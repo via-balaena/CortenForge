@@ -29,6 +29,7 @@
 //! [r]: ../../../../../../docs/studies/soft_body_architecture/src/60-differentiability/02-implicit-function.md
 //! [tet4]: ../../../../../../docs/studies/soft_body_architecture/src/30-discretization/00-element-choice/00-tet4.md
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use faer::linalg::solvers::SolveCore;
@@ -40,7 +41,7 @@ use faer::{Conj, MatMut, Side};
 use nalgebra::{Matrix3, SMatrix};
 use sim_ml_chassis::{Tensor, Var};
 
-use super::lm::LmConfig;
+use super::lm::{LmConfig, LmState};
 use super::{CpuTape, NewtonStep, Solver};
 use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
@@ -691,91 +692,202 @@ where
     }
 
     /// Factor the free-DOF condensed tangent assembled from `triplets`
-    /// (lower-tri, column-major sorted).
+    /// (lower-tri, column-major sorted), with F3 Levenberg-Marquardt
+    /// `+λI` retry rescue.
     ///
     /// Cheap-path-first: try `Llt` on the cached symbolic factor; on
     /// `LltError::Numeric` (non-PD pivot — an indefinite tangent at the
-    /// current Newton iter or position), reflect the lower-tri triplets
-    /// to the full pattern and factor via `Lu` against the cached
-    /// `symbolic_lu`. Happy path is bit-identical to the pre-A2 code;
-    /// the fall-through engages only on contact-tangent indefiniteness
-    /// (row 21 v1.5 capsule-cap apex was the documented case at A2
-    /// landing).
+    /// current Newton iter or position) the F3 retry loop bumps `λ`
+    /// (seed = `seed_relative × max_diag` on first non-PD per call,
+    /// then `λ ×= up_factor`) and retries the Llt on the regularized
+    /// `A + λI`. On Llt success, `λ` decays via `on_llt_success` for
+    /// the next call. When the retry budget exhausts OR `λ` saturates
+    /// at `max_relative × max_diag`, the loop falls through to LU on
+    /// the ORIGINAL (un-regularized) triplets — per spec §2.1, LU on
+    /// the regularized system would conflate "LM saturation" with "LU
+    /// on `λ_max`-regularized system" and make the saturation surface
+    /// a moving target.
     ///
-    /// `context` is a `&str` tag included in the fallback warn-log and
-    /// the doubly-failed panic message so debug can identify which
-    /// factor site fired the fallback or panic.
+    /// When `lm_state` is [`LmState::disabled`] (the bit-equal path
+    /// for `SolverConfig::lm_regularization == None`), `can_bump`
+    /// returns `false` unconditionally, so the loop reduces to a
+    /// single Llt attempt + direct LU fallback (today's pre-F3
+    /// behavior, observably bit-equal including the existing
+    /// `"sim-soft: faer LU fallback fired"` stderr line).
+    ///
+    /// `context` is a `&str` tag included in the fallback warn-log,
+    /// the LM seed/bump/summary logs, and the doubly-failed panic
+    /// message so debug can identify which factor site fired which
+    /// path.
     //
     // expect_used + panic justifications (helper owns both):
     //   • `SparseColMat::try_new_from_triplets` can only fail on
     //     duplicate triplet entries, which the BTreeMap accumulator in
     //     `assemble_free_hessian_triplets` (and the new() pattern
-    //     reflection) prevents by construction.
+    //     reflection) prevents by construction. `triplets_with_diagonal_
+    //     offset` mutates existing diagonal entries in place rather
+    //     than appending, preserving the no-duplicates invariant.
     //   • LltError::Generic (OutOfMemory) and LuError post-fallback are
     //     both non-recoverable: the symbolic patterns were validated at
     //     new(), so a fresh failure is either OOM or a deeper bug.
     //   • The fall-through `Lu::try_new_with_symbolic` failing is the
-    //     A2 doubly-failed case — the Llt path tripped non-PD AND the
-    //     LU path tripped a singular factor; not recoverable without a
-    //     model-level change (looser validity domain, mesh refinement,
-    //     or geometry change). Panic carries the context.
+    //     A2 doubly-failed case (now reached via LM saturation OR the
+    //     disabled short-circuit) — the Llt path tripped non-PD AND
+    //     the LU path tripped a singular factor; not recoverable
+    //     without a model-level change. Panic carries the context.
     #[allow(clippy::expect_used, clippy::panic)]
     fn factor_free_tangent(
         &self,
         triplets: &[Triplet<usize, usize, f64>],
+        lm_state: &mut LmState,
         context: &str,
     ) -> FactoredFreeTangent {
-        let a_mat: SparseColMat<usize, f64> =
-            SparseColMat::try_new_from_triplets(self.n_free, self.n_free, triplets)
-                .expect("malformed condensed-tangent triplet list");
-        match Llt::<usize, f64>::try_new_with_symbolic(
-            self.symbolic.clone(),
-            a_mat.rb(),
-            Side::Lower,
-        ) {
-            Ok(llt) => FactoredFreeTangent::Llt(llt),
-            Err(LltError::Numeric(numeric_err)) => {
-                // A2 fallback. Symmetrize lower-tri → full and factor
-                // via Lu. The warn-log lets debug tell SPD-skeleton
-                // violations (which were panics pre-A2) from
-                // genuinely-recoverable indefinite contact-tangent
-                // cases.
-                eprintln!(
-                    "sim-soft: faer LU fallback fired at {context} \
-                     (Llt non-PD pivot: {numeric_err:?})"
-                );
-                let mut full_triplets: Vec<Triplet<usize, usize, f64>> =
-                    Vec::with_capacity(triplets.len() * 2);
-                for t in triplets {
-                    full_triplets.push(Triplet::new(t.row, t.col, t.val));
-                    if t.row != t.col {
-                        full_triplets.push(Triplet::new(t.col, t.row, t.val));
+        // Snapshot max_diag ONCE per call (not per retry) per spec §2.1.
+        // Mass scatter at `assemble_free_hessian_triplets` line 1247
+        // guarantees a positive diagonal entry per free DOF (the orphan
+        // auto-pin in new() excludes zero-mass DOFs from `free_dof_
+        // indices`); the hand-built test fixtures in this module's
+        // `tests` mod also include non-zero diagonal triplets. Both
+        // gates make `max_diag > 0` a structural invariant.
+        let max_diag = triplets_max_diag(triplets);
+        debug_assert!(
+            max_diag > 0.0,
+            "factor_free_tangent: max diagonal entry must be positive (got {max_diag}); \
+             empty triplets / zero-mass DOFs should have been excluded by new() validity gates"
+        );
+
+        // Snapshot λ at call start so the first-non-PD log can pick
+        // the seed-vs-bump form per spec §2.5 logging policy.
+        let lambda_at_call_start = lm_state.lambda();
+        lm_state.begin_factor_call();
+
+        loop {
+            // λ == 0 → borrow the original triplets (bit-equal to pre-F3,
+            // no allocation). λ > 0 → clone + mutate diagonal in place.
+            let regularized: Cow<[Triplet<usize, usize, f64>]> = if lm_state.lambda() > 0.0 {
+                Cow::Owned(triplets_with_diagonal_offset(triplets, lm_state.lambda()))
+            } else {
+                Cow::Borrowed(triplets)
+            };
+            let a_mat: SparseColMat<usize, f64> =
+                SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &regularized)
+                    .expect("malformed condensed-tangent triplet list");
+            match Llt::<usize, f64>::try_new_with_symbolic(
+                self.symbolic.clone(),
+                a_mat.rb(),
+                Side::Lower,
+            ) {
+                Ok(llt) => {
+                    // Post-retry success summary (only when we actually
+                    // retried — disabled path has retry_count == 0
+                    // and emits nothing, preserving pre-F3 stderr).
+                    if lm_state.retry_count() > 0 {
+                        eprintln!(
+                            "sim-soft: LM converged in {} retries to λ = {:e} at {context}",
+                            lm_state.retry_count(),
+                            lm_state.lambda()
+                        );
                     }
+                    lm_state.on_llt_success();
+                    return FactoredFreeTangent::Llt(llt);
                 }
-                let a_mat_full: SparseColMat<usize, f64> =
-                    SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &full_triplets)
-                        .expect("malformed full condensed-tangent triplet list");
-                let lu = Lu::<usize, f64>::try_new_with_symbolic(
-                    self.symbolic_lu.clone(),
-                    a_mat_full.rb(),
-                )
-                .unwrap_or_else(|lu_err| {
-                    panic!(
-                        "condensed tangent factor doubly failed at {context}: \
+                Err(LltError::Numeric(numeric_err)) if lm_state.can_bump(max_diag) => {
+                    lm_state.on_non_pd(max_diag);
+                    // First-non-PD per-call log (seed vs bump form
+                    // determined by `lambda_at_call_start`). Subsequent
+                    // retries within the same call are silent — the
+                    // post-loop summary closes the trace.
+                    if lm_state.retry_count() == 1 {
+                        if lambda_at_call_start == 0.0 {
+                            eprintln!(
+                                "sim-soft: LM seeded λ = {:e} at {context} \
+                                 (Llt non-PD pivot: {numeric_err:?})",
+                                lm_state.lambda()
+                            );
+                        } else {
+                            eprintln!(
+                                "sim-soft: LM bumped λ = {:e} (was {:e}) at {context} \
+                                 (Llt non-PD pivot: {numeric_err:?})",
+                                lm_state.lambda(),
+                                lambda_at_call_start
+                            );
+                        }
+                    }
+                    // Loop falls through to next iteration — explicit
+                    // `continue` is clippy::needless_continue here.
+                }
+                Err(LltError::Numeric(numeric_err)) => {
+                    // Saturated (retries exhausted OR λ at ceiling) OR
+                    // LM disabled (can_bump false from the start). The
+                    // LM-saturation summary fires only when LM is active;
+                    // the underlying `faer LU fallback fired` log inside
+                    // `lu_fallback` preserves the pre-F3 stderr surface.
+                    if lm_state.is_active() {
+                        eprintln!(
+                            "sim-soft: LM saturated at λ = {:e} after {} retries at {context}; \
+                             falling back to LU on un-regularized triplets",
+                            lm_state.lambda(),
+                            lm_state.retry_count()
+                        );
+                    }
+                    return self.lu_fallback(triplets, numeric_err, context);
+                }
+                Err(LltError::Generic(faer_err)) => panic!(
+                    "condensed tangent Llt factor failed at {context} with \
+                     non-Numeric error: {faer_err:?} (symbolic pattern wrong or \
+                     OutOfMemory — both should be impossible post-new())."
+                ),
+            }
+        }
+    }
+
+    /// LU fallback path extracted from `factor_free_tangent` so the F3
+    /// retry-loop saturation arm can dispatch to it on the ORIGINAL
+    /// un-regularized triplets (per spec §2.1). Symmetrizes lower-tri
+    /// → full pattern and factors via Lu against the cached
+    /// `symbolic_lu`.
+    ///
+    /// `numeric_err` is forwarded from the Llt failure that triggered
+    /// the fallback — included in the warn-log for debug parity with
+    /// the pre-F3 single-attempt path. The warn-log surface is
+    /// preserved exactly so pre-F3 stderr regressions stay bit-equal
+    /// at LM-disabled call sites.
+    //
+    // expect_used + panic same justifications as `factor_free_tangent`'s
+    // outer comment: pattern-build correctness validated at new().
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn lu_fallback(
+        &self,
+        triplets: &[Triplet<usize, usize, f64>],
+        numeric_err: faer::linalg::cholesky::llt::factor::LltError,
+        context: &str,
+    ) -> FactoredFreeTangent {
+        eprintln!(
+            "sim-soft: faer LU fallback fired at {context} \
+             (Llt non-PD pivot: {numeric_err:?})"
+        );
+        let mut full_triplets: Vec<Triplet<usize, usize, f64>> =
+            Vec::with_capacity(triplets.len() * 2);
+        for t in triplets {
+            full_triplets.push(Triplet::new(t.row, t.col, t.val));
+            if t.row != t.col {
+                full_triplets.push(Triplet::new(t.col, t.row, t.val));
+            }
+        }
+        let a_mat_full: SparseColMat<usize, f64> =
+            SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &full_triplets)
+                .expect("malformed full condensed-tangent triplet list");
+        let lu = Lu::<usize, f64>::try_new_with_symbolic(self.symbolic_lu.clone(), a_mat_full.rb())
+            .unwrap_or_else(|lu_err| {
+                panic!(
+                    "condensed tangent factor doubly failed at {context}: \
                          Llt tripped non-PD AND Lu fallback failed: {lu_err:?}. \
                          Tangent is degenerate beyond LU rescue — model-level \
                          change needed (looser validity domain, mesh \
                          refinement, or contact-geometry change)."
-                    )
-                });
-                FactoredFreeTangent::Lu(Box::new(lu))
-            }
-            Err(LltError::Generic(faer_err)) => panic!(
-                "condensed tangent Llt factor failed at {context} with \
-                 non-Numeric error: {faer_err:?} (symbolic pattern wrong or \
-                 OutOfMemory — both should be impossible post-new())."
-            ),
-        }
+                )
+            });
+        FactoredFreeTangent::Lu(Box::new(lu))
     }
 
     /// Re-factor the free-DOF condensed tangent at a specific position
@@ -783,9 +895,34 @@ where
     /// cached symbolic factors — no rebuild. Returns either the
     /// happy-path Cholesky or the A2 LU fallback per
     /// [`Self::factor_free_tangent`].
-    fn factor_at_position(&self, x_curr: &[f64], dt: f64) -> FactoredFreeTangent {
+    ///
+    /// `lm_seed_lambda` carries the Newton-final λ from `solve_impl`
+    /// per spec §2.1 — a fresh `LmState` is constructed from
+    /// `self.config.lm_regularization` (disabled if `None`) seeded
+    /// with this value, so late-iter LM activity that hadn't fully
+    /// decayed warm-starts the adjoint factor. The adjoint runs at
+    /// converged `x_final` which is typically SPD, so the expected λ
+    /// is small-or-zero and LM typically does not fire here. On the
+    /// disabled path, `lm_seed_lambda` is ignored (the sentinel
+    /// state's λ stays permanently 0).
+    fn factor_at_position(
+        &self,
+        x_curr: &[f64],
+        dt: f64,
+        lm_seed_lambda: f64,
+    ) -> FactoredFreeTangent {
         let triplets = self.assemble_free_hessian_triplets(x_curr, dt);
-        self.factor_free_tangent(&triplets, "factor_at_position (IFT adjoint at x_final)")
+        let mut lm_state = self
+            .config
+            .lm_regularization
+            .map_or_else(LmState::disabled, |cfg| {
+                LmState::from_config_with_seed(cfg, lm_seed_lambda)
+            });
+        self.factor_free_tangent(
+            &triplets,
+            &mut lm_state,
+            "factor_at_position (IFT adjoint at x_final)",
+        )
     }
 
     /// Solve `A_free · δ = -r_free` via the cached symbolic factor.
@@ -796,19 +933,21 @@ where
     /// `r_full` is the full-DOF residual; the free-DOF subset is
     /// gathered via `self.free_dof_indices`. The factor variant (Llt
     /// vs Lu) is encapsulated by [`FactoredFreeTangent`] and forwards
-    /// the solve transparently.
+    /// the solve transparently. `lm_state` is threaded through to
+    /// `factor_free_tangent`'s F3 retry loop (per spec §2.1).
     fn factor_and_solve_free(
         &self,
         triplets: &[Triplet<usize, usize, f64>],
         r_full: &[f64],
         newton_iter: usize,
         r_norm: f64,
+        lm_state: &mut LmState,
     ) -> Vec<f64> {
         let context = format!(
             "factor_and_solve_free at Newton iter {newton_iter} \
              (free residual norm {r_norm:e})"
         );
-        let factor = self.factor_free_tangent(triplets, &context);
+        let factor = self.factor_free_tangent(triplets, lm_state, &context);
         // RHS = -r_free, gathered from r_full via the free-DOF index map.
         let mut rhs: Vec<f64> = self
             .free_dof_indices
@@ -846,7 +985,7 @@ where
         v_prev: &Tensor<f64>,
         theta: &Tensor<f64>,
         dt: f64,
-    ) -> NewtonStep<CpuTape> {
+    ) -> (NewtonStep<CpuTape>, f64) {
         assert!(
             x_prev.as_slice().len() == self.n_dof,
             "x_prev must have {} entries, got {}",
@@ -880,6 +1019,16 @@ where
         let mut f_int = vec![0.0; self.n_dof];
         let mut r_full = vec![0.0; self.n_dof];
 
+        // F3 LM state — disabled() sentinel when `lm_regularization` is
+        // None (bit-equal short-circuit at `factor_free_tangent`); the
+        // active path persists λ across Newton iters within this solve
+        // (per spec §2.2 — no per-iter reset; `down_factor` decay
+        // handles well-conditioned mid-solve regions).
+        let mut lm_state = self
+            .config
+            .lm_regularization
+            .map_or_else(LmState::disabled, LmState::from_config);
+
         for newton_iter in 0..self.config.max_newton_iter {
             self.assemble_global_int_force(&x_curr, &mut f_int);
             residual_into(
@@ -895,11 +1044,18 @@ where
             let r_norm = self.free_residual_norm(&r_full);
 
             if r_norm < self.config.tol {
-                return NewtonStep::new_converged(x_curr, newton_iter, r_norm);
+                // Return the Newton-final λ alongside the step so the
+                // IFT-adjoint factor at `factor_at_position` can seed
+                // its fresh LmState (per spec §2.1).
+                return (
+                    NewtonStep::new_converged(x_curr, newton_iter, r_norm),
+                    lm_state.lambda(),
+                );
             }
 
             let triplets = self.assemble_free_hessian_triplets(&x_curr, dt);
-            let delta_free = self.factor_and_solve_free(&triplets, &r_full, newton_iter, r_norm);
+            let delta_free =
+                self.factor_and_solve_free(&triplets, &r_full, newton_iter, r_norm, &mut lm_state);
             x_curr = self.armijo_backtrack(
                 &x_curr,
                 &x_prev_vec,
@@ -1277,14 +1433,17 @@ where
         // proceed in pure-tensor space. The tape's role is reverse-mode
         // bookkeeping; the primal solve is tape-free.
         let theta_tensor = tape.value_tensor(theta_var).clone();
-        let mut step = self.solve_impl(x_prev, v_prev, &theta_tensor, dt);
+        let (mut step, lm_final_lambda) = self.solve_impl(x_prev, v_prev, &theta_tensor, dt);
 
         // IFT adjoint factor: re-assemble A at x_final (post-convergence)
         // and factor it via `factor_free_tangent` — Llt happy path or
-        // A2 Lu fallback per `FactoredFreeTangent`. Factor ownership
-        // pattern (I-3) verified for Llt in tests/invariant_3_factor.rs;
-        // the same Arc-internal ownership shape holds for Lu.
-        let factor = self.factor_at_position(&step.x_final, dt);
+        // A2 Lu fallback per `FactoredFreeTangent`. F3: pass the
+        // Newton-final λ as the LM seed (per spec §2.1) so late-iter
+        // LM activity warm-starts the adjoint factor; on the disabled
+        // path the seed is ignored. Factor ownership pattern (I-3)
+        // verified for Llt in tests/invariant_3_factor.rs; the same
+        // Arc-internal ownership shape holds for Lu.
+        let factor = self.factor_at_position(&step.x_final, dt, lm_final_lambda);
 
         // Push `NewtonStepVjp` onto the tape with `theta_var` as parent.
         // The VJP owns the factor; `Tape::backward` feeds the scalar-or-
@@ -1338,8 +1497,11 @@ where
         // Pure-function counterpart; no tape mutation. At skeleton scale
         // this is the same primal solve — Phase-E checkpoint replay will
         // diverge by reading a stored primal instead of re-solving.
-        // `x_final_var` stays `None` — no tape means no Var.
-        self.solve_impl(x_prev, v_prev, theta, dt)
+        // `x_final_var` stays `None` — no tape means no Var. Drops the
+        // F3 Newton-final λ: replay path doesn't run the IFT adjoint
+        // factor (which is the only consumer of the seed).
+        let (step, _lm_final_lambda) = self.solve_impl(x_prev, v_prev, theta, dt);
+        step
     }
 
     fn current_dt(&self) -> f64 {
@@ -1424,6 +1586,50 @@ fn residual_into(
     }
 }
 
+/// Maximum diagonal entry magnitude (signed, not abs) across a
+/// lower-tri triplet list. F3 uses this to scale the seed and ceiling
+/// of the LM `+λI` retry loop relative to the assembled tangent's
+/// dominant diagonal (per spec §2.1 / §2.2).
+///
+/// Returns `0.0` for a triplet list with no diagonal entries — the
+/// caller (`factor_free_tangent`) `debug_assert!`s on `> 0`, so an
+/// all-off-diagonal list trips fail-fast at the assertion. Production
+/// assembly (`assemble_free_hessian_triplets`) always scatters a
+/// positive mass-diagonal entry per free DOF, so the structural
+/// invariant holds.
+fn triplets_max_diag(triplets: &[Triplet<usize, usize, f64>]) -> f64 {
+    triplets
+        .iter()
+        .filter(|t| t.row == t.col)
+        .map(|t| t.val)
+        .fold(0.0_f64, f64::max)
+}
+
+/// Clone a triplet list and add `lambda` to each diagonal entry in
+/// place (the F3 `+λI` regularization step per spec §2.1). Off-diagonal
+/// entries are copied unchanged. Preserves triplet ordering (the
+/// cached symbolic factor depends on it).
+///
+/// Mutates EXISTING diagonal entries — does NOT append fresh
+/// `(k, k, λ)` triplets — because `SparseColMat::try_new_from_triplets`
+/// rejects duplicates. The `assemble_free_hessian_triplets` mass
+/// scatter at line 1247 guarantees a diagonal entry per free DOF, so
+/// every `(k, k)` is mutated exactly once. `O(n_triplets)` clone +
+/// `O(n_triplets)` walk = `O(n_triplets)`; negligible vs the Llt
+/// factor cost.
+fn triplets_with_diagonal_offset(
+    triplets: &[Triplet<usize, usize, f64>],
+    lambda: f64,
+) -> Vec<Triplet<usize, usize, f64>> {
+    let mut out = triplets.to_vec();
+    for t in &mut out {
+        if t.row == t.col {
+            t.val += lambda;
+        }
+    }
+    out
+}
+
 /// Convert a flat `[f64]` DOF buffer (length `3·N`, vertex-major +
 /// xyz-inner) to a `Vec<Vec3>` of length `N`.
 ///
@@ -1476,7 +1682,8 @@ mod tests {
     use crate::material::MaterialField;
     use crate::mesh::SingleTetMesh;
     use crate::readout::{BoundaryConditions, LoadAxis};
-    use crate::solver::{CpuNewtonSolver, SolverConfig};
+    use crate::solver::lm::LmState;
+    use crate::solver::{CpuNewtonSolver, LmConfig, SolverConfig};
     use crate::{SkeletonSolver, element::Tet4};
 
     fn build(bc: BoundaryConditions) -> SkeletonSolver {
@@ -1551,7 +1758,8 @@ mod tests {
             Triplet::new(2, 2, 4.0),
         ];
 
-        let factor = solver.factor_free_tangent(&triplets, "SPD test fixture");
+        let mut lm_state = LmState::disabled();
+        let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "SPD test fixture");
         assert!(
             matches!(factor, FactoredFreeTangent::Llt(_)),
             "SPD case must take the Llt happy path, got Lu fallback"
@@ -1592,7 +1800,9 @@ mod tests {
             Triplet::new(2, 2, 1.0),
         ];
 
-        let factor = solver.factor_free_tangent(&triplets, "indefinite test fixture");
+        let mut lm_state = LmState::disabled();
+        let factor =
+            solver.factor_free_tangent(&triplets, &mut lm_state, "indefinite test fixture");
         assert!(
             matches!(factor, FactoredFreeTangent::Lu(_)),
             "indefinite case must engage the Lu fallback"
@@ -1611,5 +1821,82 @@ mod tests {
         assert!((ax0 - 1.0).abs() < tol, "A·x[0] = {ax0}, expected 1.0");
         assert!((ax1 - 1.0).abs() < tol, "A·x[1] = {ax1}, expected 1.0");
         assert!((ax2 - 1.0).abs() < tol, "A·x[2] = {ax2}, expected 1.0");
+    }
+
+    /// F3.2 LM rescue: same indefinite fixture as
+    /// `factor_free_tangent_falls_through_to_lu_on_non_pd` but with
+    /// LM enabled (`fork_b` defaults). The Marquardt retry loop must
+    /// bump λ until the regularized tangent `A + λI` becomes SPD,
+    /// returning the `Llt` variant instead of falling through to the
+    /// LU fallback.
+    ///
+    /// Eigenvalue arithmetic: `A = [[1, 2, 0], [2, 1, 0], [0, 0, 1]]`
+    /// has top-left 2×2 eigenvalues `{3, -1}`. To dominate the
+    /// negative mode requires `λ > 1`. With `max_diag = 1.0`,
+    /// `seed_relative = 1e-6`, `up_factor = 10.0`,
+    /// `max_retries_per_iter = 8`: retry 1 seeds at λ = 1e-6, then
+    /// retries 2..8 multiply by 10 each. Retry 8 reaches λ = 1e-6 ×
+    /// 10⁷ = 10.0, which dominates the negative mode and rescues to
+    /// SPD. Headroom is tight (1 retry above design-target — see spec
+    /// §2.2 numerical-sanity para); a future seed-relative
+    /// retune would loosen this.
+    ///
+    /// Also confirms the LM seed log fires on stderr (visible in test
+    /// runner output) and the success-summary log fires once the
+    /// retry loop converges.
+    #[test]
+    fn factor_free_tangent_lm_bump_rescues_non_pd() {
+        let mut cfg = SolverConfig::skeleton();
+        cfg.lm_regularization = Some(LmConfig::fork_b());
+        let solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        // Same indefinite fixture as the LU-fallback test above; LM
+        // must beat it to SPD before saturation.
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(1, 0, 2.0),
+            Triplet::new(2, 0, 0.0),
+            Triplet::new(1, 1, 1.0),
+            Triplet::new(2, 1, 0.0),
+            Triplet::new(2, 2, 1.0),
+        ];
+
+        let mut lm_state = LmState::from_config(LmConfig::fork_b());
+        let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "LM-rescue test fixture");
+        assert!(
+            matches!(factor, FactoredFreeTangent::Llt(_)),
+            "LM bump must rescue the non-PD case to Llt before LU fallback \
+             fires (got Lu — LM exhausted retry budget before reaching SPD)"
+        );
+        // λ exposed post-call is the post-decay value (the
+        // `on_llt_success` decay runs before return) — empirically
+        // observed at this fixture: faer's Llt accepts at λ = 1.0
+        // (the negative-eigenvalue mode reaches a "good enough" pivot
+        // threshold), retry count = 7, then decay halves λ to 0.5.
+        // Pin retry_count rather than λ directly so the test stays
+        // robust to future fork_b tunables that change the seed /
+        // up_factor / down_factor — the load-bearing invariant is
+        // "LM activated and rescued before saturation," not the exact
+        // λ value.
+        assert!(
+            lm_state.retry_count() > 0,
+            "LM must have activated (retry_count > 0), got {}",
+            lm_state.retry_count()
+        );
+        assert!(
+            lm_state.retry_count() < LmConfig::fork_b().max_retries_per_iter,
+            "LM rescued before saturation: retry_count = {} < {}",
+            lm_state.retry_count(),
+            LmConfig::fork_b().max_retries_per_iter,
+        );
     }
 }
