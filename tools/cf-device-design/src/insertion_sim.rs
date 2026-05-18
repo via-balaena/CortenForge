@@ -4834,6 +4834,15 @@ mod tests {
     /// `with_params`); regression to `with_params` would produce a
     /// non-empty active set here.
     ///
+    /// **Scope**: this test is a wire-up gate, NOT a filter-math gate.
+    /// The strict-vs-non-strict, sign-convention, and band-gate
+    /// semantics of the cutoff filter itself are pinned in
+    /// `sim/L0/soft/tests/penalty_interior_cutoff.rs` against a
+    /// `RigidPlane` fixture with precisely-controllable sd. Here the
+    /// icosphere `GridSdf` is the load-bearing surface — we're only
+    /// asserting that cf-device-design's contact-build call site
+    /// actually plumbs the cutoff through to sim-soft.
+    ///
     /// Probe at `(0, 0, 0)` with `pose = slide_pose_at(centerline, 1.0)`
     /// (rest pose — intruder centered at origin per the centerline's
     /// rest-pose convention): the inverse-transformed point lands at

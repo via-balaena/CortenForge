@@ -92,9 +92,19 @@ pub struct PenaltyRigidContact {
     /// vertex back into the contact band, at which point normal
     /// penalty contact resumes.
     ///
-    /// Motivating consumer: cortenforge cf-device-design sliding-
-    /// intruder FEM ramp (see
-    /// `docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md`).
+    /// **Scope of the filter**: applies at the active-set walk only
+    /// ([`ActivePairsFor::active_pairs`](super::ActivePairsFor::active_pairs)
+    /// and [`Self::per_pair_readout`]). The pair-indexed
+    /// [`ContactModel`](super::ContactModel) methods (`energy` /
+    /// `gradient` / `hessian`) do NOT re-check the cutoff and would
+    /// return the unfiltered penalty values if called directly with a
+    /// deep-interior pair. This is fine in practice because the solver
+    /// only invokes pair-indexed methods on pairs `active_pairs`
+    /// produced. The asymmetry is explicit so a future consumer that
+    /// hand-builds pairs is aware of the contract.
+    ///
+    /// Motivating consumer: the `cf-device-design` sliding-intruder FEM
+    /// ramp (`docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md`).
     interior_cutoff: Option<f64>,
 }
 
@@ -143,9 +153,9 @@ impl PenaltyRigidContact {
     ///
     /// # Panics
     ///
-    /// `interior_cutoff` must be strictly positive, finite, and
-    /// strictly greater than `d_hat` — otherwise the active band
-    /// `[max(-cutoff, ...), d_hat)` collapses or excludes legitimate
+    /// `interior_cutoff` must be (1) strictly positive + finite, and
+    /// (2) strictly greater than `d_hat` — so the active band
+    /// `[−cutoff, d_hat)` is non-empty + contains legitimate
     /// near-contact pairs.
     #[must_use]
     pub fn with_params_and_interior_cutoff<I>(
@@ -164,8 +174,8 @@ impl PenaltyRigidContact {
         );
         assert!(
             interior_cutoff > d_hat,
-            "interior_cutoff ({interior_cutoff}) must exceed d_hat ({d_hat}) — \
-             otherwise the active band collapses or excludes legitimate near-contact pairs",
+            "interior_cutoff ({interior_cutoff}) must be > d_hat ({d_hat}) — \
+             so the active band [−cutoff, d_hat) is non-empty",
         );
         let primitives: Vec<Box<dyn Sdf>> = primitives
             .into_iter()

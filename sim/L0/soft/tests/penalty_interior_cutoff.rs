@@ -110,3 +110,55 @@ fn penalty_per_pair_readout_respects_interior_cutoff() {
         r.sd,
     );
 }
+
+/// Boundary case — vertex exactly at `sd = -cutoff` is KEPT. The
+/// filter uses `sd < -c` (strict), so the cutoff value itself is
+/// inclusive of the active set. A future regression to `sd <= -c`
+/// would silently exclude vertices right at the boundary; this test
+/// pins the strict-vs-non-strict semantics.
+#[test]
+fn penalty_with_interior_cutoff_keeps_pair_exactly_at_boundary() {
+    let c = z_floor_with_cutoff();
+    let mesh = SingleTetMesh::new(&MaterialField::skeleton_default());
+    let positions = [Vec3::new(0.0, 0.0, -INTERIOR_CUTOFF)];
+    let pairs = c.active_pairs(&mesh, &positions);
+    assert_eq!(
+        pairs.len(),
+        1,
+        "vertex at sd = -interior_cutoff (boundary) must be KEPT (strict < filter), got {} pairs",
+        pairs.len(),
+    );
+}
+
+// ---------------------------------------------------------------------
+// Precondition tests for `with_params_and_interior_cutoff` — each
+// `#[should_panic]` test pins one branch of the constructor's
+// validation assertions.
+// ---------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "interior_cutoff must be positive and finite")]
+fn penalty_with_interior_cutoff_panics_on_zero_cutoff() {
+    let plane = RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+    let _contact =
+        PenaltyRigidContact::with_params_and_interior_cutoff(vec![plane], KAPPA, D_HAT, 0.0);
+}
+
+#[test]
+#[should_panic(expected = "interior_cutoff must be positive and finite")]
+fn penalty_with_interior_cutoff_panics_on_nan_cutoff() {
+    let plane = RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+    let _contact =
+        PenaltyRigidContact::with_params_and_interior_cutoff(vec![plane], KAPPA, D_HAT, f64::NAN);
+}
+
+#[test]
+#[should_panic(expected = "must be > d_hat")]
+fn penalty_with_interior_cutoff_panics_when_cutoff_le_d_hat() {
+    // cutoff = d̂ collapses the active band [-d̂, d̂) at its
+    // boundary; cutoff < d̂ would empty it entirely. Either misuse
+    // is a programmer error — locked by panic here.
+    let plane = RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+    let _contact =
+        PenaltyRigidContact::with_params_and_interior_cutoff(vec![plane], KAPPA, D_HAT, D_HAT);
+}
