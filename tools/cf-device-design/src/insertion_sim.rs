@@ -2316,10 +2316,32 @@ pub struct SlideRamp {
 /// arc-length increments, solving the FEM at each step.
 ///
 /// At each step the contact primitive is the transformed scan offset
-/// inward by `cavity_offset_m` (see [`intruder_contact_sliding_at`]).
-/// Cavity-wall deformation is localized to the contact zone where
-/// the intruder currently sits, NOT propagated uniformly across the
-/// wall as in the growing ramp.
+/// by `interference_m + cavity_offset_m` (see
+/// [`intruder_contact_sliding_at`]); the main loop pins
+/// `interference_m = cavity_inset_m` (full engineered interference).
+/// Cavity-wall deformation has two components: the *uniform* engineered-
+/// interference response that the bare transformed scan applies wherever
+/// it overlaps the cavity wall (~`cavity_inset_m` radial displacement
+/// at full seating), plus the *local* deformation wave that follows
+/// the intruder along the slide path. Pre-F4 sliding pinned
+/// `interference_m = 0` and only the local wave existed; the bare-scan
+/// model post-F4 is the physically correct press-fit insertion model.
+///
+/// F4 warmup (`docs/CAVITY_INSET_STALL_BOOKMARK.md` §9-§10): before
+/// the main slide ramp starts, run `K = ceil(cavity_inset_m / 1.5 mm)
+/// clamped to [0, 8]` homotopy substeps at the step-0 slide pose,
+/// ramping `interference_m` from `cavity_inset_m / K` to
+/// `cavity_inset_m`. Eases Newton through the κ=1e3 convergence
+/// envelope edge (~1.5 mm wide in interference per
+/// [`INSERTION_CONTACT_KAPPA`] docstring), which the per-substep
+/// increment respects by construction. Without warmup, cavity insets
+/// past ~3 mm step-0 stall on initial full-interference contact build.
+/// Each substep warmstarts from the previous `x_final`; the main loop
+/// then warmstarts from the warmup's final converged state. A warmup-
+/// substep stall returns a [`SlideRamp`] with `failed_at_step =
+/// Some(0)`, the underlying solver panic forwarded verbatim in
+/// `failure_reason` (per bookmark §10 falsifier: F3 LM regularization
+/// is the next-arc escalation if F4 doesn't suffice).
 ///
 /// Solver convergence: each Newton solve is warm-started from the
 /// previous step's `x_final` (D-Slide4 — no convection-aware
@@ -2328,10 +2350,11 @@ pub struct SlideRamp {
 /// `catch_unwind` records gracefully).
 ///
 /// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
-/// is the engineered shell-wall interference. It is forwarded
-/// unchanged to [`intruder_contact_sliding_at`] for the per-step
-/// contact build; see that function's docstring + the CR.1 recon spec
-/// for the active-set interior-cutoff derivation.
+/// is the engineered shell-wall interference. It is forwarded to
+/// [`intruder_contact_sliding_at`] both as the active-set
+/// `interior_cutoff` driver AND as the main loop's `interference_m`
+/// (post-F4); see that function's docstring + the CR.1 recon spec for
+/// the active-set interior-cutoff derivation.
 ///
 /// # Errors
 ///
@@ -2399,17 +2422,102 @@ pub fn run_sliding_insertion_ramp(
     let mut intruder_poses: Vec<Isometry3<f64>> = Vec::with_capacity(n_steps);
     let mut failed_at_step = None;
     let mut failure_reason = None;
+
+    // F4 — interference homotopy continuation. Before the main slide
+    // ramp picks up, warm the solver into the full engineered-
+    // interference contact configuration at the step-0 pose via K
+    // homotopy substeps ramping `interference_m` from `cavity_inset_m/K`
+    // to `cavity_inset_m`. Each substep warmstarts from the previous
+    // `x_final` so Newton stays inside the local SPD-tangent basin —
+    // the κ=1e3 convergence envelope (`INSERTION_CONTACT_KAPPA`
+    // docstring) is ~1.5 mm wide in interference, which the per-substep
+    // increment respects by construction. Without warmup, cavity insets
+    // past ~3 mm step-0 stall (`docs/CAVITY_INSET_STALL_BOOKMARK.md`
+    // §1b + §8) because Newton's tangent goes non-SPD at the *initial*
+    // full-interference contact build. K is clamped to 8 substeps to
+    // cap warmup wall-clock at ~3-5 min for the 8 mm Yeoh-validity
+    // upper bound on `cavity_inset_m` (bookmark §9). Skip when K = 0
+    // (cavity_inset_m ≤ 0, defensive — UI clamps cavity_inset_m > 0).
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let warmup_k = ((cavity_inset_m / 1.5e-3).ceil() as usize).clamp(0, 8);
+    if warmup_k > 0 {
+        // Warmup at the step-0 slide pose (t = 1/n_steps): the converged
+        // warmup state is then a near-exact warmstart for main-loop
+        // step 0, which carries the deformation field forward through
+        // the slide ramp under fixed full engineered interference.
+        #[allow(clippy::cast_precision_loss)]
+        let warmup_pose = slide_pose_at(centerline_polyline_m, 1.0 / n_steps as f64);
+        for k_warm in 1..=warmup_k {
+            #[allow(clippy::cast_precision_loss)]
+            let interference_k = (k_warm as f64 / warmup_k as f64) * cavity_inset_m;
+            let contact = intruder_contact_sliding_at(
+                &intruder,
+                bounds,
+                warmup_pose,
+                interference_k,
+                cavity_offset_m,
+                cavity_inset_m,
+            );
+            let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
+            let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
+            }));
+            match outcome {
+                Ok(step) => {
+                    x_prev_flat = step.x_final;
+                }
+                Err(payload) => {
+                    // F4 falsification path: if the warmup itself
+                    // stalls, surface as a step-0 ramp failure with
+                    // the homotopy-substep context preserved alongside
+                    // the underlying panic message — the Yeoh
+                    // validity-wall regex on the synthetic icosphere
+                    // test still matches because the underlying
+                    // reason is forwarded verbatim. Per the bookmark
+                    // §10 falsifier: do NOT iterate in-session; the
+                    // F3 (LM regularization, sim-soft) escalation
+                    // owns the next attempt.
+                    let reason = panic_message(&*payload);
+                    return Ok(SlideRamp {
+                        steps: Vec::new(),
+                        failed_at_step: Some(0),
+                        failure_reason: Some(format!(
+                            "F4 warmup stalled at homotopy substep {k_warm}/{warmup_k} \
+                             (interference {:.3} mm at step-0 pose): {reason}",
+                            interference_k * 1e3,
+                        )),
+                        final_x: x_prev_flat,
+                        n_pinned,
+                        result: None,
+                        intruder_poses: Vec::new(),
+                    });
+                }
+            }
+        }
+    }
+
     for k in 0..n_steps {
         // `(k + 1) as f64 / n_steps as f64`: tiny integers — well
         // under f64's exact-integer ceiling.
         #[allow(clippy::cast_precision_loss)]
         let t = (k + 1) as f64 / n_steps as f64;
         let pose = slide_pose_at(centerline_polyline_m, t);
+        // Main loop: pin `interference_m = cavity_inset_m` — the F4
+        // behavioral fix. Pre-F4 ran at `interference_m = 0` (shrunk-
+        // scan model: the intruder coincided with the cavity wall at
+        // rest pose and only pose-mismatch local interference drove
+        // deformation). Post-F4 the intruder is the bare transformed
+        // scan, so the full engineered interference applies uniformly
+        // wherever the body surface contacts the cavity wall — the
+        // physically correct model for press-fit press-fit insertion.
+        // The preceding warmup ensures step 0 warmstarts from a
+        // converged full-interference state at this same pose.
         let contact = intruder_contact_sliding_at(
             &intruder,
             bounds,
             pose,
-            0.0,
+            cavity_inset_m,
             cavity_offset_m,
             cavity_inset_m,
         );
@@ -2430,7 +2538,7 @@ pub fn run_sliding_insertion_ramp(
                     &intruder,
                     bounds,
                     pose,
-                    0.0,
+                    cavity_inset_m,
                     cavity_offset_m,
                     cavity_inset_m,
                 );
