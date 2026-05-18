@@ -1786,9 +1786,14 @@ fn spawn_intruder_mesh(
 /// [`LayerMeshKey`] +
 /// `insertion_sim_ui::invalidate_on_geometry_change`.
 ///
-/// `last_run_generation` rolls forward whenever a new sim run lands,
-/// which is the only time `last_run.is_sliding_mode()` can change —
-/// so a separate `is_sliding_mode` field would be redundant in the key.
+/// `last_run_generation` rolls forward at the only two `last_run`
+/// mutation sites — `insertion_sim_ui.rs:806` (poll-task sets
+/// `last_run = Some(outputs)` after sim completes) and
+/// `insertion_sim_ui.rs:671` (geometry-change resnapshot clears
+/// `last_run = None`). Both bump generation, so any
+/// `last_run.is_sliding_mode()` flip is already captured by a
+/// generation change and a separate `is_sliding_mode` field would be
+/// redundant in the key.
 #[derive(Debug, Clone, PartialEq)]
 struct IntruderMeshKey {
     displayed_step: usize,
@@ -1807,10 +1812,13 @@ struct IntruderMeshKey {
 /// - `translation`: physics-frame translation projected through
 ///   [`UpAxis::to_bevy_point`] and scaled by `render_scale`.
 /// - `rotation`: physics-frame rotation conjugated by the axis-swap
-///   permutation `S` (`R_bevy = S · R_phys · S`). For `PlusZ` and
-///   `PlusX` the swap is a reflection (det = -1), which inverts the
-///   rotation sense — the closed-form quaternion identity collapses to
-///   a scalar component swap with negated vector parts (mirroring
+///   permutation `S` (`R_bevy = S · R_phys · S`; `S² = I` because each
+///   variant's swap is its own inverse — same property called out at
+///   `sim/L1/bevy/src/convert.rs:55` for the workspace-canonical
+///   Z-up↔Y-up conversion). For `PlusZ` and `PlusX` the swap is a
+///   reflection (det = -1), which inverts the rotation sense — the
+///   closed-form quaternion identity collapses to a scalar component
+///   swap with negated vector parts (mirroring
 ///   `tools/cf-scan-prep/src/main.rs::physics_quat_to_bevy_for_plus_z`).
 ///   For `PlusY` (identity swap) the quaternion is copied verbatim.
 /// - `scale`: uniform `render_scale` — matches the
@@ -1844,6 +1852,25 @@ fn pose_to_bevy_transform(pose: Isometry3<f64>, up: UpAxis, render_scale: f32) -
     }
 }
 
+/// Visibility-gate composition for the sliding-mode intruder render —
+/// extracted from [`update_intruder_mesh`] so the three-input branch
+/// matrix can be exercised in unit tests without spinning up a Bevy
+/// world. Returns `Some(pose)` only when sliding mode + deformed-view
+/// are both on AND a pose exists at the displayed step.
+#[inline]
+#[must_use]
+fn visible_pose_for_intruder(
+    is_sliding: bool,
+    show_deformed: bool,
+    pose_at: Option<Isometry3<f64>>,
+) -> Option<Isometry3<f64>> {
+    if is_sliding && show_deformed {
+        pose_at
+    } else {
+        None
+    }
+}
+
 /// SL.4 — write per-step rigid pose to the [`IntruderEntity`] from
 /// [`InsertionSimOutputs::intruder_pose_at`]. Replaces the SL.3
 /// always-hide stub. The intruder mesh asset is constant (mounted at
@@ -1851,12 +1878,12 @@ fn pose_to_bevy_transform(pose: Isometry3<f64>, up: UpAxis, render_scale: f32) -
 /// the entity's `Transform`.
 ///
 /// Visibility = `last_run.is_sliding_mode() && show_deformed &&
-/// intruder_pose_at(displayed_step).is_some()`.
+/// intruder_pose_at(displayed_step).is_some()` — composed by
+/// [`visible_pose_for_intruder`].
 /// - `is_sliding_mode`: growing mode records identity poses per spec
-///   §3e; rendering a static intruder at origin would be wrong for
-///   that mode's geometry (the growing intruder grows in place via
-///   SDF offset, not translation). SL.7 pass-B may reawaken a
-///   separate growing-mode visualization.
+///   §3e (the growing intruder grows in place via SDF offset, not
+///   translation), so this system excludes it. SL.7 pass-B may
+///   reawaken a separate growing-mode visualization.
 /// - `show_deformed`: symmetric with [`update_cavity_mesh`] — when
 ///   OFF the cavity renders at rest, so an identity-relative intruder
 ///   would overlap its own rest-pose footprint confusingly. Playback
@@ -1891,11 +1918,11 @@ fn update_intruder_mesh(
     }
 
     let visible_pose = sim_state.last_run.as_ref().and_then(|run| {
-        if run.is_sliding_mode() && sim_state.show_deformed {
-            run.intruder_pose_at(sim_state.displayed_step)
-        } else {
-            None
-        }
+        visible_pose_for_intruder(
+            run.is_sliding_mode(),
+            sim_state.show_deformed,
+            run.intruder_pose_at(sim_state.displayed_step),
+        )
     });
 
     for (mut t, mut v) in &mut q {
@@ -3452,5 +3479,58 @@ another_future_field = "foo"
             "physics +90° Z → bevy -90° Y; got {:?}, expected {expected:?}",
             t.rotation,
         );
+    }
+
+    #[test]
+    fn pose_to_bevy_transform_plus_x_negates_rotation_about_physics_x() {
+        // Symmetric sibling of the PlusZ rotation test. Under PlusX,
+        // physics +X is the up axis; the X↔Y swap is again a det = -1
+        // reflection, so physics +90° about +X → Bevy -90° about +Y.
+        let q = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(nalgebra::Vector3::x()),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let pose = Isometry3::from_parts(nalgebra::Translation3::identity(), q);
+        let t = pose_to_bevy_transform(pose, UpAxis::PlusX, 1.0);
+        let expected = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        assert!(
+            t.rotation.dot(expected).abs() > 0.999,
+            "physics +90° X → bevy -90° Y; got {:?}, expected {expected:?}",
+            t.rotation,
+        );
+    }
+
+    // ─── SL.4.4 — visible_pose_for_intruder branch matrix ─────────────
+    //
+    // The helper composes three independent inputs. A `&&`/`||` typo or
+    // swapped guard would silently mis-render the intruder, so the
+    // four single-flip cases below pin down the truth table that
+    // `update_intruder_mesh` depends on.
+
+    fn dummy_pose() -> Isometry3<f64> {
+        Isometry3::translation(1.0, 2.0, 3.0)
+    }
+
+    #[test]
+    fn visible_pose_for_intruder_all_on_returns_pose() {
+        let p = dummy_pose();
+        assert_eq!(visible_pose_for_intruder(true, true, Some(p)), Some(p));
+    }
+
+    #[test]
+    fn visible_pose_for_intruder_not_sliding_hides() {
+        let p = dummy_pose();
+        assert_eq!(visible_pose_for_intruder(false, true, Some(p)), None);
+    }
+
+    #[test]
+    fn visible_pose_for_intruder_show_deformed_off_hides() {
+        let p = dummy_pose();
+        assert_eq!(visible_pose_for_intruder(true, false, Some(p)), None);
+    }
+
+    #[test]
+    fn visible_pose_for_intruder_no_pose_hides() {
+        assert_eq!(visible_pose_for_intruder(true, true, None), None);
     }
 }
