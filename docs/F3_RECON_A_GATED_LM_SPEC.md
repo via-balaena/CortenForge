@@ -45,15 +45,18 @@ solve + Armijo. λ persists across escalation iters per the F3 spec
 
 The empirical bet: at cavity = 3 mm the LU + Armijo path completes
 unaided (no escalation, bit-equal to pre-F3 16/16). At cavity = 5 mm
-the LU + Armijo path stalls at some late iter and gated LM escalates;
-if LM can produce an Armijo-accepting step there, the run extends past
-the pre-F3 iter-63 stall point and may reach tol. If LM can't escalate
-(class 2 chattering dominates the late-iter geometry), gated A degrades
-gracefully to pre-F3 stall behavior at cavity = 5 mm.
+the LU + Armijo path stalls at the pre-F3 Run 2 floor (r_norm = 1.78
+after a short ~5-iter trajectory per `docs/CAVITY_INSET_STALL_BOOKMARK.md`
+§8 Run 2 — `~57 → 30 → 10 → 2 → plateau at 1.78`) and gated LM
+escalates at that stall point. If LM can produce an Armijo-accepting
+step there, the run extends past pre-F3's stall and may reach tol. If
+LM can't escalate (class 2 chattering dominates the late-iter
+geometry), gated A degrades gracefully to pre-F3 stall behavior at
+cavity = 5 mm.
 
 Cavity = 8 mm is **OUT OF SCOPE** for this spec — class 3 (Yeoh material
 validity) is orthogonal to A. If A ships, the UI cap is lowered to 5 mm
-per §6.4. Candidate B addresses class 3 separately.
+per §6 A.4. Candidate B addresses class 3 separately.
 
 ---
 
@@ -123,10 +126,17 @@ Armijo's required decrease is positive, the condition fails for every α.
 This is the structural mechanism behind the Gate A iter-10 stall: F3.4
 seeded `λ = 3.17e-2` and bumped to `λ = 3.17e3` (6 retries) at iter 1;
 subsequent iters 2-9 were Llt-PD (no LM activity, but `λ` decayed from
-3.17e3 slowly — `down_factor = 0.5` per success → 3.17e3 × 0.5⁹ =
-6.2 N/m by iter 10). λ at iter 10 was still ~6 N/m — large enough vs
-typical free-DOF mass-diagonal (~1 N/m) that the iter-10 step was in
-the gradient-descent regime. Armijo had nothing to accept.
+3.17e3 by `down_factor = 0.5` per success → 3.17e3 × 0.5⁹ ≈ 6.2 N/m
+by iter 10's factor call). At iter 10, λ ≈ 6.2 acts as a per-DOF
+diagonal additive. For eigenmodes of A with eigenvalue ≫ 6.2 (the
+stiff Yeoh + dense-mesh modes), the LM step approximates the Newton
+step and Armijo can accept. For eigenmodes of A with eigenvalue ≲ 6.2
+(the soft contact-DOF modes where conditioning was already poor at
+this near-converged iterate, r_norm = 1.05e-1), the LM step is in the
+gradient-descent regime per the above math and Armijo cannot accept.
+The Armijo backtrack tests the WHOLE step at each α; if any
+significant fraction of r is in the soft modes, the trial residual
+stays close to ‖r‖ — Armijo stalls.
 
 Pre-F3 at the same Gate A iter 10: LU fallback step on the (assumed
 PD by iter 10 — gate A's silence at iters 2-9 confirms this) tangent
@@ -177,19 +187,38 @@ mechanism (each Llt-PD iter inside the LM-enabled retry loop decays λ).
 - Iter 10+: same as pre-F3 — Newton converges in ~30-40 iters.
 
 **Cross-iter behavior** at cavity = 5 mm Gate B (the question A
-empirically tests):
-- Iters 1-62: pre-F3 LU + Armijo (escalation never triggers — pre-F3
-  trace shows Armijo accepting through iter 62 even though Llt is
-  non-PD every iter). Bit-equal to pre-F3.
-- Iter 63: pre-F3 Armijo stall at r_norm = 0.572. Gated A escalates:
-  factor with LM, get δ_LM, try Armijo.
-- If LM step at iter 63 is acceptable to Armijo → x_curr advances.
-  λ persists; iter 64 tries LU + Armijo first.
-  - If iter 64 LU + Armijo passes → λ decays; gated returns to dormant.
-  - If iter 64 LU + Armijo stalls → escalate again, λ bumps further.
-- If LM step at iter 63 is NOT acceptable → SolverFailure::ArmijoStall.
+empirically tests). The **apples-to-apples pre-F3 baseline** is
+`docs/CAVITY_INSET_STALL_BOOKMARK.md` §8 Run 2 (cavity = 5 mm +
+layers 10+3 mm — default layers, isolated cavity-only change), NOT
+the §1b "original failure" trace (cavity = 5 mm + layers 5+5 mm,
+which stalls at iter 63 r_norm 0.572 by way of a different mechanism
+— more silicone in active contact at thinner Layer 0 creates a
+different conditioning surface). The F3 falsification bookmark §6
+Gate B's "0.55 N pre-F3" reference inadvertently quoted the §1b
+layers-changed case; the correct cavity-only baseline is Run 2's
+**r_norm = 1.78** after a `~57 → 30 → 10 → 2 → 1.78` ~5-iter
+trajectory.
+
+- Iters 0..N (N ≈ 4-5 per Run 2 trajectory): pre-F3 LU + Armijo
+  (escalation never triggers — pre-F3 trace shows Armijo accepting
+  through these iters even though Llt is non-PD every iter). Bit-equal
+  to pre-F3.
+- Iter N+1: pre-F3 Armijo stall at r_norm ≈ 1.78. Gated A escalates:
+  factor with LM (lm_state's persistent λ seeds), get δ_LM, try Armijo.
+- If LM step at iter N+1 is acceptable to Armijo → x_curr advances.
+  λ persists; iter N+2 tries LU + Armijo first.
+  - If iter N+2 LU + Armijo passes → λ decays; gated returns to dormant.
+  - If iter N+2 LU + Armijo stalls → escalate again, λ bumps further.
+- If LM step at iter N+1 is NOT acceptable → SolverFailure::ArmijoStall.
   Gated A failed to rescue; we know A's mechanism doesn't address
   class 2's late-iter chattering geometry.
+
+The F3.4 always-on Gate B trace (r_norm floor 0.27 across 34 iters)
+is **NOT directly predictive** of gated A's outcome — F3.4 took a
+different Newton trajectory from iter 1 onward (always-on LM steps);
+gated A's trajectory matches pre-F3 through iter N then escalates at
+iter N+1. The empirical question is whether late escalation from
+r_norm 1.78 dips below tol = 0.1.
 
 ### 2.3 Where the code change lands
 
@@ -216,19 +245,26 @@ let delta_lu = self.try_factor_and_solve_free(
     &triplets, &r_full, newton_iter, r_norm, &mut lm_disabled
 );
 
-// Try LU + Armijo first (gated A's "first pass").
+// Try LU + Armijo first (gated A's "first pass"). Failure ALWAYS
+// escalates regardless of which surface tripped (Armijo-stall on a
+// valid LU step OR DoublyFailedFactor from try_factor_and_solve_free
+// — both might be rescued by LM regularization). The first-pass
+// failure data is DISCARDED on escalation; only the SECOND-pass
+// failure data populates the surfaced SolverFailure variant (per
+// §2.5: "the LU step already had its chance; escalation is the
+// recovery attempt; if escalation also fails, THAT'S the
+// committed-iterate failure").
 let lu_outcome = delta_lu.and_then(|δ| {
     self.armijo_backtrack(&x_curr, ..., &δ, r_norm, newton_iter)
-        .map_err(...convert ArmijoStallInfo to DoublyFailedFactorInfo-shaped sibling...)
+        .map_err(|stall| /* convert ArmijoStallInfo to DoublyFailedFactorInfo-shaped sibling — illustrative */)
 });
 match lu_outcome {
     Ok(x_accepted) => {
         x_curr = x_accepted;
     }
-    Err(escalation_trigger) => {
-        // ESCALATE to LM-enabled retry.
-        // `lm_state` (the OUTER persistent state, with cross-iter
-        // lambda) takes over.
+    Err(_first_pass_failure_discarded) => {
+        // ESCALATE to LM-enabled retry. `lm_state` (the OUTER
+        // persistent state, with cross-iter lambda) takes over.
         let delta_lm = self.try_factor_and_solve_free(
             &triplets, &r_full, newton_iter, r_norm, &mut lm_state
         ).map_err(|info| SolverFailure::DoublyFailedFactor { ... })?;
@@ -257,15 +293,22 @@ fires. This is a 2× cost overhead per Armijo-stalling iter when
 LM-disabled.
 
 **Optimization for LM-disabled**: short-circuit the escalation when
-`lm_state.is_active() == false` — go straight to ArmijoStall on first
-LU-step failure (today's behavior, bit-equal). This avoids the 2×
-factor cost at LM-disabled stalls. ~5 LOC of guard:
+`lm_state.is_active() == false` — convert the first-pass failure
+DIRECTLY into a `SolverFailure` and return, skipping the redundant
+second factor + solve (which would short-circuit to the same result
+because the OUTER lm_state is itself disabled). This avoids the 2×
+factor cost at LM-disabled stalls. Handles BOTH failure modes
+(ArmijoStall + DoublyFailedFactor) — pre-F3 ArmijoStall + pre-F3
+DoublyFailedFactor surfaces are both preserved bit-equally. ~5 LOC of
+guard:
 
 ```rust
 match lu_outcome {
     Ok(x_accepted) => x_curr = x_accepted,
-    Err(stall) if !lm_state.is_active() => {
-        return Err(SolverFailure::ArmijoStall { ... from stall ... });
+    Err(failure_variant) if !lm_state.is_active() => {
+        // LM-disabled short-circuit: the first-pass result IS the
+        // committed-iterate failure; no rescue mechanism to try.
+        return Err(failure_variant);
     }
     Err(_) => { /* escalate per above */ }
 }
@@ -274,7 +317,8 @@ match lu_outcome {
 This optimization is REQUIRED for the F3 spec's §F3.1 bit-equal-when-
 dormant invariant: with `lm_regularization == None`, the existing test
 sites must not see a 2× wall-clock-cost regression on stalling fixtures
-(see §6.1 `factor_free_tangent_falls_through_to_lu_on_non_pd`).
+(see `factor_free_tangent_falls_through_to_lu_on_non_pd` at
+backward_euler.rs:1570+, referenced in §8 anchors).
 
 ### 2.4 LmState extension — none required
 
@@ -383,29 +427,35 @@ cavity = 3 mm baseline don't escalate; bookkeeping cost is bounded).
 Four outcomes ranked by what they tell us about the failure-class
 mental model:
 
+All comparisons against the **apples-to-apples pre-F3 baseline**:
+cavity = 5 mm + default layers 10+3 mm = Run 2 r_norm floor 1.78
+(`docs/CAVITY_INSET_STALL_BOOKMARK.md` §8). NOT the layers-also-changed
+§1b case (r_norm 0.572) — see §2.2 caveat.
+
 | Outcome | Cavity 3 mm | Cavity 5 mm | Cavity 8 mm | What it means | Next action |
 |---|---|---|---|---|---|
-| **A. SHIP-IT** | 16/16 converged (baseline restored) | converges OR r_norm floor < 0.27 (any improvement vs F3.4) | (out of scope — Yeoh validity expected) | Gated A mechanism works. Class 2 was the spec's diagnosis error; the mechanism is fine. | Ship + cap cavity slider at 5 mm (§6.4). Bookmark cavity = 8 mm separately for candidate B. |
-| **B. PARTIAL SHIP-IT** | 16/16 converged | stalls at r_norm ~0.55 (pre-F3 behavior — escalation didn't help) | (out of scope) | Gated A restores baseline but doesn't address class 1 at cavity = 5 mm — late-iter geometry is dominated by class 2 (chattering) not class 1 (indefinite tangent). | Ship + cap cavity at 4 mm (class 2 is the next-arc target). Recon for C (smoothed contact). |
+| **A. SHIP-IT** | 16/16 converged (baseline restored) | converges OR r_norm floor < 1.78 (any improvement vs pre-F3 Run 2) | (out of scope — Yeoh validity expected) | Gated A mechanism works. Class 2 was the spec's diagnosis error; the mechanism is fine. | Ship + cap cavity slider at 5 mm (§6 A.4). Bookmark cavity = 8 mm separately for candidate B. |
+| **B. PARTIAL SHIP-IT** | 16/16 converged | stalls at r_norm ≈ 1.78 (pre-F3 Run 2 baseline — escalation didn't help) | (out of scope) | Gated A restores baseline but doesn't address class 1 at cavity = 5 mm — late-iter geometry is dominated by class 2 (chattering) not class 1 (indefinite tangent). | Ship + cap cavity at 4 mm (class 2 is the next-arc target). Recon for C (smoothed contact). |
 | **C. REGRESSION** | < 16/16 converged | (any) | (any) | Gated A broke the baseline despite the bit-equal contract. Implementation bug in §2.3's first-pass LU + Armijo path. | Revert. Debug. Re-implement. |
-| **D. WORSE-THAN-F3** | 16/16 converged | r_norm floor > 0.55 (worse than pre-F3) | (any) | Escalation produces a WORSE Newton trajectory than pre-F3 (the LM step at iter 63 takes Newton into a deeper non-descent valley). The LM mechanism is structurally wrong for class 2. | Revert. Bookmark + recon for C (smoothed contact — the §F3 §3 outcome-C/D path the spec warned about). |
+| **D. WORSE-THAN-F3** | 16/16 converged | r_norm floor > 1.78 (worse than pre-F3 Run 2) | (any) | Escalation produces a WORSE Newton trajectory than pre-F3 (the LM step at the escalation iter takes Newton into a deeper non-descent valley). The LM mechanism is structurally wrong for class 2. | Revert. Bookmark + recon for C (smoothed contact — the F3 spec §3 outcome-C/D path the spec warned about). |
 
 **Outcome A vs B**: the binary question A empirically tests. A's
-mechanism is sound iff the cavity = 5 mm late-iter stall (pre-F3 iter
-63 r_norm = 0.572) yields to LM rescue. The bookmark §6 Gate B trace
-(F3.4 with always-on LM) reached r_norm = 0.27 — that's evidence the
-mechanism CAN improve the floor, but doesn't prove gated escalation
-gets the same outcome (F3.4's improvement may have been driven by
-eager-LM taking a different Newton trajectory through chattering, not
-by LM's late-iter rescue).
+mechanism is sound iff the cavity = 5 mm late-iter stall (pre-F3 Run
+2 r_norm = 1.78 after ~5 iters) yields to LM rescue. The bookmark §6
+Gate B trace (F3.4 with always-on LM) reached r_norm = 0.27 across 34
+iters — that's evidence the mechanism CAN drive r_norm well below 1.78,
+but doesn't prove gated escalation gets there (F3.4's improvement
+came from eager-LM taking a *different* Newton trajectory from iter 1
+onward; gated A's trajectory matches pre-F3 through iter ~5 then
+escalates only at the stall point).
 
-**Outcome D**: the pessimistic case. If gated escalation at iter 63
-puts Newton into a worse trajectory than pre-F3's stall (because the
-LM step lands in a worse-conditioned region than the LU step's stall
-point), gated A degrades behavior. Plausible but the F3.4 Gate B data
-doesn't suggest it (F3.4's r_norm trajectory was monotone-decreasing
-modulo active-set-discontinuity jumps; iter 34 stall at r_norm = 0.27
-is BETTER than pre-F3's iter 63 stall at r_norm = 0.572).
+**Outcome D**: the pessimistic case. If gated escalation at the stall
+iter puts Newton into a worse trajectory than pre-F3's stall (because
+the LM step lands in a worse-conditioned region than the LU step's
+stall point), gated A degrades behavior. Plausible but the F3.4 Gate
+B data doesn't suggest it (F3.4's r_norm trajectory was
+monotone-decreasing modulo active-set-discontinuity jumps; F3.4
+reached r_norm = 0.27 — well below pre-F3 Run 2's 1.78).
 
 **Recommendation**: outcome A or B is the realistic prior. C is an
 implementation-bug check. D is the surprise case that bookmarks +
@@ -441,16 +491,27 @@ follow inline, A.4 is outcome-dependent).
 ### A.2 — gated-LM unit test + LM-enabled stall test — same session (small)
 
 - New unit test in `backward_euler.rs::mod tests` exercising the
-  gated escalation: construct a fixture where iter 0's LU step satisfies
-  Armijo (gated stays dormant, λ = 0) and iter 1's LU step Armijo-stalls
-  (gated escalates, LM bumps λ, retry Armijo accepts). Verify the
-  per-iter `lm_state.lambda()` evolution matches the gated algorithm
-  (0 → 0 at iter 0; 0 → λ_seed → potentially bumped at iter 1).
-- Augment the existing F3 saturation test (`try_step_returns_err_on_*`)
-  to verify the gated short-circuit at LM-disabled: assert one factor
-  + one Armijo + ArmijoStall (no 2× factor wall-clock).
+  gated escalation. **Pragmatic fixture construction**: rather than a
+  hand-crafted multi-iter fixture (which is hard to construct so iter
+  0's LU step Armijo-passes AND iter 1's LU step Armijo-stalls), reuse
+  the existing `factor_free_tangent_falls_through_to_lu_on_non_pd`
+  fixture pattern at backward_euler.rs:1570+ — it constructs a small
+  non-PD system. Run try_step with LM-enabled (Fork-B config); ASSERT
+  the LM activity log lines fire only IF the first-pass LU + Armijo
+  fails (which depends on the fixture's residual landscape — verify
+  empirically and pin the observed behavior with explicit assertions).
+  If the fixture's LU step Armijo-passes (no escalation), construct a
+  second fixture that forces escalation (e.g., a deliberately
+  Armijo-hostile residual + non-PD tangent).
+- Augment the existing F3 saturation test (`try_step_returns_err_on_*`
+  at backward_euler.rs:2355+) to verify the gated short-circuit at
+  LM-disabled: assert one factor + one Armijo + ArmijoStall (or
+  DoublyFailedFactor) — observable via the absence of a SECOND
+  `"sim-soft: faer LU fallback fired"` stderr line on a stalling
+  fixture.
 - Acceptance: both tests pass; F3.1-F3.4 existing tests pass bit-equal.
-- Sizing: ~60 LOC of test code.
+- Sizing: ~60 LOC of test code; fixture-construction effort is the
+  uncertain part — budget +20 LOC if the second fixture is required.
 
 ### A.3 — cf-device-design opt-in — same session (one-liner)
 
@@ -508,7 +569,7 @@ Per §5 falsifier matrix:
   `lm_seed_lambda` threading through `factor_at_position` /
   `try_factor_at_position` unchanged.
 - **Lowering the cavity-inset UI cap to 4 mm now** (without empirical
-  result). The cap reduction is outcome-dependent per §6.4 — if A
+  result). The cap reduction is outcome-dependent per §6 A.4 — if A
   works, 5 mm; if A partial, 4 mm. Don't pre-emptively cap.
 
 ---
@@ -630,8 +691,8 @@ preserved here for B-recon context):
 - Per [[feedback-spec-falsified-revert-opt-in-keep-surface]] (banked
   from F3 falsification) — gated A's design preserves the bit-equal-
   when-dormant contract so a future falsification can still do a
-  1-line revert. The §6.4 outcome-C path is the explicit revert
-  surface.
+  1-line revert. The §6 A.4 outcome-C / outcome-D revert paths are
+  the explicit revert surface.
 - Per [[feedback-workaround-removal-verification]] (banked from F3.4
   hotfix) — gated A does NOT remove the F3.4 `catch_unwind`
   belt-and-suspenders in `run_sliding_insertion_ramp`. The undocumented
