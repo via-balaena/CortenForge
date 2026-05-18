@@ -43,9 +43,12 @@ Gated A (F3 recon A) restored the cavity = 3 mm baseline but left
 cavity = 5 mm at a structural `r_norm ≈ 1.784` floor that LM rescue
 cannot cross — the bookmark's diagnosis is **class-2 active-set
 chattering** in `PenaltyRigidContact`: when a Newton step crosses an
-active-pair on/off boundary (`sd = d̂`), the contact Hessian
-`H_contact(x) = κ · n⊗n` jumps from rank-0 to rank-1, breaking the
-quadratic regularity Newton's contraction estimate depends on.
+active-pair on/off boundary (`sd = d̂`), the **per-pair** Hessian
+contribution `H_pair = κ · n⊗n` (rank-1) appears or disappears
+discontinuously. The full `H_contact(x) = Σ_pairs H_pair` is the sum
+over active pairs (rank up to `3 · n_active`); its discontinuity at
+active-set flips breaks the quadratic regularity Newton's contraction
+estimate depends on.
 
 **Candidate C's mechanism**: mollify the penalty energy so the
 contact Hessian is C⁰ across the active-pair boundary. The bookmark
@@ -69,12 +72,16 @@ callers + existing fixture tests stay bit-equal.
 in the empirical sweep range (likely `ε ∈ [0.1, 2.0] · d̂` where
 `d̂ = 1 mm`) eliminates the chattering floor; Newton converges below
 `tol = 1e-1` in a reasonable iter budget. At cavity = 3 mm, the
-smoothed-contact run remains 16/16 (the smoothed gradient asymptotes
-to the hard gradient as the active set stabilizes, so the converged
-fixed point is bit-near pre-F3 with penetration tolerance growing as
-`O(ε)`). If the empirical sweep finds NO `ε` that clears cavity = 5 mm,
-the falsifier escalates to candidate D (mesh refinement) or
-sliding-ramp restart with sub-step time integration.
+smoothed-contact run remains 16/16 (deep-contact pairs at `sd ≪ d̂`
+are bit-equal to the hard penalty; only pairs in the boundary band
+`[d̂, d̂+ε]` see the polynomial taper). The converged fixed point
+may differ from pre-F3 by `O(ε)` at near-boundary contributors (the
+smoothing taper shifts the local force balance in the band), but the
+3 mm baseline's deep-contact regime is bit-equal so 16/16 convergence
+is preserved by construction. If the empirical sweep finds NO `ε`
+that clears cavity = 5 mm, the falsifier escalates to candidate D
+(mesh refinement) or sliding-ramp restart with sub-step time
+integration.
 
 Cavity = 8 mm is **OUT OF SCOPE** for this spec — class 3 (Yeoh
 material validity at tet 1078 / 1324) is orthogonal. Candidate B
@@ -121,16 +128,17 @@ to candidate C's framing.
 
 `PenaltyRigidContact`'s hard penalty (`sim/L0/soft/src/contact/penalty.rs`):
 
-| Formula | `sd < d̂` (active) | `sd = d̂` (boundary) | `sd ≥ d̂` (inactive) |
+| Formula | `sd < d̂` (active) | `sd = d̂` (boundary) | `sd > d̂` (inactive) |
 |---|---|---|---|
 | Energy `E` | `0.5 · κ · (d̂-sd)²` | `0` | `0` |
 | Gradient `∇E` (per-vertex contribution) | `-κ · (d̂-sd) · n` | `0` | `0` |
-| Hessian `H` (per-vertex 3×3 block) | `κ · n ⊗ n` | undefined (the gate `sd ≥ d̂` returns 0 in `hessian()` at penalty.rs:326) | `0` |
+| Hessian `H` (per-vertex 3×3 block) | `κ · n ⊗ n` | `0` (penalty.rs:326 gate `d >= self.d_hat` returns `ContactHessian::default()` at sd = d̂ exactly) | `0` |
 
 Energy is **C⁰** at `sd = d̂` (value matches: 0 = 0). Gradient is
 **C⁰** at `sd = d̂` (limit from the left `-κ·0·n = 0` matches the
-zero on the right). Hessian is **discontinuous** at `sd = d̂` (jumps
-from `κ · n ⊗ n` to `0`).
+gate-returned zero). Hessian is **discontinuous** at `sd = d̂` (limit
+from the left is `κ · n ⊗ n`; gate at `sd = d̂` returns 0 — finite
+jump).
 
 Consequence for Newton: the assembled tangent
 `A(x) = M/dt² + K(x) + H_contact(x)` is piecewise-continuous in `x`,
@@ -441,9 +449,11 @@ mass-matrix factor cost dominance. No micro-bench required for C.1.
 - **Fork A (production sim-soft)**: NOT in this spec.
   `smoothing_eps_m` stays `0.0` for all sim-soft consumers other
   than cf-device-design. If a future Fork-A consumer needs smoothing
-  (e.g., the row 21/22 silicone-sleeve insertion sim hits the same
-  chattering pathology), they opt in at their consumer's
-  empirical surface; YAGNI on the abstraction today.
+  (e.g., the row 21/22 silicone-sleeve insertion sim — see
+  `project_sim_soft_row_22_patterns.md` referenced from
+  penalty.rs:264 — hits the same chattering pathology), they opt in
+  at their consumer's empirical surface; YAGNI on the abstraction
+  today.
 
 ---
 
@@ -464,9 +474,9 @@ mental model:
 
 | Outcome | Cavity 3 mm | Cavity 5 mm | Cavity 7 mm | What it means | Next action |
 |---|---|---|---|---|---|
-| **A. SHIP-IT** | 16/16 converged (baseline preserved) | 16/16 converged at some empirical `ε ∈ [0.1, 2.0] · d̂` | 16/16 converged (or no worse than `r_norm` floor < pre-F3 5 mm baseline 1.78) | Class-2 chattering was the binding pathology at cavity 5-7 mm; smoothed contact resolves it. | Ship; raise UI cap to 7 mm (or 8 mm if Yeoh validity passes at the chosen `ε`); update F3 falsification bookmark with "RESOLVED full by candidate C". |
+| **A. SHIP-IT** | 16/16 converged (baseline preserved) | 16/16 converged at some empirical `ε ∈ [0.1, 2.0] · d̂` | 16/16 converged | Class-2 chattering was the binding pathology at cavity 5-7 mm; smoothed contact resolves it. | Ship; raise UI cap to 7 mm (or 8 mm if Yeoh validity passes at the chosen `ε`); update F3 falsification bookmark with "RESOLVED full by candidate C". |
 | **B. PARTIAL SHIP-IT** | 16/16 converged | 16/16 converged | Stalls at `r_norm` floor < 1.78 (any improvement vs pre-F3) | Class 2 was the 5 mm pathology but a separate class binds at 7 mm (likely Yeoh validity — class 3 starts before cavity = 8 mm at some pose). | Ship; cap UI at 5 mm (or 6 mm if 7 mm stall is mild — implementer judgment); bookmark + recon for candidate B (material-validity safe-step). |
-| **C. REGRESSION** | < 16/16 converged | (any) | (any) | Bit-equal-when-dormant contract was VIOLATED — implementation bug in §2.5's 5-gate lockstep or polynomial taper. | Revert C.1 + C.2; debug the contract violation (probably a gate that fires at `sd < d̂ + ε` even when `ε = 0`); re-implement. |
+| **C. REGRESSION** | < 16/16 converged | (any) | (any) | Bit-equal-when-dormant contract was VIOLATED — implementation bug in §2.5's 5-site gate lockstep or §2.2's polynomial taper. | Revert C.1 + C.2; debug the contract violation (probably a gate that fires at `sd < d̂ + ε` even when `ε = 0`); re-implement. |
 | **D. WORSE-THAN-GATED-A** | 16/16 converged | `r_norm` floor > 1.78 OR < 16/16 converged at empirically all `ε > 0` tested | (any) | The smoothing prescription is structurally wrong for class-2 — the polynomial taper may be widening the active band into pairs whose normals are ill-conditioned (the Hessian's eigenstructure worsens). Cubic-vs-quintic-vs-heptic escalation may help, or the chattering's actual mechanism is at a different geometric scale than the smoothing window. | Revert C.1 + C.2; bookmark D's empirical data (per-iter active-set size + `r_norm` trajectory under each `ε`); recon for candidate D (mesh refinement / sub-step time integration). |
 
 **Outcome A vs B**: the binary question C empirically tests at cavity
@@ -483,10 +493,13 @@ chattering diagnosis (the `r_norm` linear floor signature at iter
 58+ is textbook class-2).
 
 **Recommendation**: outcome A is the realistic prior; outcome B is
-the second-most-likely (cavity = 7 mm pushes harder against Yeoh
-validity than 5 mm does, even if validity doesn't fail outright);
-outcome C is an implementation-bug check; outcome D is the surprise
-case that bookmarks + escalates to candidate D.
+plausible if 7 mm shows a separate-class binding pathology at the
+chosen `ε` (untested under gated A — cavity = 7 mm sits between the
+gated-A-validated 5 mm chattering regime and the gated-A-Gate-C
+8 mm Yeoh-validity regime; whether 7 mm hits chattering, validity,
+or neither is the unknown C.3's user-driven gate resolves); outcome
+C is an implementation-bug check; outcome D is the surprise case
+that bookmarks + escalates to candidate D.
 
 ---
 
@@ -503,8 +516,10 @@ fans out).
 - No code changes.
 - Cold-read pass-1 + pass-2 + polish commit (per
   [[feedback-cold-read-review-post-ship]] +
-  [[feedback-cold-read-two-passes-for-non-trivial-diffs]] — spec is
-  ~400+ LOC with parallel surfaces, pass-2 is non-optional).
+  [[feedback-cold-read-two-passes-for-non-trivial-diffs]] — spec
+  exceeds 800 lines, well past the 300-LOC pass-2 trigger; the
+  parallel-surfaces hazard at §2.5's 5-site enumeration makes
+  pass-2 non-optional).
 - Memory updates ([[project-cavity-5mm-chattering-bookmark]] gets
   "C.0 spec SHIPPED, next: C.1 sim-soft primitive"; MEMORY.md
   "Resume here" updated with new commit chain).
@@ -553,37 +568,53 @@ fans out).
 - Update the inline `INSERTION_CONTACT_KAPPA` docstring to point at
   this spec (the `1e3` κ choice rationale is unchanged; smoothing
   composes orthogonally with κ).
-- **User-driven visual gate calibration sweep** at cavity = 5 mm,
+- **User-driven visual gate ε-calibration sweep** at cavity = 5 mm,
   layers 10+3 mm (the apples-to-apples gated-A Gate B regime):
   `ε ∈ {0.1, 0.25, 0.5, 1.0, 2.0} mm` (5 values × 16 ramp steps =
   80 sliding-ramp solves). Find the smallest `ε` that converges
   16/16. The chosen `ε` becomes
-  `INSERTION_CONTACT_SMOOTHING_EPS_M` default.
+  `INSERTION_CONTACT_SMOOTHING_EPS_M` default. Output: chosen `ε`
+  hand-off into C.3 + per-`ε` convergence row count documented in
+  C.4's bookkeeping.
 - Pinning the chosen `ε`: a sentinel test in cf-device-design that
   asserts the const value + carries a comment with the empirical
   evidence (the per-`ε` convergence row count).
 - Acceptance: `cargo test -p cf-device-design --release` green;
   clippy clean; user-driven visual gate at cavity = 3 mm (sanity
   check baseline preservation) + cavity = 5 mm at the chosen `ε`
-  (the candidate-validation gate).
+  (the candidate-validation gate at the gated-A-validated regime).
 - Sizing: ~20 LOC code + ~5 LOC sentinel test + 80-iter user-driven
   calibration sweep (substantial user time, ~30-60 min of UI
   scrubbing).
 
 ### C.3 — UI cap restoration (outcome-dependent) — same session as C.2
 
-Per §5 falsifier matrix:
-- **Outcome A**: raise UI cap from 4 mm → 7 mm (or 8 mm if Yeoh
-  validity passes at the chosen `ε` — additional user-driven gate
-  at cavity = 8 mm). Update the 3 parallel surfaces per the gated-A
-  precedent (main.rs:227-277 `inset_slider_range_m` docstring +
-  main.rs:2103 egui label MAINTENANCE NOTE + main.rs:2997 sentinel
-  test). Mirror-on-change MAINTENANCE NOTES across all 3 surfaces
-  (the [[feedback-cold-read-two-passes-for-non-trivial-diffs]]
-  precedent banked at gated-A's a1c26105 polish).
-- **Outcome B**: raise UI cap from 4 mm → 5 mm or 6 mm
-  (implementer judgment based on cavity = 6 mm probe data). Same
-  3-surface MAINTENANCE NOTE pattern.
+The cap-restoration is gated by **per-cavity user-driven visual
+gates** at the chosen `ε` from C.2. C.2 only validated 3 + 5 mm; C.3
+extends to 6, 7, (optionally 8) mm to validate the §5 falsifier-
+matrix outcome columns:
+
+- **Probe gate 1**: cavity = 6 mm at chosen `ε`. Outcome A's
+  intermediate confirmation; if 6 mm chatters, fall back to outcome
+  B's 5 mm cap.
+- **Probe gate 2**: cavity = 7 mm at chosen `ε`. Outcome A's
+  validation per §5 7-mm column.
+- **Probe gate 3 (optional)**: cavity = 8 mm at chosen `ε`. If Yeoh
+  validity passes (no `max_stretch_deviation > 1.0` panic), outcome A
+  raises the cap to 8 mm instead of 7 mm.
+
+Per §5 falsifier matrix outcomes:
+- **Outcome A** (3+5+6+7 mm all 16/16): raise UI cap from 4 mm →
+  7 mm (or 8 mm if probe gate 3 passes). Update the 3 parallel
+  surfaces per the gated-A precedent (main.rs:227-277
+  `inset_slider_range_m` docstring + main.rs:2103 egui label
+  MAINTENANCE NOTE + main.rs:2997 sentinel test). Mirror-on-change
+  MAINTENANCE NOTES across all 3 surfaces (the
+  [[feedback-cold-read-two-passes-for-non-trivial-diffs]] precedent
+  banked at gated-A's a1c26105 polish).
+- **Outcome B** (3+5 mm both 16/16 but 6 or 7 mm stalls): raise UI
+  cap from 4 mm → 5 mm or 6 mm (implementer judgment based on the
+  probe-gate-1 result). Same 3-surface MAINTENANCE NOTE pattern.
 - **Outcomes C / D**: NO UI cap change. Per §5, revert C.1 + C.2.
 
 ### C.4 — Bookkeeping update — same session as C.3
@@ -674,6 +705,17 @@ Per §5 falsifier matrix:
 ---
 
 ## 8. Anchors
+
+**Predecessor commits** (on `sim-arc/sl-4-intruder-render`):
+- `9a1433b8` — F3 recon A spec (A.0).
+- `61b31f9b` — F3 recon A spec cold-read polish.
+- `59997c41` — F3 recon A implementation (A.1+A.2+A.3).
+- `c16fe375` — F3 recon A outcome-B follow-up (A.4: UI cap 8→4 mm +
+  cavity-5mm bookmark + memory).
+- `a1c26105` — F3 recon A outcome-B cold-read polish (5 findings).
+- `edba9f48` — C.0 spec (this commit at draft).
+- *(next commit)* — C.0 cold-read polish (the in-flight commit
+  this spec is being polished for).
 
 **Predecessor docs**:
 - `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` — the bookmark this acts on.
