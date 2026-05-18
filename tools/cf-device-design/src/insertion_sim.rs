@@ -4825,6 +4825,46 @@ mod tests {
         );
     }
 
+    /// CR.3 fast unit gate: a probe deep inside the closed-body
+    /// GridSdf (where flood-fill sign returns far-negative) must be
+    /// silently excluded from the active set by the `interior_cutoff`
+    /// filter — independent of the FEM solve. Pins the CR.2 wire-up:
+    /// `intruder_contact_sliding_at` must call
+    /// `PenaltyRigidContact::with_params_and_interior_cutoff` (NOT
+    /// `with_params`); regression to `with_params` would produce a
+    /// non-empty active set here.
+    ///
+    /// Probe at `(0, 0, 0)` with `pose = slide_pose_at(centerline, 1.0)`
+    /// (rest pose — intruder centered at origin per the centerline's
+    /// rest-pose convention): the inverse-transformed point lands at
+    /// the body center where the icosphere GridSdf's flood-fill sign
+    /// reports `sd ≈ -40 mm`. Composed sd via
+    /// `Solid::offset(cavity_offset_m = -3 mm)` = `raw + 3 mm ≈
+    /// -37 mm`. The `2 × cavity_inset_m = 6 mm` interior_cutoff
+    /// filters at composed `< -6 mm`, so this probe is excluded.
+    #[test]
+    fn intruder_contact_sliding_at_excludes_deep_interior_probe() {
+        use sim_soft::ActivePairsFor;
+        let geometry = synthetic_sliding_geometry();
+        let centerline = synthetic_icosphere_centerline_z();
+        let pose = slide_pose_at(&centerline, 1.0);
+        let contact = intruder_contact_sliding_at(
+            &geometry.intruder,
+            geometry.bounds,
+            pose,
+            -0.003, // cavity_offset_m
+            3.0e-3, // cavity_inset_m → 6 mm interior_cutoff
+        );
+        let probe = vec![Vec3::new(0.0, 0.0, 0.0)];
+        let pairs = contact.active_pairs(&geometry.mesh, &probe);
+        assert!(
+            pairs.is_empty(),
+            "deep-interior probe at body center (composed sd ≈ -37 mm) must be \
+             excluded by the 6 mm interior_cutoff; got {} pairs",
+            pairs.len(),
+        );
+    }
+
     /// At `t = 0` the rigid intruder is translated all the way from
     /// rest (centered at the origin) to centered at the FLOOR end of
     /// the centerline (`+Z` apex of the sphere). For the synthetic
@@ -4862,30 +4902,47 @@ mod tests {
         );
     }
 
-    /// Solver-only FEM-correctness gate: the 16-step sliding ramp on
-    /// the synthetic icosphere cup makes meaningful progress before
-    /// any Yeoh-validity stall. The fixture is a cup (icosphere with
-    /// the `+Z` apex carved open by a cap plane — see
-    /// `synthetic_sliding_geometry`), but the sphere cross-section
-    /// narrows along the slide direction (it's an icosphere, not a
-    /// straight tube), so the local cavity-wall stretch climbs as the
-    /// intruder slides deeper. Past a few steps the Yeoh material
-    /// validity wall fires per `sim-soft/src/solver/backward_euler.rs`
-    /// `:625` Phase 4 scope memo Decision Q.
+    /// Solver-only FEM-correctness gate for the synthetic icosphere
+    /// cup. The fixture is a cup (icosphere with the `+Z` apex carved
+    /// open by a cap plane — see `synthetic_sliding_geometry`).
     ///
-    /// This is exactly the spec §6 risk #2 (high-curvature plus
-    /// high-stretch plus Yeoh validity wall) and the D-Slide6 Fork-B
-    /// "partial seating is honest engineering data" stall handling.
-    /// We assert Fork-B behavior end-to-end: at least 1 step
-    /// converges; every converged step has finite all-positive force
-    /// plus finite x_final; arc length is monotone; if `failed_at_step`
-    /// is set, the failure message mentions the validity wall. The
-    /// "all 16 steps converge" gate is for fixtures with more uniform
-    /// cross-section along the slide direction. Real iter-1
+    /// Two failure modes share this test's coverage; the gates
+    /// discriminate them:
+    ///
+    /// 1. **Pre-v5 SL.3 deep-interior firing** (the bug v5 fixed).
+    ///    Closed-body `TransformedSdf<GridSdf>` returned deep-negative
+    ///    `sd` for BCC vertices whose inverse-transformed position
+    ///    landed in the static intruder body interior, generating
+    ///    `κ·(d̂ − sd)·n` forces in the kN range and breaking Newton
+    ///    convergence at step 0. v5 (CR.1) `interior_cutoff` filters
+    ///    those pairs at the active-set walk; CR.2 wires
+    ///    `2 × cavity_inset_m = 6 mm` cutoff into
+    ///    `intruder_contact_sliding_at`. Empirical signature post-v5:
+    ///    **step-0 contact force ≈ 0.28 N** (vs kN pre-v5). The
+    ///    50-N step-0 sentinel below is the sharpest gate against
+    ///    regression to this mode.
+    ///
+    /// 2. **Yeoh validity wall** (genuine, geometry-driven). The
+    ///    icosphere has a NARROWING cross-section along the slide
+    ///    direction — once the intruder slides past ~15 mm the local
+    ///    cavity-wall stretch climbs past `max_stretch_deviation = 1.0`
+    ///    and the Phase-4-scope-memo-Decision-Q fail-closed semantics
+    ///    fire at `sim-soft/src/solver/backward_euler.rs:625`.
+    ///    Empirically (post-v5, observed during CR.3 implementation):
+    ///    the ramp converges 3 steps (t = 1/16, 2/16, 3/16; arc 5, 10,
+    ///    15 mm) and stalls at step 3 with `max_stretch_deviation ≈
+    ///    1.33`. The Fork-B "partial seating is honest engineering
+    ///    data" stall handling (D-Slide6) absorbs this gracefully.
+    ///
+    /// The CR.3 recon spec asserted that the "narrowing cross-section"
+    /// framing was wishful — empirical measurement during CR.3
+    /// implementation falsified that. The narrowing IS real for this
+    /// fixture; what was wishful was the assumption that the SL.3 mode
+    /// was the ONLY stall mechanism. The 50-N sentinel handles SL.3
+    /// regression; Fork-B handles the genuine Yeoh stall. Real iter-1
     /// `sock_over_capsule` is sock-shaped (tube of roughly constant
-    /// radius along its length) and gives the intruder a long arc of
-    /// near-uniform interference; that's the natural surface for the
-    /// all-steps-converge gate at SL.3+.
+    /// radius) and is the natural surface for the all-steps-converge
+    /// gate — that's CR.4 (visual gate), not this fixture.
     ///
     /// `n_steps = 16` per spec D-Slide5 default for an 80 mm centerline
     /// (`max(16, ceil(L_m / 5e-3))`).
@@ -4927,7 +4984,12 @@ mod tests {
         }
 
         // Fork-B contract: at least one step must converge (a step-0
-        // panic would mean the contact + BC + mesh are ill-posed).
+        // panic would mean the contact + BC + mesh are ill-posed). The
+        // synthetic icosphere fixture genuinely stalls at the Yeoh
+        // validity wall around step 3 due to the narrowing cross-
+        // section (see the docstring's mechanism 2). The all-steps-
+        // converge gate belongs on a sock-shaped fixture (real iter-1
+        // covers that at CR.4 visual gate).
         assert!(
             !ramp.steps.is_empty(),
             "sliding ramp must converge at least one step",
@@ -4963,17 +5025,33 @@ mod tests {
         }
         assert_eq!(ramp.intruder_poses.len(), ramp.steps.len());
 
+        // Contact-force regression sentinel — step 0 (t = 1/16) has
+        // small interference + modest active-pair count; plausible
+        // upper bound 50 N (see docstring derivation). Pre-v5 SL.3
+        // would report this in the kN range due to the deep-interior
+        // firing of body-bulk + orphan vertices. The sentinel directly
+        // catches regression to the SL.3 mode even if the all-converge
+        // gate above happens to pass for an unrelated reason.
+        const STEP_0_CONTACT_FORCE_BOUND_N: f64 = 50.0;
+        let step_0_force = ramp.steps[0].readout.contact_force_magnitude_n;
+        assert!(
+            step_0_force < STEP_0_CONTACT_FORCE_BOUND_N,
+            "step-0 contact force {step_0_force:.2} N exceeds plausible \
+             upper bound {STEP_0_CONTACT_FORCE_BOUND_N:.0} N — likely \
+             regression to the pre-v5 SL.3 deep-interior firing",
+        );
+
         let result = ramp.result.as_ref().expect("at least one step converged");
         assert_eq!(
             result.force_arc_length_curve.len(),
             ramp.steps.len(),
             "force-arc-length curve has one point per converged step",
         );
-        // If the ramp stalled, the failure must be the Yeoh-validity
-        // wall (Phase 4 fail-closed) per spec §6 risk #2 — NOT some
-        // unexpected solver pathology that should surface as a test
-        // failure. The "validity violation" + "stretch" substrings
-        // pin the expected failure mode.
+        // Safety net: the synthetic icosphere stall mode is the Yeoh
+        // validity wall (docstring mechanism 2). Any non-validity-
+        // wall stall reason is a regression to the SL.3 deep-interior
+        // mechanism (mechanism 1) the cutoff is designed to filter,
+        // OR an unexpected solver pathology — surface it.
         if let Some(reason) = &ramp.failure_reason {
             assert!(
                 reason.contains("validity violation") || reason.contains("stretch"),
