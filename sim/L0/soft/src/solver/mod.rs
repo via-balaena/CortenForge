@@ -217,8 +217,14 @@ pub trait Solver: Send + Sync {
     /// [`LmConfig::on_saturation`](crate::LmConfig::on_saturation):
     /// `PanicOnStall` forwards to [`Self::step`]'s panic (preserving
     /// pre-F3 semantics for callers that opted in to LM but not to
-    /// graceful failure); `ReturnFailed` returns `Err`. The other
-    /// two variants always return `Err` regardless of policy — they
+    /// graceful failure); `ReturnFailed` returns `Err`. When LM is
+    /// disabled (`SolverConfig::lm_regularization == None`), the
+    /// effective policy is `PanicOnStall` — calling `try_step` on
+    /// an LM-disabled solver yields the same panic-on-stall surface
+    /// as `step` itself. Graceful Armijo-stall handling REQUIRES
+    /// opting into LM with `ReturnFailed` (or constructing an
+    /// `LmConfig` explicitly setting that policy). The other two
+    /// variants always return `Err` regardless of policy — they
     /// were already model-level non-recoverable conditions pre-F3.
     ///
     /// REQUIRED with no default impl per spec §2.5 — a default
@@ -228,9 +234,12 @@ pub trait Solver: Send + Sync {
     /// `Solver` impls from silently inheriting the wrong contract.
     ///
     /// # Errors
-    /// Returns [`SolverFailure`] on Armijo stall (under `ReturnFailed`
-    /// policy), Newton iter cap, or doubly-failed factor. See variant
-    /// docs for `x_partial` semantics.
+    /// Returns [`SolverFailure`] on Armijo stall (when the effective
+    /// policy is `ReturnFailed`), Newton iter cap (always), or
+    /// doubly-failed factor (always). When the effective policy is
+    /// `PanicOnStall` (the LM-disabled default), Armijo stall panics
+    /// instead of returning. See variant docs for `x_partial`
+    /// semantics.
     fn try_step(
         &mut self,
         tape: &mut Self::Tape,
