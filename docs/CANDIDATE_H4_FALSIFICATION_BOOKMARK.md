@@ -373,14 +373,105 @@ failures (see §5.5).
   better warm-starting.  Worth a small probe arc if the partial-
   seating output of H4-2-C is the binding product gap.
 
-### 5.6 Open puzzle reminder
+### 5.6 Open puzzle PARTIAL RESOLUTION — config mismatch
 
-The 3 + 6 + 7 mm Armijo stalls in the automated `cargo test`
-path are independent of H4 (bit-identical pre-H4 / post-H4 /
-post-H4-2-A / post-H4-2-C — four-way bisect).  Worth
-investigating separately to identify the `cargo test` ↔ GUI
-pipeline divergence; the user's GUI visual gate at cavity 3 +
-5 mm reaches 16/16 on the same iter-1 dual-layer config.
+The `cargo test` h4_sweep_sliding_ramp_on_iter1_scan was running
+**the wrong layer config**.  Test code used:
+
+```rust
+layers: vec![
+    layer(0.003, "DRAGON_SKIN_20A"),   // innermost (firm)
+    layer(0.010, "ECOFLEX_00_30"),     // outermost (soft)
+],
+```
+
+User's actual iter-1 GUI default (verified by §5.7 visual gate):
+
+```text
+Layer 0 (innermost): Ecoflex 00-30 + 50% Slacker  10 mm
+Layer 1 (outermost): Dragon Skin 20A              3 mm
+```
+
+The GUI has **the soft material inside touching the intruder + the
+firm material outside as the skin** — the test had it inverted.
+With the soft inner, the contact-fit equilibrium pushes σ_min much
+deeper (the soft inner squishes more); with the firm inner the
+contact-fit lands at a different equilibrium.
+
+Banked for next-session cleanup: update the sweep test to mirror
+the GUI default + add a `layer_with_slacker(0.010, "ECOFLEX_00_30",
+0.5)` helper invocation so cargo + GUI agree on the regression
+substrate.  The 3 + 6 + 7 mm Armijo stalls in the cargo test may
+or may not persist after the config fix.
+
+### 5.7 H4-2-C GUI visual-gate sweep — product-validation record
+
+2026-05-19 LATE-NIGHT (post-H4-2-C ship `3e9958ef` + cap raise
+5 → 8 mm scaffolding `60e649d2`).  User-driven full-cavity sweep
+on iter-1 sock_over_capsule.cleaned.stl with the real iter-1
+default (Ecoflex 00-30 + 50 % Slacker inner 10 mm + DS20A outer
+3 mm; total wall 13 mm):
+
+| cavity | result | seated | F peak | inner λ range | outer λ range |
+|---|---|---|---|---|---|
+| 3 mm | **16/16 ✓** | 83.35 mm (full) | 3.0 N | 0.88 ... 1.07 | 0.98 ... 1.01 |
+| 5 mm | **16/16 ✓** | 83.35 mm (full) | 20.9 N | 0.73 ... 1.18 | 0.93 ... 1.07 |
+| 6 mm | 0/16 ✗ | — | — | — | — |
+| 7 mm | 0/16 ✗ | — | — | — | — |
+| 8 mm | **12/16 ✓** | 62.51 of 83.35 mm (75 %) | 18.4 N | 0.22 ... 2.26 | 0.48 ... 1.51 |
+
+Cavity 5 mm reached λ_min = 0.37 mid-ramp without panicking —
+confirms H4-2-C clears the path the 0.30 + 0.20 floors blocked.
+
+Cavity 6 mm: Newton iter cap 150 reached, r_norm 0.536, 2 LM
+rescues (iter 81 + 139, λ ≈ 7.9e3 + 9.9e3).  Matches the pre-H4
+C.3 probe-gate signature byte-for-byte — H4-2-C didn't change
+this outcome because the binding wall at cavity 6 mm with this
+soft-inner config isn't a compressive panic, it's a genuine
+Newton convergence wall.
+
+Cavity 7 mm: same stall mode, lower r_norm 0.294, LM rescues
+iter 111 + 139.
+
+Cavity 8 mm per-step structure (12 converged steps):
+
+| step | d (mm) | iter | r_norm | F (N) | λ_min | λ_max | max P̄ (Pa) |
+|---|---|---|---|---|---|---|---|
+| 1 | 5.21 | 24 | 9.5e-2 | 14.09 | 0.26 | 2.30 | 4.1e5 |
+| 2 | 10.42 | 1 | 8.4e-2 | 14.36 | 0.25 | 2.31 | 4.2e5 |
+| 3 | 15.63 | 3 | 7.7e-2 | 14.80 | 0.25 | 2.31 | 4.4e5 |
+| 4 | 20.84 | 1 | 7.3e-2 | 15.19 | 0.24 | 2.32 | 4.5e5 |
+| 5 | 26.05 | 2 | 9.7e-2 | 15.68 | 0.23 | 2.33 | 4.7e5 |
+| 6 | 31.25 | 3 | 5.3e-2 | 16.26 | 0.22 | 2.34 | 4.8e5 |
+| 7 | 36.46 | 3 | 6.4e-2 | 17.11 | 0.21 | 2.35 | 5.0e5 |
+| 8 | 41.67 | 4 | 9.6e-2 | 17.74 | 0.21 | 2.35 | 5.1e5 |
+| 9 | 46.88 | 4 | 6.5e-2 | 18.04 | 0.21 | 2.35 | 5.1e5 |
+| 10 | 52.09 | 1 | 7.3e-2 | 18.45 | 0.21 | 2.36 | 5.1e5 |
+| 11 | 57.30 | 4 | 9.6e-2 | 18.41 | 0.21 | 2.38 | 5.2e5 |
+| 12 | 62.51 | 6 | 5.3e-2 | 15.85 | 0.22 | 2.26 | 5.1e5 |
+
+Step 1 finds the initial equilibrium in 24 iters; steps 2-11
+warm-start in 1-4 iters (trivial Newton); step 12 takes 6 iters;
+step 13 falls off the convergence cliff.  λ_min stays in a
+narrow band 0.21-0.26 across the entire converged range — the
+soft-inner compression-fit equilibrium structure is stable; the
+stall is mechanical (warm-start can't bridge the slide-pose
+change at step 13), not material.
+
+### 5.8 Updated next-session pointers
+
+- **The 5 + 8 mm partial-seat output is genuinely usable**.
+  Pre-H4 ceiling was 5 mm; H4-2-C unlocks 8 mm at 75 % seated
+  with clean F-d curve + per-step λ structure.
+- **The 6 + 7 mm gap in the converging window** is a separate
+  sub-arc — slide-step bisection / N_STEPS sweep / better
+  warm-starting per §5.5.  Same pattern E.b §10.2 documented
+  (N=16 uniquely pathological at specific cavities).
+- **Cargo-test sweep needs config fix** (§5.6).  Update
+  `h4_sweep_sliding_ramp_on_iter1_scan` to mirror the GUI
+  default (soft-inner config).
+- **Option B (Phase H F-bar / mixed-u-p)** stays the long-term
+  right answer; H4-2-C is the quick-unlock in the meantime.
 
 ---
 
