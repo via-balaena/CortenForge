@@ -224,39 +224,39 @@ impl CavityState {
         }
     }
 
-    /// Slider range for the cavity inset, in meters. Capped at **4 mm**
-    /// (F3 recon A — `docs/F3_RECON_A_GATED_LM_SPEC.md` §6 A.4
-    /// outcome B, 2026-05-18 EVENING).
+    /// Slider range for the cavity inset, in meters. Currently **8 mm**
+    /// as **scaffolding** for the F3 recon B candidate C′.a ε-bisection
+    /// sweep (2026-05-18 LATE-EVENING, per
+    /// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md` §3 C′.a).
+    /// Gated-A baseline is 4 mm and the final cap is C-recon
+    /// outcome-dependent — revert to 4 mm if C′.a falsifies, or
+    /// adjust per the C.3 6+7 mm probe-gate result if it confirms.
     ///
-    /// **Binding constraint is the SOLVER ENVELOPE (class 2 active-set
-    /// chattering), NOT material validity at this range.** The
-    /// gated-LM F3-recon-A `try_solve_impl` empirically converges
-    /// cavity = 3 mm at 16/16 + full Newton baseline restored (verified
-    /// user-driven visual gate 2026-05-18 EVENING, ZERO LM seedings —
-    /// LU + Armijo accepts every iter). At cavity = 5 mm the gated
-    /// mechanism extends Newton's walk from pre-F3 Run 2's ~5-iter
-    /// `r_norm ≈ 1.78` plateau to **iter 57** before LM first
+    /// **Binding constraint at cavity > 4 mm is the SOLVER ENVELOPE
+    /// (class 2 active-set chattering), NOT material validity until
+    /// ≥ 8 mm.** The gated-LM F3-recon-A `try_solve_impl` empirically
+    /// converges cavity = 3 mm at 16/16 + full Newton baseline restored
+    /// (verified user-driven visual gate 2026-05-18 EVENING, ZERO LM
+    /// seedings — LU + Armijo accepts every iter). At cavity = 5 mm the
+    /// gated mechanism extends Newton's walk from pre-F3 Run 2's
+    /// ~5-iter `r_norm ≈ 1.78` plateau to **iter 57** before LM first
     /// escalates, but lands at the SAME structural floor (Armijo stall
-    /// at iter 61 with `r_norm = 1.784`) — `H_contact(x)`
-    /// discontinuity at active-pair on/off boundaries is the binding
-    /// pathology per the (now partially-falsified) C.0 spec's class-2
-    /// model.  See `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` for the
-    /// class-2 mental model and
-    /// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md` for the C.2
-    /// sweep that empirically falsified the class-2-only diagnosis.
-    ///
-    /// **Cap was briefly raised to 8 mm 2026-05-18 LATE-EVENING as
-    /// scaffolding for the C.2 sweep + reverted same session** when
-    /// the sweep showed non-monotonic ε response.  Restored to the
-    /// gated-A 4 mm baseline pending C-recon's next mechanism choice.
+    /// at iter 61 with `r_norm = 1.784`) — `H_contact(x)` discontinuity
+    /// at active-pair on/off boundaries is the binding pathology per
+    /// the (now partially-falsified) C.0 spec's class-2 model. See
+    /// `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` for the class-2 mental
+    /// model and `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`
+    /// for the C.2 sweep that empirically falsified the class-2-only
+    /// diagnosis + the C′.a ε-bisection-in-(0, 0.1) mm probe this
+    /// scaffolding was raised for.
     ///
     /// Yeoh material validity (Phase 4 Decision Q fail-closed) becomes
     /// the binding constraint at ≥ 8 mm (F3.4 Gate C tet 1324 reached
     /// `max_stretch_deviation = 1.209` at cavity 8 mm); 4-7 mm is
     /// MATERIAL-VALID territory where the chattering envelope happens
-    /// to bite first. The conservative 4 mm cap therefore keeps the
-    /// design space inside BOTH envelopes (solver + material) — but
-    /// the limiting one TODAY at cavity ≤ 7 mm is the solver.
+    /// to bite first. The 8 mm scaffolding cap therefore reaches just
+    /// to the edge of material validity for the sweep — without
+    /// extending past it.
     ///
     /// Physical strain context: 4 mm interference on a typical body-
     /// part scan diameter (~70 mm) is ~6% engineered compression —
@@ -264,21 +264,16 @@ impl CavityState {
     /// as a real product knob (Yeoh material is happy there + medical-
     /// compression-grip range) but is gated by the solver envelope.
     ///
-    /// Revisit when a C-recon candidate ships that restores 5+ mm
-    /// design space + raising to 8 mm additionally needs candidate B
-    /// (material-validity safe-step) per the F3 falsification
-    /// bookmark §4.
-    ///
     /// **MAINTENANCE NOTE**: if you change the cap value here, mirror
     /// the change to **(1)** the egui label below at
-    /// [`render_cavity_section`] (`(capped at 4 mm — past this, ...)`
+    /// [`render_cavity_section`] (`(capped at 8 mm — C′.a sweep ...)`
     /// string), AND **(2)** the sentinel test
-    /// [`tests::cavity_inset_slider_range_zero_to_four_mm`] which pins
+    /// [`tests::cavity_inset_slider_range_zero_to_eight_mm`] which pins
     /// the bound + carries the per-cap rationale. All three surfaces
     /// must agree on cap value AND on the binding-constraint
     /// attribution (solver envelope vs material validity vs other).
     fn inset_slider_range_m() -> (f64, f64) {
-        (0.0, 0.004)
+        (0.0, 0.008)
     }
 }
 
@@ -2105,14 +2100,14 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
                 state.inset_m = inset_mm * 0.001;
             }
             ui.label("(silicone skin stretches inset_m over appendage)");
-            // MAINTENANCE NOTE: this 4 mm + class-2-chattering wording
+            // MAINTENANCE NOTE: this 8 mm + C′.a-scaffolding wording
             // mirrors [`CavityState::inset_slider_range_m`]'s docstring
-            // + the `cavity_inset_slider_range_zero_to_four_mm` sentinel
+            // + the `cavity_inset_slider_range_zero_to_eight_mm` sentinel
             // test's comment. If cap value or binding-constraint
             // attribution changes, mirror to BOTH peer surfaces.
             ui.label(
-                "(capped at 4 mm — past this, sliding-ramp solver hits class-2 \
-                 active-set chattering floor; see CAVITY_5MM_CHATTERING_BOOKMARK)",
+                "(capped at 8 mm — C′.a ε-bisection sweep scaffolding; final cap is \
+                 C-recon outcome-dependent — see CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK)",
             );
         });
 }
@@ -2998,33 +2993,35 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn cavity_inset_slider_range_zero_to_four_mm() {
-        // F3 recon A outcome B (2026-05-18 EVENING) — capped at 4 mm
-        // per docs/F3_RECON_A_GATED_LM_SPEC.md §6 A.4: gated LM rescue
-        // restores cavity = 3 mm baseline (16/16 converged, ZERO LM
-        // seedings) but cavity = 5 mm hits a structural class-2 active-
-        // set chattering floor at r_norm ≈ 1.784 even with LM rescue
-        // engaged. See docs/CAVITY_5MM_CHATTERING_BOOKMARK.md for the
-        // class-2 mental model and
-        // docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md for the C.2
-        // sweep that empirically falsified the class-2-only mechanism
-        // on 2026-05-18 LATE-EVENING (non-monotonic ε response across
-        // the {0.1, 0.25} mm sample); the 5+ mm design space stays
-        // gated until a follow-up C-recon picks the next mechanism.
+    fn cavity_inset_slider_range_zero_to_eight_mm() {
+        // F3 recon B C′.a scaffolding (2026-05-18 LATE-EVENING) — cap
+        // raised 4 → 8 mm to host the ε-bisection-in-(0, 0.1) mm
+        // sweep at cavity = 5 mm + downstream C.3 6+7 mm probe gates
+        // if C′.a converges. Per
+        // docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md §3 C′.a +
+        // bookmark §7: final cap is C-recon outcome-dependent.
+        // Outcome A pins the smallest converging ε + the cap stays
+        // wherever the 6+7 mm probe gates land. Outcome B reverts
+        // both ε → 0.0 + cap → 4 mm (gated-A baseline).
         //
-        // Was 8 mm (briefly raised as scaffolding for the C.2 sweep
-        // 2026-05-18 LATE-EVENING, reverted same session), 8 mm
-        // (F4.1), 15 mm (pre-F4.1) historically.
+        // Was 4 mm (F3 recon A outcome B, 2026-05-18 EVENING — gated
+        // LM rescue restored cavity = 3 mm 16/16 but cavity = 5 mm
+        // hit a class-2 active-set chattering floor at r_norm ≈ 1.784
+        // even with LM engaged; see
+        // docs/CAVITY_5MM_CHATTERING_BOOKMARK.md). Briefly 8 mm
+        // earlier same evening (C.2 sweep scaffolding, reverted when
+        // sweep showed non-monotonic ε response in {0.1, 0.25} mm
+        // sample). Pre-F3 history: 8 mm (F4.1), 15 mm (pre-F4.1).
         //
-        // MAINTENANCE NOTE: this 4 mm bound + the rationale above mirror
+        // MAINTENANCE NOTE: this 8 mm bound + the rationale above mirror
         // the docstring on `CavityState::inset_slider_range_m` + the
-        // egui label in `render_cavity_section` ("capped at 4 mm —
-        // past this, sliding-ramp solver hits class-2 ..."). If cap
-        // value or binding-constraint attribution changes, mirror to
-        // BOTH peer surfaces.
+        // egui label in `render_cavity_section` ("capped at 8 mm —
+        // C′.a ε-bisection sweep scaffolding ..."). If cap value or
+        // binding-constraint attribution changes, mirror to BOTH peer
+        // surfaces.
         let (min_m, max_m) = CavityState::inset_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
-        assert!(approx_eq(max_m, 0.004, 1e-12));
+        assert!(approx_eq(max_m, 0.008, 1e-12));
     }
 
     #[test]
