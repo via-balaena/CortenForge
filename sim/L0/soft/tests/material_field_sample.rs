@@ -194,18 +194,18 @@ fn sample_yeoh_on_nh_variant_panics() {
 // 7. Yeoh-with-bounds variant — `from_yeoh_fields_with_bounds`
 // ---------------------------------------------------------------------
 
-/// 5-arg constructor threads per-anchor principal-stretch caps to the
-/// per-tet `Yeoh`, so `validity().max_principal_stretch ==
-/// Some(probe-sampled max field)` AND the symmetric min slot resolves
-/// the same way. Closes the `MaterialField`-drops-bounds gap diagnosed
-/// at `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10.4.
-///
-/// **H4-2-C asymmetric**: the produced `Yeoh` carries
-/// `(Some(max), None)` — the tensile cap is honored, the compressive
-/// floor is dropped at sample time per
-/// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.  The min field
-/// stays threaded through `MaterialField`'s `bounds` storage for
-/// future Option B (Phase H F-bar) re-enable but is unused.
+/// 5-arg constructor threads per-anchor principal-stretch caps into
+/// `MaterialFieldInner::Yeoh::bounds`; `sample_yeoh` routes through
+/// [`Yeoh::with_max_principal_stretch_only`] under H4-2-C asymmetric
+/// one-sided bound (`docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5),
+/// so the produced per-tet `Yeoh` carries `(Some(max), None)`: the
+/// tensile cap reaches the solver gate, the compressive floor is
+/// sampled then dropped.  The min field stays threaded through
+/// `bounds` for future Option B (Phase H F-bar / mixed-u-p decorator)
+/// re-enable.  Closes the `MaterialField`-drops-bounds gap diagnosed
+/// at `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10.4 on the
+/// tensile side; the compressive side intentionally matches pre-H4
+/// legacy gate behavior (which accepted `σ_min` ∈ [0, 1.0]).
 #[test]
 fn material_field_from_yeoh_fields_with_bounds_carries_max_only() {
     use sim_soft::{MaterialFieldKind, Yeoh};

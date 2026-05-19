@@ -33,8 +33,18 @@
 //! Yeoh uses the asymmetric `max_principal_stretch` /
 //! `min_principal_stretch` bounds (memo D8). Default constructors leave
 //! these `None`, falling through to the legacy NH symmetric bound at
-//! `max_stretch_deviation = 1.0`. Per-anchor calibrated bounds are set
-//! by the [`crate::SiliconeMaterial::to_yeoh`] path (Yeoh arc F2 work).
+//! `max_stretch_deviation = 1.0`. Per-anchor calibrated bounds reach a
+//! Yeoh via two paths:
+//!
+//! - [`crate::SiliconeMaterial::to_yeoh`] direct construction sets BOTH
+//!   bounds via [`Yeoh::with_principal_stretch_bounds`] (symmetric;
+//!   Yeoh arc F2 work).
+//! - [`crate::MaterialField::sample_yeoh`] for the per-tet field-sample
+//!   path sets ONLY the tensile bound via
+//!   [`Yeoh::with_max_principal_stretch_only`] per H4-2-C (asymmetric
+//!   one-sided; see
+//!   `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  The
+//!   compressive direction defers to `det F > 0` inversion only.
 
 use nalgebra::{Matrix3, SMatrix};
 

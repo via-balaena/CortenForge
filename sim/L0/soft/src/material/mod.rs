@@ -76,9 +76,16 @@ pub struct ValidityDomain {
     /// Compressive principal-stretch cap. `Some(n)` directs the solver
     /// gate to panic when any singular value of `F` falls below `n`.
     /// `None` defers to the legacy `max_stretch_deviation` symmetric
-    /// bound. Yeoh's `0.20` (H4-2-A research-informed default, was
-    /// 0.30 pre-H4-2-A) lands here per arc memo D8 +
-    /// `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md`.
+    /// bound (or to `det F > 0` inversion when the tensile bound is
+    /// `Some`, since the gate routes through the per-principal-stretch
+    /// flavor on either bound's presence).  Yeoh's `0.20` (H4-2-A
+    /// research-informed default, was 0.30 pre-H4-2-A) lands here per
+    /// arc memo D8 + `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` —
+    /// but note H4-2-C drops this slot to `None` for per-tet `Yeoh`s
+    /// built via [`crate::MaterialField::sample_yeoh`], so in the
+    /// cf-device-design FEM path the compressive cap is currently
+    /// dormant (preserved for future Option B re-enable per
+    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).
     pub min_principal_stretch: Option<f64>,
 
     /// Maximum rotation angle in radians. `f64::INFINITY` for

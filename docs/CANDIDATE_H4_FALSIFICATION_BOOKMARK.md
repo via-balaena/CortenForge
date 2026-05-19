@@ -74,6 +74,13 @@ that the catalog doesn't ship today.
 
 ---
 
+> **Reader note**: §1-§4 are the original H4 falsification record
+> (pre-H4-2-A, pre-H4-2-C).  §2 says the cap-raise was reverted; it
+> was later re-raised at `60e649d2` after H4-2-C unlocked cavity > 5
+> mm partial seating.  §3's "next-session recon" was executed in
+> §5.  **§5 is current state; read top-down or skip to §5.4 for
+> the shipped H4-2-C semantics.**
+
 ## 1. What we learned (3 structural findings)
 
 ### 1.1 H4 plumbing is verified inert on Newton arithmetic
@@ -336,15 +343,38 @@ is the only remaining compressive safety net.  The
 future Option B re-enable (one-line flip
 `with_max_principal_stretch_only` → `with_principal_stretch_bounds`).
 
-H4.3 sweep re-run under H4-2-C asymmetric:
+H4.3 sweep re-run under H4-2-C asymmetric (**wrong-config**;
+DS20A inner / Ecoflex outer, no Slacker — the bug surfaced by
+the cold-read polish later; corrected-config table below):
 
-| cavity | pre-H4-2-C | post-H4-2-C |
+| cavity | pre-H4-2-C | post-H4-2-C (wrong-config) |
 |---|---|---|
-| 3 mm | Armijo step 0 iter 48 (bit-identical Newton; H4-independent) | unchanged |
+| 3 mm | Armijo step 0 iter 48 | unchanged |
 | 5 mm | Yeoh tet 264 σ_min = 0.197 (0/16) | **11/16 converged**, Armijo step 11 iter 9 r_norm 19.2 |
-| 6 mm | Armijo step 0 iter 25 r_norm 3.78 (H4-independent) | unchanged |
-| 7 mm | Armijo step 0 iter 30 r_norm 0.45 (H4-independent) | unchanged |
+| 6 mm | Armijo step 0 iter 25 r_norm 3.78 | unchanged |
+| 7 mm | Armijo step 0 iter 30 r_norm 0.45 | unchanged |
 | 8 mm | Yeoh tet 673 σ_min = 0.120 (0/16) | **8/16 converged**, Armijo step 8 iter 5 r_norm 0.40 |
+
+**Corrected-config rerun** (2026-05-19 LATE-NIGHT, post-polish;
+Ecoflex 00-30 + 50 % Slacker inner 10 mm + DS20A outer 3 mm,
+matching the user's GUI default per §5.7):
+
+| cavity | post-H4-2-C (correct-config) | stall signature |
+|---|---|---|
+| 3 mm | 0/16 | Armijo step 0 iter 62 r_norm 15.9 |
+| 5 mm | 0/16 | Armijo step 0 iter 51 r_norm 23.2 |
+| 6 mm | **11/16 converged** | Armijo step 11 iter 12 r_norm 1.06 |
+| 7 mm | **11/16 converged** | Armijo step 11 iter 12 r_norm 1.79 |
+| 8 mm | **10/16 converged** | Armijo step 10 iter 6 r_norm 0.82 |
+
+The corrected-config sweep finds 6 + 7 + 8 mm partial-seat
+where the wrong-config sweep got 5 + 8 mm — **config
+inversion rotates which cavities converge** in cargo (without
+changing the structural finding that H4-2-C unlocks
+partial-seat at cavities > the 0.30 floor's binding range).
+The 6 + 7 mm stalls share the same step-11 iter-12 signature,
+suggesting Newton hits the same slide-pose convergence cliff
+regardless of cavity depth in this range.
 
 Cavity = 5 mm: 0 → 11 steps converged (3.44 mm of 5 mm = 69 %
 seated).  Cavity = 8 mm: 0 → 8 steps converged (4.0 mm of
@@ -373,36 +403,65 @@ failures (see §5.5).
   better warm-starting.  Worth a small probe arc if the partial-
   seating output of H4-2-C is the binding product gap.
 
-### 5.6 Open puzzle PARTIAL RESOLUTION — config mismatch
+### 5.6 Open puzzle — config DOES NOT explain the GUI ↔ cargo divergence
 
-The `cargo test` h4_sweep_sliding_ramp_on_iter1_scan was running
-**the wrong layer config**.  Test code used:
+**Earlier claim** (banked at H4-2-C ship): the `cargo test`
+`h4_sweep_sliding_ramp_on_iter1_scan` was running the wrong layer
+config (DS20A inner + Ecoflex 00-30 outer, no Slacker) — opposite
+of the GUI default (Ecoflex 00-30 + 50 % Slacker inner +
+DS20A outer).  Hypothesis: fixing the config aligns cargo with
+GUI behavior.
 
-```rust
-layers: vec![
-    layer(0.003, "DRAGON_SKIN_20A"),   // innermost (firm)
-    layer(0.010, "ECOFLEX_00_30"),     // outermost (soft)
-],
-```
+**Post-polish empirical test** (2026-05-19 LATE-NIGHT, cold-read
+pass): updated the sweep test to the GUI-matched config
+(`layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5)` inner +
+`layer(0.003, "DRAGON_SKIN_20A")` outer) + re-ran.  Compared to
+the GUI's user-driven visual gate at §5.7:
 
-User's actual iter-1 GUI default (verified by §5.7 visual gate):
+| cavity | cargo wrong-config | cargo correct-config | GUI |
+|---|---|---|---|
+| 3 mm | 0/16 (iter 48) | 0/16 (iter 62) | **16/16 ✓** |
+| 5 mm | **11/16 ✓** | 0/16 (iter 51) | **16/16 ✓** |
+| 6 mm | 0/16 (iter 25) | **11/16 ✓** | 0/16 ✗ |
+| 7 mm | 0/16 (iter 30) | **11/16 ✓** | 0/16 ✗ |
+| 8 mm | **8/16 ✓** | **10/16 ✓** | **12/16 ✓** |
 
-```text
-Layer 0 (innermost): Ecoflex 00-30 + 50% Slacker  10 mm
-Layer 1 (outermost): Dragon Skin 20A              3 mm
-```
+Config inversion **rotated** the cargo converging window from
+{5, 8} mm to {6, 7, 8} mm without closing the gap to the GUI's
+{3, 5, 8} mm.  Three distinct non-trivial findings:
 
-The GUI has **the soft material inside touching the intruder + the
-firm material outside as the skin** — the test had it inverted.
-With the soft inner, the contact-fit equilibrium pushes σ_min much
-deeper (the soft inner squishes more); with the firm inner the
-contact-fit lands at a different equilibrium.
+1. **3 + 5 mm**: GUI converges 16/16; cargo (either config)
+   stalls at step 0.  The GUI reaches an equilibrium structure
+   cargo cannot find.
+2. **6 + 7 mm**: GUI stalls (Newton iter cap 150, r_norm
+   0.54 + 0.29); cargo correct-config reaches 11/16.  Cargo
+   finds a partial-seat path GUI doesn't.
+3. **8 mm**: GUI 12/16; cargo correct-config 10/16; closest
+   agreement (both partial, similar depth).
 
-Banked for next-session cleanup: update the sweep test to mirror
-the GUI default + add a `layer_with_slacker(0.010, "ECOFLEX_00_30",
-0.5)` helper invocation so cargo + GUI agree on the regression
-substrate.  The 3 + 6 + 7 mm Armijo stalls in the cargo test may
-or may not persist after the config fix.
+**Config inversion is NOT the GUI ↔ cargo divergence.**  The
+two paths reach genuinely different equilibria at the same
+nominal config (scan, layers, cell size, n_steps, prep.toml).
+
+Hypotheses worth exploring next session:
+- Different centerline source between GUI and prep.toml parser
+  (despite both calling `parse_centerline`, the GUI may apply
+  per-frame transforms or smoothing the test misses).
+- Slacker resolution path differs (the GUI's
+  `effective_silicone_for_layer` may compute a different
+  effective material than the test's `layer_with_slacker` + the
+  same code path implies).
+- Bevy-side state the GUI sets up before `run_sliding_insertion_ramp`
+  (camera, prior frame's snapshot) that the test doesn't.
+- Newton initial conditions / x_prev_flat ordering quirk.
+- The GUI may run pre-warm-up substeps the test skips.
+
+Deferred sub-arc.  The §5.7 GUI sweep record remains the
+canonical product-validation regression; the cargo sweep is
+informative for the structural H4-2-C unlock claim
+("disabling the compressive gate enables partial seating at
+cavities > the floor's binding range") but does NOT reproduce
+the GUI's specific cavity converging window.
 
 ### 5.7 H4-2-C GUI visual-gate sweep — product-validation record
 
@@ -460,16 +519,26 @@ change at step 13), not material.
 
 ### 5.8 Updated next-session pointers
 
-- **The 5 + 8 mm partial-seat output is genuinely usable**.
+- **The 5 + 8 mm GUI partial-seat output is genuinely usable**.
   Pre-H4 ceiling was 5 mm; H4-2-C unlocks 8 mm at 75 % seated
-  with clean F-d curve + per-step λ structure.
-- **The 6 + 7 mm gap in the converging window** is a separate
-  sub-arc — slide-step bisection / N_STEPS sweep / better
-  warm-starting per §5.5.  Same pattern E.b §10.2 documented
-  (N=16 uniquely pathological at specific cavities).
-- **Cargo-test sweep needs config fix** (§5.6).  Update
-  `h4_sweep_sliding_ramp_on_iter1_scan` to mirror the GUI
-  default (soft-inner config).
+  with clean F-d curve + per-step λ structure (§5.7).
+- **The 6 + 7 mm GUI gap in the converging window** is a
+  separate sub-arc — slide-step bisection / N_STEPS sweep /
+  better warm-starting per §5.5.  Same pattern E.b §10.2
+  documented (N=16 uniquely pathological at specific cavities).
+- **Sweep-test config fixed** at cold-read polish (`layer_with_slacker(0.010,
+  "ECOFLEX_00_30", 0.5)` inner + `layer(0.003, "DRAGON_SKIN_20A")`
+  outer matches the GUI default).  Cargo converging window
+  shifted from {5, 8} mm to {6, 7, 8} mm; **config inversion
+  was not the GUI ↔ cargo divergence** (§5.6 elevated to open
+  sub-arc).
+- **GUI ↔ cargo divergence is an open puzzle.**  Same nominal
+  config; both converge at 8 mm with similar depth (10-12 of
+  16); diverge at 3, 5, 6, 7 mm.  Worth a small diagnostic arc
+  to identify the actual difference (centerline source,
+  effective-Slacker resolution, Bevy-side state, warm-start
+  init) before any cap or default change relies on cargo as a
+  regression substrate.
 - **Option B (Phase H F-bar / mixed-u-p)** stays the long-term
   right answer; H4-2-C is the quick-unlock in the meantime.
 

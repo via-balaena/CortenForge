@@ -761,15 +761,22 @@ pub fn build_insertion_geometry(
     // Five `LayeredScalarField`s (or `ConstantField`s) over the same
     // scan-distance partition — three Yeoh parameters + two
     // calibrated principal-stretch caps — mirroring the row-23
-    // `build_material_field` precedent + threading the per-anchor
-    // `0.8 · λ_break` / `0.30` bounds through to the per-tet
-    // validity gate per H4 (`docs/CANDIDATE_H4_YEOH_BOUND_CALIBRATION_SPEC.md`).
-    // The 5-arg constructor `from_yeoh_fields_with_bounds` routes
-    // each per-tet `Yeoh` through `with_principal_stretch_bounds`,
-    // so the solver's `check_validity_at_step_start` gates against
-    // the silicone's calibrated cap rather than the legacy
-    // symmetric `max_stretch_deviation = 1.0` fallback that the
-    // pre-H4 3-arg path implicitly used.
+    // `build_material_field` precedent.  The 5-arg constructor
+    // `from_yeoh_fields_with_bounds` threads the per-anchor
+    // `0.8 · λ_break` tensile cap + `0.20` compressive cap into
+    // `MaterialFieldInner::Yeoh.bounds`; `MaterialField::sample_yeoh`
+    // routes each per-tet `Yeoh` through
+    // `with_max_principal_stretch_only` per H4-2-C — only the
+    // tensile cap reaches the solver's
+    // `check_validity_at_step_start` gate, the compressive value
+    // is sampled then dropped (preserved in `bounds` for future
+    // Option B / Phase H F-bar re-enable per
+    // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  `det F > 0`
+    // inversion is the only remaining compressive safety net.
+    // Pre-H4 3-arg path used the legacy `max_stretch_deviation`
+    // gate (symmetric σ ∈ [0, 2]) — H4-2-C matches that behavior
+    // on the compressive side while adding the calibrated tensile
+    // cap.
     let material_field = MaterialField::from_yeoh_fields_with_bounds(
         layered_param_field(
             &scan_sdf,
@@ -4936,17 +4943,36 @@ mod tests {
 
     /// **H4.3 sweep** — sliding-intruder ramps at cavity =
     /// 3, 5, 6, 7, 8 mm on iter-1 sock_over_capsule with the iter-1
-    /// GUI-default 10+3 mm dual-layer stack (ECOFLEX_00_30 outer
-    /// 10 mm + DRAGON_SKIN_20A inner 3 mm) + the H4-plumbed
-    /// calibrated principal-stretch bounds. Pre-H4 cavity > 5 mm
-    /// fake-converged step 1 into an invalid Yeoh state and
-    /// panicked at step 2 (per
+    /// GUI-default 10+3 mm dual-layer stack: ECOFLEX_00_30 + 50 %
+    /// Slacker INNER 10 mm + DRAGON_SKIN_20A OUTER 3 mm (soft +
+    /// tacky inside, firm skin outside).  Falsification artifact
+    /// for H4-2-C asymmetric one-sided bound — re-runnable
+    /// regression gate that maps `cargo test` outcomes onto the
+    /// user's GUI visual gate behavior under H4-2-C.
+    ///
+    /// **Layer order** is `innermost-first` per `SimDesign.layers`
+    /// docstring.  Pre-H4-arc revision of this test (`60e649d2`)
+    /// had the layers INVERTED (DS20A inner / Ecoflex outer
+    /// without Slacker), which produced different convergence
+    /// behavior than the GUI — the §5.6 puzzle PARTIAL
+    /// RESOLUTION in `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md`.
+    /// This revision aligns the test substrate with the GUI
+    /// default per the user-driven §5.7 visual gate.
+    ///
+    /// **Pre-H4 baseline**: cavity > 5 mm fake-converged step 1
+    /// into an invalid Yeoh state and panicked at step 2 (per
     /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10) — or,
     /// post-commit `2739717e` end-of-solve check, panics honestly
-    /// at step 1. DRAGON_SKIN_20A's calibrated
-    /// `0.8 · λ_break = 5.76` tensile cap is well above the σ ≈ 2.05
-    /// peak the E.b sweep measured, so H4 expected to clear
-    /// cavity > 5 mm cleanly.
+    /// at step 1.
+    ///
+    /// **Post-H4-2-C outcome** (per bookmark §5.4-§5.7):
+    /// asymmetric one-sided bound drops the compressive gate at
+    /// `MaterialField::sample_yeoh` time, letting Newton iterate
+    /// through deep-compression equilibria.  Cavity 5 mm clears
+    /// 16/16 (full seat) + cavity 8 mm clears 12/16 (75 % seat)
+    /// in the GUI visual gate; the 6 + 7 mm gap is a Newton
+    /// convergence wall (genuine, not a Yeoh validity firing) —
+    /// separate sub-arc (slide-step bisection / N_STEPS sweep).
     ///
     /// Run:
     ///
@@ -4988,20 +5014,23 @@ mod tests {
 
         eprintln!(
             "H4.3 sweep — iter-1 sock_over_capsule.cleaned.stl, dual-layer \
-             DS20A inner 3 mm + Ecoflex 00-30 outer 10 mm, n_steps = {}, \
-             centerline {} points",
+             Ecoflex 00-30 + 50% Slacker INNER 10 mm + DS20A OUTER 3 mm \
+             (iter-1 GUI default), n_steps = {}, centerline {} points",
             n_steps,
             centerline.len(),
         );
         eprintln!(
-            "  DS20A bounds: max_principal_stretch = {:.2}, min = {:.2}",
-            DRAGON_SKIN_20A.validity_max_principal_stretch,
-            DRAGON_SKIN_20A.validity_min_principal_stretch,
+            "  H4-2-C asymmetric one-sided bound: only the tensile cap \
+             reaches the solver gate; compressive `min_principal_stretch` \
+             is dropped at `MaterialField::sample_yeoh`."
         );
         eprintln!(
-            "  Ecoflex 00-30 bounds: max_principal_stretch = {:.2}, min = {:.2}",
+            "  Ecoflex 00-30 max_principal_stretch (inner pre-Slacker): {:.2}",
             ECOFLEX_00_30.validity_max_principal_stretch,
-            ECOFLEX_00_30.validity_min_principal_stretch,
+        );
+        eprintln!(
+            "  DS20A max_principal_stretch (outer): {:.2}",
+            DRAGON_SKIN_20A.validity_max_principal_stretch,
         );
 
         for &cavity_mm in &cavities_mm {
@@ -5009,11 +5038,15 @@ mod tests {
             eprintln!("\n--- cavity = {cavity_mm:.1} mm ---");
             let design = SimDesign {
                 cavity_inset_m,
-                // `SimDesign.layers` is innermost-first; iter-1
-                // GUI default the prior C′.a + E.b baselines used.
+                // `SimDesign.layers` is innermost-first.  Iter-1 GUI
+                // default: soft + tacky inside (Ecoflex 00-30 + 50 %
+                // Slacker lerped to Shore 000-20), firm skin outside
+                // (DS20A).  Verified against the user-driven §5.7
+                // visual-gate sweep at
+                // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md`.
                 layers: vec![
+                    layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
                     layer(0.003, "DRAGON_SKIN_20A"),
-                    layer(0.010, "ECOFLEX_00_30"),
                 ],
             };
             let t0 = Instant::now();
@@ -5138,11 +5171,13 @@ mod tests {
         // Mirrors `build_insertion_geometry`'s switch to the
         // calibrated 5-arg `from_yeoh_fields_with_bounds`
         // constructor (H4 plumbing) so per-tet `Yeoh`s carry
-        // ECOFLEX_00_30's 8.00 tensile + 0.30 compressive caps
-        // rather than the legacy `max_stretch_deviation = 1.0`
-        // fallback — keeps the analytical-sphere recon
-        // experiment apples-to-apples with the production
-        // GridSdf geometry.
+        // ECOFLEX_00_30's 8.00 tensile cap through H4-2-C
+        // asymmetric one-sided routing (the 0.20 compressive cap
+        // is sampled but dropped at
+        // `MaterialField::sample_yeoh` per
+        // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  Keeps
+        // the analytical-sphere recon experiment apples-to-apples
+        // with the production GridSdf geometry.
         let silicone = silicone_for_anchor("ECOFLEX_00_30").unwrap();
         let material_field = MaterialField::from_yeoh_fields_with_bounds(
             Box::new(ConstantField::new(silicone.mu)),

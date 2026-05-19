@@ -1,7 +1,19 @@
 # Candidate H4 — Yeoh bound calibration plumbing
 
-> **STATUS — SPEC.** 2026-05-19 EVENING. F3 recon B candidate H4
-> per [[project-f3-recon-b-eb-arc]] §"What stayed dormant" + the
+> **STATUS — SHIPPED + FALSIFIED case D.** Spec was implemented as
+> H4.1 + H4.2 (5-arg `from_yeoh_fields_with_bounds` plumbing); the
+> cavity = 5 + 8 mm sweep triggered the spec's §5 case-D
+> falsifier (compressive floor binds before tensile cap; the
+> Phase 4 placeholder 0.30 was hiding deep-compression states).
+> The asymmetric one-sided fix shipped as H4-2-C (drop compressive
+> gate at sample time, keep tensile cap).  **Read
+> `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` for the falsification
+> + shipped behavior; this spec stays as audit trail for the
+> original H4.1 / H4.2 design and the falsifier matrix that
+> correctly anticipated case D.**
+>
+> 2026-05-19 EVENING.  F3 recon B candidate H4 per
+> [[project-f3-recon-b-eb-arc]] §"What stayed dormant" + the
 > E.b falsification bookmark §10.4 H-ladder. Refined scope: the
 > per-anchor `0.8 · λ_break` validity bounds are **already in
 > the silicone catalog** (`sim/L0/soft/src/material/silicone_table.rs:497-602`,
