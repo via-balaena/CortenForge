@@ -600,11 +600,22 @@ where
     /// Diagnostic-only at the solver level — Decision K's "Newton
     /// hot path does not branch on diagnostic metadata" framing
     /// applies to the interface flag, not to validity; this check
-    /// runs once per [`Solver::step`] call before the Newton loop
-    /// starts (Decision Q "at step start"), and panics on first
-    /// violation rather than degrading silently. The book Part 2
-    /// §00 §02 prescription is a runtime warning; Decision Q
-    /// upgrades to panic for Phase 4 fail-closed semantics.
+    /// runs at two step boundaries per [`Solver::step`] call:
+    /// (1) before the Newton loop starts (the original Decision Q
+    /// "at step start" framing — catches invalid warm-starts), AND
+    /// (2) at end of solve before returning a converged result
+    /// (catches Newton converging to an invalid equilibrium —
+    /// without this check, an invalid converged state silently
+    /// flows to the next step's start check, making the failure
+    /// step-delayed + the failed step's recorded output
+    /// physically meaningless).  Both boundaries panic on first
+    /// violation rather than degrading silently.  See
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10 for the
+    /// motivating finding (cavity > 5 mm sliding-ramp step 1
+    /// converged to `σ_max = 2.05` at tet 3206, was only caught at
+    /// step 2's start check pre-this-fix).  The book Part 2 §00
+    /// §02 prescription is a runtime warning; Decision Q upgrades
+    /// to panic for Phase 4 fail-closed semantics.
     ///
     /// # Panics
     ///
@@ -1550,6 +1561,17 @@ where
             last_r_norm = r_norm;
 
             if r_norm < self.config.tol {
+                // Decision Q validity check at converged state — sister
+                // of the step-start check at line 1525. Without this,
+                // Newton can converge to a deformation field where some
+                // tet's F violates max_stretch_deviation / inversion;
+                // the failure surfaces only at the NEXT step's start
+                // check, masking which step actually produced the
+                // invalid state + leaving the failed step's recorded
+                // output physically meaningless. See
+                // `check_validity_at_step_start`'s docstring for the
+                // motivating finding + the two-boundary check contract.
+                self.check_validity_at_step_start(&x_curr);
                 return Ok((
                     NewtonStep::new_converged(x_curr, newton_iter, r_norm),
                     lm_state.lambda(),
