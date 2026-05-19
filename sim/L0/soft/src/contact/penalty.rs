@@ -194,6 +194,21 @@ pub struct PenaltyRigidContact {
     /// (dropping the SDF-curvature ∂n/∂p term, see module docs) is C⁰
     /// — the chattering fix.
     smoothing_eps_m: f64,
+    /// Number of offset samples for per-query contact-normal averaging
+    /// (F3 recon B candidate E.b). `1` (default) disables averaging —
+    /// `n = prim.grad(p)` bit-equal to pre-E.b behavior. `7` enables
+    /// the 6-face axis-aligned neighborhood
+    /// (`prim.grad(p ± r·e_{x,y,z})` averaged with `prim.grad(p)`).
+    /// Addresses class-2 active-set chattering via normal-direction
+    /// smoothing — orthogonal to [`smoothing_eps_m`](Self::smoothing_eps_m)
+    /// which smooths the gap function instead. See
+    /// `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` for the design.
+    normal_avg_k: u8,
+    /// Offset radius (m) for per-query contact-normal averaging.
+    /// Only consulted when [`normal_avg_k`](Self::normal_avg_k) `> 1`.
+    /// Default `0.0` (matching the disabled state). For `k > 1`,
+    /// constructors require strictly positive + finite.
+    normal_avg_radius_m: f64,
 }
 
 /// Per-pair scalar contributions (energy, `dE/dsd`, `d²E/dsd²`) at a
@@ -247,6 +262,8 @@ impl PenaltyRigidContact {
             d_hat,
             interior_cutoff: None,
             smoothing_eps_m: 0.0,
+            normal_avg_k: 1,
+            normal_avg_radius_m: 0.0,
         }
     }
 
@@ -292,6 +309,8 @@ impl PenaltyRigidContact {
             d_hat,
             interior_cutoff: Some(interior_cutoff),
             smoothing_eps_m: 0.0,
+            normal_avg_k: 1,
+            normal_avg_radius_m: 0.0,
         }
     }
 
@@ -331,6 +350,8 @@ impl PenaltyRigidContact {
             d_hat,
             interior_cutoff: None,
             smoothing_eps_m,
+            normal_avg_k: 1,
+            normal_avg_radius_m: 0.0,
         }
     }
 
@@ -387,6 +408,203 @@ impl PenaltyRigidContact {
             d_hat,
             interior_cutoff: Some(interior_cutoff),
             smoothing_eps_m,
+            normal_avg_k: 1,
+            normal_avg_radius_m: 0.0,
+        }
+    }
+
+    /// Construct with non-default `(κ, d̂)` plus a positive smoothing
+    /// window AND per-query normal averaging (F3 recon B candidate
+    /// E.b). Composes
+    /// [`with_params_and_smoothing`](Self::with_params_and_smoothing)
+    /// and the normal-averaging machinery. Smoothing and normal-
+    /// averaging are orthogonal axes (one smooths the gap function,
+    /// the other smooths the contact normal direction).
+    ///
+    /// # Panics
+    ///
+    /// `smoothing_eps_m` must be non-negative + finite (see
+    /// [`with_params_and_smoothing`](Self::with_params_and_smoothing)).
+    /// `normal_avg_k` must be in `{1, 7}` (iter-1 closed-set —
+    /// `{19, 27}` reserved for §7 fallback in the spec; future
+    /// discretizations extend the assertion).
+    /// `normal_avg_radius_m` must be non-negative + finite, and
+    /// strictly positive iff `normal_avg_k > 1` — the
+    /// `(k > 1, r == 0)` combo is a silent no-op + likely a caller
+    /// mistake.
+    #[must_use]
+    pub fn with_params_and_smoothing_and_normal_averaging<I>(
+        primitives: I,
+        kappa: f64,
+        d_hat: f64,
+        smoothing_eps_m: f64,
+        normal_avg_k: u8,
+        normal_avg_radius_m: f64,
+    ) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Sdf + 'static,
+    {
+        assert!(
+            smoothing_eps_m >= 0.0 && smoothing_eps_m.is_finite(),
+            "smoothing_eps_m must be non-negative and finite, got {smoothing_eps_m}",
+        );
+        assert!(
+            matches!(normal_avg_k, 1 | 7),
+            "normal_avg_k must be 1 (disabled) or 7 (6-face axis-aligned), got {normal_avg_k}",
+        );
+        assert!(
+            normal_avg_radius_m >= 0.0 && normal_avg_radius_m.is_finite(),
+            "normal_avg_radius_m must be non-negative and finite, got {normal_avg_radius_m}",
+        );
+        assert!(
+            normal_avg_k == 1 || normal_avg_radius_m > 0.0,
+            "normal_avg_radius_m must be strictly positive when normal_avg_k > 1, got k = {normal_avg_k}, r = {normal_avg_radius_m}",
+        );
+        let primitives: Vec<Box<dyn Sdf>> = primitives
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn Sdf>)
+            .collect();
+        Self {
+            primitives,
+            kappa,
+            d_hat,
+            interior_cutoff: None,
+            smoothing_eps_m,
+            normal_avg_k,
+            normal_avg_radius_m,
+        }
+    }
+
+    /// Construct with non-default `(κ, d̂)` plus a positive smoothing
+    /// window, per-query normal averaging, AND a positive interior
+    /// cutoff (F3 recon B candidate E.b). The full sliding-intruder
+    /// FEM ramp constructor — composes
+    /// [`with_params_and_smoothing_and_normal_averaging`](Self::with_params_and_smoothing_and_normal_averaging)
+    /// with
+    /// [`with_params_and_interior_cutoff`](Self::with_params_and_interior_cutoff).
+    ///
+    /// # Panics
+    ///
+    /// Combined panics of the composed constructors: `smoothing_eps_m`
+    /// non-negative + finite; `normal_avg_k ∈ {1, 7}`;
+    /// `normal_avg_radius_m` non-negative + finite + strictly positive
+    /// iff `k > 1`; `interior_cutoff` strictly positive + finite +
+    /// strictly greater than `d_hat + smoothing_eps_m`.
+    #[must_use]
+    pub fn with_params_and_smoothing_and_normal_averaging_and_interior_cutoff<I>(
+        primitives: I,
+        kappa: f64,
+        d_hat: f64,
+        smoothing_eps_m: f64,
+        normal_avg_k: u8,
+        normal_avg_radius_m: f64,
+        interior_cutoff: f64,
+    ) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Sdf + 'static,
+    {
+        assert!(
+            smoothing_eps_m >= 0.0 && smoothing_eps_m.is_finite(),
+            "smoothing_eps_m must be non-negative and finite, got {smoothing_eps_m}",
+        );
+        assert!(
+            matches!(normal_avg_k, 1 | 7),
+            "normal_avg_k must be 1 (disabled) or 7 (6-face axis-aligned), got {normal_avg_k}",
+        );
+        assert!(
+            normal_avg_radius_m >= 0.0 && normal_avg_radius_m.is_finite(),
+            "normal_avg_radius_m must be non-negative and finite, got {normal_avg_radius_m}",
+        );
+        assert!(
+            normal_avg_k == 1 || normal_avg_radius_m > 0.0,
+            "normal_avg_radius_m must be strictly positive when normal_avg_k > 1, got k = {normal_avg_k}, r = {normal_avg_radius_m}",
+        );
+        assert!(
+            interior_cutoff > 0.0 && interior_cutoff.is_finite(),
+            "interior_cutoff must be positive and finite, got {interior_cutoff}",
+        );
+        assert!(
+            interior_cutoff > d_hat + smoothing_eps_m,
+            "interior_cutoff ({interior_cutoff}) must be > d_hat + smoothing_eps_m \
+             ({}) — so the active band [−cutoff, d_hat + smoothing_eps_m) is non-empty",
+            d_hat + smoothing_eps_m,
+        );
+        let primitives: Vec<Box<dyn Sdf>> = primitives
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn Sdf>)
+            .collect();
+        Self {
+            primitives,
+            kappa,
+            d_hat,
+            interior_cutoff: Some(interior_cutoff),
+            smoothing_eps_m,
+            normal_avg_k,
+            normal_avg_radius_m,
+        }
+    }
+
+    /// Per-pair contact-normal computation — single source of truth
+    /// for the three consumer sites that need a unit normal at a
+    /// contact pair query point.
+    ///
+    /// At `normal_avg_k == 1` (default) returns `prim.grad(p)`
+    /// bit-equal — preserves pre-E.b behavior under the construction
+    /// path that doesn't opt into averaging. At `k > 1` averages over
+    /// the center sample `prim.grad(p)` plus `k - 1` axis-aligned
+    /// offset samples at radius `normal_avg_radius_m`, then
+    /// renormalizes the sum. For `k == 7`, the 6 offset directions are
+    /// `±e_x, ±e_y, ±e_z`.
+    ///
+    /// **Fallback chain**: if the renormalization sum has norm
+    /// `< 1e-10` (deeply pathological alignment), falls back to the
+    /// center grad; if that is also degenerate, falls back to
+    /// `Vec3::z()` — matching `gradient_clamped`'s degenerate-grad
+    /// posture in `cf-geometry::sdf::SdfGrid` (the `GridSdf` consumer).
+    ///
+    /// **MAINTENANCE NOTE** — any future change to the averaging
+    /// discretization (offset directions, weights, fallback policy)
+    /// updates this method only. The three consumer sites
+    /// ([`PenaltyRigidContact::per_pair_readout`],
+    /// [`ContactModel::gradient`], [`ContactModel::hessian`]) call
+    /// this helper rather than `prim.grad` directly. See §2.6 of
+    /// `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` for the mirror-
+    /// on-change-prevention rationale (parallel to
+    /// [`Self::pair_is_active`]'s MAINTENANCE NOTE for the active-
+    /// band predicate).
+    fn averaged_normal(&self, prim: &dyn Sdf, p: Point3<f64>) -> Vec3 {
+        let center = prim.grad(p);
+        if self.normal_avg_k == 1 {
+            return center;
+        }
+        debug_assert_eq!(
+            self.normal_avg_k, 7,
+            "normal_avg_k validated to {{1, 7}} in constructors",
+        );
+        let r = self.normal_avg_radius_m;
+        // 6-face axis-aligned offsets for k = 7. Future {k = 19, 27}
+        // discretizations append to this match per spec §2.2.
+        let offsets: [Vec3; 6] = [
+            Vec3::new(r, 0.0, 0.0),
+            Vec3::new(-r, 0.0, 0.0),
+            Vec3::new(0.0, r, 0.0),
+            Vec3::new(0.0, -r, 0.0),
+            Vec3::new(0.0, 0.0, r),
+            Vec3::new(0.0, 0.0, -r),
+        ];
+        let mut sum = center;
+        for off in &offsets {
+            sum += prim.grad(p + off);
+        }
+        let norm = sum.norm();
+        if norm > 1e-10 {
+            sum / norm
+        } else if center.norm() > 1e-10 {
+            center
+        } else {
+            Vec3::z()
         }
     }
 
@@ -497,7 +715,7 @@ impl PenaltyRigidContact {
             for (pid, prim) in self.primitives.iter().enumerate() {
                 let sd = prim.eval(p_pt);
                 if let Some(contribution) = self.pair_contribution(sd) {
-                    let normal = prim.grad(p_pt);
+                    let normal = self.averaged_normal(prim.as_ref(), p_pt);
                     let force_on_soft = -contribution.d_energy_d_sd * normal;
                     readouts.push(ContactPairReadout {
                         pair: ContactPair::Vertex {
@@ -568,7 +786,7 @@ impl ContactModel for PenaltyRigidContact {
         let d = prim.eval(p);
         self.pair_contribution(d)
             .map_or_else(ContactGradient::default, |c| {
-                let n = prim.grad(p);
+                let n = self.averaged_normal(prim.as_ref(), p);
                 let force = c.d_energy_d_sd * n;
                 ContactGradient {
                     contributions: vec![(vertex_id, force)],
@@ -586,7 +804,7 @@ impl ContactModel for PenaltyRigidContact {
         let d = prim.eval(p);
         self.pair_contribution(d)
             .map_or_else(ContactHessian::default, |c| {
-                let n = prim.grad(p);
+                let n = self.averaged_normal(prim.as_ref(), p);
                 let block: Matrix3<f64> = c.d2_energy_d_sd2 * (n * n.transpose());
                 ContactHessian {
                     contributions: vec![(vertex_id, vertex_id, block)],
