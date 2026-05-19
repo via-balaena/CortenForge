@@ -1,10 +1,22 @@
 # Candidate C — C.2 sweep falsification bookmark
 
-> **STATUS — BOOKMARK.** 2026-05-18 LATE-EVENING.  Halts the F3
-> recon B C.2 + C.3 ladder mid-arc; C.1 sim-soft primitive +
-> C.2 cf-device-design wire-up KEPT (dormant via `ε = 0.0`); cap
-> scaffolding (8 mm) REVERTED to gated-A 4 mm baseline.  Recon next
-> session picks the next mechanism per the three-session pattern
+> **STATUS — RESOLVED case A (C′.a shipped).** 2026-05-18
+> LATE-EVENING.  C′.a ε-bisection in (0, 0.1) mm found a **narrow
+> converging window at ε ≈ 0.075 mm** for cavity = 5 mm (4-sample
+> sweep: 0.025/0.05 stall at r_norm ≈ 0.2, 0.075 converges 16/16,
+> 0.1 stalls at 0.384).  Pinned at 0.075 mm + cap raised 4 → 5 mm
+> (one notch above gated-A).  3 mm sanity gate (16/16, ZERO LM
+> rescues) confirms gated-A baseline preserved.  C.3 6 mm probe
+> gate at the pinned ε stalls at r_norm 0.536 → cap pinned to 5 mm
+> (no point testing 7 mm).  See §9 below for the post-resolution
+> data.  Original bookmark retained as audit trail.
+
+> **STATUS — BOOKMARK** (historical, 2026-05-18 LATE-EVENING).
+> Halted the F3 recon B C.2 + C.3 ladder mid-arc; C.1 sim-soft
+> primitive + C.2 cf-device-design wire-up KEPT (dormant via
+> `ε = 0.0`); cap scaffolding (8 mm) REVERTED to gated-A 4 mm
+> baseline.  Recon next session picks the next mechanism per the
+> three-session pattern
 > ([[feedback-bookmark-when-surface-levers-exhaust]]).
 
 **Predecessor docs**:
@@ -499,3 +511,106 @@ falsifier outcomes:
 If ALL of C′ + E + F fail, candidate D (mesh refinement) is the
 last in-spec option; past that the recon escalates to a different
 solver architecture entirely.
+
+---
+
+## 9. §C′.a-RESOLVED — case A shipped 2026-05-18 LATE-EVENING
+
+Per [[feedback-implement-measure-revert-pattern]] C′.a was
+implement → measure → keep (case A) — no separate recon session
+needed because the ε edit was a 1-line change + the data answered
+the hypothesis directly.
+
+### 9.1 Full C.2 + C′.a sweep table
+
+Cavity = 5 mm, layers 10 + 3 mm, sock_over_capsule.cleaned.stl,
+sliding-intruder ramp 1 → 16:
+
+| ε (mm) | steps converged | r_norm floor | stall mode | LM rescues | stuck pivot |
+|---|---|---|---|---|---|
+| 0 (gated-A baseline) | 0/16 | 1.784 | Armijo iter 61 | 1 mild λ ≈ 6.67e-3 | 33374 → 8535 |
+| 0.025 (C′.a) | 0/16 | 0.231 | Armijo iter 108 | 3 stiff λ ≈ 6.67e3 | 8113 (sustained) |
+| 0.05 (C′.a) | 0/16 | 0.200 | Armijo iter 147 | 4 moderate λ ≈ 5.21e3 | 13311 → 19203 → 19060 |
+| **0.075 (C′.a)** | **16/16** | **converges seated 83.35 mm** | — | **0** | — |
+| 0.1 (C.2) | 0/16 | 0.384 | Armijo iter 126 | 2 stiff λ ≈ 8.34e3 | 8535 (sustained) |
+| 0.25 (C.2) | 0/16 | 0.753 | iter cap 150 | 2 stiff λ ≈ 6.67e3+ | 1671 (sustained) |
+
+### 9.2 Mental model update
+
+The response is **U-shaped with a narrow converging window at
+ε ≈ 0.075 mm**.  Both sides of the optimum:
+
+- **Too small** (ε ≤ 0.05 mm): smoothing window doesn't cover
+  enough chattering pairs to suppress the active-set
+  discontinuity; r_norm floor improves with ε but plateaus
+  above 0.1.
+- **Too large** (ε ≥ 0.1 mm): band-widening backfire dominates
+  (hyp 3 confirmed) — too many pairs in the tapered regime
+  degrades the assembled tangent's eigenstructure.
+
+Hypothesis 3 (band-widening backfire) is **CONFIRMED** as a real
+contributor on the upper side of the optimum.  Hypotheses 1
+(SDF normal discontinuity) + 2 (step-0 cold-start) remain
+uninvestigated but the chosen ε achieves 16/16 without engaging
+LM at all, so they are not BINDING at cavity ≤ 5 mm.
+
+### 9.3 Sanity gate (cavity = 3 mm) result
+
+ε = 0.075 mm at cavity = 3 mm: **16/16 converged**, seated
+83.35 mm, ZERO LM rescues + ZERO Yeoh failures + ZERO panics.
+46 LU fallback firings (handled cleanly without escalation).
+Gated-A 3 mm baseline preserved — gated A's class-1 LM rescue
+mechanism and smoothed contact compose orthogonally.
+
+### 9.4 C.3 probe gate (cavity = 6 mm) result
+
+ε = 0.075 mm at cavity = 6 mm: **0/16**, Newton iter cap 150
+hit, r_norm 0.536. Two LM rescues (iter 81 mild λ ≈ 7.91e3,
+iter 139 bumped to λ ≈ 9.89e3 with new stuck pivot at index
+25077).  7 mm gate skipped — strictly worse than 6 mm by the
+chattering-envelope monotonicity argument.
+
+The C′.a-pinned ε **does not generalize past 5 mm**.  Cavity > 5
+mm needs either:
+
+- A ε that varies with cavity (would need a per-cavity sweep or a
+  UI slider — DO NOT add unless empirical evidence shows
+  multi-modal need per [[feedback-strip-the-knob-when-default-works]]).
+- A composed mechanism — e.g., smoothed contact + SDF normal
+  smoothing per hyp 1, or smoothed contact + step-0 warmup per
+  hyp 2.
+
+### 9.5 Cap decision
+
+Cap raised **4 → 5 mm** (one notch above gated-A baseline).
+Three-surface mirror:
+
+- `CavityState::inset_slider_range_m` returns `(0.0, 0.005)` +
+  docstring rewritten with the C′.a + C.3 rationale.
+- egui label in `render_cavity_section` reads "capped at 5 mm —
+  highest cavity the C′.a-pinned ε converges 16/16 at; C.3 6 mm
+  probe gate stalled at r_norm 0.536".
+- Sentinel test renamed
+  `cavity_inset_slider_range_zero_to_five_mm` + asserts 0.005 +
+  comment carries the C′.a ship rationale + C.3 stall.
+
+The cap **lower-bounds the chattering envelope** at cavity 6 mm
++ stays well inside Yeoh material validity (which doesn't bite
+until ≥ 8 mm).  Future C-recon mechanisms can re-raise the cap
+up to ~7 mm before material validity has to be re-evaluated.
+
+### 9.6 What stayed dormant + can be re-activated cheaply
+
+- C′.b (cubic Hermite polynomial) — orthogonal to C′.a's ε
+  bisection; not informative now that ε = 0.075 mm works.
+- C′.c (symmetric ramp) — same.
+- E candidates (SDF normal smoothing) — would extend the
+  converging window past cavity 5 mm if hyp 1 also binds there.
+- F candidates (step-0 warmup) — would extend past 5 mm if hyp
+  2 binds.
+- D (mesh refinement) — geometric attack on the chattering
+  envelope; still the deferred last-resort fallback.
+
+The bookmark §3 + §8 ladder + falsifier matrix are still valid
+guides for any of those if a future product requirement pushes
+cavity past 5 mm.

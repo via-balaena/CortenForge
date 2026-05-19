@@ -943,37 +943,43 @@ const INSERTION_CONTACT_DHAT: f64 = 1.0e-3;
 /// with `sd ∈ (d̂, d̂+ε)` contribute a quintic-Hermite-tapered
 /// penalty that reaches 0 at `sd = d̂+ε`; this makes the assembled
 /// contact Hessian `H_contact(x)` C⁰ across active-pair boundaries.
-/// See `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the design.
+/// See `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the design +
+/// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md` for the C.2
+/// sweep falsification + C′.a bisection that found this value.
 ///
-/// **DORMANT** (`ε = 0.0`) per the C.2 sweep falsification 2026-05-18
-/// — see `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md` for the
-/// empirical data + recon ladder. Two sweep gates (cavity 5 mm,
-/// layers 10+3 mm) returned:
+/// **PINNED at ε = 0.075 mm** per the C′.a ε-bisection sweep
+/// 2026-05-18 LATE-EVENING (cavity = 5 mm, layers 10+3 mm,
+/// sock_over_capsule.cleaned.stl):
 ///
-/// | ε (mm) | r_norm floor | stall mode |
-/// |---|---|---|
-/// | 0   (gated-A baseline) | 1.784 | Armijo iter 61 |
-/// | 0.1 | 0.384 | Armijo iter 126 |
-/// | 0.25 | 0.753 | iter cap 150 |
+/// | ε (mm) | steps converged | r_norm floor | stall mode | LM rescues |
+/// |---|---|---|---|---|
+/// | 0 (gated-A baseline) | 0/16 | 1.784 | Armijo iter 61 | 1 (mild λ ≈ 6.67e-3) |
+/// | 0.025 | 0/16 | 0.231 | Armijo iter 108 | 3 (stiff λ ≈ 6.67e3) |
+/// | 0.05 | 0/16 | 0.200 | Armijo iter 147 | 4 (moderate λ ≈ 5.21e3) |
+/// | **0.075** | **16/16** | converges | seated 83.35 mm | **0** |
+/// | 0.1 | 0/16 | 0.384 | Armijo iter 126 | 2 (stiff λ ≈ 8.34e3) |
+/// | 0.25 | 0/16 | 0.753 | iter cap 150 | 2 (stiff λ ≈ 8.34e3) |
 ///
-/// **Non-monotonic** in ε (0.25 mm WORSE than 0.1 mm) — the C.0
-/// spec predicted monotonic improvement, so the class-2 chattering
-/// mental model is at best incomplete. Three upstream hypotheses
-/// in the bookmark: SDF-normal-discontinuity / step-0 cold-start /
-/// band-widening backfire. C-recon next picks the next mechanism.
+/// The response is U-shaped: a **narrow converging window centered
+/// at ε ≈ 0.075 mm**.  Outside (~0.05, ~0.1) mm the residual floor
+/// climbs sharply.  The C.0 spec's "monotonic improvement with ε"
+/// prediction was wrong; the empirical structure is a sweet spot
+/// where the band-widening backfire (hyp 3 in the falsification
+/// bookmark) and the chattering-suppression effect balance.  C′.a
+/// confirms hyp 3 at least partially — wider ε bands bring more
+/// pairs into the tapered regime, degrading the assembled tangent's
+/// eigenstructure once past the optimum.
 ///
 /// **Wire-up preserved** per
 /// [[feedback-spec-falsified-revert-opt-in-keep-surface]]:
-/// `intruder_contact_at` + `intruder_contact_sliding_at` still
-/// route through C.1's
+/// `intruder_contact_at` + `intruder_contact_sliding_at` route
+/// through C.1's
 /// [`PenaltyRigidContact::with_params_and_smoothing`] +
 /// [`PenaltyRigidContact::with_params_and_smoothing_and_interior_cutoff`].
-/// At `ε = 0.0` the C.1 `pair_contribution` short-circuits the
-/// `sd ≤ d̂` branch to bit-equal pre-C.1 arithmetic (sim-soft test
-/// `penalty_smoothing_zero_eps_is_bit_equal_to_hard_penalty` pins
-/// the contract). Future recon candidates flip this const + nothing
-/// else — no need to re-wire callers.
-const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.0;
+/// Future recon (e.g. SDF-normal smoothing for hyp 1 or step-0
+/// warmup for hyp 2) flips this const + composes with the existing
+/// C.1 surface.
+const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.075e-3;
 
 /// Build the rigid-intruder contact primitive for a given press-fit
 /// `interference_m` — the scan SDF offset by
@@ -5104,48 +5110,49 @@ mod tests {
         );
     }
 
-    /// F3 recon B candidate C (smoothed contact) — pin the
-    /// [`INSERTION_CONTACT_SMOOTHING_EPS_M`] const at its post-C.2-
-    /// sweep DORMANT value (`0.0`) + carry the falsification
-    /// evidence table that justifies the dormant posture.
+    /// F3 recon B candidate C′.a (ε bisection) — pin
+    /// [`INSERTION_CONTACT_SMOOTHING_EPS_M`] at the post-C′.a-sweep
+    /// chosen value (`0.075 mm`) + carry the C′.a evidence table.
     ///
-    /// **C.2 sweep result** (2026-05-18, cavity = 5 mm, layers
-    /// 10+3 mm, per `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`):
+    /// **C.2 + C′.a combined sweep** (2026-05-18, cavity = 5 mm,
+    /// layers 10+3 mm, sock_over_capsule.cleaned.stl, per
+    /// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`):
     ///
-    /// | ε (mm) | steps converged | r_norm floor | stall mode |
-    /// |---|---|---|---|
-    /// | 0 (gated-A baseline) | 0/16 | 1.784 | Armijo iter 61 |
-    /// | 0.1 | 0/16 | 0.384 | Armijo iter 126 |
-    /// | 0.25 | 0/16 | 0.753 | Newton iter cap 150 |
+    /// | ε (mm) | steps converged | r_norm floor | stall mode | LM rescues |
+    /// |---|---|---|---|---|
+    /// | 0 (gated-A baseline) | 0/16 | 1.784 | Armijo iter 61 | 1 mild |
+    /// | 0.025 (C′.a) | 0/16 | 0.231 | Armijo iter 108 | 3 stiff |
+    /// | 0.05 (C′.a) | 0/16 | 0.200 | Armijo iter 147 | 4 moderate |
+    /// | **0.075 (C′.a)** | **16/16** | converges seated 83.35 mm | — | **0** |
+    /// | 0.1 (C.2) | 0/16 | 0.384 | Armijo iter 126 | 2 stiff |
+    /// | 0.25 (C.2) | 0/16 | 0.753 | iter cap 150 | 2 stiff |
     ///
-    /// Non-monotonic ε response (0.25 mm WORSE than 0.1 mm)
-    /// falsifies the C.0 spec's class-2-only mental model.  Sweep
-    /// halted at 2 ε samples after non-monotonicity surfaced; rest
-    /// of the spec's planned sweep ({0.5, 1.0, 2.0} mm) skipped.
-    /// `ε = 0.0` is the dormant value — bit-equal to pre-C.1 hard
-    /// penalty, so the C.1 wire-up + C.2 const surface stay alive
-    /// without behavioral change. C-recon next session picks the
-    /// next mechanism (SDF normal discontinuity / step-0 cold-
-    /// start / candidate D mesh refinement).
+    /// U-shaped response with a **narrow converging window centered
+    /// at ε ≈ 0.075 mm**.  Sweet spot where band-widening backfire
+    /// (hyp 3 from falsification bookmark) balances against
+    /// chattering-suppression effect.  No LM rescues + no Yeoh
+    /// failures + no panics at the chosen ε.
     ///
     /// MAINTENANCE NOTE: this pinned value + the sweep table mirror
     /// the docstring on [`INSERTION_CONTACT_SMOOTHING_EPS_M`].  If
     /// the const value changes, update both surfaces in lockstep.
     #[test]
     fn insertion_contact_smoothing_eps_m_sentinel() {
+        // 0.075 mm = 7.5e-5 m; use a tolerance well below the
+        // ε-bisection step (0.025 mm sample spacing → 2.5e-5 m).
+        let expected = 0.075e-3;
         assert!(
-            INSERTION_CONTACT_SMOOTHING_EPS_M.abs() < 1e-12,
-            "INSERTION_CONTACT_SMOOTHING_EPS_M expected 0.0 m (C.2 \
-             sweep falsified — DORMANT per \
+            (INSERTION_CONTACT_SMOOTHING_EPS_M - expected).abs() < 1e-9,
+            "INSERTION_CONTACT_SMOOTHING_EPS_M expected {expected} m \
+             (C′.a sweep pinned at 0.075 mm — narrow converging \
+             window 2026-05-18 per \
              docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md); got \
              {INSERTION_CONTACT_SMOOTHING_EPS_M}. If you changed the \
              value to test a recon candidate, also update the sweep \
              evidence comment AND the const docstring.",
         );
-        // Bit-equal-when-dormant escape hatch: const must remain
-        // non-negative + finite so any future re-activation by a
-        // recon candidate routes through C.1's smoothing surface
-        // cleanly.
+        // Must remain non-negative + finite so any future
+        // re-pinning routes through C.1's smoothing surface cleanly.
         assert!(
             INSERTION_CONTACT_SMOOTHING_EPS_M >= 0.0
                 && INSERTION_CONTACT_SMOOTHING_EPS_M.is_finite(),
