@@ -318,8 +318,9 @@ H4-2-A's 0.30 → 0.20 change is KEPT (commit pending after this
 bookmark addendum) for two reasons:
 
 1. **Research-defensible default** — Sparks et al. validated no
-   failure at 25 % compression; 0.20 is 5× past that floor +
-   within published rubber-elasticity guidance.  0.30 was a
+   failure at 25 % compression; 0.20 (80 % compression) is ~3×
+   past that reach (80 % / 25 % = 3.2) + within published
+   rubber-elasticity guidance.  0.30 was a
    pure Phase 4 engineering placeholder ("replace with measured
    value once compression-set test data lands") that the
    compression research has now informed.

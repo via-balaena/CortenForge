@@ -28,7 +28,8 @@
 //! `min σ` (compressive validity bound) is family-uniform at `0.20`
 //! (80 % compression cap; H4-2-A research-informed default per
 //! `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` — Sparks et al. 2015
-//! validated 25 % compression no-failure, 0.20 is 5× past that —
+//! validated 25 % compression no-failure, 0.20 (80 % compression
+//! strain) is ~3× past Sparks's validated reach —
 //! replace with anchor-specific measured value once compression-set
 //! test data lands).
 //!
@@ -196,7 +197,8 @@ pub struct SiliconeMaterial {
     /// `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` — Sparks et al.
     /// 2015 measured Ecoflex 00-10/00-30 + Dragon Skin in unconfined
     /// uniaxial compression to 25% strain (`λ_min` = 0.75) with no
-    /// failure, so 0.20 is 5× past the no-failure bound but well
+    /// failure, so 0.20 (80% engineering strain) is ~3× past
+    /// Sparks's 25% no-failure bound but well
     /// within published rubber-elasticity guidance for soft
     /// platinum-cure silicones; replace per-anchor when ASTM D575 /
     /// D395 test data lands per silicone).
@@ -510,9 +512,10 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 //   uniaxial compression on Ecoflex 00-10 / 00-30 / Dragon Skin to
 //   25 % engineering strain (λ_min = 0.75) with NO failure observed
 //   — they stopped at 25 % as the biological-tissue test target,
-//   not a material limit. 0.20 is 5× past Sparks's no-failure
-//   bound; still well within published rubber-elasticity
-//   guidance for soft platinum-cure silicones.
+//   not a material limit. 0.20 (80 % engineering strain) is ~3×
+//   past Sparks's 25 % no-failure bound; still well within
+//   published rubber-elasticity guidance for soft platinum-cure
+//   silicones.
 // - The H4.3 sweep peak compressive states (σ_min = 0.219 at tet
 //   154 cavity = 5 mm, σ_min = 0.271 at tet 519 cavity = 8 mm)
 //   both clear the 0.20 floor narrowly. Smooth-On publishes no

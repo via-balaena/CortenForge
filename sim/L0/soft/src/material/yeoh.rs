@@ -37,8 +37,9 @@
 //! Yeoh via two paths:
 //!
 //! - [`crate::SiliconeMaterial::to_yeoh`] direct construction sets BOTH
-//!   bounds via [`Yeoh::with_principal_stretch_bounds`] (symmetric;
-//!   Yeoh arc F2 work).
+//!   bounds via [`Yeoh::with_principal_stretch_bounds`] (two-sided —
+//!   the *values* `(0.20, 0.8·λ_break)` are asymmetric about λ = 1, but
+//!   both directions are checked; Yeoh arc F2 work).
 //! - [`crate::MaterialField::sample_yeoh`] for the per-tet field-sample
 //!   path sets ONLY the tensile bound via
 //!   [`Yeoh::with_max_principal_stretch_only`] per H4-2-C (asymmetric

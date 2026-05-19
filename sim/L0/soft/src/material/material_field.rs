@@ -107,8 +107,10 @@ pub(crate) enum MaterialFieldInner {
         /// is dropped at [`MaterialField::sample_yeoh`] time —
         /// preserved for future Option B (Phase H F-bar /
         /// mixed-u-p decorator) re-enable by flipping the
-        /// `sample_yeoh` call back to
-        /// [`Yeoh::with_principal_stretch_bounds`].
+        /// `sample_yeoh` call to
+        /// [`Yeoh::with_principal_stretch_bounds`] (pre-H4 the
+        /// call set no bounds at all, so this would be a
+        /// forward transition, not a restoration).
         bounds: Option<YeohBoundsFields>,
     },
 }

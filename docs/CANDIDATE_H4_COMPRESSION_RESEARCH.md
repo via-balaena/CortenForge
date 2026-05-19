@@ -198,10 +198,10 @@ Loosen the family-uniform `YEOH_MIN_PRINCIPAL_STRETCH` from
 - Sparks et al. measured all three Smooth-On silicones in
   unconfined compression to **25 % engineering strain
   (σ_min = 0.75) with NO failure observed**.  A floor at 0.20
-  (80 % compression) is 5× past what's experimentally
-  validated, but still well within the elastic-regime
-  guidance from rubber-elasticity literature for soft
-  platinum-cure silicones.
+  (80 % engineering strain) is ~3× past Sparks's validated
+  reach (80 % / 25 % = 3.2), but still well within the
+  elastic-regime guidance from rubber-elasticity literature
+  for soft platinum-cure silicones.
 - The cf-design Yeoh at ν = 0.40 substantially overstates
   compressibility; in practice the cavity-fit equilibrium will
   rarely reach extreme σ_min unless the FEM model misbehaves.
