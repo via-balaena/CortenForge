@@ -26,10 +26,14 @@
   failure-class mental model.  Class 2 (active-set discontinuity)
   remains a real contributor (smoothing measurably helps) but is
   **not the sole binding pathology** at cavity = 5 mm.
+- `docs/F4_FALSIFICATION_POSTMORTEM.md` — sibling falsification
+  postmortem (banks the F2 + F4 arcs; this C.2 falsification is the
+  next entry in that lineage).
 
 **Predecessor memory**: [[project-cavity-5mm-chattering-bookmark]],
 [[project-f3-recon-a-gated-lm-shipped]],
 [[project-f3-falsification-bookmark]],
+[[project-f4-falsification-postmortem]],
 [[project-cavity-inset-stall-bookmark]],
 [[project-sl-4-arc-shipped]].
 
@@ -286,8 +290,9 @@ LOC mesh-refinement primitive); defer unless E + F also falsify.
 ### Recommended next-session order
 
 1. **C′.a (ε bisection in (0, 0.1))** — cheapest probe of hyp 3.
-   2 hours of user time + 3 small commits.  Falsifies/confirms
-   the band-widening hypothesis directly.
+   ~5 min user time + 3 small commits per the §3 C′.a cost estimate
+   (3 rebuild-and-scrub cycles at ε ∈ {0.025, 0.05, 0.075} mm).
+   Falsifies/confirms the band-widening hypothesis directly.
 2. **E.b (per-vertex normal averaging)** — if C′.a doesn't find
    16/16 ε, this is the next-most-targeted probe of hyp 1.
 3. **F.a (κ ramp at step 0)** — if E.b also doesn't help.
@@ -395,7 +400,8 @@ pushed):
   postmortem (banks the F2 + F4 falsification arcs; this C.2
   falsification is the next entry in that lineage).
 
-**Memory pointers**:
+**Memory pointers** (project memories; feedback memories are cited
+inline above where they apply):
 
 - [[project-cavity-5mm-chattering-bookmark]] — direct predecessor.
 - [[project-f3-recon-a-gated-lm-shipped]] — sibling arc that
@@ -403,6 +409,10 @@ pushed):
 - [[project-f3-falsification-bookmark]] — grandparent.
 - [[project-f4-falsification-postmortem]] — sibling falsification
   pattern.
+- [[project-cavity-inset-stall-bookmark]] — original cavity-inset
+  stall arc this whole F3+F4+C lineage hangs from.
+- [[project-sl-4-arc-shipped]] — SL.4 sliding-intruder rendering
+  arc baseline the visual gates ride on.
 
 **Code sites — preserved C.2 wire-up (DO NOT revert)**:
 
@@ -422,12 +432,15 @@ pushed):
 
 **Code sites — preserved C.1 sim-soft surface (DO NOT revert)**:
 
-- `sim/L0/soft/src/contact/penalty.rs:74-200` — `PenaltyRigidContact`
-  struct + `smoothing_eps_m` field + 4 constructors (new, with_params,
-  with_params_and_interior_cutoff, with_params_and_smoothing,
-  with_params_and_smoothing_and_interior_cutoff) + per-pair
-  helpers (`pair_is_active`, `pair_contribution`) + the quintic
-  Hermite ramp helper.
+- `sim/L0/soft/src/contact/penalty.rs:91-120` — `quintic_ramp`
+  free helper (module scope, NOT in the impl).
+- `sim/L0/soft/src/contact/penalty.rs:136-197` —
+  `PenaltyRigidContact` struct + `smoothing_eps_m` field.
+- `sim/L0/soft/src/contact/penalty.rs:215-517` — `impl
+  PenaltyRigidContact` with **5 constructors** (`new`, `with_params`,
+  `with_params_and_interior_cutoff`, `with_params_and_smoothing`,
+  `with_params_and_smoothing_and_interior_cutoff`) + per-pair
+  helpers (`pair_is_active`, `pair_contribution`).
 - `sim/L0/soft/tests/penalty_smoothing.rs` — 15 unit tests pinning
   the bit-equal-when-dormant contract + Hessian continuity gates.
 
