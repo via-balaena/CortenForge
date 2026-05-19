@@ -353,8 +353,25 @@ C.0 spec §2.2 reasoning:
 > Hessian C² at the boundary.  Sum of C² functions is C².
 > Therefore the assembled `H_contact(x) = Σ H_pair(x)` is C².
 
-The argument is correct **per pair** but the assembled tangent's
-**eigenstructure** depends on more than the per-pair smoothness:
+**The per-pair-C² premise itself is over-stated** (caught
+2026-05-18 LATE-EVENING pass-4 cold-read).  Quintic Hermite
+`r(τ) = 1 − 10τ³ + 15τ⁴ − 6τ⁵` pins `r, r', r''` at both
+boundaries but `r'''(1) = -60 ≠ 0`.  Working it out: at the
+upper boundary `sd = d̂ + ε`, the per-pair energy ψ has
+ψ''' jump = `-30κ/ε` (interior side) → 0 (exterior side), so
+the per-pair Hessian (ψ'') is **C⁰ but not C¹** at the upper
+boundary.  The const docstring on
+`INSERTION_CONTACT_SMOOTHING_EPS_M` correctly says "C⁰"; the
+C.0 spec's "C²" claim was the stricter (and inaccurate)
+prediction.  This makes the bookmark's structural lesson
+STRONGER, not weaker: the spec was wrong at TWO levels (the
+regularity premise itself, AND the conclusion that regularity
+implies conditioning).
+
+Taking the spec's C² premise at face value for the moment:
+the argument is — under that premise — correct **per pair**,
+but the assembled tangent's **eigenstructure** depends on
+more than the per-pair smoothness:
 
 - **Magnitude** of the per-pair contribution.  Tapered pairs (in
   `(d̂, d̂+ε)`) contribute smaller-magnitude Hessian blocks than
@@ -557,7 +574,7 @@ The response is **U-shaped with a narrow converging window at
   0.231, 0.05 → 0.200 — essentially flat).
 - **Too large** (ε ≥ 0.1 mm): band-widening backfire dominates
   (hyp 3 confirmed) — too many pairs in the tapered regime
-  degrades the assembled tangent's eigenstructure, and the
+  degrade the assembled tangent's eigenstructure, and the
   r_norm floor climbs sharply (0.1 → 0.384, 0.25 → 0.753).
 
 Hypothesis 3 (band-widening backfire) is **CONFIRMED** as a real

@@ -928,10 +928,11 @@ fn insertion_solver_config() -> SolverConfig {
 /// for this relative-comparison tool (Fork B).
 ///
 /// Composes orthogonally with the C′.a-pinned smoothing window
-/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`] (0.075 mm) — see
+/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`] (the const's docstring
+/// carries the pinned value + the full sweep table; see
 /// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the original
 /// candidate-C design + `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`
-/// §9 for the C′.a case-A ship that pinned the current value.
+/// §9 for the C′.a case-A ship rationale).
 const INSERTION_CONTACT_KAPPA: f64 = 1.0e3;
 
 /// Penalty-contact band `d̂` (meters) for the insertion solve —
@@ -2353,16 +2354,18 @@ pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
 /// full derivation.
 ///
 /// The smoothing window `ε` ([`INSERTION_CONTACT_SMOOTHING_EPS_M`],
-/// currently pinned at 0.075 mm per C′.a — see the const's docstring
-/// for the full sweep table + `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`
-/// §9 for the case-A ship details) extends the active band's upper
+/// pinned per C′.a — see the const's docstring for the pinned value
+/// and full sweep table, and `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`
+/// §9 for the case-A ship rationale) extends the active band's upper
 /// edge from `d̂` to `d̂ + ε` and makes the assembled contact Hessian
-/// C⁰ across pair flips (F3 recon B candidate C lineage — `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md`
-/// for the original design, partially falsified + superseded by §9).
+/// C⁰ across pair flips (F3 recon B candidate C lineage —
+/// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the original
+/// design that shipped; bookmark §9 for the empirical ship rationale
+/// and §5 for the spec's partially-falsified predictions).
 /// The constructor short-circuits to the pre-C.2
 /// [`PenaltyRigidContact::with_params_and_interior_cutoff`] path at
 /// `ε = 0`; flipping the const back to 0 would restore bit-equal
-/// pre-C.2 arithmetic + lose the C′.a chattering-suppression.
+/// pre-C.2 arithmetic and lose the C′.a chattering-suppression.
 fn intruder_contact_sliding_at(
     intruder: &GridSdf,
     bounds: Aabb,
