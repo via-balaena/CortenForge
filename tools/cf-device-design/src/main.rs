@@ -235,9 +235,12 @@ impl CavityState {
     /// **converges 16/16 at**.  C′.a bisection found a narrow
     /// converging window centered at ε ≈ 0.075 mm; the C.3 cavity =
     /// 6 mm probe gate at that ε stalled at `r_norm 0.536` (Newton
-    /// iter cap 150, 2 LM rescues iter 81 + 139), and 7 mm would
-    /// only be worse — the smoothing sweet spot is cavity-specific
-    /// + doesn't generalize past 5 mm with a single pinned ε.
+    /// iter cap 150, 2 LM rescues iter 81 + 139), and 7 mm was
+    /// skipped (strictly worse than 6 mm by the chattering-envelope
+    /// monotonicity argument — deeper cavities push more pairs into
+    /// the active set + amplify the active-set discontinuity).  The
+    /// smoothing sweet spot is cavity-specific + doesn't generalize
+    /// past 5 mm with a single pinned ε.
     ///
     /// Cavity = 3 mm baseline preserved at the new ε (verified
     /// user-driven visual gate 2026-05-18 LATE-EVENING, 16/16 +
@@ -3005,8 +3008,9 @@ another_future_field = "foo"
         // The C′.a ε-bisection found a narrow converging window
         // centered at ε ≈ 0.075 mm (cavity 5 mm); the C.3 cavity = 6
         // mm probe gate at that ε stalled at r_norm 0.536 (Newton
-        // iter cap 150, 2 LM rescues). 7 mm would only be worse —
-        // skipped. Cavity = 3 mm baseline preserved at the new ε
+        // iter cap 150, 2 LM rescues). 7 mm skipped (strictly worse
+        // than 6 mm by the chattering-envelope monotonicity
+        // argument). Cavity = 3 mm baseline preserved at the new ε
         // (16/16, ZERO LM rescues). Cap raised one notch above the
         // gated-A 4 mm baseline as a net product-knob win.
         //

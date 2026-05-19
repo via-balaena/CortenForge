@@ -183,10 +183,17 @@ instead of smoothing**.
 
 ### 2.2 What's KEPT vs what's REVERTED
 
+> **SUPERSEDED by §9** — this subsection captured the BOOKMARK-
+> state revert (ε → 0.0, cap → 4 mm) as of the falsification
+> commit `f0f22fb8`.  C′.a then shipped (case A) the same evening
+> and re-pinned ε = 0.075 mm + cap = 5 mm.  The KEPT list below is
+> still accurate; the REVERTED list captures the bookmark-state
+> revert, not the current pin.
+
 Per [[feedback-spec-falsified-revert-opt-in-keep-surface]] — the
 1-line opt-in reverts, the surface plumbing survives:
 
-**KEPT** (binding for next-recon candidates):
+**KEPT** (binding for next-recon candidates; still accurate):
 
 - C.1 sim-soft `PenaltyRigidContact::with_params_and_smoothing` +
   `with_params_and_smoothing_and_interior_cutoff` constructors +
@@ -198,7 +205,7 @@ Per [[feedback-spec-falsified-revert-opt-in-keep-surface]] — the
   short-circuit makes this bit-equal to pre-C.1 hard penalty.
 - The sentinel test
   `insertion_contact_smoothing_eps_m_sentinel` (now pinning
-  `ε = 0.0` + carrying the falsification table).
+  ε = 0.075 mm per §9.1 — was pinning ε = 0.0 at bookmark time).
 - Gated A's `try_solve_impl` + `try_gated_factor_solve_armijo`
   (class-1 LM rescue, orthogonal to whatever C-recon picks).
 - The `catch_unwind` belt-and-suspenders in
@@ -206,16 +213,13 @@ Per [[feedback-spec-falsified-revert-opt-in-keep-surface]] — the
   belt-and-suspenders per
   [[feedback-workaround-removal-verification]]).
 
-**REVERTED**:
+**REVERTED** (as of `f0f22fb8`, SUPERSEDED by §9.1 + §9.5):
 
-- `INSERTION_CONTACT_SMOOTHING_EPS_M`: 0.25e-3 → **0.0**.  1-line
-  revert; the bit-equal-when-dormant contract makes this
-  behaviorally identical to pre-C.2.
-- UI cavity slider cap: **8 mm → 4 mm** (3-surface mirror update:
-  `inset_slider_range_m` impl + docstring, egui label, sentinel
-  test).  The 8 mm cap was scaffolding for the sweep; with the
-  sweep halted, the gated-A 4 mm baseline is the correct
-  user-facing cap.
+- ~~`INSERTION_CONTACT_SMOOTHING_EPS_M`: 0.25e-3 → **0.0**~~.  Now
+  re-pinned to **0.075e-3** per §9.1.
+- ~~UI cavity slider cap: **8 mm → 4 mm**~~.  Now **5 mm** per
+  §9.5 (cap raised one notch above gated-A baseline as a net
+  product-knob win).
 
 ### 2.3 What is NOT reverted
 
@@ -399,7 +403,14 @@ pushed):
   polish.
 - `a55f48f0` — C.2 cf-device-design opt-in (initial ε = 0.5 mm
   pending sweep) — the commit this bookmark closes the loop on.
-- (this commit) — the revert + bookmark commit.
+- `f0f22fb8` — C.2 sweep falsification revert + this bookmark.
+- `69d9f6dc` — C.2 sweep falsification bookmark cold-read polish
+  (5 findings pass-1 + pass-2).
+- `bb6292a5` — C′.a sweep scaffolding (cap 4 → 8 mm).
+- `bfbb4569` — C′.a case A ship (ε = 0.075 mm + cap 4 → 5 mm + 3
+  mm baseline preserved + §9 added).
+- (this commit) — case A cold-read polish (5 findings pass-1 +
+  pass-2).
 
 **Docs**:
 

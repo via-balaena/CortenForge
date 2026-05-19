@@ -953,22 +953,37 @@ const INSERTION_CONTACT_DHAT: f64 = 1.0e-3;
 ///
 /// | ε (mm) | steps converged | r_norm floor | stall mode | LM rescues |
 /// |---|---|---|---|---|
-/// | 0 (gated-A baseline) | 0/16 | 1.784 | Armijo iter 61 | 1 (mild λ ≈ 6.67e-3) |
-/// | 0.025 | 0/16 | 0.231 | Armijo iter 108 | 3 (stiff λ ≈ 6.67e3) |
-/// | 0.05 | 0/16 | 0.200 | Armijo iter 147 | 4 (moderate λ ≈ 5.21e3) |
-/// | **0.075** | **16/16** | converges | seated 83.35 mm | **0** |
-/// | 0.1 | 0/16 | 0.384 | Armijo iter 126 | 2 (stiff λ ≈ 8.34e3) |
-/// | 0.25 | 0/16 | 0.753 | iter cap 150 | 2 (stiff λ ≈ 8.34e3) |
+/// | 0 (gated-A baseline) | 0/16 | 1.784 | Armijo iter 61 | 1 mild |
+/// | 0.025 (C′.a) | 0/16 | 0.231 | Armijo iter 108 | 3 stiff |
+/// | 0.05 (C′.a) | 0/16 | 0.200 | Armijo iter 147 | 4 moderate |
+/// | **0.075 (C′.a)** | **16/16** | converges seated 83.35 mm | — | **0** |
+/// | 0.1 (C.2) | 0/16 | 0.384 | Armijo iter 126 | 2 stiff |
+/// | 0.25 (C.2) | 0/16 | 0.753 | iter cap 150 | 2 stiff |
 ///
 /// The response is U-shaped: a **narrow converging window centered
-/// at ε ≈ 0.075 mm**.  Outside (~0.05, ~0.1) mm the residual floor
-/// climbs sharply.  The C.0 spec's "monotonic improvement with ε"
-/// prediction was wrong; the empirical structure is a sweet spot
-/// where the band-widening backfire (hyp 3 in the falsification
-/// bookmark) and the chattering-suppression effect balance.  C′.a
-/// confirms hyp 3 at least partially — wider ε bands bring more
-/// pairs into the tapered regime, degrading the assembled tangent's
+/// at ε ≈ 0.075 mm**.  The two sides are asymmetric — below the
+/// window the residual floor plateaus around r_norm ≈ 0.2
+/// (smoothing band too narrow to cover enough chattering pairs);
+/// above the window the floor climbs sharply with ε (0.1 →
+/// r_norm 0.384, 0.25 → 0.753, band-widening backfire dominates).
+/// The C.0 spec's "monotonic improvement with ε" prediction was
+/// wrong; the empirical structure is a sweet spot where the
+/// band-widening backfire (hyp 3 in the falsification bookmark)
+/// and the chattering-suppression effect balance.  C′.a confirms
+/// hyp 3 on the upper side — wider ε bands bring more pairs into
+/// the tapered regime, degrading the assembled tangent's
 /// eigenstructure once past the optimum.
+///
+/// **CAVITY-SPECIFIC**: the chosen ε = 0.075 mm converges 16/16 at
+/// cavity ≤ 5 mm but stalls at cavity 6 mm (C.3 probe gate,
+/// r_norm 0.536).  See `CavityState::inset_slider_range_m` in
+/// `main.rs` for the UI cap that enforces this bound + the bookmark
+/// §9.4 for the probe-gate data.  Generalizing past 5 mm would
+/// require a per-cavity ε (would need a UI slider per
+/// [[feedback-strip-the-knob-when-default-works]] — deferred until
+/// empirical multi-modal evidence) or a composed mechanism
+/// (smoothed contact + SDF-normal smoothing for hyp 1 / step-0
+/// warmup for hyp 2).
 ///
 /// **Wire-up preserved** per
 /// [[feedback-spec-falsified-revert-opt-in-keep-surface]]:
