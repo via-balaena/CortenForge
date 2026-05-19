@@ -330,7 +330,7 @@ bookmark addendum) for two reasons:
    `max_stretch_deviation ≤ 1.0` would accept those scenarios;
    H4 plumbing post-H4-2-A also accepts them.
 
-### 5.4 H4-2-C SHIPPED — partial unlock at cavity 5 + 8 mm
+### 5.4 H4-2-C SHIPPED — full unlock at cavity 3 + 5 mm, partial at 8 mm
 
 2026-05-19 LATE-NIGHT (post-H4-2-A).  Option C implemented:
 `Yeoh::with_max_principal_stretch_only` setter added;
@@ -386,17 +386,27 @@ record now that cargo reproduces the GUI bit-for-bit):
 
 This is now the canonical regression record under H4-2-C.
 
-Cavity = 5 mm: 0 → 11 steps converged (3.44 mm of 5 mm = 69 %
-seated).  Cavity = 8 mm: 0 → 8 steps converged (4.0 mm of
-8 mm = 50 % seated).  The compressive panic was the binding
-step-0 wall at both cavities; disabling it lets Newton iterate
-through deep-compression equilibria and find converged states
-at most subsequent steps before a later-step Armijo stall (a
-genuine Newton limit, not a Yeoh gate firing).
+Cavity = 3 mm + 5 mm: 16/16 converged, full seat to 83.35 mm
+— matches pre-H4 GUI baseline.  The compressive panic that
+H4-2-C dropped was binding under the wrong-config no-caps
+sweep ("11/16 + 8/16" results above) but NOT under the
+canonical with-caps sweep where the open-mouth + floor-pinned
+topology lets Newton find converged equilibria at all 16
+steps.  Cavity 5 mm reaches λ_min = 0.37 mid-ramp (well past
+the 0.30 + 0.20 floors that pre-H4-2-C would have caught).
 
-Cavity 6 + 7 mm Armijo stalls remain bit-identical with H4
-plumbing — those are H4-independent Newton convergence
-failures (see §5.5).
+Cavity = 8 mm: 12/16 converged, 62.51 mm seated (75 %), step
+12 Armijo iter 10 r_norm 1.6e-1 — partial unlock.  This is
+the cavity where H4-2-C's compressive gate drop is genuinely
+load-bearing for the canonical with-caps geometry; pre-H4-2-C
+would have panicked compressively before reaching the
+later-step Newton wall.
+
+Cavity 6 + 7 mm: 0/16 step-0 stall at Newton iter cap 150
+with r_norm 5.36e-1 + 2.94e-1 — H4-independent Newton
+convergence walls (the binding constraint at these cavities
+with the soft-inner config isn't compressive; H4-2-C
+correctly diagnoses this as a separate sub-arc, see §5.5).
 
 ### 5.5 What stayed on the recon ladder
 
@@ -407,11 +417,13 @@ failures (see §5.5).
   on unphysical states) without fixing the root cause.
   Re-enabling the compressive gate after Phase H ships is the
   intended composition.
-- **The 5 + 8 mm later-step Armijo stalls under H4-2-C** are
-  genuine Newton limits at deeper insertion fractions —
-  likely solvable by smaller slide steps, looser tolerance, or
-  better warm-starting.  Worth a small probe arc if the partial-
-  seating output of H4-2-C is the binding product gap.
+- **The cavity 8 mm later-step Armijo stall under H4-2-C** is
+  a genuine Newton limit at deeper insertion fractions
+  (canonical with-caps sweep: step 12 iter 10 r_norm
+  1.6e-1) — likely solvable by smaller slide steps, looser
+  tolerance, or better warm-starting.  Worth a small probe
+  arc if the partial-seating output of H4-2-C at cavity 8 mm
+  is the binding product gap.
 
 ### 5.6 GUI ↔ cargo divergence — RESOLVED (cap_planes wiring bug)
 
@@ -430,11 +442,12 @@ converging window.**
 
 **Diagnostic path**:
 
-1. The §5.6 PARTIAL RESOLUTION claim (layer-config inversion)
-   was empirically falsified by the post-polish rerun
-   (cavity 3 mm still stalled with the GUI-matched layer
-   config).  Hypothesis list expanded: centerline source,
-   Slacker resolution, Bevy-side state, warm-start init.
+1. The earlier PARTIAL RESOLUTION hypothesis (layer-config
+   inversion was the divergence) was empirically falsified by
+   the post-polish rerun (cavity 3 mm still stalled with the
+   GUI-matched layer config).  Hypothesis list expanded:
+   centerline source, Slacker resolution, Bevy-side state,
+   warm-start init.
 2. Cold-reading the GUI's `run_sim_pipeline`
    (`insertion_sim_ui.rs:867`) surfaced the cap_planes arg.
    Cross-checking against `main.rs:489-499` revealed the GUI
@@ -537,9 +550,12 @@ change at step 13), not material.
 
 ### 5.8 Updated next-session pointers
 
-- **The 5 + 8 mm GUI partial-seat output is genuinely usable**.
-  Pre-H4 ceiling was 5 mm; H4-2-C unlocks 8 mm at 75 % seated
-  with clean F-d curve + per-step λ structure (§5.7).
+- **The 3 + 5 mm full-seat + 8 mm partial-seat (75 %) output
+  is genuinely usable**.  Pre-H4 ceiling was 5 mm; H4-2-C
+  unlocks 8 mm at 75 % seated with clean F-d curve + per-step
+  λ structure (§5.7).  Cavity 3 + 5 mm already worked pre-H4
+  via the legacy gate; H4-2-C preserves that behavior plus
+  adds the tensile cap to the per-tet validity check.
 - **The 6 + 7 mm GUI gap in the converging window** is a
   separate sub-arc — slide-step bisection / N_STEPS sweep /
   better warm-starting per §5.5.  Same pattern E.b §10.2
