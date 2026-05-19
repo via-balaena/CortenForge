@@ -13,12 +13,25 @@
 //! sphere↔plane analytic gate at `tests/hertz_sphere_plane.rs`).
 //!
 //! The active-set-discontinuity pathology specifically is mitigated
-//! (not removed) by the optional
-//! [`PenaltyRigidContact::smoothing_eps_m`] field — a quintic-Hermite
-//! taper over `[d̂, d̂+ε]` that makes the per-pair Hessian C⁰ across
-//! the active boundary. See
-//! `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the design + the
-//! cf-device-design class-2 chattering motivation.
+//! (not removed) by two orthogonal optional mechanisms:
+//!
+//! - [`PenaltyRigidContact::smoothing_eps_m`] — a quintic-Hermite
+//!   taper of the **gap function** over `[d̂, d̂+ε]` that makes the
+//!   per-pair Hessian C⁰ across the active boundary. See
+//!   `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the design.
+//! - [`PenaltyRigidContact::normal_avg_k`] +
+//!   [`PenaltyRigidContact::normal_avg_radius_m`] — per-query
+//!   averaging of the contact **normal direction** over `k` axis-
+//!   aligned offset samples, smoothing slope discontinuities in
+//!   `n = ∂d/∂p` at SDF partition boundaries (grid cell faces for
+//!   the `GridSdf` consumer in cf-device-design, or triangle Voronoi
+//!   cells for mesh-direct SDFs). See
+//!   `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` for the design.
+//!
+//! The two compose multiplicatively in the assembled Hessian (one
+//! smooths the scalar gap-function magnitude, the other smooths the
+//! `n ⊗ n` outer-product direction). Both are bit-equal-when-dormant
+//! (the existing constructors initialize them to disabled state).
 //!
 //! ## Formula
 //!
@@ -37,7 +50,11 @@
 //!   `d < d̂`, else zero. PSD only — two zero eigenvalues along the
 //!   tangent plane to `n`, one positive eigenvalue `κ` along `n`. The
 //!   full system tangent becomes SPD after the elastic Hessian is
-//!   added.
+//!   added. When [`normal_avg_k`](PenaltyRigidContact::normal_avg_k)
+//!   `> 1`, `n` in the gradient / Hessian is replaced by the
+//!   per-query averaged normal `n_avg` (still unit, still rank-1
+//!   outer-product PSD; the eigenstructure of the assembled Hessian
+//!   gains smoothness across active-set flips).
 //! - **CCD** — penalty has no time-of-impact concept; `ccd_toi`
 //!   returns [`f64::INFINITY`]. Phase H IPC delivers proper CCD.
 
