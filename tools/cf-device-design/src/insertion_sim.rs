@@ -926,12 +926,43 @@ fn insertion_solver_config() -> SolverConfig {
 /// Hessian. A gentler `1e3` widens the convergeable depth envelope;
 /// the tradeoff is slightly more residual penetration, acceptable
 /// for this relative-comparison tool (Fork B).
+///
+/// Composes orthogonally with the C.2 smoothing window
+/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`] — see
+/// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the candidate-C
+/// chattering-fix design.
 const INSERTION_CONTACT_KAPPA: f64 = 1.0e3;
 
 /// Penalty-contact band `d̂` (meters) for the insertion solve —
 /// matches sim-soft's crate-private `PENALTY_DHAT_DEFAULT`
 /// (1 mm). `with_params` requires it explicitly once `κ` is tuned.
 const INSERTION_CONTACT_DHAT: f64 = 1.0e-3;
+
+/// One-sided smoothing window `ε` (meters) above `d̂` for the
+/// insertion solve's penalty contact (F3 recon B candidate C). Pairs
+/// with `sd ∈ (d̂, d̂+ε)` contribute a quintic-Hermite-tapered
+/// penalty that reaches 0 at `sd = d̂+ε`; this makes the assembled
+/// contact Hessian `H_contact(x)` C⁰ across active-pair boundaries,
+/// fixing the class-2 active-set chattering that left the cavity =
+/// 5 mm sliding ramp at an `r_norm ≈ 1.78` structural floor under
+/// gated A alone. See `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md`
+/// (mechanism + falsifier matrix) and
+/// `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` (Gate B trace).
+///
+/// `0.0` falls back to the hard-penalty C.1 fast path bit-equal
+/// (sim-soft's `pair_contribution` short-circuits `sd ≤ d̂` to the
+/// pre-C.1 arithmetic; the bit-equal-when-dormant contract is
+/// verified in sim-soft by
+/// `penalty_smoothing_zero_eps_is_bit_equal_to_hard_penalty`). To
+/// disable smoothing for a one-line revert (spec §5 outcome C/D),
+/// set this const to `0.0`.
+///
+/// The initial value `0.5e-3` is the spec §6 C.2 middle-of-range
+/// guess; the empirical sweep (cavity 5 mm, layers 10+3 mm,
+/// ε ∈ {0.1, 0.25, 0.5, 1.0, 2.0} mm) picks the smallest ε that
+/// converges 16/16 — see the sentinel test `insertion_contact_smoothing_eps_m_sentinel`
+/// for the per-ε convergence record + chosen-value rationale.
+const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.5e-3;
 
 /// Build the rigid-intruder contact primitive for a given press-fit
 /// `interference_m` — the scan SDF offset by
@@ -948,10 +979,11 @@ fn intruder_contact_at(
 ) -> PenaltyRigidContact {
     let intruder_solid =
         Solid::from_sdf(intruder.clone(), bounds).offset(interference_m + cavity_offset_m);
-    PenaltyRigidContact::with_params(
+    PenaltyRigidContact::with_params_and_smoothing(
         vec![intruder_solid],
         INSERTION_CONTACT_KAPPA,
         INSERTION_CONTACT_DHAT,
+        INSERTION_CONTACT_SMOOTHING_EPS_M,
     )
 }
 
@@ -2276,16 +2308,24 @@ pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
 /// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
 /// is the engineered shell-wall interference. The contact model passes
 /// `2 × cavity_inset_m` as the
-/// [`PenaltyRigidContact::with_params_and_interior_cutoff`] cutoff —
-/// one design margin past the engineered interference. Physical
-/// contact pairs (composed sd ∈ [-cavity_inset_m, d̂]) stay in the
-/// active set; pose-dependent deep-interior pairs whose
+/// [`PenaltyRigidContact::with_params_and_smoothing_and_interior_cutoff`]
+/// cutoff — one design margin past the engineered interference.
+/// Physical contact pairs (composed sd ∈ [-cavity_inset_m, d̂ + ε])
+/// stay in the active set; pose-dependent deep-interior pairs whose
 /// inverse-transformed position lands inside the closed scan body
 /// (composed sd << -cavity_inset_m) are silently excluded — the FEM
 /// can't productively resolve them, and including them breaks Newton
 /// convergence at non-rest slide poses. See
 /// `docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md` §2-§3 for the
 /// full derivation.
+///
+/// The smoothing window `ε` ([`INSERTION_CONTACT_SMOOTHING_EPS_M`])
+/// extends the active band's upper edge from `d̂` to `d̂ + ε` and
+/// makes the assembled contact Hessian C⁰ across pair flips (F3
+/// recon B candidate C — see
+/// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md`). At `ε = 0` this is
+/// bit-equal to the pre-C.2
+/// [`PenaltyRigidContact::with_params_and_interior_cutoff`] path.
 fn intruder_contact_sliding_at(
     intruder: &GridSdf,
     bounds: Aabb,
@@ -2297,10 +2337,11 @@ fn intruder_contact_sliding_at(
     let transformed = TransformedSdf::new(intruder.clone(), slide_pose);
     let intruder_solid =
         Solid::from_sdf(transformed, bounds).offset(interference_m + cavity_offset_m);
-    PenaltyRigidContact::with_params_and_interior_cutoff(
+    PenaltyRigidContact::with_params_and_smoothing_and_interior_cutoff(
         vec![intruder_solid],
         INSERTION_CONTACT_KAPPA,
         INSERTION_CONTACT_DHAT,
+        INSERTION_CONTACT_SMOOTHING_EPS_M,
         2.0 * cavity_inset_m,
     )
 }
@@ -5049,6 +5090,45 @@ mod tests {
             n_lower_half_active, 0,
             "intruder at t=0 (translated +Z) must NOT fire active contact in \
              the lower hemisphere — sign-flipped inverse would surface here",
+        );
+    }
+
+    /// F3 recon B candidate C (smoothed contact) — pin the
+    /// [`INSERTION_CONTACT_SMOOTHING_EPS_M`] const value with the
+    /// empirical rationale from the C.2 calibration sweep.
+    ///
+    /// **C.2 calibration sweep** (cavity = 5 mm, layers 10+3 mm, ε
+    /// ∈ {0.1, 0.25, 0.5, 1.0, 2.0} mm × 16 ramp steps = 80 sliding-
+    /// ramp solves; per `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md`
+    /// §6 C.2): SWEEP PENDING — initial value `0.5e-3` is the spec
+    /// §5 middle-of-range guess pending empirical results. After the
+    /// sweep, update the value below + replace this comment with the
+    /// per-ε convergence table + chosen-value rationale.
+    ///
+    /// MAINTENANCE NOTE: this pinned value + the per-ε rationale
+    /// must mirror the docstring on [`INSERTION_CONTACT_SMOOTHING_EPS_M`]
+    /// (sweep evidence + chosen-value rationale lives in BOTH places —
+    /// the const docstring for code readers, this test for
+    /// regression-by-edit protection). If the const value changes,
+    /// update both surfaces in lockstep.
+    #[test]
+    fn insertion_contact_smoothing_eps_m_sentinel() {
+        assert!(
+            (INSERTION_CONTACT_SMOOTHING_EPS_M - 0.5e-3).abs() < 1e-12,
+            "INSERTION_CONTACT_SMOOTHING_EPS_M expected 0.5e-3 m (C.2 \
+             initial-sweep value); got {INSERTION_CONTACT_SMOOTHING_EPS_M}. \
+             If you changed the value, update the sweep-evidence comment \
+             on this test AND the const docstring.",
+        );
+        // Bit-equal-when-dormant escape hatch: const must remain
+        // non-negative + finite so a one-line revert to `0.0` (spec
+        // §5 outcome C/D) routes bit-equal to the pre-C.1 hard-
+        // penalty fast path.
+        assert!(
+            INSERTION_CONTACT_SMOOTHING_EPS_M >= 0.0
+                && INSERTION_CONTACT_SMOOTHING_EPS_M.is_finite(),
+            "smoothing window must be non-negative + finite for the \
+             bit-equal-when-dormant contract",
         );
     }
 
