@@ -323,26 +323,64 @@ bookmark addendum) for two reasons:
    `max_stretch_deviation ≤ 1.0` would accept those scenarios;
    H4 plumbing post-H4-2-A also accepts them.
 
-### 5.4 Updated next-session pointer
+### 5.4 H4-2-C SHIPPED — partial unlock at cavity 5 + 8 mm
 
-- **Option A is closed** — 0.20 shipped + falsified for cap > 5 mm.
-  Tighter floors (0.15, 0.10) wouldn't help by the same mechanism.
-- **Option B (Phase H F-bar / mixed-u-p)** is the only remaining
-  technical path to unlock cavity > 5 mm.  Multi-session arc;
-  deferred until workshop iter-1 cast + downstream priorities clear.
-- **Option C (asymmetric one-sided bound)** is still on the
-  table as a quick unlock that bypasses compressive gating
-  entirely — useful if a product pull needs cavity > 5 mm
-  before Phase H lands.  Loses the compressive safety net
-  but matches pre-H4 legacy gate behavior on the compressive
-  side.
+2026-05-19 LATE-NIGHT (post-H4-2-A).  Option C implemented:
+`Yeoh::with_max_principal_stretch_only` setter added;
+`MaterialField::sample_yeoh` switched to the new asymmetric path
+when bounds present.  Per-tet `Yeoh` now carries `(Some(max),
+None)` from the `MaterialField` pipeline; `det F > 0` inversion
+is the only remaining compressive safety net.  The
+`min_principal_stretch` field stays threaded through
+`MaterialFieldInner::Yeoh.bounds.min_principal_stretch` for
+future Option B re-enable (one-line flip
+`with_max_principal_stretch_only` → `with_principal_stretch_bounds`).
 
-### 5.5 Open puzzle reminder
+H4.3 sweep re-run under H4-2-C asymmetric:
+
+| cavity | pre-H4-2-C | post-H4-2-C |
+|---|---|---|
+| 3 mm | Armijo step 0 iter 48 (bit-identical Newton; H4-independent) | unchanged |
+| 5 mm | Yeoh tet 264 σ_min = 0.197 (0/16) | **11/16 converged**, Armijo step 11 iter 9 r_norm 19.2 |
+| 6 mm | Armijo step 0 iter 25 r_norm 3.78 (H4-independent) | unchanged |
+| 7 mm | Armijo step 0 iter 30 r_norm 0.45 (H4-independent) | unchanged |
+| 8 mm | Yeoh tet 673 σ_min = 0.120 (0/16) | **8/16 converged**, Armijo step 8 iter 5 r_norm 0.40 |
+
+Cavity = 5 mm: 0 → 11 steps converged (3.44 mm of 5 mm = 69 %
+seated).  Cavity = 8 mm: 0 → 8 steps converged (4.0 mm of
+8 mm = 50 % seated).  The compressive panic was the binding
+step-0 wall at both cavities; disabling it lets Newton iterate
+through deep-compression equilibria and find converged states
+at most subsequent steps before a later-step Armijo stall (a
+genuine Newton limit, not a Yeoh gate firing).
+
+Cavity 6 + 7 mm Armijo stalls remain bit-identical with H4
+plumbing — those are H4-independent Newton convergence
+failures (see §5.5).
+
+### 5.5 What stayed on the recon ladder
+
+- **Option B (Phase H F-bar / mixed-u-p decorator)** is still
+  the long-term right answer.  Real silicones at ν ≈ 0.5 would
+  resist the volume changes that the cf-design ν = 0.40 model
+  allows; H4-2-C bypasses the symptom (compressive gate firing
+  on unphysical states) without fixing the root cause.
+  Re-enabling the compressive gate after Phase H ships is the
+  intended composition.
+- **The 5 + 8 mm later-step Armijo stalls under H4-2-C** are
+  genuine Newton limits at deeper insertion fractions —
+  likely solvable by smaller slide steps, looser tolerance, or
+  better warm-starting.  Worth a small probe arc if the partial-
+  seating output of H4-2-C is the binding product gap.
+
+### 5.6 Open puzzle reminder
 
 The 3 + 6 + 7 mm Armijo stalls in the automated `cargo test`
-path are independent of H4 (bit-identical pre/post bisect).
-Worth investigating separately to identify the `cargo test` ↔
-GUI pipeline divergence.
+path are independent of H4 (bit-identical pre-H4 / post-H4 /
+post-H4-2-A / post-H4-2-C — four-way bisect).  Worth
+investigating separately to identify the `cargo test` ↔ GUI
+pipeline divergence; the user's GUI visual gate at cavity 3 +
+5 mm reaches 16/16 on the same iter-1 dual-layer config.
 
 ---
 

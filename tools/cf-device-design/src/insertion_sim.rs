@@ -3449,17 +3449,27 @@ mod tests {
     }
 
     /// H4 plumbing sentinel — every per-tet `Yeoh` in the produced
-    /// mesh carries `(Some(max), Some(min))` principal-stretch caps
-    /// rather than the legacy `(None, None)` fallback. Pinned at
-    /// `silicone.validity_max_principal_stretch` /
-    /// `validity_min_principal_stretch` for the single ECOFLEX_00_30
-    /// layer used in the fixture so a future refactor that flips
-    /// `build_insertion_geometry` back to the bounds-less 3-arg
-    /// constructor (or that silently drops one bound) trips here.
-    /// Closes the `MaterialField`-drops-bounds gap diagnosed at
-    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10.4.
+    /// mesh carries `Some(max)` tensile cap (asymmetric one-sided
+    /// bound per H4-2-C, see
+    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5) rather than
+    /// the legacy `(None, None)` fallback that the 3-arg constructor
+    /// produces.  Pinned at `silicone.validity_max_principal_stretch`
+    /// for the single ECOFLEX_00_30 layer used in the fixture so a
+    /// future refactor that flips `build_insertion_geometry` back to
+    /// the bounds-less 3-arg constructor (or that silently drops the
+    /// max bound) trips here.
+    ///
+    /// The compressive bound (`min_principal_stretch`) is dropped at
+    /// `MaterialField::sample_yeoh` time per H4-2-C (`det F > 0`
+    /// inversion is the only remaining compressive safety net); the
+    /// per-anchor `validity_min_principal_stretch` value still flows
+    /// through `MaterialField`'s internal `bounds` storage so a
+    /// future Option B (Phase H F-bar / mixed-u-p decorator) work
+    /// can re-enable the compressive gate by flipping
+    /// `sample_yeoh`'s `with_max_principal_stretch_only` call back
+    /// to `with_principal_stretch_bounds`.
     #[test]
-    fn build_insertion_geometry_per_tet_yeoh_carries_calibrated_principal_stretch_bounds() {
+    fn build_insertion_geometry_per_tet_yeoh_carries_calibrated_tensile_cap_only() {
         let scan = small_test_cube();
         let design = SimDesign {
             cavity_inset_m: 0.003,
@@ -3471,7 +3481,6 @@ mod tests {
         let materials = g.mesh.materials();
         assert!(!materials.is_empty(), "must produce at least one tet");
         let expected_max = ECOFLEX_00_30.validity_max_principal_stretch;
-        let expected_min = ECOFLEX_00_30.validity_min_principal_stretch;
         for (tet_id, yeoh) in materials.iter().enumerate() {
             let validity = yeoh.validity();
             assert_eq!(
@@ -3479,10 +3488,11 @@ mod tests {
                 Some(expected_max),
                 "tet {tet_id} max_principal_stretch must equal ECOFLEX_00_30's calibrated 0.8·λ_break"
             );
-            assert_eq!(
+            assert!(
+                validity.min_principal_stretch.is_none(),
+                "tet {tet_id} min_principal_stretch must be None under H4-2-C \
+                 asymmetric one-sided bound (got {:?})",
                 validity.min_principal_stretch,
-                Some(expected_min),
-                "tet {tet_id} min_principal_stretch must equal the family-uniform 0.30 compressive cap"
             );
         }
     }

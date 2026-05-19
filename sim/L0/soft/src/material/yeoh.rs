@@ -76,6 +76,30 @@ impl Yeoh {
         self
     }
 
+    /// Set the tensile principal-stretch cap only (H4-2-C asymmetric
+    /// one-sided bound).  Leaves the compressive cap at the default
+    /// `None`, so the solver gate at
+    /// [`crate::solver::backward_euler`] `check_validity_at_step_start`
+    /// performs only the tensile-direction check + falls back to the
+    /// `det F > 0` inversion handler for compressive safety.
+    ///
+    /// **Why this exists**: per
+    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5, the
+    /// family-uniform compressive floor binds before the calibrated
+    /// tensile cap at cavity > 5 mm in the iter-1 sliding-intruder
+    /// sweep — Newton's preferred equilibrium pushes `σ_min` way past
+    /// any reasonable floor due to the cf-design ν = 0.40 model
+    /// (real silicones are ν ≈ 0.4999; the Phase H F-bar /
+    /// mixed-u-p decorator is the long-term fix).  H4-2-C uses this
+    /// setter via [`crate::MaterialField::sample_yeoh`] to bypass
+    /// the compressive gate as a quick unlock pending Phase H.
+    /// `det F > 0` inversion remains the only compressive safety net.
+    #[must_use]
+    pub const fn with_max_principal_stretch_only(mut self, max: f64) -> Self {
+        self.max_principal_stretch = Some(max);
+        self
+    }
+
     /// Lift a [`NeoHookean`] to a Yeoh with `C₂ = 0`. Validity bounds
     /// inherit `None` so the solver falls back to the same legacy gate
     /// the source NH used; `energy`/`first_piola`/`tangent` are bit-exactly

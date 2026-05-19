@@ -199,8 +199,15 @@ fn sample_yeoh_on_nh_variant_panics() {
 /// Some(probe-sampled max field)` AND the symmetric min slot resolves
 /// the same way. Closes the `MaterialField`-drops-bounds gap diagnosed
 /// at `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10.4.
+///
+/// **H4-2-C asymmetric**: the produced `Yeoh` carries
+/// `(Some(max), None)` — the tensile cap is honored, the compressive
+/// floor is dropped at sample time per
+/// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.  The min field
+/// stays threaded through `MaterialField`'s `bounds` storage for
+/// future Option B (Phase H F-bar) re-enable but is unused.
 #[test]
-fn material_field_from_yeoh_fields_with_bounds_carries_bounds() {
+fn material_field_from_yeoh_fields_with_bounds_carries_max_only() {
     use sim_soft::{MaterialFieldKind, Yeoh};
     // Dragon Skin 20A's calibrated `0.8 · λ_break = 5.76` (TDS:
     // 620 % elongation at break) — picked because the E.b sweep at
@@ -208,7 +215,7 @@ fn material_field_from_yeoh_fields_with_bounds_carries_bounds() {
     // material lerps to this anchor, so the bound contract test
     // also pins the real production scenario.
     let max_stretch = 5.76;
-    let min_stretch = 0.30;
+    let min_stretch = 0.20;
     let mu_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(113_000.0));
     let c2_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(10_000.0));
     let lambda_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(452_000.0));
@@ -227,7 +234,14 @@ fn material_field_from_yeoh_fields_with_bounds_carries_bounds() {
     let y: Yeoh = field.sample_yeoh(Vec3::new(0.0, 0.0, 0.0));
     let validity = sim_soft::Material::validity(&y);
     assert_eq!(validity.max_principal_stretch, Some(max_stretch));
-    assert_eq!(validity.min_principal_stretch, Some(min_stretch));
+    // H4-2-C — compressive cap dropped at sample time even though
+    // the field was supplied to the constructor.
+    assert!(
+        validity.min_principal_stretch.is_none(),
+        "H4-2-C: sample_yeoh must drop the compressive cap; \
+         min_principal_stretch should be None, got {:?}",
+        validity.min_principal_stretch,
+    );
     // Lamé pair + C₂ round-trip exactly as in the 3-arg path.
     assert_eq!(y.mu().to_bits(), 113_000.0_f64.to_bits());
     assert_eq!(y.lambda().to_bits(), 452_000.0_f64.to_bits());

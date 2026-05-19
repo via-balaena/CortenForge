@@ -338,10 +338,17 @@ impl MaterialField {
     ///   (None, None)` and the solver gate falls back to
     ///   `max_stretch_deviation`.
     /// - [`MaterialField::from_yeoh_fields_with_bounds`] (5-arg
-    ///   calibrated path): both bound fields are sampled and the
-    ///   produced `Yeoh` carries `(Some(max), Some(min))` so the
-    ///   solver gate routes through the per-principal-stretch
-    ///   check.
+    ///   calibrated path, H4-2-C asymmetric one-sided): the
+    ///   `max_principal_stretch` field is sampled + routed through
+    ///   [`Yeoh::with_max_principal_stretch_only`]; the produced
+    ///   `Yeoh` carries `(Some(max), None)`.  The `min_principal_stretch`
+    ///   field stays threaded through the aggregator (preserved for
+    ///   future Option B / Phase H F-bar work that re-enables the
+    ///   compressive gate) but is unused at sample time — see
+    ///   `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5 for the
+    ///   falsification analysis that motivated dropping the
+    ///   compressive direction.  `det F > 0` inversion remains the
+    ///   only compressive safety net.
     ///
     /// # Panics
     ///
@@ -369,10 +376,16 @@ impl MaterialField {
                 );
                 match bounds {
                     None => yeoh,
-                    Some(b) => yeoh.with_principal_stretch_bounds(
-                        b.max_principal_stretch.sample(x_ref),
-                        b.min_principal_stretch.sample(x_ref),
-                    ),
+                    // H4-2-C asymmetric one-sided bound — tensile cap
+                    // only; `min_principal_stretch` field stays
+                    // threaded through `bounds` for future Option B
+                    // (Phase H F-bar / mixed-u-p decorator) re-enable
+                    // but is unused at sample time.  Falsification
+                    // motivating this asymmetry at
+                    // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.
+                    Some(b) => {
+                        yeoh.with_max_principal_stretch_only(b.max_principal_stretch.sample(x_ref))
+                    }
                 }
             }
             MaterialFieldInner::NeoHookean { .. } => {
