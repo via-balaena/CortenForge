@@ -758,10 +758,19 @@ pub fn build_insertion_geometry(
     let cap_tuples: Vec<(Point3<f64>, Vector3<f64>)> =
         cap_planes.iter().map(CapPlane::as_tuple).collect();
 
-    // Three `LayeredScalarField`s (or `ConstantField`s) over the same
-    // scan-distance partition — one per Yeoh parameter — mirroring the
-    // row-23 `build_material_field` precedent.
-    let material_field = MaterialField::from_yeoh_fields(
+    // Five `LayeredScalarField`s (or `ConstantField`s) over the same
+    // scan-distance partition — three Yeoh parameters + two
+    // calibrated principal-stretch caps — mirroring the row-23
+    // `build_material_field` precedent + threading the per-anchor
+    // `0.8 · λ_break` / `0.30` bounds through to the per-tet
+    // validity gate per H4 (`docs/CANDIDATE_H4_YEOH_BOUND_CALIBRATION_SPEC.md`).
+    // The 5-arg constructor `from_yeoh_fields_with_bounds` routes
+    // each per-tet `Yeoh` through `with_principal_stretch_bounds`,
+    // so the solver's `check_validity_at_step_start` gates against
+    // the silicone's calibrated cap rather than the legacy
+    // symmetric `max_stretch_deviation = 1.0` fallback that the
+    // pre-H4 3-arg path implicitly used.
+    let material_field = MaterialField::from_yeoh_fields_with_bounds(
         layered_param_field(
             &scan_sdf,
             &thresholds,
@@ -776,6 +785,22 @@ pub fn build_insertion_geometry(
             &scan_sdf,
             &thresholds,
             materials.iter().map(|m| m.lambda).collect(),
+        ),
+        layered_param_field(
+            &scan_sdf,
+            &thresholds,
+            materials
+                .iter()
+                .map(|m| m.validity_max_principal_stretch)
+                .collect(),
+        ),
+        layered_param_field(
+            &scan_sdf,
+            &thresholds,
+            materials
+                .iter()
+                .map(|m| m.validity_min_principal_stretch)
+                .collect(),
         ),
     );
 
@@ -3423,6 +3448,45 @@ mod tests {
         );
     }
 
+    /// H4 plumbing sentinel — every per-tet `Yeoh` in the produced
+    /// mesh carries `(Some(max), Some(min))` principal-stretch caps
+    /// rather than the legacy `(None, None)` fallback. Pinned at
+    /// `silicone.validity_max_principal_stretch` /
+    /// `validity_min_principal_stretch` for the single ECOFLEX_00_30
+    /// layer used in the fixture so a future refactor that flips
+    /// `build_insertion_geometry` back to the bounds-less 3-arg
+    /// constructor (or that silently drops one bound) trips here.
+    /// Closes the `MaterialField`-drops-bounds gap diagnosed at
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10.4.
+    #[test]
+    fn build_insertion_geometry_per_tet_yeoh_carries_calibrated_principal_stretch_bounds() {
+        let scan = small_test_cube();
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let g = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+            .expect("build must succeed on the small test cube fixture");
+
+        let materials = g.mesh.materials();
+        assert!(!materials.is_empty(), "must produce at least one tet");
+        let expected_max = ECOFLEX_00_30.validity_max_principal_stretch;
+        let expected_min = ECOFLEX_00_30.validity_min_principal_stretch;
+        for (tet_id, yeoh) in materials.iter().enumerate() {
+            let validity = yeoh.validity();
+            assert_eq!(
+                validity.max_principal_stretch,
+                Some(expected_max),
+                "tet {tet_id} max_principal_stretch must equal ECOFLEX_00_30's calibrated 0.8·λ_break"
+            );
+            assert_eq!(
+                validity.min_principal_stretch,
+                Some(expected_min),
+                "tet {tet_id} min_principal_stretch must equal the family-uniform 0.30 compressive cap"
+            );
+        }
+    }
+
     #[test]
     fn build_insertion_geometry_with_caps_opens_body_at_cap_plane() {
         // Build the same design twice: once without caps, once with a
@@ -4929,11 +4993,21 @@ mod tests {
         // the icosphere case's effective material distribution
         // (`layer_boundary_thresholds` is empty for a single layer →
         // `layered_param_field` returns a `ConstantField` too).
+        // Mirrors `build_insertion_geometry`'s switch to the
+        // calibrated 5-arg `from_yeoh_fields_with_bounds`
+        // constructor (H4 plumbing) so per-tet `Yeoh`s carry
+        // ECOFLEX_00_30's 8.00 tensile + 0.30 compressive caps
+        // rather than the legacy `max_stretch_deviation = 1.0`
+        // fallback — keeps the analytical-sphere recon
+        // experiment apples-to-apples with the production
+        // GridSdf geometry.
         let silicone = silicone_for_anchor("ECOFLEX_00_30").unwrap();
-        let material_field = MaterialField::from_yeoh_fields(
+        let material_field = MaterialField::from_yeoh_fields_with_bounds(
             Box::new(ConstantField::new(silicone.mu)),
             Box::new(ConstantField::new(silicone.c2)),
             Box::new(ConstantField::new(silicone.lambda)),
+            Box::new(ConstantField::new(silicone.validity_max_principal_stretch)),
+            Box::new(ConstantField::new(silicone.validity_min_principal_stretch)),
         );
 
         let hints = MeshingHints {
