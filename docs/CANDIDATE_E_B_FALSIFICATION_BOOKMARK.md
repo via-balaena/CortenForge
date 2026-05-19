@@ -106,8 +106,9 @@ preexisting constraint that the chattering bottleneck was hiding.
 The 5 mm sanity gate failing is the smoking gun.  At cavity = 5
 mm:
 
-- C′.a alone (k=1, r=0): 16/16 ZERO LM, max_stretch nowhere
-  near the validity bound across 16 steps.
+- C′.a alone (k=1, r=0): 16/16 ZERO LM, no Yeoh panic across
+  16 steps (so per-tet max_stretch_deviation stayed below
+  1.000 the whole ramp).
 - E.b (7, 1.0 mm): 1/16, Yeoh wall at step 2 tet 3258
   max_stretch = 1.002 (barely over the bound).
 
