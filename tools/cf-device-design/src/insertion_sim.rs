@@ -4924,6 +4924,138 @@ mod tests {
         );
     }
 
+    /// **H4.3 sweep** — sliding-intruder ramps at cavity =
+    /// 3, 5, 6, 7, 8 mm on iter-1 sock_over_capsule with the iter-1
+    /// GUI-default 10+3 mm dual-layer stack (ECOFLEX_00_30 outer
+    /// 10 mm + DRAGON_SKIN_20A inner 3 mm) + the H4-plumbed
+    /// calibrated principal-stretch bounds. Pre-H4 cavity > 5 mm
+    /// fake-converged step 1 into an invalid Yeoh state and
+    /// panicked at step 2 (per
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10) — or,
+    /// post-commit `2739717e` end-of-solve check, panics honestly
+    /// at step 1. DRAGON_SKIN_20A's calibrated
+    /// `0.8 · λ_break = 5.76` tensile cap is well above the σ ≈ 2.05
+    /// peak the E.b sweep measured, so H4 expected to clear
+    /// cavity > 5 mm cleanly.
+    ///
+    /// Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-device-design --release \
+    ///     h4_sweep_sliding_ramp_on_iter1_scan -- --ignored --nocapture
+    /// ```
+    ///
+    /// `#[ignore]` — needs the repo-excluded iter-1 scan + prep.toml
+    /// + a release-mode 5-cavity ramp; total wall-clock ~10-15 min.
+    #[test]
+    #[ignore = "H4.3 sweep — needs the iter-1 scan + a release ramp; run with --ignored --nocapture"]
+    fn h4_sweep_sliding_ramp_on_iter1_scan() {
+        let scan_path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !scan_path.exists() {
+            eprintln!(
+                "skip: iter-1 scan fixture not found at {}",
+                scan_path.display()
+            );
+            return;
+        }
+        let prep_path = PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.prep.toml");
+        let prep_text =
+            std::fs::read_to_string(&prep_path).expect("load iter-1 prep.toml for centerline");
+        let centerline =
+            crate::parse_centerline(&prep_text).expect("parse centerline from prep.toml");
+        assert!(
+            centerline.len() >= 2,
+            "iter-1 prep.toml must carry a centerline polyline",
+        );
+        let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
+
+        let cavities_mm = [3.0_f64, 5.0, 6.0, 7.0, 8.0];
+        let n_steps = 16_usize;
+        let cell_size_m = 0.004_f64;
+
+        eprintln!(
+            "H4.3 sweep — iter-1 sock_over_capsule.cleaned.stl, dual-layer \
+             DS20A inner 3 mm + Ecoflex 00-30 outer 10 mm, n_steps = {}, \
+             centerline {} points",
+            n_steps,
+            centerline.len(),
+        );
+        eprintln!(
+            "  DS20A bounds: max_principal_stretch = {:.2}, min = {:.2}",
+            DRAGON_SKIN_20A.validity_max_principal_stretch,
+            DRAGON_SKIN_20A.validity_min_principal_stretch,
+        );
+        eprintln!(
+            "  Ecoflex 00-30 bounds: max_principal_stretch = {:.2}, min = {:.2}",
+            ECOFLEX_00_30.validity_max_principal_stretch,
+            ECOFLEX_00_30.validity_min_principal_stretch,
+        );
+
+        for &cavity_mm in &cavities_mm {
+            let cavity_inset_m = cavity_mm * 1e-3;
+            eprintln!("\n--- cavity = {cavity_mm:.1} mm ---");
+            let design = SimDesign {
+                cavity_inset_m,
+                // `SimDesign.layers` is innermost-first; iter-1
+                // GUI default the prior C′.a + E.b baselines used.
+                layers: vec![
+                    layer(0.003, "DRAGON_SKIN_20A"),
+                    layer(0.010, "ECOFLEX_00_30"),
+                ],
+            };
+            let t0 = Instant::now();
+            let geometry = match build_insertion_geometry(&scan, &design, &[], 2_500, cell_size_m) {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("  build_insertion_geometry FAILED: {e}");
+                    continue;
+                }
+            };
+            eprintln!(
+                "  geometry: {} tets, {} vertices, built in {:.1}s",
+                geometry.n_tets,
+                geometry.mesh.positions().len(),
+                t0.elapsed().as_secs_f64(),
+            );
+
+            let t1 = Instant::now();
+            let ramp =
+                match run_sliding_insertion_ramp(geometry, &centerline, n_steps, cavity_inset_m) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("  run_sliding_insertion_ramp FAILED: {e}");
+                        continue;
+                    }
+                };
+            let elapsed = t1.elapsed().as_secs_f64();
+            let n_converged = ramp.steps.len();
+            let last = ramp.steps.last();
+            eprintln!("  ramp: {n_converged}/{n_steps} steps converged in {elapsed:.1}s",);
+            for (k, s) in ramp.steps.iter().enumerate() {
+                eprintln!(
+                    "    step {k:2} t={:.3} arc={:5.2}mm — {} iters, r={:.2e}, F={:6.2}N, \
+                     pairs={}",
+                    s.slide_fraction_t,
+                    s.arc_length_s_m * 1e3,
+                    s.iter_count,
+                    s.final_residual_norm,
+                    s.readout.contact_force_magnitude_n,
+                    s.readout.n_active_contact_pairs,
+                );
+            }
+            if let Some(k) = ramp.failed_at_step {
+                let reason = ramp.failure_reason.as_deref().unwrap_or("<no reason>");
+                eprintln!("  STALL at step {k}: {reason}");
+                let _ = last; // result-borrow placeholder; failure branch
+            } else {
+                eprintln!("  → ALL {n_steps} STEPS CONVERGED ✓");
+            }
+        }
+    }
+
     /// **Recon discriminating experiment (post-7.3b.1)** — isolate
     /// "full-surface contact period" from "GridSdf gradient roughness"
     /// per `docs/INSERTION_SIM_STATE.md` Q3.
