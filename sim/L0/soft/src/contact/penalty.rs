@@ -57,6 +57,60 @@ pub(crate) const PENALTY_KAPPA_DEFAULT: f64 = 1.0e4;
 /// pairs.
 pub(crate) const PENALTY_DHAT_DEFAULT: f64 = 1.0e-3;
 
+/// Quintic Hermite ramp `R(sd)` for the one-sided smoothing window
+/// `[d_hat, d_hat + eps]`, evaluated together with its first two
+/// derivatives w.r.t. `sd`. Returns `(R, dR/dsd, d²R/dsd²)`.
+///
+/// The polynomial is `p(τ) = 1 − 10τ³ + 15τ⁴ − 6τ⁵` over `τ ∈ [0, 1]`
+/// with `τ = (sd − d̂) / ε`. Boundary conditions are `(1, 0, 0)` at
+/// `τ = 0` and `(0, 0, 0)` at `τ = 1` (value / 1st / 2nd derivative);
+/// both endpoints are C² so the smoothed energy
+/// `E_smooth = 0.5 κ (d̂ − sd)² R(sd)` is C² at the active-pair
+/// boundary. `p'(τ) = −30 τ² (1 − τ)²` is strictly negative on
+/// `(0, 1)` so the ramp is monotonically decreasing in the transition
+/// band.
+///
+/// Outside the transition band the ramp is constant: `1` for
+/// `sd ≤ d̂` (full penalty), `0` for `sd ≥ d̂ + ε` (inactive). The
+/// derivatives are zero in both flat regions — needed for the C²
+/// contract at the transition-band endpoints to extend across the
+/// region boundaries.
+///
+/// Requires `eps > 0` — the smoothing-window-empty case
+/// (`smoothing_eps_m == 0.0`) is handled at the call site
+/// ([`PenaltyRigidContact::pair_contribution`]'s `sd <= d_hat` branch)
+/// without invoking this helper.
+fn quintic_ramp(sd: f64, d_hat: f64, eps: f64) -> (f64, f64, f64) {
+    debug_assert!(
+        eps > 0.0 && eps.is_finite(),
+        "quintic_ramp called with non-positive eps {eps}",
+    );
+    if sd <= d_hat {
+        return (1.0, 0.0, 0.0);
+    }
+    if sd >= d_hat + eps {
+        return (0.0, 0.0, 0.0);
+    }
+    let tau = (sd - d_hat) / eps;
+    let tau2 = tau * tau;
+    let tau3 = tau2 * tau;
+    let one_minus_tau = 1.0 - tau;
+    // p(τ) = 1 − 10τ³ + 15τ⁴ − 6τ⁵
+    //      = 1 + τ³·(−10 + τ·(15 − 6τ)) — Horner from highest degree.
+    let p = (-6.0_f64)
+        .mul_add(tau, 15.0) // 15 − 6τ
+        .mul_add(tau, -10.0) // −10 + τ·(15 − 6τ)
+        .mul_add(tau3, 1.0); // 1 + τ³·(…)
+    // p'(τ) = −30·τ²·(1 − τ)² — strictly ≤ 0 on [0, 1], so the ramp
+    // is monotonically decreasing in the transition band.
+    let dp_dtau = -30.0 * tau2 * one_minus_tau * one_minus_tau;
+    // p''(τ) = −60·τ·(1 − τ)·(1 − 2τ) — zero at τ = 0, 1/2, 1; the
+    // 1/2 root is the inflection inside the band.
+    let one_minus_two_tau = (-2.0_f64).mul_add(tau, 1.0);
+    let d2p_dtau2 = -60.0 * tau * one_minus_tau * one_minus_two_tau;
+    (p, dp_dtau / eps, d2p_dtau2 / (eps * eps))
+}
+
 /// Penalty contact between soft-body vertices and a set of kinematic
 /// rigid primitives.
 ///
@@ -106,6 +160,47 @@ pub struct PenaltyRigidContact {
     /// Motivating consumer: the `cf-device-design` sliding-intruder FEM
     /// ramp (`docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md`).
     interior_cutoff: Option<f64>,
+    /// One-sided smoothing window (m) above `d_hat`. When `> 0`, pairs
+    /// with `sd ∈ (d_hat, d_hat + smoothing_eps_m)` contribute a
+    /// quintic-Hermite-tapered penalty that smoothly reaches 0 at
+    /// `sd = d_hat + smoothing_eps_m`. Addresses class-2 active-set
+    /// chattering in `H_contact(x)` (see
+    /// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md`).
+    ///
+    /// `0.0` (default) — hard penalty, bit-equal to pre-candidate-C
+    /// behavior. Existing constructors ([`new`](Self::new),
+    /// [`with_params`](Self::with_params),
+    /// [`with_params_and_interior_cutoff`](Self::with_params_and_interior_cutoff))
+    /// initialize this to `0.0`; the
+    /// [`with_params_and_smoothing`](Self::with_params_and_smoothing) and
+    /// [`with_params_and_smoothing_and_interior_cutoff`](Self::with_params_and_smoothing_and_interior_cutoff)
+    /// constructors opt in.
+    ///
+    /// The smoothed energy is `0.5 · κ · (d̂ − sd)² · R(sd)` where
+    /// `R(sd) = p((sd − d̂) / ε)` with `p(τ) = 1 − 10τ³ + 15τ⁴ − 6τ⁵`
+    /// — quintic Hermite with boundary conditions `(1, 0, 0)` at
+    /// `τ = 0` and `(0, 0, 0)` at `τ = 1`. Both endpoint value /
+    /// derivative / second-derivative are zero so the energy is C²
+    /// across the active-pair boundary and the assembled Hessian
+    /// (dropping the SDF-curvature ∂n/∂p term, see module docs) is C⁰
+    /// — the chattering fix.
+    smoothing_eps_m: f64,
+}
+
+/// Per-pair scalar contributions (energy, `dE/dsd`, `d²E/dsd²`) at a
+/// given signed distance, before composition with the per-pair normal.
+/// `gradient = dE/dsd · n` and `hessian = d²E/dsd² · n ⊗ n` (the
+/// latter dropping the SDF-curvature ∂n/∂p term, consistent with the
+/// existing hard-penalty Hessian — see module docstring).
+///
+/// Returned by [`PenaltyRigidContact::pair_contribution`]; consumed by
+/// the four `(per_pair_readout, energy, gradient, hessian)` sites that
+/// need formula values (`active_pairs` only needs the gate, so uses
+/// [`PenaltyRigidContact::pair_is_active`] directly).
+struct PairContribution {
+    energy: f64,
+    d_energy_d_sd: f64,
+    d2_energy_d_sd2: f64,
 }
 
 impl PenaltyRigidContact {
@@ -142,6 +237,7 @@ impl PenaltyRigidContact {
             kappa,
             d_hat,
             interior_cutoff: None,
+            smoothing_eps_m: 0.0,
         }
     }
 
@@ -186,7 +282,171 @@ impl PenaltyRigidContact {
             kappa,
             d_hat,
             interior_cutoff: Some(interior_cutoff),
+            smoothing_eps_m: 0.0,
         }
+    }
+
+    /// Construct with non-default `(κ, d̂)` plus a positive smoothing
+    /// window `smoothing_eps_m` above `d̂`. See the
+    /// [`smoothing_eps_m`](Self::smoothing_eps_m) field docs for the
+    /// formula + motivating use case + bit-equal-when-dormant contract.
+    ///
+    /// # Panics
+    ///
+    /// `smoothing_eps_m` must be (1) non-negative + finite. Passing
+    /// `0.0` is allowed (equivalent to [`with_params`](Self::with_params)
+    /// — caller may bind a single constructor symbol when smoothing
+    /// is configured externally).
+    #[must_use]
+    pub fn with_params_and_smoothing<I>(
+        primitives: I,
+        kappa: f64,
+        d_hat: f64,
+        smoothing_eps_m: f64,
+    ) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Sdf + 'static,
+    {
+        assert!(
+            smoothing_eps_m >= 0.0 && smoothing_eps_m.is_finite(),
+            "smoothing_eps_m must be non-negative and finite, got {smoothing_eps_m}",
+        );
+        let primitives: Vec<Box<dyn Sdf>> = primitives
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn Sdf>)
+            .collect();
+        Self {
+            primitives,
+            kappa,
+            d_hat,
+            interior_cutoff: None,
+            smoothing_eps_m,
+        }
+    }
+
+    /// Construct with non-default `(κ, d̂)` plus a positive smoothing
+    /// window and a positive interior cutoff. Composes
+    /// [`with_params_and_smoothing`](Self::with_params_and_smoothing) and
+    /// [`with_params_and_interior_cutoff`](Self::with_params_and_interior_cutoff).
+    /// Motivating consumer: the `cf-device-design` sliding-intruder
+    /// FEM ramp (needs the interior cutoff for pose-dependent
+    /// deep-interior pairs and the smoothing window for class-2
+    /// chattering at deep cavity insets).
+    ///
+    /// # Panics
+    ///
+    /// `smoothing_eps_m` must be non-negative + finite (see
+    /// [`with_params_and_smoothing`](Self::with_params_and_smoothing)).
+    /// `interior_cutoff` must be strictly positive + finite + strictly
+    /// greater than `d_hat + smoothing_eps_m` — so the active band
+    /// `[−cutoff, d_hat + smoothing_eps_m)` is non-empty and contains
+    /// legitimate near-contact pairs.
+    #[must_use]
+    pub fn with_params_and_smoothing_and_interior_cutoff<I>(
+        primitives: I,
+        kappa: f64,
+        d_hat: f64,
+        smoothing_eps_m: f64,
+        interior_cutoff: f64,
+    ) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Sdf + 'static,
+    {
+        assert!(
+            smoothing_eps_m >= 0.0 && smoothing_eps_m.is_finite(),
+            "smoothing_eps_m must be non-negative and finite, got {smoothing_eps_m}",
+        );
+        assert!(
+            interior_cutoff > 0.0 && interior_cutoff.is_finite(),
+            "interior_cutoff must be positive and finite, got {interior_cutoff}",
+        );
+        assert!(
+            interior_cutoff > d_hat + smoothing_eps_m,
+            "interior_cutoff ({interior_cutoff}) must be > d_hat + smoothing_eps_m \
+             ({}) — so the active band [−cutoff, d_hat + smoothing_eps_m) is non-empty",
+            d_hat + smoothing_eps_m,
+        );
+        let primitives: Vec<Box<dyn Sdf>> = primitives
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn Sdf>)
+            .collect();
+        Self {
+            primitives,
+            kappa,
+            d_hat,
+            interior_cutoff: Some(interior_cutoff),
+            smoothing_eps_m,
+        }
+    }
+
+    /// Pair-inclusion gate — the single source of truth for the
+    /// active-band predicate. Returns `true` iff `sd` is below the
+    /// interior cutoff (when set) and below `d_hat + smoothing_eps_m`
+    /// (the upper edge of the active band, including any smoothing
+    /// window).
+    ///
+    /// **MAINTENANCE NOTE** — any future change to the active-band
+    /// extent (e.g., extending it further, or shifting it relative to
+    /// `d_hat`) updates this method only. The five consumer sites
+    /// ([`PenaltyRigidContact::per_pair_readout`],
+    /// [`ContactModel::energy`], [`ContactModel::gradient`],
+    /// [`ContactModel::hessian`] —
+    /// via [`Self::pair_contribution`] which delegates to this gate —
+    /// and [`ActivePairsFor::active_pairs`] — directly) inherit the
+    /// change for free. See §2.5 of
+    /// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the
+    /// mirror-on-change-prevention rationale.
+    fn pair_is_active(&self, sd: f64) -> bool {
+        if let Some(c) = self.interior_cutoff
+            && sd < -c
+        {
+            return false;
+        }
+        sd < self.d_hat + self.smoothing_eps_m
+    }
+
+    /// Per-pair scalar contributions at the given signed distance, or
+    /// `None` if the pair is outside the active band. Returns the same
+    /// gate decision as [`Self::pair_is_active`] — composing the two
+    /// methods on the same `sd` is sound, but `pair_is_active` is the
+    /// cheap path for `active_pairs` walks that don't need the formula.
+    ///
+    /// When `smoothing_eps_m == 0.0`, the returned scalars at any
+    /// `sd < d_hat` are bit-equal to the pre-smoothing hard-penalty
+    /// formula (see `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` §3 for
+    /// the bit-equal-when-dormant contract).
+    fn pair_contribution(&self, sd: f64) -> Option<PairContribution> {
+        if !self.pair_is_active(sd) {
+            return None;
+        }
+        // sd is in the active band. Two sub-branches: full penalty
+        // (sd <= d_hat) — always bit-equal to the hard penalty
+        // including when smoothing is on — versus quintic-tapered
+        // (sd ∈ (d_hat, d_hat + smoothing_eps_m), only reachable when
+        // smoothing_eps_m > 0).
+        let gap = self.d_hat - sd;
+        if sd <= self.d_hat {
+            return Some(PairContribution {
+                energy: 0.5 * self.kappa * gap * gap,
+                d_energy_d_sd: -self.kappa * gap,
+                d2_energy_d_sd2: self.kappa,
+            });
+        }
+        let (r, r_p, r_pp) = quintic_ramp(sd, self.d_hat, self.smoothing_eps_m);
+        // gap < 0 in this branch (sd > d_hat). gap² is still positive.
+        let gap_sq = gap * gap;
+        // dE/dsd = 0.5κ·[−2·gap·R + gap²·R'(sd)]
+        let d_energy_d_sd = 0.5 * self.kappa * gap_sq.mul_add(r_p, -2.0 * gap * r);
+        // d²E/dsd² = 0.5κ·[2R − 4·gap·R'(sd) + gap²·R''(sd)]
+        let d2_energy_d_sd2 =
+            0.5 * self.kappa * gap_sq.mul_add(r_pp, 2.0_f64.mul_add(r, -4.0 * gap * r_p));
+        Some(PairContribution {
+            energy: 0.5 * self.kappa * gap_sq * r,
+            d_energy_d_sd,
+            d2_energy_d_sd2,
+        })
     }
 
     /// Per-active-pair readout — for every `(soft vertex, rigid
@@ -196,18 +456,22 @@ impl PenaltyRigidContact {
     /// at the readout-time `positions`.
     ///
     /// Mirrors [`active_pairs`](super::ActivePairsFor::active_pairs)'s walk order
-    /// (vertices outer × primitives inner) and band gate (`sd < d̂`),
-    /// so the returned vec is the same length as `active_pairs(...)`
-    /// at the same `positions` and the readouts appear in the same
-    /// order.
+    /// (vertices outer × primitives inner) and band gate (via
+    /// [`Self::pair_is_active`]), so the returned vec is the same length
+    /// as `active_pairs(...)` at the same `positions` and the readouts
+    /// appear in the same order.
     ///
+    /// For the hard-penalty case (`smoothing_eps_m == 0.0`),
     /// `force_on_soft` resolves to `+κ·(d̂ − sd)·n` per the type docs'
     /// sign convention — a bit-equivalent reproduction of the energy
     /// gradient [`ContactModel::gradient`] returns (`−κ·(d̂ − sd)·n`),
-    /// negated by the force-as-`−∇U` identity. Row 18
-    /// (`contact-force-readout`) is the canonical consumer; row 14
-    /// (`compressive-block`) reconstructs this surface inline from
-    /// known plane geometry, predating this method.
+    /// negated by the force-as-`−∇U` identity. With smoothing, the
+    /// force in the transition band `(d̂, d̂+ε)` follows from the
+    /// quintic-tapered energy (see
+    /// [`Self::smoothing_eps_m`](Self::smoothing_eps_m) field docs).
+    /// Row 18 (`contact-force-readout`) is the canonical consumer;
+    /// row 14 (`compressive-block`) reconstructs this surface inline
+    /// from known plane geometry, predating this method.
     // `vid as VertexId` and `pid as u32` mirror `active_pairs`'s `Vec`-
     // iteration index packing — bounded by mesh / primitive counts that
     // fit in `u32` for any Phase 5 scene.
@@ -223,15 +487,9 @@ impl PenaltyRigidContact {
             let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
                 let sd = prim.eval(p_pt);
-                // Interior cutoff — pathologically-deep-interior filter.
-                if let Some(c) = self.interior_cutoff
-                    && sd < -c
-                {
-                    continue;
-                }
-                if sd < self.d_hat {
+                if let Some(contribution) = self.pair_contribution(sd) {
                     let normal = prim.grad(p_pt);
-                    let force_on_soft = self.kappa * (self.d_hat - sd) * normal;
+                    let force_on_soft = -contribution.d_energy_d_sd * normal;
                     readouts.push(ContactPairReadout {
                         pair: ContactPair::Vertex {
                             vertex_id: vid as VertexId,
@@ -288,12 +546,7 @@ impl ContactModel for PenaltyRigidContact {
         } = pair;
         let p = Point3::from(positions[vertex_id as usize]);
         let d = self.primitives[primitive_id as usize].eval(p);
-        if d >= self.d_hat {
-            0.0
-        } else {
-            let gap = self.d_hat - d;
-            0.5 * self.kappa * gap * gap
-        }
+        self.pair_contribution(d).map_or(0.0, |c| c.energy)
     }
 
     fn gradient(&self, pair: &ContactPair, positions: &[Vec3]) -> ContactGradient {
@@ -304,15 +557,14 @@ impl ContactModel for PenaltyRigidContact {
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let d = prim.eval(p);
-        if d >= self.d_hat {
-            ContactGradient::default()
-        } else {
-            let n = prim.grad(p);
-            let force = -self.kappa * (self.d_hat - d) * n;
-            ContactGradient {
-                contributions: vec![(vertex_id, force)],
-            }
-        }
+        self.pair_contribution(d)
+            .map_or_else(ContactGradient::default, |c| {
+                let n = prim.grad(p);
+                let force = c.d_energy_d_sd * n;
+                ContactGradient {
+                    contributions: vec![(vertex_id, force)],
+                }
+            })
     }
 
     fn hessian(&self, pair: &ContactPair, positions: &[Vec3]) -> ContactHessian {
@@ -323,15 +575,14 @@ impl ContactModel for PenaltyRigidContact {
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let d = prim.eval(p);
-        if d >= self.d_hat {
-            ContactHessian::default()
-        } else {
-            let n = prim.grad(p);
-            let block: Matrix3<f64> = self.kappa * (n * n.transpose());
-            ContactHessian {
-                contributions: vec![(vertex_id, vertex_id, block)],
-            }
-        }
+        self.pair_contribution(d)
+            .map_or_else(ContactHessian::default, |c| {
+                let n = prim.grad(p);
+                let block: Matrix3<f64> = c.d2_energy_d_sd2 * (n * n.transpose());
+                ContactHessian {
+                    contributions: vec![(vertex_id, vertex_id, block)],
+                }
+            })
     }
 
     fn ccd_toi(&self, _pair: &ContactPair, _x0: &[Vec3], _x1: &[Vec3]) -> f64 {
@@ -343,8 +594,10 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     /// Walks soft vertices outer (`0..positions.len()`) × rigid
     /// primitives inner (`0..self.primitives.len()`); emits a
     /// [`ContactPair::Vertex`] for every `(v, p)` whose signed
-    /// distance is below the band `d̂`. Order is deterministic — no
-    /// sort, no `HashMap`, no rayon.
+    /// distance is in the active band per
+    /// [`PenaltyRigidContact::pair_is_active`]
+    /// (`sd < d̂ + smoothing_eps_m` and above the interior cutoff when
+    /// set). Order is deterministic — no sort, no `HashMap`, no rayon.
     // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;
     // in practice bounded by mesh / primitive counts that fit
     // comfortably in `u32`. The `as` cast matches the convention used
@@ -358,13 +611,7 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
             let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
                 let sd = prim.eval(p_pt);
-                // Interior cutoff — pathologically-deep-interior filter.
-                if let Some(c) = self.interior_cutoff
-                    && sd < -c
-                {
-                    continue;
-                }
-                if sd < self.d_hat {
+                if self.pair_is_active(sd) {
                     pairs.push(ContactPair::Vertex {
                         vertex_id: vid as VertexId,
                         primitive_id: pid as u32,
