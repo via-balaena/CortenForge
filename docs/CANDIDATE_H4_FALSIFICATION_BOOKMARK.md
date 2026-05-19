@@ -355,26 +355,36 @@ the cold-read polish later; corrected-config table below):
 | 7 mm | Armijo step 0 iter 30 r_norm 0.45 | unchanged |
 | 8 mm | Yeoh tet 673 σ_min = 0.120 (0/16) | **8/16 converged**, Armijo step 8 iter 5 r_norm 0.40 |
 
-**Corrected-config rerun** (2026-05-19 LATE-NIGHT, post-polish;
-Ecoflex 00-30 + 50 % Slacker inner 10 mm + DS20A outer 3 mm,
-matching the user's GUI default per §5.7):
+**Corrected-config rerun** (2026-05-19 LATE-NIGHT, cold-read
+polish; Ecoflex 00-30 + 50 % Slacker inner 10 mm + DS20A outer
+3 mm, matching the user's GUI default per §5.7).  Initial rerun
+without cap_planes (still `&[]` from the pre-polish test):
 
-| cavity | post-H4-2-C (correct-config) | stall signature |
+| cavity | post-H4-2-C (correct-config, no caps) | stall signature |
 |---|---|---|
 | 3 mm | 0/16 | Armijo step 0 iter 62 r_norm 15.9 |
 | 5 mm | 0/16 | Armijo step 0 iter 51 r_norm 23.2 |
-| 6 mm | **11/16 converged** | Armijo step 11 iter 12 r_norm 1.06 |
-| 7 mm | **11/16 converged** | Armijo step 11 iter 12 r_norm 1.79 |
-| 8 mm | **10/16 converged** | Armijo step 10 iter 6 r_norm 0.82 |
+| 6 mm | 11/16 converged | Armijo step 11 iter 12 r_norm 1.06 |
+| 7 mm | 11/16 converged | Armijo step 11 iter 12 r_norm 1.79 |
+| 8 mm | 10/16 converged | Armijo step 10 iter 6 r_norm 0.82 |
 
-The corrected-config sweep finds 6 + 7 + 8 mm partial-seat
-where the wrong-config sweep got 5 + 8 mm — **config
-inversion rotates which cavities converge** in cargo (without
-changing the structural finding that H4-2-C unlocks
-partial-seat at cavities > the 0.30 floor's binding range).
-The 6 + 7 mm stalls share the same step-11 iter-12 signature,
-suggesting Newton hits the same slide-pose convergence cliff
-regardless of cavity depth in this range.
+The converging window rotated from {5, 8} mm to {6, 7, 8} mm
+(config inversion's effect) but did not match the GUI's
+{3, 5, 8} mm.  Diagnostic continued — see §5.6 for the
+cap_planes resolution.
+
+**Post-cap_planes-fix rerun** (the canonical cargo H4-2-C
+record now that cargo reproduces the GUI bit-for-bit):
+
+| cavity | cargo (correct config + caps) | GUI |
+|---|---|---|
+| 3 mm | 16/16 ✓ | 16/16 ✓ |
+| 5 mm | 16/16 ✓ | 16/16 ✓ |
+| 6 mm | 0/16, r_norm 5.360e-1 | 0/16, r_norm 5.360e-1 |
+| 7 mm | 0/16, r_norm 2.941e-1 | 0/16, r_norm 2.941e-1 |
+| 8 mm | 12/16 ✓, step 12 r_norm 1.6e-1 | 12/16 ✓ |
+
+This is now the canonical regression record under H4-2-C.
 
 Cavity = 5 mm: 0 → 11 steps converged (3.44 mm of 5 mm = 69 %
 seated).  Cavity = 8 mm: 0 → 8 steps converged (4.0 mm of
@@ -403,65 +413,73 @@ failures (see §5.5).
   better warm-starting.  Worth a small probe arc if the partial-
   seating output of H4-2-C is the binding product gap.
 
-### 5.6 Open puzzle — config DOES NOT explain the GUI ↔ cargo divergence
+### 5.6 GUI ↔ cargo divergence — RESOLVED (cap_planes wiring bug)
 
-**Earlier claim** (banked at H4-2-C ship): the `cargo test`
-`h4_sweep_sliding_ramp_on_iter1_scan` was running the wrong layer
-config (DS20A inner + Ecoflex 00-30 outer, no Slacker) — opposite
-of the GUI default (Ecoflex 00-30 + 50 % Slacker inner +
-DS20A outer).  Hypothesis: fixing the config aligns cargo with
-GUI behavior.
+**Root cause**: the `cargo test`
+`h4_sweep_sliding_ramp_on_iter1_scan` was passing
+`cap_planes = &[]` to `build_insertion_geometry`.  The GUI
+loads cap planes from the same prep.toml via
+`cf_cap_planes::parse_cap_planes(&prep_text)` and threads them
+in.  iter-1's prep.toml has one `[[caps.loops]]` record at
+z ≈ -53 mm with `included = true`; without it the cavity is
+treated as fully sealed and the `pinned_floor_shell`
+construction short-circuits to a plain isotropic offset
+instead of the open-mouth + floor-pinned-at-cap topology.
+**Different cavity topology = different FEM problem = different
+converging window.**
 
-**Post-polish empirical test** (2026-05-19 LATE-NIGHT, cold-read
-pass): updated the sweep test to the GUI-matched config
-(`layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5)` inner +
-`layer(0.003, "DRAGON_SKIN_20A")` outer) + re-ran.  Compared to
-the GUI's user-driven visual gate at §5.7:
+**Diagnostic path**:
 
-| cavity | cargo wrong-config | cargo correct-config | GUI |
+1. The §5.6 PARTIAL RESOLUTION claim (layer-config inversion)
+   was empirically falsified by the post-polish rerun
+   (cavity 3 mm still stalled with the GUI-matched layer
+   config).  Hypothesis list expanded: centerline source,
+   Slacker resolution, Bevy-side state, warm-start init.
+2. Cold-reading the GUI's `run_sim_pipeline`
+   (`insertion_sim_ui.rs:867`) surfaced the cap_planes arg.
+   Cross-checking against `main.rs:489-499` revealed the GUI
+   parses `cap_planes` from the prep.toml.  Cross-checking
+   iter-1's prep.toml revealed a non-empty `[[caps.loops]]`
+   block.  Hypothesis matched in one read.
+3. Patched the test to call
+   `cf_cap_planes::parse_cap_planes(&prep_text)` + thread the
+   result into `build_insertion_geometry`.  Re-ran.
+
+**Post-fix sweep** matches the GUI bit-for-bit:
+
+| cavity | cargo (with cap_planes) | GUI | match |
 |---|---|---|---|
-| 3 mm | 0/16 (iter 48) | 0/16 (iter 62) | **16/16 ✓** |
-| 5 mm | **11/16 ✓** | 0/16 (iter 51) | **16/16 ✓** |
-| 6 mm | 0/16 (iter 25) | **11/16 ✓** | 0/16 ✗ |
-| 7 mm | 0/16 (iter 30) | **11/16 ✓** | 0/16 ✗ |
-| 8 mm | **8/16 ✓** | **10/16 ✓** | **12/16 ✓** |
+| 3 mm | 16/16 ✓ | 16/16 ✓ | exact |
+| 5 mm | 16/16 ✓ | 16/16 ✓ | exact |
+| 6 mm | 0/16, r_norm 5.360e-1 | 0/16, r_norm 5.360e-1 | exact (residual) |
+| 7 mm | 0/16, r_norm 2.941e-1 | 0/16, r_norm 2.941e-1 | exact (residual) |
+| 8 mm | 12/16 ✓, step 12 r_norm 1.6e-1 | 12/16 ✓ | exact |
 
-Config inversion **rotated** the cargo converging window from
-{5, 8} mm to {6, 7, 8} mm without closing the gap to the GUI's
-{3, 5, 8} mm.  Three distinct non-trivial findings:
+Geometry diff confirms the topology change: cavity = 3 mm
+without caps had 91 417 tets; with caps it has 72 880 tets
+(~20 % fewer — the open-mouth removes the dome-cap material
+that the closed-cavity path was meshing).
 
-1. **3 + 5 mm**: GUI converges 16/16; cargo (either config)
-   stalls at step 0.  The GUI reaches an equilibrium structure
-   cargo cannot find.
-2. **6 + 7 mm**: GUI stalls (Newton iter cap 150, r_norm
-   0.54 + 0.29); cargo correct-config reaches 11/16.  Cargo
-   finds a partial-seat path GUI doesn't.
-3. **8 mm**: GUI 12/16; cargo correct-config 10/16; closest
-   agreement (both partial, similar depth).
+**Lesson banked**: any cargo test that consumes
+`build_insertion_geometry` MUST mirror the GUI's prep.toml
+ingestion (centerline + cap_planes both).  The legacy
+pre-cap-planes tests passed `&[]` because the
+`pinned_floor_shell` candidate-A primitive was specified to
+degenerate to the pre-pinned-floor offset for empty
+`cap_planes` (see
+`build_insertion_geometry_no_caps_byte_identical_to_pre_pinned_floor`
+at line 3406 in insertion_sim.rs); that contract held but it
+let any "iter-1 reproduction" test silently model the wrong
+cavity if the author forgot the cap planes.
 
-**Config inversion is NOT the GUI ↔ cargo divergence.**  The
-two paths reach genuinely different equilibria at the same
-nominal config (scan, layers, cell size, n_steps, prep.toml).
-
-Hypotheses worth exploring next session:
-- Different centerline source between GUI and prep.toml parser
-  (despite both calling `parse_centerline`, the GUI may apply
-  per-frame transforms or smoothing the test misses).
-- Slacker resolution path differs (the GUI's
-  `effective_silicone_for_layer` may compute a different
-  effective material than the test's `layer_with_slacker` + the
-  same code path implies).
-- Bevy-side state the GUI sets up before `run_sliding_insertion_ramp`
-  (camera, prior frame's snapshot) that the test doesn't.
-- Newton initial conditions / x_prev_flat ordering quirk.
-- The GUI may run pre-warm-up substeps the test skips.
-
-Deferred sub-arc.  The §5.7 GUI sweep record remains the
-canonical product-validation regression; the cargo sweep is
-informative for the structural H4-2-C unlock claim
-("disabling the compressive gate enables partial seating at
-cavities > the floor's binding range") but does NOT reproduce
-the GUI's specific cavity converging window.
+**Reusable pattern**: a test that claims to reproduce the GUI
+visual-gate baseline must pass through the same
+`(scan, design, cap_planes, sdf_target_faces, cell_size_m)`
+quintuple AND the same `(centerline, n_steps, cavity_inset_m)`
+ramp args.  A `from_gui_default(prep_toml_path)` test-helper
+that returns the same artifacts the GUI's `run_sim_pipeline`
+consumes would prevent this category of bug; banked as a
+small follow-up.
 
 ### 5.7 H4-2-C GUI visual-gate sweep — product-validation record
 
@@ -526,19 +544,13 @@ change at step 13), not material.
   separate sub-arc — slide-step bisection / N_STEPS sweep /
   better warm-starting per §5.5.  Same pattern E.b §10.2
   documented (N=16 uniquely pathological at specific cavities).
-- **Sweep-test config fixed** at cold-read polish (`layer_with_slacker(0.010,
-  "ECOFLEX_00_30", 0.5)` inner + `layer(0.003, "DRAGON_SKIN_20A")`
-  outer matches the GUI default).  Cargo converging window
-  shifted from {5, 8} mm to {6, 7, 8} mm; **config inversion
-  was not the GUI ↔ cargo divergence** (§5.6 elevated to open
-  sub-arc).
-- **GUI ↔ cargo divergence is an open puzzle.**  Same nominal
-  config; both converge at 8 mm with similar depth (10-12 of
-  16); diverge at 3, 5, 6, 7 mm.  Worth a small diagnostic arc
-  to identify the actual difference (centerline source,
-  effective-Slacker resolution, Bevy-side state, warm-start
-  init) before any cap or default change relies on cargo as a
-  regression substrate.
+- **Sweep-test cap_planes + layer-config fixed** at cold-read
+  polish — the test now mirrors the GUI's full prep.toml
+  ingestion (centerline + cap_planes + Slacker'd-Ecoflex inner
+  + DS20A outer).  Cargo reproduces the GUI bit-for-bit at all
+  5 cavities (§5.4 + §5.6).  The GUI ↔ cargo divergence puzzle
+  is **RESOLVED**; cargo is now a valid regression substrate
+  for the H4-2-C arc.
 - **Option B (Phase H F-bar / mixed-u-p)** stays the long-term
   right answer; H4-2-C is the quick-unlock in the meantime.
 

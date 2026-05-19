@@ -4998,14 +4998,24 @@ mod tests {
             return;
         }
         let prep_path = PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.prep.toml");
-        let prep_text =
-            std::fs::read_to_string(&prep_path).expect("load iter-1 prep.toml for centerline");
+        let prep_text = std::fs::read_to_string(&prep_path).expect("load iter-1 prep.toml");
         let centerline =
             crate::parse_centerline(&prep_text).expect("parse centerline from prep.toml");
         assert!(
             centerline.len() >= 2,
             "iter-1 prep.toml must carry a centerline polyline",
         );
+        // Cap planes from the same prep.toml — the GUI loads these via
+        // `cf_cap_planes::parse_cap_planes` and threads them into
+        // `build_insertion_geometry`'s `cap_planes` arg.  Pre-polish
+        // versions of this test passed `&[]` (no caps) which routed
+        // `pinned_floor_shell` through the closed-cavity short-circuit
+        // — a structurally different FEM problem than the GUI's
+        // open-mouth-with-floor-pinned-at-cap topology.  iter-1's
+        // prep.toml has one `[[caps.loops]]` record at z ≈ -53 mm
+        // with `included = true`.
+        let cap_planes =
+            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse cap planes from prep.toml");
         let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
 
         let cavities_mm = [3.0_f64, 5.0, 6.0, 7.0, 8.0];
@@ -5015,9 +5025,11 @@ mod tests {
         eprintln!(
             "H4.3 sweep — iter-1 sock_over_capsule.cleaned.stl, dual-layer \
              Ecoflex 00-30 + 50% Slacker INNER 10 mm + DS20A OUTER 3 mm \
-             (iter-1 GUI default), n_steps = {}, centerline {} points",
+             (iter-1 GUI default), n_steps = {}, centerline {} points, \
+             {} cap plane(s)",
             n_steps,
             centerline.len(),
+            cap_planes.len(),
         );
         eprintln!(
             "  H4-2-C asymmetric one-sided bound: only the tensile cap \
@@ -5050,13 +5062,14 @@ mod tests {
                 ],
             };
             let t0 = Instant::now();
-            let geometry = match build_insertion_geometry(&scan, &design, &[], 2_500, cell_size_m) {
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!("  build_insertion_geometry FAILED: {e}");
-                    continue;
-                }
-            };
+            let geometry =
+                match build_insertion_geometry(&scan, &design, &cap_planes, 2_500, cell_size_m) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        eprintln!("  build_insertion_geometry FAILED: {e}");
+                        continue;
+                    }
+                };
             eprintln!(
                 "  geometry: {} tets, {} vertices, built in {:.1}s",
                 geometry.n_tets,
