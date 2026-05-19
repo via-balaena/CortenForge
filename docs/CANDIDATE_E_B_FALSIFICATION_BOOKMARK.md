@@ -438,79 +438,104 @@ resonance.  C′.a's ε = 0.075 mm and E.b's `(7, 1 mm)` were both
 tuned to fix the N=16 step-0 chattering — but the fix wasn't
 necessary at other N values.
 
-**Reframe B — Yeoh wall is Newton-overshoot, not material limit.**
-Compare two N values reaching the same step-2 target depth:
+**Reframe B — Yeoh wall fires at the SECOND step's start because
+the FIRST step silently converged to an invalid state.** Reading
+`check_validity_at_step_start`'s docstring (commit before this §10
+addendum):
 
-- N=12 step 1 reaches d=6.95 mm from rest CLEANLY (max_stretch
-  nowhere near 1.0 — no Yeoh panic).
-- N=24 step 2 tries to reach d=6.94 mm from a warm-started state
-  at d=3.47 mm.  Yeoh fires at tet 3206 ms=1.051.
+> "this check runs once per `Solver::step` call **before** the
+> Newton loop starts (Decision Q 'at step start')"
 
-**Same target depth, different paths, different outcomes.**  The
-geometry CAN handle d=6.95 mm (proven by N=12 step 1).  Newton's
-iteration scheme at step 2+, starting from a warm-started deformed
-state, makes a trial step that overshoots tet 3206's deformation
-gradient past validity — Armijo gets no chance to backtrack
-because the validity check fires DURING the energy/gradient eval
-on the trial state.
+The validity check runs ONCE per step, at step START.  So step 1
+of N=12 starts from REST (clean), Newton iterates, finds an
+equilibrium at d=6.95 mm where tet 3206 has σ_max = 2.05 (past
+the validity bound 1.000 + 1.0 = 2.0).  Newton's iteration
+doesn't check validity — the Yeoh energy + gradient + Hessian
+are well-defined arithmetically at σ = 2.05 (silicone has torn,
+but the math hasn't).  So step 1 records a "converged" output
+that's PHYSICALLY MEANINGLESS — F = 8.16 N at a deformed state
+where the silicone has already exceeded its validity envelope.
 
-### 10.3 Universal Yeoh stub at step 2+ regardless of N
+Step 2 of N=12 then starts → `check_validity_at_step_start` sees
+tet 3206 at σ=2.05 in the warm-started state → panics.
+
+**This is NOT a Newton-iteration-overshoot.  It's a check-policy
+hole.**  Step 1 reached d=6.95 mm by Newton iterating into the
+invalid envelope without anyone catching it.  The "1/N converged"
+results across N = 8, 12, 20, 24 are ALL fake — step 1 in each
+case ends in an invalid state.
+
+**Step 1 of N=12 reaching d=6.95 mm from rest "cleanly" is not
+clean** — the cleanness was an artifact of the check-once-at-
+start policy missing the post-Newton invalid state.  H3 (true
+material limit, from §3.1) was actually correct; the path-
+dependence appearance was an artifact of the policy hole.
+
+### 10.3 Universal Yeoh ms ≈ 1.05 across N values — material limit
 
 Across N values that survive step 1, **step 2 always hits Yeoh at
 tet 3206 with max_stretch ≈ 1.051 - 1.057**.  Step-2 target
 depths varied from 6.94 mm (N=24) to 20.84 mm (N=8) — a 3× range
-— but the Yeoh ms barely budges.  Pattern strongly suggests
-Newton's first-trial iteration at step 2 extrapolates a similar
-displacement pattern regardless of step size, hitting the same
-geometric overshoot near tet 3206.
+— but the Yeoh ms barely budges.  Reframe B explains this: the
+ms is measured at the WARM-STARTED state (= step 1's converged
+state, which is the SAME equilibrium structure across N values
+because Newton finds the same compression-fit equilibrium
+regardless of how it gets there).  The ms ≈ 1.05 IS the
+equilibrium per-tet strain at this geometry + mesh resolution;
+finer mesh would distribute it across more tets.
 
 ### 10.4 What this means for the recon ladder
 
 §3's H1/H2/H3 hypothesis ranking was framed around "the Yeoh wall
-is the new binding constraint" — that framing is now superseded:
+is the new binding constraint" — after the §10.2 reframe B
+correction, the framing is restored to:
 
-- H1 (slide-step-size artifact): tested + falsified for
-  Yeoh-wall-avoidance (N=32 chatters at step 0 even at cavity = 5
-  mm where N=16 was clean).  But H1's spirit (smaller steps) IS
-  what produces step-1 convergence at cavity = 6 mm via N=12, 20,
-  24 — just at the cost of step-2 Yeoh overshoot.
-- H2 (mesh refinement): less directly relevant now.  Tet 3206's
-  validity violation is a Newton-trial-state issue; finer mesh
-  would distribute the overshoot across more tets but Newton would
-  still overshoot.
-- H3 (true material limit): FALSIFIED by reframe B.  d=6.94 mm IS
-  reachable (N=12 proves it from rest).  The limit is solver
-  implementation, not material.
+- H1 (slide-step-size artifact): FALSIFIED.  N=32 chatters at
+  step 0 even at cavity = 5 mm where N=16 was clean; N=8/12/20/24
+  step 1 "convergence" was fake-converged into invalid Yeoh
+  envelope.  Slide-step size doesn't fix the wall.
+- H2 (mesh refinement): the real product fix.  Finer mesh
+  distributes per-tet strain so no single tet exceeds Yeoh
+  validity at the equilibrium that requires high local stretch.
+  ~500 LOC mesh-refinement primitive.
+- H3 (true material limit): CONFIRMED.  d = 6.95 mm at cavity =
+  6 mm IS a state where the per-tet strain at tet 3206 reaches
+  σ = 2.05 (past silicone validity).  The "N=12 step 1 cleanly
+  reaches d=6.95 mm" was the fake-convergence artifact — the
+  converged state is invalid; the check just didn't see it.
 
-**New recon path** — sub-arc on Newton overshoot at step 2+ of the
-sliding ramp:
+**Two fixes shipped + remaining sub-arc:**
 
-- (a) Damped first-iter step at sliding-ramp step 2+ — limit the
-  Newton trial state to within validity by scaling the first
-  iteration's step size.
-- (b) Per-tet Yeoh-aware trial limiter — pre-screen Newton's trial
-  state against `max_stretch_deviation` before energy eval, scale
-  back if any tet exceeds 1.0.
-- (c) Micro-substep at sliding-ramp step 2+ — split each step 2+
-  into 2 micro-substeps so Newton's trial states stay smaller.
+- **Option 2 SHIPPED in commit after this bookmark update** —
+  end-of-solve validity check (sister of the at-step-start check)
+  catches the fake-convergence honestly.  cavity > 5 mm sliding
+  ramps will now panic at step 1 instead of step 2, surfacing the
+  true material limit.  Defensive fix; doesn't raise the cap.
+- **Option 3 (mesh refinement) = sub-arc** for raising the cap
+  past 5 mm.  Big arc; deferred until cap > 5 mm becomes a
+  product priority.
+- **Option 4 (Yeoh bound calibration)** also deferred — current
+  bound `max_stretch_deviation ≤ 1.0` was Phase 4 fail-closed
+  default; real silicone limits vary 4-7× (σ = 4-7) per
+  datasheets.  Per-silicone calibration would be a separate arc.
 
-(a) and (c) are sim-soft-side fixes; (b) requires Yeoh-internal
-plumbing.  Start with (a) ~50 LOC implement-measure-revert.
-
-### 10.5 What gets reverted from this commit
+### 10.5 What gets reverted from the sweep commit
 
 The sweep scaffolding (cap raise 5 → 6 mm + temp comments) is
-reverted in this commit.  All sim-soft E.b surface plumbing
-stays.  `DEFAULT_N_STEPS = 16` stays as the production default
-(other N values introduce per-step regressions that aren't
-sweep-tested against the full cavity-≤-5 mm baseline).
+reverted.  All sim-soft E.b surface plumbing stays.
+`DEFAULT_N_STEPS = 16` stays as the production default (other N
+values introduce per-step regressions and the N=8/12/20/24 "1/N
+converged" results were fake-converged invalid states).
 
 ### 10.6 Updated next-session pointer
 
-Sub-arc: Newton overshoot at sliding-ramp step 2+.  Cheap probe
-candidate (a) damped first-iter step; if successful at cavity = 6
-mm without regressing cavity ≤ 5 mm, ship + raise cap to 6 mm
-(real this time, not scaffolding).
+H2 (mesh refinement) is the only remaining lever to raise the
+cap past 5 mm.  Deferred until cap > 5 mm becomes a product
+priority — separate sub-arc with spec + recon.  Until then,
+cap = 5 mm is permanent + the cavity > 5 mm regime will panic
+honestly at step 1 (Option 2 end-of-solve validity check ships
+after this bookmark update — sister of the at-step-start check;
+no false positives across the sim-soft regression net).
 
 ---
 
