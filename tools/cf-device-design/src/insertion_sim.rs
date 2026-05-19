@@ -998,6 +998,41 @@ const INSERTION_CONTACT_DHAT: f64 = 1.0e-3;
 /// C.1 surface.
 const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.075e-3;
 
+/// Number of offset samples for per-query contact-normal averaging
+/// (F3 recon B candidate E.b — orthogonal axis to
+/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`], which smooths the gap
+/// function `(d̂ − sd)` instead). `1` (default) disables averaging —
+/// `n = prim.grad(p)` bit-equal to pre-E.b behavior. `7` enables the
+/// 6-face axis-aligned neighborhood
+/// (`n_avg = normalize(prim.grad(p) + Σ prim.grad(p ± r·e_{x,y,z}))`).
+///
+/// **Initial value `1` (disabled)** — pending the cavity = 6 mm
+/// sweep per `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` §6. The
+/// E.b.4 case-A ship re-pins this value + mirrors the full `(k, r)`
+/// sweep table in this docstring (parallel to
+/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`]'s C′.a sweep-table mirror)
+/// + updates `insertion_contact_normal_avg_k_sentinel` below.
+///
+/// **Bit-equal-when-disabled wire-up** per
+/// [[feedback-spec-falsified-revert-opt-in-keep-surface]] —
+/// `intruder_contact_at` and `intruder_contact_sliding_at` both
+/// route through the
+/// [`PenaltyRigidContact::with_params_and_smoothing_and_normal_averaging`]
+/// family (the `..._and_interior_cutoff` variant for the sliding
+/// case). At `k = 1` the `averaged_normal` helper short-circuits to
+/// `prim.grad(p)` bit-equal; flipping this const back to `1` after a
+/// future re-pin restores bit-equal pre-E.b arithmetic.
+const INSERTION_CONTACT_NORMAL_AVG_K: u8 = 1;
+
+/// Offset radius (m) for per-query contact-normal averaging. Only
+/// consulted when [`INSERTION_CONTACT_NORMAL_AVG_K`] `> 1`. Default
+/// `0.0` matches the disabled state.
+///
+/// E.b.4 case-A ship re-pins this value alongside
+/// [`INSERTION_CONTACT_NORMAL_AVG_K`]. Sweep range per the spec §2.3
+/// initial values: `{0.5, 1.0, 2.0} mm` at the cavity = 6 mm probe.
+const INSERTION_CONTACT_NORMAL_AVG_RADIUS_M: f64 = 0.0;
+
 /// Build the rigid-intruder contact primitive for a given press-fit
 /// `interference_m` — the scan SDF offset by
 /// `interference_m + cavity_offset_m` (so `interference_m =
@@ -1013,11 +1048,13 @@ fn intruder_contact_at(
 ) -> PenaltyRigidContact {
     let intruder_solid =
         Solid::from_sdf(intruder.clone(), bounds).offset(interference_m + cavity_offset_m);
-    PenaltyRigidContact::with_params_and_smoothing(
+    PenaltyRigidContact::with_params_and_smoothing_and_normal_averaging(
         vec![intruder_solid],
         INSERTION_CONTACT_KAPPA,
         INSERTION_CONTACT_DHAT,
         INSERTION_CONTACT_SMOOTHING_EPS_M,
+        INSERTION_CONTACT_NORMAL_AVG_K,
+        INSERTION_CONTACT_NORMAL_AVG_RADIUS_M,
     )
 }
 
@@ -2377,11 +2414,13 @@ fn intruder_contact_sliding_at(
     let transformed = TransformedSdf::new(intruder.clone(), slide_pose);
     let intruder_solid =
         Solid::from_sdf(transformed, bounds).offset(interference_m + cavity_offset_m);
-    PenaltyRigidContact::with_params_and_smoothing_and_interior_cutoff(
+    PenaltyRigidContact::with_params_and_smoothing_and_normal_averaging_and_interior_cutoff(
         vec![intruder_solid],
         INSERTION_CONTACT_KAPPA,
         INSERTION_CONTACT_DHAT,
         INSERTION_CONTACT_SMOOTHING_EPS_M,
+        INSERTION_CONTACT_NORMAL_AVG_K,
+        INSERTION_CONTACT_NORMAL_AVG_RADIUS_M,
         2.0 * cavity_inset_m,
     )
 }
@@ -5181,6 +5220,70 @@ mod tests {
                 && INSERTION_CONTACT_SMOOTHING_EPS_M.is_finite(),
             "smoothing window must be non-negative + finite",
         );
+    }
+
+    /// F3 recon B candidate E.b (per-query normal averaging) —
+    /// initial state sentinel: `(k, r) = (1, 0.0)` pins the
+    /// bit-equal-when-disabled wire-up. The E.b.4 case-A ship
+    /// re-pins these values, updates the assertion expected values,
+    /// and mirrors the full `(k, r)` sweep table in the const
+    /// docstrings (parallel to C′.a's 3-surface mirror pattern).
+    ///
+    /// MAINTENANCE NOTE: this sentinel + the
+    /// [`INSERTION_CONTACT_NORMAL_AVG_K`] /
+    /// [`INSERTION_CONTACT_NORMAL_AVG_RADIUS_M`] docstrings mirror
+    /// each other.  If the const values change, update both
+    /// surfaces in lockstep (sentinel asserts the new value; const
+    /// docstrings carry the sweep evidence).
+    #[test]
+    fn insertion_contact_normal_avg_sentinel() {
+        assert_eq!(
+            INSERTION_CONTACT_NORMAL_AVG_K, 1,
+            "INSERTION_CONTACT_NORMAL_AVG_K expected 1 (E.b disabled — \
+             pending the cavity = 6 mm sweep per \
+             docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md §6); got \
+             {INSERTION_CONTACT_NORMAL_AVG_K}. If you changed the \
+             value to test a recon candidate, also update the const \
+             docstring with the sweep evidence + this sentinel's \
+             expected value.",
+        );
+        // f64 equality is intentional + correct: 0.0 is exactly
+        // representable + the initial pinned value is exactly 0.0.
+        #[allow(clippy::float_cmp)]
+        let r_is_zero = INSERTION_CONTACT_NORMAL_AVG_RADIUS_M == 0.0;
+        assert!(
+            r_is_zero,
+            "INSERTION_CONTACT_NORMAL_AVG_RADIUS_M expected 0.0 \
+             (matches the disabled k=1 state); got \
+             {INSERTION_CONTACT_NORMAL_AVG_RADIUS_M}. If you changed \
+             the value to test a recon candidate, also update the \
+             const docstring + this sentinel's expected value.",
+        );
+        // Bounds well-formedness — guards against future re-pinning
+        // outside the closed-set k validation in the constructor.
+        assert!(
+            matches!(INSERTION_CONTACT_NORMAL_AVG_K, 1 | 7),
+            "k must be in sim-soft's iter-1 closed set {{1, 7}}",
+        );
+        assert!(
+            INSERTION_CONTACT_NORMAL_AVG_RADIUS_M >= 0.0
+                && INSERTION_CONTACT_NORMAL_AVG_RADIUS_M.is_finite(),
+            "normal-averaging radius must be non-negative + finite",
+        );
+        // Composition invariant: k > 1 requires r > 0 to avoid the
+        // silent-no-op caller mistake the sim-soft constructor asserts.
+        // At the disabled pin (k = 1) the inner assertion's predicate
+        // is statically true-or-skipped; #[allow] suppresses clippy's
+        // assertion-has-constant-value lint because the gate IS the
+        // invariant — when E.b.4 case A re-pins k to 7, this branch
+        // becomes the load-bearing assertion.
+        #[allow(clippy::assertions_on_constants)]
+        if INSERTION_CONTACT_NORMAL_AVG_K > 1 {
+            assert!(
+                INSERTION_CONTACT_NORMAL_AVG_RADIUS_M > 0.0,
+                "normal-averaging radius must be strictly positive when k > 1",
+            );
+        }
     }
 
     /// Solver-only FEM-correctness gate for the synthetic icosphere
