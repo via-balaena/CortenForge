@@ -1008,10 +1008,12 @@ const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.075e-3;
 ///
 /// **Initial value `1` (disabled)** — pending the cavity = 6 mm
 /// sweep per `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` §6. The
-/// E.b.4 case-A ship re-pins this value + mirrors the full `(k, r)`
+/// E.b.4 case-A ship re-pins this value, mirrors the full `(k, r)`
 /// sweep table in this docstring (parallel to
-/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`]'s C′.a sweep-table mirror)
-/// + updates `insertion_contact_normal_avg_k_sentinel` below.
+/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`]'s C′.a sweep-table mirror),
+/// and updates `insertion_contact_normal_avg_sentinel` below.
+/// Pairs with [`INSERTION_CONTACT_NORMAL_AVG_RADIUS_M`] — both
+/// consts re-pin together at case A.
 ///
 /// **Bit-equal-when-disabled wire-up** per
 /// [[feedback-spec-falsified-revert-opt-in-keep-surface]] —
@@ -2399,6 +2401,18 @@ pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
 /// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the original
 /// design that shipped; bookmark §9 for the empirical ship rationale
 /// and §5 for the spec's partially-falsified predictions).
+///
+/// The per-query normal averaging `(k, r)` pair
+/// ([`INSERTION_CONTACT_NORMAL_AVG_K`] +
+/// [`INSERTION_CONTACT_NORMAL_AVG_RADIUS_M`], F3 recon B candidate
+/// E.b — see `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md`) smooths
+/// the contact normal direction at the per-pair query site by
+/// averaging `prim.grad` over the `k - 1` axis-aligned offset
+/// points + the center sample. Initial pin `(1, 0.0)` short-circuits
+/// to `prim.grad(p)` bit-equal pre-E.b; the E.b.4 case-A re-pin
+/// engages the averaging if the cavity = 6 mm sweep finds a
+/// converging `(k, r)`.
+///
 /// The constructor short-circuits to the pre-C.2
 /// [`PenaltyRigidContact::with_params_and_interior_cutoff`] path at
 /// `ε = 0`; flipping the const back to 0 would restore bit-equal
