@@ -1006,14 +1006,33 @@ const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.075e-3;
 /// 6-face axis-aligned neighborhood
 /// (`n_avg = normalize(prim.grad(p) + Σ prim.grad(p ± r·e_{x,y,z}))`).
 ///
-/// **Initial value `1` (disabled)** — pending the cavity = 6 mm
-/// sweep per `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` §6. The
-/// E.b.4 case-A ship re-pins this value, mirrors the full `(k, r)`
-/// sweep table in this docstring (parallel to
-/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`]'s C′.a sweep-table mirror),
-/// and updates `insertion_contact_normal_avg_sentinel` below.
-/// Pairs with [`INSERTION_CONTACT_NORMAL_AVG_RADIUS_M`] — both
-/// consts re-pin together at case A.
+/// **Pinned at `1` (disabled) — E.b.4 case-E falsification ship
+/// 2026-05-19**.  The cavity = 6 mm sweep at
+/// `(k=7, r ∈ {0.5, 1.0, 2.0} mm)` all converged step 1 (seated
+/// 5.21 mm) but hit a Yeoh material-validity wall at step 2.  The
+/// 5 mm sanity gate at the candidate pin `(7, 1.0 mm)` ALSO
+/// regressed to 1/16 (step 2 Yeoh wall, tet 3258
+/// max_stretch_deviation = 1.002).  3 mm sanity gate held at 16/16
+/// ZERO LM rescues, but the 5 mm regression is the spec's CASE E —
+/// E.b's averaging shifts the equilibrium toward the Yeoh validity
+/// bound at every cavity, costing 5 mm baseline for no net gain at
+/// 6 mm (the 1/16 "win" was the Yeoh wall surfacing — same outcome
+/// a hypothetical no-chattering cavity-6mm solve would have
+/// reached).  Full falsification analysis in
+/// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md`.
+///
+/// **Sweep table** (cavity = 6 mm, layers 10+3 mm,
+/// sock_over_capsule.cleaned.stl, 2026-05-19):
+///
+/// | `(k, r)` | step 1 | F (N) | iters | step 2 |
+/// |---|---|---|---|---|
+/// | (1, 0) baseline | 0/16 r_norm 0.536 chattering stall | — | 150 cap | — |
+/// | (7, 0.5 mm) | 1/16 seated 5.21 mm | 15.23 | 34 | Yeoh tet 1458 |
+/// | (7, 1.0 mm) | 1/16 seated 5.21 mm | 8.1 | ~26 | Yeoh tet 3206 |
+/// | (7, 2.0 mm) | 1/16 seated 5.21 mm | 8.15 | 25 | Yeoh tet (likely) |
+///
+/// Sanity gates at `(k=7, r=1.0 mm)`: 3 mm 16/16 clean ✓; 5 mm
+/// 1/16 Yeoh tet 3258 ✗ (case-E regression).
 ///
 /// **Bit-equal-when-disabled wire-up** per
 /// [[feedback-spec-falsified-revert-opt-in-keep-surface]] —
@@ -1022,17 +1041,22 @@ const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.075e-3;
 /// [`PenaltyRigidContact::with_params_and_smoothing_and_normal_averaging`]
 /// family (the `..._and_interior_cutoff` variant for the sliding
 /// case). At `k = 1` the `averaged_normal` helper short-circuits to
-/// `prim.grad(p)` bit-equal; flipping this const back to `1` after a
-/// future re-pin restores bit-equal pre-E.b arithmetic.
+/// `prim.grad(p)` bit-equal — pre-E.b arithmetic preserved. Surface
+/// plumbing (sim-soft constructors + helper + 9 unit tests in
+/// `penalty_normal_averaging.rs` + this routing) survives the
+/// revert; a future recon composing E.b with a Yeoh-wall fix flips
+/// this const + pairs with
+/// [`INSERTION_CONTACT_NORMAL_AVG_RADIUS_M`].
 const INSERTION_CONTACT_NORMAL_AVG_K: u8 = 1;
 
 /// Offset radius (m) for per-query contact-normal averaging. Only
-/// consulted when [`INSERTION_CONTACT_NORMAL_AVG_K`] `> 1`. Default
-/// `0.0` matches the disabled state.
-///
-/// E.b.4 case-A ship re-pins this value alongside
-/// [`INSERTION_CONTACT_NORMAL_AVG_K`]. Sweep range per the spec §2.3
-/// initial values: `{0.5, 1.0, 2.0} mm` at the cavity = 6 mm probe.
+/// consulted when [`INSERTION_CONTACT_NORMAL_AVG_K`] `> 1`. Pinned
+/// at `0.0` per the case-E falsification — see the K const
+/// docstring above for the full sweep table and falsification
+/// rationale. A future recon composing E.b with a Yeoh-wall fix
+/// would re-pin this value (initial sweep range tested:
+/// `{0.5, 1.0, 2.0} mm` per
+/// `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` §2.3).
 const INSERTION_CONTACT_NORMAL_AVG_RADIUS_M: f64 = 0.0;
 
 /// Build the rigid-intruder contact primitive for a given press-fit

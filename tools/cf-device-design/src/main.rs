@@ -224,55 +224,71 @@ impl CavityState {
         }
     }
 
-    /// Slider range for the cavity inset, in meters. **Temporarily
-    /// raised to 6 mm** as E.b.3 sweep scaffolding (F3 recon B
-    /// candidate E.b, see
-    /// `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` §6 sweep
-    /// protocol).  Reverts to 5 mm at E.b.4 case B (if no `(k, r)`
-    /// converges) or stays at 6 mm at case A.
+    /// Slider range for the cavity inset, in meters. Capped at **5 mm**
+    /// (F3 recon B candidate C′.a ε-bisection ship 2026-05-18
+    /// LATE-EVENING, per
+    /// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md` §3 C′.a +
+    /// C.3 6 mm probe gate stall).  Briefly raised to 6 mm during
+    /// E.b.3 sweep scaffolding (2026-05-19), reverted to 5 mm at
+    /// E.b.4 case-E falsification — see
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` for the sweep
+    /// result + the Yeoh-wall finding that supersedes the C-arc.
     ///
-    /// **C′.a baseline pre-E.b**: 5 mm is the highest cavity the
-    /// C′.a-pinned ε = 0.075 mm (`INSERTION_CONTACT_SMOOTHING_EPS_M`
-    /// in `insertion_sim.rs`) converges 16/16 at.  C′.a bisection
-    /// found a narrow converging window centered at ε ≈ 0.075 mm;
-    /// the C.3 cavity = 6 mm probe gate at that ε stalled at
-    /// `r_norm 0.536` (Newton iter cap 150, 2 LM rescues iter 81 +
-    /// 139).  E.b probes hyp 1 (SDF normal discontinuity at
-    /// `prim.grad` partition boundaries) by averaging the contact
-    /// normal over `k` axis-aligned offset samples — if a `(k, r)`
-    /// converges 16/16 at cavity = 6 mm (and 3 + 5 mm sanity gates
-    /// preserved), case A pins the cap at 6 mm permanently.
+    /// **5 mm is the highest cavity the chosen ε = 0.075 mm**
+    /// (`INSERTION_CONTACT_SMOOTHING_EPS_M` in `insertion_sim.rs`)
+    /// **converges 16/16 at**.  C′.a bisection found a narrow
+    /// converging window centered at ε ≈ 0.075 mm; the C.3 cavity =
+    /// 6 mm probe gate at that ε stalled at `r_norm 0.536` (Newton
+    /// iter cap 150, 2 LM rescues iter 81 + 139), and 7 mm was
+    /// skipped (strictly worse than 6 mm by the chattering-envelope
+    /// monotonicity argument — deeper cavities push more pairs into
+    /// the active set + amplify the active-set discontinuity).  The
+    /// smoothing sweet spot is cavity-specific + doesn't generalize
+    /// past 5 mm with a single pinned ε.
     ///
-    /// Cavity = 3 mm baseline preserved at the C′.a ε (verified
+    /// Cavity = 3 mm baseline preserved at the new ε (verified
     /// user-driven visual gate 2026-05-18 LATE-EVENING, 16/16 +
     /// ZERO LM rescues — orthogonal to gated-A's class-1 rescue).
     /// Cavity = 5 mm clears 16/16 with ZERO LM rescues + ZERO Yeoh
-    /// failures.  E.b.3 sweep verifies these baselines hold at the
-    /// chosen `(k, r)` before pinning the 6 mm cap.
+    /// failures.  The cap thus expands the design space 4 → 5 mm
+    /// (25 % more compression headroom) at no regression cost.
+    ///
+    /// **Cavity > 5 mm needs further recon** — E.b.4 case-E
+    /// falsification (2026-05-19) revealed that per-query normal
+    /// averaging cracks the chattering envelope but unmasks a
+    /// **Yeoh material-validity wall at step 2** that's now the
+    /// binding constraint at cavity > 5 mm.  The wall fires at
+    /// cavity 5 + 6 mm step 2 (max_stretch_deviation ≈ 1.002 - 1.141
+    /// at various tets).  Future cap-raise work needs a Yeoh-wall
+    /// fix (slide-step bisection, mesh refinement, or accept the
+    /// material limit), not just a solver-side smoothing
+    /// mechanism.  See
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` for the full
+    /// pivot.
     ///
     /// Yeoh material validity (Phase 4 Decision Q fail-closed) becomes
-    /// the binding constraint at ≥ 8 mm (F3.4 Gate C tet 1324 reached
-    /// `max_stretch_deviation = 1.209` at cavity 8 mm); 4-7 mm is
-    /// MATERIAL-VALID territory where the solver envelope happens to
-    /// bite first. The 6 mm scaffolding stays well inside material
-    /// validity — a future composed mechanism (E.b + F.a / D / etc.)
-    /// can raise the cap up to ~7 mm before material validity has to
-    /// be re-evaluated.
+    /// the binding constraint at ≥ 8 mm per the F3.4 Gate C trace
+    /// (tet 1324 reached `max_stretch_deviation = 1.209` at cavity 8
+    /// mm).  E.b's sweep at cavity 5 + 6 mm step 2 surfaces a
+    /// SOFTER form of the same constraint earlier in the cavity
+    /// range than F3.4 found — the binding-constraint boundary
+    /// between solver envelope and material validity is now known
+    /// to sit at ~5 mm with the current slide-step protocol.
     ///
-    /// Physical strain context: 6 mm interference on a typical body-
-    /// part scan diameter (~70 mm) is ~8.5 % engineered compression —
+    /// Physical strain context: 5 mm interference on a typical body-
+    /// part scan diameter (~70 mm) is ~7 % engineered compression —
     /// solidly in compression-fit territory.
     ///
     /// **MAINTENANCE NOTE**: if you change the cap value here, mirror
     /// the change to **(1)** the egui label below at
-    /// [`render_cavity_section`] (`(capped at 6 mm — ...)` string),
+    /// [`render_cavity_section`] (`(capped at 5 mm — ...)` string),
     /// AND **(2)** the sentinel test
-    /// [`tests::cavity_inset_slider_range_zero_to_six_mm`] which pins
+    /// [`tests::cavity_inset_slider_range_zero_to_five_mm`] which pins
     /// the bound + carries the per-cap rationale. All three surfaces
     /// must agree on cap value AND on the binding-constraint
     /// attribution (solver envelope vs material validity vs other).
     fn inset_slider_range_m() -> (f64, f64) {
-        (0.0, 0.006)
+        (0.0, 0.005)
     }
 }
 
@@ -2099,17 +2115,15 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
                 state.inset_m = inset_mm * 0.001;
             }
             ui.label("(silicone skin stretches inset_m over appendage)");
-            // MAINTENANCE NOTE: this 6 mm + E.b sweep-scaffolding
-            // wording mirrors [`CavityState::inset_slider_range_m`]'s
-            // docstring + the `cavity_inset_slider_range_zero_to_six_mm`
-            // sentinel test's comment. If cap value or binding-
-            // constraint attribution changes, mirror to BOTH peer
-            // surfaces.
+            // MAINTENANCE NOTE: this 5 mm + C′.a-pinned wording
+            // mirrors [`CavityState::inset_slider_range_m`]'s docstring
+            // + the `cavity_inset_slider_range_zero_to_five_mm` sentinel
+            // test's comment. If cap value or binding-constraint
+            // attribution changes, mirror to BOTH peer surfaces.
             ui.label(
-                "(capped at 6 mm — E.b.3 sweep scaffolding probing per-query \
-                 normal averaging at hyp 1; C′.a baseline was 5 mm. Reverts \
-                 to 5 mm if no (k, r) converges at cavity = 6 mm — see \
-                 CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md)",
+                "(capped at 5 mm — highest cavity the C′.a-pinned ε converges 16/16 at; \
+                 E.b.4 case-E falsification 2026-05-19 unmasked a Yeoh wall at cavity > 5 mm \
+                 — see CANDIDATE_E_B_FALSIFICATION_BOOKMARK)",
             );
         });
 }
@@ -2995,37 +3009,35 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn cavity_inset_slider_range_zero_to_six_mm() {
-        // F3 recon B E.b.3 sweep scaffolding (this commit) — cap
-        // temporarily raised 5 → 6 mm to unlock the cavity = 6 mm
-        // sweep probing per-query normal averaging (hyp 1 from the
-        // C.2 falsification bookmark). Reverts to 5 mm at E.b.4
-        // case B if no (k, r) converges; stays at 6 mm at case A.
+    fn cavity_inset_slider_range_zero_to_five_mm() {
+        // F3 recon B C′.a ship (2026-05-18 LATE-EVENING) — cap pinned
+        // at 5 mm = highest cavity the chosen ε = 0.075 mm
+        // (`INSERTION_CONTACT_SMOOTHING_EPS_M`) converges 16/16 at.
+        // The C′.a ε-bisection found a narrow converging window
+        // centered at ε ≈ 0.075 mm (cavity 5 mm); the C.3 cavity = 6
+        // mm probe gate at that ε stalled at r_norm 0.536 (Newton
+        // iter cap 150, 2 LM rescues). 7 mm skipped (strictly worse
+        // than 6 mm by the chattering-envelope monotonicity
+        // argument). Cavity = 3 mm baseline preserved at the new ε
+        // (16/16, ZERO LM rescues). Cap raised one notch above the
+        // gated-A 4 mm baseline as a net product-knob win.
         //
-        // Pre-E.b baseline: 5 mm = highest cavity the C′.a-pinned
-        // ε = 0.075 mm (`INSERTION_CONTACT_SMOOTHING_EPS_M`)
-        // converges 16/16 at. The C′.a ε-bisection found a narrow
-        // converging window; the C.3 cavity = 6 mm probe gate at
-        // that ε stalled at r_norm 0.536 (Newton iter cap 150, 2 LM
-        // rescues). E.b averages the contact normal over k axis-
-        // aligned offset samples to smooth the slope kinks at the
-        // grid-cell partition boundaries in `prim.grad` —
-        // orthogonal to C′.a's gap-function smoothing.
+        // Was 6 mm briefly (E.b.3 sweep scaffolding 2026-05-19,
+        // reverted same-day at E.b.4 case-E falsification — see
+        // `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md`).
+        // Pre-C′.a history: 4 mm (F3 recon A outcome B), 8 mm
+        // briefly (C.2 sweep scaffolding earlier in the C-arc), 8
+        // mm (F4.1), 15 mm (pre-F4.1) historically.
         //
-        // Cap history: 8 mm briefly (C′.a sweep scaffolding), 5 mm
-        // (C′.a case A pin), 6 mm (E.b.3 scaffolding — this).
-        // Pre-C′.a: 4 mm (F3 recon A outcome B), 8 mm briefly (C.2
-        // sweep scaffolding earlier in the C-arc), 8 mm (F4.1), 15
-        // mm (pre-F4.1) historically.
-        //
-        // MAINTENANCE NOTE: this 6 mm bound + the rationale above mirror
+        // MAINTENANCE NOTE: this 5 mm bound + the rationale above mirror
         // the docstring on `CavityState::inset_slider_range_m` + the
-        // egui label in `render_cavity_section` ("capped at 6 mm —
-        // E.b.3 sweep scaffolding ..."). If cap value or binding-
-        // constraint attribution changes, mirror to BOTH peer surfaces.
+        // egui label in `render_cavity_section` ("capped at 5 mm —
+        // highest cavity the C′.a-pinned ε converges 16/16 at ..."). If
+        // cap value or binding-constraint attribution changes, mirror
+        // to BOTH peer surfaces.
         let (min_m, max_m) = CavityState::inset_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
-        assert!(approx_eq(max_m, 0.006, 1e-12));
+        assert!(approx_eq(max_m, 0.005, 1e-12));
     }
 
     #[test]
