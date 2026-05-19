@@ -239,10 +239,16 @@ impl CavityState {
     /// escalates, but lands at the SAME structural floor (Armijo stall
     /// at iter 61 with `r_norm = 1.784`) — `H_contact(x)`
     /// discontinuity at active-pair on/off boundaries is the binding
-    /// pathology, `+λI` regularization cannot smooth a value
-    /// discontinuity. See `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` for
-    /// the class-2 mental model and candidate C (smoothed-contact
-    /// penalty barrier) recon pointer.
+    /// pathology per the (now partially-falsified) C.0 spec's class-2
+    /// model.  See `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` for the
+    /// class-2 mental model and
+    /// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md` for the C.2
+    /// sweep that empirically falsified the class-2-only diagnosis.
+    ///
+    /// **Cap was briefly raised to 8 mm 2026-05-18 LATE-EVENING as
+    /// scaffolding for the C.2 sweep + reverted same session** when
+    /// the sweep showed non-monotonic ε response.  Restored to the
+    /// gated-A 4 mm baseline pending C-recon's next mechanism choice.
     ///
     /// Yeoh material validity (Phase 4 Decision Q fail-closed) becomes
     /// the binding constraint at ≥ 8 mm (F3.4 Gate C tet 1324 reached
@@ -256,13 +262,12 @@ impl CavityState {
     /// part scan diameter (~70 mm) is ~6% engineered compression —
     /// comfortable compression-fit territory. The 5+ mm region exists
     /// as a real product knob (Yeoh material is happy there + medical-
-    /// compression-grip range) but is gated by the solver envelope
-    /// until candidate C ships.
+    /// compression-grip range) but is gated by the solver envelope.
     ///
-    /// Revisit when candidate C (smoothed contact) ships — that arc's
-    /// expected outcome restores the 5-7 mm design space (class 2 fix);
-    /// raising to 8 mm additionally needs candidate B (material-
-    /// validity safe-step) per the F3 falsification bookmark §4.
+    /// Revisit when a C-recon candidate ships that restores 5+ mm
+    /// design space + raising to 8 mm additionally needs candidate B
+    /// (material-validity safe-step) per the F3 falsification
+    /// bookmark §4.
     ///
     /// **MAINTENANCE NOTE**: if you change the cap value here, mirror
     /// the change to **(1)** the egui label below at
@@ -3000,9 +3005,16 @@ another_future_field = "foo"
         // seedings) but cavity = 5 mm hits a structural class-2 active-
         // set chattering floor at r_norm ≈ 1.784 even with LM rescue
         // engaged. See docs/CAVITY_5MM_CHATTERING_BOOKMARK.md for the
-        // candidate-C (smoothed contact) next-arc that's expected to
-        // restore the 5+ mm design space.
-        // Was 8 mm (F4.1) and 15 mm (pre-F4.1) historically.
+        // class-2 mental model and
+        // docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md for the C.2
+        // sweep that empirically falsified the class-2-only mechanism
+        // on 2026-05-18 LATE-EVENING (non-monotonic ε response across
+        // the {0.1, 0.25} mm sample); the 5+ mm design space stays
+        // gated until a follow-up C-recon picks the next mechanism.
+        //
+        // Was 8 mm (briefly raised as scaffolding for the C.2 sweep
+        // 2026-05-18 LATE-EVENING, reverted same session), 8 mm
+        // (F4.1), 15 mm (pre-F4.1) historically.
         //
         // MAINTENANCE NOTE: this 4 mm bound + the rationale above mirror
         // the docstring on `CavityState::inset_slider_range_m` + the
