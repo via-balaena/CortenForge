@@ -153,14 +153,18 @@ fn penalty_smoothing_energy_continuous_at_d_hat() {
     let delta = 1.0e-9;
     let e_below = c.energy(p, &[Vec3::new(0.0, 0.0, D_HAT - delta)]);
     let e_above = c.energy(p, &[Vec3::new(0.0, 0.0, D_HAT + delta)]);
-    // Both should be ≈ 0.5·κ·delta² (with the smoothed energy being
-    // bit-equal to the hard energy at the band boundary because both
-    // gap = ±delta and ramp = 1 at sd = d̂⁺).
+    // Both should be ≈ 0.5·κ·delta². On the smoothed side at
+    // τ = delta/EPS ≈ 2e-6, the ramp R(τ) = 1 − 10τ³ + 15τ⁴ − 6τ⁵
+    // rounds to bit-exact 1.0 in f64 (the O(τ³) tail is ≈ 8e-17, well
+    // below 1.0's ULP of 2.22e-16). Tolerance 1e-10 is set by the
+    // multiplication-order ULP wobble between `0.5 * κ * delta * delta`
+    // (left-to-right) and `0.5 * κ * gap_sq * r` (pre-squared gap), not
+    // by the ramp value.
     let expected = 0.5 * KAPPA * delta * delta;
     assert_relative_eq!(e_below, expected, max_relative = 1.0e-10);
-    assert_relative_eq!(e_above, expected, max_relative = 1.0e-3);
+    assert_relative_eq!(e_above, expected, max_relative = 1.0e-10);
     // Same-magnitude continuity check across the boundary.
-    assert_relative_eq!(e_below, e_above, max_relative = 1.0e-3);
+    assert_relative_eq!(e_below, e_above, max_relative = 1.0e-10);
 }
 
 /// Gradient C⁰ at `sd = d̂`: the gradient is zero at the boundary

@@ -12,6 +12,14 @@
 //! [`ContactModel`] wiring into the Newton hot path, and the Hertzian
 //! sphere↔plane analytic gate at `tests/hertz_sphere_plane.rs`).
 //!
+//! The active-set-discontinuity pathology specifically is mitigated
+//! (not removed) by the optional
+//! [`PenaltyRigidContact::smoothing_eps_m`] field — a quintic-Hermite
+//! taper over `[d̂, d̂+ε]` that makes the per-pair Hessian C⁰ across
+//! the active boundary. See
+//! `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the design + the
+//! cf-device-design class-2 chattering motivation.
+//!
 //! ## Formula
 //!
 //! For a soft vertex at position `p` and a rigid primitive with
@@ -132,8 +140,9 @@ pub struct PenaltyRigidContact {
     /// Optional active-set lower bound. When `Some(c)`, the active-set
     /// walk excludes pairs whose signed distance is below `-c` (the
     /// pathologically-deep-interior band). `None` (default) preserves
-    /// the original behavior — every pair in the `sd < d̂` contact band
-    /// fires.
+    /// the original behavior — every pair in the contact band fires
+    /// (`sd < d̂` when [`smoothing_eps_m`](Self::smoothing_eps_m) is
+    /// zero, `sd < d̂ + smoothing_eps_m` when smoothing is on).
     ///
     /// Use case: rigid-vs-soft sims where the rigid SDF is defined
     /// globally over a closed-body domain (e.g., a flood-filled
