@@ -244,7 +244,7 @@ impl CavityState {
     ///
     /// Cavity = 3 mm baseline preserved at the new ε (verified
     /// user-driven visual gate 2026-05-18 LATE-EVENING, 16/16 +
-    /// ZERO LM seedings — orthogonal to gated-A's class-1 rescue).
+    /// ZERO LM rescues — orthogonal to gated-A's class-1 rescue).
     /// Cavity = 5 mm clears 16/16 with ZERO LM rescues + ZERO Yeoh
     /// failures.  The cap thus expands the design space 4 → 5 mm
     /// (25 % more compression headroom) at no regression cost.

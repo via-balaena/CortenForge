@@ -553,11 +553,12 @@ The response is **U-shaped with a narrow converging window at
 
 - **Too small** (ε ≤ 0.05 mm): smoothing window doesn't cover
   enough chattering pairs to suppress the active-set
-  discontinuity; r_norm floor improves with ε but plateaus
-  above 0.1.
+  discontinuity; r_norm floor plateaus around ≈ 0.2 (0.025 →
+  0.231, 0.05 → 0.200 — essentially flat).
 - **Too large** (ε ≥ 0.1 mm): band-widening backfire dominates
   (hyp 3 confirmed) — too many pairs in the tapered regime
-  degrades the assembled tangent's eigenstructure.
+  degrades the assembled tangent's eigenstructure, and the
+  r_norm floor climbs sharply (0.1 → 0.384, 0.25 → 0.753).
 
 Hypothesis 3 (band-widening backfire) is **CONFIRMED** as a real
 contributor on the upper side of the optimum.  Hypotheses 1
