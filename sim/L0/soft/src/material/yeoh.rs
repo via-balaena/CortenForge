@@ -67,7 +67,8 @@ impl Yeoh {
 
     /// Set per-material asymmetric principal-stretch bounds (memo D8).
     /// `max` caps tensile stretch (e.g. `0.8 · λ_break`); `min` caps
-    /// compression (e.g. `0.30` engineering-aggressive default).
+    /// compression (e.g. `0.20` H4-2-A research-informed default
+    /// per `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md`).
     #[must_use]
     pub const fn with_principal_stretch_bounds(mut self, max: f64, min: f64) -> Self {
         self.max_principal_stretch = Some(max);

@@ -180,7 +180,7 @@ impl MaterialField {
     /// `silicone_table.rs`) prefer
     /// [`MaterialField::from_yeoh_fields_with_bounds`] — the
     /// 5-arg path threads `0.8 · λ_break` (tensile) and
-    /// `0.30` (compressive, family-uniform) through the
+    /// `0.20` (compressive, family-uniform) through the
     /// aggregator to the per-tet validity gate.
     #[must_use]
     pub fn from_yeoh_fields(

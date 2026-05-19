@@ -243,8 +243,9 @@ testability of the sliding-ramp pipeline.
 
 ## 4. Anchors
 
-- `sim/L0/soft/src/material/silicone_table.rs:493` —
-  `YEOH_MIN_PRINCIPAL_STRETCH = 0.30` declaration + docstring.
+- `sim/L0/soft/src/material/silicone_table.rs:522` —
+  `YEOH_MIN_PRINCIPAL_STRETCH = 0.20` declaration + docstring
+  (loosened 0.30 → 0.20 by H4-2-A, see §5 below).
 - `sim/L0/soft/src/material/material_field.rs:148-244` —
   H4.1 plumbing surface (5-arg constructor + sample_yeoh).
 - `sim/L0/soft/src/solver/backward_euler.rs:679-720` — the
@@ -256,6 +257,92 @@ testability of the sliding-ramp pipeline.
   artifact).
 - `docs/CANDIDATE_H4_YEOH_BOUND_CALIBRATION_SPEC.md` §5 —
   falsifier matrix where case D is anticipated.
+
+---
+
+## 5. §POST-RESOLUTION — H4-2-A 0.20 floor falsifies "loosen the floor" thesis
+
+2026-05-19 LATE-NIGHT.  Per
+`docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` §3 Option A, the
+family-uniform `YEOH_MIN_PRINCIPAL_STRETCH` was loosened from
+0.30 → 0.20 (research-informed default per Sparks et al. 2015
+unconfined-compression-no-failure-at-25%-strain).  Re-running
+`h4_sweep_sliding_ramp_on_iter1_scan` at the new floor:
+
+| cavity | pre-H4-2-A outcome | post-H4-2-A outcome |
+|---|---|---|
+| 3 mm | Armijo stall iter 48 r_norm 21.3 | Armijo stall iter 48 r_norm 21.3 (bit-identical) |
+| 5 mm | Yeoh tet 154 σ_min = 0.219 | Yeoh **tet 264 σ_min = 0.197** (different tet, deeper compression) |
+| 6 mm | Armijo stall iter 25 r_norm 3.78 | Armijo stall iter 25 r_norm 3.78 (bit-identical) |
+| 7 mm | Armijo stall iter 30 r_norm 0.45 | Armijo stall iter 30 r_norm 0.45 (bit-identical) |
+| 8 mm | Yeoh tet 519 σ_min = 0.271 | Yeoh **tet 673 σ_min = 0.120** (way past floor, σ = [1.915, 1.000, 0.120]) |
+
+### 5.1 What the data shows
+
+Newton's preferred equilibrium at cavity > 5 mm requires σ_min
+**much deeper** than any reasonable floor.  At cavity = 8 mm
+the post-H4-2-A panic is at σ_min = 0.120 (det F ≈ 0.23 = 77 %
+volume compression at one tet) — eight percentage points past
+the 0.20 floor, well past 0.10 too.  Incremental loosening
+would just move the panic to a different tet at deeper
+compression; the cap > 5 mm unlock is **not** delivered by
+floor-tuning alone.
+
+### 5.2 Mechanism reframe — ν = 0.40 is the binding constraint
+
+The H4-2-A research memo §2 already flagged this hypothesis;
+the H4-2-A sweep CONFIRMS it.  cf-design's Yeoh uses ν = 0.40
+(standalone Yeoh asserts `nu < 0.45`); real silicones per
+Sparks are ν ≈ 0.4999.  The cf-design bulk modulus is ~240×
+lower than real, allowing the FEM to find equilibria with
+extreme single-tet volume compression that real silicone
+wouldn't sustain.  The floor catches these unphysical states
+honestly; loosening it just lets Newton find new unphysical
+states at deeper compression.
+
+The genuine fix is **Option B (Phase H F-bar / mixed-u-p
+locking-fix decorator)** that widens ν past 0.45 to the real
+~0.5 value.  Multi-session arc; banked behind workshop iter-1
+unblock and the rest of the active product pipeline.
+
+### 5.3 What H4-2-A is still worth keeping
+
+H4-2-A's 0.30 → 0.20 change is KEPT (commit pending after this
+bookmark addendum) for two reasons:
+
+1. **Research-defensible default** — Sparks et al. validated no
+   failure at 25 % compression; 0.20 is 5× past that floor +
+   within published rubber-elasticity guidance.  0.30 was a
+   pure Phase 4 engineering placeholder ("replace with measured
+   value once compression-set test data lands") that the
+   compression research has now informed.
+2. **Marginal cavity ≤ 5 mm benefit** — for sliding ramps where
+   σ_min lands in (0.20, 0.30) at a borderline tet, H4-2-A
+   reduces compressive-side false-positive panics relative to
+   the pre-H4-2-A 0.30 floor.  Pre-H4 legacy
+   `max_stretch_deviation ≤ 1.0` would accept those scenarios;
+   H4 plumbing post-H4-2-A also accepts them.
+
+### 5.4 Updated next-session pointer
+
+- **Option A is closed** — 0.20 shipped + falsified for cap > 5 mm.
+  Tighter floors (0.15, 0.10) wouldn't help by the same mechanism.
+- **Option B (Phase H F-bar / mixed-u-p)** is the only remaining
+  technical path to unlock cavity > 5 mm.  Multi-session arc;
+  deferred until workshop iter-1 cast + downstream priorities clear.
+- **Option C (asymmetric one-sided bound)** is still on the
+  table as a quick unlock that bypasses compressive gating
+  entirely — useful if a product pull needs cavity > 5 mm
+  before Phase H lands.  Loses the compressive safety net
+  but matches pre-H4 legacy gate behavior on the compressive
+  side.
+
+### 5.5 Open puzzle reminder
+
+The 3 + 6 + 7 mm Armijo stalls in the automated `cargo test`
+path are independent of H4 (bit-identical pre/post bisect).
+Worth investigating separately to identify the `cargo test` ↔
+GUI pipeline divergence.
 
 ---
 

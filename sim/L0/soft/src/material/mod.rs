@@ -76,8 +76,9 @@ pub struct ValidityDomain {
     /// Compressive principal-stretch cap. `Some(n)` directs the solver
     /// gate to panic when any singular value of `F` falls below `n`.
     /// `None` defers to the legacy `max_stretch_deviation` symmetric
-    /// bound. Yeoh's engineering-aggressive `0.30` lands here per arc
-    /// memo D8.
+    /// bound. Yeoh's `0.20` (H4-2-A research-informed default, was
+    /// 0.30 pre-H4-2-A) lands here per arc memo D8 +
+    /// `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md`.
     pub min_principal_stretch: Option<f64>,
 
     /// Maximum rotation angle in radians. `f64::INFINITY` for
