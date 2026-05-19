@@ -189,3 +189,66 @@ fn sample_yeoh_on_nh_variant_panics() {
     let field = MaterialField::uniform(1.0e5, 4.0e5);
     let _used = field.sample_yeoh(Vec3::zeros());
 }
+
+// ---------------------------------------------------------------------
+// 7. Yeoh-with-bounds variant — `from_yeoh_fields_with_bounds`
+// ---------------------------------------------------------------------
+
+/// 5-arg constructor threads per-anchor principal-stretch caps to the
+/// per-tet `Yeoh`, so `validity().max_principal_stretch ==
+/// Some(probe-sampled max field)` AND the symmetric min slot resolves
+/// the same way. Closes the `MaterialField`-drops-bounds gap diagnosed
+/// at `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10.4.
+#[test]
+fn material_field_from_yeoh_fields_with_bounds_carries_bounds() {
+    use sim_soft::{MaterialFieldKind, Yeoh};
+    // Dragon Skin 20A's calibrated `0.8 · λ_break = 5.76` (TDS:
+    // 620 % elongation at break) — picked because the E.b sweep at
+    // cavity = 6 mm peaked at σ ≈ 2.05 on a tet whose effective
+    // material lerps to this anchor, so the bound contract test
+    // also pins the real production scenario.
+    let max_stretch = 5.76;
+    let min_stretch = 0.30;
+    let mu_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(113_000.0));
+    let c2_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(10_000.0));
+    let lambda_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(452_000.0));
+    let max_p_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(max_stretch));
+    let min_p_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(min_stretch));
+
+    let field = MaterialField::from_yeoh_fields_with_bounds(
+        mu_field,
+        c2_field,
+        lambda_field,
+        max_p_field,
+        min_p_field,
+    );
+    assert_eq!(field.kind(), MaterialFieldKind::Yeoh);
+
+    let y: Yeoh = field.sample_yeoh(Vec3::new(0.0, 0.0, 0.0));
+    let validity = sim_soft::Material::validity(&y);
+    assert_eq!(validity.max_principal_stretch, Some(max_stretch));
+    assert_eq!(validity.min_principal_stretch, Some(min_stretch));
+    // Lamé pair + C₂ round-trip exactly as in the 3-arg path.
+    assert_eq!(y.mu().to_bits(), 113_000.0_f64.to_bits());
+    assert_eq!(y.lambda().to_bits(), 452_000.0_f64.to_bits());
+    assert_eq!(y.c2().to_bits(), 10_000.0_f64.to_bits());
+}
+
+/// 3-arg legacy constructor keeps the pre-H4 bit-exact behavior:
+/// produced `Yeoh.validity()` has `(None, None)` principal-stretch
+/// slots so the solver gate falls back to `max_stretch_deviation`.
+/// Pins the legacy path so future refactors don't accidentally
+/// upgrade legacy callers to the per-principal-stretch gate.
+#[test]
+fn material_field_from_yeoh_fields_keeps_legacy_none_bounds() {
+    use sim_soft::Yeoh;
+    let field = MaterialField::from_yeoh_fields(
+        Box::new(ConstantField::new(113_000.0)),
+        Box::new(ConstantField::new(10_000.0)),
+        Box::new(ConstantField::new(452_000.0)),
+    );
+    let y: Yeoh = field.sample_yeoh(Vec3::zeros());
+    let validity = sim_soft::Material::validity(&y);
+    assert!(validity.max_principal_stretch.is_none());
+    assert!(validity.min_principal_stretch.is_none());
+}

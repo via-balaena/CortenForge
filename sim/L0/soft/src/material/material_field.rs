@@ -15,8 +15,12 @@
 //!   [`MaterialField::skeleton_default`], [`MaterialField::from_fields`])
 //!   produce the legacy NH variant. Existing call sites compile
 //!   unchanged.
-//! - **Yeoh constructor** ([`MaterialField::from_yeoh_fields`])
-//!   produces the Yeoh variant; row 23+ Yeoh consumers use this.
+//! - **Yeoh constructors** ([`MaterialField::from_yeoh_fields`] —
+//!   legacy 3-arg, bounds drop to `None`;
+//!   [`MaterialField::from_yeoh_fields_with_bounds`] — 5-arg,
+//!   threads the calibrated per-anchor `(max, min)` principal-
+//!   stretch caps through the aggregator) produce the Yeoh
+//!   variant; row 23+ Yeoh consumers use these.
 //!
 //! Sampling is variant-typed: [`MaterialField::sample`] returns
 //! [`NeoHookean`] (panics on Yeoh variant);
@@ -55,8 +59,10 @@ use crate::sdf_bridge::Sdf;
 ///
 /// - NH variant (μ, λ slots) via [`MaterialField::uniform`],
 ///   [`MaterialField::skeleton_default`], [`MaterialField::from_fields`].
-/// - Yeoh variant (μ, C₂, λ slots) via
-///   [`MaterialField::from_yeoh_fields`].
+/// - Yeoh variant (μ, C₂, λ slots, optional `(max, min)`
+///   principal-stretch caps) via [`MaterialField::from_yeoh_fields`]
+///   (bounds-less) or [`MaterialField::from_yeoh_fields_with_bounds`]
+///   (calibrated).
 ///
 /// **Interface SDF (commit 12, IV-6 per Part 7 §02 §01).** Optional
 /// slot carrying the SDF whose zero set drives the material blend
@@ -83,7 +89,27 @@ pub(crate) enum MaterialFieldInner {
         mu: Box<dyn Field<f64>>,
         c2: Box<dyn Field<f64>>,
         lambda: Box<dyn Field<f64>>,
+        /// Optional per-tet asymmetric principal-stretch caps
+        /// (memo D8). `None` → legacy path: the produced [`Yeoh`]
+        /// inherits `with_principal_stretch_bounds = (None, None)`
+        /// and the solver gate falls back to
+        /// `max_stretch_deviation` (NH-style symmetric). `Some` →
+        /// every sampled `Yeoh` carries `(max, min)` from these
+        /// fields, routing through the principal-stretch gate at
+        /// [`crate::solver::backward_euler`]'s
+        /// `check_validity_at_step_start`.
+        bounds: Option<YeohBoundsFields>,
     },
+}
+
+/// Paired principal-stretch cap fields for the Yeoh variant. Both
+/// bounds must be supplied because
+/// [`Yeoh::with_principal_stretch_bounds`] sets the pair together;
+/// asymmetric single-bound construction has no production caller
+/// today (every [`crate::SiliconeMaterial`] anchor carries both).
+pub(crate) struct YeohBoundsFields {
+    pub max_principal_stretch: Box<dyn Field<f64>>,
+    pub min_principal_stretch: Box<dyn Field<f64>>,
 }
 
 /// Coarse identifier for which material model a [`MaterialField`]
@@ -144,6 +170,18 @@ impl MaterialField {
     /// `C₁ = μ / 2` is derived; the field doesn't store `C₁`
     /// separately. Per arc memo D10 — row picks one material model
     /// for all its tets, no in-row mixing.
+    ///
+    /// Bounds-less legacy path: the produced per-tet [`Yeoh`] has
+    /// `validity().max_principal_stretch == None` AND
+    /// `validity().min_principal_stretch == None`, so the solver
+    /// gate falls back to the symmetric `max_stretch_deviation`
+    /// bound. Callers with calibrated per-anchor caps (e.g.,
+    /// every [`crate::SiliconeMaterial`] in
+    /// `silicone_table.rs`) prefer
+    /// [`MaterialField::from_yeoh_fields_with_bounds`] — the
+    /// 5-arg path threads `0.8 · λ_break` (tensile) and
+    /// `0.30` (compressive, family-uniform) through the
+    /// aggregator to the per-tet validity gate.
     #[must_use]
     pub fn from_yeoh_fields(
         mu: Box<dyn Field<f64>>,
@@ -151,7 +189,56 @@ impl MaterialField {
         lambda: Box<dyn Field<f64>>,
     ) -> Self {
         Self {
-            inner: MaterialFieldInner::Yeoh { mu, c2, lambda },
+            inner: MaterialFieldInner::Yeoh {
+                mu,
+                c2,
+                lambda,
+                bounds: None,
+            },
+            interface_sdf: None,
+        }
+    }
+
+    /// Yeoh-with-calibrated-bounds constructor — five
+    /// [`Field<f64>`](crate::field::Field) impls (μ, C₂, λ,
+    /// max-principal-stretch, min-principal-stretch).
+    ///
+    /// Each sample point's `Yeoh` is built via
+    /// [`Yeoh::from_lame_and_c2`] then decorated with
+    /// [`Yeoh::with_principal_stretch_bounds`] from the bound
+    /// fields. The solver's `check_validity_at_step_start`
+    /// routes through the principal-stretch gate when either
+    /// bound is `Some`, so every tet checked through this path
+    /// is gated against its calibrated `0.8 · λ_break` cap
+    /// rather than the legacy `max_stretch_deviation = 1.0`
+    /// fallback.
+    ///
+    /// Use this when the per-layer materials come from
+    /// [`crate::SiliconeMaterial`] anchors (the
+    /// `validity_max_principal_stretch` +
+    /// `validity_min_principal_stretch` fields lift directly into
+    /// the two bound fields). Falsifies the
+    /// `MaterialField`-drops-bounds gap diagnosed at
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10.4 +
+    /// addressed by `docs/CANDIDATE_H4_YEOH_BOUND_CALIBRATION_SPEC.md`.
+    #[must_use]
+    pub fn from_yeoh_fields_with_bounds(
+        mu: Box<dyn Field<f64>>,
+        c2: Box<dyn Field<f64>>,
+        lambda: Box<dyn Field<f64>>,
+        max_principal_stretch: Box<dyn Field<f64>>,
+        min_principal_stretch: Box<dyn Field<f64>>,
+    ) -> Self {
+        Self {
+            inner: MaterialFieldInner::Yeoh {
+                mu,
+                c2,
+                lambda,
+                bounds: Some(YeohBoundsFields {
+                    max_principal_stretch,
+                    min_principal_stretch,
+                }),
+            },
             interface_sdf: None,
         }
     }
@@ -241,11 +328,20 @@ impl MaterialField {
     }
 
     /// Sample the Yeoh variant at `x_ref` and return a fresh per-element
-    /// [`Yeoh`]. Validity bounds default to `None` on the produced
-    /// `Yeoh` — per-anchor bounds are wired in by the row author via
-    /// the [`crate::SiliconeMaterial::to_yeoh`] path, not the
-    /// `MaterialField` aggregator (which only carries the `(μ, C₂, λ)`
-    /// scalar fields).
+    /// [`Yeoh`].
+    ///
+    /// Two paths depending on which constructor built the field:
+    ///
+    /// - [`MaterialField::from_yeoh_fields`] (3-arg legacy path):
+    ///   bounds are `None`; the produced `Yeoh`'s validity
+    ///   inherits `(max_principal_stretch, min_principal_stretch) =
+    ///   (None, None)` and the solver gate falls back to
+    ///   `max_stretch_deviation`.
+    /// - [`MaterialField::from_yeoh_fields_with_bounds`] (5-arg
+    ///   calibrated path): both bound fields are sampled and the
+    ///   produced `Yeoh` carries `(Some(max), Some(min))` so the
+    ///   solver gate routes through the per-principal-stretch
+    ///   check.
     ///
     /// # Panics
     ///
@@ -260,8 +356,24 @@ impl MaterialField {
     #[allow(clippy::panic)]
     pub fn sample_yeoh(&self, x_ref: Vec3) -> Yeoh {
         match &self.inner {
-            MaterialFieldInner::Yeoh { mu, c2, lambda } => {
-                Yeoh::from_lame_and_c2(mu.sample(x_ref), lambda.sample(x_ref), c2.sample(x_ref))
+            MaterialFieldInner::Yeoh {
+                mu,
+                c2,
+                lambda,
+                bounds,
+            } => {
+                let yeoh = Yeoh::from_lame_and_c2(
+                    mu.sample(x_ref),
+                    lambda.sample(x_ref),
+                    c2.sample(x_ref),
+                );
+                match bounds {
+                    None => yeoh,
+                    Some(b) => yeoh.with_principal_stretch_bounds(
+                        b.max_principal_stretch.sample(x_ref),
+                        b.min_principal_stretch.sample(x_ref),
+                    ),
+                }
             }
             MaterialFieldInner::NeoHookean { .. } => {
                 panic!(
