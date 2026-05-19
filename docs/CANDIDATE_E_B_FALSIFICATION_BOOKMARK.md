@@ -21,9 +21,14 @@
 > unit tests + cf-device-design routing + sentinel test).  Cap
 > scaffolding 6 → 5 mm reverted.  **Yeoh wall is the new binding
 > constraint at cavity > 5 mm** — superseding the chattering
-> diagnosis the C-arc was pursuing.  Recon-next-session at
-> `docs/CAVITY_6MM_YEOH_WALL_BOOKMARK.md` (TBD; this commit only
-> documents the falsification).
+> diagnosis the C-arc was pursuing.  Post-case-E investigation
+> (§10) reframes the wall as a real material limit at this mesh
+> resolution + meshes the recon ladder to **H2 (mesh refinement)
+> as the only remaining lever**; deferred until product pull.
+> End-of-solve validity check (commit `2739717e`) shipped as a
+> defensive sister to Decision Q's at-step-start check — cavity
+> > 5 mm now panics HONESTLY at step 1's end-of-solve check
+> instead of silently fake-converging.
 
 **Predecessor docs**:
 
@@ -84,6 +89,14 @@ the perturbation pushes one tet over.
 
 ## 1. What we learned (3 structural findings)
 
+> **Note**: §1-§9 were written at the E.b.4 case-E ship commit
+> (`6f953f59`) with the case-E-moment framing.  §10 was added later
+> by `1d8b3b5c` (N_STEPS sweep) + `fb9dc329` (reframe correction)
+> and supersedes the §1.3 + §3 + §5 framings on the cavity > 5 mm
+> mechanism + the recon ladder ranking.  Read §10 for the
+> corrected understanding before relying on §1.3 / §3 / §5
+> recommendations.
+
 ### 1.1 The "cavity 6 mm 1/16 win" was illusory
 
 The C.3 cavity = 6 mm probe gate at C′.a's ε stalled at step 0
@@ -125,6 +138,14 @@ must pass a "doesn't shift max_stretch_deviation in already-
 working regimes" gate**.  E.b fails that gate.
 
 ### 1.3 Yeoh wall at step 2 is the NEW binding constraint at cavity > 5 mm
+
+> **Pre-§10 framing** — this section frames the Yeoh wall as a
+> "solver granularity" problem (slide-step too coarse).  §10
+> reframe correction established the actual mechanism: step 1
+> fake-converges to an invalid state (σ ≈ 2.05 at tet 3206)
+> because Decision Q's validity check only runs at step start.
+> The wall is a real material limit at this mesh resolution; H1
+> (slide-step) is FALSIFIED.  See §10.2 + §10.4.
 
 C.2 falsification bookmark §1 enumerated three hypotheses for
 what binds at cavity > 5 mm (after C′.a partially-resolved the
@@ -194,6 +215,16 @@ Per [[feedback-spec-falsified-revert-opt-in-keep-surface]] — the
 ---
 
 ## 3. Next-session recon — Yeoh wall sub-arc
+
+> **Pre-§10 ladder — H1 is FALSIFIED + ranking is superseded by
+> §10.4.**  The H1/H2/H3 ranking below was the original recon
+> recommendation at the case-E ship moment, before the N_STEPS
+> sweep tested H1 directly.  The sweep (commit `1d8b3b5c` + §10)
+> showed H1 doesn't help (N=32 chatters at cavity = 5 mm step 0,
+> N=8/12/20/24 step 1 "convergence" was fake-converged into
+> invalid Yeoh envelope).  Current ranking is in §10.4 with H2
+> (mesh refinement) as the only remaining lever.  The §3.1-§3.3
+> text below is retained as audit trail.
 
 The cavity > 5 mm problem is now known to be **Yeoh wall at step 2**,
 not chattering.  The right recon ladder reorients accordingly:
@@ -276,6 +307,12 @@ concern.
 
 ## 5. Falsification mechanics — what the spec correctly predicted
 
+> **Pre-§10**: this section's "Escalation target reframed from F.a
+> to the Yeoh-wall sub-arc" was the case-E-ship-moment guidance.
+> Post-§10 the escalation target is concretized to **H2 (mesh
+> refinement)** as the only remaining lever; see §10.4 for the
+> updated fix tree.
+
 The spec §5 falsifier matrix anticipated **case E** verbatim:
 
 > Case E — 3 or 5 mm sanity gate at the chosen `(k, r)` drops
@@ -306,9 +343,18 @@ behavior gains.
 - `43151fb1` + `db27379c` — E.b.2 cf-device-design opt-in
   (disabled state) + cold-read polish.
 - `e13767dd` — E.b.3 sweep scaffolding (cavity cap 5 → 6 mm).
-- (this commit) — E.b.4 case-E falsification: consts revert
-  to `(1, 0)`, cap scaffolding 6 → 5 mm reverted, this bookmark
-  + const-docstring sweep table addendum + egui label revert.
+- `6f953f59` + `8513a63f` — E.b.4 case-E falsification ship
+  + cold-read polish (consts revert to `(1, 0)`, cap
+  scaffolding 6 → 5 mm reverted, §0-§9 of this bookmark,
+  const-docstring sweep table addendum + egui label revert).
+- `1d8b3b5c` — N_STEPS sweep reframe (initial framing,
+  superseded by `fb9dc329`; §10 added to this bookmark).
+- `2739717e` — end-of-solve validity check (Decision Q sister
+  in `sim/L0/soft/src/solver/backward_euler.rs`).
+- `fb9dc329` — bookmark §10 reframe correction (cold-read
+  caught the initial "Newton-overshoot" framing in §10 and
+  corrected it to the actual check-policy-hole mechanism;
+  §10.2-§10.6 rewritten).
 
 **Docs**:
 
@@ -504,20 +550,23 @@ correction, the framing is restored to:
   reaches d=6.95 mm" was the fake-convergence artifact — the
   converged state is invalid; the check just didn't see it.
 
-**Two fixes shipped + remaining sub-arc:**
+**One fix shipped + two sub-arcs remaining** (naming unified
+with §3's H-ladder for cross-doc consistency with
+[[project-f3-recon-b-eb-arc]]):
 
-- **Option 2 SHIPPED in commit after this bookmark update** —
-  end-of-solve validity check (sister of the at-step-start check)
-  catches the fake-convergence honestly.  cavity > 5 mm sliding
-  ramps will now panic at step 1 instead of step 2, surfacing the
-  true material limit.  Defensive fix; doesn't raise the cap.
-- **Option 3 (mesh refinement) = sub-arc** for raising the cap
-  past 5 mm.  Big arc; deferred until cap > 5 mm becomes a
-  product priority.
-- **Option 4 (Yeoh bound calibration)** also deferred — current
-  bound `max_stretch_deviation ≤ 1.0` was Phase 4 fail-closed
-  default; real silicone limits vary 4-7× (σ = 4-7) per
-  datasheets.  Per-silicone calibration would be a separate arc.
+- **End-of-solve validity check SHIPPED** (commit `2739717e`,
+  sister of `check_validity_at_step_start`'s at-step-start check
+  — catches the fake-convergence honestly).  cavity > 5 mm
+  sliding ramps now panic at step 1 instead of step 2,
+  surfacing the true material limit.  Defensive fix; doesn't
+  raise the cap.
+- **H2 (mesh refinement) = sub-arc** for raising the cap past
+  5 mm.  ~500 LOC primitive; deferred until cap > 5 mm becomes
+  a product priority.
+- **H4 (Yeoh bound calibration)** — current bound
+  `max_stretch_deviation ≤ 1.0` was Phase 4 fail-closed default;
+  real silicone limits vary 4-7× (σ = 4-7) per datasheets.
+  Per-silicone calibration would be a separate sub-arc.
 
 ### 10.5 What gets reverted from the sweep commit
 

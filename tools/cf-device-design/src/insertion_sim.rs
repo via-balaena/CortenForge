@@ -1018,8 +1018,14 @@ const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.075e-3;
 /// bound at every cavity, costing 5 mm baseline for no net gain at
 /// 6 mm (the 1/16 "win" was the Yeoh wall surfacing — same outcome
 /// a hypothetical no-chattering cavity-6mm solve would have
-/// reached).  Full falsification analysis in
-/// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md`.
+/// reached, empirically confirmed by the post-case-E N_STEPS sweep
+/// at §10 of the bookmark — N=8/12/20/24 all hit Yeoh tet 3206 at
+/// step 2 WITHOUT E.b).  Full falsification analysis in
+/// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md`; §10 has the
+/// post-case-E sweep + reframe (cavity > 5 mm is a real material
+/// limit at this mesh resolution, NOT chattering) + the end-of-
+/// solve validity check that surfaces invalid converged states
+/// honestly (commit `2739717e` in `sim-soft`).
 ///
 /// **Sweep table** (cavity = 6 mm, layers 10+3 mm,
 /// sock_over_capsule.cleaned.stl, 2026-05-19):
