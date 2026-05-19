@@ -1,8 +1,14 @@
 # cf-cast mold-wall optimization — bookmark
 
-> **Status**: BOOKMARK, set 2026-05-19 LATE-NIGHT after the program
-> gameplan reframe. First concrete user-facing arc under the new
-> cadence. Three-session pattern per
+> **Status**: RESOLVED-BY-RECON 2026-05-19 LATE-NIGHT — see
+> `docs/CF_CAST_MOLD_WALL_RECON.md` for the recon findings.
+> Implementation session (sub-leaf 3 of the three-session pattern)
+> ships Option A with TOML-exposed `wall_thickness_m` knob +
+> validator + regression test. Bookmark retained as audit trail.
+>
+> **Status (original)**: BOOKMARK, set 2026-05-19 LATE-NIGHT after the
+> program gameplan reframe. First concrete user-facing arc under the
+> new cadence. Three-session pattern per
 > [[feedback-bookmark-when-surface-levers-exhaust]] —
 > bookmark / recon / implementation.
 >
