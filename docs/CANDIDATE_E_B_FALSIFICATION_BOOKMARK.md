@@ -407,4 +407,111 @@ behavior gains.
 
 ---
 
+## 10. §POST-RESOLUTION — N_STEPS sweep reframes the wall as Newton overshoot
+
+2026-05-19 LATE-EVENING.  After the E.b case-E ship, an N_STEPS
+slide-fraction sweep at cavity = 6 mm WITHOUT E.b (consts at
+`(1, 0)` per case E) revealed that **the "Yeoh wall" diagnosis in
+§1.3 was incomplete**.  The wall is real but it's a **Newton-path-
+overshoot at step 2+**, not a true material limit.
+
+### 10.1 Sweep data (cavity = 6 mm, E.b disabled, layers 10+3 mm)
+
+| N | step 1 d | step 1 outcome | iters | F (N) | step 2 outcome |
+|---|---|---|---|---|---|
+| 8 | 10.42 mm | ✓ | 41 | 8.14 | Yeoh tet 3206 ms=1.057 (d=20.84) |
+| 12 | 6.95 mm | ✓ | 23 | 8.16 | Yeoh tet 3206 ms=1.052 (d=13.90) |
+| **16** | **5.21 mm** | **✗ chatter r=0.536** | 150 cap | — | — |
+| 20 | 4.17 mm | ✓ | 36 | 8.07 | Yeoh tet 3206 ms=1.052 (d=8.33) |
+| 24 | 3.47 mm | ✓ | 20 | 8.06 | Yeoh tet 3206 ms=1.051 (d=6.94) |
+| 32 (cavity=5mm) | 2.60 mm | ✗ chatter r=0.131 | 150 cap | — | — |
+
+### 10.2 Two structural reframes
+
+**Reframe A — N=16 is uniquely pathological at cavity = 6 mm.**
+The C-arc's "chattering envelope at cavity > 5 mm" diagnosis was
+N=16-specific.  N=8, 12, 20, 24 all converge step 1 cleanly at
+cavity = 6 mm WITHOUT E.b.  Only N=16 chatters at step 0.  The
+neighbors N=12 and N=20 bracket N=16 on both sides + both converge;
+this isn't a slide-fraction-monotonic threshold but a specific
+resonance.  C′.a's ε = 0.075 mm and E.b's `(7, 1 mm)` were both
+tuned to fix the N=16 step-0 chattering — but the fix wasn't
+necessary at other N values.
+
+**Reframe B — Yeoh wall is Newton-overshoot, not material limit.**
+Compare two N values reaching the same step-2 target depth:
+
+- N=12 step 1 reaches d=6.95 mm from rest CLEANLY (max_stretch
+  nowhere near 1.0 — no Yeoh panic).
+- N=24 step 2 tries to reach d=6.94 mm from a warm-started state
+  at d=3.47 mm.  Yeoh fires at tet 3206 ms=1.051.
+
+**Same target depth, different paths, different outcomes.**  The
+geometry CAN handle d=6.95 mm (proven by N=12 step 1).  Newton's
+iteration scheme at step 2+, starting from a warm-started deformed
+state, makes a trial step that overshoots tet 3206's deformation
+gradient past validity — Armijo gets no chance to backtrack
+because the validity check fires DURING the energy/gradient eval
+on the trial state.
+
+### 10.3 Universal Yeoh stub at step 2+ regardless of N
+
+Across N values that survive step 1, **step 2 always hits Yeoh at
+tet 3206 with max_stretch ≈ 1.051 - 1.057**.  Step-2 target
+depths varied from 6.94 mm (N=24) to 20.84 mm (N=8) — a 3× range
+— but the Yeoh ms barely budges.  Pattern strongly suggests
+Newton's first-trial iteration at step 2 extrapolates a similar
+displacement pattern regardless of step size, hitting the same
+geometric overshoot near tet 3206.
+
+### 10.4 What this means for the recon ladder
+
+§3's H1/H2/H3 hypothesis ranking was framed around "the Yeoh wall
+is the new binding constraint" — that framing is now superseded:
+
+- H1 (slide-step-size artifact): tested + falsified for
+  Yeoh-wall-avoidance (N=32 chatters at step 0 even at cavity = 5
+  mm where N=16 was clean).  But H1's spirit (smaller steps) IS
+  what produces step-1 convergence at cavity = 6 mm via N=12, 20,
+  24 — just at the cost of step-2 Yeoh overshoot.
+- H2 (mesh refinement): less directly relevant now.  Tet 3206's
+  validity violation is a Newton-trial-state issue; finer mesh
+  would distribute the overshoot across more tets but Newton would
+  still overshoot.
+- H3 (true material limit): FALSIFIED by reframe B.  d=6.94 mm IS
+  reachable (N=12 proves it from rest).  The limit is solver
+  implementation, not material.
+
+**New recon path** — sub-arc on Newton overshoot at step 2+ of the
+sliding ramp:
+
+- (a) Damped first-iter step at sliding-ramp step 2+ — limit the
+  Newton trial state to within validity by scaling the first
+  iteration's step size.
+- (b) Per-tet Yeoh-aware trial limiter — pre-screen Newton's trial
+  state against `max_stretch_deviation` before energy eval, scale
+  back if any tet exceeds 1.0.
+- (c) Micro-substep at sliding-ramp step 2+ — split each step 2+
+  into 2 micro-substeps so Newton's trial states stay smaller.
+
+(a) and (c) are sim-soft-side fixes; (b) requires Yeoh-internal
+plumbing.  Start with (a) ~50 LOC implement-measure-revert.
+
+### 10.5 What gets reverted from this commit
+
+The sweep scaffolding (cap raise 5 → 6 mm + temp comments) is
+reverted in this commit.  All sim-soft E.b surface plumbing
+stays.  `DEFAULT_N_STEPS = 16` stays as the production default
+(other N values introduce per-step regressions that aren't
+sweep-tested against the full cavity-≤-5 mm baseline).
+
+### 10.6 Updated next-session pointer
+
+Sub-arc: Newton overshoot at sliding-ramp step 2+.  Cheap probe
+candidate (a) damped first-iter step; if successful at cavity = 6
+mm without regressing cavity ≤ 5 mm, ship + raise cap to 6 mm
+(real this time, not scaffolding).
+
+---
+
 End of bookmark.
