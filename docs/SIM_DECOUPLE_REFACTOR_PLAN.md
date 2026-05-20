@@ -1,15 +1,14 @@
 # Sim-decouple refactor — full plan
 
-> **Status**: ACTIVE — Phase 1 + Phase 2 + Phase 2.5 + Phase 3
-> SHIPPED 2026-05-19 on branches `refactor/sim-decouple-phase-1` +
-> `refactor/sim-decouple-phase-2` + `refactor/sim-decouple-phase-2.5`
-> + `refactor/sim-decouple-phase-3` respectively; Phase 4 (strip
-> cf-device-design's now-duplicate sim systems) is next. Originally
-> bookmarked 2026-05-19 LATE-NIGHT after A1's
-> in-session scoping revealed the sim is woven deeply into
-> cf-device-design's layer/cavity/intruder rendering. The original
-> gameplan §3 A1 "~1 session feature-flag" estimate was wrong; this
-> doc sequences the real arc.
+> **Status**: ACTIVE — Phase 1 + Phase 2 + Phase 2.5 + Phase 3 + Phase
+> 4 SHIPPED. Phases 1-3 landed 2026-05-19 on per-phase branches;
+> Phase 4 landed 2026-05-20 directly on `dev` per
+> [[feedback-omnibus-pr-single-branch]] (commits `dc5ff49b` +
+> `f0ed3800`). Phase 5 (verify + close the arc) is next. Originally
+> bookmarked 2026-05-19 LATE-NIGHT after A1's in-session scoping
+> revealed the sim is woven deeply into cf-device-design's layer/
+> cavity/intruder rendering. The original gameplan §3 A1 "~1 session
+> feature-flag" estimate was wrong; this doc sequences the real arc.
 >
 > **Goal** (from [[project-program-gameplan]]): cf-device-design
 > ships as a CAD-only tool (scan → layer → mold geometry). Sim
@@ -453,35 +452,83 @@ systems land in one bundle rather than per-system.
 range; landed at the low end via the verbatim-copy + wholesale-
 template approach).
 
-### Phase 4 — refactor cf-device-design rendering, remove sim
+### Phase 4 — refactor cf-device-design rendering, remove sim ✓ SHIPPED 2026-05-20
 
-**Goal**: strip the FEM-coupled rendering paths from
-cf-device-design. Layers render with palette tint only; cavity
-renders rest-frame SDF iso only; intruder renders at static pose
-or is removed.
+**Status**: SHIPPED on `dev` directly (per
+[[feedback-omnibus-pr-single-branch]] — the per-phase branch ladder
+was retired) in a single session, two commits:
+`dc5ff49b` (the strip + dep sweep on cf-device-design) +
+`f0ed3800` (the inherited-vocab docstring sweep on cf-sim-research).
 
-**Steps**:
-1. Remove `insertion_sim*.rs` files from cf-device-design
-2. Strip InsertionSimState references from update_layer_meshes —
-   layers always palette-tint, never heat-map, never deformed
-3. Strip ScalarMode + heat_map_on + show_deformed + displayed_step
-   + last_run_generation from LayerMeshKey
-4. Strip InsertionSimState references from update_cavity_mesh —
-   cavity always rest-frame SDF iso
-5. Strip InsertionSimState references from update_intruder_mesh —
-   intruder at static cap-mouth pose, or remove if no longer needed
-   (workshop iter-1 uses cf-cast-cli for mold; intruder visualization
-   was sim-specific)
-6. Remove `render_insertion_sim_section` call from
-   `device_design_panel`
-7. Remove `InsertionSimPlugin` registration from `run_render_app`
-8. Remove sim-soft from cf-device-design Cargo.toml
-9. Verify cargo build + test green
-10. Verify cf-device-design UI works as expected (manual smoke
-    test: scan loads, layers display, mold output works)
+**Outcome**:
+- `tools/cf-device-design/src/insertion_sim.rs` (5762 LOC) +
+  `insertion_sim_ui.rs` (2275 LOC) DELETED.
+- `IntruderEntity` + `INTRUDER_COLOR` + `spawn_intruder_mesh` +
+  `update_intruder_mesh` + `IntruderMeshKey` + `pose_to_bevy_transform`
+  + `visible_pose_for_intruder` deleted from main.rs per Q4.1 default
+  lean (intruder visualization was sim-specific; workshop iter-1
+  uses cf-cast-cli for mold geometry).
+- `InsertionSimState` reads stripped from `update_layer_meshes` +
+  `update_cavity_mesh`. Layers always palette-tint; cavity always
+  rest-frame SDF iso. `LayerMeshKey` simplified to `{ cavity, layers }`;
+  `CavityMeshKey` simplified to `{ cavity }`. Snapshot-and-compare
+  `Local<>` pattern preserved per [[project-bevy-is-changed-footgun]].
+- `InsertionSimPlugin` registration + `render_insertion_sim_section`
+  call removed from `device_design_panel`. `spawn_intruder_mesh`
+  dropped from Startup chain; `update_intruder_mesh` dropped from
+  Update set.
+- 4 `pose_to_bevy_transform_*` + 4 `visible_pose_for_intruder_*`
+  unit tests deleted (helpers gone; workspace-canonical axis-swap
+  test stays in `sim/L1/bevy/src/convert.rs`).
+- `cf-device-design/Cargo.toml` orphan-dep sweep: deleted
+  `mesh-repair`, `meshopt`, `mesh-sdf`, `cf-design`, `sim-soft`,
+  `sim-ml-chassis`, `nalgebra`. Every one was consumed only by
+  `insertion_sim*.rs`; cf-device-geometry transitively re-exposes
+  the geometry subset for the cavity + layer iso path.
+- KEPT (per §1.7-§1.8): `CachedScanSdf` + `CapPlanes` resources;
+  `ClipPlanePlugin` + `ClipPlaneState`; `setup_render_scene` +
+  `spawn_cavity_mesh` Startup chain entry; the Save / Open panel.
+- cf-device-design tests: 35 (down from 99 pre-strip; 56 moved
+  with `insertion_sim*.rs` to cf-sim-research, 8 deleted with the
+  pose helpers).
+- cf-sim-research tests: 99 / 12 ignored — unchanged.
+- workspace clippy + fmt clean;
+  `cargo build -p cf-device-design --no-default-features` green
+  (verifies CAD-only path without the default `x11` Bevy feature).
+- Inherited-vocab docstring sweep (Phase 3 polish banked, landed at
+  Phase 4 per [[feedback-cold-read-two-passes-for-non-trivial-diffs]]
+  pass-2): ~15 sites in cf-sim-research renamed cf-device-design →
+  cf-sim-research (module-level docstring, `device_design_panel` →
+  `sim_research_panel` cross-refs, 9 `cargo test` invocations in
+  `#[ignore]` diagnostic tests, the catalog-lookup error string,
+  the diagnostic temp-dir name, `MAX_NEWTON_ITER` justification,
+  two test-cookbook docstrings, the `--design` CLI flag doc).
 
-**Estimate**: 1-2 sessions. Lots of small deletions + system
-signature changes.
+**Posture banked**:
+- The omnibus-on-dev posture per [[feedback-omnibus-pr-single-branch]]
+  meant Phase 4's two commits landed on `dev` directly, no
+  per-sub-arc branch.
+- Cargo.toml dep sweep is load-bearing manual grep, not
+  `cargo build` exit code (verified: cf-device-geometry's
+  transitive re-exposure of mesh-sdf would have masked the orphan
+  via the rustc dependency graph; only direct-consumer grep
+  surfaces the truth).
+- Cold-read two-passes: pass-1 (self) caught 3 stale docstrings +
+  Cargo.toml inherited-vocab comments. Pass-2 (sibling agent)
+  confirmed key-cascade integrity (`LayerMeshKey` +
+  `CavityMeshKey` still derive `PartialEq` + snapshot-compare
+  pattern preserved; no orphan imports; Cargo.toml clean), caught
+  one off-by-one in the `device_design_panel` param-count comment
+  ("10 system parameters" was already a lie pre-strip; updated to
+  "11").
+- Q4.1 default lean (delete intruder entirely) was confirmed at
+  impl time. No static-pose silhouette retained — the cavity
+  iso-render shows the appendage-fit envelope; a separate intruder
+  mesh wasn't carrying CAD-side weight.
+
+**Sub-leg estimate confirmed**: 1 session (the plan's 1-2 range;
+landed at the low end via the omnibus-on-dev posture + 2-commit
+split).
 
 ### Phase 5 — verify + document
 
@@ -507,9 +554,9 @@ documentation.
 ## 5. Total estimate + sequencing
 
 **Sessions**: 6-9 total (Phase 1: 1-2, Phase 2: 1, Phase 2.5: 1-2,
-Phase 3: 2, Phase 4: 1-2, Phase 5: 1). **4 banked** (Phase 1 +
-Phase 2 + Phase 2.5 + Phase 3 each shipped in 1 session, the low
-end of their range); **2-3 remaining** for Phases 4-5.
+Phase 3: 2, Phase 4: 1-2, Phase 5: 1). **5 banked** (Phase 1 +
+Phase 2 + Phase 2.5 + Phase 3 + Phase 4 each shipped in 1 session,
+the low end of their range); **1 remaining** for Phase 5.
 
 **Calendar**: 1-2 weeks if focused single-task; 2-4 weeks if
 interleaved with workshop-iter and other product work.
@@ -636,13 +683,11 @@ infrastructure work.
 ---
 
 End of refactor plan. **Phase 1 + Phase 2 + Phase 2.5 + Phase 3
-SHIPPED 2026-05-19** on branches `refactor/sim-decouple-phase-1` +
-`refactor/sim-decouple-phase-2` + `refactor/sim-decouple-phase-2.5`
-+ `refactor/sim-decouple-phase-3` respectively; next session picks
-up at Phase 4, which per §4 step list strips
-`insertion_sim*.rs` + the 4 sim-coupled Bevy systems +
-`InsertionSimState` references + the sim-soft direct dep from
-cf-device-design. Cold-read pass on cf-device-design's Cargo.toml
-for orphan direct deps (mesh-sdf / mesh-repair / meshopt /
-cf-cap-planes / cf-design candidates) folds in at the same time per
-the Phase 2.5 banked finding. Phase 5 verifies + documents.
+SHIPPED 2026-05-19** on per-phase branches; **Phase 4 SHIPPED
+2026-05-20** on `dev` directly (commits `dc5ff49b` strip +
+`f0ed3800` docstring sweep). Cargo.toml orphan-dep sweep landed in
+the strip commit (deleted `mesh-repair`, `meshopt`, `mesh-sdf`,
+`cf-design`, `sim-soft`, `sim-ml-chassis`, `nalgebra`; `cf-cap-planes`
+stays — `parse_cap_planes` is still called from main.rs). Phase 5
+verifies cross-binary smoke + closes the arc; THEN the omnibus PR
+`dev` → `main`.
