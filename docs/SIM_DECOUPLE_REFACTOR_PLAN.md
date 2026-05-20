@@ -1,7 +1,8 @@
 # Sim-decouple refactor — full plan
 
-> **Status**: ACTIVE — Phase 1 + Phase 2 SHIPPED 2026-05-19 on
-> branches `refactor/sim-decouple-phase-1` + `refactor/sim-decouple-phase-2`
+> **Status**: ACTIVE — Phase 1 + Phase 2 + Phase 2.5 SHIPPED
+> 2026-05-19 on branches `refactor/sim-decouple-phase-1` +
+> `refactor/sim-decouple-phase-2` + `refactor/sim-decouple-phase-2.5`
 > respectively; Phase 3 (move sim code) is next. Originally
 > bookmarked 2026-05-19 LATE-NIGHT after A1's
 > in-session scoping revealed the sim is woven deeply into
@@ -324,6 +325,65 @@ mesh-offset, which Phase 3 brings in).
 **Sub-leg estimate confirmed**: 1 session (mostly mechanical;
 clean lift across the binary boundary via cf-device-types).
 
+### Phase 2.5 — lift shared modules ✓ SHIPPED 2026-05-19
+
+**Status**: SHIPPED on branch `refactor/sim-decouple-phase-2.5`
+(off `refactor/sim-decouple-phase-3-recon` `4b0605b9`), 4 commits
+in execution order a → b → d → c per the recon's §2.5.c swap-
+order authorization (clip_plane is self-contained; lifting it
+first means 2.5.c can include `spawn_cavity_mesh` in a single
+commit). Single session.
+
+**Outcome**:
+- `18300bf6` (2.5.a) — Lift `design_toml` (666 LOC + 15 tests) +
+  `LAYER_SURFACE_PALETTE` const to cf-device-types. Drops the
+  cf-sim-research by-value duplicate atomically. `serde` + `toml`
+  + `anyhow` workspace deps added to cf-device-types. 24
+  cf-device-types tests / 149 cf-device-design tests / 10
+  cf-sim-research tests (2 duplicates retired) — all green.
+- `b72c179b` (2.5.b) — New empty `design/cf-device-geometry/`
+  crate with stub `lib.rs` + xtask grader exemption + matching
+  test assertion. Lenient lint posture per
+  [[feedback-lint-posture-on-extract]]. Bevy minimal feature set
+  (`bevy_asset` + `bevy_pbr` + `bevy_render` — 2.5.d's
+  ExtendedMaterial machinery).
+- `fe9b80e3` (2.5.d) — Lift `clip_plane.rs` (729 LOC + 15 tests)
+  + `clip_plane.wgsl` shader. Module docstring + WGSL header
+  comment rephrase the prepass posture against cf-viewer's camera
+  setup (consumed by both binaries) rather than the host binary
+  by name. Shader-path const switched to
+  `embedded://cf_device_geometry/...`. Q5.2 (`clip-plane` feature
+  flag) NOT taken per [[feedback-strip-the-knob-when-default-works]]
+  — add when cf-cast-cli (R7) actually consumes the crate.
+- `d897e6c6` (2.5.c) — Lift `sdf_layers.rs` (2091 LOC + 35
+  tests) + the 4 cross-binary cavity-render surfaces
+  (`spawn_cavity_mesh`, `build_bevy_mesh_from_indexed*`,
+  `CavityEntity`, `CAVITY_COLOR`). 17 `pub(crate)` → `pub`
+  widenings. New cf-device-geometry deps: `mesh-sdf` +
+  `mesh-offset` + `cf-cap-planes` + `cf-design` + `mesh-repair` +
+  `meshopt` + `nalgebra` + `anyhow`. Final module organization:
+  `sdf_layers` (compute) + `bevy_mesh` (adapters) + `cavity`
+  (spawner + marker + color) + `clip_plane` (already shipped).
+  50 cf-device-geometry tests (15 + 35) / 99 cf-device-design
+  tests / 10 cf-sim-research tests — all green.
+
+**Posture banked**:
+- Sub-leaf execution order swap is OK when explicitly authorized
+  by the recon — keeps commit count down (no separate 2.5.e for
+  the deferred `spawn_cavity_mesh`).
+- `pub(crate)` → `pub` bulk swap on lifted modules works cleanly
+  when the consumer is the only crate accessing the surface;
+  oversharing across the crate boundary doesn't cost anything
+  at extraction time and tightening is easy if a surface
+  surprise surfaces in Phase 3.
+- Lift-with-deletion is atomic: the recon's R2
+  ("`LAYER_SURFACE_PALETTE` consumer drift") was mitigated by
+  bundling the cf-sim-research duplicate's deletion into 2.5.a's
+  same commit as the cf-device-types const addition.
+
+**Sub-leg estimate confirmed**: 1 session (1-2 was the recon's
+range; landed at the low end via the swap-order optimization).
+
 ### Phase 3 — move sim code
 
 **Goal**: relocate insertion_sim.rs (5835 LOC) +
@@ -398,10 +458,10 @@ documentation.
 
 ## 5. Total estimate + sequencing
 
-**Sessions**: 6-9 total (Phase 1: 1-2, Phase 2: 1, Phase 3: 2-3,
-Phase 4: 1-2, Phase 5: 1). **2 banked** (Phase 1 + Phase 2 each
-shipped in 1 session, the low end of their range); **4-5
-remaining** for Phases 3-5.
+**Sessions**: 6-9 total (Phase 1: 1-2, Phase 2: 1, Phase 2.5: 1-2,
+Phase 3: 2, Phase 4: 1-2, Phase 5: 1). **3 banked** (Phase 1 +
+Phase 2 + Phase 2.5 each shipped in 1 session, the low end of
+their range); **3-4 remaining** for Phases 3-5.
 
 **Calendar**: 1-2 weeks if focused single-task; 2-4 weeks if
 interleaved with workshop-iter and other product work.
@@ -527,23 +587,15 @@ infrastructure work.
 
 ---
 
-End of refactor plan. **Phase 1 + Phase 2 SHIPPED 2026-05-19** on
-branches `refactor/sim-decouple-phase-1` + `refactor/sim-decouple-phase-2`
+End of refactor plan. **Phase 1 + Phase 2 + Phase 2.5 SHIPPED
+2026-05-19** on branches `refactor/sim-decouple-phase-1` +
+`refactor/sim-decouple-phase-2` + `refactor/sim-decouple-phase-2.5`
 respectively; next session picks up at Phase 3, which per §4 step
-list copies `insertion_sim.rs` + `insertion_sim_ui.rs` + the 3
+list copies `insertion_sim.rs` + `insertion_sim_ui.rs` + the 4
 sim-coupled Bevy systems (`update_layer_meshes` /
-`update_cavity_mesh` / `update_intruder_mesh`) into cf-sim-research.
-
-**Open scope question for Phase 3 recon**: `sdf_layers` (cached SDF
-+ per-iso MC extraction) and `design_toml` (load/save schema) are
-CAD-side primitives both binaries need. They should LIFT to a
-shared crate (cf-device-types is the natural home), not MOVE to
-cf-sim-research. The recon decides whether that lift happens as a
-Phase-2.5 mini-arc before Phase 3 proper, or folds into Phase 3
-itself. Either way, the destination is a shared crate, not the
-sim-research binary. (Phase 2's posture-banked block at §4 already
-flags this scope; this paragraph just resurfaces it at the
-end-of-doc handoff so the Phase 3 implementer doesn't miss it.)
+`update_cavity_mesh` / `update_intruder_mesh` / `spawn_intruder_mesh`)
+into cf-sim-research. All cross-crate decisions landed at Phase
+2.5; Phase 3 is pure copy + wire.
 
 Phase 4 then strips cf-device-design's copies; Phase 5 verifies +
 documents.

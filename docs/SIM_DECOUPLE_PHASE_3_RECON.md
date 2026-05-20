@@ -1,11 +1,22 @@
 # Sim-decouple Phase 3 — recon
 
-> **STATUS — RECON COMPLETE; PHASE 2.5 MINI-ARC RECOMMENDED.**
+> **STATUS — RECON COMPLETE; PHASE 2.5 MINI-ARC SHIPPED.**
 > 2026-05-19. Per [[feedback-bookmark-when-surface-levers-exhaust]]
 > three-session pattern, this is the recon between the plan (which
 > serves as the bookmark) and implementation. Recon ran on branch
 > `refactor/sim-decouple-phase-3-recon` (off `refactor/sim-decouple-phase-2`,
 > origin `de397b4a`).
+>
+> **Phase 2.5 IMPLEMENTATION SHIPPED 2026-05-19 LATE-NIGHT** on
+> branch `refactor/sim-decouple-phase-2.5` (off this recon branch),
+> 4 commits in execution order a → b → d → c (the .d/.c swap is
+> authorized by §2.5.c — clip_plane is self-contained, so doing it
+> before .c lets the sdf+cavity-helpers lift include
+> `spawn_cavity_mesh` in a single commit). See §2.5 below for the
+> per-sub-leaf SHIPPED stamps; the rest of this doc is the original
+> recon, retained as design-of-record. **Phase 3 sim move next** —
+> ~10 000 LOC copy + wire, 2 sessions, every cross-crate decision
+> already landed.
 >
 > **Predecessors**:
 > - `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` — parent plan; Phase 1 + 2
@@ -345,7 +356,7 @@ Phase 2.5 can ship and sit indefinitely if Phase 3 stalls (workshop
 iter-1 cast intervenes, etc.) without leaving the CAD binary in a
 broken state.
 
-### 2.5.a — Lift `design_toml` + `LAYER_SURFACE_PALETTE` to `cf-device-types`
+### 2.5.a — Lift `design_toml` + `LAYER_SURFACE_PALETTE` to `cf-device-types` ✓ SHIPPED `18300bf6`
 
 **Scope**: move `tools/cf-device-design/src/design_toml.rs` →
 `design/cf-device-types/src/design_toml.rs`. Add `serde` + `toml` +
@@ -360,7 +371,7 @@ the duplicated copy from `tools/cf-sim-research/src/main.rs:64`
 
 **Estimate**: 30-60 min (mostly mechanical).
 
-### 2.5.b — Create `cf-device-geometry` crate
+### 2.5.b — Create `cf-device-geometry` crate ✓ SHIPPED `b72c179b`
 
 **Scope**: new `design/cf-device-geometry/` directory with
 `Cargo.toml` + `src/lib.rs`. Workspace member entry. xtask grader
@@ -374,7 +385,19 @@ Empty lib at this stage — populated by 2.5.c + 2.5.d.
 
 **Estimate**: 20 min.
 
-### 2.5.c — Lift `sdf_layers` + sharing helpers to `cf-device-geometry`
+### 2.5.c — Lift `sdf_layers` + sharing helpers to `cf-device-geometry` ✓ SHIPPED `d897e6c6`
+
+**As-built** (executed AFTER 2.5.d per the recon's swap-order
+authorization — clip_plane is self-contained, lifting first means
+2.5.c can include `spawn_cavity_mesh` in a single commit). Lifted
+all four "Duplicate" surfaces (`spawn_cavity_mesh` + 2 mesh
+builders + `CavityEntity` + `CAVITY_COLOR`) plus the full
+`sdf_layers` module + 35 tests. Module organization inside the
+new crate: `sdf_layers` (compute), `bevy_mesh` (`IndexedMesh →
+bevy::Mesh` adapters), `cavity` (rest-frame spawner + marker +
+color), `clip_plane` (already shipped at 2.5.d). 50 tests in
+cf-device-geometry (15 + 35) / 99 in cf-device-design (was 134;
+35 sdf_layers tests moved) / clippy + fmt clean.
 
 **Scope**: move `tools/cf-device-design/src/sdf_layers.rs` →
 `design/cf-device-geometry/src/sdf.rs` (or keep `sdf_layers.rs`
@@ -405,7 +428,19 @@ declaration from `lib.rs` / `main.rs`.
 **Estimate**: 2-3 hours (~40 call-site updates + dep wiring + the
 shared rendering helpers).
 
-### 2.5.d — Lift `clip_plane` (full module) to `cf-device-geometry`
+### 2.5.d — Lift `clip_plane` (full module) to `cf-device-geometry` ✓ SHIPPED `fe9b80e3`
+
+**As-built** (executed BEFORE 2.5.c per the recon's swap-order
+authorization). Lifted the entire `clip_plane.rs` (729 LOC + 15
+tests) + `clip_plane.wgsl` shader. `pub(crate)` widened to `pub`;
+shader-path const switched to `embedded://cf_device_geometry/...`;
+module docstring + WGSL header comment updated to phrase the
+prepass posture against cf-viewer's `setup_camera_and_lighting`
+(consumed by both binaries) rather than the host binary by name.
+Q5.2 (`clip-plane` feature flag) deliberately NOT taken at the
+lift per [[feedback-strip-the-knob-when-default-works]] — both
+current consumers need clipping; add the gate when cf-cast-cli
+(R7) actually consumes the crate.
 
 **Scope**: lift the **entire** `clip_plane.rs` module:
 `ClipPlaneMaterial` + `ClipPlaneExt` + `ClipPlanePlugin` +
@@ -445,6 +480,13 @@ diffs).
 
 **Branches**: single branch `refactor/sim-decouple-phase-2.5`,
 sub-leaf commits.
+
+**As-built ship**: 4 commits on `refactor/sim-decouple-phase-2.5`
+(off this recon branch), executed order a → b → d → c. Single
+session (one workday). Workspace-internal LOC moved ≈ 3700
+(close to estimate). Each sub-leaf left workspace build +
+relevant crate tests + clippy + fmt all green per the migration-
+safety invariant.
 
 ---
 
