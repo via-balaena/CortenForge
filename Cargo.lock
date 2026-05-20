@@ -1948,6 +1948,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-device-geometry"
+version = "1.0.0"
+
+[[package]]
 name = "cf-device-types"
 version = "1.0.0"
 dependencies = [

@@ -1,0 +1,38 @@
+[package]
+name = "cf-device-geometry"
+description = "Shared device-side geometric primitives — cached scan SDF + per-iso marching-cubes extraction (`sdf_layers`), shared cavity-render helpers (`spawn_cavity_mesh`, `build_bevy_mesh_from_indexed*`, `CavityEntity`), and the clip-plane material/plugin/state. Consumed by cf-device-design (CAD tool) and cf-sim-research (Phase 3 sim viewer) so both binaries share one SDF cache + iso-extraction path + clip-plane visualization. Lifted out of `tools/cf-device-design/src/{sdf_layers.rs,clip_plane.rs,main.rs}` per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Shared workspace-internal compute + rendering primitives crate
+# (precedent: cf-bevy-common, cf-device-types). No
+# `[package.metadata.cortenforge]` tier block — tier metadata is
+# reserved for sim L0/L1 libraries (xtask Layer Integrity grader
+# exempts shared support crates by name; see
+# `xtask/src/grade.rs::applies_to_crate`).
+
+# Lenient lint posture per [[feedback-lint-posture-on-extract]] —
+# workspace `pedantic = warn` is NOT inherited because the lifted
+# `sdf_layers` + `clip_plane` modules (Phase 2.5.c + 2.5.d) carry
+# verbose pre-existing docstrings + match-same-arms in the marching-
+# cubes config that would generate pedantic warnings on extraction.
+# Mirrors cf-device-design / cf-device-types posture.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+# Empty at Phase 2.5.b — 2.5.c populates `sdf_layers` (adds bevy +
+# mesh-sdf + mesh-offset + cf-cap-planes + cf-design + mesh-types +
+# mesh-repair + meshopt + nalgebra + anyhow) and 2.5.d populates
+# `clip_plane` (extends the bevy feature set with bevy_pbr +
+# bevy_render for the ExtendedMaterial machinery).

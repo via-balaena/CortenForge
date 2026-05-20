@@ -2265,7 +2265,11 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // Phase 1; `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3) is the
     // shared device-design types crate consumed by cf-device-design
     // and cf-sim-research — Bevy-using like cf-bevy-common, same
-    // exemption shape.
+    // exemption shape. cf-device-geometry (sim-decouple Phase 2.5.b;
+    // `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d) is the shared
+    // device-side compute + rendering primitives crate (cached SDF +
+    // iso extraction + clip-plane material) consumed by the same two
+    // binaries — Bevy-using, same exemption shape.
     if matches!(
         crate_name,
         "cf-viewer"
@@ -2275,6 +2279,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-device-design"
             | "cf-sim-research"
             | "cf-device-types"
+            | "cf-device-geometry"
     ) {
         return false;
     }
@@ -3629,7 +3634,9 @@ serde = \"1\"
         // and cf-sim-research are workspace tools under `tools/`
         // carrying cf- prefix; same exemption. cf-device-types
         // (sim-decouple A1 Phase 1) is the shared Bevy-using
-        // device-design-types crate; same exemption.
+        // device-design-types crate; cf-device-geometry (sim-decouple
+        // Phase 2.5.b) is the shared Bevy-using device-side geometric-
+        // primitives crate; same exemption.
         assert!(!applies_to_crate("cf-viewer"));
         assert!(!applies_to_crate("cf-bevy-common"));
         assert!(!applies_to_crate("cf-scan-prep"));
@@ -3637,6 +3644,7 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-device-design"));
         assert!(!applies_to_crate("cf-sim-research"));
         assert!(!applies_to_crate("cf-device-types"));
+        assert!(!applies_to_crate("cf-device-geometry"));
     }
 
     #[test]
