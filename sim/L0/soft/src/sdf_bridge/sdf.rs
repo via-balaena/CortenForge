@@ -1,21 +1,21 @@
 //! Sdf trait re-export + sphere validation impl.
 //!
-//! The [`Sdf`] trait is owned by [`cf_design`]; sim-soft re-exports it
-//! so existing import paths (`sim_soft::Sdf`,
+//! The [`Sdf`] trait is owned by [`cf_geometry`]; sim-soft re-exports
+//! it so existing import paths (`sim_soft::Sdf`,
 //! `sim_soft::sdf_bridge::Sdf`) keep resolving. Trait method receivers
 //! are `Point3<f64>`; sim-soft call sites adapt at the boundary via
 //! `Point3::from(vec3)`.
 //!
 //! # Two SDF surfaces, one trait
 //!
-//! sim-soft's [`SphereSdf`] and cf-design's [`cf_design::Solid::sphere`]
+//! sim-soft's [`SphereSdf`] and cf-design's `cf_design::Solid::sphere`
 //! ctor are both [`Sdf`] implementors of the same primitive; they are
 //! retained side-by-side because each surfaces a different consumer
 //! role:
 //!
-//! - [`cf_design::Solid::sphere`] is the **production design surface**
+//! - `cf_design::Solid::sphere` is the **production design surface**
 //!   for typed-CSG composition between cf-design primitives — pair it
-//!   with [`cf_design::Solid::subtract`] / `union` / etc. when building
+//!   with `cf_design::Solid::subtract` / `union` / etc. when building
 //!   a body whose operands are all themselves `Solid`-typed.
 //! - [`SphereSdf`] is the **trait teaching primitive** + the
 //!   bit-pinned reference surface for IV-1 / IV-2 / IV-3 / IV-5
@@ -41,7 +41,7 @@
 use crate::Vec3;
 use nalgebra::Point3;
 
-pub use cf_design::Sdf;
+pub use cf_geometry::Sdf;
 
 /// Sphere centred at the origin with the given radius.
 ///
@@ -55,7 +55,7 @@ pub use cf_design::Sdf;
 /// [`Sdf`] trait + the bit-pinned reference surface for IV-1 / IV-2 /
 /// IV-3 invariant fixtures (where reference values depend on this
 /// struct's specific `eval` arithmetic). For typed-CSG composition
-/// between cf-design primitives, use [`cf_design::Solid::sphere`]
+/// between cf-design primitives, use `cf_design::Solid::sphere`
 /// instead — that's the production design surface; `SphereSdf` is the
 /// minimal-surface impl that teaches the trait. See the module-level
 /// docs for the role split.

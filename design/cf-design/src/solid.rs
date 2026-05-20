@@ -13,9 +13,9 @@ use cf_geometry::{Aabb, SdfGrid};
 use mesh_types::AttributedMesh;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
+use crate::Sdf;
 use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn, Val};
 use crate::param::ParamRef;
-use crate::sdf::Sdf;
 
 /// Lattice type for infill operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

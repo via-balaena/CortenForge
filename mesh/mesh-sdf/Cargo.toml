@@ -14,6 +14,11 @@ tier = "L0"
 [dependencies]
 # Shared mesh data structures (workspace)
 mesh-types = { workspace = true }
+# `Sdf` trait owner — mesh-sdf hosts the `impl Sdf for Signed<D, S>` +
+# `impl Sdf for CachedGridSdf` adapter blankets. The trait moved from
+# cf-design to cf-geometry so sim-soft can depend on the contract
+# without pulling the design kernel.
+cf-geometry = { workspace = true }
 # Linear algebra (vectors, matrices, rotations)
 nalgebra = { workspace = true }
 # Derive error types

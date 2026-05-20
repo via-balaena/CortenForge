@@ -6957,6 +6957,7 @@ name = "mesh-sdf"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
+ "cf-geometry",
  "mesh-types",
  "nalgebra 0.34.2",
  "parry3d",
@@ -9033,7 +9034,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "bytemuck",
- "cf-design",
+ "cf-geometry",
  "faer",
  "getrandom 0.3.4",
  "mesh-offset",

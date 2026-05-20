@@ -93,6 +93,7 @@ mod error;
 mod flood_fill;
 mod oracle;
 mod sdf;
+mod sdf_adapter;
 
 pub use error::{SdfError, SdfResult};
 pub use flood_fill::{
