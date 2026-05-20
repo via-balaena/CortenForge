@@ -1985,6 +1985,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-sim-research"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "bevy_egui",
+ "cf-bevy-common",
+ "cf-cap-planes",
+ "cf-device-types",
+ "cf-viewer",
+ "clap",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra 0.34.2",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "cf-spatial"
 version = "1.0.0"
 dependencies = [

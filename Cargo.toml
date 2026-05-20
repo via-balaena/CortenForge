@@ -24,6 +24,12 @@ members = [
     # that cf-cast-cli will consume (slice 9). The meat of the program
     # per the user 2026-05-13. See `docs/ENGINEERING_SUITE_DESIGN.md`.
     "tools/cf-device-design",
+    # Sim-research viewer (Phase 2 of the sim-decouple refactor).
+    # Phase 2 ships a skeleton: scan + centerline overlay + layer-
+    # stack readout panel consuming `cf-device-types`. Phase 3 moves
+    # the insertion-sim + heat-map + sliding-intruder rendering from
+    # cf-device-design. See `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4.
+    "tools/cf-sim-research",
 
     # Shared Bevy-0.18 helpers (orbit camera + up-axis convention) consumed by
     # cf-viewer + sim-bevy + sim-bevy-soft.

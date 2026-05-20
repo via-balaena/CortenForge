@@ -2246,24 +2246,26 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // Workspace tools and shared helper crates that happen to match a
     // library-namespace prefix need an explicit exemption. xtask is
     // excluded by virtue of having no matching prefix at all; cf-viewer,
-    // cf-bevy-common, cf-scan-prep, cf-cast-cli, and cf-device-design
-    // all carry `cf-` prefixes that would otherwise pull them into the
-    // design-library scope (cf-spatial / cf-design / cf-geometry). Per
-    // docs/VIEWER_DESIGN.md Q1 + Q8 locks: cf-viewer is a workspace
-    // tool, carries no tier metadata, and Q8 directs path-based
-    // filtering as the gating mechanism rather than retrofitting
-    // metadata. cf-bevy-common (sim-soft PR2 C2b factor-out) is a
-    // workspace-internal Bevy helper consumed by cf-viewer + sim-bevy +
-    // sim-bevy-soft; same exemption shape. cf-scan-prep (Stage 2.5
-    // scan preprocessing GUI; first inhabitant of `tools/`) +
-    // cf-cast-cli (scan→cast bridge CLI; second inhabitant) +
-    // cf-device-design (layered-silicone-device design suite; third
-    // inhabitant) are all workspace tools with the same Q8
+    // cf-bevy-common, cf-scan-prep, cf-cast-cli, cf-device-design, and
+    // cf-sim-research all carry `cf-` prefixes that would otherwise
+    // pull them into the design-library scope (cf-spatial / cf-design
+    // / cf-geometry). Per docs/VIEWER_DESIGN.md Q1 + Q8 locks: cf-viewer
+    // is a workspace tool, carries no tier metadata, and Q8 directs
+    // path-based filtering as the gating mechanism rather than
+    // retrofitting metadata. cf-bevy-common (sim-soft PR2 C2b
+    // factor-out) is a workspace-internal Bevy helper consumed by
+    // cf-viewer + sim-bevy + sim-bevy-soft; same exemption shape.
+    // cf-scan-prep (Stage 2.5 scan preprocessing GUI; first inhabitant
+    // of `tools/`) + cf-cast-cli (scan→cast bridge CLI; second
+    // inhabitant) + cf-device-design (layered-silicone-device design
+    // suite; third inhabitant) + cf-sim-research (sim-research
+    // viewer; fourth inhabitant, Phase 2 of the sim-decouple
+    // refactor) are all workspace tools with the same Q8
     // path-based-filter exemption. cf-device-types (sim-decouple A1
     // Phase 1; `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3) is the
     // shared device-design types crate consumed by cf-device-design
-    // and (Phase 2+) cf-sim-research — Bevy-using like cf-bevy-common,
-    // same exemption shape.
+    // and cf-sim-research — Bevy-using like cf-bevy-common, same
+    // exemption shape.
     if matches!(
         crate_name,
         "cf-viewer"
@@ -2271,6 +2273,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-scan-prep"
             | "cf-cast-cli"
             | "cf-device-design"
+            | "cf-sim-research"
             | "cf-device-types"
     ) {
         return false;
@@ -3622,15 +3625,17 @@ serde = \"1\"
         // cf-viewer is a workspace tool with the cf- prefix; explicit
         // exemption per docs/VIEWER_DESIGN.md Q1 + Q8 locks. cf-bevy-common
         // is the C2b factor-out: workspace-internal Bevy helper, same
-        // exemption shape. cf-scan-prep, cf-cast-cli, and cf-device-design
-        // are workspace tools under `tools/` carrying cf- prefix; same
-        // exemption. cf-device-types (sim-decouple A1 Phase 1) is the
-        // shared Bevy-using device-design-types crate; same exemption.
+        // exemption shape. cf-scan-prep, cf-cast-cli, cf-device-design,
+        // and cf-sim-research are workspace tools under `tools/`
+        // carrying cf- prefix; same exemption. cf-device-types
+        // (sim-decouple A1 Phase 1) is the shared Bevy-using
+        // device-design-types crate; same exemption.
         assert!(!applies_to_crate("cf-viewer"));
         assert!(!applies_to_crate("cf-bevy-common"));
         assert!(!applies_to_crate("cf-scan-prep"));
         assert!(!applies_to_crate("cf-cast-cli"));
         assert!(!applies_to_crate("cf-device-design"));
+        assert!(!applies_to_crate("cf-sim-research"));
         assert!(!applies_to_crate("cf-device-types"));
     }
 

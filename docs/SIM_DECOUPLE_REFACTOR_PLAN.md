@@ -1,8 +1,9 @@
 # Sim-decouple refactor — full plan
 
-> **Status**: ACTIVE — Phase 1 SHIPPED 2026-05-19 on branch
-> `refactor/sim-decouple-phase-1`; Phase 2 (cf-sim-research skeleton)
-> is next. Originally bookmarked 2026-05-19 LATE-NIGHT after A1's
+> **Status**: ACTIVE — Phase 1 + Phase 2 SHIPPED 2026-05-19 on
+> branches `refactor/sim-decouple-phase-1` + `refactor/sim-decouple-phase-2`
+> respectively; Phase 3 (move sim code) is next. Originally
+> bookmarked 2026-05-19 LATE-NIGHT after A1's
 > in-session scoping revealed the sim is woven deeply into
 > cf-device-design's layer/cavity/intruder rendering. The original
 > gameplan §3 A1 "~1 session feature-flag" estimate was wrong; this
@@ -242,23 +243,77 @@ the slacker module's catalog test (which moved with the data via
 
 **Sub-leg estimate confirmed**: 1 session (mostly mechanical).
 
-### Phase 2 — create `tools/cf-sim-research/` skeleton
+### Phase 2 — create `tools/cf-sim-research/` skeleton ✓ SHIPPED 2026-05-19
 
-**Goal**: stand up the new binary with a no-op-sim placeholder UI.
-Doesn't actually move sim code yet; just establishes the binary
-exists and compiles.
+**Status**: SHIPPED on branch `refactor/sim-decouple-phase-2` in a
+single session. The new binary loads a cleaned scan + `.prep.toml`
+centerline + cap-plane count, then opens a Bevy + egui window
+showing the scan mesh, axis-arrow + centerline overlay, and a
+right-side panel listing the default cavity + layer stack with
+palette-tinted swatches per layer row. No sim wiring yet (Phase 3);
+no 3D layer shells yet (the per-iso MC extraction needs mesh-sdf +
+mesh-offset, which Phase 3 brings in).
 
-**Steps**:
-1. Create `tools/cf-sim-research/` with Cargo.toml + main.rs
-   stub
-2. Workspace member entry in root Cargo.toml
-3. Depend on cf-device-types (Phase 1 output)
-4. Bevy + egui dep
-5. Minimal "load scan + display layers in palette tint" UI
-   (no sim yet — just to verify the binary stands up)
-6. Verify cargo build green
+**Outcome**:
+- New crate at `tools/cf-sim-research/` (Cargo.toml + src/main.rs,
+  ~530 LOC including 12 unit tests); workspace member entry added
+  after cf-device-design's block; xtask grader exempts the new
+  crate via the cf-device-design / cf-cast-cli precedent
+  (`xtask/src/grade.rs::applies_to_crate`).
+- CLI shape mirrors cf-device-design: positional `cleaned_stl` +
+  optional `--design <PATH>` + optional `--prep-toml <PATH>`.
+  Path-resolution helpers (`resolve_prep_toml_path` /
+  `resolve_design_toml_path`) duplicate cf-device-design's
+  stem-stripping convention so both viewers point at the same
+  companions from the same cleaned STL.
+- Deps: `cf-device-types` (Phase 1 output), `cf-viewer`,
+  `cf-bevy-common`, `mesh-io`, `mesh-types`, `nalgebra`,
+  `cf-cap-planes` (parse-only subset for now), `bevy` + `bevy_egui`
+  with the same feature set + version pin as cf-device-design.
+  Sim-side deps (`sim-soft`, `mesh-sdf`, `mesh-offset`,
+  `sim-ml-chassis`, `cf-design`) intentionally absent — Phase 3
+  adds them.
+- App-builder mirrors cf-device-design's `run_render_app` shape:
+  `DefaultPlugins` + `EguiPlugin` + `OrbitCameraPlugin`; resources
+  `UpAxis` / `RenderScale` / `ScanMesh` / `ScanFilePath` /
+  `ScanInfo` / `Centerline` / `CavityState` / `LayersState` /
+  `ScanMeshVisible`; Startup `setup_render_scene` (cf-viewer's
+  `spawn_face_mesh` for the scan); Update `block_orbit_input_when_over_egui`
+  + `draw_reference_overlays` + `apply_scan_mesh_visibility` +
+  `exit_on_esc`; `EguiPrimaryContextPass` panel system.
+- 12 tests in cf-sim-research (release, all green); 3 xtask
+  `applies_to_crate_*` tests still green after the exemption arm +
+  test-assert parallel-pin.
+- Lint posture matches cf-device-design's (lenient — `unwrap_used` /
+  `expect_used` / `panic` denied via `[lints.clippy]`, not workspace
+  pedantic) per [[feedback-lint-posture-on-extract]].
 
-**Estimate**: 1 session.
+**Posture banked**:
+- `.design.toml` ingest deferred to Phase 3 — the loader lives
+  behind cf-device-design's private `design_toml` module and would
+  need a Phase-2.5 lift-to-shared-crate mini-arc to be reusable
+  here. Phase 2 logs a notice if a sibling design TOML exists; the
+  viewer always renders the `default_for_scan` cavity + layer stack.
+- Cap planes parsed via `cf_cap_planes::parse_cap_planes` but
+  discarded after the count is logged — there's no cavity/layer
+  iso-extraction here to anchor them to in Phase 2. Phase 3
+  inserts them as a Bevy resource alongside the cached SDF.
+- `LAYER_SURFACE_PALETTE` (5 entries) duplicated by-value from
+  cf-device-design's binary because the source binary doesn't
+  export the constant; Phase 4 consolidates when the layer-mesh
+  helpers lift to a shared crate.
+- Layer "palette-tint" is a 14×14 px swatch in the panel row, NOT
+  a 3D shell tint — Phase 3's mesh-sdf + mesh-offset wiring brings
+  the on-mesh tinting in.
+- Post-cold-read polish bundled into the same Phase-2 commit:
+  doc-lie tightening on the lib-level docstring + CLI flag docs +
+  workspace-member comment + cf-cap-planes dep comment; cavity +
+  layers construction moved INSIDE `run_render_app` so Phase 3
+  splices `apply_design_toml` there without rewriting the call
+  site; non-empty-layer-stack regression test added.
+
+**Sub-leg estimate confirmed**: 1 session (mostly mechanical;
+clean lift across the binary boundary via cf-device-types).
 
 ### Phase 3 — move sim code
 
@@ -442,9 +497,10 @@ infrastructure work.
 
 ---
 
-End of refactor plan. **Phase 1 SHIPPED 2026-05-19** on branch
-`refactor/sim-decouple-phase-1`; next session picks up at Phase 2
-(`tools/cf-sim-research/` skeleton — stand up the new binary with a
-no-op-sim placeholder UI consuming cf-device-types). Phase 3 then
-moves the sim code; Phase 4 strips it from cf-device-design; Phase 5
-verifies + documents.
+End of refactor plan. **Phase 1 + Phase 2 SHIPPED 2026-05-19** on
+branches `refactor/sim-decouple-phase-1` + `refactor/sim-decouple-phase-2`
+respectively; next session picks up at Phase 3 (move
+`insertion_sim.rs` + `insertion_sim_ui.rs` + the 3 sim-coupled Bevy
+systems + `sdf_layers` + `design_toml` into cf-sim-research). Phase
+4 then strips them from cf-device-design; Phase 5 verifies +
+documents.
