@@ -77,6 +77,11 @@ cf-cap-planes = { workspace = true }
 # so the future `tools/cf-sim-research/` binary can describe a
 # layered-silicone device the same way as cf-device-design.
 cf-device-types = { workspace = true }
+# Shared device-side geometric primitives — clip_plane material/
+# plugin/state + (Phase 2.5.c) cached SDF + iso extraction + cavity-
+# render helpers. Lifted from this crate's `clip_plane.rs` +
+# `sdf_layers.rs` per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.c-d.
+cf-device-geometry = { workspace = true }
 sim-soft = { workspace = true }
 sim-ml-chassis = { workspace = true }
 

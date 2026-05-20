@@ -1931,6 +1931,7 @@ dependencies = [
  "cf-bevy-common",
  "cf-cap-planes",
  "cf-design",
+ "cf-device-geometry",
  "cf-device-types",
  "cf-viewer",
  "clap",
@@ -1950,6 +1951,14 @@ dependencies = [
 [[package]]
 name = "cf-device-geometry"
 version = "1.0.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "cf-bevy-common",
+ "cf-device-types",
+ "cf-viewer",
+ "mesh-types",
+]
 
 [[package]]
 name = "cf-device-types"

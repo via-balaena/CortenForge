@@ -18,20 +18,18 @@
 //!
 //! ## Stage of population
 //!
-//! Phase 2.5.b ships this crate as an empty skeleton — the lift
-//! happens in subsequent sub-leaves:
-//!
-//! - **Phase 2.5.c** populates `sdf` (the lifted `sdf_layers`) +
-//!   shared cavity-render helpers (`spawn_cavity_mesh`,
-//!   `build_bevy_mesh_from_indexed`, `build_bevy_mesh_from_indexed_with_colors`,
+//! - **Phase 2.5.b** shipped the empty crate skeleton.
+//! - **Phase 2.5.d** populates [`clip_plane`] (the full module
+//!   including [`clip_plane::render_clip_plane_section`]) — both
+//!   binaries get a clipping slider out-of-the-box. Lift order swapped
+//!   relative to the recon's alphabetic order per the recon's
+//!   §2.5.c authorization: clip_plane is self-contained, so doing it
+//!   first means 2.5.c can include `spawn_cavity_mesh` in a single
+//!   commit (its `Assets<ClipPlaneMaterial>` parameter resolves
+//!   against the lifted material at lift time).
+//! - **Phase 2.5.c** (still pending at module-doc revision time)
+//!   populates `sdf` (the lifted `sdf_layers`) + shared cavity-render
+//!   helpers (`spawn_cavity_mesh`, `build_bevy_mesh_from_indexed*`,
 //!   `CavityEntity`, `CAVITY_COLOR`).
-//! - **Phase 2.5.d** populates `clip_plane` (the full module
-//!   including `render_clip_plane_section`), adds `bevy_pbr` +
-//!   `bevy_render` to the Bevy feature set, and provides a
-//!   clipping slider to both binaries out-of-the-box.
-//!
-//! Until then, this crate exposes no public surface — the
-//! migration-safety invariant (workspace build green after every
-//! sub-leaf) is held by leaving the consumers untouched in 2.5.b
-//! and only flipping their imports as the symbols become available
-//! in 2.5.c and 2.5.d.
+
+pub mod clip_plane;

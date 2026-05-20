@@ -48,7 +48,7 @@ use cf_device_types::{
 };
 use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
 
-use crate::clip_plane::{ClipPlaneExt, ClipPlaneMaterial};
+use cf_device_geometry::clip_plane::{self, ClipPlaneExt, ClipPlaneMaterial};
 use clap::Parser;
 use mesh_io::load_stl;
 use mesh_types::{Bounded, IndexedMesh, Point3};
@@ -84,14 +84,6 @@ pub(crate) mod insertion_sim_ui;
 /// `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md` for the architecture;
 /// module docs for the API + sign convention.
 pub(crate) mod sdf_layers;
-
-/// Fit-viz rung 1 — centerline-anchored clip plane. Sub-leaf 1 ships
-/// the pure-math `resolve_plane` + the `ClipPlaneState` resource.
-/// Subsequent sub-leaves layer on the `ExtendedMaterial` extension,
-/// the embedded WGSL discard shader, the per-frame uniform push
-/// system, and the egui panel. See
-/// `docs/CF_DEVICE_DESIGN_CLIP_PLANE_SPEC.md` for the full ladder.
-pub(crate) mod clip_plane;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the

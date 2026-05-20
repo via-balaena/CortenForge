@@ -10,10 +10,11 @@
 //!
 //! Resolves to a world-space `(origin, normal)` in PHYSICS-FRAME
 //! meters. Render-frame conversion (the `UpAxis::PlusZ` swap +
-//! `RenderScale` lift) is the uniform-push system's responsibility
-//! (sub-leaf 4); this module is pure math + the resource declaration.
+//! `RenderScale` lift) is the uniform-push system's responsibility;
+//! the `resolve_plane` helper itself is pure math + the resource
+//! declaration.
 //!
-//! Sub-leaf 2 layers on:
+//! On top of that:
 //!
 //! - the [`ClipPlaneExt`] `MaterialExtension` (a `vec4` plane + a
 //!   `u32` enabled flag, packed into a single uniform at binding 100)
@@ -21,17 +22,23 @@
 //!   file, loaded via Bevy's `embedded_asset!` macro);
 //! - the `ClipPlanePlugin` that registers the shader asset, the
 //!   `MaterialPlugin<ExtendedMaterial<StandardMaterial, …>>`, and the
-//!   `ClipPlaneState` resource.
+//!   `ClipPlaneState` resource;
+//! - the per-frame uniform-push system and the egui panel
+//!   ([`render_clip_plane_section`]).
 //!
-//! Sub-leaves 4 + 5 add the per-frame uniform push system and the
-//! egui panel.
+//! Lifted from `tools/cf-device-design/src/clip_plane.rs` per
+//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.d so cf-device-design
+//! (CAD viewer) and cf-sim-research (sim viewer, Phase 3) both
+//! consume one clip-plane stack. `pub(crate)` widened to `pub` for
+//! cross-crate access.
 //!
-//! **Prepass posture**: cf-device-design's camera does NOT add
-//! `DepthPrepass` / `MotionVectorPrepass` / `NormalPrepass` (see
-//! `cf-viewer::setup_camera_and_lighting`) and its directional light
-//! has `shadows_enabled: false`, so the depth + shadow prepasses
-//! never run for these meshes — i.e., no "ghost shadows on the kept
-//! half" risk the spec called out (open risk #2). To stay defensive
+//! **Prepass posture**: the cf-viewer `setup_camera_and_lighting`
+//! routine (consumed by both cf-device-design and cf-sim-research)
+//! does NOT add `DepthPrepass` / `MotionVectorPrepass` /
+//! `NormalPrepass`, and its directional light has
+//! `shadows_enabled: false`, so the depth + shadow prepasses never
+//! run for these meshes — i.e., no "ghost shadows on the kept half"
+//! risk the spec called out (open risk #2). To stay defensive
 //! against a future arc enabling shadows or prepass without also
 //! reaching into this module, we explicitly set
 //! `MaterialExtension::enable_prepass` → `false` below, which
@@ -54,20 +61,19 @@ use mesh_types::{Point3, Vector3};
 
 use cf_device_types::Centerline;
 
-/// Embedded-asset URI of the clip-plane WGSL shader (sub-leaf 2).
+/// Embedded-asset URI of the clip-plane WGSL shader.
 ///
-/// Resolves to `tools/cf-device-design/src/clip_plane.wgsl`, embedded
-/// at compile time by [`ClipPlanePlugin::build`]'s `embedded_asset!`
-/// call. The crate-name segment uses Cargo's underscored bin name
-/// (`cf_device_design`), matching `module_path!()` — see
-/// `bevy_asset::io::embedded::_embedded_asset_path` for the exact
-/// resolution rule.
-const CLIP_PLANE_SHADER_PATH: &str = "embedded://cf_device_design/clip_plane.wgsl";
+/// Resolves to `design/cf-device-geometry/src/clip_plane.wgsl`,
+/// embedded at compile time by [`ClipPlanePlugin::build`]'s
+/// `embedded_asset!` call. The crate-name segment uses Cargo's
+/// underscored library name (`cf_device_geometry`), matching
+/// `module_path!()` — see `bevy_asset::io::embedded::_embedded_asset_path`
+/// for the exact resolution rule.
+const CLIP_PLANE_SHADER_PATH: &str = "embedded://cf_device_geometry/clip_plane.wgsl";
 
 /// Type alias for the concrete extended material used to clip the
-/// cavity + per-layer + scan meshes (sub-leaf 3 swaps the spawn
-/// sites).
-pub(crate) type ClipPlaneMaterial = ExtendedMaterial<StandardMaterial, ClipPlaneExt>;
+/// cavity + per-layer + scan meshes.
+pub type ClipPlaneMaterial = ExtendedMaterial<StandardMaterial, ClipPlaneExt>;
 
 /// `ExtendedMaterial` extension that adds the clip-plane uniform +
 /// fragment-discard shader to a `StandardMaterial` base. Both fields
@@ -75,10 +81,10 @@ pub(crate) type ClipPlaneMaterial = ExtendedMaterial<StandardMaterial, ClipPlane
 /// uniform struct matching `struct ClipPlane` in the WGSL.
 ///
 /// Render-frame meters (NOT physics-frame). The uniform-push system
-/// in sub-leaf 4 applies the `UpAxis::PlusZ` swap + `RenderScale`
-/// lift before writing this field.
+/// applies the `UpAxis::PlusZ` swap + `RenderScale` lift before
+/// writing this field.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
-pub(crate) struct ClipPlaneExt {
+pub struct ClipPlaneExt {
     /// `.xyz` = unit plane normal (render-frame), `.w = dot(origin,
     /// normal)` — the plane offset along the normal. Kept half is
     /// `dot(world_pos, normal) - w >= 0`.
@@ -99,10 +105,10 @@ impl MaterialExtension for ClipPlaneExt {
     }
 
     fn enable_prepass() -> bool {
-        // See the module docstring — cf-device-design's camera +
-        // lighting setup means the depth/shadow prepasses never run
-        // for our meshes today; opting out here prevents the prepass
-        // pipeline being built for our material if a future arc adds
+        // See the module docstring — the cf-viewer camera + lighting
+        // setup means the depth/shadow prepasses never run for our
+        // meshes today; opting out here prevents the prepass pipeline
+        // being built for our material if a future arc adds
         // `DepthPrepass` without first authoring a prepass shader
         // override.
         false
@@ -115,7 +121,7 @@ impl MaterialExtension for ClipPlaneExt {
 /// Add AFTER `DefaultPlugins` (the `EmbeddedAssetRegistry` resource
 /// the `embedded_asset!` macro writes into is set up by Bevy's
 /// `AssetPlugin`, which lives in `DefaultPlugins`).
-pub(crate) struct ClipPlanePlugin;
+pub struct ClipPlanePlugin;
 
 impl Plugin for ClipPlanePlugin {
     fn build(&self, app: &mut App) {
@@ -127,7 +133,7 @@ impl Plugin for ClipPlanePlugin {
 }
 
 // ============================================================
-// Sub-leaf 4 — per-frame uniform push.
+// Per-frame uniform push.
 // ============================================================
 //
 // Resolves the clip plane from `ClipPlaneState` + `Centerline` +
@@ -197,7 +203,7 @@ fn compute_uniform_key(
 }
 
 // ============================================================
-// Sub-leaf 5 — egui panel.
+// egui panel section.
 // ============================================================
 
 /// Render the Clip Plane egui section. Surfaces the four user
@@ -212,7 +218,7 @@ fn compute_uniform_key(
 /// directly would still let the user touch the disabled controls;
 /// the `enabled_section` guard around each widget is the actual
 /// gate.
-pub(crate) fn render_clip_plane_section(
+pub fn render_clip_plane_section(
     ui: &mut egui::Ui,
     state: &mut ClipPlaneState,
     centerline_available: bool,
@@ -285,9 +291,9 @@ fn update_clip_plane_uniform(
 
 /// Clip-plane state. Anchored to the centerline; meaningless without
 /// one (the slider and toggle disable themselves when
-/// [`Centerline::points_m`] is empty — see sub-leaf 5's UI).
+/// [`Centerline::points_m`] is empty — see [`render_clip_plane_section`]).
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ClipPlaneState {
+pub struct ClipPlaneState {
     /// Master enable. `false` → [`resolve_plane`] returns `None`
     /// regardless of the other fields.
     pub enabled: bool,
@@ -297,7 +303,8 @@ pub(crate) struct ClipPlaneState {
     /// is "peek inside the middle first."
     pub t: f64,
     /// Rotation around the centerline tangent at `P(t)`, radians.
-    /// Sub-leaf 5's UI exposes this as degrees in `[0°, 360°)`.
+    /// [`render_clip_plane_section`] exposes this as degrees in
+    /// `[0°, 360°)`.
     pub roll_rad: f64,
     /// Swap which half of the world the plane keeps. Negates the
     /// plane normal before the WGSL fragment test.
@@ -316,29 +323,29 @@ impl Default for ClipPlaneState {
 }
 
 /// Default arc-length position along the centerline (midpoint).
-pub(crate) const DEFAULT_T: f64 = 0.5;
+pub const DEFAULT_T: f64 = 0.5;
 
 /// Default roll around the tangent — plane normal aligned with the
 /// projected-world-up reference, so the plane reads as "horizontal"
 /// relative to the scan orientation by default.
-pub(crate) const DEFAULT_ROLL_RAD: f64 = 0.0;
+pub const DEFAULT_ROLL_RAD: f64 = 0.0;
 
 /// If the centerline tangent at `P(t)` is within this angle (degrees)
 /// of world Z, fall back to world X as the up-reference for the
 /// in-plane basis. Avoids `U_ref ≈ 0` when the tangent is nearly
 /// parallel to world Z. 1° is generous; the iter-1 scan's centerline
 /// runs along `+Z` so this branch is the common case.
-pub(crate) const WORLD_Z_DEGENERATE_DEG: f64 = 1.0;
+pub const WORLD_Z_DEGENERATE_DEG: f64 = 1.0;
 
 /// Resolved clip plane in PHYSICS-FRAME meters (NOT render-frame).
 ///
 /// The render-frame conversion (the same `UpAxis::PlusZ` swap +
 /// `RenderScale` lift `draw_reference_overlays` applies to the
-/// centerline overlay) happens at the uniform-push boundary in
-/// sub-leaf 4 — this struct stays in the same coordinate system as
+/// centerline overlay) happens at the uniform-push boundary —
+/// this struct stays in the same coordinate system as
 /// [`Centerline::points_m`] so the math is easy to test.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ResolvedPlane {
+pub struct ResolvedPlane {
     pub origin_m: Point3<f64>,
     pub normal: Vector3<f64>,
 }
@@ -358,10 +365,7 @@ pub(crate) struct ResolvedPlane {
 /// — the longways-split UX the spec pinned. `state.roll_rad` rotates
 /// the normal around the tangent. `state.flip` negates it (swaps
 /// which half of the world the WGSL fragment shader keeps).
-pub(crate) fn resolve_plane(
-    state: &ClipPlaneState,
-    centerline: &Centerline,
-) -> Option<ResolvedPlane> {
+pub fn resolve_plane(state: &ClipPlaneState, centerline: &Centerline) -> Option<ResolvedPlane> {
     if !state.enabled {
         return None;
     }
@@ -431,8 +435,7 @@ mod tests {
     // `unwrap()` + `expect()` are denied at the crate level for
     // production safety; allow them inside tests so assertions can
     // pull values out of `Option` / `Result` returns without
-    // multi-line `match` ceremony. Matches the posture in
-    // `main.rs::tests`.
+    // multi-line `match` ceremony.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;

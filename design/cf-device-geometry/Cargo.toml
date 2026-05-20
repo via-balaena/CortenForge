@@ -31,8 +31,40 @@ expect_used = "deny"
 panic = "deny"
 
 [dependencies]
-# Empty at Phase 2.5.b — 2.5.c populates `sdf_layers` (adds bevy +
-# mesh-sdf + mesh-offset + cf-cap-planes + cf-design + mesh-types +
-# mesh-repair + meshopt + nalgebra + anyhow) and 2.5.d populates
-# `clip_plane` (extends the bevy feature set with bevy_pbr +
-# bevy_render for the ExtendedMaterial machinery).
+# Bevy — feature set for `ExtendedMaterial` (clip_plane in 2.5.d)
+# + `Resource` derive (sdf_layers + clip_plane in 2.5.c+d).
+# `bevy_pbr` brings `StandardMaterial` + `ExtendedMaterial` +
+# `MaterialPlugin`; `bevy_render` brings `AsBindGroup` + shader
+# infrastructure; `bevy_asset` brings `Asset` derive + the
+# `embedded_asset!` macro that loads `clip_plane.wgsl`. Binary
+# Cargo.toml features always superset this minimal set per R4
+# mitigation (`docs/SIM_DECOUPLE_PHASE_3_RECON.md` §4 R4).
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_pbr",
+    "bevy_render",
+] }
+
+# egui — `render_clip_plane_section` is a `&mut egui::Ui` panel
+# section both binaries render (cf-device-design Sim panel sibling,
+# cf-sim-research Phase 3 panel). Workspace-validated pin matches
+# cf-device-design / cf-scan-prep / cf-viewer.
+bevy_egui = { version = "0.39.1", default-features = false, features = [
+    "default_fonts",
+    "render",
+    "bevy_ui",
+] }
+
+# Workspace internal deps.
+# `UpAxis` for the render-frame conversion in `update_clip_plane_uniform`.
+cf-bevy-common = { workspace = true }
+# `RenderScale` for the same uniform conversion.
+cf-viewer = { workspace = true }
+# `Centerline` resource for the clip-plane resolution math.
+cf-device-types = { workspace = true }
+# `Point3` / `Vector3` for the centerline + plane math.
+mesh-types = { workspace = true }
+
+# 2.5.c populates `sdf_layers` (adds mesh-sdf + mesh-offset +
+# cf-cap-planes + cf-design + mesh-repair + meshopt + nalgebra +
+# anyhow); those deps land then.

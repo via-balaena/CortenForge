@@ -1,16 +1,18 @@
-// cf-device-design fit-viz rung 1 — centerline-anchored clip-plane
+// cf-device-geometry fit-viz rung 1 — centerline-anchored clip-plane
 // fragment shader. Discards fragments on the kept-OUT side of the
 // plane before the standard PBR forward path runs; everything else
 // is the stock bevy_pbr forward fragment (mirrors
 // `bevy_pbr/src/render/pbr.wgsl`, minus the prepass/deferred,
 // meshlet, OIT, visibility-dither, and forward-decal branches —
-// none of which cf-device-design uses).
+// none of which the consumer binaries use). Lifted from
+// cf-device-design per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.d
+// so cf-device-design and cf-sim-research share one clip-plane stack.
 //
 // The plane is in RENDER-FRAME meters (the same UpAxis::PlusZ +
 // RenderScale space the rendered meshes live in). Conversion from
 // physics frame → render frame happens at the uniform-push boundary
-// (sub-leaf 4, Rust side), so this shader does a single dot-product
-// + sign test per fragment.
+// (Rust side, `update_clip_plane_uniform`), so this shader does a
+// single dot-product + sign test per fragment.
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
