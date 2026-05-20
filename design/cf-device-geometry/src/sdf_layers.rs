@@ -118,8 +118,8 @@ const SDF_DEGENERATE_AREA_M2: f64 = 1e-15;
 
 /// Cell pitch (meters) for the cached `ScalarGrid`. 5 mm = the spike's
 /// production setting: < 1 ms MC per extraction, ~20 k grid cells on
-/// the iter-1 AABB (≈ 150 mm × 150 mm × 250 mm). Consumed by the
-/// scan-load wiring in sub-leaf 2.
+/// the iter-1 AABB (≈ 150 mm × 150 mm × 250 mm). Consumed at scan
+/// load time when each binary inserts the `CachedScanSdf` resource.
 pub const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.005;
 
 /// Margin (meters) added on every side of the scan AABB when
@@ -175,10 +175,10 @@ pub const LAYER_GRID_MARGIN_M: f64 = 0.040;
 ///
 /// `sdf_closed` and `sdf_open` (the underlying mesh-derived SDFs) are
 /// retained for two future uses: (a) the heat-map re-projection
-/// (per-tet → per-layer-vertex closest-point lookup, sub-leaf 7) and
-/// (b) a higher-fidelity Save path. `bounds` is held for the same
-/// future Save-side consumer + for `cf_design::Sdf` adapters that
-/// need an outer bounding interval.
+/// (per-tet → per-layer-vertex closest-point lookup) and (b) a
+/// higher-fidelity Save path. `bounds` is held for the same future
+/// Save-side consumer + for `cf_design::Sdf` adapters that need an
+/// outer bounding interval.
 #[derive(Resource, Clone)]
 pub struct CachedScanSdf {
     /// Reference-counted SDF over the decimated CLOSED scan (cap
@@ -196,8 +196,8 @@ pub struct CachedScanSdf {
     /// `sdf_closed.unsigned_distance(p)`. **Reach for the field
     /// only when you genuinely need the parry BVH** — closest-point
     /// projection (`sdf_closed.closest_point(p)`, sign-independent)
-    /// for the heat-map re-projection in sub-leaf 7, or unsigned
-    /// distance for the higher-fidelity Save path. The downstream
+    /// for the heat-map re-projection, or unsigned distance for the
+    /// higher-fidelity Save path. The downstream
     /// pseudo-normal sign would have to be replaced with a
     /// `FloodFillSign` composition (deferred follow-up) before any
     /// caller can safely call `sdf_closed.distance(p)`.
@@ -443,8 +443,8 @@ pub fn build_cached_scan_sdf(
     // wall-band label expansion, plus an `inside_components` health
     // count. The cached signed values are then sampled back into the
     // existing `ScalarGrid` storage so downstream consumers
-    // (`extract_layer_surface` + the heat-map re-projection in
-    // sub-leaf 7) see byte-equivalent grid contents. The unpack uses
+    // (`extract_layer_surface` + the heat-map re-projection)
+    // see byte-equivalent grid contents. The unpack uses
     // `CachedGridSdf::signed_distance` which trilinear-samples — at a
     // lattice node every interpolation weight collapses to the cell-
     // centre value, so the round trip recovers the stored signed
@@ -852,7 +852,8 @@ mod tests {
     /// Grid margin (meters) used by the cube + cylinder tests that
     /// otherwise have axis-aligned faces sitting on grid lines.
     ///
-    /// Background (2026-05-16, sub-leaf 1 testing):
+    /// Background (2026-05-16, surfaced during the initial cube +
+    /// cylinder test pass):
     /// [`mesh_sdf::SignedDistanceField::distance`]'s sign branch is
     /// `to_point.dot(face_normal) >= 0.0`. At a grid point exactly
     /// on an axis-aligned mesh face, the f64 roundoff can produce a
@@ -1025,8 +1026,8 @@ mod tests {
         // by hand: previous [b0,t0,t1]/[b0,t1,b1] winding produced an
         // INWARD normal — the cylinder SDF then returned positive
         // inside the cylinder, and iso=+T extracted an inset rather
-        // than an offset, which surfaced as test failure during
-        // sub-leaf 1 testing).
+        // than an offset, which surfaced as test failure during the
+        // initial cube + cylinder test pass).
         for i in 0..n {
             let i_next = (i + 1) % n;
             let b0 = i;
@@ -1204,9 +1205,9 @@ mod tests {
         // for an inward offset deeper than that (iso = -0.025) puts
         // the iso below every grid cell's value → marching cubes
         // finds no surface → empty mesh. This is the SDF analog of
-        // the prior `cavity_self_intersects` check; the Validations
-        // panel (sub-leaf 5) consumes [`CachedScanSdf::min_sdf_value`]
-        // for the same gate.
+        // the prior `cavity_self_intersects` check; the cf-device-
+        // design Validations panel consumes
+        // [`CachedScanSdf::min_sdf_value`] for the same gate.
         //
         // Sphere fixture (not cube) deliberately: the mesh-sdf sign-
         // tie issue at axis-aligned face planes makes cube-on-grid

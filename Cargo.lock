@@ -1936,7 +1936,6 @@ dependencies = [
  "cf-viewer",
  "clap",
  "mesh-io",
- "mesh-offset",
  "mesh-repair",
  "mesh-sdf",
  "mesh-types",

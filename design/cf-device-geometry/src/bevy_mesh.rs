@@ -15,14 +15,14 @@ use mesh_types::IndexedMesh;
 
 /// Build a Bevy `Mesh` directly from an [`IndexedMesh`] — no
 /// per-vertex displacement. Used by the SDF-extracted cavity + per-
-/// layer surfaces (slice 9, [`crate::sdf_layers::extract_layer_surface`]).
+/// layer surfaces ([`crate::sdf_layers::extract_layer_surface`]).
 /// Maps physics-frame vertices through the cast-frame `UpAxis` swap
 /// plus the `render_scale` lift to Bevy frame; computes smooth
 /// per-vertex normals from face winding.
 ///
-/// Replaced the prior `build_displaced_proxy_mesh*` wrappers (sub-leaf
-/// 6) — the SDF iso path extracts geometry where it naturally lives,
-/// so there is no displacement step at the bevy-mesh-build boundary.
+/// The SDF iso path extracts geometry where it naturally lives, so
+/// there is no displacement step at the bevy-mesh-build boundary —
+/// the adapter is a plain vertex-position + index passthrough.
 pub fn build_bevy_mesh_from_indexed(mesh: &IndexedMesh, up: UpAxis, render_scale: f32) -> Mesh {
     build_bevy_mesh_from_indexed_with_colors(mesh, up, render_scale, None)
 }
