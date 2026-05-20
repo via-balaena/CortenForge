@@ -307,6 +307,7 @@ pub fn unsigned_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::unit_tetrahedron;
     use approx::assert_relative_eq;
     use mesh_types::Point3;
 
@@ -316,21 +317,6 @@ mod tests {
         mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
         mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
         mesh.faces.push([0, 1, 2]);
-        mesh
-    }
-
-    fn unit_tetrahedron() -> IndexedMesh {
-        let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 0.289, 0.816));
-
-        // CCW winding when viewed from outside
-        mesh.faces.push([0, 2, 1]); // bottom
-        mesh.faces.push([0, 1, 3]); // front
-        mesh.faces.push([1, 2, 3]); // right
-        mesh.faces.push([2, 0, 3]); // left
         mesh
     }
 

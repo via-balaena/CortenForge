@@ -108,10 +108,9 @@ impl<T: Sdf + ?Sized> Sdf for Box<T> {
 /// Lets a shared, heap-erased SDF satisfy [`Sdf`] directly, so an
 /// `Arc<dyn Sdf>` is callable at every site that takes any `S: Sdf` —
 /// and cloning shares the inner allocation. Consumers that need the
-/// same SDF threaded through several composition trees (e.g. a closed-
-/// body SDF passed to multiple `pinned_floor_shell` calls — one for
-/// the plug, one per layer body) wrap it once in `Arc<dyn Sdf>` and
-/// pass cheap clones of the `Arc` to each.
+/// same SDF threaded through several composition trees wrap it once in
+/// `Arc<dyn Sdf>` and pass cheap clones of the `Arc` to each call
+/// site, avoiding the cost of deep-cloning the underlying SDF.
 impl<T: Sdf + ?Sized> Sdf for Arc<T> {
     fn eval(&self, p: Point3<f64>) -> f64 {
         (**self).eval(p)

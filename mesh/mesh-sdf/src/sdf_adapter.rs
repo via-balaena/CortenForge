@@ -4,9 +4,10 @@
 //! Hosts the two adapter impls that bridge mesh-sdf's
 //! [`Signed`](crate::Signed) composition + [`CachedGridSdf`](crate::CachedGridSdf)
 //! cached grid to the workspace-wide [`Sdf`](cf_geometry::Sdf) trait.
-//! Living in mesh-sdf is orphan-rule-clean: both the implementing
-//! types and (post-migration) the trait host crate are mesh-sdf's
-//! direct deps.
+//! Orphan-rule-clean: `Signed` and `CachedGridSdf` are mesh-sdf's own
+//! types, so the impls live wherever mesh-sdf decides — and putting
+//! them next to the trait import in this module keeps the surface
+//! self-contained.
 
 use cf_geometry::Sdf;
 use nalgebra::{Point3, Vector3};
@@ -34,10 +35,9 @@ use crate::{CachedGridSdf, Sign, Signed, UnsignedDistance};
 /// [`crate::PseudoNormalSign`] is reliable on watertight, well-formed
 /// meshes but **fragile** on decimated / cleaned scans with cap fans
 /// whose winding flipped during reconstruction or high-valence apex
-/// vertices — see project memory `pinned-floor-visual-gate-postmortem`
-/// for the canonical iter-1 failure mode. Consumers deriving an SDF
-/// from a cf-scan-prep cleaned scan should prefer [`crate::FloodFillSign`]
-/// in place of [`crate::PseudoNormalSign`]. See
+/// vertices. Consumers deriving an SDF from a cf-scan-prep cleaned
+/// scan should prefer [`crate::FloodFillSign`] in place of
+/// [`crate::PseudoNormalSign`]. See
 /// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the rationale.
 impl<D, S> Sdf for Signed<D, S>
 where
@@ -84,23 +84,8 @@ impl Sdf for CachedGridSdf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::unit_tetrahedron;
     use approx::assert_relative_eq;
-
-    /// Regular tetrahedron with the bottom face on z=0 and apex above.
-    /// Bottom face winding `[0, 2, 1]` is CCW from below — outward face
-    /// normal of the bottom is `-z`.
-    fn unit_tetrahedron() -> mesh_types::IndexedMesh {
-        let mut mesh = mesh_types::IndexedMesh::new();
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 0.289, 0.816));
-        mesh.faces.push([0, 2, 1]); // bottom (outward = -z)
-        mesh.faces.push([0, 1, 3]); // front
-        mesh.faces.push([1, 2, 3]); // right
-        mesh.faces.push([2, 0, 3]); // left
-        mesh
-    }
 
     /// Construct the explicit `Signed<TriMeshDistance, PseudoNormalSign>`
     /// composition the post-D.1 API uses — the blanket

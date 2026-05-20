@@ -23,12 +23,16 @@ nalgebra = { workspace = true }
 # Derive macros for solver / collision error enums
 thiserror = { workspace = true }
 # Lightweight logging facade for `mj_warning` + auto-reset error /
-# RK4-step2 / mesh-collision fallback warn sites. `log` is the L0
-# logging facade across CortenForge — no tracing-subscriber installed
-# workspace-wide, so the `tracing` crate's structured-spans surface
-# was paying full transitive cost (tracing + tracing-attributes +
-# tracing-core) for output that goes to /dev/null. Switched to `log`
-# (already in the transitive graph via parry3d → ena).
+# RK4-step2 / mesh-collision fallback warn sites. No tracing-subscriber
+# is installed workspace-wide, so the `tracing` crate's structured-
+# spans surface was paying full transitive cost (tracing +
+# tracing-attributes + tracing-core) for output that already goes to
+# /dev/null. Swapped to `log` to drop those deps from sim-soft's tree
+# (sim-soft transitively depends on sim-core, hits the L0 100-dep cap,
+# and already pulls `log` via parry3d → ena — so the swap is dep-
+# neutral for sim-soft's distinct count). Other L0 crates (mesh-shell,
+# mesh-repair, mesh-measure, sim-mjcf) still use `tracing` directly;
+# this is sim-core-scoped, not a workspace-wide standardization.
 log = "0.4"
 # Optional Serialize / Deserialize for Model / Data snapshots
 serde = { workspace = true, optional = true }

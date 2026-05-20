@@ -95,6 +95,9 @@ mod oracle;
 mod sdf;
 mod sdf_adapter;
 
+#[cfg(test)]
+mod test_fixtures;
+
 pub use error::{SdfError, SdfResult};
 pub use flood_fill::{
     CachedGridSdf, FloodFillSign, FloodFilledSdfBuildError, WALL_THRESHOLD_FACTOR_DEFAULT,
