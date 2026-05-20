@@ -576,7 +576,7 @@ impl Plugin for InsertionSimPlugin {
 /// Slice-9 follow-up: this used to gate on
 /// `cavity.is_changed() || layers.is_changed()`, but Bevy's
 /// change-detection marks a `ResMut<T>` as changed on every `deref_mut`
-/// access — not only on actual mutations. `device_design_panel` holds
+/// access — not only on actual mutations. `sim_research_panel` holds
 /// `ResMut<CavityState>` + `ResMut<LayersState>` for the sliders, so
 /// those resources were getting flagged changed every frame the panel
 /// rendered, which cleared `last_run` immediately after every sim
@@ -1335,7 +1335,7 @@ fn scalar_to_rgba(value: f64, (lo, hi): (f64, f64)) -> [f32; 4] {
 
 // ── panel rendering ─────────────────────────────────────────────────
 
-/// Render the Insertion-Sim section into the parent `device_design_panel`.
+/// Render the Insertion-Sim section into the parent `sim_research_panel`.
 /// Reads + mutates `InsertionSimState`; surfaces F-d plot, per-step
 /// table, per-layer table, and heat-map controls.
 pub fn render_insertion_sim_section(

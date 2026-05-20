@@ -10,7 +10,7 @@
 // field `#[allow]`s as each slice lands.
 #![allow(dead_code)]
 
-//! `insertion_sim` — FEM insertion-simulation pipeline for cf-device-design.
+//! `insertion_sim` — FEM insertion-simulation pipeline for cf-sim-research.
 //!
 //! Slice 7 (sub-commit 7.0) seeds this module with the **SDF bridge
 //! spike**: the Route-A geometry path that turns the cleaned scan into
@@ -365,7 +365,7 @@ fn silicone_for_anchor(anchor_key: &str) -> Result<SiliconeMaterial> {
         "DRAGON_SKIN_20A" => Ok(DRAGON_SKIN_20A),
         "DRAGON_SKIN_30A" => Ok(DRAGON_SKIN_30A),
         other => Err(anyhow!(
-            "unrecognized silicone anchor key {other:?} — not in the cf-device-design catalog"
+            "unrecognized silicone anchor key {other:?} — not in the cf-device-types silicone catalog"
         )),
     }
 }
@@ -844,7 +844,7 @@ const MAX_NEWTON_ITER: usize = 150;
 /// Newton convergence tolerance (free-DOF residual norm, in newtons)
 /// for the insertion solve. `SolverConfig::skeleton()`'s `1e-10`
 /// default is a walking-skeleton bar far tighter than this tool
-/// needs: cf-device-design is a *relative-comparison* engineering aid
+/// needs: cf-sim-research is a *relative-comparison* engineering aid
 /// (Fork B), and a `0.1`-N out-of-balance residual is physically
 /// negligible against the tens-of-newtons contact forces.
 ///
@@ -3547,8 +3547,8 @@ mod tests {
     /// override with the `CF_DEVICE_DESIGN_SPIKE_SCAN` env var). Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design insertion_sim -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research insertion_sim -- --ignored --nocapture
     /// ```
     ///
     /// Skips gracefully (no failure) when the fixture is absent, so the
@@ -3601,8 +3601,8 @@ mod tests {
     /// gracefully when the fixture is absent. Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design insertion_sim -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research insertion_sim -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "needs the repo-excluded iter-1 scan fixture; run with --ignored"]
@@ -4010,8 +4010,8 @@ mod tests {
     /// `cargo test`. Self-contained (no fixture). Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design insertion_sim -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research insertion_sim -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "release-mode FEM solve — slow under debug; run with --release --ignored"]
@@ -4173,8 +4173,8 @@ mod tests {
     /// `#[ignore]` — needs the iter-1 fixture; run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design diagnose_iter1 -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research diagnose_iter1 -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "7.3a diagnostic — needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
@@ -4324,7 +4324,7 @@ mod tests {
 
         // ── Phase 4 — STL exports for eyes-on review ────────────────
         eprintln!("\nPHASE 4 — STL exports (open in a mesh viewer):");
-        let out_dir = std::env::temp_dir().join("cf_device_design_diag");
+        let out_dir = std::env::temp_dir().join("cf_sim_research_diag");
         std::fs::create_dir_all(&out_dir).expect("create diag output dir");
 
         let decimated_path = out_dir.join("decimated_scan.stl");
@@ -4381,8 +4381,8 @@ mod tests {
     /// (sub-commit 2). `#[ignore]` — needs the iter-1 fixture; run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design grid_sdf_fix_spike -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research grid_sdf_fix_spike -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "7.3a fix spike — needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
@@ -4514,8 +4514,8 @@ mod tests {
     /// (no fixture). Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design run_insertion_ramp_on_synthetic \
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research run_insertion_ramp_on_synthetic \
     ///     -- --ignored --nocapture
     /// ```
     #[test]
@@ -4904,7 +4904,7 @@ mod tests {
     /// Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
+    /// cargo test -p cf-sim-research --release \
     ///     h4_sweep_sliding_ramp_on_iter1_scan -- --ignored --nocapture
     /// ```
     ///
@@ -5070,7 +5070,7 @@ mod tests {
     /// Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
+    /// cargo test -p cf-sim-research --release \
     ///     run_insertion_ramp_on_analytical_sphere_shell \
     ///     -- --ignored --nocapture
     /// ```
@@ -5277,8 +5277,9 @@ mod tests {
     /// that plane, and the intruder enters cleanly along the `+Z`
     /// centerline through the open mouth — matching the product
     /// pipeline shape (cf-scan-prep records caps in `.prep.toml`,
-    /// cf-device-design carves the mouth via the same primitive in
-    /// `build_insertion_geometry`).
+    /// the same `cf_cap_planes` primitive feeds both the sim's
+    /// `build_insertion_geometry` and cf-device-geometry's cavity
+    /// iso-extraction in cf-device-design).
     fn synthetic_sliding_geometry() -> InsertionGeometry {
         let scan = icosphere(0.040, 3);
         let design = SimDesign {
@@ -5332,7 +5333,7 @@ mod tests {
     /// `sim/L0/soft/tests/penalty_interior_cutoff.rs` against a
     /// `RigidPlane` fixture with precisely-controllable sd. Here the
     /// icosphere `GridSdf` is the load-bearing surface — we're only
-    /// asserting that cf-device-design's contact-build call site
+    /// asserting that cf-sim-research's contact-build call site
     /// actually plumbs the cutoff through to sim-soft.
     ///
     /// Probe at `(0, 0, 0)` with `pose = slide_pose_at(centerline, 1.0)`
@@ -5570,7 +5571,7 @@ mod tests {
     /// growing-ramp synthetic test's posture. Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
+    /// cargo test -p cf-sim-research --release \
     ///     sliding_insertion_ramp_converges -- --ignored --nocapture
     /// ```
     #[test]

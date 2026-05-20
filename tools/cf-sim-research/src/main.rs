@@ -1,23 +1,20 @@
 //! cf-sim-research — sim-research viewer for layered-silicone devices.
 //!
-//! Phase 3 of the sim-decouple refactor
-//! (`docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4): this binary carries the
-//! insertion-sim + heat-map + sliding-intruder panel + per-layer SDF
-//! shell rendering, moved out of cf-device-design. The CAD binary
-//! (cf-device-design) and this sim-research binary both consume
-//! `cf-device-types` (Phase 1) + `cf-device-geometry` (Phase 2.5) so
-//! they describe a layered-silicone device the same way; Phase 4
-//! strips cf-device-design's now-duplicate sim systems so its default
-//! build has zero sim-soft dependency.
+//! Sim-decouple Phases 3 + 4 (`docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4)
+//! moved the insertion-sim + heat-map + sliding-intruder panel +
+//! per-layer SDF shell rendering out of cf-device-design and into this
+//! binary. cf-device-design is CAD-only post-Phase-4 (zero sim-soft
+//! dep); both binaries share `cf-device-types` (Phase 1) +
+//! `cf-device-geometry` (Phase 2.5) so they describe a layered-
+//! silicone device the same way.
 //!
-//! Sim modules `insertion_sim` + `insertion_sim_ui` were copied
-//! verbatim from cf-device-design (Phase 2.5 already rewired their
-//! cross-crate deps to `cf-device-types` + `cf-device-geometry`); the
-//! per-frame Bevy systems below (`update_cavity_mesh`,
-//! `update_layer_meshes`, `spawn_intruder_mesh`, `update_intruder_mesh`)
-//! likewise mirror cf-device-design's. The duplication is intentional
-//! through Phase 4 — the workshop loop runs against cf-device-design
-//! during the migration and must never see a half-state.
+//! Sim modules `insertion_sim` + `insertion_sim_ui` were lifted
+//! verbatim from cf-device-design in Phase 3 (Phase 2.5 had already
+//! rewired their cross-crate deps to `cf-device-types` +
+//! `cf-device-geometry`); the per-frame Bevy systems below
+//! (`update_cavity_mesh`, `update_layer_meshes`, `spawn_intruder_mesh`,
+//! `update_intruder_mesh`) likewise live here. Phase 4 removed the
+//! duplicates from cf-device-design's main.rs.
 //!
 //! Posture differences vs cf-device-design (Q5.4 default lean — sim
 //! viewer is read-only WRT disk):
@@ -100,7 +97,7 @@ struct Cli {
     /// iterate on. When supplied, the suite pre-populates panels from
     /// the file; absent, the suite auto-resolves
     /// `<cleaned-stl-stem>.design.toml` next to the STL and loads it
-    /// if it exists (else panels start at defaults). Wired in slice 8.
+    /// if it exists (else panels start at defaults).
     #[arg(long, value_name = "PATH")]
     design: Option<PathBuf>,
 
@@ -200,11 +197,11 @@ struct ScanMeshEntity;
 #[derive(Component)]
 struct IntruderEntity;
 
-/// Color for the [`IntruderEntity`] render. S4 used a warm orange too
-/// close to the coral cavity, so when the intruder coincided with the
-/// cavity surface at contact the two read as one shape. S11.3 retunes
-/// to a cool teal that stays visibly distinct from the cavity at
-/// contact.
+/// Color for the [`IntruderEntity`] render. Warm orange — distinct
+/// enough from the coral cavity that the two don't read as one shape
+/// at contact (an earlier S4 tuning sat too close to the cavity hue;
+/// the saturation/value gap on this shade preserves the contact
+/// silhouette).
 const INTRUDER_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.20);
 
 fn main() -> Result<()> {
@@ -1018,7 +1015,7 @@ fn spawn_intruder_mesh(
 /// geometry-change resnapshot that clears `last_run = None`. Both
 /// bump generation (`wrapping_add(1)`) immediately after the
 /// mutation — find via grep, not line numbers (line numbers drift
-/// with every cf-device-design refactor). Any
+/// with every cf-sim-research refactor). Any
 /// `last_run.is_sliding_mode()` flip is already captured by a
 /// generation change, so a separate `is_sliding_mode` field would
 /// be redundant in the key.
@@ -1944,7 +1941,7 @@ source_stl = "raw.stl"
     #[test]
     fn parse_centerline_extra_fields_tolerated() {
         // Forward-compatibility: schema additions in cf-scan-prep
-        // don't break cf-device-design's loader.
+        // don't break cf-sim-research's loader.
         let text = r#"
 [scan_prep]
 source_stl = "raw.stl"
@@ -2527,7 +2524,7 @@ another_future_field = "foo"
     // is a control for the rotation match arm; the rotation-about-
     // physics-Z case mirrors `sim/L1/bevy/src/convert.rs`'s
     // `rotation_around_physics_z_becomes_negative_rotation_around_bevy_y`
-    // test (workspace canonical; SL.4 helper is the cf-device-design
+    // test (workspace canonical; SL.4 helper is the cf-sim-research
     // local mirror that switches on `UpAxis`).
 
     #[test]
