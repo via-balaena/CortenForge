@@ -1,8 +1,20 @@
 # H2 — mesh refinement at cavity surface (foundational fix)
 
-> **STATUS — BOOKMARK.** Per [[feedback-bookmark-when-surface-levers-exhaust]]
-> three-session pattern: this is the bookmark.  Recon next session;
-> implementation the session after.
+> **STATUS — RECON COMPLETE; Q1 FALSIFIED; H2 ARC SHELVED.** Per
+> [[feedback-bookmark-when-surface-levers-exhaust]] three-session
+> pattern: bookmark = this session; recon = next session
+> (`bckux7phx` uniform-2mm spike at cavity 6 mm + Q3 pivot-vertex
+> instrumentation, completed 2026-05-19 21:34); implementation =
+> CUT. See §4.1 Recon Results below for the data + verdict.
+>
+> Per the program-gameplan reframe of 2026-05-19 LATE-NIGHT (sim is
+> research / quarter-pace, all tactical FEM recon arcs PAUSED), the
+> arc would have shelved anyway — but Q1's falsification means
+> "build the adaptive primitive" is not the right follow-on even if
+> sim-side recon resumes. Per §3's own framing: "If Q1 falsifies
+> uniform 2 mm, this all gets cut + we escalate to deeper solver
+> work." The Q3 pivot-localization data does survive as a forward-
+> useful artifact whenever solver-side work resumes.
 >
 > 2026-05-19 LATE-NIGHT.  Foundational fix for the indefinite-tangent
 > pivot-stagnation pattern surfaced by the N_STEPS resonance recon
@@ -41,14 +53,27 @@ the residual below ~0.54 — Levenberg-Marquardt rescues with λ ≈ 1e4
 knock the residual down once each but Newton snaps back into the
 same basin.
 
-**Why mesh refinement fixes it**: the persistent indefinite mode lives
-at one or two cavity-wall vertices whose stiffness contribution is
-the dominant source of the indefinite tangent.  Finer mesh
-distributes the contact + material stiffness over more vertices, so
-no single vertex contribution can dominate the eigenstructure of
-the Newton tangent.  The pathological pivot indices "smear out"
-across the refined mesh — no single dof index can repeat 25-50× in
-a row because the strain is shared across neighbors.
+**Why mesh refinement fixes it** ~~(load-bearing hypothesis Q1
+was meant to test)~~ — **FALSIFIED by §4.1 recon**, retained
+verbatim below as audit trail:
+
+> the persistent indefinite mode lives at one or two cavity-wall
+> vertices whose stiffness contribution is the dominant source of
+> the indefinite tangent.  Finer mesh distributes the contact +
+> material stiffness over more vertices, so no single vertex
+> contribution can dominate the eigenstructure of the Newton
+> tangent.  The pathological pivot indices "smear out" across the
+> refined mesh — no single dof index can repeat 25-50× in a row
+> because the strain is shared across neighbors.
+
+Empirical disposition: 7.6× tet count + 6.4× vertex count brings
+the final `r_norm` down ~3× (5.36e-1 → 1.62e-1) — refinement does
+*something* — but the indefinite-tangent stagnation persists.
+Pivots don't "smear out"; they redistribute across the
+same cavity-floor band (see §4.1 Q3 readout). The indefinite
+character is structural to the Yeoh-tangent + contact-Hessian
+composition at this intruder pose, not a per-vertex stiffness
+concentration.
 
 This is the same line of reasoning E.b §10.4 took to recommend H2:
 mesh refinement was banked behind H4 as the real product fix.  H4
@@ -215,6 +240,76 @@ Three-session pattern per [[feedback-bookmark-when-surface-levers-exhaust]]:
 3. **Implementation** (session N+2 onward) — if recon confirms,
    build the adaptive primitive per Q2.
 
+### 4.1 Recon results — Q1 FALSIFIED (2026-05-19 21:34, `bckux7phx`)
+
+Ran `h2_recon_cavity_6mm_n16` with `CF_DEVICE_DESIGN_H2_CELL_SIZE_MM=2.0`
+on the iter-1 sock fixture (dual-layer Ecoflex 00-30 + 50% Slacker
+INNER 10 mm + DS20A OUTER 3 mm, cavity = 6 mm, N = 16). Companion
+4 mm baseline run captured in the same session.
+
+Logs (retain until next solver-side investigation):
+`/tmp/h2_recon_4mm.log` (baseline) + `/tmp/h2_recon_2mm.log` (spike).
+
+| Metric                   | 4 mm baseline | 2 mm spike      |
+| ------------------------ | ------------- | --------------- |
+| Tets                     | 72 862        | 555 910 (7.6×)  |
+| Vertices                 | 52 286        | 333 518         |
+| Geometry build time      | 0.2 s         | 1.3 s           |
+| Wall-clock (16-step ramp)| 210 s         | 17 658 s (84×)  |
+| Steps converged          | 0/16          | 0/16            |
+| Stall location           | step 0        | step 0          |
+| Final `r_norm` @ iter 150| 5.36e-1       | **1.62e-1**     |
+| Non-PD pivots            | persistent    | persistent      |
+
+**Verdict — Q1 FALSIFIED**: mesh refinement does not fix the
+resonance. Both runs stall at step 0, hitting the Newton iter-cap
+(150) without convergence. The 2 mm spike's residual is ~3× lower
+than the 4 mm baseline (1.62e-1 vs 5.36e-1) — refinement helps
+*marginally* — but neither comes close to `tol = 1e-10`, and the
+non-PD pivots remain structurally present in both meshes. Per §3
+("If Q1 falsifies uniform 2 mm, this all gets cut + we escalate to
+deeper solver work"), the adaptive-primitive implementation phase
+is CUT.
+
+**Q3 (pivot vertex instrumentation) — succeeded**. The H2-Q3
+`world pos` print fired on every faer LU-fallback invocation. The
+pivot vertices cluster in two physical bands:
+
+- **Cavity floor band** (`z ≈ -42 to -46 mm`) — the dominant
+  pattern in both 4 mm and 2 mm runs. Pivot vertices at e.g.
+  `(-12, -32, -45.97)`, `(14, -28, -45.99)`, `(-20, -28, -45.95)`,
+  `(-10.66, 31.73, -46.85)`. This matches the slide-step contact
+  zone where the intruder first engages the cavity.
+- **Cap-plane band** (`z ≈ 0`) — visible only in the 2 mm run
+  (e.g. `(25.62, -7.62, -0.38)`, `(2.00, -24.42, -0.00)`); appears
+  briefly mid-ramp before pivots return to the cavity-floor band.
+  The cap-plane band may be a refinement-induced artifact (more
+  vertices near the pinned cap) rather than a real physical
+  pathology.
+
+**Implications for forward solver-side work** (per §5):
+- The persistent indefinite eigenmode is **not** localized to one
+  or two cavity-wall vertices "whose stiffness contribution
+  dominates" — that hypothesis (§TL;DR last paragraph) is also
+  falsified by extension. 333 k vertices and the eigenmode still
+  persists. So the indefinite-tangent character is structural to
+  the Yeoh-tangent + contact-Hessian composition at this
+  intruder-pose / cavity-geometry, not a per-vertex anomaly.
+- Modified Cholesky / block preconditioner in sim-soft (§5 last
+  bullet) becomes a more attractive next move whenever solver-side
+  recon unpauses, since "refinement smears the eigenstructure" is
+  empirically wrong on this scan.
+- F-bar / mixed-u-p decorator (§5 first bullet) is still the right
+  ν=0.40 root-cause arc, but it's orthogonal to the
+  indefinite-tangent resonance — falsification doesn't change its
+  framing.
+
+The Q3 pivot-localization is a forward-useful artifact: the
+solver-side investigation can use the cavity-floor band as the
+fixture for any future tangent-spectrum / preconditioner spike.
+
+---
+
 ## 5. What stays banked behind H2
 
 - **Phase H F-bar / mixed-u-p decorator** for the ν=0.40 root cause.
@@ -232,8 +327,12 @@ Three-session pattern per [[feedback-bookmark-when-surface-levers-exhaust]]:
 
 ## 6. Pointers
 
-- Recon log: `/tmp/n_steps_recon.log` (captured 2026-05-19
-  LATE-NIGHT, retain until H2 ships).
+- **H2 Q1 recon logs** (2026-05-19 21:34, task `bckux7phx` +
+  baseline): `/tmp/h2_recon_4mm.log` + `/tmp/h2_recon_2mm.log` —
+  retain until solver-side investigation resumes.
+- Predecessor N_STEPS recon log: `/tmp/n_steps_recon.log`
+  (captured 2026-05-19 LATE-NIGHT, retain alongside the H2 logs as
+  paired baseline).
 - Predecessor recon: E.b §10.1 had the original pre-H4 N_STEPS
   sweep at cavity 6 mm.  This session's recon is the post-H4-2-C
   version (no fake-convergence artifact).
