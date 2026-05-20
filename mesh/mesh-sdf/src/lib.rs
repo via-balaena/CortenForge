@@ -93,6 +93,10 @@ mod error;
 mod flood_fill;
 mod oracle;
 mod sdf;
+mod sdf_adapter;
+
+#[cfg(test)]
+mod test_fixtures;
 
 pub use error::{SdfError, SdfResult};
 pub use flood_fill::{

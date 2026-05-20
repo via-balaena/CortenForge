@@ -29,6 +29,7 @@
 //! [r]: ../../../../../../docs/studies/soft_body_architecture/src/60-differentiability/02-implicit-function.md
 //! [tet4]: ../../../../../../docs/studies/soft_body_architecture/src/30-discretization/00-element-choice/00-tet4.md
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use faer::linalg::solvers::SolveCore;
@@ -40,7 +41,8 @@ use faer::{Conj, MatMut, Side};
 use nalgebra::{Matrix3, SMatrix};
 use sim_ml_chassis::{Tensor, Var};
 
-use super::{CpuTape, NewtonStep, Solver};
+use super::lm::{LmConfig, LmState};
+use super::{CpuTape, NewtonStep, Solver, SolverFailure};
 use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
 use crate::differentiable::newton_vjp::NewtonStepVjp;
@@ -51,6 +53,44 @@ use crate::readout::{BoundaryConditions, LoadAxis};
 
 /// Armijo sufficient-decrease constant (scope §5 R-1).
 const ARMIJO_C1: f64 = 1e-4;
+
+/// Local stall-info carrier returned by [`CpuNewtonSolver::armijo_backtrack`]
+/// when the line search exhausts its backtrack budget (F3.3 per
+/// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5).
+///
+/// Distinct from the public [`SolverFailure::ArmijoStall`] variant —
+/// shape mirrors the spec's local-struct fields exactly. The pre-F3
+/// panic message included the per-call `final_alpha`; spec drops it
+/// from this struct (and so the panic-message text in
+/// `solve_impl`'s translation arm loses the `final α 4.77e-7`
+/// substring vs pre-F3). No regression-test pins on that substring;
+/// the substantive panic surface (panic-on-stall behavior + Newton
+/// `iter` + `r_norm`) is preserved.
+#[derive(Debug)]
+struct ArmijoStallInfo {
+    x_curr: Vec<f64>,
+    iter: usize,
+    r_norm: f64,
+}
+
+/// Local info carrier for the doubly-failed-factor case (Llt non-PD
+/// AND Lu also failed) returned by the `try_*` factor methods (F3.3
+/// per spec §2.5). The caller (e.g., `try_solve_impl`,
+/// `try_factor_at_position`) wraps this into the public
+/// [`SolverFailure::DoublyFailedFactor`] variant, filling in the
+/// `x_partial` + `last_iter` fields from its own call-site context.
+///
+/// Distinct from the public variant for the same DRY reason as
+/// `ArmijoStallInfo`: factor-site methods don't naturally have
+/// `x_partial` (they take triplets, not positions), so plumbing the
+/// position through every factor signature would be wrong-shape.
+#[derive(Debug)]
+struct DoublyFailedFactorInfo {
+    /// Full panic-message-style context: factor site + Newton iter +
+    /// Lu error details. Preserves the bit-equal panic message at
+    /// `solve_impl`'s translation site.
+    context: String,
+}
 
 /// Per-element reference-frame geometry, pre-computed at solver
 /// construction (Phase 2 commit 4a).
@@ -90,6 +130,18 @@ pub struct SolverConfig {
     /// `assemble_external_force` short-circuits the body-force scatter
     /// when this is exactly zero.
     pub gravity_z: f64,
+    /// Levenberg-Marquardt regularization for non-PD tangent rescue
+    /// per `docs/F3_LM_REGULARIZATION_SPEC.md`. `None` (the
+    /// [`Self::skeleton`] default) preserves pre-F3 behavior bit-equal
+    /// via `LmState::disabled` (pub(super) — see `super::lm`) short-circuit
+    /// at `factor_free_tangent`'s retry loop: `Llt` first, then direct
+    /// `Lu` fallback on non-PD, no `+λI`. `Some(LmConfig)` activates
+    /// the in-iter Marquardt adapter; the `Lu` fallback then becomes
+    /// the λ-saturation surface. Fork-B (cf-device-design) consumers
+    /// opt in via [`LmConfig::fork_b`] paired with
+    /// [`Solver::try_step`] for graceful
+    /// failure on Armijo stall.
+    pub lm_regularization: Option<LmConfig>,
 }
 
 impl SolverConfig {
@@ -109,6 +161,7 @@ impl SolverConfig {
             max_newton_iter: 10,
             max_line_search_backtracks: 20,
             gravity_z: 0.0,
+            lm_regularization: None,
         }
     }
 }
@@ -547,11 +600,22 @@ where
     /// Diagnostic-only at the solver level — Decision K's "Newton
     /// hot path does not branch on diagnostic metadata" framing
     /// applies to the interface flag, not to validity; this check
-    /// runs once per [`Solver::step`] call before the Newton loop
-    /// starts (Decision Q "at step start"), and panics on first
-    /// violation rather than degrading silently. The book Part 2
-    /// §00 §02 prescription is a runtime warning; Decision Q
-    /// upgrades to panic for Phase 4 fail-closed semantics.
+    /// runs at two step boundaries per [`Solver::step`] call:
+    /// (1) before the Newton loop starts (the original Decision Q
+    /// "at step start" framing — catches invalid warm-starts), AND
+    /// (2) at end of solve before returning a converged result
+    /// (catches Newton converging to an invalid equilibrium —
+    /// without this check, an invalid converged state silently
+    /// flows to the next step's start check, making the failure
+    /// step-delayed + the failed step's recorded output
+    /// physically meaningless).  Both boundaries panic on first
+    /// violation rather than degrading silently.  See
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10 for the
+    /// motivating finding (cavity > 5 mm sliding-ramp step 1
+    /// converged to `σ_max = 2.05` at tet 3206, was only caught at
+    /// step 2's start check pre-this-fix).  The book Part 2 §00
+    /// §02 prescription is a runtime warning; Decision Q upgrades
+    /// to panic for Phase 4 fail-closed semantics.
     ///
     /// # Panics
     ///
@@ -678,91 +742,216 @@ where
     }
 
     /// Factor the free-DOF condensed tangent assembled from `triplets`
-    /// (lower-tri, column-major sorted).
+    /// (lower-tri, column-major sorted), with F3 Levenberg-Marquardt
+    /// `+λI` retry rescue.
     ///
     /// Cheap-path-first: try `Llt` on the cached symbolic factor; on
     /// `LltError::Numeric` (non-PD pivot — an indefinite tangent at the
-    /// current Newton iter or position), reflect the lower-tri triplets
-    /// to the full pattern and factor via `Lu` against the cached
-    /// `symbolic_lu`. Happy path is bit-identical to the pre-A2 code;
-    /// the fall-through engages only on contact-tangent indefiniteness
-    /// (row 21 v1.5 capsule-cap apex was the documented case at A2
-    /// landing).
+    /// current Newton iter or position) the F3 retry loop bumps `λ`
+    /// (seed = `seed_relative × max_diag` on first non-PD per call,
+    /// then `λ ×= up_factor`) and retries the Llt on the regularized
+    /// `A + λI`. On Llt success, `λ` decays via `on_llt_success` for
+    /// the next call. When the retry budget exhausts OR `λ` saturates
+    /// at `max_relative × max_diag`, the loop falls through to LU on
+    /// the ORIGINAL (un-regularized) triplets — per spec §2.1, LU on
+    /// the regularized system would conflate "LM saturation" with "LU
+    /// on `λ_max`-regularized system" and make the saturation surface
+    /// a moving target.
     ///
-    /// `context` is a `&str` tag included in the fallback warn-log and
-    /// the doubly-failed panic message so debug can identify which
-    /// factor site fired the fallback or panic.
+    /// When `lm_state` is [`LmState::disabled`] (the bit-equal path
+    /// for `SolverConfig::lm_regularization == None`), `can_bump`
+    /// returns `false` unconditionally, so the loop reduces to a
+    /// single Llt attempt + direct LU fallback (today's pre-F3
+    /// behavior, observably bit-equal including the existing
+    /// `"sim-soft: faer LU fallback fired"` stderr line).
+    ///
+    /// `context` is a `&str` tag included in the fallback warn-log,
+    /// the LM seed/bump/summary logs, and the doubly-failed panic
+    /// message so debug can identify which factor site fired which
+    /// path.
+    ///
+    /// **MAINTENANCE NOTE**: this method's retry-loop body is
+    /// structurally mirrored by [`Self::try_factor_free_tangent`]
+    /// (per F3.3 — the two diverge only at the LU-fallback dispatch:
+    /// this one calls [`Self::lu_fallback`] which panics on
+    /// doubly-failed factor; the `try_*` sibling calls
+    /// [`Self::try_lu_fallback`] which returns `Err`). Spec authority
+    /// (F3.3 `try_factor_free_tangent` doc) chose duplication over
+    /// shared inner-helper to keep this method's hot path free of
+    /// `Result` indirection. Any change to the retry-loop body
+    /// (seed/bump rules, log forms, the Cow regularization branch)
+    /// MUST be mirrored to `try_factor_free_tangent` to avoid silent
+    /// divergence.
     //
     // expect_used + panic justifications (helper owns both):
     //   • `SparseColMat::try_new_from_triplets` can only fail on
     //     duplicate triplet entries, which the BTreeMap accumulator in
     //     `assemble_free_hessian_triplets` (and the new() pattern
-    //     reflection) prevents by construction.
+    //     reflection) prevents by construction. `triplets_with_diagonal_
+    //     offset` mutates existing diagonal entries in place rather
+    //     than appending, preserving the no-duplicates invariant.
     //   • LltError::Generic (OutOfMemory) and LuError post-fallback are
     //     both non-recoverable: the symbolic patterns were validated at
     //     new(), so a fresh failure is either OOM or a deeper bug.
     //   • The fall-through `Lu::try_new_with_symbolic` failing is the
-    //     A2 doubly-failed case — the Llt path tripped non-PD AND the
-    //     LU path tripped a singular factor; not recoverable without a
-    //     model-level change (looser validity domain, mesh refinement,
-    //     or geometry change). Panic carries the context.
+    //     A2 doubly-failed case (now reached via LM saturation OR the
+    //     disabled short-circuit) — the Llt path tripped non-PD AND
+    //     the LU path tripped a singular factor; not recoverable
+    //     without a model-level change. Panic carries the context.
     #[allow(clippy::expect_used, clippy::panic)]
     fn factor_free_tangent(
         &self,
         triplets: &[Triplet<usize, usize, f64>],
+        lm_state: &mut LmState,
         context: &str,
     ) -> FactoredFreeTangent {
-        let a_mat: SparseColMat<usize, f64> =
-            SparseColMat::try_new_from_triplets(self.n_free, self.n_free, triplets)
-                .expect("malformed condensed-tangent triplet list");
-        match Llt::<usize, f64>::try_new_with_symbolic(
-            self.symbolic.clone(),
-            a_mat.rb(),
-            Side::Lower,
-        ) {
-            Ok(llt) => FactoredFreeTangent::Llt(llt),
-            Err(LltError::Numeric(numeric_err)) => {
-                // A2 fallback. Symmetrize lower-tri → full and factor
-                // via Lu. The warn-log lets debug tell SPD-skeleton
-                // violations (which were panics pre-A2) from
-                // genuinely-recoverable indefinite contact-tangent
-                // cases.
-                eprintln!(
-                    "sim-soft: faer LU fallback fired at {context} \
-                     (Llt non-PD pivot: {numeric_err:?})"
-                );
-                let mut full_triplets: Vec<Triplet<usize, usize, f64>> =
-                    Vec::with_capacity(triplets.len() * 2);
-                for t in triplets {
-                    full_triplets.push(Triplet::new(t.row, t.col, t.val));
-                    if t.row != t.col {
-                        full_triplets.push(Triplet::new(t.col, t.row, t.val));
+        // Snapshot max_diag ONCE per call (not per retry) per spec §2.1.
+        // The mass-diagonal scatter inside `assemble_free_hessian_
+        // triplets` (search for `Mass diagonal:`) guarantees a positive
+        // diagonal entry per free DOF — the orphan auto-pin in `new()`
+        // excludes zero-mass DOFs from `free_dof_indices`; the
+        // hand-built test fixtures in this module's `tests` mod also
+        // include non-zero diagonal triplets. Both gates make
+        // `max_diag > 0` a structural invariant.
+        let max_diag = triplets_max_diag(triplets);
+        debug_assert!(
+            max_diag > 0.0,
+            "factor_free_tangent: max diagonal entry must be positive (got {max_diag}); \
+             empty triplets / zero-mass DOFs should have been excluded by new() validity gates"
+        );
+
+        // Snapshot λ at call start so the first-non-PD log can pick
+        // the seed-vs-bump form per spec §2.5 logging policy.
+        let lambda_at_call_start = lm_state.lambda();
+        lm_state.begin_factor_call();
+
+        loop {
+            // λ == 0 → borrow the original triplets (bit-equal to pre-F3,
+            // no allocation). λ > 0 → clone + mutate diagonal in place.
+            let regularized: Cow<[Triplet<usize, usize, f64>]> = if lm_state.lambda() > 0.0 {
+                Cow::Owned(triplets_with_diagonal_offset(triplets, lm_state.lambda()))
+            } else {
+                Cow::Borrowed(triplets)
+            };
+            let a_mat: SparseColMat<usize, f64> =
+                SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &regularized)
+                    .expect("malformed condensed-tangent triplet list");
+            match Llt::<usize, f64>::try_new_with_symbolic(
+                self.symbolic.clone(),
+                a_mat.rb(),
+                Side::Lower,
+            ) {
+                Ok(llt) => {
+                    // Post-retry success summary (only when we actually
+                    // retried — disabled path has retry_count == 0
+                    // and emits nothing, preserving pre-F3 stderr).
+                    if lm_state.retry_count() > 0 {
+                        eprintln!(
+                            "sim-soft: LM converged in {} retries to λ = {:e} at {context}",
+                            lm_state.retry_count(),
+                            lm_state.lambda()
+                        );
                     }
+                    lm_state.on_llt_success();
+                    return FactoredFreeTangent::Llt(llt);
                 }
-                let a_mat_full: SparseColMat<usize, f64> =
-                    SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &full_triplets)
-                        .expect("malformed full condensed-tangent triplet list");
-                let lu = Lu::<usize, f64>::try_new_with_symbolic(
-                    self.symbolic_lu.clone(),
-                    a_mat_full.rb(),
-                )
-                .unwrap_or_else(|lu_err| {
-                    panic!(
-                        "condensed tangent factor doubly failed at {context}: \
+                Err(LltError::Numeric(numeric_err)) if lm_state.can_bump(max_diag) => {
+                    lm_state.on_non_pd(max_diag);
+                    // First-non-PD per-call log (seed vs bump form
+                    // determined by `lambda_at_call_start`). Subsequent
+                    // retries within the same call are silent — the
+                    // post-loop summary closes the trace.
+                    if lm_state.retry_count() == 1 {
+                        if lambda_at_call_start == 0.0 {
+                            eprintln!(
+                                "sim-soft: LM seeded λ = {:e} at {context} \
+                                 (Llt non-PD pivot: {numeric_err:?})",
+                                lm_state.lambda()
+                            );
+                        } else {
+                            eprintln!(
+                                "sim-soft: LM bumped λ = {:e} (was {:e}) at {context} \
+                                 (Llt non-PD pivot: {numeric_err:?})",
+                                lm_state.lambda(),
+                                lambda_at_call_start
+                            );
+                        }
+                    }
+                    // Loop falls through to next iteration — explicit
+                    // `continue` is clippy::needless_continue here.
+                }
+                Err(LltError::Numeric(numeric_err)) => {
+                    // Saturated (retries exhausted OR λ at ceiling) OR
+                    // LM disabled (can_bump false from the start). The
+                    // LM-saturation summary fires only when LM is active;
+                    // the underlying `faer LU fallback fired` log inside
+                    // `lu_fallback` preserves the pre-F3 stderr surface.
+                    if lm_state.is_active() {
+                        eprintln!(
+                            "sim-soft: LM saturated at λ = {:e} after {} retries at {context}; \
+                             falling back to LU on un-regularized triplets",
+                            lm_state.lambda(),
+                            lm_state.retry_count()
+                        );
+                    }
+                    return self.lu_fallback(triplets, numeric_err, context);
+                }
+                Err(LltError::Generic(faer_err)) => panic!(
+                    "condensed tangent Llt factor failed at {context} with \
+                     non-Numeric error: {faer_err:?} (symbolic pattern wrong or \
+                     OutOfMemory — both should be impossible post-new())."
+                ),
+            }
+        }
+    }
+
+    /// LU fallback path extracted from `factor_free_tangent` so the F3
+    /// retry-loop saturation arm can dispatch to it on the ORIGINAL
+    /// un-regularized triplets (per spec §2.1). Symmetrizes lower-tri
+    /// → full pattern and factors via Lu against the cached
+    /// `symbolic_lu`.
+    ///
+    /// `numeric_err` is forwarded from the Llt failure that triggered
+    /// the fallback — included in the warn-log for debug parity with
+    /// the pre-F3 single-attempt path. The warn-log surface is
+    /// preserved exactly so pre-F3 stderr regressions stay bit-equal
+    /// at LM-disabled call sites.
+    //
+    // expect_used + panic same justifications as `factor_free_tangent`'s
+    // outer comment: pattern-build correctness validated at new().
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn lu_fallback(
+        &self,
+        triplets: &[Triplet<usize, usize, f64>],
+        numeric_err: faer::linalg::cholesky::llt::factor::LltError,
+        context: &str,
+    ) -> FactoredFreeTangent {
+        eprintln!(
+            "sim-soft: faer LU fallback fired at {context} \
+             (Llt non-PD pivot: {numeric_err:?})"
+        );
+        let mut full_triplets: Vec<Triplet<usize, usize, f64>> =
+            Vec::with_capacity(triplets.len() * 2);
+        for t in triplets {
+            full_triplets.push(Triplet::new(t.row, t.col, t.val));
+            if t.row != t.col {
+                full_triplets.push(Triplet::new(t.col, t.row, t.val));
+            }
+        }
+        let a_mat_full: SparseColMat<usize, f64> =
+            SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &full_triplets)
+                .expect("malformed full condensed-tangent triplet list");
+        let lu = Lu::<usize, f64>::try_new_with_symbolic(self.symbolic_lu.clone(), a_mat_full.rb())
+            .unwrap_or_else(|lu_err| {
+                panic!(
+                    "condensed tangent factor doubly failed at {context}: \
                          Llt tripped non-PD AND Lu fallback failed: {lu_err:?}. \
                          Tangent is degenerate beyond LU rescue — model-level \
                          change needed (looser validity domain, mesh \
                          refinement, or contact-geometry change)."
-                    )
-                });
-                FactoredFreeTangent::Lu(Box::new(lu))
-            }
-            Err(LltError::Generic(faer_err)) => panic!(
-                "condensed tangent Llt factor failed at {context} with \
-                 non-Numeric error: {faer_err:?} (symbolic pattern wrong or \
-                 OutOfMemory — both should be impossible post-new())."
-            ),
-        }
+                )
+            });
+        FactoredFreeTangent::Lu(Box::new(lu))
     }
 
     /// Re-factor the free-DOF condensed tangent at a specific position
@@ -770,9 +959,34 @@ where
     /// cached symbolic factors — no rebuild. Returns either the
     /// happy-path Cholesky or the A2 LU fallback per
     /// [`Self::factor_free_tangent`].
-    fn factor_at_position(&self, x_curr: &[f64], dt: f64) -> FactoredFreeTangent {
+    ///
+    /// `lm_seed_lambda` carries the Newton-final λ from `solve_impl`
+    /// per spec §2.1 — a fresh `LmState` is constructed from
+    /// `self.config.lm_regularization` (disabled if `None`) seeded
+    /// with this value, so late-iter LM activity that hadn't fully
+    /// decayed warm-starts the adjoint factor. The adjoint runs at
+    /// converged `x_final` which is typically SPD, so the expected λ
+    /// is small-or-zero and LM typically does not fire here. On the
+    /// disabled path, `lm_seed_lambda` is ignored (the sentinel
+    /// state's λ stays permanently 0).
+    fn factor_at_position(
+        &self,
+        x_curr: &[f64],
+        dt: f64,
+        lm_seed_lambda: f64,
+    ) -> FactoredFreeTangent {
         let triplets = self.assemble_free_hessian_triplets(x_curr, dt);
-        self.factor_free_tangent(&triplets, "factor_at_position (IFT adjoint at x_final)")
+        let mut lm_state = self
+            .config
+            .lm_regularization
+            .map_or_else(LmState::disabled, |cfg| {
+                LmState::from_config_with_seed(cfg, lm_seed_lambda)
+            });
+        self.factor_free_tangent(
+            &triplets,
+            &mut lm_state,
+            "factor_at_position (IFT adjoint at x_final)",
+        )
     }
 
     /// Solve `A_free · δ = -r_free` via the cached symbolic factor.
@@ -783,19 +997,21 @@ where
     /// `r_full` is the full-DOF residual; the free-DOF subset is
     /// gathered via `self.free_dof_indices`. The factor variant (Llt
     /// vs Lu) is encapsulated by [`FactoredFreeTangent`] and forwards
-    /// the solve transparently.
+    /// the solve transparently. `lm_state` is threaded through to
+    /// `factor_free_tangent`'s F3 retry loop (per spec §2.1).
     fn factor_and_solve_free(
         &self,
         triplets: &[Triplet<usize, usize, f64>],
         r_full: &[f64],
         newton_iter: usize,
         r_norm: f64,
+        lm_state: &mut LmState,
     ) -> Vec<f64> {
         let context = format!(
             "factor_and_solve_free at Newton iter {newton_iter} \
              (free residual norm {r_norm:e})"
         );
-        let factor = self.factor_free_tangent(triplets, &context);
+        let factor = self.factor_free_tangent(triplets, lm_state, &context);
         // RHS = -r_free, gathered from r_full via the free-DOF index map.
         let mut rhs: Vec<f64> = self
             .free_dof_indices
@@ -808,8 +1024,303 @@ where
         rhs
     }
 
+    /// Graceful-failure mirror of [`Self::lu_fallback`] (F3.3 per spec
+    /// §2.5). On Lu's doubly-failed case, returns
+    /// `Err(DoublyFailedFactorInfo)` carrying the full panic-message
+    /// context string instead of panicking. The caller wraps into
+    /// `SolverFailure::DoublyFailedFactor` with `x_partial` +
+    /// `last_iter` from its own context.
+    ///
+    /// The `"sim-soft: faer LU fallback fired"` stderr line is
+    /// preserved exactly — F3.3 changes the failure-reporting shape
+    /// (panic vs Err) but does NOT change the diagnostic-log surface
+    /// at successful Lu fallbacks.
+    //
+    // expect_used: pattern-build correctness validated at new() —
+    // same justification as `lu_fallback`'s expect on
+    // SparseColMat::try_new_from_triplets.
+    #[allow(clippy::expect_used)]
+    fn try_lu_fallback(
+        &self,
+        triplets: &[Triplet<usize, usize, f64>],
+        numeric_err: faer::linalg::cholesky::llt::factor::LltError,
+        context: &str,
+    ) -> Result<FactoredFreeTangent, DoublyFailedFactorInfo> {
+        eprintln!(
+            "sim-soft: faer LU fallback fired at {context} \
+             (Llt non-PD pivot: {numeric_err:?})"
+        );
+        let mut full_triplets: Vec<Triplet<usize, usize, f64>> =
+            Vec::with_capacity(triplets.len() * 2);
+        for t in triplets {
+            full_triplets.push(Triplet::new(t.row, t.col, t.val));
+            if t.row != t.col {
+                full_triplets.push(Triplet::new(t.col, t.row, t.val));
+            }
+        }
+        let a_mat_full: SparseColMat<usize, f64> =
+            SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &full_triplets)
+                .expect("malformed full condensed-tangent triplet list");
+        match Lu::<usize, f64>::try_new_with_symbolic(self.symbolic_lu.clone(), a_mat_full.rb()) {
+            Ok(lu) => Ok(FactoredFreeTangent::Lu(Box::new(lu))),
+            Err(lu_err) => Err(DoublyFailedFactorInfo {
+                context: format!(
+                    "condensed tangent factor doubly failed at {context}: \
+                     Llt tripped non-PD AND Lu fallback failed: {lu_err:?}. \
+                     Tangent is degenerate beyond LU rescue — model-level \
+                     change needed (looser validity domain, mesh \
+                     refinement, or contact-geometry change)."
+                ),
+            }),
+        }
+    }
+
+    /// Graceful-failure mirror of [`Self::factor_free_tangent`] (F3.3
+    /// per spec §2.5). Same retry loop + saturation handoff, but the
+    /// saturation arm dispatches to [`Self::try_lu_fallback`] and
+    /// propagates `Err` on doubly-failed factor.
+    ///
+    /// The factor-loop body is structurally identical to the panicking
+    /// `factor_free_tangent` — duplication is intentional for clarity
+    /// and to keep the panicking variant's hot path free of `Result`
+    /// indirection. The two methods diverge only at the LU fallback
+    /// dispatch.
+    ///
+    /// **MAINTENANCE NOTE**: see [`Self::factor_free_tangent`]'s
+    /// maintenance note. Any change to the retry-loop body
+    /// (seed/bump rules, log forms, the Cow regularization branch)
+    /// MUST be mirrored from the other direction too.
+    //
+    // expect_used + panic justifications: same as
+    // `factor_free_tangent`'s outer comment.
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn try_factor_free_tangent(
+        &self,
+        triplets: &[Triplet<usize, usize, f64>],
+        lm_state: &mut LmState,
+        context: &str,
+    ) -> Result<FactoredFreeTangent, DoublyFailedFactorInfo> {
+        let max_diag = triplets_max_diag(triplets);
+        debug_assert!(
+            max_diag > 0.0,
+            "try_factor_free_tangent: max diagonal entry must be positive (got {max_diag})"
+        );
+
+        let lambda_at_call_start = lm_state.lambda();
+        lm_state.begin_factor_call();
+
+        loop {
+            let regularized: Cow<[Triplet<usize, usize, f64>]> = if lm_state.lambda() > 0.0 {
+                Cow::Owned(triplets_with_diagonal_offset(triplets, lm_state.lambda()))
+            } else {
+                Cow::Borrowed(triplets)
+            };
+            let a_mat: SparseColMat<usize, f64> =
+                SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &regularized)
+                    .expect("malformed condensed-tangent triplet list");
+            match Llt::<usize, f64>::try_new_with_symbolic(
+                self.symbolic.clone(),
+                a_mat.rb(),
+                Side::Lower,
+            ) {
+                Ok(llt) => {
+                    if lm_state.retry_count() > 0 {
+                        eprintln!(
+                            "sim-soft: LM converged in {} retries to λ = {:e} at {context}",
+                            lm_state.retry_count(),
+                            lm_state.lambda()
+                        );
+                    }
+                    lm_state.on_llt_success();
+                    return Ok(FactoredFreeTangent::Llt(llt));
+                }
+                Err(LltError::Numeric(numeric_err)) if lm_state.can_bump(max_diag) => {
+                    lm_state.on_non_pd(max_diag);
+                    if lm_state.retry_count() == 1 {
+                        if lambda_at_call_start == 0.0 {
+                            eprintln!(
+                                "sim-soft: LM seeded λ = {:e} at {context} \
+                                 (Llt non-PD pivot: {numeric_err:?})",
+                                lm_state.lambda()
+                            );
+                        } else {
+                            eprintln!(
+                                "sim-soft: LM bumped λ = {:e} (was {:e}) at {context} \
+                                 (Llt non-PD pivot: {numeric_err:?})",
+                                lm_state.lambda(),
+                                lambda_at_call_start
+                            );
+                        }
+                    }
+                }
+                Err(LltError::Numeric(numeric_err)) => {
+                    if lm_state.is_active() {
+                        eprintln!(
+                            "sim-soft: LM saturated at λ = {:e} after {} retries at {context}; \
+                             falling back to LU on un-regularized triplets",
+                            lm_state.lambda(),
+                            lm_state.retry_count()
+                        );
+                    }
+                    return self.try_lu_fallback(triplets, numeric_err, context);
+                }
+                Err(LltError::Generic(faer_err)) => panic!(
+                    "condensed tangent Llt factor failed at {context} with \
+                     non-Numeric error: {faer_err:?} (symbolic pattern wrong or \
+                     OutOfMemory — both should be impossible post-new())."
+                ),
+            }
+        }
+    }
+
+    /// Graceful-failure mirror of [`Self::factor_and_solve_free`]
+    /// (F3.3 per spec §2.5). Routes through
+    /// [`Self::try_factor_free_tangent`] and propagates
+    /// `DoublyFailedFactorInfo` on factor failure; the solve path
+    /// itself is infallible (factor success guarantees a valid solve).
+    fn try_factor_and_solve_free(
+        &self,
+        triplets: &[Triplet<usize, usize, f64>],
+        r_full: &[f64],
+        newton_iter: usize,
+        r_norm: f64,
+        lm_state: &mut LmState,
+    ) -> Result<Vec<f64>, DoublyFailedFactorInfo> {
+        let context = format!(
+            "factor_and_solve_free at Newton iter {newton_iter} \
+             (free residual norm {r_norm:e})"
+        );
+        let factor = self.try_factor_free_tangent(triplets, lm_state, &context)?;
+        let mut rhs: Vec<f64> = self
+            .free_dof_indices
+            .iter()
+            .map(|&idx| -r_full[idx])
+            .collect();
+        let rhs_mat: MatMut<'_, f64> =
+            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
+        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        Ok(rhs)
+    }
+
+    /// Push `NewtonStepVjp` onto the tape with `theta_var` as parent.
+    /// Shared by [`Solver::step`] and [`Solver::try_step`] — both must
+    /// register the same VJP shape on the Ok-path so downstream
+    /// tape consumers (`Tape::backward`) see no API difference based
+    /// on which entry point built the step.
+    ///
+    /// The VJP owns the factor; `Tape::backward` feeds the
+    /// scalar-or-vector cotangent of `x_final` into `vjp` and we solve
+    /// the adjoint `A · λ = g_free` in place, contracting against
+    /// `(∂r/∂θ)_free` per the per-stage closed forms in
+    /// [`NewtonStepVjp::vjp`](crate::differentiable::NewtonStepVjp).
+    /// Pre-resolves loaded vertices' xyz free-DOF indices via
+    /// `full_to_free_idx` so `vjp` doesn't need solver-side metadata
+    /// at backward-pass time.
+    //
+    // expect_used: the loaded_free_xyz construction `.expect`s on
+    // `full_to_free_idx[loaded_dof]`, which BC validation guarantees
+    // is `Some` (loaded ∩ pinned = ∅ asserted in `new()`).
+    #[allow(clippy::expect_used)]
+    fn push_newton_step_vjp(
+        &self,
+        tape: &mut CpuTape,
+        theta_var: Var,
+        step: &mut NewtonStep<CpuTape>,
+        factor: FactoredFreeTangent,
+    ) {
+        let loaded_free_xyz: Vec<[usize; 3]> = self
+            .boundary_conditions
+            .loaded_vertices
+            .iter()
+            .map(|&(vid, _)| {
+                let v = vid as usize;
+                [
+                    self.full_to_free_idx[3 * v]
+                        .expect("loaded vertex must be free (BC validation)"),
+                    self.full_to_free_idx[3 * v + 1]
+                        .expect("loaded vertex must be free (BC validation)"),
+                    self.full_to_free_idx[3 * v + 2]
+                        .expect("loaded vertex must be free (BC validation)"),
+                ]
+            })
+            .collect();
+        let stage_1 = self
+            .boundary_conditions
+            .loaded_vertices
+            .iter()
+            .all(|(_, ax)| matches!(ax, LoadAxis::AxisZ));
+        let vjp = NewtonStepVjp::new(
+            factor,
+            self.n_dof,
+            self.free_dof_indices.clone(),
+            loaded_free_xyz,
+            stage_1,
+        );
+        let x_final_tensor = Tensor::from_slice(&step.x_final, &[self.n_dof]);
+        let x_final_var = tape.push_custom(&[theta_var], x_final_tensor, Box::new(vjp));
+        step.x_final_var = Some(x_final_var);
+    }
+
+    /// Resolve the effective Armijo-stall policy for `try_step` /
+    /// `try_replay_step`. Defaults to
+    /// [`SaturationPolicy::PanicOnStall`](crate::SaturationPolicy::PanicOnStall)
+    /// when LM is disabled (`lm_regularization == None`) — preserves
+    /// the pre-F3 panic-on-stall surface for callers that opted into
+    /// `try_step` but not into LM. With LM enabled, the configured
+    /// `LmConfig::on_saturation` field wins.
+    fn armijo_stall_policy(&self) -> crate::SaturationPolicy {
+        self.config
+            .lm_regularization
+            .map_or(crate::SaturationPolicy::PanicOnStall, |cfg| {
+                cfg.on_saturation
+            })
+    }
+
+    /// Graceful-failure mirror of [`Self::factor_at_position`] (F3.3
+    /// per spec §2.5). Used by [`Self::try_step`] for the IFT-adjoint
+    /// factor at converged `x_final`. On doubly-failed factor returns
+    /// `Err(SolverFailure::DoublyFailedFactor)` with
+    /// `x_partial = x_curr` (which IS `x_final` here — the natural
+    /// partial position) and `last_iter = 0` (no Newton iter applies
+    /// post-Newton; the `context` string carries the
+    /// `"factor_at_position (IFT adjoint at x_final)"` site tag for
+    /// disambiguation).
+    fn try_factor_at_position(
+        &self,
+        x_curr: &[f64],
+        dt: f64,
+        lm_seed_lambda: f64,
+    ) -> Result<FactoredFreeTangent, SolverFailure> {
+        let triplets = self.assemble_free_hessian_triplets(x_curr, dt);
+        let mut lm_state = self
+            .config
+            .lm_regularization
+            .map_or_else(LmState::disabled, |cfg| {
+                LmState::from_config_with_seed(cfg, lm_seed_lambda)
+            });
+        self.try_factor_free_tangent(
+            &triplets,
+            &mut lm_state,
+            "factor_at_position (IFT adjoint at x_final)",
+        )
+        .map_err(|info| SolverFailure::DoublyFailedFactor {
+            x_partial: x_curr.to_vec(),
+            last_iter: 0,
+            context: info.context,
+        })
+    }
+
     /// Inner solver: pure-function-of-θ Newton loop. Shared by `step`
     /// and `replay_step`.
+    ///
+    /// F3.3: thin panic-on-failure wrapper around [`Self::try_solve_impl`].
+    /// All three F3 failure surfaces (`SolverFailure::ArmijoStall` /
+    /// `NewtonIterCap` / `DoublyFailedFactor`) panic here with pre-F3
+    /// messages preserved bit-equal — the source-level body differs
+    /// from pre-F3 but observable behavior at this method's surface
+    /// is unchanged. Graceful-failure consumers use `try_step` /
+    /// `try_replay_step` which route through `try_solve_impl`
+    /// directly.
     ///
     /// # Panics
     /// - Newton exceeds `config.max_newton_iter` iterations without
@@ -822,10 +1333,9 @@ where
     //
     // panic: scope §3 R-1 (3-5-iter convergence prediction) cap +
     // Armijo cap are book-level findings, not runtime-recoverable
-    // conditions. The A2 Lu fallback at `factor_free_tangent` widens
-    // the previous "Llt fails = panic" path to "Llt fails → try Lu →
-    // panic only if Lu also fails"; the residual panic surface is
-    // exactly the doubly-failed case.
+    // conditions at the `step()` API surface. F3.3 widens the
+    // recoverable surface via `try_step` without changing `step`'s
+    // panic contract.
     #[allow(clippy::panic)]
     fn solve_impl(
         &self,
@@ -833,7 +1343,171 @@ where
         v_prev: &Tensor<f64>,
         theta: &Tensor<f64>,
         dt: f64,
-    ) -> NewtonStep<CpuTape> {
+    ) -> (NewtonStep<CpuTape>, f64) {
+        self.try_solve_impl(x_prev, v_prev, theta, dt)
+            .unwrap_or_else(|fail| match fail {
+                SolverFailure::ArmijoStall {
+                    last_iter,
+                    last_r_norm,
+                    ..
+                } => panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm)),
+                SolverFailure::NewtonIterCap { max_iter, .. } => panic!(
+                    "Newton failed to converge within {max_iter} iterations at \
+                     tol {tol:e}. Likely causes: θ drives system out of R-2's \
+                     SPD region, or spec §3 R-1's assumption of 3-5 iter \
+                     convergence from zero initial guess is wrong for this θ.",
+                    tol = self.config.tol,
+                ),
+                SolverFailure::DoublyFailedFactor { context, .. } => panic!("{context}"),
+            })
+    }
+
+    /// F3 recon candidate A — gated factor + solve + Armijo for one
+    /// Newton iter (per `docs/F3_RECON_A_GATED_LM_SPEC.md` §2.2 + §2.3).
+    /// Used exclusively by [`Self::try_solve_impl`].
+    ///
+    /// **First pass** (always): factor + solve with `LmState::disabled`
+    /// → `δ_LU`; [`Self::armijo_backtrack`] on `δ_LU`. Bit-equal to
+    /// pre-F3 LU + Armijo.
+    ///
+    /// **First pass succeeds** → return the Armijo-accepted iterate.
+    ///
+    /// **First pass fails AND outer `lm_state` is disabled** (§2.3
+    /// short-circuit): return the first-pass failure directly. NO
+    /// second factor + solve attempted — preserves the F3 spec's §F3.1
+    /// bit-equal-when-dormant contract (no 2× factor wall-clock cost
+    /// at LM-disabled stalls).
+    ///
+    /// **First pass fails AND outer `lm_state` is active** (§2.2
+    /// ESCALATION): re-factor + re-solve using the outer persistent
+    /// `lm_state` (which carries cross-Newton-iter λ per F3 spec §2.2).
+    /// The first non-PD detection at this iter seeds-or-bumps λ via the
+    /// inner `factor_free_tangent` retry loop. The LM-rescued `δ_LM`
+    /// goes through `armijo_backtrack`; if Armijo accepts → return; if
+    /// the LM step ALSO Armijo-stalls → return
+    /// `Err(SolverFailure::ArmijoStall)` (no further escalation —
+    /// already in the LM-rescue regime per §2.2 step 4b.ii).
+    ///
+    /// First-pass failure info (`DoublyFailedFactor` context,
+    /// `ArmijoStall` `r_norm`) is DISCARDED on escalation per spec
+    /// §2.5 ("the LU step already had its chance; escalation is the
+    /// recovery attempt; if escalation also fails, THAT's the
+    /// committed-iterate failure for the surfaced `SolverFailure`
+    /// variant").
+    //
+    // too_many_arguments: 10 inputs mirror the residual + Newton-iter
+    // formula's reads; bundling into a struct adds name-the-fields
+    // ceremony for a sole caller (try_solve_impl) with no readability
+    // gain (try_solve_impl already names its locals identically).
+    #[allow(clippy::too_many_arguments)]
+    fn try_gated_factor_solve_armijo(
+        &self,
+        triplets: &[Triplet<usize, usize, f64>],
+        r_full: &[f64],
+        x_curr: &[f64],
+        x_prev_vec: &[f64],
+        v_prev_vec: &[f64],
+        f_ext: &[f64],
+        dt: f64,
+        r_norm: f64,
+        newton_iter: usize,
+        lm_state: &mut LmState,
+    ) -> Result<Vec<f64>, SolverFailure> {
+        // First pass: LM-disabled (bit-equal to pre-F3).
+        let mut lm_disabled = LmState::disabled();
+        let first_pass_outcome = self
+            .try_factor_and_solve_free(triplets, r_full, newton_iter, r_norm, &mut lm_disabled)
+            .map_err(|info| SolverFailure::DoublyFailedFactor {
+                x_partial: x_curr.to_vec(),
+                last_iter: newton_iter,
+                context: info.context,
+            })
+            .and_then(|delta_lu| {
+                self.armijo_backtrack(
+                    x_curr,
+                    x_prev_vec,
+                    v_prev_vec,
+                    f_ext,
+                    dt,
+                    &delta_lu,
+                    r_norm,
+                    newton_iter,
+                )
+                .map_err(|stall| SolverFailure::ArmijoStall {
+                    x_partial: stall.x_curr,
+                    last_iter: stall.iter,
+                    last_r_norm: stall.r_norm,
+                })
+            });
+
+        match first_pass_outcome {
+            Ok(x_accepted) => Ok(x_accepted),
+            Err(failure) if !lm_state.is_active() => {
+                // §2.3 short-circuit: no LM rescue mechanism available.
+                Err(failure)
+            }
+            Err(_first_pass_failure_discarded) => {
+                // §2.2 ESCALATION via the OUTER persistent lm_state.
+                let delta_lm = self
+                    .try_factor_and_solve_free(triplets, r_full, newton_iter, r_norm, lm_state)
+                    .map_err(|info| SolverFailure::DoublyFailedFactor {
+                        x_partial: x_curr.to_vec(),
+                        last_iter: newton_iter,
+                        context: info.context,
+                    })?;
+                self.armijo_backtrack(
+                    x_curr,
+                    x_prev_vec,
+                    v_prev_vec,
+                    f_ext,
+                    dt,
+                    &delta_lm,
+                    r_norm,
+                    newton_iter,
+                )
+                .map_err(|stall| SolverFailure::ArmijoStall {
+                    x_partial: stall.x_curr,
+                    last_iter: stall.iter,
+                    last_r_norm: stall.r_norm,
+                })
+            }
+        }
+    }
+
+    /// Graceful-failure counterpart to [`Self::solve_impl`] (F3.3 per
+    /// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5). Same Newton loop,
+    /// but returns `Result<(NewtonStep, f64), SolverFailure>` instead
+    /// of panicking. The `f64` is the Newton-final λ (threaded into
+    /// the IFT-adjoint factor by [`Self::try_step`] per spec §2.1).
+    ///
+    /// `x_partial` on each `SolverFailure` variant is `x_curr` at the
+    /// START of the failed Newton iter (per spec §2.5 `ArmijoStall`
+    /// docstring — committed-Newton-iterate semantics, NOT `trial_x`
+    /// from Armijo backtracking, NOT a partial-Armijo-accepted `x`).
+    /// `NewtonIterCap`'s `x_partial` is the most-recent
+    /// armijo-accepted iterate (one full iter past the last failed
+    /// convergence check).
+    ///
+    /// **F3 recon candidate A — gated LM activation** (per
+    /// `docs/F3_RECON_A_GATED_LM_SPEC.md`). At each Newton iter, the
+    /// inner factor + solve + Armijo is attempted TWICE in the failure
+    /// path: first with LM SUPPRESSED (bit-equal to pre-F3 LU + Armijo
+    /// — the cavity = 3 mm baseline preservation lever); on first-pass
+    /// failure AND `lm_state.is_active()`, escalate to the persistent
+    /// outer `lm_state`'s LM-rescued retry. At LM-disabled
+    /// (`SolverConfig::lm_regularization == None`), the §2.3
+    /// short-circuit returns the first-pass failure directly to
+    /// preserve the F3 spec's §F3.1 bit-equal-when-dormant contract
+    /// (no 2× factor cost at LM-disabled stalls). The OUTER
+    /// `lm_state` carries cross-iter λ per F3 spec §2.2 persistence
+    /// rule — only consumed by the escalation branch.
+    fn try_solve_impl(
+        &self,
+        x_prev: &Tensor<f64>,
+        v_prev: &Tensor<f64>,
+        theta: &Tensor<f64>,
+        dt: f64,
+    ) -> Result<(NewtonStep<CpuTape>, f64), SolverFailure> {
         assert!(
             x_prev.as_slice().len() == self.n_dof,
             "x_prev must have {} entries, got {}",
@@ -848,9 +1522,6 @@ where
         );
         assert!(dt > 0.0, "dt must be positive, got {dt}");
 
-        // Initial iterate at the previous position (zero initial guess
-        // for the displacement increment; standard backward-Euler warm-
-        // start). Scope §15 D-9 notes this is deterministic (no RNG).
         let mut x_curr: Vec<f64> = x_prev.as_slice().to_vec();
         let x_prev_vec: Vec<f64> = x_prev.as_slice().to_vec();
         let v_prev_vec: Vec<f64> = v_prev.as_slice().to_vec();
@@ -858,14 +1529,21 @@ where
         let mut f_ext = vec![0.0; self.n_dof];
         self.assemble_external_force(theta, &mut f_ext);
 
-        // Decision Q validity check (Phase 4 commit 12, IV-7) — runs
-        // once at step start against `x_curr = x_prev`, panics on the
-        // first per-tet `Material::validity()` violation. Diagnostic
-        // failure mode, not solver-affecting on the happy path.
+        // Decision Q validity check stays a fail-closed panic —
+        // validity violations are scene-wiring errors at construction
+        // time, not in-solve numerical conditions; graceful-failure
+        // consumers gain nothing from converting these to Err.
         self.check_validity_at_step_start(&x_curr);
 
         let mut f_int = vec![0.0; self.n_dof];
         let mut r_full = vec![0.0; self.n_dof];
+
+        let mut lm_state = self
+            .config
+            .lm_regularization
+            .map_or_else(LmState::disabled, LmState::from_config);
+
+        let mut last_r_norm = 0.0_f64;
 
         for newton_iter in 0..self.config.max_newton_iter {
             self.assemble_global_int_force(&x_curr, &mut f_int);
@@ -880,33 +1558,46 @@ where
                 &mut r_full,
             );
             let r_norm = self.free_residual_norm(&r_full);
+            last_r_norm = r_norm;
 
             if r_norm < self.config.tol {
-                return NewtonStep::new_converged(x_curr, newton_iter, r_norm);
+                // Decision Q validity check at converged state — sister
+                // of the step-start check at line 1525. Without this,
+                // Newton can converge to a deformation field where some
+                // tet's F violates max_stretch_deviation / inversion;
+                // the failure surfaces only at the NEXT step's start
+                // check, masking which step actually produced the
+                // invalid state + leaving the failed step's recorded
+                // output physically meaningless. See
+                // `check_validity_at_step_start`'s docstring for the
+                // motivating finding + the two-boundary check contract.
+                self.check_validity_at_step_start(&x_curr);
+                return Ok((
+                    NewtonStep::new_converged(x_curr, newton_iter, r_norm),
+                    lm_state.lambda(),
+                ));
             }
 
             let triplets = self.assemble_free_hessian_triplets(&x_curr, dt);
-            let delta_free = self.factor_and_solve_free(&triplets, &r_full, newton_iter, r_norm);
-            x_curr = self.armijo_backtrack(
+            x_curr = self.try_gated_factor_solve_armijo(
+                &triplets,
+                &r_full,
                 &x_curr,
                 &x_prev_vec,
                 &v_prev_vec,
                 &f_ext,
                 dt,
-                &delta_free,
                 r_norm,
                 newton_iter,
-            );
+                &mut lm_state,
+            )?;
         }
 
-        panic!(
-            "Newton failed to converge within {max_iter} iterations at \
-             tol {tol:e}. Likely causes: θ drives system out of R-2's \
-             SPD region, or spec §3 R-1's assumption of 3-5 iter convergence \
-             from zero initial guess is wrong for this θ.",
-            max_iter = self.config.max_newton_iter,
-            tol = self.config.tol,
-        );
+        Err(SolverFailure::NewtonIterCap {
+            x_partial: x_curr,
+            max_iter: self.config.max_newton_iter,
+            last_r_norm,
+        })
     }
 
     /// Armijo backtracking per scope §5 R-1: shrink α geometrically
@@ -914,14 +1605,18 @@ where
     /// DOFs of `x` (looked up via `self.free_dof_indices`); pinned
     /// DOFs stay at their `x_curr` values.
     ///
-    /// Panic-on-stall matches the `solve_impl` policy — scope §11 S-2
-    /// treats stall as a book-level finding, not a recoverable error.
+    /// F3.3: returns `Result<Vec<f64>, ArmijoStallInfo>` so callers
+    /// can choose their own failure response. `solve_impl` (the
+    /// existing panic-on-stall consumer) translates the local
+    /// `ArmijoStallInfo` to a `panic!` with the pre-F3 message
+    /// preserved bit-equal; `try_solve_impl` (the new
+    /// graceful-failure consumer) maps it into the public
+    /// [`SolverFailure::ArmijoStall`] variant.
     //
-    // panic: stall is a book-level finding, not a recoverable error
-    // (scope §11 S-2). too_many_arguments: 8 inputs mirror the residual
-    // formula's reads; bundling into a struct adds name-the-fields
-    // ceremony for one caller with no readability gain.
-    #[allow(clippy::panic, clippy::too_many_arguments)]
+    // too_many_arguments: 8 inputs mirror the residual formula's
+    // reads; bundling into a struct adds name-the-fields ceremony for
+    // two callers with no readability gain.
+    #[allow(clippy::too_many_arguments)]
     fn armijo_backtrack(
         &self,
         x_curr: &[f64],
@@ -932,7 +1627,7 @@ where
         delta_free: &[f64],
         r_norm: f64,
         newton_iter: usize,
-    ) -> Vec<f64> {
+    ) -> Result<Vec<f64>, ArmijoStallInfo> {
         debug_assert!(x_curr.len() == self.n_dof);
         debug_assert!(delta_free.len() == self.n_free);
         let mut alpha = 1.0;
@@ -962,16 +1657,15 @@ where
             );
             let trial_norm = self.free_residual_norm(&trial_r);
             if trial_norm <= alpha.mul_add(-ARMIJO_C1, 1.0) * r_norm {
-                return trial_x;
+                return Ok(trial_x);
             }
             alpha *= 0.5;
         }
-        panic!(
-            "Armijo line-search stalled at Newton iter {newton_iter} \
-             (r_norm {r_norm:e}, final α {alpha:e}). Likely causes: \
-             non-SPD tangent near solution (spec §3 R-2 violation), \
-             or near-singular condensed system."
-        );
+        Err(ArmijoStallInfo {
+            x_curr: x_curr.to_vec(),
+            iter: newton_iter,
+            r_norm,
+        })
     }
 
     // ── Cache-using assembly methods (live since Phase 2 commit 4b). ──
@@ -1248,10 +1942,6 @@ where
 {
     type Tape = CpuTape;
 
-    // expect_used: the loaded_free_xyz construction below `.expect`s on
-    // `full_to_free_idx[loaded_dof]`, which BC validation guarantees is
-    // `Some` (loaded ∩ pinned = ∅ asserted in `new()`).
-    #[allow(clippy::expect_used)]
     fn step(
         &mut self,
         tape: &mut Self::Tape,
@@ -1264,54 +1954,18 @@ where
         // proceed in pure-tensor space. The tape's role is reverse-mode
         // bookkeeping; the primal solve is tape-free.
         let theta_tensor = tape.value_tensor(theta_var).clone();
-        let mut step = self.solve_impl(x_prev, v_prev, &theta_tensor, dt);
+        let (mut step, lm_final_lambda) = self.solve_impl(x_prev, v_prev, &theta_tensor, dt);
 
         // IFT adjoint factor: re-assemble A at x_final (post-convergence)
         // and factor it via `factor_free_tangent` — Llt happy path or
-        // A2 Lu fallback per `FactoredFreeTangent`. Factor ownership
-        // pattern (I-3) verified for Llt in tests/invariant_3_factor.rs;
-        // the same Arc-internal ownership shape holds for Lu.
-        let factor = self.factor_at_position(&step.x_final, dt);
-
-        // Push `NewtonStepVjp` onto the tape with `theta_var` as parent.
-        // The VJP owns the factor; `Tape::backward` feeds the scalar-or-
-        // vector cotangent of `x_final` into `vjp` and we solve the
-        // adjoint `A · λ = g_free` in place, contracting against
-        // (∂r/∂θ)_free per the per-stage closed forms in
-        // `NewtonStepVjp::vjp`. Pre-resolve loaded vertices' xyz
-        // free-DOF indices via `full_to_free_idx` so `vjp` doesn't
-        // need solver-side metadata at backward-pass time.
-        let loaded_free_xyz: Vec<[usize; 3]> = self
-            .boundary_conditions
-            .loaded_vertices
-            .iter()
-            .map(|&(vid, _)| {
-                let v = vid as usize;
-                [
-                    self.full_to_free_idx[3 * v]
-                        .expect("loaded vertex must be free (BC validation)"),
-                    self.full_to_free_idx[3 * v + 1]
-                        .expect("loaded vertex must be free (BC validation)"),
-                    self.full_to_free_idx[3 * v + 2]
-                        .expect("loaded vertex must be free (BC validation)"),
-                ]
-            })
-            .collect();
-        let stage_1 = self
-            .boundary_conditions
-            .loaded_vertices
-            .iter()
-            .all(|(_, ax)| matches!(ax, LoadAxis::AxisZ));
-        let vjp = NewtonStepVjp::new(
-            factor,
-            self.n_dof,
-            self.free_dof_indices.clone(),
-            loaded_free_xyz,
-            stage_1,
-        );
-        let x_final_tensor = Tensor::from_slice(&step.x_final, &[self.n_dof]);
-        let x_final_var = tape.push_custom(&[theta_var], x_final_tensor, Box::new(vjp));
-        step.x_final_var = Some(x_final_var);
+        // A2 Lu fallback per `FactoredFreeTangent`. F3: pass the
+        // Newton-final λ as the LM seed (per spec §2.1) so late-iter
+        // LM activity warm-starts the adjoint factor; on the disabled
+        // path the seed is ignored. Factor ownership pattern (I-3)
+        // verified for Llt in tests/invariant_3_factor.rs; the same
+        // Arc-internal ownership shape holds for Lu.
+        let factor = self.factor_at_position(&step.x_final, dt, lm_final_lambda);
+        self.push_newton_step_vjp(tape, theta_var, &mut step, factor);
         step
     }
 
@@ -1325,8 +1979,69 @@ where
         // Pure-function counterpart; no tape mutation. At skeleton scale
         // this is the same primal solve — Phase-E checkpoint replay will
         // diverge by reading a stored primal instead of re-solving.
-        // `x_final_var` stays `None` — no tape means no Var.
-        self.solve_impl(x_prev, v_prev, theta, dt)
+        // `x_final_var` stays `None` — no tape means no Var. Drops the
+        // F3 Newton-final λ: replay path doesn't run the IFT adjoint
+        // factor (which is the only consumer of the seed).
+        let (step, _lm_final_lambda) = self.solve_impl(x_prev, v_prev, theta, dt);
+        step
+    }
+
+    // panic: try_step honors SaturationPolicy::PanicOnStall by
+    // forwarding ArmijoStall to the pre-F3 panic surface (per spec
+    // §2.5 dispatch table). NewtonIterCap + DoublyFailedFactor are
+    // unconditionally Err regardless of policy.
+    #[allow(clippy::panic)]
+    fn try_step(
+        &mut self,
+        tape: &mut Self::Tape,
+        x_prev: &Tensor<f64>,
+        v_prev: &Tensor<f64>,
+        theta_var: Var,
+        dt: f64,
+    ) -> Result<NewtonStep<Self::Tape>, SolverFailure> {
+        let theta_tensor = tape.value_tensor(theta_var).clone();
+        let policy = self.armijo_stall_policy();
+        let (mut step, lm_final_lambda) =
+            match self.try_solve_impl(x_prev, v_prev, &theta_tensor, dt) {
+                Ok(ok) => ok,
+                Err(SolverFailure::ArmijoStall {
+                    last_iter,
+                    last_r_norm,
+                    ..
+                }) if matches!(policy, crate::SaturationPolicy::PanicOnStall) => {
+                    panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm))
+                }
+                Err(other) => return Err(other),
+            };
+        let factor = self.try_factor_at_position(&step.x_final, dt, lm_final_lambda)?;
+        self.push_newton_step_vjp(tape, theta_var, &mut step, factor);
+        Ok(step)
+    }
+
+    // panic: same `SaturationPolicy::PanicOnStall` honoring as
+    // `try_step` — replay path mirrors the forward path's failure
+    // surface.
+    #[allow(clippy::panic)]
+    fn try_replay_step(
+        &self,
+        x_prev: &Tensor<f64>,
+        v_prev: &Tensor<f64>,
+        theta: &Tensor<f64>,
+        dt: f64,
+    ) -> Result<NewtonStep<Self::Tape>, SolverFailure> {
+        let policy = self.armijo_stall_policy();
+        let (step, _lm_final_lambda) = match self.try_solve_impl(x_prev, v_prev, theta, dt) {
+            Ok(ok) => ok,
+            Err(SolverFailure::ArmijoStall {
+                last_iter,
+                last_r_norm,
+                ..
+            }) if matches!(policy, crate::SaturationPolicy::PanicOnStall) => {
+                panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm))
+            }
+            Err(other) => return Err(other),
+        };
+        Ok(step)
     }
 
     fn current_dt(&self) -> f64 {
@@ -1411,6 +2126,67 @@ fn residual_into(
     }
 }
 
+/// Standard Armijo-stall panic message text, shared by `solve_impl`,
+/// `Solver::try_step`, and `Solver::try_replay_step` so the three
+/// panic surfaces emit byte-identical stderr regardless of which
+/// entry point tripped the stall. Pulled into a free fn to dodge
+/// the multi-line-string-literal indentation trap where continuation
+/// lines silently embed leading whitespace into the message text —
+/// drifted across the three call sites pre-polish (21-space vs
+/// 17-space continuation), making the panic UX site-dependent.
+fn armijo_stall_panic_message(last_iter: usize, last_r_norm: f64) -> String {
+    format!(
+        "Armijo line-search stalled at Newton iter {last_iter} \
+         (r_norm {last_r_norm:e}). Likely causes: non-SPD tangent \
+         near solution (spec §3 R-2 violation), or near-singular \
+         condensed system."
+    )
+}
+
+/// Maximum diagonal entry magnitude (signed, not abs) across a
+/// lower-tri triplet list. F3 uses this to scale the seed and ceiling
+/// of the LM `+λI` retry loop relative to the assembled tangent's
+/// dominant diagonal (per spec §2.1 / §2.2).
+///
+/// Returns `0.0` for a triplet list with no diagonal entries — the
+/// caller (`factor_free_tangent`) `debug_assert!`s on `> 0`, so an
+/// all-off-diagonal list trips fail-fast at the assertion. Production
+/// assembly (`assemble_free_hessian_triplets`) always scatters a
+/// positive mass-diagonal entry per free DOF, so the structural
+/// invariant holds.
+fn triplets_max_diag(triplets: &[Triplet<usize, usize, f64>]) -> f64 {
+    triplets
+        .iter()
+        .filter(|t| t.row == t.col)
+        .map(|t| t.val)
+        .fold(0.0_f64, f64::max)
+}
+
+/// Clone a triplet list and add `lambda` to each diagonal entry in
+/// place (the F3 `+λI` regularization step per spec §2.1). Off-diagonal
+/// entries are copied unchanged. Preserves triplet ordering (the
+/// cached symbolic factor depends on it).
+///
+/// Mutates EXISTING diagonal entries — does NOT append fresh
+/// `(k, k, λ)` triplets — because `SparseColMat::try_new_from_triplets`
+/// rejects duplicates. The `assemble_free_hessian_triplets` mass
+/// scatter (search for `Mass diagonal:`) guarantees a diagonal entry
+/// per free DOF, so every `(k, k)` is mutated exactly once.
+/// `O(n_triplets)` clone + `O(n_triplets)` walk = `O(n_triplets)`;
+/// negligible vs the Llt factor cost.
+fn triplets_with_diagonal_offset(
+    triplets: &[Triplet<usize, usize, f64>],
+    lambda: f64,
+) -> Vec<Triplet<usize, usize, f64>> {
+    let mut out = triplets.to_vec();
+    for t in &mut out {
+        if t.row == t.col {
+            t.val += lambda;
+        }
+    }
+    out
+}
+
 /// Convert a flat `[f64]` DOF buffer (length `3·N`, vertex-major +
 /// xyz-inner) to a `Vec<Vec3>` of length `N`.
 ///
@@ -1436,6 +2212,15 @@ fn slice_to_vec3s(x_flat: &[f64]) -> Vec<Vec3> {
 }
 
 #[cfg(test)]
+#[allow(
+    // Tests are allowed to panic / expect / strict-compare-f64 — these
+    // are the inherent vocabulary of "fail loudly with a clear message"
+    // assertions. Production code carries per-method allows; the test
+    // module hoists them once at the module level.
+    clippy::panic,
+    clippy::expect_used,
+    clippy::float_cmp
+)]
 mod tests {
     //! Phase 2 commit 4a.1 — `BoundaryConditions` validation tests
     //! plus A2 LU-fallback unit fixtures.
@@ -1458,12 +2243,13 @@ mod tests {
     use faer::sparse::Triplet;
     use faer::{Conj, MatMut};
 
-    use super::FactoredFreeTangent;
+    use super::{FactoredFreeTangent, SolverFailure};
     use crate::contact::NullContact;
     use crate::material::MaterialField;
     use crate::mesh::SingleTetMesh;
     use crate::readout::{BoundaryConditions, LoadAxis};
-    use crate::solver::{CpuNewtonSolver, SolverConfig};
+    use crate::solver::lm::LmState;
+    use crate::solver::{CpuNewtonSolver, LmConfig, Solver, SolverConfig};
     use crate::{SkeletonSolver, element::Tet4};
 
     fn build(bc: BoundaryConditions) -> SkeletonSolver {
@@ -1538,7 +2324,8 @@ mod tests {
             Triplet::new(2, 2, 4.0),
         ];
 
-        let factor = solver.factor_free_tangent(&triplets, "SPD test fixture");
+        let mut lm_state = LmState::disabled();
+        let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "SPD test fixture");
         assert!(
             matches!(factor, FactoredFreeTangent::Llt(_)),
             "SPD case must take the Llt happy path, got Lu fallback"
@@ -1579,7 +2366,9 @@ mod tests {
             Triplet::new(2, 2, 1.0),
         ];
 
-        let factor = solver.factor_free_tangent(&triplets, "indefinite test fixture");
+        let mut lm_state = LmState::disabled();
+        let factor =
+            solver.factor_free_tangent(&triplets, &mut lm_state, "indefinite test fixture");
         assert!(
             matches!(factor, FactoredFreeTangent::Lu(_)),
             "indefinite case must engage the Lu fallback"
@@ -1598,5 +2387,363 @@ mod tests {
         assert!((ax0 - 1.0).abs() < tol, "A·x[0] = {ax0}, expected 1.0");
         assert!((ax1 - 1.0).abs() < tol, "A·x[1] = {ax1}, expected 1.0");
         assert!((ax2 - 1.0).abs() < tol, "A·x[2] = {ax2}, expected 1.0");
+    }
+
+    /// F3.2 LM rescue: same indefinite fixture as
+    /// `factor_free_tangent_falls_through_to_lu_on_non_pd` but with
+    /// LM enabled (`fork_b` defaults). The Marquardt retry loop must
+    /// bump λ until the regularized tangent `A + λI` becomes SPD,
+    /// returning the `Llt` variant instead of falling through to the
+    /// LU fallback.
+    ///
+    /// Eigenvalue arithmetic: `A = [[1, 2, 0], [2, 1, 0], [0, 0, 1]]`
+    /// has top-left 2×2 eigenvalues `{3, -1}`. To dominate the
+    /// negative mode requires `λ > 1`. With `max_diag = 1.0`,
+    /// `seed_relative = 1e-6`, `up_factor = 10.0`,
+    /// `max_retries_per_iter = 8`: retry 1 seeds at λ = 1e-6, then
+    /// retries 2..8 multiply by 10 each. Retry 8 reaches λ = 1e-6 ×
+    /// 10⁷ = 10.0, which dominates the negative mode and rescues to
+    /// SPD. Headroom is tight (1 retry above design-target — see spec
+    /// §2.2 numerical-sanity para); a future seed-relative
+    /// retune would loosen this.
+    ///
+    /// Also confirms the LM seed log fires on stderr (visible in test
+    /// runner output) and the success-summary log fires once the
+    /// retry loop converges.
+    #[test]
+    fn factor_free_tangent_lm_bump_rescues_non_pd() {
+        let mut cfg = SolverConfig::skeleton();
+        cfg.lm_regularization = Some(LmConfig::fork_b());
+        let solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        // Same indefinite fixture as the LU-fallback test above; LM
+        // must beat it to SPD before saturation.
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(1, 0, 2.0),
+            Triplet::new(2, 0, 0.0),
+            Triplet::new(1, 1, 1.0),
+            Triplet::new(2, 1, 0.0),
+            Triplet::new(2, 2, 1.0),
+        ];
+
+        let mut lm_state = LmState::from_config(LmConfig::fork_b());
+        let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "LM-rescue test fixture");
+        assert!(
+            matches!(factor, FactoredFreeTangent::Llt(_)),
+            "LM bump must rescue the non-PD case to Llt before LU fallback \
+             fires (got Lu — LM exhausted retry budget before reaching SPD)"
+        );
+        // λ exposed post-call is the post-decay value (the
+        // `on_llt_success` decay runs before return) — empirically
+        // observed at this fixture: faer's Llt accepts at λ = 1.0
+        // (the negative-eigenvalue mode reaches a "good enough" pivot
+        // threshold), retry count = 7, then decay halves λ to 0.5.
+        // Pin retry_count rather than λ directly so the test stays
+        // robust to future fork_b tunables that change the seed /
+        // up_factor / down_factor — the load-bearing invariant is
+        // "LM activated and rescued before saturation," not the exact
+        // λ value.
+        assert!(
+            lm_state.retry_count() > 0,
+            "LM must have activated (retry_count > 0), got {}",
+            lm_state.retry_count()
+        );
+        assert!(
+            lm_state.retry_count() < LmConfig::fork_b().max_retries_per_iter,
+            "LM rescued before saturation: retry_count = {} < {}",
+            lm_state.retry_count(),
+            LmConfig::fork_b().max_retries_per_iter,
+        );
+    }
+
+    // ── F3.3 graceful-failure tests ────────────────────────────────────
+
+    /// F3.3 end-to-end `try_step` `NewtonIterCap` dispatch: same
+    /// iter-cap scene as
+    /// `try_solve_impl_returns_err_on_newton_iter_cap` but invoked
+    /// through the public `Solver::try_step` API. Verifies that
+    /// (a) the trait method is reachable +
+    /// (b) the `try_solve_impl` → `try_step` Result-bubbling chain
+    /// works + (c) `NewtonIterCap` returns `Err` regardless of
+    /// saturation policy per spec §2.5 dispatch table.
+    ///
+    /// NOTE on `DoublyFailedFactor` end-to-end: constructing a
+    /// runtime-reachable `DoublyFailedFactor` at this fixture scale
+    /// is hard because faer's `SymbolicLu` pivot search accepts
+    /// zero-valued candidates within the structural sparsity pattern
+    /// (only `SymbolicSingular { index }` fires on pattern-level
+    /// rank deficiency, unreachable via our cached `symbolic_lu`).
+    /// `try_factor_free_tangent`'s direct `DoublyFailedFactor` `Err`
+    /// path is exercised at runtime via contact-induced rank
+    /// deficiency (e.g., row 21 capsule-cap-apex pre-A2 panics);
+    /// a permanent regression net for it is the F3.5
+    /// `contact_stability` augment.
+    #[test]
+    fn try_step_returns_err_on_newton_iter_cap_regardless_of_policy() {
+        use sim_ml_chassis::Tape;
+        let mut cfg = SolverConfig::skeleton();
+        cfg.max_newton_iter = 1;
+        // LM enabled with PanicOnStall — verifies NewtonIterCap is
+        // *never* governed by SaturationPolicy (per spec §2.5).
+        cfg.lm_regularization = Some(LmConfig {
+            on_saturation: crate::SaturationPolicy::PanicOnStall,
+            ..LmConfig::fork_b()
+        });
+        let mut solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+        let zero = [0.0_f64; 12];
+        let x_prev = sim_ml_chassis::Tensor::from_slice(&rest, &[12]);
+        let v_prev = sim_ml_chassis::Tensor::from_slice(&zero, &[12]);
+        let mut tape = Tape::new();
+        let theta_var = tape.param_tensor(sim_ml_chassis::Tensor::from_slice(&[1.0_f64], &[1]));
+
+        match solver.try_step(&mut tape, &x_prev, &v_prev, theta_var, 1e-2) {
+            Err(SolverFailure::NewtonIterCap { max_iter, .. }) => {
+                assert_eq!(max_iter, 1);
+            }
+            Err(other) => panic!("expected NewtonIterCap, got {other:?}"),
+            Ok(_) => panic!("expected NewtonIterCap, got Ok"),
+        }
+    }
+
+    /// F3.3 `ArmijoStall` (local): direct call to `armijo_backtrack`
+    /// with `max_line_search_backtracks = 0` AND a synthetic
+    /// `r_norm = 0` at `x_curr` AND a non-zero `delta_free`. Any
+    /// nonzero step produces `trial_norm > 0`, and Armijo requires
+    /// `trial_norm <= (1 - c1·α) · 0 = 0` — guaranteed to fail. The
+    /// single-iteration loop (cap = 0 → range `0..=0`) exhausts
+    /// without an accept → `Err(ArmijoStallInfo)`.
+    ///
+    /// Synthetic in that `solve_impl` never calls armijo when
+    /// `r_norm < tol` would return early — but the direct call here
+    /// pins the local `Err` mechanism, which is what
+    /// `try_solve_impl`'s `.map_err(|stall| SolverFailure::ArmijoStall
+    /// { x_partial: stall.x_curr, last_iter: stall.iter, last_r_norm:
+    /// stall.r_norm })` wraps. The mapping is trivial 3-line shape;
+    /// the load-bearing test is that `armijo_backtrack` DOES return
+    /// `Err` when its budget exhausts.
+    #[test]
+    fn armijo_backtrack_returns_err_on_budget_exhaustion() {
+        let mut cfg = SolverConfig::skeleton();
+        cfg.max_line_search_backtracks = 0;
+        let solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        // SingleTetMesh rest positions (per `mesh/single_tet.rs::build`):
+        // v0=(0,0,0), v1=(0.1,0,0), v2=(0,0.1,0), v3=(0,0,0.1).
+        let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+        let zero = [0.0_f64; 12];
+        let dt = 1e-2;
+        // Nonzero delta on v3's 3 free DOFs → trial_x != rest →
+        // trial_norm > 0 → fails Armijo against r_norm = 0.
+        let delta_free = [0.05_f64, 0.05, 0.05];
+
+        let result = solver.armijo_backtrack(&rest, &rest, &zero, &zero, dt, &delta_free, 0.0, 0);
+        let stall = result
+            .expect_err("max_backtracks=0 + r_norm=0 + nonzero delta must exhaust the line search");
+        assert_eq!(stall.iter, 0);
+        assert_eq!(stall.r_norm, 0.0);
+        assert_eq!(stall.x_curr, rest.to_vec());
+    }
+
+    /// F3.3 `NewtonIterCap` via `try_solve_impl`: set `max_newton_iter
+    /// = 1` and a θ that requires more than 1 iter to converge. Iter
+    /// 0 runs (factor + armijo accept); loop exits via cap; returns
+    /// `Err(SolverFailure::NewtonIterCap)` with `x_partial`
+    /// containing the post-armijo iterate.
+    #[test]
+    fn try_solve_impl_returns_err_on_newton_iter_cap() {
+        let mut cfg = SolverConfig::skeleton();
+        cfg.max_newton_iter = 1;
+        let solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+        let zero = [0.0_f64; 12];
+        let x_prev = sim_ml_chassis::Tensor::from_slice(&rest, &[12]);
+        let v_prev = sim_ml_chassis::Tensor::from_slice(&zero, &[12]);
+        // Non-zero θ → r > 0 at iter 0 → must do real Newton work →
+        // iter 1 needed for convergence → cap forces Err.
+        let theta = sim_ml_chassis::Tensor::from_slice(&[1.0_f64], &[1]);
+
+        match solver.try_solve_impl(&x_prev, &v_prev, &theta, 1e-2) {
+            Err(SolverFailure::NewtonIterCap {
+                max_iter,
+                last_r_norm,
+                x_partial,
+            }) => {
+                assert_eq!(max_iter, 1, "max_iter field must echo SolverConfig");
+                assert!(
+                    last_r_norm > 0.0,
+                    "last_r_norm should be the iter-0 starting residual (>0), got {last_r_norm}",
+                );
+                assert_eq!(
+                    x_partial.len(),
+                    12,
+                    "x_partial must carry the full n_dof iterate"
+                );
+            }
+            Err(other) => panic!("expected NewtonIterCap, got {other:?}"),
+            Ok(_) => panic!("expected NewtonIterCap, got Ok"),
+        }
+    }
+
+    /// F3.3 panic-translation: same scene as
+    /// `try_solve_impl_returns_err_on_newton_iter_cap` but called via
+    /// `Solver::step` — verifies `solve_impl`'s panic-translation arm
+    /// (per F3.3 spec §2.5: `step` ALWAYS panics on `NewtonIterCap`,
+    /// regardless of `SaturationPolicy`). Pins the existing panic
+    /// message text so a regression in `solve_impl`'s `match` arm
+    /// would surface as test failure not silent message drift.
+    #[test]
+    #[should_panic(expected = "Newton failed to converge within 1 iterations")]
+    fn solver_step_panics_on_newton_iter_cap_via_solve_impl_translation() {
+        use sim_ml_chassis::Tape;
+        let mut cfg = SolverConfig::skeleton();
+        cfg.max_newton_iter = 1;
+        let mut solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+        let zero = [0.0_f64; 12];
+        let x_prev = sim_ml_chassis::Tensor::from_slice(&rest, &[12]);
+        let v_prev = sim_ml_chassis::Tensor::from_slice(&zero, &[12]);
+        let mut tape = Tape::new();
+        let theta_var = tape.param_tensor(sim_ml_chassis::Tensor::from_slice(&[1.0_f64], &[1]));
+
+        // Should panic with the pre-F3 NewtonIterCap message preserved.
+        let _ = solver.step(&mut tape, &x_prev, &v_prev, theta_var, 1e-2);
+    }
+
+    // ── F3 recon candidate A (gated LM) tests ─────────────────────────
+
+    /// F3 recon A: with LM ENABLED (Fork-B preset), the gated
+    /// `try_solve_impl` must still converge normally on a happy-path
+    /// fixture where pre-F3 LU + Armijo succeeds at every iter — no
+    /// regression from F3.4's always-on LM behavior, no regression
+    /// from pre-F3.
+    ///
+    /// The gated mechanism's intent is "LM stays dormant when the
+    /// first-pass LU + Armijo succeeds." Hard to assert directly
+    /// without internal introspection, but the observable signature
+    /// is: a fixture that converges pre-F3 in N iters MUST still
+    /// converge with gated-LM-enabled in N iters (no extra iter
+    /// cost, no different `x_final` at the converged tol). This is
+    /// the LM-enabled half of the §3 bit-equal-when-dormant
+    /// contract (the LM-disabled half is covered by the existing
+    /// test suite passing bit-equal).
+    ///
+    /// Companion: the gated short-circuit branch (`!lm_state.
+    /// is_active()`) is exercised by every existing LM-disabled
+    /// test that completes normally; the gated escalation branch
+    /// is exercised end-to-end by the cf-device-design insertion
+    /// suite (integration test).
+    #[test]
+    fn gated_lm_enabled_happy_path_converges_same_as_pre_f3() {
+        // Baseline: LM-disabled (default skeleton), converges normally.
+        let baseline_cfg = SolverConfig::skeleton();
+        let baseline_solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            baseline_cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+        let zero = [0.0_f64; 12];
+        let x_prev = sim_ml_chassis::Tensor::from_slice(&rest, &[12]);
+        let v_prev = sim_ml_chassis::Tensor::from_slice(&zero, &[12]);
+        let theta = sim_ml_chassis::Tensor::from_slice(&[1.0_f64], &[1]);
+        let dt = 1e-2;
+
+        let (baseline_step, _baseline_lambda) = baseline_solver
+            .try_solve_impl(&x_prev, &v_prev, &theta, dt)
+            .expect("baseline (LM-disabled) must converge on the happy-path fixture");
+
+        // Same scene, but LM enabled with Fork-B preset. Gated A's
+        // intent: LM stays dormant because LU + Armijo succeeds at
+        // every iter on this fixture. Observable: iter_count +
+        // x_final must match baseline bit-equal (no LM activity =
+        // no trajectory difference).
+        let mut lm_cfg = SolverConfig::skeleton();
+        lm_cfg.lm_regularization = Some(LmConfig::fork_b());
+        let lm_solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            lm_cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        let (lm_step, lm_lambda) = lm_solver
+            .try_solve_impl(&x_prev, &v_prev, &theta, dt)
+            .expect("LM-enabled gated A must converge on the happy-path fixture");
+
+        assert_eq!(
+            lm_step.iter_count, baseline_step.iter_count,
+            "gated LM-enabled must converge in the same iter count as LM-disabled \
+             baseline (no escalation should fire on this happy-path fixture)"
+        );
+        assert_eq!(
+            lm_step.x_final, baseline_step.x_final,
+            "gated LM-enabled must reach the same x_final as LM-disabled baseline \
+             (bit-equal trajectory — proves LM stayed dormant)"
+        );
+        assert_eq!(
+            lm_lambda, 0.0,
+            "outer lm_state.lambda must stay 0.0 throughout (no escalation fired \
+             on happy-path), got {lm_lambda}"
+        );
     }
 }

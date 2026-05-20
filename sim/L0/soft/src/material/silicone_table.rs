@@ -25,9 +25,11 @@
 //! | Dragon Skin 20A | 20A   |   113.0 |   452.0 |    10.00 |      1080 |    7.20 |  5.76 | 49 PSI  |
 //! | Dragon Skin 30A | 30A   |   198.0 |   792.0 |    17.60 |      1080 |    4.64 |  3.71 | 86 PSI  |
 //!
-//! `min σ` (compressive validity bound) is family-uniform at `0.30`
-//! (70 % compression cap; engineering-aggressive default per Yeoh arc
-//! memo D8 — no universal Yeoh-on-silicone literature bound exists,
+//! `min σ` (compressive validity bound) is family-uniform at `0.20`
+//! (80 % compression cap; H4-2-A research-informed default per
+//! `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` — Sparks et al. 2015
+//! validated 25 % compression no-failure, 0.20 (80 % compression
+//! strain) is ~3× past Sparks's validated reach —
 //! replace with anchor-specific measured value once compression-set
 //! test data lands).
 //!
@@ -83,8 +85,9 @@
 //!
 //! Tensile validity cap `max_principal_stretch = 0.8 · λ_break` (80 %
 //! safety margin to rupture; calibrated per anchor from TDS elongation
-//! at break). Compressive cap is family-uniform at `0.30` per arc memo
-//! D8.
+//! at break). Compressive cap is family-uniform at `0.20` per arc memo
+//! D8 (loosened from 0.30 by H4-2-A — see
+//! `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md`).
 //!
 //! # Validity
 //!
@@ -190,8 +193,15 @@ pub struct SiliconeMaterial {
     /// Calibrated as `0.8 · λ_break` per anchor.
     pub validity_max_principal_stretch: f64,
     /// Compressive principal-stretch cap (Yeoh validity gate, memo D8).
-    /// Family-uniform at 0.30 (engineering-aggressive default; replace
-    /// with measured value once compression-set test data lands).
+    /// Family-uniform at 0.20 (H4-2-A research-informed default per
+    /// `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` — Sparks et al.
+    /// 2015 measured Ecoflex 00-10/00-30 + Dragon Skin in unconfined
+    /// uniaxial compression to 25% strain (`λ_min` = 0.75) with no
+    /// failure, so 0.20 (80% engineering strain) is ~3× past
+    /// Sparks's 25% no-failure bound but well
+    /// within published rubber-elasticity guidance for soft
+    /// platinum-cure silicones; replace per-anchor when ASTM D575 /
+    /// D395 test data lands per silicone).
     pub validity_min_principal_stretch: f64,
     /// Anchor's nominal Shore reading. Drives family identification
     /// for `from_effective_shore` interpolation.
@@ -256,7 +266,7 @@ impl SiliconeMaterial {
     /// family. Bracket `shore` between two adjacent published anchors
     /// of the same scale and linearly interpolate the Lamé pair, Yeoh
     /// `C₂`, density, and tensile validity bound. Compressive bound
-    /// stays family-uniform at `0.30` (no interpolation).
+    /// stays family-uniform at `0.20` (no interpolation).
     ///
     /// Cross-family interpolation is rejected (memo D3): Ecoflex and
     /// Dragon Skin are different chemistries and pretending Shore
@@ -323,7 +333,7 @@ impl SiliconeMaterial {
     /// average). Validity bounds are open on the tensile side
     /// (`f64::INFINITY`) — the user must clamp via Fork-B compression
     /// or rupture testing if a tighter bound is needed; the
-    /// compressive bound stays at `0.30`.
+    /// compressive bound stays at `0.20`.
     ///
     /// `user_description` is mandatory: it documents the cast batch,
     /// durometer + tensile setup, and date.
@@ -487,10 +497,40 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 // Per-anchor Yeoh validity bounds: tensile cap = 0.8 · λ_break,
-// compressive cap = 0.30 (family-uniform). λ_break per Smooth-On TDS
+// compressive cap = 0.20 (family-uniform). λ_break per Smooth-On TDS
 // elongation-at-break rows; recon table at Yeoh arc memo §"Recon
 // findings".
-const YEOH_MIN_PRINCIPAL_STRETCH: f64 = 0.30;
+//
+// Loosened 0.30 → 0.20 (H4-2-A, 2026-05-19 NIGHT) per
+// `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` after the H4.3 sweep
+// (`docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md`) revealed the
+// original 0.30 was the binding gate at cavity ≥ 5 mm rather than
+// the calibrated tensile cap H4 was designed to unlock.
+//
+// Justification:
+// - Sparks et al. (Adv Skin Wound Care 2015) measured unconfined
+//   uniaxial compression on Ecoflex 00-10 / 00-30 / Dragon Skin to
+//   25 % engineering strain (λ_min = 0.75) with NO failure observed
+//   — they stopped at 25 % as the biological-tissue test target,
+//   not a material limit. 0.20 (80 % engineering strain) is ~3×
+//   past Sparks's 25 % no-failure bound; still well within
+//   published rubber-elasticity guidance for soft platinum-cure
+//   silicones.
+// - The H4.3 sweep peak compressive states (σ_min = 0.219 at tet
+//   154 cavity = 5 mm, σ_min = 0.271 at tet 519 cavity = 8 mm)
+//   both clear the 0.20 floor narrowly. Smooth-On publishes no
+//   per-anchor compression data so the floor stays family-uniform
+//   for now; per-anchor measured values can replace this when
+//   ASTM D575 / D395 test data lands per anchor.
+// - The cf-design Yeoh uses ν = 0.40 (substantially compressible)
+//   per the standalone-Yeoh `assert!(nu < 0.45, ...)` constraint;
+//   real silicones per Sparks are ν ≈ 0.4999. The σ_min states the
+//   FEM reaches at this Poisson ratio are model artifacts of the
+//   compressibility compromise more than real material behavior.
+//   The long-term right answer is the F-bar / mixed-u-p locking-
+//   fix decorator (Part 2 Ch 05, banked Phase H work) that widens
+//   ν past 0.45.
+const YEOH_MIN_PRINCIPAL_STRETCH: f64 = 0.20;
 
 /// Ecoflex 00-10 — softest in the Ecoflex line; Shore 00-10. `λ_break`
 /// = 9.0 (800 % elongation at break per TDS).
@@ -702,7 +742,8 @@ mod tests {
     }
 
     /// Validity bounds: `0 < min < 1 < max`. `min` is family-uniform
-    /// at 0.30. Catches ordering typos. The `max = 0.8 · λ_break`
+    /// at 0.20 (loosened from 0.30 by H4-2-A). Catches ordering typos.
+    /// The `max = 0.8 · λ_break`
     /// invariant is locked separately by
     /// `validity_max_pins_to_80_pct_of_one_plus_elongation_at_break`
     /// so a typo in either `λ_break` or the multiplier surfaces with a

@@ -421,7 +421,7 @@ fn verify_grad_finite_and_outward_on_face_band(sdf: &dyn Sdf) {
 // =============================================================================
 
 /// Write the cube to a binary STL file, load it back, and verify the
-/// loaded mesh produces a [`SignedDistanceField`] that agrees with
+/// loaded mesh produces a `SignedDistanceField` that agrees with
 /// the original at every named probe (closed-form face / interior
 /// anchors). STL stores binary f32 vertex coords; integer `±R = ±1.0`
 /// round-trips losslessly through f32, so the SDF values must be

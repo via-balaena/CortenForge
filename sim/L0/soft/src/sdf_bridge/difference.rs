@@ -15,7 +15,7 @@
 //!
 //! `cf_design::Solid` ships the broad CSG kernel (Union, Subtract,
 //! Intersect, smoothed variants) over typed `Solid` operands;
-//! [`cf_design::Solid::from_sdf`] (PR3 F5) lifts any `impl Sdf` into a
+//! `cf_design::Solid::from_sdf` (PR3 F5) lifts any `impl Sdf` into a
 //! typed `Solid` so `Solid::subtract` itself now covers heterogeneous
 //! cases (e.g., a typed sphere differenced against a scan-derived
 //! `mesh_sdf::SignedDistanceField`). `DifferenceSdf` and
@@ -23,7 +23,7 @@
 //! difference, retained side-by-side because each surfaces a different
 //! consumer role:
 //!
-//! - [`cf_design::Solid::subtract`] (with [`from_sdf`][fs] when
+//! - `cf_design::Solid::subtract` (with `from_sdf` when
 //!   needed) is the **production design surface** for typed-CSG.
 //!   Use it when both operands are or can be lifted into `Solid`s and
 //!   you want to compose with the rest of cf-design's CSG kernel.
@@ -42,7 +42,6 @@
 //! you teaching the trait or anchoring the bridge" (use
 //! `DifferenceSdf`).
 //!
-//! [fs]: cf_design::Solid::from_sdf
 //! [r2]: ../../../../../examples/sim-soft/hollow-shell-sdf/
 //! [r16]: ../../../../../examples/sim-soft/solid-to-sim-soft/
 //!
@@ -78,7 +77,7 @@ use super::sdf::Sdf;
 /// commitment) and so heterogeneous operands (e.g., a sphere combined
 /// with a scan-derived `mesh_sdf::SignedDistanceField`) compose at the
 /// trait-object boundary without going through
-/// [`cf_design::Solid::from_sdf`].
+/// `cf_design::Solid::from_sdf`.
 ///
 /// `Send + Sync` follows automatically from `Box<dyn Sdf>`'s supertrait
 /// bound.

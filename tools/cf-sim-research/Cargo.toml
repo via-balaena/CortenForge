@@ -1,0 +1,141 @@
+[package]
+name = "cf-sim-research"
+description = "Sim-research viewer for layered-silicone devices — read-only design view over a cleaned scan + `.design.toml`, with insertion-sim + heat-map + sliding-intruder panel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace tool; no `[package.metadata.cortenforge]` block — tier
+# metadata is for sim L0/L1 libraries, not workspace tools (matches
+# cf-device-design / cf-scan-prep / cf-cast-cli precedent).
+
+# Phase 3 of `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4 — this crate now
+# carries the insertion-sim + heat-map + sliding-intruder rendering
+# moved out of cf-device-design (the sim modules `insertion_sim` +
+# `insertion_sim_ui` copy verbatim because Phase 2.5 already lifted
+# their cross-crate deps to `cf-device-types` + `cf-device-geometry`).
+# Phase 4 strips cf-device-design's duplicate sim code; the workshop
+# loop runs against cf-device-design as the CAD-only tool, sim
+# research runs against this binary.
+
+[[bin]]
+name = "cf-sim-research"
+path = "src/main.rs"
+
+[dependencies]
+# Shared device-design domain types (Phase 1) — CavityState /
+# LayersState / LayerSpec / Centerline / ScanInfo / ScanMesh /
+# LAYER_MATERIALS / material_density + `design_toml` schema +
+# loader. The shared cf-device-types contract is the load-bearing
+# reason cf-sim-research describes a layered-silicone device the
+# same way cf-device-design does.
+cf-device-types = { workspace = true }
+
+# cf-viewer library — `RenderScale` / `compute_render_scale` /
+# `scale_aabb` / `setup_camera_and_lighting`. cf-sim-research does
+# NOT consume `spawn_face_mesh` (cf-viewer's stock face-mesh
+# spawner) because Phase 3's `setup_render_scene` inlines a
+# `ClipPlaneMaterial` variant so the scan participates in clipping
+# alongside the cavity / layer shells / intruder.
+cf-viewer = { workspace = true }
+
+# Shared Bevy helpers — `UpAxis::PlusZ` (cast-frame demolding axis
+# convention) + the `OrbitCameraPlugin` system set.
+cf-bevy-common = { workspace = true }
+
+# STL loader for the cleaned scan input (cf-scan-prep output).
+mesh-io = { workspace = true }
+# `IndexedMesh` + `Bounded::aabb()` for the scan-info readout +
+# bounding-region derivation.
+mesh-types = { workspace = true }
+# `Point3` + `Isometry3` — centerline polyline parsing + the sliding-
+# intruder pose math in `pose_to_bevy_transform`.
+nalgebra = { workspace = true }
+
+# Shared cap-plane abstraction — `parse_cap_planes` for the
+# `.prep.toml` companion parse + `CapPlane` runtime type +
+# `dome_wall_only_mesh` consumed by `insertion_sim`.
+cf-cap-planes = { workspace = true }
+
+# Shared device-side geometric primitives (Phase 2.5) — `CachedScanSdf`
+# + `CapPlanes` resources, `build_cached_scan_sdf` + `extract_layer_surface`
+# (SDF iso extraction), `ClipPlaneMaterial` + `ClipPlaneExt` + `ClipPlanePlugin`
+# (clipping for cavity / layer shells / intruder / scan), cavity-render
+# helpers (`spawn_cavity_mesh` + `CavityEntity` + `build_bevy_mesh_from_indexed*`).
+cf-device-geometry = { workspace = true }
+
+# Insertion-sim FEM stack — `mesh-sdf` builds the cached SDF of the
+# cleaned scan, `cf-design` carries the Solid/Sdf trait + pinned-floor
+# helper, `sim-soft` runs the FEM solve (`CpuNewtonSolver` +
+# `PenaltyRigidContact`), `sim-ml-chassis` supplies `Tensor` (the
+# solve's position/velocity I/O type), `mesh-repair` + `meshopt`
+# decimate the scan for the SDF source.
+mesh-sdf = { workspace = true }
+mesh-repair = { workspace = true }
+meshopt = { workspace = true }
+cf-design = { workspace = true }
+sim-soft = { workspace = true }
+sim-ml-chassis = { workspace = true }
+
+# Bevy 0.18 — feature set mirrors cf-device-design exactly so the
+# workspace's validated rendering subset stays consistent across
+# viewer binaries.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+
+# egui-on-Bevy plugin — UI library for the right-side scan-info +
+# layer-stack readout panel. 0.39.1 is the workspace-validated pin
+# (cf-viewer + cf-scan-prep + cf-device-design precedent).
+bevy_egui = { version = "0.39.1", default-features = false, features = [
+    "default_fonts",
+    "render",
+    "bevy_ui",
+] }
+
+# `Result<()>` + error-context chaining for the CLI load path.
+anyhow = { workspace = true }
+# `.prep.toml` parsing (centerline polyline subset).
+serde = { workspace = true }
+toml = { workspace = true }
+
+# CLI argument parsing — direct dep with `derive` (clap has no
+# workspace pin; cf-device-design / cf-scan-prep / cf-cast-cli /
+# xtask precedent).
+clap = { version = "4", features = ["derive"] }
+
+[features]
+default = ["x11"]
+# Linux window backends — mirror cf-device-design's feature shape.
+x11 = ["bevy/x11"]
+wayland = ["bevy/wayland"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# Per `feedback_lint_posture_on_extract` — lenient posture mirroring
+# cf-device-design (the source binary this skeleton was lifted
+# alongside). Workspace pedantic would turn carryover warnings into
+# `-D warnings` failures on extraction.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

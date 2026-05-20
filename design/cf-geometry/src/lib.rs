@@ -50,7 +50,7 @@ pub use query::{
     ray_triangle,
 };
 pub use ray::{Ray, RayHit};
-pub use sdf::SdfGrid;
+pub use sdf::{Sdf, SdfGrid};
 pub use shape::Shape;
 pub use sphere::Sphere;
 pub use support_map::{

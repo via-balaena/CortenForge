@@ -174,7 +174,7 @@ impl Data {
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
         // §53: RK4 is not compatible with split-step — warn if configured.
         if model.integrator == Integrator::RungeKutta4 {
-            tracing::warn!(
+            log::warn!(
                 "step2() uses Euler integration; RK4 requires step() for correct multi-stage substeps"
             );
         }

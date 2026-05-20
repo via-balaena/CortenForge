@@ -32,7 +32,7 @@
 //! `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`) the mesh-sdf API
 //! decomposes signed-distance queries into two orthogonal oracles:
 //! [`TriMeshDistance`] (parry BVH-backed unsigned distance) and a
-//! [`Sign`] oracle ([`PseudoNormalSign`] or [`FloodFillSign`]),
+//! `Sign` oracle ([`PseudoNormalSign`] or [`FloodFillSign`]),
 //! composed via [`Signed<D, S>`]. This example walks the surface on
 //! two contrasting fixtures:
 //!

@@ -16,8 +16,8 @@
 //!    flood-fill-signed [`mesh_sdf::Signed<TriMeshDistance,
 //!    FloodFillSign>`].
 //! 4. Parse `.prep.toml` → centerline polyline.
-//! 5. Compute scan AABB; pad by `bounding_margin_m` per axis →
-//!    bounding cuboid.
+//! 5. Compute scan AABB; grow outermost layer body outward by
+//!    `wall_thickness_m` → contour-following bounding region.
 //! 6. Derive plug + per-layer body solids from a shared `Arc`-backed
 //!    scan SDF (one SDF allocation, N+1 cf-design references). With
 //!    `cavity_inset_m` lifted from `.design.toml` (0 if no design
@@ -131,11 +131,11 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
 
     // Flood-fill bounds must enclose every point `derive_spec_and_ribbon`
     // queries — the consumer-side `sdf_bounds = scan_aabb.expanded(
-    // cumulative_thickness + bounding_margin_m)`. Compute the same
+    // cumulative_thickness + wall_thickness_m)`. Compute the same
     // padding here so the SDF built in `load_scan_sdf` covers the same
     // domain the mesher walks downstream.
     let cumulative_thickness: f64 = config.layers.iter().map(|l| l.thickness_m).sum();
-    let bounds_padding_m = cumulative_thickness + config.cast.bounding_margin_m;
+    let bounds_padding_m = cumulative_thickness + config.cast.wall_thickness_m;
     let loaded_scan = scan::load_scan_sdf(
         &scan_stl_path,
         bounds_padding_m,

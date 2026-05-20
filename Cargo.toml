@@ -24,6 +24,12 @@ members = [
     # that cf-cast-cli will consume (slice 9). The meat of the program
     # per the user 2026-05-13. See `docs/ENGINEERING_SUITE_DESIGN.md`.
     "tools/cf-device-design",
+    # Sim-research viewer (Phase 2 of the sim-decouple refactor).
+    # Phase 2 ships a skeleton: scan + centerline overlay + layer-
+    # stack readout panel consuming `cf-device-types`. Phase 3 moves
+    # the insertion-sim + heat-map + sliding-intruder rendering from
+    # cf-device-design. See `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4.
+    "tools/cf-sim-research",
 
     # Shared Bevy-0.18 helpers (orbit camera + up-axis convention) consumed by
     # cf-viewer + sim-bevy + sim-bevy-soft.
@@ -384,6 +390,24 @@ members = [
     # architectural arc that introduced it.
     "design/cf-cap-planes",
 
+    # Shared device-design domain types (cavity + layer-stack state,
+    # scan resources, sim-design projection, slacker recipe data).
+    # Lifted from `tools/cf-device-design/src/main.rs` per
+    # `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3 (A1 Phase 1) so the
+    # future `tools/cf-sim-research/` binary can describe a layered-
+    # silicone device the same way as `tools/cf-device-design/`.
+    "design/cf-device-types",
+
+    # Shared device-side geometric primitives (cached SDF + per-iso
+    # marching-cubes extraction, cavity-render helpers, clip-plane
+    # material/plugin/state). Lifted from
+    # `tools/cf-device-design/src/{sdf_layers.rs,clip_plane.rs,main.rs}`
+    # per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d (Phase 2.5
+    # mini-arc) so cf-device-design and cf-sim-research share one
+    # compute + rendering surface for cavity/layer extraction +
+    # clipping.
+    "design/cf-device-geometry",
+
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
     "sim/L0/simd",
@@ -585,8 +609,15 @@ cf-geometry = { path = "design/cf-geometry" }
 # Spatial foundation
 cf-spatial = { path = "design/cf-spatial" }
 
-# Design kernel
-cf-design = { path = "design/cf-design" }
+# Design kernel.
+# `default-features = false` at the workspace level drops the
+# `parallel-meshing` feature (rayon + rayon-core + crossbeam-*) for all
+# inheriting consumers — required to keep sim-soft under the L0 100-dep
+# tier cap. Only cf-design-tests calls `mesh_adaptive_par`; it opts in
+# via `features = ["parallel-meshing"]`. cf-design's own `default =
+# ["parallel-meshing"]` keeps `cargo test -p cf-design` exercising the
+# par_* tests by default.
+cf-design = { path = "design/cf-design", default-features = false }
 cf-design-tests = { path = "design/cf-design-tests" }
 
 # Cast tooling
@@ -594,6 +625,20 @@ cf-cast = { path = "design/cf-cast" }
 
 # Shared cap-plane abstraction
 cf-cap-planes = { path = "design/cf-cap-planes" }
+
+# Shared device-design domain types (Phase 1 of the sim-decouple
+# refactor — `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3). Lifted from
+# `tools/cf-device-design/src/main.rs` so cf-device-design (CAD) +
+# cf-sim-research (Phase 2+) describe a layered-silicone device the
+# same way.
+cf-device-types = { path = "design/cf-device-types" }
+
+# Shared device-side geometric primitives (Phase 2.5 of the
+# sim-decouple refactor — `docs/SIM_DECOUPLE_PHASE_3_RECON.md`
+# §2.5.b-d). Cached SDF + iso extraction + cavity-render helpers +
+# clip-plane material/plugin/state, consumed by cf-device-design +
+# cf-sim-research.
+cf-device-geometry = { path = "design/cf-device-geometry" }
 
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }

@@ -1,0 +1,2640 @@
+//! cf-sim-research — sim-research viewer for layered-silicone devices.
+//!
+//! Sim-decouple Phases 3 + 4 (`docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4)
+//! moved the insertion-sim + heat-map + sliding-intruder panel +
+//! per-layer SDF shell rendering out of cf-device-design and into this
+//! binary. cf-device-design is CAD-only post-Phase-4 (zero sim-soft
+//! dep); both binaries share `cf-device-types` (Phase 1) +
+//! `cf-device-geometry` (Phase 2.5) so they describe a layered-
+//! silicone device the same way.
+//!
+//! Sim modules `insertion_sim` + `insertion_sim_ui` were lifted
+//! verbatim from cf-device-design in Phase 3 (Phase 2.5 had already
+//! rewired their cross-crate deps to `cf-device-types` +
+//! `cf-device-geometry`); the per-frame Bevy systems below
+//! (`update_cavity_mesh`, `update_layer_meshes`, `spawn_intruder_mesh`,
+//! `update_intruder_mesh`) likewise live here. Phase 4 removed the
+//! duplicates from cf-device-design's main.rs.
+//!
+//! Posture differences vs cf-device-design (Q5.4 default lean — sim
+//! viewer is read-only WRT disk):
+//! - Loads `.design.toml` via `apply_design_toml` on launch, but the
+//!   right-side panel has NO Save button (no `.design.toml` writes).
+//!   In-session slider edits land in the live `(CavityState,
+//!   LayersState)` resources so the user can vary design parameters
+//!   and re-sim, but those edits are lost on close. If the panel
+//!   later wants to emit a tweaked design back to disk, the loader
+//!   in `cf_device_types::design_toml` already carries `save_design_toml`.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::pbr::ExtendedMaterial;
+use bevy::prelude::*;
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
+use cf_bevy_common::prelude::*;
+use cf_device_types::{
+    CavityState, Centerline, LAYER_COUNT_MAX, LAYER_MATERIALS, LAYER_SURFACE_PALETTE, LayerSpec,
+    LayersState, ScanInfo, ScanMesh, ScanMeshVisible, design_toml, material_density,
+    resolve_slacker_fraction, slacker,
+};
+use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
+
+use cf_device_geometry::bevy_mesh::{
+    build_bevy_mesh_from_indexed, build_bevy_mesh_from_indexed_with_colors,
+};
+use cf_device_geometry::cavity::{CavityEntity, spawn_cavity_mesh};
+use cf_device_geometry::clip_plane::{self, ClipPlaneExt, ClipPlaneMaterial};
+use cf_device_geometry::sdf_layers;
+use clap::Parser;
+use mesh_io::load_stl;
+use mesh_types::{Bounded, IndexedMesh, Point3};
+use nalgebra::Isometry3;
+use serde::Deserialize;
+
+/// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
+///
+/// `#[cfg(test)]`-gated through sub-commits 7.0–7.3b.2; un-gated at
+/// 7.4 (this slice) when the Insertion Sim panel wires it into the
+/// `sim_research_panel` UI. The module is `pub(crate)` because
+/// `main.rs`'s panel + async-task glue consumes its public surface
+/// (`build_insertion_geometry`, `run_insertion_ramp`, `InsertionRamp`,
+/// `RampStep`, `StepReadout`, `TetReadout`, `InsertionResult`,
+/// `compute_tet_readouts`); the items themselves remain
+/// `pub` per their module-level docstrings — `pub(crate)` on the
+/// module declaration just keeps the binary's surface scoped (the
+/// crate doesn't export a library API). See the module docs for the
+/// slice-7 ladder.
+pub(crate) mod insertion_sim;
+
+/// Slice 7.4 — Insertion Sim panel + ECS glue. Wraps the `insertion_sim`
+/// module's public surface (`build_insertion_geometry`,
+/// `run_insertion_ramp`, `InsertionRamp`, `RampStep`, `StepReadout`,
+/// `TetReadout`, `compute_tet_readouts`) into an `AsyncComputeTaskPool`-
+/// driven sim run + egui panel + per-vertex heat-map projection on the
+/// existing per-layer surface shells.
+pub(crate) mod insertion_sim_ui;
+
+/// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
+/// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the
+/// `UpAxis::PlusZ` swap from physics frame to Bevy frame.
+const DEVICE_UP_AXIS: UpAxis = UpAxis::PlusZ;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "cf-sim-research",
+    about = "Sim-research viewer for layered-silicone devices — read-only design view over a cleaned scan + `.design.toml`, with the insertion-sim + heat-map + sliding-intruder panel",
+    version
+)]
+struct Cli {
+    /// Path to the cleaned scan STL (cf-scan-prep output;
+    /// `<stem>.cleaned.stl`).
+    cleaned_stl: PathBuf,
+
+    /// Optional path to a previously-saved design TOML to reopen +
+    /// iterate on. When supplied, the suite pre-populates panels from
+    /// the file; absent, the suite auto-resolves
+    /// `<cleaned-stl-stem>.design.toml` next to the STL and loads it
+    /// if it exists (else panels start at defaults).
+    #[arg(long, value_name = "PATH")]
+    design: Option<PathBuf>,
+
+    /// Optional path to the cf-scan-prep `.prep.toml` companion file.
+    /// Defaults to `<cleaned_stl_stem>.prep.toml` next to the cleaned
+    /// STL. The `[centerline].points_m` block drives the on-screen
+    /// centerline overlay; absent, the overlay does not render. The
+    /// centerline no longer participates in cavity / layer surface
+    /// shaping under the slice-9 SDF path — those surfaces come from
+    /// uniform-offset isosurfaces of the cleaned scan's SDF directly.
+    #[arg(long, value_name = "PATH")]
+    prep_toml: Option<PathBuf>,
+}
+
+// Device-design state types (`ScanMesh`, `ScanMeshVisible`,
+// `ScanInfo`, `Centerline`, `CavityState`, `LayerSpec`,
+// `LayersState`) plus the silicone catalog
+// (`LAYER_MATERIALS`, `material_density`, `LAYER_COUNT_MAX`,
+// `CAVITY_DEFAULT_INSET_M`) and the `slacker` recipe module live in
+// `cf-device-types` (lifted out of this binary per
+// `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3 A1 Phase 1). Imported above.
+
+// ----- .prep.toml parsing (subset; centerline only — caps lifted to
+//       cf-cap-planes via `cf_cap_planes::parse_cap_planes`) ---
+
+#[derive(Deserialize)]
+struct PrepTomlSubset {
+    centerline: Option<CenterlineBlock>,
+}
+
+#[derive(Deserialize)]
+struct CenterlineBlock {
+    points_m: Vec<[f64; 3]>,
+}
+
+/// Parse a `.prep.toml` string and return the centerline polyline.
+/// Returns an empty `Vec` if the `[centerline]` block is absent or
+/// empty — caller treats both as "no centerline available," same
+/// posture as cf-cast-cli's prep parser.
+fn parse_centerline(text: &str) -> Result<Vec<Point3<f64>>> {
+    let subset: PrepTomlSubset = toml::from_str(text)?;
+    Ok(subset
+        .centerline
+        .map(|c| c.points_m)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|[x, y, z]| Point3::new(x, y, z))
+        .collect())
+}
+
+/// Resolve the `.prep.toml` path from CLI args. Honors `--prep-toml
+/// <path>` when supplied; else falls back to `<cleaned_stl_stem>
+/// .prep.toml` next to the cleaned STL. Returns `None` if no
+/// inferred path exists (extremely rare: bare filename with no
+/// parent).
+fn resolve_prep_toml_path(cli: &Cli) -> Option<PathBuf> {
+    if let Some(p) = &cli.prep_toml {
+        return Some(p.clone());
+    }
+    // cf-scan-prep writes `<stem>.prep.toml` alongside
+    // `<stem>.cleaned.stl`. Strip `.cleaned` from the cleaned STL's
+    // stem to recover the original stem.
+    let parent = cli.cleaned_stl.parent()?;
+    let stem = cli.cleaned_stl.file_stem()?.to_str()?;
+    let base_stem = stem.strip_suffix(".cleaned").unwrap_or(stem);
+    Some(parent.join(format!("{base_stem}.prep.toml")))
+}
+
+/// Compute the centerline polyline's total arc length in meters
+/// (sum of consecutive segment distances). Zero for a polyline with
+/// fewer than 2 points.
+fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
+    points
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).norm())
+        .sum()
+}
+
+// ----- Bevy app -----------------------------------------------------
+
+#[derive(Component)]
+struct ScanMeshEntity;
+
+/// SL.4 — marker for the rigid sliding-intruder render. Lives alongside
+/// the rest-frame `ScanMeshEntity`, visible only when the most-recent
+/// run was sliding mode AND `show_deformed` is on. The mesh asset is
+/// the cleaned scan, mounted once at startup by [`spawn_intruder_mesh`];
+/// per-step kinematics live in the entity's `Transform`, written by
+/// [`update_intruder_mesh`] from
+/// [`insertion_sim_ui::InsertionSimOutputs::intruder_pose_at`].
+///
+/// Historical: S4 mounted the bare scan and slid it in via a hand-built
+/// ramp transform. S11.1 swapped to per-step FEM-iso meshes against the
+/// growing intruder. SL.4 returns to constant-mesh + per-step Transform
+/// because the SL.2 sliding ramp records the exact rigid pose at every
+/// converged step, so there is no need to extract per-step geometry.
+#[derive(Component)]
+struct IntruderEntity;
+
+/// Color for the [`IntruderEntity`] render. Warm orange — distinct
+/// enough from the coral cavity that the two don't read as one shape
+/// at contact (an earlier S4 tuning sat too close to the cavity hue;
+/// the saturation/value gap on this shade preserves the contact
+/// silhouette).
+const INTRUDER_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.20);
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let scan_mesh = load_stl(&cli.cleaned_stl)
+        .with_context(|| format!("load cleaned STL {}", cli.cleaned_stl.display()))?;
+
+    let prep_toml_path = resolve_prep_toml_path(&cli);
+    let (centerline_points, cap_planes) = if let Some(prep_path) = &prep_toml_path {
+        match std::fs::read_to_string(prep_path) {
+            Ok(text) => {
+                let centerline = parse_centerline(&text).with_context(|| {
+                    format!("parse `.prep.toml` centerline at {}", prep_path.display())
+                })?;
+                let caps = cf_cap_planes::parse_cap_planes(&text).with_context(|| {
+                    format!("parse `.prep.toml` caps at {}", prep_path.display())
+                })?;
+                (centerline, caps)
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: could not read {} ({e:#}); centerline overlay + cap planes disabled",
+                    prep_path.display()
+                );
+                (Vec::new(), Vec::new())
+            }
+        }
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let scan_info = build_scan_info(&cli.cleaned_stl, &scan_mesh, &centerline_points);
+    println!(
+        "loaded {} vertices, {} faces; bbox diagonal = {:.4} m; \
+         centerline = {} points / {:.4} m arc; cap planes = {}",
+        scan_info.vertex_count,
+        scan_info.face_count,
+        scan_info.bbox_diagonal_m,
+        scan_info.centerline_point_count,
+        scan_info.centerline_arc_length_m,
+        cap_planes.len(),
+    );
+
+    // Slice 8 — resolve the design-TOML path and load it if it exists.
+    // The CLI's `--design` wins; else fall back to
+    // `<cleaned-stl-stem-minus-.cleaned>.design.toml`. A missing file
+    // is *not* an error (first-time use); a parse / validation error
+    // IS surfaced (the file exists but is broken — user wants to know
+    // before silently dropping their design).
+    let design_toml_path =
+        design_toml::resolve_design_toml_path(&cli.cleaned_stl, cli.design.as_deref());
+    let loaded_design = match &design_toml_path {
+        Some(p) if p.exists() => match design_toml::load_design_toml(p) {
+            Ok(d) => {
+                println!(
+                    "loaded design from {} ({} layers, cavity inset {:.2} mm)",
+                    p.display(),
+                    d.layers.len(),
+                    d.cavity.inset_m * 1e3,
+                );
+                Some(d)
+            }
+            Err(e) => {
+                return Err(e.context(format!("load design.toml at {}", p.display())));
+            }
+        },
+        _ => None,
+    };
+
+    // Slice 9 — build the cached scan SDF + grid that feeds the
+    // per-layer iso-extraction pipeline (`mod sdf_layers`).
+    // One-time cost at startup: ~324 ms on the iter-1 sock fixture
+    // (dec-2500 @ 5 mm); the slider-tick MC pulls from this cache
+    // rather than re-sampling the SDF per layer. See the spec at
+    // `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md` for the perf table
+    // that pinned the constants. Sub-leaves 3/4 swap the cavity +
+    // per-layer surface previews from `EnvelopeProxyMesh` to the
+    // marching-cubes extraction this cache powers.
+    let sdf_build_start = std::time::Instant::now();
+    let cached_scan_sdf = sdf_layers::build_cached_scan_sdf(
+        &scan_mesh,
+        &cap_planes,
+        sdf_layers::LAYER_PREVIEW_CELL_SIZE_M,
+        sdf_layers::LAYER_GRID_MARGIN_M,
+    )
+    .with_context(|| format!("build cached scan SDF from {}", cli.cleaned_stl.display(),))?;
+    let sdf_build_ms = sdf_build_start.elapsed().as_secs_f64() * 1e3;
+    let (gx, gy, gz) = cached_scan_sdf.closed_grid.dimensions();
+    println!(
+        "cached scan SDF: {gx}×{gy}×{gz} grid cells ({} k), \
+         min sdf {:.3} mm, fill {sdf_build_ms:.0} ms (caps = {})",
+        gx * gy * gz / 1_000,
+        cached_scan_sdf.min_sdf_value * 1e3,
+        cap_planes.len(),
+    );
+
+    // Phase 3 — `design_toml_path` is intentionally NOT forwarded to
+    // `run_render_app`; the sim-research viewer is read-only WRT disk
+    // (Q5.4 default lean) so it never writes back to that file. The
+    // loaded design is applied to the defaults in `run_render_app`.
+    let _ = design_toml_path;
+    run_render_app(
+        scan_mesh,
+        scan_info,
+        centerline_points,
+        loaded_design,
+        cached_scan_sdf,
+        sdf_layers::CapPlanes { planes: cap_planes },
+    );
+    Ok(())
+}
+
+fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<f64>]) -> ScanInfo {
+    let aabb = mesh.aabb();
+    let extents_mm = [
+        (aabb.max.x - aabb.min.x) * 1000.0,
+        (aabb.max.y - aabb.min.y) * 1000.0,
+        (aabb.max.z - aabb.min.z) * 1000.0,
+    ];
+    ScanInfo {
+        file_label: path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("(unknown)")
+            .to_string(),
+        vertex_count: mesh.vertices.len(),
+        face_count: mesh.faces.len(),
+        aabb_mm_extents: extents_mm,
+        bbox_diagonal_m: aabb.diagonal(),
+        centerline_arc_length_m: centerline_arc_length_m(centerline_points),
+        centerline_point_count: centerline_points.len(),
+    }
+}
+
+// `CAVITY_DEFAULT_INSET_M` lives in `cf-device-types` alongside
+// `CavityState::default_for_scan()`.
+
+// ============================================================
+// Geometric validations (slice 6)
+// ============================================================
+//
+// Cheap, derived-from-state checks surfaced in the Validations
+// panel: per-layer pour volume + mass against the 2 lb single-pour
+// budget, cavity self-intersection, and minimum castable wall
+// thickness. Computed fresh each frame from `EnvelopeProxyMesh` +
+// `CavityState` + `LayersState` — `compute_validations` is a pure
+// function so the whole check set is unit-testable without Bevy.
+//
+// Pour volume uses the divergence-theorem signed mesh volume on the
+// displaced proxy (not cf-cast's SDF voxel integration): the
+// suite's geometry model is displaced proxy meshes, it carries no
+// `cf_design::Solid` representation, and the closed-form mesh
+// volume is both dependency-free and more accurate than coarse-
+// voxel counting.
+
+/// Per-silicone single-pour mass budget (kg) for the layered-
+/// silicone-device v1 cast — 2 lb via NIST's exact pound-to-kg
+/// conversion (1 lb = 0.453_592_37 kg). Mirrors cf-cast's
+/// `pour_volume::DEFAULT_MASS_BUDGET_KG` by-value (no cf-cast dep,
+/// same standalone-catalog posture as [`LAYER_MATERIALS`]).
+const MASS_BUDGET_KG: f64 = 0.907_184_74;
+
+/// Fraction of [`MASS_BUDGET_KG`] below which a single pour grades
+/// green; between this fraction and 1.0× the budget grades yellow;
+/// above 1.0× grades red. 0.8 reserves a 20 % working margin before
+/// the budget becomes a hard concern.
+const BUDGET_GREEN_FRACTION: f64 = 0.8;
+
+/// Minimum castable layer thickness (meters). Below ~2 mm a poured
+/// silicone wall is fragile and tears under insertion stretch (cf.
+/// Ecoflex 00-30's ~2 mm castability threshold, cited in
+/// [`cf_device_types::CAVITY_DEFAULT_INSET_M`]). The per-layer thickness slider
+/// floor is 1 mm — so sub-2 mm layers are reachable, and the
+/// min-wall check flags them.
+const MIN_CASTABLE_THICKNESS_M: f64 = 0.002;
+
+/// Mass-budget severity grade for one cast pour (or the device
+/// total), graded against [`MASS_BUDGET_KG`]. Variant declaration
+/// order is the severity order — `Ord` is derived so the worst
+/// per-layer status is `layers.iter().map(...).max()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum BudgetStatus {
+    /// Comfortably under budget (< [`BUDGET_GREEN_FRACTION`]× the
+    /// budget).
+    Green,
+    /// Approaching the budget ([`BUDGET_GREEN_FRACTION`]×..=1.0× the
+    /// budget).
+    Yellow,
+    /// Over budget (> 1.0× the budget) — not pourable in one pour.
+    Red,
+}
+
+/// Grade a single pour mass (kg) against [`MASS_BUDGET_KG`].
+fn grade_budget(mass_kg: f64) -> BudgetStatus {
+    if mass_kg > MASS_BUDGET_KG {
+        BudgetStatus::Red
+    } else if mass_kg >= MASS_BUDGET_KG * BUDGET_GREEN_FRACTION {
+        BudgetStatus::Yellow
+    } else {
+        BudgetStatus::Green
+    }
+}
+
+/// Per-layer validation readout — one entry per cast layer.
+#[derive(Debug, Clone, PartialEq)]
+struct LayerValidation {
+    /// Index into [`LayersState::layers`], innermost-first.
+    layer_index: usize,
+    /// Shell volume (m³) — the new silicone this layer's pour adds,
+    /// = V(this layer's outer surface) − V(its inner surface). The
+    /// inner surface is the cavity surface for layer 0, or the
+    /// prior layer's outer surface for layer `i > 0`.
+    shell_volume_m3: f64,
+    /// Pour mass (kg) = `shell_volume_m3` × the layer material's
+    /// bulk density (from [`material_density`]).
+    pour_mass_kg: f64,
+    /// Mass-budget grade for this single pour.
+    status: BudgetStatus,
+    /// Whether this layer's thickness is at or above
+    /// [`MIN_CASTABLE_THICKNESS_M`].
+    thickness_castable: bool,
+}
+
+/// Whole-device validation readout, computed fresh each frame by
+/// [`compute_validations`] from the cached scan SDF + cavity +
+/// layer state (slice 9 sub-leaf 5; per-vertex `EnvelopeProxyMesh`
+/// path retired).
+#[derive(Debug, Clone, PartialEq)]
+struct DeviceValidations {
+    /// One entry per layer, innermost-first.
+    layers: Vec<LayerValidation>,
+    /// Sum of every layer's pour mass (kg). Informational: same-
+    /// material layers may be combined into one pour or each poured
+    /// separately — the per-layer [`LayerValidation::status`] is the
+    /// pour-by-pour budget constraint, this total is context.
+    total_mass_kg: f64,
+    /// Worst per-layer budget status — drives the panel's headline
+    /// color. [`BudgetStatus::Green`] for an empty layer stack.
+    worst_status: BudgetStatus,
+    /// Whether the cavity mesh collapses at the current inset:
+    /// `true` when `cavity.inset_m ≥ -cached_sdf.min_sdf_value` (the
+    /// requested inset exceeds the maximum interior SDF depth, so
+    /// the marching-cubes extraction at iso = -inset is empty). SDF
+    /// analog of the prior `cavity.inset_m ≥ proxy.min_radial_distance_m`
+    /// check. Always applicable (no centerline-absent fallback —
+    /// the SDF carries its own collapse depth).
+    cavity_self_intersects: bool,
+    /// The inset (m) at which the cavity first collapses =
+    /// `-cached_sdf.min_sdf_value`. Always finite (the cached grid
+    /// always has at least one interior cell for a non-empty scan).
+    cavity_collapse_inset_m: f64,
+    /// `true` when every layer is at or above
+    /// [`MIN_CASTABLE_THICKNESS_M`].
+    min_wall_ok: bool,
+}
+
+/// Absolute enclosed volume (m³) of an `IndexedMesh` (the
+/// marching-cubes output of [`sdf_layers::extract_layer_surface`])
+/// via the divergence theorem about the world origin:
+/// `⅙·|Σ_faces a·(b×c)|` over the triangles, with `a, b, c` the
+/// face's vertices.
+///
+/// Pure geometry in physics-frame meters — no render-scale / UpAxis
+/// mapping (those are display-only concerns). The mesh is consumed
+/// as-extracted: no displacement step (the iso surface naturally
+/// sits where it should).
+///
+/// Origin-independent for CLOSED meshes by the divergence theorem
+/// (internal contributions cancel). The pinned-floor scope-C arc's
+/// sub-leaf 2 rewrite produces closed pinned-floor shells; the
+/// cap-centroid-origin trick the cavity-mouth arc shipped is no longer
+/// needed and was removed here (sub-leaf 3). See the
+/// `signed_volume_closed_mesh_translation_invariant` test for the
+/// regression gate.
+///
+/// The `abs` is load-bearing: mesh-offset's marching-cubes table
+/// produces INWARD-winding triangles for our SDF convention
+/// (negative inside, positive outside), so the raw divergence
+/// integral is negative for a closed iso surface. Stripping the
+/// sign lets downstream callers (`compute_validations`) treat the
+/// result as the geometric "amount enclosed" without coupling to MC's
+/// winding choice. The shell-volume difference in
+/// `compute_validations` is then itself `.abs()`'d for the same
+/// floating-point-sign-noise reason (a near-closed cleaned scan
+/// can leave a tiny sign asymmetry between outer and inner).
+fn signed_volume_m3(mesh: &IndexedMesh) -> f64 {
+    let mut six_volume = 0.0_f64;
+    for face in &mesh.faces {
+        let a = mesh.vertices[face[0] as usize].coords;
+        let b = mesh.vertices[face[1] as usize].coords;
+        let c = mesh.vertices[face[2] as usize].coords;
+        six_volume += a.dot(&b.cross(&c));
+    }
+    (six_volume / 6.0).abs()
+}
+
+/// Compute the whole-device validation readout from the cached scan
+/// SDF plus the current cavity + layer state. Pure function — the
+/// Validations panel calls this each frame; the tests call it
+/// directly.
+///
+/// Shell volumes: layer 0's inner surface is the cavity surface (at
+/// iso `−inset_m`); layer `i > 0`'s inner surface is layer `i − 1`'s
+/// outer surface. Layer `i`'s outer surface is at iso
+/// `cumulative_thickness − inset_m`. A pour's shell volume is
+/// `V(outer) − V(inner)` — the new material that pour adds.
+///
+/// Per-tick cost: one marching-cubes extraction per layer + one for
+/// the cavity (sub-millisecond each on the cached 5 mm grid), then
+/// six divergence-theorem volume reductions. Cheap enough to run
+/// every frame the panel renders; matches the spec's
+/// "extract-many" contract.
+fn compute_validations(
+    cached_sdf: &sdf_layers::CachedScanSdf,
+    cap_planes: &sdf_layers::CapPlanes,
+    cavity: &CavityState,
+    layers: &LayersState,
+) -> DeviceValidations {
+    // Clamp the iso to the cached grid's envelope so a wide slider
+    // never trips the `debug_assert!` in `extract_layer_surface` —
+    // same clamp shape as `update_layer_meshes` (slice 9 sub-leaf 4).
+    let max_iso = sdf_layers::LAYER_GRID_MARGIN_M - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
+    let clamp = |iso: f64| iso.clamp(-max_iso, max_iso);
+
+    // Closed pinned-floor shells (sub-leaf 2) → signed_volume_m3 is
+    // origin-invariant by the divergence theorem; no per-cap origin
+    // selection needed (sub-leaf 3 deleted primary_cap_origin).
+
+    // The cavity surface is layer 0's inner surface.
+    let cavity_mesh =
+        sdf_layers::extract_layer_surface(cached_sdf, &cap_planes.planes, clamp(-cavity.inset_m));
+    let mut prev_inner_volume = signed_volume_m3(&cavity_mesh);
+    let mut cumulative_thickness_m = 0.0_f64;
+    let mut layer_validations = Vec::with_capacity(layers.layers.len());
+    let mut total_mass_kg = 0.0_f64;
+    let mut worst_status = BudgetStatus::Green;
+    let mut min_wall_ok = true;
+
+    for (layer_index, layer) in layers.layers.iter().enumerate() {
+        cumulative_thickness_m += layer.thickness_m;
+        let outer_iso = clamp(cumulative_thickness_m - cavity.inset_m);
+        let outer_mesh =
+            sdf_layers::extract_layer_surface(cached_sdf, &cap_planes.planes, outer_iso);
+        let outer_volume = signed_volume_m3(&outer_mesh);
+        // The outer surface always encloses more volume than the
+        // inner; `abs` guards against floating-point sign noise on
+        // a near-closed cleaned scan, not a real sign ambiguity.
+        let shell_volume_m3 = (outer_volume - prev_inner_volume).abs();
+        prev_inner_volume = outer_volume;
+
+        let pour_mass_kg = shell_volume_m3 * material_density(layer.material_anchor_key);
+        total_mass_kg += pour_mass_kg;
+        let status = grade_budget(pour_mass_kg);
+        worst_status = worst_status.max(status);
+        let thickness_castable = layer.thickness_m >= MIN_CASTABLE_THICKNESS_M;
+        if !thickness_castable {
+            min_wall_ok = false;
+        }
+
+        layer_validations.push(LayerValidation {
+            layer_index,
+            shell_volume_m3,
+            pour_mass_kg,
+            status,
+            thickness_castable,
+        });
+    }
+
+    // SDF-side cavity collapse: when the requested inset exceeds the
+    // deepest interior SDF magnitude, the iso lies past every grid
+    // cell value → marching cubes returns an empty mesh. Equivalent
+    // gate the per-vertex path used `proxy.min_radial_distance_m` for.
+    let cavity_collapse_inset_m = -cached_sdf.min_sdf_value;
+    DeviceValidations {
+        layers: layer_validations,
+        total_mass_kg,
+        worst_status,
+        cavity_self_intersects: cavity.inset_m >= cavity_collapse_inset_m,
+        cavity_collapse_inset_m,
+        min_wall_ok,
+    }
+}
+
+// ============================================================
+// Mesh-based surface rendering (slice 5 polish 2)
+// ============================================================
+//
+// Each surface (the cavity + one per layer) is a Bevy entity with
+// a triangle Mesh asset + opaque StandardMaterial. Depth-test does
+// the right thing — near fragments occlude far fragments — so the
+// user no longer sees the far side rendering through the near side
+// (the gizmo-wireframe artifact that slice 5 polish 2 replaced).
+//
+// The mesh asset is regenerated when its source state changes
+// (`is_changed()` check on the relevant resource). Re-meshing one
+// surface is sub-millisecond on the iter-1 decimated proxy
+// (1500 faces).
+
+/// Marker component for a per-layer outer-surface mesh entity.
+/// Bevy spawns / despawns one entity per layer whenever the layer
+/// stack changes. The layer index isn't stored on the component
+/// because the despawn-all-then-respawn update pattern doesn't
+/// need it.
+#[derive(Component)]
+struct LayerSurfaceEntity;
+
+/// Snapshot of every input `update_layer_meshes` reads, kept in the
+/// system's `Local<>` so the per-frame check is "did the values
+/// actually change?" rather than "did Bevy's `Res::is_changed()`
+/// tick?". The latter is the deref-mut-on-access footgun; the
+/// former is the documented escape hatch (same posture as
+/// `insertion_sim_ui::invalidate_on_geometry_change`).
+///
+/// Fields cover every input that affects the rendered layer meshes:
+///
+/// - `cavity` / `layers`: govern the displaced shell vertex
+///   positions and which materials/colors the shells get.
+/// - `heat_map_on` / `scalar_mode`: pick which color buffer (Ψ or
+///   ‖P‖) drives the per-vertex COLOR attribute when heat map is
+///   on, or revert to palette tint when off.
+/// - `last_run_generation`: a counter `InsertionSimState` bumps
+///   whenever `last_run` changes meaningfully (a new run completed,
+///   or invalidation cleared the previous). The Vec<Vec<[f32; 4]>>
+///   color buffers themselves are large + identity-only, so we
+///   track this scalar proxy instead.
+///
+/// `proxy` / `up` / `render_scale` are intentionally NOT in the key:
+/// they're set once at app start and never change.
+#[derive(Debug, Clone, PartialEq)]
+struct LayerMeshKey {
+    cavity: CavityState,
+    layers: LayersState,
+    heat_map_on: bool,
+    scalar_mode: cf_device_types::ScalarMode,
+    last_run_generation: u64,
+    /// Slice S1 — playback-slider index. A step change re-projects the
+    /// heat map at the new step's per-tet scalar field.
+    displayed_step: usize,
+    /// Slice S3 — when `true`, the per-layer shells render the FEM
+    /// analysis mesh's deformed outer faces at `displayed_step`
+    /// instead of the rest-frame SDF iso. Same toggle the cavity uses;
+    /// keeps the two renders consistent.
+    show_deformed: bool,
+}
+
+/// Slice S11.2 — translucency for the per-layer slab render. Each
+/// layer entity carries both its inner + outer face triangles
+/// (`InsertionSimOutputs::deformed_layer_slab_mesh_at`) and renders
+/// with `AlphaMode::Blend` at this alpha so the user sees through
+/// the outer layer into the inner ones + the cavity + intruder.
+/// Bookmark §3 Tier 1 (2)–(3): opaque outer shells occluded
+/// everything else (finding F3); 0.35 lets the user see a clear
+/// translucent band of silicone per layer without losing the inner
+/// geometry behind it.
+const LAYER_SLAB_ALPHA: f32 = 0.35;
+
+/// Snapshot of every input `update_cavity_mesh` reads, kept in the
+/// system's `Local<>` so the per-frame check is "did the values
+/// actually change?" rather than "did Bevy's `Res::is_changed()`
+/// tick?" — same posture as [`LayerMeshKey`] +
+/// `insertion_sim_ui::invalidate_on_geometry_change`.
+///
+/// `show_deformed` + `displayed_step` + `last_run_generation` are the
+/// slice-S2 additions: a step-scrub, a Show-deformed toggle, or a new
+/// run completion each rebuilds the cavity mesh asset.
+#[derive(Debug, Clone, PartialEq)]
+struct CavityMeshKey {
+    cavity: CavityState,
+    show_deformed: bool,
+    displayed_step: usize,
+    last_run_generation: u64,
+}
+
+/// Regenerate the cavity mesh asset.
+///
+/// Two render modes:
+///
+/// - **Rest** (default; pre-S2 behavior): cavity surface extracted from
+///   the cached scan SDF at `iso = -cavity.inset_m`. Slice 9 sub-leaf
+///   3's smooth MC iso-surface, fitting the scan exactly perpendicular
+///   to its source (no apex-nipple artifacts).
+/// - **Deformed** (slice S2; only when `sim_state.show_deformed && last_run.is_some()`):
+///   cavity entity gets the FEM analysis mesh's deformed boundary at
+///   `sim_state.displayed_step` — the same BCC vertex layout the ramp
+///   solves on, with each step's `x_final` displaced coordinates.
+///   Coarser than the SDF iso (4 mm BCC vs ~1 mm MC) but it's the
+///   "see the squish" view the workshop user reaches for after a sim
+///   completes. Falls back to rest if `displayed_step` is out of the
+///   converged-step range.
+///
+/// Change-detection mirrors [`update_layer_meshes`]: snapshot-and-
+/// compare via `Local<Option<CavityMeshKey>>` so a Bevy `ResMut<T>`
+/// deref-mut-on-access tick doesn't rebuild every frame.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn update_cavity_mesh(
+    state: Res<CavityState>,
+    cached_sdf: Res<sdf_layers::CachedScanSdf>,
+    cap_planes: Res<sdf_layers::CapPlanes>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    sim_state: Res<insertion_sim_ui::InsertionSimState>,
+    mut last_key: Local<Option<CavityMeshKey>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut q: Query<(&mut Mesh3d, &mut Visibility), With<CavityEntity>>,
+) {
+    let current_key = CavityMeshKey {
+        cavity: *state,
+        show_deformed: sim_state.show_deformed,
+        displayed_step: sim_state.displayed_step,
+        last_run_generation: sim_state.last_run_generation,
+    };
+    let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
+    *last_key = Some(current_key);
+    if !changed {
+        return;
+    }
+    // Slice S2 — deformed view consumes the FEM boundary at the
+    // displayed step; otherwise fall through to the rest-frame SDF
+    // iso extraction. The decision + mesh build are loop-invariant
+    // (one CavityEntity expected; the loop is defensive against
+    // transient duplicates), so they live outside the entity loop.
+    let cavity_indexed = if sim_state.show_deformed {
+        sim_state
+            .last_run
+            .as_ref()
+            .and_then(|run| run.deformed_boundary_mesh_at(sim_state.displayed_step))
+            .unwrap_or_else(|| {
+                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m)
+            })
+    } else {
+        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m)
+    };
+    let mesh_asset = meshes.add(build_bevy_mesh_from_indexed(
+        &cavity_indexed,
+        *up,
+        render_scale.0,
+    ));
+    for (mut mesh_handle, mut visibility) in &mut q {
+        mesh_handle.0 = mesh_asset.clone();
+        *visibility = if state.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// Synchronize the per-layer mesh entities with `LayersState`. One
+/// entity per layer, each at its OUTER-surface offset = cumulative
+/// `sum(thickness[0..=i]) - cavity.inset_m` from the scan surface.
+/// Layer N-1's outer surface is the device's outer skin (no
+/// separate "outer envelope" concept). Each entity's visibility
+/// tracks its own `LayerSpec::visible` flag.
+///
+/// Slice 9 sub-leaf 4 — the load-bearing visual gate of the
+/// SDF-based-layer-surfaces arc. Replaces per-vertex radial
+/// displacement of `EnvelopeProxyMesh` with
+/// [`sdf_layers::extract_layer_surface`] at `iso = cumulative_thickness
+/// - cavity.inset_m`. Two consequences worth pinning:
+///
+/// 1. **Dome-apex nipple gone.** The per-vertex path raced apex
+///    vertices outward (their radial pointed up-and-out from a
+///    centerline point inside the body); the SDF iso is exactly
+///    perpendicular to the source by construction, so the apex
+///    grows uniformly with thickness.
+/// 2. **Per-layer MC mesh topology.** Each layer has its own vertex
+///    set; together with its own face set, this replaces every
+///    layer sharing the proxy's connectivity. The Insertion Sim
+///    panel's heat-map projection was keyed on
+///    `proxy.vertices.len()`; that path is temporarily disabled
+///    here and re-wired in sub-leaf 7 via per-layer-vertex
+///    closest-point lookup against the SDF tet mesh.
+///
+/// **Change-detection** (cold-read finding from slice-9 follow-up):
+/// the prior implementation gated on
+/// `layers.is_changed() || cavity.is_changed() || sim_state.is_changed()`.
+/// All three resources are held as `ResMut<>` by
+/// `sim_research_panel`, which bumps their change ticks every frame
+/// regardless of whether any value moved. Net effect: the guard
+/// always passed, and the 6 layer entities despawned-and-respawned
+/// every frame. Snapshot-and-compare via `Local<>` (same posture
+/// `invalidate_on_geometry_change` uses) keeps rebuild cost paid
+/// only on real input changes.
+///
+/// **Envelope note** ([`sdf_layers::LAYER_GRID_MARGIN_M`] = 40 mm):
+/// cumulative thickness theoretically reaches 6 layers × 20 mm =
+/// 120 mm via the existing per-layer thickness slider — past the
+/// cached grid's envelope. The current per-layer slider defaults
+/// keep typical use well inside 40 mm; release builds silently
+/// clip to the grid bounds if a user dials past, and debug builds
+/// trip the `debug_assert!` in
+/// [`sdf_layers::extract_layer_surface`]. A future arc may tighten
+/// the slider OR grow the grid — for iter-1 the 40 mm envelope is
+/// the load-bearing constraint.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn update_layer_meshes(
+    layers: Res<LayersState>,
+    cavity: Res<CavityState>,
+    cached_sdf: Res<sdf_layers::CachedScanSdf>,
+    cap_planes: Res<sdf_layers::CapPlanes>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    sim_state: Res<insertion_sim_ui::InsertionSimState>,
+    mut last_key: Local<Option<LayerMeshKey>>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ClipPlaneMaterial>>,
+    existing: Query<Entity, With<LayerSurfaceEntity>>,
+) {
+    let current_key = LayerMeshKey {
+        cavity: *cavity,
+        layers: layers.clone(),
+        heat_map_on: sim_state.heat_map_on,
+        scalar_mode: sim_state.scalar_mode,
+        last_run_generation: sim_state.last_run_generation,
+        displayed_step: sim_state.displayed_step,
+        show_deformed: sim_state.show_deformed,
+    };
+    let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
+    *last_key = Some(current_key);
+    if !changed {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    if layers.layers.is_empty() {
+        return;
+    }
+    // Pre-fetch the heat-map run reference for the per-layer
+    // projection (sub-leaf 7). When `heat_map_on && last_run` →
+    // each layer gets a per-MC-vertex projection from the sim's
+    // per-tet scalar field; otherwise palette tint.
+    let heat_map_run = if sim_state.heat_map_on {
+        sim_state.last_run.as_ref()
+    } else {
+        None
+    };
+    // Slice S3 — deformed-shells path consumes `last_run`'s per-layer
+    // outer faces at the displayed step; falls through to the
+    // rest-frame SDF iso when toggled off OR when the sim's layer
+    // count doesn't cover this UI layer (e.g., user added a layer
+    // after the run).
+    let deformed_layers_run = if sim_state.show_deformed {
+        sim_state.last_run.as_ref()
+    } else {
+        None
+    };
+    let mut cumulative_thickness_m = 0.0_f64;
+    for (i, layer) in layers.layers.iter().enumerate() {
+        cumulative_thickness_m += layer.thickness_m;
+        let offset_m = cumulative_thickness_m - cavity.inset_m;
+        // Clamp the iso value to the cached grid's envelope so a wide
+        // slider configuration doesn't trip the debug-assert in
+        // [`sdf_layers::extract_layer_surface`]. Clamping AT the
+        // envelope (not just BELOW it) lets MC pull whatever surface
+        // is visible inside the cached grid; the alternative
+        // (silently dropping the layer) would leave the user without
+        // a visual cue that the slider exceeded the envelope. A
+        // future arc should either widen `LAYER_GRID_MARGIN_M` or
+        // tighten the slider once iter-1 / iter-2 surfaces a real
+        // case.
+        let envelope = sdf_layers::LAYER_GRID_MARGIN_M;
+        // Pull the iso strictly INSIDE the envelope so the
+        // `debug_assert!` (strict `<`) still passes in debug builds.
+        let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
+        let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
+        // Slice S11.2 — deformed-shells path picks the SLAB mesh
+        // (inner + outer faces) so the user reads each layer as a
+        // translucent band of silicone instead of an opaque outer
+        // skin. Falls through to the legacy outer-only helper when
+        // the slab build is unavailable (e.g., sim ran with fewer
+        // layers than the GUI now shows), then to the rest-frame
+        // SDF iso when the deformed view is off altogether.
+        let layer_indexed = deformed_layers_run
+            .and_then(|run| run.deformed_layer_slab_mesh_at(i, sim_state.displayed_step))
+            .or_else(|| {
+                deformed_layers_run
+                    .and_then(|run| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
+            })
+            .unwrap_or_else(|| {
+                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
+            });
+        // Heat-map: project per-tet scalars onto this layer's MC
+        // vertices (sub-leaf 7). `project_layer_heat_map` returns
+        // `None` if the sim ran with fewer layers than the current
+        // GUI shows, or the layer has no tets in its partition —
+        // in either case the layer falls back to the palette tint.
+        let colors_vec = heat_map_run.and_then(|run| {
+            insertion_sim_ui::project_layer_heat_map(
+                run,
+                i,
+                sim_state.scalar_mode,
+                sim_state.displayed_step,
+                &layer_indexed.vertices,
+            )
+        });
+        let colors_slice = colors_vec.as_deref();
+        let mesh = meshes.add(build_bevy_mesh_from_indexed_with_colors(
+            &layer_indexed,
+            *up,
+            render_scale.0,
+            colors_slice,
+        ));
+        let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
+        // Slice S11.2 — slab materials carry `LAYER_SLAB_ALPHA` and
+        // `AlphaMode::Blend` so outer layers don't fully occlude the
+        // inner geometry. Heat-map mode pins base color to white so
+        // the per-vertex COLOR attribute carries the gradient
+        // straight through (StandardMaterial multiplies base ×
+        // vertex × light); off mode keeps the palette tint with the
+        // same alpha.
+        let base_color = if colors_slice.is_some() {
+            Color::srgba(1.0, 1.0, 1.0, LAYER_SLAB_ALPHA)
+        } else {
+            Color::srgba(r, g, b, LAYER_SLAB_ALPHA)
+        };
+        let material = materials.add(ExtendedMaterial {
+            base: StandardMaterial {
+                base_color,
+                alpha_mode: AlphaMode::Blend,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            },
+            extension: ClipPlaneExt::default(),
+        });
+        let visibility = if layer.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        commands.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            visibility,
+            LayerSurfaceEntity,
+        ));
+    }
+}
+
+/// Apply the [`ScanMeshVisible`] toggle to the scan-mesh entity's
+/// `Visibility` each frame. Cheap (one component write per frame
+/// when the toggle changes; Bevy short-circuits Visibility writes
+/// that don't change the value).
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn apply_scan_mesh_visibility(
+    visible: Res<ScanMeshVisible>,
+    mut q: Query<&mut Visibility, With<ScanMeshEntity>>,
+) {
+    for mut v in &mut q {
+        *v = if visible.0 {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// SL.4 — spawn the intruder render entity at startup with the cleaned
+/// scan mesh as its constant `Mesh3d`. The sliding intruder is a rigid
+/// body of constant geometry translated along the centerline arc, so
+/// the mesh asset never changes after spawn; per-step pose lives in the
+/// entity's `Transform`, written by [`update_intruder_mesh`] from
+/// `InsertionSimOutputs::intruder_pose_at(displayed_step)`.
+///
+/// Distinct from S4 (which also mounted the bare scan up front but
+/// drove a hand-built ramp transform) and S11.1 (which swapped per-step
+/// iso meshes against a growing intruder): the SL.2 sliding ramp records
+/// the rigid pose at every converged step in `SlideRamp.intruder_poses`,
+/// so SL.4 just consumes that field — no per-step mesh rebuild, no SDF
+/// iso extraction at render time.
+#[allow(clippy::needless_pass_by_value)]
+fn spawn_intruder_mesh(
+    mut commands: Commands,
+    scan: Res<ScanMesh>,
+    up: Res<UpAxis>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut clip_materials: ResMut<Assets<ClipPlaneMaterial>>,
+) {
+    let bevy_mesh = triangle_mesh_flat_shaded(&scan.0, None, *up);
+    let material = clip_materials.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color: Color::srgb(INTRUDER_COLOR.0, INTRUDER_COLOR.1, INTRUDER_COLOR.2),
+            metallic: 0.10,
+            perceptual_roughness: 0.6,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        },
+        extension: ClipPlaneExt::default(),
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(bevy_mesh)),
+        MeshMaterial3d(material),
+        Visibility::Hidden,
+        IntruderEntity,
+    ));
+}
+
+/// Snapshot of every input [`update_intruder_mesh`] reads, kept in the
+/// system's `Local<>` so the per-frame check is "did the values
+/// actually change?" rather than "did Bevy's `Res::is_changed()`
+/// tick?" — same posture as [`CavityMeshKey`] +
+/// [`LayerMeshKey`] +
+/// `insertion_sim_ui::invalidate_on_geometry_change`.
+///
+/// `last_run_generation` rolls forward at the only two `last_run`
+/// mutation sites in `insertion_sim_ui.rs`: the poll-task that sets
+/// `last_run = Some(outputs)` after sim completes, and the
+/// geometry-change resnapshot that clears `last_run = None`. Both
+/// bump generation (`wrapping_add(1)`) immediately after the
+/// mutation — find via grep, not line numbers (line numbers drift
+/// with every cf-sim-research refactor). Any
+/// `last_run.is_sliding_mode()` flip is already captured by a
+/// generation change, so a separate `is_sliding_mode` field would
+/// be redundant in the key.
+#[derive(Debug, Clone, PartialEq)]
+struct IntruderMeshKey {
+    displayed_step: usize,
+    last_run_generation: u64,
+    show_deformed: bool,
+}
+
+/// Convert a physics-frame rigid pose to a Bevy [`Transform`] under the
+/// device's [`UpAxis`] convention, applying the `render_scale` lift.
+///
+/// SL.4 — consumed by [`update_intruder_mesh`]. The intruder mesh is
+/// mounted in [`spawn_intruder_mesh`] with vertices already in Bevy
+/// frame (via [`triangle_mesh_flat_shaded`]) but in unscaled meters,
+/// so the returned transform carries:
+///
+/// - `translation`: physics-frame translation projected through
+///   [`UpAxis::to_bevy_point`] and scaled by `render_scale`.
+/// - `rotation`: physics-frame rotation conjugated by the axis-swap
+///   permutation `S` (`R_bevy = S · R_phys · S`; `S² = I` because each
+///   variant's swap is its own inverse — same property called out at
+///   `sim/L1/bevy/src/convert.rs:55` for the workspace-canonical
+///   Z-up↔Y-up conversion). For `PlusZ` and `PlusX` the swap is a
+///   reflection (det = -1), which inverts the rotation sense — the
+///   closed-form quaternion identity collapses to a scalar component
+///   swap with negated vector parts (mirroring
+///   `tools/cf-scan-prep/src/main.rs::physics_quat_to_bevy_for_plus_z`).
+///   For `PlusY` (identity swap) the quaternion is copied verbatim.
+/// - `scale`: uniform `render_scale` — matches the
+///   [`Transform::from_scale`] applied to [`ScanMeshEntity`] at
+///   [`setup_render_scene`].
+///
+/// For iter-1 the [`run_sliding_insertion_ramp`] pose is translation-
+/// only (per `slide_pose_at`), but the rotation branch is kept active
+/// so the banked iter-2 rotation enable lands without rework.
+///
+/// [`run_sliding_insertion_ramp`]: insertion_sim::run_sliding_insertion_ramp
+#[inline]
+#[must_use]
+fn pose_to_bevy_transform(pose: Isometry3<f64>, up: UpAxis, render_scale: f32) -> Transform {
+    let phys_point = Point3::from(pose.translation.vector);
+    let bevy_t = up.to_bevy_point(&phys_point);
+    let translation = Vec3::from_array(bevy_t) * render_scale;
+
+    let q = pose.rotation;
+    #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
+    let rotation = match up {
+        UpAxis::PlusY => Quat::from_xyzw(q.i as f32, q.j as f32, q.k as f32, q.w as f32),
+        UpAxis::PlusZ => Quat::from_xyzw(-q.i as f32, -q.k as f32, -q.j as f32, q.w as f32),
+        UpAxis::PlusX => Quat::from_xyzw(-q.j as f32, -q.i as f32, -q.k as f32, q.w as f32),
+    };
+
+    Transform {
+        translation,
+        rotation,
+        scale: Vec3::splat(render_scale),
+    }
+}
+
+/// Visibility-gate composition for the sliding-mode intruder render —
+/// extracted from [`update_intruder_mesh`] so the three-input branch
+/// matrix can be exercised in unit tests without spinning up a Bevy
+/// world. Returns `Some(pose)` only when sliding mode + deformed-view
+/// are both on AND a pose exists at the displayed step.
+#[inline]
+#[must_use]
+fn visible_pose_for_intruder(
+    is_sliding: bool,
+    show_deformed: bool,
+    pose_at: Option<Isometry3<f64>>,
+) -> Option<Isometry3<f64>> {
+    if is_sliding && show_deformed {
+        pose_at
+    } else {
+        None
+    }
+}
+
+/// SL.4 — write per-step rigid pose to the [`IntruderEntity`] from
+/// [`InsertionSimOutputs::intruder_pose_at`]. Replaces the SL.3
+/// always-hide stub. The intruder mesh asset is constant (mounted at
+/// startup by [`spawn_intruder_mesh`]); per-step kinematics live in
+/// the entity's `Transform`.
+///
+/// Visibility = `last_run.is_sliding_mode() && show_deformed &&
+/// intruder_pose_at(displayed_step).is_some()` — composed by
+/// [`visible_pose_for_intruder`].
+/// - `is_sliding_mode`: growing mode records identity poses per spec
+///   §3e (the growing intruder grows in place via SDF offset, not
+///   translation), so this system excludes it. SL.7 pass-B may
+///   reawaken a separate growing-mode visualization.
+/// - `show_deformed`: symmetric with [`update_cavity_mesh`] — when
+///   OFF the cavity renders at rest, so an identity-relative intruder
+///   would overlap its own rest-pose footprint confusingly. Playback
+///   ON shows the matched deformed-cavity / moving-intruder pair.
+/// - `pose_at(step).is_some()`: bakes "we have a completed run AND
+///   the step is in range" into one check.
+///
+/// Snapshot-and-compare via `Local<Option<IntruderMeshKey>>` —
+/// `Res::is_changed()` fires every frame because the panel + sim
+/// systems hold `ResMut<InsertionSimState>` (per
+/// `[[project-bevy-is-changed-footgun]]`).
+///
+/// [`InsertionSimOutputs::intruder_pose_at`]: insertion_sim_ui::InsertionSimOutputs::intruder_pose_at
+/// [`update_cavity_mesh`]: crate::update_cavity_mesh
+#[allow(clippy::needless_pass_by_value)]
+fn update_intruder_mesh(
+    sim_state: Res<insertion_sim_ui::InsertionSimState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut last_key: Local<Option<IntruderMeshKey>>,
+    mut q: Query<(&mut Transform, &mut Visibility), With<IntruderEntity>>,
+) {
+    let current_key = IntruderMeshKey {
+        displayed_step: sim_state.displayed_step,
+        last_run_generation: sim_state.last_run_generation,
+        show_deformed: sim_state.show_deformed,
+    };
+    let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
+    *last_key = Some(current_key);
+    if !changed {
+        return;
+    }
+
+    let visible_pose = sim_state.last_run.as_ref().and_then(|run| {
+        visible_pose_for_intruder(
+            run.is_sliding_mode(),
+            sim_state.show_deformed,
+            run.intruder_pose_at(sim_state.displayed_step),
+        )
+    });
+
+    for (mut t, mut v) in &mut q {
+        match visible_pose {
+            Some(pose) => {
+                *t = pose_to_bevy_transform(pose, *up, render_scale.0);
+                *v = Visibility::Visible;
+            }
+            None => {
+                *v = Visibility::Hidden;
+            }
+        }
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn setup_render_scene(
+    mut commands: Commands,
+    scan: Res<ScanMesh>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut clip_materials: ResMut<Assets<ClipPlaneMaterial>>,
+) {
+    let scale = render_scale.0;
+    let raw_aabb = scan.0.aabb();
+    let scaled_aabb = scale_aabb(&raw_aabb, scale);
+    setup_camera_and_lighting(&mut commands, &scaled_aabb, *up);
+    let entity_transform = Transform::from_scale(Vec3::splat(scale));
+    // Local inline of `cf_viewer::spawn_face_mesh` that mounts the
+    // `ClipPlaneMaterial` extended material instead of the stock
+    // `StandardMaterial` — keeps cf-viewer generic (per spec sub-leaf 3
+    // open risk #3) and gives the scan mesh the same clip-plane
+    // behavior as the cavity + per-layer shells. Same material shape
+    // as cf-viewer's helper: opaque grey, double-sided, cull-mode
+    // None.
+    let bevy_mesh = triangle_mesh_flat_shaded(&scan.0, None, *up);
+    let material = clip_materials.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color: Color::srgb(0.70, 0.72, 0.78),
+            metallic: 0.10,
+            perceptual_roughness: 0.6,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        },
+        extension: ClipPlaneExt::default(),
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(bevy_mesh)),
+        MeshMaterial3d(material),
+        entity_transform,
+        ScanMeshEntity,
+    ));
+}
+
+/// Draw the always-on viewport reference overlays each frame:
+///
+/// 1. **Three colored axis arrows** at world origin (cast-frame
+///    convention: X = red, Y = green, Z = blue). Sized to the
+///    rendered scan's diagonal.
+/// 2. **Centerline polyline overlay** (cyan), if a centerline was
+///    parsed from `.prep.toml`. Each polyline point is projected
+///    through the same `UpAxis::PlusZ` swap + `render_scale` lift
+///    the scan mesh entity uses, so the centerline tracks the mesh
+///    exactly.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn draw_reference_overlays(
+    centerline: Res<Centerline>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    scan: Res<ScanMesh>,
+    mut gizmos: Gizmos,
+) {
+    #[allow(clippy::cast_possible_truncation)] // f64 -> f32 for Bevy gizmo length.
+    let arrow_length = (scan.0.aabb().diagonal() * 0.6 * f64::from(render_scale.0)) as f32;
+    gizmos.arrow(
+        Vec3::ZERO,
+        Vec3::X * arrow_length,
+        Color::srgb(1.0, 0.30, 0.30),
+    );
+    gizmos.arrow(
+        Vec3::ZERO,
+        Vec3::Z * arrow_length,
+        Color::srgb(0.30, 1.0, 0.30),
+    );
+    gizmos.arrow(
+        Vec3::ZERO,
+        Vec3::Y * arrow_length,
+        Color::srgb(0.40, 0.60, 1.00),
+    );
+
+    if centerline.points_m.is_empty() {
+        return;
+    }
+    let cyan = Color::srgb(0.25, 0.85, 1.0);
+    let positions: Vec<Vec3> = centerline
+        .points_m
+        .iter()
+        .map(|p| Vec3::from_array(up.to_bevy_point(p)) * render_scale.0)
+        .collect();
+    for window in positions.windows(2) {
+        gizmos.line(window[0], window[1], cyan);
+    }
+}
+
+/// Render the Cavity egui section. The cavity is the scan-derived
+/// inner void the appendage slides into; its surface sits `inset_m`
+/// inside the scan along the per-vertex radial direction, so the
+/// silicone skin between the cavity and the scan stretches over the
+/// appendage for a snug fit.
+///
+/// Slice 4 v1 ships uniform-inset only. A later slice may add the
+/// insertable-length clip + tangent-perpendicular end cap.
+fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
+    egui::CollapsingHeader::new("Cavity")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.checkbox(&mut state.visible, "Show cavity");
+            let (min_m, max_m) = CavityState::inset_slider_range_m();
+            let mut inset_mm = state.inset_m * 1000.0;
+            let min_mm = min_m * 1000.0;
+            let max_mm = max_m * 1000.0;
+            if ui
+                .add(egui::Slider::new(&mut inset_mm, min_mm..=max_mm).text("inset (mm)"))
+                .changed()
+            {
+                state.inset_m = inset_mm * 0.001;
+            }
+            ui.label("(silicone skin stretches inset_m over appendage)");
+            // The numeric cap formats from `CAVITY_INSET_SLIDER_MAX_M`
+            // so this label, the const, and the
+            // `cavity_inset_slider_range_zero_to_eight_mm` sentinel
+            // test all read from one source. The binding-constraint
+            // attribution (H4-2-C asymmetric one-sided bound) stays
+            // doc-only — mirror it to the const's docstring + the
+            // sentinel test's comment if you change the rationale.
+            ui.label(format!(
+                "(capped at {:.0} mm — H4-2-C asymmetric one-sided bound dropped the family-uniform \
+                 compressive floor at MaterialField::sample_yeoh, unblocking deep-compression \
+                 equilibria; cavity 3 + 5 mm user-verified 16/16 — see \
+                 CANDIDATE_H4_FALSIFICATION_BOOKMARK §5.4)",
+                cf_device_types::CAVITY_INSET_SLIDER_MAX_M * 1e3,
+            ));
+        });
+}
+
+/// Render the Layers egui section. Surfaces the ordered layer
+/// stack innermost-first. Every layer carries its own controls:
+/// a visibility checkbox, a thickness slider, a material dropdown,
+/// a Slacker recipe control, and a remove button (hidden when only
+/// one layer remains). A "+ Add layer" button appends a new
+/// outermost layer up to [`LAYER_COUNT_MAX`].
+///
+/// The device wall total is the sum of layer thicknesses; the
+/// outer skin sits at `sum(thickness) - cavity.inset_m` radially
+/// from the scan. Those derived figures are shown as read-only
+/// labels at the bottom of the section.
+///
+/// `validations` is the shared [`DeviceValidations`] — the Slacker
+/// control reads each layer's pour mass from it for the mix-in-
+/// grams readout. A layer added this frame is not yet in
+/// `validations.layers` (it is computed once at the top of the
+/// panel); the control shows a `—` placeholder for that one frame.
+///
+/// [`update_layer_meshes`] regenerates the per-layer surface mesh
+/// entities whenever `LayersState` or `CavityState` mutates.
+fn render_layers_section(
+    ui: &mut egui::Ui,
+    layers: &mut LayersState,
+    cavity: &CavityState,
+    validations: &DeviceValidations,
+) {
+    egui::CollapsingHeader::new("Layers")
+        .default_open(true)
+        .show(ui, |ui| {
+            let n = layers.layers.len();
+            let (t_floor_m, t_ceiling_m) = LayerSpec::thickness_slider_range_m();
+            let t_floor_mm = t_floor_m * 1000.0;
+            let t_ceiling_mm = t_ceiling_m * 1000.0;
+
+            // Track which layer the user requested removal of (if
+            // any). egui's immediate-mode loop can't mutate the Vec
+            // while iterating, so we defer until after the loop.
+            let mut remove_index: Option<usize> = None;
+            for i in 0..n {
+                ui.group(|ui| {
+                    ui.label(format!("Layer {} ({})", i, layer_position_label(i, n)));
+                    ui.checkbox(&mut layers.layers[i].visible, "Show layer");
+                    let mut t_mm = layers.layers[i].thickness_m * 1000.0;
+                    let slider_text = if i == 0 {
+                        "thickness from cavity (mm)"
+                    } else {
+                        "Δ from prior layer (mm)"
+                    };
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut t_mm, t_floor_mm..=t_ceiling_mm)
+                                .text(slider_text),
+                        )
+                        .changed()
+                    {
+                        layers.layers[i].thickness_m = t_mm * 0.001;
+                    }
+                    render_material_dropdown(ui, i, &mut layers.layers[i].material_anchor_key);
+                    let pour_mass_kg = validations.layers.get(i).map(|lv| lv.pour_mass_kg);
+                    render_slacker_control(ui, i, &mut layers.layers[i], pour_mass_kg);
+                    if n > 1 && ui.button("Remove layer").clicked() {
+                        remove_index = Some(i);
+                    }
+                });
+                ui.add_space(2.0);
+            }
+            if let Some(idx) = remove_index {
+                layers.layers.remove(idx);
+            }
+
+            if layers.layers.len() < LAYER_COUNT_MAX && ui.button("+ Add layer").clicked() {
+                // Append at outermost position with 3 mm default.
+                // New layer starts visible, no Slacker; user can
+                // toggle via the per-layer "Show layer" checkbox.
+                layers.layers.push(LayerSpec {
+                    thickness_m: 0.003,
+                    material_anchor_key: "ECOFLEX_00_30",
+                    slacker_fraction: 0.0,
+                    visible: true,
+                });
+            }
+
+            // Derived geometric readouts: the device's outer skin
+            // is the outermost layer's outer surface, at offset
+            // `sum(thickness) - cavity.inset` radially from the
+            // scan surface.
+            let sum_layers_m: f64 = layers.layers.iter().map(|l| l.thickness_m).sum();
+            let derived_outer_offset_m = sum_layers_m - cavity.inset_m;
+            ui.separator();
+            ui.label(format!(
+                "Wall total: {:.1} mm  (sum of layers)",
+                sum_layers_m * 1000.0,
+            ));
+            ui.label(format!(
+                "  outer skin: +{:.1} mm from scan",
+                derived_outer_offset_m * 1000.0,
+            ));
+            ui.label(format!(
+                "  cavity: -{:.1} mm from scan",
+                cavity.inset_m * 1000.0,
+            ));
+        });
+}
+
+/// Human-readable position label for a layer in the stack
+/// ("single", "innermost", "middle", "outermost"). The innermost
+/// layer touches the cavity surface; the outermost layer's outer
+/// surface is the device's outer skin.
+fn layer_position_label(i: usize, n: usize) -> &'static str {
+    if n == 1 {
+        "single"
+    } else if i == 0 {
+        "innermost"
+    } else if i == n - 1 {
+        "outermost"
+    } else {
+        "middle"
+    }
+}
+
+/// Material-selection ComboBox for one layer. `id_source = i`
+/// distinguishes multiple dropdowns in the same parent UI.
+fn render_material_dropdown(ui: &mut egui::Ui, layer_index: usize, selected: &mut &'static str) {
+    let current_label = LAYER_MATERIALS
+        .iter()
+        .find(|(key, _, _)| *key == *selected)
+        .map(|(_, label, _)| *label)
+        .unwrap_or("(unknown)");
+    egui::ComboBox::from_id_salt(("layer-material", layer_index))
+        .selected_text(current_label)
+        .show_ui(ui, |ui| {
+            for (key, label, _) in LAYER_MATERIALS {
+                ui.selectable_value(selected, key, *label);
+            }
+        });
+}
+
+// `resolve_slacker_fraction` lives in `cf-device-types`'s `slacker`
+// module alongside the TB curve data.
+
+/// Part A / Part B / Slacker masses (grams) to weigh out for one
+/// layer's pour. Returns `(part_ab_g, slacker_g)` where `part_ab_g`
+/// is the mass of *each* of Part A and Part B (the base silicone is
+/// 1:1 A:B by weight).
+///
+/// `pour_mass_kg` is the layer's shell mass from
+/// [`compute_validations`]; `slacker_fraction` is Slacker mass as a
+/// fraction of the base A+B mass, so the cured mix obeys
+/// `pour_mass = 2·part_ab·(1 + slacker_fraction)`.
+///
+/// Approximation: `pour_mass_kg` is `shell_volume × base density` —
+/// this treats the cured base+Slacker mix density as ≈ the base
+/// silicone's (the Slacker TB publishes no density). Close enough
+/// for a bench weigh-out, where the user adds a waste margin
+/// regardless.
+fn slacker_recipe_grams(pour_mass_kg: f64, slacker_fraction: f64) -> (f64, f64) {
+    let pour_mass_g = pour_mass_kg * 1000.0;
+    let part_ab_g = pour_mass_g / (2.0 * (1.0 + slacker_fraction));
+    let slacker_g = slacker_fraction * pour_mass_g / (1.0 + slacker_fraction);
+    (part_ab_g, slacker_g)
+}
+
+/// Dropdown label for one Slacker-curve point: the native (`0.0`)
+/// point reads `No Slacker — Shore 00-30`; every other point reads
+/// `+25% Slacker — Shore 000-40 (slight-to-very tack)` (percentage,
+/// effective Shore hardness, cured tack).
+fn slacker_point_label(point: &slacker::Point) -> String {
+    if point.slacker_fraction > 0.0 {
+        format!(
+            "+{:.0}% Slacker — Shore {} ({})",
+            point.slacker_fraction * 100.0,
+            point.hardness,
+            point.tack,
+        )
+    } else {
+        format!("No Slacker — Shore {}", point.hardness)
+    }
+}
+
+/// Render one layer's Slacker recipe control. For a base silicone
+/// with TB data this is a dropdown of the curve's Slacker ratios
+/// (each labelled with its effective Shore hardness + tack) plus a
+/// mix-in-grams readout for the selected ratio; for a base without
+/// data it is a disabled note explaining why.
+///
+/// `pour_mass_kg` is the layer's shell mass (from the shared
+/// [`DeviceValidations`]), or `None` for a layer added this frame
+/// that the validation pass has not caught up to yet.
+fn render_slacker_control(
+    ui: &mut egui::Ui,
+    layer_index: usize,
+    layer: &mut LayerSpec,
+    pour_mass_kg: Option<f64>,
+) {
+    // Snap the stored fraction to a value valid for the current
+    // base material before rendering — guards a base-material
+    // change that orphaned it.
+    layer.slacker_fraction =
+        resolve_slacker_fraction(layer.material_anchor_key, layer.slacker_fraction);
+
+    match slacker::support(layer.material_anchor_key) {
+        slacker::Support::Curve(curve) => {
+            let selected_label = curve
+                .iter()
+                .find(|p| (p.slacker_fraction - layer.slacker_fraction).abs() < f64::EPSILON)
+                .map_or_else(|| "No Slacker".to_string(), slacker_point_label);
+            egui::ComboBox::from_id_salt(("layer-slacker", layer_index))
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for p in curve {
+                        ui.selectable_value(
+                            &mut layer.slacker_fraction,
+                            p.slacker_fraction,
+                            slacker_point_label(p),
+                        );
+                    }
+                });
+            // Mix-in-grams readout for the selected ratio.
+            match pour_mass_kg {
+                Some(mass_kg) => {
+                    let (part_ab_g, slacker_g) =
+                        slacker_recipe_grams(mass_kg, layer.slacker_fraction);
+                    if layer.slacker_fraction > 0.0 {
+                        ui.label(format!(
+                            "  Mix: {part_ab_g:.1} g A + {part_ab_g:.1} g B + {slacker_g:.1} g Slacker",
+                        ));
+                    } else {
+                        ui.label(format!("  Mix: {part_ab_g:.1} g A + {part_ab_g:.1} g B"));
+                    }
+                }
+                None => {
+                    ui.label("  Mix: —");
+                }
+            }
+        }
+        slacker::Support::NotRecommended => {
+            ui.add_enabled(
+                false,
+                egui::Label::new("Slacker: not recommended for this silicone"),
+            );
+        }
+        slacker::Support::NoData => {
+            ui.add_enabled(
+                false,
+                egui::Label::new("Slacker: no published data for this silicone"),
+            );
+        }
+    }
+}
+
+/// Block orbit-camera input when the pointer is over the egui side
+/// panel — prevents the sidebar from accidentally rotating the
+/// camera when the user scrolls a slider list. Mirror of
+/// cf-scan-prep's matching system.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn block_orbit_input_when_over_egui(
+    mut contexts: EguiContexts,
+    mut motion: ResMut<AccumulatedMouseMotion>,
+    mut scroll: ResMut<AccumulatedMouseScroll>,
+) -> bevy::ecs::error::Result {
+    let ctx = contexts.ctx_mut()?;
+    if ctx.wants_pointer_input() || ctx.is_pointer_over_area() {
+        motion.delta = Vec2::ZERO;
+        scroll.delta = Vec2::ZERO;
+    }
+    Ok(())
+}
+
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
+    if keys.just_pressed(KeyCode::Escape) {
+        exit.write(AppExit::Success);
+    }
+}
+
+/// Right-side egui sidebar carrying the sim-research panel sections.
+/// Renders Scan Info + Cavity + Layers + Validations + ClipPlane +
+/// Insertion Sim. No Save-Open section per Q5.4 (sim viewer is
+/// read-only WRT disk — the panel applies in-session edits to the
+/// live resources but never writes back to `.design.toml`).
+///
+/// [`compute_validations`] runs once at the top of the panel, from
+/// the current resource state, and the resulting [`DeviceValidations`]
+/// is shared by two consumers: the Layers section (each layer's
+/// pour mass drives its Slacker mix-in-grams readout) and the
+/// Validations section. A slider edit this frame lands in those
+/// readouts one frame later — imperceptible at frame rate, and it
+/// keeps both sections reading a single consistent computation
+/// rather than each re-deriving it.
+// 10 system parameters; over the default clippy cap. The alternative
+// is bundling resources into a SystemParam struct, which for this
+// single all-panels driver is more ceremony than the cap is worth —
+// every parameter is a Bevy resource consumed by a single section of
+// the panel.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn sim_research_panel(
+    mut contexts: EguiContexts,
+    info: Res<ScanInfo>,
+    cached_sdf: Res<sdf_layers::CachedScanSdf>,
+    cap_planes: Res<sdf_layers::CapPlanes>,
+    centerline: Res<Centerline>,
+    mut scan_visible: ResMut<ScanMeshVisible>,
+    mut cavity: ResMut<CavityState>,
+    mut layers: ResMut<LayersState>,
+    mut clip_state: ResMut<clip_plane::ClipPlaneState>,
+    mut sim_state: ResMut<insertion_sim_ui::InsertionSimState>,
+    scan_mesh: Option<Res<ScanMesh>>,
+) -> bevy::ecs::error::Result {
+    let ctx = contexts.ctx_mut()?;
+    let validations = compute_validations(&cached_sdf, &cap_planes, &cavity, &layers);
+    let scan_loaded = scan_mesh.is_some();
+    let centerline_available = centerline.points_m.len() >= 2;
+    egui::SidePanel::right("cf-sim-research-panels")
+        .resizable(false)
+        .default_width(320.0)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    render_scan_info_section(ui, &info, &mut scan_visible);
+                    render_cavity_section(ui, &mut cavity);
+                    render_layers_section(ui, &mut layers, &cavity, &validations);
+                    render_validations_section(ui, &validations);
+                    ui.separator();
+                    clip_plane::render_clip_plane_section(
+                        ui,
+                        &mut clip_state,
+                        centerline_available,
+                    );
+                    ui.separator();
+                    insertion_sim_ui::render_insertion_sim_section(ui, &mut sim_state, scan_loaded);
+                });
+        });
+    Ok(())
+}
+
+fn render_scan_info_section(
+    ui: &mut egui::Ui,
+    info: &ScanInfo,
+    scan_visible: &mut ScanMeshVisible,
+) {
+    egui::CollapsingHeader::new("Scan Info")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.checkbox(&mut scan_visible.0, "Show scan mesh");
+            ui.label(format!("File:  {}", info.file_label));
+            ui.label(format!("Vertices: {}", human_count(info.vertex_count)));
+            ui.label(format!("Faces: {}", human_count(info.face_count)));
+            ui.label("Raw AABB:");
+            ui.label(format!("  W: {:.1} mm", info.aabb_mm_extents[0]));
+            ui.label(format!("  D: {:.1} mm", info.aabb_mm_extents[1]));
+            ui.label(format!("  H: {:.1} mm", info.aabb_mm_extents[2]));
+            ui.label(format!("Diagonal: {:.1} mm", info.bbox_diagonal_m * 1000.0));
+            ui.separator();
+            if info.centerline_point_count == 0 {
+                ui.label("Centerline: not available");
+                ui.label("  Reopen the scan in cf-scan-prep,");
+                ui.label("  apply [Cap] + centerline,");
+                ui.label("  and re-save to enable.");
+            } else {
+                ui.label(format!(
+                    "Centerline: {} points",
+                    info.centerline_point_count
+                ));
+                ui.label(format!(
+                    "  arc length: {:.1} mm",
+                    info.centerline_arc_length_m * 1000.0
+                ));
+            }
+        });
+}
+
+// Phase 3 — the save-related surface is intentionally absent from
+// this binary (Q5.4 default lean: sim viewer is read-only WRT disk):
+// `SaveState` + `SaveMessage` + `render_save_open_section` +
+// `render_panel_stubs` + the `ScanFilePath` resource were all
+// stripped during the cf-device-design copy. The
+// `cf_device_types::design_toml` loader still ships
+// `build_design_toml` + `save_design_toml`, so a future slice could
+// reintroduce the panel without re-lifting any infrastructure.
+
+/// egui color for a [`BudgetStatus`] — green / amber / red.
+fn budget_color(status: BudgetStatus) -> egui::Color32 {
+    match status {
+        BudgetStatus::Green => egui::Color32::from_rgb(90, 200, 110),
+        BudgetStatus::Yellow => egui::Color32::from_rgb(230, 180, 60),
+        BudgetStatus::Red => egui::Color32::from_rgb(225, 90, 80),
+    }
+}
+
+/// Render the Validations egui section — per-layer pour volume +
+/// mass graded against the 2 lb single-pour budget, plus the cavity
+/// self-intersection and minimum-castable-wall checks.
+///
+/// All figures are derived; the section is read-only. The headline
+/// color is the worst per-layer budget status. See
+/// [`compute_validations`] for the geometry behind each number.
+fn render_validations_section(ui: &mut egui::Ui, v: &DeviceValidations) {
+    egui::CollapsingHeader::new("Validations")
+        .default_open(true)
+        .show(ui, |ui| {
+            let n = v.layers.len();
+            ui.colored_label(
+                budget_color(v.worst_status),
+                format!(
+                    "Pour mass — budget {:.0} g / 2 lb per pour",
+                    MASS_BUDGET_KG * 1000.0,
+                ),
+            );
+            for lv in &v.layers {
+                ui.colored_label(
+                    budget_color(lv.status),
+                    format!(
+                        "  Layer {} ({}): {:.1} cm³ · {:.1} g",
+                        lv.layer_index,
+                        layer_position_label(lv.layer_index, n),
+                        lv.shell_volume_m3 * 1.0e6,
+                        lv.pour_mass_kg * 1000.0,
+                    ),
+                );
+            }
+            ui.label(format!(
+                "Total: {:.1} g across {} pour{}",
+                v.total_mass_kg * 1000.0,
+                n,
+                if n == 1 { "" } else { "s" },
+            ));
+
+            ui.separator();
+
+            // Cavity self-intersection.
+            if v.cavity_collapse_inset_m.is_infinite() {
+                ui.label("Cavity: n/a (no centerline)");
+            } else if v.cavity_self_intersects {
+                ui.colored_label(
+                    budget_color(BudgetStatus::Red),
+                    format!(
+                        "Cavity self-intersects (inset ≥ {:.1} mm)",
+                        v.cavity_collapse_inset_m * 1000.0,
+                    ),
+                );
+            } else {
+                ui.colored_label(
+                    budget_color(BudgetStatus::Green),
+                    format!(
+                        "Cavity: OK (collapses at inset ≥ {:.1} mm)",
+                        v.cavity_collapse_inset_m * 1000.0,
+                    ),
+                );
+            }
+
+            // Minimum castable wall thickness.
+            if v.min_wall_ok {
+                ui.colored_label(
+                    budget_color(BudgetStatus::Green),
+                    format!(
+                        "Min wall: OK (every layer ≥ {:.1} mm)",
+                        MIN_CASTABLE_THICKNESS_M * 1000.0,
+                    ),
+                );
+            } else {
+                for lv in v.layers.iter().filter(|lv| !lv.thickness_castable) {
+                    ui.colored_label(
+                        budget_color(BudgetStatus::Red),
+                        format!(
+                            "Layer {} below {:.1} mm castability floor",
+                            lv.layer_index,
+                            MIN_CASTABLE_THICKNESS_M * 1000.0,
+                        ),
+                    );
+                }
+            }
+        });
+}
+
+/// Truncate large counts to k / M suffixes for compact panel
+/// display. Matches cf-scan-prep's formatter.
+fn human_count(n: usize) -> String {
+    if n >= 1_000_000 {
+        #[allow(clippy::cast_precision_loss)]
+        let m = n as f64 / 1_000_000.0;
+        format!("{m:.2}M")
+    } else if n >= 1_000 {
+        #[allow(clippy::cast_precision_loss)]
+        let k = n as f64 / 1_000.0;
+        format!("{k:.1}k")
+    } else {
+        n.to_string()
+    }
+}
+
+fn run_render_app(
+    scan_mesh: IndexedMesh,
+    scan_info: ScanInfo,
+    centerline_points: Vec<Point3<f64>>,
+    loaded_design: Option<design_toml::DesignToml>,
+    cached_scan_sdf: sdf_layers::CachedScanSdf,
+    cap_planes: sdf_layers::CapPlanes,
+) {
+    #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
+    let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
+    let render_scale = compute_render_scale(raw_diagonal);
+    // Phase 3 — start from defaults, then apply the loaded design if
+    // any. `apply_design_toml` errors only on catalog lookup, already
+    // gated by `validate_design_toml` at `load_design_toml`. A failure
+    // here means the catalog regressed between load and apply — fall
+    // back to defaults + log, don't crash the GUI.
+    let mut cavity = CavityState::default_for_scan();
+    let mut layers = LayersState::default_for_scan();
+    if let Some(d) = &loaded_design {
+        if let Err(e) = design_toml::apply_design_toml(d, &mut cavity, &mut layers) {
+            eprintln!(
+                "warning: apply_design_toml failed on a validated load ({e:#}); \
+                 starting with defaults"
+            );
+            cavity = CavityState::default_for_scan();
+            layers = LayersState::default_for_scan();
+        }
+    }
+
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "cf-sim-research".into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(EguiPlugin::default())
+        .add_plugins(OrbitCameraPlugin)
+        .add_plugins(clip_plane::ClipPlanePlugin)
+        .add_plugins(insertion_sim_ui::InsertionSimPlugin)
+        .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
+        .insert_resource(DEVICE_UP_AXIS)
+        .insert_resource(RenderScale(render_scale))
+        .insert_resource(ScanMesh(scan_mesh))
+        .insert_resource(scan_info)
+        .insert_resource(Centerline {
+            points_m: centerline_points,
+        })
+        .insert_resource(cached_scan_sdf)
+        .insert_resource(cap_planes)
+        .insert_resource(cavity)
+        .insert_resource(layers)
+        .insert_resource(ScanMeshVisible::default())
+        .add_systems(
+            Startup,
+            (setup_render_scene, spawn_cavity_mesh, spawn_intruder_mesh).chain(),
+        )
+        .add_systems(
+            Update,
+            (
+                block_orbit_input_when_over_egui.before(orbit_camera_input),
+                draw_reference_overlays,
+                update_cavity_mesh,
+                update_layer_meshes,
+                update_intruder_mesh,
+                apply_scan_mesh_visibility,
+                exit_on_esc,
+            ),
+        )
+        .add_systems(EguiPrimaryContextPass, sim_research_panel)
+        .run();
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    // `unwrap()` + `expect()` are denied at the crate level for
+    // production safety; allow them inside tests so assertions can
+    // pull values out of `Option` / `Result` returns without
+    // multi-line `match` ceremony.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    fn unit_cube_mesh() -> IndexedMesh {
+        let mut m = IndexedMesh::new();
+        let h = 0.05;
+        for (x, y, z) in [
+            (-h, -h, -h),
+            (h, -h, -h),
+            (h, h, -h),
+            (-h, h, -h),
+            (-h, -h, h),
+            (h, -h, h),
+            (h, h, h),
+            (-h, h, h),
+        ] {
+            m.vertices.push(Point3::new(x, y, z));
+        }
+        for f in [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ] {
+            m.faces.push(f);
+        }
+        m
+    }
+
+    #[test]
+    fn parses_prep_toml_centerline_when_present() {
+        let text = r#"
+[scan_prep]
+source_stl = "raw.stl"
+tool_version = "0.0.0-test"
+
+[centerline]
+points_m = [
+    [0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.1],
+    [0.0, 0.0, 0.2],
+]
+algorithm = "cross_section_centroids"
+"#;
+        let pts = parse_centerline(text).unwrap();
+        assert_eq!(pts.len(), 3);
+        assert!((pts[2].z - 0.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parse_centerline_absent_block_returns_empty() {
+        let text = r#"
+[scan_prep]
+source_stl = "raw.stl"
+"#;
+        let pts = parse_centerline(text).unwrap();
+        assert!(pts.is_empty());
+    }
+
+    #[test]
+    fn parse_centerline_extra_fields_tolerated() {
+        // Forward-compatibility: schema additions in cf-scan-prep
+        // don't break cf-sim-research's loader.
+        let text = r#"
+[scan_prep]
+source_stl = "raw.stl"
+future_field = 42
+
+[centerline]
+points_m = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+algorithm = "cross_section_centroids"
+another_future_field = "foo"
+"#;
+        let pts = parse_centerline(text).unwrap();
+        assert_eq!(pts.len(), 2);
+    }
+
+    // parse_cap_planes_* tests lifted to cf-cap-planes alongside the
+    // parser itself; see `design/cf-cap-planes/src/lib.rs`'s test module.
+
+    #[test]
+    fn centerline_arc_length_sums_segment_distances() {
+        let pts = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 1.0),
+        ];
+        let arc = centerline_arc_length_m(&pts);
+        assert!((arc - 3.0).abs() < 1e-12, "arc = {arc}");
+    }
+
+    #[test]
+    fn centerline_arc_length_zero_for_short_polylines() {
+        assert_eq!(centerline_arc_length_m(&[]), 0.0);
+        assert_eq!(centerline_arc_length_m(&[Point3::origin()]), 0.0);
+    }
+
+    #[test]
+    fn build_scan_info_populates_all_fields() {
+        let mesh = unit_cube_mesh();
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.05)];
+        let info = build_scan_info(Path::new("/scans/test.cleaned.stl"), &mesh, &centerline);
+        assert_eq!(info.file_label, "test.cleaned.stl");
+        assert_eq!(info.vertex_count, 8);
+        assert_eq!(info.face_count, 12);
+        assert!((info.aabb_mm_extents[0] - 100.0).abs() < 1e-9);
+        assert_eq!(info.centerline_point_count, 2);
+        assert!((info.centerline_arc_length_m - 0.05).abs() < 1e-12);
+    }
+
+    #[test]
+    fn resolve_prep_toml_strips_cleaned_suffix_from_stem() {
+        let cli = Cli {
+            cleaned_stl: PathBuf::from("/scans/sock.cleaned.stl"),
+            design: None,
+            prep_toml: None,
+        };
+        let p = resolve_prep_toml_path(&cli);
+        assert_eq!(p, Some(PathBuf::from("/scans/sock.prep.toml")));
+    }
+
+    #[test]
+    fn resolve_prep_toml_honors_explicit_flag() {
+        let cli = Cli {
+            cleaned_stl: PathBuf::from("/scans/sock.cleaned.stl"),
+            design: None,
+            prep_toml: Some(PathBuf::from("/elsewhere/custom.prep.toml")),
+        };
+        let p = resolve_prep_toml_path(&cli);
+        assert_eq!(p, Some(PathBuf::from("/elsewhere/custom.prep.toml")));
+    }
+
+    #[test]
+    fn resolve_prep_toml_handles_stem_without_cleaned_suffix() {
+        // Defensive — user supplies a non-cleaned STL; we still try
+        // the `<stem>.prep.toml` sibling.
+        let cli = Cli {
+            cleaned_stl: PathBuf::from("/scans/raw.stl"),
+            design: None,
+            prep_toml: None,
+        };
+        let p = resolve_prep_toml_path(&cli);
+        assert_eq!(p, Some(PathBuf::from("/scans/raw.prep.toml")));
+    }
+
+    #[test]
+    fn human_count_formats_orders_of_magnitude() {
+        assert_eq!(human_count(0), "0");
+        assert_eq!(human_count(500), "500");
+        assert_eq!(human_count(1_500), "1.5k");
+        assert_eq!(human_count(200_000), "200.0k");
+        assert_eq!(human_count(3_350_000), "3.35M");
+    }
+
+    #[test]
+    fn device_up_axis_is_plus_z() {
+        // Pinned: every cast tool in CortenForge uses +Z up. Drifting
+        // away would mismatch cf-scan-prep and cf-cast.
+        assert_eq!(DEVICE_UP_AXIS, UpAxis::PlusZ);
+    }
+
+    fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
+        (a - b).abs() < eps
+    }
+
+    // ----- Slice 4 v1 — cavity state -------------------------------
+
+    #[test]
+    fn cavity_default_inset_is_three_mm() {
+        // 3 mm = minimum-acceptable buildable design (≥ Ecoflex's
+        // ~2 mm castability threshold + ~10 % radial pre-strain).
+        let state = CavityState::default_for_scan();
+        assert!(approx_eq(state.inset_m, 0.003, 1e-12));
+    }
+
+    #[test]
+    fn cavity_inset_slider_range_zero_to_eight_mm() {
+        // F3 recon B H4-2-C ship (2026-05-19 LATE-NIGHT) — cap
+        // raised from C′.a's pinned 5 mm to 8 mm after H4-2-C
+        // dropped the family-uniform compressive floor at
+        // `MaterialField::sample_yeoh` time per
+        // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.4.
+        // Cavity 3 + 5 mm user-verified 16/16 visual gate matches
+        // pre-H4 baseline (λ_min = 0.37 reached at cavity 5 mm
+        // step without panicking); 6 + 7 + 8 mm gates unlocked
+        // by the cap raise for user verification.
+        //
+        // Pre-H4-2-C cap history: 5 mm from C′.a 2026-05-18
+        // LATE-EVENING (ε-bisection win); was 6 mm briefly
+        // (E.b.3 sweep scaffolding 2026-05-19, reverted same-day
+        // at E.b.4 case-E falsification); was 4 mm (F3 recon A
+        // outcome B), 8 mm briefly (C.2 sweep + F4.1 + H4.3
+        // scaffolding), 15 mm (pre-F4.1) historically.
+        //
+        // The numeric cap reads from `CAVITY_INSET_SLIDER_MAX_M` so
+        // this test, the slider's upper bound, and the egui label
+        // in `render_cavity_section` are all wired to one source.
+        // Binding-constraint attribution (H4-2-C asymmetric one-sided
+        // bound) stays doc-only — if it changes, mirror the rationale
+        // on `CavityState::inset_slider_range_m`'s docstring + the
+        // egui label.
+        let (min_m, max_m) = CavityState::inset_slider_range_m();
+        assert!(approx_eq(min_m, 0.0, 1e-12));
+        assert!(approx_eq(
+            max_m,
+            cf_device_types::CAVITY_INSET_SLIDER_MAX_M,
+            1e-12,
+        ));
+        // Pin the const itself at 8 mm so a future "what's a
+        // workshop-reasonable cap?" edit notices it has to argue
+        // the H4-2-C rationale above before flipping.
+        assert!(approx_eq(
+            cf_device_types::CAVITY_INSET_SLIDER_MAX_M,
+            0.008,
+            1e-12,
+        ));
+    }
+
+    #[test]
+    fn default_surfaces_are_visible() {
+        // Sanity: launching the app shows the cavity + every
+        // default layer. If we ever flip a default to "hidden,"
+        // the user would see a near-empty viewport on launch —
+        // worth a regression pin.
+        let cv = CavityState::default_for_scan();
+        let ls = LayersState::default_for_scan();
+        assert!(cv.visible);
+        assert!(ls.layers.iter().all(|l| l.visible));
+    }
+
+    // ----- Slice 5 v1 — layers state -------------------------------
+
+    #[test]
+    fn layers_default_is_single_visible_ecoflex_layer() {
+        let layers = LayersState::default_for_scan();
+        assert_eq!(layers.layers.len(), 1);
+        assert_eq!(layers.layers[0].material_anchor_key, "ECOFLEX_00_30");
+        assert!(approx_eq(layers.layers[0].thickness_m, 0.005, 1e-12));
+        assert!(layers.layers[0].visible);
+    }
+
+    #[test]
+    fn layer_count_max_is_six() {
+        // Workshop-cap pin: more than 6 layers makes the panel
+        // unwieldy and the per-frame per-layer surface-mesh
+        // regeneration cost climb. Pinning so a future "let me have
+        // 100 layers" accident is caught.
+        assert_eq!(LAYER_COUNT_MAX, 6);
+    }
+
+    #[test]
+    fn layer_material_catalog_covers_all_silicone_anchor_keys() {
+        // Mirrors cf-cast's cure-table anchor keys; verify count +
+        // each entry name to catch typos / drift from cf-cast's
+        // table. If cf-cast ever adds / removes a silicone, this
+        // test fails and we update both sides.
+        let keys: Vec<&str> = LAYER_MATERIALS.iter().map(|(k, _, _)| *k).collect();
+        assert_eq!(keys.len(), 8);
+        assert!(keys.contains(&"ECOFLEX_00_10"));
+        assert!(keys.contains(&"ECOFLEX_00_20"));
+        assert!(keys.contains(&"ECOFLEX_00_30"));
+        assert!(keys.contains(&"ECOFLEX_00_50"));
+        assert!(keys.contains(&"DRAGON_SKIN_10A"));
+        assert!(keys.contains(&"DRAGON_SKIN_15"));
+        assert!(keys.contains(&"DRAGON_SKIN_20A"));
+        assert!(keys.contains(&"DRAGON_SKIN_30A"));
+    }
+
+    #[test]
+    fn layer_material_densities_mirror_silicone_table() {
+        // Densities mirror `sim-soft`'s `silicone_table.rs` anchor
+        // values by-name. If sim-soft revises an anchor density, this
+        // pin fails and we update the catalog to match.
+        assert!(approx_eq(material_density("ECOFLEX_00_10"), 1040.0, 1e-9));
+        assert!(approx_eq(material_density("ECOFLEX_00_20"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("ECOFLEX_00_30"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("ECOFLEX_00_50"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("DRAGON_SKIN_10A"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("DRAGON_SKIN_15"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("DRAGON_SKIN_20A"), 1080.0, 1e-9));
+        assert!(approx_eq(material_density("DRAGON_SKIN_30A"), 1080.0, 1e-9));
+        // Every catalog density lands in the silicone band.
+        for (key, _, density) in LAYER_MATERIALS {
+            assert!(
+                (1040.0..=1080.0).contains(density),
+                "{key}: density {density} kg/m³ outside silicone band",
+            );
+        }
+        // Unknown key → defensive median fallback.
+        assert!(approx_eq(material_density("NOT_A_REAL_KEY"), 1070.0, 1e-9));
+    }
+
+    #[test]
+    fn layer_position_labels() {
+        assert_eq!(layer_position_label(0, 1), "single");
+        assert_eq!(layer_position_label(0, 3), "innermost");
+        assert_eq!(layer_position_label(1, 3), "middle");
+        assert_eq!(layer_position_label(2, 3), "outermost");
+        assert_eq!(layer_position_label(5, 6), "outermost");
+    }
+
+    #[test]
+    fn layer_thickness_slider_range_one_to_twenty_mm() {
+        let (min_m, max_m) = LayerSpec::thickness_slider_range_m();
+        assert!(approx_eq(min_m, 0.001, 1e-12));
+        assert!(approx_eq(max_m, 0.020, 1e-12));
+    }
+
+    #[test]
+    fn default_scan_mesh_visible() {
+        // Sanity pin: the scan mesh is shown by default. The user
+        // can hide it via the Scan Info panel checkbox to inspect
+        // the cavity, which sits INSIDE the scan and is occluded by
+        // it when both are drawn.
+        assert!(ScanMeshVisible::default().0);
+    }
+
+    /// `Aabb` re-export from `mesh_types` (transitive from
+    /// `cf_geometry`) is the canonical aabb type the suite consumes
+    /// for the scan AABB readouts + render-scale sizing. Pin
+    /// compile-time visibility so a future workspace dep shuffle
+    /// doesn't silently break the loader.
+    #[test]
+    fn aabb_canonical_type_in_scope() {
+        use mesh_types::Aabb;
+        let a = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
+        assert!((a.diagonal() - (3.0_f64).sqrt()).abs() < 1e-12);
+    }
+
+    // ----- Slice 6 — geometric validations -------------------------
+
+    #[test]
+    fn signed_volume_recovers_unit_cube_volume() {
+        // The unit cube fixture is 0.1 m on a side → 1e-3 m³.
+        // Divergence-theorem volume on the cube mesh directly (no
+        // displacement) recovers the analytical volume — positive
+        // because cf-scan-prep meshes wind CCW / outward (the fixture
+        // mirrors that convention).
+        let vol = signed_volume_m3(&unit_cube_mesh());
+        assert!(
+            approx_eq(vol, 1.0e-3, 1e-9),
+            "unit-cube signed volume = {vol}, expected 1e-3",
+        );
+    }
+
+    #[test]
+    fn signed_volume_closed_mesh_translation_invariant() {
+        // For a CLOSED mesh the divergence integral is independent of
+        // the choice of integration origin — internal tetrahedra
+        // cancel. The pinned-floor scope-C arc's sub-leaf 3 dropped
+        // the `origin` parameter; this test pins the equivalent
+        // property by translating the mesh in space and confirming
+        // the volume stays bit-identical.
+        let mesh = unit_cube_mesh();
+        let vol_orig = signed_volume_m3(&mesh);
+        let shifted = IndexedMesh {
+            vertices: mesh
+                .vertices
+                .iter()
+                .map(|v| Point3::new(v.x + 1.0, v.y + 2.0, v.z + 3.0))
+                .collect(),
+            faces: mesh.faces.clone(),
+        };
+        let vol_shifted = signed_volume_m3(&shifted);
+        assert!(
+            approx_eq(vol_orig, vol_shifted, 1e-9),
+            "closed-mesh volume must be translation-invariant: \
+             orig {vol_orig} vs shifted {vol_shifted}",
+        );
+    }
+
+    // Three primary_cap_origin_* tests + two open-mesh
+    // signed_volume_* tests were deleted alongside the
+    // primary_cap_origin function + the origin parameter (sub-leaf 3).
+    // Closed pinned-floor shells (sub-leaf 2) are origin-invariant by
+    // the divergence theorem, so the cap-centroid-origin trick the
+    // cavity-mouth arc shipped is no longer needed.
+
+    #[test]
+    fn signed_volume_grows_with_outward_offset_extracted_mesh() {
+        // Extract two iso surfaces from the same SDF cache (small
+        // cube fixture, off-grid margin to dodge the mesh-sdf
+        // sign-tie at face planes — same posture as sdf_layers'
+        // own tests). The outward iso should enclose more volume
+        // than the inward iso. This is the property
+        // `compute_validations` relies on for monotonic shell
+        // volumes.
+        let cube = unit_cube_mesh();
+        let cache =
+            sdf_layers::build_cached_scan_sdf(&cube, &[], 0.005, 0.043).expect("build cache");
+        let inner = sdf_layers::extract_layer_surface(&cache, &[], -0.005);
+        let outer = sdf_layers::extract_layer_surface(&cache, &[], 0.005);
+        let v_inner = signed_volume_m3(&inner);
+        let v_outer = signed_volume_m3(&outer);
+        assert!(
+            v_inner < v_outer,
+            "inner ({v_inner}) should enclose less volume than outer ({v_outer})",
+        );
+    }
+
+    #[test]
+    fn grade_budget_thresholds() {
+        // Green below 0.8× budget, yellow in [0.8×, 1.0×], red above.
+        assert_eq!(grade_budget(0.1), BudgetStatus::Green);
+        assert_eq!(grade_budget(MASS_BUDGET_KG * 0.5), BudgetStatus::Green);
+        assert_eq!(grade_budget(MASS_BUDGET_KG * 0.8), BudgetStatus::Yellow);
+        assert_eq!(grade_budget(MASS_BUDGET_KG * 0.99), BudgetStatus::Yellow);
+        assert_eq!(grade_budget(MASS_BUDGET_KG), BudgetStatus::Yellow);
+        assert_eq!(grade_budget(MASS_BUDGET_KG * 1.01), BudgetStatus::Red);
+    }
+
+    #[test]
+    fn budget_status_orders_by_severity() {
+        // `worst_status` relies on the derived `Ord` matching the
+        // severity order Green < Yellow < Red.
+        assert!(BudgetStatus::Green < BudgetStatus::Yellow);
+        assert!(BudgetStatus::Yellow < BudgetStatus::Red);
+        assert_eq!(
+            [BudgetStatus::Green, BudgetStatus::Red, BudgetStatus::Yellow]
+                .into_iter()
+                .max(),
+            Some(BudgetStatus::Red),
+        );
+    }
+
+    /// Build a cached scan SDF from the unit-cube fixture suitable
+    /// for the slice-6 validation tests. Cell pitch 5 mm, off-grid
+    /// margin (`MARGIN_OFFSET_M` defined inline at 0.043 m) to dodge
+    /// `mesh-sdf::compute_sign`'s tie at axis-aligned grid points.
+    fn cube_cached_sdf() -> sdf_layers::CachedScanSdf {
+        sdf_layers::build_cached_scan_sdf(&unit_cube_mesh(), &[], 0.005, 0.043)
+            .expect("build cached scan SDF for unit cube fixture")
+    }
+
+    #[test]
+    fn compute_validations_one_entry_per_layer_with_positive_shells() {
+        // Two-layer stack on the cube SDF: one validation per layer,
+        // every shell volume + mass strictly positive, and the total
+        // mass is the sum of the per-layer pour masses.
+        let cache = cube_cached_sdf();
+        let cavity = CavityState {
+            inset_m: 0.003,
+            visible: true,
+        };
+        let layers = LayersState {
+            layers: vec![
+                LayerSpec {
+                    thickness_m: 0.005,
+                    material_anchor_key: "ECOFLEX_00_30",
+                    slacker_fraction: 0.0,
+                    visible: true,
+                },
+                LayerSpec {
+                    thickness_m: 0.004,
+                    material_anchor_key: "DRAGON_SKIN_20A",
+                    slacker_fraction: 0.0,
+                    visible: true,
+                },
+            ],
+        };
+        let v = compute_validations(&cache, &sdf_layers::CapPlanes::default(), &cavity, &layers);
+        assert_eq!(v.layers.len(), 2);
+        for lv in &v.layers {
+            assert!(lv.shell_volume_m3 > 0.0, "shell volume must be positive");
+            assert!(lv.pour_mass_kg > 0.0, "pour mass must be positive");
+        }
+        let summed: f64 = v.layers.iter().map(|lv| lv.pour_mass_kg).sum();
+        assert!(
+            approx_eq(v.total_mass_kg, summed, 1e-12),
+            "total {} != sum of layers {}",
+            v.total_mass_kg,
+            summed,
+        );
+        // Pour mass uses the per-layer material density.
+        let l1 = &v.layers[1];
+        assert!(approx_eq(
+            l1.pour_mass_kg,
+            l1.shell_volume_m3 * material_density("DRAGON_SKIN_20A"),
+            1e-12,
+        ));
+    }
+
+    #[test]
+    fn compute_validations_flags_cavity_self_intersection() {
+        // Below the cached SDF's max-interior-depth the cavity is
+        // fine; at or above it the cavity MC mesh is empty and the
+        // self-intersection flag fires. SDF analog of the prior
+        // `proxy.min_radial_distance_m` check.
+        let cache = cube_cached_sdf();
+        let collapse = -cache.min_sdf_value;
+        assert!(collapse.is_finite() && collapse > 0.0);
+        let layers = LayersState::default_for_scan();
+
+        let safe = compute_validations(
+            &cache,
+            &sdf_layers::CapPlanes::default(),
+            &CavityState {
+                inset_m: collapse * 0.5,
+                visible: true,
+            },
+            &layers,
+        );
+        assert!(!safe.cavity_self_intersects);
+        assert!(approx_eq(safe.cavity_collapse_inset_m, collapse, 1e-12));
+
+        let collapsed = compute_validations(
+            &cache,
+            &sdf_layers::CapPlanes::default(),
+            &CavityState {
+                inset_m: collapse * 1.5,
+                visible: true,
+            },
+            &layers,
+        );
+        assert!(collapsed.cavity_self_intersects);
+    }
+
+    #[test]
+    fn compute_validations_min_wall_flags_sub_floor_layers() {
+        let cache = cube_cached_sdf();
+        let cavity = CavityState {
+            inset_m: 0.003,
+            visible: true,
+        };
+        // A 1 mm layer is below the 2 mm castability floor.
+        let thin = LayersState {
+            layers: vec![LayerSpec {
+                thickness_m: 0.001,
+                material_anchor_key: "ECOFLEX_00_30",
+                slacker_fraction: 0.0,
+                visible: true,
+            }],
+        };
+        let v_thin = compute_validations(&cache, &sdf_layers::CapPlanes::default(), &cavity, &thin);
+        assert!(!v_thin.min_wall_ok);
+        assert!(!v_thin.layers[0].thickness_castable);
+
+        // A 3 mm layer clears the floor.
+        let thick = LayersState {
+            layers: vec![LayerSpec {
+                thickness_m: 0.003,
+                material_anchor_key: "ECOFLEX_00_30",
+                slacker_fraction: 0.0,
+                visible: true,
+            }],
+        };
+        let v_thick =
+            compute_validations(&cache, &sdf_layers::CapPlanes::default(), &cavity, &thick);
+        assert!(v_thick.min_wall_ok);
+        assert!(v_thick.layers[0].thickness_castable);
+    }
+
+    #[test]
+    fn compute_validations_worst_status_is_the_max_layer_status() {
+        // `worst_status` must equal the most-severe per-layer grade.
+        let cache = cube_cached_sdf();
+        let cavity = CavityState {
+            inset_m: 0.003,
+            visible: true,
+        };
+        let layers = LayersState {
+            layers: vec![
+                LayerSpec {
+                    thickness_m: 0.005,
+                    material_anchor_key: "ECOFLEX_00_30",
+                    slacker_fraction: 0.0,
+                    visible: true,
+                },
+                LayerSpec {
+                    thickness_m: 0.012,
+                    material_anchor_key: "DRAGON_SKIN_30A",
+                    slacker_fraction: 0.0,
+                    visible: true,
+                },
+            ],
+        };
+        let v = compute_validations(&cache, &sdf_layers::CapPlanes::default(), &cavity, &layers);
+        let expected = v
+            .layers
+            .iter()
+            .map(|lv| lv.status)
+            .max()
+            .unwrap_or(BudgetStatus::Green);
+        assert_eq!(v.worst_status, expected);
+    }
+
+    #[test]
+    fn mass_budget_is_two_pounds_to_kg_exact() {
+        // Mirrors cf-cast's `DEFAULT_MASS_BUDGET_KG` by-value: 2 lb
+        // via the NIST exact conversion 1 lb = 0.453_592_37 kg.
+        let lb_to_kg = 0.453_592_37_f64;
+        assert!((MASS_BUDGET_KG - (lb_to_kg + lb_to_kg)).abs() < f64::EPSILON);
+    }
+
+    // ----- Slice 6.5 — per-layer Slacker recipe --------------------
+
+    #[test]
+    fn default_layer_has_no_slacker() {
+        // A fresh layer is plain base silicone — no Slacker.
+        let layers = LayersState::default_for_scan();
+        assert!(approx_eq(layers.layers[0].slacker_fraction, 0.0, 1e-12));
+    }
+
+    #[test]
+    fn slacker_recipe_grams_splits_pour_mass_by_ratio() {
+        // No Slacker: the pour is pure base silicone, 1:1 A:B.
+        let (ab, slk) = slacker_recipe_grams(0.200, 0.0);
+        assert!(approx_eq(ab, 100.0, 1e-9), "part A/B = {ab}");
+        assert!(approx_eq(slk, 0.0, 1e-9), "slacker = {slk}");
+
+        // 50 % Slacker on a 300 g pour → 100 g A + 100 g B + 100 g
+        // Slacker (the TB's "100A + 100B + 100 Slacker" row).
+        let (ab, slk) = slacker_recipe_grams(0.300, 0.50);
+        assert!(approx_eq(ab, 100.0, 1e-9), "part A/B = {ab}");
+        assert!(approx_eq(slk, 100.0, 1e-9), "slacker = {slk}");
+
+        // 25 % Slacker: A + B + Slacker must sum back to the pour
+        // mass, and Slacker must be 0.25 × the base A+B mass.
+        let (ab, slk) = slacker_recipe_grams(0.250, 0.25);
+        assert!(approx_eq(2.0 * ab + slk, 250.0, 1e-9));
+        assert!(approx_eq(slk, 0.25 * 2.0 * ab, 1e-9));
+    }
+
+    #[test]
+    fn slacker_point_label_distinguishes_native_from_slacker_points() {
+        // The native (0.0) point reads "No Slacker"; a Slacker
+        // point carries its percentage, hardness, and tack.
+        let slacker::Support::Curve(curve) = slacker::support("ECOFLEX_00_30") else {
+            unreachable!("Ecoflex 00-30 has a Slacker curve");
+        };
+        assert_eq!(slacker_point_label(&curve[0]), "No Slacker — Shore 00-30",);
+        assert_eq!(
+            slacker_point_label(&curve[1]),
+            "+25% Slacker — Shore 000-40 (slight-to-very tack)",
+        );
+    }
+
+    // ─── SL.4 — pose_to_bevy_transform ────────────────────────────────
+    //
+    // Round-tripping the device's `UpAxis::PlusZ` swap is the main
+    // load-bearing path (DEVICE_UP_AXIS = PlusZ); the +Y identity case
+    // is a control for the rotation match arm; the rotation-about-
+    // physics-Z case mirrors `sim/L1/bevy/src/convert.rs`'s
+    // `rotation_around_physics_z_becomes_negative_rotation_around_bevy_y`
+    // test (workspace canonical; SL.4 helper is the cf-sim-research
+    // local mirror that switches on `UpAxis`).
+
+    #[test]
+    fn pose_to_bevy_transform_plus_z_swaps_y_and_z_and_keeps_identity_rotation() {
+        let pose = Isometry3::translation(1.0, 2.0, 3.0);
+        let t = pose_to_bevy_transform(pose, UpAxis::PlusZ, 0.5);
+        // (1, 2, 3) physics → (1, 3, 2) Bevy → × 0.5 scale.
+        assert!((t.translation.x - 0.5).abs() < 1e-6);
+        assert!((t.translation.y - 1.5).abs() < 1e-6);
+        assert!((t.translation.z - 1.0).abs() < 1e-6);
+        // Identity rotation stays identity through the scalar swap.
+        assert!(t.rotation.x.abs() < 1e-6);
+        assert!(t.rotation.y.abs() < 1e-6);
+        assert!(t.rotation.z.abs() < 1e-6);
+        assert!((t.rotation.w - 1.0).abs() < 1e-6);
+        // Uniform scale matches `ScanMeshEntity`.
+        assert!((t.scale.x - 0.5).abs() < 1e-6);
+        assert!((t.scale.y - 0.5).abs() < 1e-6);
+        assert!((t.scale.z - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pose_to_bevy_transform_plus_y_is_identity_copy() {
+        // PlusY is the identity swap — translation and rotation copy
+        // through verbatim (modulo f64 → f32).
+        let q = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(nalgebra::Vector3::new(1.0, 0.0, 0.0)),
+            std::f64::consts::FRAC_PI_3,
+        );
+        let pose = Isometry3::from_parts(nalgebra::Translation3::new(1.0, 2.0, 3.0), q);
+        let t = pose_to_bevy_transform(pose, UpAxis::PlusY, 1.0);
+        assert!((t.translation.x - 1.0).abs() < 1e-6);
+        assert!((t.translation.y - 2.0).abs() < 1e-6);
+        assert!((t.translation.z - 3.0).abs() < 1e-6);
+        #[allow(clippy::cast_possible_truncation)]
+        let expected = Quat::from_xyzw(q.i as f32, q.j as f32, q.k as f32, q.w as f32);
+        assert!(t.rotation.dot(expected).abs() > 0.999);
+    }
+
+    #[test]
+    fn pose_to_bevy_transform_plus_z_negates_rotation_about_physics_z() {
+        // Physics +90° about +Z (the up axis under PlusZ) → Bevy -90°
+        // about +Y. The Y↔Z swap is a reflection (det = -1), which
+        // flips the handedness of the swapped plane and inverts the
+        // rotation sense. Mirrors `sim/L1/bevy/src/convert.rs`'s
+        // `rotation_around_physics_z_becomes_negative_rotation_around_bevy_y`.
+        let q = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(nalgebra::Vector3::z()),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let pose = Isometry3::from_parts(nalgebra::Translation3::identity(), q);
+        let t = pose_to_bevy_transform(pose, UpAxis::PlusZ, 1.0);
+        let expected = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        assert!(
+            t.rotation.dot(expected).abs() > 0.999,
+            "physics +90° Z → bevy -90° Y; got {:?}, expected {expected:?}",
+            t.rotation,
+        );
+    }
+
+    #[test]
+    fn pose_to_bevy_transform_plus_x_negates_rotation_about_physics_x() {
+        // Symmetric sibling of the PlusZ rotation test. Under PlusX,
+        // physics +X is the up axis; the X↔Y swap is again a det = -1
+        // reflection, so physics +90° about +X → Bevy -90° about +Y.
+        let q = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(nalgebra::Vector3::x()),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let pose = Isometry3::from_parts(nalgebra::Translation3::identity(), q);
+        let t = pose_to_bevy_transform(pose, UpAxis::PlusX, 1.0);
+        let expected = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        assert!(
+            t.rotation.dot(expected).abs() > 0.999,
+            "physics +90° X → bevy -90° Y; got {:?}, expected {expected:?}",
+            t.rotation,
+        );
+    }
+
+    // ─── SL.4.4 — visible_pose_for_intruder branch matrix ─────────────
+    //
+    // The helper composes three independent inputs. A `&&`/`||` typo or
+    // swapped guard would silently mis-render the intruder, so the
+    // four single-flip cases below pin down the truth table that
+    // `update_intruder_mesh` depends on.
+
+    fn dummy_pose() -> Isometry3<f64> {
+        Isometry3::translation(1.0, 2.0, 3.0)
+    }
+
+    #[test]
+    fn visible_pose_for_intruder_all_on_returns_pose() {
+        let p = dummy_pose();
+        assert_eq!(visible_pose_for_intruder(true, true, Some(p)), Some(p));
+    }
+
+    #[test]
+    fn visible_pose_for_intruder_not_sliding_hides() {
+        let p = dummy_pose();
+        assert_eq!(visible_pose_for_intruder(false, true, Some(p)), None);
+    }
+
+    #[test]
+    fn visible_pose_for_intruder_show_deformed_off_hides() {
+        let p = dummy_pose();
+        assert_eq!(visible_pose_for_intruder(true, false, Some(p)), None);
+    }
+
+    #[test]
+    fn visible_pose_for_intruder_no_pose_hides() {
+        assert_eq!(visible_pose_for_intruder(true, true, None), None);
+    }
+}

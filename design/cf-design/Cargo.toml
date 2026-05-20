@@ -14,6 +14,18 @@ tier = "L0"
 [lints]
 workspace = true
 
+# Default-on so existing callers (cf-cast-cli, cf-device-design via
+# cf-device-geometry, examples, etc.) keep getting the parallel
+# `mesh_adaptive_par` / `mesh_field_adaptive_par` / `build_octree_par`
+# surface without changes. Sim-soft + similar L0 tier-capped consumers
+# opt out via `default-features = false` to drop the rayon transitive
+# chain (rayon + rayon-core + crossbeam-{deque,epoch,utils}) and stay
+# under the L0 100-dep tier cap. Sequential `mesh_adaptive` /
+# `mesh_field_adaptive` remain unconditional.
+[features]
+default = ["parallel-meshing"]
+parallel-meshing = ["dep:rayon"]
+
 [dependencies]
 # Geometric primitives (workspace)
 cf-geometry = { workspace = true }
@@ -23,8 +35,12 @@ mesh-sdf = { workspace = true }
 mesh-types = { workspace = true }
 # Linear algebra (vectors, matrices, rotations)
 nalgebra = { workspace = true }
-# Data-parallel iterators
-rayon = { workspace = true }
+# Data-parallel iterators — gated behind `parallel-meshing` (default-on).
+# The parallel mesh helpers (`mesh_adaptive_par` etc.) live only under
+# this feature; sequential variants (`mesh_adaptive`) are always
+# available. L0-tier consumers near the dep-count cap drop the
+# feature via `default-features = false`.
+rayon = { workspace = true, optional = true }
 # Core physics (workspace)
 sim-core = { workspace = true }
 

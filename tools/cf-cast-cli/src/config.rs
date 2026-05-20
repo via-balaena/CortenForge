@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail, ensure};
 use serde::Deserialize;
 
-use cf_cast::DEFAULT_MASS_BUDGET_KG;
+use cf_cast::{DEFAULT_MASS_BUDGET_KG, PlugPinSpec};
 
 /// Top-level `cast.toml` schema.
 #[derive(Debug, Clone, Deserialize)]
@@ -94,11 +94,17 @@ pub struct CastDefaults {
     /// [`cf_cast::DEFAULT_MASS_BUDGET_KG`] (2 lb).
     #[serde(default = "default_mass_budget_kg")]
     pub mass_budget_kg: f64,
-    /// Bounding-region pad relative to the scan AABB (meters per
-    /// axis). The bounding cuboid envelopes the outer-most layer
-    /// body plus this margin.
-    #[serde(default = "default_bounding_margin_m")]
-    pub bounding_margin_m: f64,
+    /// Mold cup-wall thickness (meters). The bounding region is the
+    /// outer-most layer body grown outward by this much (Option A —
+    /// `outermost.offset(wall_thickness_m)`); the cup wall therefore
+    /// follows the device contour rather than enveloping it in a
+    /// cuboid. Default `0.005` (5 mm) — FDM single-perimeter +
+    /// 30 % infill is rigid enough at this thickness for the iter-1
+    /// silicone pour pressures. SLA prints + thinner-extrusion FDM
+    /// setups can dial down; deeper pours / stiffer rind layers
+    /// dial up.
+    #[serde(default = "default_wall_thickness_m")]
+    pub wall_thickness_m: f64,
     /// Ribbon split-normal unit vector (will be normalized before
     /// `SplitNormal::new`). Default `[0, 0, -1]` per v2 example —
     /// XZ-plane centerlines bisect LEFT/RIGHT for balanced pieces.
@@ -120,7 +126,7 @@ impl Default for CastDefaults {
         Self {
             mesh_cell_size_m: default_mesh_cell_size_m(),
             mass_budget_kg: default_mass_budget_kg(),
-            bounding_margin_m: default_bounding_margin_m(),
+            wall_thickness_m: default_wall_thickness_m(),
             split_normal: default_split_normal(),
             piece_min_wall_mm: default_piece_min_wall_mm(),
             output_dir: default_output_dir(),
@@ -134,8 +140,8 @@ fn default_mesh_cell_size_m() -> f64 {
 fn default_mass_budget_kg() -> f64 {
     DEFAULT_MASS_BUDGET_KG
 }
-fn default_bounding_margin_m() -> f64 {
-    0.020
+fn default_wall_thickness_m() -> f64 {
+    0.005
 }
 fn default_split_normal() -> [f64; 3] {
     [0.0, 0.0, -1.0]
@@ -388,9 +394,9 @@ impl CastConfig {
             self.cast.mass_budget_kg
         );
         ensure!(
-            self.cast.bounding_margin_m.is_finite() && self.cast.bounding_margin_m >= 0.0,
-            "cast.bounding_margin_m = {} must be finite and >= 0",
-            self.cast.bounding_margin_m
+            self.cast.wall_thickness_m.is_finite() && self.cast.wall_thickness_m > 0.0,
+            "cast.wall_thickness_m = {} must be finite and > 0",
+            self.cast.wall_thickness_m
         );
         ensure!(
             self.cast.piece_min_wall_mm.is_finite() && self.cast.piece_min_wall_mm > 0.0,
@@ -419,6 +425,31 @@ impl CastConfig {
             );
         }
 
+        // Cross-field gate: when plug-anchor pins are enabled, the
+        // pin shaft extends along -tangent from the centerline endpoint
+        // into (and through) the cup-wall material. The wall must be at
+        // least as thick as the pin length (plus a 1 mm margin to
+        // absorb MC stair-step) or the pin pokes out the back of the
+        // mold piece.
+        //
+        // See `docs/CF_CAST_MOLD_WALL_RECON.md` §3.3 and Q4.
+        if self.plug_pins.enabled {
+            let effective_pin_length_m = self
+                .plug_pins
+                .pin_length_m
+                .unwrap_or(PlugPinSpec::iter1().pin_length_m);
+            const MARGIN_M: f64 = 0.001;
+            ensure!(
+                self.cast.wall_thickness_m + MARGIN_M >= effective_pin_length_m,
+                "cast.wall_thickness_m = {} m + 1 mm margin must be >= \
+                 plug_pins.pin_length_m = {} m (the plug-anchor pin would \
+                 protrude past the mold-piece outer face). Either thicken \
+                 the wall, shorten the pin, or set plug_pins.enabled = false.",
+                self.cast.wall_thickness_m,
+                effective_pin_length_m
+            );
+        }
+
         Ok(())
     }
 }
@@ -443,14 +474,20 @@ material = "ECOFLEX_00_30"
 
     #[test]
     fn parses_minimal_config_with_defaults() {
+        // Validation is intentionally NOT exercised here — the default
+        // 5 mm wall conflicts with the default 20 mm iter-1 plug-pin
+        // length (the cross-field gate added with the Option A
+        // mold-wall arc fires for "all-defaults" configs). The
+        // gate is verified in `rejects_wall_thinner_than_default_pin_length`;
+        // this test scopes itself to field-by-field parsing of
+        // defaults.
         let cfg = CastConfig::from_toml_str(minimal_config_text()).unwrap();
-        cfg.validate().unwrap();
         assert_eq!(cfg.layers.len(), 1);
         assert_eq!(cfg.layers[0].material, "ECOFLEX_00_30");
         // Defaults from CastDefaults.
         assert!((cfg.cast.mesh_cell_size_m - 0.003).abs() < 1e-12);
         assert!((cfg.cast.mass_budget_kg - DEFAULT_MASS_BUDGET_KG).abs() < 1e-12);
-        assert!((cfg.cast.bounding_margin_m - 0.020).abs() < 1e-12);
+        assert!((cfg.cast.wall_thickness_m - 0.005).abs() < 1e-12);
         assert_eq!(cfg.cast.split_normal, [0.0, 0.0, -1.0]);
         assert!((cfg.cast.piece_min_wall_mm - 0.1).abs() < 1e-12);
         assert_eq!(cfg.cast.output_dir, PathBuf::from("out"));
@@ -470,7 +507,7 @@ prep_toml = "iter1.cleaned.prep.toml"
 [cast]
 mesh_cell_size_m = 0.004
 mass_budget_kg = 0.500
-bounding_margin_m = 0.030
+wall_thickness_m = 0.030
 split_normal = [0.0, 1.0, 0.0]
 piece_min_wall_mm = 0.5
 output_dir = "iter1_out"
@@ -547,6 +584,10 @@ material = "UNKNOWN_GRADE"
 
     #[test]
     fn accepts_unknown_material_with_density_override() {
+        // `[plug_pins] enabled = false` sidesteps the wall-thickness ↔
+        // pin-length cross-field gate (default 5 mm wall conflicts
+        // with the iter1 20 mm pin) so this test stays scoped to
+        // material-override validation.
         let text = r#"
 [scan]
 cleaned_stl = "s.stl"
@@ -557,6 +598,9 @@ thickness_m = 0.006
 material = "CUSTOM_GRADE"
 density_kg_m3 = 1080.0
 display_name = "Custom Silicone"
+
+[plug_pins]
+enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
@@ -601,6 +645,98 @@ material = "ECOFLEX_00_30"
             err.to_string().contains("thickness_m"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn rejects_non_positive_wall_thickness() {
+        let text = r#"
+[scan]
+cleaned_stl = "s.stl"
+prep_toml = "s.prep.toml"
+
+[cast]
+wall_thickness_m = 0.0
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg.validate().expect_err("zero wall_thickness must fail");
+        assert!(
+            err.to_string().contains("wall_thickness_m"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_wall_thinner_than_default_pin_length() {
+        // Default plug_pins (enabled = true, iter1 spec → 20 mm pin)
+        // with the default 5 mm wall fails the cross-field gate:
+        // `5 mm + 1 mm margin >= 20 mm` is FALSE. Confirm the gate
+        // fires.
+        let text = r#"
+[scan]
+cleaned_stl = "s.stl"
+prep_toml = "s.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("default 5 mm wall vs 20 mm iter1 pin must fail");
+        let s = err.to_string();
+        assert!(
+            s.contains("plug_pins.pin_length_m"),
+            "unexpected error: {s}"
+        );
+    }
+
+    #[test]
+    fn accepts_wall_thickness_matching_pin_length_override() {
+        // 8 mm wall + 7 mm pin override: 8 + 1 = 9 >= 7, passes.
+        let text = r#"
+[scan]
+cleaned_stl = "s.stl"
+prep_toml = "s.prep.toml"
+
+[cast]
+wall_thickness_m = 0.008
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[plug_pins]
+pin_length_m = 0.007
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_thin_wall_when_plug_pins_disabled() {
+        // 2 mm wall + plug_pins disabled: cross-field gate skipped.
+        let text = r#"
+[scan]
+cleaned_stl = "s.stl"
+prep_toml = "s.prep.toml"
+
+[cast]
+wall_thickness_m = 0.002
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[plug_pins]
+enabled = false
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
     }
 
     #[test]

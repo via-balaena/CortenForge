@@ -15,8 +15,15 @@
 //!   [`MaterialField::skeleton_default`], [`MaterialField::from_fields`])
 //!   produce the legacy NH variant. Existing call sites compile
 //!   unchanged.
-//! - **Yeoh constructor** ([`MaterialField::from_yeoh_fields`])
-//!   produces the Yeoh variant; row 23+ Yeoh consumers use this.
+//! - **Yeoh constructors** ([`MaterialField::from_yeoh_fields`] —
+//!   legacy 3-arg, bounds drop to `None`;
+//!   [`MaterialField::from_yeoh_fields_with_bounds`] — 5-arg,
+//!   threads the calibrated per-anchor `(max, min)` principal-
+//!   stretch caps into `bounds`).  Note that
+//!   [`MaterialField::sample_yeoh`] routes the 5-arg path through
+//!   [`Yeoh::with_max_principal_stretch_only`] per H4-2-C, so the
+//!   compressive value reaches `bounds` but is dropped at sample
+//!   time — see `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.
 //!
 //! Sampling is variant-typed: [`MaterialField::sample`] returns
 //! [`NeoHookean`] (panics on Yeoh variant);
@@ -55,8 +62,12 @@ use crate::sdf_bridge::Sdf;
 ///
 /// - NH variant (μ, λ slots) via [`MaterialField::uniform`],
 ///   [`MaterialField::skeleton_default`], [`MaterialField::from_fields`].
-/// - Yeoh variant (μ, C₂, λ slots) via
-///   [`MaterialField::from_yeoh_fields`].
+/// - Yeoh variant (μ, C₂, λ slots, optional `(max, min)` principal-
+///   stretch caps; `min` is preserved in `bounds` but dropped at
+///   [`MaterialField::sample_yeoh`] time under H4-2-C — see
+///   `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5) via
+///   [`MaterialField::from_yeoh_fields`] (bounds-less) or
+///   [`MaterialField::from_yeoh_fields_with_bounds`] (calibrated).
 ///
 /// **Interface SDF (commit 12, IV-6 per Part 7 §02 §01).** Optional
 /// slot carrying the SDF whose zero set drives the material blend
@@ -83,7 +94,37 @@ pub(crate) enum MaterialFieldInner {
         mu: Box<dyn Field<f64>>,
         c2: Box<dyn Field<f64>>,
         lambda: Box<dyn Field<f64>>,
+        /// Optional per-tet asymmetric principal-stretch caps
+        /// (memo D8). `None` → legacy path: the produced [`Yeoh`]
+        /// inherits `(max_principal_stretch, min_principal_stretch)
+        /// = (None, None)` and the solver gate falls back to
+        /// `max_stretch_deviation` (NH-style symmetric). `Some` →
+        /// the `max_principal_stretch` field is sampled + routed
+        /// through [`Yeoh::with_max_principal_stretch_only`] per
+        /// H4-2-C (`docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md`
+        /// §5); the produced `Yeoh` carries `(Some(max), None)`.
+        /// The `min_principal_stretch` field stays threaded but
+        /// is dropped at [`MaterialField::sample_yeoh`] time —
+        /// preserved for future Option B (Phase H F-bar /
+        /// mixed-u-p decorator) re-enable by flipping the
+        /// `sample_yeoh` call to
+        /// [`Yeoh::with_principal_stretch_bounds`] (pre-H4 the
+        /// call set no bounds at all, so this would be a
+        /// forward transition, not a restoration).
+        bounds: Option<YeohBoundsFields>,
     },
+}
+
+/// Paired principal-stretch cap fields for the Yeoh variant.
+/// Constructed by [`MaterialField::from_yeoh_fields_with_bounds`];
+/// every [`crate::SiliconeMaterial`] anchor carries both bounds so
+/// both fields are populated from the catalog.  Under H4-2-C only
+/// the `max` field reaches the solver gate (see
+/// [`MaterialFieldInner::Yeoh::bounds`] doc); the `min` field is
+/// load-bearing for future Option B re-enable.
+pub(crate) struct YeohBoundsFields {
+    pub max_principal_stretch: Box<dyn Field<f64>>,
+    pub min_principal_stretch: Box<dyn Field<f64>>,
 }
 
 /// Coarse identifier for which material model a [`MaterialField`]
@@ -144,6 +185,21 @@ impl MaterialField {
     /// `C₁ = μ / 2` is derived; the field doesn't store `C₁`
     /// separately. Per arc memo D10 — row picks one material model
     /// for all its tets, no in-row mixing.
+    ///
+    /// Bounds-less legacy path: the produced per-tet [`Yeoh`] has
+    /// `validity().max_principal_stretch == None` AND
+    /// `validity().min_principal_stretch == None`, so the solver
+    /// gate falls back to the symmetric `max_stretch_deviation`
+    /// bound. Callers with calibrated per-anchor caps (e.g.,
+    /// every [`crate::SiliconeMaterial`] in
+    /// `silicone_table.rs`) prefer
+    /// [`MaterialField::from_yeoh_fields_with_bounds`] — the
+    /// 5-arg path threads `0.8 · λ_break` (tensile) and `0.20`
+    /// (compressive, family-uniform) through the aggregator;
+    /// the tensile cap reaches the per-tet validity gate at sample
+    /// time, and the compressive cap stays in `bounds` for future
+    /// Option B re-enable per H4-2-C
+    /// (`docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).
     #[must_use]
     pub fn from_yeoh_fields(
         mu: Box<dyn Field<f64>>,
@@ -151,7 +207,64 @@ impl MaterialField {
         lambda: Box<dyn Field<f64>>,
     ) -> Self {
         Self {
-            inner: MaterialFieldInner::Yeoh { mu, c2, lambda },
+            inner: MaterialFieldInner::Yeoh {
+                mu,
+                c2,
+                lambda,
+                bounds: None,
+            },
+            interface_sdf: None,
+        }
+    }
+
+    /// Yeoh-with-calibrated-bounds constructor — five
+    /// [`Field<f64>`](crate::field::Field) impls (μ, C₂, λ,
+    /// max-principal-stretch, min-principal-stretch).
+    ///
+    /// Each sample point's `Yeoh` is built via
+    /// [`Yeoh::from_lame_and_c2`] then decorated with
+    /// [`Yeoh::with_max_principal_stretch_only`] per H4-2-C
+    /// asymmetric one-sided bound (see
+    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  The
+    /// produced `Yeoh` carries `(Some(max), None)` — the tensile
+    /// `0.8 · λ_break` cap reaches the solver gate at
+    /// `check_validity_at_step_start`; the compressive value is
+    /// sampled from `min_principal_stretch` but dropped at the
+    /// `with_max_principal_stretch_only` call.  Pre-H4 path
+    /// (`from_yeoh_fields` 3-arg) falls back to the legacy
+    /// `max_stretch_deviation = 1.0` symmetric gate which
+    /// accepted σ ∈ [0, 2] including extreme compression; the
+    /// H4-2-C asymmetric path matches that compressive permissivity
+    /// while adding the calibrated tensile cap.
+    ///
+    /// Use this when the per-layer materials come from
+    /// [`crate::SiliconeMaterial`] anchors (the
+    /// `validity_max_principal_stretch` +
+    /// `validity_min_principal_stretch` fields lift directly into
+    /// the two bound fields).  Closes the
+    /// `MaterialField`-drops-bounds gap diagnosed at
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10.4 +
+    /// originally addressed by
+    /// `docs/CANDIDATE_H4_YEOH_BOUND_CALIBRATION_SPEC.md` (spec
+    /// later case-D falsified — see the H4 falsification bookmark).
+    #[must_use]
+    pub fn from_yeoh_fields_with_bounds(
+        mu: Box<dyn Field<f64>>,
+        c2: Box<dyn Field<f64>>,
+        lambda: Box<dyn Field<f64>>,
+        max_principal_stretch: Box<dyn Field<f64>>,
+        min_principal_stretch: Box<dyn Field<f64>>,
+    ) -> Self {
+        Self {
+            inner: MaterialFieldInner::Yeoh {
+                mu,
+                c2,
+                lambda,
+                bounds: Some(YeohBoundsFields {
+                    max_principal_stretch,
+                    min_principal_stretch,
+                }),
+            },
             interface_sdf: None,
         }
     }
@@ -241,11 +354,27 @@ impl MaterialField {
     }
 
     /// Sample the Yeoh variant at `x_ref` and return a fresh per-element
-    /// [`Yeoh`]. Validity bounds default to `None` on the produced
-    /// `Yeoh` — per-anchor bounds are wired in by the row author via
-    /// the [`crate::SiliconeMaterial::to_yeoh`] path, not the
-    /// `MaterialField` aggregator (which only carries the `(μ, C₂, λ)`
-    /// scalar fields).
+    /// [`Yeoh`].
+    ///
+    /// Two paths depending on which constructor built the field:
+    ///
+    /// - [`MaterialField::from_yeoh_fields`] (3-arg legacy path):
+    ///   bounds are `None`; the produced `Yeoh`'s validity
+    ///   inherits `(max_principal_stretch, min_principal_stretch) =
+    ///   (None, None)` and the solver gate falls back to
+    ///   `max_stretch_deviation`.
+    /// - [`MaterialField::from_yeoh_fields_with_bounds`] (5-arg
+    ///   calibrated path, H4-2-C asymmetric one-sided): the
+    ///   `max_principal_stretch` field is sampled + routed through
+    ///   [`Yeoh::with_max_principal_stretch_only`]; the produced
+    ///   `Yeoh` carries `(Some(max), None)`.  The `min_principal_stretch`
+    ///   field stays threaded through the aggregator (preserved for
+    ///   future Option B / Phase H F-bar work that re-enables the
+    ///   compressive gate) but is unused at sample time — see
+    ///   `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5 for the
+    ///   falsification analysis that motivated dropping the
+    ///   compressive direction.  `det F > 0` inversion remains the
+    ///   only compressive safety net.
     ///
     /// # Panics
     ///
@@ -260,8 +389,30 @@ impl MaterialField {
     #[allow(clippy::panic)]
     pub fn sample_yeoh(&self, x_ref: Vec3) -> Yeoh {
         match &self.inner {
-            MaterialFieldInner::Yeoh { mu, c2, lambda } => {
-                Yeoh::from_lame_and_c2(mu.sample(x_ref), lambda.sample(x_ref), c2.sample(x_ref))
+            MaterialFieldInner::Yeoh {
+                mu,
+                c2,
+                lambda,
+                bounds,
+            } => {
+                let yeoh = Yeoh::from_lame_and_c2(
+                    mu.sample(x_ref),
+                    lambda.sample(x_ref),
+                    c2.sample(x_ref),
+                );
+                match bounds {
+                    None => yeoh,
+                    // H4-2-C asymmetric one-sided bound — tensile cap
+                    // only; `min_principal_stretch` field stays
+                    // threaded through `bounds` for future Option B
+                    // (Phase H F-bar / mixed-u-p decorator) re-enable
+                    // but is unused at sample time.  Falsification
+                    // motivating this asymmetry at
+                    // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.
+                    Some(b) => {
+                        yeoh.with_max_principal_stretch_only(b.max_principal_stretch.sample(x_ref))
+                    }
+                }
             }
             MaterialFieldInner::NeoHookean { .. } => {
                 panic!(

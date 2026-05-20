@@ -33,8 +33,19 @@
 //! Yeoh uses the asymmetric `max_principal_stretch` /
 //! `min_principal_stretch` bounds (memo D8). Default constructors leave
 //! these `None`, falling through to the legacy NH symmetric bound at
-//! `max_stretch_deviation = 1.0`. Per-anchor calibrated bounds are set
-//! by the [`crate::SiliconeMaterial::to_yeoh`] path (Yeoh arc F2 work).
+//! `max_stretch_deviation = 1.0`. Per-anchor calibrated bounds reach a
+//! Yeoh via two paths:
+//!
+//! - [`crate::SiliconeMaterial::to_yeoh`] direct construction sets BOTH
+//!   bounds via [`Yeoh::with_principal_stretch_bounds`] (two-sided —
+//!   the *values* `(0.20, 0.8·λ_break)` are asymmetric about λ = 1, but
+//!   both directions are checked; Yeoh arc F2 work).
+//! - [`crate::MaterialField::sample_yeoh`] for the per-tet field-sample
+//!   path sets ONLY the tensile bound via
+//!   [`Yeoh::with_max_principal_stretch_only`] per H4-2-C (asymmetric
+//!   one-sided; see
+//!   `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  The
+//!   compressive direction defers to `det F > 0` inversion only.
 
 use nalgebra::{Matrix3, SMatrix};
 
@@ -67,11 +78,36 @@ impl Yeoh {
 
     /// Set per-material asymmetric principal-stretch bounds (memo D8).
     /// `max` caps tensile stretch (e.g. `0.8 · λ_break`); `min` caps
-    /// compression (e.g. `0.30` engineering-aggressive default).
+    /// compression (e.g. `0.20` H4-2-A research-informed default
+    /// per `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md`).
     #[must_use]
     pub const fn with_principal_stretch_bounds(mut self, max: f64, min: f64) -> Self {
         self.max_principal_stretch = Some(max);
         self.min_principal_stretch = Some(min);
+        self
+    }
+
+    /// Set the tensile principal-stretch cap only (H4-2-C asymmetric
+    /// one-sided bound).  Leaves the compressive cap at the default
+    /// `None`, so the solver gate at
+    /// [`crate::solver::backward_euler`] `check_validity_at_step_start`
+    /// performs only the tensile-direction check + falls back to the
+    /// `det F > 0` inversion handler for compressive safety.
+    ///
+    /// **Why this exists**: per
+    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5, the
+    /// family-uniform compressive floor binds before the calibrated
+    /// tensile cap at cavity > 5 mm in the iter-1 sliding-intruder
+    /// sweep — Newton's preferred equilibrium pushes `σ_min` way past
+    /// any reasonable floor due to the cf-design ν = 0.40 model
+    /// (real silicones are ν ≈ 0.4999; the Phase H F-bar /
+    /// mixed-u-p decorator is the long-term fix).  H4-2-C uses this
+    /// setter via [`crate::MaterialField::sample_yeoh`] to bypass
+    /// the compressive gate as a quick unlock pending Phase H.
+    /// `det F > 0` inversion remains the only compressive safety net.
+    #[must_use]
+    pub const fn with_max_principal_stretch_only(mut self, max: f64) -> Self {
+        self.max_principal_stretch = Some(max);
         self
     }
 

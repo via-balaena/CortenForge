@@ -13,9 +13,9 @@ use cf_geometry::{Aabb, SdfGrid};
 use mesh_types::AttributedMesh;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
+use crate::Sdf;
 use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn, Val};
 use crate::param::ParamRef;
-use crate::sdf::Sdf;
 
 /// Lattice type for infill operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1261,9 +1261,14 @@ impl Solid {
     ///
     /// Returns an empty mesh for infinite geometry (bare `Plane`).
     ///
+    /// Gated behind the `parallel-meshing` feature (default-on).
+    /// Drop the feature to remove the rayon transitive chain; the
+    /// sequential `mesh_adaptive` covers the same use case.
+    ///
     /// # Panics
     ///
     /// Panics if `tolerance` is not positive and finite.
+    #[cfg(feature = "parallel-meshing")]
     #[must_use]
     pub fn mesh_adaptive_par(&self, tolerance: f64) -> AttributedMesh {
         assert!(
@@ -1307,8 +1312,11 @@ impl Solid {
         let lip = self.node.lipschitz_factor();
         let cell_size = max_deviation / lip;
         let expanded = bounds.expanded(cell_size);
+        // Sequential — keeps `mesh_to_tolerance` available without the
+        // `parallel-meshing` feature. No production caller relies on
+        // parallel here (grep confirms).
         let (mesh, _stats) =
-            crate::adaptive_dc::mesh_field_adaptive_par(&self.node, &expanded, cell_size);
+            crate::adaptive_dc::mesh_field_adaptive(&self.node, &expanded, cell_size);
 
         // Only simplify when the mesh is small enough that QEM is fast.
         // Large meshes from fine tolerances are already well-resolved by DC.
@@ -1340,7 +1348,11 @@ impl Solid {
     /// them). The returned mesh has `normals = None`.
     #[must_use]
     pub fn mesh_simplified(&self, tolerance: f64, target_faces: usize) -> AttributedMesh {
-        let mesh = self.mesh_adaptive_par(tolerance);
+        // Use the sequential variant so this surface stays available
+        // without the `parallel-meshing` feature. Callers needing the
+        // parallel mesher must use `mesh_adaptive_par` directly with
+        // the feature on.
+        let mesh = self.mesh_adaptive(tolerance);
         AttributedMesh::from(crate::simplify::simplify_mesh(&mesh.geometry, target_faces))
     }
 
@@ -3659,7 +3671,7 @@ mod tests {
     #[test]
     fn mesh_simplified_reduces_faces() {
         let sphere = Solid::sphere(5.0);
-        let full = sphere.mesh_adaptive_par(0.5);
+        let full = sphere.mesh_adaptive(0.5);
         let target = full.face_count() / 2;
         let simplified = sphere.mesh_simplified(0.5, target);
 

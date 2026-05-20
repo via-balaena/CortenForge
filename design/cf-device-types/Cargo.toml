@@ -1,0 +1,56 @@
+[package]
+name = "cf-device-types"
+description = "Shared device-design domain types — cavity + layer-stack state, scan resources, centerline, sim-design projection, slacker recipe data. Consumed by cf-device-design (CAD tool) and (Phase 2+) cf-sim-research so both binaries describe a layered-silicone device the same way. Lifted out of `tools/cf-device-design/src/main.rs` per `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Shared workspace-internal types crate (precedent: cf-bevy-common,
+# cf-cap-planes). No `[package.metadata.cortenforge]` tier block —
+# tier metadata is reserved for sim L0/L1 libraries (xtask Layer
+# Integrity grader exempts shared support crates by name; see
+# `xtask/src/grade.rs::applies_to_crate`).
+
+# Matches cf-device-design's lint posture (the crate this code was
+# lifted out of). Workspace `pedantic = warn` is intentionally NOT
+# inherited because the moved code (CavityState's MAINTENANCE NOTE
+# paragraph, the slacker TB tables' verbose docs, the LayerSpec
+# slider-range rationale) was authored against the binary's lenient
+# posture and would generate ~20 pre-existing pedantic warnings
+# (long-doc-first-paragraph + missing-const-fn + match-same-arms in
+# slacker::support) on extraction.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+# `#[derive(Resource)]` for the Bevy resources (`ScanMesh`,
+# `CavityState`, `LayersState`, `Centerline`, `ScanInfo`,
+# `ScanFilePath`, `ScanMeshVisible`). Minimal feature set — only the
+# ECS surface is needed here; the cf-device-design / cf-sim-research
+# binaries layer rendering features on top via Cargo's additive
+# feature unification.
+bevy = { workspace = true, default-features = false }
+
+# `IndexedMesh` for `ScanMesh`; `Point3` for `Centerline::points_m`.
+mesh-types = { workspace = true }
+
+# `Point3` constructor used by `Centerline` consumers + tests.
+nalgebra = { workspace = true }
+
+# `.design.toml` Save/Open — `serde` derives on the schema structs,
+# `toml` for the read/write surface, `anyhow` for `Result<()>` +
+# error-context chaining. Lifted from cf-device-design's
+# `design_toml` module per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a
+# so cf-sim-research can ingest the same design files.
+anyhow = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }

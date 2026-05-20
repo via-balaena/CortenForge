@@ -1,13 +1,18 @@
-//! `design_toml` — slice 8 Save/Open for `<scan>.design.toml`.
+//! `design_toml` — `.design.toml` Save/Open schema and helpers.
 //!
 //! Persists the design panel's state (`CavityState` + `LayersState`)
 //! to a TOML file alongside the cleaned STL, so a session can be
-//! resumed from a later run via the `--design <path>` flag (or
+//! resumed from a later run via a `--design <path>` flag (or
 //! auto-default to `<cleaned-stl-stem>.design.toml`).
 //!
-//! Slice 7's insertion-sim is *not* persisted — the sim runs fresh
-//! each session. Only the design intent (cavity inset + layer stack +
+//! Insertion-sim state is *not* persisted — the sim runs fresh each
+//! session. Only the design intent (cavity inset + layer stack +
 //! per-layer Slacker fraction) round-trips.
+//!
+//! Lifted from `tools/cf-device-design/src/design_toml.rs` per
+//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a so the future sim-
+//! research binary (`tools/cf-sim-research/`) can ingest the same
+//! design files.
 //!
 //! ## Schema
 //!
@@ -40,8 +45,8 @@
 //! `schema_version` is a forward-compat marker: a load with a future
 //! version (`>` the one this binary writes) is rejected with a clear
 //! error rather than misinterpreted; an older version (`<`) is
-//! accepted today (slice-8 schema is the first version, so this only
-//! becomes interesting if 8.x+ ever migrates).
+//! accepted today (this is the first version, so this only becomes
+//! interesting if the schema ever migrates).
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -111,8 +116,8 @@ pub struct LayerBlock {
 /// Resolve the design-TOML path: explicit `--design <PATH>` wins;
 /// else fall back to `<cleaned-stl-stem-minus-.cleaned>.design.toml`
 /// next to the cleaned STL (parallels `resolve_prep_toml_path` in
-/// `main.rs`). Returns `None` only for the extremely-rare bare-
-/// filename-with-no-parent case.
+/// cf-device-design / cf-sim-research). Returns `None` only for the
+/// extremely-rare bare-filename-with-no-parent case.
 pub fn resolve_design_toml_path(cleaned_stl: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         return Some(p.to_path_buf());
@@ -240,7 +245,7 @@ pub fn validate_design_toml(design: &DesignToml) -> Result<()> {
     if design.device_design.schema_version > DESIGN_TOML_SCHEMA_VERSION {
         return Err(anyhow!(
             "design.toml schema_version {} is newer than this binary supports ({}). \
-             Update cf-device-design.",
+             Update the cf-device-design / cf-sim-research toolchain.",
             design.device_design.schema_version,
             DESIGN_TOML_SCHEMA_VERSION,
         ));
@@ -263,7 +268,7 @@ pub fn validate_design_toml(design: &DesignToml) -> Result<()> {
         {
             return Err(anyhow!(
                 "design.toml layer {i} names unknown anchor key {:?} — \
-                 not in the cf-device-design catalog",
+                 not in the LAYER_MATERIALS catalog",
                 l.material_anchor_key,
             ));
         }
@@ -291,8 +296,9 @@ pub fn validate_design_toml(design: &DesignToml) -> Result<()> {
 
 /// Apply a validated [`DesignToml`] to the live `(CavityState,
 /// LayersState)` resources. The catalog-key lookup recovers the
-/// `&'static str` reference that `LayerSpec` wants (anchor keys are
-/// `'static` per the slice-5 design).
+/// `&'static str` reference that `LayerSpec` wants — `LAYER_MATERIALS`
+/// entries are compile-time constants, so the anchor key always has
+/// `'static` lifetime when it resolves to a catalog entry.
 pub fn apply_design_toml(
     design: &DesignToml,
     cavity: &mut CavityState,
@@ -347,6 +353,8 @@ fn iso8601_utc_now() -> String {
 }
 
 /// Howard-Hinnant civil-from-days. Identical to cf-scan-prep's copy.
+// Howard-Hinnant's algorithm mixes i64 / u32 by design (era shift +
+// year/month derivation); the conversions are exact in-domain.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 fn unix_days_to_ymd(z: i64) -> (i64, u32, u32) {
     let z_shifted = z + 719_468;
@@ -521,7 +529,7 @@ mod tests {
         let err = validate_design_toml(&design).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("NOT_A_SILICONE"), "got: {msg}");
-        assert!(msg.contains("not in the cf-device-design catalog"));
+        assert!(msg.contains("not in the LAYER_MATERIALS catalog"));
     }
 
     /// Negative thickness rejected; NaN rejected.
@@ -555,8 +563,10 @@ mod tests {
     /// Atomic save → load round-trip on a real `tempfile`-style path.
     #[test]
     fn save_and_load_round_trip_on_disk() {
-        let dir =
-            std::env::temp_dir().join(format!("cf-device-design-7-8-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "cf-device-types-design-toml-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("scan.design.toml");
 

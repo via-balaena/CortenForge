@@ -13,7 +13,7 @@ use cf_cast::{
     CastLayer, CastSpec, MoldingMaterial, PinSpec, PlugPinKind, PlugPinSpec, PourGateKind,
     PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
 };
-use cf_design::{Solid, pinned_floor_shell};
+use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
 use mesh_printability::PrinterConfig;
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
@@ -142,11 +142,17 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 ///   `cavity_inset_m`, so the whole stack moves together and inter-layer
 ///   thickness is preserved; the cap-plane fold pins every layer's
 ///   floor at the cap plane.
-/// - `bounding_region` = `Solid::cuboid(half_extents).translate(scan_center)`
-///   where `half_extents = scan.half_extents + cumulative_thickness +
-///   bounding_margin` (per-axis). The cuboid envelope is conservative —
-///   it ignores the inward inset shift, which can only shrink the
-///   bounded region — so the SDF eval domain stays valid.
+/// - `bounding_region` = `outermost_layer_body.offset(wall_thickness_m)`
+///   — the outermost cumulative layer body grown outward by the
+///   cup-wall thickness. The offset shell follows the device contour
+///   (vs the v1 cuboid envelope), so the mold piece is a contoured
+///   rind around the device rather than a brick with a contour-shaped
+///   hole; on iter-1 sock_over_capsule this drops mold-piece plastic
+///   ~10×. Containment is upheld because cf-cast layer ordering is
+///   innermost-first (so `layers.last().body` ⊇ every inner layer
+///   body) and `.offset(d)` for `d > 0` produces a superset region
+///   — `bounding ⊇ every layer_body` holds by construction. See
+///   `docs/CF_CAST_MOLD_WALL_RECON.md` §2.1.
 ///
 /// All five solids share the same underlying flood-fill-signed scan
 /// SDF via [`SharedScanSdf::clone`], so the heavy parry BVH + flood-fill
@@ -156,7 +162,7 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 /// inside `pinned_floor_shell` queries the same allocation across every
 /// call.
 ///
-/// The AABB passed to [`Solid::from_sdf`] is the scan AABB padded by
+/// The AABB passed to [`cf_design::Solid::from_sdf`] is the scan AABB padded by
 /// the cumulative outermost thickness — that ensures the outermost
 /// offset surface still falls inside the SDF's evaluation domain (the
 /// mesher uses bounds for octree pruning).
@@ -197,14 +203,14 @@ pub fn derive_spec_and_ribbon(
     let cumulative_thickness: f64 = config.layers.iter().map(|l| l.thickness_m).sum();
 
     // Pad the SDF evaluation bounds by the cumulative outward offset
-    // PLUS the bounding margin — the outer-most layer's surface lives
-    // at `scan_surface + cumulative_thickness`, and the bounding region
-    // adds another `bounding_margin_m` of cup-wall material. The
+    // PLUS the cup-wall thickness — the outer-most layer's surface
+    // lives at `scan_surface + cumulative_thickness`, and the bounding
+    // region grows that outward by another `wall_thickness_m`. The
     // mesher walks the SDF over `bounding_region.bounds()`, so the
     // SDF must produce finite distances over that whole domain.
     // The inward `cavity_inset_m` shift can only shrink the outermost
     // surface, so the existing padding stays an upper bound.
-    let sdf_bounds_pad = cumulative_thickness + config.cast.bounding_margin_m;
+    let sdf_bounds_pad = cumulative_thickness + config.cast.wall_thickness_m;
     let sdf_bounds = scan_aabb.expanded(sdf_bounds_pad);
 
     // Candidate-A two-SDF construction (per the redesign spec §2 A5
@@ -280,15 +286,22 @@ pub fn derive_spec_and_ribbon(
         layers.push(CastLayer { body, material });
     }
 
-    // Bounding cuboid: enveloping every layer body + margin.
-    let bounding_half_extents = scan_aabb.half_extents()
-        + Vector3::repeat(cumulative_thickness + config.cast.bounding_margin_m);
-    let bounding_center = scan_aabb.center();
-    let bounding_region = Solid::cuboid(bounding_half_extents).translate(Vector3::new(
-        bounding_center.x,
-        bounding_center.y,
-        bounding_center.z,
-    ));
+    // Bounding region: outermost layer body grown outward by the
+    // cup-wall thickness. Contour-following rind (Option A from
+    // `docs/CF_CAST_MOLD_WALL_RECON.md`), replaces the pre-arc cuboid
+    // envelope. The outermost body's offset distance is
+    // `cumulative_thickness - cavity_inset_m` (same as the last loop
+    // iteration's body construction); building the bounding region
+    // directly from `pinned_floor_shell` avoids a `.last().unwrap()`
+    // on `layers` and keeps the offset relationship explicit.
+    let bounding_region = pinned_floor_shell(
+        closed_sdf_arc.clone(),
+        open_sdf_arc.clone(),
+        sdf_bounds,
+        &cap_tuples,
+        cumulative_thickness - cavity_inset_m,
+    )
+    .offset(config.cast.wall_thickness_m);
 
     let printer_config =
         PrinterConfig::fdm_default().with_min_wall_thickness(config.cast.piece_min_wall_mm);
@@ -346,6 +359,7 @@ mod tests {
 
     use super::*;
     use crate::config::{CastConfig, CastDefaults, LayerConfig, PlugPinConfig, PourGateConfig};
+    use cf_design::Solid;
     use cf_geometry::IndexedMesh;
     use mesh_sdf::{WALL_THRESHOLD_FACTOR_DEFAULT, flood_filled_sdf};
 
@@ -708,7 +722,7 @@ mod tests {
             derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, inset, &[]).unwrap();
 
         let sdf_bounds_pad: f64 =
-            cfg.layers.iter().map(|l| l.thickness_m).sum::<f64>() + cfg.cast.bounding_margin_m;
+            cfg.layers.iter().map(|l| l.thickness_m).sum::<f64>() + cfg.cast.wall_thickness_m;
         let sdf_bounds = unit_cube_aabb().expanded(sdf_bounds_pad);
         let plug_ref = Solid::from_sdf(sdf.clone(), sdf_bounds).offset(-inset);
 

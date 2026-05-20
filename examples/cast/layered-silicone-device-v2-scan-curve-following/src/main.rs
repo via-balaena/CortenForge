@@ -136,50 +136,44 @@ const LAYER_MIDDLE_OUTER_M: f64 = 0.018;
 /// wall thickness.
 const LAYER_OUTER_M: f64 = 0.022;
 
-/// Bounding-region half-extent in xy (meters). 80 mm half-extent =
-/// 160 mm cube envelope. Sized so the outermost layer body
-/// (22 mm radius pipe) sits comfortably inside the bounding region
-/// at every centerline-endpoint tangent direction, with ~20 mm of
-/// cup-wall thickness remaining between the body's hemispherical
-/// cap and the bounding outer face. At the prior 60 mm half-extent
-/// the layer 2 cap exceeded the bounding outer face along the
-/// curved centerline's tangent, opening a hole in the dome-end
-/// cup wall; 80 mm closes it cleanly. Workshop iter-1 visual review
-/// 2026-05-13 caught this — bump as needed for thicker outer
-/// layers.
-const BOUNDING_HALF_XY_M: f64 = 0.080;
-
-/// Bounding-region half-extent in z (meters). Centerline arc apex
-/// at z = +0.012; outer body radius 22 mm; so the +Z extent of the
-/// outer body reaches ~+0.034 m. Half-extent 0.080 leaves ~46 mm
-/// of cup wall + clearance above the body and below the centerline.
-const BOUNDING_HALF_Z_M: f64 = 0.080;
+/// Cup-wall thickness (meters). The bounding region is the outermost
+/// layer body grown outward by this much (Option A — see
+/// `docs/CF_CAST_MOLD_WALL_RECON.md`), so the FDM mold piece is a
+/// contoured rind around the device rather than a brick envelope.
+/// 30 mm here matches `PLUG_PIN_LENGTH_M = 28 mm` plus a 2 mm
+/// stair-step margin — the v2.1 plug-anchor pin terminates as a
+/// blind hole inside the cup wall, never poking out the back of the
+/// mold piece. The v1 envelope (160 mm cube, ~2 cm wall once the
+/// device cavity is subtracted) is replaced by this contour-following
+/// rind; on iter-1 sock geometry the swap drops mold-piece plastic
+/// ~10×, but this example's curved-pipe geometry is small enough that
+/// the savings are modest (matters more for real scan fixtures).
+const WALL_THICKNESS_M: f64 = 0.030;
 
 /// Marching-cubes sampling cell size in meters. 3 mm — coarser than
-/// v1's 2 mm because the v2.1 bounding region is bigger (160 mm
-/// cube vs v1's 80 × 60 mm cube → ~10× cell count at 2 mm) and
-/// per-piece + per-layer-plug F4 validation runs once per artifact
-/// (6 pieces + 3 plugs for a 3-layer cast vs v1's 3 single cups).
-/// At 3 mm cells the example walks the full v2.1 pipeline
-/// (inter-piece pins + side-mounted gate + apex vent + per-piece
-/// plug socket + per-layer plug with anchor pin + per-piece F4)
-/// in ~5-8 min wall time on `--release` — the octree-pruning
-/// overhead from the curved-centerline `UserFn` ribbon halfspace
-/// dominates. Tune up to 4-5 mm to halve wall time at the cost of
-/// MC fidelity, or down to 2 mm if you can afford ~3× the wait.
+/// v1's 2 mm because the v2.1 pipeline runs per-piece + per-layer-plug
+/// F4 validation per artifact (6 pieces + 3 plugs for a 3-layer cast
+/// vs v1's 3 single cups). At 3 mm cells the example walks the full
+/// v2.1 pipeline (inter-piece pins + side-mounted gate + apex vent +
+/// per-piece plug socket + per-layer plug with anchor pin +
+/// per-piece F4) in ~5-8 min wall time on `--release` — the
+/// octree-pruning overhead from the curved-centerline `UserFn`
+/// ribbon halfspace dominates. Tune up to 4-5 mm to halve wall time
+/// at the cost of MC fidelity, or down to 2 mm if you can afford
+/// ~3× the wait.
 const MESH_CELL_SIZE_M: f64 = 0.003;
 
 /// v2.1 plug-anchor pin length (m). 28 mm — sized so the pin
 /// protrudes ~6-20 mm past every per-layer plug's hemispherical
 /// cap apex while still terminating as a **blind hole** inside
-/// the bounding region's cup wall.
+/// the contour-following cup wall.
 ///
 /// Geometry: `centerline[0]` = `(-0.040, 0, 0)`; first-segment
 /// tangent ≈ `(+0.97, 0, +0.24)`. Pin axis = `-tangent` (outward).
-/// At the new 80 mm bounding half-extent, the bounding-region
-/// outer face sits ~41 mm from the centerline endpoint along this
-/// axis. 28 mm pin keeps the tip ~13 mm inside the bounding outer
-/// face.
+/// The outer body radius along this axis is 22 mm; the cup wall
+/// adds another `WALL_THICKNESS_M = 30 mm`, so the bounding outer
+/// face sits ~52 mm from the centerline endpoint. 28 mm pin keeps
+/// the tip ~24 mm inside the bounding outer face.
 ///
 /// Engagement at 28 mm:
 /// - Layer 0 plug (8 mm radius cap): pin protrudes 20 mm past cap;
@@ -274,6 +268,10 @@ fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
     let layer_inner_body = Solid::pipe(centerline.to_vec(), LAYER_INNER_M);
     let layer_middle_body = Solid::pipe(centerline.to_vec(), LAYER_MIDDLE_OUTER_M);
     let layer_outer_body = Solid::pipe(centerline.to_vec(), LAYER_OUTER_M);
+    // Bounding region = outermost layer body grown outward by the
+    // cup-wall thickness. See `docs/CF_CAST_MOLD_WALL_RECON.md` —
+    // contour-following rind, replaces the v1 cuboid envelope.
+    let bounding_region = layer_outer_body.clone().offset(WALL_THICKNESS_M);
 
     let ecoflex_00_30 = MoldingMaterial {
         display_name: "Ecoflex 00-30".to_string(),
@@ -285,12 +283,6 @@ fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
         density_kg_m3: DRAGON_SKIN_10A_DENSITY_KG_M3,
         anchor_key: Some("DRAGON_SKIN_10A"),
     };
-
-    let bounding_region = Solid::cuboid(Vector3::new(
-        BOUNDING_HALF_XY_M,
-        BOUNDING_HALF_XY_M,
-        BOUNDING_HALF_Z_M,
-    ));
 
     CastSpec {
         layers: vec![

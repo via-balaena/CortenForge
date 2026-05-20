@@ -17,9 +17,13 @@ use std::marker::PhantomData;
 use sim_ml_chassis::{Tape, Tensor, Var};
 
 pub mod backward_euler;
+pub mod lm;
 
 pub(crate) use backward_euler::FactoredFreeTangent;
 pub use backward_euler::{CpuNewtonSolver, SolverConfig};
+pub use lm::{LmConfig, SaturationPolicy};
+// `SolverFailure` is re-exported from this module's own definition
+// below — no `use` needed.
 
 /// CPU tape — alias for the chassis `Tape` so VJPs register against a
 /// named backend type. `GpuTape` (Phase E) lands as a separate alias.
@@ -80,6 +84,95 @@ impl<T> NewtonStep<T> {
     }
 }
 
+/// Failure variants surfaced by [`Solver::try_step`] /
+/// [`Solver::try_replay_step`] (F3.3 graceful-failure API per
+/// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5).
+///
+/// Each variant carries `x_partial` — the Newton iterate at which the
+/// failure was detected — so the caller can decide whether to accept
+/// the partial solve (Fork-B `tol = 1e-1` is loose enough to
+/// physically interpret some non-converged states; see the docstring
+/// on `insertion_solver_config()` in
+/// `tools/cf-device-design/src/insertion_sim.rs`).
+///
+/// Variant semantics per [`crate::SaturationPolicy`]:
+/// - `ArmijoStall`: only this variant is governed by the
+///   [`LmConfig::on_saturation`](crate::LmConfig::on_saturation)
+///   policy. `Solver::step` always panics on this; `try_step`
+///   dispatches on the policy (`PanicOnStall` → forward to `step`'s
+///   panic; `ReturnFailed` → return `Err(ArmijoStall)`).
+/// - `NewtonIterCap` and `DoublyFailedFactor`: `try_step` ALWAYS
+///   returns `Err`; `Solver::step` ALWAYS panics — no per-variant
+///   policy.
+#[derive(Debug)]
+pub enum SolverFailure {
+    /// Armijo line-search stalled (under F3 LM, this means: retries
+    /// exhausted at `λ_max` AND the un-regularized LU fallback step
+    /// still failed to satisfy the Armijo decrease condition within
+    /// `max_line_search_backtracks`; with LM disabled, this is the
+    /// first Armijo stall on the pre-F3 LU-fallback step).
+    ///
+    /// `x_partial` is the `x_curr` at the START of the failed Newton
+    /// iter — the best-known position from which Armijo found no
+    /// descent step. NOT the most-recent `trial_x` from backtracking
+    /// (that's a worse-residual rejected candidate); NOT a
+    /// partial-Armijo-accepted x (no such thing — Armijo either
+    /// accepts a step or stalls).
+    ArmijoStall {
+        /// `x_curr` at the START of the failed Newton iter (per
+        /// variant docstring — committed-iterate semantics).
+        x_partial: Vec<f64>,
+        /// Newton iter number at which the stall was detected.
+        last_iter: usize,
+        /// Free-DOF residual norm at the start of the failed iter
+        /// (the value Armijo was trying to decrease).
+        last_r_norm: f64,
+    },
+    /// Newton iter cap (`SolverConfig::max_newton_iter`) reached
+    /// without `r_norm < config.tol`. `x_partial` is the most-recent
+    /// accepted Newton iterate (`x_curr` at the moment the loop
+    /// exited via cap, i.e., after the last accepted Armijo step).
+    /// The new `Result` variant of the pre-F3 `panic!` at
+    /// `solve_impl`'s iter-cap branch.
+    NewtonIterCap {
+        /// Most-recent armijo-accepted iterate (one full iter past
+        /// the last failed convergence check).
+        x_partial: Vec<f64>,
+        /// The configured `SolverConfig::max_newton_iter` cap.
+        max_iter: usize,
+        /// Free-DOF residual norm at the most-recent failed
+        /// convergence check.
+        last_r_norm: f64,
+    },
+    /// Doubly-failed factor: Llt non-PD (with LM retry budget
+    /// exhausted under F3, or first non-PD with LM disabled) AND the
+    /// LU fallback factor also failed. Pre-F3 this was a `panic!`;
+    /// F3.3 surfaces it as `Err` for graceful-failure consumers.
+    ///
+    /// `x_partial` is the position at which the factor failed —
+    /// `x_curr` at the start of the failed Newton iter for the
+    /// in-Newton-loop case (`factor_and_solve_free`), or `x_final`
+    /// for the post-Newton IFT-adjoint case (`factor_at_position`).
+    /// `last_iter` is the Newton iter number for the in-loop case,
+    /// or `0` for the IFT-adjoint case (no iter number applies
+    /// post-Newton — the `context` string disambiguates).
+    /// `context` carries the full factor-site tag + the Lu error
+    /// details so callers can log diagnostically.
+    DoublyFailedFactor {
+        /// Position at which the factor failed: `x_curr` at the start
+        /// of the failed Newton iter for the in-Newton-loop case, or
+        /// `x_final` for the IFT-adjoint post-Newton case.
+        x_partial: Vec<f64>,
+        /// Newton iter number for the in-loop case, or `0` for the
+        /// post-Newton IFT-adjoint case (the `context` string
+        /// disambiguates).
+        last_iter: usize,
+        /// Full factor-site tag + Lu error details (preserves the
+        /// pre-F3 panic message text for diagnostic logging).
+        context: String,
+    },
+}
+
 /// Mechanical solver surface. Two concrete impls: `CpuNewtonSolver`
 /// (Phase B) and `GpuNewtonSolver` (Phase E).
 pub trait Solver: Send + Sync {
@@ -112,6 +205,65 @@ pub trait Solver: Send + Sync {
         theta: &Tensor<f64>,
         dt: f64,
     ) -> NewtonStep<Self::Tape>;
+
+    /// Graceful-failure counterpart to [`Self::step`] (F3.3 per
+    /// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5). Returns the same
+    /// converged [`NewtonStep`] on the happy path; on the three
+    /// failure surfaces (`ArmijoStall`, `NewtonIterCap`,
+    /// `DoublyFailedFactor`) returns `Err(SolverFailure)` instead of
+    /// panicking. The caller decides whether to abort the parent
+    /// computation or accept the partial solve.
+    ///
+    /// `ArmijoStall` is governed by
+    /// [`LmConfig::on_saturation`](crate::LmConfig::on_saturation):
+    /// `PanicOnStall` forwards to [`Self::step`]'s panic (preserving
+    /// pre-F3 semantics for callers that opted in to LM but not to
+    /// graceful failure); `ReturnFailed` returns `Err`. When LM is
+    /// disabled (`SolverConfig::lm_regularization == None`), the
+    /// effective policy is `PanicOnStall` — calling `try_step` on
+    /// an LM-disabled solver yields the same panic-on-stall surface
+    /// as `step` itself. Graceful Armijo-stall handling REQUIRES
+    /// opting into LM with `ReturnFailed` (or constructing an
+    /// `LmConfig` explicitly setting that policy). The other two
+    /// variants always return `Err` regardless of policy — they
+    /// were already model-level non-recoverable conditions pre-F3.
+    ///
+    /// REQUIRED with no default impl per spec §2.5 — a default
+    /// `Ok(self.step(...))` would mislead callers (the signature
+    /// says `Result`, implying fallible, but the body panics).
+    /// Forcing each impl to choose explicitly prevents future
+    /// `Solver` impls from silently inheriting the wrong contract.
+    ///
+    /// # Errors
+    /// Returns [`SolverFailure`] on Armijo stall (when the effective
+    /// policy is `ReturnFailed`), Newton iter cap (always), or
+    /// doubly-failed factor (always). When the effective policy is
+    /// `PanicOnStall` (the LM-disabled default), Armijo stall panics
+    /// instead of returning. See variant docs for `x_partial`
+    /// semantics.
+    fn try_step(
+        &mut self,
+        tape: &mut Self::Tape,
+        x_prev: &Tensor<f64>,
+        v_prev: &Tensor<f64>,
+        theta_var: Var,
+        dt: f64,
+    ) -> Result<NewtonStep<Self::Tape>, SolverFailure>;
+
+    /// Graceful-failure counterpart to [`Self::replay_step`]. Same
+    /// semantics as [`Self::try_step`] but on the pure-function
+    /// (tape-free) path. REQUIRED with no default impl, same
+    /// rationale as `try_step`.
+    ///
+    /// # Errors
+    /// Same as [`Self::try_step`].
+    fn try_replay_step(
+        &self,
+        x_prev: &Tensor<f64>,
+        v_prev: &Tensor<f64>,
+        theta: &Tensor<f64>,
+        dt: f64,
+    ) -> Result<NewtonStep<Self::Tape>, SolverFailure>;
 
     /// Current integration time-step (seconds).
     fn current_dt(&self) -> f64;

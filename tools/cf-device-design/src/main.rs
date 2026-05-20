@@ -22,15 +22,12 @@
 //!   slacker`), and the Layers panel reads back the effective Shore
 //!   hardness, tack, and the mix in grams.
 //!
-//! In progress: Insertion Sim (FEM, slice 7) — `mod insertion_sim`
-//! holds the Route-A SDF bridge: 7.0 the measurement spike, 7.1 the
-//! geometry + per-layer Yeoh material builder
-//! (`build_insertion_geometry`), 7.2 the single static FEM solve
-//! (`run_single_insertion_step`). Quasi-static ramp + UI: 7.3+.
+//! Insertion-sim (FEM) lives in the sibling `tools/cf-sim-research/`
+//! binary as of the sim-decouple refactor (Phases 1-4); this crate is
+//! CAD-only. See `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` for the arc.
 //!
-//! Pending slices: Insertion Sim solve + UI (slice 7.2+) / Save /
-//! Open (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the
-//! build and is stale — trust the code.
+//! `docs/ENGINEERING_SUITE_DESIGN.md` predates the build and is stale
+//! — trust the code.
 
 use std::path::{Path, PathBuf};
 
@@ -41,58 +38,21 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::*;
+use cf_device_types::{
+    CavityState, Centerline, LAYER_COUNT_MAX, LAYER_MATERIALS, LAYER_SURFACE_PALETTE, LayerSpec,
+    LayersState, ScanFilePath, ScanInfo, ScanMesh, ScanMeshVisible, design_toml, material_density,
+    resolve_slacker_fraction, slacker,
+};
 use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
 
-use crate::clip_plane::{ClipPlaneExt, ClipPlaneMaterial};
+use cf_device_geometry::bevy_mesh::build_bevy_mesh_from_indexed;
+use cf_device_geometry::cavity::{CavityEntity, spawn_cavity_mesh};
+use cf_device_geometry::clip_plane::{self, ClipPlaneExt, ClipPlaneMaterial};
+use cf_device_geometry::sdf_layers;
 use clap::Parser;
 use mesh_io::load_stl;
 use mesh_types::{Bounded, IndexedMesh, Point3};
 use serde::Deserialize;
-
-/// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
-///
-/// `#[cfg(test)]`-gated through sub-commits 7.0–7.3b.2; un-gated at
-/// 7.4 (this slice) when the Insertion Sim panel wires it into the
-/// `device_design_panel` UI. The module is `pub(crate)` because
-/// `main.rs`'s panel + async-task glue consumes its public surface
-/// (`build_insertion_geometry`, `run_insertion_ramp`, `InsertionRamp`,
-/// `RampStep`, `StepReadout`, `TetReadout`, `InsertionResult`,
-/// `compute_tet_readouts`); the items themselves remain
-/// `pub` per their module-level docstrings — `pub(crate)` on the
-/// module declaration just keeps the binary's surface scoped (the
-/// crate doesn't export a library API). See the module docs for the
-/// slice-7 ladder.
-pub(crate) mod insertion_sim;
-
-/// Slice 7.4 — Insertion Sim panel + ECS glue. Wraps the `insertion_sim`
-/// module's public surface (`build_insertion_geometry`,
-/// `run_insertion_ramp`, `InsertionRamp`, `RampStep`, `StepReadout`,
-/// `TetReadout`, `compute_tet_readouts`) into an `AsyncComputeTaskPool`-
-/// driven sim run + egui panel + per-vertex heat-map projection on the
-/// existing per-layer surface shells.
-pub(crate) mod insertion_sim_ui;
-
-/// Slice 8 — `.design.toml` Save / Open. Serializes the design panel
-/// state (`CavityState` + `LayersState`) to a TOML file alongside the
-/// cleaned STL, so a session can resume. Schema + atomic-write
-/// helpers + round-trip tests; see the module docs for the schema
-/// layout.
-pub(crate) mod design_toml;
-
-/// Slice 9 — SDF-based layer surfaces. Replaces the retired per-vertex
-/// radial displacement (slice-3 `EnvelopeProxyMesh`) with cached-SDF
-/// + per-iso marching-cubes extraction. See
-/// `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md` for the architecture;
-/// module docs for the API + sign convention.
-pub(crate) mod sdf_layers;
-
-/// Fit-viz rung 1 — centerline-anchored clip plane. Sub-leaf 1 ships
-/// the pure-math `resolve_plane` + the `ClipPlaneState` resource.
-/// Subsequent sub-leaves layer on the `ExtendedMaterial` extension,
-/// the embedded WGSL discard shader, the per-frame uniform push
-/// system, and the egui panel. See
-/// `docs/CF_DEVICE_DESIGN_CLIP_PLANE_SPEC.md` for the full ladder.
-pub(crate) mod clip_plane;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the
@@ -129,219 +89,13 @@ struct Cli {
     prep_toml: Option<PathBuf>,
 }
 
-/// Bevy resource carrying the loaded cleaned scan in physics-frame
-/// meters. Mirror of cf-scan-prep's `ScanMesh` (same posture).
-#[derive(Resource)]
-struct ScanMesh(IndexedMesh);
-
-/// Slice 8 — the on-disk path the cleaned scan loaded from, kept for
-/// the design-TOML's `scan_ref.cleaned_stl` provenance line. The
-/// design panel + Save section read this to know what the design
-/// is anchored against.
-#[derive(Resource, Debug, Clone)]
-struct ScanFilePath(PathBuf);
-
-/// Whether the scan mesh entity is visible this frame. Toggled by
-/// the "Show scan mesh" checkbox in the Scan Info panel. Useful
-/// when inspecting the cavity mesh, which sits INSIDE the scan and
-/// is occluded by the scan mesh when both are drawn.
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-struct ScanMeshVisible(bool);
-
-impl Default for ScanMeshVisible {
-    fn default() -> Self {
-        Self(true)
-    }
-}
-
-/// Bevy resource carrying scan-info readouts surfaced in the Scan
-/// Info panel. Computed once at startup; immutable post-construction.
-#[derive(Resource, Debug, Clone)]
-struct ScanInfo {
-    file_label: String,
-    vertex_count: usize,
-    face_count: usize,
-    /// Raw AABB extents in millimeters (workshop convention).
-    aabb_mm_extents: [f64; 3],
-    /// Bbox diagonal in meters — shown in the Scan Info panel + the
-    /// startup log as a quick size sanity check.
-    bbox_diagonal_m: f64,
-    /// Centerline polyline length in physics meters (sum of
-    /// segment distances). Zero if the centerline is absent or
-    /// empty. Shown in the Scan Info panel.
-    centerline_arc_length_m: f64,
-    /// Centerline point count (display-only). Zero if the
-    /// centerline is absent.
-    centerline_point_count: usize,
-}
-
-/// Bevy resource carrying the cf-scan-prep centerline polyline (in
-/// post-bake physics-frame meters — matches the cleaned STL's
-/// coordinate system). Empty when no `.prep.toml` is present or its
-/// `[centerline]` block is absent.
-#[derive(Resource, Default, Clone)]
-pub(crate) struct Centerline {
-    pub(crate) points_m: Vec<Point3<f64>>,
-}
-
-/// Cavity panel state — the user-dialed `inset_m` by which the
-/// cavity surface sits INSIDE the scan surface. Casting context:
-/// the cavity is the void the appendage slides into; smaller than
-/// the scan so the silicone "skin" between cavity and scan
-/// stretches over the appendage, providing the snug fit. Stretch
-/// strain ≈ `inset_m / local_scan_radius` — too little = sloppy
-/// fit, too much = silicone tears.
-///
-/// Slice 4 v1: a single uniform inset along the entire scan. A
-/// later slice may add the insertable-length clip
-/// (`docs/ENGINEERING_SUITE_DESIGN.md` § 4) so the cavity covers
-/// only the inserted portion, with a tangent-perpendicular end
-/// cap.
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-struct CavityState {
-    /// Distance (meters) by which the cavity surface sits inside
-    /// the scan surface. The cavity surface is the uniform-offset
-    /// isosurface of the cleaned scan's SDF at iso = -`inset_m`
-    /// (slice 9 sub-leaves 3/4, [`sdf_layers::extract_layer_surface`]).
-    inset_m: f64,
-    /// Whether the cavity mesh entity is drawn this frame. User
-    /// toggle in the Cavity panel.
-    visible: bool,
-}
-
-impl CavityState {
-    /// Default state. Inset defaults to
-    /// [`CAVITY_DEFAULT_INSET_M`] (3 mm) — the minimum-acceptable
-    /// buildable design: above Ecoflex's ~2 mm castability
-    /// threshold, and ~10 % radial pre-strain on a typical scan
-    /// cross-section. User dials UP for more pre-strain or DOWN to
-    /// experiment.
-    fn default_for_scan() -> Self {
-        Self {
-            inset_m: CAVITY_DEFAULT_INSET_M,
-            visible: true,
-        }
-    }
-
-    /// Slider range for the cavity inset, in meters.
-    fn inset_slider_range_m() -> (f64, f64) {
-        (0.0, 0.015)
-    }
-}
-
-/// Silicone-material catalog the Layers panel offers. Each entry is
-/// `(anchor_key, display_label, density_kg_m3)`.
-///
-/// The `anchor_key` strings mirror cf-cast's `cure::lookup` keys;
-/// the densities mirror `sim-soft`'s `silicone_table.rs` anchor
-/// values (Ecoflex 00-10 = 1040, the rest of the Ecoflex line +
-/// Dragon Skin 10A/15 = 1070, Dragon Skin 20A/30A = 1080 kg/m³).
-/// Both are mirrored by-name, not by-import: cf-device-design
-/// carries the catalog standalone (no cf-cast / sim-soft dep) so
-/// this tool stays composable. cf-cast-cli re-validates the chosen
-/// anchor + resolves the runtime density at `.design.toml` ingest.
-const LAYER_MATERIALS: &[(&str, &str, f64)] = &[
-    ("ECOFLEX_00_10", "Ecoflex 00-10 (super-soft)", 1040.0),
-    ("ECOFLEX_00_20", "Ecoflex 00-20 (soft)", 1070.0),
-    ("ECOFLEX_00_30", "Ecoflex 00-30 (medium-soft)", 1070.0),
-    ("ECOFLEX_00_50", "Ecoflex 00-50 (firm-soft)", 1070.0),
-    ("DRAGON_SKIN_10A", "Dragon Skin 10A (soft)", 1070.0),
-    ("DRAGON_SKIN_15", "Dragon Skin 15 (medium)", 1070.0),
-    ("DRAGON_SKIN_20A", "Dragon Skin 20A (firm)", 1080.0),
-    ("DRAGON_SKIN_30A", "Dragon Skin 30A (firmest)", 1080.0),
-];
-
-/// Bulk density (kg/m³) for a layer's `material_anchor_key`, looked
-/// up in [`LAYER_MATERIALS`]. Falls back to 1070 kg/m³ (the Ecoflex/
-/// Dragon-Skin line median) for an unrecognized key — defensive
-/// only; every key the Layers panel can set comes from the catalog.
-fn material_density(anchor_key: &str) -> f64 {
-    LAYER_MATERIALS
-        .iter()
-        .find(|(key, _, _)| *key == anchor_key)
-        .map_or(1070.0, |(_, _, density)| *density)
-}
-
-/// Maximum number of concentric silicone layers in the device wall.
-/// 6 is a generous workshop cap; real designs typically use 1–3.
-/// Setting a finite cap keeps panel scroll predictable + the
-/// per-frame draw cost bounded.
-const LAYER_COUNT_MAX: usize = 6;
-
-/// One concentric silicone layer in the device wall. Layers are
-/// ordered innermost-first: `layers[0]`'s inner surface = the
-/// cavity surface, `layers[i]`'s outer surface = `layers[i+1]`'s
-/// inner surface, `layers[N-1]`'s outer surface = the device's
-/// outer skin.
-///
-/// Every layer carries its own user-dialed `thickness_m` (slice 5
-/// polish 3 pivot — there is no derived "last layer"). The device
-/// wall total is the sum of layer thicknesses; the outer skin sits
-/// at `sum(thickness) - cavity.inset_m` radially from the scan.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct LayerSpec {
-    /// Radial thickness (meters), user-dialed via a panel slider.
-    /// For layer 0 this is the distance from the cavity surface to
-    /// layer 0's outer surface; for layer `i > 0` it's the Δ from
-    /// the prior layer's outer surface.
-    thickness_m: f64,
-    /// Smooth-On product anchor key (from [`LAYER_MATERIALS`]).
-    /// `'static` lifetime because the entries are compile-time
-    /// constants. This is the layer's *base* silicone — Slacker (if
-    /// any) is dialed separately via `slacker_fraction`.
-    material_anchor_key: &'static str,
-    /// Slacker mass as a fraction of the base silicone's combined
-    /// Part A + Part B mass — `0.0` is the base with no Slacker. The
-    /// Layers panel only offers the discrete fractions on the base
-    /// material's Smooth-On TB curve ([`slacker::support`]); a
-    /// base-material change that orphans the stored value snaps it
-    /// back to `0.0` via [`resolve_slacker_fraction`].
-    slacker_fraction: f64,
-    /// Whether this layer's outer-surface mesh is drawn this frame.
-    /// Per-layer visibility (slice 5 polish 5) — each layer toggles
-    /// independently so the user can isolate any single layer for
-    /// inspection.
-    visible: bool,
-}
-
-impl LayerSpec {
-    /// Slider range for per-layer thickness (m). 1 mm minimum
-    /// matches FDM-printable mold-wall minimum; 20 mm upper bound
-    /// is generous for any single layer.
-    fn thickness_slider_range_m() -> (f64, f64) {
-        (0.001, 0.020)
-    }
-}
-
-/// Bevy resource carrying the ordered layer stack. Default state
-/// is a single Ecoflex 00-30 layer — the simplest buildable
-/// configuration. The user adds layers + dials each thickness via
-/// the Layers panel; the device wall total is the sum of layer
-/// thicknesses.
-///
-/// Invariant: `1 <= layers.len() <= LAYER_COUNT_MAX`. The panel's
-/// add/remove controls preserve this (the "Remove layer" button is
-/// hidden when only one layer remains; "+ Add layer" is hidden at
-/// the cap).
-#[derive(Resource, Debug, Clone, PartialEq)]
-struct LayersState {
-    layers: Vec<LayerSpec>,
-}
-
-impl LayersState {
-    /// Default state: single Ecoflex 00-30 layer. The user adds
-    /// more layers via the panel as needed.
-    fn default_for_scan() -> Self {
-        Self {
-            layers: vec![LayerSpec {
-                thickness_m: 0.005,
-                material_anchor_key: "ECOFLEX_00_30",
-                slacker_fraction: 0.0,
-                visible: true,
-            }],
-        }
-    }
-}
+// Device-design state types (`ScanMesh`, `ScanFilePath`,
+// `ScanMeshVisible`, `ScanInfo`, `Centerline`, `CavityState`,
+// `LayerSpec`, `LayersState`) plus the silicone catalog
+// (`LAYER_MATERIALS`, `material_density`, `LAYER_COUNT_MAX`,
+// `CAVITY_DEFAULT_INSET_M`) and the `slacker` recipe module live in
+// `cf-device-types` (lifted out of this binary per
+// `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3 A1 Phase 1). Imported above.
 
 // ----- .prep.toml parsing (subset; centerline only — caps lifted to
 //       cf-cap-planes via `cf_cap_planes::parse_cap_planes`) ---
@@ -403,25 +157,6 @@ fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
 
 #[derive(Component)]
 struct ScanMeshEntity;
-
-/// Slice S4 / S11.1 — marker for the FEM intruder render. Lives
-/// alongside the rest-frame `ScanMeshEntity` but visible only when the
-/// insertion sim has run AND `show_deformed` is on. Per-step the
-/// entity's Mesh3d is swapped to `last_run.intruder_mesh_at(step)`
-/// (the cached scan SDF iso surface at the step's interference depth)
-/// so the intruder coincides with the deformed cavity in contact zones
-/// at every step. S11.1 replaces the S4 rigid translation of the bare
-/// scan with per-step geometry that matches what the FEM solved
-/// against.
-#[derive(Component)]
-struct IntruderEntity;
-
-/// Color for the [`IntruderEntity`] render. S4 used a warm orange too
-/// close to the coral cavity, so when the intruder coincided with the
-/// cavity surface at contact the two read as one shape. S11.3 retunes
-/// to a cool teal that stays visibly distinct from the cavity at
-/// contact.
-const INTRUDER_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.20);
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -552,18 +287,8 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
     }
 }
 
-/// Default cavity inset (meters). 3 mm = the minimum-acceptable
-/// starting point for a buildable silicone device:
-/// - Above Ecoflex 00-30's ~2 mm castability threshold (thinner
-///   walls tear under stretch).
-/// - Yields ~10 % radial pre-strain on a typical 25–35 mm-diameter
-///   scan cross-section — meaningful snug fit, well within
-///   elongation-at-break (~900 %).
-///
-/// The user dials UP for more pre-strain or DOWN to experiment
-/// (down to 0 = cavity-coincident-with-scan, useful as a debug
-/// reference but not a buildable design).
-const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
+// `CAVITY_DEFAULT_INSET_M` lives in `cf-device-types` alongside
+// `CavityState::default_for_scan()`.
 
 // ============================================================
 // Geometric validations (slice 6)
@@ -572,16 +297,14 @@ const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
 // Cheap, derived-from-state checks surfaced in the Validations
 // panel: per-layer pour volume + mass against the 2 lb single-pour
 // budget, cavity self-intersection, and minimum castable wall
-// thickness. Computed fresh each frame from `EnvelopeProxyMesh` +
+// thickness. Computed fresh each frame from the cached scan SDF +
 // `CavityState` + `LayersState` — `compute_validations` is a pure
 // function so the whole check set is unit-testable without Bevy.
 //
 // Pour volume uses the divergence-theorem signed mesh volume on the
-// displaced proxy (not cf-cast's SDF voxel integration): the
-// suite's geometry model is displaced proxy meshes, it carries no
-// `cf_design::Solid` representation, and the closed-form mesh
-// volume is both dependency-free and more accurate than coarse-
-// voxel counting.
+// per-layer MC iso-extracted shells (not cf-cast's SDF voxel
+// integration): the closed-form mesh volume is both dependency-free
+// and more accurate than coarse-voxel counting.
 
 /// Per-silicone single-pour mass budget (kg) for the layered-
 /// silicone-device v1 cast — 2 lb via NIST's exact pound-to-kg
@@ -599,7 +322,7 @@ const BUDGET_GREEN_FRACTION: f64 = 0.8;
 /// Minimum castable layer thickness (meters). Below ~2 mm a poured
 /// silicone wall is fragile and tears under insertion stretch (cf.
 /// Ecoflex 00-30's ~2 mm castability threshold, cited in
-/// [`CAVITY_DEFAULT_INSET_M`]). The per-layer thickness slider
+/// [`cf_device_types::CAVITY_DEFAULT_INSET_M`]). The per-layer thickness slider
 /// floor is 1 mm — so sub-2 mm layers are reachable, and the
 /// min-wall check flags them.
 const MIN_CASTABLE_THICKNESS_M: f64 = 0.002;
@@ -811,422 +534,6 @@ fn compute_validations(
     }
 }
 
-// `pub(crate)` (slice 7.5): the insertion-sim path resolves a layer's
-// effective Yeoh material from `(anchor_key, slacker_fraction)`, which
-// requires reading the Slacker TB curves from this module. Module
-// visibility was private through 6.5 (only the panel UI in `main.rs`
-// consumed it); 7.5 widens to `pub(crate)` so `insertion_sim` can call
-// `slacker::support`.
-pub(crate) mod slacker {
-    //! Slacker recipe data — Smooth-On Slacker™ silicone-softening
-    //! tables, transcribed verbatim from the Slacker Tactile Mutator
-    //! Technical Bulletin (rev 011524DH).
-    //!
-    //! Slacker is a clear fluid pre-mixed into a platinum-cure
-    //! silicone's Part B (then Part A is added) to soften the cured
-    //! rubber and add surface tack. The per-layer recipe feature
-    //! lets the user dial a base silicone + a Slacker ratio and read
-    //! back the effective cured hardness — so the bench moment is
-    //! "read the recipe off the panel" instead of deriving the ratio
-    //! on the spot.
-    //!
-    //! This is the data layer only; the recipe-panel UI (a later
-    //! commit) is the consumer. Of the eight catalog silicones only
-    //! four have published Slacker data — the rest carry an honest
-    //! [`Support::NotRecommended`] / [`Support::NoData`] marker
-    //! rather than a guessed curve.
-    //!
-    //! Mix-ratio convention: the TB tabulates "X parts Slacker per
-    //! 100A + 100B" of base silicone, i.e. per 200 parts base — so a
-    //! "+50 Slacker" row is a [`Point::slacker_fraction`] of
-    //! 50 / 200 = 0.25.
-    //!
-    //! The recipe-panel UI (the Layers section) is the consumer:
-    //! [`support`] keys off a layer's base-material anchor key and
-    //! the panel renders the resulting curve as a Slacker-ratio
-    //! picker. The module's public surface is `pub(crate)`; the
-    //! curve tables + the `point` table-builder stay private.
-
-    use std::fmt;
-
-    /// Durometer scale for a Slacker-recipe hardness reading.
-    /// Slacker pushes silicones across scales: a Shore A base
-    /// softens through Shore 00 (OO) into Shore 000 (OOO, the gel
-    /// scale). These are distinct durometer scales — not cleanly
-    /// interconvertible — so the recipe readout surfaces the scale
-    /// explicitly instead of collapsing them to one number.
-    // `OO` / `OOO` are the established Shore durometer-scale names;
-    // clippy's `Ooo` suggestion would obscure them.
-    #[allow(clippy::upper_case_acronyms)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum ShoreScale {
-        /// Shore A — the firmest scale here; Dragon Skin's native
-        /// grades.
-        A,
-        /// Shore 00 (OO) — soft rubbers; the Ecoflex line's native
-        /// scale.
-        OO,
-        /// Shore 000 (OOO) — gels and ultra-soft rubbers; where
-        /// most Slacker recipes land.
-        OOO,
-    }
-
-    impl fmt::Display for ShoreScale {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                ShoreScale::A => write!(f, "A"),
-                ShoreScale::OO => write!(f, "00"),
-                ShoreScale::OOO => write!(f, "000"),
-            }
-        }
-    }
-
-    /// A cured Shore hardness reading on a named durometer scale.
-    /// Displays the way Smooth-On writes it — `10A`, `00-30`,
-    /// `000-7`.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct ShoreHardness {
-        /// Which durometer scale `points` is read on.
-        pub(crate) scale: ShoreScale,
-        /// Durometer points on `scale`. Whole numbers in the TB;
-        /// `u32` because Slacker recipes snap to the tabulated data
-        /// points (the OO/OOO scale split makes interpolating a
-        /// single hardness number meaningless).
-        pub(crate) points: u32,
-    }
-
-    impl fmt::Display for ShoreHardness {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self.scale {
-                // Shore A is written suffixed: "10A".
-                ShoreScale::A => write!(f, "{}A", self.points),
-                // Shore 00 / 000 are written prefixed + hyphenated:
-                // "00-30", "000-7".
-                ShoreScale::OO | ShoreScale::OOO => {
-                    write!(f, "{}-{}", self.scale, self.points)
-                }
-            }
-        }
-    }
-
-    /// Cured surface tack at a given Slacker fraction, from the
-    /// TB's per-row tack column.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Tack {
-        /// No tack — the base silicone, or a low Slacker fraction.
-        None,
-        /// Slight tack.
-        Slight,
-        /// Between slight and very ("Slight to Very" in the TB).
-        SlightToVery,
-        /// Very tacky / self-sticking.
-        Very,
-    }
-
-    impl fmt::Display for Tack {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            let label = match self {
-                Tack::None => "no tack",
-                Tack::Slight => "slight tack",
-                Tack::SlightToVery => "slight-to-very tack",
-                Tack::Very => "very tacky",
-            };
-            write!(f, "{label}")
-        }
-    }
-
-    /// One point on a base silicone's Slacker softening curve: a
-    /// Slacker fraction plus the resulting cured hardness + tack.
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub(crate) struct Point {
-        /// Slacker mass as a fraction of the base silicone's
-        /// combined Part A + Part B mass. `0.0` is the base with no
-        /// Slacker (native hardness); the TB's "+50 / +100 / +150 /
-        /// +200 Slacker per 100A+100B" rows are `0.25 / 0.50 /
-        /// 0.75 / 1.00`.
-        pub(crate) slacker_fraction: f64,
-        /// Cured Shore hardness at this Slacker fraction.
-        pub(crate) hardness: ShoreHardness,
-        /// Cured surface tack at this Slacker fraction.
-        pub(crate) tack: Tack,
-    }
-
-    /// Table-construction helper — keeps the const curves below
-    /// readable. Module-internal; the curves are its only callers.
-    const fn point(slacker_fraction: f64, scale: ShoreScale, points: u32, tack: Tack) -> Point {
-        Point {
-            slacker_fraction,
-            hardness: ShoreHardness { scale, points },
-            tack,
-        }
-    }
-
-    /// What Slacker data exists for a given base silicone.
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub(crate) enum Support {
-        /// Smooth-On's TB tabulates a softening curve for this
-        /// base. The slice leads with the `0.0`-fraction native-
-        /// hardness point, then the TB's data points in
-        /// increasing-Slacker order; the last point's fraction is
-        /// the per-base recommended Slacker cap.
-        Curve(&'static [Point]),
-        /// Smooth-On's TB explicitly advises against Slacker with
-        /// this base (Ecoflex 00-10).
-        NotRecommended,
-        /// No published Slacker data for this base (Dragon Skin
-        /// 15 / 20A / 30A). Not a guess — the TB simply does not
-        /// cover it.
-        NoData,
-    }
-
-    // Per-base softening curves, transcribed verbatim from the
-    // Slacker TB (rev 011524DH). Each leads with the native-
-    // hardness point at slacker_fraction 0.0. Ecoflex bases stop at
-    // 0.50 — the TB marks +150 / +200 Slacker "Not Recommended" for
-    // the Ecoflex line; the Dragon Skin line has no such cap.
-
-    /// Ecoflex 00-20 + Slacker — native Shore 00-20.
-    const ECOFLEX_00_20_CURVE: &[Point] = &[
-        point(0.0, ShoreScale::OO, 20, Tack::None),
-        point(0.25, ShoreScale::OOO, 47, Tack::Slight),
-        point(0.50, ShoreScale::OOO, 32, Tack::SlightToVery),
-    ];
-
-    /// Ecoflex 00-30 + Slacker — native Shore 00-30.
-    const ECOFLEX_00_30_CURVE: &[Point] = &[
-        point(0.0, ShoreScale::OO, 30, Tack::None),
-        point(0.25, ShoreScale::OOO, 40, Tack::SlightToVery),
-        point(0.50, ShoreScale::OOO, 20, Tack::Very),
-    ];
-
-    /// Ecoflex 00-50 + Slacker — native Shore 00-50.
-    const ECOFLEX_00_50_CURVE: &[Point] = &[
-        point(0.0, ShoreScale::OO, 50, Tack::None),
-        point(0.25, ShoreScale::OOO, 55, Tack::Slight),
-        point(0.50, ShoreScale::OOO, 35, Tack::SlightToVery),
-    ];
-
-    /// Dragon Skin 10A + Slacker — native Shore 10A. The TB's
-    /// "Dragon Skin 10" row; runs to 1.0 (the Ecoflex +150 / +200
-    /// cap does not apply to the Dragon Skin line).
-    const DRAGON_SKIN_10A_CURVE: &[Point] = &[
-        point(0.0, ShoreScale::A, 10, Tack::None),
-        point(0.25, ShoreScale::OO, 30, Tack::None),
-        point(0.50, ShoreScale::OOO, 50, Tack::Slight),
-        point(0.75, ShoreScale::OOO, 20, Tack::SlightToVery),
-        point(1.00, ShoreScale::OOO, 7, Tack::Very),
-    ];
-
-    /// Slacker data available for a layer's base silicone, keyed by
-    /// the catalog `anchor_key` ([`super::LAYER_MATERIALS`]).
-    pub(crate) fn support(anchor_key: &str) -> Support {
-        match anchor_key {
-            "ECOFLEX_00_20" => Support::Curve(ECOFLEX_00_20_CURVE),
-            "ECOFLEX_00_30" => Support::Curve(ECOFLEX_00_30_CURVE),
-            "ECOFLEX_00_50" => Support::Curve(ECOFLEX_00_50_CURVE),
-            "DRAGON_SKIN_10A" => Support::Curve(DRAGON_SKIN_10A_CURVE),
-            // The TB explicitly says do NOT use Slacker with Ecoflex
-            // 00-10 (or Ecoflex GEL).
-            "ECOFLEX_00_10" => Support::NotRecommended,
-            // Dragon Skin 15 / 20A / 30A are not covered by the
-            // Slacker TB — no guessed curve. `_` also catches any
-            // off-catalog key defensively.
-            "DRAGON_SKIN_15" | "DRAGON_SKIN_20A" | "DRAGON_SKIN_30A" => Support::NoData,
-            _ => Support::NoData,
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::{
-            DRAGON_SKIN_10A_CURVE, ECOFLEX_00_20_CURVE, ECOFLEX_00_30_CURVE, ECOFLEX_00_50_CURVE,
-            Point, ShoreHardness, ShoreScale, Support, Tack, point, support,
-        };
-
-        /// The four TB-tabulated curves, paired with their catalog
-        /// anchor key. Iterating this keeps the structural tests
-        /// free of per-curve duplication.
-        const ALL_CURVES: &[(&str, &[Point])] = &[
-            ("ECOFLEX_00_20", ECOFLEX_00_20_CURVE),
-            ("ECOFLEX_00_30", ECOFLEX_00_30_CURVE),
-            ("ECOFLEX_00_50", ECOFLEX_00_50_CURVE),
-            ("DRAGON_SKIN_10A", DRAGON_SKIN_10A_CURVE),
-        ];
-
-        /// Every catalog silicone + the [`Support`] variant it must
-        /// resolve to. Adding a catalog entry without deciding its
-        /// Slacker status trips `support_covers_every_catalog_silicone`.
-        const EXPECTED: &[(&str, &str)] = &[
-            ("ECOFLEX_00_10", "not_recommended"),
-            ("ECOFLEX_00_20", "curve"),
-            ("ECOFLEX_00_30", "curve"),
-            ("ECOFLEX_00_50", "curve"),
-            ("DRAGON_SKIN_10A", "curve"),
-            ("DRAGON_SKIN_15", "no_data"),
-            ("DRAGON_SKIN_20A", "no_data"),
-            ("DRAGON_SKIN_30A", "no_data"),
-        ];
-
-        fn variant_tag(s: Support) -> &'static str {
-            match s {
-                Support::Curve(_) => "curve",
-                Support::NotRecommended => "not_recommended",
-                Support::NoData => "no_data",
-            }
-        }
-
-        #[test]
-        fn support_covers_every_catalog_silicone() {
-            // Pins that every catalog silicone has a deliberate
-            // Slacker decision, and that the catalog + this table
-            // stay in sync (count + per-key variant).
-            let catalog: Vec<&str> = super::super::LAYER_MATERIALS
-                .iter()
-                .map(|(k, _, _)| *k)
-                .collect();
-            let expected_keys: Vec<&str> = EXPECTED.iter().map(|(k, _)| *k).collect();
-            assert_eq!(catalog.len(), EXPECTED.len());
-            for key in &catalog {
-                assert!(
-                    expected_keys.contains(key),
-                    "catalog silicone {key} has no Slacker decision in EXPECTED",
-                );
-            }
-            for (key, tag) in EXPECTED {
-                assert_eq!(variant_tag(support(key)), *tag, "{key}");
-            }
-        }
-
-        #[test]
-        fn support_wires_each_curve_key_to_its_table() {
-            // The four curve keys resolve to Curve(_) pointing at
-            // the matching const table — guards against a copy-
-            // paste swap in `support`'s match arms.
-            for (key, curve) in ALL_CURVES {
-                assert!(
-                    matches!(support(key), Support::Curve(c) if c == *curve),
-                    "{key} did not resolve to its own curve",
-                );
-            }
-        }
-
-        #[test]
-        fn curve_structural_invariants() {
-            for (key, curve) in ALL_CURVES {
-                // Leads with the native-hardness point: 0.0 Slacker,
-                // no tack.
-                assert!(
-                    (curve[0].slacker_fraction - 0.0).abs() < f64::EPSILON,
-                    "{key}: curve must lead with slacker_fraction 0.0",
-                );
-                assert_eq!(
-                    curve[0].tack,
-                    Tack::None,
-                    "{key}: native point must have no tack",
-                );
-                // Slacker fraction strictly increases along the curve.
-                for pair in curve.windows(2) {
-                    assert!(
-                        pair[1].slacker_fraction > pair[0].slacker_fraction,
-                        "{key}: slacker_fraction must strictly increase",
-                    );
-                }
-            }
-        }
-
-        #[test]
-        fn ecoflex_bases_cap_at_half_slacker_dragon_skin_runs_full() {
-            // The last point's fraction is the per-base recommended
-            // Slacker cap: Ecoflex bases stop at 0.50 (TB marks
-            // +150/+200 "Not Recommended"); Dragon Skin 10A runs to
-            // 1.00.
-            let cap = |curve: &[Point]| curve[curve.len() - 1].slacker_fraction;
-            assert!((cap(ECOFLEX_00_20_CURVE) - 0.50).abs() < f64::EPSILON);
-            assert!((cap(ECOFLEX_00_30_CURVE) - 0.50).abs() < f64::EPSILON);
-            assert!((cap(ECOFLEX_00_50_CURVE) - 0.50).abs() < f64::EPSILON);
-            assert!((cap(DRAGON_SKIN_10A_CURVE) - 1.00).abs() < f64::EPSILON);
-        }
-
-        #[test]
-        fn curve_hardness_values_match_tb() {
-            // Verbatim transcription pin against the Slacker TB
-            // (rev 011524DH). A drift in any tabulated hardness or
-            // tack value trips here.
-            assert_eq!(
-                ECOFLEX_00_20_CURVE,
-                &[
-                    point(0.0, ShoreScale::OO, 20, Tack::None),
-                    point(0.25, ShoreScale::OOO, 47, Tack::Slight),
-                    point(0.50, ShoreScale::OOO, 32, Tack::SlightToVery),
-                ][..],
-            );
-            assert_eq!(
-                ECOFLEX_00_30_CURVE,
-                &[
-                    point(0.0, ShoreScale::OO, 30, Tack::None),
-                    point(0.25, ShoreScale::OOO, 40, Tack::SlightToVery),
-                    point(0.50, ShoreScale::OOO, 20, Tack::Very),
-                ][..],
-            );
-            assert_eq!(
-                ECOFLEX_00_50_CURVE,
-                &[
-                    point(0.0, ShoreScale::OO, 50, Tack::None),
-                    point(0.25, ShoreScale::OOO, 55, Tack::Slight),
-                    point(0.50, ShoreScale::OOO, 35, Tack::SlightToVery),
-                ][..],
-            );
-            assert_eq!(
-                DRAGON_SKIN_10A_CURVE,
-                &[
-                    point(0.0, ShoreScale::A, 10, Tack::None),
-                    point(0.25, ShoreScale::OO, 30, Tack::None),
-                    point(0.50, ShoreScale::OOO, 50, Tack::Slight),
-                    point(0.75, ShoreScale::OOO, 20, Tack::SlightToVery),
-                    point(1.00, ShoreScale::OOO, 7, Tack::Very),
-                ][..],
-            );
-        }
-
-        #[test]
-        fn shore_hardness_displays_like_smooth_on() {
-            // Shore A suffixed; Shore 00 / 000 prefixed + hyphenated.
-            assert_eq!(
-                ShoreHardness {
-                    scale: ShoreScale::A,
-                    points: 10,
-                }
-                .to_string(),
-                "10A",
-            );
-            assert_eq!(
-                ShoreHardness {
-                    scale: ShoreScale::OO,
-                    points: 30,
-                }
-                .to_string(),
-                "00-30",
-            );
-            assert_eq!(
-                ShoreHardness {
-                    scale: ShoreScale::OOO,
-                    points: 7,
-                }
-                .to_string(),
-                "000-7",
-            );
-        }
-
-        #[test]
-        fn tack_displays_human_labels() {
-            assert_eq!(Tack::None.to_string(), "no tack");
-            assert_eq!(Tack::Slight.to_string(), "slight tack");
-            assert_eq!(Tack::SlightToVery.to_string(), "slight-to-very tack");
-            assert_eq!(Tack::Very.to_string(), "very tacky");
-        }
-    }
-}
-
 // ============================================================
 // Mesh-based surface rendering (slice 5 polish 2)
 // ============================================================
@@ -1242,11 +549,6 @@ pub(crate) mod slacker {
 // surface is sub-millisecond on the iter-1 decimated proxy
 // (1500 faces).
 
-/// Marker component for the cavity mesh entity. One entity at
-/// runtime.
-#[derive(Component)]
-struct CavityEntity;
-
 /// Marker component for a per-layer outer-surface mesh entity.
 /// Bevy spawns / despawns one entity per layer whenever the layer
 /// stack changes. The layer index isn't stored on the component
@@ -1258,211 +560,35 @@ struct LayerSurfaceEntity;
 /// Snapshot of every input `update_layer_meshes` reads, kept in the
 /// system's `Local<>` so the per-frame check is "did the values
 /// actually change?" rather than "did Bevy's `Res::is_changed()`
-/// tick?". The latter is the deref-mut-on-access footgun; the
-/// former is the documented escape hatch (same posture as
-/// `insertion_sim_ui::invalidate_on_geometry_change`).
-///
-/// Fields cover every input that affects the rendered layer meshes:
-///
-/// - `cavity` / `layers`: govern the displaced shell vertex
-///   positions and which materials/colors the shells get.
-/// - `heat_map_on` / `scalar_mode`: pick which color buffer (Ψ or
-///   ‖P‖) drives the per-vertex COLOR attribute when heat map is
-///   on, or revert to palette tint when off.
-/// - `last_run_generation`: a counter `InsertionSimState` bumps
-///   whenever `last_run` changes meaningfully (a new run completed,
-///   or invalidation cleared the previous). The Vec<Vec<[f32; 4]>>
-///   color buffers themselves are large + identity-only, so we
-///   track this scalar proxy instead.
-///
-/// `proxy` / `up` / `render_scale` are intentionally NOT in the key:
-/// they're set once at app start and never change.
+/// tick?". The latter is the deref-mut-on-access footgun
+/// (`device_design_panel` holds both `CavityState` + `LayersState` as
+/// `ResMut<>`, so their change ticks fire every frame regardless of
+/// whether a value moved); the former is the documented escape hatch
+/// per [[project-bevy-is-changed-footgun]].
 #[derive(Debug, Clone, PartialEq)]
 struct LayerMeshKey {
     cavity: CavityState,
     layers: LayersState,
-    heat_map_on: bool,
-    scalar_mode: insertion_sim_ui::ScalarMode,
-    last_run_generation: u64,
-    /// Slice S1 — playback-slider index. A step change re-projects the
-    /// heat map at the new step's per-tet scalar field.
-    displayed_step: usize,
-    /// Slice S3 — when `true`, the per-layer shells render the FEM
-    /// analysis mesh's deformed outer faces at `displayed_step`
-    /// instead of the rest-frame SDF iso. Same toggle the cavity uses;
-    /// keeps the two renders consistent.
-    show_deformed: bool,
 }
 
-/// Build a Bevy `Mesh` directly from an [`IndexedMesh`] — no
-/// per-vertex displacement. Used by the SDF-extracted cavity + per-
-/// layer surfaces (slice 9, [`sdf_layers::extract_layer_surface`]).
-/// Maps physics-frame vertices through the cast-frame `UpAxis` swap
-/// plus the `render_scale` lift to Bevy frame; computes smooth
-/// per-vertex normals from face winding.
-///
-/// Replaced the prior `build_displaced_proxy_mesh*` wrappers (sub-leaf
-/// 6) — the SDF iso path extracts geometry where it naturally lives,
-/// so there is no displacement step at the bevy-mesh-build boundary.
-fn build_bevy_mesh_from_indexed(mesh: &IndexedMesh, up: UpAxis, render_scale: f32) -> Mesh {
-    build_bevy_mesh_from_indexed_with_colors(mesh, up, render_scale, None)
-}
-
-/// Same as [`build_bevy_mesh_from_indexed`] but with optional per-
-/// vertex RGBA colors — the SDF-path heat-map analog of the
-/// retired `build_displaced_proxy_mesh_with_colors` (slice 9
-/// sub-leaf 7 wires this for the Insertion Sim panel).
-///
-/// # Panics
-///
-/// `vertex_colors` must match `mesh.vertices.len()` when `Some`;
-/// mismatched lengths panic via the `Mesh::ATTRIBUTE_COLOR` insert
-/// invariant — a construction-side bug, not a runtime data
-/// dependence.
-fn build_bevy_mesh_from_indexed_with_colors(
-    mesh: &IndexedMesh,
-    up: UpAxis,
-    render_scale: f32,
-    vertex_colors: Option<&[[f32; 4]]>,
-) -> Mesh {
-    let positions: Vec<[f32; 3]> = mesh
-        .vertices
-        .iter()
-        .map(|v| {
-            let bevy = up.to_bevy_point(v);
-            #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
-            [
-                bevy[0] * render_scale,
-                bevy[1] * render_scale,
-                bevy[2] * render_scale,
-            ]
-        })
-        .collect();
-    let indices: Vec<u32> = mesh.faces.iter().flatten().copied().collect();
-
-    let mut bevy_mesh = Mesh::new(
-        bevy::mesh::PrimitiveTopology::TriangleList,
-        bevy::asset::RenderAssetUsages::default(),
-    );
-    bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    bevy_mesh.insert_indices(bevy::mesh::Indices::U32(indices));
-    bevy_mesh.compute_smooth_normals();
-    if let Some(colors) = vertex_colors {
-        assert_eq!(
-            colors.len(),
-            mesh.vertices.len(),
-            "build_bevy_mesh_from_indexed_with_colors: vertex_colors.len() = {} \
-             must match mesh.vertices.len() = {}",
-            colors.len(),
-            mesh.vertices.len(),
-        );
-        bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
-    }
-    bevy_mesh
-}
-
-/// Palette for the per-layer outer-surface mesh entities. Repeats
-/// if the layer count exceeds the palette length.
-const LAYER_SURFACE_PALETTE: &[(f32, f32, f32)] = &[
-    (0.95, 0.80, 0.35), // amber
-    (0.45, 0.70, 0.95), // sky blue
-    (0.75, 0.55, 0.95), // lavender
-    (0.55, 0.95, 0.65), // mint
-    (0.95, 0.45, 0.70), // pink
-];
-
-/// Slice S11.2 — translucency for the per-layer slab render. Each
-/// layer entity carries both its inner + outer face triangles
-/// (`InsertionSimOutputs::deformed_layer_slab_mesh_at`) and renders
-/// with `AlphaMode::Blend` at this alpha so the user sees through
-/// the outer layer into the inner ones + the cavity + intruder.
-/// Bookmark §3 Tier 1 (2)–(3): opaque outer shells occluded
-/// everything else (finding F3); 0.35 lets the user see a clear
-/// translucent band of silicone per layer without losing the inner
-/// geometry behind it.
+/// Translucency for the per-layer surface shells so outer layers don't
+/// fully occlude the inner geometry + cavity. 0.35 keeps each layer
+/// readable as a translucent band of silicone without losing what's
+/// behind it.
 const LAYER_SLAB_ALPHA: f32 = 0.35;
-
-/// Cavity surface color (`StandardMaterial::base_color`). The
-/// cavity is the inner void surface; coral distinguishes it from
-/// the layer palette + scan + axis arrows. Material is double-
-/// sided so the user sees the inside when layers are hidden.
-const CAVITY_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.45);
-
-/// Spawn the cavity mesh entity at startup. Layer entities spawn
-/// lazily on the first state-change tick.
-///
-/// Slice 9 sub-leaf 3: extracts the cavity surface from the cached
-/// scan SDF at `iso = -cavity.inset_m` (inward offset by the inset
-/// distance). Replaces the prior per-vertex radial displacement of
-/// the proxy mesh — the SDF iso is exactly perpendicular to the
-/// source surface by construction (no apex-nipple artifacts).
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
-fn spawn_cavity_mesh(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ClipPlaneMaterial>>,
-    cached_sdf: Res<sdf_layers::CachedScanSdf>,
-    cap_planes: Res<sdf_layers::CapPlanes>,
-    cavity: Res<CavityState>,
-    up: Res<UpAxis>,
-    render_scale: Res<RenderScale>,
-) {
-    let cavity_indexed =
-        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -cavity.inset_m);
-    let cavity_mesh = meshes.add(build_bevy_mesh_from_indexed(
-        &cavity_indexed,
-        *up,
-        render_scale.0,
-    ));
-    let cavity_material = materials.add(ExtendedMaterial {
-        base: StandardMaterial {
-            base_color: Color::srgb(CAVITY_COLOR.0, CAVITY_COLOR.1, CAVITY_COLOR.2),
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        },
-        extension: ClipPlaneExt::default(),
-    });
-    commands.spawn((
-        Mesh3d(cavity_mesh),
-        MeshMaterial3d(cavity_material),
-        CavityEntity,
-    ));
-}
 
 /// Snapshot of every input `update_cavity_mesh` reads, kept in the
 /// system's `Local<>` so the per-frame check is "did the values
 /// actually change?" rather than "did Bevy's `Res::is_changed()`
-/// tick?" — same posture as [`LayerMeshKey`] +
-/// `insertion_sim_ui::invalidate_on_geometry_change`.
-///
-/// `show_deformed` + `displayed_step` + `last_run_generation` are the
-/// slice-S2 additions: a step-scrub, a Show-deformed toggle, or a new
-/// run completion each rebuilds the cavity mesh asset.
+/// tick?" — same posture as [`LayerMeshKey`].
 #[derive(Debug, Clone, PartialEq)]
 struct CavityMeshKey {
     cavity: CavityState,
-    show_deformed: bool,
-    displayed_step: usize,
-    last_run_generation: u64,
 }
 
-/// Regenerate the cavity mesh asset.
-///
-/// Two render modes:
-///
-/// - **Rest** (default; pre-S2 behavior): cavity surface extracted from
-///   the cached scan SDF at `iso = -cavity.inset_m`. Slice 9 sub-leaf
-///   3's smooth MC iso-surface, fitting the scan exactly perpendicular
-///   to its source (no apex-nipple artifacts).
-/// - **Deformed** (slice S2; only when `sim_state.show_deformed && last_run.is_some()`):
-///   cavity entity gets the FEM analysis mesh's deformed boundary at
-///   `sim_state.displayed_step` — the same BCC vertex layout the ramp
-///   solves on, with each step's `x_final` displaced coordinates.
-///   Coarser than the SDF iso (4 mm BCC vs ~1 mm MC) but it's the
-///   "see the squish" view the workshop user reaches for after a sim
-///   completes. Falls back to rest if `displayed_step` is out of the
-///   converged-step range.
+/// Regenerate the cavity mesh asset from the cached scan SDF at
+/// `iso = -cavity.inset_m`. Smooth MC iso-surface, fitting the scan
+/// exactly perpendicular to its source (no apex-nipple artifacts).
 ///
 /// Change-detection mirrors [`update_layer_meshes`]: snapshot-and-
 /// compare via `Local<Option<CavityMeshKey>>` so a Bevy `ResMut<T>`
@@ -1474,38 +600,18 @@ fn update_cavity_mesh(
     cap_planes: Res<sdf_layers::CapPlanes>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    sim_state: Res<insertion_sim_ui::InsertionSimState>,
     mut last_key: Local<Option<CavityMeshKey>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut q: Query<(&mut Mesh3d, &mut Visibility), With<CavityEntity>>,
 ) {
-    let current_key = CavityMeshKey {
-        cavity: *state,
-        show_deformed: sim_state.show_deformed,
-        displayed_step: sim_state.displayed_step,
-        last_run_generation: sim_state.last_run_generation,
-    };
+    let current_key = CavityMeshKey { cavity: *state };
     let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
     *last_key = Some(current_key);
     if !changed {
         return;
     }
-    // Slice S2 — deformed view consumes the FEM boundary at the
-    // displayed step; otherwise fall through to the rest-frame SDF
-    // iso extraction. The decision + mesh build are loop-invariant
-    // (one CavityEntity expected; the loop is defensive against
-    // transient duplicates), so they live outside the entity loop.
-    let cavity_indexed = if sim_state.show_deformed {
-        sim_state
-            .last_run
-            .as_ref()
-            .and_then(|run| run.deformed_boundary_mesh_at(sim_state.displayed_step))
-            .unwrap_or_else(|| {
-                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m)
-            })
-    } else {
-        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m)
-    };
+    let cavity_indexed =
+        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m);
     let mesh_asset = meshes.add(build_bevy_mesh_from_indexed(
         &cavity_indexed,
         *up,
@@ -1528,35 +634,17 @@ fn update_cavity_mesh(
 /// separate "outer envelope" concept). Each entity's visibility
 /// tracks its own `LayerSpec::visible` flag.
 ///
-/// Slice 9 sub-leaf 4 — the load-bearing visual gate of the
-/// SDF-based-layer-surfaces arc. Replaces per-vertex radial
-/// displacement of `EnvelopeProxyMesh` with
-/// [`sdf_layers::extract_layer_surface`] at `iso = cumulative_thickness
-/// - cavity.inset_m`. Two consequences worth pinning:
+/// Surfaces come from [`sdf_layers::extract_layer_surface`] at
+/// `iso = cumulative_thickness - cavity.inset_m` — exact perpendicular
+/// to the scan by construction (no apex-nipple artifacts; the
+/// SDF-based path that retired the per-vertex radial displacement
+/// in slice 9).
 ///
-/// 1. **Dome-apex nipple gone.** The per-vertex path raced apex
-///    vertices outward (their radial pointed up-and-out from a
-///    centerline point inside the body); the SDF iso is exactly
-///    perpendicular to the source by construction, so the apex
-///    grows uniformly with thickness.
-/// 2. **Per-layer MC mesh topology.** Each layer has its own vertex
-///    set; together with its own face set, this replaces every
-///    layer sharing the proxy's connectivity. The Insertion Sim
-///    panel's heat-map projection was keyed on
-///    `proxy.vertices.len()`; that path is temporarily disabled
-///    here and re-wired in sub-leaf 7 via per-layer-vertex
-///    closest-point lookup against the SDF tet mesh.
-///
-/// **Change-detection** (cold-read finding from slice-9 follow-up):
-/// the prior implementation gated on
-/// `layers.is_changed() || cavity.is_changed() || sim_state.is_changed()`.
-/// All three resources are held as `ResMut<>` by
-/// `device_design_panel`, which bumps their change ticks every frame
-/// regardless of whether any value moved. Net effect: the guard
-/// always passed, and the 6 layer entities despawned-and-respawned
-/// every frame. Snapshot-and-compare via `Local<>` (same posture
-/// `invalidate_on_geometry_change` uses) keeps rebuild cost paid
-/// only on real input changes.
+/// Change-detection is snapshot-and-compare via `Local<>` (same
+/// posture as [`update_cavity_mesh`]), not `Res::is_changed()` —
+/// `device_design_panel` holds `CavityState` + `LayersState` as
+/// `ResMut<>` so their ticks fire every frame regardless of value
+/// motion per [[project-bevy-is-changed-footgun]].
 ///
 /// **Envelope note** ([`sdf_layers::LAYER_GRID_MARGIN_M`] = 40 mm):
 /// cumulative thickness theoretically reaches 6 layers × 20 mm =
@@ -1576,7 +664,6 @@ fn update_layer_meshes(
     cap_planes: Res<sdf_layers::CapPlanes>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    sim_state: Res<insertion_sim_ui::InsertionSimState>,
     mut last_key: Local<Option<LayerMeshKey>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1586,11 +673,6 @@ fn update_layer_meshes(
     let current_key = LayerMeshKey {
         cavity: *cavity,
         layers: layers.clone(),
-        heat_map_on: sim_state.heat_map_on,
-        scalar_mode: sim_state.scalar_mode,
-        last_run_generation: sim_state.last_run_generation,
-        displayed_step: sim_state.displayed_step,
-        show_deformed: sim_state.show_deformed,
     };
     let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
     *last_key = Some(current_key);
@@ -1603,25 +685,6 @@ fn update_layer_meshes(
     if layers.layers.is_empty() {
         return;
     }
-    // Pre-fetch the heat-map run reference for the per-layer
-    // projection (sub-leaf 7). When `heat_map_on && last_run` →
-    // each layer gets a per-MC-vertex projection from the sim's
-    // per-tet scalar field; otherwise palette tint.
-    let heat_map_run = if sim_state.heat_map_on {
-        sim_state.last_run.as_ref()
-    } else {
-        None
-    };
-    // Slice S3 — deformed-shells path consumes `last_run`'s per-layer
-    // outer faces at the displayed step; falls through to the
-    // rest-frame SDF iso when toggled off OR when the sim's layer
-    // count doesn't cover this UI layer (e.g., user added a layer
-    // after the run).
-    let deformed_layers_run = if sim_state.show_deformed {
-        sim_state.last_run.as_ref()
-    } else {
-        None
-    };
     let mut cumulative_thickness_m = 0.0_f64;
     for (i, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
@@ -1641,59 +704,19 @@ fn update_layer_meshes(
         // `debug_assert!` (strict `<`) still passes in debug builds.
         let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
         let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
-        // Slice S11.2 — deformed-shells path picks the SLAB mesh
-        // (inner + outer faces) so the user reads each layer as a
-        // translucent band of silicone instead of an opaque outer
-        // skin. Falls through to the legacy outer-only helper when
-        // the slab build is unavailable (e.g., sim ran with fewer
-        // layers than the GUI now shows), then to the rest-frame
-        // SDF iso when the deformed view is off altogether.
-        let layer_indexed = deformed_layers_run
-            .and_then(|run| run.deformed_layer_slab_mesh_at(i, sim_state.displayed_step))
-            .or_else(|| {
-                deformed_layers_run
-                    .and_then(|run| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
-            })
-            .unwrap_or_else(|| {
-                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
-            });
-        // Heat-map: project per-tet scalars onto this layer's MC
-        // vertices (sub-leaf 7). `project_layer_heat_map` returns
-        // `None` if the sim ran with fewer layers than the current
-        // GUI shows, or the layer has no tets in its partition —
-        // in either case the layer falls back to the palette tint.
-        let colors_vec = heat_map_run.and_then(|run| {
-            insertion_sim_ui::project_layer_heat_map(
-                run,
-                i,
-                sim_state.scalar_mode,
-                sim_state.displayed_step,
-                &layer_indexed.vertices,
-            )
-        });
-        let colors_slice = colors_vec.as_deref();
-        let mesh = meshes.add(build_bevy_mesh_from_indexed_with_colors(
+        let layer_indexed =
+            sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m);
+        let mesh = meshes.add(build_bevy_mesh_from_indexed(
             &layer_indexed,
             *up,
             render_scale.0,
-            colors_slice,
         ));
         let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
-        // Slice S11.2 — slab materials carry `LAYER_SLAB_ALPHA` and
-        // `AlphaMode::Blend` so outer layers don't fully occlude the
-        // inner geometry. Heat-map mode pins base color to white so
-        // the per-vertex COLOR attribute carries the gradient
-        // straight through (StandardMaterial multiplies base ×
-        // vertex × light); off mode keeps the palette tint with the
-        // same alpha.
-        let base_color = if colors_slice.is_some() {
-            Color::srgba(1.0, 1.0, 1.0, LAYER_SLAB_ALPHA)
-        } else {
-            Color::srgba(r, g, b, LAYER_SLAB_ALPHA)
-        };
+        // `AlphaMode::Blend` + `LAYER_SLAB_ALPHA` so outer layers don't
+        // fully occlude the inner geometry + cavity.
         let material = materials.add(ExtendedMaterial {
             base: StandardMaterial {
-                base_color,
+                base_color: Color::srgba(r, g, b, LAYER_SLAB_ALPHA),
                 alpha_mode: AlphaMode::Blend,
                 double_sided: true,
                 cull_mode: None,
@@ -1730,93 +753,6 @@ fn apply_scan_mesh_visibility(
         } else {
             Visibility::Hidden
         };
-    }
-}
-
-/// Slice S11.1 — spawn the intruder render entity at startup with an
-/// empty placeholder mesh. [`update_intruder_mesh`] fills the actual
-/// per-step iso surface as soon as `InsertionSimState.last_run`
-/// becomes `Some` and `show_deformed` is on.
-///
-/// Distinct from S4: the S4 path mounted the bare scan mesh up front
-/// and rewrote the entity's transform per frame to "slide it in." The
-/// per-step iso surface is geometrically right (matches the FEM-solved
-/// intruder), so spawning with an empty mesh and letting the per-step
-/// system swap the asset is both simpler and FEM-truthful.
-#[allow(clippy::needless_pass_by_value)]
-fn spawn_intruder_mesh(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut clip_materials: ResMut<Assets<ClipPlaneMaterial>>,
-) {
-    let placeholder = meshes.add(Mesh::new(
-        bevy::mesh::PrimitiveTopology::TriangleList,
-        bevy::asset::RenderAssetUsages::default(),
-    ));
-    let material = clip_materials.add(ExtendedMaterial {
-        base: StandardMaterial {
-            base_color: Color::srgb(INTRUDER_COLOR.0, INTRUDER_COLOR.1, INTRUDER_COLOR.2),
-            metallic: 0.10,
-            perceptual_roughness: 0.6,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        },
-        extension: ClipPlaneExt::default(),
-    });
-    commands.spawn((
-        Mesh3d(placeholder),
-        MeshMaterial3d(material),
-        Visibility::Hidden,
-        IntruderEntity,
-    ));
-}
-
-/// Snapshot of every input [`update_intruder_mesh`] reads, kept in the
-/// system's `Local<>` so the per-frame check is "did the values
-/// actually change?" rather than "did Bevy's `Res::is_changed()`
-/// tick?" — same posture as [`CavityMeshKey`] +
-/// [`LayerMeshKey`] +
-/// `insertion_sim_ui::invalidate_on_geometry_change`.
-#[derive(Debug, Clone, PartialEq)]
-struct IntruderMeshKey {
-    displayed_step: usize,
-    last_run_generation: u64,
-    show_deformed: bool,
-}
-
-/// SL.3 (sliding-intruder arc) — stubbed to always hide the
-/// [`IntruderEntity`]. The slice-S11.1 per-step iso MC render path
-/// was removed when `run_sim_pipeline` stopped extracting per-step
-/// intruder meshes (the new sliding ramp uses a constant-mesh +
-/// per-step `Transform` render, scheduled for SL.4). Until SL.4
-/// rewires this system as `update_intruder_transform` (S4-style),
-/// the intruder is hidden — the cavity-render at the FEM-deformed
-/// boundary is the SL.3 visual gate, not the intruder shape.
-///
-/// Change-detection still uses `IntruderMeshKey` so SL.4 can drop
-/// straight into this slot.
-#[allow(clippy::needless_pass_by_value)]
-fn update_intruder_mesh(
-    sim_state: Res<insertion_sim_ui::InsertionSimState>,
-    _up: Res<UpAxis>,
-    _render_scale: Res<RenderScale>,
-    mut last_key: Local<Option<IntruderMeshKey>>,
-    _meshes: ResMut<Assets<Mesh>>,
-    mut q: Query<&mut Visibility, With<IntruderEntity>>,
-) {
-    let current_key = IntruderMeshKey {
-        displayed_step: sim_state.displayed_step,
-        last_run_generation: sim_state.last_run_generation,
-        show_deformed: sim_state.show_deformed,
-    };
-    let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
-    *last_key = Some(current_key);
-    if !changed {
-        return;
-    }
-    for mut vis in &mut q {
-        *vis = Visibility::Hidden;
     }
 }
 
@@ -1935,6 +871,13 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
                 state.inset_m = inset_mm * 0.001;
             }
             ui.label("(silicone skin stretches inset_m over appendage)");
+            // The slider's max value (8 mm) is the workshop-validated
+            // envelope; see `CAVITY_INSET_SLIDER_MAX_M` docstring for
+            // the rationale.
+            ui.label(format!(
+                "(capped at {:.0} mm — workshop envelope)",
+                cf_device_types::CAVITY_INSET_SLIDER_MAX_M * 1e3,
+            ));
         });
 }
 
@@ -2075,28 +1018,8 @@ fn render_material_dropdown(ui: &mut egui::Ui, layer_index: usize, selected: &mu
         });
 }
 
-/// The Slacker fraction a layer should actually use: `requested` if
-/// it is an exact data point on the base silicone's Smooth-On TB
-/// curve, otherwise `0.0` (no Slacker — the always-valid native
-/// default).
-///
-/// Called every frame before the Slacker control renders, so a
-/// base-material change that orphans the stored fraction (the new
-/// material has a different curve, or no Slacker support at all)
-/// snaps cleanly back to "no Slacker" instead of silently keeping a
-/// fraction that is not on the new curve.
-fn resolve_slacker_fraction(anchor_key: &str, requested: f64) -> f64 {
-    match slacker::support(anchor_key) {
-        slacker::Support::Curve(curve) => {
-            let on_curve = curve
-                .iter()
-                .any(|p| (p.slacker_fraction - requested).abs() < f64::EPSILON);
-            if on_curve { requested } else { 0.0 }
-        }
-        // No Slacker curve for this base — force the native silicone.
-        slacker::Support::NotRecommended | slacker::Support::NoData => 0.0,
-    }
-}
+// `resolve_slacker_fraction` lives in `cf-device-types`'s `slacker`
+// module alongside the TB curve data.
 
 /// Part A / Part B / Slacker masses (grams) to weigh out for one
 /// layer's pour. Returns `(part_ab_g, slacker_g)` where `part_ab_g`
@@ -2233,10 +1156,8 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
     }
 }
 
-/// Right-side egui sidebar carrying the design-suite panels.
-/// Renders Scan Info + Cavity + Layers + Validations; remaining
-/// stubs surface the planned panel order (Insertion Sim /
-/// Save-Open).
+/// Right-side egui sidebar carrying the design-suite panels:
+/// Scan Info + Cavity + Layers + Validations + Clip-plane + Save-Open.
 ///
 /// [`compute_validations`] runs once at the top of the panel, from
 /// the current resource state, and the resulting [`DeviceValidations`]
@@ -2246,7 +1167,7 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 /// readouts one frame later — imperceptible at frame rate, and it
 /// keeps both sections reading a single consistent computation
 /// rather than each re-deriving it.
-// 10 system parameters; over the default clippy cap. The alternative
+// 11 system parameters; over the default clippy cap. The alternative
 // is bundling resources into a SystemParam struct, which for this
 // single all-panels driver is more ceremony than the cap is worth —
 // every parameter is a Bevy resource consumed by a single section of
@@ -2263,13 +1184,10 @@ fn device_design_panel(
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
     mut clip_state: ResMut<clip_plane::ClipPlaneState>,
-    mut sim_state: ResMut<insertion_sim_ui::InsertionSimState>,
     mut save_state: ResMut<SaveState>,
-    scan_mesh: Option<Res<ScanMesh>>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     let validations = compute_validations(&cached_sdf, &cap_planes, &cavity, &layers);
-    let scan_loaded = scan_mesh.is_some();
     let centerline_available = centerline.points_m.len() >= 2;
     egui::SidePanel::right("cf-device-design-panels")
         .resizable(false)
@@ -2288,8 +1206,6 @@ fn device_design_panel(
                         &mut clip_state,
                         centerline_available,
                     );
-                    ui.separator();
-                    insertion_sim_ui::render_insertion_sim_section(ui, &mut sim_state, scan_loaded);
                     ui.separator();
                     render_save_open_section(ui, &mut save_state, &cavity, &layers, &scan_path.0);
                     render_panel_stubs(ui);
@@ -2334,16 +1250,11 @@ fn render_scan_info_section(
         });
 }
 
-/// Stub-section placeholders for panels arriving in later slices. UI
-/// only — no state to surface yet. Pre-populating with the future
-/// panel names so the user can see the planned layout. Order tracks
-/// the reprioritized slice ladder: the FEM insertion sim (slice 7)
-/// is pulled ahead of Features / Texture because the simulation IS
-/// the engineering payoff of the suite.
+/// Stub-section placeholders for panels arriving in later slices.
+/// Save/Open took the previous stub; nothing left to render today.
+/// The function remains so a future slice (Features / Texture) can
+/// hang its own placeholder back on it.
 fn render_panel_stubs(ui: &mut egui::Ui) {
-    // Slice 8 took the Save/Open stub; nothing left here today. The
-    // function remains so a future slice (10+: Features / Texture)
-    // can hang its own placeholder back on it.
     let _ = ui;
 }
 
@@ -2587,7 +1498,6 @@ fn run_render_app(
         .add_plugins(EguiPlugin::default())
         .add_plugins(OrbitCameraPlugin)
         .add_plugins(clip_plane::ClipPlanePlugin)
-        .add_plugins(insertion_sim_ui::InsertionSimPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(DEVICE_UP_AXIS)
         .insert_resource(RenderScale(render_scale))
@@ -2603,10 +1513,7 @@ fn run_render_app(
         .insert_resource(layers)
         .insert_resource(save_state)
         .insert_resource(ScanMeshVisible::default())
-        .add_systems(
-            Startup,
-            (setup_render_scene, spawn_cavity_mesh, spawn_intruder_mesh).chain(),
-        )
+        .add_systems(Startup, (setup_render_scene, spawn_cavity_mesh).chain())
         .add_systems(
             Update,
             (
@@ -2614,7 +1521,6 @@ fn run_render_app(
                 draw_reference_overlays,
                 update_cavity_mesh,
                 update_layer_meshes,
-                update_intruder_mesh,
                 apply_scan_mesh_visibility,
                 exit_on_esc,
             ),
@@ -2819,10 +1725,25 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn cavity_inset_slider_range_zero_to_fifteen_mm() {
+    fn cavity_inset_slider_range_zero_to_eight_mm() {
+        // Sentinel test pinning the workshop cavity-inset envelope.
+        // The cap value lives in `CAVITY_INSET_SLIDER_MAX_M`; see
+        // its docstring + `CavityState::inset_slider_range_m` for
+        // the workshop-envelope rationale + a pointer to the
+        // sim-research convergence-envelope history.
         let (min_m, max_m) = CavityState::inset_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
-        assert!(approx_eq(max_m, 0.015, 1e-12));
+        assert!(approx_eq(
+            max_m,
+            cf_device_types::CAVITY_INSET_SLIDER_MAX_M,
+            1e-12,
+        ));
+        // Pin the const at 8 mm so a future bound-edit notices.
+        assert!(approx_eq(
+            cf_device_types::CAVITY_INSET_SLIDER_MAX_M,
+            0.008,
+            1e-12,
+        ));
     }
 
     #[test]
@@ -3208,57 +2129,6 @@ another_future_field = "foo"
         // A fresh layer is plain base silicone — no Slacker.
         let layers = LayersState::default_for_scan();
         assert!(approx_eq(layers.layers[0].slacker_fraction, 0.0, 1e-12));
-    }
-
-    #[test]
-    fn resolve_slacker_fraction_keeps_on_curve_values() {
-        // A fraction that IS a data point on the base material's
-        // curve passes through unchanged.
-        assert!(approx_eq(
-            resolve_slacker_fraction("ECOFLEX_00_30", 0.25),
-            0.25,
-            1e-12,
-        ));
-        assert!(approx_eq(
-            resolve_slacker_fraction("DRAGON_SKIN_10A", 0.75),
-            0.75,
-            1e-12,
-        ));
-        // 0.0 (the native point) is on every curve.
-        assert!(approx_eq(
-            resolve_slacker_fraction("ECOFLEX_00_30", 0.0),
-            0.0,
-            1e-12,
-        ));
-    }
-
-    #[test]
-    fn resolve_slacker_fraction_resets_orphaned_values() {
-        // 0.75 is on the Dragon Skin 10A curve but NOT the Ecoflex
-        // curves (Ecoflex caps at 0.50) — switching base material
-        // to an Ecoflex orphans it, so it resets to 0.0.
-        assert!(approx_eq(
-            resolve_slacker_fraction("ECOFLEX_00_30", 0.75),
-            0.0,
-            1e-12,
-        ));
-        // An arbitrary off-curve value resets too.
-        assert!(approx_eq(
-            resolve_slacker_fraction("ECOFLEX_00_30", 0.123),
-            0.0,
-            1e-12,
-        ));
-        // Bases with no Slacker curve always resolve to 0.0.
-        assert!(approx_eq(
-            resolve_slacker_fraction("ECOFLEX_00_10", 0.25),
-            0.0,
-            1e-12,
-        ));
-        assert!(approx_eq(
-            resolve_slacker_fraction("DRAGON_SKIN_15", 0.25),
-            0.0,
-            1e-12,
-        ));
     }
 
     #[test]

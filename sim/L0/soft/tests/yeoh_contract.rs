@@ -30,7 +30,7 @@
 //! - **Calibration arithmetic** — `M_100 = 3.5·C₁ + 14·C₂` per
 //!   anchor: `material/silicone_table.rs::tests::c2_calibration_reproduces_published_100_pct_modulus`.
 //! - **Validity bound population** — `to_yeoh()` round-trips
-//!   `(max, min) = (0.8·λ_break, 0.30)`:
+//!   `(max, min) = (0.8·λ_break, 0.20)`:
 //!   `silicone_table.rs::tests::to_yeoh_round_trips_yeoh_fields_for_each_anchor`.
 //! - **`λ_break` ↔ `ε_break` ASTM-D412 conversion + 0.8 rupture margin**
 //!   — pins `validity_max = 0.8 · (1 + ε_break / 100)` per anchor:

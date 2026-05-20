@@ -32,13 +32,18 @@ gpu-probe = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
 [dependencies]
 # Chassis tape, VjpOp, Tensor<f64> — shipped in PR #213.
 sim-ml-chassis = { workspace = true }
-# Sdf trait — sim-soft's `sdf_bridge::Sdf` re-exports `cf_design::Sdf`
-# so cf-design's design surface (Solid, mesh-sdf adapter) and sim-soft's
-# simulation surface (penalty contact, BCC stuffing, MaterialField) speak
-# the same trait without an adapter. Trait method receivers are
-# `Point3<f64>`; sim-soft call sites adapt at the boundary via
-# `Point3::from(vec3)`. See inventory Q5 for the architecture decision.
-cf-design = { workspace = true }
+# Sdf trait — sim-soft's `sdf_bridge::Sdf` re-exports `cf_geometry::Sdf`
+# so cf-design's design surface (`Solid`), mesh-sdf's adapter impls
+# (`Signed<D, S>`, `CachedGridSdf`), and sim-soft's simulation surface
+# (penalty contact, BCC stuffing, MaterialField) all speak the same
+# trait without an adapter. Trait method receivers are `Point3<f64>`;
+# sim-soft call sites adapt at the boundary via `Point3::from(vec3)`.
+# See inventory Q5 for the architecture decision. The trait moved from
+# cf-design to cf-geometry (sim-soft's L0 geometric kernel) so a
+# foundational solver crate no longer depends on the design-side kernel
+# that uses it — closing the L0 100-dep tier cap violation surfaced in
+# PR #249.
+cf-geometry = { workspace = true }
 # `AttributedMesh` + `IndexedMesh` for the `viz` module's FEM-grade
 # visualization helpers (`boundary_surface`, `slab_cut`). First
 # sim-soft consumer; before F1.1 viz lift the AttributedMesh emit

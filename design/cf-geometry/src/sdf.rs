@@ -1,4 +1,24 @@
-//! Signed distance field grid for implicit surface representation.
+//! Signed-distance-function trait + signed distance field grid for
+//! implicit surface representation.
+//!
+//! This module hosts two related-but-distinct surfaces:
+//!
+//! - The [`Sdf`] **trait** — the contract every signed-distance-function
+//!   implementor in CortenForge satisfies. Owned here so the foundational
+//!   geometric layer (mesh-sdf adapters, cf-design `Solid`, sim-soft's
+//!   `SphereSdf`) can speak the same trait without any of them depending
+//!   on a design-side kernel.
+//! - The [`SdfGrid`] **struct** — a concrete uniform-grid storage of a
+//!   sampled signed distance field, with trilinear interpolation +
+//!   centered-FD gradient queries.
+//!
+//! `Sdf` is the **contract**; `SdfGrid` is one specific concrete shape
+//! for in-memory sampled SDFs. They share a name root but live at
+//! different abstraction levels: `Sdf` is a trait every signed-distance
+//! source satisfies, `SdfGrid` is a struct one could (but today does
+//! not) `impl Sdf for`.
+//!
+//! # `SdfGrid` semantics
 //!
 //! [`SdfGrid`] stores a 3D grid of signed distance values representing
 //! geometry implicitly:
@@ -7,20 +27,20 @@
 //! - Zero → on the surface boundary
 //! - The gradient at any point gives the surface normal direction
 //!
-//! # Coordinate System
+//! ## Coordinate System
 //!
 //! The grid is defined in local coordinates:
 //! - Origin at the minimum corner of the bounding box
 //! - Grid cells are uniform in all dimensions
 //! - Values are stored in ZYX order (Z varies slowest)
 //!
-//! # Performance
+//! ## Performance
 //!
 //! - O(1) distance queries with trilinear interpolation
 //! - O(1) gradient/normal computation
 //! - Memory usage: O(n³) for n×n×n grid
 //!
-//! # Robustness
+//! ## Robustness
 //!
 //! All public query methods handle out-of-bounds points gracefully:
 //!
@@ -39,10 +59,67 @@
     clippy::cast_possible_wrap
 )]
 
+use std::sync::Arc;
+
 use nalgebra::{Point3, Vector3};
 
 use crate::Aabb;
 use crate::bounded::Bounded;
+
+/// Signed-distance function over R³.
+///
+/// Sign convention: `eval` returns a negative value strictly inside the
+/// body, positive strictly outside, zero on the surface. `grad` returns
+/// the gradient of the signed-distance field — unit-length on the zero
+/// set when the field is exact, undefined at interior singularities (a
+/// concrete impl picks an arbitrary fallback there).
+///
+/// `Send + Sync` so trait objects (`Box<dyn Sdf>` inside composition
+/// trees) satisfy thread-safety bounds at every storage site without
+/// `+ Send + Sync` clutter. Every reasonable implementor is naturally
+/// `Send + Sync` — a pure function over `Point3<f64>`, or a composition
+/// of the same — and the supertrait documents the invariant.
+pub trait Sdf: Send + Sync {
+    /// Signed distance from `p` to the surface.
+    fn eval(&self, p: Point3<f64>) -> f64;
+
+    /// Gradient of [`Sdf::eval`] at `p`.
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64>;
+}
+
+/// Forwarding impl through `Box<T>` for any `T: Sdf + ?Sized`.
+///
+/// Lets a heap-erased SDF satisfy [`Sdf`] directly, so a `Box<dyn Sdf>`
+/// (or a `Vec<Box<dyn Sdf>>` of mixed concrete implementors) is callable
+/// at every site that takes any `S: Sdf` — without an inner deref or a
+/// `&dyn Sdf` reborrow.
+impl<T: Sdf + ?Sized> Sdf for Box<T> {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        (**self).eval(p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        (**self).grad(p)
+    }
+}
+
+/// Forwarding impl through `Arc<T>` for any `T: Sdf + ?Sized`.
+///
+/// Lets a shared, heap-erased SDF satisfy [`Sdf`] directly, so an
+/// `Arc<dyn Sdf>` is callable at every site that takes any `S: Sdf` —
+/// and cloning shares the inner allocation. Consumers that need the
+/// same SDF threaded through several composition trees wrap it once in
+/// `Arc<dyn Sdf>` and pass cheap clones of the `Arc` to each call
+/// site, avoiding the cost of deep-cloning the underlying SDF.
+impl<T: Sdf + ?Sized> Sdf for Arc<T> {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        (**self).eval(p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        (**self).grad(p)
+    }
+}
 
 /// Signed distance field data on a uniform 3D grid.
 ///
@@ -527,6 +604,67 @@ mod tests {
 
     fn sphere_sdf(resolution: usize) -> SdfGrid {
         SdfGrid::sphere(Point3::origin(), 1.0, resolution, 1.0)
+    }
+
+    // ── Sdf trait blanket impls ─────────────────────────────────────────
+
+    /// Minimal in-crate `Sdf` implementor for the Box/Arc blanket
+    /// forwarding pins below. cf-geometry has no concrete `Sdf` impl
+    /// of its own today (the design-side `Solid` lives in cf-design,
+    /// the mesh-sdf adapters live in mesh-sdf), so the tests use this
+    /// constant-field stand-in.
+    struct ConstSdf {
+        value: f64,
+        gradient: Vector3<f64>,
+    }
+
+    impl Sdf for ConstSdf {
+        fn eval(&self, _p: Point3<f64>) -> f64 {
+            self.value
+        }
+
+        fn grad(&self, _p: Point3<f64>) -> Vector3<f64> {
+            self.gradient
+        }
+    }
+
+    #[test]
+    fn box_dyn_sdf_blanket_forwards_eval_and_grad() {
+        let inner = ConstSdf {
+            value: 0.25,
+            gradient: Vector3::new(1.0, 0.0, 0.0),
+        };
+        let boxed: Box<dyn Sdf> = Box::new(inner);
+        for &p in &[
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(2.0, 0.0, 0.0),
+        ] {
+            assert_relative_eq!(boxed.eval(p), 0.25, epsilon = 0.0);
+            assert_relative_eq!(boxed.grad(p), Vector3::new(1.0, 0.0, 0.0), epsilon = 0.0);
+        }
+    }
+
+    #[test]
+    fn arc_dyn_sdf_blanket_forwards_eval_and_grad() {
+        let inner = ConstSdf {
+            value: -0.5,
+            gradient: Vector3::new(0.0, 1.0, 0.0),
+        };
+        let shared: Arc<dyn Sdf> = Arc::new(inner);
+        // Cloning the Arc shares the inner allocation — both clones
+        // forward to the same ConstSdf.
+        let clone = shared.clone();
+        for &p in &[
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(2.0, 0.0, 0.0),
+        ] {
+            assert_relative_eq!(shared.eval(p), -0.5, epsilon = 0.0);
+            assert_relative_eq!(shared.grad(p), Vector3::new(0.0, 1.0, 0.0), epsilon = 0.0);
+            assert_relative_eq!(clone.eval(p), -0.5, epsilon = 0.0);
+            assert_relative_eq!(clone.grad(p), Vector3::new(0.0, 1.0, 0.0), epsilon = 0.0);
+        }
     }
 
     // ── Construction ────────────────────────────────────────────────────

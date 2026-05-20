@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn simplify_sphere_reduces_face_count() {
         let sphere = Solid::sphere(5.0);
-        let mesh = sphere.mesh_adaptive_par(0.5);
+        let mesh = sphere.mesh_adaptive(0.5);
         let original_faces = mesh.face_count();
         let target = original_faces / 2;
 
@@ -613,7 +613,7 @@ mod tests {
     #[test]
     fn simplify_sphere_preserves_topology() {
         let sphere = Solid::sphere(5.0);
-        let mesh = sphere.mesh_adaptive_par(0.5);
+        let mesh = sphere.mesh_adaptive(0.5);
         let target = mesh.face_count() / 2;
 
         let simplified = simplify_mesh(&mesh.geometry, target);
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn simplify_sphere_preserves_volume() {
         let sphere = Solid::sphere(5.0);
-        let mesh = sphere.mesh_adaptive_par(0.5);
+        let mesh = sphere.mesh_adaptive(0.5);
         let original_vol = mesh.geometry.volume();
         let target = mesh.face_count() / 2;
 
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn simplify_cuboid_preserves_sharp_corners() {
         let cube = Solid::cuboid(nalgebra::Vector3::new(2.0, 2.0, 2.0));
-        let mesh = cube.mesh_adaptive_par(0.3);
+        let mesh = cube.mesh_adaptive(0.3);
         let target = mesh.face_count() * 2 / 3;
 
         let simplified = simplify_mesh(&mesh.geometry, target);
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn simplify_tolerance_stays_within_deviation() {
         let sphere = Solid::sphere(5.0);
-        let mesh = sphere.mesh_adaptive_par(0.3);
+        let mesh = sphere.mesh_adaptive(0.3);
         let max_dev = 0.2;
 
         let simplified = simplify_mesh_tolerance(&mesh.geometry, &sphere.node, max_dev);
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn simplify_tolerance_preserves_topology() {
         let sphere = Solid::sphere(5.0);
-        let mesh = sphere.mesh_adaptive_par(0.3);
+        let mesh = sphere.mesh_adaptive(0.3);
         let max_dev = 0.2;
 
         let simplified = simplify_mesh_tolerance(&mesh.geometry, &sphere.node, max_dev);
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn simplify_already_small_is_noop() {
         let sphere = Solid::sphere(5.0);
-        let mesh = sphere.mesh_adaptive_par(1.0);
+        let mesh = sphere.mesh_adaptive(1.0);
         let original = mesh.face_count();
 
         let simplified = simplify_mesh(&mesh.geometry, original + 100);
@@ -727,7 +727,7 @@ mod tests {
     #[test]
     fn simplify_aggressive_90_percent() {
         let sphere = Solid::sphere(5.0);
-        let mesh = sphere.mesh_adaptive_par(0.5);
+        let mesh = sphere.mesh_adaptive(0.5);
         let target = mesh.face_count() / 10; // 90% reduction
 
         let simplified = simplify_mesh(&mesh.geometry, target);
@@ -802,7 +802,7 @@ mod tests {
         let body = Solid::cuboid(nalgebra::Vector3::new(3.0, 3.0, 3.0));
         let hole = Solid::cylinder(1.0, 4.0);
         let shape = body.subtract(hole);
-        let mesh = shape.mesh_adaptive_par(0.4);
+        let mesh = shape.mesh_adaptive(0.4);
         let target = mesh.face_count() * 2 / 3;
 
         let simplified = simplify_mesh(&mesh.geometry, target);

@@ -53,11 +53,15 @@ pub use mechanism::{
     split_part,
 };
 pub use param::{ParamRef, ParamStore};
-pub use sdf::Sdf;
 pub use solid::{InfillKind, ShapeHint, Solid};
 pub use solid_layered::pinned_floor_shell;
 
 // Re-export geometry types that appear in our public API
-// (Solid::bounds() → Aabb, Solid::sdf_grid_at() → SdfGrid, Solid::mesh() → AttributedMesh)
-pub use cf_geometry::{Aabb, IndexedMesh, SdfGrid};
+// (Solid::bounds() → Aabb, Solid::sdf_grid_at() → SdfGrid, Solid::mesh() → AttributedMesh).
+// The `Sdf` re-export is the backward-compat seam for downstream
+// consumers (cf-cast, cf-device-geometry, cf-sim-research, cf-cast-cli,
+// the design-side examples) that import `cf_design::Sdf` today — the
+// trait itself now lives in cf-geometry, but the well-known path keeps
+// resolving.
+pub use cf_geometry::{Aabb, IndexedMesh, Sdf, SdfGrid};
 pub use mesh_types::AttributedMesh;

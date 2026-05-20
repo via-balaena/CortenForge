@@ -10,7 +10,7 @@
 // field `#[allow]`s as each slice lands.
 #![allow(dead_code)]
 
-//! `insertion_sim` — FEM insertion-simulation pipeline for cf-device-design.
+//! `insertion_sim` — FEM insertion-simulation pipeline for cf-sim-research.
 //!
 //! Slice 7 (sub-commit 7.0) seeds this module with the **SDF bridge
 //! spike**: the Route-A geometry path that turns the cleaned scan into
@@ -63,6 +63,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, anyhow};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_design::{Aabb, SdfGrid, Solid, pinned_floor_shell};
+use cf_device_types::{SimDesign, SimLayer, SlackerResolution, slacker};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
@@ -77,10 +78,10 @@ use sim_soft::material::silicone_table::{
 };
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPairReadout, CpuNewtonSolver, Field,
-    LayeredScalarField, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf,
-    SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, Tet4, TetId, Vec3,
-    VertexId, Yeoh, filter_pair_readouts_to_referenced, pick_vertices_by_predicate,
-    referenced_vertices,
+    LayeredScalarField, LmConfig, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
+    Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, SolverFailure,
+    Tet4, TetId, Vec3, VertexId, Yeoh, filter_pair_readouts_to_referenced,
+    pick_vertices_by_predicate, referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -340,58 +341,19 @@ fn elapsed_ms(start: Instant) -> f64 {
 
 // ── 7.1 — insertion geometry + per-layer Yeoh material ──────────────
 
-/// One concentric layer of the device wall, projected for the
-/// insertion sim: a radial thickness + a base-silicone anchor key +
-/// the per-layer Slacker mass fraction.
-///
-/// The decimated form of `main.rs`'s `LayerSpec` (drops `visible` —
-/// a viewport concern). `slacker_fraction` is plumbed straight
-/// through: slice 7.5 added the wiring from `LayerSpec.slacker_fraction`
-/// to the sim's per-tet Yeoh material via `effective_silicone_for_layer`
-/// — see the `Slacker → sim-modulus` section at module top for the
-/// resolution scheme + the Shore-000 floor.
-#[derive(Debug, Clone)]
-pub struct SimLayer {
-    /// Radial thickness (meters). Innermost-first ordering, same as
-    /// `LayerSpec`.
-    pub thickness_m: f64,
-    /// Smooth-On base-silicone anchor key — one of the eight in
-    /// `main.rs`'s `LAYER_MATERIALS` catalog.
-    pub anchor_key: String,
-    /// Slacker mass as a fraction of the base silicone's Part A+B
-    /// mass — `0.0` for the base alone, matches the slice 6.5
-    /// `LayerSpec.slacker_fraction` semantics. The TB-tabulated
-    /// fractions are `{0.0, 0.25, 0.50, 0.75, 1.00}` per the
-    /// Smooth-On Slacker Technical Bulletin (rev 011524DH);
-    /// `crate::slacker::support(anchor_key)` returns the curve.
-    /// Off-curve values are snapped by `crate::resolve_slacker_fraction`
-    /// before reaching the sim.
-    pub slacker_fraction: f64,
-}
+// `SimLayer`, `SimDesign`, `SlackerResolution` live in
+// `cf-device-types` so both this binary and (Phase 2+) cf-sim-research
+// project a layered-silicone device the same way. See
+// `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3 A1 Phase 1.
 
-/// Device-design parameters the insertion sim consumes: the cavity
-/// inset + the ordered (innermost-first) layer stack. The decimated
-/// projection of `main.rs`'s `CavityState` + `LayersState`.
-#[derive(Debug, Clone)]
-pub struct SimDesign {
-    /// Distance (meters) the cavity surface sits *inside* the scan
-    /// surface — `CavityState::inset_m`. The cavity surface is at
-    /// scan-SDF offset `-cavity_inset_m`.
-    pub cavity_inset_m: f64,
-    /// Innermost-first layer stack. `layers[0]`'s inner surface is
-    /// the cavity surface; `layers[i]`'s outer surface is
-    /// `layers[i + 1]`'s inner surface.
-    pub layers: Vec<SimLayer>,
-}
-
-/// Resolve a `main.rs` `LAYER_MATERIALS` anchor key to the sim-soft
-/// [`SiliconeMaterial`] anchor it mirrors.
+/// Resolve an anchor key from `cf_device_types::LAYER_MATERIALS` to
+/// the sim-soft [`SiliconeMaterial`] it mirrors.
 ///
 /// The eight keys are a closed catalog — an unrecognized key is a
 /// wiring bug, surfaced as an error rather than silently substituted.
-/// (`main.rs`'s `material_density` *does* fall back defensively, but
-/// a wrong *modulus* would quietly corrupt the sim, not just a mass
-/// readout — so the sim path fails loud instead.)
+/// (`cf_device_types::material_density` *does* fall back defensively,
+/// but a wrong *modulus* would quietly corrupt the sim, not just a
+/// mass readout — so the sim path fails loud instead.)
 fn silicone_for_anchor(anchor_key: &str) -> Result<SiliconeMaterial> {
     match anchor_key {
         "ECOFLEX_00_10" => Ok(ECOFLEX_00_10),
@@ -403,44 +365,16 @@ fn silicone_for_anchor(anchor_key: &str) -> Result<SiliconeMaterial> {
         "DRAGON_SKIN_20A" => Ok(DRAGON_SKIN_20A),
         "DRAGON_SKIN_30A" => Ok(DRAGON_SKIN_30A),
         other => Err(anyhow!(
-            "unrecognized silicone anchor key {other:?} — not in the cf-device-design catalog"
+            "unrecognized silicone anchor key {other:?} — not in the cf-device-types silicone catalog"
         )),
     }
-}
-
-/// How `effective_silicone_for_layer` resolved a layer — surfaces
-/// alongside the returned `SiliconeMaterial` so the panel can flag
-/// fallbacks to the user.
-///
-/// Slice 7.5: Slacker pushes silicones across Shore scales (A → 00 →
-/// 000). sim-soft's anchor table covers Shore 00 + Shore A; Shore 000
-/// (the gel scale, where most Slacker outcomes land) has no published
-/// Yeoh anchors. The variants below capture every path the resolver
-/// can take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SlackerResolution {
-    /// `slacker_fraction == 0.0` (or `Support::NotRecommended` /
-    /// `Support::NoData`) — material is the base anchor unchanged.
-    Base,
-    /// Slacker fraction snapped to a TB curve point whose effective
-    /// hardness lands in Shore A or Shore 00, both of which sim-soft
-    /// anchors. The material was built via
-    /// `SiliconeMaterial::from_effective_shore`.
-    Interpolated,
-    /// Slacker fraction snapped to a TB point whose effective hardness
-    /// is Shore 000 (OOO) — softer than sim-soft's softest published
-    /// anchor (`ECOFLEX_00_10`). The resolver returns the
-    /// `ECOFLEX_00_10` material as a conservative floor (slight
-    /// over-stiffness vs ground truth). A proper Shore-000 calibration
-    /// is a future slice.
-    FlooredAtSoftestAnchor,
 }
 
 /// Resolve a layer's effective `SiliconeMaterial` from
 /// `(anchor_key, slacker_fraction)` — slice 7.5's Slacker → sim-modulus
 /// wiring.
 ///
-/// **Resolution table** (driven by `crate::slacker::support`):
+/// **Resolution table** (driven by `slacker::support`):
 ///
 /// | `slacker_fraction` | `support(anchor)`        | Result |
 /// |---|---|---|
@@ -470,19 +404,19 @@ fn effective_silicone_for_layer(layer: &SimLayer) -> Result<(SiliconeMaterial, S
     if layer.slacker_fraction == 0.0 {
         return Ok((base, SlackerResolution::Base));
     }
-    let support = crate::slacker::support(&layer.anchor_key);
+    let support = slacker::support(&layer.anchor_key);
     let curve = match support {
-        crate::slacker::Support::Curve(c) => c,
+        slacker::Support::Curve(c) => c,
         // The recipe panel disables the picker for these two
         // variants, so a non-zero fraction reaching here is a wiring
         // surprise — fall back to base rather than fail the sim.
-        crate::slacker::Support::NotRecommended | crate::slacker::Support::NoData => {
+        slacker::Support::NotRecommended | slacker::Support::NoData => {
             return Ok((base, SlackerResolution::Base));
         }
     };
     // The UI snaps `slacker_fraction` to the curve's tabulated points
-    // (`resolve_slacker_fraction` in `main.rs`). Linear search through
-    // ≤ 5 points; binary-search overhead would be noise.
+    // (`cf_device_types::resolve_slacker_fraction`). Linear search
+    // through ≤ 5 points; binary-search overhead would be noise.
     let point = curve
         .iter()
         .find(|p| (p.slacker_fraction - layer.slacker_fraction).abs() < f64::EPSILON)
@@ -499,14 +433,14 @@ fn effective_silicone_for_layer(layer: &SimLayer) -> Result<(SiliconeMaterial, S
     #[allow(clippy::cast_precision_loss)]
     let shore_points = f64::from(point.hardness.points);
     match point.hardness.scale {
-        crate::slacker::ShoreScale::A => {
+        slacker::ShoreScale::A => {
             let mat = SiliconeMaterial::from_effective_shore(ShoreReading::A(shore_points), None)
                 .map_err(|e| {
                 anyhow!("sim-soft from_effective_shore(Shore A {shore_points}) failed: {e:?}")
             })?;
             Ok((mat, SlackerResolution::Interpolated))
         }
-        crate::slacker::ShoreScale::OO => {
+        slacker::ShoreScale::OO => {
             let mat = SiliconeMaterial::from_effective_shore(
                 ShoreReading::DoubleZero(shore_points),
                 None,
@@ -516,7 +450,7 @@ fn effective_silicone_for_layer(layer: &SimLayer) -> Result<(SiliconeMaterial, S
             })?;
             Ok((mat, SlackerResolution::Interpolated))
         }
-        crate::slacker::ShoreScale::OOO => {
+        slacker::ShoreScale::OOO => {
             // Shore 000 (gel scale) is softer than ECOFLEX_00_10 (the
             // softest sim-soft anchor). No published Yeoh data;
             // floor to ECOFLEX_00_10 as a conservative over-stiffness.
@@ -758,10 +692,26 @@ pub fn build_insertion_geometry(
     let cap_tuples: Vec<(Point3<f64>, Vector3<f64>)> =
         cap_planes.iter().map(CapPlane::as_tuple).collect();
 
-    // Three `LayeredScalarField`s (or `ConstantField`s) over the same
-    // scan-distance partition — one per Yeoh parameter — mirroring the
-    // row-23 `build_material_field` precedent.
-    let material_field = MaterialField::from_yeoh_fields(
+    // Five `LayeredScalarField`s (or `ConstantField`s) over the same
+    // scan-distance partition — three Yeoh parameters + two
+    // calibrated principal-stretch caps — mirroring the row-23
+    // `build_material_field` precedent.  The 5-arg constructor
+    // `from_yeoh_fields_with_bounds` threads the per-anchor
+    // `0.8 · λ_break` tensile cap + `0.20` compressive cap into
+    // `MaterialFieldInner::Yeoh.bounds`; `MaterialField::sample_yeoh`
+    // routes each per-tet `Yeoh` through
+    // `with_max_principal_stretch_only` per H4-2-C — only the
+    // tensile cap reaches the solver's
+    // `check_validity_at_step_start` gate, the compressive value
+    // is sampled then dropped (preserved in `bounds` for future
+    // Option B / Phase H F-bar re-enable per
+    // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  `det F > 0`
+    // inversion is the only remaining compressive safety net.
+    // Pre-H4 3-arg path used the legacy `max_stretch_deviation`
+    // gate (symmetric σ ∈ [0, 2]) — H4-2-C matches that behavior
+    // on the compressive side while adding the calibrated tensile
+    // cap.
+    let material_field = MaterialField::from_yeoh_fields_with_bounds(
         layered_param_field(
             &scan_sdf,
             &thresholds,
@@ -776,6 +726,22 @@ pub fn build_insertion_geometry(
             &scan_sdf,
             &thresholds,
             materials.iter().map(|m| m.lambda).collect(),
+        ),
+        layered_param_field(
+            &scan_sdf,
+            &thresholds,
+            materials
+                .iter()
+                .map(|m| m.validity_max_principal_stretch)
+                .collect(),
+        ),
+        layered_param_field(
+            &scan_sdf,
+            &thresholds,
+            materials
+                .iter()
+                .map(|m| m.validity_min_principal_stretch)
+                .collect(),
         ),
     );
 
@@ -878,7 +844,7 @@ const MAX_NEWTON_ITER: usize = 150;
 /// Newton convergence tolerance (free-DOF residual norm, in newtons)
 /// for the insertion solve. `SolverConfig::skeleton()`'s `1e-10`
 /// default is a walking-skeleton bar far tighter than this tool
-/// needs: cf-device-design is a *relative-comparison* engineering aid
+/// needs: cf-sim-research is a *relative-comparison* engineering aid
 /// (Fork B), and a `0.1`-N out-of-balance residual is physically
 /// negligible against the tens-of-newtons contact forces.
 ///
@@ -901,6 +867,20 @@ fn insertion_solver_config() -> SolverConfig {
     config.dt = STATIC_DT;
     config.max_newton_iter = MAX_NEWTON_ITER;
     config.tol = INSERTION_SOLVE_TOL;
+    // F3 recon candidate A — gated LM opt-in (per
+    // `docs/F3_RECON_A_GATED_LM_SPEC.md`). The same `LmConfig::fork_b()`
+    // preset F3.4 used; the behavioral change is in sim-soft's
+    // `try_solve_impl` — LM rescue now fires ONLY on first-pass LU +
+    // Armijo failure (gated activation), not on every Llt non-PD
+    // detection (eager activation per F3 spec §2.2 — empirically
+    // falsified 2026-05-18 EVENING, see `docs/F3_FALSIFICATION_BOOKMARK.md`).
+    // The bit-equal-when-dormant contract preserves the cavity = 3 mm
+    // baseline by keeping LM inactive when the LU + Armijo path
+    // succeeds; LM escalates only when needed at hard-conditioned
+    // iters. `try_replay_step` + `solver_failure_message` +
+    // `catch_unwind` belt-and-suspenders surface plumbing reused
+    // unchanged from F3.4 — gated A adds no SolverFailure variants.
+    config.lm_regularization = Some(LmConfig::fork_b());
     config
 }
 
@@ -912,12 +892,144 @@ fn insertion_solver_config() -> SolverConfig {
 /// Hessian. A gentler `1e3` widens the convergeable depth envelope;
 /// the tradeoff is slightly more residual penetration, acceptable
 /// for this relative-comparison tool (Fork B).
+///
+/// Composes orthogonally with the C′.a-pinned smoothing window
+/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`] (the const's docstring
+/// carries the pinned value + the full sweep table; see
+/// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the original
+/// candidate-C design + `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`
+/// §9 for the C′.a case-A ship rationale).
 const INSERTION_CONTACT_KAPPA: f64 = 1.0e3;
 
 /// Penalty-contact band `d̂` (meters) for the insertion solve —
 /// matches sim-soft's crate-private `PENALTY_DHAT_DEFAULT`
 /// (1 mm). `with_params` requires it explicitly once `κ` is tuned.
 const INSERTION_CONTACT_DHAT: f64 = 1.0e-3;
+
+/// One-sided smoothing window `ε` (meters) above `d̂` for the
+/// insertion solve's penalty contact (F3 recon B candidate C). Pairs
+/// with `sd ∈ (d̂, d̂+ε)` contribute a quintic-Hermite-tapered
+/// penalty that reaches 0 at `sd = d̂+ε`; this makes the assembled
+/// contact Hessian `H_contact(x)` C⁰ across active-pair boundaries.
+/// See `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the design +
+/// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md` for the C.2
+/// sweep falsification + C′.a bisection that found this value.
+///
+/// **PINNED at ε = 0.075 mm** per the C′.a ε-bisection sweep
+/// 2026-05-18 LATE-EVENING (cavity = 5 mm, layers 10+3 mm,
+/// sock_over_capsule.cleaned.stl):
+///
+/// | ε (mm) | steps converged | r_norm floor | stall mode | LM rescues |
+/// |---|---|---|---|---|
+/// | 0 (gated-A baseline) | 0/16 | 1.784 | Armijo iter 61 | 1 mild |
+/// | 0.025 (C′.a) | 0/16 | 0.231 | Armijo iter 108 | 3 stiff |
+/// | 0.05 (C′.a) | 0/16 | 0.200 | Armijo iter 147 | 4 moderate |
+/// | **0.075 (C′.a)** | **16/16** | converges seated 83.35 mm | — | **0** |
+/// | 0.1 (C.2) | 0/16 | 0.384 | Armijo iter 126 | 2 stiff |
+/// | 0.25 (C.2) | 0/16 | 0.753 | iter cap 150 | 2 stiff |
+///
+/// The response is U-shaped: a **narrow converging window centered
+/// at ε ≈ 0.075 mm**.  The two sides are asymmetric — below the
+/// window the residual floor plateaus around r_norm ≈ 0.2
+/// (smoothing band too narrow to cover enough chattering pairs);
+/// above the window the floor climbs sharply with ε (0.1 →
+/// r_norm 0.384, 0.25 → 0.753, band-widening backfire dominates).
+/// The C.0 spec's "monotonic improvement with ε" prediction was
+/// wrong; the empirical structure is a sweet spot where the
+/// band-widening backfire (hyp 3 in the falsification bookmark)
+/// and the chattering-suppression effect balance.  C′.a confirms
+/// hyp 3 on the upper side — wider ε bands bring more pairs into
+/// the tapered regime, degrading the assembled tangent's
+/// eigenstructure once past the optimum.
+///
+/// **CAVITY-SPECIFIC**: the chosen ε = 0.075 mm converges 16/16 at
+/// cavity ≤ 5 mm but stalls at cavity 6 mm (C.3 probe gate,
+/// r_norm 0.536).  See `cf_device_types::CavityState::inset_slider_range_m`
+/// for the UI cap that enforces this bound + the bookmark
+/// §9.4 for the probe-gate data.  Generalizing past 5 mm would
+/// require a per-cavity ε (would need a UI slider per
+/// [[feedback-strip-the-knob-when-default-works]] — deferred until
+/// empirical multi-modal evidence) or a composed mechanism
+/// (smoothed contact + SDF-normal smoothing for hyp 1 / step-0
+/// warmup for hyp 2).
+///
+/// **Wire-up preserved** per
+/// [[feedback-spec-falsified-revert-opt-in-keep-surface]]:
+/// `intruder_contact_at` + `intruder_contact_sliding_at` route
+/// through C.1's
+/// [`PenaltyRigidContact::with_params_and_smoothing`] +
+/// [`PenaltyRigidContact::with_params_and_smoothing_and_interior_cutoff`].
+/// Future recon (e.g. SDF-normal smoothing for hyp 1 or step-0
+/// warmup for hyp 2) flips this const + composes with the existing
+/// C.1 surface.
+const INSERTION_CONTACT_SMOOTHING_EPS_M: f64 = 0.075e-3;
+
+/// Number of offset samples for per-query contact-normal averaging
+/// (F3 recon B candidate E.b — orthogonal axis to
+/// [`INSERTION_CONTACT_SMOOTHING_EPS_M`], which smooths the gap
+/// function `(d̂ − sd)` instead). `1` (default) disables averaging —
+/// `n = prim.grad(p)` bit-equal to pre-E.b behavior. `7` enables the
+/// 6-face axis-aligned neighborhood
+/// (`n_avg = normalize(prim.grad(p) + Σ prim.grad(p ± r·e_{x,y,z}))`).
+///
+/// **Pinned at `1` (disabled) — E.b.4 case-E falsification ship
+/// 2026-05-19**.  The cavity = 6 mm sweep at
+/// `(k=7, r ∈ {0.5, 1.0, 2.0} mm)` all converged step 1 (seated
+/// 5.21 mm) but hit a Yeoh material-validity wall at step 2.  The
+/// 5 mm sanity gate at the candidate pin `(7, 1.0 mm)` ALSO
+/// regressed to 1/16 (step 2 Yeoh wall, tet 3258
+/// max_stretch_deviation = 1.002).  3 mm sanity gate held at 16/16
+/// ZERO LM rescues, but the 5 mm regression is the spec's CASE E —
+/// E.b's averaging shifts the equilibrium toward the Yeoh validity
+/// bound at every cavity, costing 5 mm baseline for no net gain at
+/// 6 mm (the 1/16 "win" was the Yeoh wall surfacing — same outcome
+/// a hypothetical no-chattering cavity-6mm solve would have
+/// reached, empirically confirmed by the post-case-E N_STEPS sweep
+/// at §10 of the bookmark — N=8/12/20/24 all hit Yeoh tet 3206 at
+/// step 2 WITHOUT E.b).  Full falsification analysis in
+/// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md`; §10 has the
+/// post-case-E sweep + reframe (cavity > 5 mm is a real material
+/// limit at this mesh resolution, NOT chattering) + the end-of-
+/// solve validity check that surfaces invalid converged states
+/// honestly (commit `2739717e` in `sim-soft`).
+///
+/// **Sweep table** (cavity = 6 mm, layers 10+3 mm,
+/// sock_over_capsule.cleaned.stl, 2026-05-19):
+///
+/// | `(k, r)` | step 1 | F (N) | iters | step 2 |
+/// |---|---|---|---|---|
+/// | (1, 0) baseline | 0/16 r_norm 0.536 chattering stall | — | 150 cap | — |
+/// | (7, 0.5 mm) | 1/16 seated 5.21 mm | 15.23 | 34 | Yeoh tet 1458 |
+/// | (7, 1.0 mm) | 1/16 seated 5.21 mm | 8.1 | ~26 | Yeoh tet 3206 |
+/// | (7, 2.0 mm) | 1/16 seated 5.21 mm | 8.15 | 25 | Yeoh tet (likely) |
+///
+/// Sanity gates at `(k=7, r=1.0 mm)`: 3 mm 16/16 clean ✓; 5 mm
+/// 1/16 Yeoh tet 3258 ✗ (case-E regression).
+///
+/// **Bit-equal-when-disabled wire-up** per
+/// [[feedback-spec-falsified-revert-opt-in-keep-surface]] —
+/// `intruder_contact_at` and `intruder_contact_sliding_at` both
+/// route through the
+/// [`PenaltyRigidContact::with_params_and_smoothing_and_normal_averaging`]
+/// family (the `..._and_interior_cutoff` variant for the sliding
+/// case). At `k = 1` the `averaged_normal` helper short-circuits to
+/// `prim.grad(p)` bit-equal — pre-E.b arithmetic preserved. Surface
+/// plumbing (sim-soft constructors + helper + 9 unit tests in
+/// `penalty_normal_averaging.rs` + this routing) survives the
+/// revert; a future recon composing E.b with a Yeoh-wall fix flips
+/// this const + pairs with
+/// [`INSERTION_CONTACT_NORMAL_AVG_RADIUS_M`].
+const INSERTION_CONTACT_NORMAL_AVG_K: u8 = 1;
+
+/// Offset radius (m) for per-query contact-normal averaging. Only
+/// consulted when [`INSERTION_CONTACT_NORMAL_AVG_K`] `> 1`. Pinned
+/// at `0.0` per the case-E falsification — see the K const
+/// docstring above for the full sweep table and falsification
+/// rationale. A future recon composing E.b with a Yeoh-wall fix
+/// would re-pin this value (initial sweep range tested:
+/// `{0.5, 1.0, 2.0} mm` per
+/// `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` §2.3).
+const INSERTION_CONTACT_NORMAL_AVG_RADIUS_M: f64 = 0.0;
 
 /// Build the rigid-intruder contact primitive for a given press-fit
 /// `interference_m` — the scan SDF offset by
@@ -934,10 +1046,13 @@ fn intruder_contact_at(
 ) -> PenaltyRigidContact {
     let intruder_solid =
         Solid::from_sdf(intruder.clone(), bounds).offset(interference_m + cavity_offset_m);
-    PenaltyRigidContact::with_params(
+    PenaltyRigidContact::with_params_and_smoothing_and_normal_averaging(
         vec![intruder_solid],
         INSERTION_CONTACT_KAPPA,
         INSERTION_CONTACT_DHAT,
+        INSERTION_CONTACT_SMOOTHING_EPS_M,
+        INSERTION_CONTACT_NORMAL_AVG_K,
+        INSERTION_CONTACT_NORMAL_AVG_RADIUS_M,
     )
 }
 
@@ -1030,15 +1145,13 @@ pub struct InsertionStep {
 ///
 /// - `interference_m` is non-finite;
 /// - [`outer_skin_bc`] fails — no outer-skin vertex in the Dirichlet
-///   pin-band (the wall has nothing to react against).
-///
-/// # Panics
-///
-/// `replay_step` panics if the Newton solve fails to converge within
-/// [`MAX_NEWTON_ITER`] — non-convergence returns no partial data.
-/// `run_single_insertion_step` keeps to interferences that converge;
-/// graceful "failed at step N" reporting is [`run_insertion_ramp`]
-/// (7.3b), which `catch_unwind`s each step.
+///   pin-band (the wall has nothing to react against);
+/// - the Newton solve fails to converge — Armijo line-search stall,
+///   [`MAX_NEWTON_ITER`] cap, or doubly-failed Llt-then-Lu factor.
+///   Under F3.4's Fork-B LM opt-in (see [`insertion_solver_config`]),
+///   `try_replay_step` surfaces these as `Err(SolverFailure)` instead
+///   of panicking; each variant is translated to an [`anyhow::Error`]
+///   carrying the iter index + residual / context.
 pub fn run_single_insertion_step(
     geometry: InsertionGeometry,
     interference_m: f64,
@@ -1084,7 +1197,43 @@ pub fn run_single_insertion_step(
     let theta = Tensor::from_slice(&empty_theta, &[0]);
 
     let solver = CpuNewtonSolver::new(Tet4, mesh, contact, config, bc);
-    let step = solver.replay_step(&x_prev, &v_prev, &theta, config.dt);
+    // MAINTENANCE NOTE — these `SolverFailure` arms mirror the variant
+    // wording in `solver_failure_message` (the ramp consumer). Different
+    // surfaces (anyhow! errors here, `failure_reason` strings there) and
+    // intentionally different prefixes ("insertion solve …" vs the
+    // step-N-prefixed viewport reason), but the per-variant *fields*
+    // pulled out + the `{...:.3e}` formatting must stay in sync. If a
+    // future `SolverFailure` variant lands, update BOTH sites.
+    let step = match solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt) {
+        Ok(step) => step,
+        Err(SolverFailure::ArmijoStall {
+            last_iter,
+            last_r_norm,
+            ..
+        }) => {
+            return Err(anyhow!(
+                "insertion solve Armijo-stalled at Newton iter {last_iter}, \
+                 r_norm {last_r_norm:.3e}"
+            ));
+        }
+        Err(SolverFailure::NewtonIterCap {
+            max_iter,
+            last_r_norm,
+            ..
+        }) => {
+            return Err(anyhow!(
+                "insertion solve hit Newton iter cap {max_iter}, \
+                 last r_norm {last_r_norm:.3e}"
+            ));
+        }
+        Err(SolverFailure::DoublyFailedFactor {
+            last_iter, context, ..
+        }) => {
+            return Err(anyhow!(
+                "insertion solve doubly-failed factor at Newton iter {last_iter}: {context}"
+            ));
+        }
+    };
 
     Ok(InsertionStep {
         x_final: step.x_final,
@@ -1803,6 +1952,42 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "<non-string panic payload>".to_string())
 }
 
+/// Format a [`SolverFailure`] into the same `failure_reason` shape the
+/// pre-F3.4 catch_unwind pattern produced via [`panic_message`] — so
+/// the SL.4 viewport's `"stalled at step N: <reason>"` surface reads the
+/// same regardless of whether the failure came through `try_replay_step`
+/// (F3.4 Fork-B path) or, for the still-panicking
+/// `run_insertion_ramp` (growing-intruder) path, `catch_unwind`.
+///
+/// MAINTENANCE NOTE — the per-variant field extraction here mirrors the
+/// inline match arms in `run_single_insertion_step` (which wrap the
+/// same variants in `anyhow::Error` for its `Result` return).
+/// Intentionally separate surfaces (viewport string vs CLI anyhow), so
+/// the prefix wording diverges by design — but if a future
+/// `SolverFailure` variant lands, update BOTH sites.
+fn solver_failure_message(failure: &SolverFailure) -> String {
+    match failure {
+        SolverFailure::ArmijoStall {
+            last_iter,
+            last_r_norm,
+            ..
+        } => format!(
+            "Armijo line-search stalled at Newton iter {last_iter}, r_norm {last_r_norm:.3e}"
+        ),
+        SolverFailure::NewtonIterCap {
+            max_iter,
+            last_r_norm,
+            ..
+        } => format!(
+            "Newton iter cap {max_iter} reached without convergence, \
+             last r_norm {last_r_norm:.3e}"
+        ),
+        SolverFailure::DoublyFailedFactor {
+            last_iter, context, ..
+        } => format!("doubly-failed factor at Newton iter {last_iter}: {context}"),
+    }
+}
+
 /// Run a quasi-static insertion ramp: seat the scan-derived intruder
 /// into the device cavity in `n_steps` equal interference increments
 /// (`0 → cavity_inset_m`), each step's Newton solve warm-started from
@@ -2003,7 +2188,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
 /// translation.
 ///
 /// `T⁻¹` is cached at construction — eval/grad are called inside the
-/// contact-pair inner loop ([`PenaltyRigidContact::active_pairs`])
+/// contact-pair inner loop (`PenaltyRigidContact`'s `ActivePairsFor::active_pairs`)
 /// where even scalar-cheap recomputation matters at full BCC-mesh
 /// scale.
 ///
@@ -2016,7 +2201,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
 /// fire only when the moved intruder surface is within 1 mm of the
 /// body wall, putting the inverse-transformed query well inside the
 /// grid. Inactive pairs report large `sd` and are skipped by
-/// [`PenaltyRigidContact::active_pairs`].
+/// `PenaltyRigidContact`'s `ActivePairsFor::active_pairs`.
 #[derive(Clone)]
 pub(crate) struct TransformedSdf<S: Sdf> {
     inner: S,
@@ -2153,38 +2338,100 @@ pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64
 /// (D-Slide5). Larger gives a visibly-propagating deformation wave
 /// across playback steps; smaller gives a continuous-looking wave at
 /// the cost of solver iters. Programmer-set, not user-tunable —
-/// same posture as [`DEFAULT_N_STEPS`] (the growing-ramp counterpart
+/// same posture as `DEFAULT_N_STEPS` (the growing-ramp counterpart
 /// is a fixed `n_steps`, not a step size).
 pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
 
-/// Build the sliding-intruder contact primitive at a given slide pose.
+/// Build the sliding-intruder contact primitive at a given slide pose
+/// and engineered interference.
 ///
 /// The contact SDF is `Solid::from_sdf(TransformedSdf(intruder,
-/// slide_pose), bounds).offset(cavity_offset_m)` — the rigid-translated
-/// scan, offset inward by `cavity_offset_m` (which is negative; per
-/// `cavity_offset_m = -design.cavity_inset_m`). Unlike the growing-
-/// intruder [`intruder_contact_at`] which grows the scan outward by
-/// `interference_m`, the sliding contact's SDF geometry is CONSTANT
-/// across the ramp — only the pose varies. Cavity-wall deformation is
-/// driven by the moving primitive's local interference rather than the
-/// uniform offset growth.
+/// slide_pose), bounds).offset(interference_m + cavity_offset_m)` —
+/// the rigid-translated scan, offset by `interference_m +
+/// cavity_offset_m`. With `cavity_offset_m = -design.cavity_inset_m`:
+/// - `interference_m = 0` → composed offset = `-cavity_inset_m` →
+///   transformed scan SHRUNK by `cavity_inset_m` (pre-F4 sliding
+///   model; the intruder coincides with the cavity wall at rest pose,
+///   and local interference at non-rest poses comes purely from the
+///   pose-induced geometric mismatch).
+/// - `interference_m = cavity_inset_m` → composed offset = `0` → bare
+///   transformed scan (full engineered interference uniformly applied:
+///   the body geometry overlaps the un-deformed cavity by
+///   `cavity_inset_m` everywhere the surfaces are in contact).
+///
+/// `interference_m` is the F4 homotopy parameter
+/// (`docs/CAVITY_INSET_STALL_BOOKMARK.md` §9-§10): [`run_sliding_insertion_ramp`]
+/// ramps it `0 → cavity_inset_m` across K warmup substeps to ease the
+/// solver into the full engineered-interference contact at step 0.
+/// Single-step callers (the wire-up tests) pass `interference_m = 0`
+/// to reproduce the pre-F4 shrunk-scan model bit-equal — analogous to
+/// growing-mode [`intruder_contact_at`]'s `interference_m + cavity_offset_m`
+/// composition where `interference_m = 0` sits flush with the cavity
+/// wall and `interference_m = cavity_inset_m` reproduces the bare scan.
 ///
 /// Penalty `(κ, d̂)` reuses [`INSERTION_CONTACT_KAPPA`] +
 /// [`INSERTION_CONTACT_DHAT`] from the growing ramp; the kappa
 /// tradeoff (7.3b.1 wider convergeable envelope at slight cost in
 /// residual penetration) is independent of the contact model.
+///
+/// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
+/// is the engineered shell-wall interference. The contact model passes
+/// `2 × cavity_inset_m` as the
+/// [`PenaltyRigidContact::with_params_and_smoothing_and_interior_cutoff`]
+/// cutoff — one design margin past the engineered interference.
+/// Physical contact pairs (composed sd ∈ [-cavity_inset_m, d̂ + ε])
+/// stay in the active set; pose-dependent deep-interior pairs whose
+/// inverse-transformed position lands inside the closed scan body
+/// (composed sd << -cavity_inset_m) are silently excluded — the FEM
+/// can't productively resolve them, and including them breaks Newton
+/// convergence at non-rest slide poses. See
+/// `docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md` §2-§3 for the
+/// full derivation.
+///
+/// The smoothing window `ε` ([`INSERTION_CONTACT_SMOOTHING_EPS_M`],
+/// pinned per C′.a — see the const's docstring for the pinned value
+/// and full sweep table, and `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`
+/// §9 for the case-A ship rationale) extends the active band's upper
+/// edge from `d̂` to `d̂ + ε` and makes the assembled contact Hessian
+/// C⁰ across pair flips (F3 recon B candidate C lineage —
+/// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the original
+/// design that shipped; bookmark §9 for the empirical ship rationale
+/// and §5 for the spec's partially-falsified predictions).
+///
+/// The per-query normal averaging `(k, r)` pair
+/// ([`INSERTION_CONTACT_NORMAL_AVG_K`] +
+/// [`INSERTION_CONTACT_NORMAL_AVG_RADIUS_M`], F3 recon B candidate
+/// E.b — see `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md`) smooths
+/// the contact normal direction at the per-pair query site by
+/// averaging `prim.grad` over the `k - 1` axis-aligned offset
+/// points + the center sample. Initial pin `(1, 0.0)` short-circuits
+/// to `prim.grad(p)` bit-equal pre-E.b; the E.b.4 case-A re-pin
+/// engages the averaging if the cavity = 6 mm sweep finds a
+/// converging `(k, r)`.
+///
+/// The constructor short-circuits to the pre-C.2
+/// [`PenaltyRigidContact::with_params_and_interior_cutoff`] path at
+/// `ε = 0`; flipping the const back to 0 would restore bit-equal
+/// pre-C.2 arithmetic and lose the C′.a chattering-suppression.
 fn intruder_contact_sliding_at(
     intruder: &GridSdf,
     bounds: Aabb,
     slide_pose: Isometry3<f64>,
+    interference_m: f64,
     cavity_offset_m: f64,
+    cavity_inset_m: f64,
 ) -> PenaltyRigidContact {
     let transformed = TransformedSdf::new(intruder.clone(), slide_pose);
-    let intruder_solid = Solid::from_sdf(transformed, bounds).offset(cavity_offset_m);
-    PenaltyRigidContact::with_params(
+    let intruder_solid =
+        Solid::from_sdf(transformed, bounds).offset(interference_m + cavity_offset_m);
+    PenaltyRigidContact::with_params_and_smoothing_and_normal_averaging_and_interior_cutoff(
         vec![intruder_solid],
         INSERTION_CONTACT_KAPPA,
         INSERTION_CONTACT_DHAT,
+        INSERTION_CONTACT_SMOOTHING_EPS_M,
+        INSERTION_CONTACT_NORMAL_AVG_K,
+        INSERTION_CONTACT_NORMAL_AVG_RADIUS_M,
+        2.0 * cavity_inset_m,
     )
 }
 
@@ -2259,8 +2506,12 @@ pub struct SlideRamp {
     /// `Some(k)` if step `k` failed to converge (Fork-B graceful
     /// stall — D-Slide6); `None` if every step converged.
     pub failed_at_step: Option<usize>,
-    /// Solver panic message for the failed step. `None` if every
-    /// step converged.
+    /// Human-readable description of the failure for the failed step.
+    /// Two sources: F3.4 Fork-B graceful `SolverFailure` formatted via
+    /// [`solver_failure_message`], or — for undocumented solver-internal
+    /// panics (e.g., Yeoh material validity) caught by `catch_unwind`
+    /// — the panic payload formatted via [`panic_message`]. `None` if
+    /// every step converged.
     pub failure_reason: Option<String>,
     /// Deformed vertex positions (vertex-major xyz) at the last
     /// converged step — or rest positions if step 0 itself failed.
@@ -2291,8 +2542,19 @@ pub struct SlideRamp {
 /// Solver convergence: each Newton solve is warm-started from the
 /// previous step's `x_final` (D-Slide4 — no convection-aware
 /// remapping in iter-1; the contact-set discontinuity at slide-step
-/// boundaries may stall some intermediate solves, which Fork-B's
-/// `catch_unwind` records gracefully).
+/// boundaries may stall some intermediate solves). Two graceful
+/// surfaces (both feed `failure_reason`): the F3.4 Fork-B LM opt-in
+/// makes `try_replay_step` return `Err(SolverFailure)` for the three
+/// documented failure variants, and `catch_unwind` wraps the call to
+/// catch undocumented solver-internal panics (Yeoh material validity
+/// at `backward_euler.rs:678`, `debug_assert!`s) that are NOT
+/// `SolverFailure` variants.
+///
+/// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
+/// is the engineered shell-wall interference. It is forwarded
+/// unchanged to [`intruder_contact_sliding_at`] for the per-step
+/// contact build; see that function's docstring + the CR.1 recon spec
+/// for the active-set interior-cutoff derivation.
 ///
 /// # Errors
 ///
@@ -2304,6 +2566,7 @@ pub fn run_sliding_insertion_ramp(
     geometry: InsertionGeometry,
     centerline_polyline_m: &[Point3<f64>],
     n_steps: usize,
+    cavity_inset_m: f64,
 ) -> Result<SlideRamp> {
     if n_steps == 0 {
         return Err(anyhow!("sliding insertion ramp needs at least one step"));
@@ -2365,22 +2628,43 @@ pub fn run_sliding_insertion_ramp(
         #[allow(clippy::cast_precision_loss)]
         let t = (k + 1) as f64 / n_steps as f64;
         let pose = slide_pose_at(centerline_polyline_m, t);
-        let contact = intruder_contact_sliding_at(&intruder, bounds, pose, cavity_offset_m);
+        let contact = intruder_contact_sliding_at(
+            &intruder,
+            bounds,
+            pose,
+            0.0,
+            cavity_offset_m,
+            cavity_inset_m,
+        );
         let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
         let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
-        // `replay_step` panics on non-convergence; Fork-B graceful
-        // stall handling per D-Slide6.
+        // F3.4 Fork-B: `try_replay_step` surfaces Armijo stall +
+        // Newton-iter-cap + doubly-failed-factor as `Err(SolverFailure)`
+        // (richer context than a panic message). BUT only those three
+        // variants — solver-internal panics (Yeoh material validity at
+        // `backward_euler.rs:678`, `debug_assert!`s, OOM) still unwind
+        // and would crash the Bevy app if not caught. Belt-and-suspenders:
+        // `catch_unwind` outside catches those, `try_replay_step` inside
+        // gives the graceful path SolverFailure context. Both feed into
+        // `failure_reason` so the viewport reads "stalled at step N:
+        // <reason>" regardless of which surface tripped.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
+            solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt)
         }));
         match outcome {
-            Ok(step) => {
+            Ok(Ok(step)) => {
                 let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
                 // `PenaltyRigidContact` is not `Clone`; rebuild for
                 // the readout pass (same row-23 precedent the growing
                 // ramp uses at `run_insertion_ramp`).
-                let readout_contact =
-                    intruder_contact_sliding_at(&intruder, bounds, pose, cavity_offset_m);
+                let readout_contact = intruder_contact_sliding_at(
+                    &intruder,
+                    bounds,
+                    pose,
+                    0.0,
+                    cavity_offset_m,
+                    cavity_inset_m,
+                );
                 let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
                 let contact_readouts =
                     filter_pair_readouts_to_referenced(raw_readouts, &referenced);
@@ -2399,7 +2683,19 @@ pub fn run_sliding_insertion_ramp(
                 intruder_poses.push(pose);
                 x_prev_flat = step.x_final;
             }
+            Ok(Err(failure)) => {
+                // F3.4 graceful SolverFailure (ArmijoStall /
+                // NewtonIterCap / DoublyFailedFactor).
+                failed_at_step = Some(k);
+                failure_reason = Some(solver_failure_message(&failure));
+                break;
+            }
             Err(payload) => {
+                // Undocumented panic from inside the solver — e.g.,
+                // Yeoh material validity (Phase 4 Decision Q
+                // fail-closed). Not a SolverFailure variant; surface
+                // it as the partial-ramp `failure_reason` via the
+                // pre-F3.4 `panic_message` path.
                 failed_at_step = Some(k);
                 failure_reason = Some(panic_message(&*payload));
                 break;
@@ -2788,17 +3084,10 @@ mod tests {
 
     #[test]
     fn silicone_for_anchor_resolves_the_catalog() {
-        // All eight cf-device-design catalog keys resolve.
-        for key in [
-            "ECOFLEX_00_10",
-            "ECOFLEX_00_20",
-            "ECOFLEX_00_30",
-            "ECOFLEX_00_50",
-            "DRAGON_SKIN_10A",
-            "DRAGON_SKIN_15",
-            "DRAGON_SKIN_20A",
-            "DRAGON_SKIN_30A",
-        ] {
+        // Iterate `cf_device_types::LAYER_MATERIALS` so a new catalog
+        // entry trips this test (rather than passing because the
+        // hardcoded list happens to omit the new key).
+        for (key, _label, _density) in cf_device_types::LAYER_MATERIALS {
             assert!(
                 silicone_for_anchor(key).is_ok(),
                 "catalog key {key} should resolve"
@@ -3093,6 +3382,55 @@ mod tests {
         );
     }
 
+    /// H4 plumbing sentinel — every per-tet `Yeoh` in the produced
+    /// mesh carries `Some(max)` tensile cap (asymmetric one-sided
+    /// bound per H4-2-C, see
+    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5) rather than
+    /// the legacy `(None, None)` fallback that the 3-arg constructor
+    /// produces.  Pinned at `silicone.validity_max_principal_stretch`
+    /// for the single ECOFLEX_00_30 layer used in the fixture so a
+    /// future refactor that flips `build_insertion_geometry` back to
+    /// the bounds-less 3-arg constructor (or that silently drops the
+    /// max bound) trips here.
+    ///
+    /// The compressive bound (`min_principal_stretch`) is dropped at
+    /// `MaterialField::sample_yeoh` time per H4-2-C (`det F > 0`
+    /// inversion is the only remaining compressive safety net); the
+    /// per-anchor `validity_min_principal_stretch` value still flows
+    /// through `MaterialField`'s internal `bounds` storage so a
+    /// future Option B (Phase H F-bar / mixed-u-p decorator) work
+    /// can re-enable the compressive gate by flipping
+    /// `sample_yeoh`'s `with_max_principal_stretch_only` call back
+    /// to `with_principal_stretch_bounds`.
+    #[test]
+    fn build_insertion_geometry_per_tet_yeoh_carries_calibrated_tensile_cap_only() {
+        let scan = small_test_cube();
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let g = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+            .expect("build must succeed on the small test cube fixture");
+
+        let materials = g.mesh.materials();
+        assert!(!materials.is_empty(), "must produce at least one tet");
+        let expected_max = ECOFLEX_00_30.validity_max_principal_stretch;
+        for (tet_id, yeoh) in materials.iter().enumerate() {
+            let validity = yeoh.validity();
+            assert_eq!(
+                validity.max_principal_stretch,
+                Some(expected_max),
+                "tet {tet_id} max_principal_stretch must equal ECOFLEX_00_30's calibrated 0.8·λ_break"
+            );
+            assert!(
+                validity.min_principal_stretch.is_none(),
+                "tet {tet_id} min_principal_stretch must be None under H4-2-C \
+                 asymmetric one-sided bound (got {:?})",
+                validity.min_principal_stretch,
+            );
+        }
+    }
+
     #[test]
     fn build_insertion_geometry_with_caps_opens_body_at_cap_plane() {
         // Build the same design twice: once without caps, once with a
@@ -3206,11 +3544,11 @@ mod tests {
     ///
     /// `#[ignore]` — needs the repo-excluded iter-1 fixture
     /// (`/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl`,
-    /// override with the `CF_DEVICE_DESIGN_SPIKE_SCAN` env var). Run:
+    /// override with the `CF_SIM_RESEARCH_SPIKE_SCAN` env var). Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design insertion_sim -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research insertion_sim -- --ignored --nocapture
     /// ```
     ///
     /// Skips gracefully (no failure) when the fixture is absent, so the
@@ -3218,7 +3556,7 @@ mod tests {
     #[test]
     #[ignore = "needs the repo-excluded iter-1 scan fixture; run with --ignored"]
     fn sdf_bridge_spike_on_iter1_scan() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -3258,18 +3596,18 @@ mod tests {
 
     /// [`build_insertion_geometry`] against the iter-1 cleaned scan.
     ///
-    /// `#[ignore]` — same repo-excluded fixture + `CF_DEVICE_DESIGN_SPIKE_SCAN`
+    /// `#[ignore]` — same repo-excluded fixture + `CF_SIM_RESEARCH_SPIKE_SCAN`
     /// override as [`sdf_bridge_spike_on_iter1_scan`]; skips
     /// gracefully when the fixture is absent. Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design insertion_sim -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research insertion_sim -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "needs the repo-excluded iter-1 scan fixture; run with --ignored"]
     fn build_insertion_geometry_on_iter1_scan() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -3672,8 +4010,8 @@ mod tests {
     /// `cargo test`. Self-contained (no fixture). Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design insertion_sim -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research insertion_sim -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "release-mode FEM solve — slow under debug; run with --release --ignored"]
@@ -3760,7 +4098,7 @@ mod tests {
     #[test]
     #[ignore = "7.3a fix characterization — needs the iter-1 scan + a release solve; run with --ignored"]
     fn iter1_single_step_solve_characterization() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -3835,14 +4173,14 @@ mod tests {
     /// `#[ignore]` — needs the iter-1 fixture; run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design diagnose_iter1 -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research diagnose_iter1 -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "7.3a diagnostic — needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
     #[allow(clippy::cast_precision_loss)] // diagnostic counters → f64 for %/grid math
     fn diagnose_iter1_scan_geometry() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -3986,7 +4324,7 @@ mod tests {
 
         // ── Phase 4 — STL exports for eyes-on review ────────────────
         eprintln!("\nPHASE 4 — STL exports (open in a mesh viewer):");
-        let out_dir = std::env::temp_dir().join("cf_device_design_diag");
+        let out_dir = std::env::temp_dir().join("cf_sim_research_diag");
         std::fs::create_dir_all(&out_dir).expect("create diag output dir");
 
         let decimated_path = out_dir.join("decimated_scan.stl");
@@ -4043,14 +4381,14 @@ mod tests {
     /// (sub-commit 2). `#[ignore]` — needs the iter-1 fixture; run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design grid_sdf_fix_spike -- --ignored --nocapture
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research grid_sdf_fix_spike -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "7.3a fix spike — needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
     #[allow(clippy::cast_precision_loss)] // diagnostic counters → f64 for %/grid math
     fn grid_sdf_fix_spike() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -4176,8 +4514,8 @@ mod tests {
     /// (no fixture). Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
-    ///     --bin cf-device-design run_insertion_ramp_on_synthetic \
+    /// cargo test -p cf-sim-research --release \
+    ///     --bin cf-sim-research run_insertion_ramp_on_synthetic \
     ///     -- --ignored --nocapture
     /// ```
     #[test]
@@ -4441,7 +4779,7 @@ mod tests {
     #[test]
     #[ignore = "7.3b.1 payoff — needs the iter-1 scan + a release ramp; run with --ignored --nocapture"]
     fn run_insertion_ramp_on_iter1_scan() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -4530,6 +4868,177 @@ mod tests {
         );
     }
 
+    /// **H4.3 sweep** — sliding-intruder ramps at cavity =
+    /// 3, 5, 6, 7, 8 mm on iter-1 sock_over_capsule with the iter-1
+    /// GUI-default 10+3 mm dual-layer stack: ECOFLEX_00_30 + 50 %
+    /// Slacker INNER 10 mm + DRAGON_SKIN_20A OUTER 3 mm (soft +
+    /// tacky inside, firm skin outside).  Falsification artifact
+    /// for H4-2-C asymmetric one-sided bound — re-runnable
+    /// regression gate that maps `cargo test` outcomes onto the
+    /// user's GUI visual gate behavior under H4-2-C.
+    ///
+    /// **Layer order** is `innermost-first` per `SimDesign.layers`
+    /// docstring.  Pre-H4-arc revision of this test (`60e649d2`)
+    /// had the layers INVERTED (DS20A inner / Ecoflex outer
+    /// without Slacker), which produced different convergence
+    /// behavior than the GUI — the §5.6 puzzle PARTIAL
+    /// RESOLUTION in `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md`.
+    /// This revision aligns the test substrate with the GUI
+    /// default per the user-driven §5.7 visual gate.
+    ///
+    /// **Pre-H4 baseline**: cavity > 5 mm fake-converged step 1
+    /// into an invalid Yeoh state and panicked at step 2 (per
+    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10) — or,
+    /// post-commit `2739717e` end-of-solve check, panics honestly
+    /// at step 1.
+    ///
+    /// **Post-H4-2-C outcome** (per bookmark §5.4-§5.7):
+    /// asymmetric one-sided bound drops the compressive gate at
+    /// `MaterialField::sample_yeoh` time, letting Newton iterate
+    /// through deep-compression equilibria.  Cavity 5 mm clears
+    /// 16/16 (full seat) + cavity 8 mm clears 12/16 (75 % seat)
+    /// in the GUI visual gate; the 6 + 7 mm gap is a Newton
+    /// convergence wall (genuine, not a Yeoh validity firing) —
+    /// separate sub-arc (slide-step bisection / N_STEPS sweep).
+    ///
+    /// Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-sim-research --release \
+    ///     h4_sweep_sliding_ramp_on_iter1_scan -- --ignored --nocapture
+    /// ```
+    ///
+    /// `#[ignore]` — needs the repo-excluded iter-1 scan + prep.toml
+    /// + a release-mode 5-cavity ramp; total wall-clock ~10-15 min.
+    #[test]
+    #[ignore = "H4.3 sweep — needs the iter-1 scan + a release ramp; run with --ignored --nocapture"]
+    fn h4_sweep_sliding_ramp_on_iter1_scan() {
+        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !scan_path.exists() {
+            eprintln!(
+                "skip: iter-1 scan fixture not found at {}",
+                scan_path.display()
+            );
+            return;
+        }
+        let prep_path = PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.prep.toml");
+        let prep_text = std::fs::read_to_string(&prep_path).expect("load iter-1 prep.toml");
+        let centerline =
+            crate::parse_centerline(&prep_text).expect("parse centerline from prep.toml");
+        assert!(
+            centerline.len() >= 2,
+            "iter-1 prep.toml must carry a centerline polyline",
+        );
+        // Cap planes from the same prep.toml — the GUI loads these via
+        // `cf_cap_planes::parse_cap_planes` and threads them into
+        // `build_insertion_geometry`'s `cap_planes` arg.  Pre-polish
+        // versions of this test passed `&[]` (no caps) which routed
+        // `pinned_floor_shell` through the closed-cavity short-circuit
+        // — a structurally different FEM problem than the GUI's
+        // open-mouth-with-floor-pinned-at-cap topology.  iter-1's
+        // prep.toml has one `[[caps.loops]]` record at z ≈ -53 mm
+        // with `included = true`.
+        let cap_planes =
+            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse cap planes from prep.toml");
+        let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
+
+        let cavities_mm = [3.0_f64, 5.0, 6.0, 7.0, 8.0];
+        let n_steps = 16_usize;
+        let cell_size_m = 0.004_f64;
+
+        eprintln!(
+            "H4.3 sweep — iter-1 sock_over_capsule.cleaned.stl, dual-layer \
+             Ecoflex 00-30 + 50% Slacker INNER 10 mm + DS20A OUTER 3 mm \
+             (iter-1 GUI default), n_steps = {}, centerline {} points, \
+             {} cap plane(s)",
+            n_steps,
+            centerline.len(),
+            cap_planes.len(),
+        );
+        eprintln!(
+            "  H4-2-C asymmetric one-sided bound: only the tensile cap \
+             reaches the solver gate; compressive `min_principal_stretch` \
+             is dropped at `MaterialField::sample_yeoh`."
+        );
+        eprintln!(
+            "  Ecoflex 00-30 max_principal_stretch (inner pre-Slacker): {:.2}",
+            ECOFLEX_00_30.validity_max_principal_stretch,
+        );
+        eprintln!(
+            "  DS20A max_principal_stretch (outer): {:.2}",
+            DRAGON_SKIN_20A.validity_max_principal_stretch,
+        );
+
+        for &cavity_mm in &cavities_mm {
+            let cavity_inset_m = cavity_mm * 1e-3;
+            eprintln!("\n--- cavity = {cavity_mm:.1} mm ---");
+            let design = SimDesign {
+                cavity_inset_m,
+                // `SimDesign.layers` is innermost-first.  Iter-1 GUI
+                // default: soft + tacky inside (Ecoflex 00-30 + 50 %
+                // Slacker lerped to Shore 000-20), firm skin outside
+                // (DS20A).  Verified against the user-driven §5.7
+                // visual-gate sweep at
+                // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md`.
+                layers: vec![
+                    layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
+                    layer(0.003, "DRAGON_SKIN_20A"),
+                ],
+            };
+            let t0 = Instant::now();
+            let geometry =
+                match build_insertion_geometry(&scan, &design, &cap_planes, 2_500, cell_size_m) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        eprintln!("  build_insertion_geometry FAILED: {e}");
+                        continue;
+                    }
+                };
+            eprintln!(
+                "  geometry: {} tets, {} vertices, built in {:.1}s",
+                geometry.n_tets,
+                geometry.mesh.positions().len(),
+                t0.elapsed().as_secs_f64(),
+            );
+
+            let t1 = Instant::now();
+            let ramp =
+                match run_sliding_insertion_ramp(geometry, &centerline, n_steps, cavity_inset_m) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("  run_sliding_insertion_ramp FAILED: {e}");
+                        continue;
+                    }
+                };
+            let elapsed = t1.elapsed().as_secs_f64();
+            let n_converged = ramp.steps.len();
+            let last = ramp.steps.last();
+            eprintln!("  ramp: {n_converged}/{n_steps} steps converged in {elapsed:.1}s",);
+            for (k, s) in ramp.steps.iter().enumerate() {
+                eprintln!(
+                    "    step {k:2} t={:.3} arc={:5.2}mm — {} iters, r={:.2e}, F={:6.2}N, \
+                     pairs={}",
+                    s.slide_fraction_t,
+                    s.arc_length_s_m * 1e3,
+                    s.iter_count,
+                    s.final_residual_norm,
+                    s.readout.contact_force_magnitude_n,
+                    s.readout.n_active_contact_pairs,
+                );
+            }
+            if let Some(k) = ramp.failed_at_step {
+                let reason = ramp.failure_reason.as_deref().unwrap_or("<no reason>");
+                eprintln!("  STALL at step {k}: {reason}");
+                let _ = last; // result-borrow placeholder; failure branch
+            } else {
+                eprintln!("  → ALL {n_steps} STEPS CONVERGED ✓");
+            }
+        }
+    }
+
     /// **Recon discriminating experiment (post-7.3b.1)** — isolate
     /// "full-surface contact period" from "GridSdf gradient roughness"
     /// per `docs/INSERTION_SIM_STATE.md` Q3.
@@ -4561,7 +5070,7 @@ mod tests {
     /// Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
+    /// cargo test -p cf-sim-research --release \
     ///     run_insertion_ramp_on_analytical_sphere_shell \
     ///     -- --ignored --nocapture
     /// ```
@@ -4599,11 +5108,23 @@ mod tests {
         // the icosphere case's effective material distribution
         // (`layer_boundary_thresholds` is empty for a single layer →
         // `layered_param_field` returns a `ConstantField` too).
+        // Mirrors `build_insertion_geometry`'s switch to the
+        // calibrated 5-arg `from_yeoh_fields_with_bounds`
+        // constructor (H4 plumbing) so per-tet `Yeoh`s carry
+        // ECOFLEX_00_30's 8.00 tensile cap through H4-2-C
+        // asymmetric one-sided routing (the 0.20 compressive cap
+        // is sampled but dropped at
+        // `MaterialField::sample_yeoh` per
+        // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  Keeps
+        // the analytical-sphere recon experiment apples-to-apples
+        // with the production GridSdf geometry.
         let silicone = silicone_for_anchor("ECOFLEX_00_30").unwrap();
-        let material_field = MaterialField::from_yeoh_fields(
+        let material_field = MaterialField::from_yeoh_fields_with_bounds(
             Box::new(ConstantField::new(silicone.mu)),
             Box::new(ConstantField::new(silicone.c2)),
             Box::new(ConstantField::new(silicone.lambda)),
+            Box::new(ConstantField::new(silicone.validity_max_principal_stretch)),
+            Box::new(ConstantField::new(silicone.validity_min_principal_stretch)),
         );
 
         let hints = MeshingHints {
@@ -4756,8 +5277,9 @@ mod tests {
     /// that plane, and the intruder enters cleanly along the `+Z`
     /// centerline through the open mouth — matching the product
     /// pipeline shape (cf-scan-prep records caps in `.prep.toml`,
-    /// cf-device-design carves the mouth via the same primitive in
-    /// `build_insertion_geometry`).
+    /// the same `cf_cap_planes` primitive feeds both the sim's
+    /// `build_insertion_geometry` and cf-device-geometry's cavity
+    /// iso-extraction in cf-device-design).
     fn synthetic_sliding_geometry() -> InsertionGeometry {
         let scan = icosphere(0.040, 3);
         let design = SimDesign {
@@ -4786,13 +5308,64 @@ mod tests {
         // unavailable; assert `is_err` then destructure with a guarded
         // `let-else` (cheaper than a bare `panic!` which trips the
         // crate-wide `clippy::panic` deny).
-        let result = run_sliding_insertion_ramp(geometry, &single_point, 8);
+        let result = run_sliding_insertion_ramp(geometry, &single_point, 8, 3.0e-3);
         assert!(result.is_err(), "single-point centerline must be rejected");
         let Err(err) = result else { unreachable!() };
         let msg = format!("{err:#}");
         assert!(
             msg.contains("centerline polyline of ≥ 2 points"),
             "error message must surface the polyline-length requirement, got: {msg}",
+        );
+    }
+
+    /// CR.3 fast unit gate: a probe deep inside the closed-body
+    /// GridSdf (where flood-fill sign returns far-negative) must be
+    /// silently excluded from the active set by the `interior_cutoff`
+    /// filter — independent of the FEM solve. Pins the CR.2 wire-up:
+    /// `intruder_contact_sliding_at` must call
+    /// `PenaltyRigidContact::with_params_and_interior_cutoff` (NOT
+    /// `with_params`); regression to `with_params` would produce a
+    /// non-empty active set here.
+    ///
+    /// **Scope**: this test is a wire-up gate, NOT a filter-math gate.
+    /// The strict-vs-non-strict, sign-convention, and band-gate
+    /// semantics of the cutoff filter itself are pinned in
+    /// `sim/L0/soft/tests/penalty_interior_cutoff.rs` against a
+    /// `RigidPlane` fixture with precisely-controllable sd. Here the
+    /// icosphere `GridSdf` is the load-bearing surface — we're only
+    /// asserting that cf-sim-research's contact-build call site
+    /// actually plumbs the cutoff through to sim-soft.
+    ///
+    /// Probe at `(0, 0, 0)` with `pose = slide_pose_at(centerline, 1.0)`
+    /// (rest pose — intruder centered at origin per the centerline's
+    /// rest-pose convention): the inverse-transformed point lands at
+    /// the body center where the icosphere GridSdf's flood-fill sign
+    /// reports `sd ≈ -40 mm`. Composed sd via
+    /// `Solid::offset(cavity_offset_m = -3 mm)` = `raw + 3 mm ≈
+    /// -37 mm`. The `2 × cavity_inset_m = 6 mm` interior_cutoff
+    /// filters at composed `< -6 mm`, so this probe is excluded.
+    #[test]
+    fn intruder_contact_sliding_at_excludes_deep_interior_probe() {
+        use sim_soft::ActivePairsFor;
+        let geometry = synthetic_sliding_geometry();
+        let centerline = synthetic_icosphere_centerline_z();
+        let pose = slide_pose_at(&centerline, 1.0);
+        let contact = intruder_contact_sliding_at(
+            &geometry.intruder,
+            geometry.bounds,
+            pose,
+            0.0, // interference_m — pre-F4 shrunk-scan model (the
+            // wire-up gate is independent of the F4 homotopy knob)
+            -0.003, // cavity_offset_m
+            3.0e-3, // cavity_inset_m → 6 mm interior_cutoff
+        );
+        let probe = vec![Vec3::new(0.0, 0.0, 0.0)];
+        let pairs = contact.active_pairs(&geometry.mesh, &probe);
+        assert!(
+            pairs.is_empty(),
+            "deep-interior probe at body center (composed sd ≈ -37 mm) must be \
+             excluded by the 6 mm interior_cutoff; got {} pairs",
+            pairs.len(),
         );
     }
 
@@ -4820,7 +5393,10 @@ mod tests {
             &geometry.intruder,
             geometry.bounds,
             pose,
+            0.0, // interference_m — pre-F4 shrunk-scan model (the
+            // sign-of-pose gate is independent of the F4 homotopy knob)
             -0.003, // cavity_offset_m = -cavity_inset_m
+            3.0e-3, // cavity_inset_m
         );
         let rest_positions: Vec<Vec3> = geometry.mesh.positions().to_vec();
         let readouts = contact.per_pair_readout(&geometry.mesh, &rest_positions);
@@ -4832,30 +5408,161 @@ mod tests {
         );
     }
 
-    /// Solver-only FEM-correctness gate: the 16-step sliding ramp on
-    /// the synthetic icosphere cup makes meaningful progress before
-    /// any Yeoh-validity stall. The fixture is a cup (icosphere with
-    /// the `+Z` apex carved open by a cap plane — see
-    /// `synthetic_sliding_geometry`), but the sphere cross-section
-    /// narrows along the slide direction (it's an icosphere, not a
-    /// straight tube), so the local cavity-wall stretch climbs as the
-    /// intruder slides deeper. Past a few steps the Yeoh material
-    /// validity wall fires per `sim-soft/src/solver/backward_euler.rs`
-    /// `:625` Phase 4 scope memo Decision Q.
+    /// F3 recon B candidate C′.a (ε bisection) — pin
+    /// [`INSERTION_CONTACT_SMOOTHING_EPS_M`] at the post-C′.a-sweep
+    /// chosen value (`0.075 mm`) + carry the C′.a evidence table.
     ///
-    /// This is exactly the spec §6 risk #2 (high-curvature plus
-    /// high-stretch plus Yeoh validity wall) and the D-Slide6 Fork-B
-    /// "partial seating is honest engineering data" stall handling.
-    /// We assert Fork-B behavior end-to-end: at least 1 step
-    /// converges; every converged step has finite all-positive force
-    /// plus finite x_final; arc length is monotone; if `failed_at_step`
-    /// is set, the failure message mentions the validity wall. The
-    /// "all 16 steps converge" gate is for fixtures with more uniform
-    /// cross-section along the slide direction. Real iter-1
+    /// **C.2 + C′.a combined sweep** (2026-05-18, cavity = 5 mm,
+    /// layers 10+3 mm, sock_over_capsule.cleaned.stl, per
+    /// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md`):
+    ///
+    /// | ε (mm) | steps converged | r_norm floor | stall mode | LM rescues |
+    /// |---|---|---|---|---|
+    /// | 0 (gated-A baseline) | 0/16 | 1.784 | Armijo iter 61 | 1 mild |
+    /// | 0.025 (C′.a) | 0/16 | 0.231 | Armijo iter 108 | 3 stiff |
+    /// | 0.05 (C′.a) | 0/16 | 0.200 | Armijo iter 147 | 4 moderate |
+    /// | **0.075 (C′.a)** | **16/16** | converges seated 83.35 mm | — | **0** |
+    /// | 0.1 (C.2) | 0/16 | 0.384 | Armijo iter 126 | 2 stiff |
+    /// | 0.25 (C.2) | 0/16 | 0.753 | iter cap 150 | 2 stiff |
+    ///
+    /// U-shaped response with a **narrow converging window centered
+    /// at ε ≈ 0.075 mm**.  Sweet spot where band-widening backfire
+    /// (hyp 3 from falsification bookmark) balances against
+    /// chattering-suppression effect.  No LM rescues + no Yeoh
+    /// failures + no panics at the chosen ε.
+    ///
+    /// MAINTENANCE NOTE: this pinned value + the sweep table mirror
+    /// the docstring on [`INSERTION_CONTACT_SMOOTHING_EPS_M`].  If
+    /// the const value changes, update both surfaces in lockstep.
+    #[test]
+    fn insertion_contact_smoothing_eps_m_sentinel() {
+        // 0.075 mm = 7.5e-5 m; use a tolerance well below the
+        // ε-bisection step (0.025 mm sample spacing → 2.5e-5 m).
+        let expected = 0.075e-3;
+        assert!(
+            (INSERTION_CONTACT_SMOOTHING_EPS_M - expected).abs() < 1e-9,
+            "INSERTION_CONTACT_SMOOTHING_EPS_M expected {expected} m \
+             (C′.a sweep pinned at 0.075 mm — narrow converging \
+             window 2026-05-18 per \
+             docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md); got \
+             {INSERTION_CONTACT_SMOOTHING_EPS_M}. If you changed the \
+             value to test a recon candidate, also update the sweep \
+             evidence comment AND the const docstring.",
+        );
+        // Must remain non-negative + finite so any future
+        // re-pinning routes through C.1's smoothing surface cleanly.
+        assert!(
+            INSERTION_CONTACT_SMOOTHING_EPS_M >= 0.0
+                && INSERTION_CONTACT_SMOOTHING_EPS_M.is_finite(),
+            "smoothing window must be non-negative + finite",
+        );
+    }
+
+    /// F3 recon B candidate E.b (per-query normal averaging) —
+    /// initial state sentinel: `(k, r) = (1, 0.0)` pins the
+    /// bit-equal-when-disabled wire-up. The E.b.4 case-A ship
+    /// re-pins these values, updates the assertion expected values,
+    /// and mirrors the full `(k, r)` sweep table in the const
+    /// docstrings (parallel to C′.a's 3-surface mirror pattern).
+    ///
+    /// MAINTENANCE NOTE: this sentinel + the
+    /// [`INSERTION_CONTACT_NORMAL_AVG_K`] /
+    /// [`INSERTION_CONTACT_NORMAL_AVG_RADIUS_M`] docstrings mirror
+    /// each other.  If the const values change, update both
+    /// surfaces in lockstep (sentinel asserts the new value; const
+    /// docstrings carry the sweep evidence).
+    #[test]
+    fn insertion_contact_normal_avg_sentinel() {
+        assert_eq!(
+            INSERTION_CONTACT_NORMAL_AVG_K, 1,
+            "INSERTION_CONTACT_NORMAL_AVG_K expected 1 (E.b disabled — \
+             pending the cavity = 6 mm sweep per \
+             docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md §6); got \
+             {INSERTION_CONTACT_NORMAL_AVG_K}. If you changed the \
+             value to test a recon candidate, also update the const \
+             docstring with the sweep evidence + this sentinel's \
+             expected value.",
+        );
+        // f64 equality is intentional + correct: 0.0 is exactly
+        // representable + the initial pinned value is exactly 0.0.
+        #[allow(clippy::float_cmp)]
+        let r_is_zero = INSERTION_CONTACT_NORMAL_AVG_RADIUS_M == 0.0;
+        assert!(
+            r_is_zero,
+            "INSERTION_CONTACT_NORMAL_AVG_RADIUS_M expected 0.0 \
+             (matches the disabled k=1 state); got \
+             {INSERTION_CONTACT_NORMAL_AVG_RADIUS_M}. If you changed \
+             the value to test a recon candidate, also update the \
+             const docstring + this sentinel's expected value.",
+        );
+        // Bounds well-formedness — guards against future re-pinning
+        // outside the closed-set k validation in the constructor.
+        assert!(
+            matches!(INSERTION_CONTACT_NORMAL_AVG_K, 1 | 7),
+            "k must be in sim-soft's iter-1 closed set {{1, 7}}",
+        );
+        assert!(
+            INSERTION_CONTACT_NORMAL_AVG_RADIUS_M >= 0.0
+                && INSERTION_CONTACT_NORMAL_AVG_RADIUS_M.is_finite(),
+            "normal-averaging radius must be non-negative + finite",
+        );
+        // Composition invariant: k > 1 requires r > 0 to avoid the
+        // silent-no-op caller mistake the sim-soft constructor asserts.
+        // At the disabled pin (k = 1) the inner assertion's predicate
+        // is statically true-or-skipped; #[allow] suppresses clippy's
+        // assertion-has-constant-value lint because the gate IS the
+        // invariant — when E.b.4 case A re-pins k to 7, this branch
+        // becomes the load-bearing assertion.
+        #[allow(clippy::assertions_on_constants)]
+        if INSERTION_CONTACT_NORMAL_AVG_K > 1 {
+            assert!(
+                INSERTION_CONTACT_NORMAL_AVG_RADIUS_M > 0.0,
+                "normal-averaging radius must be strictly positive when k > 1",
+            );
+        }
+    }
+
+    /// Solver-only FEM-correctness gate for the synthetic icosphere
+    /// cup. The fixture is a cup (icosphere with the `+Z` apex carved
+    /// open by a cap plane — see `synthetic_sliding_geometry`).
+    ///
+    /// Two failure modes share this test's coverage; the gates
+    /// discriminate them:
+    ///
+    /// 1. **Pre-v5 SL.3 deep-interior firing** (the bug v5 fixed).
+    ///    Closed-body `TransformedSdf<GridSdf>` returned deep-negative
+    ///    `sd` for BCC vertices whose inverse-transformed position
+    ///    landed in the static intruder body interior, generating
+    ///    `κ·(d̂ − sd)·n` forces in the kN range and breaking Newton
+    ///    convergence at step 0. v5 (CR.1) `interior_cutoff` filters
+    ///    those pairs at the active-set walk; CR.2 wires
+    ///    `2 × cavity_inset_m = 6 mm` cutoff into
+    ///    `intruder_contact_sliding_at`. Empirical signature post-v5:
+    ///    **step-0 contact force ≈ 0.28 N** (vs kN pre-v5). The
+    ///    50-N step-0 sentinel below is the sharpest gate against
+    ///    regression to this mode.
+    ///
+    /// 2. **Yeoh validity wall** (genuine, geometry-driven). The
+    ///    icosphere has a NARROWING cross-section along the slide
+    ///    direction — once the intruder slides past ~15 mm the local
+    ///    cavity-wall stretch climbs past `max_stretch_deviation = 1.0`
+    ///    and the Phase-4-scope-memo-Decision-Q fail-closed semantics
+    ///    fire at `sim-soft/src/solver/backward_euler.rs:625`.
+    ///    Empirically (post-v5, observed during CR.3 implementation):
+    ///    the ramp converges 3 steps (t = 1/16, 2/16, 3/16; arc 5, 10,
+    ///    15 mm) and stalls at step 3 with `max_stretch_deviation ≈
+    ///    1.33`. The Fork-B "partial seating is honest engineering
+    ///    data" stall handling (D-Slide6) absorbs this gracefully.
+    ///
+    /// The CR.3 recon spec asserted that the "narrowing cross-section"
+    /// framing was wishful — empirical measurement during CR.3
+    /// implementation falsified that. The narrowing IS real for this
+    /// fixture; what was wishful was the assumption that the SL.3 mode
+    /// was the ONLY stall mechanism. The 50-N sentinel handles SL.3
+    /// regression; Fork-B handles the genuine Yeoh stall. Real iter-1
     /// `sock_over_capsule` is sock-shaped (tube of roughly constant
-    /// radius along its length) and gives the intruder a long arc of
-    /// near-uniform interference; that's the natural surface for the
-    /// all-steps-converge gate at SL.3+.
+    /// radius) and is the natural surface for the all-steps-converge
+    /// gate — that's CR.4 (visual gate), not this fixture.
     ///
     /// `n_steps = 16` per spec D-Slide5 default for an 80 mm centerline
     /// (`max(16, ceil(L_m / 5e-3))`).
@@ -4864,7 +5571,7 @@ mod tests {
     /// growing-ramp synthetic test's posture. Run:
     ///
     /// ```text
-    /// cargo test -p cf-device-design --release \
+    /// cargo test -p cf-sim-research --release \
     ///     sliding_insertion_ramp_converges -- --ignored --nocapture
     /// ```
     #[test]
@@ -4875,7 +5582,7 @@ mod tests {
         let n_dof = geometry.mesh.positions().len() * 3;
         let n_steps = 16;
 
-        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps)
+        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps, 3.0e-3)
             .expect("synthetic sliding ramp should run");
         for s in &ramp.steps {
             eprintln!(
@@ -4897,7 +5604,12 @@ mod tests {
         }
 
         // Fork-B contract: at least one step must converge (a step-0
-        // panic would mean the contact + BC + mesh are ill-posed).
+        // panic would mean the contact + BC + mesh are ill-posed). The
+        // synthetic icosphere fixture genuinely stalls at the Yeoh
+        // validity wall around step 3 due to the narrowing cross-
+        // section (see the docstring's mechanism 2). The all-steps-
+        // converge gate belongs on a sock-shaped fixture (real iter-1
+        // covers that at CR.4 visual gate).
         assert!(
             !ramp.steps.is_empty(),
             "sliding ramp must converge at least one step",
@@ -4933,17 +5645,33 @@ mod tests {
         }
         assert_eq!(ramp.intruder_poses.len(), ramp.steps.len());
 
+        // Contact-force regression sentinel — step 0 (t = 1/16) has
+        // small interference + modest active-pair count; plausible
+        // upper bound 50 N (see docstring derivation). Pre-v5 SL.3
+        // would report this in the kN range due to the deep-interior
+        // firing of body-bulk + orphan vertices. The sentinel directly
+        // catches regression to the SL.3 mode even if the all-converge
+        // gate above happens to pass for an unrelated reason.
+        const STEP_0_CONTACT_FORCE_BOUND_N: f64 = 50.0;
+        let step_0_force = ramp.steps[0].readout.contact_force_magnitude_n;
+        assert!(
+            step_0_force < STEP_0_CONTACT_FORCE_BOUND_N,
+            "step-0 contact force {step_0_force:.2} N exceeds plausible \
+             upper bound {STEP_0_CONTACT_FORCE_BOUND_N:.0} N — likely \
+             regression to the pre-v5 SL.3 deep-interior firing",
+        );
+
         let result = ramp.result.as_ref().expect("at least one step converged");
         assert_eq!(
             result.force_arc_length_curve.len(),
             ramp.steps.len(),
             "force-arc-length curve has one point per converged step",
         );
-        // If the ramp stalled, the failure must be the Yeoh-validity
-        // wall (Phase 4 fail-closed) per spec §6 risk #2 — NOT some
-        // unexpected solver pathology that should surface as a test
-        // failure. The "validity violation" + "stretch" substrings
-        // pin the expected failure mode.
+        // Safety net: the synthetic icosphere stall mode is the Yeoh
+        // validity wall (docstring mechanism 2). Any non-validity-
+        // wall stall reason is a regression to the SL.3 deep-interior
+        // mechanism (mechanism 1) the cutoff is designed to filter,
+        // OR an unexpected solver pathology — surface it.
         if let Some(reason) = &ramp.failure_reason {
             assert!(
                 reason.contains("validity violation") || reason.contains("stretch"),
@@ -4978,7 +5706,7 @@ mod tests {
         let referenced: Vec<VertexId> = referenced_vertices(&geometry.mesh);
         let n_steps = 16;
 
-        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps)
+        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps, 3.0e-3)
             .expect("synthetic sliding ramp should run");
         assert!(
             !ramp.steps.is_empty(),

@@ -1468,7 +1468,7 @@ struct ReconstructedFloorPlane {
 /// the same frame as [`DetectedCapLoop::plane_centroid`] / `plane_normal`
 /// — which is what the .prep.toml's `[caps]` block contract expects
 /// (cf-cap-planes' `parse_cap_planes` bakes the recorded plane through
-/// the [`transform`] block at load time).
+/// the `[transform]` block at load time).
 ///
 /// Returns `None` when reconstruction would not produce a usable floor
 /// plane: zero floor trim, polyline too short after trimming, or a

@@ -10,9 +10,9 @@ use crate::types::{
     Contact, DISABLE_MIDPHASE, ENABLE_MULTICCD, GeomType, Model, disabled, enabled,
 };
 use cf_geometry::Shape;
+use log::warn;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
-use tracing::warn;
 
 /// GJK/EPA collision between two convex shapes with MULTICCD and margin support.
 ///
