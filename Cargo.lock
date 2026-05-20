@@ -1952,12 +1952,20 @@ dependencies = [
 name = "cf-device-geometry"
 version = "1.0.0"
 dependencies = [
+ "anyhow",
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
+ "cf-cap-planes",
+ "cf-design",
  "cf-device-types",
  "cf-viewer",
+ "mesh-offset",
+ "mesh-repair",
+ "mesh-sdf",
  "mesh-types",
+ "meshopt",
+ "nalgebra 0.34.2",
 ]
 
 [[package]]

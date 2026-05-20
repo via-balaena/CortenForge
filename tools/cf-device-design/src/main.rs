@@ -48,7 +48,12 @@ use cf_device_types::{
 };
 use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
 
+use cf_device_geometry::bevy_mesh::{
+    build_bevy_mesh_from_indexed, build_bevy_mesh_from_indexed_with_colors,
+};
+use cf_device_geometry::cavity::{CavityEntity, spawn_cavity_mesh};
 use cf_device_geometry::clip_plane::{self, ClipPlaneExt, ClipPlaneMaterial};
+use cf_device_geometry::sdf_layers;
 use clap::Parser;
 use mesh_io::load_stl;
 use mesh_types::{Bounded, IndexedMesh, Point3};
@@ -77,13 +82,6 @@ pub(crate) mod insertion_sim;
 /// driven sim run + egui panel + per-vertex heat-map projection on the
 /// existing per-layer surface shells.
 pub(crate) mod insertion_sim_ui;
-
-/// Slice 9 — SDF-based layer surfaces. Replaces the retired per-vertex
-/// radial displacement (slice-3 `EnvelopeProxyMesh`) with cached-SDF
-/// + per-iso marching-cubes extraction. See
-/// `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md` for the architecture;
-/// module docs for the API + sign convention.
-pub(crate) mod sdf_layers;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the
@@ -605,11 +603,6 @@ fn compute_validations(
 // surface is sub-millisecond on the iter-1 decimated proxy
 // (1500 faces).
 
-/// Marker component for the cavity mesh entity. One entity at
-/// runtime.
-#[derive(Component)]
-struct CavityEntity;
-
 /// Marker component for a per-layer outer-surface mesh entity.
 /// Bevy spawns / despawns one entity per layer whenever the layer
 /// stack changes. The layer index isn't stored on the component
@@ -657,73 +650,6 @@ struct LayerMeshKey {
     show_deformed: bool,
 }
 
-/// Build a Bevy `Mesh` directly from an [`IndexedMesh`] — no
-/// per-vertex displacement. Used by the SDF-extracted cavity + per-
-/// layer surfaces (slice 9, [`sdf_layers::extract_layer_surface`]).
-/// Maps physics-frame vertices through the cast-frame `UpAxis` swap
-/// plus the `render_scale` lift to Bevy frame; computes smooth
-/// per-vertex normals from face winding.
-///
-/// Replaced the prior `build_displaced_proxy_mesh*` wrappers (sub-leaf
-/// 6) — the SDF iso path extracts geometry where it naturally lives,
-/// so there is no displacement step at the bevy-mesh-build boundary.
-fn build_bevy_mesh_from_indexed(mesh: &IndexedMesh, up: UpAxis, render_scale: f32) -> Mesh {
-    build_bevy_mesh_from_indexed_with_colors(mesh, up, render_scale, None)
-}
-
-/// Same as [`build_bevy_mesh_from_indexed`] but with optional per-
-/// vertex RGBA colors — the SDF-path heat-map analog of the
-/// retired `build_displaced_proxy_mesh_with_colors` (slice 9
-/// sub-leaf 7 wires this for the Insertion Sim panel).
-///
-/// # Panics
-///
-/// `vertex_colors` must match `mesh.vertices.len()` when `Some`;
-/// mismatched lengths panic via the `Mesh::ATTRIBUTE_COLOR` insert
-/// invariant — a construction-side bug, not a runtime data
-/// dependence.
-fn build_bevy_mesh_from_indexed_with_colors(
-    mesh: &IndexedMesh,
-    up: UpAxis,
-    render_scale: f32,
-    vertex_colors: Option<&[[f32; 4]]>,
-) -> Mesh {
-    let positions: Vec<[f32; 3]> = mesh
-        .vertices
-        .iter()
-        .map(|v| {
-            let bevy = up.to_bevy_point(v);
-            #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
-            [
-                bevy[0] * render_scale,
-                bevy[1] * render_scale,
-                bevy[2] * render_scale,
-            ]
-        })
-        .collect();
-    let indices: Vec<u32> = mesh.faces.iter().flatten().copied().collect();
-
-    let mut bevy_mesh = Mesh::new(
-        bevy::mesh::PrimitiveTopology::TriangleList,
-        bevy::asset::RenderAssetUsages::default(),
-    );
-    bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    bevy_mesh.insert_indices(bevy::mesh::Indices::U32(indices));
-    bevy_mesh.compute_smooth_normals();
-    if let Some(colors) = vertex_colors {
-        assert_eq!(
-            colors.len(),
-            mesh.vertices.len(),
-            "build_bevy_mesh_from_indexed_with_colors: vertex_colors.len() = {} \
-             must match mesh.vertices.len() = {}",
-            colors.len(),
-            mesh.vertices.len(),
-        );
-        bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
-    }
-    bevy_mesh
-}
-
 /// Slice S11.2 — translucency for the per-layer slab render. Each
 /// layer entity carries both its inner + outer face triangles
 /// (`InsertionSimOutputs::deformed_layer_slab_mesh_at`) and renders
@@ -734,54 +660,6 @@ fn build_bevy_mesh_from_indexed_with_colors(
 /// translucent band of silicone per layer without losing the inner
 /// geometry behind it.
 const LAYER_SLAB_ALPHA: f32 = 0.35;
-
-/// Cavity surface color (`StandardMaterial::base_color`). The
-/// cavity is the inner void surface; coral distinguishes it from
-/// the layer palette + scan + axis arrows. Material is double-
-/// sided so the user sees the inside when layers are hidden.
-const CAVITY_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.45);
-
-/// Spawn the cavity mesh entity at startup. Layer entities spawn
-/// lazily on the first state-change tick.
-///
-/// Slice 9 sub-leaf 3: extracts the cavity surface from the cached
-/// scan SDF at `iso = -cavity.inset_m` (inward offset by the inset
-/// distance). Replaces the prior per-vertex radial displacement of
-/// the proxy mesh — the SDF iso is exactly perpendicular to the
-/// source surface by construction (no apex-nipple artifacts).
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
-fn spawn_cavity_mesh(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ClipPlaneMaterial>>,
-    cached_sdf: Res<sdf_layers::CachedScanSdf>,
-    cap_planes: Res<sdf_layers::CapPlanes>,
-    cavity: Res<CavityState>,
-    up: Res<UpAxis>,
-    render_scale: Res<RenderScale>,
-) {
-    let cavity_indexed =
-        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -cavity.inset_m);
-    let cavity_mesh = meshes.add(build_bevy_mesh_from_indexed(
-        &cavity_indexed,
-        *up,
-        render_scale.0,
-    ));
-    let cavity_material = materials.add(ExtendedMaterial {
-        base: StandardMaterial {
-            base_color: Color::srgb(CAVITY_COLOR.0, CAVITY_COLOR.1, CAVITY_COLOR.2),
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        },
-        extension: ClipPlaneExt::default(),
-    });
-    commands.spawn((
-        Mesh3d(cavity_mesh),
-        MeshMaterial3d(cavity_material),
-        CavityEntity,
-    ));
-}
 
 /// Snapshot of every input `update_cavity_mesh` reads, kept in the
 /// system's `Local<>` so the per-frame check is "did the values

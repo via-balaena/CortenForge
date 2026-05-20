@@ -38,14 +38,14 @@
 //! - `iso = -T` (T > 0) → inward offset by T meters (cavity surface).
 //! - `iso =  0` → original scan surface.
 //!
-//! Module-level `#![allow(dead_code)]` matches the `insertion_sim`
-//! precedent: this surface (`CachedScanSdf` + `build_cached_scan_sdf`
-//! + `extract_layer_surface` + the three constants) is consumed by
-//! later sub-leaves (2: Bevy resource wiring; 3: cavity preview; 4:
-//! per-layer surfaces; 5: Validations panel). Each sub-leaf un-shades
-//! parts of the surface; the allowance keeps the bin's compile clean
-//! at the in-flight slice boundary.
-#![allow(dead_code)]
+//! Lifted from `tools/cf-device-design/src/sdf_layers.rs` per
+//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.c so cf-device-design
+//! (CAD viewer + validations panel) and cf-sim-research (sim viewer,
+//! Phase 3) both consume one cached scan SDF + per-iso MC
+//! extraction path. `pub(crate)` widened to `pub` for cross-crate
+//! access. The original module's `#![allow(dead_code)]` is dropped:
+//! the consumer set is now external + symbols stay live by virtue
+//! of cross-crate visibility.
 
 use std::sync::Arc;
 
@@ -72,12 +72,12 @@ use nalgebra::Point3;
 /// fully-populated value, but the resource type always exists so
 /// systems can `Res<CapPlanes>` it unconditionally).
 #[derive(Resource, Debug, Clone, Default)]
-pub(crate) struct CapPlanes {
-    pub(crate) planes: Vec<CapPlane>,
+pub struct CapPlanes {
+    pub planes: Vec<CapPlane>,
 }
 
 impl CapPlanes {
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.planes.is_empty()
     }
 }
@@ -91,7 +91,7 @@ impl CapPlanes {
 /// fingertip / nostril / knuckle detail may need 5000+. See spec
 /// §"Open risks #2" — revisit when iter-2 / iter-3 scans surface a
 /// visible quality regression.
-pub(crate) const SDF_SOURCE_TARGET_FACES: usize = 2_500;
+pub const SDF_SOURCE_TARGET_FACES: usize = 2_500;
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — mirrors
 /// `ENVELOPE_PROXY_WELD_EPSILON_M` (1 µm). cf-scan-prep's STL loader
@@ -120,7 +120,7 @@ const SDF_DEGENERATE_AREA_M2: f64 = 1e-15;
 /// production setting: < 1 ms MC per extraction, ~20 k grid cells on
 /// the iter-1 AABB (≈ 150 mm × 150 mm × 250 mm). Consumed by the
 /// scan-load wiring in sub-leaf 2.
-pub(crate) const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.005;
+pub const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.005;
 
 /// Margin (meters) added on every side of the scan AABB when
 /// allocating the cached grid. Must cover the maximum-outward layer
@@ -128,7 +128,7 @@ pub(crate) const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.005;
 /// to find the iso surface; 40 mm covers 6 layers × ~5 mm cumulative
 /// plus a safety pad. Hard upper bound on extractable offsets — see
 /// the `debug_assert!` in [`extract_layer_surface`].
-pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
+pub const LAYER_GRID_MARGIN_M: f64 = 0.040;
 
 // Wall-band threshold + the 3-region flood-fill (Region enum +
 // neighbours6 helper + dual BFS) were promoted to mesh-sdf D.2's
@@ -180,7 +180,7 @@ pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
 /// future Save-side consumer + for `cf_design::Sdf` adapters that
 /// need an outer bounding interval.
 #[derive(Resource, Clone)]
-pub(crate) struct CachedScanSdf {
+pub struct CachedScanSdf {
     /// Reference-counted SDF over the decimated CLOSED scan (cap
     /// polygons included).
     ///
@@ -206,14 +206,14 @@ pub(crate) struct CachedScanSdf {
     /// `Signed { distance, sign }` carries an `Arc<parry3d::TriMesh>`
     /// plus the source `IndexedMesh` — so this satisfies Bevy's
     /// `Resource: Send + Sync` requirement.
-    pub(crate) sdf_closed: Arc<Signed<TriMeshDistance, PseudoNormalSign>>,
+    pub sdf_closed: Arc<Signed<TriMeshDistance, PseudoNormalSign>>,
     /// Reference-counted SDF over the decimated OPEN scan (cap
     /// polygons stripped via [`dome_wall_only_mesh`]). Provides the
     /// unsigned MAGNITUDE for the candidate-A rind. Equals `sdf_closed`
     /// (same `Arc`) when no cap planes are present — the
     /// `build_cached_scan_sdf` shortcut so `Arc::ptr_eq` lets callers
     /// detect the no-caps fast path.
-    pub(crate) sdf_open: Arc<Signed<TriMeshDistance, PseudoNormalSign>>,
+    pub sdf_open: Arc<Signed<TriMeshDistance, PseudoNormalSign>>,
     /// Grid pre-filled with the closed-body signed distance via
     /// [`CachedGridSdf::build`] — magnitude matches
     /// `sdf_closed.unsigned_distance(p)`, sign comes from the
@@ -222,14 +222,14 @@ pub(crate) struct CachedScanSdf {
     /// `MarchingCubesConfig::at_iso_value(offset_m)` extraction AND
     /// as the body-SDF source for the with-caps per-cell candidate
     /// A composition.
-    pub(crate) closed_grid: ScalarGrid,
+    pub closed_grid: ScalarGrid,
     /// Grid pre-filled with the raw unsigned open-body distance
     /// `sdf_open.unsigned_distance(p)` (always ≥ 0). `Some` only when
     /// cap planes were present at build time; `None` on the no-caps
     /// fast path (where the second grid would never be queried).
-    pub(crate) open_grid: Option<ScalarGrid>,
+    pub open_grid: Option<ScalarGrid>,
     /// Margin-expanded AABB the grids cover, in physics-frame meters.
-    pub(crate) bounds: (Point3<f64>, Point3<f64>),
+    pub bounds: (Point3<f64>, Point3<f64>),
     /// Most-negative `closed_grid` value (= negation of the cavity-
     /// collapse threshold under the no-caps fast path). When the user-
     /// requested cavity inset goes below this, the inward iso lies
@@ -240,7 +240,7 @@ pub(crate) struct CachedScanSdf {
     /// pre-pinned-floor `cavity_collapse_inset_m` semantics are
     /// preserved via the closed-grid minimum for now — sharpening this
     /// for the with-caps path is a banked validations-panel followup.)
-    pub(crate) min_sdf_value: f64,
+    pub min_sdf_value: f64,
 }
 
 /// Decimate the cleaned scan to roughly `SDF_SOURCE_TARGET_FACES`
@@ -378,7 +378,7 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 /// open mesh empty after stripping all faces as cap faces) and
 /// [`CachedGridSdf::build`] failures (bbox margin too small or grid
 /// too coarse to seed the outside flood) with context.
-pub(crate) fn build_cached_scan_sdf(
+pub fn build_cached_scan_sdf(
     scan: &IndexedMesh,
     cap_planes: &[CapPlane],
     cell_size_m: f64,
@@ -684,7 +684,7 @@ fn clip_mesh_against_cap_plane(mesh: &IndexedMesh, plane: &CapPlane) -> IndexedM
 /// grid AABB was sized for that envelope; extractions past the margin
 /// would silently clip against the bounds.
 #[must_use]
-pub(crate) fn extract_layer_surface(
+pub fn extract_layer_surface(
     cache: &CachedScanSdf,
     cap_planes: &[CapPlane],
     offset_m: f64,
@@ -787,7 +787,7 @@ pub(crate) fn extract_layer_surface(
 /// iter-1 this is ~44 k cells × ~100 ns ≈ 5 ms — paid once at sim
 /// completion, dwarfed by the FEM ramp.
 #[must_use]
-pub(crate) fn sample_sdf_into_cached_template<S: Sdf + ?Sized>(
+pub fn sample_sdf_into_cached_template<S: Sdf + ?Sized>(
     sdf: &S,
     template: &CachedScanSdf,
 ) -> ScalarGrid {
@@ -814,7 +814,7 @@ pub(crate) fn sample_sdf_into_cached_template<S: Sdf + ?Sized>(
 /// `MarchingCubesConfig::at_iso_value` / `marching_cubes` boilerplate
 /// for the per-step intruder loop in `insertion_sim_ui`.
 #[must_use]
-pub(crate) fn marching_cubes_at_iso(grid: &ScalarGrid, iso: f64) -> IndexedMesh {
+pub fn marching_cubes_at_iso(grid: &ScalarGrid, iso: f64) -> IndexedMesh {
     debug_assert!(
         iso.abs() < LAYER_GRID_MARGIN_M,
         "marching_cubes_at_iso: |iso|={:.4} exceeds LAYER_GRID_MARGIN_M={:.4}; \

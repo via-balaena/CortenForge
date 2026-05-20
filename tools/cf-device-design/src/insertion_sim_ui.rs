@@ -41,7 +41,7 @@ use crate::insertion_sim::{
     InsertionRamp, SlideRamp, StepReadout, TetReadout, build_insertion_geometry,
     compute_tet_readouts, run_insertion_ramp, run_sliding_insertion_ramp,
 };
-use crate::sdf_layers::{CachedScanSdf, CapPlanes};
+use cf_device_geometry::sdf_layers::{CachedScanSdf, CapPlanes};
 
 // ── tuned defaults ──────────────────────────────────────────────────
 

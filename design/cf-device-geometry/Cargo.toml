@@ -65,6 +65,30 @@ cf-device-types = { workspace = true }
 # `Point3` / `Vector3` for the centerline + plane math.
 mesh-types = { workspace = true }
 
-# 2.5.c populates `sdf_layers` (adds mesh-sdf + mesh-offset +
-# cf-cap-planes + cf-design + mesh-repair + meshopt + nalgebra +
-# anyhow); those deps land then.
+# Sdf machinery deps (2.5.c).
+# `SignedDistanceField` + `CachedGridSdf` + `Signed`/`TriMeshDistance`/
+# `PseudoNormalSign` + `WALL_THRESHOLD_FACTOR_DEFAULT` for the
+# cached-scan SDF stack.
+mesh-sdf = { workspace = true }
+# `MarchingCubesConfig` + `ScalarGrid` + `marching_cubes` for per-iso
+# extraction (lower-level than `mesh_offset::offset_mesh` so one
+# cached grid serves every layer extraction).
+mesh-offset = { workspace = true }
+# `CapPlane` + `dome_wall_only_mesh` + `report_cap_face_classification`
+# for the cap-aware SDF source build.
+cf-cap-planes = { workspace = true }
+# `Sdf` trait for the cached-grid + closed/open SDF adapters.
+cf-design = { workspace = true }
+# `IndexedMesh` for the SDF source + extracted iso surfaces; `Bounded`
+# for the AABB-with-margin grid bounds.
+mesh-repair = { workspace = true }
+# `weld_vertices` + `remove_unreferenced_vertices` +
+# `remove_degenerate_triangles` for the SDF-source decimation hygiene
+# pipeline.
+meshopt = { workspace = true }
+# meshopt's `simplify_decoder` + `simplify_sloppy_decoder` for the
+# face-count target decimation. Same posture as cf-device-design.
+nalgebra = { workspace = true }
+# `Result<()>` + error-context chaining for `build_cached_scan_sdf`'s
+# upstream `Context` calls.
+anyhow = { workspace = true }
