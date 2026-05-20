@@ -208,13 +208,13 @@ fn main() -> Result<()> {
         scan_info.centerline_arc_length_m,
     );
 
-    // Phase 2: defer `.design.toml` ingest. The loader + schema live
-    // behind cf-device-design's private `design_toml` module; Phase 3
-    // promotes it (or duplicates it in a controlled way) so this
-    // binary can apply it onto the cf-device-types resources. For
-    // now we resolve the path and surface a notice if a sibling file
-    // exists — keeps the user informed without claiming functionality
-    // we don't have.
+    // Phase 2: defer `.design.toml` *apply*. The loader + schema are
+    // shared via `cf_device_types::design_toml` as of Phase 2.5.a,
+    // but the `apply_design_toml` splice into the live
+    // `(CavityState, LayersState)` resources lands in Phase 3 (the
+    // sim move). For now we resolve the path and surface a notice
+    // if a sibling file exists — keeps the user informed without
+    // claiming functionality we don't have.
     if let Some(p) = design_toml::resolve_design_toml_path(&cli.cleaned_stl, cli.design.as_deref())
     {
         if p.exists() {

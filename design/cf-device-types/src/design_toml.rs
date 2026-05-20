@@ -245,7 +245,7 @@ pub fn validate_design_toml(design: &DesignToml) -> Result<()> {
     if design.device_design.schema_version > DESIGN_TOML_SCHEMA_VERSION {
         return Err(anyhow!(
             "design.toml schema_version {} is newer than this binary supports ({}). \
-             Update cf-device-design.",
+             Update the cf-device-design / cf-sim-research toolchain.",
             design.device_design.schema_version,
             DESIGN_TOML_SCHEMA_VERSION,
         ));
@@ -268,7 +268,7 @@ pub fn validate_design_toml(design: &DesignToml) -> Result<()> {
         {
             return Err(anyhow!(
                 "design.toml layer {i} names unknown anchor key {:?} — \
-                 not in the cf-device-design catalog",
+                 not in the LAYER_MATERIALS catalog",
                 l.material_anchor_key,
             ));
         }
@@ -296,8 +296,9 @@ pub fn validate_design_toml(design: &DesignToml) -> Result<()> {
 
 /// Apply a validated [`DesignToml`] to the live `(CavityState,
 /// LayersState)` resources. The catalog-key lookup recovers the
-/// `&'static str` reference that `LayerSpec` wants (anchor keys are
-/// `'static` per the slice-5 design).
+/// `&'static str` reference that `LayerSpec` wants — `LAYER_MATERIALS`
+/// entries are compile-time constants, so the anchor key always has
+/// `'static` lifetime when it resolves to a catalog entry.
 pub fn apply_design_toml(
     design: &DesignToml,
     cavity: &mut CavityState,
@@ -526,7 +527,7 @@ mod tests {
         let err = validate_design_toml(&design).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("NOT_A_SILICONE"), "got: {msg}");
-        assert!(msg.contains("not in the cf-device-design catalog"));
+        assert!(msg.contains("not in the LAYER_MATERIALS catalog"));
     }
 
     /// Negative thickness rejected; NaN rejected.

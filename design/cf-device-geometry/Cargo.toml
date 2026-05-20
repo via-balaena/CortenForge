@@ -79,15 +79,16 @@ mesh-offset = { workspace = true }
 cf-cap-planes = { workspace = true }
 # `Sdf` trait for the cached-grid + closed/open SDF adapters.
 cf-design = { workspace = true }
-# `IndexedMesh` for the SDF source + extracted iso surfaces; `Bounded`
-# for the AABB-with-margin grid bounds.
-mesh-repair = { workspace = true }
 # `weld_vertices` + `remove_unreferenced_vertices` +
 # `remove_degenerate_triangles` for the SDF-source decimation hygiene
 # pipeline.
-meshopt = { workspace = true }
+mesh-repair = { workspace = true }
 # meshopt's `simplify_decoder` + `simplify_sloppy_decoder` for the
 # face-count target decimation. Same posture as cf-device-design.
+meshopt = { workspace = true }
+# `Point3` for the SDF grid bounds + extracted iso surface coordinates.
+# (Note: `mesh-types` is already pulled in above for the clip-plane
+# math; the SDF stack reuses the same workspace dep.)
 nalgebra = { workspace = true }
 # `Result<()>` + error-context chaining for `build_cached_scan_sdf`'s
 # upstream `Context` calls.

@@ -1013,13 +1013,15 @@ fn spawn_intruder_mesh(
 /// `insertion_sim_ui::invalidate_on_geometry_change`.
 ///
 /// `last_run_generation` rolls forward at the only two `last_run`
-/// mutation sites — `insertion_sim_ui.rs:806` (poll-task sets
-/// `last_run = Some(outputs)` after sim completes) and
-/// `insertion_sim_ui.rs:671` (geometry-change resnapshot clears
-/// `last_run = None`). Both bump generation, so any
+/// mutation sites in `insertion_sim_ui.rs`: the poll-task that sets
+/// `last_run = Some(outputs)` after sim completes, and the
+/// geometry-change resnapshot that clears `last_run = None`. Both
+/// bump generation (`wrapping_add(1)`) immediately after the
+/// mutation — find via grep, not line numbers (line numbers drift
+/// with every cf-device-design refactor). Any
 /// `last_run.is_sliding_mode()` flip is already captured by a
-/// generation change and a separate `is_sliding_mode` field would be
-/// redundant in the key.
+/// generation change, so a separate `is_sliding_mode` field would
+/// be redundant in the key.
 #[derive(Debug, Clone, PartialEq)]
 struct IntruderMeshKey {
     displayed_step: usize,
