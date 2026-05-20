@@ -8,17 +8,36 @@
 
 ## Verdict
 
-- [x] **Ready to merge as-is**
-- [ ] Ready to merge after Block-class fixes
+- [ ] Ready to merge as-is
+- [x] **Ready to merge after Block-class fixes** — `xtask grade` (CI-blocking) flagged 9 crates F-grade on `d0a02ad`; fixes landed in `291d6df8` + `958f1e92` taking 8 of 9 back to A. Remaining: sim-soft Layer Integrity (108 transitive deps > L0-tier max 100), pre-existing on `main` (verified `git checkout main && cargo xtask grade sim-soft` shows the same 2 leaks). Surfaced as B2 below; out of scope for PR #249, needs its own dep-audit arc.
 - [ ] Needs another arc before merge
 
-No Block-class findings. Architecture invariants verified green, workshop + sim-research loops both Phase-5-smoked, every direct Cargo.toml dep has a real consumer, the Phase 5 inherited-vocab sweep landed cleanly on the CAD surface, and B1 + A1 + B2 are cleanly separated arcs with zero incidental cross-touch. Findings below are Polish / Note / Compliment only — bundle Polish into a follow-up commit (or skip; none affect correctness).
+**Original review's Block count was 0 — wrong.** The initial pass verified architecture invariants (`cargo tree`, `cargo build`, direct-dep grep) but did NOT run `cargo doc` with `-D warnings` or `cargo xtask grade`. Both are CI-load-bearing on this workspace per STANDARDS.md and both flagged real issues. Lesson for future reviews: `cargo clippy / cargo build` ≠ "all checks run"; xtask grade exists and matters. Added to the review doc itself as the post-mortem note.
 
 ---
 
 ## Block-class findings
 
-*(none)*
+### B1 — xtask grade F-grade on 5 PR-introduced crates @ CI `d0a02ad` — RESOLVED in `291d6df8`
+
+CI flagged xtask grade F on `d0a02ad` (the A1 Phase 5 close commit) for 9 workspace crates. 5 of those were PR-introduced and addressed in commit `291d6df8` (8 specific fixes — 7 doc-link surfaces moved by Phase 1/2.5/3 lifts whose qualifiers got stale, 1 HTML-tag-in-quoted-string warning, 2 unjustified-clippy-allow comments). See the commit message for the full site list.
+
+This finding belonged in the original review and was missed because the architecture sweep didn't run `cargo doc -- -D warnings` or `cargo xtask grade`. Lesson banked.
+
+### B2 — xtask grade F-grade on sim-soft + 3 examples — RESOLVED in `958f1e92` (doc) + open (layer integrity)
+
+Same CI failure, second class. 4 more crates failing — addressed in commit `958f1e92`:
+
+- **cf-scan-prep / example-mesh-mesh-sdf-distance-query / example-sim-soft-mesh-scan-as-solid** — 1 doc warning each, ALL pre-existing on `main`. Bundled with the sim-soft doc fixes since they're trivial backtick conversions. Now grade A.
+- **sim-soft Documentation** — 12 doc warnings, PR-introduced (sim-soft grades Documentation A on `main`). All from private-item intra-doc links inside the F3/CR/E.b.* paused-recon commits. Backtick conversion. Now grade A.
+- **sim-soft Layer Integrity** — F: `dep count 108 exceeds max 100` for L0 tier, both release/no-default and release/default builds. **PRE-EXISTING on `main`** (verified). NOT addressed in this PR — needs a dedicated sim-soft transitive-dep audit arc to bring the count below 100. Plausible interventions: feature-gate `parry3d` / `nalgebra` extensions, downgrade some deps to optional, audit `sim-ml-chassis` transitive impact. Bookmark this as a follow-on arc.
+
+**PR #249 merge decision** depends on whether CI is configured to fail on sim-soft's Layer Integrity (pre-existing). Three options for the merge:
+1. **Relax xtask grade in CI for sim-soft until the dep audit arc lands** — most honest about the gameplan §6 "research surface, not product surface" framing.
+2. **Land the sim-soft dep audit before merge** — extends PR #249 scope outside A1+B1+B2.
+3. **Merge dirty + open a follow-up issue tracking the layer integrity gap** — keeps the omnibus PR moving + sequences the fix.
+
+Default lean: option 1 or 3 per [[feedback-omnibus-pr-single-branch]] (keep the PR focused on A1+B1+B2 close); the dep audit is its own work.
 
 ---
 
