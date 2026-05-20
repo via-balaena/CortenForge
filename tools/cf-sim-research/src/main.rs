@@ -5,9 +5,10 @@
 //! (`cf-device-design`) and this sim-research binary
 //! (`cf-sim-research`) both consume `cf-device-types` so they
 //! describe a layered-silicone device the same way; Phase 3 then
-//! moves the insertion-sim + heat-map + sliding-intruder rendering
-//! out of cf-device-design into this crate, and Phase 4 strips them
-//! from cf-device-design entirely.
+//! copies the insertion-sim + heat-map + sliding-intruder rendering
+//! into this crate (cf-device-design retains the originals through
+//! Phase 3 so the workshop loop never breaks), and Phase 4 strips
+//! them from cf-device-design.
 //!
 //! This Phase-2 binary intentionally does **not** wire any sim:
 //! - No FEM. No insertion-sim panel.
@@ -15,10 +16,11 @@
 //!   mesh-offset are deliberately not in our dep graph yet — Phase 3
 //!   adds them).
 //! - No `.design.toml` load (the schema is owned by cf-device-design's
-//!   private `design_toml` module today; Phase 4 / a Phase 2.5
-//!   mini-arc lifts it to a shared crate). Phase 2 loads scan +
-//!   `.prep.toml` only and surfaces the default cavity + layer stack
-//!   in the read-only panel.
+//!   private `design_toml` module today; Phase 3, or an earlier
+//!   Phase-2.5 mini-arc, promotes the loader to a shared crate so
+//!   this binary can consume it). Phase 2 loads scan + `.prep.toml`
+//!   only and surfaces the default cavity + layer stack in the
+//!   read-only panel.
 //!
 //! What Phase 2 DOES wire: the scan → cf-device-types →
 //! Bevy/egui render pipeline. If this binary launches a window
@@ -49,9 +51,10 @@ use mesh_types::{Bounded, IndexedMesh, Point3};
 use serde::Deserialize;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
-/// cf-scan-prep + cf-cast + cf-device-design — every CortenForge cast
-/// tool assumes the `UpAxis::PlusZ` swap from physics frame to Bevy
-/// frame.
+/// cf-scan-prep + cf-cast-cli + cf-device-design — every CortenForge
+/// cast-tool binary assumes the `UpAxis::PlusZ` swap from physics
+/// frame to Bevy frame (the `cf-cast` library itself has no Bevy
+/// dependency; the convention only matters in display contexts).
 const DEVICE_UP_AXIS: UpAxis = UpAxis::PlusZ;
 
 /// Palette tinting the per-layer rows in the right-side readout
@@ -270,8 +273,9 @@ fn run_render_app(
     // Cavity + layer-stack default state — Phase 3 splices the
     // `apply_design_toml` call in HERE (between the defaults and
     // `App::new()`) so callers don't need to change. Matches
-    // cf-device-design's `run_render_app` shape at
-    // `tools/cf-device-design/src/main.rs:2050-2061`.
+    // cf-device-design's `run_render_app` defaults-then-apply-then-
+    // `App::new()` pattern (find via grep, not line numbers — that
+    // function moves with every cf-device-design refactor).
     let cavity = CavityState::default_for_scan();
     let layers = LayersState::default_for_scan();
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
