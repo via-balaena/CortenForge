@@ -1,9 +1,10 @@
 # Sim-decouple refactor — full plan
 
-> **Status**: ACTIVE — Phase 1 + Phase 2 + Phase 2.5 SHIPPED
-> 2026-05-19 on branches `refactor/sim-decouple-phase-1` +
+> **Status**: ACTIVE — Phase 1 + Phase 2 + Phase 2.5 + Phase 3
+> SHIPPED 2026-05-19 on branches `refactor/sim-decouple-phase-1` +
 > `refactor/sim-decouple-phase-2` + `refactor/sim-decouple-phase-2.5`
-> respectively; Phase 3 (move sim code) is next. Originally
+> + `refactor/sim-decouple-phase-3` respectively; Phase 4 (strip
+> cf-device-design's now-duplicate sim systems) is next. Originally
 > bookmarked 2026-05-19 LATE-NIGHT after A1's
 > in-session scoping revealed the sim is woven deeply into
 > cf-device-design's layer/cavity/intruder rendering. The original
@@ -384,26 +385,73 @@ commit). Single session.
 **Sub-leg estimate confirmed**: 1 session (1-2 was the recon's
 range; landed at the low end via the swap-order optimization).
 
-### Phase 3 — move sim code
+### Phase 3 — move sim code ✓ SHIPPED 2026-05-19
 
-**Goal**: relocate insertion_sim.rs (5835 LOC) +
-insertion_sim_ui.rs (2331 LOC) + the 5 sim-coupled Bevy systems
-from cf-device-design/main.rs into cf-sim-research.
+**Status**: SHIPPED on branch `refactor/sim-decouple-phase-3` in a
+single session, single commit `27a58847` (off Phase 2.5 local HEAD
+`06924d2a`). The recon's 2-session estimate landed at 1 session
+because Phase 2.5 had already rewired every cross-crate dep
+(`insertion_sim_ui`'s 3 `use crate::*` imports already pointed at
+`cf-device-types` + `cf-device-geometry` before Phase 3 began), and
+the natural copy approach (`cp cf-device-design/main.rs
+cf-sim-research/main.rs` + strip save section) made the sim-coupled
+systems land in one bundle rather than per-system.
 
-**Steps**:
-1. Copy insertion_sim.rs + insertion_sim_ui.rs to cf-sim-research
-2. Copy update_layer_meshes, update_cavity_mesh, update_intruder_mesh
-   (the FEM-coupled versions) to cf-sim-research's main.rs
-3. Copy LayerMeshKey + cache logic
-4. Wire InsertionSimPlugin in cf-sim-research's App builder
-5. Replace cf-sim-research's stub UI with the real sim panel
-6. Verify cargo build -p cf-sim-research green
-7. Verify cargo test -p cf-sim-research green
-8. cf-device-design still has duplicate copies of these — Phase 4
-   removes them
+**Outcome**:
+- `insertion_sim.rs` + `insertion_sim_ui.rs` copied verbatim (no
+  source-side edits — Phase 2.5 had rewired imports already).
+- Sim-coupled systems moved from cf-device-design/main.rs into
+  cf-sim-research/main.rs via the wholesale-copy approach:
+  `update_cavity_mesh` + `CavityMeshKey`, `update_layer_meshes` +
+  `LayerMeshKey` + `LayerSurfaceEntity` + `LAYER_SLAB_ALPHA`,
+  `spawn_intruder_mesh` + `update_intruder_mesh` + `IntruderMeshKey`
+  + `IntruderEntity` + `INTRUDER_COLOR`, `pose_to_bevy_transform` +
+  `visible_pose_for_intruder`. Same systems still live in
+  cf-device-design through Phase 4 — duplication intentional.
+- Phase 3 wiring delta in cf-sim-research's `run_render_app`:
+  `CachedScanSdf` + `CapPlanes` resources (loaded at startup via
+  `build_cached_scan_sdf`); `ClipPlanePlugin` + `InsertionSimPlugin`
+  registered; `setup_render_scene` swapped to the `ClipPlaneMaterial`
+  path; Startup chain `(setup_render_scene, spawn_cavity_mesh,
+  spawn_intruder_mesh).chain()`; Update set adds the three sim mesh
+  systems; `apply_design_toml` splice between defaults and
+  `App::new()`.
+- **Load-bearing CapPlanes propagation**: Phase 2's
+  discard-after-logging-count posture flipped to propagate the
+  parsed `Vec<CapPlane>` through main() → run_render_app →
+  `sdf_layers::CapPlanes` resource. Without this,
+  `extract_layer_surface` would collapse to the closed-scan fast
+  path and the cavity opening wouldn't match cf-device-design's
+  (recon §1.8 closing paragraph was the spec).
+- Q5.4 default lean (sim viewer read-only WRT disk) honored: NO
+  `SaveState` / `SaveMessage` / `render_save_open_section`,
+  `ScanFilePath` resource dropped, `render_panel_stubs` dropped.
+  `cf_device_types::design_toml` still exports `save_design_toml`
+  if a future slice wants to flip the lean.
+- Cargo.toml — Phase 3 deps added: `cf-device-geometry` (Phase 2.5
+  output, new direct dep here) + `sim-soft` + `sim-ml-chassis` +
+  `cf-design` + `mesh-sdf` + `mesh-repair` + `meshopt`. The recon
+  under-specified `mesh-repair` + `meshopt`; both are direct
+  consumers of `insertion_sim`'s SDF source decimation.
+- 99 cf-sim-research tests / 99 cf-device-design tests / clippy
+  + fmt clean / workspace builds green.
 
-**Estimate**: 2-3 sessions. Big copy job + adapter wiring. The
-sim-soft dep moves to cf-sim-research at this phase.
+**Posture banked**:
+- The wholesale-copy approach (`cp` + targeted strip) is the right
+  shape for the copy-then-strip pattern. Manually re-typing each
+  moved system is error-prone; copying the entire source file then
+  pruning the differences keeps the diff readable and the
+  Phase-4-strip target self-evident.
+- Sub-step bundling at commit time is OK when the sub-steps are
+  mechanically indivisible. Phase 3's 3.1-3.4 sub-steps could not
+  be split into per-commit landings because the workspace
+  migration-safety invariant requires cf-sim-research to compile at
+  every commit, and a half-state (sim modules without their
+  resources, or resources without their plugins) doesn't compile.
+
+**Sub-leg estimate confirmed**: 1 session (the recon's 2-session
+range; landed at the low end via the verbatim-copy + wholesale-
+template approach).
 
 ### Phase 4 — refactor cf-device-design rendering, remove sim
 
@@ -459,9 +507,9 @@ documentation.
 ## 5. Total estimate + sequencing
 
 **Sessions**: 6-9 total (Phase 1: 1-2, Phase 2: 1, Phase 2.5: 1-2,
-Phase 3: 2, Phase 4: 1-2, Phase 5: 1). **3 banked** (Phase 1 +
-Phase 2 + Phase 2.5 each shipped in 1 session, the low end of
-their range); **3-4 remaining** for Phases 3-5.
+Phase 3: 2, Phase 4: 1-2, Phase 5: 1). **4 banked** (Phase 1 +
+Phase 2 + Phase 2.5 + Phase 3 each shipped in 1 session, the low
+end of their range); **2-3 remaining** for Phases 4-5.
 
 **Calendar**: 1-2 weeks if focused single-task; 2-4 weeks if
 interleaved with workshop-iter and other product work.
@@ -587,15 +635,14 @@ infrastructure work.
 
 ---
 
-End of refactor plan. **Phase 1 + Phase 2 + Phase 2.5 SHIPPED
-2026-05-19** on branches `refactor/sim-decouple-phase-1` +
+End of refactor plan. **Phase 1 + Phase 2 + Phase 2.5 + Phase 3
+SHIPPED 2026-05-19** on branches `refactor/sim-decouple-phase-1` +
 `refactor/sim-decouple-phase-2` + `refactor/sim-decouple-phase-2.5`
-respectively; next session picks up at Phase 3, which per §4 step
-list copies `insertion_sim.rs` + `insertion_sim_ui.rs` + the 4
-sim-coupled Bevy systems (`update_layer_meshes` /
-`update_cavity_mesh` / `update_intruder_mesh` / `spawn_intruder_mesh`)
-into cf-sim-research. All cross-crate decisions landed at Phase
-2.5; Phase 3 is pure copy + wire.
-
-Phase 4 then strips cf-device-design's copies; Phase 5 verifies +
-documents.
++ `refactor/sim-decouple-phase-3` respectively; next session picks
+up at Phase 4, which per §4 step list strips
+`insertion_sim*.rs` + the 4 sim-coupled Bevy systems +
+`InsertionSimState` references + the sim-soft direct dep from
+cf-device-design. Cold-read pass on cf-device-design's Cargo.toml
+for orphan direct deps (mesh-sdf / mesh-repair / meshopt /
+cf-cap-planes / cf-design candidates) folds in at the same time per
+the Phase 2.5 banked finding. Phase 5 verifies + documents.

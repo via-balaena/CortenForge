@@ -1,6 +1,7 @@
 # Sim-decouple Phase 3 — recon
 
-> **STATUS — RECON COMPLETE; PHASE 2.5 MINI-ARC SHIPPED.**
+> **STATUS — RECON COMPLETE; PHASE 2.5 MINI-ARC SHIPPED; PHASE 3
+> SHIPPED.**
 > 2026-05-19. Per [[feedback-bookmark-when-surface-levers-exhaust]]
 > three-session pattern, this is the recon between the plan (which
 > serves as the bookmark) and implementation. Recon ran on branch
@@ -8,15 +9,15 @@
 > origin `de397b4a`).
 >
 > **Phase 2.5 IMPLEMENTATION SHIPPED 2026-05-19 LATE-NIGHT** on
-> branch `refactor/sim-decouple-phase-2.5` (off this recon branch),
-> 4 commits in execution order a → b → d → c (the .d/.c swap is
-> authorized by §2.5.c — clip_plane is self-contained, so doing it
-> before .c lets the sdf+cavity-helpers lift include
-> `spawn_cavity_mesh` in a single commit). See §2.5 below for the
-> per-sub-leaf SHIPPED stamps; the rest of this doc is the original
-> recon, retained as design-of-record. **Phase 3 sim move next** —
-> ~10 000 LOC copy + wire, 2 sessions, every cross-crate decision
-> already landed.
+> branch `refactor/sim-decouple-phase-2.5`, 4 commits a → b → d → c.
+> **Phase 3 IMPLEMENTATION SHIPPED 2026-05-19 LATE-NIGHT** on
+> branch `refactor/sim-decouple-phase-3` (off the Phase 2.5 branch,
+> local HEAD `06924d2a`), single commit `27a58847`. Single session.
+> See §3 below for the per-sub-step SHIPPED stamps; the rest of this
+> doc is the original recon, retained as design-of-record. **Phase 4
+> strip from cf-device-design next** — 1-2 sessions, cold-read sweep
+> on cf-device-design's Cargo.toml for orphan direct deps per the
+> Phase 2.5 banked finding.
 >
 > **Predecessors**:
 > - `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` — parent plan; Phase 1 + 2
@@ -490,11 +491,21 @@ safety invariant.
 
 ---
 
-## 3. Phase 3 (revised) scope
+## 3. Phase 3 (revised) scope — SHIPPED `27a58847`
 
 After Phase 2.5 lands, Phase 3 is purely the sim move:
 
-### 3.1 Copy sim modules to cf-sim-research
+**As-built**: single commit on `refactor/sim-decouple-phase-3`
+(off Phase 2.5's local HEAD `06924d2a`). ~10 000 LOC moved in one
+bundle because the sub-steps 3.1 + 3.2 + 3.3 are mechanically
+indivisible — copying a sim system without its supporting types or
+without the resources it consumes leaves the workspace broken. The
+recon's `cargo build` + `cargo test` migration-safety invariant
+applies at commit boundaries, and the natural boundary here is "all
+four sub-steps land together." Each sub-step's SHIPPED stamp is
+recorded inline below for the audit trail.
+
+### 3.1 Copy sim modules to cf-sim-research ✓ SHIPPED `27a58847`
 
 - `tools/cf-device-design/src/insertion_sim.rs` →
   `tools/cf-sim-research/src/insertion_sim.rs` (verbatim;
@@ -506,7 +517,19 @@ After Phase 2.5 lands, Phase 3 is purely the sim move:
   `cf-device-geometry`, `mesh-sdf`, `mesh-offset` to
   `tools/cf-sim-research/Cargo.toml`.
 
-### 3.2 Copy sim-coupled Bevy systems + helpers
+**As-built note**: `insertion_sim.rs` + `insertion_sim_ui.rs` were
+each `cp`-copied verbatim — Phase 2.5 had already rewired their
+cross-crate imports to `cf-device-types` + `cf-device-geometry`, so
+no source-side edits were required. The recon's "doc-comment cross-
+ref edit only" line was wrong in spirit: the cross-ref to
+`crate::insertion_sim_ui` resolves verbatim in cf-sim-research too
+(both binaries mirror the same module structure), so the rewrite was
+trivially not-needed. Phase 3's Cargo.toml additions were
+`cf-device-geometry` + `sim-soft` + `sim-ml-chassis` + `cf-design` +
+`mesh-sdf` + `mesh-repair` + `meshopt`; the recon under-specified
+`mesh-repair` + `meshopt` (insertion_sim.rs uses both directly).
+
+### 3.2 Copy sim-coupled Bevy systems + helpers ✓ SHIPPED `27a58847`
 
 Per §1.7 "Move to cf-sim-research" list — the 4 sim-coupled
 systems (`update_cavity_mesh`, `update_layer_meshes`,
@@ -519,7 +542,15 @@ consts (`INTRUDER_COLOR`, `LAYER_SLAB_ALPHA`). `spawn_cavity_mesh`
 lifted in Phase 2.5.c, so they're already in `cf-device-geometry`
 when Phase 3 starts. All copy verbatim; only path imports change.
 
-### 3.3 Wire into cf-sim-research's run_render_app
+**As-built note**: copied verbatim from cf-device-design/main.rs via
+`cp` + targeted edits — the natural approach turned out to be "clone
+cf-device-design/main.rs into cf-sim-research/main.rs whole, then
+strip the save section + rename the panel + retitle the window." The
+duplication-through-Phase-4 invariant becomes automatic this way:
+cf-sim-research's main.rs IS cf-device-design's minus the save
+button until Phase 4 strips the sim systems from the source.
+
+### 3.3 Wire into cf-sim-research's run_render_app ✓ SHIPPED `27a58847`
 
 - Insert `CachedScanSdf` + `CapPlanes` resources (built at startup
   the way cf-device-design does today — call
@@ -547,7 +578,20 @@ when Phase 3 starts. All copy verbatim; only path imports change.
   Phase-2 polish commit's [[feedback-cold-read-review-post-ship]]
   pre-positioned this splice point).
 
-### 3.4 Verify
+**As-built note**: the load-bearing CapPlanes propagation fix landed
+exactly where §1.8 said it would — Phase 2 had parsed
+`cf_cap_planes::parse_cap_planes(&text)` then discarded the result
+after logging the count. Phase 3 flips that to a `Vec<CapPlane>`
+passed through main() → run_render_app → `sdf_layers::CapPlanes`
+resource. Without this, `extract_layer_surface` would have
+collapsed to the closed-scan fast path and the cavity opening
+would not match cf-device-design's render. (Other open-question
+resolutions: Q5.4 confirmed — no save button. Posture differences
+captured in cf-sim-research/main.rs's module docstring: NO
+`SaveState`/`SaveMessage`/`render_save_open_section`,
+`ScanFilePath` resource dropped, `render_panel_stubs` dropped.)
+
+### 3.4 Verify ✓ SHIPPED `27a58847`
 
 - `cargo build -p cf-sim-research` green.
 - `cargo build -p cf-device-design` green (cf-device-design still
@@ -557,7 +601,18 @@ when Phase 3 starts. All copy verbatim; only path imports change.
   heat-map + sliding intruder render.
 - Workshop loop unaffected (cf-device-design's panel still works).
 
-### 3.5 Phase 3 estimate
+**As-built note**: `cargo build --workspace` + `cargo clippy
+--workspace --all-targets -- -D warnings` + `cargo fmt --check -p
+cf-sim-research` all green at first attempt. `cargo test -p
+cf-sim-research --release` ran 99 tests (matches cf-device-design's
+99) including the full `insertion_sim` FEM test surface
+(`build_insertion_geometry_*` + `sliding_insertion_ramp_*` +
+`intruder_contact_sliding_at_*`). `cargo test -p cf-device-design
+--release` ran 99 tests (unchanged). Visual gate (load iter-1 sock +
+verify heat-map + sliding intruder) is user-verifiable next step;
+the GUI cannot be exercised from CI.
+
+### 3.5 Phase 3 estimate ✓ confirmed at low end (1 session)
 
 **Surface area**: ~10 000 LOC copied + ~500 LOC of wiring.
 **Sessions**: 2.
