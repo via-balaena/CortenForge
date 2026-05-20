@@ -3544,7 +3544,7 @@ mod tests {
     ///
     /// `#[ignore]` — needs the repo-excluded iter-1 fixture
     /// (`/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl`,
-    /// override with the `CF_DEVICE_DESIGN_SPIKE_SCAN` env var). Run:
+    /// override with the `CF_SIM_RESEARCH_SPIKE_SCAN` env var). Run:
     ///
     /// ```text
     /// cargo test -p cf-sim-research --release \
@@ -3556,7 +3556,7 @@ mod tests {
     #[test]
     #[ignore = "needs the repo-excluded iter-1 scan fixture; run with --ignored"]
     fn sdf_bridge_spike_on_iter1_scan() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -3596,7 +3596,7 @@ mod tests {
 
     /// [`build_insertion_geometry`] against the iter-1 cleaned scan.
     ///
-    /// `#[ignore]` — same repo-excluded fixture + `CF_DEVICE_DESIGN_SPIKE_SCAN`
+    /// `#[ignore]` — same repo-excluded fixture + `CF_SIM_RESEARCH_SPIKE_SCAN`
     /// override as [`sdf_bridge_spike_on_iter1_scan`]; skips
     /// gracefully when the fixture is absent. Run:
     ///
@@ -3607,7 +3607,7 @@ mod tests {
     #[test]
     #[ignore = "needs the repo-excluded iter-1 scan fixture; run with --ignored"]
     fn build_insertion_geometry_on_iter1_scan() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -4098,7 +4098,7 @@ mod tests {
     #[test]
     #[ignore = "7.3a fix characterization — needs the iter-1 scan + a release solve; run with --ignored"]
     fn iter1_single_step_solve_characterization() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -4180,7 +4180,7 @@ mod tests {
     #[ignore = "7.3a diagnostic — needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
     #[allow(clippy::cast_precision_loss)] // diagnostic counters → f64 for %/grid math
     fn diagnose_iter1_scan_geometry() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -4388,7 +4388,7 @@ mod tests {
     #[ignore = "7.3a fix spike — needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
     #[allow(clippy::cast_precision_loss)] // diagnostic counters → f64 for %/grid math
     fn grid_sdf_fix_spike() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -4779,7 +4779,7 @@ mod tests {
     #[test]
     #[ignore = "7.3b.1 payoff — needs the iter-1 scan + a release ramp; run with --ignored --nocapture"]
     fn run_insertion_ramp_on_iter1_scan() {
-        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
@@ -4913,7 +4913,7 @@ mod tests {
     #[test]
     #[ignore = "H4.3 sweep — needs the iter-1 scan + a release ramp; run with --ignored --nocapture"]
     fn h4_sweep_sliding_ramp_on_iter1_scan() {
-        let scan_path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
             PathBuf::from,
         );
