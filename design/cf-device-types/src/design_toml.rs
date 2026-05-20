@@ -353,6 +353,8 @@ fn iso8601_utc_now() -> String {
 }
 
 /// Howard-Hinnant civil-from-days. Identical to cf-scan-prep's copy.
+// Howard-Hinnant's algorithm mixes i64 / u32 by design (era shift +
+// year/month derivation); the conversions are exact in-domain.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 fn unix_days_to_ymd(z: i64) -> (i64, u32, u32) {
     let z_shifted = z + 719_468;

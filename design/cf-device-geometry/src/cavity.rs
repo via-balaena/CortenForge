@@ -37,6 +37,8 @@ pub const CAVITY_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.45);
 /// `iso = -cavity.inset_m` (inward offset by the inset distance).
 /// The SDF iso is exactly perpendicular to the source surface by
 /// construction (no apex-nipple artifacts).
+// Bevy startup-system signature: Res<>/ResMut<> take ownership by value;
+// the cavity entity needs commands + 2 asset stores + 5 design resources.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 pub fn spawn_cavity_mesh(
     mut commands: Commands,

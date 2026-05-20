@@ -162,7 +162,7 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 /// inside `pinned_floor_shell` queries the same allocation across every
 /// call.
 ///
-/// The AABB passed to [`Solid::from_sdf`] is the scan AABB padded by
+/// The AABB passed to [`cf_design::Solid::from_sdf`] is the scan AABB padded by
 /// the cumulative outermost thickness — that ensures the outermost
 /// offset surface still falls inside the SDF's evaluation domain (the
 /// mesher uses bounds for octree pruning).

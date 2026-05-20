@@ -1954,7 +1954,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// Format a [`SolverFailure`] into the same `failure_reason` shape the
 /// pre-F3.4 catch_unwind pattern produced via [`panic_message`] — so
-/// the SL.4 viewport's "stalled at step N: <reason>" surface reads the
+/// the SL.4 viewport's `"stalled at step N: <reason>"` surface reads the
 /// same regardless of whether the failure came through `try_replay_step`
 /// (F3.4 Fork-B path) or, for the still-panicking
 /// `run_insertion_ramp` (growing-intruder) path, `catch_unwind`.
@@ -2188,7 +2188,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
 /// translation.
 ///
 /// `T⁻¹` is cached at construction — eval/grad are called inside the
-/// contact-pair inner loop ([`PenaltyRigidContact::active_pairs`])
+/// contact-pair inner loop (`PenaltyRigidContact`'s `ActivePairsFor::active_pairs`)
 /// where even scalar-cheap recomputation matters at full BCC-mesh
 /// scale.
 ///
@@ -2201,7 +2201,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
 /// fire only when the moved intruder surface is within 1 mm of the
 /// body wall, putting the inverse-transformed query well inside the
 /// grid. Inactive pairs report large `sd` and are skipped by
-/// [`PenaltyRigidContact::active_pairs`].
+/// `PenaltyRigidContact`'s `ActivePairsFor::active_pairs`.
 #[derive(Clone)]
 pub(crate) struct TransformedSdf<S: Sdf> {
     inner: S,
@@ -2338,7 +2338,7 @@ pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64
 /// (D-Slide5). Larger gives a visibly-propagating deformation wave
 /// across playback steps; smaller gives a continuous-looking wave at
 /// the cost of solver iters. Programmer-set, not user-tunable —
-/// same posture as [`DEFAULT_N_STEPS`] (the growing-ramp counterpart
+/// same posture as `DEFAULT_N_STEPS` (the growing-ramp counterpart
 /// is a fixed `n_steps`, not a step size).
 pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
 

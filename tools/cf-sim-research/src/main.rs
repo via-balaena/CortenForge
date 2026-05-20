@@ -187,7 +187,7 @@ struct ScanMeshEntity;
 /// the cleaned scan, mounted once at startup by [`spawn_intruder_mesh`];
 /// per-step kinematics live in the entity's `Transform`, written by
 /// [`update_intruder_mesh`] from
-/// [`InsertionSimOutputs::intruder_pose_at`].
+/// [`insertion_sim_ui::InsertionSimOutputs::intruder_pose_at`].
 ///
 /// Historical: S4 mounted the bare scan and slid it in via a hand-built
 /// ramp transform. S11.1 swapped to per-step FEM-iso meshes against the
@@ -373,7 +373,7 @@ const BUDGET_GREEN_FRACTION: f64 = 0.8;
 /// Minimum castable layer thickness (meters). Below ~2 mm a poured
 /// silicone wall is fragile and tears under insertion stretch (cf.
 /// Ecoflex 00-30's ~2 mm castability threshold, cited in
-/// [`CAVITY_DEFAULT_INSET_M`]). The per-layer thickness slider
+/// [`cf_device_types::CAVITY_DEFAULT_INSET_M`]). The per-layer thickness slider
 /// floor is 1 mm — so sub-2 mm layers are reachable, and the
 /// min-wall check flags them.
 const MIN_CASTABLE_THICKNESS_M: f64 = 0.002;

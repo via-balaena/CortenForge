@@ -342,7 +342,7 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 /// Build the cached SDF(s) + grids from a cleaned-scan mesh.
 ///
 /// Decimates the scan to [`SDF_SOURCE_TARGET_FACES`] via
-/// [`decimate_scan_for_sdf`], builds the closed-body
+/// `decimate_scan_for_sdf`, builds the closed-body
 /// [`Signed<TriMeshDistance, PseudoNormalSign>`](Signed), optionally
 /// builds a second SDF over the open mesh (cap polygons stripped via
 /// [`dome_wall_only_mesh`]) when `cap_planes` is non-empty, allocates
