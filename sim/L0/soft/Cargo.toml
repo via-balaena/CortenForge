@@ -38,6 +38,9 @@ sim-ml-chassis = { workspace = true }
 # the same trait without an adapter. Trait method receivers are
 # `Point3<f64>`; sim-soft call sites adapt at the boundary via
 # `Point3::from(vec3)`. See inventory Q5 for the architecture decision.
+# Workspace entry sets `default-features = false`, dropping cf-design's
+# `parallel-meshing` (rayon + rayon-core + crossbeam-*) — required to
+# stay under the L0 100-dep tier cap.
 cf-design = { workspace = true }
 # `AttributedMesh` + `IndexedMesh` for the `viz` module's FEM-grade
 # visualization helpers (`boundary_surface`, `slab_cut`). First

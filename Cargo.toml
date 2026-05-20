@@ -609,8 +609,15 @@ cf-geometry = { path = "design/cf-geometry" }
 # Spatial foundation
 cf-spatial = { path = "design/cf-spatial" }
 
-# Design kernel
-cf-design = { path = "design/cf-design" }
+# Design kernel.
+# `default-features = false` at the workspace level drops the
+# `parallel-meshing` feature (rayon + rayon-core + crossbeam-*) for all
+# inheriting consumers — required to keep sim-soft under the L0 100-dep
+# tier cap. Only cf-design-tests calls `mesh_adaptive_par`; it opts in
+# via `features = ["parallel-meshing"]`. cf-design's own `default =
+# ["parallel-meshing"]` keeps `cargo test -p cf-design` exercising the
+# par_* tests by default.
+cf-design = { path = "design/cf-design", default-features = false }
 cf-design-tests = { path = "design/cf-design-tests" }
 
 # Cast tooling

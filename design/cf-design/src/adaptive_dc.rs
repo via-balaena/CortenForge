@@ -483,9 +483,13 @@ const EDGE_CORNERS: [(usize, usize); 12] = [
 ];
 
 // ── Parallel adaptive DC ──────────────────────────────────────────────────
+// Gated behind the `parallel-meshing` feature (default-on). Drop the
+// feature via `default-features = false` to remove the rayon transitive
+// chain — used by sim-soft to stay under the L0 100-dep tier cap.
 
 /// Depth threshold below which octree construction spawns rayon tasks.
 /// Above this depth, falls back to sequential to avoid task overhead.
+#[cfg(feature = "parallel-meshing")]
 const PAR_DEPTH_THRESHOLD: u32 = 3;
 
 /// Parallel version of [`mesh_field_adaptive`].
@@ -496,6 +500,7 @@ const PAR_DEPTH_THRESHOLD: u32 = 3;
 ///
 /// Phase 2 (face generation) remains sequential (pure bookkeeping).
 // Index/count conversion bounded by domain.
+#[cfg(feature = "parallel-meshing")]
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -720,6 +725,7 @@ pub fn mesh_field_adaptive_par(
 
 /// Build octree in parallel at top levels, sequential below threshold.
 // Argument list mirrors physics-simulation signature.
+#[cfg(feature = "parallel-meshing")]
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1088,7 +1094,10 @@ mod tests {
     }
 
     // ── Parallel adaptive DC tests ────────────────────────────────────
+    // Gated behind `parallel-meshing` — under `default-features = false`
+    // sim-soft drops the parallel surface; these tests follow.
 
+    #[cfg(feature = "parallel-meshing")]
     #[test]
     fn par_sphere_valid() {
         let node = FieldNode::Sphere {
@@ -1103,6 +1112,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "parallel-meshing")]
     #[test]
     fn par_sphere_volume() {
         let node = FieldNode::Sphere {
@@ -1120,6 +1130,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "parallel-meshing")]
     #[test]
     fn par_vs_seq_volume_match() {
         let node = FieldNode::Sphere {
@@ -1141,6 +1152,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "parallel-meshing")]
     #[test]
     fn par_cuboid_valid() {
         let node = FieldNode::Cuboid {
@@ -1151,6 +1163,7 @@ mod tests {
         assert_mesh_valid(&mesh, "par_cuboid");
     }
 
+    #[cfg(feature = "parallel-meshing")]
     #[test]
     fn par_pin_hole_valid() {
         let cuboid = FieldNode::Cuboid {
@@ -1167,6 +1180,7 @@ mod tests {
         assert_mesh_valid(&mesh, "par_pin_hole");
     }
 
+    #[cfg(feature = "parallel-meshing")]
     #[test]
     fn par_topology_manifold() {
         let node = FieldNode::Sphere {
