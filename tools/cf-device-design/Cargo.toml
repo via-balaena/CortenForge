@@ -70,6 +70,13 @@ cf-design = { workspace = true }
 # insertion_sim can consume the same primitives without duplicating
 # them. See the pinned-floor scope-C spec for the architectural arc.
 cf-cap-planes = { workspace = true }
+# Shared device-design domain types — CavityState / LayersState /
+# LayerSpec / Centerline / ScanInfo / ScanMesh / ScalarMode / SimMode
+# / SimDesign / slacker module / etc. Lifted out of this crate's
+# `main.rs` per `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3 (A1 Phase 1)
+# so the future `tools/cf-sim-research/` binary can describe a
+# layered-silicone device the same way as cf-device-design.
+cf-device-types = { workspace = true }
 sim-soft = { workspace = true }
 sim-ml-chassis = { workspace = true }
 

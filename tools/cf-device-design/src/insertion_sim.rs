@@ -63,6 +63,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, anyhow};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_design::{Aabb, SdfGrid, Solid, pinned_floor_shell};
+use cf_device_types::{SimDesign, SimLayer, SlackerResolution, slacker};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
@@ -340,58 +341,19 @@ fn elapsed_ms(start: Instant) -> f64 {
 
 // ── 7.1 — insertion geometry + per-layer Yeoh material ──────────────
 
-/// One concentric layer of the device wall, projected for the
-/// insertion sim: a radial thickness + a base-silicone anchor key +
-/// the per-layer Slacker mass fraction.
-///
-/// The decimated form of `main.rs`'s `LayerSpec` (drops `visible` —
-/// a viewport concern). `slacker_fraction` is plumbed straight
-/// through: slice 7.5 added the wiring from `LayerSpec.slacker_fraction`
-/// to the sim's per-tet Yeoh material via `effective_silicone_for_layer`
-/// — see the `Slacker → sim-modulus` section at module top for the
-/// resolution scheme + the Shore-000 floor.
-#[derive(Debug, Clone)]
-pub struct SimLayer {
-    /// Radial thickness (meters). Innermost-first ordering, same as
-    /// `LayerSpec`.
-    pub thickness_m: f64,
-    /// Smooth-On base-silicone anchor key — one of the eight in
-    /// `main.rs`'s `LAYER_MATERIALS` catalog.
-    pub anchor_key: String,
-    /// Slacker mass as a fraction of the base silicone's Part A+B
-    /// mass — `0.0` for the base alone, matches the slice 6.5
-    /// `LayerSpec.slacker_fraction` semantics. The TB-tabulated
-    /// fractions are `{0.0, 0.25, 0.50, 0.75, 1.00}` per the
-    /// Smooth-On Slacker Technical Bulletin (rev 011524DH);
-    /// `crate::slacker::support(anchor_key)` returns the curve.
-    /// Off-curve values are snapped by `crate::resolve_slacker_fraction`
-    /// before reaching the sim.
-    pub slacker_fraction: f64,
-}
+// `SimLayer`, `SimDesign`, `SlackerResolution` live in
+// `cf-device-types` so both this binary and (Phase 2+) cf-sim-research
+// project a layered-silicone device the same way. See
+// `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3 A1 Phase 1.
 
-/// Device-design parameters the insertion sim consumes: the cavity
-/// inset + the ordered (innermost-first) layer stack. The decimated
-/// projection of `main.rs`'s `CavityState` + `LayersState`.
-#[derive(Debug, Clone)]
-pub struct SimDesign {
-    /// Distance (meters) the cavity surface sits *inside* the scan
-    /// surface — `CavityState::inset_m`. The cavity surface is at
-    /// scan-SDF offset `-cavity_inset_m`.
-    pub cavity_inset_m: f64,
-    /// Innermost-first layer stack. `layers[0]`'s inner surface is
-    /// the cavity surface; `layers[i]`'s outer surface is
-    /// `layers[i + 1]`'s inner surface.
-    pub layers: Vec<SimLayer>,
-}
-
-/// Resolve a `main.rs` `LAYER_MATERIALS` anchor key to the sim-soft
-/// [`SiliconeMaterial`] anchor it mirrors.
+/// Resolve an anchor key from `cf_device_types::LAYER_MATERIALS` to
+/// the sim-soft [`SiliconeMaterial`] it mirrors.
 ///
 /// The eight keys are a closed catalog — an unrecognized key is a
 /// wiring bug, surfaced as an error rather than silently substituted.
-/// (`main.rs`'s `material_density` *does* fall back defensively, but
-/// a wrong *modulus* would quietly corrupt the sim, not just a mass
-/// readout — so the sim path fails loud instead.)
+/// (`cf_device_types::material_density` *does* fall back defensively,
+/// but a wrong *modulus* would quietly corrupt the sim, not just a
+/// mass readout — so the sim path fails loud instead.)
 fn silicone_for_anchor(anchor_key: &str) -> Result<SiliconeMaterial> {
     match anchor_key {
         "ECOFLEX_00_10" => Ok(ECOFLEX_00_10),
@@ -408,39 +370,11 @@ fn silicone_for_anchor(anchor_key: &str) -> Result<SiliconeMaterial> {
     }
 }
 
-/// How `effective_silicone_for_layer` resolved a layer — surfaces
-/// alongside the returned `SiliconeMaterial` so the panel can flag
-/// fallbacks to the user.
-///
-/// Slice 7.5: Slacker pushes silicones across Shore scales (A → 00 →
-/// 000). sim-soft's anchor table covers Shore 00 + Shore A; Shore 000
-/// (the gel scale, where most Slacker outcomes land) has no published
-/// Yeoh anchors. The variants below capture every path the resolver
-/// can take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SlackerResolution {
-    /// `slacker_fraction == 0.0` (or `Support::NotRecommended` /
-    /// `Support::NoData`) — material is the base anchor unchanged.
-    Base,
-    /// Slacker fraction snapped to a TB curve point whose effective
-    /// hardness lands in Shore A or Shore 00, both of which sim-soft
-    /// anchors. The material was built via
-    /// `SiliconeMaterial::from_effective_shore`.
-    Interpolated,
-    /// Slacker fraction snapped to a TB point whose effective hardness
-    /// is Shore 000 (OOO) — softer than sim-soft's softest published
-    /// anchor (`ECOFLEX_00_10`). The resolver returns the
-    /// `ECOFLEX_00_10` material as a conservative floor (slight
-    /// over-stiffness vs ground truth). A proper Shore-000 calibration
-    /// is a future slice.
-    FlooredAtSoftestAnchor,
-}
-
 /// Resolve a layer's effective `SiliconeMaterial` from
 /// `(anchor_key, slacker_fraction)` — slice 7.5's Slacker → sim-modulus
 /// wiring.
 ///
-/// **Resolution table** (driven by `crate::slacker::support`):
+/// **Resolution table** (driven by `slacker::support`):
 ///
 /// | `slacker_fraction` | `support(anchor)`        | Result |
 /// |---|---|---|
@@ -470,19 +404,19 @@ fn effective_silicone_for_layer(layer: &SimLayer) -> Result<(SiliconeMaterial, S
     if layer.slacker_fraction == 0.0 {
         return Ok((base, SlackerResolution::Base));
     }
-    let support = crate::slacker::support(&layer.anchor_key);
+    let support = slacker::support(&layer.anchor_key);
     let curve = match support {
-        crate::slacker::Support::Curve(c) => c,
+        slacker::Support::Curve(c) => c,
         // The recipe panel disables the picker for these two
         // variants, so a non-zero fraction reaching here is a wiring
         // surprise — fall back to base rather than fail the sim.
-        crate::slacker::Support::NotRecommended | crate::slacker::Support::NoData => {
+        slacker::Support::NotRecommended | slacker::Support::NoData => {
             return Ok((base, SlackerResolution::Base));
         }
     };
     // The UI snaps `slacker_fraction` to the curve's tabulated points
-    // (`resolve_slacker_fraction` in `main.rs`). Linear search through
-    // ≤ 5 points; binary-search overhead would be noise.
+    // (`cf_device_types::resolve_slacker_fraction`). Linear search
+    // through ≤ 5 points; binary-search overhead would be noise.
     let point = curve
         .iter()
         .find(|p| (p.slacker_fraction - layer.slacker_fraction).abs() < f64::EPSILON)
@@ -499,14 +433,14 @@ fn effective_silicone_for_layer(layer: &SimLayer) -> Result<(SiliconeMaterial, S
     #[allow(clippy::cast_precision_loss)]
     let shore_points = f64::from(point.hardness.points);
     match point.hardness.scale {
-        crate::slacker::ShoreScale::A => {
+        slacker::ShoreScale::A => {
             let mat = SiliconeMaterial::from_effective_shore(ShoreReading::A(shore_points), None)
                 .map_err(|e| {
                 anyhow!("sim-soft from_effective_shore(Shore A {shore_points}) failed: {e:?}")
             })?;
             Ok((mat, SlackerResolution::Interpolated))
         }
-        crate::slacker::ShoreScale::OO => {
+        slacker::ShoreScale::OO => {
             let mat = SiliconeMaterial::from_effective_shore(
                 ShoreReading::DoubleZero(shore_points),
                 None,
@@ -516,7 +450,7 @@ fn effective_silicone_for_layer(layer: &SimLayer) -> Result<(SiliconeMaterial, S
             })?;
             Ok((mat, SlackerResolution::Interpolated))
         }
-        crate::slacker::ShoreScale::OOO => {
+        slacker::ShoreScale::OOO => {
             // Shore 000 (gel scale) is softer than ECOFLEX_00_10 (the
             // softest sim-soft anchor). No published Yeoh data;
             // floor to ECOFLEX_00_10 as a conservative over-stiffness.
@@ -1010,8 +944,8 @@ const INSERTION_CONTACT_DHAT: f64 = 1.0e-3;
 ///
 /// **CAVITY-SPECIFIC**: the chosen ε = 0.075 mm converges 16/16 at
 /// cavity ≤ 5 mm but stalls at cavity 6 mm (C.3 probe gate,
-/// r_norm 0.536).  See `CavityState::inset_slider_range_m` in
-/// `main.rs` for the UI cap that enforces this bound + the bookmark
+/// r_norm 0.536).  See `cf_device_types::CavityState::inset_slider_range_m`
+/// for the UI cap that enforces this bound + the bookmark
 /// §9.4 for the probe-gate data.  Generalizing past 5 mm would
 /// require a per-cavity ε (would need a UI slider per
 /// [[feedback-strip-the-knob-when-default-works]] — deferred until

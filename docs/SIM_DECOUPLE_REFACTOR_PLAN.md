@@ -1,10 +1,12 @@
 # Sim-decouple refactor — full plan
 
-> **Status**: BOOKMARK, set 2026-05-19 LATE-NIGHT after A1's
+> **Status**: ACTIVE — Phase 1 SHIPPED 2026-05-19 on branch
+> `refactor/sim-decouple-phase-1`; Phase 2 (cf-sim-research skeleton)
+> is next. Originally bookmarked 2026-05-19 LATE-NIGHT after A1's
 > in-session scoping revealed the sim is woven deeply into
 > cf-device-design's layer/cavity/intruder rendering. The original
-> gameplan §3 A1 "~1 session feature-flag" estimate was wrong.
-> This doc sequences the real arc.
+> gameplan §3 A1 "~1 session feature-flag" estimate was wrong; this
+> doc sequences the real arc.
 >
 > **Goal** (from [[project-program-gameplan]]): cf-device-design
 > ships as a CAD-only tool (scan → layer → mold geometry). Sim
@@ -201,26 +203,44 @@ Default lean: **Option A**.
 
 Five phases. Each phase ends with a green workspace build.
 
-### Phase 1 — extract shared types to `cf-device-types`
+### Phase 1 — extract shared types to `cf-device-types` ✓ SHIPPED 2026-05-19
 
-**Goal**: lift CavityState, LayersState, ScalarMode (+ supporting
-types) out of cf-device-design's main.rs and insertion_sim*.rs into
-a new lib crate that both future binaries depend on.
+**Status**: SHIPPED on branch `refactor/sim-decouple-phase-1` in a
+single session — mostly mechanical, no type-coupling surprises beyond
+the slacker module's catalog test (which moved with the data via
+`crate::LAYER_MATERIALS` after re-export).
 
-**Steps**:
-1. Create `lib/cf-device-types/` (or under `cf/` per workspace
-   convention)
-2. Move types: CavityState, LayersState, LayerState, MaterialField
-   (the device-side, not the sim-side), SlackerSelection,
-   ScalarMode, SimDesign, Centerline, ScanInfo, ScanMesh,
-   ScanFilePath, plus supporting structs
-3. Update cf-device-design imports + Cargo.toml dep
-4. Verify cargo build green
-5. Verify cargo test green
+**Outcome**:
+- New crate at `design/cf-device-types/` (workspace `design/cf-*`
+  convention, not `lib/`); Bevy-using because the moved types
+  include Bevy `Resource`s; xtask grader exempts it via the
+  cf-bevy-common precedent (`xtask/src/grade.rs::applies_to_crate`).
+- Four topical submodules: `scan` (ScanMesh / ScanFilePath /
+  ScanMeshVisible / ScanInfo / Centerline), `design` (CavityState /
+  LayerSpec / LayersState + LAYER_MATERIALS + LAYER_COUNT_MAX +
+  material_density + CAVITY_DEFAULT_INSET_M), `slacker` (TB curve
+  data + Support / Point / ShoreHardness / ShoreScale / Tack +
+  resolve_slacker_fraction), `sim` (SimDesign / SimLayer /
+  SlackerResolution / ScalarMode / SimMode).
+- cf-device-design imports from `cf_device_types::*`; intra-crate
+  references to moved items (`crate::CavityState` etc.) updated
+  across main.rs / insertion_sim.rs / insertion_sim_ui.rs /
+  design_toml.rs / clip_plane.rs.
+- Two redundant slacker-resolution tests removed from main.rs (now
+  covered in `cf-device-types/src/slacker.rs::tests`).
+- 9 tests in cf-device-types + 164 in cf-device-design (release,
+  zero regressions). cargo fmt + clippy clean (workspace-noise
+  pedantic warnings carried over from the pre-move code; no new
+  noise).
 
-**Estimate**: 1-2 sessions. Mostly mechanical; risk = type-coupling
-surprises (some types reference internal cf-device-design helpers
-that also need moving).
+**Posture banked**:
+- No transitional re-export shim — one-commit import swap was cheap
+  and keeps the diff understandable.
+- `slacker` module re-exported as a module (not flattened) so
+  consumers write `slacker::Support` / `slacker::ShoreScale::A` etc.
+  — preserves the original call-site shape.
+
+**Sub-leg estimate confirmed**: 1 session (mostly mechanical).
 
 ### Phase 2 — create `tools/cf-sim-research/` skeleton
 
@@ -422,6 +442,9 @@ infrastructure work.
 
 ---
 
-End of refactor plan. Next session: Phase 1 (extract shared
-types). Or, if B1 (cf-cast-cli mold-wall) is the priority, do
-that first; this refactor waits.
+End of refactor plan. **Phase 1 SHIPPED 2026-05-19** on branch
+`refactor/sim-decouple-phase-1`; next session picks up at Phase 2
+(`tools/cf-sim-research/` skeleton — stand up the new binary with a
+no-op-sim placeholder UI consuming cf-device-types). Phase 3 then
+moves the sim code; Phase 4 strips it from cf-device-design; Phase 5
+verifies + documents.

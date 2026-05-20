@@ -30,15 +30,18 @@ use nalgebra::{Isometry3, Point3, Vector3};
 use sim_soft::{Mesh as SimMesh, TetId, VertexId, Yeoh};
 
 use cf_cap_planes::CapPlane;
+use cf_device_types::{
+    CavityState, Centerline, LayersState, ScalarMode, ScanMesh, SimDesign, SimLayer, SimMode,
+};
 
+use crate::LAYER_SURFACE_PALETTE;
 #[cfg(test)]
 use crate::insertion_sim::RampStep;
 use crate::insertion_sim::{
-    InsertionRamp, SimDesign, SimLayer, SlideRamp, StepReadout, TetReadout,
-    build_insertion_geometry, compute_tet_readouts, run_insertion_ramp, run_sliding_insertion_ramp,
+    InsertionRamp, SlideRamp, StepReadout, TetReadout, build_insertion_geometry,
+    compute_tet_readouts, run_insertion_ramp, run_sliding_insertion_ramp,
 };
 use crate::sdf_layers::{CachedScanSdf, CapPlanes};
-use crate::{CavityState, Centerline, LAYER_SURFACE_PALETTE, LayersState, ScanMesh};
 
 // ── tuned defaults ──────────────────────────────────────────────────
 
@@ -64,67 +67,8 @@ const DEFAULT_N_STEPS: usize = 16;
 
 // ── public types ────────────────────────────────────────────────────
 
-/// Which scalar field drives the heat-map gradient — `Ψ` (J/m³) or
-/// `‖P‖_F` (Pa). The Insertion Sim pipeline pre-computes vertex colors
-/// for BOTH modes, so the user can toggle between them without
-/// re-running the ramp.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ScalarMode {
-    /// Strain-energy density `Ψ`. Default — what "how strained is this
-    /// region" intuitively reads as.
-    #[default]
-    EnergyDensity,
-    /// First-Piola stress Frobenius norm `‖P‖_F`. The peak-hotspot
-    /// scalar; cleaner for finding stress concentrations.
-    StressFrobenius,
-}
-
-impl ScalarMode {
-    /// Index into each step's `[Vec<f64>; 2]` in
-    /// [`InsertionSimOutputs::per_step_scalar_fields`] +
-    /// [`InsertionSimOutputs::scalar_min_max`].
-    pub fn buffer_index(self) -> usize {
-        match self {
-            Self::EnergyDensity => 0,
-            Self::StressFrobenius => 1,
-        }
-    }
-
-    /// Short user-facing label.
-    fn label(self) -> &'static str {
-        match self {
-            Self::EnergyDensity => "Ψ (J/m³)",
-            Self::StressFrobenius => "‖P‖ (Pa)",
-        }
-    }
-}
-
-/// Which insertion-sim model the next Simulate click runs.
-///
-/// Per `docs/SIM_ARC_SLIDING_INTRUDER_SPEC.md` §2 Q2 + §4 SL.3 row.
-/// Defaults to [`Sliding`](Self::Sliding) — the new sliding-intruder
-/// FEM is the workshop-product model. [`GrowingIntruder`](Self::GrowingIntruder)
-/// is the legacy uniform-offset ramp, preserved for "prototype
-/// variations of the scanned size going through the cavity" per the
-/// user's banked note (bookmark §2). SL.7 (pass B) reawakens the
-/// growing-mode UI + render handling; SL.3 ships the dispatch with
-/// both branches functionally wired but the per-mode UI affordances
-/// (mode selector, intruder render rename) at SL.4 + SL.5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SimMode {
-    /// New sliding-intruder model (default): constant-geometry rigid
-    /// intruder translated along the centerline arc, per-position
-    /// FEM-solved local cavity deformation. Requires a non-empty
-    /// `Centerline` resource (`.prep.toml [centerline]`).
-    #[default]
-    Sliding,
-    /// Legacy growing-intruder model: uniform SDF offset ramped from
-    /// `cavity_inset_m / n_steps` to `cavity_inset_m` over the ramp,
-    /// causing the whole cavity wall to deform uniformly at each
-    /// step. Useful for "what if the scanned shape was bigger by 1%"
-    /// prototyping (banked use case per bookmark §2 + §6).
-    GrowingIntruder,
-}
+// `ScalarMode` + `SimMode` live in `cf-device-types` (sim-side enums
+// shared with Phase 2+ cf-sim-research). Imported above.
 
 /// Which ramp the most recent run produced. Per spec §3a + §3e: both
 /// kinds share the per-step `x_final` shape and `StepReadout`
@@ -1908,7 +1852,7 @@ mod tests {
     /// `LayersState` saw any field change, visibility included.
     #[test]
     fn sim_relevant_snapshot_ignores_visibility_toggles() {
-        use crate::LayerSpec;
+        use cf_device_types::LayerSpec;
         let cavity_a = CavityState {
             inset_m: 0.003,
             visible: true,
@@ -2316,7 +2260,7 @@ mod tests {
     /// upper bound (no silent OOB).
     #[test]
     fn aggregate_per_layer_at_layer_count_max() {
-        let n = crate::LAYER_COUNT_MAX;
+        let n = cf_device_types::LAYER_COUNT_MAX;
         let per_tet: Vec<TetReadout> = (0..n)
             .map(|i| mk_readout([1.0, 1.0, 1.0], 1.0e3 * (i as f64 + 1.0), 1.0))
             .collect();

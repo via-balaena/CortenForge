@@ -1931,6 +1931,7 @@ dependencies = [
  "cf-bevy-common",
  "cf-cap-planes",
  "cf-design",
+ "cf-device-types",
  "cf-viewer",
  "clap",
  "mesh-io",
@@ -1944,6 +1945,15 @@ dependencies = [
  "sim-ml-chassis",
  "sim-soft",
  "toml",
+]
+
+[[package]]
+name = "cf-device-types"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "mesh-types",
+ "nalgebra 0.34.2",
 ]
 
 [[package]]

@@ -384,6 +384,14 @@ members = [
     # architectural arc that introduced it.
     "design/cf-cap-planes",
 
+    # Shared device-design domain types (cavity + layer-stack state,
+    # scan resources, sim-design projection, slacker recipe data).
+    # Lifted from `tools/cf-device-design/src/main.rs` per
+    # `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3 (A1 Phase 1) so the
+    # future `tools/cf-sim-research/` binary can describe a layered-
+    # silicone device the same way as `tools/cf-device-design/`.
+    "design/cf-device-types",
+
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
     "sim/L0/simd",
@@ -594,6 +602,13 @@ cf-cast = { path = "design/cf-cast" }
 
 # Shared cap-plane abstraction
 cf-cap-planes = { path = "design/cf-cap-planes" }
+
+# Shared device-design domain types (Phase 1 of the sim-decouple
+# refactor — `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3). Lifted from
+# `tools/cf-device-design/src/main.rs` so cf-device-design (CAD) +
+# cf-sim-research (Phase 2+) describe a layered-silicone device the
+# same way.
+cf-device-types = { path = "design/cf-device-types" }
 
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }

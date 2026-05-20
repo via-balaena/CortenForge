@@ -52,7 +52,7 @@ use cf_bevy_common::axis::UpAxis;
 use cf_viewer::RenderScale;
 use mesh_types::{Point3, Vector3};
 
-use crate::Centerline;
+use cf_device_types::Centerline;
 
 /// Embedded-asset URI of the clip-plane WGSL shader (sub-leaf 2).
 ///

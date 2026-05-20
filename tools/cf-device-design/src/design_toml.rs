@@ -49,7 +49,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::{CavityState, LAYER_COUNT_MAX, LAYER_MATERIALS, LayerSpec, LayersState};
+use cf_device_types::{CavityState, LAYER_COUNT_MAX, LAYER_MATERIALS, LayerSpec, LayersState};
 
 /// The schema version this binary writes + accepts. Bump when the
 /// TOML structure changes; loads of a higher version are rejected
