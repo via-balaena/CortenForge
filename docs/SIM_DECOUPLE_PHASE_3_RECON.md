@@ -45,13 +45,22 @@ parameterize the spawn helpers over the material type (heavy
 generics, ugly). Lift wins.
 
 After Phase 2.5 ships, Phase 3 becomes purely:
-**copy `insertion_sim.rs` + `insertion_sim_ui.rs` + 7 Bevy systems
-(`spawn_cavity_mesh` / `spawn_intruder_mesh` /
-`update_cavity_mesh` / `update_layer_meshes` / `update_intruder_mesh`
-+ the two `build_bevy_mesh_from_indexed*` helpers + `LayerMeshKey`
-+ `pose_to_bevy_transform` + `visible_pose_for_intruder`) into
-cf-sim-research, wire the `InsertionSimPlugin` into its
-`run_render_app`.** Phase 4 then strips cf-device-design's copies.
+**copy `insertion_sim.rs` + `insertion_sim_ui.rs` + 4 sim-coupled
+Bevy systems (`spawn_intruder_mesh` / `update_cavity_mesh` /
+`update_layer_meshes` / `update_intruder_mesh`) + `LayerMeshKey` /
+`CavityMeshKey` / `IntruderMeshKey` + `pose_to_bevy_transform` +
+`visible_pose_for_intruder` into cf-sim-research, wire the
+`InsertionSimPlugin` into its `run_render_app`.** `spawn_cavity_mesh`
++ `build_bevy_mesh_from_indexed*` are shared via cf-device-geometry
+(both binaries call them). Phase 4 then strips cf-device-design's
+sim-coupled copies.
+
+**Honest estimate**: Phase 2.5 (1-2 sessions) + revised Phase 3
+(2 sessions) = 3-4 sessions total, matching the original plan's
+Phase 3 high end. Phase 2.5 does not BANK session work; it
+**derisks** Phase 3 by landing the cross-crate moves + lift
+decisions upstream, so Phase 3 itself is a pure copy + wire job
+with no architectural decisions mid-arc.
 
 ---
 
@@ -75,12 +84,15 @@ Four sibling agents ran in parallel against:
 `fn sample_sdf_into_cached_template`, `fn marching_cubes_at_iso`.
 
 **Intra-crate reaches**: ZERO `use crate::*` imports. Fully
-self-contained against external workspace crates (`mesh-sdf`,
-`mesh-offset`, `cf-cap-planes`, `cf-design`, `mesh-types`,
-`mesh-repair`, `meshopt`, `nalgebra`, `anyhow`).
+self-contained against external workspace crates (`bevy` —
+Resource derive only, see below; `mesh-sdf`, `mesh-offset`,
+`cf-cap-planes`, `cf-design`, `mesh-types`, `mesh-repair`,
+`meshopt`, `nalgebra`, `anyhow`).
 
 **Bevy coupling**: `Resource` derive on `CachedScanSdf` + `CapPlanes`
-only. Trivially gated behind a `bevy` feature flag.
+only. `bevy = { workspace = true, default-features = false }` is in
+the workspace dep set already; cf-device-geometry carries the same
+minimal feature set as cf-device-types.
 
 **Why not `cf-device-types`**: too heavy. Phase 1's `cf-device-types`
 is small shared types; `CachedScanSdf` carries `ScalarGrid` +
@@ -102,7 +114,10 @@ rendering primitives both binaries need). Also natural home for
 `load_design_toml`, `validate_design_toml`, `apply_design_toml`).
 
 **Intra-crate reaches**: ZERO. Only `use cf_device_types::{...}` for
-the schema types it serializes.
+the schema types it serializes (`CavityState`, `LayerSpec`,
+`LayersState`) PLUS the `LAYER_COUNT_MAX` const + `LAYER_MATERIALS`
+table that `validate_design_toml` uses (layer-count bound + anchor-
+key catalog check).
 
 **Bevy coupling**: NONE. Doesn't import `bevy::*`, doesn't derive
 `Resource`, doesn't touch ECS. `apply_design_toml(&DesignToml,
@@ -114,7 +129,7 @@ it.
 `cf-device-types`'s deps. All three are workspace pins — no new
 third-party intake.
 
-**Tests**: ~300 LOC + 11 cases move with the file unchanged.
+**Tests**: ~300 LOC + 15 cases move with the file unchanged.
 
 ### 1.3 `LAYER_SURFACE_PALETTE` — lift to `cf-device-types`
 
@@ -205,23 +220,43 @@ workspace paths. No further coupling.
 ### 1.7 main.rs — what stays / what moves
 
 **Move to cf-sim-research** (sim-coupled):
-- `fn spawn_cavity_mesh` (line 778)
 - `fn update_cavity_mesh` (line 849) + `struct CavityMeshKey`
 - `fn update_layer_meshes` (line 950) + `struct LayerMeshKey`
 - `fn spawn_intruder_mesh` (line 1128)
 - `fn update_intruder_mesh` (line 1275) + `struct IntruderMeshKey`
 - `fn pose_to_bevy_transform` + `fn visible_pose_for_intruder` (helpers)
+- `struct LayerSurfaceEntity` + `struct IntruderEntity` markers +
+  `const INTRUDER_COLOR` + `const LAYER_SLAB_ALPHA`.
+
+**Duplicate** (needed by both binaries — the cf-device-geometry
+home is the cleanest landing, see footnote):
+- `fn spawn_cavity_mesh` (line 778) — rest-frame iso extraction, no
+  `InsertionSimState`. Parent plan §4 Phase 4 step 4 keeps "cavity
+  always rest-frame SDF iso" in cf-device-design post-strip, so the
+  CAD-side spawner survives Phase 4. cf-sim-research also needs to
+  spawn a cavity entity (which `update_cavity_mesh` then drives).
+  Two options: (i) lift `spawn_cavity_mesh` to cf-device-geometry
+  alongside `sdf_layers` (it consumes `CachedScanSdf` + `CapPlanes`
+  + `ClipPlaneMaterial`, all shared post-2.5), or (ii) duplicate by
+  copy + cold-read at Phase 3.3 time. **Lean: (i)** — single source
+  of truth, both binaries call it from the Startup chain.
 - `fn build_bevy_mesh_from_indexed` + `fn build_bevy_mesh_from_indexed_with_colors`
-  (sim-coupled in practice — after the move, no cf-device-design
-  call site remains)
-- `struct CavityEntity`, `struct LayerSurfaceEntity`,
-  `struct IntruderEntity` markers + `const INTRUDER_COLOR` +
-  `const CAVITY_COLOR` + `const LAYER_SLAB_ALPHA`
+  (lines 685, 700) — pure `IndexedMesh → bevy::Mesh` adapters with
+  optional per-vertex colors. Used by `spawn_cavity_mesh` (stays
+  CAD-side AND moves sim-side per above), `update_cavity_mesh`
+  (sim-side), `update_layer_meshes` (sim-side). **Lean: lift to
+  cf-device-geometry** alongside the cavity spawner so both binaries
+  consume the same helper.
+- `struct CavityEntity` marker — both binaries spawn a cavity
+  entity. Lifts to cf-device-geometry alongside `spawn_cavity_mesh`.
+- `const CAVITY_COLOR` — paired with `spawn_cavity_mesh`. Lifts.
 
 **Stay in cf-device-design** (sim-agnostic):
 - `fn setup_render_scene` (line 1315) — spawns scan mesh + camera +
   lighting. Cf-sim-research already has its own copy at
-  `tools/cf-sim-research/src/main.rs:317`.
+  `tools/cf-sim-research/src/main.rs:317`. Phase 3.3 swaps that
+  copy's `spawn_face_mesh` for the `ClipPlaneMaterial` path (so the
+  scan participates in clipping like cavity/layers do).
 - `fn draw_reference_overlays` (line 1366) — axis arrows + centerline
   overlay; cf-sim-research has its own copy too.
 - `fn apply_scan_mesh_visibility` (line 1101) — same.
@@ -235,9 +270,18 @@ workspace paths. No further coupling.
   `struct LayerValidation` + `fn grade_budget` + `enum BudgetStatus`
   + `fn signed_volume_m3` (~lines 380-606) — sim-agnostic
   validations machinery; consumed by `render_validations_section`
-  (panel) + `render_layers_section`. Stays.
+  (panel) + `render_layers_section`. Stays. **Note**:
+  `compute_validations` reads `&CachedScanSdf` + `&CapPlanes` and
+  calls `extract_layer_surface`, so cf-device-design's `run_render_app`
+  **keeps** the `CachedScanSdf` + `CapPlanes` resource inserts (and
+  the `build_cached_scan_sdf` call at startup) post-Phase-4 — they
+  feed validations, not just sim. ~324 ms cf-device-design startup
+  cost survives Phase 4.
 - `fn render_*_section` UI functions for Scan / Cavity / Layers /
   Validations / Save (the non-sim panel sections).
+- `fn triangle_mesh_flat_shaded` — re-exported from `cf-bevy-common`,
+  consumed by `setup_render_scene`. Already shared via cf-bevy-common
+  — no lift needed.
 
 **System ordering** (no surprises):
 - 3 sim systems can run unordered relative to each other (separate
@@ -257,15 +301,35 @@ Phase 2 inserted: `UpAxis`, `RenderScale`, `ScanMesh`, `ScanFilePath`,
 
 Phase 3 adds (delta): `CachedScanSdf` (from cf-device-geometry),
 `CapPlanes` (from cf-device-geometry), `ClipPlaneState` (from
-cf-device-geometry — gated to bind the clip-plane material the sim
+cf-device-geometry — binds the clip-plane material the sim
 systems mount), `InsertionSimState` (registered by `InsertionSimPlugin`).
 No conflicts — all new.
 
 cf-device-design's `run_render_app` resource set after Phase 4
-strip becomes: drop `CachedScanSdf` / `CapPlanes` / `InsertionSimState`
-inserts (or rather, the `CachedScanSdf` + `CapPlanes` inserts stay
-for the validations panel — see §1.7 "stay" — but no
-`InsertionSimPlugin`). TBD at Phase 4 design-time.
+strip: **`CachedScanSdf` + `CapPlanes` + `ClipPlaneState` stay**
+(needed by `compute_validations` + the CAD-side rest-frame cavity
+render + the clip-plane visualization), only `InsertionSimState` +
+`InsertionSimPlugin` get dropped. The ~324 ms `build_cached_scan_sdf`
+startup cost survives Phase 4 for the validations panel.
+
+**Two-binary cost note**: with cf-sim-research wired in Phase 3 +
+cf-device-design still building the SDF for validations, opening
+both viewers against the same scan pays the build cost twice. The
+cache is in-memory per process, no on-disk artifact to share.
+Acceptable per [[project-mesh-sdf-perf-pattern]] (decimation is the
+dominant cost, not user-facing).
+
+**Empty `CapPlanes::default()` failure mode**: `CapPlanes::default()`
+returns `planes: vec![]`. Calling `build_cached_scan_sdf` with an
+empty cap-planes vec is fine (the no-caps path is the optimized
+fast path); calling `extract_layer_surface` with `cap_planes:
+&[]` resolves to a closed-scan offset iso (no open-mouth carve).
+cf-sim-research's existing Phase-2 behavior — discard parsed caps
+after logging the count — would put it on this empty-caps path,
+which may not match a user expectation that "ran cf-device-design
+with prep.toml" → "cf-sim-research sees same cavity opening." Phase
+3.3 must propagate the parsed caps into the `CapPlanes` resource
+(not discard them). Cheap fix at impl time.
 
 ---
 
@@ -273,6 +337,13 @@ for the validations panel — see §1.7 "stay" — but no
 
 Each sub-leaf ends with a green workspace build. Order minimizes
 churn: smallest leaves first, biggest lift last.
+
+**Migration-safety invariant**: after each sub-leaf, `cargo build`
++ `cargo test` are green on the whole workspace, **including
+cf-device-design with no half-state import drift**. This means
+Phase 2.5 can ship and sit indefinitely if Phase 3 stalls (workshop
+iter-1 cast intervenes, etc.) without leaving the CAD binary in a
+broken state.
 
 ### 2.5.a — Lift `design_toml` + `LAYER_SURFACE_PALETTE` to `cf-device-types`
 
@@ -285,7 +356,7 @@ the duplicated copy from `tools/cf-sim-research/src/main.rs:64`
 (import from cf-device-types). Update cf-device-design's
 `main.rs:744` (delete the const, add import) and `insertion_sim_ui.rs:37`.
 
-**Tests**: existing 11 cases move unchanged.
+**Tests**: existing 15 cases move unchanged.
 
 **Estimate**: 30-60 min (mostly mechanical).
 
@@ -295,54 +366,83 @@ the duplicated copy from `tools/cf-sim-research/src/main.rs:64`
 `Cargo.toml` + `src/lib.rs`. Workspace member entry. xtask grader
 exemption (Bevy-using, mirrors cf-device-types posture).
 `bevy = { workspace = true, default-features = false }` minimal
-feature set (`Resource` derive only — no rendering deps yet). Lenient
+feature set (`Resource` derive only at this stage — 2.5.d adds
+`bevy/bevy_pbr` + `bevy/bevy_render` for ExtendedMaterial). Lenient
 lint posture per [[feedback-lint-posture-on-extract]].
 
 Empty lib at this stage — populated by 2.5.c + 2.5.d.
 
 **Estimate**: 20 min.
 
-### 2.5.c — Lift `sdf_layers` to `cf-device-geometry`
+### 2.5.c — Lift `sdf_layers` + sharing helpers to `cf-device-geometry`
 
 **Scope**: move `tools/cf-device-design/src/sdf_layers.rs` →
 `design/cf-device-geometry/src/sdf.rs` (or keep `sdf_layers.rs`
 name). Widen `pub(crate)` → `pub` on the public surface. Add
-mesh-sdf / mesh-offset / cf-cap-planes / cf-design / mesh-types /
-mesh-repair / meshopt / nalgebra / anyhow deps to
-cf-device-geometry/Cargo.toml. Bevy-feature-gate the `Resource`
-derives on `CachedScanSdf` + `CapPlanes` (currently un-gated; gate
-is cosmetic — Bevy-feature is on by default in cf-device-geometry
-since both binaries need it).
+`bevy` + mesh-sdf + mesh-offset + cf-cap-planes + cf-design +
+mesh-types + mesh-repair + meshopt + nalgebra + anyhow deps to
+cf-device-geometry/Cargo.toml. `Resource` derives on `CachedScanSdf`
++ `CapPlanes` stay un-gated (Bevy is a hard dep of this crate).
 
-Update cf-device-design's 30+ consumer sites (`sdf_layers::*` →
+**Also lift** (per §1.7 "Duplicate"): `fn spawn_cavity_mesh` +
+`fn build_bevy_mesh_from_indexed` + `fn build_bevy_mesh_from_indexed_with_colors`
++ `struct CavityEntity` + `const CAVITY_COLOR`. These are
+two-binary consumers; lifting alongside `sdf_layers` keeps the
+shared rest-frame cavity rendering surface in one place.
+`spawn_cavity_mesh`'s `Res<ClipPlaneMaterial>` parameter resolves
+after 2.5.d's clip-plane lift — order matters here, so 2.5.d lands
+before the consumer-site updates in 2.5.c's tail, OR 2.5.c does
+the mesh-builder lift first and defers `spawn_cavity_mesh` to a
+2.5.e sub-leaf. Implementer's choice at recon-doc level; the
+material-type ordering is the only constraint.
+
+Update cf-device-design's ~40 consumer sites (`sdf_layers::*` →
 `cf_device_geometry::*`). Delete the now-empty `sdf_layers` module
 declaration from `lib.rs` / `main.rs`.
 
-**Tests**: ~10 tests in `sdf_layers.rs` move with the file.
+**Tests**: 35 tests in `sdf_layers.rs` move with the file.
 
-**Estimate**: 1-2 hours (30+ call-site updates + dep wiring).
+**Estimate**: 2-3 hours (~40 call-site updates + dep wiring + the
+shared rendering helpers).
 
-### 2.5.d — Lift `clip_plane` to `cf-device-geometry`
+### 2.5.d — Lift `clip_plane` (full module) to `cf-device-geometry`
 
-**Scope**: lift the non-UI portion of `clip_plane.rs`:
+**Scope**: lift the **entire** `clip_plane.rs` module:
 `ClipPlaneMaterial` + `ClipPlaneExt` + `ClipPlanePlugin` +
 `ClipPlaneState` + `fn resolve_plane` + `struct ResolvedPlane` +
-the 3 constants. Keep `fn render_clip_plane_section` in
-cf-device-design (panel UI). Widen `pub(crate)` → `pub`. Add
-Bevy-feature-flagged `bevy/bevy_pbr` + `bevy/bevy_render` to
-cf-device-geometry (for ExtendedMaterial machinery).
+the 3 constants + **`fn render_clip_plane_section`** (the egui
+panel section). The section is pure `&mut ClipPlaneState` + `bool`
+input → egui output; no cf-device-design-internal state. Lifting
+it gives cf-sim-research a clipping slider out-of-the-box (instead
+of deferring to a Phase 5 follow-up — the original recon called
+that out as R5 then walked it back here).
 
-Update cf-device-design's `main.rs` + `clip_plane.rs` to import the
-moved primitives (`use cf_device_geometry::clip_plane::*`).
+Widen `pub(crate)` → `pub`. Add `bevy/bevy_pbr` + `bevy/bevy_render`
+to cf-device-geometry's Bevy feature set (for ExtendedMaterial
+machinery — see [[project-cf-device-design-clip-plane-arc]] for the
+Bevy-0.18 `ExtendedMaterial` shader-def gotcha).
 
-**Tests**: existing clip_plane tests move with the math.
+Update cf-device-design's `main.rs` + delete the local `clip_plane`
+module declaration; replace imports with `use cf_device_geometry::clip_plane::*`.
+
+**Tests**: existing clip_plane tests (math + plane resolution) move
+with the module.
 
 **Estimate**: 1-2 hours.
 
 ### 2.5 totals
 
-**Surface area**: ~3500 LOC moved across 4 sub-leaves.
-**Estimate**: 3-5 hours, 1 session.
+**Surface area**: ~3500 LOC moved across 4 sub-leaves (`design_toml`
+666 + `sdf_layers` 2091 + `clip_plane` 729 + `LAYER_SURFACE_PALETTE`
++ the cavity-rendering helpers ~150 LOC ≈ 3636).
+
+**Estimate**: 4-7 hours, **1-2 sessions** (revised up from 3-5
+hours / 1 session — the additional cavity-render-helper lifts in
+2.5.c + the full clip_plane module in 2.5.d add load, and each
+sub-leaf gets its own brief cold-read pass per
+[[feedback-cold-read-review-post-ship]] applied to non-trivial
+diffs).
+
 **Branches**: single branch `refactor/sim-decouple-phase-2.5`,
 sub-leaf commits.
 
@@ -366,8 +466,16 @@ After Phase 2.5 lands, Phase 3 is purely the sim move:
 
 ### 3.2 Copy sim-coupled Bevy systems + helpers
 
-Per §1.7 "Move" list — ~9 functions + 3 marker components + 4 key
-structs + 4 consts. All copy verbatim; only path imports change.
+Per §1.7 "Move to cf-sim-research" list — the 4 sim-coupled
+systems (`update_cavity_mesh`, `update_layer_meshes`,
+`spawn_intruder_mesh`, `update_intruder_mesh`) + the 2 sim-side
+helpers (`pose_to_bevy_transform`, `visible_pose_for_intruder`) +
+3 key structs (`CavityMeshKey`, `LayerMeshKey`, `IntruderMeshKey`)
++ 2 marker components (`LayerSurfaceEntity`, `IntruderEntity`) + 2
+consts (`INTRUDER_COLOR`, `LAYER_SLAB_ALPHA`). `spawn_cavity_mesh`
++ `CavityEntity` + `CAVITY_COLOR` + `build_bevy_mesh_from_indexed*`
+lifted in Phase 2.5.c, so they're already in `cf-device-geometry`
+when Phase 3 starts. All copy verbatim; only path imports change.
 
 ### 3.3 Wire into cf-sim-research's run_render_app
 
@@ -410,8 +518,17 @@ structs + 4 consts. All copy verbatim; only path imports change.
 ### 3.5 Phase 3 estimate
 
 **Surface area**: ~10 000 LOC copied + ~500 LOC of wiring.
-**Sessions**: 2 (was 2-3 in the original plan; one session banked
-by Phase 2.5 doing the lifts upstream).
+**Sessions**: 2.
+
+**Honest framing**: Phase 2.5 (1-2 sessions) + revised Phase 3
+(2 sessions) = **3-4 total sessions**, matching or slightly
+exceeding the original Phase 3 estimate's 2-3 session range. Phase
+2.5 does NOT bank session work — it **derisks Phase 3** by landing
+the cross-crate moves in a state where Phase 3 itself is a pure
+copy + wire job with no architectural decisions remaining.
+Cross-arc surprises (the clip_plane material coupling, the
+cavity-spawner classification, the validations SDF-dependency)
+land in 2.5 instead of mid-Phase-3, which is the actual win.
 
 ---
 
@@ -445,21 +562,30 @@ cf-device-geometry uses `default-features = false` and explicit
 feature additions; binary Cargo.toml features always superset the
 lib's. Mirror cf-device-types' precedent.
 
-**R5 — clip_plane's `render_clip_plane_section` cross-crate
-double-call.** Phase 3 wires cf-sim-research to call the same
-section in its panel (so the sim viewer also gets clipping). But
-the function lives in cf-device-design (per §1.4). cf-sim-research
-can't reach in — same backwards-dep problem. Mitigation: defer
-clipping in cf-sim-research's panel to a Phase 5 follow-up; for
-Phase 3, the clip-plane works on cf-sim-research's scan/cavity/
-layer/intruder shells via the `ClipPlanePlugin` (the plugin's
-per-frame uniform push system runs without any UI), it just has no
-slider in the cf-sim-research panel. Adequate for sim research.
+**R5 — clip_plane UI parity** ~~(originally: defer cf-sim-research
+clipping to Phase 5)~~ **— resolved at the recon-doc stage.**
+Updated 2.5.d lifts `render_clip_plane_section` to
+cf-device-geometry alongside the rest of the module, so both
+binaries get an editable clipping slider without further work. The
+section is pure `&mut ClipPlaneState` + `bool` → egui — no
+cf-device-design-internal coupling.
 
 **R6 — Workshop iter-1 cast mid-arc.** Phase 2.5 + Phase 3 don't
 touch cf-cast-cli or the workshop loop. Phase 4 is where breaking
 risk lives (cf-device-design loses sim panel). Mitigation: Phase 4
 defers until after iter-1 cast lands.
+
+**R7 — cf-cast-cli is the third consumer of `cf-device-geometry`.**
+cf-cast-cli already has open SDF-coupling work pending (see
+[[project-mesh-sdf-oracle-decomposition-spec]] D.5 — workshop unblock
+TODO + [[project-cf-cast-plug-layer-0-watertight-discovery]]).
+Whenever cf-cast-cli's SDF arc resumes, it will want
+`build_cached_scan_sdf` + `extract_layer_surface` too — a 3rd
+consumer of cf-device-geometry, not a hypothetical future. R1's
+`clip-plane` feature flag (gate the Bevy rendering deps behind a
+non-default feature) lets cf-cast-cli consume the SDF compute path
+without paying the rendering weight. Mitigation: confirmed R1
+already addresses this.
 
 ---
 
@@ -475,10 +601,15 @@ geometric primitives" umbrella. Confirm at implementation time.
 mitigation, gate the clip-plane sub-module behind a `clip-plane`
 feature. Both binaries enable it. Confirm at 2.5.d time.
 
-**Q5.3 — `build_bevy_mesh_from_indexed*` helper destination**. The
-audit (§1.7) says they're sim-coupled in practice (only consumed
-by sim-coupled systems). Move to cf-sim-research. Phase 4 confirms
-no cf-device-design caller remains.
+**Q5.3 — `build_bevy_mesh_from_indexed*` helper destination —
+RESOLVED at recon-doc revision time**. The original recon said
+"sim-coupled in practice, move to cf-sim-research" — falsified by
+the cold-read pass: `spawn_cavity_mesh` is rest-frame (no
+`InsertionSimState`) and STAYS in cf-device-design per parent plan
+§4 Phase 4 step 4, so a cf-device-design caller of these helpers
+survives Phase 4. New verdict: lift to **cf-device-geometry**
+alongside `spawn_cavity_mesh` (per §1.7 Duplicate block + §2.5.c).
+Both binaries consume from the shared crate; no duplication.
 
 **Q5.4 — Save panel for cf-sim-research**. Phase 3 ingests
 `.design.toml` (read-only — sim viewer doesn't edit designs per
@@ -510,6 +641,8 @@ at implementation.
 ---
 
 End of recon. **Phase 2.5 mini-arc next** — 4 sub-leaves, ~3500
-LOC moved, 1 session. Then Phase 3 sim move (2 sessions). Then
+LOC moved, 1-2 sessions. Then Phase 3 sim move (2 sessions). Then
 Phase 4 strip from cf-device-design (1-2 sessions). Then Phase 5
-verify + document (1 session).
+verify + document (1 session). **Total remaining: 5-7 sessions
+post-Phase-2**, matching the parent plan's "4-5 remaining"
+estimate (which counted Phase 2.5 as part of Phase 3's range).
