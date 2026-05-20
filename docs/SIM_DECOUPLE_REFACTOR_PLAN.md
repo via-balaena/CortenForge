@@ -437,7 +437,7 @@ infrastructure work.
   sim modules)
 - `tools/cf-viewer/` (if exists) — candidate home for shared
   rendering helpers
-- Future `lib/cf-device-types/` — Phase 1 output
+- `design/cf-device-types/` — Phase 1 output (SHIPPED 2026-05-19)
 - Future `tools/cf-sim-research/` — Phase 2+ output
 
 ---

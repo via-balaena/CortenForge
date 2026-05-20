@@ -3084,17 +3084,10 @@ mod tests {
 
     #[test]
     fn silicone_for_anchor_resolves_the_catalog() {
-        // All eight cf-device-design catalog keys resolve.
-        for key in [
-            "ECOFLEX_00_10",
-            "ECOFLEX_00_20",
-            "ECOFLEX_00_30",
-            "ECOFLEX_00_50",
-            "DRAGON_SKIN_10A",
-            "DRAGON_SKIN_15",
-            "DRAGON_SKIN_20A",
-            "DRAGON_SKIN_30A",
-        ] {
+        // Iterate `cf_device_types::LAYER_MATERIALS` so a new catalog
+        // entry trips this test (rather than passing because the
+        // hardcoded list happens to omit the new key).
+        for (key, _label, _density) in cf_device_types::LAYER_MATERIALS {
             assert!(
                 silicone_for_anchor(key).is_ok(),
                 "catalog key {key} should resolve"

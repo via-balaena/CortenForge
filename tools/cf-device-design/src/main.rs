@@ -1426,17 +1426,20 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
                 state.inset_m = inset_mm * 0.001;
             }
             ui.label("(silicone skin stretches inset_m over appendage)");
-            // MAINTENANCE NOTE: this 8 mm + H4-2-C wording mirrors
-            // [`CavityState::inset_slider_range_m`]'s docstring + the
+            // The numeric cap formats from `CAVITY_INSET_SLIDER_MAX_M`
+            // so this label, the const, and the
             // `cavity_inset_slider_range_zero_to_eight_mm` sentinel
-            // test's comment. If cap value or binding-constraint
-            // attribution changes, mirror to BOTH peer surfaces.
-            ui.label(
-                "(capped at 8 mm — H4-2-C asymmetric one-sided bound dropped the family-uniform \
+            // test all read from one source. The binding-constraint
+            // attribution (H4-2-C asymmetric one-sided bound) stays
+            // doc-only — mirror it to the const's docstring + the
+            // sentinel test's comment if you change the rationale.
+            ui.label(format!(
+                "(capped at {:.0} mm — H4-2-C asymmetric one-sided bound dropped the family-uniform \
                  compressive floor at MaterialField::sample_yeoh, unblocking deep-compression \
                  equilibria; cavity 3 + 5 mm user-verified 16/16 — see \
                  CANDIDATE_H4_FALSIFICATION_BOOKMARK §5.4)",
-            );
+                cf_device_types::CAVITY_INSET_SLIDER_MAX_M * 1e3,
+            ));
         });
 }
 
@@ -2319,16 +2322,28 @@ another_future_field = "foo"
         // outcome B), 8 mm briefly (C.2 sweep + F4.1 + H4.3
         // scaffolding), 15 mm (pre-F4.1) historically.
         //
-        // MAINTENANCE NOTE: this 8 mm bound + the H4-2-C
-        // rationale above mirror the docstring on
-        // `CavityState::inset_slider_range_m` + the egui label in
-        // `render_cavity_section` ("capped at 8 mm — H4-2-C
-        // asymmetric one-sided bound ..."). If cap value or
-        // binding-constraint attribution changes, mirror to BOTH
-        // peer surfaces.
+        // The numeric cap reads from `CAVITY_INSET_SLIDER_MAX_M` so
+        // this test, the slider's upper bound, and the egui label
+        // in `render_cavity_section` are all wired to one source.
+        // Binding-constraint attribution (H4-2-C asymmetric one-sided
+        // bound) stays doc-only — if it changes, mirror the rationale
+        // on `CavityState::inset_slider_range_m`'s docstring + the
+        // egui label.
         let (min_m, max_m) = CavityState::inset_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
-        assert!(approx_eq(max_m, 0.008, 1e-12));
+        assert!(approx_eq(
+            max_m,
+            cf_device_types::CAVITY_INSET_SLIDER_MAX_M,
+            1e-12,
+        ));
+        // Pin the const itself at 8 mm so a future "what's a
+        // workshop-reasonable cap?" edit notices it has to argue
+        // the H4-2-C rationale above before flipping.
+        assert!(approx_eq(
+            cf_device_types::CAVITY_INSET_SLIDER_MAX_M,
+            0.008,
+            1e-12,
+        ));
     }
 
     #[test]

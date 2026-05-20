@@ -83,20 +83,28 @@ impl CavityState {
     /// compression — still compression-fit territory, well within
     /// DRAGON_SKIN_20A's 580 % elongation budget.
     ///
-    /// **MAINTENANCE NOTE**: if you change the cap value here,
-    /// mirror the change to **(1)** the egui label in
-    /// cf-device-design's `render_cavity_section` (`(capped at 8 mm
-    /// — ...)` string), AND **(2)** the sentinel test
-    /// `cavity_inset_slider_range_zero_to_eight_mm` which pins the
-    /// bound + carries the per-cap rationale. All three surfaces
-    /// must agree on cap value AND on the binding-constraint
-    /// attribution (solver envelope vs material validity vs
-    /// scaffolding).
+    /// The slider's upper bound itself lives in
+    /// [`CAVITY_INSET_SLIDER_MAX_M`] so cf-device-design's egui label
+    /// and the `cavity_inset_slider_range_zero_to_eight_mm` sentinel
+    /// test can format the number from a single source. The
+    /// binding-constraint attribution (solver envelope vs material
+    /// validity vs scaffolding) is doc-only — keep all three surfaces'
+    /// rationale strings consistent when you change the bound.
     #[must_use]
     pub fn inset_slider_range_m() -> (f64, f64) {
-        (0.0, 0.008)
+        (0.0, CAVITY_INSET_SLIDER_MAX_M)
     }
 }
+
+/// Upper bound on [`CavityState::inset_slider_range_m`], in meters
+/// (8 mm). Single source of truth for the cavity slider's cap —
+/// cf-device-design's egui label formats the millimeter readout from
+/// this const, and the `cavity_inset_slider_range_zero_to_eight_mm`
+/// sentinel test asserts against it. See
+/// [`CavityState::inset_slider_range_m`] for the H4-2-C
+/// scaffolding rationale + the convergence-envelope data behind the
+/// 8 mm value.
+pub const CAVITY_INSET_SLIDER_MAX_M: f64 = 0.008;
 
 /// Default cavity inset (meters). 3 mm = the minimum-acceptable
 /// starting point for a buildable silicone device:

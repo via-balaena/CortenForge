@@ -67,8 +67,8 @@ pub enum SlackerResolution {
     /// `Support::NoData`) — material is the base anchor unchanged.
     Base,
     /// Slacker fraction snapped to a TB curve point whose effective
-    /// hardness lands in Shore A or Shore 00, both of which sim-soft
-    /// anchors. The material was built via
+    /// hardness lands in Shore A or Shore 00 — both scales sim-soft
+    /// has Yeoh anchors for. The material was built via
     /// `SiliconeMaterial::from_effective_shore`.
     Interpolated,
     /// Slacker fraction snapped to a TB point whose effective

@@ -36,8 +36,8 @@ pub mod sim;
 pub mod slacker;
 
 pub use design::{
-    CAVITY_DEFAULT_INSET_M, CavityState, LAYER_COUNT_MAX, LAYER_MATERIALS, LayerSpec, LayersState,
-    material_density,
+    CAVITY_DEFAULT_INSET_M, CAVITY_INSET_SLIDER_MAX_M, CavityState, LAYER_COUNT_MAX,
+    LAYER_MATERIALS, LayerSpec, LayersState, material_density,
 };
 pub use scan::{Centerline, ScanFilePath, ScanInfo, ScanMesh, ScanMeshVisible};
 pub use sim::{ScalarMode, SimDesign, SimLayer, SimMode, SlackerResolution};
