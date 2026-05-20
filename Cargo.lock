@@ -6291,6 +6291,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+]
+
+[[package]]
 name = "heapless"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6885,7 +6896,7 @@ name = "mesh-lattice"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "mesh-offset",
  "mesh-sdf",
  "mesh-types",
@@ -6921,7 +6932,7 @@ name = "mesh-printability"
 version = "0.8.0"
 dependencies = [
  "approx 0.5.1",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "mesh-repair",
  "mesh-types",
  "nalgebra 0.34.2",
@@ -6934,7 +6945,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "mesh-types",
  "nalgebra 0.34.2",
  "proptest",
@@ -6969,7 +6980,7 @@ name = "mesh-shell"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "mesh-offset",
  "mesh-repair",
  "mesh-types",
