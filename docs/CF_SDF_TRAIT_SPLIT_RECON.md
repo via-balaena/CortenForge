@@ -1,36 +1,36 @@
-# cf-sdf trait-split + sim-soft layer-integrity close — RECON
+# Sdf trait migration + sim-soft layer-integrity close — RECON
 
-> **Status**: RECON SHIPPED 2026-05-20. Bookmark + recon + planning
-> in this session per the three-session pattern; implementation in
-> the next session, intended to land on `dev` and append to PR #249.
+> **Status**: RECON SHIPPED 2026-05-20, cold-read REVISED same session
+> (math correction + architectural pivot from new `cf-sdf` crate to
+> existing `cf-geometry` host). Implementation in the next session,
+> intended to land on `dev` and append to PR #249.
 >
 > **Triggered by**: PR #249's CI layer-integrity failure for sim-soft
-> (108 transitive deps > L0 tier max 100). Previous fix `9eb6cd59`
-> gated cf-design's `parallel-meshing` feature behind a default-on
-> flag and sim-soft opts out → 103 deps, still 3 over. This recon
-> covers the remaining gap PLUS the architectural-direction fix the
-> dep-cap surfaced.
+> (108 transitive deps > L0 tier max 100). Phase 0 fix in commit
+> `9eb6cd59` gated cf-design's `parallel-meshing` feature; sim-soft
+> opts out → 103 deps, still 3 over.
 >
 > **Predecessors**:
 > - `docs/PR_249_REVIEW.md` §B2 — surfaces the layer-integrity gap
-> - Commit `9eb6cd59` — Phase 0 work: rayon gate (5 deps dropped)
+> - Commit `9eb6cd59` — Phase 0 work (rayon gate, 5 deps dropped)
 
 ---
 
 ## TL;DR
 
-Lift the `Sdf` trait out of cf-design into a thin standalone
-`cf-sdf` crate. sim-soft swaps from depending on cf-design (the full
-design kernel — Solid CSG, adaptive mesher, etc.) to depending on
-just the trait contract. Pair with replacing `tracing` usage in
-sim-core (4 call sites, dead-weight since no subscriber is
-installed anywhere in the workspace) so the layer-integrity count
-lands under 100.
+Move cf-design's `Sdf` trait into the existing `cf-geometry` crate
+(already an L0 workspace member sim-soft pulls transitively). cf-design
+keeps `impl Sdf for Solid`; mesh-sdf gains `impl Sdf for Signed<D, S>`
++ `impl Sdf for CachedGridSdf` (currently orphan-rule-parked in
+cf-design). sim-soft swaps from depending on cf-design (the design
+kernel) to depending only on the trait contract via cf-geometry —
+which it already pulls. Pair with replacing sim-core's `tracing`
+usage (4 dead-weight call sites) with `log`.
 
 Combined effect on sim-soft:
 - Original baseline (main): 108 deps.
-- After PR #249 commit `9eb6cd59` (rayon gate): 103.
-- After this arc (trait-split + tracing→log): **~99**, Layer Integrity A.
+- After commit `9eb6cd59` (rayon gate): 103.
+- After this arc: **~99**, Layer Integrity A.
 
 ---
 
@@ -49,26 +49,33 @@ pub use cf_design::Sdf;
 
 …yet pulling `cf-design = { workspace = true }` brings in the full
 design kernel: `Solid` CSG, FieldNode tree, adaptive dual-contouring
-mesher, mesh_simplified / mesh_to_tolerance, rayon (now gated),
+mesher, `mesh_simplified` / `mesh_to_tolerance`, rayon (now gated),
 etc. That's a dep-direction smell: a foundational solver crate
-should NOT transitively depend on a design surface that USES it.
+should NOT depend on a design-side kernel that USES it.
 
 ### 1.2 The right architecture
 
-Three crates instead of one for the SDF concept:
+Sdf belongs in cf-geometry (the L0 "geometric kernel" crate that
+already houses `Aabb`, `Bvh`, `ConvexHull`, `Sphere`, `Triangle`,
+`SdfGrid` — and that already has zero deps beyond nalgebra).
 
 ```
-cf-sdf            — the Sdf trait + Box/Arc blanket impls.
-                    Deps: nalgebra. Tier: L0. Probably ~50 LOC.
-cf-design         — Solid + CSG + adaptive mesher + (kept) impl Sdf for Solid.
-                    Re-exports `pub use cf_sdf::Sdf;` for backward compat.
-mesh-sdf          — TriMeshDistance + Sign oracles + (moved) impl Sdf for
-                    Signed<D, S> + impl Sdf for CachedGridSdf.
+cf-geometry       — Geometric primitives + the `Sdf` TRAIT contract
+                    (new). Box/Arc blanket impls live here. Deps:
+                    nalgebra. Already L0, already on sim-soft's path.
+cf-design         — Solid + CSG + adaptive mesher + (kept) impl Sdf
+                    for Solid. Re-exports `pub use cf_geometry::Sdf`
+                    for the 10 external consumers that import via
+                    cf-design today.
+mesh-sdf          — TriMeshDistance + Sign oracles + (moved) impl
+                    Sdf for `Signed<D, S>` + impl Sdf for
+                    `CachedGridSdf` (these were parked in cf-design
+                    because of the orphan rule; now resolved).
 ```
 
-cf-sdf is the trait contract. cf-design and mesh-sdf each implement
-it for their own types. sim-soft depends on the contract, not the
-kernel. No more orphan-rule contortion in cf-design's `sdf.rs`.
+Sim-soft depends on cf-geometry (which it already does transitively
+via mesh-types), no longer on cf-design. No new workspace crate
+created.
 
 ---
 
@@ -78,56 +85,63 @@ kernel. No more orphan-rule contortion in cf-design's `sdf.rs`.
 
 `design/cf-design/src/sdf.rs` (351 LOC total):
 
-- Lines 28-34: trait definition (`Sdf: Send + Sync` with `eval` +
-  `grad`). ~7 LOC.
-- Lines 42-50: blanket `impl<T: Sdf + ?Sized> Sdf for Box<T>`.
-- Lines 61-69: blanket `impl<T: Sdf + ?Sized> Sdf for Arc<T>`.
+| Lines | Content | Migrates to |
+|---|---|---|
+| 1-13 | module docstring | adapt + lift |
+| 14-26 | `use` statements | rewrite |
+| 28-34 | `pub trait Sdf` (7 LOC) | **cf-geometry** |
+| 42-50 | `impl<T: Sdf + ?Sized> Sdf for Box<T>` | **cf-geometry** |
+| 61-69 | `impl<T: Sdf + ?Sized> Sdf for Arc<T>` | **cf-geometry** |
+| 77-85 | `impl Sdf for Solid` (8 LOC) | stays in cf-design |
+| 113-137 | `impl<D, S> Sdf for Signed<D, S>` (25 LOC) | **mesh-sdf** |
+| 150-158 | `impl Sdf for CachedGridSdf` (9 LOC) | **mesh-sdf** |
+| 160-350 | tests | partition by destination |
 
-Total cf-sdf lift surface: **~30 LOC of impl** + module docstring.
-Deps: nalgebra (`Point3<f64>`, `Vector3<f64>`).
+cf-geometry lift surface: **~30 LOC of trait + blanket impls** plus
+2 tests (Box + Arc forwarding). Deps required: nalgebra
+(`Point3<f64>`, `Vector3<f64>`) — already cf-geometry's only direct
+dep.
 
-The other 320 LOC in cf-design's `sdf.rs` are:
+### 2.2 cf-design's contribution to sim-soft's tree is the cf-design crate itself
 
-- `impl Sdf for Solid` (8 LOC) — STAYS in cf-design (needs `Solid`).
-- `impl Sdf for Signed<D, S>` (25 LOC) — MOVES to mesh-sdf.
-- `impl Sdf for CachedGridSdf` (10 LOC) — MOVES to mesh-sdf.
-- Tests (8 fns covering all four impls + the blankets).
+**Key recon measurement** (exclusive-path enumeration via
+sequential `cargo tree -i $dep`):
 
-### 2.2 cf-design's actual contribution to sim-soft's tree is tiny
-
-**Key recon measurement** (sequential `cargo tree -p $dep -i $x`
-over every dep cf-design contributes):
-
-| Dep cf-design contributes | Also reachable via sim-soft's other deps? |
+| Dep cf-design contributes to sim-soft | Also reachable via sim-soft's OTHER direct deps? |
 |---|---|
-| All 57 of them | **Yes — every one** |
+| All 57 transitive items (minus cf-design itself) | **Yes — every one** |
+| cf-design itself | No (only path is sim-soft's direct dep) |
 
-The intuition `cf-design = 62 unique transitive deps → removing it
-drops 62` is wrong. cf-design's transitive set is fully overlapped
-with sim-soft's other direct deps (mesh-offset → mesh-sdf →
-parry3d/nalgebra/etc.; sim-ml-chassis → sim-core → tracing/serde/
-etc.; mesh-types → cf-geometry/nalgebra). Removing cf-design from
-sim-soft's direct deps would save only `cf-design` itself = **1 dep**.
+The intuition "cf-design contributes 57 unique transitive deps →
+removing it drops 57" was wrong. cf-design's transitive set is
+fully overlapped with sim-soft's other direct deps (mesh-offset →
+mesh-sdf → parry3d/nalgebra/etc.; sim-ml-chassis → sim-core →
+tracing/serde/etc.; mesh-types → cf-geometry/nalgebra). Removing
+cf-design as a direct dep removes only `cf-design` itself = **1 dep**.
 
-This **does not close** the 103 → 100 layer-integrity gap on its own.
+### 2.3 Why cf-geometry is the right home (not a new cf-sdf crate)
 
-### 2.3 The trait-split is still the right fix
+The original recon proposed creating a new `cf-sdf` crate. That
+would have netted **0** dep savings (drop cf-design = -1 + add
+cf-sdf = +1). cf-geometry as the home is strictly better:
 
-Even though it saves only 1 dep COUNT-wise, the trait-split:
+- cf-geometry already exists, already L0, already on sim-soft's
+  transitive path (via mesh-types → cf-geometry; via mesh-offset
+  → mesh-sdf → mesh-types → cf-geometry). Adding the trait to
+  cf-geometry contributes **zero new transitive deps** to anyone.
+- cf-geometry's current scope ("geometric kernel — Aabb / Bvh /
+  Sphere / Triangle / `SdfGrid`") is a natural home for the
+  signed-distance-function trait. Putting the trait next to
+  `SdfGrid` (the concrete uniform-grid SDF storage) consolidates
+  the SDF concept in one module.
+- One fewer workspace member to grade + carry, one less Cargo.toml
+  + lib.rs surface.
+- **Net dep change**: drop cf-design from sim-soft direct = **-1**.
 
-- Fixes the architectural-direction smell (L0 solver no longer
-  depends on the design kernel).
-- Reduces sim-soft's compile-time coupling (changes to
-  `Solid::user_fn` no longer recompile sim-soft).
-- Documents the contract clearly (sim-soft uses the trait, not the
-  kernel — the `pub use` line at `sdf_bridge/sdf.rs:44` becomes
-  honest).
-- Future-proofs sim-soft against cf-design growth (any new heavy
-  machinery added to cf-design — say, a TetMesh kernel — doesn't
-  leak into sim-soft's tree).
-
-So we ship the trait-split + ONE additional cut to close the
-layer-integrity gap.
+Optional polish (not in the arc, banked): impl Sdf for SdfGrid in
+cf-geometry — orphan-rule-clean since both are cf-geometry-owned.
+Not load-bearing for sim-soft (sim-soft doesn't use SdfGrid), so
+defer.
 
 ### 2.4 The additional cut: tracing → log in sim-core
 
@@ -144,258 +158,283 @@ strict dead-weight (3 deps: `tracing`, `tracing-attributes`,
 `tracing-core`).
 
 `log` is already in sim-soft's transitive tree (via `parry3d →
-ena → log`), so swapping sim-core's tracing for log adds zero
-new deps. The migration is mechanical (~6 LOC across 4 sites).
+ena → log`). Swapping sim-core's tracing for log adds zero new
+deps. Migration is mechanical (~6 LOC across 4 sites).
 
-Combined savings: trait-split (1 dep) + tracing→log (3 deps) = 4
-deps. sim-soft lands at **103 - 4 = 99** → Layer Integrity A.
+**Combined savings**: trait-move (1) + tracing→log (3) = **4 deps**.
+sim-soft lands at **103 - 4 = 99** → Layer Integrity A.
 
 ### 2.5 cf_design::Sdf consumer enumeration
 
-14 source files use `cf_design::Sdf` directly (re-export or `use`):
+14 source files reference `cf_design::Sdf` directly (`use`, type
+alias, or trait-bound). Breakdown by Phase impact:
 
-- `mesh-sdf/src/{oracle.rs, lib.rs}` — host the adapter impls
-  (these MOVE in Phase 2)
-- `cf-cast/src/ribbon.rs`, `cf-cast-cli/src/{derive.rs, scan.rs}`,
-  `cf-device-geometry/src/sdf_layers.rs`, `cf-design/src/solid_layered.rs`,
-  `cf-sim-research/src/insertion_sim.rs` — consume the trait
-  generically, will keep working through cf-design's re-export
-- 5 examples in `examples/sim-soft/` — same
-- `sim/L0/soft/src/sdf_bridge/sdf.rs:44` — the migration target;
-  swaps to `cf_sdf::Sdf` directly
+| Category | Sites | Phase impact |
+|---|---:|---|
+| mesh-sdf adapter hosts (`oracle.rs`, `lib.rs`) | 2 | adapter impls MOVE here (Phase 2) |
+| sim-soft migration target (`sdf_bridge/sdf.rs:44`) | 1 | swap to `cf_geometry::Sdf` (Phase 4) |
+| cf-design self-reference (`solid_layered.rs`) | 1 | adjust import to `crate::Sdf` (Phase 3) |
+| External consumers — keep working via re-export | 10 | no change required (cf-cast, cf-device-geometry, cf-sim-research, cf-cast-cli ×2, 5 examples) |
+| **Total** | **14** | |
 
-Only sim-soft needs an actual source-side change. All other
-consumers continue using `cf_design::Sdf` via the re-export.
+cf-design's `lib.rs` adds `pub use cf_geometry::Sdf;` to keep the
+10 external consumers' `cf_design::Sdf` imports compiling. Only
+sim-soft is actively migrated to the new path.
 
 ---
 
 ## 3. Migration plan
 
-Six phases. Each phase ends with a green workspace build.
+Five phases. Each ends with a green workspace build.
 
-### Phase 1 — Create `cf-sdf` crate skeleton
+### Phase 1 — cf-geometry gains the `Sdf` trait
 
-- New crate at `design/cf-sdf/`. Workspace tier metadata: L0.
-- `Cargo.toml`: dep on `nalgebra` (workspace) only. Lenient lint
-  posture per [[feedback-lint-posture-on-extract]] — inherit from
-  cf-design's posture (the source).
-- `src/lib.rs`:
-  - Module docstring referencing the lift origin (cf-design's
-    `sdf.rs`) and the architectural rationale (sim-soft's L0
-    placement vs cf-design's kernel role).
+- `design/cf-geometry/src/sdf.rs`: extend (don't replace — `SdfGrid`
+  stays untouched). Add:
+  - Module docstring section "## Sdf trait" describing the
+    contract semantics (sign convention, gradient meaning,
+    Send+Sync rationale) — lifted from cf-design/src/sdf.rs:1-27.
   - `pub trait Sdf: Send + Sync { fn eval; fn grad; }` (verbatim
-    from cf-design/src/sdf.rs:28-34).
-  - `impl<T: Sdf + ?Sized> Sdf for Box<T>` (verbatim from
-    cf-design lines 42-50).
-  - `impl<T: Sdf + ?Sized> Sdf for Arc<T>` (verbatim from lines
-    61-69).
-- `src/lib.rs` tests (lifted from cf-design/src/sdf.rs):
-  - `box_dyn_sdf_blanket_forwards_eval_and_grad` (lines 225-236)
+    from cf-design lines 28-34).
+  - `impl<T: Sdf + ?Sized> Sdf for Box<T>` (verbatim from cf-design
+    lines 42-50).
+  - `impl<T: Sdf + ?Sized> Sdf for Arc<T>` (verbatim from cf-design
+    lines 61-69).
+- Re-export from `cf-geometry/src/lib.rs`: add `pub use sdf::Sdf;`
+  (or follow the crate's existing pub-use pattern).
+- Tests added to `cf-geometry/src/sdf.rs`'s test mod:
+  - `box_dyn_sdf_blanket_forwards_eval_and_grad` (cf-design lines
+    225-236) — adjusted to use a tiny in-test `ConstSdf` fixture
+    instead of `Solid::sphere` (cf-geometry has no cf-design dep).
   - `arc_dyn_sdf_blanket_forwards_eval_and_grad` (lines 238-255)
-  - Adjusted: build a tiny constant-eval `Sdf` impl in the test
-    module instead of using `Solid::sphere` (no cf-design dep).
-- Workspace `Cargo.toml`: add `design/cf-sdf` to `members`; add
-  `cf-sdf = { path = "design/cf-sdf" }` to `[workspace.dependencies]`.
-- xtask grader exemption per cf-bevy-common / cf-device-types
-  precedent (`xtask/src/grade.rs::applies_to_crate`).
-- Verify: `cargo build -p cf-sdf` + `cargo test -p cf-sdf` green;
-  2 tests pass.
+    — same fixture adjustment.
+- Verify: `cargo build -p cf-geometry`, `cargo test -p cf-geometry`,
+  `cargo xtask grade cf-geometry --skip-coverage` — all green.
 
 **Estimate**: ~30 min.
 
-### Phase 2 — mesh-sdf adopts cf-sdf
+### Phase 2 — mesh-sdf adopts cf-geometry::Sdf for its adapter impls
 
-- `mesh-sdf/Cargo.toml`: add `cf-sdf = { workspace = true }`.
+- `mesh-sdf/Cargo.toml`: confirm cf-geometry is already a workspace
+  dep (it is, transitively at minimum via mesh-types — verify
+  direct dep or add it).
 - Move `impl Sdf for Signed<D, S>` (cf-design/src/sdf.rs:113-137)
-  → `mesh-sdf/src/sdf_adapter.rs` (or wherever the host module
-  fits — recon pass during impl picks the home; mesh-sdf's
-  `oracle.rs` or `lib.rs` are candidates).
+  → `mesh-sdf/src/sdf_adapter.rs` (new file, or appended to
+  `oracle.rs` / `lib.rs` — recon pass during impl picks the home).
+  Change trait reference to `cf_geometry::Sdf`.
 - Move `impl Sdf for CachedGridSdf` (lines 150-158) → same.
-- `mesh-sdf/src/lib.rs`: `pub use cf_sdf::Sdf;` for downstream
-  ergonomics (so consumers that use mesh-sdf can `use mesh_sdf::Sdf`
-  too; OR they use `cf_sdf::Sdf` directly — both work).
-- Tests follow:
+- Add module-level pub re-export `pub use cf_geometry::Sdf;` to
+  `mesh-sdf/src/lib.rs` for downstream `use mesh_sdf::Sdf` ergonomics
+  (optional polish; either path resolves the trait).
+- Tests migrate with the impls:
   - `mesh_sdf_eval_sign_convention_in_contact_band` (cf-design
     lines 284-298)
   - `mesh_sdf_grad_below_bottom_face_approximates_outward_normal`
     (lines 300-312)
   - `cached_grid_sdf_adapter_honors_sdf_sign_convention` (lines
     320-349)
-- Verify: `cargo build -p mesh-sdf` + `cargo test -p mesh-sdf` green.
+  - Plus the `unit_tetrahedron` fixture (cf-design lines 260-271)
+    and the `mesh_sdf_for_tetrahedron` builder (lines 277-282) —
+    both move with their callers.
+- Verify: `cargo build -p mesh-sdf`, `cargo test -p mesh-sdf`,
+  grade green.
+
+**Estimate**: ~25 min.
+
+### Phase 3 — cf-design adopts cf-geometry::Sdf
+
+- `cf-design/Cargo.toml`: cf-geometry is already a direct dep
+  (`design/cf-design/Cargo.toml` line 19). No Cargo.toml change.
+- `cf-design/src/sdf.rs`:
+  - DELETE: trait def (lines 28-34), Box/Arc impls (lines 42-50,
+    61-69), and the two mesh-sdf adapter impls (lines 113-137 + 150-
+    158). Also delete the tests that moved with them (Box/Arc tests
+    moved to cf-geometry; mesh-sdf adapter tests moved to mesh-sdf).
+  - KEEP: `impl Sdf for Solid` (lines 77-85) — the canonical
+    Solid-side impl. Plus its tests (lines 165-222).
+  - Adjust top-of-file imports: `use cf_geometry::Sdf;`. Drop
+    unused mesh-sdf type imports if they only supported the moved
+    adapters.
+- `cf-design/src/lib.rs`: add `pub use cf_geometry::Sdf;` so
+  external consumers' `cf_design::Sdf` imports keep compiling.
+  This is the backward-compat seam — covers 10 external sites
+  per §2.5.
+- `cf-design/src/solid_layered.rs`: adjust whatever `use` line
+  imported `crate::Sdf` (now re-exported); verify a clean
+  in-crate path or update to `crate::Sdf` via the lib.rs re-export.
+- Verify: `cargo build -p cf-design`, `cargo test -p cf-design`,
+  grade green. **Critical check**: `cargo build --workspace` to
+  catch any of the 10 external consumers that broke.
 
 **Estimate**: ~20 min.
 
-### Phase 3 — cf-design adopts cf-sdf (drops trait + adapters)
+### Phase 4 — sim-soft swaps cf-design → cf-geometry direct dep
 
-- `cf-design/Cargo.toml`: add `cf-sdf = { workspace = true }`.
-- `cf-design/src/sdf.rs`:
-  - DELETE trait def + Box/Arc impls + mesh-sdf adapter impls
-    (lines 1-69 + 113-158).
-  - KEEP `impl Sdf for Solid` (lines 77-85) — needs the `Solid`
-    type which stays in cf-design.
-  - Adjust imports: `use cf_sdf::Sdf;` at the top.
-- `cf-design/src/lib.rs`: `pub use cf_sdf::Sdf;` for backward compat
-  re-export. All 13 external consumers of `cf_design::Sdf` (per
-  recon §2.5) keep working unchanged.
-- Tests that stay in cf-design:
-  - `solid_sphere_eval_sign_convention` (lines 165-182)
-  - `solid_sphere_grad_unit_outward_on_surface` (lines 184-197)
-  - `solid_csg_difference_eval_at_hollow_shell_probes` (lines
-    199-222)
-- Verify: `cargo build -p cf-design` + `cargo test -p cf-design` green.
-
-**Estimate**: ~15 min.
-
-### Phase 4 — sim-soft swaps cf-design → cf-sdf
-
-- `sim/L0/soft/Cargo.toml`: drop `cf-design` direct dep; add
-  `cf-sdf = { workspace = true }`. Update comment (the Q5 inventory
-  rationale).
-- `sim/L0/soft/src/sdf_bridge/sdf.rs:44`: `pub use cf_design::Sdf;`
-  → `pub use cf_sdf::Sdf;`.
+- `sim/L0/soft/Cargo.toml`:
+  - DROP `cf-design = { workspace = true }` (the entry that triggered
+    the Layer Integrity F).
+  - ADD `cf-geometry = { workspace = true }` (sim-soft currently
+    pulls cf-geometry transitively; this makes it direct — needed
+    so `use cf_geometry::Sdf` resolves at sim-soft's call sites).
+  - Update the inline comment (currently mentions cf-design's Sdf
+    re-export — rewrite to point at cf-geometry).
+- `sim/L0/soft/src/sdf_bridge/sdf.rs:44`: change
+  `pub use cf_design::Sdf;` → `pub use cf_geometry::Sdf;`.
+- The docstring sites in `sdf_bridge/{sdf.rs, difference.rs}` that
+  mention `cf_design::Solid::sphere` etc. — leave alone. Those are
+  docstring references to cf-design's user-facing surface for the
+  README-style narrative, not actual code dependencies; the prose
+  still applies (cf-design still ships `Solid` and is still where
+  users build CSG SDFs).
 - Verify:
   - `cargo build -p sim-soft` + `cargo test -p sim-soft --release
-    --no-default-features --lib` green (151 tests, no regressions).
-  - `cargo tree -p sim-soft -i cf-design` returns nothing (cf-design
-    fully gone from sim-soft's tree).
-
-**Estimate**: ~10 min.
-
-### Phase 5 — Layer-integrity close: tracing → log in sim-core
-
-- `sim/L0/core/Cargo.toml`: drop `tracing` dep; add
-  `log = { workspace = true }` (which already exists in workspace
-  deps as a transitive — confirm with `grep '^log' Cargo.toml`).
-- Rewrite the 4 sim-core sites:
-  - `types/warning.rs:63`: `tracing::warn!(...)` → `log::warn!(...)`
-  - `forward/check.rs:100`: `tracing::error!(...)` → `log::error!(...)`
-  - `forward/mod.rs:177`: `tracing::warn!(...)` → `log::warn!(...)`
-  - `collision/mesh_collide.rs:15`: `use tracing::warn;` →
-    `use log::warn;`
-- Macro syntax is largely compatible; one or two sites may need
-  format-string adjustments (tracing supports structured kv fields
-  via `field = value`, log doesn't — substitute with `format!`).
-- Verify: `cargo build -p sim-core` + `cargo test -p sim-core` +
-  `cargo build -p sim-soft` all green.
+    --no-default-features --lib` → 151 tests green (no regressions).
+  - `cargo tree -p sim-soft -i cf-design` returns "no matches"
+    (cf-design fully gone from sim-soft's tree).
+  - `cargo xtask grade sim-soft --skip-coverage`: dep count down
+    to 102 (was 103; trait-move saved 1).
 
 **Estimate**: ~15 min.
 
-### Phase 6 — Verify the close
+### Phase 5 — sim-core tracing → log (the Layer-Integrity close)
 
-- `cargo xtask grade sim-soft --skip-coverage`:
-  - Documentation A, Clippy A, Safety A, Dependencies A, WASM A.
-  - Layer Integrity: **A** (dep count ≤ 99, under 100 max).
-- `cargo xtask grade {cf-sdf, cf-design, mesh-sdf, sim-core,
+- `sim/L0/core/Cargo.toml`:
+  - DROP `tracing = { workspace = true }`.
+  - ADD `log = "0.4"` (or whatever version the workspace transitive
+    resolves to). Optional follow-up: add `log = "0.4"` to
+    `[workspace.dependencies]` in the root `Cargo.toml` so future
+    consumers can use `log = { workspace = true }` — but not
+    required to close this arc.
+- Rewrite the 4 sim-core sites:
+  - `types/warning.rs:63`: `tracing::warn!("{} Time = {:.4}.", ...)`
+    → `log::warn!("{} Time = {:.4}.", ...)` (mechanical).
+  - `forward/check.rs:100`: `tracing::error!(...)` → `log::error!(...)`.
+  - `forward/mod.rs:177`: `tracing::warn!(...)` → `log::warn!(...)`.
+  - `collision/mesh_collide.rs:15`: `use tracing::warn;` →
+    `use log::warn;`.
+- **Macro-syntax caveat**: tracing supports structured `field = value`
+  kv args inside the macro call; `log` doesn't. Read each site
+  first; if any uses kv fields (none currently appear to — they're
+  plain `tracing::warn!("msg", args...)`), substitute the kv with
+  a `format!`-baked string. Phase verification compiles the crate,
+  so this surfaces immediately if missed.
+- Verify: `cargo build -p sim-core`, `cargo test -p sim-core`,
+  `cargo build -p sim-soft`, `cargo xtask grade sim-soft
+  --skip-coverage` → **Layer Integrity A** (dep count 99 ≤ 100).
+
+**Estimate**: ~20 min.
+
+### Verification gate (built into Phase 5)
+
+- `cargo xtask grade sim-soft --skip-coverage`: all criteria A
+  (Doc / Clippy / Safety / Dependencies / WASM / Layer Integrity).
+- `cargo xtask grade {cf-geometry, cf-design, mesh-sdf, sim-core,
   sim-ml-chassis, cf-cast-cli, cf-device-design, cf-device-types,
-  cf-device-geometry, cf-sim-research, cf-scan-prep}` — all
-  Automated A.
-- `cargo test --workspace --release` clean (or sampled if too long).
-- Update `docs/PR_249_REVIEW.md` B2 verdict from "Layer Integrity F
-  pre-existing" → "RESOLVED via cf-sdf trait-split + tracing→log
-  migration".
-
-**Estimate**: ~10 min.
+  cf-device-geometry, cf-sim-research, cf-scan-prep}` — all A.
+- `cargo test --workspace` sample (or `--release` for sim-soft).
+- Update `docs/PR_249_REVIEW.md` §B2 verdict: "Layer Integrity F
+  pre-existing" → "RESOLVED via Sdf trait migration to cf-geometry
+  + tracing→log close".
 
 ---
 
 ## 4. Total estimate
 
 - Phase 1: 30 min
-- Phase 2: 20 min
-- Phase 3: 15 min
-- Phase 4: 10 min
-- Phase 5: 15 min
-- Phase 6: 10 min
+- Phase 2: 25 min
+- Phase 3: 20 min
+- Phase 4: 15 min
+- Phase 5: 20 min
 
-**Total**: 90-100 min, single session.
+**Total**: 90-110 min, single session.
 
-**Commit shape**: per [[feedback-omnibus-pr-single-branch]] this
-arc is one logical change (architectural surgery + the cut needed
-to close the gap it surfaced). One commit covers all six phases.
-Alternative: split Phase 5 (tracing→log) into its own commit since
-it's orthogonal to the trait-split — easier audit-trail for the
-two distinct cuts.
+**Commit shape**: two commits per [[feedback-omnibus-pr-single-branch]]
+for audit-trail clarity (the two cuts are orthogonal):
 
-Default lean: **two commits**:
-1. Trait-split (Phases 1-4) — `refactor(cf-sdf): lift Sdf trait
-   from cf-design — sim-soft drops design-kernel dep`.
-2. tracing→log close (Phase 5) — `refactor(sim-core): tracing →
-   log — layer-integrity close on sim-soft`.
+1. `refactor(cf-geometry): lift Sdf trait from cf-design — sim-soft
+   drops design-kernel dep` (Phases 1-4 in a single atomic commit;
+   each phase compiles, but landing as one commit avoids transient
+   workspace-build breakage from half-state imports).
+2. `refactor(sim-core): tracing → log — layer-integrity close on
+   sim-soft` (Phase 5).
 
-Both land on `dev`, appending to PR #249's omnibus.
+Both land on `dev`, appending to PR #249.
 
 ---
 
 ## 5. Risks + mitigations
 
-### R1 — `cf-sdf` name collision
+### R1 — Phase 3 backward-compat re-export drift
 
-Workspace already has `cf-design`, `cf-design-types`, `cf-design-tests`,
-`cf-device-design`, `cf-device-types`, `cf-device-geometry`. The name
-`cf-sdf` is unused (no crate, no `[workspace.dependencies]` entry).
-Confirmed by `ls design/` + `grep "cf-sdf" Cargo.toml` showing zero
-hits.
+If the `pub use cf_geometry::Sdf;` line in cf-design's lib.rs is
+missed, the 10 external consumers' `cf_design::Sdf` imports break
+compile-wide.
 
-**Mitigation**: none needed. If the user prefers a different name
-at impl time (`cf-sdf-trait`, `sdf-core`, `cf-sdf-contract`), trivial
-to rename — single crate, single use site to update.
+**Mitigation**: Phase 3 verification runs `cargo build --workspace`
+explicitly — catches all 10 consumers' breaks immediately. The fix
+is single-line.
 
-### R2 — Orphan-rule constraint on the mesh-sdf adapter move
+### R2 — Phase 2 orphan-rule sequence
 
-`impl Sdf for Signed<D, S>` and `impl Sdf for CachedGridSdf` are
-currently in cf-design because cf-design owned the trait and the
-orphan rule blocked mesh-sdf from impl-ing for its own types
-without the trait being in scope. After Phase 2, mesh-sdf
-depends on cf-sdf, so it can host these impls directly. **Phase 1
-must finish before Phase 2.**
+`impl Sdf for Signed<D, S>` and `impl Sdf for CachedGridSdf` move
+to mesh-sdf. mesh-sdf must depend on cf-geometry (where Sdf now
+lives) at compile time of those impls. **Phase 1 must finish
+before Phase 2.**
 
-**Mitigation**: phase ordering pins this. The compiler enforces it
-— if mesh-sdf tries to impl `cf_sdf::Sdf for Signed` without
-depending on cf-sdf, rustc errors with "trait not in scope".
+**Mitigation**: rustc enforces ordering — if mesh-sdf tries to impl
+`cf_geometry::Sdf` without depending on cf-geometry, it errors
+with "trait not in scope". Verify cf-geometry is in mesh-sdf's
+Cargo.toml before writing the impl.
 
-### R3 — `Sdf` is `pub use` re-exported from cf-design's `lib.rs`
-
-Backward compat for the 13 external consumers depends on a
-`pub use cf_sdf::Sdf;` at cf-design's `lib.rs`. If this line is
-forgotten in Phase 3, every consumer of `cf_design::Sdf` breaks at
-compile time.
-
-**Mitigation**: Phase 3 verification step is `cargo test --workspace`
-— catches this immediately via the consumer-side compile errors.
-
-### R4 — tracing → log macro semantic drift
+### R3 — tracing → log macro semantic drift
 
 `tracing::warn!(field = value, "msg")` (structured kv) and
 `log::warn!("msg: {value}")` (formatted string) aren't identical.
 The 4 sim-core sites need a brief read to confirm the calls aren't
-relying on kv fields. From recon §2.4 these are simple `warn!(...)`
-calls with format-string args; the kv-field pattern is rare in
-sim-core.
+relying on kv fields. From recon §2.4 these are plain `warn!(...)`
+calls with positional format-string args; the kv-field pattern is
+absent in sim-core.
 
-**Mitigation**: Phase 5 spec says read each site before replacing;
-fall back to `log::warn!(format!("..."))` if a site uses kv fields
-in a way `log` can't express.
+**Mitigation**: Phase 5 spec says read each site before replacing.
+If a site uses kv fields, fall back to `log::warn!(&format!("..."))`
+— still drops the tracing chain.
 
-### R5 — Workspace dep on `log` not in `[workspace.dependencies]`
+### R4 — `log` not in workspace.dependencies
 
-Earlier `grep "^log " Cargo.toml` returned empty — log might not be
-a workspace dep entry, just a transitive. sim-core's Cargo.toml
-would need to declare it as a direct dep, possibly as
-`log = "0.4"` (matching the transitive resolved version).
+`grep "^log " Cargo.toml` returns empty — `log` is currently
+pulled only transitively (via parry3d's `ena`). sim-core's
+Cargo.toml needs to specify a version directly (e.g., `log = "0.4"`)
+rather than `{ workspace = true }`.
 
-**Mitigation**: Phase 5 spec checks `[workspace.dependencies]`;
-adds `log = "0.4"` (or whatever version resolves) if missing.
+**Mitigation**: Phase 5 spec uses direct version pin. Optional
+polish: add `log = "0.4"` to `[workspace.dependencies]` for future
+consumers — not required to close this arc, but ~3 LOC away if
+desired.
 
-### R6 — sim-soft tests use `cf_design::*` for fixtures
+### R5 — Phase 4 sim-soft test-fixture surprise (downgraded from prior recon)
 
-Spot-checked sim-soft's lib tests — they import from `cf_design`
-for `Solid::sphere` etc. in fixture construction. These would
-break when sim-soft drops cf-design as a direct dep.
+The prior recon flagged "sim-soft tests might use `cf_design::Solid::sphere`
+for fixtures". Verified at recon time: sim-soft has **zero `use
+cf_design::*` in lib code or tests**, only 9 docstring references
+in `sdf_bridge/{sdf.rs, difference.rs}` mentioning cf-design's
+public surface for the README-style narrative. No fixture dep.
 
-**Mitigation**: If found at impl time, add `cf-design = { workspace
-= true }` as a **dev-dependency** (release graph stays slim;
-test graph gets cf-design back for fixtures). Verified pattern
-in cf-design-tests's `dev-dependencies` block.
+**Mitigation**: none needed. R5 reduced to a smoke check at impl
+time ("grep `cf_design::` in sim-soft's src, confirm zero `use`
+matches before the swap").
+
+### R6 — cf-geometry's `Sdf` trait + `SdfGrid` naming proximity
+
+cf-geometry already has `SdfGrid` (concrete grid-storage SDF
+struct). Adding `Sdf` (the trait) means cf-geometry exports both
+`Sdf` and `SdfGrid`. Cognitive load is mild but real ("which is the
+contract, which is the impl?").
+
+**Mitigation**: extend `cf-geometry/src/sdf.rs`'s module docstring
+to call out the relationship explicitly — `Sdf` is the contract,
+`SdfGrid` is one concrete in-crate type that COULD implement it
+(but doesn't today; banked as optional polish in §2.3). Anyone
+reading the file gets the answer immediately.
 
 ---
 
@@ -403,20 +442,24 @@ in cf-design-tests's `dev-dependencies` block.
 
 Post-arc:
 
-- All 13 external `cf_design::Sdf` consumers (mesh-sdf, cf-cast,
-  cf-device-geometry, cf-design itself, cf-sim-research, cf-cast-cli,
-  5 examples, sim-soft) continue working — sim-soft via direct
-  `cf_sdf::Sdf`, the other 12 via cf-design's re-export.
+- All 10 external `cf_design::Sdf` consumers (cf-cast,
+  cf-device-geometry, cf-sim-research, cf-cast-cli ×2, 5 examples)
+  continue working unchanged via cf-design's re-export.
+- mesh-sdf's 2 adapter impls move (functional behavior identical;
+  trait reference changes from `cf_design::Sdf` to `cf_geometry::Sdf`).
 - cf-design's user-facing API: `Solid`, CSG ops, adaptive mesher
-  — unchanged.
+  — unchanged. `cf_design::Sdf` still works (re-export).
 - mesh-sdf's user-facing API: `TriMeshDistance`, `Signed`,
   `CachedGridSdf`, `FloodFillSign`, etc. — unchanged.
+- cf-geometry gains an export surface (`Sdf` trait + Box/Arc impls)
+  — additive, no removal.
 - Workshop loop: scan → cf-device-design → TOML → cf-cast-cli → mold
   STLs — unchanged.
 - Sim research loop: load design TOML + scan in cf-sim-research →
   run sim — unchanged.
 - sim-soft's API: Material, Element, Solver, Contact, sdf_bridge —
-  unchanged.
+  unchanged. `sim_soft::sdf_bridge::Sdf` still re-exported (just
+  now from cf-geometry, not cf-design).
 
 ---
 
@@ -424,22 +467,28 @@ Post-arc:
 
 - `docs/PR_249_REVIEW.md` §B2 — the layer-integrity gap surfaced
 - Commit `9eb6cd59` — Phase 0 work (rayon gate, 5 deps dropped)
-- `design/cf-design/src/sdf.rs` — current host of the `Sdf` trait
-  + the four impls + the test fixture
-- `sim/L0/soft/src/sdf_bridge/sdf.rs:44` — the single sim-soft
+- `design/cf-design/src/sdf.rs` — current host of `Sdf` trait +
+  the four impls + tests
+- `design/cf-geometry/src/sdf.rs` — current host of `SdfGrid`;
+  the trait + blankets get appended here in Phase 1
+- `design/cf-geometry/src/lib.rs` — gets `pub use sdf::Sdf;` in
+  Phase 1
+- `design/cf-design/src/lib.rs` — gets `pub use cf_geometry::Sdf;`
+  re-export in Phase 3 for the 10 external consumers
+- `sim/L0/soft/src/sdf_bridge/sdf.rs:44` — single sim-soft
   source-side change in Phase 4
 - `sim/L0/core/src/{types/warning.rs:63, forward/check.rs:100,
-  forward/mod.rs:177, collision/mesh_collide.rs:15}` — the 4
-  tracing call sites for Phase 5
-- `docs/PROGRAM_GAMEPLAN.md` §7.1 — research-cluster vs product-
-  pipeline crate map; sim-soft's L0 placement
+  forward/mod.rs:177, collision/mesh_collide.rs:15}` — 4 tracing
+  call sites for Phase 5
+- `docs/PROGRAM_GAMEPLAN.md` §7.1 — research-cluster vs
+  product-pipeline crate map; sim-soft's L0 placement
 - Three-session pattern memo per
   [[feedback-bookmark-when-surface-levers-exhaust]] — this recon
-  is session 2 of 3 (session 1 = the bookmark via PR_249_REVIEW
-  + commit `9eb6cd59`; session 3 = implementation per §3).
+  is session 2 of 3 (session 1 = bookmark via `PR_249_REVIEW` +
+  commit `9eb6cd59`; session 3 = implementation per §3).
 
 ---
 
-End of recon. **NEXT SESSION**: implement per §3. Both commits
-land on `dev` and append to PR #249 per
+End of recon. **NEXT SESSION**: implement per §3 (5 phases).
+Both commits land on `dev` and append to PR #249 per
 [[feedback-omnibus-pr-single-branch]].
