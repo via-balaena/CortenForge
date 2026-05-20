@@ -149,21 +149,18 @@ Sequencing: B1 (cf-cast-cli mold-wall) ships first as a concrete
 user-facing win; then this refactor; then B2 (sim-research
 roadmap doc).
 
-### A2 — Revert H2 diagnostic instrumentation
+### A2 — Revert H2 diagnostic instrumentation [N/A — never landed]
 
-Sites tagged `H2-Q3 DIAG` in
-`sim/L0/soft/src/solver/backward_euler.rs`. Revert:
-
-- `try_lu_fallback` — remove `x_curr` param + pivot-vertex eprintln
-- `try_factor_free_tangent` — remove `x_curr` param
-- `try_factor_and_solve_free` — remove `x_curr` param
-- `try_factor_at_position` — remove the `x_curr` passthrough at
-  `try_factor_free_tangent` call
-- `try_gated_factor_solve_armijo` — remove `x_curr` arg from both
-  `try_factor_and_solve_free` call sites
-
-Plus revert/delete the `h2_recon_cavity_6mm_n16` test in
-`tools/cf-device-design/src/insertion_sim.rs`.
+**Resolved 2026-05-19 LATE-NIGHT**: A2's intended cleanup is a no-op
+on the current branch. The H2-Q3 DIAG instrumentation described in
+`docs/H2_RECON_FINDINGS.md` (x_curr threading through the try_*
+functions + pivot-vertex eprintln) was authored in-session during
+H2 recon but never committed to a branch reachable from main / the
+current `sim-arc/sl-4-intruder-render`. `grep -rn "H2-Q3" sim/
+tools/` finds zero code references and the named test
+`h2_recon_cavity_6mm_n16` does not exist in
+`tools/cf-device-design/src/insertion_sim.rs`. Audit trail in
+`docs/H2_RECON_FINDINGS.md` stands.
 
 Q1 still runs to completion in the background; its log is data,
 not action.
