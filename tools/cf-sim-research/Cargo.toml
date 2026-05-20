@@ -1,6 +1,6 @@
 [package]
 name = "cf-sim-research"
-description = "Sim-research viewer for layered-silicone devices — read-only viewer over a cleaned scan + `.prep.toml`, future home of the insertion-sim + heat-map + sliding-intruder panel"
+description = "Sim-research viewer for layered-silicone devices — read-only design view over a cleaned scan + `.prep.toml` + `.design.toml`, with insertion-sim + heat-map + sliding-intruder panel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,14 +13,14 @@ publish = false
 # metadata is for sim L0/L1 libraries, not workspace tools (matches
 # cf-device-design / cf-scan-prep / cf-cast-cli precedent).
 
-# Phase 2 of `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4 — this crate
-# exists as a skeleton consuming `cf-device-types` (Phase 1 output).
-# The sim itself (insertion_sim + insertion_sim_ui + sdf-layer
-# rendering) moves over in Phase 3; this Phase-2 binary just proves
-# the scan → cf-device-types → render pipeline lifts cleanly across
-# the binary boundary. Sim-side deps (`sim-soft`, `mesh-sdf`,
-# `mesh-offset`, `sim-ml-chassis`, `cf-design`) intentionally
-# absent — Phase 3 adds them.
+# Phase 3 of `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4 — this crate now
+# carries the insertion-sim + heat-map + sliding-intruder rendering
+# moved out of cf-device-design (the sim modules `insertion_sim` +
+# `insertion_sim_ui` copy verbatim because Phase 2.5 already lifted
+# their cross-crate deps to `cf-device-types` + `cf-device-geometry`).
+# Phase 4 strips cf-device-design's duplicate sim code; the workshop
+# loop runs against cf-device-design as the CAD-only tool, sim
+# research runs against this binary.
 
 [[bin]]
 name = "cf-sim-research"
@@ -48,16 +48,34 @@ mesh-io = { workspace = true }
 # `IndexedMesh` + `Bounded::aabb()` for the scan-info readout +
 # bounding-region derivation.
 mesh-types = { workspace = true }
-# `Point3` for the centerline polyline parsing.
+# `Point3` + `Isometry3` — centerline polyline parsing + the sliding-
+# intruder pose math in `pose_to_bevy_transform`.
 nalgebra = { workspace = true }
 
 # Shared cap-plane abstraction — `parse_cap_planes` for the
-# `.prep.toml` companion parse. Parse-only subset of
-# cf-device-design's consumption (it also uses
-# `dome_wall_only_mesh` + `DomeWallSignedSdf` for cavity/layer
-# iso-extraction, which Phase 3 wires here alongside mesh-sdf +
-# mesh-offset).
+# `.prep.toml` companion parse + `CapPlane` runtime type +
+# `dome_wall_only_mesh` consumed by `insertion_sim`.
 cf-cap-planes = { workspace = true }
+
+# Shared device-side geometric primitives (Phase 2.5) — `CachedScanSdf`
+# + `CapPlanes` resources, `build_cached_scan_sdf` + `extract_layer_surface`
+# (SDF iso extraction), `ClipPlaneMaterial` + `ClipPlaneExt` + `ClipPlanePlugin`
+# (clipping for cavity / layer shells / intruder / scan), cavity-render
+# helpers (`spawn_cavity_mesh` + `CavityEntity` + `build_bevy_mesh_from_indexed*`).
+cf-device-geometry = { workspace = true }
+
+# Insertion-sim FEM stack — `mesh-sdf` builds the cached SDF of the
+# cleaned scan, `cf-design` carries the Solid/Sdf trait + pinned-floor
+# helper, `sim-soft` runs the FEM solve (`CpuNewtonSolver` +
+# `PenaltyRigidContact`), `sim-ml-chassis` supplies `Tensor` (the
+# solve's position/velocity I/O type), `mesh-repair` + `meshopt`
+# decimate the scan for the SDF source.
+mesh-sdf = { workspace = true }
+mesh-repair = { workspace = true }
+meshopt = { workspace = true }
+cf-design = { workspace = true }
+sim-soft = { workspace = true }
+sim-ml-chassis = { workspace = true }
 
 # Bevy 0.18 — feature set mirrors cf-device-design exactly so the
 # workspace's validated rendering subset stays consistent across
