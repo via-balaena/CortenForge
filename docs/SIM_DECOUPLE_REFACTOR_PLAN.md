@@ -39,24 +39,28 @@ A1 was scoped as "feature-flag the panel" — cfg-gate `mod
 insertion_sim` + plugin registration. In practice the sim is
 deeply intertwined with the layer rendering surface:
 
-- `update_layer_meshes` (main.rs:1630) — reads `InsertionSimState`
+- `update_layer_meshes` (main.rs:950) — reads `InsertionSimState`
   for `heat_map_on`, `scalar_mode`, `last_run_generation`,
   `displayed_step`, `show_deformed`, and `last_run` (the FEM
   results). Applies heat-map projection per-MC-vertex; falls
   through to deformed-shells path when `show_deformed` is on; falls
   through to rest-frame SDF iso when both are off.
-- `update_cavity_mesh` (main.rs:1529) — reads same state for the
+- `update_cavity_mesh` (main.rs:849) — reads same state for the
   deformed-cavity path.
-- `update_intruder_mesh` (main.rs:1955) — reads same state for the
+- `update_intruder_mesh` (main.rs:1275) — reads same state for the
   slide-pose-at-displayed-step rendering.
-- `device_design_panel` (main.rs:2437) — calls
+- `device_design_panel` (main.rs:1740) — calls
   `render_insertion_sim_section` inside the panel render system.
-- `LayerMeshKey` struct (main.rs:1339) — carries
+- `LayerMeshKey` struct (main.rs:659) — carries
   `scalar_mode: insertion_sim_ui::ScalarMode` as a diff field for
   layer-mesh cache invalidation.
-- `run_render_app` (main.rs:2729) — registers
+- `run_render_app` (main.rs:2032) — registers
   `insertion_sim_ui::InsertionSimPlugin` which inserts the
   `InsertionSimState` resource and runs the FEM-poll task.
+
+(Line numbers refreshed post-Phase-1 extraction, 2026-05-19. They
+will drift again under cf-device-design's churn; treat as "find by
+function name, not line.")
 
 Feature-gating these via `#[cfg(feature = "research-mode")]` would
 require ~10-15 cfg gates and would create runtime-resource-missing
@@ -139,10 +143,16 @@ a lib crate.
 
 ---
 
-## 3. Open architecture questions (resolve at recon stage)
+## 3. Architecture questions (Q1 + Q3 RESOLVED by Phase 2; Q2 + Q4 still open)
 
-**Q1 — does cf-sim-research have a UI, or is it headless?**
+**Q1 — does cf-sim-research have a UI, or is it headless?** ✓ RESOLVED by Phase 2 — Option C
 
+Phase 2 shipped a minimal Bevy + egui viewport (scan + centerline +
+read-only cavity/layer-stack readout panel). Phase 3 layers the sim
+panel onto this same minimal viewport rather than going headless or
+mirroring cf-device-design's full UI surface.
+
+Original options (preserved for audit trail):
 - Option A: full Bevy + egui UI mirroring cf-device-design's
   layout, with sim panel added. Heavy weight; lots of duplicated
   rendering code.
@@ -152,13 +162,8 @@ a lib crate.
   visualize via existing tools.
 - Option C: minimal Bevy UI with a sim-results-only viewport (load
   prep.toml + design.toml + scan, render sim outputs read-only).
-  Lightweight, still visual.
 
-Default lean: **Option C** (minimal Bevy viewport). UI is for
-visualizing sim results, not for layer tweaking. Layer tweaking
-happens in cf-device-design; sim runs against the locked design.
-
-**Q2 — should cf-sim-research enable layer-tweaking-with-live-sim?**
+**Q2 — should cf-sim-research enable layer-tweaking-with-live-sim?** (still open)
 
 A future "research mode" might want the workflow: tweak layers in
 cf-sim-research's UI, see sim re-run live (subject to wall-clock).
@@ -174,20 +179,24 @@ This is what the current cf-device-design panel supports.
 Default lean: **Option A**. Read-only sim viewer; design happens
 elsewhere.
 
-**Q3 — shared rendering helpers — extract to lib crate or duplicate?**
+**Q3 — shared rendering helpers — extract to lib crate or duplicate?** ✓ RESOLVED by Phase 2 — neither, for now
 
-The current `build_bevy_mesh_from_indexed`, `build_bevy_mesh_from_indexed_with_colors`,
-`spawn_face_mesh`, palette code, etc. would be needed by both tools.
+Phase 2 consumed cf-viewer's existing `spawn_face_mesh` directly
+(no new crate, no duplication). Phase 3 brings the sim-coupled
+layer-mesh + cavity-mesh helpers in via copy-then-dedupe (Phase 4
+strips cf-device-design's copies); only then will the
+extract-to-lib-vs-keep-in-cf-viewer question become live again. If
+the helpers stay binary-local through Phase 4's strip, no new
+crate is needed; if they need to be shared with a third binary,
+extract then.
 
+Original options (preserved for audit trail):
 - Option A: extract to a new `cf-layer-render` crate or expand
   `cf-viewer`. Both binaries depend on it. DRY.
 - Option B: duplicate the helpers between the two binaries.
   Simpler at extraction time, technical debt long-term.
 
-Default lean: **Option A**. cf-viewer already has scene helpers
-(per its existing role); expanding it is natural.
-
-**Q4 — feature-flag the sim within cf-sim-research, or always-on?**
+**Q4 — feature-flag the sim within cf-sim-research, or always-on?** (still open)
 
 Once extracted, cf-sim-research could itself have a feature flag
 for the sim, or always include it (since sim is its raison d'être).
@@ -256,7 +265,7 @@ mesh-offset, which Phase 3 brings in).
 
 **Outcome**:
 - New crate at `tools/cf-sim-research/` (Cargo.toml + src/main.rs,
-  ~530 LOC including 12 unit tests); workspace member entry added
+  ~690 LOC including 12 unit tests); workspace member entry added
   after cf-device-design's block; xtask grader exempts the new
   crate via the cf-device-design / cf-cast-cli precedent
   (`xtask/src/grade.rs::applies_to_crate`).
@@ -389,8 +398,10 @@ documentation.
 
 ## 5. Total estimate + sequencing
 
-**Sessions**: 6-9 (Phase 1: 1-2, Phase 2: 1, Phase 3: 2-3, Phase 4:
-1-2, Phase 5: 1).
+**Sessions**: 6-9 total (Phase 1: 1-2, Phase 2: 1, Phase 3: 2-3,
+Phase 4: 1-2, Phase 5: 1). **2 banked** (Phase 1 + Phase 2 each
+shipped in 1 session, the low end of their range); **4-5
+remaining** for Phases 3-5.
 
 **Calendar**: 1-2 weeks if focused single-task; 2-4 weeks if
 interleaved with workshop-iter and other product work.
@@ -406,8 +417,14 @@ already-shipped phases stand.
 
 ## 6. What stays at parity
 
-**During the arc** (cf-device-design + cf-sim-research coexist
-with duplicate sim code in Phases 3-4):
+**Phase 1 + Phase 2 (shipped)**: cf-device-design's user-facing
+surface is unchanged. cf-device-types is a pure type-share lift;
+cf-sim-research is additive (a new binary that doesn't yet touch
+the sim).
+
+**Phases 3-4** (cf-device-design + cf-sim-research coexist with
+duplicate sim code from Phase 3's copy until Phase 4 strips
+cf-device-design's copy):
 - All existing tests pass
 - All workshop-iter functionality preserved
 - The duplicate sim code is intentional; clean up in Phase 4
@@ -457,9 +474,16 @@ If iter-1 cast is mid-Phase-3, defer Phase 4 until after.
 
 ---
 
-## 8. Sequencing relative to other work
+## 8. Sequencing relative to other work — HISTORICAL
 
-Per `docs/PROGRAM_GAMEPLAN.md`:
+The original plan suggested B1 → Phase 1+2 → B2 — keep the workshop
+loop unblocked, then do the refactor, then write the roadmap.
+Shipped order matched: B1 (`948bfb8d`) → Phase 1 (`a8567f24` +
+`7cef74fe`) → B2 (`10d10db9`) → Phase 2 (`d4695892` + `7ea5a995`).
+Phase 3 is the next inflection point; no remaining cross-arc
+ordering constraints.
+
+[Original suggested order preserved below for audit trail.]
 
 - **B1 (FDM-mold-optimization in cf-cast-cli)** is INDEPENDENT of
   this refactor; can ship before, during, or after. Probably
@@ -488,19 +512,38 @@ infrastructure work.
   §3 A1's intent at honest scope
 - `docs/SIM_ARCHITECTURE_AUDIT.md` — why decouple matters
 - `tools/cf-device-design/src/main.rs` — current host of sim
-  wiring (1630, 1529, 1955, 2437, 2729 + 5835 + 2331 LOC of
-  sim modules)
-- `tools/cf-viewer/` (if exists) — candidate home for shared
-  rendering helpers
-- `design/cf-device-types/` — Phase 1 output (SHIPPED 2026-05-19)
-- Future `tools/cf-sim-research/` — Phase 2+ output
+  wiring (`update_layer_meshes` @ 950, `update_cavity_mesh` @ 849,
+  `update_intruder_mesh` @ 1275, `device_design_panel` @ 1740,
+  `run_render_app` @ 2032 + `insertion_sim.rs` 5762 LOC +
+  `insertion_sim_ui.rs` 2275 LOC). Numbers as of 2026-05-19; find
+  by name, not line.
+- `cf-viewer` — already a workspace lib (not "if exists"); Phase 2
+  consumed `spawn_face_mesh` from it directly. Candidate home for
+  any further shared rendering helpers that surface mid-Phase-3.
+- `design/cf-device-types/` — Phase 1 output (SHIPPED 2026-05-19,
+  branch `refactor/sim-decouple-phase-1` on origin).
+- `tools/cf-sim-research/` — Phase 2 output (SHIPPED 2026-05-19,
+  branch `refactor/sim-decouple-phase-2`).
 
 ---
 
 End of refactor plan. **Phase 1 + Phase 2 SHIPPED 2026-05-19** on
 branches `refactor/sim-decouple-phase-1` + `refactor/sim-decouple-phase-2`
-respectively; next session picks up at Phase 3 (move
-`insertion_sim.rs` + `insertion_sim_ui.rs` + the 3 sim-coupled Bevy
-systems + `sdf_layers` + `design_toml` into cf-sim-research). Phase
-4 then strips them from cf-device-design; Phase 5 verifies +
+respectively; next session picks up at Phase 3, which per §4 step
+list copies `insertion_sim.rs` + `insertion_sim_ui.rs` + the 3
+sim-coupled Bevy systems (`update_layer_meshes` /
+`update_cavity_mesh` / `update_intruder_mesh`) into cf-sim-research.
+
+**Open scope question for Phase 3 recon**: `sdf_layers` (cached SDF
++ per-iso MC extraction) and `design_toml` (load/save schema) are
+CAD-side primitives both binaries need. They should LIFT to a
+shared crate (cf-device-types is the natural home), not MOVE to
+cf-sim-research. The recon decides whether that lift happens as a
+Phase-2.5 mini-arc before Phase 3 proper, or folds into Phase 3
+itself. Either way, the destination is a shared crate, not the
+sim-research binary. (Phase 2's posture-banked block at §4 already
+flags this scope; this paragraph just resurfaces it at the
+end-of-doc handoff so the Phase 3 implementer doesn't miss it.)
+
+Phase 4 then strips cf-device-design's copies; Phase 5 verifies +
 documents.
