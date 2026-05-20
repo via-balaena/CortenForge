@@ -12,7 +12,7 @@
 //! enters only through `#[derive(Resource)]` on the resources the
 //! Bevy binaries need to share.
 //!
-//! The four submodules are organized by topic:
+//! The five submodules are organized by topic:
 //!
 //! - [`scan`] — scan-side resources: `ScanMesh`, `ScanFilePath`,
 //!   `ScanMeshVisible`, `ScanInfo`, plus the `Centerline` polyline
@@ -29,15 +29,21 @@
 //!   `SimLayer`, plus the per-run UI enums (`ScalarMode`,
 //!   `SimMode`) and the `SlackerResolution` enum describing how
 //!   `effective_silicone_for_layer` resolved a layer.
+//! - [`design_toml`] — `.design.toml` Save/Open schema +
+//!   load/save/validate/apply helpers. Lifted from
+//!   cf-device-design's private module per
+//!   `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a so cf-sim-research
+//!   (Phase 3) can ingest the same design files.
 
 pub mod design;
+pub mod design_toml;
 pub mod scan;
 pub mod sim;
 pub mod slacker;
 
 pub use design::{
     CAVITY_DEFAULT_INSET_M, CAVITY_INSET_SLIDER_MAX_M, CavityState, LAYER_COUNT_MAX,
-    LAYER_MATERIALS, LayerSpec, LayersState, material_density,
+    LAYER_MATERIALS, LAYER_SURFACE_PALETTE, LayerSpec, LayersState, material_density,
 };
 pub use scan::{Centerline, ScanFilePath, ScanInfo, ScanMesh, ScanMeshVisible};
 pub use sim::{ScalarMode, SimDesign, SimLayer, SimMode, SlackerResolution};

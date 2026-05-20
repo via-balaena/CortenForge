@@ -45,3 +45,12 @@ mesh-types = { workspace = true }
 
 # `Point3` constructor used by `Centerline` consumers + tests.
 nalgebra = { workspace = true }
+
+# `.design.toml` Save/Open — `serde` derives on the schema structs,
+# `toml` for the read/write surface, `anyhow` for `Result<()>` +
+# error-context chaining. Lifted from cf-device-design's
+# `design_toml` module per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a
+# so cf-sim-research can ingest the same design files.
+anyhow = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }

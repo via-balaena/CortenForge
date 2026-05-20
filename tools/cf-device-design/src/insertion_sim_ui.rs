@@ -31,10 +31,10 @@ use sim_soft::{Mesh as SimMesh, TetId, VertexId, Yeoh};
 
 use cf_cap_planes::CapPlane;
 use cf_device_types::{
-    CavityState, Centerline, LayersState, ScalarMode, ScanMesh, SimDesign, SimLayer, SimMode,
+    CavityState, Centerline, LAYER_SURFACE_PALETTE, LayersState, ScalarMode, ScanMesh, SimDesign,
+    SimLayer, SimMode,
 };
 
-use crate::LAYER_SURFACE_PALETTE;
 #[cfg(test)]
 use crate::insertion_sim::RampStep;
 use crate::insertion_sim::{

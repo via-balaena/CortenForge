@@ -159,6 +159,21 @@ pub fn material_density(anchor_key: &str) -> f64 {
 /// per-frame draw cost bounded.
 pub const LAYER_COUNT_MAX: usize = 6;
 
+/// Palette tinting the per-layer outer-surface mesh entities (and the
+/// per-layer rows in the read-only sim-research panel). Repeats if
+/// the layer count exceeds the palette length. Lifted to
+/// `cf-device-types` per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a
+/// so cf-device-design (3D shells + Sim panel layer rows) and
+/// cf-sim-research (panel-row swatches) tint the same layer-index
+/// with the same color.
+pub const LAYER_SURFACE_PALETTE: &[(f32, f32, f32)] = &[
+    (0.95, 0.80, 0.35), // amber
+    (0.45, 0.70, 0.95), // sky blue
+    (0.75, 0.55, 0.95), // lavender
+    (0.55, 0.95, 0.65), // mint
+    (0.95, 0.45, 0.70), // pink
+];
+
 /// One concentric silicone layer in the device wall. Layers are
 /// ordered innermost-first: `layers[0]`'s inner surface = the cavity
 /// surface, `layers[i]`'s outer surface = `layers[i+1]`'s inner

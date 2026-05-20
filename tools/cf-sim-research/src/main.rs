@@ -15,12 +15,13 @@
 //! - No SDF iso-extraction of cavity / layer shells (mesh-sdf +
 //!   mesh-offset are deliberately not in our dep graph yet — Phase 3
 //!   adds them).
-//! - No `.design.toml` load (the schema is owned by cf-device-design's
-//!   private `design_toml` module today; Phase 3, or an earlier
-//!   Phase-2.5 mini-arc, promotes the loader to a shared crate so
-//!   this binary can consume it). Phase 2 loads scan + `.prep.toml`
-//!   only and surfaces the default cavity + layer stack in the
-//!   read-only panel.
+//! - No `.design.toml` *apply* (the loader is shared via
+//!   `cf_device_types::design_toml` as of Phase 2.5.a, but Phase 2
+//!   only resolves the sibling path and logs a notice — the actual
+//!   `apply_design_toml` splice into the live `(CavityState,
+//!   LayersState)` resources lands in Phase 3). Phase 2 loads scan +
+//!   `.prep.toml` only and surfaces the default cavity + layer stack
+//!   in the read-only panel.
 //!
 //! What Phase 2 DOES wire: the scan → cf-device-types →
 //! Bevy/egui render pipeline. If this binary launches a window
@@ -38,8 +39,8 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::prelude::*;
 use cf_device_types::{
-    CavityState, Centerline, LAYER_MATERIALS, LayersState, ScanFilePath, ScanInfo, ScanMesh,
-    ScanMeshVisible, material_density,
+    CavityState, Centerline, LAYER_MATERIALS, LAYER_SURFACE_PALETTE, LayersState, ScanFilePath,
+    ScanInfo, ScanMesh, ScanMeshVisible, design_toml, material_density,
 };
 use cf_viewer::{
     RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting, spawn_face_mesh,
@@ -57,21 +58,6 @@ use serde::Deserialize;
 /// dependency; the convention only matters in display contexts).
 const DEVICE_UP_AXIS: UpAxis = UpAxis::PlusZ;
 
-/// Palette tinting the per-layer rows in the right-side readout
-/// panel (a 14×14 px swatch per row — no 3D shells exist yet, see
-/// the lib-level docstring). Mirrors cf-device-design's
-/// `LAYER_SURFACE_PALETTE` by-value so the two viewers tint the
-/// same layer-index with the same color; Phase 4 lifts this
-/// constant to a shared crate when the layer-mesh helpers
-/// consolidate.
-const LAYER_SURFACE_PALETTE: &[(f32, f32, f32)] = &[
-    (0.95, 0.80, 0.35), // amber
-    (0.45, 0.70, 0.95), // sky blue
-    (0.75, 0.55, 0.95), // lavender
-    (0.55, 0.95, 0.65), // mint
-    (0.95, 0.45, 0.70), // pink
-];
-
 #[derive(Parser, Debug)]
 #[command(
     name = "cf-sim-research",
@@ -84,12 +70,13 @@ struct Cli {
     cleaned_stl: PathBuf,
 
     /// Optional path to a `.design.toml` companion file. Accepted
-    /// here so the CLI shape matches cf-device-design's; the actual
-    /// load lands in Phase 3 (the loader currently lives behind
-    /// cf-device-design's private `design_toml` module and will be
-    /// promoted to a shared crate then). Phase 2 logs a notice if
-    /// the resolved sibling file exists; the viewer always renders
-    /// the `default_for_scan` cavity + layer stack.
+    /// here so the CLI shape matches cf-device-design's; the loader
+    /// is shared via `cf_device_types::design_toml` as of Phase 2.5.a,
+    /// but the actual `apply_design_toml` splice into the live
+    /// `(CavityState, LayersState)` resources lands in Phase 3.
+    /// Phase 2 logs a notice if the resolved sibling file exists;
+    /// the viewer always renders the `default_for_scan` cavity +
+    /// layer stack.
     #[arg(long, value_name = "PATH")]
     design: Option<PathBuf>,
 
@@ -141,23 +128,6 @@ fn resolve_prep_toml_path(cli: &Cli) -> Option<PathBuf> {
     let stem = cli.cleaned_stl.file_stem()?.to_str()?;
     let base_stem = stem.strip_suffix(".cleaned").unwrap_or(stem);
     Some(parent.join(format!("{base_stem}.prep.toml")))
-}
-
-/// Resolve the `.design.toml` path — `--design` wins when supplied;
-/// else `<cleaned_stl_stem-minus-.cleaned>.design.toml` next to the
-/// cleaned STL. Same semantics as cf-device-design's
-/// `design_toml::resolve_design_toml_path` (which takes
-/// `(&Path, Option<&Path>)` directly; we take `&Cli` and unpack
-/// the same way internally). Used in Phase 2 only to log a notice
-/// when a sibling file exists; the actual parse lands in Phase 3.
-fn resolve_design_toml_path(cli: &Cli) -> Option<PathBuf> {
-    if let Some(p) = &cli.design {
-        return Some(p.clone());
-    }
-    let parent = cli.cleaned_stl.parent()?;
-    let stem = cli.cleaned_stl.file_stem()?.to_str()?;
-    let base_stem = stem.strip_suffix(".cleaned").unwrap_or(stem);
-    Some(parent.join(format!("{base_stem}.design.toml")))
 }
 
 /// Centerline polyline total arc length in meters. Zero for fewer
@@ -245,10 +215,11 @@ fn main() -> Result<()> {
     // now we resolve the path and surface a notice if a sibling file
     // exists — keeps the user informed without claiming functionality
     // we don't have.
-    if let Some(p) = resolve_design_toml_path(&cli) {
+    if let Some(p) = design_toml::resolve_design_toml_path(&cli.cleaned_stl, cli.design.as_deref())
+    {
         if p.exists() {
             println!(
-                "design toml present at {} — load is wired in Phase 3 \
+                "design toml present at {} — apply lands in Phase 3 \
                  (this Phase-2 viewer renders the default layer stack)",
                 p.display()
             );
@@ -644,28 +615,6 @@ source_stl = "raw.stl"
         };
         let p = resolve_prep_toml_path(&cli);
         assert_eq!(p, Some(PathBuf::from("/elsewhere/custom.prep.toml")));
-    }
-
-    #[test]
-    fn resolve_design_toml_strips_cleaned_suffix_from_stem() {
-        let cli = Cli {
-            cleaned_stl: PathBuf::from("/scans/sock.cleaned.stl"),
-            design: None,
-            prep_toml: None,
-        };
-        let p = resolve_design_toml_path(&cli);
-        assert_eq!(p, Some(PathBuf::from("/scans/sock.design.toml")));
-    }
-
-    #[test]
-    fn resolve_design_toml_honors_explicit_flag() {
-        let cli = Cli {
-            cleaned_stl: PathBuf::from("/scans/sock.cleaned.stl"),
-            design: Some(PathBuf::from("/elsewhere/d.design.toml")),
-            prep_toml: None,
-        };
-        let p = resolve_design_toml_path(&cli);
-        assert_eq!(p, Some(PathBuf::from("/elsewhere/d.design.toml")));
     }
 
     #[test]

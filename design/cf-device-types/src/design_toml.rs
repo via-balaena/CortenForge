@@ -1,13 +1,18 @@
-//! `design_toml` — slice 8 Save/Open for `<scan>.design.toml`.
+//! `design_toml` — `.design.toml` Save/Open schema and helpers.
 //!
 //! Persists the design panel's state (`CavityState` + `LayersState`)
 //! to a TOML file alongside the cleaned STL, so a session can be
-//! resumed from a later run via the `--design <path>` flag (or
+//! resumed from a later run via a `--design <path>` flag (or
 //! auto-default to `<cleaned-stl-stem>.design.toml`).
 //!
-//! Slice 7's insertion-sim is *not* persisted — the sim runs fresh
-//! each session. Only the design intent (cavity inset + layer stack +
+//! Insertion-sim state is *not* persisted — the sim runs fresh each
+//! session. Only the design intent (cavity inset + layer stack +
 //! per-layer Slacker fraction) round-trips.
+//!
+//! Lifted from `tools/cf-device-design/src/design_toml.rs` per
+//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a so the future sim-
+//! research binary (`tools/cf-sim-research/`) can ingest the same
+//! design files.
 //!
 //! ## Schema
 //!
@@ -40,8 +45,8 @@
 //! `schema_version` is a forward-compat marker: a load with a future
 //! version (`>` the one this binary writes) is rejected with a clear
 //! error rather than misinterpreted; an older version (`<`) is
-//! accepted today (slice-8 schema is the first version, so this only
-//! becomes interesting if 8.x+ ever migrates).
+//! accepted today (this is the first version, so this only becomes
+//! interesting if the schema ever migrates).
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,7 +54,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use cf_device_types::{CavityState, LAYER_COUNT_MAX, LAYER_MATERIALS, LayerSpec, LayersState};
+use crate::{CavityState, LAYER_COUNT_MAX, LAYER_MATERIALS, LayerSpec, LayersState};
 
 /// The schema version this binary writes + accepts. Bump when the
 /// TOML structure changes; loads of a higher version are rejected
@@ -111,8 +116,8 @@ pub struct LayerBlock {
 /// Resolve the design-TOML path: explicit `--design <PATH>` wins;
 /// else fall back to `<cleaned-stl-stem-minus-.cleaned>.design.toml`
 /// next to the cleaned STL (parallels `resolve_prep_toml_path` in
-/// `main.rs`). Returns `None` only for the extremely-rare bare-
-/// filename-with-no-parent case.
+/// cf-device-design / cf-sim-research). Returns `None` only for the
+/// extremely-rare bare-filename-with-no-parent case.
 pub fn resolve_design_toml_path(cleaned_stl: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         return Some(p.to_path_buf());
@@ -555,8 +560,10 @@ mod tests {
     /// Atomic save → load round-trip on a real `tempfile`-style path.
     #[test]
     fn save_and_load_round_trip_on_disk() {
-        let dir =
-            std::env::temp_dir().join(format!("cf-device-design-7-8-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "cf-device-types-design-toml-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("scan.design.toml");
 

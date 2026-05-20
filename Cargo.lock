@@ -1951,9 +1951,12 @@ dependencies = [
 name = "cf-device-types"
 version = "1.0.0"
 dependencies = [
+ "anyhow",
  "bevy",
  "mesh-types",
  "nalgebra 0.34.2",
+ "serde",
+ "toml",
 ]
 
 [[package]]

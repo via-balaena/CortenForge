@@ -42,9 +42,9 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::*;
 use cf_device_types::{
-    CavityState, Centerline, LAYER_COUNT_MAX, LAYER_MATERIALS, LayerSpec, LayersState,
-    ScanFilePath, ScanInfo, ScanMesh, ScanMeshVisible, material_density, resolve_slacker_fraction,
-    slacker,
+    CavityState, Centerline, LAYER_COUNT_MAX, LAYER_MATERIALS, LAYER_SURFACE_PALETTE, LayerSpec,
+    LayersState, ScanFilePath, ScanInfo, ScanMesh, ScanMeshVisible, design_toml, material_density,
+    resolve_slacker_fraction, slacker,
 };
 use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
 
@@ -77,13 +77,6 @@ pub(crate) mod insertion_sim;
 /// driven sim run + egui panel + per-vertex heat-map projection on the
 /// existing per-layer surface shells.
 pub(crate) mod insertion_sim_ui;
-
-/// Slice 8 — `.design.toml` Save / Open. Serializes the design panel
-/// state (`CavityState` + `LayersState`) to a TOML file alongside the
-/// cleaned STL, so a session can resume. Schema + atomic-write
-/// helpers + round-trip tests; see the module docs for the schema
-/// layout.
-pub(crate) mod design_toml;
 
 /// Slice 9 — SDF-based layer surfaces. Replaces the retired per-vertex
 /// radial displacement (slice-3 `EnvelopeProxyMesh`) with cached-SDF
@@ -738,16 +731,6 @@ fn build_bevy_mesh_from_indexed_with_colors(
     }
     bevy_mesh
 }
-
-/// Palette for the per-layer outer-surface mesh entities. Repeats
-/// if the layer count exceeds the palette length.
-const LAYER_SURFACE_PALETTE: &[(f32, f32, f32)] = &[
-    (0.95, 0.80, 0.35), // amber
-    (0.45, 0.70, 0.95), // sky blue
-    (0.75, 0.55, 0.95), // lavender
-    (0.55, 0.95, 0.65), // mint
-    (0.95, 0.45, 0.70), // pink
-];
 
 /// Slice S11.2 — translucency for the per-layer slab render. Each
 /// layer entity carries both its inner + outer face triangles
