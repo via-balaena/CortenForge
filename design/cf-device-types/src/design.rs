@@ -40,56 +40,23 @@ impl CavityState {
         }
     }
 
-    /// Slider range for the cavity inset, in meters. **Raised to
-    /// 8 mm** as H4-2-C probe scaffolding (F3 recon B candidate
-    /// H4-2-C — asymmetric one-sided bound, see
-    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.4). H4-2-C
-    /// cargo-test sweep showed cavity 5 mm + 8 mm reach partial
-    /// seating where the H4-2-A 0.20 floor + the original 0.30 floor
-    /// both panicked; user-driven visual gate at cavity 3 + 5 mm
-    /// cleared 16/16 (verified 2026-05-19 LATE-NIGHT) matching the
-    /// pre-H4 baseline. This cap raise unlocks 6 + 7 + 8 mm visual
-    /// gates to confirm whether the GUI also reaches 16/16 there
-    /// (cargo test hit 0/16 / 0/16 / 8/16 respectively due to the
-    /// `cargo test` ↔ GUI divergence puzzle at bookmark §5.6).
+    /// Slider range for the cavity inset, in meters. Returns
+    /// `(0, CAVITY_INSET_SLIDER_MAX_M)` = 0 mm to 8 mm.
     ///
-    /// **5 mm pre-H4-2-C cap** set at F3 recon B C′.a ε-bisection
-    /// ship 2026-05-18 LATE-EVENING (per
-    /// `docs/CANDIDATE_C_SWEEP_FALSIFICATION_BOOKMARK.md` §3 C′.a)
-    /// and held through the E.b.4 case-E falsification 2026-05-19
-    /// (per `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10).
-    /// 5 mm was the highest cavity the C′.a-pinned ε = 0.075 mm
-    /// converged 16/16 at WITHOUT H4 bounds plumbing; cavity >
-    /// 5 mm previously fake-converged step 1 into an invalid Yeoh
-    /// state and panicked at step 2 (or, post-commit `2739717e`
-    /// end-of-solve check, panics honestly at step 1).
+    /// **Why 8 mm**: an 8 mm interference on a typical body-part
+    /// scan diameter (~70 mm) is ~11 % engineered compression —
+    /// still compression-fit territory, well within Dragon Skin
+    /// 20A's 580 % elongation budget. Going deeper than ~8 mm
+    /// pushes the design out of the validated workshop envelope.
     ///
-    /// **What H4-2-C enables**: the calibrated `0.8 · λ_break`
-    /// tensile cap stays in force, but the family-uniform compressive
-    /// floor (previously 0.30, then H4-2-A 0.20) is dropped at
-    /// `MaterialField::sample_yeoh` time. Newton can now iterate
-    /// through deep-compression equilibria (cavity 5 mm visual gate
-    /// reached λ_min = 0.37 on one step without panicking). `det F >
-    /// 0` inversion is the remaining compressive safety net.
+    /// The upper bound itself lives in [`CAVITY_INSET_SLIDER_MAX_M`]
+    /// so consumer binaries (cf-device-design + cf-sim-research)
+    /// format their millimeter readouts from a single source.
     ///
-    /// Cavity = 3 mm baseline preserved at the C′.a ε (verified
-    /// user-driven visual gate 2026-05-18 LATE-EVENING, 16/16 + ZERO
-    /// LM rescues — orthogonal to gated-A's class-1 rescue). Cavity
-    /// = 5 mm also user-verified 16/16 with H4-2-C 2026-05-19
-    /// LATE-NIGHT.
-    ///
-    /// **Physical strain context** at 8 mm: 8 mm interference on a
-    /// typical body-part scan diameter (~70 mm) is ~11 % engineered
-    /// compression — still compression-fit territory, well within
-    /// DRAGON_SKIN_20A's 580 % elongation budget.
-    ///
-    /// The slider's upper bound itself lives in
-    /// [`CAVITY_INSET_SLIDER_MAX_M`] so cf-device-design's egui label
-    /// and the `cavity_inset_slider_range_zero_to_eight_mm` sentinel
-    /// test can format the number from a single source. The
-    /// binding-constraint attribution (solver envelope vs material
-    /// validity vs scaffolding) is doc-only — keep all three surfaces'
-    /// rationale strings consistent when you change the bound.
+    /// For the FEM convergence-envelope research history behind the
+    /// 8 mm value (Phase H4-2-C asymmetric one-sided bound,
+    /// 2026-05-19), see the cf-sim-research-side render_cavity_section
+    /// label and `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.4.
     #[must_use]
     pub fn inset_slider_range_m() -> (f64, f64) {
         (0.0, CAVITY_INSET_SLIDER_MAX_M)
@@ -98,12 +65,12 @@ impl CavityState {
 
 /// Upper bound on [`CavityState::inset_slider_range_m`], in meters
 /// (8 mm). Single source of truth for the cavity slider's cap —
-/// cf-device-design's egui label formats the millimeter readout from
-/// this const, and the `cavity_inset_slider_range_zero_to_eight_mm`
-/// sentinel test asserts against it. See
-/// [`CavityState::inset_slider_range_m`] for the H4-2-C
-/// scaffolding rationale + the convergence-envelope data behind the
-/// 8 mm value.
+/// consumer binaries (cf-device-design + cf-sim-research) format
+/// their millimeter readouts from this const, and each carries a
+/// `cavity_inset_slider_range_zero_to_eight_mm` sentinel test
+/// asserting against it. See [`CavityState::inset_slider_range_m`]
+/// for the workshop-envelope rationale + a pointer to the
+/// sim-research history.
 pub const CAVITY_INSET_SLIDER_MAX_M: f64 = 0.008;
 
 /// Default cavity inset (meters). 3 mm = the minimum-acceptable

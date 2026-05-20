@@ -128,26 +128,42 @@ The Bevy + egui visual layer stays; the FEM-coupled overlays go.
 
 ## 3. This-week actions
 
-### A1 — Decouple insertion-sim from cf-device-design
+### A1 — Decouple insertion-sim from cf-device-design ✓ COMPLETE 2026-05-20
 
 **SCOPE REVISED 2026-05-19 LATE-NIGHT** after A1's in-session
 scoping revealed the sim is woven into layer/cavity/intruder
 rendering. Feature-flag approach (~1 session) was the wrong
 estimate; the correct refactor is structural extraction.
 
-Full plan: `docs/SIM_DECOUPLE_REFACTOR_PLAN.md`. Multi-session
-arc, 5 phases, 6-9 sessions total. Outcome:
-- cf-device-design ships as CAD-only tool with zero sim-soft dep
-- cf-sim-research is a new binary in `tools/cf-sim-research/`
-  carrying the FEM sim + heat-map rendering + deformed-cavity
-  path
-- Shared data types live in a new `cf-device-types` lib crate
-- Both tools render layers via shared helpers (cf-viewer expansion
-  or new cf-layer-render crate)
+**SHIPPED 2026-05-20** on `dev` directly per
+[[feedback-omnibus-pr-single-branch]] (5 phases + Phase 2.5
+mini-arc, 6 sessions, ~10 000 LOC moved across 4 crates).
+Full plan + per-phase ship records: `docs/SIM_DECOUPLE_REFACTOR_PLAN.md`.
 
-Sequencing: B1 (cf-cast-cli mold-wall) ships first as a concrete
-user-facing win; then this refactor; then B2 (sim-research
-roadmap doc).
+**As-built outcome**:
+- cf-device-design ships as CAD-only tool (35 tests, ~10 000 LOC
+  deleted including `insertion_sim.rs` 5762 LOC + `insertion_sim_ui.rs`
+  2275 LOC + 7 orphan deps: mesh-repair / meshopt / mesh-sdf /
+  cf-design / sim-soft / sim-ml-chassis / nalgebra). Intruder mesh
+  + helpers deleted per Q4.1. `cargo build --no-default-features`
+  green confirms zero sim-soft dep.
+- `tools/cf-sim-research/` carries the FEM sim + heat-map + deformed-
+  cavity + slide-intruder (99 tests / 12 ignored). iter-1 sock smoke
+  converged 16/16 to 83.35 mm full depth, ~3.0 N peak.
+- Shared crates: `design/cf-device-types/` (24 tests — scan / design /
+  slacker / sim modules + design_toml + LAYER_SURFACE_PALETTE) +
+  `design/cf-device-geometry/` (50 tests — sdf_layers + bevy_mesh +
+  cavity + clip_plane). cf-cast-cli is a future 3rd consumer of
+  cf-device-geometry.
+
+Workshop loop unchanged (scan → cf-device-design → save TOML →
+cf-cast-cli → workshop print); sim research loop is now independent
+(load design TOML + scan in cf-sim-research → run sim).
+
+Sequencing: B1 + B2 + A1 all SHIPPED. Next inflection points are
+Phase H sub-leg L1 (sim-research, quarter-pace per
+[[project-b2-sim-research-roadmap]]) and workshop iter-1 cast
+(cf-cast-cli, workshop-pace).
 
 ### A2 — Revert H2 diagnostic instrumentation [N/A — never landed]
 

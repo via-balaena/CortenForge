@@ -1,14 +1,17 @@
 # Sim-decouple refactor — full plan
 
-> **Status**: ACTIVE — Phase 1 + Phase 2 + Phase 2.5 + Phase 3 + Phase
-> 4 SHIPPED. Phases 1-3 landed 2026-05-19 on per-phase branches;
-> Phase 4 landed 2026-05-20 directly on `dev` per
+> **Status**: ARC COMPLETE — All 5 phases SHIPPED. Phases 1-3 landed
+> 2026-05-19 on per-phase branches (consolidated onto `dev`
+> 2026-05-20); Phase 4 landed 2026-05-20 directly on `dev` per
 > [[feedback-omnibus-pr-single-branch]] (commits `dc5ff49b` +
-> `f0ed3800`). Phase 5 (verify + close the arc) is next. Originally
-> bookmarked 2026-05-19 LATE-NIGHT after A1's in-session scoping
-> revealed the sim is woven deeply into cf-device-design's layer/
-> cavity/intruder rendering. The original gameplan §3 A1 "~1 session
-> feature-flag" estimate was wrong; this doc sequences the real arc.
+> `f0ed3800` + `2ba0f921` + `76292f34`); Phase 5 landed 2026-05-20
+> on `dev` with the cross-binary smoke + inherited-vocab sweep + this
+> doc-close. Omnibus PR `dev` → `main` is the close of the arc.
+> Originally bookmarked 2026-05-19 LATE-NIGHT after A1's in-session
+> scoping revealed the sim is woven deeply into cf-device-design's
+> layer/cavity/intruder rendering. The original gameplan §3 A1 "~1
+> session feature-flag" estimate was wrong; this doc sequences the
+> real arc.
 >
 > **Goal** (from [[project-program-gameplan]]): cf-device-design
 > ships as a CAD-only tool (scan → layer → mold geometry). Sim
@@ -530,33 +533,82 @@ was retired) in a single session, two commits:
 landed at the low end via the omnibus-on-dev posture + 2-commit
 split).
 
-### Phase 5 — verify + document
+### Phase 5 — verify + document ✓ SHIPPED 2026-05-20
 
-**Goal**: confirm both tools work end-to-end + update
-documentation.
+**Status**: SHIPPED on `dev` directly in a single session
+(continuation of the omnibus-on-dev posture per
+[[feedback-omnibus-pr-single-branch]]).
 
-**Steps**:
-1. cf-device-design smoke test: load scan, tweak cavity + layers,
-   save design TOML, generate mold via cf-cast-cli
-2. cf-sim-research smoke test: load scan + design TOML, render
-   layers, run sim panel
-3. Update gameplan §3 A1 → mark complete with refactor outcomes
-4. Update auto-memory → add cf-sim-research as the new research
-   crate cluster member
-5. Update `docs/studies/soft_body_architecture/` SUMMARY index if
-   it referenced cf-device-design as the sim host
-6. Commit messages capture the architecture decision (the WHY)
+**Outcome**:
+- **5.1 cf-device-design CAD-only smoke (iter-1 sock fixture,
+  `~/scans/sock_over_capsule.cleaned.stl` + `.prep.toml` +
+  `.design.toml`)**: PASS with one finding. Scan loads (503k verts,
+  21 centerline points, 1 cap plane); cached SDF builds in ~258 ms;
+  Cavity + Layers + Validations + Clip-plane + Save/Open panels all
+  render. No Insertion Sim section, no intruder mesh, no heat-map
+  controls (Phase 4 strip + Q4.1 default lean confirmed at runtime).
+  Save/Open round-trip works (saved `.design.toml` round-trips; only
+  `generated_at` timestamp drifts vs backup, cavity inset + layers
+  identical). Validations green (Cavity OK, Min wall OK).
+- **5.1b inherited-vocab sweep** (bundled into Phase 5 per smoke
+  finding): cf-device-design's `render_cavity_section` egui label
+  carried the full H4-2-C / MaterialField / Yeoh / CANDIDATE_H4_FALSIFICATION
+  sim-research vocab — visible to the CAD user but referring to FEM
+  context cf-device-design no longer has. Symmetric to Phase 4's
+  pass-2 docstring sweep on cf-sim-research, opposite direction.
+  Replaced the wall-of-text with `(capped at 8 mm — workshop
+  envelope)`. Stripped the matching test-comment block on the
+  sentinel test. Rewrote cf-device-types `inset_slider_range_m`
+  + `CAVITY_INSET_SLIDER_MAX_M` docstrings to be binary-neutral
+  (workshop strain context kept; sim-research history reduced
+  to a pointer). cf-sim-research local sites (its own
+  `render_cavity_section` label + matching test + insertion_sim.rs
+  Yeoh / H4-2-C references) intact — the sim-research vocab is
+  honest in that context. 30 insertions + 91 deletions.
+- **5.2 cf-sim-research sim viewer smoke**: PASS. Same fixture
+  loads with identical startup log; Insertion Sim panel surfaces
+  Simulate button + scalar mode dropdown + show-deformed + heat-map
+  toggles + F-d plot (empty) + step table (empty). User clicked
+  Simulate → FEM converged 16/16 steps in ~30-60s, seated to
+  83.35 mm full depth, ~3.0 N peak force. Per-step table + per-layer
+  Ψ/ΠPΠ readouts populated. Scrubbing displayed-step slider drives
+  deformed cavity render + intruder mesh slides through cavity per
+  pose at step. No Save button (Q5.4 default lean honored).
+- **5.3 docs + memory**: gameplan §3 A1 marked complete with
+  refactor outcomes; this plan doc §0 + §4 Phase 5 + §5 tally + §9
+  closing updated. `docs/studies/soft_body_architecture/` confirmed
+  to contain zero cf-device-design / cf-sim-research references
+  (no-op). Auto-memory [[project-sim-decouple-refactor-plan]] +
+  [[project-program-gameplan]] updated; `MEMORY.md` index pointer
+  refreshed.
 
-**Estimate**: 1 session.
+**Posture banked**:
+- The "inherited-vocab from copy-then-strip" pattern recurs at
+  Phase 5 in the opposite direction: the CAD-side label
+  carried sim vocab because the original render_cavity_section
+  lived in cf-device-design BEFORE the sim work moved to
+  cf-sim-research. The sweep is symmetric to Phase 4's pass-2
+  on cf-sim-research and Phase 3 polish's bank-for-Phase-4 list.
+  Cold-read at smoke time (visual gate) catches user-facing vocab
+  drift that compile-time cold-reads miss because rustc doesn't
+  read egui labels.
+- 4-crate smoke verdict (cf-device-design 35 + cf-sim-research
+  99 + cf-device-geometry 50 + cf-device-types 24 tests) holds
+  through the sweep. Workspace clippy + fmt + `--no-default-features`
+  green at Phase 5 close. ARC COMPLETE.
+
+**Sub-leg estimate confirmed**: 1 session (the plan's range).
+Total arc 6 sessions (Phase 1 + Phase 2 + Phase 2.5 + Phase 3 +
+Phase 4 + Phase 5 each landed in 1 session, the low end of the
+6-9 range).
 
 ---
 
 ## 5. Total estimate + sequencing
 
 **Sessions**: 6-9 total (Phase 1: 1-2, Phase 2: 1, Phase 2.5: 1-2,
-Phase 3: 2, Phase 4: 1-2, Phase 5: 1). **5 banked** (Phase 1 +
-Phase 2 + Phase 2.5 + Phase 3 + Phase 4 each shipped in 1 session,
-the low end of their range); **1 remaining** for Phase 5.
+Phase 3: 2, Phase 4: 1-2, Phase 5: 1). **6 banked = ARC COMPLETE**
+(each phase shipped in 1 session, the low end of its range).
 
 **Calendar**: 1-2 weeks if focused single-task; 2-4 weeks if
 interleaved with workshop-iter and other product work.
@@ -682,12 +734,15 @@ infrastructure work.
 
 ---
 
-End of refactor plan. **Phase 1 + Phase 2 + Phase 2.5 + Phase 3
-SHIPPED 2026-05-19** on per-phase branches; **Phase 4 SHIPPED
-2026-05-20** on `dev` directly (commits `dc5ff49b` strip +
-`f0ed3800` docstring sweep). Cargo.toml orphan-dep sweep landed in
-the strip commit (deleted `mesh-repair`, `meshopt`, `mesh-sdf`,
-`cf-design`, `sim-soft`, `sim-ml-chassis`, `nalgebra`; `cf-cap-planes`
-stays — `parse_cap_planes` is still called from main.rs). Phase 5
-verifies cross-binary smoke + closes the arc; THEN the omnibus PR
-`dev` → `main`.
+End of refactor plan. **ARC COMPLETE 2026-05-20.** Phase 1 + Phase
+2 + Phase 2.5 + Phase 3 shipped 2026-05-19 on per-phase branches
+(consolidated onto `dev` 2026-05-20); Phase 4 shipped 2026-05-20
+on `dev` directly (commits `dc5ff49b` strip + `f0ed3800` docstring
+sweep + `2ba0f921` plan docs + `76292f34` env-var rename polish);
+Phase 5 shipped 2026-05-20 on `dev` (smoke + inherited-vocab
+sweep on cf-device-design + cf-device-types docstrings + this
+doc-close). Cargo.toml orphan-dep sweep landed in the Phase 4
+strip commit (deleted `mesh-repair`, `meshopt`, `mesh-sdf`,
+`cf-design`, `sim-soft`, `sim-ml-chassis`, `nalgebra`;
+`cf-cap-planes` stays — `parse_cap_planes` is still called from
+main.rs). Omnibus PR `dev` → `main` is the close of the arc.

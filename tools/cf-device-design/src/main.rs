@@ -871,18 +871,11 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
                 state.inset_m = inset_mm * 0.001;
             }
             ui.label("(silicone skin stretches inset_m over appendage)");
-            // The numeric cap formats from `CAVITY_INSET_SLIDER_MAX_M`
-            // so this label, the const, and the
-            // `cavity_inset_slider_range_zero_to_eight_mm` sentinel
-            // test all read from one source. The binding-constraint
-            // attribution (H4-2-C asymmetric one-sided bound) stays
-            // doc-only — mirror it to the const's docstring + the
-            // sentinel test's comment if you change the rationale.
+            // The slider's max value (8 mm) is the workshop-validated
+            // envelope; see `CAVITY_INSET_SLIDER_MAX_M` docstring for
+            // the rationale.
             ui.label(format!(
-                "(capped at {:.0} mm — H4-2-C asymmetric one-sided bound dropped the family-uniform \
-                 compressive floor at MaterialField::sample_yeoh, unblocking deep-compression \
-                 equilibria; cavity 3 + 5 mm user-verified 16/16 — see \
-                 CANDIDATE_H4_FALSIFICATION_BOOKMARK §5.4)",
+                "(capped at {:.0} mm — workshop envelope)",
                 cf_device_types::CAVITY_INSET_SLIDER_MAX_M * 1e3,
             ));
         });
@@ -1733,30 +1726,11 @@ another_future_field = "foo"
 
     #[test]
     fn cavity_inset_slider_range_zero_to_eight_mm() {
-        // F3 recon B H4-2-C ship (2026-05-19 LATE-NIGHT) — cap
-        // raised from C′.a's pinned 5 mm to 8 mm after H4-2-C
-        // dropped the family-uniform compressive floor at
-        // `MaterialField::sample_yeoh` time per
-        // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5.4.
-        // Cavity 3 + 5 mm user-verified 16/16 visual gate matches
-        // pre-H4 baseline (λ_min = 0.37 reached at cavity 5 mm
-        // step without panicking); 6 + 7 + 8 mm gates unlocked
-        // by the cap raise for user verification.
-        //
-        // Pre-H4-2-C cap history: 5 mm from C′.a 2026-05-18
-        // LATE-EVENING (ε-bisection win); was 6 mm briefly
-        // (E.b.3 sweep scaffolding 2026-05-19, reverted same-day
-        // at E.b.4 case-E falsification); was 4 mm (F3 recon A
-        // outcome B), 8 mm briefly (C.2 sweep + F4.1 + H4.3
-        // scaffolding), 15 mm (pre-F4.1) historically.
-        //
-        // The numeric cap reads from `CAVITY_INSET_SLIDER_MAX_M` so
-        // this test, the slider's upper bound, and the egui label
-        // in `render_cavity_section` are all wired to one source.
-        // Binding-constraint attribution (H4-2-C asymmetric one-sided
-        // bound) stays doc-only — if it changes, mirror the rationale
-        // on `CavityState::inset_slider_range_m`'s docstring + the
-        // egui label.
+        // Sentinel test pinning the workshop cavity-inset envelope.
+        // The cap value lives in `CAVITY_INSET_SLIDER_MAX_M`; see
+        // its docstring + `CavityState::inset_slider_range_m` for
+        // the workshop-envelope rationale + a pointer to the
+        // sim-research convergence-envelope history.
         let (min_m, max_m) = CavityState::inset_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
         assert!(approx_eq(
@@ -1764,9 +1738,7 @@ another_future_field = "foo"
             cf_device_types::CAVITY_INSET_SLIDER_MAX_M,
             1e-12,
         ));
-        // Pin the const itself at 8 mm so a future "what's a
-        // workshop-reasonable cap?" edit notices it has to argue
-        // the H4-2-C rationale above before flipping.
+        // Pin the const at 8 mm so a future bound-edit notices.
         assert!(approx_eq(
             cf_device_types::CAVITY_INSET_SLIDER_MAX_M,
             0.008,
