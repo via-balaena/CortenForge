@@ -97,7 +97,7 @@ pub fn mj_check_acc(model: &Model, data: &mut Data) {
             // recompute derived quantities from the reset state.
             if !disabled(model, DISABLE_AUTORESET) {
                 if let Err(e) = data.forward(model) {
-                    tracing::error!(
+                    log::error!(
                         "mj_forward() failed after auto-reset (model's \
                          qpos0 produces non-recoverable error): {e:?}"
                     );

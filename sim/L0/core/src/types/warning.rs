@@ -60,7 +60,7 @@ fn warning_text(warning: Warning, info: i32) -> String {
 pub fn mj_warning(data: &mut Data, warning: Warning, info: i32) {
     let w = &mut data.warnings[warning as usize];
     if w.count == 0 {
-        tracing::warn!("{} Time = {:.4}.", warning_text(warning, info), data.time);
+        log::warn!("{} Time = {:.4}.", warning_text(warning, info), data.time);
     }
     w.last_info = info;
     w.count += 1;

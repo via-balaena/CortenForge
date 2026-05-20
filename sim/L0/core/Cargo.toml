@@ -22,8 +22,14 @@ sim-simd = { workspace = true }
 nalgebra = { workspace = true }
 # Derive macros for solver / collision error enums
 thiserror = { workspace = true }
-# Structured logging spans across the MuJoCo pipeline stages
-tracing = { workspace = true }
+# Lightweight logging facade for `mj_warning` + auto-reset error /
+# RK4-step2 / mesh-collision fallback warn sites. `log` is the L0
+# logging facade across CortenForge — no tracing-subscriber installed
+# workspace-wide, so the `tracing` crate's structured-spans surface
+# was paying full transitive cost (tracing + tracing-attributes +
+# tracing-core) for output that goes to /dev/null. Switched to `log`
+# (already in the transitive graph via parry3d → ena).
+log = "0.4"
 # Optional Serialize / Deserialize for Model / Data snapshots
 serde = { workspace = true, optional = true }
 # Optional data-parallel solvers behind the `parallel` feature
