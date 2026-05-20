@@ -22,15 +22,12 @@
 //!   slacker`), and the Layers panel reads back the effective Shore
 //!   hardness, tack, and the mix in grams.
 //!
-//! In progress: Insertion Sim (FEM, slice 7) — `mod insertion_sim`
-//! holds the Route-A SDF bridge: 7.0 the measurement spike, 7.1 the
-//! geometry + per-layer Yeoh material builder
-//! (`build_insertion_geometry`), 7.2 the single static FEM solve
-//! (`run_single_insertion_step`). Quasi-static ramp + UI: 7.3+.
+//! Insertion-sim (FEM) lives in the sibling `tools/cf-sim-research/`
+//! binary as of the sim-decouple refactor (Phases 1-4); this crate is
+//! CAD-only. See `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` for the arc.
 //!
-//! Pending slices: Insertion Sim solve + UI (slice 7.2+) / Save /
-//! Open (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the
-//! build and is stale — trust the code.
+//! `docs/ENGINEERING_SUITE_DESIGN.md` predates the build and is stale
+//! — trust the code.
 
 use std::path::{Path, PathBuf};
 
@@ -48,40 +45,14 @@ use cf_device_types::{
 };
 use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
 
-use cf_device_geometry::bevy_mesh::{
-    build_bevy_mesh_from_indexed, build_bevy_mesh_from_indexed_with_colors,
-};
+use cf_device_geometry::bevy_mesh::build_bevy_mesh_from_indexed;
 use cf_device_geometry::cavity::{CavityEntity, spawn_cavity_mesh};
 use cf_device_geometry::clip_plane::{self, ClipPlaneExt, ClipPlaneMaterial};
 use cf_device_geometry::sdf_layers;
 use clap::Parser;
 use mesh_io::load_stl;
 use mesh_types::{Bounded, IndexedMesh, Point3};
-use nalgebra::Isometry3;
 use serde::Deserialize;
-
-/// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
-///
-/// `#[cfg(test)]`-gated through sub-commits 7.0–7.3b.2; un-gated at
-/// 7.4 (this slice) when the Insertion Sim panel wires it into the
-/// `device_design_panel` UI. The module is `pub(crate)` because
-/// `main.rs`'s panel + async-task glue consumes its public surface
-/// (`build_insertion_geometry`, `run_insertion_ramp`, `InsertionRamp`,
-/// `RampStep`, `StepReadout`, `TetReadout`, `InsertionResult`,
-/// `compute_tet_readouts`); the items themselves remain
-/// `pub` per their module-level docstrings — `pub(crate)` on the
-/// module declaration just keeps the binary's surface scoped (the
-/// crate doesn't export a library API). See the module docs for the
-/// slice-7 ladder.
-pub(crate) mod insertion_sim;
-
-/// Slice 7.4 — Insertion Sim panel + ECS glue. Wraps the `insertion_sim`
-/// module's public surface (`build_insertion_geometry`,
-/// `run_insertion_ramp`, `InsertionRamp`, `RampStep`, `StepReadout`,
-/// `TetReadout`, `compute_tet_readouts`) into an `AsyncComputeTaskPool`-
-/// driven sim run + egui panel + per-vertex heat-map projection on the
-/// existing per-layer surface shells.
-pub(crate) mod insertion_sim_ui;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the
@@ -186,29 +157,6 @@ fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
 
 #[derive(Component)]
 struct ScanMeshEntity;
-
-/// SL.4 — marker for the rigid sliding-intruder render. Lives alongside
-/// the rest-frame `ScanMeshEntity`, visible only when the most-recent
-/// run was sliding mode AND `show_deformed` is on. The mesh asset is
-/// the cleaned scan, mounted once at startup by [`spawn_intruder_mesh`];
-/// per-step kinematics live in the entity's `Transform`, written by
-/// [`update_intruder_mesh`] from
-/// [`InsertionSimOutputs::intruder_pose_at`].
-///
-/// Historical: S4 mounted the bare scan and slid it in via a hand-built
-/// ramp transform. S11.1 swapped to per-step FEM-iso meshes against the
-/// growing intruder. SL.4 returns to constant-mesh + per-step Transform
-/// because the SL.2 sliding ramp records the exact rigid pose at every
-/// converged step, so there is no need to extract per-step geometry.
-#[derive(Component)]
-struct IntruderEntity;
-
-/// Color for the [`IntruderEntity`] render. S4 used a warm orange too
-/// close to the coral cavity, so when the intruder coincided with the
-/// cavity surface at contact the two read as one shape. S11.3 retunes
-/// to a cool teal that stays visibly distinct from the cavity at
-/// contact.
-const INTRUDER_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.20);
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -349,16 +297,14 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 // Cheap, derived-from-state checks surfaced in the Validations
 // panel: per-layer pour volume + mass against the 2 lb single-pour
 // budget, cavity self-intersection, and minimum castable wall
-// thickness. Computed fresh each frame from `EnvelopeProxyMesh` +
+// thickness. Computed fresh each frame from the cached scan SDF +
 // `CavityState` + `LayersState` — `compute_validations` is a pure
 // function so the whole check set is unit-testable without Bevy.
 //
 // Pour volume uses the divergence-theorem signed mesh volume on the
-// displaced proxy (not cf-cast's SDF voxel integration): the
-// suite's geometry model is displaced proxy meshes, it carries no
-// `cf_design::Solid` representation, and the closed-form mesh
-// volume is both dependency-free and more accurate than coarse-
-// voxel counting.
+// per-layer MC iso-extracted shells (not cf-cast's SDF voxel
+// integration): the closed-form mesh volume is both dependency-free
+// and more accurate than coarse-voxel counting.
 
 /// Per-silicone single-pour mass budget (kg) for the layered-
 /// silicone-device v1 cast — 2 lb via NIST's exact pound-to-kg
@@ -614,86 +560,35 @@ struct LayerSurfaceEntity;
 /// Snapshot of every input `update_layer_meshes` reads, kept in the
 /// system's `Local<>` so the per-frame check is "did the values
 /// actually change?" rather than "did Bevy's `Res::is_changed()`
-/// tick?". The latter is the deref-mut-on-access footgun; the
-/// former is the documented escape hatch (same posture as
-/// `insertion_sim_ui::invalidate_on_geometry_change`).
-///
-/// Fields cover every input that affects the rendered layer meshes:
-///
-/// - `cavity` / `layers`: govern the displaced shell vertex
-///   positions and which materials/colors the shells get.
-/// - `heat_map_on` / `scalar_mode`: pick which color buffer (Ψ or
-///   ‖P‖) drives the per-vertex COLOR attribute when heat map is
-///   on, or revert to palette tint when off.
-/// - `last_run_generation`: a counter `InsertionSimState` bumps
-///   whenever `last_run` changes meaningfully (a new run completed,
-///   or invalidation cleared the previous). The Vec<Vec<[f32; 4]>>
-///   color buffers themselves are large + identity-only, so we
-///   track this scalar proxy instead.
-///
-/// `proxy` / `up` / `render_scale` are intentionally NOT in the key:
-/// they're set once at app start and never change.
+/// tick?". The latter is the deref-mut-on-access footgun
+/// (`device_design_panel` holds both `CavityState` + `LayersState` as
+/// `ResMut<>`, so their change ticks fire every frame regardless of
+/// whether a value moved); the former is the documented escape hatch
+/// per [[project-bevy-is-changed-footgun]].
 #[derive(Debug, Clone, PartialEq)]
 struct LayerMeshKey {
     cavity: CavityState,
     layers: LayersState,
-    heat_map_on: bool,
-    scalar_mode: cf_device_types::ScalarMode,
-    last_run_generation: u64,
-    /// Slice S1 — playback-slider index. A step change re-projects the
-    /// heat map at the new step's per-tet scalar field.
-    displayed_step: usize,
-    /// Slice S3 — when `true`, the per-layer shells render the FEM
-    /// analysis mesh's deformed outer faces at `displayed_step`
-    /// instead of the rest-frame SDF iso. Same toggle the cavity uses;
-    /// keeps the two renders consistent.
-    show_deformed: bool,
 }
 
-/// Slice S11.2 — translucency for the per-layer slab render. Each
-/// layer entity carries both its inner + outer face triangles
-/// (`InsertionSimOutputs::deformed_layer_slab_mesh_at`) and renders
-/// with `AlphaMode::Blend` at this alpha so the user sees through
-/// the outer layer into the inner ones + the cavity + intruder.
-/// Bookmark §3 Tier 1 (2)–(3): opaque outer shells occluded
-/// everything else (finding F3); 0.35 lets the user see a clear
-/// translucent band of silicone per layer without losing the inner
-/// geometry behind it.
+/// Translucency for the per-layer surface shells so outer layers don't
+/// fully occlude the inner geometry + cavity. 0.35 keeps each layer
+/// readable as a translucent band of silicone without losing what's
+/// behind it.
 const LAYER_SLAB_ALPHA: f32 = 0.35;
 
 /// Snapshot of every input `update_cavity_mesh` reads, kept in the
 /// system's `Local<>` so the per-frame check is "did the values
 /// actually change?" rather than "did Bevy's `Res::is_changed()`
-/// tick?" — same posture as [`LayerMeshKey`] +
-/// `insertion_sim_ui::invalidate_on_geometry_change`.
-///
-/// `show_deformed` + `displayed_step` + `last_run_generation` are the
-/// slice-S2 additions: a step-scrub, a Show-deformed toggle, or a new
-/// run completion each rebuilds the cavity mesh asset.
+/// tick?" — same posture as [`LayerMeshKey`].
 #[derive(Debug, Clone, PartialEq)]
 struct CavityMeshKey {
     cavity: CavityState,
-    show_deformed: bool,
-    displayed_step: usize,
-    last_run_generation: u64,
 }
 
-/// Regenerate the cavity mesh asset.
-///
-/// Two render modes:
-///
-/// - **Rest** (default; pre-S2 behavior): cavity surface extracted from
-///   the cached scan SDF at `iso = -cavity.inset_m`. Slice 9 sub-leaf
-///   3's smooth MC iso-surface, fitting the scan exactly perpendicular
-///   to its source (no apex-nipple artifacts).
-/// - **Deformed** (slice S2; only when `sim_state.show_deformed && last_run.is_some()`):
-///   cavity entity gets the FEM analysis mesh's deformed boundary at
-///   `sim_state.displayed_step` — the same BCC vertex layout the ramp
-///   solves on, with each step's `x_final` displaced coordinates.
-///   Coarser than the SDF iso (4 mm BCC vs ~1 mm MC) but it's the
-///   "see the squish" view the workshop user reaches for after a sim
-///   completes. Falls back to rest if `displayed_step` is out of the
-///   converged-step range.
+/// Regenerate the cavity mesh asset from the cached scan SDF at
+/// `iso = -cavity.inset_m`. Smooth MC iso-surface, fitting the scan
+/// exactly perpendicular to its source (no apex-nipple artifacts).
 ///
 /// Change-detection mirrors [`update_layer_meshes`]: snapshot-and-
 /// compare via `Local<Option<CavityMeshKey>>` so a Bevy `ResMut<T>`
@@ -705,38 +600,18 @@ fn update_cavity_mesh(
     cap_planes: Res<sdf_layers::CapPlanes>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    sim_state: Res<insertion_sim_ui::InsertionSimState>,
     mut last_key: Local<Option<CavityMeshKey>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut q: Query<(&mut Mesh3d, &mut Visibility), With<CavityEntity>>,
 ) {
-    let current_key = CavityMeshKey {
-        cavity: *state,
-        show_deformed: sim_state.show_deformed,
-        displayed_step: sim_state.displayed_step,
-        last_run_generation: sim_state.last_run_generation,
-    };
+    let current_key = CavityMeshKey { cavity: *state };
     let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
     *last_key = Some(current_key);
     if !changed {
         return;
     }
-    // Slice S2 — deformed view consumes the FEM boundary at the
-    // displayed step; otherwise fall through to the rest-frame SDF
-    // iso extraction. The decision + mesh build are loop-invariant
-    // (one CavityEntity expected; the loop is defensive against
-    // transient duplicates), so they live outside the entity loop.
-    let cavity_indexed = if sim_state.show_deformed {
-        sim_state
-            .last_run
-            .as_ref()
-            .and_then(|run| run.deformed_boundary_mesh_at(sim_state.displayed_step))
-            .unwrap_or_else(|| {
-                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m)
-            })
-    } else {
-        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m)
-    };
+    let cavity_indexed =
+        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m);
     let mesh_asset = meshes.add(build_bevy_mesh_from_indexed(
         &cavity_indexed,
         *up,
@@ -759,35 +634,17 @@ fn update_cavity_mesh(
 /// separate "outer envelope" concept). Each entity's visibility
 /// tracks its own `LayerSpec::visible` flag.
 ///
-/// Slice 9 sub-leaf 4 — the load-bearing visual gate of the
-/// SDF-based-layer-surfaces arc. Replaces per-vertex radial
-/// displacement of `EnvelopeProxyMesh` with
-/// [`sdf_layers::extract_layer_surface`] at `iso = cumulative_thickness
-/// - cavity.inset_m`. Two consequences worth pinning:
+/// Surfaces come from [`sdf_layers::extract_layer_surface`] at
+/// `iso = cumulative_thickness - cavity.inset_m` — exact perpendicular
+/// to the scan by construction (no apex-nipple artifacts; the
+/// SDF-based path that retired the per-vertex radial displacement
+/// in slice 9).
 ///
-/// 1. **Dome-apex nipple gone.** The per-vertex path raced apex
-///    vertices outward (their radial pointed up-and-out from a
-///    centerline point inside the body); the SDF iso is exactly
-///    perpendicular to the source by construction, so the apex
-///    grows uniformly with thickness.
-/// 2. **Per-layer MC mesh topology.** Each layer has its own vertex
-///    set; together with its own face set, this replaces every
-///    layer sharing the proxy's connectivity. The Insertion Sim
-///    panel's heat-map projection was keyed on
-///    `proxy.vertices.len()`; that path is temporarily disabled
-///    here and re-wired in sub-leaf 7 via per-layer-vertex
-///    closest-point lookup against the SDF tet mesh.
-///
-/// **Change-detection** (cold-read finding from slice-9 follow-up):
-/// the prior implementation gated on
-/// `layers.is_changed() || cavity.is_changed() || sim_state.is_changed()`.
-/// All three resources are held as `ResMut<>` by
-/// `device_design_panel`, which bumps their change ticks every frame
-/// regardless of whether any value moved. Net effect: the guard
-/// always passed, and the 6 layer entities despawned-and-respawned
-/// every frame. Snapshot-and-compare via `Local<>` (same posture
-/// `invalidate_on_geometry_change` uses) keeps rebuild cost paid
-/// only on real input changes.
+/// Change-detection is snapshot-and-compare via `Local<>` (same
+/// posture as [`update_cavity_mesh`]), not `Res::is_changed()` —
+/// `device_design_panel` holds `CavityState` + `LayersState` as
+/// `ResMut<>` so their ticks fire every frame regardless of value
+/// motion per [[project-bevy-is-changed-footgun]].
 ///
 /// **Envelope note** ([`sdf_layers::LAYER_GRID_MARGIN_M`] = 40 mm):
 /// cumulative thickness theoretically reaches 6 layers × 20 mm =
@@ -807,7 +664,6 @@ fn update_layer_meshes(
     cap_planes: Res<sdf_layers::CapPlanes>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    sim_state: Res<insertion_sim_ui::InsertionSimState>,
     mut last_key: Local<Option<LayerMeshKey>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -817,11 +673,6 @@ fn update_layer_meshes(
     let current_key = LayerMeshKey {
         cavity: *cavity,
         layers: layers.clone(),
-        heat_map_on: sim_state.heat_map_on,
-        scalar_mode: sim_state.scalar_mode,
-        last_run_generation: sim_state.last_run_generation,
-        displayed_step: sim_state.displayed_step,
-        show_deformed: sim_state.show_deformed,
     };
     let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
     *last_key = Some(current_key);
@@ -834,25 +685,6 @@ fn update_layer_meshes(
     if layers.layers.is_empty() {
         return;
     }
-    // Pre-fetch the heat-map run reference for the per-layer
-    // projection (sub-leaf 7). When `heat_map_on && last_run` →
-    // each layer gets a per-MC-vertex projection from the sim's
-    // per-tet scalar field; otherwise palette tint.
-    let heat_map_run = if sim_state.heat_map_on {
-        sim_state.last_run.as_ref()
-    } else {
-        None
-    };
-    // Slice S3 — deformed-shells path consumes `last_run`'s per-layer
-    // outer faces at the displayed step; falls through to the
-    // rest-frame SDF iso when toggled off OR when the sim's layer
-    // count doesn't cover this UI layer (e.g., user added a layer
-    // after the run).
-    let deformed_layers_run = if sim_state.show_deformed {
-        sim_state.last_run.as_ref()
-    } else {
-        None
-    };
     let mut cumulative_thickness_m = 0.0_f64;
     for (i, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
@@ -872,59 +704,19 @@ fn update_layer_meshes(
         // `debug_assert!` (strict `<`) still passes in debug builds.
         let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
         let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
-        // Slice S11.2 — deformed-shells path picks the SLAB mesh
-        // (inner + outer faces) so the user reads each layer as a
-        // translucent band of silicone instead of an opaque outer
-        // skin. Falls through to the legacy outer-only helper when
-        // the slab build is unavailable (e.g., sim ran with fewer
-        // layers than the GUI now shows), then to the rest-frame
-        // SDF iso when the deformed view is off altogether.
-        let layer_indexed = deformed_layers_run
-            .and_then(|run| run.deformed_layer_slab_mesh_at(i, sim_state.displayed_step))
-            .or_else(|| {
-                deformed_layers_run
-                    .and_then(|run| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
-            })
-            .unwrap_or_else(|| {
-                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
-            });
-        // Heat-map: project per-tet scalars onto this layer's MC
-        // vertices (sub-leaf 7). `project_layer_heat_map` returns
-        // `None` if the sim ran with fewer layers than the current
-        // GUI shows, or the layer has no tets in its partition —
-        // in either case the layer falls back to the palette tint.
-        let colors_vec = heat_map_run.and_then(|run| {
-            insertion_sim_ui::project_layer_heat_map(
-                run,
-                i,
-                sim_state.scalar_mode,
-                sim_state.displayed_step,
-                &layer_indexed.vertices,
-            )
-        });
-        let colors_slice = colors_vec.as_deref();
-        let mesh = meshes.add(build_bevy_mesh_from_indexed_with_colors(
+        let layer_indexed =
+            sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m);
+        let mesh = meshes.add(build_bevy_mesh_from_indexed(
             &layer_indexed,
             *up,
             render_scale.0,
-            colors_slice,
         ));
         let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
-        // Slice S11.2 — slab materials carry `LAYER_SLAB_ALPHA` and
-        // `AlphaMode::Blend` so outer layers don't fully occlude the
-        // inner geometry. Heat-map mode pins base color to white so
-        // the per-vertex COLOR attribute carries the gradient
-        // straight through (StandardMaterial multiplies base ×
-        // vertex × light); off mode keeps the palette tint with the
-        // same alpha.
-        let base_color = if colors_slice.is_some() {
-            Color::srgba(1.0, 1.0, 1.0, LAYER_SLAB_ALPHA)
-        } else {
-            Color::srgba(r, g, b, LAYER_SLAB_ALPHA)
-        };
+        // `AlphaMode::Blend` + `LAYER_SLAB_ALPHA` so outer layers don't
+        // fully occlude the inner geometry + cavity.
         let material = materials.add(ExtendedMaterial {
             base: StandardMaterial {
-                base_color,
+                base_color: Color::srgba(r, g, b, LAYER_SLAB_ALPHA),
                 alpha_mode: AlphaMode::Blend,
                 double_sided: true,
                 cull_mode: None,
@@ -961,208 +753,6 @@ fn apply_scan_mesh_visibility(
         } else {
             Visibility::Hidden
         };
-    }
-}
-
-/// SL.4 — spawn the intruder render entity at startup with the cleaned
-/// scan mesh as its constant `Mesh3d`. The sliding intruder is a rigid
-/// body of constant geometry translated along the centerline arc, so
-/// the mesh asset never changes after spawn; per-step pose lives in the
-/// entity's `Transform`, written by [`update_intruder_mesh`] from
-/// `InsertionSimOutputs::intruder_pose_at(displayed_step)`.
-///
-/// Distinct from S4 (which also mounted the bare scan up front but
-/// drove a hand-built ramp transform) and S11.1 (which swapped per-step
-/// iso meshes against a growing intruder): the SL.2 sliding ramp records
-/// the rigid pose at every converged step in `SlideRamp.intruder_poses`,
-/// so SL.4 just consumes that field — no per-step mesh rebuild, no SDF
-/// iso extraction at render time.
-#[allow(clippy::needless_pass_by_value)]
-fn spawn_intruder_mesh(
-    mut commands: Commands,
-    scan: Res<ScanMesh>,
-    up: Res<UpAxis>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut clip_materials: ResMut<Assets<ClipPlaneMaterial>>,
-) {
-    let bevy_mesh = triangle_mesh_flat_shaded(&scan.0, None, *up);
-    let material = clip_materials.add(ExtendedMaterial {
-        base: StandardMaterial {
-            base_color: Color::srgb(INTRUDER_COLOR.0, INTRUDER_COLOR.1, INTRUDER_COLOR.2),
-            metallic: 0.10,
-            perceptual_roughness: 0.6,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        },
-        extension: ClipPlaneExt::default(),
-    });
-    commands.spawn((
-        Mesh3d(meshes.add(bevy_mesh)),
-        MeshMaterial3d(material),
-        Visibility::Hidden,
-        IntruderEntity,
-    ));
-}
-
-/// Snapshot of every input [`update_intruder_mesh`] reads, kept in the
-/// system's `Local<>` so the per-frame check is "did the values
-/// actually change?" rather than "did Bevy's `Res::is_changed()`
-/// tick?" — same posture as [`CavityMeshKey`] +
-/// [`LayerMeshKey`] +
-/// `insertion_sim_ui::invalidate_on_geometry_change`.
-///
-/// `last_run_generation` rolls forward at the only two `last_run`
-/// mutation sites in `insertion_sim_ui.rs`: the poll-task that sets
-/// `last_run = Some(outputs)` after sim completes, and the
-/// geometry-change resnapshot that clears `last_run = None`. Both
-/// bump generation (`wrapping_add(1)`) immediately after the
-/// mutation — find via grep, not line numbers (line numbers drift
-/// with every cf-device-design refactor). Any
-/// `last_run.is_sliding_mode()` flip is already captured by a
-/// generation change, so a separate `is_sliding_mode` field would
-/// be redundant in the key.
-#[derive(Debug, Clone, PartialEq)]
-struct IntruderMeshKey {
-    displayed_step: usize,
-    last_run_generation: u64,
-    show_deformed: bool,
-}
-
-/// Convert a physics-frame rigid pose to a Bevy [`Transform`] under the
-/// device's [`UpAxis`] convention, applying the `render_scale` lift.
-///
-/// SL.4 — consumed by [`update_intruder_mesh`]. The intruder mesh is
-/// mounted in [`spawn_intruder_mesh`] with vertices already in Bevy
-/// frame (via [`triangle_mesh_flat_shaded`]) but in unscaled meters,
-/// so the returned transform carries:
-///
-/// - `translation`: physics-frame translation projected through
-///   [`UpAxis::to_bevy_point`] and scaled by `render_scale`.
-/// - `rotation`: physics-frame rotation conjugated by the axis-swap
-///   permutation `S` (`R_bevy = S · R_phys · S`; `S² = I` because each
-///   variant's swap is its own inverse — same property called out at
-///   `sim/L1/bevy/src/convert.rs:55` for the workspace-canonical
-///   Z-up↔Y-up conversion). For `PlusZ` and `PlusX` the swap is a
-///   reflection (det = -1), which inverts the rotation sense — the
-///   closed-form quaternion identity collapses to a scalar component
-///   swap with negated vector parts (mirroring
-///   `tools/cf-scan-prep/src/main.rs::physics_quat_to_bevy_for_plus_z`).
-///   For `PlusY` (identity swap) the quaternion is copied verbatim.
-/// - `scale`: uniform `render_scale` — matches the
-///   [`Transform::from_scale`] applied to [`ScanMeshEntity`] at
-///   [`setup_render_scene`].
-///
-/// For iter-1 the [`run_sliding_insertion_ramp`] pose is translation-
-/// only (per `slide_pose_at`), but the rotation branch is kept active
-/// so the banked iter-2 rotation enable lands without rework.
-///
-/// [`run_sliding_insertion_ramp`]: insertion_sim::run_sliding_insertion_ramp
-#[inline]
-#[must_use]
-fn pose_to_bevy_transform(pose: Isometry3<f64>, up: UpAxis, render_scale: f32) -> Transform {
-    let phys_point = Point3::from(pose.translation.vector);
-    let bevy_t = up.to_bevy_point(&phys_point);
-    let translation = Vec3::from_array(bevy_t) * render_scale;
-
-    let q = pose.rotation;
-    #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
-    let rotation = match up {
-        UpAxis::PlusY => Quat::from_xyzw(q.i as f32, q.j as f32, q.k as f32, q.w as f32),
-        UpAxis::PlusZ => Quat::from_xyzw(-q.i as f32, -q.k as f32, -q.j as f32, q.w as f32),
-        UpAxis::PlusX => Quat::from_xyzw(-q.j as f32, -q.i as f32, -q.k as f32, q.w as f32),
-    };
-
-    Transform {
-        translation,
-        rotation,
-        scale: Vec3::splat(render_scale),
-    }
-}
-
-/// Visibility-gate composition for the sliding-mode intruder render —
-/// extracted from [`update_intruder_mesh`] so the three-input branch
-/// matrix can be exercised in unit tests without spinning up a Bevy
-/// world. Returns `Some(pose)` only when sliding mode + deformed-view
-/// are both on AND a pose exists at the displayed step.
-#[inline]
-#[must_use]
-fn visible_pose_for_intruder(
-    is_sliding: bool,
-    show_deformed: bool,
-    pose_at: Option<Isometry3<f64>>,
-) -> Option<Isometry3<f64>> {
-    if is_sliding && show_deformed {
-        pose_at
-    } else {
-        None
-    }
-}
-
-/// SL.4 — write per-step rigid pose to the [`IntruderEntity`] from
-/// [`InsertionSimOutputs::intruder_pose_at`]. Replaces the SL.3
-/// always-hide stub. The intruder mesh asset is constant (mounted at
-/// startup by [`spawn_intruder_mesh`]); per-step kinematics live in
-/// the entity's `Transform`.
-///
-/// Visibility = `last_run.is_sliding_mode() && show_deformed &&
-/// intruder_pose_at(displayed_step).is_some()` — composed by
-/// [`visible_pose_for_intruder`].
-/// - `is_sliding_mode`: growing mode records identity poses per spec
-///   §3e (the growing intruder grows in place via SDF offset, not
-///   translation), so this system excludes it. SL.7 pass-B may
-///   reawaken a separate growing-mode visualization.
-/// - `show_deformed`: symmetric with [`update_cavity_mesh`] — when
-///   OFF the cavity renders at rest, so an identity-relative intruder
-///   would overlap its own rest-pose footprint confusingly. Playback
-///   ON shows the matched deformed-cavity / moving-intruder pair.
-/// - `pose_at(step).is_some()`: bakes "we have a completed run AND
-///   the step is in range" into one check.
-///
-/// Snapshot-and-compare via `Local<Option<IntruderMeshKey>>` —
-/// `Res::is_changed()` fires every frame because the panel + sim
-/// systems hold `ResMut<InsertionSimState>` (per
-/// `[[project-bevy-is-changed-footgun]]`).
-///
-/// [`InsertionSimOutputs::intruder_pose_at`]: insertion_sim_ui::InsertionSimOutputs::intruder_pose_at
-/// [`update_cavity_mesh`]: crate::update_cavity_mesh
-#[allow(clippy::needless_pass_by_value)]
-fn update_intruder_mesh(
-    sim_state: Res<insertion_sim_ui::InsertionSimState>,
-    up: Res<UpAxis>,
-    render_scale: Res<RenderScale>,
-    mut last_key: Local<Option<IntruderMeshKey>>,
-    mut q: Query<(&mut Transform, &mut Visibility), With<IntruderEntity>>,
-) {
-    let current_key = IntruderMeshKey {
-        displayed_step: sim_state.displayed_step,
-        last_run_generation: sim_state.last_run_generation,
-        show_deformed: sim_state.show_deformed,
-    };
-    let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
-    *last_key = Some(current_key);
-    if !changed {
-        return;
-    }
-
-    let visible_pose = sim_state.last_run.as_ref().and_then(|run| {
-        visible_pose_for_intruder(
-            run.is_sliding_mode(),
-            sim_state.show_deformed,
-            run.intruder_pose_at(sim_state.displayed_step),
-        )
-    });
-
-    for (mut t, mut v) in &mut q {
-        match visible_pose {
-            Some(pose) => {
-                *t = pose_to_bevy_transform(pose, *up, render_scale.0);
-                *v = Visibility::Visible;
-            }
-            None => {
-                *v = Visibility::Hidden;
-            }
-        }
     }
 }
 
@@ -1573,10 +1163,8 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
     }
 }
 
-/// Right-side egui sidebar carrying the design-suite panels.
-/// Renders Scan Info + Cavity + Layers + Validations; remaining
-/// stubs surface the planned panel order (Insertion Sim /
-/// Save-Open).
+/// Right-side egui sidebar carrying the design-suite panels:
+/// Scan Info + Cavity + Layers + Validations + Clip-plane + Save-Open.
 ///
 /// [`compute_validations`] runs once at the top of the panel, from
 /// the current resource state, and the resulting [`DeviceValidations`]
@@ -1586,7 +1174,7 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 /// readouts one frame later — imperceptible at frame rate, and it
 /// keeps both sections reading a single consistent computation
 /// rather than each re-deriving it.
-// 10 system parameters; over the default clippy cap. The alternative
+// 11 system parameters; over the default clippy cap. The alternative
 // is bundling resources into a SystemParam struct, which for this
 // single all-panels driver is more ceremony than the cap is worth —
 // every parameter is a Bevy resource consumed by a single section of
@@ -1603,13 +1191,10 @@ fn device_design_panel(
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
     mut clip_state: ResMut<clip_plane::ClipPlaneState>,
-    mut sim_state: ResMut<insertion_sim_ui::InsertionSimState>,
     mut save_state: ResMut<SaveState>,
-    scan_mesh: Option<Res<ScanMesh>>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     let validations = compute_validations(&cached_sdf, &cap_planes, &cavity, &layers);
-    let scan_loaded = scan_mesh.is_some();
     let centerline_available = centerline.points_m.len() >= 2;
     egui::SidePanel::right("cf-device-design-panels")
         .resizable(false)
@@ -1628,8 +1213,6 @@ fn device_design_panel(
                         &mut clip_state,
                         centerline_available,
                     );
-                    ui.separator();
-                    insertion_sim_ui::render_insertion_sim_section(ui, &mut sim_state, scan_loaded);
                     ui.separator();
                     render_save_open_section(ui, &mut save_state, &cavity, &layers, &scan_path.0);
                     render_panel_stubs(ui);
@@ -1674,16 +1257,11 @@ fn render_scan_info_section(
         });
 }
 
-/// Stub-section placeholders for panels arriving in later slices. UI
-/// only — no state to surface yet. Pre-populating with the future
-/// panel names so the user can see the planned layout. Order tracks
-/// the reprioritized slice ladder: the FEM insertion sim (slice 7)
-/// is pulled ahead of Features / Texture because the simulation IS
-/// the engineering payoff of the suite.
+/// Stub-section placeholders for panels arriving in later slices.
+/// Save/Open took the previous stub; nothing left to render today.
+/// The function remains so a future slice (Features / Texture) can
+/// hang its own placeholder back on it.
 fn render_panel_stubs(ui: &mut egui::Ui) {
-    // Slice 8 took the Save/Open stub; nothing left here today. The
-    // function remains so a future slice (10+: Features / Texture)
-    // can hang its own placeholder back on it.
     let _ = ui;
 }
 
@@ -1927,7 +1505,6 @@ fn run_render_app(
         .add_plugins(EguiPlugin::default())
         .add_plugins(OrbitCameraPlugin)
         .add_plugins(clip_plane::ClipPlanePlugin)
-        .add_plugins(insertion_sim_ui::InsertionSimPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(DEVICE_UP_AXIS)
         .insert_resource(RenderScale(render_scale))
@@ -1943,10 +1520,7 @@ fn run_render_app(
         .insert_resource(layers)
         .insert_resource(save_state)
         .insert_resource(ScanMeshVisible::default())
-        .add_systems(
-            Startup,
-            (setup_render_scene, spawn_cavity_mesh, spawn_intruder_mesh).chain(),
-        )
+        .add_systems(Startup, (setup_render_scene, spawn_cavity_mesh).chain())
         .add_systems(
             Update,
             (
@@ -1954,7 +1528,6 @@ fn run_render_app(
                 draw_reference_overlays,
                 update_cavity_mesh,
                 update_layer_meshes,
-                update_intruder_mesh,
                 apply_scan_mesh_visibility,
                 exit_on_esc,
             ),
@@ -2618,126 +2191,5 @@ another_future_field = "foo"
             slacker_point_label(&curve[1]),
             "+25% Slacker — Shore 000-40 (slight-to-very tack)",
         );
-    }
-
-    // ─── SL.4 — pose_to_bevy_transform ────────────────────────────────
-    //
-    // Round-tripping the device's `UpAxis::PlusZ` swap is the main
-    // load-bearing path (DEVICE_UP_AXIS = PlusZ); the +Y identity case
-    // is a control for the rotation match arm; the rotation-about-
-    // physics-Z case mirrors `sim/L1/bevy/src/convert.rs`'s
-    // `rotation_around_physics_z_becomes_negative_rotation_around_bevy_y`
-    // test (workspace canonical; SL.4 helper is the cf-device-design
-    // local mirror that switches on `UpAxis`).
-
-    #[test]
-    fn pose_to_bevy_transform_plus_z_swaps_y_and_z_and_keeps_identity_rotation() {
-        let pose = Isometry3::translation(1.0, 2.0, 3.0);
-        let t = pose_to_bevy_transform(pose, UpAxis::PlusZ, 0.5);
-        // (1, 2, 3) physics → (1, 3, 2) Bevy → × 0.5 scale.
-        assert!((t.translation.x - 0.5).abs() < 1e-6);
-        assert!((t.translation.y - 1.5).abs() < 1e-6);
-        assert!((t.translation.z - 1.0).abs() < 1e-6);
-        // Identity rotation stays identity through the scalar swap.
-        assert!(t.rotation.x.abs() < 1e-6);
-        assert!(t.rotation.y.abs() < 1e-6);
-        assert!(t.rotation.z.abs() < 1e-6);
-        assert!((t.rotation.w - 1.0).abs() < 1e-6);
-        // Uniform scale matches `ScanMeshEntity`.
-        assert!((t.scale.x - 0.5).abs() < 1e-6);
-        assert!((t.scale.y - 0.5).abs() < 1e-6);
-        assert!((t.scale.z - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn pose_to_bevy_transform_plus_y_is_identity_copy() {
-        // PlusY is the identity swap — translation and rotation copy
-        // through verbatim (modulo f64 → f32).
-        let q = nalgebra::UnitQuaternion::from_axis_angle(
-            &nalgebra::Unit::new_normalize(nalgebra::Vector3::new(1.0, 0.0, 0.0)),
-            std::f64::consts::FRAC_PI_3,
-        );
-        let pose = Isometry3::from_parts(nalgebra::Translation3::new(1.0, 2.0, 3.0), q);
-        let t = pose_to_bevy_transform(pose, UpAxis::PlusY, 1.0);
-        assert!((t.translation.x - 1.0).abs() < 1e-6);
-        assert!((t.translation.y - 2.0).abs() < 1e-6);
-        assert!((t.translation.z - 3.0).abs() < 1e-6);
-        #[allow(clippy::cast_possible_truncation)]
-        let expected = Quat::from_xyzw(q.i as f32, q.j as f32, q.k as f32, q.w as f32);
-        assert!(t.rotation.dot(expected).abs() > 0.999);
-    }
-
-    #[test]
-    fn pose_to_bevy_transform_plus_z_negates_rotation_about_physics_z() {
-        // Physics +90° about +Z (the up axis under PlusZ) → Bevy -90°
-        // about +Y. The Y↔Z swap is a reflection (det = -1), which
-        // flips the handedness of the swapped plane and inverts the
-        // rotation sense. Mirrors `sim/L1/bevy/src/convert.rs`'s
-        // `rotation_around_physics_z_becomes_negative_rotation_around_bevy_y`.
-        let q = nalgebra::UnitQuaternion::from_axis_angle(
-            &nalgebra::Unit::new_normalize(nalgebra::Vector3::z()),
-            std::f64::consts::FRAC_PI_2,
-        );
-        let pose = Isometry3::from_parts(nalgebra::Translation3::identity(), q);
-        let t = pose_to_bevy_transform(pose, UpAxis::PlusZ, 1.0);
-        let expected = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
-        assert!(
-            t.rotation.dot(expected).abs() > 0.999,
-            "physics +90° Z → bevy -90° Y; got {:?}, expected {expected:?}",
-            t.rotation,
-        );
-    }
-
-    #[test]
-    fn pose_to_bevy_transform_plus_x_negates_rotation_about_physics_x() {
-        // Symmetric sibling of the PlusZ rotation test. Under PlusX,
-        // physics +X is the up axis; the X↔Y swap is again a det = -1
-        // reflection, so physics +90° about +X → Bevy -90° about +Y.
-        let q = nalgebra::UnitQuaternion::from_axis_angle(
-            &nalgebra::Unit::new_normalize(nalgebra::Vector3::x()),
-            std::f64::consts::FRAC_PI_2,
-        );
-        let pose = Isometry3::from_parts(nalgebra::Translation3::identity(), q);
-        let t = pose_to_bevy_transform(pose, UpAxis::PlusX, 1.0);
-        let expected = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
-        assert!(
-            t.rotation.dot(expected).abs() > 0.999,
-            "physics +90° X → bevy -90° Y; got {:?}, expected {expected:?}",
-            t.rotation,
-        );
-    }
-
-    // ─── SL.4.4 — visible_pose_for_intruder branch matrix ─────────────
-    //
-    // The helper composes three independent inputs. A `&&`/`||` typo or
-    // swapped guard would silently mis-render the intruder, so the
-    // four single-flip cases below pin down the truth table that
-    // `update_intruder_mesh` depends on.
-
-    fn dummy_pose() -> Isometry3<f64> {
-        Isometry3::translation(1.0, 2.0, 3.0)
-    }
-
-    #[test]
-    fn visible_pose_for_intruder_all_on_returns_pose() {
-        let p = dummy_pose();
-        assert_eq!(visible_pose_for_intruder(true, true, Some(p)), Some(p));
-    }
-
-    #[test]
-    fn visible_pose_for_intruder_not_sliding_hides() {
-        let p = dummy_pose();
-        assert_eq!(visible_pose_for_intruder(false, true, Some(p)), None);
-    }
-
-    #[test]
-    fn visible_pose_for_intruder_show_deformed_off_hides() {
-        let p = dummy_pose();
-        assert_eq!(visible_pose_for_intruder(true, false, Some(p)), None);
-    }
-
-    #[test]
-    fn visible_pose_for_intruder_no_pose_hides() {
-        assert_eq!(visible_pose_for_intruder(true, true, None), None);
     }
 }
