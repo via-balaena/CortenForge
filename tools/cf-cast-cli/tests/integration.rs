@@ -106,7 +106,7 @@ prep_toml = "scan.cleaned.prep.toml"
 
 [cast]
 mesh_cell_size_m = 0.005
-bounding_margin_m = 0.015
+wall_thickness_m = 0.005
 piece_min_wall_mm = 0.1
 split_normal = [0.0, 0.0, -1.0]
 output_dir = "out"
@@ -239,7 +239,7 @@ path = "scan.design.toml"
 
 [cast]
 mesh_cell_size_m = 0.005
-bounding_margin_m = 0.015
+wall_thickness_m = 0.005
 piece_min_wall_mm = 0.1
 split_normal = [0.0, 0.0, -1.0]
 output_dir = "out"
@@ -381,7 +381,7 @@ path = "scan.design.toml"
 
 [cast]
 mesh_cell_size_m = 0.005
-bounding_margin_m = 0.015
+wall_thickness_m = 0.005
 piece_min_wall_mm = 0.1
 split_normal = [0.0, 0.0, -1.0]
 output_dir = "out"
@@ -500,7 +500,7 @@ path = "scan.design.toml"
 
 [cast]
 mesh_cell_size_m = 0.005
-bounding_margin_m = 0.015
+wall_thickness_m = 0.005
 piece_min_wall_mm = 0.1
 split_normal = [0.0, 0.0, -1.0]
 output_dir = "out"
@@ -532,6 +532,133 @@ enabled = false
         !proc_text.contains("## Press-Fit Reservation"),
         "inset = 0 must omit Press-Fit section; got:\n{proc_text}",
     );
+}
+
+/// Compute the signed volume of a cf-cast-exported STL via the
+/// divergence theorem (`Σ a · (b × c) / 6`). Mirrors cf-device-design's
+/// `signed_volume_m3` (tools/cf-device-design/src/main.rs:774);
+/// reproduced here to keep cf-cast-cli's test crate independent of
+/// cf-device-design's egui-heavy dep tree. cf-cast exports STLs in
+/// the mm frame (`solid_to_mm_mesh` scales m → mm before save), so
+/// the raw sum is in mm³ — divide by 1000 to land in cm³.
+/// `.abs()` matches cf-device-design's posture against winding-sign
+/// noise on near-closed meshes.
+fn mesh_volume_cm3(path: &std::path::Path) -> f64 {
+    let mesh = mesh_io::load_stl(path).expect("load STL");
+    let mut six_volume_mm3 = 0.0_f64;
+    for face in &mesh.faces {
+        let a = mesh.vertices[face[0] as usize].coords;
+        let b = mesh.vertices[face[1] as usize].coords;
+        let c = mesh.vertices[face[2] as usize].coords;
+        six_volume_mm3 += a.dot(&b.cross(&c));
+    }
+    (six_volume_mm3 / 6.0).abs() / 1000.0
+}
+
+/// B1 mold-wall regression — after the Option A swap
+/// (`outermost.offset(wall_thickness_m)` replaces the cuboid
+/// bounding region; see `docs/CF_CAST_MOLD_WALL_RECON.md`), each
+/// mold piece must be a CONTOUR-following rind, not a brick. On
+/// the 30 mm cube fixture with a single 6 mm layer + 5 mm wall:
+///
+/// - outer surface ≈ cube at half-side 0.021 m → surface area
+///   ≈ `6 × 0.042² = 0.010584 m² = 105.84 cm²`
+/// - target shell volume ≈ `surface × wall = 105.84 × 0.5 = 52.92 cm³`
+///
+/// The piece-volume bound is `2 × shell_target_cm³` per piece — loose
+/// enough to absorb MC stair-step at 5 mm cells, tight enough that a
+/// regression re-introducing the cuboid (which would jump per-piece
+/// volume ~10× per the iter-1 sock recon table at §3) would trip.
+#[test]
+fn cube_fixture_mold_pieces_follow_contour_not_cuboid() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scan_stl = tmp.path().join("scan.cleaned.stl");
+    let prep_toml = tmp.path().join("scan.cleaned.prep.toml");
+    let cast_toml = tmp.path().join("cast.toml");
+
+    let mesh = cube_mesh_m();
+    save_stl(&mesh, &scan_stl, true).unwrap();
+
+    std::fs::write(
+        &prep_toml,
+        r#"
+[scan_prep]
+source_stl = "raw.stl"
+tool_version = "0.0.0-test"
+generated_at = "2026-05-13T00:00:00Z"
+stl_units_at_load = "m"
+
+[centerline]
+points_m = [
+    [-0.011, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [0.011, 0.0, 0.0],
+]
+algorithm = "cross_section_centroids"
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &cast_toml,
+        r#"
+[scan]
+cleaned_stl = "scan.cleaned.stl"
+prep_toml = "scan.cleaned.prep.toml"
+
+[cast]
+mesh_cell_size_m = 0.005
+wall_thickness_m = 0.005
+piece_min_wall_mm = 0.1
+split_normal = [0.0, 0.0, -1.0]
+output_dir = "out"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[plug_pins]
+enabled = false
+
+[pour_gate]
+enabled = false
+
+[registration_pins]
+enabled = false
+"#,
+    )
+    .unwrap();
+
+    cf_cast_cli::run(&cast_toml, None).expect("cf-cast-cli end-to-end run");
+    let out_dir: PathBuf = tmp.path().join("out");
+
+    // Compute the analytical shell-target per the docstring above:
+    // cube half-side 15 mm + 6 mm layer = 21 mm; surface area
+    // ≈ 6 × (2 × 21 mm)² = 1.0584e-2 m² = 105.84 cm². Shell-target
+    // volume = surface × wall_thickness = 105.84 cm² × 0.5 cm
+    // = 52.92 cm³.
+    let outer_half_cm: f64 = 1.5 + 0.6;
+    let surface_area_cm2 = 6.0 * (2.0 * outer_half_cm).powi(2);
+    let shell_target_cm3 = surface_area_cm2 * 0.5;
+    let per_piece_bound_cm3 = 2.0 * shell_target_cm3;
+
+    for piece in ["mold_layer_0_piece_0.stl", "mold_layer_0_piece_1.stl"] {
+        let p = out_dir.join(piece);
+        let v_cm3 = mesh_volume_cm3(&p);
+        assert!(
+            v_cm3 < per_piece_bound_cm3,
+            "{piece} volume {v_cm3:.2} cm³ exceeds 2 × shell_target \
+             {per_piece_bound_cm3:.2} cm³ — contour-following rind \
+             regressed to cuboid envelope?",
+        );
+        // Sanity floor: pieces must have non-trivial volume (catch
+        // a degenerate-empty-piece regression separately from the
+        // cuboid-shaped-regression upper bound).
+        assert!(
+            v_cm3 > 0.1,
+            "{piece} volume {v_cm3} cm³ is degenerately small"
+        );
+    }
 }
 
 /// Slice 9 — cast.toml with neither `[design]` nor `[[layers]]` is
