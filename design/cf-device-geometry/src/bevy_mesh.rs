@@ -5,9 +5,12 @@
 //! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.c (§1.7 "Duplicate") so
 //! cf-device-design (cavity + validations) and cf-sim-research
 //! (Phase 3 cavity + per-layer + intruder rendering) consume the
-//! same adapter — used by the rest-frame cavity spawner, the heat-
-//! map color path on per-layer surfaces, and the deformed-cavity /
-//! intruder render in the sim panel.
+//! same adapter. Plain (no-color) consumers: cf-device-design's
+//! rest-frame cavity spawner + palette-tinted per-layer surface
+//! meshes, plus cf-sim-research's rest-frame cavity. Colored
+//! consumers (cf-sim-research only): heat-map color path on
+//! per-layer surfaces + the deformed-cavity / intruder render in
+//! the sim panel.
 
 use bevy::prelude::*;
 use cf_bevy_common::axis::UpAxis;

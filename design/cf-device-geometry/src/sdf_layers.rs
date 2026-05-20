@@ -15,7 +15,7 @@
 //!   via the local `decimate_scan_for_sdf` (regular `simplify_decoder`
 //!   with sloppy fallback + degenerate hygiene — mirrors
 //!   `compute_envelope_proxy_mesh`'s pipeline, NOT
-//!   `insertion_sim::decimate_for_sdf`'s sloppy-only path which the
+//!   cf-sim-research's `insertion_sim::decimate_for_sdf` sloppy-only path which the
 //!   FEM BCC-mesher resamples past anyway). mesh-sdf has no spatial
 //!   acceleration; brute-force O(faces) per query, so the raw
 //!   3 M-face scan is non-viable — measured 39 s grid fill at 5 mm.
@@ -140,7 +140,7 @@ pub const LAYER_GRID_MARGIN_M: f64 = 0.040;
 // CAP_FACE_PLANARITY_EPS_M / CAP_FACE_NORMAL_DOT_MIN /
 // CAP_FACE_CENTROID_DIST_M lifted to cf-cap-planes alongside
 // `dome_wall_only_mesh` + `report_cap_face_classification` so cf-cast-cli
-// + insertion_sim can consume the same classifier without duplication.
+// + cf-sim-research's insertion_sim can consume the same classifier without duplication.
 // Tests below import `cf_cap_planes::CAP_FACE_PLANARITY_EPS_M`
 // directly where the original value was used as an assertion bound.
 
@@ -174,11 +174,12 @@ pub const LAYER_GRID_MARGIN_M: f64 = 0.040;
 ///   [`extract_layer_surface`].
 ///
 /// `sdf_closed` and `sdf_open` (the underlying mesh-derived SDFs) are
-/// retained for two future uses: (a) the heat-map re-projection
-/// (per-tet → per-layer-vertex closest-point lookup) and (b) a
-/// higher-fidelity Save path. `bounds` is held for the same future
-/// Save-side consumer + for `cf_design::Sdf` adapters that need an
-/// outer bounding interval.
+/// retained for two future per-binary uses: (a) cf-sim-research's
+/// heat-map re-projection (per-tet → per-layer-vertex closest-point
+/// lookup), and (b) cf-device-design's higher-fidelity Save path.
+/// `bounds` is held for the same future cf-device-design Save
+/// consumer + for `cf_design::Sdf` adapters that need an outer
+/// bounding interval.
 #[derive(Resource, Clone)]
 pub struct CachedScanSdf {
     /// Reference-counted SDF over the decimated CLOSED scan (cap
@@ -251,7 +252,7 @@ pub struct CachedScanSdf {
 /// produced visual artifacts in the preview).
 ///
 /// Why a dedicated decimator here rather than reusing
-/// `insertion_sim::decimate_for_sdf`: that path is sloppy-only by
+/// cf-sim-research's `insertion_sim::decimate_for_sdf`: that path is sloppy-only by
 /// design — sized for raw uncleaned scans with disconnected
 /// components / degenerates that block topology-preserving collapse,
 /// and tuned for the FEM sim's BCC-mesher (which tolerates slivers
@@ -773,7 +774,7 @@ pub fn extract_layer_surface(
 ///
 /// Why sample instead of MC the cached SDF directly: the FEM solves
 /// against `geometry.intruder`, which is built from a SLOPPY decimator
-/// at a 3 mm grid (per `insertion_sim::build_insertion_geometry`); the
+/// at a 3 mm grid (per cf-sim-research's `insertion_sim::build_insertion_geometry`); the
 /// cached scan SDF uses a TOPOLOGY-PRESERVING decimator at a 5 mm
 /// grid (per `build_cached_scan_sdf`). On iter-1 the two iso surfaces
 /// differ by SEVERAL mm — the deformed cavity (BCC mesh anchored to
@@ -812,7 +813,7 @@ pub fn sample_sdf_into_cached_template<S: Sdf + ?Sized>(
 /// the same `LAYER_GRID_MARGIN_M` envelope `debug_assert!` the
 /// per-layer + cavity extraction paths use. Wraps the
 /// `MarchingCubesConfig::at_iso_value` / `marching_cubes` boilerplate
-/// for the per-step intruder loop in `insertion_sim_ui`.
+/// for the per-step intruder loop in cf-sim-research's `insertion_sim_ui`.
 #[must_use]
 pub fn marching_cubes_at_iso(grid: &ScalarGrid, iso: f64) -> IndexedMesh {
     debug_assert!(
