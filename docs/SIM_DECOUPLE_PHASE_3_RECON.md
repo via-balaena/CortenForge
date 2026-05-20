@@ -311,11 +311,12 @@ Phase 2 inserted: `UpAxis`, `RenderScale`, `ScanMesh`, `ScanFilePath`,
 `ScanInfo`, `Centerline`, `CavityState`, `LayersState`,
 `ScanMeshVisible`.
 
-Phase 3 adds (delta): `CachedScanSdf` (from cf-device-geometry),
-`CapPlanes` (from cf-device-geometry), `ClipPlaneState` (from
-cf-device-geometry — binds the clip-plane material the sim
-systems mount), `InsertionSimState` (registered by `InsertionSimPlugin`).
-No conflicts — all new.
+Phase 3 adds (delta): `CachedScanSdf` (inserted at startup in
+`main`), `CapPlanes` (inserted at startup in `main`), `ClipPlaneState`
+(registered by `ClipPlanePlugin::build` — `cf-device-geometry` ships
+the plugin, the binary just adds the plugin and the resource lands
+as a side effect), `InsertionSimState` (registered by
+`InsertionSimPlugin::build` — same shape). No conflicts — all new.
 
 cf-device-design's `run_render_app` resource set after Phase 4
 strip: **`CachedScanSdf` + `CapPlanes` + `ClipPlaneState` stay**

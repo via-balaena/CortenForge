@@ -1573,10 +1573,11 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
     }
 }
 
-/// Right-side egui sidebar carrying the design-suite panels.
-/// Renders Scan Info + Cavity + Layers + Validations; remaining
-/// stubs surface the planned panel order (Insertion Sim /
-/// Save-Open).
+/// Right-side egui sidebar carrying the sim-research panel sections.
+/// Renders Scan Info + Cavity + Layers + Validations + ClipPlane +
+/// Insertion Sim. No Save-Open section per Q5.4 (sim viewer is
+/// read-only WRT disk — the panel applies in-session edits to the
+/// live resources but never writes back to `.design.toml`).
 ///
 /// [`compute_validations`] runs once at the top of the panel, from
 /// the current resource state, and the resulting [`DeviceValidations`]
@@ -1669,9 +1670,11 @@ fn render_scan_info_section(
         });
 }
 
-// Phase 3 — Save / Open panel, `SaveState`, `SaveMessage`, and the
-// `render_panel_stubs` placeholder are intentionally absent from this
-// binary (Q5.4 default lean: sim viewer is read-only WRT disk). The
+// Phase 3 — the save-related surface is intentionally absent from
+// this binary (Q5.4 default lean: sim viewer is read-only WRT disk):
+// `SaveState` + `SaveMessage` + `render_save_open_section` +
+// `render_panel_stubs` + the `ScanFilePath` resource were all
+// stripped during the cf-device-design copy. The
 // `cf_device_types::design_toml` loader still ships
 // `build_design_toml` + `save_design_toml`, so a future slice could
 // reintroduce the panel without re-lifting any infrastructure.

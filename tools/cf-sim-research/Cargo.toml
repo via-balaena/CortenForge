@@ -1,6 +1,6 @@
 [package]
 name = "cf-sim-research"
-description = "Sim-research viewer for layered-silicone devices — read-only design view over a cleaned scan + `.prep.toml` + `.design.toml`, with insertion-sim + heat-map + sliding-intruder panel"
+description = "Sim-research viewer for layered-silicone devices — read-only design view over a cleaned scan + `.design.toml`, with insertion-sim + heat-map + sliding-intruder panel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -29,14 +29,18 @@ path = "src/main.rs"
 [dependencies]
 # Shared device-design domain types (Phase 1) — CavityState /
 # LayersState / LayerSpec / Centerline / ScanInfo / ScanMesh /
-# LAYER_MATERIALS / material_density. The whole point of Phase 2 is
-# to demonstrate cf-sim-research can describe a device the same way
-# cf-device-design does.
+# LAYER_MATERIALS / material_density + `design_toml` schema +
+# loader. The shared cf-device-types contract is the load-bearing
+# reason cf-sim-research describes a layered-silicone device the
+# same way cf-device-design does.
 cf-device-types = { workspace = true }
 
 # cf-viewer library — `RenderScale` / `compute_render_scale` /
-# `scale_aabb` / `setup_camera_and_lighting` / `spawn_face_mesh`.
-# Same shared-scene-helper consumption as cf-device-design.
+# `scale_aabb` / `setup_camera_and_lighting`. cf-sim-research does
+# NOT consume `spawn_face_mesh` (cf-viewer's stock face-mesh
+# spawner) because Phase 3's `setup_render_scene` inlines a
+# `ClipPlaneMaterial` variant so the scan participates in clipping
+# alongside the cavity / layer shells / intruder.
 cf-viewer = { workspace = true }
 
 # Shared Bevy helpers — `UpAxis::PlusZ` (cast-frame demolding axis
