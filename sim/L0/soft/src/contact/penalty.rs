@@ -15,12 +15,12 @@
 //! The active-set-discontinuity pathology specifically is mitigated
 //! (not removed) by two orthogonal optional mechanisms:
 //!
-//! - [`PenaltyRigidContact::smoothing_eps_m`] — a quintic-Hermite
+//! - `PenaltyRigidContact::smoothing_eps_m` — a quintic-Hermite
 //!   taper of the **gap function** over `[d̂, d̂+ε]` that makes the
 //!   per-pair Hessian C⁰ across the active boundary. See
 //!   `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the design.
-//! - [`PenaltyRigidContact::normal_avg_k`] +
-//!   [`PenaltyRigidContact::normal_avg_radius_m`] — per-query
+//! - `PenaltyRigidContact::normal_avg_k` +
+//!   `PenaltyRigidContact::normal_avg_radius_m` — per-query
 //!   averaging of the contact **normal direction** over `k` axis-
 //!   aligned offset samples, smoothing slope discontinuities in
 //!   `n = ∂d/∂p` at SDF partition boundaries (grid cell faces for
@@ -50,7 +50,7 @@
 //!   `d < d̂`, else zero. PSD only — two zero eigenvalues along the
 //!   tangent plane to `n`, one positive eigenvalue `κ` along `n`. The
 //!   full system tangent becomes SPD after the elastic Hessian is
-//!   added. When [`normal_avg_k`](PenaltyRigidContact::normal_avg_k)
+//!   added. When `normal_avg_k` (private field on `PenaltyRigidContact`)
 //!   `> 1`, `n` in the gradient / Hessian is replaced by the
 //!   per-query averaged normal `n_avg` (still unit, still rank-1
 //!   outer-product PSD; the eigenstructure of the assembled Hessian
@@ -287,7 +287,7 @@ impl PenaltyRigidContact {
     /// Construct with non-default `(κ, d̂)` plus a positive interior
     /// cutoff — pairs whose signed distance is below `-interior_cutoff`
     /// are silently excluded from the active set. See the
-    /// [`interior_cutoff`](Self::interior_cutoff) field docs for the
+    /// `interior_cutoff` (private) field docs for the
     /// motivating use case.
     ///
     /// # Panics
@@ -333,7 +333,7 @@ impl PenaltyRigidContact {
 
     /// Construct with non-default `(κ, d̂)` plus a positive smoothing
     /// window `smoothing_eps_m` above `d̂`. See the
-    /// [`smoothing_eps_m`](Self::smoothing_eps_m) field docs for the
+    /// `smoothing_eps_m` (private) field docs for the
     /// formula + motivating use case + bit-equal-when-dormant contract.
     ///
     /// # Panics
@@ -701,7 +701,7 @@ impl PenaltyRigidContact {
     ///
     /// Mirrors [`active_pairs`](super::ActivePairsFor::active_pairs)'s walk order
     /// (vertices outer × primitives inner) and band gate (via
-    /// [`Self::pair_is_active`]), so the returned vec is the same length
+    /// `Self::pair_is_active` — private), so the returned vec is the same length
     /// as `active_pairs(...)` at the same `positions` and the readouts
     /// appear in the same order.
     ///
@@ -712,7 +712,7 @@ impl PenaltyRigidContact {
     /// negated by the force-as-`−∇U` identity. With smoothing, the
     /// force in the transition band `(d̂, d̂+ε)` follows from the
     /// quintic-tapered energy (see
-    /// [`Self::smoothing_eps_m`](Self::smoothing_eps_m) field docs).
+    /// `Self::smoothing_eps_m` (private) field docs).
     /// Row 18 (`contact-force-readout`) is the canonical consumer;
     /// row 14 (`compressive-block`) reconstructs this surface inline
     /// from known plane geometry, predating this method.
@@ -839,7 +839,7 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     /// primitives inner (`0..self.primitives.len()`); emits a
     /// [`ContactPair::Vertex`] for every `(v, p)` whose signed
     /// distance is in the active band per
-    /// [`PenaltyRigidContact::pair_is_active`]
+    /// `PenaltyRigidContact::pair_is_active` (private)
     /// (`sd < d̂ + smoothing_eps_m` and above the interior cutoff when
     /// set). Order is deterministic — no sort, no `HashMap`, no rayon.
     // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;

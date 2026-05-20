@@ -4,7 +4,7 @@
 //! Per `docs/F3_LM_REGULARIZATION_SPEC.md`. Module surface:
 //! - [`LmConfig`] (pub) + [`SaturationPolicy`] (pub) — tunables; opt
 //!   in via `SolverConfig::lm_regularization` (F3.1).
-//! - [`LmState`] (`pub(super)`) — mutable in-solve state, threaded
+//! - `LmState` (`pub(super)`) — mutable in-solve state, threaded
 //!   through `factor_free_tangent` / `factor_and_solve_free` /
 //!   `factor_at_position` from `solve_impl`. The `disabled()`
 //!   constructor is the bit-equal short-circuit when

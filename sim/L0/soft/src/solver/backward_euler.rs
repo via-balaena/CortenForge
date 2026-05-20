@@ -133,13 +133,13 @@ pub struct SolverConfig {
     /// Levenberg-Marquardt regularization for non-PD tangent rescue
     /// per `docs/F3_LM_REGULARIZATION_SPEC.md`. `None` (the
     /// [`Self::skeleton`] default) preserves pre-F3 behavior bit-equal
-    /// via [`LmState::disabled`](super::lm::LmState)'s short-circuit
+    /// via `LmState::disabled` (pub(super) — see `super::lm`) short-circuit
     /// at `factor_free_tangent`'s retry loop: `Llt` first, then direct
     /// `Lu` fallback on non-PD, no `+λI`. `Some(LmConfig)` activates
     /// the in-iter Marquardt adapter; the `Lu` fallback then becomes
     /// the λ-saturation surface. Fork-B (cf-device-design) consumers
     /// opt in via [`LmConfig::fork_b`] paired with
-    /// [`Solver::try_step`](super::Solver::try_step) for graceful
+    /// [`Solver::try_step`] for graceful
     /// failure on Armijo stall.
     pub lm_regularization: Option<LmConfig>,
 }
