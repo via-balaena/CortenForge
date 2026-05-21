@@ -941,6 +941,14 @@ fn mesh_and_gate_v2_plugs(
 /// Mesh + F4-gate the workshop platform STL, or return
 /// `Ok(None)` when the ribbon's plug-pin kind doesn't enable a
 /// T-bar (no platform needed). Single artifact per cast.
+///
+/// Uses a finer mesh-cell size than the rest of the cast
+/// ([`PLATFORM_MAX_CELL_SIZE_M`] capped at `spec.mesh_cell_size_m`)
+/// because the platform's pocket cross-section is small (e.g., a
+/// ~3 mm-deep crescent for iter-1's 6 mm-Ø T-bar) — at the cast's
+/// default 3 mm cells the pocket would be 1 cell deep and MC would
+/// fragment it. The platform solid is small + simple so the finer
+/// mesh costs ~1-2 s at most.
 fn mesh_and_gate_v2_platform(
     spec: &CastSpec,
     ribbon: &Ribbon,
@@ -952,7 +960,8 @@ fn mesh_and_gate_v2_platform(
     };
     let t_compose = std::time::Instant::now();
     let target = CastTarget::Platform;
-    let mesh = solid_to_mm_mesh(&platform_solid, spec.mesh_cell_size_m, target)?;
+    let cell_size_m = spec.mesh_cell_size_m.min(PLATFORM_MAX_CELL_SIZE_M);
+    let mesh = solid_to_mm_mesh(&platform_solid, cell_size_m, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir.join("platform.stl");
     let t_gate = std::time::Instant::now();
@@ -967,8 +976,9 @@ fn mesh_and_gate_v2_platform(
         });
     }
     eprintln!(
-        "[cf-cast] platform — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
-         ({verts} verts / {faces} faces)",
+        "[cf-cast] platform — compose+MC {compose_mesh_s:.1}s @ {cell_size_mm:.1} mm cells, \
+         F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+        cell_size_mm = cell_size_m * 1000.0,
         verts = mesh.vertices.len(),
         faces = mesh.faces.len(),
     );
@@ -978,6 +988,19 @@ fn mesh_and_gate_v2_platform(
         path,
     }))
 }
+
+/// Cap on the mesh-cell size used for the platform's marching-cubes
+/// pass. The platform's pocket cross-section (for typical workshop
+/// geometries: a ~3 mm-deep crescent absorbing the T-bar's protrusion
+/// below the cup outer face) is too small for the cast's default
+/// 3 mm cells to resolve cleanly — at 3 mm cells, the pocket would
+/// be ~1 cell deep and MC would fragment it. 1.5 mm cells give
+/// ~2× the radial resolution and reliably mesh the pocket as a
+/// continuous concave feature. The platform solid is small +
+/// simple (cuboid - cylinder) so the finer mesh costs ~1-2 s at
+/// most; effectively free relative to the cast's main meshing
+/// time.
+const PLATFORM_MAX_CELL_SIZE_M: f64 = 0.0015;
 
 /// Write every pending piece + per-layer plug + optional platform
 /// to disk and build the report structs. Consumes all pending
