@@ -101,9 +101,16 @@ const V_HALF_ANGLE_RAD: f64 = std::f64::consts::FRAC_PI_6;
 /// in meters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PourGateSpec {
-    /// Pour-leg channel radius (m). Default `0.003` = 3 mm =
-    /// 6 mm diameter — enough for low-viscosity silicone flow
-    /// without splashing at typical workshop pour rates.
+    /// Pour-leg channel radius (m). Default `0.005` = 5 mm =
+    /// 10 mm diameter.
+    ///
+    /// Sized for honey-thick workshop silicones (Dragon Skin 10A /
+    /// 20A / 30A at ~20-23k cps): 10 mm Ø roughly doubles the
+    /// pour-area vs the pre-iter-1 6 mm Ø, dropping per-layer pour
+    /// time from minutes to seconds. The matching pour funnel
+    /// ([`crate::build_funnel_solid`]) sizes its nipple to
+    /// `gate_radius_m × 2 − 0.2 mm` slack so it slides into the
+    /// pour leg hole.
     pub gate_radius_m: f64,
     /// Vent-leg channel radius (m). Default `0.003` = 3 mm =
     /// 6 mm diameter — same as the pour leg.
@@ -161,16 +168,25 @@ pub struct PourGateSpec {
 }
 
 impl PourGateSpec {
-    /// v2.1 iter-1 defaults: 6 mm Ø pour leg (90 mm total), 6 mm Ø
+    /// v2.1 iter-1 defaults: 10 mm Ø pour leg (90 mm total), 6 mm Ø
     /// vent leg (80 mm total), vent enabled. Both legs anchored at
     /// the V apex on the body's dome end (opposite the cap plane),
-    /// splayed ±30° in the (outward + binormal) plane. Equal-radius
-    /// legs match the MC resolution threshold at cf-cast's default
-    /// 3 mm mesh cells (see [`Self::vent_radius_m`] docstring).
+    /// splayed ±30° in the (outward + binormal) plane.
+    ///
+    /// Pour leg is bigger than the vent: honey-thick workshop
+    /// silicones (Dragon Skin 10A / 20A at ~20-23k cps) pour
+    /// tediously through smaller channels and trap air bubbles.
+    /// 10 mm Ø roughly doubles the pour-area vs the original
+    /// 6 mm Ø, dropping per-layer pour time from minutes to
+    /// seconds. Vent stays at 6 mm Ø — it only needs to release
+    /// air (no flow-rate constraint) and is workshop-visually
+    /// distinct from the larger pour hole. Both Øs mesh cleanly at
+    /// cf-cast's default 3 mm cells (10 mm = 1.67 cells radial,
+    /// 6 mm = 1 cell radial).
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
-            gate_radius_m: 0.003,
+            gate_radius_m: 0.005,
             vent_radius_m: 0.003,
             gate_half_length_m: 0.045,
             vent_half_length_m: 0.040,
@@ -336,11 +352,15 @@ mod tests {
     #[test]
     fn pour_gate_spec_iter1_has_workshop_defaults() {
         let s = PourGateSpec::iter1();
-        assert!((s.gate_radius_m - 0.003).abs() < f64::EPSILON);
+        assert!(
+            (s.gate_radius_m - 0.005).abs() < f64::EPSILON,
+            "gate_radius_m should be 5 mm (10 mm Ø) for honey-thick \
+             silicone flow",
+        );
         assert!(
             (s.vent_radius_m - 0.003).abs() < f64::EPSILON,
-            "vent_radius_m should match gate_radius_m (6 mm Ø) so both \
-             legs mesh cleanly at cf-cast's default 3 mm cells",
+            "vent_radius_m should be 3 mm (6 mm Ø) — smaller than \
+             pour gate; visually distinct + meshes cleanly at 3 mm cells",
         );
         assert!((s.gate_half_length_m - 0.045).abs() < f64::EPSILON);
         assert!((s.vent_half_length_m - 0.040).abs() < f64::EPSILON);

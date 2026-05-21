@@ -55,6 +55,14 @@ pub enum CastTarget {
     /// assembled mold to sit flat during pour + cure). Single
     /// artifact per cast (shared across layers).
     Platform,
+    /// Output mesh: the workshop pour funnel STL.
+    ///
+    /// Generated only when the ribbon has a
+    /// [`crate::pour::PourGateKind::Default`] pour gate enabled.
+    /// Self-aligning nipple + flange + cone for honey-thick
+    /// silicone pouring. Single artifact per cast (shared across
+    /// layers).
+    Funnel,
 }
 
 impl fmt::Display for CastTarget {
@@ -72,6 +80,7 @@ impl fmt::Display for CastTarget {
                 layer_index: Some(n),
             } => write!(f, "plug layer {n}"),
             Self::Platform => write!(f, "platform"),
+            Self::Funnel => write!(f, "funnel"),
         }
     }
 }

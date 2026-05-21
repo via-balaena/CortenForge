@@ -301,13 +301,37 @@ pub struct PlatformArtifact {
     pub summary: MeshSummary,
 }
 
+/// Workshop pour funnel STL.
+///
+/// Self-aligning nipple + flange + tapered cone for pouring
+/// honey-thick silicones into the cast's pour-gate hole. The
+/// nipple slides into the pour leg of the V pour gate; the flange
+/// rests flat on the cup wall around the hole; the cone tapers up
+/// to a wide ladle-friendly mouth.
+///
+/// Generated only when the ribbon has a
+/// [`crate::pour::PourGateKind::Default`] pour gate enabled.
+/// Single STL per cast, shared across all layers (workshop user
+/// prints once, uses for every layer pour).
+#[derive(Debug, Clone)]
+pub struct FunnelArtifact {
+    /// Filesystem path of the written `funnel.stl`.
+    pub path: PathBuf,
+    /// F4 validation result for the funnel.
+    pub validation: PrintValidation,
+    /// Post-export mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
 /// Summary of a successful [`CastSpec::export_molds_v2`] run.
 ///
 /// `layers.len() * 3` STLs total (2 piece STLs + 1 plug STL per
 /// layer), plus a single `platform.stl` if the ribbon enables
-/// T-bar plug-pin locking. All pieces, plugs, and the platform
-/// (when present) clear the F4 gate before any STL lands on disk
-/// (pre-write atomicity, same scope as v1's
+/// T-bar plug-pin locking, plus a single `funnel.stl` if the
+/// ribbon has a pour gate enabled. All pieces, plugs, and the
+/// optional platform + funnel clear the F4 gate before any STL
+/// lands on disk (pre-write atomicity, same scope as v1's
 /// [`CastSpec::export_molds`]).
 #[derive(Debug, Clone)]
 pub struct V2MoldExportReport {
@@ -320,6 +344,10 @@ pub struct V2MoldExportReport {
     /// assembled mold sits flat on the workbench during pour +
     /// cure.
     pub platform: Option<PlatformArtifact>,
+    /// Optional workshop pour funnel artifact, present when the
+    /// ribbon has a [`crate::pour::PourGateKind::Default`] pour
+    /// gate enabled. Self-aligning nipple sized to the pour-gate Ø.
+    pub funnel: Option<FunnelArtifact>,
 }
 
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
@@ -398,6 +426,16 @@ struct PendingPlug {
 /// plug-pin kind enables the T-bar; one platform per cast (shared
 /// across layers).
 struct PendingPlatform {
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Buffered v2 workshop pour funnel mesh + validation. Same buffer
+/// pattern as [`PendingPlatform`] — generated only when the ribbon
+/// has a pour gate enabled; one funnel per cast (shared across
+/// layers).
+struct PendingFunnel {
     mesh: IndexedMesh,
     validation: PrintValidation,
     path: PathBuf,
@@ -765,6 +803,7 @@ impl CastSpec {
         let pending_pieces = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
         let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
         let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
+        let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
@@ -772,22 +811,25 @@ impl CastSpec {
         })?;
 
         let platform_count = usize::from(pending_platform.is_some());
-        let stl_count = self.layers.len() * 3 + platform_count;
+        let funnel_count = usize::from(pending_funnel.is_some());
+        let stl_count = self.layers.len() * 3 + platform_count + funnel_count;
         eprintln!(
             "[cf-cast] writing {stl_count} STLs to {out}…",
             out = out_dir.display()
         );
-        let (layers_out, platform_out) = write_v2_artifacts(
+        let (layers_out, platform_out, funnel_out) = write_v2_artifacts(
             self,
             pending_pieces,
             pending_plugs,
             pending_platform,
+            pending_funnel,
             pour_volumes,
         )?;
 
         Ok(V2MoldExportReport {
             layers: layers_out,
             platform: platform_out,
+            funnel: funnel_out,
         })
     }
 }
@@ -1002,11 +1044,71 @@ fn mesh_and_gate_v2_platform(
 /// time.
 const PLATFORM_MAX_CELL_SIZE_M: f64 = 0.0015;
 
+/// Mesh + F4-gate the workshop pour funnel STL, or return
+/// `Ok(None)` when the ribbon has no pour gate enabled (no funnel
+/// needed). Single artifact per cast.
+///
+/// Uses [`FUNNEL_MAX_CELL_SIZE_M`] for the same MC-resolution
+/// reason as the platform: the funnel's nipple wall is 1 mm and
+/// would mesh as 0.33 cells radial at the cast's default 3 mm
+/// cells. The funnel is small + geometrically simple so finer
+/// cells cost ~1-3 s.
+fn mesh_and_gate_v2_funnel(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Option<PendingFunnel>, CastError> {
+    let Some(funnel_solid) = crate::funnel::build_funnel_solid(ribbon) else {
+        return Ok(None);
+    };
+    let t_compose = std::time::Instant::now();
+    let target = CastTarget::Funnel;
+    let cell_size_m = spec.mesh_cell_size_m.min(FUNNEL_MAX_CELL_SIZE_M);
+    let mesh = solid_to_mm_mesh(&funnel_solid, cell_size_m, target)?;
+    let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+    let path = out_dir.join("funnel.stl");
+    let t_gate = std::time::Instant::now();
+    let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+    let gate_s = t_gate.elapsed().as_secs_f64();
+    let blocking = blocking_critical_count(&validation);
+    if blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target,
+            issue_count: blocking,
+            path,
+        });
+    }
+    eprintln!(
+        "[cf-cast] funnel — compose+MC {compose_mesh_s:.1}s @ {cell_size_mm:.1} mm cells, \
+         F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+        cell_size_mm = cell_size_m * 1000.0,
+        verts = mesh.vertices.len(),
+        faces = mesh.faces.len(),
+    );
+    Ok(Some(PendingFunnel {
+        mesh,
+        validation,
+        path,
+    }))
+}
+
+/// Cap on the mesh-cell size used for the funnel's MC pass.
+///
+/// The funnel's nipple wall is 1 mm at iter-1 dimensions —
+/// 0.33 cells at the cast's default 3 mm cells, which MC would
+/// fragment. 1 mm cells give 1 cell radial across the wall (clean)
+/// and 1 mm voxel grid resolves the tapered cone surface at
+/// workshop visual fidelity. The funnel solid is small (~38 mm
+/// tall × 30 mm Ø top) so finer cells cost ~1-3 s; effectively
+/// free vs the cast's main meshing time.
+const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
+
 /// Write every pending piece + per-layer plug + optional platform
-/// to disk and build the report structs. Consumes all pending
-/// buffers; on any FS failure mid-stream the remaining artifacts
-/// are abandoned and the error surfaces with the failing artifact's
-/// path attached.
+/// + optional funnel to disk and build the report structs.
+///
+/// Consumes all pending buffers; on any FS failure mid-stream the
+/// remaining artifacts are abandoned and the error surfaces with
+/// the failing artifact's path attached.
 ///
 /// Assumes `pending_pieces` and `pending_plugs` are both ordered
 /// innermost-first and parallel to `pour_volumes`. The function
@@ -1016,8 +1118,16 @@ fn write_v2_artifacts(
     pending_pieces: Vec<[PendingPiece; 2]>,
     pending_plugs: Vec<PendingPlug>,
     pending_platform: Option<PendingPlatform>,
+    pending_funnel: Option<PendingFunnel>,
     pour_volumes: Vec<PourVolume>,
-) -> Result<(Vec<V2LayerReport>, Option<PlatformArtifact>), CastError> {
+) -> Result<
+    (
+        Vec<V2LayerReport>,
+        Option<PlatformArtifact>,
+        Option<FunnelArtifact>,
+    ),
+    CastError,
+> {
     let mut layers_out = Vec::with_capacity(pending_pieces.len());
     for ((pieces_pair, plug_entry), pour_volume) in pending_pieces
         .into_iter()
@@ -1082,7 +1192,21 @@ fn write_v2_artifacts(
     } else {
         None
     };
-    Ok((layers_out, platform_out))
+    let funnel_out = if let Some(f) = pending_funnel {
+        save_stl(&f.mesh, &f.path, true).map_err(|source| CastError::MeshIo {
+            path: f.path.clone(),
+            source,
+        })?;
+        let funnel_summary = MeshSummary::from_mesh(&f.mesh);
+        Some(FunnelArtifact {
+            path: f.path,
+            validation: f.validation,
+            summary: funnel_summary,
+        })
+    } else {
+        None
+    };
+    Ok((layers_out, platform_out, funnel_out))
 }
 
 /// Gate per-layer pour masses against [`CastSpec::mass_budget_kg`].
@@ -2886,17 +3010,15 @@ mod tests {
     #[test]
     fn generate_procedure_markdown_v2_pour_gate_prose_mentions_diameters() {
         // Pour gate ON: "Pour Gate + Vent" section must mention
-        // gate Ø (6.0 mm = 2 × 3 mm radius), vent Ø (6.0 mm =
-        // 2 × 3 mm radius — same as pour, post-G3 fix for MC
-        // resolution at 3 mm cells), and channel lengths
-        // (gate = 90.0 mm; vent = 80.0 mm). The vent leg is the
-        // same diameter as the pour leg; workshop user tells them
-        // apart by binormal side, not by hole size.
+        // pour-leg Ø (10.0 mm = 2 × 5 mm radius), vent-leg Ø
+        // (6.0 mm = 2 × 3 mm radius), and channel lengths
+        // (gate = 90.0 mm; vent = 80.0 mm). Pour leg is bigger
+        // than vent for honey-thick silicone flow (iter-1 sizing).
         let (spec, ribbon) = v2_fixture_with_pour_gate();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(md.contains("## Pour Gate + Vent"));
-        assert!(md.contains("6.0 mm Ø pour gate"));
+        assert!(md.contains("10.0 mm Ø pour gate"));
         assert!(md.contains("6.0 mm Ø vent"));
         assert!(md.contains("90.0 mm total"));
         assert!(md.contains("80.0 mm total"));

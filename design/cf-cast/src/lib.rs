@@ -73,6 +73,7 @@
 
 pub mod cure;
 mod error;
+pub mod funnel;
 mod material;
 mod mesher;
 pub mod piece;
@@ -87,6 +88,7 @@ mod spec;
 
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
+pub use funnel::build_funnel_solid;
 pub use material::MoldingMaterial;
 pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
 pub use platform::build_platform_solid;
@@ -100,6 +102,6 @@ pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2}
 pub use registration::{PinSpec, RegistrationKind, build_registration_solid};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use spec::{
-    CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport, PieceArtifact,
-    PlatformArtifact, PlugArtifact, V2LayerReport, V2MoldExportReport,
+    CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,
+    PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport, V2MoldExportReport,
 };
