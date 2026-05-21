@@ -28,10 +28,21 @@
 //! (optional) vent cylinders, or `None` if [`PourGateKind::None`].
 //! [`crate::piece::compose_piece_solid`] subtracts this solid
 //! from the base piece geometry, applying the same channel to
-//! BOTH [`crate::ribbon::PieceSide`]s. The gate cylinder is
-//! oriented perpendicular to the ribbon seam (along binormal) so
-//! each piece carves a half-cylinder cross-section that combines
-//! into the full channel when the pieces close.
+//! BOTH [`crate::ribbon::PieceSide`]s.
+//!
+//! **v2.1 sub-leaf 2 placement** (current): the pour-gate cylinder
+//! is **side-mounted** with its inner tip at the centerline
+//! midpoint and its axis along the local binormal. Because the
+//! cylinder extends entirely along `+binormal` from the centerline,
+//! it lives **on one side of the ribbon seam** — almost all of the
+//! carve lands on the [`crate::ribbon::PieceSide::Positive`] piece
+//! (with a thin seam-overlap slice on the
+//! [`crate::ribbon::PieceSide::Negative`] piece via the
+//! [`crate::piece::RIBBON_PIECE_OVERLAP_M`] bias). Workshop user
+//! pours into the gate hole on the Positive piece's binormal-facing
+//! outer face. Pre-v2.1 the gate straddled the seam and each piece
+//! carved a half-cylinder; the off-seam relocation (sub-leaf 2) gave
+//! centerline endpoints back to the plug-anchor sockets.
 //!
 //! ## Default off
 //!

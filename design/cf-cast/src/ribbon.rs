@@ -271,6 +271,32 @@ pub struct Ribbon {
     /// [`Ribbon::with_plug_pins`] builder; see [`crate::plug`] for
     /// the pin + socket geometry contract.
     pub plug_pins: PlugPinKind,
+    /// Optional pour-end anchor for the plug-anchor pin —
+    /// `(centroid, outward_axis)` in world-frame coordinates.
+    /// [`crate::plug::build_plug_pin_solid`] +
+    /// [`crate::plug::build_plug_socket_solid`] anchor the pin
+    /// cylinder at `centroid` and extend it along `outward_axis`
+    /// (pointing away from the body interior). This is **NOT** a
+    /// centerline-endpoint selector — the anchor point may sit
+    /// past the trimmed centerline tip, as is the case for
+    /// cf-scan-prep outputs where the cap-plane centroid is
+    /// `trim_floor_mm` past `centerline.last()`.
+    ///
+    /// `None` (the default) makes the plug-pin builders fall back
+    /// to `(points.last(), last_segment.tangent)` per cf-scan-prep's
+    /// centerline orientation convention (`compute_centerline_polyline`
+    /// emits points in min→max projection order along the
+    /// chord-direction principal axis = **tip→base** for a typical
+    /// body-part scan).
+    ///
+    /// cf-cast-cli's `derive_spec_and_ribbon` threads the scan's
+    /// recorded cap-plane `(centroid, outward_normal)` through here
+    /// when `.prep.toml [caps]` is non-empty; for caller-built
+    /// ribbons without cap-plane data, callers can either pass
+    /// explicit anchor + outward direction (e.g., the synthetic
+    /// example crate uses `first_segment.start` + `-first.tangent`)
+    /// or leave unset and rely on the fallback.
+    pub pour_end_hint: Option<(Point3<f64>, Vector3<f64>)>,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -401,6 +427,7 @@ impl Ribbon {
             registration: RegistrationKind::None,
             pour_gate: PourGateKind::None,
             plug_pins: PlugPinKind::None,
+            pour_end_hint: None,
         })
     }
 
@@ -454,6 +481,31 @@ impl Ribbon {
     #[must_use]
     pub const fn with_plug_pins(mut self, plug_pins: PlugPinKind) -> Self {
         self.plug_pins = plug_pins;
+        self
+    }
+
+    /// Builder: set the pour-end anchor as `(centroid, outward_axis)`.
+    /// See [`Self::pour_end_hint`] for the contract.
+    ///
+    /// Typical caller is cf-cast-cli's `derive_spec_and_ribbon`,
+    /// which passes `(cap_plane.centroid, cap_plane.normal)` from
+    /// `.prep.toml [caps]` so the plug-pin anchors at the cap plane
+    /// (where the plug body's pinned floor sits) and extends
+    /// outward along the cap-plane outward-normal — visible past
+    /// the plug surface, carving the cup-wall floor.
+    ///
+    /// Callers building ribbons without cap-plane data either
+    /// pass explicit `(centroid, outward)` (e.g., the synthetic
+    /// example crate uses `first_segment.start` +
+    /// `-first.tangent`) or leave unset and rely on the fallback
+    /// to `(points.last(), last_segment.tangent)`.
+    #[must_use]
+    pub const fn with_pour_end_hint(
+        mut self,
+        centroid: Point3<f64>,
+        outward_axis: Vector3<f64>,
+    ) -> Self {
+        self.pour_end_hint = Some((centroid, outward_axis));
         self
     }
 

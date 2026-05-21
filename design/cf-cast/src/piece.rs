@@ -111,7 +111,16 @@ pub fn compose_piece_solid(
     // holes (subtract). When `ribbon.registration` is `None` the
     // helper returns `None` and the base piece flows through
     // unchanged — Step 5-8 callers see no behavior change.
-    let piece_with_pins = match (build_registration_solid(ribbon), side) {
+    //
+    // The registration builder ray-marches `layer_body` +
+    // `bounding_region` along the ribbon's split-normal to put the
+    // pin in the per-layer cup-wall annulus midpoint (see the
+    // `crate::registration` module docstring for the "derived, not
+    // fixed" rationale).
+    let piece_with_pins = match (
+        build_registration_solid(ribbon, layer_body, bounding_region),
+        side,
+    ) {
         (Some(pins), PieceSide::Negative) => base_piece.union(pins),
         (Some(pins), PieceSide::Positive) => base_piece.subtract(pins),
         (None, _) => base_piece,
@@ -335,5 +344,219 @@ mod tests {
             .bounds()
             .expect("composition inherits bounding region's finite AABB");
         assert!(aabb.size().x > 0.0);
+    }
+
+    // ----- Sub-leaf A regression: workshop iter-1 mold visual-gate -
+
+    /// Count connected components of `mesh` via shared-edge BFS over
+    /// faces. Two faces are neighbors if they share an undirected
+    /// edge (vertex-index pair). Used by the floating-sliver
+    /// regression below: the workshop iter-1 falsification produced a
+    /// Negative-piece STL whose MC mesh had TWO components (the cup
+    /// wall + a free-floating pin cylinder); the body-relative pin
+    /// offset (C1) restores the single-component invariant by
+    /// landing the pin inside the cup-wall annulus where it
+    /// physically attaches to the surrounding mesh.
+    fn count_connected_components_via_shared_edges(mesh: &mesh_types::IndexedMesh) -> usize {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        if mesh.faces.is_empty() {
+            return 0;
+        }
+        // mesh-types face indices are u32; component bookkeeping is
+        // on the local face index (usize). Edge keys carry the u32
+        // vertex IDs directly.
+        let mut edge_to_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (face_idx, face) in mesh.faces.iter().enumerate() {
+            for i in 0..3 {
+                let a = face[i];
+                let b = face[(i + 1) % 3];
+                let edge = if a < b { (a, b) } else { (b, a) };
+                edge_to_faces.entry(edge).or_default().push(face_idx);
+            }
+        }
+        let mut visited: HashSet<usize> = HashSet::new();
+        let mut components = 0_usize;
+        for start in 0..mesh.faces.len() {
+            if visited.contains(&start) {
+                continue;
+            }
+            components += 1;
+            let mut queue: VecDeque<usize> = VecDeque::new();
+            queue.push_back(start);
+            visited.insert(start);
+            while let Some(f) = queue.pop_front() {
+                for i in 0..3 {
+                    let a = mesh.faces[f][i];
+                    let b = mesh.faces[f][(i + 1) % 3];
+                    let edge = if a < b { (a, b) } else { (b, a) };
+                    if let Some(neighbors) = edge_to_faces.get(&edge) {
+                        for &n in neighbors {
+                            if visited.insert(n) {
+                                queue.push_back(n);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        components
+    }
+
+    /// Workshop iter-1 mold visual-gate regression (per the
+    /// `docs/WORKSHOP_ITER1_MOLD_RECON.md` sub-leaf A spike):
+    ///
+    /// **Wide-body fixture** — body half-extent 30 mm in `+X`
+    /// (wider than the pre-C1 hardcoded 25 mm `offset_from_centerline_m`),
+    /// bounding 40 mm in `+X` (10 mm cup-wall annulus). With the
+    /// pre-C1 fixed offset the pin would have landed AT x = 25 mm —
+    /// inside the body, free-floating from the cup-wall mesh — and
+    /// the Negative-piece STL would have meshed as TWO components.
+    /// With C1's body-relative offset, the pin lands at x = 35 mm
+    /// (annulus midpoint) and the Negative-piece mesh is a single
+    /// connected component.
+    ///
+    /// Uses a chunky `PinSpec` (5 mm pin radius, 5 mm half-length) so
+    /// the 5 mm marching-cubes cells resolve the pin cleanly even at
+    /// the coarse test resolution.
+    #[test]
+    fn negative_piece_has_single_connected_component_with_iter1_pins_on_wide_body() {
+        use crate::mesher::solid_to_mm_mesh;
+        use crate::registration::{PinSpec, RegistrationKind};
+
+        let layer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030));
+        let bounding_region = Solid::cuboid(Vector3::new(0.040, 0.040, 0.040));
+        // Centerline along +Z, split-normal +X → binormal +Y. Pin
+        // cylinders extend along ±Y (perpendicular to ribbon seam).
+        let centerline = vec![Point3::new(0.0, 0.0, -0.050), Point3::new(0.0, 0.0, 0.050)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let chunky_pins = PinSpec {
+            pin_radius_m: 0.005,
+            pin_half_length_m: 0.005,
+            arc_fractions: vec![0.5], // single pin for a cleaner reproducer
+        };
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_registration(RegistrationKind::Pins(chunky_pins));
+
+        let neg_piece =
+            compose_piece_solid(&layer_body, &bounding_region, &ribbon, PieceSide::Negative)
+                .unwrap();
+
+        // 5 mm cells: grid ~80 mm / 5 mm = 16 cells/axis, ~4 k cells
+        // total. Coarse enough for fast tests; pin (10 mm Ø)
+        // resolves as 2 cells radially.
+        let mesh = solid_to_mm_mesh(
+            &neg_piece,
+            0.005,
+            CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: PieceSide::Negative,
+            },
+        )
+        .expect("Negative piece should mesh");
+        let components = count_connected_components_via_shared_edges(&mesh);
+        assert_eq!(
+            components, 1,
+            "iter-1 visual-gate regression: Negative-piece mesh must be a single \
+             connected component (the pin must attach to the cup-wall annulus, \
+             not float free inside the body cavity); got {components}",
+        );
+    }
+
+    /// Workshop iter-1 plug-socket regression (per `recon §E.2`):
+    ///
+    /// cf-scan-prep trims the centerline `trim_floor_mm` (typically
+    /// 40 mm) above the cap plane to keep the polyline inside the
+    /// body interior, so `centerline.last()` lives 40 mm INSIDE
+    /// the plug body. Pre-E.2 the plug-socket cylinder was anchored
+    /// at `centerline.last()` + extended along last-segment tangent
+    /// — entirely inside the body, where the socket carve is a
+    /// no-op (the piece composition already excludes body-cavity
+    /// space via `subtract(layer_body)`). With E.2 the socket
+    /// anchors at the cap-plane centroid (passed via
+    /// `with_pour_end_hint(centroid, normal)`) and extends along
+    /// the cap-plane outward normal, carving cup-wall material
+    /// past the plug body's pinned floor.
+    ///
+    /// Fixture: trimmed centerline tip at z = -13 mm (40 mm above
+    /// cap); cap-plane centroid at z = -54 mm with outward normal
+    /// in -Z; body `half_z` = 60 mm so the body extends to z = -60
+    /// mm (cup wall floor begins at z = -60 mm). Socket cylinder
+    /// (length 20 mm) spans z ∈ [-74, -54] mm — the inner half
+    /// (-60 → -54 mm) is no-op inside the body; the outer half
+    /// (-74 → -60 mm) carves cup-wall material. Query at
+    /// z = -70 mm sits in the cup-wall × socket overlap: with
+    /// the socket subtracted, piece SDF > 0 (hollow); without,
+    /// piece SDF < 0 (solid).
+    #[test]
+    fn plug_socket_carves_at_cap_plane_centroid_past_trimmed_centerline_tip() {
+        use crate::plug::{PlugPinKind, PlugPinSpec};
+
+        let centerline = || -> Vec<Point3<f64>> {
+            vec![
+                Point3::new(0.0, 0.0, 0.073), // tip / closed dome
+                Point3::new(0.0, 0.0, 0.020),
+                Point3::new(0.0, 0.0, -0.013), // trimmed end (40 mm above cap)
+            ]
+        };
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let pin_spec = PlugPinSpec {
+            pin_length_m: 0.020,
+            ..PlugPinSpec::iter1()
+        };
+        let ribbon_with_pins = Ribbon::new(centerline(), split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(pin_spec));
+        let bare_ribbon = Ribbon::new(centerline(), split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal);
+
+        let body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.060));
+        let bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.090));
+        let neg_piece_pins =
+            compose_piece_solid(&body, &bounding, &ribbon_with_pins, PieceSide::Negative).unwrap();
+        let neg_piece_bare =
+            compose_piece_solid(&body, &bounding, &bare_ribbon, PieceSide::Negative).unwrap();
+
+        let socket_axis_in_wall = Point3::new(0.0, 0.0, -0.070);
+        assert!(
+            neg_piece_bare.evaluate(&socket_axis_in_wall) < 0.0,
+            "no-socket baseline: cup-wall point at (0,0,-70mm) should be inside piece; got {}",
+            neg_piece_bare.evaluate(&socket_axis_in_wall),
+        );
+        assert!(
+            neg_piece_pins.evaluate(&socket_axis_in_wall) > 0.0,
+            "socket carve at cap-plane centroid should hollow the cup wall at (0,0,-70mm) \
+             (piece SDF > 0, i.e., inside the socket hole); got {}",
+            neg_piece_pins.evaluate(&socket_axis_in_wall),
+        );
+        // Dome end (no pin by default) → cup wall stays solid.
+        let dome_axis_in_wall = Point3::new(0.0, 0.0, 0.070);
+        assert!(
+            neg_piece_pins.evaluate(&dome_axis_in_wall) < 0.0,
+            "dome end should NOT be carved (no dome-end pin by default); got {}",
+            neg_piece_pins.evaluate(&dome_axis_in_wall),
+        );
+        // Trimmed-centerline region: pre-E.2 the socket was anchored
+        // at `centerline.last()` = z=-0.013 extending along last.tangent
+        // (-Z) for pin_length_m, spanning z ∈ [-0.033, -0.013]. To
+        // distinguish the pre-E.2 behavior, query the cup-wall side of
+        // the body at z=-0.020 (inside the pre-E.2 socket span, but the
+        // axial line at (x, y) = (0, 0) is inside body geometry — body
+        // subtracted regardless). For a true distinguishing query we
+        // need a cup-wall point: the binormal direction at z=-0.020 is
+        // +Y; body half_y = 0.020 so y=+0.025 is in cup-wall territory.
+        // The pre-E.2 socket cylinder at (0, 0, z) with axis -Z and
+        // radius 0.0035 DOESN'T reach y=+0.025 (socket is on-axis), so
+        // the cup wall at (0, 0.025, -0.020) is solid in BOTH pre- and
+        // post-E.2 — not a distinguishing query. The load-bearing
+        // distinguishing assertion is the one above at z=-0.070 which
+        // ALREADY isolates E.2's cap-plane anchor; no additional
+        // assertion is needed here. Keeping this comment as a marker
+        // for future readers chasing "why isn't there a third assertion
+        // at the trimmed-tip region?"
     }
 }

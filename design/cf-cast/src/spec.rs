@@ -2486,16 +2486,19 @@ mod tests {
 
     #[test]
     fn compose_piece_solid_with_pins_negative_side_gains_protrusion() {
-        // Pin 0 sits at (-0.025, +0.025, 0) (arc 0.25 of [-0.05, +0.05]
-        // centerline, offset +0.025 along +Y split-normal). Pin axis
-        // along binormal (+Z), half-length 5 mm so cylinder spans
+        // Pin 0 sits at (-0.025, +0.0325, 0) — arc 0.25 of
+        // [-0.05, +0.05] centerline, body-relative offset along +Y
+        // split-normal: cup-wall annulus midpoint at v2_fixture's
+        // body half_y=0.025 and bounding half_y=0.040 →
+        // pin_offset = (0.025 + 0.040)/2 = 0.0325. Pin axis along
+        // binormal (+Z), half-length 5 mm so cylinder spans
         // z ∈ [-0.005, +0.005].
         //
         // Negative piece (z < 0): base extends to z ≈ +0.5mm bias.
         // Union with the pin cylinder extends the negative piece's
         // material up to z ≈ +5mm at the pin position.
         //
-        // Query at (-0.025, +0.025, +0.003) — 3mm above the seam,
+        // Query at (-0.025, +0.0325, +0.003) — 3mm above the seam,
         // inside the pin's protrusion. With pins ON: SDF should be
         // < 0 (inside the piece's gained protrusion). With pins OFF:
         // SDF should be > 0 (outside the negative piece's natural
@@ -2510,7 +2513,7 @@ mod tests {
         let piece_pins =
             crate::compose_piece_solid(body, region, &ribbon_pins, PieceSide::Negative).unwrap();
 
-        let q = Point3::new(-0.025, 0.0255, 0.003);
+        let q = Point3::new(-0.025, 0.0325, 0.003);
         // Without pins: query is above the seam → outside negative piece.
         assert!(
             piece_no_pins.evaluate(&q) > 0.0,
@@ -2527,11 +2530,13 @@ mod tests {
 
     #[test]
     fn compose_piece_solid_with_pins_positive_side_gains_hole() {
-        // Same pin position (-0.025, +0.025, 0); query at
-        // (-0.025, +0.025, +0.003) — inside the pin cylinder AND
-        // inside positive piece's natural half-space (z > -bias).
-        // With pins: positive piece SUBTRACTS the pin cylinder →
-        // SDF > 0 (hole). Without pins: SDF < 0 (cup wall material).
+        // Same pin position (-0.025, +0.0325, 0) — annulus midpoint
+        // along +Y for v2_fixture's body half_y=0.025 + bounding
+        // half_y=0.040. Query at (-0.025, +0.0325, +0.003) — inside
+        // the pin cylinder AND inside positive piece's natural
+        // half-space (z > -bias). With pins: positive piece
+        // SUBTRACTS the pin cylinder → SDF > 0 (hole). Without
+        // pins: SDF < 0 (cup wall material).
         let (spec, ribbon_no_pins) = v2_fixture();
         let (_, ribbon_pins) = v2_fixture_with_pins();
         let body = &spec.layers[0].body;
@@ -2542,7 +2547,7 @@ mod tests {
         let piece_pins =
             crate::compose_piece_solid(body, region, &ribbon_pins, PieceSide::Positive).unwrap();
 
-        let q = Point3::new(-0.025, 0.0255, 0.003);
+        let q = Point3::new(-0.025, 0.0325, 0.003);
         // Without pins: query in cup wall above seam → inside positive piece.
         assert!(
             piece_no_pins.evaluate(&q) < 0.0,
@@ -2820,8 +2825,10 @@ mod tests {
         assert!(piece_neg.bounds().is_some());
         assert!(piece_pos.bounds().is_some());
 
-        // Pin protrusion query (pin in Negative piece):
-        let pin_q = Point3::new(-0.025, 0.0255, 0.003);
+        // Pin protrusion query (pin in Negative piece) — annulus
+        // midpoint along +Y for v2_fixture's body half_y=0.025 +
+        // bounding half_y=0.040 → pin center at y=0.0325.
+        let pin_q = Point3::new(-0.025, 0.0325, 0.003);
         assert!(
             piece_neg.evaluate(&pin_q) < 0.0,
             "pins+gate Negative piece should still contain pin protrusion"
