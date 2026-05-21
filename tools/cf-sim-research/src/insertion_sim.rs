@@ -197,8 +197,8 @@ pub struct SpikeReport {
     /// [`Signed<TriMeshDistance, PseudoNormalSign>`](Signed).
     pub sdf_build_ms: f64,
     /// Wall-clock time for [`SdfMeshedTetMesh::from_sdf`] — the
-    /// dominant cost. One brute-force SDF query per BCC lattice
-    /// vertex, ×2 for the `outer.subtract(scan)` composition.
+    /// dominant cost. One parry-BVH SDF query per BCC lattice vertex,
+    /// ×2 for the `outer.subtract(scan)` composition.
     pub mesh_build_ms: f64,
     /// Tet count of the resulting mesh.
     pub n_tets: usize,
