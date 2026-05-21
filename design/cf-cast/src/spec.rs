@@ -2638,73 +2638,91 @@ mod tests {
 
     #[test]
     fn compose_piece_solid_with_pour_gate_carves_positive_piece_cup_wall() {
-        // v2.1 sub-leaf 2: gate is side-mounted at centerline
-        // midpoint + gate_half_length_m * binormal. For the v2
-        // fixture (straight +X centerline, +Y split-normal → binormal
-        // +Z), the gate cylinder runs along +Z from the midpoint
-        // (0, 0, 0) up by 2 * 0.060 = 0.120 m. Positive piece occupies
-        // z > 0; gate carves a vertical channel through its cup wall.
+        // v2.1 sub-leaf 4 (V-at-dome): pour gate is a V at the
+        // centerline endpoint opposite `pour_end_hint`'s cap-plane
+        // centroid (falls back to `centerline[0]` when no hint).
+        // For this test we use a centerline shorter than
+        // `v2_fixture`'s default so the V apex sits INSIDE the
+        // body — the pour leg then crosses the cup-wall material
+        // on its way to the bounding region's outer surface, and
+        // the carve is testable.
         //
-        // Query (0, 0, 0.025): on the gate axis, in the POSITIVE
-        // piece's cup wall (above body z_max=+0.020 and below
-        // bounding z_max=+0.030), inside the gate cylinder. Without
-        // gate the query is INSIDE cup wall (SDF<0); with gate it's
-        // OUTSIDE (gate carved it out, SDF>0).
-        let (spec, ribbon_no_gate) = v2_fixture();
-        let (_, ribbon_gate) = v2_fixture_with_pour_gate();
+        // Body half-extents (0.025, 0.025, 0.020); bounding
+        // (0.040, 0.040, 0.030). Centerline -15→+15 mm in X with
+        // +Y split-normal → binormal +Z. V apex at centerline[0] =
+        // (-0.015, 0, 0), outward = -X. Pour leg axis
+        // = (cos30°·-X) + (sin30°·+Z) = (-0.866, 0, +0.5).
+        //
+        // Query at (-0.030, 0, +0.0098): along the pour leg axis
+        // from apex by ~17.3 mm. Inside bounding (|x|=30<40,
+        // z=0.0098<30); outside body (|x|=30>25); in Positive
+        // piece (+binormal=+Z side).
+        let spec = v2_fixture().0;
         let body = &spec.layers[0].body;
         let region = &spec.bounding_region;
+        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon_no_gate = Ribbon::new(short_centerline.clone(), split).unwrap();
+        let ribbon_gate = Ribbon::new(short_centerline, split)
+            .unwrap()
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
         let piece_no_gate =
             crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Positive).unwrap();
         let piece_gate =
             crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Positive).unwrap();
 
-        let q = Point3::new(0.0, 0.0, 0.025);
+        let q = Point3::new(-0.030, 0.0, 0.0098);
         assert!(
             piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate piece should INCLUDE cup-wall query above body; got {}",
+            "no-gate Positive piece should INCLUDE cup-wall query at \
+             (-30mm, 0, +9.8mm); got {}",
             piece_no_gate.evaluate(&q),
         );
         assert!(
             piece_gate.evaluate(&q) > 0.0,
-            "side-mounted pour-gate piece should EXCLUDE channel-axis query; got {}",
+            "V-pour-gate Positive piece should EXCLUDE pour-leg-axis query at \
+             (-30mm, 0, +9.8mm); got {}",
             piece_gate.evaluate(&q),
         );
     }
 
     #[test]
-    fn compose_piece_solid_with_pour_gate_does_not_carve_negative_piece_dome_wall() {
-        // v2.1 sub-leaf 2: side-mounted gate axis = +binormal = +Z.
-        // The gate cylinder spans z ≥ 0 only; the NEGATIVE piece's
-        // cup wall (which is at z < 0 with seam overlap to
-        // z = +0.0005) is NOT carved by the gate.
-        //
-        // Query (0, 0, -0.025): on the centerline x-axis,
-        // in the negative piece's cup wall (below body z_min=-0.020
-        // and above bounding z_min=-0.030). Both no-gate and
-        // with-gate evaluations should return NEGATIVE (inside cup
-        // wall) — adding the side-mounted gate doesn't perturb this
-        // half of the mold.
-        let (spec, ribbon_no_gate) = v2_fixture();
-        let (_, ribbon_gate) = v2_fixture_with_pour_gate();
+    fn compose_piece_solid_with_pour_gate_carves_negative_piece_only_via_vent_leg() {
+        // v2.1 sub-leaf 4: the V's pour leg lands on +binormal
+        // (Positive piece) and the vent leg lands on -binormal
+        // (Negative piece). For the +Z-binormal short-centerline
+        // fixture, the vent leg axis is (-cos30°, 0, -sin30°)
+        // ≈ (-0.866, 0, -0.5) from apex (-0.015, 0, 0). Query at
+        // (-0.030, 0, -0.0098) sits on the vent-leg axis and in
+        // Negative-piece cup-wall material (|x|=30>25 body,
+        // |x|=30<40 bounding; z=-0.0098<0 = -binormal half). The
+        // pour leg (on +binormal side) does NOT carve this point.
+        let spec = v2_fixture().0;
         let body = &spec.layers[0].body;
         let region = &spec.bounding_region;
+        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon_no_gate = Ribbon::new(short_centerline.clone(), split).unwrap();
+        let ribbon_gate = Ribbon::new(short_centerline, split)
+            .unwrap()
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
         let piece_no_gate =
             crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Negative).unwrap();
         let piece_gate =
             crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Negative).unwrap();
 
-        let q = Point3::new(0.0, 0.0, -0.025);
+        // Vent-leg query: cup-wall material on -binormal side.
+        let q = Point3::new(-0.030, 0.0, -0.0098);
         assert!(
             piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate negative piece should INCLUDE dome-side cup-wall query; got {}",
+            "no-gate Negative piece should INCLUDE cup-wall query on -binormal side; got {}",
             piece_no_gate.evaluate(&q),
         );
         assert!(
-            piece_gate.evaluate(&q) < 0.0,
-            "side-mounted gate should leave negative piece's dome-side cup wall intact; got {}",
+            piece_gate.evaluate(&q) > 0.0,
+            "V-pour-gate Negative piece should EXCLUDE vent-leg-axis query on -binormal side; got {}",
             piece_gate.evaluate(&q),
         );
     }
@@ -2797,13 +2815,22 @@ mod tests {
 
     #[test]
     fn compose_piece_solid_with_pins_and_pour_gate_composes_both() {
-        // Step 9 (pins) + Step 10 (pour gate) are orthogonal —
-        // both should compose into the same piece geometry.
-        // Verify by enabling BOTH on the ribbon and confirming
-        // compose_piece_solid produces a valid Solid (non-empty
-        // bounds; no panic).
-        let (spec, ribbon) = v2_fixture();
-        let ribbon = ribbon
+        // Step 9 (pins) + Step 10/v2.1 sub-leaf 4 (V pour gate) are
+        // orthogonal — both should compose into the same piece
+        // geometry. Verify by enabling BOTH on the ribbon and
+        // confirming compose_piece_solid produces a valid Solid
+        // with both features visible.
+        //
+        // Uses a short centerline (-15→+15 mm) so the V apex at
+        // `centerline[0]` sits INSIDE the body and the pour leg
+        // crosses the cup wall (per the standalone V-pour-gate
+        // test); v2_fixture's default centerline -50→+50 puts the
+        // apex past the bounding region.
+        let spec = v2_fixture().0;
+        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(short_centerline, split)
+            .unwrap()
             .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
@@ -2828,22 +2855,25 @@ mod tests {
         // Pin protrusion query (pin in Negative piece) — annulus
         // midpoint along +Y for v2_fixture's body half_y=0.025 +
         // bounding half_y=0.040 → pin center at y=0.0325.
-        let pin_q = Point3::new(-0.025, 0.0325, 0.003);
+        // Centerline arc fractions 0.25/0.75 on the -15→+15 mm
+        // centerline put the t=0.25 pin at x=-0.0075.
+        let pin_q = Point3::new(-0.0075, 0.0325, 0.003);
         assert!(
             piece_neg.evaluate(&pin_q) < 0.0,
-            "pins+gate Negative piece should still contain pin protrusion"
+            "pins+gate Negative piece should still contain pin protrusion at \
+             annulus midpoint; got {}",
+            piece_neg.evaluate(&pin_q),
         );
-        // Pour-gate channel query — v2.1 sub-leaf 2 moves the gate
-        // to a side-mounted position: centerline midpoint (0, 0, 0)
-        // + gate_half_length * binormal (+Z). Gate cylinder axis is
-        // +Z spanning Z ∈ [0, 2*0.060]. Query at (0, 0, 0.025) is in
-        // the POSITIVE piece's cup wall (above body z_max=+0.020,
-        // below bounding z_max=+0.030) and on the gate cylinder axis,
-        // so the gate carves it out of the positive piece.
-        let gate_q = Point3::new(0.0, 0.0, 0.025);
+        // V pour-leg query: pour leg axis from apex (-0.015, 0, 0)
+        // is ≈ (-0.866, 0, +0.5). At ~17 mm along the leg the point
+        // (-0.030, 0, +0.0098) sits in cup-wall material on the
+        // +binormal=+Z side (Positive piece). Gate carves it.
+        let gate_q = Point3::new(-0.030, 0.0, 0.0098);
         assert!(
             piece_pos.evaluate(&gate_q) > 0.0,
-            "pins+gate Positive piece should EXCLUDE side-mounted pour-gate channel"
+            "pins+gate Positive piece should EXCLUDE V pour-leg channel at \
+             (-30mm, 0, +9.8mm); got {}",
+            piece_pos.evaluate(&gate_q),
         );
     }
 

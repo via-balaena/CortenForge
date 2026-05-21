@@ -204,8 +204,8 @@ pub enum PlugPinKind {
 ///     extending along `outward`. The anchor sits where the
 ///     caller says it sits — typically the cap-plane centroid +
 ///     outward normal — NOT at any centerline endpoint. See
-///     [`pour_and_dome_anchors`]'s docstring for the
-///     `trim_floor_mm` rationale.
+///     `pour_and_dome_anchors`'s docstring (private helper in
+///     this module) for the `trim_floor_mm` rationale.
 ///   - `None` → fallback to `(centerline.last(), last.tangent)`
 ///     per cf-scan-prep's tip→base centerline-orientation
 ///     convention.

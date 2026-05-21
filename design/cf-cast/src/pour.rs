@@ -1,48 +1,75 @@
 //! Pour-gate + air-vent geometry for v2 multi-piece molds.
 //!
-//! Step 10 of `docs/CURVE_FOLLOWING_DESIGN.md` added two cylindrical
-//! channels CSG'd off the v2 mold pieces; v2.1 sub-leaves 2 + 3
-//! relocate both off the centerline endpoints so the endpoints can
-//! host plug-anchor pin sockets without overlap and so the
-//! workshop "roof" hosts the vent for natural air escape:
+//! v2 Step 10 + v2.1 sub-leaves 2/3 placed two cylindrical channels
+//! off the v2 mold pieces. Workshop iter-1 visual-pass review
+//! (2026-05-21) surfaced two problems with that layout for sock-
+//! shaped scans:
 //!
-//! - **Pour gate** at the centerline **midpoint** (arc fraction
-//!   `0.5`), axis along the ribbon's local binormal. The channel
-//!   cylinder's inner tip is at the centerline (so it overlaps the
-//!   body cavity by a small redundant amount — MC tolerance
-//!   benefit) and extends outward along binormal by
-//!   `2 * gate_half_length_m`, well past the typical bounding-
-//!   region outer surface. Workshop user pours into the channel
-//!   opening on the side face of the assembled mold.
-//! - **Air vent** at the centerline's **argmax-z vertex** (the
-//!   highest point on the polyline; workshop user orients the
-//!   assembled mold with `+Z` up, so the apex is the physical
-//!   highest point on the cured silicone body — where trapped
-//!   air collects). Axis is `+Z` (world up); cylinder rises
-//!   straight from the apex up through the cup wall to the
-//!   bounding region's `+Z` outer face.
+//! - The side-mounted pour gate exited on the cup wall's curved
+//!   binormal face — no flat surface for a funnel to rest on
+//!   during pour.
+//! - The apex vent at the centerline's argmax-z vertex landed on
+//!   roughly the same dome region as the workshop-natural pour
+//!   end, but the gate was somewhere else entirely.
+//!
+//! v2.1 sub-leaf 4 (this module, 2026-05-21) reshapes the channels
+//! into a **V at the dome end** of the centerline — opposite the
+//! plug-anchor pin / cap plane. Both channels share the V apex
+//! (the centerline endpoint farthest from
+//! [`crate::ribbon::Ribbon::pour_end_hint`]'s centroid) and splay
+//! apart in the plane containing the local outward-axis + the
+//! local segment's `binormal`, with a 30° half-angle. The pour leg
+//! lands on the [`crate::ribbon::PieceSide::Positive`] side
+//! (`+binormal` half-space); the vent leg lands on the
+//! [`crate::ribbon::PieceSide::Negative`] side (`-binormal`
+//! half-space). Workshop user orients the assembled mold `+Z` up
+//! and sees two distinct holes at the top:
+//!
+//! - **Pour leg** (`gate_radius_m`, default 3 mm = 6 mm Ø) — large
+//!   enough for low-viscosity silicone flow without splashing.
+//! - **Vent leg** (`vent_radius_m`, default 1 mm = 2 mm Ø) — small
+//!   enough for silicone surface tension to hold during pour while
+//!   letting trapped air freely escape.
 //!
 //! ## Composition
 //!
-//! [`build_pour_gate_solid`] returns the union of the gate +
-//! (optional) vent cylinders, or `None` if [`PourGateKind::None`].
-//! [`crate::piece::compose_piece_solid`] subtracts this solid
-//! from the base piece geometry, applying the same channel to
-//! BOTH [`crate::ribbon::PieceSide`]s.
+//! [`build_pour_gate_solid`] returns the union of the two cylinders,
+//! or just the pour cylinder if `spec.include_vent = false`, or
+//! `None` if [`PourGateKind::None`].
+//! [`crate::piece::compose_piece_solid`] subtracts this solid from
+//! BOTH [`crate::ribbon::PieceSide`]s — since the legs lie on
+//! opposite sides of the seam (one on `+binormal`, one on
+//! `-binormal`), each piece carves the leg on its own side and
+//! leaves the other leg untouched (modulo the small
+//! [`crate::piece::RIBBON_PIECE_OVERLAP_M`] seam-overlap slice).
 //!
-//! **v2.1 sub-leaf 2 placement** (current): the pour-gate cylinder
-//! is **side-mounted** with its inner tip at the centerline
-//! midpoint and its axis along the local binormal. Because the
-//! cylinder extends entirely along `+binormal` from the centerline,
-//! it lives **on one side of the ribbon seam** — almost all of the
-//! carve lands on the [`crate::ribbon::PieceSide::Positive`] piece
-//! (with a thin seam-overlap slice on the
-//! [`crate::ribbon::PieceSide::Negative`] piece via the
-//! [`crate::piece::RIBBON_PIECE_OVERLAP_M`] bias). Workshop user
-//! pours into the gate hole on the Positive piece's binormal-facing
-//! outer face. Pre-v2.1 the gate straddled the seam and each piece
-//! carved a half-cylinder; the off-seam relocation (sub-leaf 2) gave
-//! centerline endpoints back to the plug-anchor sockets.
+//! ## Why splay along binormal, not split-normal
+//!
+//! The ribbon's seam zero-set is the plane perpendicular to the
+//! local `binormal`. Splaying the V along `±binormal` puts the
+//! pour leg on `+binormal` (Positive piece) and the vent leg on
+//! `-binormal` (Negative piece) — each leg lives entirely on one
+//! piece. Splaying along `±split_normal` would keep both legs in
+//! the SEAM plane (since `split_normal` is perpendicular to
+//! `binormal`), so both legs would straddle the seam and each
+//! piece would carve a half-cylinder of each — workshop user can't
+//! tell pour from vent at the seam. Binormal splay gives the
+//! cleaner per-piece geometry.
+//!
+//! ## Why opposite the cap plane
+//!
+//! The plug-anchor pin lives at the cap-plane centroid (per
+//! [`crate::ribbon::Ribbon::pour_end_hint`]). The cap plane is the
+//! body's natural open end and sits at the BOTTOM of the assembled
+//! mold under `+Z` up orientation. Putting the pour channels at the
+//! cap-plane end would put the pour openings on the floor of the
+//! mold — silicone would pour DOWN through the cup wall and out
+//! the bottom rather than INTO the cavity.
+//!
+//! Anchoring at the OPPOSITE centerline endpoint (the body's closed
+//! dome, which sits on top when the mold is `+Z` up) puts the pour
+//! openings at the top of the assembly where gravity feeds silicone
+//! into the cavity.
 //!
 //! ## Default off
 //!
@@ -55,77 +82,74 @@
 //! [`Ribbon::new`]: crate::ribbon::Ribbon::new
 
 use cf_design::Solid;
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 use crate::ribbon::Ribbon;
+
+/// V half-angle in radians — 30° (= π/6). Each leg of the V splays
+/// from the body's outward axis at the dome end by this angle
+/// toward `±binormal`; total V opening is 60°.
+///
+/// Chosen so the two outer-surface punctures are visibly separate
+/// on the bounding-region outer surface while keeping each leg
+/// close enough to axial that workshop pour ergonomics aren't
+/// awkward. Not user-tunable; iter-1 visual gate accepted the
+/// default.
+const V_HALF_ANGLE_RAD: f64 = std::f64::consts::FRAC_PI_6;
 
 /// Cylindrical pour-gate + air-vent geometry spec. All dimensions
 /// in meters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PourGateSpec {
-    /// Pour-gate channel radius (m). Default `0.003` = 3 mm =
+    /// Pour-leg channel radius (m). Default `0.003` = 3 mm =
     /// 6 mm diameter — enough for low-viscosity silicone flow
     /// without splashing at typical workshop pour rates.
     pub gate_radius_m: f64,
-    /// Air-vent channel radius (m). Default `0.001` = 1 mm =
+    /// Vent-leg channel radius (m). Default `0.001` = 1 mm =
     /// 2 mm diameter — small enough for silicone surface tension
     /// to hold against the workshop pour-pressure differential
-    /// while letting air freely escape. v2.1 sub-leaf 3 shrank
-    /// the default from the prior 1.5 mm to reduce silicone
-    /// surface-tension hold concerns now that the vent is on the
-    /// workshop "roof" (apex of the centerline arc, oriented
-    /// `+Z`-up).
+    /// while letting air freely escape.
     pub vent_radius_m: f64,
-    /// Half-length of the **side-mounted pour-gate** cylinder
-    /// (m). Total channel length is `2 * gate_half_length_m`.
-    /// Default `0.045` = 45 mm half-length → 90 mm total channel.
+    /// Half-length of the **pour leg** cylinder (m). Total channel
+    /// length is `2 * gate_half_length_m`. Default `0.045` = 45 mm
+    /// half-length → 90 mm total channel.
     ///
-    /// v2.1 sub-leaf 2 anchors the gate cylinder so its **inner
-    /// tip is at the centerline midpoint** and the cylinder
-    /// extends outward along the local ribbon binormal by
-    /// `2 * gate_half_length_m`. For a typical workshop bounding
-    /// region (cuboid with ≤80 mm half-extent along the binormal
-    /// axis from the centerline midpoint), the default 45 mm
-    /// half-length puts the outer tip 10 mm past the bounding-
-    /// region outer surface — the channel reliably punches all
-    /// the way through the cup wall to the outside.
+    /// The pour leg anchors at the V apex (centerline endpoint
+    /// farthest from [`crate::ribbon::Ribbon::pour_end_hint`])
+    /// and extends along the pour-leg axis (outward at apex,
+    /// tilted by the module-private `V_HALF_ANGLE_RAD` (30°)
+    /// toward `+binormal`, where
+    /// `binormal` is the local segment's cached binormal at the
+    /// apex endpoint).
+    /// For a typical workshop bounding region (cuboid with ≤80 mm
+    /// half-extent along the body axis past the dome), the default
+    /// 45 mm half-length puts the outer tip past the bounding-
+    /// region outer surface — the channel reliably punches all the
+    /// way through the cup wall to the outside.
     ///
     /// Workshop users with larger bounding regions tune this up.
-    /// Keep the redundant outside-bounding-region portion of the
-    /// cylinder small: it's a no-op (it doesn't intersect any mold
-    /// piece's `bounding ∖ layer_body ∩ ribbon_side` composition)
-    /// but does enlarge the gate cylinder's AABB, which slows
-    /// cf-design's octree-pruning interval arithmetic.
     pub gate_half_length_m: f64,
-    /// Half-length of the **apex vent** cylinder along its `+Z`
-    /// axis (m). Total channel length is `2 * vent_half_length_m`.
-    /// Default `0.040` = 40 mm half-length → 80 mm total channel.
+    /// Half-length of the **vent leg** cylinder (m). Total channel
+    /// length is `2 * vent_half_length_m`. Default `0.040` = 40 mm
+    /// half-length → 80 mm total channel.
     ///
-    /// v2.1 sub-leaf 3 anchors the vent cylinder so its **inner
-    /// tip is at the centerline's argmax-z vertex** and the
-    /// cylinder extends straight up `+Z` by `2 * vent_half_length_m`.
-    /// For a typical workshop bounding region (cuboid with ≤80 mm
-    /// half-extent in `+Z` from the centerline apex), the default
-    /// 40 mm half-length puts the outer tip ≥80 mm above the apex
-    /// — the channel reliably punches all the way through the
-    /// cup wall to the workshop "roof".
-    ///
-    /// Workshop users with apex-far-from-`+Z`-face geometries
-    /// tune this up. The redundant outside-bounding-region portion
-    /// of the cylinder is a no-op for the mold piece composition.
+    /// The vent leg anchors at the same V apex as the pour leg and
+    /// extends along the vent-leg axis (outward at apex, tilted by
+    /// the module-private `V_HALF_ANGLE_RAD` (30°) toward
+    /// `-binormal`).
     pub vent_half_length_m: f64,
-    /// Whether to include the apex air-vent cylinder (placed at the
-    /// centerline's argmax-z vertex along `+Z` per v2.1 sub-leaf 3).
-    /// Default `true`. Disable for short straight molds where air
-    /// escape through the side-mounted pour gate is sufficient.
+    /// Whether to include the vent leg. Default `true`. Disable for
+    /// short straight molds where air escape back through the pour
+    /// leg is sufficient (silicone fills bottom-up; air bubbles
+    /// rise out the same channel).
     pub include_vent: bool,
 }
 
 impl PourGateSpec {
-    /// v2.1 iter-1 defaults: 6 mm Ø pour gate (side-mounted at
-    /// centerline midpoint along binormal, 90 mm total channel),
-    /// 2 mm Ø apex vent (at centerline's argmax-z vertex along
-    /// `+Z`, 80 mm total channel), vent enabled.
+    /// v2.1 iter-1 defaults: 6 mm Ø pour leg (90 mm total), 2 mm Ø
+    /// vent leg (80 mm total), vent enabled. Both legs anchored
+    /// at the V apex on the body's dome end (opposite the cap
+    /// plane), splayed ±30° in the (outward + split-normal) plane.
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
@@ -149,54 +173,48 @@ impl Default for PourGateSpec {
 /// `None` is the v1/v2-pre-Step-10 default — no integral pour
 /// gate or vent; the workshop user pours through the seam where
 /// pieces meet and drills vent holes post-print as needed.
-/// `Default(PourGateSpec)` enables Step 10's integrated channels.
+/// `Default(PourGateSpec)` enables the V-at-dome channels.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum PourGateKind {
     /// No pour-gate or vent channels.
     #[default]
     None,
-    /// Side-mounted pour gate at the centerline midpoint along the
-    /// ribbon binormal + optional apex air vent at the centerline's
-    /// argmax-z vertex along `+Z`, per the supplied
-    /// [`PourGateSpec`]. (v2 Step 10 originally placed the gate at
-    /// the centerline base along tangent and the vent at the tip
-    /// end along tangent; v2.1 sub-leaves 2 + 3 relocated both off
-    /// the centerline endpoints so the endpoints can host plug-
-    /// anchor pin sockets and the workshop "roof" hosts the vent.)
+    /// V-at-dome pour-leg + (optional) vent-leg per the supplied
+    /// [`PourGateSpec`]. Both legs share an apex at the centerline
+    /// endpoint opposite the cap plane (per
+    /// [`crate::ribbon::Ribbon::pour_end_hint`]) and splay ±30°
+    /// in the (outward + `binormal`) plane.
     Default(PourGateSpec),
 }
 
-/// Build the combined pour-gate + vent Solid for the ribbon's
+/// Build the combined pour-leg + vent-leg Solid for the ribbon's
 /// pour-gate kind, or `None` if [`PourGateKind::None`].
 ///
-/// Returns `Some(solid)` whose SDF is the union of the pour-gate
-/// cylinder (always present in `Default`) and the air-vent
-/// cylinder (present if `spec.include_vent`).
+/// Returns `Some(solid)` whose SDF is the union of the pour-leg
+/// cylinder (always present in `Default`) and the vent-leg
+/// cylinder (present when `spec.include_vent`).
 ///
-/// - The **pour gate** is side-mounted: the cylinder is centered
-///   at `centerline_midpoint + gate_half_length_m * binormal_unit`
-///   with axis along the binormal at the midpoint, so the inner
-///   tip rests at the centerline (overlapping the body cavity for
-///   MC tolerance) and the outer tip extends past the typical
-///   bounding-region outer surface. Workshop user pours into the
-///   channel opening on the assembled mold's side face. Reuses
-///   [`Ribbon::sample_at_arc_fraction(0.5)`] to derive midpoint +
-///   binormal.
-/// - The **vent** is at the centerline's **argmax-z vertex**
-///   (the highest point on the polyline; workshop user orients
-///   the assembled mold with `+Z` up, so the apex vertex is the
-///   physical highest point on the cured silicone body, where
-///   trapped air collects). Axis is `+Z` (world up), so the vent
-///   channel rises straight from the centerline apex up through
-///   the cup wall to the bounding region's `+Z` outer face.
+/// V geometry:
+/// - **Apex** at `v_apex_anchor(ribbon)` — the centerline endpoint
+///   FARTHER from `ribbon.pour_end_hint`'s centroid, or
+///   `centerline[0]` when the hint is unset (cf-scan-prep's
+///   tip→base convention puts the dome at `centerline[0]`).
+/// - **Outward axis at apex** — the local-segment tangent pointing
+///   AWAY from body interior at that endpoint (`-first.tangent` if
+///   apex = `centerline[0]`, `+last.tangent` if apex =
+///   `centerline.last()`).
+/// - **Pour leg axis** — `cos(θ) * outward + sin(θ) * binormal`,
+///   normalized. Lands on the [`crate::ribbon::PieceSide::Positive`]
+///   side (the `+binormal` side of the ribbon seam).
+/// - **Vent leg axis** — `cos(θ) * outward - sin(θ) * binormal`,
+///   normalized. Lands on the [`crate::ribbon::PieceSide::Negative`]
+///   side.
 ///
-/// Returns `None` when [`Ribbon::sample_at_arc_fraction(0.5)`]
-/// fails to resolve (degenerate centerline). Per the
-/// `crate::ribbon::Ribbon` invariants this only occurs for
-/// hand-constructed Ribbons that bypass the public constructor;
-/// the public path always has at least one segment.
+/// Returns `None` only when the ribbon has no segments — impossible
+/// for ribbons built via the public [`Ribbon::new`] constructor
+/// (which rejects fewer than 2 vertices).
 ///
-/// [`Ribbon::sample_at_arc_fraction(0.5)`]: crate::ribbon::Ribbon::sample_at_arc_fraction
+/// [`Ribbon::new`]: crate::ribbon::Ribbon::new
 #[must_use]
 pub fn build_pour_gate_solid(ribbon: &Ribbon) -> Option<Solid> {
     let spec = match &ribbon.pour_gate {
@@ -204,58 +222,79 @@ pub fn build_pour_gate_solid(ribbon: &Ribbon) -> Option<Solid> {
         PourGateKind::Default(spec) => spec,
     };
 
-    let (midpoint, _tangent, binormal) = ribbon.sample_at_arc_fraction(0.5)?;
-    let gate_center = midpoint + binormal * spec.gate_half_length_m;
-    let gate_cylinder = channel_cylinder(
-        gate_center,
-        binormal,
+    let (apex, outward, binormal) = v_apex_anchor(ribbon)?;
+
+    let cos = V_HALF_ANGLE_RAD.cos();
+    let sin = V_HALF_ANGLE_RAD.sin();
+    let pour_leg_axis = (cos * outward + sin * binormal).normalize();
+    let vent_leg_axis = (cos * outward - sin * binormal).normalize();
+
+    let pour_leg = leg_cylinder(
+        apex,
+        pour_leg_axis,
         spec.gate_radius_m,
         spec.gate_half_length_m,
     );
 
     if !spec.include_vent {
-        return Some(gate_cylinder);
+        return Some(pour_leg);
     }
 
-    let apex = apex_point(&ribbon.points)?;
-    let up = Vector3::z_axis().into_inner();
-    let vent_center = apex + up * spec.vent_half_length_m;
-    let vent_cylinder =
-        channel_cylinder(vent_center, up, spec.vent_radius_m, spec.vent_half_length_m);
-
-    Some(gate_cylinder.union(vent_cylinder))
+    let vent_leg = leg_cylinder(
+        apex,
+        vent_leg_axis,
+        spec.vent_radius_m,
+        spec.vent_half_length_m,
+    );
+    Some(pour_leg.union(vent_leg))
 }
 
-/// Return the centerline vertex with the maximum z coordinate (the
-/// "apex" of the polyline in the workshop's `+Z = up` frame).
+/// Resolve the V apex `(point, outward_axis, binormal)` for this
+/// ribbon — the centerline endpoint opposite the
+/// [`crate::ribbon::Ribbon::pour_end_hint`]'s centroid, with the
+/// local-segment tangent pointing outward (away from body interior)
+/// and the local-segment cached binormal threaded through so the
+/// V's leg splay aligns with the ribbon seam at the apex.
 ///
-/// Trapped air during pour + cure collects at the highest point of
-/// the cavity. v2.1 sub-leaf 3 places the air vent here so the
-/// channel rises straight from the cavity ceiling to the bounding
-/// region's `+Z` outer face — workshop user orients the assembled
-/// mold with `+Z` up, sees the vent as the small hole on the
-/// "roof".
+/// Hint resolution mirrors `crate::plug::build_plug_pin_solid`'s
+/// pour/dome split: when a hint is set, the V apex is the centerline
+/// endpoint FARTHER from the hint centroid (the hint marks the cap
+/// plane / plug-anchor side; the V apex is on the opposite end).
+/// When no hint is set, the apex falls back to `centerline[0]`
+/// (per cf-scan-prep's tip→base convention, `centerline[0]` is the
+/// closed dome).
 ///
-/// Returns `None` only for an empty polyline (impossible for a
-/// public-API `Ribbon` since `Ribbon::new` rejects fewer than 2
-/// vertices).
-fn apex_point(points: &[nalgebra::Point3<f64>]) -> Option<nalgebra::Point3<f64>> {
-    points
-        .iter()
-        .copied()
-        .max_by(|a, b| a.z.partial_cmp(&b.z).unwrap_or(std::cmp::Ordering::Equal))
+/// The returned `binormal` is the segment's cached binormal at the
+/// apex endpoint: `first.binormal` if apex = `first.start`,
+/// `last.binormal` if apex = `last.end`. Both are unit-length per
+/// `Ribbon::new`'s invariant.
+fn v_apex_anchor(ribbon: &Ribbon) -> Option<(Point3<f64>, Vector3<f64>, Vector3<f64>)> {
+    let first = ribbon.segments.first()?;
+    let last = ribbon.segments.last()?;
+    let start_anchor = (first.start, -first.tangent, first.binormal);
+    let end_anchor = (last.end, last.tangent, last.binormal);
+    match ribbon.pour_end_hint {
+        Some((centroid, _)) => {
+            let d_start = (centroid - first.start).norm_squared();
+            let d_end = (centroid - last.end).norm_squared();
+            if d_start > d_end {
+                Some(start_anchor)
+            } else {
+                Some(end_anchor)
+            }
+        }
+        // No hint: fall back to `centerline[0]` per cf-scan-prep's
+        // tip→base convention (closed dome lives at `centerline[0]`).
+        None => Some(start_anchor),
+    }
 }
 
-/// Build a single channel cylinder centered at `center` with the
-/// given `axis`, `radius`, and `half_length`. Used by
-/// [`build_pour_gate_solid`] for the side-mounted gate (where
-/// `axis = binormal`) and the apex vent (where `axis = +Z`).
-fn channel_cylinder(
-    center: nalgebra::Point3<f64>,
-    axis: Vector3<f64>,
-    radius: f64,
-    half_length: f64,
-) -> Solid {
+/// Build a single leg cylinder of the V — anchored at `apex` with
+/// its inner tip at the apex point and extending outward along
+/// `axis` by `2 * half_length_m`. The unit `axis` must already be
+/// normalized.
+fn leg_cylinder(apex: Point3<f64>, axis: Vector3<f64>, radius: f64, half_length: f64) -> Solid {
+    let center = apex + axis * half_length;
     let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &axis)
         .unwrap_or_else(UnitQuaternion::identity);
     Solid::cylinder(radius, half_length)
@@ -298,14 +337,15 @@ mod tests {
         assert!(build_pour_gate_solid(&ribbon).is_none());
     }
 
-    /// Straight +X centerline with +Y split-normal → binormal = +Z.
-    /// Midpoint = (0, 0, 0). Side-mounted gate extends from
-    /// midpoint along +Z by `2 * gate_half_length_m` = 90 mm at
-    /// the iter1 default. Apex vent rises straight +Z from the
-    /// polyline's max-z vertex (here both vertices tie at z=0;
-    /// `apex_point`'s `max_by` returns the last-encountered max so
-    /// apex = `(+0.050, 0, 0)`); vent spans z ∈ [0, +0.080] at
-    /// x=+0.050.
+    /// Straight +X centerline with +Y split-normal → binormal +Z.
+    /// With no hint set, V apex falls back to
+    /// `centerline[0] = (-0.050, 0, 0)` with outward axis =
+    /// `-first.tangent = -X`. Pour leg tilted +30° toward
+    /// `+binormal = +Z` from `-X` (so pour leg axis
+    /// ≈ `(-cos30°, 0, +sin30°)` = `(-0.866, 0, +0.5)`); vent leg
+    /// tilted -30° toward `-binormal = -Z` (so vent axis
+    /// ≈ `(-0.866, 0, -0.5)`). Each leg extends `2 * half_length`
+    /// from apex.
     #[test]
     fn build_pour_gate_solid_default_returns_some_with_finite_bounds() {
         let ribbon =
@@ -314,35 +354,33 @@ mod tests {
         let aabb = solid
             .bounds()
             .expect("channel cylinders should have finite bounds");
-        // Side-mounted gate reaches z ≥ +0.089 (45 mm × 2 from
-        // z=0). Apex vent reaches z ≥ +0.079 (40 mm × 2 from z=0).
-        // Combined max.z dominated by gate.
+        // Pour leg of length 90 mm at ~0.866 in -X direction reaches
+        // x ≈ -0.050 - 90 mm × 0.866 ≈ -0.128 m.
         assert!(
-            aabb.max.z >= 0.089,
-            "gate cylinder should reach z ≥ +0.089 m; got max.z = {}",
-            aabb.max.z
+            aabb.min.x <= -0.120,
+            "V pour leg should reach x ≤ -120 mm; got min.x = {}",
+            aabb.min.x,
         );
-        // Gate inner tip + vent inner tip both at z=0 → min z
-        // bounded by ~gate-radius slack on the -z side.
+        // Pour leg's +Z extent: apex + 90 mm × 0.5 = +0.045 m (plus
+        // radius slack ~3 mm).
         assert!(
-            aabb.min.z >= -0.0035,
-            "channels should start near z = 0; got min.z = {}",
-            aabb.min.z
+            aabb.max.z >= 0.040,
+            "V pour leg's +binormal extent should reach z ≥ +40 mm; got max.z = {}",
+            aabb.max.z,
         );
-        // Apex vent at x = +0.050 → max.x bounded by apex x plus
-        // ~vent radius (1 mm).
+        // Vent leg's -Z extent: apex + 80 mm × (-0.5) = -0.040 m
+        // (plus vent radius ~1 mm).
         assert!(
-            aabb.max.x >= 0.049,
-            "apex vent at x = +0.050 should reach max.x ≥ +0.049; got max.x = {}",
-            aabb.max.x
+            aabb.min.z <= -0.035,
+            "V vent leg's -binormal extent should reach z ≤ -35 mm; got min.z = {}",
+            aabb.min.z,
         );
     }
 
-    /// With vent disabled, only the side-mounted gate remains —
-    /// AABB spans z up high (gate) but x stays near zero (no vent
-    /// reaching out to x = -0.050).
+    /// With vent disabled, only the pour leg remains — AABB extends
+    /// in +binormal (=+Z) but NOT in -binormal (=-Z).
     #[test]
-    fn build_pour_gate_solid_no_vent_is_smaller_than_with_vent() {
+    fn build_pour_gate_solid_no_vent_omits_negative_binormal_extent() {
         let mut spec_no_vent = PourGateSpec::iter1();
         spec_no_vent.include_vent = false;
         let ribbon_no_vent =
@@ -351,61 +389,106 @@ mod tests {
             straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
         let no_vent = build_pour_gate_solid(&ribbon_no_vent).unwrap();
         let with_vent = build_pour_gate_solid(&ribbon_with_vent).unwrap();
-        // No-vent solid is just the side-mounted gate centered on
-        // the centerline midpoint x = 0 — x stays within gate
-        // radius (~3 mm). With-vent solid additionally has the
-        // apex vent at x = +0.050, so max.x extends out to ~+0.051.
+        // With-vent has the -binormal leg → AABB min.z well below 0.
+        let with_vent_min_z = with_vent.bounds().unwrap().min.z;
+        assert!(with_vent_min_z <= -0.035);
+        // No-vent has only the +binormal pour leg → AABB min.z is
+        // bounded by the pour-leg radius slack (~3 mm).
+        let no_vent_min_z = no_vent.bounds().unwrap().min.z;
         assert!(
-            no_vent.bounds().unwrap().max.x < 0.010,
-            "no-vent gate-only solid should not extend far in +x; got max.x = {}",
-            no_vent.bounds().unwrap().max.x,
-        );
-        assert!(with_vent.bounds().unwrap().max.x > 0.040);
-    }
-
-    /// Side-mounted gate is centered at `(0, 0, +half_length)` with
-    /// axis +Z. Query on the channel axis at z = +0.045 (midpoint
-    /// of the cylinder) should be inside (SDF < 0).
-    #[test]
-    fn pour_gate_solid_is_inside_at_channel_axis() {
-        let ribbon =
-            straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-        let solid = build_pour_gate_solid(&ribbon).unwrap();
-        let q = Point3::new(0.0, 0.0, 0.045);
-        assert!(
-            solid.evaluate(&q) < 0.0,
-            "side-mounted gate SDF on channel axis at z=+0.045 should be negative; got {}",
-            solid.evaluate(&q),
+            no_vent_min_z >= -0.010,
+            "no-vent solid should not extend into -z; got min.z = {no_vent_min_z}",
         );
     }
 
-    /// Inner tip of the side-mounted gate sits at the centerline
-    /// midpoint (z=0 for the straight-X test ribbon): the cylinder
-    /// extends from there outward along +binormal, so a query at
-    /// the midpoint along the cylinder axis is on the cylinder's
-    /// face. SDF should be close to zero (numerical floor inside
-    /// the cylinder, due to the cell-size-tolerant overlap
-    /// described in [`PourGateSpec::gate_half_length_m`]'s
-    /// docstring).
+    /// Pour leg's inner tip sits at the V apex. A query just inside
+    /// the cylinder along the pour-leg axis should be inside (SDF
+    /// < 0).
     #[test]
-    fn pour_gate_solid_inner_tip_is_at_centerline_midpoint() {
+    fn pour_gate_solid_is_inside_at_pour_leg_axis() {
         let ribbon =
             straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
         let solid = build_pour_gate_solid(&ribbon).unwrap();
-        // Just inside the cylinder's bottom face along the axis.
-        let q_inside = Point3::new(0.0, 0.0, 0.001);
+        // V apex at centerline[0] = (-0.050, 0, 0). Pour leg axis
+        // ≈ (-cos30°, 0, +sin30°) (binormal at apex = +Z for this
+        // ribbon). Step 20 mm along the leg from apex:
+        let pour_axis = Vector3::new(-V_HALF_ANGLE_RAD.cos(), 0.0, V_HALF_ANGLE_RAD.sin());
+        let on_leg = Point3::new(-0.050, 0.0, 0.0) + pour_axis * 0.020;
         assert!(
-            solid.evaluate(&q_inside) < 0.0,
-            "gate SDF just inside the inner tip should be negative; got {}",
-            solid.evaluate(&q_inside),
+            solid.evaluate(&on_leg) < 0.0,
+            "pour-leg SDF along leg axis should be negative; got {}",
+            solid.evaluate(&on_leg),
         );
-        // 4 mm below the midpoint along -binormal — outside the
-        // gate cylinder (cylinder starts at z=0).
-        let q_below = Point3::new(0.0, 0.0, -0.004);
+    }
+
+    /// V apex sits at the centerline endpoint opposite the
+    /// `pour_end_hint`. Set the hint near `centerline.last()` to
+    /// confirm the apex flips to `centerline[0]`; set near
+    /// `centerline[0]` to confirm the apex flips to
+    /// `centerline.last()`.
+    #[test]
+    fn v_apex_flips_to_endpoint_opposite_pour_end_hint() {
+        // Hint near `centerline.last()` (= (+0.050, 0, 0)) → V apex
+        // at `centerline[0]` (= (-0.050, 0, 0)). Pour leg extends
+        // outward in -X-ish.
+        let ribbon = straight_x_ribbon()
+            .with_pour_end_hint(Point3::new(0.060, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0))
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        let solid = build_pour_gate_solid(&ribbon).unwrap();
         assert!(
-            solid.evaluate(&q_below) > 0.0,
-            "gate SDF below the inner tip (outside cylinder) should be positive; got {}",
-            solid.evaluate(&q_below),
+            solid.bounds().unwrap().min.x < -0.050,
+            "V apex at centerline[0]: pour leg should extend into -X past -50 mm",
+        );
+
+        // Hint near `centerline[0]` → V apex at `centerline.last()`.
+        // Pour leg extends outward in +X-ish.
+        let ribbon = straight_x_ribbon()
+            .with_pour_end_hint(Point3::new(-0.060, 0.0, 0.0), Vector3::new(-1.0, 0.0, 0.0))
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        let solid = build_pour_gate_solid(&ribbon).unwrap();
+        assert!(
+            solid.bounds().unwrap().max.x > 0.050,
+            "V apex at centerline.last(): pour leg should extend into +X past +50 mm",
+        );
+    }
+
+    /// Iter-1-shaped fixture: trimmed centerline (tip at z=+0.073,
+    /// trimmed end at z=-0.013), cap centroid 40 mm past trimmed
+    /// end at z=-0.053. V apex must land at `centerline[0]` (the
+    /// closed dome at z=+0.073), NOT at `centerline.last()` (the
+    /// trimmed body interior).
+    #[test]
+    fn v_apex_at_dome_for_iter1_trimmed_centerline_with_cap_hint() {
+        let centerline = vec![
+            Point3::new(0.0, 0.0, 0.073), // closed dome
+            Point3::new(0.0, 0.0, 0.020),
+            Point3::new(0.0, 0.0, -0.013), // trimmed end (40 mm above cap)
+        ];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.053);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        let solid = build_pour_gate_solid(&ribbon).expect("Default kind should yield a solid");
+        let aabb = solid.bounds().unwrap();
+        // V apex at z=+0.073, outward axis = -first.tangent ≈ +Z
+        // (first.tangent goes from z=+0.073 to z=+0.020 = -Z).
+        // Pour-leg + vent-leg both go in roughly +Z direction (with
+        // ±split offsets).
+        assert!(
+            aabb.max.z > 0.10,
+            "V at iter-1 dome should reach high +Z; got max.z = {}",
+            aabb.max.z,
+        );
+        // Both legs are entirely above z=+0.060 — the apex is at
+        // +0.073 and legs extend outward (+Z) with only the radius
+        // slack reaching below the apex.
+        assert!(
+            aabb.min.z >= 0.060,
+            "V at iter-1 dome should not extend below z=+60 mm; got min.z = {}",
+            aabb.min.z,
         );
     }
 }
