@@ -333,6 +333,19 @@ pub fn derive_spec_and_ribbon(
         )
     })?;
 
+    // Plumb the cap-plane centroid through as the ribbon's pour-end
+    // hint when the scan has caps recorded in `.prep.toml [caps]`.
+    // The plug-pin builders pick whichever centerline endpoint is
+    // nearer this hint as the pour-end (where the axial pin
+    // anchors); without a hint they fall back to `points.last()`
+    // per cf-scan-prep's tip→base centerline orientation. Multiple
+    // caps (rare in practice) → use the first one; the assumption
+    // that "the cap geometry is at the pour end" is what justifies
+    // the hint in the first place.
+    if let Some((centroid, _normal)) = cap_tuples.first() {
+        ribbon = ribbon.with_pour_end_hint(*centroid);
+    }
+
     if config.registration_pins.enabled {
         ribbon = ribbon.with_registration(RegistrationKind::Pins(PinSpec::iter1()));
     }

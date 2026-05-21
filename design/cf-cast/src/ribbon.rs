@@ -271,6 +271,27 @@ pub struct Ribbon {
     /// [`Ribbon::with_plug_pins`] builder; see [`crate::plug`] for
     /// the pin + socket geometry contract.
     pub plug_pins: PlugPinKind,
+    /// Optional world-frame point hinting which centerline endpoint
+    /// is the pour-end (the open end the workshop user pours
+    /// through). [`crate::plug::build_plug_pin_solid`] +
+    /// [`crate::plug::build_plug_socket_solid`] pick whichever of
+    /// `points[0]` / `points.last()` is nearest this hint as the
+    /// anchor for the plug-anchor pin.
+    ///
+    /// `None` (the default) makes the plug-pin builders fall back
+    /// to `points.last()` per cf-scan-prep's centerline orientation
+    /// convention (`compute_centerline_polyline` emits points in
+    /// min→max projection order along the chord-direction principal
+    /// axis = **tip→base** for a typical body-part scan, so the
+    /// cap-open base — where the pour reservoir lives — is at
+    /// `points.last()`).
+    ///
+    /// cf-cast-cli's `derive_spec_and_ribbon` threads the scan's
+    /// recorded cap-plane centroid through here when
+    /// `.prep.toml [caps]` is non-empty; for caller-built ribbons
+    /// without cap-plane data the fallback is sufficient under the
+    /// tip→base convention.
+    pub pour_end_hint: Option<Point3<f64>>,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -401,6 +422,7 @@ impl Ribbon {
             registration: RegistrationKind::None,
             pour_gate: PourGateKind::None,
             plug_pins: PlugPinKind::None,
+            pour_end_hint: None,
         })
     }
 
@@ -454,6 +476,21 @@ impl Ribbon {
     #[must_use]
     pub const fn with_plug_pins(mut self, plug_pins: PlugPinKind) -> Self {
         self.plug_pins = plug_pins;
+        self
+    }
+
+    /// Builder: set the world-frame pour-end hint point. See
+    /// [`Self::pour_end_hint`] for the contract. Typical caller is
+    /// cf-cast-cli's `derive_spec_and_ribbon`, which threads the
+    /// cap-plane centroid recorded by cf-scan-prep here so the
+    /// plug-pin builders anchor at the open (pour) end of the scan
+    /// rather than the closed (tip) end. Callers building ribbons
+    /// without cap-plane data can leave this unset — the plug-pin
+    /// builders fall back to `points.last()` per cf-scan-prep's
+    /// tip→base centerline orientation convention.
+    #[must_use]
+    pub const fn with_pour_end_hint(mut self, hint: Point3<f64>) -> Self {
+        self.pour_end_hint = Some(hint);
         self
     }
 

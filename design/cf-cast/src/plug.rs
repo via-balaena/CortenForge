@@ -29,14 +29,21 @@
 //! Per `project_cf_cast_workshop_conventions.md` §"v2.1
 //! architectural recommendations":
 //!
-//! - The pour-end pin is centered at `centerline[0]` and extends
-//!   **outward along `-first_segment.tangent`** (away from the body
-//!   interior). The plug's natural cap region partially overlaps
-//!   the pin near `base`; the union is well-defined (boolean OR of
-//!   the two regions).
+//! - The pour-end pin is centered at the **cap-plane-nearest
+//!   centerline endpoint** and extends outward along the local
+//!   segment tangent (away from the body interior). The endpoint is
+//!   selected via [`crate::ribbon::Ribbon::pour_end_hint`] (set by
+//!   `with_pour_end_hint` on cf-cast-cli's derive path): whichever
+//!   of `points[0]` / `points.last()` is nearer the hint wins; with
+//!   no hint set, the builder falls back to `points.last()` per
+//!   cf-scan-prep's tip→base centerline-orientation convention.
+//!   The plug's natural cap region partially overlaps the pin near
+//!   `base`; the union is well-defined (boolean OR of the two
+//!   regions).
 //! - The optional dome-end pin (enabled via
 //!   [`PlugPinSpec::include_dome_pin`]) mirrors the pour-end pin at
-//!   `centerline.last()` extending along `+last_segment.tangent`.
+//!   the **opposite** centerline endpoint, extending outward along
+//!   that endpoint's local segment tangent.
 //! - Sockets are the **same cylinder geometry** with a larger
 //!   radius ([`PlugPinSpec::socket_radial_slack_m`] adds to the pin
 //!   radius). Where the socket cylinder overlaps the layer body, the
@@ -180,12 +187,17 @@ pub enum PlugPinKind {
 /// Build the combined plug-pin Solid for the ribbon's plug-pin
 /// kind, or `None` if [`PlugPinKind::None`].
 ///
-/// Returns `Some(solid)` whose SDF is the union of two cylinders:
-/// one centered on `centerline[0]` extending along
-/// `-first_segment.tangent`, and one centered on `centerline.last()`
-/// extending along `+last_segment.tangent`. The plug's natural cap
-/// region overlaps the inner half of each pin; the union with the
-/// plug `Solid` resolves cleanly via boolean OR.
+/// Returns `Some(solid)` whose SDF is the union of one cylinder per
+/// enabled pin: a pour-end pin at the cap-plane-nearest centerline
+/// endpoint extending outward along that segment's local tangent,
+/// and (when [`PlugPinSpec::include_dome_pin`] is true) a dome-end
+/// pin at the opposite centerline endpoint extending along its
+/// local tangent. The pour-end is picked from
+/// [`crate::ribbon::Ribbon::pour_end_hint`] (nearest-of-two
+/// endpoints) or falls back to `points.last()` per cf-scan-prep's
+/// tip→base centerline-orientation convention. The plug's natural
+/// cap region overlaps the inner half of each pin; the union with
+/// the plug `Solid` resolves cleanly via boolean OR.
 ///
 /// Used by [`add_plug_pins`] to extend a user-supplied plug `Solid`
 /// with the matched-to-socket pin geometry.
@@ -195,25 +207,19 @@ pub fn build_plug_pin_solid(ribbon: &Ribbon) -> Option<Solid> {
         PlugPinKind::None => return None,
         PlugPinKind::Axial(spec) => spec,
     };
-    let first = ribbon.segments.first()?;
-    let pin_at_start = anchor_cylinder(
-        first.start,
-        -first.tangent,
-        spec.pin_radius_m,
-        spec.pin_length_m,
-    );
+    let (pour, dome) = pour_and_dome_anchors(ribbon)?;
+    let pin_at_pour = anchor_cylinder(pour.0, pour.1, spec.pin_radius_m, spec.pin_length_m);
     if !spec.include_dome_pin {
-        return Some(pin_at_start);
+        return Some(pin_at_pour);
     }
-    let last = ribbon.segments.last()?;
-    let pin_at_end = anchor_cylinder(last.end, last.tangent, spec.pin_radius_m, spec.pin_length_m);
-    Some(pin_at_start.union(pin_at_end))
+    let pin_at_dome = anchor_cylinder(dome.0, dome.1, spec.pin_radius_m, spec.pin_length_m);
+    Some(pin_at_pour.union(pin_at_dome))
 }
 
 /// Build the combined plug-socket Solid for the ribbon's plug-pin
 /// kind, or `None` if [`PlugPinKind::None`].
 ///
-/// Returns `Some(solid)` whose SDF is the union of two cylinders
+/// Returns `Some(solid)` whose SDF is the union of cylinders
 /// positioned identically to [`build_plug_pin_solid`]'s output but
 /// with the socket radius (`pin_radius_m + socket_radial_slack_m`).
 /// Used by [`crate::piece::compose_piece_solid`] to carve the socket
@@ -227,20 +233,48 @@ pub fn build_plug_socket_solid(ribbon: &Ribbon) -> Option<Solid> {
         PlugPinKind::None => return None,
         PlugPinKind::Axial(spec) => spec,
     };
-    let first = ribbon.segments.first()?;
+    let (pour, dome) = pour_and_dome_anchors(ribbon)?;
     let socket_radius = spec.pin_radius_m + spec.socket_radial_slack_m;
-    let socket_at_start = anchor_cylinder(
-        first.start,
-        -first.tangent,
-        socket_radius,
-        spec.pin_length_m,
-    );
+    let socket_at_pour = anchor_cylinder(pour.0, pour.1, socket_radius, spec.pin_length_m);
     if !spec.include_dome_pin {
-        return Some(socket_at_start);
+        return Some(socket_at_pour);
     }
+    let socket_at_dome = anchor_cylinder(dome.0, dome.1, socket_radius, spec.pin_length_m);
+    Some(socket_at_pour.union(socket_at_dome))
+}
+
+/// Resolve `((pour_point, pour_outward), (dome_point, dome_outward))`
+/// for this ribbon — i.e., (point, outward axis) tuples for both
+/// centerline endpoints, with the pour-end assigned per
+/// [`crate::ribbon::Ribbon::pour_end_hint`].
+///
+/// Hint priority:
+/// - `Some(hint)`: pour-end is the endpoint nearer `hint`. Ties
+///   (equal Euclidean distance) resolve to `points.last()` per the
+///   fallback rule.
+/// - `None`: pour-end defaults to `points.last()` per cf-scan-prep's
+///   tip→base centerline-orientation convention.
+///
+/// Both endpoints' outward axes are the local-segment tangent
+/// pointing away from the body interior:
+/// `points[0]` → `-first_segment.tangent`,
+/// `points.last()` → `+last_segment.tangent`. The dome-end gets
+/// the unused endpoint with the matching outward axis.
+fn pour_and_dome_anchors(
+    ribbon: &Ribbon,
+) -> Option<((Point3<f64>, Vector3<f64>), (Point3<f64>, Vector3<f64>))> {
+    let first = ribbon.segments.first()?;
     let last = ribbon.segments.last()?;
-    let socket_at_end = anchor_cylinder(last.end, last.tangent, socket_radius, spec.pin_length_m);
-    Some(socket_at_start.union(socket_at_end))
+    let start_anchor = (first.start, -first.tangent);
+    let end_anchor = (last.end, last.tangent);
+    let prefer_start = ribbon
+        .pour_end_hint
+        .is_some_and(|hint| (hint - first.start).norm_squared() < (hint - last.end).norm_squared());
+    if prefer_start {
+        Some((start_anchor, end_anchor))
+    } else {
+        Some((end_anchor, start_anchor))
+    }
 }
 
 /// Extend a user-supplied plug [`Solid`] with axial pin cylinders
@@ -302,9 +336,12 @@ mod tests {
     use nalgebra::Point3;
 
     /// Standard test fixture — a 100 mm centerline along +X with +Y
-    /// split-normal. `first_segment.tangent = +X` so the start pin
-    /// extends along `-X`; `last_segment.tangent = +X` so the end pin
-    /// extends along `+X`.
+    /// split-normal. `first_segment.tangent = +X` so the start
+    /// endpoint's outward axis is `-X`; `last_segment.tangent = +X`
+    /// so the end endpoint's outward axis is `+X`. With no
+    /// `pour_end_hint` set, the pour-end falls back to
+    /// `points.last() = (+0.050, 0, 0)` and the pour-end pin extends
+    /// along `+X` from there.
     fn straight_x_ribbon() -> Ribbon {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -370,22 +407,52 @@ mod tests {
         let aabb = pins
             .bounds()
             .expect("single pin cylinder should have finite bounds");
-        // Pour-end pin centered at (-50 - 10) = -60 mm along -X,
-        // half-length 10 mm → spans x ∈ [-70, -50] mm.
+        // No pour_end_hint set → pour-end falls back to
+        // `points.last() = (+0.050, 0, 0)`. Pin extends outward
+        // along `+last_segment.tangent = +X` for `pin_length_m`
+        // 20 mm → cylinder center at (+0.050 + 0.010) = +60 mm,
+        // half-length 10 mm → spans x ∈ [+50, +70] mm.
         assert!(
-            aabb.min.x <= -0.069,
-            "pour-end pin should reach x ≤ -69 mm; got min.x = {}",
-            aabb.min.x
+            aabb.min.x >= 0.049,
+            "pour-end pin (fallback to centerline.last()) should start at x ≥ +49 mm; \
+             got min.x = {}",
+            aabb.min.x,
         );
         assert!(
-            aabb.max.x <= -0.049,
-            "no dome-end pin by default: AABB should stop at the start-pin's base (x ≈ -50 mm), \
-             not extend to +70 mm; got max.x = {}",
-            aabb.max.x
+            aabb.max.x >= 0.069,
+            "pour-end pin should reach x ≥ +69 mm; got max.x = {}",
+            aabb.max.x,
         );
         // y, z extents are bounded by pin radius (3 mm).
         assert!(aabb.min.y >= -0.0035);
         assert!(aabb.max.y <= 0.0035);
+    }
+
+    /// Setting `with_pour_end_hint` near the start endpoint flips
+    /// the pour-end to `points[0]`. Pin then extends along `-X`
+    /// from (-0.050, 0, 0) — the legacy pre-E1 behavior, now opt-in
+    /// via the hint.
+    #[test]
+    fn build_plug_pin_solid_with_pour_end_hint_at_start_anchors_pin_there() {
+        let ribbon = straight_x_ribbon()
+            .with_pour_end_hint(Point3::new(-0.060, 0.0, 0.0))
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        let pins = build_plug_pin_solid(&ribbon).expect("Axial kind should yield a solid");
+        let aabb = pins
+            .bounds()
+            .expect("single pin cylinder should have finite bounds");
+        // Pour-end now at points[0] = (-0.050, 0, 0); outward along
+        // `-first_segment.tangent = -X`. Pin spans x ∈ [-70, -50] mm.
+        assert!(
+            aabb.min.x <= -0.069,
+            "hinted pour-end pin should reach x ≤ -69 mm; got min.x = {}",
+            aabb.min.x,
+        );
+        assert!(
+            aabb.max.x <= -0.049,
+            "hinted pour-end pin should not extend past x = -49 mm; got max.x = {}",
+            aabb.max.x,
+        );
     }
 
     #[test]
@@ -413,17 +480,18 @@ mod tests {
         let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
         let pins = build_plug_pin_solid(&ribbon).unwrap();
 
-        // Pour-end pin spans x ∈ [-70, -50] mm. A query at x = -60 mm
-        // on the axis is dead-center → inside the pin.
-        let on_pour_axis = Point3::new(-0.060, 0.0, 0.0);
+        // With no hint set, pour-end falls back to `points.last() =
+        // (+0.050, 0, 0)`. Pin spans x ∈ [+50, +70] mm; a query at
+        // x = +60 mm on the axis is dead-center → inside the pin.
+        let on_pour_axis = Point3::new(0.060, 0.0, 0.0);
         assert!(
             pins.evaluate(&on_pour_axis) < 0.0,
             "pin SDF on pour-end pin axis should be negative; got {}",
             pins.evaluate(&on_pour_axis),
         );
 
-        // Default config has NO dome-end pin → x = +60 mm is outside.
-        let on_dome_axis = Point3::new(0.060, 0.0, 0.0);
+        // Default config has NO dome-end pin → x = -60 mm is outside.
+        let on_dome_axis = Point3::new(-0.060, 0.0, 0.0);
         assert!(
             pins.evaluate(&on_dome_axis) > 0.0,
             "pin SDF at dome-end position should be positive (no dome pin \
@@ -450,10 +518,11 @@ mod tests {
         let pins = build_plug_pin_solid(&ribbon).unwrap();
         let sockets = build_plug_socket_solid(&ribbon).unwrap();
 
-        // Pin radius 3.0 mm, socket radius 3.5 mm. Query at the
-        // start-pin axis midpoint, offset radially 3.2 mm: inside
-        // socket, outside pin.
-        let in_slack_annulus = Point3::new(-0.060, 0.0032, 0.0);
+        // Pin radius 3.0 mm, socket radius 3.5 mm. With the new
+        // default pour-end fallback, the pour-end pin spans
+        // x ∈ [+50, +70] mm at y=0. Query at +60 mm on the pin
+        // axis, offset radially 3.2 mm: inside socket, outside pin.
+        let in_slack_annulus = Point3::new(0.060, 0.0032, 0.0);
         assert!(
             pins.evaluate(&in_slack_annulus) > 0.0,
             "pin SDF at slack-annulus point should be positive; got {}",
@@ -473,19 +542,84 @@ mod tests {
     fn add_plug_pins_extends_plug_into_pin_region() {
         // Bare plug: capsule at origin spanning roughly [-25, +25] mm in z.
         // Centerline along x means pin extends along x — so pin
-        // territory (x = -60 mm) is OUTSIDE the bare plug.
+        // territory (x = +60 mm with the default pour-end fallback)
+        // is OUTSIDE the bare plug.
         let plug = Solid::capsule(0.005, 0.020);
         let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
         let extended = add_plug_pins(plug.clone(), &ribbon);
 
-        let in_start_pin = Point3::new(-0.060, 0.0, 0.0);
+        let in_pour_pin = Point3::new(0.060, 0.0, 0.0);
         // Bare plug at this point is outside (SDF > 0); extended plug
         // at this point is inside the pin (SDF < 0).
-        assert!(plug.evaluate(&in_start_pin) > 0.0);
+        assert!(plug.evaluate(&in_pour_pin) > 0.0);
         assert!(
-            extended.evaluate(&in_start_pin) < 0.0,
+            extended.evaluate(&in_pour_pin) < 0.0,
             "extended plug should contain pin region; got {}",
-            extended.evaluate(&in_start_pin),
+            extended.evaluate(&in_pour_pin),
         );
+    }
+
+    /// Tip-first centerline regression (per `recon §F`): when the
+    /// scan's cf-scan-prep centerline runs `tip → base` (closed dome
+    /// at `points[0]`, cap-open base at `points.last()`) and the
+    /// cap-plane centroid hint is at the base, the plug-pin builders
+    /// must anchor at `points.last()` — NOT at `points[0]` (the
+    /// pre-E1 hardcoded behavior that landed the pin at the dome and
+    /// silently no-op'd the socket carve).
+    #[test]
+    fn plug_pin_anchors_at_cap_plane_endpoint_for_tip_first_centerline() {
+        // Iter-1 sock orientation: centerline[0] is the closed dome
+        // at z=+0.073; centerline.last() is the cap-closed base at
+        // z=-0.054. Cap-plane centroid is at the base.
+        let centerline = vec![
+            Point3::new(0.0, 0.0, 0.073), // tip / closed dome
+            Point3::new(0.0, 0.0, 0.020),
+            Point3::new(0.0, 0.0, -0.054), // base / cap-open
+        ];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid)
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        let pins = build_plug_pin_solid(&ribbon).expect("Axial kind should yield a solid");
+        let aabb = pins
+            .bounds()
+            .expect("single pin cylinder should have finite bounds");
+        // Pour-end at base (z = -0.054), outward along
+        // `+last_segment.tangent` = -Z (segment 1 → 2 runs from
+        // z=0.020 to z=-0.054). Pin spans z ∈ [-0.074, -0.054].
+        assert!(
+            aabb.max.z <= -0.053,
+            "tip-first pour-end pin should NOT extend above z = -53 mm \
+             (else it landed at the dome); got max.z = {}",
+            aabb.max.z,
+        );
+        assert!(
+            aabb.min.z <= -0.073,
+            "tip-first pour-end pin should reach z ≤ -73 mm \
+             (20 mm pin extending from cap-plane base); got min.z = {}",
+            aabb.min.z,
+        );
+    }
+
+    /// Default (no hint) fallback regression: even without a hint,
+    /// pour-end maps to `centerline.last()` per cf-scan-prep's
+    /// tip→base convention. Sanity-checks the fallback rule without
+    /// going through the iter-1 fixture geometry.
+    #[test]
+    fn plug_pin_default_fallback_uses_centerline_last() {
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.054)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        let pins = build_plug_pin_solid(&ribbon).unwrap();
+        let aabb = pins.bounds().unwrap();
+        // Pour-end at points.last() = (0, 0, -0.054); outward along
+        // tangent which is -Z (segment runs from +0.073 to -0.054).
+        // Pin spans z ∈ [-0.074, -0.054].
+        assert!(aabb.max.z <= -0.053);
+        assert!(aabb.min.z <= -0.073);
     }
 }

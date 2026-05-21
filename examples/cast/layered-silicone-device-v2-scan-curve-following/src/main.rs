@@ -328,8 +328,22 @@ fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
 fn build_ribbon(centerline: Vec<Point3<f64>>) -> Result<Ribbon> {
     let split =
         SplitNormal::new(Vector3::new(0.0, 0.0, -1.0)).context("split-normal -Z must normalize")?;
+    // Explicit pour-end hint at `centerline[0] = (-0.040, 0, 0)` so
+    // the plug-pin builder anchors at the documented `-X` endpoint
+    // (see `PLUG_PIN_LENGTH_M` docstring for the geometry math).
+    // Without this hint, the new (post-iter-1-recon) Ribbon default
+    // falls back to `centerline.last() = (+0.040, 0, 0)` per
+    // cf-scan-prep's tip→base centerline convention — fine for real
+    // scans, but the example's documented pin-engagement math is
+    // pinned at the `-X` end. Synthetic-example contract intent
+    // overrides the cf-scan-prep convention here.
+    let pour_end_hint = centerline
+        .first()
+        .copied()
+        .context("centerline must have at least one point")?;
     let ribbon = Ribbon::new(centerline, split)
-        .context("centerline polyline must produce a valid Ribbon")?;
+        .context("centerline polyline must produce a valid Ribbon")?
+        .with_pour_end_hint(pour_end_hint);
     let plug_pin_spec = PlugPinSpec {
         pin_length_m: PLUG_PIN_LENGTH_M,
         ..PlugPinSpec::iter1()
