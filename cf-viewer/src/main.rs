@@ -152,9 +152,6 @@ fn main() -> Result<()> {
 /// name.
 #[derive(Component, Debug)]
 struct AssemblyPiece {
-    /// Zero-based index into [`AssemblyInputs::pieces`].
-    #[allow(dead_code)] // Reserved for future C.x slices that need stable indices.
-    index: usize,
     /// Filename — used by the side-panel UI as the per-piece label
     /// + the visibility-toggle key.
     name: String,
@@ -289,9 +286,9 @@ fn spawn_assembly_pieces(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let scale = render_scale.0;
-    for (index, piece) in assembly.pieces.iter().enumerate() {
+    for (color_index, piece) in assembly.pieces.iter().enumerate() {
         let bevy_mesh = build_face_mesh(&piece.mesh, None, *up);
-        let piece_color = TAB10[index % TAB10.len()];
+        let piece_color = TAB10[color_index % TAB10.len()];
         let material = StandardMaterial {
             base_color: piece_color,
             metallic: 0.10,
@@ -310,7 +307,6 @@ fn spawn_assembly_pieces(
         material_with_alpha.base_color = piece_color.with_alpha(0.55);
         commands.spawn((
             AssemblyPiece {
-                index,
                 name: piece.name.clone(),
             },
             Mesh3d(meshes.add(bevy_mesh)),

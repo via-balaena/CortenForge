@@ -25,10 +25,10 @@
 //! - **7.0** seeded the module with the SDF-bridge *spike* —
 //!   `run_sdf_bridge_spike` is a measurement harness that proved
 //!   Route A end-to-end and characterized the decimation/timing
-//!   tradeoff. The pre-parry mesh-sdf distance query was brute-force
-//!   O(faces) and the mesher samples the SDF at every BCC lattice
-//!   vertex, so the raw 3.34 M-face scan must be decimated — the
-//!   spike found a low target (~1.5–3k faces) is best.
+//!   tradeoff. Post parry-accel the distance query itself is
+//!   O(log faces) via BVH, but BVH build cost + MC fidelity over
+//!   the raw 3.34 M-face scan still favor decimation — the spike
+//!   found a low target (~1.5–3k faces) is best.
 //! - **7.1** adds `build_insertion_geometry` — the real builder
 //!   that turns a `SimDesign` (cavity inset + layer stack) into the
 //!   device-wall `SdfMeshedTetMesh` with per-tet Yeoh materials,
@@ -101,13 +101,14 @@ const SPIKE_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 ///
 /// Separate from `main.rs`'s `compute_envelope_proxy_mesh` (which
 /// decimates hard — ~1500 faces — for *viewport* speed): here the
-/// face count trades the pre-parry mesh-sdf brute-force O(faces)
-/// query cost — paid once per BCC lattice vertex — against
-/// isosurface-landing fidelity. [`run_sdf_bridge_spike`] sweeps
-/// `target_faces` so 7.1 can pick that tradeoff point from measured
-/// data; the 7.0 spike found tet count + element quality are governed
-/// by the BCC `cell_size`, *not* the SDF face count, so a low
-/// resolution is preferred (see the slice-7 ship log).
+/// face count trades parry BVH build cost + per-BCC-vertex query
+/// constant factor against isosurface-landing fidelity (smoothing
+/// over fingertip / sliver detail before MC sees it). The 7.0 spike
+/// found tet count + element quality are governed by the BCC
+/// `cell_size`, *not* the SDF face count, so a low resolution is
+/// preferred (see the slice-7 ship log). [`run_sdf_bridge_spike`]
+/// sweeps `target_faces` so 7.1 can pick that tradeoff point from
+/// measured data.
 ///
 /// Pipeline mirrors the proxy builder: weld unshared STL vertices,
 /// `simplify_sloppy_decoder` (topology-non-preserving — required for
