@@ -1,29 +1,28 @@
 //! Workshop platform geometry for casts with T-bar-locked plug pins.
 //!
 //! When the ribbon's plug-pin kind has `include_t_bar = true`, the
-//! plug's T-bar at the pin tip protrudes ~2 mm below the cup outer
-//! face at iter-1's 5 mm wall thickness (see
-//! [`crate::plug::PlugPinSpec::include_t_bar`] for the lock-vs-
-//! plastic-economy trade-off). [`build_platform_solid`] generates a
-//! complementary printable slab with a pocket carved into its top
-//! surface matching the T-bar's protrusion, so the assembled mold
-//! sits flat during pour + cure.
+//! plug's T-bar at the pin tip protrudes below the cup outer face
+//! (see [`crate::plug::PlugPinSpec::include_t_bar`] for the
+//! lock-vs-plastic-economy trade-off). [`build_platform_solid`]
+//! generates a complementary printable slab with a rectangular
+//! through-hole sized to clear the T-bar — workshop user sets the
+//! assembled mold on the platform's top face; the T-bar hangs
+//! through the hole below the slab; the cup outer face rests flat
+//! on the slab top.
 //!
 //! ## Geometry
 //!
 //! - **Slab**: cuboid sized to the bounding region's XY AABB plus
 //!   [`PLATFORM_XY_SLACK_M`] on each side; Z-thickness
-//!   [`PLATFORM_THICKNESS_M`].
-//! - **Slab position**: top face at the bounding region's `min.z`
-//!   minus [`PLATFORM_TOP_GAP_M`] (a small gap below the cup outer
-//!   face so the cuboid doesn't accidentally intersect the bounding
-//!   region's outer surface at MC stair-step).
-//! - **Pocket**: cylinder matching the T-bar's `(center, axis,
-//!   radius, half_length)` per
-//!   [`crate::plug::pour_end_t_bar_geometry`], with
-//!   [`PLATFORM_POCKET_RADIAL_SLACK_M`] added to both the radius
-//!   and the half-length for FDM print tolerance.
-//! - **Final solid**: `slab.subtract(pocket)`.
+//!   [`PLATFORM_THICKNESS_M`]. Positioned with the top face just
+//!   below the bounding region's outer bottom face.
+//! - **Through-hole**: cuboid sized to the T-bar's footprint plus
+//!   [`PLATFORM_HOLE_LATERAL_SLACK_M`] on each side. Long axis
+//!   aligned with the T-bar's axis (= ribbon binormal at the
+//!   plug-pin anchor); short axis perpendicular within the slab
+//!   plane. Cuboid Z-extent exceeds slab thickness so the hole
+//!   passes completely through.
+//! - **Final solid**: `slab.subtract(through_hole)`.
 
 use cf_design::Solid;
 use nalgebra::{UnitQuaternion, Vector3};
@@ -51,21 +50,32 @@ pub const PLATFORM_THICKNESS_M: f64 = 0.010;
 /// outer face under MC.
 pub const PLATFORM_TOP_GAP_M: f64 = 0.0005;
 
-/// Radial slack between the T-bar protrusion and the platform's
-/// pocket.
+/// Lateral slack between the T-bar's bounding box and the
+/// platform's through-hole (m).
 ///
-/// 0.5 mm — slide-fit clearance for the cup-bottom-side T-bar
-/// half-cylinder + matching pocket; workshop user lowers assembled
-/// mold onto the platform, T-bar slides into pocket.
-pub const PLATFORM_POCKET_RADIAL_SLACK_M: f64 = 0.0005;
+/// 2 mm of horizontal play on each side of the T-bar so workshop
+/// user can drop the assembled mold into the platform without
+/// fighting tight tolerance. The slack also absorbs FDM print
+/// shrink (~0.2 mm) + any ribbon-binormal mis-alignment from a
+/// not-quite-vertical cap-plane normal.
+pub const PLATFORM_HOLE_LATERAL_SLACK_M: f64 = 0.002;
+
+/// Extra Z-extent added to the through-hole beyond the slab's
+/// thickness so the hole reliably passes all the way through (m).
+///
+/// 5 mm of overshoot above + below the slab guarantees MC produces
+/// a clean through-hole regardless of slab-position MC stair-step.
+pub const PLATFORM_HOLE_Z_OVERSHOOT_M: f64 = 0.005;
 
 /// Build the workshop platform [`Solid`] for the given cast spec +
 /// ribbon, or `None` if the ribbon's plug-pin kind doesn't
 /// produce a T-bar protrusion (no platform needed).
 ///
-/// The platform's pocket is carved to accept the T-bar shape per
-/// [`pour_end_t_bar_geometry`] with [`PLATFORM_POCKET_RADIAL_SLACK_M`]
-/// added for FDM tolerance.
+/// The platform's through-hole is sized to the T-bar's bounding
+/// footprint plus [`PLATFORM_HOLE_LATERAL_SLACK_M`] on each side,
+/// aligned with the T-bar's axis (ribbon binormal at the pin
+/// anchor). The hole spans the full slab thickness so the T-bar
+/// hangs through the platform during workshop pour + cure.
 ///
 /// Returns `None` when:
 /// - The ribbon's plug-pin kind is
@@ -97,18 +107,33 @@ pub fn build_platform_solid(bounding_region: &Solid, ribbon: &Ribbon) -> Option<
     let slab = Solid::cuboid(Vector3::new(slab_half_x, slab_half_y, slab_half_z))
         .translate(Vector3::new(bound_center.x, bound_center.y, slab_z_center));
 
-    // Pocket cylinder: matches T-bar geometry + slack on radius +
-    // half-length.
-    let pocket_radius = t_bar_radius_m + PLATFORM_POCKET_RADIAL_SLACK_M;
-    let pocket_half_length = t_bar_half_length_m + PLATFORM_POCKET_RADIAL_SLACK_M;
-    let pocket_rotation =
-        UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &t_bar_axis)
-            .unwrap_or_else(UnitQuaternion::identity);
-    let pocket = Solid::cylinder(pocket_radius, pocket_half_length)
-        .rotate(pocket_rotation)
-        .translate(t_bar_center.coords);
+    // Through-hole cuboid: local frame has Y-axis along T-bar axis
+    // (long direction), X-axis perpendicular within the slab plane
+    // (short direction = T-bar diameter + slack), Z-axis through
+    // the slab (with overshoot for clean MC through-hole).
+    let hole_half_x = t_bar_radius_m + PLATFORM_HOLE_LATERAL_SLACK_M;
+    let hole_half_y = t_bar_half_length_m + PLATFORM_HOLE_LATERAL_SLACK_M;
+    let hole_half_z = slab_half_z + PLATFORM_HOLE_Z_OVERSHOOT_M;
 
-    Some(slab.subtract(pocket))
+    let hole_local = Solid::cuboid(Vector3::new(hole_half_x, hole_half_y, hole_half_z));
+    // Rotate the cuboid's local Y-axis onto the T-bar axis. Cuboid
+    // is symmetric under 180° rotation around any of its principal
+    // axes, so even if `rotation_between` resolves an antipodal
+    // input (e.g., binormal = -Y in iter-1's frame) via its
+    // arbitrary-perpendicular-axis fallback, the resulting cuboid
+    // shape is identical.
+    let rotation = UnitQuaternion::rotation_between(&Vector3::y_axis().into_inner(), &t_bar_axis)
+        .unwrap_or_else(UnitQuaternion::identity);
+    // Hole z-center aligned with slab z-center so the cuboid
+    // straddles the slab evenly + the overshoot extends past both
+    // faces.
+    let hole = hole_local.rotate(rotation).translate(Vector3::new(
+        t_bar_center.x,
+        t_bar_center.y,
+        slab_z_center,
+    ));
+
+    Some(slab.subtract(hole))
 }
 
 #[cfg(test)]
@@ -118,7 +143,7 @@ mod tests {
     use super::*;
     use crate::plug::{PlugPinKind, PlugPinSpec};
     use crate::ribbon::{Ribbon, SplitNormal};
-    use nalgebra::{Point3, Vector3};
+    use nalgebra::Point3;
 
     fn iter1_like_ribbon() -> Ribbon {
         let centerline = vec![
@@ -167,16 +192,13 @@ mod tests {
     #[test]
     fn build_platform_solid_returns_some_for_iter1_like_fixture() {
         let ribbon = iter1_like_ribbon();
-        // Bounding shaped like iter-1's: half-extents (61, 61, 90)
-        // mm with center near origin shifted along -Z to match
-        // body-relative bounding.
         let bounding = Solid::cuboid(Vector3::new(0.061, 0.061, 0.090))
             .translate(Vector3::new(0.0, 0.0, -0.020));
         let platform = build_platform_solid(&bounding, &ribbon).expect("platform should build");
         let aabb = platform.bounds().expect("platform solid has finite bounds");
-        // Platform slab Z thickness = 10 mm; top face below bounding
-        // min.z (-0.110) by 0.5 mm gap → top at z = -0.1105 m.
-        // Slab spans z ∈ [-0.1205, -0.1105].
+        // Slab Z thickness 10 mm; top at bounding.min.z - 0.5 mm.
+        // Bounding min.z = -0.020 - 0.090 = -0.110 → slab top at
+        // -0.1105 m, slab spans z ∈ [-0.1205, -0.1105].
         assert!(
             aabb.max.z <= -0.110,
             "platform top should sit below bounding min.z = -0.110; got max.z = {}",
@@ -187,57 +209,45 @@ mod tests {
             "platform bottom should not extend below z = -122 mm; got min.z = {}",
             aabb.min.z,
         );
-        // Platform footprint extends past bounding XY (±66 mm slab
-        // half-extent vs ±61 mm bounding).
-        assert!(
-            aabb.min.x <= -0.065,
-            "platform should extend past bounding -X face; got min.x = {}",
-            aabb.min.x,
-        );
+        // Footprint extends past bounding XY (66 mm half-extent vs
+        // 61 mm bounding half-extent).
+        assert!(aabb.min.x <= -0.065);
         assert!(aabb.max.x >= 0.065);
     }
 
     #[test]
-    fn build_platform_solid_carves_pocket_at_t_bar_location() {
+    fn build_platform_solid_hole_carves_t_bar_footprint() {
         let ribbon = iter1_like_ribbon();
         let bounding = Solid::cuboid(Vector3::new(0.061, 0.061, 0.090))
             .translate(Vector3::new(0.0, 0.0, -0.020));
-        let platform =
-            build_platform_solid(&bounding, &ribbon).expect("platform should build for iter-1");
-        // T-bar geometry for iter-1: pin tip at cap_centroid +
-        // pin_length * cap_normal = (0, 0, -0.054) + 0.020*(0,0,-1)
-        // = (0, 0, -0.074). T-bar axis = cap_normal × split_normal =
-        // -Z × +X = -Y. T-bar spans y ∈ [-0.012, +0.012] at z=-0.074.
+        let platform = build_platform_solid(&bounding, &ribbon).expect("platform should build");
+
+        // T-bar geometry: for iter-1-like ribbon, pour_end_t_bar
+        // returns center at cap_centroid + pin_length * cap_normal
+        // = (0, 0, -0.054) + 0.020*(0, 0, -1) = (0, 0, -0.074),
+        // axis = cap_normal × split = -Z × +X = -Y. The platform
+        // slab sits at z ∈ [-0.1205, -0.1105] — way below the T-bar
+        // at z=-0.074. The hole is positioned at the slab z-center,
+        // and its XY center matches the T-bar's XY (= (0, 0)).
         //
-        // Pocket carves this region from the slab. The slab spans
-        // z ∈ [-0.1205, -0.1105] — wait, the T-bar is at z=-0.074
-        // which is ABOVE the slab. That means the pocket and the
-        // slab don't overlap, and the platform is just a plain
-        // cuboid.
-        //
-        // For iter-1 the T-bar protrusion at z=-0.060 (per the
-        // 4 mm pin in cast.toml) actually overlaps the cup wall
-        // bounding floor (z=-0.058). The synthetic iter1-like
-        // ribbon here uses pin_length_m = 0.020 (the PlugPinSpec
-        // default), making the T-bar much deeper (z=-0.077) so
-        // this test fixture has the T-bar BELOW the cup outer
-        // bottom — which is the case where the platform MUST
-        // have the pocket carved.
-        //
-        // Slab top at z = bounding.min.z - 0.0005 = -0.110 - 0.0005
-        // = -0.1105 m. T-bar at z=-0.074 is ABOVE slab top — so
-        // pocket cylinder doesn't enter slab here.
-        //
-        // To check the pocket actually carves: use a thinner-Z
-        // bounding so the slab top is closer to the T-bar. Or
-        // rely on the fact that with reasonable iter-1 geometries
-        // the T-bar protrusion DOES enter the platform; this
-        // fixture just doesn't hit that case.
-        //
-        // For a basic sanity assertion: slab has finite bounds and
-        // is a real Solid (not None). The pocket-carve verification
-        // is exercised by the iter-1 cast-cli integration test
-        // running on real geometry.
-        assert!(platform.bounds().is_some());
+        // Probe at slab center XY (0, 0) within slab z range: with
+        // the through-hole cut, the platform SDF should be > 0
+        // (outside the platform — i.e., inside the hole).
+        let q_hole_center = Point3::new(0.0, 0.0, -0.115);
+        assert!(
+            platform.evaluate(&q_hole_center) > 0.0,
+            "platform SDF at hole center should be > 0 (outside platform = inside hole); \
+             got {}",
+            platform.evaluate(&q_hole_center),
+        );
+
+        // Probe far from the hole (corner of slab) should be INSIDE
+        // the platform (SDF < 0).
+        let q_far_corner = Point3::new(0.060, 0.060, -0.115);
+        assert!(
+            platform.evaluate(&q_far_corner) < 0.0,
+            "platform SDF at far corner of slab should be < 0 (inside platform); got {}",
+            platform.evaluate(&q_far_corner),
+        );
     }
 }
