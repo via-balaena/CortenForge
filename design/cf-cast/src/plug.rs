@@ -196,17 +196,27 @@ pub enum PlugPinKind {
 /// Build the combined plug-pin Solid for the ribbon's plug-pin
 /// kind, or `None` if [`PlugPinKind::None`].
 ///
-/// Returns `Some(solid)` whose SDF is the union of one cylinder per
-/// enabled pin: a pour-end pin at the cap-plane-nearest centerline
-/// endpoint extending outward along that segment's local tangent,
-/// and (when [`PlugPinSpec::include_dome_pin`] is true) a dome-end
-/// pin at the opposite centerline endpoint extending along its
-/// local tangent. The pour-end is picked from
-/// [`crate::ribbon::Ribbon::pour_end_hint`] (nearest-of-two
-/// endpoints) or falls back to `points.last()` per cf-scan-prep's
-/// tip→base centerline-orientation convention. The plug's natural
-/// cap region overlaps the inner half of each pin; the union with
-/// the plug `Solid` resolves cleanly via boolean OR.
+/// Returns `Some(solid)` whose SDF is the union of one cylinder
+/// per enabled pin:
+/// - **Pour-end pin** anchored per
+///   [`crate::ribbon::Ribbon::pour_end_hint`]:
+///   - `Some((centroid, outward))` → anchored at `centroid`
+///     extending along `outward`. The anchor sits where the
+///     caller says it sits — typically the cap-plane centroid +
+///     outward normal — NOT at any centerline endpoint. See
+///     [`pour_and_dome_anchors`]'s docstring for the
+///     `trim_floor_mm` rationale.
+///   - `None` → fallback to `(centerline.last(), last.tangent)`
+///     per cf-scan-prep's tip→base centerline-orientation
+///     convention.
+/// - **Dome-end pin** (when [`PlugPinSpec::include_dome_pin`] is
+///   `true`): anchored at the centerline endpoint **farthest** from
+///   the pour anchor, extending outward along that endpoint's
+///   local segment tangent.
+///
+/// The plug's natural cap region overlaps the inner half of each
+/// pin; the union with the plug `Solid` resolves cleanly via
+/// boolean OR.
 ///
 /// Used by [`add_plug_pins`] to extend a user-supplied plug `Solid`
 /// with the matched-to-socket pin geometry.

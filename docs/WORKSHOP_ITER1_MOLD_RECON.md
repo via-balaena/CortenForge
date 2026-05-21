@@ -474,3 +474,61 @@ for plug-pin).
   class worth a feedback memo:
   [[feedback-default-numeric-vs-derived-geometry]] (to write
   post-implementation).
+
+## Iter-2 update — E.2 cap-plane anchor (post-`bb1b6731`)
+
+**The §E recommendation above proved insufficient at the visual gate.**
+Shipping E1 ("anchor at the centerline endpoint nearest the cap-plane
+centroid") cleared defects (4)+(5a)+(5b) but **NOT (6)**. Iter-1 sock
+re-meshed still showed no plug pin + no socket carve.
+
+**Root cause uncovered in recon-iter-2**: cf-scan-prep's
+`compute_centerline_polyline` trims the centerline `trim_floor_mm`
+(40 mm by default, per `[centerline_trim]` in `.prep.toml`) ABOVE the
+cap plane to keep the polyline inside the body interior. So
+`centerline.last()` for iter-1 sock sits at z = -0.013, **40 mm
+INSIDE** the plug body (whose pinned floor sits at the cap plane
+z = -0.053 via `pinned_floor_shell`). E1's "anchor at
+`centerline.last()` extending outward along last.tangent" puts the
+pin entirely inside body territory — buried, no visible protrusion
++ no socket carve. The hint mechanism was correctly plumbed but
+**interpreted as a centerline-endpoint selector** rather than the
+literal anchor point + axis.
+
+**§E was missing this:** `centerline.last()` ≠ cap-plane region.
+The recommendation needed cf-scan-prep-realistic test fixtures (cap
+centroid 40 mm past `centerline.last()`) to falsify the
+"hint nearest endpoint" mental model; the §F fixtures shipped with
+hint == `centerline.last()` because the synthetic-fixture
+convenience masked the trim.
+
+**Shipped fix (E.2, commit `2f035569`):**
+
+- `Ribbon::pour_end_hint: Option<Point3>` →
+  `Option<(Point3, Vector3)>` carrying both centroid + outward axis.
+- `with_pour_end_hint(centroid, outward_axis)` takes both.
+- `plug.rs::pour_and_dome_anchors` anchors pin at hint centroid +
+  extends along hint outward axis **verbatim** — NOT centerline-
+  endpoint selection. Dome-end uses the centerline endpoint
+  **farther** from the hint when `include_dome_pin = true`.
+  Fallback (no hint): `(centerline.last(), last.tangent)` per the
+  tip→base convention.
+- `derive.rs` passes `(cap_plane.centroid, cap_plane.normal)` per
+  `cf-cap-planes::CapPlane::as_tuple()`. Outward convention
+  confirmed via `cf-scan-prep::orient_cap_normal_outward`.
+- Regression tests rewritten with cf-scan-prep-realistic fixtures
+  (cap centroid 40 mm past `centerline.last()`) so the
+  endpoint-selector interpretation now FAILS the test.
+
+(4)+(5a)+(5b)+(6) all cleared at the visual gate post-`2f035569`,
+user-verified via `cf-view --assembly`.
+
+**Banked pattern (4th instance):** the iter-1-numeric/convention-
+default-vs-derived-geometry class persists THROUGH a "fix" when
+the fix's regression tests don't mirror the upstream's real output
+shape. cf-scan-prep's `trim_floor_mm` is a CONVENTION the spec
+never wrote down; the E1 fix encoded a different unwritten
+convention (`hint nearest endpoint`); both broke the same way
+under iter-1 real geometry. See
+[[feedback-default-numeric-vs-derived-geometry]] §"Specific trap
+for (4)" for the lesson.
