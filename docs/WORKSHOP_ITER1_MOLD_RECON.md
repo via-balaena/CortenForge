@@ -5,13 +5,20 @@
 next session.
 
 **Scope:** defects (4) pour gate missing, (5a) registration pins
-missing, (5b) free-floating positive sliver in `mold_layer_0_piece_0`.
-Defect (1) plug base flare is a separate cf-scan-prep concern, out of
-scope.
+missing, (5b) free-floating positive sliver in `mold_layer_0_piece_0`,
+**plus (6) plug-pin centerline-orientation bug** — surfaced during this
+recon's cold-read pass, folded into scope because it's the same
+root-cause class as (5a)+(5b) (iter-1 hardcoded default vs. derived
+geometry) and an unfixed (6) means the workshop user gets a printed
+plug with no usable mold anchor at the dome end. Defect (1) plug base
+flare is a separate cf-scan-prep concern, out of scope.
 
 ## TL;DR
 
-**Single root cause** for (5a) + (5b): `PinSpec::iter1().offset_from_centerline_m
+Two iter-1 hardcoded-default-vs-derived-geometry bugs in v2.1 cf-cast,
+both folded into the same arc:
+
+**Root cause for (5a) + (5b)**: `PinSpec::iter1().offset_from_centerline_m
 = 0.025` (25 mm) — fixed offset hardcoded since v2 Step 9 (2026-05-13),
 calibrated against the OLD cuboid bounding region. After the mold-wall
 arc (`54df41cb`, 2026-05-19), the bounding region is
@@ -37,6 +44,26 @@ midpoint along binormal, length 90 mm out, doesn't straddle the seam).
 Piece 0 (Negative) gets no gate by design. Piece 1 (Positive) should
 have a 6 mm Ø × 20 mm radial hole through the -Y face. **Verification
 gate**: cf-view `mold_layer_0_piece_1.stl` before any code change.
+
+**Root cause for (6) plug-pin centerline-orientation**:
+`plug.rs:198-211` hardcodes `pin_at_start = anchor_cylinder(first.start,
+-first.tangent, …)` with docstrings declaring `centerline[0]` to be
+the pour-end. cf-scan-prep's `compute_centerline_polyline` emits
+points in **min-projection → max-projection** order along the chord-
+direction principal axis — for the iter-1 sock that's tip → base
+(`centerline[0]` is the closed dome at z=+0.073, `centerline.last()`
+is the cap-closed base at z=-0.054). So the "pour-end pin" is placed
+at the dome, and the socket subtraction cylinder sits mostly INSIDE
+the layer-0 body where the carve is a no-op. Only the ~1 mm of
+cylinder extending past the body tip touches cup-wall material, and
+3 mm MC cells can't resolve a 1 mm-deep feature. **Plug-anchor
+feature is functionally broken for tip-first centerlines** — the
+printed plug has no usable socket in any of the mold pieces.
+
+Same root-cause class as (5a)+(5b): an iter-1 numeric/geometric
+default that worked under a narrower assumption (test fixture: pour-
+end at centerline[0], straight along +X) and silently breaks under
+real cf-scan-prep output.
 
 ## Evidence trail
 
@@ -172,6 +199,11 @@ only. If absent, dig into `compose_piece_solid` for piece_1 path.
 
 ## Sub-leaf ladder for implementation session
 
+Order is **A → B → C → E → F → G**, with D firing only if B fails.
+A is cheap and pins the bug; B is a 5-minute cf-view check that can
+collapse D out of scope entirely; C and E are the two real fixes; F
+and G land the regression coverage.
+
 ### A. Recon-iter-2 synthetic spike (~15 min, cheap)
 
 Build a minimal cf-cast lib test that reproduces the floating-sliver
@@ -198,10 +230,7 @@ confirm the -Y face has a 6 mm Ø hole. Two outcomes:
   "half-cylinder" paragraph in `pour.rs:31-36` to match v2.1 sub-leaf 2
   reality, and add a procedure.md update telling workshop users to look
   at the Positive piece for the gate.
-- **Hole absent**: dig into `compose_piece_solid` for piece_1 path.
-  Likely candidates: `bounding_region.bounds()` doesn't extend far
-  enough in -Y; or MC grid is misaligned with cylinder; or some
-  per-layer issue. Spike a 60mm cube + pour gate similar to step A.
+- **Hole absent**: D fires (see below).
 
 ### C. Fix `offset_from_centerline_m` (~1-2 hr)
 
@@ -246,7 +275,51 @@ candidate fixes:
 - Increase `gate_half_length` or shift the cylinder further outward so
   MC reliably resolves a clean through-hole.
 
-### E. Regression tests (~30 min)
+### E. Fix plug-pin endpoint selection (~1-2 hr)
+
+`plug.rs:193-244` (`build_plug_pin_solid` + `build_plug_socket_solid`)
+currently treat `centerline[0]` as the pour-end unconditionally.
+Replace with a **cap-plane-derived endpoint selection**: cf-scan-prep
+already records the open-end plane in `prep.toml [caps].loops[i]`
+(centroid + normal). Plumb the cap-plane centroid through
+`derive.rs` → `Ribbon::with_plug_pins` or as a sibling argument, and
+pick the centerline endpoint nearest the cap-plane centroid as the
+"pour-end" anchor for `pin_at_start`.
+
+Two candidates considered:
+
+**E1 — cap-plane-derived endpoint (recommended)**: Per the sibling
+bookmark §"Hypotheses for the fix" (1). Leverages data we already
+record. Adapts automatically to any centerline orientation (PCA,
+reversed, etc.).
+
+**E2 — `cast.toml [plug_pins].pour_end = "start" | "end"` knob**:
+Cheap escape hatch but pushes the orientation question to the
+workshop user, who shouldn't have to reason about cf-scan-prep
+internal axis conventions. Skipped per
+[[feedback-strip-the-knob-when-default-works]].
+
+**Surface area:** New optional `cap_plane_centroid: Option<Point3<f64>>`
+parameter on `build_plug_pin_solid` + `build_plug_socket_solid`, OR a
+new `Ribbon::with_pour_end_hint(Point3<f64>)` builder method. Prefer
+the latter — keeps the registration / pour-gate / plug-pin builder
+signatures uniform (`&Ribbon` only) and surfaces the pour-end hint as
+explicit ribbon state for the workshop user to inspect.
+
+The cap-plane centroid is already in `cf-scan-prep`'s `prep.toml`;
+`cf-cast-cli` reads it (the pinned-floor arc already consumes it).
+Plumbing should be minimal — `derive.rs:336-351` is the right place
+to wire `Ribbon::with_pour_end_hint(cap_plane.centroid)` between the
+ribbon construction and the `with_plug_pins` builder call.
+
+**Fallback for no caps**: When `cap_planes.is_empty()` (e.g.,
+hand-built closed scan), default to `centerline.last()` as the
+pour-end. Rationale: cf-scan-prep's PCA-aligned auto-orientation puts
+the body's natural "open end" at the END of the principal axis when
+the scan was loaded with normals correctly. Bank the assumption;
+revisit if a no-caps fixture surfaces a different convention.
+
+### F. Regression tests — wide body + reversed centerline (~45 min)
 
 Inside cf-cast lib:
 - `mold_piece_negative_has_single_connected_component_with_pins_iter1()`:
@@ -256,70 +329,117 @@ Inside cf-cast lib:
   `build_registration_solid` directly on the 60 mm cube fixture and
   asserts the returned solid's AABB lies inside the cup-wall annulus
   (`x ∈ [body_half + wall_thickness, bounding_half - pin_radius]`).
+- `plug_pin_anchors_to_pour_end_for_tip_first_centerline()`: synthetic
+  fixture where `centerline[0]` is the dome (tip-first orientation,
+  matching cf-scan-prep's iter-1 output). Pass a `cap_plane_centroid`
+  that's nearer `centerline.last()`. Assert
+  `build_plug_pin_solid(ribbon).bounds()` is positioned at
+  `centerline.last()`, NOT `centerline[0]`.
+- `plug_socket_carves_visible_mold_material_for_tip_first_centerline()`:
+  the same fixture, but compose the layer-0 mold piece and assert the
+  socket cylinder's intersection with the mold piece SDF is at least
+  `cell_size * 2` deep (i.e., MC will resolve it).
 - Optional `pour_gate_visible_in_positive_piece()`: assert at least one
   vertex in mold_layer_0_piece_1's mesh has y > -bounding_y + 1 mm
   AND lies inside the gate cylinder's cross-section. Documents the
   intentional one-sided placement.
 
 Inside cf-cast-cli:
-- Add a `wide_body_fixture_has_clean_negative_piece_with_pins()`
-  integration test using the existing fixture pattern.
+- `wide_body_fixture_has_clean_negative_piece_with_pins()` integration
+  test using the existing fixture pattern.
+- `reverse_centerline_fixture_plug_pin_anchors_at_cap_end()`:
+  feed an integration fixture where the centerline runs tip → base
+  AND `prep.toml [caps]` records the cap plane at the base end.
+  Verify the cf-cast-cli output's plug STL has the pin extending from
+  the base-end face, AND the mold pieces have a visible socket carve
+  at the base-end face.
 
-## Cold-read polish opportunities (out of scope, surface during implementation)
+### G. Update workshop iter-1 cast.toml + procedure.md (~15 min)
+
+After C + E land, re-run cf-cast-cli on
+`~/scans/cast.iter1-design.toml`. Inspect all 12 STLs in cf-view
+(assembly mode). Verify:
+
+- (5a) Registration pins are visible protrusions on the +Y seam face
+  of piece_0, matching holes on the -Y seam face of piece_1.
+- (5b) No free-floating mesh components in piece_0 or piece_1.
+- (4) Pour gate is visible as a 6 mm Ø hole on the -Y outer face of
+  piece_1 (per the v2.1 sub-leaf 2 one-sided design).
+- (6) Plug STLs have a single pin at the BASE end (z=-0.054). Mold
+  piece_0 + piece_1 have matching socket carves at the base end's +Z
+  face (assuming the cap plane is at the base).
+
+This is the workshop iter-1 visual gate, re-fired post-fix.
+
+If anything fails, that's the next session's recon — the fixes
+themselves don't ship until G passes.
+
+## Cold-read polish (in-arc, surface during implementation)
+
+These survived the scope-fold from the sibling-bookmark into this arc.
+Land alongside C and E in the same implementation session.
 
 - `pour.rs:31-36` "each piece carves a half-cylinder cross-section"
   paragraph is stale post-v2.1 sub-leaf 2 (gate is now one-sided).
   Update to match the current placement OR add a "v2.1 sub-leaf 2:
   side-mounted" annotation similar to lines 7-23.
-- `plug.rs:31-39` "pour-end pin is centered at centerline[0]" — for
-  the iter-1 sock the cf-scan-prep centerline runs **tip → base**
-  (centerline[0] is the closed dome at z=+0.073, centerline.last() is
-  the cap-closed base at z=-0.054). The "pour-end" / "dome-end"
-  vocabulary doesn't survive the cf-scan-prep centerline orientation
-  convention. Either re-derive the pour-end from cap-plane data in
-  `prep.toml`, or rename to "start-end" / "end-end" and let the workshop
-  user pick `include_dome_pin` to mean "pin at the OTHER end".
-  Functional implication: for iter-1 the socket subtraction cylinder is
-  mostly INSIDE the layer-0 body (z < tip), so the carve is mostly a
-  no-op — only the ~1 mm of cylinder extending past the body tip
-  actually carves cup-wall material, and 3 mm MC cells can't resolve a
-  1 mm-deep feature. **Plug-anchor pin is functionally broken for
-  tip-first centerlines.** Bank as a sibling bookmark — it's distinct
-  from the bookmark's three defects but a load-bearing v2.1 feature
-  for workshop iter-1 assembly.
+- `plug.rs:31-39` "pour-end pin is centered at centerline[0]" — the
+  "pour-end" / "dome-end" vocabulary doesn't survive the cf-scan-prep
+  centerline orientation convention; rewrite to "pour-end is the
+  cap-plane-nearest centerline endpoint" and reference the E1 fix.
+- `registration.rs:16-17` "pin sits in the cup wall (outside the body
+  cavity, inside the bounding region)" — true under C1's new
+  body-relative placement; reaffirm as the invariant.
 
-## Coverage gap
+## Coverage gap (drives F + G test plan)
 
-The v2.1 arc's integration tests at `design/cf-cast/src/registration.rs:155-246`
-+ `pour.rs:255-400` use a **straight 100 mm centerline along +X with
-+Y split-normal**, fixture body 20 mm half-extent in +X. With body
-half-extent 20 mm and pin at offset 25 mm, the pin is at x = 25 mm
-which is 5 mm OUTSIDE the body — in cup-wall territory for the
-fixture's 30 mm half-extent bounding region. Test passes.
+### Registration pin
+
+The v2.1 arc's integration tests at
+`design/cf-cast/src/registration.rs:155-246` + `pour.rs:255-400` use a
+**straight 100 mm centerline along +X with +Y split-normal**, fixture
+body 20 mm half-extent in +X. With body half-extent 20 mm and pin at
+offset 25 mm, the pin is at x = 25 mm which is 5 mm OUTSIDE the body —
+in cup-wall territory for the fixture's 30 mm half-extent bounding
+region. Test passes.
 
 For iter-1's 36 mm body half-extent + bounding 61 mm, the pin at 25 mm
 is INSIDE the body. The test geometry didn't surface this because the
 relationship between fixture body size and pin offset wasn't ever
 exercised in a "body bigger than offset" regime.
 
-**Test plan addition for implementation session**: include the
-"wide-body fixture" (≥ 60 mm cube body) in cf-cast lib tests, not just
-the 20 mm narrow fixture. Same pattern as the mold-wall arc's added
-`cube_fixture_mold_pieces_follow_contour_not_cuboid` regression.
+### Plug-pin centerline orientation
 
-## Banked observations
+The cf-cast lib tests at `plug.rs:296-490` use a synthetic centerline
+running `-50 mm → +50 mm along +X`. `centerline[0] = (-0.05, 0, 0)` is
+"clearly the pour end" by intent of the test fixture, and
+`first.tangent = +X`, `-first.tangent = -X` reaches at x=-60 mm into
+empty space (no body geometry there in the test fixture). Tests pass.
 
-- The v2.1 arc's integration tests pass on iter-1 because the test
-  fixtures use a 20-mm-half-extent body — narrower than the 25 mm pin
-  offset. Iter-1's sock-over-capsule (36 mm) crosses the threshold.
-  Pattern: **fixture sizing relative to parameter defaults matters**.
-- This is the SECOND v2.1 default-vs-real-geometry failure surfaced in
-  the mold-wall arc's wake (first was the 20 mm plug-pin vs 5 mm wall,
-  caught by the cross-field validator at config-parse time). Both have
-  the same shape: an iter-1 numeric default calibrated against an
-  older bounding-region regime, not adapted to the new contour-follow
-  geometry. Pattern worth banking:
-  [[feedback-default-numeric-vs-derived-geometry]] (to write).
-- The plug-pin centerline-orientation bug (cold-read item) is a THIRD
-  iter-1-default-vs-real-geometry case. Bookmark it as a sibling
-  defect — same root cause class, separate implementation arc.
+Real cf-scan-prep centerlines don't have this convenient pour-end-at-zero
+convention — they follow the scan's principal-axis projection
+direction, which is set by the scan's PCA-detected long axis, not by
+any pour-end vs. tip semantics.
+
+### Shared pattern
+
+Both gaps share a shape: a fixture-vs-real-output mismatch where the
+fixture's numerical convenience happened to satisfy the implicit
+invariant, hiding the load-bearing dependency on a property cf-scan-prep
+doesn't guarantee. F + G's test fixtures must include geometry where
+the convenience does NOT hold (wide-body for registration, tip-first
+for plug-pin).
+
+## Banked observations (patterns)
+
+- The v2.1 arc's integration tests pass because the fixtures' numerical
+  conveniences happened to satisfy load-bearing invariants the spec
+  never wrote down. Pattern: **fixture sizing AND fixture axis
+  conventions relative to parameter defaults matters**.
+- This recon's two folded defects join the mold-wall arc's plug-pin
+  cross-field failure (20 mm pin vs 5 mm wall, caught by config-parse
+  validator) as THREE iter-1-numeric-default-vs-derived-geometry
+  failures surfaced in the mold-wall arc's wake. Common root-cause
+  class worth a feedback memo:
+  [[feedback-default-numeric-vs-derived-geometry]] (to write
+  post-implementation).
