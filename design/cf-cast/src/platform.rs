@@ -81,10 +81,12 @@ pub const PLATFORM_HOLE_LATERAL_SLACK_M: f64 = 0.002;
 
 /// Clearance between the T-bar tip and the pocket floor (m).
 ///
-/// 2 mm — workshop-margin so the T-bar doesn't contact the pocket
-/// floor when the cup-floor outer face is resting on the slab top.
-/// Absorbs FDM print tolerance + any ribbon-binormal mis-alignment.
-pub const PLATFORM_POCKET_FLOOR_CLEARANCE_M: f64 = 0.002;
+/// 5 mm — comfortable workshop-margin so the T-bar doesn't
+/// contact the pocket floor when the cup-floor outer face is
+/// resting on the slab top. Absorbs FDM print tolerance + any
+/// ribbon-binormal mis-alignment + leaves visible inspection
+/// space between T-bar tip and pocket bottom.
+pub const PLATFORM_POCKET_FLOOR_CLEARANCE_M: f64 = 0.005;
 
 /// Pocket overshoot above the slab top (m).
 ///
