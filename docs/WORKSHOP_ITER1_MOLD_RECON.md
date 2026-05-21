@@ -1,17 +1,24 @@
 # Workshop iter-1 mold visual-gate — RECON
 
-**Status:** recon complete 2026-05-21. Bookmark (prior session):
+**Status:** recon complete 2026-05-21, shipped to dev `fc9e88e8`
+(this doc) + `4f5fa493` (initial recon). Bookmark (prior session):
 [[project-workshop-iter1-mold-unsatisfactory-bookmark]]. Implementation
 next session.
 
 **Scope:** defects (4) pour gate missing, (5a) registration pins
 missing, (5b) free-floating positive sliver in `mold_layer_0_piece_0`,
-**plus (6) plug-pin centerline-orientation bug** — surfaced during this
-recon's cold-read pass, folded into scope because it's the same
+**plus (6) plug-pin centerline-orientation bug** — surfaced during
+this recon's cold-read pass, folded into scope because it's the same
 root-cause class as (5a)+(5b) (iter-1 hardcoded default vs. derived
-geometry) and an unfixed (6) means the workshop user gets a printed
-plug with no usable mold anchor at the dome end. Defect (1) plug base
-flare is a separate cf-scan-prep concern, out of scope.
+geometry). Unfixed (6) is a dual bug: (i) the socket carve is mostly
+inside the body so MC can't resolve the ~1 mm overhang into cup-wall
+material — workshop user's printed plug has no usable mold socket,
+AND (ii) even if the carve resolved, the pin is at the closed-dome
+end of the centerline rather than the pour-open base, which inverts
+workshop pour-and-anchor ergonomics (the user pours through the
+side-mounted gate while the anchor needs to be at the same end the
+user can hand-stabilize). Defect (1) plug base flare is a separate
+cf-scan-prep concern, out of scope.
 
 ## TL;DR
 
@@ -58,7 +65,9 @@ the layer-0 body where the carve is a no-op. Only the ~1 mm of
 cylinder extending past the body tip touches cup-wall material, and
 3 mm MC cells can't resolve a 1 mm-deep feature. **Plug-anchor
 feature is functionally broken for tip-first centerlines** — the
-printed plug has no usable socket in any of the mold pieces.
+printed plug has no usable socket in any of the mold pieces. See
+[[project-cf-cast-plug-pin-centerline-orientation-bookmark]] for the
+diagnosis + candidate-fix analysis from the original sibling bookmark.
 
 Same root-cause class as (5a)+(5b): an iter-1 numeric/geometric
 default that worked under a narrower assumption (test fixture: pour-
@@ -169,8 +178,12 @@ the cup wall" check depends on body radius along split-normal at the
 pin's centerline z — **a quantity the spec never reads**.
 
 H3 (transformed-frame mismatch) **PARTIALLY CONFIRMED** in a related
-sense: the spec uses world-frame `+X * 25 mm` for placement, but the
-correct frame would be **layer-body-surface-relative** along split-normal.
+sense: the spec uses `split_normal * 25 mm` for placement (world-frame
++X for iter-1, but parametric over the cast's chosen split-normal),
+but the correct frame would be **layer-body-surface-relative** along
+split-normal — i.e., the offset from centerline should equal
+`body_half_extent_along_split_normal + wall_thickness/2`, not a
+fixed 25 mm.
 
 ## (4) Pour gate — verification gate first, code dive only if needed
 
@@ -223,8 +236,12 @@ later.
 
 ### B. Verify pour-gate piece 1 (~5 min)
 
-Before any code change, open `mold_layer_0_piece_1.stl` in cf-view and
-confirm the -Y face has a 6 mm Ø hole. Two outcomes:
+Before any code change, open the existing iter-1 cast output with
+`cf-view --assembly ~/scans/cast_iter1_design/` (the established
+re-inspection command per the bookmark — preserves the falsification
+state without re-running cf-cast-cli). Focus on
+`mold_layer_0_piece_1.stl` and confirm the -Y face has a 6 mm Ø hole.
+Two outcomes:
 
 - **Hole present**: (4) is a documentation issue. Fix the stale
   "half-cylinder" paragraph in `pour.rs:31-36` to match v2.1 sub-leaf 2
@@ -331,14 +348,21 @@ Inside cf-cast lib:
   (`x ∈ [body_half + wall_thickness, bounding_half - pin_radius]`).
 - `plug_pin_anchors_to_pour_end_for_tip_first_centerline()`: synthetic
   fixture where `centerline[0]` is the dome (tip-first orientation,
-  matching cf-scan-prep's iter-1 output). Pass a `cap_plane_centroid`
-  that's nearer `centerline.last()`. Assert
+  matching cf-scan-prep's iter-1 output). Build the ribbon with
+  `Ribbon::with_pour_end_hint(cap_centroid)` where `cap_centroid` is
+  nearer `centerline.last()` than `centerline[0]` (matches the
+  production E1 wiring through `derive.rs`). Assert
   `build_plug_pin_solid(ribbon).bounds()` is positioned at
   `centerline.last()`, NOT `centerline[0]`.
-- `plug_socket_carves_visible_mold_material_for_tip_first_centerline()`:
-  the same fixture, but compose the layer-0 mold piece and assert the
-  socket cylinder's intersection with the mold piece SDF is at least
-  `cell_size * 2` deep (i.e., MC will resolve it).
+- `plug_socket_carves_at_cap_plane_endpoint_for_tip_first_centerline()`:
+  the same fixture, but compose the layer-0 mold piece and assert two
+  invariants: (i) the socket cylinder's center is at the
+  cap-plane-nearest endpoint (`centerline.last()`), and (ii) the
+  socket's intersection with the mold piece SDF is at least
+  `cell_size * 2` deep (i.e., MC resolves it). Invariant (i) catches
+  regressions that re-break endpoint selection but leave carve-depth
+  logic intact; invariant (ii) catches the original 1 mm-overhang
+  no-op failure mode.
 - Optional `pour_gate_visible_in_positive_piece()`: assert at least one
   vertex in mold_layer_0_piece_1's mesh has y > -bounding_y + 1 mm
   AND lies inside the gate cylinder's cross-section. Documents the
@@ -365,9 +389,12 @@ After C + E land, re-run cf-cast-cli on
 - (5b) No free-floating mesh components in piece_0 or piece_1.
 - (4) Pour gate is visible as a 6 mm Ø hole on the -Y outer face of
   piece_1 (per the v2.1 sub-leaf 2 one-sided design).
-- (6) Plug STLs have a single pin at the BASE end (z=-0.054). Mold
-  piece_0 + piece_1 have matching socket carves at the base end's +Z
-  face (assuming the cap plane is at the base).
+- (6) Plug STLs have a single pin at the BASE end (z=-0.054), extending
+  outward in -Z. Mold piece_0 + piece_1 have matching socket carves in
+  the cup-wall cap region at z=-0.054, opening into the cavity from
+  the inner face (the cap-plane region of the cup wall) and extending
+  ~4 mm in -Z into cup-wall material (assuming the cap plane is at
+  the base per iter-1's prep.toml).
 
 This is the workshop iter-1 visual gate, re-fired post-fix.
 
@@ -376,20 +403,24 @@ themselves don't ship until G passes.
 
 ## Cold-read polish (in-arc, surface during implementation)
 
-These survived the scope-fold from the sibling-bookmark into this arc.
+Three independent docstring-rot items surfaced during the recon.
 Land alongside C and E in the same implementation session.
 
 - `pour.rs:31-36` "each piece carves a half-cylinder cross-section"
   paragraph is stale post-v2.1 sub-leaf 2 (gate is now one-sided).
   Update to match the current placement OR add a "v2.1 sub-leaf 2:
-  side-mounted" annotation similar to lines 7-23.
+  side-mounted" annotation similar to lines 7-23. (Recon-original
+  observation about pre-v2.1 doc-rot, surfaced while diagnosing (4).)
 - `plug.rs:31-39` "pour-end pin is centered at centerline[0]" — the
   "pour-end" / "dome-end" vocabulary doesn't survive the cf-scan-prep
   centerline orientation convention; rewrite to "pour-end is the
   cap-plane-nearest centerline endpoint" and reference the E1 fix.
+  (Carried over from the absorbed sibling bookmark.)
 - `registration.rs:16-17` "pin sits in the cup wall (outside the body
   cavity, inside the bounding region)" — true under C1's new
-  body-relative placement; reaffirm as the invariant.
+  body-relative placement; reaffirm as the invariant once C1 lands.
+  (New polish item, picked up because the invariant the docstring
+  asserts is exactly the one C1 restores.)
 
 ## Coverage gap (drives F + G test plan)
 
