@@ -280,7 +280,7 @@ const CLEANUP_MIN_COMPONENT_FACES: usize = 10;
 /// the longest mesh axis"; `0.05` ≈ 5 % of half-extent.
 ///
 /// **Calibrated against cf-cast's SDF sampling resolution.** cf-cast
-/// samples its `SignedDistanceField` on a 2 mm grid (spec
+/// samples its scan SDF on a 2 mm grid (spec
 /// §Strategic context); geometric detail below 2 mm is sub-cell and
 /// won't transfer to the silicone mold. Setting the threshold above
 /// that floor means we're trading "wasted detail meshopt couldn't

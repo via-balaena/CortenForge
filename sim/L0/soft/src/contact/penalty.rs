@@ -146,7 +146,7 @@ fn quintic_ramp(sd: f64, d_hat: f64, eps: f64) -> (f64, f64, f64) {
 ///
 /// Primitives are heap-erased [`Sdf`] trait objects so a single contact
 /// model can compose mixed primitive types (planes, spheres,
-/// scan-derived `mesh_sdf::SignedDistanceField`, cf-design `Solid`s)
+/// scan-derived `mesh_sdf::Signed<TriMeshDistance, _>`, cf-design `Solid`s)
 /// in one list. The constructors are generic over any `IntoIterator`
 /// of `Sdf + 'static`, so a homogeneous `Vec<RigidPlane>` flows
 /// through without explicit boxing.

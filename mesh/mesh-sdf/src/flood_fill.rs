@@ -151,10 +151,6 @@ impl SdfGrid {
 }
 
 // ── 6-connected neighbour helper (private) ────────────────────────────
-//
-// Same body as cf-device-design's two copies (sdf_layers + insertion_sim).
-// Inlined here so D.3 can delete both downstream copies once the
-// migration lands.
 
 #[inline]
 fn neighbours6(i: usize, nx: usize, ny: usize, nz: usize) -> [Option<usize>; 6] {
@@ -710,10 +706,9 @@ pub enum FloodFilledSdfBuildError {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
-    use crate::{PseudoNormalSign, SignedDistanceField, TriMeshDistance};
+    use crate::{PseudoNormalSign, TriMeshDistance};
     use approx::assert_relative_eq;
     use mesh_types::{IndexedMesh, Point3};
 
@@ -1050,7 +1045,7 @@ mod tests {
         assert!(!sdf.is_inside(outside));
         assert!(sdf.unsigned_distance(outside) > 0.0);
 
-        // `mesh()` accessor (per D.1's `impl<S: Sign> Signed<TriMeshDistance, S>`)
+        // `mesh()` accessor (the `impl<S: Sign> Signed<TriMeshDistance, S>`)
         // works on the recommended FloodFillSign composition too.
         assert_eq!(sdf.mesh().faces.len(), 6);
     }
@@ -1159,41 +1154,5 @@ mod tests {
             report.inside_components, 2,
             "two disjoint tetrahedra must yield two Inside components"
         );
-    }
-
-    // ── Deprecated-bridge numerical equivalence (deferred from D.1 #3) ──
-
-    /// Pins that `SignedDistanceField::new(mesh)?.distance(p)`
-    /// (deprecated convenience constructor) produces bit-equal
-    /// signed distances to the explicit
-    /// `Signed { distance: TriMeshDistance::new(mesh)?, sign:
-    /// PseudoNormalSign::from_distance(&distance) }.evaluate(p)`
-    /// composition. Catches silent refactor drift in the
-    /// deprecated bridge.
-    #[test]
-    fn deprecated_constructor_matches_explicit_composition_bit_for_bit() {
-        let mesh = closed_pyramid();
-
-        let legacy = SignedDistanceField::new(mesh.clone()).expect("non-empty mesh");
-        let distance = TriMeshDistance::new(mesh).expect("non-empty mesh");
-        let sign = PseudoNormalSign::from_distance(&distance);
-        let explicit = Signed { distance, sign };
-
-        let probes = [
-            Point3::new(0.0, 0.0, 0.5),  // inside
-            Point3::new(0.0, 0.0, 1.5),  // outside above apex
-            Point3::new(1.5, 0.0, 0.5),  // outside lateral
-            Point3::new(0.0, 0.0, -0.5), // outside below base
-            Point3::new(0.5, 0.3, 0.2),  // off-axis inside
-        ];
-        for p in probes {
-            assert_eq!(
-                legacy.distance(p),
-                explicit.evaluate(p),
-                "legacy and explicit composition must agree bit-for-bit at {p:?}"
-            );
-            assert_eq!(legacy.unsigned_distance(p), explicit.unsigned_distance(p));
-            assert_eq!(legacy.is_inside(p), explicit.is_inside(p));
-        }
     }
 }

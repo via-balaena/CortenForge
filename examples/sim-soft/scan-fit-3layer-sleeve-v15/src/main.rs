@@ -73,9 +73,9 @@
 //!    the new radius). The capsule stand-in is openly synthetic — the
 //!    framing emphasises the workflow, not the geometry. Production
 //!    runs swap this analytic stand-in for a
-//!    `mesh_sdf::SignedDistanceField` lifted via PR3 F2 (`impl Sdf for
-//!    SignedDistanceField`); row 15 `mesh-scan-as-solid` is the
-//!    canonical STL-import precedent. Non-exact SDFs
+//!    `mesh_sdf::Signed<TriMeshDistance, _>` (PR3 F2 lifts any
+//!    `impl Sdf` into a typed `Solid`); row 15 `mesh-scan-as-solid`
+//!    is the canonical STL-import precedent. Non-exact SDFs
 //!    (`Solid::superellipsoid`, `Solid::ellipsoid`) are rejected here
 //!    on the same Q1 grounds — `offset` on a non-exact SDF shifts the
 //!    level set in non-distance units, producing a paper-thin or
@@ -255,7 +255,7 @@ use sim_soft::{
 /// radius `r + d` with the same half-height), restoring an organic,
 /// manufacturing-realistic cavity shape vs the cuboid's sharp internal
 /// corners. Production runs replace this analytic stand-in with a
-/// `mesh_sdf::SignedDistanceField` lifted via PR3 F2.
+/// `mesh_sdf::Signed<TriMeshDistance, _>` lifted via PR3 F2.
 const SCAN_RADIUS: f64 = 0.015;
 
 /// Capsule cylinder-section half-height (m) — 25 mm cylinder half-

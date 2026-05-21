@@ -1,6 +1,6 @@
 // `unreachable!()` calls in this binary are diagnostic guards on
 // `let-else` branches that cannot fire (12-tri cube fixture is
-// non-empty by construction → `SignedDistanceField::new` cannot
+// non-empty by construction → `TriMeshDistance::new` cannot
 // return `Err(EmptyMesh)`). `xtask grade`'s Safety criterion counts
 // un-justified `unreachable!()` macros; allow at file level since
 // every call is a post-validation `Result::Err` impossibility, not
@@ -92,8 +92,7 @@ use mesh_io::{load_mesh, save_stl};
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::{AttributedMesh, IndexedMesh, Point3, Vector3};
 
-/// Local alias — `Signed<TriMeshDistance, PseudoNormalSign>` is the
-/// post-D arc shape of the deprecated `SignedDistanceField` type alias.
+/// Local alias — the canonical parry-pseudo-normal composition.
 /// [`PseudoNormalSign`] is the cheap parry pseudo-normal path; for
 /// cleaned body-part scans prefer `mesh_sdf::flood_filled_sdf` per
 /// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`.
@@ -421,7 +420,7 @@ fn verify_grad_finite_and_outward_on_face_band(sdf: &dyn Sdf) {
 // =============================================================================
 
 /// Write the cube to a binary STL file, load it back, and verify the
-/// loaded mesh produces a `SignedDistanceField` that agrees with
+/// loaded mesh produces a `ScanSdf` composition that agrees with
 /// the original at every named probe (closed-form face / interior
 /// anchors). STL stores binary f32 vertex coords; integer `±R = ±1.0`
 /// round-trips losslessly through f32, so the SDF values must be
@@ -524,7 +523,7 @@ fn build_grid(sdf: &ScanSdf) -> Vec<GridSample> {
 /// Bulk-grid consistency over the SDF + raycast-inside fields:
 ///
 /// 1. **Closed-form-vs-trait identity** — at every grid point,
-///    `<SignedDistanceField as cf_design::Sdf>::eval(p)` equals
+///    `<ScanSdf as cf_design::Sdf>::eval(p)` equals
 ///    `analytical_cube_sdf(p)` within `BAND_TOL`. Both expressions
 ///    reduce to the same closest-point-on-triangle Euclidean
 ///    distance with sign from the closest-face normal, which agrees
@@ -652,7 +651,7 @@ fn print_summary(
     println!();
     println!("input  : programmatic 12-triangle cube (8v, 12f)");
     println!("         half-extent R = {R}; vertices at (±R, ±R, ±R)");
-    println!("         routed: build → save_stl → load_mesh → SignedDistanceField");
+    println!("         routed: build → save_stl → load_mesh → ScanSdf composition");
     println!("         dispatched via cf_design::Sdf (the trait spine post-PR3 F1+F2)");
     println!();
     println!("Closed-form anchor groups (all assertions exit-0 on success):");
@@ -664,7 +663,7 @@ fn print_summary(
     println!("  grad_finite_outward_on_face: 7 face-band probes, ‖grad‖ ∈ [0.9, 1.1]");
     println!();
     println!("STL round-trip:");
-    println!("  save_stl + load_mesh + new SignedDistanceField → ");
+    println!("  save_stl + load_mesh + Signed composition → ");
     println!("  SDF agrees with in-memory at face-region + origin probes (bit-exact)");
     println!();
     println!(

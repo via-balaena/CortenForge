@@ -24,7 +24,7 @@
 //!   `CapPlane`s. Empty `Vec` when the block is absent or all loops
 //!   are excluded.
 //! - [`dome_wall_only_mesh`] — strip cap-polygon faces from a cleaned
-//!   scan mesh so its `SignedDistanceField` has no cap-polygon offset
+//!   scan mesh so its signed-distance field has no cap-polygon offset
 //!   to enclose.
 //! - [`report_cap_face_classification`] — permanent regression-sentinel
 //!   diagnostic. Emits a stderr table of cap-face classification stats
@@ -311,7 +311,7 @@ pub fn parse_cap_planes(text: &str) -> Result<Vec<CapPlane>> {
 /// to the cap normal even after every vertex moved a few mm.
 ///
 /// Vertices are NOT compacted — the SDF construction tolerates
-/// unreferenced vertices (`SignedDistanceField::new` walks faces, not
+/// unreferenced vertices (`TriMeshDistance::new` walks faces, not
 /// vertices); skipping the compaction step keeps face-index parity with
 /// the input so the cap planes stay aligned with whatever downstream
 /// code references both.

@@ -50,8 +50,8 @@
 //!    cuboid's edges and corners, flat-faced everywhere else). The
 //!    box stand-in is openly synthetic — the framing emphasises the
 //!    workflow, not the geometry. Production runs swap this analytic
-//!    stand-in for a `mesh_sdf::SignedDistanceField` lifted via PR3 F2
-//!    (`impl Sdf for SignedDistanceField`); row 15
+//!    stand-in for a `mesh_sdf::Signed<TriMeshDistance, _>` (PR3 F2
+//!    lifts any `impl Sdf` into a typed `Solid`); row 15
 //!    `mesh-scan-as-solid` is the canonical STL-import precedent.
 //!    Non-exact SDFs (`Solid::superellipsoid`, `Solid::ellipsoid`) are
 //!    rejected here on the same Q1 grounds — `offset` on a non-exact
@@ -215,7 +215,7 @@ use sim_soft::{
 /// the load-bearing requirement for the sleeve's wrap geometry to
 /// have non-trivial physical thickness at meshing time. Production
 /// runs replace this analytic stand-in with a
-/// `mesh_sdf::SignedDistanceField` lifted via PR3 F2.
+/// `mesh_sdf::Signed<TriMeshDistance, _>` lifted via PR3 F2.
 const SCAN_HX: f64 = 0.020;
 const SCAN_HY: f64 = 0.015;
 const SCAN_HZ: f64 = 0.040;

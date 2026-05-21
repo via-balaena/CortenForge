@@ -18,7 +18,7 @@
 //! `cf_design::Solid::from_sdf` (PR3 F5) lifts any `impl Sdf` into a
 //! typed `Solid` so `Solid::subtract` itself now covers heterogeneous
 //! cases (e.g., a typed sphere differenced against a scan-derived
-//! `mesh_sdf::SignedDistanceField`). `DifferenceSdf` and
+//! `mesh_sdf::Signed<TriMeshDistance, _>`). `DifferenceSdf` and
 //! `Solid::subtract` are both [`Sdf`] implementors of the same sharp
 //! difference, retained side-by-side because each surfaces a different
 //! consumer role:
@@ -75,8 +75,8 @@ use super::sdf::Sdf;
 /// so a single `DifferenceSdf` value can be stored in a uniform
 /// composition tree (per book Part 7 §00 §01 closed-algebra
 /// commitment) and so heterogeneous operands (e.g., a sphere combined
-/// with a scan-derived `mesh_sdf::SignedDistanceField`) compose at the
-/// trait-object boundary without going through
+/// with a scan-derived `mesh_sdf::Signed<TriMeshDistance, _>`) compose
+/// at the trait-object boundary without going through
 /// `cf_design::Solid::from_sdf`.
 ///
 /// `Send + Sync` follows automatically from `Box<dyn Sdf>`'s supertrait
