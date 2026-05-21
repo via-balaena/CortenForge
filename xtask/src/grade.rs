@@ -2266,7 +2266,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // shared device-design types crate consumed by cf-device-design
     // and cf-sim-research — Bevy-using like cf-bevy-common, same
     // exemption shape. cf-device-geometry (sim-decouple Phase 2.5.b;
-    // `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d) is the shared
+    // `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d) is the shared
     // device-side compute + rendering primitives crate (cached SDF +
     // iso extraction + clip-plane material) consumed by the same two
     // binaries — Bevy-using, same exemption shape.

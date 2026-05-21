@@ -12,7 +12,7 @@ use nalgebra::Vector3;
 #[test]
 fn threemf_round_trip() {
     let sphere = Solid::sphere(5.0);
-    let mesh = sphere.mesh_adaptive_par(0.5);
+    let mesh = sphere.mesh_adaptive(0.5);
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("sphere.3mf");
@@ -45,7 +45,7 @@ fn threemf_round_trip_composed_shape() {
     let body = Solid::cuboid(Vector3::new(3.0, 3.0, 3.0));
     let hole = Solid::cylinder(1.0, 4.0);
     let shape = body.subtract(hole);
-    let mesh = shape.mesh_adaptive_par(0.4);
+    let mesh = shape.mesh_adaptive(0.4);
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("composed.3mf");

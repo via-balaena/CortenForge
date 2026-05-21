@@ -129,7 +129,7 @@ pub const LAYER_COUNT_MAX: usize = 6;
 /// Palette tinting the per-layer outer-surface mesh entities (and the
 /// per-layer rows in the read-only sim-research panel). Repeats if
 /// the layer count exceeds the palette length. Lifted to
-/// `cf-device-types` per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a
+/// `cf-device-types` per `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a
 /// so cf-device-design (3D shells + Sim panel layer rows) and
 /// cf-sim-research (panel-row swatches) tint the same layer-index
 /// with the same color.
