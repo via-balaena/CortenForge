@@ -166,9 +166,9 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 /// they extend equally into both [`crate::ribbon::PieceSide`] halves.
 ///
 /// Returns `None` for any arc fraction whose split-normal ray runs
-/// past [`PIN_RAY_MAX_REACH_M`] without crossing the
-/// bounding-region surface; this signals a degenerate caller
-/// (unbounded bounding region) and the surrounding piece
+/// past the module-private `PIN_RAY_MAX_REACH_M` (1 m) without
+/// crossing the bounding-region surface; this signals a degenerate
+/// caller (unbounded bounding region) and the surrounding piece
 /// composition will produce a pin-less mold piece for this layer.
 #[must_use]
 pub fn build_registration_solid(
