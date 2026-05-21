@@ -105,10 +105,25 @@ pub struct PourGateSpec {
     /// 6 mm diameter — enough for low-viscosity silicone flow
     /// without splashing at typical workshop pour rates.
     pub gate_radius_m: f64,
-    /// Vent-leg channel radius (m). Default `0.001` = 1 mm =
-    /// 2 mm diameter — small enough for silicone surface tension
-    /// to hold against the workshop pour-pressure differential
-    /// while letting air freely escape.
+    /// Vent-leg channel radius (m). Default `0.003` = 3 mm =
+    /// 6 mm diameter — same as the pour leg.
+    ///
+    /// Equal-radius legs ship together because at cf-cast's default
+    /// 3 mm mesh-cell size, a 2 mm Ø vent (the pre-V-shape default)
+    /// captures as only 0.67 cells radially and MC produces a
+    /// partial / fragmented through-hole — workshop iter-1 visual
+    /// gate falsified the small-vent variant. The pour leg's 6 mm Ø
+    /// is the minimum that meshes cleanly at 3 mm cells (1 cell
+    /// radius); matching the vent to it guarantees the vent leg
+    /// also resolves. Workshop user tells pour from vent by position
+    /// (procedure.md surfaces the +/-binormal side mapping), not by
+    /// hole diameter.
+    ///
+    /// Trade-off: silicone surface tension can't hold against the
+    /// pour-pressure differential on a 6 mm Ø vent as reliably as
+    /// the prior 2 mm Ø. Workshop iter-1 accepts that — the pour
+    /// leg is the main filler; the vent's role is post-fill air
+    /// release as the pour decelerates.
     pub vent_radius_m: f64,
     /// Half-length of the **pour leg** cylinder (m). Total channel
     /// length is `2 * gate_half_length_m`. Default `0.045` = 45 mm
@@ -146,15 +161,17 @@ pub struct PourGateSpec {
 }
 
 impl PourGateSpec {
-    /// v2.1 iter-1 defaults: 6 mm Ø pour leg (90 mm total), 2 mm Ø
-    /// vent leg (80 mm total), vent enabled. Both legs anchored
-    /// at the V apex on the body's dome end (opposite the cap
-    /// plane), splayed ±30° in the (outward + split-normal) plane.
+    /// v2.1 iter-1 defaults: 6 mm Ø pour leg (90 mm total), 6 mm Ø
+    /// vent leg (80 mm total), vent enabled. Both legs anchored at
+    /// the V apex on the body's dome end (opposite the cap plane),
+    /// splayed ±30° in the (outward + binormal) plane. Equal-radius
+    /// legs match the MC resolution threshold at cf-cast's default
+    /// 3 mm mesh cells (see [`Self::vent_radius_m`] docstring).
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
             gate_radius_m: 0.003,
-            vent_radius_m: 0.001,
+            vent_radius_m: 0.003,
             gate_half_length_m: 0.045,
             vent_half_length_m: 0.040,
             include_vent: true,
@@ -320,7 +337,11 @@ mod tests {
     fn pour_gate_spec_iter1_has_workshop_defaults() {
         let s = PourGateSpec::iter1();
         assert!((s.gate_radius_m - 0.003).abs() < f64::EPSILON);
-        assert!((s.vent_radius_m - 0.001).abs() < f64::EPSILON);
+        assert!(
+            (s.vent_radius_m - 0.003).abs() < f64::EPSILON,
+            "vent_radius_m should match gate_radius_m (6 mm Ø) so both \
+             legs mesh cleanly at cf-cast's default 3 mm cells",
+        );
         assert!((s.gate_half_length_m - 0.045).abs() < f64::EPSILON);
         assert!((s.vent_half_length_m - 0.040).abs() < f64::EPSILON);
         assert!(s.include_vent);

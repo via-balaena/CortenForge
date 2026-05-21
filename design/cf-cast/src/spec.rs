@@ -2753,23 +2753,28 @@ mod tests {
     #[test]
     fn generate_procedure_markdown_v2_pour_gate_prose_mentions_diameters() {
         // Pour gate ON: "Pour Gate + Vent" section must mention
-        // gate Ø (6.0 mm = 2 × 3 mm radius), vent Ø (2.0 mm =
-        // 2 × 1 mm radius), and channel lengths (gate = 90.0 mm
-        // = 2 × 45 mm half-length; vent = 80.0 mm = 2 × 40 mm
-        // half-length).
+        // gate Ø (6.0 mm = 2 × 3 mm radius), vent Ø (6.0 mm =
+        // 2 × 3 mm radius — same as pour, post-G3 fix for MC
+        // resolution at 3 mm cells), and channel lengths
+        // (gate = 90.0 mm; vent = 80.0 mm). The vent leg is the
+        // same diameter as the pour leg; workshop user tells them
+        // apart by binormal side, not by hole size.
         let (spec, ribbon) = v2_fixture_with_pour_gate();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(md.contains("## Pour Gate + Vent"));
         assert!(md.contains("6.0 mm Ø pour gate"));
-        assert!(md.contains("2.0 mm Ø vent"));
+        assert!(md.contains("6.0 mm Ø vent"));
         assert!(md.contains("90.0 mm total"));
         assert!(md.contains("80.0 mm total"));
-        // Per-layer Step 6 references the side-mounted pour gate
-        // when enabled.
+        // Per-layer Step 6 references the V pour leg at the dome
+        // end when enabled.
         assert!(
-            md.contains("Pour silicone into the side-mounted pour gate at the centerline midpoint"),
-            "Step 6 should reference the side-mounted pour gate when enabled; got: {md}",
+            md.contains(
+                "Pour silicone into the pour leg of the V at the dome end \
+                 (Positive piece, +binormal side)"
+            ),
+            "Step 6 should reference the V pour leg when enabled; got: {md}",
         );
     }
 
