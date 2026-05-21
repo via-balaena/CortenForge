@@ -278,17 +278,48 @@ pub struct V2LayerReport {
     pub plug: PlugArtifact,
 }
 
+/// Workshop platform STL.
+///
+/// A flat slab with a pocket carved into the top surface that
+/// accepts the T-bar protrusion from the assembled mold. The mold
+/// sits on this platform during pour + cure so it rests flat
+/// (T-bar in the pocket) even though the T-bar extends below the
+/// cup outer face.
+///
+/// Generated only when the ribbon's `plug_pins` field is
+/// [`crate::plug::PlugPinKind::Axial`] AND `include_t_bar = true`
+/// (the configuration that produces a T-bar protrusion needing
+/// support). Single STL per cast, shared across all layers.
+#[derive(Debug, Clone)]
+pub struct PlatformArtifact {
+    /// Filesystem path of the written `platform.stl`.
+    pub path: PathBuf,
+    /// F4 validation result for the platform.
+    pub validation: PrintValidation,
+    /// Post-export mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
 /// Summary of a successful [`CastSpec::export_molds_v2`] run.
 ///
 /// `layers.len() * 3` STLs total (2 piece STLs + 1 plug STL per
-/// layer). All pieces and plugs clear the F4 gate before any STL
-/// lands on disk (pre-write atomicity, same scope as v1's
+/// layer), plus a single `platform.stl` if the ribbon enables
+/// T-bar plug-pin locking. All pieces, plugs, and the platform
+/// (when present) clear the F4 gate before any STL lands on disk
+/// (pre-write atomicity, same scope as v1's
 /// [`CastSpec::export_molds`]).
 #[derive(Debug, Clone)]
 pub struct V2MoldExportReport {
     /// Per-layer reports (innermost-first), each carrying its 2
     /// mold pieces + 1 plug.
     pub layers: Vec<V2LayerReport>,
+    /// Optional workshop platform artifact, present when the
+    /// ribbon's plug-pin kind has `include_t_bar = true`. The
+    /// platform's pocket matches the T-bar protrusion so the
+    /// assembled mold sits flat on the workbench during pour +
+    /// cure.
+    pub platform: Option<PlatformArtifact>,
 }
 
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
@@ -356,6 +387,17 @@ struct PendingPiece {
 /// detachable-shell assembly workflow.
 struct PendingPlug {
     layer_index: usize,
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Buffered v2 workshop platform mesh + validation, held in memory
+/// alongside [`PendingPiece`]s + [`PendingPlug`]s until every
+/// artifact clears the F4 gate. Generated only when the ribbon's
+/// plug-pin kind enables the T-bar; one platform per cast (shared
+/// across layers).
+struct PendingPlatform {
     mesh: IndexedMesh,
     validation: PrintValidation,
     path: PathBuf,
@@ -722,20 +764,31 @@ impl CastSpec {
 
         let pending_pieces = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
         let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
+        let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
             source: mesh_io::IoError::from(e),
         })?;
 
-        let stl_count = self.layers.len() * 3;
+        let platform_count = usize::from(pending_platform.is_some());
+        let stl_count = self.layers.len() * 3 + platform_count;
         eprintln!(
             "[cf-cast] writing {stl_count} STLs to {out}…",
             out = out_dir.display()
         );
-        let layers_out = write_v2_artifacts(self, pending_pieces, pending_plugs, pour_volumes)?;
+        let (layers_out, platform_out) = write_v2_artifacts(
+            self,
+            pending_pieces,
+            pending_plugs,
+            pending_platform,
+            pour_volumes,
+        )?;
 
-        Ok(V2MoldExportReport { layers: layers_out })
+        Ok(V2MoldExportReport {
+            layers: layers_out,
+            platform: platform_out,
+        })
     }
 }
 
@@ -885,10 +938,52 @@ fn mesh_and_gate_v2_plugs(
     Ok(pending)
 }
 
-/// Write every pending piece + per-layer plug to disk and build
-/// the per-layer reports. Consumes both pending buffers; on any FS
-/// failure mid-stream the remaining artifacts are abandoned and
-/// the error surfaces with the failing artifact's path attached.
+/// Mesh + F4-gate the workshop platform STL, or return
+/// `Ok(None)` when the ribbon's plug-pin kind doesn't enable a
+/// T-bar (no platform needed). Single artifact per cast.
+fn mesh_and_gate_v2_platform(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Option<PendingPlatform>, CastError> {
+    let Some(platform_solid) = crate::platform::build_platform_solid(&spec.bounding_region, ribbon)
+    else {
+        return Ok(None);
+    };
+    let t_compose = std::time::Instant::now();
+    let target = CastTarget::Platform;
+    let mesh = solid_to_mm_mesh(&platform_solid, spec.mesh_cell_size_m, target)?;
+    let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+    let path = out_dir.join("platform.stl");
+    let t_gate = std::time::Instant::now();
+    let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+    let gate_s = t_gate.elapsed().as_secs_f64();
+    let blocking = blocking_critical_count(&validation);
+    if blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target,
+            issue_count: blocking,
+            path,
+        });
+    }
+    eprintln!(
+        "[cf-cast] platform — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
+         ({verts} verts / {faces} faces)",
+        verts = mesh.vertices.len(),
+        faces = mesh.faces.len(),
+    );
+    Ok(Some(PendingPlatform {
+        mesh,
+        validation,
+        path,
+    }))
+}
+
+/// Write every pending piece + per-layer plug + optional platform
+/// to disk and build the report structs. Consumes all pending
+/// buffers; on any FS failure mid-stream the remaining artifacts
+/// are abandoned and the error surfaces with the failing artifact's
+/// path attached.
 ///
 /// Assumes `pending_pieces` and `pending_plugs` are both ordered
 /// innermost-first and parallel to `pour_volumes`. The function
@@ -897,8 +992,9 @@ fn write_v2_artifacts(
     spec: &CastSpec,
     pending_pieces: Vec<[PendingPiece; 2]>,
     pending_plugs: Vec<PendingPlug>,
+    pending_platform: Option<PendingPlatform>,
     pour_volumes: Vec<PourVolume>,
-) -> Result<Vec<V2LayerReport>, CastError> {
+) -> Result<(Vec<V2LayerReport>, Option<PlatformArtifact>), CastError> {
     let mut layers_out = Vec::with_capacity(pending_pieces.len());
     for ((pieces_pair, plug_entry), pour_volume) in pending_pieces
         .into_iter()
@@ -949,7 +1045,21 @@ fn write_v2_artifacts(
             },
         });
     }
-    Ok(layers_out)
+    let platform_out = if let Some(p) = pending_platform {
+        save_stl(&p.mesh, &p.path, true).map_err(|source| CastError::MeshIo {
+            path: p.path.clone(),
+            source,
+        })?;
+        let platform_summary = MeshSummary::from_mesh(&p.mesh);
+        Some(PlatformArtifact {
+            path: p.path,
+            validation: p.validation,
+            summary: platform_summary,
+        })
+    } else {
+        None
+    };
+    Ok((layers_out, platform_out))
 }
 
 /// Gate per-layer pour masses against [`CastSpec::mass_budget_kg`].

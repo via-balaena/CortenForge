@@ -152,15 +152,73 @@ pub struct PlugPinSpec {
     /// (max tangent rotation approaching 120°) may need dome-end
     /// rotation constraint and opt in here.
     pub include_dome_pin: bool,
+    /// Whether to add a perpendicular T-bar at the pour-end pin's
+    /// tip, locking the plug against upward (axial) motion + axial
+    /// rotation once the cup pieces close around it.
+    ///
+    /// The T-bar is a cylinder whose axis lies in the ribbon seam
+    /// plane at the pin's anchor endpoint (axis =
+    /// `pour_outward × split_normal`, normalized). Because the
+    /// axis is perpendicular to the cutting plane normal, each cup
+    /// piece's geometry carves half of the matching T-slot via the
+    /// existing ribbon-side subtraction — workshop assembles by
+    /// dropping the plug into one cup half (T-bar lies in the seam
+    /// plane), then closing the other half around it (captive
+    /// insertion). Plug cannot slide upward because the T-bar would
+    /// have to push through the cup-wall material between the
+    /// T-slot and the pin-shaft socket above it; plug cannot rotate
+    /// around the pin axis because the T-bar would have to rotate
+    /// out of the fixed binormal orientation that the T-slot
+    /// accepts.
+    ///
+    /// Default `true` for v2.1 iter-1 +. Disable when the cured
+    /// silicone alone provides adequate plug-to-mold hold and the
+    /// workshop doesn't want the T-bar's protrusion through the cup
+    /// wall outer face (at typical 5 mm wall thicknesses, the T-bar
+    /// at iter-1's default dimensions protrudes ~2 mm below the cup
+    /// outer face — cf-cast emits a complementary `platform.stl`
+    /// with a matching pocket so the assembled mold sits flat on
+    /// the platform during pour + cure).
+    pub include_t_bar: bool,
+    /// T-bar cylinder radius (m). Default `0.003` = 3 mm = 6 mm
+    /// diameter, matching [`Self::pin_radius_m`]. Same MC-resolution
+    /// rationale as the pin shaft: at cf-cast's default 3 mm
+    /// mesh-cell size, 6 mm Ø is the minimum that meshes cleanly
+    /// (1 cell radius). Smaller T-bars fragment.
+    pub t_bar_radius_m: f64,
+    /// T-bar cylinder half-length along its axis (m). Default
+    /// `0.012` = 12 mm half-length → 24 mm total = 4× pin Ø.
+    /// Long enough that each cup piece's half-T-slot has
+    /// comfortable mechanical purchase against the T-bar's upward
+    /// motion; short enough that the T-bar fits inside typical
+    /// workshop bounding regions along the binormal direction.
+    pub t_bar_half_length_m: f64,
+    /// Radial slack between the T-bar and the T-slot cylinder (m).
+    /// Default `0.0001` = 0.1 mm — **much tighter** than the pin
+    /// shaft's [`Self::socket_radial_slack_m`] (0.5 mm slide-fit).
+    /// Reason: the T-bar doesn't need to axial-slide into its slot
+    /// — the cup pieces close around it (captive insertion), so
+    /// the tolerance only needs to absorb FDM print tolerance
+    /// (~0.1-0.2 mm). The tight T-slot interface also seals the
+    /// silicone leak path that would otherwise wick from the
+    /// 0.5 mm pin-shaft slack annulus into the T-slot and out the
+    /// T-bar's protruding bottom — silicone surface tension holds
+    /// against the 0.1 mm gap during pour + cure.
+    pub t_slot_radial_slack_m: f64,
 }
 
 impl PlugPinSpec {
-    /// v2.1 iter-1 defaults: single pour-end pin, 6 mm Ø × 20 mm
-    /// long, 0.5 mm radial socket slack (7 mm Ø socket). Pin Ø >
-    /// [`crate::registration::PinSpec`]'s 3 mm to clear the
-    /// marching-cubes resolution threshold at the 3 mm default
-    /// cell size; see [`Self::pin_radius_m`] docstring. Dome-end
-    /// pin disabled per [`Self::include_dome_pin`] default.
+    /// v2.1 iter-1 defaults: single pour-end pin (6 mm Ø × 20 mm
+    /// long, 0.5 mm radial socket slack), T-bar lock enabled at
+    /// pin tip (6 mm Ø × 24 mm long, 0.1 mm T-slot slack), dome-end
+    /// pin disabled.
+    ///
+    /// Pin Ø > [`crate::registration::PinSpec`]'s 3 mm to clear
+    /// the marching-cubes resolution threshold at the 3 mm default
+    /// cell size; see [`Self::pin_radius_m`] docstring. T-bar
+    /// matches pin Ø for the same MC resolution rationale; T-slot
+    /// uses tight slack since cup pieces close around the T-bar
+    /// (captive insertion, no axial slide-fit clearance needed).
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
@@ -168,6 +226,10 @@ impl PlugPinSpec {
             pin_length_m: 0.020,
             socket_radial_slack_m: 0.0005,
             include_dome_pin: false,
+            include_t_bar: true,
+            t_bar_radius_m: 0.003,
+            t_bar_half_length_m: 0.012,
+            t_slot_radial_slack_m: 0.0001,
         }
     }
 }
@@ -227,12 +289,25 @@ pub fn build_plug_pin_solid(ribbon: &Ribbon) -> Option<Solid> {
         PlugPinKind::Axial(spec) => spec,
     };
     let (pour, dome) = pour_and_dome_anchors(ribbon)?;
-    let pin_at_pour = anchor_cylinder(pour.0, pour.1, spec.pin_radius_m, spec.pin_length_m);
+    let split_vec = ribbon.split_normal.as_vector();
+    let mut result = anchor_cylinder(pour.0, pour.1, spec.pin_radius_m, spec.pin_length_m);
+    if spec.include_t_bar {
+        if let Some(t_bar) = build_t_bar_cylinder(
+            pour.0,
+            pour.1,
+            split_vec,
+            spec.pin_length_m,
+            spec.t_bar_radius_m,
+            spec.t_bar_half_length_m,
+        ) {
+            result = result.union(t_bar);
+        }
+    }
     if !spec.include_dome_pin {
-        return Some(pin_at_pour);
+        return Some(result);
     }
     let pin_at_dome = anchor_cylinder(dome.0, dome.1, spec.pin_radius_m, spec.pin_length_m);
-    Some(pin_at_pour.union(pin_at_dome))
+    Some(result.union(pin_at_dome))
 }
 
 /// Build the combined plug-socket Solid for the ribbon's plug-pin
@@ -253,13 +328,106 @@ pub fn build_plug_socket_solid(ribbon: &Ribbon) -> Option<Solid> {
         PlugPinKind::Axial(spec) => spec,
     };
     let (pour, dome) = pour_and_dome_anchors(ribbon)?;
+    let split_vec = ribbon.split_normal.as_vector();
     let socket_radius = spec.pin_radius_m + spec.socket_radial_slack_m;
-    let socket_at_pour = anchor_cylinder(pour.0, pour.1, socket_radius, spec.pin_length_m);
+    let mut result = anchor_cylinder(pour.0, pour.1, socket_radius, spec.pin_length_m);
+    if spec.include_t_bar {
+        // T-slot uses its own (tighter) slack — see
+        // `PlugPinSpec::t_slot_radial_slack_m` for the rationale.
+        if let Some(t_slot) = build_t_bar_cylinder(
+            pour.0,
+            pour.1,
+            split_vec,
+            spec.pin_length_m,
+            spec.t_bar_radius_m + spec.t_slot_radial_slack_m,
+            spec.t_bar_half_length_m + spec.t_slot_radial_slack_m,
+        ) {
+            result = result.union(t_slot);
+        }
+    }
     if !spec.include_dome_pin {
-        return Some(socket_at_pour);
+        return Some(result);
     }
     let socket_at_dome = anchor_cylinder(dome.0, dome.1, socket_radius, spec.pin_length_m);
-    Some(socket_at_pour.union(socket_at_dome))
+    Some(result.union(socket_at_dome))
+}
+
+/// Resolve the pour-end T-bar location + axis for this ribbon's
+/// plug-pin kind, or `None` if disabled / inapplicable.
+///
+/// Returns `None` for `PlugPinKind::None`, `include_t_bar = false`,
+/// or a degenerate pour anchor. Exposes the geometry the
+/// [`crate::platform`] module needs to carve the matching pocket
+/// in `platform.stl` without duplicating the anchor-resolution
+/// logic.
+///
+/// Returns `(t_bar_center, t_bar_axis, t_bar_radius_m,
+/// t_bar_half_length_m)` — all in world-frame meters / unit
+/// directions. The platform's pocket cylinder uses the same
+/// `center` + `axis` with slack-augmented radius + length.
+#[must_use]
+pub fn pour_end_t_bar_geometry(ribbon: &Ribbon) -> Option<(Point3<f64>, Vector3<f64>, f64, f64)> {
+    let spec = match &ribbon.plug_pins {
+        PlugPinKind::None => return None,
+        PlugPinKind::Axial(spec) => spec,
+    };
+    if !spec.include_t_bar {
+        return None;
+    }
+    let (pour, _dome) = pour_and_dome_anchors(ribbon)?;
+    let split_vec = ribbon.split_normal.as_vector();
+    let bar_axis_raw = pour.1.cross(&split_vec);
+    let bar_axis_norm = bar_axis_raw.norm();
+    if bar_axis_norm < 1e-9 {
+        return None;
+    }
+    let bar_axis = bar_axis_raw / bar_axis_norm;
+    let bar_center = pour.0 + pour.1 * spec.pin_length_m;
+    Some((
+        bar_center,
+        bar_axis,
+        spec.t_bar_radius_m,
+        spec.t_bar_half_length_m,
+    ))
+}
+
+/// Build the T-bar cylinder for a pin anchored at `pin_anchor`
+/// extending along `pin_outward` for `pin_length_m`. The T-bar
+/// sits at the pin tip with its axis perpendicular to the pin axis
+/// in the ribbon seam plane — specifically
+/// `pin_outward × split_normal_vec` (normalized). Returns `None` if
+/// the cross product is degenerate (pin axis parallel to
+/// `split_normal_vec`), which can't happen for ribbons built via
+/// the public [`Ribbon::new`] constructor (that rejects
+/// `TangentParallelToSplitNormal`).
+///
+/// Shared by [`build_plug_pin_solid`] (with `bar_radius_m`) and
+/// [`build_plug_socket_solid`] (with `bar_radius_m + slack`); the
+/// caller composes the slack into the radius/length parameters
+/// before calling.
+#[must_use]
+fn build_t_bar_cylinder(
+    pin_anchor: Point3<f64>,
+    pin_outward: Vector3<f64>,
+    split_normal_vec: Vector3<f64>,
+    pin_length_m: f64,
+    bar_radius_m: f64,
+    bar_half_length_m: f64,
+) -> Option<Solid> {
+    let bar_axis_raw = pin_outward.cross(&split_normal_vec);
+    let bar_axis_norm = bar_axis_raw.norm();
+    if bar_axis_norm < 1e-9 {
+        return None;
+    }
+    let bar_axis = bar_axis_raw / bar_axis_norm;
+    let bar_center = pin_anchor + pin_outward * pin_length_m;
+    let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &bar_axis)
+        .unwrap_or_else(UnitQuaternion::identity);
+    Some(
+        Solid::cylinder(bar_radius_m, bar_half_length_m)
+            .rotate(rotation)
+            .translate(bar_center.coords),
+    )
 }
 
 /// Resolve `((pour_point, pour_outward), (dome_point, dome_outward))`
