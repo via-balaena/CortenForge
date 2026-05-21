@@ -540,23 +540,5 @@ mod tests {
             "dome end should NOT be carved (no dome-end pin by default); got {}",
             neg_piece_pins.evaluate(&dome_axis_in_wall),
         );
-        // Trimmed-centerline region: pre-E.2 the socket was anchored
-        // at `centerline.last()` = z=-0.013 extending along last.tangent
-        // (-Z) for pin_length_m, spanning z ∈ [-0.033, -0.013]. To
-        // distinguish the pre-E.2 behavior, query the cup-wall side of
-        // the body at z=-0.020 (inside the pre-E.2 socket span, but the
-        // axial line at (x, y) = (0, 0) is inside body geometry — body
-        // subtracted regardless). For a true distinguishing query we
-        // need a cup-wall point: the binormal direction at z=-0.020 is
-        // +Y; body half_y = 0.020 so y=+0.025 is in cup-wall territory.
-        // The pre-E.2 socket cylinder at (0, 0, z) with axis -Z and
-        // radius 0.0035 DOESN'T reach y=+0.025 (socket is on-axis), so
-        // the cup wall at (0, 0.025, -0.020) is solid in BOTH pre- and
-        // post-E.2 — not a distinguishing query. The load-bearing
-        // distinguishing assertion is the one above at z=-0.070 which
-        // ALREADY isolates E.2's cap-plane anchor; no additional
-        // assertion is needed here. Keeping this comment as a marker
-        // for future readers chasing "why isn't there a third assertion
-        // at the trimmed-tip region?"
     }
 }

@@ -51,8 +51,9 @@ pub const FUNNEL_NIPPLE_HEIGHT_M: f64 = 0.004;
 /// wall below 1.0 mm in places, triggering Critical `ThinWall`
 /// failures. Trade-off: nipple inner Ø drops from 7.8 mm
 /// (theoretical 1 mm wall) to 6.8 mm (`1.5` mm wall) — still wider
-/// than the original 6 mm pour-gate Ø, and the 4 mm nipple height
-/// keeps the bottleneck short.
+/// than the pre-iter-1 6 mm pour-gate Ø (= the historical
+/// bottleneck the bump-to-10 mm pour gate aimed to eliminate), and
+/// the 4 mm nipple height keeps the bottleneck short.
 pub const FUNNEL_NIPPLE_WALL_M: f64 = 0.0015;
 
 /// Diametric slack between the nipple outer Ø and the pour-gate
@@ -152,12 +153,14 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<Solid> {
     // Inner cavity: cylinder through nipple + flange, then taper
     // up through the cone. Tiny overshoot at both ends so MC cuts
     // cleanly at the funnel openings.
+    let inner_lower_z_bot = -INNER_CAVITY_OVERSHOOT_M;
     let inner_lower_z_top = flange_z_top;
-    let inner_lower_half_h = f64::midpoint(inner_lower_z_top, INNER_CAVITY_OVERSHOOT_M);
+    let inner_lower_half_h = (inner_lower_z_top - inner_lower_z_bot) / 2.0;
+    let inner_lower_z_center = f64::midpoint(inner_lower_z_bot, inner_lower_z_top);
     let inner_lower = Solid::cylinder(nipple_inner_r, inner_lower_half_h).translate(Vector3::new(
         0.0,
         0.0,
-        f64::midpoint(-INNER_CAVITY_OVERSHOOT_M, inner_lower_z_top),
+        inner_lower_z_center,
     ));
     let inner_cone = truncated_cone(
         nipple_inner_r,
@@ -320,17 +323,39 @@ mod tests {
 
     #[test]
     fn build_funnel_solid_nipple_outer_matches_pour_gate_with_slack() {
-        // Nipple outer Ø should equal pour-gate Ø minus the FDM slack.
-        // For iter-1's 10 mm pour gate, nipple outer = 9.8 mm.
+        // Built funnel's nipple outer Ø should equal the ribbon's
+        // pour-gate Ø minus the FDM slack. Probe the actual built
+        // solid at points just inside / just outside the expected
+        // nipple outer radius at a mid-nipple z, and verify the
+        // SDF sign flips at the expected radius.
         let ribbon = iter1_like_ribbon();
         let pour_radius = match &ribbon.pour_gate {
             PourGateKind::Default(spec) => spec.gate_radius_m,
             PourGateKind::None => panic!("iter1_like_ribbon must have pour gate"),
         };
-        let expected_nipple_outer_diameter = pour_radius.mul_add(2.0, -FUNNEL_NIPPLE_SLACK_M);
+        let expected_nipple_outer_r = pour_radius - FUNNEL_NIPPLE_SLACK_M / 2.0;
+        let funnel = build_funnel_solid(&ribbon).expect("funnel should build");
+        let z_mid_nipple = FUNNEL_NIPPLE_HEIGHT_M / 2.0;
+        // Just INSIDE the expected outer radius → INSIDE funnel
+        // wall (SDF < 0) provided we're also outside the inner
+        // cavity. Probe at a radius midway between inner + outer.
+        let r_mid_wall = expected_nipple_outer_r - FUNNEL_NIPPLE_WALL_M / 2.0;
+        let q_inside = nalgebra::Point3::new(r_mid_wall, 0.0, z_mid_nipple);
         assert!(
-            (expected_nipple_outer_diameter - 0.0098).abs() < 1e-9,
-            "iter-1 nipple outer Ø should be 9.8 mm; got {expected_nipple_outer_diameter}",
+            funnel.evaluate(&q_inside) < 0.0,
+            "funnel mid-nipple-wall at r={r_mid_wall} (just inside outer Ø) \
+             should be inside funnel material (SDF < 0); got {}",
+            funnel.evaluate(&q_inside),
+        );
+        // Just OUTSIDE the expected outer radius → OUTSIDE the
+        // funnel (SDF > 0).
+        let r_just_outside = expected_nipple_outer_r + 0.0005; // +0.5 mm beyond outer
+        let q_outside = nalgebra::Point3::new(r_just_outside, 0.0, z_mid_nipple);
+        assert!(
+            funnel.evaluate(&q_outside) > 0.0,
+            "funnel just-outside-nipple at r={r_just_outside} should be \
+             outside funnel material (SDF > 0); got {}",
+            funnel.evaluate(&q_outside),
         );
     }
 }

@@ -273,42 +273,49 @@ mod tests {
     #[test]
     fn build_platform_solid_has_floor_below_pocket() {
         // Pocket is BLIND (not through-hole) — slab must have
-        // material below the pocket floor. Probe well below the
-        // T-bar tip but above the slab bottom: this should be
-        // INSIDE the platform (SDF < 0).
+        // material below the pocket floor. Use a bounding whose
+        // outer bottom face sits just below the T-bar (so the
+        // slab top hovers near the T-bar's z range and the pocket
+        // actually carves into the slab) and probe both the
+        // pocket-interior + the floor-below-pocket regions.
         let ribbon = iter1_like_ribbon_with_short_pin();
-        let bounding = Solid::cuboid(Vector3::new(0.061, 0.061, 0.090))
-            .translate(Vector3::new(0.0, 0.0, -0.020));
+        // T-bar's world-frame z range for this fixture: center at
+        // z=-0.058 (cap_centroid.z=-0.054 + pin_length=0.004 *
+        // cap_normal=-1 = -0.058), radius 3 mm → z ∈ [-0.061,
+        // -0.055]. Place the bounding's min.z just above the
+        // T-bar's bottom so the slab sits below the cup outer face
+        // AND the T-bar protrudes through the slab top into the
+        // pocket region.
+        let bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030)).translate(Vector3::new(
+            0.0,
+            0.0,
+            -0.058 + 0.030, // bounds.min.z = -0.058 (right at cup outer face)
+        ));
         let platform = build_platform_solid(&bounding, &ribbon).expect("platform should build");
 
-        // Slab top at bounding.min.z - 0.0005 = -0.110 - 0.0005 =
-        // -0.1105. Bounding spans z ∈ [-0.110, +0.070]; min.z is
-        // -0.110. Pocket depth = (slab_top - t_bar_z_min) + 2 mm
-        // clearance. For this fixture, slab top -0.1105, t_bar_z_min
-        // -0.061. Protrusion below slab top = -0.1105 + 0.061 =
-        // -0.0495... negative, meaning T-bar is ABOVE slab top. So
-        // protrusion clamps to 0 → pocket_depth = 0 + 2 mm = 2 mm.
-        //
-        // Wait — for this fixture, the bounding extends to -0.110
-        // (way below the T-bar at -0.061). That puts the slab WAY
-        // below the T-bar; the slab + cup wall outer face are below
-        // the T-bar entirely. T-bar is above the slab, no pocket
-        // needed.
-        //
-        // Hmm. For this synthetic fixture, the bounding doesn't
-        // represent realistic iter-1 geometry (where bounding's
-        // min.z would be ≈ T-bar bottom). Skip the pocket-presence
-        // assertion; just check that the slab is a real Solid.
-        //
-        // The pocket geometry is exercised in the
-        // `build_platform_solid_pocket_floor_clears_t_bar_tip` test
-        // above with a query that does land in the pocket region.
-        let q_below_pocket = Point3::new(0.0, 0.0, -0.119);
+        // Pocket should now carve real material from the slab.
+        // Slab top at z = bounding.min.z - 0.0005 = -0.0585. T-bar
+        // z_min = -0.061. Pocket depth = (slab_top - t_bar_z_min) +
+        // 5 mm clearance = (-0.0585 + 0.061) + 0.005 = 0.0075 m =
+        // 7.5 mm. Pocket extends from slab_top (-0.0585) down to
+        // -0.066. Slab thickness auto-bumps from 10 mm to (7.5 + 5)
+        // = 12.5 mm; slab bottom at z = -0.0585 - 0.0125 = -0.0710.
+        // Floor below pocket: z ∈ [-0.0710, -0.066] = 5 mm of slab
+        // material.
+        let q_below_pocket = Point3::new(0.0, 0.0, -0.068); // 2 mm below pocket bottom
         assert!(
             platform.evaluate(&q_below_pocket) < 0.0,
-            "platform SDF well below pocket bottom should be < 0 (inside slab floor); \
-             got {}",
+            "platform SDF 2 mm below pocket bottom should be < 0 \
+             (inside slab floor material); got {}",
             platform.evaluate(&q_below_pocket),
+        );
+        // And in the pocket: should be OUTSIDE the platform.
+        let q_in_pocket = Point3::new(0.0, 0.0, -0.063); // mid-pocket
+        assert!(
+            platform.evaluate(&q_in_pocket) > 0.0,
+            "platform SDF mid-pocket should be > 0 (inside the carved \
+             pocket); got {}",
+            platform.evaluate(&q_in_pocket),
         );
     }
 }

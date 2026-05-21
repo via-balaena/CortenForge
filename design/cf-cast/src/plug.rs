@@ -332,15 +332,20 @@ pub fn build_plug_socket_solid(ribbon: &Ribbon) -> Option<Solid> {
     let socket_radius = spec.pin_radius_m + spec.socket_radial_slack_m;
     let mut result = anchor_cylinder(pour.0, pour.1, socket_radius, spec.pin_length_m);
     if spec.include_t_bar {
-        // T-slot uses its own (tighter) slack — see
+        // T-slot uses its own (tighter) slack on the radius — see
         // `PlugPinSpec::t_slot_radial_slack_m` for the rationale.
+        // Half-length stays at `t_bar_half_length_m` (no axial
+        // slack) to mirror the pin-shaft socket's radius-only slack
+        // semantics — the cup pieces close around the T-bar's ends
+        // along the bar's long axis, so no axial slide-fit
+        // clearance is needed at the ends.
         if let Some(t_slot) = build_t_bar_cylinder(
             pour.0,
             pour.1,
             split_vec,
             spec.pin_length_m,
             spec.t_bar_radius_m + spec.t_slot_radial_slack_m,
-            spec.t_bar_half_length_m + spec.t_slot_radial_slack_m,
+            spec.t_bar_half_length_m,
         ) {
             result = result.union(t_slot);
         }

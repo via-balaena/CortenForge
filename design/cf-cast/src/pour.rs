@@ -25,11 +25,14 @@
 //! half-space). Workshop user orients the assembled mold `+Z` up
 //! and sees two distinct holes at the top:
 //!
-//! - **Pour leg** (`gate_radius_m`, default 3 mm = 6 mm Ø) — large
-//!   enough for low-viscosity silicone flow without splashing.
-//! - **Vent leg** (`vent_radius_m`, default 1 mm = 2 mm Ø) — small
-//!   enough for silicone surface tension to hold during pour while
-//!   letting trapped air freely escape.
+//! - **Pour leg** (`gate_radius_m`, default 5 mm = 10 mm Ø) —
+//!   sized for honey-thick workshop silicones (Dragon Skin 10A /
+//!   20A at ~20-23k cps) so per-layer pour completes in seconds
+//!   without trapping air. Mates with the printable
+//!   [`crate::funnel::build_funnel_solid`] funnel.
+//! - **Vent leg** (`vent_radius_m`, default 3 mm = 6 mm Ø) — wide
+//!   enough to mesh cleanly at cf-cast's default 3 mm cells, narrow
+//!   enough to be workshop-visually distinct from the pour leg.
 //!
 //! ## Composition
 //!
