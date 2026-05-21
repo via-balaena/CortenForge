@@ -415,10 +415,12 @@ fn write_header_v2(md: &mut String, spec: &CastSpec) {
     let _ = writeln!(
         md,
         "**Orientation convention**: orient the assembled mold with \
-         **+Z up** during pour + cure. The side-mounted pour gate \
-         opens on one of the +/-Y faces (depending on the ribbon \
-         binormal); the air vent opens on the +Z (top) face above \
-         the arc apex."
+         **+Z up** during pour + cure. The pour gate + vent form a V \
+         at the dome end of the centerline (opposite the cap plane); \
+         both holes are visible at the TOP of the assembly. Pour leg \
+         on the Positive piece (`_piece_1`, +binormal side of the \
+         seam), vent leg on the Negative piece (`_piece_0`, -binormal \
+         side)."
     );
     md.push('\n');
     let _ = writeln!(
@@ -618,37 +620,43 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
             let vent_length_mm = spec.vent_half_length_m * 2.0 * 1000.0;
             let _ = writeln!(
                 md,
-                "Integrated pour-gate + air-vent channels are CSG'd \
-                 through the assembled mold cup. Pour silicone into \
-                 the **{gate_dia_mm:.1} mm Ø pour gate** on the side \
-                 of the mold (side-mounted at the centerline midpoint \
-                 along the ribbon binormal, {gate_length_mm:.1} mm \
-                 total channel length); air escapes through the \
-                 **{vent_dia_mm:.1} mm Ø vent** at the **arc apex** \
-                 — the polyline's highest-`+Z` vertex, oriented up \
-                 by workshop convention so trapped air rises into \
-                 the vent ({vent_length_mm:.1} mm total channel \
-                 length). Both channels split equally between the two \
-                 pieces (each piece gets half the channel \
-                 cross-section)."
+                "Integrated pour-gate + air-vent channels form a **V at \
+                 the dome end** of the centerline (opposite the cap \
+                 plane). The V apex sits on the body's closed end with \
+                 both legs splaying outward at ±30° from the body axis \
+                 in the (outward + binormal) plane. Workshop orients \
+                 the assembled mold **+Z up** during pour + cure; both \
+                 holes appear at the top:\n\n\
+                 - **{gate_dia_mm:.1} mm Ø pour gate** on the +binormal \
+                 side of the seam (Positive piece, file `_piece_1`), \
+                 {gate_length_mm:.1} mm total channel length.\n\
+                 - **{vent_dia_mm:.1} mm Ø vent** on the -binormal \
+                 side of the seam (Negative piece, file `_piece_0`), \
+                 {vent_length_mm:.1} mm total channel length.\n\n\
+                 Each leg lives entirely on one piece (no seam \
+                 straddling), so each piece carves the leg on its own \
+                 side and leaves the other untouched."
             );
             md.push('\n');
             if !spec.include_vent {
                 let _ = writeln!(
                     md,
-                    "**Note**: this cast has the air-vent channel \
-                     disabled (`include_vent = false`). For short straight \
-                     molds the gate alone vents adequately; for any cast \
-                     where air trapping is suspected, enable the vent or \
-                     drill a relief hole post-print at the curve's apex."
+                    "**Note**: this cast has the vent leg disabled \
+                     (`include_vent = false`). For short straight molds \
+                     air escapes back through the pour leg as silicone \
+                     fills bottom-up. For any cast where air trapping \
+                     is suspected, enable the vent."
                 );
                 md.push('\n');
             }
             let _ = writeln!(
                 md,
-                "Pour slowly into the gate to avoid splashing silicone \
-                 through the vent (small-diameter vents have high air \
-                 throughput but limited silicone surface-tension hold)."
+                "Pour silicone slowly into the pour leg (+binormal hole, \
+                 Positive piece). Trapped air escapes through the vent \
+                 leg (-binormal hole, Negative piece) as the cavity \
+                 fills bottom-up. Workshop user identifies pour vs vent \
+                 by binormal side — both legs are the same diameter to \
+                 mesh cleanly at cf-cast's default 3 mm cells."
             );
         }
     }
@@ -707,7 +715,9 @@ fn write_per_layer_sections_v2(
         }
         let _ = writeln!(md, "5. Vacuum-degas the mix for 2-3 minutes at ≥27 inHg.");
         let pour_into = match &ribbon.pour_gate {
-            PourGateKind::Default(_) => "the side-mounted pour gate at the centerline midpoint",
+            PourGateKind::Default(_) => {
+                "the pour leg of the V at the dome end (Positive piece, +binormal side)"
+            }
             PourGateKind::None => "the assembled mold cavity",
         };
         let _ = writeln!(
@@ -715,10 +725,11 @@ fn write_per_layer_sections_v2(
             "6. Apply mold release to `plug_layer_{0}.stl` (Smooth-On \
              Ease Release 200 standard) and seat the plug into the \
              assembled mold via the plug-anchor pin socket. Orient \
-             the mold with **+Z up** so the apex vent is on top. \
-             Pour silicone into {pour_into} at a slow steady rate to \
-             avoid splashing through the vent; trapped air rises \
-             into the vent as the cavity fills.",
+             the mold with **+Z up** so the V's pour + vent legs are \
+             on top. Pour silicone into {pour_into} at a slow steady \
+             rate to avoid splashing through the vent; trapped air \
+             rises into the vent leg (Negative piece, -binormal side) \
+             as the cavity fills.",
             pour.layer_index,
         );
         if let Some(protocol) = protocol {

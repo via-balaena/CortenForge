@@ -21,8 +21,8 @@
 //!   piece** + **v2.1 detachable-shell**. Each layer's mold cup
 //!   is split into 2 pieces along a curve-following [`Ribbon`]
 //!   surface (per `docs/CURVE_FOLLOWING_DESIGN.md`), with optional
-//!   inter-piece registration pins ([`PinSpec`]), side-mounted
-//!   pour gate + apex air vent ([`PourGateSpec`]), and per-piece
+//!   inter-piece registration pins ([`PinSpec`]), V-at-dome
+//!   pour gate + vent legs ([`PourGateSpec`]), and per-piece
 //!   plug-anchor pin sockets ([`PlugPinSpec`]). Each layer is
 //!   cast independently against its own plug — layer 0's plug
 //!   derives from [`CastSpec::plug`], layer N>0's derives from
@@ -56,13 +56,16 @@
 //!
 //! # Workshop orientation convention (v2.1)
 //!
-//! [`CastSpec::export_molds_v2`] places the apex vent on the
-//! polyline's argmax-z vertex with axis `+Z`; v2.1 callers orient
-//! the assembled mold **`+Z` up** during pour + cure so trapped
-//! air rises into the vent. The side-mounted pour gate exits on
-//! the `±Y` face (binormal direction at the centerline midpoint).
-//! v1's [`CastSpec::export_molds`] uses `+z` as the demolding
-//! axis (clip cuboid above each layer body's `z_max`).
+//! [`CastSpec::export_molds_v2`] places a V-shape pour gate at the
+//! centerline endpoint opposite the cap plane (i.e., the body's
+//! closed dome end). Both legs splay outward in the local
+//! (outward-axis + binormal) plane at ±30°: pour leg on the
+//! Positive piece's `+binormal` side, vent leg on the Negative
+//! piece's `-binormal` side. v2.1 callers orient the assembled
+//! mold **`+Z` up** during pour + cure so the V is at the top of
+//! the assembly and trapped air rises out the vent leg. v1's
+//! [`CastSpec::export_molds`] uses `+z` as the demolding axis
+//! (clip cuboid above each layer body's `z_max`).
 //!
 //! See the [casting roadmap][rmp] for the full Track F trajectory.
 //!
@@ -70,9 +73,11 @@
 
 pub mod cure;
 mod error;
+pub mod funnel;
 mod material;
 mod mesher;
 pub mod piece;
+pub mod platform;
 pub mod plug;
 pub mod pour;
 mod pour_volume;
@@ -83,10 +88,13 @@ mod spec;
 
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
+pub use funnel::build_funnel_solid;
 pub use material::MoldingMaterial;
 pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
+pub use platform::build_platform_solid;
 pub use plug::{
     PlugPinKind, PlugPinSpec, add_plug_pins, build_plug_pin_solid, build_plug_socket_solid,
+    pour_end_t_bar_geometry,
 };
 pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_solid};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
@@ -94,6 +102,6 @@ pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2}
 pub use registration::{PinSpec, RegistrationKind, build_registration_solid};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use spec::{
-    CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport, PieceArtifact, PlugArtifact,
-    V2LayerReport, V2MoldExportReport,
+    CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,
+    PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport, V2MoldExportReport,
 };

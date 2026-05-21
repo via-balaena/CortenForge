@@ -49,6 +49,20 @@ pub enum CastTarget {
         /// single shared plug.
         layer_index: Option<usize>,
     },
+    /// Output mesh: the workshop platform STL. Generated only when
+    /// the ribbon's plug-pin kind has `include_t_bar = true` (so
+    /// the T-bar protrusion needs a pocketed platform for the
+    /// assembled mold to sit flat during pour + cure). Single
+    /// artifact per cast (shared across layers).
+    Platform,
+    /// Output mesh: the workshop pour funnel STL.
+    ///
+    /// Generated only when the ribbon has a
+    /// [`crate::pour::PourGateKind::Default`] pour gate enabled.
+    /// Self-aligning nipple + flange + cone for honey-thick
+    /// silicone pouring. Single artifact per cast (shared across
+    /// layers).
+    Funnel,
 }
 
 impl fmt::Display for CastTarget {
@@ -65,6 +79,8 @@ impl fmt::Display for CastTarget {
             Self::Plug {
                 layer_index: Some(n),
             } => write!(f, "plug layer {n}"),
+            Self::Platform => write!(f, "platform"),
+            Self::Funnel => write!(f, "funnel"),
         }
     }
 }

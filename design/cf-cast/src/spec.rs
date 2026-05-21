@@ -278,10 +278,59 @@ pub struct V2LayerReport {
     pub plug: PlugArtifact,
 }
 
+/// Workshop platform STL.
+///
+/// A flat slab with a pocket carved into the top surface that
+/// accepts the T-bar protrusion from the assembled mold. The mold
+/// sits on this platform during pour + cure so it rests flat
+/// (T-bar in the pocket) even though the T-bar extends below the
+/// cup outer face.
+///
+/// Generated only when the ribbon's `plug_pins` field is
+/// [`crate::plug::PlugPinKind::Axial`] AND `include_t_bar = true`
+/// (the configuration that produces a T-bar protrusion needing
+/// support). Single STL per cast, shared across all layers.
+#[derive(Debug, Clone)]
+pub struct PlatformArtifact {
+    /// Filesystem path of the written `platform.stl`.
+    pub path: PathBuf,
+    /// F4 validation result for the platform.
+    pub validation: PrintValidation,
+    /// Post-export mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
+/// Workshop pour funnel STL.
+///
+/// Self-aligning nipple + flange + tapered cone for pouring
+/// honey-thick silicones into the cast's pour-gate hole. The
+/// nipple slides into the pour leg of the V pour gate; the flange
+/// rests flat on the cup wall around the hole; the cone tapers up
+/// to a wide ladle-friendly mouth.
+///
+/// Generated only when the ribbon has a
+/// [`crate::pour::PourGateKind::Default`] pour gate enabled.
+/// Single STL per cast, shared across all layers (workshop user
+/// prints once, uses for every layer pour).
+#[derive(Debug, Clone)]
+pub struct FunnelArtifact {
+    /// Filesystem path of the written `funnel.stl`.
+    pub path: PathBuf,
+    /// F4 validation result for the funnel.
+    pub validation: PrintValidation,
+    /// Post-export mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
 /// Summary of a successful [`CastSpec::export_molds_v2`] run.
 ///
 /// `layers.len() * 3` STLs total (2 piece STLs + 1 plug STL per
-/// layer). All pieces and plugs clear the F4 gate before any STL
+/// layer), plus a single `platform.stl` if the ribbon enables
+/// T-bar plug-pin locking, plus a single `funnel.stl` if the
+/// ribbon has a pour gate enabled. All pieces, plugs, and the
+/// optional platform + funnel clear the F4 gate before any STL
 /// lands on disk (pre-write atomicity, same scope as v1's
 /// [`CastSpec::export_molds`]).
 #[derive(Debug, Clone)]
@@ -289,6 +338,16 @@ pub struct V2MoldExportReport {
     /// Per-layer reports (innermost-first), each carrying its 2
     /// mold pieces + 1 plug.
     pub layers: Vec<V2LayerReport>,
+    /// Optional workshop platform artifact, present when the
+    /// ribbon's plug-pin kind has `include_t_bar = true`. The
+    /// platform's pocket matches the T-bar protrusion so the
+    /// assembled mold sits flat on the workbench during pour +
+    /// cure.
+    pub platform: Option<PlatformArtifact>,
+    /// Optional workshop pour funnel artifact, present when the
+    /// ribbon has a [`crate::pour::PourGateKind::Default`] pour
+    /// gate enabled. Self-aligning nipple sized to the pour-gate Ø.
+    pub funnel: Option<FunnelArtifact>,
 }
 
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
@@ -356,6 +415,27 @@ struct PendingPiece {
 /// detachable-shell assembly workflow.
 struct PendingPlug {
     layer_index: usize,
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Buffered v2 workshop platform mesh + validation, held in memory
+/// alongside [`PendingPiece`]s + [`PendingPlug`]s until every
+/// artifact clears the F4 gate. Generated only when the ribbon's
+/// plug-pin kind enables the T-bar; one platform per cast (shared
+/// across layers).
+struct PendingPlatform {
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Buffered v2 workshop pour funnel mesh + validation. Same buffer
+/// pattern as [`PendingPlatform`] — generated only when the ribbon
+/// has a pour gate enabled; one funnel per cast (shared across
+/// layers).
+struct PendingFunnel {
     mesh: IndexedMesh,
     validation: PrintValidation,
     path: PathBuf,
@@ -722,20 +802,35 @@ impl CastSpec {
 
         let pending_pieces = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
         let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
+        let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
+        let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
             source: mesh_io::IoError::from(e),
         })?;
 
-        let stl_count = self.layers.len() * 3;
+        let platform_count = usize::from(pending_platform.is_some());
+        let funnel_count = usize::from(pending_funnel.is_some());
+        let stl_count = self.layers.len() * 3 + platform_count + funnel_count;
         eprintln!(
             "[cf-cast] writing {stl_count} STLs to {out}…",
             out = out_dir.display()
         );
-        let layers_out = write_v2_artifacts(self, pending_pieces, pending_plugs, pour_volumes)?;
+        let (layers_out, platform_out, funnel_out) = write_v2_artifacts(
+            self,
+            pending_pieces,
+            pending_plugs,
+            pending_platform,
+            pending_funnel,
+            pour_volumes,
+        )?;
 
-        Ok(V2MoldExportReport { layers: layers_out })
+        Ok(V2MoldExportReport {
+            layers: layers_out,
+            platform: platform_out,
+            funnel: funnel_out,
+        })
     }
 }
 
@@ -885,10 +980,135 @@ fn mesh_and_gate_v2_plugs(
     Ok(pending)
 }
 
-/// Write every pending piece + per-layer plug to disk and build
-/// the per-layer reports. Consumes both pending buffers; on any FS
-/// failure mid-stream the remaining artifacts are abandoned and
-/// the error surfaces with the failing artifact's path attached.
+/// Mesh + F4-gate the workshop platform STL, or return
+/// `Ok(None)` when the ribbon's plug-pin kind doesn't enable a
+/// T-bar (no platform needed). Single artifact per cast.
+///
+/// Uses a finer mesh-cell size than the rest of the cast
+/// ([`PLATFORM_MAX_CELL_SIZE_M`] capped at `spec.mesh_cell_size_m`)
+/// because the platform's pocket cross-section is small (e.g., a
+/// ~3 mm-deep crescent for iter-1's 6 mm-Ø T-bar) — at the cast's
+/// default 3 mm cells the pocket would be 1 cell deep and MC would
+/// fragment it. The platform solid is small + simple so the finer
+/// mesh costs ~1-2 s at most.
+fn mesh_and_gate_v2_platform(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Option<PendingPlatform>, CastError> {
+    let Some(platform_solid) = crate::platform::build_platform_solid(&spec.bounding_region, ribbon)
+    else {
+        return Ok(None);
+    };
+    let t_compose = std::time::Instant::now();
+    let target = CastTarget::Platform;
+    let cell_size_m = spec.mesh_cell_size_m.min(PLATFORM_MAX_CELL_SIZE_M);
+    let mesh = solid_to_mm_mesh(&platform_solid, cell_size_m, target)?;
+    let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+    let path = out_dir.join("platform.stl");
+    let t_gate = std::time::Instant::now();
+    let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+    let gate_s = t_gate.elapsed().as_secs_f64();
+    let blocking = blocking_critical_count(&validation);
+    if blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target,
+            issue_count: blocking,
+            path,
+        });
+    }
+    eprintln!(
+        "[cf-cast] platform — compose+MC {compose_mesh_s:.1}s @ {cell_size_mm:.1} mm cells, \
+         F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+        cell_size_mm = cell_size_m * 1000.0,
+        verts = mesh.vertices.len(),
+        faces = mesh.faces.len(),
+    );
+    Ok(Some(PendingPlatform {
+        mesh,
+        validation,
+        path,
+    }))
+}
+
+/// Cap on the mesh-cell size used for the platform's marching-cubes
+/// pass. The platform's pocket cross-section (for typical workshop
+/// geometries: a ~3 mm-deep crescent absorbing the T-bar's protrusion
+/// below the cup outer face) is too small for the cast's default
+/// 3 mm cells to resolve cleanly — at 3 mm cells, the pocket would
+/// be ~1 cell deep and MC would fragment it. 1.5 mm cells give
+/// ~2× the radial resolution and reliably mesh the pocket as a
+/// continuous concave feature. The platform solid is small +
+/// simple (cuboid - cylinder) so the finer mesh costs ~1-2 s at
+/// most; effectively free relative to the cast's main meshing
+/// time.
+const PLATFORM_MAX_CELL_SIZE_M: f64 = 0.0015;
+
+/// Mesh + F4-gate the workshop pour funnel STL, or return
+/// `Ok(None)` when the ribbon has no pour gate enabled (no funnel
+/// needed). Single artifact per cast.
+///
+/// Uses [`FUNNEL_MAX_CELL_SIZE_M`] for the same MC-resolution
+/// reason as the platform: the funnel's nipple wall is 1 mm and
+/// would mesh as 0.33 cells radial at the cast's default 3 mm
+/// cells. The funnel is small + geometrically simple so finer
+/// cells cost ~1-3 s.
+fn mesh_and_gate_v2_funnel(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Option<PendingFunnel>, CastError> {
+    let Some(funnel_solid) = crate::funnel::build_funnel_solid(ribbon) else {
+        return Ok(None);
+    };
+    let t_compose = std::time::Instant::now();
+    let target = CastTarget::Funnel;
+    let cell_size_m = spec.mesh_cell_size_m.min(FUNNEL_MAX_CELL_SIZE_M);
+    let mesh = solid_to_mm_mesh(&funnel_solid, cell_size_m, target)?;
+    let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+    let path = out_dir.join("funnel.stl");
+    let t_gate = std::time::Instant::now();
+    let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+    let gate_s = t_gate.elapsed().as_secs_f64();
+    let blocking = blocking_critical_count(&validation);
+    if blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target,
+            issue_count: blocking,
+            path,
+        });
+    }
+    eprintln!(
+        "[cf-cast] funnel — compose+MC {compose_mesh_s:.1}s @ {cell_size_mm:.1} mm cells, \
+         F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+        cell_size_mm = cell_size_m * 1000.0,
+        verts = mesh.vertices.len(),
+        faces = mesh.faces.len(),
+    );
+    Ok(Some(PendingFunnel {
+        mesh,
+        validation,
+        path,
+    }))
+}
+
+/// Cap on the mesh-cell size used for the funnel's MC pass.
+///
+/// The funnel's nipple wall is 1 mm at iter-1 dimensions —
+/// 0.33 cells at the cast's default 3 mm cells, which MC would
+/// fragment. 1 mm cells give 1 cell radial across the wall (clean)
+/// and 1 mm voxel grid resolves the tapered cone surface at
+/// workshop visual fidelity. The funnel solid is small (~38 mm
+/// tall × 30 mm Ø top) so finer cells cost ~1-3 s; effectively
+/// free vs the cast's main meshing time.
+const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
+
+/// Write every pending piece + per-layer plug + optional platform
+/// + optional funnel to disk and build the report structs.
+///
+/// Consumes all pending buffers; on any FS failure mid-stream the
+/// remaining artifacts are abandoned and the error surfaces with
+/// the failing artifact's path attached.
 ///
 /// Assumes `pending_pieces` and `pending_plugs` are both ordered
 /// innermost-first and parallel to `pour_volumes`. The function
@@ -897,8 +1117,17 @@ fn write_v2_artifacts(
     spec: &CastSpec,
     pending_pieces: Vec<[PendingPiece; 2]>,
     pending_plugs: Vec<PendingPlug>,
+    pending_platform: Option<PendingPlatform>,
+    pending_funnel: Option<PendingFunnel>,
     pour_volumes: Vec<PourVolume>,
-) -> Result<Vec<V2LayerReport>, CastError> {
+) -> Result<
+    (
+        Vec<V2LayerReport>,
+        Option<PlatformArtifact>,
+        Option<FunnelArtifact>,
+    ),
+    CastError,
+> {
     let mut layers_out = Vec::with_capacity(pending_pieces.len());
     for ((pieces_pair, plug_entry), pour_volume) in pending_pieces
         .into_iter()
@@ -949,7 +1178,35 @@ fn write_v2_artifacts(
             },
         });
     }
-    Ok(layers_out)
+    let platform_out = if let Some(p) = pending_platform {
+        save_stl(&p.mesh, &p.path, true).map_err(|source| CastError::MeshIo {
+            path: p.path.clone(),
+            source,
+        })?;
+        let platform_summary = MeshSummary::from_mesh(&p.mesh);
+        Some(PlatformArtifact {
+            path: p.path,
+            validation: p.validation,
+            summary: platform_summary,
+        })
+    } else {
+        None
+    };
+    let funnel_out = if let Some(f) = pending_funnel {
+        save_stl(&f.mesh, &f.path, true).map_err(|source| CastError::MeshIo {
+            path: f.path.clone(),
+            source,
+        })?;
+        let funnel_summary = MeshSummary::from_mesh(&f.mesh);
+        Some(FunnelArtifact {
+            path: f.path,
+            validation: f.validation,
+            summary: funnel_summary,
+        })
+    } else {
+        None
+    };
+    Ok((layers_out, platform_out, funnel_out))
 }
 
 /// Gate per-layer pour masses against [`CastSpec::mass_budget_kg`].
@@ -2638,73 +2895,91 @@ mod tests {
 
     #[test]
     fn compose_piece_solid_with_pour_gate_carves_positive_piece_cup_wall() {
-        // v2.1 sub-leaf 2: gate is side-mounted at centerline
-        // midpoint + gate_half_length_m * binormal. For the v2
-        // fixture (straight +X centerline, +Y split-normal → binormal
-        // +Z), the gate cylinder runs along +Z from the midpoint
-        // (0, 0, 0) up by 2 * 0.060 = 0.120 m. Positive piece occupies
-        // z > 0; gate carves a vertical channel through its cup wall.
+        // v2.1 sub-leaf 4 (V-at-dome): pour gate is a V at the
+        // centerline endpoint opposite `pour_end_hint`'s cap-plane
+        // centroid (falls back to `centerline[0]` when no hint).
+        // For this test we use a centerline shorter than
+        // `v2_fixture`'s default so the V apex sits INSIDE the
+        // body — the pour leg then crosses the cup-wall material
+        // on its way to the bounding region's outer surface, and
+        // the carve is testable.
         //
-        // Query (0, 0, 0.025): on the gate axis, in the POSITIVE
-        // piece's cup wall (above body z_max=+0.020 and below
-        // bounding z_max=+0.030), inside the gate cylinder. Without
-        // gate the query is INSIDE cup wall (SDF<0); with gate it's
-        // OUTSIDE (gate carved it out, SDF>0).
-        let (spec, ribbon_no_gate) = v2_fixture();
-        let (_, ribbon_gate) = v2_fixture_with_pour_gate();
+        // Body half-extents (0.025, 0.025, 0.020); bounding
+        // (0.040, 0.040, 0.030). Centerline -15→+15 mm in X with
+        // +Y split-normal → binormal +Z. V apex at centerline[0] =
+        // (-0.015, 0, 0), outward = -X. Pour leg axis
+        // = (cos30°·-X) + (sin30°·+Z) = (-0.866, 0, +0.5).
+        //
+        // Query at (-0.030, 0, +0.0098): along the pour leg axis
+        // from apex by ~17.3 mm. Inside bounding (|x|=30<40,
+        // z=0.0098<30); outside body (|x|=30>25); in Positive
+        // piece (+binormal=+Z side).
+        let spec = v2_fixture().0;
         let body = &spec.layers[0].body;
         let region = &spec.bounding_region;
+        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon_no_gate = Ribbon::new(short_centerline.clone(), split).unwrap();
+        let ribbon_gate = Ribbon::new(short_centerline, split)
+            .unwrap()
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
         let piece_no_gate =
             crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Positive).unwrap();
         let piece_gate =
             crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Positive).unwrap();
 
-        let q = Point3::new(0.0, 0.0, 0.025);
+        let q = Point3::new(-0.030, 0.0, 0.0098);
         assert!(
             piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate piece should INCLUDE cup-wall query above body; got {}",
+            "no-gate Positive piece should INCLUDE cup-wall query at \
+             (-30mm, 0, +9.8mm); got {}",
             piece_no_gate.evaluate(&q),
         );
         assert!(
             piece_gate.evaluate(&q) > 0.0,
-            "side-mounted pour-gate piece should EXCLUDE channel-axis query; got {}",
+            "V-pour-gate Positive piece should EXCLUDE pour-leg-axis query at \
+             (-30mm, 0, +9.8mm); got {}",
             piece_gate.evaluate(&q),
         );
     }
 
     #[test]
-    fn compose_piece_solid_with_pour_gate_does_not_carve_negative_piece_dome_wall() {
-        // v2.1 sub-leaf 2: side-mounted gate axis = +binormal = +Z.
-        // The gate cylinder spans z ≥ 0 only; the NEGATIVE piece's
-        // cup wall (which is at z < 0 with seam overlap to
-        // z = +0.0005) is NOT carved by the gate.
-        //
-        // Query (0, 0, -0.025): on the centerline x-axis,
-        // in the negative piece's cup wall (below body z_min=-0.020
-        // and above bounding z_min=-0.030). Both no-gate and
-        // with-gate evaluations should return NEGATIVE (inside cup
-        // wall) — adding the side-mounted gate doesn't perturb this
-        // half of the mold.
-        let (spec, ribbon_no_gate) = v2_fixture();
-        let (_, ribbon_gate) = v2_fixture_with_pour_gate();
+    fn compose_piece_solid_with_pour_gate_carves_negative_piece_only_via_vent_leg() {
+        // v2.1 sub-leaf 4: the V's pour leg lands on +binormal
+        // (Positive piece) and the vent leg lands on -binormal
+        // (Negative piece). For the +Z-binormal short-centerline
+        // fixture, the vent leg axis is (-cos30°, 0, -sin30°)
+        // ≈ (-0.866, 0, -0.5) from apex (-0.015, 0, 0). Query at
+        // (-0.030, 0, -0.0098) sits on the vent-leg axis and in
+        // Negative-piece cup-wall material (|x|=30>25 body,
+        // |x|=30<40 bounding; z=-0.0098<0 = -binormal half). The
+        // pour leg (on +binormal side) does NOT carve this point.
+        let spec = v2_fixture().0;
         let body = &spec.layers[0].body;
         let region = &spec.bounding_region;
+        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon_no_gate = Ribbon::new(short_centerline.clone(), split).unwrap();
+        let ribbon_gate = Ribbon::new(short_centerline, split)
+            .unwrap()
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
         let piece_no_gate =
             crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Negative).unwrap();
         let piece_gate =
             crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Negative).unwrap();
 
-        let q = Point3::new(0.0, 0.0, -0.025);
+        // Vent-leg query: cup-wall material on -binormal side.
+        let q = Point3::new(-0.030, 0.0, -0.0098);
         assert!(
             piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate negative piece should INCLUDE dome-side cup-wall query; got {}",
+            "no-gate Negative piece should INCLUDE cup-wall query on -binormal side; got {}",
             piece_no_gate.evaluate(&q),
         );
         assert!(
-            piece_gate.evaluate(&q) < 0.0,
-            "side-mounted gate should leave negative piece's dome-side cup wall intact; got {}",
+            piece_gate.evaluate(&q) > 0.0,
+            "V-pour-gate Negative piece should EXCLUDE vent-leg-axis query on -binormal side; got {}",
             piece_gate.evaluate(&q),
         );
     }
@@ -2735,23 +3010,26 @@ mod tests {
     #[test]
     fn generate_procedure_markdown_v2_pour_gate_prose_mentions_diameters() {
         // Pour gate ON: "Pour Gate + Vent" section must mention
-        // gate Ø (6.0 mm = 2 × 3 mm radius), vent Ø (2.0 mm =
-        // 2 × 1 mm radius), and channel lengths (gate = 90.0 mm
-        // = 2 × 45 mm half-length; vent = 80.0 mm = 2 × 40 mm
-        // half-length).
+        // pour-leg Ø (10.0 mm = 2 × 5 mm radius), vent-leg Ø
+        // (6.0 mm = 2 × 3 mm radius), and channel lengths
+        // (gate = 90.0 mm; vent = 80.0 mm). Pour leg is bigger
+        // than vent for honey-thick silicone flow (iter-1 sizing).
         let (spec, ribbon) = v2_fixture_with_pour_gate();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(md.contains("## Pour Gate + Vent"));
-        assert!(md.contains("6.0 mm Ø pour gate"));
-        assert!(md.contains("2.0 mm Ø vent"));
+        assert!(md.contains("10.0 mm Ø pour gate"));
+        assert!(md.contains("6.0 mm Ø vent"));
         assert!(md.contains("90.0 mm total"));
         assert!(md.contains("80.0 mm total"));
-        // Per-layer Step 6 references the side-mounted pour gate
-        // when enabled.
+        // Per-layer Step 6 references the V pour leg at the dome
+        // end when enabled.
         assert!(
-            md.contains("Pour silicone into the side-mounted pour gate at the centerline midpoint"),
-            "Step 6 should reference the side-mounted pour gate when enabled; got: {md}",
+            md.contains(
+                "Pour silicone into the pour leg of the V at the dome end \
+                 (Positive piece, +binormal side)"
+            ),
+            "Step 6 should reference the V pour leg when enabled; got: {md}",
         );
     }
 
@@ -2797,13 +3075,22 @@ mod tests {
 
     #[test]
     fn compose_piece_solid_with_pins_and_pour_gate_composes_both() {
-        // Step 9 (pins) + Step 10 (pour gate) are orthogonal —
-        // both should compose into the same piece geometry.
-        // Verify by enabling BOTH on the ribbon and confirming
-        // compose_piece_solid produces a valid Solid (non-empty
-        // bounds; no panic).
-        let (spec, ribbon) = v2_fixture();
-        let ribbon = ribbon
+        // Step 9 (pins) + Step 10/v2.1 sub-leaf 4 (V pour gate) are
+        // orthogonal — both should compose into the same piece
+        // geometry. Verify by enabling BOTH on the ribbon and
+        // confirming compose_piece_solid produces a valid Solid
+        // with both features visible.
+        //
+        // Uses a short centerline (-15→+15 mm) so the V apex at
+        // `centerline[0]` sits INSIDE the body and the pour leg
+        // crosses the cup wall (per the standalone V-pour-gate
+        // test); v2_fixture's default centerline -50→+50 puts the
+        // apex past the bounding region.
+        let spec = v2_fixture().0;
+        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(short_centerline, split)
+            .unwrap()
             .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
@@ -2828,22 +3115,25 @@ mod tests {
         // Pin protrusion query (pin in Negative piece) — annulus
         // midpoint along +Y for v2_fixture's body half_y=0.025 +
         // bounding half_y=0.040 → pin center at y=0.0325.
-        let pin_q = Point3::new(-0.025, 0.0325, 0.003);
+        // Centerline arc fractions 0.25/0.75 on the -15→+15 mm
+        // centerline put the t=0.25 pin at x=-0.0075.
+        let pin_q = Point3::new(-0.0075, 0.0325, 0.003);
         assert!(
             piece_neg.evaluate(&pin_q) < 0.0,
-            "pins+gate Negative piece should still contain pin protrusion"
+            "pins+gate Negative piece should still contain pin protrusion at \
+             annulus midpoint; got {}",
+            piece_neg.evaluate(&pin_q),
         );
-        // Pour-gate channel query — v2.1 sub-leaf 2 moves the gate
-        // to a side-mounted position: centerline midpoint (0, 0, 0)
-        // + gate_half_length * binormal (+Z). Gate cylinder axis is
-        // +Z spanning Z ∈ [0, 2*0.060]. Query at (0, 0, 0.025) is in
-        // the POSITIVE piece's cup wall (above body z_max=+0.020,
-        // below bounding z_max=+0.030) and on the gate cylinder axis,
-        // so the gate carves it out of the positive piece.
-        let gate_q = Point3::new(0.0, 0.0, 0.025);
+        // V pour-leg query: pour leg axis from apex (-0.015, 0, 0)
+        // is ≈ (-0.866, 0, +0.5). At ~17 mm along the leg the point
+        // (-0.030, 0, +0.0098) sits in cup-wall material on the
+        // +binormal=+Z side (Positive piece). Gate carves it.
+        let gate_q = Point3::new(-0.030, 0.0, 0.0098);
         assert!(
             piece_pos.evaluate(&gate_q) > 0.0,
-            "pins+gate Positive piece should EXCLUDE side-mounted pour-gate channel"
+            "pins+gate Positive piece should EXCLUDE V pour-leg channel at \
+             (-30mm, 0, +9.8mm); got {}",
+            piece_pos.evaluate(&gate_q),
         );
     }
 

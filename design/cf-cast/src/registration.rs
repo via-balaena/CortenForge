@@ -27,8 +27,13 @@
 //! - Diameter: 3 mm (1.5 mm radius) for the default — beefy enough
 //!   for FDM printing without supports, small enough to insert by
 //!   hand with no tooling.
-//! - Count: 2 per layer-piece-pair, at arc-length fractions
-//!   `0.25` and `0.75` — prevents rotation around the centerline.
+//! - Count: 4 per layer-piece-pair — at arc-length fractions
+//!   `0.25` and `0.75` along the centerline, mirrored across the
+//!   split-normal axis (one pin at `+split_normal` offset and one
+//!   at `-split_normal` offset per arc fraction). The four pins
+//!   give each cup piece two lateral interlock columns instead of
+//!   one, doubling the alignment constraint against rotation +
+//!   parting-plane shear.
 //!
 //! ## Why the offset is derived, not fixed
 //!
@@ -83,8 +88,12 @@ pub struct PinSpec {
     /// Default `0.005` = 5 mm → total pin length 10 mm.
     pub pin_half_length_m: f64,
     /// Arc-length fractions along the centerline where pins are
-    /// placed. Default `vec![0.25, 0.75]` — 2 pins per
-    /// layer-piece-pair, evenly spaced, no rotation possible.
+    /// placed. Default `vec![0.25, 0.75]`. Each arc fraction yields
+    /// TWO pins — one on each lateral side of the centerline
+    /// (at `+split_normal` and `-split_normal` offsets). With the
+    /// default two fractions, total pin count is 4 per
+    /// layer-piece-pair, giving each cup piece two lateral
+    /// interlock columns + axial pin pairs.
     pub arc_fractions: Vec<f64>,
 }
 
@@ -166,9 +175,9 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 /// they extend equally into both [`crate::ribbon::PieceSide`] halves.
 ///
 /// Returns `None` for any arc fraction whose split-normal ray runs
-/// past [`PIN_RAY_MAX_REACH_M`] without crossing the
-/// bounding-region surface; this signals a degenerate caller
-/// (unbounded bounding region) and the surrounding piece
+/// past the module-private `PIN_RAY_MAX_REACH_M` (1 m) without
+/// crossing the bounding-region surface; this signals a degenerate
+/// caller (unbounded bounding region) and the surrounding piece
 /// composition will produce a pin-less mold piece for this layer.
 #[must_use]
 pub fn build_registration_solid(
@@ -184,19 +193,32 @@ pub fn build_registration_solid(
         return None;
     }
     let split_vec = ribbon.split_normal.as_vector();
-    let mut cylinders = Vec::with_capacity(spec.arc_fractions.len());
+    // For each arc fraction, build TWO pins — one on each lateral
+    // side of the centerline along ±split_normal. The split-normal
+    // direction defines the mold's lateral "left/right" axis (the
+    // axis the cup pieces open along); putting pins on both lateral
+    // sides gives each cup piece two interlock columns instead of
+    // one, doubling the alignment constraint. For asymmetric scans
+    // (body wider on one side of the centerline than the other),
+    // each pin's offset is computed independently — the +side and
+    // -side annulus midpoints can differ.
+    let mut cylinders = Vec::with_capacity(spec.arc_fractions.len() * 2);
     for &t in &spec.arc_fractions {
         let (center, _tangent, binormal) = ribbon.sample_at_arc_fraction(t)?;
-        let body_dist = surface_distance_along_ray(layer_body, center, split_vec)?;
-        let bounding_dist = surface_distance_along_ray(bounding_region, center, split_vec)?;
-        let pin_offset = f64::midpoint(body_dist, bounding_dist);
-        let pin_center = center + pin_offset * split_vec;
-        let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &binormal)
-            .unwrap_or_else(UnitQuaternion::identity);
-        let cyl = Solid::cylinder(spec.pin_radius_m, spec.pin_half_length_m)
-            .rotate(rotation)
-            .translate(pin_center.coords);
-        cylinders.push(cyl);
+        for &sign in &[1.0_f64, -1.0_f64] {
+            let ray_dir = sign * split_vec;
+            let body_dist = surface_distance_along_ray(layer_body, center, ray_dir)?;
+            let bounding_dist = surface_distance_along_ray(bounding_region, center, ray_dir)?;
+            let pin_offset = f64::midpoint(body_dist, bounding_dist);
+            let pin_center = center + pin_offset * ray_dir;
+            let rotation =
+                UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &binormal)
+                    .unwrap_or_else(UnitQuaternion::identity);
+            let cyl = Solid::cylinder(spec.pin_radius_m, spec.pin_half_length_m)
+                .rotate(rotation)
+                .translate(pin_center.coords);
+            cylinders.push(cyl);
+        }
     }
     // Union all pin cylinders. `Solid::union` is binary; chain via
     // fold. (No `union_all` helper in cf-design today; trivial loop.)
@@ -326,25 +348,31 @@ mod tests {
         let aabb = pins
             .bounds()
             .expect("pin cylinders should have finite bounds");
-        // 2 pins along +X at 25%/75% of 100 mm centerline → x ∈
-        // [-0.025, +0.025] (centers). Each pin offset along +Y by
-        // the annulus midpoint (10 + 30)/2 = 20 mm, centered at z=0
-        // with half-length 5 mm. Pin radius 1.5 mm so x extent
-        // ~[-0.025-0.0015, +0.025+0.0015]
-        assert!(aabb.min.x < 0.0); // first pin at -25 mm
-        assert!(aabb.max.x > 0.0); // second pin at +25 mm
-        // y around +20 mm (annulus midpoint, NOT the legacy
-        // hardcoded 25 mm offset).
+        // 4 pins total: 2 arc fractions × 2 lateral mirror sides.
+        // Arc fractions 0.25/0.75 of [-0.050, +0.050] centerline →
+        // centers at x ∈ {-0.025, +0.025}. Each arc fraction yields
+        // pins on both +Y and -Y sides (split-normal mirror): pin
+        // y_center at ±(annulus midpoint) = ±(10 + 30)/2 = ±20 mm.
+        // Pin radius 1.5 mm + half-length 5 mm along binormal (+Z).
+        assert!(aabb.min.x < 0.0); // -X arc-fraction pins
+        assert!(aabb.max.x > 0.0); // +X arc-fraction pins
+        // y range spans BOTH lateral mirror sides — pins at
+        // y = ±20 mm with radius 1.5 mm.
         assert!(
-            aabb.min.y > 0.018,
-            "pin y_min should sit in the annulus around +20 mm; got {}",
+            aabb.min.y < -0.018,
+            "pin y_min should reach -split-normal mirror (~-20 mm); \
+             got {}",
             aabb.min.y,
         );
         assert!(
-            aabb.max.y < 0.022,
-            "pin y_max should sit in the annulus around +20 mm; got {}",
+            aabb.max.y > 0.018,
+            "pin y_max should reach +split-normal mirror (~+20 mm); \
+             got {}",
             aabb.max.y,
         );
+        // y range bounded near ±22 mm (annulus midpoint 20 mm + pin
+        // radius 1.5 mm + small slack for rotation FP error).
+        assert!(aabb.max.y < 0.022 && aabb.min.y > -0.022);
         // z extends pin_half_length each side
         assert!(aabb.min.z <= -0.005 + 1e-9);
         assert!(aabb.max.z >= 0.005 - 1e-9);
@@ -413,24 +441,30 @@ mod tests {
         let aabb = pins
             .bounds()
             .expect("pin cylinders should have finite bounds");
-        // Annulus midpoint along +X = (36 + 61) / 2 = 48.5 mm. Pin
-        // cylinder spans 48.5 ± pin_radius (1.5 mm) in x.
+        // 4 pins total: 2 arc fractions × 2 lateral mirror sides.
+        // Annulus midpoint along ±X = ±(36 + 61) / 2 = ±48.5 mm.
+        // Pin cylinders span ±48.5 ± pin_radius (1.5 mm) in x.
         assert!(
-            aabb.min.x > 0.046,
-            "pin AABB x_min should sit inside cup-wall annulus (>46 mm), \
-             not at the legacy 25 mm offset; got {}",
+            aabb.min.x < -0.046,
+            "pin AABB x_min should reach -split-normal mirror \
+             (~-48.5 mm); got {}",
             aabb.min.x,
         );
         assert!(
-            aabb.max.x < 0.051,
-            "pin AABB x_max should sit inside cup-wall annulus (<51 mm); got {}",
+            aabb.max.x > 0.046,
+            "pin AABB x_max should reach +split-normal mirror \
+             (~+48.5 mm); got {}",
             aabb.max.x,
         );
-        // Pin t=0.25 is centered at (+0.0485, 0, -0.025) (annulus
-        // midpoint along +X, sample z at 25% of [-0.050, +0.050]).
-        // Pin axis is the local binormal +Y; cylinder extends
-        // ±5 mm along Y. Query at pin center → inside pin (SDF < 0);
-        // also OUTSIDE the body and INSIDE the bounding region.
+        // x range bounded near ±51 mm (annulus midpoint 48.5 mm +
+        // pin radius 1.5 mm + small rotation slack).
+        assert!(aabb.max.x < 0.051 && aabb.min.x > -0.051);
+        // Pin t=0.25 +split mirror is centered at (+0.0485, 0, -0.025)
+        // (annulus midpoint along +X, sample z at 25% of [-0.050,
+        // +0.050]). Pin axis is the local binormal +Y; cylinder
+        // extends ±5 mm along Y. Query at pin center → inside pin
+        // (SDF < 0); also OUTSIDE the body and INSIDE the bounding
+        // region.
         let pin_center_t025 = Point3::new(0.0485, 0.0, -0.025);
         assert!(
             body.evaluate(&pin_center_t025) > 0.0,

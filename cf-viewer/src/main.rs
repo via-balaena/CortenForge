@@ -334,6 +334,23 @@ fn assembly_piece_panel(
         .show(ctx, |ui| {
             ui.heading("cf-view (assembly)");
             ui.label("Per-piece visibility:");
+            // Select-all / deselect-all shortcuts. Useful when the
+            // workshop user is inspecting a single piece in a
+            // large multi-piece assembly: click "Deselect all",
+            // then check the one piece. The "Select all" path
+            // restores the default state.
+            ui.horizontal(|ui| {
+                if ui.button("Select all").clicked() {
+                    for piece in &assembly.pieces {
+                        visibility.visible.insert(piece.name.clone(), true);
+                    }
+                }
+                if ui.button("Deselect all").clicked() {
+                    for piece in &assembly.pieces {
+                        visibility.visible.insert(piece.name.clone(), false);
+                    }
+                }
+            });
             ui.separator();
             for piece in &assembly.pieces {
                 let entry = visibility.visible.entry(piece.name.clone()).or_insert(true);

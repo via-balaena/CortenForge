@@ -532,3 +532,62 @@ convention (`hint nearest endpoint`); both broke the same way
 under iter-1 real geometry. See
 [[feedback-default-numeric-vs-derived-geometry]] §"Specific trap
 for (4)" for the lesson.
+
+## Iter-3 update — V-pour-gate at dome end (post-E.2)
+
+**The (4) cleared at the visual gate, but workshop user surfaced
+a follow-up usability concern**: the side-mounted pour-gate hole
+exits on the cup wall's curved binormal face. The iter-1 sock is
+rounded everywhere except the flat cap-plane floor, so the gate
+opening lands on a curved surface — no flat region for a funnel
+to rest on during pour. User-described fix: relocate the pour
+geometry to the dome end (opposite the cap plane), splayed into
+a V shape with two distinct holes — one for pour, one for vent.
+
+**Shipped fix (sub-leaf 4, commit landing in a separate PR)**:
+
+- `pour.rs::build_pour_gate_solid` rewritten. Side-mounted gate
+  (at centerline midpoint along binormal) + apex vent (at
+  argmax-z vertex along `+Z`) replaced with a **V at the dome
+  end**:
+  - Both legs share an apex at the centerline endpoint OPPOSITE
+    `pour_end_hint`'s cap-plane centroid (= `centerline[0]` for
+    cf-scan-prep tip→base centerlines).
+  - Pour leg axis = `cos(30°) * outward + sin(30°) * binormal`
+    (normalized) → lands entirely on
+    `crate::ribbon::PieceSide::Positive` (+binormal half-space).
+  - Vent leg axis = `cos(30°) * outward - sin(30°) * binormal`
+    → lands entirely on `crate::ribbon::PieceSide::Negative`.
+  - 30° half-angle so the two outer-surface punctures are
+    visibly separate on the bounding region.
+  - `gate_radius_m` / `vent_radius_m` / `gate_half_length_m` /
+    `vent_half_length_m` / `include_vent` field shape preserved;
+    just the geometry uses them differently.
+
+- **Key mechanism note** — splay along `binormal` (the seam
+  normal), NOT `split_normal`. Splaying along `split_normal`
+  keeps both legs in the seam plane, so both legs straddle the
+  seam and each piece carves a half-cylinder of each leg —
+  workshop user can't tell pour from vent at the seam. Binormal
+  splay puts each leg entirely on one piece; the user sees one
+  hole on Positive piece (pour) and one on Negative piece
+  (vent). Mechanism caught in self-cold-read mid-implementation.
+
+- `pour.rs::apex_point` helper deleted (no longer needed — the V
+  apex comes from the centerline endpoint, not the argmax-z
+  vertex).
+
+- spec.rs tests updated: the `compose_piece_solid_with_pour_gate_*`
+  tests previously used `v2_fixture`'s `-50→+50 mm` centerline,
+  but the V apex at `centerline[0] = (-0.050, 0, 0)` lives PAST
+  `v2_fixture`'s bounding region (40 mm half-extent). New tests
+  use a short `-15→+15 mm` centerline so the apex sits inside
+  the body and the legs cross the cup wall, making the carve
+  testable.
+
+**The (4) defect (pour-gate awkward to use on curved cup wall)
+is a USABILITY concern, not a geometry-fails-falsification
+concern. Iter-1 cast pipeline still produced functional
+geometry pre-V-shape; the V-shape fix is an ergonomics
+improvement. Distinct from defects (5a)/(5b)/(6) which had
+MC-resolves-zero-faces failure modes.**
