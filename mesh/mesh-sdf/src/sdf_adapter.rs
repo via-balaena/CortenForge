@@ -87,9 +87,9 @@ mod tests {
     use crate::test_fixtures::unit_tetrahedron;
     use approx::assert_relative_eq;
 
-    /// Construct the explicit `Signed<TriMeshDistance, PseudoNormalSign>`
-    /// composition the post-D.1 API uses — the blanket
-    /// `impl<D, S> Sdf for Signed<D, S>` is what these tests pin.
+    /// Construct the canonical `Signed<TriMeshDistance, PseudoNormalSign>`
+    /// composition — the blanket `impl<D, S> Sdf for Signed<D, S>`
+    /// is what these tests pin.
     #[allow(clippy::expect_used)]
     fn mesh_sdf_for_tetrahedron() -> Signed<crate::TriMeshDistance, crate::PseudoNormalSign> {
         let distance = crate::TriMeshDistance::new(unit_tetrahedron())

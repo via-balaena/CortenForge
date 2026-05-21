@@ -11,7 +11,7 @@
 //! load-bearing demonstration of the bridge.
 //!
 //! Companion to row 15 `mesh-scan-as-solid` (cf-design-side, scan-derived
-//! `mesh_sdf::SignedDistanceField` consumed via the same trait): row 15
+//! `mesh_sdf::Signed<TriMeshDistance, _>` consumed via the same trait): row 15
 //! validates the mesh-derived SDF impl against a closed-form cube anchor;
 //! row 16 validates the typed-`Solid` consumer against the production
 //! sim-soft `DifferenceSdf<SphereSdf>` baseline (semantic-equivalence

@@ -25,10 +25,10 @@
 //! - **7.0** seeded the module with the SDF-bridge *spike* —
 //!   `run_sdf_bridge_spike` is a measurement harness that proved
 //!   Route A end-to-end and characterized the decimation/timing
-//!   tradeoff. `SignedDistanceField::distance` is brute-force
-//!   O(faces) and the mesher samples the SDF at every BCC lattice
-//!   vertex, so the raw 3.34 M-face scan must be decimated — the
-//!   spike found a low target (~1.5–3k faces) is best.
+//!   tradeoff. Post parry-accel the distance query itself is
+//!   O(log faces) via BVH, but BVH build cost + MC fidelity over
+//!   the raw 3.34 M-face scan still favor decimation — the spike
+//!   found a low target (~1.5–3k faces) is best.
 //! - **7.1** adds `build_insertion_geometry` — the real builder
 //!   that turns a `SimDesign` (cavity inset + layer stack) into the
 //!   device-wall `SdfMeshedTetMesh` with per-tet Yeoh materials,
@@ -101,13 +101,14 @@ const SPIKE_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 ///
 /// Separate from `main.rs`'s `compute_envelope_proxy_mesh` (which
 /// decimates hard — ~1500 faces — for *viewport* speed): here the
-/// face count trades `SignedDistanceField`'s brute-force O(faces)
-/// query cost — paid once per BCC lattice vertex — against
-/// isosurface-landing fidelity. [`run_sdf_bridge_spike`] sweeps
-/// `target_faces` so 7.1 can pick that tradeoff point from measured
-/// data; the 7.0 spike found tet count + element quality are governed
-/// by the BCC `cell_size`, *not* the SDF face count, so a low
-/// resolution is preferred (see the slice-7 ship log).
+/// face count trades parry BVH build cost + per-BCC-vertex query
+/// constant factor against isosurface-landing fidelity (smoothing
+/// over fingertip / sliver detail before MC sees it). The 7.0 spike
+/// found tet count + element quality are governed by the BCC
+/// `cell_size`, *not* the SDF face count, so a low resolution is
+/// preferred (see the slice-7 ship log). [`run_sdf_bridge_spike`]
+/// sweeps `target_faces` so 7.1 can pick that tradeoff point from
+/// measured data.
 ///
 /// Pipeline mirrors the proxy builder: weld unshared STL vertices,
 /// `simplify_sloppy_decoder` (topology-non-preserving — required for
@@ -197,8 +198,8 @@ pub struct SpikeReport {
     /// [`Signed<TriMeshDistance, PseudoNormalSign>`](Signed).
     pub sdf_build_ms: f64,
     /// Wall-clock time for [`SdfMeshedTetMesh::from_sdf`] — the
-    /// dominant cost. One brute-force SDF query per BCC lattice
-    /// vertex, ×2 for the `outer.subtract(scan)` composition.
+    /// dominant cost. One parry-BVH SDF query per BCC lattice vertex,
+    /// ×2 for the `outer.subtract(scan)` composition.
     pub mesh_build_ms: f64,
     /// Tet count of the resulting mesh.
     pub n_tets: usize,
@@ -286,9 +287,9 @@ pub fn run_sdf_bridge_spike(
     let sdf_build_ms = elapsed_ms(t);
 
     // Route-A geometry: body = outer.subtract(scan), mirroring the
-    // sim-soft rows 21–25 layered-sleeve precedent. `SignedDistanceField`
-    // is `Clone` and the decimated mesh is small, so cloning it for the
-    // two CSG operands is cheap.
+    // sim-soft rows 21–25 layered-sleeve precedent. The composed
+    // `Signed<TriMeshDistance, _>` is `Clone` and the decimated mesh
+    // is small, so cloning it for the two CSG operands is cheap.
     let t = Instant::now();
     let outer = Solid::from_sdf(sdf.clone(), bounds).offset(wall_thickness_m);
     let cavity = Solid::from_sdf(sdf, bounds);
@@ -658,7 +659,7 @@ pub fn build_insertion_geometry(
     let thresholds = layer_boundary_thresholds(design);
 
     let decimated = decimate_for_sdf(scan, sdf_target_faces);
-    // Flood-fill `GridSdf`, not `mesh_sdf::SignedDistanceField`: the
+    // Flood-fill `GridSdf`, not parry pseudo-normal sign: the
     // 7.3a diagnostic found the closest-face-normal sign ~12% wrong on
     // the sloppy-decimated (non-manifold) scan. The grid is finer than
     // the BCC cell so trilinear interp stays sub-mm; the wall-band
@@ -1249,7 +1250,7 @@ pub fn run_single_insertion_step(
 /// from a flood fill**, not from `mesh_sdf`'s closest-face normal.
 ///
 /// The 7.3a diagnostic root-caused the real-scan solve failure to
-/// `mesh_sdf::SignedDistanceField`'s closest-face-normal sign being
+/// `mesh_sdf::PseudoNormalSign`'s closest-face-normal sign being
 /// ~12% wrong on the sloppy-decimated (non-manifold) scan. `GridSdf`
 /// sidesteps it: [`build_grid_sdf`] samples the *unsigned* distance
 /// (always reliable — just closest-triangle, topology-blind) on a

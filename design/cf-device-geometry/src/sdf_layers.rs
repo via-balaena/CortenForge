@@ -16,11 +16,14 @@
 //!   with sloppy fallback + degenerate hygiene — mirrors
 //!   `compute_envelope_proxy_mesh`'s pipeline, NOT
 //!   cf-sim-research's `insertion_sim::decimate_for_sdf` sloppy-only path which the
-//!   FEM BCC-mesher resamples past anyway). mesh-sdf has no spatial
-//!   acceleration; brute-force O(faces) per query, so the raw
-//!   3 M-face scan is non-viable — measured 39 s grid fill at 5 mm.
-//! - Build a `SignedDistanceField` over the decimated mesh; wrap in
-//!   `Arc` for cheap cloning (matches `cf-cast-cli::scan::SharedScanSdf`).
+//!   FEM BCC-mesher resamples past anyway). The parry BVH backing
+//!   `TriMeshDistance` is O(log faces) per query, but the BVH build
+//!   itself + per-query constant factor still scale with face count;
+//!   the heat-map projection downstream also walks the source mesh
+//!   directly. Decimation keeps both costs bounded for interactive use.
+//! - Build a `Signed<TriMeshDistance, PseudoNormalSign>` over the
+//!   decimated mesh; wrap in `Arc` for cheap cloning (matches
+//!   `cf-cast-cli::scan::SharedScanSdf`).
 //! - Allocate a `ScalarGrid` over the scan AABB + `LAYER_GRID_MARGIN_M`
 //!   at `LAYER_PREVIEW_CELL_SIZE_M` cell pitch; fill ONCE with raw SDF
 //!   values (NOT iso-shifted).
@@ -31,7 +34,7 @@
 //! The fill is the dominant cost (324 ms on iter-1, dec-2500 @ 5 mm);
 //! per-layer extraction is < 1 ms.
 //!
-//! Sign convention: `SignedDistanceField::distance` is positive
+//! Sign convention: the composed `Signed::distance` is positive
 //! outside the scan, negative inside. So:
 //! - `iso = +T` (T > 0) → outward offset by T meters (layer outer
 //!   surfaces).
@@ -82,10 +85,12 @@ impl CapPlanes {
     }
 }
 
-/// Decimation target for the SDF source mesh. mesh-sdf queries are
-/// brute-force O(faces); 2500 is the spike-measured sweet spot for
-/// iter-1 (324 ms one-time grid fill at 5 mm cell pitch vs 39 s on
-/// the raw 167 k-face cleaned scan).
+/// Decimation target for the SDF source mesh. Parry's BVH makes
+/// per-query distance cheap (O(log faces)), but BVH build cost still
+/// scales with face count and the marching-cubes extraction downstream
+/// is more sensitive to source-mesh slivers than to face budget.
+/// 2500 was the spike-measured sweet spot for iter-1 (324 ms one-time
+/// grid fill at 5 mm cell pitch on the dec-2500 source).
 ///
 /// Generous for the smooth iter-1 sock fixture; body parts with
 /// fingertip / nostril / knuckle detail may need 5000+. See spec
@@ -260,7 +265,7 @@ pub struct CachedScanSdf {
 /// independently). The layer-surface MC extraction is more sensitive
 /// — slivers in the decimated source produce spurious axis-aligned
 /// face-plane segments, which then trigger
-/// `mesh-sdf::SignedDistanceField::compute_sign`'s tie behavior at
+/// `mesh_sdf::PseudoNormalSign`'s tie behavior at
 /// grid points landing on those planes, surfacing as floating
 /// "needle" fragments in the extracted layer. Same hygiene as
 /// `compute_envelope_proxy_mesh` keeps the SDF source clean enough
@@ -855,7 +860,7 @@ mod tests {
     ///
     /// Background (2026-05-16, surfaced during the initial cube +
     /// cylinder test pass):
-    /// [`mesh_sdf::SignedDistanceField::distance`]'s sign branch is
+    /// [`mesh_sdf::PseudoNormalSign`]'s sign branch is
     /// `to_point.dot(face_normal) >= 0.0`. At a grid point exactly
     /// on an axis-aligned mesh face, the f64 roundoff can produce a
     /// tiny negative dot product, flipping the sign — producing

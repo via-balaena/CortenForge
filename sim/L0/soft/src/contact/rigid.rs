@@ -2,8 +2,8 @@
 //! one-way soft↔rigid penalty contact.
 //!
 //! Penalty contact is routed through the crate-public [`Sdf`] trait,
-//! so any `impl Sdf` (`SphereSdf`, scan-derived
-//! `mesh_sdf::SignedDistanceField`, cf-design `Solid`, ...) is a valid
+//! so any `impl Sdf` (`SphereSdf`, a scan-derived
+//! `mesh_sdf::Signed<TriMeshDistance, _>`, cf-design `Solid`, ...) is a valid
 //! rigid primitive without per-shape boilerplate; this file holds only
 //! `RigidPlane` and its [`Sdf`] impl. Primitives stay kinematic — they
 //! don't move during a step

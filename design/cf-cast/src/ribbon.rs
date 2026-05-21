@@ -168,7 +168,7 @@ impl Sdf for RibbonHalfspaceSdf {
         // contribution drops to zero when `p` lies in the segment's
         // Voronoi interior). At segment-junction creases the gradient
         // is multivalued; we pick the closest-segment side, matching
-        // the convention `mesh_sdf::SignedDistanceField` uses for
+        // the convention `mesh_sdf::TriMeshDistance` uses for
         // face-boundary discontinuities. Unused by the
         // `Solid::from_sdf` bridge (which always falls back to finite
         // differences inside `FieldNode::UserFn`) but provided so the

@@ -7,14 +7,10 @@
 //! [`PseudoNormalSign`] (parry's pseudo-normal inside test, fast but
 //! fragile on cleaned scans).
 //!
-//! The previous monolithic `SignedDistanceField` is retained as a
-//! deprecated type alias for `Signed<TriMeshDistance, PseudoNormalSign>`
-//! so existing call sites keep building during consumer migration.
-//! New consumers should compose the oracles explicitly — see
+//! Compose the oracles explicitly via `Signed { distance, sign }`. See
 //! `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the architecture
-//! rationale and the choice between `PseudoNormalSign` (well-formed
-//! synthetic meshes) and `FloodFillSign` (cleaned body-part scans;
-//! shipped in D.2).
+//! rationale and the choice between [`PseudoNormalSign`] (well-formed
+//! synthetic meshes) and [`FloodFillSign`] (cleaned body-part scans).
 //!
 //! # Layer 0
 //!
@@ -105,5 +101,3 @@ pub use flood_fill::{
 };
 pub use oracle::{FloodFillError, FloodFillReport, Region, Sign, Signed, UnsignedDistance};
 pub use sdf::{PseudoNormalSign, TriMeshDistance};
-#[allow(deprecated)]
-pub use sdf::{SignedDistanceField, signed_distance, unsigned_distance};

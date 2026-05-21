@@ -1,17 +1,13 @@
 //! Decomposed SDF oracles.
 //!
-//! [`UnsignedDistance`] and [`Sign`] are orthogonal oracles whose
-//! conflation was a recurring bug source — consumers couldn't tell from
-//! a single `SignedDistanceField` API whether they needed extra sign
-//! defense, and three callers shipped three different ad-hoc postures
-//! (`cf-device-design::sdf_layers`, `cf-device-design::insertion_sim`,
-//! `cf-cast-cli`). Splitting them lets the type carry the choice:
+//! [`UnsignedDistance`] and [`Sign`] are orthogonal oracles. Splitting
+//! them lets the type carry the sign choice:
 //! `Signed<TriMeshDistance, PseudoNormalSign>` is fast + fragile on
 //! cleaned scans; `Signed<TriMeshDistance, FloodFillSign>` is robust at
 //! the cost of a one-shot grid build.
 //!
 //! See `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the full
-//! architectural rationale and migration plan.
+//! architectural rationale.
 
 use nalgebra::Point3;
 use thiserror::Error;
@@ -38,7 +34,7 @@ pub trait UnsignedDistance: Send + Sync {
 /// `is_inside(p)` returns `true` iff `p` is in the closed body's
 /// interior. Implementations differ in (a) what "inside" means for
 /// non-manifold input and (b) cost — see the concrete impls
-/// ([`crate::PseudoNormalSign`], `FloodFillSign` in D.2) for posture.
+/// ([`crate::PseudoNormalSign`], [`crate::FloodFillSign`]) for posture.
 ///
 /// Boundary-point behavior is implementation-defined; do not probe
 /// exactly on the surface and expect a particular branch.
@@ -83,9 +79,9 @@ impl<D: UnsignedDistance, S: Sign> Signed<D, S> {
         if self.sign.is_inside(p) { -u } else { u }
     }
 
-    /// Alias for [`Signed::evaluate`] — preserves the
-    /// `SignedDistanceField::distance` API shape so deprecated call
-    /// sites work unchanged.
+    /// Alias for [`Signed::evaluate`] — short-name convenience for
+    /// `.distance(p)` at call sites that read more naturally as a
+    /// signed-distance query than as an evaluation.
     #[must_use]
     pub fn distance(&self, p: Point3<f64>) -> f64 {
         self.evaluate(p)
@@ -111,8 +107,8 @@ impl<D: UnsignedDistance, S: Sign> Signed<D, S> {
     }
 }
 
-/// Three-valued region tag produced by `FloodFillSign`'s
-/// classification pass (D.2).
+/// Three-valued region tag produced by [`crate::FloodFillSign`]'s
+/// classification pass.
 ///
 /// - `Inside`/`Outside`: the cell's center sits unambiguously inside
 ///   or outside the body.
@@ -123,10 +119,7 @@ impl<D: UnsignedDistance, S: Sign> Signed<D, S> {
 ///   cell with its nearest non-wall region so every cell carries a
 ///   sign.
 ///
-/// Exposed at the mesh-sdf API surface even though no public function
-/// constructs it yet — D.2 fills in `FloodFillSign::build`, which
-/// surfaces `FloodFillReport` whose `region_counts` is keyed by
-/// [`Region`].
+/// [`FloodFillReport`]'s cell counts are keyed by this tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Region {
     /// Cell center is unambiguously outside the body.
@@ -137,7 +130,7 @@ pub enum Region {
     Wall,
 }
 
-/// Failure modes for `FloodFillSign::build` (D.2).
+/// Failure modes for [`crate::FloodFillSign::build`].
 ///
 /// All variants describe construction-time failures; once built, the
 /// flood-fill sign returns deterministic `is_inside` values for every
@@ -171,7 +164,7 @@ pub enum FloodFillError {
     },
 }
 
-/// Diagnostic summary produced by `FloodFillSign::build` (D.2).
+/// Diagnostic summary produced by [`crate::FloodFillSign::build`].
 ///
 /// `inside_components == 1` is the healthy outcome on watertight
 /// input; `> 1` indicates the flood detected multiple disconnected

@@ -223,6 +223,16 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     // fraction. No-op when no layer uses Slacker. The recipe table
     // is built from `config.layers` (slacker_fraction) and
     // `report.layers[i].pour_volume.pour_mass_kg` (base mass).
+    //
+    // `derive_layers_from_design` upstream guarantees the 1:1 layer
+    // correspondence with `report.layers`. The `debug_assert_eq!`
+    // catches silent truncation in tests if that invariant ever drifts;
+    // release builds short-circuit to the zip.
+    debug_assert_eq!(
+        config.layers.len(),
+        report.layers.len(),
+        "config.layers and report.layers must be 1:1 (else the slacker-recipe zip silently truncates)"
+    );
     let slacker_recipes: Vec<procedure_post::SlackerLayerRecipe> = config
         .layers
         .iter()

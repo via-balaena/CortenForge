@@ -226,9 +226,9 @@ mod tier4_analysis {
 
     #[test]
     fn sdf_distance_queries() {
-        // Post-D arc: SignedDistanceField is decomposed into a
-        // TriMeshDistance (BVH-backed unsigned distance) composed with
-        // a Sign oracle via `Signed<D, S>`. PseudoNormalSign is the
+        // Signed distance composes two orthogonal oracles: a
+        // TriMeshDistance (BVH-backed unsigned distance) and a Sign
+        // oracle, combined via `Signed<D, S>`. PseudoNormalSign is the
         // cheap parry path; the explicit composition makes the sign
         // choice visible at the call site. See
         // docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md.

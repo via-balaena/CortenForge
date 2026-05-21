@@ -40,16 +40,16 @@
 //!
 //! # Pipeline
 //!
-//! 1. **Scan-derived rigid indenter** → `mesh_sdf::SignedDistanceField`
-//!    over a programmatic 12-triangle cube fixture (`R_SCAN = 0.025 m`,
+//! 1. **Scan-derived rigid indenter** → `mesh_sdf::Signed<TriMeshDistance,
+//!    PseudoNormalSign>` over a programmatic 12-triangle cube fixture (`R_SCAN = 0.025 m`,
 //!    translated by `SCAN_OFFSET_X = 0.015 m` along `+x` to make the
 //!    carved cavity asymmetric and visibly non-spherical). No checked-in scan
 //!    asset per the device memo's sanitization directive — the cube
 //!    stand-in IS the workflow demonstration; production scans flow
-//!    through this same `SignedDistanceField::new(loaded_mesh)` path
-//!    via row 15 `mesh-scan-as-solid`'s STL-import precedent.
-//!    `SignedDistanceField` impls `cf_design::Sdf` (PR3 F2 at
-//!    `design/cf-design/src/sdf.rs:90`) so it is a first-class
+//!    through the same `TriMeshDistance::new(loaded_mesh)` + sign-oracle
+//!    composition via row 15 `mesh-scan-as-solid`'s STL-import precedent.
+//!    `Signed<D, S>` impls `cf_design::Sdf` (the blanket adapter at
+//!    `mesh-sdf/src/sdf_adapter.rs`) so it is a first-class
 //!    cf-design SDF the moment it is constructed.
 //!
 //! 2. **Heterogeneous CSG composition** via PR3 F5 (`commit 93f4bfaa`):
@@ -193,7 +193,7 @@
 //! or "scan-derived rigid indenter" throughout this crate's prose.
 //! No anatomical references appear in any tracked surface. The 12-tri
 //! cube placeholder is a programmatic synthetic stand-in — the
-//! pipeline demonstration is the workflow ("scan → `SignedDistanceField`
+//! pipeline demonstration is the workflow ("scan → `Signed<TriMeshDistance, _>`
 //! → cf-design `Solid` → `SdfMeshedTetMesh` → 3-material FEM → contact"),
 //! not the cube's specific geometry; production runs swap the cube
 //! fixture for a real scan via row 15's STL-import path without any
@@ -219,9 +219,8 @@ use cf_design::Solid;
 use mesh_io::save_ply_attributed;
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 
-/// Local alias — `Signed<TriMeshDistance, PseudoNormalSign>` is the
-/// post-D arc shape of the deprecated `SignedDistanceField` type alias.
-/// Matches the sister mesh-scan-as-solid example's `ScanSdf` for
+/// Local alias — the canonical parry-pseudo-normal composition,
+/// matching the sister `mesh-scan-as-solid` example's `ScanSdf` for
 /// cross-file consistency. [`PseudoNormalSign`] is the cheap parry
 /// pseudo-normal path; cleaned body-part scans should prefer
 /// `mesh_sdf::flood_filled_sdf` per
@@ -474,7 +473,8 @@ const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f44_0ecb_b0cb_1cbc;
 ///
 /// The "scan" framing is the workflow, not the geometry — production
 /// runs replace this fixture with `mesh_io::load_mesh(scan.stl)` then
-/// `SignedDistanceField::new(loaded)`, and every downstream code path
+/// the explicit `TriMeshDistance::new(loaded)` + `PseudoNormalSign::from_distance`
+/// composition, and every downstream code path
 /// (`Solid::from_sdf` + `SdfMeshedTetMesh::from_sdf` + the contact
 /// `PenaltyRigidContact::new(scan.clone())` line) stays unchanged.
 fn build_scan_fixture() -> ScanSdf {
