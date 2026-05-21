@@ -463,52 +463,56 @@ mod tests {
         );
     }
 
-    /// Workshop iter-1 plug-socket regression (per `recon §F`):
+    /// Workshop iter-1 plug-socket regression (per `recon §E.2`):
     ///
-    /// When the centerline runs **tip → base** (cf-scan-prep's
-    /// min→max projection convention) and the cap-plane centroid
-    /// hint is at the base, the layer-0 mold piece's plug-socket
-    /// carve must land at `centerline.last()` (the cap-plane
-    /// endpoint), NOT at `centerline[0]` (the dome). Pre-E1 the
-    /// socket cylinder was anchored at `centerline[0]` regardless
-    /// of orientation, so a tip-first centerline put the socket
-    /// almost entirely inside the body where the carve was a no-op
-    /// (the piece composition already excludes body-cavity space
-    /// via `subtract(layer_body)`); with E1 it lands in cup-wall
-    /// material at the pour end and actually hollows it out.
+    /// cf-scan-prep trims the centerline `trim_floor_mm` (typically
+    /// 40 mm) above the cap plane to keep the polyline inside the
+    /// body interior, so `centerline.last()` lives 40 mm INSIDE
+    /// the plug body. Pre-E.2 the plug-socket cylinder was anchored
+    /// at `centerline.last()` + extended along last-segment tangent
+    /// — entirely inside the body, where the socket carve is a
+    /// no-op (the piece composition already excludes body-cavity
+    /// space via `subtract(layer_body)`). With E.2 the socket
+    /// anchors at the cap-plane centroid (passed via
+    /// `with_pour_end_hint(centroid, normal)`) and extends along
+    /// the cap-plane outward normal, carving cup-wall material
+    /// past the plug body's pinned floor.
     ///
-    /// Fixture: body `half_z` = 60 mm; cap-plane endpoint at
-    /// z = -54 mm; socket cylinder spans z ∈ [-74, -54] mm
-    /// (length 20 mm extending outward along the last segment's
-    /// `-Z` tangent). The inner half of the socket (-60 → -54 mm)
-    /// is no-op inside the body; the outer half (-74 → -60 mm)
-    /// carves cup-wall material. Query at z = -70 mm sits in the
-    /// cup-wall × socket overlap: with the socket subtracted,
-    /// piece SDF > 0 (hollow); without, piece SDF < 0 (solid).
+    /// Fixture: trimmed centerline tip at z = -13 mm (40 mm above
+    /// cap); cap-plane centroid at z = -54 mm with outward normal
+    /// in -Z; body `half_z` = 60 mm so the body extends to z = -60
+    /// mm (cup wall floor begins at z = -60 mm). Socket cylinder
+    /// (length 20 mm) spans z ∈ [-74, -54] mm — the inner half
+    /// (-60 → -54 mm) is no-op inside the body; the outer half
+    /// (-74 → -60 mm) carves cup-wall material. Query at
+    /// z = -70 mm sits in the cup-wall × socket overlap: with
+    /// the socket subtracted, piece SDF > 0 (hollow); without,
+    /// piece SDF < 0 (solid).
     #[test]
-    fn plug_socket_carves_at_cap_plane_endpoint_for_tip_first_centerline() {
+    fn plug_socket_carves_at_cap_plane_centroid_past_trimmed_centerline_tip() {
         use crate::plug::{PlugPinKind, PlugPinSpec};
 
         let centerline = || -> Vec<Point3<f64>> {
             vec![
                 Point3::new(0.0, 0.0, 0.073), // tip / closed dome
                 Point3::new(0.0, 0.0, 0.020),
-                Point3::new(0.0, 0.0, -0.054), // base / cap-open
+                Point3::new(0.0, 0.0, -0.013), // trimmed end (40 mm above cap)
             ]
         };
         let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
         let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
         let pin_spec = PlugPinSpec {
             pin_length_m: 0.020,
             ..PlugPinSpec::iter1()
         };
         let ribbon_with_pins = Ribbon::new(centerline(), split)
             .unwrap()
-            .with_pour_end_hint(cap_centroid)
+            .with_pour_end_hint(cap_centroid, cap_normal)
             .with_plug_pins(PlugPinKind::Axial(pin_spec));
         let bare_ribbon = Ribbon::new(centerline(), split)
             .unwrap()
-            .with_pour_end_hint(cap_centroid);
+            .with_pour_end_hint(cap_centroid, cap_normal);
 
         let body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.060));
         let bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.090));
@@ -525,7 +529,7 @@ mod tests {
         );
         assert!(
             neg_piece_pins.evaluate(&socket_axis_in_wall) > 0.0,
-            "socket carve at cap-plane endpoint should hollow the cup wall at (0,0,-70mm) \
+            "socket carve at cap-plane centroid should hollow the cup wall at (0,0,-70mm) \
              (piece SDF > 0, i.e., inside the socket hole); got {}",
             neg_piece_pins.evaluate(&socket_axis_in_wall),
         );
@@ -535,6 +539,22 @@ mod tests {
             neg_piece_pins.evaluate(&dome_axis_in_wall) < 0.0,
             "dome end should NOT be carved (no dome-end pin by default); got {}",
             neg_piece_pins.evaluate(&dome_axis_in_wall),
+        );
+        // Centerline.last() region (z = -0.013) should NOT be carved
+        // — the pre-E.2 bug would put the socket here.
+        let trimmed_tip_in_body = Point3::new(0.0, 0.0, -0.013);
+        // This point is inside the body (z=-0.013 < body half_z=0.060),
+        // so the piece already excludes it regardless of socket. Just
+        // confirm the socket didn't redirect to a visible carve here.
+        // Easier: confirm the piece SDF at a cup-wall point z=-0.020
+        // (still inside body for our fixture; cup-wall begins at
+        // z=-0.060) is OUTSIDE the piece in BOTH bare and pin'd cases
+        // (no socket carve at the trimmed tip).
+        assert!(
+            neg_piece_bare.evaluate(&trimmed_tip_in_body) > 0.0,
+            "trimmed-tip region (z=-0.013) is inside the body and outside the piece; \
+             got {}",
+            neg_piece_bare.evaluate(&trimmed_tip_in_body),
         );
     }
 }

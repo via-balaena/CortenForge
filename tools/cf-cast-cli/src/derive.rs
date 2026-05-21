@@ -333,17 +333,29 @@ pub fn derive_spec_and_ribbon(
         )
     })?;
 
-    // Plumb the cap-plane centroid through as the ribbon's pour-end
-    // hint when the scan has caps recorded in `.prep.toml [caps]`.
-    // The plug-pin builders pick whichever centerline endpoint is
-    // nearer this hint as the pour-end (where the axial pin
-    // anchors); without a hint they fall back to `points.last()`
-    // per cf-scan-prep's tip→base centerline orientation. Multiple
-    // caps (rare in practice) → use the first one; the assumption
-    // that "the cap geometry is at the pour end" is what justifies
-    // the hint in the first place.
-    if let Some((centroid, _normal)) = cap_tuples.first() {
-        ribbon = ribbon.with_pour_end_hint(*centroid);
+    // Plumb the cap-plane (centroid, outward_normal) through as
+    // the ribbon's pour-end anchor when the scan has caps recorded
+    // in `.prep.toml [caps]`. The plug-pin builders anchor the
+    // pin cylinder at this centroid and extend it along the
+    // outward normal — landing on the plug body's pinned floor
+    // (which sits at the cap plane via `pinned_floor_shell`).
+    //
+    // **Why the centroid + normal, not a centerline endpoint**:
+    // cf-scan-prep's `compute_centerline_polyline` trims the
+    // centerline `trim_floor_mm` (typically 40 mm) ABOVE the cap
+    // plane to keep the polyline inside the body interior. So
+    // `centerline.last()` lives 40 mm inside the plug body, where
+    // a pin anchored there is entirely buried (no visible
+    // protrusion + no socket carve in the cup wall). The cap
+    // plane is where the plug body's pinned floor sits, so a pin
+    // anchored at the cap centroid extending along the outward
+    // normal straddles the plug surface and cup wall correctly.
+    //
+    // Multiple caps (rare in practice) → use the first one; the
+    // assumption that "the cap geometry is at the pour end" is
+    // what justifies the hint in the first place.
+    if let Some((centroid, normal)) = cap_tuples.first() {
+        ribbon = ribbon.with_pour_end_hint(*centroid, *normal);
     }
 
     if config.registration_pins.enabled {

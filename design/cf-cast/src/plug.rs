@@ -29,21 +29,30 @@
 //! Per `project_cf_cast_workshop_conventions.md` §"v2.1
 //! architectural recommendations":
 //!
-//! - The pour-end pin is centered at the **cap-plane-nearest
-//!   centerline endpoint** and extends outward along the local
-//!   segment tangent (away from the body interior). The endpoint is
-//!   selected via [`crate::ribbon::Ribbon::pour_end_hint`] (set by
-//!   `with_pour_end_hint` on cf-cast-cli's derive path): whichever
-//!   of `points[0]` / `points.last()` is nearer the hint wins; with
-//!   no hint set, the builder falls back to `points.last()` per
-//!   cf-scan-prep's tip→base centerline-orientation convention.
-//!   The plug's natural cap region partially overlaps the pin near
-//!   `base`; the union is well-defined (boolean OR of the two
-//!   regions).
+//! - The pour-end pin is centered at the **cap-plane centroid**
+//!   passed via [`crate::ribbon::Ribbon::pour_end_hint`]
+//!   `(centroid, outward_axis)` and extends along `outward_axis`
+//!   (away from the body interior). cf-cast-cli's derive path
+//!   threads the cap-plane data from `.prep.toml [caps]` here;
+//!   callers without cap-plane data either pass explicit anchor +
+//!   outward direction or leave unset and rely on the fallback to
+//!   `(points.last(), last_segment.tangent)` per cf-scan-prep's
+//!   tip→base convention. The plug's natural cap region partially
+//!   overlaps the pin near `base`; the union is well-defined
+//!   (boolean OR of the two regions).
+//! - **Why the cap plane and not the centerline tip**: cf-scan-prep
+//!   trims the centerline `trim_floor_mm` (typically 40 mm) above
+//!   the cap plane to keep the polyline inside the body interior.
+//!   `centerline.last()` therefore lives 40 mm INSIDE the plug
+//!   body, where a pin of typical length is entirely buried (no
+//!   visible protrusion + no socket carve in the cup wall). The
+//!   cap plane is where the plug body's pinned floor sits, so a
+//!   pin anchored there straddles the plug surface and the cup
+//!   wall correctly.
 //! - The optional dome-end pin (enabled via
-//!   [`PlugPinSpec::include_dome_pin`]) mirrors the pour-end pin at
-//!   the **opposite** centerline endpoint, extending outward along
-//!   that endpoint's local segment tangent.
+//!   [`PlugPinSpec::include_dome_pin`]) sits at the centerline
+//!   endpoint **farthest** from the pour anchor, extending
+//!   outward along that endpoint's local segment tangent.
 //! - Sockets are the **same cylinder geometry** with a larger
 //!   radius ([`PlugPinSpec::socket_radial_slack_m`] adds to the pin
 //!   radius). Where the socket cylinder overlaps the layer body, the
@@ -244,22 +253,28 @@ pub fn build_plug_socket_solid(ribbon: &Ribbon) -> Option<Solid> {
 }
 
 /// Resolve `((pour_point, pour_outward), (dome_point, dome_outward))`
-/// for this ribbon — i.e., (point, outward axis) tuples for both
-/// centerline endpoints, with the pour-end assigned per
-/// [`crate::ribbon::Ribbon::pour_end_hint`].
+/// for this ribbon — i.e., (point, outward axis) tuples for the
+/// plug-anchor pin's pour-end and (optional) dome-end positions.
 ///
-/// Hint priority:
-/// - `Some(hint)`: pour-end is the endpoint nearer `hint`. Ties
-///   (equal Euclidean distance) resolve to `points.last()` per the
-///   fallback rule.
-/// - `None`: pour-end defaults to `points.last()` per cf-scan-prep's
-///   tip→base centerline-orientation convention.
+/// **Pour-end**:
+/// - `pour_end_hint = Some((centroid, outward))` → anchor at
+///   `centroid` extending along `outward`. This sits where the
+///   caller says it sits, **NOT** at any centerline endpoint —
+///   cf-scan-prep's `trim_floor_mm` typically leaves
+///   `centerline.last()` 40 mm short of the cap plane, and the
+///   pin must sit on the plug body's pinned floor (= cap plane),
+///   not at the trimmed centerline tip (which lives 40 mm inside
+///   the plug body).
+/// - `pour_end_hint = None` → fall back to `(last.end, last.tangent)`
+///   per cf-scan-prep's tip→base centerline-orientation convention.
 ///
-/// Both endpoints' outward axes are the local-segment tangent
-/// pointing away from the body interior:
-/// `points[0]` → `-first_segment.tangent`,
-/// `points.last()` → `+last_segment.tangent`. The dome-end gets
-/// the unused endpoint with the matching outward axis.
+/// **Dome-end** (only consulted when [`PlugPinSpec::include_dome_pin`]
+/// is `true`): the centerline endpoint **farthest** from the pour
+/// anchor. When the hint is set, that's whichever of
+/// `first.start` / `last.end` lies farther from the hint centroid;
+/// when unset, defaults to `first.start` (the opposite end from
+/// the fallback pour). Outward axis is the local-segment tangent
+/// pointing away from the body interior at that endpoint.
 fn pour_and_dome_anchors(
     ribbon: &Ribbon,
 ) -> Option<((Point3<f64>, Vector3<f64>), (Point3<f64>, Vector3<f64>))> {
@@ -267,14 +282,22 @@ fn pour_and_dome_anchors(
     let last = ribbon.segments.last()?;
     let start_anchor = (first.start, -first.tangent);
     let end_anchor = (last.end, last.tangent);
-    let prefer_start = ribbon
-        .pour_end_hint
-        .is_some_and(|hint| (hint - first.start).norm_squared() < (hint - last.end).norm_squared());
-    if prefer_start {
-        Some((start_anchor, end_anchor))
-    } else {
-        Some((end_anchor, start_anchor))
-    }
+    let (pour_anchor, dome_anchor) = match ribbon.pour_end_hint {
+        Some((centroid, outward)) => {
+            // Pour-end is the hinted location verbatim. Dome-end is
+            // the centerline endpoint farther from the hint.
+            let d_start = (centroid - first.start).norm_squared();
+            let d_end = (centroid - last.end).norm_squared();
+            let dome = if d_start > d_end {
+                start_anchor
+            } else {
+                end_anchor
+            };
+            ((centroid, outward), dome)
+        }
+        None => (end_anchor, start_anchor),
+    };
+    Some((pour_anchor, dome_anchor))
 }
 
 /// Extend a user-supplied plug [`Solid`] with axial pin cylinders
@@ -428,29 +451,50 @@ mod tests {
         assert!(aabb.max.y <= 0.0035);
     }
 
-    /// Setting `with_pour_end_hint` near the start endpoint flips
-    /// the pour-end to `points[0]`. Pin then extends along `-X`
-    /// from (-0.050, 0, 0) — the legacy pre-E1 behavior, now opt-in
-    /// via the hint.
+    /// `with_pour_end_hint(centroid, outward)` anchors the pin at
+    /// `centroid` extending along `outward`, regardless of where
+    /// the centerline endpoints sit. Pre-E.2 the hint was treated
+    /// as a centerline-endpoint selector, so this test would have
+    /// landed the pin at `points[0]` = (-0.050, 0, 0). Post-E.2
+    /// it lands at the hint centroid (-0.060, 0, 0) — distinctly
+    /// past `points[0]`, mirroring the cf-scan-prep `trim_floor_mm`
+    /// scenario where the cap-plane centroid sits past the
+    /// trimmed centerline tip.
     #[test]
-    fn build_plug_pin_solid_with_pour_end_hint_at_start_anchors_pin_there() {
+    fn build_plug_pin_solid_with_pour_end_hint_anchors_at_centroid_not_centerline_endpoint() {
+        let hint_centroid = Point3::new(-0.060, 0.0, 0.0);
+        let outward = Vector3::new(-1.0, 0.0, 0.0);
         let ribbon = straight_x_ribbon()
-            .with_pour_end_hint(Point3::new(-0.060, 0.0, 0.0))
+            .with_pour_end_hint(hint_centroid, outward)
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
         let pins = build_plug_pin_solid(&ribbon).expect("Axial kind should yield a solid");
         let aabb = pins
             .bounds()
             .expect("single pin cylinder should have finite bounds");
-        // Pour-end now at points[0] = (-0.050, 0, 0); outward along
-        // `-first_segment.tangent = -X`. Pin spans x ∈ [-70, -50] mm.
+        // Pin anchored at hint centroid (-0.060, 0, 0) extending
+        // along `outward = -X` by pin_length_m = 20 mm. Cylinder
+        // center at (-0.060 + (-0.010)) = -0.070 m, half-length
+        // 0.010 m → spans x ∈ [-0.080, -0.060].
         assert!(
-            aabb.min.x <= -0.069,
-            "hinted pour-end pin should reach x ≤ -69 mm; got min.x = {}",
+            aabb.min.x <= -0.079,
+            "hint-anchored pin should reach x ≤ -79 mm (hint at -60 mm + \
+             20 mm outward extent); got min.x = {}",
             aabb.min.x,
         );
         assert!(
-            aabb.max.x <= -0.049,
-            "hinted pour-end pin should not extend past x = -49 mm; got max.x = {}",
+            aabb.max.x <= -0.059,
+            "hint-anchored pin should NOT extend past the hint centroid \
+             (max.x ≤ -59 mm); got max.x = {}",
+            aabb.max.x,
+        );
+        // Crucially, the pin's max.x is < -0.050 (past centerline[0])
+        // so it does NOT live near `points[0] = (-0.050, 0, 0)` — the
+        // anchor really IS the hint centroid, not a selected centerline
+        // endpoint.
+        assert!(
+            aabb.max.x < -0.050,
+            "hint-anchored pin must NOT regress to centerline-endpoint \
+             selection (which would land it at x = -0.050); got max.x = {}",
             aabb.max.x,
         );
     }
@@ -559,47 +603,59 @@ mod tests {
         );
     }
 
-    /// Tip-first centerline regression (per `recon §F`): when the
-    /// scan's cf-scan-prep centerline runs `tip → base` (closed dome
-    /// at `points[0]`, cap-open base at `points.last()`) and the
-    /// cap-plane centroid hint is at the base, the plug-pin builders
-    /// must anchor at `points.last()` — NOT at `points[0]` (the
-    /// pre-E1 hardcoded behavior that landed the pin at the dome and
-    /// silently no-op'd the socket carve).
+    /// Trimmed-centerline cap-plane anchor regression (per `recon
+    /// §E.2`): cf-scan-prep trims the centerline `trim_floor_mm`
+    /// (typically 40 mm) ABOVE the cap plane to keep the polyline
+    /// inside the body interior. Pre-E.2, the plug-pin builder
+    /// anchored at `centerline.last()` — which sits 40 mm INSIDE
+    /// the plug body, where the pin is entirely buried (no visible
+    /// protrusion, no socket carve). The cap-plane centroid lives
+    /// past the trimmed centerline tip and must be the pin anchor.
+    ///
+    /// Fixture: tip→base centerline trimmed at z=-0.013, cap
+    /// centroid at z=-0.053 (40 mm past the trim), cap normal in
+    /// -Z (outward away from body). Pin must anchor at z=-0.053,
+    /// NOT at z=-0.013.
     #[test]
-    fn plug_pin_anchors_at_cap_plane_endpoint_for_tip_first_centerline() {
-        // Iter-1 sock orientation: centerline[0] is the closed dome
-        // at z=+0.073; centerline.last() is the cap-closed base at
-        // z=-0.054. Cap-plane centroid is at the base.
+    fn plug_pin_anchors_at_cap_plane_centroid_past_trimmed_centerline_tip() {
         let centerline = vec![
-            Point3::new(0.0, 0.0, 0.073), // tip / closed dome
+            Point3::new(0.0, 0.0, 0.073), // closed dome
             Point3::new(0.0, 0.0, 0.020),
-            Point3::new(0.0, 0.0, -0.054), // base / cap-open
+            Point3::new(0.0, 0.0, -0.013), // trimmed end (40 mm above cap)
         ];
         let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
-        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_centroid = Point3::new(0.0, 0.0, -0.053);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
         let ribbon = Ribbon::new(centerline, split)
             .unwrap()
-            .with_pour_end_hint(cap_centroid)
+            .with_pour_end_hint(cap_centroid, cap_normal)
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
         let pins = build_plug_pin_solid(&ribbon).expect("Axial kind should yield a solid");
         let aabb = pins
             .bounds()
             .expect("single pin cylinder should have finite bounds");
-        // Pour-end at base (z = -0.054), outward along
-        // `+last_segment.tangent` = -Z (segment 1 → 2 runs from
-        // z=0.020 to z=-0.054). Pin spans z ∈ [-0.074, -0.054].
+        // Pin anchored at cap centroid (z=-0.053), extending along
+        // cap_normal=-Z by pin_length_m=20 mm.
+        // Cylinder spans z ∈ [-0.073, -0.053].
         assert!(
-            aabb.max.z <= -0.053,
-            "tip-first pour-end pin should NOT extend above z = -53 mm \
-             (else it landed at the dome); got max.z = {}",
+            aabb.max.z <= -0.052,
+            "pin should anchor at cap centroid (z=-0.053), NOT at trimmed \
+             centerline.last() (z=-0.013); got max.z = {}",
             aabb.max.z,
         );
         assert!(
-            aabb.min.z <= -0.073,
-            "tip-first pour-end pin should reach z ≤ -73 mm \
-             (20 mm pin extending from cap-plane base); got min.z = {}",
+            aabb.min.z <= -0.072,
+            "pin should reach z ≤ -73 mm (cap centroid + 20 mm outward); got min.z = {}",
             aabb.min.z,
+        );
+        // Crucially, the pin's max.z is < -0.013 (past centerline.last())
+        // so it does NOT regress to centerline-endpoint anchoring.
+        assert!(
+            aabb.max.z < -0.013,
+            "pin must NOT regress to centerline.last() anchoring (which \
+             would land it at z = -0.013 with pin extending to z = -0.033); \
+             got max.z = {}",
+            aabb.max.z,
         );
     }
 
