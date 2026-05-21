@@ -402,7 +402,7 @@ members = [
     # marching-cubes extraction, cavity-render helpers, clip-plane
     # material/plugin/state). Lifted from
     # `tools/cf-device-design/src/{sdf_layers.rs,clip_plane.rs,main.rs}`
-    # per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d (Phase 2.5
+    # per `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d (Phase 2.5
     # mini-arc) so cf-device-design and cf-sim-research share one
     # compute + rendering surface for cavity/layer extraction +
     # clipping.
@@ -634,7 +634,7 @@ cf-cap-planes = { path = "design/cf-cap-planes" }
 cf-device-types = { path = "design/cf-device-types" }
 
 # Shared device-side geometric primitives (Phase 2.5 of the
-# sim-decouple refactor — `docs/SIM_DECOUPLE_PHASE_3_RECON.md`
+# sim-decouple refactor — `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md`
 # §2.5.b-d). Cached SDF + iso extraction + cavity-render helpers +
 # clip-plane material/plugin/state, consumed by cf-device-design +
 # cf-sim-research.

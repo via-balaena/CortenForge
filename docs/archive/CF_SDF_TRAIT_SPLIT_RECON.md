@@ -11,7 +11,7 @@
 > opts out → 103 deps, still 3 over.
 >
 > **Predecessors**:
-> - `docs/PR_249_REVIEW.md` §B2 — surfaces the layer-integrity gap
+> - `docs/archive/PR_249_REVIEW.md` §B2 — surfaces the layer-integrity gap
 > - Commit `9eb6cd59` — Phase 0 work (rayon gate, 5 deps dropped)
 
 ---
@@ -332,7 +332,7 @@ Five phases. Each ends with a green workspace build.
   sim-ml-chassis, cf-cast-cli, cf-device-design, cf-device-types,
   cf-device-geometry, cf-sim-research, cf-scan-prep}` — all A.
 - `cargo test --workspace` sample (or `--release` for sim-soft).
-- Update `docs/PR_249_REVIEW.md` §B2 verdict: "Layer Integrity F
+- Update `docs/archive/PR_249_REVIEW.md` §B2 verdict: "Layer Integrity F
   pre-existing" → "RESOLVED via Sdf trait migration to cf-geometry
   + tracing→log close".
 
@@ -465,7 +465,7 @@ Post-arc:
 
 ## 7. Pointers
 
-- `docs/PR_249_REVIEW.md` §B2 — the layer-integrity gap surfaced
+- `docs/archive/PR_249_REVIEW.md` §B2 — the layer-integrity gap surfaced
 - Commit `9eb6cd59` — Phase 0 work (rayon gate, 5 deps dropped)
 - `design/cf-design/src/sdf.rs` — current host of `Sdf` trait +
   the four impls + tests

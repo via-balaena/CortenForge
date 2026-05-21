@@ -42,7 +42,7 @@
 //! - `iso =  0` → original scan surface.
 //!
 //! Lifted from `tools/cf-device-design/src/sdf_layers.rs` per
-//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.c so cf-device-design
+//! `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.c so cf-device-design
 //! (CAD viewer + validations panel) and cf-sim-research (sim viewer,
 //! Phase 3) both consume one cached scan SDF + per-iso MC
 //! extraction path. `pub(crate)` widened to `pub` for cross-crate

@@ -27,7 +27,7 @@
 //!   ([`render_clip_plane_section`]).
 //!
 //! Lifted from `tools/cf-device-design/src/clip_plane.rs` per
-//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.d so cf-device-design
+//! `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.d so cf-device-design
 //! (CAD viewer) and cf-sim-research (sim viewer, Phase 3) both
 //! consume one clip-plane stack. `pub(crate)` widened to `pub` for
 //! cross-crate access.

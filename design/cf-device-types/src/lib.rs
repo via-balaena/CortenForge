@@ -32,7 +32,7 @@
 //! - [`design_toml`] — `.design.toml` Save/Open schema +
 //!   load/save/validate/apply helpers. Lifted from
 //!   cf-device-design's private module per
-//!   `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a so cf-sim-research
+//!   `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a so cf-sim-research
 //!   (Phase 3) can ingest the same design files.
 
 pub mod design;

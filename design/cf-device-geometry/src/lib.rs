@@ -2,7 +2,7 @@
 //!
 //! Lifted out of `tools/cf-device-design/src/{sdf_layers.rs,
 //! clip_plane.rs,main.rs}` per
-//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d. The CAD binary
+//! `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d. The CAD binary
 //! (`cf-device-design`) and the future sim-research binary
 //! (`cf-sim-research`, Phase 3+) both depend on this crate so they
 //! share one cached scan SDF + per-iso marching-cubes extraction

@@ -10,7 +10,7 @@
 //! per-layer Slacker fraction) round-trips.
 //!
 //! Lifted from `tools/cf-device-design/src/design_toml.rs` per
-//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a so the future sim-
+//! `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a so the future sim-
 //! research binary (`tools/cf-sim-research/`) can ingest the same
 //! design files.
 //!

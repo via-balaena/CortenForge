@@ -2,7 +2,7 @@
 //! both binaries spawn at startup.
 //!
 //! Lifted from `tools/cf-device-design/src/main.rs` per
-//! `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.c (§1.7 "Duplicate").
+//! `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.c (§1.7 "Duplicate").
 //! The cavity is rest-frame (no `InsertionSimState` dependence —
 //! parent plan §4 Phase 4 step 4 keeps the rest-frame iso path in
 //! cf-device-design post-strip), so the spawner lives here in the

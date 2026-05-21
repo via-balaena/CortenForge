@@ -38,6 +38,34 @@ If you need to read one of these, the project memory entry it corresponds to is 
 | `CF_DEVICE_DESIGN_FIT_VIZ_BOOKMARK.md` | SUPERSEDED by sim-arc recon 2026-05-18 | `[[project-cf-device-design-sim-arc-recon]]` (S1-S11.2 shipped; rungs 2-5 absorbed) |
 | `INSERTION_SIM_STATE.md` | 2026-05-14 slice-7 bookmark; SUPERSEDED 2026-05-18 | `[[project-cf-device-design-sim-arc-recon]]` (replaces stale slice-7 + fit-viz memos) |
 
+### Sim-decouple / SDF-trait-split / PR review (3)
+
+| Archived file | Status when archived | Successor / superseder |
+|---|---|---|
+| `SIM_DECOUPLE_PHASE_3_RECON.md` | Phase 5 SHIPPED 2026-05-20; arc CLOSED via PR #249 | `[[project-sim-decouple-refactor-plan]]` |
+| `CF_SDF_TRAIT_SPLIT_RECON.md` | RECON SHIPPED 2026-05-20; arc CLOSED via PR #249 | `[[project-cf-sdf-trait-split-recon]]` |
+| `PR_249_REVIEW.md` | PR #249 merged 2026-05-20 | GitHub PR is canonical |
+
+Note: `SIM_DECOUPLE_PHASE_3_RECON.md` has 12 live in-tree references (Cargo.toml descriptions + module-level docstrings in cf-device-geometry + cf-device-types) with section anchors like `§2.5.b-d`. Path references were rewritten from `docs/...` to `docs/archive/...` in the archival commit so the section anchors stay resolvable.
+
+### Postmortems + closed recons + falsified specs (5)
+
+| Archived file | Status when archived | Successor / superseder |
+|---|---|---|
+| `F4_FALSIFICATION_POSTMORTEM.md` | FALSIFIED 2026-05-18 | F4 interference-homotopy ruled out; F3 LM was the alt that shipped |
+| `H2_RECON_FINDINGS.md` | H2 arc SHELVED per gameplan | `[[project-program-gameplan]]` (sim-arc paused) |
+| `INSERTION_SIM_RECON.md` | 2026-05-14 slice-7 recon; superseded by sim-arc recon | `[[project-cf-device-design-sim-arc-recon]]` |
+| `CF_SCAN_PREP_V1_RECON.md` | Gap list; superseded by PR #247 + #248 | `[[project-cf-scan-prep-v1-incomplete-pivot]]` |
+| `CF_CAST_MOLD_WALL_RECON.md` | RESOLVED; arc shipped in PR #249 | `[[project-cf-cast-mold-wall-arc-shipped]]` |
+
+### Recon-iter specs (3)
+
+| Archived file | Status when archived | Successor / superseder |
+|---|---|---|
+| `CANDIDATE_H4_YEOH_BOUND_CALIBRATION_SPEC.md` | SHIPPED + FALSIFIED case D; scaffolding reverted | F3 recon B candidate H4 sweep |
+| `F3_RECON_A_GATED_LM_SPEC.md` | SHIPPED outcome B via PR #249 | `docs/F3_LM_REGULARIZATION_SPEC.md` (canonical) |
+| `CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_SPEC.md` | scope-C shipped + falsified + reverted | `docs/CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md` (candidate A canonical) |
+
 ## What stays in `docs/` (not archived)
 
 Three sim-arc bookmarks remain in `docs/` proper because the sim is research-paced + currently paused per `[[project-program-gameplan]]`, and the recon entry points are still live restart targets when sim work resumes:

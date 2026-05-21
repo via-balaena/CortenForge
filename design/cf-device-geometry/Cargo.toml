@@ -1,6 +1,6 @@
 [package]
 name = "cf-device-geometry"
-description = "Shared device-side geometric primitives — cached scan SDF + per-iso marching-cubes extraction (`sdf_layers`), shared cavity-render helpers (`spawn_cavity_mesh`, `build_bevy_mesh_from_indexed*`, `CavityEntity`), and the clip-plane material/plugin/state. Consumed by cf-device-design (CAD tool) and cf-sim-research (Phase 3 sim viewer) so both binaries share one SDF cache + iso-extraction path + clip-plane visualization. Lifted out of `tools/cf-device-design/src/{sdf_layers.rs,clip_plane.rs,main.rs}` per `docs/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d."
+description = "Shared device-side geometric primitives — cached scan SDF + per-iso marching-cubes extraction (`sdf_layers`), shared cavity-render helpers (`spawn_cavity_mesh`, `build_bevy_mesh_from_indexed*`, `CavityEntity`), and the clip-plane material/plugin/state. Consumed by cf-device-design (CAD tool) and cf-sim-research (Phase 3 sim viewer) so both binaries share one SDF cache + iso-extraction path + clip-plane visualization. Lifted out of `tools/cf-device-design/src/{sdf_layers.rs,clip_plane.rs,main.rs}` per `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -38,7 +38,7 @@ panic = "deny"
 # infrastructure; `bevy_asset` brings `Asset` derive + the
 # `embedded_asset!` macro that loads `clip_plane.wgsl`. Binary
 # Cargo.toml features always superset this minimal set per R4
-# mitigation (`docs/SIM_DECOUPLE_PHASE_3_RECON.md` §4 R4).
+# mitigation (`docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §4 R4).
 bevy = { workspace = true, default-features = false, features = [
     "bevy_asset",
     "bevy_pbr",
