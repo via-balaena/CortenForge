@@ -293,8 +293,244 @@ hook list — recon walks the whole spec).
 - Source files cited above (`piece.rs`, `registration.rs`, `plug.rs`, `pour.rs`, `funnel.rs`, `platform.rs`, `mesher.rs`, `spec.rs`, `procedure.rs`) under `design/cf-cast/src/`.
 - iter-1 STLs at `~/scans/cast_iter1_design/` and config at `~/scans/cast.toml`.
 
+## S1 — library spike decision memo
+
+**Session:** S1 (Phase 1, library de-risk — no production code).
+**Spike location (deleted at session end):** `~/spikes/cf-cast-mesh-csg-spike/`,
+**940 LOC total** across `Cargo.toml` (32) + `src/main.rs` (599, of which
+~300 is measurement/reporting infra) + `src/csgrs_lib.rs` (181) +
+`src/manifold_lib.rs` (128), NOT a member of the cortenforge workspace
+per plan §S1. (Plan §S1 budgeted ~200 LOC; the overshoot is dominated by
+measurement scaffolding — welding, manifold-edge counter, F4 issue-type
+tally, determinism re-run, comparison-table formatter — that the recon
+will not need.)
+**Verdict:** ✅ **Use `manifold3d` 0.1.8** for the post-MC mesh-CSG stage.
+csgrs (BSP-based, pure Rust) is empirically falsified for this use case —
+it produces non-manifold output on every operation against both fixtures.
+
+### Method
+
+The spike executed three operations — (a) plane-trim, (b) cylinder-
+subtract, (c) cylinder-union — against two fixtures: a hand-built
+10 mm cube uniformly subdivided to a 10×10 grid per face (6 faces × 200
+triangles = 1200 triangles, similar density to a 10 mm cube MC-meshed
+at 1 mm cells), and the real iter-1 Negative-piece STL (`~/scans/cast_iter1_design/mold_layer_0_piece_0.stl`,
+15204 triangles, 7602 welded vertices, manifold-clean per a roll-your-own
+`edges_with_two_faces == total_edges` check). Both fixtures were
+**vertex-welded at 1e-6 mm tolerance** before being fed to either library
+— a non-obvious requirement surfaced by manifold3d's input rejection of
+unwelded STL data (see §"Findings worth banking", item 3).
+
+For each (library, fixture, op) triple the spike measured: pass/fail,
+output triangle count, wall-clock latency, output manifoldness (edges with
+1 or 3+ incident faces), F4 grade via `mesh_printability::validate_for_printing`
+under `PrinterConfig::fdm_default()` with issue-type tally, and
+determinism (re-run + welded-output bit-hash compare).
+
+Edge cases probed on the toy cube (plane-only): plane exactly on the
++X face, plane 0.1 µm inside the +X face (near-tangent), plane through
+the +X+Y+Z corner vertex.
+
+### Comparison table
+
+Coordinates are mm. Per-op timings are release-build wall-clock; the
+"open" column is welded-output edges with exactly one incident face
+(non-zero ⇒ topological boundary, i.e., non-manifold for a solid).
+"f4-types" shows the dominant `PrintIssueType` categories on F-grade
+runs to distinguish topology bugs from print-feasibility flags.
+
+| Library | Fixture | Op | OK | f_out | latency | open | 3+ | F4 | f4-top-types | Det |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **csgrs** (git HEAD) | toy | plane-trim | ✓ | 602 | 13 ms | 44 | 0 | F | DetectorSkipped:2, NotWatertight:1, SelfIntersecting:1 | bit |
+| csgrs | toy | cyl-sub | ✓ | 2080 | 12 ms | 182 | 0 | F | SmallFeature:2, NotWatertight:1, SelfIntersecting:1 | bit |
+| csgrs | toy | cyl-uni | ✓ | 2080 | 9 ms | 182 | 0 | F | SmallFeature:2, NotWatertight:1, SelfIntersecting:1 | bit |
+| csgrs | **real** | plane-trim | ✓ | 23759 | **801 ms** | **7541** | 0 | F | ExcessiveOverhang:35, LongBridge:25, SmallFeature:9 | bit |
+| csgrs | **real** | cyl-sub | ✓ | 45102 | **773 ms** | **10540** | 0 | F | ExcessiveOverhang:22, LongBridge:3, SmallFeature:2 | bit |
+| csgrs | **real** | cyl-uni | ✓ | 44730 | **767 ms** | **10522** | 0 | F | ExcessiveOverhang:21, LongBridge:3, SmallFeature:2 | bit |
+| **manifold3d** 0.1.8 | toy | plane-trim | ✓ | 566 | 2 ms | **0** | 0 | **A** | — (zero issues) | bit |
+| manifold3d | toy | cyl-sub | ✓ | 1310 | 1 ms | **0** | 0 | F | ExcessiveOverhang:1 | bit |
+| manifold3d | toy | cyl-uni | ✓ | 1310 | 1 ms | **0** | 0 | F | ExcessiveOverhang:1 | bit |
+| manifold3d | **real** | plane-trim | ✓ | 8668 | **7 ms** | **0** | 0 | F | ThinWall:33, ExcessiveOverhang:8, LongBridge:3 | bit |
+| manifold3d | **real** | cyl-sub | ✓ | 15204 | **6 ms** | **0** | 0 | F | ExcessiveOverhang:14, LongBridge:3 | bit |
+| manifold3d | **real** | cyl-uni | ✓ | 15328 | **5 ms** | **0** | 0 | F | ExcessiveOverhang:15, LongBridge:3, ThinWall:1 | bit |
+
+**Edge cases (toy cube, plane-only):**
+
+| Case | csgrs | manifold3d |
+|---|---|---|
+| Plane exactly on +X face | empty (0 v / 0 f) | empty (0 v / 0 f) |
+| Plane 0.1 µm inside +X face | 966 v / 322 f, **966 open edges** | 125 v / 246 f, **0 open edges** |
+| Plane through +X+Y+Z corner vertex | empty | empty |
+
+### Verdict, by criterion
+
+- **Correctness on edge cases.** Both libraries collapse trivially-empty
+  cases to empty output. Only manifold3d handles near-tangent input
+  cleanly; csgrs produces an open-boundary mesh whose edge count tracks
+  the sliver region's boundary loop.
+- **Output mesh manifoldness.** **manifold3d 6/6 zero open edges. csgrs
+  6/6 non-zero open edges**, including 7541–10540 open edges on real-
+  fixture operations even after output welding. This is the dispositive
+  criterion — the architectural fix requires meshes that round-trip
+  through STL export → cf-viewer → workshop print as closed solids.
+- **F4 pass-through.** Both libraries score F on the real fixture under
+  FDM defaults, but for different reasons. manifold3d's F-grades are
+  dominated by `ThinWall` (intrinsic to the iter-1 piece's 5 mm
+  `wall_thickness_m` near the pour-leg) and `ExcessiveOverhang`
+  (intrinsic to the curve-following body geometry) — exactly the
+  "expected to flake" cases plan §G5 explicitly accepts. csgrs's
+  F-grades on real also surface `NotWatertight` + `SelfIntersecting` on
+  the toy fixture and produce ~3× the triangle count of manifold3d on
+  the cyl ops — symptoms of broken-topology output, not print-
+  feasibility. The toy plane-trim under manifold3d hits F4 grade A
+  (zero issues) — proof that manifold3d's CSG produces print-ready
+  topology when the source geometry permits.
+- **Build cost.** manifold3d 0.1.8 adds **14 transitive packages**
+  including the C++ `manifold-csg-sys` (CMake + `cc`); from-scratch
+  `cargo check --release` of a stub binary depending only on
+  manifold3d took **3 min 14 s** (one-time C++ compile; cached after).
+  csgrs at git HEAD adds **268 transitive packages** under default
+  features (truck-* CAD kernel, bevy mesh adapters, image I/O, font
+  handling, parry3d/rapier3d, etc.). Even with `default-features = false`
+  csgrs's transitive set substantially exceeds manifold3d's.
+- **License.** manifold3d: `Apache-2.0 OR MIT` (same for
+  manifold-csg-sys, manifold-csg). csgrs: `MIT`. Both compatible with
+  cortenforge.
+- **Determinism (G3).** Both bit-deterministic across runs when output
+  is welded to 1e-6 mm. csgrs's RAW output exhibited vertex-order
+  drift across runs (BSP clip order varies), masked by welding. Plan
+  §S2 shared-primitive invariant test should hash on welded form.
+
+### Findings worth banking
+
+1. **csgrs is empirically unsuitable for cf-cast's post-MC stage.**
+   The BSP-based kernel's output is *structurally* non-manifold on both
+   fixtures, both operations, after welding. This is not a tuning issue
+   ("set tolerance lower") — BSP boolean output is known to produce
+   T-junctions and degenerate triangles that no post-process fixes. Do
+   not revisit csgrs for this use case in S2.
+
+2. **`csgrs` 0.20.1 on crates.io is uninstallable** as of 2026-05-22 —
+   it depends on yanked `core2 0.4.0` (confirmed `error: failed to
+   select a version for the requirement core2 = "^0.4"` from
+   `cargo add csgrs@0.20.1`). The git HEAD works but pins
+   in-development versions of `i_overlay`/`i_float`/`i_shape`. This is a
+   maintenance-signal supplemental data point reinforcing the verdict.
+
+3. **manifold3d requires welded input.** `Manifold::from_mesh_f64`
+   rejects unwelded STL data with `CsgError::ManifoldStatus(NotManifold)`.
+   Production `solid_to_mm_mesh` already emits shared-index output, so
+   this is a non-issue for the live pipeline; but any spike or test
+   that round-trips through STL (`mesh-io::load_mesh`) must weld
+   before constructing a `Manifold`. The welding pass is ~25 LOC + a
+   `HashMap<(i64,i64,i64), u32>` keyed on coordinates quantized at
+   1 µm (1e-6 mm; effectively bit-exact for the spike's input range).
+   Bank this for the S3 plumbing refactor — the geometric-equivalence
+   test helper plan §G2 mandates should likewise weld before comparing.
+
+4. **manifold3d 0.1.8 is pre-1.0.** This is the principal residual risk.
+   Mitigations: (a) the underlying C++ `manifold` kernel (`elalish/manifold`
+   on GitHub) is a mature project — manifold3d 0.1.8 wraps
+   `manifold-csg-sys` v3.4.107 of the C++ library — so the unstable
+   layer is the Rust binding, not the kernel; (b) the Rust binding API
+   surface cf-cast needs is small (`from_mesh_f64` + `to_mesh_f64` +
+   `union`/`difference` + `cube` + `cylinder` + `translate` + `rotate`),
+   so binding-API churn is bounded; (c) the binding is `Apache-2.0 OR MIT`
+   and the source is readable (single-file `lib.rs` re-export of
+   `manifold-csg`, which is itself ~2000 LOC across a handful of modules
+   per the local `~/.cargo/registry/...` snapshot). If the 0.1.x line
+   stalls or breaks, the minimum-viable fork is small. **Plan §S2 should
+   record a contingency note:** pin manifold3d in the workspace
+   `Cargo.toml` to an exact patch version; do not chase float-version
+   ranges until the crate hits 1.0.
+
+5. **manifold3d API needs an axis-orientation helper for cf-cast.**
+   manifold3d's cylinder primitive is Z-axis-aligned only
+   (`Manifold::cylinder(height, r_low, r_high, segments, center)`);
+   axis-rotated cylinders require a `rotate(x_deg, y_deg, z_deg)`
+   call. The spike used `nalgebra::Rotation3::rotation_between` →
+   euler-XYZ-degrees as the bridge. **S3 should expose, for S5/S6 to
+   consume, a `build_cylinder_along_axis(...) -> Manifold` helper at the
+   mesh-CSG plumbing layer** so callers don't reimplement the
+   axis-to-euler conversion six times. Same helper pattern for the
+   half-space slab used by plane-trim (S4).
+
+6. **manifold3d's transform API is euler-XYZ-degrees, not matrices**
+   (it also has a `transform(&[f64; 12])` 4×3 affine form that's more
+   precise — confirmed by inspecting the `manifold-csg` `Manifold::transform`
+   method signature). For the
+   shared-primitive invariant (one cylinder mesh used on both Negative
+   and Positive sides), prefer the 4×3 affine form to keep round-off
+   identical across the pair. The spike used eulers and still hit
+   bit-determinism on the welded output, but the affine route is the
+   safer default for the production shared-primitive cookbook.
+
+7. **Real iter-1 Negative-piece is manifold-clean after welding.**
+   15204 triangles, 7602 welded vertices, 22806 edges all with exactly
+   two incident faces. This confirms the architectural assumption that
+   the *current* SDF/MC output is sound topology — the iter-1 mating-
+   surface defects are not "MC produces bad topology" but the three
+   mechanisms (A CSG-not-C¹, B independent MC grids, C FDM bead
+   tolerance) the plan diagnoses. Cf-cast's pipeline is producing
+   manifold input for the post-MC CSG stage to consume.
+
+### Spike code disposition
+
+The spike crate at `~/spikes/cf-cast-mesh-csg-spike/` is deleted at
+session end per plan §S1 ("Spike code thrown away. The two finalists'
+deltas … go in the memo as a comparison table the recon references."),
+along with its `target/` directory. The full run output is preserved in
+this memo's table; raw stdout is at `/tmp/spike_final_results.log`
+(also ephemeral — `/tmp/` is not persisted across reboots, but the table
+above captures every measurement the recon needs).
+
+### Bail-out branches — disposition
+
+The plan §S1 bail-outs do **not** fire:
+
+- ✗ "Both libraries produce F4-failing meshes on the real fixture" —
+  *literally* true at the F-grade level, but manifold3d's F-grade is
+  pure FDM-feasibility (`ThinWall` / `ExcessiveOverhang` / `LongBridge`)
+  — issue types that flag intrinsic geometric properties of the input
+  mesh (thin walls, steep slopes), not topology faults the CSG stage
+  introduces. Manifold3d *preserves* the input mesh's geometric character
+  rather than degrading it (zero open edges, zero 3+ edges, output
+  triangle count within ~10% of input). Plan §G5 explicitly accepts this.
+  Do not escalate to the hand-rolled-fallback session.
+- ✗ Hand-rolled out of scope / no acceptable library → "pivot to Route B"
+  — does not fire; manifold3d is acceptable.
+
+### Open questions kicked to S2 (recon)
+
+- **S2-A — Floating-point precision.** manifold3d's `from_mesh_f64`
+  takes f64 vertices but `manifold-csg-sys` internally uses what the
+  C++ Manifold project chooses (Manifold has had a historical f32-
+  default that was lifted to f64 — confirm the v3.4.107 sys-crate is
+  built against f64, not f32 with a precision-losing round-trip).
+  S2-recon line item: read `manifold-csg-sys` build.rs + verify in the
+  cmake configure of the C++ kernel.
+- **S2-B — Affine vs euler shared-primitive cookbook.** Recon picks
+  one transform path for the shared-primitive invariant and documents
+  the helper signatures S3 introduces. Recommendation: 4×3 affine.
+- **S2-C — `mesh-printability` welding inside the boundary?** The S3
+  plumbing pipeline should weld each piece's mesh before mesh-CSG; the
+  shared-primitive mesh is built directly from `Manifold::cylinder` so
+  is already welded. Open: does the *output* of `Manifold::to_mesh_f64`
+  ever need re-welding before STL save / F4 evaluation? The spike data
+  (output `dv0` across re-runs, zero open edges) says no, but S2
+  should confirm by reading the `to_mesh_f64` impl.
+
+### Status — S1
+
+- **2026-05-22 — S1 spike executed.** ~940 LOC throwaway crate; twelve
+  (lib×fixture×op) triples (3 ops × 2 fixtures × 2 libs) + six
+  (lib×plane-edge-case) probes (3 cases × 2 libs). Verdict:
+  manifold3d 0.1.8. Spike code deleted; only this memo persists.
+
 ## Status
 
 - **2026-05-22 — S0 bookmark drafted.** Inventory + clearance table +
-  acceptance gate shipped. No production code changes. S1 (library
-  spike) is the next session.
+  acceptance gate shipped. No production code changes.
+- **2026-05-22 — S1 spike + ADR.** manifold3d 0.1.8 chosen; csgrs
+  empirically falsified (non-manifold output on every operation, both
+  fixtures). Spike code thrown away. S2 (recon) is the next session.
