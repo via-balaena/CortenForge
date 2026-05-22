@@ -129,12 +129,20 @@ pub struct PinSpec {
     /// 0.20 mm matches FDM precision; recon §9 baseline for M2
     /// pins (positional sliding fit).
     pub diametral_clearance_m: f64,
-    /// Axial pocket-bottom clearance per side (m). The socket's
-    /// parent `half_length` is extended by `axial_clearance_m / 2`
-    /// so the socket cavity bottoms `axial_clearance_m / 2` past the
-    /// pin tip on each side of the seam (symmetric per the
-    /// `diametral_clearance / 2 → radius` convention). v2 iter-1
-    /// default `0.00050` = 0.50 mm; recon §9 baseline for M2 pins.
+    /// Axial socket-bottom relief (m). The socket parent's
+    /// `half_length` is extended by `axial_clearance_m / 2` so the
+    /// socket *cylinder primitive* runs `axial_clearance_m / 2` past
+    /// the pin cylinder on each axial face (symmetric per the
+    /// `diametral_clearance / 2 → radius` convention). Per-piece
+    /// `SeamTrim` removes the near-seam half of each cylinder, so
+    /// the workshop-meaningful component is the AWAY-from-seam
+    /// extension — a modest bottom-of-pocket relief beyond a
+    /// pin-half-length-only socket. Workshop assembly engagement is
+    /// dominated by [`crate::piece::RIBBON_PIECE_OVERLAP_M`] (the
+    /// pin's protrusion past the seam plane after trim), not by this
+    /// field; the iter-1 0.50 mm baseline is preserved for spec
+    /// completeness + future asymmetric-cylinder migrations. Recon
+    /// §9 baseline for M2 pins.
     pub axial_clearance_m: f64,
 }
 
@@ -192,8 +200,9 @@ const PIN_RAY_MAX_REACH_M: f64 = 1.0;
 /// [`surface_distance_along_ray`]. Float comparisons drive the
 /// outer loop, so this cap guarantees termination on pathological
 /// inputs (NaN-tinted SDFs, etc.); the bracket reaches
-/// [`PIN_RAY_MAX_REACH_M`] in ≤ 14 doublings from the 5 mm start,
-/// so 32 is comfortably above the legitimate bound.
+/// [`PIN_RAY_MAX_REACH_M`] in ≤ 8 doublings from the 5 mm start
+/// (`0.005 × 2^8 = 1.28 m > 1.0 m`), so 32 is comfortably above the
+/// legitimate bound.
 const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 
 /// Build the per-piece pin/socket mating transforms for the ribbon's
@@ -294,8 +303,12 @@ pub fn build_registration_transforms(
 /// [`MatingTransform::SubtractCylinder`] with a socket that's
 /// inflated by [`PinSpec::diametral_clearance_m`] / 2 radially and
 /// [`PinSpec::axial_clearance_m`] / 2 axially (symmetric `/2`
-/// convention — each side of the seam gets half the total clearance
-/// as pocket-bottom relief).
+/// convention — the socket *cylinder primitive* extends past the
+/// pin cylinder on each axial face). Per-piece `SeamTrim` removes
+/// the near-seam half of each cylinder, so only the AWAY-from-seam
+/// extension survives in the printed STL — a modest socket-bottom
+/// relief; see [`PinSpec::axial_clearance_m`] for the workshop-
+/// engagement caveat.
 fn pin_transform_for_side(
     spec: &PinSpec,
     pin_center: Point3<f64>,
@@ -473,7 +486,11 @@ mod tests {
             4,
             "4 pins per piece (2 arc fractions × 2 lateral mirrors)"
         );
-        assert_eq!(pos.len(), 4);
+        assert_eq!(
+            pos.len(),
+            4,
+            "Positive side emits the same pin count as Negative"
+        );
         // Negative emits UnionCylinder; Positive emits SubtractCylinder.
         for t in &neg {
             assert!(
@@ -544,6 +561,72 @@ mod tests {
             let p = params_of(t);
             assert!((p.radius_m - 0.0015).abs() < f64::EPSILON);
             assert!((p.parent.half_length_m - 0.005).abs() < f64::EPSILON);
+        }
+    }
+
+    /// Positive-side socket params carry the diametral + axial
+    /// clearance inflation; pin and socket share `center_m` + `axis`
+    /// per pin position. The `mesh_csg::tests` math invariant builds
+    /// parents inline, so without this test a regression in
+    /// `pin_transform_for_side`'s Positive arm (e.g., a stray `* 2.0`
+    /// or dropped `/ 2.0`) could land without any test surfacing it.
+    #[test]
+    fn pin_transforms_positive_socket_params_inflate_per_spec() {
+        let ribbon =
+            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        let (body, bounds) = reference_body_and_bounds();
+        let neg = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative);
+        let pos = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Positive);
+        assert_eq!(
+            neg.len(),
+            pos.len(),
+            "Negative and Positive emit one transform per pin"
+        );
+
+        let spec = PinSpec::iter1();
+        let expected_socket_radius = spec.pin_radius_m + spec.diametral_clearance_m / 2.0;
+        let expected_socket_half_length = spec.pin_half_length_m + spec.axial_clearance_m / 2.0;
+
+        // Each Positive socket pairs with the same-position Negative
+        // pin via shared center+axis. Match Positive transforms back
+        // to Negative by `parent.center_m` (per-position bijection).
+        for (i, pos_t) in pos.iter().enumerate() {
+            let pos_params = params_of(pos_t);
+            let neg_match = neg
+                .iter()
+                .find(|n| {
+                    let np = params_of(n);
+                    np.parent.center_m == pos_params.parent.center_m
+                })
+                .unwrap_or_else(|| {
+                    panic!("Positive transform {i} has no Negative match by center_m")
+                });
+            let neg_params = params_of(neg_match);
+
+            // Shared center + axis.
+            assert_eq!(neg_params.parent.center_m, pos_params.parent.center_m);
+            assert_eq!(neg_params.parent.axis, pos_params.parent.axis);
+            // Negative side carries pin geometry verbatim.
+            assert!((neg_params.radius_m - spec.pin_radius_m).abs() < f64::EPSILON);
+            assert!(
+                (neg_params.parent.half_length_m - spec.pin_half_length_m).abs() < f64::EPSILON
+            );
+            // Positive side carries the symmetric `/2` inflation.
+            assert!(
+                (pos_params.radius_m - expected_socket_radius).abs() < f64::EPSILON,
+                "Positive socket radius should be pin + diametral/2 = {expected_socket_radius}; \
+                 got {}",
+                pos_params.radius_m,
+            );
+            assert!(
+                (pos_params.parent.half_length_m - expected_socket_half_length).abs()
+                    < f64::EPSILON,
+                "Positive socket half_length should be pin + axial/2 = {expected_socket_half_length}; \
+                 got {}",
+                pos_params.parent.half_length_m,
+            );
+            // Determinism contract — same segments across sides.
+            assert_eq!(neg_params.segments, pos_params.segments);
         }
     }
 

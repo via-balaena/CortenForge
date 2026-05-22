@@ -883,18 +883,22 @@ mod tests {
 
     /// S5 pin/socket fit invariant — math-verified (recon §9 + plan §S5).
     ///
-    /// Given the same `CylinderParent` (shared `center`/`axis` for
-    /// the pin/socket pair) and the same `segments`:
+    /// Pin and socket parents share `center_m` and `axis`; only
+    /// `half_length` and `radius_m` differ. With the same `segments`:
     /// - Socket radius = pin radius + `diametral_clearance_m / 2`
     ///   → socket diameter exceeds pin diameter by exactly
     ///   `diametral_clearance_m` (manifold3d cylinder primitive's
     ///   radial AABB extent scales linearly with the radius input;
     ///   the per-side radial gap equals `diametral_clearance / 2`).
     /// - Socket parent `half_length` = pin parent `half_length` +
-    ///   `axial_clearance_m / 2` → the socket cavity bottoms
-    ///   `axial_clearance_m / 2` past the pin tip on each side of
-    ///   the seam (symmetric `/2` convention matching the diametral
-    ///   budget).
+    ///   `axial_clearance_m / 2` → the socket *cylinder primitive*
+    ///   extends `axial_clearance_m / 2` past the pin cylinder on
+    ///   each axial face (symmetric `/2` convention matching the
+    ///   diametral budget). The per-piece `SeamTrim` downstream clips
+    ///   each side's near-seam half independently, so the AWAY-from-
+    ///   seam extension is the workshop-meaningful component
+    ///   (modest bottom-of-pocket relief beyond a pin-half-length-
+    ///   only socket); the near-seam extension is removed by trim.
     ///
     /// Locks the clearance arithmetic at engine precision rather
     /// than via cf-view smoke per
@@ -947,9 +951,13 @@ mod tests {
             );
         }
 
-        // Axial extent (Z): socket bigger than pin by exactly
-        // axial_clearance / 2 on EACH side of the seam (symmetric
-        // since both cylinders are centred at the same parent.center).
+        // Axial extent (Z): socket cylinder bigger than pin cylinder
+        // by exactly axial_clearance / 2 on EACH end (symmetric since
+        // both cylinders are centred at the same parent.center; per-
+        // piece SeamTrim later clips the near-seam half of each so
+        // only the away-from-seam extension survives in the per-piece
+        // STL — see `pin_transform_for_side` doc for the workshop
+        // semantics).
         let half_axial_mm = (axial_clearance_m / 2.0) * METERS_TO_MM;
         let axial_gap_z_max = sock_max.z - pin_max.z;
         let axial_gap_z_min = pin_min.z - sock_min.z;
