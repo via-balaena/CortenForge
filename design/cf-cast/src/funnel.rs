@@ -32,6 +32,7 @@
 use cf_design::Solid;
 use nalgebra::{UnitQuaternion, Vector3};
 
+use crate::mesh_csg::MatingTransform;
 use crate::pour::PourGateKind;
 use crate::ribbon::Ribbon;
 
@@ -119,7 +120,7 @@ const INNER_CAVITY_OVERSHOOT_M: f64 = 0.0005;
 /// Returns `None` when the ribbon's pour-gate kind is
 /// [`crate::pour::PourGateKind::None`].
 #[must_use]
-pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<Solid> {
+pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform>)> {
     let spec = match &ribbon.pour_gate {
         PourGateKind::None => return None,
         PourGateKind::Default(spec) => spec,
@@ -170,7 +171,10 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<Solid> {
     );
     let inner = inner_lower.union(inner_cone);
 
-    Some(outer.subtract(inner))
+    // S3 plumbing: no mating transforms yet. S7 (sweep) may migrate
+    // the nipple↔pour-gate fit to a mesh-CSG `SubtractCylinder` keyed
+    // off a shared parent triple with the cup-piece pour-gate carve.
+    Some((outer.subtract(inner), Vec::new()))
 }
 
 /// Build a truncated cone (frustum) with bottom radius `r_bot` at
@@ -246,7 +250,7 @@ mod tests {
     #[test]
     fn build_funnel_solid_returns_some_when_pour_gate_enabled() {
         let ribbon = iter1_like_ribbon();
-        let funnel = build_funnel_solid(&ribbon).expect("funnel should build");
+        let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
         let aabb = funnel.bounds().expect("funnel has finite bounds");
         // Total height = nipple (4 mm) + flange (1 mm) + cone (30 mm) = 35 mm.
         let total_height = FUNNEL_NIPPLE_HEIGHT_M + FUNNEL_FLANGE_HEIGHT_M + FUNNEL_CONE_HEIGHT_M;
@@ -272,7 +276,7 @@ mod tests {
         // material) — that's the inner cavity, where silicone
         // flows.
         let ribbon = iter1_like_ribbon();
-        let funnel = build_funnel_solid(&ribbon).expect("funnel should build");
+        let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
         let q_nipple_interior = Point3::new(0.0, 0.0, 0.002); // 2 mm above bottom
         assert!(
             funnel.evaluate(&q_nipple_interior) > 0.0,
@@ -288,7 +292,7 @@ mod tests {
         // (between inner radius and outer radius), the funnel SDF
         // should be < 0 (solid wall material).
         let ribbon = iter1_like_ribbon();
-        let funnel = build_funnel_solid(&ribbon).expect("funnel should build");
+        let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
         let pour_radius = match &ribbon.pour_gate {
             PourGateKind::Default(spec) => spec.gate_radius_m,
             PourGateKind::None => panic!("iter1_like_ribbon must have pour gate"),
@@ -310,7 +314,7 @@ mod tests {
         // funnel SDF should be > 0 (inside the cone cavity, where
         // workshop pours silicone in).
         let ribbon = iter1_like_ribbon();
-        let funnel = build_funnel_solid(&ribbon).expect("funnel should build");
+        let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
         let total_height = FUNNEL_NIPPLE_HEIGHT_M + FUNNEL_FLANGE_HEIGHT_M + FUNNEL_CONE_HEIGHT_M;
         let q_cone_interior = Point3::new(0.0, 0.0, total_height - 0.002);
         assert!(
@@ -334,7 +338,7 @@ mod tests {
             PourGateKind::None => panic!("iter1_like_ribbon must have pour gate"),
         };
         let expected_nipple_outer_r = pour_radius - FUNNEL_NIPPLE_SLACK_M / 2.0;
-        let funnel = build_funnel_solid(&ribbon).expect("funnel should build");
+        let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
         let z_mid_nipple = FUNNEL_NIPPLE_HEIGHT_M / 2.0;
         // Just INSIDE the expected outer radius → INSIDE funnel
         // wall (SDF < 0) provided we're also outside the inner

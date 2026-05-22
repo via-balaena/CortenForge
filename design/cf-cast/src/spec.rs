@@ -15,6 +15,7 @@ use nalgebra::Vector3;
 
 use crate::error::{CastError, CastTarget};
 use crate::material::MoldingMaterial;
+use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::solid_to_mm_mesh;
 use crate::piece::compose_piece_solid;
 use crate::plug::add_plug_pins;
@@ -887,12 +888,16 @@ fn mesh_and_gate_v2_piece(
     layer_count: usize,
 ) -> Result<PendingPiece, CastError> {
     let t_compose = std::time::Instant::now();
-    let piece_solid = compose_piece_solid(&layer.body, &spec.bounding_region, ribbon, piece_side)?;
+    let (piece_solid, mating_transforms) =
+        compose_piece_solid(&layer.body, &spec.bounding_region, ribbon, piece_side)?;
     let target = CastTarget::MoldPiece {
         layer_index,
         piece_side,
     };
     let mesh = solid_to_mm_mesh(&piece_solid, spec.mesh_cell_size_m, target)?;
+    // Post-MC mesh-CSG stage (S3 plumbing; S4/S5/S6 emit transforms).
+    // Empty `mating_transforms` short-circuits to a pass-through.
+    let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir.join(mold_piece_filename(layer_index, piece_side));
     let t_gate = std::time::Instant::now();
@@ -945,11 +950,12 @@ fn mesh_and_gate_v2_plugs(
         } else {
             spec.layers[layer_index - 1].body.clone()
         };
-        let plug_solid = add_plug_pins(base_plug, ribbon);
+        let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
         let target = CastTarget::Plug {
             layer_index: Some(layer_index),
         };
         let mesh = solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?;
+        let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
         let compose_mesh_s = t_compose.elapsed().as_secs_f64();
         let path = out_dir.join(plug_layer_filename(layer_index));
         let t_gate = std::time::Instant::now();
@@ -996,7 +1002,8 @@ fn mesh_and_gate_v2_platform(
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Option<PendingPlatform>, CastError> {
-    let Some(platform_solid) = crate::platform::build_platform_solid(&spec.bounding_region, ribbon)
+    let Some((platform_solid, mating_transforms)) =
+        crate::platform::build_platform_solid(&spec.bounding_region, ribbon)
     else {
         return Ok(None);
     };
@@ -1004,6 +1011,7 @@ fn mesh_and_gate_v2_platform(
     let target = CastTarget::Platform;
     let cell_size_m = spec.mesh_cell_size_m.min(PLATFORM_MAX_CELL_SIZE_M);
     let mesh = solid_to_mm_mesh(&platform_solid, cell_size_m, target)?;
+    let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir.join("platform.stl");
     let t_gate = std::time::Instant::now();
@@ -1058,13 +1066,14 @@ fn mesh_and_gate_v2_funnel(
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Option<PendingFunnel>, CastError> {
-    let Some(funnel_solid) = crate::funnel::build_funnel_solid(ribbon) else {
+    let Some((funnel_solid, mating_transforms)) = crate::funnel::build_funnel_solid(ribbon) else {
         return Ok(None);
     };
     let t_compose = std::time::Instant::now();
     let target = CastTarget::Funnel;
     let cell_size_m = spec.mesh_cell_size_m.min(FUNNEL_MAX_CELL_SIZE_M);
     let mesh = solid_to_mm_mesh(&funnel_solid, cell_size_m, target)?;
+    let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir.join("funnel.stl");
     let t_gate = std::time::Instant::now();
@@ -2765,9 +2774,9 @@ mod tests {
         let body = &spec.layers[0].body;
         let region = &spec.bounding_region;
 
-        let piece_no_pins =
+        let (piece_no_pins, _) =
             crate::compose_piece_solid(body, region, &ribbon_no_pins, PieceSide::Negative).unwrap();
-        let piece_pins =
+        let (piece_pins, _) =
             crate::compose_piece_solid(body, region, &ribbon_pins, PieceSide::Negative).unwrap();
 
         let q = Point3::new(-0.025, 0.0325, 0.003);
@@ -2799,9 +2808,9 @@ mod tests {
         let body = &spec.layers[0].body;
         let region = &spec.bounding_region;
 
-        let piece_no_pins =
+        let (piece_no_pins, _) =
             crate::compose_piece_solid(body, region, &ribbon_no_pins, PieceSide::Positive).unwrap();
-        let piece_pins =
+        let (piece_pins, _) =
             crate::compose_piece_solid(body, region, &ribbon_pins, PieceSide::Positive).unwrap();
 
         let q = Point3::new(-0.025, 0.0325, 0.003);
@@ -2924,9 +2933,9 @@ mod tests {
             .unwrap()
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
-        let piece_no_gate =
+        let (piece_no_gate, _) =
             crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Positive).unwrap();
-        let piece_gate =
+        let (piece_gate, _) =
             crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Positive).unwrap();
 
         let q = Point3::new(-0.030, 0.0, 0.0098);
@@ -2965,9 +2974,9 @@ mod tests {
             .unwrap()
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
-        let piece_no_gate =
+        let (piece_no_gate, _) =
             crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Negative).unwrap();
-        let piece_gate =
+        let (piece_gate, _) =
             crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Negative).unwrap();
 
         // Vent-leg query: cup-wall material on -binormal side.
@@ -3094,14 +3103,14 @@ mod tests {
             .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
-        let piece_neg = crate::compose_piece_solid(
+        let (piece_neg, _) = crate::compose_piece_solid(
             &spec.layers[0].body,
             &spec.bounding_region,
             &ribbon,
             PieceSide::Negative,
         )
         .unwrap();
-        let piece_pos = crate::compose_piece_solid(
+        let (piece_pos, _) = crate::compose_piece_solid(
             &spec.layers[0].body,
             &spec.bounding_region,
             &ribbon,

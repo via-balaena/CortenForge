@@ -75,6 +75,7 @@ pub mod cure;
 mod error;
 pub mod funnel;
 mod material;
+pub mod mesh_csg;
 mod mesher;
 pub mod piece;
 pub mod platform;
@@ -90,6 +91,10 @@ pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use funnel::build_funnel_solid;
 pub use material::MoldingMaterial;
+pub use mesh_csg::{
+    CylinderParams, CylinderParent, MatingTransform, WELD_TOLERANCE_M, apply_mating_transforms,
+    build_cylinder_along_axis, build_half_space_slab, geometric_equivalence, weld_in_place,
+};
 pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
 pub use platform::build_platform_solid;
 pub use plug::{

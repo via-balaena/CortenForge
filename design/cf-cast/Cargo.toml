@@ -33,6 +33,11 @@ mesh-printability = { workspace = true }
 nalgebra = { workspace = true }
 # Custom error type derive
 thiserror = { workspace = true }
+# Post-MC mesh-CSG kernel for the mating-features stage. See
+# workspace dep comment for the cold-build cost. The architectural
+# fix (`docs/CF_CAST_MATING_FEATURES_PLAN.md`) hinges on this being
+# bit-deterministic + manifold-clean, both confirmed by the S1 ADR.
+manifold3d = { workspace = true }
 
 [dev-dependencies]
 # Approximate equality for unit-conversion tests

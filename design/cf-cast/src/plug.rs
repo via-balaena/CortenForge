@@ -102,6 +102,7 @@
 use cf_design::Solid;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
+use crate::mesh_csg::MatingTransform;
 use crate::ribbon::Ribbon;
 
 /// Axial plug-anchor pin geometry spec. All dimensions in meters.
@@ -503,11 +504,16 @@ fn pour_and_dome_anchors(
 /// [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
 /// [`CastSpec`]: crate::CastSpec
 #[must_use]
-pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> Solid {
-    match build_plug_pin_solid(ribbon) {
+pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransform>) {
+    let extended = match build_plug_pin_solid(ribbon) {
         Some(pins) => plug.union(pins),
         None => plug,
-    }
+    };
+    // S3 plumbing: no mating transforms yet. S6 replaces the T-bar
+    // and plug-pin-shaft SDF union above with UnionCylinder
+    // transforms keyed off the same parent triples the cup-side
+    // SubtractCylinder ops consume.
+    (extended, Vec::new())
 }
 
 /// Build a cylinder of `radius` × `length` centered along its axis
@@ -590,7 +596,7 @@ mod tests {
         let plug = Solid::capsule(0.005, 0.020);
         // Sample a few points on the bare plug + the extended-plug
         // SDFs; they should agree exactly when plug_pins is None.
-        let extended = add_plug_pins(plug.clone(), &ribbon);
+        let (extended, _) = add_plug_pins(plug.clone(), &ribbon);
         for q in [
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(0.010, 0.0, 0.0),
@@ -773,7 +779,7 @@ mod tests {
         // is OUTSIDE the bare plug.
         let plug = Solid::capsule(0.005, 0.020);
         let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
-        let extended = add_plug_pins(plug.clone(), &ribbon);
+        let (extended, _) = add_plug_pins(plug.clone(), &ribbon);
 
         let in_pour_pin = Point3::new(0.060, 0.0, 0.0);
         // Bare plug at this point is outside (SDF > 0); extended plug

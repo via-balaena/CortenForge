@@ -43,6 +43,7 @@
 use cf_design::Solid;
 
 use crate::error::{CastError, CastTarget};
+use crate::mesh_csg::MatingTransform;
 use crate::plug::build_plug_socket_solid;
 use crate::pour::build_pour_gate_solid;
 use crate::registration::build_registration_solid;
@@ -69,8 +70,11 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 /// Returns a [`cf_design::Solid`] expression tree whose evaluated
 /// SDF is **negative inside the piece** (i.e., inside the bounding
 /// region, outside the layer body, on the correct side of the
-/// biased ribbon half-space). Step 6's per-piece marching cubes
-/// passes this Solid through the internal `solid_to_mm_mesh` mesher.
+/// biased ribbon half-space), paired with a `Vec<MatingTransform>`
+/// that the post-MC mesh-CSG stage applies before F4. S3 plumbing
+/// always returns an empty Vec; S4 (seam plane) + S5 (registration
+/// pins) + S6 (T-slot + plug-socket carves) populate it. See
+/// `docs/CF_CAST_MATING_FEATURES_PLAN.md`.
 ///
 /// `bounding_region` and `layer_body` are taken by reference and
 /// cloned into the result; the underlying [`cf_design::Solid`] is
@@ -96,7 +100,7 @@ pub fn compose_piece_solid(
     bounding_region: &Solid,
     ribbon: &Ribbon,
     side: PieceSide,
-) -> Result<Solid, CastError> {
+) -> Result<(Solid, Vec<MatingTransform>), CastError> {
     let bounds = bounding_region
         .bounds()
         .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
@@ -154,7 +158,11 @@ pub fn compose_piece_solid(
         Some(sockets) => piece_with_channels.subtract(sockets),
         None => piece_with_channels,
     };
-    Ok(piece)
+    // S3 plumbing: no mating transforms yet. S4 emits SeamTrim
+    // here; S5 replaces the registration-pin SDF union/subtract
+    // above with UnionCylinder/SubtractCylinder transforms; S6
+    // does the same for the T-slot and plug-socket carves.
+    Ok((piece, Vec::new()))
 }
 
 #[cfg(test)]
@@ -192,7 +200,7 @@ mod tests {
     #[test]
     fn negative_piece_contains_cup_wall_below_ribbon() {
         let (body, region, ribbon) = fixture();
-        let piece = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (piece, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
         // Inside bounding region (-30 ≤ z ≤ +30 mm), outside body
         // (body z ∈ [-10, +10]), below ribbon (z < 0):
         let q = Point3::new(0.0, 0.0, -0.020);
@@ -209,7 +217,7 @@ mod tests {
     #[test]
     fn negative_piece_excludes_cup_wall_above_ribbon() {
         let (body, region, ribbon) = fixture();
-        let piece = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (piece, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
         let q = Point3::new(0.0, 0.0, 0.020);
         assert!(
             piece.evaluate(&q) > 0.0,
@@ -227,8 +235,8 @@ mod tests {
         // ribbon — without the body subtraction the negative piece
         // would CONTAIN this point.
         let q = Point3::new(0.0, 0.0, -0.005);
-        let neg = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        let pos = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
         assert!(
             neg.evaluate(&q) > 0.0,
             "negative piece must not contain body interior; got {}",
@@ -248,8 +256,8 @@ mod tests {
         let (body, region, ribbon) = fixture();
         // Far outside the 30 mm half-extent bounding region.
         let q = Point3::new(0.10, 0.0, 0.0);
-        let neg = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        let pos = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
         assert!(
             neg.evaluate(&q) > 0.0,
             "neg piece must exclude far-out point"
@@ -267,8 +275,8 @@ mod tests {
     #[test]
     fn pieces_partition_cup_material_symmetrically() {
         let (body, region, ribbon) = fixture();
-        let neg = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        let pos = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
 
         let q_below = Point3::new(0.0, 0.0, -0.020);
         let q_above = Point3::new(0.0, 0.0, 0.020);
@@ -289,8 +297,8 @@ mod tests {
     #[test]
     fn both_pieces_overlap_at_ribbon_seam() {
         let (body, region, ribbon) = fixture();
-        let neg = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        let pos = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
         // Cup wall on the ribbon seam: y outside body, x within bounding,
         // z = 0 (the ribbon's zero plane). y = 0.020 is outside body
         // (10 mm half-extent) and inside bounding region (30 mm).
@@ -338,7 +346,7 @@ mod tests {
         let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
-        let piece = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (piece, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
         // Final piece carries the bounding region's finite AABB.
         let aabb = piece
             .bounds()
@@ -438,7 +446,7 @@ mod tests {
             .unwrap()
             .with_registration(RegistrationKind::Pins(chunky_pins));
 
-        let neg_piece =
+        let (neg_piece, _) =
             compose_piece_solid(&layer_body, &bounding_region, &ribbon, PieceSide::Negative)
                 .unwrap();
 
@@ -516,9 +524,9 @@ mod tests {
 
         let body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.060));
         let bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.090));
-        let neg_piece_pins =
+        let (neg_piece_pins, _) =
             compose_piece_solid(&body, &bounding, &ribbon_with_pins, PieceSide::Negative).unwrap();
-        let neg_piece_bare =
+        let (neg_piece_bare, _) =
             compose_piece_solid(&body, &bounding, &bare_ribbon, PieceSide::Negative).unwrap();
 
         let socket_axis_in_wall = Point3::new(0.0, 0.0, -0.070);
