@@ -762,6 +762,84 @@ mod tests {
         assert_eq!(mesh.faces.len(), f_before);
     }
 
+    /// S4: a `SeamTrim` with non-zero offset against a mesh that
+    /// straddles the cut plane removes geometry from the opposite
+    /// half and caps the cut with a flat face at the offset.
+    ///
+    /// Fixture: unit cube spanning [-1, +1] mm. Trim normal +Z,
+    /// offset 0.5 mm → kept half is `z > 0.5`. Output should:
+    /// - Have no vertices with z < 0.5 - tolerance.
+    /// - Include vertices exactly at z = 0.5 (the cut cap).
+    #[test]
+    fn seam_trim_caps_at_offset_and_removes_opposite_half() {
+        let cube = unit_cube_mesh();
+        let target = CastTarget::MoldPiece {
+            layer_index: 0,
+            piece_side: crate::ribbon::PieceSide::Negative,
+        };
+        let trimmed = apply_mating_transforms(
+            cube,
+            &[MatingTransform::SeamTrim {
+                normal: Vector3::z_axis(),
+                offset_m: 0.0005, // 0.5 mm in mesh coords
+            }],
+            target,
+        )
+        .unwrap();
+
+        assert!(
+            !trimmed.vertices.is_empty(),
+            "trimmed mesh must retain the +Z half"
+        );
+        // Geometric proxies for "trim worked" (vertex/face counts
+        // can coincide with the input cube's 8/12 by manifold3d's
+        // particular triangulation choice, so structural assertions
+        // on the cut plane are the load-bearing checks here).
+        // No vertices below the cut plane (within 1 µm of f64 noise).
+        let min_z = trimmed
+            .vertices
+            .iter()
+            .map(|v| v.z)
+            .fold(f64::MAX, f64::min);
+        assert!(
+            min_z >= 0.5 - 1.0e-6,
+            "no vertex should sit below the cut plane at z=0.5; got min.z = {min_z}",
+        );
+        // At least one vertex sits exactly on the cap plane.
+        let any_at_cap = trimmed.vertices.iter().any(|v| (v.z - 0.5).abs() < 1.0e-6);
+        assert!(
+            any_at_cap,
+            "trim must cap the cut with new vertices at z = 0.5",
+        );
+    }
+
+    /// `SeamTrim` with an offset large enough to remove the entire
+    /// input mesh produces an empty output (manifold3d's trim
+    /// returns an empty manifold; downstream F4 surfaces the empty
+    /// geometry).
+    #[test]
+    fn seam_trim_offset_past_mesh_extent_produces_empty_output() {
+        let cube = unit_cube_mesh();
+        let target = CastTarget::MoldPiece {
+            layer_index: 0,
+            piece_side: crate::ribbon::PieceSide::Negative,
+        };
+        let trimmed = apply_mating_transforms(
+            cube,
+            &[MatingTransform::SeamTrim {
+                normal: Vector3::z_axis(),
+                offset_m: 0.010, // 10 mm — cube max.z is 1 mm
+            }],
+            target,
+        )
+        .unwrap();
+        assert!(
+            trimmed.vertices.is_empty(),
+            "trim past mesh extent should leave no geometry; got {} verts",
+            trimmed.vertices.len(),
+        );
+    }
+
     #[test]
     fn half_space_slab_has_face_at_plane_point() {
         // Slab oriented with +normal = +Z, plane_point at origin.
