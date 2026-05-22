@@ -8,7 +8,9 @@
 //!
 //! Step 9 of `docs/CURVE_FOLLOWING_DESIGN.md` ships **cylindrical
 //! pins** (vs the design-doc-§Open-questions §1 alternatives of
-//! dovetails or magnets): simplest SDF (one cylinder per pin),
+//! dovetails or magnets): simplest geometry (one cylinder per pin —
+//! pre-S5 an SDF [`Solid::cylinder`], post-S5 a manifold3d cylinder
+//! primitive via [`crate::mesh_csg::build_cylinder_along_axis`]),
 //! industry-standard for printed molds, easy to print + insert +
 //! remove, gravity-held. Pin geometry:
 //!
@@ -55,13 +57,27 @@
 //!
 //! ## Composition
 //!
-//! Pin cylinders are unioned into the [`crate::ribbon::PieceSide::Negative`]
-//! piece's geometry (gain protrusions) and subtracted from the
-//! [`crate::ribbon::PieceSide::Positive`] piece's geometry (gain
-//! matching holes). The [`crate::piece::compose_piece_solid`]
-//! function consults [`crate::ribbon::Ribbon::registration`] and
-//! does the CSG inline; callers don't manage pin geometry
-//! explicitly.
+//! Pin cylinders are emitted as
+//! [`crate::mesh_csg::MatingTransform::UnionCylinder`] on the
+//! [`crate::ribbon::PieceSide::Negative`] piece (gain protrusions)
+//! and as [`crate::mesh_csg::MatingTransform::SubtractCylinder`] on
+//! the [`crate::ribbon::PieceSide::Positive`] piece (gain matching
+//! sockets, slightly inflated radius + depth per the per-piece
+//! clearance budget). [`crate::piece::compose_piece_solid`] consults
+//! [`crate::ribbon::Ribbon::registration`] and appends the pin
+//! transforms to the returned `Vec<MatingTransform>` so the post-MC
+//! mesh-CSG stage materializes the geometry; callers don't manage
+//! pin geometry explicitly.
+//!
+//! S5 of `docs/CF_CAST_MATING_FEATURES_PLAN.md` migrated this path
+//! from an SDF [`Solid::union`] / [`Solid::subtract`] (MC-resolved at
+//! marching-cubes grid resolution) to the post-MC mesh-CSG stage —
+//! exact cylinder primitives via [`crate::mesh_csg::build_cylinder_along_axis`]
+//! replace MC-discretized pin geometry. The pin and socket of a
+//! registration pair share `(center, axis)` derived from the same
+//! arc-fraction sample; only `half_length` (extended by
+//! [`PinSpec::axial_clearance_m`] / 2) and radius (extended by
+//! [`PinSpec::diametral_clearance_m`] / 2) differ between the two.
 //!
 //! ## Default off
 //!
@@ -75,9 +91,20 @@
 //! [`Ribbon::new`]: crate::ribbon::Ribbon::new
 
 use cf_design::Solid;
-use nalgebra::{Point3, UnitQuaternion, Vector3};
+use nalgebra::{Point3, UnitVector3, Vector3};
 
-use crate::ribbon::Ribbon;
+use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
+use crate::ribbon::{PieceSide, Ribbon};
+
+/// Polygonal facet count around the pin cylinder's circumference.
+///
+/// 32-segment circles are the workshop default for 3 mm Ø pins
+/// (recon §2): the chord error at radius 1.5 mm is
+/// `r(1 - cos(π/32)) ≈ 7 µm`, comfortably below FDM bead width
+/// (~0.4 mm). Part of the determinism contract — same
+/// [`CylinderParent`] + same radius + same `PIN_SEGMENTS` → bit-equal
+/// output across calls and across pieces.
+pub(crate) const PIN_SEGMENTS: u32 = 32;
 
 /// Cylindrical-pin registration spec. All dimensions in meters.
 #[derive(Debug, Clone, PartialEq)]
@@ -95,15 +122,31 @@ pub struct PinSpec {
     /// layer-piece-pair, giving each cup piece two lateral
     /// interlock columns + axial pin pairs.
     pub arc_fractions: Vec<f64>,
+    /// Diametral clearance between pin and socket (m). The socket's
+    /// radius is `pin_radius_m + diametral_clearance_m / 2` so the
+    /// pin-vs-socket diameter difference equals
+    /// `diametral_clearance_m`. v2 iter-1 default `0.00020` =
+    /// 0.20 mm matches FDM precision; recon §9 baseline for M2
+    /// pins (positional sliding fit).
+    pub diametral_clearance_m: f64,
+    /// Axial pocket-bottom clearance per side (m). The socket's
+    /// parent `half_length` is extended by `axial_clearance_m / 2`
+    /// so the socket cavity bottoms `axial_clearance_m / 2` past the
+    /// pin tip on each side of the seam (symmetric per the
+    /// `diametral_clearance / 2 → radius` convention). v2 iter-1
+    /// default `0.00050` = 0.50 mm; recon §9 baseline for M2 pins.
+    pub axial_clearance_m: f64,
 }
 
 impl PinSpec {
     /// v2 iter-1 defaults: 3 mm diameter × 10 mm long pins at 25% +
-    /// 75% of centerline arc length. Pin offset from the centerline
-    /// along the ribbon's split-normal is derived per-layer in
-    /// [`build_registration_solid`] (midpoint of the cup-wall
-    /// annulus between the layer body and the bounding region),
-    /// not stored on the spec — see the module docstring for the
+    /// 75% of centerline arc length, 0.20 mm diametral × 0.50 mm
+    /// axial clearance (recon §9 M2 baseline — positional sliding
+    /// fit). Pin offset from the centerline along the ribbon's
+    /// split-normal is derived per-layer in
+    /// [`build_registration_transforms`] (midpoint of the cup-wall
+    /// annulus between the layer body and the bounding region), not
+    /// stored on the spec — see the module docstring for the
     /// "derived, not fixed" rationale.
     #[must_use]
     pub fn iter1() -> Self {
@@ -111,6 +154,8 @@ impl PinSpec {
             pin_radius_m: 0.0015,
             pin_half_length_m: 0.005,
             arc_fractions: vec![0.25, 0.75],
+            diametral_clearance_m: 0.00020,
+            axial_clearance_m: 0.00050,
         }
     }
 }
@@ -151,19 +196,35 @@ const PIN_RAY_MAX_REACH_M: f64 = 1.0;
 /// so 32 is comfortably above the legitimate bound.
 const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 
-/// Build the combined pin Solid for the ribbon's registration kind,
-/// or `None` if registration is `None` or the pin spec has no arc
-/// fractions.
+/// Build the per-piece pin/socket mating transforms for the ribbon's
+/// registration kind.
 ///
-/// Returns `Some(solid)` whose SDF is the union of all individual
-/// pin cylinders (one cylinder per arc fraction in
-/// [`PinSpec::arc_fractions`]). Each cylinder is positioned at
-/// `centerline_sample(t) + pin_offset(t) * split_normal_vec` with
-/// axis aligned to the ribbon's binormal at that centerline
-/// position. `pin_offset(t)` is the midpoint of the cup-wall
-/// annulus at that arc fraction — i.e., halfway between the layer
-/// body's outer surface and the bounding region's outer surface
-/// along the split-normal ray from the centerline sample.
+/// Returns a `Vec<MatingTransform>` containing one
+/// [`MatingTransform::UnionCylinder`] per pin position for
+/// [`PieceSide::Negative`], or one
+/// [`MatingTransform::SubtractCylinder`] per pin position for
+/// [`PieceSide::Positive`]. Pin and socket of a registration pair
+/// share `(center, axis)` derived from the same arc-fraction sample
+/// (and lateral mirror sign); the socket's `half_length` is extended
+/// by [`PinSpec::axial_clearance_m`] / 2 and its `radius_m` by
+/// [`PinSpec::diametral_clearance_m`] / 2 so the pin seats with
+/// symmetric per-side clearance (matching the `/2` convention the
+/// diametral budget uses).
+///
+/// Returns an empty `Vec` when:
+/// - `ribbon.registration` is [`RegistrationKind::None`];
+/// - the spec has no arc fractions;
+/// - any pin's split-normal ray runs past the module-private
+///   [`PIN_RAY_MAX_REACH_M`] (1 m) without crossing the
+///   bounding-region surface (signals a degenerate caller).
+///
+/// Each pin is positioned at
+/// `centerline_sample(t) + pin_offset(t) * sign * split_normal_vec`
+/// with axis aligned to the ribbon's binormal at that centerline
+/// position. `pin_offset(t)` is the midpoint of the cup-wall annulus
+/// at that arc fraction — halfway between the layer body's outer
+/// surface and the bounding region's outer surface along the
+/// split-normal ray from the centerline sample.
 ///
 /// `layer_body` and `bounding_region` are the same per-layer
 /// [`Solid`]s the caller passes to
@@ -172,25 +233,22 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 ///
 /// The cylinders are deliberately NOT rotated to align with the
 /// centerline's tangent — they're perpendicular to the seam, so
-/// they extend equally into both [`crate::ribbon::PieceSide`] halves.
-///
-/// Returns `None` for any arc fraction whose split-normal ray runs
-/// past the module-private `PIN_RAY_MAX_REACH_M` (1 m) without
-/// crossing the bounding-region surface; this signals a degenerate
-/// caller (unbounded bounding region) and the surrounding piece
-/// composition will produce a pin-less mold piece for this layer.
+/// they extend equally into both [`PieceSide`] halves (later
+/// bisected by the cup-piece [`MatingTransform::SeamTrim`] in
+/// recon §5's transform order: cylinder ops before seam trim).
 #[must_use]
-pub fn build_registration_solid(
+pub fn build_registration_transforms(
     ribbon: &Ribbon,
     layer_body: &Solid,
     bounding_region: &Solid,
-) -> Option<Solid> {
+    side: PieceSide,
+) -> Vec<MatingTransform> {
     let spec = match &ribbon.registration {
-        RegistrationKind::None => return None,
+        RegistrationKind::None => return Vec::new(),
         RegistrationKind::Pins(spec) => spec,
     };
     if spec.arc_fractions.is_empty() {
-        return None;
+        return Vec::new();
     }
     let split_vec = ribbon.split_normal.as_vector();
     // For each arc fraction, build TWO pins — one on each lateral
@@ -202,31 +260,72 @@ pub fn build_registration_solid(
     // (body wider on one side of the centerline than the other),
     // each pin's offset is computed independently — the +side and
     // -side annulus midpoints can differ.
-    let mut cylinders = Vec::with_capacity(spec.arc_fractions.len() * 2);
+    let mut transforms = Vec::with_capacity(spec.arc_fractions.len() * 2);
     for &t in &spec.arc_fractions {
-        let (center, _tangent, binormal) = ribbon.sample_at_arc_fraction(t)?;
+        let Some((center, _tangent, binormal)) = ribbon.sample_at_arc_fraction(t) else {
+            return Vec::new();
+        };
+        // `binormal` is unit-length by ribbon construction
+        // (`tangent × N_split` normalized); renormalize defensively
+        // so a degenerate (zero) binormal vector returns the
+        // Z-fallback rather than panicking on UnitVector3 invariants.
+        let axis = UnitVector3::new_normalize(binormal);
         for &sign in &[1.0_f64, -1.0_f64] {
             let ray_dir = sign * split_vec;
-            let body_dist = surface_distance_along_ray(layer_body, center, ray_dir)?;
-            let bounding_dist = surface_distance_along_ray(bounding_region, center, ray_dir)?;
+            let Some(body_dist) = surface_distance_along_ray(layer_body, center, ray_dir) else {
+                return Vec::new();
+            };
+            let Some(bounding_dist) = surface_distance_along_ray(bounding_region, center, ray_dir)
+            else {
+                return Vec::new();
+            };
             let pin_offset = f64::midpoint(body_dist, bounding_dist);
             let pin_center = center + pin_offset * ray_dir;
-            let rotation =
-                UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &binormal)
-                    .unwrap_or_else(UnitQuaternion::identity);
-            let cyl = Solid::cylinder(spec.pin_radius_m, spec.pin_half_length_m)
-                .rotate(rotation)
-                .translate(pin_center.coords);
-            cylinders.push(cyl);
+            transforms.push(pin_transform_for_side(spec, pin_center, axis, side));
         }
     }
-    // Union all pin cylinders. `Solid::union` is binary; chain via
-    // fold. (No `union_all` helper in cf-design today; trivial loop.)
-    let mut combined = cylinders.pop()?;
-    for c in cylinders {
-        combined = combined.union(c);
+    transforms
+}
+
+/// Build the per-side cylinder transform for one pin location.
+///
+/// Negative side gets [`MatingTransform::UnionCylinder`] at the pin
+/// radius and pin half-length. Positive side gets
+/// [`MatingTransform::SubtractCylinder`] with a socket that's
+/// inflated by [`PinSpec::diametral_clearance_m`] / 2 radially and
+/// [`PinSpec::axial_clearance_m`] / 2 axially (symmetric `/2`
+/// convention — each side of the seam gets half the total clearance
+/// as pocket-bottom relief).
+fn pin_transform_for_side(
+    spec: &PinSpec,
+    pin_center: Point3<f64>,
+    axis: UnitVector3<f64>,
+    side: PieceSide,
+) -> MatingTransform {
+    match side {
+        PieceSide::Negative => MatingTransform::UnionCylinder {
+            params: CylinderParams {
+                parent: CylinderParent {
+                    center_m: pin_center,
+                    axis,
+                    half_length_m: spec.pin_half_length_m,
+                },
+                radius_m: spec.pin_radius_m,
+                segments: PIN_SEGMENTS,
+            },
+        },
+        PieceSide::Positive => MatingTransform::SubtractCylinder {
+            params: CylinderParams {
+                parent: CylinderParent {
+                    center_m: pin_center,
+                    axis,
+                    half_length_m: spec.pin_half_length_m + spec.axial_clearance_m / 2.0,
+                },
+                radius_m: spec.pin_radius_m + spec.diametral_clearance_m / 2.0,
+                segments: PIN_SEGMENTS,
+            },
+        },
     }
-    Some(combined)
 }
 
 /// Walk `dir` outward from `origin` to find the distance `d ≥ 0` at
@@ -318,12 +417,30 @@ mod tests {
         (body, bounds)
     }
 
+    /// Extract `CylinderParams` from a [`MatingTransform`] for test
+    /// inspection. Both Union and Subtract cylinder variants carry
+    /// the same payload type; tests focus on the params rather than
+    /// the variant when checking pin position / radius / clearance.
+    fn params_of(t: &MatingTransform) -> &CylinderParams {
+        match t {
+            MatingTransform::UnionCylinder { params }
+            | MatingTransform::SubtractCylinder { params } => params,
+            MatingTransform::SeamTrim { .. } => {
+                panic!("registration transforms should never include SeamTrim")
+            }
+        }
+    }
+
     #[test]
     fn pin_spec_iter1_has_workshop_defaults() {
         let s = PinSpec::iter1();
         assert!((s.pin_radius_m - 0.0015).abs() < f64::EPSILON);
         assert!((s.pin_half_length_m - 0.005).abs() < f64::EPSILON);
         assert_eq!(s.arc_fractions, vec![0.25, 0.75]);
+        // S5 clearance defaults — recon §9 M2 baseline (positional
+        // sliding fit). 0.20 mm diametral × 0.50 mm axial.
+        assert!((s.diametral_clearance_m - 0.00020).abs() < f64::EPSILON);
+        assert!((s.axial_clearance_m - 0.00050).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -332,63 +449,66 @@ mod tests {
     }
 
     #[test]
-    fn build_registration_solid_none_returns_none() {
+    fn build_registration_transforms_none_returns_empty() {
         let ribbon = straight_x_ribbon(); // default registration = None
         let (body, bounds) = reference_body_and_bounds();
-        assert!(build_registration_solid(&ribbon, &body, &bounds).is_none());
+        assert!(
+            build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative).is_empty()
+        );
+        assert!(
+            build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Positive).is_empty()
+        );
     }
 
     #[test]
-    fn build_registration_solid_pins_returns_some_with_finite_bounds() {
+    fn build_registration_transforms_pins_returns_one_per_pin_per_side() {
+        // 4 pins total: 2 arc fractions × 2 lateral mirror sides.
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
         let (body, bounds) = reference_body_and_bounds();
-        let pins = build_registration_solid(&ribbon, &body, &bounds)
-            .expect("pin spec should yield a solid");
-        let aabb = pins
-            .bounds()
-            .expect("pin cylinders should have finite bounds");
-        // 4 pins total: 2 arc fractions × 2 lateral mirror sides.
-        // Arc fractions 0.25/0.75 of [-0.050, +0.050] centerline →
-        // centers at x ∈ {-0.025, +0.025}. Each arc fraction yields
-        // pins on both +Y and -Y sides (split-normal mirror): pin
-        // y_center at ±(annulus midpoint) = ±(10 + 30)/2 = ±20 mm.
-        // Pin radius 1.5 mm + half-length 5 mm along binormal (+Z).
-        assert!(aabb.min.x < 0.0); // -X arc-fraction pins
-        assert!(aabb.max.x > 0.0); // +X arc-fraction pins
-        // y range spans BOTH lateral mirror sides — pins at
-        // y = ±20 mm with radius 1.5 mm.
-        assert!(
-            aabb.min.y < -0.018,
-            "pin y_min should reach -split-normal mirror (~-20 mm); \
-             got {}",
-            aabb.min.y,
+        let neg = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative);
+        let pos = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Positive);
+        assert_eq!(
+            neg.len(),
+            4,
+            "4 pins per piece (2 arc fractions × 2 lateral mirrors)"
         );
-        assert!(
-            aabb.max.y > 0.018,
-            "pin y_max should reach +split-normal mirror (~+20 mm); \
-             got {}",
-            aabb.max.y,
-        );
-        // y range bounded near ±22 mm (annulus midpoint 20 mm + pin
-        // radius 1.5 mm + small slack for rotation FP error).
-        assert!(aabb.max.y < 0.022 && aabb.min.y > -0.022);
-        // z extends pin_half_length each side
-        assert!(aabb.min.z <= -0.005 + 1e-9);
-        assert!(aabb.max.z >= 0.005 - 1e-9);
+        assert_eq!(pos.len(), 4);
+        // Negative emits UnionCylinder; Positive emits SubtractCylinder.
+        for t in &neg {
+            assert!(
+                matches!(t, MatingTransform::UnionCylinder { .. }),
+                "Negative side should emit UnionCylinder; got {t:?}",
+            );
+        }
+        for t in &pos {
+            assert!(
+                matches!(t, MatingTransform::SubtractCylinder { .. }),
+                "Positive side should emit SubtractCylinder; got {t:?}",
+            );
+        }
     }
 
     #[test]
-    fn build_registration_solid_empty_arc_fractions_returns_none() {
+    fn build_registration_transforms_empty_arc_fractions_returns_empty() {
         let mut spec = PinSpec::iter1();
         spec.arc_fractions.clear();
         let ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(spec));
         let (body, bounds) = reference_body_and_bounds();
-        assert!(build_registration_solid(&ribbon, &body, &bounds).is_none());
+        assert!(
+            build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative).is_empty()
+        );
     }
 
+    /// The pin position invariant: each Negative-side pin's
+    /// `CylinderParent::center_m` lands at the annulus midpoint, NOT
+    /// inside the body (where pre-C1 iter-1 fixture made the pin
+    /// free-float). Replaces the pre-S5 pin-SDF inside-only assertion
+    /// — post-S5 the pin geometry is mesh-CSG, but the COMPOSITION
+    /// position invariant lives in the transform parameters and is
+    /// directly inspectable without a manifold3d round-trip.
     #[test]
-    fn pin_cylinders_are_inside_only_at_pin_positions() {
+    fn pin_transforms_position_each_pin_at_annulus_midpoint() {
         // Pin at arc-fraction 0.25 of straight +X centerline (-0.05 → +0.05):
         //   centerline_sample = (-0.025, 0, 0)
         //   body surface along +Y: y = +0.010
@@ -400,31 +520,45 @@ mod tests {
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
         let (body, bounds) = reference_body_and_bounds();
-        let pins = build_registration_solid(&ribbon, &body, &bounds).unwrap();
+        let neg = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative);
 
-        let pin_center = Point3::new(-0.025, 0.020, 0.0);
-        assert!(
-            pins.evaluate(&pin_center) < 0.0,
-            "pin SDF at pin center should be negative; got {}",
-            pins.evaluate(&pin_center),
-        );
-
-        let far = Point3::new(0.100, 0.100, 0.100);
-        assert!(
-            pins.evaluate(&far) > 0.0,
-            "pin SDF far from pins should be positive; got {}",
-            pins.evaluate(&far),
-        );
+        // Expect 4 pin centers — 2 arc fractions × 2 lateral sides.
+        let centers: Vec<Point3<f64>> = neg.iter().map(|t| params_of(t).parent.center_m).collect();
+        let expected = [
+            Point3::new(-0.025, 0.020, 0.0),  // t=0.25, +Y
+            Point3::new(-0.025, -0.020, 0.0), // t=0.25, -Y
+            Point3::new(0.025, 0.020, 0.0),   // t=0.75, +Y
+            Point3::new(0.025, -0.020, 0.0),  // t=0.75, -Y
+        ];
+        for e in &expected {
+            let matched = centers.iter().any(|c| {
+                (c.x - e.x).abs() < 1e-6 && (c.y - e.y).abs() < 1e-6 && (c.z - e.z).abs() < 1e-6
+            });
+            assert!(
+                matched,
+                "expected pin center at {e:?}, got centers {centers:?}"
+            );
+        }
+        // Pin radius + half-length unchanged from spec.
+        for t in &neg {
+            let p = params_of(t);
+            assert!((p.radius_m - 0.0015).abs() < f64::EPSILON);
+            assert!((p.parent.half_length_m - 0.005).abs() < f64::EPSILON);
+        }
     }
 
     /// Wider body fixture: half-extent 36 mm body + 61 mm bounding —
     /// mirrors iter-1 sock-over-capsule's `+X` geometry (body extent
     /// at layer 0 ≈ 41 mm, bounding ≈ 61 mm; cup-wall annulus
-    /// `x ∈ [41 mm, 61 mm]`). Pin should land at the annulus
-    /// midpoint, NOT at the legacy 25 mm fixed offset — the original
-    /// iter-1 visual-gate falsification mode. Per `recon §F`.
+    /// `x ∈ [41 mm, 61 mm]`). Each pin's `CylinderParent::center_m`
+    /// should land at the annulus midpoint, NOT at the legacy 25 mm
+    /// fixed offset — the original iter-1 visual-gate falsification
+    /// mode (workshop iter-1 mold recon §F). Pre-S5 the test
+    /// asserted the pin-SDF inside-only; post-S5 the equivalent
+    /// invariant inspects the [`CylinderParent::center_m`] each
+    /// transform carries directly.
     #[test]
-    fn pin_position_stays_in_cup_wall_for_wide_body_iter1_regression() {
+    fn pin_transforms_position_stays_in_cup_wall_for_wide_body_iter1_regression() {
         let body = Solid::cuboid(Vector3::new(0.036, 0.036, 0.036));
         let bounds = Solid::cuboid(Vector3::new(0.061, 0.061, 0.061));
         // Centerline along +X, split-normal +X so the pin extends
@@ -436,49 +570,31 @@ mod tests {
         let ribbon = Ribbon::new(centerline, split)
             .unwrap()
             .with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let pins = build_registration_solid(&ribbon, &body, &bounds)
-            .expect("pin spec should yield a solid for wide-body fixture");
-        let aabb = pins
-            .bounds()
-            .expect("pin cylinders should have finite bounds");
-        // 4 pins total: 2 arc fractions × 2 lateral mirror sides.
-        // Annulus midpoint along ±X = ±(36 + 61) / 2 = ±48.5 mm.
-        // Pin cylinders span ±48.5 ± pin_radius (1.5 mm) in x.
-        assert!(
-            aabb.min.x < -0.046,
-            "pin AABB x_min should reach -split-normal mirror \
-             (~-48.5 mm); got {}",
-            aabb.min.x,
-        );
-        assert!(
-            aabb.max.x > 0.046,
-            "pin AABB x_max should reach +split-normal mirror \
-             (~+48.5 mm); got {}",
-            aabb.max.x,
-        );
-        // x range bounded near ±51 mm (annulus midpoint 48.5 mm +
-        // pin radius 1.5 mm + small rotation slack).
-        assert!(aabb.max.x < 0.051 && aabb.min.x > -0.051);
-        // Pin t=0.25 +split mirror is centered at (+0.0485, 0, -0.025)
-        // (annulus midpoint along +X, sample z at 25% of [-0.050,
-        // +0.050]). Pin axis is the local binormal +Y; cylinder
-        // extends ±5 mm along Y. Query at pin center → inside pin
-        // (SDF < 0); also OUTSIDE the body and INSIDE the bounding
-        // region.
-        let pin_center_t025 = Point3::new(0.0485, 0.0, -0.025);
-        assert!(
-            body.evaluate(&pin_center_t025) > 0.0,
-            "pin axis should be OUTSIDE the body (in the cup wall)",
-        );
-        assert!(
-            bounds.evaluate(&pin_center_t025) < 0.0,
-            "pin axis should be INSIDE the bounding region (in the cup wall)",
-        );
-        assert!(
-            pins.evaluate(&pin_center_t025) < 0.0,
-            "pin SDF at the annulus-midpoint pin center should be negative; got {}",
-            pins.evaluate(&pin_center_t025),
-        );
+        let neg = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative);
+        assert_eq!(neg.len(), 4, "wide-body fixture should still emit 4 pins");
+
+        // For each pin, the parent center must be:
+        // - OUTSIDE the body (cup-wall material, body.evaluate > 0),
+        // - INSIDE the bounding region (cup-wall material, bounds.evaluate < 0),
+        // - At |x| ≈ (36 + 61) / 2 = 48.5 mm (annulus midpoint along ±X).
+        for t in &neg {
+            let c = params_of(t).parent.center_m;
+            assert!(
+                body.evaluate(&c) > 0.0,
+                "pin center {c:?} must be OUTSIDE the body (in cup wall); body.evaluate = {}",
+                body.evaluate(&c),
+            );
+            assert!(
+                bounds.evaluate(&c) < 0.0,
+                "pin center {c:?} must be INSIDE the bounding region (in cup wall); \
+                 bounds.evaluate = {}",
+                bounds.evaluate(&c),
+            );
+            assert!(
+                (c.x.abs() - 0.0485).abs() < 1e-6,
+                "pin center {c:?} should land at the annulus midpoint |x| ≈ 48.5 mm",
+            );
+        }
     }
 
     /// Origin strictly OUTSIDE the solid (`sd_origin > 0`) →

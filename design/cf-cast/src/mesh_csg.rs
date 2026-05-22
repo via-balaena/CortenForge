@@ -840,6 +840,131 @@ mod tests {
         );
     }
 
+    /// S5 cross-piece determinism contract (recon §2): two
+    /// independent calls to [`build_cylinder_along_axis`] with the
+    /// same [`CylinderParent`] + same radius + same `segments` MUST
+    /// produce bit-equal `to_mesh_f64` output (both vertex array
+    /// and triangle index array). This is the load-bearing invariant
+    /// the architectural fix rests on — pin and socket of a
+    /// registration pair share the same parent triple, so their
+    /// meshes are matched by construction across pieces rather than
+    /// by tolerance.
+    #[test]
+    fn pin_cylinder_mesh_is_bit_equal_across_pieces() {
+        // Synthetic parent triple — same shape as the M2 path in
+        // production. The Y-axis pin matches the
+        // `cylinder_along_y_axis_pose_matches_axis` test above; we
+        // pick a non-trivial pose so the affine-12 packing is
+        // exercised, not the Z-aligned trivial case.
+        let parent = CylinderParent {
+            center_m: Point3::new(0.030, 0.010, 0.000),
+            axis: Vector3::y_axis(),
+            half_length_m: 0.005,
+        };
+        let r_pin = 0.0015; // PinSpec::iter1 pin radius
+        let segments = 32_u32;
+
+        // Two independent builds → bit-equal output.
+        let m_a = build_cylinder_along_axis(&parent, r_pin, segments);
+        let m_b = build_cylinder_along_axis(&parent, r_pin, segments);
+        let (verts_a, props_a, tris_a) = m_a.to_mesh_f64();
+        let (verts_b, props_b, tris_b) = m_b.to_mesh_f64();
+
+        assert_eq!(props_a, props_b);
+        assert_eq!(
+            verts_a, verts_b,
+            "two builds of same parent + radius + segments must produce bit-equal vertex array"
+        );
+        assert_eq!(tris_a, tris_b, "…and bit-equal triangle index array");
+        // Sanity check: not empty.
+        assert!(!verts_a.is_empty());
+        assert!(!tris_a.is_empty());
+    }
+
+    /// S5 pin/socket fit invariant — math-verified (recon §9 + plan §S5).
+    ///
+    /// Given the same `CylinderParent` (shared `center`/`axis` for
+    /// the pin/socket pair) and the same `segments`:
+    /// - Socket radius = pin radius + `diametral_clearance_m / 2`
+    ///   → socket diameter exceeds pin diameter by exactly
+    ///   `diametral_clearance_m` (manifold3d cylinder primitive's
+    ///   radial AABB extent scales linearly with the radius input;
+    ///   the per-side radial gap equals `diametral_clearance / 2`).
+    /// - Socket parent `half_length` = pin parent `half_length` +
+    ///   `axial_clearance_m / 2` → the socket cavity bottoms
+    ///   `axial_clearance_m / 2` past the pin tip on each side of
+    ///   the seam (symmetric `/2` convention matching the diametral
+    ///   budget).
+    ///
+    /// Locks the clearance arithmetic at engine precision rather
+    /// than via cf-view smoke per
+    /// `feedback_math_verify_geometric_contracts`: manifold3d's
+    /// cylinder bounding-box is bit-precise on f64, so the fit
+    /// invariant should hold to ≤ 1 µm.
+    #[test]
+    fn pin_and_socket_fit_invariant() {
+        let parent_pin = CylinderParent {
+            center_m: Point3::origin(),
+            axis: Vector3::z_axis(),
+            half_length_m: 0.005, // 5 mm
+        };
+        let r_pin_m = 0.0015; // 1.5 mm
+        let diametral_clearance_m = 0.00020; // 0.20 mm
+        let axial_clearance_m = 0.00050; // 0.50 mm
+        let segments = 32_u32;
+
+        // Socket parent extends half-length by axial_clearance / 2;
+        // socket radius extends pin radius by diametral_clearance / 2.
+        let parent_socket = CylinderParent {
+            center_m: parent_pin.center_m,
+            axis: parent_pin.axis,
+            half_length_m: parent_pin.half_length_m + axial_clearance_m / 2.0,
+        };
+        let r_socket_m = r_pin_m + diametral_clearance_m / 2.0;
+
+        let pin = build_cylinder_along_axis(&parent_pin, r_pin_m, segments);
+        let socket = build_cylinder_along_axis(&parent_socket, r_socket_m, segments);
+
+        let (pin_min, pin_max) = pin.bounding_box_nalgebra().unwrap();
+        let (sock_min, sock_max) = socket.bounding_box_nalgebra().unwrap();
+
+        // Radial extent (X, Y): socket bigger than pin by exactly
+        // diametral_clearance / 2 on each side (= diametral_clearance
+        // across the diameter).
+        let half_diametral_mm = (diametral_clearance_m / 2.0) * METERS_TO_MM;
+        let tol_mm = 1.0e-3; // 1 µm — manifold3d f64 precision
+        let radial_gaps = [
+            ("+X", sock_max.x - pin_max.x),
+            ("-X", pin_min.x - sock_min.x),
+            ("+Y", sock_max.y - pin_max.y),
+            ("-Y", pin_min.y - sock_min.y),
+        ];
+        for (name, gap) in radial_gaps {
+            assert!(
+                (gap - half_diametral_mm).abs() < tol_mm,
+                "socket-vs-pin radial gap on {name} should equal diametral/2 = \
+                 {half_diametral_mm:.6} mm; got {gap:.6} mm",
+            );
+        }
+
+        // Axial extent (Z): socket bigger than pin by exactly
+        // axial_clearance / 2 on EACH side of the seam (symmetric
+        // since both cylinders are centred at the same parent.center).
+        let half_axial_mm = (axial_clearance_m / 2.0) * METERS_TO_MM;
+        let axial_gap_z_max = sock_max.z - pin_max.z;
+        let axial_gap_z_min = pin_min.z - sock_min.z;
+        assert!(
+            (axial_gap_z_max - half_axial_mm).abs() < tol_mm,
+            "socket-vs-pin axial gap on +Z should equal axial/2 = \
+             {half_axial_mm:.6} mm; got {axial_gap_z_max:.6} mm",
+        );
+        assert!(
+            (axial_gap_z_min - half_axial_mm).abs() < tol_mm,
+            "socket-vs-pin axial gap on -Z should equal axial/2 = \
+             {half_axial_mm:.6} mm; got {axial_gap_z_min:.6} mm",
+        );
+    }
+
     #[test]
     fn half_space_slab_has_face_at_plane_point() {
         // Slab oriented with +normal = +Z, plane_point at origin.

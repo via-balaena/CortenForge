@@ -5,18 +5,24 @@
 //! geometry is the CSG composition
 //!
 //! ```text
-//! piece_sdf = bounding_region ∖ layer_body
-//! piece_meshcsg = SeamTrim against ribbon's single-plane approximation
+//! piece_sdf = bounding_region ∖ layer_body ∖ pour_gate ∖ plug_socket
+//! piece_meshcsg = [registration pin/socket cylinders] then SeamTrim
 //! ```
 //!
 //! Pre-S4 the ribbon split was an SDF half-space intersect appended
 //! to the formula; S4 of `docs/CF_CAST_MATING_FEATURES_PLAN.md`
-//! moved it to a post-MC mesh-CSG operation emitted into the
-//! returned `Vec<MatingTransform>`. This module provides
-//! [`compose_piece_solid`] that wires both halves: the SDF side
-//! over [`cf_design::Solid`]'s `subtract` / `intersect` algebra,
-//! the mesh-CSG side via [`crate::mesh_csg::MatingTransform`]. The
-//! resulting `(Solid, Vec<MatingTransform>)` pair feeds into the
+//! moved it to a post-MC mesh-CSG operation. S5 (this surface)
+//! moved the registration pins/sockets the same way: pre-S5 the
+//! pin geometry was an SDF [`Solid::union`] / [`Solid::subtract`]
+//! (MC-resolved at marching-cubes grid resolution); post-S5 each pin
+//! is an exact [`crate::mesh_csg::MatingTransform::UnionCylinder`]
+//! (Negative side) or
+//! [`crate::mesh_csg::MatingTransform::SubtractCylinder`] (Positive
+//! side) appended to the returned `Vec<MatingTransform>`, ordered
+//! per recon §5 (cylinder ops BEFORE the `SeamTrim` so the trim
+//! bisects pin/socket meshes cleanly through the seam plane).
+//!
+//! The resulting `(Solid, Vec<MatingTransform>)` pair feeds into the
 //! per-piece pipeline at Step 6: `solid_to_mm_mesh` →
 //! `apply_mating_transforms` → F4 → STL.
 //!
@@ -59,7 +65,7 @@ use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
 use crate::plug::build_plug_socket_solid;
 use crate::pour::build_pour_gate_solid;
-use crate::registration::build_registration_solid;
+use crate::registration::build_registration_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
 
 /// Inter-piece seam overlap distance applied at the
@@ -84,11 +90,15 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 ///   **side-agnostic** — both [`PieceSide::Negative`] and
 ///   [`PieceSide::Positive`] return the same Solid; the side-specific
 ///   bisection moves to the Vec).
-/// - **`Vec<MatingTransform>`** = a single
+/// - **`Vec<MatingTransform>`** = the per-piece registration pin
+///   ops (one
+///   [`crate::mesh_csg::MatingTransform::UnionCylinder`] per pin on
+///   [`PieceSide::Negative`]; one
+///   [`crate::mesh_csg::MatingTransform::SubtractCylinder`] per pin
+///   on [`PieceSide::Positive`]) followed by a single
 ///   [`crate::mesh_csg::MatingTransform::SeamTrim`] selecting the
-///   side's kept half-space (plus the 0.5 mm overlap bias). S5
-///   (pins) + S6 (T-slot + plug-socket) will extend the Vec with
-///   `UnionCylinder` / `SubtractCylinder` entries.
+///   side's kept half-space (plus the 0.5 mm overlap bias). S6
+///   (T-slot + plug-socket) will extend the Vec further.
 ///
 /// The returned Solid's SDF is **negative inside the cup-wall
 /// material** (inside the bounding region, outside the layer body);
@@ -130,26 +140,6 @@ pub fn compose_piece_solid(
     // to the returned `Vec<MatingTransform>` as a post-MC seam trim.
     let base_piece = bounding_region.clone().subtract(layer_body.clone());
 
-    // Step 9: inter-piece registration pins. `Negative` side
-    // gains protrusions (union); `Positive` side gains matching
-    // holes (subtract). When `ribbon.registration` is `None` the
-    // helper returns `None` and the base piece flows through
-    // unchanged — Step 5-8 callers see no behavior change.
-    //
-    // The registration builder ray-marches `layer_body` +
-    // `bounding_region` along the ribbon's split-normal to put the
-    // pin in the per-layer cup-wall annulus midpoint (see the
-    // `crate::registration` module docstring for the "derived, not
-    // fixed" rationale).
-    let piece_with_pins = match (
-        build_registration_solid(ribbon, layer_body, bounding_region),
-        side,
-    ) {
-        (Some(pins), PieceSide::Negative) => base_piece.union(pins),
-        (Some(pins), PieceSide::Positive) => base_piece.subtract(pins),
-        (None, _) => base_piece,
-    };
-
     // Step 10 + v2.1 sub-leaves 2-3: pour-gate + air-vent channels.
     // Both pieces lose material along the channel cylinders
     // (subtract). The side-mounted pour gate runs along the ribbon
@@ -159,10 +149,10 @@ pub fn compose_piece_solid(
     // polyline's argmax-z vertex (straddles the seam, so each piece
     // gets half the channel cross-section). When
     // `ribbon.pour_gate` is `None` the helper returns `None` and the
-    // piece flows through unchanged — Steps 5-9 callers unaffected.
+    // piece flows through unchanged.
     let piece_with_channels = match build_pour_gate_solid(ribbon) {
-        Some(channels) => piece_with_pins.subtract(channels),
-        None => piece_with_pins,
+        Some(channels) => base_piece.subtract(channels),
+        None => base_piece,
     };
 
     // v2.1: plug-anchor sockets at centerline endpoints. Both
@@ -178,20 +168,37 @@ pub fn compose_piece_solid(
         Some(sockets) => piece_with_channels.subtract(sockets),
         None => piece_with_channels,
     };
+    // Step 9 (S5): inter-piece registration pins. Negative side
+    // emits `UnionCylinder` per pin (gains protrusions); Positive
+    // side emits `SubtractCylinder` per pin (gains matching
+    // sockets, inflated by the per-piece diametral + axial
+    // clearance budgets). The helper returns an empty Vec when
+    // `ribbon.registration` is `None` so callers see no behavior
+    // change for the registration-less path.
+    //
+    // The helper ray-marches `layer_body` + `bounding_region`
+    // along the ribbon's split-normal to put each pin at the
+    // per-layer cup-wall annulus midpoint (see the
+    // `crate::registration` module docstring for the "derived, not
+    // fixed" rationale).
+    let mut transforms = build_registration_transforms(ribbon, layer_body, bounding_region, side);
+
     // S4: emit a SeamTrim against the single-plane approximation of
     // the ribbon's curve-following splitting surface. Both pieces
     // trim against the SAME physical plane through the centerline's
     // arc-length midpoint, with the 0.5 mm overlap bias applied
     // symmetrically so each kept half-space extends `2 *
-    // RIBBON_PIECE_OVERLAP_M = 1 mm` into the other side. S5 will
-    // add the registration-pin UnionCylinder/SubtractCylinder
-    // transforms; S6 will add the T-slot + plug-socket carves.
+    // RIBBON_PIECE_OVERLAP_M = 1 mm` into the other side. Recon §5
+    // pins ordering: cylinder CSG ops BEFORE the seam trim so the
+    // trim bisects pin/socket meshes cleanly through the seam plane.
+    // S6 will add the T-slot + plug-socket carves ahead of the pins
+    // (recon §5 sequence: subtract-then-union-then-trim).
     let (midpoint, binormal) = ribbon.seam_plane_reference();
-    let seam_trim = MatingTransform::SeamTrim {
+    transforms.push(MatingTransform::SeamTrim {
         normal: seam_normal_for(side, binormal),
         offset_m: seam_offset_m_for(side, midpoint, binormal),
-    };
-    Ok((piece, vec![seam_trim]))
+    });
+    Ok((piece, transforms))
 }
 
 /// Outward-pointing unit normal of the kept half-space for `side`.
@@ -654,97 +661,36 @@ mod tests {
 
     // ----- Sub-leaf A regression: workshop iter-1 mold visual-gate -
 
-    /// Count connected components of `mesh` via shared-edge BFS over
-    /// faces. Two faces are neighbors if they share an undirected
-    /// edge (vertex-index pair). Used by the floating-sliver
-    /// regression below: the workshop iter-1 falsification produced a
-    /// Negative-piece STL whose MC mesh had TWO components (the cup
-    /// wall + a free-floating pin cylinder); the body-relative pin
-    /// offset (C1) restores the single-component invariant by
-    /// landing the pin inside the cup-wall annulus where it
-    /// physically attaches to the surrounding mesh.
-    fn count_connected_components_via_shared_edges(mesh: &mesh_types::IndexedMesh) -> usize {
-        use std::collections::{HashMap, HashSet, VecDeque};
-        if mesh.faces.is_empty() {
-            return 0;
-        }
-        // mesh-types face indices are u32; component bookkeeping is
-        // on the local face index (usize). Edge keys carry the u32
-        // vertex IDs directly.
-        let mut edge_to_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
-        for (face_idx, face) in mesh.faces.iter().enumerate() {
-            for i in 0..3 {
-                let a = face[i];
-                let b = face[(i + 1) % 3];
-                let edge = if a < b { (a, b) } else { (b, a) };
-                edge_to_faces.entry(edge).or_default().push(face_idx);
-            }
-        }
-        let mut visited: HashSet<usize> = HashSet::new();
-        let mut components = 0_usize;
-        for start in 0..mesh.faces.len() {
-            if visited.contains(&start) {
-                continue;
-            }
-            components += 1;
-            let mut queue: VecDeque<usize> = VecDeque::new();
-            queue.push_back(start);
-            visited.insert(start);
-            while let Some(f) = queue.pop_front() {
-                for i in 0..3 {
-                    let a = mesh.faces[f][i];
-                    let b = mesh.faces[f][(i + 1) % 3];
-                    let edge = if a < b { (a, b) } else { (b, a) };
-                    if let Some(neighbors) = edge_to_faces.get(&edge) {
-                        for &n in neighbors {
-                            if visited.insert(n) {
-                                queue.push_back(n);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        components
-    }
-
     /// Workshop iter-1 mold visual-gate regression (per the
     /// `docs/WORKSHOP_ITER1_MOLD_RECON.md` sub-leaf A spike):
     ///
-    /// **Wide-body fixture** — body half-extent 30 mm in `+X`
-    /// (wider than the pre-C1 hardcoded 25 mm `offset_from_centerline_m`),
+    /// **Wide-body fixture** — body half-extent 30 mm in `+X` (wider
+    /// than the pre-C1 hardcoded 25 mm `offset_from_centerline_m`),
     /// bounding 40 mm in `+X` (10 mm cup-wall annulus). With the
     /// pre-C1 fixed offset the pin would have landed AT x = 25 mm —
-    /// inside the body, free-floating from the cup-wall mesh — and
-    /// the Negative-piece STL would have meshed as TWO components.
-    /// With C1's body-relative offset, the pin lands at x = 35 mm
-    /// (annulus midpoint) and the Negative-piece mesh is a single
-    /// connected component.
+    /// inside the body, free-floating from the cup-wall mesh. With
+    /// C1's body-relative offset, the pin lands at x = 35 mm
+    /// (annulus midpoint).
     ///
-    /// Uses a chunky `PinSpec` (5 mm pin radius, 5 mm half-length) so
-    /// the 5 mm marching-cubes cells resolve the pin cleanly even at
-    /// the coarse test resolution.
-    ///
-    /// Post-S4 IGNORED — REWRITE in S5 per
-    /// `docs/CF_CAST_MATING_FEATURES_RECON.md` §8 table.
-    ///
-    /// Background: pre-S4 the SDF half-space intersection forced MC
-    /// to produce a single open shell (outer + inner cup-wall
-    /// surfaces merged at the seam-plane cap during marching cubes
-    /// itself). Post-S4 the seam cut is applied AFTER MC by
-    /// `manifold3d::trim_by_plane`, which caps the outer and inner
-    /// cavity surfaces *independently* — so the post-CSG mesh has
-    /// 2+ topological shells (cup outer + body cavity + pin
-    /// shells) that the shared-edge BFS counts as separate
-    /// components even when geometrically attached. The
-    /// "pin-attached-to-cup-wall" invariant the workshop iter-1
-    /// fixture originally falsified moves to a different mesh-level
-    /// probe in S5 (e.g., parry3d point-in-mesh queries at the pin
-    /// surface).
+    /// Post-S5 the invariant lives in the transform parameters
+    /// rather than in the post-CSG mesh topology: pre-S5 the pin
+    /// SDF unioned into the piece Solid, so the MC output produced a
+    /// single connected shell when the pin sat in the cup wall and
+    /// 2 components when it floated free. Post-S5 the pin is a
+    /// separate mesh-CSG cylinder primitive that produces a 2-shell
+    /// topology either way (the seam trim caps the outer + inner
+    /// cavity surfaces independently), so the connected-component
+    /// probe no longer distinguishes the failure mode. The
+    /// pin-attaches-to-cup-wall invariant is now: each pin's
+    /// `CylinderParent::center_m` lies **outside the body** AND
+    /// **inside the bounding region**, i.e., in the cup-wall annulus
+    /// where the union/subtract intersects cup-wall material rather
+    /// than empty body-cavity space.
     #[test]
-    #[ignore = "REWRITE in S5: shared-edge component count is no longer 1 once MC produces 2-shell hollow-cuboid output (the seam trim caps each shell independently); replace with a parry3d point-in-mesh probe at the pin/cup-wall interface."]
-    fn negative_piece_has_single_connected_component_with_iter1_pins_on_wide_body() {
-        use crate::registration::{PinSpec, RegistrationKind};
+    fn pin_transforms_anchor_in_cup_wall_for_iter1_wide_body() {
+        use crate::registration::{
+            PIN_SEGMENTS, PinSpec, RegistrationKind, build_registration_transforms,
+        };
 
         let layer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030));
         let bounding_region = Solid::cuboid(Vector3::new(0.040, 0.040, 0.040));
@@ -756,28 +702,45 @@ mod tests {
             pin_radius_m: 0.005,
             pin_half_length_m: 0.005,
             arc_fractions: vec![0.5], // single pin for a cleaner reproducer
+            ..PinSpec::iter1()
         };
         let ribbon = Ribbon::new(centerline, split)
             .unwrap()
             .with_registration(RegistrationKind::Pins(chunky_pins));
 
-        // 5 mm cells: grid ~80 mm / 5 mm = 16 cells/axis, ~4k cells
-        // total. Coarse enough for fast tests; pin (10 mm Ø)
-        // resolves as 2 cells radially.
-        let mesh = mesh_piece_through_s4_pipeline(
+        // Two pins emitted (one arc fraction × two lateral mirror sides).
+        let neg = build_registration_transforms(
+            &ribbon,
             &layer_body,
             &bounding_region,
-            &ribbon,
             PieceSide::Negative,
-            0.005,
         );
-        let components = count_connected_components_via_shared_edges(&mesh);
-        assert_eq!(
-            components, 1,
-            "iter-1 visual-gate regression: Negative-piece post-S4 mesh must be a single \
-             connected component (the pin must attach to the cup-wall annulus, \
-             not float free inside the body cavity); got {components}",
-        );
+        assert_eq!(neg.len(), 2, "1 arc fraction × 2 lateral mirrors = 2 pins");
+        for t in &neg {
+            let params = match t {
+                MatingTransform::UnionCylinder { params } => params,
+                other => panic!("Negative side expects UnionCylinder; got {other:?}"),
+            };
+            let c = params.parent.center_m;
+            assert!(
+                layer_body.evaluate(&c) > 0.0,
+                "iter-1 wide-body regression: pin center {c:?} must be OUTSIDE the body \
+                 (cup-wall material); body.evaluate = {}",
+                layer_body.evaluate(&c),
+            );
+            assert!(
+                bounding_region.evaluate(&c) < 0.0,
+                "iter-1 wide-body regression: pin center {c:?} must be INSIDE the bounding \
+                 region (cup-wall material); bounds.evaluate = {}",
+                bounding_region.evaluate(&c),
+            );
+            // Annulus midpoint along ±X = ±(30 + 40)/2 = ±35 mm.
+            assert!(
+                (c.x.abs() - 0.035).abs() < 1e-6,
+                "pin center should land at the annulus midpoint |x| ≈ 35 mm; got {c:?}",
+            );
+            assert_eq!(params.segments, PIN_SEGMENTS);
+        }
     }
 
     /// Workshop iter-1 plug-socket regression (per `recon §E.2`):

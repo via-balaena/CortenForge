@@ -104,7 +104,7 @@ pub use plug::{
 pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_solid};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
-pub use registration::{PinSpec, RegistrationKind, build_registration_solid};
+pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use spec::{
     CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,
