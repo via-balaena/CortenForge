@@ -42,3 +42,9 @@ manifold3d = { workspace = true }
 [dev-dependencies]
 # Approximate equality for unit-conversion tests
 approx = { workspace = true }
+# Connected-component analysis for the §R1 connectivity invariant
+# tests (registration-pin disconnection recon-2). Inspector
+# integration test (`tests/iter_connectivity_inspector.rs`) uses
+# the same surface to triage out-of-repo iter-1 STL sets before
+# workshop print.
+mesh-repair = { workspace = true }

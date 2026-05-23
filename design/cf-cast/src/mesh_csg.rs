@@ -977,6 +977,244 @@ mod tests {
         );
     }
 
+    /// Recon-2 §R1 / §R3 #2 generic connectivity gate.
+    ///
+    /// Synthetic cup-piece mesh + one each of `UnionCylinder`,
+    /// `SubtractCylinder`, and `SeamTrim` exercised through
+    /// `apply_mating_transforms`. The cylinders are sized to
+    /// **protrude through** one cube face — the architectural
+    /// contract every mating-feature migration must satisfy: a
+    /// mating cylinder must overlap the cup-piece mesh's volume
+    /// boundary so the boolean op merges them into one connected
+    /// component. The post-recon-2 registration-pin fix makes the
+    /// pin axis radial through the cup-wall annulus exactly to
+    /// satisfy this contract.
+    ///
+    /// Gates ALL future mating features against the §R1 invariant:
+    /// any new transform variant that emits a cylinder NOT
+    /// overlapping cup-wall material would land here as 2+
+    /// components. Replaces the per-feature connected-component
+    /// surface that the S5-era registration-pin parameter audit
+    /// failed to maintain (the bug that triggered recon-2; see
+    /// `docs/CF_CAST_REGISTRATION_PIN_DISCONNECTION_BOOKMARK.md`).
+    /// §R1 thresholds — same per-mesh check the workshop-fixture
+    /// inspector uses (recon-2 §R1 boxed decision).
+    const MAX_EXTRA_COMPONENTS: usize = 2;
+    const MAX_SLIVER_FACES: usize = 50;
+    const MAX_SLIVER_MAX_EXTENT_MM: f64 = 1.5;
+
+    #[test]
+    fn apply_mating_transforms_keeps_cup_mesh_in_one_component() {
+        use mesh_repair::components::find_connected_components;
+
+        // 20×20×20 mm centered cube — surrogate for a cup-piece
+        // solid that the mating cylinders attach to. Tiny enough to
+        // run fast (12 starter faces; manifold3d's boolean op
+        // re-tessellates as needed); large enough that the
+        // protrusion cylinders' overlap regions resolve cleanly.
+        let cube = unit_cube_mesh();
+        // Scale the unit cube (verts at ±1 mm) up to ±10 mm by
+        // editing vertices directly. Faces stay identical.
+        let mut cup = cube;
+        for v in &mut cup.vertices {
+            v.x *= 10.0;
+            v.y *= 10.0;
+            v.z *= 10.0;
+        }
+
+        // UnionCylinder: protrudes 5 mm out of the +X face. Pin
+        // center at (10 mm, 0, 0) — exactly on the +X face — with
+        // axis +X and half_length 5 mm. Half the cylinder is INSIDE
+        // the cube, half PROTRUDES outside — the post-recon-2 axis
+        // contract for cup-wall registration pins, exactly.
+        let union_cyl = MatingTransform::UnionCylinder {
+            params: CylinderParams {
+                parent: CylinderParent {
+                    center_m: Point3::new(0.010, 0.0, 0.0),
+                    axis: Vector3::x_axis(),
+                    half_length_m: 0.005,
+                },
+                radius_m: 0.0015,
+                segments: 32,
+            },
+        };
+        // SubtractCylinder: carves a hole through the +Y face.
+        // Anchored at the face midpoint, axis +Y, half_length 5 mm
+        // — same protrusion pattern, but for the Positive-side
+        // socket carve.
+        let sub_cyl = MatingTransform::SubtractCylinder {
+            params: CylinderParams {
+                parent: CylinderParent {
+                    center_m: Point3::new(0.0, 0.010, 0.0),
+                    axis: Vector3::y_axis(),
+                    half_length_m: 0.005,
+                },
+                radius_m: 0.0015,
+                segments: 32,
+            },
+        };
+        // SeamTrim: bisect at Z=0 keeping the +Z half-space (the
+        // half-space normal must point INTO the kept side per
+        // manifold3d's trim_by_plane contract).
+        let trim = MatingTransform::SeamTrim {
+            normal: Vector3::z_axis(),
+            offset_m: 0.0,
+        };
+
+        let target = CastTarget::MoldPiece {
+            layer_index: 0,
+            piece_side: crate::ribbon::PieceSide::Negative,
+        };
+        let out = apply_mating_transforms(cup, &[union_cyl, sub_cyl, trim], target).unwrap();
+        let analysis = find_connected_components(&out);
+        let extra = analysis.component_count - 1;
+        assert!(
+            extra <= MAX_EXTRA_COMPONENTS,
+            "§R1 violation — {extra} extra components (cap {MAX_EXTRA_COMPONENTS}). \
+             The mating-feature cylinders should be merged into the cube via volume overlap.",
+        );
+        for (i, comp) in analysis.components.iter().enumerate().skip(1) {
+            assert!(
+                comp.len() <= MAX_SLIVER_FACES,
+                "component {i} has {} faces — exceeds §R1 sliver-face cap {MAX_SLIVER_FACES}",
+                comp.len(),
+            );
+            let mut min_v = [f64::INFINITY; 3];
+            let mut max_v = [f64::NEG_INFINITY; 3];
+            for &fi in comp {
+                for &vi in &out.faces[fi as usize] {
+                    let v = &out.vertices[vi as usize];
+                    let xs = [v.x, v.y, v.z];
+                    for k in 0..3 {
+                        if xs[k] < min_v[k] {
+                            min_v[k] = xs[k];
+                        }
+                        if xs[k] > max_v[k] {
+                            max_v[k] = xs[k];
+                        }
+                    }
+                }
+            }
+            let extent = (max_v[0] - min_v[0])
+                .max(max_v[1] - min_v[1])
+                .max(max_v[2] - min_v[2]);
+            assert!(
+                extent <= MAX_SLIVER_MAX_EXTENT_MM,
+                "component {i} max-extent {extent:.3} mm exceeds §R1 sliver cap {MAX_SLIVER_MAX_EXTENT_MM} mm",
+            );
+        }
+    }
+
+    /// Recon-2 §R1 negative-case sentinel: a `UnionCylinder` whose
+    /// volume does NOT overlap the cup-piece mesh must surface as a
+    /// disconnected shell. This is the exact failure mode that hit
+    /// post-S5 iter-1 (pin axis along binormal swept into body
+    /// interior → cylinder mesh and cup-wall mesh don't touch →
+    /// `boolean_union` returns 2 components). Locks the gate's
+    /// sensitivity so a future-self refactoring `apply_mating_transforms`
+    /// can't silently swallow disconnected sub-solids.
+    #[test]
+    fn apply_mating_transforms_flags_non_overlapping_cylinder_as_disconnected() {
+        use mesh_repair::components::find_connected_components;
+
+        let cube = unit_cube_mesh();
+        let mut cup = cube;
+        for v in &mut cup.vertices {
+            v.x *= 10.0;
+            v.y *= 10.0;
+            v.z *= 10.0;
+        }
+
+        // Cylinder centered at (50 mm, 0, 0) — well clear of the
+        // cube's +X face at 10 mm. Volume does NOT overlap cube.
+        let detached_cyl = MatingTransform::UnionCylinder {
+            params: CylinderParams {
+                parent: CylinderParent {
+                    center_m: Point3::new(0.050, 0.0, 0.0),
+                    axis: Vector3::x_axis(),
+                    half_length_m: 0.003,
+                },
+                radius_m: 0.0015,
+                segments: 32,
+            },
+        };
+        let target = CastTarget::MoldPiece {
+            layer_index: 0,
+            piece_side: crate::ribbon::PieceSide::Negative,
+        };
+        let out = apply_mating_transforms(cup, &[detached_cyl], target).unwrap();
+
+        let analysis = find_connected_components(&out);
+        assert!(
+            analysis.component_count >= 2,
+            "§R1 negative case must surface a disconnected cylinder shell; got {} components",
+            analysis.component_count,
+        );
+    }
+
+    /// Documents the manifold3d boolean-union behavior for a cylinder
+    /// FULLY CONTAINED inside the host mesh's volume — the case
+    /// where the cylinder's surface doesn't touch the host's
+    /// surface. Empirically (recon-2 implementation session)
+    /// manifold3d ABSORBS the contained cylinder into the host;
+    /// the result is one component. This is the load-bearing
+    /// behavior that makes the post-recon-2 registration-pin fix
+    /// work: pin half-length 2 mm in a 5 mm cup-wall annulus
+    /// (offset = annulus midpoint at 2.5 mm from each face) leaves
+    /// the pin's surface strictly INSIDE cup-wall material, with
+    /// 0.5 mm margin against each annulus face — and the boolean
+    /// union still merges the pin into the cup-wall mesh as a
+    /// single connected component.
+    ///
+    /// (Earlier iterations of this session hit a related but
+    /// distinct issue with the multi-surface mesh produced by
+    /// `bounds.subtract(body)` through MC — a closed shell with
+    /// outer + inner surfaces — where the post-CSG topology kept
+    /// the inner/outer surfaces disconnected because the seam
+    /// trim's cap mesh wasn't bridging them at all geometries. The
+    /// workshop iter-1 mesh has a pour gate carving the shell into
+    /// a single-surface object, so this multi-surface artefact
+    /// doesn't manifest in the production pipeline — the inspector
+    /// gate at `tests/iter_connectivity_inspector.rs` confirms.)
+    #[test]
+    fn apply_mating_transforms_absorbs_contained_cylinder_into_host() {
+        use mesh_repair::components::find_connected_components;
+
+        let cube = unit_cube_mesh();
+        let mut cup = cube;
+        for v in &mut cup.vertices {
+            v.x *= 10.0;
+            v.y *= 10.0;
+            v.z *= 10.0;
+        }
+        // Cylinder centered at (5, 0, 0), axis +X, half_length 2 mm,
+        // radius 1.5 mm — entirely inside the cube (volume ⊂ cube,
+        // and the cylinder's surface doesn't touch any cube face).
+        let contained_cyl = MatingTransform::UnionCylinder {
+            params: CylinderParams {
+                parent: CylinderParent {
+                    center_m: Point3::new(0.005, 0.0, 0.0),
+                    axis: Vector3::x_axis(),
+                    half_length_m: 0.002,
+                },
+                radius_m: 0.0015,
+                segments: 32,
+            },
+        };
+        let target = CastTarget::MoldPiece {
+            layer_index: 0,
+            piece_side: crate::ribbon::PieceSide::Negative,
+        };
+        let out = apply_mating_transforms(cup, &[contained_cyl], target).unwrap();
+        let analysis = find_connected_components(&out);
+        assert_eq!(
+            analysis.component_count, 1,
+            "manifold3d MUST absorb a fully-contained cylinder into the host's volume; \
+             result should be one connected manifold (the post-recon-2 pin fix relies \
+             on this for cup-wall pins that stay inside the annulus).",
+        );
+    }
+
     #[test]
     fn half_space_slab_has_face_at_plane_point() {
         // Slab oriented with +normal = +Z, plane_point at origin.

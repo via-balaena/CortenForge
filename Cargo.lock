@@ -1873,6 +1873,7 @@ dependencies = [
  "mesh-io",
  "mesh-offset",
  "mesh-printability",
+ "mesh-repair",
  "mesh-types",
  "nalgebra 0.34.2",
  "thiserror 2.0.18",
