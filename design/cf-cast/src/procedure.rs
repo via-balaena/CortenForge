@@ -469,11 +469,13 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  curve-following seam. This cast has no integral \
                  registration features (`RegistrationKind::None`); \
                  align the pieces by hand and clamp with rubber bands \
-                 or wide tape during pour + cure. The 1 mm inter-piece \
-                 seam overlap (0.5 mm bias per side, see \
-                 `cf-cast::piece::RIBBON_PIECE_OVERLAP_M`) is well \
-                 above FDM printer accuracy (~0.1 mm), so hand \
-                 alignment is workable for the first cast iteration."
+                 or wide tape during pour + cure. Post-S4 of the \
+                 mating-features arc, each piece's seam face is trimmed \
+                 flat to the exact ribbon plane via post-MC mesh-CSG \
+                 (see `cf-cast::piece::RIBBON_PIECE_OVERLAP_M` for the \
+                 pre-trim SDF over-build extent), so the two halves \
+                 seat flush at the seam without bias and hand alignment \
+                 only needs to bring the cup outlines into registration."
             );
             md.push('\n');
             let _ = writeln!(
@@ -489,6 +491,8 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
             let pin_count = spec.arc_fractions.len();
             let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
             let pin_length_mm = spec.pin_half_length_m * 2.0 * 1000.0;
+            let diametral_mm = spec.diametral_clearance_m * 1000.0;
+            let socket_dia_mm = pin_dia_mm + diametral_mm;
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
@@ -496,7 +500,9 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  curve-following seam. **{pin_count} cylindrical pins** \
                  ({pin_dia_mm:.1} mm Ø × {pin_length_mm:.1} mm long, \
                  printed integrally with `_piece_0` and matched by \
-                 cylindrical holes in `_piece_1`) lock the pieces in \
+                 {socket_dia_mm:.2} mm Ø cylindrical holes in \
+                 `_piece_1` — {diametral_mm:.2} mm diametral clearance \
+                 for a positional sliding fit) lock the pieces in \
                  alignment along the seam — no manual clamping needed \
                  once the pins are seated."
             );
@@ -507,10 +513,13 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  hole in `_piece_1` along the binormal direction (the \
                  hole axis is perpendicular to the seam at the pin \
                  position). Pins are gravity-held; no friction lock. \
-                 The 1 mm seam overlap (0.5 mm bias per side) is \
-                 absorbed by the hole depth (slightly deeper than the \
-                 pin protrusion), so pieces seat flush against the \
-                 seam plane without binding."
+                 Post-S4 of the mating-features arc, each piece's \
+                 seam face is trimmed flat to the ribbon plane via \
+                 mesh-CSG, so the pieces seat flush at the seam; the \
+                 workshop-visible pin protrusion past the seam plane \
+                 is `cf-cast::piece::RIBBON_PIECE_OVERLAP_M` (0.5 mm), \
+                 and the sliding fit comes from the \
+                 {diametral_mm:.2} mm diametral clearance above."
             );
             md.push('\n');
             let _ = writeln!(
@@ -550,11 +559,14 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
         PlugPinKind::Axial(spec) => {
             let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
             let pin_length_mm = spec.pin_length_m * 1000.0;
-            // Diametral gap between pin and socket (post-S6: the
-            // socket Ø exceeds the pin Ø by the full
-            // `shaft_diametral_clearance_m`; previously
-            // `2 × socket_radial_slack_m`).
+            // Post-S6 cup-side socket primitive inflates by
+            // `shaft_diametral_clearance_m / 2` per radial side
+            // (Ø grows by the full diametral clearance) and extends
+            // axially past the pin by `shaft_axial_clearance_m / 2`
+            // on each face (deep-end relief is the workshop-meaningful
+            // half; see `PlugPinSpec::shaft_axial_clearance_m`).
             let socket_diametral_gap_mm = spec.shaft_diametral_clearance_m * 1000.0;
+            let socket_axial_relief_mm = spec.shaft_axial_clearance_m * 1000.0;
             let dome_pin_status = if spec.include_dome_pin {
                 "**Both** the pour end and the dome end have plug-\
                  anchor pins"
@@ -571,9 +583,12 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
                  Ø × {pin_length_mm:.1} mm long pin** at the pour end \
                  (centerline endpoint with the pour gate; pin extends \
                  outward along the local tangent). The mold pieces \
-                 carry a matching cylindrical socket {socket_diametral_gap_mm:.2} mm \
-                 wider in diameter than the pin (positional sliding fit). \
-                 {dome_pin_status}."
+                 carry a matching cylindrical socket \
+                 {socket_diametral_gap_mm:.2} mm wider in diameter than \
+                 the pin (positional sliding fit) with \
+                 {socket_axial_relief_mm:.2} mm axial pocket-bottom \
+                 relief so workshop FDM stair-step doesn't bottom the \
+                 pin out before its shoulder seats. {dome_pin_status}."
             );
             md.push('\n');
             let _ = writeln!(

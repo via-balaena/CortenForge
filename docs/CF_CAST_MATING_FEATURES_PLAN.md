@@ -515,6 +515,43 @@ pass missed (per `feedback_cold_read_two_passes_for_non_trivial_diffs`):
 - **P2-P** — Total scope said "~9 sessions, +1 contingent" but the
   actual count is 9 mandatory + 1 optional + 1 contingent. Itemized.
 
+## Deferred items (locked by decision, not omission)
+
+S0–S7 shipped the architectural fix across M1 (seam) / M2 (registration
+pins) / M3 (T-bar) / M4 (plug pin shaft) / M5 (funnel-nipple + cup
+pour-gate). Two items from the arc are explicitly NOT shipped and are
+locked here so a future session reader sees the decision rationale
+inline rather than reconstructing it from session memories.
+
+- **`funnel::FLANGE_AXIAL_STANDOFF_M`** (recon §9 M5). Recon proposed
+  a 0.5 mm physical lip on the funnel flange underside so the flange
+  doesn't wobble on the cup's curved + MC-jittery outer surface. S7
+  attempted to ship the lip as a post-MC contact-ring mesh-CSG
+  primitive; the resulting <1 mm-thick ring fails F4 ThinWall
+  (`FUNNEL_MAX_CELL_SIZE_M = 1 mm` blocks below-cell-size mesh
+  features). **Disposition: deferred.** Reopen only if iter-2
+  workshop physical print physically surfaces a flange-wobble defect
+  during pour. The two implementation paths remain (a) drop
+  `FUNNEL_MAX_CELL_SIZE_M` below 0.5 mm and ship the lip as an SDF
+  primitive, or (b) lap a flat patch on the cup outer face under the
+  flange footprint. Don't reopen pre-emptively — S0 bookmark M5 noted
+  the standoff was "likely needed" but the FDM-bead bulge on a 20 mm
+  flange may already provide sufficient bearing.
+
+- **M6 platform T-bar pocket**. Stays as the pre-S0 SDF cuboid carve;
+  not migrated to mesh-CSG. **Disposition: locked unchanged.**
+  Rationale: (a) workshop iter-1 print physically validated the
+  current 4 mm lateral × 5 mm axial cuboid slack without a binding
+  complaint (S0 bookmark M6 "Likely no spec change"); (b) the cuboid
+  pocket has no shared-primitive cross-piece coupling (one platform
+  STL, one pocket — Mechanism B from the §"Mechanism A/B/C"
+  diagnosis doesn't apply); (c) workshop ergonomics favor the
+  generous slack over a tight CAD-precise fit. Reopen only if a
+  future print physically surfaces a fit issue.
+
+If either deferral fires in iter-2, scope it as a recon-2 (single
+session, no architectural-arc reopen) per §G11 partial-pass branch.
+
 ## Status log
 
 - **2026-05-22 — Plan drafted.** Initial cadence + diagnosis.
@@ -523,3 +560,21 @@ pass missed (per `feedback_cold_read_two_passes_for_non_trivial_diffs`):
 - **2026-05-22 — Cold-read pass 2 applied.** P2-A/B/C/E/F/L/N/P
   resolved structural drift introduced by pass 1. Plan ready for S0
   (bookmark) next session. No production code touched yet.
+- **2026-05-22 — S0/S1/S2/S3/S4/S5/S6/S7 shipped on dev.** Eleven
+  commits `ba74b1a8` (plan) through `ae53ee93` (S7 polish); each
+  session's memory has the per-ship detail. Phases 1+2+3+4 all
+  complete; F4 grade preserved or improved across every migrated
+  feature; cf-cast-cli iter-1 wall-clock came in ~10 s *under* the
+  S5 baseline (mesh-CSG is faster than the SDF subtract it replaced —
+  recon §6 predicted ≤2 s additional; actual is negative).
+- **2026-05-22 — S8 Phase A shipped on dev.** Cross-session cold-read
+  pass across the eleven-commit arc; companion-doc polish bundle
+  (procedure.rs prose surfaces S5/S6 clearance values + post-S4 seam
+  semantics; CURVE_FOLLOWING_DESIGN.md §Step 3 + §Risks updated to
+  acknowledge the SDF → mesh-CSG migration); deferred items locked
+  here (§"Deferred items" above). cf-view smoke + S8 Phase B physical
+  print are workshop-user steps and don't ship from this session.
+  Per §G11, S8 Phase B is the next inflection — workshop user prints
+  the iter-2 STLs at `~/scans/cast_iter1/`, caliper-verifies the
+  acceptance gate, and the outcome branches (pass / partial-pass /
+  full-fail) decide whether S9 (patterns memo) or recon-2 follows.

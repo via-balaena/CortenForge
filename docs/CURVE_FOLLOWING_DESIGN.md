@@ -106,6 +106,8 @@ Where:
 - `layer_body_sdf` — the scan + cumulative outer-shell-thickness offset (same as v1's layered scheme)
 - `ribbon_negative / ribbon_positive` — half-space SDFs: `ribbon_negative = -ribbon_sdf`, `ribbon_positive = +ribbon_sdf`. Marching cubes on these gives one piece on each side of the ribbon.
 
+> **Note (mating-features arc, 2026-05-22).** The `∩ ribbon_side` half-space intersection above describes the **pre-mesh** SDF expression that marching cubes consumes. Per `docs/CF_CAST_MATING_FEATURES_PLAN.md` §S4 the workshop-facing seam migrated to a **post-MC mesh-trim** (`MatingTransform::SeamTrim`) against an exact ribbon plane; the SDF expression here over-builds each piece by `RIBBON_PIECE_OVERLAP_M` past the seam and the post-MC trim cuts both halves back to a flat, bit-precise mating face. Same applies to registration pins (S5), the plug T-bar + T-slot + shaft socket (S6), and the funnel-nipple + cup pour-gate (S7) — each migrated from SDF-time `union`/`subtract` to post-MC `MatingTransform` ops. The per-piece composer (`piece.rs::compose_piece_solid`) now returns `(Solid, Vec<MatingTransform>)`; the Solid is a side-agnostic cup-wall envelope and every mating feature lives in the Vec.
+
 ### Step 4 — Marching cubes per piece per layer
 
 Same `mesh-offset::marching_cubes` infrastructure as v1, called once per `piece_sdf`. Each call → one IndexedMesh → `mesh-io::save_stl`. Atomic write at the meshing boundary (same pattern as v1's `cf-cast` Stage 2 F1).
@@ -207,7 +209,7 @@ v1 cf-cast stays in main for backward compatibility; users who actually want sin
 
 - **Per-piece marching-cubes runtime** — for fine cell sizes (1mm), each piece's SDF gets sampled on a 3D grid bounded by its AABB. 2-piece × 3-layer = 6 marching-cubes runs. v1's single-piece × 3-layer = 3 runs. Roughly 2× the CPU. Acceptable; not a blocker.
 
-- **CSG numerical issues at the ribbon ∩ mold_cup intersection** — SDF intersection is min(a, b), which is correct geometrically but produces marching-cubes artifacts when the surfaces are coincident or near-tangent. Mitigation: add a small bias (~0.5 cell-size) to the ribbon SDF so the intersection is clean. v1 already uses this trick for the clip-body overlap (`CLIP_BODY_OVERLAP_M = 0.5 mm`).
+- **CSG numerical issues at the ribbon ∩ mold_cup intersection** — SDF intersection is min(a, b), which is correct geometrically but produces marching-cubes artifacts when the surfaces are coincident or near-tangent. Mitigation: add a small bias (~0.5 cell-size) to the ribbon SDF so the intersection is clean. v1 already uses this trick for the clip-body overlap (`CLIP_BODY_OVERLAP_M = 0.5 mm`). **Update (2026-05-22, mating-features arc S4):** the SDF over-build still keeps MC numerics clean inside the cup-piece grid, but the *workshop-visible* seam face is now a post-MC mesh-trim (`MatingTransform::SeamTrim`) — bit-precise to f64 per the manifold3d kernel rather than MC-cell-quantized. See `docs/CF_CAST_MATING_FEATURES_PLAN.md` §S4 and the §"Per-piece SDF construction" note above.
 
 ---
 
