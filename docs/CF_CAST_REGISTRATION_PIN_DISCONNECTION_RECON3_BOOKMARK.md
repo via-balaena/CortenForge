@@ -292,3 +292,14 @@ In order:
   fails §R1 with 5-6 components (same topology as pre-recon-2 iter-2
   set). Workshop iter-2 print remains BLOCKED. Recon-3 session is
   next.
+- **2026-05-22 — Recon-3 session COMPLETE.** Decisions written to
+  `docs/CF_CAST_REGISTRATION_PIN_DISCONNECTION_RECON_PLAN_V2.md`
+  §R3-1 – §R3-7. Picked candidate (α) protrusion through the
+  bounding outer surface with (γ) belt-and-suspenders SDF as named
+  bail-out. §R3-3 surfaces a load-bearing empirical reproducer
+  (direct-manifold3d shell-host union probe) the implementation
+  session must run FIRST to confirm or refute this bookmark's
+  "multi-surface shell host is the failure mode" framing. §R3-1
+  slicer-side test is workshop-user-physical, side-tracked.
+  §R3-7 implementation estimate ~315 LOC; workshop iter-2 print
+  remains BLOCKED until implementation lands.
