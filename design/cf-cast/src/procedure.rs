@@ -613,9 +613,42 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
                  tolerances for the post-iter-1 review of \
                  `PlugPinSpec::iter1` defaults."
             );
+            if spec.include_t_bar {
+                md.push('\n');
+                write_v2_t_bar_note(md, spec);
+            }
         }
     }
     md.push('\n');
+}
+
+fn write_v2_t_bar_note(md: &mut String, spec: &crate::plug::PlugPinSpec) {
+    let t_bar_dia_mm = spec.t_bar_radius_m * 2.0 * 1000.0;
+    let t_bar_length_mm = spec.t_bar_half_length_m * 2.0 * 1000.0;
+    let t_slot_diametral_mm = spec.t_bar_diametral_clearance_m * 1000.0;
+    let t_slot_dia_mm = t_bar_dia_mm + t_slot_diametral_mm;
+    let t_slot_axial_relief_mm = spec.t_bar_axial_clearance_m * 1000.0;
+    let _ = writeln!(
+        md,
+        "**T-bar lock** (one-time print: `platform.stl`). The plug's \
+         pour-end pin tip carries a **{t_bar_dia_mm:.1} mm \
+         Ø × {t_bar_length_mm:.1} mm long T-bar** whose axis lies \
+         parallel to the seam-plane normal. Each cup piece carves one \
+         half of a matching T-slot ({t_slot_dia_mm:.2} mm Ø — \
+         {t_slot_diametral_mm:.2} mm diametral clearance, \
+         {t_slot_axial_relief_mm:.2} mm axial pocket-bottom relief at \
+         the AWAY-from-seam tip); captive insertion: lower the plug \
+         T-bar into one cup half's half-T-slot, then close the second \
+         half around it. Once seated the T-bar locks the plug against \
+         axial pull-out (would have to push through cup-wall material) \
+         and rotation around the pin axis (would have to rotate out of \
+         the seam-normal orientation). The T-bar protrudes a few mm \
+         below the cup outer face at typical wall thicknesses; the \
+         `platform.stl` carries a matching blind pocket so the \
+         assembled mold sits flat on the platform during pour + cure \
+         (print `platform.stl` once for the whole multi-layer device \
+         — it is reused across every layer's pour)."
+    );
 }
 
 fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
@@ -676,6 +709,32 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
                  leg (-binormal hole, Negative piece) as the cavity fills \
                  bottom-up. Workshop user identifies pour vs vent by \
                  binormal side AND by hole diameter."
+            );
+            md.push('\n');
+            // NIPPLE_DIAMETRAL_CLEARANCE_M is funnel-private; recompute
+            // the asymmetric-`/2` cup-vs-nipple Ø delta from the spec so
+            // workshop user sees the actual diametral gap.
+            let nipple_clearance_mm = crate::funnel::NIPPLE_DIAMETRAL_CLEARANCE_M * 1000.0;
+            let nipple_outer_dia_mm = gate_dia_mm - nipple_clearance_mm;
+            let _ = writeln!(
+                md,
+                "**Pour funnel** (one-time print: `funnel.stl`). Honey-\
+                 thick workshop silicones (Dragon Skin 10A / 20A / 30A \
+                 at ~20-23k cps) splash through a bare \
+                 {gate_dia_mm:.1} mm Ø pour leg; a printable funnel \
+                 STL ships alongside the mold pieces with a \
+                 {nipple_outer_dia_mm:.2} mm Ø self-aligning nipple \
+                 that drops into the cup pour-gate hole \
+                 ({nipple_clearance_mm:.2} mm asymmetric diametral \
+                 clearance — the cup-side hole stays at the nominal \
+                 {gate_dia_mm:.1} mm Ø; the funnel nipple bears all the \
+                 slack), a broad flange that rests on the cup outer \
+                 surface around the hole, and a tapered cone widening \
+                 to a workshop-friendly mouth for ladle-pouring. Print \
+                 `funnel.stl` once for the whole multi-layer device — \
+                 it is reused across every layer's pour. Apply mold \
+                 release to the nipple before each pour so cured \
+                 silicone doesn't lock the funnel onto the cup."
             );
         }
     }
