@@ -46,12 +46,14 @@
 //! [`crate::piece::compose_piece_solid`] appends these to BOTH
 //! [`crate::ribbon::PieceSide`]s' transform Vec — since the legs
 //! lie on opposite sides of the seam (one on `+binormal`, one on
-//! `-binormal`), the downstream S4 [`MatingTransform::SeamTrim`]
-//! bisects each leg cleanly: each piece keeps only its own side's
+//! `-binormal`), the cup-piece Solid's SDF halfspace intersect
+//! (recon-4 (P), see
+//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2) bounds each
+//! piece's mesh to its kept half-shell; the post-MC mesh-CSG
+//! subtract of the full cylinder is a no-op for the portion
+//! outside the half-shell. Each piece keeps only its own side's
 //! half-cylinder carve (modulo the small
 //! [`crate::piece::RIBBON_PIECE_OVERLAP_M`] seam-overlap slice).
-//! Recon §5 sequencing principle: cylinder ops precede the seam
-//! trim.
 //!
 //! ## Why splay along binormal, not split-normal
 //!
@@ -253,9 +255,12 @@ pub enum PourGateKind {
 /// Each leg of the V emits one [`MatingTransform::SubtractCylinder`]:
 /// the pour leg always, plus the vent leg when `spec.include_vent`.
 /// `compose_piece_solid` appends these to both [`crate::ribbon::PieceSide`]
-/// transforms; the downstream [`MatingTransform::SeamTrim`] cleaves
-/// each leg into the side it belongs to (pour leg → Positive,
-/// vent leg → Negative) per the splay-along-binormal layout.
+/// transforms; the cup-piece Solid's SDF halfspace intersect
+/// (recon-4 (P)) bounds each piece's mesh to its kept half-shell,
+/// so the `SubtractCylinder` is effectively bisected at the seam
+/// plane by construction — each piece keeps only its own side's
+/// half-cylinder carve (pour leg → Positive, vent leg → Negative)
+/// per the splay-along-binormal layout.
 ///
 /// V geometry (unchanged from the pre-S7 SDF encoding):
 /// - **Apex** at `v_apex_anchor(ribbon)` — the centerline endpoint

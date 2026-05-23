@@ -14,37 +14,29 @@
 //! industry-standard for printed molds, easy to print + insert +
 //! remove, gravity-held. Pin geometry:
 //!
-//! - Position: each pin is **anchored to the bounding outer
-//!   surface** along the ribbon's split-normal direction at each
-//!   `centerline_sample(arc_fraction)` so the pin's `+axis` tip
-//!   protrudes [`PIN_PROTRUSION_M`] (0.5 mm) past the cup-wall outer
-//!   face and the lateral cylindrical surface intersects the
-//!   bounding boundary at a circular cross-section (recon-3 §R3-2
-//!   (α) pick). The offset along the split-normal ray is
-//!   **derived per-(layer × ribbon-frame)** by ray-marching the
-//!   layer body + bounding-region SDFs from the centerline sample
-//!   and then offsetting back from the bounding-surface crossing by
-//!   `pin_half_length_m - PIN_PROTRUSION_M`; no fixed
-//!   `offset_from_centerline_m` knob.
-//! - Axis: along the ribbon's **split-normal** at that centerline
-//!   position (radially outward through the cup-wall annulus —
-//!   recon-2 §R2's split-normal axis preserved). The pin's long
-//!   axis lies IN the seam plane; the per-piece `SeamTrim` bisects
-//!   the pin lengthwise into a half-cylinder ridge across each
-//!   piece's seam face.
-//! - Length: 6 mm total (3 mm half-length each side of the centerline
-//!   sample) for the default — pin spans the cup wall annulus
-//!   radially with [`PIN_PROTRUSION_M`] protrusion at the outer face
-//!   and a ≈ 0.5 mm silicone dimple in the body cavity in the 5 mm
-//!   iter-1 wall (well within recon-3 §R3-2's stated ≤ 2 mm
-//!   silicone-demold tolerance — recon-3 §R3-2 dimple arithmetic
-//!   correction from the original 4 mm half-length that produced
-//!   2.5 mm dimples).
+//! - Position: each pin is anchored at the **annulus midpoint** of
+//!   the cup-wall — halfway along the ribbon's split-normal between
+//!   the layer body's outer surface and the bounding region's outer
+//!   surface, derived per-(layer × ribbon-frame) by ray-marching
+//!   the SDFs from each `centerline_sample(arc_fraction)`. The
+//!   per-layer offset is **derived**, not a fixed knob.
+//! - Axis: along the ribbon's **binormal** at the centerline
+//!   position (perpendicular to the seam plane, normal-to-seam).
+//!   The pin extends `±pin_half_length_m` symmetrically across the
+//!   seam plane and lives entirely contained inside the cup-wall
+//!   annulus volume.
+//! - Length: 10 mm total (5 mm half-length each side of the
+//!   centerline sample). On the Negative cup piece's half-shell the
+//!   pin's `+binormal` half (5 mm) protrudes past the seam face as
+//!   the workshop-visible ridge; the `-binormal` half lives buried
+//!   inside the half-shell's cup-wall material. The Positive cup
+//!   piece's matching socket (radius + half-length inflated by the
+//!   per-piece clearance budget) mates with the protruding ridge.
 //! - Diameter: 3 mm (1.5 mm radius) for the default — beefy enough
 //!   for FDM printing without supports, small enough to insert by
-//!   hand with no tooling. Half-cylinder ridge across the seam face
-//!   is 1.5 mm tall × 6 mm long after `SeamTrim` (workshop
-//!   ridge/groove keyway model).
+//!   hand with no tooling. Workshop assembly: gravity-stack the
+//!   pieces along the seam plane normal; ridges seat into matching
+//!   sockets with the diametral clearance providing a sliding fit.
 //! - Count: 4 per layer-piece-pair — at arc-length fractions
 //!   `0.25` and `0.75` along the centerline, mirrored across the
 //!   split-normal axis (one pin at `+split_normal` offset and one
@@ -71,37 +63,23 @@
 //! bounding-region SDFs makes the pin position track whatever
 //! per-layer cup-wall annulus geometry the spec produces.
 //!
-//! ## Why the pin protrudes past the bounding outer face
+//! ## Recon-arc disposition
 //!
-//! Recon-3 §R3-2 (α) pick. The post-S5 registration-pin disconnection
-//! bug (workshop iter-1 cup-piece STLs failing the §R1 connectivity
-//! invariant with separate ~168-188-face pin shells per pin) is
-//! resolved by ANCHORING each pin to the bounding outer surface
-//! rather than the cup-wall annulus midpoint. Forcing the pin's
-//! lateral cylindrical surface to intersect the bounding boundary
-//! at a circular cross-section keeps the boolean union on
-//! manifold3d's most-robust path (surface-vs-surface intersection
-//! with a well-defined intersection curve) regardless of host
-//! topology complexity — sidestepping whatever pipeline-layer
-//! interaction (MC quantization, multi-feature ordering, complex
-//! curved-body geometry) introduced the disconnection in production
-//! iter-1 STLs even though `mesh_csg::tests` showed synthetic
-//! shell-host unions handle contained cylinders cleanly (recon-3
-//! §R3-3 Branch B characterisation).
-//!
-//! Workshop trade-off: each pin produces a ≈ 3 mm Ø × 0.5 mm
-//! circular bump on the cup-piece's outer face at 4 locations per
-//! piece. The bumps are well below FDM bead-width tolerance (≤ 1 mm)
-//! the platform-pocket STL already absorbs, so no platform re-cut is
-//! required. With the 3 mm half-length default in the 5 mm iter-1
-//! wall, the pin's `-axis` tip lands 0.5 mm INTO the body cavity
-//! producing a ≈ 3 mm Ø × 0.5 mm silicone dimple on the cast (well
-//! within recon-3 §R3-2's ≤ 2 mm silicone-demold tolerance, no
-//! workshop-significant demold consequence). See
-//! [`PIN_PROTRUSION_M`] + [`PinSpec::pin_half_length_m`] for the
-//! numeric defaults and the wall-thickness cross-field gate that
-//! the cf-cast-cli bridge enforces (allowable dimple capped at 2 mm
-//! by the gate's `MAX_REGISTRATION_DIMPLE_M`).
+//! Workshop iter-2 surfaced two issues post-S5: (1) a registration-
+//! pin disconnection signal at the §R1 connectivity inspector
+//! (multiple pin shells survived as separate components per cup
+//! piece); (2) cf-view smoke on the recon-3 (α) post-fix STL set
+//! showed a thin film of cup-wall material covering the body-cavity
+//! opening on each cup piece's seam face. The film bisected to S4's
+//! `93aaa0c2` (seam SDF → post-MC mesh-CSG migration). Recon-4 (P)
+//! reverted the seam to the SDF form (see
+//! [`crate::piece::compose_piece_solid`] module docstring) and per
+//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-3 confirmed that
+//! the post-(P) clean 1-component half-shell host absorbs the
+//! binormal-axis pin via mesh-CSG Union without disconnection,
+//! superseding the recon-3 (α) split-normal protrusion design. The
+//! pre-recon-2 / S5 binormal-axis annulus-midpoint design is
+//! restored.
 //!
 //! ## Composition
 //!
@@ -154,45 +132,20 @@ use crate::ribbon::{PieceSide, Ribbon};
 /// output across calls and across pieces.
 pub(crate) const PIN_SEGMENTS: u32 = 32;
 
-/// Distance the pin's `+axis` tip extends past the bounding outer
-/// surface along the split-normal ray, in meters.
-///
-/// Recon-3 §R3-2 (α) pick: forces the pin's lateral cylindrical
-/// surface to intersect the bounding boundary at a circular
-/// cross-section so manifold3d's boolean union resolves the topology
-/// cleanly on whatever cup-piece host shape the cf-cast pipeline
-/// produces (independent of MC quantization, multi-op ordering, or
-/// complex curved-body geometry — recon-3 §R3-3 Branch B
-/// characterisation).
-///
-/// `0.0005` = 0.5 mm: well above the 1 µm welding tolerance
-/// ([`crate::mesh_csg::WELD_TOLERANCE_M`]) + MC cell-jitter floor,
-/// well below the iter-1 5 mm cup-wall thickness. Visible as a
-/// ≈ 3 mm Ø × 0.5 mm circular bump on each cup-piece's outer face
-/// at 4 pin locations per piece — below FDM bead width × 2 (≤ 1 mm
-/// tolerance) the M6 platform pocket already absorbs.
-pub const PIN_PROTRUSION_M: f64 = 0.0005;
-
 /// Cylindrical-pin registration spec. All dimensions in meters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PinSpec {
     /// Pin radius (m). Default `0.0015` = 1.5 mm = 3 mm diameter.
     pub pin_radius_m: f64,
-    /// Half-length of each pin along the split-normal axis (m).
-    /// Default `0.003` = 3 mm → total pin length 6 mm. Recon-3 §R3-2
-    /// (α) pick: the pin's `+axis` tip lands at
-    /// `bounding_dist + PIN_PROTRUSION_M` (0.5 mm protrusion past the
-    /// cup-wall outer face) and the `-axis` tip lands at
-    /// `bounding_dist - (2 × pin_half_length_m) + PIN_PROTRUSION_M`.
-    /// With the iter-1 5 mm cup wall, the `-axis` tip sits 0.5 mm
-    /// INTO the body cavity (silicone dimple depth =
-    /// `2 × pin_half_length_m - PIN_PROTRUSION_M - wall_thickness_m`
-    /// when positive = `6 - 0.5 - 5 = 0.5 mm`), well within
-    /// recon-3 §R3-2's stated ≤ 2 mm silicone-demold tolerance.
-    /// After `SeamTrim` the workshop-meaningful keyway ridge across
-    /// each piece's seam face is the half-cylinder with
-    /// `2 × pin_half_length_m = 6 mm` ridge length × `pin_radius_m
-    /// = 1.5 mm` engagement depth.
+    /// Half-length of each pin along the binormal axis (m). Default
+    /// `0.005` = 5 mm → total pin length 10 mm symmetric across
+    /// the seam plane. On the Negative cup piece, the `+binormal`
+    /// half (5 mm) protrudes past the seam face as the workshop-
+    /// visible ridge; the `-binormal` half lives buried inside the
+    /// half-shell's cup-wall material. The Positive cup piece's
+    /// matching socket is inflated by [`PinSpec::axial_clearance_m`]
+    /// / 2 along the axial direction and [`PinSpec::diametral_clearance_m`]
+    /// / 2 radially for a positional sliding fit.
     pub pin_half_length_m: f64,
     /// Arc-length fractions along the centerline where pins are
     /// placed. Default `vec![0.25, 0.75]`. Each arc fraction yields
@@ -211,49 +164,29 @@ pub struct PinSpec {
     pub diametral_clearance_m: f64,
     /// Axial socket-bottom relief (m). The socket parent's
     /// `half_length` is extended by `axial_clearance_m / 2` so the
-    /// socket *cylinder primitive* runs `axial_clearance_m / 2` past
-    /// the pin cylinder on each axial face (symmetric per the
-    /// `diametral_clearance / 2 → radius` convention). Per-piece
-    /// `SeamTrim` removes the near-seam half of each cylinder, so
-    /// the workshop-meaningful component is the AWAY-from-seam
-    /// extension — a modest bottom-of-pocket relief beyond a
-    /// pin-half-length-only socket. Workshop assembly engagement is
-    /// dominated by [`crate::piece::RIBBON_PIECE_OVERLAP_M`] (the
-    /// pin's protrusion past the seam plane after trim), not by this
-    /// field; the iter-1 0.50 mm baseline is preserved for spec
-    /// completeness + future asymmetric-cylinder migrations. Recon
-    /// §9 baseline for M2 pins.
+    /// socket cylinder runs `axial_clearance_m / 2` past the pin
+    /// cylinder on each axial face (symmetric per the
+    /// `diametral_clearance / 2 → radius` convention). Recon §9
+    /// baseline for M2 pins (positional sliding fit). v2 iter-1
+    /// default `0.00050` = 0.50 mm.
     pub axial_clearance_m: f64,
 }
 
 impl PinSpec {
-    /// v2 iter-1 defaults: 3 mm diameter × 6 mm long pins at 25% +
+    /// v2 iter-1 defaults: 3 mm diameter × 10 mm long pins at 25% +
     /// 75% of centerline arc length, 0.20 mm diametral × 0.50 mm
     /// axial clearance (recon §9 M2 baseline — positional sliding
     /// fit). Pin offset from the centerline along the ribbon's
     /// split-normal is derived per-layer in
-    /// [`build_registration_transforms`] — bounds-anchored
-    /// (`bounding_dist - pin_half_length_m + PIN_PROTRUSION_M`) per
-    /// recon-3 §R3-2 (α). Not stored on the spec — see the module
-    /// docstring for the "derived, not fixed" rationale + the
-    /// "why the pin protrudes past the bounding outer face" section
-    /// for the recon-3 disposition.
-    ///
-    /// The 3 mm half-length default fits the iter-1 5 mm
-    /// `wall_thickness_m` with 0.5 mm protrusion past the outer face
-    /// and a 0.5 mm silicone dimple in the body cavity (well within
-    /// the cf-cast-cli's `MAX_REGISTRATION_DIMPLE_M = 2 mm` workshop
-    /// tolerance). Configs with deeper walls have proportionally
-    /// smaller (or zero) dimples; the cf-cast-cli `CastConfig::validate`
-    /// cross-field gate enforces
-    /// `2 × pin_half_length_m ≤ wall_thickness_m + PIN_PROTRUSION_M +
-    /// MAX_REGISTRATION_DIMPLE_M` so the inner-cavity dimple stays
-    /// within the silicone-demold tolerance.
+    /// [`build_registration_transforms`] — annulus midpoint
+    /// `(body_dist + bounding_dist) / 2`. Not stored on the spec —
+    /// see the module docstring for the "derived, not fixed"
+    /// rationale.
     #[must_use]
     pub fn iter1() -> Self {
         Self {
             pin_radius_m: 0.0015,
-            pin_half_length_m: 0.003,
+            pin_half_length_m: 0.005,
             arc_fractions: vec![0.25, 0.75],
             diametral_clearance_m: 0.00020,
             axial_clearance_m: 0.00050,
@@ -322,42 +255,42 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 ///
 /// Each pin is positioned at
 /// `centerline_sample(t) + pin_offset(t) * sign * split_normal_vec`
-/// with axis aligned to the **split-normal** at that centerline
-/// position (radially outward through the cup-wall annulus —
-/// recon-2 §R2's axis pick, preserved by recon-3 §R3-2). The pin's
-/// long axis lies IN the seam plane.
+/// with axis aligned to the ribbon's **binormal** at that centerline
+/// position (perpendicular to the seam plane). The pin's long axis
+/// is normal-to-seam; the cylinder sweeps through cup-wall material
+/// on both sides of the centerline, with the `+binormal` half
+/// protruding past the Negative piece's seam face as the workshop-
+/// visible ridge.
 ///
-/// `pin_offset(t)` is **bounds-anchored** (recon-3 §R3-2 (α)):
+/// `pin_offset(t)` is the **annulus midpoint** of the cup wall:
 ///
 /// ```text
-/// pin_offset = bounding_dist - spec.pin_half_length_m + PIN_PROTRUSION_M
+/// pin_offset = (body_dist + bounding_dist) / 2
 /// ```
 ///
-/// so the pin's `+axis` tip lands at `bounding_dist + PIN_PROTRUSION_M`
-/// — i.e., the pin's lateral cylindrical surface PROTRUDES through
-/// the bounding outer surface, forcing manifold3d's boolean union
-/// onto its most-robust surface-vs-surface intersection path. The
-/// `-axis` tip lands at `bounding_dist - 2*spec.pin_half_length_m +
-/// PIN_PROTRUSION_M`, which for the iter-1 default
-/// `pin_half_length_m = 3 mm` + `PIN_PROTRUSION_M = 0.5 mm` in a
-/// 5 mm `wall_thickness_m` annulus sits 0.5 mm inside the cup wall
-/// (margin against the body cavity, no inner-cavity dimple).
+/// — halfway between the layer body's outer surface and the
+/// bounding region's outer surface along the split-normal ray from
+/// the centerline sample. The midpoint keeps the pin centered in
+/// cup-wall material regardless of per-layer body shape.
 ///
 /// `layer_body` and `bounding_region` are the same per-layer
 /// [`Solid`]s the caller passes to
 /// [`crate::piece::compose_piece_solid`]; the cup-wall annulus is
-/// `bounding_region ∖ layer_body` at this layer. `layer_body` is
-/// retained in the signature so the surface-ray-march remains
-/// callable for future workshop-fixture pin-position checks even
-/// though the bounds-anchored offset no longer consults it directly.
+/// `bounding_region ∖ layer_body` at this layer.
 ///
 /// The cylinders are deliberately NOT rotated to align with the
-/// centerline's tangent — they're radial through the cup-wall
-/// annulus along the split-normal, so the `SeamTrim` (whose normal
-/// is the binormal, perpendicular to `split_normal`) bisects the pin
-/// LENGTHWISE into a half-cylinder ridge across each piece's seam
-/// face (workshop keyway model — recon §5's transform order:
-/// cylinder ops before seam trim).
+/// centerline's tangent — they're normal to the seam plane along
+/// the binormal direction. Under recon-4 (P), the SDF halfspace
+/// intersect in [`crate::piece::compose_piece_solid`] produces a
+/// clean 1-component half-shell host for each side; manifold3d's
+/// mesh-CSG union absorbs the contained binormal-axis pin into the
+/// half-shell without disconnection (per
+/// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-3 + the recon-3
+/// §R3-3 `apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`
+/// characterisation). The workshop-visible ridge is the half of the
+/// pin cylinder that extends past the Negative half-shell's seam
+/// face (`+binormal · pin_half_length_m` = 5 mm protrusion); the
+/// other half lives inside the half-shell volume.
 #[must_use]
 pub fn build_registration_transforms(
     ribbon: &Ribbon,
@@ -380,33 +313,29 @@ pub fn build_registration_transforms(
     // sides gives each cup piece two interlock columns instead of
     // one, doubling the alignment constraint. For asymmetric scans
     // (body wider on one side of the centerline than the other),
-    // each pin's bounding-surface crossing is computed independently —
-    // the +side and -side `bounding_dist` values can differ.
+    // each pin's annulus-midpoint offset is computed independently —
+    // the +side and -side `(body_dist, bounding_dist)` pairs can
+    // differ.
     let mut transforms = Vec::with_capacity(spec.arc_fractions.len() * 2);
     for &t in &spec.arc_fractions {
-        let Some((center, _tangent, _binormal)) = ribbon.sample_at_arc_fraction(t) else {
+        let Some((center, _tangent, binormal)) = ribbon.sample_at_arc_fraction(t) else {
             return Vec::new();
         };
+        // `binormal` is unit-length by ribbon construction
+        // (`tangent × N_split` normalized); renormalize defensively
+        // so a degenerate (zero) binormal vector returns the
+        // Z-fallback rather than panicking on UnitVector3 invariants.
+        let axis = UnitVector3::new_normalize(binormal);
         for &sign in &[1.0_f64, -1.0_f64] {
             let ray_dir = sign * split_vec;
-            // `layer_body` is consulted defensively so a degenerate
-            // caller (centerline endpoint OUTSIDE the body or
-            // bounding region) returns empty rather than landing a
-            // pin in free space; the bounds-anchored offset itself
-            // doesn't use `body_dist`.
-            let Some(_body_dist) = surface_distance_along_ray(layer_body, center, ray_dir) else {
+            let Some(body_dist) = surface_distance_along_ray(layer_body, center, ray_dir) else {
                 return Vec::new();
             };
             let Some(bounding_dist) = surface_distance_along_ray(bounding_region, center, ray_dir)
             else {
                 return Vec::new();
             };
-            // Pin axis is the split-normal ray direction itself —
-            // pin extends RADIALLY outward through the cup wall,
-            // protruding `PIN_PROTRUSION_M` past the bounding outer
-            // face on the `+axis` side.
-            let axis = UnitVector3::new_normalize(ray_dir);
-            let pin_offset = bounding_dist - spec.pin_half_length_m + PIN_PROTRUSION_M;
+            let pin_offset = f64::midpoint(body_dist, bounding_dist);
             let pin_center = center + pin_offset * ray_dir;
             transforms.push(pin_transform_for_side(spec, pin_center, axis, side));
         }
@@ -421,12 +350,8 @@ pub fn build_registration_transforms(
 /// [`MatingTransform::SubtractCylinder`] with a socket that's
 /// inflated by [`PinSpec::diametral_clearance_m`] / 2 radially and
 /// [`PinSpec::axial_clearance_m`] / 2 axially (symmetric `/2`
-/// convention — the socket *cylinder primitive* extends past the
-/// pin cylinder on each axial face). Per-piece `SeamTrim` removes
-/// the near-seam half of each cylinder, so only the AWAY-from-seam
-/// extension survives in the printed STL — a modest socket-bottom
-/// relief; see [`PinSpec::axial_clearance_m`] for the workshop-
-/// engagement caveat.
+/// convention — the socket cylinder extends past the pin cylinder
+/// on each axial face for socket-bottom relief).
 fn pin_transform_for_side(
     spec: &PinSpec,
     pin_center: Point3<f64>,
@@ -540,10 +465,8 @@ mod tests {
     /// `[-0.050, +0.050]` centerline span) and 10 mm in Y/Z;
     /// bounding cuboid 60 mm × 30 mm × 30 mm half-extents. The
     /// cup-wall annulus along the `+Y` split-normal spans
-    /// `y ∈ [+10 mm, +30 mm]` and the pin should land at
-    /// `y = +27.5 mm` (recon-3 §R3-2 (α) bounds-anchored offset:
-    /// `bounding_dist − pin_half_length + PIN_PROTRUSION_M
-    /// = 30 − 3 + 0.5`).
+    /// `y ∈ [+10 mm, +30 mm]` and the pin lands at the annulus
+    /// midpoint `y = +20 mm` ((10 + 30) / 2).
     fn reference_body_and_bounds() -> (Solid, Solid) {
         let body = Solid::cuboid(Vector3::new(0.060, 0.010, 0.010));
         let bounds = Solid::cuboid(Vector3::new(0.060, 0.030, 0.030));
@@ -568,10 +491,10 @@ mod tests {
     fn pin_spec_iter1_has_workshop_defaults() {
         let s = PinSpec::iter1();
         assert!((s.pin_radius_m - 0.0015).abs() < f64::EPSILON);
-        // Recon-3 §R3-2 (α): 3 mm half-length fits the iter-1 5 mm
-        // cup-wall annulus with 0.5 mm protrusion past the outer face
-        // and 0.5 mm body-cavity margin (no inner-cavity dimple).
-        assert!((s.pin_half_length_m - 0.003).abs() < f64::EPSILON);
+        // Pre-recon-2 / S5 binormal-axis design restored by
+        // recon-4 (P): 5 mm half-length = 10 mm total pin length,
+        // symmetric across the seam plane.
+        assert!((s.pin_half_length_m - 0.005).abs() < f64::EPSILON);
         assert_eq!(s.arc_fractions, vec![0.25, 0.75]);
         // S5 clearance defaults — recon §9 M2 baseline (positional
         // sliding fit). 0.20 mm diametral × 0.50 mm axial.
@@ -641,28 +564,23 @@ mod tests {
     }
 
     /// The pin position invariant: each Negative-side pin's
-    /// `CylinderParent::center_m` lands at the **bounds-anchored
-    /// offset** (recon-3 §R3-2 (α)) — i.e., shifted back from the
-    /// bounding-surface crossing by `pin_half_length_m -
-    /// PIN_PROTRUSION_M` so the pin's `+axis` tip lands at
-    /// `bounding_dist + PIN_PROTRUSION_M`. Replaces the pre-S5 pin-SDF
-    /// inside-only assertion — post-S5 the pin geometry is mesh-CSG,
-    /// but the COMPOSITION position invariant lives in the transform
-    /// parameters and is directly inspectable without a manifold3d
-    /// round-trip.
+    /// `CylinderParent::center_m` lands at the **annulus midpoint**
+    /// of the cup-wall (`(body_dist + bounding_dist) / 2`) and its
+    /// axis is the ribbon binormal (perpendicular to the seam plane).
+    /// Replaces the pre-S5 pin-SDF inside-only assertion — post-S5
+    /// the pin geometry is mesh-CSG, but the COMPOSITION position
+    /// invariant lives in the transform parameters and is directly
+    /// inspectable without a manifold3d round-trip.
     #[test]
-    fn pin_transforms_position_each_pin_at_bounds_anchored_offset() {
+    fn pin_transforms_position_each_pin_at_annulus_midpoint() {
         // Pin at arc-fraction 0.25 of straight +X centerline (-0.05 → +0.05):
-        //   centerline_sample   = (-0.025, 0, 0)
-        //   body surface along +Y:  y = +0.010
-        //   bounding surface +Y:    y = +0.030
-        //   pin_offset = bounds - half + PIN_PROTRUSION_M
-        //              = 0.030 - 0.003 + 0.0005 = +0.0275
-        //   pin position      = (-0.025, +0.0275, 0)
-        //   axis              = +Y (split-normal direction itself —
-        //                       pin extends radially outward through
-        //                       the cup-wall annulus)
-        //   radius 1.5 mm, half-length 3 mm
+        //   centerline_sample = (-0.025, 0, 0)
+        //   body surface along +Y: y = +0.010
+        //   bounding surface +Y:   y = +0.030
+        //   annulus midpoint   = (10 + 30) / 2 = +0.020
+        //   pin position       = (-0.025, +0.020, 0)
+        //   axis               = +Z (binormal: tangent +X × split +Y = +Z)
+        //   radius 1.5 mm, half-length 5 mm
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
         let (body, bounds) = reference_body_and_bounds();
@@ -671,10 +589,10 @@ mod tests {
         // Expect 4 pin centers — 2 arc fractions × 2 lateral sides.
         let centers: Vec<Point3<f64>> = neg.iter().map(|t| params_of(t).parent.center_m).collect();
         let expected = [
-            Point3::new(-0.025, 0.0275, 0.0),  // t=0.25, +Y
-            Point3::new(-0.025, -0.0275, 0.0), // t=0.25, -Y
-            Point3::new(0.025, 0.0275, 0.0),   // t=0.75, +Y
-            Point3::new(0.025, -0.0275, 0.0),  // t=0.75, -Y
+            Point3::new(-0.025, 0.020, 0.0),  // t=0.25, +Y
+            Point3::new(-0.025, -0.020, 0.0), // t=0.25, -Y
+            Point3::new(0.025, 0.020, 0.0),   // t=0.75, +Y
+            Point3::new(0.025, -0.020, 0.0),  // t=0.75, -Y
         ];
         for e in &expected {
             let matched = centers.iter().any(|c| {
@@ -689,13 +607,13 @@ mod tests {
         for t in &neg {
             let p = params_of(t);
             assert!((p.radius_m - 0.0015).abs() < f64::EPSILON);
-            assert!((p.parent.half_length_m - 0.003).abs() < f64::EPSILON);
+            assert!((p.parent.half_length_m - 0.005).abs() < f64::EPSILON);
         }
-        // Axis is the split-normal ray direction — ±Y (split_vec is
-        // +Y; each pin's ray_dir is sign * split_vec).
+        // Axis is the ribbon binormal — +Z for this fixture
+        // (tangent +X × split-normal +Y = +Z).
         for t in &neg {
             let a = params_of(t).parent.axis.into_inner();
-            assert!(a.x.abs() < 1e-12 && a.z.abs() < 1e-12 && (a.y.abs() - 1.0).abs() < 1e-12);
+            assert!(a.x.abs() < 1e-12 && a.y.abs() < 1e-12 && (a.z - 1.0).abs() < 1e-12);
         }
     }
 
@@ -744,7 +662,7 @@ mod tests {
             // Negative side carries pin geometry verbatim.
             assert!((neg_params.radius_m - spec.pin_radius_m).abs() < f64::EPSILON);
             assert!(
-                (neg_params.parent.half_length_m - spec.pin_half_length_m).abs() < f64::EPSILON
+                (neg_params.parent.half_length_m - spec.pin_half_length_m).abs() < f64::EPSILON,
             );
             // Positive side carries the symmetric `/2` inflation.
             assert!(
@@ -769,14 +687,12 @@ mod tests {
     /// mirrors iter-1 sock-over-capsule's `+X` geometry (body extent
     /// at layer 0 ≈ 41 mm, bounding ≈ 61 mm; cup-wall annulus
     /// `x ∈ [41 mm, 61 mm]`). Each pin's `CylinderParent::center_m`
-    /// should land at the **bounds-anchored offset** (recon-3 §R3-2
-    /// (α)): `bounding_dist - pin_half_length_m + PIN_PROTRUSION_M`.
-    /// Original iter-1 visual-gate falsification mode (workshop iter-1
-    /// mold recon §F) tested at the legacy 25 mm fixed offset; this
-    /// regression now also catches the recon-3 axis + offset change.
-    /// Pre-S5 the test asserted the pin-SDF inside-only; post-S5 the
-    /// equivalent invariant inspects the [`CylinderParent::center_m`]
-    /// each transform carries directly.
+    /// lands at the annulus midpoint along ±X (`(36 + 61) / 2 =
+    /// 48.5 mm`), NOT at the legacy 25 mm fixed offset — the
+    /// original iter-1 visual-gate falsification mode (workshop
+    /// iter-1 mold recon §F). Pre-S5 the test asserted the pin-SDF
+    /// inside-only; post-S5 the equivalent invariant inspects the
+    /// [`CylinderParent::center_m`] each transform carries directly.
     #[test]
     fn pin_transforms_position_stays_in_cup_wall_for_wide_body_iter1_regression() {
         let body = Solid::cuboid(Vector3::new(0.036, 0.036, 0.036));
@@ -796,8 +712,8 @@ mod tests {
         // For each pin, the parent center must be:
         // - OUTSIDE the body (cup-wall material, body.evaluate > 0),
         // - INSIDE the bounding region (cup-wall material, bounds.evaluate < 0),
-        // - At |x| ≈ 61 - 3 + 0.5 = 58.5 mm (bounds-anchored offset
-        //   along ±X with iter-1 3 mm half-length + 0.5 mm protrusion).
+        // - At |x| ≈ (36 + 61) / 2 = 48.5 mm (annulus midpoint along
+        //   ±X).
         for t in &neg {
             let c = params_of(t).parent.center_m;
             assert!(
@@ -812,9 +728,8 @@ mod tests {
                 bounds.evaluate(&c),
             );
             assert!(
-                (c.x.abs() - 0.0585).abs() < 1e-6,
-                "pin center {c:?} should land at the bounds-anchored offset |x| ≈ 58.5 mm \
-                 (= bounding_dist 61 mm − pin_half_length 3 mm + PIN_PROTRUSION 0.5 mm)",
+                (c.x.abs() - 0.0485).abs() < 1e-6,
+                "pin center {c:?} should land at the annulus-midpoint offset |x| ≈ 48.5 mm",
             );
         }
     }

@@ -73,19 +73,19 @@
 //! - [`build_plug_socket_transforms`] emits one
 //!   [`MatingTransform::SubtractCylinder`] per pin-socket + T-slot
 //!   feature for the **cup pieces** (consumed by
-//!   [`crate::piece::compose_piece_solid`]; side-agnostic per S4 —
-//!   both cup halves emit the same Vec and the
-//!   [`MatingTransform::SeamTrim`] downstream bisects).
+//!   [`crate::piece::compose_piece_solid`]; side-agnostic — both
+//!   cup halves emit the same Vec, and each piece's SDF halfspace
+//!   intersect bounds the subtract to its kept half-shell).
 //!
-//! The cup-piece T-slot is bisected at its center by the per-piece
-//! `SeamTrim` because the T-bar's axis is parallel to the seam-plane
-//! normal (= the ribbon binormal). Each cup half therefore receives
-//! a co-planar half-disk cross-section of the T-slot on its mating
-//! face, and the workshop user closes the second cup half around
-//! the plug's T-bar (captive insertion). Recon §5 picks this
-//! "approach (a) — cylinder CSG before seam trim" over precomputed
-//! half-cylinders because the bisection match is bit-precise by
-//! manifold3d's `trim_by_plane` contract.
+//! The cup-piece T-slot lands as a half-disk on each cup half's
+//! mating face: the T-bar's axis is parallel to the seam-plane
+//! normal (= the ribbon binormal), the cup-piece Solid is the
+//! halfspace-intersected half-shell (recon-4 (P) — see
+//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2), and the
+//! post-MC mesh-CSG subtract punches the cylinder cross-section
+//! through the half-shell's seam face. The workshop user closes
+//! the second cup half around the plug's T-bar (captive
+//! insertion).
 //!
 //! # Multi-layer trade-off
 //!

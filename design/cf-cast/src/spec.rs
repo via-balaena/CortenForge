@@ -1318,19 +1318,19 @@ fn is_blocking_critical(issue: &PrintIssue, target: CastTarget) -> bool {
     if issue.severity != IssueSeverity::Critical {
         return false;
     }
-    // Post-S4 (mating-features arc): per
-    // `docs/CF_CAST_MATING_FEATURES_RECON.md` §G5 + §7, cup-piece
-    // (`MoldPiece`) F4 informs but does not gate — the post-MC
-    // seam trim's flat cap intersects the curved body cavity
-    // surface at acute angles near the seam, producing thin
-    // slivers that ThinWall flags. recon §7 enumerates this as
-    // expected-flake (not a manifold3d regression); the
-    // mating-face flatness invariant is verified mathematically
-    // by `piece::tests::s4_mating_face_is_mathematically_flat_and_coplanar`
-    // and the physical print at S8 remains the authoritative
-    // gate. Sentinel issues (NotWatertight / NonManifold /
-    // SelfIntersecting) still block — those would indicate a
-    // real manifold3d regression on cup geometry.
+    // Cup-piece (`MoldPiece`) F4 informs but does not gate — per
+    // `docs/CF_CAST_MATING_FEATURES_RECON.md` §G5 + §7 the post-MC
+    // mating-features cylinder ops (S5/S6/S7) intersect the curved
+    // body cavity surface at acute angles, producing thin slivers
+    // that ThinWall flags. recon §7 enumerates this as
+    // expected-flake (not a manifold3d regression); the mating-face
+    // flatness invariant is verified mathematically by
+    // `piece::tests::mating_face_is_mathematically_flat_and_coplanar`
+    // (recon-4 (P) production-fixture promotion of the §F-4 audit)
+    // and the physical print at S8 remains the authoritative gate.
+    // Sentinel issues (NotWatertight / NonManifold /
+    // SelfIntersecting) still block — those would indicate a real
+    // manifold3d regression on cup geometry.
     //
     // Plug, platform, funnel, and v1 mold targets keep the full
     // blocking set: their geometry is regular and ThinWall there
@@ -2802,19 +2802,15 @@ mod tests {
         assert!(ribbon.sample_at_arc_fraction(f64::NAN).is_none());
     }
 
-    // S4 pulled forward the deletion of the two side-specific
-    // `compose_piece_solid_with_pins_*` SDF tests that recon §8
-    // (`docs/CF_CAST_MATING_FEATURES_RECON.md`) scheduled for S5.
-    // Reason: post-S4 the cup-piece [`Solid`] returned by
-    // `compose_piece_solid` is **side-agnostic** — the
-    // side-specific seam cut moved to the returned
-    // `Vec<MatingTransform>`. The deleted tests asserted SDF-level
-    // side behavior of the Solid that no longer exists. The pin
-    // protrusion-vs-hole invariant will be restored by S5 as a
-    // post-CSG mesh assertion alongside the
-    // `MatingTransform::UnionCylinder` / `SubtractCylinder`
-    // migration. (Bookmark moved here so S5 doesn't trip on the
-    // already-deleted symbols.)
+    // S5 deleted the two `compose_piece_solid_with_pins_*` SDF
+    // tests that asserted side-specific pin Solid behavior at the
+    // SDF level (per `docs/CF_CAST_MATING_FEATURES_RECON.md` §8 —
+    // S4 pulled the deletion forward when the cup-piece Solid
+    // briefly went side-agnostic; recon-4 (P) restored side-
+    // specificity but the pin geometry stays mesh-CSG so the
+    // post-CSG pin-protrusion-vs-hole invariant lives in
+    // `registration::tests::pin_transforms_positive_socket_params_inflate_per_spec`
+    // instead).
 
     #[test]
     fn export_molds_v2_with_pins_writes_pieces_plus_plug() {
@@ -2846,23 +2842,24 @@ mod tests {
     #[test]
     fn generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_diameter() {
         // Pins ON: the v2 Mold Assembly section must mention the
-        // keyway count + diameter (1.5 mm radius × 2 = 3.0 mm
-        // diameter for iter1) + the ridge length (recon-3 §R3-2 (α)
-        // half-cylinder ridge/groove workshop model). v1/v2-pre-
-        // Step-9 prose ("clamp with rubber bands") must NOT appear.
+        // pin count + diameter (1.5 mm radius × 2 = 3.0 mm diameter
+        // for iter1) + the pin length (5 mm half-length × 2 = 10 mm
+        // total under the recon-4 (P) binormal-axis restoration).
+        // v1/v2-pre-Step-9 prose ("clamp with rubber bands") must
+        // NOT appear.
         let (spec, ribbon) = v2_fixture_with_pins();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        assert!(md.contains("2 half-cylinder ridge/groove keyways"));
+        assert!(md.contains("2 cylindrical pins"));
         assert!(md.contains("3.0 mm Ø"));
-        // 3 mm half-length default → 6 mm ridge length across the seam.
+        // 5 mm half-length default → 10 mm pin length across the seam.
         assert!(
-            md.contains("6.0 mm \n                 long")
-                || md.contains("6.0 mm long")
-                || md.contains("× 6.0 mm")
+            md.contains("10.0 mm long")
+                || md.contains("× 10.0 mm long")
+                || md.contains("× 10.0 mm,"),
         );
-        // Recon-3 §R3-2 (α) workshop callout — outer-face bumps.
-        assert!(md.contains("0.5 mm past the cup"));
+        // Workshop callout: insertion along the binormal direction.
+        assert!(md.contains("binormal"));
         assert!(
             !md.contains("rubber bands"),
             "with-pins prose must not retain rubber-band clamping note"
@@ -2901,14 +2898,12 @@ mod tests {
     /// Post-S7 the pour-gate carve lives as
     /// [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
     /// emitted into the returned Vec rather than as an SDF subtract
-    /// folded into the cup-piece [`cf_design::Solid`]. The carve is
-    /// side-agnostic — both [`PieceSide`]s emit the SAME pour-gate
-    /// transforms; the downstream
-    /// [`crate::mesh_csg::MatingTransform::SeamTrim`] cleaves each
-    /// leg into the side it belongs to (pour leg → Positive,
-    /// vent leg → Negative). The bisection itself is exercised
-    /// downstream by `pieces_partition_cup_material_at_seam_plane_in_post_csg_mesh`
-    /// in `piece.rs::tests`.
+    /// folded into the cup-piece [`cf_design::Solid`]. Both
+    /// [`PieceSide`]s emit the SAME pour-gate transforms; under
+    /// recon-4 (P) the SDF half-space intersect in the cup-piece
+    /// Solid handles per-side bisection at the SDF level — the
+    /// portion of the cylinder outside the kept half-shell is a
+    /// no-op for the mesh-CSG subtract.
     ///
     /// Pre-S7 this surface was covered by two side-specific SDF
     /// probe tests (`compose_piece_solid_with_pour_gate_carves_*`).
@@ -3092,21 +3087,18 @@ mod tests {
         assert!(piece_neg.bounds().is_some());
         assert!(piece_pos.bounds().is_some());
 
-        // Cup-wall SDF probe (no body, inside bounding) still
-        // resolves negative — the base_piece Solid is unchanged by
-        // either S5 pins (post-MC) or S7 pour gate (post-MC). The
-        // probe point at y=0.0325 sits inside the cup-wall annulus
-        // (body half_y=0.025, bounding half_y=0.040); we don't probe
-        // at the recon-3 (α) bounds-anchored pin center (y≈0.0375)
-        // because that point is also valid cup-wall material — what
-        // matters for this assertion is "base_piece Solid resolves
-        // cup-wall material" and the SDF is constant across the
-        // annulus interior.
-        let pin_q = Point3::new(-0.0075, 0.0325, 0.003);
+        // Cup-wall SDF probe inside the annulus (body half_y=0.025,
+        // bounding half_y=0.040, probe at y=0.0325 the annulus
+        // midpoint). The base_piece Solid is the SDF half-shell
+        // (`bounding ∖ body ∩ halfspace`) — pin geometry lives in
+        // the post-MC mesh-CSG transforms. Probe z=+0.003 sits on
+        // the Negative kept side (+overlap = +0.5 mm boundary at z=0
+        // biased inward).
+        let pin_q = Point3::new(-0.0075, 0.0325, -0.003);
         assert!(
             piece_neg.evaluate(&pin_q) < 0.0,
-            "Negative piece base Solid should still register cup-wall material at \
-             the probed point inside the annulus (pin geometry lives post-MC); got {}",
+            "Negative piece base Solid should register cup-wall material at \
+             the annulus-midpoint probe (pin geometry lives post-MC); got {}",
             piece_neg.evaluate(&pin_q),
         );
         // Both features land in the transform Vec post-S5+S7:

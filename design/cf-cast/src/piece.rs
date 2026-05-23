@@ -5,35 +5,24 @@
 //! geometry is the CSG composition
 //!
 //! ```text
-//! piece_sdf      = bounding_region ∖ layer_body ∖ pour_gate
+//! piece_sdf      = bounding_region ∖ layer_body ∩ ribbon_side(side)
 //! piece_meshcsg  = [plug-shaft + T-slot SubtractCylinder]
-//!                + [registration pin/socket cylinders]
-//!                + [SeamTrim]
+//!                + [pour-gate + vent SubtractCylinder]
+//!                + [registration pin/socket UnionCylinder/SubtractCylinder]
 //! ```
 //!
-//! Pre-S4 the ribbon split was an SDF half-space intersect appended
-//! to the formula; S4 of `docs/CF_CAST_MATING_FEATURES_PLAN.md`
-//! moved it to a post-MC mesh-CSG operation. S5 moved the
-//! registration pins/sockets the same way. S6 (this surface)
-//! moved the plug-shaft socket + T-slot the same way: pre-S6 the
-//! cup-piece Solid carried a third [`Solid::subtract`] for
-//! `build_plug_socket_solid`'s output (which united the shaft
-//! socket + T-slot SDF cylinders); post-S6 the cup-piece Solid is
-//! `bounding_region ∖ layer_body ∖ pour_gate` regardless of plug
-//! configuration, and the shaft socket + T-slot land as
-//! [`crate::mesh_csg::MatingTransform::SubtractCylinder`] entries
-//! at the FRONT of the returned `Vec<MatingTransform>` (recon §5
-//! ordering: subtract-then-union-then-trim).
-//!
-//! The T-bar's axis is parallel to the seam-plane normal (= ribbon
-//! binormal at arc midpoint), so the per-piece `SeamTrim` bisects
-//! the T-slot cylinder through its center along a co-planar
-//! half-disk on each cup-piece mating face. Workshop user closes
-//! the second cup half around the plug's T-bar (captive insertion).
-//!
-//! The resulting `(Solid, Vec<MatingTransform>)` pair feeds into the
-//! per-piece pipeline at Step 6: `solid_to_mm_mesh` →
-//! `apply_mating_transforms` → F4 → STL.
+//! The cup-piece [`Solid`] is **side-specific**: each
+//! [`PieceSide`] returns its own half-shell via
+//! [`Ribbon::halfspace_solid`]'s SDF half-space intersect (biased
+//! inward by [`RIBBON_PIECE_OVERLAP_M`] so the two pieces overlap by
+//! 1 mm at the seam). Marching-cubes meshes the half-shell directly;
+//! the mating-features cylinders (S5/S6/S7) compose post-MC via
+//! [`apply_mating_transforms`]. See
+//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 for the
+//! recon-4 (P) architectural-correction rationale: the seam belongs
+//! to the SDF/MC paradigm (continuous bulk geometry); mating-feature
+//! cylinders belong to the mesh-CSG paradigm (exact discrete
+//! primitives with bit-precise diametral fit).
 //!
 //! # v1 vs v2 mold cup
 //!
@@ -48,7 +37,7 @@
 //!
 //! # Inter-piece seam overlap
 //!
-//! [`RIBBON_PIECE_OVERLAP_M`] biases each piece's seam-trim plane
+//! [`RIBBON_PIECE_OVERLAP_M`] biases each piece's half-space
 //! inward by 0.5 mm so the two pieces' geometry overlaps by 1 mm at
 //! the ribbon seam. v1 uses the same magnitude
 //! (`CLIP_BODY_OVERLAP_M`) to break the coincidence between the
@@ -59,16 +48,28 @@
 //! also gives the workshop user mechanical tolerance during fit-up
 //! (FDM accuracy is ~0.1 mm, well below the 1 mm seam).
 //!
-//! S4 of `docs/CF_CAST_MATING_FEATURES_PLAN.md` migrated the seam
-//! from an SDF half-space intersection (where marching-cubes
-//! resolved the seam through its body-cavity-influenced grid) to a
-//! post-MC mesh-trim against an exact plane via
-//! [`crate::mesh_csg::MatingTransform::SeamTrim`]. The cup-piece
-//! [`Solid`] returned here is now **side-agnostic**: the
-//! side-specific cut lives in the returned `Vec<MatingTransform>`.
+//! # Architectural history
+//!
+//! S4 of `docs/CF_CAST_MATING_FEATURES_PLAN.md` (2026-05-22)
+//! migrated the seam from the SDF half-space intersect described
+//! above to a post-MC mesh-trim against an exact plane via
+//! `MatingTransform::SeamTrim`, making the cup-piece [`Solid`]
+//! side-agnostic. Workshop iter-1 cf-view smoke surfaced an
+//! orthogonal seam-face film bug (a thin membrane of cup-wall
+//! material capping the body-cavity opening at the seam plane) that
+//! bisected to S4 `93aaa0c2`. Recon-4 (P) (2026-05-23) reverted the
+//! seam to the SDF form per `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md`
+//! §F-2: the body-cavity opening at the seam is established by SDF
+//! arithmetic (`bounding ∖ body ∩ halfspace` evaluates linearly at
+//! the seam plane), so MC interpolates seam-cap vertices exactly on
+//! the plane (§F-4 audit: bit-precise to f64 precision). S5/S6/S7
+//! mating-features mesh-CSG stays unchanged — `apply_mating_transforms`
+//! still runs cylinder Union/Subtract ops post-MC against the
+//! half-shell mesh. [`crate::mesh_csg::MatingTransform::SeamTrim`]
+//! remains in the enum as a defensive primitive but is no longer
+//! emitted from this function.
 
 use cf_design::Solid;
-use nalgebra::{Point3, Unit, Vector3};
 
 use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
@@ -95,38 +96,45 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 /// Compose the per-(layer × piece) mold-piece geometry as the pair
 /// `(Solid, Vec<MatingTransform>)`:
 ///
-/// - **Solid** = `bounding_region ∖ layer_body` (post-S7 side-
-///   agnostic AND plug-socket-agnostic AND pour-gate-agnostic —
-///   both [`PieceSide::Negative`] and [`PieceSide::Positive`]
-///   return the same Solid; the side-specific bisection AND every
-///   cylinder carve move to the Vec).
+/// - **Solid** = `bounding_region ∖ layer_body ∩ ribbon.halfspace_solid(side, ...)`
+///   — side-specific half-shell. Each [`PieceSide`] returns its own
+///   biased half-space intersect ([`RIBBON_PIECE_OVERLAP_M`] grows
+///   each side 0.5 mm into the other so the two pieces overlap by
+///   1 mm at the seam).
 /// - **`Vec<MatingTransform>`** =
 ///   1. Plug-shaft socket + T-slot
 ///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
-///      (side-agnostic — both cup halves emit the same set; S6).
+///      (S6).
 ///   2. Pour-gate + vent
 ///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
-///      (side-agnostic — pour leg lands on `+binormal`, vent leg
-///      lands on `-binormal`; the seam trim downstream bisects
-///      each leg into the side it belongs to; S7).
+///      (S7). The full-length cylinder is subtracted from the
+///      half-shell; the SDF halfspace handles per-side bisection by
+///      construction (cylinder portion outside the half-shell is a
+///      no-op).
 ///   3. Per-pin registration ops — one
 ///      [`crate::mesh_csg::MatingTransform::UnionCylinder`] per pin
 ///      on [`PieceSide::Negative`]; one
 ///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] per
 ///      pin on [`PieceSide::Positive`] (S5).
-///   4. A single [`crate::mesh_csg::MatingTransform::SeamTrim`]
-///      selecting the side's kept half-space (plus the 0.5 mm
-///      overlap bias; S4).
 ///
-/// Order matters: recon §5 requires the cylinder ops BEFORE the
-/// seam trim so the trim bisects pin/socket/T-slot/pour-leg meshes
-/// cleanly through the seam plane (approach (a) — cylinder CSG
-/// before trim).
+/// The cup-piece Solid's SDF is **negative inside the cup-wall
+/// material** on the half-shell side; the side-specific cut is
+/// already baked into the Solid via the ribbon's half-space
+/// intersect. `apply_mating_transforms` then runs the cylinder ops
+/// post-MC against the half-shell mesh; cylinder portions outside
+/// the half-shell volume contribute nothing (a no-op for
+/// `SubtractCylinder`; a free-floating addition for `UnionCylinder`
+/// — which under the binormal-axis pin design materializes as the
+/// workshop-visible half-cylinder ridge across the seam face).
 ///
-/// The returned Solid's SDF is **negative inside the cup-wall
-/// material** (inside the bounding region, outside the layer body);
-/// the side-specific cut happens in `apply_mating_transforms`. See
-/// `docs/CF_CAST_MATING_FEATURES_PLAN.md` §S4.
+/// Recon-4 (P) reverted the seam cut from a post-MC
+/// [`crate::mesh_csg::MatingTransform::SeamTrim`] back to this SDF
+/// half-space intersect; see
+/// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 + the module
+/// docstring for the architectural-correction rationale.
+/// [`crate::mesh_csg::MatingTransform::SeamTrim`] remains in the
+/// enum as a defensive primitive (its `apply_one` arm still runs)
+/// but is no longer emitted here.
 ///
 /// `bounding_region` and `layer_body` are taken by reference and
 /// cloned into the result; the underlying [`cf_design::Solid`] is
@@ -136,9 +144,9 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 /// # Errors
 ///
 /// - [`CastError::InfiniteBounds`] with [`CastTarget::BoundingRegion`]
-///   if `bounding_region.bounds()` returns `None` — downstream MC
-///   meshes the SDF over the bounding region's AABB and needs a
-///   finite extent.
+///   if `bounding_region.bounds()` returns `None` — the ribbon
+///   half-space derives its AABB from the bounding region and the
+///   downstream MC mesher needs a finite extent.
 ///
 /// An unbounded `layer_body` (e.g., a [`cf_design::Solid::plane`])
 /// is **not** an error: the final piece Solid's bounds come from
@@ -153,109 +161,36 @@ pub fn compose_piece_solid(
     ribbon: &Ribbon,
     side: PieceSide,
 ) -> Result<(Solid, Vec<MatingTransform>), CastError> {
-    // Validate bounded region (the ribbon's S4 seam trim derives its
-    // plane from the ribbon directly, but downstream meshing needs a
-    // finite bounding-region AABB; preserve the explicit error here).
-    bounding_region
+    let bounds = bounding_region
         .bounds()
         .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
-    // S4: piece Solid is side-agnostic; ribbon-side bisection moved
-    // to the returned `Vec<MatingTransform>` as a post-MC seam trim.
-    // Post-S7 the pour-gate carve also moves to the Vec; the base
-    // Solid is just `bounding ∖ layer_body`.
-    let base_piece = bounding_region.clone().subtract(layer_body.clone());
+    // Pre-S4 / recon-4 (P) SDF seam: side-specific half-space
+    // intersect at the SDF level. The biased halfspace's SDF is
+    // exactly linear; MC interpolates seam-cap vertices on the seam
+    // plane to f64 precision per §F-4. S5/S6/S7 mating-features
+    // mesh-CSG cylinder primitives compose post-MC against the
+    // resulting half-shell mesh.
+    let halfspace = ribbon.halfspace_solid(side, bounds, RIBBON_PIECE_OVERLAP_M);
+    let base_piece = bounding_region
+        .clone()
+        .subtract(layer_body.clone())
+        .intersect(halfspace);
 
-    // S6: plug-anchor sockets + T-slot become post-MC mesh-CSG.
-    // Pre-S6 the cup-piece Solid had a `subtract(sockets)` term;
-    // post-S6 the Solid is side-agnostic AND plug-socket-agnostic
-    // — both cup pieces emit the same SubtractCylinder transforms
-    // below, and the per-piece SeamTrim downstream bisects each
-    // cylinder (recon §5 approach (a): cylinder CSG before seam
-    // trim). T-slot + plug-shaft sockets land FIRST in the Vec so
-    // the seam trim bisects them cleanly; empty Vec when
-    // `ribbon.plug_pins` is `None`.
+    // S6 plug-anchor socket + T-slot SubtractCylinders.
     let mut transforms = build_plug_socket_transforms(ribbon);
-    // S7: pour-gate + air-vent channels migrate from SDF subtract
-    // to post-MC `SubtractCylinder` ops. Both pieces emit the same
-    // transforms; the splay-along-binormal layout puts the pour
-    // leg on `+binormal` (Positive) and the vent leg on `-binormal`
-    // (Negative), and the downstream SeamTrim cleaves each leg
-    // into the side it belongs to. Empty Vec when
-    // `ribbon.pour_gate` is `PourGateKind::None`.
+    // S7 pour-gate + air-vent SubtractCylinders.
     transforms.extend(build_pour_gate_transforms(ribbon));
-    // Step 9 (S5): inter-piece registration pins. Negative side
-    // emits `UnionCylinder` per pin (gains protrusions); Positive
-    // side emits `SubtractCylinder` per pin (gains matching
-    // sockets, inflated by the per-piece diametral + axial
-    // clearance budgets). The helper returns an empty Vec when
-    // `ribbon.registration` is `None` so callers see no behavior
-    // change for the registration-less path.
-    //
-    // The helper ray-marches `layer_body` + `bounding_region`
-    // along the ribbon's split-normal to anchor each pin to the
-    // per-layer bounding outer surface, with the pin's `+axis` tip
-    // protruding `registration::PIN_PROTRUSION_M` past the
-    // bounding face (recon-3 §R3-2 (α); see the
-    // `crate::registration` module docstring for the
-    // "derived, not fixed" rationale + the "why the pin protrudes"
-    // section).
+    // S5 inter-piece registration pins/sockets. Negative emits
+    // UnionCylinder per pin; Positive emits SubtractCylinder per
+    // pin (inflated by diametral + axial clearance). Empty Vec
+    // when `ribbon.registration` is `None`.
     transforms.extend(build_registration_transforms(
         ribbon,
         layer_body,
         bounding_region,
         side,
     ));
-
-    // S4: emit a SeamTrim against the single-plane approximation of
-    // the ribbon's curve-following splitting surface. Both pieces
-    // trim against the SAME physical plane through the centerline's
-    // arc-length midpoint, with the 0.5 mm overlap bias applied
-    // symmetrically so each kept half-space extends `2 *
-    // RIBBON_PIECE_OVERLAP_M = 1 mm` into the other side. Tail of
-    // the recon §5 ordering: subtract-then-union-then-trim — both
-    // S5 (registration pins) and S6 (plug-socket + T-slot) cylinder
-    // CSG ops precede the trim above so the trim bisects each
-    // cylinder mesh cleanly through the seam plane.
-    let (midpoint, binormal) = ribbon.seam_plane_reference();
-    transforms.push(MatingTransform::SeamTrim {
-        normal: seam_normal_for(side, binormal),
-        offset_m: seam_offset_m_for(side, midpoint, binormal),
-    });
     Ok((base_piece, transforms))
-}
-
-/// Outward-pointing unit normal of the kept half-space for `side`.
-///
-/// `Positive` keeps the `+binormal` half (away from the Negative
-/// piece); `Negative` keeps the `-binormal` half. manifold3d's
-/// `trim_by_plane` keeps the half-space `n · p > offset`, so the
-/// returned normal points toward the matter to retain.
-fn seam_normal_for(side: PieceSide, binormal: Unit<Vector3<f64>>) -> Unit<Vector3<f64>> {
-    match side {
-        PieceSide::Positive => binormal,
-        // `Unit::new_unchecked` is sound for the negation of a unit
-        // vector (magnitude preserved exactly under f64 negation).
-        PieceSide::Negative => Unit::new_unchecked(-binormal.into_inner()),
-    }
-}
-
-/// Plane offset in meters for the kept half-space `n · p > offset_m`
-/// (where `n = seam_normal_for(side, binormal)`).
-///
-/// Both pieces' kept half-spaces share the **same physical plane**
-/// `dot(p - midpoint, binormal) = 0`, with the
-/// [`RIBBON_PIECE_OVERLAP_M`] bias subtracted from each offset so
-/// each piece extends 0.5 mm into the opposite side (combined
-/// overlap = 1 mm at the seam — matches the pre-S4 SDF bias
-/// convention).
-fn seam_offset_m_for(side: PieceSide, midpoint: Point3<f64>, binormal: Unit<Vector3<f64>>) -> f64 {
-    let plane_d = midpoint.coords.dot(&binormal.into_inner());
-    match side {
-        // Positive: kept where `+binormal · p > plane_d - overlap`.
-        PieceSide::Positive => plane_d - RIBBON_PIECE_OVERLAP_M,
-        // Negative: kept where `-binormal · p > -plane_d - overlap`.
-        PieceSide::Negative => -plane_d - RIBBON_PIECE_OVERLAP_M,
-    }
 }
 
 #[cfg(test)]
@@ -285,23 +220,39 @@ mod tests {
         (layer_body, bounding_region, ribbon)
     }
 
-    /// Post-S4 the cup-piece [`Solid`] is **side-agnostic** (the
-    /// side-specific ribbon-seam cut moved to the returned
-    /// `Vec<MatingTransform>`); a query point in the cup wall
-    /// outside the body must register inside the Solid regardless of
-    /// `side`. The mesh-level partition invariant moves to the
-    /// `pieces_partition_cup_material_at_seam_plane_in_post_csg_mesh`
-    /// test below.
+    /// Negative-side piece: covers the cup wall on the `-Z` side of
+    /// the ribbon (binormal `+Z`, sign `+1` → SDF negative where
+    /// `ribbon.sdf < +bias`, i.e., at and below the body's bottom).
+    /// A query point in the cup wall below the body must be INSIDE
+    /// (SDF < 0). Post-(P) the cup-piece [`Solid`] is side-specific
+    /// again — the half-space intersect lives at the SDF level.
     #[test]
-    fn piece_solid_contains_cup_wall_outside_body() {
+    fn negative_piece_contains_cup_wall_below_ribbon() {
         let (body, region, ribbon) = fixture();
         let (piece, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
         // Inside bounding region (-30 ≤ z ≤ +30 mm), outside body
-        // (body z ∈ [-10, +10]):
+        // (body z ∈ [-10, +10]), below ribbon (z < 0):
         let q = Point3::new(0.0, 0.0, -0.020);
         assert!(
             piece.evaluate(&q) < 0.0,
-            "piece Solid must contain cup-wall point at z = -20 mm; got {}",
+            "negative-side piece must contain cup-wall point at z = -20 mm; got {}",
+            piece.evaluate(&q),
+        );
+    }
+
+    /// Same negative-side piece: a cup-wall query ABOVE the ribbon
+    /// must be OUTSIDE (the body's top hemisphere belongs to the
+    /// positive piece). Restored from the pre-S4 form by recon-4
+    /// (P) — the side-specific Solid distinguishes the two halves
+    /// at the SDF level.
+    #[test]
+    fn negative_piece_excludes_cup_wall_above_ribbon() {
+        let (body, region, ribbon) = fixture();
+        let (piece, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let q = Point3::new(0.0, 0.0, 0.020);
+        assert!(
+            piece.evaluate(&q) > 0.0,
+            "negative-side piece must exclude cup-wall point at z = +20 mm; got {}",
             piece.evaluate(&q),
         );
     }
@@ -348,11 +299,66 @@ mod tests {
         );
     }
 
+    /// Negative and Positive pieces partition the cup material:
+    /// at a cup-wall point on the `-Z` side, the negative piece is
+    /// inside (SDF < 0) and the positive piece is outside (SDF > 0),
+    /// with opposite signs at the symmetric `+Z` point. Restored
+    /// from the pre-S4 form by recon-4 (P) — side-specific Solid
+    /// makes the partition observable at the SDF layer.
+    #[test]
+    fn pieces_partition_cup_material_symmetrically() {
+        let (body, region, ribbon) = fixture();
+        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+
+        let q_below = Point3::new(0.0, 0.0, -0.020);
+        let q_above = Point3::new(0.0, 0.0, 0.020);
+
+        // Below: in negative piece, out of positive piece.
+        assert!(neg.evaluate(&q_below) < 0.0);
+        assert!(pos.evaluate(&q_below) > 0.0);
+        // Above: out of negative, in positive.
+        assert!(neg.evaluate(&q_above) > 0.0);
+        assert!(pos.evaluate(&q_above) < 0.0);
+    }
+
+    /// At the ribbon seam (z = 0 inside the cup wall), BOTH pieces
+    /// contain the point — this is the design-doc seam overlap that
+    /// keeps marching cubes from resolving coincident surfaces.
+    /// `RIBBON_PIECE_OVERLAP_M = 0.5 mm` gives each piece an SDF of
+    /// `-0.5 mm` along the seam (by symmetry of the bias). Restored
+    /// from the pre-S4 form by recon-4 (P) — the SDF half-space
+    /// intersect carries the overlap directly.
+    #[test]
+    fn both_pieces_overlap_at_ribbon_seam() {
+        let (body, region, ribbon) = fixture();
+        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        // Cup wall on the ribbon seam: y outside body, x within bounding,
+        // z = 0 (the ribbon's zero plane). y = 0.020 is outside body
+        // (10 mm half-extent) and inside bounding region (30 mm).
+        let q_seam = Point3::new(0.0, 0.020, 0.0);
+        // The body-subtract dominates the piece SDF outside the
+        // bias-overlap region; at z=0 just outside the body, the
+        // governing constraint is the half-space bias, so the SDF
+        // should be exactly `-RIBBON_PIECE_OVERLAP_M`.
+        assert!(neg.evaluate(&q_seam) < 0.0);
+        assert!(pos.evaluate(&q_seam) < 0.0);
+        // Both report the same SDF magnitude on the seam (by
+        // symmetry of the bias).
+        let neg_sdf = neg.evaluate(&q_seam);
+        let pos_sdf = pos.evaluate(&q_seam);
+        assert!(
+            (neg_sdf - pos_sdf).abs() < 1e-12,
+            "both pieces' SDFs at the seam should match by symmetry; got neg={neg_sdf} pos={pos_sdf}",
+        );
+    }
+
     /// Mesh-level test fixture pipeline: compose Solid → MC →
-    /// post-CSG mesh-trim. Returns the post-CSG `IndexedMesh` in mm
-    /// world coords, exactly the geometry that flows to F4 +
+    /// post-CSG mating-features. Returns the post-CSG `IndexedMesh`
+    /// in mm world coords, exactly the geometry that flows to F4 +
     /// STL-export in the live `mesh_and_gate_v2_*` sites.
-    fn mesh_piece_through_s4_pipeline(
+    fn mesh_piece_through_p_pipeline(
         body: &Solid,
         bounding: &Solid,
         ribbon: &Ribbon,
@@ -370,112 +376,62 @@ mod tests {
         apply_mating_transforms(mesh, &transforms, target).expect("CSG must succeed")
     }
 
-    /// Post-S4 partition invariant at the **mesh** level: Negative
-    /// and Positive piece meshes occupy opposite half-spaces of the
-    /// seam plane, with the kept side extending to the bounding-
-    /// region wall and the trimmed side capped at the
-    /// [`RIBBON_PIECE_OVERLAP_M`] overlap bias (≈ ±0.5 mm).
+    /// Recon-4 (P) §F-4 falsification gate, promoted from the
+    /// synthetic `mesh_csg::tests::f4_synthetic_presdf_seam_is_bit_precise_flat`
+    /// probe to a production-fixture gate (mirrors the S4-era
+    /// `s4_mating_face_is_mathematically_flat_and_coplanar` test
+    /// structure on the pre-S4 SDF form).
     ///
-    /// Pre-S4 this was an SDF test (`neg.evaluate(z=-20) < 0` etc.).
-    /// Post-S4 the Solid is side-agnostic; the partition appears
-    /// only after `apply_mating_transforms` runs the seam trim.
-    /// (Recon §8 missed this rewrite; bookmark in the S4 commit
-    /// message + memory.)
+    /// The SDF formula `bounding ∖ body ∩ halfspace` evaluates to
+    /// the halfspace SDF (signed distance to a plane) at the seam
+    /// plane: bounding interior negative; body exterior positive;
+    /// the intersect's max-operator surfaces the halfspace's
+    /// exactly-zero value. MC interpolates linearly between adjacent
+    /// cell-corner SDF values, so for a linear SDF the interpolated
+    /// vertex lands ON the SDF = 0 surface (to f64 precision modulo
+    /// gradient + max-operator noise). The seam plane is at
+    /// `signed_dist = 0`; each side's cap-vertex extreme along the
+    /// kept-side normal lies at `signed_dist = ±RIBBON_PIECE_OVERLAP_M`
+    /// (the inward bias from `halfspace_solid`'s `overlap_m`
+    /// argument).
+    ///
+    /// Verifies the three pre-S4 form invariants:
+    ///
+    /// 1. Each piece's seam-cap vertex extreme is at
+    ///    `signed_dist = ±RIBBON_PIECE_OVERLAP_M` to within 1 µm
+    ///    (the synthetic §F-4 probe hit 0.000000 mm; production
+    ///    curved geometry may add small noise — kept at 1 µm
+    ///    strict, with the 10 µm relaxed fallback documented in
+    ///    `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-5 #2).
+    /// 2. The two pieces' cap planes are co-planar with offsets
+    ///    differing by `2 × RIBBON_PIECE_OVERLAP_M`.
+    /// 3. No vertex escapes the kept half-space.
+    ///
+    /// Locks the §F-4 architectural-claim audit (pre-S4 SDF seam is
+    /// bit-precise flat, contrary to S4's implicit premise that
+    /// pre-S4 was NOT flat). Future seam-mechanism migrations can't
+    /// silently regress.
     #[test]
-    fn pieces_partition_cup_material_at_seam_plane_in_post_csg_mesh() {
-        let (body, region, ribbon) = fixture();
-        // 5 mm cells: coarse but fast; the seam-trim is an exact
-        // post-MC plane cut so trim-side vertex extent is bit-precise
-        // regardless of MC resolution.
-        let neg =
-            mesh_piece_through_s4_pipeline(&body, &region, &ribbon, PieceSide::Negative, 0.005);
-        let pos =
-            mesh_piece_through_s4_pipeline(&body, &region, &ribbon, PieceSide::Positive, 0.005);
-        assert!(!neg.vertices.is_empty(), "Negative mesh must survive trim");
-        assert!(!pos.vertices.is_empty(), "Positive mesh must survive trim");
-
-        // Vertex extremes along the seam-plane normal (Z, since
-        // binormal = +Z for this fixture).
-        let neg_z_max = neg.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
-        let neg_z_min = neg.vertices.iter().map(|v| v.z).fold(f64::MAX, f64::min);
-        let pos_z_max = pos.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
-        let pos_z_min = pos.vertices.iter().map(|v| v.z).fold(f64::MAX, f64::min);
-
-        // Overlap bias in mm (mesh coords).
-        let overlap_mm = RIBBON_PIECE_OVERLAP_M * 1000.0;
-        let tol_mm = 1.0e-3; // 1 µm: manifold3d's trim is bit-precise on the cut plane.
-
-        // Negative kept half: z < +overlap. max.z lies precisely on
-        // the cut plane (manifold3d's trim caps the cut with new
-        // vertices at z = +overlap).
-        assert!(
-            (neg_z_max - overlap_mm).abs() < tol_mm,
-            "Negative trim cap should land at z = +{overlap_mm:.3} mm; got max.z = {neg_z_max:.6} mm",
-        );
-        // Negative extends to the bounding-region floor.
-        assert!(
-            (neg_z_min - -30.0).abs() < 0.1,
-            "Negative should extend to bounding floor at z ≈ -30 mm; got min.z = {neg_z_min:.3} mm",
-        );
-
-        // Positive: mirror image.
-        assert!(
-            (pos_z_min - -overlap_mm).abs() < tol_mm,
-            "Positive trim cap should land at z = -{overlap_mm:.3} mm; got min.z = {pos_z_min:.6} mm",
-        );
-        assert!(
-            (pos_z_max - 30.0).abs() < 0.1,
-            "Positive should extend to bounding ceiling at z ≈ +30 mm; got max.z = {pos_z_max:.3} mm",
-        );
-    }
-
-    /// Plan §S4 falsification gate — **mathematically instrumented**
-    /// (not eyeball-the-cf-view). Verifies the mating-face flatness
-    /// invariant the workshop iter-1 print physically falsified:
-    ///
-    /// 1. Each piece's seam-trim cap is **exactly flat**: every
-    ///    cap-region vertex lies on the piece's cut plane to within
-    ///    f64 precision (manifold3d's `trim_by_plane` cap-vertex
-    ///    contract).
-    /// 2. The two pieces' cap planes are **parallel + co-planar with
-    ///    overlap**: both pieces share the same physical plane
-    ///    geometry (same normal), with caps offset by exactly
-    ///    `±RIBBON_PIECE_OVERLAP_M`. When assembled, the 1 mm overlap
-    ///    region is the design-doc seam-mating zone.
-    /// 3. No piece has material on the trimmed side past its cap:
-    ///    every vertex lies on the kept-side half-space (within 1 µm
-    ///    of f64 noise).
-    ///
-    /// This locks the geometric contract in a structural test:
-    /// future manifold3d upgrades or S4 reworks can't silently
-    /// regress the mating-face flatness the iter-1 print failed.
-    /// Replaces the cf-view visual gate the plan §S4 placeholder
-    /// suggested (visual gate is too imprecise — manifold3d's cap is
-    /// bit-precise, not 0.1 mm RMS).
-    #[test]
-    fn s4_mating_face_is_mathematically_flat_and_coplanar() {
+    fn mating_face_is_mathematically_flat_and_coplanar() {
         let (body, region, ribbon) = fixture();
         // For the fixture, binormal = +Z and midpoint = origin, so
         // the seam plane is z = 0, Negative cap at z = +0.5 mm,
-        // Positive cap at z = -0.5 mm. The math below works for any
-        // ribbon — it just uses the runtime seam_plane_reference.
+        // Positive cap at z = -0.5 mm.
         let (midpoint, binormal) = ribbon.seam_plane_reference();
         let normal_v = binormal.into_inner();
         let plane_d_mm = midpoint.coords.dot(&normal_v) * 1000.0;
         let overlap_mm = RIBBON_PIECE_OVERLAP_M * 1000.0;
 
         let neg =
-            mesh_piece_through_s4_pipeline(&body, &region, &ribbon, PieceSide::Negative, 0.005);
+            mesh_piece_through_p_pipeline(&body, &region, &ribbon, PieceSide::Negative, 0.005);
         let pos =
-            mesh_piece_through_s4_pipeline(&body, &region, &ribbon, PieceSide::Positive, 0.005);
+            mesh_piece_through_p_pipeline(&body, &region, &ribbon, PieceSide::Positive, 0.005);
 
-        // Signed distance of each vertex from the seam plane along
-        // +binormal (mm). The seam plane itself is at signed_dist=0.
         let signed_dist = |v: &Point3<f64>| -> f64 { v.coords.dot(&normal_v) - plane_d_mm };
 
-        // (1) Negative kept where `binormal · p_mm < plane_d + overlap`,
-        // i.e., signed_dist < +overlap. Cap vertices sit AT
-        // signed_dist = +overlap. No vertex should sit past the cap.
+        // (1) Negative kept where signed_dist < +overlap. Cap
+        // vertices sit AT signed_dist = +overlap by MC's linear-SDF
+        // interpolation property.
         let neg_max = neg
             .vertices
             .iter()
@@ -486,19 +442,19 @@ mod tests {
             .iter()
             .map(signed_dist)
             .fold(f64::MAX, f64::min);
-        let cap_tol_mm = 1.0e-3; // 1 µm — well inside manifold3d's f64 precision
+        let cap_tol_mm = 1.0e-3; // 1 µm — §F-4 strict gate
         assert!(
             (neg_max - overlap_mm).abs() < cap_tol_mm,
             "Negative cap vertices must lie on signed_dist = +{overlap_mm:.4} mm \
-             (flat by manifold3d's trim_by_plane contract); got max = {neg_max:.6} mm",
+             (pre-S4 SDF seam is bit-precise flat by MC's linear-SDF interpolation, \
+             per recon-4 §F-4); got max = {neg_max:.6} mm",
         );
         assert!(
             neg_min >= -50.0,
             "Negative should still have far-side material (bounding floor); got min = {neg_min:.3} mm",
         );
 
-        // (2) Positive kept where signed_dist > -overlap. Cap at
-        // signed_dist = -overlap.
+        // (2) Positive: mirror.
         let pos_max = pos
             .vertices
             .iter()
@@ -519,25 +475,20 @@ mod tests {
             "Positive should still have far-side material; got max = {pos_max:.3} mm",
         );
 
-        // (3) No vertex strictly past the cap (Negative max ≤ cap +
-        // tol; Positive min ≥ -cap - tol). Already implied by (1)
-        // + (2)'s equality assertions; re-check explicitly to lock
-        // the "kept-side only" invariant.
+        // (3) No vertex past the cap (the SDF halfspace intersect
+        // bounds the kept-side mesh to `signed_dist ≤ +overlap` for
+        // Negative and `signed_dist ≥ -overlap` for Positive).
         assert!(
             neg_max <= overlap_mm + cap_tol_mm,
-            "Negative mesh must not extend past the trim cap",
+            "Negative mesh must not extend past the cap",
         );
         assert!(
             pos_min >= -overlap_mm - cap_tol_mm,
-            "Positive mesh must not extend past the trim cap",
+            "Positive mesh must not extend past the cap",
         );
 
-        // (4) Co-planarity across pieces: the two cap planes share
-        // the same normal (binormal) and their offsets along that
-        // normal differ by exactly `2 * RIBBON_PIECE_OVERLAP_M`
-        // (the design-doc overlap). This is the "pieces sit flush"
-        // contract — assembled, the 1 mm overlap region is the
-        // seam-mating zone.
+        // (4) Co-planarity across pieces: cap offsets differ by
+        // exactly `2 × RIBBON_PIECE_OVERLAP_M`.
         let cap_offset_difference_mm = neg_max - pos_min;
         let expected_difference_mm = 2.0 * overlap_mm;
         assert!(
@@ -548,19 +499,20 @@ mod tests {
         );
     }
 
-    /// Mating-face flatness still holds for a curved centerline
-    /// (the single-plane approximation per `Ribbon::seam_plane_reference`).
-    /// Locks the contract under the conditions plan §S4 warned
-    /// about: the approximation deviates from the curve-following
-    /// surface, but each piece's cap is still exactly flat by
-    /// manifold3d's trim contract.
+    /// §F-4 flatness gate under a curved centerline — locks the
+    /// contract for the production iter-1 ribbon shape (curved-
+    /// centerline + ribbon binormal numerics introduce small
+    /// deviations from the synthetic axis-aligned case). The
+    /// `Ribbon::halfspace_solid` SDF samples the ribbon's binormal
+    /// per-segment, so curvature can in principle introduce
+    /// piecewise-linear-SDF noise. The gate stays at 1 µm strict
+    /// (the synthetic §F-4 audit cleared 0.000000 mm); if production
+    /// noise grows under aggressive curvature, the recon-4 §F-5 #2
+    /// fallback is to relax to 10 µm (still ≪ FDM 0.4 mm bead).
     #[test]
-    fn s4_mating_face_is_mathematically_flat_under_curved_centerline() {
-        // Bend the centerline mid-span (10° turn): tangent rotates,
-        // so segment binormals along the polyline vary, but
-        // `seam_plane_reference` picks one (the arc-midpoint
-        // segment's binormal) and the cap-flatness contract holds
-        // regardless of how curved the rest of the centerline is.
+    fn mating_face_is_mathematically_flat_under_curved_centerline() {
+        // Bend the centerline mid-span (10° turn): tangent rotates
+        // so segment binormals along the polyline vary.
         let centerline = vec![
             Point3::new(-0.060, 0.0, 0.0),
             Point3::new(-0.020, 0.0, 0.0),
@@ -578,9 +530,9 @@ mod tests {
         let overlap_mm = RIBBON_PIECE_OVERLAP_M * 1000.0;
 
         let neg =
-            mesh_piece_through_s4_pipeline(&body, &region, &ribbon, PieceSide::Negative, 0.005);
+            mesh_piece_through_p_pipeline(&body, &region, &ribbon, PieceSide::Negative, 0.005);
         let pos =
-            mesh_piece_through_s4_pipeline(&body, &region, &ribbon, PieceSide::Positive, 0.005);
+            mesh_piece_through_p_pipeline(&body, &region, &ribbon, PieceSide::Positive, 0.005);
 
         let signed_dist = |v: &Point3<f64>| v.coords.dot(&normal_v) - plane_d_mm;
         let neg_max = neg
@@ -593,57 +545,20 @@ mod tests {
             .iter()
             .map(signed_dist)
             .fold(f64::MAX, f64::min);
+        // The piecewise-linear segment binormal stays exactly linear
+        // within each segment, so cap-vertex deviation from the
+        // arc-midpoint segment's binormal plane is small. Strict
+        // gate 1 µm; loosen if production exceeds (recon-4 §F-5 #2).
         let cap_tol_mm = 1.0e-3;
         assert!(
             (neg_max - overlap_mm).abs() < cap_tol_mm,
             "curved-centerline Negative cap must still be flat at +{overlap_mm:.4} mm; \
-             got max = {neg_max:.6} mm",
+             got max = {neg_max:.6} mm (relax to 10 µm per §F-5 #2 if production hits this)",
         );
         assert!(
             (pos_min - -overlap_mm).abs() < cap_tol_mm,
             "curved-centerline Positive cap must still be flat at -{overlap_mm:.4} mm; \
              got min = {pos_min:.6} mm",
-        );
-    }
-
-    /// Both piece meshes extend `RIBBON_PIECE_OVERLAP_M` past the
-    /// `z = 0` ribbon zero plane into the other piece's half — the
-    /// design-doc 1 mm seam overlap survives the S4 SDF→mesh-CSG
-    /// migration.
-    ///
-    /// Pre-S4 this was tested via SDF probe (`neg.evaluate(z=0) <
-    /// 0`); post-S4 the overlap is a property of the post-CSG mesh
-    /// vertex extent. Each piece's cut-cap lies 0.5 mm on the
-    /// opposite side of the seam plane from the rest of its
-    /// material.
-    #[test]
-    fn both_pieces_overlap_at_ribbon_seam() {
-        let (body, region, ribbon) = fixture();
-        let neg =
-            mesh_piece_through_s4_pipeline(&body, &region, &ribbon, PieceSide::Negative, 0.005);
-        let pos =
-            mesh_piece_through_s4_pipeline(&body, &region, &ribbon, PieceSide::Positive, 0.005);
-
-        let neg_z_max = neg.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
-        let pos_z_min = pos.vertices.iter().map(|v| v.z).fold(f64::MAX, f64::min);
-
-        // Negative crosses z=0 into +Z by ~0.5 mm; Positive crosses
-        // z=0 into -Z by ~0.5 mm. Together the seam is 1 mm wide.
-        assert!(
-            neg_z_max > 0.0,
-            "Negative mesh must extend into +Z (seam overlap); got max.z = {neg_z_max:.6} mm",
-        );
-        assert!(
-            pos_z_min < 0.0,
-            "Positive mesh must extend into -Z (seam overlap); got min.z = {pos_z_min:.6} mm",
-        );
-        // Combined overlap should be ~1 mm = 2 × RIBBON_PIECE_OVERLAP_M.
-        let combined_overlap_mm = neg_z_max - pos_z_min;
-        let expected_mm = 2.0 * RIBBON_PIECE_OVERLAP_M * 1000.0;
-        assert!(
-            (combined_overlap_mm - expected_mm).abs() < 1.0e-3,
-            "Combined seam overlap should be ~{expected_mm:.3} mm; \
-             got Negative.max.z - Positive.min.z = {combined_overlap_mm:.6} mm",
         );
     }
 
@@ -692,25 +607,26 @@ mod tests {
     /// bounding 40 mm in `+X` (10 mm cup-wall annulus). With the
     /// pre-C1 fixed offset the pin would have landed AT x = 25 mm —
     /// inside the body, free-floating from the cup-wall mesh. With
-    /// C1's body-relative offset + recon-3 §R3-2 (α) bounds-anchored
-    /// offset the pin lands at
-    /// `x = bounding_dist − pin_half_length + PIN_PROTRUSION_M`
-    /// (≈ 35.5 mm with the test's overridden 5 mm half-length).
+    /// C1's body-relative offset the pin lands at the annulus
+    /// midpoint, `x = (body_dist + bounding_dist) / 2 = 35 mm`.
     ///
     /// Post-S5 the invariant lives in the transform parameters
     /// rather than in the post-CSG mesh topology: pre-S5 the pin
     /// SDF unioned into the piece Solid, so the MC output produced a
     /// single connected shell when the pin sat in the cup wall and
     /// 2 components when it floated free. Post-S5 the pin is a
-    /// separate mesh-CSG cylinder primitive that produces a 2-shell
-    /// topology either way (the seam trim caps the outer + inner
-    /// cavity surfaces independently), so the connected-component
-    /// probe no longer distinguishes the failure mode. The
-    /// pin-attaches-to-cup-wall invariant is now: each pin's
-    /// `CylinderParent::center_m` lies **outside the body** AND
-    /// **inside the bounding region**, i.e., in the cup-wall annulus
-    /// where the union/subtract intersects cup-wall material rather
-    /// than empty body-cavity space.
+    /// separate mesh-CSG cylinder primitive whose attachment to the
+    /// cup-wall material is governed by the cylinder Union's
+    /// `parent.center_m` (must lie OUTSIDE the body and INSIDE the
+    /// bounding region — i.e., in the cup-wall annulus where the
+    /// union intersects cup-wall material rather than empty body-
+    /// cavity space).
+    ///
+    /// Recon-4 (P) reverted recon-3 (α)'s bounds-anchored offset to
+    /// the pre-recon-2 / S5 annulus-midpoint design + binormal axis
+    /// (perpendicular to the seam plane, pin sweeps through cup-wall
+    /// material as a contained cylinder); see
+    /// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2/§F-3.
     #[test]
     fn pin_transforms_anchor_in_cup_wall_for_iter1_wide_body() {
         use crate::registration::{
@@ -719,16 +635,17 @@ mod tests {
 
         let layer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030));
         let bounding_region = Solid::cuboid(Vector3::new(0.040, 0.040, 0.040));
-        // Centerline along +Z, split-normal +X. Pin cylinders extend
-        // RADIALLY along ±X (split-normal direction itself —
-        // recon-3 §R3-2 (α)) through the cup-wall annulus.
+        // Centerline along +Z, split-normal +X. Binormal = tangent ×
+        // split-normal = +Z × +X = +Y; pin cylinders extend along ±Y
+        // (perpendicular to the seam plane, sweeping through the
+        // cup-wall annulus). pin_offset = annulus midpoint along
+        // ±X = ±(30 + 40)/2 = ±35 mm.
         let centerline = vec![Point3::new(0.0, 0.0, -0.050), Point3::new(0.0, 0.0, 0.050)];
         let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
         // Chunky 5 mm half-length pin in this 10 mm cup-wall fixture
-        // gives a bounds-anchored offset of bounds − 5 + 0.5 = 35.5 mm
-        // (|x|), still inside the wall annulus and well clear of the
-        // body face (no inner-cavity dimple in the test fixture's
-        // 10 mm wall).
+        // still fits inside the bounding region (pin extends ±5 mm
+        // along ±Y from pin_center at |x| = 35 mm, ±Y body extent
+        // 30 mm so pin doesn't escape the bounding region in Y).
         let chunky_pins = PinSpec {
             pin_radius_m: 0.005,
             pin_half_length_m: 0.005,
@@ -765,11 +682,10 @@ mod tests {
                  region (cup-wall material); bounds.evaluate = {}",
                 bounding_region.evaluate(&c),
             );
-            // Bounds-anchored offset along ±X = ±(40 − 5 + 0.5) = ±35.5 mm
-            // (recon-3 §R3-2 (α)).
+            // Annulus-midpoint offset along ±X = ±(30 + 40) / 2 = ±35 mm.
             assert!(
-                (c.x.abs() - 0.0355).abs() < 1e-6,
-                "pin center should land at the bounds-anchored offset |x| ≈ 35.5 mm; got {c:?}",
+                (c.x.abs() - 0.035).abs() < 1e-6,
+                "pin center should land at the annulus-midpoint offset |x| ≈ 35 mm; got {c:?}",
             );
             assert_eq!(params.segments, PIN_SEGMENTS);
         }
@@ -846,19 +762,22 @@ mod tests {
     }
 
     /// Recon §5 T-bar bisection gate: post-CSG the Negative cup and
-    /// Positive cup mating faces each carry a co-planar half-disk
-    /// cross-section of the T-slot cylinder. The T-bar's axis is
-    /// parallel to the seam normal (= ribbon binormal), so
-    /// manifold3d's `trim_by_plane` cuts the T-slot cylinder
-    /// through its center along a flat circular cross-section —
-    /// each cup half receives one half-cylinder T-slot capped at
-    /// the seam plane.
+    /// Positive cup mating faces each carry a half-disk T-slot
+    /// cross-section. The T-bar's axis is parallel to the seam
+    /// normal (= ribbon binormal), so under recon-4 (P) the SDF
+    /// halfspace intersect at the SDF level produces a half-shell
+    /// whose seam face is at `signed_dist = ±RIBBON_PIECE_OVERLAP_M`;
+    /// the mesh-CSG `SubtractCylinder` then removes the T-slot
+    /// cylinder from the half-shell, punching a circular hole in
+    /// the seam face whose rim consists of vertices at the kept-
+    /// side cap with radial distance ≤ (`t_bar_radius` + diametral/2)
+    /// from the T-bar's projected center.
     ///
-    /// The math: each piece's seam cap should contain vertices
-    /// lying ON a circle of radius `t_bar_radius + diametral/2`
-    /// centred at the T-bar's projected (`anchor + outward *
-    /// pin_length`) location, AND those vertices should sit at the
-    /// kept-side cap `signed_dist` (= `±RIBBON_PIECE_OVERLAP_M`).
+    /// Under the pre-(P) S4 architecture the same property held via
+    /// a different mechanism (`SeamTrim` bisected the full cylinder
+    /// against the seam plane); this test exercises the cap-rim
+    /// invariant rather than the bisection mechanism, so it works
+    /// uniformly across (P) and (pre-P) for any future migration.
     /// Stronger than eyeball cf-view per
     /// `feedback_math_verify_geometric_contracts`.
     #[test]
@@ -891,9 +810,9 @@ mod tests {
             .translate(Vector3::new(0.0, 0.0, -0.020));
 
         let neg =
-            mesh_piece_through_s4_pipeline(&body, &bounding, &ribbon, PieceSide::Negative, 0.005);
+            mesh_piece_through_p_pipeline(&body, &bounding, &ribbon, PieceSide::Negative, 0.005);
         let pos =
-            mesh_piece_through_s4_pipeline(&body, &bounding, &ribbon, PieceSide::Positive, 0.005);
+            mesh_piece_through_p_pipeline(&body, &bounding, &ribbon, PieceSide::Positive, 0.005);
         assert!(!neg.vertices.is_empty(), "Negative cup must survive trim");
         assert!(!pos.vertices.is_empty(), "Positive cup must survive trim");
 
@@ -974,8 +893,8 @@ mod tests {
         // T-slot cap's max signed_dist and the Positive T-slot
         // cap's min signed_dist should be exactly
         // `2 * RIBBON_PIECE_OVERLAP_M`. (Already exercised by
-        // `s4_mating_face_is_mathematically_flat_and_coplanar` —
+        // `mating_face_is_mathematically_flat_and_coplanar` —
         // S6's contribution is verifying T-slot bisection works
-        // alongside the seam trim.)
+        // alongside the SDF seam.)
     }
 }

@@ -1257,12 +1257,15 @@ mod tests {
     /// curved-geometry interaction with MC-quantized surfaces, not
     /// in manifold3d's shell-host union itself.
     ///
-    /// Recon-3 §R3-2 still picks (α) protrusion as the production
-    /// fix because forcing surface-vs-surface intersection sidesteps
-    /// the (unknown) pipeline-layer disconnection cause entirely; the
+    /// Recon-4 (P) supersedes the recon-3 (α) protrusion fix —
+    /// reverting S4 to the SDF half-space seam produces a clean
+    /// 1-component half-shell host (per `f3b_synthetic_presdf_seam_baseline_is_one_component`),
+    /// at which point this contained-cylinder absorption is the
+    /// load-bearing property for the restored binormal-axis pin (per
+    /// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2/§F-3). The
     /// §R1 workshop-fixture inspector
     /// (`tests/iter_connectivity_inspector.rs`) remains the
-    /// load-bearing falsification gate.
+    /// load-bearing production-fixture falsification gate.
     #[test]
     fn apply_mating_transforms_absorbs_contained_cylinder_into_shell_host() {
         use mesh_repair::components::find_connected_components;
@@ -1303,23 +1306,23 @@ mod tests {
         );
     }
 
-    /// Recon-3 §R3-3 experiment 2 / positive control for the (α)
-    /// protrusion pick. Pin centered so its `+axis` tip extends
-    /// 0.5 mm past the outer cube face (x = 10.5 mm) — lateral
-    /// cylindrical surface physically intersects the outer surface at
-    /// a circular cross-section. manifold3d's boolean union merges
-    /// the cylinder into the host's outer surface; component count
-    /// stays at the bare baseline (cylinder folded into outer, no
-    /// extra component).
+    /// Recon-3 §R3-3 experiment 2 — manifold3d characterisation
+    /// for the protruding-cylinder mode. Pin centered so its `+axis`
+    /// tip extends 0.5 mm past the outer cube face (x = 10.5 mm) —
+    /// lateral cylindrical surface physically intersects the outer
+    /// surface at a circular cross-section. manifold3d's boolean
+    /// union merges the cylinder into the host's outer surface;
+    /// component count stays at the bare baseline (cylinder folded
+    /// into outer, no extra component).
     ///
     /// Pair this with the companion
     /// [`apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`]
     /// — same shell host + same cylinder radius/length, only the
     /// center moves. Both pass at "no extra component" on synthetic
-    /// geometry; the production iter-1 difference lives at a
-    /// different layer. (α) protrusion is the defensive pick — it
-    /// always forces surface-vs-surface intersection, which is the
-    /// manifold3d boolean's most-robust path.
+    /// geometry. Recon-4 (P) restored the contained-cylinder
+    /// binormal-axis pin design and retains this protruding-mode
+    /// test as a regression guard against future migrations that
+    /// might reintroduce a protrusion variant.
     #[test]
     fn apply_mating_transforms_merges_protruding_cylinder_into_shell_host() {
         use mesh_repair::components::find_connected_components;
@@ -1355,8 +1358,10 @@ mod tests {
             after, bare_components,
             "shell-host union of a PROTRUDING cylinder must merge the cylinder into \
              the outer surface (component count = bare baseline \
-             {bare_components}); got {after} — load-bearing positive case for \
-             recon-3 §R3-2 (α)",
+             {bare_components}); got {after} — positive control for the recon-3 \
+             §R3-3 characterisation (superseded by recon-4 (P) but retained as a \
+             manifold3d-behavior regression guard for any future migration that \
+             reintroduces a protruding-cylinder pin variant)",
         );
     }
 
@@ -1383,32 +1388,33 @@ mod tests {
         );
     }
 
-    /// §F-3 probe — pre-S4 SDF-intersect seam + SDF-union binormal-axis
-    /// pin → MC → check connected components.
+    /// §F-3 probe (recon-4) — pre-S4 SDF-intersect seam + SDF-union
+    /// binormal-axis pin → MC → 1 connected component.
     ///
-    /// Tests the bookmark's hypothesis: if the film fix is candidate
-    /// (a) (revert to pre-S4 SDF half-space intersect for the seam),
-    /// can the pin-disconnection failure mode that drove the (α) pick
-    /// be avoided too?  Specifically: pre-S4 the seam was an SDF op
-    /// that subsumed pin SDF additions into ONE continuous SDF, which
-    /// MC meshed as ONE connected component.
-    ///
-    /// Fixture: same hollow cube (40 mm bounding minus 20 mm body),
-    /// but compose pre-S4 style:
+    /// Promoted from a recon-4 spike to a permanent regression guard
+    /// for the post-(P) pin-absorbs-cleanly invariant on the
+    /// synthetic axis-aligned fixture (cf-cast pipeline production
+    /// validation lives in `tests/iter_connectivity_inspector.rs`
+    /// per §F-5 #1). Tests the §F-3 BRANCH A finding:
     ///
     /// ```text
     /// piece_sdf = bounding ∖ body ∩ halfspace(z > 0) ∪ pin
     /// ```
     ///
-    /// Pin = a small contained cylinder sitting in the cup-wall
-    /// annulus (the binormal-axis pin geometry — pin axis aligned
-    /// with the seam normal, pin lives entirely within the wall
-    /// volume on one side of the seam). MC at 3 mm, check connected
-    /// components. If `component_count == 1`, (α) is supersedeable
-    /// under (a). If `> 1`, the disconnection is fundamental even
-    /// pre-S4 and (α) stays load-bearing.
+    /// where the pin is a small SDF cuboid in the cup-wall annulus
+    /// at y = 15 mm with binormal-axis (+Z) extent in [0, 12 mm].
+    /// MC at 3 mm cells must produce ONE connected component — the
+    /// pin SDF-union flows into the same MC-meshed surface as the
+    /// half-shell, with no disconnected pin shell.
+    ///
+    /// Per `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-3 BRANCH A
+    /// confirms (α) is supersedeable under (P): if SDF-union pin
+    /// works on this fixture, mesh-CSG-union pin on the same clean
+    /// 1-component half-shell host (per recon-3 §R3-3's
+    /// `apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`
+    /// characterisation) is at least as robust topologically.
     #[test]
-    fn f3_probe_presdf_seam_plus_sdf_pin_components() {
+    fn f3_synthetic_presdf_seam_plus_sdf_pin_is_one_component() {
         use crate::mesher::solid_to_mm_mesh;
         use cf_design::Solid;
         use mesh_repair::components::find_connected_components;
@@ -1422,23 +1428,13 @@ mod tests {
         // (so +Z is the "inside" side of the half-space).
         let halfspace = Solid::plane(NVec3::new(0.0, 0.0, -1.0), 0.0);
 
-        // Pre-S5-style SDF pin: a small cylinder in the cup wall
-        // annulus at y = 15 mm (well inside the 20 mm bounding half
-        // and outside the 10 mm body cavity), pin axis = +Z (binormal-
-        // axis, perpendicular to the z=0 seam plane). Pin length
-        // 6 mm half-extent so it sits entirely in the +Z half (z ∈
-        // [0, 12]) — like a pre-recon-arc workshop-ergonomic pin
-        // sticking up from one piece into the matching socket.
-        //
-        // cf_design::Solid doesn't have a `cylinder` constructor at
-        // arbitrary pose; use a cuboid approximation as the pin
-        // primitive (geometric pin shape doesn't matter — what
-        // matters is that the SDF is a UNION of pin + wall, and MC
-        // sees a single SDF crossing).
+        // Pin as SDF cuboid approximation (cf_design::Solid lacks a
+        // pose'd cylinder constructor; the geometric pin shape
+        // doesn't matter — what matters is that the SDF is a UNION
+        // of pin + wall, and MC sees a single SDF crossing).
         let pin_block = Solid::cuboid(NVec3::new(0.003, 0.003, 0.012));
         let pin = pin_block.translate(NVec3::new(0.0, 0.015, 0.006));
 
-        // Pre-S4 + pre-S5 composition.
         let piece_sdf = bounding.subtract(body).intersect(halfspace).union(pin);
 
         let mesh = solid_to_mm_mesh(
@@ -1450,53 +1446,50 @@ mod tests {
             },
         )
         .unwrap();
-        eprintln!(
-            "F-3: pre-S4 + SDF-union pin MC mesh: {} verts, {} faces",
+
+        let analysis = find_connected_components(&mesh);
+        assert_eq!(
+            analysis.component_count,
+            1,
+            "§F-3 BRANCH A: pre-S4 SDF half-cube + SDF-union binormal-axis pin must \
+             produce 1 connected component (got {}). Mesh has {} verts / {} faces. \
+             A regression here means MC is no longer absorbing the contained pin \
+             into the half-shell — investigate the SDF composition + MC cell-size \
+             interaction (rebbond the pin offset or shrink the cell size).",
+            analysis.component_count,
             mesh.vertices.len(),
             mesh.faces.len(),
         );
-
-        let analysis = find_connected_components(&mesh);
-        eprintln!(
-            "F-3 SUMMARY: connected components = {} (synthetic axis-aligned fixture; \
-             baseline cup half-shell SHOULD be 1 component with pin SDF-unioned)",
-            analysis.component_count,
-        );
-        eprintln!(
-            "F-3 BRANCH: {}",
-            if analysis.component_count == 1 {
-                "A (pin absorbed — (α) supersedeable under candidate (a))"
-            } else {
-                "B (pin disconnected even pre-S4 — (α) stays load-bearing)"
-            },
-        );
     }
 
-    /// §F-4 probe — pre-S4 SDF seam math-flatness.
+    /// §F-4 (recon-4) — pre-S4 SDF seam math-flatness via MC's
+    /// linear-SDF interpolation property.
     ///
-    /// Load-bearing recon-4 architectural-claim verification: is the
-    /// pre-S4 SDF half-space-intersect seam ALREADY bit-precise flat
-    /// after MC?  The S4 ship migrated this to post-MC
-    /// `trim_by_plane` for "math-verified flat seam"; if pre-S4 was
-    /// already flat by the linear-SDF interpolation property of MC,
-    /// the S4 migration had no flatness benefit (only the film cost).
+    /// Promoted from a recon-4 architectural-claim audit spike to a
+    /// permanent regression guard. The halfspace SDF is exactly
+    /// linear (signed distance to plane); the intersect's
+    /// max-operator surfaces the halfspace value at the seam plane.
+    /// MC's vertex placement linearly interpolates the SDF along
+    /// cell edges to find the zero-crossing — for a linear SDF the
+    /// interpolated vertex lands EXACTLY on the SDF = 0 surface
+    /// (modulo f64 noise from gradient solving + the intersect's
+    /// max-operator). The §F-4 synthetic audit cleared 0.000000 mm
+    /// (bit-equal to f64 precision); S4's "math-verified flatness"
+    /// premise (that pre-S4 was NOT flat) was empirically wrong.
     ///
-    /// Mirrors S4's `s4_mating_face_is_mathematically_flat_and_coplanar`
-    /// gate but on the pre-S4 form:
-    /// `piece_sdf = bounding ∖ body ∩ halfspace_solid(side)` where
-    /// the halfspace SDF is exactly linear (signed distance to
-    /// plane). MC's vertex interpolation along a cell edge is linear
-    /// in the SDF, so for a linear SDF the interpolated vertex should
-    /// land EXACTLY on the `SDF = 0` surface (modulo f64 noise + the
-    /// intersect max-operator).
+    /// Synthetic axis-aligned counterpart of the production
+    /// `piece::tests::mating_face_is_mathematically_flat_and_coplanar`
+    /// gate (where the production fixture exercises the ribbon's
+    /// curved-centerline binormal numerics). This synthetic gate
+    /// locks the SDF-arithmetic side of the contract.
     ///
-    /// Reports per-side seam-cap vertex distance-from-plane
-    /// (max, mean). The probe uses no-overlap halves at z = 0; the
-    /// 0.5 mm overlap-bias is irrelevant to the flatness claim
-    /// (flatness comes from the linear SDF, not the offset magnitude).
+    /// The probe uses no-overlap halves at z = 0; the
+    /// `RIBBON_PIECE_OVERLAP_M` bias is irrelevant to the flatness
+    /// claim (flatness comes from the linear SDF, not the offset
+    /// magnitude).
     #[test]
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
-    fn f4_probe_presdf_seam_flatness() {
+    #[allow(clippy::cast_precision_loss)]
+    fn f4_synthetic_presdf_seam_is_bit_precise_flat() {
         use crate::mesher::solid_to_mm_mesh;
         use cf_design::Solid;
         use nalgebra::Vector3 as NVec3;
@@ -1534,101 +1527,58 @@ mod tests {
         )
         .unwrap();
 
-        eprintln!(
-            "F-4: NEG piece MC mesh = {} verts, {} faces",
-            mesh_neg.vertices.len(),
-            mesh_neg.faces.len(),
-        );
-        eprintln!(
-            "F-4: POS piece MC mesh = {} verts, {} faces",
-            mesh_pos.vertices.len(),
-            mesh_pos.faces.len(),
-        );
-
-        // Seam-cap vertices: vertices within 100 µm of the seam plane
-        // (z = 0). Wider tolerance to gather candidates; then measure
-        // distance precisely.
-        let cap_neg: Vec<&Point3<f64>> = mesh_neg
+        // Seam-cap vertices: vertices within 100 µm of the seam
+        // plane (z = 0). Wider tolerance to gather candidates; then
+        // measure distance precisely.
+        let cap_neg_max = mesh_neg
             .vertices
             .iter()
             .filter(|v| v.z.abs() < 0.1)
-            .collect();
-        let cap_pos: Vec<&Point3<f64>> = mesh_pos
+            .map(|v| v.z.abs())
+            .fold(0.0_f64, f64::max);
+        let cap_pos_max = mesh_pos
             .vertices
             .iter()
             .filter(|v| v.z.abs() < 0.1)
-            .collect();
+            .map(|v| v.z.abs())
+            .fold(0.0_f64, f64::max);
 
-        let max_dist_neg = cap_neg.iter().map(|v| v.z.abs()).fold(0.0_f64, f64::max);
-        let mean_dist_neg = if cap_neg.is_empty() {
-            0.0
-        } else {
-            cap_neg.iter().map(|v| v.z.abs()).sum::<f64>() / cap_neg.len() as f64
-        };
-        let max_dist_pos = cap_pos.iter().map(|v| v.z.abs()).fold(0.0_f64, f64::max);
-        let mean_dist_pos = if cap_pos.is_empty() {
-            0.0
-        } else {
-            cap_pos.iter().map(|v| v.z.abs()).sum::<f64>() / cap_pos.len() as f64
-        };
-
-        eprintln!(
-            "F-4 NEG: {} seam-cap candidates within 100 µm; max |z| = {:.6} mm, \
-             mean |z| = {:.6} mm",
-            cap_neg.len(),
-            max_dist_neg,
-            mean_dist_neg,
+        // S4's gate threshold (1 µm); pre-S4 synthetic audit cleared
+        // 0.000000 mm.
+        let threshold_mm = 1.0e-3;
+        assert!(
+            cap_neg_max <= threshold_mm,
+            "§F-4 (synthetic): NEG seam-cap max |z| must be ≤ 1 µm by MC's linear-SDF \
+             interpolation property; got {cap_neg_max:.6} mm. A regression here means \
+             the SDF arithmetic at the halfspace intersect no longer evaluates linearly \
+             at the seam plane.",
         );
-        eprintln!(
-            "F-4 POS: {} seam-cap candidates within 100 µm; max |z| = {:.6} mm, \
-             mean |z| = {:.6} mm",
-            cap_pos.len(),
-            max_dist_pos,
-            mean_dist_pos,
-        );
-
-        // S4's gate asserted bit-precise to 1 µm. Compare against
-        // that threshold: does pre-S4 also meet it?
-        let s4_threshold_mm = 1.0e-3; // 1 µm in mm
-        eprintln!(
-            "F-4 vs S4 1 µm gate: NEG {} | POS {}",
-            if max_dist_neg <= s4_threshold_mm {
-                "PASS"
-            } else {
-                "FAIL"
-            },
-            if max_dist_pos <= s4_threshold_mm {
-                "PASS"
-            } else {
-                "FAIL"
-            },
-        );
-        eprintln!(
-            "F-4 BRANCH: {}",
-            if max_dist_neg <= s4_threshold_mm && max_dist_pos <= s4_threshold_mm {
-                "A — pre-S4 ALSO bit-precise flat (1 µm); S4 migration had no flatness benefit, \
-                 only the film cost. (P) is a strict architectural upgrade."
-            } else if max_dist_neg <= 0.01 && max_dist_pos <= 0.01 {
-                "B — pre-S4 flat to < 10 µm but not 1 µm. Workshop-acceptable (≪ FDM 0.4 mm bead) \
-                 but (P) trades bit-precise framing for the film fix."
-            } else {
-                "C — pre-S4 NOT bit-precise flat (max > 10 µm). (P)'s architectural claim weakens; \
-                 trade-off harder to justify."
-            },
+        assert!(
+            cap_pos_max <= threshold_mm,
+            "§F-4 (synthetic): POS seam-cap max |z| must be ≤ 1 µm by MC's linear-SDF \
+             interpolation property; got {cap_pos_max:.6} mm.",
         );
     }
 
-    /// §F-3b probe — pre-S4 SDF seam WITHOUT pin → MC → component
-    /// count baseline.
+    /// §F-3b (recon-4) — pre-S4 SDF half-shell baseline → MC → 1
+    /// connected component (without pin).
     ///
-    /// Establishes whether the half-cube SDF (bounding ∖ body ∩
-    /// halfspace) under MC produces 1 or 2 components on its own.
-    /// Post-S4 the same SDF without the halfspace produces a 2-shell
-    /// hollow cuboid (per the §R1 inspector unit-test history); pre-
-    /// S4 the halfspace intersect closes one end of the shell, so it
-    /// should be 1 component.
+    /// Promoted from a recon-4 spike to a permanent regression guard.
+    /// Establishes the half-cube SDF (`bounding ∖ body ∩ halfspace`)
+    /// meshes as a SINGLE connected component under MC: the
+    /// halfspace intersect closes one end of the body-cavity tube,
+    /// merging the outer + cavity surfaces into one closed half-
+    /// shell. Post-S4 (without the SDF halfspace) the same
+    /// `bounding ∖ body` is a 2-shell hollow cuboid (per the §R1
+    /// inspector history); this gate locks in the (P) topology
+    /// invariant.
+    ///
+    /// Pair test: §F-3 confirms that adding the SDF pin keeps the
+    /// component count at 1. §F-3b confirms the baseline (no pin)
+    /// is also 1. Together they bracket the failure modes (pin
+    /// stays absorbed; half-shell itself stays connected).
     #[test]
-    fn f3b_probe_presdf_seam_baseline_components() {
+    fn f3b_synthetic_presdf_seam_baseline_is_one_component() {
         use crate::mesher::solid_to_mm_mesh;
         use cf_design::Solid;
         use mesh_repair::components::find_connected_components;
@@ -1650,12 +1600,14 @@ mod tests {
         )
         .unwrap();
         let analysis = find_connected_components(&mesh);
-        eprintln!(
-            "F-3b BASELINE: pre-S4 SDF half-cube MC mesh = {} verts, {} faces, \
-             {} components",
+        assert_eq!(
+            analysis.component_count,
+            1,
+            "§F-3b BASELINE: pre-S4 SDF half-cube must mesh as 1 connected component \
+             (got {}). Mesh has {} verts / {} faces.",
+            analysis.component_count,
             mesh.vertices.len(),
             mesh.faces.len(),
-            analysis.component_count,
         );
     }
 }

@@ -491,62 +491,46 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
             let pin_count = spec.arc_fractions.len();
             let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
             let pin_length_mm = spec.pin_half_length_m * 2.0 * 1000.0;
-            let ridge_radius_mm = spec.pin_radius_m * 1000.0;
             let diametral_mm = spec.diametral_clearance_m * 1000.0;
             let socket_dia_mm = pin_dia_mm + diametral_mm;
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
-                 curve-following seam. **{pin_count} half-cylinder \
-                 ridge/groove keyways** ({pin_dia_mm:.1} mm Ø cylindrical \
-                 pins extending radially through the cup wall, \
-                 bisected by the seam-trim into matching \
-                 {ridge_radius_mm:.1} mm tall × {pin_length_mm:.1} mm \
-                 long ridges on `_piece_0` and matching grooves on \
+                 curve-following seam. **{pin_count} cylindrical pins** \
+                 ({pin_dia_mm:.1} mm Ø × {pin_length_mm:.1} mm long, \
+                 printed integrally with `_piece_0` and matched by \
+                 {socket_dia_mm:.2} mm Ø cylindrical holes in \
                  `_piece_1` — {diametral_mm:.2} mm diametral clearance \
                  for a positional sliding fit) lock the pieces in \
                  alignment along the seam — no manual clamping needed \
-                 once the pieces are seated."
+                 once the pins are seated."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
-                "Slide `_piece_0` into `_piece_1` along the seam-plane \
-                 normal — the half-cylinder ridges seat into the \
-                 matching grooves and lock both lateral translation \
-                 and rotation in plane. Ridges are gravity-held + \
-                 friction-supported by the {diametral_mm:.2} mm \
-                 sliding fit; no extra fasteners. Post-S4 of the \
-                 mating-features arc, each piece's seam face is \
-                 trimmed flat to the ribbon plane via mesh-CSG, so \
-                 the pieces seat flush at the seam; the \
-                 {socket_dia_mm:.2} mm groove width matches the \
-                 ridge with the diametral clearance above."
+                "Insert each pin from `_piece_0` into the matching \
+                 hole in `_piece_1` along the binormal direction (the \
+                 pin axis is perpendicular to the seam plane at the \
+                 pin position). Pins are gravity-held; no friction \
+                 lock. Each pin extends {pin_length_mm:.1} mm \
+                 symmetrically across the seam plane — half lives \
+                 buried inside `_piece_0`'s cup-wall material; the \
+                 other half protrudes past the seam face as the \
+                 workshop-visible ridge that seats into `_piece_1`'s \
+                 matching socket. The pre-S4 SDF half-space intersect \
+                 keeps each piece's seam face bit-precise flat by MC's \
+                 linear-SDF interpolation property (recon-4 §F-4), so \
+                 the pieces seat flush along the {socket_dia_mm:.2} mm \
+                 sliding-fit sockets."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
-                "Recon-3 §R3-2 (α) workshop note: each pin's `+axis` \
-                 tip is anchored to PROTRUDE 0.5 mm past the cup \
-                 piece's outer face — a ≈ {pin_dia_mm:.1} mm Ø × \
-                 0.5 mm circular bump on the outer wall at each pin \
-                 location. The bump is below FDM bead-width tolerance \
-                 the platform pocket already absorbs (no platform-STL \
-                 re-cut). The pin's `-axis` tip sits 0.5 mm INTO the \
-                 body cavity (default 3 mm half-length + 0.5 mm \
-                 protrusion in the 5 mm iter-1 wall) — a ≈ \
-                 {pin_dia_mm:.1} mm Ø × 0.5 mm silicone dimple on the \
-                 cast, well within the cf-cast-cli's 2 mm demold \
-                 tolerance."
-            );
-            md.push('\n');
-            let _ = writeln!(
-                md,
-                "If a ridge chips during demold or assembly, file the \
-                 stub flush + sand the matching groove if needed; a \
-                 manual rubber-band clamp restores the cast for that \
-                 layer. Document keyway failures for the post-iter-1 \
+                "If a pin breaks during demold or assembly, file the \
+                 stub flush + drill out the hole if needed; a manual \
+                 rubber-band clamp restores the cast for that layer. \
+                 Document pin failures for the post-iter-1 \
                  registration-feature decision (revisit dia/length \
                  defaults in `PinSpec::iter1`)."
             );

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail, ensure};
 use serde::Deserialize;
 
-use cf_cast::{DEFAULT_MASS_BUDGET_KG, PIN_PROTRUSION_M, PinSpec, PlugPinSpec};
+use cf_cast::{DEFAULT_MASS_BUDGET_KG, PlugPinSpec};
 
 /// Top-level `cast.toml` schema.
 #[derive(Debug, Clone, Deserialize)]
@@ -450,44 +450,6 @@ impl CastConfig {
             );
         }
 
-        // Cross-field gate: when registration pins are enabled, the
-        // recon-3 §R3-2 (α) pin position spans
-        // `2 × pin_half_length_m` along the split-normal, with the
-        // `+axis` tip protruding `PIN_PROTRUSION_M` past the bounding
-        // outer face. The pin's `-axis` tip sits at depth
-        // `2 × pin_half_length_m - PIN_PROTRUSION_M` below the
-        // bounding outer face → inner-cavity dimple depth =
-        // `2 × pin_half_length_m - PIN_PROTRUSION_M - wall_thickness_m`
-        // (when positive). We require the dimple ≤
-        // [`MAX_REGISTRATION_DIMPLE_M`] so workshop silicone demold
-        // tolerance (recon-3 §R3-2: "silicone tolerates ≤ 2 mm
-        // undercuts on demold") holds.
-        //
-        // Equivalent inequality: `2 × pin_half_length_m ≤
-        // wall_thickness_m + PIN_PROTRUSION_M +
-        // MAX_REGISTRATION_DIMPLE_M`. Iter-1's 3 mm half-length
-        // (6 mm total) + 0.5 mm protrusion in a 5 mm wall → 0.5 mm
-        // dimple, well within the 2 mm tolerance.
-        if self.registration_pins.enabled {
-            const MAX_REGISTRATION_DIMPLE_M: f64 = 0.002;
-            let effective_pin_half_length_m = PinSpec::iter1().pin_half_length_m;
-            let pin_total_m = 2.0 * effective_pin_half_length_m;
-            let budget_m =
-                self.cast.wall_thickness_m + PIN_PROTRUSION_M + MAX_REGISTRATION_DIMPLE_M;
-            ensure!(
-                pin_total_m <= budget_m,
-                "cast.wall_thickness_m ({} m) + PIN_PROTRUSION_M ({} m) + \
-                 MAX_REGISTRATION_DIMPLE_M ({} m) must be >= \
-                 2 × PinSpec::iter1().pin_half_length_m ({} m) so the registration \
-                 pin's inner-cavity silicone dimple stays within demold tolerance. \
-                 Either thicken the wall or set registration_pins.enabled = false.",
-                self.cast.wall_thickness_m,
-                PIN_PROTRUSION_M,
-                MAX_REGISTRATION_DIMPLE_M,
-                pin_total_m
-            );
-        }
-
         Ok(())
     }
 }
@@ -756,99 +718,11 @@ pin_length_m = 0.007
     }
 
     #[test]
-    fn rejects_wall_thinner_than_registration_pin_dimple_budget() {
-        // PinSpec::iter1() pin_half_length_m = 3 mm → 2 × 3 mm = 6 mm
-        // pin span. Budget = wall + PIN_PROTRUSION_M (0.5 mm) +
-        // MAX_REGISTRATION_DIMPLE_M (2 mm). To fail the gate need
-        // budget < 6 mm → wall < 3.5 mm. Pick wall = 3 mm
-        // (budget = 5.5 < 6, fails by 0.5 mm). Plug-pin override
-        // sized to leave only the registration gate firing.
-        let text = r#"
-[scan]
-cleaned_stl = "s.stl"
-prep_toml = "s.prep.toml"
-
-[cast]
-wall_thickness_m = 0.003
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[plug_pins]
-pin_length_m = 0.003
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        let err = cfg
-            .validate()
-            .expect_err("3 mm wall < 6 mm registration-pin dimple budget must fail");
-        let s = err.to_string();
-        assert!(
-            s.contains("PinSpec::iter1().pin_half_length_m"),
-            "unexpected error: {s}"
-        );
-    }
-
-    #[test]
-    fn accepts_iter1_default_wall_with_default_registration_pins() {
-        // 5 mm wall + 6 mm pin span; budget = 5 + 0.5 + 2 = 7.5 ≥ 6
-        // → PASSES with 0.5 mm inner-cavity silicone dimple, well
-        // within recon-3 §R3-2's 2 mm tolerance. Workshop iter-1's
-        // cast.toml uses wall_thickness_m = 0.005 — this test
-        // confirms the default still passes the recon-3 gate.
-        let text = r#"
-[scan]
-cleaned_stl = "s.stl"
-prep_toml = "s.prep.toml"
-
-[cast]
-wall_thickness_m = 0.005
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[plug_pins]
-enabled = false
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn accepts_thin_wall_when_registration_pins_disabled() {
-        // 3 mm wall (below the 3.5 mm threshold for the registration
-        // gate) + registration_pins.enabled = false → gate skipped,
-        // validation passes (plug_pins also disabled-equivalent via
-        // a short override).
-        let text = r#"
-[scan]
-cleaned_stl = "s.stl"
-prep_toml = "s.prep.toml"
-
-[cast]
-wall_thickness_m = 0.003
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[plug_pins]
-pin_length_m = 0.003
-
-[registration_pins]
-enabled = false
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        cfg.validate().unwrap();
-    }
-
-    #[test]
     fn accepts_thin_wall_when_plug_pins_disabled() {
         // 2 mm wall + plug_pins disabled: plug-pin cross-field gate
-        // skipped. Registration-pins also disabled here to scope the
-        // test to the plug-pin gate (registration-pin gate has its
-        // own dedicated cases above).
+        // skipped. (Registration-pin gate was retired by recon-4 (P)
+        // when the binormal-axis annulus-midpoint design was restored
+        // — no inner-cavity dimple to budget.)
         let text = r#"
 [scan]
 cleaned_stl = "s.stl"
@@ -862,9 +736,6 @@ thickness_m = 0.006
 material = "ECOFLEX_00_30"
 
 [plug_pins]
-enabled = false
-
-[registration_pins]
 enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
