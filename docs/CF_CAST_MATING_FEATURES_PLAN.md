@@ -578,3 +578,21 @@ session, no architectural-arc reopen) per §G11 partial-pass branch.
   the iter-2 STLs at `~/scans/cast_iter1/`, caliper-verifies the
   acceptance gate, and the outcome branches (pass / partial-pass /
   full-fail) decide whether S9 (patterns memo) or recon-2 follows.
+- **2026-05-22 — S8 Phase B BLOCKED on registration-pin disconnection
+  regression.** cf-view smoke during the S8 Phase A close surfaced
+  a triangular "film" inside the cup cavity; chasing the diagnostic
+  via env-var-gated shell inspector revealed that every iter-2 cup
+  piece contains 6 connected components (1 main cup + 4 floating
+  registration pin/socket shells + 1 sub-mm sliver), where the
+  pre-S5 baseline had 2 (cup + sliver). Root cause: post-S5
+  mesh-CSG pin cylinders don't topologically merge with the cup
+  wall because the pin's binormal axis sweeps Y values where the
+  cup wall doesn't exist at the pin's X. Pre-S5 SDF-side union
+  didn't have this problem (SDF arithmetic is contiguous; mesh
+  topology isn't). Test gate didn't catch it because the S5 rewrite
+  of `negative_piece_has_single_connected_component_*` to a
+  transform-parameter audit dropped the connected-component check
+  per `[[feedback-workaround-removal-verification]]`. Documented
+  in [`docs/CF_CAST_REGISTRATION_PIN_DISCONNECTION_BOOKMARK.md`](./CF_CAST_REGISTRATION_PIN_DISCONNECTION_BOOKMARK.md);
+  recon-2 plan opened at [`docs/CF_CAST_REGISTRATION_PIN_DISCONNECTION_RECON_PLAN.md`](./CF_CAST_REGISTRATION_PIN_DISCONNECTION_RECON_PLAN.md).
+  Workshop iter-2 print HALTED pending recon-2 + implementation.
