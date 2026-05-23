@@ -434,6 +434,70 @@ fn shaft_parent(anchor: Point3<f64>, outward: Vector3<f64>, length_m: f64) -> Cy
     }
 }
 
+/// Overlap-bias the plug-shaft cylinder's near-end extends inward
+/// into the plug body's volume (m), used by
+/// [`build_plug_self_transforms`].
+///
+/// 1 mm. The plug-shaft [`MatingTransform::UnionCylinder`] is
+/// post-MC unioned onto the plug body's SDF-meshed solid; without
+/// this overlap-bias the shaft's near-end face at `cap_centroid` is
+/// EXACTLY coincident with the plug body's pinned cap face
+/// (`cf_design::solid_layered::pinned_floor_shell` produces a
+/// bit-precise flat body cap via MC's linear-SDF interpolation,
+/// same property recon-4 §F-4 verifies for the cup-piece seam).
+/// manifold3d's boolean union on exactly-coincident faces produces
+/// disconnected output — workshop iter-2 cf-view smoke confirmed
+/// every iter-1 plug STL shipped as 2 connected components (plug
+/// body + floating shaft+T-bar assembly), same failure mode as S7's
+/// funnel-nipple coincidence with the flange bottom (see
+/// [`crate::funnel`] module docstring §"Architectural placement" +
+/// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 for the
+/// recon-4 paradigm-boundary pattern).
+///
+/// Extending the shaft's near-end 1 mm INWARD into the plug body's
+/// volume makes the boolean union act on overlapping (not just
+/// touching) volumes. The overlap region (radius `pin_radius_m` ≈
+/// 3 mm × 1 mm depth into the body) lives ENTIRELY inside the plug
+/// body's bulk volume — workshop scan bodies are typically ≥ 20 mm
+/// radius at the cap plane, so the shaft's near-end portion is
+/// fully CONTAINED in the body's cross-section (no surface
+/// intersection at the overlap zone, manifold3d's safest boolean
+/// path — same case as
+/// [`crate::mesh_csg::apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`]).
+/// Workshop-visible far-end position is unchanged (still
+/// `cap_centroid + cap_normal × pin_length_m`); only the
+/// non-visible interior portion of the shaft changes.
+///
+/// Sized at 1 mm rather than smaller because iter-1's typical
+/// `mesh_cell_size_m = 3 mm` MC sampling needs ≥ ⅓ cell overlap
+/// to resolve the union junction cleanly; 1 mm gives margin
+/// without intruding meaningfully into the body interior. Applied
+/// uniformly to pour-end + dome-end shafts (the dome end is
+/// usually anchored on a non-pinned curved body surface and would
+/// be safe without the bias per the recon-4 framework, but the
+/// uniform application protects against future spec changes that
+/// might pin the dome end too).
+const PLUG_SHAFT_NEAR_END_OVERLAP_M: f64 = 0.001;
+
+/// Extend the cylinder's near-end (the end at
+/// `center - axis * half_length`) inward by `overlap_m`, leaving
+/// the far-end (`center + axis * half_length`) unchanged.
+///
+/// Used by [`build_plug_self_transforms`] to bury the plug-shaft
+/// cylinder's near-end inside the plug body's volume for clean
+/// boolean-union welding (see [`PLUG_SHAFT_NEAR_END_OVERLAP_M`]).
+fn extend_near_end(parent: &CylinderParent, overlap_m: f64) -> CylinderParent {
+    let half_overlap = overlap_m / 2.0;
+    // Inward = opposite of `axis` (axis points OUTWARD from the
+    // near-end face by construction in `shaft_parent`).
+    let inward = -parent.axis.into_inner();
+    CylinderParent {
+        center_m: parent.center_m + inward * half_overlap,
+        axis: parent.axis,
+        half_length_m: parent.half_length_m + half_overlap,
+    }
+}
+
 /// Build the T-bar [`CylinderParent`] for the pour-end pin, or
 /// `None` when the T-bar axis (`pour_outward × split_normal_vec`)
 /// is degenerate (pour direction parallel to split-normal).
@@ -494,14 +558,26 @@ pub fn build_plug_self_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
         return Vec::new();
     };
     let mut out = Vec::new();
+    // Plug-side pour-end shaft: extend near-end PLUG_SHAFT_NEAR_END_OVERLAP_M
+    // INWARD into the plug body so the boolean union welds across
+    // the body-cap junction (recon-4 paradigm-boundary pattern; see
+    // PLUG_SHAFT_NEAR_END_OVERLAP_M docstring + `extend_near_end`).
+    // Workshop-visible far-end position unchanged.
     out.push(MatingTransform::UnionCylinder {
         params: CylinderParams {
-            parent: parents.pour_shaft,
+            parent: extend_near_end(&parents.pour_shaft, PLUG_SHAFT_NEAR_END_OVERLAP_M),
             radius_m: spec.pin_radius_m,
             segments: PLUG_CYLINDER_SEGMENTS,
         },
     });
     if let Some(t_bar) = parents.pour_t_bar {
+        // T-bar stays at the un-extended pose: its volume overlaps
+        // the shaft's far-end disc volumetrically (T-bar axis is
+        // perpendicular to shaft axis, T-bar center is at the
+        // shaft's far-end), so the boolean union with the
+        // welded-plug-shaft acts on overlapping volumes — no
+        // paradigm-boundary issue here. PROTRUDING from the shaft
+        // far-end, manifold3d's safe surface-vs-surface path.
         out.push(MatingTransform::UnionCylinder {
             params: CylinderParams {
                 parent: t_bar,
@@ -511,9 +587,14 @@ pub fn build_plug_self_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
         });
     }
     if let Some(dome) = parents.dome_shaft {
+        // Dome-end shaft also gets the near-end overlap-bias —
+        // typically the dome end anchors on a curved body surface
+        // (PROTRUDING, safe without the bias), but applying
+        // uniformly protects against future spec changes that
+        // pin the dome end.
         out.push(MatingTransform::UnionCylinder {
             params: CylinderParams {
-                parent: dome,
+                parent: extend_near_end(&dome, PLUG_SHAFT_NEAR_END_OVERLAP_M),
                 radius_m: spec.pin_radius_m,
                 segments: PLUG_CYLINDER_SEGMENTS,
             },
@@ -877,22 +958,40 @@ mod tests {
         // build_plug_self_transforms).
         let shaft = params_of(&transforms[0]);
         // pour anchor = centerline.last() = (+0.050, 0, 0); outward
-        // = +X; pin_length = 20 mm; half_length = 10 mm.
-        // Shaft center = (0.050 + 0.010, 0, 0) = (+0.060, 0, 0).
+        // = +X; pin_length = 20 mm; nominal half_length = 10 mm.
+        // Post-recon-4-pattern plug-shaft fix: `extend_near_end`
+        // shifts shaft center INWARD by PLUG_SHAFT_NEAR_END_OVERLAP_M
+        // / 2 = 0.5 mm and grows half_length by the same so the
+        // shaft's near-end buries 1 mm inside the plug body for
+        // clean boolean-union welding. Workshop-visible far-end at
+        // anchor + outward × pin_length = (+0.070, 0, 0) is
+        // unchanged.
+        // Shaft center = (0.050 + 0.010 − 0.0005, 0, 0) = (+0.0595, 0, 0).
+        // Nominal shaft center = anchor + outward × pin_length/2 =
+        // (+0.050) + (+1) × 0.010 = +0.060. `extend_near_end`
+        // shifts INWARD (toward anchor, i.e., toward zero for a +X
+        // outward) by overlap/2 = 0.0005, so center.x = 0.060 −
+        // 0.0005 = 0.0595.
         let c = shaft.parent.center_m;
-        assert!((c.x - 0.060).abs() < 1e-9, "shaft center.x = {}", c.x);
+        assert!((c.x - 0.0595).abs() < 1e-9, "shaft center.x = {}", c.x);
         assert!(c.y.abs() < 1e-9);
         assert!(c.z.abs() < 1e-9);
         // Axis = +X (last_segment.tangent).
         assert!((shaft.parent.axis.x - 1.0).abs() < 1e-9);
         assert!(shaft.parent.axis.y.abs() < 1e-9);
         assert!(shaft.parent.axis.z.abs() < 1e-9);
-        // half_length = pin_length / 2 = 10 mm.
+        // half_length = (pin_length + overlap) / 2 = 10.5 mm.
         assert!(
-            (shaft.parent.half_length_m - 0.010).abs() < 1e-9,
-            "shaft half_length = {} (expected 0.010)",
+            (shaft.parent.half_length_m - 0.0105).abs() < 1e-9,
+            "shaft half_length = {} (expected 0.0105)",
             shaft.parent.half_length_m,
         );
+        // Workshop-visible far-end position: center + axis × half_length
+        // = 0.0595 + 1 × 0.0105 = 0.070 mm. Equals nominal anchor +
+        // pin_length (= 0.050 + 0.020 = 0.070). Invariant under the
+        // overlap-bias.
+        let far_end_x = shaft.parent.axis.x.mul_add(shaft.parent.half_length_m, c.x);
+        assert!((far_end_x - 0.070).abs() < 1e-9, "far-end = {far_end_x}");
         // Bare pin radius (no clearance inflation on plug side).
         assert!((shaft.radius_m - 0.003).abs() < f64::EPSILON);
     }
@@ -910,13 +1009,17 @@ mod tests {
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
         let transforms = build_plug_self_transforms(&ribbon);
         let shaft = params_of(&transforms[0]);
-        // Shaft center = hint_centroid + outward * pin_length / 2
-        //              = (-0.060, 0, 0) + (-1, 0, 0) * 0.010
-        //              = (-0.070, 0, 0).
+        // Shaft center after the recon-4-pattern `extend_near_end`
+        // overlap-bias. Nominal center = hint_centroid + outward ×
+        // pin_length/2 = (-0.060, 0, 0) + (-1, 0, 0) × 0.010 =
+        // (-0.070, 0, 0); `extend_near_end` shifts the center
+        // INWARD (toward the anchor) by overlap/2 = 0.0005, so the
+        // final center is `-0.070 + 0.0005 = -0.0695` (toward zero
+        // for a -X outward).
         let c = shaft.parent.center_m;
         assert!(
-            (c.x - -0.070).abs() < 1e-9,
-            "shaft center anchored past hint centroid; got {c:?}",
+            (c.x - -0.0695).abs() < 1e-9,
+            "shaft center anchored past hint centroid (+ 0.5 mm inward overlap-bias); got {c:?}",
         );
         // Axis = -X (outward).
         assert!((shaft.parent.axis.x - -1.0).abs() < 1e-9);
@@ -929,6 +1032,11 @@ mod tests {
              got center.x = {}",
             c.x,
         );
+        // Workshop-visible far-end position unchanged by the
+        // overlap-bias: anchor + outward × pin_length = -0.080.
+        // (= -0.0695 + (-1) × 0.0105 = -0.080).
+        let far_end_x = shaft.parent.axis.x.mul_add(shaft.parent.half_length_m, c.x);
+        assert!((far_end_x - -0.080).abs() < 1e-9, "far-end = {far_end_x}");
     }
 
     /// `include_dome_pin = true` emits THREE transforms — pour
@@ -957,9 +1065,11 @@ mod tests {
             .find(|p| p.parent.center_m.x < 0.0)
             .expect("dome shaft transform should appear at -X center");
         // Dome anchor = centerline[0] = (-0.050, 0, 0); outward =
-        // -first_segment.tangent = -X. Dome shaft center =
-        // (-0.050, 0, 0) + (-1, 0, 0) * 0.010 = (-0.060, 0, 0).
-        assert!((dome.parent.center_m.x - -0.060).abs() < 1e-9);
+        // -first_segment.tangent = -X. Nominal dome shaft center =
+        // (-0.050, 0, 0) + (-1, 0, 0) × pin_length/2 = (-0.060, 0, 0).
+        // `extend_near_end` shifts INWARD (toward the anchor) by
+        // overlap/2 = 0.0005, so center.x = -0.060 + 0.0005 = -0.0595.
+        assert!((dome.parent.center_m.x - -0.0595).abs() < 1e-9);
     }
 
     /// `include_t_bar = false` drops the T-bar transform — only
@@ -1041,13 +1151,16 @@ mod tests {
     }
 
     /// Positive-side T-slot and shaft socket params carry the
-    /// symmetric `/2` diametral + axial inflation; the cup-side
-    /// transforms share `center_m` + `axis` with the plug-side
-    /// transforms per shared-parent invariant (recon §2). S5 polish
-    /// pattern carried forward — the `mesh_csg` fit invariant
-    /// constructs parents inline, so without this test a stray
-    /// `* 2.0` or dropped `/ 2.0` on the socket arm could land
-    /// without any test surfacing it.
+    /// symmetric `/2` diametral + axial inflation per workshop fit
+    /// budget. Post-plug-shaft-fix the shared-`center_m` invariant
+    /// holds only for the T-bar (no overlap-bias applied — PROTRUDING
+    /// from shaft far-end, safe for mesh-CSG); for the SHAFTS, the
+    /// plug-side `extend_near_end` shifts the cylinder INWARD by
+    /// `PLUG_SHAFT_NEAR_END_OVERLAP_M / 2` so the boolean union welds
+    /// into the plug body. The workshop-fit invariant becomes:
+    /// **cup-side socket far-end extends `axial/2` past plug-side
+    /// shaft far-end** (the workshop-visible "socket bottom relief"),
+    /// independent of how the plug-side near-end is shifted inward.
     #[test]
     fn plug_socket_transforms_inflate_per_spec() {
         let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
@@ -1066,13 +1179,19 @@ mod tests {
             assert!(matches!(cup_t, MatingTransform::SubtractCylinder { .. }));
             let p = params_of(plug_t);
             let c = params_of(cup_t);
-            // Shared center + axis.
-            assert_eq!(p.parent.center_m, c.parent.center_m);
+            // Shared axis + segments are workshop-fit invariants
+            // (both surfaces share the same circumferential
+            // tessellation).
             assert_eq!(p.parent.axis, c.parent.axis);
             assert_eq!(p.segments, c.segments);
-            // Cup-side half_length inflates by `axial / 2`. Which
-            // axial budget depends on whether this is the T-bar
-            // (different radius) or a shaft.
+
+            // Classify shaft vs T-bar by radius AND half-length —
+            // iter1 defaults give pin_radius_m = t_bar_radius_m =
+            // 3 mm, so radius alone is ambiguous. T-bar's
+            // half-length (12 mm) differs from the shaft's
+            // post-`extend_near_end` half-length (10.5 mm = 10 mm
+            // pin half + 0.5 mm overlap-bias), so the combined
+            // check disambiguates.
             let is_t_bar = (p.radius_m - spec.t_bar_radius_m).abs() < f64::EPSILON
                 && (p.parent.half_length_m - spec.t_bar_half_length_m).abs() < f64::EPSILON;
             let (axial, diametral) = if is_t_bar {
@@ -1086,18 +1205,44 @@ mod tests {
                     spec.shaft_diametral_clearance_m,
                 )
             };
-            let expected_half_length = p.parent.half_length_m + axial / 2.0;
+
+            // Workshop-visible far-end: cup socket extends `axial/2`
+            // past plug shaft far-end (the workshop "socket-bottom
+            // relief"). This invariant is independent of any
+            // near-end overlap-bias the plug-shaft applies for clean
+            // boolean welding.
+            let axis_v = p.parent.axis.into_inner();
+            let plug_far = p.parent.center_m + axis_v * p.parent.half_length_m;
+            let cup_far = c.parent.center_m + axis_v * c.parent.half_length_m;
+            let far_offset = cup_far - plug_far;
+            let expected_offset = axis_v * (axial / 2.0);
+            assert!(
+                (far_offset - expected_offset).norm() < 1e-9,
+                "cup-side far-end offset from plug-side far-end should equal \
+                 axis × axial/2 = {expected_offset:?}; got {far_offset:?}",
+            );
+
+            // Cup-side radius inflation: cup radius = plug radius
+            // + diametral/2.
             let expected_radius = p.radius_m + diametral / 2.0;
             assert!(
-                (c.parent.half_length_m - expected_half_length).abs() < f64::EPSILON,
-                "cup-side half_length should be plug + axial/2 = {expected_half_length}; got {}",
-                c.parent.half_length_m,
-            );
-            assert!(
                 (c.radius_m - expected_radius).abs() < f64::EPSILON,
-                "cup-side radius should be plug + diametral/2 = {expected_radius}; got {}",
+                "cup-side radius should be plug + diametral/2 = {expected_radius}; \
+                 got {}",
                 c.radius_m,
             );
+
+            // T-bar preserves the original shared-`center_m`
+            // invariant (no overlap-bias on T-bar — PROTRUDING from
+            // shaft far-end is the safe manifold3d boolean path; see
+            // `build_plug_self_transforms` comments).
+            if is_t_bar {
+                assert_eq!(
+                    p.parent.center_m, c.parent.center_m,
+                    "T-bar plug-side and cup-side must share center_m \
+                     (no overlap-bias applied)",
+                );
+            }
         }
     }
 
@@ -1243,18 +1388,24 @@ mod tests {
         let transforms = build_plug_self_transforms(&ribbon);
         let shaft = params_of(&transforms[0]);
         let c = shaft.parent.center_m;
-        // Shaft center = cap_centroid + cap_normal * pin_length / 2
-        //              = (0, 0, -0.053) + (0, 0, -1) * 0.010
-        //              = (0, 0, -0.063).
+        // Nominal shaft center = cap_centroid + cap_normal ×
+        // pin_length/2 = (0, 0, -0.053) + (0, 0, -1) × 0.010 =
+        // (0, 0, -0.063). `extend_near_end` shifts INWARD (toward
+        // anchor, i.e., toward zero for a -Z outward) by overlap/2
+        // = 0.0005, so center.z = -0.063 + 0.0005 = -0.0625.
         assert!(
-            (c.z - -0.063).abs() < 1e-9,
-            "shaft center anchored at cap_centroid + outward*half_length; got {c:?}",
+            (c.z - -0.0625).abs() < 1e-9,
+            "shaft center anchored at cap_centroid + outward × pin_length/2 + inward overlap-bias; got {c:?}",
         );
         assert!(
             c.z < -0.013,
             "shaft anchor must NOT regress to centerline.last() (z = -0.013); got {}",
             c.z,
         );
+        // Workshop-visible far-end unchanged by the overlap-bias:
+        // cap_centroid + cap_normal × pin_length = -0.073.
+        let far_end_z = shaft.parent.axis.z.mul_add(shaft.parent.half_length_m, c.z);
+        assert!((far_end_z - -0.073).abs() < 1e-9, "far-end z = {far_end_z}");
     }
 
     /// Default (no hint) fallback: pour-end maps to
@@ -1272,9 +1423,11 @@ mod tests {
         let shaft = params_of(&transforms[0]);
         // pour anchor = centerline.last() = (0, 0, -0.054); outward
         // = last_segment.tangent = -Z (segment +0.073 → -0.054).
-        // Shaft center = (0, 0, -0.054) + (0, 0, -1) * 0.010 =
-        // (0, 0, -0.064).
-        assert!((shaft.parent.center_m.z - -0.064).abs() < 1e-9);
+        // Nominal shaft center = (0, 0, -0.054) + (0, 0, -1) ×
+        // 0.010 = (0, 0, -0.064). `extend_near_end` shifts INWARD
+        // by overlap/2 = 0.0005, so center.z = -0.064 + 0.0005 =
+        // -0.0635.
+        assert!((shaft.parent.center_m.z - -0.0635).abs() < 1e-9);
     }
 
     /// `pour_end_t_bar_geometry` continues to return the bare plug-
@@ -1318,5 +1471,153 @@ mod tests {
         };
         let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(spec));
         assert!(pour_end_t_bar_geometry(&ribbon).is_none());
+    }
+
+    /// Plug-shaft overlap-bias regression guard — locks the
+    /// [`PLUG_SHAFT_NEAR_END_OVERLAP_M`] inward shift that
+    /// [`build_plug_self_transforms`] applies via `extend_near_end`
+    /// so a future refactor can't silently revert the workshop
+    /// iter-1 plug-disconnection fix (every iter-1 plug STL
+    /// previously shipped as 2 connected components — plug body +
+    /// floating shaft+T-bar assembly — when the shaft cylinder's
+    /// near-end exactly coincided with the plug body's pinned cap
+    /// face; same failure mode as S7's funnel-nipple, see
+    /// [`PLUG_SHAFT_NEAR_END_OVERLAP_M`] docstring).
+    ///
+    /// Asserts at the transform-parameter level:
+    /// 1. The shaft cylinder's half-length grew by
+    ///    `PLUG_SHAFT_NEAR_END_OVERLAP_M / 2` past the nominal
+    ///    `pin_length_m / 2`.
+    /// 2. The shaft's near-end position is shifted INWARD past the
+    ///    nominal anchor by `PLUG_SHAFT_NEAR_END_OVERLAP_M` (buried
+    ///    inside the plug body's volume — the workshop-fit
+    ///    invariant that prevents the coincident-face boolean
+    ///    union failure).
+    /// 3. The workshop-visible far-end position is UNCHANGED from
+    ///    the un-extended cylinder (`anchor + outward × pin_length`).
+    ///
+    /// End-to-end mesh round-trip verification happens at the
+    /// integration tier — `~/scans/cast_iter1/plug_layer_{0,1,2}.stl`
+    /// regen post-fix shows all 3 production plugs PASS the §R1
+    /// inspector at 1 connected component each (mesh-level
+    /// confirmation). A synthetic small-fixture capsule was tried
+    /// for a lib-test mesh round-trip but produces 2 components on
+    /// the synthetic geometry for reasons orthogonal to the
+    /// overlap-bias mechanism (manifold3d behavior on small
+    /// synthetic shapes differs from the production scale + body
+    /// surface complexity); the parameter-level invariant captured
+    /// here is the load-bearing regression guard.
+    #[test]
+    fn plug_shaft_transform_has_inward_near_end_overlap_bias() {
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        let transforms = build_plug_self_transforms(&ribbon);
+        let shaft = params_of(&transforms[0]);
+
+        // (1) Half-length grew by PLUG_SHAFT_NEAR_END_OVERLAP_M / 2.
+        let spec = PlugPinSpec::iter1();
+        let nominal_half_length = spec.pin_length_m / 2.0;
+        let expected_half_length = nominal_half_length + PLUG_SHAFT_NEAR_END_OVERLAP_M / 2.0;
+        assert!(
+            (shaft.parent.half_length_m - expected_half_length).abs() < 1e-12,
+            "plug-shaft half_length must grow by PLUG_SHAFT_NEAR_END_OVERLAP_M / 2 \
+             (overlap-bias for clean boolean-union welding at the plug body's \
+             pinned cap-plane junction); expected {expected_half_length}, got {}",
+            shaft.parent.half_length_m,
+        );
+
+        // (2) Near-end position INWARD past cap_centroid by
+        // PLUG_SHAFT_NEAR_END_OVERLAP_M (= buried inside plug body).
+        let axis_v = shaft.parent.axis.into_inner();
+        let near_end = shaft.parent.center_m - axis_v * shaft.parent.half_length_m;
+        let expected_near_end = cap_centroid - axis_v * PLUG_SHAFT_NEAR_END_OVERLAP_M;
+        let near_end_offset = (near_end - expected_near_end).norm();
+        assert!(
+            near_end_offset < 1e-9,
+            "plug-shaft near-end must sit INWARD of cap_centroid by \
+             PLUG_SHAFT_NEAR_END_OVERLAP_M (buried inside plug body for boolean \
+             union welding); expected {expected_near_end:?}, got {near_end:?} \
+             (offset {near_end_offset:.9} m)",
+        );
+
+        // (3) Workshop-visible far-end unchanged from the
+        // un-extended cylinder (`cap_centroid + cap_normal × pin_length`).
+        let far_end = shaft.parent.center_m + axis_v * shaft.parent.half_length_m;
+        let expected_far_end = cap_centroid + axis_v * spec.pin_length_m;
+        let far_end_offset = (far_end - expected_far_end).norm();
+        assert!(
+            far_end_offset < 1e-9,
+            "plug-shaft workshop-visible far-end must equal \
+             cap_centroid + cap_normal × pin_length (unchanged by `extend_near_end`); \
+             expected {expected_far_end:?}, got {far_end:?}",
+        );
+    }
+
+    /// Cup-side shaft socket near-end directional invariant — the
+    /// `inflate_axial` extension pushes the socket cylinder's
+    /// near-end face PAST the plug body's cap plane (into the
+    /// body-cavity side, where there's no cup material to carve —
+    /// no-op). Locks the workshop "no coincident face on the
+    /// cup-piece side" property the recon-4 framework relies on
+    /// for the cup-side shaft socket (Agent 2 surfaced this as
+    /// load-bearing but untested in the architectural review).
+    ///
+    /// If `shaft_axial_clearance_m` is ever reduced to ≤ 0, this
+    /// test fails — and the cup-side socket would re-introduce the
+    /// same coincident-face failure mode the plug-side fix
+    /// resolves.
+    #[test]
+    fn shaft_socket_near_end_clears_body_cap_plane() {
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+
+        let cup_transforms = build_plug_socket_transforms(&ribbon);
+        // First transform = shaft socket (Vec ordering matches
+        // build_plug_self_transforms).
+        let shaft_socket = params_of(&cup_transforms[0]);
+        // Socket near-end position: center − axis × half_length.
+        // The cup-side `inflate_axial(pour_shaft, axial_clearance)`
+        // pushes the socket cylinder's near-end inward by
+        // `axial_clearance / 2 = 0.5 mm` past `cap_centroid` along
+        // the `-cap_normal` direction (= INTO the body cavity).
+        let axis_v = shaft_socket.parent.axis.into_inner();
+        let near_end = shaft_socket.parent.center_m - axis_v * shaft_socket.parent.half_length_m;
+        // For cap_normal = -Z, axis_v = -Z, INTO body cavity means
+        // z = cap_centroid.z + axial_clearance/2 (more positive).
+        // Iter-1 axial_clearance = 1 mm → near-end at z = -0.054 +
+        // 0.0005 = -0.0535.
+        let spec = PlugPinSpec::iter1();
+        let expected_near_z = cap_centroid.z + spec.shaft_axial_clearance_m / 2.0;
+        assert!(
+            (near_end.z - expected_near_z).abs() < 1e-9,
+            "cup-side shaft socket near-end must extend `axial_clearance/2` past \
+             cap_centroid INTO the body cavity (no-op carve, but pushes the cylinder \
+             cap off the body cap plane to avoid coincident-face boolean failure on \
+             the cup side); got near-end z = {} (expected {expected_near_z})",
+            near_end.z,
+        );
+        // Sanity: the near-end is INSIDE the body cavity (z > cap_centroid.z
+        // for a -Z-outward cap), not on or past the cap plane.
+        assert!(
+            near_end.z > cap_centroid.z,
+            "near-end z = {} must be > cap_centroid.z = {} (body-cavity side); \
+             a regression dropping shaft_axial_clearance_m to 0 would put the \
+             near-end exactly on the cap plane and reintroduce the coincident-face \
+             failure mode that the plug-side fix avoids via PLUG_SHAFT_NEAR_END_OVERLAP_M",
+            near_end.z,
+            cap_centroid.z,
+        );
     }
 }

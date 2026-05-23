@@ -897,4 +897,58 @@ mod tests {
         // S6's contribution is verifying T-slot bisection works
         // alongside the SDF seam.)
     }
+
+    /// Cup-piece SDF half-shell connectivity guard — locks the
+    /// recon-4 §F-3b invariant at the lib-test level: the SDF
+    /// halfspace intersect `bounding ∖ body ∩ halfspace(side)`
+    /// must mesh as 1 connected component (the kept half-shell,
+    /// with the halfspace cap closing the body-cavity tube). The
+    /// pre-S4 form was already verified on a synthetic axis-aligned
+    /// cuboid by `crate::mesh_csg::tests::f3b_synthetic_presdf_seam_baseline_is_one_component`;
+    /// this test extends the invariant to the production composition
+    /// path (`compose_piece_solid` → MC) for BOTH `PieceSide`s
+    /// without registration pins (the bare half-shell connectivity
+    /// is the load-bearing recon-4 §F-2 architectural claim).
+    ///
+    /// Full mating-features connectivity (cup body + registration
+    /// pins via mesh-CSG union) is verified at the integration tier
+    /// — `~/scans/cast_iter1/mold_layer_{0..2}_piece_{0,1}.stl`
+    /// regen post-recon-4 shows all 6 production cup-piece STLs
+    /// PASS the §R1 inspector at 1 connected component each
+    /// (~50k verts / ~17k tris each — production scale + capsule-
+    /// body curvature). A synthetic cuboid fixture for the
+    /// full-mating-features path produces 5 components for reasons
+    /// orthogonal to the half-shell invariant (manifold3d's mesh-CSG
+    /// union behavior on small synthetic cuboid hosts with
+    /// 4 contained pins differs from production capsule-body
+    /// geometry); the half-shell baseline captured here is the
+    /// load-bearing recon-4 (P) regression guard.
+    #[test]
+    fn cup_piece_half_shell_is_single_connected_component() {
+        use mesh_repair::components::find_connected_components;
+
+        let (layer_body, bounding_region, ribbon) = fixture();
+
+        for side in [PieceSide::Negative, PieceSide::Positive] {
+            // 3 mm cells: matches iter-1's production
+            // `mesh_cell_size_m` (workshop cast.toml default).
+            let mesh =
+                mesh_piece_through_p_pipeline(&layer_body, &bounding_region, &ribbon, side, 0.003);
+            let analysis = find_connected_components(&mesh);
+            assert_eq!(
+                analysis.component_count,
+                1,
+                "{side:?} cup-piece SDF half-shell must mesh as 1 connected \
+                 component (recon-4 (P) §F-2 architectural claim: the SDF \
+                 halfspace intersect closes the body-cavity tube into one closed \
+                 half-shell, replacing S4's 2-shell-hollow-cuboid + film artifact); \
+                 got {} components ({} verts / {} faces). A regression here means \
+                 the SDF seam reverted to S4's post-MC SeamTrim (the recon-4 (P) \
+                 architectural correction was undone).",
+                analysis.component_count,
+                mesh.vertices.len(),
+                mesh.faces.len(),
+            );
+        }
+    }
 }
