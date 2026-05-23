@@ -226,7 +226,7 @@ const PIN_RAY_MAX_REACH_M: f64 = 1.0;
 /// [`surface_distance_along_ray`]. Float comparisons drive the
 /// outer loop, so this cap guarantees termination on pathological
 /// inputs (NaN-tinted SDFs, etc.); the bracket reaches
-/// [`PIN_RAY_MAX_REACH_M`] in ≤ 8 doublings from the 5 mm start
+/// `PIN_RAY_MAX_REACH_M` in ≤ 8 doublings from the 5 mm start
 /// (`0.005 × 2^8 = 1.28 m > 1.0 m`), so 32 is comfortably above the
 /// legitimate bound.
 const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
@@ -250,7 +250,7 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 /// - `ribbon.registration` is [`RegistrationKind::None`];
 /// - the spec has no arc fractions;
 /// - any pin's split-normal ray runs past the module-private
-///   [`PIN_RAY_MAX_REACH_M`] (1 m) without crossing the
+///   `PIN_RAY_MAX_REACH_M` (1 m) without crossing the
 ///   bounding-region surface (signals a degenerate caller).
 ///
 /// Each pin is positioned at
@@ -398,7 +398,7 @@ fn pin_transform_for_side(
 /// surface crossing along the ray and bisection nails it down.
 ///
 /// Returns `None` only if the ray fails to exit the solid within
-/// [`PIN_RAY_MAX_REACH_M`] (degenerate input — e.g., an unbounded
+/// `PIN_RAY_MAX_REACH_M` (degenerate input — e.g., an unbounded
 /// [`cf_design::Solid::plane`] passed as the bounding region).
 fn surface_distance_along_ray(
     solid: &Solid,

@@ -1,7 +1,7 @@
 //! Post-MC mesh-CSG stage for cf-cast's mating-features architectural fix.
 //!
 //! `docs/CF_CAST_MATING_FEATURES_PLAN.md` (S3) introduces a transform
-//! stage between [`crate::mesher::solid_to_mm_mesh`] and the F4
+//! stage between `crate::mesher::solid_to_mm_mesh` and the F4
 //! printability gate. The stage applies exact-CAD primitives — true
 //! cylinders + true half-spaces — as mesh-CSG operations against the
 //! MC-output mold pieces, replacing the SDF/MC encoding that iter-1
@@ -98,7 +98,7 @@ pub struct CylinderParams {
 
 /// One mating-feature mesh-CSG operation.
 ///
-/// Applied between [`crate::mesher::solid_to_mm_mesh`] and the F4
+/// Applied between `crate::mesher::solid_to_mm_mesh` and the F4
 /// printability gate. Transforms are applied in declared order;
 /// S3 ships the empty-Vec pass-through, S4/S5/S6/S7 populate
 /// concrete variants.
@@ -299,7 +299,7 @@ pub fn build_half_space_slab(
 /// keys collide are collapsed; faces are remapped and any face that
 /// degenerates after collapse is dropped.
 ///
-/// Live pipeline does NOT need this — [`crate::mesher::solid_to_mm_mesh`]
+/// Live pipeline does NOT need this — `crate::mesher::solid_to_mm_mesh`
 /// emits shared-index meshes by construction (recon §10 S2-C). This
 /// helper exists for the S3 [`geometric_equivalence`] test helper
 /// and any future STL-round-trip fixtures where a non-indexed STL
@@ -514,6 +514,12 @@ pub fn geometric_equivalence(lhs: &IndexedMesh, rhs: &IndexedMesh) -> Result<(),
         ));
     }
     let inv = 1.0 / (WELD_TOLERANCE_M * METERS_TO_MM);
+    // Round-to-nearest f64 → i64 quantization: the `* inv` scales
+    // mm coords to grid units where WELD_TOLERANCE_M is 1.0; the
+    // `.round() as i64` truncation is intentional + bounded (mesh
+    // bbox is workshop-scale, so coords stay well within i64
+    // range). cf. the same pattern + justification at the
+    // `assert_geometric_equivalence` quantizer above.
     #[allow(clippy::cast_possible_truncation)]
     let quantize = |p: &Point3<f64>| -> (i64, i64, i64) {
         (

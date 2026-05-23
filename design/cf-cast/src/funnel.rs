@@ -47,7 +47,7 @@
 //! bit-precise diametral fit belong to mesh-CSG. The nipple's
 //! pour-gate-fit precision is bounded by [`NIPPLE_DIAMETRAL_CLEARANCE_M`]
 //! (0.5 mm workshop slack), well above MC-quantization noise at
-//! [`crate::spec::FUNNEL_MAX_CELL_SIZE_M`] (1 mm cells) — so the
+//! `crate::spec::FUNNEL_MAX_CELL_SIZE_M` (1 mm cells) — so the
 //! S7 "bit-precise OD" benefit was workshop-irrelevant.
 //!
 //! ## Recon §9 axial standoff — DEFERRED
@@ -60,7 +60,7 @@
 //! face mesh gets a local-flat patch under the flange footprint" —
 //! never resolved in recon §9). S7 explored a sub-mm contact-ring
 //! lip in mesh-CSG, but that thickness is below
-//! [`crate::spec::FUNNEL_MAX_CELL_SIZE_M`] (1 mm) and the resulting
+//! `crate::spec::FUNNEL_MAX_CELL_SIZE_M` (1 mm) and the resulting
 //! mesh fails F4 `ThinWall` checks. Deferred to a future polish
 //! session: either drop the funnel MC cell size below 0.5 mm and
 //! ship a flange-underside annular lip in the SDF, or wait until
@@ -104,7 +104,7 @@ pub const FUNNEL_NIPPLE_WALL_M: f64 = 0.0015;
 /// 0.5 mm — resting-contact fit per `docs/CF_CAST_MATING_FEATURES_RECON.md`
 /// §9 M5. Absorbs both FDM bead-bulge (cup hole prints undersized;
 /// funnel nipple prints oversized) AND MC-quantization noise on
-/// the SDF-meshed nipple OD at the [`crate::spec::FUNNEL_MAX_CELL_SIZE_M`]
+/// the SDF-meshed nipple OD at the `crate::spec::FUNNEL_MAX_CELL_SIZE_M`
 /// (1 mm) cell size (~0.5 mm radial precision). Workshop user
 /// reams if first print binds.
 pub const NIPPLE_DIAMETRAL_CLEARANCE_M: f64 = 0.0005;
