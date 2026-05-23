@@ -75,6 +75,7 @@ pub mod cure;
 mod error;
 pub mod funnel;
 mod material;
+pub mod mesh_csg;
 mod mesher;
 pub mod piece;
 pub mod platform;
@@ -90,16 +91,20 @@ pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use funnel::build_funnel_solid;
 pub use material::MoldingMaterial;
+pub use mesh_csg::{
+    CylinderParams, CylinderParent, MatingTransform, WELD_TOLERANCE_M, apply_mating_transforms,
+    build_cylinder_along_axis, build_half_space_slab, geometric_equivalence, weld_in_place,
+};
 pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
 pub use platform::build_platform_solid;
 pub use plug::{
-    PlugPinKind, PlugPinSpec, add_plug_pins, build_plug_pin_solid, build_plug_socket_solid,
-    pour_end_t_bar_geometry,
+    PlugPinKind, PlugPinSpec, add_plug_pins, build_plug_self_transforms,
+    build_plug_socket_transforms, pour_end_t_bar_geometry,
 };
-pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_solid};
+pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
-pub use registration::{PinSpec, RegistrationKind, build_registration_solid};
+pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use spec::{
     CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,

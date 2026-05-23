@@ -26,10 +26,7 @@
 //!
 //! # Geometry
 //!
-//! Per `project_cf_cast_workshop_conventions.md` §"v2.1
-//! architectural recommendations":
-//!
-//! - The pour-end pin is centered at the **cap-plane centroid**
+//! - The pour-end pin shaft is centered at the **cap-plane centroid**
 //!   passed via [`crate::ribbon::Ribbon::pour_end_hint`]
 //!   `(centroid, outward_axis)` and extends along `outward_axis`
 //!   (away from the body interior). cf-cast-cli's derive path
@@ -37,9 +34,7 @@
 //!   callers without cap-plane data either pass explicit anchor +
 //!   outward direction or leave unset and rely on the fallback to
 //!   `(points.last(), last_segment.tangent)` per cf-scan-prep's
-//!   tip→base convention. The plug's natural cap region partially
-//!   overlaps the pin near `base`; the union is well-defined
-//!   (boolean OR of the two regions).
+//!   tip→base convention.
 //! - **Why the cap plane and not the centerline tip**: cf-scan-prep
 //!   trims the centerline `trim_floor_mm` (typically 40 mm) above
 //!   the cap plane to keep the polyline inside the body interior.
@@ -53,12 +48,44 @@
 //!   [`PlugPinSpec::include_dome_pin`]) sits at the centerline
 //!   endpoint **farthest** from the pour anchor, extending
 //!   outward along that endpoint's local segment tangent.
-//! - Sockets are the **same cylinder geometry** with a larger
-//!   radius ([`PlugPinSpec::socket_radial_slack_m`] adds to the pin
-//!   radius). Where the socket cylinder overlaps the layer body, the
-//!   subtraction is a no-op (the piece's cup wall already excludes
-//!   that region); where it overlaps cup-wall material it carves a
-//!   slide-fit channel that receives the pin.
+//! - Cup-piece sockets are the **same cylinder geometry** as the
+//!   plug's pin/T-bar, inflated diametrically by
+//!   [`PlugPinSpec::shaft_diametral_clearance_m`] /
+//!   [`PlugPinSpec::t_bar_diametral_clearance_m`] (symmetric `/2`
+//!   convention — half the budget on each radial side) and axially
+//!   by [`PlugPinSpec::shaft_axial_clearance_m`] /
+//!   [`PlugPinSpec::t_bar_axial_clearance_m`] (symmetric `/2`
+//!   convention on each axial end). The plug-side and cup-side
+//!   cylinder primitives share the same [`CylinderParent`] triple
+//!   (`center`, `axis`, `half_length`) modulo the `+ axial/2`
+//!   inflation on the cup side, so the workshop fit is exact by
+//!   construction (S6 of [[mating-features arc]]).
+//!
+//! # Mesh-CSG migration (S6)
+//!
+//! S6 of `docs/CF_CAST_MATING_FEATURES_PLAN.md` migrated this path
+//! from SDF [`Solid::union`] / [`Solid::subtract`] (MC-resolved at
+//! marching-cubes grid resolution) to post-MC mesh-CSG primitives.
+//! - [`build_plug_self_transforms`] emits one
+//!   [`MatingTransform::UnionCylinder`] per pin-shaft + T-bar
+//!   feature for the **plug** STL (consumed by
+//!   [`add_plug_pins`]).
+//! - [`build_plug_socket_transforms`] emits one
+//!   [`MatingTransform::SubtractCylinder`] per pin-socket + T-slot
+//!   feature for the **cup pieces** (consumed by
+//!   [`crate::piece::compose_piece_solid`]; side-agnostic — both
+//!   cup halves emit the same Vec, and each piece's SDF halfspace
+//!   intersect bounds the subtract to its kept half-shell).
+//!
+//! The cup-piece T-slot lands as a half-disk on each cup half's
+//! mating face: the T-bar's axis is parallel to the seam-plane
+//! normal (= the ribbon binormal), the cup-piece Solid is the
+//! halfspace-intersected half-shell (recon-4 (P) — see
+//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2), and the
+//! post-MC mesh-CSG subtract punches the cylinder cross-section
+//! through the half-shell's seam face. The workshop user closes
+//! the second cup half around the plug's T-bar (captive
+//! insertion).
 //!
 //! # Multi-layer trade-off
 //!
@@ -84,25 +111,39 @@
 //! [`crate::CastSpec::export_molds_v2`] handle the rest —
 //! `export_molds_v2` derives each layer's plug solid from
 //! [`crate::CastSpec::plug`] (layer 0) or `layers[N-1].body`
-//! (layer N>0) and internally calls [`add_plug_pins`] to extend
-//! it with the pin geometry, then [`crate::piece::compose_piece_solid`]
-//! subtracts the matching sockets. The `plug_pins` field on the
-//! ribbon is the single source of truth that both call paths
-//! consult, so sockets-without-pins (jams the plug) and
-//! pins-without-sockets (prevents mold close) can't drift apart.
-//!
-//! [`add_plug_pins`] remains public for callers building a custom
-//! plug `Solid` outside [`CastSpec`]'s per-layer-plug derivation
-//! (e.g., a one-off cast with a hand-tuned plug shape).
+//! (layer N>0) and internally calls [`add_plug_pins`] to attach
+//! the pin geometry as `MatingTransform`s; the cup-piece
+//! [`crate::piece::compose_piece_solid`] consults the same
+//! [`crate::ribbon::Ribbon::plug_pins`] field to emit the matching
+//! socket transforms. Single source of truth — sockets-without-pins
+//! (jams the plug) and pins-without-sockets (prevents mold close)
+//! can't drift apart.
 //!
 //! [`Ribbon::new`]: crate::ribbon::Ribbon::new
 //! [`Ribbon::with_plug_pins`]: crate::ribbon::Ribbon::with_plug_pins
 //! [`CastSpec`]: crate::CastSpec
+//! [`CylinderParent`]: crate::mesh_csg::CylinderParent
 
 use cf_design::Solid;
-use nalgebra::{Point3, UnitQuaternion, Vector3};
+use nalgebra::{Point3, UnitVector3, Vector3};
 
+use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::ribbon::Ribbon;
+
+/// Polygonal facet count around the plug shaft + T-bar cylinder
+/// circumference.
+///
+/// 32-segment circles match [`crate::registration::PIN_SEGMENTS`]
+/// at 3 mm Ø: chord error `r(1 - cos(π/32))` ≈ 7 µm at radius
+/// 1.5 mm, well below FDM bead width. The plug's 6 mm Ø
+/// shaft + T-bar (`PlugPinSpec::iter1` default) inherit the same
+/// facet count: chord error scales linearly with radius
+/// (`r(1 - cos(π/32))` ≈ 14 µm at 3 mm radius), still inside FDM
+/// tolerance. Part of the determinism contract — same
+/// [`CylinderParent`] + same radius + same `PLUG_CYLINDER_SEGMENTS`
+/// → bit-equal output across plug, Negative cup, and Positive cup
+/// (3-piece shared primitive per recon §2).
+pub(crate) const PLUG_CYLINDER_SEGMENTS: u32 = 32;
 
 /// Axial plug-anchor pin geometry spec. All dimensions in meters.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,18 +151,17 @@ pub struct PlugPinSpec {
     /// Pin radius (m). Default `0.003` = 3 mm = 6 mm diameter.
     ///
     /// 6 mm Ø ships **wider** than [`crate::registration::PinSpec`]'s
-    /// 3 mm Ø inter-piece pin radius. The reason is mesh resolution:
-    /// inter-piece pins are CSG'd into a much-larger mold piece (the
-    /// surrounding cup-wall surface gives marching cubes plenty of
-    /// neighboring samples to resolve the pin as a protrusion), but
-    /// the plug-anchor pin sticks out into otherwise-empty space
-    /// past the plug cap and must be at least 2 cells across in
-    /// every axis to resolve cleanly. At cf-cast's default 3 mm
-    /// mesh-cell size (`MESH_CELL_SIZE_M` in the iter-1 example), a
-    /// 3 mm Ø pin captures as only 1 cell radially and MC produces
-    /// disconnected tip fragments; 6 mm Ø clears the threshold.
-    /// FDM hole accuracy is ±0.2 mm; the socket adds
-    /// [`Self::socket_radial_slack_m`] on top for slide-fit.
+    /// 3 mm Ø inter-piece pin radius. Pre-S6 this was a marching-
+    /// cubes resolution constraint (a 3 mm Ø pin captured as only
+    /// 1 cell radially at the 3 mm default cell size, fragmenting
+    /// on MC); post-S6 the plug pin lands as an exact post-MC
+    /// cylinder primitive via [`build_plug_self_transforms`], so
+    /// MC resolution no longer constrains the minimum diameter.
+    /// The 6 mm baseline is retained for workshop ergonomics
+    /// (FDM-printable without supports, comfortable hand-insertion)
+    /// and consistency with the T-bar's diameter. Cup-side socket
+    /// inflates by [`Self::shaft_diametral_clearance_m`] / 2 on
+    /// each radial side for slide-fit.
     pub pin_radius_m: f64,
     /// Total axial pin length (m). Default `0.020` = 20 mm. The
     /// pin starts at the centerline endpoint and extends outward
@@ -133,16 +173,54 @@ pub struct PlugPinSpec {
     /// suits single-layer + thin-shell multi-layer casts;
     /// thick-shell layouts override to ~25-30 mm.
     pub pin_length_m: f64,
-    /// Radial slack between the pin and the socket cylinder (m).
-    /// Default `0.0005` = 0.5 mm. The socket radius is
-    /// `pin_radius_m + socket_radial_slack_m`, so the diametric gap
-    /// is `2 × socket_radial_slack_m` = 1 mm at the default.
+    /// Diametral clearance between the plug pin shaft and the
+    /// cup-wall socket (m). The cup-side
+    /// [`MatingTransform::SubtractCylinder`] uses
+    /// `pin_radius_m + shaft_diametral_clearance_m / 2` so the
+    /// pin-vs-socket *diameter* difference equals
+    /// `shaft_diametral_clearance_m` (symmetric `/2` convention —
+    /// half the budget appears as radial gap on each side). v2
+    /// iter-1 default `0.00030` = 0.30 mm matches recon §9 M4
+    /// (plug-shaft positional fit) baseline. **Escalate-on-bind**:
+    /// if the workshop M2 pin (`PinSpec::diametral_clearance_m =
+    /// 0.20 mm`) trial binds for a given printer, lift this to
+    /// `0.00050` (0.50 mm slide-fit) to retain workshop hand-
+    /// insertion ergonomics.
+    pub shaft_diametral_clearance_m: f64,
+    /// Axial socket-bottom relief for the plug pin shaft (m). The
+    /// cup-side socket cylinder's [`CylinderParent::half_length_m`]
+    /// extends past the plug-side pin's half-length by
+    /// `shaft_axial_clearance_m / 2` on each axial face (symmetric
+    /// `/2` convention matching the diametral budget).
     ///
-    /// FDM holes typically print smaller than nominal by ~0.1-0.2 mm;
-    /// 0.5 mm radial slack provides slide-fit clearance for typical
-    /// FDM accuracy. Tighter fits jam; looser fits wobble. Workshop
-    /// iter-1 reams to taste.
-    pub socket_radial_slack_m: f64,
+    /// Unlike the registration pin's
+    /// [`crate::registration::PinSpec::axial_clearance_m`] — where
+    /// the cup-piece SDF halfspace intersect clips each pin's
+    /// near-seam half so workshop engagement reduces to
+    /// [`crate::piece::RIBBON_PIECE_OVERLAP_M`] — the plug-side
+    /// pin shaft is **not** bisected by the seam (the plug STL is
+    /// a single unsplit piece). Workshop engagement on the plug
+    /// side is the full [`Self::pin_length_m`].
+    ///
+    /// The shaft's axis is parallel to the centerline tangent at
+    /// the cap plane (= along `pour_outward`) which is typically
+    /// perpendicular to the seam-plane normal — i.e., the shaft
+    /// axis lies WITHIN the seam plane. The cup-side socket
+    /// cylinder is therefore bisected LENGTHWISE by the cup-piece
+    /// SDF halfspace intersect (recon-4 (P): each cup half
+    /// receives one half-cylinder of the socket cross-section via
+    /// the pre-MC halfspace, not a post-MC `SeamTrim`); the
+    /// `axial / 2` extension SURVIVES on both axial faces, but
+    /// only the DEEP-end extension is workshop-meaningful (the
+    /// near-end extension lies inside the body cavity, where there
+    /// is no cup-wall material to subtract from — and the
+    /// inflate-axial push protects against the cup-side coincident-
+    /// face boolean-union failure mode, see
+    /// `shaft_socket_near_end_clears_body_cap_plane` test).
+    ///
+    /// v2 iter-1 default `0.00100` = 1.00 mm matches recon §9
+    /// M4 baseline.
+    pub shaft_axial_clearance_m: f64,
     /// Whether to add a matching pin at the dome end
     /// (`centerline.last()`). Default `false` — the plug's
     /// hemispherical cap seats naturally into the body cavity's
@@ -152,24 +230,26 @@ pub struct PlugPinSpec {
     /// (max tangent rotation approaching 120°) may need dome-end
     /// rotation constraint and opt in here.
     pub include_dome_pin: bool,
-    /// Whether to add a perpendicular T-bar at the pour-end pin's
-    /// tip, locking the plug against upward (axial) motion + axial
-    /// rotation once the cup pieces close around it.
+    /// Whether to add a T-bar at the pour-end pin's tip, locking
+    /// the plug against axial pull-out + rotation around the pin
+    /// axis once the cup pieces close around it.
     ///
-    /// The T-bar is a cylinder whose axis lies in the ribbon seam
-    /// plane at the pin's anchor endpoint (axis =
-    /// `pour_outward × split_normal`, normalized). Because the
-    /// axis is perpendicular to the cutting plane normal, each cup
-    /// piece's geometry carves half of the matching T-slot via the
-    /// existing ribbon-side subtraction — workshop assembles by
-    /// dropping the plug into one cup half (T-bar lies in the seam
-    /// plane), then closing the other half around it (captive
-    /// insertion). Plug cannot slide upward because the T-bar would
-    /// have to push through the cup-wall material between the
-    /// T-slot and the pin-shaft socket above it; plug cannot rotate
-    /// around the pin axis because the T-bar would have to rotate
-    /// out of the fixed binormal orientation that the T-slot
-    /// accepts.
+    /// The T-bar is a cylinder whose axis is computed as
+    /// `pour_outward × split_normal` (normalized). For the typical
+    /// iter-1 pour-end pin (`pour_outward` aligned with the
+    /// centerline's local tangent at the cap plane), this axis is
+    /// **parallel to the ribbon binormal** — i.e., parallel to the
+    /// seam-plane normal — so the seam plane bisects the T-bar
+    /// through its center along a flat circular cross-section.
+    /// Each cup half therefore receives one half-cylinder T-slot
+    /// (with a co-planar half-disk cross-section on its mating
+    /// face), and the workshop user closes the second cup half
+    /// around the plug's T-bar (captive insertion). The plug
+    /// cannot pull up because the T-bar would have to push through
+    /// cup-wall material between the T-slot and the shaft socket;
+    /// it cannot rotate around the pin axis because the T-bar
+    /// would have to rotate out of the seam-normal orientation the
+    /// T-slot accepts.
     ///
     /// Default `true` for v2.1 iter-1 +. Disable when the cured
     /// silicone alone provides adequate plug-to-mold hold and the
@@ -181,10 +261,7 @@ pub struct PlugPinSpec {
     /// the platform during pour + cure).
     pub include_t_bar: bool,
     /// T-bar cylinder radius (m). Default `0.003` = 3 mm = 6 mm
-    /// diameter, matching [`Self::pin_radius_m`]. Same MC-resolution
-    /// rationale as the pin shaft: at cf-cast's default 3 mm
-    /// mesh-cell size, 6 mm Ø is the minimum that meshes cleanly
-    /// (1 cell radius). Smaller T-bars fragment.
+    /// diameter, matching [`Self::pin_radius_m`].
     pub t_bar_radius_m: f64,
     /// T-bar cylinder half-length along its axis (m). Default
     /// `0.012` = 12 mm half-length → 24 mm total = 4× pin Ø.
@@ -193,43 +270,61 @@ pub struct PlugPinSpec {
     /// motion; short enough that the T-bar fits inside typical
     /// workshop bounding regions along the binormal direction.
     pub t_bar_half_length_m: f64,
-    /// Radial slack between the T-bar and the T-slot cylinder (m).
-    /// Default `0.0001` = 0.1 mm — **much tighter** than the pin
-    /// shaft's [`Self::socket_radial_slack_m`] (0.5 mm slide-fit).
-    /// Reason: the T-bar doesn't need to axial-slide into its slot
-    /// — the cup pieces close around it (captive insertion), so
-    /// the tolerance only needs to absorb FDM print tolerance
-    /// (~0.1-0.2 mm). The tight T-slot interface also seals the
-    /// silicone leak path that would otherwise wick from the
-    /// 0.5 mm pin-shaft slack annulus into the T-slot and out the
-    /// T-bar's protruding bottom — silicone surface tension holds
-    /// against the 0.1 mm gap during pour + cure.
-    pub t_slot_radial_slack_m: f64,
+    /// Diametral clearance between the T-bar and the cup-wall
+    /// T-slot (m). Same `/2` convention as
+    /// [`Self::shaft_diametral_clearance_m`] — cup-side T-slot
+    /// radius is `t_bar_radius_m + t_bar_diametral_clearance_m /
+    /// 2`.
+    ///
+    /// v2 iter-1 default `0.00030` = 0.30 mm matches recon §9 M3
+    /// (T-bar positional fit) baseline. The T-bar is captive-
+    /// inserted (workshop user closes the second cup half around
+    /// it), not axial-slid, so the tolerance only needs to absorb
+    /// FDM print tolerance + the workshop's ability to close the
+    /// cup halves flush. Tightens further (e.g., `0.00010` = 0.10
+    /// mm) when a future iter's printer surfaces a binding-tight
+    /// fit; loosens when iter-1 print surfaces excess wobble.
+    pub t_bar_diametral_clearance_m: f64,
+    /// Axial pocket-bottom relief for the T-slot (m). The cup-side
+    /// T-slot's [`CylinderParent::half_length_m`] extends past the
+    /// plug-side T-bar's by `t_bar_axial_clearance_m / 2` on each
+    /// axial face (lateral ends of the bar, in seam-plane-normal
+    /// terms: each cup half's T-slot is one half of the bisected
+    /// T-bar cylinder, with `axial/2` of pocket relief at the
+    /// AWAY-from-seam tip).
+    ///
+    /// v2 iter-1 default `0.00100` = 1.00 mm matches recon §9
+    /// M3 baseline.
+    pub t_bar_axial_clearance_m: f64,
 }
 
 impl PlugPinSpec {
     /// v2.1 iter-1 defaults: single pour-end pin (6 mm Ø × 20 mm
-    /// long, 0.5 mm radial socket slack), T-bar lock enabled at
-    /// pin tip (6 mm Ø × 24 mm long, 0.1 mm T-slot slack), dome-end
-    /// pin disabled.
+    /// long, 0.30 mm × 1.00 mm shaft clearance), T-bar lock
+    /// enabled at pin tip (6 mm Ø × 24 mm long, 0.30 mm × 1.00 mm
+    /// T-slot clearance), dome-end pin disabled.
     ///
-    /// Pin Ø > [`crate::registration::PinSpec`]'s 3 mm to clear
-    /// the marching-cubes resolution threshold at the 3 mm default
-    /// cell size; see [`Self::pin_radius_m`] docstring. T-bar
-    /// matches pin Ø for the same MC resolution rationale; T-slot
-    /// uses tight slack since cup pieces close around the T-bar
-    /// (captive insertion, no axial slide-fit clearance needed).
+    /// Pin Ø matches [`crate::registration::PinSpec`]'s 3 mm × 2
+    /// = 6 mm for workshop hand-insertion ergonomics + consistency
+    /// with the T-bar's diameter (pre-S6 it was an MC-resolution
+    /// constraint; S6 retired that constraint via mesh-CSG). Both
+    /// clearance pairs ship at the recon §9 M3/M4 positional-fit
+    /// baseline (0.30 mm diametral, 1.00 mm axial); escalate-on-
+    /// bind to 0.50 mm diametral only if a future iter's printer
+    /// surfaces binding.
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
             pin_radius_m: 0.003,
             pin_length_m: 0.020,
-            socket_radial_slack_m: 0.0005,
+            shaft_diametral_clearance_m: 0.00030,
+            shaft_axial_clearance_m: 0.00100,
             include_dome_pin: false,
             include_t_bar: true,
             t_bar_radius_m: 0.003,
             t_bar_half_length_m: 0.012,
-            t_slot_radial_slack_m: 0.0001,
+            t_bar_diametral_clearance_m: 0.00030,
+            t_bar_axial_clearance_m: 0.00100,
         }
     }
 }
@@ -255,106 +350,361 @@ pub enum PlugPinKind {
     Axial(PlugPinSpec),
 }
 
-/// Build the combined plug-pin Solid for the ribbon's plug-pin
-/// kind, or `None` if [`PlugPinKind::None`].
+/// Per-feature [`CylinderParent`] triples for one ribbon's plug-pin
+/// geometry.
 ///
-/// Returns `Some(solid)` whose SDF is the union of one cylinder
-/// per enabled pin:
-/// - **Pour-end pin** anchored per
-///   [`crate::ribbon::Ribbon::pour_end_hint`]:
-///   - `Some((centroid, outward))` → anchored at `centroid`
-///     extending along `outward`. The anchor sits where the
-///     caller says it sits — typically the cap-plane centroid +
-///     outward normal — NOT at any centerline endpoint. See
-///     `pour_and_dome_anchors`'s docstring (private helper in
-///     this module) for the `trim_floor_mm` rationale.
-///   - `None` → fallback to `(centerline.last(), last.tangent)`
-///     per cf-scan-prep's tip→base centerline-orientation
-///     convention.
-/// - **Dome-end pin** (when [`PlugPinSpec::include_dome_pin`] is
-///   `true`): anchored at the centerline endpoint **farthest** from
-///   the pour anchor, extending outward along that endpoint's
-///   local segment tangent.
-///
-/// The plug's natural cap region overlaps the inner half of each
-/// pin; the union with the plug `Solid` resolves cleanly via
-/// boolean OR.
-///
-/// Used by [`add_plug_pins`] to extend a user-supplied plug `Solid`
-/// with the matched-to-socket pin geometry.
-#[must_use]
-pub fn build_plug_pin_solid(ribbon: &Ribbon) -> Option<Solid> {
-    let spec = match &ribbon.plug_pins {
-        PlugPinKind::None => return None,
-        PlugPinKind::Axial(spec) => spec,
-    };
-    let (pour, dome) = pour_and_dome_anchors(ribbon)?;
-    let split_vec = ribbon.split_normal.as_vector();
-    let mut result = anchor_cylinder(pour.0, pour.1, spec.pin_radius_m, spec.pin_length_m);
-    if spec.include_t_bar {
-        if let Some(t_bar) = build_t_bar_cylinder(
-            pour.0,
-            pour.1,
-            split_vec,
-            spec.pin_length_m,
-            spec.t_bar_radius_m,
-            spec.t_bar_half_length_m,
-        ) {
-            result = result.union(t_bar);
-        }
-    }
-    if !spec.include_dome_pin {
-        return Some(result);
-    }
-    let pin_at_dome = anchor_cylinder(dome.0, dome.1, spec.pin_radius_m, spec.pin_length_m);
-    Some(result.union(pin_at_dome))
+/// All parents are at PIN (= plug-side) dimensions —
+/// `half_length = pin_length_m / 2` for the shaft,
+/// `half_length = t_bar_half_length_m` for the T-bar. Cup-side
+/// inflation (`+ axial_clearance / 2`) happens at transform-emit
+/// time in [`build_plug_socket_transforms`]; plug-side consumers
+/// in [`build_plug_self_transforms`] use the parents verbatim.
+/// Same triple consumed by plug + Negative cup + Positive cup is
+/// the load-bearing 3-piece shared-primitive invariant (recon §2).
+#[derive(Debug)]
+struct PlugMatingParents {
+    /// Pour-end shaft cylinder parent (always present when
+    /// `plug_pins = Axial(_)`).
+    pour_shaft: CylinderParent,
+    /// Pour-end T-bar cylinder parent (when `include_t_bar`).
+    pour_t_bar: Option<CylinderParent>,
+    /// Dome-end shaft cylinder parent (when `include_dome_pin`).
+    /// No T-bar at the dome end (the dome end doesn't lock against
+    /// axial pull — it relies on the plug's hemispherical cap
+    /// seating in the body-cavity dome).
+    dome_shaft: Option<CylinderParent>,
 }
 
-/// Build the combined plug-socket Solid for the ribbon's plug-pin
-/// kind, or `None` if [`PlugPinKind::None`].
+/// Resolve the per-feature [`CylinderParent`] triples for the
+/// ribbon's plug-pin kind, or `None` when the ribbon has no plug
+/// pins.
 ///
-/// Returns `Some(solid)` whose SDF is the union of cylinders
-/// positioned identically to [`build_plug_pin_solid`]'s output but
-/// with the socket radius (`pin_radius_m + socket_radial_slack_m`).
-/// Used by [`crate::piece::compose_piece_solid`] to carve the socket
-/// channels into each mold piece via CSG subtraction. The same
-/// socket cylinder is subtracted from BOTH [`crate::ribbon::PieceSide`]s
-/// — sockets straddle the ribbon seam since centerline endpoints
-/// lie on or near it for typical cf-scan-prep outputs.
-#[must_use]
-pub fn build_plug_socket_solid(ribbon: &Ribbon) -> Option<Solid> {
+/// Returns `Some((spec, parents))` where `parents` carries one
+/// triple per enabled feature. The `pour_shaft` triple is always
+/// present; `pour_t_bar` follows [`PlugPinSpec::include_t_bar`];
+/// `dome_shaft` follows [`PlugPinSpec::include_dome_pin`].
+///
+/// Returns `None` for [`PlugPinKind::None`], a degenerate pour
+/// anchor (empty ribbon), or a degenerate T-bar axis when
+/// `include_t_bar = true` (pour outward parallel to split-normal —
+/// caught upstream by [`Ribbon::new`] but defended-against here
+/// for robustness). The degenerate-axis case suppresses ALL
+/// transforms rather than just the T-bar so the caller doesn't
+/// produce a misshapen plug with a shaft but no anti-rotation lock.
+fn build_plug_mating_parents(ribbon: &Ribbon) -> Option<(&PlugPinSpec, PlugMatingParents)> {
     let spec = match &ribbon.plug_pins {
         PlugPinKind::None => return None,
         PlugPinKind::Axial(spec) => spec,
     };
     let (pour, dome) = pour_and_dome_anchors(ribbon)?;
     let split_vec = ribbon.split_normal.as_vector();
-    let socket_radius = spec.pin_radius_m + spec.socket_radial_slack_m;
-    let mut result = anchor_cylinder(pour.0, pour.1, socket_radius, spec.pin_length_m);
-    if spec.include_t_bar {
-        // T-slot uses its own (tighter) slack on the radius — see
-        // `PlugPinSpec::t_slot_radial_slack_m` for the rationale.
-        // Half-length stays at `t_bar_half_length_m` (no axial
-        // slack) to mirror the pin-shaft socket's radius-only slack
-        // semantics — the cup pieces close around the T-bar's ends
-        // along the bar's long axis, so no axial slide-fit
-        // clearance is needed at the ends.
-        if let Some(t_slot) = build_t_bar_cylinder(
-            pour.0,
-            pour.1,
-            split_vec,
-            spec.pin_length_m,
-            spec.t_bar_radius_m + spec.t_slot_radial_slack_m,
-            spec.t_bar_half_length_m,
-        ) {
-            result = result.union(t_slot);
-        }
+    let pour_shaft = shaft_parent(pour.0, pour.1, spec.pin_length_m);
+    let pour_t_bar = if spec.include_t_bar {
+        // `?` propagates degenerate-axis None up — see fn-level doc
+        // on why we suppress all transforms in that case.
+        Some(t_bar_parent_at(pour.0, pour.1, &split_vec, spec)?)
+    } else {
+        None
+    };
+    let dome_shaft = spec
+        .include_dome_pin
+        .then(|| shaft_parent(dome.0, dome.1, spec.pin_length_m));
+    Some((
+        spec,
+        PlugMatingParents {
+            pour_shaft,
+            pour_t_bar,
+            dome_shaft,
+        },
+    ))
+}
+
+/// Build a shaft [`CylinderParent`] for a pin anchored at `anchor`
+/// extending along `outward` for `length_m` total.
+///
+/// The cylinder is centered at `anchor + outward * (length_m / 2)`
+/// with axis along `outward` and `half_length = length_m / 2`.
+fn shaft_parent(anchor: Point3<f64>, outward: Vector3<f64>, length_m: f64) -> CylinderParent {
+    let half_length = length_m / 2.0;
+    let center = anchor + outward * half_length;
+    // `UnitVector3::new_normalize` is defensive against tiny
+    // numerical drift; ribbon construction guarantees `outward` is
+    // already unit-magnitude for the typical (centerline tangent
+    // or cap-plane normal) inputs.
+    let axis = UnitVector3::new_normalize(outward);
+    CylinderParent {
+        center_m: center,
+        axis,
+        half_length_m: half_length,
     }
-    if !spec.include_dome_pin {
-        return Some(result);
+}
+
+/// Overlap-bias the plug-shaft cylinder's near-end extends inward
+/// into the plug body's volume (m), used by
+/// [`build_plug_self_transforms`].
+///
+/// 1 mm. The plug-shaft [`MatingTransform::UnionCylinder`] is
+/// post-MC unioned onto the plug body's SDF-meshed solid; without
+/// this overlap-bias the shaft's near-end face at `cap_centroid` is
+/// EXACTLY coincident with the plug body's pinned cap face
+/// (`cf_design::solid_layered::pinned_floor_shell` produces a
+/// bit-precise flat body cap via MC's linear-SDF interpolation,
+/// same property recon-4 §F-4 verifies for the cup-piece seam).
+/// manifold3d's boolean union on exactly-coincident faces produces
+/// disconnected output — workshop iter-2 cf-view smoke confirmed
+/// every iter-1 plug STL shipped as 2 connected components (plug
+/// body + floating shaft+T-bar assembly), same failure mode as S7's
+/// funnel-nipple coincidence with the flange bottom (see
+/// [`crate::funnel`] module docstring §"Architectural placement" +
+/// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 for the
+/// recon-4 paradigm-boundary pattern).
+///
+/// Extending the shaft's near-end 1 mm INWARD into the plug body's
+/// volume makes the boolean union act on overlapping (not just
+/// touching) volumes. The overlap region (radius `pin_radius_m` ≈
+/// 3 mm × 1 mm depth into the body) lives ENTIRELY inside the plug
+/// body's bulk volume — workshop scan bodies are typically ≥ 20 mm
+/// radius at the cap plane, so the shaft's near-end portion is
+/// fully CONTAINED in the body's cross-section (no surface
+/// intersection at the overlap zone, manifold3d's safest boolean
+/// path — same case as the recon-3 §R3-3 contained-cylinder
+/// absorption characterisation in `mesh_csg::tests`).
+/// Workshop-visible far-end position is unchanged (still
+/// `cap_centroid + cap_normal × pin_length_m`); only the
+/// non-visible interior portion of the shaft changes.
+///
+/// Sized at 1 mm rather than smaller because iter-1's typical
+/// `mesh_cell_size_m = 3 mm` MC sampling needs ≥ ⅓ cell overlap
+/// to resolve the union junction cleanly; 1 mm gives margin
+/// without intruding meaningfully into the body interior. Applied
+/// uniformly to pour-end + dome-end shafts (the dome end is
+/// usually anchored on a non-pinned curved body surface and would
+/// be safe without the bias per the recon-4 framework, but the
+/// uniform application protects against future spec changes that
+/// might pin the dome end too).
+pub const PLUG_SHAFT_NEAR_END_OVERLAP_M: f64 = 0.001;
+
+/// Extend the cylinder's near-end (the end at
+/// `center - axis * half_length`) inward by `overlap_m`, leaving
+/// the far-end (`center + axis * half_length`) unchanged.
+///
+/// Used by [`build_plug_self_transforms`] to bury the plug-shaft
+/// cylinder's near-end inside the plug body's volume for clean
+/// boolean-union welding (see [`PLUG_SHAFT_NEAR_END_OVERLAP_M`]).
+fn extend_near_end(parent: &CylinderParent, overlap_m: f64) -> CylinderParent {
+    let half_overlap = overlap_m / 2.0;
+    // Inward = opposite of `axis` (axis points OUTWARD from the
+    // near-end face by construction in `shaft_parent`).
+    let inward = -parent.axis.into_inner();
+    CylinderParent {
+        center_m: parent.center_m + inward * half_overlap,
+        axis: parent.axis,
+        half_length_m: parent.half_length_m + half_overlap,
     }
-    let socket_at_dome = anchor_cylinder(dome.0, dome.1, socket_radius, spec.pin_length_m);
-    Some(result.union(socket_at_dome))
+}
+
+/// Build the T-bar [`CylinderParent`] for the pour-end pin, or
+/// `None` when the T-bar axis (`pour_outward × split_normal_vec`)
+/// is degenerate (pour direction parallel to split-normal).
+///
+/// The T-bar sits at the pin tip (`pour_anchor + pour_outward *
+/// pin_length_m`) with axis = `pour_outward × split_normal_vec`
+/// normalized. For the typical iter-1 pour-end pin where
+/// `pour_outward` aligns with the centerline tangent at the cap
+/// plane, this axis equals the ribbon binormal — i.e., is parallel
+/// to the seam-plane normal — so the cup-piece SDF halfspace
+/// intersect (recon-4 (P), see
+/// [`crate::piece::compose_piece_solid`]) bisects the cup-side
+/// T-slot through its center along a co-planar circular
+/// cross-section (each cup half receives one half-disk T-slot
+/// cap on its mating face).
+fn t_bar_parent_at(
+    pour_anchor: Point3<f64>,
+    pour_outward: Vector3<f64>,
+    split_normal_vec: &Vector3<f64>,
+    spec: &PlugPinSpec,
+) -> Option<CylinderParent> {
+    let bar_axis_raw = pour_outward.cross(split_normal_vec);
+    let bar_axis_norm = bar_axis_raw.norm();
+    if bar_axis_norm < 1e-9 {
+        return None;
+    }
+    let bar_axis = UnitVector3::new_unchecked(bar_axis_raw / bar_axis_norm);
+    let bar_center = pour_anchor + pour_outward * spec.pin_length_m;
+    Some(CylinderParent {
+        center_m: bar_center,
+        axis: bar_axis,
+        half_length_m: spec.t_bar_half_length_m,
+    })
+}
+
+/// Build the plug-side mesh-CSG transforms for the ribbon's
+/// plug-pin geometry.
+///
+/// Returns one [`MatingTransform::UnionCylinder`] per enabled
+/// feature (shaft, T-bar, optional dome shaft), each consuming the
+/// shared [`CylinderParent`] at the **pin** dimensions verbatim.
+/// Used by [`add_plug_pins`] to attach the post-MC shaft + T-bar
+/// geometry to the bare plug Solid.
+///
+/// Cup-side counterparts come from [`build_plug_socket_transforms`]
+/// and share each parent triple modulo the symmetric `/2`
+/// clearance inflation (recon §2 + §9). The 3-piece shared-
+/// primitive invariant (plug ↔ Negative cup ↔ Positive cup all
+/// consume the same T-bar parent) is the strongest determinism
+/// gate in the mating-features arc — see `mesh_csg::tests`
+/// `t_bar_cylinder_mesh_is_bit_equal_across_three_pieces`.
+///
+/// Returns an empty `Vec` when:
+/// - `ribbon.plug_pins` is [`PlugPinKind::None`];
+/// - the ribbon has no segments (degenerate pour anchor);
+/// - the T-bar axis would be degenerate when `include_t_bar = true`
+///   (caught by [`Ribbon::new`] upstream).
+#[must_use]
+pub fn build_plug_self_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
+    let Some((spec, parents)) = build_plug_mating_parents(ribbon) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    // Plug-side pour-end shaft: extend near-end PLUG_SHAFT_NEAR_END_OVERLAP_M
+    // INWARD into the plug body so the boolean union welds across
+    // the body-cap junction (recon-4 paradigm-boundary pattern; see
+    // PLUG_SHAFT_NEAR_END_OVERLAP_M docstring + `extend_near_end`).
+    // Workshop-visible far-end position unchanged.
+    out.push(MatingTransform::UnionCylinder {
+        params: CylinderParams {
+            parent: extend_near_end(&parents.pour_shaft, PLUG_SHAFT_NEAR_END_OVERLAP_M),
+            radius_m: spec.pin_radius_m,
+            segments: PLUG_CYLINDER_SEGMENTS,
+        },
+    });
+    if let Some(t_bar) = parents.pour_t_bar {
+        // T-bar stays at the un-extended pose: its volume overlaps
+        // the shaft's far-end disc volumetrically (T-bar axis is
+        // perpendicular to shaft axis, T-bar center is at the
+        // shaft's far-end), so the boolean union with the
+        // welded-plug-shaft acts on overlapping volumes — no
+        // paradigm-boundary issue here. PROTRUDING from the shaft
+        // far-end, manifold3d's safe surface-vs-surface path.
+        out.push(MatingTransform::UnionCylinder {
+            params: CylinderParams {
+                parent: t_bar,
+                radius_m: spec.t_bar_radius_m,
+                segments: PLUG_CYLINDER_SEGMENTS,
+            },
+        });
+    }
+    if let Some(dome) = parents.dome_shaft {
+        // Dome-end shaft also gets the near-end overlap-bias —
+        // typically the dome end anchors on a curved body surface
+        // (PROTRUDING, safe without the bias), but applying
+        // uniformly protects against future spec changes that
+        // pin the dome end.
+        out.push(MatingTransform::UnionCylinder {
+            params: CylinderParams {
+                parent: extend_near_end(&dome, PLUG_SHAFT_NEAR_END_OVERLAP_M),
+                radius_m: spec.pin_radius_m,
+                segments: PLUG_CYLINDER_SEGMENTS,
+            },
+        });
+    }
+    out
+}
+
+/// Build the cup-side mesh-CSG transforms for the ribbon's plug-
+/// pin sockets and (when enabled) T-slot.
+///
+/// **Side-agnostic** transforms Vec: both Negative and Positive
+/// cup pieces emit the *same* Vec; the cup-piece SDF halfspace
+/// intersect (recon-4 (P), see [`crate::piece::compose_piece_solid`])
+/// bounds each piece's MC mesh to its kept half-shell, so each
+/// cylinder `SubtractCylinder` is effectively bisected at the seam
+/// plane by construction. The T-bar's axis is parallel to the seam
+/// normal, so each cup half receives one co-planar half-disk T-slot
+/// cross-section on its mating face (workshop "captive T-bar
+/// insertion" mating model).
+///
+/// Returns one [`MatingTransform::SubtractCylinder`] per enabled
+/// feature, with the cup-side parameters inflated relative to the
+/// plug-side pin/T-bar by the symmetric `/2` clearance convention:
+/// - Shaft socket: `half_length += shaft_axial_clearance_m / 2`,
+///   `radius_m = pin_radius_m + shaft_diametral_clearance_m / 2`.
+/// - T-slot: `half_length += t_bar_axial_clearance_m / 2`,
+///   `radius_m = t_bar_radius_m + t_bar_diametral_clearance_m / 2`.
+/// - Dome-end shaft socket (when [`PlugPinSpec::include_dome_pin`]
+///   is `true`): same inflation as the pour-end shaft socket.
+///
+/// Consumed by [`crate::piece::compose_piece_solid`]. Returns an
+/// empty `Vec` when the ribbon has no plug pins; see
+/// [`build_plug_self_transforms`] for the empty-Vec preconditions.
+#[must_use]
+pub fn build_plug_socket_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
+    let Some((spec, parents)) = build_plug_mating_parents(ribbon) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    out.push(MatingTransform::SubtractCylinder {
+        params: CylinderParams {
+            parent: inflate_axial(&parents.pour_shaft, spec.shaft_axial_clearance_m),
+            radius_m: spec.pin_radius_m + spec.shaft_diametral_clearance_m / 2.0,
+            segments: PLUG_CYLINDER_SEGMENTS,
+        },
+    });
+    if let Some(t_bar) = parents.pour_t_bar {
+        out.push(MatingTransform::SubtractCylinder {
+            params: CylinderParams {
+                parent: inflate_axial(&t_bar, spec.t_bar_axial_clearance_m),
+                radius_m: spec.t_bar_radius_m + spec.t_bar_diametral_clearance_m / 2.0,
+                segments: PLUG_CYLINDER_SEGMENTS,
+            },
+        });
+    }
+    if let Some(dome) = parents.dome_shaft {
+        out.push(MatingTransform::SubtractCylinder {
+            params: CylinderParams {
+                parent: inflate_axial(&dome, spec.shaft_axial_clearance_m),
+                radius_m: spec.pin_radius_m + spec.shaft_diametral_clearance_m / 2.0,
+                segments: PLUG_CYLINDER_SEGMENTS,
+            },
+        });
+    }
+    out
+}
+
+/// Extend a [`CylinderParent`]'s half-length by `axial_clearance_m
+/// / 2`, preserving `center_m` + `axis`.
+///
+/// The cup-side cylinder primitive then extends `axial / 2` past
+/// the plug-side cylinder on EACH axial face (symmetric `/2`
+/// convention matching the diametral budget). The cup-piece SDF
+/// halfspace intersect (recon-4 (P), see
+/// [`crate::piece::compose_piece_solid`]) interacts with the
+/// extended cylinder differently depending on which feature it
+/// carries:
+///
+/// - **T-slot** (T-bar axis parallel to seam normal): the SDF
+///   halfspace bisects the cylinder through its center,
+///   perpendicular to the long axis. Each cup half receives one
+///   half-cylinder; the `axial / 2` extension at each lateral tip
+///   becomes a pocket-bottom relief at the AWAY-from-seam end of
+///   that half's T-slot.
+/// - **Shaft socket** (shaft axis perpendicular to seam normal):
+///   shaft axis lies WITHIN the seam plane, so the halfspace
+///   bisects the cylinder LENGTHWISE; each cup half receives one
+///   half-cylinder split along its long axis. The `axial / 2`
+///   extension survives on both axial faces, but only the DEEP-end
+///   extension is workshop-meaningful (the near-end extension
+///   lies inside the body cavity, where there is no cup-wall
+///   material to subtract from — AND it pushes the socket's
+///   near-end cap off the body cap plane, avoiding the
+///   coincident-face boolean-union failure mode on the cup side;
+///   see `shaft_socket_near_end_clears_body_cap_plane` test).
+fn inflate_axial(parent: &CylinderParent, axial_clearance_m: f64) -> CylinderParent {
+    CylinderParent {
+        center_m: parent.center_m,
+        axis: parent.axis,
+        half_length_m: parent.half_length_m + axial_clearance_m / 2.0,
+    }
 }
 
 /// Resolve the pour-end T-bar location + axis for this ribbon's
@@ -362,77 +712,28 @@ pub fn build_plug_socket_solid(ribbon: &Ribbon) -> Option<Solid> {
 ///
 /// Returns `None` for `PlugPinKind::None`, `include_t_bar = false`,
 /// or a degenerate pour anchor. Exposes the geometry the
-/// [`crate::platform`] module needs to carve the matching pocket
-/// in `platform.stl` without duplicating the anchor-resolution
-/// logic.
+/// [`crate::platform`] module needs to size the matching pocket in
+/// `platform.stl` without duplicating the anchor-resolution logic.
 ///
 /// Returns `(t_bar_center, t_bar_axis, t_bar_radius_m,
-/// t_bar_half_length_m)` — all in world-frame meters / unit
-/// directions. The platform's pocket cylinder uses the same
-/// `center` + `axis` with slack-augmented radius + length.
+/// t_bar_half_length_m)` — bare plug-side dimensions in world-
+/// frame meters / unit directions. The platform consumer adds its
+/// own [`crate::platform::PLATFORM_HOLE_LATERAL_SLACK_M`] to size
+/// the pocket; the post-S6 cup-side T-slot clearance fields
+/// ([`PlugPinSpec::t_bar_diametral_clearance_m`] /
+/// [`PlugPinSpec::t_bar_axial_clearance_m`]) are NOT applied here
+/// — the platform pocket sizes against the bare T-bar, not the
+/// inflated T-slot.
 #[must_use]
 pub fn pour_end_t_bar_geometry(ribbon: &Ribbon) -> Option<(Point3<f64>, Vector3<f64>, f64, f64)> {
-    let spec = match &ribbon.plug_pins {
-        PlugPinKind::None => return None,
-        PlugPinKind::Axial(spec) => spec,
-    };
-    if !spec.include_t_bar {
-        return None;
-    }
-    let (pour, _dome) = pour_and_dome_anchors(ribbon)?;
-    let split_vec = ribbon.split_normal.as_vector();
-    let bar_axis_raw = pour.1.cross(&split_vec);
-    let bar_axis_norm = bar_axis_raw.norm();
-    if bar_axis_norm < 1e-9 {
-        return None;
-    }
-    let bar_axis = bar_axis_raw / bar_axis_norm;
-    let bar_center = pour.0 + pour.1 * spec.pin_length_m;
+    let (spec, parents) = build_plug_mating_parents(ribbon)?;
+    let t_bar = parents.pour_t_bar?;
     Some((
-        bar_center,
-        bar_axis,
+        t_bar.center_m,
+        t_bar.axis.into_inner(),
         spec.t_bar_radius_m,
         spec.t_bar_half_length_m,
     ))
-}
-
-/// Build the T-bar cylinder for a pin anchored at `pin_anchor`
-/// extending along `pin_outward` for `pin_length_m`. The T-bar
-/// sits at the pin tip with its axis perpendicular to the pin axis
-/// in the ribbon seam plane — specifically
-/// `pin_outward × split_normal_vec` (normalized). Returns `None` if
-/// the cross product is degenerate (pin axis parallel to
-/// `split_normal_vec`), which can't happen for ribbons built via
-/// the public [`Ribbon::new`] constructor (that rejects
-/// `TangentParallelToSplitNormal`).
-///
-/// Shared by [`build_plug_pin_solid`] (with `bar_radius_m`) and
-/// [`build_plug_socket_solid`] (with `bar_radius_m + slack`); the
-/// caller composes the slack into the radius/length parameters
-/// before calling.
-#[must_use]
-fn build_t_bar_cylinder(
-    pin_anchor: Point3<f64>,
-    pin_outward: Vector3<f64>,
-    split_normal_vec: Vector3<f64>,
-    pin_length_m: f64,
-    bar_radius_m: f64,
-    bar_half_length_m: f64,
-) -> Option<Solid> {
-    let bar_axis_raw = pin_outward.cross(&split_normal_vec);
-    let bar_axis_norm = bar_axis_raw.norm();
-    if bar_axis_norm < 1e-9 {
-        return None;
-    }
-    let bar_axis = bar_axis_raw / bar_axis_norm;
-    let bar_center = pin_anchor + pin_outward * pin_length_m;
-    let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &bar_axis)
-        .unwrap_or_else(UnitQuaternion::identity);
-    Some(
-        Solid::cylinder(bar_radius_m, bar_half_length_m)
-            .rotate(rotation)
-            .translate(bar_center.coords),
-    )
 }
 
 /// Resolve `((pour_point, pour_outward), (dome_point, dome_outward))`
@@ -483,12 +784,24 @@ fn pour_and_dome_anchors(
     Some((pour_anchor, dome_anchor))
 }
 
-/// Extend a user-supplied plug [`Solid`] with axial pin cylinders
-/// per the ribbon's [`PlugPinKind`].
+/// Pair a user-supplied plug [`Solid`] with the post-MC mesh-CSG
+/// transforms that materialize its axial pin shaft + T-bar
+/// geometry per the ribbon's [`PlugPinKind`].
 ///
-/// Returns the plug unchanged when [`Ribbon::plug_pins`] is
-/// [`PlugPinKind::None`]; otherwise returns `plug.union(pins)` where
-/// `pins` is [`build_plug_pin_solid`]'s output.
+/// Returns `(plug, transforms)` where `plug` is the **bare** plug
+/// Solid (passed through unchanged) and `transforms` is the
+/// [`MatingTransform`] Vec from [`build_plug_self_transforms`].
+/// Empty `transforms` for [`PlugPinKind::None`]; otherwise one
+/// [`MatingTransform::UnionCylinder`] per enabled feature (shaft,
+/// T-bar, optional dome shaft) that the downstream
+/// [`crate::mesh_csg::apply_mating_transforms`] applies between MC
+/// output and the F4 printability gate.
+///
+/// Pre-S6 this function returned `plug.union(pins_SDF)` — pin +
+/// T-bar geometry baked into the SDF expression tree before MC. S6
+/// moved the pin + T-bar to post-MC mesh-CSG (recon §1 + §5) so
+/// the plug's shaft + T-bar match the cup-piece sockets + T-slot
+/// by shared-parent construction rather than by MC tolerance.
 ///
 /// [`CastSpec::export_molds_v2`] calls this internally for each
 /// per-layer plug (derived from `spec.plug` for layer 0 and
@@ -503,34 +816,8 @@ fn pour_and_dome_anchors(
 /// [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
 /// [`CastSpec`]: crate::CastSpec
 #[must_use]
-pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> Solid {
-    match build_plug_pin_solid(ribbon) {
-        Some(pins) => plug.union(pins),
-        None => plug,
-    }
-}
-
-/// Build a cylinder of `radius` × `length` centered along its axis
-/// such that one end is exactly at `base` and the cylinder extends
-/// `length` outward along `outward_axis`.
-///
-/// Used by [`build_plug_pin_solid`] (with the pin radius) and
-/// [`build_plug_socket_solid`] (with the slack-augmented socket
-/// radius) so the two solids share the same axis/length geometry and
-/// only differ in radius.
-fn anchor_cylinder(
-    base: Point3<f64>,
-    outward_axis: Vector3<f64>,
-    radius: f64,
-    length: f64,
-) -> Solid {
-    let half_length = length / 2.0;
-    let center = base + outward_axis * half_length;
-    let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &outward_axis)
-        .unwrap_or_else(UnitQuaternion::identity);
-    Solid::cylinder(radius, half_length)
-        .rotate(rotation)
-        .translate(center.coords)
+pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransform>) {
+    (plug, build_plug_self_transforms(ribbon))
 }
 
 #[cfg(test)]
@@ -554,12 +841,34 @@ mod tests {
         Ribbon::new(centerline, split).unwrap()
     }
 
+    /// Extract `CylinderParams` from a [`MatingTransform`] for test
+    /// inspection. Both Union and Subtract cylinder variants carry
+    /// the same payload type. Plug self/socket transforms never
+    /// emit `SeamTrim`, so a `SeamTrim` variant is a structural
+    /// bug in the producer.
+    fn params_of(t: &MatingTransform) -> &CylinderParams {
+        match t {
+            MatingTransform::UnionCylinder { params }
+            | MatingTransform::SubtractCylinder { params } => params,
+            MatingTransform::SeamTrim { .. } => {
+                panic!("plug transforms should never include SeamTrim")
+            }
+        }
+    }
+
     #[test]
     fn plug_pin_spec_iter1_has_workshop_defaults() {
         let s = PlugPinSpec::iter1();
         assert!((s.pin_radius_m - 0.003).abs() < f64::EPSILON);
         assert!((s.pin_length_m - 0.020).abs() < f64::EPSILON);
-        assert!((s.socket_radial_slack_m - 0.0005).abs() < f64::EPSILON);
+        // S6 clearance defaults — recon §9 M3+M4 baseline
+        // (positional fit). 0.30 mm diametral × 1.00 mm axial for
+        // BOTH the shaft and T-bar.
+        assert!((s.shaft_diametral_clearance_m - 0.00030).abs() < f64::EPSILON);
+        assert!((s.shaft_axial_clearance_m - 0.00100).abs() < f64::EPSILON);
+        assert!((s.t_bar_diametral_clearance_m - 0.00030).abs() < f64::EPSILON);
+        assert!((s.t_bar_axial_clearance_m - 0.00100).abs() < f64::EPSILON);
+        assert!(s.include_t_bar, "iter-1 default ships the T-bar lock");
         assert!(
             !s.include_dome_pin,
             "iter-1 default ships pour-end pin only (no dome-end pin); \
@@ -572,237 +881,515 @@ mod tests {
         assert_eq!(PlugPinKind::default(), PlugPinKind::None);
     }
 
+    /// `PlugPinKind::None` short-circuits both transform builders to
+    /// empty Vec — the empty-Vec pass-through path
+    /// `apply_mating_transforms` short-circuits on (in
+    /// `mesh_csg.rs`).
     #[test]
-    fn build_plug_pin_solid_none_returns_none() {
+    fn build_plug_self_transforms_none_returns_empty() {
         let ribbon = straight_x_ribbon();
-        assert!(build_plug_pin_solid(&ribbon).is_none());
+        assert!(build_plug_self_transforms(&ribbon).is_empty());
+        assert!(build_plug_socket_transforms(&ribbon).is_empty());
     }
 
+    /// `add_plug_pins` passes the plug Solid through unchanged
+    /// (S6: Solid path is bare; pin/T-bar geometry lands post-MC).
+    /// With `PlugPinKind::None` the transforms Vec is empty too.
     #[test]
-    fn build_plug_socket_solid_none_returns_none() {
-        let ribbon = straight_x_ribbon();
-        assert!(build_plug_socket_solid(&ribbon).is_none());
-    }
-
-    #[test]
-    fn add_plug_pins_passes_through_when_kind_is_none() {
+    fn add_plug_pins_passes_plug_through_unchanged() {
         let ribbon = straight_x_ribbon();
         let plug = Solid::capsule(0.005, 0.020);
-        // Sample a few points on the bare plug + the extended-plug
-        // SDFs; they should agree exactly when plug_pins is None.
-        let extended = add_plug_pins(plug.clone(), &ribbon);
+        let (returned_plug, transforms) = add_plug_pins(plug.clone(), &ribbon);
+        // Bare plug Solid is returned verbatim — same SDF response
+        // at a handful of sample points.
         for q in [
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(0.010, 0.0, 0.0),
             Point3::new(0.0, 0.0, 0.025),
         ] {
             let bare = plug.evaluate(&q);
-            let ext = extended.evaluate(&q);
+            let returned = returned_plug.evaluate(&q);
             assert!(
-                (bare - ext).abs() < 1e-12,
-                "add_plug_pins must pass through plug unchanged when ribbon has no pins; \
-                 differed at {q:?}: bare={bare}, extended={ext}",
+                (bare - returned).abs() < 1e-12,
+                "add_plug_pins must pass through plug unchanged (S6: pin geometry \
+                 lands post-MC); differed at {q:?}: bare={bare}, returned={returned}",
+            );
+        }
+        // PlugPinKind::None → empty transforms Vec.
+        assert!(
+            transforms.is_empty(),
+            "PlugPinKind::None should produce empty transforms Vec; got {} ops",
+            transforms.len(),
+        );
+    }
+
+    /// `add_plug_pins` with `PlugPinKind::Axial` returns the plug
+    /// unchanged AND a Vec containing one `UnionCylinder` per
+    /// enabled feature. Replaces the pre-S6
+    /// `add_plug_pins_extends_plug_into_pin_region` test — post-S6
+    /// the pin no longer extends the plug `Solid`; it appears in
+    /// the returned transforms Vec as a separate primitive.
+    #[test]
+    fn add_plug_pins_axial_emits_shaft_and_t_bar_transforms() {
+        let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        let plug = Solid::capsule(0.005, 0.020);
+        let (returned_plug, transforms) = add_plug_pins(plug.clone(), &ribbon);
+
+        // (1) Plug Solid is the bare input; the previous "pin
+        // extends plug into pin region" invariant moves to the
+        // mesh-CSG output, no longer testable at the Solid SDF
+        // level.
+        let bare = plug.evaluate(&Point3::origin());
+        let returned = returned_plug.evaluate(&Point3::origin());
+        assert!((bare - returned).abs() < 1e-12);
+
+        // (2) Transforms Vec carries shaft + T-bar (iter-1 default
+        // ships both, no dome-pin).
+        assert_eq!(
+            transforms.len(),
+            2,
+            "iter-1 default emits shaft + T-bar = 2 transforms; got {}",
+            transforms.len(),
+        );
+        // Both are UnionCylinder (plug-side adds material).
+        for t in &transforms {
+            assert!(
+                matches!(t, MatingTransform::UnionCylinder { .. }),
+                "plug-side transforms should all be UnionCylinder; got {t:?}",
             );
         }
     }
 
+    /// With no `pour_end_hint`, the pour-end shaft parent anchors
+    /// at `centerline.last()` extending along `+last_segment.tangent`
+    /// per cf-scan-prep's tip→base convention. Pre-S6 this was an
+    /// AABB-bounds test; post-S6 the equivalent invariant lives in
+    /// the shaft transform's parent geometry (center + axis +
+    /// `half_length`).
     #[test]
-    fn build_plug_pin_solid_axial_default_ships_only_pour_end_pin() {
+    fn build_plug_self_transforms_default_anchors_shaft_at_centerline_last() {
         let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
-        let pins = build_plug_pin_solid(&ribbon).expect("Axial kind should yield a solid");
-        let aabb = pins
-            .bounds()
-            .expect("single pin cylinder should have finite bounds");
-        // No pour_end_hint set → pour-end falls back to
-        // `points.last() = (+0.050, 0, 0)`. Pin extends outward
-        // along `+last_segment.tangent = +X` for `pin_length_m`
-        // 20 mm → cylinder center at (+0.050 + 0.010) = +60 mm,
-        // half-length 10 mm → spans x ∈ [+50, +70] mm.
+        let transforms = build_plug_self_transforms(&ribbon);
+        // First transform = shaft (per Vec ordering in
+        // build_plug_self_transforms).
+        let shaft = params_of(&transforms[0]);
+        // pour anchor = centerline.last() = (+0.050, 0, 0); outward
+        // = +X; pin_length = 20 mm; nominal half_length = 10 mm.
+        // Post-recon-4-pattern plug-shaft fix: `extend_near_end`
+        // shifts shaft center INWARD by PLUG_SHAFT_NEAR_END_OVERLAP_M
+        // / 2 = 0.5 mm and grows half_length by the same so the
+        // shaft's near-end buries 1 mm inside the plug body for
+        // clean boolean-union welding. Workshop-visible far-end at
+        // anchor + outward × pin_length = (+0.070, 0, 0) is
+        // unchanged.
+        // Shaft center = (0.050 + 0.010 − 0.0005, 0, 0) = (+0.0595, 0, 0).
+        // Nominal shaft center = anchor + outward × pin_length/2 =
+        // (+0.050) + (+1) × 0.010 = +0.060. `extend_near_end`
+        // shifts INWARD (toward anchor, i.e., toward zero for a +X
+        // outward) by overlap/2 = 0.0005, so center.x = 0.060 −
+        // 0.0005 = 0.0595.
+        let c = shaft.parent.center_m;
+        assert!((c.x - 0.0595).abs() < 1e-9, "shaft center.x = {}", c.x);
+        assert!(c.y.abs() < 1e-9);
+        assert!(c.z.abs() < 1e-9);
+        // Axis = +X (last_segment.tangent).
+        assert!((shaft.parent.axis.x - 1.0).abs() < 1e-9);
+        assert!(shaft.parent.axis.y.abs() < 1e-9);
+        assert!(shaft.parent.axis.z.abs() < 1e-9);
+        // half_length = (pin_length + overlap) / 2 = 10.5 mm.
         assert!(
-            aabb.min.x >= 0.049,
-            "pour-end pin (fallback to centerline.last()) should start at x ≥ +49 mm; \
-             got min.x = {}",
-            aabb.min.x,
+            (shaft.parent.half_length_m - 0.0105).abs() < 1e-9,
+            "shaft half_length = {} (expected 0.0105)",
+            shaft.parent.half_length_m,
         );
-        assert!(
-            aabb.max.x >= 0.069,
-            "pour-end pin should reach x ≥ +69 mm; got max.x = {}",
-            aabb.max.x,
-        );
-        // y, z extents are bounded by pin radius (3 mm).
-        assert!(aabb.min.y >= -0.0035);
-        assert!(aabb.max.y <= 0.0035);
+        // Workshop-visible far-end position: center + axis × half_length
+        // = 0.0595 + 1 × 0.0105 = 0.070 mm. Equals nominal anchor +
+        // pin_length (= 0.050 + 0.020 = 0.070). Invariant under the
+        // overlap-bias.
+        let far_end_x = shaft.parent.axis.x.mul_add(shaft.parent.half_length_m, c.x);
+        assert!((far_end_x - 0.070).abs() < 1e-9, "far-end = {far_end_x}");
+        // Bare pin radius (no clearance inflation on plug side).
+        assert!((shaft.radius_m - 0.003).abs() < f64::EPSILON);
     }
 
-    /// `with_pour_end_hint(centroid, outward)` anchors the pin at
-    /// `centroid` extending along `outward`, regardless of where
-    /// the centerline endpoints sit. Pre-E.2 the hint was treated
-    /// as a centerline-endpoint selector, so this test would have
-    /// landed the pin at `points[0]` = (-0.050, 0, 0). Post-E.2
-    /// it lands at the hint centroid (-0.060, 0, 0) — distinctly
-    /// past `points[0]`, mirroring the cf-scan-prep `trim_floor_mm`
-    /// scenario where the cap-plane centroid sits past the
-    /// trimmed centerline tip.
+    /// `with_pour_end_hint(centroid, outward)` anchors the pour-
+    /// shaft at the hint `centroid` extending along `outward`,
+    /// **NOT** at any centerline endpoint. Pre-E.2 fixture regression
+    /// preserved post-S6 as transform-parameter inspection.
     #[test]
-    fn build_plug_pin_solid_with_pour_end_hint_anchors_at_centroid_not_centerline_endpoint() {
+    fn build_plug_self_transforms_with_pour_end_hint_anchors_at_centroid() {
         let hint_centroid = Point3::new(-0.060, 0.0, 0.0);
         let outward = Vector3::new(-1.0, 0.0, 0.0);
         let ribbon = straight_x_ribbon()
             .with_pour_end_hint(hint_centroid, outward)
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
-        let pins = build_plug_pin_solid(&ribbon).expect("Axial kind should yield a solid");
-        let aabb = pins
-            .bounds()
-            .expect("single pin cylinder should have finite bounds");
-        // Pin anchored at hint centroid (-0.060, 0, 0) extending
-        // along `outward = -X` by pin_length_m = 20 mm. Cylinder
-        // center at (-0.060 + (-0.010)) = -0.070 m, half-length
-        // 0.010 m → spans x ∈ [-0.080, -0.060].
+        let transforms = build_plug_self_transforms(&ribbon);
+        let shaft = params_of(&transforms[0]);
+        // Shaft center after the recon-4-pattern `extend_near_end`
+        // overlap-bias. Nominal center = hint_centroid + outward ×
+        // pin_length/2 = (-0.060, 0, 0) + (-1, 0, 0) × 0.010 =
+        // (-0.070, 0, 0); `extend_near_end` shifts the center
+        // INWARD (toward the anchor) by overlap/2 = 0.0005, so the
+        // final center is `-0.070 + 0.0005 = -0.0695` (toward zero
+        // for a -X outward).
+        let c = shaft.parent.center_m;
         assert!(
-            aabb.min.x <= -0.079,
-            "hint-anchored pin should reach x ≤ -79 mm (hint at -60 mm + \
-             20 mm outward extent); got min.x = {}",
-            aabb.min.x,
+            (c.x - -0.0695).abs() < 1e-9,
+            "shaft center anchored past hint centroid (+ 0.5 mm inward overlap-bias); got {c:?}",
         );
-        assert!(
-            aabb.max.x <= -0.059,
-            "hint-anchored pin should NOT extend past the hint centroid \
-             (max.x ≤ -59 mm); got max.x = {}",
-            aabb.max.x,
-        );
-        // Crucially, the pin's max.x is < -0.050 (past centerline[0])
-        // so it does NOT live near `points[0] = (-0.050, 0, 0)` — the
-        // anchor really IS the hint centroid, not a selected centerline
+        // Axis = -X (outward).
+        assert!((shaft.parent.axis.x - -1.0).abs() < 1e-9);
+        // Crucially: center.x < -0.050 (past centerline[0]) — the
+        // anchor really is the hint centroid, not a centerline
         // endpoint.
         assert!(
-            aabb.max.x < -0.050,
-            "hint-anchored pin must NOT regress to centerline-endpoint \
-             selection (which would land it at x = -0.050); got max.x = {}",
-            aabb.max.x,
+            c.x < -0.050,
+            "hint-anchored shaft must NOT regress to centerline-endpoint anchoring; \
+             got center.x = {}",
+            c.x,
         );
+        // Workshop-visible far-end position unchanged by the
+        // overlap-bias: anchor + outward × pin_length = -0.080.
+        // (= -0.0695 + (-1) × 0.0105 = -0.080).
+        let far_end_x = shaft.parent.axis.x.mul_add(shaft.parent.half_length_m, c.x);
+        assert!((far_end_x - -0.080).abs() < 1e-9, "far-end = {far_end_x}");
     }
 
+    /// `include_dome_pin = true` emits THREE transforms — pour
+    /// shaft + T-bar + dome shaft. Default ships only two (shaft +
+    /// T-bar), so this test guards the dome-pin migration (S6:
+    /// migrated uniformly per user instruction).
     #[test]
-    fn build_plug_pin_solid_axial_include_dome_pin_spans_both_endpoints() {
+    fn build_plug_self_transforms_with_dome_pin_emits_three() {
         let spec = PlugPinSpec {
             include_dome_pin: true,
             ..PlugPinSpec::iter1()
         };
         let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(spec));
-        let pins = build_plug_pin_solid(&ribbon).expect("Axial kind should yield a solid");
-        let aabb = pins
-            .bounds()
-            .expect("two finite cylinders should have finite bounds");
-        // With include_dome_pin = true, pin AABB spans both endpoints:
-        // pour-end x ∈ [-70, -50] mm + dome-end x ∈ [+50, +70] mm.
-        assert!(aabb.min.x <= -0.069);
-        assert!(aabb.max.x >= 0.069);
+        let transforms = build_plug_self_transforms(&ribbon);
+        assert_eq!(
+            transforms.len(),
+            3,
+            "include_dome_pin enables a 3rd UnionCylinder transform; got {}",
+            transforms.len(),
+        );
+        // Locate the dome shaft by its negative-X center (pour end
+        // is +X for straight_x_ribbon's tangent fallback).
+        let dome = transforms
+            .iter()
+            .map(params_of)
+            .find(|p| p.parent.center_m.x < 0.0)
+            .expect("dome shaft transform should appear at -X center");
+        // Dome anchor = centerline[0] = (-0.050, 0, 0); outward =
+        // -first_segment.tangent = -X. Nominal dome shaft center =
+        // (-0.050, 0, 0) + (-1, 0, 0) × pin_length/2 = (-0.060, 0, 0).
+        // `extend_near_end` shifts INWARD (toward the anchor) by
+        // overlap/2 = 0.0005, so center.x = -0.060 + 0.0005 = -0.0595.
+        assert!((dome.parent.center_m.x - -0.0595).abs() < 1e-9);
     }
 
-    /// On-axis interior point at the pour-end pin should be inside
-    /// the pin Solid; the dome-end position (no pin by default) and
-    /// far-away points should be outside.
+    /// `include_t_bar = false` drops the T-bar transform — only
+    /// the shaft remains.
     #[test]
-    fn plug_pin_solid_is_inside_only_at_pour_end_pin_by_default() {
-        let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
-        let pins = build_plug_pin_solid(&ribbon).unwrap();
-
-        // With no hint set, pour-end falls back to `points.last() =
-        // (+0.050, 0, 0)`. Pin spans x ∈ [+50, +70] mm; a query at
-        // x = +60 mm on the axis is dead-center → inside the pin.
-        let on_pour_axis = Point3::new(0.060, 0.0, 0.0);
-        assert!(
-            pins.evaluate(&on_pour_axis) < 0.0,
-            "pin SDF on pour-end pin axis should be negative; got {}",
-            pins.evaluate(&on_pour_axis),
-        );
-
-        // Default config has NO dome-end pin → x = -60 mm is outside.
-        let on_dome_axis = Point3::new(-0.060, 0.0, 0.0);
-        assert!(
-            pins.evaluate(&on_dome_axis) > 0.0,
-            "pin SDF at dome-end position should be positive (no dome pin \
-             by default); got {}",
-            pins.evaluate(&on_dome_axis),
-        );
-
-        // Far from any pin — clearly outside.
-        let far = Point3::new(0.100, 0.100, 0.100);
-        assert!(
-            pins.evaluate(&far) > 0.0,
-            "pin SDF far from pins should be positive; got {}",
-            pins.evaluate(&far),
-        );
+    fn build_plug_self_transforms_without_t_bar_emits_only_shaft() {
+        let spec = PlugPinSpec {
+            include_t_bar: false,
+            ..PlugPinSpec::iter1()
+        };
+        let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(spec));
+        let transforms = build_plug_self_transforms(&ribbon);
+        assert_eq!(transforms.len(), 1);
     }
 
-    /// Socket has the same axis/length as the pin but larger radius.
-    /// A point inside the socket but outside the pin (in the slack
-    /// annulus) should be INSIDE the socket Solid and OUTSIDE the pin
-    /// Solid.
-    #[test]
-    fn socket_solid_is_larger_radius_than_pin_solid() {
-        let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
-        let pins = build_plug_pin_solid(&ribbon).unwrap();
-        let sockets = build_plug_socket_solid(&ribbon).unwrap();
-
-        // Pin radius 3.0 mm, socket radius 3.5 mm. With the new
-        // default pour-end fallback, the pour-end pin spans
-        // x ∈ [+50, +70] mm at y=0. Query at +60 mm on the pin
-        // axis, offset radially 3.2 mm: inside socket, outside pin.
-        let in_slack_annulus = Point3::new(0.060, 0.0032, 0.0);
-        assert!(
-            pins.evaluate(&in_slack_annulus) > 0.0,
-            "pin SDF at slack-annulus point should be positive; got {}",
-            pins.evaluate(&in_slack_annulus),
-        );
-        assert!(
-            sockets.evaluate(&in_slack_annulus) < 0.0,
-            "socket SDF at slack-annulus point should be negative; got {}",
-            sockets.evaluate(&in_slack_annulus),
-        );
-    }
-
-    /// `add_plug_pins` returns a Solid whose SDF is negative at the
-    /// pin region (the pin extends past the bare plug into territory
-    /// that was outside the bare plug).
-    #[test]
-    fn add_plug_pins_extends_plug_into_pin_region() {
-        // Bare plug: capsule at origin spanning roughly [-25, +25] mm in z.
-        // Centerline along x means pin extends along x — so pin
-        // territory (x = +60 mm with the default pour-end fallback)
-        // is OUTSIDE the bare plug.
-        let plug = Solid::capsule(0.005, 0.020);
-        let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
-        let extended = add_plug_pins(plug.clone(), &ribbon);
-
-        let in_pour_pin = Point3::new(0.060, 0.0, 0.0);
-        // Bare plug at this point is outside (SDF > 0); extended plug
-        // at this point is inside the pin (SDF < 0).
-        assert!(plug.evaluate(&in_pour_pin) > 0.0);
-        assert!(
-            extended.evaluate(&in_pour_pin) < 0.0,
-            "extended plug should contain pin region; got {}",
-            extended.evaluate(&in_pour_pin),
-        );
-    }
-
-    /// Trimmed-centerline cap-plane anchor regression (per `recon
-    /// §E.2`): cf-scan-prep trims the centerline `trim_floor_mm`
-    /// (typically 40 mm) ABOVE the cap plane to keep the polyline
-    /// inside the body interior. Pre-E.2, the plug-pin builder
-    /// anchored at `centerline.last()` — which sits 40 mm INSIDE
-    /// the plug body, where the pin is entirely buried (no visible
-    /// protrusion, no socket carve). The cap-plane centroid lives
-    /// past the trimmed centerline tip and must be the pin anchor.
+    /// Three-piece bit-equal determinism contract (recon §2): the
+    /// T-bar [`CylinderParent`] is consumed by THREE pieces — the
+    /// plug (`UnionCylinder`) plus both cup halves
+    /// (`SubtractCylinder` with shared `center` + `axis` + pin
+    /// `half_length`). All three calls to
+    /// [`crate::mesh_csg::build_cylinder_along_axis`] with that
+    /// shared parent + the same pin radius + same segments must
+    /// produce bit-equal `to_mesh_f64` output.
     ///
-    /// Fixture: tip→base centerline trimmed at z=-0.013, cap
-    /// centroid at z=-0.053 (40 mm past the trim), cap normal in
-    /// -Z (outward away from body). Pin must anchor at z=-0.053,
-    /// NOT at z=-0.013.
+    /// The S5 two-piece variant ships in `mesh_csg::tests`
+    /// (`pin_cylinder_mesh_is_bit_equal_across_pieces`); this is
+    /// the load-bearing 3-piece extension for S6's most-coupled
+    /// feature.
+    #[test]
+    fn t_bar_cylinder_mesh_is_bit_equal_across_three_pieces() {
+        use crate::mesh_csg::build_cylinder_along_axis;
+
+        // Synthetic ribbon mirroring the iter-1 fixture (centerline
+        // along +Z, split-normal +X, cap hint at -Z) so the T-bar
+        // axis exercises the typical pour_outward × split_normal
+        // path.
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+
+        // Resolve the T-bar parent triple directly. Same payload is
+        // consumed by plug (UnionCylinder), Negative cup
+        // (SubtractCylinder), Positive cup (SubtractCylinder).
+        let (_spec, parents) = build_plug_mating_parents(&ribbon).expect("Axial kind");
+        let t_bar_parent = parents.pour_t_bar.expect("include_t_bar = true");
+        let r_pin = PlugPinSpec::iter1().t_bar_radius_m;
+        let segments = PLUG_CYLINDER_SEGMENTS;
+
+        // Build the SAME radius + parent + segments THREE times.
+        let m_plug = build_cylinder_along_axis(&t_bar_parent, r_pin, segments);
+        let m_neg = build_cylinder_along_axis(&t_bar_parent, r_pin, segments);
+        let m_pos = build_cylinder_along_axis(&t_bar_parent, r_pin, segments);
+        let (v_plug, p_plug, t_plug) = m_plug.to_mesh_f64();
+        let (v_neg, p_neg, t_neg) = m_neg.to_mesh_f64();
+        let (v_pos, p_pos, t_pos) = m_pos.to_mesh_f64();
+
+        // All three properties counts agree.
+        assert_eq!(p_plug, p_neg);
+        assert_eq!(p_neg, p_pos);
+        // Bit-equal vertices across all three consumers.
+        assert_eq!(
+            v_plug, v_neg,
+            "plug vs Negative cup: T-bar parent must produce bit-equal mesh"
+        );
+        assert_eq!(
+            v_neg, v_pos,
+            "Negative vs Positive cup: T-bar parent must produce bit-equal mesh"
+        );
+        // …and bit-equal triangle index arrays.
+        assert_eq!(t_plug, t_neg);
+        assert_eq!(t_neg, t_pos);
+        assert!(!v_plug.is_empty());
+        assert!(!t_plug.is_empty());
+    }
+
+    /// Positive-side T-slot and shaft socket params carry the
+    /// symmetric `/2` diametral + axial inflation per workshop fit
+    /// budget. Post-plug-shaft-fix the shared-`center_m` invariant
+    /// holds only for the T-bar (no overlap-bias applied — PROTRUDING
+    /// from shaft far-end, safe for mesh-CSG); for the SHAFTS, the
+    /// plug-side `extend_near_end` shifts the cylinder INWARD by
+    /// `PLUG_SHAFT_NEAR_END_OVERLAP_M / 2` so the boolean union welds
+    /// into the plug body. The workshop-fit invariant becomes:
+    /// **cup-side socket far-end extends `axial/2` past plug-side
+    /// shaft far-end** (the workshop-visible "socket bottom relief"),
+    /// independent of how the plug-side near-end is shifted inward.
+    #[test]
+    fn plug_socket_transforms_inflate_per_spec() {
+        let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        let plug_side = build_plug_self_transforms(&ribbon);
+        let cup_side = build_plug_socket_transforms(&ribbon);
+        assert_eq!(
+            plug_side.len(),
+            cup_side.len(),
+            "plug-side and cup-side emit one transform per feature"
+        );
+
+        let spec = PlugPinSpec::iter1();
+        for (plug_t, cup_t) in plug_side.iter().zip(&cup_side) {
+            // plug-side = UnionCylinder; cup-side = SubtractCylinder.
+            assert!(matches!(plug_t, MatingTransform::UnionCylinder { .. }));
+            assert!(matches!(cup_t, MatingTransform::SubtractCylinder { .. }));
+            let p = params_of(plug_t);
+            let c = params_of(cup_t);
+            // Shared axis + segments are workshop-fit invariants
+            // (both surfaces share the same circumferential
+            // tessellation).
+            assert_eq!(p.parent.axis, c.parent.axis);
+            assert_eq!(p.segments, c.segments);
+
+            // Classify shaft vs T-bar by radius AND half-length —
+            // iter1 defaults give pin_radius_m = t_bar_radius_m =
+            // 3 mm, so radius alone is ambiguous. T-bar's
+            // half-length (12 mm) differs from the shaft's
+            // post-`extend_near_end` half-length (10.5 mm = 10 mm
+            // pin half + 0.5 mm overlap-bias), so the combined
+            // check disambiguates.
+            let is_t_bar = (p.radius_m - spec.t_bar_radius_m).abs() < f64::EPSILON
+                && (p.parent.half_length_m - spec.t_bar_half_length_m).abs() < f64::EPSILON;
+            let (axial, diametral) = if is_t_bar {
+                (
+                    spec.t_bar_axial_clearance_m,
+                    spec.t_bar_diametral_clearance_m,
+                )
+            } else {
+                (
+                    spec.shaft_axial_clearance_m,
+                    spec.shaft_diametral_clearance_m,
+                )
+            };
+
+            // Workshop-visible far-end: cup socket extends `axial/2`
+            // past plug shaft far-end (the workshop "socket-bottom
+            // relief"). This invariant is independent of any
+            // near-end overlap-bias the plug-shaft applies for clean
+            // boolean welding.
+            let axis_v = p.parent.axis.into_inner();
+            let plug_far = p.parent.center_m + axis_v * p.parent.half_length_m;
+            let cup_far = c.parent.center_m + axis_v * c.parent.half_length_m;
+            let far_offset = cup_far - plug_far;
+            let expected_offset = axis_v * (axial / 2.0);
+            assert!(
+                (far_offset - expected_offset).norm() < 1e-9,
+                "cup-side far-end offset from plug-side far-end should equal \
+                 axis × axial/2 = {expected_offset:?}; got {far_offset:?}",
+            );
+
+            // Cup-side radius inflation: cup radius = plug radius
+            // + diametral/2.
+            let expected_radius = p.radius_m + diametral / 2.0;
+            assert!(
+                (c.radius_m - expected_radius).abs() < f64::EPSILON,
+                "cup-side radius should be plug + diametral/2 = {expected_radius}; \
+                 got {}",
+                c.radius_m,
+            );
+
+            // T-bar preserves the original shared-`center_m`
+            // invariant (no overlap-bias on T-bar — PROTRUDING from
+            // shaft far-end is the safe manifold3d boolean path; see
+            // `build_plug_self_transforms` comments).
+            if is_t_bar {
+                assert_eq!(
+                    p.parent.center_m, c.parent.center_m,
+                    "T-bar plug-side and cup-side must share center_m \
+                     (no overlap-bias applied)",
+                );
+            }
+        }
+    }
+
+    /// Math-verified plug-shaft / socket fit invariant — same shape
+    /// as registration's `pin_and_socket_fit_invariant` but at the
+    /// plug-shaft scale (6 mm Ø × 20 mm long) and using the M4
+    /// clearance budget. Locks the workshop fit at engine
+    /// precision rather than via eyeball cf-view per
+    /// `feedback_math_verify_geometric_contracts`.
+    #[test]
+    fn plug_shaft_and_socket_fit_invariant() {
+        use crate::mesh_csg::build_cylinder_along_axis;
+
+        let spec = PlugPinSpec::iter1();
+        let parent_pin = CylinderParent {
+            center_m: Point3::origin(),
+            axis: nalgebra::Vector3::z_axis(),
+            half_length_m: spec.pin_length_m / 2.0,
+        };
+        let parent_socket = CylinderParent {
+            center_m: parent_pin.center_m,
+            axis: parent_pin.axis,
+            half_length_m: parent_pin.half_length_m + spec.shaft_axial_clearance_m / 2.0,
+        };
+        let r_socket = spec.pin_radius_m + spec.shaft_diametral_clearance_m / 2.0;
+
+        let pin = build_cylinder_along_axis(&parent_pin, spec.pin_radius_m, PLUG_CYLINDER_SEGMENTS);
+        let socket = build_cylinder_along_axis(&parent_socket, r_socket, PLUG_CYLINDER_SEGMENTS);
+
+        let (pin_min, pin_max) = pin.bounding_box_nalgebra().unwrap();
+        let (sock_min, sock_max) = socket.bounding_box_nalgebra().unwrap();
+
+        let half_diametral_mm =
+            (spec.shaft_diametral_clearance_m / 2.0) * crate::mesher::METERS_TO_MM;
+        let half_axial_mm = (spec.shaft_axial_clearance_m / 2.0) * crate::mesher::METERS_TO_MM;
+        let tol_mm = 1.0e-3;
+
+        for (name, gap) in [
+            ("+X", sock_max.x - pin_max.x),
+            ("-X", pin_min.x - sock_min.x),
+            ("+Y", sock_max.y - pin_max.y),
+            ("-Y", pin_min.y - sock_min.y),
+        ] {
+            assert!(
+                (gap - half_diametral_mm).abs() < tol_mm,
+                "plug shaft socket radial gap on {name} = {gap:.6} mm \
+                 (expected {half_diametral_mm:.6} mm)",
+            );
+        }
+        let axial_gap_z_max = sock_max.z - pin_max.z;
+        let axial_gap_z_min = pin_min.z - sock_min.z;
+        assert!(
+            (axial_gap_z_max - half_axial_mm).abs() < tol_mm,
+            "plug shaft socket +Z axial gap = {axial_gap_z_max:.6} mm \
+             (expected {half_axial_mm:.6} mm)",
+        );
+        assert!(
+            (axial_gap_z_min - half_axial_mm).abs() < tol_mm,
+            "plug shaft socket -Z axial gap = {axial_gap_z_min:.6} mm \
+             (expected {half_axial_mm:.6} mm)",
+        );
+    }
+
+    /// Math-verified T-bar / T-slot fit invariant — sibling to
+    /// `plug_shaft_and_socket_fit_invariant` using the M3
+    /// clearance budget.
+    #[test]
+    fn t_bar_and_t_slot_fit_invariant() {
+        use crate::mesh_csg::build_cylinder_along_axis;
+
+        let spec = PlugPinSpec::iter1();
+        let parent_bar = CylinderParent {
+            center_m: Point3::origin(),
+            axis: nalgebra::Vector3::z_axis(),
+            half_length_m: spec.t_bar_half_length_m,
+        };
+        let parent_slot = CylinderParent {
+            center_m: parent_bar.center_m,
+            axis: parent_bar.axis,
+            half_length_m: parent_bar.half_length_m + spec.t_bar_axial_clearance_m / 2.0,
+        };
+        let r_slot = spec.t_bar_radius_m + spec.t_bar_diametral_clearance_m / 2.0;
+
+        let bar =
+            build_cylinder_along_axis(&parent_bar, spec.t_bar_radius_m, PLUG_CYLINDER_SEGMENTS);
+        let slot = build_cylinder_along_axis(&parent_slot, r_slot, PLUG_CYLINDER_SEGMENTS);
+
+        let (bar_min, bar_max) = bar.bounding_box_nalgebra().unwrap();
+        let (slot_min, slot_max) = slot.bounding_box_nalgebra().unwrap();
+
+        let half_diametral_mm =
+            (spec.t_bar_diametral_clearance_m / 2.0) * crate::mesher::METERS_TO_MM;
+        let half_axial_mm = (spec.t_bar_axial_clearance_m / 2.0) * crate::mesher::METERS_TO_MM;
+        let tol_mm = 1.0e-3;
+
+        for (name, gap) in [
+            ("+X", slot_max.x - bar_max.x),
+            ("-X", bar_min.x - slot_min.x),
+            ("+Y", slot_max.y - bar_max.y),
+            ("-Y", bar_min.y - slot_min.y),
+        ] {
+            assert!(
+                (gap - half_diametral_mm).abs() < tol_mm,
+                "T-slot radial gap on {name} = {gap:.6} mm \
+                 (expected {half_diametral_mm:.6} mm)",
+            );
+        }
+        let axial_gap_z_max = slot_max.z - bar_max.z;
+        let axial_gap_z_min = bar_min.z - slot_min.z;
+        assert!(
+            (axial_gap_z_max - half_axial_mm).abs() < tol_mm,
+            "T-slot +Z axial gap = {axial_gap_z_max:.6} mm \
+             (expected {half_axial_mm:.6} mm)",
+        );
+        assert!(
+            (axial_gap_z_min - half_axial_mm).abs() < tol_mm,
+            "T-slot -Z axial gap = {axial_gap_z_min:.6} mm \
+             (expected {half_axial_mm:.6} mm)",
+        );
+    }
+
+    /// Cap-plane anchor regression preserved post-S6: cf-scan-prep
+    /// trims the centerline `trim_floor_mm` above the cap plane;
+    /// the pour-shaft must anchor at the cap-plane centroid, NOT
+    /// at the trimmed centerline tip. Pre-S6 the invariant was
+    /// asserted via the pin Solid's AABB; post-S6 it lives in the
+    /// shaft transform's parent geometry.
     #[test]
     fn plug_pin_anchors_at_cap_plane_centroid_past_trimmed_centerline_tip() {
         let centerline = vec![
-            Point3::new(0.0, 0.0, 0.073), // closed dome
+            Point3::new(0.0, 0.0, 0.073),
             Point3::new(0.0, 0.0, 0.020),
             Point3::new(0.0, 0.0, -0.013), // trimmed end (40 mm above cap)
         ];
@@ -813,39 +1400,34 @@ mod tests {
             .unwrap()
             .with_pour_end_hint(cap_centroid, cap_normal)
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
-        let pins = build_plug_pin_solid(&ribbon).expect("Axial kind should yield a solid");
-        let aabb = pins
-            .bounds()
-            .expect("single pin cylinder should have finite bounds");
-        // Pin anchored at cap centroid (z=-0.053), extending along
-        // cap_normal=-Z by pin_length_m=20 mm.
-        // Cylinder spans z ∈ [-0.073, -0.053].
+
+        let transforms = build_plug_self_transforms(&ribbon);
+        let shaft = params_of(&transforms[0]);
+        let c = shaft.parent.center_m;
+        // Nominal shaft center = cap_centroid + cap_normal ×
+        // pin_length/2 = (0, 0, -0.053) + (0, 0, -1) × 0.010 =
+        // (0, 0, -0.063). `extend_near_end` shifts INWARD (toward
+        // anchor, i.e., toward zero for a -Z outward) by overlap/2
+        // = 0.0005, so center.z = -0.063 + 0.0005 = -0.0625.
         assert!(
-            aabb.max.z <= -0.052,
-            "pin should anchor at cap centroid (z=-0.053), NOT at trimmed \
-             centerline.last() (z=-0.013); got max.z = {}",
-            aabb.max.z,
+            (c.z - -0.0625).abs() < 1e-9,
+            "shaft center anchored at cap_centroid + outward × pin_length/2 + inward overlap-bias; got {c:?}",
         );
         assert!(
-            aabb.min.z <= -0.072,
-            "pin should reach z ≤ -73 mm (cap centroid + 20 mm outward); got min.z = {}",
-            aabb.min.z,
+            c.z < -0.013,
+            "shaft anchor must NOT regress to centerline.last() (z = -0.013); got {}",
+            c.z,
         );
-        // Crucially, the pin's max.z is < -0.013 (past centerline.last())
-        // so it does NOT regress to centerline-endpoint anchoring.
-        assert!(
-            aabb.max.z < -0.013,
-            "pin must NOT regress to centerline.last() anchoring (which \
-             would land it at z = -0.013 with pin extending to z = -0.033); \
-             got max.z = {}",
-            aabb.max.z,
-        );
+        // Workshop-visible far-end unchanged by the overlap-bias:
+        // cap_centroid + cap_normal × pin_length = -0.073.
+        let far_end_z = shaft.parent.axis.z.mul_add(shaft.parent.half_length_m, c.z);
+        assert!((far_end_z - -0.073).abs() < 1e-9, "far-end z = {far_end_z}");
     }
 
-    /// Default (no hint) fallback regression: even without a hint,
-    /// pour-end maps to `centerline.last()` per cf-scan-prep's
-    /// tip→base convention. Sanity-checks the fallback rule without
-    /// going through the iter-1 fixture geometry.
+    /// Default (no hint) fallback: pour-end maps to
+    /// `centerline.last()` per cf-scan-prep's tip→base convention.
+    /// Sanity-checks the fallback rule at the transform-parameter
+    /// level (pre-S6 was Solid-AABB).
     #[test]
     fn plug_pin_default_fallback_uses_centerline_last() {
         let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.054)];
@@ -853,12 +1435,205 @@ mod tests {
         let ribbon = Ribbon::new(centerline, split)
             .unwrap()
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
-        let pins = build_plug_pin_solid(&ribbon).unwrap();
-        let aabb = pins.bounds().unwrap();
-        // Pour-end at points.last() = (0, 0, -0.054); outward along
-        // tangent which is -Z (segment runs from +0.073 to -0.054).
-        // Pin spans z ∈ [-0.074, -0.054].
-        assert!(aabb.max.z <= -0.053);
-        assert!(aabb.min.z <= -0.073);
+        let transforms = build_plug_self_transforms(&ribbon);
+        let shaft = params_of(&transforms[0]);
+        // pour anchor = centerline.last() = (0, 0, -0.054); outward
+        // = last_segment.tangent = -Z (segment +0.073 → -0.054).
+        // Nominal shaft center = (0, 0, -0.054) + (0, 0, -1) ×
+        // 0.010 = (0, 0, -0.064). `extend_near_end` shifts INWARD
+        // by overlap/2 = 0.0005, so center.z = -0.064 + 0.0005 =
+        // -0.0635.
+        assert!((shaft.parent.center_m.z - -0.0635).abs() < 1e-9);
+    }
+
+    /// `pour_end_t_bar_geometry` continues to return the bare plug-
+    /// side T-bar dimensions (consumed by `platform::build_platform_solid`
+    /// to size the workshop pocket). Post-S6 this fn routes through
+    /// `build_plug_mating_parents`; the output contract is unchanged.
+    #[test]
+    fn pour_end_t_bar_geometry_returns_bare_plug_side_dimensions() {
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        let (center, axis, r, h) = pour_end_t_bar_geometry(&ribbon).unwrap();
+        let spec = PlugPinSpec::iter1();
+        // Bare T-bar dimensions (no clearance inflation).
+        assert!((r - spec.t_bar_radius_m).abs() < f64::EPSILON);
+        assert!((h - spec.t_bar_half_length_m).abs() < f64::EPSILON);
+        // T-bar center = pour_anchor + pour_outward * pin_length =
+        // (0,0,-0.054) + (0,0,-1) * 0.020 = (0,0,-0.074).
+        assert!((center.z - -0.074).abs() < 1e-9);
+        // T-bar axis = pour_outward × split_normal = (-Z) × (+X) =
+        // -Y. (Parallel to seam-plane normal — bisection per recon
+        // §5.)
+        assert!(axis.x.abs() < 1e-9);
+        assert!((axis.y - -1.0).abs() < 1e-9);
+        assert!(axis.z.abs() < 1e-9);
+    }
+
+    /// `pour_end_t_bar_geometry` returns `None` when the T-bar is
+    /// disabled — platform consumer skips emitting `platform.stl`
+    /// in that case.
+    #[test]
+    fn pour_end_t_bar_geometry_returns_none_when_include_t_bar_false() {
+        let spec = PlugPinSpec {
+            include_t_bar: false,
+            ..PlugPinSpec::iter1()
+        };
+        let ribbon = straight_x_ribbon().with_plug_pins(PlugPinKind::Axial(spec));
+        assert!(pour_end_t_bar_geometry(&ribbon).is_none());
+    }
+
+    /// Plug-shaft overlap-bias regression guard — locks the
+    /// [`PLUG_SHAFT_NEAR_END_OVERLAP_M`] inward shift that
+    /// [`build_plug_self_transforms`] applies via `extend_near_end`
+    /// so a future refactor can't silently revert the workshop
+    /// iter-1 plug-disconnection fix (every iter-1 plug STL
+    /// previously shipped as 2 connected components — plug body +
+    /// floating shaft+T-bar assembly — when the shaft cylinder's
+    /// near-end exactly coincided with the plug body's pinned cap
+    /// face; same failure mode as S7's funnel-nipple, see
+    /// [`PLUG_SHAFT_NEAR_END_OVERLAP_M`] docstring).
+    ///
+    /// Asserts at the transform-parameter level:
+    /// 1. The shaft cylinder's half-length grew by
+    ///    `PLUG_SHAFT_NEAR_END_OVERLAP_M / 2` past the nominal
+    ///    `pin_length_m / 2`.
+    /// 2. The shaft's near-end position is shifted INWARD past the
+    ///    nominal anchor by `PLUG_SHAFT_NEAR_END_OVERLAP_M` (buried
+    ///    inside the plug body's volume — the workshop-fit
+    ///    invariant that prevents the coincident-face boolean
+    ///    union failure).
+    /// 3. The workshop-visible far-end position is UNCHANGED from
+    ///    the un-extended cylinder (`anchor + outward × pin_length`).
+    ///
+    /// End-to-end mesh round-trip verification happens at the
+    /// integration tier — `~/scans/cast_iter1/plug_layer_{0,1,2}.stl`
+    /// regen post-fix shows all 3 production plugs PASS the §R1
+    /// inspector at 1 connected component each (mesh-level
+    /// confirmation). A synthetic small-fixture capsule was tried
+    /// for a lib-test mesh round-trip but produces 2 components on
+    /// the synthetic geometry for reasons orthogonal to the
+    /// overlap-bias mechanism (manifold3d behavior on small
+    /// synthetic shapes differs from the production scale + body
+    /// surface complexity); the parameter-level invariant captured
+    /// here is the load-bearing regression guard.
+    #[test]
+    fn plug_shaft_transform_has_inward_near_end_overlap_bias() {
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        let transforms = build_plug_self_transforms(&ribbon);
+        let shaft = params_of(&transforms[0]);
+
+        // (1) Half-length grew by PLUG_SHAFT_NEAR_END_OVERLAP_M / 2.
+        let spec = PlugPinSpec::iter1();
+        let nominal_half_length = spec.pin_length_m / 2.0;
+        let expected_half_length = nominal_half_length + PLUG_SHAFT_NEAR_END_OVERLAP_M / 2.0;
+        assert!(
+            (shaft.parent.half_length_m - expected_half_length).abs() < 1e-12,
+            "plug-shaft half_length must grow by PLUG_SHAFT_NEAR_END_OVERLAP_M / 2 \
+             (overlap-bias for clean boolean-union welding at the plug body's \
+             pinned cap-plane junction); expected {expected_half_length}, got {}",
+            shaft.parent.half_length_m,
+        );
+
+        // (2) Near-end position INWARD past cap_centroid by
+        // PLUG_SHAFT_NEAR_END_OVERLAP_M (= buried inside plug body).
+        let axis_v = shaft.parent.axis.into_inner();
+        let near_end = shaft.parent.center_m - axis_v * shaft.parent.half_length_m;
+        let expected_near_end = cap_centroid - axis_v * PLUG_SHAFT_NEAR_END_OVERLAP_M;
+        let near_end_offset = (near_end - expected_near_end).norm();
+        assert!(
+            near_end_offset < 1e-9,
+            "plug-shaft near-end must sit INWARD of cap_centroid by \
+             PLUG_SHAFT_NEAR_END_OVERLAP_M (buried inside plug body for boolean \
+             union welding); expected {expected_near_end:?}, got {near_end:?} \
+             (offset {near_end_offset:.9} m)",
+        );
+
+        // (3) Workshop-visible far-end unchanged from the
+        // un-extended cylinder (`cap_centroid + cap_normal × pin_length`).
+        let far_end = shaft.parent.center_m + axis_v * shaft.parent.half_length_m;
+        let expected_far_end = cap_centroid + axis_v * spec.pin_length_m;
+        let far_end_offset = (far_end - expected_far_end).norm();
+        assert!(
+            far_end_offset < 1e-9,
+            "plug-shaft workshop-visible far-end must equal \
+             cap_centroid + cap_normal × pin_length (unchanged by `extend_near_end`); \
+             expected {expected_far_end:?}, got {far_end:?}",
+        );
+    }
+
+    /// Cup-side shaft socket near-end directional invariant — the
+    /// `inflate_axial` extension pushes the socket cylinder's
+    /// near-end face PAST the plug body's cap plane (into the
+    /// body-cavity side, where there's no cup material to carve —
+    /// no-op). Locks the workshop "no coincident face on the
+    /// cup-piece side" property the recon-4 framework relies on
+    /// for the cup-side shaft socket (Agent 2 surfaced this as
+    /// load-bearing but untested in the architectural review).
+    ///
+    /// If `shaft_axial_clearance_m` is ever reduced to ≤ 0, this
+    /// test fails — and the cup-side socket would re-introduce the
+    /// same coincident-face failure mode the plug-side fix
+    /// resolves.
+    #[test]
+    fn shaft_socket_near_end_clears_body_cap_plane() {
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+
+        let cup_transforms = build_plug_socket_transforms(&ribbon);
+        // First transform = shaft socket (Vec ordering matches
+        // build_plug_self_transforms).
+        let shaft_socket = params_of(&cup_transforms[0]);
+        // Socket near-end position: center − axis × half_length.
+        // The cup-side `inflate_axial(pour_shaft, axial_clearance)`
+        // pushes the socket cylinder's near-end inward by
+        // `axial_clearance / 2 = 0.5 mm` past `cap_centroid` along
+        // the `-cap_normal` direction (= INTO the body cavity).
+        let axis_v = shaft_socket.parent.axis.into_inner();
+        let near_end = shaft_socket.parent.center_m - axis_v * shaft_socket.parent.half_length_m;
+        // For cap_normal = -Z, axis_v = -Z, INTO body cavity means
+        // z = cap_centroid.z + axial_clearance/2 (more positive).
+        // Iter-1 axial_clearance = 1 mm → near-end at z = -0.054 +
+        // 0.0005 = -0.0535.
+        let spec = PlugPinSpec::iter1();
+        let expected_near_z = cap_centroid.z + spec.shaft_axial_clearance_m / 2.0;
+        assert!(
+            (near_end.z - expected_near_z).abs() < 1e-9,
+            "cup-side shaft socket near-end must extend `axial_clearance/2` past \
+             cap_centroid INTO the body cavity (no-op carve, but pushes the cylinder \
+             cap off the body cap plane to avoid coincident-face boolean failure on \
+             the cup side); got near-end z = {} (expected {expected_near_z})",
+            near_end.z,
+        );
+        // Sanity: the near-end is INSIDE the body cavity (z > cap_centroid.z
+        // for a -Z-outward cap), not on or past the cap plane.
+        assert!(
+            near_end.z > cap_centroid.z,
+            "near-end z = {} must be > cap_centroid.z = {} (body-cavity side); \
+             a regression dropping shaft_axial_clearance_m to 0 would put the \
+             near-end exactly on the cap plane and reintroduce the coincident-face \
+             failure mode that the plug-side fix avoids via PLUG_SHAFT_NEAR_END_OVERLAP_M",
+            near_end.z,
+            cap_centroid.z,
+        );
     }
 }

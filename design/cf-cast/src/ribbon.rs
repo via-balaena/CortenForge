@@ -13,9 +13,14 @@
 //! See `docs/CURVE_FOLLOWING_DESIGN.md` §Algorithm §Step 2 for the
 //! full geometric construction. This module ships the [`Ribbon`]
 //! type, its SDF evaluation ([`Ribbon::sdf`] — Step 4 of the v2
-//! arc), and the [`Solid`]-adapter for half-space composition
-//! ([`Ribbon::halfspace_solid`] — used by
-//! [`crate::piece::compose_piece_solid`] at Step 5).
+//! arc), the [`Solid`]-adapter for the SDF half-space
+//! ([`Ribbon::halfspace_solid`] — consumed by
+//! [`crate::piece::compose_piece_solid`] under recon-4 (P) to
+//! produce the side-specific cup-piece half-shell at the SDF/MC
+//! paradigm boundary), and the single-plane seam approximation
+//! ([`Ribbon::seam_plane_reference`] — consumed by S5's
+//! registration-pin pose derivation + the piece-flatness
+//! math-instrumented gates).
 //!
 //! # Types
 //!
@@ -273,9 +278,9 @@ pub struct Ribbon {
     pub plug_pins: PlugPinKind,
     /// Optional pour-end anchor for the plug-anchor pin —
     /// `(centroid, outward_axis)` in world-frame coordinates.
-    /// [`crate::plug::build_plug_pin_solid`] +
-    /// [`crate::plug::build_plug_socket_solid`] anchor the pin
-    /// cylinder at `centroid` and extend it along `outward_axis`
+    /// [`crate::plug::build_plug_self_transforms`] +
+    /// [`crate::plug::build_plug_socket_transforms`] anchor the
+    /// pin cylinder at `centroid` and extend it along `outward_axis`
     /// (pointing away from the body interior). This is **NOT** a
     /// centerline-endpoint selector — the anchor point may sit
     /// past the trimmed centerline tip, as is the case for
@@ -554,8 +559,8 @@ impl Ribbon {
     /// with the last segment's frame. Out-of-range `t` returns
     /// `None`.
     ///
-    /// Used by [`crate::registration::build_registration_solid`] to
-    /// position pin cylinders along the centerline.
+    /// Used by [`crate::registration::build_registration_transforms`]
+    /// to position pin cylinders along the centerline.
     #[must_use]
     pub fn sample_at_arc_fraction(
         &self,
@@ -583,6 +588,52 @@ impl Ribbon {
         // FP slack: target ≈ total arc; return last segment endpoint.
         let last = self.segments.last()?;
         Some((last.end, last.tangent, last.binormal))
+    }
+
+    /// World-frame reference for the single-plane seam approximation.
+    ///
+    /// Returns `(midpoint, binormal)` where `midpoint` is the
+    /// arc-length midpoint of the centerline polyline and `binormal`
+    /// is the unit-length binormal of the segment containing it. The
+    /// plane through `midpoint` with normal `binormal` is the
+    /// reference seam plane used by:
+    ///
+    /// - S5's registration-pin pose derivation (the pin axis is the
+    ///   binormal returned here; the seam plane separates the two
+    ///   cup pieces' kept half-shells via the SDF halfspace intersect
+    ///   in [`crate::piece::compose_piece_solid`] under recon-4 (P)).
+    /// - The math-instrumented flatness gates in
+    ///   `crate::piece::tests::mating_face_is_mathematically_flat_*`
+    ///   (production-fixture promotion of the recon-4 §F-4 audit).
+    ///
+    /// Was originally introduced (S4) as the reference for a
+    /// post-MC `MatingTransform::SeamTrim` emission from
+    /// `compose_piece_solid`; recon-4 (P) (`24bdc221`) reverted the
+    /// seam to the SDF halfspace path. The reference plane is
+    /// retained because S5 + the flatness gates still consume it.
+    ///
+    /// For a straight centerline every segment's binormal is
+    /// identical, so the returned plane coincides exactly with the
+    /// ribbon's SDF zero set. For curved centerlines the
+    /// single-plane approximation deviates from the true
+    /// curve-following surface by
+    /// `O(arc_length × max_tangent_rotation_rad / 2)` at the
+    /// centerline endpoints; iter-1's near-axial body stays well
+    /// below the recon-4 §F-4 1 µm flatness threshold (verified
+    /// empirically by the `..._under_curved_centerline` variant).
+    #[must_use]
+    pub fn seam_plane_reference(&self) -> (Point3<f64>, Unit<Vector3<f64>>) {
+        // sample_at_arc_fraction(0.5) is `Some` for any ribbon valid
+        // per Ribbon::new (≥1 non-zero-length segment). The
+        // unwrap_or_else fallback keeps the lib panic-free under any
+        // hypothetical degenerate input.
+        let (center, _tangent, binormal) = self.sample_at_arc_fraction(0.5).unwrap_or_else(|| {
+            let seg = &self.segments[0];
+            (seg.start, seg.tangent, seg.binormal)
+        });
+        // `binormal` is unit-length by construction (Ribbon::new
+        // validates the cross-product magnitude).
+        (center, Unit::new_unchecked(binormal))
     }
 
     /// Find the index of the centerline segment closest to `query` +
@@ -1072,5 +1123,45 @@ mod tests {
     fn piece_side_sign_matches_design_doc_convention() {
         assert!((PieceSide::Negative.sign() - 1.0).abs() < f64::EPSILON);
         assert!((PieceSide::Positive.sign() - -1.0).abs() < f64::EPSILON);
+    }
+
+    /// Straight ribbon along +X with +Y split-normal → binormal +Z;
+    /// arc-length midpoint at x = 0.05 m. The single-plane
+    /// approximation coincides exactly with the ribbon's SDF zero
+    /// set for straight centerlines.
+    #[test]
+    fn seam_plane_reference_picks_arc_midpoint_and_binormal_on_straight_ribbon() {
+        let points = polyline_along_x(11); // 10 segments, total 0.10 m
+        let split =
+            SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).expect("(0, 1, 0) is non-degenerate");
+        let ribbon = Ribbon::new(points, split).expect("non-degenerate ribbon");
+        let (midpoint, binormal) = ribbon.seam_plane_reference();
+        // Arc-length midpoint at 0.05 m along +X.
+        assert_relative_eq!(midpoint.x, 0.05, epsilon = 1e-12);
+        assert_relative_eq!(midpoint.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(midpoint.z, 0.0, epsilon = 1e-12);
+        // Binormal +Z (tangent +X × split +Y = +Z).
+        assert_relative_eq!(binormal.x, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(binormal.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(binormal.z, 1.0, epsilon = 1e-12);
+    }
+
+    /// Off-origin straight ribbon: midpoint dot binormal is non-zero,
+    /// so the seam plane equation `dot(p, binormal) = dot(midpoint,
+    /// binormal)` carries a real offset. Locks in the general-form
+    /// reference (the S4 offset formula must NOT assume the
+    /// centerline passes through origin).
+    #[test]
+    fn seam_plane_reference_carries_world_offset_for_off_origin_ribbon() {
+        // Centerline along +X but offset to z = +0.020 m.
+        let points = vec![Point3::new(0.0, 0.0, 0.020), Point3::new(0.10, 0.0, 0.020)];
+        let split =
+            SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).expect("(0, 1, 0) is non-degenerate");
+        let ribbon = Ribbon::new(points, split).expect("non-degenerate ribbon");
+        let (midpoint, binormal) = ribbon.seam_plane_reference();
+        assert_relative_eq!(midpoint.z, 0.020, epsilon = 1e-12);
+        // dot(midpoint, binormal) = midpoint.z = +0.020 (binormal +Z).
+        let d = midpoint.coords.dot(&binormal.into_inner());
+        assert_relative_eq!(d, 0.020, epsilon = 1e-12);
     }
 }

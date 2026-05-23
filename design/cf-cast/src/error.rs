@@ -168,6 +168,29 @@ pub enum CastError {
         threshold_deg: f64,
     },
 
+    /// Post-MC mesh-CSG operation (mating-features stage) failed.
+    ///
+    /// The S3 plumbing surface raises this only when the input mesh
+    /// fails manifold3d's shared-index manifoldness requirement at
+    /// `IndexedMesh → Manifold` conversion (recon §11 item 3); the
+    /// live pipeline's `solid_to_mm_mesh` output is shared-index by
+    /// construction and the empty-`Vec<MatingTransform>` case
+    /// short-circuits before the conversion, so this variant
+    /// typically fires only when S4-S6 emit concrete transforms
+    /// against an unexpected mesh shape. `context` names the
+    /// failing step, `source` carries the manifold3d error chain.
+    #[error("mesh-CSG operation failed for {target} ({context}): {source}")]
+    MeshCsg {
+        /// Which output failed.
+        target: CastTarget,
+        /// Short description of the failing step
+        /// (e.g., `"mesh→manifold conversion"`).
+        context: String,
+        /// Underlying manifold3d error.
+        #[source]
+        source: manifold3d::CsgError,
+    },
+
     /// A layer's computed pour mass exceeds the per-pour
     /// [`crate::CastSpec::mass_budget_kg`] gate. Fires before any
     /// meshing or STL write — pre-write atomicity guarantees no

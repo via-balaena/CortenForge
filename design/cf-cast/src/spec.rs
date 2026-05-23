@@ -15,6 +15,7 @@ use nalgebra::Vector3;
 
 use crate::error::{CastError, CastTarget};
 use crate::material::MoldingMaterial;
+use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::solid_to_mm_mesh;
 use crate::piece::compose_piece_solid;
 use crate::plug::add_plug_pins;
@@ -564,7 +565,7 @@ impl CastSpec {
             let path = out_dir.join(mold_filename(layer_index));
             let validation = run_printability_gate(&mold_mesh, &self.printer_config, &path)?;
 
-            let blocking = blocking_critical_count(&validation);
+            let blocking = blocking_critical_count(&validation, mold_target);
             if blocking > 0 {
                 return Err(CastError::PrintabilityCritical {
                     target: mold_target,
@@ -589,7 +590,8 @@ impl CastSpec {
             CastTarget::Plug { layer_index: None },
         )?;
         let plug_validation = run_printability_gate(&plug_mesh, &self.printer_config, &plug_path)?;
-        let plug_blocking = blocking_critical_count(&plug_validation);
+        let plug_blocking =
+            blocking_critical_count(&plug_validation, CastTarget::Plug { layer_index: None });
         if plug_blocking > 0 {
             return Err(CastError::PrintabilityCritical {
                 target: CastTarget::Plug { layer_index: None },
@@ -887,19 +889,23 @@ fn mesh_and_gate_v2_piece(
     layer_count: usize,
 ) -> Result<PendingPiece, CastError> {
     let t_compose = std::time::Instant::now();
-    let piece_solid = compose_piece_solid(&layer.body, &spec.bounding_region, ribbon, piece_side)?;
+    let (piece_solid, mating_transforms) =
+        compose_piece_solid(&layer.body, &spec.bounding_region, ribbon, piece_side)?;
     let target = CastTarget::MoldPiece {
         layer_index,
         piece_side,
     };
     let mesh = solid_to_mm_mesh(&piece_solid, spec.mesh_cell_size_m, target)?;
+    // Post-MC mesh-CSG stage (S3 plumbing; S4/S5/S6 emit transforms).
+    // Empty `mating_transforms` short-circuits to a pass-through.
+    let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir.join(mold_piece_filename(layer_index, piece_side));
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
 
-    let blocking = blocking_critical_count(&validation);
+    let blocking = blocking_critical_count(&validation, target);
     if blocking > 0 {
         return Err(CastError::PrintabilityCritical {
             target,
@@ -945,17 +951,18 @@ fn mesh_and_gate_v2_plugs(
         } else {
             spec.layers[layer_index - 1].body.clone()
         };
-        let plug_solid = add_plug_pins(base_plug, ribbon);
+        let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
         let target = CastTarget::Plug {
             layer_index: Some(layer_index),
         };
         let mesh = solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?;
+        let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
         let compose_mesh_s = t_compose.elapsed().as_secs_f64();
         let path = out_dir.join(plug_layer_filename(layer_index));
         let t_gate = std::time::Instant::now();
         let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
         let gate_s = t_gate.elapsed().as_secs_f64();
-        let blocking = blocking_critical_count(&validation);
+        let blocking = blocking_critical_count(&validation, target);
         if blocking > 0 {
             return Err(CastError::PrintabilityCritical {
                 target,
@@ -996,7 +1003,8 @@ fn mesh_and_gate_v2_platform(
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Option<PendingPlatform>, CastError> {
-    let Some(platform_solid) = crate::platform::build_platform_solid(&spec.bounding_region, ribbon)
+    let Some((platform_solid, mating_transforms)) =
+        crate::platform::build_platform_solid(&spec.bounding_region, ribbon)
     else {
         return Ok(None);
     };
@@ -1004,12 +1012,13 @@ fn mesh_and_gate_v2_platform(
     let target = CastTarget::Platform;
     let cell_size_m = spec.mesh_cell_size_m.min(PLATFORM_MAX_CELL_SIZE_M);
     let mesh = solid_to_mm_mesh(&platform_solid, cell_size_m, target)?;
+    let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir.join("platform.stl");
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
-    let blocking = blocking_critical_count(&validation);
+    let blocking = blocking_critical_count(&validation, target);
     if blocking > 0 {
         return Err(CastError::PrintabilityCritical {
             target,
@@ -1058,19 +1067,20 @@ fn mesh_and_gate_v2_funnel(
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Option<PendingFunnel>, CastError> {
-    let Some(funnel_solid) = crate::funnel::build_funnel_solid(ribbon) else {
+    let Some((funnel_solid, mating_transforms)) = crate::funnel::build_funnel_solid(ribbon) else {
         return Ok(None);
     };
     let t_compose = std::time::Instant::now();
     let target = CastTarget::Funnel;
     let cell_size_m = spec.mesh_cell_size_m.min(FUNNEL_MAX_CELL_SIZE_M);
     let mesh = solid_to_mm_mesh(&funnel_solid, cell_size_m, target)?;
+    let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir.join("funnel.stl");
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
-    let blocking = blocking_critical_count(&validation);
+    let blocking = blocking_critical_count(&validation, target);
     if blocking > 0 {
         return Err(CastError::PrintabilityCritical {
             target,
@@ -1101,7 +1111,7 @@ fn mesh_and_gate_v2_funnel(
 /// workshop visual fidelity. The funnel solid is small (~38 mm
 /// tall × 30 mm Ø top) so finer cells cost ~1-3 s; effectively
 /// free vs the cast's main meshing time.
-const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
+pub const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
 
 /// Write every pending piece + per-layer plug + optional platform
 /// + optional funnel to disk and build the report structs.
@@ -1291,8 +1301,48 @@ fn mold_piece_filename(layer_index: usize, piece_side: PieceSide) -> String {
 /// fixture or pipeline bug and abort the export. Warnings of every
 /// kind surface in the returned `PrintValidation` for caller
 /// inspection.
-fn is_blocking_critical(issue: &PrintIssue) -> bool {
+///
+/// **Post-S4 cup-piece carve-out.** For `CastTarget::MoldPiece`
+/// (cup halves) the post-MC seam-trim cap intersects the curved
+/// body cavity surface at acute angles near the seam, producing
+/// thin slivers + small features + trapped-volume signals that
+/// recon §G5 + §7 categorize as expected-flake (informational,
+/// not blocking). The mating-face flatness invariant is verified
+/// mathematically in `piece::tests` and the physical print at S8
+/// remains authoritative. Sentinel issues (`NotWatertight` /
+/// `NonManifold` / `SelfIntersecting` / `ExceedsBuildVolume`) still
+/// block on cup pieces — those would indicate a real
+/// manifold3d regression on cup geometry rather than the
+/// curve-meets-flat-cap topology artifact.
+fn is_blocking_critical(issue: &PrintIssue, target: CastTarget) -> bool {
     if issue.severity != IssueSeverity::Critical {
+        return false;
+    }
+    // Cup-piece (`MoldPiece`) F4 informs but does not gate — per
+    // `docs/CF_CAST_MATING_FEATURES_RECON.md` §G5 + §7 the post-MC
+    // mating-features cylinder ops (S5/S6/S7) intersect the curved
+    // body cavity surface at acute angles, producing thin slivers
+    // that ThinWall flags. recon §7 enumerates this as
+    // expected-flake (not a manifold3d regression); the mating-face
+    // flatness invariant is verified mathematically by
+    // `piece::tests::mating_face_is_mathematically_flat_and_coplanar`
+    // (recon-4 (P) production-fixture promotion of the §F-4 audit)
+    // and the physical print at S8 remains the authoritative gate.
+    // Sentinel issues (NotWatertight / NonManifold /
+    // SelfIntersecting) still block — those would indicate a real
+    // manifold3d regression on cup geometry.
+    //
+    // Plug, platform, funnel, and v1 mold targets keep the full
+    // blocking set: their geometry is regular and ThinWall there
+    // would be a legit defect, not a curve-meets-flat-cap
+    // artifact.
+    let is_cup_piece = matches!(target, CastTarget::MoldPiece { .. });
+    let cup_piece_expected_flake = is_cup_piece
+        && matches!(
+            issue.issue_type,
+            PrintIssueType::ThinWall | PrintIssueType::SmallFeature | PrintIssueType::TrappedVolume
+        );
+    if cup_piece_expected_flake {
         return false;
     }
     matches!(
@@ -1307,12 +1357,13 @@ fn is_blocking_critical(issue: &PrintIssue) -> bool {
 }
 
 /// Count `Critical`-severity issues that block export per the
-/// [`is_blocking_critical`] rule.
-fn blocking_critical_count(validation: &PrintValidation) -> usize {
+/// [`is_blocking_critical`] rule (target-aware: cup pieces use the
+/// post-S4 expected-flake relaxation per recon §G5 + §7).
+fn blocking_critical_count(validation: &PrintValidation, target: CastTarget) -> usize {
     validation
         .issues
         .iter()
-        .filter(|i| is_blocking_critical(i))
+        .filter(|i| is_blocking_critical(i, target))
         .count()
 }
 
@@ -1684,7 +1735,10 @@ mod tests {
         // (it's a simple closed manifold cuboid). Any failure here
         // means our gate semantics drifted from the baseline.
         assert_eq!(
-            super::blocking_critical_count(&baseline_validation),
+            super::blocking_critical_count(
+                &baseline_validation,
+                CastTarget::Mold { layer_index: 0 }
+            ),
             0,
             "plain cuboid should have zero blocking critical issues; if this fires, \
              review `is_blocking_critical` against the actual issue types reported"
@@ -2480,9 +2534,16 @@ mod tests {
         for piece in &report.layers[0].pieces {
             // Both pieces individually clear the F4 gate (no blocking
             // Criticals; cf-cast tolerates non-blocking Criticals
-            // like ExcessiveOverhang per `is_blocking_critical`).
+            // like ExcessiveOverhang per `is_blocking_critical`). Post-S4
+            // (recon §G5 + §7) cup-piece expected-flake issues (ThinWall,
+            // SmallFeature, TrappedVolume) are also non-blocking via the
+            // target-aware filter.
+            let piece_target = CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: piece.piece_side,
+            };
             assert_eq!(
-                super::blocking_critical_count(&piece.validation),
+                super::blocking_critical_count(&piece.validation, piece_target),
                 0,
                 "piece {:?} should have zero blocking Critical issues; \
                  got validation {:?}",
@@ -2741,83 +2802,15 @@ mod tests {
         assert!(ribbon.sample_at_arc_fraction(f64::NAN).is_none());
     }
 
-    #[test]
-    fn compose_piece_solid_with_pins_negative_side_gains_protrusion() {
-        // Pin 0 sits at (-0.025, +0.0325, 0) — arc 0.25 of
-        // [-0.05, +0.05] centerline, body-relative offset along +Y
-        // split-normal: cup-wall annulus midpoint at v2_fixture's
-        // body half_y=0.025 and bounding half_y=0.040 →
-        // pin_offset = (0.025 + 0.040)/2 = 0.0325. Pin axis along
-        // binormal (+Z), half-length 5 mm so cylinder spans
-        // z ∈ [-0.005, +0.005].
-        //
-        // Negative piece (z < 0): base extends to z ≈ +0.5mm bias.
-        // Union with the pin cylinder extends the negative piece's
-        // material up to z ≈ +5mm at the pin position.
-        //
-        // Query at (-0.025, +0.0325, +0.003) — 3mm above the seam,
-        // inside the pin's protrusion. With pins ON: SDF should be
-        // < 0 (inside the piece's gained protrusion). With pins OFF:
-        // SDF should be > 0 (outside the negative piece's natural
-        // half-space).
-        let (spec, ribbon_no_pins) = v2_fixture();
-        let (_, ribbon_pins) = v2_fixture_with_pins();
-        let body = &spec.layers[0].body;
-        let region = &spec.bounding_region;
-
-        let piece_no_pins =
-            crate::compose_piece_solid(body, region, &ribbon_no_pins, PieceSide::Negative).unwrap();
-        let piece_pins =
-            crate::compose_piece_solid(body, region, &ribbon_pins, PieceSide::Negative).unwrap();
-
-        let q = Point3::new(-0.025, 0.0325, 0.003);
-        // Without pins: query is above the seam → outside negative piece.
-        assert!(
-            piece_no_pins.evaluate(&q) > 0.0,
-            "no-pin negative piece should EXCLUDE query above seam; got {}",
-            piece_no_pins.evaluate(&q),
-        );
-        // With pins: query is inside the pin protrusion → inside.
-        assert!(
-            piece_pins.evaluate(&q) < 0.0,
-            "pin'd negative piece should INCLUDE query in pin protrusion; got {}",
-            piece_pins.evaluate(&q),
-        );
-    }
-
-    #[test]
-    fn compose_piece_solid_with_pins_positive_side_gains_hole() {
-        // Same pin position (-0.025, +0.0325, 0) — annulus midpoint
-        // along +Y for v2_fixture's body half_y=0.025 + bounding
-        // half_y=0.040. Query at (-0.025, +0.0325, +0.003) — inside
-        // the pin cylinder AND inside positive piece's natural
-        // half-space (z > -bias). With pins: positive piece
-        // SUBTRACTS the pin cylinder → SDF > 0 (hole). Without
-        // pins: SDF < 0 (cup wall material).
-        let (spec, ribbon_no_pins) = v2_fixture();
-        let (_, ribbon_pins) = v2_fixture_with_pins();
-        let body = &spec.layers[0].body;
-        let region = &spec.bounding_region;
-
-        let piece_no_pins =
-            crate::compose_piece_solid(body, region, &ribbon_no_pins, PieceSide::Positive).unwrap();
-        let piece_pins =
-            crate::compose_piece_solid(body, region, &ribbon_pins, PieceSide::Positive).unwrap();
-
-        let q = Point3::new(-0.025, 0.0325, 0.003);
-        // Without pins: query in cup wall above seam → inside positive piece.
-        assert!(
-            piece_no_pins.evaluate(&q) < 0.0,
-            "no-pin positive piece should INCLUDE cup-wall query; got {}",
-            piece_no_pins.evaluate(&q),
-        );
-        // With pins: query in pin hole → outside (subtracted).
-        assert!(
-            piece_pins.evaluate(&q) > 0.0,
-            "pin'd positive piece should EXCLUDE query in pin hole; got {}",
-            piece_pins.evaluate(&q),
-        );
-    }
+    // S5 deleted the two `compose_piece_solid_with_pins_*` SDF
+    // tests that asserted side-specific pin Solid behavior at the
+    // SDF level (per `docs/CF_CAST_MATING_FEATURES_RECON.md` §8 —
+    // S4 pulled the deletion forward when the cup-piece Solid
+    // briefly went side-agnostic; recon-4 (P) restored side-
+    // specificity but the pin geometry stays mesh-CSG so the
+    // post-CSG pin-protrusion-vs-hole invariant lives in
+    // `registration::tests::pin_transforms_positive_socket_params_inflate_per_spec`
+    // instead).
 
     #[test]
     fn export_molds_v2_with_pins_writes_pieces_plus_plug() {
@@ -2848,16 +2841,25 @@ mod tests {
 
     #[test]
     fn generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_diameter() {
-        // Pins ON: the v2 Mold Assembly section must mention the pin
-        // count + diameter (1.5 mm radius × 2 = 3.0 mm diameter for
-        // iter1). v1/v2-pre-Step-9 prose ("clamp with rubber bands")
-        // must NOT appear.
+        // Pins ON: the v2 Mold Assembly section must mention the
+        // pin count + diameter (1.5 mm radius × 2 = 3.0 mm diameter
+        // for iter1) + the pin length (5 mm half-length × 2 = 10 mm
+        // total under the recon-4 (P) binormal-axis restoration).
+        // v1/v2-pre-Step-9 prose ("clamp with rubber bands") must
+        // NOT appear.
         let (spec, ribbon) = v2_fixture_with_pins();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(md.contains("2 cylindrical pins"));
         assert!(md.contains("3.0 mm Ø"));
-        assert!(md.contains("10.0 mm long"));
+        // 5 mm half-length default → 10 mm pin length across the seam.
+        assert!(
+            md.contains("10.0 mm long")
+                || md.contains("× 10.0 mm long")
+                || md.contains("× 10.0 mm,"),
+        );
+        // Workshop callout: insertion along the binormal direction.
+        assert!(md.contains("binormal"));
         assert!(
             !md.contains("rubber bands"),
             "with-pins prose must not retain rubber-band clamping note"
@@ -2893,94 +2895,67 @@ mod tests {
         assert!(matches!(ribbon_gate.pour_gate, PourGateKind::Default(_)));
     }
 
+    /// Post-S7 the pour-gate carve lives as
+    /// [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
+    /// emitted into the returned Vec rather than as an SDF subtract
+    /// folded into the cup-piece [`cf_design::Solid`]. Both
+    /// [`PieceSide`]s emit the SAME pour-gate transforms; under
+    /// recon-4 (P) the SDF half-space intersect in the cup-piece
+    /// Solid handles per-side bisection at the SDF level — the
+    /// portion of the cylinder outside the kept half-shell is a
+    /// no-op for the mesh-CSG subtract.
+    ///
+    /// Pre-S7 this surface was covered by two side-specific SDF
+    /// probe tests (`compose_piece_solid_with_pour_gate_carves_*`).
+    /// Post-S7 the cup Solid no longer carries the carve, so the
+    /// per-side probe is meaningless; transforms-Vec inspection
+    /// is the equivalent invariant.
     #[test]
-    fn compose_piece_solid_with_pour_gate_carves_positive_piece_cup_wall() {
-        // v2.1 sub-leaf 4 (V-at-dome): pour gate is a V at the
-        // centerline endpoint opposite `pour_end_hint`'s cap-plane
-        // centroid (falls back to `centerline[0]` when no hint).
-        // For this test we use a centerline shorter than
-        // `v2_fixture`'s default so the V apex sits INSIDE the
-        // body — the pour leg then crosses the cup-wall material
-        // on its way to the bounding region's outer surface, and
-        // the carve is testable.
-        //
-        // Body half-extents (0.025, 0.025, 0.020); bounding
-        // (0.040, 0.040, 0.030). Centerline -15→+15 mm in X with
-        // +Y split-normal → binormal +Z. V apex at centerline[0] =
-        // (-0.015, 0, 0), outward = -X. Pour leg axis
-        // = (cos30°·-X) + (sin30°·+Z) = (-0.866, 0, +0.5).
-        //
-        // Query at (-0.030, 0, +0.0098): along the pour leg axis
-        // from apex by ~17.3 mm. Inside bounding (|x|=30<40,
-        // z=0.0098<30); outside body (|x|=30>25); in Positive
-        // piece (+binormal=+Z side).
+    fn compose_piece_solid_with_pour_gate_emits_pour_and_vent_transforms_both_sides() {
         let spec = v2_fixture().0;
         let body = &spec.layers[0].body;
         let region = &spec.bounding_region;
         let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
-        let ribbon_no_gate = Ribbon::new(short_centerline.clone(), split).unwrap();
-        let ribbon_gate = Ribbon::new(short_centerline, split)
+        let pour_spec = PourGateSpec::iter1();
+        let ribbon_gate = Ribbon::new(short_centerline.clone(), split)
             .unwrap()
-            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+            .with_pour_gate(PourGateKind::Default(pour_spec.clone()));
+        let ribbon_no_gate = Ribbon::new(short_centerline, split).unwrap();
 
-        let piece_no_gate =
-            crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Positive).unwrap();
-        let piece_gate =
-            crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Positive).unwrap();
+        let count_subtract_cylinders_for_pour_gate = |ribbon: &Ribbon, side: PieceSide| -> usize {
+            let (_, transforms) = crate::compose_piece_solid(body, region, ribbon, side).unwrap();
+            transforms
+                .iter()
+                .filter(|t| {
+                    matches!(
+                        t,
+                        crate::mesh_csg::MatingTransform::SubtractCylinder { params }
+                            if (params.radius_m - pour_spec.gate_radius_m).abs() < f64::EPSILON
+                                || (params.radius_m - pour_spec.vent_radius_m).abs() < f64::EPSILON,
+                    )
+                })
+                .count()
+        };
 
-        let q = Point3::new(-0.030, 0.0, 0.0098);
-        assert!(
-            piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate Positive piece should INCLUDE cup-wall query at \
-             (-30mm, 0, +9.8mm); got {}",
-            piece_no_gate.evaluate(&q),
+        // Both sides emit pour leg + vent leg = 2 SubtractCylinder
+        // ops with pour-gate-spec radii.
+        assert_eq!(
+            count_subtract_cylinders_for_pour_gate(&ribbon_gate, PieceSide::Positive),
+            2,
         );
-        assert!(
-            piece_gate.evaluate(&q) > 0.0,
-            "V-pour-gate Positive piece should EXCLUDE pour-leg-axis query at \
-             (-30mm, 0, +9.8mm); got {}",
-            piece_gate.evaluate(&q),
+        assert_eq!(
+            count_subtract_cylinders_for_pour_gate(&ribbon_gate, PieceSide::Negative),
+            2,
         );
-    }
-
-    #[test]
-    fn compose_piece_solid_with_pour_gate_carves_negative_piece_only_via_vent_leg() {
-        // v2.1 sub-leaf 4: the V's pour leg lands on +binormal
-        // (Positive piece) and the vent leg lands on -binormal
-        // (Negative piece). For the +Z-binormal short-centerline
-        // fixture, the vent leg axis is (-cos30°, 0, -sin30°)
-        // ≈ (-0.866, 0, -0.5) from apex (-0.015, 0, 0). Query at
-        // (-0.030, 0, -0.0098) sits on the vent-leg axis and in
-        // Negative-piece cup-wall material (|x|=30>25 body,
-        // |x|=30<40 bounding; z=-0.0098<0 = -binormal half). The
-        // pour leg (on +binormal side) does NOT carve this point.
-        let spec = v2_fixture().0;
-        let body = &spec.layers[0].body;
-        let region = &spec.bounding_region;
-        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
-        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
-        let ribbon_no_gate = Ribbon::new(short_centerline.clone(), split).unwrap();
-        let ribbon_gate = Ribbon::new(short_centerline, split)
-            .unwrap()
-            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-
-        let piece_no_gate =
-            crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Negative).unwrap();
-        let piece_gate =
-            crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Negative).unwrap();
-
-        // Vent-leg query: cup-wall material on -binormal side.
-        let q = Point3::new(-0.030, 0.0, -0.0098);
-        assert!(
-            piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate Negative piece should INCLUDE cup-wall query on -binormal side; got {}",
-            piece_no_gate.evaluate(&q),
+        // Without a pour gate, neither side emits any.
+        assert_eq!(
+            count_subtract_cylinders_for_pour_gate(&ribbon_no_gate, PieceSide::Positive),
+            0,
         );
-        assert!(
-            piece_gate.evaluate(&q) > 0.0,
-            "V-pour-gate Negative piece should EXCLUDE vent-leg-axis query on -binormal side; got {}",
-            piece_gate.evaluate(&q),
+        assert_eq!(
+            count_subtract_cylinders_for_pour_gate(&ribbon_no_gate, PieceSide::Negative),
+            0,
         );
     }
 
@@ -3094,14 +3069,14 @@ mod tests {
             .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
-        let piece_neg = crate::compose_piece_solid(
+        let (piece_neg, neg_transforms) = crate::compose_piece_solid(
             &spec.layers[0].body,
             &spec.bounding_region,
             &ribbon,
             PieceSide::Negative,
         )
         .unwrap();
-        let piece_pos = crate::compose_piece_solid(
+        let (piece_pos, pos_transforms) = crate::compose_piece_solid(
             &spec.layers[0].body,
             &spec.bounding_region,
             &ribbon,
@@ -3112,28 +3087,48 @@ mod tests {
         assert!(piece_neg.bounds().is_some());
         assert!(piece_pos.bounds().is_some());
 
-        // Pin protrusion query (pin in Negative piece) — annulus
-        // midpoint along +Y for v2_fixture's body half_y=0.025 +
-        // bounding half_y=0.040 → pin center at y=0.0325.
-        // Centerline arc fractions 0.25/0.75 on the -15→+15 mm
-        // centerline put the t=0.25 pin at x=-0.0075.
-        let pin_q = Point3::new(-0.0075, 0.0325, 0.003);
+        // Cup-wall SDF probe inside the annulus (body half_y=0.025,
+        // bounding half_y=0.040, probe at y=0.0325 the annulus
+        // midpoint). The base_piece Solid is the SDF half-shell
+        // (`bounding ∖ body ∩ halfspace`) — pin geometry lives in
+        // the post-MC mesh-CSG transforms. Probe z=+0.003 sits on
+        // the Negative kept side (+overlap = +0.5 mm boundary at z=0
+        // biased inward).
+        let pin_q = Point3::new(-0.0075, 0.0325, -0.003);
         assert!(
             piece_neg.evaluate(&pin_q) < 0.0,
-            "pins+gate Negative piece should still contain pin protrusion at \
-             annulus midpoint; got {}",
+            "Negative piece base Solid should register cup-wall material at \
+             the annulus-midpoint probe (pin geometry lives post-MC); got {}",
             piece_neg.evaluate(&pin_q),
         );
-        // V pour-leg query: pour leg axis from apex (-0.015, 0, 0)
-        // is ≈ (-0.866, 0, +0.5). At ~17 mm along the leg the point
-        // (-0.030, 0, +0.0098) sits in cup-wall material on the
-        // +binormal=+Z side (Positive piece). Gate carves it.
-        let gate_q = Point3::new(-0.030, 0.0, 0.0098);
+        // Both features land in the transform Vec post-S5+S7:
+        // Negative gains UnionCylinder per pin; Positive gains
+        // SubtractCylinder per pin; both gain SubtractCylinder per
+        // pour-gate leg. Count cylinder ops on each side.
+        let count_cylinders = |ts: &[crate::mesh_csg::MatingTransform]| -> usize {
+            ts.iter()
+                .filter(|t| {
+                    matches!(
+                        t,
+                        crate::mesh_csg::MatingTransform::UnionCylinder { .. }
+                            | crate::mesh_csg::MatingTransform::SubtractCylinder { .. }
+                    )
+                })
+                .count()
+        };
+        // pins (4 per side via bilateral mirror) + pour leg + vent leg = 6
+        // cylinder ops minimum on each side (plus S6 plug-socket /
+        // T-slot when applicable; v2_fixture has plug-pins so add
+        // those too).
+        let neg_cyls = count_cylinders(&neg_transforms);
+        let pos_cyls = count_cylinders(&pos_transforms);
         assert!(
-            piece_pos.evaluate(&gate_q) > 0.0,
-            "pins+gate Positive piece should EXCLUDE V pour-leg channel at \
-             (-30mm, 0, +9.8mm); got {}",
-            piece_pos.evaluate(&gate_q),
+            neg_cyls >= 6,
+            "Negative piece should emit ≥ 6 cylinder ops (4 pins + 2 pour-gate legs); got {neg_cyls}",
+        );
+        assert!(
+            pos_cyls >= 6,
+            "Positive piece should emit ≥ 6 cylinder ops (4 pins + 2 pour-gate legs); got {pos_cyls}",
         );
     }
 

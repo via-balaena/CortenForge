@@ -469,11 +469,16 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  curve-following seam. This cast has no integral \
                  registration features (`RegistrationKind::None`); \
                  align the pieces by hand and clamp with rubber bands \
-                 or wide tape during pour + cure. The 1 mm inter-piece \
-                 seam overlap (0.5 mm bias per side, see \
-                 `cf-cast::piece::RIBBON_PIECE_OVERLAP_M`) is well \
-                 above FDM printer accuracy (~0.1 mm), so hand \
-                 alignment is workable for the first cast iteration."
+                 or wide tape during pour + cure. Each piece's seam \
+                 face is bit-precise flat to the ribbon plane via \
+                 the cup-piece SDF halfspace intersect (MC's \
+                 linear-SDF interpolation places seam-cap vertices \
+                 exactly on the plane; see \
+                 `cf-cast::piece::RIBBON_PIECE_OVERLAP_M` for the \
+                 0.5 mm inward bias that gives each piece a 1 mm \
+                 seam overlap), so the two halves seat flush at the \
+                 seam and hand alignment only needs to bring the cup \
+                 outlines into registration."
             );
             md.push('\n');
             let _ = writeln!(
@@ -489,6 +494,8 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
             let pin_count = spec.arc_fractions.len();
             let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
             let pin_length_mm = spec.pin_half_length_m * 2.0 * 1000.0;
+            let diametral_mm = spec.diametral_clearance_m * 1000.0;
+            let socket_dia_mm = pin_dia_mm + diametral_mm;
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
@@ -496,7 +503,9 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  curve-following seam. **{pin_count} cylindrical pins** \
                  ({pin_dia_mm:.1} mm Ø × {pin_length_mm:.1} mm long, \
                  printed integrally with `_piece_0` and matched by \
-                 cylindrical holes in `_piece_1`) lock the pieces in \
+                 {socket_dia_mm:.2} mm Ø cylindrical holes in \
+                 `_piece_1` — {diametral_mm:.2} mm diametral clearance \
+                 for a positional sliding fit) lock the pieces in \
                  alignment along the seam — no manual clamping needed \
                  once the pins are seated."
             );
@@ -505,12 +514,18 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                 md,
                 "Insert each pin from `_piece_0` into the matching \
                  hole in `_piece_1` along the binormal direction (the \
-                 hole axis is perpendicular to the seam at the pin \
-                 position). Pins are gravity-held; no friction lock. \
-                 The 1 mm seam overlap (0.5 mm bias per side) is \
-                 absorbed by the hole depth (slightly deeper than the \
-                 pin protrusion), so pieces seat flush against the \
-                 seam plane without binding."
+                 pin axis is perpendicular to the seam plane at the \
+                 pin position). Pins are gravity-held; no friction \
+                 lock. Each pin extends {pin_length_mm:.1} mm \
+                 symmetrically across the seam plane — half lives \
+                 buried inside `_piece_0`'s cup-wall material; the \
+                 other half protrudes past the seam face as the \
+                 workshop-visible ridge that seats into `_piece_1`'s \
+                 matching socket. The pre-S4 SDF half-space intersect \
+                 keeps each piece's seam face bit-precise flat by MC's \
+                 linear-SDF interpolation property (recon-4 §F-4), so \
+                 the pieces seat flush along the {socket_dia_mm:.2} mm \
+                 sliding-fit sockets."
             );
             md.push('\n');
             let _ = writeln!(
@@ -550,7 +565,14 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
         PlugPinKind::Axial(spec) => {
             let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
             let pin_length_mm = spec.pin_length_m * 1000.0;
-            let socket_slack_mm = spec.socket_radial_slack_m * 1000.0;
+            // Post-S6 cup-side socket primitive inflates by
+            // `shaft_diametral_clearance_m / 2` per radial side
+            // (Ø grows by the full diametral clearance) and extends
+            // axially past the pin by `shaft_axial_clearance_m / 2`
+            // on each face (deep-end relief is the workshop-meaningful
+            // half; see `PlugPinSpec::shaft_axial_clearance_m`).
+            let socket_diametral_gap_mm = spec.shaft_diametral_clearance_m * 1000.0;
+            let socket_axial_relief_mm = spec.shaft_axial_clearance_m * 1000.0;
             let dome_pin_status = if spec.include_dome_pin {
                 "**Both** the pour end and the dome end have plug-\
                  anchor pins"
@@ -567,9 +589,12 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
                  Ø × {pin_length_mm:.1} mm long pin** at the pour end \
                  (centerline endpoint with the pour gate; pin extends \
                  outward along the local tangent). The mold pieces \
-                 carry a matching cylindrical socket carved through \
-                 the cup wall with {socket_slack_mm:.1} mm radial slack \
-                 for slide-fit. {dome_pin_status}."
+                 carry a matching cylindrical socket \
+                 {socket_diametral_gap_mm:.2} mm wider in diameter than \
+                 the pin (positional sliding fit) with \
+                 {socket_axial_relief_mm:.2} mm axial pocket-bottom \
+                 relief so workshop FDM stair-step doesn't bottom the \
+                 pin out before its shoulder seats. {dome_pin_status}."
             );
             md.push('\n');
             let _ = writeln!(
@@ -594,9 +619,42 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
                  tolerances for the post-iter-1 review of \
                  `PlugPinSpec::iter1` defaults."
             );
+            if spec.include_t_bar {
+                md.push('\n');
+                write_v2_t_bar_note(md, spec);
+            }
         }
     }
     md.push('\n');
+}
+
+fn write_v2_t_bar_note(md: &mut String, spec: &crate::plug::PlugPinSpec) {
+    let t_bar_dia_mm = spec.t_bar_radius_m * 2.0 * 1000.0;
+    let t_bar_length_mm = spec.t_bar_half_length_m * 2.0 * 1000.0;
+    let t_slot_diametral_mm = spec.t_bar_diametral_clearance_m * 1000.0;
+    let t_slot_dia_mm = t_bar_dia_mm + t_slot_diametral_mm;
+    let t_slot_axial_relief_mm = spec.t_bar_axial_clearance_m * 1000.0;
+    let _ = writeln!(
+        md,
+        "**T-bar lock** (one-time print: `platform.stl`). The plug's \
+         pour-end pin tip carries a **{t_bar_dia_mm:.1} mm \
+         Ø × {t_bar_length_mm:.1} mm long T-bar** whose axis lies \
+         parallel to the seam-plane normal. Each cup piece carves one \
+         half of a matching T-slot ({t_slot_dia_mm:.2} mm Ø — \
+         {t_slot_diametral_mm:.2} mm diametral clearance, \
+         {t_slot_axial_relief_mm:.2} mm axial pocket-bottom relief at \
+         the AWAY-from-seam tip); captive insertion: lower the plug \
+         T-bar into one cup half's half-T-slot, then close the second \
+         half around it. Once seated the T-bar locks the plug against \
+         axial pull-out (would have to push through cup-wall material) \
+         and rotation around the pin axis (would have to rotate out of \
+         the seam-normal orientation). The T-bar protrudes a few mm \
+         below the cup outer face at typical wall thicknesses; the \
+         `platform.stl` carries a matching blind pocket so the \
+         assembled mold sits flat on the platform during pour + cure \
+         (print `platform.stl` once for the whole multi-layer device \
+         — it is reused across every layer's pour)."
+    );
 }
 
 fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
@@ -651,12 +709,38 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
             }
             let _ = writeln!(
                 md,
-                "Pour silicone slowly into the pour leg (+binormal hole, \
-                 Positive piece). Trapped air escapes through the vent \
-                 leg (-binormal hole, Negative piece) as the cavity \
-                 fills bottom-up. Workshop user identifies pour vs vent \
-                 by binormal side — both legs are the same diameter to \
-                 mesh cleanly at cf-cast's default 3 mm cells."
+                "Pour silicone slowly into the larger {gate_dia_mm:.1} mm Ø \
+                 pour leg (+binormal hole, Positive piece). Trapped air \
+                 escapes through the smaller {vent_dia_mm:.1} mm Ø vent \
+                 leg (-binormal hole, Negative piece) as the cavity fills \
+                 bottom-up. Workshop user identifies pour vs vent by \
+                 binormal side AND by hole diameter."
+            );
+            md.push('\n');
+            // NIPPLE_DIAMETRAL_CLEARANCE_M is funnel-private; recompute
+            // the asymmetric-`/2` cup-vs-nipple Ø delta from the spec so
+            // workshop user sees the actual diametral gap.
+            let nipple_clearance_mm = crate::funnel::NIPPLE_DIAMETRAL_CLEARANCE_M * 1000.0;
+            let nipple_outer_dia_mm = gate_dia_mm - nipple_clearance_mm;
+            let _ = writeln!(
+                md,
+                "**Pour funnel** (one-time print: `funnel.stl`). Honey-\
+                 thick workshop silicones (Dragon Skin 10A / 20A / 30A \
+                 at ~20-23k cps) splash through a bare \
+                 {gate_dia_mm:.1} mm Ø pour leg; a printable funnel \
+                 STL ships alongside the mold pieces with a \
+                 {nipple_outer_dia_mm:.2} mm Ø self-aligning nipple \
+                 that drops into the cup pour-gate hole \
+                 ({nipple_clearance_mm:.2} mm asymmetric diametral \
+                 clearance — the cup-side hole stays at the nominal \
+                 {gate_dia_mm:.1} mm Ø; the funnel nipple bears all the \
+                 slack), a broad flange that rests on the cup outer \
+                 surface around the hole, and a tapered cone widening \
+                 to a workshop-friendly mouth for ladle-pouring. Print \
+                 `funnel.stl` once for the whole multi-layer device — \
+                 it is reused across every layer's pour. Apply mold \
+                 release to the nipple before each pour so cured \
+                 silicone doesn't lock the funnel onto the cup."
             );
         }
     }

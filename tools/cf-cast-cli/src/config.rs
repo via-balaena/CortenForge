@@ -719,7 +719,10 @@ pin_length_m = 0.007
 
     #[test]
     fn accepts_thin_wall_when_plug_pins_disabled() {
-        // 2 mm wall + plug_pins disabled: cross-field gate skipped.
+        // 2 mm wall + plug_pins disabled: plug-pin cross-field gate
+        // skipped. (Registration-pin gate was retired by recon-4 (P)
+        // when the binormal-axis annulus-midpoint design was restored
+        // — no inner-cavity dimple to budget.)
         let text = r#"
 [scan]
 cleaned_stl = "s.stl"

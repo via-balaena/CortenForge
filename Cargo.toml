@@ -575,6 +575,18 @@ bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 
 # ---------------------------------------------------------------------------
+# Mesh-CSG
+# ---------------------------------------------------------------------------
+# manifold3d: post-MC mesh-CSG kernel for cf-cast's mating-feature stage
+# (`docs/CF_CAST_MATING_FEATURES_RECON.md` §2 + §11). Pre-1.0; pinned exact
+# patch — manifold3d's API + output bit-pattern are not yet semver-stable,
+# and the cross-piece shared-primitive invariant rests on bit-equal output.
+# First-time builds compile the upstream `elalish/manifold` C++ kernel via
+# manifold-csg-sys's build.rs (CMake + a vendored Clipper2); measured ~3 min
+# 14 s on the S1 spike. Subsequent builds use cargo's target cache.
+manifold3d = { version = "=0.1.8", features = ["nalgebra"] }
+
+# ---------------------------------------------------------------------------
 # Testing
 # ---------------------------------------------------------------------------
 criterion = "0.8"

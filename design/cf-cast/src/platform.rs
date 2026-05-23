@@ -32,6 +32,7 @@
 use cf_design::Solid;
 use nalgebra::{UnitQuaternion, Vector3};
 
+use crate::mesh_csg::MatingTransform;
 use crate::plug::pour_end_t_bar_geometry;
 use crate::ribbon::Ribbon;
 
@@ -107,7 +108,10 @@ pub const PLATFORM_POCKET_OVERSHOOT_ABOVE_M: f64 = 0.0005;
 /// - The T-bar's axis is degenerate (pin direction parallel to
 ///   `split_normal` — caught upstream by `Ribbon::new`).
 #[must_use]
-pub fn build_platform_solid(bounding_region: &Solid, ribbon: &Ribbon) -> Option<Solid> {
+pub fn build_platform_solid(
+    bounding_region: &Solid,
+    ribbon: &Ribbon,
+) -> Option<(Solid, Vec<MatingTransform>)> {
     let (t_bar_center, t_bar_axis, t_bar_radius_m, t_bar_half_length_m) =
         pour_end_t_bar_geometry(ribbon)?;
 
@@ -174,7 +178,12 @@ pub fn build_platform_solid(bounding_region: &Solid, ribbon: &Ribbon) -> Option<
         cuboid_z_center,
     ));
 
-    Some(slab.subtract(hole))
+    // Platform pocket stays pure SDF — explicitly deferred from
+    // the S7 mesh-CSG sweep per `MATING_FEATURES_PLAN.md` §S8 Phase
+    // A "Deferred items"; no observed workshop defect, and the
+    // 2 mm cuboid lateral slack ergonomically beats a tighter
+    // cylinder pocket.
+    Some((slab.subtract(hole), Vec::new()))
 }
 
 #[cfg(test)]
@@ -248,7 +257,8 @@ mod tests {
         let ribbon = iter1_like_ribbon_with_short_pin();
         let bounding = Solid::cuboid(Vector3::new(0.061, 0.061, 0.090))
             .translate(Vector3::new(0.0, 0.0, -0.020));
-        let platform = build_platform_solid(&bounding, &ribbon).expect("platform should build");
+        let (platform, _) =
+            build_platform_solid(&bounding, &ribbon).expect("platform should build");
 
         // T-bar's world-frame z_min for this fixture:
         // cap_centroid.z=-0.054, pin_length=0.004, cap_normal.z=-1,
@@ -291,7 +301,8 @@ mod tests {
             0.0,
             -0.058 + 0.030, // bounds.min.z = -0.058 (right at cup outer face)
         ));
-        let platform = build_platform_solid(&bounding, &ribbon).expect("platform should build");
+        let (platform, _) =
+            build_platform_solid(&bounding, &ribbon).expect("platform should build");
 
         // Pocket should now carve real material from the slab.
         // Slab top at z = bounding.min.z - 0.0005 = -0.0585. T-bar
