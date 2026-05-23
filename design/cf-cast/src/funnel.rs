@@ -63,17 +63,17 @@ use crate::ribbon::Ribbon;
 /// isn't a long viscous bottleneck.
 pub const FUNNEL_NIPPLE_HEIGHT_M: f64 = 0.004;
 
-/// Nipple wall thickness (m). 1.5 mm = 3-4 perimeters at a 0.4 mm
-/// FDM nozzle.
+/// Nipple wall thickness (m).
 ///
-/// Sized at 1.5 mm rather than 1 mm to clear cf-cast's F4
-/// `min_wall_thickness: 1.0` threshold with margin — MC stair-step
-/// thinning at the nipple's outer surface can push a 1 mm-design
-/// wall below 1.0 mm in places, triggering Critical `ThinWall`
-/// failures. Trade-off: nipple inner Ø drops from 7.8 mm
-/// (theoretical 1 mm wall) to 6.8 mm (`1.5` mm wall) — still wider
-/// than the pre-iter-1 6 mm pour-gate Ø (= the historical
-/// bottleneck the bump-to-10 mm pour gate aimed to eliminate), and
+/// 1.5 mm = 3-4 perimeters at a 0.4 mm FDM nozzle. Sized at 1.5 mm
+/// rather than 1 mm so the nipple has multi-perimeter structural
+/// rigidity against workshop pour-pressure deflection — and to
+/// clear cf-cast's F4 `min_wall_thickness: 1.0` threshold with
+/// margin around the inner lumen carve (which still passes through
+/// MC at the flange annulus, even though the nipple OD itself is
+/// bit-precise via mesh-CSG post-S7). Trade-off: nipple inner Ø
+/// drops from 7.8 mm (theoretical 1 mm wall) to 6.8 mm (`1.5` mm
+/// wall) — still wider than the pre-iter-1 6 mm pour-gate Ø, and
 /// the 4 mm nipple height keeps the bottleneck short.
 pub const FUNNEL_NIPPLE_WALL_M: f64 = 0.0015;
 
@@ -128,12 +128,21 @@ pub const FUNNEL_CONE_WALL_M: f64 = 0.0015;
 /// total height + footprint manageable.
 pub const FUNNEL_CONE_HEIGHT_M: f64 = 0.030;
 
-/// MC tolerance overshoot for the inner cavity at the funnel's
-/// open ends (m).
+/// Overshoot past funnel surfaces for the inner cavity carve (m).
 ///
-/// 0.5 mm — small overshoot past the funnel's top + bottom
-/// surfaces ensures MC produces clean openings instead of
-/// stair-step shelves at the cavity boundary.
+/// 0.5 mm. Two uses post-S7 (both at the same workshop-margin
+/// value):
+///
+/// 1. **SDF top opening** — `inner_cone` extends `INNER_CAVITY_OVERSHOOT_M`
+///    above `cone_z_top` so MC produces a clean opening at the
+///    workshop pour mouth instead of leaving a stair-step shelf.
+/// 2. **Mesh-CSG lumen margin** — the post-MC
+///    [`MatingTransform::SubtractCylinder`] lumen extends
+///    `INNER_CAVITY_OVERSHOOT_M` past both nipple end faces so
+///    manifold3d's `difference` op definitely cuts through the
+///    unioned nipple's flat caps (at the tip + at the flange
+///    interface) rather than leaving a thin disk capping either
+///    end.
 const INNER_CAVITY_OVERSHOOT_M: f64 = 0.0005;
 
 /// Build the workshop pour funnel [`Solid`] + post-MC mesh-CSG

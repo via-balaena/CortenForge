@@ -83,10 +83,8 @@
 //!
 //! ## Default off
 //!
-//! [`Ribbon::new`] sets `pour_gate = PourGateKind::None` for
-//! backward compatibility with Steps 5-9 of the v2 arc. The
-//! Step 11 example crate is expected to opt into
-//! [`PourGateKind::Default`] via
+//! [`Ribbon::new`] sets `pour_gate = PourGateKind::None`. Callers
+//! opt into the V-at-dome channels via
 //! [`crate::ribbon::Ribbon::with_pour_gate`].
 //!
 //! [`Ribbon::new`]: crate::ribbon::Ribbon::new
@@ -136,18 +134,20 @@ pub struct PourGateSpec {
     /// clearance).
     pub gate_radius_m: f64,
     /// Vent-leg channel radius (m). Default `0.003` = 3 mm =
-    /// 6 mm diameter — same as the pour leg.
+    /// 6 mm diameter — smaller than the 10 mm pour leg, but wider
+    /// than the pre-V-shape 2 mm vent that workshop iter-1 visually
+    /// falsified.
     ///
-    /// Equal-radius legs ship together because at cf-cast's default
-    /// 3 mm mesh-cell size, a 2 mm Ø vent (the pre-V-shape default)
-    /// captures as only 0.67 cells radially and MC produces a
-    /// partial / fragmented through-hole — workshop iter-1 visual
-    /// gate falsified the small-vent variant. The pour leg's 6 mm Ø
-    /// is the minimum that meshes cleanly at 3 mm cells (1 cell
-    /// radius); matching the vent to it guarantees the vent leg
-    /// also resolves. Workshop user tells pour from vent by position
-    /// (procedure.md surfaces the +/-binormal side mapping), not by
-    /// hole diameter.
+    /// Sized so the vent meshes cleanly at cf-cast's default 3 mm
+    /// mesh-cell size: 6 mm Ø = 1 cell radial, the minimum that MC
+    /// resolves without fragmenting a through-hole. The pre-V 2 mm
+    /// Ø vent captured as only 0.67 cells radial and MC produced
+    /// partial through-holes — workshop iter-1 visual gate falsified
+    /// that variant. The pour leg's 10 mm Ø is larger by design (see
+    /// [`Self::gate_radius_m`] — honey-thick silicone flow); workshop
+    /// user tells pour from vent by binormal side
+    /// (`procedure.md` surfaces the +/-binormal mapping), not hole
+    /// diameter.
     ///
     /// Trade-off: silicone surface tension can't hold against the
     /// pour-pressure differential on a 6 mm Ø vent as reliably as

@@ -655,12 +655,12 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
             }
             let _ = writeln!(
                 md,
-                "Pour silicone slowly into the pour leg (+binormal hole, \
-                 Positive piece). Trapped air escapes through the vent \
-                 leg (-binormal hole, Negative piece) as the cavity \
-                 fills bottom-up. Workshop user identifies pour vs vent \
-                 by binormal side — both legs are the same diameter to \
-                 mesh cleanly at cf-cast's default 3 mm cells."
+                "Pour silicone slowly into the larger {gate_dia_mm:.1} mm Ø \
+                 pour leg (+binormal hole, Positive piece). Trapped air \
+                 escapes through the smaller {vent_dia_mm:.1} mm Ø vent \
+                 leg (-binormal hole, Negative piece) as the cavity fills \
+                 bottom-up. Workshop user identifies pour vs vent by \
+                 binormal side AND by hole diameter."
             );
         }
     }
