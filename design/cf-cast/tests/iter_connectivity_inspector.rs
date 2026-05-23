@@ -84,20 +84,27 @@ fn inspect_external_stl() {
         let bb = component_aabb(&mesh, comp);
         let center = bb.center();
         let extent = bb.extent();
+        // `mesh_io::load_stl` returns vertices in the STL file's
+        // units (cf-cast writes STLs in millimeters via
+        // `mesh_csg::METERS_TO_MM`), so center + extent are already
+        // in mm — no scale-conversion needed (an earlier inspector
+        // version multiplied by 1000.0 here under the wrong
+        // assumption that load_stl returned meters; that masked
+        // sub-mm slivers behind 1000×-inflated displayed values).
         eprintln!(
             "  comp {i:>2}: {:>5} faces  center=[{:>+8.3},{:>+8.3},{:>+8.3}] mm  extent=[{:>6.3},{:>6.3},{:>6.3}] mm",
             comp.len(),
-            center[0] * 1000.0,
-            center[1] * 1000.0,
-            center[2] * 1000.0,
-            extent[0] * 1000.0,
-            extent[1] * 1000.0,
-            extent[2] * 1000.0,
+            center[0],
+            center[1],
+            center[2],
+            extent[0],
+            extent[1],
+            extent[2],
         );
         if i == 0 {
             continue;
         }
-        let max_extent_mm = (extent[0].max(extent[1]).max(extent[2])) * 1000.0;
+        let max_extent_mm = extent[0].max(extent[1]).max(extent[2]);
         if comp.len() > MAX_SLIVER_FACES {
             violations.push(format!(
                 "comp {i}: {} faces > §R1 cap {MAX_SLIVER_FACES}",

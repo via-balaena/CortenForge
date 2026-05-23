@@ -1155,27 +1155,27 @@ mod tests {
     /// Documents the manifold3d boolean-union behavior for a cylinder
     /// FULLY CONTAINED inside the host mesh's volume — the case
     /// where the cylinder's surface doesn't touch the host's
-    /// surface. Empirically (recon-2 implementation session)
-    /// manifold3d ABSORBS the contained cylinder into the host;
-    /// the result is one component. This is the load-bearing
-    /// behavior that makes the post-recon-2 registration-pin fix
-    /// work: pin half-length 2 mm in a 5 mm cup-wall annulus
-    /// (offset = annulus midpoint at 2.5 mm from each face) leaves
-    /// the pin's surface strictly INSIDE cup-wall material, with
-    /// 0.5 mm margin against each annulus face — and the boolean
-    /// union still merges the pin into the cup-wall mesh as a
-    /// single connected component.
+    /// surface. Empirically manifold3d ABSORBS the contained
+    /// cylinder into the host; the result is one component. The
+    /// shell-host counterpart
+    /// [`apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`]
+    /// confirms the same absorption behavior on a multi-surface
+    /// 20 mm-cube-minus-10 mm-cube host (recon-3 §R3-3 Branch B
+    /// finding: synthetic shell-host unions behave correctly).
     ///
-    /// (Earlier iterations of this session hit a related but
-    /// distinct issue with the multi-surface mesh produced by
-    /// `bounds.subtract(body)` through MC — a closed shell with
-    /// outer + inner surfaces — where the post-CSG topology kept
-    /// the inner/outer surfaces disconnected because the seam
-    /// trim's cap mesh wasn't bridging them at all geometries. The
-    /// workshop iter-1 mesh has a pour gate carving the shell into
-    /// a single-surface object, so this multi-surface artefact
-    /// doesn't manifest in the production pipeline — the inspector
-    /// gate at `tests/iter_connectivity_inspector.rs` confirms.)
+    /// Workshop iter-1 production cup-piece STLs nonetheless surfaced
+    /// the post-S5 registration-pin disconnection bug (5-6 components
+    /// per piece with separate ~168-188-face pin shells per pin
+    /// post-recon-2 impl, vs the 2-component pre-S5 baseline). The
+    /// failure mode lives at some deeper layer of the cf-cast pipeline
+    /// (likely the multi-op + complex curved-body interaction with
+    /// MC-quantized surfaces); see
+    /// `docs/CF_CAST_REGISTRATION_PIN_DISCONNECTION_RECON_PLAN_V2.md`
+    /// §R3-3. Recon-3 §R3-2 (α) ships protrusion-through-bounding-
+    /// outer-face as a defensive fix that sidesteps the unknown
+    /// layer entirely — verified on the regenerated iter-1 STL set
+    /// by `tests/iter_connectivity_inspector.rs` returning to the
+    /// 2-component baseline.
     #[test]
     fn apply_mating_transforms_absorbs_contained_cylinder_into_host() {
         use mesh_repair::components::find_connected_components;

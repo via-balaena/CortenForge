@@ -35,9 +35,11 @@
 //! - Length: 6 mm total (3 mm half-length each side of the centerline
 //!   sample) for the default — pin spans the cup wall annulus
 //!   radially with [`PIN_PROTRUSION_M`] protrusion at the outer face
-//!   and ≈ 0.5 mm internal margin against the body cavity in the
-//!   5 mm iter-1 wall (no inner-cavity silicone dimple — recon-3
-//!   §R3-2 dimple arithmetic correction).
+//!   and a ≈ 0.5 mm silicone dimple in the body cavity in the 5 mm
+//!   iter-1 wall (well within recon-3 §R3-2's stated ≤ 2 mm
+//!   silicone-demold tolerance — recon-3 §R3-2 dimple arithmetic
+//!   correction from the original 4 mm half-length that produced
+//!   2.5 mm dimples).
 //! - Diameter: 3 mm (1.5 mm radius) for the default — beefy enough
 //!   for FDM printing without supports, small enough to insert by
 //!   hand with no tooling. Half-cylinder ridge across the seam face
@@ -92,11 +94,14 @@
 //! piece. The bumps are well below FDM bead-width tolerance (≤ 1 mm)
 //! the platform-pocket STL already absorbs, so no platform re-cut is
 //! required. With the 3 mm half-length default in the 5 mm iter-1
-//! wall, the pin's `-axis` tip lands 0.5 mm INSIDE the cup wall
-//! (margin against the body cavity) — no inner-cavity silicone
-//! dimple, no demold consequence. See [`PIN_PROTRUSION_M`] +
-//! [`PinSpec::pin_half_length_m`] for the numeric defaults and the
-//! wall-thickness cross-field gate workshop-CLI bridge applies.
+//! wall, the pin's `-axis` tip lands 0.5 mm INTO the body cavity
+//! producing a ≈ 3 mm Ø × 0.5 mm silicone dimple on the cast (well
+//! within recon-3 §R3-2's ≤ 2 mm silicone-demold tolerance, no
+//! workshop-significant demold consequence). See
+//! [`PIN_PROTRUSION_M`] + [`PinSpec::pin_half_length_m`] for the
+//! numeric defaults and the wall-thickness cross-field gate that
+//! the cf-cast-cli bridge enforces (allowable dimple capped at 2 mm
+//! by the gate's `MAX_REGISTRATION_DIMPLE_M`).
 //!
 //! ## Composition
 //!
@@ -178,15 +183,16 @@ pub struct PinSpec {
     /// (α) pick: the pin's `+axis` tip lands at
     /// `bounding_dist + PIN_PROTRUSION_M` (0.5 mm protrusion past the
     /// cup-wall outer face) and the `-axis` tip lands at
-    /// `bounding_dist - pin_half_length_m + PIN_PROTRUSION_M`. With
-    /// the iter-1 5 mm cup wall (`wall_thickness_m`), the `-axis`
-    /// tip sits at `wall_thickness_m - pin_half_length_m +
-    /// PIN_PROTRUSION_M = 2.5 mm` inside the cup wall — 0.5 mm
-    /// margin against the body cavity, no inner-cavity silicone
-    /// dimple, no demold consequence. After `SeamTrim` the workshop-
-    /// meaningful keyway ridge across each piece's seam face is the
-    /// half-cylinder with `2 × pin_half_length_m = 6 mm` ridge
-    /// length × `pin_radius_m = 1.5 mm` engagement depth.
+    /// `bounding_dist - (2 × pin_half_length_m) + PIN_PROTRUSION_M`.
+    /// With the iter-1 5 mm cup wall, the `-axis` tip sits 0.5 mm
+    /// INTO the body cavity (silicone dimple depth =
+    /// `2 × pin_half_length_m - PIN_PROTRUSION_M - wall_thickness_m`
+    /// when positive = `6 - 0.5 - 5 = 0.5 mm`), well within
+    /// recon-3 §R3-2's stated ≤ 2 mm silicone-demold tolerance.
+    /// After `SeamTrim` the workshop-meaningful keyway ridge across
+    /// each piece's seam face is the half-cylinder with
+    /// `2 × pin_half_length_m = 6 mm` ridge length × `pin_radius_m
+    /// = 1.5 mm` engagement depth.
     pub pin_half_length_m: f64,
     /// Arc-length fractions along the centerline where pins are
     /// placed. Default `vec![0.25, 0.75]`. Each arc fraction yields
@@ -235,11 +241,14 @@ impl PinSpec {
     ///
     /// The 3 mm half-length default fits the iter-1 5 mm
     /// `wall_thickness_m` with 0.5 mm protrusion past the outer face
-    /// and 0.5 mm internal margin against the body cavity (no inner-
-    /// cavity dimple). Configs with deeper walls can dial up; the
-    /// cf-cast-cli `CastConfig::validate` cross-field gate enforces
-    /// `pin_half_length_m ≤ wall_thickness_m + PIN_PROTRUSION_M` so
-    /// the pin's `-axis` tip never punches into the body cavity.
+    /// and a 0.5 mm silicone dimple in the body cavity (well within
+    /// the cf-cast-cli's `MAX_REGISTRATION_DIMPLE_M = 2 mm` workshop
+    /// tolerance). Configs with deeper walls have proportionally
+    /// smaller (or zero) dimples; the cf-cast-cli `CastConfig::validate`
+    /// cross-field gate enforces
+    /// `2 × pin_half_length_m ≤ wall_thickness_m + PIN_PROTRUSION_M +
+    /// MAX_REGISTRATION_DIMPLE_M` so the inner-cavity dimple stays
+    /// within the silicone-demold tolerance.
     #[must_use]
     pub fn iter1() -> Self {
         Self {
@@ -532,7 +541,9 @@ mod tests {
     /// bounding cuboid 60 mm × 30 mm × 30 mm half-extents. The
     /// cup-wall annulus along the `+Y` split-normal spans
     /// `y ∈ [+10 mm, +30 mm]` and the pin should land at
-    /// `y = +20 mm` (annulus midpoint).
+    /// `y = +27.5 mm` (recon-3 §R3-2 (α) bounds-anchored offset:
+    /// `bounding_dist − pin_half_length + PIN_PROTRUSION_M
+    /// = 30 − 3 + 0.5`).
     fn reference_body_and_bounds() -> (Solid, Solid) {
         let body = Solid::cuboid(Vector3::new(0.060, 0.010, 0.010));
         let bounds = Solid::cuboid(Vector3::new(0.060, 0.030, 0.030));

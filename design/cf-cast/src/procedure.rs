@@ -533,10 +533,12 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  0.5 mm circular bump on the outer wall at each pin \
                  location. The bump is below FDM bead-width tolerance \
                  the platform pocket already absorbs (no platform-STL \
-                 re-cut). The pin's `-axis` tip sits inside the cup \
-                 wall (default 3 mm half-length in the 5 mm iter-1 \
-                 wall → 0.5 mm body-side margin) — no inner-cavity \
-                 silicone dimple, no demold consequence."
+                 re-cut). The pin's `-axis` tip sits 0.5 mm INTO the \
+                 body cavity (default 3 mm half-length + 0.5 mm \
+                 protrusion in the 5 mm iter-1 wall) — a ≈ \
+                 {pin_dia_mm:.1} mm Ø × 0.5 mm silicone dimple on the \
+                 cast, well within the cf-cast-cli's 2 mm demold \
+                 tolerance."
             );
             md.push('\n');
             let _ = writeln!(

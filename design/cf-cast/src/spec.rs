@@ -3094,16 +3094,19 @@ mod tests {
 
         // Cup-wall SDF probe (no body, inside bounding) still
         // resolves negative — the base_piece Solid is unchanged by
-        // either S5 pins (post-MC) or S7 pour gate (post-MC).
-        // Centerline arc fractions 0.25/0.75 on the -15→+15 mm
-        // centerline put the t=0.25 pin at x=-0.0075; cup wall at
-        // y=0.0325 (annulus midpoint between body half_y=0.025 and
-        // bounding half_y=0.040).
+        // either S5 pins (post-MC) or S7 pour gate (post-MC). The
+        // probe point at y=0.0325 sits inside the cup-wall annulus
+        // (body half_y=0.025, bounding half_y=0.040); we don't probe
+        // at the recon-3 (α) bounds-anchored pin center (y≈0.0375)
+        // because that point is also valid cup-wall material — what
+        // matters for this assertion is "base_piece Solid resolves
+        // cup-wall material" and the SDF is constant across the
+        // annulus interior.
         let pin_q = Point3::new(-0.0075, 0.0325, 0.003);
         assert!(
             piece_neg.evaluate(&pin_q) < 0.0,
             "Negative piece base Solid should still register cup-wall material at \
-             annulus midpoint (pin protrusion lives post-MC); got {}",
+             the probed point inside the annulus (pin geometry lives post-MC); got {}",
             piece_neg.evaluate(&pin_q),
         );
         // Both features land in the transform Vec post-S5+S7:

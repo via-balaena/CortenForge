@@ -192,10 +192,13 @@ pub fn compose_piece_solid(
     // change for the registration-less path.
     //
     // The helper ray-marches `layer_body` + `bounding_region`
-    // along the ribbon's split-normal to put each pin at the
-    // per-layer cup-wall annulus midpoint (see the
-    // `crate::registration` module docstring for the "derived, not
-    // fixed" rationale).
+    // along the ribbon's split-normal to anchor each pin to the
+    // per-layer bounding outer surface, with the pin's `+axis` tip
+    // protruding `registration::PIN_PROTRUSION_M` past the
+    // bounding face (recon-3 §R3-2 (α); see the
+    // `crate::registration` module docstring for the
+    // "derived, not fixed" rationale + the "why the pin protrudes"
+    // section).
     transforms.extend(build_registration_transforms(
         ribbon,
         layer_body,
