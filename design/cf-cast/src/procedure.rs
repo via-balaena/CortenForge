@@ -550,7 +550,11 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
         PlugPinKind::Axial(spec) => {
             let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
             let pin_length_mm = spec.pin_length_m * 1000.0;
-            let socket_slack_mm = spec.socket_radial_slack_m * 1000.0;
+            // Diametral gap between pin and socket (post-S6: the
+            // socket Ø exceeds the pin Ø by the full
+            // `shaft_diametral_clearance_m`; previously
+            // `2 × socket_radial_slack_m`).
+            let socket_diametral_gap_mm = spec.shaft_diametral_clearance_m * 1000.0;
             let dome_pin_status = if spec.include_dome_pin {
                 "**Both** the pour end and the dome end have plug-\
                  anchor pins"
@@ -567,9 +571,9 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
                  Ø × {pin_length_mm:.1} mm long pin** at the pour end \
                  (centerline endpoint with the pour gate; pin extends \
                  outward along the local tangent). The mold pieces \
-                 carry a matching cylindrical socket carved through \
-                 the cup wall with {socket_slack_mm:.1} mm radial slack \
-                 for slide-fit. {dome_pin_status}."
+                 carry a matching cylindrical socket {socket_diametral_gap_mm:.2} mm \
+                 wider in diameter than the pin (positional sliding fit). \
+                 {dome_pin_status}."
             );
             md.push('\n');
             let _ = writeln!(

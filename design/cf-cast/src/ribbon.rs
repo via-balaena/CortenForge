@@ -277,9 +277,9 @@ pub struct Ribbon {
     pub plug_pins: PlugPinKind,
     /// Optional pour-end anchor for the plug-anchor pin —
     /// `(centroid, outward_axis)` in world-frame coordinates.
-    /// [`crate::plug::build_plug_pin_solid`] +
-    /// [`crate::plug::build_plug_socket_solid`] anchor the pin
-    /// cylinder at `centroid` and extend it along `outward_axis`
+    /// [`crate::plug::build_plug_self_transforms`] +
+    /// [`crate::plug::build_plug_socket_transforms`] anchor the
+    /// pin cylinder at `centroid` and extend it along `outward_axis`
     /// (pointing away from the body interior). This is **NOT** a
     /// centerline-endpoint selector — the anchor point may sit
     /// past the trimmed centerline tip, as is the case for
