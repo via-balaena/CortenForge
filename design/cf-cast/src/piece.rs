@@ -689,8 +689,10 @@ mod tests {
     /// bounding 40 mm in `+X` (10 mm cup-wall annulus). With the
     /// pre-C1 fixed offset the pin would have landed AT x = 25 mm —
     /// inside the body, free-floating from the cup-wall mesh. With
-    /// C1's body-relative offset, the pin lands at x = 35 mm
-    /// (annulus midpoint).
+    /// C1's body-relative offset + recon-3 §R3-2 (α) bounds-anchored
+    /// offset the pin lands at
+    /// `x = bounding_dist − pin_half_length + PIN_PROTRUSION_M`
+    /// (≈ 35.5 mm with the test's overridden 5 mm half-length).
     ///
     /// Post-S5 the invariant lives in the transform parameters
     /// rather than in the post-CSG mesh topology: pre-S5 the pin
@@ -714,10 +716,16 @@ mod tests {
 
         let layer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030));
         let bounding_region = Solid::cuboid(Vector3::new(0.040, 0.040, 0.040));
-        // Centerline along +Z, split-normal +X → binormal +Y. Pin
-        // cylinders extend along ±Y (perpendicular to ribbon seam).
+        // Centerline along +Z, split-normal +X. Pin cylinders extend
+        // RADIALLY along ±X (split-normal direction itself —
+        // recon-3 §R3-2 (α)) through the cup-wall annulus.
         let centerline = vec![Point3::new(0.0, 0.0, -0.050), Point3::new(0.0, 0.0, 0.050)];
         let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        // Chunky 5 mm half-length pin in this 10 mm cup-wall fixture
+        // gives a bounds-anchored offset of bounds − 5 + 0.5 = 35.5 mm
+        // (|x|), still inside the wall annulus and well clear of the
+        // body face (no inner-cavity dimple in the test fixture's
+        // 10 mm wall).
         let chunky_pins = PinSpec {
             pin_radius_m: 0.005,
             pin_half_length_m: 0.005,
@@ -754,10 +762,11 @@ mod tests {
                  region (cup-wall material); bounds.evaluate = {}",
                 bounding_region.evaluate(&c),
             );
-            // Annulus midpoint along ±X = ±(30 + 40)/2 = ±35 mm.
+            // Bounds-anchored offset along ±X = ±(40 − 5 + 0.5) = ±35.5 mm
+            // (recon-3 §R3-2 (α)).
             assert!(
-                (c.x.abs() - 0.035).abs() < 1e-6,
-                "pin center should land at the annulus midpoint |x| ≈ 35 mm; got {c:?}",
+                (c.x.abs() - 0.0355).abs() < 1e-6,
+                "pin center should land at the bounds-anchored offset |x| ≈ 35.5 mm; got {c:?}",
             );
             assert_eq!(params.segments, PIN_SEGMENTS);
         }

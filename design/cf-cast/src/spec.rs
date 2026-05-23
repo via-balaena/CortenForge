@@ -2845,16 +2845,24 @@ mod tests {
 
     #[test]
     fn generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_diameter() {
-        // Pins ON: the v2 Mold Assembly section must mention the pin
-        // count + diameter (1.5 mm radius × 2 = 3.0 mm diameter for
-        // iter1). v1/v2-pre-Step-9 prose ("clamp with rubber bands")
-        // must NOT appear.
+        // Pins ON: the v2 Mold Assembly section must mention the
+        // keyway count + diameter (1.5 mm radius × 2 = 3.0 mm
+        // diameter for iter1) + the ridge length (recon-3 §R3-2 (α)
+        // half-cylinder ridge/groove workshop model). v1/v2-pre-
+        // Step-9 prose ("clamp with rubber bands") must NOT appear.
         let (spec, ribbon) = v2_fixture_with_pins();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        assert!(md.contains("2 cylindrical pins"));
+        assert!(md.contains("2 half-cylinder ridge/groove keyways"));
         assert!(md.contains("3.0 mm Ø"));
-        assert!(md.contains("10.0 mm long"));
+        // 3 mm half-length default → 6 mm ridge length across the seam.
+        assert!(
+            md.contains("6.0 mm \n                 long")
+                || md.contains("6.0 mm long")
+                || md.contains("× 6.0 mm")
+        );
+        // Recon-3 §R3-2 (α) workshop callout — outer-face bumps.
+        assert!(md.contains("0.5 mm past the cup"));
         assert!(
             !md.contains("rubber bands"),
             "with-pins prose must not retain rubber-band clamping note"

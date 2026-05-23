@@ -1215,6 +1215,151 @@ mod tests {
         );
     }
 
+    /// Build a multi-surface **shell host** mesh directly via
+    /// manifold3d API ops (skipping the cf-cast MC pipeline). 20 mm
+    /// outer cube minus 10 mm inner cube → 5 mm wall thickness on
+    /// every face. The bare shell has **two topologically disjoint
+    /// surface components** (outer + inner cube faces) by definition,
+    /// even though manifold3d represents it as a single valid
+    /// `Manifold` — face-adjacency-based connected-component
+    /// analysis (`mesh_repair::components::find_connected_components`)
+    /// surfaces both.
+    ///
+    /// This fixture lets the recon-3 §R3-3 shell-host tests
+    /// characterise manifold3d's union behavior on a host whose
+    /// outer and inner surfaces are NOT bridged by a tunnel (the
+    /// "pre-pour-gate-carve" topology the registration-pin union
+    /// composes against in the cf-cast pipeline, before S7 ops
+    /// connect outer ↔ inner). Companion to the single-surface
+    /// solid-cube fixture used by
+    /// [`apply_mating_transforms_keeps_cup_mesh_in_one_component`].
+    fn build_shell_host_mesh_mm() -> IndexedMesh {
+        let outer = Manifold::cube(20.0, 20.0, 20.0, true);
+        let inner = Manifold::cube(10.0, 10.0, 10.0, true);
+        let shell = outer.difference(&inner);
+        manifold_to_indexed_mesh(&shell)
+    }
+
+    /// Recon-3 §R3-3 experiment 1 / Branch B characterisation:
+    /// documents that manifold3d ABSORBS a fully-contained cylinder
+    /// into a multi-surface shell host volumetrically — the bare
+    /// shell's 2-component topology (outer + inner cube faces) is
+    /// preserved, no extra component appears for the cylinder.
+    ///
+    /// This refutes the recon-3 bookmark's "manifold3d boolean
+    /// disconnects contained cylinders on multi-surface shell hosts"
+    /// framing as a generic claim. On synthetic clean shell geometry
+    /// the union ABSORBS the cylinder volume into the wall material
+    /// (the cylinder's volume is a subset of the wall volume, so the
+    /// boolean result equals the wall manifold). The production
+    /// iter-1 STL set's disconnection therefore lives at a different
+    /// layer of the cf-cast pipeline — likely the multi-op + complex
+    /// curved-geometry interaction with MC-quantized surfaces, not
+    /// in manifold3d's shell-host union itself.
+    ///
+    /// Recon-3 §R3-2 still picks (α) protrusion as the production
+    /// fix because forcing surface-vs-surface intersection sidesteps
+    /// the (unknown) pipeline-layer disconnection cause entirely; the
+    /// §R1 workshop-fixture inspector
+    /// (`tests/iter_connectivity_inspector.rs`) remains the
+    /// load-bearing falsification gate.
+    #[test]
+    fn apply_mating_transforms_absorbs_contained_cylinder_into_shell_host() {
+        use mesh_repair::components::find_connected_components;
+
+        let cup = build_shell_host_mesh_mm();
+        let bare_components = find_connected_components(&cup).component_count;
+
+        // Cylinder centered at annulus midpoint (x = 7.5 mm = midpoint
+        // of [5 mm, 10 mm] cup-wall band on the +X side), axis +X,
+        // half_length 1.5 mm, radius 1.5 mm. Cylinder bounds:
+        // x ∈ [6, 9] mm, |y|, |z| ≤ 1.5 mm — strictly inside the
+        // wall volume, no surface intersection with outer or inner.
+        let contained_cyl = MatingTransform::UnionCylinder {
+            params: CylinderParams {
+                parent: CylinderParent {
+                    center_m: Point3::new(0.0075, 0.0, 0.0),
+                    axis: Vector3::x_axis(),
+                    half_length_m: 0.0015,
+                },
+                radius_m: 0.0015,
+                segments: 32,
+            },
+        };
+        let target = CastTarget::MoldPiece {
+            layer_index: 0,
+            piece_side: crate::ribbon::PieceSide::Negative,
+        };
+        let out = apply_mating_transforms(cup, &[contained_cyl], target).unwrap();
+
+        let after = find_connected_components(&out).component_count;
+        assert_eq!(
+            after, bare_components,
+            "synthetic-shell host union of a fully-CONTAINED cylinder must absorb \
+             the cylinder volume into the wall (component count = bare baseline \
+             {bare_components}); got {after} — the production iter-1 disconnection \
+             lives elsewhere in the cf-cast pipeline (recon-3 §R3-3 Branch B \
+             characterisation)",
+        );
+    }
+
+    /// Recon-3 §R3-3 experiment 2 / positive control for the (α)
+    /// protrusion pick. Pin centered so its `+axis` tip extends
+    /// 0.5 mm past the outer cube face (x = 10.5 mm) — lateral
+    /// cylindrical surface physically intersects the outer surface at
+    /// a circular cross-section. manifold3d's boolean union merges
+    /// the cylinder into the host's outer surface; component count
+    /// stays at the bare baseline (cylinder folded into outer, no
+    /// extra component).
+    ///
+    /// Pair this with the companion
+    /// [`apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`]
+    /// — same shell host + same cylinder radius/length, only the
+    /// center moves. Both pass at "no extra component" on synthetic
+    /// geometry; the production iter-1 difference lives at a
+    /// different layer. (α) protrusion is the defensive pick — it
+    /// always forces surface-vs-surface intersection, which is the
+    /// manifold3d boolean's most-robust path.
+    #[test]
+    fn apply_mating_transforms_merges_protruding_cylinder_into_shell_host() {
+        use mesh_repair::components::find_connected_components;
+
+        let cup = build_shell_host_mesh_mm();
+        let bare_components = find_connected_components(&cup).component_count;
+
+        // Pin centered at (9 mm, 0, 0), axis +X, half_length 1.5 mm.
+        // +X tip = 9 + 1.5 = 10.5 mm (0.5 mm past outer face at
+        // x=10 mm); -X tip = 9 - 1.5 = 7.5 mm (well inside the
+        // [5, 10] mm wall annulus). Radius 1.5 mm. Lateral surface
+        // at radius 1.5 mm intersects the outer cube face (x=10) at
+        // a circle (y² + z² = 1.5²).
+        let protruding_cyl = MatingTransform::UnionCylinder {
+            params: CylinderParams {
+                parent: CylinderParent {
+                    center_m: Point3::new(0.009, 0.0, 0.0),
+                    axis: Vector3::x_axis(),
+                    half_length_m: 0.0015,
+                },
+                radius_m: 0.0015,
+                segments: 32,
+            },
+        };
+        let target = CastTarget::MoldPiece {
+            layer_index: 0,
+            piece_side: crate::ribbon::PieceSide::Negative,
+        };
+        let out = apply_mating_transforms(cup, &[protruding_cyl], target).unwrap();
+
+        let after = find_connected_components(&out).component_count;
+        assert_eq!(
+            after, bare_components,
+            "shell-host union of a PROTRUDING cylinder must merge the cylinder into \
+             the outer surface (component count = bare baseline \
+             {bare_components}); got {after} — load-bearing positive case for \
+             recon-3 §R3-2 (α)",
+        );
+    }
+
     #[test]
     fn half_space_slab_has_face_at_plane_point() {
         // Slab oriented with +normal = +Z, plane_point at origin.
