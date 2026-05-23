@@ -195,23 +195,28 @@ pub struct PlugPinSpec {
     ///
     /// Unlike the registration pin's
     /// [`crate::registration::PinSpec::axial_clearance_m`] — where
-    /// the per-piece `SeamTrim` clips the near-seam half of the
-    /// cylinder so workshop engagement reduces to
+    /// the cup-piece SDF halfspace intersect clips each pin's
+    /// near-seam half so workshop engagement reduces to
     /// [`crate::piece::RIBBON_PIECE_OVERLAP_M`] — the plug-side
-    /// pin shaft is **not** clipped by a `SeamTrim` (the plug STL
-    /// is a single unsplit piece). Workshop engagement on the plug
+    /// pin shaft is **not** bisected by the seam (the plug STL is
+    /// a single unsplit piece). Workshop engagement on the plug
     /// side is the full [`Self::pin_length_m`].
     ///
     /// The shaft's axis is parallel to the centerline tangent at
     /// the cap plane (= along `pour_outward`) which is typically
     /// perpendicular to the seam-plane normal — i.e., the shaft
     /// axis lies WITHIN the seam plane. The cup-side socket
-    /// cylinder is therefore bisected LENGTHWISE by the per-piece
-    /// `SeamTrim` (each cup half receives one half-cylinder of the
-    /// socket); the `axial / 2` extension SURVIVES the trim on both
-    /// axial faces, but only the DEEP-end extension is workshop-
-    /// meaningful (the near-end extension lies inside the body
-    /// cavity, where there is no cup-wall material to subtract from).
+    /// cylinder is therefore bisected LENGTHWISE by the cup-piece
+    /// SDF halfspace intersect (recon-4 (P): each cup half
+    /// receives one half-cylinder of the socket cross-section via
+    /// the pre-MC halfspace, not a post-MC `SeamTrim`); the
+    /// `axial / 2` extension SURVIVES on both axial faces, but
+    /// only the DEEP-end extension is workshop-meaningful (the
+    /// near-end extension lies inside the body cavity, where there
+    /// is no cup-wall material to subtract from — and the
+    /// inflate-axial push protects against the cup-side coincident-
+    /// face boolean-union failure mode, see
+    /// `shaft_socket_near_end_clears_body_cap_plane` test).
     ///
     /// v2 iter-1 default `0.00100` = 1.00 mm matches recon §9
     /// M4 baseline.
@@ -462,8 +467,8 @@ fn shaft_parent(anchor: Point3<f64>, outward: Vector3<f64>, length_m: f64) -> Cy
 /// radius at the cap plane, so the shaft's near-end portion is
 /// fully CONTAINED in the body's cross-section (no surface
 /// intersection at the overlap zone, manifold3d's safest boolean
-/// path — same case as
-/// [`crate::mesh_csg::apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`]).
+/// path — same case as the recon-3 §R3-3 contained-cylinder
+/// absorption characterisation in `mesh_csg::tests`).
 /// Workshop-visible far-end position is unchanged (still
 /// `cap_centroid + cap_normal × pin_length_m`); only the
 /// non-visible interior portion of the shaft changes.
@@ -477,7 +482,7 @@ fn shaft_parent(anchor: Point3<f64>, outward: Vector3<f64>, length_m: f64) -> Cy
 /// be safe without the bias per the recon-4 framework, but the
 /// uniform application protects against future spec changes that
 /// might pin the dome end too).
-const PLUG_SHAFT_NEAR_END_OVERLAP_M: f64 = 0.001;
+pub const PLUG_SHAFT_NEAR_END_OVERLAP_M: f64 = 0.001;
 
 /// Extend the cylinder's near-end (the end at
 /// `center - axis * half_length`) inward by `overlap_m`, leaving
@@ -507,9 +512,12 @@ fn extend_near_end(parent: &CylinderParent, overlap_m: f64) -> CylinderParent {
 /// normalized. For the typical iter-1 pour-end pin where
 /// `pour_outward` aligns with the centerline tangent at the cap
 /// plane, this axis equals the ribbon binormal — i.e., is parallel
-/// to the seam-plane normal — so the per-piece `SeamTrim` bisects
-/// the cylinder through its center along a co-planar circular
-/// cross-section (recon §5 approach (a)).
+/// to the seam-plane normal — so the cup-piece SDF halfspace
+/// intersect (recon-4 (P), see
+/// [`crate::piece::compose_piece_solid`]) bisects the cup-side
+/// T-slot through its center along a co-planar circular
+/// cross-section (each cup half receives one half-disk T-slot
+/// cap on its mating face).
 fn t_bar_parent_at(
     pour_anchor: Point3<f64>,
     pour_outward: Vector3<f64>,
@@ -606,13 +614,15 @@ pub fn build_plug_self_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
 /// Build the cup-side mesh-CSG transforms for the ribbon's plug-
 /// pin sockets and (when enabled) T-slot.
 ///
-/// **Side-agnostic** per S4: both Negative and Positive cup pieces
-/// emit the *same* Vec, and the per-piece
-/// [`MatingTransform::SeamTrim`] downstream bisects each cylinder
-/// at the seam plane. The T-bar's axis is parallel to the seam
-/// normal, so the trim cuts each T-slot through its center along
-/// a co-planar half-disk on the cup-piece mating face (recon §5
-/// approach (a)).
+/// **Side-agnostic** transforms Vec: both Negative and Positive
+/// cup pieces emit the *same* Vec; the cup-piece SDF halfspace
+/// intersect (recon-4 (P), see [`crate::piece::compose_piece_solid`])
+/// bounds each piece's MC mesh to its kept half-shell, so each
+/// cylinder `SubtractCylinder` is effectively bisected at the seam
+/// plane by construction. The T-bar's axis is parallel to the seam
+/// normal, so each cup half receives one co-planar half-disk T-slot
+/// cross-section on its mating face (workshop "captive T-bar
+/// insertion" mating model).
 ///
 /// Returns one [`MatingTransform::SubtractCylinder`] per enabled
 /// feature, with the cup-side parameters inflated relative to the
@@ -666,23 +676,29 @@ pub fn build_plug_socket_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
 ///
 /// The cup-side cylinder primitive then extends `axial / 2` past
 /// the plug-side cylinder on EACH axial face (symmetric `/2`
-/// convention matching the diametral budget). Per-piece `SeamTrim`
-/// downstream interacts with the extended cylinder differently
-/// depending on which feature it carries:
+/// convention matching the diametral budget). The cup-piece SDF
+/// halfspace intersect (recon-4 (P), see
+/// [`crate::piece::compose_piece_solid`]) interacts with the
+/// extended cylinder differently depending on which feature it
+/// carries:
 ///
-/// - **T-slot** (T-bar axis parallel to seam normal): seam plane
-///   bisects the cylinder through its center, perpendicular to its
-///   long axis. Each cup half receives one half-cylinder; the
-///   `axial / 2` extension at each lateral tip becomes a pocket-
-///   bottom relief at the AWAY-from-seam end of that half's T-slot.
+/// - **T-slot** (T-bar axis parallel to seam normal): the SDF
+///   halfspace bisects the cylinder through its center,
+///   perpendicular to the long axis. Each cup half receives one
+///   half-cylinder; the `axial / 2` extension at each lateral tip
+///   becomes a pocket-bottom relief at the AWAY-from-seam end of
+///   that half's T-slot.
 /// - **Shaft socket** (shaft axis perpendicular to seam normal):
-///   shaft axis lies WITHIN the seam plane, so the trim bisects
-///   the cylinder LENGTHWISE; each cup half receives one half-
-///   cylinder split along its long axis. The `axial / 2`
-///   extension survives the trim on both axial faces, but only the
-///   DEEP-end extension is workshop-meaningful (the near-end
-///   extension lies inside the body cavity, where there is no
-///   cup-wall material to subtract from).
+///   shaft axis lies WITHIN the seam plane, so the halfspace
+///   bisects the cylinder LENGTHWISE; each cup half receives one
+///   half-cylinder split along its long axis. The `axial / 2`
+///   extension survives on both axial faces, but only the DEEP-end
+///   extension is workshop-meaningful (the near-end extension
+///   lies inside the body cavity, where there is no cup-wall
+///   material to subtract from — AND it pushes the socket's
+///   near-end cap off the body cap plane, avoiding the
+///   coincident-face boolean-union failure mode on the cup side;
+///   see `shaft_socket_near_end_clears_body_cap_plane` test).
 fn inflate_axial(parent: &CylinderParent, axial_clearance_m: f64) -> CylinderParent {
     CylinderParent {
         center_m: parent.center_m,

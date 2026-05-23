@@ -1111,7 +1111,7 @@ fn mesh_and_gate_v2_funnel(
 /// workshop visual fidelity. The funnel solid is small (~38 mm
 /// tall × 30 mm Ø top) so finer cells cost ~1-3 s; effectively
 /// free vs the cast's main meshing time.
-const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
+pub const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
 
 /// Write every pending piece + per-layer plug + optional platform
 /// + optional funnel to disk and build the report structs.

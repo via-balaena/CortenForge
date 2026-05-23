@@ -178,11 +178,11 @@ pub fn build_platform_solid(
         cuboid_z_center,
     ));
 
-    // S3 plumbing: no mating transforms yet. S7 (sweep) may migrate
-    // the cuboid-pocket carve to a mesh-CSG `SubtractCylinder` keyed
-    // off the same T-bar parent triple the plug + cup pieces consume,
-    // so platform pocket / plug T-bar / cup T-slot all match by
-    // construction.
+    // Platform pocket stays pure SDF — explicitly deferred from
+    // the S7 mesh-CSG sweep per `MATING_FEATURES_PLAN.md` §S8 Phase
+    // A "Deferred items"; no observed workshop defect, and the
+    // 2 mm cuboid lateral slack ergonomically beats a tighter
+    // cylinder pocket.
     Some((slab.subtract(hole), Vec::new()))
 }
 

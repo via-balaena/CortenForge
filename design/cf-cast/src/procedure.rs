@@ -469,13 +469,16 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  curve-following seam. This cast has no integral \
                  registration features (`RegistrationKind::None`); \
                  align the pieces by hand and clamp with rubber bands \
-                 or wide tape during pour + cure. Post-S4 of the \
-                 mating-features arc, each piece's seam face is trimmed \
-                 flat to the exact ribbon plane via post-MC mesh-CSG \
-                 (see `cf-cast::piece::RIBBON_PIECE_OVERLAP_M` for the \
-                 pre-trim SDF over-build extent), so the two halves \
-                 seat flush at the seam without bias and hand alignment \
-                 only needs to bring the cup outlines into registration."
+                 or wide tape during pour + cure. Each piece's seam \
+                 face is bit-precise flat to the ribbon plane via \
+                 the cup-piece SDF halfspace intersect (MC's \
+                 linear-SDF interpolation places seam-cap vertices \
+                 exactly on the plane; see \
+                 `cf-cast::piece::RIBBON_PIECE_OVERLAP_M` for the \
+                 0.5 mm inward bias that gives each piece a 1 mm \
+                 seam overlap), so the two halves seat flush at the \
+                 seam and hand alignment only needs to bring the cup \
+                 outlines into registration."
             );
             md.push('\n');
             let _ = writeln!(

@@ -9,11 +9,22 @@
 //! enough to seal; pin protrusion ≠ socket depth; T-bar misfit).
 //!
 //! S3 ships the empty-Vec pass-through: every composer emits
-//! `(Solid, Vec<MatingTransform>)` with the Vec empty. S4 (seam
-//! plane), S5 (registration pins), S6 (T-bar + plug-pin), and S7
-//! (funnel-nipple + cup pour-gate) populate
-//! the Vec with concrete transforms. See decision §1 + §11 of
-//! `docs/CF_CAST_MATING_FEATURES_RECON.md` for the full surface.
+//! `(Solid, Vec<MatingTransform>)` with the Vec empty. S5
+//! (registration pins), S6 (T-bar + plug-pin), and S7 (cup
+//! pour-gate) populate the Vec with concrete cylinder ops; the
+//! plug-shaft adds a near-end overlap-bias via
+//! [`crate::plug::PLUG_SHAFT_NEAR_END_OVERLAP_M`] for clean
+//! boolean-union welding against the SDF-meshed plug body. S4
+//! originally added a `MatingTransform::SeamTrim` emission for
+//! the cup-piece seam plane, reverted by recon-4 (P) to the
+//! pre-S4 SDF halfspace intersect (see
+//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2); the
+//! `SeamTrim` variant + `apply_one` arm are retained as a
+//! defensive primitive but no longer emitted from production
+//! composers. S7's funnel-nipple was similarly reverted by the
+//! funnel fix (`2bf0bd17`); cup-side pour-gate stays mesh-CSG.
+//! See decision §1 + §11 of `docs/CF_CAST_MATING_FEATURES_RECON.md`
+//! for the original migration surface.
 //!
 //! # Unit boundary
 //!
@@ -96,8 +107,14 @@ pub enum MatingTransform {
     /// Trim the mesh against an exact plane defined as
     /// `dot(normal, p) = offset_m` (meters world coords). The
     /// `normal` direction points toward the half-space to **keep**;
-    /// matter on the opposite side is removed. S4 (seam plane)
-    /// emits one of these per cup piece.
+    /// matter on the opposite side is removed. Originally emitted
+    /// by S4 for the cup-piece seam plane; reverted by recon-4 (P)
+    /// to the pre-S4 SDF halfspace intersect (see module
+    /// docstring + `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md`
+    /// §F-2). Retained as a defensive primitive — `apply_one` arm
+    /// still runs and the variant's behavior is covered by
+    /// `seam_trim_caps_at_offset_*` tests — but no longer emitted
+    /// by any production composer.
     SeamTrim {
         /// Outward-pointing unit normal of the kept half-space.
         normal: UnitVector3<f64>,
@@ -107,8 +124,14 @@ pub enum MatingTransform {
     },
     /// Mesh-union of an exact axis-aligned cylinder primitive.
     /// S5 emits one per Negative-side registration pin; S6 emits
-    /// one for the plug-side T-bar + plug-pin shaft; S7 emits one
-    /// for the funnel-side pour-gate nipple.
+    /// one for the plug-side T-bar + plug-pin shaft (the shaft
+    /// near-end is shifted inward by
+    /// [`crate::plug::PLUG_SHAFT_NEAR_END_OVERLAP_M`] so the
+    /// boolean union welds cleanly into the SDF-meshed plug body
+    /// — see recon-4 paradigm-boundary pattern). S7's funnel-side
+    /// pour-gate nipple was reverted by the funnel fix to SDF
+    /// (continuous welding with the SDF flange); no production
+    /// composer currently emits `UnionCylinder` for the funnel.
     UnionCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,
@@ -116,8 +139,11 @@ pub enum MatingTransform {
     /// Mesh-subtract of an exact axis-aligned cylinder primitive.
     /// S5 emits one per Positive-side registration socket; S6 emits
     /// the cup-side T-slot + plug-pin socket carves; S7 emits one
-    /// per cup-side pour-gate leg (pour + vent) and one for the
-    /// funnel-side nipple lumen.
+    /// per cup-side pour-gate leg (pour + vent). The funnel-side
+    /// nipple lumen was reverted by the funnel fix to SDF (carved
+    /// in the funnel's `outer.subtract(inner)` SDF chain); no
+    /// production composer currently emits `SubtractCylinder` for
+    /// the funnel side.
     SubtractCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,
@@ -226,17 +252,18 @@ pub fn build_cylinder_along_axis(
 /// `plane_point` and its body extends `2 × slab_half_thickness_m`
 /// into the `-normal` half-space.
 ///
-/// Useful when S4's seam-trim mechanism needs an explicit Boolean
+/// Useful when a seam-trim-style consumer needs an explicit Boolean
 /// `difference(slab)` instead of [`Manifold::trim_by_plane`] (e.g.,
 /// to work around upstream issue #1516's coincident-face reassembly
 /// caveat in scenarios that compose against the slab directly).
 /// `slab_half_thickness_m` must exceed the target mesh's extent on
 /// the `-normal` side of the plane.
 ///
-/// Currently exercised only by S3's unit tests; the live S3 pipeline
-/// uses [`MatingTransform::SeamTrim`] which routes through manifold3d's
-/// direct `trim_by_plane` op. S4 may switch to slab-intersect if
-/// downstream issues surface.
+/// Currently exercised only by unit tests; no production composer
+/// emits [`MatingTransform::SeamTrim`] (S4's seam-trim emission was
+/// reverted by recon-4 (P), see this module's docstring). Retained
+/// for future paradigm-boundary primitives that may need an
+/// explicit-slab boolean as a numerical fallback.
 #[must_use]
 pub fn build_half_space_slab(
     plane_point: Point3<f64>,
@@ -1158,7 +1185,7 @@ mod tests {
     /// surface. Empirically manifold3d ABSORBS the contained
     /// cylinder into the host; the result is one component. The
     /// shell-host counterpart
-    /// [`apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`]
+    /// `apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`
     /// confirms the same absorption behavior on a multi-surface
     /// 20 mm-cube-minus-10 mm-cube host (recon-3 §R3-3 Branch B
     /// finding: synthetic shell-host unions behave correctly).
@@ -1316,7 +1343,7 @@ mod tests {
     /// into outer, no extra component).
     ///
     /// Pair this with the companion
-    /// [`apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`]
+    /// `apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`
     /// — same shell host + same cylinder radius/length, only the
     /// center moves. Both pass at "no extra component" on synthetic
     /// geometry. Recon-4 (P) restored the contained-cylinder

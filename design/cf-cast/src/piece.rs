@@ -17,7 +17,7 @@
 //! inward by [`RIBBON_PIECE_OVERLAP_M`] so the two pieces overlap by
 //! 1 mm at the seam). Marching-cubes meshes the half-shell directly;
 //! the mating-features cylinders (S5/S6/S7) compose post-MC via
-//! [`apply_mating_transforms`]. See
+//! [`crate::mesh_csg::apply_mating_transforms`]. See
 //! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 for the
 //! recon-4 (P) architectural-correction rationale: the seam belongs
 //! to the SDF/MC paradigm (continuous bulk geometry); mating-feature

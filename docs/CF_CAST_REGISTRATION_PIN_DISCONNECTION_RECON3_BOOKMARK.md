@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-05-23):** Resolved by recon-4 (P) — see [`docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md`](./CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md) §F-2/§F-3. The (α) split-normal protrusion pin design was reverted to the pre-recon-2 binormal-axis annulus-midpoint design per recon-4 §F-3 + impl `24bdc221`. Workshop iter-1 plug STL connectivity (orthogonal to the registration arc) fixed by the recon-4-pattern plug-shaft overlap-bias `6fcdeb0b`. Retained as audit trail.
+
 # cf-cast registration-pin disconnection — recon-3 bookmark
 
 **Status:** bookmark, 2026-05-22 — recon-2 implementation FALSIFIED;

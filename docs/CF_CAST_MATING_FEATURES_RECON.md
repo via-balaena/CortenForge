@@ -1,3 +1,5 @@
+> **PARTIAL REVERT (2026-05-23):** S4 (cup-piece seam SDF → post-MC `MatingTransform::SeamTrim`) was reverted by recon-4 (P) per [`docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md`](./CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md) §F-2 + impl `24bdc221`. S7's funnel-nipple sub-migration was reverted by the funnel fix `2bf0bd17`. S5/S6/S7 mating-features mesh-CSG (registration pins, T-bar/T-slot/plug-shaft, cup pour-gate) STAYS. §F-4 audit falsified S4's flatness justification (pre-S4 SDF seam was already bit-precise flat via MC linear-SDF interpolation). The plug-shaft `MatingTransform::UnionCylinder` got a near-end overlap-bias (`PLUG_SHAFT_NEAR_END_OVERLAP_M`) per the recon-4 paradigm-boundary pattern (`6fcdeb0b`). Retained as audit trail.
+
 # cf-cast mating-features — S2 recon
 
 **Arc:** [`docs/CF_CAST_MATING_FEATURES_PLAN.md`](./CF_CAST_MATING_FEATURES_PLAN.md)

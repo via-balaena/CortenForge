@@ -286,7 +286,7 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 /// mesh-CSG union absorbs the contained binormal-axis pin into the
 /// half-shell without disconnection (per
 /// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-3 + the recon-3
-/// §R3-3 `apply_mating_transforms_absorbs_contained_cylinder_into_shell_host`
+/// §R3-3 contained-cylinder absorption test (in `mesh_csg::tests`)
 /// characterisation). The workshop-visible ridge is the half of the
 /// pin cylinder that extends past the Negative half-shell's seam
 /// face (`+binormal · pin_half_length_m` = 5 mm protrusion); the

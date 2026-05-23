@@ -13,13 +13,14 @@
 //! See `docs/CURVE_FOLLOWING_DESIGN.md` §Algorithm §Step 2 for the
 //! full geometric construction. This module ships the [`Ribbon`]
 //! type, its SDF evaluation ([`Ribbon::sdf`] — Step 4 of the v2
-//! arc), the single-plane seam approximation
-//! ([`Ribbon::seam_plane_reference`] — consumed by
-//! [`crate::piece::compose_piece_solid`] post-S4 to emit a
-//! `MatingTransform::SeamTrim` against the ribbon's flat-cap
-//! approximation), and the [`Solid`]-adapter for the legacy SDF
-//! half-space ([`Ribbon::halfspace_solid`] — pre-S4 consumer; still
-//! exported for ribbon-SDF semantic tests).
+//! arc), the [`Solid`]-adapter for the SDF half-space
+//! ([`Ribbon::halfspace_solid`] — consumed by
+//! [`crate::piece::compose_piece_solid`] under recon-4 (P) to
+//! produce the side-specific cup-piece half-shell at the SDF/MC
+//! paradigm boundary), and the single-plane seam approximation
+//! ([`Ribbon::seam_plane_reference`] — consumed by S5's
+//! registration-pin pose derivation + the piece-flatness
+//! math-instrumented gates).
 //!
 //! # Types
 //!
@@ -558,8 +559,8 @@ impl Ribbon {
     /// with the last segment's frame. Out-of-range `t` returns
     /// `None`.
     ///
-    /// Used by [`crate::registration::build_registration_solid`] to
-    /// position pin cylinders along the centerline.
+    /// Used by [`crate::registration::build_registration_transforms`]
+    /// to position pin cylinders along the centerline.
     #[must_use]
     pub fn sample_at_arc_fraction(
         &self,
@@ -589,16 +590,27 @@ impl Ribbon {
         Some((last.end, last.tangent, last.binormal))
     }
 
-    /// World-frame reference for the S4 single-plane seam approximation.
+    /// World-frame reference for the single-plane seam approximation.
     ///
     /// Returns `(midpoint, binormal)` where `midpoint` is the
     /// arc-length midpoint of the centerline polyline and `binormal`
     /// is the unit-length binormal of the segment containing it. The
-    /// plane through `midpoint` with normal `binormal` is the post-MC
-    /// seam-trim reference for
-    /// [`crate::piece::compose_piece_solid`]'s
-    /// [`crate::mesh_csg::MatingTransform::SeamTrim`] emission (S4 of
-    /// `docs/CF_CAST_MATING_FEATURES_PLAN.md`).
+    /// plane through `midpoint` with normal `binormal` is the
+    /// reference seam plane used by:
+    ///
+    /// - S5's registration-pin pose derivation (the pin axis is the
+    ///   binormal returned here; the seam plane separates the two
+    ///   cup pieces' kept half-shells via the SDF halfspace intersect
+    ///   in [`crate::piece::compose_piece_solid`] under recon-4 (P)).
+    /// - The math-instrumented flatness gates in
+    ///   `crate::piece::tests::mating_face_is_mathematically_flat_*`
+    ///   (production-fixture promotion of the recon-4 §F-4 audit).
+    ///
+    /// Was originally introduced (S4) as the reference for a
+    /// post-MC `MatingTransform::SeamTrim` emission from
+    /// `compose_piece_solid`; recon-4 (P) (`24bdc221`) reverted the
+    /// seam to the SDF halfspace path. The reference plane is
+    /// retained because S5 + the flatness gates still consume it.
     ///
     /// For a straight centerline every segment's binormal is
     /// identical, so the returned plane coincides exactly with the
@@ -607,10 +619,8 @@ impl Ribbon {
     /// curve-following surface by
     /// `O(arc_length × max_tangent_rotation_rad / 2)` at the
     /// centerline endpoints; iter-1's near-axial body stays well
-    /// below the 0.1 mm RMS flatness target the plan §S4
-    /// falsification gate sets. Curved centerlines that exceed the
-    /// gate fall under plan §S4 bail-out (revert + meshed-slab
-    /// seam-trim variant, or tighter MC for the seam region only).
+    /// below the recon-4 §F-4 1 µm flatness threshold (verified
+    /// empirically by the `..._under_curved_centerline` variant).
     #[must_use]
     pub fn seam_plane_reference(&self) -> (Point3<f64>, Unit<Vector3<f64>>) {
         // sample_at_arc_fraction(0.5) is `Some` for any ribbon valid
