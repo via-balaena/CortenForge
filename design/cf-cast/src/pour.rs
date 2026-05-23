@@ -101,8 +101,7 @@ use crate::ribbon::Ribbon;
 ///
 /// Same workshop default as the other mesh-CSG cylinder ops (see
 /// [`crate::registration::PIN_SEGMENTS`] /
-/// [`crate::plug::PLUG_CYLINDER_SEGMENTS`] /
-/// [`crate::funnel::FUNNEL_CYLINDER_SEGMENTS`]). Part of the
+/// [`crate::plug::PLUG_CYLINDER_SEGMENTS`]). Part of the
 /// determinism contract — same parent + same `segments` → bit-equal
 /// output.
 pub const POUR_GATE_SEGMENTS: u32 = 32;

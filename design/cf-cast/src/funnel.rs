@@ -17,20 +17,38 @@
 //!
 //! - **Nipple** at the bottom: cylinder outer Ø = pour-gate Ø −
 //!   [`NIPPLE_DIAMETRAL_CLEARANCE_M`] (slides into the pour-leg
-//!   hole). Post-S7 lives entirely as a post-MC mesh-CSG primitive
-//!   ([`MatingTransform::UnionCylinder`]) so the OD is bit-precise
-//!   to f64 rather than MC-quantized. Inner Ø = outer Ø −
-//!   2 × [`FUNNEL_NIPPLE_WALL_M`].
+//!   hole). Inner Ø = outer Ø − 2 × [`FUNNEL_NIPPLE_WALL_M`].
 //! - **Flange** above the nipple: cylinder outer Ø = 2 ×
 //!   [`FUNNEL_FLANGE_OUTER_RADIUS_M`]. Rests flat on the cup wall
 //!   outer surface around the pour-gate hole.
 //! - **Cone** above the flange: truncated cone widening from
 //!   flange Ø at the bottom to 2 × [`FUNNEL_TOP_OUTER_RADIUS_M`]
 //!   at the top.
-//! - **Hollow interior**: single continuous tapered cavity. The
-//!   SDF carves the flange + cone region; the post-MC
-//!   [`MatingTransform::SubtractCylinder`] lumen carves through the
-//!   added nipple so the lumen passes through end-to-end.
+//! - **Hollow interior**: single continuous tapered cavity from
+//!   the nipple's inner Ø at `z=0` up to (top Ø −
+//!   2 × [`FUNNEL_CONE_WALL_M`]) at `z=top`.
+//!
+//! ## Architectural placement (recon-4 pattern)
+//!
+//! Nipple + flange + cone are all **SDF-meshed bulk geometry**:
+//! they weld into one continuous funnel body via SDF unions, and
+//! MC produces one connected mesh in a single pass. S7's migration
+//! of the nipple OD to a post-MC `MatingTransform::UnionCylinder`
+//! was reverted 2026-05-23 — the post-MC boolean union of the
+//! nipple cylinder onto the SDF-meshed flange ran into the same
+//! paradigm-boundary failure as recon-4 (P)'s seam-face film:
+//! exactly-coincident faces (nipple top at z=4 mm vs flange bottom
+//! at z=4 mm) produced 2 disconnected mesh components, and any
+//! sized overlap-bias created `ThinWall` + `SelfIntersecting` +
+//! `ExcessiveOverhang` F4 issues. The architectural-correctness
+//! principle (`docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2): a
+//! feature welded into bulk geometry belongs to the SDF/MC
+//! paradigm; only fine mating-feature primitives that need
+//! bit-precise diametral fit belong to mesh-CSG. The nipple's
+//! pour-gate-fit precision is bounded by [`NIPPLE_DIAMETRAL_CLEARANCE_M`]
+//! (0.5 mm workshop slack), well above MC-quantization noise at
+//! [`crate::spec::FUNNEL_MAX_CELL_SIZE_M`] (1 mm cells) — so the
+//! S7 "bit-precise OD" benefit was workshop-irrelevant.
 //!
 //! ## Recon §9 axial standoff — DEFERRED
 //!
@@ -50,9 +68,9 @@
 //! a specific implementation.
 
 use cf_design::Solid;
-use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
+use nalgebra::{UnitQuaternion, Vector3};
 
-use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
+use crate::mesh_csg::MatingTransform;
 use crate::pour::PourGateKind;
 use crate::ribbon::Ribbon;
 
@@ -63,18 +81,17 @@ use crate::ribbon::Ribbon;
 /// isn't a long viscous bottleneck.
 pub const FUNNEL_NIPPLE_HEIGHT_M: f64 = 0.004;
 
-/// Nipple wall thickness (m).
+/// Nipple wall thickness (m). 1.5 mm = 3-4 perimeters at a 0.4 mm
+/// FDM nozzle.
 ///
-/// 1.5 mm = 3-4 perimeters at a 0.4 mm FDM nozzle. Sized at 1.5 mm
-/// rather than 1 mm so the nipple has multi-perimeter structural
-/// rigidity against workshop pour-pressure deflection — and to
-/// clear cf-cast's F4 `min_wall_thickness: 1.0` threshold with
-/// margin around the inner lumen carve (which still passes through
-/// MC at the flange annulus, even though the nipple OD itself is
-/// bit-precise via mesh-CSG post-S7). Trade-off: nipple inner Ø
-/// drops from 7.8 mm (theoretical 1 mm wall) to 6.8 mm (`1.5` mm
-/// wall) — still wider than the pre-iter-1 6 mm pour-gate Ø, and
-/// the 4 mm nipple height keeps the bottleneck short.
+/// Sized at 1.5 mm rather than 1 mm to clear cf-cast's F4
+/// `min_wall_thickness: 1.0` threshold with margin — MC stair-step
+/// thinning at the nipple's outer surface can push a 1 mm-design
+/// wall below 1.0 mm in places, triggering Critical `ThinWall`
+/// failures. Trade-off: nipple inner Ø drops from 7.8 mm
+/// (theoretical 1 mm wall) to 6.8 mm (`1.5` mm wall) — still wider
+/// than the pre-iter-1 6 mm pour-gate Ø, and the 4 mm nipple
+/// height keeps the bottleneck short.
 pub const FUNNEL_NIPPLE_WALL_M: f64 = 0.0015;
 
 /// Diametral clearance between the nipple OD and the cup pour-gate
@@ -85,12 +102,11 @@ pub const FUNNEL_NIPPLE_WALL_M: f64 = 0.0015;
 /// funnel nipple shrinks by half this clearance per side).
 ///
 /// 0.5 mm — resting-contact fit per `docs/CF_CAST_MATING_FEATURES_RECON.md`
-/// §9 M5. Loosens vs the pre-S7 0.2 mm slack to absorb FDM bead
-/// bulge on both sides (cup hole prints undersized; funnel nipple
-/// prints oversized) without the workshop user reaming. The
-/// mesh-CSG migration (S7) makes the nominal sizes bit-precise to
-/// f64; the looser budget compensates only for the FDM
-/// mechanism-C error.
+/// §9 M5. Absorbs both FDM bead-bulge (cup hole prints undersized;
+/// funnel nipple prints oversized) AND MC-quantization noise on
+/// the SDF-meshed nipple OD at the [`crate::spec::FUNNEL_MAX_CELL_SIZE_M`]
+/// (1 mm) cell size (~0.5 mm radial precision). Workshop user
+/// reams if first print binds.
 pub const NIPPLE_DIAMETRAL_CLEARANCE_M: f64 = 0.0005;
 
 /// Flange outer radius (m).
@@ -128,47 +144,37 @@ pub const FUNNEL_CONE_WALL_M: f64 = 0.0015;
 /// total height + footprint manageable.
 pub const FUNNEL_CONE_HEIGHT_M: f64 = 0.030;
 
-/// Overshoot past funnel surfaces for the inner cavity carve (m).
+/// MC tolerance overshoot for the inner cavity at the funnel's
+/// open ends (m).
 ///
-/// 0.5 mm. Two uses post-S7 (both at the same workshop-margin
-/// value):
-///
-/// 1. **SDF top opening** — `inner_cone` extends `INNER_CAVITY_OVERSHOOT_M`
-///    above `cone_z_top` so MC produces a clean opening at the
-///    workshop pour mouth instead of leaving a stair-step shelf.
-/// 2. **Mesh-CSG lumen margin** — the post-MC
-///    [`MatingTransform::SubtractCylinder`] lumen extends
-///    `INNER_CAVITY_OVERSHOOT_M` past both nipple end faces so
-///    manifold3d's `difference` op definitely cuts through the
-///    unioned nipple's flat caps (at the tip + at the flange
-///    interface) rather than leaving a thin disk capping either
-///    end.
+/// 0.5 mm — small overshoot past the funnel's top + bottom
+/// surfaces ensures MC produces clean openings (workshop pour
+/// entry + exit) instead of leaving stair-step shelves at the
+/// cavity boundary.
 const INNER_CAVITY_OVERSHOOT_M: f64 = 0.0005;
 
-/// Build the workshop pour funnel [`Solid`] + post-MC mesh-CSG
-/// transforms for the given ribbon, or `None` if the ribbon has no
-/// pour gate enabled (no funnel needed).
+/// Build the workshop pour funnel [`Solid`] for the given ribbon,
+/// or `None` if the ribbon has no pour gate enabled (no funnel
+/// needed).
 ///
-/// Post-S7, the **nipple lives entirely as a post-MC mesh-CSG
-/// primitive** ([`MatingTransform::UnionCylinder`]) so its OD is
-/// bit-precise to f64 rather than MC-quantized (the cup pour-gate
-/// carve on the matching cup side similarly migrates to mesh-CSG,
-/// locking the workshop diametral fit at engine precision).
+/// Returns `Some((solid, transforms))` where `solid` is the
+/// SDF-encoded funnel body (nipple + flange + cone welded into one
+/// continuous SDF, lumen carved through the entire interior) and
+/// `transforms` is an empty Vec — the funnel composes entirely in
+/// SDF/MC; no post-MC mesh-CSG operations run (see the module
+/// docstring §"Architectural placement" for the recon-4 paradigm-
+/// boundary rationale that reverted the S7 post-MC nipple
+/// migration).
 ///
 /// The funnel's nipple OD is sized to slide into the ribbon's
 /// pour-gate hole: nipple OD = 2 × `pour_gate.gate_radius_m` −
 /// [`NIPPLE_DIAMETRAL_CLEARANCE_M`] (asymmetric `/2` convention —
 /// funnel side bears all the slack; cup-piece pour-gate-hole stays
-/// at the nominal `2 × gate_radius_m`).
-///
-/// The returned `Vec<MatingTransform>` contains two ops in
-/// declared order:
-/// 1. [`MatingTransform::UnionCylinder`] for the nipple body
-///    (`r = nipple_outer_r`, `z ∈ [0, FUNNEL_NIPPLE_HEIGHT_M]`).
-/// 2. [`MatingTransform::SubtractCylinder`] for the lumen
-///    (`r = nipple_inner_r`, z spans the nipple + small overshoot
-///    at both ends so the lumen opens at the nipple tip and joins
-///    the SDF-carved flange hole at the top).
+/// at the nominal `2 × gate_radius_m`). The cup-side pour-gate
+/// carve remains post-MC mesh-CSG (`crate::pour::build_pour_gate_transforms`)
+/// because it lives on a separate cup-piece mesh and the
+/// `SubtractCylinder` is a pure interior carve with no
+/// paradigm-boundary junction.
 ///
 /// Returns `None` when the ribbon's pour-gate kind is
 /// [`crate::pour::PourGateKind::None`].
@@ -187,8 +193,23 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
     let flange_z_top = nipple_z_top + FUNNEL_FLANGE_HEIGHT_M;
     let cone_z_top = flange_z_top + FUNNEL_CONE_HEIGHT_M;
 
-    // Outer body: flange disk ∪ cone frustum. The nipple + contact
-    // ring live post-MC as mesh-CSG primitives (see returned Vec).
+    // Outer body: nipple cylinder ∪ flange disk ∪ cone frustum.
+    // The nipple's top extends half the flange height past the
+    // nominal nipple_z_top so the SDF union has overlap to
+    // interpolate across at the junction. At the
+    // FUNNEL_MAX_CELL_SIZE_M (1 mm) cell size the MC cell straddling
+    // exactly-coincident nipple-top / flange-bottom z values can't
+    // resolve the SDF union into one connected manifold (without
+    // this overlap the mesh splits into a floating nipple component
+    // + a flange+cone shell starting at z = 4.5 mm rather than the
+    // nominal flange-bottom z = 4 mm — caught by
+    // `funnel_mesh_is_single_connected_component`). The overlap
+    // is INTERIOR to the flange's annular volume (nipple OD 4.75 mm
+    // is fully contained inside flange OD 10 mm / ID 3.25 mm), so
+    // workshop-visible geometry is unchanged.
+    let nipple_outer_h = FUNNEL_NIPPLE_HEIGHT_M + FUNNEL_FLANGE_HEIGHT_M / 2.0;
+    let nipple_outer = Solid::cylinder(nipple_outer_r, nipple_outer_h / 2.0)
+        .translate(Vector3::new(0.0, 0.0, nipple_outer_h / 2.0));
     let flange_outer =
         Solid::cylinder(FUNNEL_FLANGE_OUTER_RADIUS_M, FUNNEL_FLANGE_HEIGHT_M / 2.0).translate(
             Vector3::new(0.0, 0.0, f64::midpoint(nipple_z_top, flange_z_top)),
@@ -199,13 +220,12 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
         flange_z_top,
         cone_z_top,
     );
-    let outer = flange_outer.union(cone_outer);
+    let outer = nipple_outer.union(flange_outer).union(cone_outer);
 
-    // Inner cavity: cylinder through the flange hole, then taper up
-    // through the cone. The portion below z = nipple_z_top has no
-    // SDF material to carve (the nipple lives in mesh-CSG); the
-    // overshoot at the lower end keeps MC from leaving a thin shelf
-    // at the flange underside.
+    // Inner cavity: cylinder through nipple + flange, then taper
+    // up through the cone. Tiny overshoot at both ends so MC cuts
+    // cleanly at the funnel openings (workshop pour-entry below
+    // z=0, ladle-pour mouth above the cone top).
     let inner_lower_z_bot = -INNER_CAVITY_OVERSHOOT_M;
     let inner_lower_z_top = flange_z_top;
     let inner_lower_half_h = (inner_lower_z_top - inner_lower_z_bot) / 2.0;
@@ -223,57 +243,9 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
     );
     let inner = inner_lower.union(inner_cone);
 
-    // Mesh-CSG ops (S7): nipple body as UnionCylinder, then
-    // SubtractCylinder for the through-lumen. Order is load-bearing
-    // — Union MUST precede the Subtract so the lumen carves through
-    // the freshly-added material (manifold3d applies transforms in
-    // declared order; recon §5 sequencing principle).
-    let z_axis = Unit::new_unchecked(Vector3::new(0.0, 0.0, 1.0));
-    let nipple_half_len = FUNNEL_NIPPLE_HEIGHT_M / 2.0;
-    let nipple_parent = CylinderParent {
-        center_m: Point3::new(0.0, 0.0, nipple_half_len),
-        axis: z_axis,
-        half_length_m: nipple_half_len,
-    };
-    // Lumen extends half the nipple plus a small overshoot at each
-    // end so the bottom face opens to z<0 (workshop pour) and the
-    // top joins the SDF-carved flange hole cleanly. Centred at the
-    // nipple's midpoint so both ends overshoot symmetrically.
-    let lumen_half_len = nipple_half_len + INNER_CAVITY_OVERSHOOT_M;
-    let lumen_parent = CylinderParent {
-        center_m: Point3::new(0.0, 0.0, nipple_half_len),
-        axis: z_axis,
-        half_length_m: lumen_half_len,
-    };
-    let transforms = vec![
-        MatingTransform::UnionCylinder {
-            params: CylinderParams {
-                parent: nipple_parent,
-                radius_m: nipple_outer_r,
-                segments: FUNNEL_CYLINDER_SEGMENTS,
-            },
-        },
-        MatingTransform::SubtractCylinder {
-            params: CylinderParams {
-                parent: lumen_parent,
-                radius_m: nipple_inner_r,
-                segments: FUNNEL_CYLINDER_SEGMENTS,
-            },
-        },
-    ];
-    Some((outer.subtract(inner), transforms))
+    // Funnel composes entirely in SDF/MC — no post-MC mesh-CSG ops.
+    Some((outer.subtract(inner), Vec::new()))
 }
-
-/// Polygonal facet count around the circumference for the funnel's
-/// mesh-CSG cylinder primitives (nipple + lumen).
-///
-/// Same workshop default as the registration pin + plug shaft
-/// segment counts (see [`crate::registration::PIN_SEGMENTS`] /
-/// [`crate::plug::PLUG_CYLINDER_SEGMENTS`]) — 32 facets at a 5 mm
-/// nipple radius is < 0.05 mm chord error, well below workshop
-/// tolerances. Part of the determinism contract (same segments →
-/// bit-equal output across builds).
-pub const FUNNEL_CYLINDER_SEGMENTS: u32 = 32;
 
 /// Build a truncated cone (frustum) with bottom radius `r_bot` at
 /// `z_bot` and top radius `r_top` at `z_top` (axis along +Z).
@@ -367,31 +339,43 @@ mod tests {
         );
     }
 
+    /// Nipple SDF should contain its wall material between
+    /// `nipple_inner_r` and `nipple_outer_r` at mid-nipple z (the
+    /// recon-4 S7 revert restored the nipple to SDF/MC so the
+    /// boolean union with the flange welds continuously, fixing the
+    /// workshop iter-1 cf-view-smoke disconnection).
     #[test]
-    fn build_funnel_solid_sdf_is_empty_below_flange() {
-        // Post-S7: nipple + contact ring no longer live in the
-        // SDF (they're emitted as post-MC `UnionCylinder` ops, see
-        // `funnel_emits_nipple_ring_lumen_transforms_per_spec`).
-        // The SDF only carries the flange disk + cone, so any point
-        // below the flange-bottom plane should report "outside"
-        // (SDF > 0). The mesh-CSG step is responsible for adding
-        // the nipple + ring material post-MC.
+    fn build_funnel_solid_nipple_wall_is_in_sdf() {
         let ribbon = iter1_like_ribbon();
+        let spec = match &ribbon.pour_gate {
+            PourGateKind::Default(s) => s.clone(),
+            PourGateKind::None => panic!("iter1_like_ribbon must have pour gate"),
+        };
         let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
-        let q_below_flange = Point3::new(0.0, 0.0, 0.002); // 2 mm above bottom — mid-nipple
+        let nipple_outer_r = spec.gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0;
+        let nipple_inner_r = nipple_outer_r - FUNNEL_NIPPLE_WALL_M;
+        let mid_wall_r = f64::midpoint(nipple_inner_r, nipple_outer_r);
+        let mid_z = FUNNEL_NIPPLE_HEIGHT_M / 2.0;
+        // Mid-nipple-wall point should be INSIDE the funnel (SDF < 0).
+        let q_wall = Point3::new(mid_wall_r, 0.0, mid_z);
         assert!(
-            funnel.evaluate(&q_below_flange) > 0.0,
-            "funnel SDF mid-nipple should be empty post-S7 (nipple lives \
-             as mesh-CSG UnionCylinder); got {}",
-            funnel.evaluate(&q_below_flange),
+            funnel.evaluate(&q_wall) < 0.0,
+            "funnel SDF at mid-nipple-wall (r={mid_wall_r}, z={mid_z}) should be inside; got {}",
+            funnel.evaluate(&q_wall),
         );
-        // Just outside the nipple radius (off the central axis) is
-        // also empty pre-mesh-CSG.
-        let q_off_axis = Point3::new(0.003, 0.0, 0.002); // 3 mm radius, mid-nipple
+        // On-axis at mid-nipple is inside the lumen → outside (SDF > 0).
+        let q_lumen = Point3::new(0.0, 0.0, mid_z);
         assert!(
-            funnel.evaluate(&q_off_axis) > 0.0,
-            "funnel SDF off-axis below flange should be empty post-S7; got {}",
-            funnel.evaluate(&q_off_axis),
+            funnel.evaluate(&q_lumen) > 0.0,
+            "funnel SDF on-axis at mid-nipple (lumen interior) should be outside; got {}",
+            funnel.evaluate(&q_lumen),
+        );
+        // Off-axis beyond nipple OD is outside the funnel body.
+        let q_off = Point3::new(nipple_outer_r + 0.002, 0.0, mid_z);
+        assert!(
+            funnel.evaluate(&q_off) > 0.0,
+            "funnel SDF beyond nipple OD at mid-nipple z should be outside; got {}",
+            funnel.evaluate(&q_off),
         );
     }
 
@@ -412,73 +396,37 @@ mod tests {
         );
     }
 
-    /// S7 transform-parameter audit: `build_funnel_solid` must emit
-    /// the two expected mesh-CSG ops in declared order — nipple
-    /// `UnionCylinder` + lumen `SubtractCylinder` — with radii /
-    /// half-lengths / poses matching the module-level constants.
-    /// Replaces the pre-S7 SDF probes at nipple-interior /
-    /// nipple-wall points (the nipple no longer lives in the SDF).
+    /// `build_funnel_solid` returns no mesh-CSG transforms — the
+    /// funnel composes entirely in SDF/MC (the S7 nipple migration
+    /// was reverted 2026-05-23 per the module docstring §"Architectural
+    /// placement" rationale).
     #[test]
-    fn funnel_emits_nipple_and_lumen_transforms_per_spec() {
+    fn build_funnel_solid_returns_empty_transforms() {
         let ribbon = iter1_like_ribbon();
-        let pour_radius = match &ribbon.pour_gate {
-            PourGateKind::Default(spec) => spec.gate_radius_m,
-            PourGateKind::None => panic!("iter1_like_ribbon must have pour gate"),
-        };
         let (_, transforms) = build_funnel_solid(&ribbon).expect("funnel should build");
-        assert_eq!(transforms.len(), 2, "expect [nipple, lumen] ops");
-
-        let expected_nipple_outer_r = pour_radius - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0;
-        let expected_nipple_inner_r = expected_nipple_outer_r - FUNNEL_NIPPLE_WALL_M;
-        let nipple_half = FUNNEL_NIPPLE_HEIGHT_M / 2.0;
-
-        // 1. Nipple body — UnionCylinder centred at nipple midpoint.
-        match &transforms[0] {
-            MatingTransform::UnionCylinder { params } => {
-                assert!(
-                    (params.radius_m - expected_nipple_outer_r).abs() < f64::EPSILON,
-                    "nipple radius should be gate_radius - diametral/2 = \
-                     {expected_nipple_outer_r}; got {}",
-                    params.radius_m,
-                );
-                assert!(
-                    (params.parent.half_length_m - nipple_half).abs() < f64::EPSILON,
-                    "nipple half_length should be FUNNEL_NIPPLE_HEIGHT/2 = \
-                     {nipple_half}; got {}",
-                    params.parent.half_length_m,
-                );
-                assert!((params.parent.center_m.z - nipple_half).abs() < f64::EPSILON);
-                assert_eq!(params.segments, FUNNEL_CYLINDER_SEGMENTS);
-            }
-            other => panic!("transforms[0] expected UnionCylinder; got {other:?}"),
-        }
-
-        // 2. Lumen — SubtractCylinder with the nipple-inner radius,
-        // extended past both nipple ends by INNER_CAVITY_OVERSHOOT_M.
-        match &transforms[1] {
-            MatingTransform::SubtractCylinder { params } => {
-                assert!(
-                    (params.radius_m - expected_nipple_inner_r).abs() < f64::EPSILON,
-                    "lumen radius should be nipple_inner_r = \
-                     {expected_nipple_inner_r}; got {}",
-                    params.radius_m,
-                );
-                let expected_half = nipple_half + INNER_CAVITY_OVERSHOOT_M;
-                assert!((params.parent.half_length_m - expected_half).abs() < f64::EPSILON,);
-            }
-            other => panic!("transforms[1] expected SubtractCylinder; got {other:?}"),
-        }
+        assert!(
+            transforms.is_empty(),
+            "funnel composes entirely in SDF/MC; expected empty transforms vec, got {} ops",
+            transforms.len(),
+        );
     }
 
     /// Math-verified M5 fit invariant per
     /// `feedback_math_verify_geometric_contracts`. The funnel nipple
-    /// OD and the cup pour-gate-hole ID (carved at the nominal
-    /// `2 × gate_radius_m`, see `crate::pour::build_pour_gate_transforms`)
-    /// must differ by exactly [`NIPPLE_DIAMETRAL_CLEARANCE_M`] —
-    /// asymmetric `/2` convention (funnel side bears all the slack;
-    /// cup side stays at nominal). Verified at the transform-parameter
-    /// level so a regression on either side's sizing math is caught
-    /// without mesh round-trip noise.
+    /// OD (sized in SDF as `gate_radius_m − NIPPLE_DIAMETRAL_CLEARANCE_M / 2`)
+    /// and the cup pour-gate-hole ID (carved at the nominal
+    /// `2 × gate_radius_m` via mesh-CSG, see
+    /// `crate::pour::build_pour_gate_transforms`) must differ by
+    /// exactly [`NIPPLE_DIAMETRAL_CLEARANCE_M`] — asymmetric `/2`
+    /// convention (funnel side bears all the slack; cup side stays
+    /// at nominal).
+    ///
+    /// Verified at the spec-sizing level (funnel side) + the
+    /// transform-parameter level (cup side) so a regression on
+    /// either side's sizing math is caught without mesh round-trip
+    /// noise. NB: the funnel nipple OD is MC-quantized to the
+    /// `FUNNEL_MAX_CELL_SIZE_M` cell size (~0.5 mm radial precision
+    /// at 1 mm cells); workshop slack absorbs this.
     #[test]
     fn funnel_nipple_and_pour_gate_fit_invariant() {
         let ribbon = iter1_like_ribbon();
@@ -486,17 +434,11 @@ mod tests {
             PourGateKind::Default(spec) => spec.clone(),
             PourGateKind::None => panic!("iter1_like_ribbon must have pour gate"),
         };
-        let (_, funnel_transforms) = build_funnel_solid(&ribbon).expect("funnel should build");
-        let cup_transforms = crate::pour::build_pour_gate_transforms(&ribbon);
+        // Funnel nipple OD is derived in build_funnel_solid as
+        // `gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2`.
+        let funnel_nipple_r = spec.gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0;
 
-        // Funnel nipple radius = transforms[0]'s UnionCylinder radius.
-        let funnel_nipple_r = match &funnel_transforms[0] {
-            MatingTransform::UnionCylinder { params } => params.radius_m,
-            other => panic!("funnel_transforms[0] expected UnionCylinder; got {other:?}"),
-        };
-        // Cup pour-gate hole radius = first SubtractCylinder in the
-        // cup-side transforms (pour leg; vent leg follows when
-        // include_vent).
+        let cup_transforms = crate::pour::build_pour_gate_transforms(&ribbon);
         let cup_pour_r = cup_transforms
             .iter()
             .find_map(|t| match t {
@@ -520,6 +462,51 @@ mod tests {
             "cup pour-gate hole radius should equal gate_radius_m = {} \
              (cup side stays nominal); got {cup_pour_r}",
             spec.gate_radius_m,
+        );
+    }
+
+    /// Funnel connectivity regression guard — workshop iter-1
+    /// cf-view smoke (2026-05-23) surfaced a 2-component funnel.stl
+    /// when the nipple was a post-MC `UnionCylinder` boolean-unioned
+    /// onto the SDF-meshed flange (exactly-coincident faces at
+    /// z = `FUNNEL_NIPPLE_HEIGHT_M` produced disconnected output).
+    /// The recon-4-pattern revert moves the nipple back to SDF so
+    /// MC produces one continuous mesh in a single pass.
+    ///
+    /// Asserts the full pipeline (SDF → MC → mesh-CSG transforms)
+    /// produces a SINGLE connected component. Math-instrumented at
+    /// the lib-test level (`mesh_repair::components::find_connected_components`)
+    /// so the regression is caught without a workshop STL regen.
+    #[test]
+    fn funnel_mesh_is_single_connected_component() {
+        use crate::error::CastTarget;
+        use crate::mesh_csg::apply_mating_transforms;
+        use crate::mesher::solid_to_mm_mesh;
+        use mesh_repair::components::find_connected_components;
+
+        let ribbon = iter1_like_ribbon();
+        let (solid, transforms) =
+            build_funnel_solid(&ribbon).expect("iter1 fixture has pour gate enabled");
+        // 1 mm cell size matches `FUNNEL_MAX_CELL_SIZE_M` in the
+        // production funnel mesher path.
+        let mesh = solid_to_mm_mesh(&solid, 0.001, CastTarget::Funnel).expect("funnel MC");
+        let mesh = apply_mating_transforms(mesh, &transforms, CastTarget::Funnel)
+            .expect("funnel mesh-CSG");
+        let analysis = find_connected_components(&mesh);
+        assert_eq!(
+            analysis.component_count,
+            1,
+            "funnel mesh must be a single connected component (nipple + flange + \
+             cone welded by SDF union, meshed by MC in one pass); got {} components \
+             ({} verts / {} faces). A regression here means either (a) the SDF \
+             chain dropped the nipple_outer union (the S7-era post-MC mesh-CSG \
+             nipple migration produced 2 disconnected components — see the module \
+             docstring for the recon-4 pattern), or (b) a future migration \
+             introduced a new paradigm-boundary cylinder Union onto the \
+             SDF-meshed funnel without an SDF-side weld.",
+            analysis.component_count,
+            mesh.vertices.len(),
+            mesh.faces.len(),
         );
     }
 }
