@@ -36,15 +36,22 @@
 //!
 //! ## Composition
 //!
-//! [`build_pour_gate_solid`] returns the union of the two cylinders,
-//! or just the pour cylinder if `spec.include_vent = false`, or
-//! `None` if [`PourGateKind::None`].
-//! [`crate::piece::compose_piece_solid`] subtracts this solid from
-//! BOTH [`crate::ribbon::PieceSide`]s — since the legs lie on
-//! opposite sides of the seam (one on `+binormal`, one on
-//! `-binormal`), each piece carves the leg on its own side and
-//! leaves the other leg untouched (modulo the small
+//! [`build_pour_gate_transforms`] returns one
+//! [`MatingTransform::SubtractCylinder`] per channel — pour leg
+//! always, plus the vent leg when `spec.include_vent`. Empty Vec
+//! when [`PourGateKind::None`]. Post-S7 the carve lives as post-MC
+//! mesh-CSG primitives (bit-precise to f64) rather than as an SDF
+//! cylinder unioned into the cup-piece Solid before MC.
+//!
+//! [`crate::piece::compose_piece_solid`] appends these to BOTH
+//! [`crate::ribbon::PieceSide`]s' transform Vec — since the legs
+//! lie on opposite sides of the seam (one on `+binormal`, one on
+//! `-binormal`), the downstream S4 [`MatingTransform::SeamTrim`]
+//! bisects each leg cleanly: each piece keeps only its own side's
+//! half-cylinder carve (modulo the small
 //! [`crate::piece::RIBBON_PIECE_OVERLAP_M`] seam-overlap slice).
+//! Recon §5 sequencing principle: cylinder ops precede the seam
+//! trim.
 //!
 //! ## Why splay along binormal, not split-normal
 //!
@@ -84,10 +91,21 @@
 //!
 //! [`Ribbon::new`]: crate::ribbon::Ribbon::new
 
-use cf_design::Solid;
-use nalgebra::{Point3, UnitQuaternion, Vector3};
+use nalgebra::{Point3, Unit, Vector3};
 
+use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::ribbon::Ribbon;
+
+/// Polygonal facet count around the circumference for the
+/// pour-gate cylinder primitives.
+///
+/// Same workshop default as the other mesh-CSG cylinder ops (see
+/// [`crate::registration::PIN_SEGMENTS`] /
+/// [`crate::plug::PLUG_CYLINDER_SEGMENTS`] /
+/// [`crate::funnel::FUNNEL_CYLINDER_SEGMENTS`]). Part of the
+/// determinism contract — same parent + same `segments` → bit-equal
+/// output.
+pub const POUR_GATE_SEGMENTS: u32 = 32;
 
 /// V half-angle in radians — 30° (= π/6). Each leg of the V splays
 /// from the body's outward axis at the dome end by this angle
@@ -111,9 +129,11 @@ pub struct PourGateSpec {
     /// 20A / 30A at ~20-23k cps): 10 mm Ø roughly doubles the
     /// pour-area vs the pre-iter-1 6 mm Ø, dropping per-layer pour
     /// time from minutes to seconds. The matching pour funnel
-    /// ([`crate::build_funnel_solid`]) sizes its nipple to
-    /// `gate_radius_m × 2 − 0.2 mm` slack so it slides into the
-    /// pour leg hole.
+    /// ([`crate::build_funnel_solid`]) sizes its nipple OD to
+    /// `2 × gate_radius_m − NIPPLE_DIAMETRAL_CLEARANCE_M` (asymmetric
+    /// `/2` convention — cup pour-gate hole stays at exactly
+    /// `2 × gate_radius_m`; funnel side bears all the diametral
+    /// clearance).
     pub gate_radius_m: f64,
     /// Vent-leg channel radius (m). Default `0.003` = 3 mm =
     /// 6 mm diameter — same as the pour leg.
@@ -223,14 +243,21 @@ pub enum PourGateKind {
     Default(PourGateSpec),
 }
 
-/// Build the combined pour-leg + vent-leg Solid for the ribbon's
-/// pour-gate kind, or `None` if [`PourGateKind::None`].
+/// Build the cup-side pour-gate mesh-CSG transforms for the
+/// ribbon's pour-gate kind.
 ///
-/// Returns `Some(solid)` whose SDF is the union of the pour-leg
-/// cylinder (always present in `Default`) and the vent-leg
-/// cylinder (present when `spec.include_vent`).
+/// Returns an empty Vec when [`PourGateKind::None`] or when the
+/// ribbon has no segments (impossible via the public
+/// [`Ribbon::new`] constructor).
 ///
-/// V geometry:
+/// Each leg of the V emits one [`MatingTransform::SubtractCylinder`]:
+/// the pour leg always, plus the vent leg when `spec.include_vent`.
+/// `compose_piece_solid` appends these to both [`crate::ribbon::PieceSide`]
+/// transforms; the downstream [`MatingTransform::SeamTrim`] cleaves
+/// each leg into the side it belongs to (pour leg → Positive,
+/// vent leg → Negative) per the splay-along-binormal layout.
+///
+/// V geometry (unchanged from the pre-S7 SDF encoding):
 /// - **Apex** at `v_apex_anchor(ribbon)` — the centerline endpoint
 ///   FARTHER from `ribbon.pour_end_hint`'s centroid, or
 ///   `centerline[0]` when the hint is unset (cf-scan-prep's
@@ -246,43 +273,46 @@ pub enum PourGateKind {
 ///   normalized. Lands on the [`crate::ribbon::PieceSide::Negative`]
 ///   side.
 ///
-/// Returns `None` only when the ribbon has no segments — impossible
-/// for ribbons built via the public [`Ribbon::new`] constructor
-/// (which rejects fewer than 2 vertices).
+/// Per recon §9 M5 + the asymmetric `/2` clearance convention, the
+/// cup pour-gate hole stays at exactly `spec.gate_radius_m` (no
+/// inflation) — the funnel side bears all the diametral slack via
+/// [`crate::funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`]. The vent leg
+/// has no funnel-side counterpart and uses `spec.vent_radius_m`
+/// verbatim.
 ///
 /// [`Ribbon::new`]: crate::ribbon::Ribbon::new
 #[must_use]
-pub fn build_pour_gate_solid(ribbon: &Ribbon) -> Option<Solid> {
+pub fn build_pour_gate_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
     let spec = match &ribbon.pour_gate {
-        PourGateKind::None => return None,
+        PourGateKind::None => return Vec::new(),
         PourGateKind::Default(spec) => spec,
     };
-
-    let (apex, outward, binormal) = v_apex_anchor(ribbon)?;
+    let Some((apex, outward, binormal)) = v_apex_anchor(ribbon) else {
+        return Vec::new();
+    };
 
     let cos = V_HALF_ANGLE_RAD.cos();
     let sin = V_HALF_ANGLE_RAD.sin();
     let pour_leg_axis = (cos * outward + sin * binormal).normalize();
-    let vent_leg_axis = (cos * outward - sin * binormal).normalize();
 
-    let pour_leg = leg_cylinder(
+    let mut transforms = Vec::with_capacity(if spec.include_vent { 2 } else { 1 });
+    transforms.push(leg_transform(
         apex,
         pour_leg_axis,
         spec.gate_radius_m,
         spec.gate_half_length_m,
-    );
+    ));
 
-    if !spec.include_vent {
-        return Some(pour_leg);
+    if spec.include_vent {
+        let vent_leg_axis = (cos * outward - sin * binormal).normalize();
+        transforms.push(leg_transform(
+            apex,
+            vent_leg_axis,
+            spec.vent_radius_m,
+            spec.vent_half_length_m,
+        ));
     }
-
-    let vent_leg = leg_cylinder(
-        apex,
-        vent_leg_axis,
-        spec.vent_radius_m,
-        spec.vent_half_length_m,
-    );
-    Some(pour_leg.union(vent_leg))
+    transforms
 }
 
 /// Resolve the V apex `(point, outward_axis, binormal)` for this
@@ -325,17 +355,28 @@ fn v_apex_anchor(ribbon: &Ribbon) -> Option<(Point3<f64>, Vector3<f64>, Vector3<
     }
 }
 
-/// Build a single leg cylinder of the V — anchored at `apex` with
-/// its inner tip at the apex point and extending outward along
-/// `axis` by `2 * half_length_m`. The unit `axis` must already be
-/// normalized.
-fn leg_cylinder(apex: Point3<f64>, axis: Vector3<f64>, radius: f64, half_length: f64) -> Solid {
-    let center = apex + axis * half_length;
-    let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &axis)
-        .unwrap_or_else(UnitQuaternion::identity);
-    Solid::cylinder(radius, half_length)
-        .rotate(rotation)
-        .translate(center.coords)
+/// Build a single leg's [`MatingTransform::SubtractCylinder`] —
+/// inner tip at `apex`, extending outward along `axis` by
+/// `2 × half_length`. The unit `axis` must already be normalized.
+fn leg_transform(
+    apex: Point3<f64>,
+    axis: Vector3<f64>,
+    radius_m: f64,
+    half_length_m: f64,
+) -> MatingTransform {
+    let center_m = apex + axis * half_length_m;
+    let parent = CylinderParent {
+        center_m,
+        axis: Unit::new_normalize(axis),
+        half_length_m,
+    };
+    MatingTransform::SubtractCylinder {
+        params: CylinderParams {
+            parent,
+            radius_m,
+            segments: POUR_GATE_SEGMENTS,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -375,10 +416,37 @@ mod tests {
         assert_eq!(PourGateKind::default(), PourGateKind::None);
     }
 
+    /// Extract the inner-tip apex point of a `SubtractCylinder`
+    /// leg (= `center − axis × half_length`, i.e., the cylinder
+    /// face nearest the V apex).
+    fn leg_apex(t: &MatingTransform) -> Point3<f64> {
+        match t {
+            MatingTransform::SubtractCylinder { params } => {
+                let p = &params.parent;
+                p.center_m - p.axis.into_inner() * p.half_length_m
+            }
+            other => panic!("expected SubtractCylinder; got {other:?}"),
+        }
+    }
+
+    /// Extract the outward tip point of a `SubtractCylinder` leg
+    /// (= `center + axis × half_length`, i.e., the cylinder face
+    /// farthest from the V apex — where the carve emerges from the
+    /// cup outer surface).
+    fn leg_outward_tip(t: &MatingTransform) -> Point3<f64> {
+        match t {
+            MatingTransform::SubtractCylinder { params } => {
+                let p = &params.parent;
+                p.center_m + p.axis.into_inner() * p.half_length_m
+            }
+            other => panic!("expected SubtractCylinder; got {other:?}"),
+        }
+    }
+
     #[test]
-    fn build_pour_gate_solid_none_returns_none() {
+    fn build_pour_gate_transforms_none_returns_empty() {
         let ribbon = straight_x_ribbon(); // default pour_gate = None
-        assert!(build_pour_gate_solid(&ribbon).is_none());
+        assert!(build_pour_gate_transforms(&ribbon).is_empty());
     }
 
     /// Straight +X centerline with +Y split-normal → binormal +Z.
@@ -388,80 +456,85 @@ mod tests {
     /// `+binormal = +Z` from `-X` (so pour leg axis
     /// ≈ `(-cos30°, 0, +sin30°)` = `(-0.866, 0, +0.5)`); vent leg
     /// tilted -30° toward `-binormal = -Z` (so vent axis
-    /// ≈ `(-0.866, 0, -0.5)`). Each leg extends `2 * half_length`
-    /// from apex.
+    /// ≈ `(-0.866, 0, -0.5)`). Each leg's inner tip is at the
+    /// shared apex; outward tip extends `2 * half_length` from apex.
     #[test]
-    fn build_pour_gate_solid_default_returns_some_with_finite_bounds() {
+    fn build_pour_gate_transforms_default_emits_pour_and_vent() {
         let ribbon =
             straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-        let solid = build_pour_gate_solid(&ribbon).expect("Default kind should yield a solid");
-        let aabb = solid
-            .bounds()
-            .expect("channel cylinders should have finite bounds");
-        // Pour leg of length 90 mm at ~0.866 in -X direction reaches
-        // x ≈ -0.050 - 90 mm × 0.866 ≈ -0.128 m.
+        let transforms = build_pour_gate_transforms(&ribbon);
+        assert_eq!(transforms.len(), 2, "expect [pour, vent] SubtractCylinders");
+
+        // Pour leg radius = nominal `gate_radius_m` (cup side stays
+        // nominal per the asymmetric `/2` convention; funnel bears
+        // all M5 diametral slack).
+        let spec = PourGateSpec::iter1();
+        if let MatingTransform::SubtractCylinder { params } = &transforms[0] {
+            assert!((params.radius_m - spec.gate_radius_m).abs() < f64::EPSILON);
+            assert!((params.parent.half_length_m - spec.gate_half_length_m).abs() < f64::EPSILON);
+            assert_eq!(params.segments, POUR_GATE_SEGMENTS);
+        } else {
+            panic!(
+                "transforms[0] expected SubtractCylinder; got {:?}",
+                transforms[0]
+            );
+        }
+        // Vent leg radius = `vent_radius_m`; no funnel-side counterpart.
+        if let MatingTransform::SubtractCylinder { params } = &transforms[1] {
+            assert!((params.radius_m - spec.vent_radius_m).abs() < f64::EPSILON);
+            assert!((params.parent.half_length_m - spec.vent_half_length_m).abs() < f64::EPSILON);
+        } else {
+            panic!(
+                "transforms[1] expected SubtractCylinder; got {:?}",
+                transforms[1]
+            );
+        }
+
+        // Both legs share the V apex point at (-0.050, 0, 0).
+        let apex = Point3::new(-0.050, 0.0, 0.0);
+        for t in &transforms {
+            let inner = leg_apex(t);
+            assert!(
+                (inner - apex).norm() < 1.0e-9,
+                "leg inner tip should sit at apex; got {inner:?}"
+            );
+        }
+
+        // Pour leg's outward tip lands at apex + 90 mm × (-cos30°, 0, +sin30°)
+        // ≈ (-0.128, 0, +0.045). Vent leg's outward tip lands at
+        // apex + 80 mm × (-cos30°, 0, -sin30°) ≈ (-0.119, 0, -0.040).
+        let pour_tip = leg_outward_tip(&transforms[0]);
         assert!(
-            aabb.min.x <= -0.120,
-            "V pour leg should reach x ≤ -120 mm; got min.x = {}",
-            aabb.min.x,
+            pour_tip.x < -0.120,
+            "pour leg should reach x ≤ -120 mm; got {}",
+            pour_tip.x
         );
-        // Pour leg's +Z extent: apex + 90 mm × 0.5 = +0.045 m (plus
-        // radius slack ~3 mm).
         assert!(
-            aabb.max.z >= 0.040,
-            "V pour leg's +binormal extent should reach z ≥ +40 mm; got max.z = {}",
-            aabb.max.z,
+            pour_tip.z > 0.040,
+            "pour leg should reach z ≥ +40 mm; got {}",
+            pour_tip.z
         );
-        // Vent leg's -Z extent: apex + 80 mm × (-0.5) = -0.040 m
-        // (plus vent radius ~1 mm).
+        let vent_tip = leg_outward_tip(&transforms[1]);
         assert!(
-            aabb.min.z <= -0.035,
-            "V vent leg's -binormal extent should reach z ≤ -35 mm; got min.z = {}",
-            aabb.min.z,
+            vent_tip.z < -0.035,
+            "vent leg should reach z ≤ -35 mm; got {}",
+            vent_tip.z
         );
     }
 
-    /// With vent disabled, only the pour leg remains — AABB extends
-    /// in +binormal (=+Z) but NOT in -binormal (=-Z).
+    /// With vent disabled, only the pour leg remains.
     #[test]
-    fn build_pour_gate_solid_no_vent_omits_negative_binormal_extent() {
+    fn build_pour_gate_transforms_no_vent_omits_vent_leg() {
         let mut spec_no_vent = PourGateSpec::iter1();
         spec_no_vent.include_vent = false;
-        let ribbon_no_vent =
-            straight_x_ribbon().with_pour_gate(PourGateKind::Default(spec_no_vent));
-        let ribbon_with_vent =
-            straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-        let no_vent = build_pour_gate_solid(&ribbon_no_vent).unwrap();
-        let with_vent = build_pour_gate_solid(&ribbon_with_vent).unwrap();
-        // With-vent has the -binormal leg → AABB min.z well below 0.
-        let with_vent_min_z = with_vent.bounds().unwrap().min.z;
-        assert!(with_vent_min_z <= -0.035);
-        // No-vent has only the +binormal pour leg → AABB min.z is
-        // bounded by the pour-leg radius slack (~3 mm).
-        let no_vent_min_z = no_vent.bounds().unwrap().min.z;
+        let ribbon = straight_x_ribbon().with_pour_gate(PourGateKind::Default(spec_no_vent));
+        let transforms = build_pour_gate_transforms(&ribbon);
+        assert_eq!(transforms.len(), 1, "no-vent should emit only the pour leg");
+        // No -binormal extent (no vent leg).
+        let tip = leg_outward_tip(&transforms[0]);
         assert!(
-            no_vent_min_z >= -0.010,
-            "no-vent solid should not extend into -z; got min.z = {no_vent_min_z}",
-        );
-    }
-
-    /// Pour leg's inner tip sits at the V apex. A query just inside
-    /// the cylinder along the pour-leg axis should be inside (SDF
-    /// < 0).
-    #[test]
-    fn pour_gate_solid_is_inside_at_pour_leg_axis() {
-        let ribbon =
-            straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-        let solid = build_pour_gate_solid(&ribbon).unwrap();
-        // V apex at centerline[0] = (-0.050, 0, 0). Pour leg axis
-        // ≈ (-cos30°, 0, +sin30°) (binormal at apex = +Z for this
-        // ribbon). Step 20 mm along the leg from apex:
-        let pour_axis = Vector3::new(-V_HALF_ANGLE_RAD.cos(), 0.0, V_HALF_ANGLE_RAD.sin());
-        let on_leg = Point3::new(-0.050, 0.0, 0.0) + pour_axis * 0.020;
-        assert!(
-            solid.evaluate(&on_leg) < 0.0,
-            "pour-leg SDF along leg axis should be negative; got {}",
-            solid.evaluate(&on_leg),
+            tip.z > 0.040,
+            "remaining leg should be the +binormal pour leg"
         );
     }
 
@@ -473,26 +546,28 @@ mod tests {
     #[test]
     fn v_apex_flips_to_endpoint_opposite_pour_end_hint() {
         // Hint near `centerline.last()` (= (+0.050, 0, 0)) → V apex
-        // at `centerline[0]` (= (-0.050, 0, 0)). Pour leg extends
-        // outward in -X-ish.
+        // at `centerline[0]` (= (-0.050, 0, 0)).
         let ribbon = straight_x_ribbon()
             .with_pour_end_hint(Point3::new(0.060, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0))
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-        let solid = build_pour_gate_solid(&ribbon).unwrap();
+        let transforms = build_pour_gate_transforms(&ribbon);
+        let apex = leg_apex(&transforms[0]);
         assert!(
-            solid.bounds().unwrap().min.x < -0.050,
-            "V apex at centerline[0]: pour leg should extend into -X past -50 mm",
+            (apex.x - -0.050).abs() < 1.0e-9,
+            "apex should be at centerline[0]; got x={}",
+            apex.x
         );
 
         // Hint near `centerline[0]` → V apex at `centerline.last()`.
-        // Pour leg extends outward in +X-ish.
         let ribbon = straight_x_ribbon()
             .with_pour_end_hint(Point3::new(-0.060, 0.0, 0.0), Vector3::new(-1.0, 0.0, 0.0))
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-        let solid = build_pour_gate_solid(&ribbon).unwrap();
+        let transforms = build_pour_gate_transforms(&ribbon);
+        let apex = leg_apex(&transforms[0]);
         assert!(
-            solid.bounds().unwrap().max.x > 0.050,
-            "V apex at centerline.last(): pour leg should extend into +X past +50 mm",
+            (apex.x - 0.050).abs() < 1.0e-9,
+            "apex should be at centerline.last(); got x={}",
+            apex.x
         );
     }
 
@@ -515,24 +590,20 @@ mod tests {
             .unwrap()
             .with_pour_end_hint(cap_centroid, cap_normal)
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-        let solid = build_pour_gate_solid(&ribbon).expect("Default kind should yield a solid");
-        let aabb = solid.bounds().unwrap();
-        // V apex at z=+0.073, outward axis = -first.tangent ≈ +Z
-        // (first.tangent goes from z=+0.073 to z=+0.020 = -Z).
-        // Pour-leg + vent-leg both go in roughly +Z direction (with
-        // ±split offsets).
+        let transforms = build_pour_gate_transforms(&ribbon);
+        assert_eq!(transforms.len(), 2);
+        let apex = leg_apex(&transforms[0]);
         assert!(
-            aabb.max.z > 0.10,
-            "V at iter-1 dome should reach high +Z; got max.z = {}",
-            aabb.max.z,
+            (apex.z - 0.073).abs() < 1.0e-9,
+            "V apex must land at the closed dome z=+0.073; got z={}",
+            apex.z,
         );
-        // Both legs are entirely above z=+0.060 — the apex is at
-        // +0.073 and legs extend outward (+Z) with only the radius
-        // slack reaching below the apex.
-        assert!(
-            aabb.min.z >= 0.060,
-            "V at iter-1 dome should not extend below z=+60 mm; got min.z = {}",
-            aabb.min.z,
-        );
+        // Outward axis = -first.tangent ≈ +Z (first.tangent goes
+        // from z=+0.073 to z=+0.020 = -Z). Pour-leg + vent-leg both
+        // extend roughly +Z from apex with ±split offsets.
+        let pour_tip = leg_outward_tip(&transforms[0]);
+        let vent_tip = leg_outward_tip(&transforms[1]);
+        assert!(pour_tip.z > 0.10, "pour leg should reach high +Z");
+        assert!(vent_tip.z > 0.10, "vent leg should reach high +Z");
     }
 }

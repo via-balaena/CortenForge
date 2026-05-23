@@ -10,7 +10,8 @@
 //!
 //! S3 ships the empty-Vec pass-through: every composer emits
 //! `(Solid, Vec<MatingTransform>)` with the Vec empty. S4 (seam
-//! plane), S5 (registration pins), and S6 (T-bar + plug-pin) populate
+//! plane), S5 (registration pins), S6 (T-bar + plug-pin), and S7
+//! (funnel-nipple + cup pour-gate) populate
 //! the Vec with concrete transforms. See decision §1 + §11 of
 //! `docs/CF_CAST_MATING_FEATURES_RECON.md` for the full surface.
 //!
@@ -88,8 +89,8 @@ pub struct CylinderParams {
 ///
 /// Applied between [`crate::mesher::solid_to_mm_mesh`] and the F4
 /// printability gate. Transforms are applied in declared order;
-/// S3 ships the empty-Vec pass-through, S4/S5/S6 populate concrete
-/// variants.
+/// S3 ships the empty-Vec pass-through, S4/S5/S6/S7 populate
+/// concrete variants.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatingTransform {
     /// Trim the mesh against an exact plane defined as
@@ -106,14 +107,17 @@ pub enum MatingTransform {
     },
     /// Mesh-union of an exact axis-aligned cylinder primitive.
     /// S5 emits one per Negative-side registration pin; S6 emits
-    /// one for the plug-side T-bar + plug-pin shaft.
+    /// one for the plug-side T-bar + plug-pin shaft; S7 emits one
+    /// for the funnel-side pour-gate nipple.
     UnionCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,
     },
     /// Mesh-subtract of an exact axis-aligned cylinder primitive.
     /// S5 emits one per Positive-side registration socket; S6 emits
-    /// the cup-side T-slot + plug-pin socket carves.
+    /// the cup-side T-slot + plug-pin socket carves; S7 emits one
+    /// per cup-side pour-gate leg (pour + vent) and one for the
+    /// funnel-side nipple lumen.
     SubtractCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,

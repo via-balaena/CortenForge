@@ -73,7 +73,7 @@ use nalgebra::{Point3, Unit, Vector3};
 use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
 use crate::plug::build_plug_socket_transforms;
-use crate::pour::build_pour_gate_solid;
+use crate::pour::build_pour_gate_transforms;
 use crate::registration::build_registration_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
 
@@ -95,28 +95,33 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 /// Compose the per-(layer × piece) mold-piece geometry as the pair
 /// `(Solid, Vec<MatingTransform>)`:
 ///
-/// - **Solid** = `bounding_region ∖ layer_body ∖ pour_gate` (post-
-///   S6 side-agnostic AND plug-socket-agnostic — both
-///   [`PieceSide::Negative`] and [`PieceSide::Positive`] return the
-///   same Solid; the side-specific bisection AND the plug-shaft +
-///   T-slot socket carves move to the Vec).
+/// - **Solid** = `bounding_region ∖ layer_body` (post-S7 side-
+///   agnostic AND plug-socket-agnostic AND pour-gate-agnostic —
+///   both [`PieceSide::Negative`] and [`PieceSide::Positive`]
+///   return the same Solid; the side-specific bisection AND every
+///   cylinder carve move to the Vec).
 /// - **`Vec<MatingTransform>`** =
 ///   1. Plug-shaft socket + T-slot
 ///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
 ///      (side-agnostic — both cup halves emit the same set; S6).
-///   2. Per-pin registration ops — one
+///   2. Pour-gate + vent
+///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
+///      (side-agnostic — pour leg lands on `+binormal`, vent leg
+///      lands on `-binormal`; the seam trim downstream bisects
+///      each leg into the side it belongs to; S7).
+///   3. Per-pin registration ops — one
 ///      [`crate::mesh_csg::MatingTransform::UnionCylinder`] per pin
 ///      on [`PieceSide::Negative`]; one
 ///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] per
 ///      pin on [`PieceSide::Positive`] (S5).
-///   3. A single [`crate::mesh_csg::MatingTransform::SeamTrim`]
+///   4. A single [`crate::mesh_csg::MatingTransform::SeamTrim`]
 ///      selecting the side's kept half-space (plus the 0.5 mm
 ///      overlap bias; S4).
 ///
 /// Order matters: recon §5 requires the cylinder ops BEFORE the
-/// seam trim so the trim bisects pin/socket/T-slot meshes cleanly
-/// through the seam plane (approach (a) — cylinder CSG before
-/// trim).
+/// seam trim so the trim bisects pin/socket/T-slot/pour-leg meshes
+/// cleanly through the seam plane (approach (a) — cylinder CSG
+/// before trim).
 ///
 /// The returned Solid's SDF is **negative inside the cup-wall
 /// material** (inside the bounding region, outside the layer body);
@@ -156,34 +161,28 @@ pub fn compose_piece_solid(
         .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
     // S4: piece Solid is side-agnostic; ribbon-side bisection moved
     // to the returned `Vec<MatingTransform>` as a post-MC seam trim.
+    // Post-S7 the pour-gate carve also moves to the Vec; the base
+    // Solid is just `bounding ∖ layer_body`.
     let base_piece = bounding_region.clone().subtract(layer_body.clone());
 
-    // Step 10 + v2.1 sub-leaves 2-3: pour-gate + air-vent channels.
-    // Both pieces lose material along the channel cylinders
-    // (subtract). The side-mounted pour gate runs along the ribbon
-    // binormal from the centerline midpoint (so the positive piece
-    // gets most of the carve + a thin seam-overlap slice on the
-    // negative piece); the apex vent rises along `+Z` from the
-    // polyline's argmax-z vertex (straddles the seam, so each piece
-    // gets half the channel cross-section). When
-    // `ribbon.pour_gate` is `None` the helper returns `None` and the
-    // piece flows through unchanged.
-    let piece_with_channels = match build_pour_gate_solid(ribbon) {
-        Some(channels) => base_piece.subtract(channels),
-        None => base_piece,
-    };
-
     // S6: plug-anchor sockets + T-slot become post-MC mesh-CSG.
-    // Pre-S6 the cup-piece Solid had a third `subtract(sockets)`
-    // term here (`build_plug_socket_solid`); post-S6 the Solid
-    // (= `piece_with_channels`) is side-agnostic AND plug-socket-
-    // agnostic — both cup pieces emit the same SubtractCylinder
-    // transforms below, and the per-piece SeamTrim downstream
-    // bisects each cylinder (recon §5 approach (a): cylinder CSG
-    // before seam trim). T-slot + plug-shaft sockets land FIRST in
-    // the Vec so the seam trim bisects them cleanly; empty Vec
-    // when `ribbon.plug_pins` is `None`.
+    // Pre-S6 the cup-piece Solid had a `subtract(sockets)` term;
+    // post-S6 the Solid is side-agnostic AND plug-socket-agnostic
+    // — both cup pieces emit the same SubtractCylinder transforms
+    // below, and the per-piece SeamTrim downstream bisects each
+    // cylinder (recon §5 approach (a): cylinder CSG before seam
+    // trim). T-slot + plug-shaft sockets land FIRST in the Vec so
+    // the seam trim bisects them cleanly; empty Vec when
+    // `ribbon.plug_pins` is `None`.
     let mut transforms = build_plug_socket_transforms(ribbon);
+    // S7: pour-gate + air-vent channels migrate from SDF subtract
+    // to post-MC `SubtractCylinder` ops. Both pieces emit the same
+    // transforms; the splay-along-binormal layout puts the pour
+    // leg on `+binormal` (Positive) and the vent leg on `-binormal`
+    // (Negative), and the downstream SeamTrim cleaves each leg
+    // into the side it belongs to. Empty Vec when
+    // `ribbon.pour_gate` is `PourGateKind::None`.
+    transforms.extend(build_pour_gate_transforms(ribbon));
     // Step 9 (S5): inter-piece registration pins. Negative side
     // emits `UnionCylinder` per pin (gains protrusions); Positive
     // side emits `SubtractCylinder` per pin (gains matching
@@ -219,7 +218,7 @@ pub fn compose_piece_solid(
         normal: seam_normal_for(side, binormal),
         offset_m: seam_offset_m_for(side, midpoint, binormal),
     });
-    Ok((piece_with_channels, transforms))
+    Ok((base_piece, transforms))
 }
 
 /// Outward-pointing unit normal of the kept half-space for `side`.

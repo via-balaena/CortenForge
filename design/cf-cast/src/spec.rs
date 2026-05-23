@@ -2890,94 +2890,69 @@ mod tests {
         assert!(matches!(ribbon_gate.pour_gate, PourGateKind::Default(_)));
     }
 
+    /// Post-S7 the pour-gate carve lives as
+    /// [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
+    /// emitted into the returned Vec rather than as an SDF subtract
+    /// folded into the cup-piece [`cf_design::Solid`]. The carve is
+    /// side-agnostic — both [`PieceSide`]s emit the SAME pour-gate
+    /// transforms; the downstream
+    /// [`crate::mesh_csg::MatingTransform::SeamTrim`] cleaves each
+    /// leg into the side it belongs to (pour leg → Positive,
+    /// vent leg → Negative). The bisection itself is exercised
+    /// downstream by `pieces_partition_cup_material_at_seam_plane_in_post_csg_mesh`
+    /// in `piece.rs::tests`.
+    ///
+    /// Pre-S7 this surface was covered by two side-specific SDF
+    /// probe tests (`compose_piece_solid_with_pour_gate_carves_*`).
+    /// Post-S7 the cup Solid no longer carries the carve, so the
+    /// per-side probe is meaningless; transforms-Vec inspection
+    /// is the equivalent invariant.
     #[test]
-    fn compose_piece_solid_with_pour_gate_carves_positive_piece_cup_wall() {
-        // v2.1 sub-leaf 4 (V-at-dome): pour gate is a V at the
-        // centerline endpoint opposite `pour_end_hint`'s cap-plane
-        // centroid (falls back to `centerline[0]` when no hint).
-        // For this test we use a centerline shorter than
-        // `v2_fixture`'s default so the V apex sits INSIDE the
-        // body — the pour leg then crosses the cup-wall material
-        // on its way to the bounding region's outer surface, and
-        // the carve is testable.
-        //
-        // Body half-extents (0.025, 0.025, 0.020); bounding
-        // (0.040, 0.040, 0.030). Centerline -15→+15 mm in X with
-        // +Y split-normal → binormal +Z. V apex at centerline[0] =
-        // (-0.015, 0, 0), outward = -X. Pour leg axis
-        // = (cos30°·-X) + (sin30°·+Z) = (-0.866, 0, +0.5).
-        //
-        // Query at (-0.030, 0, +0.0098): along the pour leg axis
-        // from apex by ~17.3 mm. Inside bounding (|x|=30<40,
-        // z=0.0098<30); outside body (|x|=30>25); in Positive
-        // piece (+binormal=+Z side).
+    fn compose_piece_solid_with_pour_gate_emits_pour_and_vent_transforms_both_sides() {
         let spec = v2_fixture().0;
         let body = &spec.layers[0].body;
         let region = &spec.bounding_region;
         let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
-        let ribbon_no_gate = Ribbon::new(short_centerline.clone(), split).unwrap();
-        let ribbon_gate = Ribbon::new(short_centerline, split)
+        let pour_spec = PourGateSpec::iter1();
+        let ribbon_gate = Ribbon::new(short_centerline.clone(), split)
             .unwrap()
-            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+            .with_pour_gate(PourGateKind::Default(pour_spec.clone()));
+        let ribbon_no_gate = Ribbon::new(short_centerline, split).unwrap();
 
-        let (piece_no_gate, _) =
-            crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Positive).unwrap();
-        let (piece_gate, _) =
-            crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Positive).unwrap();
+        let count_subtract_cylinders_for_pour_gate = |ribbon: &Ribbon, side: PieceSide| -> usize {
+            let (_, transforms) = crate::compose_piece_solid(body, region, ribbon, side).unwrap();
+            transforms
+                .iter()
+                .filter(|t| {
+                    matches!(
+                        t,
+                        crate::mesh_csg::MatingTransform::SubtractCylinder { params }
+                            if (params.radius_m - pour_spec.gate_radius_m).abs() < f64::EPSILON
+                                || (params.radius_m - pour_spec.vent_radius_m).abs() < f64::EPSILON,
+                    )
+                })
+                .count()
+        };
 
-        let q = Point3::new(-0.030, 0.0, 0.0098);
-        assert!(
-            piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate Positive piece should INCLUDE cup-wall query at \
-             (-30mm, 0, +9.8mm); got {}",
-            piece_no_gate.evaluate(&q),
+        // Both sides emit pour leg + vent leg = 2 SubtractCylinder
+        // ops with pour-gate-spec radii.
+        assert_eq!(
+            count_subtract_cylinders_for_pour_gate(&ribbon_gate, PieceSide::Positive),
+            2,
         );
-        assert!(
-            piece_gate.evaluate(&q) > 0.0,
-            "V-pour-gate Positive piece should EXCLUDE pour-leg-axis query at \
-             (-30mm, 0, +9.8mm); got {}",
-            piece_gate.evaluate(&q),
+        assert_eq!(
+            count_subtract_cylinders_for_pour_gate(&ribbon_gate, PieceSide::Negative),
+            2,
         );
-    }
-
-    #[test]
-    fn compose_piece_solid_with_pour_gate_carves_negative_piece_only_via_vent_leg() {
-        // v2.1 sub-leaf 4: the V's pour leg lands on +binormal
-        // (Positive piece) and the vent leg lands on -binormal
-        // (Negative piece). For the +Z-binormal short-centerline
-        // fixture, the vent leg axis is (-cos30°, 0, -sin30°)
-        // ≈ (-0.866, 0, -0.5) from apex (-0.015, 0, 0). Query at
-        // (-0.030, 0, -0.0098) sits on the vent-leg axis and in
-        // Negative-piece cup-wall material (|x|=30>25 body,
-        // |x|=30<40 bounding; z=-0.0098<0 = -binormal half). The
-        // pour leg (on +binormal side) does NOT carve this point.
-        let spec = v2_fixture().0;
-        let body = &spec.layers[0].body;
-        let region = &spec.bounding_region;
-        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
-        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
-        let ribbon_no_gate = Ribbon::new(short_centerline.clone(), split).unwrap();
-        let ribbon_gate = Ribbon::new(short_centerline, split)
-            .unwrap()
-            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-
-        let (piece_no_gate, _) =
-            crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Negative).unwrap();
-        let (piece_gate, _) =
-            crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Negative).unwrap();
-
-        // Vent-leg query: cup-wall material on -binormal side.
-        let q = Point3::new(-0.030, 0.0, -0.0098);
-        assert!(
-            piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate Negative piece should INCLUDE cup-wall query on -binormal side; got {}",
-            piece_no_gate.evaluate(&q),
+        // Without a pour gate, neither side emits any.
+        assert_eq!(
+            count_subtract_cylinders_for_pour_gate(&ribbon_no_gate, PieceSide::Positive),
+            0,
         );
-        assert!(
-            piece_gate.evaluate(&q) > 0.0,
-            "V-pour-gate Negative piece should EXCLUDE vent-leg-axis query on -binormal side; got {}",
-            piece_gate.evaluate(&q),
+        assert_eq!(
+            count_subtract_cylinders_for_pour_gate(&ribbon_no_gate, PieceSide::Negative),
+            0,
         );
     }
 
@@ -3091,14 +3066,14 @@ mod tests {
             .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
 
-        let (piece_neg, _) = crate::compose_piece_solid(
+        let (piece_neg, neg_transforms) = crate::compose_piece_solid(
             &spec.layers[0].body,
             &spec.bounding_region,
             &ribbon,
             PieceSide::Negative,
         )
         .unwrap();
-        let (piece_pos, _) = crate::compose_piece_solid(
+        let (piece_pos, pos_transforms) = crate::compose_piece_solid(
             &spec.layers[0].body,
             &spec.bounding_region,
             &ribbon,
@@ -3109,28 +3084,48 @@ mod tests {
         assert!(piece_neg.bounds().is_some());
         assert!(piece_pos.bounds().is_some());
 
-        // Pin protrusion query (pin in Negative piece) — annulus
-        // midpoint along +Y for v2_fixture's body half_y=0.025 +
-        // bounding half_y=0.040 → pin center at y=0.0325.
+        // Cup-wall SDF probe (no body, inside bounding) still
+        // resolves negative — the base_piece Solid is unchanged by
+        // either S5 pins (post-MC) or S7 pour gate (post-MC).
         // Centerline arc fractions 0.25/0.75 on the -15→+15 mm
-        // centerline put the t=0.25 pin at x=-0.0075.
+        // centerline put the t=0.25 pin at x=-0.0075; cup wall at
+        // y=0.0325 (annulus midpoint between body half_y=0.025 and
+        // bounding half_y=0.040).
         let pin_q = Point3::new(-0.0075, 0.0325, 0.003);
         assert!(
             piece_neg.evaluate(&pin_q) < 0.0,
-            "pins+gate Negative piece should still contain pin protrusion at \
-             annulus midpoint; got {}",
+            "Negative piece base Solid should still register cup-wall material at \
+             annulus midpoint (pin protrusion lives post-MC); got {}",
             piece_neg.evaluate(&pin_q),
         );
-        // V pour-leg query: pour leg axis from apex (-0.015, 0, 0)
-        // is ≈ (-0.866, 0, +0.5). At ~17 mm along the leg the point
-        // (-0.030, 0, +0.0098) sits in cup-wall material on the
-        // +binormal=+Z side (Positive piece). Gate carves it.
-        let gate_q = Point3::new(-0.030, 0.0, 0.0098);
+        // Both features land in the transform Vec post-S5+S7:
+        // Negative gains UnionCylinder per pin; Positive gains
+        // SubtractCylinder per pin; both gain SubtractCylinder per
+        // pour-gate leg. Count cylinder ops on each side.
+        let count_cylinders = |ts: &[crate::mesh_csg::MatingTransform]| -> usize {
+            ts.iter()
+                .filter(|t| {
+                    matches!(
+                        t,
+                        crate::mesh_csg::MatingTransform::UnionCylinder { .. }
+                            | crate::mesh_csg::MatingTransform::SubtractCylinder { .. }
+                    )
+                })
+                .count()
+        };
+        // pins (4 per side via bilateral mirror) + pour leg + vent leg = 6
+        // cylinder ops minimum on each side (plus S6 plug-socket /
+        // T-slot when applicable; v2_fixture has plug-pins so add
+        // those too).
+        let neg_cyls = count_cylinders(&neg_transforms);
+        let pos_cyls = count_cylinders(&pos_transforms);
         assert!(
-            piece_pos.evaluate(&gate_q) > 0.0,
-            "pins+gate Positive piece should EXCLUDE V pour-leg channel at \
-             (-30mm, 0, +9.8mm); got {}",
-            piece_pos.evaluate(&gate_q),
+            neg_cyls >= 6,
+            "Negative piece should emit ≥ 6 cylinder ops (4 pins + 2 pour-gate legs); got {neg_cyls}",
+        );
+        assert!(
+            pos_cyls >= 6,
+            "Positive piece should emit ≥ 6 cylinder ops (4 pins + 2 pour-gate legs); got {pos_cyls}",
         );
     }
 

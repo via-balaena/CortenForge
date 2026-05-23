@@ -101,7 +101,7 @@ pub use plug::{
     PlugPinKind, PlugPinSpec, add_plug_pins, build_plug_self_transforms,
     build_plug_socket_transforms, pour_end_t_bar_geometry,
 };
-pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_solid};
+pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
