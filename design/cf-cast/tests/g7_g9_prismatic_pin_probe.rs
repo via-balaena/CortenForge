@@ -30,16 +30,24 @@
 //!   composed pre-MC into the host SDF (`bounding ∖ body ∩ halfspace ∪
 //!   pin`) → MC → mesh, the result is 1 connected component, no new
 //!   F4 Critical types at the boolean junction. This matches the
-//!   recon-4 (P) §F-3 SDF-union pin characterisation.
+//!   recon-4 (P) §F-3 SDF-union pin characterisation. As of the S2
+//!   ship the `g12_2_bailout_*` test consumes the **production
+//!   [`cf_cast::build_prismatic_pin_sdf`] emitter** (six-half-space
+//!   frustum intersection + optional chamfer-band frustum, unioned)
+//!   rather than the S1-spike's `Solid::cuboid` approximation — the
+//!   test is therefore a load-bearing regression guard on the S2
+//!   emitter's behaviour against the §G-7 synthetic curved-shell
+//!   fixture, not just a characterisation of an approximation.
 //!
 //! Conclusion: §G-12 #2 is the implementation path. §G-12 #1 (post-MC
 //! mesh-CSG pre-mixed with pre-MC SDF for the pin BULK only) was the
 //! recon's first-pass bail-out hypothesis; the empirical evidence here
 //! pushes one step further — the whole PrismaticPin primitive lives in
-//! SDF, not just its bulk. The chamfer-band geometry can still emit as
-//! SDF (`Solid::cuboid` + smooth-min taper or per-axis half-extent
-//! reductions); the §G-9 CSG-level chamfer decision remains intact as
-//! long as the chamfer band is SDF-side, not mesh-CSG-side.
+//! SDF, not just its bulk. The chamfer-band geometry emits as SDF too
+//! (the S2 emitter unions a chamfer-band frustum onto the main taper
+//! frustum at the bed-end); the §G-9 CSG-level chamfer decision
+//! remains intact as long as the chamfer band is SDF-side, not
+//! mesh-CSG-side.
 //!
 //! # Probe construction
 //!
@@ -89,13 +97,14 @@
     dead_code
 )]
 
+use cf_cast::{PrismaticPinPose, PrismaticPinSpec, build_prismatic_pin_sdf};
 use cf_design::Solid;
 use manifold3d::Manifold;
 use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
 use mesh_printability::{IssueSeverity, PrintIssueType, PrinterConfig, validate_for_printing};
 use mesh_repair::components::find_connected_components;
 use mesh_types::IndexedMesh;
-use nalgebra::Vector3;
+use nalgebra::{Point3, Vector2, Vector3};
 
 // ── Probe constants ──────────────────────────────────────────────────
 
@@ -572,17 +581,55 @@ fn g7_characterisation_subtract_at_fine_cell_size_branch_b_only() {
 
 // ── §G-12 #2 bail-out characterisation: SDF-side pin ────────────────
 
+/// Build the §G-7 doc-spec PrismaticPin SDF using the S2 production
+/// emitter ([`cf_cast::build_prismatic_pin_sdf`]) at the same pose
+/// and dimensions as the mesh-CSG `Manifold::hull_pts` pin in
+/// `build_prismatic_pin_manifold`. Pose: axis = +Y (binormal to
+/// the wall), lateral = +X (arbitrary in-plane direction for the
+/// square-base pin), centre = wall-midpoint on the +X equator.
+fn build_g12_2_bailout_pin_sdf(chamfer_mm: f64) -> Solid {
+    let spec = PrismaticPinSpec {
+        pin_base_half_extents_m: Vector2::new(
+            PIN_BASE_HALF_MM / METERS_TO_MM,
+            PIN_BASE_HALF_MM / METERS_TO_MM,
+        ),
+        pin_tip_half_extents_m: Vector2::new(
+            PIN_TIP_HALF_MM / METERS_TO_MM,
+            PIN_TIP_HALF_MM / METERS_TO_MM,
+        ),
+        pin_half_length_m: PIN_HALF_LENGTH_MM / METERS_TO_MM,
+        base_chamfer_m: chamfer_mm / METERS_TO_MM,
+        diametral_clearance_m: SOCKET_DIAMETRAL_CLEARANCE_M,
+        axial_clearance_m: 0.0005,
+    };
+    let pose = PrismaticPinPose::new(
+        Point3::new(
+            PIN_RADIUS_OFFSET_MM / METERS_TO_MM,
+            0.0,
+            PIN_Z_EQUATOR_MM / METERS_TO_MM,
+        ),
+        Vector3::y_axis(),
+        Vector3::x_axis(),
+    );
+    build_prismatic_pin_sdf(&spec.pin_params(pose))
+}
+
 /// §G-12 #2 bail-out: pin geometry lives entirely in SDF (composed
 /// pre-MC into the host SDF). MC sees a single SDF (`half_shell ∪
 /// pin`) and produces a single mesh — no mesh-CSG boolean op against
 /// the curved-shell, no paradigm-boundary crossed.
 ///
-/// This is the recon-4 (P) §F-3 pattern transposed to PrismaticPin:
-/// the synthetic SDF cuboid pin (an axis-aligned-box approximation
-/// of the truncated-pyramid; full taper + chamfer SDF emission is an
-/// implementation-session detail) demonstrates the §G-12 #2 path is
-/// topologically sound. The implementation arc S2 builds a proper
-/// taper + chamfer SDF emitter for `PrismaticPin`.
+/// This is the recon-4 (P) §F-3 SDF-pin pattern transposed to
+/// PrismaticPin. The pin SDF is the **production S2 emitter**
+/// [`cf_cast::build_prismatic_pin_sdf`] — same truncated-pyramid
+/// frustum + chamfer-band composition cup-pin / plug-floor-lock S3 /
+/// S4 will use — not an `Solid::cuboid` approximation. This test
+/// therefore acts as a load-bearing regression guard on the S2
+/// emitter's behaviour against the §G-7 synthetic fixture: if the
+/// S2 SDF emission ever introduces topology defects on a clean
+/// 1-component curved-shell host (e.g., a future chamfer-emission
+/// refactor that breaks the SDF), this test catches it before any
+/// cup-piece or plug STL regenerates.
 ///
 /// → BRANCH A under the §G-12 #2 bail-out: 1 component, no new F4
 /// critical types at the junction.
@@ -599,24 +646,7 @@ fn g12_2_bailout_sdf_pin_yields_one_component_no_new_critical_at_production_cell
         "§G-12 #2 bail-out baseline regression",
     );
 
-    // SDF-side pin: cuboid centred at the same wall midpoint as the
-    // mesh-CSG probes, axis-aligned to +Y (length axis), composed
-    // via `Solid::union` BEFORE MC. The actual implementation-arc
-    // PrismaticPin SDF would emit `cuboid + taper-correction +
-    // chamfer-band`; for the §G-12 #2 BRANCH-A characterisation an
-    // axis-aligned cuboid is the minimum viable composition.
-    let pin_half_extents_m = Vector3::new(
-        PIN_BASE_HALF_MM / METERS_TO_MM,
-        PIN_HALF_LENGTH_MM / METERS_TO_MM,
-        PIN_BASE_HALF_MM / METERS_TO_MM,
-    );
-    let pin_center_m = Vector3::new(
-        PIN_RADIUS_OFFSET_MM / METERS_TO_MM,
-        0.0,
-        PIN_Z_EQUATOR_MM / METERS_TO_MM,
-    );
-    let pin_solid = Solid::cuboid(pin_half_extents_m).translate(pin_center_m);
-
+    let pin_solid = build_g12_2_bailout_pin_sdf(PIN_DEFAULT_CHAMFER_MM);
     let composed = build_half_sphere_shell_solid().union(pin_solid);
     let composed_mesh = solid_to_mm_mesh(&composed, PROD_CELL_SIZE_M);
     let composed_components = find_connected_components(&composed_mesh).component_count;
@@ -629,22 +659,24 @@ fn g12_2_bailout_sdf_pin_yields_one_component_no_new_critical_at_production_cell
         .collect();
 
     eprintln!(
-        "g12 #2 SDF-pin @ 3mm cell — components: {composed_components} (baseline \
+        "g12 #2 S2-emitter PrismaticPin @ 3mm cell — components: {composed_components} (baseline \
          {baseline_components}), critical types: {composed_critical_types:?}, new critical: \
          {new_critical_types:?}",
     );
 
     assert_eq!(
         composed_components, baseline_components,
-        "§G-12 #2 BAIL-OUT FALSIFIED — SDF-union pin onto half-shell SDF, MC'd, produced \
-         {composed_components} components vs baseline {baseline_components}. The bail-out path \
-         is also unsound; recon-2 escalation (pivot mating-feature mechanism, e.g. surface- \
-         intersecting dimples or magnetic registration) is required.",
+        "§G-12 #2 BAIL-OUT FALSIFIED — S2-emitter PrismaticPin onto half-shell SDF, MC'd, \
+         produced {composed_components} components vs baseline {baseline_components}. Either the \
+         S2 SDF emission introduced a topology defect (regression in \
+         `cf_cast::build_prismatic_pin_sdf`) or the bail-out path is empirically unsound on this \
+         fixture; recon-2 escalation per §G-12 #4 may be required.",
     );
     assert!(
         new_critical_types.is_empty(),
-        "§G-12 #2 BAIL-OUT FALSIFIED — SDF-union pin introduced {new_critical_types:?} \
-         critical types not in baseline. Recon-2 escalation required.",
+        "§G-12 #2 BAIL-OUT FALSIFIED — S2-emitter PrismaticPin introduced {new_critical_types:?} \
+         critical types not in baseline. Either S2 SDF emission regression or recon-2 \
+         escalation required.",
     );
 }
 
@@ -752,15 +784,27 @@ fn g9_characterisation_chamfer_sweep_fails_identically_chamfer_independent() {
 
 // ── PrismaticPin primitive sanity guards ─────────────────────────────
 
-/// Independent sanity: the chamfer-0 PrismaticPin has at least 8
-/// distinct hull vertices and the chamfer-positive variant has at
-/// least 12. hull_pts can in principle dedupe coincident points; the
-/// test just pins the vertex-count contract so a future refactor that
-/// accidentally drops a corner surfaces immediately. The bounding-box
-/// extents are also pinned (axis is +Y → |y| spread = half-length;
-/// lateral spread = max(base_half, tip_half)).
+/// Sanity for the **probe-local mesh-CSG pin construction** used by
+/// the `g7_characterisation_*` tests above. NOT on the production
+/// path under §G-12 #2 — the cup-pin / plug-floor-lock S3 / S4
+/// emit SDF primitives via [`cf_cast::build_prismatic_pin_sdf`].
+/// This test stays as a guard against accidental refactors of
+/// [`build_prismatic_pin_manifold`] that would silently change the
+/// §G-7 characterisation (e.g., dropping a hull corner or
+/// reorienting the axis), since the §G-7 BRANCH B + C
+/// characterisation is the empirical evidence load-bearing for
+/// the §G-12 #2 architectural pick — re-evaluating the recon
+/// decision requires this probe's mesh-CSG pin to still be the
+/// same one the §G-7 tests characterised.
+///
+/// Vertex-count contract: chamfer-0 has ≥ 8 hull verts, chamfer-
+/// positive has ≥ 12. (hull_pts can in principle dedupe coincident
+/// points; the test just pins the count contract so a future
+/// refactor that accidentally drops a corner surfaces immediately.)
+/// Bounding-box extents: axis is +Y → |y| spread = half-length;
+/// lateral spread = max(base_half, tip_half).
 #[test]
-fn prismatic_pin_primitive_vertex_count_and_extents_hold() {
+fn prismatic_pin_probe_local_hull_construction_vertex_count_and_extents_hold() {
     let plain =
         build_prismatic_pin_manifold(PIN_BASE_HALF_MM, PIN_TIP_HALF_MM, PIN_HALF_LENGTH_MM, 0.0);
     let chamfered = build_prismatic_pin_manifold(

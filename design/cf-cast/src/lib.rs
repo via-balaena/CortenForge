@@ -82,6 +82,7 @@ pub mod platform;
 pub mod plug;
 pub mod pour;
 mod pour_volume;
+pub mod prismatic_pin;
 mod procedure;
 pub mod registration;
 mod ribbon;
@@ -103,6 +104,10 @@ pub use plug::{
 };
 pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
+pub use prismatic_pin::{
+    LATERAL_ORTHOGONALITY_TOLERANCE, PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec,
+    build_prismatic_pin_sdf,
+};
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
