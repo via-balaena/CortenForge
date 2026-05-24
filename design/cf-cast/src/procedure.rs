@@ -491,51 +491,67 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
             );
         }
         RegistrationKind::Pins(spec) => {
-            let pin_count = spec.arc_fractions.len();
-            let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
-            let pin_length_mm = spec.pin_half_length_m * 2.0 * 1000.0;
-            let diametral_mm = spec.diametral_clearance_m * 1000.0;
-            let socket_dia_mm = pin_dia_mm + diametral_mm;
+            // S3 of the FDM-friendly geometry arc migrated the cup-
+            // pin primitive from cylindrical mesh-CSG to truncated-
+            // pyramid SDF-side composition (recon-1 §G-2 + §G-12 #2);
+            // procedure prose reflects the rectangular base + tapered
+            // walls + chamfer geometry.
+            let pin_count_per_side = spec.arc_fractions.len() * 2;
+            let pin_spec = &spec.pin_spec;
+            let base_lateral_mm = pin_spec.pin_base_half_extents_m.x * 2.0 * 1000.0;
+            let base_binormal_mm = pin_spec.pin_base_half_extents_m.y * 2.0 * 1000.0;
+            let tip_lateral_mm = pin_spec.pin_tip_half_extents_m.x * 2.0 * 1000.0;
+            let tip_binormal_mm = pin_spec.pin_tip_half_extents_m.y * 2.0 * 1000.0;
+            let pin_length_mm = pin_spec.pin_half_length_m * 2.0 * 1000.0;
+            let chamfer_mm = pin_spec.base_chamfer_m * 1000.0;
+            let diametral_mm = pin_spec.diametral_clearance_m * 1000.0;
+            let socket_base_lateral_mm = base_lateral_mm + diametral_mm;
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
-                 curve-following seam. **{pin_count} cylindrical pins** \
-                 ({pin_dia_mm:.1} mm Ø × {pin_length_mm:.1} mm long, \
-                 printed integrally with `_piece_0` and matched by \
-                 {socket_dia_mm:.2} mm Ø cylindrical holes in \
-                 `_piece_1` — {diametral_mm:.2} mm diametral clearance \
-                 for a positional sliding fit) lock the pieces in \
-                 alignment along the seam — no manual clamping needed \
-                 once the pins are seated."
+                 curve-following seam. **{pin_count_per_side} \
+                 truncated-pyramid registration pins** \
+                 ({base_lateral_mm:.1} × {base_binormal_mm:.1} mm rectangular base, \
+                 tapered to {tip_lateral_mm:.1} × {tip_binormal_mm:.1} mm flat tip, \
+                 {pin_length_mm:.1} mm long, {chamfer_mm:.2} mm base-end \
+                 chamfer absorbing first-layer elephant foot) protrude \
+                 from `_piece_0`'s seam face. Matching cavities in \
+                 `_piece_1` ({socket_base_lateral_mm:.2} mm base — \
+                 {diametral_mm:.2} mm diametral clearance for a \
+                 positional sliding fit) accept each ridge. The \
+                 trapezoidal cross-section gives self-centering wedge \
+                 action on engagement; flat angled lateral faces seat \
+                 plane-on-plane without the facet-vs-facet binding \
+                 cylindrical pins suffer on consumer-FDM prints."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
                 "Insert each pin from `_piece_0` into the matching \
-                 hole in `_piece_1` along the binormal direction (the \
-                 pin axis is perpendicular to the seam plane at the \
-                 pin position). Pins are gravity-held; no friction \
+                 cavity in `_piece_1` along the binormal direction \
+                 (the pin axis is perpendicular to the seam plane at \
+                 the pin position). Pins are gravity-held; no friction \
                  lock. Each pin extends {pin_length_mm:.1} mm \
                  symmetrically across the seam plane — half lives \
                  buried inside `_piece_0`'s cup-wall material; the \
                  other half protrudes past the seam face as the \
-                 workshop-visible ridge that seats into `_piece_1`'s \
-                 matching socket. The pre-S4 SDF half-space intersect \
-                 keeps each piece's seam face bit-precise flat by MC's \
-                 linear-SDF interpolation property (recon-4 §F-4), so \
-                 the pieces seat flush along the {socket_dia_mm:.2} mm \
-                 sliding-fit sockets."
+                 workshop-visible ridge. Per recon-4 (P) the seam \
+                 face is bit-precise flat via the cup-piece SDF \
+                 halfspace intersect (MC's linear-SDF interpolation \
+                 places seam-cap vertices exactly on the plane), so \
+                 the pieces seat flush along the cavity rims."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
                 "If a pin breaks during demold or assembly, file the \
-                 stub flush + drill out the hole if needed; a manual \
+                 stub flush + open the cavity if needed; a manual \
                  rubber-band clamp restores the cast for that layer. \
-                 Document pin failures for the post-iter-1 \
-                 registration-feature decision (revisit dia/length \
-                 defaults in `PinSpec::iter1`)."
+                 Document pin failures for the post-iter-3 \
+                 registration-feature decision (revisit base/tip \
+                 extents + clearance + chamfer defaults in \
+                 `PrismaticPinSpec::cup_pin_default`)."
             );
         }
     }

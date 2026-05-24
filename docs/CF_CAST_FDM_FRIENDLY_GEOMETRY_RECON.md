@@ -920,7 +920,7 @@ Per the recon-3 §R3-6 / recon-4 §F-6 pattern:
 | S0 | Recon scaffold (this commit + pass-1 + pass-2 polish) | ~1000 | this doc |
 | S1 | Probe spike: §G-7 + §G-9 manifold3d feasibility | ~700 | SHIPPED 2026-05-24 `design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs`, 8 characterisation tests; §G-7 BRANCH B+C falsification + §G-12 #2 BRANCH-A confirmation |
 | S2 | `PrismaticPin` SDF primitive (revised per §G-12 #2) | ~300 | new file `design/cf-cast/src/prismatic_pin.rs`; SDF-side emission via `Solid::cuboid` + taper + chamfer-band composition, params, bit-precise fit-determinism gate per §G-10 #1 — **no** `MatingTransform::*PrismaticPin` variants (pin lives entirely SDF-side) |
-| S3 | Cup-piece registration pin migration | ~400 | `registration.rs` rewrite; `PinSpec` → `PrismaticPinSpec`; cf-cast-cli cross-field validator update; ~150 LOC test churn; SDF-union composition pattern from recon-4 §F-3 |
+| S3 | Cup-piece registration pin migration | ~400 | SHIPPED 2026-05-24 `registration.rs` rewrite — `PinSpec` wraps `PrismaticPinSpec::cup_pin_default()` + arc_fractions; `build_registration_transforms` → `build_registration_sdf_ops` returning `Vec<Solid>` for SDF-union/subtract composition in `compose_piece_solid`; symmetric-across-seam pose with axis=binormal + lateral=split_normal; mesh-CSG cylinder transforms removed for cup-pin (kept for S6 plug-anchor + S7 pour-gate); procedure.rs prose updated for truncated-pyramid vocabulary; cf-cast-cli only needed surface-level touch-up (PinSpec::iter1 constructor preserved, no TOML field overrides exposed); 8 new + 5 deleted/migrated tests in registration.rs + spec.rs + piece.rs; iter-1 regen 303 s, all 11 production STLs PASS §R1 at 1 component each (§G-11 #1 cleared) |
 | S4 | Plug-floor lock migration (replaces T-bar + shaft + T-slot) | ~500 | `plug.rs` major rewrite; `PlugPinSpec` shrinks (T-bar + shaft fields deleted); ~200 LOC test churn; cup-piece cap-plane-end socket geometry; `platform.stl` blind pocket retired (no shaft penetration) |
 | S5 | First-layer chamfer geometry | ~80 | chamfer-band emitted SDF-side per revised §G-9 — folds into S2's PrismaticPin SDF primitive; minimal incremental cost above S2 |
 | S6 | `procedure.rs` print-orientation + Bambu A1 target docs | ~120 | per-piece orientation prose, default-settings + Jayo reference recipe, cf-view sanity-check section |
@@ -1118,3 +1118,43 @@ empirics falsify recon-1's framing.
   Workshop iter-3 print STILL BLOCKED until S2-S8 implementation
   completes; the empirical evidence has narrowed the implementation
   architecture but not unblocked the print.
+- **2026-05-24 — S3 cup-piece registration pin migration SHIPPED.**
+  `design/cf-cast/src/registration.rs` rewrite: cup-pin primitive
+  migrated from mesh-CSG cylinders (`MatingTransform::UnionCylinder` /
+  `SubtractCylinder` consuming a shared `CylinderParent`) to SDF-side
+  `PrismaticPin` composition (`Solid::union` for pin / `Solid::subtract`
+  for socket, pre-MC in `piece::compose_piece_solid`) per the §G-12 #2
+  architecture picked by S1 probe-spike. `PinSpec` reshaped to wrap
+  `PrismaticPinSpec::cup_pin_default()` + arc_fractions; field-level
+  fixture overrides on cf-cast-cli intentionally not exposed (only the
+  `[registration_pins].enabled` toggle is wired through the TOML —
+  per-pin geometry is locked to the §G-6 / §G-8 defaults pending
+  workshop-physical calibration in S7). `build_registration_transforms`
+  renamed to `build_registration_sdf_ops` returning `Vec<Solid>`;
+  `compose_piece_solid` now unions/subtracts per `PieceSide`. Pose
+  derivation reuses the existing `surface_distance_along_ray`
+  annulus-midpoint geometry; `axis_unit = +binormal`,
+  `lateral_unit = +split_normal` (orthogonal-to-binormal by ribbon
+  construction, deterministic for square-base pins where the rotation
+  about `axis_unit` is geometrically immaterial). The chamfer band's
+  bed-adjacency under §G-4 print orientation is unresolved at the SDF
+  layer — flagged in the module docstring for §G-6 procedure.rs
+  reconciliation in S6 (the symmetric-across-seam pose places the
+  chamfer at the deepest-in-cup-wall axial end, not at the seam face;
+  reconciling this requires either flipping the pose convention or
+  revisiting the §G-4 cup print orientation). 201 cf-cast unit + 8
+  probe + 48 cf-cast-cli + 7 integration tests / clippy `-D warnings` /
+  fmt clean. cf-cast-cli iter-1 regen 303 s; **all 11 production STLs
+  (6 cup pieces + 3 plugs + funnel + platform) PASS §R1 inspector at
+  1 component each under `INSPECT_STL_R1=1`** — §G-11 #1 (mechanical
+  unblock gate for workshop iter-3) CLEARED. §G-11 #3 (cf-view smoke)
+  + #4 (Bambu A1 print) remain workshop-user-physical pauses. S2
+  probe characterisation extrapolates to production: the §G-12 #2
+  SDF-union path holds at production scale + curvature, not just on
+  the synthetic half-sphere fixture. `MatingTransform::UnionCylinder`
+  is now confirmed UNUSED in the cup-pin path; deletion-of-the-variant
+  deferred to S8 cold-read per §G-5. Successor session: S4 plug-floor
+  lock migration per §G-13 S4 (~500 LOC; T-bar + shaft + T-slot
+  mechanism DELETED, replaced by truncated-pyramid press-fit against
+  mold cap-plane floor; platform.stl blind pocket retires per §G-1 —
+  no shaft penetration).

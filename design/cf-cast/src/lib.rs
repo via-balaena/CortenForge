@@ -21,8 +21,10 @@
 //!   piece** + **v2.1 detachable-shell**. Each layer's mold cup
 //!   is split into 2 pieces along a curve-following [`Ribbon`]
 //!   surface (per `docs/CURVE_FOLLOWING_DESIGN.md`), with optional
-//!   inter-piece registration pins ([`PinSpec`]), V-at-dome
-//!   pour gate + vent legs ([`PourGateSpec`]), and per-piece
+//!   inter-piece registration pins ([`PinSpec`] wrapping the SDF-
+//!   side [`PrismaticPinSpec`] primitive — pre-S3 of the FDM-
+//!   friendly geometry arc the cup-pin was a mesh-CSG cylinder),
+//!   V-at-dome pour gate + vent legs ([`PourGateSpec`]), and per-piece
 //!   plug-anchor pin sockets ([`PlugPinSpec`]). Each layer is
 //!   cast independently against its own plug — layer 0's plug
 //!   derives from [`CastSpec::plug`], layer N>0's derives from
@@ -109,7 +111,7 @@ pub use prismatic_pin::{
     build_prismatic_pin_sdf,
 };
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
-pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
+pub use registration::{PinSpec, RegistrationKind, build_registration_sdf_ops};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use spec::{
     CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,

@@ -3,193 +3,188 @@
 //! v2 iter-1 surfaced a workshop pain point: hand-clamping two
 //! ribbon-cut mold pieces with rubber bands works but is fiddly,
 //! and the pieces can shift along the seam during pour.
-//! Registration features — geometry CSG'd into the mold pieces —
+//! Registration features — geometry composed into the mold pieces —
 //! lock the pieces in alignment.
 //!
-//! Step 9 of `docs/CURVE_FOLLOWING_DESIGN.md` ships **cylindrical
-//! pins** (vs the design-doc-§Open-questions §1 alternatives of
-//! dovetails or magnets): simplest geometry (one cylinder per pin —
-//! pre-S5 an SDF [`Solid::cylinder`], post-S5 a manifold3d cylinder
-//! primitive via [`crate::mesh_csg::build_cylinder_along_axis`]),
-//! industry-standard for printed molds, easy to print + insert +
-//! remove, gravity-held. Pin geometry:
+//! # Architectural history
 //!
-//! - Position: each pin is anchored at the **annulus midpoint** of
-//!   the cup-wall — halfway along the ribbon's split-normal between
-//!   the layer body's outer surface and the bounding region's outer
-//!   surface, derived per-(layer × ribbon-frame) by ray-marching
-//!   the SDFs from each `centerline_sample(arc_fraction)`. The
-//!   per-layer offset is **derived**, not a fixed knob.
-//! - Axis: along the ribbon's **binormal** at the centerline
-//!   position (perpendicular to the seam plane, normal-to-seam).
-//!   The pin extends `±pin_half_length_m` symmetrically across the
-//!   seam plane and lives entirely contained inside the cup-wall
-//!   annulus volume.
-//! - Length: 10 mm total (5 mm half-length each side of the
-//!   centerline sample). On the Negative cup piece's half-shell the
-//!   pin's `+binormal` half (5 mm) protrudes past the seam face as
-//!   the workshop-visible ridge; the `-binormal` half lives buried
-//!   inside the half-shell's cup-wall material. The Positive cup
-//!   piece's matching socket (radius + half-length inflated by the
-//!   per-piece clearance budget) mates with the protruding ridge.
-//! - Diameter: 3 mm (1.5 mm radius) for the default — beefy enough
-//!   for FDM printing without supports, small enough to insert by
-//!   hand with no tooling. Workshop assembly: gravity-stack the
-//!   pieces along the seam plane normal; ridges seat into matching
-//!   sockets with the diametral clearance providing a sliding fit.
-//! - Count: 4 per layer-piece-pair — at arc-length fractions
-//!   `0.25` and `0.75` along the centerline, mirrored across the
-//!   split-normal axis (one pin at `+split_normal` offset and one
-//!   at `-split_normal` offset per arc fraction). The four pins
-//!   give each cup piece two lateral interlock columns instead of
-//!   one, doubling the alignment constraint against rotation +
-//!   parting-plane shear.
+//! Step 9 of `docs/CURVE_FOLLOWING_DESIGN.md` originally shipped
+//! **cylindrical pins** (vs the design-doc-§Open-questions §1
+//! alternatives of dovetails or magnets) — pre-S5 an SDF
+//! [`Solid::cylinder`], post-S5 a manifold3d cylinder primitive via
+//! `crate::mesh_csg::build_cylinder_along_axis`. Workshop iter-2
+//! printed cleanly on Bambu Lab calibrated FDM but the consumer-FDM
+//! target floor (Bambu A1 + default + Jayo per the FDM-friendly
+//! geometry recon §G-3) struggles with cylinder-on-cylinder facet-
+//! vs-facet contact + first-layer elephant foot. Recon-1
+//! (`docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md`) §G-2 picked
+//! trapezoidal / truncated-pyramid pins (sharp angles, flat faces,
+//! straight lines — what FDM gantry kinematics produce cleanly)
+//! over the cylindrical design.
 //!
-//! ## Why the offset is derived, not fixed
+//! S3 of the FDM-friendly geometry implementation arc migrates this
+//! module from the mesh-CSG cylinder primitive
+//! (`MatingTransform::UnionCylinder` / `SubtractCylinder` consuming
+//! a shared [`crate::mesh_csg::CylinderParent`]) to the SDF-side
+//! [`crate::PrismaticPin`][`crate::prismatic_pin`] primitive
+//! composed pre-MC via [`Solid::union`] / [`Solid::subtract`]. The
+//! mesh-CSG `MatingTransform` variants stay for the cup pour-gate
+//! carve (S7 of the prior mating-features arc) but no longer carry
+//! the cup-pin payload.
 //!
-//! Pre-mold-wall-arc, the bounding region was a cuboid envelope
-//! whose half-extent comfortably exceeded any per-layer body half-
-//! extent, so a fixed 25 mm offset reliably landed the pin in
-//! cup-wall territory regardless of the body's width along the
-//! split-normal. After `54df41cb` (2026-05-19) the bounding region
-//! is body-relative (`outermost_body.offset(wall_thickness_m)`), so
-//! the "is the pin in the cup wall?" geometry now depends on body
-//! radius along the split-normal at the pin's centerline z — a
-//! quantity the fixed offset can't see. The iter-1 workshop visual
-//! gate falsified the fixed default for sock-over-capsule
-//! (body half-extent ~36 mm vs the 25 mm offset → pin inside the
-//! body → free-floating sliver in the Negative-piece mesh +
-//! invisible Positive-piece hole). Ray-marching the layer body +
-//! bounding-region SDFs makes the pin position track whatever
-//! per-layer cup-wall annulus geometry the spec produces.
+//! # Paradigm-boundary placement
 //!
-//! ## Recon-arc disposition
+//! The S1 probe-spike characterised mesh-CSG `Manifold::union` of a
+//! `Manifold::hull_pts` truncated-pyramid pin against an SDF→MC
+//! curved-shell host (`design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs`,
+//! commit `a218ddfb`). Outcome at both production (3 mm) and
+//! over-resolved (1 mm) cell sizes: the union introduces 2
+//! disconnected components AND a `SelfIntersecting` F4 Critical
+//! issue at the boolean junction (§G-7 BRANCH B + BRANCH C BOTH
+//! fire). The §G-12 #2 bail-out (pin composed pre-MC into the host
+//! SDF via [`Solid::union`]) PASSES the BRANCH-A criteria — 1
+//! connected component, no new F4 Critical types at the junction.
+//! See [`crate::prismatic_pin`] module docstring for the full
+//! probe outcome + paradigm-boundary framing (recon-4 (P) "bulk-
+//! welded SDF/MC × fine mesh-CSG" boundary).
 //!
-//! Workshop iter-2 surfaced two issues post-S5: (1) a registration-
-//! pin disconnection signal at the §R1 connectivity inspector
-//! (multiple pin shells survived as separate components per cup
-//! piece); (2) cf-view smoke on the recon-3 (α) post-fix STL set
-//! showed a thin film of cup-wall material covering the body-cavity
-//! opening on each cup piece's seam face. The film bisected to S4's
-//! `93aaa0c2` (seam SDF → post-MC mesh-CSG migration). Recon-4 (P)
-//! reverted the seam to the SDF form (see
-//! [`crate::piece::compose_piece_solid`] module docstring) and per
-//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-3 confirmed that
-//! the post-(P) clean 1-component half-shell host absorbs the
-//! binormal-axis pin via mesh-CSG Union without disconnection,
-//! superseding the recon-3 (α) split-normal protrusion design. The
-//! pre-recon-2 / S5 binormal-axis annulus-midpoint design is
-//! restored.
+//! # Pin pose convention
 //!
-//! ## Composition
+//! Each cup-pin's pose is derived per-(layer × ribbon-frame × arc-
+//! fraction × lateral-mirror) by ray-marching the layer body +
+//! bounding region SDFs from each `centerline_sample(arc_fraction)`:
 //!
-//! Pin cylinders are emitted as
-//! [`crate::mesh_csg::MatingTransform::UnionCylinder`] on the
-//! [`crate::ribbon::PieceSide::Negative`] piece (gain protrusions)
-//! and as [`crate::mesh_csg::MatingTransform::SubtractCylinder`] on
-//! the [`crate::ribbon::PieceSide::Positive`] piece (gain matching
-//! sockets, slightly inflated radius + depth per the per-piece
-//! clearance budget). [`crate::piece::compose_piece_solid`] consults
-//! [`crate::ribbon::Ribbon::registration`] and appends the pin
-//! transforms to the returned `Vec<MatingTransform>` so the post-MC
-//! mesh-CSG stage materializes the geometry; callers don't manage
-//! pin geometry explicitly.
+//! - **`center_m` = annulus midpoint** of the cup-wall: halfway
+//!   along the ribbon's split-normal between the layer body's outer
+//!   surface and the bounding region's outer surface. Pre-recon-2 /
+//!   recon-4 (P) restored this from recon-3 (α)'s bounds-anchored
+//!   variant — the annulus-midpoint pin is contained in cup-wall
+//!   material with `RIBBON_PIECE_OVERLAP_M`-sized overlap into the
+//!   Negative half-shell, so SDF union absorbs it without
+//!   disconnection.
+//! - **`axis_unit` = ribbon binormal** at the centerline sample
+//!   (perpendicular to the seam plane). The pin extends
+//!   `±half_length_m` along binormal symmetrically across the seam
+//!   plane; the `-binormal` half lives inside the Negative half-
+//!   shell material (provides SDF-union connectivity) and the
+//!   `+binormal` half protrudes past the seam face as the workshop-
+//!   visible registration ridge.
+//! - **`lateral_unit` = ribbon split-normal**. The
+//!   [`crate::PrismaticPinPose`] requires a deterministic lateral
+//!   axis even for square-base pins (where the rotation about
+//!   `axis_unit` is geometrically immaterial). Split-normal is
+//!   picked over tangent because it's the lateral mirror axis along
+//!   which sibling pins are placed — same direction the workshop
+//!   user perceives as the cup's "left/right" — and because
+//!   split-normal ⊥ binormal by ribbon construction
+//!   (`binormal = tangent × split_normal_unit`), so the orthogonality
+//!   contract on [`crate::PrismaticPinPose::new`] holds without an
+//!   extra Gram-Schmidt step.
 //!
-//! S5 of `docs/CF_CAST_MATING_FEATURES_PLAN.md` migrated this path
-//! from an SDF [`Solid::union`] / [`Solid::subtract`] (MC-resolved at
-//! marching-cubes grid resolution) to the post-MC mesh-CSG stage —
-//! exact cylinder primitives via [`crate::mesh_csg::build_cylinder_along_axis`]
-//! replace MC-discretized pin geometry. The pin and socket of a
-//! registration pair share `(center, axis)` derived from the same
-//! arc-fraction sample; only `half_length` (extended by
-//! [`PinSpec::axial_clearance_m`] / 2) and radius (extended by
-//! [`PinSpec::diametral_clearance_m`] / 2) differ between the two.
+//! # Composition
 //!
-//! ## Default off
+//! Pin SDFs are built via [`crate::build_prismatic_pin_sdf`] and
+//! returned as a `Vec<Solid>` per piece side by
+//! [`build_registration_sdf_ops`]. [`crate::piece::compose_piece_solid`]
+//! consumes the returned solids:
+//!
+//! - [`PieceSide::Negative`] receives PIN solids — each unioned into
+//!   the per-piece half-shell `Solid` pre-MC. The pin's `-binormal`
+//!   half overlaps cup-wall material (SDF-union connectivity);
+//!   `+binormal` half protrudes past the half-shell as the workshop-
+//!   visible ridge.
+//! - [`PieceSide::Positive`] receives SOCKET solids (same pose, each
+//!   extent inflated per [`crate::PrismaticPinSpec`]'s symmetric
+//!   `/2` clearance convention) — each subtracted from the per-piece
+//!   half-shell `Solid` pre-MC. The socket's `+binormal` half
+//!   carves a matching cavity from Positive cup-wall material;
+//!   `-binormal` half extends past the half-shell as a no-op
+//!   (subtraction outside the kept material doesn't affect the
+//!   result).
+//!
+//! # Bit-precise fit invariant
+//!
+//! Pin (Negative side) and socket (Positive side) of a registration
+//! pair derive from the **same** [`crate::PrismaticPinPose`] (per-pin
+//! `center_m`, `axis_unit`, `lateral_unit` triple), so the SDF input
+//! layer is bit-identical between the two sides modulo the socket's
+//! inflated extents. [`crate::PrismaticPinSpec::pin_params`] and
+//! [`crate::PrismaticPinSpec::socket_params`] share the same pose
+//! input and diverge only by the symmetric `/2` extent inflation —
+//! the bit-precise fit invariant (analog to S5's cylinder-primitive
+//! `pin_and_socket_fit_invariant`) is preserved at the spec layer
+//! and exercised by
+//! [`tests::cup_prismatic_pin_and_socket_fit_invariant`].
+//!
+//! # First-layer chamfer
+//!
+//! [`crate::PrismaticPinSpec::cup_pin_default`] sets a 0.6 mm
+//! base-end chamfer band per recon-1 §G-6 / §G-8. The chamfer band
+//! lives at the pin's `-half_length` axial end (deep inside the
+//! Negative cup wall under the symmetric-across-seam pose). Print
+//! orientation discipline that places the chamfer band at the bed-
+//! adjacent face is a §G-4 procedure.rs concern — the SDF emission
+//! is pose-symmetric and emits the chamfer band regardless of which
+//! end the workshop user prints down.
+//!
+//! # Default off
 //!
 //! [`Ribbon::new`] sets `registration = RegistrationKind::None`
 //! for backward compatibility — Steps 5-8 of the v2 arc all
 //! pre-date this module, and no v2 test fixture or example crate
 //! is expected to opt into pins without an explicit
 //! [`crate::ribbon::Ribbon::with_registration`] call. The Step 11
-//! example will flip this on.
+//! example + cf-cast-cli `[registration_pins].enabled = true`
+//! turn it on.
 //!
 //! [`Ribbon::new`]: crate::ribbon::Ribbon::new
 
 use cf_design::Solid;
 use nalgebra::{Point3, UnitVector3, Vector3};
 
-use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
+use crate::prismatic_pin::{PrismaticPinPose, PrismaticPinSpec, build_prismatic_pin_sdf};
 use crate::ribbon::{PieceSide, Ribbon};
 
-/// Polygonal facet count around the pin cylinder's circumference.
+/// Cup-pin registration spec — wraps the SDF-side
+/// [`PrismaticPinSpec`] primitive with the per-cup-side arc-fraction
+/// placement list.
 ///
-/// 32-segment circles are the workshop default for 3 mm Ø pins
-/// (recon §2): the chord error at radius 1.5 mm is
-/// `r(1 - cos(π/32)) ≈ 7 µm`, comfortably below FDM bead width
-/// (~0.4 mm). Part of the determinism contract — same
-/// [`CylinderParent`] + same radius + same `PIN_SEGMENTS` → bit-equal
-/// output across calls and across pieces.
-pub(crate) const PIN_SEGMENTS: u32 = 32;
-
-/// Cylindrical-pin registration spec. All dimensions in meters.
+/// `pin_spec` is the per-pin geometry (rectangular base half-extents,
+/// taper to flat tip, optional base-end chamfer band, diametral +
+/// axial clearance for the matching socket) — shared between every
+/// pin on the cup-piece. `arc_fractions` lists where along the
+/// centerline pins are placed; each fraction yields TWO pins (one
+/// per lateral-mirror side along `±split_normal`), so a default
+/// `vec![0.25, 0.75]` gives 4 pins per cup-piece pair.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PinSpec {
-    /// Pin radius (m). Default `0.0015` = 1.5 mm = 3 mm diameter.
-    pub pin_radius_m: f64,
-    /// Half-length of each pin along the binormal axis (m). Default
-    /// `0.005` = 5 mm → total pin length 10 mm symmetric across
-    /// the seam plane. On the Negative cup piece, the `+binormal`
-    /// half (5 mm) protrudes past the seam face as the workshop-
-    /// visible ridge; the `-binormal` half lives buried inside the
-    /// half-shell's cup-wall material. The Positive cup piece's
-    /// matching socket is inflated by [`PinSpec::axial_clearance_m`]
-    /// / 2 along the axial direction and [`PinSpec::diametral_clearance_m`]
-    /// / 2 radially for a positional sliding fit.
-    pub pin_half_length_m: f64,
+    /// Per-pin SDF-side primitive spec. Default
+    /// `PrismaticPinSpec::cup_pin_default()` per recon-1 §G-6 /
+    /// §G-8: 1.5 mm half-extent square base, 1.2 mm half-extent
+    /// square tip, 3 mm half-length, 0.6 mm chamfer, 0.30 mm
+    /// diametral, 0.50 mm axial clearance.
+    pub pin_spec: PrismaticPinSpec,
     /// Arc-length fractions along the centerline where pins are
-    /// placed. Default `vec![0.25, 0.75]`. Each arc fraction yields
-    /// TWO pins — one on each lateral side of the centerline
-    /// (at `+split_normal` and `-split_normal` offsets). With the
-    /// default two fractions, total pin count is 4 per
-    /// layer-piece-pair, giving each cup piece two lateral
-    /// interlock columns + axial pin pairs.
+    /// placed. Each fraction yields TWO pins — one on each lateral
+    /// side of the centerline (at `+split_normal` and `-split_normal`
+    /// offsets). With the default two fractions, total pin count is
+    /// 4 per layer-piece-pair (2 arc fractions × 2 lateral mirrors),
+    /// giving each cup-piece two lateral interlock columns + axial
+    /// pin pairs.
     pub arc_fractions: Vec<f64>,
-    /// Diametral clearance between pin and socket (m). The socket's
-    /// radius is `pin_radius_m + diametral_clearance_m / 2` so the
-    /// pin-vs-socket diameter difference equals
-    /// `diametral_clearance_m`. v2 iter-1 default `0.00020` =
-    /// 0.20 mm matches FDM precision; recon §9 baseline for M2
-    /// pins (positional sliding fit).
-    pub diametral_clearance_m: f64,
-    /// Axial socket-bottom relief (m). The socket parent's
-    /// `half_length` is extended by `axial_clearance_m / 2` so the
-    /// socket cylinder runs `axial_clearance_m / 2` past the pin
-    /// cylinder on each axial face (symmetric per the
-    /// `diametral_clearance / 2 → radius` convention). Recon §9
-    /// baseline for M2 pins (positional sliding fit). v2 iter-1
-    /// default `0.00050` = 0.50 mm.
-    pub axial_clearance_m: f64,
 }
 
 impl PinSpec {
-    /// v2 iter-1 defaults: 3 mm diameter × 10 mm long pins at 25% +
-    /// 75% of centerline arc length, 0.20 mm diametral × 0.50 mm
-    /// axial clearance (recon §9 M2 baseline — positional sliding
-    /// fit). Pin offset from the centerline along the ribbon's
-    /// split-normal is derived per-layer in
-    /// [`build_registration_transforms`] — annulus midpoint
-    /// `(body_dist + bounding_dist) / 2`. Not stored on the spec —
-    /// see the module docstring for the "derived, not fixed"
-    /// rationale.
+    /// v2 iter-3 defaults (post-S3): cup-pin geometry per
+    /// [`PrismaticPinSpec::cup_pin_default`] (1.5 mm half-extent
+    /// base, taper to 1.2 mm tip, 3 mm half-length, 0.6 mm base
+    /// chamfer, 0.30 mm diametral × 0.50 mm axial clearance) at
+    /// arc fractions `[0.25, 0.75]` — 4 pins per cup-piece-pair.
     #[must_use]
     pub fn iter1() -> Self {
         Self {
-            pin_radius_m: 0.0015,
-            pin_half_length_m: 0.005,
+            pin_spec: PrismaticPinSpec::cup_pin_default(),
             arc_fractions: vec![0.25, 0.75],
-            diametral_clearance_m: 0.00020,
-            axial_clearance_m: 0.00050,
         }
     }
 }
@@ -203,15 +198,16 @@ impl Default for PinSpec {
 /// What registration mechanism, if any, the [`Ribbon`] uses.
 ///
 /// `None` is the v1/v2-pre-Step-9 default — pieces clamp by hand
-/// with rubber bands. `Pins(PinSpec)` enables Step 9's cylindrical
-/// pins.
+/// with rubber bands. `Pins(PinSpec)` enables Step 9's registration
+/// pins (cylindrical pre-S3 of the FDM-friendly geometry arc;
+/// truncated-pyramid post-S3).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum RegistrationKind {
     /// No registration features. Workshop hand-clamps the pieces;
     /// the v2 procedure.md surfaces the rubber-band approach.
     #[default]
     None,
-    /// Cylindrical pins per [`PinSpec`].
+    /// Trapezoidal / truncated-pyramid pins per [`PinSpec`].
     Pins(PinSpec),
 }
 
@@ -231,20 +227,22 @@ const PIN_RAY_MAX_REACH_M: f64 = 1.0;
 /// legitimate bound.
 const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 
-/// Build the per-piece pin/socket mating transforms for the ribbon's
+/// Build the per-piece cup-pin SDF composition list for the ribbon's
 /// registration kind.
 ///
-/// Returns a `Vec<MatingTransform>` containing one
-/// [`MatingTransform::UnionCylinder`] per pin position for
-/// [`PieceSide::Negative`], or one
-/// [`MatingTransform::SubtractCylinder`] per pin position for
-/// [`PieceSide::Positive`]. Pin and socket of a registration pair
-/// share `(center, axis)` derived from the same arc-fraction sample
-/// (and lateral mirror sign); the socket's `half_length` is extended
-/// by [`PinSpec::axial_clearance_m`] / 2 and its `radius_m` by
-/// [`PinSpec::diametral_clearance_m`] / 2 so the pin seats with
-/// symmetric per-side clearance (matching the `/2` convention the
-/// diametral budget uses).
+/// Returns a `Vec<Solid>` of [`crate::PrismaticPin`][`crate::prismatic_pin`]
+/// solids:
+///
+/// - [`PieceSide::Negative`] returns **pin** solids (per
+///   [`PrismaticPinSpec::pin_params`]) — callers UNION each into the
+///   per-piece [`Solid`] pre-MC.
+/// - [`PieceSide::Positive`] returns **socket** solids (per
+///   [`PrismaticPinSpec::socket_params`], same pose, extents inflated
+///   by the symmetric `/2` clearance convention) — callers SUBTRACT
+///   each from the per-piece [`Solid`] pre-MC.
+///
+/// `compose_piece_solid` (the only production caller) consumes both
+/// modes uniformly per [`PieceSide`].
 ///
 /// Returns an empty `Vec` when:
 /// - `ribbon.registration` is [`RegistrationKind::None`];
@@ -253,51 +251,27 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 ///   `PIN_RAY_MAX_REACH_M` (1 m) without crossing the
 ///   bounding-region surface (signals a degenerate caller).
 ///
-/// Each pin is positioned at
-/// `centerline_sample(t) + pin_offset(t) * sign * split_normal_vec`
-/// with axis aligned to the ribbon's **binormal** at that centerline
-/// position (perpendicular to the seam plane). The pin's long axis
-/// is normal-to-seam; the cylinder sweeps through cup-wall material
-/// on both sides of the centerline, with the `+binormal` half
-/// protruding past the Negative piece's seam face as the workshop-
-/// visible ridge.
-///
-/// `pin_offset(t)` is the **annulus midpoint** of the cup wall:
-///
-/// ```text
-/// pin_offset = (body_dist + bounding_dist) / 2
-/// ```
-///
-/// — halfway between the layer body's outer surface and the
-/// bounding region's outer surface along the split-normal ray from
-/// the centerline sample. The midpoint keeps the pin centered in
-/// cup-wall material regardless of per-layer body shape.
+/// Each pin's pose is built per the §"Pin pose convention" module-
+/// docstring section: `center_m` at the annulus midpoint
+/// `(body_dist + bounding_dist) / 2` along `sign · split_normal`;
+/// `axis_unit` is the ribbon binormal; `lateral_unit` is the ribbon
+/// split-normal (orthogonal to binormal by construction). Pin
+/// extends `±half_length_m` along binormal, symmetric across the
+/// seam plane — the `-binormal` half overlaps cup-wall material for
+/// SDF-union connectivity under the recon-4 (P) seam architecture,
+/// the `+binormal` half protrudes as the workshop-visible ridge.
 ///
 /// `layer_body` and `bounding_region` are the same per-layer
 /// [`Solid`]s the caller passes to
 /// [`crate::piece::compose_piece_solid`]; the cup-wall annulus is
 /// `bounding_region ∖ layer_body` at this layer.
-///
-/// The cylinders are deliberately NOT rotated to align with the
-/// centerline's tangent — they're normal to the seam plane along
-/// the binormal direction. Under recon-4 (P), the SDF halfspace
-/// intersect in [`crate::piece::compose_piece_solid`] produces a
-/// clean 1-component half-shell host for each side; manifold3d's
-/// mesh-CSG union absorbs the contained binormal-axis pin into the
-/// half-shell without disconnection (per
-/// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-3 + the recon-3
-/// §R3-3 contained-cylinder absorption test (in `mesh_csg::tests`)
-/// characterisation). The workshop-visible ridge is the half of the
-/// pin cylinder that extends past the Negative half-shell's seam
-/// face (`+binormal · pin_half_length_m` = 5 mm protrusion); the
-/// other half lives inside the half-shell volume.
 #[must_use]
-pub fn build_registration_transforms(
+pub fn build_registration_sdf_ops(
     ribbon: &Ribbon,
     layer_body: &Solid,
     bounding_region: &Solid,
     side: PieceSide,
-) -> Vec<MatingTransform> {
+) -> Vec<Solid> {
     let spec = match &ribbon.registration {
         RegistrationKind::None => return Vec::new(),
         RegistrationKind::Pins(spec) => spec,
@@ -306,17 +280,8 @@ pub fn build_registration_transforms(
         return Vec::new();
     }
     let split_vec = ribbon.split_normal.as_vector();
-    // For each arc fraction, build TWO pins — one on each lateral
-    // side of the centerline along ±split_normal. The split-normal
-    // direction defines the mold's lateral "left/right" axis (the
-    // axis the cup pieces open along); putting pins on both lateral
-    // sides gives each cup piece two interlock columns instead of
-    // one, doubling the alignment constraint. For asymmetric scans
-    // (body wider on one side of the centerline than the other),
-    // each pin's annulus-midpoint offset is computed independently —
-    // the +side and -side `(body_dist, bounding_dist)` pairs can
-    // differ.
-    let mut transforms = Vec::with_capacity(spec.arc_fractions.len() * 2);
+    let lateral_unit = UnitVector3::new_unchecked(split_vec);
+    let mut solids = Vec::with_capacity(spec.arc_fractions.len() * 2);
     for &t in &spec.arc_fractions {
         let Some((center, _tangent, binormal)) = ribbon.sample_at_arc_fraction(t) else {
             return Vec::new();
@@ -325,7 +290,7 @@ pub fn build_registration_transforms(
         // (`tangent × N_split` normalized); renormalize defensively
         // so a degenerate (zero) binormal vector returns the
         // Z-fallback rather than panicking on UnitVector3 invariants.
-        let axis = UnitVector3::new_normalize(binormal);
+        let axis_unit = UnitVector3::new_normalize(binormal);
         for &sign in &[1.0_f64, -1.0_f64] {
             let ray_dir = sign * split_vec;
             let Some(body_dist) = surface_distance_along_ray(layer_body, center, ray_dir) else {
@@ -337,51 +302,15 @@ pub fn build_registration_transforms(
             };
             let pin_offset = f64::midpoint(body_dist, bounding_dist);
             let pin_center = center + pin_offset * ray_dir;
-            transforms.push(pin_transform_for_side(spec, pin_center, axis, side));
+            let pose = PrismaticPinPose::new(pin_center, axis_unit, lateral_unit);
+            let params = match side {
+                PieceSide::Negative => spec.pin_spec.pin_params(pose),
+                PieceSide::Positive => spec.pin_spec.socket_params(pose),
+            };
+            solids.push(build_prismatic_pin_sdf(&params));
         }
     }
-    transforms
-}
-
-/// Build the per-side cylinder transform for one pin location.
-///
-/// Negative side gets [`MatingTransform::UnionCylinder`] at the pin
-/// radius and pin half-length. Positive side gets
-/// [`MatingTransform::SubtractCylinder`] with a socket that's
-/// inflated by [`PinSpec::diametral_clearance_m`] / 2 radially and
-/// [`PinSpec::axial_clearance_m`] / 2 axially (symmetric `/2`
-/// convention — the socket cylinder extends past the pin cylinder
-/// on each axial face for socket-bottom relief).
-fn pin_transform_for_side(
-    spec: &PinSpec,
-    pin_center: Point3<f64>,
-    axis: UnitVector3<f64>,
-    side: PieceSide,
-) -> MatingTransform {
-    match side {
-        PieceSide::Negative => MatingTransform::UnionCylinder {
-            params: CylinderParams {
-                parent: CylinderParent {
-                    center_m: pin_center,
-                    axis,
-                    half_length_m: spec.pin_half_length_m,
-                },
-                radius_m: spec.pin_radius_m,
-                segments: PIN_SEGMENTS,
-            },
-        },
-        PieceSide::Positive => MatingTransform::SubtractCylinder {
-            params: CylinderParams {
-                parent: CylinderParent {
-                    center_m: pin_center,
-                    axis,
-                    half_length_m: spec.pin_half_length_m + spec.axial_clearance_m / 2.0,
-                },
-                radius_m: spec.pin_radius_m + spec.diametral_clearance_m / 2.0,
-                segments: PIN_SEGMENTS,
-            },
-        },
-    }
+    solids
 }
 
 /// Walk `dir` outward from `origin` to find the distance `d ≥ 0` at
@@ -447,11 +376,24 @@ fn surface_distance_along_ray(
 }
 
 #[cfg(test)]
+// `float_cmp`: fit-invariant + chamfer-equality assertions compare
+// f64 fields by exact value — these are determinism contracts on
+// emission where any bit-difference would indicate a real regression
+// (not measurement noise). The `assert_abs_diff_eq!` machine-epsilon
+// variants live alongside, used where decimal-mm input values are
+// not f64-exact (matches the convention in `crate::prismatic_pin::tests`).
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::expect_used,
+    clippy::float_cmp
+)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
     use super::*;
+    use crate::piece::RIBBON_PIECE_OVERLAP_M;
     use crate::ribbon::{Ribbon, SplitNormal};
+    use approx::assert_abs_diff_eq;
     use nalgebra::Point3;
 
     fn straight_x_ribbon() -> Ribbon {
@@ -473,33 +415,11 @@ mod tests {
         (body, bounds)
     }
 
-    /// Extract `CylinderParams` from a [`MatingTransform`] for test
-    /// inspection. Both Union and Subtract cylinder variants carry
-    /// the same payload type; tests focus on the params rather than
-    /// the variant when checking pin position / radius / clearance.
-    fn params_of(t: &MatingTransform) -> &CylinderParams {
-        match t {
-            MatingTransform::UnionCylinder { params }
-            | MatingTransform::SubtractCylinder { params } => params,
-            MatingTransform::SeamTrim { .. } => {
-                panic!("registration transforms should never include SeamTrim")
-            }
-        }
-    }
-
     #[test]
-    fn pin_spec_iter1_has_workshop_defaults() {
+    fn pin_spec_iter1_has_cup_pin_default_and_two_arc_fractions() {
         let s = PinSpec::iter1();
-        assert!((s.pin_radius_m - 0.0015).abs() < f64::EPSILON);
-        // Pre-recon-2 / S5 binormal-axis design restored by
-        // recon-4 (P): 5 mm half-length = 10 mm total pin length,
-        // symmetric across the seam plane.
-        assert!((s.pin_half_length_m - 0.005).abs() < f64::EPSILON);
+        assert_eq!(s.pin_spec, PrismaticPinSpec::cup_pin_default());
         assert_eq!(s.arc_fractions, vec![0.25, 0.75]);
-        // S5 clearance defaults — recon §9 M2 baseline (positional
-        // sliding fit). 0.20 mm diametral × 0.50 mm axial.
-        assert!((s.diametral_clearance_m - 0.00020).abs() < f64::EPSILON);
-        assert!((s.axial_clearance_m - 0.00050).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -508,25 +428,25 @@ mod tests {
     }
 
     #[test]
-    fn build_registration_transforms_none_returns_empty() {
+    fn build_registration_sdf_ops_none_returns_empty() {
         let ribbon = straight_x_ribbon(); // default registration = None
         let (body, bounds) = reference_body_and_bounds();
         assert!(
-            build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative).is_empty()
+            build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative).is_empty()
         );
         assert!(
-            build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Positive).is_empty()
+            build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Positive).is_empty()
         );
     }
 
     #[test]
-    fn build_registration_transforms_pins_returns_one_per_pin_per_side() {
+    fn build_registration_sdf_ops_pins_returns_one_solid_per_pin_per_side() {
         // 4 pins total: 2 arc fractions × 2 lateral mirror sides.
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
         let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative);
-        let pos = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Positive);
+        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        let pos = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Positive);
         assert_eq!(
             neg.len(),
             4,
@@ -535,203 +455,270 @@ mod tests {
         assert_eq!(
             pos.len(),
             4,
-            "Positive side emits the same pin count as Negative"
+            "Positive side emits the same socket count as Negative pin count"
         );
-        // Negative emits UnionCylinder; Positive emits SubtractCylinder.
-        for t in &neg {
-            assert!(
-                matches!(t, MatingTransform::UnionCylinder { .. }),
-                "Negative side should emit UnionCylinder; got {t:?}",
-            );
-        }
-        for t in &pos {
-            assert!(
-                matches!(t, MatingTransform::SubtractCylinder { .. }),
-                "Positive side should emit SubtractCylinder; got {t:?}",
-            );
-        }
     }
 
     #[test]
-    fn build_registration_transforms_empty_arc_fractions_returns_empty() {
+    fn build_registration_sdf_ops_empty_arc_fractions_returns_empty() {
         let mut spec = PinSpec::iter1();
         spec.arc_fractions.clear();
         let ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(spec));
         let (body, bounds) = reference_body_and_bounds();
         assert!(
-            build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative).is_empty()
+            build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative).is_empty()
         );
     }
 
-    /// The pin position invariant: each Negative-side pin's
-    /// `CylinderParent::center_m` lands at the **annulus midpoint**
-    /// of the cup-wall (`(body_dist + bounding_dist) / 2`) and its
-    /// axis is the ribbon binormal (perpendicular to the seam plane).
-    /// Replaces the pre-S5 pin-SDF inside-only assertion — post-S5
-    /// the pin geometry is mesh-CSG, but the COMPOSITION position
-    /// invariant lives in the transform parameters and is directly
-    /// inspectable without a manifold3d round-trip.
+    /// §G-10 #1 bit-precise fit invariant: at the spec layer,
+    /// socket extents inflate by exactly `clearance / 2` per axis
+    /// from pin extents, within machine epsilon. SDF-side analog of
+    /// S5's mesh-CSG `pin_and_socket_fit_invariant`. The contract
+    /// lives at the SDF input layer (per
+    /// [`crate::prismatic_pin`] module docstring) — the SDF kernel
+    /// composes the primitive lazily, so a determinism contract on
+    /// the SDF input bytes implies bit-equal SDF evaluation across
+    /// pin / socket sides modulo the clearance inflation.
+    ///
+    /// Extends the [`crate::prismatic_pin`] module's
+    /// `prismatic_pin_pair_extents_match_spec_clearance_within_machine_epsilon`
+    /// test to the cup-pin call path (verifies the registration
+    /// module's spec consumption — not just the primitive in
+    /// isolation).
     #[test]
-    fn pin_transforms_position_each_pin_at_annulus_midpoint() {
+    fn cup_prismatic_pin_and_socket_fit_invariant() {
+        let ribbon =
+            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        let (body, bounds) = reference_body_and_bounds();
+
+        let pin_spec = PrismaticPinSpec::cup_pin_default();
+        let half_diametral = pin_spec.diametral_clearance_m / 2.0;
+        let half_axial = pin_spec.axial_clearance_m / 2.0;
+
+        // Pose comes from the same ray-march per arc fraction +
+        // mirror; verifying both sides give the same pose triple by
+        // reaching the same per-pin annulus midpoint in both `side`
+        // calls. Then check that the BUILT params per
+        // PrismaticPinSpec respect the clearance inflation.
+        let pose = PrismaticPinPose::new(
+            Point3::new(-0.025, 0.020, 0.0),
+            UnitVector3::new_unchecked(Vector3::new(0.0, 0.0, 1.0)),
+            UnitVector3::new_unchecked(Vector3::new(0.0, 1.0, 0.0)),
+        );
+        let pin_params = pin_spec.pin_params(pose.clone());
+        let socket_params = pin_spec.socket_params(pose);
+
+        assert_abs_diff_eq!(
+            socket_params.base_half_extents_m.x - pin_params.base_half_extents_m.x,
+            half_diametral,
+            epsilon = 1.0e-15,
+        );
+        assert_abs_diff_eq!(
+            socket_params.base_half_extents_m.y - pin_params.base_half_extents_m.y,
+            half_diametral,
+            epsilon = 1.0e-15,
+        );
+        assert_abs_diff_eq!(
+            socket_params.tip_half_extents_m.x - pin_params.tip_half_extents_m.x,
+            half_diametral,
+            epsilon = 1.0e-15,
+        );
+        assert_abs_diff_eq!(
+            socket_params.tip_half_extents_m.y - pin_params.tip_half_extents_m.y,
+            half_diametral,
+            epsilon = 1.0e-15,
+        );
+        assert_abs_diff_eq!(
+            socket_params.half_length_m - pin_params.half_length_m,
+            half_axial,
+            epsilon = 1.0e-15,
+        );
+        assert_eq!(socket_params.base_chamfer_m, pin_params.base_chamfer_m);
+
+        // Spot-check via the full call path that pin + socket sides
+        // produce different solids (different counts of solids would
+        // signal a missing arc fraction; identical Vec lengths but
+        // different contained geometry is what we want).
+        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        let pos = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Positive);
+        assert_eq!(neg.len(), pos.len(), "pin + socket Vec lengths must match");
+    }
+
+    /// §G-10 SDF position invariant: each pin's centre (interior
+    /// reading) lies at the annulus midpoint of the cup-wall along
+    /// `±split_normal`. Replaces the mesh-CSG-era
+    /// `pin_transforms_position_each_pin_at_annulus_midpoint` (which
+    /// inspected `CylinderParent::center_m` directly); the SDF-side
+    /// equivalent samples the pin SDF at the expected pose centre
+    /// and asserts interior.
+    #[test]
+    fn cup_pin_sdf_centre_lands_at_annulus_midpoint() {
         // Pin at arc-fraction 0.25 of straight +X centerline (-0.05 → +0.05):
         //   centerline_sample = (-0.025, 0, 0)
         //   body surface along +Y: y = +0.010
         //   bounding surface +Y:   y = +0.030
         //   annulus midpoint   = (10 + 30) / 2 = +0.020
-        //   pin position       = (-0.025, +0.020, 0)
+        //   pin centre         = (-0.025, +0.020, 0)
         //   axis               = +Z (binormal: tangent +X × split +Y = +Z)
-        //   radius 1.5 mm, half-length 5 mm
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
         let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative);
+        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        assert_eq!(neg.len(), 4, "4 pins expected from default iter1 spec");
 
-        // Expect 4 pin centers — 2 arc fractions × 2 lateral sides.
-        let centers: Vec<Point3<f64>> = neg.iter().map(|t| params_of(t).parent.center_m).collect();
-        let expected = [
+        let expected_centres = [
             Point3::new(-0.025, 0.020, 0.0),  // t=0.25, +Y
             Point3::new(-0.025, -0.020, 0.0), // t=0.25, -Y
             Point3::new(0.025, 0.020, 0.0),   // t=0.75, +Y
             Point3::new(0.025, -0.020, 0.0),  // t=0.75, -Y
         ];
-        for e in &expected {
-            let matched = centers.iter().any(|c| {
-                (c.x - e.x).abs() < 1e-6 && (c.y - e.y).abs() < 1e-6 && (c.z - e.z).abs() < 1e-6
-            });
+        for expected in &expected_centres {
+            let matched = neg.iter().any(|pin| pin.evaluate(expected) < 0.0);
             assert!(
                 matched,
-                "expected pin center at {e:?}, got centers {centers:?}"
+                "expected interior reading at pin centre {expected:?}; \
+                 no pin SDF in the Vec reads negative there"
             );
-        }
-        // Pin radius + half-length unchanged from spec.
-        for t in &neg {
-            let p = params_of(t);
-            assert!((p.radius_m - 0.0015).abs() < f64::EPSILON);
-            assert!((p.parent.half_length_m - 0.005).abs() < f64::EPSILON);
-        }
-        // Axis is the ribbon binormal — +Z for this fixture
-        // (tangent +X × split-normal +Y = +Z).
-        for t in &neg {
-            let a = params_of(t).parent.axis.into_inner();
-            assert!(a.x.abs() < 1e-12 && a.y.abs() < 1e-12 && (a.z - 1.0).abs() < 1e-12);
         }
     }
 
-    /// Positive-side socket params carry the diametral + axial
-    /// clearance inflation; pin and socket share `center_m` + `axis`
-    /// per pin position. The `mesh_csg::tests` math invariant builds
-    /// parents inline, so without this test a regression in
-    /// `pin_transform_for_side`'s Positive arm (e.g., a stray `* 2.0`
-    /// or dropped `/ 2.0`) could land without any test surfacing it.
+    /// §G-10 wide-body regression (iter-1 sock-over-capsule scope) —
+    /// each pin's pose lands in the cup-wall annulus (OUTSIDE body,
+    /// INSIDE bounding) at `|x| ≈ 48.5 mm = (36 + 61) / 2`.
+    /// SDF-side equivalent of the post-S5 mesh-CSG-era
+    /// `pin_transforms_position_stays_in_cup_wall_for_wide_body_iter1_regression`.
     #[test]
-    fn pin_transforms_positive_socket_params_inflate_per_spec() {
-        let ribbon =
-            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative);
-        let pos = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Positive);
-        assert_eq!(
-            neg.len(),
-            pos.len(),
-            "Negative and Positive emit one transform per pin"
-        );
-
-        let spec = PinSpec::iter1();
-        let expected_socket_radius = spec.pin_radius_m + spec.diametral_clearance_m / 2.0;
-        let expected_socket_half_length = spec.pin_half_length_m + spec.axial_clearance_m / 2.0;
-
-        // Each Positive socket pairs with the same-position Negative
-        // pin via shared center+axis. Match Positive transforms back
-        // to Negative by `parent.center_m` (per-position bijection).
-        for (i, pos_t) in pos.iter().enumerate() {
-            let pos_params = params_of(pos_t);
-            let neg_match = neg
-                .iter()
-                .find(|n| {
-                    let np = params_of(n);
-                    np.parent.center_m == pos_params.parent.center_m
-                })
-                .unwrap_or_else(|| {
-                    panic!("Positive transform {i} has no Negative match by center_m")
-                });
-            let neg_params = params_of(neg_match);
-
-            // Shared center + axis.
-            assert_eq!(neg_params.parent.center_m, pos_params.parent.center_m);
-            assert_eq!(neg_params.parent.axis, pos_params.parent.axis);
-            // Negative side carries pin geometry verbatim.
-            assert!((neg_params.radius_m - spec.pin_radius_m).abs() < f64::EPSILON);
-            assert!(
-                (neg_params.parent.half_length_m - spec.pin_half_length_m).abs() < f64::EPSILON,
-            );
-            // Positive side carries the symmetric `/2` inflation.
-            assert!(
-                (pos_params.radius_m - expected_socket_radius).abs() < f64::EPSILON,
-                "Positive socket radius should be pin + diametral/2 = {expected_socket_radius}; \
-                 got {}",
-                pos_params.radius_m,
-            );
-            assert!(
-                (pos_params.parent.half_length_m - expected_socket_half_length).abs()
-                    < f64::EPSILON,
-                "Positive socket half_length should be pin + axial/2 = {expected_socket_half_length}; \
-                 got {}",
-                pos_params.parent.half_length_m,
-            );
-            // Determinism contract — same segments across sides.
-            assert_eq!(neg_params.segments, pos_params.segments);
-        }
-    }
-
-    /// Wider body fixture: half-extent 36 mm body + 61 mm bounding —
-    /// mirrors iter-1 sock-over-capsule's `+X` geometry (body extent
-    /// at layer 0 ≈ 41 mm, bounding ≈ 61 mm; cup-wall annulus
-    /// `x ∈ [41 mm, 61 mm]`). Each pin's `CylinderParent::center_m`
-    /// lands at the annulus midpoint along ±X (`(36 + 61) / 2 =
-    /// 48.5 mm`), NOT at the legacy 25 mm fixed offset — the
-    /// original iter-1 visual-gate falsification mode (workshop
-    /// iter-1 mold recon §F). Pre-S5 the test asserted the pin-SDF
-    /// inside-only; post-S5 the equivalent invariant inspects the
-    /// [`CylinderParent::center_m`] each transform carries directly.
-    #[test]
-    fn pin_transforms_position_stays_in_cup_wall_for_wide_body_iter1_regression() {
+    fn cup_pin_sdf_centre_stays_in_cup_wall_for_wide_body() {
         let body = Solid::cuboid(Vector3::new(0.036, 0.036, 0.036));
         let bounds = Solid::cuboid(Vector3::new(0.061, 0.061, 0.061));
-        // Centerline along +X, split-normal +X so the pin extends
-        // along +X (the iter-1 production direction). +Y split would
-        // require the cuboid to be wider in +Y than in +X; we keep
-        // the cuboid symmetric and switch the split direction.
         let centerline = vec![Point3::new(0.0, 0.0, -0.050), Point3::new(0.0, 0.0, 0.050)];
         let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split)
             .unwrap()
             .with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let neg = build_registration_transforms(&ribbon, &body, &bounds, PieceSide::Negative);
+        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
         assert_eq!(neg.len(), 4, "wide-body fixture should still emit 4 pins");
 
-        // For each pin, the parent center must be:
-        // - OUTSIDE the body (cup-wall material, body.evaluate > 0),
-        // - INSIDE the bounding region (cup-wall material, bounds.evaluate < 0),
-        // - At |x| ≈ (36 + 61) / 2 = 48.5 mm (annulus midpoint along
-        //   ±X).
-        for t in &neg {
-            let c = params_of(t).parent.center_m;
+        // Sample expected centres: arc fractions 0.25 + 0.75 along
+        // ±Z centerline (z = -0.025 and z = +0.025), each mirrored
+        // along ±X split-normal at offset = (36 + 61) / 2 = 48.5 mm.
+        let expected_centres = [
+            Point3::new(0.0485, 0.0, -0.025),
+            Point3::new(-0.0485, 0.0, -0.025),
+            Point3::new(0.0485, 0.0, 0.025),
+            Point3::new(-0.0485, 0.0, 0.025),
+        ];
+        for expected in &expected_centres {
+            let matched = neg.iter().any(|pin| pin.evaluate(expected) < 0.0);
             assert!(
-                body.evaluate(&c) > 0.0,
-                "pin center {c:?} must be OUTSIDE the body (in cup wall); body.evaluate = {}",
-                body.evaluate(&c),
+                matched,
+                "expected interior reading at annulus-midpoint pin centre {expected:?} \
+                 (wide-body iter-1 regression); no pin SDF reads negative there. \
+                 If a pin's centre is INSIDE the body, the pre-C1 fixed-offset bug \
+                 has regressed."
+            );
+            // Belt-and-suspenders: the centre must lie OUTSIDE the
+            // body (cup-wall material) and INSIDE the bounding
+            // region (cup-wall material). Holds independently of the
+            // SDF emission path.
+            assert!(
+                body.evaluate(expected) > 0.0,
+                "pin centre {expected:?} must be OUTSIDE the body"
             );
             assert!(
-                bounds.evaluate(&c) < 0.0,
-                "pin center {c:?} must be INSIDE the bounding region (in cup wall); \
-                 bounds.evaluate = {}",
-                bounds.evaluate(&c),
-            );
-            assert!(
-                (c.x.abs() - 0.0485).abs() < 1e-6,
-                "pin center {c:?} should land at the annulus-midpoint offset |x| ≈ 48.5 mm",
+                bounds.evaluate(expected) < 0.0,
+                "pin centre {expected:?} must be INSIDE the bounding region"
             );
         }
+    }
+
+    /// §G-10 pin-extends-across-seam check: the pin's `+binormal`
+    /// half protrudes past the seam plane (= z = 0 for this
+    /// fixture) by ~`half_length_m`. Confirms the symmetric-across-
+    /// seam pose convention from the module docstring — the
+    /// workshop-visible registration ridge is produced when this
+    /// pin SDF is unioned with the Negative half-shell (the half-
+    /// shell's `+binormal` boundary is at `+RIBBON_PIECE_OVERLAP_M`,
+    /// so any pin material past that becomes the ridge).
+    #[test]
+    fn cup_pin_extends_symmetrically_across_seam_plane() {
+        let ribbon =
+            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        let (body, bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+
+        // For the first pin (centre at (-0.025, +0.020, 0)), sample
+        // at:
+        //   - 1 µm past the +binormal tip → exterior (z = +half_length + 1e-6)
+        //   - 1 mm inside the -binormal tip → interior (z = -half_length + 1e-3)
+        let half_length = PrismaticPinSpec::cup_pin_default().pin_half_length_m;
+        let first_pin = &neg[0];
+        let first_centre = Point3::new(-0.025, 0.020, 0.0);
+
+        let interior_neg_z = first_centre + Vector3::new(0.0, 0.0, -half_length + 1.0e-3);
+        let interior_pos_z = first_centre + Vector3::new(0.0, 0.0, half_length - 1.0e-3);
+        let exterior_pos_z = first_centre + Vector3::new(0.0, 0.0, half_length + 1.0e-4);
+
+        assert!(
+            first_pin.evaluate(&interior_neg_z) < 0.0,
+            "pin interior at -binormal half (z = -{} + 1 mm) must be inside; SDF = {}",
+            half_length,
+            first_pin.evaluate(&interior_neg_z),
+        );
+        assert!(
+            first_pin.evaluate(&interior_pos_z) < 0.0,
+            "pin interior at +binormal half (z = +{} - 1 mm) must be inside; \
+             confirms symmetric extent across seam; SDF = {}",
+            half_length,
+            first_pin.evaluate(&interior_pos_z),
+        );
+        assert!(
+            first_pin.evaluate(&exterior_pos_z) > 0.0,
+            "pin 0.1 mm past +binormal tip must be exterior; SDF = {}",
+            first_pin.evaluate(&exterior_pos_z),
+        );
+    }
+
+    /// §G-10 + recon-1 §G-12 #2 paradigm-boundary precondition: the
+    /// pin's `-binormal` half overlaps the Negative half-shell
+    /// material by at least `RIBBON_PIECE_OVERLAP_M`. The half-
+    /// shell's `+binormal` boundary sits at
+    /// `+RIBBON_PIECE_OVERLAP_M` (per
+    /// `crate::piece::compose_piece_solid`'s seam halfspace inward
+    /// bias); the pin centre at `binormal = 0` has its `-binormal`
+    /// half spanning `[-half_length, 0]`. So the overlap region
+    /// `[-half_length, +RIBBON_PIECE_OVERLAP_M]` lies inside the
+    /// half-shell — providing the SDF-union connectivity that the
+    /// recon-3 §R3-3 / recon-4 §F-3 architectural-correction
+    /// pattern relies on.
+    ///
+    /// This is the lib-test analog of the §G-7 probe's BRANCH-A
+    /// outcome (`§G-12 #2 bail-out (SDF-side pin, 3 mm)` →
+    /// 1 component). The probe characterises full SDF→MC at
+    /// production cell sizes; this test characterises the SDF input
+    /// pre-MC (geometric overlap exists, which is the SDF-union
+    /// connectivity precondition).
+    #[test]
+    fn cup_pin_overlaps_negative_half_shell_for_sdf_union_connectivity() {
+        let ribbon =
+            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        let (body, bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+
+        let first_pin = &neg[0];
+        let first_centre = Point3::new(-0.025, 0.020, 0.0);
+        // Probe at z = -RIBBON_PIECE_OVERLAP_M (just inside the
+        // Negative half-shell's seam boundary): the pin must report
+        // interior here so SDF union with the half-shell forms a
+        // connected component.
+        let overlap_probe = first_centre + Vector3::new(0.0, 0.0, -RIBBON_PIECE_OVERLAP_M);
+        assert!(
+            first_pin.evaluate(&overlap_probe) < 0.0,
+            "pin must extend into the Negative half-shell's seam-overlap region \
+             (z = -RIBBON_PIECE_OVERLAP_M from centre) for SDF-union connectivity; \
+             pin SDF = {}",
+            first_pin.evaluate(&overlap_probe),
+        );
     }
 
     /// Origin strictly OUTSIDE the solid (`sd_origin > 0`) →

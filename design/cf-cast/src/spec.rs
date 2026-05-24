@@ -2807,10 +2807,14 @@ mod tests {
     // SDF level (per `docs/CF_CAST_MATING_FEATURES_RECON.md` §8 —
     // S4 pulled the deletion forward when the cup-piece Solid
     // briefly went side-agnostic; recon-4 (P) restored side-
-    // specificity but the pin geometry stays mesh-CSG so the
-    // post-CSG pin-protrusion-vs-hole invariant lives in
-    // `registration::tests::pin_transforms_positive_socket_params_inflate_per_spec`
-    // instead).
+    // specificity but the pin geometry stayed mesh-CSG). S3 of the
+    // FDM-friendly geometry arc (2026-05-24) put the pin geometry
+    // BACK on the SDF side (per recon-1 §G-12 #2 architectural
+    // correction); the pin-protrusion-vs-hole invariant now lives
+    // in `registration::tests::cup_prismatic_pin_and_socket_fit_invariant`
+    // (spec-layer math-verified) +
+    // `registration::tests::cup_pin_sdf_centre_lands_at_annulus_midpoint`
+    // (SDF interior reading).
 
     #[test]
     fn export_molds_v2_with_pins_writes_pieces_plus_plug() {
@@ -2840,26 +2844,39 @@ mod tests {
     }
 
     #[test]
-    fn generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_diameter() {
+    fn generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_geometry() {
         // Pins ON: the v2 Mold Assembly section must mention the
-        // pin count + diameter (1.5 mm radius × 2 = 3.0 mm diameter
-        // for iter1) + the pin length (5 mm half-length × 2 = 10 mm
-        // total under the recon-4 (P) binormal-axis restoration).
-        // v1/v2-pre-Step-9 prose ("clamp with rubber bands") must
-        // NOT appear.
+        // pin count (4 pins = 2 arc fractions × 2 lateral mirrors
+        // for iter1) + the new truncated-pyramid geometry vocabulary
+        // (post-S3 of the FDM-friendly geometry arc). Base extents
+        // 3.0 × 3.0 mm (1.5 mm half-extents per
+        // PrismaticPinSpec::cup_pin_default) + pin length 6.0 mm
+        // (3 mm half-length × 2). v1/v2-pre-Step-9 prose ("clamp
+        // with rubber bands") must NOT appear.
         let (spec, ribbon) = v2_fixture_with_pins();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        assert!(md.contains("2 cylindrical pins"));
-        assert!(md.contains("3.0 mm Ø"));
-        // 5 mm half-length default → 10 mm pin length across the seam.
         assert!(
-            md.contains("10.0 mm long")
-                || md.contains("× 10.0 mm long")
-                || md.contains("× 10.0 mm,"),
+            md.contains("4 truncated-pyramid registration pins"),
+            "post-S3 prose must mention the truncated-pyramid pin count + geometry"
+        );
+        // 3 mm base half-extent × 2 = 6 mm × 6 mm rectangular base.
+        assert!(
+            md.contains("3.0 × 3.0 mm rectangular base"),
+            "prose must mention the rectangular base extents"
+        );
+        // 3 mm half-length default → 6 mm pin length across the seam.
+        assert!(
+            md.contains("6.0 mm long"),
+            "prose must mention the pin length"
         );
         // Workshop callout: insertion along the binormal direction.
         assert!(md.contains("binormal"));
+        // First-layer chamfer surfaced for the FDM-target user.
+        assert!(
+            md.contains("chamfer"),
+            "post-S3 prose must mention the base-end chamfer (first-layer elephant-foot absorber)"
+        );
         assert!(
             !md.contains("rubber bands"),
             "with-pins prose must not retain rubber-band clamping note"
@@ -3089,22 +3106,31 @@ mod tests {
 
         // Cup-wall SDF probe inside the annulus (body half_y=0.025,
         // bounding half_y=0.040, probe at y=0.0325 the annulus
-        // midpoint). The base_piece Solid is the SDF half-shell
-        // (`bounding ∖ body ∩ halfspace`) — pin geometry lives in
-        // the post-MC mesh-CSG transforms. Probe z=+0.003 sits on
-        // the Negative kept side (+overlap = +0.5 mm boundary at z=0
-        // biased inward).
+        // midpoint). Post-S3 of the FDM-friendly geometry arc, the
+        // composed cup-piece Solid is `bounding ∖ body ∩ halfspace`
+        // PLUS the SDF-side registration pin unions (Negative side).
+        // Probe z=-0.003 sits on the Negative kept side (`+overlap =
+        // +0.5 mm` boundary at z=0 biased inward, so z=-3 mm is
+        // 2.5 mm inside the kept material at the cup-wall annulus).
+        // The pin SDFs are centred at z=0 and extend ±3 mm along the
+        // binormal axis, so the probe at z=-3 mm sits roughly at the
+        // pin's `-binormal` tip — but on the lateral axis the probe
+        // at x=-0.0075 (arc-fraction-0.25 centerline sample) and
+        // y=+0.0325 (mid-annulus) IS the pin centre lateral
+        // location, so this point reads INSIDE the composed Solid
+        // (either via cup-wall material or pin-tip overlap).
         let pin_q = Point3::new(-0.0075, 0.0325, -0.003);
         assert!(
             piece_neg.evaluate(&pin_q) < 0.0,
-            "Negative piece base Solid should register cup-wall material at \
-             the annulus-midpoint probe (pin geometry lives post-MC); got {}",
+            "Negative piece composed Solid should register cup-wall material \
+             at the annulus-midpoint probe; got {}",
             piece_neg.evaluate(&pin_q),
         );
-        // Both features land in the transform Vec post-S5+S7:
-        // Negative gains UnionCylinder per pin; Positive gains
-        // SubtractCylinder per pin; both gain SubtractCylinder per
-        // pour-gate leg. Count cylinder ops on each side.
+        // Post-S3 of the FDM-friendly geometry arc, registration
+        // pins live SDF-side (no longer in the transform Vec). The
+        // remaining mesh-CSG cylinder ops are: S7 pour-gate + vent
+        // legs (2 per side) plus S6 plug-socket / T-slot when
+        // applicable.
         let count_cylinders = |ts: &[crate::mesh_csg::MatingTransform]| -> usize {
             ts.iter()
                 .filter(|t| {
@@ -3116,19 +3142,15 @@ mod tests {
                 })
                 .count()
         };
-        // pins (4 per side via bilateral mirror) + pour leg + vent leg = 6
-        // cylinder ops minimum on each side (plus S6 plug-socket /
-        // T-slot when applicable; v2_fixture has plug-pins so add
-        // those too).
         let neg_cyls = count_cylinders(&neg_transforms);
         let pos_cyls = count_cylinders(&pos_transforms);
         assert!(
-            neg_cyls >= 6,
-            "Negative piece should emit ≥ 6 cylinder ops (4 pins + 2 pour-gate legs); got {neg_cyls}",
+            neg_cyls >= 2,
+            "Negative piece should emit ≥ 2 cylinder ops (2 pour-gate legs; pins moved SDF-side in S3); got {neg_cyls}",
         );
         assert!(
-            pos_cyls >= 6,
-            "Positive piece should emit ≥ 6 cylinder ops (4 pins + 2 pour-gate legs); got {pos_cyls}",
+            pos_cyls >= 2,
+            "Positive piece should emit ≥ 2 cylinder ops (2 pour-gate legs; pins moved SDF-side in S3); got {pos_cyls}",
         );
     }
 

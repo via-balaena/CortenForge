@@ -5,24 +5,32 @@
 //! geometry is the CSG composition
 //!
 //! ```text
-//! piece_sdf      = bounding_region ∖ layer_body ∩ ribbon_side(side)
+//! piece_sdf      = bounding_region ∖ layer_body
+//!                  ∩ ribbon_side(side)
+//!                  ∪ registration pin solids        (Negative side)
+//!                  ∖ registration socket solids     (Positive side)
 //! piece_meshcsg  = [plug-shaft + T-slot SubtractCylinder]
 //!                + [pour-gate + vent SubtractCylinder]
-//!                + [registration pin/socket UnionCylinder/SubtractCylinder]
 //! ```
 //!
 //! The cup-piece [`Solid`] is **side-specific**: each
 //! [`PieceSide`] returns its own half-shell via
 //! [`Ribbon::halfspace_solid`]'s SDF half-space intersect (biased
 //! inward by [`RIBBON_PIECE_OVERLAP_M`] so the two pieces overlap by
-//! 1 mm at the seam). Marching-cubes meshes the half-shell directly;
-//! the mating-features cylinders (S5/S6/S7) compose post-MC via
-//! [`crate::mesh_csg::apply_mating_transforms`]. See
+//! 1 mm at the seam), then unions / subtracts the registration
+//! [`crate::PrismaticPin`][`crate::prismatic_pin`] solids per side.
+//! Marching-cubes meshes the composed half-shell; the remaining
+//! mating-features cylinders (S6 plug-anchor + S7 pour-gate) compose
+//! post-MC via [`crate::mesh_csg::apply_mating_transforms`]. See
 //! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 for the
-//! recon-4 (P) architectural-correction rationale: the seam belongs
-//! to the SDF/MC paradigm (continuous bulk geometry); mating-feature
-//! cylinders belong to the mesh-CSG paradigm (exact discrete
-//! primitives with bit-precise diametral fit).
+//! recon-4 (P) seam architectural-correction rationale and
+//! `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-12 #2 for the
+//! S3 registration-pin SDF-side architectural-correction rationale
+//! (the cup-pin primitive was mesh-CSG `MatingTransform::UnionCylinder` /
+//! `SubtractCylinder` pre-S3; post-S3 it lives entirely SDF-side per
+//! the §G-7 probe-spike outcome — `Manifold::hull_pts` truncated-
+//! pyramid mesh-CSG union onto an SDF→MC curved-shell host fails at
+//! the paradigm boundary, the §G-12 #2 SDF-union path clears).
 //!
 //! # v1 vs v2 mold cup
 //!
@@ -62,12 +70,18 @@
 //! §F-2: the body-cavity opening at the seam is established by SDF
 //! arithmetic (`bounding ∖ body ∩ halfspace` evaluates linearly at
 //! the seam plane), so MC interpolates seam-cap vertices exactly on
-//! the plane (§F-4 audit: bit-precise to f64 precision). S5/S6/S7
-//! mating-features mesh-CSG stays unchanged — `apply_mating_transforms`
-//! still runs cylinder Union/Subtract ops post-MC against the
-//! half-shell mesh. [`crate::mesh_csg::MatingTransform::SeamTrim`]
-//! remains in the enum as a defensive primitive but is no longer
-//! emitted from this function.
+//! the plane (§F-4 audit: bit-precise to f64 precision).
+//! [`crate::mesh_csg::MatingTransform::SeamTrim`] remains in the
+//! enum as a defensive primitive but is no longer emitted here.
+//!
+//! S3 of the FDM-friendly geometry arc (2026-05-24) migrated the
+//! cup-pin registration mating features from mesh-CSG cylinders
+//! (`MatingTransform::UnionCylinder` / `SubtractCylinder` consuming
+//! a shared `crate::mesh_csg::CylinderParent`) to SDF-side
+//! [`crate::PrismaticPin`][`crate::prismatic_pin`] solids composed
+//! pre-MC into the half-shell. The mesh-CSG `MatingTransform`
+//! variants stay for the cup pour-gate carve (S7 of the prior
+//! mating-features arc) + the plug-anchor socket / T-slot (S6).
 
 use cf_design::Solid;
 
@@ -75,7 +89,7 @@ use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
 use crate::plug::build_plug_socket_transforms;
 use crate::pour::build_pour_gate_transforms;
-use crate::registration::build_registration_transforms;
+use crate::registration::build_registration_sdf_ops;
 use crate::ribbon::{PieceSide, Ribbon};
 
 /// Inter-piece seam overlap distance applied at the
@@ -111,21 +125,26 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 ///      half-shell; the SDF halfspace handles per-side bisection by
 ///      construction (cylinder portion outside the half-shell is a
 ///      no-op).
-///   3. Per-pin registration ops — one
-///      [`crate::mesh_csg::MatingTransform::UnionCylinder`] per pin
-///      on [`PieceSide::Negative`]; one
-///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] per
-///      pin on [`PieceSide::Positive`] (S5).
+///
+/// Post-S3 of the FDM-friendly geometry arc, the cup-pin
+/// registration features live SDF-side (per
+/// `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-12 #2) —
+/// composed into the per-piece [`Solid`] above the half-shell
+/// intersect, NOT in the `Vec<MatingTransform>`. The Negative side
+/// unions [`crate::PrismaticPin`][`crate::prismatic_pin`] pin solids
+/// (workshop-visible ridge protrudes past the half-shell seam face);
+/// the Positive side subtracts socket solids (matching cavity carved
+/// from cup-wall material). See
+/// [`crate::registration::build_registration_sdf_ops`] for the per-
+/// pin pose derivation.
 ///
 /// The cup-piece Solid's SDF is **negative inside the cup-wall
 /// material** on the half-shell side; the side-specific cut is
 /// already baked into the Solid via the ribbon's half-space
-/// intersect. `apply_mating_transforms` then runs the cylinder ops
-/// post-MC against the half-shell mesh; cylinder portions outside
-/// the half-shell volume contribute nothing (a no-op for
-/// `SubtractCylinder`; a free-floating addition for `UnionCylinder`
-/// — which under the binormal-axis pin design materializes as the
-/// workshop-visible half-cylinder ridge across the seam face).
+/// intersect. `apply_mating_transforms` then runs the remaining S6 +
+/// S7 cylinder ops post-MC against the half-shell mesh; cylinder
+/// portions outside the half-shell volume contribute nothing (a
+/// no-op for `SubtractCylinder`).
 ///
 /// Recon-4 (P) reverted the seam cut from a post-MC
 /// [`crate::mesh_csg::MatingTransform::SeamTrim`] back to this SDF
@@ -171,25 +190,32 @@ pub fn compose_piece_solid(
     // mesh-CSG cylinder primitives compose post-MC against the
     // resulting half-shell mesh.
     let halfspace = ribbon.halfspace_solid(side, bounds, RIBBON_PIECE_OVERLAP_M);
-    let base_piece = bounding_region
+    let mut base_piece = bounding_region
         .clone()
         .subtract(layer_body.clone())
         .intersect(halfspace);
+
+    // S3 (FDM-friendly geometry arc) inter-piece registration pins
+    // / sockets — SDF-side composition per recon-1 §G-12 #2.
+    // Negative unions each pin solid into the half-shell (`-binormal`
+    // pin half overlaps cup-wall material for SDF-union connectivity;
+    // `+binormal` half protrudes past the half-shell seam face as
+    // the workshop-visible ridge). Positive subtracts each socket
+    // solid (matching cavity carved from Positive cup-wall material;
+    // socket extents inflated per the symmetric `/2` clearance
+    // convention). Empty Vec when `ribbon.registration` is `None`.
+    let registration_ops = build_registration_sdf_ops(ribbon, layer_body, bounding_region, side);
+    for op in registration_ops {
+        base_piece = match side {
+            PieceSide::Negative => base_piece.union(op),
+            PieceSide::Positive => base_piece.subtract(op),
+        };
+    }
 
     // S6 plug-anchor socket + T-slot SubtractCylinders.
     let mut transforms = build_plug_socket_transforms(ribbon);
     // S7 pour-gate + air-vent SubtractCylinders.
     transforms.extend(build_pour_gate_transforms(ribbon));
-    // S5 inter-piece registration pins/sockets. Negative emits
-    // UnionCylinder per pin; Positive emits SubtractCylinder per
-    // pin (inflated by diametral + axial clearance). Empty Vec
-    // when `ribbon.registration` is `None`.
-    transforms.extend(build_registration_transforms(
-        ribbon,
-        layer_body,
-        bounding_region,
-        side,
-    ));
     Ok((base_piece, transforms))
 }
 
@@ -598,98 +624,13 @@ mod tests {
     }
 
     // ----- Sub-leaf A regression: workshop iter-1 mold visual-gate -
-
-    /// Workshop iter-1 mold visual-gate regression (per the
-    /// `docs/WORKSHOP_ITER1_MOLD_RECON.md` sub-leaf A spike):
-    ///
-    /// **Wide-body fixture** — body half-extent 30 mm in `+X` (wider
-    /// than the pre-C1 hardcoded 25 mm `offset_from_centerline_m`),
-    /// bounding 40 mm in `+X` (10 mm cup-wall annulus). With the
-    /// pre-C1 fixed offset the pin would have landed AT x = 25 mm —
-    /// inside the body, free-floating from the cup-wall mesh. With
-    /// C1's body-relative offset the pin lands at the annulus
-    /// midpoint, `x = (body_dist + bounding_dist) / 2 = 35 mm`.
-    ///
-    /// Post-S5 the invariant lives in the transform parameters
-    /// rather than in the post-CSG mesh topology: pre-S5 the pin
-    /// SDF unioned into the piece Solid, so the MC output produced a
-    /// single connected shell when the pin sat in the cup wall and
-    /// 2 components when it floated free. Post-S5 the pin is a
-    /// separate mesh-CSG cylinder primitive whose attachment to the
-    /// cup-wall material is governed by the cylinder Union's
-    /// `parent.center_m` (must lie OUTSIDE the body and INSIDE the
-    /// bounding region — i.e., in the cup-wall annulus where the
-    /// union intersects cup-wall material rather than empty body-
-    /// cavity space).
-    ///
-    /// Recon-4 (P) reverted recon-3 (α)'s bounds-anchored offset to
-    /// the pre-recon-2 / S5 annulus-midpoint design + binormal axis
-    /// (perpendicular to the seam plane, pin sweeps through cup-wall
-    /// material as a contained cylinder); see
-    /// `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2/§F-3.
-    #[test]
-    fn pin_transforms_anchor_in_cup_wall_for_iter1_wide_body() {
-        use crate::registration::{
-            PIN_SEGMENTS, PinSpec, RegistrationKind, build_registration_transforms,
-        };
-
-        let layer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030));
-        let bounding_region = Solid::cuboid(Vector3::new(0.040, 0.040, 0.040));
-        // Centerline along +Z, split-normal +X. Binormal = tangent ×
-        // split-normal = +Z × +X = +Y; pin cylinders extend along ±Y
-        // (perpendicular to the seam plane, sweeping through the
-        // cup-wall annulus). pin_offset = annulus midpoint along
-        // ±X = ±(30 + 40)/2 = ±35 mm.
-        let centerline = vec![Point3::new(0.0, 0.0, -0.050), Point3::new(0.0, 0.0, 0.050)];
-        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
-        // Chunky 5 mm half-length pin in this 10 mm cup-wall fixture
-        // still fits inside the bounding region (pin extends ±5 mm
-        // along ±Y from pin_center at |x| = 35 mm, ±Y body extent
-        // 30 mm so pin doesn't escape the bounding region in Y).
-        let chunky_pins = PinSpec {
-            pin_radius_m: 0.005,
-            pin_half_length_m: 0.005,
-            arc_fractions: vec![0.5], // single pin for a cleaner reproducer
-            ..PinSpec::iter1()
-        };
-        let ribbon = Ribbon::new(centerline, split)
-            .unwrap()
-            .with_registration(RegistrationKind::Pins(chunky_pins));
-
-        // Two pins emitted (one arc fraction × two lateral mirror sides).
-        let neg = build_registration_transforms(
-            &ribbon,
-            &layer_body,
-            &bounding_region,
-            PieceSide::Negative,
-        );
-        assert_eq!(neg.len(), 2, "1 arc fraction × 2 lateral mirrors = 2 pins");
-        for t in &neg {
-            let params = match t {
-                MatingTransform::UnionCylinder { params } => params,
-                other => panic!("Negative side expects UnionCylinder; got {other:?}"),
-            };
-            let c = params.parent.center_m;
-            assert!(
-                layer_body.evaluate(&c) > 0.0,
-                "iter-1 wide-body regression: pin center {c:?} must be OUTSIDE the body \
-                 (cup-wall material); body.evaluate = {}",
-                layer_body.evaluate(&c),
-            );
-            assert!(
-                bounding_region.evaluate(&c) < 0.0,
-                "iter-1 wide-body regression: pin center {c:?} must be INSIDE the bounding \
-                 region (cup-wall material); bounds.evaluate = {}",
-                bounding_region.evaluate(&c),
-            );
-            // Annulus-midpoint offset along ±X = ±(30 + 40) / 2 = ±35 mm.
-            assert!(
-                (c.x.abs() - 0.035).abs() < 1e-6,
-                "pin center should land at the annulus-midpoint offset |x| ≈ 35 mm; got {c:?}",
-            );
-            assert_eq!(params.segments, PIN_SEGMENTS);
-        }
-    }
+    //
+    // The wide-body pin-anchor regression moved into
+    // `crate::registration::tests::cup_pin_sdf_centre_stays_in_cup_wall_for_wide_body`
+    // when S3 of the FDM-friendly geometry arc migrated the cup-pin
+    // primitive from mesh-CSG cylinder transforms to SDF-side
+    // PrismaticPin solids — the new test asserts the SAME annulus-
+    // midpoint invariant on the SDF emission path.
 
     /// Workshop iter-1 plug-socket regression preserved post-S6.
     ///

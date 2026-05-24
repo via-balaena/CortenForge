@@ -81,15 +81,19 @@ pub struct CylinderParent {
 /// pieces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CylinderParams {
-    /// Shared geometry triple — identical between pin and socket of
-    /// a registration pair, plug and cup of a T-bar pair, etc.
+    /// Shared geometry triple — identical between plug and cup of a
+    /// T-bar pair, etc. (Pre-S3 of the FDM-friendly geometry arc the
+    /// registration cup-pin pair shared this triple too; post-S3 the
+    /// cup-pin primitive lives SDF-side as a
+    /// [`crate::PrismaticPin`][`crate::prismatic_pin`], so the
+    /// `CylinderParams` shared-primitive invariant only covers the
+    /// S6 plug-anchor T-bar / shaft and the S7 pour-gate carve.)
     pub parent: CylinderParent,
     /// Per-side radius (meters). Pin and socket of a registration
-    /// pair consume *different* values here: pin uses the pin radius
-    /// (e.g., [`crate::PinSpec::pin_radius_m`]), socket uses
-    /// pin radius + `diametral_clearance_m / 2`. Geometric match
-    /// across pieces comes from the shared [`Self::parent`] pose +
-    /// length, not from radius equality.
+    /// pair consume *different* values here: pin uses the pin radius,
+    /// socket uses pin radius + `diametral_clearance_m / 2`. Geometric
+    /// match across pieces comes from the shared [`Self::parent`]
+    /// pose + length, not from radius equality.
     pub radius_m: f64,
     /// Polygonal facet count around the circumference. Determinism
     /// contract: same parent + same `segments` → bit-equal output.
@@ -898,7 +902,7 @@ mod tests {
             axis: Vector3::y_axis(),
             half_length_m: 0.005,
         };
-        let r_pin = 0.0015; // PinSpec::iter1 pin radius
+        let r_pin = 0.0015; // representative 1.5 mm pin radius (S6/S7 cylinder scale)
         let segments = 32_u32;
 
         // Two independent builds → bit-equal output.
