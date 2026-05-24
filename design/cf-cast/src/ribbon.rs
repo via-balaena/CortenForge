@@ -271,21 +271,24 @@ pub struct Ribbon {
     /// for the channel-geometry contract.
     pub pour_gate: PourGateKind,
     /// Plug-anchor pin kind. Default [`PlugPinKind::None`] (no
-    /// axial plug-anchor pins — workshop user hand-positions the
-    /// plug during pour). v2.1 adds [`PlugPinKind::Axial`] via the
+    /// plug-floor lock — workshop user hand-positions the plug
+    /// during pour). v2.1 adds [`PlugPinKind::Axial`] via the
     /// [`Ribbon::with_plug_pins`] builder; see [`crate::plug`] for
-    /// the pin + socket geometry contract.
+    /// the truncated-pyramid press-fit lock geometry contract
+    /// (post-S4 of the FDM-friendly geometry arc; pre-S4 was a
+    /// cylindrical shaft + T-bar mechanism).
     pub plug_pins: PlugPinKind,
-    /// Optional pour-end anchor for the plug-anchor pin —
+    /// Optional pour-end anchor for the plug-floor lock —
     /// `(centroid, outward_axis)` in world-frame coordinates.
-    /// [`crate::plug::build_plug_self_transforms`] +
-    /// [`crate::plug::build_plug_socket_transforms`] anchor the
-    /// pin cylinder at `centroid` and extend it along `outward_axis`
-    /// (pointing away from the body interior). This is **NOT** a
-    /// centerline-endpoint selector — the anchor point may sit
-    /// past the trimmed centerline tip, as is the case for
-    /// cf-scan-prep outputs where the cap-plane centroid is
-    /// `trim_floor_mm` past `centerline.last()`.
+    /// [`crate::plug::build_plug_lock_sdf`] +
+    /// [`crate::plug::build_plug_lock_socket_sdf`] anchor the
+    /// truncated-pyramid pose at `centroid` with axis along
+    /// `outward_axis` (pointing away from the body interior, =
+    /// downward in pour orientation). This is **NOT** a centerline-
+    /// endpoint selector — the anchor point may sit past the
+    /// trimmed centerline tip, as is the case for cf-scan-prep
+    /// outputs where the cap-plane centroid is `trim_floor_mm`
+    /// past `centerline.last()`.
     ///
     /// `None` (the default) makes the plug-pin builders fall back
     /// to `(points.last(), last_segment.tangent)` per cf-scan-prep's
@@ -559,8 +562,8 @@ impl Ribbon {
     /// with the last segment's frame. Out-of-range `t` returns
     /// `None`.
     ///
-    /// Used by [`crate::registration::build_registration_transforms`]
-    /// to position pin cylinders along the centerline.
+    /// Used by [`crate::registration::build_registration_sdf_ops`]
+    /// to position truncated-pyramid pin SDFs along the centerline.
     #[must_use]
     pub fn sample_at_arc_fraction(
         &self,

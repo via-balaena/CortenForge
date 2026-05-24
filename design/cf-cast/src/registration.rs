@@ -113,8 +113,8 @@
 //! input and diverge only by the symmetric `/2` extent inflation —
 //! the bit-precise fit invariant (analog to S5's cylinder-primitive
 //! `pin_and_socket_fit_invariant`) is preserved at the spec layer
-//! and exercised by
-//! [`tests::cup_prismatic_pin_and_socket_fit_invariant`].
+//! and exercised by `tests::cup_prismatic_pin_and_socket_fit_invariant`
+//! (private module-level test in this file).
 //!
 //! # First-layer chamfer
 //!

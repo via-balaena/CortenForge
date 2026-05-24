@@ -690,69 +690,88 @@ mod tests {
             .with_pour_end_hint(cap_centroid, cap_normal)
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
 
-        // Body extends Z ∈ [-0.060, +0.060]; bounding extends Z ∈
-        // [-0.090, +0.090]. The cap-plane (z = -0.054) lies inside
-        // the body, so cup-wall material at the cap-plane centroid
-        // is the `bounding ∖ body` shell. Pick a probe just past
-        // the body's `-Z` face along `+cap_normal` (= deeper into
-        // cup material from the cap-plane); without the socket
-        // carve the cup-piece SDF is interior there (cup-wall
-        // material). With the carve, the lock socket's
-        // `+axis_unit` half occupies that region and the cup-piece
-        // SDF reports exterior.
-        let body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.060));
+        // Fixture geometry mirrors production: the layer body's
+        // cap-plane face sits AT `cap_centroid.z = -0.054` (= body
+        // `z_min`); cup material lives in `+cap_normal` direction
+        // (z < -0.054) up to the bounding region's `z_min`. The
+        // lock pyramid's workshop-meaningful `+axis_unit` half
+        // spans z ∈ [cap_centroid.z - half_length, cap_centroid.z]
+        // = [-0.058, -0.054], fully inside cup-wall material. The
+        // body cuboid is centered such that its `z_min` lands at
+        // `cap_centroid.z`; the bounding cuboid extends past it by
+        // ≥ half_length + clearance to host the full carve.
+        let body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.040)).translate(Vector3::new(
+            0.0,
+            0.0,
+            -0.054 + 0.040,
+        ));
         let bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.090));
         // Probe at cap_centroid + cap_normal × 2 mm = (0, 0, -0.056) —
         // 2 mm into the `+axis_unit` (workshop-meaningful) half of
-        // the symmetric-across-cap-plane socket. The pyramid main
-        // taper at axis = +0.002 has lateral half-extent
-        // interpolating between base (axis = -half_length + chamfer
-        // = -0.0032) and tip (axis = +half_length = +0.004) — so at
-        // axis = 0.002 the half-extent is well above zero, and the
-        // socket interior is clearly carving cup material.
+        // the symmetric-across-cap-plane socket. Probe lies BELOW
+        // the body's `z_min` (= cap_centroid.z = -0.054), so without
+        // the socket carve the cup-piece SDF reports INTERIOR
+        // (cup-wall material). With the carve, the lock socket's
+        // pyramid SDF reports interior at this probe and the
+        // subtract makes the cup-piece SDF EXTERIOR.
         let probe = Point3::new(0.0, 0.0, -0.056);
 
         for side in [PieceSide::Negative, PieceSide::Positive] {
             let (piece, _) = compose_piece_solid(&body, &bounding, &ribbon, side).unwrap();
-            // (a) Without the lock, the cup-piece SDF at the probe
-            // is interior (cup-wall material wraps the body's -Z
-            // face). The lock socket subtract carves this region
-            // → cup-piece SDF must NOT report interior here. Allow
-            // boundary (SDF = 0 at the carve face) by using a
-            // strict positive threshold; the probe lies 0.002 m
-            // INSIDE the socket interior, so the subtract makes it
-            // clearly exterior.
-            // Caveat for the Positive side under recon-4 (P)
-            // halfspace bisection: the seam plane (y = 0) bisects
-            // the socket laterally, but the probe lies at y = 0
-            // exactly — on the bisection plane. Each piece's
-            // overlap-biased halfspace places its boundary at
-            // ±RIBBON_PIECE_OVERLAP_M from y = 0, so the probe at
-            // y = 0 is comfortably INSIDE both half-shells. The
-            // socket carve at the probe is workshop-meaningful for
-            // both sides.
+
+            // (a) Load-bearing pre-condition: the bare half-shell
+            // SDF (without the lock-socket carve) is INTERIOR at
+            // the probe. If this fails the fixture itself is
+            // broken — the test cannot exercise the carve unless
+            // cup material exists at the probe to begin with.
+            // Compose a parallel ribbon with `PlugPinKind::None`
+            // and verify the bare half-shell SDF.
+            let bare_ribbon = Ribbon::new(
+                vec![
+                    Point3::new(0.0, 0.0, 0.073),
+                    Point3::new(0.0, 0.0, 0.020),
+                    Point3::new(0.0, 0.0, -0.013),
+                ],
+                SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap(),
+            )
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal);
+            let (bare_piece, _) =
+                compose_piece_solid(&body, &bounding, &bare_ribbon, side).unwrap();
+            assert!(
+                bare_piece.evaluate(&probe) < 0.0,
+                "{side:?} fixture precondition FAILED: bare half-shell (no plug pins) \
+                 must report INTERIOR at probe inside cup-wall material so the lock-socket \
+                 carve has material to remove; got SDF = {}. Fixture geometry is broken.",
+                bare_piece.evaluate(&probe),
+            );
+
+            // (b) With the lock socket subtract, the cup-piece SDF
+            // at the probe reports EXTERIOR — the carve worked.
             assert!(
                 piece.evaluate(&probe) > 0.0,
                 "{side:?} cup-piece SDF at probe inside lock socket cavity must report \
-                 exterior (= no cup material there); got SDF = {} — carve regressed",
+                 exterior (= cup material carved away by the lock-socket subtract); \
+                 got SDF = {}. Compare to bare half-shell SDF = {} (interior); the \
+                 delta is the workshop-meaningful carve.",
                 piece.evaluate(&probe),
+                bare_piece.evaluate(&probe),
             );
 
-            // (b) Sanity that the carve is the LOCK socket (not a
-            // wholesale region delete): probe at a point in
-            // cup-wall material but well outside the socket's
-            // lateral extent (the socket's main-taper half-extent
-            // at axis = 0.002 m is ≈ 3.5 mm; probe at x = 25 mm is
-            // ~21 mm past the socket lateral edge). The body
-            // half-extent in X is 20 mm and the bounding half-
-            // extent is 30 mm, so x = 25 mm sits squarely in the
-            // cup-wall X-band at z = -0.056. The cup-piece SDF
-            // must report INTERIOR there (cup material is intact).
+            // (c) Sanity that the carve is the LOCK socket (not a
+            // wholesale region delete): probe at a point in cup-
+            // wall material but well outside the socket's lateral
+            // extent. The socket's main-taper half-extent at axis =
+            // +0.002 is ≈ 3.5 mm; probe at x = 25 mm is 21 mm past
+            // the socket lateral edge. The body's X half-extent is
+            // 20 mm and the bounding's is 30 mm, so x = 25 mm sits
+            // in cup-wall material in X. The cup-piece SDF must
+            // report INTERIOR there (cup material intact).
             let outside_socket_probe = Point3::new(0.025, 0.0, -0.056);
             assert!(
                 piece.evaluate(&outside_socket_probe) < 0.0,
                 "{side:?} cup-piece SDF in cup-wall material at (25, 0, -56) mm \
-                 (well past the socket's ~3.5 mm lateral half-extent) must report \
+                 (21 mm past the socket's ~3.5 mm lateral half-extent) must report \
                  interior — confirms the carve is the localized plug-floor-lock \
                  socket; got SDF = {}",
                 piece.evaluate(&outside_socket_probe),

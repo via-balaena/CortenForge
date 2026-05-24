@@ -357,7 +357,7 @@ pub fn build_plug_lock_socket_sdf(ribbon: &Ribbon) -> Option<Solid> {
 /// [`PlugPinKind::Axial`] via [`Ribbon::with_plug_pins`] get the
 /// pyramid geometry baked into every plug STL automatically. The
 /// function stays public for callers building a custom plug
-/// [`Solid`] outside the [`CastSpec`] per-layer-plug derivation.
+/// [`Solid`] outside the [`crate::CastSpec`] per-layer-plug derivation.
 ///
 /// [`Ribbon::with_plug_pins`]: crate::ribbon::Ribbon::with_plug_pins
 /// [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
@@ -721,6 +721,58 @@ mod tests {
              clearance places the socket wall past the pin wall by diametral/2 = 0.175 mm; \
              SDF = {}",
             socket.evaluate(&between_probe),
+        );
+    }
+
+    /// Gram-Schmidt regression: production cf-scan-prep cap-normal
+    /// is PCA-fitted on the cap-plane vertex cloud while the ribbon's
+    /// `split_normal` is a user-axis projection, so production casts
+    /// see ~1-3° between them. Pre-Gram-Schmidt the
+    /// [`PrismaticPinPose::new`] orthogonality assert panicked at
+    /// `|dot| > 1e-9` on the first iter-1 regen attempt with
+    /// `|dot| ≈ 0.041` (≈ 2.4°). This test rebuilds that fixture
+    /// (non-orthogonal `cap_normal` vs `split_normal`) and verifies
+    /// (a) the pose builder doesn't panic, (b) the returned pose's
+    /// `lateral_unit ⊥ axis_unit` to f64 precision (the assertion
+    /// contract), and (c) the lock SDF still reports interior at
+    /// `cap_centroid` (the pose's geometric centre).
+    #[test]
+    fn build_plug_lock_pose_gram_schmidt_handles_non_orthogonal_cap_normal() {
+        // cap_normal tilted 2-3° from -Z: dot(cap_normal, +X
+        // split_normal) ≈ 0.04. Matches the iter-1 production
+        // misalignment that surfaced this regression.
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.04, 0.0, -1.0).normalize();
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+
+        let (_spec, pose) = build_plug_lock_pose(&ribbon)
+            .expect("Gram-Schmidt must rescue non-orthogonal cap-normal × split-normal");
+
+        let dot = pose
+            .axis_unit
+            .into_inner()
+            .dot(&pose.lateral_unit.into_inner());
+        assert!(
+            dot.abs() < 1.0e-12,
+            "pose lateral_unit must be orthogonal to axis_unit to f64 precision after \
+             Gram-Schmidt projection; got |dot| = {} (PrismaticPinPose::new's \
+             LATERAL_ORTHOGONALITY_TOLERANCE = 1e-9 — Gram-Schmidt should hit ~ulp-level \
+             orthogonality, well past the tolerance)",
+            dot.abs(),
+        );
+
+        // Geometric sanity: the lock SDF still reports interior at
+        // the pose centre (the cap-plane centroid).
+        let lock = build_plug_lock_sdf(&ribbon).expect("Axial kind must build");
+        assert!(
+            lock.evaluate(&cap_centroid) < 0.0,
+            "lock SDF at cap_centroid must be interior after Gram-Schmidt; got SDF = {}",
+            lock.evaluate(&cap_centroid),
         );
     }
 

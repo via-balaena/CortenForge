@@ -139,8 +139,10 @@ pub struct PrismaticPinSpec {
     /// Diametral clearance (meters). The socket's lateral extents
     /// inflate by `diametral_clearance_m / 2` per side; total
     /// socket-vs-pin lateral gap equals `diametral_clearance_m`.
-    /// Symmetric `/2` convention matches [`crate::PinSpec::diametral_clearance_m`]
-    /// from the S5 cylindrical-pin design.
+    /// Symmetric `/2` convention carried over from the pre-S3 S5
+    /// cylindrical-pin design (the cylinder-era `PinSpec` field
+    /// migrated into this spec on S3 of the FDM-friendly geometry
+    /// arc).
     pub diametral_clearance_m: f64,
     /// Axial clearance (meters). The socket's `half_length` extends
     /// by `axial_clearance_m / 2` on each axial face so the socket
