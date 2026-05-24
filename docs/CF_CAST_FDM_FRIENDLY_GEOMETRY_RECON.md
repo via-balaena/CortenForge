@@ -584,14 +584,70 @@ assert_eq!(f4_critical_issues(&result).len(), 0);
   #2: paradigm-boundary correction — pin lives in SDF (welded-to-
   bulk), chamfer band stays mesh-CSG.
 
-**Probe deferred to next session** (recon scaffold ships first).
+### §G-7 Empirical outcome (probe-spike 2026-05-24)
 
-> **Decision §G-7. DEFERRED to probe session.** Branch expectation:
-> BRANCH A (manifold3d handles closed convex primitives uniformly;
-> the PrismaticPin is no less manifold3d-friendly than the
-> CylinderParent per the §F-3 architectural framework — closed
-> convex solid into mesh-CSG-suitable shell host). BRANCH B/C
-> fallbacks identified.
+Probe shipped on `dev` at
+`design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs` (8 tests, all
+PASS post-characterisation). Host: half-sphere shell
+`sphere(R).shell(t) ∩ halfspace(z > 0)` with R = 30 mm, `Solid::shell`
+half-thickness 5 mm (total wall 10 mm — `Solid::shell` builds a `2t`-
+thick shell centred on the original surface per
+`evaluate.rs:107`), MC'd at the cf-cast-cli default cell size
+(3 mm) and at an over-resolved control cell size (1 mm) for
+quantization characterisation. Pin: §G-7 doc spec (base 1.5 mm /
+tip 1.2 mm / half-length 3 mm / chamfer 0.5 mm), binormal-axis
+oriented (+Y), centred at the wall midpoint (32.5 mm, 0, 5 mm).
+
+**Findings:**
+
+| Probe | Baseline components | Post-CSG components | New F4 Critical types | Branch |
+|---|---:|---:|---|---|
+| §G-7 Union @ 3 mm | 1 | **3** | `[SelfIntersecting]` | B + C |
+| §G-7 Union @ 1 mm | 1 | **3** | `[SelfIntersecting]` | B + C |
+| §G-7 Subtract @ 3 mm | 1 | **2** | `[]` | B only |
+| §G-7 Subtract @ 1 mm | 1 | **2** | `[]` | B only |
+| §G-12 #2 bail-out (SDF-side pin, 3 mm) | 1 | **1** | `[]` | A |
+
+**Interpretation.** The §G-7 default path (mesh-CSG `Manifold::union` /
+`difference` of a `Manifold::hull_pts` truncated-pyramid pin against
+the SDF→MC half-shell host) FAILS the BRANCH-A criteria at BOTH cell
+sizes. The 1 mm over-resolved control case fails identically to the
+3 mm production case — so the failure is **not** pure MC
+quantization, it is the mesh-CSG-union of a sharp-cornered convex
+polyhedron against an MC-tessellated curved-shell host. This is the
+exact paradigm-boundary pattern recon-4 characterised (bulk-welded
+SDF/MC geometry × fine mesh-CSG primitives = paradigm-boundary risk;
+see [[project-cf-cast-sdf-meshcsg-paradigm-boundary]]).
+
+The §G-12 #2 bail-out (pin geometry pre-MC, composed into the host
+SDF via `Solid::union`) PASSES the BRANCH-A criteria — 1 component,
+no new F4 Critical types. This is the recon-4 (P) §F-3 SDF-union pin
+pattern transposed onto PrismaticPin: the architectural framework
+already had this surface load-bearing for `CylinderParent` on
+production cup-piece pieces; the probe confirms it carries over.
+
+The recon-4 §F-3 docstring's inference — "if SDF-union pin works on
+this fixture, mesh-CSG-union pin on the same clean 1-component
+half-shell host is at least as robust topologically" — was an
+UNTESTED extrapolation from the recon-3 §R3-3 manifold3d-DIRECT
+cube-shell-host probe, not from a synthetic MC-curved-shell host
+plus mesh-CSG primitive. The §G-7 probe IS that missing test, and
+the inference is empirically FALSE for `hull_pts` truncated-pyramid
+primitives. Open question whether this also extends to mesh-CSG
+`Manifold::cylinder` primitives on MC-curved-shell hosts — production
+iter-1 cup-piece STLs (recon-4 (P) §F-5 #1) pass §R1 at 1 component
+per piece, so production-fixture cylinder × cup-piece-SDF works, but
+this synthetic probe says we can NOT extrapolate to all
+MC-curved-shell × mesh-CSG combinations.
+
+> **Decision §G-7 (revised). BRANCH B + BRANCH C BOTH fire under
+> the default mesh-CSG path.** §G-12 #2 bail-out (pin lives entirely
+> in SDF) PICKED as the implementation path. The chamfer band per
+> §G-9 emits as SDF too (cuboid subtract or smooth taper) — see §G-9
+> revised decision below. `MatingTransform::UnionPrismaticPin` /
+> `SubtractPrismaticPin` variants are NOT introduced (since the pin
+> isn't mesh-CSG); the §G-13 implementation arc scope drops S2 and
+> S5 LOC accordingly.
 
 ### §G-8 — Numeric value picks: clearances + chamfer dimensions
 
@@ -688,12 +744,33 @@ with (a) CSG-level 0.6 mm chamfer + slicer default elephant-foot
 comp; (b) sharp CSG edge + slicer "first layer +0.6 mm" expansion.
 Compare seating fit + lateral-face quality.
 
-> **Decision §G-9. CSG-LEVEL CHAMFER (option (i)).** PrismaticPin
-> primitive carries a `base_chamfer_m` field; chamfer band is
-> designed-in at SDF / mesh emission time. Bambu A1 + default
-> settings + Jayo with NO additional slicer configuration should
-> produce a working pin. Slicer-level compensation is workshop
-> opt-in for over-the-floor printers, not the design contract.
+### §G-9 Empirical outcome (probe-spike 2026-05-24)
+
+Sweep ran the §G-7 default mesh-CSG path with `chamfer_mm ∈ {0.0,
+0.4, 0.6, 0.8, 1.0 mm}`. ALL chamfer values fail IDENTICALLY:
+post-union components = 3 (baseline 1, +2 disconnected shells),
+new F4 Critical types = `[SelfIntersecting]`. The §G-7 failure is
+**chamfer-INDEPENDENT** — it's the underlying mesh-CSG-on-MC-curved-
+shell paradigm boundary (§G-7 BRANCH B + C), not the chamfer band
+geometry. The PrismaticPin primitive's `Manifold::hull_pts` build
+succeeds cleanly at every chamfer (volume ≈ 41–44 mm³ across the
+sweep, monotone-decreasing as chamfer narrows the base footprint;
+manifold-clean per `is_empty() == false`); the failure is in the
+union/difference op against the MC-curved-shell host, not in the
+primitive.
+
+> **Decision §G-9 (revised). CSG-LEVEL CHAMFER (option (i))
+> RETAINED, but emitted SDF-SIDE per §G-12 #2.** The PrismaticPin
+> primitive's chamfer band emits as part of the SDF composition —
+> e.g. `cuboid(base_half) ∪ cuboid(inset_half, base_half)
+> smooth-min` for the chamfered base, or per-axis half-extent
+> reductions along the pin's axis for a piecewise-linear taper plus
+> chamfer band. The §G-9 design contract (chamfer designed-in, no
+> slicer configuration required) is intact; only the emission
+> mechanism (SDF rather than mesh-CSG) changes. §G-12 #3 (slicer-
+> level chamfer fallback) is NOT picked — the §G-7 mesh-CSG failure
+> is chamfer-INDEPENDENT, so swapping CSG-chamfer for slicer-
+> chamfer alone wouldn't unblock §G-7.
 
 ### §G-10 — Test surface design
 
@@ -825,20 +902,31 @@ Per the recon-3 §R3-6 / recon-4 §F-6 pattern:
 > require a new recon; (4) does. (5) is a debug iteration, not a
 > bail-out.
 
+> **Decision §G-12 (post-probe-spike, 2026-05-24). #2 PICKED** as the
+> implementation path per §G-7 + §G-9 empirical outcomes. The probe
+> falsified the §G-13 default mesh-CSG path at the synthetic-fixture
+> level; the §G-12 #2 SDF-side bail-out PASSES BRANCH-A criteria on
+> the same fixture. The S2-S8 implementation arc transposes into the
+> §G-12 #2 architecture rather than the mesh-CSG default; LOC delta
+> is approximately NEUTRAL (mesh-CSG primitive emission cost ≈ SDF
+> emission cost; no `MatingTransform::*PrismaticPin` variants are
+> introduced; chamfer band lives SDF-side per revised §G-9). See
+> revised §G-13 below.
+
 ### §G-13 — Implementation-session scope estimate
 
 | Phase | Subject | LOC | Notes |
 |---|---|---:|---|
 | S0 | Recon scaffold (this commit + pass-1 + pass-2 polish) | ~1000 | this doc |
-| S1 | Probe spike: §G-7 + §G-9 manifold3d feasibility | ~150 | throwaway tests in `mesh/mesh/tests/`; results land in §G-7 / §G-9 |
-| S2 | `PrismaticPin` primitive + `MatingTransform` variants | ~350 | new file `design/cf-cast/src/mesh_csg/prismatic_pin.rs`; emission fn, SDF eval, params, fit-determinism gate |
-| S3 | Cup-piece registration pin migration | ~400 | `registration.rs` rewrite; `PinSpec` → `PrismaticPinSpec`; cf-cast-cli cross-field validator update; ~150 LOC test churn |
+| S1 | Probe spike: §G-7 + §G-9 manifold3d feasibility | ~700 | SHIPPED 2026-05-24 `design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs`, 8 characterisation tests; §G-7 BRANCH B+C falsification + §G-12 #2 BRANCH-A confirmation |
+| S2 | `PrismaticPin` SDF primitive (revised per §G-12 #2) | ~300 | new file `design/cf-cast/src/prismatic_pin.rs`; SDF-side emission via `Solid::cuboid` + taper + chamfer-band composition, params, bit-precise fit-determinism gate per §G-10 #1 — **no** `MatingTransform::*PrismaticPin` variants (pin lives entirely SDF-side) |
+| S3 | Cup-piece registration pin migration | ~400 | `registration.rs` rewrite; `PinSpec` → `PrismaticPinSpec`; cf-cast-cli cross-field validator update; ~150 LOC test churn; SDF-union composition pattern from recon-4 §F-3 |
 | S4 | Plug-floor lock migration (replaces T-bar + shaft + T-slot) | ~500 | `plug.rs` major rewrite; `PlugPinSpec` shrinks (T-bar + shaft fields deleted); ~200 LOC test churn; cup-piece cap-plane-end socket geometry; `platform.stl` blind pocket retired (no shaft penetration) |
-| S5 | First-layer chamfer geometry | ~150 | `PrismaticPin` chamfer band emission per §G-9 option (i); no separate test phase — covered by S2 |
+| S5 | First-layer chamfer geometry | ~80 | chamfer-band emitted SDF-side per revised §G-9 — folds into S2's PrismaticPin SDF primitive; minimal incremental cost above S2 |
 | S6 | `procedure.rs` print-orientation + Bambu A1 target docs | ~120 | per-piece orientation prose, default-settings + Jayo reference recipe, cf-view sanity-check section |
 | S7 | Workshop print + caliper calibration | ~50 | clearance + chamfer numeric pins per §G-8; cf-cast-cli iter-1 regen; cf-view smoke gates §G-11 #3 |
 | S8 | Cold-read pass-2 polish | ~80 | doc lies, anchors, multi-line-string drift |
-| **TOTAL** | | **~2400** | ~5x scale of recon-4 (P) impl; multi-session arc |
+| **TOTAL** | | **~3230** | scope inflated by S1 probe (~+550 LOC vs original ~150 estimate — the probe-spike's characterisation surface is richer than the original recon-4 §F-3 spike, since it must lock 5 distinct findings); S2 + S5 LOC drop slightly under §G-12 #2 path (no mesh-CSG MatingTransform variants; chamfer folds into SDF primitive); net delta ~+830 LOC over original estimate |
 
 **Phase ordering:**
 
@@ -855,11 +943,17 @@ parallelize with S5. S7 is workshop-user-physical (gates §G-11
 (40) / S7 (0) / S8 (60).
 
 **Per-phase paradigm boundary check (per
-[[project-cf-cast-sdf-meshcsg-paradigm-boundary]]):** S2's
-PrismaticPin lives in mesh-CSG (closed convex solid, ≤ 2-piece
-shared primitive). S3 + S4 keep mesh-CSG. S5 chamfer is mesh-CSG.
-**No SDF migration in the default path.** Bail-out §G-12 #1 / #2
-escalate to SDF if needed.
+[[project-cf-cast-sdf-meshcsg-paradigm-boundary]]):** Under the
+revised §G-12 #2 path (post-probe-spike), S2's PrismaticPin lives in
+SDF, not mesh-CSG. S3 + S4 cup-pin + plug-floor lock are SDF-union
+compositions (recon-4 §F-3 pattern). S5 chamfer band is SDF-side
+(folds into S2). The PrismaticPin is now in the SAME column as the
+recon-4 funnel-nipple revert and the cup pour-gate-carve (SDF for
+bulk-welded features). The cup pour-gate-carve mesh-CSG transform
+(`CylinderParent` + `MatingTransform::SubtractCylinder`) is the ONLY
+remaining mesh-CSG mating-feature surface after this arc lands —
+fine-feature mesh-CSG is now ONLY used where it doesn't paradigm-
+boundary-cross.
 
 **Estimated total wall-clock:** 5-7 sessions for S1-S8 default path.
 +1-3 sessions if bail-out branches trigger.
@@ -999,3 +1093,28 @@ empirics falsify recon-1's framing.
   symmetric (each cup half carves half the socket, same pattern as
   today's half-T-slot). 2-piece vs 3-piece decision deferred to S2 /
   S4 implementation.
+- **2026-05-24 — S1 probe-spike SHIPPED.** Probe-spike session lands
+  `design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs` (8 characterisation
+  tests, all PASS, 187 cf-cast unit + 8 probe tests / clippy
+  `-D warnings` / fmt clean, ~58 s release-test wall-clock). §G-7
+  BRANCH determination: **B + C BOTH fire** under the §G-13 default
+  mesh-CSG path (mesh-CSG union of a `Manifold::hull_pts` truncated-
+  pyramid PrismaticPin onto an SDF→MC half-sphere shell host adds 2
+  components AND introduces a `SelfIntersecting` F4 Critical at the
+  boolean junction; symptoms reproduce at the over-resolved 1 mm
+  control cell size, so failure is NOT pure MC quantization). §G-9
+  characterisation: chamfer-INDEPENDENT (all values in {0.0, 0.4,
+  0.6, 0.8, 1.0 mm} fail identically). §G-12 #2 bail-out (pin lives
+  entirely in SDF, recon-4 §F-3 pattern) PASSES BRANCH-A on the same
+  fixture — 1 component, no new F4 Critical types. **Decision: §G-12
+  #2 PICKED** as the implementation path. The recon-4 §F-3 docstring's
+  inference that mesh-CSG-union pin on a clean 1-component half-shell
+  host is "at least as robust topologically" as SDF-union pin was an
+  untested extrapolation; the probe falsifies it for `hull_pts`
+  truncated-pyramid primitives. §G-13 implementation scope revised:
+  S2 PrismaticPin primitive is SDF-side (no `MatingTransform::*PrismaticPin`
+  variants); S5 chamfer band folds into S2 (SDF-side emission); LOC
+  delta approximately neutral vs original mesh-CSG-default estimate.
+  Workshop iter-3 print STILL BLOCKED until S2-S8 implementation
+  completes; the empirical evidence has narrowed the implementation
+  architecture but not unblocked the print.
