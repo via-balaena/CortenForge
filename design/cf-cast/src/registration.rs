@@ -721,6 +721,216 @@ mod tests {
         );
     }
 
+    /// Bisect for the SDF zero-crossing along `lateral_unit` from
+    /// `base_world`. `base_world` is the world-frame point at the
+    /// axial coordinate of interest (`= center + axial * axis_unit`
+    /// at lateral = 0); the bisection walks `+lateral_unit` and
+    /// returns the lateral magnitude at which the SDF crosses 0.
+    ///
+    /// World-coord analog of `crate::prismatic_pin::tests::find_x_zero_crossing`
+    /// (which operates in pin-local coords against the identity pose).
+    /// The half-open interior predicate (`sdf <= +1e-12`) absorbs
+    /// sub-ulp positive noise on the chamfer-band cap planes — same
+    /// rationale as the primitive-layer helper's docstring.
+    fn find_lateral_zero_crossing(
+        sdf: &Solid,
+        base_world: Point3<f64>,
+        lateral_unit: Vector3<f64>,
+        lo: f64,
+        hi: f64,
+    ) -> f64 {
+        let mut a = lo;
+        let mut b = hi;
+        for _ in 0..64 {
+            let m = f64::midpoint(a, b);
+            if sdf.evaluate(&(base_world + m * lateral_unit)) <= 1.0e-12 {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        f64::midpoint(a, b)
+    }
+
+    /// §G-10 S5 chamfer band production-call-path gate: the chamfer
+    /// band that S2's [`crate::build_prismatic_pin_sdf`] composes at
+    /// the primitive layer must hold geometrically when emitted
+    /// through [`build_registration_sdf_ops`]'s pose-rotation +
+    /// world-translation, on the production cup-pin call path
+    /// (symmetric-across-seam pose, not the synthetic identity pose
+    /// used in
+    /// `crate::prismatic_pin::tests::chamfer_band_lateral_extents_match_spec_across_g6_range`).
+    ///
+    /// First pin (arc fraction 0.25, `+split_normal` mirror) sits at
+    /// `center = (-0.025, +0.020, 0)` with `axis_unit = +Z` (binormal)
+    /// and `lateral_unit = +Y` (`split_normal`). The pin-local `-Y`
+    /// axial end (= chamfer-band base; per the module docstring this
+    /// sits at the deepest-in-cup-wall side under the symmetric-
+    /// across-seam pose, **not necessarily bed-adjacent** — the §G-4
+    /// chamfer-band ↔ workshop-bed reconciliation is deferred to S6
+    /// procedure.rs) projects to world `z = -half_length_m`; the
+    /// chamfer-top axial coord projects to world
+    /// `z = -half_length_m + base_chamfer_m`. Lateral extents along
+    /// pin-local `+X` map to world `+Y`.
+    ///
+    /// Verifies (a) the chamfer-band-base lateral extent equals
+    /// `(base - chamfer)` to ~1 µm; (b) the chamfer-top lateral
+    /// extent equals `base` to ~1 µm. Paired with a chamfer-disabled
+    /// bare baseline per [[feedback-load-bearing-test-fixtures]]: a
+    /// `PrismaticPinSpec { base_chamfer_m: 0.0, .. }` override emits
+    /// a single-frustum pin whose chamfer-band-base extent equals
+    /// `base` exactly — the delta between bare-baseline and with-
+    /// chamfer base extents must equal `base_chamfer_m`. If chamfer
+    /// emission breaks at the pose-rotation layer, the extent would
+    /// either stay at `base` (no chamfer applied) or invert; the bare
+    /// baseline guarantees the test detects fixture breakage rather
+    /// than passing for the wrong reason.
+    #[test]
+    fn cup_pin_chamfer_band_holds_through_sdf_ops() {
+        let pin_spec = PrismaticPinSpec::cup_pin_default();
+        let ribbon =
+            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        let (body, bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        let pin = &neg[0];
+
+        let center = Point3::new(-0.025, 0.020, 0.0);
+        let axis_unit = Vector3::new(0.0, 0.0, 1.0);
+        let lateral_unit = Vector3::new(0.0, 1.0, 0.0);
+        let bed_axial = -pin_spec.pin_half_length_m;
+        let bed_base = center + bed_axial * axis_unit;
+        let bed_expected = pin_spec.pin_base_half_extents_m.x - pin_spec.base_chamfer_m;
+        let bed_extent = find_lateral_zero_crossing(pin, bed_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(bed_extent, bed_expected, epsilon = 1.0e-6);
+
+        let top_axial = -pin_spec.pin_half_length_m + pin_spec.base_chamfer_m;
+        let top_base = center + top_axial * axis_unit;
+        let top_expected = pin_spec.pin_base_half_extents_m.x;
+        let top_extent = find_lateral_zero_crossing(pin, top_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(top_extent, top_expected, epsilon = 1.0e-6);
+
+        // Bare-baseline pairing: chamfer-disabled spec emits a
+        // single-frustum pin; bed-face extent equals `base` (NOT
+        // `base - chamfer`). Confirms the chamfer band emission is
+        // load-bearing through the production cup-pin call path —
+        // not silently degenerate.
+        let bare_spec = PinSpec {
+            pin_spec: PrismaticPinSpec {
+                base_chamfer_m: 0.0,
+                ..pin_spec
+            },
+            arc_fractions: vec![0.25, 0.75],
+        };
+        let bare_ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(bare_spec));
+        let bare_neg =
+            build_registration_sdf_ops(&bare_ribbon, &body, &bounds, PieceSide::Negative);
+        let bare_pin = &bare_neg[0];
+        let bare_bed_extent =
+            find_lateral_zero_crossing(bare_pin, bed_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(
+            bare_bed_extent,
+            pin_spec.pin_base_half_extents_m.x,
+            epsilon = 1.0e-6,
+        );
+        // The chamfered bed extent is inset from the bare-baseline
+        // bed extent by exactly `base_chamfer_m`.
+        assert_abs_diff_eq!(
+            bare_bed_extent - bed_extent,
+            pin_spec.base_chamfer_m,
+            epsilon = 1.0e-6,
+        );
+    }
+
+    /// §G-10 S5 socket-side chamfer gate: at the production cup-pin
+    /// emission, the Positive-side socket's chamfer-band cross-section
+    /// **at the socket's own bed face** is the pin's chamfer-band
+    /// bed-face cross-section inflated by `diametral_clearance_m / 2`
+    /// per lateral side. Same invariant at the chamfer-top boundary
+    /// (widest section).
+    ///
+    /// Why each side's **own** bed face (not a shared world-coord):
+    /// [`PrismaticPinSpec::socket_params`] inflates `half_length_m`
+    /// by `axial_clearance_m / 2`, so the socket's bed face sits
+    /// `axial_clearance_m / 2` axially deeper than the pin's. Probing
+    /// at a shared world-axial coord would land midway through the
+    /// socket's chamfer band's linear interpolation (lateral delta
+    /// would be larger than `half_diametral`, conflating chamfer-band
+    /// emission with the axial-clearance offset). The bit-precise fit
+    /// invariant is on the spec layer's `base_half_extents_m` +
+    /// `pin_base_half_extents_m - chamfer` extents — i.e., extents at
+    /// each side's chamfer-band endpoints.
+    ///
+    /// Paired with a chamfer-disabled bare baseline per
+    /// [[feedback-load-bearing-test-fixtures]]: chamfer disabled, the
+    /// socket-vs-pin lateral delta at each side's bed face still
+    /// equals `diametral_clearance_m / 2` — confirms the socket
+    /// extents emission path is chamfer-independent (a chamfer-only
+    /// bug would surface as with-chamfer delta breakage while the
+    /// bare baseline holds).
+    #[test]
+    fn cup_pin_socket_chamfer_matches_pin() {
+        let pin_spec = PrismaticPinSpec::cup_pin_default();
+        let half_diametral = pin_spec.diametral_clearance_m / 2.0;
+        let half_axial = pin_spec.axial_clearance_m / 2.0;
+        let ribbon =
+            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        let (body, bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        let pos = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Positive);
+
+        let center = Point3::new(-0.025, 0.020, 0.0);
+        let axis_unit = Vector3::new(0.0, 0.0, 1.0);
+        let lateral_unit = Vector3::new(0.0, 1.0, 0.0);
+
+        // Pin bed face: axial = -pin_half_length; extent = base -
+        // chamfer = 0.9 mm. Socket bed face: axial = -(pin_half_length
+        // + half_axial); extent = (base + half_diametral) - chamfer =
+        // 1.05 mm. Delta = half_diametral.
+        let pin_bed_base = center + (-pin_spec.pin_half_length_m) * axis_unit;
+        let socket_bed_base = center + (-(pin_spec.pin_half_length_m + half_axial)) * axis_unit;
+        let pin_bed = find_lateral_zero_crossing(&neg[0], pin_bed_base, lateral_unit, 0.0, 0.01);
+        let socket_bed =
+            find_lateral_zero_crossing(&pos[0], socket_bed_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(socket_bed - pin_bed, half_diametral, epsilon = 1.0e-6);
+
+        // Pin chamfer-top: axial = -pin_half_length + chamfer; extent
+        // = base = 1.5 mm. Socket chamfer-top: axial =
+        // -(pin_half_length + half_axial) + chamfer; extent = base +
+        // half_diametral = 1.65 mm. Delta = half_diametral.
+        let pin_top_base =
+            center + (-pin_spec.pin_half_length_m + pin_spec.base_chamfer_m) * axis_unit;
+        let socket_top_base = center
+            + (-(pin_spec.pin_half_length_m + half_axial) + pin_spec.base_chamfer_m) * axis_unit;
+        let pin_top = find_lateral_zero_crossing(&neg[0], pin_top_base, lateral_unit, 0.0, 0.01);
+        let socket_top =
+            find_lateral_zero_crossing(&pos[0], socket_top_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(socket_top - pin_top, half_diametral, epsilon = 1.0e-6);
+
+        // Bare-baseline (chamfer disabled): same socket-vs-pin delta
+        // at each side's bed face. Chamfer-independence sanity check.
+        let bare_spec = PinSpec {
+            pin_spec: PrismaticPinSpec {
+                base_chamfer_m: 0.0,
+                ..pin_spec
+            },
+            arc_fractions: vec![0.25, 0.75],
+        };
+        let bare_ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(bare_spec));
+        let bare_neg =
+            build_registration_sdf_ops(&bare_ribbon, &body, &bounds, PieceSide::Negative);
+        let bare_pos =
+            build_registration_sdf_ops(&bare_ribbon, &body, &bounds, PieceSide::Positive);
+        let bare_pin_bed =
+            find_lateral_zero_crossing(&bare_neg[0], pin_bed_base, lateral_unit, 0.0, 0.01);
+        let bare_socket_bed =
+            find_lateral_zero_crossing(&bare_pos[0], socket_bed_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(
+            bare_socket_bed - bare_pin_bed,
+            half_diametral,
+            epsilon = 1.0e-6,
+        );
+    }
+
     /// Origin strictly OUTSIDE the solid (`sd_origin > 0`) →
     /// short-circuit to 0 (the ray has already exited). Origin ON
     /// the surface in a non-ray axis (`sd_origin == 0` but the body

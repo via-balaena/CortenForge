@@ -776,6 +776,206 @@ mod tests {
         );
     }
 
+    /// Bisect for the SDF zero-crossing along `lateral_unit` from
+    /// `base_world` (`base_world = center + axial * axis_unit` at
+    /// lateral = 0). World-coord analog of
+    /// `crate::prismatic_pin::tests::find_x_zero_crossing`; same
+    /// half-open interior predicate (`sdf <= +1e-12`) for sub-ulp
+    /// positive noise on the chamfer-band cap planes.
+    fn find_lateral_zero_crossing(
+        sdf: &Solid,
+        base_world: Point3<f64>,
+        lateral_unit: Vector3<f64>,
+        lo: f64,
+        hi: f64,
+    ) -> f64 {
+        let mut a = lo;
+        let mut b = hi;
+        for _ in 0..64 {
+            let m = f64::midpoint(a, b);
+            if sdf.evaluate(&(base_world + m * lateral_unit)) <= 1.0e-12 {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        f64::midpoint(a, b)
+    }
+
+    /// Build an iter-1-like ribbon with a custom `PlugPinSpec`. Lets
+    /// the chamfer-band tests build a chamfer-disabled bare-baseline
+    /// ribbon for fixture-breakage detection per
+    /// [[feedback-load-bearing-test-fixtures]].
+    fn iter1_like_ribbon_with_spec(spec: PlugPinSpec) -> Ribbon {
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_plug_pins(PlugPinKind::Axial(spec))
+    }
+
+    /// §G-10 S5 chamfer band production-emission gate: the chamfer
+    /// band that S2's [`crate::build_prismatic_pin_sdf`] composes at
+    /// the primitive layer must hold geometrically when emitted
+    /// through [`build_plug_lock_sdf`]'s pose-rotation +
+    /// world-translation on the production plug-lock call path
+    /// (symmetric-across-cap-plane pose, not the synthetic identity
+    /// pose used in
+    /// `crate::prismatic_pin::tests::chamfer_band_lateral_extents_match_spec_across_g6_range`).
+    ///
+    /// Iter-1 fixture pose: `center = cap_centroid = (0, 0, -0.054)`,
+    /// `axis_unit = -Z` (`cap_normal`), `lateral_unit = +X`
+    /// (`split_normal`). Pin-local `-Y` (the chamfer-band base; this
+    /// is the `-axis_unit`-end of the symmetric-across-cap-plane
+    /// pose — buried inside the plug body under SDF union, and
+    /// **not the workshop bed face** under the §G-4 preferred
+    /// dome-end-on-bed plug orientation; the chamfer remains a
+    /// lead-in self-centering aid here, with the bed-adjacency
+    /// reconciliation deferred to S6 procedure.rs) maps to world
+    /// `+Z`; lateral pin-local `+X` maps to world `+X`. Chamfer-
+    /// band-base axial coord = `-half_length`, world `z = cap_z +
+    /// half_length`. Chamfer-top axial coord = `-half_length +
+    /// chamfer`, world `z = cap_z + half_length - chamfer`.
+    ///
+    /// Verifies (a) the chamfer-band-base lateral extent equals
+    /// `(base - chamfer)` to ~1 µm; (b) the chamfer-top extent
+    /// equals `base` to ~1 µm. Paired with a chamfer-disabled bare-
+    /// baseline per [[feedback-load-bearing-test-fixtures]]: a
+    /// `base_chamfer_m = 0.0` override emits a single-frustum
+    /// pyramid whose chamfer-band-base extent equals `base` exactly;
+    /// the delta between bare-baseline and with-chamfer base extents
+    /// must equal `base_chamfer_m`.
+    #[test]
+    fn plug_lock_chamfer_band_holds_through_sdf_emission() {
+        let lock_spec = PrismaticPinSpec::plug_lock_default();
+        let ribbon = iter1_like_ribbon();
+        let lock = build_plug_lock_sdf(&ribbon).expect("Axial kind must build a lock SDF");
+
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        // axis_unit = -Z → pin-local +Y maps to world -Z; the
+        // chamfer-band-base axial coord (pin-local `-half_length`)
+        // maps to `cap_centroid + (-half_length) * (-Z) =
+        // cap_centroid + half_length * +Z`.
+        let axis_unit = Vector3::new(0.0, 0.0, -1.0);
+        let lateral_unit = Vector3::new(1.0, 0.0, 0.0);
+
+        let bed_axial = -lock_spec.pin_half_length_m;
+        let bed_base = cap_centroid + bed_axial * axis_unit;
+        let bed_expected = lock_spec.pin_base_half_extents_m.x - lock_spec.base_chamfer_m;
+        let bed_extent = find_lateral_zero_crossing(&lock, bed_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(bed_extent, bed_expected, epsilon = 1.0e-6);
+
+        let top_axial = -lock_spec.pin_half_length_m + lock_spec.base_chamfer_m;
+        let top_base = cap_centroid + top_axial * axis_unit;
+        let top_expected = lock_spec.pin_base_half_extents_m.x;
+        let top_extent = find_lateral_zero_crossing(&lock, top_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(top_extent, top_expected, epsilon = 1.0e-6);
+
+        // Bare-baseline pairing: chamfer-disabled spec emits a
+        // single-frustum pyramid; bed-face extent equals `base`.
+        let bare_ribbon = iter1_like_ribbon_with_spec(PlugPinSpec {
+            lock_spec: PrismaticPinSpec {
+                base_chamfer_m: 0.0,
+                ..lock_spec
+            },
+        });
+        let bare_lock = build_plug_lock_sdf(&bare_ribbon).expect("bare-baseline lock must build");
+        let bare_bed_extent =
+            find_lateral_zero_crossing(&bare_lock, bed_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(
+            bare_bed_extent,
+            lock_spec.pin_base_half_extents_m.x,
+            epsilon = 1.0e-6,
+        );
+        assert_abs_diff_eq!(
+            bare_bed_extent - bed_extent,
+            lock_spec.base_chamfer_m,
+            epsilon = 1.0e-6,
+        );
+    }
+
+    /// §G-10 S5 cup-side-socket chamfer gate: the cup-side socket
+    /// emitted by [`build_plug_lock_socket_sdf`] inflates the
+    /// plug-side lock's chamfer-band cross-section **at the socket's
+    /// own bed face** by exactly `diametral_clearance_m / 2` per
+    /// lateral side. Same invariant at the chamfer-top boundary
+    /// (widest section).
+    ///
+    /// Why each side's **own** bed face (not a shared world-coord):
+    /// [`PrismaticPinSpec::socket_params`] inflates `half_length_m`
+    /// by `axial_clearance_m / 2`, so the socket's bed face sits
+    /// `axial_clearance_m / 2` axially deeper than the lock's
+    /// (mirror of the cup-pin pattern; same rationale in
+    /// `crate::registration::tests::cup_pin_socket_chamfer_matches_pin`).
+    /// Probing at a shared world-axial coord would land midway
+    /// through the socket's chamfer-band interpolation, conflating
+    /// chamfer-band emission with the axial-clearance offset.
+    ///
+    /// Paired with a chamfer-disabled bare baseline per
+    /// [[feedback-load-bearing-test-fixtures]]: with chamfer disabled
+    /// the socket-vs-pin bed-face delta still equals
+    /// `diametral_clearance_m / 2` — confirms the socket extents
+    /// emission path is chamfer-independent.
+    #[test]
+    fn plug_lock_socket_chamfer_matches_lock_pin() {
+        let lock_spec = PrismaticPinSpec::plug_lock_default();
+        let half_diametral = lock_spec.diametral_clearance_m / 2.0;
+        let half_axial = lock_spec.axial_clearance_m / 2.0;
+        let ribbon = iter1_like_ribbon();
+        let lock = build_plug_lock_sdf(&ribbon).expect("Axial kind");
+        let socket = build_plug_lock_socket_sdf(&ribbon).expect("Axial kind");
+
+        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+        let axis_unit = Vector3::new(0.0, 0.0, -1.0);
+        let lateral_unit = Vector3::new(1.0, 0.0, 0.0);
+
+        // Pin bed face at axial = -pin_half_length; socket bed face at
+        // axial = -(pin_half_length + half_axial) (socket inflates
+        // half_length by axial_clearance/2).
+        let pin_bed_base = cap_centroid + (-lock_spec.pin_half_length_m) * axis_unit;
+        let socket_bed_base =
+            cap_centroid + (-(lock_spec.pin_half_length_m + half_axial)) * axis_unit;
+        let pin_bed = find_lateral_zero_crossing(&lock, pin_bed_base, lateral_unit, 0.0, 0.01);
+        let socket_bed =
+            find_lateral_zero_crossing(&socket, socket_bed_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(socket_bed - pin_bed, half_diametral, epsilon = 1.0e-6);
+
+        // Each side's own chamfer-top boundary.
+        let pin_top_base =
+            cap_centroid + (-lock_spec.pin_half_length_m + lock_spec.base_chamfer_m) * axis_unit;
+        let socket_top_base = cap_centroid
+            + (-(lock_spec.pin_half_length_m + half_axial) + lock_spec.base_chamfer_m) * axis_unit;
+        let pin_top = find_lateral_zero_crossing(&lock, pin_top_base, lateral_unit, 0.0, 0.01);
+        let socket_top =
+            find_lateral_zero_crossing(&socket, socket_top_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(socket_top - pin_top, half_diametral, epsilon = 1.0e-6);
+
+        // Bare-baseline (chamfer disabled): socket-vs-pin delta at
+        // each side's bed face equals `diametral_clearance_m / 2`.
+        // Chamfer-independence sanity check.
+        let bare_ribbon = iter1_like_ribbon_with_spec(PlugPinSpec {
+            lock_spec: PrismaticPinSpec {
+                base_chamfer_m: 0.0,
+                ..lock_spec
+            },
+        });
+        let bare_lock = build_plug_lock_sdf(&bare_ribbon).expect("bare-baseline lock must build");
+        let bare_socket =
+            build_plug_lock_socket_sdf(&bare_ribbon).expect("bare-baseline socket must build");
+        let bare_pin_bed =
+            find_lateral_zero_crossing(&bare_lock, pin_bed_base, lateral_unit, 0.0, 0.01);
+        let bare_socket_bed =
+            find_lateral_zero_crossing(&bare_socket, socket_bed_base, lateral_unit, 0.0, 0.01);
+        assert_abs_diff_eq!(
+            bare_socket_bed - bare_pin_bed,
+            half_diametral,
+            epsilon = 1.0e-6,
+        );
+    }
+
     /// §G-10 lock-extends-across-cap-plane check: the lock pyramid
     /// extends `±half_length_m` along `axis_unit` symmetrically
     /// across the cap-plane. The `-axis_unit` half is buried inside
