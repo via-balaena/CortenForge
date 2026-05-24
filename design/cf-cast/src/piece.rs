@@ -9,8 +9,8 @@
 //!                  ∩ ribbon_side(side)
 //!                  ∪ registration pin solids        (Negative side)
 //!                  ∖ registration socket solids     (Positive side)
-//! piece_meshcsg  = [plug-shaft + T-slot SubtractCylinder]
-//!                + [pour-gate + vent SubtractCylinder]
+//!                  ∖ plug-floor-lock socket          (both sides)
+//! piece_meshcsg  = [pour-gate + vent SubtractCylinder]
 //! ```
 //!
 //! The cup-piece [`Solid`] is **side-specific**: each
@@ -18,19 +18,23 @@
 //! [`Ribbon::halfspace_solid`]'s SDF half-space intersect (biased
 //! inward by [`RIBBON_PIECE_OVERLAP_M`] so the two pieces overlap by
 //! 1 mm at the seam), then unions / subtracts the registration
-//! [`crate::PrismaticPin`][`crate::prismatic_pin`] solids per side.
-//! Marching-cubes meshes the composed half-shell; the remaining
-//! mating-features cylinders (S6 plug-anchor + S7 pour-gate) compose
+//! [`crate::PrismaticPin`][`crate::prismatic_pin`] solids per side
+//! and subtracts the plug-floor-lock socket (side-agnostic single
+//! solid; the per-side halfspace intersect bisects it laterally
+//! across the seam by construction — S6 three-piece shared-
+//! primitive invariant analog in SDF). Marching-cubes meshes the
+//! composed half-shell; the remaining S7 pour-gate cylinders compose
 //! post-MC via [`crate::mesh_csg::apply_mating_transforms`]. See
 //! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 for the
 //! recon-4 (P) seam architectural-correction rationale and
 //! `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-12 #2 for the
-//! S3 registration-pin SDF-side architectural-correction rationale
-//! (the cup-pin primitive was mesh-CSG `MatingTransform::UnionCylinder` /
-//! `SubtractCylinder` pre-S3; post-S3 it lives entirely SDF-side per
-//! the §G-7 probe-spike outcome — `Manifold::hull_pts` truncated-
-//! pyramid mesh-CSG union onto an SDF→MC curved-shell host fails at
-//! the paradigm boundary, the §G-12 #2 SDF-union path clears).
+//! S3/S4 SDF-side architectural-correction rationale (the cup-pin
+//! registration + plug-floor-lock primitives were mesh-CSG
+//! `MatingTransform::UnionCylinder` / `SubtractCylinder` pre-S3 /
+//! pre-S4; post-S4 they live entirely SDF-side per the §G-7
+//! probe-spike outcome — `Manifold::hull_pts` truncated-pyramid
+//! mesh-CSG union onto an SDF→MC curved-shell host fails at the
+//! paradigm boundary, the §G-12 #2 SDF-union path clears).
 //!
 //! # v1 vs v2 mold cup
 //!
@@ -79,15 +83,20 @@
 //! (`MatingTransform::UnionCylinder` / `SubtractCylinder` consuming
 //! a shared `crate::mesh_csg::CylinderParent`) to SDF-side
 //! [`crate::PrismaticPin`][`crate::prismatic_pin`] solids composed
-//! pre-MC into the half-shell. The mesh-CSG `MatingTransform`
-//! variants stay for the cup pour-gate carve (S7 of the prior
-//! mating-features arc) + the plug-anchor socket / T-slot (S6).
+//! pre-MC into the half-shell. S4 (2026-05-24) migrated the
+//! plug-floor lock from the S6 mesh-CSG plug-shaft + T-bar + T-slot
+//! mechanism to a single SDF-side [`crate::PrismaticPin`] socket
+//! subtracted from the half-shell (recon-1 §G-1 architectural
+//! redesign — see [`crate::plug`] module docstring for the
+//! cup-wall-penetration leak-path failure mode the pyramid lock
+//! eliminates). The mesh-CSG `MatingTransform` variants stay for
+//! the cup pour-gate carve (S7 of the prior mating-features arc).
 
 use cf_design::Solid;
 
 use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
-use crate::plug::build_plug_socket_transforms;
+use crate::plug::build_plug_lock_socket_sdf;
 use crate::pour::build_pour_gate_transforms;
 use crate::registration::build_registration_sdf_ops;
 use crate::ribbon::{PieceSide, Ribbon};
@@ -116,27 +125,30 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 ///   each side 0.5 mm into the other so the two pieces overlap by
 ///   1 mm at the seam).
 /// - **`Vec<MatingTransform>`** =
-///   1. Plug-shaft socket + T-slot
-///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
-///      (S6).
-///   2. Pour-gate + vent
+///   1. Pour-gate + vent
 ///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
 ///      (S7). The full-length cylinder is subtracted from the
 ///      half-shell; the SDF halfspace handles per-side bisection by
 ///      construction (cylinder portion outside the half-shell is a
 ///      no-op).
 ///
-/// Post-S3 of the FDM-friendly geometry arc, the cup-pin
-/// registration features live SDF-side (per
+/// Post-S3 / post-S4 of the FDM-friendly geometry arc, all mating
+/// features other than the pour-gate live SDF-side (per
 /// `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-12 #2) —
 /// composed into the per-piece [`Solid`] above the half-shell
 /// intersect, NOT in the `Vec<MatingTransform>`. The Negative side
-/// unions [`crate::PrismaticPin`][`crate::prismatic_pin`] pin solids
-/// (workshop-visible ridge protrudes past the half-shell seam face);
-/// the Positive side subtracts socket solids (matching cavity carved
-/// from cup-wall material). See
-/// [`crate::registration::build_registration_sdf_ops`] for the per-
-/// pin pose derivation.
+/// unions [`crate::PrismaticPin`][`crate::prismatic_pin`] cup-pin
+/// solids (workshop-visible ridge protrudes past the half-shell
+/// seam face); the Positive side subtracts cup-pin socket solids
+/// (matching cavity carved from cup-wall material). BOTH sides
+/// subtract the plug-floor-lock socket solid (side-agnostic single
+/// solid; per-side halfspace intersect bisects it laterally across
+/// the seam by construction — S6 three-piece shared-primitive
+/// invariant analog in SDF). See
+/// [`crate::registration::build_registration_sdf_ops`] for the
+/// cup-pin pose derivation and
+/// [`crate::plug::build_plug_lock_socket_sdf`] for the plug-floor
+/// lock socket emission.
 ///
 /// The cup-piece Solid's SDF is **negative inside the cup-wall
 /// material** on the half-shell side; the side-specific cut is
@@ -212,10 +224,24 @@ pub fn compose_piece_solid(
         };
     }
 
-    // S6 plug-anchor socket + T-slot SubtractCylinders.
-    let mut transforms = build_plug_socket_transforms(ribbon);
-    // S7 pour-gate + air-vent SubtractCylinders.
-    transforms.extend(build_pour_gate_transforms(ribbon));
+    // S4 (FDM-friendly geometry arc) plug-floor-lock socket —
+    // side-agnostic SDF subtract per recon-1 §G-1 / §G-5 (3-piece
+    // shared-primitive invariant analog). The pyramid axis is
+    // along `cap_normal` (in the seam plane), so the lateral
+    // extent spans both sides of the seam; each cup half's
+    // halfspace intersect bisects the socket through the seam
+    // plane by construction. `None` when `ribbon.plug_pins` is
+    // `PlugPinKind::None` or the cap-plane anchor is unresolvable.
+    if let Some(plug_lock_socket) = build_plug_lock_socket_sdf(ribbon) {
+        base_piece = base_piece.subtract(plug_lock_socket);
+    }
+
+    // S7 pour-gate + air-vent SubtractCylinders (the lone mesh-CSG
+    // mating-feature path post-S4 — pour-gate cylinder cross-
+    // section is fine-feature mesh-CSG against the bulk-welded
+    // half-shell, which production iter-1 has shown manifold3d
+    // handles cleanly).
+    let transforms = build_pour_gate_transforms(ribbon);
     Ok((base_piece, transforms))
 }
 
@@ -632,22 +658,23 @@ mod tests {
     // PrismaticPin solids — the new test asserts the SAME annulus-
     // midpoint invariant on the SDF emission path.
 
-    /// Workshop iter-1 plug-socket regression preserved post-S6.
+    /// Workshop iter-1 plug-socket regression preserved post-S4.
     ///
-    /// Pre-S6 this test queried the cup-piece Solid SDF directly to
-    /// verify that the plug-shaft socket carved cup-wall material
-    /// at the cap-plane centroid (where cf-scan-prep's
-    /// `trim_floor_mm` leaves the centerline tip 40 mm short of
-    /// the cap plane). Post-S6 the cup-piece Solid is plug-socket-
-    /// agnostic — the socket appears as a `SubtractCylinder`
-    /// transform whose [`CylinderParent::center_m`] lives at
-    /// `cap_centroid + cap_normal * pin_length / 2`, and the carve
-    /// materializes downstream in `apply_mating_transforms`. The
-    /// composition-time invariant tested here: the shaft socket
-    /// transform's parent anchors at the cap-plane centroid (NOT
-    /// at the trimmed centerline tip).
+    /// Pre-S6 this verified the SDF-era plug-shaft socket carved
+    /// cup-wall material at the cap-plane centroid (where
+    /// cf-scan-prep's `trim_floor_mm` leaves the centerline tip 40
+    /// mm short of the cap plane). Post-S6 the invariant moved to
+    /// the mesh-CSG `SubtractCylinder` transform's parent center.
+    /// Post-S4 (FDM-friendly geometry arc) the plug-floor lock
+    /// socket lives SDF-side again (per §G-12 #2) — the
+    /// composition-time invariant returns to its pre-S6 shape:
+    /// the cup-piece Solid SDF at a probe point inside the lock
+    /// socket cavity (cap-plane centroid + into-cup direction)
+    /// must report EXTERIOR (the SDF subtract carved the socket
+    /// from cup material at the cap-plane centroid, NOT at the
+    /// trimmed centerline tip).
     #[test]
-    fn plug_socket_transform_anchors_at_cap_plane_centroid_past_trimmed_centerline_tip() {
+    fn plug_lock_socket_carves_cup_material_at_cap_plane_centroid_past_trimmed_centerline_tip() {
         use crate::plug::{PlugPinKind, PlugPinSpec};
 
         let centerline = vec![
@@ -658,186 +685,92 @@ mod tests {
         let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
         let cap_centroid = Point3::new(0.0, 0.0, -0.054);
         let cap_normal = Vector3::new(0.0, 0.0, -1.0);
-        let pin_spec = PlugPinSpec {
-            pin_length_m: 0.020,
-            ..PlugPinSpec::iter1()
-        };
         let ribbon = Ribbon::new(centerline, split)
             .unwrap()
             .with_pour_end_hint(cap_centroid, cap_normal)
-            .with_plug_pins(PlugPinKind::Axial(pin_spec));
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
 
+        // Body extends Z ∈ [-0.060, +0.060]; bounding extends Z ∈
+        // [-0.090, +0.090]. The cap-plane (z = -0.054) lies inside
+        // the body, so cup-wall material at the cap-plane centroid
+        // is the `bounding ∖ body` shell. Pick a probe just past
+        // the body's `-Z` face along `+cap_normal` (= deeper into
+        // cup material from the cap-plane); without the socket
+        // carve the cup-piece SDF is interior there (cup-wall
+        // material). With the carve, the lock socket's
+        // `+axis_unit` half occupies that region and the cup-piece
+        // SDF reports exterior.
         let body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.060));
         let bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.090));
-        let (_solid, transforms) =
-            compose_piece_solid(&body, &bounding, &ribbon, PieceSide::Negative).unwrap();
+        // Probe at cap_centroid + cap_normal × 2 mm = (0, 0, -0.056) —
+        // 2 mm into the `+axis_unit` (workshop-meaningful) half of
+        // the symmetric-across-cap-plane socket. The pyramid main
+        // taper at axis = +0.002 has lateral half-extent
+        // interpolating between base (axis = -half_length + chamfer
+        // = -0.0032) and tip (axis = +half_length = +0.004) — so at
+        // axis = 0.002 the half-extent is well above zero, and the
+        // socket interior is clearly carving cup material.
+        let probe = Point3::new(0.0, 0.0, -0.056);
 
-        // First SubtractCylinder = plug-shaft socket (per
-        // `build_plug_socket_transforms`'s Vec ordering: shaft,
-        // T-bar, [dome shaft]).
-        let shaft_socket = transforms
-            .iter()
-            .find_map(|t| match t {
-                MatingTransform::SubtractCylinder { params } => Some(params),
-                _ => None,
-            })
-            .expect("S6: cup piece emits SubtractCylinder for plug shaft socket");
+        for side in [PieceSide::Negative, PieceSide::Positive] {
+            let (piece, _) = compose_piece_solid(&body, &bounding, &ribbon, side).unwrap();
+            // (a) Without the lock, the cup-piece SDF at the probe
+            // is interior (cup-wall material wraps the body's -Z
+            // face). The lock socket subtract carves this region
+            // → cup-piece SDF must NOT report interior here. Allow
+            // boundary (SDF = 0 at the carve face) by using a
+            // strict positive threshold; the probe lies 0.002 m
+            // INSIDE the socket interior, so the subtract makes it
+            // clearly exterior.
+            // Caveat for the Positive side under recon-4 (P)
+            // halfspace bisection: the seam plane (y = 0) bisects
+            // the socket laterally, but the probe lies at y = 0
+            // exactly — on the bisection plane. Each piece's
+            // overlap-biased halfspace places its boundary at
+            // ±RIBBON_PIECE_OVERLAP_M from y = 0, so the probe at
+            // y = 0 is comfortably INSIDE both half-shells. The
+            // socket carve at the probe is workshop-meaningful for
+            // both sides.
+            assert!(
+                piece.evaluate(&probe) > 0.0,
+                "{side:?} cup-piece SDF at probe inside lock socket cavity must report \
+                 exterior (= no cup material there); got SDF = {} — carve regressed",
+                piece.evaluate(&probe),
+            );
 
-        // Socket parent center = cap_centroid + cap_normal *
-        // pin_length / 2 = (0,0,-0.054) + (0,0,-1) * 0.010 =
-        // (0, 0, -0.064). Past the trimmed centerline tip at
-        // z=-0.013, exactly where the original SDF-era socket
-        // anchored cup-wall material.
-        let c = shaft_socket.parent.center_m;
-        assert!(
-            (c.z - -0.064).abs() < 1e-9,
-            "shaft socket should anchor at cap_centroid + outward*half_length \
-             (z = -0.064); got {c:?}",
-        );
-        assert!(
-            c.z < -0.013,
-            "shaft socket parent must NOT regress to centerline.last() (z = -0.013) anchoring; \
-             got center.z = {}",
-            c.z,
-        );
+            // (b) Sanity that the carve is the LOCK socket (not a
+            // wholesale region delete): probe at a point in
+            // cup-wall material but well outside the socket's
+            // lateral extent (the socket's main-taper half-extent
+            // at axis = 0.002 m is ≈ 3.5 mm; probe at x = 25 mm is
+            // ~21 mm past the socket lateral edge). The body
+            // half-extent in X is 20 mm and the bounding half-
+            // extent is 30 mm, so x = 25 mm sits squarely in the
+            // cup-wall X-band at z = -0.056. The cup-piece SDF
+            // must report INTERIOR there (cup material is intact).
+            let outside_socket_probe = Point3::new(0.025, 0.0, -0.056);
+            assert!(
+                piece.evaluate(&outside_socket_probe) < 0.0,
+                "{side:?} cup-piece SDF in cup-wall material at (25, 0, -56) mm \
+                 (well past the socket's ~3.5 mm lateral half-extent) must report \
+                 interior — confirms the carve is the localized plug-floor-lock \
+                 socket; got SDF = {}",
+                piece.evaluate(&outside_socket_probe),
+            );
+        }
     }
 
-    /// Recon §5 T-bar bisection gate: post-CSG the Negative cup and
-    /// Positive cup mating faces each carry a half-disk T-slot
-    /// cross-section. The T-bar's axis is parallel to the seam
-    /// normal (= ribbon binormal), so under recon-4 (P) the SDF
-    /// halfspace intersect at the SDF level produces a half-shell
-    /// whose seam face is at `signed_dist = ±RIBBON_PIECE_OVERLAP_M`;
-    /// the mesh-CSG `SubtractCylinder` then removes the T-slot
-    /// cylinder from the half-shell, punching a circular hole in
-    /// the seam face whose rim consists of vertices at the kept-
-    /// side cap with radial distance ≤ (`t_bar_radius` + diametral/2)
-    /// from the T-bar's projected center.
-    ///
-    /// Under the pre-(P) S4 architecture the same property held via
-    /// a different mechanism (`SeamTrim` bisected the full cylinder
-    /// against the seam plane); this test exercises the cap-rim
-    /// invariant rather than the bisection mechanism, so it works
-    /// uniformly across (P) and (pre-P) for any future migration.
-    /// Stronger than eyeball cf-view per
-    /// `feedback_math_verify_geometric_contracts`.
-    #[test]
-    fn t_bar_halves_share_coplanar_seam_face() {
-        use crate::plug::{PlugPinKind, PlugPinSpec};
-
-        // Fixture mirroring the iter-1 cap-plane layout so the
-        // T-bar axis exercises the typical `pour_outward ×
-        // split_normal` path. Use a short pin (4 mm) so the T-bar
-        // sits inside the bounding region for the test cuboid.
-        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
-        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
-        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
-        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
-        let pin_spec = PlugPinSpec {
-            pin_length_m: 0.004,
-            ..PlugPinSpec::iter1()
-        };
-        let ribbon = Ribbon::new(centerline, split)
-            .unwrap()
-            .with_pour_end_hint(cap_centroid, cap_normal)
-            .with_plug_pins(PlugPinKind::Axial(pin_spec));
-
-        // Iter-1-like body + bounding. Use a body extent in Y that
-        // covers the T-bar's lateral half-length (12 mm) plus the
-        // axial clearance / 2 (0.5 mm) and a bounding cuboid that
-        // spans the cup wall in every axis.
-        let body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.030));
-        let bounding = Solid::cuboid(Vector3::new(0.040, 0.040, 0.090))
-            .translate(Vector3::new(0.0, 0.0, -0.020));
-
-        let neg =
-            mesh_piece_through_p_pipeline(&body, &bounding, &ribbon, PieceSide::Negative, 0.005);
-        let pos =
-            mesh_piece_through_p_pipeline(&body, &bounding, &ribbon, PieceSide::Positive, 0.005);
-        assert!(!neg.vertices.is_empty(), "Negative cup must survive trim");
-        assert!(!pos.vertices.is_empty(), "Positive cup must survive trim");
-
-        // Seam plane normal = ribbon binormal at arc midpoint. For
-        // this centerline (along -Z) with split-normal +X, binormal
-        // = tangent × split = -Z × +X = -Y. seam_plane_reference
-        // returns the unit binormal directly.
-        let (midpoint, binormal) = ribbon.seam_plane_reference();
-        let normal_v = binormal.into_inner();
-        let plane_d_mm = midpoint.coords.dot(&normal_v) * 1000.0;
-        let overlap_mm = RIBBON_PIECE_OVERLAP_M * 1000.0;
-
-        // T-bar center in mm coords. Plug-side T-bar parent half-
-        // length = 12 mm; T-slot socket extends by axial/2 = 0.5 mm.
-        // The T-bar axis is parallel to seam normal, so the
-        // cap-vertex circle for the bisected T-slot sits at the
-        // seam plane at radial distance ≤ (t_bar_radius +
-        // diametral/2) from the projection of the T-bar center
-        // onto the seam plane.
-        let spec = PlugPinSpec::iter1();
-        let t_slot_radius_mm =
-            (spec.t_bar_radius_m + spec.t_bar_diametral_clearance_m / 2.0) * 1000.0;
-        // T-bar center in m: cap_centroid + cap_normal * pin_length.
-        let t_bar_center_m = cap_centroid + cap_normal * 0.004_f64;
-        let t_bar_center_mm = nalgebra::Vector3::new(
-            t_bar_center_m.x * 1000.0,
-            t_bar_center_m.y * 1000.0,
-            t_bar_center_m.z * 1000.0,
-        );
-
-        // Project a vertex onto the seam plane: signed_dist measures
-        // distance along seam normal; the projected location lies at
-        // `v - signed_dist * normal_v` in the seam plane.
-        let signed_dist = |v: &Point3<f64>| -> f64 { v.coords.dot(&normal_v) - plane_d_mm };
-        // Distance in the seam plane from the T-bar's projected
-        // center to the vertex's projection.
-        let in_plane_radius_from_t_bar = |v: &Point3<f64>| -> f64 {
-            // Project v - t_bar_center onto the seam plane.
-            let delta = v.coords - t_bar_center_mm;
-            let along_normal = delta.dot(&normal_v);
-            let in_plane = delta - along_normal * normal_v;
-            in_plane.norm()
-        };
-        // A T-slot cap vertex sits NEAR the seam plane (within the
-        // ±overlap cap) AND within `t_slot_radius_mm` of the T-bar's
-        // projected center.
-        let cap_tol_mm = 1.0e-3;
-        let near_t_slot_cap = |signed: f64, radius: f64, expected_cap: f64| -> bool {
-            (signed - expected_cap).abs() < cap_tol_mm && radius < t_slot_radius_mm + cap_tol_mm
-        };
-
-        // Negative kept half: cap vertices at signed_dist = +overlap.
-        // Find any vertex that satisfies both conditions — proves
-        // the T-slot's half-disk lands on the seam plane.
-        let neg_has_t_slot_cap = neg
-            .vertices
-            .iter()
-            .any(|v| near_t_slot_cap(signed_dist(v), in_plane_radius_from_t_bar(v), overlap_mm));
-        assert!(
-            neg_has_t_slot_cap,
-            "Negative cup's seam cap must contain T-slot cross-section vertices \
-             (within {t_slot_radius_mm:.4} mm of T-bar center, on seam plane at \
-             signed_dist = +{overlap_mm:.4} mm)",
-        );
-
-        // Positive: mirror.
-        let pos_has_t_slot_cap = pos
-            .vertices
-            .iter()
-            .any(|v| near_t_slot_cap(signed_dist(v), in_plane_radius_from_t_bar(v), -overlap_mm));
-        assert!(
-            pos_has_t_slot_cap,
-            "Positive cup's seam cap must contain T-slot cross-section vertices \
-             at signed_dist = -{overlap_mm:.4} mm",
-        );
-
-        // Co-planarity gate: the difference between the Negative
-        // T-slot cap's max signed_dist and the Positive T-slot
-        // cap's min signed_dist should be exactly
-        // `2 * RIBBON_PIECE_OVERLAP_M`. (Already exercised by
-        // `mating_face_is_mathematically_flat_and_coplanar` —
-        // S6's contribution is verifying T-slot bisection works
-        // alongside the SDF seam.)
-    }
+    // S4 (FDM-friendly geometry arc) deleted the
+    // `t_bar_halves_share_coplanar_seam_face` test — the T-bar
+    // mesh-CSG mechanism was retired along with the entire plug-
+    // shaft + T-bar + T-slot retention path (replaced by the
+    // truncated-pyramid plug-floor lock per recon-1 §G-1). The
+    // post-S4 analog of "seam bisects the plug-retention feature
+    // through its center" is captured by the cup-piece SDF subtract
+    // in `compose_piece_solid` — both cup halves' halfspace
+    // intersect bisect the side-agnostic socket SDF laterally,
+    // verified at the SDF level by
+    // `plug_lock_socket_carves_cup_material_at_cap_plane_centroid_past_trimmed_centerline_tip`.
 
     /// Cup-piece SDF half-shell connectivity guard — locks the
     /// recon-4 §F-3b invariant at the lib-test level: the SDF

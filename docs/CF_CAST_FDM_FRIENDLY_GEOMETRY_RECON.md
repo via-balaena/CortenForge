@@ -921,7 +921,7 @@ Per the recon-3 §R3-6 / recon-4 §F-6 pattern:
 | S1 | Probe spike: §G-7 + §G-9 manifold3d feasibility | ~700 | SHIPPED 2026-05-24 `design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs`, 8 characterisation tests; §G-7 BRANCH B+C falsification + §G-12 #2 BRANCH-A confirmation |
 | S2 | `PrismaticPin` SDF primitive (revised per §G-12 #2) | ~300 | new file `design/cf-cast/src/prismatic_pin.rs`; SDF-side emission via `Solid::cuboid` + taper + chamfer-band composition, params, bit-precise fit-determinism gate per §G-10 #1 — **no** `MatingTransform::*PrismaticPin` variants (pin lives entirely SDF-side) |
 | S3 | Cup-piece registration pin migration | ~400 | SHIPPED 2026-05-24 `registration.rs` rewrite — `PinSpec` wraps `PrismaticPinSpec::cup_pin_default()` + arc_fractions; `build_registration_transforms` → `build_registration_sdf_ops` returning `Vec<Solid>` for SDF-union/subtract composition in `compose_piece_solid`; symmetric-across-seam pose with axis=binormal + lateral=split_normal; mesh-CSG cylinder transforms removed for cup-pin (kept for S6 plug-anchor + S7 pour-gate); procedure.rs prose updated for truncated-pyramid vocabulary; cf-cast-cli only needed surface-level touch-up (PinSpec::iter1 constructor preserved, no TOML field overrides exposed); 8 new + 5 deleted/migrated tests in registration.rs + spec.rs + piece.rs; iter-1 regen 303 s, all 11 production STLs PASS §R1 at 1 component each (§G-11 #1 cleared) |
-| S4 | Plug-floor lock migration (replaces T-bar + shaft + T-slot) | ~500 | `plug.rs` major rewrite; `PlugPinSpec` shrinks (T-bar + shaft fields deleted); ~200 LOC test churn; cup-piece cap-plane-end socket geometry; `platform.stl` blind pocket retired (no shaft penetration) |
+| S4 | Plug-floor lock migration (replaces T-bar + shaft + T-slot) | net **-1124 LOC** | SHIPPED 2026-05-24 `plug.rs` full rewrite (1640 → 715 lines) + `piece.rs` SDF-subtract wire-up + `platform.rs` pocket retirement (332 → 220 lines) + `procedure.rs` truncated-pyramid prose update + cf-cast-cli `[plug_pins]` shrinks to single `enabled` toggle (TOML `pin_length_m` / `include_dome_pin` retired, wall-thickness ↔ pin-length cross-field gate retired) + mesh_csg.rs `UnionCylinder`/`SubtractCylinder` docstrings updated (lone post-S4 emitter is S7 pour-gate). `PlugPinSpec` wraps `PrismaticPinSpec::plug_lock_default()`; `add_plug_pins` returns `(plug.union(pyramid_sdf), Vec::new())` for spec.rs caller compat; `build_plug_lock_sdf` + `build_plug_lock_socket_sdf` replace pre-S4's `build_plug_self_transforms` / `build_plug_socket_transforms` / `pour_end_t_bar_geometry`; `PLUG_SHAFT_NEAR_END_OVERLAP_M` + `PLUG_CYLINDER_SEGMENTS` deleted. 3-piece shared-primitive invariant preserved in SDF (plug.union + each cup half subtract same socket; halfspace bisects laterally). Gram-Schmidt projection of `split_normal` against `cap_normal` absorbs the 2-3° production drift between cf-scan-prep cap-normal fit and ribbon split-normal user-axis. **§G-11 #1 CLEARED**: all 11 production STLs PASS §R1 inspector at 1 component each under `INSPECT_STL_R1=1`. cf-cast-cli iter-1 regen **293.4 s** (vs S3 baseline 303 s — faster, S4 deletes mesh-CSG steps). 191 cf-cast unit + 8 probe + 46 cf-cast-cli unit + 7 integration tests / clippy `-D warnings` / fmt clean. **Open §G-4 plug print orientation** flagged for S6 procedure.rs (cap-plane-face-down invalid; preferred dome-down). Workshop iter-3 print STILL BLOCKED until S5-S8 ships. |
 | S5 | First-layer chamfer geometry | ~80 | chamfer-band emitted SDF-side per revised §G-9 — folds into S2's PrismaticPin SDF primitive; minimal incremental cost above S2 |
 | S6 | `procedure.rs` print-orientation + Bambu A1 target docs | ~120 | per-piece orientation prose, default-settings + Jayo reference recipe, cf-view sanity-check section |
 | S7 | Workshop print + caliper calibration | ~50 | clearance + chamfer numeric pins per §G-8; cf-cast-cli iter-1 regen; cf-view smoke gates §G-11 #3 |
@@ -1158,3 +1158,74 @@ empirics falsify recon-1's framing.
   mechanism DELETED, replaced by truncated-pyramid press-fit against
   mold cap-plane floor; platform.stl blind pocket retires per §G-1 —
   no shaft penetration).
+- **2026-05-24 — S4 plug-floor-lock migration SHIPPED.**
+  `design/cf-cast/src/plug.rs` full rewrite (1640 → 715 lines); the
+  pre-S4 cylindrical plug-shaft + perpendicular T-bar + cup-side
+  T-slot captive-insertion mechanism (S6 of the prior mating-features
+  arc) is DELETED entirely, replaced by a single SDF-side
+  `PrismaticPin` truncated-pyramid lock per §G-1. **Architectural
+  decision: 3-piece shared-primitive invariant** (per §G-5 deferred-
+  to-S4 choice) — pyramid axis along `cap_normal` (in-seam-plane
+  direction), so the seam plane bisects the socket laterally through
+  its centre; same `PrismaticPinSpec` + same `PrismaticPinPose` flow
+  through plug self-emission (SDF-union into plug body in
+  `add_plug_pins`) AND both cup halves (side-agnostic SDF-subtract
+  in `compose_piece_solid`). Mirrors S6's three-piece pattern but in
+  SDF — the per-side halfspace intersect bisects the side-agnostic
+  socket solid by construction. **Pose convention**: symmetric-
+  across-cap-plane (mirrors S3 cup-pin's symmetric-across-seam
+  pose); base half buried inside plug body / no-op inside body
+  cavity on the cup side; tip half protrudes outward on the plug /
+  carves cup-wall material on the cup side; both sides share the
+  same cross-section at the cap-plane (axis = 0) — bit-precise
+  workshop fit modulo the symmetric `/2` clearance inflation.
+  **Public surface change**: `PlugPinSpec` shrinks to a single
+  `lock_spec: PrismaticPinSpec` field (10 pre-S4 fields → 1);
+  `pour_end_t_bar_geometry` / `build_plug_self_transforms` /
+  `build_plug_socket_transforms` / `PLUG_SHAFT_NEAR_END_OVERLAP_M` /
+  `PLUG_CYLINDER_SEGMENTS` DELETED; `build_plug_lock_sdf` +
+  `build_plug_lock_socket_sdf` introduced; `add_plug_pins`
+  preserved (now `plug.union(pyramid_sdf), Vec::new()`).
+  **Gram-Schmidt** projection of `split_normal` against `cap_normal`
+  absorbs production drift (cf-scan-prep cap-normal is fitted to
+  point-cloud PCA on cap-plane vertices, ribbon `split_normal` is
+  user-axis projection — production casts see 2-3° misalignment;
+  pre-Gram-Schmidt path panicked in `PrismaticPinPose::new`'s
+  orthogonality assert). **Platform retirement**: `platform.stl`
+  pre-S4 blind T-bar pocket retires to a bare flat support slab —
+  preserved as an artifact (11-STL count + workshop muscle memory
+  preserved) but with no carve. `PlatformConfig::include_t_bar`
+  toggle eliminated (the field was always read off the `PlugPinSpec`
+  that no longer carries it). **cf-cast-cli TOML surface**:
+  `[plug_pins]` shrinks to single `enabled` toggle —
+  `pin_length_m` + `include_dome_pin` per-field overrides retired
+  (S6/§G-6 typed-range defaults pinned by `PrismaticPinSpec::plug_lock_default()`,
+  S7 workshop-physical calibration narrows numeric values). The
+  wall-thickness ↔ pin-length cross-field gate (recon §3.3) retired
+  with the cup-wall penetration failure mode it guarded; new
+  socket-recess-depth gate deferred until S7 surfaces a need.
+  **procedure.rs prose** updated for truncated-pyramid press-fit
+  vocabulary (rectangular base, taper, lead-in chamfer, mold-
+  assembly press-fit + press-stop tactile feedback); `T-bar lock`
+  paragraph DELETED. **piece.rs** docstrings updated for the
+  side-agnostic SDF-subtract of the plug-lock socket; deleted test
+  `t_bar_halves_share_coplanar_seam_face` (T-bar mechanism gone);
+  replaced `plug_socket_transform_anchors_at_cap_plane_centroid_*`
+  with the SDF-equivalent `plug_lock_socket_carves_cup_material_at_cap_plane_centroid_*`.
+  **mesh_csg.rs** docstrings updated — `MatingTransform::UnionCylinder`
+  confirmed UNUSED post-S4 (lone consumer was S6 plug-shaft + T-bar,
+  both retired), `SubtractCylinder` lone surviving emitter is S7
+  pour-gate. Variant deletion deferred to S8. 191 cf-cast unit + 8
+  probe + 46 cf-cast-cli unit + 7 integration tests / clippy
+  `-D warnings` / fmt clean. cf-cast-cli iter-1 regen **293.4 s**
+  (vs S3 baseline 303 s — faster, S4 deletes a mesh-CSG step per
+  layer). **§G-11 #1 CLEARED**: all 11 production STLs PASS §R1
+  inspector at 1 component each (6 cup pieces + 3 plugs + funnel
+  + platform). Net LOC **-1124** (1055 ins / 2179 del). **Open
+  §G-4 plug print orientation** flagged for S6 procedure.rs
+  reconciliation (cap-plane-face-down invalid; preferred dome-end-
+  on-bed). Workshop iter-3 print STILL BLOCKED until S5-S8 ships
+  even after S4 lands. Successor: S5 first-layer chamfer geometry
+  per §G-13 S5 (~80 LOC; chamfer band already folded into S2's
+  PrismaticPin SDF primitive per revised §G-9, so S5 is mostly
+  test churn + verifying the chamfer holds at production scale).

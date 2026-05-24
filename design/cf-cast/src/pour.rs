@@ -99,11 +99,15 @@ use crate::ribbon::Ribbon;
 /// Polygonal facet count around the circumference for the
 /// pour-gate cylinder primitives.
 ///
-/// Same workshop default as the other mesh-CSG cylinder ops (see
-/// `crate::registration::PIN_SEGMENTS` /
-/// `crate::plug::PLUG_CYLINDER_SEGMENTS`). Part of the
-/// determinism contract — same parent + same `segments` → bit-equal
-/// output.
+/// 32 segments at the workshop default 5 mm pour-leg radius gives
+/// chord error `r(1 - cos(π/32))` ≈ 24 µm — well below FDM bead
+/// width. Pre-S3 / pre-S4 of the FDM-friendly geometry arc this
+/// matched parallel `PIN_SEGMENTS` / `PLUG_CYLINDER_SEGMENTS`
+/// consts elsewhere (both now retired with their respective SDF-
+/// side migrations); the pour-gate carve is the lone surviving
+/// mesh-CSG mating-feature surface post-S4 and the only consumer
+/// of this const. Part of the determinism contract — same parent
+/// + same `segments` → bit-equal output.
 pub const POUR_GATE_SEGMENTS: u32 = 32;
 
 /// V half-angle in radians — 30° (= π/6). Each leg of the V splays

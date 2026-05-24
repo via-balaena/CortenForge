@@ -10,21 +10,28 @@
 //!
 //! S3 ships the empty-Vec pass-through: every composer emits
 //! `(Solid, Vec<MatingTransform>)` with the Vec empty. S5
-//! (registration pins), S6 (T-bar + plug-pin), and S7 (cup
-//! pour-gate) populate the Vec with concrete cylinder ops; the
-//! plug-shaft adds a near-end overlap-bias via
-//! [`crate::plug::PLUG_SHAFT_NEAR_END_OVERLAP_M`] for clean
-//! boolean-union welding against the SDF-meshed plug body. S4
-//! originally added a `MatingTransform::SeamTrim` emission for
-//! the cup-piece seam plane, reverted by recon-4 (P) to the
-//! pre-S4 SDF halfspace intersect (see
-//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2); the
-//! `SeamTrim` variant + `apply_one` arm are retained as a
+//! (registration pins) + S6 (plug-shaft + T-bar) + S7 (cup
+//! pour-gate) originally populated the Vec with concrete cylinder
+//! ops. S4 of the prior mating-features arc added a
+//! `MatingTransform::SeamTrim` emission for the cup-piece seam
+//! plane, reverted by recon-4 (P) to the pre-S4 SDF halfspace
+//! intersect (see `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2);
+//! the `SeamTrim` variant + `apply_one` arm are retained as a
 //! defensive primitive but no longer emitted from production
 //! composers. S7's funnel-nipple was similarly reverted by the
 //! funnel fix (`2bf0bd17`); cup-side pour-gate stays mesh-CSG.
-//! See decision §1 + §11 of `docs/CF_CAST_MATING_FEATURES_RECON.md`
-//! for the original migration surface.
+//! S3 of the FDM-friendly geometry arc migrated the cup-pin
+//! registration pair from mesh-CSG cylinder ops to SDF-side
+//! [`crate::PrismaticPin`][`crate::prismatic_pin`] composition;
+//! S4 of the same arc migrated the plug-floor lock (and retired
+//! the entire S6 plug-shaft + T-bar + T-slot mechanism) to a
+//! single SDF-side socket — the lone mesh-CSG mating-feature
+//! surface post-S4 is the cup-side pour-gate carve (S7), still a
+//! `SubtractCylinder` against the bulk-welded half-shell. See
+//! decision §1 + §11 of `docs/CF_CAST_MATING_FEATURES_RECON.md`
+//! for the original migration surface and
+//! `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-5 for the
+//! S3/S4 SDF-side migration.
 //!
 //! # Unit boundary
 //!
@@ -55,10 +62,15 @@ use crate::mesher::METERS_TO_MM;
 
 /// Cross-piece shared geometry triple.
 ///
-/// Pin and socket of a registration pair, or T-bar/T-slot of a
-/// plug+cup pair, both derive their cylinder primitive from the
-/// same `CylinderParent`; only the per-side
-/// [`CylinderParams::radius_m`] differs (recon §2).
+/// Pre-S4 of the FDM-friendly geometry arc this carried the
+/// registration cup-pin pair AND the plug-shaft + T-bar + T-slot
+/// triple (pin + socket / bar + slot consumed the same
+/// `CylinderParent`; only the per-side
+/// [`CylinderParams::radius_m`] differed, per recon §2). Post-S4
+/// both surfaces migrated to SDF-side
+/// [`crate::PrismaticPin`][`crate::prismatic_pin`] primitives; the
+/// shared-primitive invariant survives only for the cup pour-gate
+/// carve (single producer + consumer, no cross-piece sharing).
 ///
 /// All coordinates are meters in cf-design's compose-time frame.
 /// The builders convert m → mm at primitive-build time.
@@ -81,13 +93,13 @@ pub struct CylinderParent {
 /// pieces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CylinderParams {
-    /// Shared geometry triple — identical between plug and cup of a
-    /// T-bar pair, etc. (Pre-S3 of the FDM-friendly geometry arc the
-    /// registration cup-pin pair shared this triple too; post-S3 the
-    /// cup-pin primitive lives SDF-side as a
-    /// [`crate::PrismaticPin`][`crate::prismatic_pin`], so the
-    /// `CylinderParams` shared-primitive invariant only covers the
-    /// S6 plug-anchor T-bar / shaft and the S7 pour-gate carve.)
+    /// Shared geometry triple. Pre-S4 of the FDM-friendly geometry
+    /// arc the cup-pin pair AND the plug T-bar/shaft pair both
+    /// shared this triple across plug + cup pieces (recon §2);
+    /// post-S4 both surfaces migrated SDF-side and the only
+    /// remaining consumer is the S7 pour-gate carve (no
+    /// cross-piece sharing, but the type stays for the unit-
+    /// boundary + segments-determinism contract).
     pub parent: CylinderParent,
     /// Per-side radius (meters). Pin and socket of a registration
     /// pair consume *different* values here: pin uses the pin radius,
@@ -127,27 +139,27 @@ pub enum MatingTransform {
         offset_m: f64,
     },
     /// Mesh-union of an exact axis-aligned cylinder primitive.
-    /// S5 emits one per Negative-side registration pin; S6 emits
-    /// one for the plug-side T-bar + plug-pin shaft (the shaft
-    /// near-end is shifted inward by
-    /// [`crate::plug::PLUG_SHAFT_NEAR_END_OVERLAP_M`] so the
-    /// boolean union welds cleanly into the SDF-meshed plug body
-    /// — see recon-4 paradigm-boundary pattern). S7's funnel-side
-    /// pour-gate nipple was reverted by the funnel fix to SDF
-    /// (continuous welding with the SDF flange); no production
-    /// composer currently emits `UnionCylinder` for the funnel.
+    /// Pre-S3/S4 of the FDM-friendly geometry arc this was emitted
+    /// by the cup-pin (S5) + plug-side T-bar + plug-shaft (S6)
+    /// composers. Post-S4 NO production composer emits this
+    /// variant — the cup-pin migrated to SDF (§G-12 #2) and the
+    /// plug retention migrated to a single SDF pyramid (§G-1).
+    /// Variant retained as a defensive primitive (its `apply_one`
+    /// arm + cylinder-build tests still run); deletion deferred to
+    /// the S8 cold-read pass per §G-5.
     UnionCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,
     },
     /// Mesh-subtract of an exact axis-aligned cylinder primitive.
-    /// S5 emits one per Positive-side registration socket; S6 emits
-    /// the cup-side T-slot + plug-pin socket carves; S7 emits one
-    /// per cup-side pour-gate leg (pour + vent). The funnel-side
-    /// nipple lumen was reverted by the funnel fix to SDF (carved
-    /// in the funnel's `outer.subtract(inner)` SDF chain); no
-    /// production composer currently emits `SubtractCylinder` for
-    /// the funnel side.
+    /// Pre-S3/S4 this was emitted by the cup-pin socket (S5) +
+    /// cup-side T-slot + plug-pin socket carves (S6) + cup-side
+    /// pour-gate legs (S7). Post-S4 the lone production emitter is
+    /// the S7 cup pour-gate carve (pour + vent) — the cup-pin
+    /// socket migrated to SDF (S3) and the plug-shaft + T-slot
+    /// retired entirely (S4 plug-floor lock is SDF; no cup-wall
+    /// through-hole). The funnel-side nipple lumen was reverted
+    /// to SDF by the funnel fix.
     SubtractCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,

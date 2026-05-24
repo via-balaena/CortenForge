@@ -566,111 +566,94 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
         PlugPinKind::None => {
             let _ = writeln!(
                 md,
-                "This cast has no plug-anchor pin geometry \
+                "This cast has no plug-floor-lock geometry \
                  (`PlugPinKind::None`). The plug is positioned in \
                  the assembled mold cup by hand and held there \
                  during pour + cure (workshop user braces the plug \
-                 manually or jigs against the cavity dome). v2.1's \
-                 `PlugPinKind::Axial` opt-in adds a printed pin to \
-                 the pour end of each layer's plug + a matching \
-                 socket in each mold piece; recommended for any \
+                 manually or jigs against the cavity dome). \
+                 `PlugPinKind::Axial` opt-in adds a truncated-\
+                 pyramid press-fit lock to the plug's cap-plane face \
+                 + a matching socket recessed into each cup-piece's \
+                 cap-plane interior surface; recommended for any \
                  cast where the plug's silicone-displacement weight \
                  + curve geometry makes hand-positioning fiddly."
             );
         }
         PlugPinKind::Axial(spec) => {
-            let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
-            let pin_length_mm = spec.pin_length_m * 1000.0;
-            // Post-S6 cup-side socket primitive inflates by
-            // `shaft_diametral_clearance_m / 2` per radial side
-            // (Ø grows by the full diametral clearance) and extends
-            // axially past the pin by `shaft_axial_clearance_m / 2`
-            // on each face (deep-end relief is the workshop-meaningful
-            // half; see `PlugPinSpec::shaft_axial_clearance_m`).
-            let socket_diametral_gap_mm = spec.shaft_diametral_clearance_m * 1000.0;
-            let socket_axial_relief_mm = spec.shaft_axial_clearance_m * 1000.0;
-            let dome_pin_status = if spec.include_dome_pin {
-                "**Both** the pour end and the dome end have plug-\
-                 anchor pins"
-            } else {
-                "Only the **pour end** has a plug-anchor pin (the \
-                 dome end relies on the plug's hemispherical cap \
-                 seating into the cavity's matching dome for \
-                 centerline alignment — no through-hole on the \
-                 dome side)"
-            };
+            // S4 of the FDM-friendly geometry arc migrated this
+            // section from cylindrical plug-shaft + T-bar prose
+            // (cup-wall penetration leak path on consumer FDM —
+            // recon-1 §G-1) to the truncated-pyramid plug-floor
+            // lock vocabulary (interior to the cavity, no through-
+            // hole, press-fit against the cup floor).
+            let lock_spec = &spec.lock_spec;
+            let base_lateral_mm = lock_spec.pin_base_half_extents_m.x * 2.0 * 1000.0;
+            let base_binormal_mm = lock_spec.pin_base_half_extents_m.y * 2.0 * 1000.0;
+            let tip_lateral_mm = lock_spec.pin_tip_half_extents_m.x * 2.0 * 1000.0;
+            let tip_binormal_mm = lock_spec.pin_tip_half_extents_m.y * 2.0 * 1000.0;
+            let lock_length_mm = lock_spec.pin_half_length_m * 2.0 * 1000.0;
+            let chamfer_mm = lock_spec.base_chamfer_m * 1000.0;
+            let diametral_mm = lock_spec.diametral_clearance_m * 1000.0;
+            let socket_base_lateral_mm = base_lateral_mm + diametral_mm;
             let _ = writeln!(
                 md,
-                "Each per-layer plug carries an axial **{pin_dia_mm:.1} mm \
-                 Ø × {pin_length_mm:.1} mm long pin** at the pour end \
-                 (centerline endpoint with the pour gate; pin extends \
-                 outward along the local tangent). The mold pieces \
-                 carry a matching cylindrical socket \
-                 {socket_diametral_gap_mm:.2} mm wider in diameter than \
-                 the pin (positional sliding fit) with \
-                 {socket_axial_relief_mm:.2} mm axial pocket-bottom \
-                 relief so workshop FDM stair-step doesn't bottom the \
-                 pin out before its shoulder seats. {dome_pin_status}."
+                "Each per-layer plug carries a **truncated-pyramid \
+                 lock** at its cap-plane face — \
+                 {base_lateral_mm:.1} × {base_binormal_mm:.1} mm \
+                 rectangular base, tapered to \
+                 {tip_lateral_mm:.1} × {tip_binormal_mm:.1} mm flat \
+                 tip, {lock_length_mm:.1} mm long along the cap-\
+                 normal, {chamfer_mm:.2} mm base-end chamfer as a \
+                 lead-in self-centering aid — protruding away from \
+                 the plug body (= downward in pour orientation). \
+                 Each cup-piece's cap-plane interior surface carries \
+                 a matching socket cavity \
+                 ({socket_base_lateral_mm:.2} mm base — \
+                 {diametral_mm:.2} mm diametral clearance for a \
+                 positional sliding fit); the seam plane bisects \
+                 each socket laterally through its center, so each \
+                 cup half carves one half of the cross-section \
+                 (3-piece shared-primitive invariant). The socket \
+                 is a recessed cavity NOT a through-hole — no shaft \
+                 penetrates the cup wall, eliminating the silicone-\
+                 leak failure mode the pre-S4 cylindrical plug-shaft \
+                 was prone to on consumer FDM."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
                 "Workshop assembly: apply mold release (Smooth-On \
-                 Ease Release 200 standard) to the pin before \
-                 seating. Lower the plug into the assembled cup; \
-                 the pin slides into the socket along the centerline \
-                 tangent direction until the pin's shoulder rests \
-                 against the cup wall. The plug is now positionally \
-                 constrained against axial drift; combined with the \
-                 cap-into-dome seating at the un-pinned end, the \
-                 plug stays centered in 6 DoF during pour + cure."
+                 Ease Release 200 standard) to the pyramid before \
+                 seating. Lower the plug into one open cup half \
+                 (seam plane up) so the pyramid drops into that \
+                 half's floor socket; the tapered lateral faces \
+                 self-center the pyramid as it descends. Close the \
+                 second cup half over the plug, sandwiching the \
+                 pyramid between the two socket halves. Press-stop \
+                 tactile feedback = the cup-piece seam halves bottom \
+                 out flush against each other when the pyramid is \
+                 fully seated. The plug is now positionally \
+                 constrained against axial drift + lateral wobble; \
+                 combined with the cap-into-dome seating at the dome \
+                 end, the plug stays centered in 6 DoF during pour + \
+                 cure."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
-                "If the pin doesn't seat (too tight): ream the socket \
-                 with a {pin_dia_mm:.1} mm drill bit to remove any \
-                 FDM stair-step. If it wobbles (too loose): wrap the \
-                 pin with PTFE tape until snug. Document fit \
-                 tolerances for the post-iter-1 review of \
-                 `PlugPinSpec::iter1` defaults."
+                "If the lock doesn't seat (too tight, seam won't \
+                 close flush): file the pyramid's lateral faces \
+                 lightly to relieve, then re-check the seam. If the \
+                 plug wobbles (too loose, plug drifts during pour): \
+                 wrap the pyramid base with PTFE tape until snug, OR \
+                 tighten `PrismaticPinSpec::plug_lock_default()`'s \
+                 `diametral_clearance_m` for the next print. \
+                 Document fit tolerances for the S7 workshop-physical \
+                 calibration pass on Bambu A1 + default + Jayo."
             );
-            if spec.include_t_bar {
-                md.push('\n');
-                write_v2_t_bar_note(md, spec);
-            }
         }
     }
     md.push('\n');
-}
-
-fn write_v2_t_bar_note(md: &mut String, spec: &crate::plug::PlugPinSpec) {
-    let t_bar_dia_mm = spec.t_bar_radius_m * 2.0 * 1000.0;
-    let t_bar_length_mm = spec.t_bar_half_length_m * 2.0 * 1000.0;
-    let t_slot_diametral_mm = spec.t_bar_diametral_clearance_m * 1000.0;
-    let t_slot_dia_mm = t_bar_dia_mm + t_slot_diametral_mm;
-    let t_slot_axial_relief_mm = spec.t_bar_axial_clearance_m * 1000.0;
-    let _ = writeln!(
-        md,
-        "**T-bar lock** (one-time print: `platform.stl`). The plug's \
-         pour-end pin tip carries a **{t_bar_dia_mm:.1} mm \
-         Ø × {t_bar_length_mm:.1} mm long T-bar** whose axis lies \
-         parallel to the seam-plane normal. Each cup piece carves one \
-         half of a matching T-slot ({t_slot_dia_mm:.2} mm Ø — \
-         {t_slot_diametral_mm:.2} mm diametral clearance, \
-         {t_slot_axial_relief_mm:.2} mm axial pocket-bottom relief at \
-         the AWAY-from-seam tip); captive insertion: lower the plug \
-         T-bar into one cup half's half-T-slot, then close the second \
-         half around it. Once seated the T-bar locks the plug against \
-         axial pull-out (would have to push through cup-wall material) \
-         and rotation around the pin axis (would have to rotate out of \
-         the seam-normal orientation). The T-bar protrudes a few mm \
-         below the cup outer face at typical wall thicknesses; the \
-         `platform.stl` carries a matching blind pocket so the \
-         assembled mold sits flat on the platform during pour + cure \
-         (print `platform.stl` once for the whole multi-layer device \
-         — it is reused across every layer's pour)."
-    );
 }
 
 fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
@@ -823,13 +806,16 @@ fn write_per_layer_sections_v2(
         let _ = writeln!(
             md,
             "6. Apply mold release to `plug_layer_{0}.stl` (Smooth-On \
-             Ease Release 200 standard) and seat the plug into the \
-             assembled mold via the plug-anchor pin socket. Orient \
-             the mold with **+Z up** so the V's pour + vent legs are \
-             on top. Pour silicone into {pour_into} at a slow steady \
-             rate to avoid splashing through the vent; trapped air \
-             rises into the vent leg (Negative piece, -binormal side) \
-             as the cavity fills.",
+             Ease Release 200 standard) and seat the plug into one \
+             open cup half so its truncated-pyramid floor lock drops \
+             into the cup-piece floor socket; close the second cup \
+             half over the plug (seam closes flush = press-stop \
+             tactile feedback). Orient the assembled mold with \
+             **+Z up** so the V's pour + vent legs are on top. Pour \
+             silicone into {pour_into} at a slow steady rate to \
+             avoid splashing through the vent; trapped air rises \
+             into the vent leg (Negative piece, -binormal side) as \
+             the cavity fills.",
             pour.layer_index,
         );
         if let Some(protocol) = protocol {
@@ -850,10 +836,11 @@ fn write_per_layer_sections_v2(
              seam (remove `piece_0` first, then `piece_1` for clean \
              centerline-axis slide release on curved centerlines). \
              Pull the plug axially out of the cured silicone shell; \
-             the plug-anchor pin slides out of its socket-cavity in \
-             the silicone cap. The cured layer detaches as a \
-             standalone silicone tube ready to nest with the other \
-             layers post-cure."
+             the truncated-pyramid floor lock slides out of its \
+             cap-plane socket-cavity in the silicone (the pyramid's \
+             taper releases without interference under axial pull). \
+             The cured layer detaches as a standalone silicone tube \
+             ready to nest with the other layers post-cure."
         );
         md.push('\n');
     }

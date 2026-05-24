@@ -50,10 +50,14 @@ pub enum CastTarget {
         layer_index: Option<usize>,
     },
     /// Output mesh: the workshop platform STL. Generated only when
-    /// the ribbon's plug-pin kind has `include_t_bar = true` (so
-    /// the T-bar protrusion needs a pocketed platform for the
-    /// assembled mold to sit flat during pour + cure). Single
-    /// artifact per cast (shared across layers).
+    /// the ribbon enables plug pins ([`crate::plug::PlugPinKind::Axial`])
+    /// — a flat support slab the workshop user sets the assembled
+    /// mold on during pour + cure. Pre-S4 of the FDM-friendly
+    /// geometry arc this carried a blind pocket sized to clear the
+    /// plug's T-bar protrusion through the cup wall; post-S4 the
+    /// plug-floor lock is interior to the cavity (no through-hole,
+    /// no protrusion) so the slab is bare. Single artifact per
+    /// cast (shared across layers).
     Platform,
     /// Output mesh: the workshop pour funnel STL.
     ///

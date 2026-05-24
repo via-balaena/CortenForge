@@ -281,16 +281,18 @@ pub struct V2LayerReport {
 
 /// Workshop platform STL.
 ///
-/// A flat slab with a pocket carved into the top surface that
-/// accepts the T-bar protrusion from the assembled mold. The mold
-/// sits on this platform during pour + cure so it rests flat
-/// (T-bar in the pocket) even though the T-bar extends below the
-/// cup outer face.
+/// A flat slab the workshop user sets the assembled mold on
+/// during pour + cure (level + spill catchment). Pre-S4 of the
+/// FDM-friendly geometry arc the slab carried a blind pocket
+/// sized to clear the plug's T-bar protrusion through the cup
+/// wall; post-S4 the plug-floor lock is interior to the cavity
+/// (no through-hole, no protrusion) so the slab is bare.
 ///
 /// Generated only when the ribbon's `plug_pins` field is
-/// [`crate::plug::PlugPinKind::Axial`] AND `include_t_bar = true`
-/// (the configuration that produces a T-bar protrusion needing
-/// support). Single STL per cast, shared across all layers.
+/// [`crate::plug::PlugPinKind::Axial`] (i.e., the assembled mold
+/// will be installed via the plug-floor lock; ribbons without
+/// plug pins skip the platform artifact). Single STL per cast,
+/// shared across all layers.
 #[derive(Debug, Clone)]
 pub struct PlatformArtifact {
     /// Filesystem path of the written `platform.stl`.
@@ -329,7 +331,7 @@ pub struct FunnelArtifact {
 ///
 /// `layers.len() * 3` STLs total (2 piece STLs + 1 plug STL per
 /// layer), plus a single `platform.stl` if the ribbon enables
-/// T-bar plug-pin locking, plus a single `funnel.stl` if the
+/// plug-floor-lock retention, plus a single `funnel.stl` if the
 /// ribbon has a pour gate enabled. All pieces, plugs, and the
 /// optional platform + funnel clear the F4 gate before any STL
 /// lands on disk (pre-write atomicity, same scope as v1's
@@ -340,10 +342,12 @@ pub struct V2MoldExportReport {
     /// mold pieces + 1 plug.
     pub layers: Vec<V2LayerReport>,
     /// Optional workshop platform artifact, present when the
-    /// ribbon's plug-pin kind has `include_t_bar = true`. The
-    /// platform's pocket matches the T-bar protrusion so the
-    /// assembled mold sits flat on the workbench during pour +
-    /// cure.
+    /// ribbon's plug-pin kind is
+    /// [`crate::plug::PlugPinKind::Axial`]. Post-S4 of the FDM-
+    /// friendly geometry arc this is a bare flat support slab
+    /// (pre-S4 it had a blind pocket sized to clear the plug's
+    /// T-bar protrusion; the plug-floor lock now lives interior
+    /// to the cavity so no protrusion needs clearing).
     pub platform: Option<PlatformArtifact>,
     /// Optional workshop pour funnel artifact, present when the
     /// ribbon has a [`crate::pour::PourGateKind::Default`] pour
@@ -423,9 +427,9 @@ struct PendingPlug {
 
 /// Buffered v2 workshop platform mesh + validation, held in memory
 /// alongside [`PendingPiece`]s + [`PendingPlug`]s until every
-/// artifact clears the F4 gate. Generated only when the ribbon's
-/// plug-pin kind enables the T-bar; one platform per cast (shared
-/// across layers).
+/// artifact clears the F4 gate. Generated only when the ribbon
+/// enables plug pins ([`crate::plug::PlugPinKind::Axial`]); one
+/// platform per cast (shared across layers).
 struct PendingPlatform {
     mesh: IndexedMesh,
     validation: PrintValidation,
@@ -988,16 +992,16 @@ fn mesh_and_gate_v2_plugs(
 }
 
 /// Mesh + F4-gate the workshop platform STL, or return
-/// `Ok(None)` when the ribbon's plug-pin kind doesn't enable a
-/// T-bar (no platform needed). Single artifact per cast.
+/// `Ok(None)` when the ribbon doesn't enable plug pins (no
+/// platform needed). Single artifact per cast.
 ///
 /// Uses a finer mesh-cell size than the rest of the cast
 /// ([`PLATFORM_MAX_CELL_SIZE_M`] capped at `spec.mesh_cell_size_m`)
-/// because the platform's pocket cross-section is small (e.g., a
-/// ~3 mm-deep crescent for iter-1's 6 mm-Ø T-bar) — at the cast's
-/// default 3 mm cells the pocket would be 1 cell deep and MC would
-/// fragment it. The platform solid is small + simple so the finer
-/// mesh costs ~1-2 s at most.
+/// as a defensive carry-over from the pre-S4 era (the slab carried
+/// a blind pocket for the plug's T-bar protrusion that needed
+/// sub-default cell resolution to mesh cleanly). Post-S4 the slab
+/// is bare and the cap is no longer load-bearing for correctness,
+/// just over-resolution; deletion deferred to S8.
 fn mesh_and_gate_v2_platform(
     spec: &CastSpec,
     ribbon: &Ribbon,
@@ -1041,16 +1045,16 @@ fn mesh_and_gate_v2_platform(
 }
 
 /// Cap on the mesh-cell size used for the platform's marching-cubes
-/// pass. The platform's pocket cross-section (for typical workshop
-/// geometries: a ~3 mm-deep crescent absorbing the T-bar's protrusion
-/// below the cup outer face) is too small for the cast's default
-/// 3 mm cells to resolve cleanly — at 3 mm cells, the pocket would
-/// be ~1 cell deep and MC would fragment it. 1.5 mm cells give
-/// ~2× the radial resolution and reliably mesh the pocket as a
-/// continuous concave feature. The platform solid is small +
-/// simple (cuboid - cylinder) so the finer mesh costs ~1-2 s at
-/// most; effectively free relative to the cast's main meshing
-/// time.
+/// pass. Pre-S4 of the FDM-friendly geometry arc the platform's
+/// blind T-bar pocket (~3 mm-deep crescent absorbing the plug's
+/// T-bar protrusion through the cup wall) required this sub-default
+/// cell size to resolve cleanly — at 3 mm cells the pocket would
+/// be ~1 cell deep and MC would fragment it. Post-S4 the plug-floor
+/// lock is interior to the cavity (no protrusion → bare slab, no
+/// pocket); the cap is retained as a defensive over-resolution
+/// margin pending workshop iter-3 print validation, and is
+/// candidate for deletion in S8 once the bare-slab approach is
+/// confirmed.
 const PLATFORM_MAX_CELL_SIZE_M: f64 = 0.0015;
 
 /// Mesh + F4-gate the workshop pour funnel STL, or return
@@ -3126,11 +3130,11 @@ mod tests {
              at the annulus-midpoint probe; got {}",
             piece_neg.evaluate(&pin_q),
         );
-        // Post-S3 of the FDM-friendly geometry arc, registration
-        // pins live SDF-side (no longer in the transform Vec). The
-        // remaining mesh-CSG cylinder ops are: S7 pour-gate + vent
-        // legs (2 per side) plus S6 plug-socket / T-slot when
-        // applicable.
+        // Post-S3 + post-S4 of the FDM-friendly geometry arc, both
+        // the cup-pin registration AND the plug-floor lock live
+        // SDF-side (no longer in the transform Vec). The lone
+        // remaining mesh-CSG cylinder surface is S7's pour-gate +
+        // vent (2 legs per side).
         let count_cylinders = |ts: &[crate::mesh_csg::MatingTransform]| -> usize {
             ts.iter()
                 .filter(|t| {

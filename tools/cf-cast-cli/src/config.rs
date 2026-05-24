@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail, ensure};
 use serde::Deserialize;
 
-use cf_cast::{DEFAULT_MASS_BUDGET_KG, PlugPinSpec};
+use cf_cast::DEFAULT_MASS_BUDGET_KG;
 
 /// Top-level `cast.toml` schema.
 #[derive(Debug, Clone, Deserialize)]
@@ -197,35 +197,33 @@ pub struct LayerConfig {
     pub slacker_fraction: Option<f64>,
 }
 
-/// `[plug_pins]` block — plug-anchor pin override. Maps to
+/// `[plug_pins]` block — plug-floor-lock toggle. Maps to
 /// [`cf_cast::PlugPinKind`].
+///
+/// Post-S4 of the FDM-friendly geometry arc the only user-facing
+/// knob is `enabled`. The pre-S4 `pin_length_m` + `include_dome_pin`
+/// per-field overrides retired:
+/// - `pin_length_m`: pinned by [`cf_cast::PrismaticPinSpec::plug_lock_default`]
+///   per recon-1 §G-6 / §G-8 typed-range defaults; S7 workshop-
+///   physical calibration narrows numeric values rather than
+///   exposing per-cast `cast.toml` overrides.
+/// - `include_dome_pin`: dome-end variant is out of scope for the
+///   iter-3 default path per §G-1 (the plug-floor lock is a single
+///   cap-plane-end feature).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlugPinConfig {
     /// Master toggle. When `false`, the bridge passes
-    /// [`cf_cast::PlugPinKind::None`] to the ribbon (no plug-anchor
-    /// pin geometry).
+    /// [`cf_cast::PlugPinKind::None`] to the ribbon (no plug-floor
+    /// lock geometry; workshop user hand-positions the plug during
+    /// pour + cure).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Override [`cf_cast::PlugPinSpec::pin_length_m`]. The v2
-    /// example overrides the iter1 20 mm default to 28 mm to clear
-    /// the bounding cup wall on every layer; bridge users with
-    /// thicker shells may need more.
-    #[serde(default)]
-    pub pin_length_m: Option<f64>,
-    /// Override [`cf_cast::PlugPinSpec::include_dome_pin`]. Defaults
-    /// to `None` (= use iter1's `false`).
-    #[serde(default)]
-    pub include_dome_pin: Option<bool>,
 }
 
 impl Default for PlugPinConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            pin_length_m: None,
-            include_dome_pin: None,
-        }
+        Self { enabled: true }
     }
 }
 
@@ -417,38 +415,20 @@ impl CastConfig {
             n
         );
 
-        if let Some(len) = self.plug_pins.pin_length_m {
-            ensure!(
-                len.is_finite() && len > 0.0,
-                "plug_pins.pin_length_m = {} must be finite and > 0",
-                len
-            );
-        }
-
-        // Cross-field gate: when plug-anchor pins are enabled, the
-        // pin shaft extends along -tangent from the centerline endpoint
-        // into (and through) the cup-wall material. The wall must be at
-        // least as thick as the pin length (plus a 1 mm margin to
-        // absorb MC stair-step) or the pin pokes out the back of the
-        // mold piece.
-        //
-        // See `docs/CF_CAST_MOLD_WALL_RECON.md` §3.3 and Q4.
-        if self.plug_pins.enabled {
-            let effective_pin_length_m = self
-                .plug_pins
-                .pin_length_m
-                .unwrap_or(PlugPinSpec::iter1().pin_length_m);
-            const MARGIN_M: f64 = 0.001;
-            ensure!(
-                self.cast.wall_thickness_m + MARGIN_M >= effective_pin_length_m,
-                "cast.wall_thickness_m = {} m + 1 mm margin must be >= \
-                 plug_pins.pin_length_m = {} m (the plug-anchor pin would \
-                 protrude past the mold-piece outer face). Either thicken \
-                 the wall, shorten the pin, or set plug_pins.enabled = false.",
-                self.cast.wall_thickness_m,
-                effective_pin_length_m
-            );
-        }
+        // S4 of the FDM-friendly geometry arc retired the pre-S4
+        // `plug_pins.pin_length_m` override + the wall-thickness ↔
+        // pin-length cross-field gate. The gate guarded against the
+        // pre-S4 cylindrical plug-shaft poking out past the
+        // cup-piece outer face (cup-wall penetration); the post-S4
+        // plug-floor lock is INTERIOR to the cavity (recessed
+        // socket, NOT a through-hole — see recon-1 §G-1), so the
+        // workshop-meaningful constraint is now socket-recess depth
+        // ≤ wall thickness − 1 mm cup material at the cap-plane
+        // outer face. With the spec-pinned 4 mm half-length default
+        // and the workshop's 5 mm `cast.wall_thickness_m` floor,
+        // the constraint is satisfied by construction; the gate is
+        // omitted until S7 calibration surfaces a workshop-physical
+        // need.
 
         Ok(())
     }
@@ -474,13 +454,13 @@ material = "ECOFLEX_00_30"
 
     #[test]
     fn parses_minimal_config_with_defaults() {
-        // Validation is intentionally NOT exercised here — the default
-        // 5 mm wall conflicts with the default 20 mm iter-1 plug-pin
-        // length (the cross-field gate added with the Option A
-        // mold-wall arc fires for "all-defaults" configs). The
-        // gate is verified in `rejects_wall_thinner_than_default_pin_length`;
-        // this test scopes itself to field-by-field parsing of
-        // defaults.
+        // Post-S4: the wall-thickness ↔ pin-length cross-field
+        // gate that previously made all-defaults configs fail
+        // validation was retired with the plug-shaft cup-wall
+        // penetration mechanism (see config.rs validate_after_layer_source
+        // §"S4 of the FDM-friendly geometry arc" comment). This
+        // test scopes itself to field-by-field parsing of defaults;
+        // the all-defaults validation gate is verified below.
         let cfg = CastConfig::from_toml_str(minimal_config_text()).unwrap();
         assert_eq!(cfg.layers.len(), 1);
         assert_eq!(cfg.layers[0].material, "ECOFLEX_00_30");
@@ -526,8 +506,7 @@ thickness_m = 0.004
 material = "ECOFLEX_00_30"
 
 [plug_pins]
-pin_length_m = 0.028
-include_dome_pin = false
+enabled = true
 
 [pour_gate]
 enabled = true
@@ -541,7 +520,7 @@ enabled = false
         assert_eq!(cfg.layers[0].display_name.as_deref(), Some("Inner Ecoflex"));
         assert!((cfg.cast.mesh_cell_size_m - 0.004).abs() < 1e-12);
         assert_eq!(cfg.cast.output_dir, PathBuf::from("iter1_out"));
-        assert_eq!(cfg.plug_pins.pin_length_m, Some(0.028));
+        assert!(cfg.plug_pins.enabled);
         assert!(!cfg.registration_pins.enabled);
     }
 
@@ -584,10 +563,12 @@ material = "UNKNOWN_GRADE"
 
     #[test]
     fn accepts_unknown_material_with_density_override() {
-        // `[plug_pins] enabled = false` sidesteps the wall-thickness ↔
-        // pin-length cross-field gate (default 5 mm wall conflicts
-        // with the iter1 20 mm pin) so this test stays scoped to
-        // material-override validation.
+        // Post-S4 the wall-thickness ↔ pin-length cross-field gate
+        // is gone (the plug-floor lock is interior to the cavity,
+        // not a through-shaft), so this test no longer needs
+        // `[plug_pins] enabled = false` to scope itself to material-
+        // override validation. Keep the override on for parity with
+        // production iter-1 cast.toml.
         let text = r#"
 [scan]
 cleaned_stl = "s.stl"
@@ -598,9 +579,6 @@ thickness_m = 0.006
 material = "CUSTOM_GRADE"
 density_kg_m3 = 1080.0
 display_name = "Custom Silicone"
-
-[plug_pins]
-enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
@@ -670,11 +648,16 @@ material = "ECOFLEX_00_30"
     }
 
     #[test]
-    fn rejects_wall_thinner_than_default_pin_length() {
-        // Default plug_pins (enabled = true, iter1 spec → 20 mm pin)
-        // with the default 5 mm wall fails the cross-field gate:
-        // `5 mm + 1 mm margin >= 20 mm` is FALSE. Confirm the gate
-        // fires.
+    fn accepts_all_defaults_post_s4() {
+        // Post-S4 of the FDM-friendly geometry arc the wall-thickness
+        // ↔ pin-length cross-field gate is retired (the plug-floor
+        // lock is interior to the cavity, NOT a through-shaft, so
+        // no cup-wall penetration). The pre-S4 tests
+        // `rejects_wall_thinner_than_default_pin_length` /
+        // `accepts_wall_thickness_matching_pin_length_override`
+        // were retired with the cross-field gate. This test pins
+        // the post-S4 contract: all-defaults validates clean (no
+        // gate fires).
         let text = r#"
 [scan]
 cleaned_stl = "s.stl"
@@ -683,60 +666,6 @@ prep_toml = "s.prep.toml"
 [[layers]]
 thickness_m = 0.006
 material = "ECOFLEX_00_30"
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        let err = cfg
-            .validate()
-            .expect_err("default 5 mm wall vs 20 mm iter1 pin must fail");
-        let s = err.to_string();
-        assert!(
-            s.contains("plug_pins.pin_length_m"),
-            "unexpected error: {s}"
-        );
-    }
-
-    #[test]
-    fn accepts_wall_thickness_matching_pin_length_override() {
-        // 8 mm wall + 7 mm pin override: 8 + 1 = 9 >= 7, passes.
-        let text = r#"
-[scan]
-cleaned_stl = "s.stl"
-prep_toml = "s.prep.toml"
-
-[cast]
-wall_thickness_m = 0.008
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[plug_pins]
-pin_length_m = 0.007
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn accepts_thin_wall_when_plug_pins_disabled() {
-        // 2 mm wall + plug_pins disabled: plug-pin cross-field gate
-        // skipped. (Registration-pin gate was retired by recon-4 (P)
-        // when the binormal-axis annulus-midpoint design was restored
-        // — no inner-cavity dimple to budget.)
-        let text = r#"
-[scan]
-cleaned_stl = "s.stl"
-prep_toml = "s.prep.toml"
-
-[cast]
-wall_thickness_m = 0.002
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[plug_pins]
-enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();

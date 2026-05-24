@@ -365,14 +365,13 @@ pub fn derive_spec_and_ribbon(
         ribbon = ribbon.with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
     }
     if config.plug_pins.enabled {
-        let mut plug_pin_spec = PlugPinSpec::iter1();
-        if let Some(len) = config.plug_pins.pin_length_m {
-            plug_pin_spec.pin_length_m = len;
-        }
-        if let Some(b) = config.plug_pins.include_dome_pin {
-            plug_pin_spec.include_dome_pin = b;
-        }
-        ribbon = ribbon.with_plug_pins(PlugPinKind::Axial(plug_pin_spec));
+        // Post-S4 of the FDM-friendly geometry arc the `pin_length_m`
+        // + `include_dome_pin` per-field TOML overrides are retired
+        // (see `config::PlugPinConfig` docstring). The bridge passes
+        // the workshop-iter-3 `PlugPinSpec::iter1()` default — S7
+        // workshop-physical calibration narrows the §G-6 / §G-8
+        // numeric values rather than threading them through TOML.
+        ribbon = ribbon.with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
     }
 
     Ok(DerivedSpec { spec, ribbon })
@@ -637,9 +636,14 @@ mod tests {
     }
 
     #[test]
-    fn derive_plug_pin_length_override_passes_through() {
-        let mut cfg = three_layer_config();
-        cfg.plug_pins.pin_length_m = Some(0.028);
+    fn derive_plug_pin_axial_uses_iter1_defaults() {
+        // Post-S4 the per-field TOML overrides on `[plug_pins]`
+        // (pre-S4: `pin_length_m`, `include_dome_pin`) are retired
+        // — the bridge passes `PlugPinSpec::iter1()` directly. The
+        // pre-S4 `derive_plug_pin_length_override_passes_through`
+        // test retired with the override path; this test pins the
+        // post-S4 contract.
+        let cfg = three_layer_config();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
@@ -647,7 +651,7 @@ mod tests {
         let PlugPinKind::Axial(spec) = &derived.ribbon.plug_pins else {
             unreachable!("plug_pins.enabled=true should yield Axial(_)")
         };
-        assert!((spec.pin_length_m - 0.028).abs() < 1e-12);
+        assert_eq!(*spec, PlugPinSpec::iter1());
     }
 
     #[test]
