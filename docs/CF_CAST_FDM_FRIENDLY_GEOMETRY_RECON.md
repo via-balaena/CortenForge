@@ -26,9 +26,11 @@ all OUT OF SCOPE.** Only the mating features get touched.
 `CylinderParent` shared-primitive invariant (the unifying type that
 lets cup-pin, plug-shaft, T-bar, T-slot all consume
 `MatingTransform::Union/SubtractCylinder`). It also deletes the
-T-bar twist-lock retention mechanism. These are architectural-ceiling
-changes affecting S5, S6, S7 surfaces — multi-session implementation
-scope. Per
+T-bar + shaft + T-slot retention mechanism (replaced by a press-fit
+truncated pyramid internal to the mold cavity — eliminating the
+shaft-through-cup-wall penetration that's today's silicone-leak
+risk). These are architectural-ceiling changes affecting S5, S6,
+S7 surfaces — multi-session implementation scope. Per
 [[feedback-bookmark-when-surface-levers-exhaust]] +
 [[feedback-implement-measure-revert-pattern]], decision-doc before
 implementation when the failure surface is fully understood; the
@@ -84,34 +86,53 @@ through §G-13 are recon-scaffold-resolvable.
 
 ### §G-1 — Plug retention mechanism
 
-Today's mechanism (post-S6, post-recon-4 (P)): plug has a stem
-(cylinder) extending in the seam plane with a T-bar (perpendicular
-cylinder) at the deep end. Cup pieces have a matching T-slot (cavity)
-that accepts the T-bar in vertical orientation, then the workshop
-user rotates the plug 90° to engage the T-bar's wider face against
-the narrower slot opening — captive retention until the workshop
-user reverses the rotation post-cure.
+**Pour orientation note (load-bearing for what "floor" means):**
+per procedure.rs:418-419, the mold pours **+Z up**, with the V-pour-
+gate + vent at the **dome end of the centerline (= top in pour
+orientation)**. The opposite end of the centerline — the
+**cap plane** (where the device's open / cuff end is, per
+`Ribbon::pour_end_hint` + plug.rs:38-46) — is at the **bottom** in
+pour orientation. The user's **"floor of the mold"** = cup-piece
+interior at the cap-plane end; the user's **"bottom of the plug"**
+= the plug body's cap-plane face. Silicone leaking "out the bottom"
+= leaking past the plug-to-cup-floor contact at the cap-plane.
 
-**Consumer FDM problems with twist-lock retention:**
+Today's mechanism (post-S6, post-recon-4 (P)): plug has an axial
+shaft (cylinder) protruding through the **cap-plane face of the
+plug body** along the cap-normal direction (= downward in pour
+orientation), exiting through a matching socket in the cup-piece
+cap-plane wall. A T-bar (perpendicular cylinder) at the shaft's
+deep end. Cup pieces carve half-T-slots in the seam plane that
+accept the T-bar via **captive insertion** (procedure.rs:646-648):
+lower the plug + T-bar into one cup half's half-T-slot, close the
+second half over it — T-bar is captive against axial pull-out
+without rotation needed. The shaft penetrates the cup-wall at the
+cap plane, creating a through-hole that must be sealed against
+silicone leak.
 
-1. Cylindrical stem in cylindrical socket binds on consumer FDM:
-   - First-layer elephant foot at the stem base bulges outward,
+**Consumer FDM problems with the current mechanism:**
+
+1. Cylindrical shaft in cylindrical cup-side socket binds on
+   consumer FDM:
+   - First-layer elephant foot at the shaft base bulges outward,
      making the bottom layer Ø > nominal Ø — the socket near its
      entry can't accept the bulged base
    - Cylinder lateral surface prints as polygonal facets at the slice
      resolution; cylinder-in-cylinder contact across the entire
      circumference has no design slack to absorb facet-vs-facet
      misalignment
-2. T-bar overhang from stem: T-bar is a perpendicular cylinder
-   joining the stem — creates a 90° unsupported overhang both sides
-   of the join. Consumer FDM may sag here without support.
-3. The 90° rotation under friction-fit conditions amplifies binding —
-   the workshop user discovers binding mid-rotation when neither
-   "twist further" nor "twist back" releases.
+2. T-bar overhang from shaft: T-bar is a perpendicular cylinder
+   joining the shaft — creates a 90° unsupported overhang both
+   sides of the join. Consumer FDM may sag here without support.
+3. Shaft-through-cup-wall penetration leak path: today's design
+   relies on shaft-OD-vs-socket-ID tight fit for the silicone seal.
+   On consumer FDM where tolerance budget is larger, the shaft-
+   socket gap can become a leak path; silicone wicks down through
+   the cup wall and out the bottom.
 
-**Design-chat decision (2026-05-24):** the T-bar twist-lock is
-mechanically OVERKILL for the actual retention task. The retention
-need is narrower than "captive-against-pullout":
+**Design-chat decision (2026-05-24):** the current mechanism is
+mechanically OVERKILL for the actual retention task + introduces
+an FDM-fragile leak path. The retention need is narrower:
 
 > "we just need an fdm simple pin that locks the mold plug flush
 > against the floor of the mold when they are locked together, so
@@ -120,20 +141,25 @@ need is narrower than "captive-against-pullout":
 > doesnt leak out of the bottom" — user 2026-05-24
 
 The retention's job is **seat plug flush against mold floor**, not
-"resist pullout." This is a downward seating force, not a captive
-lock. A press-fit truncated-pyramid mechanism does this job with
-zero rotation.
+"resist captive pullout." This is a downward seating force against
+the cap-plane floor, providing the silicone seal at the plug-bottom-
+to-cup-floor contact. A press-fit truncated-pyramid mechanism
+internal to the cavity does this job without any cup-wall
+penetration.
 
-**Locked: truncated-pyramid plug-floor lock.** Plug's dome-end face
-(the end that contacts the mold cavity's dome-end interior surface —
-"the floor" in the user's framing, since the mold is poured with the
-pour gate up + dome end down) carries a downward-pointing truncated
-pyramid (square or rectangular base, tapered walls converging toward
-a smaller flat-faced tip). The cup-piece dome-end interior surface
-carries the matching socket. Workshop motion: position plug above
-the seam-open mold, drop through pour-gate opening, press straight
-down until the truncated pyramid bottoms out — the tapered walls
-auto-center + wedge the plug down flush against the floor.
+**Locked: truncated-pyramid plug-floor lock.** Plug's cap-plane
+face (the face that sits flush against the cup-piece cap-plane
+interior surface — "the floor" in the user's framing) carries a
+truncated pyramid protruding away from the plug body (= downward
+in pour orientation, along `cap_normal`). The cup-piece cap-plane
+interior surface carries the matching socket (cavity recessed
+INTO the cup material, NOT through the cup wall — no leak path).
+Workshop motion: during mold assembly, plug is lowered into the
+open cup half (seam plane up) so the pyramid seats into the cup-
+piece floor socket; the second cup half closes over the plug,
+sandwiching it. Press-stop tactile feedback = the seam halves
+bottom out flush against each other when the pyramid is fully
+seated.
 
 **Why this works on consumer FDM:**
 - All flat planes + sharp angles + straight lines. FDM gantry
@@ -145,19 +171,28 @@ auto-center + wedge the plug down flush against the floor.
   contact). Elephant foot grows the base laterally; the socket's
   matching base is also widest at its bed contact, so the elephant-
   foot bulge meets matching elephant-foot bulge with no binding.
-- The seating motion is purely vertical — no rotational friction.
-- The press-stop tactile feedback ("plug stops when seated") is
-  acceptable to the user — confirmed 2026-05-24 ("i prefer press
-  stop to twist lock for fdm 10/10 times").
+- The pyramid lives entirely INSIDE the mold cavity — no shaft
+  penetration through the cup wall, eliminating today's leak-path
+  failure mode.
+- No rotational friction. No twist motion required.
+- The press-stop tactile feedback ("plug seats when seam closes
+  flush") is acceptable to the user — confirmed 2026-05-24 ("i
+  prefer press stop to twist lock for fdm 10/10 times"; the user's
+  "twist lock" framing was an earlier-in-conversation mis-framing
+  by Claude — the current actual mechanism is captive insertion,
+  not twist, but the user's preference for press-stop > anything-
+  rotational stands regardless).
 
 > **Decision §G-1.** **Plug retention = truncated-pyramid press-fit
-> against mold floor. T-bar / stem / T-slot mechanism DELETED.** The
-> retention point moves from the seam-plane (today) to the dome-end
-> of the plug-cup interface. The truncated pyramid lives at the
-> plug's bottom face (the face that contacts the mold cavity's
-> dome-end interior); the matching socket lives in the cup pieces'
-> dome-end interior surface. Workshop motion is press-straight-down,
-> no twist. No separate parts.
+> against the mold's cap-plane floor. T-bar / shaft / T-slot / cup-
+> wall penetration DELETED.** The retention point stays at the
+> cap-plane end of the plug-cup interface (same location as today's
+> mechanism) but moves INSIDE the cavity (no through-hole). The
+> truncated pyramid lives at the plug body's cap-plane face,
+> pointing AWAY from the body (= downward in pour orientation);
+> the matching socket lives recessed into the cup-piece cap-plane
+> interior surface. Workshop motion is mold-assembly press-fit
+> (seam-close engagement), no twist, no separate parts.
 
 ### §G-2 — Pin cross-section shape (cup ↔ cup registration)
 
@@ -260,10 +295,20 @@ procedure.rs + slicing-aware design. Specifically:
 - **Cup pieces** (6 total: 3 layers × Negative + Positive): seam
   face down on bed. Pins point UP in Z. Truncated-pyramid
   registration-pin first-layer chamfer placed at the seam-face base.
+  (Note: this means the cap-plane floor's plug-lock socket is on
+  the cup-piece's seam-perpendicular interior wall — the socket
+  prints as a downward-recess in the bed-facing seam face, which
+  is a known-clean FDM topology.)
 - **Plug** (3 total: per-layer): pyramid-face down on bed (i.e., the
-  dome-end face that carries the §G-1 plug-floor lock contacts the
-  bed). Pyramid first-layer chamfer placed at the dome-end base.
-- **Funnel + platform**: stay as today (no mating-feature redesign).
+  cap-plane face of the plug body that carries the §G-1 plug-floor
+  lock is on the bed; the plug's hemispherical dome end points UP).
+  Pyramid first-layer chamfer placed at the cap-plane base.
+- **Funnel + platform**: today's `platform.stl` has a blind pocket
+  to accept the T-bar shaft protruding through the cup-wall floor.
+  Under §G-1, no shaft protrudes through the cup wall → the
+  platform's blind pocket is no longer load-bearing. Platform.stl
+  becomes a flat support for the mold. (Or could be deleted; locked
+  for §G-13 S4 to decide.)
 
 **Why locked-orientation is the right policy here:**
 
@@ -281,15 +326,18 @@ procedure.rs + slicing-aware design. Specifically:
   post-print.
 
 **Per-piece procedure.rs documentation** must include:
-- Which face goes on bed (cup pieces: seam face; plug: dome end)
+- Which face goes on bed (cup pieces: seam face; plug: cap-plane face
+  carrying the pyramid)
 - First-layer chamfer dimension (locked in §G-5 / §G-8)
 - "Default Bambu A1 settings + Jayo filament" reference recipe
 - Standard support setting (likely "none required" given chamfer)
 
 > **Decision §G-4.** **Print orientation LOCKED per piece via
-> procedure.rs.** Cup pieces: seam face on bed. Plug: dome-end face
-> on bed. First-layer chamfers placed only where the bed contact
-> actually happens. Orientation-agnostic geometry REJECTED.
+> procedure.rs.** Cup pieces: seam face on bed. Plug: cap-plane
+> face on bed (the face carrying the §G-1 truncated pyramid;
+> hemispherical dome end points up). First-layer chamfers placed
+> only where the bed contact actually happens. Orientation-agnostic
+> geometry REJECTED.
 
 ### §G-5 — Architectural primitive design: `PrismaticPin`
 
@@ -367,25 +415,32 @@ delete in S8 if confirmed unused.
 Replaced by a single `PrismaticPinSpec`-shaped block for the plug-
 floor lock (base extents, tip extents, length, chamfer, clearances).
 
-**Three-piece shared-primitive invariant (S6 architectural keep):**
-the S6 invariant ("plug ↔ Negative cup ↔ Positive cup all consume
-the same primitive for bit-precise fit") is geometrically MOOT under
-§G-1 because the plug-floor lock interacts with cup pieces, not with
-the plug-shaft + cup-T-slot triple. New invariant: the plug-floor
-lock primitive is shared between plug (union — protrusion) +
-cup-piece dome-end interior (subtract — socket). 2-piece, not 3.
-The cup-pin invariant is 2-piece (Negative pin + Positive socket).
+**Shared-primitive invariant (analog to S5 / S6 architectural keep):**
+the S6 three-piece invariant ("plug ↔ Negative cup ↔ Positive cup
+all consume the same primitive for bit-precise fit") was built on
+the T-bar + shaft + cup-T-slot triple where the seam plane bisected
+the T-bar's cylinder. Under §G-1, the truncated pyramid is at the
+plug's cap-plane face — the seam plane likely bisects this pyramid
+symmetrically (each cup half carves half the socket, same shape as
+today's half-T-slot pattern), giving a **3-piece shared-primitive
+invariant** (plug + Negative cup half + Positive cup half). An
+asymmetric variant (socket entirely in one cup half) would be
+2-piece. Decision deferred to S2 / S4 implementation; both are
+geometrically supportable. The cup-pin shared-primitive invariant
+is 2-piece (Negative-half pin + Positive-half socket), same shape
+as today's S5 pin/socket pair.
 
 > **Decision §G-5.** **New primitive `PrismaticPin` replaces
 > `CylinderParent` for all mating features.** `MatingTransform`
 > gains `UnionPrismaticPin` + `SubtractPrismaticPin` variants.
 > `CylinderParent` + cylinder variants stay for non-mating features
-> (funnel-nipple, pour-gate, cup-pour-gate cylinders).
+> (cup pour-gate carve).
 > `CylinderParent` shared-primitive invariant SUPERSEDED — the new
 > shared primitive is `PrismaticPin`, shared between cup-pin
-> (2-piece: pin + socket) and plug-floor lock (2-piece: plug
-> protrusion + cup-piece socket). S6 three-piece invariant
-> geometrically dissolves (plug-shaft + T-bar mechanism deleted).
+> (2-piece: pin + socket) and plug-floor lock (2 OR 3 piece per
+> S2 / S4 implementation choice). S6 three-piece invariant analog
+> carries through if plug-floor lock socket is seam-plane-symmetric
+> across both cup halves.
 
 ### §G-6 — Clearance budget + first-layer chamfer recipe
 
@@ -734,7 +789,7 @@ Per the recon-3 §R3-6 / recon-4 §F-6 pattern:
 | S1 | Probe spike: §G-7 + §G-9 manifold3d feasibility | ~150 | throwaway tests in `mesh/mesh/tests/`; results land in §G-7 / §G-9 |
 | S2 | `PrismaticPin` primitive + `MatingTransform` variants | ~350 | new file `design/cf-cast/src/mesh_csg/prismatic_pin.rs`; emission fn, SDF eval, params, fit-determinism gate |
 | S3 | Cup-piece registration pin migration | ~400 | `registration.rs` rewrite; `PinSpec` → `PrismaticPinSpec`; cf-cast-cli cross-field validator update; ~150 LOC test churn |
-| S4 | Plug-floor lock migration (replaces T-bar + stem + T-slot) | ~500 | `plug.rs` major rewrite; `PlugPinSpec` shrinks (T-bar + shaft fields deleted); ~200 LOC test churn; cup-piece dome-end socket geometry |
+| S4 | Plug-floor lock migration (replaces T-bar + shaft + T-slot) | ~500 | `plug.rs` major rewrite; `PlugPinSpec` shrinks (T-bar + shaft fields deleted); ~200 LOC test churn; cup-piece cap-plane-end socket geometry; `platform.stl` blind pocket retired (no shaft penetration) |
 | S5 | First-layer chamfer geometry | ~150 | `PrismaticPin` chamfer band emission per §G-9 option (i); no separate test phase — covered by S2 |
 | S6 | `procedure.rs` print-orientation + Bambu A1 target docs | ~120 | per-piece orientation prose, default-settings + Jayo reference recipe, cf-view sanity-check section |
 | S7 | Workshop print + caliper calibration | ~50 | clearance + chamfer numeric pins per §G-8; cf-cast-cli iter-1 regen; cf-view smoke gates §G-11 #3 |
@@ -851,15 +906,38 @@ empirics falsify recon-1's framing.
 
 - **2026-05-24 — Recon-1 scaffold drafted.** Locked decisions §G-1 –
   §G-6 from the 2026-05-24 design chat: plug retention =
-  truncated-pyramid press-fit (T-bar twist-lock DELETED); cup-pin
+  truncated-pyramid press-fit (T-bar mechanism DELETED); cup-pin
   shape = trapezoidal / truncated-pyramid (cylinder DELETED);
   target FDM floor = Bambu A1 + default + Jayo (clearance budget
   ~0.25-0.35 mm); print orientation locked per piece in procedure.rs;
   `PrismaticPin` primitive replaces `CylinderParent` for mating
-  features (`CylinderParent` retained for funnel + pour-gate);
+  features (`CylinderParent` retained for cup pour-gate carve);
   parameter envelope typed-ranged. Deferred §G-7 / §G-9 manifold3d
   feasibility probes to the next session (probe-spike). §G-8 numeric
   values deferred to S7 workshop-physical calibration. §G-13
   implementation arc estimated at 8 phases / ~2400 LOC / 5-7 sessions
   default. Workshop iter-3 print BLOCKED until implementation arc
   completes.
+- **2026-05-24 — Cold-read pass-1 polish.** Fixed cap-plane vs
+  dome-end terminology error throughout §G-1 / §G-4 / §G-5 / §G-13.
+  The plug-floor lock is at the **cap-plane end** of the plug (the
+  open / cuff end of the device, where today's T-bar + shaft
+  mechanism exits — see `plug.rs:1-46` for cap-plane = "pinned floor"
+  of the plug), NOT the dome end (which is the closed / toe end of
+  the device, where the V-pour-gate sits per `procedure.rs:418-419`).
+  Per `procedure.rs` the pour orientation is **+Z up with dome end
+  at top, cap plane at bottom** — the user's "floor of the mold" =
+  cap-plane end interior. Also clarified that today's T-bar is
+  **captive insertion** (per `procedure.rs:646-648`), NOT a twist-
+  lock — the user's "twist lock" framing was an earlier-conversation
+  mis-framing by Claude; the user's preference for press-stop over
+  rotational mechanisms stands regardless. Workshop motion is mold-
+  assembly press-fit (lower plug into open cup half, close second
+  half) — NOT "drop through pour-gate opening" (plug is much wider
+  than pour gate, geometrically impossible). `platform.stl`'s blind
+  pocket retires under §G-1 (no shaft penetration through cup wall).
+  S6 three-piece shared-primitive invariant CARRIES THROUGH (not
+  "dissolves") if the truncated-pyramid socket is seam-plane-
+  symmetric (each cup half carves half the socket, same pattern as
+  today's half-T-slot). 2-piece vs 3-piece decision deferred to S2 /
+  S4 implementation.
