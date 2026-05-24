@@ -292,23 +292,37 @@ workshop user (or default slicer) orients arbitrarily.
 **Design-chat decision (2026-05-24):** lock orientation in
 procedure.rs + slicing-aware design. Specifically:
 
-- **Cup pieces** (6 total: 3 layers × Negative + Positive): seam
-  face down on bed. Pins point UP in Z. Truncated-pyramid
-  registration-pin first-layer chamfer placed at the seam-face base.
-  (Note: this means the cap-plane floor's plug-lock socket is on
-  the cup-piece's seam-perpendicular interior wall — the socket
-  prints as a downward-recess in the bed-facing seam face, which
-  is a known-clean FDM topology.)
-- **Plug** (3 total: per-layer): pyramid-face down on bed (i.e., the
-  cap-plane face of the plug body that carries the §G-1 plug-floor
-  lock is on the bed; the plug's hemispherical dome end points UP).
-  Pyramid first-layer chamfer placed at the cap-plane base.
+- **Cup pieces** (6 total: 3 layers × Negative + Positive): **seam
+  face down on bed.** Cup-pins point UP in Z (out of the bed-facing
+  seam face). Cup-pin first-layer chamfer placed at the seam-face
+  base (bed-adjacent). The cap-plane wall of the cup piece is a
+  vertical wall perpendicular to the seam face; the plug-lock
+  socket on this wall prints as a horizontal SIDE recess (no bed
+  contact, no first-layer issue).
+- **Plug** (3 total: per-layer): orientation **deferred to S4
+  implementation** with the following constraints:
+  - Plug body has a hemispherical / domed cap at one end (dome end)
+    and a flat cap-plane face at the other end (cuff end). The §G-1
+    truncated pyramid protrudes from the cap-plane face in the
+    `cap_normal` direction (= away from plug body).
+  - If printed cap-plane-face-down: pyramid would protrude INTO the
+    bed → geometrically impossible. **Cap-plane-face-down is NOT a
+    valid print orientation.**
+  - Preferred orientation: **dome end on bed, cap-plane face up,
+    pyramid pointing up.** Pros: flat cap-plane face's pyramid is at
+    the top of the print = no elephant-foot issue; cons: dome contact
+    patch on bed requires brim or raft, may need supports for the
+    first few layers of the dome's curvature.
+  - Alternative: plug on its side (centerline horizontal). Requires
+    supports for body curvature overhangs.
+  - S4 picks the specific orientation based on iter-1 / iter-2 plug
+    geometry. procedure.rs documents the chosen orientation.
 - **Funnel + platform**: today's `platform.stl` has a blind pocket
   to accept the T-bar shaft protruding through the cup-wall floor.
   Under §G-1, no shaft protrudes through the cup wall → the
   platform's blind pocket is no longer load-bearing. Platform.stl
-  becomes a flat support for the mold. (Or could be deleted; locked
-  for §G-13 S4 to decide.)
+  becomes a flat support for the mold (or could be deleted; locked
+  for §G-13 S4 to decide).
 
 **Why locked-orientation is the right policy here:**
 
@@ -326,18 +340,23 @@ procedure.rs + slicing-aware design. Specifically:
   post-print.
 
 **Per-piece procedure.rs documentation** must include:
-- Which face goes on bed (cup pieces: seam face; plug: cap-plane face
-  carrying the pyramid)
-- First-layer chamfer dimension (locked in §G-5 / §G-8)
+- Which face goes on bed (cup pieces: seam face; plug: per S4
+  decision — preferred dome end on bed, cap-plane face up)
+- First-layer chamfer dimension (locked in §G-5 / §G-8) — load-
+  bearing for the cup-pin (bed-adjacent); plug-pyramid chamfer
+  contingent on the S4 print-orientation pick
 - "Default Bambu A1 settings + Jayo filament" reference recipe
-- Standard support setting (likely "none required" given chamfer)
+- Standard support setting (cup pieces: "none required" given
+  chamfer + seam-face-down stability; plug: per S4 — likely brim
+  for dome contact, possibly minor supports)
 
-> **Decision §G-4.** **Print orientation LOCKED per piece via
-> procedure.rs.** Cup pieces: seam face on bed. Plug: cap-plane
-> face on bed (the face carrying the §G-1 truncated pyramid;
-> hemispherical dome end points up). First-layer chamfers placed
-> only where the bed contact actually happens. Orientation-agnostic
-> geometry REJECTED.
+> **Decision §G-4.** **Cup-piece print orientation LOCKED: seam
+> face on bed. Plug print orientation DEFERRED to S4** with the
+> constraint that cap-plane-face-down is invalid (pyramid would
+> protrude into bed); preferred dome-end-on-bed. First-layer
+> chamfers placed only where the bed contact actually happens
+> (load-bearing for cup-pin; plug-pyramid chamfer depends on S4
+> orientation pick). Orientation-agnostic geometry REJECTED.
 
 ### §G-5 — Architectural primitive design: `PrismaticPin`
 
@@ -467,16 +486,28 @@ Locked-from-design-chat parameter envelope (numeric values pinned in
   carries the seating force).
 - Tip half-extents: ~60-75% of base (steeper taper than cup-pin —
   the plug-floor lock benefits more from wedge action).
-- Half-length: ~3-5 mm.
+- Half-length: ~3-5 mm. Constrained by cup-wall thickness at the
+  cap-plane region (5 mm wall per [[project-cf-cast-mold-wall-arc-shipped]])
+  — socket recess can be at most ~4 mm deep to retain ~1 mm cup
+  material on the outside.
 - Diametral clearance: 0.30-0.40 mm symmetric (slightly looser than
   cup-pin to ease seating; the wedge geometry locks regardless).
 - Axial clearance: 0.5-1.0 mm at socket bottom (same recipe).
-- Base chamfer: 45° × 0.6-1.0 mm (larger chamfer for the larger
-  feature).
+- Base chamfer: **contingent on §G-4 plug print orientation.** If
+  plug prints dome-down (preferred), the pyramid is at the top of
+  the print = no elephant-foot issue, base chamfer is OPTIONAL
+  (could still be useful for lead-in alignment, just not for FDM
+  reasons). If plug prints in a different orientation that puts
+  the pyramid base near the bed, a 45° × 0.6-1.0 mm chamfer matches
+  the cup-pin recipe.
 
-**Chamfer placement (locked from §G-4):** ONLY at the bed-facing end
-(the base end). The tip already self-tapers; no additional chamfer
-needed there.
+**Chamfer placement:** ONLY where the feature contacts the bed in
+its locked print orientation. For cup-pin (printed seam-face-down),
+the chamfer is at the seam-face base — bed-adjacent in print
+orientation. The cup-pin SOCKET (in the matching cup half) also
+gets the chamfer at its bed-adjacent entry. For plug-pyramid +
+plug-pyramid socket: no first-layer issue under the preferred §G-4
+orientation; lead-in chamfer remains a soft option.
 
 **Numeric values:** pinned in §G-8 after the §G-9 probe-spike print
 + caliper measurement.
@@ -485,7 +516,9 @@ needed there.
 > level; numeric values pinned in §G-8 post-probe.** Cup-pin base
 > 1.5-2.5 mm half-extent; plug-lock base 3-5 mm half-extent; taper
 > ratios 0.6-0.85; clearances 0.25-0.40 mm; first-layer chamfer
-> 0.4-1.0 mm at base only.
+> 0.4-1.0 mm at the BED-CONTACT base (load-bearing for cup-pin
+> only; plug-pyramid chamfer optional per §G-4 print-orientation
+> pick).
 
 ### §G-7 — manifold3d feasibility probe: PrismaticPin CSG on curved-shell host
 
@@ -606,6 +639,15 @@ substitutes specific values.
 
 ### §G-9 — First-layer chamfer geometry (CSG vs slicer)
 
+**Scope note:** the first-layer chamfer is load-bearing primarily
+for the **cup-pin** (bed-adjacent base when cup pieces print
+seam-face-down per §G-4). The plug-pyramid + plug-pyramid socket
+do NOT have first-layer chamfer concerns under the preferred §G-4
+plug orientation (dome on bed, pyramid at top of print). Cup-pin
+socket on the matching cup half: also bed-adjacent (opening on
+the seam-face = bed), also needs the chamfer at its entry. So
+§G-9's question affects the cup-pin pair primarily.
+
 **Question:** is the first-layer chamfer geometry generated by the
 cf-cast pipeline (CSG-level chamfer on the PrismaticPin primitive),
 or left to the slicer's "chamfer first layer" post-processing?
@@ -714,10 +756,12 @@ recon.
 
 **Workshop iter-3 unblock (Bambu A1 + default + Jayo print):**
 
-1. **§R1 connectivity inspector PASSES** on all 11 production STLs
-   (6 cup pieces + 3 plugs + funnel + platform) at the spec
-   threshold (1 component per piece, post-(P) baseline; allows ≤ 2
-   with sub-mm sliver under §G-7 BRANCH B).
+1. **§R1 connectivity inspector PASSES** on all production STLs
+   (today: 11 = 6 cup pieces + 3 plugs + funnel + platform; post-§G-1
+   the platform may retire to a flat support or be eliminated per
+   §G-4, so count may drop to 10) at the spec threshold (1 component
+   per piece, post-(P) baseline; allows ≤ 2 with sub-mm sliver under
+   §G-7 BRANCH B).
 2. **PrismaticPin bit-precise fit invariant PASSES** in
    `design/cf-cast` cargo tests.
 3. **cf-view smoke gate (workshop-user-physical):** workshop user
@@ -785,7 +829,7 @@ Per the recon-3 §R3-6 / recon-4 §F-6 pattern:
 
 | Phase | Subject | LOC | Notes |
 |---|---|---:|---|
-| S0 | Recon scaffold (this commit) | ~600 | this doc |
+| S0 | Recon scaffold (this commit + pass-1 + pass-2 polish) | ~1000 | this doc |
 | S1 | Probe spike: §G-7 + §G-9 manifold3d feasibility | ~150 | throwaway tests in `mesh/mesh/tests/`; results land in §G-7 / §G-9 |
 | S2 | `PrismaticPin` primitive + `MatingTransform` variants | ~350 | new file `design/cf-cast/src/mesh_csg/prismatic_pin.rs`; emission fn, SDF eval, params, fit-determinism gate |
 | S3 | Cup-piece registration pin migration | ~400 | `registration.rs` rewrite; `PinSpec` → `PrismaticPinSpec`; cf-cast-cli cross-field validator update; ~150 LOC test churn |
@@ -918,6 +962,20 @@ empirics falsify recon-1's framing.
   implementation arc estimated at 8 phases / ~2400 LOC / 5-7 sessions
   default. Workshop iter-3 print BLOCKED until implementation arc
   completes.
+- **2026-05-24 — Cold-read pass-2 polish.** Fixed plug print
+  orientation geometric impossibility in §G-4: cap-plane-face-down
+  would protrude the pyramid INTO the bed (impossible for FDM).
+  Plug print orientation deferred to S4 with constraint that
+  cap-plane-down is invalid; preferred dome-end-on-bed (cap-plane
+  up, pyramid up, requires brim for dome contact). Cascade fixes
+  to §G-6 + §G-9: first-layer chamfer is load-bearing for the
+  CUP-PIN (bed-adjacent base under cup-piece print orientation),
+  but the plug-pyramid does NOT have first-layer issue under the
+  preferred plug orientation (pyramid at top of print) — its
+  chamfer becomes OPTIONAL (lead-in alignment use, not FDM
+  elephant-foot use). §G-11 STL count noted as possibly dropping
+  from 11 to 10 if platform.stl retires under §G-4. §G-13 S0 LOC
+  updated to ~1000 (after pass-1 + pass-2).
 - **2026-05-24 — Cold-read pass-1 polish.** Fixed cap-plane vs
   dome-end terminology error throughout §G-1 / §G-4 / §G-5 / §G-13.
   The plug-floor lock is at the **cap-plane end** of the plug (the
