@@ -1,9 +1,21 @@
 # cf-cast post-salvage triage (2026-05-24 night)
 
-**Status:** workshop iter-3 print UNBLOCKED on pin/lock GEOMETRY
-per the 2026-05-24 night salvage (commits `b2ff45d5` + `fed4b0c6`
-+ `a8e3e056` on dev). Workshop user has cf-view-verified the
-cup-pin trapezoidal ridges + base-down captive plug-lock pyramid.
+**Status (2026-05-25 morning update):** workshop user triaged all
+four findings (A+B+C+D) as blockers. Candidate (1) verification
+**falsified the triage doc's framing**: see
+`docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md` for the empirical
+findings — the SDF cap-plane halfspace intersect is **already
+shipping in production** via `pinned_floor_shell`; the visible
+cf-view non-flatness is MC corner-chamfering at the sharp
+cap-plane × curving-wall corner (10-100 µm scatter on 5-30% of
+cap-face tris, clustered at the EDGE; cap-plane CENTER is
+bit-precise flat). Recon arc bookmarked for next session.
+
+**Original status (2026-05-24 night, unchanged below):** workshop
+iter-3 print UNBLOCKED on pin/lock GEOMETRY per the 2026-05-24
+night salvage (commits `b2ff45d5` + `fed4b0c6` + `a8e3e056` on
+dev). Workshop user has cf-view-verified the cup-pin trapezoidal
+ridges + base-down captive plug-lock pyramid.
 
 This doc triages the 4 follow-up findings the workshop user
 flagged in the same cf-view session, scoped per finding, with a
@@ -198,11 +210,19 @@ defensive primitives + tests.
 Four candidate approaches for the next recon to consider, ranked
 by my current estimate of viability:
 
-### Candidate (1) — SDF halfspace intersect at the plug body (recommended)
+### Candidate (1) — SDF halfspace intersect at the plug body (FALSIFIED 2026-05-25; see CAP_PLANE_FLATNESS_BOOKMARK)
 
-**Approach**: compose the plug body Solid with an SDF halfspace
-intersect that enforces the cap-plane plane as a clean halfspace
-boundary, BEFORE the body is sampled by MC.
+**2026-05-25 update — superseded:** this candidate is **already
+shipping in production** via `pinned_floor_shell` at
+`design/cf-design/src/solid_layered.rs:122-130`. Adding another
+intersect is a no-op. See
+`docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md` for the empirical
+findings + re-framed candidate set.
+
+**Original approach (preserved for audit trail)**: compose the
+plug body Solid with an SDF halfspace intersect that enforces the
+cap-plane plane as a clean halfspace boundary, BEFORE the body is
+sampled by MC.
 
 ```rust
 // Pseudocode in the body-derivation path (cf-cast-cli derive or
