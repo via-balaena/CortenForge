@@ -7,7 +7,7 @@ one place so we don't lose track.
 
 ## Branch state
 
-`dev` is **N commits ahead of origin** (no push, no PR until arc
+`dev` is **13 commits ahead of origin** (no push, no PR until arc
 close per [[feedback-omnibus-pr-single-branch]]).
 
 | # | Commit | Arc | Phase |
@@ -16,13 +16,15 @@ close per [[feedback-omnibus-pr-single-branch]]).
 | 2 | `6c8bc7f8` | seam-gasket-mold | S1 cold-read |
 | 3 | `c7e042c6` | seam-gasket-mold | S2 ship |
 | 4 | `eed6d515` | seam-gasket-mold | S2 cold-read |
-| 5 | `fc9f30e7` | seam-gasket-mold | **S3 ship (current frontier)** |
+| 5 | `fc9f30e7` | seam-gasket-mold | S3 ship |
 | 6 | `be0542aa` | parallel-meshing | recon scaffold |
 | 7 | `22a2c8fd` | parallel-meshing | S1 ship |
-| 8 | `d3ff8063` | parallel-meshing | **S2 ship** |
+| 8 | `d3ff8063` | parallel-meshing | S2 ship |
 | 9 | `1da08ab7` | seam-flange | recon scaffold |
 | 10 | `d4ca615f` | seam-flange | recon cold-read |
 | 11 | `74dcbb8c` | F4 spatial-index | recon scaffold |
+| 12 | `e62fdac1` | (this doc) | active-arcs coordination |
+| 13 | `d42ddf11` | F4 spatial-index | **S1 ship (current frontier)** |
 
 ## Active arcs
 
@@ -97,8 +99,10 @@ close per [[feedback-omnibus-pr-single-branch]]).
 ### Arc 4 — F4 spatial-index (perf arc, layer 2)
 
 - **Recon:** `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md`
-- **State:** Recon shipped. **S1-S4 pending.**
-- **Memory:** _(none yet — created at S1 ship)_
+- **State:** **S1 shipped (`d42ddf11`)**. S2-S4 pending.
+- **Memory:** [[project-cf-cast-f4-spatial-index-s1]]
+- **S1 result:** cf-cast lib test suite 78.20 s → **17.15 s = 4.6×** at test-fixture scale. Architectural pick discovered empirically during S1: parry3d-f64 (not parry3d) — f32 sibling drifts ~1e-7 mm in Möller-Trumbore which crosses `min_wall_thickness` at 1.0 mm boundary. **Recon §B-2 hand-waved at "parry3d's BVH" without specifying f32/f64; needs amendment in next cold-read.**
+- **Production iter-1 regen projection** (per recon §B-0 + S1 test-fixture observation): per-mesh thin-wall 540 s → ~1-2 s = ~300-500× algorithmic; per-gasket F4 → ~20-50 s; production iter-1 regen 12.9 min → ~1-1.5 min.
 - **Trigger:** parallel-meshing-S2 empirical measurement showed
   gasket F4 = 78% of total wall-clock (587 s × 3 layers parallel,
   longest single drives the floor). Algorithmic optimization is
@@ -114,46 +118,44 @@ close per [[feedback-omnibus-pr-single-branch]]).
   regen compounding with parallel-meshing-S2 (12.9 min → ~1-1.5
   min).**
 - **Next phases (§B-12):**
-  - S1 (~150-250 LOC) — `parry3d` direct dep on mesh-
-    printability; BVH-accelerated `flag_thin_wall_faces`; paired
-    BVH-vs-reference regression test.
-  - S2 — production iter-1 regen + new-bottleneck identification.
+  - S1 — ✅ SHIPPED (`d42ddf11`). parry3d-f64 BVH; `flag_thin_wall_faces` swapped; 3 regression tests pass.
+  - S2 — production iter-1 regen + new-bottleneck identification on `~/scans/cast.toml`.
   - S3 (conditional) — targeted opt on whatever check is now the
     long pole.
-  - S4 — cold-read + omnibus PR.
+  - S4 — cold-read pass-1 (including recon §B-2 amendment for f32/f64) + omnibus PR.
 
 ## Sequencing recommendation
 
-The three pending arcs (flange / F4-index / parallel-meshing-S3)
-are loosely independent at the code level, but **iter-1 regen
-measurements depend on the ship order**. Recommended order:
+F4-index S1 is done — that opened up developer-experience speedup
+for the remaining arcs. Updated order:
 
-1. **F4 spatial-index S1 first.** Single-function targeted change;
-   biggest single win on a primitive that every other cf-cast
-   STL flows through. Once shipped, iter-1 regen drops to ~2 min
-   → the seam-flange S4 iter-1 regen step (and any future
-   workshop-iteration cycle) becomes a routine ~2-min action
-   rather than a 13-min pause. **Improves the developer
-   experience for every other arc.**
-2. **Seam-flange S1-S5 next.** Builds on the fast regen + adds
-   the workshop-clampability that unblocks the gasket arc's S6
-   physical pour. Each S1-S5 phase regen is fast enough to
-   validate inline.
-3. **Parallel-meshing S3 last (or skip).** Log buffer + `--threads`
-   flag are cosmetic. Phase-level concurrency would have saved
-   30-60 s pre-F4-arc; post-F4-arc the phases all run in <30 s
-   each so the savings collapse to ~5-10 s. **Skip S3 entirely
-   unless the omnibus PR cold-read surfaces a log-readability
-   complaint.** Go straight to S4 (PR).
+1. ✅ **F4-index S1.** Shipped `d42ddf11`. cf-cast suite 4.6×
+   faster at test-fixture scale; production projection 12.9 min
+   → ~1-1.5 min.
+2. **F4-index S2 next** (RECOMMENDED) — production iter-1 regen on
+   `~/scans/cast.toml` to MEASURE the actual speedup (vs test-
+   fixture extrapolation) + identify the new bottleneck. Likely
+   candidates: `check_self_intersecting`, `check_trapped_volumes`,
+   `check_long_bridges`. Decides whether S3 of this arc is needed
+   or ship-as-is. Takes ~2-15 min wall-clock (depending on actual
+   post-S1 perf).
+3. **Seam-flange S1-S5 then.** Each phase's S4 iter-1 regen
+   should run in ~1-2 min now → fast validation. Workshop S6
+   physical pour gate cleared.
+4. **Parallel-meshing S3 last (or skip).** Log buffer + `--threads`
+   flag are cosmetic. Phase-level concurrency savings collapse
+   post-F4-arc. **Skip S3 entirely** unless omnibus PR cold-read
+   surfaces a log-readability complaint.
 
-**Compounding regen projection:**
+**Compounding regen projection (updated):**
 
 | Order | After step | Iter-1 regen |
 |-------|------------|-------------:|
-| Current (S2 baseline) | — | 12.9 min |
-| 1. F4-index S1 | S1 ship | ~1-1.5 min |
-| 2. Seam-flange S1-S4 | each phase regen | ~1-1.5 min |
-| Final state at PR time | all S-phases shipped | ~1-1.5 min |
+| Pre-S1-of-parallel-meshing baseline | — | 33.6 min |
+| Parallel-meshing S2 ship | measured | 12.9 min (2.6×) |
+| F4-index S1 ship (this commit) | test-fixture cf-cast suite 4.6× | ~1-1.5 min projected (measure at S2 of this arc) |
+| Seam-flange S1-S5 | each phase regen | ~1-2 min |
+| Final state at PR time | all S-phases shipped | **~1-2 min (15-30× over baseline)** |
 
 ## Cross-arc correctness boundaries
 
@@ -215,6 +217,13 @@ parallel meshing + F4 BVH (iter-3 unblock)`.
 Major architectural decisions across all arcs (chronological,
 most recent first):
 
+- **2026-05-25**: **parry3d-f64 (NOT parry3d)** picked for F4
+  spatial-index S1 (commit `d42ddf11`). Discovered empirically
+  during S1 testing — parry3d (f32 sibling) drifts Möller-
+  Trumbore toi by ~1e-7 mm which crosses the
+  `min_wall_thickness` boundary at the 1.0 mm slab fixture.
+  Workspace adds 2 parry3d crates (mesh-sdf stays on f32; mesh-
+  printability uses f64).
 - **2026-05-25**: **Hybrid contoured-cup + flat-flange** picked
   for seam-flange (recon §F-13). Cross-arc decision-staleness
   call vs the archived mold-wall recon's "Option A contour
