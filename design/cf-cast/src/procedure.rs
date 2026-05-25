@@ -354,6 +354,7 @@ pub fn generate_procedure_markdown_v2(
     write_chamfer_recipe_v2(&mut md);
     write_target_fdm_floor_v2(&mut md);
     write_cfview_sanity_check_v2(&mut md);
+    write_cap_plane_chamfer_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md);
     write_v2_assembly_note(&mut md, ribbon);
@@ -775,6 +776,84 @@ fn write_cfview_sanity_check_v2(md: &mut String) {
          (`PrismaticPin` bit-precise fit invariant) pass on cargo \
          tests; this cf-view gate is the workshop-user-physical \
          third gate before the Bambu A1 print gate (§G-11 #4)."
+    );
+    md.push('\n');
+}
+
+fn write_cap_plane_chamfer_v2(md: &mut String) {
+    let _ = writeln!(md, "## Cap-Plane Edge Chamfer (Expected MC Quantization)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "When inspecting STLs in cf-view, you will see a ~3 mm-wide \
+         ring of slightly-rounded triangulation at the cap-plane \
+         EDGE — where the flat cap-plane meets the curving body \
+         wall. On plug pieces this is the cap-plane face perimeter \
+         (cap-plane × curving plug body wall). On cup pieces this \
+         is the body-cavity opening perimeter on the cap-plane wall \
+         (cap-plane × curving cup body cavity wall). It does NOT \
+         appear at the plug-lock socket recess perimeter (the \
+         truncated-pyramid socket has FLAT lateral walls, no \
+         derivative discontinuity with the cap-plane). This is \
+         **expected geometry, not a defect.**"
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **Cap-plane CENTER is bit-precise flat.** 70-95% of \
+         cap-face triangles land within 10 µm of the cap-plane \
+         (`Solid::plane`'s linear SDF placed exactly by \
+         marching-cubes linear interpolation — same mechanism as the \
+         seam-face flatness invariant per recon-4 (P) §F-4).\n\
+         - **Cap-plane EDGE has a ≤100 µm chamfer band.** \
+         The sharp ~90° corner between flat cap-plane and curving \
+         body wall is a derivative discontinuity in the \
+         piecewise-defined SDF (`max(shell_sdf, plane_sdf)`); MC \
+         cells straddling the corner interpolate vertices across \
+         the branch boundary, producing one-cell-wide (~3 mm) \
+         chamfering. Intrinsic to marching-cubes on any \
+         piecewise-SDF max-corner; cannot be eliminated SDF-side at \
+         any cell size short of adaptive-mesh infrastructure."
+    );
+    md.push('\n');
+    let _ = writeln!(md, "**Workshop guidance:**");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **Do NOT sand the cap-plane edge flat.** The chamfer \
+         band's max deviation (~100 µm) is below the §G-3 target \
+         FDM floor's slicer-to-print quantization (Bambu A1 default \
+         0.4 mm extrusion / 0.2 mm layer height; typical 0.1-0.2 mm \
+         dimensional tolerance). Sanding the STL-level chamfer \
+         would not change the printed plug-to-cup-floor mating \
+         interface — the printer quantizes the edge to its own \
+         grid regardless.\n\
+         - **PR #255 era shipped with the same chamfer band**, and \
+         the workshop iter-2 print on calibrated Bambu was \
+         workshop-accepted. Verified 2026-05-25 via git-bisect — \
+         cap-plane edge geometry is bit-precisely identical \
+         between PR #255 (`aadcfed6`) and current dev; see \
+         `docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md` for the \
+         measurement protocol + the spatial-radial-bin probe that \
+         distinguished the invariant edge ring from the \
+         mating-mechanism-dependent interior.\n\
+         - **The chamfer is at the EDGE not the CENTER.** If \
+         cf-view shows the WHOLE cap-face faceted (not just the \
+         ~3 mm-wide perimeter ring), THAT would be a regression — \
+         file an issue with a cf-view screenshot. The center-flat \
+         vs edge-chamfered distinction is the diagnostic."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Distinct from `## First-Layer Chamfer Recipe`** above: \
+         that section concerns the SDF-side first-layer chamfer \
+         BAND on pin/lock features (a deliberate `PrismaticPin` \
+         geometry primitive for FDM topology continuity at the \
+         deepest-in-material corner). The cap-plane edge chamfer \
+         documented here is an MC-quantization byproduct of the \
+         body × cap-plane derivative discontinuity, NOT a \
+         deliberately-emitted feature."
     );
     md.push('\n');
 }

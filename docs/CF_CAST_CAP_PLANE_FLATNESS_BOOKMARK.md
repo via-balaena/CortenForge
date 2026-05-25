@@ -1,8 +1,41 @@
 # cf-cast cap-plane flatness — recon bookmark (2026-05-25)
 
-**Status:** triage of `docs/CF_CAST_POST_SALVAGE_TRIAGE.md` Findings
-A+B+C+D1 → escalated to recon arc. Verification step on Candidate
-(1) **falsified the triage doc's framing**: the SDF cap-plane
+**Status (2026-05-25 same-day RESOLVED):** triage Findings A + B
+(cap-plane CENTER + EDGE flatness on cup-floor + plug-bottom)
+**resolved via (4') accept + document** — head-architect call
+after (5') git-bisect Branch A confirmed PR #255 era had the
+identical chamfer band. Findings C + D (socket-mouth obstruction
++ seam-face dome+cap flatness) remain open for separate triage
+(different root causes — out of scope for the cap-plane recon).
+
+`procedure.rs` v2 generator gains a new `## Cap-Plane Edge Chamfer
+(Expected MC Quantization)` section documenting the chamfer as
+expected geometry; spec.rs gains a doc-anchoring test gating any
+future drift back toward "fix it" framing. **No production STL
+geometry changes.** Workshop iter-3 print **UNBLOCKED on cap-plane**
+pending workshop user's triage on remaining findings C + D.
+
+### Recon-trail (for archaeology)
+
+- **2026-05-25 morning** (commit `06286520`): triage doc Candidate
+  (1) "add SDF halfspace intersect" FALSIFIED — already shipping
+  in `pinned_floor_shell`. Empirical measurement on iter-1 STLs:
+  70-95% of cap-face tris bit-precise flat, 5-30% in 10-100 µm
+  scatter at cap-plane EDGE. Re-framed candidate set: (1') no-op
+  removed, (2') paradigm-boundary slab subtract, (4') accept +
+  document, (5') git-bisect first.
+- **2026-05-25 same-day** (commit `f5d80112`): (5') git-bisect
+  result BRANCH A — PR #255 era had bit-precisely identical
+  chamfer band; workshop user misremembered. Candidate set
+  collapsed to (2') vs (4').
+- **2026-05-25 same-day** (this commit): (4') PICKED + SHIPPED.
+  Rationale below in §"(4') head-architect decision rationale".
+
+### Original framing (retained as audit trail)
+
+Triage of `docs/CF_CAST_POST_SALVAGE_TRIAGE.md` Findings A+B+C+D1
+→ escalated to recon arc. Verification step on Candidate (1)
+**falsified the triage doc's framing**: the SDF cap-plane
 halfspace intersect is already in production via `pinned_floor_shell`;
 the visible cf-view "faceting" is MC corner-chamfering at the sharp
 cap-plane × curving-wall corner, not a missing SDF intersect.
@@ -391,19 +424,82 @@ identically.
 - No new tests in `cf-cast` or `cf-cast-cli`.
 - No iter-1 regen.
 
+## (4') head-architect decision rationale (2026-05-25 same-day)
+
+Workshop user delegated the (2')-vs-(4') pick to head architect
+("your call as head architect. take all the time you need.").
+**Picked (4') accept + document.** Reasoning chain:
+
+1. **Below-print-resolution argument.** Chamfer band max
+   geometric deviation ≤ 100 µm (0.1 mm) in a ~3 mm-wide edge
+   ring. §G-3 target FDM floor (Bambu A1 + default + Jayo) is
+   0.4 mm extrusion / 0.2 mm layer / typical 0.1-0.2 mm
+   dimensional tolerance. A 100 µm STL-level deviation does NOT
+   survive slicer-to-printer quantization — the printed
+   plug-to-cup-floor mating interface is identical whether the
+   STL has a 100 µm chamfer or 0 µm chamfer. Fixing it STL-side
+   is a category error.
+2. **PR #255 + workshop iter-2 acceptance is empirical evidence.**
+   PR #255 (`aadcfed6`) shipped with the bit-precisely identical
+   chamfer band (see §"(5') git-bisect result"); workshop user
+   printed iter-2 on calibrated Bambu and accepted it. The
+   chamfer is workshop-ergonomically acceptable in practice; the
+   2026-05-24 night cf-view recollection ("PR #255 had this fixed")
+   was attention drift on the seam-face film + plug-pin
+   disconnection bugs, not a regression detection.
+3. **(2') has unmitigated paradigm-boundary risk.** The
+   2026-05-24 `a8e3e056` cap-plane trim attempt using
+   `MatingTransform::SeamTrim` already hit recon-4 (P) §F-2
+   failure (F4 Critical issues at the boolean junction) and was
+   reverted. The (2') mitigation hypothesis (ε ≥ 0.5 mm offset
+   to break face-coincidence) is UNPROVEN; needs g7c-style
+   synthetic probe with cross-primitive control BEFORE
+   implementation. 1-2 session minimum just for the probe.
+4. **(2') even if successful has geometric side effects.** An
+   ε ≥ 0.5 mm inward slab subtract shifts the cap-plane location
+   inward by ε. The S4 salvage truncated-pyramid plug-lock
+   (workshop-verified 2 sessions ago at `fed4b0c6`) depends on
+   cap-plane geometry; shifting the cap-plane changes the
+   plug-seating depth relative to the body cavity, risking
+   regression on workshop-verified base-down captive geometry.
+5. **(2') would not eliminate the chamfer phenomenon anyway.**
+   The slab subtract slices off the existing chamfer band but
+   creates a NEW sharp corner at the ε-displaced cap-plane × wall
+   intersection. That new corner face-welds to the SDF body wall
+   via mesh-CSG → paradigm boundary all over again. Even in the
+   best case, (2') replaces one chamfer-band geometry with another
+   at a different location.
+6. **The morning bookmark's "Open question 1" already framed (4')
+   as the obvious pick if PR #255 had the same chamfer.** The
+   bisect confirmed PR #255 had the same chamfer. The picker
+   would have to invent novel justification to NOT pick (4');
+   none is forthcoming.
+
+**What (4') ships:** ~80 LOC procedure.rs prose addition
+(`write_cap_plane_chamfer_v2` section in v2 generator pipeline)
++ ~35 LOC spec.rs doc-anchoring test
+(`generate_procedure_markdown_v2_cap_plane_chamfer_section_accepts_edge_band`)
++ this bookmark resolution + triage doc resolution + memory
+updates. **Zero production STL geometry changes.** Zero
+paradigm-boundary exposure. Workshop-verified S4-salvage
+plug-lock geometry preserved unchanged.
+
 ## Status
 
 - Triage doc → recon bookmark transition (2026-05-25 morning).
 - (5') git-bisect COMPLETE 2026-05-25 same-day. Branch A: PR #255
   era had the same chamfer band; workshop user misremembered.
-  Candidate set collapses to (2') vs (4'); (4') is the front-runner.
-- This bookmark + the [[project-cf-cast-fdm-friendly-geometry-arc]]
-  memory entry update + the [[project-cf-cast-cap-plane-flatness-bookmark]]
-  memory entry update are this session's only artifacts.
+- (4') PICKED + SHIPPED 2026-05-25 same-day. See §"(4')
+  head-architect decision rationale" above. Findings A + B
+  RESOLVED.
+- Findings C (socket-mouth obstruction) + D (seam-face dome+cap
+  flatness) **remain open** for separate triage — different root
+  causes (mesh-CSG boolean junction artifact + curved-body ×
+  seam-plane MC, NOT cap-plane × wall corner). Workshop iter-3
+  print partially unblocked (cap-plane edge no longer a blocker);
+  full unblock pending workshop user's C + D triage.
 - Branch: `dev`, no push, no PR per
   [[feedback-omnibus-pr-single-branch]].
-- Workshop iter-3 print **STILL BLOCKED** pending workshop user's
-  (2')-vs-(4') decision + impl (or accept+document if (4')).
 
 ## Cross-references
 

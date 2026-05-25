@@ -2616,6 +2616,7 @@ mod tests {
         assert!(md.contains("## First-Layer Chamfer Recipe"));
         assert!(md.contains("## Target FDM Floor (Bambu A1 + Default + Jayo)"));
         assert!(md.contains("## cf-view Sanity-Check Workflow"));
+        assert!(md.contains("## Cap-Plane Edge Chamfer (Expected MC Quantization)"));
         // Sections shared with v1.
         assert!(md.contains("## Materials Summary"));
         assert!(md.contains("## Generic Smooth-On Guidance"));
@@ -2676,6 +2677,53 @@ mod tests {
         assert!(
             md.contains("Elephant-foot compensation**: 0.0 mm"),
             "0.0 mm elephant-foot compensation guidance missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cap_plane_chamfer_section_accepts_edge_band() {
+        // 2026-05-25 (4') decision (post-bisect): the ~3 mm-wide
+        // cap-plane EDGE chamfer band (≤100 µm vertex deviation) is
+        // expected MC quantization at the body × cap-plane derivative
+        // discontinuity, NOT a defect. Workshop user must NOT try to
+        // sand it flat (below the §G-3 target FDM floor's
+        // slicer-to-print quantization; PR #255 era shipped with the
+        // same chamfer + workshop iter-2 accepted). Anchors gate any
+        // future rewrite that drifts the acceptance back toward a
+        // "fix it" framing (would re-open the paradigm-boundary
+        // hazard documented in recon-4 (P) §F-2 + bookmarked at
+        // `a8e3e056`). See `docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md`
+        // for the bisect protocol + spatial-radial-bin probe.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("expected geometry, not a defect"),
+            "cap-plane chamfer acceptance framing missing in: {md}"
+        );
+        assert!(
+            md.contains("Do NOT sand the cap-plane edge flat"),
+            "explicit don't-sand workshop guidance missing in: {md}"
+        );
+        assert!(
+            md.contains("PR #255 era shipped with the same chamfer band"),
+            "PR #255 acceptance-precedent anchor missing in: {md}"
+        );
+        // EDGE-vs-CENTER distinction is the diagnostic — if a future
+        // regression dropped this anchor, the workshop user would
+        // lose the heuristic for distinguishing the accepted edge
+        // chamfer from a hypothetical WHOLE-face regression.
+        assert!(
+            md.contains("EDGE not the CENTER"),
+            "EDGE-vs-CENTER diagnostic anchor missing in: {md}"
+        );
+        // The new section must explicitly disambiguate from the
+        // existing First-Layer Chamfer Recipe (different concept —
+        // deliberate PrismaticPin SDF primitive vs MC-quantization
+        // byproduct).
+        assert!(
+            md.contains("Distinct from `## First-Layer Chamfer Recipe`"),
+            "disambiguation from First-Layer Chamfer Recipe missing in: {md}"
         );
     }
 

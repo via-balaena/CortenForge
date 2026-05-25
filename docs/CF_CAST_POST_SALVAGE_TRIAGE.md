@@ -1,5 +1,16 @@
 # cf-cast post-salvage triage (2026-05-24 night)
 
+**Findings A + B RESOLVED 2026-05-25** via (4') accept + document
+— head-architect decision after (5') git-bisect Branch A
+confirmed PR #255 era had the identical cap-plane edge chamfer
+band. See `docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md` for the
+recon trail + (4') decision rationale + procedure.rs section
+("Cap-Plane Edge Chamfer (Expected MC Quantization)") that
+documents the chamfer as expected geometry. **Findings C + D
+remain OPEN for separate triage** (different root causes — not
+cap-plane × wall corner MC quantization).
+
+
 **Status (2026-05-25 morning update):** workshop user triaged all
 four findings (A+B+C+D) as blockers. Candidate (1) verification
 **falsified the triage doc's framing**: see
@@ -45,11 +56,25 @@ Per finding:
 
 ## Finding A — Cup-piece floor face faceted
 
+**RESOLUTION 2026-05-25 — accepted via (4'); see
+`docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md`.**
+The "PR #255 had this flat" recollection was falsified by
+git-bisect: PR #255 era (`aadcfed6`) has the bit-precisely
+identical chamfer band. The visible non-flatness is an MC
+chamfer band at the cap-plane EDGE (≤100 µm scatter in a ~3 mm
+ring) — below FDM print resolution. Cap-plane CENTER is
+bit-precise flat. Documented in `procedure.rs` v2
+`## Cap-Plane Edge Chamfer (Expected MC Quantization)` section
+with explicit "do not sand it flat" workshop guidance. The
+original framing below is RETAINED AS AUDIT TRAIL — note its
+"Why PR #255 didn't have this" hypothesis was FALSIFIED.
+
 **Symptom**: the cup-piece's interior wall at the cap-plane (the
 "cup-floor" where the plug-lock pyramid seats) is not perfectly
 flat. Visible MC quantization facets at the 3 mm grid scale.
 Workshop user's read: "we actually had this down and solved in
-the main branch" — PR #255 era had this flat.
+the main branch" — PR #255 era had this flat. **(Verified
+falsified 2026-05-25: PR #255 era has the same chamfer band.)**
 
 **Root cause**: the plug body comes from a scan mesh
 (`sock_over_capsule.cleaned.stl`) which has a flat cap-plane face
@@ -84,6 +109,11 @@ cap-plane flatness. Likely shared with finding B (same root
 cause). See the recon-prep section below.
 
 ## Finding B — Plug bottom face faceted
+
+**RESOLUTION 2026-05-25 — accepted via (4'); see Finding A
+resolution.** Same root cause as A (same cap-plane); same fix
+(documentation only). The original framing below is retained as
+audit trail.
 
 **Symptom**: same as A but on the OPPOSITE side of the cap-plane.
 The plug's exterior bottom face (the cap-plane face of the plug
@@ -128,12 +158,17 @@ interior). If larger, workshop user would need to manually file
 or drill the socket mouth before assembly to allow plug
 insertion. Borderline.
 
-**Recon scope**: probably resolves with the same cap-plane
-flatness fix as A+B (cleaning up the cap-plane face removes the
-boundary artifacts at the cavity mouth). If it doesn't, separate
-sub-fix for the mesh-CSG boolean junction (possibly via a
-controlled epsilon-offset on the subtract pyramid extents to
-avoid the coincident-face issue at the cap-plane).
+**Recon scope**: pre-resolution hypothesis was "resolves with the
+same cap-plane flatness fix as A+B." **That hypothesis no longer
+holds (2026-05-25)** — A+B were resolved via (4') accept +
+document, with no production-geometry change. Finding C remains
+OPEN and now needs independent recon. Likely root cause is
+mesh-CSG `SubtractTruncatedPyramid` boundary-junction artifacts
+at the cavity mouth (paradigm-boundary territory per
+[[project-cf-cast-sdf-meshcsg-paradigm-boundary]]). Workshop user
+triage required: is the obstruction a functional blocker (plug
+won't seat) or workshop-ergonomic (small artifacts a workshop
+user files off before assembly)?
 
 ## Finding D — Cup-piece seam face non-flatness at dome + cap regions
 
@@ -333,34 +368,35 @@ workshop user effectively bears the cost of post-print sanding.
 
 ## Recommended next session
 
-1. **Triage decision**: workshop user reviews findings A-D in
-   this doc + decides which are blockers vs ergonomic. Open
-   questions for the workshop user:
-   - Is sub-mm cup-floor / plug-bottom wobble acceptable for
-     iter-3 print? (informs whether A+B+C are blockers)
-   - Is the dome-edge non-flatness visible in cf-view a workshop
-     concern or just visual noise? (informs whether D2 is a
-     blocker)
-2. **If A+B+C are blockers**: open the cap-plane recon arc.
-   First task: verify Candidate (1)'s body-extent assumption on
-   iter-1 (query body SDF at points past cap-plane on cup-floor
-   side). If safe, ship (1) — single impl session, bit-precise
-   flat by construction, no paradigm-boundary risk.
-3. **If (1) fails verification**: probe Candidate (2) on a
-   synthetic flat-face fixture (g7c-style); pick the safe ε
-   offset; ship.
-4. **If D2 is a blocker after cap-plane fix lands**: open
-   separate D2 recon arc (likely needs paradigm-careful approach
-   for the dome-edge sub-mm quantization).
-5. **Once geometry blockers resolved**: workshop iter-3 print
-   on Bambu A1 + default + Jayo. Workshop-user-physical PAUSE
-   point. Caliper data → S7 calibration of clearances + chamfers
-   in `PrismaticPinSpec` defaults.
-6. **Cold-read close + PR to main**: final session after iter-3
+**Status update 2026-05-25**: A + B resolved via (4'). The plan
+below was authored before the cap-plane recon resolved; updated
+flow follows.
+
+1. **Workshop user triage on findings C + D** (cap-plane recon
+   resolved, leaving these two as the remaining cf-view smoke
+   findings):
+   - **Finding C** (socket-mouth obstruction): is the visible
+     obstruction a functional blocker (plug can't seat in
+     socket) or workshop-ergonomic (small artifact to file off
+     before assembly)? If blocker → open Finding-C recon
+     (likely paradigm-boundary territory at the
+     SubtractTruncatedPyramid × cup-floor junction).
+   - **Finding D** (seam-face flatness at dome+cap regions):
+     does the workshop user see this as a print blocker, a
+     silicone-leak risk, or workshop-ergonomic visual noise? If
+     blocker → open Finding-D recon (likely curved-body ×
+     seam-plane MC quantization; orthogonal to cap-plane × wall
+     corner so the (4') approach may or may not generalize).
+2. **If C + D are workshop-ergonomic**: proceed direct to
+   workshop iter-3 print on Bambu A1 + default + Jayo.
+   Workshop-user-physical PAUSE point. Caliper data → S7
+   calibration of clearances + chamfers in `PrismaticPinSpec`
+   defaults.
+3. **Cold-read close + PR to main**: final session after iter-3
    workshop print success. Includes procedure.rs prose updates
-   for any geometry changes, dead-code cleanup (`MatingTransform::UnionCylinder`
-   confirmed unused, deletion deferred per recon-1 §G-5), and
-   omnibus PR open.
+   for any post-print findings, dead-code cleanup
+   (`MatingTransform::UnionCylinder` confirmed unused, deletion
+   deferred per recon-1 §G-5), and omnibus PR open.
 
 ## Lessons referenced
 
@@ -389,9 +425,16 @@ workshop user effectively bears the cost of post-print sanding.
 - Salvage commits: `b2ff45d5` + `fed4b0c6` + `a8e3e056` on dev.
 - Workshop user cf-view-verified: cup-pin features + base-down
   captive plug-lock pyramid. Cup-pin/lock geometry unblocked.
-- This doc: workshop user reviews + decides triage in next
-  session. No production code change tonight.
+- **2026-05-25 update**: Findings A + B resolved via (4') accept
+  + document (head-architect call after (5') git-bisect Branch A;
+  PR #255 era had bit-precisely identical cap-plane edge chamfer
+  band). Procedure.rs `## Cap-Plane Edge Chamfer (Expected MC
+  Quantization)` section + doc-anchoring test shipped. Findings
+  C + D remain OPEN for workshop user triage.
 - 201 cf-cast lib tests + 8 g7_g9 probe + 1 g7c probe + 1
-  single-layer-smoke / clippy / fmt clean.
+  single-layer-smoke / clippy / fmt clean (pre-(4'); the (4')
+  ship adds 1 doc-anchoring test).
 - cf-cast-cli iter-1 regen ~5 min produces 11 STLs at
   `~/scans/cast_iter1/` with current captive-lock geometry.
+  **No regen needed for the (4') ship** — production STL
+  geometry unchanged.
