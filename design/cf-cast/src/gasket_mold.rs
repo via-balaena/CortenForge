@@ -1,19 +1,19 @@
 //! Per-layer gasket mold composition for v2 cup-half seam sealing.
 //!
-//! S1 of `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md` — the gasket mold
-//! is a flat tray with a closed-loop channel that workshop user
+//! S1 + S2 of `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md` — the gasket
+//! mold is a flat tray with a closed-loop channel that workshop user
 //! pours silicone into. The cured gasket is a thin closed-loop strip
 //! shaped like the cup-piece body-cavity perimeter at the seam plane.
 //! Workshop installs the gasket on the Negative cup-half seam face
 //! before closing the Positive half and pouring the layer's silicone
 //! — the compressible silicone-on-silicone interface absorbs FDM
-//! print tolerance (~200 µm) + STL-level MC cell-quantization
-//! mismatch (~3 mm one-cell width per
+//! print tolerance (~200 µm per §G-0 typed-range table) + STL-level
+//! MC cell-quantization mismatch (~3 mm one-cell width per
 //! `~/scans/cast_iter1_bare/` cross-half match probe from
 //! 2026-05-25 head-architect session).
 //!
 //! See `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md` §G-1 — §G-6 for the
-//! locked design decisions and §G-13 S1 for this module's scope.
+//! locked design decisions and §G-13 S1 + S2 for this module's scope.
 //!
 //! # Geometry overview
 //!
@@ -49,10 +49,13 @@
 //! at the seam-plane projection of `P` — captures the body cavity
 //! perimeter shape at the seam plane regardless of `P.y` (so the
 //! channel traces the perimeter even when probed away from the
-//! seam plane). `|body_sdf| < width/2` means `P` is laterally
-//! within `width/2` of the perimeter curve; combined with the
-//! vertical box at `channel_y_center ± depth/2`, the result is the
-//! 3D channel sweep.
+//! seam plane). `|body_sdf| < half_width(P.y)` means `P` is
+//! laterally within the (Y-dependent) channel envelope of the
+//! perimeter curve; combined with the vertical box at
+//! `channel_y_center ± depth/2`, the result is the 3D channel
+//! sweep. For `draft_angle = 0`, `half_width(P.y)` collapses to
+//! `cross_section_width / 2` and the channel recovers a rectangular
+//! cross-section bit-precisely.
 //!
 //! # Coordinate frame
 //!
@@ -71,9 +74,9 @@
 //!   per recon §G-3 demold; gasket-material enum ([`GasketMaterial`])
 //!   with Ecoflex 00-30 + Dragon Skin 10A picks per §G-1;
 //!   Hookean compression prediction ([`GasketSpec::predicted_compression_m`])
-//!   anchoring the §G-3 FDM-tolerance gate at workshop clamp
-//!   pressure; short-side + corner perimeter probes carried from
-//!   S1 cold-read pass-1.
+//!   anchoring the FDM-tolerance gate (§G-0 typed-range; ~200 µm)
+//!   at workshop clamp pressure; short-side + corner perimeter
+//!   probes carried from S1 cold-read pass-1.
 //!
 //! Out of scope per §G-13:
 //! - cf-cast-cli integration (`[gasket]` config block, STL
@@ -129,9 +132,10 @@
 //!   verify the channel rounds the body-rectangle corners with
 //!   half-width radius. MC meshing at S3 (3 mm default cell) will
 //!   smooth that further; if iter-1 cf-view smoke shows lost corners
-//!   on production fixtures the §G-3 chamfer-pattern from cap-plane
-//!   [(4')-recon](docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md) applies
-//!   ("accept + document" — workshop trims if needed).
+//!   on production fixtures the (4')-pattern from the cap-plane
+//!   recon [`docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md`] applies
+//!   ("accept + document" below-print-resolution MC byproducts —
+//!   workshop trims if needed).
 
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Vector3};
@@ -142,11 +146,10 @@ use crate::ribbon::Ribbon;
 
 /// Default cross-section width for the iter-1 gasket (~1.5 mm).
 ///
-/// Picked at recon §G-1 typed-range midpoint. S2 narrows via
-/// compression calibration against Ecoflex 00-30 shore hardness
-/// vs workshop clamping pressure. FDM-printable: well above the
-/// Bambu A1 default 0.4 mm extrusion-width minimum + leaves room
-/// for the channel's two side walls (>= 0.6 mm each).
+/// Picked at recon §G-1 typed-range midpoint. S6 workshop iter-3
+/// pour may narrow empirically. FDM-printable: well above the Bambu
+/// A1 default 0.4 mm extrusion-width minimum + leaves room for the
+/// channel's two side walls (>= 0.6 mm each).
 const DEFAULT_CROSS_SECTION_WIDTH_M: f64 = 0.0015;
 
 /// Default cross-section thickness (gasket height perpendicular to
@@ -155,7 +158,9 @@ const DEFAULT_CROSS_SECTION_WIDTH_M: f64 = 0.0015;
 /// Picked at recon §G-1 typed-range midpoint. Below 0.5 mm and the
 /// gasket may not bridge FDM-tolerance gaps (~200 µm); above 1 mm
 /// and the gasket may not compress enough to let halves close. S2
-/// calibrates against the §G-3 target FDM floor.
+/// `predicted_compression_m` cross-checks this against the FDM-
+/// tolerance target (§G-0 typed-range; ~200 µm) at iter1 spec; S6
+/// iter-3 empirically validates.
 const DEFAULT_CROSS_SECTION_THICKNESS_M: f64 = 0.0008;
 
 /// Default tray total thickness (3 mm). Sized so the channel
@@ -184,8 +189,8 @@ const DEFAULT_DRAFT_ANGLE_DEG: f64 = 5.0;
 /// band; the seam-face contact area gets ~5-30 kPa contact
 /// pressure. Picked mid-range; S6 workshop iter-3 measures actual.
 /// Used by [`GasketSpec::predicted_compression_m`] to predict the
-/// gasket's clamped-state compression vs the §G-3 FDM-tolerance
-/// floor (~200 µm).
+/// gasket's clamped-state compression vs the FDM-tolerance floor
+/// (§G-0 typed-range; ~200 µm).
 const DEFAULT_WORKSHOP_CLAMP_PRESSURE_PA: f64 = 20_000.0;
 
 /// Platinum-cure silicone material pick for the gasket pour.
@@ -236,10 +241,11 @@ impl GasketMaterial {
 
 /// Gasket mold parameter envelope per recon §G-1 + §G-3.
 ///
-/// S2 narrows the cross-section profile (trapezoidal draft angle) +
-/// material (Ecoflex 00-30 / Dragon Skin 10A) + workshop clamp
-/// pressure target. S6 workshop physical iter-3 pins the final
-/// empirical defaults. See `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md`.
+/// S2 introduced the trapezoidal-draft-angle cross-section profile,
+/// the gasket-material enum (Ecoflex 00-30 / Dragon Skin 10A), and
+/// the workshop-clamp-pressure target fields. S6 workshop physical
+/// iter-3 pins the final empirical defaults. See
+/// `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md`.
 #[derive(Debug, Clone, Copy)]
 pub struct GasketSpec {
     /// Gasket cross-section midline width (perpendicular to perimeter
@@ -304,8 +310,9 @@ impl GasketSpec {
     /// non-linear + this prediction overestimates by ~10-20%.
     ///
     /// S6 workshop iter-3 empirically validates; if measured
-    /// compression < §G-3 FDM-tolerance target (~200 µm) the seal
-    /// fails + workshop user picks a softer material or higher clamp.
+    /// compression < FDM-tolerance target (§G-0 typed-range;
+    /// ~200 µm) the seal fails + workshop user picks a softer
+    /// material or higher clamp.
     #[must_use]
     pub fn predicted_compression_m(&self) -> f64 {
         let strain = self.workshop_clamp_pressure_pa / self.material.youngs_modulus_pa();
@@ -372,9 +379,9 @@ impl Sdf for GasketChannelSdf {
 /// at the seam plane.
 ///
 /// Returns `(Solid, Vec<MatingTransform>)` — the second element is
-/// empty in S1 (per §G-13 scope). S3 may append mating transforms
-/// for the §G-5 (a)/(b) pin-routing variants (notch-outs at cup-pin
-/// footprints); S1 default `(c)` continuous channel needs no
+/// empty pre-S3 (per §G-13 scope). S3 ships the §G-5 (a)/(b) pin-
+/// routing variants (notch-outs at cup-pin footprints); S1 + S2
+/// ship the default `(c)` continuous channel which needs no
 /// transforms.
 ///
 /// # Geometry
@@ -385,9 +392,13 @@ impl Sdf for GasketChannelSdf {
 ///   bounds plus `tray_margin_m` on each side.
 /// - **Channel** at the tray top: lateral extent traces the body
 ///   perimeter at the seam plane (where
-///   `|body.evaluate(P_at_seam_plane)| < cross_section_width_m / 2`);
-///   vertical extent `Y ∈ [tray_thickness - channel_depth,
-///   tray_thickness]` (carves into tray from the top).
+///   `|body.evaluate(P_at_seam_plane)| < half_width(P.y)`, with
+///   `half_width(P.y) = 0.5 * cross_section_width_m + tan(draft) *
+///   clamp(P.y - channel_y_center, ±channel_depth/2)` for the
+///   trapezoidal profile, or `cross_section_width_m / 2` for
+///   `draft_angle_deg = 0`); vertical extent
+///   `Y ∈ [tray_thickness - channel_depth, tray_thickness]`
+///   (carves into tray from the top).
 ///
 /// # Errors
 ///
@@ -444,8 +455,8 @@ pub fn compose_gasket_mold_solid(
     let mold = tray_solid.subtract(channel_solid);
 
     // S3 territory: append mating transforms for §G-5 pin-routing
-    // variants. S1 default `(c)` continuous channel needs no
-    // transforms.
+    // variants. S1 + S2 ship the default `(c)` continuous channel
+    // which needs no transforms.
     Ok((mold, Vec::new()))
 }
 
@@ -474,8 +485,10 @@ mod tests {
     /// its lateral surface at |Z| = 10. `compose_gasket_mold_solid`
     /// produces a channel tracing this rectangular perimeter — a
     /// closed loop with 4 straight sides + 4 corners at (±30, ±10).
-    /// Tests below probe the long-side perimeter (|Z| = 10 within
-    /// |X| ≤ 30); short-side + corner probes are S2 coverage.
+    /// S1 tests below probe the long-side perimeter (|Z| = 10 within
+    /// |X| ≤ 30); S2 adds short-side + corner probes
+    /// ([`gasket_channel_traces_short_side_perimeter`],
+    /// [`gasket_channel_rounds_body_corner_with_half_width_radius`]).
     fn synthetic_fixture() -> (Ribbon, Solid, Solid) {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
@@ -779,19 +792,19 @@ mod tests {
         );
     }
 
-    /// Target §G-3 FDM-tolerance floor (~200 µm) the gasket must
-    /// absorb at workshop clamp pressure. Shared by the S2 compression
-    /// tests.
+    /// Target FDM-tolerance floor (§G-0 typed-range; ~200 µm) the
+    /// gasket must absorb at workshop clamp pressure. Shared by the
+    /// S2 compression tests.
     const FDM_TOLERANCE_TARGET_M: f64 = 200e-6;
 
     #[test]
     fn ecoflex_iter1_predicted_compression_absorbs_fdm_tolerance() {
         // S2 compression calibration: at the iter1 spec (Ecoflex 00-30
         // + 20 kPa workshop clamp + 0.8 mm gasket thickness) the
-        // Hookean compression prediction MUST exceed the §G-3 FDM-
-        // tolerance target. If this fails, either the material is
-        // wrong (too stiff) or the clamp pressure is too low for the
-        // chosen gasket geometry.
+        // Hookean compression prediction MUST exceed the FDM-tolerance
+        // target (§G-0 typed-range; ~200 µm). If this fails, either
+        // the material is wrong (too stiff) or the clamp pressure is
+        // too low for the chosen gasket geometry.
         //
         // Hand math: strain = 20 kPa / 69 kPa ≈ 0.29; compression =
         // 0.29 × 0.8 mm = 0.232 mm = 232 µm > 200 µm target. ✓
@@ -905,9 +918,11 @@ mod tests {
 
     #[test]
     fn rectangular_cross_section_zero_draft_constant_width() {
-        // §G-3 fallback: `draft_angle_deg = 0` reduces channel SDF to
-        // the S1 rectangular case bit-precisely. Verify top + bottom
-        // half-widths match within numerical noise.
+        // Recon §G-3 lists "vertical or slightly tapered" walls as
+        // co-equal demold options; vertical = `draft_angle_deg = 0`
+        // reduces the trapezoidal channel SDF to the S1 rectangular
+        // case bit-precisely. Verify top + bottom half-widths match
+        // within numerical noise.
         let spec = GasketSpec {
             draft_angle_deg: 0.0,
             ..GasketSpec::iter1()
@@ -935,8 +950,10 @@ mod tests {
         // precise width invariant test only probed the long-side
         // rectangle perimeter (Z = ±10). The short-side perimeter
         // lies at X = ±30 (the cylinder's axial caps). Verify the
-        // channel SDF also traces it: probe at (X = 30 ± half_w_mid,
-        // Y = mid, Z = 0) → channel boundary.
+        // channel SDF also traces it: probe at (X = 30 ± half_w,
+        // Y = mid, Z = 0) → channel boundary (mid-Y half-width is
+        // bit-precisely `0.5 * cross_section_width_m` regardless of
+        // draft angle).
         let (ribbon, body, bounds) = synthetic_fixture();
         let spec = GasketSpec::iter1();
         let (mold, _) = compose_gasket_mold_solid(&ribbon, &body, &bounds, &spec).unwrap();

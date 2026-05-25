@@ -392,10 +392,18 @@ implementation session before any architectural decision:
 
 ## Status (open)
 
-- Scaffold shipped 2026-05-25 (this commit).
-- Awaiting workshop user approval to proceed to S1.
-- No code change yet; this is design doc only.
+- Scaffold shipped 2026-05-25 dev `382426d5` (this recon doc).
+- S1 shipped 2026-05-25 dev `1729796b` (+ cold-read pass-1
+  `6c8bc7f8`): `GasketSpec` + `compose_gasket_mold_solid` skeleton
+  + 11 characterisation tests + module docstring.
+- S2 shipped 2026-05-25 dev `c7e042c6` (+ cold-read pass-1 — this
+  status update): trapezoidal cross-section (workshop user picked
+  §G-7 default) + `GasketMaterial` enum (parameterized — workshop
+  empirically picks at S6 iter-3 pour) + Hookean
+  `predicted_compression_m`; 222 lib tests + clippy + fmt clean.
+- S3 — S8 still pending per §G-13. Next: S3 cf-cast-cli
+  integration (~150 LOC).
 - Workshop iter-3 print remains BLOCKED on cup-half seam leak
-  risk pending gasket arc.
+  risk pending S3 — S6 ship.
 - Branch: `dev`, no push, no PR until arc close (per
   [[feedback-omnibus-pr-single-branch]]).
