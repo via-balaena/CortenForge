@@ -381,6 +381,80 @@ pub fn build_plug_lock_socket_transform(ribbon: &Ribbon) -> Option<MatingTransfo
     })
 }
 
+/// Build a [`MatingTransform::SeamTrim`] enforcing a flat plug-
+/// side cap-plane face.
+///
+/// Trims any MC-quantization facets the plug body's scan-derived
+/// SDF produces at the cap-plane (cf-cast's mesh → SDF → MC
+/// pipeline samples the flat scan cap-plane face at 3 mm grid
+/// points and re-meshes, producing visible facets even when the
+/// SDF is mathematically flat).
+///
+/// `normal = -cap_normal` (points into the plug body — the kept
+/// half-space); `offset_m = dot(-cap_normal, cap_centroid)` =
+/// `-dot(cap_normal, cap_centroid)`. Trims away everything on the
+/// `+cap_normal` side of the cap-plane (= outside the plug body)
+/// post-MC. Must be applied BEFORE
+/// [`build_plug_lock_transform`]'s `UnionTruncatedPyramid` —
+/// the post-flip pyramid extends past the cap-plane into the
+/// `+cap_normal` half-space (workshop-visible base-down protrusion);
+/// trimming first flattens the plug body face, then the pyramid
+/// union adds the protruding lock on top.
+///
+/// Returns `None` for an empty / unresolvable ribbon (same
+/// fallback as [`build_plug_lock_pose`]).
+#[must_use]
+pub fn build_plug_cap_trim_transform(ribbon: &Ribbon) -> Option<MatingTransform> {
+    // Gate on an EXPLICIT `pour_end_hint` — the centerline-tip
+    // fallback from `pour_anchor` (used for hand-built test
+    // ribbons without `with_pour_end_hint`) isn't a real cap-plane
+    // anchor and the trim there could cut unintended material.
+    let (cap_centroid, cap_normal_vec) = ribbon.pour_end_hint?;
+    let cap_normal = UnitVector3::new_normalize(cap_normal_vec);
+    let kept_normal = UnitVector3::new_normalize(-cap_normal.into_inner());
+    let offset_m = kept_normal.into_inner().dot(&cap_centroid.coords);
+    Some(MatingTransform::SeamTrim {
+        normal: kept_normal,
+        offset_m,
+    })
+}
+
+/// Build a [`MatingTransform::SeamTrim`] enforcing a flat cup-
+/// side cap-plane face.
+///
+/// Targets the interior boundary of the cup-piece at the cap-
+/// plane plane (= the cup's floor face from the body-cavity side,
+/// where the plug seats onto the cup-floor when assembled).
+/// Sibling of [`build_plug_cap_trim_transform`]; uses the SAME
+/// cap-plane reference but trims the OPPOSITE side (cup-floor
+/// material is on `+cap_normal` side of the cap-plane, opposite
+/// of the plug body).
+///
+/// `normal = +cap_normal` (points into cup-floor material — the
+/// kept half-space); `offset_m = dot(cap_normal, cap_centroid)`.
+/// Trims away everything on the `-cap_normal` side of the cap-
+/// plane (= cup body cavity air + any post-CSG artifacts above
+/// the cap-plane). Safe to apply AFTER the cup-side plug-lock
+/// socket subtract: the socket cavity's `+axis_unit` half (post-
+/// flip = `-cap_normal` direction = above cap-plane in cup-floor
+/// reference) is a no-op carve in body cavity air; the trim
+/// removes any boolean-junction artifacts there.
+///
+/// Returns `None` for an empty / unresolvable ribbon.
+#[must_use]
+pub fn build_cup_cap_trim_transform(ribbon: &Ribbon) -> Option<MatingTransform> {
+    // Same `pour_end_hint` gating as [`build_plug_cap_trim_transform`]
+    // — without explicit cap-plane data the trim could remove
+    // unintended material in synthetic test fixtures.
+    let (cap_centroid, cap_normal_vec) = ribbon.pour_end_hint?;
+    let kept_normal = UnitVector3::new_normalize(cap_normal_vec);
+    let offset_m = kept_normal.into_inner().dot(&cap_centroid.coords);
+    Some(MatingTransform::SeamTrim {
+        normal: kept_normal,
+        offset_m,
+    })
+}
+
 /// Pair a user-supplied plug [`Solid`] with the plug-floor-lock.
 ///
 /// Returns `(plug_unchanged, transforms)` for downstream
@@ -405,7 +479,21 @@ pub fn build_plug_lock_socket_transform(ribbon: &Ribbon) -> Option<MatingTransfo
 /// [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
 #[must_use]
 pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransform>) {
-    let transforms = build_plug_lock_transform(ribbon).into_iter().collect();
+    // **Cap-plane trim DISABLED 2026-05-24 night.** Attempted to
+    // append `build_plug_cap_trim_transform` here for MC-
+    // quantization flatness relief on the plug bottom face, but
+    // the trim plane coincides with the plug body's cap-plane SDF
+    // surface — the recon-4 (P) §F-2 paradigm-boundary failure
+    // mode (S4's SeamTrim film bug). F4 gate flagged a Critical
+    // blocking issue on the plug after the trim. The cap-plane
+    // flatness concern is bookmarked for a follow-up arc that
+    // needs paradigm-boundary-careful handling (likely via
+    // `build_half_space_slab` with offset, OR a different
+    // approach entirely). Captive-lock geometry ships without the
+    // trim for now. Builders `build_plug_cap_trim_transform` +
+    // `build_cup_cap_trim_transform` retained as defensive
+    // primitives for the follow-up arc.
+    let transforms: Vec<MatingTransform> = build_plug_lock_transform(ribbon).into_iter().collect();
     (plug, transforms)
 }
 
@@ -613,6 +701,72 @@ mod tests {
         );
     }
 
+    /// `build_plug_cap_trim_transform` emits a `SeamTrim` whose
+    /// `normal` direction points INTO the plug body (= `-cap_normal`)
+    /// and whose `offset_m` is the plane-equation value at
+    /// `cap_centroid`. Verifies the trim keeps the plug body side
+    /// (where the workshop-visible plug material lives) and trims
+    /// away anything on the `+cap_normal` side (above the cap-plane
+    /// in pour orientation — outside the plug body, where MC
+    /// quantization artifacts would otherwise sit).
+    #[test]
+    fn build_plug_cap_trim_transform_keeps_plug_body_side() {
+        let ribbon = iter1_like_ribbon();
+        let trim = build_plug_cap_trim_transform(&ribbon).expect("pour_end_hint set");
+        match trim {
+            MatingTransform::SeamTrim { normal, offset_m } => {
+                let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+                let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+                let kept_normal = -cap_normal;
+                let expected_offset = kept_normal.dot(&cap_centroid.coords);
+                assert_abs_diff_eq!(normal.into_inner().x, kept_normal.x, epsilon = 1.0e-12);
+                assert_abs_diff_eq!(normal.into_inner().y, kept_normal.y, epsilon = 1.0e-12);
+                assert_abs_diff_eq!(normal.into_inner().z, kept_normal.z, epsilon = 1.0e-12);
+                assert_abs_diff_eq!(offset_m, expected_offset, epsilon = 1.0e-12);
+            }
+            other => panic!("expected SeamTrim, got {other:?}"),
+        }
+    }
+
+    /// `build_plug_cap_trim_transform` returns `None` when the
+    /// ribbon has no `pour_end_hint` — the `centerline-tip` fallback
+    /// from `pour_anchor` isn't a real cap-plane anchor.
+    #[test]
+    fn build_plug_cap_trim_transform_none_without_pour_end_hint() {
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.054)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+        assert!(build_plug_cap_trim_transform(&ribbon).is_none());
+        assert!(build_cup_cap_trim_transform(&ribbon).is_none());
+    }
+
+    /// `build_cup_cap_trim_transform` is the SIBLING of the
+    /// plug-side trim — same cap-plane reference, OPPOSITE kept
+    /// half-space (cup-floor material lives on the `+cap_normal`
+    /// side, opposite of the plug body). Verifies the trim keeps
+    /// the cup-floor side and trims away material on the
+    /// `-cap_normal` side (body cavity air + any post-CSG
+    /// artifacts there).
+    #[test]
+    fn build_cup_cap_trim_transform_keeps_cup_floor_side() {
+        let ribbon = iter1_like_ribbon();
+        let trim = build_cup_cap_trim_transform(&ribbon).expect("pour_end_hint set");
+        match trim {
+            MatingTransform::SeamTrim { normal, offset_m } => {
+                let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+                let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+                let expected_offset = cap_normal.dot(&cap_centroid.coords);
+                assert_abs_diff_eq!(normal.into_inner().x, cap_normal.x, epsilon = 1.0e-12);
+                assert_abs_diff_eq!(normal.into_inner().y, cap_normal.y, epsilon = 1.0e-12);
+                assert_abs_diff_eq!(normal.into_inner().z, cap_normal.z, epsilon = 1.0e-12);
+                assert_abs_diff_eq!(offset_m, expected_offset, epsilon = 1.0e-12);
+            }
+            other => panic!("expected SeamTrim, got {other:?}"),
+        }
+    }
+
     /// `add_plug_pins` for [`PlugPinKind::Axial`] returns the bare
     /// plug [`Solid`] unchanged AND a transforms Vec containing one
     /// [`MatingTransform::UnionTruncatedPyramid`] carrying the
@@ -644,11 +798,14 @@ mod tests {
         }
 
         // Transforms Vec carries exactly one UnionTruncatedPyramid
-        // matching the plug-lock pose + spec.
+        // matching the plug-lock pose + spec. (Cap-plane trim was
+        // attempted 2026-05-24 night but disabled due to recon-4
+        // (P) §F-2 paradigm-boundary issue — see
+        // `add_plug_pins` for the bookmark.)
         assert_eq!(
             transforms.len(),
             1,
-            "Axial kind emits exactly one plug-lock mesh-CSG transform",
+            "Axial kind emits one plug-lock mesh-CSG transform; got {transforms:#?}",
         );
         match &transforms[0] {
             MatingTransform::UnionTruncatedPyramid { params } => {

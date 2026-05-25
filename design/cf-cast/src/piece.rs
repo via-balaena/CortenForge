@@ -231,6 +231,10 @@ pub fn compose_piece_solid(
     if let Some(plug_lock_socket) = build_plug_lock_socket_transform(ribbon) {
         transforms.push(plug_lock_socket);
     }
+    // **Cup-side cap-plane trim DISABLED 2026-05-24 night** — same
+    // recon-4 (P) §F-2 paradigm-boundary issue that blocked the
+    // plug-side trim. See `add_plug_pins` in `plug.rs` for the
+    // full rationale + follow-up bookmark.
 
     Ok((base_piece, transforms))
 }
