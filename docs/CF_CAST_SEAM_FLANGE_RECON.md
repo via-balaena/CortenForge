@@ -113,30 +113,44 @@ the cavity-adjacent walls; the flange is a peripheral skirt.
 
 Three numeric parameters with workshop-iter-3 defaults:
 
-- **`flange_width_m`**: lateral extent of the flange (perpendicular
-  to body perimeter, in the seam plane). Default **15 mm**.
+- **`flange_width_m`**: lateral extent of the flange perpendicular
+  to the body perimeter, in the seam plane. Default **15 mm**.
   Rationale: ~10 mm for a standard C-clamp jaw reach + ~5 mm
   perimeter clearance.
-- **`flange_thickness_m`**: extent perpendicular to the seam plane
-  (along the Y-axis in production frame). Default **4 mm**. Above
-  the FDM minimum-wall floor (1.0 mm); thick enough to not flex
-  under ~50 N clamp force (PLA flexural modulus ≈ 3.5 GPa, so a
-  4 mm × 15 mm × 100 mm flange cantilevered at one edge with 50 N
-  load deflects ~0.3 mm — acceptable).
-- **`flange_clearance_m`**: gap between the flange's outer edge
-  and the gasket-mold tray's outer edge. Default **5 mm**. Matches
-  the existing `tray_margin_m` precedent.
+- **`flange_thickness_m`**: **per-half** thickness perpendicular
+  to the seam plane (along the Y-axis in production frame).
+  Default **4 mm per cup half** → total closed flange-zone
+  thickness ≈ 8 mm + gasket compression. Above the FDM minimum-
+  wall floor (1.0 mm). Bending check: a 1 mm-wide flange strip
+  cantilevered along its 15 mm width direction (force applied
+  perpendicular to the seam plane by the C-clamp), thickness
+  4 mm, PLA flexural modulus ≈ 3.5 GPa, distributed load of
+  ~1 N/mm of perimeter (50 N spread over ~50 mm of clamp
+  contact): δ ≈ F·L³ / (3·E·I) ≈ 1 · 15³ / (3 · 3500 · 5.33) ≈
+  **30 µm** — well below the gasket's ~200 µm compression
+  budget.
+- **`flange_inner_offset_m`**: gap between the body perimeter
+  (where the gasket sits) and the flange's INNER edge (where the
+  flange material begins). Default **2 mm** = ~2.7 × the gasket-
+  channel half-width at iter1 (0.75 mm). Keeps the flange's PLA
+  material LATERALLY DISJOINT from the gasket channel so the
+  silicone seal isn't pinched by the flange.
 
 Total PLA cost per cup half:
-- Flange volume ≈ seam_perimeter × flange_width × flange_thickness
-- For the production sock scan (perimeter ~360 mm), volume ≈
-  360 × 15 × 4 = 21,600 mm³ = **21.6 cm³ per cup half**.
-- Per cast (3 layers × 2 halves = 6 cup halves): ~130 cm³.
+- Flange volume ≈ seam_perimeter × flange_width_m × flange_thickness_m
+  (per cup half).
+- Production sock-over-capsule cross-section at the seam plane
+  ≈ 200 × 30 mm (long along centerline, short radial); perimeter
+  ≈ 2 × (200 + 30) = **460 mm**.
+- Volume per cup half ≈ 460 × 15 × 4 = 27,600 mm³ ≈
+  **27.6 cm³**.
+- Per cast (3 layers × 2 halves = 6 cup halves): ~**165 cm³**.
 - Comparison: full-cuboid bounding region per the mold-wall recon
-  was ~570 cm³ for the entire cup; the flange adds ~130 cm³.
-- **Net cost**: contour + flange ≈ 130 cm³ extra vs current
-  contour-only. **Still ~6-7× less PLA than the full cuboid that
-  the prior mold-wall recon rejected.**
+  was ~570 cm³ for the entire cup; contour + flange ≈ 165 cm³
+  extra vs current contour-only.
+- **Net cost**: **~3-4× less PLA than the full cuboid** the
+  prior mold-wall recon rejected. Clamp ergonomics restored at a
+  fraction of the material cost.
 
 ## §F-3 SDF composition options
 
@@ -145,15 +159,20 @@ Three composition strategies; pick at S1 implementation:
 **(a) Per-perimeter-offset flange** (geometrically clean).
 ```text
 flange_sdf(P) = max(
-    body.evaluate(P_at_seam_plane) - flange_width,   // outward extent
-    |P.y - seam_plane_y| - flange_thickness/2,        // Y-extent
-    -body.evaluate(P_at_seam_plane)                   // never inside body
+    body.evaluate(P_at_seam_plane) - flange_width_m,
+    flange_inner_offset_m - body.evaluate(P_at_seam_plane),
+    |P.y - seam_plane_y| - flange_thickness_m
 )
 ```
-The flange exists where:
-- body SDF at seam plane is ≥ 0 (outside body cavity)
-- body SDF at seam plane is ≤ flange_width (within flange reach)
-- |P.y - seam_plane_y| ≤ flange_thickness/2
+The flange exists where ALL THREE inequalities are ≤ 0:
+- `body_dist ≤ flange_width_m` (within outward reach)
+- `body_dist ≥ flange_inner_offset_m` (clears the gasket channel
+  laterally per §F-4 disjoint invariant)
+- `|P.y - seam_plane_y| ≤ flange_thickness_m` — symmetric
+  ±thickness around the seam plane. After the per-half halfspace
+  cut (next paragraph), this gives `flange_thickness_m` of
+  material in EACH half-space (consistent with §F-2's per-half
+  thickness definition).
 
 **Mirrors the `GasketChannelSdf` pattern** from
 [[project-cf-cast-seam-gasket-mold-s1]] — projection-to-seam-plane
@@ -168,14 +187,14 @@ half and Positive-half flanges via
 ```text
 flange_sdf(P) = max(
     bounding_rect_sdf(P_at_seam_plane),
-    |P.y - seam_plane_y| - flange_thickness/2,
-    -body.evaluate(P_at_seam_plane)  // carve out body cavity
+    |P.y - seam_plane_y| - flange_thickness_m,
+    flange_inner_offset_m - body.evaluate(P_at_seam_plane)
 )
 ```
 Flange is a flat rectangle at the seam plane (sized to body XZ
-bbox + flange_width), minus the body cavity. Simpler but wastes
-material at narrow-end-of-body regions. PLA cost ~30-50% higher
-than option (a).
+bbox + `flange_width_m`), minus the body cavity inflated by
+`flange_inner_offset_m`. Simpler but wastes material at narrow-
+end-of-body regions. PLA cost ~30-50% higher than option (a).
 
 **(c) Constant-Y offset flange** (intermediate).
 Same as (a) but with a fixed-thickness rectangular flange shape
@@ -191,66 +210,55 @@ SDF in `compose_piece_solid`.
 
 ## §F-4 Interaction with the gasket-mold channel
 
-The gasket channel SDF
-([`compose_gasket_mold_solid`](../design/cf-cast/src/gasket_mold.rs))
-traces the body perimeter at lateral offset `±half_width(P.y)`
-from the body. The flange begins at `body_dist = 0` and extends
-to `body_dist = flange_width_m`. **The gasket channel is INSIDE
-the flange's lateral extent** (channel half-width ≤ 0.75 mm at
-iter1; flange width = 15 mm).
+The flange and the gasket live in the **same Y-range** (centered
+on the seam plane) but at **different lateral positions** relative
+to the body perimeter:
 
-**Geometric layout at the seam plane (Y = 0):**
+- **Gasket strip**: at the body perimeter itself
+  (`|body_dist| ≤ gasket_half_width ≈ 0.75 mm` at iter1).
+  Compressed between the two cup halves' seam faces.
+- **Flange**: outside the body perimeter, starting beyond the
+  gasket's lateral reach (`body_dist ≥ flange_inner_offset_m ≈
+  2 mm`) and extending outward to `body_dist ≤ flange_width_m ≈
+  15 mm`.
 
-```
-                         ← flange_width = 15 mm →
-       ┌─────────────────────────────────────────┐
-       │  FLANGE (clamp grip surface)            │
-       │                                         │
-       │   ┌─ gasket channel (1.5 mm wide) ─┐    │
-       │   │                                │    │
-       │   │  ↑ body perimeter (0-width)    │    │
-       │   │                                │    │
-       │   └────────────────────────────────┘    │
-       │                                         │
-       └─────────────────────────────────────────┘
-
-         (this whole figure repeats at every point
-          along the body perimeter; gasket curves
-          with the body, flange curves with the gasket)
-```
-
-Wait — the flange surrounds the gasket OUTSIDE the body, but the
-gasket sits ON the body perimeter itself, not outside it. Let me
-re-think §F-4 at code-review time. Sketch below revised:
+**Y-cross-section schematic** (looking along the body perimeter
+tangent at any seam-perimeter point):
 
 ```
-                Y = +flange_thickness/2  ──┬──   (top of +half flange)
-                                           │
-                                           │  +half flange
-                                           │
-                Y = +ε  (seam face, +)  ───┤
-                Y = 0   (seam plane)      ─┼── gasket strip lives here,
-                Y = -ε  (seam face, -)  ───┤   between the two cup halves,
-                                           │   centered on the body
-                                           │   perimeter
-                Y = -flange_thickness/2 ──┴──  -half flange (bottom)
+                                  outward (+body_dist) →
+
+           Y = +flange_thickness_m ─┬─────────────────────────────
+                                    │                             │
+                                    │     +half flange material   │
+                                    │     (cup half + Y)          │
+           Y = +ε (seam face, +) ───┤                             │
+           Y = 0  (seam plane)    ──┼─ gasket strip here (body_dist ≈ 0)
+           Y = −ε (seam face, −) ───┤                             │
+                                    │                             │
+                                    │     -half flange material   │
+                                    │     (cup half - Y)          │
+           Y = -flange_thickness_m ─┴─────────────────────────────
+
+           body_dist:          0    2 mm                       15 mm
+                          (gasket   (flange inner edge)   (flange outer edge)
+                           lives
+                           here)
 ```
 
-The flange THICKNESS extends perpendicular to the seam plane (the
-Y direction). The flange WIDTH extends laterally outward FROM the
-body perimeter in the seam plane (XZ).
+The flange's PLA-on-PLA contact at the seam plane (Y = 0) is
+**outside** the gasket strip. C-clamp force on the flange (in the
+±Y direction) translates to compressive force on the gasket strip
+through the cup body — the flange provides the grip surface; the
+gasket provides the seal.
 
-The gasket sits at the seam interface itself (Y = 0 ± a fraction
-of a mm), AT the body perimeter (not outside it). The flange is in
-the same Y-range as the seam, but laterally OUTSIDE the body
-perimeter where the gasket can't physically reach.
-
-**Critical invariant:** flange + gasket are LATERALLY DISJOINT (no
-overlap in XZ at the seam plane). Flange exists where
-`body_dist > flange_inner_offset`; gasket exists where
-`|body_dist| ≤ half_channel_width`. Pick `flange_inner_offset >
-half_channel_width` so they don't overlap — default
-**flange_inner_offset = 2 mm** (= 4 × half_channel_width margin).
+**Critical invariant:** flange and gasket are **LATERALLY
+DISJOINT** in the seam plane. The SDF in §F-3 option (a)
+enforces this via `body_dist ≥ flange_inner_offset_m`. Default
+`flange_inner_offset_m = 2 mm` ≈ 2.7× the gasket half-width
+(0.75 mm) — comfortable lateral margin so MC quantization at the
+flange's inner edge can't accidentally touch the gasket channel
+at the §G-13 0.5 mm gasket cell size.
 
 ## §F-5 Interaction with mating features
 
@@ -421,7 +429,7 @@ If S1 reveals the flange breaks something:
 
 ## §F-13 Implementation arc
 
-4-phase, ~5-6 sessions:
+5 phases, ~4-6 wall-clock sessions:
 
 - **S1: FlangeSpec + compose_piece_solid integration**
   (~200 LOC). New `FlangeSpec` struct + `FlangeKind` enum + Ribbon
@@ -448,7 +456,7 @@ If S1 reveals the flange breaks something:
   [[feedback-omnibus-pr-single-branch]] alongside the gasket arc
   + parallel-meshing arc.
 
-Total scope: ~380 LOC, 3-4 wall-clock sessions.
+Total scope: ~380 LOC across S1-S3; S4-S5 are gate + ship.
 
 ## §F-14 Prior-arc memory checklist
 
