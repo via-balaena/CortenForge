@@ -29,6 +29,7 @@ use crate::cure::lookup as lookup_cure;
 use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
 use crate::pour_volume::PourVolume;
+use crate::prismatic_pin::PrismaticPinSpec;
 use crate::registration::RegistrationKind;
 use crate::ribbon::Ribbon;
 use crate::spec::CastSpec;
@@ -349,6 +350,10 @@ pub fn generate_procedure_markdown_v2(
     let mut md = String::new();
     write_header_v2(&mut md, spec);
     write_cast_geometry_v2(&mut md, ribbon);
+    write_print_orientation_v2(&mut md);
+    write_chamfer_recipe_v2(&mut md);
+    write_target_fdm_floor_v2(&mut md);
+    write_cfview_sanity_check_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md);
     write_v2_assembly_note(&mut md, ribbon);
@@ -453,6 +458,323 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
         md,
         "- Piece count per layer: **2** (`piece_0` = ribbon-negative side, \
          `piece_1` = ribbon-positive side)."
+    );
+    md.push('\n');
+}
+
+// ===== S6 — print-prep documentation ==============================
+// Per-piece print orientation (recon-1 §G-4, S6-revised), first-layer
+// chamfer recipe (§G-6 reframed under S6 orientation), Bambu A1 +
+// default + Jayo target FDM floor (§G-3), and the cf-view sanity-
+// check workflow gating §G-11 #3 before the workshop user starts
+// slicing.
+
+/// Recon-1 §G-4 originally locked cup pieces to "seam face on bed"
+/// assuming registration pins lived entirely inside cup-wall
+/// material. S3 shipped pins extending symmetrically along the
+/// ribbon binormal across the seam plane (`binormal = tangent ×
+/// split_normal`, so binormal is **perpendicular** to the seam
+/// plane), placing the workshop-visible ridge ON THE EMPTY side
+/// of the seam — which under seam-face-down would point INTO
+/// the bed (geometrically impossible). S6 revises the cup
+/// orientation to seam-face-UP and reclassifies the cup-pin
+/// chamfer band from FDM-elephant-foot driver to pin/socket
+/// geometric soft-corner. The recon §G-4 entry carries a
+/// follow-up "(revised post-S6)" decision capturing this; this
+/// section is the workshop-facing surface of that revision.
+fn write_print_orientation_v2(md: &mut String) {
+    let _ = writeln!(md, "## Per-Piece Print Orientation");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Each STL has one geometrically-correct print orientation \
+         picked from the FDM-friendly geometry contract (recon-1 \
+         §G-4 in `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md`, \
+         S6-revised — see §G-4 revision note at the end of this \
+         section)."
+    );
+    md.push('\n');
+    write_print_orientation_cup_pieces(md);
+    write_print_orientation_plug_pieces(md);
+    write_print_orientation_funnel_platform(md);
+    write_print_orientation_g4_revision(md);
+}
+
+fn write_print_orientation_cup_pieces(md: &mut String) {
+    let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Orient seam face UP, outer curved cup surface DOWN on \
+         bed.** Add a brim (5-8 mm, 1 layer) for curved-surface \
+         adhesion; supports not required (cup walls build layer-\
+         by-layer upward from a continuous bottom contour)."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "The S3 cup-pin extends symmetrically along the ribbon \
+         binormal across the seam plane — half buried in \
+         `_piece_0` material for SDF-union connectivity, half \
+         protruding past the seam face as the workshop-visible \
+         registration ridge. Binormal is **perpendicular** to the \
+         seam plane (`binormal = tangent × split_normal` by ribbon \
+         construction), so under seam-face-DOWN orientation the \
+         ridge would point INTO the bed — geometrically \
+         impossible. Seam-face-UP puts the ridge pointing UP into \
+         air (printable) and the matching `_piece_1` socket cavity \
+         opening UP as a recess (printable without internal \
+         support)."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "The cap-plane wall carrying the S4 plug-floor-lock socket \
+         is a vertical wall in this orientation; the socket prints \
+         as a horizontal SIDE recess into the vertical wall — no \
+         first-layer adhesion concern at the socket interior."
+    );
+    md.push('\n');
+}
+
+fn write_print_orientation_plug_pieces(md: &mut String) {
+    let _ = writeln!(md, "### Plug pieces (`plug_layer_*.stl`)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Orient dome end DOWN on bed, cap-plane face UP, the \
+         truncated-pyramid lock pointing UP.** Add a brim (5-8 mm, \
+         1 layer) for the dome contact patch; brief minor supports \
+         may be needed for the first dome-curvature layers."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Cap-plane-face-DOWN is INVALID** — the S4 truncated \
+         pyramid protrudes from the cap-plane face along \
+         `cap_normal` (away from plug body), so cap-plane-face-\
+         down would put the pyramid INTO the bed (geometrically \
+         impossible). Side-orient (centerline horizontal) is \
+         geometrically valid but requires extensive supports for \
+         body curvature overhangs; not recommended."
+    );
+    md.push('\n');
+}
+
+fn write_print_orientation_funnel_platform(md: &mut String) {
+    let _ = writeln!(md, "### Funnel + platform (one-time prints)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "`funnel.stl`: flange-face DOWN on bed. The cone + nipple \
+         build upward from the flange contact patch; no supports \
+         required. Print once for the whole multi-layer device — \
+         reuse across every layer's pour."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "`platform.stl`: post-S4 bare flat slab (pre-S4 T-bar pocket \
+         retired with the plug-shaft removal). Trivial orientation \
+         — any face down works; no supports."
+    );
+    md.push('\n');
+}
+
+fn write_print_orientation_g4_revision(md: &mut String) {
+    let _ = writeln!(md, "### §G-4 revision note");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Recon-1 §G-4 originally locked cup pieces to **seam face \
+         on bed** on the assumption that registration pins lived \
+         entirely inside cup-wall material with only the chamfer \
+         band touching the seam-face plane. S3 shipped pins \
+         extending symmetrically across the seam plane (binormal \
+         axis ⇒ protruding ridge on empty seam side ⇒ ridge \
+         points into bed under seam-face-down). S6 revises to \
+         seam-face-UP as documented above; the cup-pin first-layer \
+         chamfer band reclassifies from FDM-elephant-foot driver \
+         to geometric soft-corner / pin-socket lead-in (next \
+         section). The recon doc §G-4 decision carries a follow-\
+         up \"(revised post-S6)\" entry."
+    );
+    md.push('\n');
+}
+
+fn write_chamfer_recipe_v2(md: &mut String) {
+    let cup_chamfer_mm = PrismaticPinSpec::cup_pin_default().base_chamfer_m * 1000.0;
+    let plug_chamfer_mm = PrismaticPinSpec::plug_lock_default().base_chamfer_m * 1000.0;
+    let _ = writeln!(md, "## First-Layer Chamfer Recipe");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Recon-1 §G-6 envisioned the chamfer band on each \
+         `PrismaticPin` as bed-adjacent FDM-elephant-foot relief. \
+         Under the S6-revised cup orientation (seam-face-UP) and \
+         the dome-end-DOWN plug orientation, the chamfer band on \
+         **both** pin/socket pairs lives at the `-axis_unit` end \
+         of the pin extent — deep inside material, never at the \
+         bed-touching first layer, never workshop-visible from \
+         outside the printed part. The chamfer is reframed as \
+         **SDF/MC topology continuity at the deepest-in-material \
+         corner**, retained at the §G-6 typed-range default \
+         pending S7 caliper data."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Cup-pin chamfer** ({cup_chamfer_mm:.2} mm default per \
+         `PrismaticPinSpec::cup_pin_default`, typed-range §G-6 / \
+         pinned post-S7 §G-8): retained at default. The chamfer \
+         band on the pin SDF lives at the `-binormal` end (deepest \
+         in `_piece_0` cup-wall material, between mid-wall and the \
+         outer cup surface). The matching socket's chamfer band is \
+         on the `-binormal` (air) side of the seam plane on \
+         `_piece_1` and carves into empty space (no-op subtract); \
+         the actual cavity in `_piece_1` material is the unchamfered \
+         main-taper frustum. Bambu A1 + default + Jayo elephant \
+         foot at the cup's outer-surface first layer is absorbed by \
+         the brim, not by any pin sub-feature."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Plug-lock chamfer** ({plug_chamfer_mm:.2} mm default per \
+         `PrismaticPinSpec::plug_lock_default`, typed-range §G-6 / \
+         pinned post-S7 §G-8): retained at default. Under the dome-\
+         end-DOWN plug orientation `+axis_unit = +cap_normal` \
+         points UP, so the chamfer band at `-axis_unit` lives \
+         **inside the plug body** (below the cap-plane face). The \
+         workshop-visible pyramid above the cap-plane is the \
+         unchamfered main-taper portion only. The matching socket's \
+         chamfer band on each cup-piece carves into the cup body \
+         cavity (no-op subtract) per the cup-pin pattern."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Slicer-level elephant-foot compensation** (Bambu Studio \
+         / PrusaSlicer / OrcaSlicer): set to **0.0 mm**. The \
+         pin/socket diametral + axial clearances are tuned by \
+         `PrismaticPinSpec` (S7 caliper pass per §G-8); adding \
+         slicer-level compensation on top would tighten the fit \
+         past the spec budget and the per-layer cup-wall surface \
+         past spec wall-thickness."
+    );
+    md.push('\n');
+}
+
+fn write_target_fdm_floor_v2(md: &mut String) {
+    let _ = writeln!(md, "## Target FDM Floor (Bambu A1 + Default + Jayo)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Recon-1 §G-3 picks **Bambu A1 + Bambu Studio default settings \
+         + Jayo generic PLA** as the consumer-FDM tolerance floor for \
+         the mating-feature geometry. Print mold + plug + funnel + \
+         platform STLs against this baseline as the regression \
+         target. Calibrated Bambu Lab (X1C / P1S with PEI sheet + \
+         tuned profile + Bambu PLA) is acceptable as a side-\
+         comparison reference but is NOT the regression target — \
+         chasing calibrated-printer tolerances would let the geometry \
+         drift past Bambu A1 + default capabilities."
+    );
+    md.push('\n');
+    let _ = writeln!(md, "Slicer baseline:");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **Layer height**: 0.2 mm (Bambu Studio default).\n\
+         - **Wall loops**: 3 (default).\n\
+         - **Infill**: 15% gyroid (default; mold pieces don't need \
+         structural infill — silicone pour pressure is low).\n\
+         - **Supports**: none for cup pieces (continuous bottom \
+         contour); brim 5-8 mm 1-layer for cup outer-surface \
+         adhesion; brim + brief dome-curvature supports for plug.\n\
+         - **Elephant-foot compensation**: 0.0 mm (geometry \
+         includes chamfer bands per the previous section).\n\
+         - **Filament**: Jayo PLA generic profile (~220 °C nozzle, \
+         60 °C bed); equivalent generic-PLA profile if Jayo \
+         unavailable."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "`PrismaticPinSpec::cup_pin_default` + \
+         `PrismaticPinSpec::plug_lock_default` diametral + axial \
+         clearances default to the §G-6 typed-range mid-points; \
+         exact values are pinned to caliper data from the S7 \
+         workshop-physical Bambu A1 calibration pass."
+    );
+    md.push('\n');
+}
+
+fn write_cfview_sanity_check_v2(md: &mut String) {
+    let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Before slicing, open each STL in cf-view (workshop laptop \
+         viewer) and verify the recon-1 §G-11 #3 visual gate:"
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
+         - Pin: trapezoidal-cross-section ridge protruding from the \
+         seam face of `_piece_0` (visible as small rectangular \
+         bumps); flat angled lateral faces, not cylindrical.\n   \
+         - Socket: matching trapezoidal cavity on `_piece_1` seam \
+         face.\n   \
+         - No cylindrical pin remnants (pre-S3 cylinder primitive \
+         retired).\n   \
+         - No T-bar / stem / T-slot remnants on the cap-plane wall \
+         (pre-S4 plug-shaft mechanism retired).\n   \
+         - Cap-plane wall carries a clean rectangular plug-floor-\
+         lock socket recess (S4) — recessed cavity, NOT a through-\
+         hole."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "2. **Plug pieces** (`plug_layer_*.stl`):\n   \
+         - Cap-plane face carries a single truncated-pyramid lock \
+         protruding from the cap-plane face along `cap_normal` \
+         (S4); flat tapered lateral faces, sharp edges.\n   \
+         - No T-bar / stem / cylindrical-shaft remnants (pre-S4 \
+         geometry retired); no separate dome-pin (pre-S4 dome-pin \
+         gone too).\n   \
+         - Dome end is smooth and closed; the workshop-visible \
+         pyramid above the cap-plane is the unchamfered main-taper \
+         only (the chamfer band lives inside the plug body and is \
+         not visible from outside)."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "3. **Funnel** (`funnel.stl`): flange + cone + nipple as one \
+         connected body; nipple Ø matches the cup pour-gate Ø minus \
+         the funnel's asymmetric diametral clearance (`cf-cast` \
+         `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). No floating \
+         components."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "4. **Platform** (`platform.stl`): bare flat slab (post-S4 \
+         pocket retirement). If the slab shows ANY pocket / cavity \
+         / protrusion, flag a regression — S4 retired all features."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "If any of the above checks fail, do NOT proceed to print — \
+         file a regression issue with a cf-view screenshot. \
+         §G-11 #1 (§R1 connectivity inspector) + §G-11 #2 \
+         (`PrismaticPin` bit-precise fit invariant) pass on cargo \
+         tests; this cf-view gate is the workshop-user-physical \
+         third gate before the Bambu A1 print gate (§G-11 #4)."
     );
     md.push('\n');
 }

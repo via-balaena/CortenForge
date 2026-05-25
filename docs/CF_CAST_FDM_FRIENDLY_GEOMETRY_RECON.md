@@ -358,6 +358,47 @@ procedure.rs + slicing-aware design. Specifically:
 > (load-bearing for cup-pin; plug-pyramid chamfer depends on S4
 > orientation pick). Orientation-agnostic geometry REJECTED.
 
+> **Decision §G-4 (revised post-S6, 2026-05-24).** **Cup-piece
+> print orientation REVISED to seam-face-UP** (outer curved cup
+> surface DOWN on bed, brim recommended). The original "seam face
+> on bed" lock assumed registration pins lived entirely inside
+> cup-wall material with only the chamfer band touching the seam-
+> face plane. S3 shipped pins extending **symmetrically across the
+> seam plane** along the ribbon binormal (`binormal = tangent ×
+> split_normal`, perpendicular to the seam plane): half buried in
+> Negative cup-wall material for SDF-union connectivity, half
+> protruding past the seam face as the workshop-visible registration
+> ridge. Under the original seam-face-DOWN orientation that
+> protruding ridge would point INTO the bed — geometrically
+> impossible. Seam-face-UP puts the ridge pointing UP into air
+> (printable) and the matching Positive socket cavity opening UP
+> as a recess (printable without internal support). The plug
+> orientation pick (dome-end-DOWN, cap-plane-UP, pyramid pointing
+> UP) and cap-plane-face-DOWN-INVALID call-out from the original
+> decision carry through unchanged. **First-layer chamfer
+> reclassified on BOTH pin/socket pairs**: under seam-face-UP the
+> cup-pin chamfer band at `-binormal` is buried inside cup
+> material (between mid-wall and the outer cup surface, not at
+> the bed-touching first layer which is the cup's outer curved
+> surface); under dome-end-DOWN the plug-lock chamfer band at
+> `-axis_unit` = `-cap_normal` lives inside the plug body (below
+> the cap-plane face), and the workshop-visible pyramid above
+> the cap-plane is the unchamfered main-taper only. Both sockets'
+> chamfer bands carve into empty space on the air side of the
+> seam (no-op subtract); actual cavities in mating-piece material
+> are unchamfered main-taper frusta. The chamfer is reframed as
+> **SDF/MC topology continuity at the deepest-in-material corner**
+> rather than FDM-elephant-foot driver. Brim absorbs the cup's
+> outer-surface first-layer adhesion concern; slicer-level
+> elephant-foot compensation stays at 0.0 mm so the spec's pin/
+> socket clearances + cup-wall-thickness aren't double-corrected.
+> The chamfer is retained at the §G-6 typed-range default; S7
+> caliper data may confirm or refute whether to zero out the
+> band. S6 surfaces the revised orientation + chamfer recipe in
+> `design/cf-cast/src/procedure.rs` §"Per-Piece Print Orientation"
+> + §"First-Layer Chamfer Recipe" sections. No production-code
+> change; doc-only revision.
+
 ### §G-5 — Architectural primitive design: `PrismaticPin`
 
 Today's primitive (post-S6): `CylinderParent { center_m, axis_unit,

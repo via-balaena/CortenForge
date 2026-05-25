@@ -2611,11 +2611,72 @@ mod tests {
         // v2-specific sections.
         assert!(md.contains("## Cast Geometry"));
         assert!(md.contains("## v2 Mold Assembly"));
+        // S6 print-prep sections (recon-1 §G-3 / §G-4 / §G-6 / §G-11 #3).
+        assert!(md.contains("## Per-Piece Print Orientation"));
+        assert!(md.contains("## First-Layer Chamfer Recipe"));
+        assert!(md.contains("## Target FDM Floor (Bambu A1 + Default + Jayo)"));
+        assert!(md.contains("## cf-view Sanity-Check Workflow"));
         // Sections shared with v1.
         assert!(md.contains("## Materials Summary"));
         assert!(md.contains("## Generic Smooth-On Guidance"));
         assert!(md.contains("## Per-Layer Procedure"));
         assert!(md.contains("## Mass Budget"));
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_includes_print_orientation_revision() {
+        // S6 anchors the §G-4 revision to seam-face-UP for cup pieces
+        // and dome-end-DOWN for plug pieces (cap-plane-face-DOWN
+        // explicitly called out as INVALID). These vocabulary
+        // anchors gate any future rewrite that silently flips the
+        // orientation guidance back to recon-1 §G-4's original
+        // (geometrically-falsified) seam-face-on-bed lock.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("Orient seam face UP"),
+            "cup-piece seam-face-UP guidance missing in: {md}"
+        );
+        assert!(
+            md.contains("Orient dome end DOWN"),
+            "plug-piece dome-end-DOWN guidance missing in: {md}"
+        );
+        assert!(
+            md.contains("Cap-plane-face-DOWN is INVALID"),
+            "plug cap-plane-face-DOWN INVALID call-out missing in: {md}"
+        );
+        assert!(
+            md.contains("§G-4 revision"),
+            "§G-4 revision header missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_lists_target_fdm_floor() {
+        // S6 anchors the recon-1 §G-3 consumer-FDM tolerance floor —
+        // Bambu A1 + Bambu Studio default settings + Jayo PLA. These
+        // exact vocabulary anchors gate any future rewrite that
+        // silently drifts the regression target toward
+        // calibrated-printer tolerances.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(md.contains("Bambu A1"), "Bambu A1 anchor missing in: {md}");
+        assert!(
+            md.contains("default settings"),
+            "default settings anchor missing in: {md}"
+        );
+        assert!(md.contains("Jayo"), "Jayo filament anchor missing in: {md}");
+        // Slicer baseline elephant-foot compensation must be 0.0 mm
+        // (the geometry includes chamfer bands per S6 §"First-Layer
+        // Chamfer Recipe"; non-zero slicer compensation would
+        // double-correct and tighten the pin/socket fit beyond
+        // the spec's diametral clearance budget).
+        assert!(
+            md.contains("Elephant-foot compensation**: 0.0 mm"),
+            "0.0 mm elephant-foot compensation guidance missing in: {md}"
+        );
     }
 
     #[test]

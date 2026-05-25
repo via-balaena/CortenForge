@@ -67,13 +67,22 @@
 //! unioned along the shared `axis = -half_length + chamfer` plane:
 //!
 //! - **Chamfer band** (axis ∈ `[-half_length, -half_length + chamfer]`):
-//!   lateral extent expands from `(base - chamfer)` at the bed-facing
-//!   bottom to `base` at the top. Absorbs FDM first-layer squish
-//!   (elephant foot) so the printed pin's load-bearing widest section
-//!   sits **above** the bed splay region.
+//!   lateral extent expands from `(base - chamfer)` at the
+//!   `-axis_unit` end to `base` at the top of the band. Originally
+//!   spec'd as FDM first-layer elephant-foot relief at the bed-
+//!   adjacent face (recon-1 §G-6); S6 procedure.rs reclassifies the
+//!   band as SDF/MC topology continuity at the deepest-in-material
+//!   corner under the revised seam-face-UP cup orientation +
+//!   dome-end-DOWN plug orientation. On both pin/socket pairs the
+//!   `-axis_unit` end lives deep inside mating-piece material (or
+//!   for the socket-side air-side carve, in empty space), never at
+//!   the bed-touching first layer and never workshop-visible from
+//!   outside the print. The SDF geometry is unchanged — only the
+//!   workshop interpretation shifted.
 //! - **Main taper** (axis ∈ `[-half_length + chamfer, +half_length]`):
-//!   lateral extent shrinks from `base` at the bottom to `tip` at the
-//!   top — the workshop-visible self-centering wedge.
+//!   lateral extent shrinks from `base` at the `-axis_unit` side of
+//!   the boundary to `tip` at the `+axis_unit` end — the workshop-
+//!   visible self-centering wedge.
 //!
 //! With chamfer disabled (`base_chamfer_m == 0.0`), the chamfer band
 //! is omitted and the main taper spans the full half-length.
@@ -208,10 +217,15 @@ impl PrismaticPinSpec {
     /// - lateral extents (both base + tip, both axes) +=
     ///   `diametral_clearance_m / 2`
     /// - `half_length_m` += `axial_clearance_m / 2`
-    /// - chamfer is unchanged (the socket mouth inherits the same
-    ///   chamfer dimension so the pin's chamfered base lines up
-    ///   with the socket's chamfered mouth at the bed-adjacent
-    ///   face)
+    /// - chamfer is unchanged (the socket inherits the same chamfer
+    ///   dimension so the pin's chamfered `-axis_unit` base lines up
+    ///   with the socket's chamfered `-axis_unit` mouth at the
+    ///   shared deepest-engagement end of the pin/socket pair;
+    ///   under the S6-revised cup orientation + dome-end-DOWN plug
+    ///   orientation the band is SDF/MC topology continuity at the
+    ///   deepest-in-material corner rather than the bed-adjacent
+    ///   FDM-elephant-foot relief originally envisioned — see
+    ///   `procedure.rs` §"First-Layer Chamfer Recipe")
     #[must_use]
     pub fn socket_params(&self, pose: PrismaticPinPose) -> PrismaticPinParams {
         let half_diametral = self.diametral_clearance_m / 2.0;
