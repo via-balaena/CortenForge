@@ -142,7 +142,8 @@
 use cf_design::Solid;
 use nalgebra::{Point3, UnitVector3, Vector3};
 
-use crate::prismatic_pin::{PrismaticPinPose, PrismaticPinSpec, build_prismatic_pin_sdf};
+use crate::mesh_csg::MatingTransform;
+use crate::prismatic_pin::{PrismaticPinPose, PrismaticPinSpec};
 use crate::ribbon::{PieceSide, Ribbon};
 
 /// Cup-pin registration spec — wraps the SDF-side
@@ -227,22 +228,23 @@ const PIN_RAY_MAX_REACH_M: f64 = 1.0;
 /// legitimate bound.
 const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 
-/// Build the per-piece cup-pin SDF composition list for the ribbon's
-/// registration kind.
+/// Build the per-piece cup-pin mesh-CSG transform list for the
+/// ribbon's registration kind.
 ///
-/// Returns a `Vec<Solid>` of [`crate::PrismaticPin`][`crate::prismatic_pin`]
-/// solids:
+/// Returns a `Vec<MatingTransform>` of
+/// [`MatingTransform::UnionTruncatedPyramid`] (Negative) or
+/// [`MatingTransform::SubtractTruncatedPyramid`] (Positive)
+/// transforms, each consuming a [`PrismaticPinParams`] payload:
 ///
-/// - [`PieceSide::Negative`] returns **pin** solids (per
-///   [`PrismaticPinSpec::pin_params`]) — callers UNION each into the
-///   per-piece [`Solid`] pre-MC.
-/// - [`PieceSide::Positive`] returns **socket** solids (per
-///   [`PrismaticPinSpec::socket_params`], same pose, extents inflated
-///   by the symmetric `/2` clearance convention) — callers SUBTRACT
-///   each from the per-piece [`Solid`] pre-MC.
-///
-/// `compose_piece_solid` (the only production caller) consumes both
-/// modes uniformly per [`PieceSide`].
+/// - [`PieceSide::Negative`] emits **`UnionTruncatedPyramid`** ops
+///   (pin extents per [`PrismaticPinSpec::pin_params`]) — applied
+///   POST-MC by [`crate::apply_mating_transforms`], producing
+///   workshop-visible truncated-pyramid ridges on the seam face.
+/// - [`PieceSide::Positive`] emits **`SubtractTruncatedPyramid`** ops
+///   (socket extents per [`PrismaticPinSpec::socket_params`], same
+///   pose, extents inflated by the symmetric `/2` clearance
+///   convention) — applied POST-MC, carving matching cavities into
+///   the seam face.
 ///
 /// Returns an empty `Vec` when:
 /// - `ribbon.registration` is [`RegistrationKind::None`];
@@ -258,20 +260,34 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 /// split-normal (orthogonal to binormal by construction). Pin
 /// extends `±half_length_m` along binormal, symmetric across the
 /// seam plane — the `-binormal` half overlaps cup-wall material for
-/// SDF-union connectivity under the recon-4 (P) seam architecture,
-/// the `+binormal` half protrudes as the workshop-visible ridge.
+/// mesh-CSG-union connectivity (CONTAINED placement per the recon-4
+/// (P) paradigm-boundary framework — see
+/// [[project-cf-cast-sdf-meshcsg-paradigm-boundary]]), the
+/// `+binormal` half protrudes as the workshop-visible ridge.
+///
+/// # Architecture note (2026-05-24 FDM-friendly arc salvage)
+///
+/// Pre-salvage this function was `build_registration_sdf_ops`
+/// returning `Vec<Solid>` for pre-MC SDF-side composition (recon-1
+/// §G-12 #2). The post-mortem found SDF-side composition silently
+/// destroyed workshop-visible feature fidelity at production 3 mm
+/// MC cell size (pin features sub-MC-cell → eaten by quantization).
+/// Post-salvage this restores the prior mating-features arc S5
+/// architecture: POST-MC mesh-CSG primitives carry their own native
+/// hull-resolution geometry, independent of the bulk MC cell size.
+/// See [[feedback-read-prior-arc-memory-before-architectural-decisions]].
 ///
 /// `layer_body` and `bounding_region` are the same per-layer
 /// [`Solid`]s the caller passes to
 /// [`crate::piece::compose_piece_solid`]; the cup-wall annulus is
 /// `bounding_region ∖ layer_body` at this layer.
 #[must_use]
-pub fn build_registration_sdf_ops(
+pub fn build_registration_transforms(
     ribbon: &Ribbon,
     layer_body: &Solid,
     bounding_region: &Solid,
     side: PieceSide,
-) -> Vec<Solid> {
+) -> Vec<MatingTransform> {
     let spec = match &ribbon.registration {
         RegistrationKind::None => return Vec::new(),
         RegistrationKind::Pins(spec) => spec,
@@ -281,7 +297,7 @@ pub fn build_registration_sdf_ops(
     }
     let split_vec = ribbon.split_normal.as_vector();
     let lateral_unit = UnitVector3::new_unchecked(split_vec);
-    let mut solids = Vec::with_capacity(spec.arc_fractions.len() * 2);
+    let mut transforms = Vec::with_capacity(spec.arc_fractions.len() * 2);
     for &t in &spec.arc_fractions {
         let Some((center, _tangent, binormal)) = ribbon.sample_at_arc_fraction(t) else {
             return Vec::new();
@@ -307,10 +323,14 @@ pub fn build_registration_sdf_ops(
                 PieceSide::Negative => spec.pin_spec.pin_params(pose),
                 PieceSide::Positive => spec.pin_spec.socket_params(pose),
             };
-            solids.push(build_prismatic_pin_sdf(&params));
+            let transform = match side {
+                PieceSide::Negative => MatingTransform::UnionTruncatedPyramid { params },
+                PieceSide::Positive => MatingTransform::SubtractTruncatedPyramid { params },
+            };
+            transforms.push(transform);
         }
     }
-    solids
+    transforms
 }
 
 /// Walk `dir` outward from `origin` to find the distance `d ≥ 0` at
@@ -392,9 +412,35 @@ mod tests {
 
     use super::*;
     use crate::piece::RIBBON_PIECE_OVERLAP_M;
+    use crate::prismatic_pin::build_prismatic_pin_sdf;
     use crate::ribbon::{Ribbon, SplitNormal};
     use approx::assert_abs_diff_eq;
     use nalgebra::Point3;
+
+    /// Test-only SDF-side shim — re-derives the pin SDFs from the
+    /// `build_registration_transforms` output for assertions that
+    /// probe SDF values at world coords. Production no longer
+    /// composes pin SDFs into the per-piece Solid pre-MC (post-2026-
+    /// 05-24 salvage); these test-only SDFs let the existing pose-
+    /// math assertions keep working while a follow-up session
+    /// migrates them to transform-parameter inspection.
+    fn build_registration_sdf_ops(
+        ribbon: &Ribbon,
+        layer_body: &Solid,
+        bounding_region: &Solid,
+        side: PieceSide,
+    ) -> Vec<Solid> {
+        build_registration_transforms(ribbon, layer_body, bounding_region, side)
+            .into_iter()
+            .map(|t| match t {
+                MatingTransform::UnionTruncatedPyramid { params }
+                | MatingTransform::SubtractTruncatedPyramid { params } => {
+                    build_prismatic_pin_sdf(&params)
+                }
+                other => panic!("registration emitted unexpected transform variant: {other:?}"),
+            })
+            .collect()
+    }
 
     fn straight_x_ribbon() -> Ribbon {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];

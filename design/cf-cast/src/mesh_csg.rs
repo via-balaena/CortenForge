@@ -59,6 +59,7 @@ use nalgebra::{Isometry3, Point3, Rotation3, Translation3, UnitVector3, Vector3}
 
 use crate::error::{CastError, CastTarget};
 use crate::mesher::METERS_TO_MM;
+use crate::prismatic_pin::PrismaticPinParams;
 
 /// Cross-piece shared geometry triple.
 ///
@@ -164,6 +165,35 @@ pub enum MatingTransform {
         /// Cylinder geometry payload.
         params: CylinderParams,
     },
+    /// Mesh-union of a `hull_pts` truncated-pyramid primitive matching
+    /// the [`PrismaticPinParams`] shape. **Production emission
+    /// pattern for cup-pin and plug-floor-lock pairs post-2026-05-24
+    /// FDM-friendly arc salvage** — replaces the SDF-side
+    /// composition that S3/S4 of the FDM-friendly arc had shipped,
+    /// which silently degraded workshop-visible feature fidelity at
+    /// production 3 mm MC cell size (pin features 1.5 mm half-extent
+    /// → sub-MC-cell → eaten by quantization → workshop user's
+    /// cf-view screenshot 2026-05-24 showed features GONE on iter-3
+    /// STLs). Restores the mating-features arc S5 architecture
+    /// pattern (POST-MC primitives carry their own native mesh
+    /// resolution; pose discipline ensures CONTAINED / PROTRUDING
+    /// placement per the recon-4 (P) paradigm-boundary framework).
+    UnionTruncatedPyramid {
+        /// `PrismaticPin` geometry + pose payload.
+        params: PrismaticPinParams,
+    },
+    /// Mesh-subtract of a `hull_pts` truncated-pyramid primitive
+    /// matching the [`PrismaticPinParams`] shape. Sibling of
+    /// [`Self::UnionTruncatedPyramid`] — used for the cup-pin
+    /// SOCKET on the Positive cup-piece + the cup-side plug-floor-
+    /// lock socket carve. Inflated extents per
+    /// [`PrismaticPinSpec::socket_params`][`crate::PrismaticPinSpec::socket_params`]
+    /// carry the symmetric `/2` clearance convention from the S5
+    /// mating-features arc.
+    SubtractTruncatedPyramid {
+        /// `PrismaticPin` geometry + pose payload.
+        params: PrismaticPinParams,
+    },
 }
 
 /// Apply mating-feature mesh-CSG operations between marching-cubes
@@ -223,6 +253,14 @@ fn apply_one(m: &Manifold, t: &MatingTransform) -> Manifold {
             let cyl = build_cylinder_along_axis(&params.parent, params.radius_m, params.segments);
             m.difference(&cyl)
         }
+        MatingTransform::UnionTruncatedPyramid { params } => {
+            let pyramid = build_truncated_pyramid_via_hull_pts(params);
+            m.union(&pyramid)
+        }
+        MatingTransform::SubtractTruncatedPyramid { params } => {
+            let pyramid = build_truncated_pyramid_via_hull_pts(params);
+            m.difference(&pyramid)
+        }
     }
 }
 
@@ -260,6 +298,123 @@ pub fn build_cylinder_along_axis(
     );
     let iso = pose_from_z_axis(parent.axis, center_mm);
     z_aligned.transform(&affine_12_from_isometry(&iso))
+}
+
+/// Build a [`Manifold`] truncated-pyramid (with optional chamfer
+/// band) via `Manifold::hull_pts`, placed at the world-frame pose
+/// encoded in `params.pose`.
+///
+/// Geometry in pin-local coords (mm — converted from `params`'s
+/// meters at build time):
+///
+/// - Pin-local +Y = `pose.axis_unit` direction in world.
+/// - Pin-local +X = `pose.lateral_unit` direction in world.
+/// - Pin-local +Z = `lateral × axis` (derived, matches the
+///   determinant-+1 rotation contract in
+///   [`crate::PrismaticPinPose::rotation_local_to_world`]).
+///
+/// Corners:
+///
+/// - `params.base_chamfer_m == 0.0` (no chamfer band):
+///   - Base (y = `-half_length_mm`): 4 corners at
+///     `(±base_extent_x, _, ±base_extent_y)`.
+///   - Tip (y = `+half_length_mm`): 4 corners at
+///     `(±tip_extent_x, _, ±tip_extent_y)`.
+///   - 8 hull points total.
+/// - `params.base_chamfer_m > 0.0` (with chamfer band):
+///   - Base inset (y = `-half_length_mm`): 4 corners at
+///     `(±(base_extent_x - chamfer), _, ±(base_extent_y - chamfer))`.
+///   - Chamfer top (y = `-half_length_mm + chamfer_mm`): 4 corners
+///     at `(±base_extent_x, _, ±base_extent_y)`.
+///   - Tip (y = `+half_length_mm`): 4 corners at
+///     `(±tip_extent_x, _, ±tip_extent_y)`.
+///   - 12 hull points total.
+///
+/// The hull is then transformed from pin-local to world coords via
+/// the rotation built from `(pose.lateral_unit, pose.axis_unit,
+/// lateral × axis)` as the rotation matrix's column basis +
+/// translation by `pose.center_m`. Matches the
+/// [`crate::PrismaticPinPose`] rotation-local-to-world contract.
+///
+/// # Determinism
+///
+/// Two builders consuming the same [`PrismaticPinParams`] produce
+/// bit-equal Manifolds — same hull point set in same order, same
+/// pose transform, same `Manifold::hull_pts` output. Cross-piece
+/// pin/socket pair (Negative pin + Positive socket consuming
+/// inflated-extent socket params with the same pose) shares the
+/// pose triple; geometric match across pieces is preserved.
+///
+/// # Panics
+///
+/// Panics if `params.base_chamfer_m >= min(base_half_extents_m.x,
+/// base_half_extents_m.y)` — the chamfer would invert the base
+/// inset (`base - chamfer < 0`). Caller must ensure
+/// `PrismaticPinSpec::cup_pin_default` / `plug_lock_default`
+/// envelope keeps `chamfer < base_half` per recon-1 §G-6.
+#[must_use]
+pub fn build_truncated_pyramid_via_hull_pts(params: &PrismaticPinParams) -> Manifold {
+    let half_length_mm = params.half_length_m * METERS_TO_MM;
+    let base_lat_mm = params.base_half_extents_m.x * METERS_TO_MM;
+    let base_third_mm = params.base_half_extents_m.y * METERS_TO_MM;
+    let tip_lat_mm = params.tip_half_extents_m.x * METERS_TO_MM;
+    let tip_third_mm = params.tip_half_extents_m.y * METERS_TO_MM;
+    let chamfer_mm = params.base_chamfer_m * METERS_TO_MM;
+
+    let mut pts: Vec<[f64; 3]> = Vec::new();
+    if chamfer_mm <= 0.0 {
+        for s_third in [-1.0, 1.0] {
+            for s_lat in [-1.0, 1.0] {
+                pts.push([
+                    s_lat * base_lat_mm,
+                    -half_length_mm,
+                    s_third * base_third_mm,
+                ]);
+            }
+        }
+    } else {
+        assert!(
+            chamfer_mm < base_lat_mm && chamfer_mm < base_third_mm,
+            "chamfer {chamfer_mm} mm must be strictly less than both base half-extents \
+             (lat={base_lat_mm}, third={base_third_mm}) — caller envelope violation",
+        );
+        let inset_lat = base_lat_mm - chamfer_mm;
+        let inset_third = base_third_mm - chamfer_mm;
+        for s_third in [-1.0, 1.0] {
+            for s_lat in [-1.0, 1.0] {
+                pts.push([s_lat * inset_lat, -half_length_mm, s_third * inset_third]);
+                pts.push([
+                    s_lat * base_lat_mm,
+                    -half_length_mm + chamfer_mm,
+                    s_third * base_third_mm,
+                ]);
+            }
+        }
+    }
+    for s_third in [-1.0, 1.0] {
+        for s_lat in [-1.0, 1.0] {
+            pts.push([s_lat * tip_lat_mm, half_length_mm, s_third * tip_third_mm]);
+        }
+    }
+
+    let local_pyramid = Manifold::hull_pts(&pts);
+
+    // Pose pin-local → world. Mirrors PrismaticPinPose::rotation_local_to_world:
+    // rotation matrix has columns = (lateral_unit, axis_unit, lateral × axis).
+    // Translation is pose.center_m converted to mm.
+    let pose = &params.pose;
+    let lateral = pose.lateral_unit.into_inner();
+    let axis = pose.axis_unit.into_inner();
+    let third = lateral.cross(&axis);
+    let rotation_matrix = nalgebra::Matrix3::from_columns(&[lateral, axis, third]);
+    let rotation = Rotation3::from_matrix_unchecked(rotation_matrix);
+    let center_mm = Point3::new(
+        pose.center_m.x * METERS_TO_MM,
+        pose.center_m.y * METERS_TO_MM,
+        pose.center_m.z * METERS_TO_MM,
+    );
+    let iso = Isometry3::from_parts(Translation3::from(center_mm.coords), rotation.into());
+    local_pyramid.transform(&affine_12_from_isometry(&iso))
 }
 
 /// Build a slab `Manifold` for half-space intersection.

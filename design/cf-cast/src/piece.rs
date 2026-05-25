@@ -98,7 +98,7 @@ use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
 use crate::plug::build_plug_lock_socket_sdf;
 use crate::pour::build_pour_gate_transforms;
-use crate::registration::build_registration_sdf_ops;
+use crate::registration::build_registration_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
 
 /// Inter-piece seam overlap distance applied at the
@@ -207,23 +207,6 @@ pub fn compose_piece_solid(
         .subtract(layer_body.clone())
         .intersect(halfspace);
 
-    // S3 (FDM-friendly geometry arc) inter-piece registration pins
-    // / sockets — SDF-side composition per recon-1 §G-12 #2.
-    // Negative unions each pin solid into the half-shell (`-binormal`
-    // pin half overlaps cup-wall material for SDF-union connectivity;
-    // `+binormal` half protrudes past the half-shell seam face as
-    // the workshop-visible ridge). Positive subtracts each socket
-    // solid (matching cavity carved from Positive cup-wall material;
-    // socket extents inflated per the symmetric `/2` clearance
-    // convention). Empty Vec when `ribbon.registration` is `None`.
-    let registration_ops = build_registration_sdf_ops(ribbon, layer_body, bounding_region, side);
-    for op in registration_ops {
-        base_piece = match side {
-            PieceSide::Negative => base_piece.union(op),
-            PieceSide::Positive => base_piece.subtract(op),
-        };
-    }
-
     // S4 (FDM-friendly geometry arc) plug-floor-lock socket —
     // side-agnostic SDF subtract per recon-1 §G-1 / §G-5 (3-piece
     // shared-primitive invariant analog). The pyramid axis is
@@ -232,16 +215,33 @@ pub fn compose_piece_solid(
     // halfspace intersect bisects the socket through the seam
     // plane by construction. `None` when `ribbon.plug_pins` is
     // `PlugPinKind::None` or the cap-plane anchor is unresolvable.
+    //
+    // **2026-05-24 SALVAGE BOOKMARK:** S4 plug-floor-lock SDF
+    // composition is still in place pending its own mesh-CSG
+    // migration in the next session. Cup-pin (S3) is migrated to
+    // mesh-CSG transforms below; plug-lock follows the same pattern.
     if let Some(plug_lock_socket) = build_plug_lock_socket_sdf(ribbon) {
         base_piece = base_piece.subtract(plug_lock_socket);
     }
 
-    // S7 pour-gate + air-vent SubtractCylinders (the lone mesh-CSG
-    // mating-feature path post-S4 — pour-gate cylinder cross-
-    // section is fine-feature mesh-CSG against the bulk-welded
-    // half-shell, which production iter-1 has shown manifold3d
-    // handles cleanly).
-    let transforms = build_pour_gate_transforms(ribbon);
+    // Post-mortem salvage (2026-05-24): cup-pin registration is now
+    // emitted as POST-MC mesh-CSG transforms via
+    // [`MatingTransform::UnionTruncatedPyramid`] /
+    // [`SubtractTruncatedPyramid`]. Restores the prior
+    // mating-features arc S5 architecture (POST-MC primitives carry
+    // their own native hull resolution; pose discipline per the
+    // recon-4 (P) framework keeps placement CONTAINED / PROTRUDING).
+    // See [[feedback-read-prior-arc-memory-before-architectural-decisions]]
+    // for the post-mortem on why pre-MC SDF composition (the prior
+    // S3 architecture) was abandoned.
+    let mut transforms = build_pour_gate_transforms(ribbon);
+    transforms.extend(build_registration_transforms(
+        ribbon,
+        layer_body,
+        bounding_region,
+        side,
+    ));
+
     Ok((base_piece, transforms))
 }
 
