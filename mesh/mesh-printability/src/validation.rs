@@ -7,6 +7,9 @@ use std::collections::VecDeque;
 
 use hashbrown::{HashMap, HashSet};
 use mesh_types::{IndexedMesh, Point3, Vector3};
+use parry3d_f64::math::{Point as ParryPoint, Real as ParryReal, Vector as ParryVector};
+use parry3d_f64::query::{Ray, RayCast};
+use parry3d_f64::shape::TriMesh;
 
 use crate::config::{PrintTechnology, PrinterConfig};
 use crate::error::{PrintabilityError, PrintabilityResult};
@@ -778,16 +781,82 @@ fn is_watertight_and_consistent_winding(mesh: &IndexedMesh) -> bool {
     directed.values().all(|&c| c <= 1)
 }
 
+/// Build a `parry3d_f64::shape::TriMesh` (BVH-backed) from an
+/// [`IndexedMesh`].
+///
+/// Used by [`flag_thin_wall_faces`]'s BVH-accelerated ray-cast path
+/// per `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-12 S1. Returns
+/// `None` if `parry3d_f64`'s `TriMesh` builder would reject the input
+/// (empty / out-of-bounds indices / non-finite vertices); the caller
+/// falls back to a no-walls outcome which matches the watertight
+/// precondition's behavior.
+///
+/// **Precision:** uses `parry3d-f64` (the f64 sibling of `parry3d`)
+/// because the f32 sibling produces ~1e-7 mm drift in Möller-Trumbore
+/// which crosses the `min_wall_thickness` boundary at the 1.0 mm
+/// borderline test fixture. f64 keeps the BVH path bit-aligned to
+/// the f64 reference path's Möller-Trumbore. Tradeoff: ~2× the
+/// parry3d build cost in the workspace (parry3d remains for
+/// `mesh-sdf`'s f32 SDF queries which don't hit threshold-boundary
+/// precision issues at MC cell scales).
+fn build_parry_trimesh(mesh: &IndexedMesh) -> Option<TriMesh> {
+    // Defensive preconditions — `parry3d_f64::shape::TriMesh::new`
+    // panics on empty vertices / out-of-bounds indices / non-finite
+    // coordinates. Production callers reach this fn through
+    // `check_thin_walls`'s watertight precondition (which implies
+    // all of these), but the degenerate-input regression test
+    // directly probes this entry. Return `None` rather than panic.
+    if mesh.vertices.is_empty() || mesh.faces.is_empty() {
+        return None;
+    }
+    let n_verts = mesh.vertices.len();
+    for face in &mesh.faces {
+        if (face[0] as usize) >= n_verts
+            || (face[1] as usize) >= n_verts
+            || (face[2] as usize) >= n_verts
+        {
+            return None;
+        }
+    }
+    for v in &mesh.vertices {
+        if !v.x.is_finite() || !v.y.is_finite() || !v.z.is_finite() {
+            return None;
+        }
+    }
+    let vertices: Vec<ParryPoint<ParryReal>> = mesh
+        .vertices
+        .iter()
+        .map(|v| ParryPoint::new(v.x, v.y, v.z))
+        .collect();
+    Some(TriMesh::new(vertices, mesh.faces.clone()))
+}
+
 /// Walk every face and ray-cast inward; collect those whose nearest
 /// opposite face is closer than `config.min_wall_thickness`. Returns
 /// per-face `thickness` + `area` keyed by face index for downstream
 /// edge-adjacency clustering and per-cluster emission.
+///
+/// **Algorithmic acceleration (S1 of
+/// `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md`):** the inner ray-cast
+/// uses a parry3d BVH built once at function entry, replacing the
+/// pure O(face²) Möller-Trumbore double-loop. Per-mesh wall-clock
+/// drops from ~540 s to ~1-2 s on production 400 k-face gasket
+/// meshes (~300-500× algorithmic speedup). The
+/// [`flag_thin_wall_faces_reference`] function preserves the O(n²)
+/// implementation for regression testing.
 fn flag_thin_wall_faces(
     mesh: &IndexedMesh,
     config: &PrinterConfig,
 ) -> HashMap<u32, ThinWallFlagMeta> {
     let mut flagged: HashMap<u32, ThinWallFlagMeta> = HashMap::new();
     let num_triangles = mesh.face_count();
+
+    // Build the BVH once. Degenerate input (e.g., NaN vertices that
+    // slipped past the watertight precondition) → no flagged faces,
+    // same outcome as a no-thin-walls mesh.
+    let Some(tri_mesh) = build_parry_trimesh(mesh) else {
+        return flagged;
+    };
 
     for i in 0..num_triangles {
         let face = mesh.faces[i];
@@ -835,6 +904,91 @@ fn flag_thin_wall_faces(
         );
         let direction = Vector3::new(-normal.x, -normal.y, -normal.z);
 
+        // BVH-accelerated inward ray-cast (replaces the O(face²)
+        // Möller-Trumbore double-loop). `solid: false` ⇒ ray
+        // starting inside the body is considered to start at the
+        // entry surface and must exit the shape — returns the
+        // exit-wall toi (the OPPOSITE-side wall thickness), which
+        // is exactly what the thin-wall detector wants. The source
+        // face's `t = 0` self-hit is implicit in the entry-skip
+        // semantic — no explicit `j == i` filter needed.
+        let ray = Ray::new(
+            ParryPoint::new(origin.x, origin.y, origin.z),
+            ParryVector::new(direction.x, direction.y, direction.z),
+        );
+        let min_dist = tri_mesh
+            .cast_local_ray(&ray, ParryReal::MAX, false)
+            .unwrap_or(f64::INFINITY);
+
+        // Reported thickness is min_dist + EPS_RAY_OFFSET — the geometric
+        // wall thickness from outer face surface to inner face surface,
+        // accounting for the ray's inward starting offset. Without this
+        // correction, every reported thickness is off by 1 µm and a
+        // wall at exactly `min_wall_thickness` flags spuriously
+        // (`min_dist = 0.999999 < 1.0` at thickness = 1.0).
+        let thickness = min_dist + EPS_RAY_OFFSET;
+        if thickness < config.min_wall_thickness {
+            // Mesh face index `i` fits in u32 (same bound as
+            // `flag_overhang_faces`'s `i as u32` cast).
+            #[allow(clippy::cast_possible_truncation)]
+            let face_idx = i as u32;
+            flagged.insert(face_idx, ThinWallFlagMeta { thickness, area });
+        }
+    }
+
+    flagged
+}
+
+/// O(face²) Möller-Trumbore reference implementation of
+/// [`flag_thin_wall_faces`]. Preserved as a test-only path so the
+/// BVH-accelerated production path can be regression-tested for
+/// flagged-faces + per-face `min_dist` equivalence per
+/// `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-3 #1.
+#[cfg(test)]
+fn flag_thin_wall_faces_reference(
+    mesh: &IndexedMesh,
+    config: &PrinterConfig,
+) -> HashMap<u32, ThinWallFlagMeta> {
+    let mut flagged: HashMap<u32, ThinWallFlagMeta> = HashMap::new();
+    let num_triangles = mesh.face_count();
+
+    for i in 0..num_triangles {
+        let face = mesh.faces[i];
+        let idx0 = face[0] as usize;
+        let idx1 = face[1] as usize;
+        let idx2 = face[2] as usize;
+        if idx0 >= mesh.vertices.len() || idx1 >= mesh.vertices.len() || idx2 >= mesh.vertices.len()
+        {
+            continue;
+        }
+
+        let v0 = mesh.vertices[idx0];
+        let v1 = mesh.vertices[idx1];
+        let v2 = mesh.vertices[idx2];
+        let edge1 = Vector3::new(v1.x - v0.x, v1.y - v0.y, v1.z - v0.z);
+        let edge2 = Vector3::new(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z);
+        let raw_normal = edge1.cross(&edge2);
+
+        #[allow(clippy::suboptimal_flops)]
+        let len = (raw_normal.x * raw_normal.x
+            + raw_normal.y * raw_normal.y
+            + raw_normal.z * raw_normal.z)
+            .sqrt();
+        if len < 1e-10 {
+            continue;
+        }
+        let normal = Vector3::new(raw_normal.x / len, raw_normal.y / len, raw_normal.z / len);
+        let area = len / 2.0;
+
+        let centroid = compute_face_centroid(mesh, i);
+        #[allow(clippy::suboptimal_flops)]
+        let origin = Point3::new(
+            centroid.x - EPS_RAY_OFFSET * normal.x,
+            centroid.y - EPS_RAY_OFFSET * normal.y,
+            centroid.z - EPS_RAY_OFFSET * normal.z,
+        );
+        let direction = Vector3::new(-normal.x, -normal.y, -normal.z);
+
         let mut min_dist = f64::INFINITY;
         for (j, other) in mesh.faces.iter().enumerate() {
             if j == i {
@@ -861,16 +1015,8 @@ fn flag_thin_wall_faces(
             }
         }
 
-        // Reported thickness is min_dist + EPS_RAY_OFFSET — the geometric
-        // wall thickness from outer face surface to inner face surface,
-        // accounting for the ray's inward starting offset. Without this
-        // correction, every reported thickness is off by 1 µm and a
-        // wall at exactly `min_wall_thickness` flags spuriously
-        // (`min_dist = 0.999999 < 1.0` at thickness = 1.0).
         let thickness = min_dist + EPS_RAY_OFFSET;
         if thickness < config.min_wall_thickness {
-            // Mesh face index `i` fits in u32 (same bound as
-            // `flag_overhang_faces`'s `i as u32` cast).
             #[allow(clippy::cast_possible_truncation)]
             let face_idx = i as u32;
             flagged.insert(face_idx, ThinWallFlagMeta { thickness, area });
@@ -3622,6 +3768,259 @@ mod tests {
             0,
             "1.0 mm under min_wall=1.0 must not flag (strict-less predicate)"
         );
+    }
+
+    /// Build a subdivided thin-slab mesh: each of the 6 faces of a
+    /// 10 × 10 × `thickness` mm box is split into `subdiv × subdiv`
+    /// triangles. Total face count = `12 × subdiv²`. Workshop-scale
+    /// fixture for the BVH-vs-reference regression test + runtime
+    /// gate without coupling to specific hardware via the production
+    /// 400 k-face gasket mesh.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_lossless
+    )]
+    fn make_subdivided_slab(thickness: f64, subdiv: u32) -> IndexedMesh {
+        let n = subdiv as usize;
+        // Build a regular grid of vertices on each of the 6 faces.
+        // Use a flat vertex Vec; index calculation below.
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        let subdiv_f = f64::from(subdiv);
+
+        // Helper: emit (subdiv+1)² grid vertices spanning param (u, v)
+        // ∈ [0, 1]², projected via `pos_at(u, v)`.
+        let mut emit_grid = |pos_at: &dyn Fn(f64, f64) -> Point3<f64>,
+                             faces: &mut Vec<[u32; 3]>| {
+            let base = vertices.len() as u32;
+            for j in 0..=n {
+                for i in 0..=n {
+                    let u = (i as u32) as f64 / subdiv_f;
+                    let v = (j as u32) as f64 / subdiv_f;
+                    vertices.push(pos_at(u, v));
+                }
+            }
+            // Emit two tris per grid cell.
+            let row = subdiv + 1;
+            for j in 0..n {
+                for i in 0..n {
+                    let r0 = base + (j as u32) * row + (i as u32);
+                    let r1 = r0 + 1;
+                    let r2 = r0 + row;
+                    let r3 = r2 + 1;
+                    faces.push([r0, r2, r1]);
+                    faces.push([r1, r2, r3]);
+                }
+            }
+        };
+
+        // Six faces: bottom (-Z) / top (+Z) / -Y / +Y / -X / +X.
+        emit_grid(&|u, v| Point3::new(u * 10.0, v * 10.0, 0.0), &mut faces);
+        emit_grid(
+            &|u, v| Point3::new(u * 10.0, v * 10.0, thickness),
+            &mut faces,
+        );
+        // (Side faces omitted — for the thin-wall test only the top +
+        // bottom flagging matters; side walls at 10 mm don't flag.
+        // Including them inflates face count without helping the test
+        // case discriminate. The detector's watertight precondition
+        // requires a closed mesh, so add minimal-tri side strips.)
+        // Simpler: build a watertight slab. Use a non-subdivided side
+        // wall (just 2 tris each = 8 side tris) so total = 12·n² + 8.
+        let v0 = vertices.len() as u32;
+        // Bottom + top rim verts shared via existing grid — but for
+        // simplicity emit standalone side-wall verts at the 4 corners.
+        vertices.extend([
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(10.0, 10.0, 0.0),
+            Point3::new(0.0, 10.0, 0.0),
+            Point3::new(0.0, 0.0, thickness),
+            Point3::new(10.0, 0.0, thickness),
+            Point3::new(10.0, 10.0, thickness),
+            Point3::new(0.0, 10.0, thickness),
+        ]);
+        // 4 side faces × 2 tris each, using the 8 corner verts above.
+        faces.extend([
+            // -Y face (verts at y=0): bottom-front-left, top-front-left, etc.
+            [v0, v0 + 1, v0 + 5],
+            [v0, v0 + 5, v0 + 4],
+            // +X face (verts at x=10):
+            [v0 + 1, v0 + 2, v0 + 6],
+            [v0 + 1, v0 + 6, v0 + 5],
+            // +Y face (verts at y=10):
+            [v0 + 2, v0 + 3, v0 + 7],
+            [v0 + 2, v0 + 7, v0 + 6],
+            // -X face (verts at x=0):
+            [v0 + 3, v0, v0 + 4],
+            [v0 + 3, v0 + 4, v0 + 7],
+        ]);
+
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    #[allow(clippy::panic, clippy::float_cmp)]
+    fn thin_wall_bvh_matches_reference_o_n_squared() {
+        // S1 of `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-3 #1:
+        // BVH-accelerated `flag_thin_wall_faces` must produce
+        // bit-identical-to-1µm flagged-face set + per-face min_dist
+        // as the O(face²) `flag_thin_wall_faces_reference` on a
+        // representative mesh.
+        //
+        // 0.4 mm slab is the canonical thin-wall fixture used by the
+        // existing test_thin_wall_detected_on_thin_slab — flags top +
+        // bottom triangles, leaves sides un-flagged. Same flagged
+        // set MUST emerge from both paths.
+        let mesh = make_thin_slab(0.4);
+        let config = PrinterConfig::fdm_default();
+
+        let bvh_flagged = flag_thin_wall_faces(&mesh, &config);
+        let ref_flagged = flag_thin_wall_faces_reference(&mesh, &config);
+
+        assert_eq!(
+            bvh_flagged.len(),
+            ref_flagged.len(),
+            "BVH flagged-face count {} ≠ reference {}",
+            bvh_flagged.len(),
+            ref_flagged.len()
+        );
+        for (face_idx, ref_meta) in &ref_flagged {
+            let bvh_meta = bvh_flagged.get(face_idx).unwrap_or_else(|| {
+                panic!(
+                    "face {face_idx} flagged by reference but NOT by BVH \
+                     (reference thickness {:.6} mm)",
+                    ref_meta.thickness
+                )
+            });
+            // 1 µm tolerance — f32 parry3d cast has ~1e-7 relative
+            // drift, well below `min_wall_thickness` resolution.
+            let dt = (bvh_meta.thickness - ref_meta.thickness).abs();
+            assert!(
+                dt < 1e-3,
+                "face {face_idx}: BVH thickness {:.6} mm vs reference {:.6} mm \
+                 differ by {:.6} mm (> 1 µm tolerance)",
+                bvh_meta.thickness,
+                ref_meta.thickness,
+                dt
+            );
+            // Area is computed identically in both paths (no FP
+            // contamination from BVH) — must match exactly.
+            assert_eq!(
+                bvh_meta.area, ref_meta.area,
+                "face {face_idx}: area mismatch (computed in both paths the same way)"
+            );
+        }
+    }
+
+    #[test]
+    fn thin_wall_bvh_runtime_under_target_on_subdivided_slab() {
+        // S1 of §B-3 #2: release-mode runtime gate. Subdivided 0.4 mm
+        // slab (subdiv=20 → 12·400 + 8 = 4808 faces). Reference path
+        // is O(face²) ≈ 23 M ray-tri tests; BVH path is O(face log
+        // face) ≈ 60 k node tests. Expected ratio ≥ 100×.
+        //
+        // Gate is RELATIVE (BVH < reference / 10) rather than absolute
+        // wall-clock to avoid hardware coupling. Per
+        // [[feedback-cf-cast-tests-use-release]] this requires
+        // release-mode (debug-mode BVH builds are 50-100× slower).
+        let mesh = make_subdivided_slab(0.4, 20);
+        let config = PrinterConfig::fdm_default();
+
+        let t_bvh = std::time::Instant::now();
+        let bvh_flagged = flag_thin_wall_faces(&mesh, &config);
+        let bvh_elapsed = t_bvh.elapsed();
+
+        let t_ref = std::time::Instant::now();
+        let ref_flagged = flag_thin_wall_faces_reference(&mesh, &config);
+        let ref_elapsed = t_ref.elapsed();
+
+        // Sanity: both paths agree.
+        assert_eq!(
+            bvh_flagged.len(),
+            ref_flagged.len(),
+            "BVH + reference must agree on flagged-face count \
+             (BVH {}, ref {})",
+            bvh_flagged.len(),
+            ref_flagged.len(),
+        );
+
+        // Runtime gate: BVH at least 10× faster than reference on
+        // this fixture (conservative — production gasket meshes hit
+        // ~300-500× per the recon's algorithmic estimate).
+        let ratio = ref_elapsed.as_secs_f64() / bvh_elapsed.as_secs_f64().max(1e-9);
+        assert!(
+            ratio > 10.0,
+            "BVH speedup ratio {ratio:.1}× below 10× target \
+             (ref {:.3}ms, BVH {:.3}ms)",
+            ref_elapsed.as_secs_f64() * 1000.0,
+            bvh_elapsed.as_secs_f64() * 1000.0,
+        );
+    }
+
+    #[test]
+    fn thin_wall_bvh_handles_degenerate_inputs() {
+        // S1 of §B-3 #3: BVH + reference paths must both gracefully
+        // return empty flagged set on degenerate inputs (empty mesh,
+        // single-face, NaN-vertex, zero-area face). NO panics.
+        let config = PrinterConfig::fdm_default();
+
+        // Empty mesh.
+        let empty = IndexedMesh::from_parts(Vec::new(), Vec::new());
+        assert!(flag_thin_wall_faces(&empty, &config).is_empty());
+        assert!(flag_thin_wall_faces_reference(&empty, &config).is_empty());
+
+        // Single-face mesh (BVH builds, but no opposite face for
+        // ray-cast → no thin walls).
+        let single = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            vec![[0, 1, 2]],
+        );
+        assert!(flag_thin_wall_faces(&single, &config).is_empty());
+        assert!(flag_thin_wall_faces_reference(&single, &config).is_empty());
+
+        // NaN vertex (BVH builder rejects; reference path's normal
+        // calc returns NaN, `if NaN < 1e-10` is false but `if t < min`
+        // is also false → no flagged faces).
+        let nan_mesh = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(f64::NAN, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.5, 0.5, 0.1),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        // BVH path: build_parry_trimesh returns None → empty flagged.
+        assert!(flag_thin_wall_faces(&nan_mesh, &config).is_empty());
+        // Reference path: NaN propagates through normal computation,
+        // skip via `len < 1e-10` is false but downstream `t < min`
+        // comparisons return false → no flagged faces.
+        // (May still flag if NaN happens to be < INFINITY in the
+        // accumulator's first iteration; that's acceptable behavior
+        // — the test asserts NO PANIC, not a specific flagged set on
+        // NaN input.)
+        let _ = flag_thin_wall_faces_reference(&nan_mesh, &config);
+
+        // Zero-area face (degenerate triangle: three colinear verts).
+        let zero_area = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0), // colinear with 0, 1
+                Point3::new(0.5, 0.5, 0.0), // gives a real second tri
+            ],
+            vec![[0, 1, 2], [0, 1, 3]], // first tri is zero-area
+        );
+        // Both paths skip the zero-area face via the `len < 1e-10`
+        // guard.
+        let _ = flag_thin_wall_faces(&zero_area, &config);
+        let _ = flag_thin_wall_faces_reference(&zero_area, &config);
     }
 
     #[test]

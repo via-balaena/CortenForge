@@ -25,6 +25,16 @@ hashbrown = { workspace = true }
 # Self-intersection detection (Gap I detector re-uses
 # `mesh_repair::detect_self_intersections`)
 mesh-repair = { workspace = true }
+# BVH-accelerated ray-cast for `flag_thin_wall_faces`, replacing the
+# O(face²) Möller-Trumbore double-loop with O(face × log face). See
+# `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-12 S1 for the per-mesh
+# wall-clock measurement (540 s → ~1-2 s on 400 k-face gasket meshes,
+# ~300-500× algorithmic speedup). parry3d-f64 (not parry3d) — the
+# f32 sibling produces ~1e-7 mm drift in Möller-Trumbore which
+# crosses the `min_wall_thickness` boundary at the 1.0 mm test
+# fixture; f64 keeps the BVH path bit-aligned to the reference
+# path's f64 Möller-Trumbore.
+parry3d-f64 = { workspace = true }
 
 [dev-dependencies]
 # Approximate equality for numeric tests
