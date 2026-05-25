@@ -10,8 +10,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_cast::{
-    CastLayer, CastSpec, MoldingMaterial, PinSpec, PlugPinKind, PlugPinSpec, PourGateKind,
-    PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
+    CastLayer, CastSpec, GasketKind, GasketMaterial, GasketSpec, MoldingMaterial, PinSpec,
+    PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -373,8 +373,43 @@ pub fn derive_spec_and_ribbon(
         // numeric values rather than threading them through TOML.
         ribbon = ribbon.with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
     }
+    if config.gasket.enabled {
+        // S3 of the seam-gasket-mold arc per recon §G-7. Material
+        // override is workshop-empirical (S6 iter-3 pour picks
+        // Ecoflex vs Dragon Skin); cross-section + draft pinned at
+        // S2 iter1 defaults until S6 calibration demands a tweak.
+        let material = resolve_gasket_material(config.gasket.material.as_deref())?;
+        let gasket_spec = GasketSpec {
+            material,
+            ..GasketSpec::iter1()
+        };
+        ribbon = ribbon.with_gasket(GasketKind::Mold(gasket_spec));
+    }
 
     Ok(DerivedSpec { spec, ribbon })
+}
+
+/// Resolve the [`crate::config::GasketConfig::material`] string into a
+/// [`cf_cast::GasketMaterial`] enum value. `None` falls back to the
+/// iter1 default (Ecoflex 00-30 per recon §G-1).
+///
+/// Recognized keys follow the same UPPER_SNAKE_CASE convention as
+/// [`crate::config::LayerConfig::material`]: `"ECOFLEX_00_30"` +
+/// `"DRAGON_SKIN_10A"`.
+///
+/// # Errors
+///
+/// Returns an error with the full set of recognized keys in the
+/// message when the key is unknown (typo-friendly diagnostic).
+fn resolve_gasket_material(key: Option<&str>) -> Result<GasketMaterial> {
+    match key {
+        None | Some("ECOFLEX_00_30") => Ok(GasketMaterial::Ecoflex0030),
+        Some("DRAGON_SKIN_10A") => Ok(GasketMaterial::DragonSkin10A),
+        Some(other) => bail!(
+            "cast.toml: unknown gasket material {other:?}. Recognized: \
+             \"ECOFLEX_00_30\", \"DRAGON_SKIN_10A\"."
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -488,6 +523,7 @@ mod tests {
             plug_pins: PlugPinConfig::default(),
             pour_gate: PourGateConfig::default(),
             registration_pins: crate::config::RegistrationConfig::default(),
+            gasket: crate::config::GasketConfig::default(),
         }
     }
 

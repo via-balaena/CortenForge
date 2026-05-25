@@ -94,7 +94,9 @@ mod spec;
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use funnel::build_funnel_solid;
-pub use gasket_mold::{GasketSpec, compose_gasket_mold_solid};
+pub use gasket_mold::{
+    GASKET_MAX_CELL_SIZE_M, GasketKind, GasketMaterial, GasketSpec, compose_gasket_mold_solid,
+};
 pub use material::MoldingMaterial;
 pub use mesh_csg::{
     CylinderParams, CylinderParent, MatingTransform, WELD_TOLERANCE_M, apply_mating_transforms,

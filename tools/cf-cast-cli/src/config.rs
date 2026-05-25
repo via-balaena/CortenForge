@@ -51,6 +51,12 @@ pub struct CastConfig {
     /// disable.
     #[serde(default)]
     pub registration_pins: RegistrationConfig,
+    /// Per-layer gasket mold override (default = enabled with
+    /// `GasketSpec::iter1()` + Ecoflex 00-30 material). Absence of
+    /// the table means "enabled with iter1 defaults". Set
+    /// `enabled = false` to disable. S3 of the seam-gasket-mold arc.
+    #[serde(default)]
+    pub gasket: GasketConfig,
 }
 
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
@@ -258,6 +264,43 @@ pub struct RegistrationConfig {
 impl Default for RegistrationConfig {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// `[gasket]` block — per-layer gasket mold toggle + material pick.
+/// Maps to [`cf_cast::GasketKind`].
+///
+/// S3 of the seam-gasket-mold arc per recon §G-7. Defaults to
+/// `enabled = true` with [`cf_cast::GasketSpec::iter1`] geometry +
+/// Ecoflex 00-30 material. Workshop user may flip
+/// `material = "DRAGON_SKIN_10A"` at S6 iter-3 pour if the Ecoflex
+/// pour compresses too freely. Cross-section is pinned trapezoidal
+/// at iter1 (recon §G-7 default; S2 picked); no per-cast TOML
+/// override surfaced — `draft_angle_deg` recalibration belongs to a
+/// downstream S6 / S7 arc, not iter-3.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GasketConfig {
+    /// Master toggle. When `false`, the bridge passes
+    /// [`cf_cast::GasketKind::None`] (no per-layer gasket molds; cup
+    /// halves hand-clamped without a silicone seal).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Gasket material — Smooth-On silicone product key.
+    /// Recognized values: `"ECOFLEX_00_30"` (iter1 default),
+    /// `"DRAGON_SKIN_10A"`. Maps to [`cf_cast::GasketMaterial`].
+    /// Absent in the TOML → falls back to the iter1 default
+    /// (Ecoflex 00-30 per recon §G-1).
+    #[serde(default)]
+    pub material: Option<String>,
+}
+
+impl Default for GasketConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            material: None,
+        }
     }
 }
 
@@ -475,6 +518,55 @@ material = "ECOFLEX_00_30"
         assert!(cfg.plug_pins.enabled);
         assert!(cfg.pour_gate.enabled);
         assert!(cfg.registration_pins.enabled);
+        // S3 seam-gasket-mold arc default: enabled + Ecoflex (None →
+        // GasketMaterial::Ecoflex0030 in derive).
+        assert!(cfg.gasket.enabled);
+        assert!(cfg.gasket.material.is_none());
+    }
+
+    #[test]
+    fn parses_gasket_block_disabled() {
+        // S3: `[gasket] enabled = false` parses cleanly + the
+        // master toggle propagates. Material absent (None) is the
+        // documented fallback to iter1 default at derive time.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+enabled = false
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        assert!(!cfg.gasket.enabled);
+        assert!(cfg.gasket.material.is_none());
+    }
+
+    #[test]
+    fn parses_gasket_block_dragon_skin_override() {
+        // S3: workshop iter-3 fallback path — material override to
+        // Dragon Skin 10A when Ecoflex compresses too freely per
+        // recon §G-1. derive::resolve_gasket_material handles the
+        // string → enum lift.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+material = "DRAGON_SKIN_10A"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        assert!(cfg.gasket.enabled);
+        assert_eq!(cfg.gasket.material.as_deref(), Some("DRAGON_SKIN_10A"));
     }
 
     #[test]

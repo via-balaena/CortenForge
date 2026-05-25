@@ -183,6 +183,19 @@ const DEFAULT_TRAY_MARGIN_M: f64 = 0.005;
 /// recovers a rectangular cross-section bit-precisely.
 const DEFAULT_DRAFT_ANGLE_DEG: f64 = 5.0;
 
+/// Cap on the MC sampling cell size used for gasket-mold meshing.
+///
+/// At iter1 the channel cross-section is 1.5 mm × 0.8 mm — sub-cell
+/// at the cast's default 3 mm cells, which MC would either drop
+/// entirely or fragment unrecognisably. 0.5 mm cells give ~3 cells
+/// across channel width + ~1.6 cells across depth (channel surface
+/// resolves cleanly with the trapezoidal draft preserved). The
+/// tray's bounding cuboid is small (Y ≈ 3 mm, X ~ scan-extent-x,
+/// Z ~ scan-extent-z) so the cell-count cost is bounded — ~3-5 s
+/// per gasket mold at production scan sizes. Same pattern as
+/// [`crate::spec::FUNNEL_MAX_CELL_SIZE_M`] for the funnel nipple.
+pub const GASKET_MAX_CELL_SIZE_M: f64 = 0.0005;
+
 /// Default workshop-clamp pressure target for the compression
 /// calculation (20 kPa). Roughly: workshop user closes two cup
 /// halves over the gasket with a hand-applied C-clamp or rubber
@@ -246,7 +259,7 @@ impl GasketMaterial {
 /// the workshop-clamp-pressure target fields. S6 workshop physical
 /// iter-3 pins the final empirical defaults. See
 /// `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GasketSpec {
     /// Gasket cross-section midline width (perpendicular to perimeter
     /// curve, in the seam plane). Default
@@ -323,6 +336,45 @@ impl GasketSpec {
 impl Default for GasketSpec {
     fn default() -> Self {
         Self::iter1()
+    }
+}
+
+/// Gasket-mold kind on the [`Ribbon`](crate::Ribbon).
+///
+/// Matches the existing `RegistrationKind` / `PourGateKind` /
+/// `PlugPinKind` patterns — bridges the cf-cast-cli `[gasket]` toml
+/// block to the per-layer gasket-mold emission in `export_molds_v2`.
+///
+/// Default [`Self::None`] (no gasket mold emission — cup halves
+/// hand-clamped at iter-1, no silicone seal). Set
+/// `GasketKind::Mold(GasketSpec::iter1())` via
+/// [`Ribbon::with_gasket`](crate::Ribbon::with_gasket) to enable
+/// per-layer gasket mold STL emission.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GasketKind {
+    /// No gasket-mold emission. Workshop user hand-clamps cup halves
+    /// without a silicone seal — relies on FDM print tolerance + cup
+    /// curved-centerline match alone (cross-half delta ≤ 200 µm per
+    /// `~/scans/cast_iter1_bare/` baseline, but ≥ FDM-tolerance
+    /// envelope for soft silicones).
+    None,
+    /// Per-layer gasket mold emission, parameterized by the inner
+    /// [`GasketSpec`] (`iter1()` for workshop iter-3 defaults).
+    /// `export_molds_v2` writes `gasket_mold_layer_N.stl` for each
+    /// layer with the channel traced to that layer's body-cavity
+    /// perimeter at the seam plane.
+    Mold(GasketSpec),
+}
+
+impl GasketKind {
+    /// Returns the inner [`GasketSpec`] for [`GasketKind::Mold`],
+    /// `None` otherwise. Convenience accessor for the export pipeline.
+    #[must_use]
+    pub const fn spec(&self) -> Option<&GasketSpec> {
+        match self {
+            Self::None => None,
+            Self::Mold(spec) => Some(spec),
+        }
     }
 }
 

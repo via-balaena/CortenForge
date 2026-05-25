@@ -67,6 +67,17 @@ pub enum CastTarget {
     /// silicone pouring. Single artifact per cast (shared across
     /// layers).
     Funnel,
+    /// Output mesh: a per-layer gasket mold STL
+    /// (`gasket_mold_layer_N.stl`). Generated only when the ribbon
+    /// has [`crate::GasketKind::Mold`] enabled. S3 of the seam-
+    /// gasket-mold arc — flat tray with a closed-loop channel that
+    /// the workshop user pours silicone into for a per-layer
+    /// compressible seam seal.
+    GasketMold {
+        /// Innermost-first layer index (parallel to
+        /// `CastSpec::layers`).
+        layer_index: usize,
+    },
 }
 
 impl fmt::Display for CastTarget {
@@ -85,6 +96,7 @@ impl fmt::Display for CastTarget {
             } => write!(f, "plug layer {n}"),
             Self::Platform => write!(f, "platform"),
             Self::Funnel => write!(f, "funnel"),
+            Self::GasketMold { layer_index } => write!(f, "gasket mold layer {layer_index}"),
         }
     }
 }

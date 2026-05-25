@@ -14,6 +14,7 @@ use mesh_printability::{
 use nalgebra::Vector3;
 
 use crate::error::{CastError, CastTarget};
+use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
 use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::solid_to_mm_mesh;
@@ -327,6 +328,31 @@ pub struct FunnelArtifact {
     pub summary: MeshSummary,
 }
 
+/// Per-layer gasket mold artifact emitted when the ribbon has a
+/// [`GasketKind::Mold`](crate::GasketKind) enabled. S3 of the seam-
+/// gasket-mold arc; see `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md`
+/// §G-7 for the schema.
+///
+/// Each layer N gets its own `gasket_mold_layer_N.stl`, with the
+/// channel tracing the layer's body-cavity perimeter at the seam
+/// plane (per [`crate::compose_gasket_mold_solid`]). Trays are
+/// translated laterally outside the cup-piece bounding region so
+/// cf-view assembly mode stays readable (cup pieces + gasket molds
+/// don't interpenetrate visually).
+#[derive(Debug, Clone)]
+pub struct GasketMoldArtifact {
+    /// Innermost-first layer index (parallel to
+    /// [`CastSpec::layers`]).
+    pub layer_index: usize,
+    /// Filesystem path of the written `gasket_mold_layer_N.stl`.
+    pub path: PathBuf,
+    /// F4 validation result for the gasket mold.
+    pub validation: PrintValidation,
+    /// Post-export mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
 /// Summary of a successful [`CastSpec::export_molds_v2`] run.
 ///
 /// `layers.len() * 3` STLs total (2 piece STLs + 1 plug STL per
@@ -353,6 +379,12 @@ pub struct V2MoldExportReport {
     /// ribbon has a [`crate::pour::PourGateKind::Default`] pour
     /// gate enabled. Self-aligning nipple sized to the pour-gate Ø.
     pub funnel: Option<FunnelArtifact>,
+    /// Per-layer gasket mold artifacts, one per layer (innermost-
+    /// first; parallel to [`Self::layers`]). Empty when the ribbon
+    /// has [`crate::GasketKind::None`] (no gasket emission); length
+    /// = `layers.len()` when [`crate::GasketKind::Mold`] is enabled.
+    /// S3 of the seam-gasket-mold arc.
+    pub gasket_molds: Vec<GasketMoldArtifact>,
 }
 
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
@@ -441,6 +473,16 @@ struct PendingPlatform {
 /// has a pour gate enabled; one funnel per cast (shared across
 /// layers).
 struct PendingFunnel {
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Buffered v2 per-layer gasket mold mesh + validation. Generated
+/// only when the ribbon has a [`crate::GasketKind::Mold`] enabled;
+/// one entry per layer.
+struct PendingGasket {
+    layer_index: usize,
     mesh: IndexedMesh,
     validation: PrintValidation,
     path: PathBuf,
@@ -810,6 +852,7 @@ impl CastSpec {
         let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
         let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
         let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
+        let pending_gaskets = mesh_and_gate_v2_gaskets(self, ribbon, out_dir)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
@@ -818,17 +861,19 @@ impl CastSpec {
 
         let platform_count = usize::from(pending_platform.is_some());
         let funnel_count = usize::from(pending_funnel.is_some());
-        let stl_count = self.layers.len() * 3 + platform_count + funnel_count;
+        let gasket_count = pending_gaskets.len();
+        let stl_count = self.layers.len() * 3 + platform_count + funnel_count + gasket_count;
         eprintln!(
             "[cf-cast] writing {stl_count} STLs to {out}…",
             out = out_dir.display()
         );
-        let (layers_out, platform_out, funnel_out) = write_v2_artifacts(
+        let (layers_out, platform_out, funnel_out, gasket_molds_out) = write_v2_artifacts(
             self,
             pending_pieces,
             pending_plugs,
             pending_platform,
             pending_funnel,
+            pending_gaskets,
             pour_volumes,
         )?;
 
@@ -836,6 +881,7 @@ impl CastSpec {
             layers: layers_out,
             platform: platform_out,
             funnel: funnel_out,
+            gasket_molds: gasket_molds_out,
         })
     }
 }
@@ -1117,6 +1163,106 @@ fn mesh_and_gate_v2_funnel(
 /// free vs the cast's main meshing time.
 pub const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
 
+/// Lateral clearance (meters) between the cup-piece bounding region
+/// and the leftmost gasket-mold tray, AND between consecutive gasket-
+/// mold trays along the +X stacking axis. 10 mm picked so cf-view
+/// assembly mode shows visible air-gap between the cup pieces and
+/// each gasket mold (no visual ambiguity about which artifact is
+/// which) and between adjacent gasket molds.
+const GASKET_LAYOUT_CLEARANCE_M: f64 = 0.010;
+
+/// Per-layer compose + MC-mesh + F4-gate the gasket molds, applying
+/// the lateral offset translation that shifts each layer N's tray
+/// outside the cup-piece bounding region along +X (cf-view assembly
+/// mode readability per S1 cold-read pass-1 carryover).
+///
+/// Returns an empty `Vec` when `ribbon.gasket` is
+/// [`crate::GasketKind::None`]; returns `Vec<PendingGasket>` with
+/// `spec.layers.len()` entries (innermost-first, parallel to
+/// [`CastSpec::layers`]) when [`crate::GasketKind::Mold`] is set.
+///
+/// Layout formula: with `tray_size_x = bounding_region.size().x +
+/// 2 * spec.tray_margin_m` (the gasket tray's X extent before
+/// translation), layer N's tray-center sits at
+/// `(0.5 * (bounding_region.size().x + tray_size_x) +
+/// GASKET_LAYOUT_CLEARANCE_M) + N * (tray_size_x +
+/// GASKET_LAYOUT_CLEARANCE_M)` along +X (Y + Z unchanged). Adjacent
+/// trays are separated by `GASKET_LAYOUT_CLEARANCE_M` air-gap.
+fn mesh_and_gate_v2_gaskets(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Vec<PendingGasket>, CastError> {
+    let Some(gasket_spec) = ribbon.gasket.spec() else {
+        return Ok(Vec::new());
+    };
+    let region_bounds = spec
+        .bounding_region
+        .bounds()
+        .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
+    let bounding_size_x = region_bounds.size().x;
+    let tray_size_x = 2.0_f64.mul_add(gasket_spec.tray_margin_m, bounding_size_x);
+    let base_offset_x = 0.5_f64.mul_add(bounding_size_x + tray_size_x, GASKET_LAYOUT_CLEARANCE_M);
+    let per_layer_step = tray_size_x + GASKET_LAYOUT_CLEARANCE_M;
+    let cell_size_m = spec.mesh_cell_size_m.min(GASKET_MAX_CELL_SIZE_M);
+
+    let mut pending = Vec::with_capacity(spec.layers.len());
+    for (layer_index, layer) in spec.layers.iter().enumerate() {
+        let target = CastTarget::GasketMold { layer_index };
+        let t_compose = std::time::Instant::now();
+        let (mold_solid, mating_transforms) =
+            compose_gasket_mold_solid(ribbon, &layer.body, &spec.bounding_region, gasket_spec)?;
+        // `layer_index as f64` precision-loss lint suppressed: this
+        // is a small-integer-to-f64 cast for layer counts (typically
+        // ≤ 5 per recon §G-2's per-layer scope). At u64::MAX (the
+        // alternative widening path) the value won't ever reach the
+        // f64 53-bit mantissa boundary in practice.
+        #[allow(clippy::cast_precision_loss)]
+        let offset_x = (layer_index as f64).mul_add(per_layer_step, base_offset_x);
+        let translated = mold_solid.translate(nalgebra::Vector3::new(offset_x, 0.0, 0.0));
+        let mesh = solid_to_mm_mesh(&translated, cell_size_m, target)?;
+        let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
+        let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+        let path = out_dir.join(gasket_mold_filename(layer_index));
+        let t_gate = std::time::Instant::now();
+        let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+        let gate_s = t_gate.elapsed().as_secs_f64();
+        let blocking = blocking_critical_count(&validation, target);
+        if blocking > 0 {
+            return Err(CastError::PrintabilityCritical {
+                target,
+                issue_count: blocking,
+                path,
+            });
+        }
+        eprintln!(
+            "[cf-cast] gasket_mold layer {layer_index} — compose+MC \
+             {compose_mesh_s:.1}s @ {cell_size_mm:.2} mm cells, F4 {gate_s:.1}s \
+             ({verts} verts / {faces} faces) — offset_x = {offset_mm:.1} mm",
+            cell_size_mm = cell_size_m * 1000.0,
+            verts = mesh.vertices.len(),
+            faces = mesh.faces.len(),
+            offset_mm = offset_x * 1000.0,
+        );
+        pending.push(PendingGasket {
+            layer_index,
+            mesh,
+            validation,
+            path,
+        });
+    }
+    Ok(pending)
+}
+
+/// `gasket_mold_layer_{layer_index}.stl` — innermost-first indexing
+/// matches the v2 plug + mold-piece filename precedent (e.g.
+/// `plug_layer_{N}.stl`, `mold_layer_{N}_piece_{M}.stl`) so workshop
+/// users have a consistent layer-numbering convention across all
+/// per-layer artifacts.
+fn gasket_mold_filename(layer_index: usize) -> String {
+    format!("gasket_mold_layer_{layer_index}.stl")
+}
+
 /// Write every pending piece + per-layer plug + optional platform
 /// + optional funnel to disk and build the report structs.
 ///
@@ -1133,12 +1279,14 @@ fn write_v2_artifacts(
     pending_plugs: Vec<PendingPlug>,
     pending_platform: Option<PendingPlatform>,
     pending_funnel: Option<PendingFunnel>,
+    pending_gaskets: Vec<PendingGasket>,
     pour_volumes: Vec<PourVolume>,
 ) -> Result<
     (
         Vec<V2LayerReport>,
         Option<PlatformArtifact>,
         Option<FunnelArtifact>,
+        Vec<GasketMoldArtifact>,
     ),
     CastError,
 > {
@@ -1220,7 +1368,21 @@ fn write_v2_artifacts(
     } else {
         None
     };
-    Ok((layers_out, platform_out, funnel_out))
+    let mut gasket_molds_out = Vec::with_capacity(pending_gaskets.len());
+    for g in pending_gaskets {
+        save_stl(&g.mesh, &g.path, true).map_err(|source| CastError::MeshIo {
+            path: g.path.clone(),
+            source,
+        })?;
+        let summary = MeshSummary::from_mesh(&g.mesh);
+        gasket_molds_out.push(GasketMoldArtifact {
+            layer_index: g.layer_index,
+            path: g.path,
+            validation: g.validation,
+            summary,
+        });
+    }
+    Ok((layers_out, platform_out, funnel_out, gasket_molds_out))
 }
 
 /// Gate per-layer pour masses against [`CastSpec::mass_budget_kg`].
@@ -3142,6 +3304,160 @@ mod tests {
         assert_eq!(
             count_subtract_cylinders_for_pour_gate(&ribbon_no_gate, PieceSide::Negative),
             0,
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_no_gasket_produces_empty_gasket_molds() {
+        // Default ribbon has `GasketKind::None` → gasket_molds vec is
+        // empty + no `gasket_mold_layer_N.stl` emitted. Paired
+        // baseline for `export_molds_v2_with_gasket_writes_one_per_layer`
+        // per [[feedback-load-bearing-test-fixtures]].
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-no-gasket");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (spec, ribbon) = v2_fixture();
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert!(
+            report.gasket_molds.is_empty(),
+            "GasketKind::None must produce zero gasket molds; got {}",
+            report.gasket_molds.len()
+        );
+        // No gasket_mold_layer_*.stl files on disk.
+        let stray_gasket = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("gasket_mold_layer_")
+            });
+        assert!(
+            !stray_gasket,
+            "no gasket_mold_layer_*.stl should exist when GasketKind::None"
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_with_gasket_writes_one_per_layer() {
+        // Single-layer fixture + GasketKind::Mold → one
+        // `gasket_mold_layer_0.stl` written, layer_index matches,
+        // mesh is non-empty.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-with-gasket-single");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert_eq!(report.gasket_molds.len(), 1);
+        let g = &report.gasket_molds[0];
+        assert_eq!(g.layer_index, 0);
+        assert!(g.path.ends_with("gasket_mold_layer_0.stl"));
+        assert!(g.path.exists(), "gasket STL must exist on disk");
+        assert!(
+            g.summary.face_count > 0,
+            "gasket mesh must be non-empty; got {} faces",
+            g.summary.face_count
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_with_gasket_multi_layer_offset_non_overlapping() {
+        // 2-layer fixture + GasketKind::Mold: two gasket STLs +
+        // per-layer offset places them at non-overlapping +X
+        // positions outside the cup-piece bounding region. Validates
+        // the cf-view-readability invariant from S1 cold-read pass-1
+        // ("S3 cf-cast-cli integration is responsible for per-STL
+        // world-coordinate offsets").
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-with-gasket-multi");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        // Fixture mirrors the existing two-layer F4 test fixture
+        // (see `export_molds_v2_writes_four_pieces_plus_plug_for_two_layer`)
+        // — proven to mesh + F4-gate cleanly with the plug-floor lock
+        // disabled. ~135 s under S3's 0.5 mm gasket cell size: 90 mm
+        // bounding × 100 mm tray × 2 layers ≈ 240 k cells × 2.
+        let inner_body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.015));
+        let outer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.025));
+        let plug = Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040));
+        let bounding_region = Solid::cuboid(Vector3::new(0.045, 0.045, 0.035));
+        let inner_material = MoldingMaterial {
+            display_name: "Ecoflex 00-30".to_string(),
+            density_kg_m3: 1070.0,
+            anchor_key: Some("ECOFLEX_00_30"),
+        };
+        let outer_material = MoldingMaterial {
+            display_name: "Dragon Skin 10A".to_string(),
+            density_kg_m3: 1070.0,
+            anchor_key: Some("DRAGON_SKIN_10A"),
+        };
+        let bounding_size_x = 2.0 * 0.045; // matches the cuboid half-extent above
+        let spec = CastSpec {
+            layers: vec![
+                CastLayer {
+                    body: inner_body,
+                    material: inner_material,
+                },
+                CastLayer {
+                    body: outer_body,
+                    material: outer_material,
+                },
+            ],
+            plug,
+            bounding_region,
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let centerline = vec![Point3::new(-0.030, 0.0, 0.0), Point3::new(0.030, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert_eq!(report.gasket_molds.len(), 2);
+
+        let g0 = &report.gasket_molds[0];
+        let g1 = &report.gasket_molds[1];
+        assert_eq!(g0.layer_index, 0);
+        assert_eq!(g1.layer_index, 1);
+        assert!(g0.path.ends_with("gasket_mold_layer_0.stl"));
+        assert!(g1.path.ends_with("gasket_mold_layer_1.stl"));
+
+        // Offset gate: each gasket mold's AABB min-X (in mm coords)
+        // must be strictly greater than the cup-piece bounding-region
+        // max-X (cup occupies X ∈ [-bounding_x/2, +bounding_x/2]
+        // = [-22.5, +22.5] mm). Layer-0 sits adjacent + clearance;
+        // layer-1 sits past layer-0 + clearance.
+        let bounding_max_x_mm = bounding_size_x * 1000.0 / 2.0;
+        let g0_min_x_mm = g0.summary.aabb_mm.min.x;
+        let g0_max_x_mm = g0.summary.aabb_mm.max.x;
+        let g1_min_x_mm = g1.summary.aabb_mm.min.x;
+        assert!(
+            g0_min_x_mm > bounding_max_x_mm,
+            "layer-0 gasket min-X ({g0_min_x_mm} mm) must be > cup max-X \
+             ({bounding_max_x_mm} mm) — gasket is interpenetrating cup pieces"
+        );
+        assert!(
+            g1_min_x_mm > g0_max_x_mm,
+            "layer-1 gasket min-X ({g1_min_x_mm} mm) must be > layer-0 max-X \
+             ({g0_max_x_mm} mm) — adjacent gasket trays overlap"
         );
     }
 

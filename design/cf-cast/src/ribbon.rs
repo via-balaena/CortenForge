@@ -45,6 +45,7 @@
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
+use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
 use crate::registration::RegistrationKind;
@@ -278,6 +279,15 @@ pub struct Ribbon {
     /// (post-S4 of the FDM-friendly geometry arc; pre-S4 was a
     /// cylindrical shaft + T-bar mechanism).
     pub plug_pins: PlugPinKind,
+    /// Per-layer gasket-mold kind. Default [`GasketKind::None`] (no
+    /// gasket mold emission — cup halves hand-clamped without a
+    /// silicone seal). S3 of the seam-gasket-mold arc adds
+    /// [`GasketKind::Mold`] via the [`Ribbon::with_gasket`] builder;
+    /// `export_molds_v2` then writes `gasket_mold_layer_N.stl` for
+    /// each layer (offset laterally outside the cup-piece bounding
+    /// region so cf-view assembly mode stays readable). See
+    /// [`crate::gasket_mold`] for the channel-geometry contract.
+    pub gasket: GasketKind,
     /// Optional pour-end anchor for the plug-floor lock —
     /// `(centroid, outward_axis)` in world-frame coordinates.
     /// [`crate::plug::build_plug_lock_sdf`] +
@@ -435,6 +445,7 @@ impl Ribbon {
             registration: RegistrationKind::None,
             pour_gate: PourGateKind::None,
             plug_pins: PlugPinKind::None,
+            gasket: GasketKind::None,
             pour_end_hint: None,
         })
     }
@@ -489,6 +500,18 @@ impl Ribbon {
     #[must_use]
     pub const fn with_plug_pins(mut self, plug_pins: PlugPinKind) -> Self {
         self.plug_pins = plug_pins;
+        self
+    }
+
+    /// Builder: set the per-layer gasket-mold kind. S3 of the seam-
+    /// gasket-mold arc entry point — wraps a freshly-constructed
+    /// [`Ribbon`] with a [`GasketKind::Mold`] spec (or disables via
+    /// [`GasketKind::None`]). Composable with all other `with_*`
+    /// builders — the gasket arc is orthogonal to registration / pour
+    /// gate / plug pins.
+    #[must_use]
+    pub const fn with_gasket(mut self, gasket: GasketKind) -> Self {
+        self.gasket = gasket;
         self
     }
 
