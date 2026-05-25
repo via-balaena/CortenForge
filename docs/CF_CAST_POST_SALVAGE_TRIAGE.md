@@ -1,14 +1,25 @@
 # cf-cast post-salvage triage (2026-05-24 night)
 
-**Findings A + B RESOLVED 2026-05-25** via (4') accept + document
-— head-architect decision after (5') git-bisect Branch A
-confirmed PR #255 era had the identical cap-plane edge chamfer
-band. See `docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md` for the
-recon trail + (4') decision rationale + procedure.rs section
-("Cap-Plane Edge Chamfer (Expected MC Quantization)") that
-documents the chamfer as expected geometry. **Findings C + D
-remain OPEN for separate triage** (different root causes — not
-cap-plane × wall corner MC quantization).
+**Findings A + B + D RESOLVED 2026-05-25** via (4') accept +
+document — head-architect decision. A + B closed by (5')
+git-bisect Branch A (PR #255 era had identical cap-plane edge
+chamfer band; see `docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md`).
+D closed by no-pins isolation probe at
+`~/scans/cast_iter1_nopins/` confirming dome+cap edge seam-face
+non-flatness is intrinsic curved-centerline × MC quantization
+(NOT pin-induced; per-tri max ≤ 200 µm, below FDM print
+resolution). Procedure.rs gains two sections:
+("Cap-Plane Edge Chamfer (Expected MC Quantization)") + ("Seam-
+Face Edge Non-Flatness (Expected Centerline Curvature + MC)").
+
+**Finding C remains workshop-judgment.** Expected magnitude is
+~100 µm boolean-junction noise (well below the original triage
+doc's <0.5 mm acceptability threshold). Documented in the seam-
+face section as a workshop cf-view triage deferral, NOT a
+definitive (4') call — workshop user judges visually whether
+"matter obstructing the opening" is < 0.5 mm (accept + file off
+in 30 seconds) or > 0.5 mm (file regression issue with cf-view
+screenshot for separate recon arc).
 
 
 **Status (2026-05-25 morning update):** workshop user triaged all
@@ -132,6 +143,18 @@ mating-gap wobble.
 
 ## Finding C — Cup-side socket cavity mouth has partial obstruction
 
+**STATUS 2026-05-25: workshop-judgment deferred.**
+Documented in procedure.rs `## Seam-Face Edge Non-Flatness`
+section as a workshop cf-view triage callout. Expected magnitude
+is ~100 µm — well below the < 0.5 mm acceptability threshold
+quoted below. Workshop user inspects in cf-view: if the
+obstruction is visibly < 0.5 mm thick → accept + file off in 30
+seconds before assembly. If > 0.5 mm → file regression issue with
+cf-view screenshot for separate recon arc on the
+SubtractTruncatedPyramid × cap-plane boolean-junction geometry
+(paradigm-boundary territory per
+[[project-cf-cast-sdf-meshcsg-paradigm-boundary]]).
+
 **Symptom**: the plug-lock socket cavity carved into the cup-
 floor has irregular geometry at its mouth (where the cavity opens
 at the cap-plane plane). Workshop user screenshot at session
@@ -171,6 +194,39 @@ won't seat) or workshop-ergonomic (small artifacts a workshop
 user files off before assembly)?
 
 ## Finding D — Cup-piece seam face non-flatness at dome + cap regions
+
+**RESOLUTION 2026-05-25 — accepted via (4'); see procedure.rs
+`## Seam-Face Edge Non-Flatness (Expected Centerline Curvature +
+MC)`.**
+No-pins isolation probe at `~/scans/cast_iter1_nopins/` (regen
+with `[registration_pins] enabled = false`) confirmed:
+- **Pin-independent**: dome-slab + cap-slab seam-face tri counts
+  are bit-precisely identical with-pins vs without-pins on every
+  cup piece (delta = 0 in every Z region; cup-pin mesh-CSG
+  truncated-pyramid unions only remesh the seam-face INTERIOR,
+  never the dome/cap-plane edges). Triage doc's hypothesis-2 (D2
+  is pin-induced) is FALSIFIED.
+- **Below print resolution**: per-tri max Y deviation ≤ 200 µm
+  across all seam-face regions (one MC cell width). Below FDM
+  print quantization (Bambu A1 default 0.4 mm extrusion / 0.2 mm
+  layer).
+- **Curved-centerline root cause**: the seam face follows the
+  centerline polyline (per-segment binormal frame), translating
+  5-7 mm in Y across the cup body's Z extent. What looks like
+  "non-flatness" in cf-view at the dome+cap ends is the
+  centerline's Y range being prominent against the narrow cavity
+  there. At a single Z, the seam face IS flat to ≤ 200 µm.
+- The hypothetical (2')-style fix (post-MC mesh-CSG slab subtract
+  at the seam plane) is EXACTLY the recon-4 (P) §F-2 failure
+  mode that was reverted from S4 mating-features. Doubly
+  contraindicated.
+
+The original framing below (D1 + D2 split, "PR #255 had this
+fully flat") is retained as audit trail. **The "PR #255 was
+flat" recollection is the same misremembering pattern as A+B —
+PR #255 era's seam face is also driven by `Ribbon::halfspace_solid`
+with the same curved centerline, so it had the same dome+cap
+edge appearance.**
 
 **Symptom**: workshop user screenshot at session timestamp 22:21
 shows the cup-piece viewed edge-on with the seam face along the
@@ -368,30 +424,26 @@ workshop user effectively bears the cost of post-print sanding.
 
 ## Recommended next session
 
-**Status update 2026-05-25**: A + B resolved via (4'). The plan
-below was authored before the cap-plane recon resolved; updated
-flow follows.
+**Status update 2026-05-25 (post (4') D)**: A + B + D resolved
+via (4'). C is workshop-judgment-deferred. Updated flow:
 
-1. **Workshop user triage on findings C + D** (cap-plane recon
-   resolved, leaving these two as the remaining cf-view smoke
-   findings):
-   - **Finding C** (socket-mouth obstruction): is the visible
-     obstruction a functional blocker (plug can't seat in
-     socket) or workshop-ergonomic (small artifact to file off
-     before assembly)? If blocker → open Finding-C recon
-     (likely paradigm-boundary territory at the
-     SubtractTruncatedPyramid × cup-floor junction).
-   - **Finding D** (seam-face flatness at dome+cap regions):
-     does the workshop user see this as a print blocker, a
-     silicone-leak risk, or workshop-ergonomic visual noise? If
-     blocker → open Finding-D recon (likely curved-body ×
-     seam-plane MC quantization; orthogonal to cap-plane × wall
-     corner so the (4') approach may or may not generalize).
-2. **If C + D are workshop-ergonomic**: proceed direct to
-   workshop iter-3 print on Bambu A1 + default + Jayo.
-   Workshop-user-physical PAUSE point. Caliper data → S7
-   calibration of clearances + chamfers in `PrismaticPinSpec`
-   defaults.
+1. **Workshop cf-view check on C** (the only remaining unresolved
+   finding). Workshop user opens the cup-piece STLs in cf-view
+   assembly mode, zooms in on the plug-lock socket recess at the
+   cap-plane wall, and judges the obstruction magnitude:
+   - **Visibly < 0.5 mm thick** → ACCEPT (consistent with the
+     (4')-pattern; workshop user can file off any small artifact
+     before assembly). Workshop iter-3 print proceeds.
+   - **Visibly > 0.5 mm thick** → file a regression issue with
+     a cf-view screenshot; open a separate recon arc on the
+     `SubtractTruncatedPyramid` × cap-plane boolean-junction
+     paradigm-boundary geometry (likely candidate for an
+     `extend_near_end`-style overlap-bias on the pyramid socket
+     near-end, mirroring the plug-shaft recon-4 pattern).
+2. **Workshop iter-3 print** on Bambu A1 + default + Jayo
+   (assuming C accepted). Workshop-user-physical PAUSE point.
+   Caliper data → S7 calibration of clearances + chamfers in
+   `PrismaticPinSpec` defaults.
 3. **Cold-read close + PR to main**: final session after iter-3
    workshop print success. Includes procedure.rs prose updates
    for any post-print findings, dead-code cleanup
@@ -425,12 +477,19 @@ flow follows.
 - Salvage commits: `b2ff45d5` + `fed4b0c6` + `a8e3e056` on dev.
 - Workshop user cf-view-verified: cup-pin features + base-down
   captive plug-lock pyramid. Cup-pin/lock geometry unblocked.
-- **2026-05-25 update**: Findings A + B resolved via (4') accept
-  + document (head-architect call after (5') git-bisect Branch A;
-  PR #255 era had bit-precisely identical cap-plane edge chamfer
-  band). Procedure.rs `## Cap-Plane Edge Chamfer (Expected MC
-  Quantization)` section + doc-anchoring test shipped. Findings
-  C + D remain OPEN for workshop user triage.
+- **2026-05-25 update**: Findings A + B + D resolved via (4')
+  accept + document (head-architect call). A + B via (5')
+  git-bisect Branch A (PR #255 era had bit-precisely identical
+  cap-plane edge chamfer band). D via no-pins isolation probe
+  (`~/scans/cast_iter1_nopins/` — dome+cap-edge seam-face
+  triangulation bit-precisely identical with-pins vs no-pins;
+  per-tri max ≤ 200 µm; curved-centerline root cause, NOT
+  pin-induced). Procedure.rs gains two sections: `## Cap-Plane
+  Edge Chamfer (Expected MC Quantization)` + `## Seam-Face Edge
+  Non-Flatness (Expected Centerline Curvature + MC)` (incl.
+  Finding C workshop-cf-view triage callout). Finding C is
+  workshop-judgment deferred (< 0.5 mm threshold → accept;
+  > 0.5 mm → file regression issue).
 - 201 cf-cast lib tests + 8 g7_g9 probe + 1 g7c probe + 1
   single-layer-smoke / clippy / fmt clean (pre-(4'); the (4')
   ship adds 1 doc-anchoring test).

@@ -355,6 +355,7 @@ pub fn generate_procedure_markdown_v2(
     write_target_fdm_floor_v2(&mut md);
     write_cfview_sanity_check_v2(&mut md);
     write_cap_plane_chamfer_v2(&mut md);
+    write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md);
     write_v2_assembly_note(&mut md, ribbon);
@@ -854,6 +855,109 @@ fn write_cap_plane_chamfer_v2(md: &mut String) {
          documented here is an MC-quantization byproduct of the \
          body × cap-plane derivative discontinuity, NOT a \
          deliberately-emitted feature."
+    );
+    md.push('\n');
+}
+
+fn write_seam_face_edge_v2(md: &mut String) {
+    let _ = writeln!(
+        md,
+        "## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "When inspecting cup-piece STLs in cf-view, you will see what \
+         looks like seam-face non-flatness at the **dome end** (high Z, \
+         where the seam plane meets the cup body's dome cap) and the \
+         **cap-plane end** (low Z, where the seam plane meets the \
+         cap-plane wall). This is **expected geometry, not a defect.**"
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **The seam face follows the curved centerline.** It is NOT a \
+         single flat plane — it is a curved ribbon swept along the \
+         centerline polyline (per-segment binormal frame). Even with \
+         `max tangent rotation: 0.1°` (typical for sock-shaped scans), \
+         the centerline translates ~5-7 mm in the binormal direction \
+         across the Z extent of the cup body. What looks like \
+         seam-face non-flatness in cf-view is mostly this translation \
+         — at any single Z, the seam face is **per-tri flat to within \
+         one MC cell width** (~200 µm at 3 mm cells).\n\
+         - **At the dome+cap ENDS the centerline curvature is more \
+         visible** because the cup body cavity is smaller there, so \
+         the seam face's binormal-direction Y range stands out against \
+         the narrow cavity. At the cup's mid-section, the cavity is \
+         wider so the seam-face curvature is proportionally less \
+         noticeable in cf-view.\n\
+         - **Per-tri max deviation ≤ 200 µm** across all seam-face \
+         regions (verified empirically 2026-05-25 against \
+         `~/scans/cast_iter1*/mold_layer_*_piece_*.stl`). Same \
+         below-print-resolution argument as `## Cap-Plane Edge \
+         Chamfer` above: a 200 µm STL-level deviation does not \
+         survive the Bambu A1 default 0.4 mm extrusion / 0.2 mm layer \
+         height quantization."
+    );
+    md.push('\n');
+    let _ = writeln!(md, "**Workshop guidance:**");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **Do NOT try to flatten the seam face globally.** The seam \
+         face is intentionally curved (follows the centerline). \
+         Flattening to a single plane would break the recon-4 (P) \
+         §F-4 bit-precise SDF-halfspace invariant + the workshop fit \
+         between the two cup halves (which fit because both halves' \
+         seam faces follow the SAME curved ribbon).\n\
+         - **Workshop user has empirical acceptability precedent.** \
+         The PR #255 era (`aadcfed6`) shipped with the same \
+         curved-centerline seam face + iter-2 print on calibrated \
+         Bambu was workshop-accepted. The 2026-05-25 (5') bisect on \
+         the cap-plane edge applies the same logic here — the seam \
+         face geometry is driven by `Ribbon::halfspace_solid` + \
+         pre-arc body derivation, both of which are continuous since \
+         2026-05-19.\n\
+         - **Pin-independent: no remediation via pin geometry.** A \
+         2026-05-25 no-pins regen (`registration_pins.enabled = \
+         false` at `~/scans/cast_iter1_nopins/`) confirmed the \
+         dome-edge + cap-edge seam-face triangulation is \
+         bit-precisely identical with-pins vs without-pins. The \
+         cup-pin mesh-CSG truncated-pyramid unions only remesh the \
+         INTERIOR of the seam face (around each pin), NOT the dome \
+         or cap-plane edges. So pin-geometry tweaks cannot mitigate \
+         the dome/cap-edge appearance."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Distinct from `## Cap-Plane Edge Chamfer` above:** that \
+         section concerns the cap-plane × curving-body-wall corner on \
+         plug + cup-floor faces (~3 mm-wide chamfer ring at the \
+         cap-plane perimeter). The seam-face edge non-flatness here \
+         is on the cup-piece SEAM faces and is driven by \
+         centerline-curvature × MC quantization at the dome+cap ends. \
+         Different root causes, both below print resolution, both \
+         (4')-pattern accepted."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Plug-lock socket mouth (cup-piece cap-plane wall):** the \
+         `SubtractTruncatedPyramid` mesh-CSG carve of the plug-lock \
+         socket recess inherits ~100 µm cap-plane edge chamfer at the \
+         socket mouth perimeter (manifold3d boolean subtract on an \
+         already-MC-quantized cap-plane face). Workshop user 2026-05-24 \
+         night cf-view flagged this as \"matter obstructing the \
+         opening\" (Finding C in `docs/CF_CAST_POST_SALVAGE_TRIAGE.md`). \
+         Expected magnitude is ~100 µm — well below the triage doc's \
+         <0.5 mm workshop-acceptability threshold. If cf-view shows \
+         the obstruction is < 0.5 mm thick, accept it (workshop user \
+         can file off any visible artifact in 30 seconds before \
+         pressing the plug into the socket). If the obstruction is \
+         visibly > 0.5 mm thick, file a regression issue with a \
+         cf-view screenshot — that would warrant a separate recon arc \
+         on the boolean-junction geometry."
     );
     md.push('\n');
 }

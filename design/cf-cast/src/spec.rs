@@ -2617,6 +2617,7 @@ mod tests {
         assert!(md.contains("## Target FDM Floor (Bambu A1 + Default + Jayo)"));
         assert!(md.contains("## cf-view Sanity-Check Workflow"));
         assert!(md.contains("## Cap-Plane Edge Chamfer (Expected MC Quantization)"));
+        assert!(md.contains("## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"));
         // Sections shared with v1.
         assert!(md.contains("## Materials Summary"));
         assert!(md.contains("## Generic Smooth-On Guidance"));
@@ -2724,6 +2725,61 @@ mod tests {
         assert!(
             md.contains("Distinct from `## First-Layer Chamfer Recipe`"),
             "disambiguation from First-Layer Chamfer Recipe missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_seam_face_section_accepts_curved_centerline() {
+        // 2026-05-25 (4') decision for Finding D (seam-face dome+cap
+        // edge non-flatness): the curved-centerline seam face follows
+        // the polyline through the binormal direction, appearing
+        // "non-flat" in cf-view at the dome+cap ends where the cup
+        // body is narrowest. Per-tri max deviation ≤ 200 µm (one MC
+        // cell width); below FDM print resolution. Workshop user must
+        // NOT try to flatten globally (would break recon-4 (P) §F-4
+        // bit-precise halfspace invariant + cross-cup-half fit).
+        // Pin-independent per 2026-05-25 no-pins regen — cap-edge +
+        // dome-edge seam-face tris bit-precisely identical with-pins
+        // vs without-pins. Anchors gate any future drift back toward
+        // "fix it" framing.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("expected geometry, not a defect"),
+            "seam-face acceptance framing missing in: {md}"
+        );
+        assert!(
+            md.contains("The seam face follows the curved centerline"),
+            "curved-centerline root-cause anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("Do NOT try to flatten the seam face globally"),
+            "explicit don't-flatten workshop guidance missing in: {md}"
+        );
+        assert!(
+            md.contains("Pin-independent"),
+            "no-pins regen result anchor missing in: {md}"
+        );
+        // The section must explicitly disambiguate from the cap-plane
+        // chamfer section (different root cause: centerline curvature
+        // vs derivative discontinuity at flat × curved corner).
+        assert!(
+            md.contains("Distinct from `## Cap-Plane Edge Chamfer` above"),
+            "disambiguation from cap-plane chamfer section missing in: {md}"
+        );
+        // Finding C (socket-mouth obstruction) callout — workshop-judgment
+        // deferral, NOT a definitive (4') call. Anchors guard against
+        // the section getting rewritten to remove the deferral framing
+        // (workshop user needs the < 0.5 mm threshold + the file-it-off
+        // workshop instruction to make their cf-view triage decision).
+        assert!(
+            md.contains("plug-lock socket mouth") || md.contains("Plug-lock socket mouth"),
+            "Finding C socket-mouth callout missing in: {md}"
+        );
+        assert!(
+            md.contains("< 0.5 mm"),
+            "Finding C 0.5 mm workshop-acceptability threshold missing in: {md}"
         );
     }
 

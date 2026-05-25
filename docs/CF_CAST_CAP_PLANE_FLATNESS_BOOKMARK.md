@@ -484,20 +484,130 @@ updates. **Zero production STL geometry changes.** Zero
 paradigm-boundary exposure. Workshop-verified S4-salvage
 plug-lock geometry preserved unchanged.
 
+## (4') extended to Finding D (2026-05-25 same-day, head-architect)
+
+Workshop user authorized continuation ("we should keep going").
+The cap-plane (4') ship resolved A + B; turning to D + C next.
+
+**D measurement protocol:**
+
+1. Regen iter-1 with `[registration_pins] enabled = false`
+   (plug_pins kept enabled — plug-floor-lock is separate from
+   registration). Output dir `~/scans/cast_iter1_nopins/`.
+2. Compare with-pins (`~/scans/cast_iter1/`) vs no-pins
+   (`~/scans/cast_iter1_nopins/`) cup-piece STLs. Per-region
+   tri counts in seam-adjacent slabs (cap-edge Z < -40 mm;
+   dome-edge Z > +70 mm).
+3. Per-tri Y-deviation magnitude on no-pins cup pieces in each
+   Z region.
+
+**D result table (cup-piece seam-slab tri counts; delta = with-pins − no-pins):**
+
+| STL                  | with-pins | no-pins | delta | cap-slab Δ | dome-slab Δ |
+|----------------------|----------:|--------:|------:|-----------:|------------:|
+| mold_layer_0_piece_0 |    1096   |    998  |  +98  |       0    |        0    |
+| mold_layer_0_piece_1 |    1285   |   1194  |  +91  |       0    |        0    |
+| mold_layer_1_piece_0 |     921   |    809  | +112  |       0    |        0    |
+| mold_layer_1_piece_1 |    1077   |    988  |  +89  |       0    |        0    |
+| mold_layer_2_piece_0 |     661   |    538  | +123  |       0    |        0    |
+| mold_layer_2_piece_1 |     862   |    742  | +120  |       0    |        0    |
+
+**Cap-edge + dome-edge seam-face tri counts are bit-precisely
+identical with-pins vs no-pins on every cup piece.** Pin
+mesh-CSG truncated-pyramid unions only remesh the seam-face
+INTERIOR (mid-Z region between cap-plane and dome ends),
+adding ~90-123 tris per piece around the pins. Pins do not
+touch the dome or cap edges. **Triage doc's hypothesis-2 (D2
+is pin-induced) is FALSIFIED.**
+
+**D per-tri magnitude (no-pins Negative cup piece, layer 0,
+within-tri max Y span on seam-face tris filtered as `|y|<2mm` +
+`within-tri Y span < 200 µm`):**
+
+- cap-near (Z ∈ [-40, -20] mm): 33 tris, max 388 µm. Slightly
+  worse than the 200 µm typical (cap-end centerline curvature
+  drives the larger span at this Z).
+- mid (Z ∈ [-20, +40] mm): 353 tris, max 2080 µm (centerline
+  translation, not per-tri non-flatness — large span comes from
+  filtering being looser at mid-Z where the cavity is wide).
+- dome-near (Z ∈ [+40, +70] mm): 295 tris, max 3000 µm.
+- dome-edge (Z > +70 mm): 249 tris, max 3000 µm.
+
+**The large mid/dome span values reflect the curved-centerline
+seam following the polyline through different Y values across
+Z, NOT per-tri non-flatness.** Each individual tri is flat to
+≤ 200-400 µm (one MC cell width); the seam face as a whole
+follows the centerline. recon-4 (P) §F-4 + the production-
+fixture `piece::tests::mating_face_is_mathematically_flat_under_curved_centerline`
+test invariant (≤ 1 µm cap-vertex deviation from the arc-midpoint
+binormal plane) confirms this is bit-precise for the
+single-plane approximation; per-tri MC quantization (one cell
+width) sets the realistic resolution.
+
+**D root cause:** the seam face is a curved ribbon following
+the centerline, NOT a single flat plane. cf-view's eye sees the
+ribbon's binormal-direction Y variance at the dome+cap ends
+(where the cup body is narrow) as "non-flatness" — but the
+seam face IS flat per-Z; it just translates in Y across Z. The
+cup halves fit because BOTH halves' seam faces follow the SAME
+curved ribbon — flatten one and the cup halves stop fitting.
+
+**D decision: ACCEPT via (4'),** same as A + B. Workshop user's
+"PR #255 had this fully flat" recollection is the same
+misremembering pattern as A + B — PR #255 era's seam face is
+also driven by `Ribbon::halfspace_solid` with the same curved
+centerline; the geometric appearance was identical, attention
+at the time was on other findings.
+
+**(2')-style fix (post-MC mesh-CSG slab subtract at seam plane)
+is doubly contraindicated for D:**
+
+- Recon-4 (P) §F-2 paradigm-boundary failure mode: a flat slab
+  subtract face coincident with the curved-centerline ribbon
+  SDF surface would face-coincident-fail manifold3d. The
+  original S4 `MatingTransform::SeamTrim` did exactly this and
+  was reverted in recon-4 (P) impl `24bdc221`.
+- Flattening to a single plane would break the recon-4 (P) §F-4
+  bit-precise SDF-halfspace invariant + the cross-cup-half fit.
+
+**Finding C status: workshop-judgment deferred.** The plug-lock
+socket recess on the cup-floor inherits ~100 µm cap-plane edge
+chamfer at the mesh-CSG `SubtractTruncatedPyramid` boundary
+junction. Expected magnitude is well below the original triage
+doc's < 0.5 mm acceptability threshold, but I haven't done a
+direct measurement of the cavity-mouth perimeter. Documented in
+procedure.rs section as workshop cf-view triage callout — if
+visible obstruction is < 0.5 mm, accept + file off (workshop
+30 seconds); if > 0.5 mm, file regression issue for separate
+recon arc.
+
+**D ship contents:** ~110 LOC procedure.rs prose addition
+(`write_seam_face_edge_v2` section in v2 pipeline, including
+Finding C cf-view triage callout) + ~50 LOC spec.rs doc-
+anchoring test (`generate_procedure_markdown_v2_seam_face_section_accepts_curved_centerline`)
++ 1 section-header anchor in
+`generate_procedure_markdown_v2_renders_all_required_sections`.
+**Zero production STL geometry change.** cf-cast-cli iter-1
+regen NOT needed.
+
 ## Status
 
 - Triage doc → recon bookmark transition (2026-05-25 morning).
 - (5') git-bisect COMPLETE 2026-05-25 same-day. Branch A: PR #255
   era had the same chamfer band; workshop user misremembered.
-- (4') PICKED + SHIPPED 2026-05-25 same-day. See §"(4')
-  head-architect decision rationale" above. Findings A + B
-  RESOLVED.
-- Findings C (socket-mouth obstruction) + D (seam-face dome+cap
-  flatness) **remain open** for separate triage — different root
-  causes (mesh-CSG boolean junction artifact + curved-body ×
-  seam-plane MC, NOT cap-plane × wall corner). Workshop iter-3
-  print partially unblocked (cap-plane edge no longer a blocker);
-  full unblock pending workshop user's C + D triage.
+- (4') PICKED + SHIPPED 2026-05-25 same-day for A + B (commit
+  `394961e2` on dev). See §"(4') head-architect decision
+  rationale" above.
+- (4') EXTENDED to D 2026-05-25 same-day after no-pins probe
+  isolated D as intrinsic curved-centerline × MC quantization
+  (NOT pin-induced). See §"(4') extended to Finding D" above.
+- Finding C remains workshop-judgment deferred — documented in
+  procedure.rs `## Seam-Face Edge Non-Flatness` section with
+  the < 0.5 mm acceptability threshold + file-it-off workshop
+  guidance.
+- Workshop iter-3 print **UNBLOCKED on A + B + D**. Final gate
+  is workshop user's cf-view check on Finding C — if accepted,
+  iter-3 print proceeds to Bambu A1 + default + Jayo.
 - Branch: `dev`, no push, no PR per
   [[feedback-omnibus-pr-single-branch]].
 
