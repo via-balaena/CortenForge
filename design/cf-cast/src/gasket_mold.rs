@@ -67,6 +67,49 @@
 //! - Channel cross-section + material calibration — S2 territory.
 //! - Pin-routing (§G-5 (a)/(b)/(c) variants) — S3 territory.
 //! - Dovetail retention (§G-3 fallback) — S5 territory.
+//!
+//! # Open design questions for S2-S6 (cold-read pass-1 noted)
+//!
+//! - **Gasket centerline position.** The SDF places gasket centerline
+//!   at `body.evaluate = 0` — i.e., the gasket sits HALF-INSIDE the
+//!   silicone cast volume + half-outside in the cup-wall region.
+//!   Workshop consequence: silicone bonds to the gasket's inner half
+//!   during pour + cure; after demold the cast carries a thin
+//!   silicone bead at the seam (the gasket itself). Workshop user
+//!   trims. **Alternative** for S2 consideration: shift gasket
+//!   centerline to `body.evaluate = +width/2 + offset` so the entire
+//!   gasket sits outside the silicone (gasket stays in cup-wall on
+//!   demold; no cast contamination). Adds 1 layer of complexity to
+//!   the channel SDF formula.
+//! - **Single-plane body cross-section approximation.** The channel
+//!   SDF evaluates body at the seam-plane midpoint Y from
+//!   [`Ribbon::seam_plane_reference`], not at the per-segment
+//!   binormal plane. For low-curvature centerlines (production:
+//!   `max tangent rotation: 0.1°`) the per-Z variation is small and
+//!   absorbed by silicone gasket flexibility on install. S2 should
+//!   validate on a curved-centerline production fixture.
+//! - **Per-STL positioning.** Mold is composed at the SAME world
+//!   coordinates as the cup pieces (tray Y ∈ [0, `tray_thickness_m`]
+//!   overlaps the cup-piece bounding region). cf-view assembly mode
+//!   will show interpenetration. S3 cf-cast-cli integration is
+//!   responsible for per-STL world-coordinate offsets (e.g., shift
+//!   gasket mold outside the cup piece bounding region) so cf-view
+//!   smoke isn't confusing.
+//! - **`channel_depth_m` vs `cross_section_thickness_m`.** Default
+//!   has them equal: silicone fills the channel to exactly the
+//!   gasket thickness. If `channel_depth_m < cross_section_thickness_m`,
+//!   silicone overflows the channel during pour → forms a flat sheet
+//!   on top of the tray → workshop user trims the strip out of the
+//!   sheet. If `channel_depth_m > cross_section_thickness_m`, silicone
+//!   doesn't fill the channel fully — usually undesirable. Picked at
+//!   S2 calibration; S1 default keeps them equal.
+//! - **Tray orientation.** Tray hardcoded to XZ-plane with Y as
+//!   vertical. Production `~/scans/cast.toml` has
+//!   `split_normal = [1, 0, 0]` → binormal ≈ `-Y` → seam plane ≈
+//!   XZ-plane → tray orientation correct. For other `split_normal`
+//!   pickings the tray would need rotating to match the binormal
+//!   direction. S2 should add a tray-orientation invariant test if
+//!   a non-Y binormal becomes a production target.
 
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Vector3};
@@ -287,10 +330,16 @@ mod tests {
 
     /// Synthetic fixture mirroring production seam-plane geometry:
     /// straight-along-X centerline at Y=0; cylindrical body cavity
-    /// (sock proxy) centered on the centerline; large bounding cuboid.
-    /// The body's XZ cross-section at the seam plane is a circle of
-    /// radius 10 mm — `compose_gasket_mold_solid` should produce a
-    /// channel tracing this circular perimeter.
+    /// (sock proxy along X-axis, 10 mm radius in YZ, 60 mm length
+    /// along X) centered on the centerline; large bounding cuboid
+    /// (200 × 30 × 30 mm). The body's XZ cross-section at the seam
+    /// plane (Y=0) is a **rectangle 60 × 20 mm** (|X| ≤ 30 AND
+    /// |Z| ≤ 10), bounded by the cylinder's axial caps along X and
+    /// its lateral surface at |Z| = 10. `compose_gasket_mold_solid`
+    /// produces a channel tracing this rectangular perimeter — a
+    /// closed loop with 4 straight sides + 4 corners at (±30, ±10).
+    /// Tests below probe the long-side perimeter (|Z| = 10 within
+    /// |X| ≤ 30); short-side + corner probes are S2 coverage.
     fn synthetic_fixture() -> (Ribbon, Solid, Solid) {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
@@ -410,9 +459,9 @@ mod tests {
         let (ribbon, body, bounds) = synthetic_fixture();
         let spec = GasketSpec::iter1();
         let (mold, _) = compose_gasket_mold_solid(&ribbon, &body, &bounds, &spec).unwrap();
-        // Body cavity is 10 mm radius cylinder along X centered on
-        // (X, 0, 0). At the channel Y (top of tray), probe on the
-        // perimeter at (X=0, Y=tray_top, Z=+10 mm).
+        // Body cross-section at seam plane Y=0 is the rectangle
+        // |X| ≤ 30 AND |Z| ≤ 10. Probe the long-side perimeter at
+        // (X=0, Y=channel_mid, Z=+10) — on the body boundary.
         let perimeter = Point3::new(
             0.0,
             0.5_f64.mul_add(-spec.channel_depth_m, spec.tray_thickness_m),
@@ -451,9 +500,10 @@ mod tests {
         let (ribbon, body, bounds) = synthetic_fixture();
         let spec = GasketSpec::iter1();
         let (mold, _) = compose_gasket_mold_solid(&ribbon, &body, &bounds, &spec).unwrap();
-        // Cavity interior: 5 mm from center, well inside 10 mm radius
-        // cavity → body.evaluate ≈ -5 mm, |body.evaluate| > 5 mm >>
-        // width/2 = 0.75 mm → channel SDF positive → mold solid.
+        // Cavity interior: probe at (X=0, _, Z=5) → 5 mm from the
+        // body's lateral surface (|Z| = 10) along the short axis →
+        // body.evaluate ≈ -5 mm, |body.evaluate| = 5 mm >> width/2 =
+        // 0.75 mm → channel SDF positive → mold solid.
         let cavity_interior = Point3::new(
             0.0,
             0.5_f64.mul_add(-spec.channel_depth_m, spec.tray_thickness_m),
@@ -474,8 +524,10 @@ mod tests {
         let (ribbon, body, bounds) = synthetic_fixture();
         let spec = GasketSpec::iter1();
         let (mold, _) = compose_gasket_mold_solid(&ribbon, &body, &bounds, &spec).unwrap();
-        // Outside cavity by ~3 mm: body.evaluate ≈ +3 mm, |body.evaluate|
-        // = 3 mm >> width/2 = 0.75 mm → channel SDF positive → mold solid.
+        // Outside cavity by ~3 mm: probe at (X=0, _, Z=13) →
+        // body.evaluate = max(|Z|-10, |X|-30) = max(3, -30) = +3 mm →
+        // |body.evaluate| = 3 mm >> width/2 = 0.75 mm → channel SDF
+        // positive → mold solid.
         let outside_cavity = Point3::new(
             0.0,
             0.5_f64.mul_add(-spec.channel_depth_m, spec.tray_thickness_m),
@@ -494,15 +546,15 @@ mod tests {
         // Bit-precise fit invariant per [[project-cf-cast-mating-features-s5-registration-pins]]
         // §"math-verified clearance": probe at (body.evaluate = +w/2)
         // and (body.evaluate = -w/2) — both should land at the channel
-        // boundary (channel SDF ≈ 0). The cavity radius is 10 mm; the
-        // channel width is 1.5 mm so the channel boundary lies at
-        // r = 10 ± 0.75 mm.
+        // boundary (channel SDF ≈ 0). At the long-side perimeter
+        // (|Z| = 10 within |X| ≤ 30), the channel boundary lies at
+        // Z = 10 ± width/2 = 10 ± 0.75 mm.
         let (ribbon, body, bounds) = synthetic_fixture();
         let spec = GasketSpec::iter1();
         let (mold, _) = compose_gasket_mold_solid(&ribbon, &body, &bounds, &spec).unwrap();
         let y_mid = 0.5_f64.mul_add(-spec.channel_depth_m, spec.tray_thickness_m);
         let half_w = 0.5 * spec.cross_section_width_m;
-        // Outer boundary of channel: r = 10 mm + 0.75 mm = 10.75 mm.
+        // Outer boundary of channel (Z away from cavity): Z = 10 mm + 0.75 mm = 10.75 mm.
         let outer_boundary = Point3::new(0.0, y_mid, 0.010 + half_w);
         let outer_sdf = mold.evaluate(&outer_boundary);
         // Channel SDF ≈ 0 at the boundary → mold SDF (tray subtract
@@ -510,14 +562,14 @@ mod tests {
         // composition.
         assert!(
             outer_sdf.abs() < 1e-6,
-            "mold SDF at outer channel boundary (r = 10.75 mm) must be ≈ 0; got {outer_sdf}"
+            "mold SDF at outer channel boundary (Z = 10.75 mm) must be ≈ 0; got {outer_sdf}"
         );
-        // Inner boundary: r = 10 mm - 0.75 mm = 9.25 mm.
+        // Inner boundary of channel (Z toward cavity): Z = 10 mm - 0.75 mm = 9.25 mm.
         let inner_boundary = Point3::new(0.0, y_mid, 0.010 - half_w);
         let inner_sdf = mold.evaluate(&inner_boundary);
         assert!(
             inner_sdf.abs() < 1e-6,
-            "mold SDF at inner channel boundary (r = 9.25 mm) must be ≈ 0; got {inner_sdf}"
+            "mold SDF at inner channel boundary (Z = 9.25 mm) must be ≈ 0; got {inner_sdf}"
         );
     }
 
