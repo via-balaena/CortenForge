@@ -895,35 +895,58 @@ impl CastSpec {
 /// large scans aren't black-boxed for minutes between "loaded
 /// design" and the final STL writes. Format:
 /// `[cf-cast] layer N piece M (Negative|Positive) — composed + meshed in Xs, F4 gate passed in Ys`.
+///
+/// **Parallelization (S2 of `docs/CF_CAST_PARALLEL_MESHING_RECON.md`):**
+/// per-layer tasks via `rayon::par_iter`; per-piece `(Negative,
+/// Positive)` within a layer via `rayon::join`. Total parallelism =
+/// `2 * layer_count` (6 tasks for the production 3-layer cast).
+/// Canonical-first-error semantics matching the serial pipeline's
+/// `?`-on-first-error contract: rayon's `collect::<Result<Vec<_>,
+/// _>>` short-circuits on the first error in original-layer order;
+/// within a layer, `rayon::join` returns both results and we
+/// `?`-propagate (Negative first per canonical iteration ordering).
+/// Pre-write atomicity preserved by construction.
 fn mesh_and_gate_v2_pieces(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Vec<[PendingPiece; 2]>, CastError> {
+    use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+
     let layer_count = spec.layers.len();
-    let mut pending_layers = Vec::with_capacity(layer_count);
-    for (layer_index, layer) in spec.layers.iter().enumerate() {
-        let neg = mesh_and_gate_v2_piece(
-            spec,
-            ribbon,
-            layer,
-            layer_index,
-            PieceSide::Negative,
-            out_dir,
-            layer_count,
-        )?;
-        let pos = mesh_and_gate_v2_piece(
-            spec,
-            ribbon,
-            layer,
-            layer_index,
-            PieceSide::Positive,
-            out_dir,
-            layer_count,
-        )?;
-        pending_layers.push([neg, pos]);
-    }
-    Ok(pending_layers)
+    spec.layers
+        .par_iter()
+        .enumerate()
+        .map(
+            |(layer_index, layer)| -> Result<[PendingPiece; 2], CastError> {
+                let (neg_res, pos_res) = rayon::join(
+                    || {
+                        mesh_and_gate_v2_piece(
+                            spec,
+                            ribbon,
+                            layer,
+                            layer_index,
+                            PieceSide::Negative,
+                            out_dir,
+                            layer_count,
+                        )
+                    },
+                    || {
+                        mesh_and_gate_v2_piece(
+                            spec,
+                            ribbon,
+                            layer,
+                            layer_index,
+                            PieceSide::Positive,
+                            out_dir,
+                            layer_count,
+                        )
+                    },
+                );
+                Ok([neg_res?, pos_res?])
+            },
+        )
+        .collect::<Result<Vec<[PendingPiece; 2]>, CastError>>()
 }
 
 /// Compose + mesh + F4-gate a single piece. Extracted so
@@ -987,54 +1010,62 @@ fn mesh_and_gate_v2_piece(
 /// then mesh + F4-gate. Each layer's plug matches the next-inner
 /// silicone shell's outer surface, so the detachable per-layer
 /// casts produce nesting cured tubes.
+///
+/// **Parallelization (S2 of `docs/CF_CAST_PARALLEL_MESHING_RECON.md`):**
+/// per-layer tasks via `rayon::par_iter`. Same canonical-first-error
+/// `collect::<Result<Vec<_>, _>>` pattern as the gasket + cup-piece
+/// pipelines; pre-write atomicity preserved.
 fn mesh_and_gate_v2_plugs(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Vec<PendingPlug>, CastError> {
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
     let layer_count = spec.layers.len();
-    let mut pending = Vec::with_capacity(layer_count);
-    for layer_index in 0..layer_count {
-        let t_compose = std::time::Instant::now();
-        let base_plug = if layer_index == 0 {
-            spec.plug.clone()
-        } else {
-            spec.layers[layer_index - 1].body.clone()
-        };
-        let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
-        let target = CastTarget::Plug {
-            layer_index: Some(layer_index),
-        };
-        let mesh = solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?;
-        let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
-        let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-        let path = out_dir.join(plug_layer_filename(layer_index));
-        let t_gate = std::time::Instant::now();
-        let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
-        let gate_s = t_gate.elapsed().as_secs_f64();
-        let blocking = blocking_critical_count(&validation, target);
-        if blocking > 0 {
-            return Err(CastError::PrintabilityCritical {
-                target,
-                issue_count: blocking,
+    (0..layer_count)
+        .into_par_iter()
+        .map(|layer_index| -> Result<PendingPlug, CastError> {
+            let t_compose = std::time::Instant::now();
+            let base_plug = if layer_index == 0 {
+                spec.plug.clone()
+            } else {
+                spec.layers[layer_index - 1].body.clone()
+            };
+            let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
+            let target = CastTarget::Plug {
+                layer_index: Some(layer_index),
+            };
+            let mesh = solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?;
+            let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
+            let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+            let path = out_dir.join(plug_layer_filename(layer_index));
+            let t_gate = std::time::Instant::now();
+            let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+            let gate_s = t_gate.elapsed().as_secs_f64();
+            let blocking = blocking_critical_count(&validation, target);
+            if blocking > 0 {
+                return Err(CastError::PrintabilityCritical {
+                    target,
+                    issue_count: blocking,
+                    path,
+                });
+            }
+            eprintln!(
+                "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
+                 — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+                layer_count_minus_1 = layer_count.saturating_sub(1),
+                verts = mesh.vertices.len(),
+                faces = mesh.faces.len(),
+            );
+            Ok(PendingPlug {
+                layer_index,
+                mesh,
+                validation,
                 path,
-            });
-        }
-        eprintln!(
-            "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
-             — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
-            layer_count_minus_1 = layer_count.saturating_sub(1),
-            verts = mesh.vertices.len(),
-            faces = mesh.faces.len(),
-        );
-        pending.push(PendingPlug {
-            layer_index,
-            mesh,
-            validation,
-            path,
-        });
-    }
-    Ok(pending)
+            })
+        })
+        .collect::<Result<Vec<PendingPlug>, CastError>>()
 }
 
 /// Mesh + F4-gate the workshop platform STL, or return
