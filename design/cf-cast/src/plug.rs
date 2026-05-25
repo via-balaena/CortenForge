@@ -153,7 +153,7 @@ use cf_design::Solid;
 use nalgebra::{Point3, UnitVector3, Vector3};
 
 use crate::mesh_csg::MatingTransform;
-use crate::prismatic_pin::{PrismaticPinPose, PrismaticPinSpec, build_prismatic_pin_sdf};
+use crate::prismatic_pin::{PrismaticPinPose, PrismaticPinSpec};
 use crate::ribbon::Ribbon;
 
 /// Plug-floor-lock geometry spec — wraps the SDF-side
@@ -224,10 +224,31 @@ pub enum PlugPinKind {
 /// plane anchor.
 ///
 /// Returned pose: `center_m` at the cap-plane centroid;
-/// `axis_unit = +cap_normal` (= away from plug body, downward in
-/// pour orientation); `lateral_unit = +split_normal` (orthogonal to
-/// `cap_normal` by ribbon construction — see module docstring
-/// §"Pose convention").
+/// `axis_unit = -cap_normal` (= INTO plug body, upward in pour
+/// orientation); `lateral_unit = +split_normal` projected
+/// orthogonal to `axis_unit` (see module docstring §"Pose
+/// convention").
+///
+/// # Axis direction (base-down captive convention, 2026-05-24 polish)
+///
+/// `axis_unit = -cap_normal` orients the pyramid **BASE DOWN** in
+/// pour orientation: the `-axis_unit` half of the symmetric-across-
+/// cap-plane pose lives along `+cap_normal` (= DOWN, workshop-
+/// visible) and carries the pyramid's BASE end (full base half-
+/// extents + chamfer band), while the `+axis_unit` half lives along
+/// `-cap_normal` (= UP, inside plug body) and carries the TIP end
+/// (smaller tip half-extents). The cup-piece socket inherits the
+/// same flip — its inflated cavity opens at a NARROW mouth at the
+/// cap-plane and widens DOWN into the cup-wall material. Workshop
+/// assembly: insert plug downward into the open cup half; the
+/// pyramid's narrow top threads through the socket mouth and the
+/// wider base settles into the deeper socket cavity. Close the
+/// second cup half; the cup halves trap the pyramid's wider base
+/// against vertical pull-out, making the plug captive in 6 `DoF`
+/// during pour + cure. Pre-2026-05-24-polish convention was
+/// `axis_unit = +cap_normal` (BASE UP, TIP DOWN) — workshop user
+/// flagged that the plug pulled straight back up out of the socket
+/// (no vertical lock), so the convention flipped.
 ///
 /// Returns `None` for [`PlugPinKind::None`], an empty ribbon, or
 /// any of the degenerate fallbacks per [`pour_anchor`].
@@ -240,7 +261,10 @@ fn build_plug_lock_pose(ribbon: &Ribbon) -> Option<(&PlugPinSpec, PrismaticPinPo
     // `outward` arrives as a tangent / cap-normal vector;
     // renormalize defensively. Ribbon construction guarantees unit
     // magnitude for typical inputs; tiny FP drift is absorbed.
-    let axis_unit = UnitVector3::new_normalize(outward);
+    // **Flip to -outward** so the pyramid orients BASE-DOWN (per
+    // the axis direction note above) — gives the captive vertical
+    // lock the workshop user requested 2026-05-24.
+    let axis_unit = UnitVector3::new_normalize(-outward);
     // Gram-Schmidt `split_normal` against `axis_unit` to enforce the
     // [`PrismaticPinPose::new`] orthogonality contract. The cf-scan-
     // prep cap-plane normal is fitted to point cloud data (PCA on
@@ -291,36 +315,54 @@ fn pour_anchor(ribbon: &Ribbon) -> Option<(Point3<f64>, Vector3<f64>)> {
     Some((last.end, last.tangent))
 }
 
-/// Build the plug-side plug-floor-lock SDF for this ribbon, or
-/// `None` when [`PlugPinKind::None`] or the cap-plane anchor is
-/// unresolvable.
+/// Build the plug-side plug-floor-lock mesh-CSG transform for this
+/// ribbon, or `None` when [`PlugPinKind::None`] or the cap-plane
+/// anchor is unresolvable.
 ///
-/// The returned [`Solid`] is the truncated-pyramid in world coords:
-/// base flush at the plug body's cap-plane face (`-axis_unit` half
-/// buried inside the plug body, absorbed by SDF union), tip
-/// protruding outward along `+axis_unit` for `half_length_m` (the
-/// workshop-visible portion that seats into the cup-piece floor
-/// socket). Callers UNION this into the per-layer plug [`Solid`]
-/// pre-MC; see [`add_plug_pins`] for the production caller.
+/// The returned [`MatingTransform::UnionTruncatedPyramid`] applies
+/// POST-MC via [`crate::apply_mating_transforms`] to union the
+/// truncated-pyramid geometry into the plug mesh: the `-axis_unit`
+/// half lives inside the plug body (CONTAINED in the mesh-CSG
+/// boolean sense — manifold3d absorbs the inside half cleanly), and
+/// the `+axis_unit` half PROTRUDES past the plug's cap-plane face
+/// as the workshop-visible pyramid lock that seats into the
+/// cup-piece floor socket. See [`add_plug_pins`] for the production
+/// caller.
+///
+/// # Architecture note (2026-05-24 FDM-friendly arc salvage)
+///
+/// Pre-salvage this function was `build_plug_lock_sdf` returning
+/// `Option<Solid>` for pre-MC SDF-side composition. The post-mortem
+/// found pre-MC SDF composition silently destroyed workshop-visible
+/// feature fidelity at production 3 mm MC cell size — pyramid
+/// features 4 mm half-extent are a few MC cells across and got
+/// mangled by quantization. Post-salvage this restores the prior
+/// mating-features arc S6 architecture (POST-MC mesh-CSG primitives
+/// carry their own native hull resolution). See
+/// [[feedback-read-prior-arc-memory-before-architectural-decisions]].
 #[must_use]
-pub fn build_plug_lock_sdf(ribbon: &Ribbon) -> Option<Solid> {
+pub fn build_plug_lock_transform(ribbon: &Ribbon) -> Option<MatingTransform> {
     let (spec, pose) = build_plug_lock_pose(ribbon)?;
-    Some(build_prismatic_pin_sdf(&spec.lock_spec.pin_params(pose)))
+    Some(MatingTransform::UnionTruncatedPyramid {
+        params: spec.lock_spec.pin_params(pose),
+    })
 }
 
-/// Build the cup-side plug-floor-lock socket SDF for this ribbon,
-/// or `None` when [`PlugPinKind::None`] or the cap-plane anchor is
-/// unresolvable.
+/// Build the cup-side plug-floor-lock socket mesh-CSG transform
+/// for this ribbon, or `None` when [`PlugPinKind::None`] or the
+/// cap-plane anchor is unresolvable.
 ///
-/// **Side-agnostic** Solid: both Negative and Positive cup pieces
-/// SUBTRACT the *same* socket Solid from their per-piece half-shell
-/// pre-MC. The cup-piece SDF halfspace intersect (recon-4 (P), see
-/// [`crate::piece::compose_piece_solid`]) bisects the socket
-/// laterally through the seam plane by construction — the pyramid
-/// extends `±base_half_extents.y` along the seam-normal direction,
-/// so each cup half receives one half of the socket cross-section
-/// (S6 three-piece shared-primitive invariant analog; see module
-/// docstring §"3-piece shared-primitive invariant").
+/// **Side-agnostic** transform: both Negative and Positive cup
+/// pieces apply the *same* [`MatingTransform::SubtractTruncatedPyramid`]
+/// to their per-piece half-shell mesh POST-MC. The cup-piece SDF
+/// halfspace intersect (recon-4 (P), see
+/// [`crate::piece::compose_piece_solid`]) bisects the cup-piece
+/// material laterally through the seam plane in the SDF/MC stage;
+/// the POST-MC mesh-CSG subtract then carves the socket cavity
+/// from whichever half of cup-wall material exists on each piece —
+/// the same physical socket geometry shows up correctly on both
+/// halves (S6 three-piece shared-primitive invariant analog; see
+/// module docstring §"3-piece shared-primitive invariant").
 ///
 /// The socket inflates the pyramid extents per the symmetric `/2`
 /// clearance convention from [`PrismaticPinSpec::socket_params`]:
@@ -332,24 +374,24 @@ pub fn build_plug_lock_sdf(ribbon: &Ribbon) -> Option<Solid> {
 /// the bit-precise workshop fit invariant from [`PrismaticPinSpec`]
 /// flows through.
 #[must_use]
-pub fn build_plug_lock_socket_sdf(ribbon: &Ribbon) -> Option<Solid> {
+pub fn build_plug_lock_socket_transform(ribbon: &Ribbon) -> Option<MatingTransform> {
     let (spec, pose) = build_plug_lock_pose(ribbon)?;
-    Some(build_prismatic_pin_sdf(&spec.lock_spec.socket_params(pose)))
+    Some(MatingTransform::SubtractTruncatedPyramid {
+        params: spec.lock_spec.socket_params(pose),
+    })
 }
 
-/// Pair a user-supplied plug [`Solid`] with the plug-floor-lock
-/// pyramid SDF unioned into it, returning `(plug_with_lock,
-/// transforms)` for downstream marching-cubes + F4 gating.
+/// Pair a user-supplied plug [`Solid`] with the plug-floor-lock.
 ///
-/// `transforms` is always empty post-S4 — the plug-floor lock lives
-/// entirely SDF-side per §G-12 #2, so plug self-emission produces
-/// no post-MC mesh-CSG ops. The tuple shape matches pre-S4 callers
-/// in [`crate::CastSpec::export_molds_v2`] that thread
-/// `(Solid, Vec<MatingTransform>)` into the per-layer plug pipeline
-/// uniformly with other artifact paths.
+/// Returns `(plug_unchanged, transforms)` for downstream
+/// marching-cubes + F4 gating — the pyramid transform is appended
+/// to the post-MC mesh-CSG transforms Vec.
 ///
-/// For [`PlugPinKind::None`] the plug Solid is returned unchanged
-/// and `transforms` is empty.
+/// Post-salvage (2026-05-24): the plug [`Solid`] passes through
+/// unchanged (no pre-MC SDF union); the lock geometry is added
+/// POST-MC via [`MatingTransform::UnionTruncatedPyramid`] applied
+/// by [`crate::apply_mating_transforms`]. For [`PlugPinKind::None`]
+/// the transforms Vec is empty.
 ///
 /// [`CastSpec::export_molds_v2`] calls this internally for each
 /// per-layer plug (derived from `spec.plug` for layer 0 and
@@ -363,11 +405,8 @@ pub fn build_plug_lock_socket_sdf(ribbon: &Ribbon) -> Option<Solid> {
 /// [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
 #[must_use]
 pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransform>) {
-    let with_lock = match build_plug_lock_sdf(ribbon) {
-        Some(lock) => plug.union(lock),
-        None => plug,
-    };
-    (with_lock, Vec::new())
+    let transforms = build_plug_lock_transform(ribbon).into_iter().collect();
+    (plug, transforms)
 }
 
 #[cfg(test)]
@@ -384,9 +423,40 @@ pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransfor
 )]
 mod tests {
     use super::*;
+    use crate::prismatic_pin::build_prismatic_pin_sdf;
     use crate::ribbon::{Ribbon, SplitNormal};
     use approx::assert_abs_diff_eq;
     use nalgebra::Point3;
+
+    /// Test-only SDF-side shim — re-derives the plug-lock pin SDF
+    /// from the post-salvage [`build_plug_lock_transform`] output
+    /// for assertions that probe SDF values at world coords.
+    /// Production no longer composes the lock pyramid into the plug
+    /// `Solid` pre-MC (post-2026-05-24 salvage); this shim keeps
+    /// the existing pose-math assertions working pending a
+    /// follow-up session that migrates them to transform-parameter
+    /// inspection.
+    fn build_plug_lock_sdf(ribbon: &Ribbon) -> Option<Solid> {
+        match build_plug_lock_transform(ribbon)? {
+            MatingTransform::UnionTruncatedPyramid { params } => {
+                Some(build_prismatic_pin_sdf(&params))
+            }
+            other => panic!("build_plug_lock_transform emitted unexpected variant: {other:?}"),
+        }
+    }
+
+    /// Sibling SDF shim for the cup-side plug-lock socket — same
+    /// rationale as [`build_plug_lock_sdf`].
+    fn build_plug_lock_socket_sdf(ribbon: &Ribbon) -> Option<Solid> {
+        match build_plug_lock_socket_transform(ribbon)? {
+            MatingTransform::SubtractTruncatedPyramid { params } => {
+                Some(build_prismatic_pin_sdf(&params))
+            }
+            other => {
+                panic!("build_plug_lock_socket_transform emitted unexpected variant: {other:?}")
+            }
+        }
+    }
 
     /// Standard test fixture mirroring the iter-1 cap-plane layout
     /// (centerline along ±Z with cf-scan-prep `trim_floor_mm` shape;
@@ -485,8 +555,9 @@ mod tests {
             pose.center_m.z,
         );
         assert!(
-            (pose.axis_unit.z - -1.0).abs() < 1e-12,
-            "lock pose axis must align with cap_normal = -Z; got axis.z = {}",
+            (pose.axis_unit.z - 1.0).abs() < 1e-12,
+            "lock pose axis must align with -cap_normal = +Z post-2026-05-24 base-down \
+             captive-lock flip; got axis.z = {}",
             pose.axis_unit.z,
         );
     }
@@ -505,10 +576,11 @@ mod tests {
             .unwrap()
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
         let (_spec, pose) = build_plug_lock_pose(&ribbon).expect("Axial kind");
-        // last segment runs +Z→-Z so tangent = -Z; anchor centre =
-        // last.end = (0, 0, -0.054).
+        // last segment runs +Z→-Z so tangent = -Z (cap_normal); anchor
+        // centre = last.end = (0, 0, -0.054). Post-2026-05-24 base-down
+        // flip: pose axis_unit = -cap_normal = +Z.
         assert!((pose.center_m.z - -0.054).abs() < 1e-12);
-        assert!((pose.axis_unit.z - -1.0).abs() < 1e-12);
+        assert!((pose.axis_unit.z - 1.0).abs() < 1e-12);
     }
 
     /// `add_plug_pins` for [`PlugPinKind::None`] passes the plug
@@ -541,41 +613,70 @@ mod tests {
         );
     }
 
-    /// `add_plug_pins` for [`PlugPinKind::Axial`] returns a plug
-    /// Solid that is the SDF-union of the bare plug body with the
-    /// pyramid SDF. The returned plug's SDF at a point JUST OUTSIDE
-    /// the bare plug body but INSIDE the pyramid's `+axis_unit`
-    /// (protruding) half reports interior — confirms the union
-    /// composed the pyramid into the plug.
+    /// `add_plug_pins` for [`PlugPinKind::Axial`] returns the bare
+    /// plug [`Solid`] unchanged AND a transforms Vec containing one
+    /// [`MatingTransform::UnionTruncatedPyramid`] carrying the
+    /// plug-lock pyramid geometry. The shimmed `build_plug_lock_sdf`
+    /// helper (re-deriving the SDF from the transform's params)
+    /// reports interior at a probe inside the pyramid's `+axis_unit`
+    /// (protruding) half — confirms the transform carries the
+    /// correct geometry. Post-salvage (2026-05-24): no SDF union
+    /// into the plug body; the lock is applied POST-MC.
     #[test]
     fn add_plug_pins_axial_unions_pyramid_into_plug() {
         let ribbon = iter1_like_ribbon();
-        // Use a small capsule so a probe point just past its
-        // cap-plane face is clearly outside the bare plug body.
         let plug = Solid::capsule(0.005, 0.020);
         let (returned_plug, transforms) = add_plug_pins(plug.clone(), &ribbon);
 
-        assert!(
-            transforms.is_empty(),
-            "S4: plug self-emission emits no mesh-CSG ops",
-        );
+        // Returned plug Solid is the BARE plug — lock geometry no
+        // longer composed into it pre-MC.
+        for q in [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.010, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.025),
+        ] {
+            let bare = plug.evaluate(&q);
+            let returned = returned_plug.evaluate(&q);
+            assert!(
+                (bare - returned).abs() < 1e-12,
+                "plug Solid passes through unchanged at {q:?}; bare={bare}, returned={returned}",
+            );
+        }
 
-        // Probe at cap_centroid + axis_unit × pin_half_length / 2 =
-        // cap_centroid + (0, 0, -1) × 0.002 = (0, 0, -0.056). This
-        // lies on the `+axis_unit` (protruding) half of the
-        // symmetric-across-cap-plane pyramid (axis = +0.002 < +0.004
-        // = half_length, so inside the pyramid axially) and inside
-        // the pyramid's main-taper cross-section in lateral terms
-        // (Ø > 0 mm at axis = 0.002, which is past the chamfer band
-        // ending at axis = -0.004 + 0.0008 = -0.0032 in pin-local
-        // coords; main-taper interpolates linearly from 4 mm to
-        // 2.8 mm half-extent over axis ∈ [-0.0032, +0.004]).
+        // Transforms Vec carries exactly one UnionTruncatedPyramid
+        // matching the plug-lock pose + spec.
+        assert_eq!(
+            transforms.len(),
+            1,
+            "Axial kind emits exactly one plug-lock mesh-CSG transform",
+        );
+        match &transforms[0] {
+            MatingTransform::UnionTruncatedPyramid { params } => {
+                let spec = PlugPinSpec::iter1();
+                assert_eq!(
+                    params.half_length_m, spec.lock_spec.pin_half_length_m,
+                    "transform params carry pin (not socket) half-length",
+                );
+                assert_eq!(
+                    params.base_chamfer_m, spec.lock_spec.base_chamfer_m,
+                    "transform params carry the lock spec's chamfer",
+                );
+            }
+            other => panic!("expected UnionTruncatedPyramid, got {other:?}"),
+        }
+
+        // Shimmed SDF probe at the same probe point as the
+        // pre-salvage test — confirms the transform's params encode
+        // the correct pyramid geometry (re-deriving the SDF
+        // matches what `apply_mating_transforms` will union into
+        // the plug mesh post-MC).
+        let lock_sdf = build_plug_lock_sdf(&ribbon).expect("Axial kind builds a lock");
         let probe_in_lock = Point3::new(0.0, 0.0, -0.056);
         assert!(
-            returned_plug.evaluate(&probe_in_lock) < 0.0,
-            "returned plug must report interior at a point inside the lock pyramid's \
-             `+axis_unit` half (outside bare plug body); SDF = {}",
-            returned_plug.evaluate(&probe_in_lock),
+            lock_sdf.evaluate(&probe_in_lock) < 0.0,
+            "lock pyramid SDF must report interior at probe inside the `+axis_unit` half; \
+             SDF = {}",
+            lock_sdf.evaluate(&probe_in_lock),
         );
         // Bare-plug spot-check: same probe is OUTSIDE the bare
         // capsule (capsule half-length 20 mm, cap-plane face at z =
@@ -826,19 +927,18 @@ mod tests {
     /// pose used in
     /// `crate::prismatic_pin::tests::chamfer_band_lateral_extents_match_spec_across_g6_range`).
     ///
-    /// Iter-1 fixture pose: `center = cap_centroid = (0, 0, -0.054)`,
-    /// `axis_unit = -Z` (`cap_normal`), `lateral_unit = +X`
-    /// (`split_normal`). Pin-local `-Y` (the chamfer-band base; this
-    /// is the `-axis_unit`-end of the symmetric-across-cap-plane
-    /// pose — buried inside the plug body under SDF union, and
-    /// **not the workshop bed face** under the §G-4 preferred
-    /// dome-end-on-bed plug orientation; the chamfer remains a
-    /// lead-in self-centering aid here, with the bed-adjacency
-    /// reconciliation deferred to S6 procedure.rs) maps to world
-    /// `+Z`; lateral pin-local `+X` maps to world `+X`. Chamfer-
-    /// band-base axial coord = `-half_length`, world `z = cap_z +
-    /// half_length`. Chamfer-top axial coord = `-half_length +
-    /// chamfer`, world `z = cap_z + half_length - chamfer`.
+    /// Iter-1 fixture pose: `center = cap_centroid` = (0, 0, -0.054),
+    /// `axis_unit` = +Z (`-cap_normal` post-2026-05-24 base-down
+    /// captive-lock flip), `lateral_unit` = +X (`split_normal`).
+    /// Pin-local -Y (the chamfer-band base; this is the
+    /// `-axis_unit`-end of the symmetric-across-cap-plane pose —
+    /// post-flip it now lives along `+cap_normal` = DOWN =
+    /// **workshop-visible bottom face of the protruding pyramid**,
+    /// acting as an insertion lead-in into the cup-piece floor
+    /// socket) maps to world -Z; lateral pin-local +X maps to
+    /// world +X. Chamfer-band-base axial coord = `-half_length`,
+    /// world `z = cap_z - half_length`. Chamfer-top axial coord =
+    /// `-half_length + chamfer`, world `z = cap_z - half_length + chamfer`.
     ///
     /// Verifies (a) the chamfer-band-base lateral extent equals
     /// `(base - chamfer)` to ~1 µm; (b) the chamfer-top extent
@@ -855,11 +955,11 @@ mod tests {
         let lock = build_plug_lock_sdf(&ribbon).expect("Axial kind must build a lock SDF");
 
         let cap_centroid = Point3::new(0.0, 0.0, -0.054);
-        // axis_unit = -Z → pin-local +Y maps to world -Z; the
-        // chamfer-band-base axial coord (pin-local `-half_length`)
-        // maps to `cap_centroid + (-half_length) * (-Z) =
-        // cap_centroid + half_length * +Z`.
-        let axis_unit = Vector3::new(0.0, 0.0, -1.0);
+        // axis_unit = +Z post-2026-05-24 base-down flip → pin-local
+        // +Y maps to world +Z; the chamfer-band-base axial coord
+        // (pin-local `-half_length`) maps to `cap_centroid +
+        // (-half_length) * +Z = cap_centroid - half_length * +Z`.
+        let axis_unit = Vector3::new(0.0, 0.0, 1.0);
         let lateral_unit = Vector3::new(1.0, 0.0, 0.0);
 
         let bed_axial = -lock_spec.pin_half_length_m;
@@ -929,7 +1029,9 @@ mod tests {
         let socket = build_plug_lock_socket_sdf(&ribbon).expect("Axial kind");
 
         let cap_centroid = Point3::new(0.0, 0.0, -0.054);
-        let axis_unit = Vector3::new(0.0, 0.0, -1.0);
+        // Post-2026-05-24 base-down flip: pose axis_unit = +Z
+        // (= -cap_normal), not -Z.
+        let axis_unit = Vector3::new(0.0, 0.0, 1.0);
         let lateral_unit = Vector3::new(1.0, 0.0, 0.0);
 
         // Pin bed face at axial = -pin_half_length; socket bed face at

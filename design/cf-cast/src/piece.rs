@@ -96,7 +96,7 @@ use cf_design::Solid;
 
 use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
-use crate::plug::build_plug_lock_socket_sdf;
+use crate::plug::build_plug_lock_socket_transform;
 use crate::pour::build_pour_gate_transforms;
 use crate::registration::build_registration_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
@@ -202,38 +202,25 @@ pub fn compose_piece_solid(
     // mesh-CSG cylinder primitives compose post-MC against the
     // resulting half-shell mesh.
     let halfspace = ribbon.halfspace_solid(side, bounds, RIBBON_PIECE_OVERLAP_M);
-    let mut base_piece = bounding_region
+    let base_piece = bounding_region
         .clone()
         .subtract(layer_body.clone())
         .intersect(halfspace);
 
-    // S4 (FDM-friendly geometry arc) plug-floor-lock socket —
-    // side-agnostic SDF subtract per recon-1 §G-1 / §G-5 (3-piece
-    // shared-primitive invariant analog). The pyramid axis is
-    // along `cap_normal` (in the seam plane), so the lateral
-    // extent spans both sides of the seam; each cup half's
-    // halfspace intersect bisects the socket through the seam
-    // plane by construction. `None` when `ribbon.plug_pins` is
-    // `PlugPinKind::None` or the cap-plane anchor is unresolvable.
-    //
-    // **2026-05-24 SALVAGE BOOKMARK:** S4 plug-floor-lock SDF
-    // composition is still in place pending its own mesh-CSG
-    // migration in the next session. Cup-pin (S3) is migrated to
-    // mesh-CSG transforms below; plug-lock follows the same pattern.
-    if let Some(plug_lock_socket) = build_plug_lock_socket_sdf(ribbon) {
-        base_piece = base_piece.subtract(plug_lock_socket);
-    }
-
-    // Post-mortem salvage (2026-05-24): cup-pin registration is now
-    // emitted as POST-MC mesh-CSG transforms via
-    // [`MatingTransform::UnionTruncatedPyramid`] /
+    // Post-mortem salvage (2026-05-24): cup-pin registration AND the
+    // S4 plug-floor-lock socket are now emitted as POST-MC mesh-CSG
+    // transforms via [`MatingTransform::UnionTruncatedPyramid`] /
     // [`SubtractTruncatedPyramid`]. Restores the prior
-    // mating-features arc S5 architecture (POST-MC primitives carry
-    // their own native hull resolution; pose discipline per the
-    // recon-4 (P) framework keeps placement CONTAINED / PROTRUDING).
+    // mating-features arc S5/S6 architecture (POST-MC primitives
+    // carry their own native hull resolution; pose discipline per
+    // the recon-4 (P) framework keeps placement CONTAINED /
+    // PROTRUDING). The plug-lock socket is **side-agnostic** —
+    // both Negative + Positive cup pieces apply the same
+    // SubtractTruncatedPyramid to carve the matching cavity from
+    // whichever half of cup-wall material exists on each piece.
     // See [[feedback-read-prior-arc-memory-before-architectural-decisions]]
     // for the post-mortem on why pre-MC SDF composition (the prior
-    // S3 architecture) was abandoned.
+    // S3/S4 architecture) was abandoned.
     let mut transforms = build_pour_gate_transforms(ribbon);
     transforms.extend(build_registration_transforms(
         ribbon,
@@ -241,6 +228,9 @@ pub fn compose_piece_solid(
         bounding_region,
         side,
     ));
+    if let Some(plug_lock_socket) = build_plug_lock_socket_transform(ribbon) {
+        transforms.push(plug_lock_socket);
+    }
 
     Ok((base_piece, transforms))
 }
@@ -658,23 +648,26 @@ mod tests {
     // PrismaticPin solids — the new test asserts the SAME annulus-
     // midpoint invariant on the SDF emission path.
 
-    /// Workshop iter-1 plug-socket regression preserved post-S4.
+    /// Workshop iter-1 plug-socket regression preserved post-salvage.
     ///
     /// Pre-S6 this verified the SDF-era plug-shaft socket carved
-    /// cup-wall material at the cap-plane centroid (where
-    /// cf-scan-prep's `trim_floor_mm` leaves the centerline tip 40
-    /// mm short of the cap plane). Post-S6 the invariant moved to
-    /// the mesh-CSG `SubtractCylinder` transform's parent center.
-    /// Post-S4 (FDM-friendly geometry arc) the plug-floor lock
-    /// socket lives SDF-side again (per §G-12 #2) — the
-    /// composition-time invariant returns to its pre-S6 shape:
-    /// the cup-piece Solid SDF at a probe point inside the lock
-    /// socket cavity (cap-plane centroid + into-cup direction)
-    /// must report EXTERIOR (the SDF subtract carved the socket
-    /// from cup material at the cap-plane centroid, NOT at the
-    /// trimmed centerline tip).
+    /// cup-wall material at the cap-plane centroid. Post-S6 the
+    /// invariant moved to the mesh-CSG `SubtractCylinder`
+    /// transform's parent center. Pre-2026-05-24-salvage S4 the
+    /// plug-floor lock socket lived SDF-side again (§G-12 #2)
+    /// and this asserted on the cup-piece SDF reporting EXTERIOR
+    /// at the probe. Post-2026-05-24-salvage the socket is back
+    /// on the mesh-CSG post-MC path per
+    /// [[feedback-read-prior-arc-memory-before-architectural-decisions]]
+    /// — the invariant moves to the transform-parameter layer:
+    /// `compose_piece_solid` emits a `SubtractTruncatedPyramid`
+    /// transform whose `params.pose.center_m` anchors at the
+    /// cap-plane centroid (NOT at the trimmed centerline tip),
+    /// and the transform's params shape match the plug-side lock
+    /// pyramid (modulo the symmetric `/2` clearance inflate).
     #[test]
     fn plug_lock_socket_carves_cup_material_at_cap_plane_centroid_past_trimmed_centerline_tip() {
+        use crate::mesh_csg::MatingTransform;
         use crate::plug::{PlugPinKind, PlugPinSpec};
 
         let centerline = vec![
@@ -690,91 +683,60 @@ mod tests {
             .with_pour_end_hint(cap_centroid, cap_normal)
             .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
 
-        // Fixture geometry mirrors production: the layer body's
-        // cap-plane face sits AT `cap_centroid.z = -0.054` (= body
-        // `z_min`); cup material lives in `+cap_normal` direction
-        // (z < -0.054) up to the bounding region's `z_min`. The
-        // lock pyramid's workshop-meaningful `+axis_unit` half
-        // spans z ∈ [cap_centroid.z - half_length, cap_centroid.z]
-        // = [-0.058, -0.054], fully inside cup-wall material. The
-        // body cuboid is centered such that its `z_min` lands at
-        // `cap_centroid.z`; the bounding cuboid extends past it by
-        // ≥ half_length + clearance to host the full carve.
         let body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.040)).translate(Vector3::new(
             0.0,
             0.0,
             -0.054 + 0.040,
         ));
         let bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.090));
-        // Probe at cap_centroid + cap_normal × 2 mm = (0, 0, -0.056) —
-        // 2 mm into the `+axis_unit` (workshop-meaningful) half of
-        // the symmetric-across-cap-plane socket. Probe lies BELOW
-        // the body's `z_min` (= cap_centroid.z = -0.054), so without
-        // the socket carve the cup-piece SDF reports INTERIOR
-        // (cup-wall material). With the carve, the lock socket's
-        // pyramid SDF reports interior at this probe and the
-        // subtract makes the cup-piece SDF EXTERIOR.
-        let probe = Point3::new(0.0, 0.0, -0.056);
 
         for side in [PieceSide::Negative, PieceSide::Positive] {
-            let (piece, _) = compose_piece_solid(&body, &bounding, &ribbon, side).unwrap();
+            let (_piece, transforms) =
+                compose_piece_solid(&body, &bounding, &ribbon, side).unwrap();
 
-            // (a) Load-bearing pre-condition: the bare half-shell
-            // SDF (without the lock-socket carve) is INTERIOR at
-            // the probe. If this fails the fixture itself is
-            // broken — the test cannot exercise the carve unless
-            // cup material exists at the probe to begin with.
-            // Compose a parallel ribbon with `PlugPinKind::None`
-            // and verify the bare half-shell SDF.
-            let bare_ribbon = Ribbon::new(
-                vec![
-                    Point3::new(0.0, 0.0, 0.073),
-                    Point3::new(0.0, 0.0, 0.020),
-                    Point3::new(0.0, 0.0, -0.013),
-                ],
-                SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap(),
-            )
-            .unwrap()
-            .with_pour_end_hint(cap_centroid, cap_normal);
-            let (bare_piece, _) =
-                compose_piece_solid(&body, &bounding, &bare_ribbon, side).unwrap();
+            let socket_transform = transforms
+                .iter()
+                .find_map(|t| match t {
+                    MatingTransform::SubtractTruncatedPyramid { params } => Some(params),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{side:?} compose_piece_solid must emit a SubtractTruncatedPyramid for \
+                         the plug-lock socket; got transforms = {transforms:#?}",
+                    )
+                });
+
+            // Cap-plane-centroid anchor regression: pose center
+            // lands at cap_centroid (z = -0.054), NOT at the
+            // trimmed centerline tip (z = -0.013).
             assert!(
-                bare_piece.evaluate(&probe) < 0.0,
-                "{side:?} fixture precondition FAILED: bare half-shell (no plug pins) \
-                 must report INTERIOR at probe inside cup-wall material so the lock-socket \
-                 carve has material to remove; got SDF = {}. Fixture geometry is broken.",
-                bare_piece.evaluate(&probe),
+                (socket_transform.pose.center_m.z - cap_centroid.z).abs() < 1e-12,
+                "{side:?} socket pose centre must anchor at cap_centroid \
+                 (z = {}); got centre z = {} (cap-plane regression — pre-salvage was at \
+                 trimmed centerline tip z = -0.013)",
+                cap_centroid.z,
+                socket_transform.pose.center_m.z,
+            );
+            assert!(
+                (socket_transform.pose.axis_unit.z - 1.0).abs() < 1e-12,
+                "{side:?} socket pose axis must align with -cap_normal = +Z post-2026-05-24 \
+                 base-down captive-lock flip; got axis.z = {}",
+                socket_transform.pose.axis_unit.z,
             );
 
-            // (b) With the lock socket subtract, the cup-piece SDF
-            // at the probe reports EXTERIOR — the carve worked.
+            // Spec-match invariant: the socket's params come from
+            // `PrismaticPinSpec::socket_params` (i.e., the spec's
+            // inflated extents). half_length must equal
+            // `lock_spec.pin_half_length_m + axial_clearance_m / 2`.
+            let spec = PlugPinSpec::iter1();
+            let expected_half_length =
+                spec.lock_spec.pin_half_length_m + spec.lock_spec.axial_clearance_m / 2.0;
             assert!(
-                piece.evaluate(&probe) > 0.0,
-                "{side:?} cup-piece SDF at probe inside lock socket cavity must report \
-                 exterior (= cup material carved away by the lock-socket subtract); \
-                 got SDF = {}. Compare to bare half-shell SDF = {} (interior); the \
-                 delta is the workshop-meaningful carve.",
-                piece.evaluate(&probe),
-                bare_piece.evaluate(&probe),
-            );
-
-            // (c) Sanity that the carve is the LOCK socket (not a
-            // wholesale region delete): probe at a point in cup-
-            // wall material but well outside the socket's lateral
-            // extent. The socket's main-taper half-extent at axis =
-            // +0.002 is ≈ 3.5 mm; probe at x = 25 mm is 21 mm past
-            // the socket lateral edge. The body's X half-extent is
-            // 20 mm and the bounding's is 30 mm, so x = 25 mm sits
-            // in cup-wall material in X. The cup-piece SDF must
-            // report INTERIOR there (cup material intact).
-            let outside_socket_probe = Point3::new(0.025, 0.0, -0.056);
-            assert!(
-                piece.evaluate(&outside_socket_probe) < 0.0,
-                "{side:?} cup-piece SDF in cup-wall material at (25, 0, -56) mm \
-                 (21 mm past the socket's ~3.5 mm lateral half-extent) must report \
-                 interior — confirms the carve is the localized plug-floor-lock \
-                 socket; got SDF = {}",
-                piece.evaluate(&outside_socket_probe),
+                (socket_transform.half_length_m - expected_half_length).abs() < 1e-12,
+                "{side:?} socket half_length must match the spec's pin half-length + \
+                 axial_clearance/2; expected {expected_half_length}, got {}",
+                socket_transform.half_length_m,
             );
         }
     }

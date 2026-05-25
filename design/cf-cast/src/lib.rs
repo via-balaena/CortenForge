@@ -102,7 +102,8 @@ pub use mesh_csg::{
 pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
 pub use platform::build_platform_solid;
 pub use plug::{
-    PlugPinKind, PlugPinSpec, add_plug_pins, build_plug_lock_sdf, build_plug_lock_socket_sdf,
+    PlugPinKind, PlugPinSpec, add_plug_pins, build_plug_lock_socket_transform,
+    build_plug_lock_transform,
 };
 pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
