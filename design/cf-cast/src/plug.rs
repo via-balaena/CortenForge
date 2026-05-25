@@ -401,15 +401,11 @@ mod tests {
     ///   seam-normal direction (binormal = `tangent × split` = `-Z × +X`
     ///   = `-Y`, so `-Y` is the seam plane's outward normal; `+Y` per
     ///   the third-basis convention).
+    ///
+    /// Delegates to [`iter1_like_ribbon_with_spec`] with the iter-1
+    /// default plug-lock spec.
     fn iter1_like_ribbon() -> Ribbon {
-        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
-        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
-        let cap_centroid = Point3::new(0.0, 0.0, -0.054);
-        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
-        Ribbon::new(centerline, split)
-            .unwrap()
-            .with_pour_end_hint(cap_centroid, cap_normal)
-            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()))
+        iter1_like_ribbon_with_spec(PlugPinSpec::iter1())
     }
 
     #[test]
@@ -782,6 +778,10 @@ mod tests {
     /// `crate::prismatic_pin::tests::find_x_zero_crossing`; same
     /// half-open interior predicate (`sdf <= +1e-12`) for sub-ulp
     /// positive noise on the chamfer-band cap planes.
+    ///
+    /// MIRROR: an identical copy lives in `crate::registration::tests`;
+    /// any change to one MUST mirror the other (or the helper should
+    /// be promoted to a shared test-util module).
     fn find_lateral_zero_crossing(
         sdf: &Solid,
         base_world: Point3<f64>,

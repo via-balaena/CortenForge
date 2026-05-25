@@ -732,6 +732,10 @@ mod tests {
     /// The half-open interior predicate (`sdf <= +1e-12`) absorbs
     /// sub-ulp positive noise on the chamfer-band cap planes — same
     /// rationale as the primitive-layer helper's docstring.
+    ///
+    /// MIRROR: an identical copy lives in `crate::plug::tests`; any
+    /// change to one MUST mirror the other (or the helper should be
+    /// promoted to a shared test-util module).
     fn find_lateral_zero_crossing(
         sdf: &Solid,
         base_world: Point3<f64>,
@@ -867,6 +871,13 @@ mod tests {
     /// extents emission path is chamfer-independent (a chamfer-only
     /// bug would surface as with-chamfer delta breakage while the
     /// bare baseline holds).
+    ///
+    /// Parallel test on the plug-lock call path:
+    /// `crate::plug::tests::plug_lock_socket_chamfer_matches_lock_pin`
+    /// — mirrored structure (same probe-at-each-side's-own-bed-face
+    /// pattern; same chamfer-disabled bare-baseline pairing). Any
+    /// future change to the socket inflation convention or chamfer
+    /// emission MUST update both tests in lockstep.
     #[test]
     fn cup_pin_socket_chamfer_matches_pin() {
         let pin_spec = PrismaticPinSpec::cup_pin_default();
