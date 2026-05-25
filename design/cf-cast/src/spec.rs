@@ -1188,11 +1188,27 @@ const GASKET_LAYOUT_CLEARANCE_M: f64 = 0.010;
 /// GASKET_LAYOUT_CLEARANCE_M) + N * (tray_size_x +
 /// GASKET_LAYOUT_CLEARANCE_M)` along +X (Y + Z unchanged). Adjacent
 /// trays are separated by `GASKET_LAYOUT_CLEARANCE_M` air-gap.
+///
+/// **Parallelization (S1 of `docs/CF_CAST_PARALLEL_MESHING_RECON.md`):**
+/// per-layer tasks run via `rayon::par_iter`. Each layer's compose +
+/// MC mesh + F4 gate is an input-independent unit (no shared mutable
+/// state); rayon's `collect::<Result<Vec<_>, _>>` preserves
+/// canonical-first-error semantics (matches the serial pipeline's
+/// `?`-on-first-error contract). Pre-write atomicity preserved by
+/// construction — all `PendingGasket` results land in the returned
+/// `Vec` before [`write_v2_artifacts`] runs.
+///
+/// Logging: the per-layer `eprintln!` progress lines may interleave
+/// across rayon tasks. Per recon §P-6 this is the S1 simplification;
+/// S3 of the parallel-meshing arc adds per-unit log buffering for
+/// canonical-order log flushing.
 fn mesh_and_gate_v2_gaskets(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Vec<PendingGasket>, CastError> {
+    use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+
     let Some(gasket_spec) = ribbon.gasket.spec() else {
         return Ok(Vec::new());
     };
@@ -1206,52 +1222,55 @@ fn mesh_and_gate_v2_gaskets(
     let per_layer_step = tray_size_x + GASKET_LAYOUT_CLEARANCE_M;
     let cell_size_m = spec.mesh_cell_size_m.min(GASKET_MAX_CELL_SIZE_M);
 
-    let mut pending = Vec::with_capacity(spec.layers.len());
-    for (layer_index, layer) in spec.layers.iter().enumerate() {
-        let target = CastTarget::GasketMold { layer_index };
-        let t_compose = std::time::Instant::now();
-        let (mold_solid, mating_transforms) =
-            compose_gasket_mold_solid(ribbon, &layer.body, &spec.bounding_region, gasket_spec)?;
-        // `layer_index as f64` precision-loss lint suppressed: this
-        // is a small-integer-to-f64 cast for layer counts (typically
-        // ≤ 5 per recon §G-2's per-layer scope). At u64::MAX (the
-        // alternative widening path) the value won't ever reach the
-        // f64 53-bit mantissa boundary in practice.
-        #[allow(clippy::cast_precision_loss)]
-        let offset_x = (layer_index as f64).mul_add(per_layer_step, base_offset_x);
-        let translated = mold_solid.translate(nalgebra::Vector3::new(offset_x, 0.0, 0.0));
-        let mesh = solid_to_mm_mesh(&translated, cell_size_m, target)?;
-        let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
-        let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-        let path = out_dir.join(gasket_mold_filename(layer_index));
-        let t_gate = std::time::Instant::now();
-        let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
-        let gate_s = t_gate.elapsed().as_secs_f64();
-        let blocking = blocking_critical_count(&validation, target);
-        if blocking > 0 {
-            return Err(CastError::PrintabilityCritical {
-                target,
-                issue_count: blocking,
+    spec.layers
+        .par_iter()
+        .enumerate()
+        .map(|(layer_index, layer)| -> Result<PendingGasket, CastError> {
+            let target = CastTarget::GasketMold { layer_index };
+            let t_compose = std::time::Instant::now();
+            let (mold_solid, mating_transforms) =
+                compose_gasket_mold_solid(ribbon, &layer.body, &spec.bounding_region, gasket_spec)?;
+            // `layer_index as f64` precision-loss lint suppressed:
+            // this is a small-integer-to-f64 cast for layer counts
+            // (typically ≤ 5 per recon §G-2's per-layer scope). At
+            // u64::MAX (the alternative widening path) the value
+            // won't ever reach the f64 53-bit mantissa boundary in
+            // practice.
+            #[allow(clippy::cast_precision_loss)]
+            let offset_x = (layer_index as f64).mul_add(per_layer_step, base_offset_x);
+            let translated = mold_solid.translate(nalgebra::Vector3::new(offset_x, 0.0, 0.0));
+            let mesh = solid_to_mm_mesh(&translated, cell_size_m, target)?;
+            let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
+            let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+            let path = out_dir.join(gasket_mold_filename(layer_index));
+            let t_gate = std::time::Instant::now();
+            let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+            let gate_s = t_gate.elapsed().as_secs_f64();
+            let blocking = blocking_critical_count(&validation, target);
+            if blocking > 0 {
+                return Err(CastError::PrintabilityCritical {
+                    target,
+                    issue_count: blocking,
+                    path,
+                });
+            }
+            eprintln!(
+                "[cf-cast] gasket_mold layer {layer_index} — compose+MC \
+                 {compose_mesh_s:.1}s @ {cell_size_mm:.2} mm cells, F4 {gate_s:.1}s \
+                 ({verts} verts / {faces} faces) — offset_x = {offset_mm:.1} mm",
+                cell_size_mm = cell_size_m * 1000.0,
+                verts = mesh.vertices.len(),
+                faces = mesh.faces.len(),
+                offset_mm = offset_x * 1000.0,
+            );
+            Ok(PendingGasket {
+                layer_index,
+                mesh,
+                validation,
                 path,
-            });
-        }
-        eprintln!(
-            "[cf-cast] gasket_mold layer {layer_index} — compose+MC \
-             {compose_mesh_s:.1}s @ {cell_size_mm:.2} mm cells, F4 {gate_s:.1}s \
-             ({verts} verts / {faces} faces) — offset_x = {offset_mm:.1} mm",
-            cell_size_mm = cell_size_m * 1000.0,
-            verts = mesh.vertices.len(),
-            faces = mesh.faces.len(),
-            offset_mm = offset_x * 1000.0,
-        );
-        pending.push(PendingGasket {
-            layer_index,
-            mesh,
-            validation,
-            path,
-        });
-    }
-    Ok(pending)
+            })
+        })
+        .collect::<Result<Vec<PendingGasket>, CastError>>()
 }
 
 /// `gasket_mold_layer_{layer_index}.stl` — innermost-first indexing

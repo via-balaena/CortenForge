@@ -1876,6 +1876,7 @@ dependencies = [
  "mesh-repair",
  "mesh-types",
  "nalgebra 0.34.2",
+ "rayon",
  "thiserror 2.0.18",
 ]
 

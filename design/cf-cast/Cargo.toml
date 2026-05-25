@@ -38,6 +38,12 @@ thiserror = { workspace = true }
 # fix (`docs/CF_CAST_MATING_FEATURES_PLAN.md`) hinges on this being
 # bit-deterministic + manifold-clean, both confirmed by the S1 ADR.
 manifold3d = { workspace = true }
+# Parallel meshing of per-unit compose+mesh+F4-gate tasks per
+# `docs/CF_CAST_PARALLEL_MESHING_RECON.md` §P-9 S1. Used by the
+# `mesh_and_gate_v2_*` family in `spec.rs` to drop iter-1 regen
+# wall-clock from ~33 min (gasket-mold-dominated F4 gate) to
+# ~9-10 min on a 4-core workshop machine.
+rayon = { workspace = true }
 
 [dev-dependencies]
 # Approximate equality for unit-conversion tests
