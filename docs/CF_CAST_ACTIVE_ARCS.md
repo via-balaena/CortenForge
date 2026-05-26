@@ -99,14 +99,17 @@ close per [[feedback-omnibus-pr-single-branch]]).
 ### Arc 4 — F4 spatial-index (perf arc, layer 2)
 
 - **Recon:** `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md`
-- **State:** **S1 + S2 shipped**; S3 in-flight; S4 pending.
+- **State:** **S1 + S2 + S3 shipped**; S4 pending (cold-read + PR, possibly S4 self_intersect BVH first).
 - **Memory:** [[project-cf-cast-f4-spatial-index-s1]],
-  [[project-cf-cast-f4-spatial-index-s2]]
-- **S1 ship (`d42ddf11`):** parry3d-f64 BVH for `flag_thin_wall_faces`. cf-cast lib test suite 78.20 s → 17.15 s = 4.6× at test-fixture scale. Architectural pick discovered empirically during S1: parry3d-f64 (not parry3d) — f32 sibling drifts ~1e-7 mm in Möller-Trumbore which crosses `min_wall_thickness` at 1.0 mm boundary.
-- **S2 result (production regen, 2026-05-25):** **4.14 min wall / 224.7 s internal / 8.1× over pre-parallel-meshing 33.6 min baseline / 3.4× over parallel-meshing-S2's 12.9 min.** CPU peak 1076% (~11 cores). Recon §B-0 projection (1-1.5 min) was 2.5× too optimistic. Per-gasket F4 **9.2× speedup** (587s → 64s), NOT the 25× projected. **New bottleneck identified**: cup-piece Positive F4 ~50s vs Negative 0.0s on same-size (~16k face) meshes — asymmetric F4 check (smoking gun: `check_self_intersecting` on pin-junction boolean artifacts, since Positive cup carries pin protrusions + Negative carries pin sockets). Residual gasket F4 64s also wants investigation.
-- **Open follow-ups (S3 + S4):**
-  - S3 (in-flight) — instrument `validate_for_printing` per-check timing; identify the asymmetric long pole on Positive cup; BVH-pre-filter via parry3d-f64 (or voxel-grid opt if it's `check_trapped_volumes`).
-  - S4 — cold-read pass-1 (including recon §B-2 amendment for f32/f64 + §B-0 amendment for "OTHER checks not negligible") + omnibus PR.
+  [[project-cf-cast-f4-spatial-index-s2]],
+  [[project-cf-cast-f4-spatial-index-s3]]
+- **S1 ship (`d42ddf11`):** parry3d-f64 BVH for `flag_thin_wall_faces`. cf-cast lib test suite 78.20 s → 17.15 s. parry3d-f64 picked over parry3d after f32 drift caused 1.0 mm test boundary flip.
+- **S2 (`2026-05-25`, no code commit):** empirical regen identified `check_trapped_volumes` (NOT self_intersecting) as the asymmetric long pole — 50 s on Positive cup pieces, 0.001 s on Negative (Negative skipped via watertight precondition due to pin-socket boolean open edges). Recon §B-0 projection (1-1.5 min) was 2.5× too optimistic.
+- **S3 ship (`876f20d4`):** `MAX_VOXELS_PER_AXIS = 500` cap in `check_trapped_volumes` (workshop 200 mm cup: voxel_size 0.1 → 0.4 mm; grid 180 M → 2.8 M voxels = 65× fewer). Permanent env-var-gated per-check timing infra (`MESH_PRINTABILITY_TIMING=1`). **Production iter-1 regen 2:10.58 = 2.18 min = 15.4× over pre-parallel-meshing 33.6 min baseline.** Memory peak 1.2 GB → 127 MB. cf-cast lib test suite 17.15 s → 5.44 s (3× additional, 14× cumulative).
+- **New bottleneck (post-S3, out of scope unless S4 attacks it):** gasket `check_self_intersecting` at ~25 s each (mesh-repair's existing AABB-pre-filter + rayon-parallel is O(face²) worst case on 400 k-face meshes). BVH-pre-filter via parry3d-f64 would project to ~3 s, giving production iter-1 regen ~0.9 min.
+- **Open S4 picks (workshop-user decision pending):**
+  - **Option A — ship arc at S4 (cold-read + omnibus PR).** 2.18 min iter-1 regen is workshop-acceptable; sub-1-min may be diminishing returns. Bookmark self_intersect-BVH as a separate follow-up arc.
+  - **Option B — S4 attacks self_intersect** (~50-100 LOC mesh-repair change). Projection: sub-1-min iter-1 regen (~37× over baseline). Smaller scope than prior S-phases; likely 1 session.
 - **Trigger:** parallel-meshing-S2 empirical measurement showed
   gasket F4 = 78% of total wall-clock (587 s × 3 layers parallel,
   longest single drives the floor). Algorithmic optimization is
