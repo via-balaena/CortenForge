@@ -832,21 +832,59 @@ mod tests {
 
     // ─── Seam-flange S1 paired-baseline tests (recon §F-13) ──────────
     // Per [[feedback-load-bearing-test-fixtures]]: pair every "with
-    // flange" probe with a "without flange" probe, on the same
-    // probe coordinate. Verifies the flange-union changes are
-    // additive (flange material APPEARS where bare cup wall doesn't,
-    // INSIDE the flange region) and FlangeKind::None is bit-
-    // backward-compatible (zero change vs pre-S1 cup-piece SDF).
+    // flange" probe with a "without flange" probe, on the same probe
+    // coordinate. Tests verify (1) FlangeKind::None preserves the
+    // pre-S1 SDF bit-for-bit (backward-compat), (2) FlangeKind::Plate
+    // ADDS material in the flange's lateral+vertical region (union
+    // semantics with non-empty contribution), and (3) at the body
+    // perimeter (gasket strip region) the flange contributes NO
+    // material per the §F-4 lateral-disjoint invariant.
+    //
+    // **Fixture choice (cold-read pass-1 of S1):** these tests use
+    // `flange_test_fixture()` with `split_normal = (0, 0, 1)` →
+    // binormal = -Y → seam plane perpendicular to Y. This matches
+    // `FlangeSdf::eval`'s `|p.y - seam_plane_y| - thickness` Y-axis
+    // hardcoding (recon §F-1 simplification). The piece-level
+    // `fixture()` used by other tests in this module has
+    // `split_normal = +Y` → binormal = +Z → seam plane perpendicular
+    // to Z, which would rotate the flange 90° from the actual seam
+    // boundary — invalid for flange validation. Production
+    // `cast.toml` uses `split_normal = +X` (binormal also -Y), so
+    // `flange_test_fixture()` is geometrically equivalent to the
+    // production setup.
+
+    /// Flange-test fixture aligned with the `FlangeSdf` Y-hardcoding:
+    /// - body: cylinder along X (10 mm radius, 30 mm half-length —
+    ///   total 60 mm long; caps at |X| = 30 mm) — matches gasket-
+    ///   mold S1 synthetic-fixture body
+    /// - bounding region: cuboid (100, 15, 12) half-extents = 200 ×
+    ///   30 × 24 mm — body fits inside with cup-wall thickness ~5 mm
+    ///   in the radial direction
+    /// - ribbon: centerline along +X through origin, `split_normal =
+    ///   +Z` → binormal = -Y → seam plane = XZ (Y=0). Matches
+    ///   `FlangeSdf`'s Y-hardcoded seam-plane convention.
+    fn flange_test_fixture() -> (Solid, Solid, Ribbon) {
+        let layer_body =
+            Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+                &Vector3::y_axis(),
+                std::f64::consts::FRAC_PI_2,
+            ));
+        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.015, 0.012));
+        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        (layer_body, bounding_region, ribbon)
+    }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn flange_kind_none_preserves_cup_piece_sdf_bit_for_bit() {
         // §F-5 backward-compat invariant: `FlangeKind::None` (default
         // post-S1) MUST produce a cup-piece SDF bit-identical to the
-        // pre-S1 path. Probe both inside-cup-wall + outside-region
-        // points; SDF values must match.
+        // pre-S1 path. This test does NOT depend on flange-fixture
+        // orientation — it just verifies the short-circuit, so we
+        // can keep using the standard `fixture()`.
         let (body, region, ribbon) = fixture();
-        // Default ribbon has flange: FlangeKind::None.
         assert_eq!(ribbon.flange, crate::flange::FlangeKind::None);
 
         let (piece_none, _) =
@@ -854,8 +892,8 @@ mod tests {
 
         // Spot-check probes spanning inside-wall + outside + at-seam.
         let probes = [
-            Point3::new(0.0, 0.0, 0.020), // outside body, in cup wall, +Z side
-            Point3::new(0.0, 0.020, 0.0), // outside body, in cup wall, +Y side
+            Point3::new(0.0, 0.0, 0.020), // outside body, in cup wall
+            Point3::new(0.0, 0.020, 0.0), // outside body, in cup wall (Y direction)
             Point3::new(0.0, 0.0, 0.040), // outside bounding region entirely
             Point3::new(0.0, 0.0, 0.005), // inside body cavity
         ];
@@ -880,145 +918,45 @@ mod tests {
     }
 
     #[test]
-    fn flange_plate_adds_material_at_seam_plane_outside_body() {
-        // Paired-baseline test: probe just outside the body cavity
-        // perimeter at the seam plane (where the flange material
-        // should appear). With FlangeKind::Plate the SDF must be
-        // INSIDE (negative; flange material present); with
-        // FlangeKind::None the SDF must be OUTSIDE (positive at the
-        // same point — the bare cup wall is contour-following + the
-        // flange region is outside that contour).
-        let (body, region, ribbon_none) = fixture();
-        let ribbon_plate = ribbon_none
-            .clone()
-            .with_flange(crate::flange::FlangeKind::Plate(
-                crate::flange::FlangeSpec::iter1(),
-            ));
-
-        // Probe in the flange's lateral region at the seam plane:
-        // body cuboid is |X|, |Y|, |Z| ≤ 10 mm; bounding cuboid is
-        // |.| ≤ 30 mm. A probe at (0.020, +0.001, 0.0) is OUTSIDE
-        // the body cavity (X=20 > 10), INSIDE the bounding region
-        // (X=20 < 30), at +Y=+1mm which is inside Negative half
-        // (binormal=+Z; +Y is the +Y half but binormal sign
-        // makes Negative side = +Y region for split=+Y? Let me
-        // pick a coordinate I can reason about: probe at Z = 0
-        // (the seam plane for this fixture's split=+Y → binormal
-        // = +Z → seam plane is XY-plane). Probe at (0, 0.020,
-        // 0.001) is outside body, in cup wall, on Negative side
-        // (binormal=+Z, +Z is binormal direction so -Z is
-        // Negative? Or +Z is Negative? Use signs to determine).
+    fn flange_plate_adds_material_outside_bounding_region_at_seam_plane() {
+        // §F-13 S1 paired-baseline test for "Plate adds material
+        // where None has none". The probe is positioned OUTSIDE the
+        // bounding region (region ∖ body produces no cup material
+        // there) BUT INSIDE the flange's lateral+vertical region.
+        // Under None: piece_sdf > 0 (no material). Under Plate: the
+        // flange union adds material → piece_sdf < 0.
         //
-        // Skip the side-specific check — use a probe ON the seam
-        // plane itself + body-perimeter-outward, where both halves
-        // share the flange material at exactly Y=0:
-        let bounds = region.bounds().unwrap();
-        let halfspace_neg =
-            ribbon_none.halfspace_solid(PieceSide::Negative, bounds, RIBBON_PIECE_OVERLAP_M);
-        let neg_at_origin = halfspace_neg.evaluate(&Point3::new(0.0, 0.020, 0.0));
-        let seam_y_side = if neg_at_origin < 0.0 {
-            // Negative halfspace contains +Y; pick a probe in +Y
-            // for both bare-neg and plate-neg.
-            PieceSide::Negative
-        } else {
-            PieceSide::Positive
-        };
-
-        let (piece_none, _) =
-            compose_piece_solid(&body, &region, &ribbon_none, seam_y_side).unwrap();
-        let (piece_plate, _) =
-            compose_piece_solid(&body, &region, &ribbon_plate, seam_y_side).unwrap();
-
-        // Probe: body perimeter (X=0, |Y|=10mm) + outward in +Y by
-        // flange_inner_offset + half_flange_width = 2 + 7.5 = 9.5 mm.
-        // So probe Y = 10 + 9.5 = 19.5 mm, well inside the flange
-        // region. Probe Z within ±flange_thickness/2 = 2 mm of seam.
+        // Fixture: cylinder body along X (radius 10 mm in YZ) inside
+        // a 200 × 30 × 24 mm bounding cuboid. The flange extends
+        // outward from the cylinder's radial surface by up to
+        // `flange_width_m` = 15 mm in Z, so a probe at Z = +13 mm
+        // is 3 mm beyond the cylinder's lateral surface (body_dist
+        // ≈ 3 mm, between inner_offset 2 mm and width 15 mm =
+        // inside flange laterally) but ALSO 1 mm beyond the bounding
+        // cuboid's +Z face at Z = 12 mm.
+        let (body, region, ribbon_none) = flange_test_fixture();
         let spec = crate::flange::FlangeSpec::iter1();
-        let y_probe = 0.5_f64.mul_add(spec.flange_width_m, 0.010 + spec.flange_inner_offset_m);
-        // Pick a Z slightly inside the side's half (sign matches the
-        // halfspace check above).
-        let z_sign = if seam_y_side == PieceSide::Negative {
-            -1.0
-        } else {
-            1.0
-        };
-        let probe = Point3::new(0.0, y_probe, z_sign * 0.5 * spec.flange_thickness_m);
-
-        let sdf_none = piece_none.evaluate(&probe);
-        let sdf_plate = piece_plate.evaluate(&probe);
-
-        // With FlangeKind::None: probe is OUTSIDE the cup material
-        // (region ∖ body wraps the body but doesn't extend that far
-        // outward at the seam plane).
-        //
-        // Actually — this fixture's region is the FULL 60×60×60 mm
-        // cuboid, so the probe at Y=19.5mm IS still inside the
-        // bounding region (|Y| ≤ 30 mm). It's also inside the cup
-        // wall (region ∖ body at Y > 10 mm = cup wall material).
-        // So sdf_none < 0 (inside cup wall).
-        //
-        // With FlangeKind::Plate, the flange UNION adds material at
-        // the seam plane outside the body; the probe is inside
-        // BOTH the cup wall AND the flange union region → SDF still
-        // < 0, but POTENTIALLY MORE NEGATIVE (further inside the
-        // union of materials).
-        //
-        // The cleanest assertion: sdf_plate ≤ sdf_none. The union
-        // operation `max(-cup_sdf, -flange_sdf) → min(cup_sdf,
-        // flange_sdf) for inside-points` means adding the flange
-        // can only make the SDF MORE NEGATIVE (more inside).
-        assert!(
-            sdf_plate <= sdf_none + 1e-9,
-            "FlangeKind::Plate must yield SDF ≤ FlangeKind::None at the same probe \
-             (union of cup wall + flange material is at least as inside as cup wall \
-             alone); got plate={sdf_plate} vs none={sdf_none}"
-        );
-    }
-
-    #[test]
-    fn flange_plate_appears_in_flange_only_region() {
-        // Pick a probe that is OUTSIDE the cup wall under
-        // FlangeKind::None but INSIDE under FlangeKind::Plate — i.e.,
-        // a region the flange uniquely covers. Body fixture is a
-        // cuboid at origin; bounding region is a larger cuboid. The
-        // cup wall under None fills the region-body subtract. So
-        // there's NO point that's "outside cup wall + inside flange"
-        // in this fixture geometry (the bounding region is bigger
-        // than the flange's reach). The cylindrical sock fixture in
-        // flange::tests already exercises this case directly via
-        // build_flange_solid_for_side; piece.rs integration test
-        // verifies the additive-only property at the cup-piece level.
-        //
-        // Concrete check: per recon §F-4 lateral disjoint invariant,
-        // a probe AT the body perimeter (where the gasket lives)
-        // MUST have the same SDF under None vs Plate — the flange's
-        // inner_offset_m guard ensures the flange material doesn't
-        // extend to body_dist = 0.
-        let (body, region, ribbon_none) = fixture();
         let ribbon_plate = ribbon_none
             .clone()
-            .with_flange(crate::flange::FlangeKind::Plate(
-                crate::flange::FlangeSpec::iter1(),
-            ));
+            .with_flange(crate::flange::FlangeKind::Plate(spec));
 
-        // Probe AT the body cavity perimeter on the seam plane.
-        // Body is cuboid 20×20×20 mm centered at origin → perimeter
-        // at |Y| = 10 mm. Seam plane (split=+Y) = XY-plane → seam
-        // Y = 0 doesn't help here; need to probe at the seam plane
-        // which is the binormal-perpendicular plane.
-        //
-        // For this fixture (split=+Y, binormal=+Z), seam plane is
-        // XY (z=0). Probe at the body perimeter ON the seam plane =
-        // (0, 0, 0.010) — wait that's body's +Z face, not the seam
-        // plane perimeter. The seam plane is Z=0; the body perimeter
-        // at Z=0 is |X|≤10 AND |Y|≤10 boundary in the XY plane.
-        // Probe at (0, 0.010, 0) — corner of body cross-section at
-        // seam plane.
-        let probe = Point3::new(0.0, 0.010, 0.0);
+        // Probe slightly into Negative side's clear half (Y > 0 per
+        // §F-test "per-side halfspace cut" finding) at Z just past
+        // the bounding cuboid's +Z face.
+        let probe = Point3::new(0.0, 0.001, 0.013);
 
-        // Both ribbons evaluate to the same SDF at this probe because
-        // the flange's inner_offset_m prevents flange material from
-        // appearing at body_dist = 0.
+        // Sanity-check the side mapping: this fixture (split=+Z,
+        // binormal=-Y) puts the Negative side in +Y region per
+        // ribbon.sdf < 0 there with Negative-side multiplier +1.
+        // The probe's Y = +0.001 should be on Negative side.
+        let bounds = region.bounds().unwrap();
+        let neg_halfspace =
+            ribbon_none.halfspace_solid(PieceSide::Negative, bounds, RIBBON_PIECE_OVERLAP_M);
+        assert!(
+            neg_halfspace.evaluate(&probe) < 0.0,
+            "fixture sanity: probe Y=+0.001 must be inside Negative halfspace"
+        );
+
         let (piece_none, _) =
             compose_piece_solid(&body, &region, &ribbon_none, PieceSide::Negative).unwrap();
         let (piece_plate, _) =
@@ -1027,15 +965,59 @@ mod tests {
         let sdf_none = piece_none.evaluate(&probe);
         let sdf_plate = piece_plate.evaluate(&probe);
 
-        // The flange must NOT contribute material at body_dist = 0
-        // (lateral disjoint invariant from gasket). So sdf_none ==
-        // sdf_plate within FP precision.
+        assert!(
+            sdf_none > 0.0,
+            "FlangeKind::None: probe at Z=+0.013 (1 mm past bounding cuboid +Z face) \
+             must be OUTSIDE cup material (region ∖ body has no material there); \
+             got sdf_none={sdf_none}"
+        );
+        assert!(
+            sdf_plate < 0.0,
+            "FlangeKind::Plate: probe at Z=+0.013 (1 mm past bounding, inside flange's \
+             lateral + thickness region) must be INSIDE material via flange union; \
+             got sdf_plate={sdf_plate}"
+        );
+        assert!(
+            sdf_plate < sdf_none,
+            "Plate must produce more-inside SDF than None at flange-only probe \
+             (union added material); plate={sdf_plate} vs none={sdf_none}"
+        );
+    }
+
+    #[test]
+    fn flange_plate_does_not_extend_to_body_perimeter() {
+        // §F-4 gasket-disjoint invariant: at the body cavity perimeter
+        // (body_dist = 0), the flange's `inner_offset_m` guard
+        // ensures NO flange material is present (so the gasket strip
+        // can sit at body_dist ≈ 0 without PLA pinching it). Under
+        // both None and Plate the cup-piece SDF at body_dist = 0
+        // must be identical within FP precision.
+        let (body, region, ribbon_none) = flange_test_fixture();
+        let ribbon_plate = ribbon_none
+            .clone()
+            .with_flange(crate::flange::FlangeKind::Plate(
+                crate::flange::FlangeSpec::iter1(),
+            ));
+
+        // Probe AT body cavity perimeter on the seam plane: cylinder
+        // along X with radius 10 mm; at (0, 0, 0.010) the radial
+        // distance from the cylinder axis is exactly 10 mm = body
+        // surface. body_dist = 0.
+        let probe = Point3::new(0.0, 0.0, 0.010);
+
+        let (piece_none, _) =
+            compose_piece_solid(&body, &region, &ribbon_none, PieceSide::Negative).unwrap();
+        let (piece_plate, _) =
+            compose_piece_solid(&body, &region, &ribbon_plate, PieceSide::Negative).unwrap();
+
+        let sdf_none = piece_none.evaluate(&probe);
+        let sdf_plate = piece_plate.evaluate(&probe);
+
         let dt = (sdf_none - sdf_plate).abs();
         assert!(
             dt < 1e-9,
             "Flange must NOT alter SDF at body perimeter (gasket-disjoint \
-             invariant §F-4); diff {dt} between plate={sdf_plate} and \
-             none={sdf_none}"
+             invariant §F-4); diff {dt} between plate={sdf_plate} and none={sdf_none}"
         );
     }
 }
