@@ -3144,6 +3144,38 @@ mod tests {
     }
 
     #[test]
+    fn generate_procedure_markdown_v2_per_layer_step_6_references_clamp_section() {
+        // S3 cold-read pass-2 (integration gap): the per-layer
+        // procedure's Step 6 ("seat plug + close cup half + pour
+        // silicone") must reference the
+        // `## Cup-Half Clamping with Gasket Installation` section
+        // so a workshop user reading the per-layer procedure
+        // linearly doesn't miss the gasket-placement + flange-clamp
+        // sub-sequence on (Plate, Mold) casts. Without the cross-
+        // reference the workshop user could close the cup halves +
+        // pour without ever placing the gasket strip, defeating the
+        // seam-gasket-mold arc's leak-seal purpose.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("`## Cup-Half Clamping with Gasket Installation` above"),
+            "per-layer step 6 must cross-reference the clamp section: {md}"
+        );
+        // Both branches (flange + gasket enabled / disabled) must
+        // surface in the conditional so a reader knows which path
+        // applies to their cast config.
+        assert!(
+            md.contains("**For casts with the seam-flange + per-layer gasket geometry enabled**"),
+            "step 6 must call out the flange+gasket-enabled branch: {md}"
+        );
+        assert!(
+            md.contains("**for casts without flange or gasket**"),
+            "step 6 must call out the no-flange-no-gasket fallback branch: {md}"
+        );
+    }
+
+    #[test]
     fn generate_procedure_markdown_v2_demold_prose_specifies_piece_order() {
         // Step 8 of the per-layer block must call out "piece_0 first,
         // then piece_1" — the centerline-slide demold sequence.

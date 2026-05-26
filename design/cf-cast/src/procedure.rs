@@ -1542,8 +1542,16 @@ fn write_per_layer_sections_v2(
             "6. Apply mold release to `plug_layer_{0}.stl` (Smooth-On \
              Ease Release 200 standard) and seat the plug into one \
              open cup half so its truncated-pyramid floor lock drops \
-             into the cup-piece floor socket; close the second cup \
-             half over the plug (seam closes flush = press-stop \
+             into the cup-piece floor socket. **For casts with the \
+             seam-flange + per-layer gasket geometry enabled** (the \
+             cf-cast-cli default — see `## Cup-Half Clamping with \
+             Gasket Installation` above), place the cured gasket \
+             strip on the Negative half's seam face per that \
+             section's Step 3 BEFORE closing the second cup half, \
+             then close the second half and apply the 4-quadrant \
+             C-clamps per that section's Steps 4 + 5; **for casts \
+             without flange or gasket**, close the second cup half \
+             over the plug directly (seam closes flush = press-stop \
              tactile feedback). Orient the assembled mold with \
              **+Z up** so the V's pour + vent legs are on top. Pour \
              silicone into {pour_into} at a slow steady rate to \
