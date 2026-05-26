@@ -191,41 +191,84 @@ pub fn validate_for_printing(
 
     let mut validation = PrintValidation::new(config.clone());
 
+    // Per-check timing instrumentation — gated by env var
+    // `MESH_PRINTABILITY_TIMING=1` so production runs are silent.
+    // Diagnostic for `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-12
+    // S3 — identifies which F4 check dominates after the
+    // `flag_thin_wall_faces` BVH ship at S1.
+    let time_checks = std::env::var_os("MESH_PRINTABILITY_TIMING").is_some();
+
+    macro_rules! timed_check {
+        ($name:literal, $call:expr) => {{
+            let t = std::time::Instant::now();
+            $call;
+            if time_checks {
+                eprintln!(
+                    "[F4-time] {} ({} faces): {:.3}s",
+                    $name,
+                    mesh.face_count(),
+                    t.elapsed().as_secs_f64()
+                );
+            }
+        }};
+    }
+
     // Check build volume
-    check_build_volume(mesh, config, &mut validation);
+    timed_check!(
+        "build_volume",
+        check_build_volume(mesh, config, &mut validation)
+    );
 
     // Check overhangs
-    check_overhangs(mesh, config, &mut validation);
+    timed_check!("overhangs", check_overhangs(mesh, config, &mut validation));
 
     // Check manifold (basic check)
-    check_basic_manifold(mesh, &mut validation);
+    timed_check!(
+        "basic_manifold",
+        check_basic_manifold(mesh, &mut validation)
+    );
 
     // §6.1 Gap C — thin walls via inward ray-cast. Runs after manifold so
     // its precondition check (watertight + consistent winding) reflects
     // the same edge analysis the manifold detector just performed.
-    check_thin_walls(mesh, config, &mut validation);
+    timed_check!(
+        "thin_walls",
+        check_thin_walls(mesh, config, &mut validation)
+    );
 
     // §6.2 Gap G — long bridges via boundary-edge span analysis. Runs
     // after `check_thin_walls`; FDM/SLA-only (silent skip on SLS/MJF
     // per `requires_supports()`).
-    check_long_bridges(mesh, config, &mut validation);
+    timed_check!(
+        "long_bridges",
+        check_long_bridges(mesh, config, &mut validation)
+    );
 
     // §6.3 Gap H — trapped volumes via voxel-based exterior flood-fill.
     // Watertight precondition (NOT consistent winding, distinct from
     // ThinWall) — `§9.1` row 11 documents that TrappedVolume tolerates
     // inconsistent winding.
-    check_trapped_volumes(mesh, config, &mut validation);
+    timed_check!(
+        "trapped_volumes",
+        check_trapped_volumes(mesh, config, &mut validation)
+    );
 
     // §6.4 Gap I — self-intersecting triangle pairs via mesh-repair
     // re-use. No precondition (mesh-repair handles all input gracefully:
     // single-face / empty / large meshes).
-    check_self_intersecting(mesh, &mut validation);
+    timed_check!(
+        "self_intersecting",
+        check_self_intersecting(mesh, &mut validation)
+    );
 
     // §6.5 Gap J — small features via connected-component bbox extent.
     // No precondition (tolerant of any input: empty, open, non-manifold,
     // or NaN-vertex). Catches floating debris, unit-conversion errors,
     // and CAD-leftover burrs.
-    check_small_features(mesh, config, &mut validation);
+    timed_check!(
+        "small_features",
+        check_small_features(mesh, config, &mut validation)
+    );
 
     Ok(validation)
 }
@@ -1552,6 +1595,29 @@ const ROW_JITTER_Z: f64 = 1.7e-5;
 /// Gap H grid-memory blowup risk.
 const VOXEL_GRID_BYTE_CAP: u64 = 1_000_000_000;
 
+/// Per-axis voxel-count cap for the `TrappedVolume` detector grid.
+/// Bounds the `O((part_size / voxel_size)³)` memory + scanline cost
+/// when the part's extent is much larger than `min_feature_size`.
+///
+/// For workshop cf-cast parts (200 mm-scale cup pieces) at the
+/// default 0.1 mm voxel, the un-capped grid was 2000 × 300 × 300 =
+/// 180 million voxels, costing ~50 s per cup half in the inside-
+/// mark + flood-fill phase. With this cap at 500 the voxel size
+/// scales up for large parts (200 mm → 0.4 mm voxel, ~2.8 M voxels
+/// = 65× less work). Small parts (test fixtures ≤ 50 mm) are
+/// unaffected — initial voxel size's 0.1 mm gives 500 voxels at
+/// exactly 50 mm extent, cap doesn't kick in.
+///
+/// **Tradeoff:** trapped cavities smaller than the scaled voxel
+/// get missed on large parts. Acceptable for cf-cast iter-N use
+/// case (cup-piece cavities are gross body-cavity scale, not sub-
+/// mm pockets). §6.3 v0.9 followup ("per-region adaptive voxel
+/// sizing") is still the canonical fix; this cap is the workshop-
+/// scale accelerator until that ships. See
+/// `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-12 S3 for the
+/// production iter-1 regen measurement that motivated the cap.
+const MAX_VOXELS_PER_AXIS: f64 = 500.0;
+
 /// Voxel state encoding for the `TrappedVolume` detector's grid:
 /// 0 unknown, 1 inside-mesh, 2 exterior, 3 trapped, 4 trapped-visited.
 const VOXEL_UNKNOWN: u8 = 0;
@@ -1883,8 +1949,8 @@ fn check_trapped_volumes(
         return;
     }
 
-    let voxel_size = config.min_feature_size.min(config.layer_height) / 2.0;
-    if !voxel_size.is_finite() || voxel_size <= 0.0 {
+    let initial_voxel_size = config.min_feature_size.min(config.layer_height) / 2.0;
+    if !initial_voxel_size.is_finite() || initial_voxel_size <= 0.0 {
         // Pathological config (zero / negative / NaN feature size). Tolerate
         // silently — `validate_for_printing`'s upstream `check_build_volume`
         // is the authoritative handler for nonsensical configs.
@@ -1892,6 +1958,15 @@ fn check_trapped_volumes(
     }
 
     let (mesh_min, mesh_max) = compute_bounds(mesh);
+
+    // S3 voxel-axis cap: see `MAX_VOXELS_PER_AXIS` const at module
+    // scope below for the algorithmic rationale.
+    let max_extent = (mesh_max.x - mesh_min.x)
+        .max(mesh_max.y - mesh_min.y)
+        .max(mesh_max.z - mesh_min.z);
+    let cap_voxel_size = max_extent / MAX_VOXELS_PER_AXIS;
+    let voxel_size = initial_voxel_size.max(cap_voxel_size);
+
     let pad = 2.0 * voxel_size;
     let grid_min = Point3::new(mesh_min.x - pad, mesh_min.y - pad, mesh_min.z - pad);
     let grid_max = Point3::new(mesh_max.x + pad, mesh_max.y + pad, mesh_max.z + pad);
@@ -5016,34 +5091,41 @@ mod tests {
     }
 
     #[test]
-    fn test_trapped_volume_voxel_grid_oom_safety_skips() {
-        // Pathological config that would request a >1 GB grid: 200 mm cube
-        // at FDM-coarsened voxel = 0.2 mm → 1004³ ≈ 10⁹ bytes — at the
-        // boundary. Push into oversize via cavity-fixture-with-large-extent:
-        // construct a fake fixture whose vertices span (-1000, +1000) on
-        // each axis → 2000 mm extent at voxel 0.2 → 10004³ ≈ 10¹² bytes
-        // → far above the 1 GB cap → DetectorSkipped emitted before
-        // the grid is allocated.
+    fn test_trapped_volume_large_extent_uses_axis_cap() {
+        // S3 of `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-12: large
+        // parts have their voxel_size scaled up by the `MAX_VOXELS
+        // _PER_AXIS = 500` cap so the trapped-volumes algorithm
+        // completes in bounded time + memory. Pre-S3 this test
+        // verified the 1 GB memory pre-flight skipped a 2000 mm
+        // fixture; post-S3 the voxel-axis cap keeps the grid at
+        // ≤ 500³ × 1 byte = 125 MB regardless of part extent, so
+        // the 1 GB skip never fires in practice + the algorithm
+        // runs normally.
         let outer_extent = 2000.0;
         let mesh = make_cube_with_inner_cavity(outer_extent, outer_extent / 3.0);
         let config = coarse_voxel_config(PrintTechnology::Fdm);
         #[allow(clippy::expect_used)]
         let result = validate_for_printing(&mesh, &config)
-            .expect("validation should succeed (oom safety path)");
+            .expect("validation should succeed under voxel-axis cap");
 
-        let any_skipped = result.issues.iter().any(|i| {
+        // No DetectorSkipped emitted — the algorithm runs to
+        // completion with a scaled voxel_size.
+        let trapped_skipped = result.issues.iter().any(|i| {
             i.issue_type == PrintIssueType::DetectorSkipped
                 && i.description.contains("TrappedVolume")
-                && i.description.contains("1 GB")
         });
         assert!(
-            any_skipped,
-            "200 mm-extent fixture must trigger §6.3 step 4.5 memory pre-flight skip"
+            !trapped_skipped,
+            "voxel-axis cap should allow trapped_volumes to complete \
+             instead of skipping for large parts"
         );
-        assert_eq!(
-            result.trapped_volumes.len(),
-            0,
-            "memory-cap skip must not populate trapped_volumes"
+        // The cavity (outer_extent / 3 = ~667 mm) should still flag
+        // as a trapped volume despite the coarsened voxel — 667 mm
+        // is far above any per-axis cap-induced voxel size
+        // (2000 / 500 = 4 mm voxel).
+        assert!(
+            !result.trapped_volumes.is_empty(),
+            "voxel-axis-capped algorithm must still detect the inner cavity"
         );
     }
 
