@@ -85,8 +85,8 @@ respective S2 in memory but not in commit table.)
 
 - **Recon:** `docs/CF_CAST_SEAM_FLANGE_RECON.md` (+ cold-read
   pass-1 applied).
-- **State:** **S1 shipped (`8997bdd3`) + cold-read pass-1 (`746a75bc`).** S2-S5 pending.
-- **Memory:** [[project-cf-cast-seam-flange-s1]]
+- **State:** **S1 shipped (`8997bdd3`) + cold-read pass-1 (`746a75bc`) + S2 shipped (`3f50689e`).** S3-S5 pending.
+- **Memory:** [[project-cf-cast-seam-flange-s1]], [[project-cf-cast-seam-flange-s2]]
 - **Trigger:** the seam-gasket-mold S2 `GasketSpec.
   workshop_clamp_pressure_pa = 20 kPa` invariant requires even
   flat-clamp pressure to achieve the predicted gasket compression
@@ -98,11 +98,11 @@ respective S2 in memory but not in commit table.)
   gasket-arc.
 - **Phases (§F-13):**
   - S1 — ✅ SHIPPED (`8997bdd3`) + cold-read pass-1 (`746a75bc`). FlangeSpec + FlangeKind enum + Ribbon::with_flange + compose_piece_solid SDF-union. 8 flange tests + 3 piece paired-baseline tests pass; 236 cf-cast lib tests total. Cold-read pass-1 added `flange_test_fixture()` aligned with FlangeSdf Y-hardcoding (split=+Z → binormal=-Y, equivalent to production split=+X) + rewrote piece-tests 10+11 with geometrically meaningful probes (test 10 now probes outside-bounding-region + inside-flange-region for `sdf_plate < 0 < sdf_none`). Backward-compat (None ≡ pre-S1 bit-for-bit) + add-material (Plate produces sdf<0 where None has sdf>0) + gasket-disjoint (Plate ≡ None at body_dist=0) invariants verified.
-  - S2 (~80 LOC) — cf-cast-cli `[flange]` config + derive + cross-field validation (`inner_offset_m > half_gasket_channel_width`).
+  - S2 — ✅ SHIPPED (`3f50689e`). cf-cast-cli `[flange]` TOML block + `FlangeConfig` (enabled + 3 optional geometry overrides) + `resolve_flange_spec` derive helper + `validate_after_layer_source` cross-field gasket-disjoint gate (recon §F-4: when both gasket + flange enabled, `flange.inner_offset_m > GasketSpec::iter1().cross_section_width_m / 2`). 4 new + 1 extended unit tests; 52 cf-cast-cli unit / 7 integration / clippy / fmt clean. Workshop iter-3 GEOMETRY layer now fully unblocked through the TOML path.
   - S3 (~100 LOC) — procedure.rs workshop clamp protocol prose.
   - S4 — cf-cast-cli iter-1 regen on production cast.toml + §R1 inspector + workshop cf-view smoke.
   - S5 — cold-read + omnibus PR.
-- **Workshop dependency:** S1 unblocks the GEOMETRY layer — cup pieces emitted via `Ribbon::with_flange(FlangeKind::Plate(...))` carry the flange. Full workshop-iter-3 unblock (gasket arc's S6 physical pour) still needs S2-S4 for the cf-cast-cli TOML wire-up.
+- **Workshop dependency:** S1 unblocks the GEOMETRY layer at the cf-cast lib level; S2 wires cf-cast-cli so production `cast.toml` runs emit cup-piece STLs WITH flanges by default. Full workshop-iter-3 unblock (gasket arc's S6 physical pour) still needs S3-S4 for the workshop clamp protocol + cf-view smoke.
 
 ### Arc 4 — F4 spatial-index (perf arc, layer 2)
 
