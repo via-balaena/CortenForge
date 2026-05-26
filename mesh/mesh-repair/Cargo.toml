@@ -29,6 +29,14 @@ hashbrown = { workspace = true }
 rayon = { workspace = true }
 # Structured diagnostics
 tracing = { workspace = true }
+# BVH-accelerated pair enumeration for `detect_self_intersections`,
+# replacing the O(face²) double-loop with O(n log n) Qbvh self-overlap
+# traversal. See `docs/CF_CAST_F4_SELF_INTERSECT_BVH_RECON.md` §S-1
+# for the algorithmic gain estimate (~8× per-mesh wall on 400 k-face
+# gasket meshes). parry3d-f64 (NOT parry3d) matches the workspace
+# precision tier set by `mesh-printability`'s F4 spatial-index ship
+# at commit `d42ddf11`.
+parry3d-f64 = { workspace = true }
 
 [dev-dependencies]
 # Approximate equality for numeric tests

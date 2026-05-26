@@ -6980,6 +6980,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "mesh-types",
  "nalgebra 0.34.2",
+ "parry3d-f64",
  "proptest",
  "rayon",
  "thiserror 2.0.18",
