@@ -91,17 +91,21 @@ let intersecting_pairs: Vec<(u32, u32)> = (0..face_count)
 - Inner loop: `(i+1)..400_000`. Total pair-considerations =
   `n × (n-1) / 2 ≈ 8 × 10¹⁰`.
 - Each pair-consideration does:
-  1. `aabbs[i].overlaps(&aabbs[j])` — 6 inequality tests, ~5 ns
-     per call.
+  1. `aabbs[i].overlaps(&aabbs[j])` — 6 inequality tests, ~3 ns
+     per call on modern CPU (well-predicted branches, cache-
+     friendly Vec<Aabb> access).
   2. Skip-adjacent check (HashSet lookup) on overlap-pass — ~30 ns.
   3. SAT-based `triangles_intersect` on overlap-pass — ~50 ns.
 
 The AABB-overlap check is fast individually, but **enumerating
 all `n²/2` pairs is the dominant cost** at gasket scale.
-`8×10¹⁰ pairs × 5 ns/pair = 400 s single-threaded`; with rayon's
-11-way parallelism, ~40 s wall — close to the observed 25-26 s
-(rayon overhead + the per-thread atomic counter contention
-explain the remaining 1.6× gap).
+`8×10¹⁰ pairs × 3 ns/pair = 240 s single-threaded`; with rayon's
+parallelism on the workshop machine (~11 logical cores, including
+hyperthreading), wall time settles around 22-25 s, which matches
+the observed 25-26 s well. The earlier "11× linear" scaling
+estimate was conservative — AABB-overlap is compute-bound (not
+memory-bandwidth-bound), so SMT/hyperthreading contributes
+effective parallelism beyond the physical-core count.
 
 The triangle-triangle intersection test itself (`triangles_intersect`,
 SAT with 13 axes) is fine — it only runs on the small fraction of
@@ -118,7 +122,9 @@ method is called with leaf-pairs whose AABBs overlap. parry3d's
 SIMD-accelerated 4-wide BVH gives `O(k + n log n)` where `k` is the
 number of overlapping pairs.
 
-**Pseudocode:**
+**Pseudocode** (illustrative — `OverlapPairCollector` is the
+load-bearing implementation work; see "Visitor implementation
+cost" below):
 
 ```rust
 fn detect_self_intersections(mesh: &IndexedMesh, params: &IntersectionParams)
@@ -140,18 +146,31 @@ fn detect_self_intersections(mesh: &IndexedMesh, params: &IntersectionParams)
     qbvh.clear_and_rebuild(leaves.into_iter(), 0.0);
 
     // 4. Enumerate overlapping pairs via a custom visitor.
+    //    `OverlapPairCollector` MUST enforce canonical pair
+    //    ordering (`i < j`) and skip self-pairs (`i == j`):
+    //    parry's `traverse_bvtt(self, self)` emits both `(i, j)`
+    //    AND `(j, i)` for every non-trivial overlap, PLUS `(i, i)`
+    //    for every leaf (since each leaf's AABB trivially
+    //    overlaps itself). Without the canonical-pair filter the
+    //    BVH path would emit 2× pair count of the reference path.
     let mut candidate_pairs: Vec<(u32, u32)> = Vec::new();
-    let mut visitor = OverlapPairCollector { pairs: &mut candidate_pairs };
+    let mut visitor = OverlapPairCollector::new(&mut candidate_pairs);
     qbvh.traverse_bvtt(&qbvh, &mut visitor);
+    // After traversal: `candidate_pairs` contains exactly the
+    // `(i, j)` pairs with `i < j` whose AABBs (epsilon-expanded)
+    // overlap — same set the reference O(n²) loop would discover.
 
-    // 5. For each candidate pair, run SAT-based triangles_intersect (unchanged).
+    // 5. For each candidate pair, run SAT-based triangles_intersect
+    //    (unchanged from reference). Adjacency-skip is applied as
+    //    a post-filter here rather than inside the visitor — picked
+    //    over visitor-internal filtering per §S-8 #1 below
+    //    (candidate-list scale is small; post-filter is simpler).
     let intersecting_pairs: Vec<(u32, u32)> = candidate_pairs
         .par_iter()
         .filter(|&&(i, j)| {
-            let i = i as usize; let j = j as usize;
-            // skip adjacent
-            if let Some(ref adj) = adjacency && adj[i].contains(&(j as u32)) { return false; }
-            triangles_intersect(&triangles[i], &triangles[j], params.epsilon)
+            let iu = i as usize; let ju = j as usize;
+            if let Some(ref adj) = adjacency && adj[iu].contains(&j) { return false; }
+            triangles_intersect(&triangles[iu], &triangles[ju], params.epsilon)
         })
         .copied()
         .collect();
@@ -161,9 +180,30 @@ fn detect_self_intersections(mesh: &IndexedMesh, params: &IntersectionParams)
 }
 ```
 
-**Key correctness invariant:** the candidate pairs returned by
-parry's BVH traversal are the EXACT set of AABB-overlapping pairs
-(plus epsilon-expanded). The same set the O(n²) loop would
+**Visitor implementation cost.** `OverlapPairCollector` must
+implement
+`parry3d_f64::partitioning::SimdSimultaneousVisitor<u32, u32,
+SimdAabb>` — a SIMD-aware trait whose `visit` method is called
+with 4-wide leaf batches (parry3d's Qbvh stores 4 children per
+node for SIMD AABB tests). The implementation is ~30-60 LOC of
+trait boilerplate handling:
+- Returning `SimdSimultaneousVisitStatus::MaybeContinue(mask)` for
+  internal nodes (parry walks deeper where the mask is set).
+- For leaf-leaf interactions, extracting the 4 left-leaf indices
+  + 4 right-leaf indices, looping over the 4×4 = 16 combinations,
+  and pushing canonical `(i, j)` pairs into `candidate_pairs`
+  when `i < j` AND the mask bit is set for that (left, right)
+  combination.
+- Returning `SimdSimultaneousVisitStatus::Continue` for non-leaf
+  pairings.
+
+Not trivial to write but a one-time cost — pattern is reusable
+for any future Qbvh-pair-enumeration consumer.
+
+**Key correctness invariant:** the canonical-pair candidate set
+returned by the visitor is the EXACT set of AABB-overlapping
+`(i, j)` pairs with `i < j` (plus the epsilon-expansion baked into
+the precomputed AABBs). Same set the O(n²) reference loop would
 discover. The downstream `triangles_intersect` filter is
 unchanged, so the final reported intersecting-pair set is
 **bit-identical** to the reference path.
@@ -174,18 +214,28 @@ adjacency-skip semantics — all preserved.
 
 ## §S-2 Algorithmic gain estimate
 
-| Phase | Current O(n²) | BVH O(n log n) |
-|-------|--------------:|---------------:|
+| Aspect | Current O(n²) | BVH O(n log n) |
+|--------|--------------:|---------------:|
 | Pair-considerations on 400 k-face gasket | 8×10¹⁰ | ~7×10⁶ |
-| AABB pair-test wall (incl. rayon ×11)    | ~25 s | (replaced by BVH) |
-| BVH build cost (one-time per mesh)       | — | ~0.5-1 s |
-| BVH traversal (overlap pair enumeration) | — | ~1-2 s |
-| Candidate filter via SAT (unchanged)     | ~0.5 s | ~0.5 s |
-| **Total `detect_self_intersections`**     | **~25 s** | **~3 s** |
+| Pair-enumeration cost (interleaved AABB-test + SAT filter; rayon ×11) | ~25 s total | (replaced by BVH below) |
+| BVH build cost (one-time per mesh)     | — | ~0.5-1 s |
+| BVH traversal — overlap pair enumeration | — | ~1-2 s |
+| Candidate filter via SAT (rayon-parallel, ~thousands of pairs) | (part of "~25 s" above) | ~0.5 s |
+| **Total `detect_self_intersections`**   | **~25 s** | **~3 s** |
+
+Reading the table: in the current O(n²) path, the inner loop
+**interleaves** AABB-overlap pre-filter + SAT triangle test
+across all `n²/2` pair-considerations — they're NOT separate
+phases. The ~25 s wall is the whole loop's cost, dominated by
+the AABB pre-filter (since the SAT branch only fires on the small
+overlap-pass fraction). The BVH path **separates** those into
+two distinct steps: BVH traversal emits candidate pairs (no SAT
+called), then a downstream `par_iter().filter()` runs the SAT
+test on candidates only.
 
 **Per-gasket speedup: ~8× wall.** Per-mesh speedup compounds with
-S1's thin-walls BVH + S3's voxel cap to drop gasket F4 from 64s
-(post-S1) → 30.6 s (post-S3) → **~9 s (post-§S)**.
+F4-S1's thin-walls BVH + F4-S3's voxel cap to drop gasket F4 from
+64 s (post-S1) → 30.6 s (post-S3) → **~9 s (post-§S)**.
 
 **Production iter-1 regen projection: 2.18 min → ~0.9 min (~37× over
 pre-parallel-meshing 33.6 min baseline).**
@@ -234,9 +284,13 @@ Three load-bearing tests at S1:
    `detect_self_intersections_reference` (O(n²), preserved as
    `#[cfg(test)] fn` like S1's thin-walls reference). Assert:
    - Identical `intersection_count`.
-   - Identical `intersecting_pairs` set (`HashSet<(u32, u32)>`
-     comparison, ignoring vector ordering since rayon parallelism
-     already non-determinizes the order).
+   - Identical `intersecting_pairs` set, compared as
+     `HashSet<(u32, u32)>` to abstract over both paths'
+     ordering quirks — reference uses rayon (non-deterministic
+     across runs); BVH path may be deterministic (single-
+     threaded `traverse_bvtt`) but ordering depends on Qbvh
+     internal SIMD-leaf traversal order. HashSet equality is
+     the right cross-path invariant.
    - Same `truncated` flag.
    - Same `has_intersections` boolean.
 2. **`self_intersect_bvh_runtime_under_target`** — generate a
@@ -334,15 +388,14 @@ include this fixture case + canonicalize pair direction
 
 ## §S-8 Open questions
 
-1. **Adjacency-skip placement.** Currently the adjacency check is
-   inline in the inner pair loop. Should it move INSIDE the BVH
-   visitor (skip pairs before they reach the candidate list) or
-   stay AFTER the visitor returns (filter candidate list)? The
-   visitor-internal approach saves visitor-emit cost; the
-   post-filter approach keeps the visitor pure spatial. Pick at
-   S1 — likely post-filter since it's simpler + the cost
-   difference is small at the candidate-list scale (~thousands of
-   pairs, not millions).
+1. **Adjacency-skip placement: PICKED post-filter (decided at
+   cold-read pass-1).** Adjacency check runs on the candidate-
+   pair list returned by the visitor, not inside the visitor.
+   Rationale: candidate-list scale is ~thousands of pairs on
+   real meshes — even O(k) post-filter is fast. Visitor stays
+   pure spatial (just emits AABB-overlap pairs), which is
+   simpler to implement + test in isolation. The cost of
+   skipping pairs slightly later is negligible.
 2. **Visitor parallelization.** parry3d's `traverse_bvtt` is
    single-threaded. Could the visitor itself be parallelized
    (multiple subtree traversals in parallel)? Probably not worth
