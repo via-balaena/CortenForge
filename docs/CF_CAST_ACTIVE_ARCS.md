@@ -43,6 +43,49 @@ respective S2 in memory but not in commit table.)
 
 ## Active arcs
 
+### Arc 6 — geometry crispness (visual-quality triage)
+
+- **Recon:** `docs/CF_CAST_GEOMETRY_CRISPNESS_RECON.md` (scaffold
+  2026-05-25, this commit).
+- **State:** **scaffold; awaiting cold-read pass-1 + §Q-11 S0
+  diagnostics (§Q-6 flange-asymmetry disambiguation, §Q-5 normal-
+  correctness instrumentation, §Q-3 scan-mesh resolution
+  measurement, §Q-7 gasket crispness check) before S1 plunges.**
+- **Memory:** (none yet — recon scaffold only).
+- **Trigger:** workshop user's cf-view smoke gate on
+  `~/scans/cast_iter1_post_flange_smoke/` (the [[project-cf-cast-seam-flange-s4]]
+  production STL set) catalogued 6 distinct visual quality
+  failure modes during a live walkthrough. Strictly additive
+  quality-improvement arc within the current curve-following +
+  seam-flange + gasket architecture (NOT a paradigm pivot).
+  Condo-floor-weight constraint ([[project-workshop-condo-weight-constraint]])
+  rules out concrete-fill / heavy-fixture fix paths.
+- **Six failure modes (§Q-1 through §Q-6):**
+  - §Q-1: seam-face perimeter saw-tooth (SDF/MC quantization)
+  - §Q-2: plug-floor-lock polygonal socket (coarse mesh-CSG)
+  - §Q-3: cavity walls degraded scan resolution (SDF re-MC)
+  - §Q-4: cap-plane × cavity floor not flat (SDF/MC quantization)
+  - §Q-5: normals are weird (mesh winding / normal export)
+  - §Q-6: flange asymmetric — possibly missing on some sides
+    (TBD diagnostic A/B/C: bug vs viewing-angle vs genuine
+    geometric asymmetry)
+- **Cross-failure-mode synergy:** finer MC cells globally (or
+  adaptive MC) addresses §Q-1 + §Q-3 + §Q-4 simultaneously.
+  §Q-11 S1 is an empirical-only ship phase that measures the
+  finer-cell wall-clock cost on production cast.toml before
+  the arc commits to a fix path.
+- **Phases (§Q-11; ~5-7 phases, ~5-8 sessions):** S0 diagnostics
+  (no code) — S1 finer-MC-cells empirical experiment — S2
+  adaptive MC scaffold + impl (only if S1 measurement justifies)
+  — S3 mesh-CSG cap-plane primitive (only if §Q-4 needs it) —
+  S4 truncated-pyramid subdivision (§Q-2) — S5 normal-
+  consistency (§Q-5) — S6 §Q-6 fix (only if diagnostic = branch
+  C bug) — S7 production iter-1 regen + cf-view smoke — S8
+  cold-read + omnibus PR.
+- **Retirement scope (§Q-13): NOTHING.** All fixes additive or
+  in-place refinements. The shipped seam-flange + seam-gasket-
+  mold + FDM-friendly-geometry + perf arcs carry forward as-is.
+
 ### Arc 1 — seam-gasket-mold (gasket-seal arc)
 
 - **Recon:** `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md`
@@ -303,10 +346,12 @@ most recent first):
 
 ## Cross-refs
 
-- Per-arc recons: `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md`,
+- Per-arc recons: `docs/CF_CAST_GEOMETRY_CRISPNESS_RECON.md`
+  (new), `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md`,
   `docs/CF_CAST_PARALLEL_MESHING_RECON.md`,
   `docs/CF_CAST_SEAM_FLANGE_RECON.md`,
-  `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md`.
+  `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md`,
+  `docs/CF_CAST_F4_SELF_INTERSECT_BVH_RECON.md`.
 - Memory entries for shipped phases: see "Memory" entries per
   arc above.
 - Archived predecessor: `docs/archive/CF_CAST_MOLD_WALL_RECON.md`
