@@ -3086,6 +3086,38 @@ mod tests {
             md.contains("Do NOT release"),
             "do-not-release-during-cure warning missing in: {md}"
         );
+        // Cold-read pass-1 (Finding A): Step 3 geometry must say
+        // "annular clearance gap between body cavity edge and flange
+        // inner edge", NOT "INSIDE the flange perimeter" (ambiguous
+        // — workshop user could put the gasket in the wrong ring).
+        assert!(
+            md.contains("annular clearance gap"),
+            "annular-gap geometry vocabulary missing in: {md}"
+        );
+        assert!(
+            !md.contains("INSIDE the flange perimeter"),
+            "ambiguous \"INSIDE the flange perimeter\" wording leaking back in: {md}"
+        );
+        // Cold-read pass-1 (Finding B): the predicted compression
+        // number must live in Step 5 (where clamps are applied),
+        // NOT Step 4 (cup-close only). Step 4 must explicitly
+        // distinguish "lightly seated" from full compression.
+        assert!(
+            md.contains("Full gasket compression is achieved in Step 5"),
+            "Step 4 must defer full compression to Step 5: {md}"
+        );
+        // Cold-read pass-1 (Finding C): silicone-on-silicone bond
+        // chemistry warning + scalpel-trim fallback present in
+        // Step 8 (platinum-cure silicones DO bond to each other at
+        // the lateral gasket↔main-pour interface).
+        assert!(
+            md.contains("chemically bonded to the cured silicone"),
+            "Step 8 silicone-bond chemistry warning missing in: {md}"
+        );
+        assert!(
+            md.contains("scalpel"),
+            "Step 8 scalpel-trim fallback missing in: {md}"
+        );
         // None-branch vocabulary must NOT appear when both kinds are
         // active — guards against the dispatch falling through to
         // the hand-clamp fallback branch.

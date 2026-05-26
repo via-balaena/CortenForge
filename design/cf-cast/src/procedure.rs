@@ -1269,8 +1269,8 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                  arc (recon §G-1). The flange's `inner_offset_m` \
                  ({inner_offset_mm:.1} mm) keeps the flange material \
                  laterally disjoint from the gasket channel per recon \
-                 §F-4 — gasket compresses, flange clamps, no \
-                 cross-contamination."
+                 §F-4 — gasket compresses, flange clamps, no lateral \
+                 overlap between the two."
             );
             md.push('\n');
             let _ = writeln!(
@@ -1297,15 +1297,18 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
             let _ = writeln!(
                 md,
                 "3. **Position the gasket on the Negative cup half.** \
-                 Open the cup halves (registration pins disengaged), \
-                 lay the Negative cup half \
+                 Open the cup halves, lay the Negative cup half \
                  (`mold_layer_{{N}}_piece_0.stl`) seam-face-UP on the \
                  workshop bench. Place the gasket strip on the seam \
-                 face, INSIDE the flange perimeter — the strip \
-                 traces `body_dist = 0` (the body cavity edge); the \
-                 flange's {inner_offset_mm:.1} mm `inner_offset_m` \
-                 keeps the flange's lateral inner edge clear of the \
-                 gasket per recon §F-4 gasket-disjoint invariant."
+                 face **along the body cavity perimeter, in the \
+                 annular clearance gap between the body cavity edge \
+                 (`body_dist = 0`) and the flange's inner edge** — \
+                 the flange's {inner_offset_mm:.1} mm \
+                 `inner_offset_m` is the width of that gap and keeps \
+                 the flange material laterally clear of the gasket \
+                 per recon §F-4 gasket-disjoint invariant. The \
+                 gasket strip itself is centered on the body \
+                 perimeter (half inside body_dist < 0, half outside)."
             );
             let _ = writeln!(
                 md,
@@ -1313,26 +1316,28 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                  gasket.** Bring the Positive piece \
                  (`mold_layer_{{N}}_piece_1.stl`) down onto the \
                  Negative + gasket assembly, aligning via the \
-                 registration pins. The gasket compresses ~\
-                 {predicted_compression_um:.0} µm per the \
-                 `GasketSpec::predicted_compression_m` Hookean \
-                 estimate at \
-                 `workshop_clamp_pressure_pa` = \
-                 {clamp_pressure_kpa:.0} kPa; the cup halves should \
+                 registration pins (if enabled — see \
+                 `## v2 Mold Assembly` above for the alignment \
+                 method when pins are disabled). At this stage the \
+                 gasket is only lightly seated (cup halves resting \
+                 on the registration features); the cup halves should \
                  seat flush at the seam (flange-to-flange contact \
-                 OUTSIDE the gasket strip; gasket-sandwiched \
-                 compression INSIDE)."
+                 OUTSIDE the gasket strip; gasket-sandwiched lightly \
+                 INSIDE). Full gasket compression is achieved in \
+                 Step 5 once the C-clamps apply the design pressure."
             );
             let _ = writeln!(
                 md,
                 "5. **Apply C-clamps to the flange at 4 quadrant \
                  positions.** Place one C-clamp at each 90° quadrant \
                  around the seam-plane perimeter. Tighten each clamp \
-                 to **hand-tight + 1/8 turn** — enough to maintain \
-                 the gasket's {clamp_pressure_kpa:.0} kPa target \
-                 pressure without crushing the strip. Workshop user \
-                 MUST avoid over-tightening (gasket extrusion → \
-                 loss of seal)."
+                 to **hand-tight + 1/8 turn** — enough to reach the \
+                 gasket's design {clamp_pressure_kpa:.0} kPa target \
+                 pressure (predicts ~{predicted_compression_um:.0} \
+                 µm compression per the \
+                 `GasketSpec::predicted_compression_m` Hookean \
+                 estimate). Workshop user MUST avoid over-tightening \
+                 (gasket extrusion → loss of seal)."
             );
             let _ = writeln!(
                 md,
@@ -1354,12 +1359,20 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
             let _ = writeln!(
                 md,
                 "8. **Release clamps + open cup halves.** After cure, \
-                 release the 4 C-clamps. Disengage the registration \
-                 pins by separating the cup halves. Peel the gasket \
-                 out of the seam (it stays bonded to neither cup \
-                 half nor the cured silicone — both surfaces are \
-                 silicone-non-stick). Demold the cured silicone tube \
-                 per `## Post-Cure Assembly + Disassembly` below."
+                 release the 4 C-clamps. Separate the cup halves; \
+                 the registration pins slide out of their cavities \
+                 (gravity-held wedge fit — no latch action). Peel \
+                 the gasket strip out of the seam; trim at the body \
+                 cavity perimeter with a scalpel if the gasket has \
+                 chemically bonded to the cured silicone shell at \
+                 the lateral interface (platinum-cure silicones can \
+                 develop a thin lateral bond where the cured gasket \
+                 contacted the fresh main pour at body_dist < 0; the \
+                 thin gasket strip tears cleanly under light scalpel \
+                 guidance). The gasket does NOT bond to the PLA cup \
+                 halves (silicone-non-stick). Demold the cured \
+                 silicone tube per `## Post-Cure Assembly + \
+                 Disassembly` below."
             );
             md.push('\n');
             let _ = writeln!(
