@@ -277,15 +277,16 @@ const PIN_RAY_BRACKET_MAX_ITERS: usize = 32;
 /// hull-resolution geometry, independent of the bulk MC cell size.
 /// See [[feedback-read-prior-arc-memory-before-architectural-decisions]].
 ///
-/// `layer_body` and `bounding_region` are the same per-layer
-/// [`Solid`]s the caller passes to
-/// [`crate::piece::compose_piece_solid`]; the cup-wall annulus is
-/// `bounding_region ∖ layer_body` at this layer.
+/// `layer_body` is the per-layer body [`Solid`] the caller passes to
+/// [`crate::piece::compose_piece_solid`]; the cup-wall annulus is a
+/// body-tracking shell of thickness `wall_thickness_m` per
+/// [`crate::piece::CupWallShellSdf`] (post-§Q-1, 2026-05-26 — was
+/// `bounding_region ∖ layer_body` pre-refactor).
 #[must_use]
 pub fn build_registration_transforms(
     ribbon: &Ribbon,
     layer_body: &Solid,
-    bounding_region: &Solid,
+    wall_thickness_m: f64,
     side: PieceSide,
 ) -> Vec<MatingTransform> {
     let spec = match &ribbon.registration {
@@ -312,11 +313,13 @@ pub fn build_registration_transforms(
             let Some(body_dist) = surface_distance_along_ray(layer_body, center, ray_dir) else {
                 return Vec::new();
             };
-            let Some(bounding_dist) = surface_distance_along_ray(bounding_region, center, ray_dir)
-            else {
-                return Vec::new();
-            };
-            let pin_offset = f64::midpoint(body_dist, bounding_dist);
+            // §Q-1 (2026-05-26): cup-wall is now a body-tracking
+            // shell of `wall_thickness_m` (was: bounded by the
+            // pre-§Q-1 outer cuboid via `surface_distance_along_ray
+            // (bounding_region, ...)`). Pin midpoint sits at the
+            // shell mid-thickness along this ray: `body_dist +
+            // wall_thickness_m / 2`.
+            let pin_offset = 0.5_f64.mul_add(wall_thickness_m, body_dist);
             let pin_center = center + pin_offset * ray_dir;
             let pose = PrismaticPinPose::new(pin_center, axis_unit, lateral_unit);
             let params = match side {
@@ -427,10 +430,10 @@ mod tests {
     fn build_registration_sdf_ops(
         ribbon: &Ribbon,
         layer_body: &Solid,
-        bounding_region: &Solid,
+        wall_thickness_m: f64,
         side: PieceSide,
     ) -> Vec<Solid> {
-        build_registration_transforms(ribbon, layer_body, bounding_region, side)
+        build_registration_transforms(ribbon, layer_body, wall_thickness_m, side)
             .into_iter()
             .map(|t| match t {
                 MatingTransform::UnionTruncatedPyramid { params }
@@ -476,13 +479,9 @@ mod tests {
     #[test]
     fn build_registration_sdf_ops_none_returns_empty() {
         let ribbon = straight_x_ribbon(); // default registration = None
-        let (body, bounds) = reference_body_and_bounds();
-        assert!(
-            build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative).is_empty()
-        );
-        assert!(
-            build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Positive).is_empty()
-        );
+        let (body, _bounds) = reference_body_and_bounds();
+        assert!(build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative).is_empty());
+        assert!(build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Positive).is_empty());
     }
 
     #[test]
@@ -490,9 +489,9 @@ mod tests {
         // 4 pins total: 2 arc fractions × 2 lateral mirror sides.
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
-        let pos = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Positive);
+        let (body, _bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative);
+        let pos = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Positive);
         assert_eq!(
             neg.len(),
             4,
@@ -510,10 +509,8 @@ mod tests {
         let mut spec = PinSpec::iter1();
         spec.arc_fractions.clear();
         let ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(spec));
-        let (body, bounds) = reference_body_and_bounds();
-        assert!(
-            build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative).is_empty()
-        );
+        let (body, _bounds) = reference_body_and_bounds();
+        assert!(build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative).is_empty());
     }
 
     /// §G-10 #1 bit-precise fit invariant: at the spec layer,
@@ -535,7 +532,7 @@ mod tests {
     fn cup_prismatic_pin_and_socket_fit_invariant() {
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let (body, bounds) = reference_body_and_bounds();
+        let (body, _bounds) = reference_body_and_bounds();
 
         let pin_spec = PrismaticPinSpec::cup_pin_default();
         let half_diametral = pin_spec.diametral_clearance_m / 2.0;
@@ -585,8 +582,8 @@ mod tests {
         // produce different solids (different counts of solids would
         // signal a missing arc fraction; identical Vec lengths but
         // different contained geometry is what we want).
-        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
-        let pos = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Positive);
+        let neg = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative);
+        let pos = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Positive);
         assert_eq!(neg.len(), pos.len(), "pin + socket Vec lengths must match");
     }
 
@@ -608,8 +605,8 @@ mod tests {
         //   axis               = +Z (binormal: tangent +X × split +Y = +Z)
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        let (body, _bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative);
         assert_eq!(neg.len(), 4, "4 pins expected from default iter1 spec");
 
         let expected_centres = [
@@ -642,7 +639,12 @@ mod tests {
         let ribbon = Ribbon::new(centerline, split)
             .unwrap()
             .with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        // wall_thickness = 25 mm to match the original wide-body
+        // fixture's bounding-vs-body delta (61 - 36 = 25 mm). Post-§Q-1
+        // the cup-wall is body-tracking via [`CupWallShellSdf`]; pin
+        // midpoint = body_dist + wall_thickness / 2 along the ray,
+        // giving offset 36 + 25/2 = 48.5 mm = (36 + 61) / 2 as before.
+        let neg = build_registration_sdf_ops(&ribbon, &body, 0.025, PieceSide::Negative);
         assert_eq!(neg.len(), 4, "wide-body fixture should still emit 4 pins");
 
         // Sample expected centres: arc fractions 0.25 + 0.75 along
@@ -690,8 +692,8 @@ mod tests {
     fn cup_pin_extends_symmetrically_across_seam_plane() {
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        let (body, _bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative);
 
         // For the first pin (centre at (-0.025, +0.020, 0)), sample
         // at:
@@ -748,8 +750,8 @@ mod tests {
     fn cup_pin_overlaps_negative_half_shell_for_sdf_union_connectivity() {
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        let (body, _bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative);
 
         let first_pin = &neg[0];
         let first_centre = Point3::new(-0.025, 0.020, 0.0);
@@ -840,8 +842,8 @@ mod tests {
         let pin_spec = PrismaticPinSpec::cup_pin_default();
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
+        let (body, _bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative);
         let pin = &neg[0];
 
         let center = Point3::new(-0.025, 0.020, 0.0);
@@ -872,8 +874,7 @@ mod tests {
             arc_fractions: vec![0.25, 0.75],
         };
         let bare_ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(bare_spec));
-        let bare_neg =
-            build_registration_sdf_ops(&bare_ribbon, &body, &bounds, PieceSide::Negative);
+        let bare_neg = build_registration_sdf_ops(&bare_ribbon, &body, 0.020, PieceSide::Negative);
         let bare_pin = &bare_neg[0];
         let bare_bed_extent =
             find_lateral_zero_crossing(bare_pin, bed_base, lateral_unit, 0.0, 0.01);
@@ -931,9 +932,9 @@ mod tests {
         let half_axial = pin_spec.axial_clearance_m / 2.0;
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        let (body, bounds) = reference_body_and_bounds();
-        let neg = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Negative);
-        let pos = build_registration_sdf_ops(&ribbon, &body, &bounds, PieceSide::Positive);
+        let (body, _bounds) = reference_body_and_bounds();
+        let neg = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Negative);
+        let pos = build_registration_sdf_ops(&ribbon, &body, 0.020, PieceSide::Positive);
 
         let center = Point3::new(-0.025, 0.020, 0.0);
         let axis_unit = Vector3::new(0.0, 0.0, 1.0);
@@ -973,10 +974,8 @@ mod tests {
             arc_fractions: vec![0.25, 0.75],
         };
         let bare_ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(bare_spec));
-        let bare_neg =
-            build_registration_sdf_ops(&bare_ribbon, &body, &bounds, PieceSide::Negative);
-        let bare_pos =
-            build_registration_sdf_ops(&bare_ribbon, &body, &bounds, PieceSide::Positive);
+        let bare_neg = build_registration_sdf_ops(&bare_ribbon, &body, 0.020, PieceSide::Negative);
+        let bare_pos = build_registration_sdf_ops(&bare_ribbon, &body, 0.020, PieceSide::Positive);
         let bare_pin_bed =
             find_lateral_zero_crossing(&bare_neg[0], pin_bed_base, lateral_unit, 0.0, 0.01);
         let bare_socket_bed =

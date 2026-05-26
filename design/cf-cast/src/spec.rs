@@ -115,7 +115,31 @@ pub struct CastSpec {
     /// layer body with the desired wall thickness. The exporter
     /// clips its top above each layer body to open every cup for
     /// pour.
+    ///
+    /// **Post-§Q-1 (2026-05-26)**: the cup-piece geometry's outer
+    /// surface no longer follows this cuboid — it's body-tracking
+    /// via the [`crate::piece::CupWallShellSdf`] at uniform
+    /// thickness [`wall_thickness_m`](Self::wall_thickness_m). This
+    /// field is still used for the platform, gasket mold, and other
+    /// derived geometry that DOES want the cuboid envelope, but the
+    /// cup pieces themselves are now shell-shaped around each
+    /// layer's body. See [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
     pub bounding_region: Solid,
+
+    /// Cup-wall thickness for each layer (uniform across layers,
+    /// constant around each body's perimeter via shell SDF).
+    ///
+    /// Post-§Q-1 (2026-05-26): this replaces the pre-§Q-1
+    /// "cup-wall thickness derived from `bounding_region.bounds() -
+    /// layer_body.bounds()`" semantics. The shell SDF in
+    /// [`crate::piece::compose_piece_solid`] uses this value
+    /// directly so cup-wall thickness is uniform per layer (was
+    /// per-layer-varying because all layers shared the outer-most-
+    /// layer-sized bounding cuboid pre-refactor).
+    ///
+    /// Workshop default 5 mm (B1 PR #254 — matches the iter-1
+    /// print's outer-most layer cup-wall thickness).
+    pub wall_thickness_m: f64,
 
     /// Cell size (in meters) for the SDF → marching-cubes scalar
     /// sampling. Finer cells produce smoother surfaces at the cost of
@@ -963,7 +987,7 @@ fn mesh_and_gate_v2_piece(
 ) -> Result<PendingPiece, CastError> {
     let t_compose = std::time::Instant::now();
     let (piece_solid, mating_transforms) =
-        compose_piece_solid(&layer.body, &spec.bounding_region, ribbon, piece_side)?;
+        compose_piece_solid(&layer.body, spec.wall_thickness_m, ribbon, piece_side)?;
     let target = CastTarget::MoldPiece {
         layer_index,
         piece_side,
@@ -1677,6 +1701,7 @@ mod tests {
             }],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             // 2 mm cell size: keeps integration-test wall time on the
             // mold cup's marching-cubes grid (~51 k probes) and the
             // downstream F4 validation (O(faces²) self-intersection
@@ -1720,6 +1745,7 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             // 12 mm cells: deliberately ugly geometry. Under llvm-cov
             // instrumentation, `mesh-printability::validate_for_printing`
             // runs multiple O(faces²) checks (self-intersection,
@@ -1810,6 +1836,7 @@ mod tests {
             ],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -1842,6 +1869,7 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -1865,6 +1893,7 @@ mod tests {
             }],
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2018,6 +2047,7 @@ mod tests {
             ],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             // 1 mm cells: pour-volume integration doesn't trigger
             // `validate_for_printing` (the heavy O(faces²) check),
             // so finer cells are tractable under llvm-cov here. 1 mm
@@ -2093,6 +2123,7 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2203,6 +2234,7 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2237,6 +2269,7 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.060)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2282,6 +2315,7 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.060)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2360,6 +2394,7 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2399,6 +2434,7 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2487,6 +2523,7 @@ mod tests {
             ],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2570,6 +2607,7 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2656,17 +2694,23 @@ mod tests {
     }
 
     #[test]
-    fn export_molds_v2_errors_when_bounding_region_unbounded() {
-        // Bounding-region must be finite for the ribbon half-space
-        // AABB — propagates through `compose_piece_solid` as
-        // `InfiniteBounds(BoundingRegion)`.
+    fn export_molds_v2_errors_when_layer_body_unbounded() {
+        // Post-§Q-1 (2026-05-26) the cup-piece's MC bounds derive
+        // from `layer_body.bounds()`, so an unbounded body (e.g., a
+        // bare plane) surfaces as
+        // `InfiniteBounds(LayerBody { layer_index: 0 })`. Pre-§Q-1
+        // this error path was driven by an unbounded bounding region;
+        // post-§Q-1 the bounding_region's finiteness is no longer
+        // load-bearing for cup-piece composition (still used by
+        // platform + gasket mold paths).
         let spec = CastSpec {
             layers: vec![CastLayer {
-                body: Solid::cuboid(Vector3::new(0.020, 0.020, 0.015)),
+                body: Solid::plane(Vector3::new(0.0, 0.0, 1.0), 0.0),
                 material: reference_material(),
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
-            bounding_region: Solid::plane(Vector3::new(0.0, 0.0, 1.0), 0.0),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -2675,11 +2719,14 @@ mod tests {
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/cf-cast-v2-unbounded");
+            .join("../../target/cf-cast-v2-unbounded-body");
         let err = spec.export_molds_v2(&ribbon, &out_dir).unwrap_err();
         assert!(
-            matches!(err, CastError::InfiniteBounds(CastTarget::BoundingRegion)),
-            "expected InfiniteBounds(BoundingRegion), got {err:?}"
+            matches!(
+                err,
+                CastError::InfiniteBounds(CastTarget::LayerBody { layer_index: 0 })
+            ),
+            "expected InfiniteBounds(LayerBody), got {err:?}"
         );
     }
 
@@ -3337,6 +3384,7 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -3569,7 +3617,7 @@ mod tests {
     fn compose_piece_solid_with_pour_gate_emits_pour_and_vent_transforms_both_sides() {
         let spec = v2_fixture().0;
         let body = &spec.layers[0].body;
-        let region = &spec.bounding_region;
+        let wall_thickness_m = spec.wall_thickness_m;
         let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         let pour_spec = PourGateSpec::iter1();
@@ -3579,7 +3627,8 @@ mod tests {
         let ribbon_no_gate = Ribbon::new(short_centerline, split).unwrap();
 
         let count_subtract_cylinders_for_pour_gate = |ribbon: &Ribbon, side: PieceSide| -> usize {
-            let (_, transforms) = crate::compose_piece_solid(body, region, ribbon, side).unwrap();
+            let (_, transforms) =
+                crate::compose_piece_solid(body, wall_thickness_m, ribbon, side).unwrap();
             transforms
                 .iter()
                 .filter(|t| {
@@ -3727,6 +3776,7 @@ mod tests {
             ],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
@@ -3880,14 +3930,14 @@ mod tests {
 
         let (piece_neg, neg_transforms) = crate::compose_piece_solid(
             &spec.layers[0].body,
-            &spec.bounding_region,
+            spec.wall_thickness_m,
             &ribbon,
             PieceSide::Negative,
         )
         .unwrap();
         let (piece_pos, pos_transforms) = crate::compose_piece_solid(
             &spec.layers[0].body,
-            &spec.bounding_region,
+            spec.wall_thickness_m,
             &ribbon,
             PieceSide::Positive,
         )

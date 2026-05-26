@@ -311,6 +311,7 @@ pub fn derive_spec_and_ribbon(
         layers,
         plug,
         bounding_region,
+        wall_thickness_m: config.cast.wall_thickness_m,
         mesh_cell_size_m: config.cast.mesh_cell_size_m,
         printer_config,
         mass_budget_kg: config.cast.mass_budget_kg,

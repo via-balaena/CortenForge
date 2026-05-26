@@ -92,7 +92,8 @@
 //! eliminates). The mesh-CSG `MatingTransform` variants stay for
 //! the cup pour-gate carve (S7 of the prior mating-features arc).
 
-use cf_design::Solid;
+use cf_design::{Sdf, Solid};
+use nalgebra::{Point3, Vector3};
 
 use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
@@ -116,14 +117,101 @@ use crate::ribbon::{PieceSide, Ribbon};
 /// surfaces a specific need.
 pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 
+/// MC bounds padding (1 mm) added to `max(wall_thickness_m, flange_width_m)`
+/// when computing the cup-piece's MC sampling region. Ensures the MC
+/// grid extends past the cup-wall outer surface AND the flange outer
+/// edge by at least 1 mm so MC samples the SDF's "exterior" region
+/// adjacent to every iso-surface (required for `marching_cubes` to
+/// resolve the outer surface vertices, not just emit a clipped mesh
+/// at the sampling-region boundary).
+const MC_BOUNDS_PAD_M: f64 = 0.001;
+
+/// SDF adapter that defines the cup-wall as a body-tracking SHELL of
+/// thickness `wall_thickness_m` around `body`, rather than the
+/// pre-§Q-1 `bounding_region.subtract(body)` cuboid-bounded form.
+///
+/// **Why this exists** (§Q-1, 2026-05-26): the old form used the
+/// `bounding_region` cuboid as the cup-wall's outer boundary. When
+/// the seam-flange S1 added a flange that extends 15 mm laterally
+/// from the body perimeter — wider than the cuboid's `wall_thickness_m`
+/// (5 mm) padding — the cuboid's faces ended up passing THROUGH the
+/// flange's interior. At 2 mm MC cells, this produced topology-
+/// ambiguous MC sample configurations at the cuboid-face × flange-
+/// thickness-boundary intersection on Layer 2 cup pieces, surfacing
+/// as 20-22 boundary edges (a closed-loop hole on the bounding
+/// cuboid's face). See [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
+///
+/// The shell SDF replaces `bounding_region.subtract(body)` with
+/// `max(body_dist - wall_thickness_m, -body_dist)` — the cup-wall is
+/// the set of points OUTSIDE the body but within `wall_thickness_m`
+/// of its surface. The cuboid disappears as an SDF surface; only the
+/// body's outer surface and the shell's outer offset surface remain
+/// as SDF zero-sets. No cuboid face × flange interior intersection
+/// can exist.
+///
+/// **Behavior change**: pre-§Q-1, cup-wall thickness varied per
+/// layer (because all layers shared the outer-most-layer-sized
+/// bounding cuboid → inner layers had thicker walls). Post-§Q-1,
+/// cup-wall thickness is uniform `wall_thickness_m` per layer.
+/// Inner-layer molds become smaller / lighter; outer mold dims
+/// vary per layer instead of being uniform. Workshop clamps grip
+/// the flange face (body-tracking), not the cuboid outer, so this
+/// is a workshop-neutral change.
+///
+/// SDF math (where `body_dist = body.evaluate(p)`):
+/// - inside body (`body_dist < 0`): `max(neg - wall, pos) = pos`
+///   → exterior (cup-wall doesn't extend into body cavity) ✓
+/// - in shell (`0 < body_dist < wall_thickness_m`): `max(neg, neg)`
+///   → interior (cup-wall material) ✓
+/// - outside shell (`body_dist > wall_thickness_m`): `max(pos, neg)
+///   = pos` → exterior ✓
+///
+/// Mirrors the [`crate::flange::FlangeSdf`] pattern — wraps a
+/// `Solid` body's `evaluate` + composes via `max()`.
+#[derive(Debug, Clone)]
+struct CupWallShellSdf {
+    body: Solid,
+    wall_thickness_m: f64,
+}
+
+impl Sdf for CupWallShellSdf {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        let body_dist = self.body.evaluate(&p);
+        (body_dist - self.wall_thickness_m).max(-body_dist)
+    }
+
+    fn grad(&self, _p: Point3<f64>) -> Vector3<f64> {
+        // `max()` composition's analytical gradient is multi-valued at
+        // facet boundaries. `Solid::from_sdf`'s `FieldNode::UserFn`
+        // bridges via finite-differences, so this analytical grad is
+        // unused. Pick +Z arbitrarily (matches `FlangeSdf::grad`'s
+        // convention of an arbitrary unit vector).
+        Vector3::new(0.0, 0.0, 1.0)
+    }
+}
+
 /// Compose the per-(layer × piece) mold-piece geometry as the pair
 /// `(Solid, Vec<MatingTransform>)`:
 ///
-/// - **Solid** = `bounding_region ∖ layer_body ∩ ribbon.halfspace_solid(side, ...)`
-///   — side-specific half-shell. Each [`PieceSide`] returns its own
-///   biased half-space intersect ([`RIBBON_PIECE_OVERLAP_M`] grows
-///   each side 0.5 mm into the other so the two pieces overlap by
-///   1 mm at the seam).
+/// - **Solid** = `CupWallShellSdf(layer_body, wall_thickness_m)
+///   ∩ ribbon.halfspace_solid(side, ...) [∪ flange]`
+///   — side-specific half-shell tracking the body's outer surface.
+///   Each [`PieceSide`] returns its own biased half-space intersect
+///   ([`RIBBON_PIECE_OVERLAP_M`] grows each side 0.5 mm into the
+///   other so the two pieces overlap by 1 mm at the seam). The
+///   optional flange union (when `ribbon.flange` is
+///   [`FlangeKind::Plate`][crate::flange::FlangeKind::Plate]) adds a
+///   clamp-grip plate at the seam plane per
+///   [`docs/CF_CAST_SEAM_FLANGE_RECON.md`] §F-13 S1.
+///
+/// **Post-§Q-1 (2026-05-26)**: the cup-wall is body-tracking via
+/// [`CupWallShellSdf`], not bounded by a `bounding_region` cuboid.
+/// See the [`CupWallShellSdf`] docstring +
+/// [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]]
+/// for the architectural-correction rationale. Pre-§Q-1 form was
+/// `bounding_region.subtract(layer_body).intersect(halfspace)`;
+/// the cuboid faces produced MC topology ambiguity at finer cells
+/// when the flange's lateral reach exceeded the cuboid's padding.
 /// - **`Vec<MatingTransform>`** =
 ///   1. Pour-gate + vent
 ///      [`crate::mesh_csg::MatingTransform::SubtractCylinder`] ops
@@ -167,60 +255,86 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 /// enum as a defensive primitive (its `apply_one` arm still runs)
 /// but is no longer emitted here.
 ///
-/// `bounding_region` and `layer_body` are taken by reference and
-/// cloned into the result; the underlying [`cf_design::Solid`] is
-/// internally `Arc`-shared so cloning is cheap (no geometry
-/// duplication).
+/// `layer_body` is taken by reference and cloned into the result;
+/// the underlying [`cf_design::Solid`] is internally `Arc`-shared
+/// so cloning is cheap (no geometry duplication).
 ///
 /// # Errors
 ///
-/// - [`CastError::InfiniteBounds`] with [`CastTarget::BoundingRegion`]
-///   if `bounding_region.bounds()` returns `None` — the ribbon
-///   half-space derives its AABB from the bounding region and the
-///   downstream MC mesher needs a finite extent.
-///
-/// An unbounded `layer_body` (e.g., a [`cf_design::Solid::plane`])
-/// is **not** an error: the final piece Solid's bounds come from
-/// `bounding_region` (the minuend), and the body's SDF is
-/// well-defined everywhere inside that region. v1's
-/// `clip_above_body` rejected unbounded bodies because it needed
-/// `body.z_max` to position the straight-pull clip cuboid; v2's
-/// composition has no such requirement.
+/// - [`CastError::InfiniteBounds`] with [`CastTarget::LayerBody`]
+///   (post-§Q-1, 2026-05-26) if `layer_body.bounds()` returns
+///   `None`. The cup-piece's MC sampling bounds derive from the
+///   body's AABB expanded by `max(wall_thickness_m,
+///   flange_width_m) + [MC_BOUNDS_PAD_M]`. Pre-§Q-1 the bounds came
+///   from `bounding_region` and an unbounded `layer_body` was
+///   allowed; post-§Q-1 the body must be bounded. The error's
+///   `layer_index` is hardcoded to `0` because `compose_piece_solid`
+///   doesn't receive the caller's layer index — in production all
+///   per-layer bodies are bounded so this defensive guard only
+///   fires in test fixtures that explicitly construct unbounded
+///   `Solid::plane` bodies.
 pub fn compose_piece_solid(
     layer_body: &Solid,
-    bounding_region: &Solid,
+    wall_thickness_m: f64,
     ribbon: &Ribbon,
     side: PieceSide,
 ) -> Result<(Solid, Vec<MatingTransform>), CastError> {
-    let bounds = bounding_region
-        .bounds()
-        .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
+    // §Q-1 (2026-05-26): MC bounds are body_bounds expanded by
+    // max(wall_thickness, flange_width) + ε. The cup-wall shell
+    // SDF + flange SDF must BOTH sample within this region for MC
+    // to resolve their outer surfaces correctly. Pre-§Q-1 the
+    // bounds came from `bounding_region.bounds()` which was a
+    // cuboid sized only for `wall_thickness_m` past the body — too
+    // small to enclose the flange's 15 mm lateral reach. See
+    // [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
+    let body_bounds =
+        layer_body
+            .bounds()
+            .ok_or(CastError::InfiniteBounds(CastTarget::LayerBody {
+                layer_index: 0,
+            }))?;
+    let flange_extent = ribbon.flange.spec().map_or(0.0, |s| s.flange_width_m);
+    let mc_pad = wall_thickness_m.max(flange_extent) + MC_BOUNDS_PAD_M;
+    let mc_bounds = body_bounds.expanded(mc_pad);
+
     // Pre-S4 / recon-4 (P) SDF seam: side-specific half-space
     // intersect at the SDF level. The biased halfspace's SDF is
     // exactly linear; MC interpolates seam-cap vertices on the seam
     // plane to f64 precision per §F-4. S5/S6/S7 mating-features
     // mesh-CSG cylinder primitives compose post-MC against the
     // resulting half-shell mesh.
-    let halfspace = ribbon.halfspace_solid(side, bounds, RIBBON_PIECE_OVERLAP_M);
-    let mut base_piece = bounding_region
-        .clone()
-        .subtract(layer_body.clone())
-        .intersect(halfspace);
+    let halfspace = ribbon.halfspace_solid(side, mc_bounds, RIBBON_PIECE_OVERLAP_M);
+
+    // §Q-1: cup-wall as body-tracking shell, not bounding cuboid.
+    // See [`CupWallShellSdf`] docstring for the architectural
+    // rationale. The shell SDF + `mc_bounds` give MC a clean
+    // sampling region around the body's outer shell with no
+    // cuboid SDF zero-set passing through flange interior.
+    let shell = Solid::from_sdf(
+        CupWallShellSdf {
+            body: layer_body.clone(),
+            wall_thickness_m,
+        },
+        mc_bounds,
+    );
+    let mut base_piece = shell.intersect(halfspace);
 
     // S1 of `docs/CF_CAST_SEAM_FLANGE_RECON.md` §F-13: when
     // `ribbon.flange` is `FlangeKind::Plate(spec)`, union the
     // per-side flange SDF into the cup-piece base. The flange is a
     // flat slab at the seam plane extending OUTWARD from the body
-    // cavity perimeter; its per-side halfspace cut matches the
-    // cup-wall's so both share the same MC vertex placement at the
-    // seam plane per recon-4 (P) §F-4. `FlangeKind::None`
-    // short-circuits → cup-piece SDF bit-identical to pre-S1.
+    // cavity perimeter. Pre-§Q-1 the flange's halfspace cut
+    // explicitly used zero overlap_m so the cup-wall × flange
+    // junction was flush; post-§Q-1 the cup-wall is body-tracking
+    // (shell SDF) and the flange's outer reach is fully inside
+    // `mc_bounds`, so no cuboid face × flange interaction can
+    // produce MC ambiguity. `FlangeKind::None` short-circuits.
     if let Some(flange_spec) = ribbon.flange.spec() {
         let flange = crate::flange::build_flange_solid_for_side(
             layer_body,
             ribbon,
             flange_spec,
-            bounds,
+            mc_bounds,
             side,
         );
         base_piece = base_piece.union(flange);
@@ -240,11 +354,17 @@ pub fn compose_piece_solid(
     // See [[feedback-read-prior-arc-memory-before-architectural-decisions]]
     // for the post-mortem on why pre-MC SDF composition (the prior
     // S3/S4 architecture) was abandoned.
+    //
+    // §Q-1 (2026-05-26): registration pin placement now uses
+    // `wall_thickness_m` for the cup-wall outer distance (was:
+    // surface_distance_along_ray(bounding_region, ...) at the
+    // OLD cuboid face). Pin position = body + wall_thickness/2 in
+    // the shell midpoint.
     let mut transforms = build_pour_gate_transforms(ribbon);
     transforms.extend(build_registration_transforms(
         ribbon,
         layer_body,
-        bounding_region,
+        wall_thickness_m,
         side,
     ));
     if let Some(plug_lock_socket) = build_plug_lock_socket_transform(ribbon) {
@@ -293,8 +413,8 @@ mod tests {
     /// again — the half-space intersect lives at the SDF level.
     #[test]
     fn negative_piece_contains_cup_wall_below_ribbon() {
-        let (body, region, ribbon) = fixture();
-        let (piece, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (body, _region, ribbon) = fixture();
+        let (piece, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Negative).unwrap();
         // Inside bounding region (-30 ≤ z ≤ +30 mm), outside body
         // (body z ∈ [-10, +10]), below ribbon (z < 0):
         let q = Point3::new(0.0, 0.0, -0.020);
@@ -312,8 +432,8 @@ mod tests {
     /// at the SDF level.
     #[test]
     fn negative_piece_excludes_cup_wall_above_ribbon() {
-        let (body, region, ribbon) = fixture();
-        let (piece, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+        let (body, _region, ribbon) = fixture();
+        let (piece, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Negative).unwrap();
         let q = Point3::new(0.0, 0.0, 0.020);
         assert!(
             piece.evaluate(&q) > 0.0,
@@ -326,13 +446,13 @@ mod tests {
     /// OUTSIDE the piece (the body has been subtracted out).
     #[test]
     fn neither_piece_contains_layer_body_interior() {
-        let (body, region, ribbon) = fixture();
+        let (body, _region, ribbon) = fixture();
         // A point well inside the body but offset to one side of the
         // ribbon — without the body subtraction the negative piece
         // would CONTAIN this point.
         let q = Point3::new(0.0, 0.0, -0.005);
-        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        let (neg, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Positive).unwrap();
         assert!(
             neg.evaluate(&q) > 0.0,
             "negative piece must not contain body interior; got {}",
@@ -349,11 +469,11 @@ mod tests {
     /// (the `bounding_region` minuend pins the outer envelope).
     #[test]
     fn neither_piece_contains_points_outside_bounding_region() {
-        let (body, region, ribbon) = fixture();
+        let (body, _region, ribbon) = fixture();
         // Far outside the 30 mm half-extent bounding region.
         let q = Point3::new(0.10, 0.0, 0.0);
-        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        let (neg, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Positive).unwrap();
         assert!(
             neg.evaluate(&q) > 0.0,
             "neg piece must exclude far-out point"
@@ -372,9 +492,9 @@ mod tests {
     /// makes the partition observable at the SDF layer.
     #[test]
     fn pieces_partition_cup_material_symmetrically() {
-        let (body, region, ribbon) = fixture();
-        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        let (body, _region, ribbon) = fixture();
+        let (neg, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Positive).unwrap();
 
         let q_below = Point3::new(0.0, 0.0, -0.020);
         let q_above = Point3::new(0.0, 0.0, 0.020);
@@ -396,9 +516,9 @@ mod tests {
     /// intersect carries the overlap directly.
     #[test]
     fn both_pieces_overlap_at_ribbon_seam() {
-        let (body, region, ribbon) = fixture();
-        let (neg, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        let (pos, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Positive).unwrap();
+        let (body, _region, ribbon) = fixture();
+        let (neg, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Negative).unwrap();
+        let (pos, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Positive).unwrap();
         // Cup wall on the ribbon seam: y outside body, x within bounding,
         // z = 0 (the ribbon's zero plane). y = 0.020 is outside body
         // (10 mm half-extent) and inside bounding region (30 mm).
@@ -425,7 +545,7 @@ mod tests {
     /// STL-export in the live `mesh_and_gate_v2_*` sites.
     fn mesh_piece_through_p_pipeline(
         body: &Solid,
-        bounding: &Solid,
+        _bounding: &Solid,
         ribbon: &Ribbon,
         side: PieceSide,
         cell_size_m: f64,
@@ -436,7 +556,7 @@ mod tests {
             layer_index: 0,
             piece_side: side,
         };
-        let (solid, transforms) = compose_piece_solid(body, bounding, ribbon, side).unwrap();
+        let (solid, transforms) = compose_piece_solid(body, 0.020, ribbon, side).unwrap();
         let mesh = solid_to_mm_mesh(&solid, cell_size_m, target).expect("MC must succeed");
         apply_mating_transforms(mesh, &transforms, target).expect("CSG must succeed")
     }
@@ -627,39 +747,29 @@ mod tests {
         );
     }
 
-    /// Unbounded bounding region surfaces as
-    /// `CastError::InfiniteBounds(BoundingRegion)` — the ribbon
-    /// half-space needs a finite AABB.
+    /// Unbounded layer body surfaces as
+    /// `CastError::InfiniteBounds(LayerBody {layer_index: 0})` —
+    /// post-§Q-1 (2026-05-26) the cup-piece's MC bounds derive
+    /// from `layer_body.bounds()`, not `bounding_region.bounds()`.
+    /// An unbounded body (e.g., a bare `Solid::plane`) can't be
+    /// expanded by `wall_thickness_m`, so `compose_piece_solid`
+    /// errors at the entry. Pre-§Q-1 this test exercised the
+    /// opposite — unbounded bounding region was the error, unbounded
+    /// body was OK.
     #[test]
-    fn unbounded_bounding_region_returns_infinite_bounds_error() {
-        let body = Solid::cuboid(Vector3::new(0.010, 0.010, 0.010));
-        let region = Solid::plane(Vector3::new(0.0, 0.0, 1.0), 0.0);
-        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
-        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
-        let ribbon = Ribbon::new(centerline, split).unwrap();
-        let err = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap_err();
-        assert!(
-            matches!(err, CastError::InfiniteBounds(CastTarget::BoundingRegion)),
-            "expected InfiniteBounds(BoundingRegion), got {err:?}",
-        );
-    }
-
-    /// Unbounded layer body is **not** an error in v2 (unlike v1's
-    /// `clip_above_body` which needs `body.z_max`); the final piece
-    /// Solid's bounds inherit from the bounding region.
-    #[test]
-    fn unbounded_layer_body_is_not_an_error() {
+    fn unbounded_layer_body_returns_infinite_bounds_error() {
         let body = Solid::plane(Vector3::new(0.0, 0.0, 1.0), 0.0);
-        let region = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030));
         let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
-        let (piece, _) = compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
-        // Final piece carries the bounding region's finite AABB.
-        let aabb = piece
-            .bounds()
-            .expect("composition inherits bounding region's finite AABB");
-        assert!(aabb.size().x > 0.0);
+        let err = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Negative).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CastError::InfiniteBounds(CastTarget::LayerBody { layer_index: 0 })
+            ),
+            "expected InfiniteBounds(LayerBody), got {err:?}",
+        );
     }
 
     // ----- Sub-leaf A regression: workshop iter-1 mold visual-gate -
@@ -711,11 +821,10 @@ mod tests {
             0.0,
             -0.054 + 0.040,
         ));
-        let bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.090));
+        let _bounding = Solid::cuboid(Vector3::new(0.030, 0.030, 0.090));
 
         for side in [PieceSide::Negative, PieceSide::Positive] {
-            let (_piece, transforms) =
-                compose_piece_solid(&body, &bounding, &ribbon, side).unwrap();
+            let (_piece, transforms) = compose_piece_solid(&body, 0.020, &ribbon, side).unwrap();
 
             let socket_transform = transforms
                 .iter()
@@ -879,103 +988,115 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn flange_kind_none_preserves_cup_piece_sdf_bit_for_bit() {
-        // §F-5 backward-compat invariant: `FlangeKind::None` (default
-        // post-S1) MUST produce a cup-piece SDF bit-identical to the
-        // pre-S1 path. This test does NOT depend on flange-fixture
-        // orientation — it just verifies the short-circuit, so we
-        // can keep using the standard `fixture()`.
-        let (body, region, ribbon) = fixture();
+        // §F-5 backward-compat invariant (rewritten post-§Q-1
+        // 2026-05-26): `FlangeKind::None` (default post-S1) MUST
+        // produce a cup-piece SDF bit-identical to the bare cup-wall
+        // shell path. Pre-§Q-1 the bare form was
+        // `region.subtract(body).intersect(halfspace)`; post-§Q-1 the
+        // bare form is `CupWallShellSdf.intersect(halfspace)` because
+        // the cup-wall is body-tracking, not cuboid-bounded. See
+        // [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
+        let (body, _region, ribbon) = fixture();
         assert_eq!(ribbon.flange, crate::flange::FlangeKind::None);
 
+        let wall_thickness_m = 0.020;
         let (piece_none, _) =
-            compose_piece_solid(&body, &region, &ribbon, PieceSide::Negative).unwrap();
+            compose_piece_solid(&body, wall_thickness_m, &ribbon, PieceSide::Negative).unwrap();
 
         // Spot-check probes spanning inside-wall + outside + at-seam.
+        // Coords picked relative to body extent (10 mm half-extent →
+        // body_dist 10 mm at probe (0, 0.020, 0) etc) so they don't
+        // depend on the pre-§Q-1 bounding-cuboid extent.
         let probes = [
-            Point3::new(0.0, 0.0, 0.020), // outside body, in cup wall
-            Point3::new(0.0, 0.020, 0.0), // outside body, in cup wall (Y direction)
-            Point3::new(0.0, 0.0, 0.040), // outside bounding region entirely
-            Point3::new(0.0, 0.0, 0.005), // inside body cavity
+            Point3::new(0.0, 0.0, 0.020),  // outside body Z, in cup wall
+            Point3::new(0.0, -0.020, 0.0), // outside body Y, in Negative-side cup wall
+            Point3::new(0.0, 0.0, 0.040),  // outside cup wall entirely
+            Point3::new(0.0, 0.0, 0.005),  // inside body cavity
         ];
 
-        // Compare against a hand-rolled "bare" composition replicating
-        // the pre-S1 compose_piece_solid body (sans the flange-union
-        // block). If FlangeKind::None short-circuits correctly, the
-        // SDFs must be bit-identical.
-        let bounds = region.bounds().unwrap();
-        let halfspace = ribbon.halfspace_solid(PieceSide::Negative, bounds, RIBBON_PIECE_OVERLAP_M);
-        let bare = region.subtract(body).intersect(halfspace);
+        // Hand-roll the post-§Q-1 "bare" composition: shell SDF
+        // intersected with halfspace, NO flange union.
+        let body_bounds = body.bounds().unwrap();
+        let mc_bounds = body_bounds.expanded(wall_thickness_m + MC_BOUNDS_PAD_M);
+        let halfspace =
+            ribbon.halfspace_solid(PieceSide::Negative, mc_bounds, RIBBON_PIECE_OVERLAP_M);
+        let shell = Solid::from_sdf(
+            CupWallShellSdf {
+                body,
+                wall_thickness_m,
+            },
+            mc_bounds,
+        );
+        let bare = shell.intersect(halfspace);
 
         for probe in &probes {
             let v_none = piece_none.evaluate(probe);
             let v_bare = bare.evaluate(probe);
             assert_eq!(
                 v_none, v_bare,
-                "FlangeKind::None must be bit-identical to bare cup-piece SDF at {probe:?}; \
-                 got piece-with-None={v_none} vs bare={v_bare}"
+                "FlangeKind::None must be bit-identical to bare shell-based cup-piece SDF \
+                 at {probe:?}; got piece-with-None={v_none} vs bare={v_bare}"
             );
         }
     }
 
     #[test]
-    fn flange_plate_adds_material_outside_bounding_region_at_seam_plane() {
+    fn flange_plate_adds_material_outside_cup_wall_at_seam_plane() {
         // §F-13 S1 paired-baseline test for "Plate adds material
         // where None has none". The probe is positioned OUTSIDE the
-        // bounding region (region ∖ body produces no cup material
-        // there) BUT INSIDE the flange's lateral+vertical region.
-        // Under None: piece_sdf > 0 (no material). Under Plate: the
-        // flange union adds material → piece_sdf < 0.
+        // cup-wall shell (body_dist > wall_thickness — shell has no
+        // material there) BUT INSIDE the flange's lateral+vertical
+        // region. Under None: piece_sdf > 0 (no material). Under
+        // Plate: the flange union adds material → piece_sdf < 0.
         //
-        // Fixture: cylinder body along X (radius 10 mm in YZ) inside
-        // a 200 × 30 × 24 mm bounding cuboid. The flange extends
-        // outward from the cylinder's radial surface by up to
-        // `flange_width_m` = 15 mm in Z, so a probe at Z = +13 mm
-        // is 3 mm beyond the cylinder's lateral surface (body_dist
-        // ≈ 3 mm, between inner_offset 2 mm and width 15 mm =
-        // inside flange laterally) but ALSO 1 mm beyond the bounding
-        // cuboid's +Z face at Z = 12 mm.
-        let (body, region, ribbon_none) = flange_test_fixture();
+        // Fixture: cylinder body along X (radius 10 mm in YZ). The
+        // flange extends `flange_width_m` = 15 mm radially from the
+        // cylinder surface; we use `wall_thickness_m` = 0.005 (5 mm)
+        // so the band body_dist ∈ [5 mm, 15 mm] is "outside cup-wall
+        // shell" but "inside flange lateral reach". A probe at
+        // Z = +0.020 m (body_dist = 0.020 - 0.010 = 0.010 = 10 mm)
+        // lands in that band.
+        //
+        // Post-§Q-1 (2026-05-26): pre-refactor this used wall_thickness
+        // derived from a bounding cuboid; post-refactor the cup-wall
+        // is a body-tracking shell, so the probe coordinates moved
+        // from "past bounding cuboid face" to "past shell outer
+        // surface in body_dist sense". See
+        // [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
+        let (body, _region, ribbon_none) = flange_test_fixture();
         let spec = crate::flange::FlangeSpec::iter1();
         let ribbon_plate = ribbon_none
             .clone()
             .with_flange(crate::flange::FlangeKind::Plate(spec));
+        let wall_thickness_m = 0.005;
 
-        // Probe slightly into Negative side's clear half (Y > 0 per
-        // §F-test "per-side halfspace cut" finding) at Z just past
-        // the bounding cuboid's +Z face.
-        let probe = Point3::new(0.0, 0.001, 0.013);
-
-        // Sanity-check the side mapping: this fixture (split=+Z,
-        // binormal=-Y) puts the Negative side in +Y region per
-        // ribbon.sdf < 0 there with Negative-side multiplier +1.
-        // The probe's Y = +0.001 should be on Negative side.
-        let bounds = region.bounds().unwrap();
-        let neg_halfspace =
-            ribbon_none.halfspace_solid(PieceSide::Negative, bounds, RIBBON_PIECE_OVERLAP_M);
-        assert!(
-            neg_halfspace.evaluate(&probe) < 0.0,
-            "fixture sanity: probe Y=+0.001 must be inside Negative halfspace"
-        );
+        // Probe in flange-only band (5 mm < body_dist < 15 mm).
+        // body_dist at (0, 0.001, 0.020) ≈ sqrt(0.001² + 0.020²) -
+        // 0.010 ≈ 0.010 m = 10 mm. Y=+0.001 is on Negative side
+        // for this fixture (split=+Z → binormal=-Y → Negative covers
+        // +Y region per §F-test "per-side halfspace cut" finding).
+        let probe = Point3::new(0.0, 0.001, 0.020);
 
         let (piece_none, _) =
-            compose_piece_solid(&body, &region, &ribbon_none, PieceSide::Negative).unwrap();
+            compose_piece_solid(&body, wall_thickness_m, &ribbon_none, PieceSide::Negative)
+                .unwrap();
         let (piece_plate, _) =
-            compose_piece_solid(&body, &region, &ribbon_plate, PieceSide::Negative).unwrap();
+            compose_piece_solid(&body, wall_thickness_m, &ribbon_plate, PieceSide::Negative)
+                .unwrap();
 
         let sdf_none = piece_none.evaluate(&probe);
         let sdf_plate = piece_plate.evaluate(&probe);
 
         assert!(
             sdf_none > 0.0,
-            "FlangeKind::None: probe at Z=+0.013 (1 mm past bounding cuboid +Z face) \
-             must be OUTSIDE cup material (region ∖ body has no material there); \
-             got sdf_none={sdf_none}"
+            "FlangeKind::None: probe at body_dist≈10 mm (outside 5 mm cup-wall shell) \
+             must be OUTSIDE cup material; got sdf_none={sdf_none}"
         );
         assert!(
             sdf_plate < 0.0,
-            "FlangeKind::Plate: probe at Z=+0.013 (1 mm past bounding, inside flange's \
-             lateral + thickness region) must be INSIDE material via flange union; \
-             got sdf_plate={sdf_plate}"
+            "FlangeKind::Plate: probe at body_dist≈10 mm (inside flange's [2 mm, 15 mm] \
+             lateral reach + thickness region) must be INSIDE material via flange \
+             union; got sdf_plate={sdf_plate}"
         );
         assert!(
             sdf_plate < sdf_none,
@@ -992,7 +1113,7 @@ mod tests {
         // can sit at body_dist ≈ 0 without PLA pinching it). Under
         // both None and Plate the cup-piece SDF at body_dist = 0
         // must be identical within FP precision.
-        let (body, region, ribbon_none) = flange_test_fixture();
+        let (body, _region, ribbon_none) = flange_test_fixture();
         let ribbon_plate = ribbon_none
             .clone()
             .with_flange(crate::flange::FlangeKind::Plate(
@@ -1006,9 +1127,9 @@ mod tests {
         let probe = Point3::new(0.0, 0.0, 0.010);
 
         let (piece_none, _) =
-            compose_piece_solid(&body, &region, &ribbon_none, PieceSide::Negative).unwrap();
+            compose_piece_solid(&body, 0.020, &ribbon_none, PieceSide::Negative).unwrap();
         let (piece_plate, _) =
-            compose_piece_solid(&body, &region, &ribbon_plate, PieceSide::Negative).unwrap();
+            compose_piece_solid(&body, 0.020, &ribbon_plate, PieceSide::Negative).unwrap();
 
         let sdf_none = piece_none.evaluate(&probe);
         let sdf_plate = piece_plate.evaluate(&probe);
