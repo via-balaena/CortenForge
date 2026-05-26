@@ -45,6 +45,7 @@
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
+use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
@@ -288,6 +289,15 @@ pub struct Ribbon {
     /// region so cf-view assembly mode stays readable). See
     /// [`crate::gasket_mold`] for the channel-geometry contract.
     pub gasket: GasketKind,
+    /// Per-cup-half seam flange kind. Default [`FlangeKind::None`]
+    /// (cup-piece outer surface is contour-following only per the
+    /// archived mold-wall recon's Option A). S1 of the seam-flange
+    /// arc adds [`FlangeKind::Plate`] via the [`Ribbon::with_flange`]
+    /// builder; [`crate::compose_piece_solid`] then unions the
+    /// flange SDF into each cup-piece base at the seam plane (per-
+    /// half halfspace cut applied). See [`crate::flange`] for the
+    /// SDF composition contract.
+    pub flange: FlangeKind,
     /// Optional pour-end anchor for the plug-floor lock —
     /// `(centroid, outward_axis)` in world-frame coordinates.
     /// [`crate::plug::build_plug_lock_sdf`] +
@@ -446,6 +456,7 @@ impl Ribbon {
             pour_gate: PourGateKind::None,
             plug_pins: PlugPinKind::None,
             gasket: GasketKind::None,
+            flange: FlangeKind::None,
             pour_end_hint: None,
         })
     }
@@ -512,6 +523,18 @@ impl Ribbon {
     #[must_use]
     pub const fn with_gasket(mut self, gasket: GasketKind) -> Self {
         self.gasket = gasket;
+        self
+    }
+
+    /// Builder: set the per-cup-half seam-flange kind. S1 of the
+    /// seam-flange arc entry point — wraps a freshly-constructed
+    /// [`Ribbon`] with a [`FlangeKind::Plate`] spec (or disables
+    /// via [`FlangeKind::None`]). Composable with all other
+    /// `with_*` builders; the flange arc is orthogonal to
+    /// registration / pour gate / plug pins / gasket.
+    #[must_use]
+    pub const fn with_flange(mut self, flange: FlangeKind) -> Self {
+        self.flange = flange;
         self
     }
 
