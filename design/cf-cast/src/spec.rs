@@ -2830,6 +2830,9 @@ mod tests {
         assert!(md.contains("## cf-view Sanity-Check Workflow"));
         assert!(md.contains("## Cap-Plane Edge Chamfer (Expected MC Quantization)"));
         assert!(md.contains("## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"));
+        // Seam-flange S3: clamp-protocol section is emitted
+        // unconditionally (prose adapts to FlangeKind + GasketKind).
+        assert!(md.contains("## Cup-Half Clamping with Gasket Installation"));
         // Sections shared with v1.
         assert!(md.contains("## Materials Summary"));
         assert!(md.contains("## Generic Smooth-On Guidance"));
@@ -2992,6 +2995,103 @@ mod tests {
         assert!(
             md.contains("< 0.5 mm"),
             "Finding C 0.5 mm workshop-acceptability threshold missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cup_half_clamping_default_ribbon_none_branch() {
+        // S3 of the seam-flange arc per recon §F-7. The default
+        // v2_procedure_fixture ribbon has FlangeKind::None +
+        // GasketKind::None (no `with_flange`/`with_gasket` call); the
+        // section must emit a hand-clamp fallback note with the
+        // explicit None vocabulary, NOT the 8-step protocol. Anchors
+        // gate any future drift that silently falls into the
+        // Plate+Mold branch when the ribbon is unenriched.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("## Cup-Half Clamping with Gasket Installation"),
+            "clamp-section header missing in: {md}"
+        );
+        assert!(
+            md.contains("`FlangeKind::None`"),
+            "None-branch FlangeKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("hand-clamped"),
+            "hand-clamp fallback vocabulary missing in: {md}"
+        );
+        // Plate+Mold-only vocabulary must NOT appear when both kinds
+        // are None — guards against the dispatch falling through to
+        // the full-protocol branch.
+        assert!(
+            !md.contains("4-clamp / hand-tight + 1/8 turn"),
+            "Plate+Mold 8-step prose leaking into None+None branch: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cup_half_clamping_plate_plus_mold_protocol() {
+        // S3 of the seam-flange arc: with both FlangeKind::Plate +
+        // GasketKind::Mold (workshop iter-3 default after the cf-
+        // cast-cli `[flange]` + `[gasket]` blocks both default to
+        // enabled), the section must emit the full 8-step clamp-and-
+        // pour protocol with the quadrant + hand-tight + cure
+        // vocabulary. Anchors gate any future rewrite that drops a
+        // step or softens the over-tightening warning.
+        let (_spec, base_ribbon) = v2_procedure_fixture();
+        let ribbon = base_ribbon
+            .with_flange(crate::FlangeKind::Plate(crate::FlangeSpec::iter1()))
+            .with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+        let (spec, _) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("## Cup-Half Clamping with Gasket Installation"),
+            "clamp-section header missing in: {md}"
+        );
+        // Full-protocol vocabulary anchors.
+        assert!(
+            md.contains("`FlangeKind::Plate`"),
+            "Plate FlangeKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("`GasketKind::Mold`"),
+            "Mold GasketKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("recon §F-4 gasket-disjoint invariant"),
+            "§F-4 lateral-disjoint invariant anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("1. **Pour gasket silicone.**"),
+            "step 1 (gasket-silicone-pour) missing in: {md}"
+        );
+        assert!(
+            md.contains("5. **Apply C-clamps to the flange at 4 quadrant positions.**"),
+            "step 5 (4-quadrant C-clamp) missing in: {md}"
+        );
+        assert!(
+            md.contains("hand-tight + 1/8 turn"),
+            "hand-tight + 1/8 turn torque recipe missing in: {md}"
+        );
+        // Critical safety warning — workshop user must NOT over-
+        // tighten (gasket extrusion = loss of seal).
+        assert!(
+            md.contains("MUST avoid over-tightening"),
+            "over-tightening warning missing in: {md}"
+        );
+        assert!(
+            md.contains("Do NOT release"),
+            "do-not-release-during-cure warning missing in: {md}"
+        );
+        // None-branch vocabulary must NOT appear when both kinds are
+        // active — guards against the dispatch falling through to
+        // the hand-clamp fallback branch.
+        assert!(
+            !md.contains("`FlangeKind::None`"),
+            "None-branch FlangeKind anchor leaking into Plate+Mold branch: {md}"
         );
     }
 

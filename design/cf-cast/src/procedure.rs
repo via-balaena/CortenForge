@@ -26,6 +26,8 @@
 use std::fmt::Write as _;
 
 use crate::cure::lookup as lookup_cure;
+use crate::flange::FlangeKind;
+use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
 use crate::pour_volume::PourVolume;
@@ -359,6 +361,7 @@ pub fn generate_procedure_markdown_v2(
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md);
     write_v2_assembly_note(&mut md, ribbon);
+    write_v2_cup_half_clamping_note(&mut md, ribbon);
     write_v2_pour_gate_note(&mut md, ribbon);
     write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon);
     write_v2_post_cure_assembly(&mut md, spec);
@@ -1155,6 +1158,219 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
                  `diametral_clearance_m` for the next print. \
                  Document fit tolerances for the S7 workshop-physical \
                  calibration pass on Bambu A1 + default + Jayo."
+            );
+        }
+    }
+    md.push('\n');
+}
+
+// 4-arm match over (FlangeKind, GasketKind) with multi-paragraph
+// prose per branch pushes the line count well past clippy's default
+// 100; the function is otherwise simple (linear writeln!s, no
+// nested control flow), so factoring each branch into its own
+// helper would just shuffle the same prose between identifiers.
+#[allow(clippy::too_many_lines)]
+fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
+    // S3 of the seam-flange arc per recon §F-7. Prose adapts to the
+    // combination of FlangeKind + GasketKind: the full clamp-and-pour
+    // protocol fires only when both are enabled (the workshop
+    // iter-3 default); other combinations get a brief fallback note
+    // pointing at the hand-clamp / no-gasket degraded paths.
+    let _ = writeln!(md, "## Cup-Half Clamping with Gasket Installation");
+    md.push('\n');
+    match (&ribbon.flange, &ribbon.gasket) {
+        (FlangeKind::None, GasketKind::None) => {
+            let _ = writeln!(
+                md,
+                "This cast has neither a seam-plane flange \
+                 (`FlangeKind::None`) nor a per-layer gasket \
+                 (`GasketKind::None`). Cup halves must be hand-clamped \
+                 over their contoured outer surface (wide tape, \
+                 ratchet straps, or workshop user's preferred \
+                 contoured-clamp method; see the assembly note above \
+                 for the registration-pin-mediated alignment). Pour \
+                 silicone directly through the pour gate; the seam \
+                 relies on the cup-piece SDF halfspace intersect's \
+                 bit-precise flat seam face (recon-4 (P) §F-2). \
+                 Workshop user monitors for leaks at the seam during \
+                 pour; flag any leak for the post-iter-3 gasket / \
+                 flange enablement decision."
+            );
+        }
+        (FlangeKind::None, GasketKind::Mold(_)) => {
+            let _ = writeln!(
+                md,
+                "This cast carries per-layer gaskets \
+                 (`GasketKind::Mold`) but no flange \
+                 (`FlangeKind::None`). Pour and cure the gasket \
+                 strips per the gasket-mold protocol, peel them out, \
+                 and lay each gasket on the Negative cup half's seam \
+                 face inside the body cavity perimeter. Close the \
+                 Positive half over Negative + gasket, aligning via \
+                 the registration pins. Without a flange to provide \
+                 a flat C-clamp grip surface, the cup must be hand-\
+                 clamped over its contoured outer surface (wide tape \
+                 or ratchet straps at 4+ quadrants). Aim for the \
+                 gasket's `predicted_compression_m` (~232 µm at the \
+                 `GasketSpec.workshop_clamp_pressure_pa` 20 kPa \
+                 default for Ecoflex 00-30); over-tightening extrudes \
+                 the gasket and loses the seal. Document hand-clamp \
+                 pressure variability for the post-iter-3 flange-\
+                 enablement decision."
+            );
+        }
+        (FlangeKind::Plate(flange_spec), GasketKind::None) => {
+            let width_mm = flange_spec.flange_width_m * 1000.0;
+            let thickness_mm = flange_spec.flange_thickness_m * 1000.0;
+            let _ = writeln!(
+                md,
+                "This cast carries a seam-plane flange \
+                 (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
+                 {thickness_mm:.1} mm per-half thickness) but no \
+                 per-layer gasket (`GasketKind::None`). Use the \
+                 flange as a flat C-clamp grip surface: after mating \
+                 the cup halves via the registration pins, apply \
+                 C-clamps to the flange at 4 positions (one per 90° \
+                 quadrant around the seam plane perimeter). Tighten \
+                 each clamp to hand-tight only — without a gasket \
+                 there is no compressible silicone strip to absorb \
+                 over-tightening, and PLA-on-PLA flange contact at \
+                 high clamp force can stress-crack the flange. Pour \
+                 silicone through the pour gate; the seam relies on \
+                 the cup-piece SDF halfspace intersect's bit-precise \
+                 flat seam face (recon-4 (P) §F-2). Workshop user \
+                 monitors for leaks; flag any leak for the post-\
+                 iter-3 gasket enablement decision."
+            );
+        }
+        (FlangeKind::Plate(flange_spec), GasketKind::Mold(gasket_spec)) => {
+            // Workshop iter-3 default path — full clamp-and-pour
+            // protocol per recon §F-7.
+            let width_mm = flange_spec.flange_width_m * 1000.0;
+            let thickness_mm = flange_spec.flange_thickness_m * 1000.0;
+            let inner_offset_mm = flange_spec.flange_inner_offset_m * 1000.0;
+            let gasket_width_mm = gasket_spec.cross_section_width_m * 1000.0;
+            let gasket_thickness_mm = gasket_spec.cross_section_thickness_m * 1000.0;
+            let clamp_pressure_kpa = gasket_spec.workshop_clamp_pressure_pa / 1000.0;
+            let predicted_compression_um = gasket_spec.predicted_compression_m() * 1_000_000.0;
+            let gasket_material_label = gasket_spec.material.shore_label();
+            let _ = writeln!(
+                md,
+                "This cast carries both a seam-plane flange \
+                 (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
+                 {thickness_mm:.1} mm per-half thickness × \
+                 {inner_offset_mm:.1} mm inner offset from body \
+                 cavity perimeter) and per-layer gaskets \
+                 (`GasketKind::Mold`: {gasket_width_mm:.1} × \
+                 {gasket_thickness_mm:.1} mm {gasket_material_label} \
+                 cross-section). The flange provides the flat C-clamp \
+                 grip surface; the gasket provides the silicone seal \
+                 against FDM-tolerance leak per the seam-gasket-mold \
+                 arc (recon §G-1). The flange's `inner_offset_m` \
+                 ({inner_offset_mm:.1} mm) keeps the flange material \
+                 laterally disjoint from the gasket channel per recon \
+                 §F-4 — gasket compresses, flange clamps, no \
+                 cross-contamination."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "**Per-layer workshop protocol** (repeat for each \
+                 layer's pour):"
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "1. **Pour gasket silicone.** Mix and pour the \
+                 {gasket_material_label} gasket material into the \
+                 per-layer gasket-mold tray \
+                 (`gasket_mold_layer_{{N}}.stl`). Cure per the gasket \
+                 material's Smooth-On TDS at 23 °C."
+            );
+            let _ = writeln!(
+                md,
+                "2. **Peel the cured gasket.** Once cured, peel the \
+                 gasket strip out of the mold tray. The strip traces \
+                 the body cavity perimeter; handle it as a continuous \
+                 loop (don't stretch or twist)."
+            );
+            let _ = writeln!(
+                md,
+                "3. **Position the gasket on the Negative cup half.** \
+                 Open the cup halves (registration pins disengaged), \
+                 lay the Negative cup half \
+                 (`mold_layer_{{N}}_piece_0.stl`) seam-face-UP on the \
+                 workshop bench. Place the gasket strip on the seam \
+                 face, INSIDE the flange perimeter — the strip \
+                 traces `body_dist = 0` (the body cavity edge); the \
+                 flange's {inner_offset_mm:.1} mm `inner_offset_m` \
+                 keeps the flange's lateral inner edge clear of the \
+                 gasket per recon §F-4 gasket-disjoint invariant."
+            );
+            let _ = writeln!(
+                md,
+                "4. **Close the Positive cup half over Negative + \
+                 gasket.** Bring the Positive piece \
+                 (`mold_layer_{{N}}_piece_1.stl`) down onto the \
+                 Negative + gasket assembly, aligning via the \
+                 registration pins. The gasket compresses ~\
+                 {predicted_compression_um:.0} µm per the \
+                 `GasketSpec::predicted_compression_m` Hookean \
+                 estimate at \
+                 `workshop_clamp_pressure_pa` = \
+                 {clamp_pressure_kpa:.0} kPa; the cup halves should \
+                 seat flush at the seam (flange-to-flange contact \
+                 OUTSIDE the gasket strip; gasket-sandwiched \
+                 compression INSIDE)."
+            );
+            let _ = writeln!(
+                md,
+                "5. **Apply C-clamps to the flange at 4 quadrant \
+                 positions.** Place one C-clamp at each 90° quadrant \
+                 around the seam-plane perimeter. Tighten each clamp \
+                 to **hand-tight + 1/8 turn** — enough to maintain \
+                 the gasket's {clamp_pressure_kpa:.0} kPa target \
+                 pressure without crushing the strip. Workshop user \
+                 MUST avoid over-tightening (gasket extrusion → \
+                 loss of seal)."
+            );
+            let _ = writeln!(
+                md,
+                "6. **Pour main layer silicone through the pour \
+                 gate.** With the cup clamped and gasket compressed, \
+                 pour the layer silicone through the pour-gate \
+                 funnel (see `## Pour Gate + Vent` below). The vent \
+                 leg confirms full cavity fill; pour until silicone \
+                 wets the vent opening."
+            );
+            let _ = writeln!(
+                md,
+                "7. **Cure per layer material TDS.** Leave the \
+                 assembly clamped for the full cure window (per \
+                 layer material's TDS at 23 °C). Do NOT release \
+                 clamps until cure is complete — gasket compression \
+                 must hold throughout cure to maintain the seal."
+            );
+            let _ = writeln!(
+                md,
+                "8. **Release clamps + open cup halves.** After cure, \
+                 release the 4 C-clamps. Disengage the registration \
+                 pins by separating the cup halves. Peel the gasket \
+                 out of the seam (it stays bonded to neither cup \
+                 half nor the cured silicone — both surfaces are \
+                 silicone-non-stick). Demold the cured silicone tube \
+                 per `## Post-Cure Assembly + Disassembly` below."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "**Clamp count + tightness** (recon §F-10): the \
+                 4-clamp / hand-tight + 1/8 turn recipe is the iter-3 \
+                 starting point. Workshop S6 calibration may dial up \
+                 to 6-8 clamps for longer perimeters, or dial down \
+                 clamp torque if gasket extrusion is observed. \
+                 Document deltas for the S7 post-iter-3 calibration \
+                 sweep."
             );
         }
     }
