@@ -50,20 +50,26 @@ respective S2 in memory but not in commit table.)
 - **State:** **scaffold (`f2431c7f`) + cold-read pass-1
   (`fc01a28b`) + §Q-11 S0 diagnostics shipped (`ef72cc89`,
   2026-05-25) + §Q-5 root-cause fix shipped (`efdff6b8`,
-  2026-05-26) + §Q-1 finer-cells empirically BLOCKED 2026-05-26
-  (no code commit; cleaning-pass code reverted).** Workshop user
-  inspected post-§Q-5 fix output and reported "looks the exact
-  same" — §Q-5 is geometrically correct but cf-view rendering
-  masks the winding fix; the visual concern is §Q-1 / §Q-4 MC
-  quantization. §Q-1 2 mm regen with mating features fails
-  `manifold3d NotManifold` on layer 2 piece Negative; bare-
-  diagnostic at 2 mm (mating features disabled) succeeded +
-  workshop confirmed patches fade; cleaning-pass attempts
-  (simple + `repair_mesh::for_printing`) both insufficient.
-  Blocker is real mesh-cleaning work, paused for the session.
+  2026-05-26) + §Q-1 root-cause fix SHIPPED (`d65be3f6`,
+  2026-05-26).** §Q-1 fix replaced the `bounding_region.subtract
+  (layer_body)` cuboid-bounded cup-wall with a `CupWallShellSdf`
+  body-tracking shell, eliminating the cuboid-face × flange-interior
+  MC topology ambiguity that previously failed 2 mm regens.
+  Production gates: 2 mm full config ✅ 3:50 (was: ❌ NotManifold
+  @ 1:41); 3 mm full config ✅ 1:52 (+5 % vs 1:44 baseline);
+  241/241 cf-cast lib tests pass; workshop user cf-view smoke
+  confirmed patches-fade visual win + plug-floor-lock pocket
+  clearer. Two new findings surfaced for separate arcs:
+  flange-perimeter-continuity (body_dist projection limitation in
+  body concavities) + cap-plane mating-face flatness (§Q-4 territory,
+  pre-existing bookmark). §Q-6 cup-piece flange asymmetry still
+  needs workshop 360° cf-view rotation gate.
 - **Memory:** [[project-cf-cast-geometry-crispness-s0]],
   [[project-cf-cast-geometry-crispness-q5-fix]],
-  [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]]
+  [[project-cf-cast-geometry-crispness-q1-fix]],
+  [[project-cf-cast-flange-perimeter-continuity-bookmark]] (new bookmark),
+  [[project-cf-cast-cap-plane-flatness-bookmark]] (pre-existing,
+  re-confirmed at 2 mm scale)
 - **Trigger:** chained — workshop user's cf-view smoke gate on
   `~/scans/cast_iter1_post_flange_smoke/` (the [[project-cf-cast-seam-flange-s4]]
   production STL set) failed initial inspection; workshop user

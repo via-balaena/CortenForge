@@ -96,49 +96,74 @@ specific. This recon enumerates the candidates per failure mode +
 identifies cross-failure-mode synergies (single fixes that address
 multiple failure modes).
 
-## §Q-1 Seam-face perimeter saw-tooth — ⏸️ BLOCKED 2026-05-26 (empirical investigation; no code commit)
+## §Q-1 Seam-face perimeter saw-tooth — ✅ FIXED 2026-05-26 dev `d65be3f6`
 
-**Status: empirically BLOCKED behind a mesh-cleaning investigation.** See
-[[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]] for the
-full empirical record. Summary:
+**Status: SHIPPED.** See [[project-cf-cast-geometry-crispness-q1-fix]]
+for the full empirical record + root-cause walk + lessons.
 
-- **Direction confirmed**: workshop user inspected the 2 mm bare-
-  diagnostic output (`~/scans/cast_iter1_2mm_bare_diagnostic/`) in
-  cf-view + reported "patches visibly fainter" vs 3 mm production.
-  Finer MC cells DO fix the workshop-visible symptom.
-- **Blocker**: 2 mm regen with full mating features (registration
-  pins + plug-floor-lock + flange) fails at `manifold3d status:
-  NotManifold` on layer 2 piece Negative during `apply_mating_transforms`'s
-  `mesh→manifold conversion` step. 1 mm regen fails the same way
-  earlier in the pipeline. Per the §Q-11 bare-diagnostic at 2 mm
-  with mating features disabled (succeeded in 3:21), the root cause
-  is in the **mating-features mesh-CSG pipeline**, not bulk SDF
-  compose.
-- **Cleaning approaches tried + insufficient**:
-  - Simple (`weld_vertices 1µm` + `remove_degenerate_triangles 1e-9 mm²`
-    + `remove_duplicate_faces` + `remove_unreferenced_vertices`):
-    same `NotManifold` failure.
-  - Aggressive (`repair_mesh::for_printing` + `fill_holes 64`):
-    DIFFERENT + worse failure (culls real high-aspect-ratio slivers
-    creating new manifold holes that `fill_holes` can't close).
-- **Cleaning-pass code reverted**; repo is back to the post-§Q-5-fix
-  state (commits `efdff6b8` + `b16f1444`).
+- **Direction confirmed empirically**: workshop user cf-view smoke at
+  2 mm cells (post-fix `~/scans/cast_iter1_q1_phase1_2mm_full/`)
+  confirmed patches-fade visual win + plug-floor-lock pocket clearer.
+- **Root cause**: pre-§Q-1 `compose_piece_solid` used the bounding
+  cuboid for two roles — (a) cup-wall outer SDF boundary, (b) MC
+  sampling region. The seam-flange S1 added a flange that extends
+  15 mm laterally; the cuboid's 5 mm `wall_thickness_m` padding meant
+  the cuboid's outer faces passed THROUGH the flange's interior.
+  At 2 mm cells, MC's table-based topology resolution at the
+  cuboid-face × flange-thickness intersection produced 20-22 boundary
+  edges (a closed-loop hole on the bounding cuboid's outer face) on
+  Layer 2 cup pieces only. Layers 0+1 had different body geometry
+  combinations that didn't trip the bad MC config.
+- **Fix layer (upstream)**: new `CupWallShellSdf` =
+  `max(body_dist - wall_thickness_m, -body_dist)` body-tracking shell
+  replaces `bounding_region.subtract(layer_body)`. MC bounds derive
+  from `body_bounds.expanded(max(wall_thickness, flange_width) + 1 mm
+  ε)`. The cuboid disappears as an SDF surface; no zero-set passes
+  through the flange's interior.
+- **API change**: `compose_piece_solid` signature
+  `bounding_region: &Solid → wall_thickness_m: f64`;
+  `build_registration_transforms` same; `CastSpec` gains
+  `wall_thickness_m: f64`; cf-cast-cli plumbs it from
+  `config.cast.wall_thickness_m`.
+- **Behavior change** (workshop-explicitly-approved): cup-wall
+  thickness is now uniform `wall_thickness_m` per layer (was
+  per-layer-varying because all layers shared the outer-most-layer-
+  sized bounding cuboid). Inner-layer molds ~30 % less PLA;
+  outer mold dims track each body's offset instead of being uniform
+  across layers. Workshop clamps grip the flange face
+  (body-tracking) so this is workshop-neutral.
+- **Production gates**: 2 mm flange-only ✅ 3:48 (was: ❌ 1:42);
+  **2 mm full config ✅ 3:50 (was: ❌ 1:41)**; 3 mm full config
+  ✅ 1:52 (+5 % wall vs 1:44 baseline). 241/241 cf-cast lib tests
+  pass; clippy `-D warnings` + fmt clean.
 
-**Resume path (Phase A → B → C):**
+**Two new findings surfaced by the cf-view smoke** (bookmarked for
+separate arcs, NOT §Q-1 scope):
 
-1. **Phase A**: insert `mesh_repair::validate_mesh(&mesh)` BEFORE
-   `indexed_mesh_to_manifold` in a re-added cleaning function; on the
-   failure path, log the `MeshReport` to identify the SPECIFIC
-   non-manifold violation type (boundary edges / non-manifold edges /
-   duplicate vertices the weld-epsilon missed / self-intersections in
-   post-CSG mesh).
-2. **Phase B**: write targeted ~20-50 LOC cleaning that handles the
-   specific violation WITHOUT `repair_mesh::for_printing`'s
-   aspect-ratio + min-edge-length culls. Custom `RepairParams`:
-   `degenerate_aspect_ratio: f64::INFINITY` + `degenerate_min_edge_length: 0.0`
-   to preserve real-feature slivers.
-3. **Phase C**: production regen at 2 mm + cf-view smoke gate to
-   verify patches visibly improve with mating features intact.
+1. **Flange perimeter continuity** — [[project-cf-cast-flange-perimeter-continuity-bookmark]].
+   `FlangeSdf::eval` uses 3D distance from seam-plane-projected point
+   to body surface; in body concavities at the seam plane, the closest
+   3D body surface is > `flange_width_m` away even when the query
+   point is at the perimeter → flange material drops out in those
+   regions. Fix path: replace 3D-projected body distance with a 2D
+   distance-to-silhouette algorithm. Synthetic-cylinder S1 fixture
+   missed this (cylinder cross-section is fully convex). Needs its
+   own §F arc.
+2. **Mating face flatness** — [[project-cf-cast-cap-plane-flatness-bookmark]]
+   (pre-existing). Workshop user re-flagged at 2 mm cells where the
+   chamfer is more visually pronounced. Same root (intrinsic
+   curved-centerline × MC quantization at the cap-plane edge).
+
+**LESSONS captured in the memory entry**: (1) when a single object
+plays multiple semantic roles, fix-at-conflict-boundary requires
+decomposing the object, not patching one role; (2) hypothesis
+falsification via bias-magnitude 1000× sweep is cheap + decisive;
+(3) MeshReport COUNTS aren't always enough — second-stage location
+dump (vertex coords + failing-mesh STL save) pins the root; (4)
+workshop "build from upstream layer" directive again load-bearing;
+(5) test fixture parameters encode hidden coupling between cell size
++ feature size; (6) `git stash` before declaring refactor regressions
+(g7_g9_probe failures were pre-existing from §Q-5 winding fix).
 
 The fix candidates (1)-(4) below are the original recon framing,
 preserved for context.
