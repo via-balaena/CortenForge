@@ -3144,6 +3144,99 @@ mod tests {
     }
 
     #[test]
+    fn generate_procedure_markdown_v2_cup_half_clamping_plate_only_branch() {
+        // S3 cold-read pass-3 (S4 review test-coverage gap): the
+        // (FlangeKind::Plate, GasketKind::None) prose branch was
+        // written at S3 but never exercised by any test or by the
+        // workshop-default production regen. This test pins the
+        // branch's vocabulary so a future refactor can't silently
+        // collapse it into the None+None fallback (which would
+        // lose the "C-clamp the flange hand-tight only — no
+        // compressible silicone" safety guidance for casts that
+        // disable the gasket).
+        let (_spec, base_ribbon) = v2_procedure_fixture();
+        let ribbon = base_ribbon.with_flange(crate::FlangeKind::Plate(crate::FlangeSpec::iter1()));
+        let (spec, _) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // Plate-only branch heading vocabulary.
+        assert!(
+            md.contains("`FlangeKind::Plate`"),
+            "Plate FlangeKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("`GasketKind::None`"),
+            "None GasketKind anchor missing in Plate-only branch: {md}"
+        );
+        // Workshop safety: no gasket → hand-tight only (no compressible
+        // silicone to absorb over-tightening). Anchors the no-gasket
+        // safety guidance against silent removal.
+        assert!(
+            md.contains("hand-tight only"),
+            "Plate-only branch must explicitly say \"hand-tight only\" (no gasket safety): {md}"
+        );
+        assert!(
+            md.contains("stress-crack the flange"),
+            "Plate-only branch must warn about PLA stress-cracking under over-tight: {md}"
+        );
+        // Plate+Mold-only vocabulary must NOT appear (no 8-step
+        // protocol when gasket is disabled).
+        assert!(
+            !md.contains("1. **Pour gasket silicone.**"),
+            "Plate+Mold step 1 leaking into Plate-only branch: {md}"
+        );
+        assert!(
+            !md.contains("`FlangeKind::None`"),
+            "None FlangeKind anchor leaking into Plate-only branch: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cup_half_clamping_gasket_only_branch() {
+        // S3 cold-read pass-3 (S4 review test-coverage gap): the
+        // (FlangeKind::None, GasketKind::Mold) prose branch was
+        // written at S3 but never exercised by any test or by the
+        // workshop-default production regen. Workshop user disabling
+        // the flange but keeping the gasket needs the hand-clamping
+        // fallback guidance preserved.
+        let (_spec, base_ribbon) = v2_procedure_fixture();
+        let ribbon = base_ribbon.with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+        let (spec, _) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // Gasket-only branch heading vocabulary.
+        assert!(
+            md.contains("`GasketKind::Mold`"),
+            "Mold GasketKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("`FlangeKind::None`"),
+            "None FlangeKind anchor missing in gasket-only branch: {md}"
+        );
+        // Workshop must hand-clamp the contoured surface; the
+        // predicted_compression_m target is preserved without a
+        // flange.
+        assert!(
+            md.contains("hand-clamped over its contoured outer surface"),
+            "gasket-only branch must specify hand-clamp on contoured surface: {md}"
+        );
+        assert!(
+            md.contains("`predicted_compression_m`"),
+            "gasket-only branch must reference predicted_compression_m target: {md}"
+        );
+        // Plate+Mold-only vocabulary must NOT appear (no 8-step
+        // protocol when flange is disabled).
+        assert!(
+            !md.contains("1. **Pour gasket silicone.**"),
+            "Plate+Mold step 1 leaking into gasket-only branch: {md}"
+        );
+        assert!(
+            !md.contains("`FlangeKind::Plate`"),
+            "Plate FlangeKind anchor leaking into gasket-only branch: {md}"
+        );
+    }
+
+    #[test]
     fn generate_procedure_markdown_v2_per_layer_step_6_references_clamp_section() {
         // S3 cold-read pass-2 (integration gap): the per-layer
         // procedure's Step 6 ("seat plug + close cup half + pour
