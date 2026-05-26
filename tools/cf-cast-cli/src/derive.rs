@@ -307,6 +307,19 @@ pub fn derive_spec_and_ribbon(
     let printer_config =
         PrinterConfig::fdm_default().with_min_wall_thickness(config.cast.piece_min_wall_mm);
 
+    // Opt-in scan-mesh-direct routing for plug_layer_0 (S1 of
+    // `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md`). Gated on both the
+    // user-set TOML flag AND `cavity_inset_m == 0` — non-zero inset
+    // would emit an oversized plug because the scan mesh has no
+    // inward offset baked in. S2 of the recon extends this to the
+    // offset cases with an explicit per-layer offset parameter.
+    let scan_mesh_for_plug_layer_0 =
+        if config.cast.scan_mesh_direct_plug_layer_0 && cavity_inset_m == 0.0 {
+            Some(std::sync::Arc::new(scan_sdf.mesh().clone()))
+        } else {
+            None
+        };
+
     let spec = CastSpec {
         layers,
         plug,
@@ -315,6 +328,7 @@ pub fn derive_spec_and_ribbon(
         mesh_cell_size_m: config.cast.mesh_cell_size_m,
         printer_config,
         mass_budget_kg: config.cast.mass_budget_kg,
+        scan_mesh_for_plug_layer_0,
     };
 
     let split_normal_vec = Vector3::new(

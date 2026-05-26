@@ -131,6 +131,26 @@ pub struct CastDefaults {
     /// absolute). Default `"out"`.
     #[serde(default = "default_output_dir")]
     pub output_dir: PathBuf,
+    /// Feature flag for the **scan-mesh-direct plug_layer_0** path
+    /// (S1 of `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md`).
+    ///
+    /// When `true` AND `cavity_inset_m == 0`, the layer-0 plug STL is
+    /// emitted directly from the cf-scan-prep cleaned scan mesh
+    /// instead of through the `pinned_floor_shell → SDF → marching
+    /// cubes` pipeline. Layers 1+ continue on the SDF/MC path until
+    /// S2 of the recon extends scan-mesh-direct to the offset cases.
+    ///
+    /// Off by default — the SDF/MC path is bit-preserved for every
+    /// cast.toml that doesn't opt in.
+    ///
+    /// **Safety guard**: the flag is silently ignored when
+    /// `cavity_inset_m > 0` because the scan mesh has no inward
+    /// offset baked in and a non-zero `cavity_inset_m` would emit a
+    /// plug oversized by the inset amount. cf-cast-cli derives
+    /// `cavity_inset_m` from the design / inline-layers source and
+    /// gates the opt-in accordingly.
+    #[serde(default)]
+    pub scan_mesh_direct_plug_layer_0: bool,
 }
 
 impl Default for CastDefaults {
@@ -142,6 +162,7 @@ impl Default for CastDefaults {
             split_normal: default_split_normal(),
             piece_min_wall_mm: default_piece_min_wall_mm(),
             output_dir: default_output_dir(),
+            scan_mesh_direct_plug_layer_0: false,
         }
     }
 }

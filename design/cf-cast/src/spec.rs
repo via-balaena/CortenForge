@@ -4,6 +4,7 @@
 //! pipelines.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cf_design::{Aabb, IndexedMesh, Solid};
 use mesh_io::save_stl;
@@ -23,6 +24,7 @@ use crate::plug::add_plug_pins;
 use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 use crate::ribbon::{PieceSide, Ribbon};
+use crate::scan_mesh_direct::build_plug_body_mesh;
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -165,6 +167,35 @@ pub struct CastSpec {
     /// field is required so callers cannot silently fall back —
     /// set it explicitly even when adopting the default.
     pub mass_budget_kg: f64,
+
+    /// Feature flag for the scan-mesh-direct `plug_layer_0` path
+    /// (S1 of `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md`).
+    ///
+    /// When `Some`, [`Self::export_molds_v2`] routes the layer-0
+    /// plug body through [`crate::build_plug_body_mesh`] (a direct
+    /// copy of the cf-scan-prep cleaned scan mesh, scaled to mm),
+    /// bypassing the [`Self::plug`] SDF → marching-cubes path for
+    /// that one layer. The post-MC mating-feature transforms from
+    /// [`crate::add_plug_pins`] still apply.
+    ///
+    /// When `None` (default for all pre-S1 callers), the legacy
+    /// SDF/MC pipeline runs for every plug — preserves all
+    /// pre-S1 bit-for-bit output.
+    ///
+    /// **Unit**: the wrapped mesh is in **meters** (cf-design /
+    /// cf-scan-prep frame; same allocation `SharedScanSdf::mesh()`
+    /// hands out). The helper scales to mm at use time.
+    ///
+    /// **Caller responsibility**: this is safe to set only when
+    /// the scan-derived [`Self::plug`] solid corresponds to a
+    /// zero-offset rebuild of the scan (i.e., `cavity_inset_m ==
+    /// 0`). For non-zero inset the plug Solid shrinks inward by
+    /// the inset amount, but the scan mesh does not — using
+    /// scan-mesh-direct in that case would emit a plug oversized
+    /// by `cavity_inset_m`. S2 of the recon extends this path to
+    /// the offset cases with an explicit per-layer offset
+    /// parameter.
+    pub scan_mesh_for_plug_layer_0: Option<Arc<IndexedMesh>>,
 }
 
 /// Per-layer output of a successful [`CastSpec::export_molds`] run.
@@ -1060,7 +1091,17 @@ fn mesh_and_gate_v2_plugs(
             let target = CastTarget::Plug {
                 layer_index: Some(layer_index),
             };
-            let mesh = solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?;
+            // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
+            // feature flag is set, layer 0 bypasses the SDF → MC
+            // pipeline and copies the cf-scan-prep cleaned scan mesh
+            // directly. Mating-feature transforms still apply post-
+            // copy (cap-plane SeamTrim + plug-lock pyramid union).
+            // Layers 1+ stay on the SDF/MC path until S2 of the
+            // recon extends scan-mesh-direct to the offset cases.
+            let mesh = match (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
+                (0, Some(scan_mesh)) => build_plug_body_mesh(scan_mesh),
+                _ => solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?,
+            };
             let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
             let compose_mesh_s = t_compose.elapsed().as_secs_f64();
             let path = out_dir.join(plug_layer_filename(layer_index));
@@ -1711,6 +1752,7 @@ mod tests {
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         }
     }
 
@@ -1756,6 +1798,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let report = spec.export_molds(&out_dir).unwrap();
 
@@ -1840,6 +1883,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
 
         let report = spec.export_molds(&out_dir).unwrap();
@@ -1873,6 +1917,7 @@ mod tests {
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-empty-layers");
@@ -1897,6 +1942,7 @@ mod tests {
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-error-unbounded");
@@ -2057,6 +2103,7 @@ mod tests {
             mesh_cell_size_m: 0.001,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         }
     }
 
@@ -2127,6 +2174,7 @@ mod tests {
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let err = spec.compute_pour_volumes().unwrap_err();
         assert!(matches!(err, CastError::EmptyLayers));
@@ -2139,6 +2187,7 @@ mod tests {
         // any STL is written (pre-write atomicity scope).
         let spec = CastSpec {
             mass_budget_kg: 0.010,
+            scan_mesh_for_plug_layer_0: None,
             ..pour_volume_fixture()
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2238,6 +2287,7 @@ mod tests {
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-f3-empty.md");
@@ -2273,6 +2323,7 @@ mod tests {
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
@@ -2319,6 +2370,7 @@ mod tests {
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
@@ -2344,6 +2396,7 @@ mod tests {
         // write_procedure. No `.md` file may land on disk.
         let spec = CastSpec {
             mass_budget_kg: 0.010,
+            scan_mesh_for_plug_layer_0: None,
             ..pour_volume_fixture()
         };
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2398,6 +2451,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let standalone_pours = spec.compute_pour_volumes().unwrap();
         let report = spec.export_molds(&out_dir).unwrap();
@@ -2438,6 +2492,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -2481,6 +2536,125 @@ mod tests {
         assert!(layer.plug.path.ends_with("plug_layer_0.stl"));
         assert!(layer.plug.path.exists());
         assert!(layer.plug.summary.face_count > 0);
+    }
+
+    /// Build a unit-cube `IndexedMesh` in **meters** with outward-CCW
+    /// face winding (post-§Q-5 convention). 8 verts × 12 tris;
+    /// centred at `origin` with half-extent `half_m`. Used only by
+    /// the scan-mesh-direct wiring smoke test below; production
+    /// scan-mesh-direct consumes `SharedScanSdf::mesh()` instead.
+    fn unit_cube_indexed_mesh_in_meters(
+        origin: nalgebra::Point3<f64>,
+        half_m: f64,
+    ) -> mesh_types::IndexedMesh {
+        use mesh_types::Point3 as MPoint3;
+        let mut mesh = mesh_types::IndexedMesh::new();
+        let xs = [origin.x - half_m, origin.x + half_m];
+        let ys = [origin.y - half_m, origin.y + half_m];
+        let zs = [origin.z - half_m, origin.z + half_m];
+        for &z in &zs {
+            for &y in &ys {
+                for &x in &xs {
+                    mesh.vertices.push(MPoint3::new(x, y, z));
+                }
+            }
+        }
+        // Vertex index layout (binary: zyx):
+        //   0=000, 1=001, 2=010, 3=011, 4=100, 5=101, 6=110, 7=111
+        // Outward CCW faces per cube:
+        let f = |a: u32, b: u32, c: u32| [a, b, c];
+        mesh.faces.extend_from_slice(&[
+            // -x (verts 0,2,6,4)
+            f(0, 6, 2),
+            f(0, 4, 6),
+            // +x (verts 1,5,7,3)
+            f(1, 3, 7),
+            f(1, 7, 5),
+            // -y (verts 0,1,5,4)
+            f(0, 1, 5),
+            f(0, 5, 4),
+            // +y (verts 2,6,7,3)
+            f(2, 6, 7),
+            f(2, 7, 3),
+            // -z (verts 0,2,3,1)
+            f(0, 2, 3),
+            f(0, 3, 1),
+            // +z (verts 4,5,7,6)
+            f(4, 7, 6),
+            f(4, 5, 7),
+        ]);
+        mesh
+    }
+
+    #[test]
+    fn export_molds_v2_routes_plug_layer_0_through_scan_mesh_direct_when_flag_set() {
+        // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md — gates the
+        // wiring: when `scan_mesh_for_plug_layer_0` is `Some`, the
+        // layer-0 plug STL must reflect the scan mesh's face count
+        // (post-mating-transforms), NOT the SDF→MC count.
+        //
+        // The v2_fixture has no pour_end_hint + no PlugPinKind, so
+        // `add_plug_pins` emits an empty transforms vec and
+        // `apply_mating_transforms` short-circuits to a pass-through;
+        // the plug STL therefore matches the synthetic cube mesh
+        // face count exactly (12 tris).
+        use std::sync::Arc;
+
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-scan-mesh-direct-flag-on");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (mut spec, ribbon) = v2_fixture();
+        // Cube centred where the capsule plug sits in the fixture
+        // (`translate(0, 0, 0.040)`), half-extent 0.012 m → 24 mm
+        // edges, comfortably inside F4's build-volume + minimum-wall
+        // checks.
+        let scan_mesh = unit_cube_indexed_mesh_in_meters(Point3::new(0.0, 0.0, 0.040), 0.012);
+        let expected_face_count = scan_mesh.faces.len();
+        spec.scan_mesh_for_plug_layer_0 = Some(Arc::new(scan_mesh));
+
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        let plug = &report.layers[0].plug;
+        assert!(plug.path.ends_with("plug_layer_0.stl"));
+        assert!(plug.path.exists());
+        assert_eq!(
+            plug.summary.face_count, expected_face_count,
+            "scan-mesh-direct plug should preserve the synthetic scan's 12 faces verbatim \
+             (no SDF→MC quantization, no mating-feature transforms because v2_fixture has no \
+             pour_end_hint / PlugPinKind)"
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_preserves_legacy_plug_path_when_scan_mesh_flag_is_none() {
+        // Pairs with `_when_flag_set` above: confirms the new field
+        // defaults to a no-op path. The plug STL face count should
+        // come from the SDF→MC pipeline at `mesh_cell_size_m` — for
+        // the capsule plug at 12 mm cells, that's far more than the
+        // synthetic-cube 12 faces, so the strict greater-than is a
+        // load-bearing distinguishing signal.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-scan-mesh-direct-flag-off");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (spec, ribbon) = v2_fixture();
+        assert!(spec.scan_mesh_for_plug_layer_0.is_none());
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        let plug = &report.layers[0].plug;
+        assert!(plug.path.exists());
+        assert!(
+            plug.summary.face_count > 12,
+            "SDF→MC path should produce many more faces than the synthetic 12 — got {}",
+            plug.summary.face_count
+        );
     }
 
     #[test]
@@ -2527,6 +2701,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -2611,6 +2786,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -2714,6 +2890,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3388,6 +3565,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3780,6 +3958,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.030, 0.0, 0.0), Point3::new(0.030, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();

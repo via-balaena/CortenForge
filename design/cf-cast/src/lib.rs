@@ -90,6 +90,7 @@ pub mod prismatic_pin;
 mod procedure;
 pub mod registration;
 mod ribbon;
+pub mod scan_mesh_direct;
 mod spec;
 
 pub use cure::CureProtocol;
@@ -120,6 +121,7 @@ pub use prismatic_pin::{
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
+pub use scan_mesh_direct::build_plug_body_mesh;
 pub use spec::{
     CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,
     PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport, V2MoldExportReport,

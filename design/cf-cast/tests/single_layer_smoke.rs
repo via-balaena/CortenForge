@@ -54,6 +54,7 @@ fn reference_spec() -> CastSpec {
         mesh_cell_size_m: 0.002,
         printer_config: PrinterConfig::fdm_default(),
         mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        scan_mesh_for_plug_layer_0: None,
     }
 }
 
