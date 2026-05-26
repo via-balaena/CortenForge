@@ -7,7 +7,7 @@ one place so we don't lose track.
 
 ## Branch state
 
-`dev` is **24 commits ahead of origin** (no push, no PR until arc
+`dev` is **26 commits ahead of origin** (no push, no PR until arc
 close per [[feedback-omnibus-pr-single-branch]]).
 
 | # | Commit | Arc | Phase |
@@ -33,7 +33,9 @@ close per [[feedback-omnibus-pr-single-branch]]).
 | 19 | `b26389a8` | (this doc) | active-arcs Arc 5 added |
 | 20 | `0e07a4ad` | self-intersect-BVH | recon cold-read |
 | 21 | `ab810400` | self-intersect-BVH | S1 ship (BVH pair enumeration) |
-| 22 | (pending)  | (this doc) | active-arcs S1-ship update (this commit) |
+| 22 | `d279151a` | (this doc) | active-arcs Arc 5 S1 ship update |
+| 23 | `8997bdd3` | seam-flange | S1 ship (FlangeKind + SDF union) |
+| 24 | (pending)  | (this doc) | active-arcs seam-flange S1 update (this commit) |
 
 (S2 of F4 spatial-index + S2 of self-intersect-BVH were
 empirical-measurement-only; no code commits. Counted as the
@@ -83,8 +85,8 @@ respective S2 in memory but not in commit table.)
 
 - **Recon:** `docs/CF_CAST_SEAM_FLANGE_RECON.md` (+ cold-read
   pass-1 applied).
-- **State:** Recon shipped. **S1-S5 pending.**
-- **Memory:** _(none yet — created at S1 ship)_
+- **State:** **S1 shipped (`8997bdd3`).** S2-S5 pending.
+- **Memory:** [[project-cf-cast-seam-flange-s1]]
 - **Trigger:** the seam-gasket-mold S2 `GasketSpec.
   workshop_clamp_pressure_pa = 20 kPa` invariant requires even
   flat-clamp pressure to achieve the predicted gasket compression
@@ -94,20 +96,13 @@ respective S2 in memory but not in commit table.)
   `docs/archive/CF_CAST_MOLD_WALL_RECON.md` §3.3 Q5 verdict
   ("aesthetic, not blocking") flipped to load-bearing post-
   gasket-arc.
-- **Next phases (§F-13):**
-  - S1 (~200 LOC) — `FlangeSpec` + `FlangeKind` enum + Ribbon
-    field + builder + `compose_piece_solid` SDF union with
-    Option (a) per-perimeter-offset flange. Paired-baseline
-    tests + flange-vs-gasket lateral non-overlap probe.
-  - S2 (~80 LOC) — cf-cast-cli `[flange]` config + derive +
-    cross-field validation (`inner_offset_m >
-    half_gasket_channel_width`).
+- **Phases (§F-13):**
+  - S1 — ✅ SHIPPED (`8997bdd3`). FlangeSpec + FlangeKind enum + Ribbon::with_flange + compose_piece_solid SDF-union. 8 flange tests + 3 piece paired-baseline tests pass; 236 cf-cast lib tests total. Backward-compat (None ≡ pre-S1 bit-for-bit) + gasket-disjoint (Plate ≡ None at body_dist=0) invariants verified.
+  - S2 (~80 LOC) — cf-cast-cli `[flange]` config + derive + cross-field validation (`inner_offset_m > half_gasket_channel_width`).
   - S3 (~100 LOC) — procedure.rs workshop clamp protocol prose.
-  - S4 — cf-cast-cli iter-1 regen on production cast.toml + §R1
-    inspector + workshop cf-view smoke.
+  - S4 — cf-cast-cli iter-1 regen on production cast.toml + §R1 inspector + workshop cf-view smoke.
   - S5 — cold-read + omnibus PR.
-- **Workshop dependency:** unblocks the gasket arc's S6 physical
-  pour (gasket can't seal without even clamp pressure).
+- **Workshop dependency:** S1 unblocks the GEOMETRY layer — cup pieces emitted via `Ribbon::with_flange(FlangeKind::Plate(...))` carry the flange. Full workshop-iter-3 unblock (gasket arc's S6 physical pour) still needs S2-S4 for the cf-cast-cli TOML wire-up.
 
 ### Arc 4 — F4 spatial-index (perf arc, layer 2)
 
@@ -167,20 +162,15 @@ respective S2 in memory but not in commit table.)
 
 ## Sequencing recommendation
 
-Updated post-F4-S3-ship + Arc-5-recon-scaffold:
+Updated post-seam-flange-S1-ship:
 
-1. ✅ **F4-index S1+S2+S3.** Production iter-1 regen 33.6 → 2.18 min.
-2. ✅ **Arc 5 self-intersect-BVH recon scaffold** (`2af5247f`).
-3. **Arc 5 cold-read pass-1 next** (workshop user just asked for it).
-4. **Arc 5 S1-S2-S3 ship** — sub-1-min iter-1 regen projected.
-5. **Seam-flange S1-S5.** Each phase regen <2 min thanks to
-   compounded perf wins. Workshop S6 physical pour gate clear.
-6. **F4-index S4 (cold-read + recon amendments).** Joins the
-   omnibus PR — no new code, just doc fixes for recon §B-0
-   ("OTHER checks not negligible") + §B-2 (f32/f64 distinction).
-7. **Parallel-meshing S3 (or skip).** Log buffer + `--threads`
-   flag are cosmetic. **Skip** unless omnibus PR cold-read
-   surfaces a log-readability complaint.
+1. ✅ **F4-index S1+S2+S3 + self-intersect-BVH S1.** Production iter-1 regen 33.6 → 1:44 min (24.6× internal).
+2. ✅ **Seam-flange S1.** GEOMETRY-layer unblock; cup-piece SDF carries flange under `Ribbon::with_flange(FlangeKind::Plate(...))`.
+3. **Seam-flange S2-S4 next.** cf-cast-cli `[flange]` block + cross-field validation; procedure.rs workshop clamp protocol; iter-1 regen + cf-view smoke. ~280 LOC + workshop user gate.
+4. **F4-index S4** — cold-read pass-1 + recon §B-0 / §B-2 amendments (no code).
+5. **Arc 5 self-intersect-BVH S3** — cold-read pass-1 (no code).
+6. **Parallel-meshing S3 (or skip).** Log buffer + `--threads` flag are cosmetic. **Skip** unless omnibus PR cold-read surfaces a log-readability complaint.
+7. **Omnibus PR rollup.** Joint across all 5 arcs.
 
 **Compounding regen progression (multiple steps measured 2026-05-25):**
 
@@ -192,7 +182,8 @@ Updated post-F4-S3-ship + Arc-5-recon-scaffold:
 | **F4-index S2 production regen** | **measured** | **4.14 min (8.1×)** | recon §B-0 was 2.5× optimistic |
 | **F4-index S3 ship (`876f20d4`)** | **measured** | **2.18 min (15.4×)** | voxel-cap on trapped_volumes |
 | **Arc 5 self-intersect-BVH S1 (`ab810400`)** | **measured** | **1:44 (20× wall / 24.6× internal)** | Qbvh self-overlap pair enum; 7× per-gasket F4 |
-| Seam-flange S1-S5 (pending) | each phase regen | ~1:44 - 3 min | iter-3 unblock |
+| **Seam-flange S1 ship (`8997bdd3`)** | (geometry only — no perf change) | N/A | adds flange material to cup pieces |
+| Seam-flange S2-S5 (pending) | each phase regen | ~1:44 - 3 min | iter-3 unblock — cf-cast-cli wire-up + procedure prose + iter-1 verification |
 | Final state at PR time | all S-phases shipped | **~1:44 - 3 min (≥20× over baseline)** | |
 
 ## Cross-arc correctness boundaries
@@ -255,6 +246,14 @@ parallel meshing + F4 BVH (iter-3 unblock)`.
 Major architectural decisions across all arcs (chronological,
 most recent first):
 
+- **2026-05-25 (Seam-flange S1 ship `8997bdd3`)**: flange's
+  per-side halfspace cut uses **zero overlap_m** (NOT
+  `RIBBON_PIECE_OVERLAP_M`). Rationale: OVERLAP_M is a cup-wall
+  MC-overlap bias (FDM-fit tolerance across the seam at cup-wall
+  thickness), NOT a seam-plane orientation parameter. Using it
+  for the flange would push the flange edge 0.5 mm off the seam
+  plane and create a step at the cup-wall ↔ flange junction.
+  Flange at seam plane = exactly Y = halfspace boundary.
 - **2026-05-25 (Arc 5 S1 ship `ab810400`)**: canonical-pair
   filter (`i < j`) MUST live in the visitor's leaf-leaf branch
   (cold-read Finding 3). Without it `Qbvh::traverse_bvtt(qbvh,
