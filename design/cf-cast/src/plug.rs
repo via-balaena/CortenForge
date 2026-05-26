@@ -156,6 +156,33 @@ use crate::mesh_csg::MatingTransform;
 use crate::prismatic_pin::{PrismaticPinPose, PrismaticPinSpec};
 use crate::ribbon::Ribbon;
 
+/// Inward offset bias (meters) applied to
+/// [`build_plug_cap_trim_transform`]'s emitted plane to keep the
+/// resulting trim face from coinciding exactly with the plug
+/// body's SDF cap-plane surface.
+///
+/// **Paradigm-boundary rationale** (recon §Q-4 + the
+/// `project-cf-cast-sdf-meshcsg-paradigm-boundary` framework): a
+/// face-coincident `MatingTransform::SeamTrim` at the body's SDF
+/// cap-plane triggers the recon-4 (P) §F-2 WELDED-TO-BULK failure
+/// mode (the 2026-05-24 disabling of this builder in
+/// [`add_plug_pins`] was caused by precisely that mode — F4
+/// flagged a Critical issue on the trimmed plug). Shifting the
+/// plane 1 µm INWARD (into the kept plug-body half-space) makes
+/// the trim face CONTAINED inside the body's pre-trim material →
+/// no exact-coincidence → paradigm-safe per the
+/// [recon-4 §F-2 framework](crate::mesh_csg).
+///
+/// Magnitude rationale (1 µm = `1e-6` m):
+/// - Below FDM print resolution (Bambu A1 ≈ 200 µm) by 200× —
+///   workshop-invisible at the slicer-quantization layer.
+/// - Above mesh-CSG numerical noise (manifold3d f64 internal
+///   precision ≈ 1 nm) by 6+ orders of magnitude — empirically
+///   safe from manifold3d ambiguity.
+/// - Same magnitude as the §G-7 plug-shaft `extend_near_end`
+///   inward overlap-bias (same paradigm-boundary pattern).
+pub const PLUG_CAP_TRIM_BIAS_M: f64 = 1.0e-6;
+
 /// Plug-floor-lock geometry spec — wraps the SDF-side
 /// [`PrismaticPinSpec`] primitive with no extra fields.
 ///
@@ -391,10 +418,14 @@ pub fn build_plug_lock_socket_transform(ribbon: &Ribbon) -> Option<MatingTransfo
 /// SDF is mathematically flat).
 ///
 /// `normal = -cap_normal` (points into the plug body — the kept
-/// half-space); `offset_m = dot(-cap_normal, cap_centroid)` =
-/// `-dot(cap_normal, cap_centroid)`. Trims away everything on the
-/// `+cap_normal` side of the cap-plane (= outside the plug body)
-/// post-MC. Must be applied BEFORE
+/// half-space); base plane equation `dot(-cap_normal, cap_centroid)`
+/// is shifted INWARD by [`PLUG_CAP_TRIM_BIAS_M`] (added to
+/// `offset_m`) so the resulting trim face does NOT coincide with
+/// the plug body's SDF cap-plane surface (see
+/// [`PLUG_CAP_TRIM_BIAS_M`] for the paradigm-boundary rationale).
+/// Trims away everything on the `+cap_normal` side of the biased
+/// plane (= outside the plug body + a thin 1 µm slab inside the
+/// body at the cap-plane face) post-MC. Must be applied BEFORE
 /// [`build_plug_lock_transform`]'s `UnionTruncatedPyramid` —
 /// the post-flip pyramid extends past the cap-plane into the
 /// `+cap_normal` half-space (workshop-visible base-down protrusion);
@@ -412,7 +443,14 @@ pub fn build_plug_cap_trim_transform(ribbon: &Ribbon) -> Option<MatingTransform>
     let (cap_centroid, cap_normal_vec) = ribbon.pour_end_hint?;
     let cap_normal = UnitVector3::new_normalize(cap_normal_vec);
     let kept_normal = UnitVector3::new_normalize(-cap_normal.into_inner());
-    let offset_m = kept_normal.into_inner().dot(&cap_centroid.coords);
+    // Base plane = cap-plane through `cap_centroid` with `kept_normal`
+    // pointing into the plug body. Adding `PLUG_CAP_TRIM_BIAS_M` to
+    // `offset_m` shifts the plane INTO the kept half-space (= 1 µm
+    // INWARD from the body cap-plane face), producing a CONTAINED
+    // trim face inside body pre-trim material — paradigm-safe per
+    // [`PLUG_CAP_TRIM_BIAS_M`].
+    let base_offset_m = kept_normal.into_inner().dot(&cap_centroid.coords);
+    let offset_m = base_offset_m + PLUG_CAP_TRIM_BIAS_M;
     Some(MatingTransform::SeamTrim {
         normal: kept_normal,
         offset_m,
@@ -479,21 +517,28 @@ pub fn build_cup_cap_trim_transform(ribbon: &Ribbon) -> Option<MatingTransform> 
 /// [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
 #[must_use]
 pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransform>) {
-    // **Cap-plane trim DISABLED 2026-05-24 night.** Attempted to
-    // append `build_plug_cap_trim_transform` here for MC-
-    // quantization flatness relief on the plug bottom face, but
-    // the trim plane coincides with the plug body's cap-plane SDF
-    // surface — the recon-4 (P) §F-2 paradigm-boundary failure
-    // mode (S4's SeamTrim film bug). F4 gate flagged a Critical
-    // blocking issue on the plug after the trim. The cap-plane
-    // flatness concern is bookmarked for a follow-up arc that
-    // needs paradigm-boundary-careful handling (likely via
-    // `build_half_space_slab` with offset, OR a different
-    // approach entirely). Captive-lock geometry ships without the
-    // trim for now. Builders `build_plug_cap_trim_transform` +
-    // `build_cup_cap_trim_transform` retained as defensive
-    // primitives for the follow-up arc.
-    let transforms: Vec<MatingTransform> = build_plug_lock_transform(ribbon).into_iter().collect();
+    // **Cap-plane trim RE-ENABLED 2026-05-26 (§Q-4 S1 probe).** The
+    // 2026-05-24 disabling here was caused by a face-coincident
+    // trim plane (recon-4 (P) §F-2 WELDED-TO-BULK paradigm-boundary
+    // failure — F4 flagged Critical on the trimmed plug). §Q-4 S1
+    // bakes a 1 µm inward offset bias into `build_plug_cap_trim_transform`
+    // via `PLUG_CAP_TRIM_BIAS_M`, shifting the trim plane OFF the
+    // body SDF cap-plane → resulting trim face is CONTAINED inside
+    // body pre-trim material → paradigm-safe. The trim flattens
+    // the MC-quantization facets on the plug bottom (workshop-
+    // visible PR-blocker at 2 mm cells per the recon's §Q-4-1
+    // worked example), then the pyramid union adds the protruding
+    // lock on top (order: trim before union per
+    // `build_plug_cap_trim_transform`'s ordering note).
+    //
+    // The sibling cup-side builder `build_cup_cap_trim_transform`
+    // stays retained-but-unused: cup-piece cap-plane MC flatness
+    // needs the §Q-4 S2 `MatingTransform::UnionCuboid` slab
+    // (handles MC under- AND overshoot symmetrically), not a
+    // halfspace trim (which would only handle one direction).
+    let mut transforms: Vec<MatingTransform> = Vec::new();
+    transforms.extend(build_plug_cap_trim_transform(ribbon));
+    transforms.extend(build_plug_lock_transform(ribbon));
     (plug, transforms)
 }
 
@@ -704,11 +749,12 @@ mod tests {
     /// `build_plug_cap_trim_transform` emits a `SeamTrim` whose
     /// `normal` direction points INTO the plug body (= `-cap_normal`)
     /// and whose `offset_m` is the plane-equation value at
-    /// `cap_centroid`. Verifies the trim keeps the plug body side
-    /// (where the workshop-visible plug material lives) and trims
-    /// away anything on the `+cap_normal` side (above the cap-plane
-    /// in pour orientation — outside the plug body, where MC
-    /// quantization artifacts would otherwise sit).
+    /// `cap_centroid` PLUS the 1 µm inward bias per
+    /// [`PLUG_CAP_TRIM_BIAS_M`]. Verifies the trim keeps the plug
+    /// body side (where the workshop-visible plug material lives)
+    /// and trims away anything on the `+cap_normal` side (above the
+    /// cap-plane in pour orientation — outside the plug body, where
+    /// MC quantization artifacts would otherwise sit).
     #[test]
     fn build_plug_cap_trim_transform_keeps_plug_body_side() {
         let ribbon = iter1_like_ribbon();
@@ -718,11 +764,45 @@ mod tests {
                 let cap_centroid = Point3::new(0.0, 0.0, -0.054);
                 let cap_normal = Vector3::new(0.0, 0.0, -1.0);
                 let kept_normal = -cap_normal;
-                let expected_offset = kept_normal.dot(&cap_centroid.coords);
+                let expected_offset = kept_normal.dot(&cap_centroid.coords) + PLUG_CAP_TRIM_BIAS_M;
                 assert_abs_diff_eq!(normal.into_inner().x, kept_normal.x, epsilon = 1.0e-12);
                 assert_abs_diff_eq!(normal.into_inner().y, kept_normal.y, epsilon = 1.0e-12);
                 assert_abs_diff_eq!(normal.into_inner().z, kept_normal.z, epsilon = 1.0e-12);
                 assert_abs_diff_eq!(offset_m, expected_offset, epsilon = 1.0e-12);
+            }
+            other => panic!("expected SeamTrim, got {other:?}"),
+        }
+    }
+
+    /// §Q-4 S1 paradigm-boundary regression gate. The emitted
+    /// `SeamTrim.offset_m` MUST be greater than the unbiased
+    /// cap-plane offset by EXACTLY [`PLUG_CAP_TRIM_BIAS_M`] — i.e.,
+    /// the trim plane is shifted INWARD (into the kept plug-body
+    /// half-space) by the documented bias magnitude. This is the
+    /// load-bearing invariant that makes the trim face CONTAINED
+    /// inside the body's pre-trim material rather than coincident
+    /// with the body SDF cap-plane (recon-4 (P) §F-2). A future
+    /// rewrite that drops the bias or flips its sign would silently
+    /// reintroduce the WELDED-TO-BULK failure that disabled this
+    /// transform 2026-05-24.
+    #[test]
+    fn build_plug_cap_trim_transform_shifts_plane_one_micron_inward() {
+        let ribbon = iter1_like_ribbon();
+        let trim =
+            build_plug_cap_trim_transform(&ribbon).expect("iter1_like_ribbon sets pour_end_hint");
+        match trim {
+            MatingTransform::SeamTrim { normal, offset_m } => {
+                let cap_centroid = Point3::new(0.0, 0.0, -0.054);
+                let unbiased_offset = normal.into_inner().dot(&cap_centroid.coords);
+                let delta = offset_m - unbiased_offset;
+                assert_abs_diff_eq!(delta, PLUG_CAP_TRIM_BIAS_M, epsilon = 1.0e-15);
+                assert!(
+                    delta > 0.0,
+                    "bias MUST be POSITIVE (shift plane INTO kept half-space) — \
+                     a non-positive delta would put the trim plane on / outside \
+                     the body SDF cap-plane and re-open the recon-4 (P) §F-2 \
+                     WELDED-TO-BULK paradigm-boundary failure; got delta = {delta}",
+                );
             }
             other => panic!("expected SeamTrim, got {other:?}"),
         }
@@ -768,14 +848,16 @@ mod tests {
     }
 
     /// `add_plug_pins` for [`PlugPinKind::Axial`] returns the bare
-    /// plug [`Solid`] unchanged AND a transforms Vec containing one
-    /// [`MatingTransform::UnionTruncatedPyramid`] carrying the
-    /// plug-lock pyramid geometry. The shimmed `build_plug_lock_sdf`
-    /// helper (re-deriving the SDF from the transform's params)
-    /// reports interior at a probe inside the pyramid's `+axis_unit`
-    /// (protruding) half — confirms the transform carries the
-    /// correct geometry. Post-salvage (2026-05-24): no SDF union
-    /// into the plug body; the lock is applied POST-MC.
+    /// plug [`Solid`] unchanged AND a transforms Vec containing
+    /// (post-§Q-4-S1) TWO transforms in declared order:
+    /// (0) [`MatingTransform::SeamTrim`] flattening the plug bottom
+    /// face at the biased cap-plane (paradigm-safe per
+    /// [`PLUG_CAP_TRIM_BIAS_M`]); (1)
+    /// [`MatingTransform::UnionTruncatedPyramid`] adding the
+    /// protruding plug-lock geometry on top. Order is load-bearing
+    /// per `build_plug_cap_trim_transform`'s ordering note — trim
+    /// FIRST then union, so the pyramid's base-down protrusion is
+    /// preserved against the otherwise-applied trim.
     #[test]
     fn add_plug_pins_axial_unions_pyramid_into_plug() {
         let ribbon = iter1_like_ribbon();
@@ -797,17 +879,21 @@ mod tests {
             );
         }
 
-        // Transforms Vec carries exactly one UnionTruncatedPyramid
-        // matching the plug-lock pose + spec. (Cap-plane trim was
-        // attempted 2026-05-24 night but disabled due to recon-4
-        // (P) §F-2 paradigm-boundary issue — see
-        // `add_plug_pins` for the bookmark.)
+        // Transforms Vec carries the cap-plane trim followed by the
+        // plug-lock pyramid union (re-enabled 2026-05-26 in §Q-4 S1
+        // with the 1 µm paradigm-safety bias; see
+        // `add_plug_pins` body comment + `PLUG_CAP_TRIM_BIAS_M`).
         assert_eq!(
             transforms.len(),
-            1,
-            "Axial kind emits one plug-lock mesh-CSG transform; got {transforms:#?}",
+            2,
+            "Axial kind emits cap-plane SeamTrim then plug-lock UnionTruncatedPyramid; \
+             got {transforms:#?}",
         );
         match &transforms[0] {
+            MatingTransform::SeamTrim { .. } => {}
+            other => panic!("expected SeamTrim at index 0 (trim FIRST), got {other:?}"),
+        }
+        match &transforms[1] {
             MatingTransform::UnionTruncatedPyramid { params } => {
                 let spec = PlugPinSpec::iter1();
                 assert_eq!(
@@ -819,7 +905,7 @@ mod tests {
                     "transform params carry the lock spec's chamfer",
                 );
             }
-            other => panic!("expected UnionTruncatedPyramid, got {other:?}"),
+            other => panic!("expected UnionTruncatedPyramid at index 1, got {other:?}"),
         }
 
         // Shimmed SDF probe at the same probe point as the
