@@ -10,8 +10,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_cast::{
-    CastLayer, CastSpec, GasketKind, GasketMaterial, GasketSpec, MoldingMaterial, PinSpec,
-    PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
+    CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
+    MoldingMaterial, PinSpec, PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec,
+    RegistrationKind, Ribbon, SplitNormal,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -385,6 +386,15 @@ pub fn derive_spec_and_ribbon(
         };
         ribbon = ribbon.with_gasket(GasketKind::Mold(gasket_spec));
     }
+    if config.flange.enabled {
+        // S2 of the seam-flange arc per recon §F-6. Per-field
+        // overrides fall back to FlangeSpec::iter1() at None; the
+        // cross-field gasket-disjoint invariant (recon §F-4) is
+        // already enforced in config::validate_after_layer_source,
+        // so the spec built here is known-valid.
+        let flange_spec = resolve_flange_spec(&config.flange);
+        ribbon = ribbon.with_flange(FlangeKind::Plate(flange_spec));
+    }
 
     Ok(DerivedSpec { spec, ribbon })
 }
@@ -409,6 +419,24 @@ fn resolve_gasket_material(key: Option<&str>) -> Result<GasketMaterial> {
             "cast.toml: unknown gasket material {other:?}. Recognized: \
              \"ECOFLEX_00_30\", \"DRAGON_SKIN_10A\"."
         ),
+    }
+}
+
+/// Resolve a [`crate::config::FlangeConfig`] into a
+/// [`cf_cast::FlangeSpec`], falling back to
+/// [`FlangeSpec::iter1`] for each `None` per-field override.
+///
+/// Pure (no validation — finiteness + positivity + cross-field
+/// gasket-disjoint gates already ran in
+/// [`crate::config::CastConfig::validate_after_layer_source`]).
+/// Returns by-value because `FlangeSpec` is plain-old-f64-struct
+/// (Copy-able by construction).
+fn resolve_flange_spec(config: &crate::config::FlangeConfig) -> FlangeSpec {
+    let iter1 = FlangeSpec::iter1();
+    FlangeSpec {
+        flange_width_m: config.width_m.unwrap_or(iter1.flange_width_m),
+        flange_thickness_m: config.thickness_m.unwrap_or(iter1.flange_thickness_m),
+        flange_inner_offset_m: config.inner_offset_m.unwrap_or(iter1.flange_inner_offset_m),
     }
 }
 
@@ -524,6 +552,7 @@ mod tests {
             pour_gate: PourGateConfig::default(),
             registration_pins: crate::config::RegistrationConfig::default(),
             gasket: crate::config::GasketConfig::default(),
+            flange: crate::config::FlangeConfig::default(),
         }
     }
 

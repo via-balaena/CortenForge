@@ -57,6 +57,12 @@ pub struct CastConfig {
     /// `enabled = false` to disable. S3 of the seam-gasket-mold arc.
     #[serde(default)]
     pub gasket: GasketConfig,
+    /// Seam-plane flange override (default = enabled with
+    /// [`cf_cast::FlangeSpec::iter1`] geometry). Absence of the table
+    /// means "enabled with iter1 defaults". Set `enabled = false` to
+    /// disable. S2 of the seam-flange arc per recon §F-6.
+    #[serde(default)]
+    pub flange: FlangeConfig,
 }
 
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
@@ -304,6 +310,55 @@ impl Default for GasketConfig {
     }
 }
 
+/// `[flange]` block — seam-plane clampable flange toggle + geometry
+/// overrides. Maps to [`cf_cast::FlangeKind`].
+///
+/// S2 of the seam-flange arc per recon §F-6. Defaults to
+/// `enabled = true` with [`cf_cast::FlangeSpec::iter1`] geometry
+/// (15 mm width × 4 mm thickness per half × 2 mm inner offset). Per-
+/// field overrides are surfaced as optionals; absent → falls back to
+/// the iter1 default for that field. The cross-field invariant
+/// `inner_offset_m > GasketSpec.channel_width_m / 2` is enforced at
+/// [`CastConfig::validate_after_layer_source`] time when both the
+/// gasket and flange are enabled (recon §F-4 "gasket-disjoint
+/// invariant").
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlangeConfig {
+    /// Master toggle. When `false`, the bridge passes
+    /// [`cf_cast::FlangeKind::None`] (no seam-plane flange; cup
+    /// halves clamped via whatever contoured surface they have).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Lateral extent (meters) from `inner_offset_m` outward in the
+    /// seam plane. `None` → falls back to
+    /// [`cf_cast::FlangeSpec::iter1`]'s 15 mm default.
+    #[serde(default)]
+    pub width_m: Option<f64>,
+    /// Half-thickness (meters) perpendicular to the seam plane.
+    /// Closed flange-zone thickness ≈ 2 × this. `None` → 4 mm per
+    /// half (iter1 default).
+    #[serde(default)]
+    pub thickness_m: Option<f64>,
+    /// Lateral gap (meters) between body cavity perimeter and
+    /// flange inner edge. Must exceed half the gasket channel width
+    /// when the gasket is enabled (recon §F-4). `None` → 2 mm
+    /// (iter1 default).
+    #[serde(default)]
+    pub inner_offset_m: Option<f64>,
+}
+
+impl Default for FlangeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            width_m: None,
+            thickness_m: None,
+            inner_offset_m: None,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -473,6 +528,51 @@ impl CastConfig {
         // omitted until S7 calibration surfaces a workshop-physical
         // need.
 
+        // S2 of the seam-flange arc per recon §F-6. Per-field
+        // finiteness + positivity + cross-field gasket-disjoint
+        // invariant (recon §F-4). Skipped when flange disabled.
+        if self.flange.enabled {
+            for (label, v) in [
+                ("flange.width_m", self.flange.width_m),
+                ("flange.thickness_m", self.flange.thickness_m),
+                ("flange.inner_offset_m", self.flange.inner_offset_m),
+            ] {
+                if let Some(value) = v {
+                    ensure!(
+                        value.is_finite() && value > 0.0,
+                        "cast.toml: {label} = {value} must be finite and > 0"
+                    );
+                }
+            }
+            // Cross-field gate (recon §F-4): when both gasket + flange
+            // are enabled, the flange's lateral inner edge MUST sit
+            // outside the gasket strip (which traces body_dist=0 with
+            // half-width = GasketSpec::iter1().cross_section_width_m
+            // / 2). The post-S2 gasket arc doesn't surface a
+            // channel-width TOML override, so the iter1 width (1.5 mm
+            // → half = 0.75 mm) is the authoritative half-width. The
+            // flange `inner_offset_m` is the bare gap from
+            // body_dist=0 to the flange's inner edge; it must
+            // STRICTLY exceed the half-width so there's lateral air
+            // between gasket and flange.
+            if self.gasket.enabled {
+                let iter1 = cf_cast::FlangeSpec::iter1();
+                let inner_offset = self
+                    .flange
+                    .inner_offset_m
+                    .unwrap_or(iter1.flange_inner_offset_m);
+                let gasket_half_width = cf_cast::GasketSpec::iter1().cross_section_width_m / 2.0;
+                ensure!(
+                    inner_offset > gasket_half_width,
+                    "cast.toml: flange.inner_offset_m = {inner_offset} must exceed half \
+                     the gasket channel width ({gasket_half_width}) when both [gasket] and \
+                     [flange] are enabled (recon §F-4 gasket-disjoint invariant). Either \
+                     widen the flange inner offset, narrow the gasket, or disable one of \
+                     the two blocks."
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -522,6 +622,13 @@ material = "ECOFLEX_00_30"
         // GasketMaterial::Ecoflex0030 in derive).
         assert!(cfg.gasket.enabled);
         assert!(cfg.gasket.material.is_none());
+        // S2 seam-flange arc default: enabled + all iter1 overrides
+        // None (derive::resolve_flange_spec falls back to
+        // FlangeSpec::iter1() per field).
+        assert!(cfg.flange.enabled);
+        assert!(cfg.flange.width_m.is_none());
+        assert!(cfg.flange.thickness_m.is_none());
+        assert!(cfg.flange.inner_offset_m.is_none());
     }
 
     #[test]
@@ -567,6 +674,110 @@ material = "DRAGON_SKIN_10A"
         let cfg = CastConfig::from_toml_str(text).unwrap();
         assert!(cfg.gasket.enabled);
         assert_eq!(cfg.gasket.material.as_deref(), Some("DRAGON_SKIN_10A"));
+    }
+
+    #[test]
+    fn parses_flange_block_disabled() {
+        // S2 seam-flange arc: `[flange] enabled = false` parses cleanly
+        // + master toggle propagates. Overrides absent (None) → iter1
+        // defaults at derive time.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[flange]
+enabled = false
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.flange.enabled);
+        assert!(cfg.flange.width_m.is_none());
+    }
+
+    #[test]
+    fn parses_flange_block_with_overrides() {
+        // S2: partial override — width + thickness picked at non-iter1
+        // values, inner_offset left as iter1 default. Validates the
+        // optional-per-field design (recon §F-6).
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[flange]
+width_m = 0.020
+thickness_m = 0.005
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.flange.enabled);
+        assert!((cfg.flange.width_m.unwrap() - 0.020).abs() < 1e-12);
+        assert!((cfg.flange.thickness_m.unwrap() - 0.005).abs() < 1e-12);
+        assert!(cfg.flange.inner_offset_m.is_none());
+    }
+
+    #[test]
+    fn rejects_flange_inner_offset_overlapping_gasket() {
+        // S2 cross-field gate (recon §F-4): with both gasket + flange
+        // enabled, `flange.inner_offset_m` MUST exceed half the gasket
+        // channel width (1.5 mm / 2 = 0.75 mm at iter1). A 0.5 mm
+        // override falls below the threshold → rejected at validate
+        // time.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[flange]
+inner_offset_m = 0.0005
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("flange inner_offset below gasket half-width must fail");
+        let s = err.to_string();
+        assert!(s.contains("inner_offset_m"), "unexpected error: {s}");
+        assert!(s.contains("gasket"), "unexpected error: {s}");
+    }
+
+    #[test]
+    fn accepts_flange_inner_offset_overlapping_when_gasket_disabled() {
+        // S2 cross-field gate scope: with the gasket disabled there's
+        // no gasket strip to clear, so a small `inner_offset_m`
+        // override is allowed. Pins the gate's "skip when gasket off"
+        // branch.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+enabled = false
+
+[flange]
+inner_offset_m = 0.0005
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.gasket.enabled);
+        assert!(cfg.flange.enabled);
     }
 
     #[test]
