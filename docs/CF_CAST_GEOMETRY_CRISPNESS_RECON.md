@@ -96,7 +96,54 @@ specific. This recon enumerates the candidates per failure mode +
 identifies cross-failure-mode synergies (single fixes that address
 multiple failure modes).
 
-## §Q-1 Seam-face perimeter saw-tooth
+## §Q-1 Seam-face perimeter saw-tooth — ⏸️ BLOCKED 2026-05-26 (empirical investigation; no code commit)
+
+**Status: empirically BLOCKED behind a mesh-cleaning investigation.** See
+[[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]] for the
+full empirical record. Summary:
+
+- **Direction confirmed**: workshop user inspected the 2 mm bare-
+  diagnostic output (`~/scans/cast_iter1_2mm_bare_diagnostic/`) in
+  cf-view + reported "patches visibly fainter" vs 3 mm production.
+  Finer MC cells DO fix the workshop-visible symptom.
+- **Blocker**: 2 mm regen with full mating features (registration
+  pins + plug-floor-lock + flange) fails at `manifold3d status:
+  NotManifold` on layer 2 piece Negative during `apply_mating_transforms`'s
+  `mesh→manifold conversion` step. 1 mm regen fails the same way
+  earlier in the pipeline. Per the §Q-11 bare-diagnostic at 2 mm
+  with mating features disabled (succeeded in 3:21), the root cause
+  is in the **mating-features mesh-CSG pipeline**, not bulk SDF
+  compose.
+- **Cleaning approaches tried + insufficient**:
+  - Simple (`weld_vertices 1µm` + `remove_degenerate_triangles 1e-9 mm²`
+    + `remove_duplicate_faces` + `remove_unreferenced_vertices`):
+    same `NotManifold` failure.
+  - Aggressive (`repair_mesh::for_printing` + `fill_holes 64`):
+    DIFFERENT + worse failure (culls real high-aspect-ratio slivers
+    creating new manifold holes that `fill_holes` can't close).
+- **Cleaning-pass code reverted**; repo is back to the post-§Q-5-fix
+  state (commits `efdff6b8` + `b16f1444`).
+
+**Resume path (Phase A → B → C):**
+
+1. **Phase A**: insert `mesh_repair::validate_mesh(&mesh)` BEFORE
+   `indexed_mesh_to_manifold` in a re-added cleaning function; on the
+   failure path, log the `MeshReport` to identify the SPECIFIC
+   non-manifold violation type (boundary edges / non-manifold edges /
+   duplicate vertices the weld-epsilon missed / self-intersections in
+   post-CSG mesh).
+2. **Phase B**: write targeted ~20-50 LOC cleaning that handles the
+   specific violation WITHOUT `repair_mesh::for_printing`'s
+   aspect-ratio + min-edge-length culls. Custom `RepairParams`:
+   `degenerate_aspect_ratio: f64::INFINITY` + `degenerate_min_edge_length: 0.0`
+   to preserve real-feature slivers.
+3. **Phase C**: production regen at 2 mm + cf-view smoke gate to
+   verify patches visibly improve with mating features intact.
+
+The fix candidates (1)-(4) below are the original recon framing,
+preserved for context.
+
+### Original §Q-1 framing
 
 **Symptom:** triangular spikes 1-3 mm in extent all along the
 flange's outer edge perimeter. The flange's 15 mm × 4 mm × 2 mm
@@ -288,7 +335,20 @@ features (cap-plane × cavity floor junction = §Q-4 territory;
 dome end's tighter curvature). **May be subordinate to §Q-1 +
 §Q-4 in workshop visual-quality priority; defer until empirical.**
 
-## §Q-4 Cap-plane × cavity floor not flat
+## §Q-4 Cap-plane × cavity floor not flat — observation reconfirmed 2026-05-26
+
+**Status: still OPEN.** Workshop user observed in the 2 mm bare-
+diagnostic cf-view inspection (`~/scans/cast_iter1_2mm_bare_diagnostic/`):
+**"the floor is still not completely flat"** even at the finer 2 mm
+cell size with mating features disabled. Confirms §Q-4 is
+independent of §Q-1 (MC quantization on the cap-plane × cavity-floor
+junction persists at any practical MC cell size; the cleanest fix
+is the mesh-CSG cap-plane primitive per candidate (3) below).
+
+This can be attacked in parallel with §Q-1's mesh-cleaning
+investigation; the two paths are independent.
+
+### Original §Q-4 framing
 
 **Symptom:** the cap-plane region inside the cup cavity (where
 the plug's cap-plane face mates) is stair-stepped. The plug's

@@ -50,13 +50,20 @@ respective S2 in memory but not in commit table.)
 - **State:** **scaffold (`f2431c7f`) + cold-read pass-1
   (`fc01a28b`) + §Q-11 S0 diagnostics shipped (`ef72cc89`,
   2026-05-25) + §Q-5 root-cause fix shipped (`efdff6b8`,
-  2026-05-26) at the upstream layer (mesh-offset MC face emission
-  + mesh-shell compensation removal).** Workshop user cf-view
-  inspection of `~/scans/cast_iter1_post_winding_fix/` pending
-  to confirm visual fix lands. §Q-11 S1 (finer-MC empirical
-  regen) decoupled from §Q-5 + ready to plunge after visual gate.
+  2026-05-26) + §Q-1 finer-cells empirically BLOCKED 2026-05-26
+  (no code commit; cleaning-pass code reverted).** Workshop user
+  inspected post-§Q-5 fix output and reported "looks the exact
+  same" — §Q-5 is geometrically correct but cf-view rendering
+  masks the winding fix; the visual concern is §Q-1 / §Q-4 MC
+  quantization. §Q-1 2 mm regen with mating features fails
+  `manifold3d NotManifold` on layer 2 piece Negative; bare-
+  diagnostic at 2 mm (mating features disabled) succeeded +
+  workshop confirmed patches fade; cleaning-pass attempts
+  (simple + `repair_mesh::for_printing`) both insufficient.
+  Blocker is real mesh-cleaning work, paused for the session.
 - **Memory:** [[project-cf-cast-geometry-crispness-s0]],
-  [[project-cf-cast-geometry-crispness-q5-fix]]
+  [[project-cf-cast-geometry-crispness-q5-fix]],
+  [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]]
 - **Trigger:** chained — workshop user's cf-view smoke gate on
   `~/scans/cast_iter1_post_flange_smoke/` (the [[project-cf-cast-seam-flange-s4]]
   production STL set) failed initial inspection; workshop user
