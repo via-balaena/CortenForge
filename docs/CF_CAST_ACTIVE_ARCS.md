@@ -7,7 +7,7 @@ one place so we don't lose track.
 
 ## Branch state
 
-`dev` is **13 commits ahead of origin** (no push, no PR until arc
+`dev` is **20 commits ahead of origin** (no push, no PR until arc
 close per [[feedback-omnibus-pr-single-branch]]).
 
 | # | Commit | Arc | Phase |
@@ -23,8 +23,19 @@ close per [[feedback-omnibus-pr-single-branch]]).
 | 9 | `1da08ab7` | seam-flange | recon scaffold |
 | 10 | `d4ca615f` | seam-flange | recon cold-read |
 | 11 | `74dcbb8c` | F4 spatial-index | recon scaffold |
-| 12 | `e62fdac1` | (this doc) | active-arcs coordination |
-| 13 | `d42ddf11` | F4 spatial-index | **S1 ship (current frontier)** |
+| 12 | `e62fdac1` | (this doc) | active-arcs coordination v1 |
+| 13 | `d42ddf11` | F4 spatial-index | S1 ship (BVH thin-walls) |
+| 14 | `b1bda454` | (this doc) | active-arcs S1 update |
+| 15 | `99415ff8` | (this doc) | active-arcs S2 update |
+| 16 | `876f20d4` | F4 spatial-index | S3 ship (voxel cap) |
+| 17 | `820125c7` | (this doc) | active-arcs S3 update |
+| 18 | `2af5247f` | self-intersect-BVH | recon scaffold |
+| 19 | `?`         | (this doc) | active-arcs Arc 5 added (this commit) |
+| 20 | (pending)  | self-intersect-BVH | recon cold-read |
+
+(S2 of F4 spatial-index was empirical-measurement-only; no code
+commit. Counted as the S2 in the memory log but not in the commit
+table.)
 
 ## Active arcs
 
@@ -106,10 +117,25 @@ close per [[feedback-omnibus-pr-single-branch]]).
 - **S1 ship (`d42ddf11`):** parry3d-f64 BVH for `flag_thin_wall_faces`. cf-cast lib test suite 78.20 s → 17.15 s. parry3d-f64 picked over parry3d after f32 drift caused 1.0 mm test boundary flip.
 - **S2 (`2026-05-25`, no code commit):** empirical regen identified `check_trapped_volumes` (NOT self_intersecting) as the asymmetric long pole — 50 s on Positive cup pieces, 0.001 s on Negative (Negative skipped via watertight precondition due to pin-socket boolean open edges). Recon §B-0 projection (1-1.5 min) was 2.5× too optimistic.
 - **S3 ship (`876f20d4`):** `MAX_VOXELS_PER_AXIS = 500` cap in `check_trapped_volumes` (workshop 200 mm cup: voxel_size 0.1 → 0.4 mm; grid 180 M → 2.8 M voxels = 65× fewer). Permanent env-var-gated per-check timing infra (`MESH_PRINTABILITY_TIMING=1`). **Production iter-1 regen 2:10.58 = 2.18 min = 15.4× over pre-parallel-meshing 33.6 min baseline.** Memory peak 1.2 GB → 127 MB. cf-cast lib test suite 17.15 s → 5.44 s (3× additional, 14× cumulative).
-- **New bottleneck (post-S3, out of scope unless S4 attacks it):** gasket `check_self_intersecting` at ~25 s each (mesh-repair's existing AABB-pre-filter + rayon-parallel is O(face²) worst case on 400 k-face meshes). BVH-pre-filter via parry3d-f64 would project to ~3 s, giving production iter-1 regen ~0.9 min.
-- **Open S4 picks (workshop-user decision pending):**
-  - **Option A — ship arc at S4 (cold-read + omnibus PR).** 2.18 min iter-1 regen is workshop-acceptable; sub-1-min may be diminishing returns. Bookmark self_intersect-BVH as a separate follow-up arc.
-  - **Option B — S4 attacks self_intersect** (~50-100 LOC mesh-repair change). Projection: sub-1-min iter-1 regen (~37× over baseline). Smaller scope than prior S-phases; likely 1 session.
+- **New bottleneck post-S3:** gasket `check_self_intersecting` at ~25 s each. Promoted to Arc 5 (self-intersect-BVH) — see below — rather than expanded inline in this arc, since it (a) touches a different workspace crate (`mesh-repair`), and (b) has its own recon doc + §S-N section numbering distinct from this arc's §B-N.
+- **Open S4-S5 picks (workshop-user pick made 2026-05-25):** workshop user picked the sub-1-min path; the self_intersect work is tracked as Arc 5 below. This arc's S4 = cold-read pass-1 (incl. recon §B-2 amendment for f32/f64 + §B-0 amendment for "OTHER checks not negligible") + roll into the omnibus PR alongside Arc 5 ship.
+
+### Arc 5 — self-intersect BVH (perf arc, layer 3)
+
+- **Recon:** `docs/CF_CAST_F4_SELF_INTERSECT_BVH_RECON.md`
+  (commit `2af5247f`).
+- **State:** Recon shipped. **S1-S3 pending.**
+- **Memory:** _(none yet — created at S1 ship)_
+- **Trigger:** Arc 4 (F4 spatial-index) S3's regen identified gasket `check_self_intersecting` at ~25 s per gasket as the new long pole post-thin-walls-BVH + post-voxel-cap. mesh-repair's existing AABB-pre-filter + rayon-parallel inner loop is O(n²) worst case on 400 k-face meshes; pair generation is the bottleneck, not the SAT triangle-test.
+- **Bottleneck (code-survey-confirmed):**
+  `mesh/mesh-repair/src/intersect.rs:149` `detect_self_intersections`'s inner `for j in (i+1)..n` enumerates `n × (n-1) / 2 = 8×10¹⁰` pairs on a 400 k-face gasket. AABB-overlap test is fast (~5 ns) but enumerating all pairs is the dominant cost. Triangle-triangle SAT only runs on the small overlap-pass fraction.
+- **Picked architectural fix:** `parry3d_f64::partitioning::Qbvh::traverse_bvtt(qbvh, qbvh, visitor)` — simultaneous traversal of the same Qbvh against itself enumerates AABB-overlapping pairs in O(k + n log n). Downstream SAT triangle-test (`triangles_intersect`) unchanged. parry3d-f64 already a workspace dep (added at Arc 4 S1).
+- **Projected gain:** per-gasket `detect_self_intersections` 25 s → ~3 s (~8× wall). Production iter-1 regen 2.18 min → **~0.9 min (~37× over pre-parallel-meshing 33.6 min baseline)**.
+- **Scope:** mesh-repair internals only; no public API change. 3 workspace consumers (mesh-printability, mesh-repair-benches, printability-self-intersecting example) auto-inherit the speedup.
+- **Next phases (§S-9):**
+  - S1 (~150-250 LOC) — Qbvh-based pair enumeration in `detect_self_intersections` + `#[cfg(test)] fn detect_self_intersections_reference` preserving O(n²) impl + 5 paired regression tests (matches-reference / runtime gate / skip-adjacent / max-reported truncation / degenerate inputs).
+  - S2 — cf-cast production iter-1 regen + measure new wall-clock (target <1 min).
+  - S3 — cold-read pass-1 + omnibus PR (joint with all in-flight arcs).
 - **Trigger:** parallel-meshing-S2 empirical measurement showed
   gasket F4 = 78% of total wall-clock (587 s × 3 layers parallel,
   longest single drives the floor). Algorithmic optimization is
@@ -133,38 +159,33 @@ close per [[feedback-omnibus-pr-single-branch]]).
 
 ## Sequencing recommendation
 
-F4-index S1 is done — that opened up developer-experience speedup
-for the remaining arcs. Updated order:
+Updated post-F4-S3-ship + Arc-5-recon-scaffold:
 
-1. ✅ **F4-index S1.** Shipped `d42ddf11`. cf-cast suite 4.6×
-   faster at test-fixture scale; production projection 12.9 min
-   → ~1-1.5 min.
-2. **F4-index S2 next** (RECOMMENDED) — production iter-1 regen on
-   `~/scans/cast.toml` to MEASURE the actual speedup (vs test-
-   fixture extrapolation) + identify the new bottleneck. Likely
-   candidates: `check_self_intersecting`, `check_trapped_volumes`,
-   `check_long_bridges`. Decides whether S3 of this arc is needed
-   or ship-as-is. Takes ~2-15 min wall-clock (depending on actual
-   post-S1 perf).
-3. **Seam-flange S1-S5 then.** Each phase's S4 iter-1 regen
-   should run in ~1-2 min now → fast validation. Workshop S6
-   physical pour gate cleared.
-4. **Parallel-meshing S3 last (or skip).** Log buffer + `--threads`
-   flag are cosmetic. Phase-level concurrency savings collapse
-   post-F4-arc. **Skip S3 entirely** unless omnibus PR cold-read
+1. ✅ **F4-index S1+S2+S3.** Production iter-1 regen 33.6 → 2.18 min.
+2. ✅ **Arc 5 self-intersect-BVH recon scaffold** (`2af5247f`).
+3. **Arc 5 cold-read pass-1 next** (workshop user just asked for it).
+4. **Arc 5 S1-S2-S3 ship** — sub-1-min iter-1 regen projected.
+5. **Seam-flange S1-S5.** Each phase regen <2 min thanks to
+   compounded perf wins. Workshop S6 physical pour gate clear.
+6. **F4-index S4 (cold-read + recon amendments).** Joins the
+   omnibus PR — no new code, just doc fixes for recon §B-0
+   ("OTHER checks not negligible") + §B-2 (f32/f64 distinction).
+7. **Parallel-meshing S3 (or skip).** Log buffer + `--threads`
+   flag are cosmetic. **Skip** unless omnibus PR cold-read
    surfaces a log-readability complaint.
 
-**Compounding regen progression (S2 measured 2026-05-25):**
+**Compounding regen progression (multiple steps measured 2026-05-25):**
 
 | Order | After step | Iter-1 regen | Notes |
 |-------|------------|-------------:|-------|
 | Pre-S1-of-parallel-meshing | baseline | 33.6 min | |
 | Parallel-meshing S2 ship | measured | 12.9 min (2.6×) | gasket F4 dominates 78% |
-| F4-index S1 ship (`d42ddf11`) | test-fixture cf-cast suite 4.6× | (projection — see next row for actual) | |
-| **F4-index S2 measurement (production regen)** | **measured 2026-05-25** | **4.14 min (8.1× over baseline)** | recon was 2.5× optimistic — see Arc 4 |
-| F4-index S3 (in-flight) | per-check instrument + new-pole BVH | ~1-2 min projected | cup-Positive F4 ~50s + gasket residual ~64s targets |
-| Seam-flange S1-S5 | each phase regen | ~1-2 min | iter-3 unblock |
-| Final state at PR time | all S-phases shipped | **~1-2 min (15-30× over baseline)** | |
+| F4-index S1 ship (`d42ddf11`) | (projection only — see next row) | | |
+| **F4-index S2 production regen** | **measured** | **4.14 min (8.1×)** | recon §B-0 was 2.5× optimistic |
+| **F4-index S3 ship (`876f20d4`)** | **measured** | **2.18 min (15.4×)** | voxel-cap on trapped_volumes |
+| Arc 5 self-intersect-BVH S1-S2 (pending) | projected | **~0.9 min (~37×)** | Qbvh self-overlap pair enum |
+| Seam-flange S1-S5 (pending) | each phase regen | ~0.9-1.5 min | iter-3 unblock |
+| Final state at PR time | all S-phases shipped | **~0.9-1.5 min (22-37× over baseline)** | |
 
 ## Cross-arc correctness boundaries
 
@@ -226,6 +247,12 @@ parallel meshing + F4 BVH (iter-3 unblock)`.
 Major architectural decisions across all arcs (chronological,
 most recent first):
 
+- **2026-05-25 (post-F4-S3)**: spin self-intersect-BVH work out
+  into its own **Arc 5** rather than expanding F4-index S4. Two
+  reasons: (a) different workspace crate (`mesh-repair` vs
+  `mesh-printability`), (b) self-contained recon doc with §S-N
+  section numbering distinct from F4's §B-N. F4-index S4
+  collapses to cold-read pass-1 + recon amendments (no code).
 - **2026-05-25 (F4-index S2 measurement)**: ship F4-index **S3**
   rather than ship-as-is at 4.14 min. Workshop developer-experience
   delta between 4 min and <2 min is meaningful (coffee-fetch vs
