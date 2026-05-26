@@ -52,14 +52,21 @@ respective S2 in memory but not in commit table.)
   correctness instrumentation, §Q-3 scan-mesh resolution
   measurement, §Q-7 gasket crispness check) before S1 plunges.**
 - **Memory:** (none yet — recon scaffold only).
-- **Trigger:** workshop user's cf-view smoke gate on
+- **Trigger:** chained — workshop user's cf-view smoke gate on
   `~/scans/cast_iter1_post_flange_smoke/` (the [[project-cf-cast-seam-flange-s4]]
-  production STL set) catalogued 6 distinct visual quality
-  failure modes during a live walkthrough. Strictly additive
-  quality-improvement arc within the current curve-following +
-  seam-flange + gasket architecture (NOT a paradigm pivot).
-  Condo-floor-weight constraint ([[project-workshop-condo-weight-constraint]])
-  rules out concrete-fill / heavy-fixture fix paths.
+  production STL set) failed initial inspection; workshop user
+  briefly pivoted to a "cuboid+dowel+concrete-fill" architectural
+  reset (recon scaffold `b214d763` + cold-read `4d6873ab` +
+  active-arcs `282487f9`), then RETRACTED that pivot after
+  recognizing the condo floor weight constraint
+  ([[project-workshop-condo-weight-constraint]]) makes concrete-
+  fill infeasible (commits reverted via `git reset --hard
+  f42fe842`); pivoted back to "solve this within current
+  architecture, without giving up on what we have"; live cf-view
+  walkthrough then catalogued the 6 distinct visual quality
+  failure modes that this recon addresses. Strictly additive
+  quality-improvement arc within the curve-following + seam-
+  flange + gasket architecture (NOT a paradigm pivot).
 - **Six failure modes (§Q-1 through §Q-6):**
   - §Q-1: seam-face perimeter saw-tooth (SDF/MC quantization)
   - §Q-2: plug-floor-lock polygonal socket (coarse mesh-CSG)

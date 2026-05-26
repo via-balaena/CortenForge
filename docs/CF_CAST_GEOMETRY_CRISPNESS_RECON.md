@@ -79,15 +79,16 @@ must respect):
 
 cf-view smoke gate on `~/scans/cast_iter1_post_flange_smoke/`
 2026-05-25 produced 6 distinct visual quality complaints from the
-workshop user. The complaints span THREE paradigm strata in the
-cast pipeline:
+workshop user. The complaints span **THREE identified paradigm
+strata** in the cast pipeline + **one TBD stratum** pending §Q-6
+disambiguation:
 
 | Paradigm | Affected by failure modes |
 |---|---|
 | SDF/MC composition at 3 mm cells | §Q-1, §Q-3, §Q-4 |
 | Mesh-CSG mating-feature primitives | §Q-2 |
 | Mesh export (STL writer + normal computation) | §Q-5 |
-| TBD diagnostic (per-side halfspace cut?) | §Q-6 |
+| TBD pending §Q-6 diagnostic (could be per-side halfspace cut OR scan-driven geometric asymmetry OR viewing-angle illusion) | §Q-6 |
 
 Each paradigm has its own quality knobs + cost surfaces. A single
 "fix the geometry" patch doesn't exist — the fixes are paradigm-
@@ -120,28 +121,43 @@ SDF crossings.
 **Fix candidates:**
 
 1. **Finer MC cells globally**: drop `mesh_cell_size_m` from 3 mm
-   to ~1 mm. Resolves features cleanly. **Cost: TBD — projected
-   ~27× more MC samples per piece (3³ axis-scaling). Wall-clock
-   1:44 → projected 30-50 min range. Empirical verification
-   needed at §Q-12 S1.** All shipped F4 perf arcs would re-amortize
-   under the larger work unit.
+   to ~1 mm. Resolves features cleanly. **Cost: TBD — verify
+   empirically at §Q-11 S1.** Quantitative bound only: MC sample
+   count scales as `(3/1)³ = 27×` per piece (lower bound on
+   compute), but **wall-clock scaling is NOT purely cubic** —
+   F4 + post-MC mesh-CSG + STL I/O scale separately (F4 thin-wall
+   BVH at O(n log n), trapped-volumes at O(voxel-grid), I/O at
+   O(triangle count)). Parallel-meshing-S2's 2.6× amortizes
+   compute across cores; F4-S1 + F4-S3 + self-intersect-BVH may
+   ALSO need re-calibration at the new face-count regime (see
+   §Q-15 cross-arc interactions). **The pre-S1 wall-clock
+   projection range is uncertain enough that any specific number
+   would be hand-waving; S1 empirical regen is the load-bearing
+   data point.**
 2. **Adaptive MC cell sizing**: coarse cells (3 mm) over body
    bulk, fine cells (~0.5-1 mm) near flange + cap-plane +
    thin-feature regions. Compute-efficient version of (1).
    **Cost: significant infrastructure work (new MC pipeline
-   wrapping the existing single-cell-size flow). Estimated
-   ~600-1000 LOC across cf-design + cf-cast. Pre-existing
-   bookmark from [[project-cf-cast-self-intersect-bvh-s1]] §S-12.**
-3. **Mesh-CSG flange primitive** (paradigm shift): build the
+   wrapping the existing single-cell-size flow). LOC estimate
+   ~600-1000 across cf-design + cf-cast — TBD pending S2
+   scaffold (this LOC range is a rough order-of-magnitude
+   guess, NOT empirically anchored). Pre-existing bookmark from
+   [[project-cf-cast-self-intersect-bvh-s1]] §S-12.**
+3. **Mesh-CSG flange primitive (additive)** (paradigm extension,
+   NOT replacement): add a mesh-CSG flange variant ALONGSIDE the
+   shipped SDF `FlangeSdf` (workshop user toggles via a new
+   `FlangeKind::MeshPlate(spec)` variant or similar). Build the
    flange as a separate analytical mesh primitive (clean
    rectangular box; sharp edges), post-MC `.union()` it onto
    the cup-piece mesh. Same paradigm placement as the existing
    `MatingTransform::Union/SubtractCylinder` pins.
-   **Cost: ~200-300 LOC. Retires SDF FlangeSdf + adds a mesh-CSG
-   flange variant.** Per-perimeter offset is geometrically more
-   complex than a rectangular box; mesh-CSG flange might need
+   **Cost: ~200-300 LOC (TBD anchor; needs scaffold). Additive
+   to FlangeKind; the existing `Plate(FlangeSpec)` variant
+   stays.** Per-perimeter offset is geometrically more complex
+   than a rectangular box; mesh-CSG flange might need
    per-perimeter sweep approximation OR accept a rectangular-
-   bounding-box approximation.
+   bounding-box approximation. The `Plate` (SDF) variant remains
+   default until S1 empirical comparison.
 4. **Smoother flange SDF**: replace `max(...)` with `smin`-style
    smooth-max blends. **Cost: ~20 LOC. Accepts slightly rounded
    flange profile (no sharp 90° edges); doesn't fix the
@@ -162,46 +178,64 @@ mesh-CSG complexity; (4) is a partial workaround.
 **Paradigm:** mesh-CSG mating-feature. The plug-lock socket comes
 from `MatingTransform::SubtractTruncatedPyramid` shipped at
 [[project-cf-cast-fdm-friendly-geometry-arc]] S4. The pyramid is
-built from ~10-20 triangles total (one per pyramid face);
-boolean-subtract preserves the pyramid's native triangulation.
+built from a **convex hull over a small point set** via
+`mesh_csg::build_truncated_pyramid_via_hull_pts`
+(`design/cf-cast/src/mesh_csg.rs:356`); boolean-subtract preserves
+the hull's native triangulation.
 
-**Root cause specifics:**
+**Root cause specifics (verified against `mesh_csg.rs`):**
 
-- A truncated pyramid has 6 quadrilateral faces (4 lateral + base
-  + top) → ~12 triangles after triangulation.
-- That's the mesh resolution at the cup-piece cap-plane socket;
-  MC cells are not involved at this surface.
-- Increasing `mesh_cell_size_m` doesn't help (the truncated-pyramid
-  mesh isn't in MC's sampling).
+- The pyramid is **4-sided rectangular** (NOT 6-sided): rectangular
+  base × rectangular top × 4 trapezoidal lateral faces.
+- Point counts feeding the convex hull (`Manifold::hull_pts`):
+  - **Without chamfer:** 4 base + 4 tip = 8 points → ~12 triangles.
+  - **With chamfer (production default, `base_chamfer_m > 0`):**
+    8 base (4 inner + 4 outer) + 4 tip = 12 points → ~16-20
+    triangles (exact count depends on convex-hull triangulation).
+- Workshop user's "6-8 facet" cf-view observation matches the
+  chamfered-pyramid edition viewed from one camera angle (visible
+  lateral facets + chamfer-band triangles from that side).
+- MC cells are not involved at this surface — increasing
+  `mesh_cell_size_m` doesn't help.
 
 **Fix candidates:**
 
-1. **Finer-tessellated truncated pyramid primitive**: subdivide
-   each pyramid face into N×N triangles. Increases face count
-   from ~12 → ~12×N². At N=4, ~192 triangles per pyramid; at
-   N=8, ~768. **Cost: ~50-100 LOC in `prismatic_pin.rs` or
-   wherever the pyramid mesh-CSG primitive lives.** Workshop
-   visible improvement linear in N; budget-bound by F4 wall-
-   clock impact (more triangles per piece → more F4 work).
-2. **Replace truncated pyramid with cylindrical post primitive**:
-   cylinders mesh with ~32 segments around → 64 triangles for
-   lateral surface alone. Visually MUCH crisper than truncated
-   pyramid at workshop scale. **Cost: ~150 LOC (new
-   `PrismaticPinSpec` variant or new spec entirely).** Different
-   workshop ergonomics: cylindrical post has NO self-centering
-   wedge action; relies purely on diametral clearance for fit.
+1. **Finer-tessellated truncated pyramid primitive**: replace the
+   `Manifold::hull_pts` call with a **parametric mesh constructor**
+   that subdivides each pyramid face (lateral + chamfer-band)
+   into N×N triangles. Doesn't apply regular `12 × N²` scaling
+   because the hull's native triangulation isn't a regular
+   subdivision; a parametric constructor would emit roughly
+   `(4 lateral faces + base + top) × 2 triangles × N²` =
+   `12 × N²` ≈ N=4 → ~192 triangles, N=8 → ~768. **Cost: ~80-150
+   LOC in `mesh_csg::build_truncated_pyramid_via_hull_pts` (or a
+   sibling `_subdivided` constructor); requires switching from
+   convex-hull to explicit parametric face mesh — not a trivial
+   knob.** Workshop-visible improvement scales with N; budget-
+   bound by F4 wall-clock impact (more triangles per piece → more
+   F4 work).
+2. **Replace truncated pyramid with cylindrical post primitive
+   ⚠ VIOLATES PRIOR-ARC-MEMORY RULE #6**: cylinders mesh with ~32
+   segments around → 64 triangles for lateral surface alone.
+   Visually MUCH crisper than truncated pyramid at workshop scale.
+   **Cost: ~150 LOC (new `PrismaticPinSpec` variant).** But:
+   **this candidate silently reverts the [[project-cf-cast-fdm-friendly-geometry-arc]]
+   S4 decision** which explicitly picked truncated-pyramid OVER
+   cylindrical for the self-centering wedge action workshop
+   ergonomics. Per [[feedback-read-prior-arc-memory-before-architectural-decisions]]
+   rule #6, **DO NOT pick this candidate without an explicit
+   workshop-user re-decision** that re-opens the FDM-friendly-S4
+   call. Listed for completeness only.
 3. **Higher mesh-CSG resolution applied uniformly**: not just
    the plug-lock; cup-pin sockets too. Same fix as (1) applied
-   across the prismatic-pin module. **Cost: same as (1) per
-   call site.**
+   across the prismatic-pin module. **Cost: same per-call-site
+   delta as (1).**
 
-**Recommendation:** (1) is the lowest-cost workshop-visible fix.
-(2) is the paradigm-shift if the truncated-pyramid SHAPE itself
-is the wrong call (see [[project-cf-cast-fdm-friendly-geometry-arc]]
-S4 LESSONS about why truncated-pyramid was picked over cylinders
-in the first place — workshop ergonomics + self-centering wedge
-action. Reverting to cylindrical would re-open that decision;
-make a NEW decision empirically post-iter-3, not via this recon).
+**Recommendation:** (1) is the lowest-risk workshop-visible fix
+(no rule #6 concern; just primitive-resolution increase). (2) is
+listed for completeness but **explicitly contraindicated** unless
+the workshop user re-opens the FDM-friendly-S4 decision via a
+separate re-decision pass.
 
 ## §Q-3 Cavity walls degraded scan resolution
 
@@ -568,12 +602,51 @@ phase touches the primitive in question:
 ## §Q-13 Retirement scope (NOTHING)
 
 **This arc retires no shipped code.** All fixes are additive
-(new mesh-CSG primitives; new mesh-repair passes; new MC
-configuration options; new procedure.rs accept-prose) or
-in-place refinements (cell-size config change; pyramid
-subdivision parameter). The shipped seam-flange + seam-gasket-
-mold + FDM-friendly-geometry + parallel-meshing + F4-index +
+(new mesh-CSG primitives ALONGSIDE existing SDF ones; new mesh-
+repair passes; new MC configuration options; new procedure.rs
+accept-prose) or in-place refinements (cell-size config change;
+pyramid subdivision parameter). The shipped seam-flange + seam-
+gasket-mold + FDM-friendly-geometry + parallel-meshing + F4-index +
 self-intersect-BVH arcs all carry forward as-is.
+
+**Note for §Q-1 candidate (3) + §Q-4 candidate (3) mesh-CSG
+paradigm-extensions:** these are **additive** (new
+`FlangeKind::MeshPlate` / new `MatingTransform::IntersectFlatPlane`
+variants) — they do NOT retire the existing SDF FlangeSdf or
+SDF cap-plane composition. Workshop user picks via the new variant
+explicitly; default stays on the SDF path until S1 empirical
+comparison.
+
+## §Q-15 Cross-arc interactions (regression-risk table)
+
+The shipped perf arcs (parallel-meshing, F4-spatial-index, self-
+intersect-BVH) were each calibrated at the CURRENT 3 mm MC cell
+size / ~16-19k faces-per-cup-piece regime. §Q-1 + §Q-3 + §Q-4
+candidate (1) (finer MC cells globally) shifts that regime
+significantly. Per-arc regression risk analysis:
+
+| Active arc | At 3 mm cells (current) | At 1 mm cells (§Q-1 (1)) | Regression risk |
+|---|---|---|---|
+| Parallel-meshing-S2 | Wall 1:44; rayon par_iter over pieces+plugs+gaskets phases | Compute per-task grows ~27× (cubic on MC samples). Rayon scaling holds; per-task absolute time grows. | LOW — parallelism amortizes per-task work across cores; the 2.6× speedup factor preserved. |
+| F4-spatial-index-S1 (thin-wall BVH) | parry3d-f64 BVH crossover at ~30-50k faces (per [[project-cf-cast-self-intersect-bvh-s1]] LESSON a). Current cup pieces 15-19k faces → BVH amortizes marginally. | Face count grows 9-27× → cup pieces 150-500k faces → BVH amortizes strongly. | LOW — moves face count INTO the BVH's design regime, doesn't break it. |
+| F4-spatial-index-S3 (voxel-axis cap) | `MAX_VOXELS_PER_AXIS = 500` cap on `check_trapped_volumes`; production 200 mm part at 3 mm cells = ~67 cells/axis (no cap fires). | At 1 mm cells, 200 mm part = 200 cells/axis. Still under 500 cap → trapped_volumes still bounded. | LOW — cap was sized for 200-300 mm parts; 1 mm cells stays under cap. |
+| Self-intersect-BVH-S1 | parry3d-f64 Qbvh crossover at ~30-50k faces (LESSON a). Current gaskets 400k faces strongly amortized; cup pieces marginally. | Cup-piece face counts move into BVH's design regime. | LOW — same crossover reasoning as F4-S1. |
+| **Seam-flange-S1 SDF** | FlangeSdf adds 1 max() composition per MC sample. | Same SDF eval per sample but **27× more samples** → compose-time grows ~27×. Cup-piece compose phase was non-dominant at 3 mm cells; at 1 mm it may compete with gasket-MC for wall-clock dominance. | **MEDIUM** — re-shuffles wall-clock-bottleneck ordering; doesn't break correctness. |
+| **Seam-gasket-mold-S1 SDF** | Gasket MC at 0.5 mm cells (per `GASKET_MAX_CELL_SIZE_M`); independent of `cast.mesh_cell_size_m`. | UNCHANGED — gasket cell size is per-gasket-spec, not global. | NONE — gasket arc not affected by §Q-1 (1). |
+
+**Load-bearing regression check:** §Q-11 S1 production regen MUST
+re-run with `MESH_PRINTABILITY_TIMING=1` enabled (the env-var
+introduced by [[project-cf-cast-f4-spatial-index-s3]]) so per-check
+F4 timings + per-phase wall-clock are captured. If any check
+regresses significantly (e.g. trapped_volumes growing
+super-linearly with face count), the perf arcs need recalibration
+BEFORE the §Q-1 fix ships.
+
+**MEDIUM-risk seam-flange-S1 SDF compose-time amplification** is
+the most likely surprise. Mitigation: §Q-1 candidate (3) — the
+mesh-CSG flange paradigm-extension — bypasses the SDF compose-time
+amplification by building the flange post-MC. If S1 regen reveals
+seam-flange compose time dominating, escalate to candidate (3).
 
 ## §Q-14 Successor
 
