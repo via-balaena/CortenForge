@@ -166,6 +166,23 @@ struct AssemblyVisibility {
     visible: std::collections::HashMap<String, bool>,
 }
 
+/// Per-piece opacity state — `pieces[name] = alpha in [0.0, 1.0]`.
+/// Initialized to [`ASSEMBLY_DEFAULT_ALPHA`] for every piece at
+/// spawn time; mutated by `assembly_piece_panel` (per-piece slider
+/// or "Apply global opacity" button); consumed by
+/// `apply_assembly_opacity` each frame to update each piece's
+/// material `base_color` alpha channel.
+#[derive(Resource, Debug, Default)]
+struct AssemblyOpacity {
+    alpha: std::collections::HashMap<String, f32>,
+}
+
+/// Default per-piece alpha at startup. Matches the pre-slider hard-
+/// coded value (slight transparency so overlapping pieces don't
+/// fully hide each other on first orbit). Workshop user dials per-
+/// piece sliders or the global slider to inspect internal features.
+const ASSEMBLY_DEFAULT_ALPHA: f32 = 0.55;
+
 /// Drive the Bevy app for Option C assembly mode — load all STLs
 /// up front, insert as [`AssemblyInputs`], skip scrub UI + scalar
 /// dropdown machinery.
@@ -207,6 +224,7 @@ fn run_assembly_mode(cli: &Cli, stls: &[std::path::PathBuf]) -> Result<()> {
     .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
     .insert_resource(assembly)
     .insert_resource(AssemblyVisibility::default())
+    .insert_resource(AssemblyOpacity::default())
     .insert_resource(up_axis)
     .insert_resource(RenderScale(render_scale));
 
@@ -214,7 +232,14 @@ fn run_assembly_mode(cli: &Cli, stls: &[std::path::PathBuf]) -> Result<()> {
         Startup,
         (setup_assembly_scene, spawn_assembly_pieces).chain(),
     )
-    .add_systems(Update, (apply_assembly_visibility, exit_on_esc))
+    .add_systems(
+        Update,
+        (
+            apply_assembly_visibility,
+            apply_assembly_opacity,
+            exit_on_esc,
+        ),
+    )
     .add_systems(EguiPrimaryContextPass, assembly_piece_panel)
     .run();
 
@@ -281,6 +306,7 @@ fn spawn_assembly_pieces(
     assembly: Res<AssemblyInputs>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
+    mut opacity: ResMut<AssemblyOpacity>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -289,28 +315,30 @@ fn spawn_assembly_pieces(
     for (color_index, piece) in assembly.pieces.iter().enumerate() {
         let bevy_mesh = build_face_mesh(&piece.mesh, None, *up);
         let piece_color = TAB10[color_index % TAB10.len()];
+        // Seed the per-piece alpha resource at the default (slight
+        // transparency so overlapping pieces don't fully hide each
+        // other on first orbit). Workshop user adjusts per-piece
+        // sliders or the global slider via the side panel.
+        opacity
+            .alpha
+            .entry(piece.name.clone())
+            .or_insert(ASSEMBLY_DEFAULT_ALPHA);
         let material = StandardMaterial {
-            base_color: piece_color,
+            base_color: piece_color.with_alpha(ASSEMBLY_DEFAULT_ALPHA),
             metallic: 0.10,
             perceptual_roughness: 0.6,
             double_sided: true,
             cull_mode: None,
             unlit: false,
-            // Slight transparency so overlapping pieces don't fully
-            // hide each other on first orbit. Workshop user can
-            // toggle individual pieces off via the side panel for
-            // a fully opaque look at any single piece.
             alpha_mode: AlphaMode::Blend,
             ..default()
         };
-        let mut material_with_alpha = material;
-        material_with_alpha.base_color = piece_color.with_alpha(0.55);
         commands.spawn((
             AssemblyPiece {
                 name: piece.name.clone(),
             },
             Mesh3d(meshes.add(bevy_mesh)),
-            MeshMaterial3d(materials.add(material_with_alpha)),
+            MeshMaterial3d(materials.add(material)),
             Transform::from_scale(Vec3::splat(scale)),
         ));
     }
@@ -325,15 +353,39 @@ fn assembly_piece_panel(
     mut contexts: bevy_egui::EguiContexts,
     assembly: Res<AssemblyInputs>,
     mut visibility: ResMut<AssemblyVisibility>,
+    mut opacity: ResMut<AssemblyOpacity>,
+    mut global_alpha: Local<f32>,
+    mut global_alpha_initialized: Local<bool>,
 ) {
+    if !*global_alpha_initialized {
+        *global_alpha = ASSEMBLY_DEFAULT_ALPHA;
+        *global_alpha_initialized = true;
+    }
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
     bevy_egui::egui::SidePanel::left("assembly_pieces")
-        .min_width(220.0)
+        .min_width(260.0)
         .show(ctx, |ui| {
             ui.heading("cf-view (assembly)");
-            ui.label("Per-piece visibility:");
+            // Global opacity — single slider + apply button that
+            // cascades the value to every per-piece alpha. Useful
+            // for "fade everything to see interior features" or
+            // "snap everything back to opaque." Per-piece sliders
+            // (below) override after.
+            ui.label("Global opacity:");
+            ui.horizontal(|ui| {
+                ui.add(
+                    bevy_egui::egui::Slider::new(&mut *global_alpha, 0.0..=1.0).show_value(true),
+                );
+                if ui.button("Apply to all").clicked() {
+                    for piece in &assembly.pieces {
+                        opacity.alpha.insert(piece.name.clone(), *global_alpha);
+                    }
+                }
+            });
+            ui.separator();
+            ui.label("Per-piece visibility + opacity:");
             // Select-all / deselect-all shortcuts. Useful when the
             // workshop user is inspecting a single piece in a
             // large multi-piece assembly: click "Deselect all",
@@ -353,8 +405,17 @@ fn assembly_piece_panel(
             });
             ui.separator();
             for piece in &assembly.pieces {
-                let entry = visibility.visible.entry(piece.name.clone()).or_insert(true);
-                ui.checkbox(entry, &piece.name);
+                let visible_entry = visibility.visible.entry(piece.name.clone()).or_insert(true);
+                ui.checkbox(visible_entry, &piece.name);
+                let alpha_entry = opacity
+                    .alpha
+                    .entry(piece.name.clone())
+                    .or_insert(ASSEMBLY_DEFAULT_ALPHA);
+                ui.add(
+                    bevy_egui::egui::Slider::new(alpha_entry, 0.0..=1.0)
+                        .text("α")
+                        .show_value(true),
+                );
             }
             ui.separator();
             ui.label(format!("{} pieces total", assembly.pieces.len()));
@@ -379,6 +440,32 @@ fn apply_assembly_visibility(
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+/// Each-frame system: read [`AssemblyOpacity`], update each piece's
+/// `StandardMaterial.base_color` alpha channel to match. The side-
+/// panel slider mutates the resource; this system propagates the
+/// value to the asset store so the next render frame picks it up.
+/// Skipped when the resource is unchanged (cheap default-pass).
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take Res/ResMut/Query/Commands by value
+fn apply_assembly_opacity(
+    opacity: Res<AssemblyOpacity>,
+    query: Query<(&AssemblyPiece, &MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !opacity.is_changed() {
+        return;
+    }
+    for (piece, material_handle) in &query {
+        let alpha = opacity
+            .alpha
+            .get(&piece.name)
+            .copied()
+            .unwrap_or(ASSEMBLY_DEFAULT_ALPHA);
+        if let Some(material) = materials.get_mut(&material_handle.0) {
+            material.base_color = material.base_color.with_alpha(alpha);
+        }
     }
 }
 
