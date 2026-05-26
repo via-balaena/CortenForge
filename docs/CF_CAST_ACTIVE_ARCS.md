@@ -7,7 +7,7 @@ one place so we don't lose track.
 
 ## Branch state
 
-`dev` is **20 commits ahead of origin** (no push, no PR until arc
+`dev` is **24 commits ahead of origin** (no push, no PR until arc
 close per [[feedback-omnibus-pr-single-branch]]).
 
 | # | Commit | Arc | Phase |
@@ -30,12 +30,14 @@ close per [[feedback-omnibus-pr-single-branch]]).
 | 16 | `876f20d4` | F4 spatial-index | S3 ship (voxel cap) |
 | 17 | `820125c7` | (this doc) | active-arcs S3 update |
 | 18 | `2af5247f` | self-intersect-BVH | recon scaffold |
-| 19 | `?`         | (this doc) | active-arcs Arc 5 added (this commit) |
-| 20 | (pending)  | self-intersect-BVH | recon cold-read |
+| 19 | `b26389a8` | (this doc) | active-arcs Arc 5 added |
+| 20 | `0e07a4ad` | self-intersect-BVH | recon cold-read |
+| 21 | `ab810400` | self-intersect-BVH | S1 ship (BVH pair enumeration) |
+| 22 | (pending)  | (this doc) | active-arcs S1-ship update (this commit) |
 
-(S2 of F4 spatial-index was empirical-measurement-only; no code
-commit. Counted as the S2 in the memory log but not in the commit
-table.)
+(S2 of F4 spatial-index + S2 of self-intersect-BVH were
+empirical-measurement-only; no code commits. Counted as the
+respective S2 in memory but not in commit table.)
 
 ## Active arcs
 
@@ -123,19 +125,25 @@ table.)
 ### Arc 5 — self-intersect BVH (perf arc, layer 3)
 
 - **Recon:** `docs/CF_CAST_F4_SELF_INTERSECT_BVH_RECON.md`
-  (commit `2af5247f`).
-- **State:** Recon shipped. **S1-S3 pending.**
-- **Memory:** _(none yet — created at S1 ship)_
+  (commit `2af5247f` + cold-read `0e07a4ad`).
+- **State:** **S1 shipped (`ab810400`).** S2 collapses to omnibus PR rollup (S1 measured production regen inline); S3 = cold-read + omnibus PR.
+- **Memory:** [[project-cf-cast-self-intersect-bvh-s1]]
 - **Trigger:** Arc 4 (F4 spatial-index) S3's regen identified gasket `check_self_intersecting` at ~25 s per gasket as the new long pole post-thin-walls-BVH + post-voxel-cap. mesh-repair's existing AABB-pre-filter + rayon-parallel inner loop is O(n²) worst case on 400 k-face meshes; pair generation is the bottleneck, not the SAT triangle-test.
 - **Bottleneck (code-survey-confirmed):**
   `mesh/mesh-repair/src/intersect.rs:149` `detect_self_intersections`'s inner `for j in (i+1)..n` enumerates `n × (n-1) / 2 = 8×10¹⁰` pairs on a 400 k-face gasket. AABB-overlap test is fast (~5 ns) but enumerating all pairs is the dominant cost. Triangle-triangle SAT only runs on the small overlap-pass fraction.
 - **Picked architectural fix:** `parry3d_f64::partitioning::Qbvh::traverse_bvtt(qbvh, qbvh, visitor)` — simultaneous traversal of the same Qbvh against itself enumerates AABB-overlapping pairs in O(k + n log n). Downstream SAT triangle-test (`triangles_intersect`) unchanged. parry3d-f64 already a workspace dep (added at Arc 4 S1).
 - **Projected gain:** per-gasket `detect_self_intersections` 25 s → ~3 s (~8× wall). Production iter-1 regen 2.18 min → **~0.9 min (~37× over pre-parallel-meshing 33.6 min baseline)**.
 - **Scope:** mesh-repair internals only; no public API change. 3 workspace consumers (mesh-printability, mesh-repair-benches, printability-self-intersecting example) auto-inherit the speedup.
-- **Next phases (§S-9):**
-  - S1 (~150-250 LOC) — Qbvh-based pair enumeration in `detect_self_intersections` + `#[cfg(test)] fn detect_self_intersections_reference` preserving O(n²) impl + 5 paired regression tests (matches-reference / runtime gate / skip-adjacent / max-reported truncation / degenerate inputs).
-  - S2 — cf-cast production iter-1 regen + measure new wall-clock (target <1 min).
+- **Phases (§S-9):**
+  - S1 — ✅ SHIPPED (`ab810400`). Qbvh-based pair enumeration + OverlapPairCollector visitor + 5 paired tests pass. Production regen 2:10.58 → 1:44.13 wall (1.32× internal, 7× per-gasket F4).
+  - S2 — collapses to omnibus PR rollup (S1 measured inline).
   - S3 — cold-read pass-1 + omnibus PR (joint with all in-flight arcs).
+- **Production regen result (measured 2026-05-25 post-S1):**
+  - Wall: **1:44.13 (1.74 min)**.
+  - cf-cast-cli internal: **82.4 s** (vs 109.0 s post-F4-S3).
+  - Per-gasket F4: **4.4 s each** (vs 30.6 s post-F4-S3, vs 587 s pre-F4-S1 = **~145× cumulative** on gasket F4).
+  - **Cumulative iter-1 regen 24.6× internal vs pre-parallel-meshing 33.6 min baseline.**
+- **New bottleneck (out of scope for Arc 5):** gasket MC compose at 34.4 s per gasket — F4 stack essentially solved at 4.4 s; the compose+MC unchanged from S3 territory. Recon §S-12 bookmarks adaptive MC cell sizing OR wgpu MC offload as the next layer if sub-1-min iter-1 regen becomes workshop-priority. 1:44 wall hits the "design-iteration acceptable" target the recon §S-1 set out for.
 - **Trigger:** parallel-meshing-S2 empirical measurement showed
   gasket F4 = 78% of total wall-clock (587 s × 3 layers parallel,
   longest single drives the floor). Algorithmic optimization is
@@ -183,9 +191,9 @@ Updated post-F4-S3-ship + Arc-5-recon-scaffold:
 | F4-index S1 ship (`d42ddf11`) | (projection only — see next row) | | |
 | **F4-index S2 production regen** | **measured** | **4.14 min (8.1×)** | recon §B-0 was 2.5× optimistic |
 | **F4-index S3 ship (`876f20d4`)** | **measured** | **2.18 min (15.4×)** | voxel-cap on trapped_volumes |
-| Arc 5 self-intersect-BVH S1-S2 (pending) | projected | **~0.9 min (~37×)** | Qbvh self-overlap pair enum |
-| Seam-flange S1-S5 (pending) | each phase regen | ~0.9-1.5 min | iter-3 unblock |
-| Final state at PR time | all S-phases shipped | **~0.9-1.5 min (22-37× over baseline)** | |
+| **Arc 5 self-intersect-BVH S1 (`ab810400`)** | **measured** | **1:44 (20× wall / 24.6× internal)** | Qbvh self-overlap pair enum; 7× per-gasket F4 |
+| Seam-flange S1-S5 (pending) | each phase regen | ~1:44 - 3 min | iter-3 unblock |
+| Final state at PR time | all S-phases shipped | **~1:44 - 3 min (≥20× over baseline)** | |
 
 ## Cross-arc correctness boundaries
 
@@ -247,6 +255,13 @@ parallel meshing + F4 BVH (iter-3 unblock)`.
 Major architectural decisions across all arcs (chronological,
 most recent first):
 
+- **2026-05-25 (Arc 5 S1 ship `ab810400`)**: canonical-pair
+  filter (`i < j`) MUST live in the visitor's leaf-leaf branch
+  (cold-read Finding 3). Without it `Qbvh::traverse_bvtt(qbvh,
+  qbvh)` emits both `(i, j)` AND `(j, i)` plus `(i, i)`
+  self-pairs for every leaf — 2× pair count vs reference path.
+  Tests catch the divergence via HashSet equality but cleanest
+  to enforce in the visitor.
 - **2026-05-25 (post-F4-S3)**: spin self-intersect-BVH work out
   into its own **Arc 5** rather than expanding F4-index S4. Two
   reasons: (a) different workspace crate (`mesh-repair` vs
