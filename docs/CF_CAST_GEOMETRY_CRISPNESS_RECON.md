@@ -332,7 +332,23 @@ for one orthogonal plane; extending to the cap-plane is a parallel
 application. Candidate (4) is the bail-out if iter-3 surfaces a
 workshop-blocking issue and (3) isn't ready.
 
-## §Q-5 Normals are weird — UPDATED post-S0 diagnostic
+## §Q-5 Normals are weird — ✅ FIXED 2026-05-26 dev `efdff6b8`
+
+**Status: RESOLVED at the upstream foundational layer.** See
+[[project-cf-cast-geometry-crispness-q5-fix]] for the full fix
+record. The S0 diagnostic + investigation chain identified the
+root cause at `mesh-offset/src/marching_cubes.rs:160-162` (face
+emission missing the e1/e2 swap that cf-design's `mesher.rs` uses
+for CCW outward winding). 1-effective-LOC fix + downstream
+compensation removal in `mesh-shell/src/shell/generate.rs:300`.
+1353 tests across 7 crates pass; production regen confirms
+platform.stl 100% → 0% inverted-by-heuristic. Workshop visual
+gate (cf-view inspection of `~/scans/cast_iter1_post_winding_fix/`)
+pending.
+
+The investigation history below is preserved for context.
+
+### Original §Q-5 framing
 
 **Symptom:** visible bright/dark triangular patches on the plug
 surface in cf-view; lighting doesn't match the underlying smooth
