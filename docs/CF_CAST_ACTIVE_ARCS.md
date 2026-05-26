@@ -99,10 +99,14 @@ close per [[feedback-omnibus-pr-single-branch]]).
 ### Arc 4 — F4 spatial-index (perf arc, layer 2)
 
 - **Recon:** `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md`
-- **State:** **S1 shipped (`d42ddf11`)**. S2-S4 pending.
-- **Memory:** [[project-cf-cast-f4-spatial-index-s1]]
-- **S1 result:** cf-cast lib test suite 78.20 s → **17.15 s = 4.6×** at test-fixture scale. Architectural pick discovered empirically during S1: parry3d-f64 (not parry3d) — f32 sibling drifts ~1e-7 mm in Möller-Trumbore which crosses `min_wall_thickness` at 1.0 mm boundary. **Recon §B-2 hand-waved at "parry3d's BVH" without specifying f32/f64; needs amendment in next cold-read.**
-- **Production iter-1 regen projection** (per recon §B-0 + S1 test-fixture observation): per-mesh thin-wall 540 s → ~1-2 s = ~300-500× algorithmic; per-gasket F4 → ~20-50 s; production iter-1 regen 12.9 min → ~1-1.5 min.
+- **State:** **S1 + S2 shipped**; S3 in-flight; S4 pending.
+- **Memory:** [[project-cf-cast-f4-spatial-index-s1]],
+  [[project-cf-cast-f4-spatial-index-s2]]
+- **S1 ship (`d42ddf11`):** parry3d-f64 BVH for `flag_thin_wall_faces`. cf-cast lib test suite 78.20 s → 17.15 s = 4.6× at test-fixture scale. Architectural pick discovered empirically during S1: parry3d-f64 (not parry3d) — f32 sibling drifts ~1e-7 mm in Möller-Trumbore which crosses `min_wall_thickness` at 1.0 mm boundary.
+- **S2 result (production regen, 2026-05-25):** **4.14 min wall / 224.7 s internal / 8.1× over pre-parallel-meshing 33.6 min baseline / 3.4× over parallel-meshing-S2's 12.9 min.** CPU peak 1076% (~11 cores). Recon §B-0 projection (1-1.5 min) was 2.5× too optimistic. Per-gasket F4 **9.2× speedup** (587s → 64s), NOT the 25× projected. **New bottleneck identified**: cup-piece Positive F4 ~50s vs Negative 0.0s on same-size (~16k face) meshes — asymmetric F4 check (smoking gun: `check_self_intersecting` on pin-junction boolean artifacts, since Positive cup carries pin protrusions + Negative carries pin sockets). Residual gasket F4 64s also wants investigation.
+- **Open follow-ups (S3 + S4):**
+  - S3 (in-flight) — instrument `validate_for_printing` per-check timing; identify the asymmetric long pole on Positive cup; BVH-pre-filter via parry3d-f64 (or voxel-grid opt if it's `check_trapped_volumes`).
+  - S4 — cold-read pass-1 (including recon §B-2 amendment for f32/f64 + §B-0 amendment for "OTHER checks not negligible") + omnibus PR.
 - **Trigger:** parallel-meshing-S2 empirical measurement showed
   gasket F4 = 78% of total wall-clock (587 s × 3 layers parallel,
   longest single drives the floor). Algorithmic optimization is
@@ -147,15 +151,17 @@ for the remaining arcs. Updated order:
    post-F4-arc. **Skip S3 entirely** unless omnibus PR cold-read
    surfaces a log-readability complaint.
 
-**Compounding regen projection (updated):**
+**Compounding regen progression (S2 measured 2026-05-25):**
 
-| Order | After step | Iter-1 regen |
-|-------|------------|-------------:|
-| Pre-S1-of-parallel-meshing baseline | — | 33.6 min |
-| Parallel-meshing S2 ship | measured | 12.9 min (2.6×) |
-| F4-index S1 ship (this commit) | test-fixture cf-cast suite 4.6× | ~1-1.5 min projected (measure at S2 of this arc) |
-| Seam-flange S1-S5 | each phase regen | ~1-2 min |
-| Final state at PR time | all S-phases shipped | **~1-2 min (15-30× over baseline)** |
+| Order | After step | Iter-1 regen | Notes |
+|-------|------------|-------------:|-------|
+| Pre-S1-of-parallel-meshing | baseline | 33.6 min | |
+| Parallel-meshing S2 ship | measured | 12.9 min (2.6×) | gasket F4 dominates 78% |
+| F4-index S1 ship (`d42ddf11`) | test-fixture cf-cast suite 4.6× | (projection — see next row for actual) | |
+| **F4-index S2 measurement (production regen)** | **measured 2026-05-25** | **4.14 min (8.1× over baseline)** | recon was 2.5× optimistic — see Arc 4 |
+| F4-index S3 (in-flight) | per-check instrument + new-pole BVH | ~1-2 min projected | cup-Positive F4 ~50s + gasket residual ~64s targets |
+| Seam-flange S1-S5 | each phase regen | ~1-2 min | iter-3 unblock |
+| Final state at PR time | all S-phases shipped | **~1-2 min (15-30× over baseline)** | |
 
 ## Cross-arc correctness boundaries
 
@@ -217,6 +223,12 @@ parallel meshing + F4 BVH (iter-3 unblock)`.
 Major architectural decisions across all arcs (chronological,
 most recent first):
 
+- **2026-05-25 (F4-index S2 measurement)**: ship F4-index **S3**
+  rather than ship-as-is at 4.14 min. Workshop developer-experience
+  delta between 4 min and <2 min is meaningful (coffee-fetch vs
+  "interrupt + come back"); the asymmetric Positive-cup F4 (50s
+  vs Negative 0s) is a concentrated bottleneck likely tractable
+  via the same BVH-pre-filter pattern as S1.
 - **2026-05-25**: **parry3d-f64 (NOT parry3d)** picked for F4
   spatial-index S1 (commit `d42ddf11`). Discovered empirically
   during S1 testing — parry3d (f32 sibling) drifts Möller-
