@@ -1098,9 +1098,22 @@ fn mesh_and_gate_v2_plugs(
             // copy (cap-plane SeamTrim + plug-lock pyramid union).
             // Layers 1+ stay on the SDF/MC path until S2 of the
             // recon extends scan-mesh-direct to the offset cases.
-            let mesh = match (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
-                (0, Some(scan_mesh)) => build_plug_body_mesh(scan_mesh),
-                _ => solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?,
+            //
+            // Caveat: `add_plug_pins` is currently pure-transforms
+            // (returns its `base_plug` input unchanged + a Vec of
+            // mating transforms), so discarding `plug_solid` on the
+            // scan-mesh-direct branch is just a cheap `Solid::clone`
+            // waste. If `add_plug_pins` ever re-grows SDF-side
+            // composition (e.g., a §G-7-style plug-shaft re-added
+            // pre-MC), the discard would silently skip that
+            // composition on the scan-mesh-direct path — pull the
+            // mating-transforms construction out independently then.
+            let (mesh, path_label) = match (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
+                (0, Some(scan_mesh)) => (build_plug_body_mesh(scan_mesh), "scan-mesh-direct"),
+                _ => (
+                    solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?,
+                    "compose+MC",
+                ),
             };
             let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
             let compose_mesh_s = t_compose.elapsed().as_secs_f64();
@@ -1118,7 +1131,8 @@ fn mesh_and_gate_v2_plugs(
             }
             eprintln!(
                 "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
-                 — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+                 — {path_label} {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
+                 ({verts} verts / {faces} faces)",
                 layer_count_minus_1 = layer_count.saturating_sub(1),
                 verts = mesh.vertices.len(),
                 faces = mesh.faces.len(),

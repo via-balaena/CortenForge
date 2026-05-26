@@ -60,12 +60,24 @@ use crate::mesher::METERS_TO_MM;
 /// winding direction are inherited from the input scan — cf-scan-prep
 /// is responsible for those upstream.
 ///
-/// The cap-plane truncation that [`crate::build_plug_cap_trim_transform`]
-/// re-asserts post-MC also flattens any cap-plane material below the
-/// trim plane on a scan-mesh-direct input (the scan mesh extends only
-/// to the cap-plane via cf-scan-prep's `trim_floor` workflow; if it
-/// over-extends, the `SeamTrim` removes the excess at scan resolution
-/// rather than MC resolution).
+/// **Cap-plane geometry note**: the cleaned scan mesh is a **CLOSED,
+/// watertight** mesh — cf-scan-prep's `auto_cap_open_boundaries` adds
+/// a cap-fan polygon (projected onto the fit plane) to close the
+/// open bottom, then `taubin_smooth_vertices` smooths the whole mesh
+/// (which can drift cap-fan vertices up to ~6 mm off the cap plane;
+/// see `cf-cap-planes::dome_wall_only_mesh` docstring for the
+/// rationale). The flatness of the resulting plug bottom is therefore
+/// owned upstream by cf-scan-prep's cap-fan placement, not by any
+/// truncation here.
+///
+/// The post-MC [`crate::build_plug_cap_trim_transform`] `SeamTrim`
+/// applies to scan-mesh-direct input the same way it applies to the
+/// SDF/MC output: it removes everything on the `+cap_normal` side of
+/// the parsed `.prep.toml` cap-plane (i.e., anything below cap-plane
+/// in pour orientation). For a properly-capped scan this is a near-
+/// no-op (the cap-fan vertices already sit near the cap-plane). Any
+/// pre-existing material below cap-plane is trimmed at scan resolution
+/// rather than MC resolution.
 #[must_use]
 pub fn build_plug_body_mesh(scan_mesh: &IndexedMesh) -> IndexedMesh {
     let mut out = IndexedMesh::new();

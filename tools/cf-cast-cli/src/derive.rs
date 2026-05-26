@@ -313,12 +313,30 @@ pub fn derive_spec_and_ribbon(
     // would emit an oversized plug because the scan mesh has no
     // inward offset baked in. S2 of the recon extends this to the
     // offset cases with an explicit per-layer offset parameter.
-    let scan_mesh_for_plug_layer_0 =
-        if config.cast.scan_mesh_direct_plug_layer_0 && cavity_inset_m == 0.0 {
+    //
+    // When the user opted in but `cavity_inset_m > 0`, surface a loud
+    // warning so the silent fall-through to SDF/MC doesn't look like
+    // a successful opt-in in the production-regen log. `eprintln`
+    // rather than `bail!` because the SDF/MC path is still
+    // workshop-correct; we just want to flag that the requested
+    // feature didn't engage.
+    let scan_mesh_for_plug_layer_0 = if config.cast.scan_mesh_direct_plug_layer_0 {
+        if cavity_inset_m == 0.0 {
             Some(std::sync::Arc::new(scan_sdf.mesh().clone()))
         } else {
+            eprintln!(
+                "[cf-cast] WARNING: cast.scan_mesh_direct_plug_layer_0 = true was requested \
+                 but cavity_inset_m = {cavity_inset_m_mm:.3} mm > 0; opt-in IGNORED for this \
+                 run and the legacy SDF/MC plug pipeline is used. (Recon §SMD-4 S2 extends \
+                 scan-mesh-direct to non-zero inset cases with an explicit per-layer offset \
+                 parameter.)",
+                cavity_inset_m_mm = cavity_inset_m * 1e3,
+            );
             None
-        };
+        }
+    } else {
+        None
+    };
 
     let spec = CastSpec {
         layers,
@@ -905,5 +923,84 @@ mod tests {
             sd_deep < 0.0,
             "deep interior must be inside plug, got {sd_deep}",
         );
+    }
+
+    /// S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the cast.toml
+    /// opt-in is set and `cavity_inset_m == 0`, the derived spec
+    /// must carry the scan mesh through to `export_molds_v2`.
+    #[test]
+    fn scan_mesh_direct_opt_in_populates_spec_field_at_zero_inset() {
+        let mut cfg = three_layer_config();
+        cfg.cast.scan_mesh_direct_plug_layer_0 = true;
+        let sdf = unit_cube_sdf();
+        let derived = derive_spec_and_ribbon(
+            &cfg,
+            &sdf,
+            unit_cube_aabb(),
+            &straight_x_centerline(),
+            0.0,
+            &[],
+        )
+        .unwrap();
+        let mesh = derived
+            .spec
+            .scan_mesh_for_plug_layer_0
+            .as_ref()
+            .expect("opt-in at cavity_inset_m == 0 must populate the field");
+        // Mesh-identity gate: the populated mesh must come from
+        // `scan_sdf.mesh()` (same vertex + face counts as the
+        // unit_cube_sdf fixture). Catches accidental routing to a
+        // different mesh source.
+        assert_eq!(mesh.vertices.len(), sdf.mesh().vertices.len());
+        assert_eq!(mesh.faces.len(), sdf.mesh().faces.len());
+    }
+
+    /// Sibling of `_at_zero_inset` above: the cavity_inset_m > 0 gate
+    /// silently drops the opt-in to None (with a stderr warning the
+    /// integration test can't easily assert on). Pre-S2, scan-mesh-
+    /// direct doesn't support non-zero inset.
+    #[test]
+    fn scan_mesh_direct_opt_in_ignored_when_cavity_inset_nonzero() {
+        let mut cfg = three_layer_config();
+        cfg.cast.scan_mesh_direct_plug_layer_0 = true;
+        let sdf = unit_cube_sdf();
+        let derived = derive_spec_and_ribbon(
+            &cfg,
+            &sdf,
+            unit_cube_aabb(),
+            &straight_x_centerline(),
+            0.001,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            derived.spec.scan_mesh_for_plug_layer_0.is_none(),
+            "scan-mesh-direct opt-in must NOT engage when cavity_inset_m > 0 \
+             (the scan mesh has no inward offset baked in; S2 of the recon \
+             extends this path to non-zero inset)",
+        );
+    }
+
+    /// Default cast.toml (no `scan_mesh_direct_plug_layer_0`) preserves
+    /// pre-S1 bit-for-bit output. Pairs with the opt-in tests above.
+    #[test]
+    fn scan_mesh_direct_default_leaves_spec_field_unset() {
+        let cfg = three_layer_config();
+        assert!(
+            !cfg.cast.scan_mesh_direct_plug_layer_0,
+            "TOML default must be false so existing cast.toml files \
+             continue through the SDF/MC plug pipeline",
+        );
+        let sdf = unit_cube_sdf();
+        let derived = derive_spec_and_ribbon(
+            &cfg,
+            &sdf,
+            unit_cube_aabb(),
+            &straight_x_centerline(),
+            0.0,
+            &[],
+        )
+        .unwrap();
+        assert!(derived.spec.scan_mesh_for_plug_layer_0.is_none());
     }
 }
