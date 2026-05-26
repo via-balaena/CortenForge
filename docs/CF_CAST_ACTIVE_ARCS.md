@@ -85,7 +85,7 @@ respective S2 in memory but not in commit table.)
 
 - **Recon:** `docs/CF_CAST_SEAM_FLANGE_RECON.md` (+ cold-read
   pass-1 applied).
-- **State:** **S1 shipped (`8997bdd3`).** S2-S5 pending.
+- **State:** **S1 shipped (`8997bdd3`) + cold-read pass-1 (`746a75bc`).** S2-S5 pending.
 - **Memory:** [[project-cf-cast-seam-flange-s1]]
 - **Trigger:** the seam-gasket-mold S2 `GasketSpec.
   workshop_clamp_pressure_pa = 20 kPa` invariant requires even
@@ -97,7 +97,7 @@ respective S2 in memory but not in commit table.)
   ("aesthetic, not blocking") flipped to load-bearing post-
   gasket-arc.
 - **Phases (§F-13):**
-  - S1 — ✅ SHIPPED (`8997bdd3`). FlangeSpec + FlangeKind enum + Ribbon::with_flange + compose_piece_solid SDF-union. 8 flange tests + 3 piece paired-baseline tests pass; 236 cf-cast lib tests total. Backward-compat (None ≡ pre-S1 bit-for-bit) + gasket-disjoint (Plate ≡ None at body_dist=0) invariants verified.
+  - S1 — ✅ SHIPPED (`8997bdd3`) + cold-read pass-1 (`746a75bc`). FlangeSpec + FlangeKind enum + Ribbon::with_flange + compose_piece_solid SDF-union. 8 flange tests + 3 piece paired-baseline tests pass; 236 cf-cast lib tests total. Cold-read pass-1 added `flange_test_fixture()` aligned with FlangeSdf Y-hardcoding (split=+Z → binormal=-Y, equivalent to production split=+X) + rewrote piece-tests 10+11 with geometrically meaningful probes (test 10 now probes outside-bounding-region + inside-flange-region for `sdf_plate < 0 < sdf_none`). Backward-compat (None ≡ pre-S1 bit-for-bit) + add-material (Plate produces sdf<0 where None has sdf>0) + gasket-disjoint (Plate ≡ None at body_dist=0) invariants verified.
   - S2 (~80 LOC) — cf-cast-cli `[flange]` config + derive + cross-field validation (`inner_offset_m > half_gasket_channel_width`).
   - S3 (~100 LOC) — procedure.rs workshop clamp protocol prose.
   - S4 — cf-cast-cli iter-1 regen on production cast.toml + §R1 inspector + workshop cf-view smoke.
