@@ -47,11 +47,12 @@ respective S2 in memory but not in commit table.)
 
 - **Recon:** `docs/CF_CAST_GEOMETRY_CRISPNESS_RECON.md` (scaffold
   2026-05-25, this commit).
-- **State:** **scaffold; awaiting cold-read pass-1 + §Q-11 S0
-  diagnostics (§Q-6 flange-asymmetry disambiguation, §Q-5 normal-
-  correctness instrumentation, §Q-3 scan-mesh resolution
-  measurement, §Q-7 gasket crispness check) before S1 plunges.**
-- **Memory:** (none yet — recon scaffold only).
+- **State:** **scaffold (`f2431c7f`) + cold-read pass-1
+  (`fc01a28b`) + §Q-11 S0 diagnostics SHIPPED 2026-05-25 (no
+  code commit, this commit).** Awaiting workshop pick on §Q-11
+  S0.5 (expedited §Q-5 winding-reversal fix) vs proceeding
+  directly to S1 finer-MC empirical regen.
+- **Memory:** [[project-cf-cast-geometry-crispness-s0]]
 - **Trigger:** chained — workshop user's cf-view smoke gate on
   `~/scans/cast_iter1_post_flange_smoke/` (the [[project-cf-cast-seam-flange-s4]]
   production STL set) failed initial inspection; workshop user

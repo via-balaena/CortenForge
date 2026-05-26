@@ -242,8 +242,8 @@ separate re-decision pass.
 **Symptom:** the cup-piece's interior cavity walls show visible
 faceting where the body cavity follows the device contour. The
 scan mesh from `~/scans/sock_over_capsule.cleaned.stl` is
-triangulated at the scan's native resolution (likely sub-mm);
-cf-cast re-MC's at 3 mm cells and coarsens it.
+triangulated at sub-mm native resolution; cf-cast re-MC's at 3 mm
+cells and coarsens it.
 
 **Paradigm:** SDF re-MC of already-meshed scan geometry. The
 body cavity is `pinned_floor_shell(...)` per the cf-design
@@ -251,12 +251,22 @@ pipeline → a Solid whose SDF is evaluated by sampling the scan
 mesh's TriMeshDistance; MC at 3 mm cells then re-meshes the
 combined cuboid - cavity SDF.
 
-**Root cause specifics:**
+**Root cause specifics (S0-empirical per
+[[project-cf-cast-geometry-crispness-s0]]):**
 
-- Scan mesh resolution: ~unknown (TBD §Q-11; measure via
-  `mesh_io::load_stl` face count + AABB).
+- Scan mesh resolution: **167,898 faces, AABB ~71 × 71 × 127 mm,
+  ~0.66 mm avg edge length** (measured 2026-05-25 via the §R1
+  inspector + binary-STL header math).
 - MC cell size: 3 mm (production cast.toml).
-- Re-meshing loses any scan detail finer than ~6 mm.
+- **Coarsening factor: ~4.5×** (3 mm cells / 0.66 mm scan edges).
+- Re-meshing loses any scan detail finer than ~6 mm (2× cell
+  width for MC's typical feature-resolution limit).
+
+**Cost-sharing note (Tier 2 cold-read pass-2):** §Q-3 fix
+candidate (1) "Finer MC cells" is THE SAME compute spend as
+§Q-1's (1) + §Q-4's (1) — same global cell-size change applies to
+all three failure modes simultaneously; the compute cost
+amortizes across all three, not adds per-failure-mode.
 
 **Fix candidates:**
 
@@ -322,65 +332,99 @@ for one orthogonal plane; extending to the cap-plane is a parallel
 application. Candidate (4) is the bail-out if iter-3 surfaces a
 workshop-blocking issue and (3) isn't ready.
 
-## §Q-5 Normals are weird
+## §Q-5 Normals are weird — UPDATED post-S0 diagnostic
 
 **Symptom:** visible bright/dark triangular patches on the plug
-surface; lighting doesn't match the underlying smooth dome
-curvature. Random triangles glint brighter or darker than their
-neighbors.
+surface in cf-view; lighting doesn't match the underlying smooth
+dome curvature.
 
-**Paradigm:** mesh export (STL writer) + cf-view normal handling.
+**Paradigm:** mesh export (STL writer) + upstream mesh winding
+convention. cf-view's StandardMaterial with `double_sided: true,
+cull_mode: None` renders both sides of every triangle, so visible
+patches = lighting discontinuities at feature boundaries where
+adjacent inverted-winding triangles produce inconsistent shading.
 
-**Root cause analysis** (from
-`mesh/mesh-io/src/stl.rs::save_stl_binary`): STL stores per-face
-normals computed at write time as `(v1 - v0).cross(v2 - v0)
-.normalized()`. The normal direction depends ENTIRELY on triangle
-vertex WINDING ORDER. If MC or mesh-CSG produces a triangle with
-inverted winding (compared to its neighbors), the STL gets an
-inverted normal → cf-view renders the back-face shader on a
-front-facing triangle (or vice versa) → unnatural brightness.
+**S0 diagnostic result (per [[project-cf-cast-geometry-crispness-s0]]):**
 
-**Candidate sources of inverted-winding triangles:**
+**100% of cf-cast STL output has systematically inverted triangle
+winding.** Smoking gun: `platform.stl` (a flat slab with no
+concavity → centroid heuristic is unambiguous) reports 100% of
+its 33,340 triangles' winding-derived normals point INWARD toward
+the volume centroid. Spot-checked individual triangles confirm:
+top-face triangles have normals pointing -Z (into the slab from
+above); bottom-face triangles have normals pointing +Z (into the
+slab from below). Plug + cup-piece + gasket-mold STLs show
+55-99% inverted-by-heuristic (lower rates explained by the
+centroid heuristic's false-negative band on shapes with
+cavities). Scan input mesh
+(`sock_over_capsule.cleaned.stl`) reports 1.25% inverted —
+within noise; the scan winding is CORRECT.
 
-1. **MC implementation bug**: shouldn't happen — Marching Cubes
-   is supposed to produce consistent outward winding per the
-   classic algorithm. Verify by examining the production STL
-   output: count triangles whose computed normal disagrees with
-   the mesh's surface-flow direction.
-2. **Mesh-CSG operations**: boolean union/subtract at the manifold
-   boundary CAN produce inconsistent winding if the implementation
-   doesn't enforce orientation. Check manifold3d's output for
-   winding consistency.
-3. **STL writer normal computation**: the cross-product formula
-   assumes CCW outward-normal convention. If the upstream mesh
-   uses CW convention, normals are inverted at write time.
-   Verify the cf-cast → mesh-io contract.
+**The inversion happens INSIDE cf-cast's pipeline**, not in the
+scan input. Three candidate layers:
 
-**Fix candidates:**
+- (a) **STL writer (`mesh_io::stl::save_stl_binary`)**: uses
+  `(v1 - v0).cross(v2 - v0)`. If the upstream mesh's winding is
+  CW outward (some Manifold3d configurations), this cross-
+  product gives an INWARD normal. **2-LOC fix possible** —
+  reverse the cross-product order OR swap `v1`/`v2` when
+  writing the face. **MOST LIKELY ROOT CAUSE** given the
+  uniformity of inversion across MC + mesh-CSG outputs (all
+  produce STLs through this writer).
+- (b) **MC implementation** in cf-design / manifold3d: if MC
+  emits CW winding, all bulk geometry is inverted. Mesh-CSG
+  primitives (truncated pyramids, cylinders) would also need
+  to match the same convention.
+- (c) **Mesh-CSG operations** in mesh_csg / manifold3d: boolean
+  union/subtract at the manifold boundary may invert winding.
 
-1. **Diagnostic first**: instrument mesh-io's STL writer to count
-   triangles whose computed normal points in the unexpected
-   direction (toward the mesh interior rather than away). If <1%
-   of triangles, the issue is rare-MC-artifact. If >10%, the
-   issue is systematic. **Cost: ~30 LOC diagnostic.**
-2. **mesh-repair `enforce_consistent_winding(mesh)` pass**: walks
+**Workshop visual impact:** cf-view's StandardMaterial with
+double-sided + cull-none rendering shows inverted-normal
+geometry, but the shading is INCONSISTENT at feature transitions
+(plug dome × cylinder junction; chamfer-band edges). These are
+the "bright/dark patches" the workshop user saw. Slicers
+typically recompute normals from winding on STL import + handle
+single-sided rendering robustly, so the inverted output may
+print fine in slicer preview AND in physical printing (slicers
+re-derive outward direction); but for cf-view inspection +
+workshop user expectations + tools that DO use stored STL
+normals (some 3D viewers), the inversion is workshop-visible.
+
+**Fix candidates (revised post-S0):**
+
+1. **Reverse winding at STL write time** (most likely correct
+   layer per candidate-source analysis above). Swap `v1` and `v2`
+   in `save_stl_binary` (or equivalently negate the cross-product).
+   **Cost: ~2 LOC + a regression test ensuring scan-input
+   ROUND-TRIP produces correct winding.** Workshop-visible result
+   confirmed via re-run of the §Q-5 S0 diagnostic on the new
+   output: platform.stl should report ~0% inverted-by-heuristic
+   post-fix.
+2. **Fix upstream MC / mesh-CSG winding convention** (if (1)'s
+   reverse-at-write hides a real upstream bug instead of fixing
+   it). **Cost: depends on which layer; ~10-100 LOC.** More
+   thorough; protects against future consumers that bypass
+   `save_stl_binary` (e.g. PLY writer if cf-cast ever emits PLY).
+3. **mesh-repair `enforce_consistent_winding(mesh)` pass**: walks
    the mesh's face-adjacency graph, flips any triangle whose
    normal disagrees with its connected-component majority.
-   **Cost: ~150 LOC mesh-repair lib + tests. Same pattern as
-   `weld_vertices` + `find_connected_components`.**
-3. **STL writer normal-from-stored-mesh-normals**: if cf-cast can
-   compute correct normals upstream (per-face from MC's signed-
-   distance gradient direction, OR per-vertex from neighborhood
-   averaging), use those instead of recomputing from winding.
-   **Cost: ~50 LOC mesh-io extension.**
+   **Cost: ~150 LOC mesh-repair lib + tests.** **Overkill given
+   S0 finding** — there's nothing to disambiguate; ALL output is
+   inverted in the same direction. Listed for completeness but
+   no longer recommended.
 4. **cf-view recompute normals**: ignore stored STL normals; have
    cf-view recompute per-vertex normals from winding. **Cost:
-   ~30 LOC cf-view. Doesn't fix the STL ITSELF (slicers reading
-   the STL would still see bad stored normals); workshop value
-   limited.**
+   ~30 LOC cf-view. Doesn't fix the STL ITSELF** (workshop
+   tools that respect stored STL normals still see bad data).
+   Listed as a partial workaround.
 
-**Recommendation:** (1) diagnostic first to confirm scope, then
-(2) if systematic OR (3) if STL writer is the wrong layer.
+**Recommendation:** (1) the 2-LOC winding reversal at write time
+is the smallest workshop-visible fix path. If post-fix the §Q-5
+S0 diagnostic shows correct winding (platform → ~0% inverted),
+ship it. If it surfaces another upstream issue (e.g. some
+triangles still inverted from a different convention), escalate
+to (2). The S0 diagnostic script (`/tmp/normal_check.py`) is
+the verification gate.
 
 ## §Q-6 Flange asymmetric — possibly missing on some sides
 
@@ -396,7 +440,21 @@ edge-on and invisible), OR genuine geometric asymmetry (body
 cavity narrows on certain sides → flange's outer-edge contour
 narrows similarly).
 
-**Status: OPEN — disambiguate before scoping fix.**
+**Status: PARTIALLY ANSWERED post-S0 (per [[project-cf-cast-geometry-crispness-s0]]); workshop 360° cf-view visual disambiguation still pending.**
+
+**S0 analytical-pass result:** `build_flange_solid_for_side` in
+`design/cf-cast/src/flange.rs:283-292` is **structurally
+symmetric** — `build_flange_solid` produces the full perimeter
+ring SDF with no per-side bias; the per-side cut is just
+`ribbon.halfspace_solid(side, bounds, 0.0)` (same mechanism that
+produces the bit-precise-flat seam face, verified in
+[[project-cf-cast-seam-flange-s1]] LESSON 3). **Branch C (real
+bug) is geometrically unlikely** given the code's symmetry.
+Branch A (viewing-angle illusion) or branch B (scan-driven
+asymmetric body perimeter narrowing → flange's outer-edge
+contour narrows correspondingly + appears edge-on / invisible
+from certain camera angles) are the candidates. Visual A-vs-B
+disambiguation still pending workshop input.
 
 **Diagnostic (§Q-12 S0):**
 
@@ -448,34 +506,28 @@ failure modes; trades implementation simplicity for compute cost.
 the wall-clock budget, fall back to adaptive MC OR accept the
 quantization.**
 
-## §Q-8 Open questions
+## §Q-8 Open questions — status post-S0 diagnostics
 
-1. **§Q-6 disambiguation**: is the flange asymmetry a real bug,
-   viewing-angle illusion, or genuine geometric asymmetry?
-   **Diagnostic required (S0) before §Q-6 scope is set.**
-2. **§Q-1 + §Q-3 + §Q-4 fix path**: finer MC cells, adaptive MC,
-   or mesh-CSG paradigm shift? Decision driven by §Q-12 S1
-   empirical measurement of finer-cell wall-clock cost.
-3. **§Q-2 truncated-pyramid vs cylindrical post**: revisit the
-   FDM-friendly-geometry arc's S4 decision (truncated pyramid
-   for self-centering wedge action)? **Recommendation: NO —
-   per prior-arc memory rule #6, that decision is load-bearing.
-   Subdivide the existing pyramid primitive instead.**
-4. **§Q-5 normal-correctness scope**: 1% rare-artifact vs >10%
-   systematic? **Diagnostic required (S1) before §Q-5 fix scope
-   is set.**
-5. **Production scan mesh resolution** (§Q-3): how many faces +
-   what AABB does `sock_over_capsule.cleaned.stl` have? Affects
-   whether §Q-3 is a real concern or subordinate.
-6. **MC cell-size scaling**: production `mesh_cell_size_m = 0.003`
-   was picked at v2's 33.6 min baseline; with current 1:44 wall,
-   we have ~20× headroom for finer cells. Empirical wall-clock
-   at 1 mm cells is the load-bearing data point.
-7. **GASKET geometry crispness**: not in the 6-failure-mode list
-   but the gasket molds visible in earlier screenshots also use
-   3 mm MC cells (with a per-gasket override to 0.5 mm at the
-   GasketSpec level). Are gasket molds visually-crisp enough at
-   workshop scale, or is gasket-quality a hidden §Q-7 entry?
+| # | Question | Status |
+|---|---|---|
+| 1 | §Q-6 disambiguation (bug vs viewing-angle vs scan-asymmetry) | **PARTIALLY ANSWERED** — S0 analytical pass rules out branch C (real bug) as geometrically unlikely; A-vs-B still pending workshop 360° cf-view rotation |
+| 2 | §Q-1 + §Q-3 + §Q-4 fix path (finer MC vs adaptive MC vs paradigm shift) | OPEN — driven by §Q-11 S1 empirical regen |
+| 3 | §Q-2 truncated-pyramid vs cylindrical post | OPEN; recommendation per pass-1 cold-read: stay with pyramid + subdivide (candidate (1)); reverting to cylindrical violates rule #6 |
+| 4 | §Q-5 normal-correctness scope | **ANSWERED post-S0**: 100% systematic (NOT rare-artifact); simple writer-or-upstream fix path; 2-LOC candidate (1) identified |
+| 5 | Production scan mesh resolution | **ANSWERED post-S0**: 167,898 faces / AABB ~71×71×127 mm / ~0.66 mm avg edge length / 4.5× coarsening at 3 mm MC cells |
+| 6 | MC cell-size scaling at 1 mm — empirical wall-clock | OPEN — load-bearing for §Q-11 S1 (the headroom estimate "~20× headroom" was hand-waved pre-S0; needs the actual S1 measurement) |
+| 7 | GASKET geometry crispness — hidden §Q-7 entry? | **ANSWERED post-S0**: NO. Gasket molds already use 0.5 mm cell override (6× finer than cup pieces); subordinate priority as transient artifacts |
+
+**S0 closed 4 of 7 (#1 partial; #4 + #5 + #7 fully).** Open
+questions for S1: #2 (fix-path selection driven by S1
+measurement), #3 (workshop-user re-decision territory; not
+S1-blocking), #6 (THE load-bearing S1 measurement).
+
+**Workshop-user gate (out-of-S0)**: 360° cf-view rotation to
+close #1 (branch A vs B). Quick: open assembly mode in cf-view +
+rotate camera around the cup pair while both halves are at α=1.0;
+confirm whether the flange ring is visible from at least one
+angle on every side.
 
 ## §Q-9 Workshop iter-3 unblock criteria
 
@@ -519,46 +571,68 @@ bust the workshop wall-clock budget:
 
 **Estimated 5-7 phases, ~5-8 wall-clock sessions:**
 
-- **S0: Diagnostics (no code change).**
-  - **§Q-6 disambiguation**: rotate cf-view 360°, capture
-    views, classify as A/B/C per §Q-6's outcome branches.
-  - **§Q-5 normal-correctness diagnostic**: instrument
-    mesh-io STL writer to count inverted-normal triangles in
-    the production STL output. Classify as rare-artifact vs
-    systematic.
-  - **§Q-3 scan mesh resolution measurement**: read
-    `sock_over_capsule.cleaned.stl` face count + AABB; compute
-    average edge length; compare to 3 mm MC cell size.
-  - **§Q-7 gasket crispness check**: cf-view the
-    `gasket_mold_layer_*.stl` files; document whether gasket
-    geometry has its own failure modes worth adding to scope.
+- **S0: Diagnostics (no code change). ✅ SHIPPED 2026-05-25**
+  (per [[project-cf-cast-geometry-crispness-s0]]).
+  - **§Q-6 disambiguation** (PARTIAL): code-side analytical
+    pass — branch C unlikely; A-vs-B still pending workshop
+    360° cf-view rotation.
+  - **§Q-5 normal-correctness diagnostic** (FULL): 100%
+    systematic inverted winding across cf-cast STL output;
+    scan input clean.
+  - **§Q-3 scan mesh resolution measurement** (FULL): 167,898
+    faces / ~0.66 mm avg edge length / 4.5× coarsening at 3 mm
+    MC cells.
+  - **§Q-7 gasket crispness check** (FULL via code-side):
+    subordinate priority; 0.5 mm cell override already
+    optimized.
+- **S0.5 (NEW post-S0): §Q-5 winding-reversal fix expedited**
+  (proposed; awaiting workshop user pick). Reverse triangle
+  winding at write time in `mesh_io::stl::save_stl_binary`
+  (~2 LOC) + a regression test asserting platform.stl reports
+  ~0% inverted-by-heuristic post-fix (re-run S0's diagnostic
+  script `/tmp/normal_check.py` as the gate). Decoupled from
+  §Q-1 + §Q-3 + §Q-4 fix path; ships independently. **Time
+  cost: ~5 min implementation + ~5 min verification + 1 brief
+  cf-view check.** Workshop user can ship this BEFORE §Q-11 S1
+  to confirm the visual fix without mixing it with the
+  finer-MC-cells regen.
 - **S1: §Q-1 + §Q-3 + §Q-4 finer-MC-cells experiment** (~5 LOC
   config change + production iter-1 regen + cf-view smoke gate).
   Change `mesh_cell_size_m` from 0.003 to 0.001 in
   `~/scans/cast.toml`; measure wall-clock impact + cf-view
   visual improvement. **Empirical-only ship phase (like the
-  F4-S2 / seam-flange-S4 pattern).** Decision branches:
+  F4-S2 / seam-flange-S4 pattern).** **MUST run with
+  `MESH_PRINTABILITY_TIMING=1` per §Q-15 cross-arc table to
+  catch any perf-arc regression at the larger face-count
+  regime.** Time budget: ~10-50 min per regen attempt
+  depending on cell-size scaling; budget 2-3 attempts.
+  Decision branches:
   - Wall-clock acceptable + visual improvement satisfies §Q-1
-    + §Q-3 + §Q-4 → proceed to S5 (omnibus).
+    + §Q-3 + §Q-4 → proceed to S8 (omnibus PR rollup).
   - Wall-clock too slow + visual improvement worth pursuing
     via different path → proceed to S2 (adaptive MC scaffold).
   - Visual improvement insufficient at 1 mm → proceed to S2
     + S3 (paradigm-shift to mesh-CSG flange + cap-plane).
-- **S2: Adaptive MC scaffold + S1 implementation** (~600-1000
+- **S2: Adaptive MC scaffold + implementation** (~600-1000
   LOC). Only if S1 measurement justifies. New MC pipeline
   wrapping existing flow with per-region cell-size override.
-- **S3: Mesh-CSG cap-plane primitive** (~150 LOC). Only if
-  finer MC alone doesn't resolve §Q-4 satisfactorily. Post-MC
-  intersect with analytical flat-plane mesh.
-- **S4: §Q-2 truncated-pyramid subdivision** (~50-100 LOC).
-  Add N×N subdivision parameter to prismatic_pin's truncated-
-  pyramid mesh-CSG primitive. Default N=4 (12× face count);
+- **S3: Mesh-CSG cap-plane primitive** (~150 LOC, **rough
+  estimate; no existing primitive scaffolded — verify
+  pre-implementation against MatingTransform variant catalogue
+  + manifold3d integration cost**). Only if finer MC alone
+  doesn't resolve §Q-4 satisfactorily. Post-MC intersect with
+  analytical flat-plane mesh.
+- **S4: §Q-2 truncated-pyramid subdivision** (~80-150 LOC per
+  pass-1 cold-read; requires switching from convex-hull to
+  parametric face mesh — not a trivial knob). Add N×N
+  subdivision to `mesh_csg::build_truncated_pyramid_via_hull_pts`
+  (or a sibling parametric constructor). Default N=4;
   workshop-iter-3 calibration may tune.
-- **S5: §Q-5 normal-consistency** (~150 LOC mesh-repair if
-  S0 diagnostic showed systematic issue; ~30 LOC cf-view
-  recompute otherwise).
-- **S6: §Q-6 fix** (only if S0 disambiguation = branch C).
-  Scope TBD per the specific bug.
+- **S5: §Q-5 normal-consistency** (already shipped at S0.5 if
+  workshop user takes the expedite path; otherwise scoped here).
+- **S6: §Q-6 fix** (only if workshop 360° cf-view inspection
+  reveals branch C — geometrically unlikely per S0 analytical
+  pass). Scope TBD per the specific bug.
 - **S7: Production iter-1 regen + cf-view smoke gate** —
   empirical-only ship verifying all 6 failure modes resolved
   or accepted per §Q-9.
@@ -566,7 +640,7 @@ bust the workshop wall-clock budget:
   any in-flight arcs).
 
 Total scope: **~50 LOC (S1) + 0-1200 LOC (S2-S6 depending on
-branches) + procedure.rs prose**.
+branches) + ~2 LOC (S0.5 if taken) + procedure.rs prose**.
 
 ## §Q-12 Prior-arc memory checklist
 
