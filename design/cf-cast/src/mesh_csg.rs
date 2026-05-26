@@ -804,6 +804,48 @@ mod tests {
     }
 
     #[test]
+    fn manifold3d_roundtrip_preserves_outward_winding() {
+        // §Q-5 root-cause diagnostic (per
+        // CF_CAST_GEOMETRY_CRISPNESS_RECON.md): if cf-design's MC
+        // produces correct outward winding (verified at
+        // `cf-design::mesher::tests::sphere_mesh_valid`) BUT cf-cast
+        // STL output has 100% systematically inverted winding (per
+        // [[project-cf-cast-geometry-crispness-s0]]), the inversion
+        // must enter the pipeline at manifold3d's conversion path.
+        //
+        // Test: take an explicitly-CCW-outward-winding `unit_cube_mesh`
+        // (signed_volume > 0 by construction; verified manually:
+        // face [0,2,1] = bottom → normal -Z = outward) → pass it
+        // through `indexed_mesh_to_manifold` + `manifold_to_indexed_mesh`
+        // round-trip. If signed_volume of the OUTPUT is positive,
+        // manifold3d preserves winding (root cause is elsewhere). If
+        // negative, manifold3d (or its conversion helpers) inverts
+        // winding (root cause confirmed at this layer).
+        let input = unit_cube_mesh();
+        let input_signed_volume = input.signed_volume();
+        assert!(
+            input_signed_volume > 0.0,
+            "unit_cube_mesh fixture must have positive signed volume \
+             (CCW outward by construction); got {input_signed_volume}"
+        );
+
+        let manifold = indexed_mesh_to_manifold(&input).unwrap();
+        let output = manifold_to_indexed_mesh(&manifold);
+        let output_signed_volume = output.signed_volume();
+
+        // Positive = winding preserved (manifold3d output is outward).
+        // Negative = manifold3d's output is inside-out → root cause at
+        // this layer; the §Q-5 fix lives in
+        // `manifold_to_indexed_mesh` (swap face indices on emission).
+        assert!(
+            output_signed_volume > 0.0,
+            "manifold3d roundtrip inverted winding: input signed_volume = \
+             {input_signed_volume}, output signed_volume = {output_signed_volume}. \
+             §Q-5 root cause CONFIRMED at the manifold3d conversion layer."
+        );
+    }
+
+    #[test]
     fn empty_transforms_pass_through_unchanged() {
         let mesh = unit_cube_mesh();
         let out = apply_mating_transforms(
