@@ -410,6 +410,26 @@ pub struct GasketMoldArtifact {
     pub summary: MeshSummary,
 }
 
+/// Workshop printable dowel-array artifact.
+///
+/// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Single
+/// STL per cast containing N cylindrical PLA dowels (one per
+/// [`crate::dowel_hole::DowelHoleSpec::count`]) the workshop user
+/// prints once + re-uses across all per-layer mating events to
+/// register the two cup-halves at assembly time. Translated
+/// laterally outside the cup-piece bounding region so cf-view
+/// assembly mode stays readable.
+#[derive(Debug, Clone)]
+pub struct DowelArtifact {
+    /// Filesystem path of the written `dowel.stl`.
+    pub path: PathBuf,
+    /// F4 validation result for the dowel array.
+    pub validation: PrintValidation,
+    /// Post-export mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
 /// Summary of a successful [`CastSpec::export_molds_v2`] run.
 ///
 /// `layers.len() * 3` STLs total (2 piece STLs + 1 plug STL per
@@ -442,6 +462,12 @@ pub struct V2MoldExportReport {
     /// = `layers.len()` when [`crate::GasketKind::Mold`] is enabled.
     /// S3 of the seam-gasket-mold arc.
     pub gasket_molds: Vec<GasketMoldArtifact>,
+    /// Optional workshop dowel-array artifact, present when the
+    /// ribbon has [`crate::dowel_hole::DowelHoleKind::Auto`] enabled.
+    /// Single STL containing N PLA dowel cylinders sized to slide-
+    /// fit into the cup-piece mating-face dowel-hole pockets. §M-S2
+    /// of [[project-cf-cast-unified-mating-plane-recon]].
+    pub dowel: Option<DowelArtifact>,
 }
 
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
@@ -540,6 +566,15 @@ struct PendingFunnel {
 /// one entry per layer.
 struct PendingGasket {
     layer_index: usize,
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Buffered v2 workshop dowel-array mesh + validation. Generated only
+/// when the ribbon has [`crate::dowel_hole::DowelHoleKind::Auto`]
+/// enabled; single artifact per cast.
+struct PendingDowel {
     mesh: IndexedMesh,
     validation: PrintValidation,
     path: PathBuf,
@@ -910,6 +945,7 @@ impl CastSpec {
         let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
         let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
         let pending_gaskets = mesh_and_gate_v2_gaskets(self, ribbon, out_dir)?;
+        let pending_dowel = mesh_and_gate_v2_dowel(self, ribbon, out_dir)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
@@ -919,26 +955,31 @@ impl CastSpec {
         let platform_count = usize::from(pending_platform.is_some());
         let funnel_count = usize::from(pending_funnel.is_some());
         let gasket_count = pending_gaskets.len();
-        let stl_count = self.layers.len() * 3 + platform_count + funnel_count + gasket_count;
+        let dowel_count = usize::from(pending_dowel.is_some());
+        let stl_count =
+            self.layers.len() * 3 + platform_count + funnel_count + gasket_count + dowel_count;
         eprintln!(
             "[cf-cast] writing {stl_count} STLs to {out}…",
             out = out_dir.display()
         );
-        let (layers_out, platform_out, funnel_out, gasket_molds_out) = write_v2_artifacts(
-            self,
-            pending_pieces,
-            pending_plugs,
-            pending_platform,
-            pending_funnel,
-            pending_gaskets,
-            pour_volumes,
-        )?;
+        let (layers_out, platform_out, funnel_out, gasket_molds_out, dowel_out) =
+            write_v2_artifacts(
+                self,
+                pending_pieces,
+                pending_plugs,
+                pending_platform,
+                pending_funnel,
+                pending_gaskets,
+                pending_dowel,
+                pour_volumes,
+            )?;
 
         Ok(V2MoldExportReport {
             layers: layers_out,
             platform: platform_out,
             funnel: funnel_out,
             gasket_molds: gasket_molds_out,
+            dowel: dowel_out,
         })
     }
 }
@@ -1295,6 +1336,73 @@ fn mesh_and_gate_v2_funnel(
     }))
 }
 
+/// Mesh + F4-gate the workshop printable dowel-array STL, or return
+/// `Ok(None)` when the ribbon has no dowel-hole spec enabled (no
+/// dowels needed). Single artifact per cast (re-used across all
+/// per-layer mating events). §M-S2 of
+/// [[project-cf-cast-unified-mating-plane-recon]].
+///
+/// Uses [`DOWEL_MAX_CELL_SIZE_M`] for the same MC-resolution reason
+/// as the funnel: the default 3 mm dowel diameter would mesh as 1
+/// cell radial at the cast's 3 mm cells (too coarse for a smooth
+/// cylindrical surface). 0.5 mm cells give 6 cells radial = smooth
+/// cylinder + sub-mm wall fidelity. Dowel array is small (≤ 25 mm
+/// X × 3 mm Y × 9 mm Z) so finer cells cost ~1-3 s.
+///
+/// Translates the dowel array laterally in cast +X past the
+/// bounding region (similar pattern to the gasket molds) so cf-view
+/// assembly mode renders without overlapping the cup pieces.
+fn mesh_and_gate_v2_dowel(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Option<PendingDowel>, CastError> {
+    let Some(dowel_spec) = ribbon.dowel_hole.spec() else {
+        return Ok(None);
+    };
+    let region_bounds = spec
+        .bounding_region
+        .bounds()
+        .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
+    // Lay the dowel array out alongside the bounding region in +X;
+    // 30 mm clearance keeps it off the gasket-mold trays (which sit
+    // even further out in +X at base_offset_x in
+    // `mesh_and_gate_v2_gaskets`).
+    let offset_x = region_bounds.max.x + 0.030;
+    let t_compose = std::time::Instant::now();
+    let target = CastTarget::Dowel;
+    let Some(mesh) = crate::dowel::build_dowel_array_mesh(dowel_spec, offset_x) else {
+        return Ok(None);
+    };
+    let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+    let path = out_dir.join("dowel.stl");
+    let t_gate = std::time::Instant::now();
+    let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+    let gate_s = t_gate.elapsed().as_secs_f64();
+    let blocking = blocking_critical_count(&validation, target);
+    if blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target,
+            issue_count: blocking,
+            path,
+        });
+    }
+    eprintln!(
+        "[cf-cast] dowel — analytic 32-segment cylinders {compose_mesh_s:.2}s, \
+         F4 {gate_s:.1}s ({verts} verts / {faces} faces, {count} dowels) — \
+         offset_x = {offset_mm:.1} mm",
+        verts = mesh.vertices.len(),
+        faces = mesh.faces.len(),
+        count = dowel_spec.count,
+        offset_mm = offset_x * 1000.0,
+    );
+    Ok(Some(PendingDowel {
+        mesh,
+        validation,
+        path,
+    }))
+}
+
 /// Cap on the mesh-cell size used for the funnel's MC pass.
 ///
 /// The funnel's nipple wall is 1 mm at iter-1 dimensions —
@@ -1435,6 +1543,7 @@ fn gasket_mold_filename(layer_index: usize) -> String {
 /// Assumes `pending_pieces` and `pending_plugs` are both ordered
 /// innermost-first and parallel to `pour_volumes`. The function
 /// asserts this invariant via `layer_index` matching on each step.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn write_v2_artifacts(
     spec: &CastSpec,
     pending_pieces: Vec<[PendingPiece; 2]>,
@@ -1442,6 +1551,7 @@ fn write_v2_artifacts(
     pending_platform: Option<PendingPlatform>,
     pending_funnel: Option<PendingFunnel>,
     pending_gaskets: Vec<PendingGasket>,
+    pending_dowel: Option<PendingDowel>,
     pour_volumes: Vec<PourVolume>,
 ) -> Result<
     (
@@ -1449,6 +1559,7 @@ fn write_v2_artifacts(
         Option<PlatformArtifact>,
         Option<FunnelArtifact>,
         Vec<GasketMoldArtifact>,
+        Option<DowelArtifact>,
     ),
     CastError,
 > {
@@ -1544,7 +1655,27 @@ fn write_v2_artifacts(
             summary,
         });
     }
-    Ok((layers_out, platform_out, funnel_out, gasket_molds_out))
+    let dowel_out = if let Some(d) = pending_dowel {
+        save_stl(&d.mesh, &d.path, true).map_err(|source| CastError::MeshIo {
+            path: d.path.clone(),
+            source,
+        })?;
+        let dowel_summary = MeshSummary::from_mesh(&d.mesh);
+        Some(DowelArtifact {
+            path: d.path,
+            validation: d.validation,
+            summary: dowel_summary,
+        })
+    } else {
+        None
+    };
+    Ok((
+        layers_out,
+        platform_out,
+        funnel_out,
+        gasket_molds_out,
+        dowel_out,
+    ))
 }
 
 /// Gate per-layer pour masses against [`CastSpec::mass_budget_kg`].

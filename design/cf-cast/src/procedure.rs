@@ -953,6 +953,7 @@ fn write_seam_face_edge_v2(md: &mut String) {
     md.push('\n');
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
@@ -1016,14 +1017,26 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  around the body silhouette + offset \
                  {outboard_offset_mm:.1} mm outboard from the body \
                  perimeter. The hole pattern is identical on both \
-                 halves; the workshop user supplies {count} loose \
-                 printed PLA dowels ({diameter_mm:.1} mm Ø × \
-                 {depth_total:.1} mm long, sized so each dowel \
-                 inserts ~{depth_mm:.1} mm into each half) and \
-                 inserts one dowel through each pair of matching \
-                 holes to register the two halves laterally before \
-                 clamping.",
-                depth_total = depth_mm * 2.0,
+                 halves.",
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "**Print `dowel.stl` first.** The export emits a \
+                 single `dowel.stl` containing all {count} printable \
+                 PLA dowels ({diameter_mm:.1} mm Ø × \
+                 {dowel_length_mm:.1} mm long — sized so each dowel \
+                 inserts ~{insert_depth_mm:.1} mm into each cup-half \
+                 with {tip_slack_mm:.1} mm assembly slack at each \
+                 tip). Print the dowels VERTICAL (cylindrical axis \
+                 perpendicular to the build plate; cf-view loads them \
+                 oriented this way) so the cylindrical walls print \
+                 clean without overhangs. Insert one dowel through \
+                 each pair of matching holes to register the two \
+                 halves laterally before clamping.",
+                dowel_length_mm = depth_mm.mul_add(2.0, -1.0),
+                insert_depth_mm = depth_mm - 0.5,
+                tip_slack_mm = 0.5_f64,
             );
             md.push('\n');
             let _ = writeln!(

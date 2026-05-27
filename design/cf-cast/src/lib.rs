@@ -76,6 +76,7 @@
 //! [rmp]: ../../../docs/CASTING_ROADMAP.md
 
 pub mod cure;
+pub mod dowel;
 pub mod dowel_hole;
 mod error;
 pub mod flange;
@@ -125,6 +126,7 @@ pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2}
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 pub use spec::{
-    CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,
-    PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport, V2MoldExportReport,
+    CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
+    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport,
+    V2MoldExportReport,
 };

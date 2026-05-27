@@ -601,7 +601,7 @@ fn indexed_mesh_to_manifold(mesh: &IndexedMesh) -> Result<Manifold, manifold3d::
 /// needed. Narrows `Vec<u64>` indices back to `Vec<[u32; 3]>` with a
 /// `debug_assert!` on the u32 ceiling — iter-1 cup pieces are
 /// ~50k verts, comfortably under `u32::MAX`.
-fn manifold_to_indexed_mesh(manifold: &Manifold) -> IndexedMesh {
+pub(crate) fn manifold_to_indexed_mesh(manifold: &Manifold) -> IndexedMesh {
     let (vp, n_props, tri) = manifold.to_mesh_f64();
     debug_assert_eq!(
         n_props, 3,

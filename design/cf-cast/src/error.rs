@@ -79,6 +79,15 @@ pub enum CastTarget {
         /// `CastSpec::layers`).
         layer_index: usize,
     },
+    /// Output mesh: the printable dowel-array STL. Generated only
+    /// when the ribbon has [`crate::dowel_hole::DowelHoleKind::Auto`]
+    /// enabled — N cylindrical PLA rods that insert through the
+    /// matching dowel-hole pockets on the cup-piece mating faces to
+    /// register the two halves laterally at workshop assembly time.
+    /// Single artifact per cast (re-used across all layer mating
+    /// events). §M-S2 of
+    /// [[project-cf-cast-unified-mating-plane-recon]].
+    Dowel,
 }
 
 impl fmt::Display for CastTarget {
@@ -98,6 +107,7 @@ impl fmt::Display for CastTarget {
             Self::Platform => write!(f, "platform"),
             Self::Funnel => write!(f, "funnel"),
             Self::GasketMold { layer_index } => write!(f, "gasket mold layer {layer_index}"),
+            Self::Dowel => write!(f, "dowel array"),
         }
     }
 }
