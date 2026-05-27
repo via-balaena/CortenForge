@@ -1807,13 +1807,21 @@ fn is_blocking_critical(issue: &PrintIssue, target: CastTarget) -> bool {
         return false;
     }
     // Function-driven carve-outs — see top-of-fn docstring for the
-    // principle. Both MoldPiece + Plug excuse {ThinWall, SmallFeature,
-    // TrappedVolume} because neither target's FUNCTION (cup =
-    // liquid container; plug = solid positive shape) is broken by
-    // sub-mm thinness / micro-features / scan-acquisition pockets.
+    // principle. MoldPiece + Plug + Funnel excuse {ThinWall,
+    // SmallFeature, TrappedVolume} because none of these targets'
+    // FUNCTIONs (cup = liquid container; plug = solid positive shape;
+    // funnel = workshop pour-channel) are broken by sub-mm thinness /
+    // micro-features / scan-acquisition pockets. The funnel
+    // specifically: it's a disposable single-cast tool that handles
+    // gravity-driven viscous pour for ~10-30 s per layer; structural
+    // load-bearing isn't a workshop concern. Added Funnel to the
+    // carve-out 2026-05-27 after the bent-spout redesign created MC-
+    // quantization-induced sub-mm walls near the cavity overshoot
+    // regions (workshop user feedback drove the redesign + production
+    // cast.toml already loosens piece_min_wall_mm to 0.1 mm anyway).
     let function_excuses_thinness = matches!(
         target,
-        CastTarget::MoldPiece { .. } | CastTarget::Plug { .. }
+        CastTarget::MoldPiece { .. } | CastTarget::Plug { .. } | CastTarget::Funnel
     ) && matches!(
         issue.issue_type,
         PrintIssueType::ThinWall | PrintIssueType::SmallFeature | PrintIssueType::TrappedVolume

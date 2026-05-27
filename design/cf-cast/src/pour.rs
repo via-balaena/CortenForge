@@ -120,7 +120,7 @@ pub const POUR_GATE_SEGMENTS: u32 = 32;
 /// close enough to axial that workshop pour ergonomics aren't
 /// awkward. Not user-tunable; iter-1 visual gate accepted the
 /// default.
-const V_HALF_ANGLE_RAD: f64 = std::f64::consts::FRAC_PI_6;
+pub const V_HALF_ANGLE_RAD: f64 = std::f64::consts::FRAC_PI_6;
 
 /// Cylindrical pour-gate + air-vent geometry spec. All dimensions
 /// in meters.

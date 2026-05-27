@@ -566,10 +566,21 @@ fn write_print_orientation_funnel_platform(md: &mut String) {
     md.push('\n');
     let _ = writeln!(
         md,
-        "`funnel.stl`: flange-face DOWN on bed. The cone + nipple \
-         build upward from the flange contact patch; no supports \
-         required. Print once for the whole multi-layer device — \
-         reuse across every layer's pour."
+        "`funnel.stl`: **bent-spout funnel** with a vertical bowl + \
+         angled nipple matching the pour-gate's 30° splay (the cup \
+         pour-gate cylinder is tilted 30° from the dome's outward \
+         axis; the bent nipple lets the workshop user orient the \
+         assembled mold +Z up with the bowl mouth facing straight up \
+         for ladle-pouring). Print with **bowl mouth UP on the build \
+         plate** (mouth disk = build-plate surface; bowl + nipple \
+         build downward+sideways from there). **Enable auto-supports \
+         in the slicer**: the tilted nipple sticks ~7.5 mm \
+         horizontally from the bowl base and needs supports to print \
+         clean — cleaned off after the print. Alternative: rotate \
+         the print so the nipple lies along the build plate (bowl \
+         tilted) to avoid supports — slicer choice; STL is unchanged. \
+         Print once for the whole multi-layer device — reuse across \
+         every layer's pour."
     );
     md.push('\n');
     let _ = writeln!(
@@ -742,11 +753,14 @@ fn write_cfview_sanity_check_v2(md: &mut String) {
     md.push('\n');
     let _ = writeln!(
         md,
-        "3. **Funnel** (`funnel.stl`): flange + cone + nipple as one \
-         connected body; nipple Ø matches the cup pour-gate Ø minus \
-         the funnel's asymmetric diametral clearance (`cf-cast` \
-         `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). No floating \
-         components."
+        "3. **Funnel** (`funnel.stl`): bent-spout funnel — vertical \
+         bowl + 30°-tilted nipple as one connected body, joined at \
+         the bowl-bottom shoulder. Nipple Ø matches the cup pour-gate \
+         Ø minus the funnel's asymmetric diametral clearance \
+         (`cf-cast` `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). Interior \
+         bore tapers smoothly from the bowl mouth down to the nipple \
+         bore (single conical lumen). No flat flange disk; no \
+         floating components."
     );
     md.push('\n');
     let _ = writeln!(
@@ -1579,13 +1593,22 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
                  ({nipple_clearance_mm:.2} mm asymmetric diametral \
                  clearance — the cup-side hole stays at the nominal \
                  {gate_dia_mm:.1} mm Ø; the funnel nipple bears all the \
-                 slack), a broad flange that rests on the cup outer \
-                 surface around the hole, and a tapered cone widening \
-                 to a workshop-friendly mouth for ladle-pouring. Print \
-                 `funnel.stl` once for the whole multi-layer device — \
-                 it is reused across every layer's pour. Apply mold \
-                 release to the nipple before each pour so cured \
-                 silicone doesn't lock the funnel onto the cup."
+                 slack), a 30°-bent spout matching the pour-gate's \
+                 splay so the bowl mouth faces straight up when the \
+                 mold is oriented +Z up for the pour, and a smoothly-\
+                 tapered bowl widening to a workshop-friendly mouth \
+                 for ladle-pouring. The bent spout pattern is the \
+                 same as a real-world oil/lab funnel; insert the \
+                 nipple into the pour-gate hole, rotate the funnel \
+                 around the bowl axis until the nipple aligns with \
+                 the angled pour leg, then ladle silicone into the \
+                 vertical bowl mouth. Print `funnel.stl` once for the \
+                 whole multi-layer device — reused across every \
+                 layer's pour. The tilted nipple needs **slicer \
+                 auto-supports** during print (or rotate the print \
+                 so the nipple lies along the build plate). Apply \
+                 mold release to the nipple before each pour so \
+                 cured silicone doesn't lock the funnel onto the cup."
             );
         }
     }

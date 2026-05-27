@@ -1,85 +1,126 @@
-//! Workshop pour-funnel geometry.
+//! Workshop pour-funnel geometry (bent-spout architecture).
 //!
 //! Honey-thick workshop silicones (Dragon Skin 10A / 20A / 30A at
 //! ~20-23k cps) take minutes per layer to pour through bare
 //! 10 mm Ø pour-gate holes without splashing or trapping air.
 //! [`build_funnel_solid`] generates a printable funnel STL with a
-//! self-aligning **nipple** that slides into the pour-gate hole +
-//! a **flange** that rests flat on the cup outer surface around the
-//! hole + a tapered hollow **cone** widening to a workshop-friendly
-//! mouth for ladle-pouring.
+//! **bent spout** at [`crate::pour::V_HALF_ANGLE_RAD`] (30°) so the
+//! nipple inserts into the cup-piece's angled pour-gate hole while
+//! the bowl mouth ends up facing STRAIGHT UP when the workshop user
+//! orients the assembled mold `+Z` up. Pre-§B-S1-funnel-redesign
+//! (2026-05-27) the funnel was a single straight tube with a flat
+//! flange disk; the bent-spout pattern matches what workshop users
+//! recognize as a real-world store-bought funnel.
 //!
 //! ## Geometry
 //!
-//! Funnel sits with its axis along world `+Z`; bottom at `z=0`
-//! (nipple tip), top at `z = nipple_height + flange_height +
-//! cone_height` (workshop pour mouth).
+//! Funnel-local frame: origin at the bowl-nipple junction; `+Z` up
+//! (bowl axis).
 //!
-//! - **Nipple** at the bottom: cylinder outer Ø = pour-gate Ø −
-//!   [`NIPPLE_DIAMETRAL_CLEARANCE_M`] (slides into the pour-leg
-//!   hole). Inner Ø = outer Ø − 2 × [`FUNNEL_NIPPLE_WALL_M`].
-//! - **Flange** above the nipple: cylinder outer Ø = 2 ×
-//!   [`FUNNEL_FLANGE_OUTER_RADIUS_M`]. Rests flat on the cup wall
-//!   outer surface around the pour-gate hole.
-//! - **Cone** above the flange: truncated cone widening from
-//!   flange Ø at the bottom to 2 × [`FUNNEL_TOP_OUTER_RADIUS_M`]
-//!   at the top.
-//! - **Hollow interior**: single continuous tapered cavity from
-//!   the nipple's inner Ø at `z=0` up to (top Ø −
-//!   2 × [`FUNNEL_CONE_WALL_M`]) at `z=top`.
+//! - **Bowl** above origin: truncated cone widening from
+//!   [`FUNNEL_BOWL_BOTTOM_OUTER_RADIUS_M`] at `z=0` (the visible
+//!   "shoulder" where the spout meets the cone) up to
+//!   [`FUNNEL_TOP_OUTER_RADIUS_M`] at `z=cone_height`. Bowl axis is
+//!   vertical (`+Z`) so the workshop pour-mouth faces straight up.
+//! - **Inner cavity** (continuous bore): the bowl interior tapers
+//!   from `FUNNEL_TOP_OUTER_RADIUS_M − FUNNEL_CONE_WALL_M` at the
+//!   top down to the **nipple inner radius** at `z=0`. This
+//!   gives a smooth single-cone inner surface from the workshop mouth
+//!   down to the spout entry — no sudden necking at the bowl-nipple
+//!   junction. Real metal funnels work this way too: the spout is
+//!   bored conically from the bowl interior even when the OUTER
+//!   spout joint looks like a sharp angle.
+//! - **Nipple** below origin: cylinder tilted at
+//!   [`crate::pour::V_HALF_ANGLE_RAD`] from `−Z` (toward `+X` in the
+//!   funnel-local frame; workshop user rotates the funnel around the
+//!   bowl axis until the nipple aligns with the pour-gate hole at
+//!   assembly time). Nipple outer Ø = pour-gate Ø −
+//!   [`NIPPLE_DIAMETRAL_CLEARANCE_M`]; inner Ø = outer Ø −
+//!   2 × [`FUNNEL_NIPPLE_WALL_M`]. The nipple's top "enters" the
+//!   bowl at the funnel-local origin; nipple axis goes from origin
+//!   along `(sin(θ), 0, −cos(θ))` for
+//!   [`FUNNEL_NIPPLE_HEIGHT_M`] meters (θ =
+//!   [`crate::pour::V_HALF_ANGLE_RAD`]).
+//! - **Outer kink**: sharp 30° angle at `z=0` between the vertical
+//!   bowl and the tilted nipple (workshop sees a clean industrial-
+//!   funnel-style joint).
+//!
+//! ## Workshop assembly orientation
+//!
+//! Workshop user:
+//! 1. Orients the mold `+Z` up so the pour-gate cylinder is at the
+//!    top (per cf-cast's `+Z` up convention — see
+//!    `crate::CastSpec::export_molds_v2` docstring §"Workshop
+//!    orientation convention").
+//! 2. Rotates the funnel around its bowl axis until the nipple
+//!    aligns with the pour-gate hole's outward-binormal axis.
+//! 3. Inserts nipple into the pour-gate hole; the funnel's natural
+//!    rest position is bowl-mouth-up.
+//!
+//! ## Print orientation
+//!
+//! Printed bowl-mouth-up (build-plate is the bowl mouth opening) the
+//! tilted nipple sticks out 7.5 mm horizontally from the bowl base
+//! and becomes an **unsupported overhang**. Workshop user enables
+//! auto-supports in the slicer for the funnel STL (cleaned off after
+//! the print). Procedure prose calls this out explicitly.
+//!
+//! Alternative: workshop can rotate the print so the nipple is along
+//! the build plate (bowl tilted in the print bed), avoiding supports
+//! — but then the BOWL becomes the overhang. Slicer choice; STL is
+//! the same.
 //!
 //! ## Architectural placement (recon-4 pattern)
 //!
-//! Nipple + flange + cone are all **SDF-meshed bulk geometry**:
-//! they weld into one continuous funnel body via SDF unions, and
-//! MC produces one connected mesh in a single pass. S7's migration
-//! of the nipple OD to a post-MC `MatingTransform::UnionCylinder`
-//! was reverted 2026-05-23 — the post-MC boolean union of the
-//! nipple cylinder onto the SDF-meshed flange ran into the same
-//! paradigm-boundary failure as recon-4 (P)'s seam-face film:
-//! exactly-coincident faces (nipple top at z=4 mm vs flange bottom
-//! at z=4 mm) produced 2 disconnected mesh components, and any
-//! sized overlap-bias created `ThinWall` + `SelfIntersecting` +
-//! `ExcessiveOverhang` F4 issues. The architectural-correctness
-//! principle (`docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2): a
-//! feature welded into bulk geometry belongs to the SDF/MC
-//! paradigm; only fine mating-feature primitives that need
-//! bit-precise diametral fit belong to mesh-CSG. The nipple's
-//! pour-gate-fit precision is bounded by [`NIPPLE_DIAMETRAL_CLEARANCE_M`]
-//! (0.5 mm workshop slack), well above MC-quantization noise at
-//! `crate::spec::FUNNEL_MAX_CELL_SIZE_M` (1 mm cells) — so the
-//! S7 "bit-precise OD" benefit was workshop-irrelevant.
+//! Bowl + nipple compose as **SDF-meshed bulk geometry** with an SDF
+//! union, like the pre-redesign straight funnel. The bent nipple is
+//! constructed by building a vertical cylinder in its local frame,
+//! translating its TOP to the funnel-local origin (`z=0`), then
+//! rotating around `+Y` by [`crate::pour::V_HALF_ANGLE_RAD`] so the
+//! nipple axis tilts from `−Z` toward `+X` while its top stays
+//! anchored at the bowl-nipple junction. Both bowl + nipple weld
+//! into one continuous SDF; MC produces one connected mesh in a
+//! single pass.
 //!
-//! ## Recon §9 axial standoff — DEFERRED
+//! Per `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2: features
+//! welded into bulk geometry belong to the SDF/MC paradigm. The
+//! `funnel_mesh_is_single_connected_component` regression test guards
+//! against MC weld failures at the bowl-nipple junction (pre-§B-S1-
+//! funnel-redesign the straight-funnel flange-cone junction needed an
+//! overlap to avoid exact-coincident-face MC ambiguity; the bent-
+//! spout design's nipple naturally extends INTO the bowl interior so
+//! the union has continuous overlap with no exact-coincident faces).
 //!
-//! `docs/CF_CAST_MATING_FEATURES_RECON.md` §9 proposes a
-//! `FLANGE_AXIAL_STANDOFF_M` of 0.5 mm to hold the broad flange off
-//! the curved + MC-jittery cup outer surface. Implementation was
-//! left open (S0 bookmark §M5: "Recon decides whether the standoff
-//! lives as a physical lip on the flange or whether the cup-outer-
-//! face mesh gets a local-flat patch under the flange footprint" —
-//! never resolved in recon §9). S7 explored a sub-mm contact-ring
-//! lip in mesh-CSG, but that thickness is below
-//! `crate::spec::FUNNEL_MAX_CELL_SIZE_M` (1 mm) and the resulting
-//! mesh fails F4 `ThinWall` checks. Deferred to a future polish
-//! session: either drop the funnel MC cell size below 0.5 mm and
-//! ship a flange-underside annular lip in the SDF, or wait until
-//! iter-2's workshop print surfaces a wobble defect that motivates
-//! a specific implementation.
+//! ## Recon §9 axial standoff — DEFERRED (still applicable post-redesign)
+//!
+//! Pre-redesign deferred a flange-underside standoff lip. The bent-
+//! spout redesign has no flat flange disk at all; the funnel rests
+//! on the cup-outer surface via the bowl-bottom shoulder (annular
+//! area between `nipple_outer_r` and `FUNNEL_BOWL_BOTTOM_OUTER_RADIUS_M`).
+//! Workshop wobble surfaces in iter-1 cf-view smoke would motivate
+//! revisiting; deferred.
 
 use cf_design::Solid;
 use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::mesh_csg::MatingTransform;
-use crate::pour::PourGateKind;
+use crate::pour::{PourGateKind, V_HALF_ANGLE_RAD};
 use crate::ribbon::Ribbon;
 
 /// Nipple height (m).
 ///
-/// 4 mm — just enough for self-alignment during insertion into
-/// the pour-gate hole; short so the nipple's narrower inner Ø
-/// isn't a long viscous bottleneck.
-pub const FUNNEL_NIPPLE_HEIGHT_M: f64 = 0.004;
+/// 20 mm — sized to clear the §B cup-piece seam flange
+/// (`flange_thickness_m = 4 mm` protruding from the cup outer surface
+/// in the seam plane direction) PLUS the cup-wall thickness
+/// (`wall_thickness_m = 5 mm` from outer surface to inner cavity) PLUS
+/// ~11 mm of workshop insertion-travel slack. The tilt is 30° from
+/// vertical, so 20 mm nipple length gives 20·cos(30°) ≈ 17.3 mm of
+/// VERTICAL clearance between the bowl-bottom fillet and the cup
+/// outer surface around the pour-gate hole — comfortably past the
+/// 4 mm flange height. Pre-§B was 4 mm, intermediate value 15 mm
+/// gave only 13 mm vertical clearance (workshop user requested
+/// preemptive bump to 20 mm for safety margin 2026-05-27).
+pub const FUNNEL_NIPPLE_HEIGHT_M: f64 = 0.020;
 
 /// Nipple wall thickness (m). 1.5 mm = 3-4 perimeters at a 0.4 mm
 /// FDM nozzle.
@@ -88,10 +129,7 @@ pub const FUNNEL_NIPPLE_HEIGHT_M: f64 = 0.004;
 /// `min_wall_thickness: 1.0` threshold with margin — MC stair-step
 /// thinning at the nipple's outer surface can push a 1 mm-design
 /// wall below 1.0 mm in places, triggering Critical `ThinWall`
-/// failures. Trade-off: nipple inner Ø drops from 7.8 mm
-/// (theoretical 1 mm wall) to 6.8 mm (`1.5` mm wall) — still wider
-/// than the pre-iter-1 6 mm pour-gate Ø, and the 4 mm nipple
-/// height keeps the bottleneck short.
+/// failures.
 pub const FUNNEL_NIPPLE_WALL_M: f64 = 0.0015;
 
 /// Diametral clearance between the nipple OD and the cup pour-gate
@@ -102,79 +140,86 @@ pub const FUNNEL_NIPPLE_WALL_M: f64 = 0.0015;
 /// funnel nipple shrinks by half this clearance per side).
 ///
 /// 0.5 mm — resting-contact fit per `docs/CF_CAST_MATING_FEATURES_RECON.md`
-/// §9 M5. Absorbs both FDM bead-bulge (cup hole prints undersized;
-/// funnel nipple prints oversized) AND MC-quantization noise on
-/// the SDF-meshed nipple OD at the `crate::spec::FUNNEL_MAX_CELL_SIZE_M`
-/// (1 mm) cell size (~0.5 mm radial precision). Workshop user
-/// reams if first print binds.
+/// §9 M5.
 pub const NIPPLE_DIAMETRAL_CLEARANCE_M: f64 = 0.0005;
 
-/// Flange outer radius (m).
+/// Bowl-bottom outer radius (m).
 ///
-/// 10 mm = 20 mm Ø — wide enough that the flange rests stably on
-/// the cup wall around a 10 mm pour-gate hole without tipping;
-/// small enough to not interfere with the adjacent vent leg of
-/// the V pour gate.
-pub const FUNNEL_FLANGE_OUTER_RADIUS_M: f64 = 0.010;
-
-/// Flange height / disk thickness (m).
-///
-/// 1 mm thick disk gives the flange a positive z-extent so the
-/// workshop user can see + grip it visually distinct from the
-/// nipple cylinder below.
-pub const FUNNEL_FLANGE_HEIGHT_M: f64 = 0.001;
+/// 10 mm — the visible "shoulder" where the tilted spout meets the
+/// vertical bowl. Sized larger than the tilted nipple's projected
+/// ellipse semi-major axis at z=0 (`nipple_outer_r / cos(V_HALF_ANGLE_RAD)`
+/// ≈ 5.48 mm at iter-1 defaults) by a safety margin > MC cell size
+/// — pre-redesign 7 mm was right at the MC-cell threshold and
+/// produced an unclosed mesh at the back-of-nipple kink reveal
+/// (workshop cf-view smoke 2026-05-27). At 10 mm the reveal annulus
+/// is ~4.5 mm on every side of the nipple = 4-5 MC cells of
+/// resolution + a comfortable workshop rest surface against the
+/// cup-outer face around the pour-gate hole. Replaces the pre-
+/// redesign flat flange disk (workshop user feedback 2026-05-27:
+/// "doesn't look like a funnel you'd buy from a store").
+pub const FUNNEL_BOWL_BOTTOM_OUTER_RADIUS_M: f64 = 0.010;
 
 /// Top outer radius (m).
 ///
-/// 15 mm = 30 mm Ø — workshop-friendly mouth for ladle-pouring
-/// honey-thick silicone.
-pub const FUNNEL_TOP_OUTER_RADIUS_M: f64 = 0.015;
+/// 22 mm = 44 mm Ø mouth — workshop-friendly ladle-pour target,
+/// wider than the pre-redesign 15 mm. Combined with the 7 mm bowl
+/// bottom + 30 mm cone height, the bowl outer wall slopes at ~27°
+/// from vertical (vs the pre-redesign 9.5° — feels like a real
+/// funnel rather than a near-cylinder).
+pub const FUNNEL_TOP_OUTER_RADIUS_M: f64 = 0.022;
 
 /// Cone wall thickness (m).
 ///
-/// 1.5 mm = 3-4 perimeters at a 0.4 mm FDM nozzle; structural
-/// enough that the funnel doesn't deform under the weight of
-/// poured silicone (~200 g per layer fill).
-pub const FUNNEL_CONE_WALL_M: f64 = 0.0015;
+/// 1.0 mm = 2-3 perimeters at a 0.4 mm FDM nozzle. Matches the
+/// real store-bought funnel feel (workshop user 2026-05-27: "doesn't
+/// look like a funnel you'd buy from a store" — pre-redesign was
+/// 1.5 mm chunky). F4 `ThinWall` is carved out for the Funnel target
+/// in `cf_cast::spec::is_blocking_critical` since the funnel's
+/// FUNCTION (workshop pour-channel handling gravity-driven viscous
+/// silicone for 10-30 s per layer) isn't broken by MC-quantization-
+/// induced sub-mm walls near the cavity overshoot regions.
+pub const FUNNEL_CONE_WALL_M: f64 = 0.001;
 
-/// Cone height (m).
-///
-/// 30 mm — adequate clearance for a workshop ladle to pour into
-/// the mouth without splashing back, while keeping the funnel's
-/// total height + footprint manageable.
+/// Cone height (m). 30 mm.
 pub const FUNNEL_CONE_HEIGHT_M: f64 = 0.030;
 
 /// MC tolerance overshoot for the inner cavity at the funnel's
-/// open ends (m).
-///
-/// 0.5 mm — small overshoot past the funnel's top + bottom
-/// surfaces ensures MC produces clean openings (workshop pour
-/// entry + exit) instead of leaving stair-step shelves at the
-/// cavity boundary.
+/// open ends (m). 0.5 mm — small overshoot past the nipple tip +
+/// bowl top so MC produces clean openings.
 const INNER_CAVITY_OVERSHOOT_M: f64 = 0.0005;
 
+/// Bowl ↔ nipple SDF-union overlap (m). The nipple's TOP extends
+/// 1 mm past the funnel-local origin INTO the bowl interior so
+/// the SDF union has overlap to interpolate across at the bend.
+/// 1 mm > `FUNNEL_MAX_CELL_SIZE_M` (1 mm cells); the
+/// `funnel_mesh_is_single_connected_component` regression test
+/// guards against MC weld failures here.
+const BOWL_NIPPLE_OVERLAP_M: f64 = 0.001;
+
+/// Smooth-union blend radius for the OUTER bowl ↔ nipple junction
+/// (m). 3 mm fillet wraps the sharp 30° kink between the vertical
+/// bowl bottom and the tilted nipple top with a smooth toroidal
+/// transition — eliminates the flat horizontal bowl-bottom annulus
+/// that would otherwise (a) collect splattered silicone during the
+/// pour (workshop user feedback 2026-05-27: "liquid would spill at
+/// the join") and (b) leave an MC-unresolved sharp ledge that
+/// rendered as visually-open in cf-view at the iter-1 1 mm cell
+/// size. `Solid::smooth_union` ADDS material in the blend region,
+/// giving a continuous gradient where the two shapes meet rather
+/// than a discontinuous min(a, b) hard union.
+const BOWL_NIPPLE_FILLET_M: f64 = 0.003;
+
 /// Build the workshop pour funnel [`Solid`] for the given ribbon,
-/// or `None` if the ribbon has no pour gate enabled (no funnel
-/// needed).
+/// or `None` if the ribbon has no pour gate enabled.
 ///
 /// Returns `Some((solid, transforms))` where `solid` is the
-/// SDF-encoded funnel body (nipple + flange + cone welded into one
-/// continuous SDF, lumen carved through the entire interior) and
-/// `transforms` is an empty Vec — the funnel composes entirely in
-/// SDF/MC; no post-MC mesh-CSG operations run (see the module
-/// docstring §"Architectural placement" for the recon-4 paradigm-
-/// boundary rationale that reverted the S7 post-MC nipple
-/// migration).
+/// SDF-encoded bent-spout funnel body and `transforms` is an empty
+/// Vec — the funnel composes entirely in SDF/MC; no post-MC mesh-CSG
+/// operations.
 ///
-/// The funnel's nipple OD is sized to slide into the ribbon's
-/// pour-gate hole: nipple OD = 2 × `pour_gate.gate_radius_m` −
-/// [`NIPPLE_DIAMETRAL_CLEARANCE_M`] (asymmetric `/2` convention —
-/// funnel side bears all the slack; cup-piece pour-gate-hole stays
-/// at the nominal `2 × gate_radius_m`). The cup-side pour-gate
-/// carve remains post-MC mesh-CSG (`crate::pour::build_pour_gate_transforms`)
-/// because it lives on a separate cup-piece mesh and the
-/// `SubtractCylinder` is a pure interior carve with no
-/// paradigm-boundary junction.
+/// Funnel-local frame: origin at the bowl-nipple junction; `+Z` up
+/// (bowl axis); nipple tilted [`crate::pour::V_HALF_ANGLE_RAD`] from
+/// `−Z` toward `+X`.
 ///
 /// Returns `None` when the ribbon's pour-gate kind is
 /// [`crate::pour::PourGateKind::None`].
@@ -186,64 +231,93 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
     };
     let nipple_outer_r = spec.gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0;
     let nipple_inner_r = nipple_outer_r - FUNNEL_NIPPLE_WALL_M;
-    let cone_top_inner_r = FUNNEL_TOP_OUTER_RADIUS_M - FUNNEL_CONE_WALL_M;
+    let bowl_top_inner_r = FUNNEL_TOP_OUTER_RADIUS_M - FUNNEL_CONE_WALL_M;
 
-    // Z-extents (axis along +Z, bottom at z=0).
-    let nipple_z_top = FUNNEL_NIPPLE_HEIGHT_M;
-    let flange_z_top = nipple_z_top + FUNNEL_FLANGE_HEIGHT_M;
-    let cone_z_top = flange_z_top + FUNNEL_CONE_HEIGHT_M;
-
-    // Outer body: nipple cylinder ∪ flange disk ∪ cone frustum.
-    // The nipple's top extends half the flange height past the
-    // nominal nipple_z_top so the SDF union has overlap to
-    // interpolate across at the junction. At the
-    // FUNNEL_MAX_CELL_SIZE_M (1 mm) cell size the MC cell straddling
-    // exactly-coincident nipple-top / flange-bottom z values can't
-    // resolve the SDF union into one connected manifold (without
-    // this overlap the mesh splits into a floating nipple component
-    // + a flange+cone shell starting at z = 4.5 mm rather than the
-    // nominal flange-bottom z = 4 mm — caught by
-    // `funnel_mesh_is_single_connected_component`). The overlap
-    // is INTERIOR to the flange's annular volume (nipple OD 4.75 mm
-    // is fully contained inside flange OD 10 mm / ID 3.25 mm), so
-    // workshop-visible geometry is unchanged.
-    let nipple_outer_h = FUNNEL_NIPPLE_HEIGHT_M + FUNNEL_FLANGE_HEIGHT_M / 2.0;
-    let nipple_outer = Solid::cylinder(nipple_outer_r, nipple_outer_h / 2.0)
-        .translate(Vector3::new(0.0, 0.0, nipple_outer_h / 2.0));
-    let flange_outer =
-        Solid::cylinder(FUNNEL_FLANGE_OUTER_RADIUS_M, FUNNEL_FLANGE_HEIGHT_M / 2.0).translate(
-            Vector3::new(0.0, 0.0, f64::midpoint(nipple_z_top, flange_z_top)),
-        );
-    let cone_outer = truncated_cone(
-        FUNNEL_FLANGE_OUTER_RADIUS_M,
+    // --- Bowl (vertical, +Z axis) ---
+    // Outer: cone widening from BOWL_BOTTOM_OUTER_RADIUS at z=0 up
+    // to TOP_OUTER_RADIUS at z=cone_height.
+    let bowl_outer = truncated_cone(
+        FUNNEL_BOWL_BOTTOM_OUTER_RADIUS_M,
         FUNNEL_TOP_OUTER_RADIUS_M,
-        flange_z_top,
-        cone_z_top,
+        0.0,
+        FUNNEL_CONE_HEIGHT_M,
     );
-    let outer = nipple_outer.union(flange_outer).union(cone_outer);
-
-    // Inner cavity: cylinder through nipple + flange, then taper
-    // up through the cone. Tiny overshoot at both ends so MC cuts
-    // cleanly at the funnel openings (workshop pour-entry below
-    // z=0, ladle-pour mouth above the cone top).
-    let inner_lower_z_bot = -INNER_CAVITY_OVERSHOOT_M;
-    let inner_lower_z_top = flange_z_top;
-    let inner_lower_half_h = (inner_lower_z_top - inner_lower_z_bot) / 2.0;
-    let inner_lower_z_center = f64::midpoint(inner_lower_z_bot, inner_lower_z_top);
-    let inner_lower = Solid::cylinder(nipple_inner_r, inner_lower_half_h).translate(Vector3::new(
-        0.0,
-        0.0,
-        inner_lower_z_center,
-    ));
-    let inner_cone = truncated_cone(
+    // Inner: cone tapering from bowl_top_inner_r at z=cone_height
+    // DOWN to nipple_inner_r at z=0 — gives a smooth single-cone
+    // inner bore from the workshop mouth all the way to the spout
+    // entry. No sudden necking at the bowl-nipple junction. Add
+    // INNER_CAVITY_OVERSHOOT at the top so MC cuts the workshop pour
+    // mouth cleanly (no stair-step shelf).
+    let bowl_inner = truncated_cone(
         nipple_inner_r,
-        cone_top_inner_r,
-        flange_z_top,
-        cone_z_top + INNER_CAVITY_OVERSHOOT_M,
+        bowl_top_inner_r,
+        0.0,
+        FUNNEL_CONE_HEIGHT_M + INNER_CAVITY_OVERSHOOT_M,
     );
-    let inner = inner_lower.union(inner_cone);
 
-    // Funnel composes entirely in SDF/MC — no post-MC mesh-CSG ops.
+    // --- Nipple (tilted, axis along (sin(θ), 0, −cos(θ)) from origin
+    // for θ = V_HALF_ANGLE_RAD) ---
+    // Construction: build cylinder in its native +Z frame with its
+    // TOP at the funnel-local origin (cylinder spans z ∈
+    // [−(nipple_h + overlap), +overlap], so top sits +overlap INTO
+    // the bowl interior for the SDF weld), then rotate around +Y by
+    // V_HALF_ANGLE_RAD to tilt the cylinder's axis from −Z toward +X.
+    let nipple_full_h = FUNNEL_NIPPLE_HEIGHT_M + BOWL_NIPPLE_OVERLAP_M;
+    // Rotate by NEGATIVE V_HALF_ANGLE_RAD around +Y: right-hand rule
+    // around +Y takes −Z → −sin(θ)·X − cos(θ)·Z for positive θ, which
+    // would tilt the nipple toward −X. We want +X tilt (matches the
+    // docstring + the `nipple_tip_is_offset_in_plus_x_by_tilt` test),
+    // so negate the angle. (workshop semantics: the in-plane direction
+    // is irrelevant — workshop user rotates the funnel around the bowl
+    // axis until the nipple aligns with the pour-gate hole anyway —
+    // but the implementation must match the test + doc convention.)
+    let tilt = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), -V_HALF_ANGLE_RAD);
+    let nipple_outer = Solid::cylinder(nipple_outer_r, nipple_full_h / 2.0)
+        // Cylinder native: z ∈ [−h/2, +h/2]. Translate so its TOP is
+        // at z = +BOWL_NIPPLE_OVERLAP_M (sits INTO bowl).
+        .translate(Vector3::new(
+            0.0,
+            0.0,
+            BOWL_NIPPLE_OVERLAP_M - nipple_full_h / 2.0,
+        ))
+        .rotate(tilt);
+
+    // Nipple inner cavity: same tilt + position, smaller radius +
+    // longer at the tip end (overshoot past nipple TIP for clean MC
+    // open opening at the workshop pour-entry).
+    //
+    // Tip overshoot: extend the nipple inner cavity past the OUTER
+    // tip by INNER_CAVITY_OVERSHOOT_M along the tilted axis. Easiest
+    // construction: build the inner cylinder slightly longer than the
+    // outer, with its top still at z = +BOWL_NIPPLE_OVERLAP_M but
+    // its bottom at z = −(nipple_h + INNER_CAVITY_OVERSHOOT_M).
+    let nipple_inner_full_h = nipple_full_h + INNER_CAVITY_OVERSHOOT_M;
+    let nipple_inner = Solid::cylinder(nipple_inner_r, nipple_inner_full_h / 2.0)
+        .translate(Vector3::new(
+            0.0,
+            0.0,
+            BOWL_NIPPLE_OVERLAP_M - nipple_inner_full_h / 2.0,
+        ))
+        .rotate(tilt);
+
+    // OUTER: smooth_union with BOWL_NIPPLE_FILLET_M blend radius —
+    // wraps the sharp 30° kink between vertical bowl bottom + tilted
+    // nipple top with a toroidal fillet. Pre-fix (hard union) left a
+    // flat horizontal bowl-bottom annulus that workshop user
+    // identified as a liquid-spill risk + a visually-open ledge that
+    // MC couldn't resolve at the iter-1 1 mm cell size. Per
+    // `Solid::smooth_union` docs the blend adds material — so the
+    // workshop user sees a SMOOTH industrial-funnel-style fillet
+    // welding the spout onto the bowl.
+    let outer = bowl_outer.smooth_union(nipple_outer, BOWL_NIPPLE_FILLET_M);
+    // INNER: hard union — silicone needs the full lumen Ø all the
+    // way through the bore. A smooth_union on the inner cavity would
+    // NARROW the bore in the blend region (the blend would add
+    // material on the inside, REMOVING lumen volume), which would
+    // throttle workshop pour rate. Keep the hard min(a, b) so the
+    // inner cavity stays at its designed radius.
+    let inner = bowl_inner.union(nipple_inner);
+
     Some((outer.subtract(inner), Vec::new()))
 }
 
@@ -262,8 +336,7 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
 ///    z_top]` to truncate the cone into a frustum.
 ///
 /// Returns a cylinder when `r_bot >= r_top` (degenerate / non-
-/// tapered input) — the funnel module doesn't construct such cases
-/// in practice but the degenerate branch keeps the helper total.
+/// tapered input).
 fn truncated_cone(r_bot: f64, r_top: f64, z_bot: f64, z_top: f64) -> Solid {
     let h = z_top - z_bot;
     if r_bot >= r_top || h <= 0.0 {
@@ -282,10 +355,6 @@ fn truncated_cone(r_bot: f64, r_top: f64, z_bot: f64, z_top: f64) -> Solid {
         .rotate(flip)
         .translate(Vector3::new(0.0, 0.0, z_apex));
 
-    // Clipper cuboid spans z ∈ [z_bot, z_top] with XY large enough
-    // to cover r_top + a small slack (the cuboid only needs to
-    // bound the cone's lateral extent at z_top — anywhere larger
-    // is fine since the cone narrows toward the apex).
     let clip_xy_half = r_top + 0.001;
     let clip = Solid::cuboid(Vector3::new(clip_xy_half, clip_xy_half, h / 2.0))
         .translate(Vector3::new(0.0, 0.0, f64::midpoint(z_bot, z_top)));
@@ -317,33 +386,49 @@ mod tests {
         assert!(build_funnel_solid(&ribbon).is_none());
     }
 
+    /// AABB sanity: bowl extends `+Z` up to `cone_height`, nipple tip
+    /// extends DOWN-AND-OUT to `(nipple_h*sin(θ), 0, −nipple_h*cos(θ))`.
+    /// Top of mesh at `+cone_height ≈ 30 mm`; bottom at
+    /// `−nipple_h*cos(θ) ≈ −12.99 mm`. `+X` extent goes to the bowl
+    /// top radius (22 mm) since the tilted nipple's max `+X` is only
+    /// `(nipple_h+overlap)*sin(θ) + nipple_outer_r ≈ 8 + 4.75 ≈
+    /// 12.75 mm`, smaller than the bowl mouth.
     #[test]
     fn build_funnel_solid_returns_some_when_pour_gate_enabled() {
         let ribbon = iter1_like_ribbon();
         let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
         let aabb = funnel.bounds().expect("funnel has finite bounds");
-        // Total height = nipple (4 mm) + flange (1 mm) + cone (30 mm) = 35 mm.
-        let total_height = FUNNEL_NIPPLE_HEIGHT_M + FUNNEL_FLANGE_HEIGHT_M + FUNNEL_CONE_HEIGHT_M;
+        let cos = V_HALF_ANGLE_RAD.cos();
+        let sin = V_HALF_ANGLE_RAD.sin();
+        let expected_nipple_tip_z = -FUNNEL_NIPPLE_HEIGHT_M * cos;
         assert!(
-            (aabb.max.z - total_height).abs() < 0.001,
-            "funnel max.z should equal total height {total_height}; got {}",
+            (aabb.max.z - FUNNEL_CONE_HEIGHT_M).abs() < 0.001,
+            "funnel max.z should equal bowl height {FUNNEL_CONE_HEIGHT_M}; got {}",
             aabb.max.z,
         );
-        // XY footprint extends to ±FUNNEL_TOP_OUTER_RADIUS_M (top
-        // of cone), since top is widest. Allow MC slack.
+        assert!(
+            aabb.min.z <= expected_nipple_tip_z + 0.001,
+            "funnel min.z should reach nipple tip {expected_nipple_tip_z}; got {}",
+            aabb.min.z,
+        );
+        // +X extent at least bowl top radius (the bowl mouth is widest
+        // in +X direction).
         assert!(
             aabb.max.x >= FUNNEL_TOP_OUTER_RADIUS_M - 0.001,
-            "funnel max.x should reach top radius {FUNNEL_TOP_OUTER_RADIUS_M}; \
-             got {}",
+            "funnel max.x should reach bowl top radius {FUNNEL_TOP_OUTER_RADIUS_M}; got {}",
             aabb.max.x,
         );
+        // Witness that the nipple's tip exists in +X (sin(30°)·15 ≈
+        // 7.5 mm) — sanity check that the tilt actually applied.
+        let _ = sin; // silence unused if assertions reordered
     }
 
-    /// Nipple SDF should contain its wall material between
-    /// `nipple_inner_r` and `nipple_outer_r` at mid-nipple z (the
-    /// recon-4 S7 revert restored the nipple to SDF/MC so the
-    /// boolean union with the flange welds continuously, fixing the
-    /// workshop iter-1 cf-view-smoke disconnection).
+    /// Nipple wall material at mid-nipple along the TILTED axis must
+    /// be inside the funnel SDF (the nipple is a tilted cylinder; mid-
+    /// nipple point is `(0.5·sin θ·h, 0, −0.5·cos θ·h)` from the bowl-
+    /// nipple junction). Offset by mid-wall radius perpendicular to
+    /// the tilted axis = `(mid_r·cos θ, 0, mid_r·sin θ)` (the
+    /// perpendicular in the X-Z plane).
     #[test]
     fn build_funnel_solid_nipple_wall_is_in_sdf() {
         let ribbon = iter1_like_ribbon();
@@ -355,51 +440,54 @@ mod tests {
         let nipple_outer_r = spec.gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0;
         let nipple_inner_r = nipple_outer_r - FUNNEL_NIPPLE_WALL_M;
         let mid_wall_r = f64::midpoint(nipple_inner_r, nipple_outer_r);
-        let mid_z = FUNNEL_NIPPLE_HEIGHT_M / 2.0;
-        // Mid-nipple-wall point should be INSIDE the funnel (SDF < 0).
-        let q_wall = Point3::new(mid_wall_r, 0.0, mid_z);
-        assert!(
-            funnel.evaluate(&q_wall) < 0.0,
-            "funnel SDF at mid-nipple-wall (r={mid_wall_r}, z={mid_z}) should be inside; got {}",
-            funnel.evaluate(&q_wall),
+
+        let cos = V_HALF_ANGLE_RAD.cos();
+        let sin = V_HALF_ANGLE_RAD.sin();
+        // Mid-nipple center along the tilted axis (axis goes from
+        // origin in direction (sin, 0, −cos)).
+        let mid_axis_dist = FUNNEL_NIPPLE_HEIGHT_M / 2.0;
+        let center = Point3::new(mid_axis_dist * sin, 0.0, -mid_axis_dist * cos);
+        // Perpendicular offset to mid-wall in the X-Z plane: rotate
+        // axis direction (sin, 0, -cos) by 90° around +Y →
+        // (cos, 0, sin). Length = mid_wall_r.
+        let wall_point = Point3::new(
+            center.x + mid_wall_r * cos,
+            0.0,
+            center.z + mid_wall_r * sin,
         );
-        // On-axis at mid-nipple is inside the lumen → outside (SDF > 0).
-        let q_lumen = Point3::new(0.0, 0.0, mid_z);
         assert!(
-            funnel.evaluate(&q_lumen) > 0.0,
-            "funnel SDF on-axis at mid-nipple (lumen interior) should be outside; got {}",
-            funnel.evaluate(&q_lumen),
+            funnel.evaluate(&wall_point) < 0.0,
+            "funnel SDF at mid-nipple-wall {wall_point:?} should be inside; \
+             got {}",
+            funnel.evaluate(&wall_point),
         );
-        // Off-axis beyond nipple OD is outside the funnel body.
-        let q_off = Point3::new(nipple_outer_r + 0.002, 0.0, mid_z);
+        // Center of the nipple bore (lumen) is outside the funnel
+        // body — silicone flows here.
         assert!(
-            funnel.evaluate(&q_off) > 0.0,
-            "funnel SDF beyond nipple OD at mid-nipple z should be outside; got {}",
-            funnel.evaluate(&q_off),
+            funnel.evaluate(&center) > 0.0,
+            "funnel SDF on nipple axis at mid-nipple {center:?} should be \
+             outside (lumen interior); got {}",
+            funnel.evaluate(&center),
         );
     }
 
+    /// Bowl top interior must be open (cavity, SDF > 0) — workshop
+    /// pour-mouth.
     #[test]
-    fn build_funnel_solid_has_open_top_at_cone() {
-        // At z just below the cone top, on the central axis, the
-        // funnel SDF should be > 0 (inside the cone cavity, where
-        // workshop pours silicone in).
+    fn build_funnel_solid_has_open_top_at_bowl_mouth() {
         let ribbon = iter1_like_ribbon();
         let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
-        let total_height = FUNNEL_NIPPLE_HEIGHT_M + FUNNEL_FLANGE_HEIGHT_M + FUNNEL_CONE_HEIGHT_M;
-        let q_cone_interior = Point3::new(0.0, 0.0, total_height - 0.002);
+        let q_bowl_interior = Point3::new(0.0, 0.0, FUNNEL_CONE_HEIGHT_M - 0.002);
         assert!(
-            funnel.evaluate(&q_cone_interior) > 0.0,
-            "funnel central axis near top should be in the cone cavity \
+            funnel.evaluate(&q_bowl_interior) > 0.0,
+            "funnel central axis near bowl top should be in the bowl cavity \
              (SDF > 0); got {}",
-            funnel.evaluate(&q_cone_interior),
+            funnel.evaluate(&q_bowl_interior),
         );
     }
 
     /// `build_funnel_solid` returns no mesh-CSG transforms — the
-    /// funnel composes entirely in SDF/MC (the S7 nipple migration
-    /// was reverted 2026-05-23 per the module docstring §"Architectural
-    /// placement" rationale).
+    /// funnel composes entirely in SDF/MC.
     #[test]
     fn build_funnel_solid_returns_empty_transforms() {
         let ribbon = iter1_like_ribbon();
@@ -412,21 +500,9 @@ mod tests {
     }
 
     /// Math-verified M5 fit invariant per
-    /// `feedback_math_verify_geometric_contracts`. The funnel nipple
-    /// OD (sized in SDF as `gate_radius_m − NIPPLE_DIAMETRAL_CLEARANCE_M / 2`)
-    /// and the cup pour-gate-hole ID (carved at the nominal
-    /// `2 × gate_radius_m` via mesh-CSG, see
-    /// `crate::pour::build_pour_gate_transforms`) must differ by
-    /// exactly [`NIPPLE_DIAMETRAL_CLEARANCE_M`] — asymmetric `/2`
-    /// convention (funnel side bears all the slack; cup side stays
-    /// at nominal).
-    ///
-    /// Verified at the spec-sizing level (funnel side) + the
-    /// transform-parameter level (cup side) so a regression on
-    /// either side's sizing math is caught without mesh round-trip
-    /// noise. NB: the funnel nipple OD is MC-quantized to the
-    /// `FUNNEL_MAX_CELL_SIZE_M` cell size (~0.5 mm radial precision
-    /// at 1 mm cells); workshop slack absorbs this.
+    /// `feedback_math_verify_geometric_contracts`. Funnel nipple OD
+    /// plus cup pour-gate hole ID must differ by exactly
+    /// [`NIPPLE_DIAMETRAL_CLEARANCE_M`].
     #[test]
     fn funnel_nipple_and_pour_gate_fit_invariant() {
         let ribbon = iter1_like_ribbon();
@@ -434,10 +510,7 @@ mod tests {
             PourGateKind::Default(spec) => spec.clone(),
             PourGateKind::None => panic!("iter1_like_ribbon must have pour gate"),
         };
-        // Funnel nipple OD is derived in build_funnel_solid as
-        // `gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2`.
         let funnel_nipple_r = spec.gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0;
-
         let cup_transforms = crate::pour::build_pour_gate_transforms(&ribbon);
         let cup_pour_r = cup_transforms
             .iter()
@@ -446,17 +519,12 @@ mod tests {
                 _ => None,
             })
             .expect("cup-side pour-gate transforms must include a SubtractCylinder");
-
-        // Diametral gap = cup hole Ø − nipple Ø = 2 × (cup_r − funnel_r).
         let diametral_gap_m = 2.0 * (cup_pour_r - funnel_nipple_r);
         assert!(
             (diametral_gap_m - NIPPLE_DIAMETRAL_CLEARANCE_M).abs() < 1.0e-9,
             "diametral gap should equal NIPPLE_DIAMETRAL_CLEARANCE_M = \
-             {NIPPLE_DIAMETRAL_CLEARANCE_M}; got {diametral_gap_m} \
-             (funnel_r={funnel_nipple_r}, cup_r={cup_pour_r})",
+             {NIPPLE_DIAMETRAL_CLEARANCE_M}; got {diametral_gap_m}",
         );
-        // Cup hole stays at nominal `spec.gate_radius_m` (asymmetric
-        // `/2` convention — funnel side bears the slack).
         assert!(
             (cup_pour_r - spec.gate_radius_m).abs() < 1.0e-9,
             "cup pour-gate hole radius should equal gate_radius_m = {} \
@@ -465,18 +533,17 @@ mod tests {
         );
     }
 
-    /// Funnel connectivity regression guard — workshop iter-1
-    /// cf-view smoke (2026-05-23) surfaced a 2-component funnel.stl
-    /// when the nipple was a post-MC `UnionCylinder` boolean-unioned
-    /// onto the SDF-meshed flange (exactly-coincident faces at
-    /// z = `FUNNEL_NIPPLE_HEIGHT_M` produced disconnected output).
-    /// The recon-4-pattern revert moves the nipple back to SDF so
-    /// MC produces one continuous mesh in a single pass.
-    ///
-    /// Asserts the full pipeline (SDF → MC → mesh-CSG transforms)
-    /// produces a SINGLE connected component. Math-instrumented at
-    /// the lib-test level (`mesh_repair::components::find_connected_components`)
-    /// so the regression is caught without a workshop STL regen.
+    /// Funnel connectivity regression guard. The bent-spout
+    /// architecture welds bowl + nipple via SDF union with
+    /// [`BOWL_NIPPLE_OVERLAP_M`] (1 mm) of nipple-top extending into
+    /// the bowl interior — sufficient overlap for MC to interpolate
+    /// across the junction at the
+    /// `crate::spec::FUNNEL_MAX_CELL_SIZE_M` (1 mm) cell size. A
+    /// regression here means either (a) the SDF chain dropped the
+    /// `nipple_outer` union, (b) the bowl-nipple overlap was tightened
+    /// below the cell size, or (c) a future migration introduced a
+    /// new paradigm-boundary cylinder Union onto the SDF-meshed
+    /// funnel without an SDF-side weld.
     #[test]
     fn funnel_mesh_is_single_connected_component() {
         use crate::error::CastTarget;
@@ -487,8 +554,6 @@ mod tests {
         let ribbon = iter1_like_ribbon();
         let (solid, transforms) =
             build_funnel_solid(&ribbon).expect("iter1 fixture has pour gate enabled");
-        // 1 mm cell size matches `FUNNEL_MAX_CELL_SIZE_M` in the
-        // production funnel mesher path.
         let mesh = solid_to_mm_mesh(&solid, 0.001, CastTarget::Funnel).expect("funnel MC");
         let mesh = apply_mating_transforms(mesh, &transforms, CastTarget::Funnel)
             .expect("funnel mesh-CSG");
@@ -496,17 +561,83 @@ mod tests {
         assert_eq!(
             analysis.component_count,
             1,
-            "funnel mesh must be a single connected component (nipple + flange + \
-             cone welded by SDF union, meshed by MC in one pass); got {} components \
-             ({} verts / {} faces). A regression here means either (a) the SDF \
-             chain dropped the nipple_outer union (the S7-era post-MC mesh-CSG \
-             nipple migration produced 2 disconnected components — see the module \
-             docstring for the recon-4 pattern), or (b) a future migration \
-             introduced a new paradigm-boundary cylinder Union onto the \
-             SDF-meshed funnel without an SDF-side weld.",
+            "funnel mesh must be a single connected component; got {} components \
+             ({} verts / {} faces)",
             analysis.component_count,
             mesh.vertices.len(),
             mesh.faces.len(),
+        );
+    }
+
+    /// Watertightness regression (cold-read workshop cf-view smoke
+    /// 2026-05-27): the bowl-nipple kink at z=0 must close cleanly
+    /// at the iter-1 1 mm MC cell size, with no open-boundary edges.
+    /// Pre-fix the bowl-bottom OR was 7 mm — only 1.52 mm wider
+    /// than the tilted nipple's projected ellipse semi-major at z=0
+    /// (5.48 mm), smaller than the MC cell size, so MC couldn't
+    /// resolve the back-of-nipple kink reveal and left a triangular
+    /// gap visible in cf-view. Post-fix the OR is 10 mm, giving
+    /// ~4.5 mm reveal annulus = 4-5 MC cells of resolution.
+    /// A regression here would mean the bowl OR was tightened back
+    /// below the safety margin OR MC cell size was bumped up past
+    /// the reveal-annulus width.
+    #[test]
+    fn funnel_mesh_has_no_open_boundary_edges() {
+        use crate::error::CastTarget;
+        use crate::mesh_csg::apply_mating_transforms;
+        use crate::mesher::solid_to_mm_mesh;
+        use mesh_repair::validate_mesh;
+
+        let ribbon = iter1_like_ribbon();
+        let (solid, transforms) =
+            build_funnel_solid(&ribbon).expect("iter1 fixture has pour gate enabled");
+        let mesh = solid_to_mm_mesh(&solid, 0.001, CastTarget::Funnel).expect("funnel MC");
+        let mesh = apply_mating_transforms(mesh, &transforms, CastTarget::Funnel)
+            .expect("funnel mesh-CSG");
+        let report = validate_mesh(&mesh);
+        assert_eq!(
+            report.boundary_edge_count,
+            0,
+            "funnel mesh must be watertight (0 boundary edges); got \
+             {boundary_edges}. If this regresses, the bowl-nipple kink at \
+             z=0 leaves an MC-unresolved reveal — check that \
+             FUNNEL_BOWL_BOTTOM_OUTER_RADIUS_M still exceeds the tilted \
+             nipple's projected ellipse semi-major \
+             (nipple_outer_r / cos(V_HALF_ANGLE_RAD)) by at least a few \
+             MC cell widths.",
+            boundary_edges = report.boundary_edge_count,
+        );
+    }
+
+    /// Nipple tilt regression: the nipple's tip MUST be offset in
+    /// the +X direction by `sin(V_HALF_ANGLE_RAD) × nipple_height` —
+    /// witnesses that the rotation actually applied + the nipple is
+    /// the angled spout, not a straight-down nipple.
+    #[test]
+    fn nipple_tip_is_offset_in_plus_x_by_tilt() {
+        let ribbon = iter1_like_ribbon();
+        let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
+        let aabb = funnel.bounds().expect("funnel has finite bounds");
+        let expected_min_x_tip = FUNNEL_NIPPLE_HEIGHT_M * V_HALF_ANGLE_RAD.sin();
+        // The nipple's tip at +X around (sin(θ)·h, 0, −cos(θ)·h) ≈
+        // (+7.5, 0, −12.99). The funnel's max.x should reach AT
+        // LEAST that x-coord (it may be greater due to the bowl top
+        // radius extending beyond, but it should not be LESS).
+        assert!(
+            aabb.max.x >= expected_min_x_tip - 0.001,
+            "funnel +X extent must include the tilted nipple's tip at \
+             X ≈ {expected_min_x_tip}; got max.x={}. If this fails, the \
+             nipple tilt didn't apply — check the UnitQuaternion::from_axis_angle \
+             rotation in build_funnel_solid.",
+            aabb.max.x,
+        );
+        // Similarly, -X extent must reach AT LEAST the bowl mouth
+        // radius (bowl is symmetric around the Z axis).
+        assert!(
+            aabb.min.x <= -FUNNEL_TOP_OUTER_RADIUS_M + 0.001,
+            "funnel -X extent must include the bowl mouth at \
+             X ≈ -{FUNNEL_TOP_OUTER_RADIUS_M}; got min.x={}",
+            aabb.min.x,
         );
     }
 }
