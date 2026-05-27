@@ -818,6 +818,50 @@ impl CastConfig {
                 min_flange = (bolt_offset + bolt_radius + bolt_wall_floor) * 1000.0,
             );
 
+            // Cup-wall-step washer-clearance invariant (iter-1 near-
+            // miss anchor): the M5 washer's lateral footprint extends
+            // inboard from the bolt centerline by the washer radius
+            // (~5 mm for standard M5 ~10 mm OD). The washer's inboard
+            // edge must clear the cup-wall outer step at
+            // `body_dist = wall_thickness_m`; otherwise the washer
+            // rests partly on the step and clamp pressure points-
+            // loads onto the cup-wall edge instead of seating flat
+            // against the flange. Workshop user surfaced this 2026-
+            // 05-27 against an earlier bolt_offset = 9 mm config:
+            // 9 − 5 = 4 mm < 5 mm wall → washer overlaps step.
+            // iter-1 bumped to bolt_offset = 13 mm: 13 − 5 = 8 mm vs
+            // 5 mm + 1 mm margin = 6 mm floor → 2 mm slack.
+            const M5_WASHER_RADIUS_M: f64 = 0.005;
+            const CUP_WALL_STEP_MARGIN_M: f64 = 0.001;
+            let wall_thickness_m = self.cast.wall_thickness_m;
+            let cup_wall_step_clearance = bolt_offset - M5_WASHER_RADIUS_M - wall_thickness_m;
+            ensure!(
+                cup_wall_step_clearance >= CUP_WALL_STEP_MARGIN_M,
+                "cast.toml: M5 washer footprint overlaps cup-wall outer \
+                 step — bolt_offset {bolt_offset:.4} − M5 washer radius \
+                 {washer_radius:.4} = {washer_inboard_edge:.4} m, which \
+                 is {overlap_mm:.3} mm {direction} cast.wall_thickness_m \
+                 {wall_mm:.3} mm + {margin_mm:.3} mm margin. Washer \
+                 would rest partly on the cup-wall step instead of \
+                 seating flat against the flange, point-loading the \
+                 step under hand-torque. Move bolts outboard \
+                 (raise bolt_pattern.silhouette_outboard_offset_m to \
+                 ≥ {min_offset_mm:.3} mm) or shrink the cup wall \
+                 (lower cast.wall_thickness_m).",
+                washer_radius = M5_WASHER_RADIUS_M,
+                washer_inboard_edge = bolt_offset - M5_WASHER_RADIUS_M,
+                overlap_mm = (CUP_WALL_STEP_MARGIN_M - cup_wall_step_clearance).abs() * 1000.0,
+                direction = if cup_wall_step_clearance < 0.0 {
+                    "INSIDE"
+                } else {
+                    "below"
+                },
+                wall_mm = wall_thickness_m * 1000.0,
+                margin_mm = CUP_WALL_STEP_MARGIN_M * 1000.0,
+                min_offset_mm =
+                    (wall_thickness_m + M5_WASHER_RADIUS_M + CUP_WALL_STEP_MARGIN_M) * 1000.0,
+            );
+
             // Dowel ↔ bolt arc-length stagger invariant: when both
             // patterns enabled, the minimum arc-fraction separation
             // across all (dowel, bolt) pairs must give an arc-length
@@ -1110,7 +1154,7 @@ prep_toml = "iter1.cleaned.prep.toml"
 [cast]
 mesh_cell_size_m = 0.004
 mass_budget_kg = 0.500
-wall_thickness_m = 0.030
+wall_thickness_m = 0.005
 split_normal = [0.0, 1.0, 0.0]
 piece_min_wall_mm = 0.5
 output_dir = "iter1_out"
@@ -1308,5 +1352,138 @@ material = "ECOFLEX_00_30"
             err.to_string().contains("typo_field"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn rejects_bolt_washer_overlapping_cup_wall_step() {
+        // Cup-wall-step washer-clearance invariant (2026-05-27 follow-
+        // up to the iter-1 ultra-review). The historical near-miss:
+        // bolt_pattern.silhouette_outboard_offset_m = 9 mm with the
+        // default 5 mm cast.wall_thickness_m + ~5 mm M5 washer radius
+        // → washer inboard edge at body_dist = 4 mm, overlapping the
+        // cup-wall outer step at body_dist = 5 mm. Validator must
+        // catch this at config time instead of letting the workshop
+        // discover it post-print.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[bolt_pattern]
+silhouette_outboard_offset_m = 0.009
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("bolt_offset = 9 mm at default wall = 5 mm must fail washer-clearance");
+        let s = err.to_string();
+        assert!(
+            s.contains("washer footprint"),
+            "expected washer-footprint error: {s}"
+        );
+        assert!(
+            s.contains("cup-wall outer step"),
+            "expected cup-wall-step mention: {s}"
+        );
+    }
+
+    #[test]
+    fn accepts_bolt_washer_clears_cup_wall_step_at_iter1_defaults() {
+        // iter-1 defaults (bolt_offset = 13 mm, wall = 5 mm, washer
+        // radius = 5 mm) → washer inboard edge at body_dist = 8 mm,
+        // well clear of the 5 mm cup-wall step (3 mm slack vs 1 mm
+        // margin requirement). Pins the gate's "passes at iter-1
+        // defaults" branch — regression-anchors that the validator
+        // doesn't accidentally reject the production-default config.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_thin_cup_wall_with_default_bolt_offset() {
+        // Workshop drops wall_thickness_m to 3 mm: washer clearance
+        // = 13 − 5 − 3 = 5 mm slack vs 1 mm margin requirement →
+        // passes. Pins the gate's responsiveness to the cup-wall
+        // input (vs hard-coding the wall floor at 5 mm).
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[cast]
+wall_thickness_m = 0.003
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_bolt_offset_below_thick_cup_wall() {
+        // Inverse pairing: with cast.wall_thickness_m bumped to 8 mm,
+        // the iter-1 default 13 mm bolt offset has clearance 13 − 5 −
+        // 8 = 0 mm < 1 mm margin → fail. Pins the gate's coupling on
+        // the wall-thickness side.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[cast]
+wall_thickness_m = 0.008
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("13 mm bolt offset at 8 mm wall must fail");
+        assert!(
+            err.to_string().contains("washer footprint"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn skips_washer_clearance_check_when_bolts_disabled() {
+        // The whole bolt-pattern validator block is gated on
+        // `self.bolt_pattern.enabled`. A bolt_offset value that
+        // WOULD fail the washer check passes silently when bolts are
+        // off (no flange→bolt invariants fire either). Pins the
+        // "no-op when disabled" branch.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[bolt_pattern]
+enabled = false
+silhouette_outboard_offset_m = 0.009
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.bolt_pattern.enabled);
     }
 }

@@ -2213,6 +2213,145 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn f4_carveout_policy_table_locks_per_target_blocking_set() {
+        // 2026-05-27 follow-up to the iter-1 ultra-review: lock the
+        // F4 `is_blocking_critical` per-target carve-out scope across
+        // all `CastTarget` variants and all `PrintIssueType` variants
+        // that could reach Critical severity. Any future change that
+        // widens the ThinWall/SmallFeature/TrappedVolume carve-out
+        // beyond MoldPiece + Plug + Funnel must update this table —
+        // the test fails loudly so the reviewer notices the policy
+        // shift. Equally any future change that ACCIDENTALLY drops
+        // the PrintabilityCritical floor (NonManifold etc.) for the
+        // carved targets is caught here.
+        use mesh_printability::{IssueSeverity, PrintIssue, PrintIssueType};
+        let carved_targets: &[CastTarget] = &[
+            CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: PieceSide::Negative,
+            },
+            CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: PieceSide::Positive,
+            },
+            CastTarget::Plug { layer_index: None },
+            CastTarget::Plug {
+                layer_index: Some(0),
+            },
+            CastTarget::Funnel,
+        ];
+        let strict_targets: &[CastTarget] = &[
+            CastTarget::LayerBody { layer_index: 0 },
+            CastTarget::Mold { layer_index: 0 },
+            CastTarget::Platform,
+            CastTarget::GasketMold { layer_index: 0 },
+            CastTarget::Dowel,
+        ];
+        // The PrintabilityCritical floor — blocks at Critical for
+        // EVERY target (carved or not).
+        let always_blocking = [
+            PrintIssueType::ExceedsBuildVolume,
+            PrintIssueType::NotWatertight,
+            PrintIssueType::NonManifold,
+        ];
+        // The function-driven carve-out scope — non-blocking on the
+        // carved-targets list, blocking on the strict-targets list.
+        let function_excused = [
+            PrintIssueType::ThinWall,
+            PrintIssueType::SmallFeature,
+            PrintIssueType::TrappedVolume,
+        ];
+        // Universal non-blockers — never block regardless of target
+        // or severity (covered by `is_blocking_critical`'s match-
+        // arm enumeration: anything not listed in the final
+        // `matches!` returns false).
+        let universal_nonblocking = [
+            PrintIssueType::ExcessiveOverhang,
+            PrintIssueType::LongBridge,
+            PrintIssueType::SelfIntersecting,
+            PrintIssueType::Other,
+            PrintIssueType::DetectorSkipped,
+        ];
+
+        let critical_issue = |t: PrintIssueType| {
+            PrintIssue::new(t, IssueSeverity::Critical, format!("synthetic-{t:?}"))
+        };
+
+        // Floor: every target blocks on PrintabilityCritical signals.
+        for target in carved_targets.iter().chain(strict_targets.iter()).copied() {
+            for &issue_type in &always_blocking {
+                let issue = critical_issue(issue_type);
+                assert!(
+                    super::is_blocking_critical(&issue, target),
+                    "PrintabilityCritical floor regression: target={target:?} \
+                     issue_type={issue_type:?} must block at Critical severity"
+                );
+            }
+        }
+
+        // Function-driven carve-out: ThinWall/SmallFeature/
+        // TrappedVolume are non-blocking on carved targets.
+        for target in carved_targets.iter().copied() {
+            for &issue_type in &function_excused {
+                let issue = critical_issue(issue_type);
+                assert!(
+                    !super::is_blocking_critical(&issue, target),
+                    "carve-out regression: target={target:?} \
+                     issue_type={issue_type:?} must NOT block at Critical \
+                     (function-driven carve-out per is_blocking_critical \
+                     docstring's per-target block)"
+                );
+            }
+        }
+
+        // Same three issue types DO block on strict targets — guards
+        // against accidental widening of the carve-out.
+        for target in strict_targets.iter().copied() {
+            for &issue_type in &function_excused {
+                let issue = critical_issue(issue_type);
+                assert!(
+                    super::is_blocking_critical(&issue, target),
+                    "carve-out over-widening regression: target={target:?} \
+                     issue_type={issue_type:?} must STILL block at Critical \
+                     (only MoldPiece + Plug + Funnel are carved)"
+                );
+            }
+        }
+
+        // Universal non-blockers: never block regardless of target.
+        for target in carved_targets.iter().chain(strict_targets.iter()).copied() {
+            for &issue_type in &universal_nonblocking {
+                let issue = critical_issue(issue_type);
+                assert!(
+                    !super::is_blocking_critical(&issue, target),
+                    "universal-non-blocker regression: target={target:?} \
+                     issue_type={issue_type:?} must never block (cf-cast \
+                     gate skips this issue type for every target per the \
+                     is_blocking_critical docstring's universal-non-\
+                     blockers block)"
+                );
+            }
+        }
+
+        // Severity gate: a sub-Critical instance of even the
+        // PrintabilityCritical types must not block.
+        for target in carved_targets.iter().chain(strict_targets.iter()).copied() {
+            for &issue_type in &always_blocking {
+                for sev in [IssueSeverity::Info, IssueSeverity::Warning] {
+                    let issue = PrintIssue::new(issue_type, sev, "synthetic");
+                    assert!(
+                        !super::is_blocking_critical(&issue, target),
+                        "severity-gate regression: target={target:?} \
+                         issue_type={issue_type:?} severity={sev:?} \
+                         must not block (only Critical severity blocks)"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn baseline_cuboid_self_intersection_noise_floor() {
         // Establishes the MC self-intersection noise floor on a plain
         // cuboid (no CSG composition). Self-intersection counts at
