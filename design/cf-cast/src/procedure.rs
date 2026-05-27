@@ -571,16 +571,16 @@ fn write_print_orientation_funnel_platform(md: &mut String) {
          pour-gate cylinder is tilted 30° from the dome's outward \
          axis; the bent nipple lets the workshop user orient the \
          assembled mold +Z up with the bowl mouth facing straight up \
-         for ladle-pouring). Print with **bowl mouth UP on the build \
-         plate** (mouth disk = build-plate surface; bowl + nipple \
-         build downward+sideways from there). **Enable auto-supports \
-         in the slicer**: the tilted nipple sticks ~7.5 mm \
-         horizontally from the bowl base and needs supports to print \
-         clean — cleaned off after the print. Alternative: rotate \
-         the print so the nipple lies along the build plate (bowl \
-         tilted) to avoid supports — slicer choice; STL is unchanged. \
-         Print once for the whole multi-layer device — reuse across \
-         every layer's pour."
+         for ladle-pouring). Print with the **bowl-mouth disk DOWN on \
+         the build plate** (mouth disk = first layer; the bowl widens \
+         upward from the mouth; the tilted nipple cantilevers ~7.5 mm \
+         horizontally from the bowl side). **Enable auto-supports in \
+         the slicer**: the cantilevered nipple needs supports to \
+         print clean — cleaned off after the print. Alternative: \
+         rotate the print so the nipple lies along the build plate \
+         (bowl tilted on its side) to avoid supports — slicer choice; \
+         STL is unchanged. Print once for the whole multi-layer \
+         device — reuse across every layer's pour."
     );
     md.push('\n');
     let _ = writeln!(
@@ -1101,7 +1101,9 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
     // around the body silhouette (interleaved with dowel positions
     // when both patterns are enabled at default counts). M5
     // through-bolts + flat washers (×2 per bolt) + hex nuts clamp
-    // the two halves across the gasket.
+    // the two halves at the flange (across a gasket when one is
+    // present; iter-1 ships gasketless with mold release + PLA-on-
+    // PLA contact under bolt-induced clamp pressure as the seal).
     let count = spec.count;
     let clearance_mm = spec.clearance_diameter_m * 1000.0;
     let outboard_offset_mm = spec.silhouette_outboard_offset_m * 1000.0;
@@ -1304,7 +1306,12 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
     // protocol fires only when both are enabled (the workshop
     // iter-3 default); other combinations get a brief fallback note
     // pointing at the hand-clamp / no-gasket degraded paths.
-    let _ = writeln!(md, "## Cup-Half Clamping with Gasket Installation");
+    let header = match (&ribbon.gasket, ribbon.bolt_pattern.spec()) {
+        (GasketKind::Mold(_), _) => "## Cup-Half Clamping with Gasket Installation",
+        (GasketKind::None, Some(_)) => "## Cup-Half Clamping (M5 Bolt-Pattern Seal)",
+        (GasketKind::None, None) => "## Cup-Half Clamping (Gasketless)",
+    };
+    let _ = writeln!(md, "{header}");
     md.push('\n');
     match (&ribbon.flange, &ribbon.gasket) {
         (FlangeKind::None, GasketKind::None) => {
@@ -1351,27 +1358,55 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
         (FlangeKind::Plate(flange_spec), GasketKind::None) => {
             let width_mm = flange_spec.flange_width_m * 1000.0;
             let thickness_mm = flange_spec.flange_thickness_m * 1000.0;
-            let _ = writeln!(
-                md,
-                "This cast carries a seam-plane flange \
-                 (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
-                 {thickness_mm:.1} mm per-half thickness) but no \
-                 per-layer gasket (`GasketKind::None`). Use the \
-                 flange as a flat C-clamp grip surface: after mating \
-                 the cup halves via the symmetric dowel-hole pattern, \
-                 apply \
-                 C-clamps to the flange at 4 positions (one per 90° \
-                 quadrant around the seam plane perimeter). Tighten \
-                 each clamp to hand-tight only — without a gasket \
-                 there is no compressible silicone strip to absorb \
-                 over-tightening, and PLA-on-PLA flange contact at \
-                 high clamp force can stress-crack the flange. Pour \
-                 silicone through the pour gate; the seam relies on \
-                 the cup-piece SDF halfspace intersect's bit-precise \
-                 flat seam face (recon-4 (P) §F-2). Workshop user \
-                 monitors for leaks; flag any leak for the post-\
-                 iter-3 gasket enablement decision."
-            );
+            if ribbon.bolt_pattern.spec().is_some() {
+                // iter-1 path: flange + bolts, no gasket. The bolts
+                // ARE the clamp; defer the protocol to the §B section
+                // already rendered above. Emitting C-clamp prose here
+                // would conflict with the bolt-pattern instructions.
+                let _ = writeln!(
+                    md,
+                    "This cast carries a seam-plane flange \
+                     (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
+                     {thickness_mm:.1} mm per-half thickness) and the \
+                     §B M5 through-bolt clamp pattern, but no \
+                     per-layer gasket (`GasketKind::None`). The M5 \
+                     through-bolts ARE the clamp mechanism — see \
+                     `### M5 through-bolt clamp pattern (§B)` above \
+                     for the supplies list + crosswise hand-tighten \
+                     protocol. Do NOT apply external C-clamps in \
+                     addition to the bolts; the bolt-induced flange \
+                     contact pressure (~1 MPa) seals PLA-on-PLA at \
+                     the seam with mold release standing in for a \
+                     compressible gasket. Workshop user monitors for \
+                     leaks at the seam during pour; if a leak \
+                     develops, the iter-2 path is to re-enable the \
+                     per-layer gasket (`[gasket].enabled = true` in \
+                     cast.toml)."
+                );
+            } else {
+                let _ = writeln!(
+                    md,
+                    "This cast carries a seam-plane flange \
+                     (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
+                     {thickness_mm:.1} mm per-half thickness) but no \
+                     per-layer gasket (`GasketKind::None`) and no §B \
+                     bolt pattern. Use the flange as a flat C-clamp \
+                     grip surface: after mating the cup halves via \
+                     the symmetric dowel-hole pattern, apply C-clamps \
+                     to the flange at 4 positions (one per 90° \
+                     quadrant around the seam plane perimeter). \
+                     Tighten each clamp to hand-tight only — without \
+                     a gasket there is no compressible silicone strip \
+                     to absorb over-tightening, and PLA-on-PLA flange \
+                     contact at high clamp force can stress-crack \
+                     the flange. Pour silicone through the pour gate; \
+                     the seam relies on the cup-piece SDF halfspace \
+                     intersect's bit-precise flat seam face (recon-4 \
+                     (P) §F-2). Workshop user monitors for leaks; \
+                     flag any leak for the post-iter-3 gasket \
+                     enablement decision."
+                );
+            }
         }
         (FlangeKind::Plate(flange_spec), GasketKind::Mold(gasket_spec)) => {
             // Workshop iter-3 default path — full clamp-and-pour
@@ -1619,6 +1654,7 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
     md.push('\n');
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_per_layer_sections_v2(
     md: &mut String,
     spec: &CastSpec,
@@ -1676,27 +1712,41 @@ fn write_per_layer_sections_v2(
             }
             PourGateKind::None => "the assembled mold cavity",
         };
+        let closing_protocol = match (&ribbon.gasket, ribbon.bolt_pattern.spec()) {
+            (GasketKind::Mold(_), _) => {
+                "Place the cured gasket strip on the Negative half's \
+                 seam face per `## Cup-Half Clamping with Gasket \
+                 Installation` above BEFORE closing the second cup \
+                 half, then close the second half and apply the \
+                 clamping protocol from that section."
+            }
+            (GasketKind::None, Some(_)) => {
+                "Close the second cup half over the plug, registering \
+                 the §M dowels to seat the two halves flush. Then \
+                 install the §B M5 through-bolts per `### M5 \
+                 through-bolt clamp pattern (§B)` above — insert each \
+                 bolt + washers + nut and hand-tighten crosswise for \
+                 even flange clamp pressure. PLA-on-PLA seam contact \
+                 + mold release stands in for a gasket; the bolt \
+                 clamp force is the seal."
+            }
+            (GasketKind::None, None) => {
+                "Close the second cup half over the plug directly \
+                 (seam closes flush = press-stop tactile feedback). \
+                 Apply the clamping protocol from the section above."
+            }
+        };
         let _ = writeln!(
             md,
             "6. Apply mold release to `plug_layer_{0}.stl` (Smooth-On \
              Ease Release 200 standard) and seat the plug into one \
              open cup half so its truncated-pyramid floor lock drops \
-             into the cup-piece floor socket. **For casts with the \
-             seam-flange + per-layer gasket geometry enabled** (the \
-             cf-cast-cli default — see `## Cup-Half Clamping with \
-             Gasket Installation` above), place the cured gasket \
-             strip on the Negative half's seam face per that \
-             section's Step 3 BEFORE closing the second cup half, \
-             then close the second half and apply the 4-quadrant \
-             C-clamps per that section's Steps 4 + 5; **for casts \
-             without flange or gasket**, close the second cup half \
-             over the plug directly (seam closes flush = press-stop \
-             tactile feedback). Orient the assembled mold with \
-             **+Z up** so the V's pour + vent legs are on top. Pour \
-             silicone into {pour_into} at a slow steady rate to \
-             avoid splashing through the vent; trapped air rises \
-             into the vent leg (Negative piece, -binormal side) as \
-             the cavity fills.",
+             into the cup-piece floor socket. {closing_protocol} \
+             Orient the assembled mold with **+Z up** so the V's \
+             pour + vent legs are on top. Pour silicone into \
+             {pour_into} at a slow steady rate to avoid splashing \
+             through the vent; trapped air rises into the vent leg \
+             (Negative piece, -binormal side) as the cavity fills.",
             pour.layer_index,
         );
         if let Some(protocol) = protocol {

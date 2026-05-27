@@ -1765,11 +1765,15 @@ fn mold_piece_filename(layer_index: usize, piece_side: PieceSide) -> String {
 ///   structurally part of a solid; FDM prints them as continuous
 ///   material. They do not affect the cast. Likewise the scan's
 ///   sub-mm surface features can't be "trapped volumes" in a solid.
-/// - **Platforms** + **funnels** + **registration pins** + **v1
-///   monolithic molds** are regular CAD-emitted geometry, so a
-///   `ThinWall` there really IS a fixture bug (we accidentally emitted
-///   a wall under min-extrusion-width). Their full blocking set
-///   stays.
+/// - **Platforms** + **registration pins** + **v1 monolithic molds**
+///   are regular CAD-emitted geometry, so a `ThinWall` there really
+///   IS a fixture bug (we accidentally emitted a wall under min-
+///   extrusion-width). Their full blocking set stays.
+/// - **Funnels** are disposable workshop pour-channel tools (gravity-
+///   driven viscous pour, 10-30 s per layer). The bent-spout funnel's
+///   MC-quantization-induced sub-mm features near the bowl/nipple
+///   fillet are not a workshop concern; carved out 2026-05-27 — see
+///   the per-target carve-outs block below.
 ///
 /// # Universal non-blockers (apply to every target)
 ///
@@ -1802,6 +1806,13 @@ fn mold_piece_filename(layer_index: usize, piece_side: PieceSide) -> String {
 ///   scan-mesh-direct path (S1.1) inherits the input scan's surface
 ///   noise verbatim, and ~100 `ThinWall` reports on a solid plug body
 ///   are scan-acquisition-noise, not real fixture bugs.
+/// - **Funnel** (post-bent-spout 2026-05-27): `ThinWall` +
+///   `SmallFeature` + `TrappedVolume` → non-blocking. Disposable
+///   single-cast pour-channel tool, no structural load — the bent-
+///   spout redesign's bowl/nipple fillet trips sub-mm thinness
+///   heuristics that don't matter for ~10-30 s gravity-driven pour.
+///   `PrintabilityCritical` signals (`NonManifold`, `NotWatertight`,
+///   `ExceedsBuildVolume`) STILL block.
 fn is_blocking_critical(issue: &PrintIssue, target: CastTarget) -> bool {
     if issue.severity != IssueSeverity::Critical {
         return false;
@@ -3257,8 +3268,10 @@ mod tests {
         assert!(md.contains("## Cap-Plane Edge Chamfer (Expected MC Quantization)"));
         assert!(md.contains("## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"));
         // Seam-flange S3: clamp-protocol section is emitted
-        // unconditionally (prose adapts to FlangeKind + GasketKind).
-        assert!(md.contains("## Cup-Half Clamping with Gasket Installation"));
+        // unconditionally (header + prose adapt to FlangeKind +
+        // GasketKind + BoltPatternKind — iter-1 gasketless edit
+        // 2026-05-27 split the header into three variants).
+        assert!(md.contains("## Cup-Half Clamping"));
         // Sections shared with v1.
         assert!(md.contains("## Materials Summary"));
         assert!(md.contains("## Generic Smooth-On Guidance"));
@@ -3436,9 +3449,12 @@ mod tests {
         let (spec, ribbon) = v2_procedure_fixture();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // (None, None) → "Gasketless" header (iter-1 2026-05-27
+        // header-branching edit; pre-edit was a single
+        // "with Gasket Installation" header for all branches).
         assert!(
-            md.contains("## Cup-Half Clamping with Gasket Installation"),
-            "clamp-section header missing in: {md}"
+            md.contains("## Cup-Half Clamping (Gasketless)"),
+            "gasketless clamp-section header missing in: {md}"
         );
         assert!(
             md.contains("`FlangeKind::None`"),
@@ -3663,34 +3679,83 @@ mod tests {
     }
 
     #[test]
-    fn generate_procedure_markdown_v2_per_layer_step_6_references_clamp_section() {
-        // S3 cold-read pass-2 (integration gap): the per-layer
-        // procedure's Step 6 ("seat plug + close cup half + pour
-        // silicone") must reference the
-        // `## Cup-Half Clamping with Gasket Installation` section
-        // so a workshop user reading the per-layer procedure
-        // linearly doesn't miss the gasket-placement + flange-clamp
-        // sub-sequence on (Plate, Mold) casts. Without the cross-
-        // reference the workshop user could close the cup halves +
-        // pour without ever placing the gasket strip, defeating the
-        // seam-gasket-mold arc's leak-seal purpose.
+    fn generate_procedure_markdown_v2_per_layer_step_6_branches_on_ribbon_config() {
+        // S3 cold-read pass-2 (integration gap), iter-1 2026-05-27
+        // refactor: the per-layer procedure's Step 6 ("seat plug +
+        // close cup half + pour silicone") MUST emit the protocol
+        // specific to the ribbon's (gasket, bolt_pattern) combination,
+        // not a generic conditional cross-reference. Pre-iter-1 Step 6
+        // emitted a "for casts with X / for casts without X" sub-
+        // clause unconditionally, which (a) instructed workshop users
+        // with gasketless configs to install a gasket strip that
+        // didn't exist (C1) and (b) conflicted with the §B M5 bolt-
+        // pattern instructions (C2). Anchors gate any future regression
+        // that re-introduces the unconditional cross-reference.
+
+        // (None, None) fixture: Step 6 says "Close the second cup half
+        // over the plug directly... Apply the clamping protocol from
+        // the section above."
         let (spec, ribbon) = v2_procedure_fixture();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(
-            md.contains("`## Cup-Half Clamping with Gasket Installation` above"),
-            "per-layer step 6 must cross-reference the clamp section: {md}"
-        );
-        // Both branches (flange + gasket enabled / disabled) must
-        // surface in the conditional so a reader knows which path
-        // applies to their cast config.
-        assert!(
-            md.contains("**For casts with the seam-flange + per-layer gasket geometry enabled**"),
-            "step 6 must call out the flange+gasket-enabled branch: {md}"
+            md.contains("Close the second cup half over the plug directly"),
+            "(None,None) step 6 must say close directly: {md}"
         );
         assert!(
-            md.contains("**for casts without flange or gasket**"),
-            "step 6 must call out the no-flange-no-gasket fallback branch: {md}"
+            md.contains("Apply the clamping protocol from the section above"),
+            "(None,None) step 6 must point at the clamping section: {md}"
+        );
+        // The old unconditional cross-reference / sub-clause prose
+        // MUST NOT appear — these are the C1/C2 regression anchors.
+        assert!(
+            !md.contains("**For casts with the seam-flange + per-layer gasket geometry enabled**"),
+            "old unconditional gasket-enabled sub-clause must not leak: {md}"
+        );
+        assert!(
+            !md.contains("place the cured gasket strip"),
+            "gasketless step 6 must not mention placing a gasket strip: {md}"
+        );
+
+        // (Plate, Mold) ribbon: Step 6 says "Place the cured gasket
+        // strip on the Negative half's seam face per `## Cup-Half
+        // Clamping with Gasket Installation` above..."
+        let gasket_ribbon = ribbon
+            .clone()
+            .with_flange(crate::FlangeKind::Plate(crate::FlangeSpec::iter1()))
+            .with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+        let md_gasket =
+            crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &gasket_ribbon);
+        assert!(
+            md_gasket.contains("Place the cured gasket strip"),
+            "(Plate,Mold) step 6 must place the gasket strip: {md_gasket}"
+        );
+        assert!(
+            md_gasket.contains("`## Cup-Half Clamping with Gasket Installation` above"),
+            "(Plate,Mold) step 6 must cross-reference the gasket clamp section: {md_gasket}"
+        );
+
+        // (Plate, None) + bolt-pattern ribbon (iter-1 gasketless path):
+        // Step 6 says "install the §B M5 through-bolts per `### M5
+        // through-bolt clamp pattern (§B)` above..."
+        let bolt_ribbon = ribbon
+            .with_flange(crate::FlangeKind::Plate(crate::FlangeSpec::iter1()))
+            .with_bolt_pattern(crate::bolt_pattern::BoltPatternKind::Auto(
+                crate::bolt_pattern::BoltPatternSpec::iter1(),
+            ));
+        let md_bolt = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &bolt_ribbon);
+        assert!(
+            md_bolt.contains("install the §B M5 through-bolts"),
+            "(Plate,None,Bolts) step 6 must install the bolts: {md_bolt}"
+        );
+        assert!(
+            md_bolt.contains("`### M5 through-bolt clamp pattern (§B)` above"),
+            "(Plate,None,Bolts) step 6 must cross-reference the bolt section: {md_bolt}"
+        );
+        // Gasket prose MUST NOT appear in the gasketless+bolt path.
+        assert!(
+            !md_bolt.contains("place the cured gasket strip"),
+            "gasketless+bolt step 6 must not mention a gasket strip: {md_bolt}"
         );
     }
 

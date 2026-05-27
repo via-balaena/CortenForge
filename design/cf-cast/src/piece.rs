@@ -145,8 +145,8 @@ const MC_BOUNDS_PAD_M: f64 = 0.001;
 ///
 /// **Why this exists** (§Q-1, 2026-05-26): the old form used the
 /// `bounding_region` cuboid as the cup-wall's outer boundary. When
-/// the seam-flange S1 added a flange that extends 15 mm laterally
-/// from the body perimeter — wider than the cuboid's `wall_thickness_m`
+/// the seam-flange S1 added a flange that extends 15+ mm laterally
+/// from the body perimeter (20 mm at iter-1 defaults) — wider than the cuboid's `wall_thickness_m`
 /// (5 mm) padding — the cuboid's faces ended up passing THROUGH the
 /// flange's interior. At 2 mm MC cells, this produced topology-
 /// ambiguous MC sample configurations at the cuboid-face × flange-
@@ -298,7 +298,8 @@ pub fn compose_piece_solid(
     // to resolve their outer surfaces correctly. Pre-§Q-1 the
     // bounds came from `bounding_region.bounds()` which was a
     // cuboid sized only for `wall_thickness_m` past the body — too
-    // small to enclose the flange's 15 mm lateral reach. See
+    // small to enclose the flange's 15+ mm lateral reach (20 mm at
+    // iter-1 defaults). See
     // [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
     let body_bounds =
         layer_body

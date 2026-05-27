@@ -144,7 +144,9 @@ pub struct BoltPatternSpec {
     /// Default 8.
     pub count: u32,
     /// Radial offset from the body silhouette curve to the bolt
-    /// centerline (meters). Default 9 mm.
+    /// centerline (meters). Default 13 mm (bumped 9 → 13 mm in iter-1
+    /// so the M5 washer footprint clears the cup-wall outer step;
+    /// see [`DEFAULT_OUTBOARD_OFFSET_M`] rationale).
     pub silhouette_outboard_offset_m: f64,
     /// Whether to silently drop bolts that collide with the pour-gate
     /// channels. Default `true`. When `false`, every bolt is emitted

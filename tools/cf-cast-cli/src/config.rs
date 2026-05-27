@@ -327,7 +327,7 @@ impl Default for GasketConfig {
 ///
 /// S2 of the seam-flange arc per recon §F-6. Defaults to
 /// `enabled = true` with [`cf_cast::FlangeSpec::iter1`] geometry
-/// (15 mm width × 4 mm thickness per half × 2 mm inner offset). Per-
+/// (20 mm width × 4 mm thickness per half × 2 mm inner offset). Per-
 /// field overrides are surfaced as optionals; absent → falls back to
 /// the iter1 default for that field. The cross-field invariant
 /// `inner_offset_m > GasketSpec.channel_width_m / 2` is enforced at
@@ -344,7 +344,7 @@ pub struct FlangeConfig {
     pub enabled: bool,
     /// Lateral extent (meters) from `inner_offset_m` outward in the
     /// seam plane. `None` → falls back to
-    /// [`cf_cast::FlangeSpec::iter1`]'s 15 mm default.
+    /// [`cf_cast::FlangeSpec::iter1`]'s 20 mm default.
     #[serde(default)]
     pub width_m: Option<f64>,
     /// Half-thickness (meters) perpendicular to the seam plane.
@@ -377,7 +377,7 @@ impl Default for FlangeConfig {
 /// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Defaults
 /// to `enabled = true` with
 /// [`cf_cast::dowel_hole::DowelHoleSpec::iter1`] (3 mm diameter ×
-/// 4 holes × 5 mm depth × 8 mm outboard offset × 0.1 mm clearance).
+/// 4 holes × 5 mm depth × 10 mm outboard offset × 0.1 mm clearance).
 /// Per-field overrides surfaced as optionals; absent → falls back to
 /// the iter1 default for that field.
 #[derive(Debug, Clone, Deserialize)]
@@ -402,7 +402,7 @@ pub struct DowelHoleConfig {
     #[serde(default)]
     pub count: Option<u32>,
     /// Radial offset from the body silhouette curve to the dowel
-    /// centerline (meters). `None` → 8 mm (iter1 default). Must satisfy
+    /// centerline (meters). `None` → 10 mm (iter1 default). Must satisfy
     /// the §M-5-b cross-field invariants in the recon.
     #[serde(default)]
     pub silhouette_outboard_offset_m: Option<f64>,
@@ -428,7 +428,7 @@ impl Default for DowelHoleConfig {
 /// §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
 /// Defaults to `enabled = true` with
 /// [`cf_cast::bolt_pattern::BoltPatternSpec::iter1`] (5.5 mm M5
-/// clearance × 8 bolts × 9 mm outboard offset × pour-gate collision
+/// clearance × 8 bolts × 13 mm outboard offset × pour-gate collision
 /// skip enabled). Per-field overrides surfaced as optionals; absent
 /// → falls back to the iter1 default for that field.
 #[derive(Debug, Clone, Deserialize)]
@@ -447,7 +447,7 @@ pub struct BoltPatternConfig {
     #[serde(default)]
     pub count: Option<u32>,
     /// Radial offset from body silhouette to bolt centerline (meters).
-    /// `None` → 9 mm (iter1 default). Must satisfy the §B-S1 cross-
+    /// `None` → 13 mm (iter1 default). Must satisfy the §B-S1 cross-
     /// field invariants in `validate_after_layer_source`.
     #[serde(default)]
     pub silhouette_outboard_offset_m: Option<f64>,

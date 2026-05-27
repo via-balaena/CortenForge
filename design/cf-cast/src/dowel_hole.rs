@@ -120,7 +120,8 @@ pub struct DowelHoleSpec {
     /// silhouette. Default 4.
     pub count: u32,
     /// Radial offset from the body silhouette curve to the dowel
-    /// centerline (meters). Default 8 mm. Must satisfy the §M-5-b
+    /// centerline (meters). Default 10 mm (bumped 8 → 10 mm in iter-1
+    /// for vice-jaw flange clearance). Must satisfy the §M-5-b
     /// cross-field invariants in the recon (inboard + outboard wall
     /// thicknesses ≥ FDM floor).
     pub silhouette_outboard_offset_m: f64,

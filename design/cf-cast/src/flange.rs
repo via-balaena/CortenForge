@@ -21,7 +21,8 @@
 //!   `body_dist = flange_inner_offset_m` (default 2 mm — keeps the
 //!   flange material LATERALLY DISJOINT from the gasket channel
 //!   per §F-4); outer edge at `body_dist = flange_width_m` (default
-//!   15 mm — C-clamp jaw reach + 5 mm grip clearance). Thickness
+//!   20 mm in iter-1 — sized to land the M5 through-bolt clamp
+//!   pattern with safe walls on both sides of the bolt hole). Thickness
 //!   `flange_thickness_m` (default 4 mm PER HALF) extends
 //!   perpendicular to the seam plane into the cup half's Y region.
 //!
@@ -107,8 +108,9 @@ use crate::silhouette_2d::Silhouette2d;
 /// 0.75× outboard wall rule with the new 13 mm offset, flange width
 /// bumped to 20 mm (`13 + 2.75 + 4.25 = 20`). Workshop trades 4 mm
 /// extra flange perimeter per piece for genuinely safe washer
-/// seating. Dowels (radius 1.6 mm, offset 8 mm) gain even more
-/// outboard margin (10.4 mm vs 6.4 mm at 16 mm).
+/// seating. Dowels (radius 1.6 mm, offset 10 mm after the 8 → 10 mm
+/// vice-jaw-clearance bump) have outboard margin 8.4 mm at the
+/// 20 mm flange (`20 - 10 - 1.6 = 8.4`), well above the FDM floor.
 const DEFAULT_FLANGE_WIDTH_M: f64 = 0.020;
 
 /// Default flange thickness PER HALF (4 mm).
@@ -118,7 +120,7 @@ const DEFAULT_FLANGE_WIDTH_M: f64 = 0.020;
 /// thickness — about 8 mm of PLA plus ~0.2 mm of gasket at iter-1
 /// design pressure. Above the FDM minimum-wall floor (1.0 mm).
 /// Per recon §F-2 bending check: a 1 mm-wide flange strip
-/// cantilevered along its 15 mm width direction, 4 mm thick, PLA
+/// cantilevered along its 20 mm width direction, 4 mm thick, PLA
 /// flexural modulus ≈ 3.5 `GPa`, distributed load ~1 `N/mm` of
 /// perimeter yields δ ≈ 30 µm, well below the gasket's ~200 µm
 /// compression budget.
@@ -141,7 +143,7 @@ const DEFAULT_FLANGE_INNER_OFFSET_M: f64 = 0.002;
 pub struct FlangeSpec {
     /// Flange lateral extent perpendicular to the body perimeter,
     /// measured in the seam plane. Default [`DEFAULT_FLANGE_WIDTH_M`]
-    /// (15 mm).
+    /// (20 mm in iter-1).
     pub flange_width_m: f64,
     /// Flange thickness PER HALF perpendicular to the seam plane
     /// (along the cup-world Y axis in production frame). Default
