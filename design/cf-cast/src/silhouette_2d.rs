@@ -2,7 +2,7 @@
 //!
 //! §F-1 + §F-2 of
 //! `docs/CF_CAST_FLANGE_CONTINUITY_BOLT_PATTERN_RECON.md`. Replaces
-//! [`crate::flange::FlangeSdf`]'s 3D-projected `body.evaluate` with a
+//! `crate::flange::FlangeSdf`'s 3D-projected `body.evaluate` with a
 //! 2D point-to-silhouette signed distance so the flange ring closes
 //! around body concavities (heel pocket etc. on production
 //! sock-over-capsule scans).
@@ -10,7 +10,7 @@
 //! # Why a separate 2D distance metric
 //!
 //! Per [[project-cf-cast-flange-perimeter-continuity-bookmark]] +
-//! §F-S0 empirical probe ([`crate::flange::tests::s0_flange_continuity_probe`]):
+//! §F-S0 empirical probe (`crate::flange::tests::s0_flange_continuity_probe`):
 //! the pre-fix bug was that `body.evaluate(P_projected_to_seam)`
 //! returns the 3D distance from `P` to the nearest body surface,
 //! which can collapse to the distance to a 3D wrap-around feature
@@ -228,6 +228,13 @@ impl Silhouette2d {
                     12 => segments.push([e_left(), e_right()]),
                     13 => segments.push([e_bottom(), e_right()]),
                     14 => segments.push([e_left(), e_bottom()]),
+                    // `case` is the 4-bit marching-squares cell mask built
+                    // from `inside` bits 0..=3 above. The 16 case arms
+                    // (0..=15) enumerate every reachable mask; cases 0/15
+                    // (all inside / all outside) emit no segments and are
+                    // handled by the outer `if/else` guard. Reachability is
+                    // mechanical from the bit construction; no runtime
+                    // input can produce a `case` outside 0..=15.
                     _ => unreachable!("case {case} out of 0..=15"),
                 }
             }

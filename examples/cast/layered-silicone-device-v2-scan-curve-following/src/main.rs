@@ -20,11 +20,13 @@
 //!   v2 Mold Assembly (with Plug Anchor sub-section), Pour Gate +
 //!   Vent, per-layer procedure, and Post-Cure Assembly + Disassembly
 //!   sections.
-//! - **Step 9**: cylindrical inter-piece registration pins enabled
-//!   via [`Ribbon::with_registration`] with
-//!   `RegistrationKind::Pins(PinSpec::iter1())` — 2 pins per
-//!   layer-piece-pair at 25%/75% of centerline arc length, 3 mm Ø ×
-//!   10 mm long × 25 mm offset from the centerline.
+//! - **Step 9 (retired in §M-S4)**: the legacy cylindrical inter-
+//!   piece registration pins (`Ribbon::with_registration` +
+//!   `RegistrationKind::Pins`) were retired in favor of the §M-S2
+//!   symmetric dowel-hole pattern. The example no longer enables a
+//!   registration mechanism explicitly; cf-cast-cli production casts
+//!   pick up the dowel-hole defaults via the cast.toml `[dowel_hole]`
+//!   block (see workshop iter-1 cast.toml).
 //! - **Step 10 + v2.1 sub-leaves 2-3**: side-mounted pour gate +
 //!   apex air vent via [`Ribbon::with_pour_gate`] with
 //!   `PourGateKind::Default(PourGateSpec::iter1())` — 6 mm Ø
@@ -105,8 +107,8 @@
 
 use anyhow::{Context, Result};
 use cf_cast::{
-    CastLayer, CastSpec, DEFAULT_MASS_BUDGET_KG, MoldingMaterial, PinSpec, PlugPinKind,
-    PlugPinSpec, PourGateKind, PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
+    CastLayer, CastSpec, DEFAULT_MASS_BUDGET_KG, MoldingMaterial, PlugPinKind, PlugPinSpec,
+    PourGateKind, PourGateSpec, Ribbon, SplitNormal,
 };
 use cf_design::Solid;
 use nalgebra::{Point3, Vector3};
@@ -163,32 +165,12 @@ const WALL_THICKNESS_M: f64 = 0.030;
 /// ~3× the wait.
 const MESH_CELL_SIZE_M: f64 = 0.003;
 
-/// v2.1 plug-anchor pin length (m). 28 mm — sized so the pin
-/// protrudes ~6-20 mm past every per-layer plug's hemispherical
-/// cap apex while still terminating as a **blind hole** inside
-/// the contour-following cup wall.
-///
-/// Geometry: `centerline[0]` = `(-0.040, 0, 0)`; first-segment
-/// tangent ≈ `(+0.97, 0, +0.24)`. Pin axis = `-tangent` (outward).
-/// The outer body radius along this axis is 22 mm; the cup wall
-/// adds another `WALL_THICKNESS_M = 30 mm`, so the bounding outer
-/// face sits ~52 mm from the centerline endpoint. 28 mm pin keeps
-/// the tip ~24 mm inside the bounding outer face.
-///
-/// Engagement at 28 mm:
-/// - Layer 0 plug (8 mm radius cap): pin protrudes 20 mm past cap;
-///   socket carves cup wall from body apex (14 mm) to 28 mm =
-///   14 mm engagement ✓
-/// - Layer 1 plug (14 mm radius cap): pin protrudes 14 mm past cap;
-///   socket carves cup wall from 18 mm to 28 mm = 10 mm engagement ✓
-/// - Layer 2 plug (18 mm radius cap): pin protrudes 10 mm past cap;
-///   socket carves cup wall from 22 mm to 28 mm = 6 mm engagement ✓
-///
-/// All three layers get visible-and-functional pin protrusion +
-/// matching cup-wall socket. Workshop iter-1 visual review
-/// 2026-05-13 caught the pin-vanishes-on-outer-layer issue;
-/// bumping the pin length addresses it.
-const PLUG_PIN_LENGTH_M: f64 = 0.028;
+// PLUG_PIN_LENGTH_M retired with §M-S4: the v2.1 plug-anchor pin
+// geometry now lives inside PlugPinSpec::iter1's lock_spec
+// (PrismaticPinSpec), which carries fixed per-half geometry sized
+// against the §G-1 truncated-pyramid press-fit lock. The example
+// uses iter1 defaults; per-layer engagement math is owned by the
+// PrismaticPinSpec::plug_lock_default rationale in cf-cast.
 
 /// Per-piece minimum wall thickness for the F4 gate (mm).
 ///
@@ -301,10 +283,12 @@ fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
         ],
         plug,
         bounding_region,
+        wall_thickness_m: 0.005,
         mesh_cell_size_m: MESH_CELL_SIZE_M,
         printer_config: mesh_printability::PrinterConfig::fdm_default()
             .with_min_wall_thickness(PIECE_MIN_WALL_MM),
         mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        scan_mesh_for_plug_layer_0: None,
     }
 }
 
@@ -349,12 +333,14 @@ fn build_ribbon(centerline: Vec<Point3<f64>>) -> Result<Ribbon> {
     let pour_end_centroid = first_segment.start;
     let pour_end_outward = -first_segment.tangent;
     let ribbon = ribbon_initial.with_pour_end_hint(pour_end_centroid, pour_end_outward);
-    let plug_pin_spec = PlugPinSpec {
-        pin_length_m: PLUG_PIN_LENGTH_M,
-        ..PlugPinSpec::iter1()
-    };
+    // §M-S4 (2026-05-27) retired RegistrationKind::Pins + PinSpec in
+    // favor of the symmetric dowel-hole pattern; the example carries
+    // forward the pour-gate + plug-pin builders only. PlugPinSpec's
+    // pin geometry now lives inside `lock_spec: PrismaticPinSpec` —
+    // the synthetic example uses iter1 defaults and ignores the now-
+    // retired PLUG_PIN_LENGTH_M constant.
+    let plug_pin_spec = PlugPinSpec::iter1();
     Ok(ribbon
-        .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
         .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()))
         .with_plug_pins(PlugPinKind::Axial(plug_pin_spec)))
 }

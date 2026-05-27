@@ -61,9 +61,9 @@
 //! one half of the socket; the plug-side pyramid is one solid
 //! spanning both halves. The same [`PrismaticPinSpec`] +
 //! [`PrismaticPinPose`] triple flows through three call sites:
-//! plug self-emission ([`build_plug_lock_sdf`]) unions the full
+//! plug self-emission (`build_plug_lock_sdf`) unions the full
 //! pyramid into the plug body; cup self-emission
-//! ([`build_plug_lock_socket_sdf`]) returns one socket Solid that
+//! (`build_plug_lock_socket_sdf`) returns one socket Solid that
 //! BOTH cup halves' [`crate::piece::compose_piece_solid`]
 //! invocations subtract from their half-shell pre-MC (side-agnostic
 //! single solid — the per-side halfspace intersect bisects it by
@@ -189,7 +189,7 @@ pub const PLUG_CAP_TRIM_BIAS_M: f64 = 1.0e-6;
 /// Post-S4 of the FDM-friendly geometry arc, the lock is a single
 /// truncated-pyramid press-fit feature at the plug body's
 /// cap-plane face (§G-1). The wrapper exists for parallel structure
-/// with [`crate::PinSpec`] (cup-pin registration) — both wrap a
+/// with `crate::PinSpec` (cup-pin registration; retired in §M-S4) — both wrap a
 /// [`PrismaticPinSpec`] and add per-feature placement; the plug
 /// lock has a single fixed placement (cap-plane centroid, see
 /// module docstring §"Pose convention"), so the wrapper carries no
@@ -433,7 +433,7 @@ pub fn build_plug_lock_socket_transform(ribbon: &Ribbon) -> Option<MatingTransfo
 /// union adds the protruding lock on top.
 ///
 /// Returns `None` for an empty / unresolvable ribbon (same
-/// fallback as [`build_plug_lock_pose`]).
+/// fallback as `build_plug_lock_pose`).
 #[must_use]
 pub fn build_plug_cap_trim_transform(ribbon: &Ribbon) -> Option<MatingTransform> {
     // Gate on an EXPLICIT `pour_end_hint` — the centerline-tip

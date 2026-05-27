@@ -99,10 +99,10 @@
 //! cup-pin registration mating features from mesh-CSG cylinders
 //! (`MatingTransform::UnionCylinder` / `SubtractCylinder` consuming
 //! a shared `crate::mesh_csg::CylinderParent`) to SDF-side
-//! [`crate::PrismaticPin`][`crate::prismatic_pin`] solids composed
+//! [`crate::prismatic_pin`] solids composed
 //! pre-MC into the half-shell. S4 (2026-05-24) migrated the
 //! plug-floor lock from the S6 mesh-CSG plug-shaft + T-bar + T-slot
-//! mechanism to a single SDF-side [`crate::PrismaticPin`] socket
+//! mechanism to a single SDF-side `prismatic_pin` socket
 //! subtracted from the half-shell (recon-1 §G-1 architectural
 //! redesign — see [`crate::plug`] module docstring for the
 //! cup-wall-penetration leak-path failure mode the pyramid lock
@@ -215,11 +215,11 @@ impl Sdf for CupWallShellSdf {
 ///   optional flange union (when `ribbon.flange` is
 ///   [`FlangeKind::Plate`][crate::flange::FlangeKind::Plate]) adds a
 ///   clamp-grip plate at the seam plane per
-///   [`docs/CF_CAST_SEAM_FLANGE_RECON.md`] §F-13 S1.
+///   `docs/CF_CAST_SEAM_FLANGE_RECON.md` §F-13 S1.
 ///
 /// **Post-§Q-1 (2026-05-26)**: the cup-wall is body-tracking via
-/// [`CupWallShellSdf`], not bounded by a `bounding_region` cuboid.
-/// See the [`CupWallShellSdf`] docstring +
+/// `CupWallShellSdf`, not bounded by a `bounding_region` cuboid.
+/// See the `CupWallShellSdf` docstring +
 /// [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]]
 /// for the architectural-correction rationale. Pre-§Q-1 form was
 /// `bounding_region.subtract(layer_body).intersect(halfspace)`;
@@ -238,7 +238,7 @@ impl Sdf for CupWallShellSdf {
 /// `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-12 #2) —
 /// composed into the per-piece [`Solid`] above the half-shell
 /// intersect, NOT in the `Vec<MatingTransform>`. The Negative side
-/// unions [`crate::PrismaticPin`][`crate::prismatic_pin`] cup-pin
+/// unions [`crate::prismatic_pin`] cup-pin
 /// solids (workshop-visible ridge protrudes past the half-shell
 /// seam face); the Positive side subtracts cup-pin socket solids
 /// (matching cavity carved from cup-wall material). BOTH sides
@@ -246,9 +246,9 @@ impl Sdf for CupWallShellSdf {
 /// solid; per-side halfspace intersect bisects it laterally across
 /// the seam by construction — S6 three-piece shared-primitive
 /// invariant analog in SDF). See
-/// [`crate::registration::build_registration_sdf_ops`] for the
+/// `crate::registration::build_registration_sdf_ops` for the
 /// cup-pin pose derivation and
-/// [`crate::plug::build_plug_lock_socket_sdf`] for the plug-floor
+/// `crate::plug::build_plug_lock_socket_sdf` for the plug-floor
 /// lock socket emission.
 ///
 /// The cup-piece Solid's SDF is **negative inside the cup-wall

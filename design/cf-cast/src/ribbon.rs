@@ -316,8 +316,8 @@ pub struct Ribbon {
     pub bolt_pattern: BoltPatternKind,
     /// Optional pour-end anchor for the plug-floor lock —
     /// `(centroid, outward_axis)` in world-frame coordinates.
-    /// [`crate::plug::build_plug_lock_sdf`] +
-    /// [`crate::plug::build_plug_lock_socket_sdf`] anchor the
+    /// `crate::plug::build_plug_lock_sdf` +
+    /// `crate::plug::build_plug_lock_socket_sdf` anchor the
     /// truncated-pyramid pose at `centroid` with axis along
     /// `outward_axis` (pointing away from the body interior, =
     /// downward in pour orientation). This is **NOT** a centerline-

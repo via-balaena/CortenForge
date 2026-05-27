@@ -180,9 +180,11 @@ fn build_spec() -> CastSpec {
         ],
         plug,
         bounding_region,
+        wall_thickness_m: 0.005,
         mesh_cell_size_m: MESH_CELL_SIZE_M,
         printer_config,
         mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        scan_mesh_for_plug_layer_0: None,
     }
 }
 

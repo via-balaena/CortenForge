@@ -967,6 +967,11 @@ fn write_seam_face_edge_v2(md: &mut String) {
     md.push('\n');
 }
 
+// Mostly prose writeln!s describing dowel placement + bolt-pattern
+// interleave; the v2 assembly note grew past clippy's 100-line default
+// once the §M dowel section landed alongside the §B bolt section.
+// Factoring per-subsection into helpers would just shuffle the prose
+// into named functions without reducing complexity.
 #[allow(clippy::too_many_lines)]
 fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
     let _ = writeln!(md, "## v2 Mold Assembly");
@@ -1654,6 +1659,11 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
     md.push('\n');
 }
 
+// Per-layer Step 6 branches on (gasket, bolt_pattern) and each
+// per-layer block emits 8 numbered steps with embedded mix-ratio +
+// cure prose; the function legitimately runs past clippy's default
+// 100 lines once those branches landed. Splitting per-step would
+// shuffle the same writeln!s into helpers without reducing complexity.
 #[allow(clippy::too_many_lines)]
 fn write_per_layer_sections_v2(
     md: &mut String,

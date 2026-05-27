@@ -20,13 +20,13 @@
 //! ## Unit boundary
 //!
 //! The scan [`IndexedMesh`] arrives from
-//! [`SharedScanSdf::mesh()`][shared-scan-sdf-mesh] in **meters** (cf-design /
+//! `SharedScanSdf::mesh()` (cf-cast-cli) in **meters** (cf-design /
 //! cf-scan-prep frame). `apply_mating_transforms` consumes meshes in
-//! **millimeters** (the convention [`solid_to_mm_mesh`] emits — see
+//! **millimeters** (the convention `solid_to_mm_mesh` emits — see
 //! `mesher.rs:METERS_TO_MM`). [`build_plug_body_mesh`] performs the
 //! ×1000 scale at this paradigm boundary exactly once so the resulting
 //! mesh composes directly with the post-MC mating-feature transforms
-//! from [`add_plug_pins`].
+//! from `add_plug_pins`.
 //!
 //! ## Scope (S1)
 //!
@@ -37,7 +37,6 @@
 //! through the SDF/MC pipeline. The §SMD-4 S2/S3 offset cases
 //! (per-layer body + cup-wall outer) are out of scope here.
 //!
-//! [shared-scan-sdf-mesh]: `scan::SharedScanSdf::mesh` (cf-cast-cli)
 //! [scan-mesh-field]: `crate::CastSpec::scan_mesh_for_plug_layer_0`
 //!
 //! [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
@@ -62,13 +61,13 @@ const SCAN_MESH_WELD_EPSILON_MM: f64 = 0.01;
 /// from the cf-scan-prep cleaned scan mesh.
 ///
 /// The input mesh is expected in **meters** (cf-design / cf-scan-prep
-/// frame — same allocation [`SharedScanSdf::mesh()`] returns). The
+/// frame — same allocation `SharedScanSdf::mesh()` returns). The
 /// returned mesh is in **millimeters** so it flows through
 /// [`crate::apply_mating_transforms`] alongside meshes emitted by
-/// [`crate::mesher::solid_to_mm_mesh`].
+/// `crate::mesher::solid_to_mm_mesh`.
 ///
 /// Faces are copied unchanged (topology preserved); vertices are
-/// scaled by [`METERS_TO_MM`]. Winding direction is inherited from the
+/// scaled by `METERS_TO_MM`. Winding direction is inherited from the
 /// input scan. **Manifoldness is NOT guaranteed by this helper** —
 /// cf-scan-prep's cleaned scan mesh is watertight enough for STL
 /// distribution but does not satisfy manifold3d's stricter "every edge
@@ -157,7 +156,7 @@ pub struct ScanMeshRepairSummary {
 /// the bug while still fixing the genuine STL-soup issue.
 ///
 /// Three steps:
-/// 1. [`weld_vertices`] at [`SCAN_MESH_WELD_EPSILON_MM`] = 0.01 mm —
+/// 1. [`weld_vertices`] at `SCAN_MESH_WELD_EPSILON_MM` = 0.01 mm —
 ///    merges per-triangle vertex slots back to shared indices.
 /// 2. [`remove_unreferenced_vertices`] — compacts the vertex array
 ///    after weld.
@@ -176,7 +175,7 @@ pub struct ScanMeshRepairSummary {
 /// # Errors
 ///
 /// Currently infallible — the `Result` return type is preserved for
-/// API stability with the pre-2026-05-26 [`fill_holes`]-bearing
+/// API stability with the pre-2026-05-26 `fill_holes`-bearing
 /// signature so the spec.rs call site doesn't churn.
 pub fn repair_scan_mesh_for_mesh_csg(
     mesh: &mut IndexedMesh,

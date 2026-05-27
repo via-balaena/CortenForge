@@ -1306,7 +1306,7 @@ fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
 /// non-overlapping, manifold triangulation by construction. The
 /// centroid is inside the polygon (star-point), so every cap triangle
 /// is contained in the polygon and adjacent triangles share exactly
-/// one edge (the [centroid, perim[i]] edge). Self-intersecting
+/// one edge (the `(centroid, perim[i])` edge). Self-intersecting
 /// polygons would still trip this, but cf-scan-prep's projection step
 /// ([`project_loop_to_plane_2d`]) on workshop scans hasn't surfaced a
 /// non-star-shaped case to date; if one ever does, the workshop user

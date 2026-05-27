@@ -133,7 +133,7 @@
 //!   half-width radius. MC meshing at S3 (3 mm default cell) will
 //!   smooth that further; if iter-1 cf-view smoke shows lost corners
 //!   on production fixtures the (4')-pattern from the cap-plane
-//!   recon [`docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md`] applies
+//!   recon `docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md` applies
 //!   ("accept + document" below-print-resolution MC byproducts —
 //!   workshop trims if needed).
 
@@ -193,7 +193,7 @@ const DEFAULT_DRAFT_ANGLE_DEG: f64 = 5.0;
 /// tray's bounding cuboid is small (Y ≈ 3 mm, X ~ scan-extent-x,
 /// Z ~ scan-extent-z) so the cell-count cost is bounded — ~3-5 s
 /// per gasket mold at production scan sizes. Same pattern as
-/// [`crate::spec::FUNNEL_MAX_CELL_SIZE_M`] for the funnel nipple.
+/// `crate::spec::FUNNEL_MAX_CELL_SIZE_M` for the funnel nipple.
 pub const GASKET_MAX_CELL_SIZE_M: f64 = 0.0005;
 
 /// Default workshop-clamp pressure target for the compression
@@ -263,26 +263,26 @@ impl GasketMaterial {
 pub struct GasketSpec {
     /// Gasket cross-section midline width (perpendicular to perimeter
     /// curve, in the seam plane). Default
-    /// [`DEFAULT_CROSS_SECTION_WIDTH_M`] (1.5 mm). For non-zero
-    /// [`draft_angle_deg`] the channel is wider at the tray top +
+    /// `DEFAULT_CROSS_SECTION_WIDTH_M` (1.5 mm). For non-zero
+    /// [`Self::draft_angle_deg`] the channel is wider at the tray top +
     /// narrower at the channel floor; this field is the MID-Y width.
     pub cross_section_width_m: f64,
     /// Gasket cross-section thickness (perpendicular to seam plane,
     /// along the cup-world Y axis). Default
-    /// [`DEFAULT_CROSS_SECTION_THICKNESS_M`] (0.8 mm).
+    /// `DEFAULT_CROSS_SECTION_THICKNESS_M` (0.8 mm).
     pub cross_section_thickness_m: f64,
     /// Tray total Y extent (printer-bed-vertical). Default
-    /// [`DEFAULT_TRAY_THICKNESS_M`] (3 mm).
+    /// `DEFAULT_TRAY_THICKNESS_M` (3 mm).
     pub tray_thickness_m: f64,
     /// Lateral margin around the bounding region's XZ projection when
-    /// sizing the tray. Default [`DEFAULT_TRAY_MARGIN_M`] (5 mm).
+    /// sizing the tray. Default `DEFAULT_TRAY_MARGIN_M` (5 mm).
     pub tray_margin_m: f64,
     /// Channel depth into tray top (`<= cross_section_thickness_m` to
     /// keep the gasket fully contained; `> tray_thickness_m` would
     /// pierce the tray base). Default = cross-section thickness.
     pub channel_depth_m: f64,
     /// Channel-wall draft angle for demold (degrees). Default
-    /// [`DEFAULT_DRAFT_ANGLE_DEG`] (5°). Channel is wider at tray top
+    /// `DEFAULT_DRAFT_ANGLE_DEG` (5°). Channel is wider at tray top
     /// (wide-face opening) + narrower at the channel floor; cured
     /// gasket peels out upward. `0.0` recovers a rectangular cross-
     /// section bit-precisely.
@@ -293,7 +293,7 @@ pub struct GasketSpec {
     pub material: GasketMaterial,
     /// Target workshop clamp pressure (Pa) for the predicted
     /// compression at install. Default
-    /// [`DEFAULT_WORKSHOP_CLAMP_PRESSURE_PA`] (20 kPa). S6 iter-3
+    /// `DEFAULT_WORKSHOP_CLAMP_PRESSURE_PA` (20 kPa). S6 iter-3
     /// empirically measures actual clamp pressure.
     pub workshop_clamp_pressure_pa: f64,
 }
@@ -339,7 +339,7 @@ impl Default for GasketSpec {
     }
 }
 
-/// Gasket-mold kind on the [`Ribbon`](crate::Ribbon).
+/// Gasket-mold kind on the [`crate::Ribbon`].
 ///
 /// Matches the existing `RegistrationKind` / `PourGateKind` /
 /// `PlugPinKind` patterns — bridges the cf-cast-cli `[gasket]` toml

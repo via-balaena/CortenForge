@@ -79,7 +79,7 @@
 //! # Scope (S1)
 //!
 //! S1 ships the [`FlangeSpec`] + [`FlangeKind`] + SDF builder.
-//! Public-API integration into [`compose_piece_solid`] happens in
+//! Public-API integration into [`crate::compose_piece_solid`] happens in
 //! the same commit (the flange is unioned into the cup-piece SDF
 //! when `ribbon.flange` is [`FlangeKind::Plate`]).
 //!
@@ -142,17 +142,17 @@ const DEFAULT_FLANGE_INNER_OFFSET_M: f64 = 0.002;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlangeSpec {
     /// Flange lateral extent perpendicular to the body perimeter,
-    /// measured in the seam plane. Default [`DEFAULT_FLANGE_WIDTH_M`]
+    /// measured in the seam plane. Default `DEFAULT_FLANGE_WIDTH_M`
     /// (20 mm in iter-1).
     pub flange_width_m: f64,
     /// Flange thickness PER HALF perpendicular to the seam plane
     /// (along the cup-world Y axis in production frame). Default
-    /// [`DEFAULT_FLANGE_THICKNESS_M`] (4 mm per cup half → ~8 mm
+    /// `DEFAULT_FLANGE_THICKNESS_M` (4 mm per cup half → ~8 mm
     /// total closed flange-zone thickness).
     pub flange_thickness_m: f64,
     /// Gap between body perimeter and flange's INNER edge — keeps
     /// the flange laterally disjoint from the gasket channel. Default
-    /// [`DEFAULT_FLANGE_INNER_OFFSET_M`] (2 mm).
+    /// `DEFAULT_FLANGE_INNER_OFFSET_M` (2 mm).
     pub flange_inner_offset_m: f64,
 }
 

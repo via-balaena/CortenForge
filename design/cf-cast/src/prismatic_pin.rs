@@ -93,7 +93,7 @@
 //! per-side diametral + axial clearance. The socket is the same
 //! geometry with extents inflated by `clearance / 2` on each
 //! corresponding axis (symmetric `/2` convention matching
-//! [`crate::PinSpec`]). The socket inherits the pin's chamfer band
+//! `crate::PinSpec` — retired in §M-S4). The socket inherits the pin's chamfer band
 //! so the socket mouth has a matching flared lead-in — the pin
 //! seats without catching at the socket entry.
 //!

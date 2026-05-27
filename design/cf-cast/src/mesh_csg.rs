@@ -311,7 +311,7 @@ pub fn build_cylinder_along_axis(
 /// - Pin-local +X = `pose.lateral_unit` direction in world.
 /// - Pin-local +Z = `lateral × axis` (derived, matches the
 ///   determinant-+1 rotation contract in
-///   [`crate::PrismaticPinPose::rotation_local_to_world`]).
+///   `crate::PrismaticPinPose::rotation_local_to_world`).
 ///
 /// Corners:
 ///

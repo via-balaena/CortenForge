@@ -122,7 +122,7 @@ pub struct CastSpec {
     ///
     /// **Post-§Q-1 (2026-05-26)**: the cup-piece geometry's outer
     /// surface no longer follows this cuboid — it's body-tracking
-    /// via the [`crate::piece::CupWallShellSdf`] at uniform
+    /// via the `crate::piece::CupWallShellSdf` at uniform
     /// thickness [`wall_thickness_m`](Self::wall_thickness_m). This
     /// field is still used for the platform, gasket mold, and other
     /// derived geometry that DOES want the cuboid envelope, but the
@@ -1543,6 +1543,13 @@ fn gasket_mold_filename(layer_index: usize) -> String {
 /// Assumes `pending_pieces` and `pending_plugs` are both ordered
 /// innermost-first and parallel to `pour_volumes`. The function
 /// asserts this invariant via `layer_index` matching on each step.
+// Many-argument shape is intrinsic to v2's per-layer/per-piece
+// fan-out (pending pieces × pending plugs × pour volumes × spec
+// metadata all flow into a single artifact-write loop); factoring
+// into a struct would just shuffle the same fields into named
+// container without reducing call-site count. Line-count similarly
+// driven by the per-piece + per-plug write loops + atomicity-rollback
+// arms.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn write_v2_artifacts(
     spec: &CastSpec,
