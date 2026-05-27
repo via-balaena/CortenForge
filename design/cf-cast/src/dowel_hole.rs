@@ -71,10 +71,20 @@ const DEFAULT_DEPTH_M: f64 = 0.005;
 const DEFAULT_COUNT: u32 = 4;
 
 /// Default radial offset from the body silhouette curve to the dowel
-/// centerline (8 mm) — inboard band in the post-§B-washer-clearance
-/// `[2, 20]` mm flange band, leaves 4.4 mm inboard wall + 10.4 mm
-/// outboard wall on each side of the hole.
-const DEFAULT_OUTBOARD_OFFSET_M: f64 = 0.008;
+/// centerline (10 mm). Workshop user feedback 2026-05-27 cf-view
+/// smoke: the dowel hole at the pre-bump 8 mm offset left only 3 mm
+/// of FLAT flange between the cup-wall outer step (at
+/// `body_dist = wall_thickness_m = 5 mm`) and the dowel hole — too
+/// narrow for a 5 mm-wide vice jaw to grip during press-fit dowel
+/// insertion. At 10 mm offset the inboard flat is 5 mm (matches
+/// vice jaw width) and dowel outboard wall is `20 - 10 - 1.6 = 8.4
+/// mm` (still 5.25× hole-Ø safe margin in the post-§B-washer-
+/// clearance 20 mm flange band). Dowel-bolt radial separation
+/// drops 5 → 3 mm but the arc-length stagger (1/16 perimeter ≈
+/// 12.5 mm at iter-1 sock) keeps the 3D distance between dowel +
+/// bolt cylinder centers well above the 4.35 mm cylinder-collision
+/// threshold.
+const DEFAULT_OUTBOARD_OFFSET_M: f64 = 0.010;
 
 /// Polygonal facets around the dowel cylinder. 32 segments give a
 /// ~0.2 mm chord error at 3 mm diameter — workshop-imperceptible at
@@ -301,7 +311,7 @@ mod tests {
         assert_eq!(s.clearance_m, 0.0001);
         assert_eq!(s.depth_m, 0.005);
         assert_eq!(s.count, 4);
-        assert_eq!(s.silhouette_outboard_offset_m, 0.008);
+        assert_eq!(s.silhouette_outboard_offset_m, 0.010);
     }
 
     #[test]
