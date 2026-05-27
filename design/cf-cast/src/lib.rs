@@ -107,7 +107,7 @@ pub use mesh_csg::{
     build_cylinder_along_axis, build_half_space_slab, build_truncated_pyramid_via_hull_pts,
     geometric_equivalence, weld_in_place,
 };
-pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
+pub use piece::compose_piece_solid;
 pub use platform::build_platform_solid;
 pub use plug::{
     PlugPinKind, PlugPinSpec, add_plug_pins, build_cup_cap_trim_transform,

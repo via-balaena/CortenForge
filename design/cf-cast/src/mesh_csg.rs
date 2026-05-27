@@ -1729,10 +1729,11 @@ mod tests {
     /// curved-centerline binormal numerics). This synthetic gate
     /// locks the SDF-arithmetic side of the contract.
     ///
-    /// The probe uses no-overlap halves at z = 0; the
-    /// `RIBBON_PIECE_OVERLAP_M` bias is irrelevant to the flatness
-    /// claim (flatness comes from the linear SDF, not the offset
-    /// magnitude).
+    /// The probe uses no-overlap halves at z = 0 (post-§M-S1 the
+    /// production composition matches this; pre-§M used a 0.5 mm
+    /// `RIBBON_PIECE_OVERLAP_M` inward bias, irrelevant to the
+    /// flatness claim — flatness comes from the linear SDF, not the
+    /// offset magnitude).
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn f4_synthetic_presdf_seam_is_bit_precise_flat() {

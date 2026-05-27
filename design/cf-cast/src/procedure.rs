@@ -979,14 +979,12 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  align the pieces by hand and clamp with rubber bands \
                  or wide tape during pour + cure. Each piece's seam \
                  face is bit-precise flat to the ribbon plane via \
-                 the cup-piece SDF halfspace intersect (MC's \
+                 the cup-piece SDF halfspace intersect with \
+                 `overlap_m = 0` (post-§M-S1 flush mating; MC's \
                  linear-SDF interpolation places seam-cap vertices \
-                 exactly on the plane; see \
-                 `cf-cast::piece::RIBBON_PIECE_OVERLAP_M` for the \
-                 0.5 mm inward bias that gives each piece a 1 mm \
-                 seam overlap), so the two halves seat flush at the \
-                 seam and hand alignment only needs to bring the cup \
-                 outlines into registration."
+                 exactly on the plane), so the two halves butt flush \
+                 at the seam with zero gap and hand alignment only \
+                 needs to bring the cup outlines into registration."
             );
             md.push('\n');
             let _ = writeln!(

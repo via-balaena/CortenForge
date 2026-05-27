@@ -15,9 +15,10 @@
 //!
 //! The cup-piece [`Solid`] is **side-specific**: each
 //! [`PieceSide`] returns its own half-shell via
-//! [`Ribbon::halfspace_solid`]'s SDF half-space intersect (biased
-//! inward by [`RIBBON_PIECE_OVERLAP_M`] so the two pieces overlap by
-//! 1 mm at the seam), then unions / subtracts the registration
+//! [`Ribbon::halfspace_solid`]'s SDF half-space intersect (post-§M-S1
+//! 2026-05-27 uses `overlap_m = 0` for flush mating; pre-§M used
+//! `RIBBON_PIECE_OVERLAP_M = 0.5 mm` inward bias for 1 mm overlap
+//! at the seam), then unions / subtracts the registration
 //! [`crate::PrismaticPin`][`crate::prismatic_pin`] solids per side
 //! and subtracts the plug-floor-lock socket (side-agnostic single
 //! solid; the per-side halfspace intersect bisects it laterally
@@ -47,18 +48,27 @@
 //! only opens where the pieces themselves come apart. No `+Z` axis
 //! is privileged in v2.
 //!
-//! # Inter-piece seam overlap
+//! # Inter-piece seam mating (post-§M-S1 flush)
 //!
-//! [`RIBBON_PIECE_OVERLAP_M`] biases each piece's half-space
-//! inward by 0.5 mm so the two pieces' geometry overlaps by 1 mm at
-//! the ribbon seam. v1 uses the same magnitude
-//! (`CLIP_BODY_OVERLAP_M`) to break the coincidence between the
-//! body's top face and the clip's bottom face; v2 applies it at the
-//! ribbon ∩ mold-cup intersection per
-//! `docs/CURVE_FOLLOWING_DESIGN.md` §Risks §"CSG numerical issues at
-//! the ribbon ∩ `mold_cup` intersection". Both halves overlapping
-//! also gives the workshop user mechanical tolerance during fit-up
-//! (FDM accuracy is ~0.1 mm, well below the 1 mm seam).
+//! Post-§M-S1 (2026-05-27) the two halves mate FLUSH at the ribbon
+//! seam plane (cast y=0 in production frame): each piece's halfspace
+//! cut uses `overlap_m = 0`, the cup-wall's MC samples produce
+//! vertices on the mating face plane to FP precision, and the two
+//! halves' mating faces are coplanar with zero gap. Gasket carries
+//! all sealing load.
+//!
+//! Pre-§M-S1 the cup-wall halfspace used `RIBBON_PIECE_OVERLAP_M =
+//! 0.5 mm` inward bias so the two halves overlapped by 1 mm at the
+//! cup-wall seam (PLA-on-PLA compression backstop at the body cavity
+//! rim); the flange's halfspace was already at zero overlap (flush
+//! mating for gasket precision). The cup-wall vs flange mismatch
+//! produced a workshop-visible stepped mating face — see
+//! [[project-cf-cast-flange-continuity-s1]] §F-S2 cf-view smoke +
+//! Y-bin STL diagnostic. §M-S1 unified to zero overlap throughout
+//! per [[project-cf-cast-unified-mating-plane-recon]] Candidate A.
+//! If iter-1 physical print surfaces a need for the cup-wall
+//! compression backstop, Candidate B (1 mm overlap throughout — both
+//! cup-wall + flange) is the ready-made fallback.
 //!
 //! # Architectural history
 //!
@@ -102,20 +112,17 @@ use crate::pour::build_pour_gate_transforms;
 use crate::registration::build_registration_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
 
-/// Inter-piece seam overlap distance applied at the
-/// ribbon ∩ mold-cup intersection.
-///
-/// Each [`PieceSide`] half-space grows by this distance toward the
-/// other side, so the two pieces overlap by
-/// `2 * RIBBON_PIECE_OVERLAP_M = 1 mm` at the seam.
-///
-/// 0.5 mm matches v1's `CLIP_BODY_OVERLAP_M` — well above FDM layer
-/// height (typically 0.2 mm) so workshop printers tolerate it, well
-/// below the 2 mm cell-size cf-cast targets so marching-cubes never
-/// resolves the bias as a separate surface. Single source of truth
-/// for the v2 per-piece composition; not user-tunable until iter-1
-/// surfaces a specific need.
-pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
+// §M-S1 (2026-05-27): `RIBBON_PIECE_OVERLAP_M` deleted per
+// [[project-cf-cast-unified-mating-plane-recon]]. Cup-wall halfspace
+// now uses overlap_m=0 throughout (matching the flange's existing
+// zero overlap), producing a SINGLE flush mating plane at cast y=0
+// per `Ribbon::seam_plane_reference`. Pre-§M architecture had cup-
+// wall 0.5 mm overlap (PLA-on-PLA compression backstop at cavity rim)
+// + flange 0 mm overlap (gasket-precision flush mating) → workshop-
+// visible stepped mating face. Post-§M: flush mating throughout,
+// gasket carries all seal load. Iter-1 physical print gates whether
+// the cup-wall backstop absence matters; Candidate B (1 mm overlap
+// throughout) is the ready-made fallback.
 
 /// MC bounds padding (1 mm) added to `max(wall_thickness_m, flange_width_m)`
 /// when computing the cup-piece's MC sampling region. Ensures the MC
@@ -196,9 +203,9 @@ impl Sdf for CupWallShellSdf {
 /// - **Solid** = `CupWallShellSdf(layer_body, wall_thickness_m)
 ///   ∩ ribbon.halfspace_solid(side, ...) [∪ flange]`
 ///   — side-specific half-shell tracking the body's outer surface.
-///   Each [`PieceSide`] returns its own biased half-space intersect
-///   ([`RIBBON_PIECE_OVERLAP_M`] grows each side 0.5 mm into the
-///   other so the two pieces overlap by 1 mm at the seam). The
+///   Each [`PieceSide`] returns its own halfspace intersect with
+///   `overlap_m = 0` (post-§M-S1 flush mating; pre-§M used 0.5 mm
+///   `RIBBON_PIECE_OVERLAP_M` for 1 mm seam-overlap). The
 ///   optional flange union (when `ribbon.flange` is
 ///   [`FlangeKind::Plate`][crate::flange::FlangeKind::Plate]) adds a
 ///   clamp-grip plate at the seam plane per
@@ -303,7 +310,10 @@ pub fn compose_piece_solid(
     // plane to f64 precision per §F-4. S5/S6/S7 mating-features
     // mesh-CSG cylinder primitives compose post-MC against the
     // resulting half-shell mesh.
-    let halfspace = ribbon.halfspace_solid(side, mc_bounds, RIBBON_PIECE_OVERLAP_M);
+    // §M-S1 (2026-05-27): overlap_m = 0 throughout (flush mating).
+    // Pre-§M used `RIBBON_PIECE_OVERLAP_M = 0.5 mm` which created a
+    // stepped mating face vs the flange's already-zero overlap.
+    let halfspace = ribbon.halfspace_solid(side, mc_bounds, 0.0);
 
     // §Q-1: cup-wall as body-tracking shell, not bounding cuboid.
     // See [`CupWallShellSdf`] docstring for the architectural
@@ -523,35 +533,41 @@ mod tests {
         assert!(pos.evaluate(&q_above) < 0.0);
     }
 
-    /// At the ribbon seam (z = 0 inside the cup wall), BOTH pieces
-    /// contain the point — this is the design-doc seam overlap that
-    /// keeps marching cubes from resolving coincident surfaces.
-    /// `RIBBON_PIECE_OVERLAP_M = 0.5 mm` gives each piece an SDF of
-    /// `-0.5 mm` along the seam (by symmetry of the bias). Restored
-    /// from the pre-S4 form by recon-4 (P) — the SDF half-space
-    /// intersect carries the overlap directly.
+    /// §M-S1 (2026-05-27): at the ribbon seam (z = 0 inside the cup
+    /// wall), BOTH pieces' SDFs evaluate to exactly 0 — the flush
+    /// mating plane invariant. Pre-§M this test asserted the seam
+    /// overlap (SDF = -0.5 mm both sides); post-§M asserts coplanar
+    /// flush mating (SDF = 0 both sides, ±FP-precision). Per
+    /// [[project-cf-cast-unified-mating-plane-recon]] §M-S1.
     #[test]
-    fn both_pieces_overlap_at_ribbon_seam() {
+    fn both_pieces_meet_flush_at_ribbon_seam() {
         let (body, _region, ribbon) = fixture();
         let (neg, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Negative).unwrap();
         let (pos, _) = compose_piece_solid(&body, 0.020, &ribbon, PieceSide::Positive).unwrap();
-        // Cup wall on the ribbon seam: y outside body, x within bounding,
-        // z = 0 (the ribbon's zero plane). y = 0.020 is outside body
-        // (10 mm half-extent) and inside bounding region (30 mm).
+        // Cup wall on the ribbon seam: y outside body, x within
+        // bounding, z = 0 (the ribbon's zero plane).
         let q_seam = Point3::new(0.0, 0.020, 0.0);
-        // The body-subtract dominates the piece SDF outside the
-        // bias-overlap region; at z=0 just outside the body, the
-        // governing constraint is the half-space bias, so the SDF
-        // should be exactly `-RIBBON_PIECE_OVERLAP_M`.
-        assert!(neg.evaluate(&q_seam) < 0.0);
-        assert!(pos.evaluate(&q_seam) < 0.0);
-        // Both report the same SDF magnitude on the seam (by
-        // symmetry of the bias).
         let neg_sdf = neg.evaluate(&q_seam);
         let pos_sdf = pos.evaluate(&q_seam);
+        // Both pieces' SDFs at the exact seam plane should be 0
+        // (boundary). With overlap_m = 0, the halfspace SDF is 0 at
+        // z=0 and the cup-piece SDF = max(shell_sdf, 0) = max(negative,
+        // 0) = 0 at any seam-plane point inside the shell.
+        assert!(
+            neg_sdf.abs() < 1e-12,
+            "Negative piece SDF at seam plane must be 0 ± FP precision; \
+             got {neg_sdf}",
+        );
+        assert!(
+            pos_sdf.abs() < 1e-12,
+            "Positive piece SDF at seam plane must be 0 ± FP precision; \
+             got {pos_sdf}",
+        );
+        // Symmetry: both report identical SDF at seam.
         assert!(
             (neg_sdf - pos_sdf).abs() < 1e-12,
-            "both pieces' SDFs at the seam should match by symmetry; got neg={neg_sdf} pos={pos_sdf}",
+            "both pieces' SDFs at the seam must match by symmetry; \
+             got neg={neg_sdf} pos={pos_sdf}",
         );
     }
 
@@ -592,20 +608,20 @@ mod tests {
     /// vertex lands ON the SDF = 0 surface (to f64 precision modulo
     /// gradient + max-operator noise). The seam plane is at
     /// `signed_dist = 0`; each side's cap-vertex extreme along the
-    /// kept-side normal lies at `signed_dist = ±RIBBON_PIECE_OVERLAP_M`
-    /// (the inward bias from `halfspace_solid`'s `overlap_m`
-    /// argument).
+    /// kept-side normal lies at `signed_dist = 0` (post-§M-S1 flush
+    /// mating; pre-§M this was `±RIBBON_PIECE_OVERLAP_M`).
     ///
     /// Verifies the three pre-S4 form invariants:
     ///
     /// 1. Each piece's seam-cap vertex extreme is at
-    ///    `signed_dist = ±RIBBON_PIECE_OVERLAP_M` to within 1 µm
-    ///    (the synthetic §F-4 probe hit 0.000000 mm; production
-    ///    curved geometry may add small noise — kept at 1 µm
-    ///    strict, with the 10 µm relaxed fallback documented in
+    ///    `signed_dist = 0` to within 1 µm (the synthetic §F-4 probe
+    ///    hit 0.000000 mm; production curved geometry may add small
+    ///    noise — kept at 1 µm strict, with the 10 µm relaxed
+    ///    fallback documented in
     ///    `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-5 #2).
-    /// 2. The two pieces' cap planes are co-planar with offsets
-    ///    differing by `2 × RIBBON_PIECE_OVERLAP_M`.
+    /// 2. The two pieces' cap planes are coplanar at `signed_dist`
+    ///    = 0 (post-§M-S1: zero offset between caps; pre-§M offset
+    ///    was `2 × RIBBON_PIECE_OVERLAP_M = 1 mm`).
     /// 3. No vertex escapes the kept half-space.
     ///
     /// Locks the §F-4 architectural-claim audit (pre-S4 SDF seam is
@@ -616,12 +632,12 @@ mod tests {
     fn mating_face_is_mathematically_flat_and_coplanar() {
         let (body, region, ribbon) = fixture();
         // For the fixture, binormal = +Z and midpoint = origin, so
-        // the seam plane is z = 0, Negative cap at z = +0.5 mm,
-        // Positive cap at z = -0.5 mm.
+        // the seam plane is z = 0. Post-§M-S1 both caps are at z = 0
+        // exactly (was: Negative at +0.5 mm, Positive at -0.5 mm).
         let (midpoint, binormal) = ribbon.seam_plane_reference();
         let normal_v = binormal.into_inner();
         let plane_d_mm = midpoint.coords.dot(&normal_v) * 1000.0;
-        let overlap_mm = RIBBON_PIECE_OVERLAP_M * 1000.0;
+        let overlap_mm = 0.0_f64;
 
         let neg =
             mesh_piece_through_p_pipeline(&body, &region, &ribbon, PieceSide::Negative, 0.005);
@@ -688,8 +704,8 @@ mod tests {
             "Positive mesh must not extend past the cap",
         );
 
-        // (4) Co-planarity across pieces: cap offsets differ by
-        // exactly `2 × RIBBON_PIECE_OVERLAP_M`.
+        // (4) Co-planarity across pieces: cap offsets differ by 0
+        // (post-§M-S1 flush mating; pre-§M was 2 × 0.5 = 1 mm).
         let cap_offset_difference_mm = neg_max - pos_min;
         let expected_difference_mm = 2.0 * overlap_mm;
         assert!(
@@ -728,7 +744,7 @@ mod tests {
         let (midpoint, binormal) = ribbon.seam_plane_reference();
         let normal_v = binormal.into_inner();
         let plane_d_mm = midpoint.coords.dot(&normal_v) * 1000.0;
-        let overlap_mm = RIBBON_PIECE_OVERLAP_M * 1000.0;
+        let overlap_mm = 0.0_f64;
 
         let neg =
             mesh_piece_through_p_pipeline(&body, &region, &ribbon, PieceSide::Negative, 0.005);
@@ -1034,8 +1050,7 @@ mod tests {
         // intersected with halfspace, NO flange union.
         let body_bounds = body.bounds().unwrap();
         let mc_bounds = body_bounds.expanded(wall_thickness_m + MC_BOUNDS_PAD_M);
-        let halfspace =
-            ribbon.halfspace_solid(PieceSide::Negative, mc_bounds, RIBBON_PIECE_OVERLAP_M);
+        let halfspace = ribbon.halfspace_solid(PieceSide::Negative, mc_bounds, 0.0);
         let shell = Solid::from_sdf(
             CupWallShellSdf {
                 body,

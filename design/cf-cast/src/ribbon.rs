@@ -797,10 +797,10 @@ impl Ribbon {
     /// `overlap_m` shifts the half-space's zero surface inward by
     /// the given distance (in meters), so the two
     /// [`PieceSide`]-opposed half-spaces grown from the same ribbon
-    /// overlap by `2 * overlap_m` at the seam. Set to `0.0` for the
-    /// raw mathematical half-space (useful for SDF-semantics tests);
-    /// the cf-cast composition uses
-    /// [`crate::piece::RIBBON_PIECE_OVERLAP_M`] in production.
+    /// overlap by `2 * overlap_m` at the seam. Production cf-cast
+    /// composition uses `0.0` (post-§M-S1 flush mating); pre-§M
+    /// 2026-05-27 cup-wall passed `RIBBON_PIECE_OVERLAP_M = 0.5 mm`
+    /// for 1 mm seam overlap.
     ///
     /// Octree pruning is disabled for the resulting Solid (the
     /// underlying [`Solid::from_sdf`] inherits user-fn's `(-∞, +∞)`

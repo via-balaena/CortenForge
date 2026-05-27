@@ -52,8 +52,9 @@
 //! piece's mesh to its kept half-shell; the post-MC mesh-CSG
 //! subtract of the full cylinder is a no-op for the portion
 //! outside the half-shell. Each piece keeps only its own side's
-//! half-cylinder carve (modulo the small
-//! [`crate::piece::RIBBON_PIECE_OVERLAP_M`] seam-overlap slice).
+//! half-cylinder carve at the exact mating plane (post-§M-S1
+//! flush mating; pre-§M 2026-05-27 had a 0.5 mm seam-overlap slice
+//! from the cup-wall's `RIBBON_PIECE_OVERLAP_M`).
 //!
 //! ## Why splay along binormal, not split-normal
 //!

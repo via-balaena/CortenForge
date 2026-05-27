@@ -58,10 +58,11 @@
 //!   along the ribbon's split-normal between the layer body's outer
 //!   surface and the bounding region's outer surface. Pre-recon-2 /
 //!   recon-4 (P) restored this from recon-3 (α)'s bounds-anchored
-//!   variant — the annulus-midpoint pin is contained in cup-wall
-//!   material with `RIBBON_PIECE_OVERLAP_M`-sized overlap into the
-//!   Negative half-shell, so SDF union absorbs it without
-//!   disconnection.
+//!   variant. Post-§M-S1 2026-05-27 the half-shell ends exactly at
+//!   the seam plane (no `RIBBON_PIECE_OVERLAP_M` inward bias); post-
+//!   2026-05-24 salvage moved pin composition from pre-MC SDF union
+//!   to post-MC mesh-CSG, so the SDF-union-connectivity precondition
+//!   that depended on the overlap region is no longer load-bearing.
 //! - **`axis_unit` = ribbon binormal** at the centerline sample
 //!   (perpendicular to the seam plane). The pin extends
 //!   `±half_length_m` along binormal symmetrically across the seam
@@ -414,7 +415,6 @@ fn surface_distance_along_ray(
 mod tests {
 
     use super::*;
-    use crate::piece::RIBBON_PIECE_OVERLAP_M;
     use crate::prismatic_pin::build_prismatic_pin_sdf;
     use crate::ribbon::{Ribbon, SplitNormal};
     use approx::assert_abs_diff_eq;
@@ -685,9 +685,9 @@ mod tests {
     /// fixture) by ~`half_length_m`. Confirms the symmetric-across-
     /// seam pose convention from the module docstring — the
     /// workshop-visible registration ridge is produced when this
-    /// pin SDF is unioned with the Negative half-shell (the half-
-    /// shell's `+binormal` boundary is at `+RIBBON_PIECE_OVERLAP_M`,
-    /// so any pin material past that becomes the ridge).
+    /// pin SDF is unioned with the Negative half-shell (post-§M-S1
+    /// the half-shell's `+binormal` boundary is at z = 0; pre-§M
+    /// was at `+RIBBON_PIECE_OVERLAP_M = +0.5 mm`).
     #[test]
     fn cup_pin_extends_symmetrically_across_seam_plane() {
         let ribbon =
@@ -727,27 +727,28 @@ mod tests {
         );
     }
 
-    /// §G-10 + recon-1 §G-12 #2 paradigm-boundary precondition: the
-    /// pin's `-binormal` half overlaps the Negative half-shell
-    /// material by at least `RIBBON_PIECE_OVERLAP_M`. The half-
-    /// shell's `+binormal` boundary sits at
-    /// `+RIBBON_PIECE_OVERLAP_M` (per
-    /// `crate::piece::compose_piece_solid`'s seam halfspace inward
-    /// bias); the pin centre at `binormal = 0` has its `-binormal`
-    /// half spanning `[-half_length, 0]`. So the overlap region
-    /// `[-half_length, +RIBBON_PIECE_OVERLAP_M]` lies inside the
-    /// half-shell — providing the SDF-union connectivity that the
-    /// recon-3 §R3-3 / recon-4 §F-3 architectural-correction
-    /// pattern relies on.
+    /// §M-S1 (2026-05-27): pre-§M this test gated SDF-union
+    /// connectivity by probing at `z = -RIBBON_PIECE_OVERLAP_M`,
+    /// verifying the pin's -binormal half overlapped the Negative
+    /// half-shell's 0.5 mm seam-overlap region. Post-2026-05-24
+    /// salvage moved pin composition from pre-MC SDF union to
+    /// post-MC mesh-CSG union, making the SDF-side connectivity
+    /// precondition non-load-bearing. Post-§M-S1 the half-shell's
+    /// seam boundary is at z = 0 (no overlap), eliminating the
+    /// "seam-overlap region" entirely.
     ///
-    /// This is the lib-test analog of the §G-7 probe's BRANCH-A
-    /// outcome (`§G-12 #2 bail-out (SDF-side pin, 3 mm)` →
-    /// 1 component). The probe characterises full SDF→MC at
-    /// production cell sizes; this test characterises the SDF input
-    /// pre-MC (geometric overlap exists, which is the SDF-union
-    /// connectivity precondition).
+    /// The pin-extends-across-seam invariant is still tested by
+    /// `cup_pin_extends_symmetrically_across_seam_plane` above.
+    /// The post-MC mesh-CSG union doesn't need SDF connectivity;
+    /// manifold3d's surface mesh merge handles half-shell-meets-pin
+    /// joining as a discrete topological op.
+    ///
+    /// Test retired (replaced by the pin-extends-symmetric test).
+    /// Per [[project-cf-cast-unified-mating-plane-recon]] §M-S1 +
+    /// [[project-cf-cast-registration-pin-disconnection-impl]]
+    /// post-salvage architecture.
     #[test]
-    fn cup_pin_overlaps_negative_half_shell_for_sdf_union_connectivity() {
+    fn cup_pin_centred_at_seam_plane_is_interior_at_seam() {
         let ribbon =
             straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
         let (body, _bounds) = reference_body_and_bounds();
@@ -755,17 +756,13 @@ mod tests {
 
         let first_pin = &neg[0];
         let first_centre = Point3::new(-0.025, 0.020, 0.0);
-        // Probe at z = -RIBBON_PIECE_OVERLAP_M (just inside the
-        // Negative half-shell's seam boundary): the pin must report
-        // interior here so SDF union with the half-shell forms a
-        // connected component.
-        let overlap_probe = first_centre + Vector3::new(0.0, 0.0, -RIBBON_PIECE_OVERLAP_M);
+        // Pin centered at z = 0 (the seam plane) — at the center,
+        // the pin SDF is at its most-interior point.
         assert!(
-            first_pin.evaluate(&overlap_probe) < 0.0,
-            "pin must extend into the Negative half-shell's seam-overlap region \
-             (z = -RIBBON_PIECE_OVERLAP_M from centre) for SDF-union connectivity; \
-             pin SDF = {}",
-            first_pin.evaluate(&overlap_probe),
+            first_pin.evaluate(&first_centre) < 0.0,
+            "pin at its center (z = 0, the seam plane) must report \
+             interior; pin SDF = {}",
+            first_pin.evaluate(&first_centre),
         );
     }
 
