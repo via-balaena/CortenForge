@@ -188,9 +188,11 @@ pub const PLUG_CAP_TRIM_BIAS_M: f64 = 1.0e-6;
 ///
 /// Post-S4 of the FDM-friendly geometry arc, the lock is a single
 /// truncated-pyramid press-fit feature at the plug body's
-/// cap-plane face (§G-1). The wrapper exists for parallel structure
-/// with `crate::PinSpec` (cup-pin registration; retired in §M-S4) — both wrap a
-/// [`PrismaticPinSpec`] and add per-feature placement; the plug
+/// cap-plane face (§G-1). The wrapper previously paralleled
+/// `crate::PinSpec`'s shape (`PinSpec` retired in §M-S4); it is
+/// retained as a thin wrapper around [`PrismaticPinSpec`] plus
+/// per-feature placement so future iters can extend it without
+/// breaking the [`crate::PlugPinKind::Axial`] surface. The plug
 /// lock has a single fixed placement (cap-plane centroid, see
 /// module docstring §"Pose convention"), so the wrapper carries no
 /// additional fields today. Future iters may add a

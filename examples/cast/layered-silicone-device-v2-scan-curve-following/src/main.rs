@@ -23,10 +23,14 @@
 //! - **Step 9 (retired in §M-S4)**: the legacy cylindrical inter-
 //!   piece registration pins (`Ribbon::with_registration` +
 //!   `RegistrationKind::Pins`) were retired in favor of the §M-S2
-//!   symmetric dowel-hole pattern. The example no longer enables a
-//!   registration mechanism explicitly; cf-cast-cli production casts
-//!   pick up the dowel-hole defaults via the cast.toml `[dowel_hole]`
-//!   block (see workshop iter-1 cast.toml).
+//!   symmetric dowel-hole pattern. This synthetic example ships
+//!   WITHOUT registration (`Ribbon::dowel_hole` defaults to `None`
+//!   when no `with_dowel_hole(...)` builder call is made). Production
+//!   users get the dowel-hole defaults via cf-cast-cli's
+//!   `[dowel_hole]` cast.toml block (see workshop iter-1 cast.toml);
+//!   to enable dowels in this synthetic example, add a
+//!   `.with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))`
+//!   call in `build_ribbon` below.
 //! - **Step 10 + v2.1 sub-leaves 2-3**: side-mounted pour gate +
 //!   apex air vent via [`Ribbon::with_pour_gate`] with
 //!   `PourGateKind::Default(PourGateSpec::iter1())` — 6 mm Ø
@@ -283,7 +287,11 @@ fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
         ],
         plug,
         bounding_region,
-        wall_thickness_m: 0.005,
+        // Post-§Q-1 (2026-05-26) the cup-piece outer surface is body-
+        // tracking via `CupWallShellSdf` at this uniform thickness —
+        // matches the synthetic WALL_THICKNESS_M used for `bounding_region`
+        // above so the shell + envelope stay consistent.
+        wall_thickness_m: WALL_THICKNESS_M,
         mesh_cell_size_m: MESH_CELL_SIZE_M,
         printer_config: mesh_printability::PrinterConfig::fdm_default()
             .with_min_wall_thickness(PIECE_MIN_WALL_MM),

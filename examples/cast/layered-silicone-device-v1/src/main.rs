@@ -180,6 +180,12 @@ fn build_spec() -> CastSpec {
         ],
         plug,
         bounding_region,
+        // Post-§Q-1 (2026-05-26) the cup-piece outer surface is body-
+        // tracking via `CupWallShellSdf` at this uniform thickness.
+        // 5 mm matches the workshop production cast.toml default; the
+        // v1 example's static cuboid `bounding_region` (35 mm half-XY,
+        // 55 mm half-Z) comfortably encloses the 26 mm outer body
+        // radius + 5 mm shell.
         wall_thickness_m: 0.005,
         mesh_cell_size_m: MESH_CELL_SIZE_M,
         printer_config,
