@@ -1155,10 +1155,14 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
          bolt-clearance holes match up across the seam). Then insert each \
          M5 bolt through the matching bolt-clearance holes on the two \
          halves, slip a washer under each head + nut, and hand-tighten \
-         crosswise (like a car lug pattern) to compress the gasket evenly. \
-         Engine-valve-cover torque level — snug, not stripped; PLA threads \
-         in the workshop user's hand-tools strip well before the gasket \
-         seal pressure is exceeded.\n\
+         crosswise (like a car lug pattern) for even flange clamp \
+         pressure (~1 MPa across the flange contact area at \
+         hand-torqued M5 — exceeds the silicone hydrostatic leak \
+         pressure by ~1000× so PLA-on-PLA seam contact + mold release \
+         should seal without a separate gasket). Engine-valve-cover \
+         torque level — snug, not stripped; PLA threads in the \
+         workshop user's hand-tools strip well before the bolt design \
+         load is exceeded.\n\
          \n\
          The bolt clearance is {clearance_mm:.1} mm with no slide-fit \
          slack — the washer compensates for FDM hole dimensional error \
