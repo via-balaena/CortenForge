@@ -55,7 +55,13 @@ use crate::dowel_hole::DowelHoleSpec;
 use crate::mesh_csg::{CylinderParent, build_cylinder_along_axis, manifold_to_indexed_mesh};
 
 /// Axial slack at each dowel tip after assembly insertion (0.5 mm).
-const DOWEL_INSERTION_SLACK_M: f64 = 0.0005;
+///
+/// Public so `crate::procedure` can quote the assembly tip-slack
+/// accurately in workshop-facing markdown (the total tip slack the
+/// workshop user experiences is this PLUS
+/// [`crate::dowel_hole::HOLE_AXIAL_SLACK_M`] — the hole has its own
+/// internal axial slack).
+pub const DOWEL_INSERTION_SLACK_M: f64 = 0.0005;
 
 /// Center-to-center extra spacing between adjacent dowels (4 mm).
 const DOWEL_PRINT_SPACING_M: f64 = 0.004;

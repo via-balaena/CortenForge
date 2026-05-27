@@ -81,12 +81,15 @@ const DEFAULT_OUTBOARD_OFFSET_M: f64 = 0.008;
 /// [`CylinderParams::segments`].
 const DEFAULT_SEGMENTS: u32 = 32;
 
-/// Extra axial slack on each side of the hole's nominal depth so the
-/// cylinder's CYLINDRICAL flat caps are well INSIDE the cup-piece
-/// material (avoids mesh-CSG operating on coincident endcap planes).
-/// 0.5 mm is well below FDM resolution + safely past any mating-face
-/// MC ambiguity.
-const HOLE_AXIAL_SLACK_M: f64 = 0.0005;
+/// Extra axial slack on each side of the hole's nominal depth.
+///
+/// Ensures the cylinder's CYLINDRICAL flat caps are well INSIDE the
+/// cup-piece material (avoids mesh-CSG operating on coincident
+/// endcap planes). 0.5 mm is well below FDM resolution + safely past
+/// any mating-face MC ambiguity. Public so consumers (e.g.
+/// `crate::dowel`, `crate::procedure`) can compute total cavity
+/// depth + dowel tip-slack accurately.
+pub const HOLE_AXIAL_SLACK_M: f64 = 0.0005;
 
 /// Dowel-hole geometry parameter envelope per §M-S2 recon.
 ///
@@ -227,14 +230,27 @@ pub fn build_dowel_hole_transforms(
         let Some(n_out) = silhouette.outward_normal_at_arc_fraction(t) else {
             continue;
         };
-        // Offset outward in (X, Z) by silhouette_outboard_offset_m.
-        // Y stays at seam_midpoint.y (the dowel cylinder is centered
-        // on the seam plane).
-        let center_m = Point3::new(
+        // Offset outward from the silhouette in (X, Z) by
+        // silhouette_outboard_offset_m, then project the result onto
+        // the binormal-aligned seam plane through seam_midpoint so
+        // the cylinder center sits EXACTLY on the mating plane.
+        //
+        // Cold-read finding 2026-05-27: pre-projection version put
+        // `center_m.y = seam_midpoint.y` (constant-Y plane), which
+        // for the iter-1 ~3.4° tilted centerline placed the cylinder
+        // center up to a few mm off the binormal-aligned seam plane —
+        // making the dowel carve asymmetrically (one half ~9 mm
+        // deep, the other ~2 mm). Now: project onto the binormal
+        // plane so both halves get equal carve depth. Per
+        // [[project-cf-cast-unified-mating-plane-recon]] §M-S1.5
+        // (binormal-aligned vertical) extended to dowel positioning.
+        let candidate = Point3::new(
             spec.silhouette_outboard_offset_m.mul_add(n_out.x, p_silh.x),
             seam_midpoint.y,
             spec.silhouette_outboard_offset_m.mul_add(n_out.z, p_silh.z),
         );
+        let signed_dist_from_seam = (candidate - seam_midpoint).dot(&binormal);
+        let center_m = candidate - signed_dist_from_seam * binormal;
         transforms.push(MatingTransform::SubtractCylinder {
             params: CylinderParams {
                 parent: CylinderParent {
@@ -377,6 +393,53 @@ mod tests {
             assert!(
                 (dot - 1.0).abs() < 1e-9,
                 "dowel axis must align with ribbon binormal; got dot = {dot}"
+            );
+        }
+    }
+
+    /// Cold-read regression 2026-05-27: dowel cylinder centers must
+    /// land ON the binormal-aligned seam plane regardless of
+    /// centerline tilt. Pre-fix the code put `center_m.y =
+    /// seam_midpoint.y` (constant-Y plane), which for tilted
+    /// centerlines placed the center off the actual seam plane along
+    /// the binormal direction — making the dowel carve asymmetrically
+    /// between the two cup-halves.
+    ///
+    /// Fixture: tilted centerline (~5.7° XY-plane tilt, similar to
+    /// the §M-S1.5 flange-thickness test). Verify each dowel center
+    /// satisfies `(center - seam_midpoint).dot(&binormal) ≈ 0`.
+    #[test]
+    fn dowel_hole_centers_lie_on_binormal_aligned_seam_plane_under_tilted_centerline() {
+        let centerline = vec![
+            Point3::new(-0.050, -0.005, 0.0),
+            Point3::new(0.050, 0.005, 0.0),
+        ];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        let layer_body =
+            Solid::cylinder(0.010, 0.060).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+                &Vector3::y_axis(),
+                std::f64::consts::FRAC_PI_2,
+            ));
+        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.030, 0.030));
+        let bounds = bounding_region.bounds().unwrap();
+        let spec = DowelHoleSpec::iter1();
+        let transforms = build_dowel_hole_transforms(&layer_body, &ribbon, &spec, bounds);
+        assert_eq!(transforms.len(), spec.count as usize);
+
+        let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
+        let binormal = seam_normal.into_inner();
+        for (i, t) in transforms.iter().enumerate() {
+            let MatingTransform::SubtractCylinder { params } = t else {
+                continue;
+            };
+            let dist_from_seam = (params.parent.center_m - seam_midpoint).dot(&binormal);
+            assert!(
+                dist_from_seam.abs() < 1e-9,
+                "dowel #{i} center must lie ON the binormal-aligned seam \
+                 plane; got binormal-distance = {dist_from_seam:.6} m \
+                 (pre-fix this could be several mm for tilted centerlines, \
+                 producing asymmetric hole carve across the two cup-halves)"
             );
         }
     }

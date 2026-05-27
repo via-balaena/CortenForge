@@ -1020,6 +1020,16 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  halves.",
             );
             md.push('\n');
+            // §M-S2 followup: total tip slack is the SUM of the
+            // dowel's own insertion slack + the hole's axial slack
+            // (cold-read 2026-05-27 caught the prose understating
+            // this by half by counting only one).
+            let dowel_insertion_slack_mm = crate::dowel::DOWEL_INSERTION_SLACK_M * 1000.0;
+            let hole_axial_slack_mm = crate::dowel_hole::HOLE_AXIAL_SLACK_M * 1000.0;
+            let dowel_length_mm = depth_mm.mul_add(2.0, -2.0 * dowel_insertion_slack_mm);
+            let total_cavity_mm = depth_mm.mul_add(2.0, 2.0 * hole_axial_slack_mm);
+            let tip_slack_mm = (total_cavity_mm - dowel_length_mm) / 2.0;
+            let insert_depth_mm = depth_mm + hole_axial_slack_mm - tip_slack_mm;
             let _ = writeln!(
                 md,
                 "**Print `dowel.stl` first.** The export emits a \
@@ -1033,10 +1043,7 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  oriented this way) so the cylindrical walls print \
                  clean without overhangs. Insert one dowel through \
                  each pair of matching holes to register the two \
-                 halves laterally before clamping.",
-                dowel_length_mm = depth_mm.mul_add(2.0, -1.0),
-                insert_depth_mm = depth_mm - 0.5,
-                tip_slack_mm = 0.5_f64,
+                 halves laterally before clamping."
             );
             md.push('\n');
             let _ = writeln!(

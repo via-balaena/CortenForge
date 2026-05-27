@@ -628,6 +628,66 @@ impl CastConfig {
             }
         }
 
+        // §M-S2 cross-field gate (recon §M-5-b): when both flange +
+        // dowel_hole are enabled, the dowel hole must fit inside the
+        // flange band with FDM-floor wall thickness on both sides
+        // (inboard toward gasket channel + outboard toward flange
+        // outer edge). The iter1 defaults satisfy this with comfortable
+        // 4.4 mm margins; per-field overrides in TOML can violate it,
+        // so gate at parse time. Cold-read finding 2026-05-27.
+        if self.dowel_hole.enabled && self.flange.enabled {
+            let flange_iter1 = cf_cast::FlangeSpec::iter1();
+            let dowel_iter1 = cf_cast::dowel_hole::DowelHoleSpec::iter1();
+            let flange_inner_offset = self
+                .flange
+                .inner_offset_m
+                .unwrap_or(flange_iter1.flange_inner_offset_m);
+            let flange_width = self.flange.width_m.unwrap_or(flange_iter1.flange_width_m);
+            let dowel_diameter = self.dowel_hole.diameter_m.unwrap_or(dowel_iter1.diameter_m);
+            let dowel_clearance = self
+                .dowel_hole
+                .clearance_m
+                .unwrap_or(dowel_iter1.clearance_m);
+            let dowel_offset = self
+                .dowel_hole
+                .silhouette_outboard_offset_m
+                .unwrap_or(dowel_iter1.silhouette_outboard_offset_m);
+            let hole_outer_radius = dowel_diameter / 2.0 + dowel_clearance;
+            // 1 mm FDM-friendly wall floor (the workshop's iter-1
+            // print pipeline can resolve down to ~0.4 mm bead but
+            // <1 mm walls are squish/strip risks).
+            const FDM_WALL_FLOOR_M: f64 = 0.001;
+            let inboard_wall = dowel_offset - hole_outer_radius - flange_inner_offset;
+            ensure!(
+                inboard_wall >= FDM_WALL_FLOOR_M,
+                "cast.toml: dowel-hole inboard wall thickness = \
+                 {inboard_wall_mm:.3} mm violates the {floor_mm:.1} mm FDM \
+                 floor (silhouette_outboard_offset_m {dowel_offset:.4} − \
+                 hole_outer_radius {hole_outer_radius:.4} − \
+                 flange.inner_offset_m {flange_inner_offset:.4}). The dowel \
+                 hole would pierce the gasket channel. Move dowels outboard \
+                 (raise dowel_hole.silhouette_outboard_offset_m), shrink the \
+                 dowel (dowel_hole.diameter_m), or narrow the flange inner \
+                 offset (flange.inner_offset_m).",
+                inboard_wall_mm = inboard_wall * 1000.0,
+                floor_mm = FDM_WALL_FLOOR_M * 1000.0,
+            );
+            let outboard_wall = flange_width - dowel_offset - hole_outer_radius;
+            ensure!(
+                outboard_wall >= FDM_WALL_FLOOR_M,
+                "cast.toml: dowel-hole outboard wall thickness = \
+                 {outboard_wall_mm:.3} mm violates the {floor_mm:.1} mm FDM \
+                 floor (flange.width_m {flange_width:.4} − \
+                 silhouette_outboard_offset_m {dowel_offset:.4} − \
+                 hole_outer_radius {hole_outer_radius:.4}). The dowel hole \
+                 would breach the flange outer perimeter. Move dowels \
+                 inboard (lower dowel_hole.silhouette_outboard_offset_m) or \
+                 widen the flange (flange.width_m).",
+                outboard_wall_mm = outboard_wall * 1000.0,
+                floor_mm = FDM_WALL_FLOOR_M * 1000.0,
+            );
+        }
+
         Ok(())
     }
 }
