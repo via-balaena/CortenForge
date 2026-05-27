@@ -200,22 +200,39 @@ impl FlangeKind {
 }
 
 /// SDF adapter for the seam-flange (§F-3 option (a) per-perimeter-
-/// offset, §F-1 silhouette-based lateral distance). Evaluates the
-/// body's seam-plane 2D silhouette signed distance at the query
-/// point's (X, Z), then composes lateral (width + inner-offset) +
-/// vertical (thickness) box constraints to define the flange as a
-/// flat slab at the seam plane extending outward from the body
-/// cavity perimeter.
+/// offset, §F-1 silhouette-based lateral distance, §M-S1.5 binormal-
+/// aligned vertical term). Evaluates the body's seam-plane 2D
+/// silhouette signed distance at the query point's (X, Z), then
+/// composes lateral (width + inner-offset) + vertical (thickness)
+/// box constraints to define the flange as a flat slab at the seam
+/// plane extending outward from the body cavity perimeter.
 ///
 /// Pattern mirrors [`crate::gasket_mold::compose_gasket_mold_solid`]'s
 /// `GasketChannelSdf` — `max()` composition; the lateral distance
-/// metric is the only difference. Y-clamp on the vertical term not
-/// needed (the vertical `max()` component handles outside-thickness-
-/// range fully via the standard `|p.y - seam_y| - thickness` SDF box).
+/// metric is the only difference.
+///
+/// §M-S1.5 (2026-05-27): vertical term uses
+/// `dot(p - seam_midpoint, binormal)` so the flange slab is
+/// perpendicular to the ribbon's binormal — coplanar with the
+/// halfspace cut in [`crate::compose_piece_solid`]. Pre-§M-S1.5 the
+/// vertical term used `(p.y - seam_plane_y).abs()` which assumed the
+/// seam plane was Y=constant. For non-Y-aligned centerlines (e.g.,
+/// the iter-1 sock scan whose centerline tilts ~3.4° from cast Z),
+/// the cast-Y-aligned flange slab and the binormal-aligned halfspace
+/// cut were at different orientations → their intersection was a
+/// wedge that tapered the flange thickness from one Z extreme to the
+/// other. Per [[project-cf-cast-unified-mating-plane-recon]] §M-S1.5
+/// + workshop cf-view smoke 2026-05-27.
 #[derive(Debug, Clone)]
 struct FlangeSdf {
     silhouette: Silhouette2d,
-    seam_plane_y: f64,
+    /// Seam-plane midpoint (cf-cast world frame). Used as the origin
+    /// for the binormal-aligned vertical term.
+    seam_midpoint: Point3<f64>,
+    /// Ribbon binormal at the seam-plane reference sample. Unit
+    /// vector pointing from the Positive side toward the Negative
+    /// side. Defines the flange slab's thickness direction.
+    binormal: Vector3<f64>,
     flange_width_m: f64,
     flange_thickness_m: f64,
     flange_inner_offset_m: f64,
@@ -226,7 +243,12 @@ impl Sdf for FlangeSdf {
         let body_dist = self.silhouette.signed_distance_to(p.x, p.z);
         let outer = body_dist - self.flange_width_m;
         let inner = self.flange_inner_offset_m - body_dist;
-        let vertical = (p.y - self.seam_plane_y).abs() - self.flange_thickness_m;
+        // §M-S1.5: signed distance from p to the seam plane measured
+        // along the binormal direction. The flange slab is the band
+        // |this distance| < flange_thickness_m, perpendicular to
+        // binormal (coplanar with the halfspace cut).
+        let signed_dist_from_seam = (p - self.seam_midpoint).dot(&self.binormal);
+        let vertical = signed_dist_from_seam.abs() - self.flange_thickness_m;
         outer.max(inner).max(vertical)
     }
 
@@ -235,8 +257,8 @@ impl Sdf for FlangeSdf {
         // at facet boundaries. Same rationale as `GasketChannelSdf`:
         // `Solid::from_sdf` bridges this via `FieldNode::UserFn`
         // which always uses finite differences, so this analytical
-        // grad is unused. Picks +Y arbitrarily.
-        Vector3::new(0.0, 1.0, 0.0)
+        // grad is unused. Picks binormal arbitrarily.
+        self.binormal
     }
 }
 
@@ -257,7 +279,19 @@ pub(crate) fn build_flange_solid(
     spec: &FlangeSpec,
     bounds: Aabb,
 ) -> Solid {
-    let (seam_midpoint, _seam_normal) = ribbon.seam_plane_reference();
+    let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
+    // §M-S1.5: binormal == seam_normal == perpendicular to seam plane.
+    // Both the flange's vertical slab AND the cup-wall's halfspace
+    // cut must use this direction so they're coplanar (no tilted-cut
+    // wedge artifact for non-Y-aligned centerlines).
+    let binormal = seam_normal.into_inner();
+    // Silhouette sampling Y is the seam midpoint's Y coordinate.
+    // For nearly-Y-aligned binormals (production iter-1 ~3.4° tilt),
+    // sampling on a constant-Y plane is approximately the body's
+    // seam-plane cross-section to within sub-mm. Fully-correct would
+    // sample on the tilted seam plane itself, but the SDF lateral
+    // metric stays based on the 2D (X, Z) projection regardless, so
+    // the constant-Y approximation is workshop-imperceptible.
     let seam_plane_y = seam_midpoint.y;
 
     // Expand the bounds outward by flange_width + a small margin so
@@ -287,7 +321,8 @@ pub(crate) fn build_flange_solid(
     Solid::from_sdf(
         FlangeSdf {
             silhouette,
-            seam_plane_y,
+            seam_midpoint,
+            binormal,
             flange_width_m: spec.flange_width_m,
             flange_thickness_m: spec.flange_thickness_m,
             flange_inner_offset_m: spec.flange_inner_offset_m,
@@ -564,6 +599,139 @@ mod tests {
         );
     }
 
+    /// §M-S1.5 falsification: with a tilted centerline (binormal not
+    /// aligned with cast Y), the flange's vertical thickness must
+    /// stay uniform across the body's Z extent. Pre-§M-S1.5 the
+    /// `FlangeSdf` used `(p.y - seam_plane_y).abs()` which is
+    /// perpendicular to cast Y; the cup-wall halfspace used the
+    /// ribbon's binormal-perpendicular plane. For tilted centerlines
+    /// the two planes were at the tilt angle to each other → the
+    /// intersection (the flange material that survived the cut)
+    /// tapered from one Z extreme to the other.
+    ///
+    /// Fixture: ribbon with centerline tilted ~5° from cast Z axis
+    /// (centerline start (0, -5, -50), end (0, +5, +50)). Tangent
+    /// has +Y component → binormal tilts ~5° from cast Y. Cylinder
+    /// body along the tilted centerline.
+    ///
+    /// Probe: at multiple Z positions in the flange band (mid-band
+    /// laterally), evaluate the per-side flange SDF. The set of
+    /// `p` such that `flange_sdf(p)` < 0 (interior) has a uniform
+    /// "thickness" in the binormal direction at every Z value —
+    /// specifically, the flange's max binormal-distance from the
+    /// seam plane is `flange_thickness_m` (4 mm) at every Z probed.
+    ///
+    /// Pre-§M-S1.5: the flange tapers; thickness varies with Z by
+    /// up to ~`tan(tilt) × Z_extent` mm (~8-9 mm for 5° tilt over
+    /// 100 mm).
+    /// Post-§M-S1.5: thickness uniform ±FP-precision.
+    #[test]
+    fn flange_thickness_uniform_across_x_under_tilted_centerline() {
+        // Centerline tilted in the X-Y plane: tangent direction
+        // (0.995, 0.0995, 0) before normalization (≈ +X with small
+        // +Y component, ~5.7° tilt). split_normal = +Z. Then
+        // binormal = tangent × split ≈ (0.0995, -0.995, 0) — mostly
+        // -Y but tilted ~5.7° toward +X. The binormal-aligned plane
+        // is no longer parallel to the cast XZ plane, exposing the
+        // pre-§M-S1.5 cast-Y-aligned vertical term as a wedge bug.
+        let centerline = vec![
+            Point3::new(-0.050, -0.005, 0.0),
+            Point3::new(0.050, 0.005, 0.0),
+        ];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        // Body: cylinder along X with radius 10 mm in YZ. Silhouette
+        // at Y=0 is the rectangle X ∈ [-60, 60], Z ∈ [-10, 10] — a
+        // long stadium along X.
+        let layer_body =
+            Solid::cylinder(0.010, 0.060).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+                &Vector3::y_axis(),
+                std::f64::consts::FRAC_PI_2,
+            ));
+        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.030, 0.030));
+        let bounds = bounding_region.bounds().unwrap();
+        let spec = FlangeSpec::iter1();
+        let neg_flange =
+            build_flange_solid_for_side(&layer_body, &ribbon, &spec, bounds, PieceSide::Negative);
+
+        let (_seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
+        let binormal = seam_normal.into_inner();
+
+        // Probe at 5 X positions across the body's length. At each
+        // X, pick a probe in the lateral flange band (Z=+18 mm =
+        // silhouette_dist 8 mm from the +Z silhouette edge at Z=+10).
+        // Walk in BOTH +binormal and -binormal directions from this
+        // probe; record the binormal-distance range where flange SDF
+        // is negative (inside flange material). That range's width is
+        // the flange's thickness at this X.
+        let probe_xs = [-0.050, -0.025, 0.0, 0.025, 0.050];
+        let mut measured_thicknesses = Vec::new();
+        for x in probe_xs {
+            // Base probe: walk from binormal-dist = -8 mm to +8 mm
+            // (covers both halfspaces around the seam plane).
+            let base_xz = Point3::new(x, 0.0, 0.018);
+            let mut min_dist_inside: f64 = f64::MAX;
+            let mut max_dist_inside: f64 = f64::MIN;
+            for i in -100i32..=100 {
+                let dist = f64::from(i) * 0.0001; // -10 mm to +10 mm in 0.1 mm steps
+                let probe = base_xz + binormal * dist;
+                let sdf = neg_flange.evaluate(&probe);
+                if sdf < 0.0 {
+                    min_dist_inside = min_dist_inside.min(dist);
+                    max_dist_inside = max_dist_inside.max(dist);
+                }
+            }
+            let thickness = if min_dist_inside < max_dist_inside {
+                max_dist_inside - min_dist_inside
+            } else {
+                0.0
+            };
+            measured_thicknesses.push((x, thickness, min_dist_inside, max_dist_inside));
+        }
+
+        let mut min_t = f64::MAX;
+        let mut max_t = f64::MIN;
+        for (x, t, lo, hi) in &measured_thicknesses {
+            eprintln!(
+                "  X={:+.3} m: flange binormal-dist range [{:+.4}, {:+.4}] mm; \
+                 thickness {:.3} mm",
+                x,
+                lo * 1000.0,
+                hi * 1000.0,
+                t * 1000.0
+            );
+            if *t > 0.0 {
+                min_t = min_t.min(*t);
+                max_t = max_t.max(*t);
+            }
+        }
+        assert!(
+            min_t < max_t || (min_t - max_t).abs() < 1e-9,
+            "at least one probe must have found flange material"
+        );
+        let spread_mm = (max_t - min_t) * 1000.0;
+        // Post-§M-S1.5: thicknesses uniform within 0.5 mm (probe step
+        // granularity = 0.1 mm; allow some slack for binormal-aligned
+        // walk vs lateral flange band intersections). Pre-§M-S1.5 the
+        // spread was several mm because the cast-Y-aligned slab × the
+        // binormal-tilted halfspace cut produced a wedge.
+        assert!(
+            spread_mm < 0.5,
+            "flange thickness must be UNIFORM across X extent for tilted \
+             centerline (binormal-aligned slab matches halfspace cut); got \
+             spread {spread_mm:.3} mm across X probes"
+        );
+        // Post-§M-S1.5: thickness ≈ flange_thickness_m = 4 mm (Negative
+        // side keeps half the slab, so thickness = 4 mm).
+        let expected_mm = spec.flange_thickness_m * 1000.0;
+        assert!(
+            max_t.mul_add(1000.0, -expected_mm).abs() < 0.3,
+            "Negative-side flange thickness should equal flange_thickness_m \
+             = {expected_mm:.1} mm; got {:.3} mm",
+            max_t * 1000.0
+        );
+    }
+
     /// §F-S1 falsification fixture per
     /// [[feedback-load-bearing-test-fixtures]] + [[project-cf-cast-flange-perimeter-continuity-bookmark]].
     ///
@@ -806,7 +974,8 @@ mod tests {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
-        let (seam_midpoint, _) = ribbon.seam_plane_reference();
+        let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
+        let binormal = seam_normal.into_inner();
         let seam_plane_y = seam_midpoint.y;
 
         // Build silhouette over a generous XZ region covering the
@@ -815,7 +984,8 @@ mod tests {
             Silhouette2d::from_body_at_y(body, seam_plane_y, -0.060, 0.060, -0.040, 0.040);
         let sdf = FlangeSdf {
             silhouette,
-            seam_plane_y,
+            seam_midpoint,
+            binormal,
             flange_width_m: spec.flange_width_m,
             flange_thickness_m: spec.flange_thickness_m,
             flange_inner_offset_m: spec.flange_inner_offset_m,
