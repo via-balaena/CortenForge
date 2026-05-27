@@ -1110,9 +1110,9 @@ mod tests {
         // Plate: the flange union adds material → piece_sdf < 0.
         //
         // Fixture: cylinder body along X (radius 10 mm in YZ). The
-        // flange extends `flange_width_m` = 16 mm radially from the
+        // flange extends `flange_width_m` = 20 mm radially from the
         // cylinder surface; we use `wall_thickness_m` = 0.005 (5 mm)
-        // so the band body_dist ∈ [5 mm, 16 mm] is "outside cup-wall
+        // so the band body_dist ∈ [5 mm, 20 mm] is "outside cup-wall
         // shell" but "inside flange lateral reach". A probe at
         // Z = +0.020 m (body_dist = 0.020 - 0.010 = 0.010 = 10 mm)
         // lands in that band.
@@ -1130,7 +1130,7 @@ mod tests {
             .with_flange(crate::flange::FlangeKind::Plate(spec));
         let wall_thickness_m = 0.005;
 
-        // Probe in flange-only band (5 mm < body_dist < 16 mm).
+        // Probe in flange-only band (5 mm < body_dist < 20 mm).
         // body_dist at (0, 0.001, 0.020) ≈ sqrt(0.001² + 0.020²) -
         // 0.010 ≈ 0.010 m = 10 mm. Y=+0.001 is on Negative side
         // for this fixture (split=+Z → binormal=-Y → Negative covers
@@ -1154,7 +1154,7 @@ mod tests {
         );
         assert!(
             sdf_plate < 0.0,
-            "FlangeKind::Plate: probe at body_dist≈10 mm (inside flange's [2 mm, 16 mm] \
+            "FlangeKind::Plate: probe at body_dist≈10 mm (inside flange's [2 mm, 20 mm] \
              lateral reach + thickness region) must be INSIDE material via flange \
              union; got sdf_plate={sdf_plate}"
         );

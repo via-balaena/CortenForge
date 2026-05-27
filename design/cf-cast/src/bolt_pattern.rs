@@ -92,13 +92,20 @@ const DEFAULT_CLEARANCE_DIAMETER_M: f64 = 0.0055;
 const DEFAULT_COUNT: u32 = 8;
 
 /// Default radial offset from the body silhouette curve to the bolt
-/// centerline (9 mm). With the default 5.5 mm bolt clearance and the
-/// post-§B 16 mm flange width + 2 mm inner offset, this gives 4.25 mm
-/// of inboard wall (toward the gasket channel) AND 4.25 mm of
-/// outboard wall (toward the flange edge) — symmetric stress
-/// distribution at 0.77× clearance Ø, comfortably within the FDM-PLA
-/// 0.75× rule of thumb.
-const DEFAULT_OUTBOARD_OFFSET_M: f64 = 0.009;
+/// centerline (13 mm). Workshop user feedback 2026-05-27 cf-view
+/// smoke: the bolt-HEAD/WASHER footprint must clear the cup-wall
+/// outer step (cup-wall extends to `body_dist = wall_thickness_m =
+/// 5 mm`, then steps DOWN past the flange's back face on the cup
+/// piece's outer shell). M5 washer OD = 10 mm = 5 mm radius. Bolt
+/// offset must satisfy `bolt_offset - washer_radius >=
+/// wall_thickness + safety_margin`. With 3 mm safety margin
+/// (absorbs FDM ±0.3 mm tolerance + body-curvature variation up to
+/// 2 mm in the Y direction below the seam plane): 13 mm offset
+/// gives washer inboard edge at `body_dist 8 mm`, cup-wall outer at
+/// 5 mm → **3 mm clearance**. Pre-fix 9 mm offset gave -1 mm
+/// clearance (washer landed ON cup-wall step), would have caused
+/// non-flat washer seating + uneven bolt tension.
+const DEFAULT_OUTBOARD_OFFSET_M: f64 = 0.013;
 
 /// Default minimum clearance between bolt cylinder + pour-gate
 /// cylinder centerlines, beyond the sum of the two radii. 1 mm of
@@ -392,7 +399,7 @@ mod tests {
         let s = BoltPatternSpec::iter1();
         assert_eq!(s.clearance_diameter_m, 0.0055);
         assert_eq!(s.count, 8);
-        assert_eq!(s.silhouette_outboard_offset_m, 0.009);
+        assert_eq!(s.silhouette_outboard_offset_m, 0.013);
         assert!(s.skip_pour_gate_collision);
         assert_eq!(s.pour_gate_clearance_m, 0.001);
     }

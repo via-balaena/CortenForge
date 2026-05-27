@@ -95,17 +95,21 @@ use nalgebra::{Point3, Vector3};
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::silhouette_2d::Silhouette2d;
 
-/// Default flange lateral width (16 mm).
+/// Default flange lateral width (20 mm).
 ///
 /// Picked at recon §F-2: ~10 mm for a standard C-clamp jaw reach plus
 /// ~5 mm perimeter clearance (= 15 mm pre-§B). §B-S1 bumped to 16 mm
-/// to accommodate the M5 through-bolt clamp pattern. With the default
-/// 9 mm silhouette outboard offset, 5.5 mm bolt clearance Ø, and 2 mm
-/// flange inner offset, 16 mm width gives symmetric 4.25 mm inboard
-/// and outboard walls = 0.77× clearance Ø (workshop-realistic FDM-PLA
-/// fastener rule of thumb). Workshop iter-1 dowels (radius 1.6 mm,
-/// offset 8 mm) also gain outboard margin (6.4 mm vs 5.4 mm at 15 mm).
-const DEFAULT_FLANGE_WIDTH_M: f64 = 0.016;
+/// to give the M5 through-bolt clamp pattern symmetric 4.25 mm walls.
+/// Workshop cf-view smoke 2026-05-27 surfaced a separate constraint:
+/// the bolt-HEAD/WASHER footprint must clear the cup-wall outer step.
+/// Bolt offset bumped 9 → 13 mm so the M5 washer (10 mm OD) clears
+/// the 5 mm-thick cup-wall with 3 mm safety margin. To maintain the
+/// 0.75× outboard wall rule with the new 13 mm offset, flange width
+/// bumped to 20 mm (`13 + 2.75 + 4.25 = 20`). Workshop trades 4 mm
+/// extra flange perimeter per piece for genuinely safe washer
+/// seating. Dowels (radius 1.6 mm, offset 8 mm) gain even more
+/// outboard margin (10.4 mm vs 6.4 mm at 16 mm).
+const DEFAULT_FLANGE_WIDTH_M: f64 = 0.020;
 
 /// Default flange thickness PER HALF (4 mm).
 ///
@@ -793,7 +797,7 @@ mod tests {
         // Probe P_concave: inside the C's mouth, mid-flange-band per
         // 2D silhouette distance.
         // - 2D silhouette dist from (0,0,+10) to notch floor (0,0,-3)
-        //   = 13 mm; inside flange band [inner_offset=2, width=16].
+        //   = 13 mm; inside flange band [inner_offset=2, width=20].
         // - 3D body_dist (pre-fix) ≈ 1.5 mm (Y-distance to lid surface
         //   at Y=±1.5); trips inner check, flange ABSENT (BUG).
         // - 2D silhouette dist (post-fix) = 13 mm; all checks pass,
@@ -805,7 +809,7 @@ mod tests {
             "FALSIFICATION: flange must be PRESENT inside C's mouth \
              concavity at (X=0, Y=0, Z=+10 mm) — 2D silhouette dist to \
              notch floor (0,0,-3) is 13 mm which is inside the flange \
-             band [2, 16] mm. Got SDF = {sdf_mm:.3} mm (positive = \
+             band [2, 20] mm. Got SDF = {sdf_mm:.3} mm (positive = \
              flange absent). Pre-fix 3D `body.evaluate` returns ≈1.5 mm \
              (lid surface at Y=±1.5) tripping the inner check; post-fix \
              2D silhouette returns 13 mm and emits flange material. \
@@ -858,12 +862,12 @@ mod tests {
         // Sanity: well past the C-shape's flange outer reach in -Z
         // direction (convex region) — flange must be ABSENT. Both
         // pre-fix and post-fix agree here (convex region; no bug).
-        let p_beyond = Point3::new(0.0, 0.0, -0.040);
+        let p_beyond = Point3::new(0.0, 0.0, -0.045);
         let sdf_beyond = c_flange.evaluate(&p_beyond);
         assert!(
             sdf_beyond > 0.0,
-            "flange must be ABSENT 20 mm past body's -Z silhouette \
-             (flange_width = 16 mm); got SDF = {:.3} mm.",
+            "flange must be ABSENT 25 mm past body's -Z silhouette \
+             (flange_width = 20 mm); got SDF = {:.3} mm.",
             sdf_beyond * 1000.0,
         );
     }
@@ -999,7 +1003,7 @@ mod tests {
 
         // All probes at X=0, Y=0 (seam plane), varying Z. Cylinder
         // silhouette +Z edge is at Z=10 mm; flange band is
-        // Z ∈ [12, 26] mm (inner_offset=2, width=16).
+        // Z ∈ [12, 30] mm (inner_offset=2, width=20).
         let probes: &[(&str, Point3<f64>)] = &[
             (
                 "on +Z perimeter           @ Z=10  mm",
@@ -1014,20 +1018,20 @@ mod tests {
                 Point3::new(0.0, 0.0, 0.0125),
             ),
             (
-                "mid-flange band           @ Z=15  mm",
-                Point3::new(0.0, 0.0, 0.015),
-            ),
-            (
-                "deeper into flange band   @ Z=20  mm",
+                "mid-flange band           @ Z=20  mm",
                 Point3::new(0.0, 0.0, 0.020),
             ),
             (
-                "near outer flange edge    @ Z=25  mm",
+                "deeper into flange band   @ Z=25  mm",
                 Point3::new(0.0, 0.0, 0.025),
             ),
             (
-                "past outer flange edge    @ Z=27  mm",
-                Point3::new(0.0, 0.0, 0.027),
+                "near outer flange edge    @ Z=29  mm",
+                Point3::new(0.0, 0.0, 0.029),
+            ),
+            (
+                "past outer flange edge    @ Z=31  mm",
+                Point3::new(0.0, 0.0, 0.031),
             ),
         ];
 

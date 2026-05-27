@@ -71,9 +71,9 @@ const DEFAULT_DEPTH_M: f64 = 0.005;
 const DEFAULT_COUNT: u32 = 4;
 
 /// Default radial offset from the body silhouette curve to the dowel
-/// centerline (8 mm) — mid-band in the post-§B `[2, 16]` mm flange
-/// band, leaves 4.4 mm inboard wall + 6.4 mm outboard wall on each
-/// side of the hole.
+/// centerline (8 mm) — inboard band in the post-§B-washer-clearance
+/// `[2, 20]` mm flange band, leaves 4.4 mm inboard wall + 10.4 mm
+/// outboard wall on each side of the hole.
 const DEFAULT_OUTBOARD_OFFSET_M: f64 = 0.008;
 
 /// Polygonal facets around the dowel cylinder. 32 segments give a
