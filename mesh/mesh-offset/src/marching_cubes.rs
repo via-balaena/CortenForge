@@ -150,7 +150,13 @@ fn process_cell(
         edge_indices[edge_idx] = vert_idx;
     }
 
-    // Generate triangles using cached indices.
+    // Generate triangles using cached indices (swap e1/e2 for CCW
+    // outward-facing winding, matching cf-design's mesher.rs:156-158
+    // convention). Without the swap, raw TRI_TABLE order produces
+    // inside-out winding with the val<iso=inside convention used at
+    // line 100 above — see §Q-5 of CF_CAST_GEOMETRY_CRISPNESS_RECON.md
+    // for the root-cause analysis. Verified by
+    // `marching_cubes_produces_outward_winding_on_cube_sdf`.
     let tri_table = &TRI_TABLE[cube_index as usize];
     let mut i = 0;
     while i < 16 && tri_table[i] != -1 {
@@ -158,7 +164,7 @@ fn process_cell(
         let e1 = tri_table[i + 1] as usize;
         let e2 = tri_table[i + 2] as usize;
         mesh.faces
-            .push([edge_indices[e0], edge_indices[e1], edge_indices[e2]]);
+            .push([edge_indices[e0], edge_indices[e2], edge_indices[e1]]);
         i += 3;
     }
 }
@@ -515,6 +521,61 @@ const TRI_TABLE: [[i8; 16]; 256] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §Q-5 root-cause gate (per
+    /// `docs/CF_CAST_GEOMETRY_CRISPNESS_RECON.md`): mesh-offset's
+    /// marching_cubes MUST produce CCW outward winding (positive
+    /// signed_volume on a closed surface). Pre-fix, this test FAILS
+    /// because the face emission at line 160-162 uses raw TRI_TABLE
+    /// order without the e1/e2 swap that cf-design's `mesher.rs`
+    /// applies for outward winding. After the fix (swap e1/e2 when
+    /// pushing the face), this test PASSES.
+    ///
+    /// Test geometry: a 6×6×6 ScalarGrid representing a cube SDF
+    /// (val<0 inside the inner 2×2×2 cube; val>0 outside). marching_cubes
+    /// produces a triangle mesh of the inner cube's boundary; for
+    /// CCW outward winding, signed_volume is positive.
+    #[test]
+    fn marching_cubes_produces_outward_winding_on_cube_sdf() {
+        let n = 6_usize;
+        let cell_size = 1.0;
+        let origin = Point3::new(-3.0, -3.0, -3.0);
+        let mut grid = ScalarGrid::new((n, n, n), origin, cell_size);
+        // Cube SDF: distance to the surface of a cube with half-extent
+        // 1.5 centered at origin. Positive outside, negative inside.
+        for iz in 0..n {
+            for iy in 0..n {
+                for ix in 0..n {
+                    let x = (ix as f64).mul_add(cell_size, origin.x);
+                    let y = (iy as f64).mul_add(cell_size, origin.y);
+                    let z = (iz as f64).mul_add(cell_size, origin.z);
+                    // Standard cube SDF: max axis-aligned displacement
+                    // (positive outside the cube, negative inside).
+                    let half = 1.5_f64;
+                    let dx = x.abs() - half;
+                    let dy = y.abs() - half;
+                    let dz = z.abs() - half;
+                    let sdf = dx.max(dy).max(dz);
+                    grid.set(ix, iy, iz, sdf);
+                }
+            }
+        }
+        let config = MarchingCubesConfig::default();
+        let mesh = marching_cubes(&grid, &config);
+        assert!(
+            !mesh.vertices.is_empty(),
+            "MC should produce a non-empty mesh for a cube SDF crossing the grid"
+        );
+        let sv = mesh.signed_volume();
+        assert!(
+            sv > 0.0,
+            "marching_cubes output must have CCW outward winding (positive signed_volume); \
+             got signed_volume={sv}. Pre-§Q-5 fix this assertion fails because face emission \
+             at mesh-offset/src/marching_cubes.rs:160-162 uses raw TRI_TABLE order without \
+             the e1/e2 swap. cf-design's mesher.rs:156-158 applies the swap for outward \
+             winding; mesh-offset must match."
+        );
+    }
 
     #[test]
     fn config_default() {

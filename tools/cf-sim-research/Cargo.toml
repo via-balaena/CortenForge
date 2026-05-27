@@ -72,11 +72,13 @@ cf-device-geometry = { workspace = true }
 # cleaned scan, `cf-design` carries the Solid/Sdf trait + pinned-floor
 # helper, `sim-soft` runs the FEM solve (`CpuNewtonSolver` +
 # `PenaltyRigidContact`), `sim-ml-chassis` supplies `Tensor` (the
-# solve's position/velocity I/O type), `mesh-repair` + `meshopt`
-# decimate the scan for the SDF source.
+# solve's position/velocity I/O type), `mesh-repair` + `baby_shark`
+# decimate the scan for the SDF source. Switched from meshopt
+# 2026-05-26 per S1.1 probes 7/8 (manifold preservation in the
+# decimator pipeline).
 mesh-sdf = { workspace = true }
 mesh-repair = { workspace = true }
-meshopt = { workspace = true }
+baby_shark = { workspace = true }
 cf-design = { workspace = true }
 sim-soft = { workspace = true }
 sim-ml-chassis = { workspace = true }

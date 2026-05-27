@@ -1326,11 +1326,37 @@ fn stress_h_voxel_grid_perf_cliff() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release-only perf budget; debug runtime would over-budget the 30 s ceiling"
+)]
 fn stress_h_voxel_grid_oom_safety() {
     // 200 mm cube at FDM defaults (voxel = 0.1 mm) → 2000³ ≈ 8 × 10⁹
-    // voxels = 8 GB, well above the 1 GB cap. The §6.3 step 4.5
-    // memory pre-flight must emit `DetectorSkipped` Info BEFORE the
-    // grid is allocated; the test runs in <1 ms (no allocation).
+    // voxels = 8 GB if naively allocated.
+    //
+    // Pre-S3 (commit 7539cc8e — Gap H): the §6.3 step 4.5 memory
+    // pre-flight checked the total-byte cap (1 GB) AFTER computing
+    // the grid dims at the input `voxel_size`, and emitted a
+    // `DetectorSkipped` Info for inputs above the cap. This test
+    // asserted that skip.
+    //
+    // Post-S3 (commit 876f20d4 — voxel-axis cap): a 500-voxel-per-
+    // axis cap fires FIRST and silently bumps the effective voxel
+    // size up so the grid stays bounded (here 0.1 mm → 0.4 mm, grid
+    // 504³ ≈ 128 M voxels ≈ 128 MB). The post-S3 architecture means
+    // the 1 GB byte cap can no longer fire in practice — every input
+    // has its grid downsampled to ≤ 500 voxels per axis BEFORE the
+    // byte cap is checked.
+    //
+    // This test now verifies the post-S3 contract:
+    //   1. validation succeeds (no OOM, no panic),
+    //   2. the trapped-volume detector ran on the downsampled grid
+    //      and correctly reported zero cavities (the input is a
+    //      solid cube),
+    //   3. runtime stays inside a release-mode budget that reflects
+    //      the bounded-grid cost (release ~1-3 s on CI; debug
+    //      excluded via `#[cfg_attr(debug_assertions, ignore)]` —
+    //      same gating as `stress_h_voxel_grid_perf_cliff`).
     let mut vertices: Vec<Point3<f64>> = Vec::new();
     let mut faces: Vec<[u32; 3]> = Vec::new();
     append_outer_cube(
@@ -1348,21 +1374,14 @@ fn stress_h_voxel_grid_oom_safety() {
         validate_for_printing(&mesh, &config).expect("oom-safety fixture: validation must succeed");
     let elapsed = start.elapsed();
 
-    let any_skipped = validation.issues.iter().any(|i| {
-        i.issue_type == PrintIssueType::DetectorSkipped
-            && i.description.contains("TrappedVolume")
-            && i.description.contains("1 GB")
-    });
-    assert!(
-        any_skipped,
-        "200 mm cube at FDM voxel 0.1 mm must trigger §6.3 step 4.5 memory pre-flight skip"
+    assert_eq!(
+        validation.trapped_volumes.len(),
+        0,
+        "solid 200 mm cube has no cavities; trapped_volumes must be empty"
     );
-    assert_eq!(validation.trapped_volumes.len(), 0);
-    // Memory cap check fires BEFORE grid alloc → fixture runs in <1 ms;
-    // 100 ms is a generous safety margin for cold-cache / loaded CI runners.
     assert!(
-        elapsed.as_millis() < 100,
-        "memory pre-flight must skip before allocation; got {elapsed:?}"
+        elapsed.as_secs_f64() < 30.0,
+        "stress_h_voxel_grid_oom_safety exceeded 30 s release-mode runtime budget: {elapsed:?}"
     );
 }
 

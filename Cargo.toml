@@ -503,6 +503,14 @@ toml = "1.1"
 # ---------------------------------------------------------------------------
 # parry3d: Collision detection, BVH, convex hulls
 parry3d = "0.17"
+# parry3d-f64: f64-Real sibling of parry3d. Used by mesh-printability's
+# F4 spatial-index path (`flag_thin_wall_faces` BVH ray-cast) where
+# f32 precision drift at the `min_wall_thickness` threshold causes
+# borderline 1.0 mm walls to flag spuriously. See
+# `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-2 + the S1 commit's
+# precision diagnosis. Two parry crates in workspace = ~2× build
+# cost of parry; acceptable for the precision win.
+parry3d-f64 = "0.17"
 
 # ---------------------------------------------------------------------------
 # Randomness
@@ -685,10 +693,28 @@ cf-bevy-common = { path = "cf-bevy-common" }
 cf-viewer = { path = "cf-viewer" }
 
 # meshopt-rs — Rust FFI bindings to Arseny Kapoulkine's `meshoptimizer`
-# C++ library (battle-tested in Unity, Unreal, Bevy itself). Used by
-# `tools/cf-scan-prep` (Stage 2.5 commit #5) for the Simplify panel's
-# boundary-preserving quadric edge collapse decimation. Brings a small
-# C/C++ build-time toolchain dep (cargo handles via `cc` build script);
-# 0.6.2 is the latest stable as of 2025-10. License MIT/Apache-2.0.
+# C++ library (battle-tested in Unity, Unreal, Bevy itself). License
+# MIT/Apache-2.0.
+#
+# Originally adopted (Stage 2.5 commit #5) for the Simplify panel's
+# boundary-preserving quadric edge collapse decimation. Replaced in
+# `tools/cf-scan-prep` 2026-05-26 with `baby_shark` (below) after S1.1
+# probe-7 showed `meshopt::simplify_decoder` introduces non-manifold
+# edges + duplicate faces on a manifold input (35 each on the workshop
+# iter-1 sock-over-capsule scan) which then trips manifold3d-based
+# downstream consumers (cf-cast's `apply_mating_transforms`). Retained
+# at the workspace level for `cf-device-geometry` + `cf-sim-research`,
+# which use other meshopt entry points unrelated to decimation; if
+# those later need a decimator they should also switch to baby_shark.
 meshopt = "0.6.2"
+
+# baby_shark — pure-Rust geometry processing. Manifold-preserving
+# incremental QEM edge decimator. Replaces meshopt::simplify_decoder
+# in `tools/cf-scan-prep` per S1.1 probe-8 (2026-05-26): baby_shark's
+# `EdgeDecimator` produces zero non-manifold edges + zero duplicate
+# faces on the workshop iter-1 sock-over-capsule scan where meshopt
+# produced 35 + 35. Costs ~12× wall-clock (38s vs 3s for the iter-1
+# regen) — acceptable for cf-scan-prep's interactive one-shot save
+# flow. License MIT.
+baby_shark = "0.3"
 

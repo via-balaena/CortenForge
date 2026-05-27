@@ -8,7 +8,7 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use mesh_offset::{OffsetConfig, offset_mesh};
-use mesh_repair::{MeshAdjacency, flip_winding, remove_unreferenced_vertices, weld_vertices};
+use mesh_repair::{MeshAdjacency, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
 use tracing::{debug, info, warn};
@@ -293,11 +293,16 @@ fn generate_shell_sdf(
         merged, orphans
     );
 
-    // mesh-offset's marching cubes produces inside-out winding (commits
-    // 9+10 platform truth). Flip every outer face so normals point outward
-    // from the wall material; otherwise the assembled shell has
-    // signed_volume < 0 + is_inside_out == true and slicers see backfaces.
-    flip_winding(&mut outer_mesh);
+    // Pre-§Q-5 fix, mesh-offset's marching cubes produced inside-out
+    // winding and this site explicitly called `flip_winding` to
+    // compensate. Post-§Q-5 fix (commit fixing
+    // `mesh-offset/src/marching_cubes.rs:160-162` to swap e1/e2 for
+    // CCW outward winding — see CF_CAST_GEOMETRY_CRISPNESS_RECON.md
+    // §Q-5), mesh-offset's MC output is already outward-winding;
+    // the prior compensation is removed (a double-flip would
+    // re-invert the shell). Test coverage:
+    // `shell_assembled_signed_volume_positive` below asserts
+    // `!report.is_inside_out` post-S5 fix without the flip.
 
     let outer_vertex_count = outer_mesh.vertices.len();
     debug!(

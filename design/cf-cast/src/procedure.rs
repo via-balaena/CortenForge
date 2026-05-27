@@ -26,10 +26,12 @@
 use std::fmt::Write as _;
 
 use crate::cure::lookup as lookup_cure;
+use crate::flange::FlangeKind;
+use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
 use crate::pour_volume::PourVolume;
-use crate::registration::RegistrationKind;
+use crate::prismatic_pin::PrismaticPinSpec;
 use crate::ribbon::Ribbon;
 use crate::spec::CastSpec;
 
@@ -316,8 +318,8 @@ const fn layer_position_label(layer_index: usize, layer_count: usize) -> &'stati
 /// straight-pull demold prose with explicit piece-removal order
 /// ("piece 0 first, then piece 1 — the part slides out along
 /// the centerline"), and adds an iter-1 manual-clamping note
-/// (registration features are Step 9; v2 iter-1 uses hand pressure
-/// + rubber bands).
+/// (registration uses §M-S2 symmetric dowel holes; v2 iter-1
+/// hand-aligns + clamps with rubber bands when dowels disabled).
 ///
 /// Materials table, generic Smooth-On guidance, and mass-budget
 /// summary are shared verbatim with v1 (same pour-volume
@@ -349,9 +351,16 @@ pub fn generate_procedure_markdown_v2(
     let mut md = String::new();
     write_header_v2(&mut md, spec);
     write_cast_geometry_v2(&mut md, ribbon);
+    write_print_orientation_v2(&mut md);
+    write_chamfer_recipe_v2(&mut md);
+    write_target_fdm_floor_v2(&mut md);
+    write_cfview_sanity_check_v2(&mut md);
+    write_cap_plane_chamfer_v2(&mut md);
+    write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md);
     write_v2_assembly_note(&mut md, ribbon);
+    write_v2_cup_half_clamping_note(&mut md, ribbon);
     write_v2_pour_gate_note(&mut md, ribbon);
     write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon);
     write_v2_post_cure_assembly(&mut md, spec);
@@ -457,28 +466,539 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
     md.push('\n');
 }
 
+// ===== S6 — print-prep documentation ==============================
+// Per-piece print orientation (recon-1 §G-4, S6-revised), first-layer
+// chamfer recipe (§G-6 reframed under S6 orientation), Bambu A1 +
+// default + Jayo target FDM floor (§G-3), and the cf-view sanity-
+// check workflow gating §G-11 #3 before the workshop user starts
+// slicing.
+
+/// Recon-1 §G-4 originally locked cup pieces to "seam face on bed"
+/// assuming registration pins lived entirely inside cup-wall
+/// material. S3 shipped pins extending symmetrically along the
+/// ribbon binormal across the seam plane, placing the workshop-
+/// visible ridge ON THE EMPTY side of the seam — which under
+/// seam-face-down would point INTO the bed (geometrically
+/// impossible). S6 revised the cup orientation to seam-face-UP.
+/// §M-S4 (2026-05-27) retired the prismatic-pin registration path
+/// entirely; the seam-face-UP orientation remains preferred for the
+/// dowel-hole pattern (holes carve straight through the seam face,
+/// printable as recessed cavities without internal support when the
+/// seam face is up).
+fn write_print_orientation_v2(md: &mut String) {
+    let _ = writeln!(md, "## Per-Piece Print Orientation");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Each STL has one geometrically-correct print orientation \
+         picked from the FDM-friendly geometry contract (recon-1 \
+         §G-4 in `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md`, \
+         S6-revised — see §G-4 revision note at the end of this \
+         section)."
+    );
+    md.push('\n');
+    write_print_orientation_cup_pieces(md);
+    write_print_orientation_plug_pieces(md);
+    write_print_orientation_funnel_platform(md);
+    write_print_orientation_g4_revision(md);
+}
+
+fn write_print_orientation_cup_pieces(md: &mut String) {
+    let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Orient seam face UP, outer curved cup surface DOWN on \
+         bed.** Add a brim (5-8 mm, 1 layer) for curved-surface \
+         adhesion; supports not required (cup walls build layer-\
+         by-layer upward from a continuous bottom contour)."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Seam-face-UP also fits the §M-S2 symmetric dowel-hole \
+         pattern: dowel holes carve straight through the seam face \
+         along the ribbon binormal (perpendicular to the seam \
+         plane). With the seam face UP, each hole opens upward as a \
+         shallow recessed cavity (printable without internal support \
+         or bridging). Pre-§M-S4 this section described the now-\
+         retired prismatic-pin registration ridge; the same \
+         seam-face-UP orientation carries over for dowel holes \
+         without modification."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "The cap-plane wall carrying the S4 plug-floor-lock socket \
+         is a vertical wall in this orientation; the socket prints \
+         as a horizontal SIDE recess into the vertical wall — no \
+         first-layer adhesion concern at the socket interior."
+    );
+    md.push('\n');
+}
+
+fn write_print_orientation_plug_pieces(md: &mut String) {
+    let _ = writeln!(md, "### Plug pieces (`plug_layer_*.stl`)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Orient dome end DOWN on bed, cap-plane face UP, the \
+         truncated-pyramid lock pointing UP.** Add a brim (5-8 mm, \
+         1 layer) for the dome contact patch; brief minor supports \
+         may be needed for the first dome-curvature layers."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Cap-plane-face-DOWN is INVALID** — the S4 truncated \
+         pyramid protrudes from the cap-plane face along \
+         `cap_normal` (away from plug body), so cap-plane-face-\
+         down would put the pyramid INTO the bed (geometrically \
+         impossible). Side-orient (centerline horizontal) is \
+         geometrically valid but requires extensive supports for \
+         body curvature overhangs; not recommended."
+    );
+    md.push('\n');
+}
+
+fn write_print_orientation_funnel_platform(md: &mut String) {
+    let _ = writeln!(md, "### Funnel + platform (one-time prints)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "`funnel.stl`: **bent-spout funnel** with a vertical bowl + \
+         angled nipple matching the pour-gate's 30° splay (the cup \
+         pour-gate cylinder is tilted 30° from the dome's outward \
+         axis; the bent nipple lets the workshop user orient the \
+         assembled mold +Z up with the bowl mouth facing straight up \
+         for ladle-pouring). Print with the **bowl-mouth disk DOWN on \
+         the build plate** (mouth disk = first layer; the bowl widens \
+         upward from the mouth; the tilted nipple cantilevers ~7.5 mm \
+         horizontally from the bowl side). **Enable auto-supports in \
+         the slicer**: the cantilevered nipple needs supports to \
+         print clean — cleaned off after the print. Alternative: \
+         rotate the print so the nipple lies along the build plate \
+         (bowl tilted on its side) to avoid supports — slicer choice; \
+         STL is unchanged. Print once for the whole multi-layer \
+         device — reuse across every layer's pour."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "`platform.stl`: post-S4 bare flat slab (pre-S4 T-bar pocket \
+         retired with the plug-shaft removal). Trivial orientation \
+         — any face down works; no supports."
+    );
+    md.push('\n');
+}
+
+fn write_print_orientation_g4_revision(md: &mut String) {
+    let _ = writeln!(md, "### §G-4 revision note");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Recon-1 §G-4 originally locked cup pieces to **seam face \
+         on bed** on the assumption that registration pins lived \
+         entirely inside cup-wall material. S3 shipped pins \
+         extending symmetrically across the seam plane — ridge \
+         points into bed under seam-face-down. S6 revised to \
+         seam-face-UP as documented above. §M-S4 (2026-05-27) \
+         retired the prismatic-pin registration path entirely in \
+         favor of the §M-S2 symmetric dowel-hole pattern; the \
+         seam-face-UP orientation carries over (dowel holes are \
+         printable as upward-opening recesses without modification \
+         to the orientation lock)."
+    );
+    md.push('\n');
+}
+
+fn write_chamfer_recipe_v2(md: &mut String) {
+    let plug_chamfer_mm = PrismaticPinSpec::plug_lock_default().base_chamfer_m * 1000.0;
+    let _ = writeln!(md, "## First-Layer Chamfer Recipe");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Recon-1 §G-6 envisioned the chamfer band on each \
+         `PrismaticPin` as bed-adjacent FDM-elephant-foot relief. \
+         Post-§M-S4 the cup-pin registration path is retired (see \
+         `## v2 Mold Assembly` above for the symmetric dowel-hole \
+         replacement); only the plug-floor-lock chamfer remains. \
+         Under the dome-end-DOWN plug orientation the chamfer band \
+         lives at the `-axis_unit` end of the lock pyramid — deep \
+         inside the plug body, never at the bed-touching first \
+         layer, never workshop-visible from outside the printed \
+         part. The chamfer is **SDF/MC topology continuity at the \
+         deepest-in-material corner**, retained at the §G-6 \
+         typed-range default pending S7 caliper data."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Plug-lock chamfer** ({plug_chamfer_mm:.2} mm default per \
+         `PrismaticPinSpec::plug_lock_default`, typed-range §G-6 / \
+         pinned post-S7 §G-8): retained at default. Under the dome-\
+         end-DOWN plug orientation `+axis_unit = +cap_normal` \
+         points UP, so the chamfer band at `-axis_unit` lives \
+         **inside the plug body** (below the cap-plane face). The \
+         workshop-visible pyramid above the cap-plane is the \
+         unchamfered main-taper portion only. The matching socket's \
+         chamfer band on each cup-piece carves into the cup body \
+         cavity (no-op subtract)."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Slicer-level elephant-foot compensation** (Bambu Studio \
+         / PrusaSlicer / OrcaSlicer): set to **0.0 mm**. The \
+         plug-lock pyramid/socket diametral + axial clearances are \
+         tuned by `PrismaticPinSpec` (S7 caliper pass per §G-8); \
+         the dowel-hole radial clearance is tuned by \
+         `DowelHoleSpec` (§M-S2 / §M-S3). Adding slicer-level \
+         compensation on top would tighten both fits past their \
+         spec budgets and the per-layer cup-wall surface past spec \
+         wall-thickness."
+    );
+    md.push('\n');
+}
+
+fn write_target_fdm_floor_v2(md: &mut String) {
+    let _ = writeln!(md, "## Target FDM Floor (Bambu A1 + Default + Jayo)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Recon-1 §G-3 picks **Bambu A1 + Bambu Studio default settings \
+         + Jayo generic PLA** as the consumer-FDM tolerance floor for \
+         the mating-feature geometry. Print mold + plug + funnel + \
+         platform STLs against this baseline as the regression \
+         target. Calibrated Bambu Lab (X1C / P1S with PEI sheet + \
+         tuned profile + Bambu PLA) is acceptable as a side-\
+         comparison reference but is NOT the regression target — \
+         chasing calibrated-printer tolerances would let the geometry \
+         drift past Bambu A1 + default capabilities."
+    );
+    md.push('\n');
+    let _ = writeln!(md, "Slicer baseline:");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **Layer height**: 0.2 mm (Bambu Studio default).\n\
+         - **Wall loops**: 3 (default).\n\
+         - **Infill**: 15% gyroid (default; mold pieces don't need \
+         structural infill — silicone pour pressure is low).\n\
+         - **Supports**: none for cup pieces (continuous bottom \
+         contour); brim 5-8 mm 1-layer for cup outer-surface \
+         adhesion; brim + brief dome-curvature supports for plug.\n\
+         - **Elephant-foot compensation**: 0.0 mm (geometry \
+         includes chamfer bands per the previous section).\n\
+         - **Filament**: Jayo PLA generic profile (~220 °C nozzle, \
+         60 °C bed); equivalent generic-PLA profile if Jayo \
+         unavailable."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "`PrismaticPinSpec::cup_pin_default` + \
+         `PrismaticPinSpec::plug_lock_default` diametral + axial \
+         clearances default to the §G-6 typed-range mid-points; \
+         exact values are pinned to caliper data from the S7 \
+         workshop-physical Bambu A1 calibration pass."
+    );
+    md.push('\n');
+}
+
+fn write_cfview_sanity_check_v2(md: &mut String) {
+    let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Before slicing, open each STL in cf-view (workshop laptop \
+         viewer) and verify the recon-1 §G-11 #3 visual gate:"
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
+         - Dowel holes: cylindrical recessed cavities in BOTH \
+         halves' seam faces, arc-length-equal-spaced around the \
+         body cavity perimeter + offset outboard from the body \
+         silhouette per `DowelHoleSpec` (§M-S2). The hole pattern \
+         is symmetric — the two halves should mirror each other \
+         exactly along the seam plane.\n   \
+         - No trapezoidal / truncated-pyramid pin remnants on the \
+         seam face (the §M-S4-retired prismatic-pin registration \
+         path).\n   \
+         - No cylindrical pin remnants (pre-S3 cylinder primitive \
+         retired).\n   \
+         - No T-bar / stem / T-slot remnants on the cap-plane wall \
+         (pre-S4 plug-shaft mechanism retired).\n   \
+         - Cap-plane wall carries a clean rectangular plug-floor-\
+         lock socket recess (S4) — recessed cavity, NOT a through-\
+         hole."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "2. **Plug pieces** (`plug_layer_*.stl`):\n   \
+         - Cap-plane face carries a single truncated-pyramid lock \
+         protruding from the cap-plane face along `cap_normal` \
+         (S4); flat tapered lateral faces, sharp edges.\n   \
+         - No T-bar / stem / cylindrical-shaft remnants (pre-S4 \
+         geometry retired); no separate dome-pin (pre-S4 dome-pin \
+         gone too).\n   \
+         - Dome end is smooth and closed; the workshop-visible \
+         pyramid above the cap-plane is the unchamfered main-taper \
+         only (the chamfer band lives inside the plug body and is \
+         not visible from outside)."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "3. **Funnel** (`funnel.stl`): bent-spout funnel — vertical \
+         bowl + 30°-tilted nipple as one connected body, joined at \
+         the bowl-bottom shoulder. Nipple Ø matches the cup pour-gate \
+         Ø minus the funnel's asymmetric diametral clearance \
+         (`cf-cast` `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). Interior \
+         bore tapers smoothly from the bowl mouth down to the nipple \
+         bore (single conical lumen). No flat flange disk; no \
+         floating components."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "4. **Platform** (`platform.stl`): bare flat slab (post-S4 \
+         pocket retirement). If the slab shows ANY pocket / cavity \
+         / protrusion, flag a regression — S4 retired all features."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "If any of the above checks fail, do NOT proceed to print — \
+         file a regression issue with a cf-view screenshot. \
+         §G-11 #1 (§R1 connectivity inspector) + §G-11 #2 \
+         (`PrismaticPin` bit-precise fit invariant) pass on cargo \
+         tests; this cf-view gate is the workshop-user-physical \
+         third gate before the Bambu A1 print gate (§G-11 #4)."
+    );
+    md.push('\n');
+}
+
+fn write_cap_plane_chamfer_v2(md: &mut String) {
+    let _ = writeln!(md, "## Cap-Plane Edge Chamfer (Expected MC Quantization)");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "When inspecting STLs in cf-view, you will see a ~3 mm-wide \
+         ring of slightly-rounded triangulation at the cap-plane \
+         EDGE — where the flat cap-plane meets the curving body \
+         wall. On plug pieces this is the cap-plane face perimeter \
+         (cap-plane × curving plug body wall). On cup pieces this \
+         is the body-cavity opening perimeter on the cap-plane wall \
+         (cap-plane × curving cup body cavity wall). It does NOT \
+         appear at the plug-lock socket recess perimeter (the \
+         truncated-pyramid socket has FLAT lateral walls, no \
+         derivative discontinuity with the cap-plane). This is \
+         **expected geometry, not a defect.**"
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **Cap-plane CENTER is bit-precise flat.** 70-95% of \
+         cap-face triangles land within 10 µm of the cap-plane \
+         (`Solid::plane`'s linear SDF placed exactly by \
+         marching-cubes linear interpolation — same mechanism as the \
+         seam-face flatness invariant per recon-4 (P) §F-4).\n\
+         - **Cap-plane EDGE has a ≤100 µm chamfer band.** \
+         The sharp ~90° corner between flat cap-plane and curving \
+         body wall is a derivative discontinuity in the \
+         piecewise-defined SDF (`max(shell_sdf, plane_sdf)`); MC \
+         cells straddling the corner interpolate vertices across \
+         the branch boundary, producing one-cell-wide (~3 mm) \
+         chamfering. Intrinsic to marching-cubes on any \
+         piecewise-SDF max-corner; cannot be eliminated SDF-side at \
+         any cell size short of adaptive-mesh infrastructure."
+    );
+    md.push('\n');
+    let _ = writeln!(md, "**Workshop guidance:**");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **Do NOT sand the cap-plane edge flat.** The chamfer \
+         band's max deviation (~100 µm) is below the §G-3 target \
+         FDM floor's slicer-to-print quantization (Bambu A1 default \
+         0.4 mm extrusion / 0.2 mm layer height; typical 0.1-0.2 mm \
+         dimensional tolerance). Sanding the STL-level chamfer \
+         would not change the printed plug-to-cup-floor mating \
+         interface — the printer quantizes the edge to its own \
+         grid regardless.\n\
+         - **PR #255 era shipped with the same chamfer band**, and \
+         the workshop iter-2 print on calibrated Bambu was \
+         workshop-accepted. Verified 2026-05-25 via git-bisect — \
+         cap-plane edge geometry is bit-precisely identical \
+         between PR #255 (`aadcfed6`) and current dev; see \
+         `docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md` for the \
+         measurement protocol + the spatial-radial-bin probe that \
+         distinguished the invariant edge ring from the \
+         mating-mechanism-dependent interior.\n\
+         - **The chamfer is at the EDGE not the CENTER.** If \
+         cf-view shows the WHOLE cap-face faceted (not just the \
+         ~3 mm-wide perimeter ring), THAT would be a regression — \
+         file an issue with a cf-view screenshot. The center-flat \
+         vs edge-chamfered distinction is the diagnostic."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Distinct from `## First-Layer Chamfer Recipe`** above: \
+         that section concerns the SDF-side first-layer chamfer \
+         BAND on pin/lock features (a deliberate `PrismaticPin` \
+         geometry primitive for FDM topology continuity at the \
+         deepest-in-material corner). The cap-plane edge chamfer \
+         documented here is an MC-quantization byproduct of the \
+         body × cap-plane derivative discontinuity, NOT a \
+         deliberately-emitted feature."
+    );
+    md.push('\n');
+}
+
+// Linear writeln!s + a single bullet-list block; factoring out subsections would
+// just shuffle the prose into helper names without reducing complexity.
+#[allow(clippy::too_many_lines)]
+fn write_seam_face_edge_v2(md: &mut String) {
+    let _ = writeln!(
+        md,
+        "## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "When inspecting cup-piece STLs in cf-view, you will see what \
+         looks like seam-face non-flatness at the **dome end** (high Z, \
+         where the seam plane meets the cup body's dome cap) and the \
+         **cap-plane end** (low Z, where the seam plane meets the \
+         cap-plane wall). This is **expected geometry, not a defect.**"
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **The seam face follows the curved centerline.** It is NOT a \
+         single flat plane — it is a curved ribbon swept along the \
+         centerline polyline (per-segment binormal frame). Even with \
+         `max tangent rotation: 0.1°` (typical for sock-shaped scans), \
+         the centerline translates ~5-7 mm in the binormal direction \
+         across the Z extent of the cup body. What looks like \
+         seam-face non-flatness in cf-view is mostly this translation \
+         — at any single Z, the seam face is **per-tri flat to within \
+         one MC cell width** (~200 µm at 3 mm cells).\n\
+         - **At the dome+cap ENDS the centerline curvature is more \
+         visible** because the cup body cavity is smaller there, so \
+         the seam face's binormal-direction Y range stands out against \
+         the narrow cavity. At the cup's mid-section, the cavity is \
+         wider so the seam-face curvature is proportionally less \
+         noticeable in cf-view.\n\
+         - **Per-tri max deviation ≤ 200 µm** across all seam-face \
+         regions (verified empirically 2026-05-25 against \
+         `~/scans/cast_iter1*/mold_layer_*_piece_*.stl`). Same \
+         below-print-resolution argument as `## Cap-Plane Edge \
+         Chamfer` above: a 200 µm STL-level deviation does not \
+         survive the Bambu A1 default 0.4 mm extrusion / 0.2 mm layer \
+         height quantization."
+    );
+    md.push('\n');
+    let _ = writeln!(md, "**Workshop guidance:**");
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "- **Do NOT try to flatten the seam face globally.** The seam \
+         face is intentionally curved (follows the centerline). \
+         Flattening to a single plane would break the recon-4 (P) \
+         §F-4 bit-precise SDF-halfspace invariant + the workshop fit \
+         between the two cup halves (which fit because both halves' \
+         seam faces follow the SAME curved ribbon).\n\
+         - **Workshop user has empirical acceptability precedent.** \
+         The PR #255 era (`aadcfed6`) shipped with the same \
+         curved-centerline seam face + iter-2 print on calibrated \
+         Bambu was workshop-accepted. The 2026-05-25 (5') bisect on \
+         the cap-plane edge applies the same logic here — the seam \
+         face geometry is driven by `Ribbon::halfspace_solid` + \
+         pre-arc body derivation, both of which are continuous since \
+         2026-05-19.\n\
+         - **Registration-independent: no remediation via \
+         registration geometry.** A 2026-05-25 no-pins regen \
+         (`registration_pins.enabled = false` at \
+         `~/scans/cast_iter1_nopins/`) confirmed the dome-edge + \
+         cap-edge seam-face triangulation is bit-precisely identical \
+         with-pins vs without-pins. The cup-pin mesh-CSG (since \
+         retired in §M-S4) and the §M-S2 dowel-hole subtracts only \
+         remesh the INTERIOR of the seam face (around each feature), \
+         NOT the dome or cap-plane edges. So registration-geometry \
+         tweaks cannot mitigate the dome/cap-edge appearance."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Distinct from `## Cap-Plane Edge Chamfer` above:** that \
+         section concerns the cap-plane × curving-body-wall corner on \
+         plug + cup-floor faces (~3 mm-wide chamfer ring at the \
+         cap-plane perimeter). The seam-face edge non-flatness here \
+         is on the cup-piece SEAM faces and is driven by \
+         centerline-curvature × MC quantization at the dome+cap ends. \
+         Different root causes, both below print resolution, both \
+         (4')-pattern accepted."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Plug-lock socket mouth (cup-piece cap-plane wall):** the \
+         `SubtractTruncatedPyramid` mesh-CSG carve of the plug-lock \
+         socket recess inherits ~100 µm cap-plane edge chamfer at the \
+         socket mouth perimeter (manifold3d boolean subtract on an \
+         already-MC-quantized cap-plane face). Workshop user 2026-05-24 \
+         night cf-view flagged this as \"matter obstructing the \
+         opening\" (Finding C in `docs/CF_CAST_POST_SALVAGE_TRIAGE.md`). \
+         Expected magnitude is ~100 µm — well below the triage doc's \
+         <0.5 mm workshop-acceptability threshold. If cf-view shows \
+         the obstruction is < 0.5 mm thick, accept it (workshop user \
+         can file off any visible artifact in 30 seconds before \
+         pressing the plug into the socket). If the obstruction is \
+         visibly > 0.5 mm thick, file a regression issue with a \
+         cf-view screenshot — that would warrant a separate recon arc \
+         on the boolean-junction geometry."
+    );
+    md.push('\n');
+}
+
+// Mostly prose writeln!s describing dowel placement + bolt-pattern
+// interleave; the v2 assembly note grew past clippy's 100-line default
+// once the §M dowel section landed alongside the §B bolt section.
+// Factoring per-subsection into helpers would just shuffle the prose
+// into named functions without reducing complexity.
+#[allow(clippy::too_many_lines)]
 fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
-    match &ribbon.registration {
-        RegistrationKind::None => {
+    // §M-S4 (2026-05-27) retired the legacy prismatic-pin
+    // registration prose (RegistrationKind::Pins arm). Dowel holes
+    // (§M-S2) are the sole inter-piece registration mechanism; the
+    // workshop user inserts loose printed dowels through matching
+    // holes at assembly time. Per
+    // [[project-cf-cast-unified-mating-plane-recon]] §M-S4.
+    match ribbon.dowel_hole.spec() {
+        None => {
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
                  curve-following seam. This cast has no integral \
-                 registration features (`RegistrationKind::None`); \
+                 registration features (`DowelHoleKind::None`); \
                  align the pieces by hand and clamp with rubber bands \
                  or wide tape during pour + cure. Each piece's seam \
                  face is bit-precise flat to the ribbon plane via \
-                 the cup-piece SDF halfspace intersect (MC's \
+                 the cup-piece SDF halfspace intersect with \
+                 `overlap_m = 0` (post-§M-S1 flush mating; MC's \
                  linear-SDF interpolation places seam-cap vertices \
-                 exactly on the plane; see \
-                 `cf-cast::piece::RIBBON_PIECE_OVERLAP_M` for the \
-                 0.5 mm inward bias that gives each piece a 1 mm \
-                 seam overlap), so the two halves seat flush at the \
-                 seam and hand alignment only needs to bring the cup \
-                 outlines into registration."
+                 exactly on the plane), so the two halves butt flush \
+                 at the seam with zero gap and hand alignment only \
+                 needs to bring the cup outlines into registration."
             );
             md.push('\n');
             let _ = writeln!(
@@ -487,60 +1007,199 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  small fillet of mold release or putty along the outside \
                  of the seam before the next layer. Document the leak \
                  position for the post-iter-1 registration-feature \
-                 decision (pins vs dovetails vs magnets)."
+                 decision (enable dowel holes, dovetails, or magnets)."
             );
         }
-        RegistrationKind::Pins(spec) => {
-            let pin_count = spec.arc_fractions.len();
-            let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
-            let pin_length_mm = spec.pin_half_length_m * 2.0 * 1000.0;
-            let diametral_mm = spec.diametral_clearance_m * 1000.0;
-            let socket_dia_mm = pin_dia_mm + diametral_mm;
+        Some(spec) => {
+            // §M-S2 of the unified-mating-plane arc: symmetric
+            // SubtractCylinder holes per dowel, arc-length-equal-
+            // spaced around the body silhouette, identical on both
+            // cup-halves. Workshop user supplies loose printed PLA
+            // dowels and inserts them through matching holes at
+            // assembly time.
+            let count = spec.count;
+            let diameter_mm = spec.diameter_m * 1000.0;
+            let clearance_mm = spec.clearance_m * 1000.0;
+            let depth_mm = spec.depth_m * 1000.0;
+            let outboard_offset_mm = spec.silhouette_outboard_offset_m * 1000.0;
+            let hole_diameter_mm = 2.0_f64.mul_add(clearance_mm, diameter_mm);
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
-                 curve-following seam. **{pin_count} cylindrical pins** \
-                 ({pin_dia_mm:.1} mm Ø × {pin_length_mm:.1} mm long, \
-                 printed integrally with `_piece_0` and matched by \
-                 {socket_dia_mm:.2} mm Ø cylindrical holes in \
-                 `_piece_1` — {diametral_mm:.2} mm diametral clearance \
-                 for a positional sliding fit) lock the pieces in \
-                 alignment along the seam — no manual clamping needed \
-                 once the pins are seated."
+                 curve-following seam. **{count} symmetric dowel \
+                 holes** ({hole_diameter_mm:.2} mm Ø — \
+                 {diameter_mm:.1} mm nominal dowel × \
+                 2 × {clearance_mm:.2} mm radial clearance, \
+                 {depth_mm:.1} mm deep per half) are carved through \
+                 BOTH cup-halves' mating faces, arc-length-equal-spaced \
+                 around the body silhouette + offset \
+                 {outboard_offset_mm:.1} mm outboard from the body \
+                 perimeter. The hole pattern is identical on both \
+                 halves.",
+            );
+            md.push('\n');
+            // §M-S2 followup: total tip slack is the SUM of the
+            // dowel's own insertion slack + the hole's axial slack
+            // (cold-read 2026-05-27 caught the prose understating
+            // this by half by counting only one).
+            let dowel_insertion_slack_mm = crate::dowel::DOWEL_INSERTION_SLACK_M * 1000.0;
+            let hole_axial_slack_mm = crate::dowel_hole::HOLE_AXIAL_SLACK_M * 1000.0;
+            let dowel_length_mm = depth_mm.mul_add(2.0, -2.0 * dowel_insertion_slack_mm);
+            let total_cavity_mm = depth_mm.mul_add(2.0, 2.0 * hole_axial_slack_mm);
+            let tip_slack_mm = (total_cavity_mm - dowel_length_mm) / 2.0;
+            let insert_depth_mm = depth_mm + hole_axial_slack_mm - tip_slack_mm;
+            let _ = writeln!(
+                md,
+                "**Print `dowel.stl` first.** The export emits a \
+                 single `dowel.stl` containing all {count} printable \
+                 PLA dowels ({diameter_mm:.1} mm Ø × \
+                 {dowel_length_mm:.1} mm long — sized so each dowel \
+                 inserts ~{insert_depth_mm:.1} mm into each cup-half \
+                 with {tip_slack_mm:.1} mm assembly slack at each \
+                 tip). Print the dowels VERTICAL (cylindrical axis \
+                 perpendicular to the build plate; cf-view loads them \
+                 oriented this way) so the cylindrical walls print \
+                 clean without overhangs. Insert one dowel through \
+                 each pair of matching holes to register the two \
+                 halves laterally before clamping."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
-                "Insert each pin from `_piece_0` into the matching \
-                 hole in `_piece_1` along the binormal direction (the \
-                 pin axis is perpendicular to the seam plane at the \
-                 pin position). Pins are gravity-held; no friction \
-                 lock. Each pin extends {pin_length_mm:.1} mm \
-                 symmetrically across the seam plane — half lives \
-                 buried inside `_piece_0`'s cup-wall material; the \
-                 other half protrudes past the seam face as the \
-                 workshop-visible ridge that seats into `_piece_1`'s \
-                 matching socket. The pre-S4 SDF half-space intersect \
-                 keeps each piece's seam face bit-precise flat by MC's \
-                 linear-SDF interpolation property (recon-4 §F-4), so \
-                 the pieces seat flush along the {socket_dia_mm:.2} mm \
-                 sliding-fit sockets."
+                "Each dowel cylinder is centered on the seam plane \
+                 along the ribbon binormal (perpendicular to the seam \
+                 plane at the dowel position). Holes are gravity-held \
+                 with the dowel friction-fit absorbed by the radial \
+                 clearance — no latching action. Per recon-4 (P) the \
+                 seam face is bit-precise flat via the cup-piece SDF \
+                 halfspace intersect (MC's linear-SDF interpolation \
+                 places seam-cap vertices exactly on the plane), so \
+                 the pieces seat flush around the dowel pattern."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
-                "If a pin breaks during demold or assembly, file the \
-                 stub flush + drill out the hole if needed; a manual \
-                 rubber-band clamp restores the cast for that layer. \
-                 Document pin failures for the post-iter-1 \
-                 registration-feature decision (revisit dia/length \
-                 defaults in `PinSpec::iter1`)."
+                "If a dowel breaks during assembly or the holes drift \
+                 out of register on a given print, swap to a fresh \
+                 PLA rod cut to {depth_total:.1} mm; the symmetric \
+                 dowel-hole pattern means no asymmetry to worry about \
+                 between halves. Document fit issues for the post-\
+                 iter-3 dowel-spec decision (revisit \
+                 `DowelHoleSpec::iter1` diameter / clearance / count / \
+                 outboard offset defaults).",
+                depth_total = depth_mm * 2.0,
             );
         }
     }
+    write_v2_bolt_pattern_note(md, ribbon);
     md.push('\n');
     write_v2_plug_anchor_note(md, ribbon);
+}
+
+fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
+    let Some(spec) = ribbon.bolt_pattern.spec() else {
+        return;
+    };
+    // §B of the unified-mating-plane bolt-pattern arc: symmetric
+    // SubtractCylinder holes per bolt, arc-length-equal-spaced
+    // around the body silhouette (interleaved with dowel positions
+    // when both patterns are enabled at default counts). M5
+    // through-bolts + flat washers (×2 per bolt) + hex nuts clamp
+    // the two halves at the flange (across a gasket when one is
+    // present; iter-1 ships gasketless with mold release + PLA-on-
+    // PLA contact under bolt-induced clamp pressure as the seal).
+    let count = spec.count;
+    let clearance_mm = spec.clearance_diameter_m * 1000.0;
+    let outboard_offset_mm = spec.silhouette_outboard_offset_m * 1000.0;
+    // Minimum bolt length the workshop should source: 2 × flange
+    // thickness (the bolt traverse) + 2 × washer (~1 mm each) + nut
+    // (~4 mm M5) + bolt-head (~3 mm M5). With 4 mm flange thickness
+    // default that's 8 + 2 + 4 + 3 = 17 mm — round up to M5×20 mm
+    // (standard stock length, gives ~3 mm thread excess past the nut
+    // which is workshop-friendly).
+    // Cold-read I3 fix 2026-05-27: prefer FlangeSpec::iter1() over a
+    // hard-coded magic number when the ribbon has no flange. In
+    // practice the cf-cast-cli validator forbids bolt_pattern without
+    // flange + `write_v2_bolt_pattern_note` is gated on
+    // `ribbon.bolt_pattern.spec().is_some()`, so this fallback only
+    // matters for hand-built test ribbons bypassing the validator.
+    let flange_thickness_mm = ribbon.flange.spec().map_or_else(
+        || crate::flange::FlangeSpec::iter1().flange_thickness_m * 1000.0,
+        |f| f.flange_thickness_m * 1000.0,
+    );
+    let bolt_traverse_mm = flange_thickness_mm * 2.0;
+    // Minimum exact length = traverse + 2 × washer (~1 mm each) + nut
+    // (~4 mm M5) + head (~3 mm M5). Round UP to the nearest 5 mm
+    // since fastener catalogs stock M5 in 5 mm increments above 10 mm
+    // (10, 12, 16, 20, 25, …). At the default 4 mm flange this gives
+    // 17 mm minimum → 20 mm workshop pick, with ~3 mm thread excess
+    // past the nut.
+    let min_bolt_length_mm = bolt_traverse_mm + 2.0 + 4.0 + 3.0;
+    let recommended_bolt_length_mm = (min_bolt_length_mm / 5.0).ceil() * 5.0;
+    let _ = writeln!(md);
+    let _ = writeln!(
+        md,
+        "### M5 through-bolt clamp pattern (§B)\n\
+         \n\
+         **{count} bolt clearance holes** ({clearance_mm:.1} mm Ø) carve \
+         through BOTH cup-halves' flange material, arc-length-equal-spaced \
+         around the body silhouette + offset {outboard_offset_mm:.1} mm \
+         outboard from the body perimeter. Identical hole pattern on both \
+         halves; the holes interleave with the §M-S2 dowel-hole positions \
+         (when dowels enabled at default counts) so the two registration + \
+         clamp patterns share the flange band without colliding.\n\
+         \n\
+         **Workshop supplies (per cast assembly)**: {count} × M5 hex bolts \
+         (recommend M5×{recommended:.0} mm to cover the \
+         {bolt_traverse_mm:.0} mm PLA traverse + washers + nut + head, with \
+         a few mm of thread excess), {count_washers} × M5 flat washers \
+         (~10 mm OD; 2 per bolt — one under the head, one under the nut), \
+         {count} × M5 hex nuts.\n\
+         \n\
+         **Assembly order**: register the two halves with the §M dowels \
+         FIRST (the dowel-hole pattern provides lateral alignment so the \
+         bolt-clearance holes match up across the seam). Then insert each \
+         M5 bolt through the matching bolt-clearance holes on the two \
+         halves, slip a washer under each head + nut, and hand-tighten \
+         crosswise (like a car lug pattern) for even flange clamp \
+         pressure (~1 MPa across the flange contact area at \
+         hand-torqued M5 — exceeds the silicone hydrostatic leak \
+         pressure by ~1000× so PLA-on-PLA seam contact + mold release \
+         should seal without a separate gasket). Engine-valve-cover \
+         torque level — snug, not stripped; PLA threads in the \
+         workshop user's hand-tools strip well before the bolt design \
+         load is exceeded.\n\
+         \n\
+         The bolt clearance is {clearance_mm:.1} mm with no slide-fit \
+         slack — the washer compensates for FDM hole dimensional error \
+         (~±0.1 mm typical). If a bolt won't seat, lightly ream the hole \
+         with a {clearance_mm:.1} mm drill bit before the next iteration.\n",
+        recommended = recommended_bolt_length_mm,
+        count_washers = count * 2,
+    );
+    if spec.skip_pour_gate_collision {
+        // Cold-read I2 fix 2026-05-27: rename the local from
+        // `clearance_mm` (which shadowed the outer scope's
+        // clearance-Ø value) to `bolt_radius_mm` to match the prose
+        // ("bolt radius" — half the clearance Ø).
+        let bolt_radius_mm = spec.clearance_diameter_m * 500.0;
+        let _ = writeln!(
+            md,
+            "**Pour-gate collision skip**: bolts arc-length-spaced near \
+             the pour-gate V apex are silently dropped at compose time \
+             (within {bolt_radius_mm:.1} mm bolt radius + pour-gate \
+             cylinder radius + {gate_clearance_mm:.1} mm extra PLA wall). \
+             The pattern may look slightly asymmetric near the dome end — \
+             that's the collision-skip working as designed (engine-valve-\
+             cover analog: cover bolts that would land on the pushrod \
+             tubes are simply omitted). If the workshop wants full \
+             symmetry near the pour gate, set \
+             `bolt_pattern.skip_pour_gate_collision = false` in cast.toml \
+             and clear the pour-gate leg by hand at assembly.",
+            gate_clearance_mm = spec.pour_gate_clearance_m * 1000.0,
+        );
+    }
 }
 
 fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
@@ -550,111 +1209,355 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
         PlugPinKind::None => {
             let _ = writeln!(
                 md,
-                "This cast has no plug-anchor pin geometry \
+                "This cast has no plug-floor-lock geometry \
                  (`PlugPinKind::None`). The plug is positioned in \
                  the assembled mold cup by hand and held there \
                  during pour + cure (workshop user braces the plug \
-                 manually or jigs against the cavity dome). v2.1's \
-                 `PlugPinKind::Axial` opt-in adds a printed pin to \
-                 the pour end of each layer's plug + a matching \
-                 socket in each mold piece; recommended for any \
+                 manually or jigs against the cavity dome). \
+                 `PlugPinKind::Axial` opt-in adds a truncated-\
+                 pyramid press-fit lock to the plug's cap-plane face \
+                 + a matching socket recessed into each cup-piece's \
+                 cap-plane interior surface; recommended for any \
                  cast where the plug's silicone-displacement weight \
                  + curve geometry makes hand-positioning fiddly."
             );
         }
         PlugPinKind::Axial(spec) => {
-            let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
-            let pin_length_mm = spec.pin_length_m * 1000.0;
-            // Post-S6 cup-side socket primitive inflates by
-            // `shaft_diametral_clearance_m / 2` per radial side
-            // (Ø grows by the full diametral clearance) and extends
-            // axially past the pin by `shaft_axial_clearance_m / 2`
-            // on each face (deep-end relief is the workshop-meaningful
-            // half; see `PlugPinSpec::shaft_axial_clearance_m`).
-            let socket_diametral_gap_mm = spec.shaft_diametral_clearance_m * 1000.0;
-            let socket_axial_relief_mm = spec.shaft_axial_clearance_m * 1000.0;
-            let dome_pin_status = if spec.include_dome_pin {
-                "**Both** the pour end and the dome end have plug-\
-                 anchor pins"
-            } else {
-                "Only the **pour end** has a plug-anchor pin (the \
-                 dome end relies on the plug's hemispherical cap \
-                 seating into the cavity's matching dome for \
-                 centerline alignment — no through-hole on the \
-                 dome side)"
-            };
+            // S4 of the FDM-friendly geometry arc migrated this
+            // section from cylindrical plug-shaft + T-bar prose
+            // (cup-wall penetration leak path on consumer FDM —
+            // recon-1 §G-1) to the truncated-pyramid plug-floor
+            // lock vocabulary (interior to the cavity, no through-
+            // hole, press-fit against the cup floor).
+            let lock_spec = &spec.lock_spec;
+            let base_lateral_mm = lock_spec.pin_base_half_extents_m.x * 2.0 * 1000.0;
+            let base_binormal_mm = lock_spec.pin_base_half_extents_m.y * 2.0 * 1000.0;
+            let tip_lateral_mm = lock_spec.pin_tip_half_extents_m.x * 2.0 * 1000.0;
+            let tip_binormal_mm = lock_spec.pin_tip_half_extents_m.y * 2.0 * 1000.0;
+            let lock_length_mm = lock_spec.pin_half_length_m * 2.0 * 1000.0;
+            let chamfer_mm = lock_spec.base_chamfer_m * 1000.0;
+            let diametral_mm = lock_spec.diametral_clearance_m * 1000.0;
+            let socket_base_lateral_mm = base_lateral_mm + diametral_mm;
             let _ = writeln!(
                 md,
-                "Each per-layer plug carries an axial **{pin_dia_mm:.1} mm \
-                 Ø × {pin_length_mm:.1} mm long pin** at the pour end \
-                 (centerline endpoint with the pour gate; pin extends \
-                 outward along the local tangent). The mold pieces \
-                 carry a matching cylindrical socket \
-                 {socket_diametral_gap_mm:.2} mm wider in diameter than \
-                 the pin (positional sliding fit) with \
-                 {socket_axial_relief_mm:.2} mm axial pocket-bottom \
-                 relief so workshop FDM stair-step doesn't bottom the \
-                 pin out before its shoulder seats. {dome_pin_status}."
+                "Each per-layer plug carries a **truncated-pyramid \
+                 lock** at its cap-plane face — \
+                 {base_lateral_mm:.1} × {base_binormal_mm:.1} mm \
+                 rectangular base, tapered to \
+                 {tip_lateral_mm:.1} × {tip_binormal_mm:.1} mm flat \
+                 tip, {lock_length_mm:.1} mm long along the cap-\
+                 normal, {chamfer_mm:.2} mm base-end chamfer as a \
+                 lead-in self-centering aid — protruding away from \
+                 the plug body (= downward in pour orientation). \
+                 Each cup-piece's cap-plane interior surface carries \
+                 a matching socket cavity \
+                 ({socket_base_lateral_mm:.2} mm base — \
+                 {diametral_mm:.2} mm diametral clearance for a \
+                 positional sliding fit); the seam plane bisects \
+                 each socket laterally through its center, so each \
+                 cup half carves one half of the cross-section \
+                 (3-piece shared-primitive invariant). The socket \
+                 is a recessed cavity NOT a through-hole — no shaft \
+                 penetrates the cup wall, eliminating the silicone-\
+                 leak failure mode the pre-S4 cylindrical plug-shaft \
+                 was prone to on consumer FDM."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
                 "Workshop assembly: apply mold release (Smooth-On \
-                 Ease Release 200 standard) to the pin before \
-                 seating. Lower the plug into the assembled cup; \
-                 the pin slides into the socket along the centerline \
-                 tangent direction until the pin's shoulder rests \
-                 against the cup wall. The plug is now positionally \
-                 constrained against axial drift; combined with the \
-                 cap-into-dome seating at the un-pinned end, the \
-                 plug stays centered in 6 DoF during pour + cure."
+                 Ease Release 200 standard) to the pyramid before \
+                 seating. Lower the plug into one open cup half \
+                 (seam plane up) so the pyramid drops into that \
+                 half's floor socket; the tapered lateral faces \
+                 self-center the pyramid as it descends. Close the \
+                 second cup half over the plug, sandwiching the \
+                 pyramid between the two socket halves. Press-stop \
+                 tactile feedback = the cup-piece seam halves bottom \
+                 out flush against each other when the pyramid is \
+                 fully seated. The plug is now positionally \
+                 constrained against axial drift + lateral wobble; \
+                 combined with the cap-into-dome seating at the dome \
+                 end, the plug stays centered in 6 DoF during pour + \
+                 cure."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
-                "If the pin doesn't seat (too tight): ream the socket \
-                 with a {pin_dia_mm:.1} mm drill bit to remove any \
-                 FDM stair-step. If it wobbles (too loose): wrap the \
-                 pin with PTFE tape until snug. Document fit \
-                 tolerances for the post-iter-1 review of \
-                 `PlugPinSpec::iter1` defaults."
+                "If the lock doesn't seat (too tight, seam won't \
+                 close flush): file the pyramid's lateral faces \
+                 lightly to relieve, then re-check the seam. If the \
+                 plug wobbles (too loose, plug drifts during pour): \
+                 wrap the pyramid base with PTFE tape until snug, OR \
+                 tighten `PrismaticPinSpec::plug_lock_default()`'s \
+                 `diametral_clearance_m` for the next print. \
+                 Document fit tolerances for the S7 workshop-physical \
+                 calibration pass on Bambu A1 + default + Jayo."
             );
-            if spec.include_t_bar {
-                md.push('\n');
-                write_v2_t_bar_note(md, spec);
-            }
         }
     }
     md.push('\n');
 }
 
-fn write_v2_t_bar_note(md: &mut String, spec: &crate::plug::PlugPinSpec) {
-    let t_bar_dia_mm = spec.t_bar_radius_m * 2.0 * 1000.0;
-    let t_bar_length_mm = spec.t_bar_half_length_m * 2.0 * 1000.0;
-    let t_slot_diametral_mm = spec.t_bar_diametral_clearance_m * 1000.0;
-    let t_slot_dia_mm = t_bar_dia_mm + t_slot_diametral_mm;
-    let t_slot_axial_relief_mm = spec.t_bar_axial_clearance_m * 1000.0;
-    let _ = writeln!(
-        md,
-        "**T-bar lock** (one-time print: `platform.stl`). The plug's \
-         pour-end pin tip carries a **{t_bar_dia_mm:.1} mm \
-         Ø × {t_bar_length_mm:.1} mm long T-bar** whose axis lies \
-         parallel to the seam-plane normal. Each cup piece carves one \
-         half of a matching T-slot ({t_slot_dia_mm:.2} mm Ø — \
-         {t_slot_diametral_mm:.2} mm diametral clearance, \
-         {t_slot_axial_relief_mm:.2} mm axial pocket-bottom relief at \
-         the AWAY-from-seam tip); captive insertion: lower the plug \
-         T-bar into one cup half's half-T-slot, then close the second \
-         half around it. Once seated the T-bar locks the plug against \
-         axial pull-out (would have to push through cup-wall material) \
-         and rotation around the pin axis (would have to rotate out of \
-         the seam-normal orientation). The T-bar protrudes a few mm \
-         below the cup outer face at typical wall thicknesses; the \
-         `platform.stl` carries a matching blind pocket so the \
-         assembled mold sits flat on the platform during pour + cure \
-         (print `platform.stl` once for the whole multi-layer device \
-         — it is reused across every layer's pour)."
-    );
+// 4-arm match over (FlangeKind, GasketKind) with multi-paragraph
+// prose per branch pushes the line count well past clippy's default
+// 100; the function is otherwise simple (linear writeln!s, no
+// nested control flow), so factoring each branch into its own
+// helper would just shuffle the same prose between identifiers.
+#[allow(clippy::too_many_lines)]
+fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
+    // S3 of the seam-flange arc per recon §F-7. Prose adapts to the
+    // combination of FlangeKind + GasketKind: the full clamp-and-pour
+    // protocol fires only when both are enabled (the workshop
+    // iter-3 default); other combinations get a brief fallback note
+    // pointing at the hand-clamp / no-gasket degraded paths.
+    let header = match (&ribbon.gasket, ribbon.bolt_pattern.spec()) {
+        (GasketKind::Mold(_), _) => "## Cup-Half Clamping with Gasket Installation",
+        (GasketKind::None, Some(_)) => "## Cup-Half Clamping (M5 Bolt-Pattern Seal)",
+        (GasketKind::None, None) => "## Cup-Half Clamping (Gasketless)",
+    };
+    let _ = writeln!(md, "{header}");
+    md.push('\n');
+    match (&ribbon.flange, &ribbon.gasket) {
+        (FlangeKind::None, GasketKind::None) => {
+            let _ = writeln!(
+                md,
+                "This cast has neither a seam-plane flange \
+                 (`FlangeKind::None`) nor a per-layer gasket \
+                 (`GasketKind::None`). Cup halves must be hand-clamped \
+                 over their contoured outer surface (wide tape, \
+                 ratchet straps, or workshop user's preferred \
+                 contoured-clamp method; see the assembly note above \
+                 for the registration-pin-mediated alignment). Pour \
+                 silicone directly through the pour gate; the seam \
+                 relies on the cup-piece SDF halfspace intersect's \
+                 bit-precise flat seam face (recon-4 (P) §F-2). \
+                 Workshop user monitors for leaks at the seam during \
+                 pour; flag any leak for the post-iter-3 gasket / \
+                 flange enablement decision."
+            );
+        }
+        (FlangeKind::None, GasketKind::Mold(_)) => {
+            let _ = writeln!(
+                md,
+                "This cast carries per-layer gaskets \
+                 (`GasketKind::Mold`) but no flange \
+                 (`FlangeKind::None`). Pour and cure the gasket \
+                 strips per the gasket-mold protocol, peel them out, \
+                 and lay each gasket on the Negative cup half's seam \
+                 face inside the body cavity perimeter. Close the \
+                 Positive half over Negative + gasket, aligning via \
+                 the symmetric dowel-hole pattern (or hand-alignment \
+                 when `DowelHoleKind::None`). Without a flange to provide \
+                 a flat C-clamp grip surface, the cup must be hand-\
+                 clamped over its contoured outer surface (wide tape \
+                 or ratchet straps at 4+ quadrants). Aim for the \
+                 gasket's `predicted_compression_m` (~232 µm at the \
+                 `GasketSpec.workshop_clamp_pressure_pa` 20 kPa \
+                 default for Ecoflex 00-30); over-tightening extrudes \
+                 the gasket and loses the seal. Document hand-clamp \
+                 pressure variability for the post-iter-3 flange-\
+                 enablement decision."
+            );
+        }
+        (FlangeKind::Plate(flange_spec), GasketKind::None) => {
+            let width_mm = flange_spec.flange_width_m * 1000.0;
+            let thickness_mm = flange_spec.flange_thickness_m * 1000.0;
+            if ribbon.bolt_pattern.spec().is_some() {
+                // iter-1 path: flange + bolts, no gasket. The bolts
+                // ARE the clamp; defer the protocol to the §B section
+                // already rendered above. Emitting C-clamp prose here
+                // would conflict with the bolt-pattern instructions.
+                let _ = writeln!(
+                    md,
+                    "This cast carries a seam-plane flange \
+                     (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
+                     {thickness_mm:.1} mm per-half thickness) and the \
+                     §B M5 through-bolt clamp pattern, but no \
+                     per-layer gasket (`GasketKind::None`). The M5 \
+                     through-bolts ARE the clamp mechanism — see \
+                     `### M5 through-bolt clamp pattern (§B)` above \
+                     for the supplies list + crosswise hand-tighten \
+                     protocol. Do NOT apply external C-clamps in \
+                     addition to the bolts; the bolt-induced flange \
+                     contact pressure (~1 MPa) seals PLA-on-PLA at \
+                     the seam with mold release standing in for a \
+                     compressible gasket. Workshop user monitors for \
+                     leaks at the seam during pour; if a leak \
+                     develops, the iter-2 path is to re-enable the \
+                     per-layer gasket (`[gasket].enabled = true` in \
+                     cast.toml)."
+                );
+            } else {
+                let _ = writeln!(
+                    md,
+                    "This cast carries a seam-plane flange \
+                     (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
+                     {thickness_mm:.1} mm per-half thickness) but no \
+                     per-layer gasket (`GasketKind::None`) and no §B \
+                     bolt pattern. Use the flange as a flat C-clamp \
+                     grip surface: after mating the cup halves via \
+                     the symmetric dowel-hole pattern, apply C-clamps \
+                     to the flange at 4 positions (one per 90° \
+                     quadrant around the seam plane perimeter). \
+                     Tighten each clamp to hand-tight only — without \
+                     a gasket there is no compressible silicone strip \
+                     to absorb over-tightening, and PLA-on-PLA flange \
+                     contact at high clamp force can stress-crack \
+                     the flange. Pour silicone through the pour gate; \
+                     the seam relies on the cup-piece SDF halfspace \
+                     intersect's bit-precise flat seam face (recon-4 \
+                     (P) §F-2). Workshop user monitors for leaks; \
+                     flag any leak for the post-iter-3 gasket \
+                     enablement decision."
+                );
+            }
+        }
+        (FlangeKind::Plate(flange_spec), GasketKind::Mold(gasket_spec)) => {
+            // Workshop iter-3 default path — full clamp-and-pour
+            // protocol per recon §F-7.
+            let width_mm = flange_spec.flange_width_m * 1000.0;
+            let thickness_mm = flange_spec.flange_thickness_m * 1000.0;
+            let inner_offset_mm = flange_spec.flange_inner_offset_m * 1000.0;
+            let gasket_width_mm = gasket_spec.cross_section_width_m * 1000.0;
+            let gasket_thickness_mm = gasket_spec.cross_section_thickness_m * 1000.0;
+            let clamp_pressure_kpa = gasket_spec.workshop_clamp_pressure_pa / 1000.0;
+            let predicted_compression_um = gasket_spec.predicted_compression_m() * 1_000_000.0;
+            let gasket_material_label = gasket_spec.material.shore_label();
+            let _ = writeln!(
+                md,
+                "This cast carries both a seam-plane flange \
+                 (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
+                 {thickness_mm:.1} mm per-half thickness × \
+                 {inner_offset_mm:.1} mm inner offset from body \
+                 cavity perimeter) and per-layer gaskets \
+                 (`GasketKind::Mold`: {gasket_width_mm:.1} × \
+                 {gasket_thickness_mm:.1} mm {gasket_material_label} \
+                 cross-section). The flange provides the flat C-clamp \
+                 grip surface; the gasket provides the silicone seal \
+                 against FDM-tolerance leak per the seam-gasket-mold \
+                 arc (recon §G-1). The flange's `inner_offset_m` \
+                 ({inner_offset_mm:.1} mm) keeps the flange material \
+                 laterally disjoint from the gasket channel per recon \
+                 §F-4 — gasket compresses, flange clamps, no lateral \
+                 overlap between the two."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "**Per-layer workshop protocol** (repeat for each \
+                 layer's pour):"
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "1. **Pour gasket silicone.** Mix and pour the \
+                 {gasket_material_label} gasket material into the \
+                 per-layer gasket-mold tray \
+                 (`gasket_mold_layer_{{N}}.stl`). Cure per the gasket \
+                 material's Smooth-On TDS at 23 °C."
+            );
+            let _ = writeln!(
+                md,
+                "2. **Peel the cured gasket.** Once cured, peel the \
+                 gasket strip out of the mold tray. The strip traces \
+                 the body cavity perimeter; handle it as a continuous \
+                 loop (don't stretch or twist)."
+            );
+            let _ = writeln!(
+                md,
+                "3. **Position the gasket on the Negative cup half.** \
+                 Open the cup halves, lay the Negative cup half \
+                 (`mold_layer_{{N}}_piece_0.stl`) seam-face-UP on the \
+                 workshop bench. Place the gasket strip on the seam \
+                 face **along the body cavity perimeter, in the \
+                 annular clearance gap between the body cavity edge \
+                 (`body_dist = 0`) and the flange's inner edge** — \
+                 the flange's {inner_offset_mm:.1} mm \
+                 `inner_offset_m` is the width of that gap and keeps \
+                 the flange material laterally clear of the gasket \
+                 per recon §F-4 gasket-disjoint invariant. The \
+                 gasket strip itself is centered on the body \
+                 perimeter (half inside body_dist < 0, half outside)."
+            );
+            let _ = writeln!(
+                md,
+                "4. **Close the Positive cup half over Negative + \
+                 gasket.** Bring the Positive piece \
+                 (`mold_layer_{{N}}_piece_1.stl`) down onto the \
+                 Negative + gasket assembly, aligning via the \
+                 symmetric dowel holes (if enabled — see \
+                 `## v2 Mold Assembly` above for the alignment \
+                 method when dowel holes are disabled). At this stage \
+                 the gasket is only lightly seated (cup halves resting \
+                 on the registration features); the cup halves should \
+                 seat flush at the seam (flange-to-flange contact \
+                 OUTSIDE the gasket strip; gasket-sandwiched lightly \
+                 INSIDE). Full gasket compression is achieved in \
+                 Step 5 once the C-clamps apply the design pressure."
+            );
+            let _ = writeln!(
+                md,
+                "5. **Apply C-clamps to the flange at 4 quadrant \
+                 positions.** Place one C-clamp at each 90° quadrant \
+                 around the seam-plane perimeter. Tighten each clamp \
+                 to **hand-tight + 1/8 turn** — enough to reach the \
+                 gasket's design {clamp_pressure_kpa:.0} kPa target \
+                 pressure (predicts ~{predicted_compression_um:.0} \
+                 µm compression per the \
+                 `GasketSpec::predicted_compression_m` Hookean \
+                 estimate). Workshop user MUST avoid over-tightening \
+                 (gasket extrusion → loss of seal)."
+            );
+            let _ = writeln!(
+                md,
+                "6. **Pour main layer silicone through the pour \
+                 gate.** With the cup clamped and gasket compressed, \
+                 pour the layer silicone through the pour-gate \
+                 funnel (see `## Pour Gate + Vent` below). The vent \
+                 leg confirms full cavity fill; pour until silicone \
+                 wets the vent opening."
+            );
+            let _ = writeln!(
+                md,
+                "7. **Cure per layer material TDS.** Leave the \
+                 assembly clamped for the full cure window (per \
+                 layer material's TDS at 23 °C). Do NOT release \
+                 clamps until cure is complete — gasket compression \
+                 must hold throughout cure to maintain the seal."
+            );
+            let _ = writeln!(
+                md,
+                "8. **Release clamps + open cup halves.** After cure, \
+                 release the 4 C-clamps. Separate the cup halves; \
+                 any dowels in the symmetric holes slide out \
+                 (gravity-held friction-fit — no latch action). Peel \
+                 the gasket strip out of the seam; trim at the body \
+                 cavity perimeter with a scalpel if the gasket has \
+                 chemically bonded to the cured silicone shell at \
+                 the lateral interface (platinum-cure silicones can \
+                 develop a thin lateral bond where the cured gasket \
+                 contacted the fresh main pour at body_dist < 0; the \
+                 thin gasket strip tears cleanly under light scalpel \
+                 guidance). The gasket does NOT bond to the PLA cup \
+                 halves (silicone-non-stick). Demold the cured \
+                 silicone tube per `## Post-Cure Assembly + \
+                 Disassembly` below."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "**Clamp count + tightness** (recon §F-10): the \
+                 4-clamp / hand-tight + 1/8 turn recipe is the iter-3 \
+                 starting point. Workshop S6 calibration may dial up \
+                 to 6-8 clamps for longer perimeters, or dial down \
+                 clamp torque if gasket extrusion is observed. \
+                 Document deltas for the S7 post-iter-3 calibration \
+                 sweep."
+            );
+        }
+    }
+    md.push('\n');
 }
 
 fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
@@ -734,19 +1637,34 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
                  ({nipple_clearance_mm:.2} mm asymmetric diametral \
                  clearance — the cup-side hole stays at the nominal \
                  {gate_dia_mm:.1} mm Ø; the funnel nipple bears all the \
-                 slack), a broad flange that rests on the cup outer \
-                 surface around the hole, and a tapered cone widening \
-                 to a workshop-friendly mouth for ladle-pouring. Print \
-                 `funnel.stl` once for the whole multi-layer device — \
-                 it is reused across every layer's pour. Apply mold \
-                 release to the nipple before each pour so cured \
-                 silicone doesn't lock the funnel onto the cup."
+                 slack), a 30°-bent spout matching the pour-gate's \
+                 splay so the bowl mouth faces straight up when the \
+                 mold is oriented +Z up for the pour, and a smoothly-\
+                 tapered bowl widening to a workshop-friendly mouth \
+                 for ladle-pouring. The bent spout pattern is the \
+                 same as a real-world oil/lab funnel; insert the \
+                 nipple into the pour-gate hole, rotate the funnel \
+                 around the bowl axis until the nipple aligns with \
+                 the angled pour leg, then ladle silicone into the \
+                 vertical bowl mouth. Print `funnel.stl` once for the \
+                 whole multi-layer device — reused across every \
+                 layer's pour. The tilted nipple needs **slicer \
+                 auto-supports** during print (or rotate the print \
+                 so the nipple lies along the build plate). Apply \
+                 mold release to the nipple before each pour so \
+                 cured silicone doesn't lock the funnel onto the cup."
             );
         }
     }
     md.push('\n');
 }
 
+// Per-layer Step 6 branches on (gasket, bolt_pattern) and each
+// per-layer block emits 8 numbered steps with embedded mix-ratio +
+// cure prose; the function legitimately runs past clippy's default
+// 100 lines once those branches landed. Splitting per-step would
+// shuffle the same writeln!s into helpers without reducing complexity.
+#[allow(clippy::too_many_lines)]
 fn write_per_layer_sections_v2(
     md: &mut String,
     spec: &CastSpec,
@@ -804,16 +1722,41 @@ fn write_per_layer_sections_v2(
             }
             PourGateKind::None => "the assembled mold cavity",
         };
+        let closing_protocol = match (&ribbon.gasket, ribbon.bolt_pattern.spec()) {
+            (GasketKind::Mold(_), _) => {
+                "Place the cured gasket strip on the Negative half's \
+                 seam face per `## Cup-Half Clamping with Gasket \
+                 Installation` above BEFORE closing the second cup \
+                 half, then close the second half and apply the \
+                 clamping protocol from that section."
+            }
+            (GasketKind::None, Some(_)) => {
+                "Close the second cup half over the plug, registering \
+                 the §M dowels to seat the two halves flush. Then \
+                 install the §B M5 through-bolts per `### M5 \
+                 through-bolt clamp pattern (§B)` above — insert each \
+                 bolt + washers + nut and hand-tighten crosswise for \
+                 even flange clamp pressure. PLA-on-PLA seam contact \
+                 + mold release stands in for a gasket; the bolt \
+                 clamp force is the seal."
+            }
+            (GasketKind::None, None) => {
+                "Close the second cup half over the plug directly \
+                 (seam closes flush = press-stop tactile feedback). \
+                 Apply the clamping protocol from the section above."
+            }
+        };
         let _ = writeln!(
             md,
             "6. Apply mold release to `plug_layer_{0}.stl` (Smooth-On \
-             Ease Release 200 standard) and seat the plug into the \
-             assembled mold via the plug-anchor pin socket. Orient \
-             the mold with **+Z up** so the V's pour + vent legs are \
-             on top. Pour silicone into {pour_into} at a slow steady \
-             rate to avoid splashing through the vent; trapped air \
-             rises into the vent leg (Negative piece, -binormal side) \
-             as the cavity fills.",
+             Ease Release 200 standard) and seat the plug into one \
+             open cup half so its truncated-pyramid floor lock drops \
+             into the cup-piece floor socket. {closing_protocol} \
+             Orient the assembled mold with **+Z up** so the V's \
+             pour + vent legs are on top. Pour silicone into \
+             {pour_into} at a slow steady rate to avoid splashing \
+             through the vent; trapped air rises into the vent leg \
+             (Negative piece, -binormal side) as the cavity fills.",
             pour.layer_index,
         );
         if let Some(protocol) = protocol {
@@ -834,10 +1777,11 @@ fn write_per_layer_sections_v2(
              seam (remove `piece_0` first, then `piece_1` for clean \
              centerline-axis slide release on curved centerlines). \
              Pull the plug axially out of the cured silicone shell; \
-             the plug-anchor pin slides out of its socket-cavity in \
-             the silicone cap. The cured layer detaches as a \
-             standalone silicone tube ready to nest with the other \
-             layers post-cure."
+             the truncated-pyramid floor lock slides out of its \
+             cap-plane socket-cavity in the silicone (the pyramid's \
+             taper releases without interference under axial pull). \
+             The cured layer detaches as a standalone silicone tube \
+             ready to nest with the other layers post-cure."
         );
         md.push('\n');
     }

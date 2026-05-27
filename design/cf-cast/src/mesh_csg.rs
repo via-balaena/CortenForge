@@ -10,21 +10,28 @@
 //!
 //! S3 ships the empty-Vec pass-through: every composer emits
 //! `(Solid, Vec<MatingTransform>)` with the Vec empty. S5
-//! (registration pins), S6 (T-bar + plug-pin), and S7 (cup
-//! pour-gate) populate the Vec with concrete cylinder ops; the
-//! plug-shaft adds a near-end overlap-bias via
-//! [`crate::plug::PLUG_SHAFT_NEAR_END_OVERLAP_M`] for clean
-//! boolean-union welding against the SDF-meshed plug body. S4
-//! originally added a `MatingTransform::SeamTrim` emission for
-//! the cup-piece seam plane, reverted by recon-4 (P) to the
-//! pre-S4 SDF halfspace intersect (see
-//! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2); the
-//! `SeamTrim` variant + `apply_one` arm are retained as a
+//! (registration pins) + S6 (plug-shaft + T-bar) + S7 (cup
+//! pour-gate) originally populated the Vec with concrete cylinder
+//! ops. S4 of the prior mating-features arc added a
+//! `MatingTransform::SeamTrim` emission for the cup-piece seam
+//! plane, reverted by recon-4 (P) to the pre-S4 SDF halfspace
+//! intersect (see `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2);
+//! the `SeamTrim` variant + `apply_one` arm are retained as a
 //! defensive primitive but no longer emitted from production
 //! composers. S7's funnel-nipple was similarly reverted by the
 //! funnel fix (`2bf0bd17`); cup-side pour-gate stays mesh-CSG.
-//! See decision §1 + §11 of `docs/CF_CAST_MATING_FEATURES_RECON.md`
-//! for the original migration surface.
+//! S3 of the FDM-friendly geometry arc migrated the cup-pin
+//! registration pair from mesh-CSG cylinder ops to SDF-side
+//! [`crate::PrismaticPin`][`crate::prismatic_pin`] composition;
+//! S4 of the same arc migrated the plug-floor lock (and retired
+//! the entire S6 plug-shaft + T-bar + T-slot mechanism) to a
+//! single SDF-side socket — the lone mesh-CSG mating-feature
+//! surface post-S4 is the cup-side pour-gate carve (S7), still a
+//! `SubtractCylinder` against the bulk-welded half-shell. See
+//! decision §1 + §11 of `docs/CF_CAST_MATING_FEATURES_RECON.md`
+//! for the original migration surface and
+//! `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-5 for the
+//! S3/S4 SDF-side migration.
 //!
 //! # Unit boundary
 //!
@@ -52,13 +59,19 @@ use nalgebra::{Isometry3, Point3, Rotation3, Translation3, UnitVector3, Vector3}
 
 use crate::error::{CastError, CastTarget};
 use crate::mesher::METERS_TO_MM;
+use crate::prismatic_pin::PrismaticPinParams;
 
 /// Cross-piece shared geometry triple.
 ///
-/// Pin and socket of a registration pair, or T-bar/T-slot of a
-/// plug+cup pair, both derive their cylinder primitive from the
-/// same `CylinderParent`; only the per-side
-/// [`CylinderParams::radius_m`] differs (recon §2).
+/// Pre-S4 of the FDM-friendly geometry arc this carried the
+/// registration cup-pin pair AND the plug-shaft + T-bar + T-slot
+/// triple (pin + socket / bar + slot consumed the same
+/// `CylinderParent`; only the per-side
+/// [`CylinderParams::radius_m`] differed, per recon §2). Post-S4
+/// both surfaces migrated to SDF-side
+/// [`crate::PrismaticPin`][`crate::prismatic_pin`] primitives; the
+/// shared-primitive invariant survives only for the cup pour-gate
+/// carve (single producer + consumer, no cross-piece sharing).
 ///
 /// All coordinates are meters in cf-design's compose-time frame.
 /// The builders convert m → mm at primitive-build time.
@@ -81,15 +94,19 @@ pub struct CylinderParent {
 /// pieces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CylinderParams {
-    /// Shared geometry triple — identical between pin and socket of
-    /// a registration pair, plug and cup of a T-bar pair, etc.
+    /// Shared geometry triple. Pre-S4 of the FDM-friendly geometry
+    /// arc the cup-pin pair AND the plug T-bar/shaft pair both
+    /// shared this triple across plug + cup pieces (recon §2);
+    /// post-S4 both surfaces migrated SDF-side and the only
+    /// remaining consumer is the S7 pour-gate carve (no
+    /// cross-piece sharing, but the type stays for the unit-
+    /// boundary + segments-determinism contract).
     pub parent: CylinderParent,
     /// Per-side radius (meters). Pin and socket of a registration
-    /// pair consume *different* values here: pin uses the pin radius
-    /// (e.g., [`crate::PinSpec::pin_radius_m`]), socket uses
-    /// pin radius + `diametral_clearance_m / 2`. Geometric match
-    /// across pieces comes from the shared [`Self::parent`] pose +
-    /// length, not from radius equality.
+    /// pair consume *different* values here: pin uses the pin radius,
+    /// socket uses pin radius + `diametral_clearance_m / 2`. Geometric
+    /// match across pieces comes from the shared [`Self::parent`]
+    /// pose + length, not from radius equality.
     pub radius_m: f64,
     /// Polygonal facet count around the circumference. Determinism
     /// contract: same parent + same `segments` → bit-equal output.
@@ -123,30 +140,59 @@ pub enum MatingTransform {
         offset_m: f64,
     },
     /// Mesh-union of an exact axis-aligned cylinder primitive.
-    /// S5 emits one per Negative-side registration pin; S6 emits
-    /// one for the plug-side T-bar + plug-pin shaft (the shaft
-    /// near-end is shifted inward by
-    /// [`crate::plug::PLUG_SHAFT_NEAR_END_OVERLAP_M`] so the
-    /// boolean union welds cleanly into the SDF-meshed plug body
-    /// — see recon-4 paradigm-boundary pattern). S7's funnel-side
-    /// pour-gate nipple was reverted by the funnel fix to SDF
-    /// (continuous welding with the SDF flange); no production
-    /// composer currently emits `UnionCylinder` for the funnel.
+    /// Pre-S3/S4 of the FDM-friendly geometry arc this was emitted
+    /// by the cup-pin (S5) + plug-side T-bar + plug-shaft (S6)
+    /// composers. Post-S4 NO production composer emits this
+    /// variant — the cup-pin migrated to SDF (§G-12 #2) and the
+    /// plug retention migrated to a single SDF pyramid (§G-1).
+    /// Variant retained as a defensive primitive (its `apply_one`
+    /// arm + cylinder-build tests still run); deletion deferred to
+    /// the S8 cold-read pass per §G-5.
     UnionCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,
     },
     /// Mesh-subtract of an exact axis-aligned cylinder primitive.
-    /// S5 emits one per Positive-side registration socket; S6 emits
-    /// the cup-side T-slot + plug-pin socket carves; S7 emits one
-    /// per cup-side pour-gate leg (pour + vent). The funnel-side
-    /// nipple lumen was reverted by the funnel fix to SDF (carved
-    /// in the funnel's `outer.subtract(inner)` SDF chain); no
-    /// production composer currently emits `SubtractCylinder` for
-    /// the funnel side.
+    /// Pre-S3/S4 this was emitted by the cup-pin socket (S5) +
+    /// cup-side T-slot + plug-pin socket carves (S6) + cup-side
+    /// pour-gate legs (S7). Post-S4 the lone production emitter is
+    /// the S7 cup pour-gate carve (pour + vent) — the cup-pin
+    /// socket migrated to SDF (S3) and the plug-shaft + T-slot
+    /// retired entirely (S4 plug-floor lock is SDF; no cup-wall
+    /// through-hole). The funnel-side nipple lumen was reverted
+    /// to SDF by the funnel fix.
     SubtractCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,
+    },
+    /// Mesh-union of a `hull_pts` truncated-pyramid primitive matching
+    /// the [`PrismaticPinParams`] shape. **Production emission
+    /// pattern for cup-pin and plug-floor-lock pairs post-2026-05-24
+    /// FDM-friendly arc salvage** — replaces the SDF-side
+    /// composition that S3/S4 of the FDM-friendly arc had shipped,
+    /// which silently degraded workshop-visible feature fidelity at
+    /// production 3 mm MC cell size (pin features 1.5 mm half-extent
+    /// → sub-MC-cell → eaten by quantization → workshop user's
+    /// cf-view screenshot 2026-05-24 showed features GONE on iter-3
+    /// STLs). Restores the mating-features arc S5 architecture
+    /// pattern (POST-MC primitives carry their own native mesh
+    /// resolution; pose discipline ensures CONTAINED / PROTRUDING
+    /// placement per the recon-4 (P) paradigm-boundary framework).
+    UnionTruncatedPyramid {
+        /// `PrismaticPin` geometry + pose payload.
+        params: PrismaticPinParams,
+    },
+    /// Mesh-subtract of a `hull_pts` truncated-pyramid primitive
+    /// matching the [`PrismaticPinParams`] shape. Sibling of
+    /// [`Self::UnionTruncatedPyramid`] — used for the cup-pin
+    /// SOCKET on the Positive cup-piece + the cup-side plug-floor-
+    /// lock socket carve. Inflated extents per
+    /// [`PrismaticPinSpec::socket_params`][`crate::PrismaticPinSpec::socket_params`]
+    /// carry the symmetric `/2` clearance convention from the S5
+    /// mating-features arc.
+    SubtractTruncatedPyramid {
+        /// `PrismaticPin` geometry + pose payload.
+        params: PrismaticPinParams,
     },
 }
 
@@ -207,6 +253,14 @@ fn apply_one(m: &Manifold, t: &MatingTransform) -> Manifold {
             let cyl = build_cylinder_along_axis(&params.parent, params.radius_m, params.segments);
             m.difference(&cyl)
         }
+        MatingTransform::UnionTruncatedPyramid { params } => {
+            let pyramid = build_truncated_pyramid_via_hull_pts(params);
+            m.union(&pyramid)
+        }
+        MatingTransform::SubtractTruncatedPyramid { params } => {
+            let pyramid = build_truncated_pyramid_via_hull_pts(params);
+            m.difference(&pyramid)
+        }
     }
 }
 
@@ -244,6 +298,123 @@ pub fn build_cylinder_along_axis(
     );
     let iso = pose_from_z_axis(parent.axis, center_mm);
     z_aligned.transform(&affine_12_from_isometry(&iso))
+}
+
+/// Build a [`Manifold`] truncated-pyramid (with optional chamfer
+/// band) via `Manifold::hull_pts`, placed at the world-frame pose
+/// encoded in `params.pose`.
+///
+/// Geometry in pin-local coords (mm — converted from `params`'s
+/// meters at build time):
+///
+/// - Pin-local +Y = `pose.axis_unit` direction in world.
+/// - Pin-local +X = `pose.lateral_unit` direction in world.
+/// - Pin-local +Z = `lateral × axis` (derived, matches the
+///   determinant-+1 rotation contract in
+///   `crate::PrismaticPinPose::rotation_local_to_world`).
+///
+/// Corners:
+///
+/// - `params.base_chamfer_m == 0.0` (no chamfer band):
+///   - Base (y = `-half_length_mm`): 4 corners at
+///     `(±base_extent_x, _, ±base_extent_y)`.
+///   - Tip (y = `+half_length_mm`): 4 corners at
+///     `(±tip_extent_x, _, ±tip_extent_y)`.
+///   - 8 hull points total.
+/// - `params.base_chamfer_m > 0.0` (with chamfer band):
+///   - Base inset (y = `-half_length_mm`): 4 corners at
+///     `(±(base_extent_x - chamfer), _, ±(base_extent_y - chamfer))`.
+///   - Chamfer top (y = `-half_length_mm + chamfer_mm`): 4 corners
+///     at `(±base_extent_x, _, ±base_extent_y)`.
+///   - Tip (y = `+half_length_mm`): 4 corners at
+///     `(±tip_extent_x, _, ±tip_extent_y)`.
+///   - 12 hull points total.
+///
+/// The hull is then transformed from pin-local to world coords via
+/// the rotation built from `(pose.lateral_unit, pose.axis_unit,
+/// lateral × axis)` as the rotation matrix's column basis +
+/// translation by `pose.center_m`. Matches the
+/// [`crate::PrismaticPinPose`] rotation-local-to-world contract.
+///
+/// # Determinism
+///
+/// Two builders consuming the same [`PrismaticPinParams`] produce
+/// bit-equal Manifolds — same hull point set in same order, same
+/// pose transform, same `Manifold::hull_pts` output. Cross-piece
+/// pin/socket pair (Negative pin + Positive socket consuming
+/// inflated-extent socket params with the same pose) shares the
+/// pose triple; geometric match across pieces is preserved.
+///
+/// # Panics
+///
+/// Panics if `params.base_chamfer_m >= min(base_half_extents_m.x,
+/// base_half_extents_m.y)` — the chamfer would invert the base
+/// inset (`base - chamfer < 0`). Caller must ensure
+/// `PrismaticPinSpec::cup_pin_default` / `plug_lock_default`
+/// envelope keeps `chamfer < base_half` per recon-1 §G-6.
+#[must_use]
+pub fn build_truncated_pyramid_via_hull_pts(params: &PrismaticPinParams) -> Manifold {
+    let half_length_mm = params.half_length_m * METERS_TO_MM;
+    let base_lat_mm = params.base_half_extents_m.x * METERS_TO_MM;
+    let base_third_mm = params.base_half_extents_m.y * METERS_TO_MM;
+    let tip_lat_mm = params.tip_half_extents_m.x * METERS_TO_MM;
+    let tip_third_mm = params.tip_half_extents_m.y * METERS_TO_MM;
+    let chamfer_mm = params.base_chamfer_m * METERS_TO_MM;
+
+    let mut pts: Vec<[f64; 3]> = Vec::new();
+    if chamfer_mm <= 0.0 {
+        for s_third in [-1.0, 1.0] {
+            for s_lat in [-1.0, 1.0] {
+                pts.push([
+                    s_lat * base_lat_mm,
+                    -half_length_mm,
+                    s_third * base_third_mm,
+                ]);
+            }
+        }
+    } else {
+        assert!(
+            chamfer_mm < base_lat_mm && chamfer_mm < base_third_mm,
+            "chamfer {chamfer_mm} mm must be strictly less than both base half-extents \
+             (lat={base_lat_mm}, third={base_third_mm}) — caller envelope violation",
+        );
+        let inset_lat = base_lat_mm - chamfer_mm;
+        let inset_third = base_third_mm - chamfer_mm;
+        for s_third in [-1.0, 1.0] {
+            for s_lat in [-1.0, 1.0] {
+                pts.push([s_lat * inset_lat, -half_length_mm, s_third * inset_third]);
+                pts.push([
+                    s_lat * base_lat_mm,
+                    -half_length_mm + chamfer_mm,
+                    s_third * base_third_mm,
+                ]);
+            }
+        }
+    }
+    for s_third in [-1.0, 1.0] {
+        for s_lat in [-1.0, 1.0] {
+            pts.push([s_lat * tip_lat_mm, half_length_mm, s_third * tip_third_mm]);
+        }
+    }
+
+    let local_pyramid = Manifold::hull_pts(&pts);
+
+    // Pose pin-local → world. Mirrors PrismaticPinPose::rotation_local_to_world:
+    // rotation matrix has columns = (lateral_unit, axis_unit, lateral × axis).
+    // Translation is pose.center_m converted to mm.
+    let pose = &params.pose;
+    let lateral = pose.lateral_unit.into_inner();
+    let axis = pose.axis_unit.into_inner();
+    let third = lateral.cross(&axis);
+    let rotation_matrix = nalgebra::Matrix3::from_columns(&[lateral, axis, third]);
+    let rotation = Rotation3::from_matrix_unchecked(rotation_matrix);
+    let center_mm = Point3::new(
+        pose.center_m.x * METERS_TO_MM,
+        pose.center_m.y * METERS_TO_MM,
+        pose.center_m.z * METERS_TO_MM,
+    );
+    let iso = Isometry3::from_parts(Translation3::from(center_mm.coords), rotation.into());
+    local_pyramid.transform(&affine_12_from_isometry(&iso))
 }
 
 /// Build a slab `Manifold` for half-space intersection.
@@ -430,7 +601,7 @@ fn indexed_mesh_to_manifold(mesh: &IndexedMesh) -> Result<Manifold, manifold3d::
 /// needed. Narrows `Vec<u64>` indices back to `Vec<[u32; 3]>` with a
 /// `debug_assert!` on the u32 ceiling — iter-1 cup pieces are
 /// ~50k verts, comfortably under `u32::MAX`.
-fn manifold_to_indexed_mesh(manifold: &Manifold) -> IndexedMesh {
+pub(crate) fn manifold_to_indexed_mesh(manifold: &Manifold) -> IndexedMesh {
     let (vp, n_props, tri) = manifold.to_mesh_f64();
     debug_assert_eq!(
         n_props, 3,
@@ -630,6 +801,48 @@ mod tests {
             [0, 7, 3], // -X left
         ];
         IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    fn manifold3d_roundtrip_preserves_outward_winding() {
+        // §Q-5 root-cause diagnostic (per
+        // CF_CAST_GEOMETRY_CRISPNESS_RECON.md): if cf-design's MC
+        // produces correct outward winding (verified at
+        // `cf-design::mesher::tests::sphere_mesh_valid`) BUT cf-cast
+        // STL output has 100% systematically inverted winding (per
+        // [[project-cf-cast-geometry-crispness-s0]]), the inversion
+        // must enter the pipeline at manifold3d's conversion path.
+        //
+        // Test: take an explicitly-CCW-outward-winding `unit_cube_mesh`
+        // (signed_volume > 0 by construction; verified manually:
+        // face [0,2,1] = bottom → normal -Z = outward) → pass it
+        // through `indexed_mesh_to_manifold` + `manifold_to_indexed_mesh`
+        // round-trip. If signed_volume of the OUTPUT is positive,
+        // manifold3d preserves winding (root cause is elsewhere). If
+        // negative, manifold3d (or its conversion helpers) inverts
+        // winding (root cause confirmed at this layer).
+        let input = unit_cube_mesh();
+        let input_signed_volume = input.signed_volume();
+        assert!(
+            input_signed_volume > 0.0,
+            "unit_cube_mesh fixture must have positive signed volume \
+             (CCW outward by construction); got {input_signed_volume}"
+        );
+
+        let manifold = indexed_mesh_to_manifold(&input).unwrap();
+        let output = manifold_to_indexed_mesh(&manifold);
+        let output_signed_volume = output.signed_volume();
+
+        // Positive = winding preserved (manifold3d output is outward).
+        // Negative = manifold3d's output is inside-out → root cause at
+        // this layer; the §Q-5 fix lives in
+        // `manifold_to_indexed_mesh` (swap face indices on emission).
+        assert!(
+            output_signed_volume > 0.0,
+            "manifold3d roundtrip inverted winding: input signed_volume = \
+             {input_signed_volume}, output signed_volume = {output_signed_volume}. \
+             §Q-5 root cause CONFIRMED at the manifold3d conversion layer."
+        );
     }
 
     #[test]
@@ -898,7 +1111,7 @@ mod tests {
             axis: Vector3::y_axis(),
             half_length_m: 0.005,
         };
-        let r_pin = 0.0015; // PinSpec::iter1 pin radius
+        let r_pin = 0.0015; // representative 1.5 mm pin radius (S6/S7 cylinder scale)
         let segments = 32_u32;
 
         // Two independent builds → bit-equal output.
@@ -1516,10 +1729,11 @@ mod tests {
     /// curved-centerline binormal numerics). This synthetic gate
     /// locks the SDF-arithmetic side of the contract.
     ///
-    /// The probe uses no-overlap halves at z = 0; the
-    /// `RIBBON_PIECE_OVERLAP_M` bias is irrelevant to the flatness
-    /// claim (flatness comes from the linear SDF, not the offset
-    /// magnitude).
+    /// The probe uses no-overlap halves at z = 0 (post-§M-S1 the
+    /// production composition matches this; pre-§M used a 0.5 mm
+    /// `RIBBON_PIECE_OVERLAP_M` inward bias, irrelevant to the
+    /// flatness claim — flatness comes from the linear SDF, not the
+    /// offset magnitude).
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn f4_synthetic_presdf_seam_is_bit_precise_flat() {

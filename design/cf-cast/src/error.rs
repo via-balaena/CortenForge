@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use mesh_io::IoError;
+use mesh_repair::RepairError;
 
 use crate::ribbon::PieceSide;
 
@@ -50,10 +51,14 @@ pub enum CastTarget {
         layer_index: Option<usize>,
     },
     /// Output mesh: the workshop platform STL. Generated only when
-    /// the ribbon's plug-pin kind has `include_t_bar = true` (so
-    /// the T-bar protrusion needs a pocketed platform for the
-    /// assembled mold to sit flat during pour + cure). Single
-    /// artifact per cast (shared across layers).
+    /// the ribbon enables plug pins ([`crate::plug::PlugPinKind::Axial`])
+    /// — a flat support slab the workshop user sets the assembled
+    /// mold on during pour + cure. Pre-S4 of the FDM-friendly
+    /// geometry arc this carried a blind pocket sized to clear the
+    /// plug's T-bar protrusion through the cup wall; post-S4 the
+    /// plug-floor lock is interior to the cavity (no through-hole,
+    /// no protrusion) so the slab is bare. Single artifact per
+    /// cast (shared across layers).
     Platform,
     /// Output mesh: the workshop pour funnel STL.
     ///
@@ -63,6 +68,26 @@ pub enum CastTarget {
     /// silicone pouring. Single artifact per cast (shared across
     /// layers).
     Funnel,
+    /// Output mesh: a per-layer gasket mold STL
+    /// (`gasket_mold_layer_N.stl`). Generated only when the ribbon
+    /// has [`crate::GasketKind::Mold`] enabled. S3 of the seam-
+    /// gasket-mold arc — flat tray with a closed-loop channel that
+    /// the workshop user pours silicone into for a per-layer
+    /// compressible seam seal.
+    GasketMold {
+        /// Innermost-first layer index (parallel to
+        /// `CastSpec::layers`).
+        layer_index: usize,
+    },
+    /// Output mesh: the printable dowel-array STL. Generated only
+    /// when the ribbon has [`crate::dowel_hole::DowelHoleKind::Auto`]
+    /// enabled — N cylindrical PLA rods that insert through the
+    /// matching dowel-hole pockets on the cup-piece mating faces to
+    /// register the two halves laterally at workshop assembly time.
+    /// Single artifact per cast (re-used across all layer mating
+    /// events). §M-S2 of
+    /// [[project-cf-cast-unified-mating-plane-recon]].
+    Dowel,
 }
 
 impl fmt::Display for CastTarget {
@@ -81,6 +106,8 @@ impl fmt::Display for CastTarget {
             } => write!(f, "plug layer {n}"),
             Self::Platform => write!(f, "platform"),
             Self::Funnel => write!(f, "funnel"),
+            Self::GasketMold { layer_index } => write!(f, "gasket mold layer {layer_index}"),
+            Self::Dowel => write!(f, "dowel array"),
         }
     }
 }
@@ -189,6 +216,20 @@ pub enum CastError {
         /// Underlying manifold3d error.
         #[source]
         source: manifold3d::CsgError,
+    },
+
+    /// Scan-mesh-direct repair pass (S1.1 of
+    /// `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md`) failed before the
+    /// mesh-CSG mating-features stage. Typically indicates a
+    /// pathological boundary loop that `fill_holes` ear-clipping
+    /// couldn't resolve.
+    #[error("scan-mesh-direct repair failed for {target}: {source}")]
+    ScanMeshRepair {
+        /// Which output failed.
+        target: CastTarget,
+        /// Underlying mesh-repair error.
+        #[source]
+        source: RepairError,
     },
 
     /// A layer's computed pour mass exceeds the per-pour

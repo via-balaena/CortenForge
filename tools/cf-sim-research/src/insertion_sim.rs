@@ -61,13 +61,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
+use baby_shark::{
+    decimation::{AlwaysDecimate, EdgeDecimator},
+    mesh::{corner_table::CornerTableF, traits::TriangleMesh},
+};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_design::{Aabb, SdfGrid, Solid, pinned_floor_shell};
 use cf_device_types::{SimDesign, SimLayer, SlackerResolution, slacker};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
-use meshopt::simplify_sloppy_decoder;
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use sim_ml_chassis::Tensor;
 #[cfg(test)]
@@ -89,12 +92,6 @@ use sim_soft::{
 /// load produces 3-per-triangle unshared vertices that meshopt needs
 /// welded to find collapsible edges.
 const SPIKE_WELD_EPSILON_M: f64 = 1e-6;
-
-/// `simplify_sloppy_decoder`'s target-error cap — effectively
-/// unbounded, same rationale as `main.rs`'s
-/// `ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR`: the face-count target is
-/// the binding constraint, this cap is only a defensive upper bound.
-const SPIKE_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 
 /// Decimate the cleaned scan to roughly `target_faces` triangles for
 /// SDF construction.
@@ -119,38 +116,65 @@ const SPIKE_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 pub(crate) fn decimate_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh {
     let mut welded = scan.clone();
     weld_vertices(&mut welded, SPIKE_WELD_EPSILON_M);
+    remove_unreferenced_vertices(&mut welded);
 
-    // f64 → f32 cast is intentional: meshopt's C API operates on f32.
+    if welded.faces.len() <= target_faces {
+        return welded;
+    }
+
+    // baby_shark `EdgeDecimator` with `keep_boundary(false)` ≈ the
+    // meshopt `simplify_sloppy_decoder` posture this path used pre-
+    // 2026-05-26: sacrifices boundary fidelity to push past
+    // topological collapse limits on uncleaned scans (disconnected
+    // components, sliver triangles). Switched from meshopt per
+    // S1.1 probes 7/8 — meshopt's decimator introduces non-manifold
+    // edges + duplicate faces on a manifold input.
     #[allow(clippy::cast_possible_truncation)]
-    let positions: Vec<[f32; 3]> = welded
+    let positions_f32: Vec<Vector3<f32>> = welded
         .vertices
         .iter()
-        .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+        .map(|p| Vector3::new(p.x as f32, p.y as f32, p.z as f32))
         .collect();
-    let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
-    let target_index_count = target_faces.saturating_mul(3);
-
-    let simplified = if target_index_count < indices.len() {
-        let mut result_error = 0.0_f32;
-        simplify_sloppy_decoder(
-            &indices,
-            &positions,
-            target_index_count,
-            SPIKE_SIMPLIFY_TARGET_ERROR,
-            Some(&mut result_error),
-        )
-    } else {
-        // Already at or below target — skip decimation.
-        indices
-    };
-
-    let mut decimated = welded;
-    decimated.faces = simplified
-        .chunks_exact(3)
-        .map(|tri| [tri[0], tri[1], tri[2]])
+    let flat_indices: Vec<usize> = welded
+        .faces
+        .iter()
+        .flat_map(|tri| [tri[0] as usize, tri[1] as usize, tri[2] as usize])
         .collect();
-    remove_unreferenced_vertices(&mut decimated);
-    decimated
+    let mut ct_mesh = CornerTableF::from_vertex_and_face_slices(&positions_f32, &flat_indices);
+
+    let mut decimator: EdgeDecimator<f32, AlwaysDecimate> = EdgeDecimator::default()
+        .decimation_criteria(AlwaysDecimate)
+        .min_faces_count(Some(target_faces))
+        .keep_boundary(false);
+    decimator.decimate(&mut ct_mesh);
+
+    let mut out = IndexedMesh::new();
+    let mut vid_to_dense: std::collections::HashMap<_, u32> = std::collections::HashMap::new();
+    for vid in <CornerTableF as TriangleMesh>::vertices(&ct_mesh) {
+        let pos = <CornerTableF as TriangleMesh>::position(&ct_mesh, vid);
+        let dense_idx = out.vertices.len() as u32;
+        out.vertices.push(Point3::new(
+            f64::from(pos[0]),
+            f64::from(pos[1]),
+            f64::from(pos[2]),
+        ));
+        vid_to_dense.insert(vid, dense_idx);
+    }
+    for face_vids in <CornerTableF as TriangleMesh>::faces(&ct_mesh) {
+        // Invariant: each `face_vids[i]` was emitted by `vertices()`
+        // above, so the map lookup always succeeds. Use `if let` over
+        // `expect` to satisfy the crate's `expect_used = deny` lint
+        // without changing behavior — the no-match arm is unreachable
+        // under the documented baby_shark TriangleMesh contract.
+        if let (Some(&a), Some(&b), Some(&c)) = (
+            vid_to_dense.get(&face_vids[0]),
+            vid_to_dense.get(&face_vids[1]),
+            vid_to_dense.get(&face_vids[2]),
+        ) {
+            out.faces.push([a, b, c]);
+        }
+    }
+    out
 }
 
 /// Axis-aligned bounding box of `scan`'s vertices, expanded by

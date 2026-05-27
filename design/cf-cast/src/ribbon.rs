@@ -45,9 +45,12 @@
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
+use crate::bolt_pattern::BoltPatternKind;
+use crate::dowel_hole::DowelHoleKind;
+use crate::flange::FlangeKind;
+use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
-use crate::registration::RegistrationKind;
 
 /// World-frame direction anchoring "which way the mold opens".
 /// Combined with each centerline segment's tangent at Ribbon
@@ -256,13 +259,6 @@ pub struct Ribbon {
     /// User-supplied world-frame split direction used to compute
     /// the per-segment binormals.
     pub split_normal: SplitNormal,
-    /// Inter-piece registration kind. Default
-    /// [`RegistrationKind::None`] (no registration features —
-    /// pieces hand-clamped at iter-1). Step 9 of the v2 arc adds
-    /// `RegistrationKind::Pins` via the
-    /// [`Ribbon::with_registration`] builder; see
-    /// [`crate::registration`] for the geometry contract.
-    pub registration: RegistrationKind,
     /// Pour-gate + air-vent kind. Default [`PourGateKind::None`]
     /// (no integrated channels — workshop user pours through the
     /// seam + drills vents post-print). Step 10 of the v2 arc
@@ -271,21 +267,64 @@ pub struct Ribbon {
     /// for the channel-geometry contract.
     pub pour_gate: PourGateKind,
     /// Plug-anchor pin kind. Default [`PlugPinKind::None`] (no
-    /// axial plug-anchor pins — workshop user hand-positions the
-    /// plug during pour). v2.1 adds [`PlugPinKind::Axial`] via the
+    /// plug-floor lock — workshop user hand-positions the plug
+    /// during pour). v2.1 adds [`PlugPinKind::Axial`] via the
     /// [`Ribbon::with_plug_pins`] builder; see [`crate::plug`] for
-    /// the pin + socket geometry contract.
+    /// the truncated-pyramid press-fit lock geometry contract
+    /// (post-S4 of the FDM-friendly geometry arc; pre-S4 was a
+    /// cylindrical shaft + T-bar mechanism).
     pub plug_pins: PlugPinKind,
-    /// Optional pour-end anchor for the plug-anchor pin —
+    /// Per-layer gasket-mold kind. Default [`GasketKind::None`] (no
+    /// gasket mold emission — cup halves hand-clamped without a
+    /// silicone seal). S3 of the seam-gasket-mold arc adds
+    /// [`GasketKind::Mold`] via the [`Ribbon::with_gasket`] builder;
+    /// `export_molds_v2` then writes `gasket_mold_layer_N.stl` for
+    /// each layer (offset laterally outside the cup-piece bounding
+    /// region so cf-view assembly mode stays readable). See
+    /// [`crate::gasket_mold`] for the channel-geometry contract.
+    pub gasket: GasketKind,
+    /// Per-cup-half seam flange kind. Default [`FlangeKind::None`]
+    /// (cup-piece outer surface is contour-following only per the
+    /// archived mold-wall recon's Option A). S1 of the seam-flange
+    /// arc adds [`FlangeKind::Plate`] via the [`Ribbon::with_flange`]
+    /// builder; [`crate::compose_piece_solid`] then unions the
+    /// flange SDF into each cup-piece base at the seam plane (per-
+    /// half halfspace cut applied). See [`crate::flange`] for the
+    /// SDF composition contract.
+    pub flange: FlangeKind,
+    /// Symmetric dowel-hole registration kind. Default
+    /// [[`DowelHoleKind::None`]] (no dowel holes). §M-S2 of
+    /// [[project-cf-cast-unified-mating-plane-recon]] adds
+    /// [`DowelHoleKind::Auto`] via the [`Ribbon::with_dowel_hole`]
+    /// builder; [`crate::compose_piece_solid`] emits per-dowel
+    /// `MatingTransform::SubtractCylinder` ops applied side-
+    /// agnostically to both cup-halves. See [`crate::dowel_hole`]
+    /// for the placement contract.
+    pub dowel_hole: DowelHoleKind,
+    /// M5 through-bolt clamp pattern kind. Default
+    /// [[`BoltPatternKind::None`]] (no bolt holes — cup pieces
+    /// clamped by hand or external method). §B of
+    /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]] adds
+    /// [`BoltPatternKind::Auto`] via the [`Ribbon::with_bolt_pattern`]
+    /// builder; [`crate::compose_piece_solid`] emits per-bolt
+    /// `MatingTransform::SubtractCylinder` ops applied side-
+    /// agnostically to both cup-halves. Composes on top of §M's
+    /// unified mating plane + symmetric dowel-hole registration; arc-
+    /// length stagger between dowels + bolts is automatic at the
+    /// iter-1 default counts. See [`crate::bolt_pattern`] for the
+    /// placement contract + pour-gate collision-skip behavior.
+    pub bolt_pattern: BoltPatternKind,
+    /// Optional pour-end anchor for the plug-floor lock —
     /// `(centroid, outward_axis)` in world-frame coordinates.
-    /// [`crate::plug::build_plug_self_transforms`] +
-    /// [`crate::plug::build_plug_socket_transforms`] anchor the
-    /// pin cylinder at `centroid` and extend it along `outward_axis`
-    /// (pointing away from the body interior). This is **NOT** a
-    /// centerline-endpoint selector — the anchor point may sit
-    /// past the trimmed centerline tip, as is the case for
-    /// cf-scan-prep outputs where the cap-plane centroid is
-    /// `trim_floor_mm` past `centerline.last()`.
+    /// `crate::plug::build_plug_lock_sdf` +
+    /// `crate::plug::build_plug_lock_socket_sdf` anchor the
+    /// truncated-pyramid pose at `centroid` with axis along
+    /// `outward_axis` (pointing away from the body interior, =
+    /// downward in pour orientation). This is **NOT** a centerline-
+    /// endpoint selector — the anchor point may sit past the
+    /// trimmed centerline tip, as is the case for cf-scan-prep
+    /// outputs where the cap-plane centroid is `trim_floor_mm`
+    /// past `centerline.last()`.
     ///
     /// `None` (the default) makes the plug-pin builders fall back
     /// to `(points.last(), last_segment.tangent)` per cf-scan-prep's
@@ -429,35 +468,14 @@ impl Ribbon {
             points,
             segments,
             split_normal,
-            registration: RegistrationKind::None,
             pour_gate: PourGateKind::None,
             plug_pins: PlugPinKind::None,
+            gasket: GasketKind::None,
+            flange: FlangeKind::None,
+            dowel_hole: DowelHoleKind::None,
+            bolt_pattern: BoltPatternKind::None,
             pour_end_hint: None,
         })
-    }
-
-    /// Builder: set the inter-piece registration kind. Step 9 entry
-    /// point — wraps a freshly-constructed
-    /// [`Ribbon`] with a [`RegistrationKind::Pins`] spec (or
-    /// disables registration via [`RegistrationKind::None`]).
-    ///
-    /// Example:
-    /// ```
-    /// use cf_cast::{PinSpec, RegistrationKind, Ribbon, SplitNormal};
-    /// use nalgebra::{Point3, Vector3};
-    ///
-    /// let ribbon = Ribbon::new(
-    ///     vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.1, 0.0, 0.0)],
-    ///     SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap(),
-    /// )
-    /// .unwrap()
-    /// .with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-    /// assert_ne!(ribbon.registration, RegistrationKind::None);
-    /// ```
-    #[must_use]
-    pub fn with_registration(mut self, registration: RegistrationKind) -> Self {
-        self.registration = registration;
-        self
     }
 
     /// Builder: set the pour-gate + air-vent kind. Step 10 entry
@@ -465,9 +483,8 @@ impl Ribbon {
     /// [`PourGateKind::Default`] spec (or disables via
     /// [`PourGateKind::None`]).
     ///
-    /// Composable with [`Self::with_registration`] — pin
-    /// registration + pour gate are orthogonal features that may
-    /// be enabled independently or together.
+    /// Composable with all other `with_*` builders — pour gate is
+    /// orthogonal to flange / dowel-hole / gasket / plug pins.
     #[must_use]
     pub const fn with_pour_gate(mut self, pour_gate: PourGateKind) -> Self {
         self.pour_gate = pour_gate;
@@ -479,13 +496,65 @@ impl Ribbon {
     /// [`PlugPinKind::Axial`] spec (or disables via
     /// [`PlugPinKind::None`]).
     ///
-    /// Composable with [`Self::with_registration`] and
-    /// [`Self::with_pour_gate`] — inter-piece registration, pour
-    /// gate, and plug-anchor pins are orthogonal features that may
-    /// be enabled independently or together.
+    /// Composable with [`Self::with_pour_gate`] — pour gate and
+    /// plug-anchor pins are orthogonal features that may be enabled
+    /// independently or together.
     #[must_use]
     pub const fn with_plug_pins(mut self, plug_pins: PlugPinKind) -> Self {
         self.plug_pins = plug_pins;
+        self
+    }
+
+    /// Builder: set the per-layer gasket-mold kind. S3 of the seam-
+    /// gasket-mold arc entry point — wraps a freshly-constructed
+    /// [`Ribbon`] with a [`GasketKind::Mold`] spec (or disables via
+    /// [`GasketKind::None`]). Composable with all other `with_*`
+    /// builders — the gasket arc is orthogonal to flange / pour gate /
+    /// plug pins / dowel hole.
+    #[must_use]
+    pub const fn with_gasket(mut self, gasket: GasketKind) -> Self {
+        self.gasket = gasket;
+        self
+    }
+
+    /// Builder: set the per-cup-half seam-flange kind. S1 of the
+    /// seam-flange arc entry point — wraps a freshly-constructed
+    /// [`Ribbon`] with a [`FlangeKind::Plate`] spec (or disables
+    /// via [`FlangeKind::None`]). Composable with all other
+    /// `with_*` builders; the flange arc is orthogonal to
+    /// dowel hole / pour gate / plug pins / gasket.
+    #[must_use]
+    pub const fn with_flange(mut self, flange: FlangeKind) -> Self {
+        self.flange = flange;
+        self
+    }
+
+    /// Builder: set the symmetric dowel-hole registration kind. §M-S2
+    /// of the unified-mating-plane arc entry point — both cup-halves
+    /// get identical `SubtractCylinder` holes through their mating
+    /// faces, arc-length-equal-spaced around the body silhouette.
+    /// Composable with all other `with_*` builders; the dowel-hole
+    /// arc is orthogonal to flange / pour gate / plug pins / gasket.
+    /// §M-S4 of the same arc retired the legacy prismatic-pin
+    /// `with_registration` builder — dowel holes are now the sole
+    /// inter-piece registration mechanism, with loose printed dowels
+    /// the workshop user inserts at assembly time.
+    #[must_use]
+    pub const fn with_dowel_hole(mut self, dowel_hole: DowelHoleKind) -> Self {
+        self.dowel_hole = dowel_hole;
+        self
+    }
+
+    /// Builder: set the M5 through-bolt clamp pattern kind. §B of
+    /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]] entry
+    /// point — both cup-halves get identical `SubtractCylinder` bolt-
+    /// clearance through-holes, arc-length-equal-spaced around the
+    /// body silhouette. Composable with all other `with_*` builders;
+    /// the bolt-pattern arc is orthogonal to dowel hole / flange /
+    /// pour gate / plug pins / gasket.
+    #[must_use]
+    pub const fn with_bolt_pattern(mut self, bolt_pattern: BoltPatternKind) -> Self {
+        self.bolt_pattern = bolt_pattern;
         self
     }
 
@@ -559,8 +628,10 @@ impl Ribbon {
     /// with the last segment's frame. Out-of-range `t` returns
     /// `None`.
     ///
-    /// Used by [`crate::registration::build_registration_transforms`]
-    /// to position pin cylinders along the centerline.
+    /// Was used (pre-§M-S4) by the retired
+    /// `crate::registration::build_registration_sdf_ops` to position
+    /// truncated-pyramid pin SDFs along the centerline; still useful
+    /// for downstream arc-length sampling.
     #[must_use]
     pub fn sample_at_arc_fraction(
         &self,
@@ -598,10 +669,12 @@ impl Ribbon {
     /// plane through `midpoint` with normal `binormal` is the
     /// reference seam plane used by:
     ///
-    /// - S5's registration-pin pose derivation (the pin axis is the
-    ///   binormal returned here; the seam plane separates the two
-    ///   cup pieces' kept half-shells via the SDF halfspace intersect
-    ///   in [`crate::piece::compose_piece_solid`] under recon-4 (P)).
+    /// - Pre-§M-S4 S5's registration-pin pose derivation (the pin
+    ///   axis was the binormal returned here; retired with the
+    ///   prismatic-pin registration path). The seam plane still
+    ///   separates the two cup pieces' kept half-shells via the SDF
+    ///   halfspace intersect in [`crate::piece::compose_piece_solid`]
+    ///   under recon-4 (P).
     /// - The math-instrumented flatness gates in
     ///   `crate::piece::tests::mating_face_is_mathematically_flat_*`
     ///   (production-fixture promotion of the recon-4 §F-4 audit).
@@ -748,10 +821,10 @@ impl Ribbon {
     /// `overlap_m` shifts the half-space's zero surface inward by
     /// the given distance (in meters), so the two
     /// [`PieceSide`]-opposed half-spaces grown from the same ribbon
-    /// overlap by `2 * overlap_m` at the seam. Set to `0.0` for the
-    /// raw mathematical half-space (useful for SDF-semantics tests);
-    /// the cf-cast composition uses
-    /// [`crate::piece::RIBBON_PIECE_OVERLAP_M`] in production.
+    /// overlap by `2 * overlap_m` at the seam. Production cf-cast
+    /// composition uses `0.0` (post-§M-S1 flush mating); pre-§M
+    /// 2026-05-27 cup-wall passed `RIBBON_PIECE_OVERLAP_M = 0.5 mm`
+    /// for 1 mm seam overlap.
     ///
     /// Octree pruning is disabled for the resulting Solid (the
     /// underlying [`Solid::from_sdf`] inherits user-fn's `(-∞, +∞)`

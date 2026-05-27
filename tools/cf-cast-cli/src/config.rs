@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail, ensure};
 use serde::Deserialize;
 
-use cf_cast::{DEFAULT_MASS_BUDGET_KG, PlugPinSpec};
+use cf_cast::DEFAULT_MASS_BUDGET_KG;
 
 /// Top-level `cast.toml` schema.
 #[derive(Debug, Clone, Deserialize)]
@@ -45,12 +45,32 @@ pub struct CastConfig {
     /// defaults". Set `enabled = false` to disable.
     #[serde(default)]
     pub pour_gate: PourGateConfig,
-    /// Inter-piece registration pin override (default =
-    /// `PinSpec::iter1()` + enabled). Absence of the table means
-    /// "enabled with iter1 defaults". Set `enabled = false` to
-    /// disable.
+    /// Per-layer gasket mold override (default = enabled with
+    /// `GasketSpec::iter1()` + Ecoflex 00-30 material). Absence of
+    /// the table means "enabled with iter1 defaults". Set
+    /// `enabled = false` to disable. S3 of the seam-gasket-mold arc.
     #[serde(default)]
-    pub registration_pins: RegistrationConfig,
+    pub gasket: GasketConfig,
+    /// Seam-plane flange override (default = enabled with
+    /// [`cf_cast::FlangeSpec::iter1`] geometry). Absence of the table
+    /// means "enabled with iter1 defaults". Set `enabled = false` to
+    /// disable. S2 of the seam-flange arc per recon §F-6.
+    #[serde(default)]
+    pub flange: FlangeConfig,
+    /// Symmetric dowel-hole registration override (default = enabled
+    /// with [`cf_cast::dowel_hole::DowelHoleSpec::iter1`] geometry).
+    /// Absence of the table means "enabled with iter1 defaults". Set
+    /// `enabled = false` to disable. §M-S2 of the unified-mating-plane
+    /// arc per [[project-cf-cast-unified-mating-plane-recon]].
+    #[serde(default)]
+    pub dowel_hole: DowelHoleConfig,
+    /// M5 through-bolt clamp pattern override (default = enabled with
+    /// [`cf_cast::bolt_pattern::BoltPatternSpec::iter1`] geometry).
+    /// Absence of the table means "enabled with iter1 defaults". Set
+    /// `enabled = false` to disable. §B of
+    /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
+    #[serde(default)]
+    pub bolt_pattern: BoltPatternConfig,
 }
 
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
@@ -119,6 +139,26 @@ pub struct CastDefaults {
     /// absolute). Default `"out"`.
     #[serde(default = "default_output_dir")]
     pub output_dir: PathBuf,
+    /// Feature flag for the **scan-mesh-direct plug_layer_0** path
+    /// (S1 of `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md`).
+    ///
+    /// When `true` AND `cavity_inset_m == 0`, the layer-0 plug STL is
+    /// emitted directly from the cf-scan-prep cleaned scan mesh
+    /// instead of through the `pinned_floor_shell → SDF → marching
+    /// cubes` pipeline. Layers 1+ continue on the SDF/MC path until
+    /// S2 of the recon extends scan-mesh-direct to the offset cases.
+    ///
+    /// Off by default — the SDF/MC path is bit-preserved for every
+    /// cast.toml that doesn't opt in.
+    ///
+    /// **Safety guard**: the flag is silently ignored when
+    /// `cavity_inset_m > 0` because the scan mesh has no inward
+    /// offset baked in and a non-zero `cavity_inset_m` would emit a
+    /// plug oversized by the inset amount. cf-cast-cli derives
+    /// `cavity_inset_m` from the design / inline-layers source and
+    /// gates the opt-in accordingly.
+    #[serde(default)]
+    pub scan_mesh_direct_plug_layer_0: bool,
 }
 
 impl Default for CastDefaults {
@@ -130,6 +170,7 @@ impl Default for CastDefaults {
             split_normal: default_split_normal(),
             piece_min_wall_mm: default_piece_min_wall_mm(),
             output_dir: default_output_dir(),
+            scan_mesh_direct_plug_layer_0: false,
         }
     }
 }
@@ -197,35 +238,33 @@ pub struct LayerConfig {
     pub slacker_fraction: Option<f64>,
 }
 
-/// `[plug_pins]` block — plug-anchor pin override. Maps to
+/// `[plug_pins]` block — plug-floor-lock toggle. Maps to
 /// [`cf_cast::PlugPinKind`].
+///
+/// Post-S4 of the FDM-friendly geometry arc the only user-facing
+/// knob is `enabled`. The pre-S4 `pin_length_m` + `include_dome_pin`
+/// per-field overrides retired:
+/// - `pin_length_m`: pinned by [`cf_cast::PrismaticPinSpec::plug_lock_default`]
+///   per recon-1 §G-6 / §G-8 typed-range defaults; S7 workshop-
+///   physical calibration narrows numeric values rather than
+///   exposing per-cast `cast.toml` overrides.
+/// - `include_dome_pin`: dome-end variant is out of scope for the
+///   iter-3 default path per §G-1 (the plug-floor lock is a single
+///   cap-plane-end feature).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlugPinConfig {
     /// Master toggle. When `false`, the bridge passes
-    /// [`cf_cast::PlugPinKind::None`] to the ribbon (no plug-anchor
-    /// pin geometry).
+    /// [`cf_cast::PlugPinKind::None`] to the ribbon (no plug-floor
+    /// lock geometry; workshop user hand-positions the plug during
+    /// pour + cure).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Override [`cf_cast::PlugPinSpec::pin_length_m`]. The v2
-    /// example overrides the iter1 20 mm default to 28 mm to clear
-    /// the bounding cup wall on every layer; bridge users with
-    /// thicker shells may need more.
-    #[serde(default)]
-    pub pin_length_m: Option<f64>,
-    /// Override [`cf_cast::PlugPinSpec::include_dome_pin`]. Defaults
-    /// to `None` (= use iter1's `false`).
-    #[serde(default)]
-    pub include_dome_pin: Option<bool>,
 }
 
 impl Default for PlugPinConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            pin_length_m: None,
-            include_dome_pin: None,
-        }
+        Self { enabled: true }
     }
 }
 
@@ -246,20 +285,194 @@ impl Default for PourGateConfig {
     }
 }
 
-/// `[registration_pins]` block — inter-piece pin toggle. Defaults to
-/// `enabled = true` with [`cf_cast::PinSpec::iter1`] geometry.
+/// `[gasket]` block — per-layer gasket mold toggle + material pick.
+/// Maps to [`cf_cast::GasketKind`].
+///
+/// S3 of the seam-gasket-mold arc per recon §G-7. Defaults to
+/// `enabled = true` with [`cf_cast::GasketSpec::iter1`] geometry +
+/// Ecoflex 00-30 material. Workshop user may flip
+/// `material = "DRAGON_SKIN_10A"` at S6 iter-3 pour if the Ecoflex
+/// pour compresses too freely. Cross-section is pinned trapezoidal
+/// at iter1 (recon §G-7 default; S2 picked); no per-cast TOML
+/// override surfaced — `draft_angle_deg` recalibration belongs to a
+/// downstream S6 / S7 arc, not iter-3.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RegistrationConfig {
+pub struct GasketConfig {
     /// Master toggle. When `false`, the bridge passes
-    /// [`cf_cast::RegistrationKind::None`] (pieces clamp by hand).
+    /// [`cf_cast::GasketKind::None`] (no per-layer gasket molds; cup
+    /// halves hand-clamped without a silicone seal).
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Gasket material — Smooth-On silicone product key.
+    /// Recognized values: `"ECOFLEX_00_30"` (iter1 default),
+    /// `"DRAGON_SKIN_10A"`. Maps to [`cf_cast::GasketMaterial`].
+    /// Absent in the TOML → falls back to the iter1 default
+    /// (Ecoflex 00-30 per recon §G-1).
+    #[serde(default)]
+    pub material: Option<String>,
 }
 
-impl Default for RegistrationConfig {
+impl Default for GasketConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            material: None,
+        }
+    }
+}
+
+/// `[flange]` block — seam-plane clampable flange toggle + geometry
+/// overrides. Maps to [`cf_cast::FlangeKind`].
+///
+/// S2 of the seam-flange arc per recon §F-6. Defaults to
+/// `enabled = true` with [`cf_cast::FlangeSpec::iter1`] geometry
+/// (20 mm width × 4 mm thickness per half × 2 mm inner offset). Per-
+/// field overrides are surfaced as optionals; absent → falls back to
+/// the iter1 default for that field. The cross-field invariant
+/// `inner_offset_m > GasketSpec.channel_width_m / 2` is enforced at
+/// [`CastConfig::validate_after_layer_source`] time when both the
+/// gasket and flange are enabled (recon §F-4 "gasket-disjoint
+/// invariant").
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlangeConfig {
+    /// Master toggle. When `false`, the bridge passes
+    /// [`cf_cast::FlangeKind::None`] (no seam-plane flange; cup
+    /// halves clamped via whatever contoured surface they have).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Lateral extent (meters) from `inner_offset_m` outward in the
+    /// seam plane. `None` → falls back to
+    /// [`cf_cast::FlangeSpec::iter1`]'s 20 mm default.
+    #[serde(default)]
+    pub width_m: Option<f64>,
+    /// Half-thickness (meters) perpendicular to the seam plane.
+    /// Closed flange-zone thickness ≈ 2 × this. `None` → 4 mm per
+    /// half (iter1 default).
+    #[serde(default)]
+    pub thickness_m: Option<f64>,
+    /// Lateral gap (meters) between body cavity perimeter and
+    /// flange inner edge. Must exceed half the gasket channel width
+    /// when the gasket is enabled (recon §F-4). `None` → 2 mm
+    /// (iter1 default).
+    #[serde(default)]
+    pub inner_offset_m: Option<f64>,
+}
+
+impl Default for FlangeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            width_m: None,
+            thickness_m: None,
+            inner_offset_m: None,
+        }
+    }
+}
+
+/// `[dowel_hole]` block — symmetric dowel-hole registration toggle
+/// + geometry overrides. Maps to [`cf_cast::dowel_hole::DowelHoleKind`].
+///
+/// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Defaults
+/// to `enabled = true` with
+/// [`cf_cast::dowel_hole::DowelHoleSpec::iter1`] (3 mm diameter ×
+/// 4 holes × 5 mm depth × 10 mm outboard offset × 0.1 mm clearance).
+/// Per-field overrides surfaced as optionals; absent → falls back to
+/// the iter1 default for that field.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DowelHoleConfig {
+    /// Master toggle. When `false`, the bridge passes
+    /// [`cf_cast::dowel_hole::DowelHoleKind::None`] (no dowel holes).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Dowel diameter (meters). `None` → 3 mm (iter1 default).
+    #[serde(default)]
+    pub diameter_m: Option<f64>,
+    /// Radial clearance between dowel and hole wall (meters).
+    /// `None` → 0.1 mm (iter1 default).
+    #[serde(default)]
+    pub clearance_m: Option<f64>,
+    /// Hole depth PER HALF (meters). `None` → 5 mm (iter1 default).
+    #[serde(default)]
+    pub depth_m: Option<f64>,
+    /// Number of dowels arc-length-equal-spaced around the silhouette.
+    /// `None` → 4 (iter1 default).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// Radial offset from the body silhouette curve to the dowel
+    /// centerline (meters). `None` → 10 mm (iter1 default). Must satisfy
+    /// the §M-5-b cross-field invariants in the recon.
+    #[serde(default)]
+    pub silhouette_outboard_offset_m: Option<f64>,
+}
+
+impl Default for DowelHoleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            diameter_m: None,
+            clearance_m: None,
+            depth_m: None,
+            count: None,
+            silhouette_outboard_offset_m: None,
+        }
+    }
+}
+
+/// `[bolt_pattern]` block — M5 through-bolt clamp pattern toggle
+/// plus geometry overrides. Maps to
+/// [`cf_cast::bolt_pattern::BoltPatternKind`].
+///
+/// §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
+/// Defaults to `enabled = true` with
+/// [`cf_cast::bolt_pattern::BoltPatternSpec::iter1`] (5.5 mm M5
+/// clearance × 8 bolts × 13 mm outboard offset × pour-gate collision
+/// skip enabled). Per-field overrides surfaced as optionals; absent
+/// → falls back to the iter1 default for that field.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoltPatternConfig {
+    /// Master toggle. When `false`, the bridge passes
+    /// [`cf_cast::bolt_pattern::BoltPatternKind::None`] (no bolt holes).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Bolt clearance hole diameter (meters). `None` → 5.5 mm
+    /// (M5 ISO 273 medium fit).
+    #[serde(default)]
+    pub clearance_diameter_m: Option<f64>,
+    /// Number of bolts arc-length-equal-spaced around the silhouette.
+    /// `None` → 8 (iter1 default).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// Radial offset from body silhouette to bolt centerline (meters).
+    /// `None` → 13 mm (iter1 default). Must satisfy the §B-S1 cross-
+    /// field invariants in `validate_after_layer_source`.
+    #[serde(default)]
+    pub silhouette_outboard_offset_m: Option<f64>,
+    /// Whether to silently drop bolts colliding with pour-gate
+    /// channels. `None` → `true` (iter1 default). When `false`, every
+    /// bolt is emitted — workshop may need to clear collision-zone
+    /// pour-gate leg by hand.
+    #[serde(default)]
+    pub skip_pour_gate_collision: Option<bool>,
+    /// Extra clearance distance between bolt + pour-gate cylinder
+    /// surfaces (meters). `None` → 1 mm (iter1 default).
+    #[serde(default)]
+    pub pour_gate_clearance_m: Option<f64>,
+}
+
+impl Default for BoltPatternConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            clearance_diameter_m: None,
+            count: None,
+            silhouette_outboard_offset_m: None,
+            skip_pour_gate_collision: None,
+            pour_gate_clearance_m: None,
+        }
     }
 }
 
@@ -417,37 +630,306 @@ impl CastConfig {
             n
         );
 
-        if let Some(len) = self.plug_pins.pin_length_m {
+        // S4 of the FDM-friendly geometry arc retired the pre-S4
+        // `plug_pins.pin_length_m` override + the wall-thickness ↔
+        // pin-length cross-field gate. The gate guarded against the
+        // pre-S4 cylindrical plug-shaft poking out past the
+        // cup-piece outer face (cup-wall penetration); the post-S4
+        // plug-floor lock is INTERIOR to the cavity (recessed
+        // socket, NOT a through-hole — see recon-1 §G-1), so the
+        // workshop-meaningful constraint is now socket-recess depth
+        // ≤ wall thickness − 1 mm cup material at the cap-plane
+        // outer face. With the spec-pinned 4 mm half-length default
+        // and the workshop's 5 mm `cast.wall_thickness_m` floor,
+        // the constraint is satisfied by construction; the gate is
+        // omitted until S7 calibration surfaces a workshop-physical
+        // need.
+
+        // S2 of the seam-flange arc per recon §F-6. Per-field
+        // finiteness + positivity + cross-field gasket-disjoint
+        // invariant (recon §F-4). Skipped when flange disabled.
+        if self.flange.enabled {
+            for (label, v) in [
+                ("flange.width_m", self.flange.width_m),
+                ("flange.thickness_m", self.flange.thickness_m),
+                ("flange.inner_offset_m", self.flange.inner_offset_m),
+            ] {
+                if let Some(value) = v {
+                    ensure!(
+                        value.is_finite() && value > 0.0,
+                        "cast.toml: {label} = {value} must be finite and > 0"
+                    );
+                }
+            }
+            // Cross-field gate (recon §F-4): when both gasket + flange
+            // are enabled, the flange's lateral inner edge MUST sit
+            // outside the gasket strip (which traces body_dist=0 with
+            // half-width = GasketSpec::iter1().cross_section_width_m
+            // / 2). The post-S2 gasket arc doesn't surface a
+            // channel-width TOML override, so the iter1 width (1.5 mm
+            // → half = 0.75 mm) is the authoritative half-width. The
+            // flange `inner_offset_m` is the bare gap from
+            // body_dist=0 to the flange's inner edge; it must
+            // STRICTLY exceed the half-width so there's lateral air
+            // between gasket and flange.
+            if self.gasket.enabled {
+                let iter1 = cf_cast::FlangeSpec::iter1();
+                let inner_offset = self
+                    .flange
+                    .inner_offset_m
+                    .unwrap_or(iter1.flange_inner_offset_m);
+                let gasket_half_width = cf_cast::GasketSpec::iter1().cross_section_width_m / 2.0;
+                ensure!(
+                    inner_offset > gasket_half_width,
+                    "cast.toml: flange.inner_offset_m = {inner_offset} must exceed half \
+                     the gasket channel width ({gasket_half_width}) when both [gasket] and \
+                     [flange] are enabled (recon §F-4 gasket-disjoint invariant). Either \
+                     widen the flange inner offset, narrow the gasket, or disable one of \
+                     the two blocks."
+                );
+            }
+        }
+
+        // §M-S2 cross-field gate (recon §M-5-b): when both flange +
+        // dowel_hole are enabled, the dowel hole must fit inside the
+        // flange band with FDM-floor wall thickness on both sides
+        // (inboard toward gasket channel + outboard toward flange
+        // outer edge). The iter1 defaults satisfy this with comfortable
+        // 4.4 mm margins; per-field overrides in TOML can violate it,
+        // so gate at parse time. Cold-read finding 2026-05-27.
+        if self.dowel_hole.enabled && self.flange.enabled {
+            let flange_iter1 = cf_cast::FlangeSpec::iter1();
+            let dowel_iter1 = cf_cast::dowel_hole::DowelHoleSpec::iter1();
+            let flange_inner_offset = self
+                .flange
+                .inner_offset_m
+                .unwrap_or(flange_iter1.flange_inner_offset_m);
+            let flange_width = self.flange.width_m.unwrap_or(flange_iter1.flange_width_m);
+            let dowel_diameter = self.dowel_hole.diameter_m.unwrap_or(dowel_iter1.diameter_m);
+            let dowel_clearance = self
+                .dowel_hole
+                .clearance_m
+                .unwrap_or(dowel_iter1.clearance_m);
+            let dowel_offset = self
+                .dowel_hole
+                .silhouette_outboard_offset_m
+                .unwrap_or(dowel_iter1.silhouette_outboard_offset_m);
+            let hole_outer_radius = dowel_diameter / 2.0 + dowel_clearance;
+            // 1 mm FDM-friendly wall floor (the workshop's iter-1
+            // print pipeline can resolve down to ~0.4 mm bead but
+            // <1 mm walls are squish/strip risks).
+            const FDM_WALL_FLOOR_M: f64 = 0.001;
+            let inboard_wall = dowel_offset - hole_outer_radius - flange_inner_offset;
             ensure!(
-                len.is_finite() && len > 0.0,
-                "plug_pins.pin_length_m = {} must be finite and > 0",
-                len
+                inboard_wall >= FDM_WALL_FLOOR_M,
+                "cast.toml: dowel-hole inboard wall thickness = \
+                 {inboard_wall_mm:.3} mm violates the {floor_mm:.1} mm FDM \
+                 floor (silhouette_outboard_offset_m {dowel_offset:.4} − \
+                 hole_outer_radius {hole_outer_radius:.4} − \
+                 flange.inner_offset_m {flange_inner_offset:.4}). The dowel \
+                 hole would pierce the gasket channel. Move dowels outboard \
+                 (raise dowel_hole.silhouette_outboard_offset_m), shrink the \
+                 dowel (dowel_hole.diameter_m), or narrow the flange inner \
+                 offset (flange.inner_offset_m).",
+                inboard_wall_mm = inboard_wall * 1000.0,
+                floor_mm = FDM_WALL_FLOOR_M * 1000.0,
+            );
+            let outboard_wall = flange_width - dowel_offset - hole_outer_radius;
+            ensure!(
+                outboard_wall >= FDM_WALL_FLOOR_M,
+                "cast.toml: dowel-hole outboard wall thickness = \
+                 {outboard_wall_mm:.3} mm violates the {floor_mm:.1} mm FDM \
+                 floor (flange.width_m {flange_width:.4} − \
+                 silhouette_outboard_offset_m {dowel_offset:.4} − \
+                 hole_outer_radius {hole_outer_radius:.4}). The dowel hole \
+                 would breach the flange outer perimeter. Move dowels \
+                 inboard (lower dowel_hole.silhouette_outboard_offset_m) or \
+                 widen the flange (flange.width_m).",
+                outboard_wall_mm = outboard_wall * 1000.0,
+                floor_mm = FDM_WALL_FLOOR_M * 1000.0,
             );
         }
 
-        // Cross-field gate: when plug-anchor pins are enabled, the
-        // pin shaft extends along -tangent from the centerline endpoint
-        // into (and through) the cup-wall material. The wall must be at
-        // least as thick as the pin length (plus a 1 mm margin to
-        // absorb MC stair-step) or the pin pokes out the back of the
-        // mold piece.
-        //
-        // See `docs/CF_CAST_MOLD_WALL_RECON.md` §3.3 and Q4.
-        if self.plug_pins.enabled {
-            let effective_pin_length_m = self
-                .plug_pins
-                .pin_length_m
-                .unwrap_or(PlugPinSpec::iter1().pin_length_m);
-            const MARGIN_M: f64 = 0.001;
+        // §B cross-field gates: bolt-pattern requires a flange to
+        // clamp through, and bolt holes must respect inboard +
+        // outboard FDM wall floors. When dowel + bolt patterns are
+        // both enabled, the arc-fraction sets must not collide (radial
+        // sums of cylinder radii < the minimum arc-length separation).
+        if self.bolt_pattern.enabled {
             ensure!(
-                self.cast.wall_thickness_m + MARGIN_M >= effective_pin_length_m,
-                "cast.wall_thickness_m = {} m + 1 mm margin must be >= \
-                 plug_pins.pin_length_m = {} m (the plug-anchor pin would \
-                 protrude past the mold-piece outer face). Either thicken \
-                 the wall, shorten the pin, or set plug_pins.enabled = false.",
-                self.cast.wall_thickness_m,
-                effective_pin_length_m
+                self.flange.enabled,
+                "cast.toml: [bolt_pattern] is enabled but [flange] is \
+                 disabled. M5 through-bolts clamp through the flange — \
+                 without a flange there is no material to bolt. Either \
+                 enable [flange] or disable [bolt_pattern]."
             );
+            let flange_iter1 = cf_cast::FlangeSpec::iter1();
+            let bolt_iter1 = cf_cast::bolt_pattern::BoltPatternSpec::iter1();
+            let flange_inner_offset = self
+                .flange
+                .inner_offset_m
+                .unwrap_or(flange_iter1.flange_inner_offset_m);
+            let flange_width = self.flange.width_m.unwrap_or(flange_iter1.flange_width_m);
+            let bolt_diameter = self
+                .bolt_pattern
+                .clearance_diameter_m
+                .unwrap_or(bolt_iter1.clearance_diameter_m);
+            let bolt_offset = self
+                .bolt_pattern
+                .silhouette_outboard_offset_m
+                .unwrap_or(bolt_iter1.silhouette_outboard_offset_m);
+            let bolt_radius = bolt_diameter / 2.0;
+            // 1 mm FDM-floor + 0.75× rule of thumb for PLA bolt
+            // fasteners (workshop-realistic per §B engineering
+            // analysis). Use the larger of the two for the
+            // wall-thickness floor here.
+            const FDM_WALL_FLOOR_M: f64 = 0.001;
+            let bolt_wall_floor = (0.75 * bolt_diameter).max(FDM_WALL_FLOOR_M);
+            let inboard_wall = bolt_offset - bolt_radius - flange_inner_offset;
+            ensure!(
+                inboard_wall >= bolt_wall_floor,
+                "cast.toml: bolt-pattern inboard wall thickness = \
+                 {inboard_wall_mm:.3} mm violates the {floor_mm:.3} mm wall \
+                 floor (0.75× bolt clearance Ø rule for FDM PLA fasteners): \
+                 silhouette_outboard_offset_m {bolt_offset:.4} − \
+                 bolt_radius {bolt_radius:.4} − flange.inner_offset_m \
+                 {flange_inner_offset:.4}. Bolt would crack the inboard wall \
+                 under hand-torque. Move bolts outboard \
+                 (raise bolt_pattern.silhouette_outboard_offset_m), shrink \
+                 the bolt (bolt_pattern.clearance_diameter_m), or narrow \
+                 the flange inner offset (flange.inner_offset_m).",
+                inboard_wall_mm = inboard_wall * 1000.0,
+                floor_mm = bolt_wall_floor * 1000.0,
+            );
+            let outboard_wall = flange_width - bolt_offset - bolt_radius;
+            ensure!(
+                outboard_wall >= bolt_wall_floor,
+                "cast.toml: bolt-pattern outboard wall thickness = \
+                 {outboard_wall_mm:.3} mm violates the {floor_mm:.3} mm wall \
+                 floor (0.75× bolt clearance Ø rule for FDM PLA fasteners): \
+                 flange.width_m {flange_width:.4} − \
+                 silhouette_outboard_offset_m {bolt_offset:.4} − \
+                 bolt_radius {bolt_radius:.4}. Bolt would crack the outboard \
+                 wall under hand-torque. Move bolts inboard (lower \
+                 bolt_pattern.silhouette_outboard_offset_m) or widen the \
+                 flange (flange.width_m, ideally to ≥ {min_flange:.3} mm).",
+                outboard_wall_mm = outboard_wall * 1000.0,
+                floor_mm = bolt_wall_floor * 1000.0,
+                min_flange = (bolt_offset + bolt_radius + bolt_wall_floor) * 1000.0,
+            );
+
+            // Cup-wall-step washer-clearance invariant (iter-1 near-
+            // miss anchor): the M5 washer's lateral footprint extends
+            // inboard from the bolt centerline by the washer radius
+            // (~5 mm for standard M5 ~10 mm OD). The washer's inboard
+            // edge must clear the cup-wall outer step at
+            // `body_dist = wall_thickness_m`; otherwise the washer
+            // rests partly on the step and clamp pressure points-
+            // loads onto the cup-wall edge instead of seating flat
+            // against the flange. Workshop user surfaced this 2026-
+            // 05-27 against an earlier bolt_offset = 9 mm config:
+            // 9 − 5 = 4 mm < 5 mm wall → washer overlaps step.
+            // iter-1 bumped to bolt_offset = 13 mm: 13 − 5 = 8 mm vs
+            // 5 mm + 1 mm margin = 6 mm floor → 2 mm slack.
+            const M5_WASHER_RADIUS_M: f64 = 0.005;
+            const CUP_WALL_STEP_MARGIN_M: f64 = 0.001;
+            let wall_thickness_m = self.cast.wall_thickness_m;
+            let cup_wall_step_clearance = bolt_offset - M5_WASHER_RADIUS_M - wall_thickness_m;
+            ensure!(
+                cup_wall_step_clearance >= CUP_WALL_STEP_MARGIN_M,
+                "cast.toml: M5 washer footprint overlaps cup-wall outer \
+                 step — bolt_offset {bolt_offset:.4} − M5 washer radius \
+                 {washer_radius:.4} = {washer_inboard_edge:.4} m, which \
+                 is {overlap_mm:.3} mm {direction} cast.wall_thickness_m \
+                 {wall_mm:.3} mm + {margin_mm:.3} mm margin. Washer \
+                 would rest partly on the cup-wall step instead of \
+                 seating flat against the flange, point-loading the \
+                 step under hand-torque. Move bolts outboard \
+                 (raise bolt_pattern.silhouette_outboard_offset_m to \
+                 ≥ {min_offset_mm:.3} mm) or shrink the cup wall \
+                 (lower cast.wall_thickness_m).",
+                washer_radius = M5_WASHER_RADIUS_M,
+                washer_inboard_edge = bolt_offset - M5_WASHER_RADIUS_M,
+                overlap_mm = (CUP_WALL_STEP_MARGIN_M - cup_wall_step_clearance).abs() * 1000.0,
+                direction = if cup_wall_step_clearance < 0.0 {
+                    "INSIDE"
+                } else {
+                    "below"
+                },
+                wall_mm = wall_thickness_m * 1000.0,
+                margin_mm = CUP_WALL_STEP_MARGIN_M * 1000.0,
+                min_offset_mm =
+                    (wall_thickness_m + M5_WASHER_RADIUS_M + CUP_WALL_STEP_MARGIN_M) * 1000.0,
+            );
+
+            // Dowel ↔ bolt arc-length stagger invariant: when both
+            // patterns enabled, the minimum arc-fraction separation
+            // across all (dowel, bolt) pairs must give an arc-length
+            // exceeding `dowel_radius + bolt_radius` at the smallest
+            // body silhouette perimeter we'd reasonably ship. We
+            // approximate "smallest perimeter" as 100 mm — well below
+            // the production sock's 200 mm — to give workshop a clean
+            // signal at config-time instead of a confusing runtime
+            // collision near the dome.
+            if self.dowel_hole.enabled {
+                let dowel_iter1 = cf_cast::dowel_hole::DowelHoleSpec::iter1();
+                let dowel_count = self.dowel_hole.count.unwrap_or(dowel_iter1.count);
+                let bolt_count = self.bolt_pattern.count.unwrap_or(bolt_iter1.count);
+                ensure!(
+                    dowel_count > 0,
+                    "cast.toml: dowel_hole.count must be > 0 when \
+                     [dowel_hole] is enabled"
+                );
+                ensure!(
+                    bolt_count > 0,
+                    "cast.toml: bolt_pattern.count must be > 0 when \
+                     [bolt_pattern] is enabled"
+                );
+                let dowel_fractions: Vec<f64> = (0..dowel_count)
+                    .map(|k| (f64::from(k) + 0.5) / f64::from(dowel_count))
+                    .collect();
+                let bolt_fractions: Vec<f64> = (0..bolt_count)
+                    .map(|k| (f64::from(k) + 0.5) / f64::from(bolt_count))
+                    .collect();
+                let mut min_sep_fraction = f64::INFINITY;
+                for db in &dowel_fractions {
+                    for bb in &bolt_fractions {
+                        let sep = (db - bb).abs();
+                        if sep < min_sep_fraction {
+                            min_sep_fraction = sep;
+                        }
+                    }
+                }
+                // Production minimum perimeter assumption.
+                const MIN_PERIMETER_M: f64 = 0.100;
+                let min_sep_arc_m = min_sep_fraction * MIN_PERIMETER_M;
+                let dowel_diameter = self.dowel_hole.diameter_m.unwrap_or(dowel_iter1.diameter_m);
+                let dowel_clearance = self
+                    .dowel_hole
+                    .clearance_m
+                    .unwrap_or(dowel_iter1.clearance_m);
+                let dowel_hole_radius = dowel_diameter / 2.0 + dowel_clearance;
+                let required = dowel_hole_radius + bolt_radius + FDM_WALL_FLOOR_M;
+                ensure!(
+                    min_sep_arc_m >= required,
+                    "cast.toml: dowel ↔ bolt arc-length stagger gives \
+                     {min_arc_mm:.2} mm minimum separation at a 100 mm \
+                     silhouette perimeter, below the required \
+                     {required_mm:.2} mm (dowel_hole_radius \
+                     {dowel_radius_mm:.2} mm + bolt_radius \
+                     {bolt_radius_mm:.2} mm + 1 mm FDM wall). Bolt holes \
+                     would intersect dowel holes near the silhouette. \
+                     Pick non-equal counts for dowel_hole.count + \
+                     bolt_pattern.count (e.g., 4 + 8 default; or 4 + 6, \
+                     4 + 12) so the arc-fraction interleave is finer; \
+                     or widen the radial separation by moving one \
+                     pattern further outboard.",
+                    min_arc_mm = min_sep_arc_m * 1000.0,
+                    required_mm = required * 1000.0,
+                    dowel_radius_mm = dowel_hole_radius * 1000.0,
+                    bolt_radius_mm = bolt_radius * 1000.0,
+                );
+            }
         }
 
         Ok(())
@@ -474,13 +956,13 @@ material = "ECOFLEX_00_30"
 
     #[test]
     fn parses_minimal_config_with_defaults() {
-        // Validation is intentionally NOT exercised here — the default
-        // 5 mm wall conflicts with the default 20 mm iter-1 plug-pin
-        // length (the cross-field gate added with the Option A
-        // mold-wall arc fires for "all-defaults" configs). The
-        // gate is verified in `rejects_wall_thinner_than_default_pin_length`;
-        // this test scopes itself to field-by-field parsing of
-        // defaults.
+        // Post-S4: the wall-thickness ↔ pin-length cross-field
+        // gate that previously made all-defaults configs fail
+        // validation was retired with the plug-shaft cup-wall
+        // penetration mechanism (see config.rs validate_after_layer_source
+        // §"S4 of the FDM-friendly geometry arc" comment). This
+        // test scopes itself to field-by-field parsing of defaults;
+        // the all-defaults validation gate is verified below.
         let cfg = CastConfig::from_toml_str(minimal_config_text()).unwrap();
         assert_eq!(cfg.layers.len(), 1);
         assert_eq!(cfg.layers[0].material, "ECOFLEX_00_30");
@@ -494,7 +976,172 @@ material = "ECOFLEX_00_30"
         // Block defaults.
         assert!(cfg.plug_pins.enabled);
         assert!(cfg.pour_gate.enabled);
-        assert!(cfg.registration_pins.enabled);
+        // S3 seam-gasket-mold arc default: enabled + Ecoflex (None →
+        // GasketMaterial::Ecoflex0030 in derive).
+        assert!(cfg.gasket.enabled);
+        assert!(cfg.gasket.material.is_none());
+        // S2 seam-flange arc default: enabled + all iter1 overrides
+        // None (derive::resolve_flange_spec falls back to
+        // FlangeSpec::iter1() per field).
+        assert!(cfg.flange.enabled);
+        assert!(cfg.flange.width_m.is_none());
+        assert!(cfg.flange.thickness_m.is_none());
+        assert!(cfg.flange.inner_offset_m.is_none());
+    }
+
+    #[test]
+    fn parses_gasket_block_disabled() {
+        // S3: `[gasket] enabled = false` parses cleanly + the
+        // master toggle propagates. Material absent (None) is the
+        // documented fallback to iter1 default at derive time.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+enabled = false
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        assert!(!cfg.gasket.enabled);
+        assert!(cfg.gasket.material.is_none());
+    }
+
+    #[test]
+    fn parses_gasket_block_dragon_skin_override() {
+        // S3: workshop iter-3 fallback path — material override to
+        // Dragon Skin 10A when Ecoflex compresses too freely per
+        // recon §G-1. derive::resolve_gasket_material handles the
+        // string → enum lift.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+material = "DRAGON_SKIN_10A"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        assert!(cfg.gasket.enabled);
+        assert_eq!(cfg.gasket.material.as_deref(), Some("DRAGON_SKIN_10A"));
+    }
+
+    #[test]
+    fn parses_flange_block_disabled() {
+        // S2 seam-flange arc: `[flange] enabled = false` parses cleanly
+        // + master toggle propagates. Overrides absent (None) → iter1
+        // defaults at derive time.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[flange]
+enabled = false
+
+# §B requires flange to clamp through; disable both together when
+# disabling flange.
+[bolt_pattern]
+enabled = false
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.flange.enabled);
+        assert!(cfg.flange.width_m.is_none());
+        assert!(!cfg.bolt_pattern.enabled);
+    }
+
+    #[test]
+    fn parses_flange_block_with_overrides() {
+        // S2: partial override — width + thickness picked at non-iter1
+        // values, inner_offset left as iter1 default. Validates the
+        // optional-per-field design (recon §F-6).
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[flange]
+width_m = 0.020
+thickness_m = 0.005
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.flange.enabled);
+        assert!((cfg.flange.width_m.unwrap() - 0.020).abs() < 1e-12);
+        assert!((cfg.flange.thickness_m.unwrap() - 0.005).abs() < 1e-12);
+        assert!(cfg.flange.inner_offset_m.is_none());
+    }
+
+    #[test]
+    fn rejects_flange_inner_offset_overlapping_gasket() {
+        // S2 cross-field gate (recon §F-4): with both gasket + flange
+        // enabled, `flange.inner_offset_m` MUST exceed half the gasket
+        // channel width (1.5 mm / 2 = 0.75 mm at iter1). A 0.5 mm
+        // override falls below the threshold → rejected at validate
+        // time.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[flange]
+inner_offset_m = 0.0005
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("flange inner_offset below gasket half-width must fail");
+        let s = err.to_string();
+        assert!(s.contains("inner_offset_m"), "unexpected error: {s}");
+        assert!(s.contains("gasket"), "unexpected error: {s}");
+    }
+
+    #[test]
+    fn accepts_flange_inner_offset_overlapping_when_gasket_disabled() {
+        // S2 cross-field gate scope: with the gasket disabled there's
+        // no gasket strip to clear, so a small `inner_offset_m`
+        // override is allowed. Pins the gate's "skip when gasket off"
+        // branch.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+enabled = false
+
+[flange]
+inner_offset_m = 0.0005
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.gasket.enabled);
+        assert!(cfg.flange.enabled);
     }
 
     #[test]
@@ -507,7 +1154,7 @@ prep_toml = "iter1.cleaned.prep.toml"
 [cast]
 mesh_cell_size_m = 0.004
 mass_budget_kg = 0.500
-wall_thickness_m = 0.030
+wall_thickness_m = 0.005
 split_normal = [0.0, 1.0, 0.0]
 piece_min_wall_mm = 0.5
 output_dir = "iter1_out"
@@ -526,14 +1173,10 @@ thickness_m = 0.004
 material = "ECOFLEX_00_30"
 
 [plug_pins]
-pin_length_m = 0.028
-include_dome_pin = false
+enabled = true
 
 [pour_gate]
 enabled = true
-
-[registration_pins]
-enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
@@ -541,8 +1184,7 @@ enabled = false
         assert_eq!(cfg.layers[0].display_name.as_deref(), Some("Inner Ecoflex"));
         assert!((cfg.cast.mesh_cell_size_m - 0.004).abs() < 1e-12);
         assert_eq!(cfg.cast.output_dir, PathBuf::from("iter1_out"));
-        assert_eq!(cfg.plug_pins.pin_length_m, Some(0.028));
-        assert!(!cfg.registration_pins.enabled);
+        assert!(cfg.plug_pins.enabled);
     }
 
     #[test]
@@ -584,10 +1226,12 @@ material = "UNKNOWN_GRADE"
 
     #[test]
     fn accepts_unknown_material_with_density_override() {
-        // `[plug_pins] enabled = false` sidesteps the wall-thickness ↔
-        // pin-length cross-field gate (default 5 mm wall conflicts
-        // with the iter1 20 mm pin) so this test stays scoped to
-        // material-override validation.
+        // Post-S4 the wall-thickness ↔ pin-length cross-field gate
+        // is gone (the plug-floor lock is interior to the cavity,
+        // not a through-shaft), so this test no longer needs
+        // `[plug_pins] enabled = false` to scope itself to material-
+        // override validation. Keep the override on for parity with
+        // production iter-1 cast.toml.
         let text = r#"
 [scan]
 cleaned_stl = "s.stl"
@@ -598,9 +1242,6 @@ thickness_m = 0.006
 material = "CUSTOM_GRADE"
 density_kg_m3 = 1080.0
 display_name = "Custom Silicone"
-
-[plug_pins]
-enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
@@ -670,11 +1311,16 @@ material = "ECOFLEX_00_30"
     }
 
     #[test]
-    fn rejects_wall_thinner_than_default_pin_length() {
-        // Default plug_pins (enabled = true, iter1 spec → 20 mm pin)
-        // with the default 5 mm wall fails the cross-field gate:
-        // `5 mm + 1 mm margin >= 20 mm` is FALSE. Confirm the gate
-        // fires.
+    fn accepts_all_defaults_post_s4() {
+        // Post-S4 of the FDM-friendly geometry arc the wall-thickness
+        // ↔ pin-length cross-field gate is retired (the plug-floor
+        // lock is interior to the cavity, NOT a through-shaft, so
+        // no cup-wall penetration). The pre-S4 tests
+        // `rejects_wall_thinner_than_default_pin_length` /
+        // `accepts_wall_thickness_matching_pin_length_override`
+        // were retired with the cross-field gate. This test pins
+        // the post-S4 contract: all-defaults validates clean (no
+        // gate fires).
         let text = r#"
 [scan]
 cleaned_stl = "s.stl"
@@ -683,60 +1329,6 @@ prep_toml = "s.prep.toml"
 [[layers]]
 thickness_m = 0.006
 material = "ECOFLEX_00_30"
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        let err = cfg
-            .validate()
-            .expect_err("default 5 mm wall vs 20 mm iter1 pin must fail");
-        let s = err.to_string();
-        assert!(
-            s.contains("plug_pins.pin_length_m"),
-            "unexpected error: {s}"
-        );
-    }
-
-    #[test]
-    fn accepts_wall_thickness_matching_pin_length_override() {
-        // 8 mm wall + 7 mm pin override: 8 + 1 = 9 >= 7, passes.
-        let text = r#"
-[scan]
-cleaned_stl = "s.stl"
-prep_toml = "s.prep.toml"
-
-[cast]
-wall_thickness_m = 0.008
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[plug_pins]
-pin_length_m = 0.007
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn accepts_thin_wall_when_plug_pins_disabled() {
-        // 2 mm wall + plug_pins disabled: plug-pin cross-field gate
-        // skipped. (Registration-pin gate was retired by recon-4 (P)
-        // when the binormal-axis annulus-midpoint design was restored
-        // — no inner-cavity dimple to budget.)
-        let text = r#"
-[scan]
-cleaned_stl = "s.stl"
-prep_toml = "s.prep.toml"
-
-[cast]
-wall_thickness_m = 0.002
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[plug_pins]
-enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
@@ -760,5 +1352,138 @@ material = "ECOFLEX_00_30"
             err.to_string().contains("typo_field"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn rejects_bolt_washer_overlapping_cup_wall_step() {
+        // Cup-wall-step washer-clearance invariant (2026-05-27 follow-
+        // up to the iter-1 ultra-review). The historical near-miss:
+        // bolt_pattern.silhouette_outboard_offset_m = 9 mm with the
+        // default 5 mm cast.wall_thickness_m + ~5 mm M5 washer radius
+        // → washer inboard edge at body_dist = 4 mm, overlapping the
+        // cup-wall outer step at body_dist = 5 mm. Validator must
+        // catch this at config time instead of letting the workshop
+        // discover it post-print.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[bolt_pattern]
+silhouette_outboard_offset_m = 0.009
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("bolt_offset = 9 mm at default wall = 5 mm must fail washer-clearance");
+        let s = err.to_string();
+        assert!(
+            s.contains("washer footprint"),
+            "expected washer-footprint error: {s}"
+        );
+        assert!(
+            s.contains("cup-wall outer step"),
+            "expected cup-wall-step mention: {s}"
+        );
+    }
+
+    #[test]
+    fn accepts_bolt_washer_clears_cup_wall_step_at_iter1_defaults() {
+        // iter-1 defaults (bolt_offset = 13 mm, wall = 5 mm, washer
+        // radius = 5 mm) → washer inboard edge at body_dist = 8 mm,
+        // well clear of the 5 mm cup-wall step (3 mm slack vs 1 mm
+        // margin requirement). Pins the gate's "passes at iter-1
+        // defaults" branch — regression-anchors that the validator
+        // doesn't accidentally reject the production-default config.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_thin_cup_wall_with_default_bolt_offset() {
+        // Workshop drops wall_thickness_m to 3 mm: washer clearance
+        // = 13 − 5 − 3 = 5 mm slack vs 1 mm margin requirement →
+        // passes. Pins the gate's responsiveness to the cup-wall
+        // input (vs hard-coding the wall floor at 5 mm).
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[cast]
+wall_thickness_m = 0.003
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_bolt_offset_below_thick_cup_wall() {
+        // Inverse pairing: with cast.wall_thickness_m bumped to 8 mm,
+        // the iter-1 default 13 mm bolt offset has clearance 13 − 5 −
+        // 8 = 0 mm < 1 mm margin → fail. Pins the gate's coupling on
+        // the wall-thickness side.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[cast]
+wall_thickness_m = 0.008
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("13 mm bolt offset at 8 mm wall must fail");
+        assert!(
+            err.to_string().contains("washer footprint"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn skips_washer_clearance_check_when_bolts_disabled() {
+        // The whole bolt-pattern validator block is gated on
+        // `self.bolt_pattern.enabled`. A bolt_offset value that
+        // WOULD fail the washer check passes silently when bolts are
+        // off (no flange→bolt invariants fire either). Pins the
+        // "no-op when disabled" branch.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[bolt_pattern]
+enabled = false
+silhouette_outboard_offset_m = 0.009
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.bolt_pattern.enabled);
     }
 }

@@ -26,7 +26,7 @@
 //!    - `layer[N].body` =
 //!      `Solid::from_sdf(scan_sdf, aabb).offset(sum t[0..=N] - cavity_inset_m)`
 //! 7. Build [`cf_cast::Ribbon`] from the parsed centerline + the
-//!    config's split-normal + registration / pour-gate / plug-pin
+//!    config's split-normal + dowel-hole / pour-gate / plug-pin
 //!    overrides.
 //! 8. Invoke [`cf_cast::CastSpec::export_molds_v2`] +
 //!    [`cf_cast::CastSpec::write_procedure_v2`].
@@ -57,7 +57,7 @@ use anyhow::{Context, Result, bail};
 
 pub use config::{
     CastConfig, CastDefaults, DesignSourceConfig, LayerConfig, PlugPinConfig, PourGateConfig,
-    RegistrationConfig, ScanConfig,
+    ScanConfig,
 };
 pub use derive::{
     DerivedSpec, density_for_anchor, derive_spec_and_ribbon, display_name_for_anchor,

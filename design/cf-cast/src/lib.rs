@@ -20,9 +20,13 @@
 //! - [`CastSpec::export_molds_v2`] — **v2 curve-following multi-
 //!   piece** + **v2.1 detachable-shell**. Each layer's mold cup
 //!   is split into 2 pieces along a curve-following [`Ribbon`]
-//!   surface (per `docs/CURVE_FOLLOWING_DESIGN.md`), with optional
-//!   inter-piece registration pins ([`PinSpec`]), V-at-dome
-//!   pour gate + vent legs ([`PourGateSpec`]), and per-piece
+//!   surface (per `docs/CURVE_FOLLOWING_DESIGN.md`), with symmetric
+//!   dowel-hole registration ([`crate::dowel_hole::DowelHoleKind`]
+//!   post-§M-S4; pre-§M-S4 used a now-retired prismatic-pin
+//!   `PinSpec` wrapping `PrismaticPinSpec`, replaced by loose printed
+//!   dowels the workshop user inserts through matching holes at
+//!   assembly time),
+//!   V-at-dome pour gate + vent legs ([`PourGateSpec`]), and per-piece
 //!   plug-anchor pin sockets ([`PlugPinSpec`]). Each layer is
 //!   cast independently against its own plug — layer 0's plug
 //!   derives from [`CastSpec::plug`], layer N>0's derives from
@@ -71,9 +75,14 @@
 //!
 //! [rmp]: ../../../docs/CASTING_ROADMAP.md
 
+pub mod bolt_pattern;
 pub mod cure;
+pub mod dowel;
+pub mod dowel_hole;
 mod error;
+pub mod flange;
 pub mod funnel;
+pub mod gasket_mold;
 mod material;
 pub mod mesh_csg;
 mod mesher;
@@ -82,31 +91,43 @@ pub mod platform;
 pub mod plug;
 pub mod pour;
 mod pour_volume;
+pub mod prismatic_pin;
 mod procedure;
-pub mod registration;
 mod ribbon;
+pub mod scan_mesh_direct;
+pub mod silhouette_2d;
 mod spec;
 
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
+pub use flange::{FlangeKind, FlangeSpec};
 pub use funnel::build_funnel_solid;
+pub use gasket_mold::{
+    GASKET_MAX_CELL_SIZE_M, GasketKind, GasketMaterial, GasketSpec, compose_gasket_mold_solid,
+};
 pub use material::MoldingMaterial;
 pub use mesh_csg::{
     CylinderParams, CylinderParent, MatingTransform, WELD_TOLERANCE_M, apply_mating_transforms,
-    build_cylinder_along_axis, build_half_space_slab, geometric_equivalence, weld_in_place,
+    build_cylinder_along_axis, build_half_space_slab, build_truncated_pyramid_via_hull_pts,
+    geometric_equivalence, weld_in_place,
 };
-pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
+pub use piece::compose_piece_solid;
 pub use platform::build_platform_solid;
 pub use plug::{
-    PlugPinKind, PlugPinSpec, add_plug_pins, build_plug_self_transforms,
-    build_plug_socket_transforms, pour_end_t_bar_geometry,
+    PlugPinKind, PlugPinSpec, add_plug_pins, build_cup_cap_trim_transform,
+    build_plug_cap_trim_transform, build_plug_lock_socket_transform, build_plug_lock_transform,
 };
 pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
+pub use prismatic_pin::{
+    LATERAL_ORTHOGONALITY_TOLERANCE, PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec,
+    build_prismatic_pin_sdf,
+};
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
-pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
+pub use scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 pub use spec::{
-    CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,
-    PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport, V2MoldExportReport,
+    CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
+    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport,
+    V2MoldExportReport,
 };

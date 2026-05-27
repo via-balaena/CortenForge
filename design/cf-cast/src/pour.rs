@@ -52,8 +52,9 @@
 //! piece's mesh to its kept half-shell; the post-MC mesh-CSG
 //! subtract of the full cylinder is a no-op for the portion
 //! outside the half-shell. Each piece keeps only its own side's
-//! half-cylinder carve (modulo the small
-//! [`crate::piece::RIBBON_PIECE_OVERLAP_M`] seam-overlap slice).
+//! half-cylinder carve at the exact mating plane (post-§M-S1
+//! flush mating; pre-§M 2026-05-27 had a 0.5 mm seam-overlap slice
+//! from the cup-wall's `RIBBON_PIECE_OVERLAP_M`).
 //!
 //! ## Why splay along binormal, not split-normal
 //!
@@ -99,11 +100,15 @@ use crate::ribbon::Ribbon;
 /// Polygonal facet count around the circumference for the
 /// pour-gate cylinder primitives.
 ///
-/// Same workshop default as the other mesh-CSG cylinder ops (see
-/// `crate::registration::PIN_SEGMENTS` /
-/// `crate::plug::PLUG_CYLINDER_SEGMENTS`). Part of the
-/// determinism contract — same parent + same `segments` → bit-equal
-/// output.
+/// 32 segments at the workshop default 5 mm pour-leg radius gives
+/// chord error `r(1 - cos(π/32))` ≈ 24 µm — well below FDM bead
+/// width. Pre-S3 / pre-S4 of the FDM-friendly geometry arc this
+/// matched parallel `PIN_SEGMENTS` / `PLUG_CYLINDER_SEGMENTS`
+/// consts elsewhere (both now retired with their respective SDF-
+/// side migrations); the pour-gate carve is the lone surviving
+/// mesh-CSG mating-feature surface post-S4 and the only consumer
+/// of this const. Part of the determinism contract — same parent
+/// + same `segments` → bit-equal output.
 pub const POUR_GATE_SEGMENTS: u32 = 32;
 
 /// V half-angle in radians — 30° (= π/6). Each leg of the V splays
@@ -115,7 +120,7 @@ pub const POUR_GATE_SEGMENTS: u32 = 32;
 /// close enough to axial that workshop pour ergonomics aren't
 /// awkward. Not user-tunable; iter-1 visual gate accepted the
 /// default.
-const V_HALF_ANGLE_RAD: f64 = std::f64::consts::FRAC_PI_6;
+pub const V_HALF_ANGLE_RAD: f64 = std::f64::consts::FRAC_PI_6;
 
 /// Cylindrical pour-gate + air-vent geometry spec. All dimensions
 /// in meters.

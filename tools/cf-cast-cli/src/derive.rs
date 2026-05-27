@@ -9,9 +9,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
+use cf_cast::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
-    CastLayer, CastSpec, MoldingMaterial, PinSpec, PlugPinKind, PlugPinSpec, PourGateKind,
-    PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
+    CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
+    MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec, Ribbon, SplitNormal,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -306,13 +308,46 @@ pub fn derive_spec_and_ribbon(
     let printer_config =
         PrinterConfig::fdm_default().with_min_wall_thickness(config.cast.piece_min_wall_mm);
 
+    // Opt-in scan-mesh-direct routing for plug_layer_0 (S1 of
+    // `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md`). Gated on both the
+    // user-set TOML flag AND `cavity_inset_m == 0` — non-zero inset
+    // would emit an oversized plug because the scan mesh has no
+    // inward offset baked in. S2 of the recon extends this to the
+    // offset cases with an explicit per-layer offset parameter.
+    //
+    // When the user opted in but `cavity_inset_m > 0`, surface a loud
+    // warning so the silent fall-through to SDF/MC doesn't look like
+    // a successful opt-in in the production-regen log. `eprintln`
+    // rather than `bail!` because the SDF/MC path is still
+    // workshop-correct; we just want to flag that the requested
+    // feature didn't engage.
+    let scan_mesh_for_plug_layer_0 = if config.cast.scan_mesh_direct_plug_layer_0 {
+        if cavity_inset_m == 0.0 {
+            Some(std::sync::Arc::new(scan_sdf.mesh().clone()))
+        } else {
+            eprintln!(
+                "[cf-cast] WARNING: cast.scan_mesh_direct_plug_layer_0 = true was requested \
+                 but cavity_inset_m = {cavity_inset_m_mm:.3} mm > 0; opt-in IGNORED for this \
+                 run and the legacy SDF/MC plug pipeline is used. (Recon §SMD-4 S2 extends \
+                 scan-mesh-direct to non-zero inset cases with an explicit per-layer offset \
+                 parameter.)",
+                cavity_inset_m_mm = cavity_inset_m * 1e3,
+            );
+            None
+        }
+    } else {
+        None
+    };
+
     let spec = CastSpec {
         layers,
         plug,
         bounding_region,
+        wall_thickness_m: config.cast.wall_thickness_m,
         mesh_cell_size_m: config.cast.mesh_cell_size_m,
         printer_config,
         mass_budget_kg: config.cast.mass_budget_kg,
+        scan_mesh_for_plug_layer_0,
     };
 
     let split_normal_vec = Vector3::new(
@@ -358,24 +393,137 @@ pub fn derive_spec_and_ribbon(
         ribbon = ribbon.with_pour_end_hint(*centroid, *normal);
     }
 
-    if config.registration_pins.enabled {
-        ribbon = ribbon.with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-    }
     if config.pour_gate.enabled {
         ribbon = ribbon.with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
     }
     if config.plug_pins.enabled {
-        let mut plug_pin_spec = PlugPinSpec::iter1();
-        if let Some(len) = config.plug_pins.pin_length_m {
-            plug_pin_spec.pin_length_m = len;
-        }
-        if let Some(b) = config.plug_pins.include_dome_pin {
-            plug_pin_spec.include_dome_pin = b;
-        }
-        ribbon = ribbon.with_plug_pins(PlugPinKind::Axial(plug_pin_spec));
+        // Post-S4 of the FDM-friendly geometry arc the `pin_length_m`
+        // + `include_dome_pin` per-field TOML overrides are retired
+        // (see `config::PlugPinConfig` docstring). The bridge passes
+        // the workshop-iter-3 `PlugPinSpec::iter1()` default — S7
+        // workshop-physical calibration narrows the §G-6 / §G-8
+        // numeric values rather than threading them through TOML.
+        ribbon = ribbon.with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+    }
+    if config.gasket.enabled {
+        // S3 of the seam-gasket-mold arc per recon §G-7. Material
+        // override is workshop-empirical (S6 iter-3 pour picks
+        // Ecoflex vs Dragon Skin); cross-section + draft pinned at
+        // S2 iter1 defaults until S6 calibration demands a tweak.
+        let material = resolve_gasket_material(config.gasket.material.as_deref())?;
+        let gasket_spec = GasketSpec {
+            material,
+            ..GasketSpec::iter1()
+        };
+        ribbon = ribbon.with_gasket(GasketKind::Mold(gasket_spec));
+    }
+    if config.flange.enabled {
+        // S2 of the seam-flange arc per recon §F-6. Per-field
+        // overrides fall back to FlangeSpec::iter1() at None; the
+        // cross-field gasket-disjoint invariant (recon §F-4) is
+        // already enforced in config::validate_after_layer_source,
+        // so the spec built here is known-valid.
+        let flange_spec = resolve_flange_spec(&config.flange);
+        ribbon = ribbon.with_flange(FlangeKind::Plate(flange_spec));
+    }
+    if config.dowel_hole.enabled {
+        // §M-S2 of [[project-cf-cast-unified-mating-plane-recon]].
+        // Per-field overrides fall back to DowelHoleSpec::iter1().
+        let dowel_spec = resolve_dowel_hole_spec(&config.dowel_hole);
+        ribbon = ribbon.with_dowel_hole(DowelHoleKind::Auto(dowel_spec));
+    }
+    if config.bolt_pattern.enabled {
+        // §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
+        // Per-field overrides fall back to BoltPatternSpec::iter1();
+        // cross-field invariants (flange-required, wall-thickness,
+        // dowel-stagger) are gated in
+        // config::validate_after_layer_source.
+        let bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
+        ribbon = ribbon.with_bolt_pattern(BoltPatternKind::Auto(bolt_spec));
     }
 
     Ok(DerivedSpec { spec, ribbon })
+}
+
+/// Resolve the [`crate::config::GasketConfig::material`] string into a
+/// [`cf_cast::GasketMaterial`] enum value. `None` falls back to the
+/// iter1 default (Ecoflex 00-30 per recon §G-1).
+///
+/// Recognized keys follow the same UPPER_SNAKE_CASE convention as
+/// [`crate::config::LayerConfig::material`]: `"ECOFLEX_00_30"` +
+/// `"DRAGON_SKIN_10A"`.
+///
+/// # Errors
+///
+/// Returns an error with the full set of recognized keys in the
+/// message when the key is unknown (typo-friendly diagnostic).
+fn resolve_gasket_material(key: Option<&str>) -> Result<GasketMaterial> {
+    match key {
+        None | Some("ECOFLEX_00_30") => Ok(GasketMaterial::Ecoflex0030),
+        Some("DRAGON_SKIN_10A") => Ok(GasketMaterial::DragonSkin10A),
+        Some(other) => bail!(
+            "cast.toml: unknown gasket material {other:?}. Recognized: \
+             \"ECOFLEX_00_30\", \"DRAGON_SKIN_10A\"."
+        ),
+    }
+}
+
+/// Resolve a [`crate::config::FlangeConfig`] into a
+/// [`cf_cast::FlangeSpec`], falling back to
+/// [`FlangeSpec::iter1`] for each `None` per-field override.
+///
+/// Pure (no validation — finiteness + positivity + cross-field
+/// gasket-disjoint gates already ran in
+/// [`crate::config::CastConfig::validate_after_layer_source`]).
+/// Returns by-value because `FlangeSpec` is plain-old-f64-struct
+/// (Copy-able by construction).
+fn resolve_flange_spec(config: &crate::config::FlangeConfig) -> FlangeSpec {
+    let iter1 = FlangeSpec::iter1();
+    FlangeSpec {
+        flange_width_m: config.width_m.unwrap_or(iter1.flange_width_m),
+        flange_thickness_m: config.thickness_m.unwrap_or(iter1.flange_thickness_m),
+        flange_inner_offset_m: config.inner_offset_m.unwrap_or(iter1.flange_inner_offset_m),
+    }
+}
+
+/// Resolve a [`crate::config::DowelHoleConfig`] into a
+/// [`DowelHoleSpec`], falling back to [`DowelHoleSpec::iter1`] for
+/// each `None` per-field override. §M-S2 of
+/// [[project-cf-cast-unified-mating-plane-recon]].
+fn resolve_dowel_hole_spec(config: &crate::config::DowelHoleConfig) -> DowelHoleSpec {
+    let iter1 = DowelHoleSpec::iter1();
+    DowelHoleSpec {
+        diameter_m: config.diameter_m.unwrap_or(iter1.diameter_m),
+        clearance_m: config.clearance_m.unwrap_or(iter1.clearance_m),
+        depth_m: config.depth_m.unwrap_or(iter1.depth_m),
+        count: config.count.unwrap_or(iter1.count),
+        silhouette_outboard_offset_m: config
+            .silhouette_outboard_offset_m
+            .unwrap_or(iter1.silhouette_outboard_offset_m),
+    }
+}
+
+/// Resolve a [`crate::config::BoltPatternConfig`] into a
+/// [`BoltPatternSpec`], falling back to [`BoltPatternSpec::iter1`]
+/// for each `None` per-field override. §B of
+/// [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
+fn resolve_bolt_pattern_spec(config: &crate::config::BoltPatternConfig) -> BoltPatternSpec {
+    let iter1 = BoltPatternSpec::iter1();
+    BoltPatternSpec {
+        clearance_diameter_m: config
+            .clearance_diameter_m
+            .unwrap_or(iter1.clearance_diameter_m),
+        count: config.count.unwrap_or(iter1.count),
+        silhouette_outboard_offset_m: config
+            .silhouette_outboard_offset_m
+            .unwrap_or(iter1.silhouette_outboard_offset_m),
+        skip_pour_gate_collision: config
+            .skip_pour_gate_collision
+            .unwrap_or(iter1.skip_pour_gate_collision),
+        pour_gate_clearance_m: config
+            .pour_gate_clearance_m
+            .unwrap_or(iter1.pour_gate_clearance_m),
+    }
 }
 
 #[cfg(test)]
@@ -488,7 +636,10 @@ mod tests {
             ],
             plug_pins: PlugPinConfig::default(),
             pour_gate: PourGateConfig::default(),
-            registration_pins: crate::config::RegistrationConfig::default(),
+            gasket: crate::config::GasketConfig::default(),
+            flange: crate::config::FlangeConfig::default(),
+            dowel_hole: crate::config::DowelHoleConfig::default(),
+            bolt_pattern: crate::config::BoltPatternConfig::default(),
         }
     }
 
@@ -598,16 +749,16 @@ mod tests {
     }
 
     #[test]
-    fn derive_ribbon_carries_registration_when_enabled() {
+    fn derive_ribbon_carries_features_when_enabled() {
+        // §M-S4 (2026-05-27): the legacy prismatic-pin registration
+        // path is retired; this test no longer probes
+        // `ribbon.registration` — see the dowel-hole-on-by-default
+        // matcher below for the post-§M-S4 registration equivalent.
         let cfg = three_layer_config();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
             derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
-        assert!(
-            matches!(derived.ribbon.registration, RegistrationKind::Pins(_)),
-            "registration_pins.enabled=true must produce Pins(_)"
-        );
         assert!(
             matches!(derived.ribbon.pour_gate, PourGateKind::Default(_)),
             "pour_gate.enabled=true must produce Default(_)"
@@ -616,30 +767,42 @@ mod tests {
             matches!(derived.ribbon.plug_pins, PlugPinKind::Axial(_)),
             "plug_pins.enabled=true must produce Axial(_)"
         );
+        assert!(
+            matches!(derived.ribbon.dowel_hole, DowelHoleKind::Auto(_)),
+            "dowel_hole.enabled=true must produce Auto(_)"
+        );
+        assert!(
+            matches!(derived.ribbon.bolt_pattern, BoltPatternKind::Auto(_)),
+            "bolt_pattern.enabled=true must produce Auto(_)"
+        );
     }
 
     #[test]
     fn derive_ribbon_disables_features_when_config_disables_them() {
         let mut cfg = three_layer_config();
-        cfg.registration_pins.enabled = false;
         cfg.pour_gate.enabled = false;
         cfg.plug_pins.enabled = false;
+        cfg.dowel_hole.enabled = false;
+        cfg.bolt_pattern.enabled = false;
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
             derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
-        assert!(matches!(
-            derived.ribbon.registration,
-            RegistrationKind::None
-        ));
         assert!(matches!(derived.ribbon.pour_gate, PourGateKind::None));
         assert!(matches!(derived.ribbon.plug_pins, PlugPinKind::None));
+        assert!(matches!(derived.ribbon.dowel_hole, DowelHoleKind::None));
+        assert!(matches!(derived.ribbon.bolt_pattern, BoltPatternKind::None));
     }
 
     #[test]
-    fn derive_plug_pin_length_override_passes_through() {
-        let mut cfg = three_layer_config();
-        cfg.plug_pins.pin_length_m = Some(0.028);
+    fn derive_plug_pin_axial_uses_iter1_defaults() {
+        // Post-S4 the per-field TOML overrides on `[plug_pins]`
+        // (pre-S4: `pin_length_m`, `include_dome_pin`) are retired
+        // — the bridge passes `PlugPinSpec::iter1()` directly. The
+        // pre-S4 `derive_plug_pin_length_override_passes_through`
+        // test retired with the override path; this test pins the
+        // post-S4 contract.
+        let cfg = three_layer_config();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
@@ -647,7 +810,7 @@ mod tests {
         let PlugPinKind::Axial(spec) = &derived.ribbon.plug_pins else {
             unreachable!("plug_pins.enabled=true should yield Axial(_)")
         };
-        assert!((spec.pin_length_m - 0.028).abs() < 1e-12);
+        assert_eq!(*spec, PlugPinSpec::iter1());
     }
 
     #[test]
@@ -821,5 +984,84 @@ mod tests {
             sd_deep < 0.0,
             "deep interior must be inside plug, got {sd_deep}",
         );
+    }
+
+    /// S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the cast.toml
+    /// opt-in is set and `cavity_inset_m == 0`, the derived spec
+    /// must carry the scan mesh through to `export_molds_v2`.
+    #[test]
+    fn scan_mesh_direct_opt_in_populates_spec_field_at_zero_inset() {
+        let mut cfg = three_layer_config();
+        cfg.cast.scan_mesh_direct_plug_layer_0 = true;
+        let sdf = unit_cube_sdf();
+        let derived = derive_spec_and_ribbon(
+            &cfg,
+            &sdf,
+            unit_cube_aabb(),
+            &straight_x_centerline(),
+            0.0,
+            &[],
+        )
+        .unwrap();
+        let mesh = derived
+            .spec
+            .scan_mesh_for_plug_layer_0
+            .as_ref()
+            .expect("opt-in at cavity_inset_m == 0 must populate the field");
+        // Mesh-identity gate: the populated mesh must come from
+        // `scan_sdf.mesh()` (same vertex + face counts as the
+        // unit_cube_sdf fixture). Catches accidental routing to a
+        // different mesh source.
+        assert_eq!(mesh.vertices.len(), sdf.mesh().vertices.len());
+        assert_eq!(mesh.faces.len(), sdf.mesh().faces.len());
+    }
+
+    /// Sibling of `_at_zero_inset` above: the cavity_inset_m > 0 gate
+    /// silently drops the opt-in to None (with a stderr warning the
+    /// integration test can't easily assert on). Pre-S2, scan-mesh-
+    /// direct doesn't support non-zero inset.
+    #[test]
+    fn scan_mesh_direct_opt_in_ignored_when_cavity_inset_nonzero() {
+        let mut cfg = three_layer_config();
+        cfg.cast.scan_mesh_direct_plug_layer_0 = true;
+        let sdf = unit_cube_sdf();
+        let derived = derive_spec_and_ribbon(
+            &cfg,
+            &sdf,
+            unit_cube_aabb(),
+            &straight_x_centerline(),
+            0.001,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            derived.spec.scan_mesh_for_plug_layer_0.is_none(),
+            "scan-mesh-direct opt-in must NOT engage when cavity_inset_m > 0 \
+             (the scan mesh has no inward offset baked in; S2 of the recon \
+             extends this path to non-zero inset)",
+        );
+    }
+
+    /// Default cast.toml (no `scan_mesh_direct_plug_layer_0`) preserves
+    /// pre-S1 bit-for-bit output. Pairs with the opt-in tests above.
+    #[test]
+    fn scan_mesh_direct_default_leaves_spec_field_unset() {
+        let cfg = three_layer_config();
+        assert!(
+            !cfg.cast.scan_mesh_direct_plug_layer_0,
+            "TOML default must be false so existing cast.toml files \
+             continue through the SDF/MC plug pipeline",
+        );
+        let sdf = unit_cube_sdf();
+        let derived = derive_spec_and_ribbon(
+            &cfg,
+            &sdf,
+            unit_cube_aabb(),
+            &straight_x_centerline(),
+            0.0,
+            &[],
+        )
+        .unwrap();
+        assert!(derived.spec.scan_mesh_for_plug_layer_0.is_none());
     }
 }

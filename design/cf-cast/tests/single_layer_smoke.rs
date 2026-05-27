@@ -50,9 +50,11 @@ fn reference_spec() -> CastSpec {
         }],
         plug,
         bounding_region,
+        wall_thickness_m: 0.005,
         mesh_cell_size_m: 0.002,
         printer_config: PrinterConfig::fdm_default(),
         mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        scan_mesh_for_plug_layer_0: None,
     }
 }
 

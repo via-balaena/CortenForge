@@ -4,6 +4,7 @@
 //! pipelines.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cf_design::{Aabb, IndexedMesh, Solid};
 use mesh_io::save_stl;
@@ -14,6 +15,7 @@ use mesh_printability::{
 use nalgebra::Vector3;
 
 use crate::error::{CastError, CastTarget};
+use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
 use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::solid_to_mm_mesh;
@@ -22,6 +24,7 @@ use crate::plug::add_plug_pins;
 use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 use crate::ribbon::{PieceSide, Ribbon};
+use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -62,8 +65,10 @@ const CLIP_BODY_OVERLAP_M: f64 = 0.0005;
 ///   (single-piece cup with `+z`-opening clip).
 /// - v2's [`CastSpec::export_molds_v2`] carves
 ///   `bounding_region ∖ layers[i].body ∩ ribbon_side` per piece,
-///   plus optional registration pin / pour gate / vent / plug
-///   socket CSG (see [`crate::piece::compose_piece_solid`]).
+///   plus optional dowel-hole registration / pour gate / vent / plug
+///   socket CSG (see [`crate::piece::compose_piece_solid`]). §M-S4
+///   (2026-05-27) retired the legacy prismatic-pin registration
+///   path; symmetric dowel holes (§M-S2) are the replacement.
 #[derive(Debug, Clone)]
 pub struct CastLayer {
     /// Cumulative outer-surface positive solid in **meters**. See
@@ -114,7 +119,31 @@ pub struct CastSpec {
     /// layer body with the desired wall thickness. The exporter
     /// clips its top above each layer body to open every cup for
     /// pour.
+    ///
+    /// **Post-§Q-1 (2026-05-26)**: the cup-piece geometry's outer
+    /// surface no longer follows this cuboid — it's body-tracking
+    /// via the `crate::piece::CupWallShellSdf` at uniform
+    /// thickness [`wall_thickness_m`](Self::wall_thickness_m). This
+    /// field is still used for the platform, gasket mold, and other
+    /// derived geometry that DOES want the cuboid envelope, but the
+    /// cup pieces themselves are now shell-shaped around each
+    /// layer's body. See [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
     pub bounding_region: Solid,
+
+    /// Cup-wall thickness for each layer (uniform across layers,
+    /// constant around each body's perimeter via shell SDF).
+    ///
+    /// Post-§Q-1 (2026-05-26): this replaces the pre-§Q-1
+    /// "cup-wall thickness derived from `bounding_region.bounds() -
+    /// layer_body.bounds()`" semantics. The shell SDF in
+    /// [`crate::piece::compose_piece_solid`] uses this value
+    /// directly so cup-wall thickness is uniform per layer (was
+    /// per-layer-varying because all layers shared the outer-most-
+    /// layer-sized bounding cuboid pre-refactor).
+    ///
+    /// Workshop default 5 mm (B1 PR #254 — matches the iter-1
+    /// print's outer-most layer cup-wall thickness).
+    pub wall_thickness_m: f64,
 
     /// Cell size (in meters) for the SDF → marching-cubes scalar
     /// sampling. Finer cells produce smoother surfaces at the cost of
@@ -140,6 +169,35 @@ pub struct CastSpec {
     /// field is required so callers cannot silently fall back —
     /// set it explicitly even when adopting the default.
     pub mass_budget_kg: f64,
+
+    /// Feature flag for the scan-mesh-direct `plug_layer_0` path
+    /// (S1 of `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md`).
+    ///
+    /// When `Some`, [`Self::export_molds_v2`] routes the layer-0
+    /// plug body through [`crate::build_plug_body_mesh`] (a direct
+    /// copy of the cf-scan-prep cleaned scan mesh, scaled to mm),
+    /// bypassing the [`Self::plug`] SDF → marching-cubes path for
+    /// that one layer. The post-MC mating-feature transforms from
+    /// [`crate::add_plug_pins`] still apply.
+    ///
+    /// When `None` (default for all pre-S1 callers), the legacy
+    /// SDF/MC pipeline runs for every plug — preserves all
+    /// pre-S1 bit-for-bit output.
+    ///
+    /// **Unit**: the wrapped mesh is in **meters** (cf-design /
+    /// cf-scan-prep frame; same allocation `SharedScanSdf::mesh()`
+    /// hands out). The helper scales to mm at use time.
+    ///
+    /// **Caller responsibility**: this is safe to set only when
+    /// the scan-derived [`Self::plug`] solid corresponds to a
+    /// zero-offset rebuild of the scan (i.e., `cavity_inset_m ==
+    /// 0`). For non-zero inset the plug Solid shrinks inward by
+    /// the inset amount, but the scan mesh does not — using
+    /// scan-mesh-direct in that case would emit a plug oversized
+    /// by `cavity_inset_m`. S2 of the recon extends this path to
+    /// the offset cases with an explicit per-layer offset
+    /// parameter.
+    pub scan_mesh_for_plug_layer_0: Option<Arc<IndexedMesh>>,
 }
 
 /// Per-layer output of a successful [`CastSpec::export_molds`] run.
@@ -281,16 +339,18 @@ pub struct V2LayerReport {
 
 /// Workshop platform STL.
 ///
-/// A flat slab with a pocket carved into the top surface that
-/// accepts the T-bar protrusion from the assembled mold. The mold
-/// sits on this platform during pour + cure so it rests flat
-/// (T-bar in the pocket) even though the T-bar extends below the
-/// cup outer face.
+/// A flat slab the workshop user sets the assembled mold on
+/// during pour + cure (level + spill catchment). Pre-S4 of the
+/// FDM-friendly geometry arc the slab carried a blind pocket
+/// sized to clear the plug's T-bar protrusion through the cup
+/// wall; post-S4 the plug-floor lock is interior to the cavity
+/// (no through-hole, no protrusion) so the slab is bare.
 ///
 /// Generated only when the ribbon's `plug_pins` field is
-/// [`crate::plug::PlugPinKind::Axial`] AND `include_t_bar = true`
-/// (the configuration that produces a T-bar protrusion needing
-/// support). Single STL per cast, shared across all layers.
+/// [`crate::plug::PlugPinKind::Axial`] (i.e., the assembled mold
+/// will be installed via the plug-floor lock; ribbons without
+/// plug pins skip the platform artifact). Single STL per cast,
+/// shared across all layers.
 #[derive(Debug, Clone)]
 pub struct PlatformArtifact {
     /// Filesystem path of the written `platform.stl`.
@@ -325,11 +385,56 @@ pub struct FunnelArtifact {
     pub summary: MeshSummary,
 }
 
+/// Per-layer gasket mold artifact emitted when the ribbon has a
+/// [`GasketKind::Mold`](crate::GasketKind) enabled. S3 of the seam-
+/// gasket-mold arc; see `docs/CF_CAST_SEAM_GASKET_MOLD_RECON.md`
+/// §G-7 for the schema.
+///
+/// Each layer N gets its own `gasket_mold_layer_N.stl`, with the
+/// channel tracing the layer's body-cavity perimeter at the seam
+/// plane (per [`crate::compose_gasket_mold_solid`]). Trays are
+/// translated laterally outside the cup-piece bounding region so
+/// cf-view assembly mode stays readable (cup pieces + gasket molds
+/// don't interpenetrate visually).
+#[derive(Debug, Clone)]
+pub struct GasketMoldArtifact {
+    /// Innermost-first layer index (parallel to
+    /// [`CastSpec::layers`]).
+    pub layer_index: usize,
+    /// Filesystem path of the written `gasket_mold_layer_N.stl`.
+    pub path: PathBuf,
+    /// F4 validation result for the gasket mold.
+    pub validation: PrintValidation,
+    /// Post-export mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
+/// Workshop printable dowel-array artifact.
+///
+/// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Single
+/// STL per cast containing N cylindrical PLA dowels (one per
+/// [`crate::dowel_hole::DowelHoleSpec::count`]) the workshop user
+/// prints once + re-uses across all per-layer mating events to
+/// register the two cup-halves at assembly time. Translated
+/// laterally outside the cup-piece bounding region so cf-view
+/// assembly mode stays readable.
+#[derive(Debug, Clone)]
+pub struct DowelArtifact {
+    /// Filesystem path of the written `dowel.stl`.
+    pub path: PathBuf,
+    /// F4 validation result for the dowel array.
+    pub validation: PrintValidation,
+    /// Post-export mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
 /// Summary of a successful [`CastSpec::export_molds_v2`] run.
 ///
 /// `layers.len() * 3` STLs total (2 piece STLs + 1 plug STL per
 /// layer), plus a single `platform.stl` if the ribbon enables
-/// T-bar plug-pin locking, plus a single `funnel.stl` if the
+/// plug-floor-lock retention, plus a single `funnel.stl` if the
 /// ribbon has a pour gate enabled. All pieces, plugs, and the
 /// optional platform + funnel clear the F4 gate before any STL
 /// lands on disk (pre-write atomicity, same scope as v1's
@@ -340,15 +445,29 @@ pub struct V2MoldExportReport {
     /// mold pieces + 1 plug.
     pub layers: Vec<V2LayerReport>,
     /// Optional workshop platform artifact, present when the
-    /// ribbon's plug-pin kind has `include_t_bar = true`. The
-    /// platform's pocket matches the T-bar protrusion so the
-    /// assembled mold sits flat on the workbench during pour +
-    /// cure.
+    /// ribbon's plug-pin kind is
+    /// [`crate::plug::PlugPinKind::Axial`]. Post-S4 of the FDM-
+    /// friendly geometry arc this is a bare flat support slab
+    /// (pre-S4 it had a blind pocket sized to clear the plug's
+    /// T-bar protrusion; the plug-floor lock now lives interior
+    /// to the cavity so no protrusion needs clearing).
     pub platform: Option<PlatformArtifact>,
     /// Optional workshop pour funnel artifact, present when the
     /// ribbon has a [`crate::pour::PourGateKind::Default`] pour
     /// gate enabled. Self-aligning nipple sized to the pour-gate Ø.
     pub funnel: Option<FunnelArtifact>,
+    /// Per-layer gasket mold artifacts, one per layer (innermost-
+    /// first; parallel to [`Self::layers`]). Empty when the ribbon
+    /// has [`crate::GasketKind::None`] (no gasket emission); length
+    /// = `layers.len()` when [`crate::GasketKind::Mold`] is enabled.
+    /// S3 of the seam-gasket-mold arc.
+    pub gasket_molds: Vec<GasketMoldArtifact>,
+    /// Optional workshop dowel-array artifact, present when the
+    /// ribbon has [`crate::dowel_hole::DowelHoleKind::Auto`] enabled.
+    /// Single STL containing N PLA dowel cylinders sized to slide-
+    /// fit into the cup-piece mating-face dowel-hole pockets. §M-S2
+    /// of [[project-cf-cast-unified-mating-plane-recon]].
+    pub dowel: Option<DowelArtifact>,
 }
 
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
@@ -423,9 +542,9 @@ struct PendingPlug {
 
 /// Buffered v2 workshop platform mesh + validation, held in memory
 /// alongside [`PendingPiece`]s + [`PendingPlug`]s until every
-/// artifact clears the F4 gate. Generated only when the ribbon's
-/// plug-pin kind enables the T-bar; one platform per cast (shared
-/// across layers).
+/// artifact clears the F4 gate. Generated only when the ribbon
+/// enables plug pins ([`crate::plug::PlugPinKind::Axial`]); one
+/// platform per cast (shared across layers).
 struct PendingPlatform {
     mesh: IndexedMesh,
     validation: PrintValidation,
@@ -437,6 +556,25 @@ struct PendingPlatform {
 /// has a pour gate enabled; one funnel per cast (shared across
 /// layers).
 struct PendingFunnel {
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Buffered v2 per-layer gasket mold mesh + validation. Generated
+/// only when the ribbon has a [`crate::GasketKind::Mold`] enabled;
+/// one entry per layer.
+struct PendingGasket {
+    layer_index: usize,
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Buffered v2 workshop dowel-array mesh + validation. Generated only
+/// when the ribbon has [`crate::dowel_hole::DowelHoleKind::Auto`]
+/// enabled; single artifact per cast.
+struct PendingDowel {
     mesh: IndexedMesh,
     validation: PrintValidation,
     path: PathBuf,
@@ -806,6 +944,8 @@ impl CastSpec {
         let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
         let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
         let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
+        let pending_gaskets = mesh_and_gate_v2_gaskets(self, ribbon, out_dir)?;
+        let pending_dowel = mesh_and_gate_v2_dowel(self, ribbon, out_dir)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
@@ -814,24 +954,32 @@ impl CastSpec {
 
         let platform_count = usize::from(pending_platform.is_some());
         let funnel_count = usize::from(pending_funnel.is_some());
-        let stl_count = self.layers.len() * 3 + platform_count + funnel_count;
+        let gasket_count = pending_gaskets.len();
+        let dowel_count = usize::from(pending_dowel.is_some());
+        let stl_count =
+            self.layers.len() * 3 + platform_count + funnel_count + gasket_count + dowel_count;
         eprintln!(
             "[cf-cast] writing {stl_count} STLs to {out}…",
             out = out_dir.display()
         );
-        let (layers_out, platform_out, funnel_out) = write_v2_artifacts(
-            self,
-            pending_pieces,
-            pending_plugs,
-            pending_platform,
-            pending_funnel,
-            pour_volumes,
-        )?;
+        let (layers_out, platform_out, funnel_out, gasket_molds_out, dowel_out) =
+            write_v2_artifacts(
+                self,
+                pending_pieces,
+                pending_plugs,
+                pending_platform,
+                pending_funnel,
+                pending_gaskets,
+                pending_dowel,
+                pour_volumes,
+            )?;
 
         Ok(V2MoldExportReport {
             layers: layers_out,
             platform: platform_out,
             funnel: funnel_out,
+            gasket_molds: gasket_molds_out,
+            dowel: dowel_out,
         })
     }
 }
@@ -845,35 +993,58 @@ impl CastSpec {
 /// large scans aren't black-boxed for minutes between "loaded
 /// design" and the final STL writes. Format:
 /// `[cf-cast] layer N piece M (Negative|Positive) — composed + meshed in Xs, F4 gate passed in Ys`.
+///
+/// **Parallelization (S2 of `docs/CF_CAST_PARALLEL_MESHING_RECON.md`):**
+/// per-layer tasks via `rayon::par_iter`; per-piece `(Negative,
+/// Positive)` within a layer via `rayon::join`. Total parallelism =
+/// `2 * layer_count` (6 tasks for the production 3-layer cast).
+/// Canonical-first-error semantics matching the serial pipeline's
+/// `?`-on-first-error contract: rayon's `collect::<Result<Vec<_>,
+/// _>>` short-circuits on the first error in original-layer order;
+/// within a layer, `rayon::join` returns both results and we
+/// `?`-propagate (Negative first per canonical iteration ordering).
+/// Pre-write atomicity preserved by construction.
 fn mesh_and_gate_v2_pieces(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Vec<[PendingPiece; 2]>, CastError> {
+    use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+
     let layer_count = spec.layers.len();
-    let mut pending_layers = Vec::with_capacity(layer_count);
-    for (layer_index, layer) in spec.layers.iter().enumerate() {
-        let neg = mesh_and_gate_v2_piece(
-            spec,
-            ribbon,
-            layer,
-            layer_index,
-            PieceSide::Negative,
-            out_dir,
-            layer_count,
-        )?;
-        let pos = mesh_and_gate_v2_piece(
-            spec,
-            ribbon,
-            layer,
-            layer_index,
-            PieceSide::Positive,
-            out_dir,
-            layer_count,
-        )?;
-        pending_layers.push([neg, pos]);
-    }
-    Ok(pending_layers)
+    spec.layers
+        .par_iter()
+        .enumerate()
+        .map(
+            |(layer_index, layer)| -> Result<[PendingPiece; 2], CastError> {
+                let (neg_res, pos_res) = rayon::join(
+                    || {
+                        mesh_and_gate_v2_piece(
+                            spec,
+                            ribbon,
+                            layer,
+                            layer_index,
+                            PieceSide::Negative,
+                            out_dir,
+                            layer_count,
+                        )
+                    },
+                    || {
+                        mesh_and_gate_v2_piece(
+                            spec,
+                            ribbon,
+                            layer,
+                            layer_index,
+                            PieceSide::Positive,
+                            out_dir,
+                            layer_count,
+                        )
+                    },
+                );
+                Ok([neg_res?, pos_res?])
+            },
+        )
+        .collect::<Result<Vec<[PendingPiece; 2]>, CastError>>()
 }
 
 /// Compose + mesh + F4-gate a single piece. Extracted so
@@ -890,7 +1061,7 @@ fn mesh_and_gate_v2_piece(
 ) -> Result<PendingPiece, CastError> {
     let t_compose = std::time::Instant::now();
     let (piece_solid, mating_transforms) =
-        compose_piece_solid(&layer.body, &spec.bounding_region, ribbon, piece_side)?;
+        compose_piece_solid(&layer.body, spec.wall_thickness_m, ribbon, piece_side)?;
     let target = CastTarget::MoldPiece {
         layer_index,
         piece_side,
@@ -937,67 +1108,130 @@ fn mesh_and_gate_v2_piece(
 /// then mesh + F4-gate. Each layer's plug matches the next-inner
 /// silicone shell's outer surface, so the detachable per-layer
 /// casts produce nesting cured tubes.
+///
+/// **Parallelization (S2 of `docs/CF_CAST_PARALLEL_MESHING_RECON.md`):**
+/// per-layer tasks via `rayon::par_iter`. Same canonical-first-error
+/// `collect::<Result<Vec<_>, _>>` pattern as the gasket + cup-piece
+/// pipelines; pre-write atomicity preserved.
 fn mesh_and_gate_v2_plugs(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Vec<PendingPlug>, CastError> {
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
     let layer_count = spec.layers.len();
-    let mut pending = Vec::with_capacity(layer_count);
-    for layer_index in 0..layer_count {
-        let t_compose = std::time::Instant::now();
-        let base_plug = if layer_index == 0 {
-            spec.plug.clone()
-        } else {
-            spec.layers[layer_index - 1].body.clone()
-        };
-        let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
-        let target = CastTarget::Plug {
-            layer_index: Some(layer_index),
-        };
-        let mesh = solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?;
-        let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
-        let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-        let path = out_dir.join(plug_layer_filename(layer_index));
-        let t_gate = std::time::Instant::now();
-        let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
-        let gate_s = t_gate.elapsed().as_secs_f64();
-        let blocking = blocking_critical_count(&validation, target);
-        if blocking > 0 {
-            return Err(CastError::PrintabilityCritical {
-                target,
-                issue_count: blocking,
+    (0..layer_count)
+        .into_par_iter()
+        .map(|layer_index| -> Result<PendingPlug, CastError> {
+            let t_compose = std::time::Instant::now();
+            let base_plug = if layer_index == 0 {
+                spec.plug.clone()
+            } else {
+                spec.layers[layer_index - 1].body.clone()
+            };
+            let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
+            let target = CastTarget::Plug {
+                layer_index: Some(layer_index),
+            };
+            // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
+            // feature flag is set, layer 0 bypasses the SDF → MC
+            // pipeline and copies the cf-scan-prep cleaned scan mesh
+            // directly. Mating-feature transforms still apply post-
+            // copy (cap-plane SeamTrim + plug-lock pyramid union).
+            // Layers 1+ stay on the SDF/MC path until S2 of the
+            // recon extends scan-mesh-direct to the offset cases.
+            //
+            // Caveat: `add_plug_pins` is currently pure-transforms
+            // (returns its `base_plug` input unchanged + a Vec of
+            // mating transforms), so discarding `plug_solid` on the
+            // scan-mesh-direct branch is just a cheap `Solid::clone`
+            // waste. If `add_plug_pins` ever re-grows SDF-side
+            // composition (e.g., a §G-7-style plug-shaft re-added
+            // pre-MC), the discard would silently skip that
+            // composition on the scan-mesh-direct path — pull the
+            // mating-transforms construction out independently then.
+            let (mut mesh, path_label) =
+                match (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
+                    (0, Some(scan_mesh)) => (build_plug_body_mesh(scan_mesh), "scan-mesh-direct"),
+                    _ => (
+                        solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?,
+                        "compose+MC",
+                    ),
+                };
+            // S1.1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md (recon §SMD-7
+            // follow-up #1): the cf-scan-prep cleaned scan mesh fails
+            // manifold3d's `indexed_mesh_to_manifold` precondition
+            // ("every edge shared by exactly two faces") even after
+            // cf-scan-prep's STL serialization. Welds the soup back
+            // into shared-index topology so manifold3d's
+            // `indexed_mesh_to_manifold` accepts the mesh. See
+            // `repair_scan_mesh_for_mesh_csg`'s docstring for the
+            // full S1.1 history (baby_shark + centroid-fan upstream
+            // fixes mean this repair can stay weld-only).
+            let repair_summary = if path_label == "scan-mesh-direct" {
+                Some(
+                    repair_scan_mesh_for_mesh_csg(&mut mesh)
+                        .map_err(|source| CastError::ScanMeshRepair { target, source })?,
+                )
+            } else {
+                None
+            };
+            let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
+            let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+            let path = out_dir.join(plug_layer_filename(layer_index));
+            let t_gate = std::time::Instant::now();
+            let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+            let gate_s = t_gate.elapsed().as_secs_f64();
+            let blocking = blocking_critical_count(&validation, target);
+            if blocking > 0 {
+                return Err(CastError::PrintabilityCritical {
+                    target,
+                    issue_count: blocking,
+                    path,
+                });
+            }
+            let repair_note = repair_summary
+                .map(|s| {
+                    format!(
+                        ", repair welds={} degens={} dupes={} unref={} holes={}",
+                        s.base.vertices_welded,
+                        s.base.degenerates_removed,
+                        s.base.duplicates_removed,
+                        s.base.unreferenced_removed,
+                        s.holes_filled,
+                    )
+                })
+                .unwrap_or_default();
+            eprintln!(
+                "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
+                 — {path_label} {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
+                 ({verts} verts / {faces} faces){repair_note}",
+                layer_count_minus_1 = layer_count.saturating_sub(1),
+                verts = mesh.vertices.len(),
+                faces = mesh.faces.len(),
+            );
+            Ok(PendingPlug {
+                layer_index,
+                mesh,
+                validation,
                 path,
-            });
-        }
-        eprintln!(
-            "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
-             — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
-            layer_count_minus_1 = layer_count.saturating_sub(1),
-            verts = mesh.vertices.len(),
-            faces = mesh.faces.len(),
-        );
-        pending.push(PendingPlug {
-            layer_index,
-            mesh,
-            validation,
-            path,
-        });
-    }
-    Ok(pending)
+            })
+        })
+        .collect::<Result<Vec<PendingPlug>, CastError>>()
 }
 
 /// Mesh + F4-gate the workshop platform STL, or return
-/// `Ok(None)` when the ribbon's plug-pin kind doesn't enable a
-/// T-bar (no platform needed). Single artifact per cast.
+/// `Ok(None)` when the ribbon doesn't enable plug pins (no
+/// platform needed). Single artifact per cast.
 ///
 /// Uses a finer mesh-cell size than the rest of the cast
 /// ([`PLATFORM_MAX_CELL_SIZE_M`] capped at `spec.mesh_cell_size_m`)
-/// because the platform's pocket cross-section is small (e.g., a
-/// ~3 mm-deep crescent for iter-1's 6 mm-Ø T-bar) — at the cast's
-/// default 3 mm cells the pocket would be 1 cell deep and MC would
-/// fragment it. The platform solid is small + simple so the finer
-/// mesh costs ~1-2 s at most.
+/// as a defensive carry-over from the pre-S4 era (the slab carried
+/// a blind pocket for the plug's T-bar protrusion that needed
+/// sub-default cell resolution to mesh cleanly). Post-S4 the slab
+/// is bare and the cap is no longer load-bearing for correctness,
+/// just over-resolution; deletion deferred to S8.
 fn mesh_and_gate_v2_platform(
     spec: &CastSpec,
     ribbon: &Ribbon,
@@ -1041,16 +1275,16 @@ fn mesh_and_gate_v2_platform(
 }
 
 /// Cap on the mesh-cell size used for the platform's marching-cubes
-/// pass. The platform's pocket cross-section (for typical workshop
-/// geometries: a ~3 mm-deep crescent absorbing the T-bar's protrusion
-/// below the cup outer face) is too small for the cast's default
-/// 3 mm cells to resolve cleanly — at 3 mm cells, the pocket would
-/// be ~1 cell deep and MC would fragment it. 1.5 mm cells give
-/// ~2× the radial resolution and reliably mesh the pocket as a
-/// continuous concave feature. The platform solid is small +
-/// simple (cuboid - cylinder) so the finer mesh costs ~1-2 s at
-/// most; effectively free relative to the cast's main meshing
-/// time.
+/// pass. Pre-S4 of the FDM-friendly geometry arc the platform's
+/// blind T-bar pocket (~3 mm-deep crescent absorbing the plug's
+/// T-bar protrusion through the cup wall) required this sub-default
+/// cell size to resolve cleanly — at 3 mm cells the pocket would
+/// be ~1 cell deep and MC would fragment it. Post-S4 the plug-floor
+/// lock is interior to the cavity (no protrusion → bare slab, no
+/// pocket); the cap is retained as a defensive over-resolution
+/// margin pending workshop iter-3 print validation, and is
+/// candidate for deletion in S8 once the bare-slab approach is
+/// confirmed.
 const PLATFORM_MAX_CELL_SIZE_M: f64 = 0.0015;
 
 /// Mesh + F4-gate the workshop pour funnel STL, or return
@@ -1102,6 +1336,73 @@ fn mesh_and_gate_v2_funnel(
     }))
 }
 
+/// Mesh + F4-gate the workshop printable dowel-array STL, or return
+/// `Ok(None)` when the ribbon has no dowel-hole spec enabled (no
+/// dowels needed). Single artifact per cast (re-used across all
+/// per-layer mating events). §M-S2 of
+/// [[project-cf-cast-unified-mating-plane-recon]].
+///
+/// Uses [`DOWEL_MAX_CELL_SIZE_M`] for the same MC-resolution reason
+/// as the funnel: the default 3 mm dowel diameter would mesh as 1
+/// cell radial at the cast's 3 mm cells (too coarse for a smooth
+/// cylindrical surface). 0.5 mm cells give 6 cells radial = smooth
+/// cylinder + sub-mm wall fidelity. Dowel array is small (≤ 25 mm
+/// X × 3 mm Y × 9 mm Z) so finer cells cost ~1-3 s.
+///
+/// Translates the dowel array laterally in cast +X past the
+/// bounding region (similar pattern to the gasket molds) so cf-view
+/// assembly mode renders without overlapping the cup pieces.
+fn mesh_and_gate_v2_dowel(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Option<PendingDowel>, CastError> {
+    let Some(dowel_spec) = ribbon.dowel_hole.spec() else {
+        return Ok(None);
+    };
+    let region_bounds = spec
+        .bounding_region
+        .bounds()
+        .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
+    // Lay the dowel array out alongside the bounding region in +X;
+    // 30 mm clearance keeps it off the gasket-mold trays (which sit
+    // even further out in +X at base_offset_x in
+    // `mesh_and_gate_v2_gaskets`).
+    let offset_x = region_bounds.max.x + 0.030;
+    let t_compose = std::time::Instant::now();
+    let target = CastTarget::Dowel;
+    let Some(mesh) = crate::dowel::build_dowel_array_mesh(dowel_spec, offset_x) else {
+        return Ok(None);
+    };
+    let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+    let path = out_dir.join("dowel.stl");
+    let t_gate = std::time::Instant::now();
+    let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+    let gate_s = t_gate.elapsed().as_secs_f64();
+    let blocking = blocking_critical_count(&validation, target);
+    if blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target,
+            issue_count: blocking,
+            path,
+        });
+    }
+    eprintln!(
+        "[cf-cast] dowel — analytic 32-segment cylinders {compose_mesh_s:.2}s, \
+         F4 {gate_s:.1}s ({verts} verts / {faces} faces, {count} dowels) — \
+         offset_x = {offset_mm:.1} mm",
+        verts = mesh.vertices.len(),
+        faces = mesh.faces.len(),
+        count = dowel_spec.count,
+        offset_mm = offset_x * 1000.0,
+    );
+    Ok(Some(PendingDowel {
+        mesh,
+        validation,
+        path,
+    }))
+}
+
 /// Cap on the mesh-cell size used for the funnel's MC pass.
 ///
 /// The funnel's nipple wall is 1 mm at iter-1 dimensions —
@@ -1113,6 +1414,125 @@ fn mesh_and_gate_v2_funnel(
 /// free vs the cast's main meshing time.
 pub const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
 
+/// Lateral clearance (meters) between the cup-piece bounding region
+/// and the leftmost gasket-mold tray, AND between consecutive gasket-
+/// mold trays along the +X stacking axis. 10 mm picked so cf-view
+/// assembly mode shows visible air-gap between the cup pieces and
+/// each gasket mold (no visual ambiguity about which artifact is
+/// which) and between adjacent gasket molds.
+const GASKET_LAYOUT_CLEARANCE_M: f64 = 0.010;
+
+/// Per-layer compose + MC-mesh + F4-gate the gasket molds, applying
+/// the lateral offset translation that shifts each layer N's tray
+/// outside the cup-piece bounding region along +X (cf-view assembly
+/// mode readability per S1 cold-read pass-1 carryover).
+///
+/// Returns an empty `Vec` when `ribbon.gasket` is
+/// [`crate::GasketKind::None`]; returns `Vec<PendingGasket>` with
+/// `spec.layers.len()` entries (innermost-first, parallel to
+/// [`CastSpec::layers`]) when [`crate::GasketKind::Mold`] is set.
+///
+/// Layout formula: with `tray_size_x = bounding_region.size().x +
+/// 2 * spec.tray_margin_m` (the gasket tray's X extent before
+/// translation), layer N's tray-center sits at
+/// `(0.5 * (bounding_region.size().x + tray_size_x) +
+/// GASKET_LAYOUT_CLEARANCE_M) + N * (tray_size_x +
+/// GASKET_LAYOUT_CLEARANCE_M)` along +X (Y + Z unchanged). Adjacent
+/// trays are separated by `GASKET_LAYOUT_CLEARANCE_M` air-gap.
+///
+/// **Parallelization (S1 of `docs/CF_CAST_PARALLEL_MESHING_RECON.md`):**
+/// per-layer tasks run via `rayon::par_iter`. Each layer's compose +
+/// MC mesh + F4 gate is an input-independent unit (no shared mutable
+/// state); rayon's `collect::<Result<Vec<_>, _>>` preserves
+/// canonical-first-error semantics (matches the serial pipeline's
+/// `?`-on-first-error contract). Pre-write atomicity preserved by
+/// construction — all `PendingGasket` results land in the returned
+/// `Vec` before [`write_v2_artifacts`] runs.
+///
+/// Logging: the per-layer `eprintln!` progress lines may interleave
+/// across rayon tasks. Per recon §P-6 this is the S1 simplification;
+/// S3 of the parallel-meshing arc adds per-unit log buffering for
+/// canonical-order log flushing.
+fn mesh_and_gate_v2_gaskets(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Vec<PendingGasket>, CastError> {
+    use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+
+    let Some(gasket_spec) = ribbon.gasket.spec() else {
+        return Ok(Vec::new());
+    };
+    let region_bounds = spec
+        .bounding_region
+        .bounds()
+        .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
+    let bounding_size_x = region_bounds.size().x;
+    let tray_size_x = 2.0_f64.mul_add(gasket_spec.tray_margin_m, bounding_size_x);
+    let base_offset_x = 0.5_f64.mul_add(bounding_size_x + tray_size_x, GASKET_LAYOUT_CLEARANCE_M);
+    let per_layer_step = tray_size_x + GASKET_LAYOUT_CLEARANCE_M;
+    let cell_size_m = spec.mesh_cell_size_m.min(GASKET_MAX_CELL_SIZE_M);
+
+    spec.layers
+        .par_iter()
+        .enumerate()
+        .map(|(layer_index, layer)| -> Result<PendingGasket, CastError> {
+            let target = CastTarget::GasketMold { layer_index };
+            let t_compose = std::time::Instant::now();
+            let (mold_solid, mating_transforms) =
+                compose_gasket_mold_solid(ribbon, &layer.body, &spec.bounding_region, gasket_spec)?;
+            // `layer_index as f64` precision-loss lint suppressed:
+            // this is a small-integer-to-f64 cast for layer counts
+            // (typically ≤ 5 per recon §G-2's per-layer scope). At
+            // u64::MAX (the alternative widening path) the value
+            // won't ever reach the f64 53-bit mantissa boundary in
+            // practice.
+            #[allow(clippy::cast_precision_loss)]
+            let offset_x = (layer_index as f64).mul_add(per_layer_step, base_offset_x);
+            let translated = mold_solid.translate(nalgebra::Vector3::new(offset_x, 0.0, 0.0));
+            let mesh = solid_to_mm_mesh(&translated, cell_size_m, target)?;
+            let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
+            let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+            let path = out_dir.join(gasket_mold_filename(layer_index));
+            let t_gate = std::time::Instant::now();
+            let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+            let gate_s = t_gate.elapsed().as_secs_f64();
+            let blocking = blocking_critical_count(&validation, target);
+            if blocking > 0 {
+                return Err(CastError::PrintabilityCritical {
+                    target,
+                    issue_count: blocking,
+                    path,
+                });
+            }
+            eprintln!(
+                "[cf-cast] gasket_mold layer {layer_index} — compose+MC \
+                 {compose_mesh_s:.1}s @ {cell_size_mm:.2} mm cells, F4 {gate_s:.1}s \
+                 ({verts} verts / {faces} faces) — offset_x = {offset_mm:.1} mm",
+                cell_size_mm = cell_size_m * 1000.0,
+                verts = mesh.vertices.len(),
+                faces = mesh.faces.len(),
+                offset_mm = offset_x * 1000.0,
+            );
+            Ok(PendingGasket {
+                layer_index,
+                mesh,
+                validation,
+                path,
+            })
+        })
+        .collect::<Result<Vec<PendingGasket>, CastError>>()
+}
+
+/// `gasket_mold_layer_{layer_index}.stl` — innermost-first indexing
+/// matches the v2 plug + mold-piece filename precedent (e.g.
+/// `plug_layer_{N}.stl`, `mold_layer_{N}_piece_{M}.stl`) so workshop
+/// users have a consistent layer-numbering convention across all
+/// per-layer artifacts.
+fn gasket_mold_filename(layer_index: usize) -> String {
+    format!("gasket_mold_layer_{layer_index}.stl")
+}
+
 /// Write every pending piece + per-layer plug + optional platform
 /// + optional funnel to disk and build the report structs.
 ///
@@ -1123,18 +1543,30 @@ pub const FUNNEL_MAX_CELL_SIZE_M: f64 = 0.001;
 /// Assumes `pending_pieces` and `pending_plugs` are both ordered
 /// innermost-first and parallel to `pour_volumes`. The function
 /// asserts this invariant via `layer_index` matching on each step.
+// Many-argument shape is intrinsic to v2's per-layer/per-piece
+// fan-out (pending pieces × pending plugs × pour volumes × spec
+// metadata all flow into a single artifact-write loop); factoring
+// into a struct would just shuffle the same fields into named
+// container without reducing call-site count. Line-count similarly
+// driven by the per-piece + per-plug write loops + atomicity-rollback
+// arms.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn write_v2_artifacts(
     spec: &CastSpec,
     pending_pieces: Vec<[PendingPiece; 2]>,
     pending_plugs: Vec<PendingPlug>,
     pending_platform: Option<PendingPlatform>,
     pending_funnel: Option<PendingFunnel>,
+    pending_gaskets: Vec<PendingGasket>,
+    pending_dowel: Option<PendingDowel>,
     pour_volumes: Vec<PourVolume>,
 ) -> Result<
     (
         Vec<V2LayerReport>,
         Option<PlatformArtifact>,
         Option<FunnelArtifact>,
+        Vec<GasketMoldArtifact>,
+        Option<DowelArtifact>,
     ),
     CastError,
 > {
@@ -1216,7 +1648,41 @@ fn write_v2_artifacts(
     } else {
         None
     };
-    Ok((layers_out, platform_out, funnel_out))
+    let mut gasket_molds_out = Vec::with_capacity(pending_gaskets.len());
+    for g in pending_gaskets {
+        save_stl(&g.mesh, &g.path, true).map_err(|source| CastError::MeshIo {
+            path: g.path.clone(),
+            source,
+        })?;
+        let summary = MeshSummary::from_mesh(&g.mesh);
+        gasket_molds_out.push(GasketMoldArtifact {
+            layer_index: g.layer_index,
+            path: g.path,
+            validation: g.validation,
+            summary,
+        });
+    }
+    let dowel_out = if let Some(d) = pending_dowel {
+        save_stl(&d.mesh, &d.path, true).map_err(|source| CastError::MeshIo {
+            path: d.path.clone(),
+            source,
+        })?;
+        let dowel_summary = MeshSummary::from_mesh(&d.mesh);
+        Some(DowelArtifact {
+            path: d.path,
+            validation: d.validation,
+            summary: dowel_summary,
+        })
+    } else {
+        None
+    };
+    Ok((
+        layers_out,
+        platform_out,
+        funnel_out,
+        gasket_molds_out,
+        dowel_out,
+    ))
 }
 
 /// Gate per-layer pour masses against [`CastSpec::mass_budget_kg`].
@@ -1286,63 +1752,99 @@ fn mold_piece_filename(layer_index: usize, piece_side: PieceSide) -> String {
 /// cf-cast's blocking-issue rule: which `Critical`-severity issues
 /// from `mesh-printability` should abort an export.
 ///
-/// Mold-cup geometry is inherently support-dependent (the cavity
-/// ceiling and the annular pour rim are downward-facing horizontal
-/// faces — `ExcessiveOverhang` + `LongBridge` always fire on a real
-/// open-top cup). `SelfIntersecting` reports a noise floor of ~100
-/// regions on marching-cubes output for any closed cuboid surface
-/// (verified by `baseline_cuboid_self_intersection_noise_floor` in
-/// this crate's test module); it does not reliably indicate a real
-/// defect at the cell sizes used by `cf-cast`.
+/// # Principle (the F4 framework rule)
 ///
-/// The remaining `Critical` types — geometry actually too big for the
-/// printer, broken topology, sub-min-wall thinness, CAD-leftover
-/// debris, or a sealed cavity that can't be poured — DO indicate a
-/// fixture or pipeline bug and abort the export. Warnings of every
-/// kind surface in the returned `PrintValidation` for caller
-/// inspection.
+/// **An F4 `Critical` blocks export iff the defect makes the target's
+/// FUNCTION fail.** Function depends on what the cast piece DOES in
+/// the workshop workflow — not on whether the geometry is
+/// dimensionally perfect.
 ///
-/// **Post-S4 cup-piece carve-out.** For `CastTarget::MoldPiece`
-/// (cup halves) the post-MC seam-trim cap intersects the curved
-/// body cavity surface at acute angles near the seam, producing
-/// thin slivers + small features + trapped-volume signals that
-/// recon §G5 + §7 categorize as expected-flake (informational,
-/// not blocking). The mating-face flatness invariant is verified
-/// mathematically in `piece::tests` and the physical print at S8
-/// remains authoritative. Sentinel issues (`NotWatertight` /
-/// `NonManifold` / `SelfIntersecting` / `ExceedsBuildVolume`) still
-/// block on cup pieces — those would indicate a real
-/// manifold3d regression on cup geometry rather than the
-/// curve-meets-flat-cap topology artifact.
+/// - **Mold cup pieces** function as liquid containers (they hold
+///   poured silicone through cure). Wall thinness under FDM min-
+///   extrusion-width → silicone leaks. Non-watertight → silicone
+///   leaks. Trapped volume → air pocket the silicone can't displace.
+///   These all break the function and block.
+/// - **Plug bodies** function as solid positive shapes that silicone
+///   is cast AROUND (the plug forms the device's body cavity). The
+///   plug prints SOLID — there are no walls. Surface "thin wall"
+///   features inherited from the input scan (sub-mm scan-acquisition
+///   noise where the captured surface comes near itself) are
+///   structurally part of a solid; FDM prints them as continuous
+///   material. They do not affect the cast. Likewise the scan's
+///   sub-mm surface features can't be "trapped volumes" in a solid.
+/// - **Platforms** + **registration pins** + **v1 monolithic molds**
+///   are regular CAD-emitted geometry, so a `ThinWall` there really
+///   IS a fixture bug (we accidentally emitted a wall under min-
+///   extrusion-width). Their full blocking set stays.
+/// - **Funnels** are disposable workshop pour-channel tools (gravity-
+///   driven viscous pour, 10-30 s per layer). The bent-spout funnel's
+///   MC-quantization-induced sub-mm features near the bowl/nipple
+///   fillet are not a workshop concern; carved out 2026-05-27 — see
+///   the per-target carve-outs block below.
+///
+/// # Universal non-blockers (apply to every target)
+///
+/// - `ExcessiveOverhang` + `LongBridge`: mold-cup cavity ceilings +
+///   annular pour rims always fire these (downward-facing horizontal
+///   faces are intrinsic to "cup" geometry). The workshop slicer
+///   handles them via auto-supports — never a fixture bug.
+/// - `SelfIntersecting`: marching-cubes output has a noise floor of
+///   ~100 self-intersecting regions on any closed cuboid surface
+///   (verified by `baseline_cuboid_self_intersection_noise_floor`
+///   in this crate's test module). Doesn't reliably indicate a real
+///   defect at cf-cast's cell sizes. Manifold3d's mesh-CSG bridge
+///   already rejects truly broken topology upstream.
+/// - `Other`: catch-all bucket; never blocks.
+///
+/// All `Warning` and `Info` severities surface in
+/// `PrintValidation::issues` for caller inspection but never block.
+///
+/// # Per-target carve-outs (function-driven)
+///
+/// - **`MoldPiece` (cup halves)**: post-MC seam-trim cap intersects the
+///   curved body cavity surface at acute angles near the seam,
+///   producing thin slivers + small features + trapped-volume signals
+///   that recon §G5 + §7 categorize as expected-flake. The mating-
+///   face flatness invariant is verified mathematically by
+///   `piece::tests::mating_face_is_mathematically_flat_and_coplanar`;
+///   physical print at S8 is the authoritative gate.
+/// - **Plug** (post-S1.1 2026-05-26): `ThinWall` + `SmallFeature` +
+///   `TrappedVolume` → non-blocking. Plug is solid, no walls; the
+///   scan-mesh-direct path (S1.1) inherits the input scan's surface
+///   noise verbatim, and ~100 `ThinWall` reports on a solid plug body
+///   are scan-acquisition-noise, not real fixture bugs.
+/// - **Funnel** (post-bent-spout 2026-05-27): `ThinWall` +
+///   `SmallFeature` + `TrappedVolume` → non-blocking. Disposable
+///   single-cast pour-channel tool, no structural load — the bent-
+///   spout redesign's bowl/nipple fillet trips sub-mm thinness
+///   heuristics that don't matter for ~10-30 s gravity-driven pour.
+///   `PrintabilityCritical` signals (`NonManifold`, `NotWatertight`,
+///   `ExceedsBuildVolume`) STILL block.
 fn is_blocking_critical(issue: &PrintIssue, target: CastTarget) -> bool {
     if issue.severity != IssueSeverity::Critical {
         return false;
     }
-    // Cup-piece (`MoldPiece`) F4 informs but does not gate — per
-    // `docs/CF_CAST_MATING_FEATURES_RECON.md` §G5 + §7 the post-MC
-    // mating-features cylinder ops (S5/S6/S7) intersect the curved
-    // body cavity surface at acute angles, producing thin slivers
-    // that ThinWall flags. recon §7 enumerates this as
-    // expected-flake (not a manifold3d regression); the mating-face
-    // flatness invariant is verified mathematically by
-    // `piece::tests::mating_face_is_mathematically_flat_and_coplanar`
-    // (recon-4 (P) production-fixture promotion of the §F-4 audit)
-    // and the physical print at S8 remains the authoritative gate.
-    // Sentinel issues (NotWatertight / NonManifold /
-    // SelfIntersecting) still block — those would indicate a real
-    // manifold3d regression on cup geometry.
-    //
-    // Plug, platform, funnel, and v1 mold targets keep the full
-    // blocking set: their geometry is regular and ThinWall there
-    // would be a legit defect, not a curve-meets-flat-cap
-    // artifact.
-    let is_cup_piece = matches!(target, CastTarget::MoldPiece { .. });
-    let cup_piece_expected_flake = is_cup_piece
-        && matches!(
-            issue.issue_type,
-            PrintIssueType::ThinWall | PrintIssueType::SmallFeature | PrintIssueType::TrappedVolume
-        );
-    if cup_piece_expected_flake {
+    // Function-driven carve-outs — see top-of-fn docstring for the
+    // principle. MoldPiece + Plug + Funnel excuse {ThinWall,
+    // SmallFeature, TrappedVolume} because none of these targets'
+    // FUNCTIONs (cup = liquid container; plug = solid positive shape;
+    // funnel = workshop pour-channel) are broken by sub-mm thinness /
+    // micro-features / scan-acquisition pockets. The funnel
+    // specifically: it's a disposable single-cast tool that handles
+    // gravity-driven viscous pour for ~10-30 s per layer; structural
+    // load-bearing isn't a workshop concern. Added Funnel to the
+    // carve-out 2026-05-27 after the bent-spout redesign created MC-
+    // quantization-induced sub-mm walls near the cavity overshoot
+    // regions (workshop user feedback drove the redesign + production
+    // cast.toml already loosens piece_min_wall_mm to 0.1 mm anyway).
+    let function_excuses_thinness = matches!(
+        target,
+        CastTarget::MoldPiece { .. } | CastTarget::Plug { .. } | CastTarget::Funnel
+    ) && matches!(
+        issue.issue_type,
+        PrintIssueType::ThinWall | PrintIssueType::SmallFeature | PrintIssueType::TrappedVolume
+    );
+    if function_excuses_thinness {
         return false;
     }
     matches!(
@@ -1461,6 +1963,7 @@ mod tests {
             }],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             // 2 mm cell size: keeps integration-test wall time on the
             // mold cup's marching-cubes grid (~51 k probes) and the
             // downstream F4 validation (O(faces²) self-intersection
@@ -1470,6 +1973,7 @@ mod tests {
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         }
     }
 
@@ -1504,6 +2008,7 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             // 12 mm cells: deliberately ugly geometry. Under llvm-cov
             // instrumentation, `mesh-printability::validate_for_printing`
             // runs multiple O(faces²) checks (self-intersection,
@@ -1514,6 +2019,7 @@ mod tests {
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let report = spec.export_molds(&out_dir).unwrap();
 
@@ -1594,9 +2100,11 @@ mod tests {
             ],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
 
         let report = spec.export_molds(&out_dir).unwrap();
@@ -1626,9 +2134,11 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-empty-layers");
@@ -1649,9 +2159,11 @@ mod tests {
             }],
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-error-unbounded");
@@ -1705,6 +2217,145 @@ mod tests {
             "clip max z should extend well above body z_max, got {}",
             clip_aabb.max.z
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn f4_carveout_policy_table_locks_per_target_blocking_set() {
+        // 2026-05-27 follow-up to the iter-1 ultra-review: lock the
+        // F4 `is_blocking_critical` per-target carve-out scope across
+        // all `CastTarget` variants and all `PrintIssueType` variants
+        // that could reach Critical severity. Any future change that
+        // widens the ThinWall/SmallFeature/TrappedVolume carve-out
+        // beyond MoldPiece + Plug + Funnel must update this table —
+        // the test fails loudly so the reviewer notices the policy
+        // shift. Equally any future change that ACCIDENTALLY drops
+        // the PrintabilityCritical floor (NonManifold etc.) for the
+        // carved targets is caught here.
+        use mesh_printability::{IssueSeverity, PrintIssue, PrintIssueType};
+        let carved_targets: &[CastTarget] = &[
+            CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: PieceSide::Negative,
+            },
+            CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: PieceSide::Positive,
+            },
+            CastTarget::Plug { layer_index: None },
+            CastTarget::Plug {
+                layer_index: Some(0),
+            },
+            CastTarget::Funnel,
+        ];
+        let strict_targets: &[CastTarget] = &[
+            CastTarget::LayerBody { layer_index: 0 },
+            CastTarget::Mold { layer_index: 0 },
+            CastTarget::Platform,
+            CastTarget::GasketMold { layer_index: 0 },
+            CastTarget::Dowel,
+        ];
+        // The PrintabilityCritical floor — blocks at Critical for
+        // EVERY target (carved or not).
+        let always_blocking = [
+            PrintIssueType::ExceedsBuildVolume,
+            PrintIssueType::NotWatertight,
+            PrintIssueType::NonManifold,
+        ];
+        // The function-driven carve-out scope — non-blocking on the
+        // carved-targets list, blocking on the strict-targets list.
+        let function_excused = [
+            PrintIssueType::ThinWall,
+            PrintIssueType::SmallFeature,
+            PrintIssueType::TrappedVolume,
+        ];
+        // Universal non-blockers — never block regardless of target
+        // or severity (covered by `is_blocking_critical`'s match-
+        // arm enumeration: anything not listed in the final
+        // `matches!` returns false).
+        let universal_nonblocking = [
+            PrintIssueType::ExcessiveOverhang,
+            PrintIssueType::LongBridge,
+            PrintIssueType::SelfIntersecting,
+            PrintIssueType::Other,
+            PrintIssueType::DetectorSkipped,
+        ];
+
+        let critical_issue = |t: PrintIssueType| {
+            PrintIssue::new(t, IssueSeverity::Critical, format!("synthetic-{t:?}"))
+        };
+
+        // Floor: every target blocks on PrintabilityCritical signals.
+        for target in carved_targets.iter().chain(strict_targets.iter()).copied() {
+            for &issue_type in &always_blocking {
+                let issue = critical_issue(issue_type);
+                assert!(
+                    super::is_blocking_critical(&issue, target),
+                    "PrintabilityCritical floor regression: target={target:?} \
+                     issue_type={issue_type:?} must block at Critical severity"
+                );
+            }
+        }
+
+        // Function-driven carve-out: ThinWall/SmallFeature/
+        // TrappedVolume are non-blocking on carved targets.
+        for target in carved_targets.iter().copied() {
+            for &issue_type in &function_excused {
+                let issue = critical_issue(issue_type);
+                assert!(
+                    !super::is_blocking_critical(&issue, target),
+                    "carve-out regression: target={target:?} \
+                     issue_type={issue_type:?} must NOT block at Critical \
+                     (function-driven carve-out per is_blocking_critical \
+                     docstring's per-target block)"
+                );
+            }
+        }
+
+        // Same three issue types DO block on strict targets — guards
+        // against accidental widening of the carve-out.
+        for target in strict_targets.iter().copied() {
+            for &issue_type in &function_excused {
+                let issue = critical_issue(issue_type);
+                assert!(
+                    super::is_blocking_critical(&issue, target),
+                    "carve-out over-widening regression: target={target:?} \
+                     issue_type={issue_type:?} must STILL block at Critical \
+                     (only MoldPiece + Plug + Funnel are carved)"
+                );
+            }
+        }
+
+        // Universal non-blockers: never block regardless of target.
+        for target in carved_targets.iter().chain(strict_targets.iter()).copied() {
+            for &issue_type in &universal_nonblocking {
+                let issue = critical_issue(issue_type);
+                assert!(
+                    !super::is_blocking_critical(&issue, target),
+                    "universal-non-blocker regression: target={target:?} \
+                     issue_type={issue_type:?} must never block (cf-cast \
+                     gate skips this issue type for every target per the \
+                     is_blocking_critical docstring's universal-non-\
+                     blockers block)"
+                );
+            }
+        }
+
+        // Severity gate: a sub-Critical instance of even the
+        // PrintabilityCritical types must not block.
+        for target in carved_targets.iter().chain(strict_targets.iter()).copied() {
+            for &issue_type in &always_blocking {
+                for sev in [IssueSeverity::Info, IssueSeverity::Warning] {
+                    let issue = PrintIssue::new(issue_type, sev, "synthetic");
+                    assert!(
+                        !super::is_blocking_critical(&issue, target),
+                        "severity-gate regression: target={target:?} \
+                         issue_type={issue_type:?} severity={sev:?} \
+                         must not block (only Critical severity blocks)"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1802,6 +2453,7 @@ mod tests {
             ],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             // 1 mm cells: pour-volume integration doesn't trigger
             // `validate_for_printing` (the heavy O(faces²) check),
             // so finer cells are tractable under llvm-cov here. 1 mm
@@ -1811,6 +2463,7 @@ mod tests {
             mesh_cell_size_m: 0.001,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         }
     }
 
@@ -1877,9 +2530,11 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let err = spec.compute_pour_volumes().unwrap_err();
         assert!(matches!(err, CastError::EmptyLayers));
@@ -1892,6 +2547,7 @@ mod tests {
         // any STL is written (pre-write atomicity scope).
         let spec = CastSpec {
             mass_budget_kg: 0.010,
+            scan_mesh_for_plug_layer_0: None,
             ..pour_volume_fixture()
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1987,9 +2643,11 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-f3-empty.md");
@@ -2021,9 +2679,11 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.060)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
@@ -2066,9 +2726,11 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.060)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
@@ -2094,6 +2756,7 @@ mod tests {
         // write_procedure. No `.md` file may land on disk.
         let spec = CastSpec {
             mass_budget_kg: 0.010,
+            scan_mesh_for_plug_layer_0: None,
             ..pour_volume_fixture()
         };
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2144,9 +2807,11 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let standalone_pours = spec.compute_pour_volumes().unwrap();
         let report = spec.export_molds(&out_dir).unwrap();
@@ -2165,7 +2830,6 @@ mod tests {
     // ----- v2 export_molds_v2 -------------------------------------
 
     use crate::pour::{PourGateKind, PourGateSpec};
-    use crate::registration::{PinSpec, RegistrationKind};
     use crate::ribbon::{PieceSide, Ribbon, SplitNormal};
     use nalgebra::Point3;
 
@@ -2183,9 +2847,11 @@ mod tests {
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -2231,6 +2897,125 @@ mod tests {
         assert!(layer.plug.summary.face_count > 0);
     }
 
+    /// Build a unit-cube `IndexedMesh` in **meters** with outward-CCW
+    /// face winding (post-§Q-5 convention). 8 verts × 12 tris;
+    /// centred at `origin` with half-extent `half_m`. Used only by
+    /// the scan-mesh-direct wiring smoke test below; production
+    /// scan-mesh-direct consumes `SharedScanSdf::mesh()` instead.
+    fn unit_cube_indexed_mesh_in_meters(
+        origin: nalgebra::Point3<f64>,
+        half_m: f64,
+    ) -> mesh_types::IndexedMesh {
+        use mesh_types::Point3 as MPoint3;
+        let mut mesh = mesh_types::IndexedMesh::new();
+        let xs = [origin.x - half_m, origin.x + half_m];
+        let ys = [origin.y - half_m, origin.y + half_m];
+        let zs = [origin.z - half_m, origin.z + half_m];
+        for &z in &zs {
+            for &y in &ys {
+                for &x in &xs {
+                    mesh.vertices.push(MPoint3::new(x, y, z));
+                }
+            }
+        }
+        // Vertex index layout (binary: zyx):
+        //   0=000, 1=001, 2=010, 3=011, 4=100, 5=101, 6=110, 7=111
+        // Outward CCW faces per cube:
+        let f = |a: u32, b: u32, c: u32| [a, b, c];
+        mesh.faces.extend_from_slice(&[
+            // -x (verts 0,2,6,4)
+            f(0, 6, 2),
+            f(0, 4, 6),
+            // +x (verts 1,5,7,3)
+            f(1, 3, 7),
+            f(1, 7, 5),
+            // -y (verts 0,1,5,4)
+            f(0, 1, 5),
+            f(0, 5, 4),
+            // +y (verts 2,6,7,3)
+            f(2, 6, 7),
+            f(2, 7, 3),
+            // -z (verts 0,2,3,1)
+            f(0, 2, 3),
+            f(0, 3, 1),
+            // +z (verts 4,5,7,6)
+            f(4, 7, 6),
+            f(4, 5, 7),
+        ]);
+        mesh
+    }
+
+    #[test]
+    fn export_molds_v2_routes_plug_layer_0_through_scan_mesh_direct_when_flag_set() {
+        // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md — gates the
+        // wiring: when `scan_mesh_for_plug_layer_0` is `Some`, the
+        // layer-0 plug STL must reflect the scan mesh's face count
+        // (post-mating-transforms), NOT the SDF→MC count.
+        //
+        // The v2_fixture has no pour_end_hint + no PlugPinKind, so
+        // `add_plug_pins` emits an empty transforms vec and
+        // `apply_mating_transforms` short-circuits to a pass-through;
+        // the plug STL therefore matches the synthetic cube mesh
+        // face count exactly (12 tris).
+        use std::sync::Arc;
+
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-scan-mesh-direct-flag-on");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (mut spec, ribbon) = v2_fixture();
+        // Cube centred where the capsule plug sits in the fixture
+        // (`translate(0, 0, 0.040)`), half-extent 0.012 m → 24 mm
+        // edges, comfortably inside F4's build-volume + minimum-wall
+        // checks.
+        let scan_mesh = unit_cube_indexed_mesh_in_meters(Point3::new(0.0, 0.0, 0.040), 0.012);
+        let expected_face_count = scan_mesh.faces.len();
+        spec.scan_mesh_for_plug_layer_0 = Some(Arc::new(scan_mesh));
+
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        let plug = &report.layers[0].plug;
+        assert!(plug.path.ends_with("plug_layer_0.stl"));
+        assert!(plug.path.exists());
+        assert_eq!(
+            plug.summary.face_count, expected_face_count,
+            "scan-mesh-direct plug should preserve the synthetic scan's 12 faces verbatim \
+             (no SDF→MC quantization, no mating-feature transforms because v2_fixture has no \
+             pour_end_hint / PlugPinKind)"
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_preserves_legacy_plug_path_when_scan_mesh_flag_is_none() {
+        // Pairs with `_when_flag_set` above: confirms the new field
+        // defaults to a no-op path. The plug STL face count should
+        // come from the SDF→MC pipeline at `mesh_cell_size_m` — for
+        // the capsule plug at 12 mm cells, that's far more than the
+        // synthetic-cube 12 faces, so the strict greater-than is a
+        // load-bearing distinguishing signal.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-scan-mesh-direct-flag-off");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (spec, ribbon) = v2_fixture();
+        assert!(spec.scan_mesh_for_plug_layer_0.is_none());
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        let plug = &report.layers[0].plug;
+        assert!(plug.path.exists());
+        assert!(
+            plug.summary.face_count > 12,
+            "SDF→MC path should produce many more faces than the synthetic 12 — got {}",
+            plug.summary.face_count
+        );
+    }
+
     #[test]
     fn export_molds_v2_writes_four_pieces_plus_plug_for_two_layer() {
         // 2 layers × 2 pieces = 4 piece STLs + 1 plug = 5 total.
@@ -2271,9 +3056,11 @@ mod tests {
             ],
             plug,
             bounding_region,
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -2354,9 +3141,11 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -2440,30 +3229,40 @@ mod tests {
     }
 
     #[test]
-    fn export_molds_v2_errors_when_bounding_region_unbounded() {
-        // Bounding-region must be finite for the ribbon half-space
-        // AABB — propagates through `compose_piece_solid` as
-        // `InfiniteBounds(BoundingRegion)`.
+    fn export_molds_v2_errors_when_layer_body_unbounded() {
+        // Post-§Q-1 (2026-05-26) the cup-piece's MC bounds derive
+        // from `layer_body.bounds()`, so an unbounded body (e.g., a
+        // bare plane) surfaces as
+        // `InfiniteBounds(LayerBody { layer_index: 0 })`. Pre-§Q-1
+        // this error path was driven by an unbounded bounding region;
+        // post-§Q-1 the bounding_region's finiteness is no longer
+        // load-bearing for cup-piece composition (still used by
+        // platform + gasket mold paths).
         let spec = CastSpec {
             layers: vec![CastLayer {
-                body: Solid::cuboid(Vector3::new(0.020, 0.020, 0.015)),
+                body: Solid::plane(Vector3::new(0.0, 0.0, 1.0), 0.0),
                 material: reference_material(),
             }],
             plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
-            bounding_region: Solid::plane(Vector3::new(0.0, 0.0, 1.0), 0.0),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/cf-cast-v2-unbounded");
+            .join("../../target/cf-cast-v2-unbounded-body");
         let err = spec.export_molds_v2(&ribbon, &out_dir).unwrap_err();
         assert!(
-            matches!(err, CastError::InfiniteBounds(CastTarget::BoundingRegion)),
-            "expected InfiniteBounds(BoundingRegion), got {err:?}"
+            matches!(
+                err,
+                CastError::InfiniteBounds(CastTarget::LayerBody { layer_index: 0 })
+            ),
+            "expected InfiniteBounds(LayerBody), got {err:?}"
         );
     }
 
@@ -2607,11 +3406,313 @@ mod tests {
         // v2-specific sections.
         assert!(md.contains("## Cast Geometry"));
         assert!(md.contains("## v2 Mold Assembly"));
+        // S6 print-prep sections (recon-1 §G-3 / §G-4 / §G-6 / §G-11 #3).
+        assert!(md.contains("## Per-Piece Print Orientation"));
+        assert!(md.contains("## First-Layer Chamfer Recipe"));
+        assert!(md.contains("## Target FDM Floor (Bambu A1 + Default + Jayo)"));
+        assert!(md.contains("## cf-view Sanity-Check Workflow"));
+        assert!(md.contains("## Cap-Plane Edge Chamfer (Expected MC Quantization)"));
+        assert!(md.contains("## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"));
+        // Seam-flange S3: clamp-protocol section is emitted
+        // unconditionally (header + prose adapt to FlangeKind +
+        // GasketKind + BoltPatternKind — iter-1 gasketless edit
+        // 2026-05-27 split the header into three variants).
+        assert!(md.contains("## Cup-Half Clamping"));
         // Sections shared with v1.
         assert!(md.contains("## Materials Summary"));
         assert!(md.contains("## Generic Smooth-On Guidance"));
         assert!(md.contains("## Per-Layer Procedure"));
         assert!(md.contains("## Mass Budget"));
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_includes_print_orientation_revision() {
+        // S6 anchors the §G-4 revision to seam-face-UP for cup pieces
+        // and dome-end-DOWN for plug pieces (cap-plane-face-DOWN
+        // explicitly called out as INVALID). These vocabulary
+        // anchors gate any future rewrite that silently flips the
+        // orientation guidance back to recon-1 §G-4's original
+        // (geometrically-falsified) seam-face-on-bed lock.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("Orient seam face UP"),
+            "cup-piece seam-face-UP guidance missing in: {md}"
+        );
+        assert!(
+            md.contains("Orient dome end DOWN"),
+            "plug-piece dome-end-DOWN guidance missing in: {md}"
+        );
+        assert!(
+            md.contains("Cap-plane-face-DOWN is INVALID"),
+            "plug cap-plane-face-DOWN INVALID call-out missing in: {md}"
+        );
+        assert!(
+            md.contains("§G-4 revision"),
+            "§G-4 revision header missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_lists_target_fdm_floor() {
+        // S6 anchors the recon-1 §G-3 consumer-FDM tolerance floor —
+        // Bambu A1 + Bambu Studio default settings + Jayo PLA. These
+        // exact vocabulary anchors gate any future rewrite that
+        // silently drifts the regression target toward
+        // calibrated-printer tolerances.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(md.contains("Bambu A1"), "Bambu A1 anchor missing in: {md}");
+        assert!(
+            md.contains("default settings"),
+            "default settings anchor missing in: {md}"
+        );
+        assert!(md.contains("Jayo"), "Jayo filament anchor missing in: {md}");
+        // Slicer baseline elephant-foot compensation must be 0.0 mm
+        // (the geometry includes chamfer bands per S6 §"First-Layer
+        // Chamfer Recipe"; non-zero slicer compensation would
+        // double-correct and tighten the pin/socket fit beyond
+        // the spec's diametral clearance budget).
+        assert!(
+            md.contains("Elephant-foot compensation**: 0.0 mm"),
+            "0.0 mm elephant-foot compensation guidance missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cap_plane_chamfer_section_accepts_edge_band() {
+        // 2026-05-25 (4') decision (post-bisect): the ~3 mm-wide
+        // cap-plane EDGE chamfer band (≤100 µm vertex deviation) is
+        // expected MC quantization at the body × cap-plane derivative
+        // discontinuity, NOT a defect. Workshop user must NOT try to
+        // sand it flat (below the §G-3 target FDM floor's
+        // slicer-to-print quantization; PR #255 era shipped with the
+        // same chamfer + workshop iter-2 accepted). Anchors gate any
+        // future rewrite that drifts the acceptance back toward a
+        // "fix it" framing (would re-open the paradigm-boundary
+        // hazard documented in recon-4 (P) §F-2 + bookmarked at
+        // `a8e3e056`). See `docs/CF_CAST_CAP_PLANE_FLATNESS_BOOKMARK.md`
+        // for the bisect protocol + spatial-radial-bin probe.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("expected geometry, not a defect"),
+            "cap-plane chamfer acceptance framing missing in: {md}"
+        );
+        assert!(
+            md.contains("Do NOT sand the cap-plane edge flat"),
+            "explicit don't-sand workshop guidance missing in: {md}"
+        );
+        assert!(
+            md.contains("PR #255 era shipped with the same chamfer band"),
+            "PR #255 acceptance-precedent anchor missing in: {md}"
+        );
+        // EDGE-vs-CENTER distinction is the diagnostic — if a future
+        // regression dropped this anchor, the workshop user would
+        // lose the heuristic for distinguishing the accepted edge
+        // chamfer from a hypothetical WHOLE-face regression.
+        assert!(
+            md.contains("EDGE not the CENTER"),
+            "EDGE-vs-CENTER diagnostic anchor missing in: {md}"
+        );
+        // The new section must explicitly disambiguate from the
+        // existing First-Layer Chamfer Recipe (different concept —
+        // deliberate PrismaticPin SDF primitive vs MC-quantization
+        // byproduct).
+        assert!(
+            md.contains("Distinct from `## First-Layer Chamfer Recipe`"),
+            "disambiguation from First-Layer Chamfer Recipe missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_seam_face_section_accepts_curved_centerline() {
+        // 2026-05-25 (4') decision for Finding D (seam-face dome+cap
+        // edge non-flatness): the curved-centerline seam face follows
+        // the polyline through the binormal direction, appearing
+        // "non-flat" in cf-view at the dome+cap ends where the cup
+        // body is narrowest. Per-tri max deviation ≤ 200 µm (one MC
+        // cell width); below FDM print resolution. Workshop user must
+        // NOT try to flatten globally (would break recon-4 (P) §F-4
+        // bit-precise halfspace invariant + cross-cup-half fit).
+        // Pin-independent per 2026-05-25 no-pins regen — cap-edge +
+        // dome-edge seam-face tris bit-precisely identical with-pins
+        // vs without-pins. Anchors gate any future drift back toward
+        // "fix it" framing.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("expected geometry, not a defect"),
+            "seam-face acceptance framing missing in: {md}"
+        );
+        assert!(
+            md.contains("The seam face follows the curved centerline"),
+            "curved-centerline root-cause anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("Do NOT try to flatten the seam face globally"),
+            "explicit don't-flatten workshop guidance missing in: {md}"
+        );
+        assert!(
+            md.contains("Registration-independent"),
+            "no-pins regen result anchor missing in: {md}"
+        );
+        // The section must explicitly disambiguate from the cap-plane
+        // chamfer section (different root cause: centerline curvature
+        // vs derivative discontinuity at flat × curved corner).
+        assert!(
+            md.contains("Distinct from `## Cap-Plane Edge Chamfer` above"),
+            "disambiguation from cap-plane chamfer section missing in: {md}"
+        );
+        // Finding C (socket-mouth obstruction) callout — workshop-judgment
+        // deferral, NOT a definitive (4') call. Anchors guard against
+        // the section getting rewritten to remove the deferral framing
+        // (workshop user needs the < 0.5 mm threshold + the file-it-off
+        // workshop instruction to make their cf-view triage decision).
+        assert!(
+            md.contains("plug-lock socket mouth") || md.contains("Plug-lock socket mouth"),
+            "Finding C socket-mouth callout missing in: {md}"
+        );
+        assert!(
+            md.contains("< 0.5 mm"),
+            "Finding C 0.5 mm workshop-acceptability threshold missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cup_half_clamping_default_ribbon_none_branch() {
+        // S3 of the seam-flange arc per recon §F-7. The default
+        // v2_procedure_fixture ribbon has FlangeKind::None +
+        // GasketKind::None (no `with_flange`/`with_gasket` call); the
+        // section must emit a hand-clamp fallback note with the
+        // explicit None vocabulary, NOT the 8-step protocol. Anchors
+        // gate any future drift that silently falls into the
+        // Plate+Mold branch when the ribbon is unenriched.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // (None, None) → "Gasketless" header (iter-1 2026-05-27
+        // header-branching edit; pre-edit was a single
+        // "with Gasket Installation" header for all branches).
+        assert!(
+            md.contains("## Cup-Half Clamping (Gasketless)"),
+            "gasketless clamp-section header missing in: {md}"
+        );
+        assert!(
+            md.contains("`FlangeKind::None`"),
+            "None-branch FlangeKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("hand-clamped"),
+            "hand-clamp fallback vocabulary missing in: {md}"
+        );
+        // Plate+Mold-only vocabulary must NOT appear when both kinds
+        // are None — guards against the dispatch falling through to
+        // the full-protocol branch.
+        assert!(
+            !md.contains("4-clamp / hand-tight + 1/8 turn"),
+            "Plate+Mold 8-step prose leaking into None+None branch: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cup_half_clamping_plate_plus_mold_protocol() {
+        // S3 of the seam-flange arc: with both FlangeKind::Plate +
+        // GasketKind::Mold (workshop iter-3 default after the cf-
+        // cast-cli `[flange]` + `[gasket]` blocks both default to
+        // enabled), the section must emit the full 8-step clamp-and-
+        // pour protocol with the quadrant + hand-tight + cure
+        // vocabulary. Anchors gate any future rewrite that drops a
+        // step or softens the over-tightening warning.
+        let (_spec, base_ribbon) = v2_procedure_fixture();
+        let ribbon = base_ribbon
+            .with_flange(crate::FlangeKind::Plate(crate::FlangeSpec::iter1()))
+            .with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+        let (spec, _) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("## Cup-Half Clamping with Gasket Installation"),
+            "clamp-section header missing in: {md}"
+        );
+        // Full-protocol vocabulary anchors.
+        assert!(
+            md.contains("`FlangeKind::Plate`"),
+            "Plate FlangeKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("`GasketKind::Mold`"),
+            "Mold GasketKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("recon §F-4 gasket-disjoint invariant"),
+            "§F-4 lateral-disjoint invariant anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("1. **Pour gasket silicone.**"),
+            "step 1 (gasket-silicone-pour) missing in: {md}"
+        );
+        assert!(
+            md.contains("5. **Apply C-clamps to the flange at 4 quadrant positions.**"),
+            "step 5 (4-quadrant C-clamp) missing in: {md}"
+        );
+        assert!(
+            md.contains("hand-tight + 1/8 turn"),
+            "hand-tight + 1/8 turn torque recipe missing in: {md}"
+        );
+        // Critical safety warning — workshop user must NOT over-
+        // tighten (gasket extrusion = loss of seal).
+        assert!(
+            md.contains("MUST avoid over-tightening"),
+            "over-tightening warning missing in: {md}"
+        );
+        assert!(
+            md.contains("Do NOT release"),
+            "do-not-release-during-cure warning missing in: {md}"
+        );
+        // Cold-read pass-1 (Finding A): Step 3 geometry must say
+        // "annular clearance gap between body cavity edge and flange
+        // inner edge", NOT "INSIDE the flange perimeter" (ambiguous
+        // — workshop user could put the gasket in the wrong ring).
+        assert!(
+            md.contains("annular clearance gap"),
+            "annular-gap geometry vocabulary missing in: {md}"
+        );
+        assert!(
+            !md.contains("INSIDE the flange perimeter"),
+            "ambiguous \"INSIDE the flange perimeter\" wording leaking back in: {md}"
+        );
+        // Cold-read pass-1 (Finding B): the predicted compression
+        // number must live in Step 5 (where clamps are applied),
+        // NOT Step 4 (cup-close only). Step 4 must explicitly
+        // distinguish "lightly seated" from full compression.
+        assert!(
+            md.contains("Full gasket compression is achieved in Step 5"),
+            "Step 4 must defer full compression to Step 5: {md}"
+        );
+        // Cold-read pass-1 (Finding C): silicone-on-silicone bond
+        // chemistry warning + scalpel-trim fallback present in
+        // Step 8 (platinum-cure silicones DO bond to each other at
+        // the lateral gasket↔main-pour interface).
+        assert!(
+            md.contains("chemically bonded to the cured silicone"),
+            "Step 8 silicone-bond chemistry warning missing in: {md}"
+        );
+        assert!(
+            md.contains("scalpel"),
+            "Step 8 scalpel-trim fallback missing in: {md}"
+        );
+        // None-branch vocabulary must NOT appear when both kinds are
+        // active — guards against the dispatch falling through to
+        // the hand-clamp fallback branch.
+        assert!(
+            !md.contains("`FlangeKind::None`"),
+            "None-branch FlangeKind anchor leaking into Plate+Mold branch: {md}"
+        );
     }
 
     #[test]
@@ -2628,6 +3729,180 @@ mod tests {
         // Each layer references its own per-layer plug (v2.1
         // detachable-shell architecture).
         assert!(md.contains("plug_layer_0.stl"));
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cup_half_clamping_plate_only_branch() {
+        // S3 cold-read pass-3 (S4 review test-coverage gap): the
+        // (FlangeKind::Plate, GasketKind::None) prose branch was
+        // written at S3 but never exercised by any test or by the
+        // workshop-default production regen. This test pins the
+        // branch's vocabulary so a future refactor can't silently
+        // collapse it into the None+None fallback (which would
+        // lose the "C-clamp the flange hand-tight only — no
+        // compressible silicone" safety guidance for casts that
+        // disable the gasket).
+        let (_spec, base_ribbon) = v2_procedure_fixture();
+        let ribbon = base_ribbon.with_flange(crate::FlangeKind::Plate(crate::FlangeSpec::iter1()));
+        let (spec, _) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // Plate-only branch heading vocabulary.
+        assert!(
+            md.contains("`FlangeKind::Plate`"),
+            "Plate FlangeKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("`GasketKind::None`"),
+            "None GasketKind anchor missing in Plate-only branch: {md}"
+        );
+        // Workshop safety: no gasket → hand-tight only (no compressible
+        // silicone to absorb over-tightening). Anchors the no-gasket
+        // safety guidance against silent removal.
+        assert!(
+            md.contains("hand-tight only"),
+            "Plate-only branch must explicitly say \"hand-tight only\" (no gasket safety): {md}"
+        );
+        assert!(
+            md.contains("stress-crack the flange"),
+            "Plate-only branch must warn about PLA stress-cracking under over-tight: {md}"
+        );
+        // Plate+Mold-only vocabulary must NOT appear (no 8-step
+        // protocol when gasket is disabled).
+        assert!(
+            !md.contains("1. **Pour gasket silicone.**"),
+            "Plate+Mold step 1 leaking into Plate-only branch: {md}"
+        );
+        assert!(
+            !md.contains("`FlangeKind::None`"),
+            "None FlangeKind anchor leaking into Plate-only branch: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cup_half_clamping_gasket_only_branch() {
+        // S3 cold-read pass-3 (S4 review test-coverage gap): the
+        // (FlangeKind::None, GasketKind::Mold) prose branch was
+        // written at S3 but never exercised by any test or by the
+        // workshop-default production regen. Workshop user disabling
+        // the flange but keeping the gasket needs the hand-clamping
+        // fallback guidance preserved.
+        let (_spec, base_ribbon) = v2_procedure_fixture();
+        let ribbon = base_ribbon.with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+        let (spec, _) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // Gasket-only branch heading vocabulary.
+        assert!(
+            md.contains("`GasketKind::Mold`"),
+            "Mold GasketKind anchor missing in: {md}"
+        );
+        assert!(
+            md.contains("`FlangeKind::None`"),
+            "None FlangeKind anchor missing in gasket-only branch: {md}"
+        );
+        // Workshop must hand-clamp the contoured surface; the
+        // predicted_compression_m target is preserved without a
+        // flange.
+        assert!(
+            md.contains("hand-clamped over its contoured outer surface"),
+            "gasket-only branch must specify hand-clamp on contoured surface: {md}"
+        );
+        assert!(
+            md.contains("`predicted_compression_m`"),
+            "gasket-only branch must reference predicted_compression_m target: {md}"
+        );
+        // Plate+Mold-only vocabulary must NOT appear (no 8-step
+        // protocol when flange is disabled).
+        assert!(
+            !md.contains("1. **Pour gasket silicone.**"),
+            "Plate+Mold step 1 leaking into gasket-only branch: {md}"
+        );
+        assert!(
+            !md.contains("`FlangeKind::Plate`"),
+            "Plate FlangeKind anchor leaking into gasket-only branch: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_per_layer_step_6_branches_on_ribbon_config() {
+        // S3 cold-read pass-2 (integration gap), iter-1 2026-05-27
+        // refactor: the per-layer procedure's Step 6 ("seat plug +
+        // close cup half + pour silicone") MUST emit the protocol
+        // specific to the ribbon's (gasket, bolt_pattern) combination,
+        // not a generic conditional cross-reference. Pre-iter-1 Step 6
+        // emitted a "for casts with X / for casts without X" sub-
+        // clause unconditionally, which (a) instructed workshop users
+        // with gasketless configs to install a gasket strip that
+        // didn't exist (C1) and (b) conflicted with the §B M5 bolt-
+        // pattern instructions (C2). Anchors gate any future regression
+        // that re-introduces the unconditional cross-reference.
+
+        // (None, None) fixture: Step 6 says "Close the second cup half
+        // over the plug directly... Apply the clamping protocol from
+        // the section above."
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("Close the second cup half over the plug directly"),
+            "(None,None) step 6 must say close directly: {md}"
+        );
+        assert!(
+            md.contains("Apply the clamping protocol from the section above"),
+            "(None,None) step 6 must point at the clamping section: {md}"
+        );
+        // The old unconditional cross-reference / sub-clause prose
+        // MUST NOT appear — these are the C1/C2 regression anchors.
+        assert!(
+            !md.contains("**For casts with the seam-flange + per-layer gasket geometry enabled**"),
+            "old unconditional gasket-enabled sub-clause must not leak: {md}"
+        );
+        assert!(
+            !md.contains("place the cured gasket strip"),
+            "gasketless step 6 must not mention placing a gasket strip: {md}"
+        );
+
+        // (Plate, Mold) ribbon: Step 6 says "Place the cured gasket
+        // strip on the Negative half's seam face per `## Cup-Half
+        // Clamping with Gasket Installation` above..."
+        let gasket_ribbon = ribbon
+            .clone()
+            .with_flange(crate::FlangeKind::Plate(crate::FlangeSpec::iter1()))
+            .with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+        let md_gasket =
+            crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &gasket_ribbon);
+        assert!(
+            md_gasket.contains("Place the cured gasket strip"),
+            "(Plate,Mold) step 6 must place the gasket strip: {md_gasket}"
+        );
+        assert!(
+            md_gasket.contains("`## Cup-Half Clamping with Gasket Installation` above"),
+            "(Plate,Mold) step 6 must cross-reference the gasket clamp section: {md_gasket}"
+        );
+
+        // (Plate, None) + bolt-pattern ribbon (iter-1 gasketless path):
+        // Step 6 says "install the §B M5 through-bolts per `### M5
+        // through-bolt clamp pattern (§B)` above..."
+        let bolt_ribbon = ribbon
+            .with_flange(crate::FlangeKind::Plate(crate::FlangeSpec::iter1()))
+            .with_bolt_pattern(crate::bolt_pattern::BoltPatternKind::Auto(
+                crate::bolt_pattern::BoltPatternSpec::iter1(),
+            ));
+        let md_bolt = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &bolt_ribbon);
+        assert!(
+            md_bolt.contains("install the §B M5 through-bolts"),
+            "(Plate,None,Bolts) step 6 must install the bolts: {md_bolt}"
+        );
+        assert!(
+            md_bolt.contains("`### M5 through-bolt clamp pattern (§B)` above"),
+            "(Plate,None,Bolts) step 6 must cross-reference the bolt section: {md_bolt}"
+        );
+        // Gasket prose MUST NOT appear in the gasketless+bolt path.
+        assert!(
+            !md_bolt.contains("place the cured gasket strip"),
+            "gasketless+bolt step 6 must not mention a gasket strip: {md_bolt}"
+        );
     }
 
     #[test]
@@ -2699,9 +3974,11 @@ mod tests {
             layers: Vec::new(),
             plug: Solid::capsule(0.005, 0.010),
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            wall_thickness_m: 0.020,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
         };
         let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -2758,28 +4035,16 @@ mod tests {
         assert!(!path.exists());
     }
 
-    // ----- Step 9: registration pins -------------------------------
-
-    /// v2 fixture variant: same geometry as `v2_fixture` but with
-    /// Step 9 cylindrical-pin registration enabled on the ribbon.
-    fn v2_fixture_with_pins() -> (CastSpec, Ribbon) {
-        let (spec, ribbon) = v2_fixture();
-        let ribbon = ribbon.with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        (spec, ribbon)
-    }
-
-    #[test]
-    fn ribbon_with_registration_sets_field() {
-        // Builder method threads the kind through; default remains
-        // None for a freshly-constructed Ribbon.
-        let (_, ribbon_default) = v2_fixture();
-        assert_eq!(ribbon_default.registration, RegistrationKind::None);
-        let (_, ribbon_pins) = v2_fixture_with_pins();
-        assert!(matches!(
-            ribbon_pins.registration,
-            RegistrationKind::Pins(_)
-        ));
-    }
+    // ----- Step 9: registration pins (retired in §M-S4) ----------
+    //
+    // §M-S4 (2026-05-27) retired the legacy prismatic-pin
+    // `RegistrationKind::Pins` path along with the
+    // `v2_fixture_with_pins` + `ribbon_with_registration_sets_field`
+    // tests + the `export_molds_v2_with_pins_writes_pieces_plus_plug`
+    // + `generate_procedure_markdown_v2_pin_prose_*` tests below.
+    // Symmetric dowel-hole registration (§M-S2) replaces it; see
+    // `crate::dowel_hole::tests` + the spec/derive coverage for
+    // `DowelHoleKind` in cf-cast-cli.
 
     #[test]
     fn ribbon_sample_at_arc_fraction_returns_polyline_position() {
@@ -2802,80 +4067,16 @@ mod tests {
         assert!(ribbon.sample_at_arc_fraction(f64::NAN).is_none());
     }
 
-    // S5 deleted the two `compose_piece_solid_with_pins_*` SDF
-    // tests that asserted side-specific pin Solid behavior at the
-    // SDF level (per `docs/CF_CAST_MATING_FEATURES_RECON.md` §8 —
-    // S4 pulled the deletion forward when the cup-piece Solid
-    // briefly went side-agnostic; recon-4 (P) restored side-
-    // specificity but the pin geometry stays mesh-CSG so the
-    // post-CSG pin-protrusion-vs-hole invariant lives in
-    // `registration::tests::pin_transforms_positive_socket_params_inflate_per_spec`
-    // instead).
-
-    #[test]
-    fn export_molds_v2_with_pins_writes_pieces_plus_plug() {
-        // End-to-end: enabling pins on the ribbon still produces a
-        // valid `2L + 1` STL output. Pins are CSG'd in during
-        // compose_piece_solid; marching cubes runs once per piece
-        // exactly as the no-pins path.
-        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/cf-cast-v2-pins");
-        match std::fs::remove_dir_all(&out_dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
-        }
-        let (spec, ribbon) = v2_fixture_with_pins();
-        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
-        assert_eq!(report.layers.len(), 1);
-        assert!(report.layers[0].pieces[0].path.exists());
-        assert!(report.layers[0].pieces[1].path.exists());
-        assert!(report.layers[0].plug.path.exists());
-        // Each piece's mesh has non-trivial face count (the pin
-        // cylinder contributes a few dozen extra faces at the 12 mm
-        // cell size).
-        for piece in &report.layers[0].pieces {
-            assert!(piece.summary.face_count > 0);
-        }
-    }
-
-    #[test]
-    fn generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_diameter() {
-        // Pins ON: the v2 Mold Assembly section must mention the
-        // pin count + diameter (1.5 mm radius × 2 = 3.0 mm diameter
-        // for iter1) + the pin length (5 mm half-length × 2 = 10 mm
-        // total under the recon-4 (P) binormal-axis restoration).
-        // v1/v2-pre-Step-9 prose ("clamp with rubber bands") must
-        // NOT appear.
-        let (spec, ribbon) = v2_fixture_with_pins();
-        let pours = spec.compute_pour_volumes().unwrap();
-        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        assert!(md.contains("2 cylindrical pins"));
-        assert!(md.contains("3.0 mm Ø"));
-        // 5 mm half-length default → 10 mm pin length across the seam.
-        assert!(
-            md.contains("10.0 mm long")
-                || md.contains("× 10.0 mm long")
-                || md.contains("× 10.0 mm,"),
-        );
-        // Workshop callout: insertion along the binormal direction.
-        assert!(md.contains("binormal"));
-        assert!(
-            !md.contains("rubber bands"),
-            "with-pins prose must not retain rubber-band clamping note"
-        );
-    }
-
-    #[test]
-    fn generate_procedure_markdown_v2_no_pins_prose_keeps_clamp_note() {
-        // Pins OFF: the v2 Mold Assembly section keeps the existing
-        // hand-clamp prose unchanged.
-        let (spec, ribbon) = v2_fixture(); // RegistrationKind::None
-        let pours = spec.compute_pour_volumes().unwrap();
-        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        assert!(md.contains("rubber bands"));
-        assert!(md.contains("`RegistrationKind::None`"));
-    }
+    // §M-S4 (2026-05-27) retired the legacy prismatic-pin
+    // registration tests:
+    // - `export_molds_v2_with_pins_writes_pieces_plus_plug`
+    // - `generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_geometry`
+    // - `generate_procedure_markdown_v2_no_pins_prose_keeps_clamp_note`
+    // Symmetric dowel-hole registration (§M-S2) replaces it; coverage
+    // lives in `crate::dowel_hole::tests` + the cf-cast-cli derive
+    // tier. The v2 Mold Assembly prose now dispatches on
+    // `ribbon.dowel_hole` (None vs Auto) — see `procedure.rs`
+    // `write_v2_assembly_note`.
 
     // ----- Step 10: pour gate + air vent ---------------------------
 
@@ -2914,7 +4115,7 @@ mod tests {
     fn compose_piece_solid_with_pour_gate_emits_pour_and_vent_transforms_both_sides() {
         let spec = v2_fixture().0;
         let body = &spec.layers[0].body;
-        let region = &spec.bounding_region;
+        let wall_thickness_m = spec.wall_thickness_m;
         let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         let pour_spec = PourGateSpec::iter1();
@@ -2924,7 +4125,8 @@ mod tests {
         let ribbon_no_gate = Ribbon::new(short_centerline, split).unwrap();
 
         let count_subtract_cylinders_for_pour_gate = |ribbon: &Ribbon, side: PieceSide| -> usize {
-            let (_, transforms) = crate::compose_piece_solid(body, region, ribbon, side).unwrap();
+            let (_, transforms) =
+                crate::compose_piece_solid(body, wall_thickness_m, ribbon, side).unwrap();
             transforms
                 .iter()
                 .filter(|t| {
@@ -2956,6 +4158,162 @@ mod tests {
         assert_eq!(
             count_subtract_cylinders_for_pour_gate(&ribbon_no_gate, PieceSide::Negative),
             0,
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_no_gasket_produces_empty_gasket_molds() {
+        // Default ribbon has `GasketKind::None` → gasket_molds vec is
+        // empty + no `gasket_mold_layer_N.stl` emitted. Paired
+        // baseline for `export_molds_v2_with_gasket_writes_one_per_layer`
+        // per [[feedback-load-bearing-test-fixtures]].
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-no-gasket");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (spec, ribbon) = v2_fixture();
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert!(
+            report.gasket_molds.is_empty(),
+            "GasketKind::None must produce zero gasket molds; got {}",
+            report.gasket_molds.len()
+        );
+        // No gasket_mold_layer_*.stl files on disk.
+        let stray_gasket = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("gasket_mold_layer_")
+            });
+        assert!(
+            !stray_gasket,
+            "no gasket_mold_layer_*.stl should exist when GasketKind::None"
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_with_gasket_writes_one_per_layer() {
+        // Single-layer fixture + GasketKind::Mold → one
+        // `gasket_mold_layer_0.stl` written, layer_index matches,
+        // mesh is non-empty.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-with-gasket-single");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert_eq!(report.gasket_molds.len(), 1);
+        let g = &report.gasket_molds[0];
+        assert_eq!(g.layer_index, 0);
+        assert!(g.path.ends_with("gasket_mold_layer_0.stl"));
+        assert!(g.path.exists(), "gasket STL must exist on disk");
+        assert!(
+            g.summary.face_count > 0,
+            "gasket mesh must be non-empty; got {} faces",
+            g.summary.face_count
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_with_gasket_multi_layer_offset_non_overlapping() {
+        // 2-layer fixture + GasketKind::Mold: two gasket STLs +
+        // per-layer offset places them at non-overlapping +X
+        // positions outside the cup-piece bounding region. Validates
+        // the cf-view-readability invariant from S1 cold-read pass-1
+        // ("S3 cf-cast-cli integration is responsible for per-STL
+        // world-coordinate offsets").
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-with-gasket-multi");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        // Fixture mirrors the existing two-layer F4 test fixture
+        // (see `export_molds_v2_writes_four_pieces_plus_plug_for_two_layer`)
+        // — proven to mesh + F4-gate cleanly with the plug-floor lock
+        // disabled. ~135 s under S3's 0.5 mm gasket cell size: 90 mm
+        // bounding × 100 mm tray × 2 layers ≈ 240 k cells × 2.
+        let inner_body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.015));
+        let outer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.025));
+        let plug = Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040));
+        let bounding_region = Solid::cuboid(Vector3::new(0.045, 0.045, 0.035));
+        let inner_material = MoldingMaterial {
+            display_name: "Ecoflex 00-30".to_string(),
+            density_kg_m3: 1070.0,
+            anchor_key: Some("ECOFLEX_00_30"),
+        };
+        let outer_material = MoldingMaterial {
+            display_name: "Dragon Skin 10A".to_string(),
+            density_kg_m3: 1070.0,
+            anchor_key: Some("DRAGON_SKIN_10A"),
+        };
+        let bounding_size_x = 2.0 * 0.045; // matches the cuboid half-extent above
+        let spec = CastSpec {
+            layers: vec![
+                CastLayer {
+                    body: inner_body,
+                    material: inner_material,
+                },
+                CastLayer {
+                    body: outer_body,
+                    material: outer_material,
+                },
+            ],
+            plug,
+            bounding_region,
+            wall_thickness_m: 0.020,
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
+        };
+        let centerline = vec![Point3::new(-0.030, 0.0, 0.0), Point3::new(0.030, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_gasket(crate::GasketKind::Mold(crate::GasketSpec::iter1()));
+
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert_eq!(report.gasket_molds.len(), 2);
+
+        let g0 = &report.gasket_molds[0];
+        let g1 = &report.gasket_molds[1];
+        assert_eq!(g0.layer_index, 0);
+        assert_eq!(g1.layer_index, 1);
+        assert!(g0.path.ends_with("gasket_mold_layer_0.stl"));
+        assert!(g1.path.ends_with("gasket_mold_layer_1.stl"));
+
+        // Offset gate: each gasket mold's AABB min-X (in mm coords)
+        // must be strictly greater than the cup-piece bounding-region
+        // max-X (cup occupies X ∈ [-bounding_x/2, +bounding_x/2]
+        // = [-22.5, +22.5] mm). Layer-0 sits adjacent + clearance;
+        // layer-1 sits past layer-0 + clearance.
+        let bounding_max_x_mm = bounding_size_x * 1000.0 / 2.0;
+        let g0_min_x_mm = g0.summary.aabb_mm.min.x;
+        let g0_max_x_mm = g0.summary.aabb_mm.max.x;
+        let g1_min_x_mm = g1.summary.aabb_mm.min.x;
+        assert!(
+            g0_min_x_mm > bounding_max_x_mm,
+            "layer-0 gasket min-X ({g0_min_x_mm} mm) must be > cup max-X \
+             ({bounding_max_x_mm} mm) — gasket is interpenetrating cup pieces"
+        );
+        assert!(
+            g1_min_x_mm > g0_max_x_mm,
+            "layer-1 gasket min-X ({g1_min_x_mm} mm) must be > layer-0 max-X \
+             ({g0_max_x_mm} mm) — adjacent gasket trays overlap"
         );
     }
 
@@ -3048,89 +4406,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compose_piece_solid_with_pins_and_pour_gate_composes_both() {
-        // Step 9 (pins) + Step 10/v2.1 sub-leaf 4 (V pour gate) are
-        // orthogonal — both should compose into the same piece
-        // geometry. Verify by enabling BOTH on the ribbon and
-        // confirming compose_piece_solid produces a valid Solid
-        // with both features visible.
-        //
-        // Uses a short centerline (-15→+15 mm) so the V apex at
-        // `centerline[0]` sits INSIDE the body and the pour leg
-        // crosses the cup wall (per the standalone V-pour-gate
-        // test); v2_fixture's default centerline -50→+50 puts the
-        // apex past the bounding region.
-        let spec = v2_fixture().0;
-        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
-        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
-        let ribbon = Ribbon::new(short_centerline, split)
-            .unwrap()
-            .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
-            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-
-        let (piece_neg, neg_transforms) = crate::compose_piece_solid(
-            &spec.layers[0].body,
-            &spec.bounding_region,
-            &ribbon,
-            PieceSide::Negative,
-        )
-        .unwrap();
-        let (piece_pos, pos_transforms) = crate::compose_piece_solid(
-            &spec.layers[0].body,
-            &spec.bounding_region,
-            &ribbon,
-            PieceSide::Positive,
-        )
-        .unwrap();
-
-        assert!(piece_neg.bounds().is_some());
-        assert!(piece_pos.bounds().is_some());
-
-        // Cup-wall SDF probe inside the annulus (body half_y=0.025,
-        // bounding half_y=0.040, probe at y=0.0325 the annulus
-        // midpoint). The base_piece Solid is the SDF half-shell
-        // (`bounding ∖ body ∩ halfspace`) — pin geometry lives in
-        // the post-MC mesh-CSG transforms. Probe z=+0.003 sits on
-        // the Negative kept side (+overlap = +0.5 mm boundary at z=0
-        // biased inward).
-        let pin_q = Point3::new(-0.0075, 0.0325, -0.003);
-        assert!(
-            piece_neg.evaluate(&pin_q) < 0.0,
-            "Negative piece base Solid should register cup-wall material at \
-             the annulus-midpoint probe (pin geometry lives post-MC); got {}",
-            piece_neg.evaluate(&pin_q),
-        );
-        // Both features land in the transform Vec post-S5+S7:
-        // Negative gains UnionCylinder per pin; Positive gains
-        // SubtractCylinder per pin; both gain SubtractCylinder per
-        // pour-gate leg. Count cylinder ops on each side.
-        let count_cylinders = |ts: &[crate::mesh_csg::MatingTransform]| -> usize {
-            ts.iter()
-                .filter(|t| {
-                    matches!(
-                        t,
-                        crate::mesh_csg::MatingTransform::UnionCylinder { .. }
-                            | crate::mesh_csg::MatingTransform::SubtractCylinder { .. }
-                    )
-                })
-                .count()
-        };
-        // pins (4 per side via bilateral mirror) + pour leg + vent leg = 6
-        // cylinder ops minimum on each side (plus S6 plug-socket /
-        // T-slot when applicable; v2_fixture has plug-pins so add
-        // those too).
-        let neg_cyls = count_cylinders(&neg_transforms);
-        let pos_cyls = count_cylinders(&pos_transforms);
-        assert!(
-            neg_cyls >= 6,
-            "Negative piece should emit ≥ 6 cylinder ops (4 pins + 2 pour-gate legs); got {neg_cyls}",
-        );
-        assert!(
-            pos_cyls >= 6,
-            "Positive piece should emit ≥ 6 cylinder ops (4 pins + 2 pour-gate legs); got {pos_cyls}",
-        );
-    }
+    // §M-S4 (2026-05-27) retired
+    // `compose_piece_solid_with_pins_and_pour_gate_composes_both`
+    // along with the prismatic-pin registration path. The remaining
+    // pour-gate transform-count gate is exercised by
+    // `compose_piece_solid_with_pour_gate_emits_pour_and_vent_transforms_both_sides`
+    // above; dowel-hole transform emission is exercised in
+    // `crate::dowel_hole::tests`.
 
     #[test]
     fn mold_piece_filename_maps_piece_side_to_integer_suffix() {
