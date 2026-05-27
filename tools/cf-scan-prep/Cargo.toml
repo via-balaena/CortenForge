@@ -41,11 +41,16 @@ mesh-types = { workspace = true }
 # to find collapsible edges, so we weld pre-simplify.
 mesh-repair = { workspace = true }
 # Boundary-preserving quadric edge collapse decimation (commit #5
-# Simplify panel). `meshopt::simplify_decoder` with
-# `SimplifyOptions::LockBorder` keeps open-boundary loop vertices
-# pinned so the downstream Cap panel (commit #9) sees the same loop
-# topology.
-meshopt = { workspace = true }
+# Simplify panel). `baby_shark::decimation::EdgeDecimator` with
+# `keep_boundary(true)` keeps open-boundary loop vertices pinned so the
+# downstream Cap panel (commit #9) sees the same loop topology.
+# Switched from `meshopt = { workspace = true }` 2026-05-26 per S1.1
+# probe-7 + probe-8 — meshopt's `simplify_decoder` introduces
+# non-manifold edges + duplicate faces on a manifold input which trips
+# manifold3d-based downstream consumers (cf-cast's
+# `apply_mating_transforms`). baby_shark preserves manifoldness in
+# exchange for ~12× wall-clock; one-shot per save click, acceptable.
+baby_shark = { workspace = true }
 # `UnitQuaternion<f64>` for the Reorient panel (commit #6). Euler-
 # angle slider values are the source of truth; `quaternion_physics`
 # derives the unit quaternion at read time so gimbal-lock state

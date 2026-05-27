@@ -40,8 +40,13 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use baby_shark::{
+    decimation::{AlwaysDecimate, EdgeDecimator},
+    mesh::{corner_table::CornerTableF, traits::TriangleMesh},
+};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::prelude::*;
 use cf_viewer::{
@@ -54,7 +59,6 @@ use mesh_repair::{
     remove_small_components, remove_unreferenced_vertices, taubin_smooth_vertices, weld_vertices,
 };
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
-use meshopt::{SimplifyOptions, simplify_decoder};
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 use serde::Serialize;
 
@@ -213,6 +217,36 @@ impl Default for SimplifyState {
     }
 }
 
+/// In-flight simplify-task state. baby_shark decimation is on the
+/// order of 10s of seconds on workshop-scale meshes (vs. meshopt's
+/// ~3 s, the trade we made for manifold preservation in S1.1 2026-05-26);
+/// running it on the Bevy main thread freezes the egui loop and
+/// triggers the macOS spinning-rainbow "app is not responsive"
+/// indicator. We instead spawn the decimation onto
+/// `AsyncComputeTaskPool` and poll it non-blocking each frame, letting
+/// the GUI continue to render an elapsed-time spinner.
+///
+/// `pending` is `None` when no task is in flight; `Some(...)` while
+/// the worker is running. `started_at_secs` is set at spawn time so
+/// the panel can render a live elapsed counter without re-reading
+/// `Time` from inside the panel renderer.
+#[derive(Resource, Default)]
+struct SimplifyTask {
+    pending: Option<Task<SimplifyResult>>,
+    started_at_secs: f64,
+}
+
+/// Bundle of simplify-related system params, used by [`scan_prep_panel`]
+/// to stay under Bevy's 16-system-param limit. `SystemParam` derive
+/// lets the panel function declare one `SimplifyPanelParams` slot
+/// instead of three (`SimplifyState` + `SimplifyTask` + `Time`).
+#[derive(bevy::ecs::system::SystemParam)]
+struct SimplifyPanelParams<'w> {
+    state: ResMut<'w, SimplifyState>,
+    task: Res<'w, SimplifyTask>,
+    time: Res<'w, Time>,
+}
+
 /// User action queued from the Simplify panel buttons. Consumed by
 /// [`handle_simplify_actions`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,28 +308,6 @@ const CLEANUP_DEGENERATE_AREA_M2: f64 = 1e-15;
 /// shell externally; this threshold is the safety net for the
 /// "user forgot" case.
 const CLEANUP_MIN_COMPONENT_FACES: usize = 10;
-
-/// `target_error` parameter passed to `meshopt::simplify_decoder`.
-/// Normalized to mesh extents — `1.0` means "deviate by up to half
-/// the longest mesh axis"; `0.05` ≈ 5 % of half-extent.
-///
-/// **Calibrated against cf-cast's SDF sampling resolution.** cf-cast
-/// samples its scan SDF on a 2 mm grid (spec
-/// §Strategic context); geometric detail below 2 mm is sub-cell and
-/// won't transfer to the silicone mold. Setting the threshold above
-/// that floor means we're trading "wasted detail meshopt couldn't
-/// have preserved anyway" for "actually reaching the requested face
-/// count". For the iter-1 fixture (130 mm tall), `0.05` × 65 mm
-/// half-axis = ~3.25 mm worst-case tolerance — comfortably above the
-/// 2 mm SDF floor + below typical scan-feature scales.
-///
-/// **History**: started at `0.01` (~0.65 mm tolerance for iter-1)
-/// which was too tight — sock-textile scans hit the error budget
-/// before reaching the requested face count (~3.35M → ~3.33M,
-/// effectively zero reduction). Loosened to `0.05` so meshopt
-/// actually decimates. Re-tune if iter-1 cast surfaces visible
-/// surface artifacts; tighten back toward `0.01` if so.
-const SIMPLIFY_TARGET_ERROR: f32 = 0.05;
 
 /// Default TTL for `Normal`-kind status messages (apply-result,
 /// reset-result). Persistent messages (auto-suggest banner) set
@@ -1264,40 +1276,96 @@ fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
             .collect();
         let verts_2d =
             project_loop_to_plane_2d(&loop_points_projected, plane_centroid, plane_normal);
-        let triangulation = triangulate_polygon_2d_earclip(&verts_2d);
 
-        for tri in triangulation {
-            let a = loop_data.vertices[tri[0] as usize];
-            let b = loop_data.vertices[tri[1] as usize];
-            let c = loop_data.vertices[tri[2] as usize];
-            // Emit cap face winding so its 3D cross-product normal
-            // aligns with `plane_normal` (which `orient_cap_normal_outward`
-            // already returned in OUTWARD direction). Per
-            // `project_loop_to_plane_2d`'s (u, v, plane_normal) =
-            // right-handed basis: a 2D-CCW triangle (signed_area > 0)
-            // emitted as `[a, b, c]` produces a 3D cross = +plane_normal
-            // = outward. This is the common path —
-            // `triangulate_polygon_2d_earclip` reverses input loops to
-            // CCW before triangulating, so every ear-emitted triangle
-            // has signed_area > 0. The `signed_area < 0` branch is
-            // defensive against the earclip's fan-fallback path on
-            // degenerate (non-convex / self-intersecting) inputs;
-            // emitting `[a, c, b]` reverses the order to land the same
-            // outward direction. See
-            // `auto_cap_open_boundaries_emits_outward_cap_normals`.
-            let p0 = verts_2d[tri[0] as usize];
-            let p1 = verts_2d[tri[1] as usize];
-            let p2 = verts_2d[tri[2] as usize];
-            let signed_area_2d = (p1.0 - p0.0) * (p2.1 - p0.1) - (p1.1 - p0.1) * (p2.0 - p0.0);
-            if signed_area_2d >= 0.0 {
-                mesh.faces.push([a, b, c]);
-            } else {
-                mesh.faces.push([a, c, b]);
-            }
-        }
+        emit_centroid_fan_cap(mesh, &loop_data.vertices, &loop_points_projected, &verts_2d);
         capped += 1;
     }
     capped
+}
+
+/// Cap a single open boundary loop with a **centroid-fan**: append one
+/// new vertex at the loop's 3D centroid (which sits on the fit plane
+/// because `loop_points_projected` has already been snapped to it) and
+/// emit one cap triangle per perimeter edge fanning out from that
+/// centroid.
+///
+/// Replaces the [`triangulate_polygon_2d_earclip`] path that
+/// `auto_cap_open_boundaries` + `build_cleaned_mesh`'s cap step used
+/// pre-2026-05-26. Per S1.1 probe-8/recon: that path's fan-fallback
+/// (kicked in whenever no ear satisfies the convex + empty-interior
+/// check) emitted overlapping triangles from a degenerate fan anchor
+/// on self-intersecting projected boundaries, producing duplicate
+/// faces + non-manifold edges in the cap region that downstream
+/// manifold3d-based consumers (cf-cast's `apply_mating_transforms`)
+/// rejected.
+///
+/// **Why centroid-fan is always-manifold for our cap-fan inputs**:
+/// for any STAR-SHAPED 2D polygon — which fit-plane-projected
+/// boundary loops always are on the workshop scans — fanning from
+/// the centroid to each consecutive perimeter edge produces a
+/// non-overlapping, manifold triangulation by construction. The
+/// centroid is inside the polygon (star-point), so every cap triangle
+/// is contained in the polygon and adjacent triangles share exactly
+/// one edge (the [centroid, perim[i]] edge). Self-intersecting
+/// polygons would still trip this, but cf-scan-prep's projection step
+/// ([`project_loop_to_plane_2d`]) on workshop scans hasn't surfaced a
+/// non-star-shaped case to date; if one ever does, the workshop user
+/// can re-scan or pre-process upstream.
+///
+/// **Winding**: `verts_2d` lives in the `(u, v, plane_normal)`
+/// right-handed basis returned by `project_loop_to_plane_2d`. A
+/// 2D-CCW perimeter (`signed_area > 0`) emitted as
+/// `[centroid, perim[i], perim[i+1]]` produces a 3D cross product
+/// in the `+plane_normal` direction, which `orient_cap_normal_outward`
+/// has already aligned with OUTWARD. For 2D-CW perimeters
+/// (`signed_area < 0`) we swap the perimeter pair to land the same
+/// outward direction. Pinned by
+/// `auto_cap_open_boundaries_emits_outward_cap_normals`.
+fn emit_centroid_fan_cap(
+    mesh: &mut IndexedMesh,
+    loop_vertex_indices: &[u32],
+    loop_points_projected: &[Point3<f64>],
+    verts_2d: &[(f64, f64)],
+) {
+    let n = loop_vertex_indices.len();
+    if n < 3 || loop_points_projected.len() != n || verts_2d.len() != n {
+        return;
+    }
+    // 3D centroid as the mean of the projected perimeter positions.
+    // Because the perimeter was projected onto the fit plane upstream
+    // (CSP.3a), the arithmetic mean is also on the plane → cap stays
+    // planar.
+    let mut sum = Vector3::zeros();
+    for p in loop_points_projected {
+        sum += p.coords;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let centroid_3d = Point3::from(sum / n as f64);
+    #[allow(clippy::cast_possible_truncation)]
+    let centroid_global_idx = mesh.vertices.len() as u32;
+    mesh.vertices.push(centroid_3d);
+
+    // 2D signed area (shoelace) determines perimeter winding.
+    let signed_area_2d: f64 = (0..n)
+        .map(|i| {
+            let (x0, y0) = verts_2d[i];
+            let (x1, y1) = verts_2d[(i + 1) % n];
+            x0 * y1 - x1 * y0
+        })
+        .sum::<f64>()
+        * 0.5;
+
+    for i in 0..n {
+        let next_i = (i + 1) % n;
+        let a = loop_vertex_indices[i];
+        let b = loop_vertex_indices[next_i];
+        if signed_area_2d >= 0.0 {
+            mesh.faces.push([centroid_global_idx, a, b]);
+        } else {
+            // CW perimeter — flip to match the OUTWARD direction.
+            mesh.faces.push([centroid_global_idx, b, a]);
+        }
+    }
 }
 
 // ----- Centerline reconstruction (CSP.4e.2) -------------------------
@@ -3021,6 +3089,16 @@ fn project_mesh_local_to_world(
 /// polygon is non-simple (self-intersecting) or near-degenerate. Fan
 /// from vertex 0 always works for star-shaped polygons; produces
 /// possibly-thin triangles but no NaN / inverted faces.
+///
+/// **No longer used in production** as of S1.1 2026-05-26 — both cap-
+/// fan call sites (`auto_cap_open_boundaries` + `build_cleaned_mesh`)
+/// switched to [`emit_centroid_fan_cap`] after the fan-fallback path
+/// here was identified as the source of cleaned.stl's cap-region
+/// duplicate-face + non-manifold-edge artifacts. Retained as a
+/// generic 2D-polygon ear-clip with its regression tests so the
+/// algorithm + its convention (CCW input → CCW output, fan-fallback
+/// for non-simple polys) stay documented in-tree.
+#[allow(dead_code)]
 fn triangulate_polygon_2d_earclip(verts_2d: &[(f64, f64)]) -> Vec<[u32; 3]> {
     let n = verts_2d.len();
     if n < 3 {
@@ -3110,6 +3188,10 @@ fn triangulate_polygon_2d_earclip(verts_2d: &[(f64, f64)]) -> Vec<[u32; 3]> {
 /// Returns `true` if `p` is strictly inside the triangle `(a, b, c)`.
 /// Points on edges return `false` to avoid spurious ear rejection
 /// from shared boundary vertices.
+///
+/// Only used by [`triangulate_polygon_2d_earclip`] which itself is no
+/// longer used in production (see its docstring for rationale).
+#[allow(dead_code)]
 fn point_in_triangle_2d(p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
     let d1 = (p.0 - b.0) * (a.1 - b.1) - (a.0 - b.0) * (p.1 - b.1);
     let d2 = (p.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (p.1 - c.1);
@@ -3252,44 +3334,20 @@ fn build_cleaned_mesh(
         }
 
         let verts_2d = project_loop_to_plane_2d(&loop_points_world, centroid_world, normal_world);
-        let triangulation = triangulate_polygon_2d_earclip(&verts_2d);
 
-        // Map ear-clip's local indices (into the loop) back to
-        // global mesh vertex indices.
-        for tri in triangulation {
-            let a = cap_loop.vertex_indices[tri[0] as usize];
-            let b = cap_loop.vertex_indices[tri[1] as usize];
-            let c = cap_loop.vertex_indices[tri[2] as usize];
-            // Emit cap face winding so its 3D cross-product normal
-            // aligns with `normal_world` (the post-bake outward cap
-            // normal — `cap_loop.plane_normal` was already oriented
-            // outward at `build_detected_cap_loop` time via
-            // `orient_cap_normal_outward`). Per `project_loop_to_plane_2d`'s
-            // `(u, v, normal_world)` = right-handed basis: a 2D-CCW
-            // triangle (signed_area > 0) emitted as `[a, b, c]`
-            // produces a 3D cross = +normal_world = outward. This is
-            // the common path — `triangulate_polygon_2d_earclip`
-            // reverses input loops to CCW before triangulating, so
-            // every ear-emitted triangle has signed_area > 0. The
-            // `signed_area < 0` branch is defensive against the
-            // earclip's fan-fallback path on degenerate inputs;
-            // emitting `[a, c, b]` reverses the order to land the same
-            // outward direction. Same algorithm + assertion target as
-            // `auto_cap_open_boundaries`; see
-            // `auto_cap_open_boundaries_emits_outward_cap_normals` for
-            // the regression-anchor +
-            // `build_cleaned_mesh_projects_loop_verts_onto_fit_plane`
-            // for the build_cleaned_mesh-path outward-winding anchor.
-            let p0 = verts_2d[tri[0] as usize];
-            let p1 = verts_2d[tri[1] as usize];
-            let p2 = verts_2d[tri[2] as usize];
-            let signed_area_2d = (p1.0 - p0.0) * (p2.1 - p0.1) - (p1.1 - p0.1) * (p2.0 - p0.0);
-            if signed_area_2d >= 0.0 {
-                out.faces.push([a, b, c]);
-            } else {
-                out.faces.push([a, c, b]);
-            }
-        }
+        // Centroid-fan replacement for the ear-clip path (S1.1
+        // 2026-05-26) — produces a non-overlapping fan from a fresh
+        // centroid vertex to each perimeter edge. Manifold by
+        // construction for star-shaped projected polygons; eliminates
+        // the duplicate-face + non-manifold-edge artifacts the ear-
+        // clip's fan-fallback emitted on self-intersecting
+        // projections. Same helper as `auto_cap_open_boundaries`.
+        emit_centroid_fan_cap(
+            &mut out,
+            &cap_loop.vertex_indices,
+            &loop_points_world,
+            &verts_2d,
+        );
     }
 
     out
@@ -4213,6 +4271,18 @@ fn main() -> Result<()> {
 
     match try_load_scan(&cli) {
         Ok((scan_mesh, auto_center_offset_m, auto_pca_quat)) => {
+            // TODO (deferred from S1.1 d+c+e arc, 2026-05-26): surface
+            // raw-scan quality (self-intersection + non-manifold counts)
+            // here so the workshop user sees input quality at load
+            // time. Bumped because BVH-backed self-intersection
+            // detection on the 3.35M-face raw scan adds ~30 s to load;
+            // doing it right needs background async detection, post-
+            // Apply-Simplify deferred display, or a `--diagnose-scan`
+            // opt-in flag. See:
+            //   - `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md` §SMD-12
+            //     (architectural arc framework)
+            //   - memory `project-cf-scan-prep-raw-scan-validation-bookmark`
+            //     (picker-upper writeup with the 3 perf approaches)
             let scan_info = ScanInfo::from_loaded(&cli.path, &scan_mesh, cli.stl_units);
             // Clone the loaded mesh into `OriginalScanMesh` so the
             // Simplify panel's `[Reset to original]` action can restore
@@ -4462,47 +4532,18 @@ fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyRe
     }
 
     // Step 1: weld unshared vertices into shared indices, then
-    // **compact the vertex array**. `weld_vertices` remaps face
-    // indices to canonical representatives + drops degenerate faces,
-    // but leaves the merged-away duplicates as unreferenced entries
-    // in `mesh.vertices`. On the iter-1 sock-over-capsule scan that
-    // means 10.06M positions with only ~1.67M referenced after the
-    // weld.
-    //
-    // **Bug fixed 2026-05-16**: passing this sparse positions array
-    // to `simplify_decoder` causes meshopt to return the input
-    // unchanged (`result_error=0`, zero face reduction). Diagnosed
-    // via `--diagnose-simplify`:
-    // ```
-    // [simplify_mesh] pass 0: in_verts=10056204 meshopt_out_faces=3334935
-    //   result_error=0.000000           <-- meshopt did no work
-    // ```
-    // The 17k-face drop the user observed in pre-fix click 1 came
-    // entirely from the weld dropping degenerates — meshopt itself
-    // was idle. The reason click 2 then succeeded: click 1's
-    // post-meshopt `remove_unreferenced_vertices` compacted the
-    // verts to 1.67M, so click 2 fed meshopt a dense positions
-    // array that it could actually collapse.
-    //
-    // Fix: compact unreferenced vertices once, after the weld,
-    // BEFORE the meshopt call. Single pass is sufficient — meshopt
-    // reaches the target in one shot on the compacted input. The
-    // pre-fix iterative loop (May 15 WIP commit) didn't help
-    // because it kept feeding the sparse vertex array back in
-    // (pass 0's `remove_unreferenced_vertices` ran post-meshopt
-    // and never executed because the no-progress guard already
-    // broke). Loop retained as a defensive safety net + safety cap
-    // for edge cases where the dense single-pass still hits the
-    // quadric error ceiling.
+    // compact the vertex array. STL load produces 3 unique vertex
+    // slots per triangle (vertex soup); the decimator needs shared
+    // vertex indices across adjacent triangles to find collapsible
+    // edges. `remove_unreferenced_vertices` compacts away the
+    // unreferenced entries `weld_vertices` leaves behind, which makes
+    // the decimator's vertex-index space dense.
     let mut welded = original.clone();
     weld_vertices(&mut welded, SIMPLIFY_WELD_EPSILON_M);
     remove_unreferenced_vertices(&mut welded);
 
-    // Env-var-gated per-pass diagnostics. Set
-    // `CF_SCAN_PREP_SIMPLIFY_DIAG=1` to see pass counts, in/out
-    // face counts, meshopt `result_error`, and per-pass timing on
-    // stderr. Used during the 2026-05-15 one-click bug recon; kept
-    // for future debugging of meshopt convergence on novel scans.
+    // Env-var-gated diagnostics. Set `CF_SCAN_PREP_SIMPLIFY_DIAG=1` to
+    // see pre/post stats + timing on stderr.
     let diag = std::env::var("CF_SCAN_PREP_SIMPLIFY_DIAG").is_ok_and(|v| !v.is_empty());
     if diag {
         eprintln!(
@@ -4513,83 +4554,93 @@ fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyRe
         );
     }
 
-    const MAX_PASSES: usize = 10;
-    let mut current = welded;
-    let mut previous_face_count = current.faces.len();
-    for pass in 0..MAX_PASSES {
-        if current.faces.len() <= target_face_count {
-            if diag {
-                eprintln!(
-                    "[simplify_mesh] pass {pass}: at-or-below-target ({} <= {}), break",
-                    current.faces.len(),
-                    target_face_count,
-                );
-            }
-            break;
-        }
-        let pass_start = Instant::now();
-        let in_faces = current.faces.len();
-        let in_verts = current.vertices.len();
-        #[allow(clippy::cast_possible_truncation)]
-        let positions: Vec<[f32; 3]> = current
-            .vertices
-            .iter()
-            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
-            .collect();
-        let indices: Vec<u32> = current.faces.iter().flatten().copied().collect();
-        let target_index_count = target_face_count.saturating_mul(3);
-        let mut result_error: f32 = 0.0;
-        let simplified_indices = simplify_decoder(
-            &indices,
-            &positions,
-            target_index_count,
-            SIMPLIFY_TARGET_ERROR,
-            SimplifyOptions::LockBorder,
-            Some(&mut result_error),
-        );
-        let achieved_face_count = simplified_indices.len() / 3;
-        let mut simplified_faces: Vec<[u32; 3]> = Vec::with_capacity(achieved_face_count);
-        for tri in simplified_indices.chunks_exact(3) {
-            simplified_faces.push([tri[0], tri[1], tri[2]]);
-        }
-        current.faces = simplified_faces;
-        let removed = remove_unreferenced_vertices(&mut current);
-        if diag {
-            let pass_elapsed = pass_start.elapsed().as_secs_f64();
-            eprintln!(
-                "[simplify_mesh] pass {pass}: in_faces={in_faces} in_verts={in_verts} \
-                 meshopt_out_faces={achieved_face_count} unreferenced_removed={removed} \
-                 out_verts={out_verts} result_error={result_error:.6} elapsed={pass_elapsed:.3}s",
-                out_verts = current.vertices.len(),
-            );
-        }
+    // Step 2: convert `IndexedMesh` -> `CornerTableF` for baby_shark.
+    // CornerTableF stores positions as f32 (matches the prior meshopt
+    // path's f32 conversion; sub-1 µm precision at scan mm scale).
+    #[allow(clippy::cast_possible_truncation)]
+    let positions_f32: Vec<Vector3<f32>> = welded
+        .vertices
+        .iter()
+        .map(|p| Vector3::new(p.x as f32, p.y as f32, p.z as f32))
+        .collect();
+    let flat_indices: Vec<usize> = welded
+        .faces
+        .iter()
+        .flat_map(|tri| [tri[0] as usize, tri[1] as usize, tri[2] as usize])
+        .collect();
+    let mut ct_mesh = CornerTableF::from_vertex_and_face_slices(&positions_f32, &flat_indices);
 
-        // Converged: this pass made no progress (still hitting the
-        // error ceiling at the same place). Stop — further passes
-        // would just spin.
-        if current.faces.len() >= previous_face_count {
-            if diag {
-                eprintln!(
-                    "[simplify_mesh] pass {pass}: no-progress guard ({} >= {}), break",
-                    current.faces.len(),
-                    previous_face_count,
-                );
-            }
-            break;
-        }
-        previous_face_count = current.faces.len();
+    // Step 3: decimate with baby_shark's incremental QEM edge collapse.
+    // `keep_boundary(true)` is the equivalent of meshopt's
+    // `SimplifyOptions::LockBorder` — pins open-boundary loop vertices
+    // so the downstream Cap panel sees the same loop topology after
+    // simplification (the spec's load-bearing boundary-preservation
+    // requirement). Unlike meshopt, baby_shark's `EdgeDecimator`
+    // refuses any collapse that would create a non-manifold edge —
+    // see S1.1 probe-8 (2026-05-26) for the empirical confirmation
+    // on the workshop iter-1 scan.
+    let decimate_start = Instant::now();
+    let mut decimator: EdgeDecimator<f32, AlwaysDecimate> = EdgeDecimator::default()
+        .decimation_criteria(AlwaysDecimate)
+        .min_faces_count(Some(target_face_count))
+        .keep_boundary(true);
+    decimator.decimate(&mut ct_mesh);
+    let decimate_elapsed = decimate_start.elapsed().as_secs_f64();
+
+    // Step 4: convert CornerTableF back to IndexedMesh. baby_shark's
+    // `VertexId` is opaque (an internal handle, possibly with gaps
+    // after edge collapse); walk `vertices()` once to assign each VID
+    // a dense `[0..n)` index, then walk `faces()` to emit triangles
+    // using the dense indices.
+    let mut out_mesh = IndexedMesh::new();
+    let mut vid_to_dense: std::collections::HashMap<_, u32> = std::collections::HashMap::new();
+    for vid in <CornerTableF as TriangleMesh>::vertices(&ct_mesh) {
+        let pos = <CornerTableF as TriangleMesh>::position(&ct_mesh, vid);
+        let dense_idx = out_mesh.vertices.len() as u32;
+        out_mesh.vertices.push(Point3::new(
+            f64::from(pos[0]),
+            f64::from(pos[1]),
+            f64::from(pos[2]),
+        ));
+        vid_to_dense.insert(vid, dense_idx);
     }
+    for face_vids in <CornerTableF as TriangleMesh>::faces(&ct_mesh) {
+        // Invariant: each `face_vids[i]` was emitted by `vertices()`
+        // above, so the map lookup always succeeds. Use `if let` over
+        // `expect` to satisfy the crate's `expect_used = deny` lint
+        // without changing behavior — the no-match arm is unreachable
+        // under the documented baby_shark TriangleMesh contract.
+        if let (Some(&a), Some(&b), Some(&c)) = (
+            vid_to_dense.get(&face_vids[0]),
+            vid_to_dense.get(&face_vids[1]),
+            vid_to_dense.get(&face_vids[2]),
+        ) {
+            out_mesh.faces.push([a, b, c]);
+        }
+    }
+
+    if diag {
+        eprintln!(
+            "[simplify_mesh] decimated: in_faces={} out_faces={} out_verts={} \
+             decimate_elapsed={:.3}s",
+            welded.faces.len(),
+            out_mesh.faces.len(),
+            out_mesh.vertices.len(),
+            decimate_elapsed,
+        );
+    }
+
     if diag {
         eprintln!(
             "[simplify_mesh] end: final_faces={} final_vertices={} elapsed={:.3}s",
-            current.faces.len(),
-            current.vertices.len(),
+            out_mesh.faces.len(),
+            out_mesh.vertices.len(),
             start.elapsed().as_secs_f64(),
         );
     }
 
     SimplifyResult {
-        mesh: current,
+        mesh: out_mesh,
         elapsed_secs: start.elapsed().as_secs_f64(),
     }
 }
@@ -4639,6 +4690,7 @@ fn run_render_app(
         .insert_resource(original)
         .insert_resource(scan_info)
         .insert_resource(SimplifyState::default())
+        .init_resource::<SimplifyTask>()
         .insert_resource(ReorientState::default())
         .insert_resource(RecenterState::default())
         .insert_resource(CapState::default())
@@ -4668,16 +4720,23 @@ fn run_render_app(
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 handle_simplify_actions,
+                // Poll the in-flight baby_shark task. Runs `.after`
+                // `handle_simplify_actions` so the same-tick spawn
+                // doesn't poll itself prematurely (rare race; explicit
+                // ordering is cheap).
+                poll_simplify_task.after(handle_simplify_actions),
                 // CSP.4b.4 — live trim respawns the displayed
                 // mesh entity. Runs after `handle_simplify_actions`
-                // so the simplify mutation lands first; runs after
-                // `handle_cap_actions` so a fresh Cap → Scan's
-                // centerline is visible to the trim on the same
-                // tick. Both `.after`s are explicit since Bevy
-                // doesn't guarantee tuple-position ordering on its
-                // own.
+                // (sync Reset) AND after `poll_simplify_task` (async
+                // Apply completion) so the simplify mutation lands
+                // first; runs after `handle_cap_actions` so a fresh
+                // Cap → Scan's centerline is visible to the trim on
+                // the same tick. All `.after`s are explicit since
+                // Bevy doesn't guarantee tuple-position ordering on
+                // its own.
                 update_displayed_mesh
                     .after(handle_simplify_actions)
+                    .after(poll_simplify_task)
                     .after(handle_cap_actions),
                 apply_world_transform_to_scan_entity,
                 handle_cap_actions,
@@ -4833,6 +4892,7 @@ fn init_status_for_load(scan: Res<ScanMesh>, mut status: ResMut<StatusBar>) {
 #[allow(clippy::needless_pass_by_value)]
 fn handle_simplify_actions(
     mut simplify_state: ResMut<SimplifyState>,
+    mut simplify_task: ResMut<SimplifyTask>,
     mut scan: ResMut<ScanMesh>,
     original: Res<OriginalScanMesh>,
     mut status: ResMut<StatusBar>,
@@ -4842,30 +4902,29 @@ fn handle_simplify_actions(
         return;
     };
 
+    // Refuse to start a new Apply while a previous one is still
+    // running. Reset still works (it's synchronous + fast); but the
+    // panel disables the Reset button too as a UX cue while a task is
+    // in flight, so this branch should never fire in practice.
+    if simplify_task.pending.is_some() {
+        return;
+    }
+
     // `current` (not "original"): the face count of `scan.0` AT THE
     // START OF THIS HANDLER. After a prior Apply, scan.0 holds the
     // simplified mesh, so `current` is the post-prior-simplify count
     // (not the unsimplified loaded mesh — that lives in
-    // `original: Res<OriginalScanMesh>`). Naming as "current" to avoid
-    // the two-meanings-of-original confusion inside this function.
+    // `original: Res<OriginalScanMesh>`).
     let current_face_count = scan.0.faces.len();
     let target = simplify_state.target_face_count;
 
-    // Pre-check the Apply no-op case. Two reasons we treat
-    // `target >= current` as a no-op rather than calling meshopt:
-    //
-    // 1. Crash prevention: meshopt is reduction-only. Its C++ side
-    //    asserts `target_index_count <= index_count` in
-    //    `meshopt_simplifyEdge` (simplifier.cpp:2286) and SIGABRTs the
-    //    process if violated. So `target > current` would abort.
-    // 2. UX: even `target == current` is wasted work (meshopt would
-    //    early-exit with the input unchanged, but the user-facing
-    //    achievement message "Reduced 200k -> 200k faces in 0.5s"
-    //    reads as a broken button). Treating equality as a no-op
-    //    keeps the messaging honest.
-    //
-    // The user-friendly workflow when they want *more* faces back is
-    // `[Reset to original]` first.
+    // Pre-check the Apply no-op case. baby_shark's `EdgeDecimator`
+    // would early-exit when `min_faces_count >= current.faces.len()`
+    // (it's a stop condition, not a SIGABRT trap — but the user-
+    // facing "Reduced 200k -> 200k in 0.5s" still reads as a broken
+    // button), so we still short-circuit here. The user-friendly
+    // workflow when they want *more* faces back is `[Reset to
+    // original]` first.
     if matches!(action, SimplifyAction::Apply) && target >= current_face_count {
         status.text = format!(
             "Already at {} faces (target {} is not lower). Use [Reset to original] first if you want a less-decimated mesh.",
@@ -4877,38 +4936,74 @@ fn handle_simplify_actions(
         return;
     }
 
-    let (new_mesh, status_text) = match action {
+    match action {
         SimplifyAction::Apply => {
-            let result = simplify_mesh(&scan.0, target);
-            let achieved = result.mesh.faces.len();
-            let text = format!(
-                "Reduced {} -> {} faces in {:.1}s",
+            // Spawn the decimation on the AsyncComputeTaskPool so the
+            // GUI keeps rendering (60 FPS egui) instead of macOS
+            // showing the spinning-rainbow unresponsive indicator
+            // during baby_shark's ~10-40 s decimation. `poll_simplify_task`
+            // picks up the result the frame after it completes.
+            let scan_clone = scan.0.clone();
+            let pool = AsyncComputeTaskPool::get();
+            let task = pool.spawn(async move { simplify_mesh(&scan_clone, target) });
+            simplify_task.pending = Some(task);
+            simplify_task.started_at_secs = time.elapsed_secs_f64();
+            status.text = format!(
+                "Simplifying {} -> {} faces (baby_shark)…",
                 human_count(current_face_count),
-                format_count_with_separators(achieved),
-                result.elapsed_secs,
+                human_count(target),
             );
-            // Provenance: user actively ran simplify on this mesh.
-            // Threaded into `.prep.toml`'s `[simplify].applied` flag
-            // by `build_prep_toml_string` instead of the broken
-            // face-count-inference (which can lie when the save-time
-            // cleanup pass drops faces with no user Apply).
-            simplify_state.was_applied = true;
-            (result.mesh, text)
+            status.kind = StatusKind::Normal;
+            // No auto-clear while task is in flight — the panel +
+            // poll_simplify_task own the lifecycle.
+            status.auto_clear_at_secs = None;
         }
         SimplifyAction::Reset => {
+            // Reset is fast (single mesh clone); run it synchronously.
             let cloned = original.0.clone();
             let text = format!(
                 "Restored original mesh ({} faces)",
                 human_count(cloned.faces.len()),
             );
             simplify_state.was_applied = false;
-            (cloned, text)
+            scan.0 = cloned;
+            status.text = text;
+            status.kind = StatusKind::Normal;
+            status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
         }
+    }
+}
+
+/// Per-frame non-blocking poll of the in-flight simplify task. When
+/// the worker finishes, swap the result into `ScanMesh`, flip
+/// `was_applied`, and surface a completion status message.
+#[allow(clippy::needless_pass_by_value)]
+fn poll_simplify_task(
+    mut simplify_task: ResMut<SimplifyTask>,
+    mut simplify_state: ResMut<SimplifyState>,
+    mut scan: ResMut<ScanMesh>,
+    mut status: ResMut<StatusBar>,
+    time: Res<Time>,
+) {
+    let Some(mut task) = simplify_task.pending.take() else {
+        return;
+    };
+    let Some(result) = future::block_on(future::poll_once(&mut task)) else {
+        // Still running — put the handle back.
+        simplify_task.pending = Some(task);
+        return;
     };
 
-    scan.0 = new_mesh;
-
-    status.text = status_text;
+    let before = scan.0.faces.len();
+    let achieved = result.mesh.faces.len();
+    scan.0 = result.mesh;
+    simplify_state.was_applied = true;
+    status.text = format!(
+        "Reduced {} -> {} faces in {:.1}s",
+        human_count(before),
+        format_count_with_separators(achieved),
+        result.elapsed_secs,
+    );
     status.kind = StatusKind::Normal;
     status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
 }
@@ -5785,7 +5880,7 @@ fn scan_prep_panel(
     info: Res<ScanInfo>,
     overlays: Res<OverlayLengths>,
     scan: Res<ScanMesh>,
-    mut simplify_state: ResMut<SimplifyState>,
+    mut simplify: SimplifyPanelParams,
     mut reorient_state: ResMut<ReorientState>,
     mut recenter_state: ResMut<RecenterState>,
     mut cap_state: ResMut<CapState>,
@@ -5835,7 +5930,13 @@ fn scan_prep_panel(
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
-                    render_simplify_section(ui, &info, &mut simplify_state);
+                    render_simplify_section(
+                        ui,
+                        &info,
+                        &mut simplify.state,
+                        &simplify.task,
+                        simplify.time.elapsed_secs_f64(),
+                    );
                     render_cap_section(ui, &mut cap_state, &mut cap_pending);
                     render_centerline_trim_section(ui, &mut centerline_trim_state, &cap_state);
                     // ----- Manual overrides (collapsed) -----
@@ -5904,15 +6005,24 @@ fn render_scan_info_section(ui: &mut egui::Ui, info: &ScanInfo) {
 /// - `[Apply simplify]` + `[Reset to original]` buttons queue
 ///   [`SimplifyAction`] on `SimplifyState`; [`handle_simplify_actions`]
 ///   consumes them next Update tick.
-fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut SimplifyState) {
+fn render_simplify_section(
+    ui: &mut egui::Ui,
+    info: &ScanInfo,
+    state: &mut SimplifyState,
+    task: &SimplifyTask,
+    now_secs: f64,
+) {
     egui::CollapsingHeader::new("Simplify (decimate)")
         .default_open(true)
         .show(ui, |ui| {
             ui.label(format!("Current: {} faces", human_count(info.face_count)));
 
+            let task_running = task.pending.is_some();
+
             ui.add_space(4.0);
             ui.label("Target face count:");
-            ui.add(
+            ui.add_enabled(
+                !task_running,
                 egui::Slider::new(
                     &mut state.target_face_count,
                     SIMPLIFY_TARGET_MIN..=SIMPLIFY_TARGET_MAX,
@@ -5923,13 +6033,31 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Apply simplify").clicked() {
+                if ui
+                    .add_enabled(!task_running, egui::Button::new("Apply simplify"))
+                    .clicked()
+                {
                     state.pending_action = Some(SimplifyAction::Apply);
                 }
-                if ui.button("Reset to original").clicked() {
+                if ui
+                    .add_enabled(!task_running, egui::Button::new("Reset to original"))
+                    .clicked()
+                {
                     state.pending_action = Some(SimplifyAction::Reset);
                 }
             });
+
+            if task_running {
+                ui.add_space(6.0);
+                let elapsed_secs = (now_secs - task.started_at_secs).max(0.0);
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label(format!(
+                        "Simplifying… {elapsed_secs:.1}s elapsed (baby_shark, ~10-40 s typical)"
+                    ));
+                });
+            }
+
             ui.add_space(4.0);
             // Slice 9.8 — communicate the save-time budget semantics.
             // Without this, users assume the slider only affects the

@@ -42,9 +42,21 @@
 //!
 //! [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
 
+use mesh_repair::{
+    RepairError, RepairSummary, remove_duplicate_faces, remove_unreferenced_vertices, weld_vertices,
+};
 use mesh_types::IndexedMesh;
 
 use crate::mesher::METERS_TO_MM;
+
+/// Vertex-weld epsilon (mm) applied by [`repair_scan_mesh_for_mesh_csg`]
+/// to merge the per-triangle vertex slots that `mesh_io::load_stl`
+/// produces (STL is a vertex-soup format: 3 unique vertex slots per
+/// triangle). 0.01 mm = 10 µm — well below the workshop iter-1 scan's
+/// ~0.66 mm avg edge length so distinct features are preserved, well
+/// above the f32 → STL roundtrip precision (~10 nm at 150 mm scale)
+/// so coincident vertices reliably merge.
+const SCAN_MESH_WELD_EPSILON_MM: f64 = 0.01;
 
 /// Build the plug-body mesh for the zero-offset plug case directly
 /// from the cf-scan-prep cleaned scan mesh.
@@ -56,9 +68,15 @@ use crate::mesher::METERS_TO_MM;
 /// [`crate::mesher::solid_to_mm_mesh`].
 ///
 /// Faces are copied unchanged (topology preserved); vertices are
-/// scaled by [`METERS_TO_MM`]. Self-intersections, manifoldness, and
-/// winding direction are inherited from the input scan — cf-scan-prep
-/// is responsible for those upstream.
+/// scaled by [`METERS_TO_MM`]. Winding direction is inherited from the
+/// input scan. **Manifoldness is NOT guaranteed by this helper** —
+/// cf-scan-prep's cleaned scan mesh is watertight enough for STL
+/// distribution but does not satisfy manifold3d's stricter "every edge
+/// shared by exactly two faces" precondition (workshop regen
+/// 2026-05-26 confirmed `manifold3d status: NotManifold` on the
+/// scan's raw `mesh_to_manifold` conversion). Callers that hand the
+/// returned mesh to [`crate::apply_mating_transforms`] (which calls
+/// manifold3d) MUST run [`repair_scan_mesh_for_mesh_csg`] first.
 ///
 /// **Cap-plane geometry note**: the cleaned scan mesh is a **CLOSED,
 /// watertight** mesh — cf-scan-prep's `auto_cap_open_boundaries` adds
@@ -90,6 +108,98 @@ pub fn build_plug_body_mesh(scan_mesh: &IndexedMesh) -> IndexedMesh {
         .collect();
     out.faces.clone_from(&scan_mesh.faces);
     out
+}
+
+/// Summary of [`repair_scan_mesh_for_mesh_csg`]'s work.
+///
+/// Stripped down 2026-05-26 (S1.1 post-baby_shark + post-centroid-fan
+/// fix) — see [`repair_scan_mesh_for_mesh_csg`] docstring for the
+/// before/after. Holes-filled + degens-removed are gone since the
+/// minimal repair no longer runs aspect-ratio degen-removal or
+/// `fill_holes`.
+#[derive(Debug, Clone)]
+pub struct ScanMeshRepairSummary {
+    /// Stats from the inline weld-then-strip-unreferenced-then-
+    /// dedupe pass. `vertices_welded` is the load-bearing count
+    /// (turns the STL vertex-soup back into shared-index topology
+    /// that manifold3d will accept).
+    pub base: RepairSummary,
+    /// Held at 0; field retained for backward-compat with the
+    /// production-regen log line. Future S2-style expansions might
+    /// re-introduce a hole-fill stage if cf-scan-prep ever ships
+    /// non-watertight meshes again.
+    pub holes_filled: usize,
+}
+
+/// Re-weld the cf-scan-prep cleaned-scan STL back to shared-index
+/// topology so it satisfies manifold3d's preconditions.
+///
+/// **Required upstream of [`crate::apply_mating_transforms`] on the
+/// scan-mesh-direct path** — `mesh_io::load_stl` produces a vertex
+/// soup (3 unique vertex slots per triangle), where manifold3d sees
+/// every edge as a boundary edge. The weld merges coincident vertex
+/// slots back into shared indices, restoring the topology
+/// cf-scan-prep emitted before STL serialization.
+///
+/// **History — why this is a single 3-step pass instead of a full
+/// `repair_mesh` + `fill_holes` pipeline**: pre-baby_shark (S1.1
+/// 2026-05-26), cf-scan-prep's meshopt-based decimation produced
+/// non-manifold edges + duplicate faces in the dome wall, and its
+/// ear-clip-based cap-fan produced similar artifacts at the cap-plane.
+/// cf-cast worked around both bugs with `RepairParams::for_scans` +
+/// `fill_holes`. After (a) cf-scan-prep switched to `baby_shark` and
+/// (b) `auto_cap_open_boundaries` + `build_cleaned_mesh` switched to
+/// a centroid-fan cap, cf-scan-prep emits a manifold mesh. cf-cast's
+/// own aspect-ratio sliver removal + ear-clip `fill_holes` then
+/// INTRODUCED the very artifacts we were defending against
+/// (`mesh-repair::fill_holes` uses the same ear-clip pattern
+/// internally). Slimming the repair to weld-only avoids re-introducing
+/// the bug while still fixing the genuine STL-soup issue.
+///
+/// Three steps:
+/// 1. [`weld_vertices`] at [`SCAN_MESH_WELD_EPSILON_MM`] = 0.01 mm —
+///    merges per-triangle vertex slots back to shared indices.
+/// 2. [`remove_unreferenced_vertices`] — compacts the vertex array
+///    after weld.
+/// 3. [`remove_duplicate_faces`] — defensive cleanup for the rare
+///    case where cf-scan-prep emits exactly-coincident triangles
+///    (e.g., a tiny capped scanner artifact that the centroid-fan
+///    fans over twice).
+///
+/// The mesh is expected in **millimeters** (i.e., post-
+/// [`build_plug_body_mesh`] scaling).
+///
+/// Returns the [`ScanMeshRepairSummary`] for production-regen
+/// diagnostics. Idempotent — a second pass over a clean mesh is a
+/// no-op.
+///
+/// # Errors
+///
+/// Currently infallible — the `Result` return type is preserved for
+/// API stability with the pre-2026-05-26 [`fill_holes`]-bearing
+/// signature so the spec.rs call site doesn't churn.
+pub fn repair_scan_mesh_for_mesh_csg(
+    mesh: &mut IndexedMesh,
+) -> Result<ScanMeshRepairSummary, RepairError> {
+    let initial_vertices = mesh.vertices.len();
+    let initial_faces = mesh.faces.len();
+    let vertices_welded = weld_vertices(mesh, SCAN_MESH_WELD_EPSILON_MM);
+    let unreferenced_removed = remove_unreferenced_vertices(mesh);
+    let duplicates_removed = remove_duplicate_faces(mesh);
+    let base = RepairSummary {
+        initial_vertices,
+        initial_faces,
+        final_vertices: mesh.vertices.len(),
+        final_faces: mesh.faces.len(),
+        vertices_welded,
+        degenerates_removed: 0,
+        duplicates_removed,
+        unreferenced_removed,
+    };
+    Ok(ScanMeshRepairSummary {
+        base,
+        holes_filled: 0,
+    })
 }
 
 #[cfg(test)]
@@ -167,5 +277,97 @@ mod tests {
         let out = build_plug_body_mesh(&empty);
         assert!(out.vertices.is_empty());
         assert!(out.faces.is_empty());
+    }
+
+    #[test]
+    fn repair_scan_mesh_for_mesh_csg_welds_sub_epsilon_duplicate_vertices() {
+        // Two coincident triangles sharing a hypothetical edge that
+        // sits 1 µm apart via two duplicate vertex slots — exactly the
+        // shape of failure manifold3d's `NotManifold` flags (the edge
+        // is technically a boundary edge because each "side" sees a
+        // different vertex index). The 10 µm weld closes the gap.
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 0.0));
+        // Duplicate of vertex 1, 1 µm offset (below 10 µm weld_epsilon).
+        mesh.vertices.push(Point3::new(10.0 + 1e-3, 0.0, 0.0));
+        // Duplicate of vertex 2.
+        mesh.vertices.push(Point3::new(0.0, 10.0 + 1e-3, 0.0));
+        mesh.faces.push([0, 1, 2]);
+        mesh.faces.push([4, 3, 5]);
+
+        let summary = repair_scan_mesh_for_mesh_csg(&mut mesh).unwrap();
+        assert!(
+            summary.base.vertices_welded >= 2,
+            "expected at least 2 welds, got {}",
+            summary.base.vertices_welded
+        );
+        assert_eq!(mesh.vertices.len(), 4);
+        // Face count NOT pinned here — `remove_duplicate_faces` may
+        // collapse the two near-coincident triangles after weld; the
+        // load-bearing property is the weld count.
+    }
+
+    #[test]
+    fn repair_scan_mesh_for_mesh_csg_is_idempotent_on_clean_mesh() {
+        // A second pass over an already-clean mesh should be a no-op
+        // (no welds, no duplicate-face removals). Pins the idempotency
+        // property documented on the helper.
+        let mut mesh = build_plug_body_mesh(&synthetic_scan_mesh());
+
+        let _first = repair_scan_mesh_for_mesh_csg(&mut mesh).unwrap();
+        let verts_after_first = mesh.vertices.len();
+        let faces_after_first = mesh.faces.len();
+        let second = repair_scan_mesh_for_mesh_csg(&mut mesh).unwrap();
+
+        assert_eq!(second.base.vertices_welded, 0);
+        assert_eq!(second.base.duplicates_removed, 0);
+        assert_eq!(second.holes_filled, 0);
+        assert_eq!(mesh.vertices.len(), verts_after_first);
+        assert_eq!(mesh.faces.len(), faces_after_first);
+    }
+
+    #[test]
+    fn repair_scan_mesh_for_mesh_csg_preserves_open_boundary() {
+        // Cube missing its top face: 5 faces × 4 unique verts. Post-
+        // S1.1-cleanup the repair NO LONGER calls fill_holes (per
+        // function docstring: that was the source of the bugs we
+        // moved upstream). The top face must STAY open — caller
+        // (cf-scan-prep) is responsible for emitting watertight
+        // meshes; cf-cast just re-welds the STL soup.
+        let mut mesh = IndexedMesh::new();
+        let p = |x: f64, y: f64, z: f64| Point3::new(x, y, z);
+        let v = [
+            p(0.0, 0.0, 0.0),
+            p(10.0, 0.0, 0.0),
+            p(10.0, 10.0, 0.0),
+            p(0.0, 10.0, 0.0),
+            p(0.0, 0.0, 10.0),
+            p(10.0, 0.0, 10.0),
+            p(10.0, 10.0, 10.0),
+            p(0.0, 10.0, 10.0),
+        ];
+        mesh.vertices.extend_from_slice(&v);
+        // Bottom + 4 side walls; top deliberately omitted.
+        mesh.faces.push([0, 2, 1]);
+        mesh.faces.push([0, 3, 2]);
+        mesh.faces.push([0, 1, 5]);
+        mesh.faces.push([0, 5, 4]);
+        mesh.faces.push([1, 2, 6]);
+        mesh.faces.push([1, 6, 5]);
+        mesh.faces.push([2, 3, 7]);
+        mesh.faces.push([2, 7, 6]);
+        mesh.faces.push([3, 0, 4]);
+        mesh.faces.push([3, 4, 7]);
+        let faces_before = mesh.faces.len();
+        let summary = repair_scan_mesh_for_mesh_csg(&mut mesh).unwrap();
+        assert_eq!(summary.holes_filled, 0, "S1.1-cleanup removes fill_holes");
+        assert_eq!(
+            mesh.faces.len(),
+            faces_before,
+            "repair must not add or drop faces on a clean input"
+        );
     }
 }

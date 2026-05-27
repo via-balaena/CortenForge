@@ -121,7 +121,7 @@ pub use prismatic_pin::{
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
-pub use scan_mesh_direct::build_plug_body_mesh;
+pub use scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 pub use spec::{
     CastLayer, CastSpec, FunnelArtifact, MeshSummary, MoldArtifact, MoldExportReport,
     PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport, V2MoldExportReport,

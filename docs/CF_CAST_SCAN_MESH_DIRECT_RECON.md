@@ -834,3 +834,67 @@ the §Q-5 / §Q-1 pattern of empirical falsification at the smallest
 scope before committing implementation code.
 
 S1 code lands in the next session after S0a + S0b conclude.
+
+## §SMD-12 S1.1 architectural triple — d+c+e (shipped 2026-05-26)
+
+S1.1's architectural arc: **F4 framework refactor (d) + raw-scan
+quality awareness (c) + scan-mesh-direct contract documentation
+(e)**. Shipped d + e in the same commit as the upstream baby_shark +
+centroid-fan fixes; **(c) deferred to a follow-up arc** — see
+[[project-cf-scan-prep-raw-scan-validation-bookmark]] for the
+picker-upper writeup.
+
+### Why d, c, e together
+
+- (d) makes cf-cast's F4 "blocking-vs-non-blocking" rule
+  function-driven: a Critical blocks export iff the defect breaks
+  the target's FUNCTION in the workshop workflow. For plug bodies
+  (function = solid positive shape that silicone is cast around)
+  sub-mm surface noise inherited from the input scan does NOT
+  break the function → ThinWall / SmallFeature / TrappedVolume
+  become non-blocking on `CastTarget::Plug` (mirroring the
+  pre-existing post-S4 carve-out on `CastTarget::MoldPiece`).
+  Code: `cf-cast::spec::is_blocking_critical`.
+
+- (e) tightens scan-mesh-direct's architectural contract: the path
+  **inherits the input scan's surface noise verbatim** as the
+  trade for preserving scan resolution. Workshop-acceptable when
+  the downstream consumer (silicone mold + cast) tolerates sub-mm
+  artifacts; not appropriate where dimensional perfection matters.
+
+- (c) is the awareness layer: cf-scan-prep should surface raw-scan
+  quality (self-intersection + non-manifold counts) to the workshop
+  user at load, so degraded inputs become visible at the layer
+  where the user CAN act (re-scan / adjust scanner / pre-trim).
+  Without (c), the framework silently absorbs scan-quality drift.
+
+### Why (c) was deferred
+
+Detection cost on the raw 3.35M-face scan: ~11 s vertex weld + ~5-30 s
+BVH-backed self-intersection pair scan (workshop iter-1 scan timing,
+S1.1 probe-6 measurements). Adding ~15-45 s to every load is a real
+UX hit for an awareness signal. Doing (c) right requires one of:
+
+1. **Background async detection** — reuse the `AsyncComputeTaskPool`
+   infrastructure S1.1 added for baby_shark's simplify task; run the
+   validate in parallel with the GUI; pop the result into ScanInfo
+   when it lands. ~150 LOC, 1-2 sessions.
+2. **Post-Apply-Simplify deferred display** — only run detection
+   on the simplified ~168k-face mesh; ScanInfo updates after
+   baby_shark completes. Cheap; count unavailable at load.
+3. **CLI-flag opt-in `--diagnose-scan`** — default OFF; on-demand
+   diagnostic.
+
+None of those is single-session shippable, and the workshop loop
+already closes today on (d) + (e). The bookmark above carries
+the architectural context forward for the picker-upper.
+
+### Follow-up gates
+
+- Workshop notices a scan-quality regression in the field → bump
+  (c)'s priority + pick option 1 (the most user-visible approach).
+- A different scanner (or a re-scan of the same physical fixture)
+  produces a noticeably-cleaner cleaned.stl → still bump (c) so the
+  delta is visible.
+- Both stay silent → (c) stays deferred indefinitely; awareness
+  isn't urgent if input quality is stable.

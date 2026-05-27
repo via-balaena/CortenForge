@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use mesh_io::IoError;
+use mesh_repair::RepairError;
 
 use crate::ribbon::PieceSide;
 
@@ -205,6 +206,20 @@ pub enum CastError {
         /// Underlying manifold3d error.
         #[source]
         source: manifold3d::CsgError,
+    },
+
+    /// Scan-mesh-direct repair pass (S1.1 of
+    /// `docs/CF_CAST_SCAN_MESH_DIRECT_RECON.md`) failed before the
+    /// mesh-CSG mating-features stage. Typically indicates a
+    /// pathological boundary loop that `fill_holes` ear-clipping
+    /// couldn't resolve.
+    #[error("scan-mesh-direct repair failed for {target}: {source}")]
+    ScanMeshRepair {
+        /// Which output failed.
+        target: CastTarget,
+        /// Underlying mesh-repair error.
+        #[source]
+        source: RepairError,
     },
 
     /// A layer's computed pour mass exceeds the per-pour

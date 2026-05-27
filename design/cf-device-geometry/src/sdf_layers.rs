@@ -53,6 +53,10 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use baby_shark::{
+    decimation::{AlwaysDecimate, EdgeDecimator},
+    mesh::{corner_table::CornerTableF, traits::TriangleMesh},
+};
 use bevy::prelude::Resource;
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh, report_cap_face_classification};
 use cf_design::Sdf;
@@ -62,8 +66,7 @@ use mesh_sdf::{
     CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance, WALL_THRESHOLD_FACTOR_DEFAULT,
 };
 use mesh_types::{Aabb, Bounded, IndexedMesh};
-use meshopt::{SimplifyOptions, simplify_decoder, simplify_sloppy_decoder};
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
 
 /// Bevy resource holding the parsed + baked cap planes. Built once at
 /// scan load by the `.prep.toml` parser; consumed by the two-SDF
@@ -104,14 +107,9 @@ pub const SDF_SOURCE_TARGET_FACES: usize = 2_500;
 /// welded to find collapsible edges.
 const SDF_WELD_EPSILON_M: f64 = 1e-6;
 
-/// `meshopt::simplify_decoder`'s target-error cap — same posture as
-/// `ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR`: relaxed (10.0 ≈ 1000 % of
-/// half-extent) so the face-count target is the binding constraint.
-const SDF_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
-
-/// If topology-preserving `simplify_decoder` stops short with more
+/// If strict (`keep_boundary=true`) decimation stops short with more
 /// than `SDF_SLOPPY_FALLBACK_MULTIPLIER × target` faces, fall back to
-/// `simplify_sloppy_decoder` so the SDF source stays in the
+/// sloppy (`keep_boundary=false`) so the SDF source stays in the
 /// O(2 500-face) cost envelope. 4× target mirrors
 /// `ENVELOPE_PROXY_SLOPPY_FALLBACK_MULTIPLIER`.
 const SDF_SLOPPY_FALLBACK_MULTIPLIER: usize = 4;
@@ -288,55 +286,80 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 
     let mut proxy = welded;
     if proxy.faces.len() > target_faces {
-        #[allow(clippy::cast_possible_truncation)] // meshopt's C API is f32.
-        let positions: Vec<[f32; 3]> = proxy
-            .vertices
-            .iter()
-            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
-            .collect();
-        let indices: Vec<u32> = proxy.faces.iter().flatten().copied().collect();
-        let target_index_count = target_faces.saturating_mul(3);
-
-        let mut result_error = 0.0_f32;
-        let simplified_indices = if target_index_count < indices.len() {
-            let regular = simplify_decoder(
-                &indices,
-                &positions,
-                target_index_count,
-                SDF_SIMPLIFY_TARGET_ERROR,
-                SimplifyOptions::LockBorder,
-                Some(&mut result_error),
+        proxy = decimate_via_baby_shark(&proxy, target_faces, /* keep_boundary */ true);
+        let fallback_threshold = target_faces.saturating_mul(SDF_SLOPPY_FALLBACK_MULTIPLIER);
+        if proxy.faces.len() > fallback_threshold {
+            eprintln!(
+                "[sdf_layers] strict decimation stopped at {} faces \
+                 (target {target_faces}, fallback {fallback_threshold}); \
+                 falling back to sloppy (keep_boundary=false)",
+                proxy.faces.len(),
             );
-            let regular_face_count = regular.len() / 3;
-            let fallback_threshold = target_faces.saturating_mul(SDF_SLOPPY_FALLBACK_MULTIPLIER);
-            if regular_face_count > fallback_threshold {
-                eprintln!(
-                    "[sdf_layers] simplify_decoder stopped at {regular_face_count} faces \
-                     (target {target_faces}, fallback {fallback_threshold}); \
-                     falling back to simplify_sloppy_decoder",
-                );
-                simplify_sloppy_decoder(
-                    &indices,
-                    &positions,
-                    target_index_count,
-                    SDF_SIMPLIFY_TARGET_ERROR,
-                    Some(&mut result_error),
-                )
-            } else {
-                regular
-            }
-        } else {
-            indices
-        };
-        proxy.faces = simplified_indices
-            .chunks_exact(3)
-            .map(|tri| [tri[0], tri[1], tri[2]])
-            .collect();
+            proxy = decimate_via_baby_shark(&proxy, target_faces, /* keep_boundary */ false);
+        }
     }
 
     remove_degenerate_triangles(&mut proxy, SDF_DEGENERATE_AREA_M2);
     remove_unreferenced_vertices(&mut proxy);
     proxy
+}
+
+/// Single baby_shark decimation pass. `keep_boundary=true` matches
+/// meshopt's `LockBorder` (boundary loops pinned); `false` is the
+/// equivalent of meshopt's `simplify_sloppy_decoder` posture
+/// (sacrifices boundary fidelity to push past topological collapse
+/// limits).
+fn decimate_via_baby_shark(
+    input: &IndexedMesh,
+    target_faces: usize,
+    keep_boundary: bool,
+) -> IndexedMesh {
+    #[allow(clippy::cast_possible_truncation)] // baby_shark CornerTableF stores f32 positions.
+    let positions_f32: Vec<Vector3<f32>> = input
+        .vertices
+        .iter()
+        .map(|p| Vector3::new(p.x as f32, p.y as f32, p.z as f32))
+        .collect();
+    let flat_indices: Vec<usize> = input
+        .faces
+        .iter()
+        .flat_map(|tri| [tri[0] as usize, tri[1] as usize, tri[2] as usize])
+        .collect();
+    let mut ct_mesh = CornerTableF::from_vertex_and_face_slices(&positions_f32, &flat_indices);
+
+    let mut decimator: EdgeDecimator<f32, AlwaysDecimate> = EdgeDecimator::default()
+        .decimation_criteria(AlwaysDecimate)
+        .min_faces_count(Some(target_faces))
+        .keep_boundary(keep_boundary);
+    decimator.decimate(&mut ct_mesh);
+
+    let mut out = IndexedMesh::new();
+    let mut vid_to_dense: std::collections::HashMap<_, u32> = std::collections::HashMap::new();
+    for vid in <CornerTableF as TriangleMesh>::vertices(&ct_mesh) {
+        let pos = <CornerTableF as TriangleMesh>::position(&ct_mesh, vid);
+        let dense_idx = out.vertices.len() as u32;
+        out.vertices.push(Point3::new(
+            f64::from(pos[0]),
+            f64::from(pos[1]),
+            f64::from(pos[2]),
+        ));
+        vid_to_dense.insert(vid, dense_idx);
+    }
+    for face_vids in <CornerTableF as TriangleMesh>::faces(&ct_mesh) {
+        // Invariant: each `face_vids[i]` was emitted by `vertices()`
+        // above, so the map lookup always succeeds. Use `if let` over
+        // `expect` to satisfy the crate's `expect_used = deny` lint
+        // without changing behavior — the no-match arm is unreachable
+        // under the documented baby_shark TriangleMesh contract.
+        if let (Some(&a), Some(&b), Some(&c)) = (
+            vid_to_dense.get(&face_vids[0]),
+            vid_to_dense.get(&face_vids[1]),
+            vid_to_dense.get(&face_vids[2]),
+        ) {
+            out.faces.push([a, b, c]);
+        }
+    }
+    out
 }
 
 // `dome_wall_only_mesh` + `report_cap_face_classification` (plus the

@@ -83,9 +83,14 @@ cf-design = { workspace = true }
 # `remove_degenerate_triangles` for the SDF-source decimation hygiene
 # pipeline.
 mesh-repair = { workspace = true }
-# meshopt's `simplify_decoder` + `simplify_sloppy_decoder` for the
-# face-count target decimation. Same posture as cf-device-design.
-meshopt = { workspace = true }
+# baby_shark's `EdgeDecimator` for face-count target decimation.
+# Switched from meshopt 2026-05-26 per S1.1 probes 7/8: meshopt's
+# `simplify_decoder` introduces non-manifold edges + duplicate faces on
+# manifold input, causing the very MC sliver artifacts the
+# `decimate_scan_for_sdf` docstring was already designed to combat.
+# baby_shark preserves manifoldness in exchange for ~12× wall-clock;
+# SDF construction is interactive/one-shot per device, acceptable.
+baby_shark = { workspace = true }
 # `Point3` for the SDF grid bounds + extracted iso surface coordinates.
 # (Note: `mesh-types` is already pulled in above for the clip-plane
 # math; the SDF stack reuses the same workspace dep.)

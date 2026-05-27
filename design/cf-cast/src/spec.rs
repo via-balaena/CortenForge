@@ -24,7 +24,7 @@ use crate::plug::add_plug_pins;
 use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 use crate::ribbon::{PieceSide, Ribbon};
-use crate::scan_mesh_direct::build_plug_body_mesh;
+use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -1108,12 +1108,31 @@ fn mesh_and_gate_v2_plugs(
             // pre-MC), the discard would silently skip that
             // composition on the scan-mesh-direct path — pull the
             // mating-transforms construction out independently then.
-            let (mesh, path_label) = match (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
-                (0, Some(scan_mesh)) => (build_plug_body_mesh(scan_mesh), "scan-mesh-direct"),
-                _ => (
-                    solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?,
-                    "compose+MC",
-                ),
+            let (mut mesh, path_label) =
+                match (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
+                    (0, Some(scan_mesh)) => (build_plug_body_mesh(scan_mesh), "scan-mesh-direct"),
+                    _ => (
+                        solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?,
+                        "compose+MC",
+                    ),
+                };
+            // S1.1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md (recon §SMD-7
+            // follow-up #1): the cf-scan-prep cleaned scan mesh fails
+            // manifold3d's `indexed_mesh_to_manifold` precondition
+            // ("every edge shared by exactly two faces") even after
+            // cf-scan-prep's STL serialization. Welds the soup back
+            // into shared-index topology so manifold3d's
+            // `indexed_mesh_to_manifold` accepts the mesh. See
+            // `repair_scan_mesh_for_mesh_csg`'s docstring for the
+            // full S1.1 history (baby_shark + centroid-fan upstream
+            // fixes mean this repair can stay weld-only).
+            let repair_summary = if path_label == "scan-mesh-direct" {
+                Some(
+                    repair_scan_mesh_for_mesh_csg(&mut mesh)
+                        .map_err(|source| CastError::ScanMeshRepair { target, source })?,
+                )
+            } else {
+                None
             };
             let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
             let compose_mesh_s = t_compose.elapsed().as_secs_f64();
@@ -1129,10 +1148,22 @@ fn mesh_and_gate_v2_plugs(
                     path,
                 });
             }
+            let repair_note = repair_summary
+                .map(|s| {
+                    format!(
+                        ", repair welds={} degens={} dupes={} unref={} holes={}",
+                        s.base.vertices_welded,
+                        s.base.degenerates_removed,
+                        s.base.duplicates_removed,
+                        s.base.unreferenced_removed,
+                        s.holes_filled,
+                    )
+                })
+                .unwrap_or_default();
             eprintln!(
                 "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
                  — {path_label} {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
-                 ({verts} verts / {faces} faces)",
+                 ({verts} verts / {faces} faces){repair_note}",
                 layer_count_minus_1 = layer_count.saturating_sub(1),
                 verts = mesh.vertices.len(),
                 faces = mesh.faces.len(),
@@ -1581,63 +1612,80 @@ fn mold_piece_filename(layer_index: usize, piece_side: PieceSide) -> String {
 /// cf-cast's blocking-issue rule: which `Critical`-severity issues
 /// from `mesh-printability` should abort an export.
 ///
-/// Mold-cup geometry is inherently support-dependent (the cavity
-/// ceiling and the annular pour rim are downward-facing horizontal
-/// faces — `ExcessiveOverhang` + `LongBridge` always fire on a real
-/// open-top cup). `SelfIntersecting` reports a noise floor of ~100
-/// regions on marching-cubes output for any closed cuboid surface
-/// (verified by `baseline_cuboid_self_intersection_noise_floor` in
-/// this crate's test module); it does not reliably indicate a real
-/// defect at the cell sizes used by `cf-cast`.
+/// # Principle (the F4 framework rule)
 ///
-/// The remaining `Critical` types — geometry actually too big for the
-/// printer, broken topology, sub-min-wall thinness, CAD-leftover
-/// debris, or a sealed cavity that can't be poured — DO indicate a
-/// fixture or pipeline bug and abort the export. Warnings of every
-/// kind surface in the returned `PrintValidation` for caller
-/// inspection.
+/// **An F4 `Critical` blocks export iff the defect makes the target's
+/// FUNCTION fail.** Function depends on what the cast piece DOES in
+/// the workshop workflow — not on whether the geometry is
+/// dimensionally perfect.
 ///
-/// **Post-S4 cup-piece carve-out.** For `CastTarget::MoldPiece`
-/// (cup halves) the post-MC seam-trim cap intersects the curved
-/// body cavity surface at acute angles near the seam, producing
-/// thin slivers + small features + trapped-volume signals that
-/// recon §G5 + §7 categorize as expected-flake (informational,
-/// not blocking). The mating-face flatness invariant is verified
-/// mathematically in `piece::tests` and the physical print at S8
-/// remains authoritative. Sentinel issues (`NotWatertight` /
-/// `NonManifold` / `SelfIntersecting` / `ExceedsBuildVolume`) still
-/// block on cup pieces — those would indicate a real
-/// manifold3d regression on cup geometry rather than the
-/// curve-meets-flat-cap topology artifact.
+/// - **Mold cup pieces** function as liquid containers (they hold
+///   poured silicone through cure). Wall thinness under FDM min-
+///   extrusion-width → silicone leaks. Non-watertight → silicone
+///   leaks. Trapped volume → air pocket the silicone can't displace.
+///   These all break the function and block.
+/// - **Plug bodies** function as solid positive shapes that silicone
+///   is cast AROUND (the plug forms the device's body cavity). The
+///   plug prints SOLID — there are no walls. Surface "thin wall"
+///   features inherited from the input scan (sub-mm scan-acquisition
+///   noise where the captured surface comes near itself) are
+///   structurally part of a solid; FDM prints them as continuous
+///   material. They do not affect the cast. Likewise the scan's
+///   sub-mm surface features can't be "trapped volumes" in a solid.
+/// - **Platforms** + **funnels** + **registration pins** + **v1
+///   monolithic molds** are regular CAD-emitted geometry, so a
+///   `ThinWall` there really IS a fixture bug (we accidentally emitted
+///   a wall under min-extrusion-width). Their full blocking set
+///   stays.
+///
+/// # Universal non-blockers (apply to every target)
+///
+/// - `ExcessiveOverhang` + `LongBridge`: mold-cup cavity ceilings +
+///   annular pour rims always fire these (downward-facing horizontal
+///   faces are intrinsic to "cup" geometry). The workshop slicer
+///   handles them via auto-supports — never a fixture bug.
+/// - `SelfIntersecting`: marching-cubes output has a noise floor of
+///   ~100 self-intersecting regions on any closed cuboid surface
+///   (verified by `baseline_cuboid_self_intersection_noise_floor`
+///   in this crate's test module). Doesn't reliably indicate a real
+///   defect at cf-cast's cell sizes. Manifold3d's mesh-CSG bridge
+///   already rejects truly broken topology upstream.
+/// - `Other`: catch-all bucket; never blocks.
+///
+/// All `Warning` and `Info` severities surface in
+/// `PrintValidation::issues` for caller inspection but never block.
+///
+/// # Per-target carve-outs (function-driven)
+///
+/// - **`MoldPiece` (cup halves)**: post-MC seam-trim cap intersects the
+///   curved body cavity surface at acute angles near the seam,
+///   producing thin slivers + small features + trapped-volume signals
+///   that recon §G5 + §7 categorize as expected-flake. The mating-
+///   face flatness invariant is verified mathematically by
+///   `piece::tests::mating_face_is_mathematically_flat_and_coplanar`;
+///   physical print at S8 is the authoritative gate.
+/// - **Plug** (post-S1.1 2026-05-26): `ThinWall` + `SmallFeature` +
+///   `TrappedVolume` → non-blocking. Plug is solid, no walls; the
+///   scan-mesh-direct path (S1.1) inherits the input scan's surface
+///   noise verbatim, and ~100 `ThinWall` reports on a solid plug body
+///   are scan-acquisition-noise, not real fixture bugs.
 fn is_blocking_critical(issue: &PrintIssue, target: CastTarget) -> bool {
     if issue.severity != IssueSeverity::Critical {
         return false;
     }
-    // Cup-piece (`MoldPiece`) F4 informs but does not gate — per
-    // `docs/CF_CAST_MATING_FEATURES_RECON.md` §G5 + §7 the post-MC
-    // mating-features cylinder ops (S5/S6/S7) intersect the curved
-    // body cavity surface at acute angles, producing thin slivers
-    // that ThinWall flags. recon §7 enumerates this as
-    // expected-flake (not a manifold3d regression); the mating-face
-    // flatness invariant is verified mathematically by
-    // `piece::tests::mating_face_is_mathematically_flat_and_coplanar`
-    // (recon-4 (P) production-fixture promotion of the §F-4 audit)
-    // and the physical print at S8 remains the authoritative gate.
-    // Sentinel issues (NotWatertight / NonManifold /
-    // SelfIntersecting) still block — those would indicate a real
-    // manifold3d regression on cup geometry.
-    //
-    // Plug, platform, funnel, and v1 mold targets keep the full
-    // blocking set: their geometry is regular and ThinWall there
-    // would be a legit defect, not a curve-meets-flat-cap
-    // artifact.
-    let is_cup_piece = matches!(target, CastTarget::MoldPiece { .. });
-    let cup_piece_expected_flake = is_cup_piece
-        && matches!(
-            issue.issue_type,
-            PrintIssueType::ThinWall | PrintIssueType::SmallFeature | PrintIssueType::TrappedVolume
-        );
-    if cup_piece_expected_flake {
+    // Function-driven carve-outs — see top-of-fn docstring for the
+    // principle. Both MoldPiece + Plug excuse {ThinWall, SmallFeature,
+    // TrappedVolume} because neither target's FUNCTION (cup =
+    // liquid container; plug = solid positive shape) is broken by
+    // sub-mm thinness / micro-features / scan-acquisition pockets.
+    let function_excuses_thinness = matches!(
+        target,
+        CastTarget::MoldPiece { .. } | CastTarget::Plug { .. }
+    ) && matches!(
+        issue.issue_type,
+        PrintIssueType::ThinWall | PrintIssueType::SmallFeature | PrintIssueType::TrappedVolume
+    );
+    if function_excuses_thinness {
         return false;
     }
     matches!(

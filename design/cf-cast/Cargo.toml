@@ -44,13 +44,14 @@ manifold3d = { workspace = true }
 # wall-clock from ~33 min (gasket-mold-dominated F4 gate) to
 # ~9-10 min on a 4-core workshop machine.
 rayon = { workspace = true }
+# Mesh-repair pass on the scan-mesh-direct path
+# (`scan_mesh_direct::repair_scan_mesh_for_mesh_csg`) — the
+# cf-scan-prep cleaned scan mesh fails manifold3d's
+# `indexed_mesh_to_manifold` precondition without a vertex-weld pass.
+# Also re-used by the §R1 connectivity inspector integration test +
+# the iter_connectivity_inspector tool below.
+mesh-repair = { workspace = true }
 
 [dev-dependencies]
 # Approximate equality for unit-conversion tests
 approx = { workspace = true }
-# Connected-component analysis for the §R1 connectivity invariant
-# tests (registration-pin disconnection recon-2). Inspector
-# integration test (`tests/iter_connectivity_inspector.rs`) uses
-# the same surface to triage out-of-repo iter-1 STL sets before
-# workshop print.
-mesh-repair = { workspace = true }
