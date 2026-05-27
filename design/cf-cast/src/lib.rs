@@ -91,6 +91,7 @@ mod procedure;
 pub mod registration;
 mod ribbon;
 pub mod scan_mesh_direct;
+pub mod silhouette_2d;
 mod spec;
 
 pub use cure::CureProtocol;

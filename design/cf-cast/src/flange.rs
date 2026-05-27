@@ -32,15 +32,26 @@
 //!   perpendicular to the seam plane (±Y) translates to compressive
 //!   force on the gasket strip via the cup body.
 //!
-//! # SDF composition (§F-3 option (a))
+//! # SDF composition (§F-3 option (a), updated per §F-1)
 //!
 //! ```text
 //! flange_sdf(P) = max(
-//!     body.evaluate(P_projected_to_seam) - flange_width_m,
-//!     flange_inner_offset_m - body.evaluate(P_projected_to_seam),
+//!     silhouette.signed_distance_to(P.x, P.z) - flange_width_m,
+//!     flange_inner_offset_m - silhouette.signed_distance_to(P.x, P.z),
 //!     |P.y - seam_plane_y| - flange_thickness_m
 //! )
 //! ```
+//!
+//! The lateral term uses [`crate::silhouette_2d::Silhouette2d`]'s
+//! 2D point-to-silhouette distance rather than the body's 3D SDF
+//! projected to the seam plane. The 3D-projected form (pre-fix) had
+//! a workshop-visible bug: at concave perimeter regions the 3D
+//! distance to the nearest body surface can collapse to a 3D
+//! wrap-around feature (overhang, lid, sock thickness in Y direction)
+//! at a small Y offset rather than the in-plane distance to the
+//! silhouette curve, falsely tripping the inner check and suppressing
+//! flange material. See `silhouette_2d` module docs and
+//! `tests::s0_flange_continuity_probe` for the diagnostic data.
 //!
 //! The flange exists where ALL THREE inequalities are ≤ 0:
 //! - `body_dist ≤ flange_width_m` (within outward reach of body perimeter)
@@ -82,6 +93,7 @@ use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Vector3};
 
 use crate::ribbon::{PieceSide, Ribbon};
+use crate::silhouette_2d::Silhouette2d;
 
 /// Default flange lateral width (15 mm).
 ///
@@ -188,20 +200,21 @@ impl FlangeKind {
 }
 
 /// SDF adapter for the seam-flange (§F-3 option (a) per-perimeter-
-/// offset). Evaluates the layer body's SDF at the seam-plane
-/// projection of the query point, then composes lateral (width +
-/// inner-offset) + vertical (thickness) box constraints to define
-/// the flange as a flat slab at the seam plane extending outward
-/// from the body cavity perimeter.
+/// offset, §F-1 silhouette-based lateral distance). Evaluates the
+/// body's seam-plane 2D silhouette signed distance at the query
+/// point's (X, Z), then composes lateral (width + inner-offset) +
+/// vertical (thickness) box constraints to define the flange as a
+/// flat slab at the seam plane extending outward from the body
+/// cavity perimeter.
 ///
 /// Pattern mirrors [`crate::gasket_mold::compose_gasket_mold_solid`]'s
-/// `GasketChannelSdf` — projection-to-seam-plane + `max()`
-/// composition. Y-clamp on the vertical term not needed here (the
-/// vertical `max()` component handles outside-thickness-range fully
-/// via the standard `|p.y - seam_y| - thickness` SDF box).
+/// `GasketChannelSdf` — `max()` composition; the lateral distance
+/// metric is the only difference. Y-clamp on the vertical term not
+/// needed (the vertical `max()` component handles outside-thickness-
+/// range fully via the standard `|p.y - seam_y| - thickness` SDF box).
 #[derive(Debug, Clone)]
 struct FlangeSdf {
-    body: Solid,
+    silhouette: Silhouette2d,
     seam_plane_y: f64,
     flange_width_m: f64,
     flange_thickness_m: f64,
@@ -210,8 +223,7 @@ struct FlangeSdf {
 
 impl Sdf for FlangeSdf {
     fn eval(&self, p: Point3<f64>) -> f64 {
-        let projected = Point3::new(p.x, self.seam_plane_y, p.z);
-        let body_dist = self.body.evaluate(&projected);
+        let body_dist = self.silhouette.signed_distance_to(p.x, p.z);
         let outer = body_dist - self.flange_width_m;
         let inner = self.flange_inner_offset_m - body_dist;
         let vertical = (p.y - self.seam_plane_y).abs() - self.flange_thickness_m;
@@ -259,9 +271,22 @@ pub(crate) fn build_flange_solid(
         Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
     );
 
+    // Pre-compute the 2D silhouette at the seam plane over the
+    // expanded XZ bounds. This is the §F-1 fix — the lateral distance
+    // metric is the silhouette's 2D point-to-segment distance, NOT
+    // the body's 3D SDF projected to the seam plane.
+    let silhouette = Silhouette2d::from_body_at_y(
+        layer_body,
+        seam_plane_y,
+        expanded_bounds.min.x,
+        expanded_bounds.max.x,
+        expanded_bounds.min.z,
+        expanded_bounds.max.z,
+    );
+
     Solid::from_sdf(
         FlangeSdf {
-            body: layer_body.clone(),
+            silhouette,
             seam_plane_y,
             flange_width_m: spec.flange_width_m,
             flange_thickness_m: spec.flange_thickness_m,
@@ -537,5 +562,322 @@ mod tests {
             pos_plus > 0.0,
             "Positive flange must exclude +Y probe; got {pos_plus}"
         );
+    }
+
+    /// §F-S1 falsification fixture per
+    /// [[feedback-load-bearing-test-fixtures]] + [[project-cf-cast-flange-perimeter-continuity-bookmark]].
+    ///
+    /// Builds a C-shape body (cuboid with a thin-Y notch on +Z face)
+    /// where the silhouette at Y=0 has a concavity AND the body wraps
+    /// in 3D via thin "lids" at Y=±1.5 mm (within `flange_inner_offset`
+    /// = 2 mm of the seam plane). The §F-S0 probe
+    /// ([`s0_flange_continuity_probe`]) characterized the bug mechanism
+    /// as the INNER check (`flange_inner_offset - body_dist > 0`)
+    /// tripping when 3D `body.evaluate(projected)` returns the distance
+    /// to a 3D wrap-around feature (here: the lids) rather than the
+    /// in-plane distance to the silhouette curve.
+    ///
+    /// The original synthetic-cylinder fixture
+    /// ([`flange_sdf_inside_at_body_perimeter_plus_offset`]) missed
+    /// this because a cylinder cross-section is fully convex and the
+    /// body is 2D-extruded (no 3D wrap), so 3D `body_dist` matches the
+    /// 2D silhouette distance everywhere.
+    ///
+    /// Expected behavior:
+    /// - At a probe IN the C's mouth, inside the flange band per 2D
+    ///   silhouette distance: flange must be PRESENT.
+    /// - Pre-fix (3D-projected `body.evaluate`): asserts FAIL —
+    ///   `body_dist ≈ 1.5 mm` (lid surface) trips the inner check.
+    /// - Post-fix (2D `silhouette.signed_distance_to`): asserts PASS —
+    ///   `silhouette_dist ≈ 13 mm` (notch floor) satisfies all three
+    ///   checks; flange material emitted.
+    ///
+    /// Paired with a cylinder-control assertion at the same 2D probe
+    /// distance to disambiguate "fixture is broken" from "feature
+    /// regressed" per the feedback memo.
+    #[test]
+    fn flange_continues_around_silhouette_concavity() {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        // C-shape body: outer cuboid 80×30×40 mm with thin-Y notch on
+        // +Z face. Notch X∈[-20,20], Y∈[-1.5,1.5], Z∈[-3,23] mm
+        // (intersected with body Z∈[-20,20] gives Z∈[-3,20]). Lids at
+        // Y∈[-15,-1.5]∪[1.5,15] mm. Lids sit inside flange thickness
+        // (Y∈[-4,4]) so they shadow the flange in their Y range, but
+        // the flange should still EXIST in the lid's Y gap (Y∈[-1.5,1.5])
+        // — that's the workshop-visible PR-blocker.
+        let outer = Solid::cuboid(Vector3::new(0.040, 0.015, 0.020));
+        let notch = Solid::cuboid(Vector3::new(0.020, 0.0015, 0.013))
+            .translate(Vector3::new(0.0, 0.0, 0.010));
+        let c_body = outer.subtract(notch);
+        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.030, 0.030));
+        let bounds = bounding_region.bounds().unwrap();
+        let spec = FlangeSpec::iter1();
+        let c_flange = build_flange_solid(&c_body, &ribbon, &spec, bounds);
+
+        // Probe P_concave: inside the C's mouth, mid-flange-band per
+        // 2D silhouette distance.
+        // - 2D silhouette dist from (0,0,+10) to notch floor (0,0,-3)
+        //   = 13 mm; inside flange band [inner_offset=2, width=15].
+        // - 3D body_dist (pre-fix) ≈ 1.5 mm (Y-distance to lid surface
+        //   at Y=±1.5); trips inner check, flange ABSENT (BUG).
+        // - 2D silhouette dist (post-fix) = 13 mm; all checks pass,
+        //   flange PRESENT.
+        let p_concave = Point3::new(0.0, 0.0, 0.010);
+        let sdf_concave = c_flange.evaluate(&p_concave);
+        assert!(
+            sdf_concave < 0.0,
+            "FALSIFICATION: flange must be PRESENT inside C's mouth \
+             concavity at (X=0, Y=0, Z=+10 mm) — 2D silhouette dist to \
+             notch floor (0,0,-3) is 13 mm which is inside the flange \
+             band [2, 15] mm. Got SDF = {sdf_mm:.3} mm (positive = \
+             flange absent). Pre-fix 3D `body.evaluate` returns ≈1.5 mm \
+             (lid surface at Y=±1.5) tripping the inner check; post-fix \
+             2D silhouette returns 13 mm and emits flange material. \
+             See §F-S0 probe + \
+             [[project-cf-cast-flange-perimeter-continuity-bookmark]].",
+            sdf_mm = sdf_concave * 1000.0,
+        );
+
+        // Probe P_wall_outboard: 5 mm outboard of the notch's -X wall,
+        // inside the C's mouth. 2D silhouette dist = 5 mm (to notch
+        // wall at -20). Pre-fix body_dist = 1.5 mm (lid). Same bug.
+        let p_wall_outboard = Point3::new(-0.015, 0.0, 0.010);
+        let sdf_wall = c_flange.evaluate(&p_wall_outboard);
+        assert!(
+            sdf_wall < 0.0,
+            "FALSIFICATION: flange must be PRESENT 5 mm outboard of \
+             notch -X wall, inside C's mouth at (X=-15, Y=0, Z=+10 mm). \
+             2D silhouette dist = 5 mm, inside flange band. Got SDF \
+             = {:.3} mm.",
+            sdf_wall * 1000.0,
+        );
+
+        // Cylinder-control: parallel fixture with same probe 2D distance
+        // from the silhouette. Cylinder has no concavity + no 3D wrap,
+        // so pre-fix and post-fix agree. If THIS assertion fails, the
+        // fixture is broken (not the silhouette logic) per
+        // [[feedback-load-bearing-test-fixtures]].
+        let cyl_body =
+            Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+                &Vector3::y_axis(),
+                std::f64::consts::FRAC_PI_2,
+            ));
+        let cyl_flange = build_flange_solid(&cyl_body, &ribbon, &spec, bounds);
+        // 13 mm outboard of cylinder's +Z silhouette edge (at Z=10 mm)
+        // — same lateral distance as P_concave from its nearest
+        // silhouette point.
+        let p_cyl = Point3::new(0.0, 0.0, 0.023);
+        let sdf_cyl = cyl_flange.evaluate(&p_cyl);
+        assert!(
+            sdf_cyl < 0.0,
+            "FIXTURE PRECONDITION FAILED: cylinder-control flange must \
+             be PRESENT 13 mm outboard of +Z perimeter at (X=0, Y=0, \
+             Z=+23 mm); both pre-fix and post-fix should agree here. \
+             Got SDF = {:.3} mm — indicates build_flange_solid wiring \
+             or FlangeSpec defaults regressed, not the silhouette \
+             change.",
+            sdf_cyl * 1000.0,
+        );
+
+        // Sanity: well past the C-shape's flange outer reach in -Z
+        // direction (convex region) — flange must be ABSENT. Both
+        // pre-fix and post-fix agree here (convex region; no bug).
+        let p_beyond = Point3::new(0.0, 0.0, -0.040);
+        let sdf_beyond = c_flange.evaluate(&p_beyond);
+        assert!(
+            sdf_beyond > 0.0,
+            "flange must be ABSENT 20 mm past body's -Z silhouette \
+             (flange_width = 15 mm); got SDF = {:.3} mm.",
+            sdf_beyond * 1000.0,
+        );
+    }
+
+    /// §F-S0 empirical probe — disambiguates which `FlangeSdf` check
+    /// (outer/inner/vertical) trips the workshop-visible "flange isn't
+    /// all the way around" symptom on real 3D-concave body geometry.
+    ///
+    /// Background: [[project-cf-cast-flange-perimeter-continuity-bookmark]]
+    /// claims `body.evaluate(P_projected_to_seam)` returns a 3D distance
+    /// LARGER than the 2D in-plane distance to the body's seam-plane
+    /// silhouette curve in concavity regions, tripping the OUTER check
+    /// (`body_dist - flange_width > 0`). Cold-read analysis of the math
+    /// suggests the inequality goes the OTHER way: the silhouette is a
+    /// subset of the body surface, so 3D `body.evaluate(Q)` ≤ 2D
+    /// distance from Q to silhouette for any Q in the seam plane. If
+    /// that analysis is correct, the actual bug mechanism is the INNER
+    /// check (`flange_inner_offset - body_dist > 0`): when the body has
+    /// 3D structure (overhang/shelf/lid) near the projected seam-plane
+    /// point, `body_dist` is unexpectedly small, falsely tripping the
+    /// "this point is inside the gasket-channel margin" check.
+    ///
+    /// This probe runs three synthetic fixtures and dumps the four SDF
+    /// components at each probe to see which check actually trips. The
+    /// data informs the §F-S1 C-shape fixture geometry — a falsification
+    /// fixture has to ACTUALLY reproduce the bug pre-fix, and depending
+    /// on which mechanism is real, the fixture geometry is different.
+    ///
+    /// `#[ignore]`-gated; run manually with:
+    /// `cargo test --release -p cf-cast --lib \
+    ///     flange::tests::s0_flange_continuity_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore = "S0 diagnostic probe — manual invocation only"]
+    fn s0_flange_continuity_probe() {
+        let spec = FlangeSpec::iter1();
+        eprintln!(
+            "\n§F-S0 probe — FlangeSpec: width={} mm, thickness={} mm/half, \
+             inner_offset={} mm\n",
+            spec.flange_width_m * 1000.0,
+            spec.flange_thickness_m * 1000.0,
+            spec.flange_inner_offset_m * 1000.0,
+        );
+
+        // Fixture A (control — pure cylinder along X, convex silhouette).
+        // 2D silhouette at Y=0 is the rectangle |Z|≤10 mm, |X|≤30 mm.
+        // 3D body is 2D-extruded ⇒ 3D body_dist == 2D silhouette dist
+        // at any seam-plane query. Expect no divergence between body
+        // and silhouette signals; flange present in the lateral
+        // [inner_offset, width] band.
+        eprintln!("=== Fixture A (control): cylinder along X, R=10, len=60 mm ===");
+        let body_a =
+            Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+                &Vector3::y_axis(),
+                std::f64::consts::FRAC_PI_2,
+            ));
+        probe_flange_sdf(&body_a, &spec);
+
+        // Fixture B (overhang — cylinder + thin wing at Y=2 mm).
+        // The wing is a thin slab at Y∈[1.5, 2.5] mm extending in +Z
+        // beyond the cylinder's perimeter. At Y=0, the silhouette is
+        // unchanged (just the cylinder rectangle) — the wing has no
+        // presence at Y=0. But for query points at Y=0 beyond the
+        // cylinder's +Z silhouette edge, the 3D nearest body surface
+        // is the wing (distance ≈ 1.5 mm), NOT the cylinder edge
+        // (distance > 1.5 mm in 3D). So 3D body_dist < 2D silhouette
+        // dist. If body_dist drops below flange_inner_offset (2 mm),
+        // the INNER check trips → flange absent. Predicted bug
+        // manifestation.
+        eprintln!("\n=== Fixture B (overhang): cylinder + thin wing at Y=2 mm ===");
+        let cyl_b =
+            Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+                &Vector3::y_axis(),
+                std::f64::consts::FRAC_PI_2,
+            ));
+        let wing_b = Solid::cuboid(Vector3::new(0.025, 0.0005, 0.015))
+            .translate(Vector3::new(0.0, 0.002, 0.020));
+        let body_b = cyl_b.union(wing_b);
+        probe_flange_sdf(&body_b, &spec);
+
+        // Fixture C (extruded C-shape — notch through all Y).
+        // Outer cuboid 80×30×40 mm minus inner notch 40×40×26 mm
+        // translated +Z=10 — creates a 2D concavity on +Z face that
+        // extends through ALL Y of the body. 3D body is 2D-extruded ⇒
+        // body_dist == silhouette dist. Predicted: no bug
+        // manifestation (concavity alone is not sufficient).
+        eprintln!("\n=== Fixture C: extruded C-shape (notch through Y) ===");
+        let outer_c = Solid::cuboid(Vector3::new(0.040, 0.015, 0.020));
+        let notch_c = Solid::cuboid(Vector3::new(0.020, 0.020, 0.013))
+            .translate(Vector3::new(0.0, 0.0, 0.010));
+        let body_c = outer_c.subtract(notch_c);
+        probe_flange_sdf(&body_c, &spec);
+
+        eprintln!(
+            "\nInterpretation: if Fixture B's +Z probes at Y=0 show INNER>0 and \
+             total>0 (flange ABSENT) while Fixture A's same-Z probes show flange \
+             PRESENT, the INNER-check hypothesis is confirmed and the §F-S1 C-shape \
+             fixture should pair an in-plane concavity with a 3D wrap-around \
+             feature (lid/wing at small Y offset) that won't shadow the flange but \
+             will trip body_dist below inner_offset. If neither check trips on \
+             Fixture B, the bug mechanism is something else and the hypothesis \
+             needs revision."
+        );
+    }
+
+    /// Probe helper for `s0_flange_continuity_probe`. Builds a
+    /// `FlangeSdf` directly (skipping `Solid::from_sdf` so we can
+    /// inspect the components in isolation) and dumps both the
+    /// pre-fix 3D body distance AND the post-fix 2D silhouette
+    /// distance at each probe, plus the four post-fix SDF terms.
+    /// The 3D-vs-2D column is the empirical signal that drove the
+    /// §F-1 architectural pivot — kept post-fix as a regression
+    /// diagnostic for future flange-continuity work.
+    fn probe_flange_sdf(body: &Solid, spec: &FlangeSpec) {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        let (seam_midpoint, _) = ribbon.seam_plane_reference();
+        let seam_plane_y = seam_midpoint.y;
+
+        // Build silhouette over a generous XZ region covering the
+        // fixture's body + flange reach.
+        let silhouette =
+            Silhouette2d::from_body_at_y(body, seam_plane_y, -0.060, 0.060, -0.040, 0.040);
+        let sdf = FlangeSdf {
+            silhouette,
+            seam_plane_y,
+            flange_width_m: spec.flange_width_m,
+            flange_thickness_m: spec.flange_thickness_m,
+            flange_inner_offset_m: spec.flange_inner_offset_m,
+        };
+
+        // All probes at X=0, Y=0 (seam plane), varying Z. Cylinder
+        // silhouette +Z edge is at Z=10 mm; flange band is
+        // Z ∈ [12, 25] mm (inner_offset=2, width=15).
+        let probes: &[(&str, Point3<f64>)] = &[
+            (
+                "on +Z perimeter           @ Z=10  mm",
+                Point3::new(0.0, 0.0, 0.010),
+            ),
+            (
+                "gasket-channel zone       @ Z=10.5mm",
+                Point3::new(0.0, 0.0, 0.0105),
+            ),
+            (
+                "just inside flange inner  @ Z=12.5mm",
+                Point3::new(0.0, 0.0, 0.0125),
+            ),
+            (
+                "mid-flange band           @ Z=15  mm",
+                Point3::new(0.0, 0.0, 0.015),
+            ),
+            (
+                "deeper into flange band   @ Z=20  mm",
+                Point3::new(0.0, 0.0, 0.020),
+            ),
+            (
+                "near outer flange edge    @ Z=24  mm",
+                Point3::new(0.0, 0.0, 0.024),
+            ),
+            (
+                "past outer flange edge    @ Z=26  mm",
+                Point3::new(0.0, 0.0, 0.026),
+            ),
+        ];
+
+        eprintln!(
+            "  {:42}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  flange?",
+            "probe (all at X=0, Y=0)", "body3D", "silh2D", "inner", "vert", "total"
+        );
+        for (plabel, p) in probes {
+            let projected = Point3::new(p.x, seam_plane_y, p.z);
+            let body_dist_3d = body.evaluate(&projected);
+            let body_dist_2d = sdf.silhouette.signed_distance_to(p.x, p.z);
+            // The post-fix inner check uses the 2D silhouette distance.
+            let inner = spec.flange_inner_offset_m - body_dist_2d;
+            let vertical = (p.y - seam_plane_y).abs() - spec.flange_thickness_m;
+            let total = sdf.eval(*p);
+            let present = if total < 0.0 { "PRESENT" } else { "absent " };
+            eprintln!(
+                "  {:42}  {:>7.3}  {:>7.3}  {:>7.3}  {:>7.3}  {:>7.3}  {}",
+                plabel,
+                body_dist_3d * 1000.0,
+                body_dist_2d * 1000.0,
+                inner * 1000.0,
+                vertical * 1000.0,
+                total * 1000.0,
+                present,
+            );
+        }
     }
 }
