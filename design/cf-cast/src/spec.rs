@@ -65,8 +65,10 @@ const CLIP_BODY_OVERLAP_M: f64 = 0.0005;
 ///   (single-piece cup with `+z`-opening clip).
 /// - v2's [`CastSpec::export_molds_v2`] carves
 ///   `bounding_region ∖ layers[i].body ∩ ribbon_side` per piece,
-///   plus optional registration pin / pour gate / vent / plug
-///   socket CSG (see [`crate::piece::compose_piece_solid`]).
+///   plus optional dowel-hole registration / pour gate / vent / plug
+///   socket CSG (see [`crate::piece::compose_piece_solid`]). §M-S4
+///   (2026-05-27) retired the legacy prismatic-pin registration
+///   path; symmetric dowel holes (§M-S2) are the replacement.
 #[derive(Debug, Clone)]
 pub struct CastLayer {
     /// Cumulative outer-surface positive solid in **meters**. See
@@ -2532,7 +2534,6 @@ mod tests {
     // ----- v2 export_molds_v2 -------------------------------------
 
     use crate::pour::{PourGateKind, PourGateSpec};
-    use crate::registration::{PinSpec, RegistrationKind};
     use crate::ribbon::{PieceSide, Ribbon, SplitNormal};
     use nalgebra::Point3;
 
@@ -3259,7 +3260,7 @@ mod tests {
             "explicit don't-flatten workshop guidance missing in: {md}"
         );
         assert!(
-            md.contains("Pin-independent"),
+            md.contains("Registration-independent"),
             "no-pins regen result anchor missing in: {md}"
         );
         // The section must explicitly disambiguate from the cap-plane
@@ -3684,28 +3685,16 @@ mod tests {
         assert!(!path.exists());
     }
 
-    // ----- Step 9: registration pins -------------------------------
-
-    /// v2 fixture variant: same geometry as `v2_fixture` but with
-    /// Step 9 cylindrical-pin registration enabled on the ribbon.
-    fn v2_fixture_with_pins() -> (CastSpec, Ribbon) {
-        let (spec, ribbon) = v2_fixture();
-        let ribbon = ribbon.with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-        (spec, ribbon)
-    }
-
-    #[test]
-    fn ribbon_with_registration_sets_field() {
-        // Builder method threads the kind through; default remains
-        // None for a freshly-constructed Ribbon.
-        let (_, ribbon_default) = v2_fixture();
-        assert_eq!(ribbon_default.registration, RegistrationKind::None);
-        let (_, ribbon_pins) = v2_fixture_with_pins();
-        assert!(matches!(
-            ribbon_pins.registration,
-            RegistrationKind::Pins(_)
-        ));
-    }
+    // ----- Step 9: registration pins (retired in §M-S4) ----------
+    //
+    // §M-S4 (2026-05-27) retired the legacy prismatic-pin
+    // `RegistrationKind::Pins` path along with the
+    // `v2_fixture_with_pins` + `ribbon_with_registration_sets_field`
+    // tests + the `export_molds_v2_with_pins_writes_pieces_plus_plug`
+    // + `generate_procedure_markdown_v2_pin_prose_*` tests below.
+    // Symmetric dowel-hole registration (§M-S2) replaces it; see
+    // `crate::dowel_hole::tests` + the spec/derive coverage for
+    // `DowelHoleKind` in cf-cast-cli.
 
     #[test]
     fn ribbon_sample_at_arc_fraction_returns_polyline_position() {
@@ -3728,97 +3717,16 @@ mod tests {
         assert!(ribbon.sample_at_arc_fraction(f64::NAN).is_none());
     }
 
-    // S5 deleted the two `compose_piece_solid_with_pins_*` SDF
-    // tests that asserted side-specific pin Solid behavior at the
-    // SDF level (per `docs/CF_CAST_MATING_FEATURES_RECON.md` §8 —
-    // S4 pulled the deletion forward when the cup-piece Solid
-    // briefly went side-agnostic; recon-4 (P) restored side-
-    // specificity but the pin geometry stayed mesh-CSG). S3 of the
-    // FDM-friendly geometry arc (2026-05-24) put the pin geometry
-    // BACK on the SDF side (per recon-1 §G-12 #2 architectural
-    // correction); the pin-protrusion-vs-hole invariant now lives
-    // in `registration::tests::cup_prismatic_pin_and_socket_fit_invariant`
-    // (spec-layer math-verified) +
-    // `registration::tests::cup_pin_sdf_centre_lands_at_annulus_midpoint`
-    // (SDF interior reading).
-
-    #[test]
-    fn export_molds_v2_with_pins_writes_pieces_plus_plug() {
-        // End-to-end: enabling pins on the ribbon still produces a
-        // valid `2L + 1` STL output. Pins are CSG'd in during
-        // compose_piece_solid; marching cubes runs once per piece
-        // exactly as the no-pins path.
-        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/cf-cast-v2-pins");
-        match std::fs::remove_dir_all(&out_dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
-        }
-        let (spec, ribbon) = v2_fixture_with_pins();
-        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
-        assert_eq!(report.layers.len(), 1);
-        assert!(report.layers[0].pieces[0].path.exists());
-        assert!(report.layers[0].pieces[1].path.exists());
-        assert!(report.layers[0].plug.path.exists());
-        // Each piece's mesh has non-trivial face count (the pin
-        // cylinder contributes a few dozen extra faces at the 12 mm
-        // cell size).
-        for piece in &report.layers[0].pieces {
-            assert!(piece.summary.face_count > 0);
-        }
-    }
-
-    #[test]
-    fn generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_geometry() {
-        // Pins ON: the v2 Mold Assembly section must mention the
-        // pin count (4 pins = 2 arc fractions × 2 lateral mirrors
-        // for iter1) + the new truncated-pyramid geometry vocabulary
-        // (post-S3 of the FDM-friendly geometry arc). Base extents
-        // 3.0 × 3.0 mm (1.5 mm half-extents per
-        // PrismaticPinSpec::cup_pin_default) + pin length 6.0 mm
-        // (3 mm half-length × 2). v1/v2-pre-Step-9 prose ("clamp
-        // with rubber bands") must NOT appear.
-        let (spec, ribbon) = v2_fixture_with_pins();
-        let pours = spec.compute_pour_volumes().unwrap();
-        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        assert!(
-            md.contains("4 truncated-pyramid registration pins"),
-            "post-S3 prose must mention the truncated-pyramid pin count + geometry"
-        );
-        // 3 mm base half-extent × 2 = 6 mm × 6 mm rectangular base.
-        assert!(
-            md.contains("3.0 × 3.0 mm rectangular base"),
-            "prose must mention the rectangular base extents"
-        );
-        // 3 mm half-length default → 6 mm pin length across the seam.
-        assert!(
-            md.contains("6.0 mm long"),
-            "prose must mention the pin length"
-        );
-        // Workshop callout: insertion along the binormal direction.
-        assert!(md.contains("binormal"));
-        // First-layer chamfer surfaced for the FDM-target user.
-        assert!(
-            md.contains("chamfer"),
-            "post-S3 prose must mention the base-end chamfer (first-layer elephant-foot absorber)"
-        );
-        assert!(
-            !md.contains("rubber bands"),
-            "with-pins prose must not retain rubber-band clamping note"
-        );
-    }
-
-    #[test]
-    fn generate_procedure_markdown_v2_no_pins_prose_keeps_clamp_note() {
-        // Pins OFF: the v2 Mold Assembly section keeps the existing
-        // hand-clamp prose unchanged.
-        let (spec, ribbon) = v2_fixture(); // RegistrationKind::None
-        let pours = spec.compute_pour_volumes().unwrap();
-        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        assert!(md.contains("rubber bands"));
-        assert!(md.contains("`RegistrationKind::None`"));
-    }
+    // §M-S4 (2026-05-27) retired the legacy prismatic-pin
+    // registration tests:
+    // - `export_molds_v2_with_pins_writes_pieces_plus_plug`
+    // - `generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_geometry`
+    // - `generate_procedure_markdown_v2_no_pins_prose_keeps_clamp_note`
+    // Symmetric dowel-hole registration (§M-S2) replaces it; coverage
+    // lives in `crate::dowel_hole::tests` + the cf-cast-cli derive
+    // tier. The v2 Mold Assembly prose now dispatches on
+    // `ribbon.dowel_hole` (None vs Auto) — see `procedure.rs`
+    // `write_v2_assembly_note`.
 
     // ----- Step 10: pour gate + air vent ---------------------------
 
@@ -4148,94 +4056,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compose_piece_solid_with_pins_and_pour_gate_composes_both() {
-        // Step 9 (pins) + Step 10/v2.1 sub-leaf 4 (V pour gate) are
-        // orthogonal — both should compose into the same piece
-        // geometry. Verify by enabling BOTH on the ribbon and
-        // confirming compose_piece_solid produces a valid Solid
-        // with both features visible.
-        //
-        // Uses a short centerline (-15→+15 mm) so the V apex at
-        // `centerline[0]` sits INSIDE the body and the pour leg
-        // crosses the cup wall (per the standalone V-pour-gate
-        // test); v2_fixture's default centerline -50→+50 puts the
-        // apex past the bounding region.
-        let spec = v2_fixture().0;
-        let short_centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
-        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
-        let ribbon = Ribbon::new(short_centerline, split)
-            .unwrap()
-            .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
-            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-
-        let (piece_neg, neg_transforms) = crate::compose_piece_solid(
-            &spec.layers[0].body,
-            spec.wall_thickness_m,
-            &ribbon,
-            PieceSide::Negative,
-        )
-        .unwrap();
-        let (piece_pos, pos_transforms) = crate::compose_piece_solid(
-            &spec.layers[0].body,
-            spec.wall_thickness_m,
-            &ribbon,
-            PieceSide::Positive,
-        )
-        .unwrap();
-
-        assert!(piece_neg.bounds().is_some());
-        assert!(piece_pos.bounds().is_some());
-
-        // Cup-wall SDF probe inside the annulus (body half_y=0.025,
-        // bounding half_y=0.040, probe at y=0.0325 the annulus
-        // midpoint). Post-S3 of the FDM-friendly geometry arc, the
-        // composed cup-piece Solid is `bounding ∖ body ∩ halfspace`
-        // PLUS the SDF-side registration pin unions (Negative side).
-        // Probe z=-0.003 sits on the Negative kept side (`+overlap =
-        // +0.5 mm` boundary at z=0 biased inward, so z=-3 mm is
-        // 2.5 mm inside the kept material at the cup-wall annulus).
-        // The pin SDFs are centred at z=0 and extend ±3 mm along the
-        // binormal axis, so the probe at z=-3 mm sits roughly at the
-        // pin's `-binormal` tip — but on the lateral axis the probe
-        // at x=-0.0075 (arc-fraction-0.25 centerline sample) and
-        // y=+0.0325 (mid-annulus) IS the pin centre lateral
-        // location, so this point reads INSIDE the composed Solid
-        // (either via cup-wall material or pin-tip overlap).
-        let pin_q = Point3::new(-0.0075, 0.0325, -0.003);
-        assert!(
-            piece_neg.evaluate(&pin_q) < 0.0,
-            "Negative piece composed Solid should register cup-wall material \
-             at the annulus-midpoint probe; got {}",
-            piece_neg.evaluate(&pin_q),
-        );
-        // Post-S3 + post-S4 of the FDM-friendly geometry arc, both
-        // the cup-pin registration AND the plug-floor lock live
-        // SDF-side (no longer in the transform Vec). The lone
-        // remaining mesh-CSG cylinder surface is S7's pour-gate +
-        // vent (2 legs per side).
-        let count_cylinders = |ts: &[crate::mesh_csg::MatingTransform]| -> usize {
-            ts.iter()
-                .filter(|t| {
-                    matches!(
-                        t,
-                        crate::mesh_csg::MatingTransform::UnionCylinder { .. }
-                            | crate::mesh_csg::MatingTransform::SubtractCylinder { .. }
-                    )
-                })
-                .count()
-        };
-        let neg_cyls = count_cylinders(&neg_transforms);
-        let pos_cyls = count_cylinders(&pos_transforms);
-        assert!(
-            neg_cyls >= 2,
-            "Negative piece should emit ≥ 2 cylinder ops (2 pour-gate legs; pins moved SDF-side in S3); got {neg_cyls}",
-        );
-        assert!(
-            pos_cyls >= 2,
-            "Positive piece should emit ≥ 2 cylinder ops (2 pour-gate legs; pins moved SDF-side in S3); got {pos_cyls}",
-        );
-    }
+    // §M-S4 (2026-05-27) retired
+    // `compose_piece_solid_with_pins_and_pour_gate_composes_both`
+    // along with the prismatic-pin registration path. The remaining
+    // pour-gate transform-count gate is exercised by
+    // `compose_piece_solid_with_pour_gate_emits_pour_and_vent_transforms_both_sides`
+    // above; dowel-hole transform emission is exercised in
+    // `crate::dowel_hole::tests`.
 
     #[test]
     fn mold_piece_filename_maps_piece_side_to_integer_suffix() {

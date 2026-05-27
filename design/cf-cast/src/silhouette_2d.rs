@@ -266,6 +266,220 @@ impl Silhouette2d {
     pub const fn segment_count(&self) -> usize {
         self.segments.len()
     }
+
+    /// Assemble the segment soup into ordered closed polylines.
+    ///
+    /// §M-S2 (2026-05-27): lands the §F-S1-deferred ordered polyline
+    /// assembly needed for arc-length parameterization (dowel-hole +
+    /// §B bolt-pattern placement around the silhouette perimeter).
+    ///
+    /// Algorithm: hash each segment endpoint to a fixed-precision
+    /// integer coordinate (1 µm grid), build an adjacency map, walk
+    /// from any unvisited segment following shared endpoints until a
+    /// loop closes. Each closed loop becomes one polyline (vertices
+    /// in order, last vertex NOT duplicated; the closing edge from
+    /// `last → first` is implicit).
+    ///
+    /// For grid-aligned marching-squares output, each cell-edge
+    /// crossing point is exact to FP precision and the 1 µm hash
+    /// reliably groups coincident endpoints from adjacent cells.
+    ///
+    /// Returns disjoint polylines if the silhouette has multiple
+    /// connected components (rare; usually one main perimeter +
+    /// possibly tiny MC artifact loops).
+    #[must_use]
+    pub fn polylines(&self) -> Vec<Vec<Point2>> {
+        use std::collections::HashMap;
+        // 1 µm precision hash for endpoint coords. SDF is in meters;
+        // 1e6 multiplier gives µm-scale integer keys.
+        let hash = |p: Point2| -> (i64, i64) {
+            ((p.x * 1.0e6).round() as i64, (p.z * 1.0e6).round() as i64)
+        };
+        // adjacency: endpoint hash → list of (segment_idx, end_idx in {0,1})
+        let mut adj: HashMap<(i64, i64), Vec<(usize, usize)>> = HashMap::new();
+        for (i, seg) in self.segments.iter().enumerate() {
+            adj.entry(hash(seg[0])).or_default().push((i, 0));
+            adj.entry(hash(seg[1])).or_default().push((i, 1));
+        }
+        let mut visited = vec![false; self.segments.len()];
+        let mut polylines: Vec<Vec<Point2>> = Vec::new();
+        for start_seg in 0..self.segments.len() {
+            if visited[start_seg] {
+                continue;
+            }
+            let mut polyline: Vec<Point2> = Vec::new();
+            let mut current_seg = start_seg;
+            let mut current_end = 0usize; // walk OUT of this endpoint
+            loop {
+                if visited[current_seg] {
+                    break;
+                }
+                visited[current_seg] = true;
+                let seg = &self.segments[current_seg];
+                // Append the "in" endpoint (opposite of current_end);
+                // the "out" endpoint becomes the next iteration's
+                // shared point with the neighbor segment.
+                let in_idx = 1 - current_end;
+                let out_idx = current_end;
+                polyline.push(seg[in_idx]);
+                let out_point = seg[out_idx];
+                // Find neighbor sharing the out_point.
+                let neighbors = adj.get(&hash(out_point)).map_or(&[][..], Vec::as_slice);
+                let next = neighbors
+                    .iter()
+                    .find(|(s_idx, _)| *s_idx != current_seg && !visited[*s_idx]);
+                if let Some(&(next_seg, next_endpoint_in)) = next {
+                    current_seg = next_seg;
+                    current_end = 1 - next_endpoint_in;
+                } else {
+                    break;
+                }
+            }
+            if polyline.len() >= 2 {
+                polylines.push(polyline);
+            }
+        }
+        polylines
+    }
+
+    /// Pick the largest polyline by total arc length (main body
+    /// perimeter, ignoring small MC-artifact loops) + compute its
+    /// cumulative arc length at each vertex.
+    ///
+    /// Returns `(polyline, cumulative_arc_lengths, total_arc_length)`:
+    /// the polyline has N vertices, the cumulative array has N+1
+    /// entries where `cum[i]` = arc length from vertex 0 walking to
+    /// vertex `i` (so `cum[0] = 0` and `cum[N]` = total including the
+    /// closing edge back to vertex 0). Returns `None` if the
+    /// silhouette has no polylines (empty segment set).
+    #[must_use]
+    pub fn longest_polyline_with_arc_length(&self) -> Option<(Vec<Point2>, Vec<f64>, f64)> {
+        let polylines = self.polylines();
+        let mut best: Option<(Vec<Point2>, Vec<f64>, f64)> = None;
+        for poly in polylines {
+            if poly.is_empty() {
+                continue;
+            }
+            let mut cum = Vec::with_capacity(poly.len() + 1);
+            cum.push(0.0_f64);
+            let mut total = 0.0_f64;
+            for i in 0..poly.len() {
+                let a = poly[i];
+                let b = poly[(i + 1) % poly.len()];
+                let dx = b.x - a.x;
+                let dz = b.z - a.z;
+                total += dx.mul_add(dx, dz * dz).sqrt();
+                cum.push(total);
+            }
+            // `cum` has poly.len() + 1 entries: cum[0]=0, cum[N]=total
+            // (closes back to vertex 0).
+            let beats = best
+                .as_ref()
+                .is_none_or(|(_, _, prev_total)| total > *prev_total);
+            if beats {
+                best = Some((poly, cum, total));
+            }
+        }
+        best
+    }
+
+    /// Return the point on the longest polyline at arc-length fraction
+    /// `t` ∈ [0, 1]. `t=0` and `t=1` both return the polyline's first
+    /// vertex (closed loop). Returns `None` if the silhouette has no
+    /// polylines.
+    ///
+    /// Used by [`crate::dowel_hole`] + future bolt-pattern placement
+    /// for arc-length-equal spacing of post-MC mesh-CSG primitives
+    /// around the body silhouette.
+    #[must_use]
+    pub fn point_at_arc_fraction(&self, t: f64) -> Option<Point2> {
+        let (poly, cum, total) = self.longest_polyline_with_arc_length()?;
+        if total <= 0.0 || poly.is_empty() {
+            return Some(poly.first().copied().unwrap_or(Point2::new(0.0, 0.0)));
+        }
+        let target = t.clamp(0.0, 1.0) * total;
+        // Binary search for the segment containing `target`.
+        let mut lo = 0_usize;
+        let mut hi = cum.len() - 1;
+        while lo + 1 < hi {
+            let mid = lo.midpoint(hi);
+            if cum[mid] <= target {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        // Segment from poly[lo] to poly[(lo+1) % len], arc length
+        // from cum[lo] to cum[lo+1].
+        let seg_start = poly[lo];
+        let seg_end = poly[(lo + 1) % poly.len()];
+        let seg_len = cum[lo + 1] - cum[lo];
+        let alpha = if seg_len > 0.0 {
+            (target - cum[lo]) / seg_len
+        } else {
+            0.0
+        };
+        Some(Point2::new(
+            alpha.mul_add(seg_end.x - seg_start.x, seg_start.x),
+            alpha.mul_add(seg_end.z - seg_start.z, seg_start.z),
+        ))
+    }
+
+    /// Outward-pointing 2D unit normal to the silhouette at the
+    /// given arc-length fraction. Used to offset dowel positions
+    /// outboard from the silhouette by `silhouette_outboard_offset_m`
+    /// in [`crate::dowel_hole`].
+    ///
+    /// The local outward direction at arc fraction `t` is the
+    /// perpendicular to the local tangent direction (the segment
+    /// containing `t`), oriented so it points OUT of the closed
+    /// curve (positive `signed_distance` side).
+    #[must_use]
+    pub fn outward_normal_at_arc_fraction(&self, t: f64) -> Option<Point2> {
+        let (poly, cum, total) = self.longest_polyline_with_arc_length()?;
+        if total <= 0.0 || poly.len() < 2 {
+            return None;
+        }
+        let target = t.clamp(0.0, 1.0) * total;
+        let mut lo = 0_usize;
+        let mut hi = cum.len() - 1;
+        while lo + 1 < hi {
+            let mid = lo.midpoint(hi);
+            if cum[mid] <= target {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let seg_start = poly[lo];
+        let seg_end = poly[(lo + 1) % poly.len()];
+        let dx = seg_end.x - seg_start.x;
+        let dz = seg_end.z - seg_start.z;
+        let len = dx.mul_add(dx, dz * dz).sqrt();
+        if len <= 0.0 {
+            return None;
+        }
+        // Tangent (unit): (dx, dz) / len.
+        // Two perpendiculars: (dz, -dx)/len  and  (-dz, dx)/len.
+        // Pick the one with positive silhouette_dist sign (outward).
+        let mid = Point2::new(
+            0.5_f64.mul_add(seg_start.x + seg_end.x, 0.0),
+            0.5_f64.mul_add(seg_start.z + seg_end.z, 0.0),
+        );
+        let probe_dist = 1.0e-6_f64;
+        let candidate_a = Point2::new(dz / len, -dx / len);
+        let probe_a = Point2::new(
+            probe_dist.mul_add(candidate_a.x, mid.x),
+            probe_dist.mul_add(candidate_a.z, mid.z),
+        );
+        // Sign at probe_a: positive = outside silhouette = outward.
+        let sign_a = self.signed_distance_to(probe_a.x, probe_a.z);
+        if sign_a > 0.0 {
+            Some(candidate_a)
+        } else {
+            Some(Point2::new(-candidate_a.x, -candidate_a.z))
+        }
+    }
 }
 
 /// Linear interpolation of the zero-crossing on an edge with corner
@@ -478,6 +692,111 @@ mod tests {
              case-10 saddle branches are swapped between center-inside \
              and center-outside)"
         );
+    }
+
+    /// §M-S2 polyline assembly: cylinder body silhouette assembles
+    /// into closed polylines whose total arc length matches the
+    /// rectangle perimeter (2 × (60 + 20) = 160 mm). MC corner
+    /// handling can split the perimeter into multiple chained
+    /// polylines depending on how walks terminate at corner-endpoint
+    /// ambiguities; what matters for downstream §M-S2 dowel placement
+    /// is that the LONGEST polyline captures most of the perimeter
+    /// and arc-length-parameterizes correctly.
+    #[test]
+    fn cylinder_silhouette_polylines_cover_full_perimeter() {
+        let body = cylinder_along_x();
+        let sil = Silhouette2d::from_body_at_y(&body, 0.0, -0.050, 0.050, -0.025, 0.025);
+        let polylines = sil.polylines();
+        assert!(
+            !polylines.is_empty(),
+            "cylinder silhouette must produce at least 1 polyline; got 0"
+        );
+        // Sum of all polyline arc lengths should approximate perimeter.
+        let total_assembled: f64 = polylines
+            .iter()
+            .map(|poly| {
+                let mut s = 0.0_f64;
+                for i in 0..poly.len() {
+                    let a = poly[i];
+                    let b = poly[(i + 1) % poly.len()];
+                    let dx = b.x - a.x;
+                    let dz = b.z - a.z;
+                    s += dx.mul_add(dx, dz * dz).sqrt();
+                }
+                s
+            })
+            .sum();
+        let expected_perim = 2.0 * (0.060 + 0.020); // 2 × (length + width)
+        assert!(
+            (total_assembled - expected_perim).abs() < 0.005,
+            "assembled-polyline total arc length should match perimeter \
+             160 mm; got {:.4} m across {} polylines",
+            total_assembled,
+            polylines.len()
+        );
+        // Longest polyline must cover at least half the perimeter
+        // (so dowel arc-length placement on it is meaningful).
+        let (_poly, _cum, longest) = sil.longest_polyline_with_arc_length().unwrap();
+        assert!(
+            longest > 0.5 * expected_perim,
+            "longest polyline must cover > 50% of perimeter for \
+             arc-length placement; got {longest:.4} m / {expected_perim:.4} m"
+        );
+    }
+
+    /// §M-S2 arc-length parameterization: 4 evenly-spaced points
+    /// around the cylinder silhouette should land on its rectangular
+    /// perimeter at roughly 25/50/75/100% positions.
+    #[test]
+    fn arc_fraction_walks_around_silhouette() {
+        let body = cylinder_along_x();
+        let sil = Silhouette2d::from_body_at_y(&body, 0.0, -0.050, 0.050, -0.025, 0.025);
+        let total = sil.longest_polyline_with_arc_length().unwrap().2;
+        // All 4 sample points must be on the perimeter (signed_distance ≈ 0).
+        for i in 0..4 {
+            let t = f64::from(i) / 4.0;
+            let p = sil.point_at_arc_fraction(t).unwrap();
+            let d = sil.signed_distance_to(p.x, p.z).abs();
+            assert!(
+                d < SILHOUETTE_GRID_STEP_M,
+                "arc-fraction {t} sample {p:?} must be on silhouette \
+                 (|signed_dist| < grid step); got {d:.6} m"
+            );
+        }
+        // Going around the loop once should return to ~start.
+        let p0 = sil.point_at_arc_fraction(0.0).unwrap();
+        let p1 = sil.point_at_arc_fraction(1.0).unwrap();
+        let d = (p1.x - p0.x).hypot(p1.z - p0.z);
+        assert!(
+            d < SILHOUETTE_GRID_STEP_M,
+            "t=0 and t=1 must return same point (closed loop); got {d:.6} m apart"
+        );
+        // Sanity that we actually walked a non-trivial arc length.
+        assert!(total > 0.100, "perimeter must be > 0.1m, got {total}");
+    }
+
+    /// §M-S2 outward normal: at multiple arc positions on the
+    /// cylinder silhouette, the outward normal must point AWAY from
+    /// the body interior (positive `signed_distance` side).
+    #[test]
+    fn outward_normal_points_away_from_body() {
+        let body = cylinder_along_x();
+        let sil = Silhouette2d::from_body_at_y(&body, 0.0, -0.050, 0.050, -0.025, 0.025);
+        for i in 0..8 {
+            let t = f64::from(i) / 8.0;
+            let p = sil.point_at_arc_fraction(t).unwrap();
+            let n = sil.outward_normal_at_arc_fraction(t).unwrap();
+            // Probe 1 mm in normal direction from p; signed_distance
+            // should be positive (outside body).
+            let probe_x = 0.001_f64.mul_add(n.x, p.x);
+            let probe_z = 0.001_f64.mul_add(n.z, p.z);
+            let d = sil.signed_distance_to(probe_x, probe_z);
+            assert!(
+                d > 0.0,
+                "outward normal at t={t} must point OUT of body; \
+                 probe 1 mm out got signed_distance = {d:.6} m (should be positive)"
+            );
+        }
     }
 
     #[test]

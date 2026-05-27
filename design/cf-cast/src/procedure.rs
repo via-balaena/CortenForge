@@ -32,7 +32,6 @@ use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
 use crate::pour_volume::PourVolume;
 use crate::prismatic_pin::PrismaticPinSpec;
-use crate::registration::RegistrationKind;
 use crate::ribbon::Ribbon;
 use crate::spec::CastSpec;
 
@@ -319,8 +318,8 @@ const fn layer_position_label(layer_index: usize, layer_count: usize) -> &'stati
 /// straight-pull demold prose with explicit piece-removal order
 /// ("piece 0 first, then piece 1 — the part slides out along
 /// the centerline"), and adds an iter-1 manual-clamping note
-/// (registration features are Step 9; v2 iter-1 uses hand pressure
-/// + rubber bands).
+/// (registration uses §M-S2 symmetric dowel holes; v2 iter-1
+/// hand-aligns + clamps with rubber bands when dowels disabled).
 ///
 /// Materials table, generic Smooth-On guidance, and mass-budget
 /// summary are shared verbatim with v1 (same pour-volume
@@ -477,16 +476,15 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
 /// Recon-1 §G-4 originally locked cup pieces to "seam face on bed"
 /// assuming registration pins lived entirely inside cup-wall
 /// material. S3 shipped pins extending symmetrically along the
-/// ribbon binormal across the seam plane (`binormal = tangent ×
-/// split_normal`, so binormal is **perpendicular** to the seam
-/// plane), placing the workshop-visible ridge ON THE EMPTY side
-/// of the seam — which under seam-face-down would point INTO
-/// the bed (geometrically impossible). S6 revises the cup
-/// orientation to seam-face-UP and reclassifies the cup-pin
-/// chamfer band from FDM-elephant-foot driver to pin/socket
-/// geometric soft-corner. The recon §G-4 entry carries a
-/// follow-up "(revised post-S6)" decision capturing this; this
-/// section is the workshop-facing surface of that revision.
+/// ribbon binormal across the seam plane, placing the workshop-
+/// visible ridge ON THE EMPTY side of the seam — which under
+/// seam-face-down would point INTO the bed (geometrically
+/// impossible). S6 revised the cup orientation to seam-face-UP.
+/// §M-S4 (2026-05-27) retired the prismatic-pin registration path
+/// entirely; the seam-face-UP orientation remains preferred for the
+/// dowel-hole pattern (holes carve straight through the seam face,
+/// printable as recessed cavities without internal support when the
+/// seam face is up).
 fn write_print_orientation_v2(md: &mut String) {
     let _ = writeln!(md, "## Per-Piece Print Orientation");
     md.push('\n');
@@ -518,18 +516,15 @@ fn write_print_orientation_cup_pieces(md: &mut String) {
     md.push('\n');
     let _ = writeln!(
         md,
-        "The S3 cup-pin extends symmetrically along the ribbon \
-         binormal across the seam plane — half buried in \
-         `_piece_0` material for SDF-union connectivity, half \
-         protruding past the seam face as the workshop-visible \
-         registration ridge. Binormal is **perpendicular** to the \
-         seam plane (`binormal = tangent × split_normal` by ribbon \
-         construction), so under seam-face-DOWN orientation the \
-         ridge would point INTO the bed — geometrically \
-         impossible. Seam-face-UP puts the ridge pointing UP into \
-         air (printable) and the matching `_piece_1` socket cavity \
-         opening UP as a recess (printable without internal \
-         support)."
+        "Seam-face-UP also fits the §M-S2 symmetric dowel-hole \
+         pattern: dowel holes carve straight through the seam face \
+         along the ribbon binormal (perpendicular to the seam \
+         plane). With the seam face UP, each hole opens upward as a \
+         shallow recessed cavity (printable without internal support \
+         or bridging). Pre-§M-S4 this section described the now-\
+         retired prismatic-pin registration ridge; the same \
+         seam-face-UP orientation carries over for dowel holes \
+         without modification."
     );
     md.push('\n');
     let _ = writeln!(
@@ -593,22 +588,20 @@ fn write_print_orientation_g4_revision(md: &mut String) {
         md,
         "Recon-1 §G-4 originally locked cup pieces to **seam face \
          on bed** on the assumption that registration pins lived \
-         entirely inside cup-wall material with only the chamfer \
-         band touching the seam-face plane. S3 shipped pins \
-         extending symmetrically across the seam plane (binormal \
-         axis ⇒ protruding ridge on empty seam side ⇒ ridge \
-         points into bed under seam-face-down). S6 revises to \
-         seam-face-UP as documented above; the cup-pin first-layer \
-         chamfer band reclassifies from FDM-elephant-foot driver \
-         to geometric soft-corner / pin-socket lead-in (next \
-         section). The recon doc §G-4 decision carries a follow-\
-         up \"(revised post-S6)\" entry."
+         entirely inside cup-wall material. S3 shipped pins \
+         extending symmetrically across the seam plane — ridge \
+         points into bed under seam-face-down. S6 revised to \
+         seam-face-UP as documented above. §M-S4 (2026-05-27) \
+         retired the prismatic-pin registration path entirely in \
+         favor of the §M-S2 symmetric dowel-hole pattern; the \
+         seam-face-UP orientation carries over (dowel holes are \
+         printable as upward-opening recesses without modification \
+         to the orientation lock)."
     );
     md.push('\n');
 }
 
 fn write_chamfer_recipe_v2(md: &mut String) {
-    let cup_chamfer_mm = PrismaticPinSpec::cup_pin_default().base_chamfer_m * 1000.0;
     let plug_chamfer_mm = PrismaticPinSpec::plug_lock_default().base_chamfer_m * 1000.0;
     let _ = writeln!(md, "## First-Layer Chamfer Recipe");
     md.push('\n');
@@ -616,31 +609,16 @@ fn write_chamfer_recipe_v2(md: &mut String) {
         md,
         "Recon-1 §G-6 envisioned the chamfer band on each \
          `PrismaticPin` as bed-adjacent FDM-elephant-foot relief. \
-         Under the S6-revised cup orientation (seam-face-UP) and \
-         the dome-end-DOWN plug orientation, the chamfer band on \
-         **both** pin/socket pairs lives at the `-axis_unit` end \
-         of the pin extent — deep inside material, never at the \
-         bed-touching first layer, never workshop-visible from \
-         outside the printed part. The chamfer is reframed as \
-         **SDF/MC topology continuity at the deepest-in-material \
-         corner**, retained at the §G-6 typed-range default \
-         pending S7 caliper data."
-    );
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "**Cup-pin chamfer** ({cup_chamfer_mm:.2} mm default per \
-         `PrismaticPinSpec::cup_pin_default`, typed-range §G-6 / \
-         pinned post-S7 §G-8): retained at default. The chamfer \
-         band on the pin SDF lives at the `-binormal` end (deepest \
-         in `_piece_0` cup-wall material, between mid-wall and the \
-         outer cup surface). The matching socket's chamfer band is \
-         on the `-binormal` (air) side of the seam plane on \
-         `_piece_1` and carves into empty space (no-op subtract); \
-         the actual cavity in `_piece_1` material is the unchamfered \
-         main-taper frustum. Bambu A1 + default + Jayo elephant \
-         foot at the cup's outer-surface first layer is absorbed by \
-         the brim, not by any pin sub-feature."
+         Post-§M-S4 the cup-pin registration path is retired (see \
+         `## v2 Mold Assembly` above for the symmetric dowel-hole \
+         replacement); only the plug-floor-lock chamfer remains. \
+         Under the dome-end-DOWN plug orientation the chamfer band \
+         lives at the `-axis_unit` end of the lock pyramid — deep \
+         inside the plug body, never at the bed-touching first \
+         layer, never workshop-visible from outside the printed \
+         part. The chamfer is **SDF/MC topology continuity at the \
+         deepest-in-material corner**, retained at the §G-6 \
+         typed-range default pending S7 caliper data."
     );
     md.push('\n');
     let _ = writeln!(
@@ -654,18 +632,20 @@ fn write_chamfer_recipe_v2(md: &mut String) {
          workshop-visible pyramid above the cap-plane is the \
          unchamfered main-taper portion only. The matching socket's \
          chamfer band on each cup-piece carves into the cup body \
-         cavity (no-op subtract) per the cup-pin pattern."
+         cavity (no-op subtract)."
     );
     md.push('\n');
     let _ = writeln!(
         md,
         "**Slicer-level elephant-foot compensation** (Bambu Studio \
          / PrusaSlicer / OrcaSlicer): set to **0.0 mm**. The \
-         pin/socket diametral + axial clearances are tuned by \
-         `PrismaticPinSpec` (S7 caliper pass per §G-8); adding \
-         slicer-level compensation on top would tighten the fit \
-         past the spec budget and the per-layer cup-wall surface \
-         past spec wall-thickness."
+         plug-lock pyramid/socket diametral + axial clearances are \
+         tuned by `PrismaticPinSpec` (S7 caliper pass per §G-8); \
+         the dowel-hole radial clearance is tuned by \
+         `DowelHoleSpec` (§M-S2 / §M-S3). Adding slicer-level \
+         compensation on top would tighten both fits past their \
+         spec budgets and the per-layer cup-wall surface past spec \
+         wall-thickness."
     );
     md.push('\n');
 }
@@ -727,11 +707,15 @@ fn write_cfview_sanity_check_v2(md: &mut String) {
     let _ = writeln!(
         md,
         "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
-         - Pin: trapezoidal-cross-section ridge protruding from the \
-         seam face of `_piece_0` (visible as small rectangular \
-         bumps); flat angled lateral faces, not cylindrical.\n   \
-         - Socket: matching trapezoidal cavity on `_piece_1` seam \
-         face.\n   \
+         - Dowel holes: cylindrical recessed cavities in BOTH \
+         halves' seam faces, arc-length-equal-spaced around the \
+         body cavity perimeter + offset outboard from the body \
+         silhouette per `DowelHoleSpec` (§M-S2). The hole pattern \
+         is symmetric — the two halves should mirror each other \
+         exactly along the seam plane.\n   \
+         - No trapezoidal / truncated-pyramid pin remnants on the \
+         seam face (the §M-S4-retired prismatic-pin registration \
+         path).\n   \
          - No cylindrical pin remnants (pre-S3 cylinder primitive \
          retired).\n   \
          - No T-bar / stem / T-slot remnants on the cap-plane wall \
@@ -862,6 +846,9 @@ fn write_cap_plane_chamfer_v2(md: &mut String) {
     md.push('\n');
 }
 
+// Linear writeln!s + a single bullet-list block; factoring out subsections would
+// just shuffle the prose into helper names without reducing complexity.
+#[allow(clippy::too_many_lines)]
 fn write_seam_face_edge_v2(md: &mut String) {
     let _ = writeln!(
         md,
@@ -921,15 +908,16 @@ fn write_seam_face_edge_v2(md: &mut String) {
          face geometry is driven by `Ribbon::halfspace_solid` + \
          pre-arc body derivation, both of which are continuous since \
          2026-05-19.\n\
-         - **Pin-independent: no remediation via pin geometry.** A \
-         2026-05-25 no-pins regen (`registration_pins.enabled = \
-         false` at `~/scans/cast_iter1_nopins/`) confirmed the \
-         dome-edge + cap-edge seam-face triangulation is \
-         bit-precisely identical with-pins vs without-pins. The \
-         cup-pin mesh-CSG truncated-pyramid unions only remesh the \
-         INTERIOR of the seam face (around each pin), NOT the dome \
-         or cap-plane edges. So pin-geometry tweaks cannot mitigate \
-         the dome/cap-edge appearance."
+         - **Registration-independent: no remediation via \
+         registration geometry.** A 2026-05-25 no-pins regen \
+         (`registration_pins.enabled = false` at \
+         `~/scans/cast_iter1_nopins/`) confirmed the dome-edge + \
+         cap-edge seam-face triangulation is bit-precisely identical \
+         with-pins vs without-pins. The cup-pin mesh-CSG (since \
+         retired in §M-S4) and the §M-S2 dowel-hole subtracts only \
+         remesh the INTERIOR of the seam face (around each feature), \
+         NOT the dome or cap-plane edges. So registration-geometry \
+         tweaks cannot mitigate the dome/cap-edge appearance."
     );
     md.push('\n');
     let _ = writeln!(
@@ -968,14 +956,20 @@ fn write_seam_face_edge_v2(md: &mut String) {
 fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
-    match &ribbon.registration {
-        RegistrationKind::None => {
+    // §M-S4 (2026-05-27) retired the legacy prismatic-pin
+    // registration prose (RegistrationKind::Pins arm). Dowel holes
+    // (§M-S2) are the sole inter-piece registration mechanism; the
+    // workshop user inserts loose printed dowels through matching
+    // holes at assembly time. Per
+    // [[project-cf-cast-unified-mating-plane-recon]] §M-S4.
+    match ribbon.dowel_hole.spec() {
+        None => {
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
                  curve-following seam. This cast has no integral \
-                 registration features (`RegistrationKind::None`); \
+                 registration features (`DowelHoleKind::None`); \
                  align the pieces by hand and clamp with rubber bands \
                  or wide tape during pour + cure. Each piece's seam \
                  face is bit-precise flat to the ribbon plane via \
@@ -993,71 +987,69 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  small fillet of mold release or putty along the outside \
                  of the seam before the next layer. Document the leak \
                  position for the post-iter-1 registration-feature \
-                 decision (pins vs dovetails vs magnets)."
+                 decision (enable dowel holes, dovetails, or magnets)."
             );
         }
-        RegistrationKind::Pins(spec) => {
-            // S3 of the FDM-friendly geometry arc migrated the cup-
-            // pin primitive from cylindrical mesh-CSG to truncated-
-            // pyramid SDF-side composition (recon-1 §G-2 + §G-12 #2);
-            // procedure prose reflects the rectangular base + tapered
-            // walls + chamfer geometry.
-            let pin_count_per_side = spec.arc_fractions.len() * 2;
-            let pin_spec = &spec.pin_spec;
-            let base_lateral_mm = pin_spec.pin_base_half_extents_m.x * 2.0 * 1000.0;
-            let base_binormal_mm = pin_spec.pin_base_half_extents_m.y * 2.0 * 1000.0;
-            let tip_lateral_mm = pin_spec.pin_tip_half_extents_m.x * 2.0 * 1000.0;
-            let tip_binormal_mm = pin_spec.pin_tip_half_extents_m.y * 2.0 * 1000.0;
-            let pin_length_mm = pin_spec.pin_half_length_m * 2.0 * 1000.0;
-            let chamfer_mm = pin_spec.base_chamfer_m * 1000.0;
-            let diametral_mm = pin_spec.diametral_clearance_m * 1000.0;
-            let socket_base_lateral_mm = base_lateral_mm + diametral_mm;
+        Some(spec) => {
+            // §M-S2 of the unified-mating-plane arc: symmetric
+            // SubtractCylinder holes per dowel, arc-length-equal-
+            // spaced around the body silhouette, identical on both
+            // cup-halves. Workshop user supplies loose printed PLA
+            // dowels and inserts them through matching holes at
+            // assembly time.
+            let count = spec.count;
+            let diameter_mm = spec.diameter_m * 1000.0;
+            let clearance_mm = spec.clearance_m * 1000.0;
+            let depth_mm = spec.depth_m * 1000.0;
+            let outboard_offset_mm = spec.silhouette_outboard_offset_m * 1000.0;
+            let hole_diameter_mm = 2.0_f64.mul_add(clearance_mm, diameter_mm);
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
-                 curve-following seam. **{pin_count_per_side} \
-                 truncated-pyramid registration pins** \
-                 ({base_lateral_mm:.1} × {base_binormal_mm:.1} mm rectangular base, \
-                 tapered to {tip_lateral_mm:.1} × {tip_binormal_mm:.1} mm flat tip, \
-                 {pin_length_mm:.1} mm long, {chamfer_mm:.2} mm base-end \
-                 chamfer absorbing first-layer elephant foot) protrude \
-                 from `_piece_0`'s seam face. Matching cavities in \
-                 `_piece_1` ({socket_base_lateral_mm:.2} mm base — \
-                 {diametral_mm:.2} mm diametral clearance for a \
-                 positional sliding fit) accept each ridge. The \
-                 trapezoidal cross-section gives self-centering wedge \
-                 action on engagement; flat angled lateral faces seat \
-                 plane-on-plane without the facet-vs-facet binding \
-                 cylindrical pins suffer on consumer-FDM prints."
+                 curve-following seam. **{count} symmetric dowel \
+                 holes** ({hole_diameter_mm:.2} mm Ø — \
+                 {diameter_mm:.1} mm nominal dowel × \
+                 2 × {clearance_mm:.2} mm radial clearance, \
+                 {depth_mm:.1} mm deep per half) are carved through \
+                 BOTH cup-halves' mating faces, arc-length-equal-spaced \
+                 around the body silhouette + offset \
+                 {outboard_offset_mm:.1} mm outboard from the body \
+                 perimeter. The hole pattern is identical on both \
+                 halves; the workshop user supplies {count} loose \
+                 printed PLA dowels ({diameter_mm:.1} mm Ø × \
+                 {depth_total:.1} mm long, sized so each dowel \
+                 inserts ~{depth_mm:.1} mm into each half) and \
+                 inserts one dowel through each pair of matching \
+                 holes to register the two halves laterally before \
+                 clamping.",
+                depth_total = depth_mm * 2.0,
             );
             md.push('\n');
             let _ = writeln!(
                 md,
-                "Insert each pin from `_piece_0` into the matching \
-                 cavity in `_piece_1` along the binormal direction \
-                 (the pin axis is perpendicular to the seam plane at \
-                 the pin position). Pins are gravity-held; no friction \
-                 lock. Each pin extends {pin_length_mm:.1} mm \
-                 symmetrically across the seam plane — half lives \
-                 buried inside `_piece_0`'s cup-wall material; the \
-                 other half protrudes past the seam face as the \
-                 workshop-visible ridge. Per recon-4 (P) the seam \
-                 face is bit-precise flat via the cup-piece SDF \
+                "Each dowel cylinder is centered on the seam plane \
+                 along the ribbon binormal (perpendicular to the seam \
+                 plane at the dowel position). Holes are gravity-held \
+                 with the dowel friction-fit absorbed by the radial \
+                 clearance — no latching action. Per recon-4 (P) the \
+                 seam face is bit-precise flat via the cup-piece SDF \
                  halfspace intersect (MC's linear-SDF interpolation \
                  places seam-cap vertices exactly on the plane), so \
-                 the pieces seat flush along the cavity rims."
+                 the pieces seat flush around the dowel pattern."
             );
             md.push('\n');
             let _ = writeln!(
                 md,
-                "If a pin breaks during demold or assembly, file the \
-                 stub flush + open the cavity if needed; a manual \
-                 rubber-band clamp restores the cast for that layer. \
-                 Document pin failures for the post-iter-3 \
-                 registration-feature decision (revisit base/tip \
-                 extents + clearance + chamfer defaults in \
-                 `PrismaticPinSpec::cup_pin_default`)."
+                "If a dowel breaks during assembly or the holes drift \
+                 out of register on a given print, swap to a fresh \
+                 PLA rod cut to {depth_total:.1} mm; the symmetric \
+                 dowel-hole pattern means no asymmetry to worry about \
+                 between halves. Document fit issues for the post-\
+                 iter-3 dowel-spec decision (revisit \
+                 `DowelHoleSpec::iter1` diameter / clearance / count / \
+                 outboard offset defaults).",
+                depth_total = depth_mm * 2.0,
             );
         }
     }
@@ -1205,7 +1197,8 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                  and lay each gasket on the Negative cup half's seam \
                  face inside the body cavity perimeter. Close the \
                  Positive half over Negative + gasket, aligning via \
-                 the registration pins. Without a flange to provide \
+                 the symmetric dowel-hole pattern (or hand-alignment \
+                 when `DowelHoleKind::None`). Without a flange to provide \
                  a flat C-clamp grip surface, the cup must be hand-\
                  clamped over its contoured outer surface (wide tape \
                  or ratchet straps at 4+ quadrants). Aim for the \
@@ -1227,7 +1220,8 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                  {thickness_mm:.1} mm per-half thickness) but no \
                  per-layer gasket (`GasketKind::None`). Use the \
                  flange as a flat C-clamp grip surface: after mating \
-                 the cup halves via the registration pins, apply \
+                 the cup halves via the symmetric dowel-hole pattern, \
+                 apply \
                  C-clamps to the flange at 4 positions (one per 90° \
                  quadrant around the seam plane perimeter). Tighten \
                  each clamp to hand-tight only — without a gasket \
@@ -1314,10 +1308,10 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                  gasket.** Bring the Positive piece \
                  (`mold_layer_{{N}}_piece_1.stl`) down onto the \
                  Negative + gasket assembly, aligning via the \
-                 registration pins (if enabled — see \
+                 symmetric dowel holes (if enabled — see \
                  `## v2 Mold Assembly` above for the alignment \
-                 method when pins are disabled). At this stage the \
-                 gasket is only lightly seated (cup halves resting \
+                 method when dowel holes are disabled). At this stage \
+                 the gasket is only lightly seated (cup halves resting \
                  on the registration features); the cup halves should \
                  seat flush at the seam (flange-to-flange contact \
                  OUTSIDE the gasket strip; gasket-sandwiched lightly \
@@ -1358,8 +1352,8 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                 md,
                 "8. **Release clamps + open cup halves.** After cure, \
                  release the 4 C-clamps. Separate the cup halves; \
-                 the registration pins slide out of their cavities \
-                 (gravity-held wedge fit — no latch action). Peel \
+                 any dowels in the symmetric holes slide out \
+                 (gravity-held friction-fit — no latch action). Peel \
                  the gasket strip out of the seam; trim at the body \
                  cavity perimeter with a scalpel if the gasket has \
                  chemically bonded to the cured silicone shell at \

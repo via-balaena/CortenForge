@@ -45,12 +45,6 @@ pub struct CastConfig {
     /// defaults". Set `enabled = false` to disable.
     #[serde(default)]
     pub pour_gate: PourGateConfig,
-    /// Inter-piece registration pin override (default =
-    /// `PinSpec::iter1()` + enabled). Absence of the table means
-    /// "enabled with iter1 defaults". Set `enabled = false` to
-    /// disable.
-    #[serde(default)]
-    pub registration_pins: RegistrationConfig,
     /// Per-layer gasket mold override (default = enabled with
     /// `GasketSpec::iter1()` + Ecoflex 00-30 material). Absence of
     /// the table means "enabled with iter1 defaults". Set
@@ -63,6 +57,13 @@ pub struct CastConfig {
     /// disable. S2 of the seam-flange arc per recon §F-6.
     #[serde(default)]
     pub flange: FlangeConfig,
+    /// Symmetric dowel-hole registration override (default = enabled
+    /// with [`cf_cast::dowel_hole::DowelHoleSpec::iter1`] geometry).
+    /// Absence of the table means "enabled with iter1 defaults". Set
+    /// `enabled = false` to disable. §M-S2 of the unified-mating-plane
+    /// arc per [[project-cf-cast-unified-mating-plane-recon]].
+    #[serde(default)]
+    pub dowel_hole: DowelHoleConfig,
 }
 
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
@@ -277,23 +278,6 @@ impl Default for PourGateConfig {
     }
 }
 
-/// `[registration_pins]` block — inter-piece pin toggle. Defaults to
-/// `enabled = true` with [`cf_cast::PinSpec::iter1`] geometry.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RegistrationConfig {
-    /// Master toggle. When `false`, the bridge passes
-    /// [`cf_cast::RegistrationKind::None`] (pieces clamp by hand).
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for RegistrationConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
 /// `[gasket]` block — per-layer gasket mold toggle + material pick.
 /// Maps to [`cf_cast::GasketKind`].
 ///
@@ -376,6 +360,56 @@ impl Default for FlangeConfig {
             width_m: None,
             thickness_m: None,
             inner_offset_m: None,
+        }
+    }
+}
+
+/// `[dowel_hole]` block — symmetric dowel-hole registration toggle
+/// + geometry overrides. Maps to [`cf_cast::dowel_hole::DowelHoleKind`].
+///
+/// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Defaults
+/// to `enabled = true` with
+/// [`cf_cast::dowel_hole::DowelHoleSpec::iter1`] (3 mm diameter ×
+/// 4 holes × 5 mm depth × 8 mm outboard offset × 0.1 mm clearance).
+/// Per-field overrides surfaced as optionals; absent → falls back to
+/// the iter1 default for that field.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DowelHoleConfig {
+    /// Master toggle. When `false`, the bridge passes
+    /// [`cf_cast::dowel_hole::DowelHoleKind::None`] (no dowel holes).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Dowel diameter (meters). `None` → 3 mm (iter1 default).
+    #[serde(default)]
+    pub diameter_m: Option<f64>,
+    /// Radial clearance between dowel and hole wall (meters).
+    /// `None` → 0.1 mm (iter1 default).
+    #[serde(default)]
+    pub clearance_m: Option<f64>,
+    /// Hole depth PER HALF (meters). `None` → 5 mm (iter1 default).
+    #[serde(default)]
+    pub depth_m: Option<f64>,
+    /// Number of dowels arc-length-equal-spaced around the silhouette.
+    /// `None` → 4 (iter1 default).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// Radial offset from the body silhouette curve to the dowel
+    /// centerline (meters). `None` → 8 mm (iter1 default). Must satisfy
+    /// the §M-5-b cross-field invariants in the recon.
+    #[serde(default)]
+    pub silhouette_outboard_offset_m: Option<f64>,
+}
+
+impl Default for DowelHoleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            diameter_m: None,
+            clearance_m: None,
+            depth_m: None,
+            count: None,
+            silhouette_outboard_offset_m: None,
         }
     }
 }
@@ -638,7 +672,6 @@ material = "ECOFLEX_00_30"
         // Block defaults.
         assert!(cfg.plug_pins.enabled);
         assert!(cfg.pour_gate.enabled);
-        assert!(cfg.registration_pins.enabled);
         // S3 seam-gasket-mold arc default: enabled + Ecoflex (None →
         // GasketMaterial::Ecoflex0030 in derive).
         assert!(cfg.gasket.enabled);
@@ -834,9 +867,6 @@ enabled = true
 
 [pour_gate]
 enabled = true
-
-[registration_pins]
-enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
@@ -845,7 +875,6 @@ enabled = false
         assert!((cfg.cast.mesh_cell_size_m - 0.004).abs() < 1e-12);
         assert_eq!(cfg.cast.output_dir, PathBuf::from("iter1_out"));
         assert!(cfg.plug_pins.enabled);
-        assert!(!cfg.registration_pins.enabled);
     }
 
     #[test]

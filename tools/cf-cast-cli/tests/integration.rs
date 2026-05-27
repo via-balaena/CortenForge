@@ -121,8 +121,6 @@ enabled = false
 [pour_gate]
 enabled = false
 
-[registration_pins]
-enabled = false
 "#,
     )
     .unwrap();
@@ -250,8 +248,6 @@ enabled = false
 [pour_gate]
 enabled = false
 
-[registration_pins]
-enabled = false
 "#,
     )
     .unwrap();
@@ -392,8 +388,6 @@ enabled = false
 [pour_gate]
 enabled = false
 
-[registration_pins]
-enabled = false
 "#,
     )
     .unwrap();
@@ -511,8 +505,6 @@ enabled = false
 [pour_gate]
 enabled = false
 
-[registration_pins]
-enabled = false
 "#,
     )
     .unwrap();
@@ -623,8 +615,6 @@ enabled = false
 [pour_gate]
 enabled = false
 
-[registration_pins]
-enabled = false
 "#,
     )
     .unwrap();

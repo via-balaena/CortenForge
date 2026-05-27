@@ -20,10 +20,12 @@
 //! - [`CastSpec::export_molds_v2`] — **v2 curve-following multi-
 //!   piece** + **v2.1 detachable-shell**. Each layer's mold cup
 //!   is split into 2 pieces along a curve-following [`Ribbon`]
-//!   surface (per `docs/CURVE_FOLLOWING_DESIGN.md`), with optional
-//!   inter-piece registration pins ([`PinSpec`] wrapping the SDF-
-//!   side [`PrismaticPinSpec`] primitive — pre-S3 of the FDM-
-//!   friendly geometry arc the cup-pin was a mesh-CSG cylinder),
+//!   surface (per `docs/CURVE_FOLLOWING_DESIGN.md`), with symmetric
+//!   dowel-hole registration ([`crate::dowel_hole::DowelHoleKind`]
+//!   post-§M-S4; pre-§M-S4 used a now-retired prismatic-pin
+//!   `PinSpec` wrapping `PrismaticPinSpec`, replaced by loose printed
+//!   dowels the workshop user inserts through matching holes at
+//!   assembly time),
 //!   V-at-dome pour gate + vent legs ([`PourGateSpec`]), and per-piece
 //!   plug-anchor pin sockets ([`PlugPinSpec`]). Each layer is
 //!   cast independently against its own plug — layer 0's plug
@@ -74,6 +76,7 @@
 //! [rmp]: ../../../docs/CASTING_ROADMAP.md
 
 pub mod cure;
+pub mod dowel_hole;
 mod error;
 pub mod flange;
 pub mod funnel;
@@ -88,7 +91,6 @@ pub mod pour;
 mod pour_volume;
 pub mod prismatic_pin;
 mod procedure;
-pub mod registration;
 mod ribbon;
 pub mod scan_mesh_direct;
 pub mod silhouette_2d;
@@ -120,7 +122,6 @@ pub use prismatic_pin::{
     build_prismatic_pin_sdf,
 };
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
-pub use registration::{PinSpec, RegistrationKind, build_registration_transforms};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 pub use spec::{

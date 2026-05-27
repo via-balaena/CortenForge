@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
+use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
     CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
-    MoldingMaterial, PinSpec, PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec,
-    RegistrationKind, Ribbon, SplitNormal,
+    MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec, Ribbon, SplitNormal,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -392,9 +392,6 @@ pub fn derive_spec_and_ribbon(
         ribbon = ribbon.with_pour_end_hint(*centroid, *normal);
     }
 
-    if config.registration_pins.enabled {
-        ribbon = ribbon.with_registration(RegistrationKind::Pins(PinSpec::iter1()));
-    }
     if config.pour_gate.enabled {
         ribbon = ribbon.with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
     }
@@ -427,6 +424,12 @@ pub fn derive_spec_and_ribbon(
         // so the spec built here is known-valid.
         let flange_spec = resolve_flange_spec(&config.flange);
         ribbon = ribbon.with_flange(FlangeKind::Plate(flange_spec));
+    }
+    if config.dowel_hole.enabled {
+        // §M-S2 of [[project-cf-cast-unified-mating-plane-recon]].
+        // Per-field overrides fall back to DowelHoleSpec::iter1().
+        let dowel_spec = resolve_dowel_hole_spec(&config.dowel_hole);
+        ribbon = ribbon.with_dowel_hole(DowelHoleKind::Auto(dowel_spec));
     }
 
     Ok(DerivedSpec { spec, ribbon })
@@ -470,6 +473,23 @@ fn resolve_flange_spec(config: &crate::config::FlangeConfig) -> FlangeSpec {
         flange_width_m: config.width_m.unwrap_or(iter1.flange_width_m),
         flange_thickness_m: config.thickness_m.unwrap_or(iter1.flange_thickness_m),
         flange_inner_offset_m: config.inner_offset_m.unwrap_or(iter1.flange_inner_offset_m),
+    }
+}
+
+/// Resolve a [`crate::config::DowelHoleConfig`] into a
+/// [`DowelHoleSpec`], falling back to [`DowelHoleSpec::iter1`] for
+/// each `None` per-field override. §M-S2 of
+/// [[project-cf-cast-unified-mating-plane-recon]].
+fn resolve_dowel_hole_spec(config: &crate::config::DowelHoleConfig) -> DowelHoleSpec {
+    let iter1 = DowelHoleSpec::iter1();
+    DowelHoleSpec {
+        diameter_m: config.diameter_m.unwrap_or(iter1.diameter_m),
+        clearance_m: config.clearance_m.unwrap_or(iter1.clearance_m),
+        depth_m: config.depth_m.unwrap_or(iter1.depth_m),
+        count: config.count.unwrap_or(iter1.count),
+        silhouette_outboard_offset_m: config
+            .silhouette_outboard_offset_m
+            .unwrap_or(iter1.silhouette_outboard_offset_m),
     }
 }
 
@@ -583,9 +603,9 @@ mod tests {
             ],
             plug_pins: PlugPinConfig::default(),
             pour_gate: PourGateConfig::default(),
-            registration_pins: crate::config::RegistrationConfig::default(),
             gasket: crate::config::GasketConfig::default(),
             flange: crate::config::FlangeConfig::default(),
+            dowel_hole: crate::config::DowelHoleConfig::default(),
         }
     }
 
@@ -695,16 +715,16 @@ mod tests {
     }
 
     #[test]
-    fn derive_ribbon_carries_registration_when_enabled() {
+    fn derive_ribbon_carries_features_when_enabled() {
+        // §M-S4 (2026-05-27): the legacy prismatic-pin registration
+        // path is retired; this test no longer probes
+        // `ribbon.registration` — see the dowel-hole-on-by-default
+        // matcher below for the post-§M-S4 registration equivalent.
         let cfg = three_layer_config();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
             derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
-        assert!(
-            matches!(derived.ribbon.registration, RegistrationKind::Pins(_)),
-            "registration_pins.enabled=true must produce Pins(_)"
-        );
         assert!(
             matches!(derived.ribbon.pour_gate, PourGateKind::Default(_)),
             "pour_gate.enabled=true must produce Default(_)"
@@ -713,24 +733,25 @@ mod tests {
             matches!(derived.ribbon.plug_pins, PlugPinKind::Axial(_)),
             "plug_pins.enabled=true must produce Axial(_)"
         );
+        assert!(
+            matches!(derived.ribbon.dowel_hole, DowelHoleKind::Auto(_)),
+            "dowel_hole.enabled=true must produce Auto(_)"
+        );
     }
 
     #[test]
     fn derive_ribbon_disables_features_when_config_disables_them() {
         let mut cfg = three_layer_config();
-        cfg.registration_pins.enabled = false;
         cfg.pour_gate.enabled = false;
         cfg.plug_pins.enabled = false;
+        cfg.dowel_hole.enabled = false;
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
             derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
-        assert!(matches!(
-            derived.ribbon.registration,
-            RegistrationKind::None
-        ));
         assert!(matches!(derived.ribbon.pour_gate, PourGateKind::None));
         assert!(matches!(derived.ribbon.plug_pins, PlugPinKind::None));
+        assert!(matches!(derived.ribbon.dowel_hole, DowelHoleKind::None));
     }
 
     #[test]

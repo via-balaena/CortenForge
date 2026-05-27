@@ -7,20 +7,27 @@
 //! ```text
 //! piece_sdf      = bounding_region ∖ layer_body
 //!                  ∩ ribbon_side(side)
-//!                  ∪ registration pin solids        (Negative side)
-//!                  ∖ registration socket solids     (Positive side)
 //!                  ∖ plug-floor-lock socket          (both sides)
 //! piece_meshcsg  = [pour-gate + vent SubtractCylinder]
+//!                  + [dowel-hole SubtractCylinder]   (§M-S2)
 //! ```
+//!
+//! §M-S4 (2026-05-27) retired the legacy prismatic-pin registration
+//! path (`MatingTransform::UnionTruncatedPyramid` /
+//! `SubtractTruncatedPyramid` from the registration module) entirely;
+//! the dowel-hole pattern shipped in §M-S2 replaces it. See
+//! [[project-cf-cast-unified-mating-plane-recon]] §M-S4.
 //!
 //! The cup-piece [`Solid`] is **side-specific**: each
 //! [`PieceSide`] returns its own half-shell via
 //! [`Ribbon::halfspace_solid`]'s SDF half-space intersect (post-§M-S1
 //! 2026-05-27 uses `overlap_m = 0` for flush mating; pre-§M used
 //! `RIBBON_PIECE_OVERLAP_M = 0.5 mm` inward bias for 1 mm overlap
-//! at the seam), then unions / subtracts the registration
-//! [`crate::PrismaticPin`][`crate::prismatic_pin`] solids per side
-//! and subtracts the plug-floor-lock socket (side-agnostic single
+//! at the seam), then (pre-§M-S4) unioned/subtracted the legacy
+//! registration [`crate::PrismaticPin`][`crate::prismatic_pin`]
+//! solids per side. Post-§M-S4 the legacy registration path is
+//! retired; only the plug-floor-lock socket subtract remains as a
+//! per-side SDF op. The plug-floor-lock socket is side-agnostic (single
 //! solid; the per-side halfspace intersect bisects it laterally
 //! across the seam by construction — S6 three-piece shared-
 //! primitive invariant analog in SDF). Marching-cubes meshes the
@@ -109,7 +116,6 @@ use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
 use crate::plug::build_plug_lock_socket_transform;
 use crate::pour::build_pour_gate_transforms;
-use crate::registration::build_registration_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
 
 // §M-S1 (2026-05-27): `RIBBON_PIECE_OVERLAP_M` deleted per
@@ -366,11 +372,10 @@ pub fn compose_piece_solid(
         base_piece = base_piece.union(flange_clipped);
     }
 
-    // Post-mortem salvage (2026-05-24): cup-pin registration AND the
-    // S4 plug-floor-lock socket are now emitted as POST-MC mesh-CSG
-    // transforms via [`MatingTransform::UnionTruncatedPyramid`] /
-    // [`SubtractTruncatedPyramid`]. Restores the prior
-    // mating-features arc S5/S6 architecture (POST-MC primitives
+    // Post-mortem salvage (2026-05-24): the S4 plug-floor-lock socket
+    // is emitted as a POST-MC mesh-CSG transform via
+    // [`MatingTransform::SubtractTruncatedPyramid`]. Restores the
+    // prior mating-features arc S6 architecture (POST-MC primitives
     // carry their own native hull resolution; pose discipline per
     // the recon-4 (P) framework keeps placement CONTAINED /
     // PROTRUDING). The plug-lock socket is **side-agnostic** —
@@ -381,20 +386,25 @@ pub fn compose_piece_solid(
     // for the post-mortem on why pre-MC SDF composition (the prior
     // S3/S4 architecture) was abandoned.
     //
-    // §Q-1 (2026-05-26): registration pin placement now uses
-    // `wall_thickness_m` for the cup-wall outer distance (was:
-    // surface_distance_along_ray(bounding_region, ...) at the
-    // OLD cuboid face). Pin position = body + wall_thickness/2 in
-    // the shell midpoint.
+    // §M-S4 (2026-05-27): the legacy cup-pin registration path is
+    // retired (`build_registration_transforms` deleted along with
+    // the entire `crate::registration` module). The symmetric dowel-
+    // hole pattern shipped in §M-S2 (below) replaces it. See
+    // [[project-cf-cast-unified-mating-plane-recon]] §M-S4.
     let mut transforms = build_pour_gate_transforms(ribbon);
-    transforms.extend(build_registration_transforms(
-        ribbon,
-        layer_body,
-        wall_thickness_m,
-        side,
-    ));
     if let Some(plug_lock_socket) = build_plug_lock_socket_transform(ribbon) {
         transforms.push(plug_lock_socket);
+    }
+    // §M-S2 (2026-05-27): symmetric dowel-hole registration. Same
+    // transforms for both Negative + Positive sides — each
+    // SubtractCylinder spans the seam plane and carves matching
+    // holes from whichever cup-half material exists. Workshop user
+    // inserts loose PLA dowels at assembly time to register the two
+    // halves laterally. Per [[project-cf-cast-unified-mating-plane-recon]] §M-S2.
+    if let Some(dowel_spec) = ribbon.dowel_hole.spec() {
+        transforms.extend(crate::dowel_hole::build_dowel_hole_transforms(
+            layer_body, ribbon, dowel_spec, mc_bounds,
+        ));
     }
     // **Cup-side cap-plane trim DISABLED 2026-05-24 night** — same
     // recon-4 (P) §F-2 paradigm-boundary issue that blocked the
@@ -806,12 +816,11 @@ mod tests {
 
     // ----- Sub-leaf A regression: workshop iter-1 mold visual-gate -
     //
-    // The wide-body pin-anchor regression moved into
-    // `crate::registration::tests::cup_pin_sdf_centre_stays_in_cup_wall_for_wide_body`
-    // when S3 of the FDM-friendly geometry arc migrated the cup-pin
-    // primitive from mesh-CSG cylinder transforms to SDF-side
-    // PrismaticPin solids — the new test asserts the SAME annulus-
-    // midpoint invariant on the SDF emission path.
+    // §M-S4 (2026-05-27) retired the legacy prismatic-pin
+    // registration path along with the `crate::registration` module
+    // and its `cup_pin_sdf_centre_stays_in_cup_wall_for_wide_body`
+    // test. The dowel-hole pattern (§M-S2) does not carve into the
+    // cup wall, so the annulus-midpoint regression no longer applies.
 
     /// Workshop iter-1 plug-socket regression preserved post-salvage.
     ///
@@ -929,19 +938,17 @@ mod tests {
     /// without registration pins (the bare half-shell connectivity
     /// is the load-bearing recon-4 §F-2 architectural claim).
     ///
-    /// Full mating-features connectivity (cup body + registration
-    /// pins via mesh-CSG union) is verified at the integration tier
-    /// — `~/scans/cast_iter1/mold_layer_{0..2}_piece_{0,1}.stl`
+    /// Full mating-features connectivity (cup body + plug-floor-lock
+    /// socket + dowel holes via mesh-CSG) is verified at the
+    /// integration tier — `~/scans/cast_iter1/mold_layer_{0..2}_piece_{0,1}.stl`
     /// regen post-recon-4 shows all 6 production cup-piece STLs
     /// PASS the §R1 inspector at 1 connected component each
     /// (~50k verts / ~17k tris each — production scale + capsule-
-    /// body curvature). A synthetic cuboid fixture for the
-    /// full-mating-features path produces 5 components for reasons
-    /// orthogonal to the half-shell invariant (manifold3d's mesh-CSG
-    /// union behavior on small synthetic cuboid hosts with
-    /// 4 contained pins differs from production capsule-body
-    /// geometry); the half-shell baseline captured here is the
-    /// load-bearing recon-4 (P) regression guard.
+    /// body curvature). The half-shell baseline captured here is
+    /// the load-bearing recon-4 (P) regression guard. Pre-§M-S4
+    /// (now retired) the legacy prismatic-pin path participated in
+    /// this invariant; post-§M-S4 only the half-shell + plug-lock +
+    /// dowel-hole transforms remain.
     #[test]
     fn cup_piece_half_shell_is_single_connected_component() {
         use mesh_repair::components::find_connected_components;
