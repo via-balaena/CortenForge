@@ -329,6 +329,21 @@ pub fn compose_piece_solid(
     // (shell SDF) and the flange's outer reach is fully inside
     // `mc_bounds`, so no cuboid face × flange interaction can
     // produce MC ambiguity. `FlangeKind::None` short-circuits.
+    //
+    // §F-S1 follow-up (2026-05-27): subtract the layer body from the
+    // flange before unioning. The §F-S1 silhouette-based FlangeSdf
+    // uses 2D point-to-silhouette-curve distance, which has no
+    // awareness of the body's 3D extent — at points where the body
+    // bulges in ±Y past the seam-plane silhouette (sock fabric
+    // bunching on top of capsule curves), the flange would otherwise
+    // extend into the body's 3D interior and create floating shards
+    // of cup material inside the body cavity after the cup-piece
+    // union. `flange ∖ body` clips the flange to "outside body in
+    // 3D", restoring 3D-body-respect without losing the §F-S1
+    // concavity fix (flange material in the seam plane outside the
+    // silhouette curve = outside body in 3D too). See workshop
+    // cf-view smoke after §F-S2 production regen for the shard
+    // diagnostic that triggered this follow-up.
     if let Some(flange_spec) = ribbon.flange.spec() {
         let flange = crate::flange::build_flange_solid_for_side(
             layer_body,
@@ -337,7 +352,8 @@ pub fn compose_piece_solid(
             mc_bounds,
             side,
         );
-        base_piece = base_piece.union(flange);
+        let flange_clipped = flange.subtract(layer_body.clone());
+        base_piece = base_piece.union(flange_clipped);
     }
 
     // Post-mortem salvage (2026-05-24): cup-pin registration AND the
@@ -1139,6 +1155,72 @@ mod tests {
             dt < 1e-9,
             "Flange must NOT alter SDF at body perimeter (gasket-disjoint \
              invariant §F-4); diff {dt} between plate={sdf_plate} and none={sdf_none}"
+        );
+    }
+
+    /// §F-S1 shard-prevention regression: workshop cf-view smoke on
+    /// the §F-S2 production regen surfaced floating shards of cup
+    /// material inside the body cavity. Root cause: the §F-S1
+    /// silhouette-based `FlangeSdf` uses 2D point-to-silhouette-curve
+    /// distance, which has no awareness of the body's 3D extent — at
+    /// (X, Y, Z) points where the body bulges in ±Y past the
+    /// seam-plane silhouette curve, the flange's lateral+vertical
+    /// band returns "inside flange material" while the body in 3D
+    /// also contains the point. The cup-piece `(bounding ∖ body) ∪
+    /// flange` then leaves cup material inside the body cavity. Fix
+    /// is `flange ∖ body` before the union — see
+    /// `compose_piece_solid`'s §F-S1-follow-up comment.
+    ///
+    /// Fixture mirrors the §F-S1 falsification's C-shape body: outer
+    /// cuboid 80×30×40 mm with thin-Y notch on +Z face. Body has
+    /// "lids" at Y ∈ [-15, -1.5] ∪ [1.5, 15] mm. Probe at (0, +2, 0)
+    /// is INSIDE the body's 3D lid AND outside the seam-plane
+    /// silhouette curve (which has a notch at Z ∈ [-3, +20]). Without
+    /// the body-subtract, flange material would be present here →
+    /// cup-piece SDF goes negative → shard. With body-subtract, no
+    /// shard.
+    #[test]
+    fn flange_does_not_create_shards_inside_body_3d_extent() {
+        use crate::flange::{FlangeKind, FlangeSpec};
+
+        let outer = Solid::cuboid(Vector3::new(0.040, 0.015, 0.020));
+        let notch = Solid::cuboid(Vector3::new(0.020, 0.0015, 0.013))
+            .translate(Vector3::new(0.0, 0.0, 0.010));
+        let body = outer.subtract(notch);
+        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_flange(FlangeKind::Plate(FlangeSpec::iter1()));
+
+        // Probe at (0, +2 mm, 0): inside the body's +Y lid (Y=2 ∈
+        // [1.5, 15]), outside the seam-plane silhouette in 2D
+        // (silhouette has a notch at this XZ, nearest perimeter point
+        // is the notch floor at Z=-3 mm, distance ≈ 3 mm).
+        let probe = Point3::new(0.0, 0.002, 0.0);
+
+        // Sanity-check: bare body-only SDF says probe is INSIDE body.
+        assert!(
+            body.evaluate(&probe) < 0.0,
+            "fixture precondition: body must contain probe (0, +2, 0) in 3D — \
+             the +Y lid extends past the seam-plane silhouette; got body SDF \
+             = {}",
+            body.evaluate(&probe),
+        );
+
+        // Run with Negative side (covers +Y region for this fixture
+        // per the existing `flange_per_side_halfspace_cut_keeps_only_one_y_half`
+        // analysis in flange.rs tests).
+        let (piece, _) = compose_piece_solid(&body, 0.005, &ribbon, PieceSide::Negative).unwrap();
+        let sdf = piece.evaluate(&probe);
+        assert!(
+            sdf > 0.0,
+            "REGRESSION: cup-piece must NOT contain probe (0, +2 mm, 0) which \
+             is inside the body's 3D lid — without `flange ∖ body` clip, the \
+             §F-S1 silhouette-based flange creates a floating shard of cup \
+             material inside the body cavity (the §F-S2 workshop cf-view \
+             smoke finding). Got piece SDF = {sdf} (negative = wrongly inside \
+             cup material at body-interior probe = shard)."
         );
     }
 }
