@@ -406,6 +406,28 @@ pub fn compose_piece_solid(
             layer_body, ribbon, dowel_spec, mc_bounds,
         ));
     }
+    // §B (2026-05-27): M5 through-bolt clamp pattern. Identical
+    // SubtractCylinder set on both Negative + Positive sides —
+    // each cylinder spans the seam plane through both halves' flange
+    // material so a single M5 bolt passes through the corresponding
+    // holes to clamp the assembled mold. Workshop user supplies the
+    // M5 bolts + washers + nuts. Per
+    // [[project-cf-cast-flange-continuity-bolt-pattern-recon]] §B-S1.
+    if let Some(bolt_spec) = ribbon.bolt_pattern.spec() {
+        if let Some(flange_spec) = ribbon.flange.spec() {
+            transforms.extend(crate::bolt_pattern::build_bolt_pattern_transforms(
+                layer_body,
+                ribbon,
+                bolt_spec,
+                flange_spec,
+                mc_bounds,
+            ));
+        }
+        // Bolt pattern without a flange has no material to clamp —
+        // silently no-op rather than fail. cf-cast-cli's
+        // validate_after_layer_source surfaces this as a
+        // workshop-actionable config error before reaching here.
+    }
     // **Cup-side cap-plane trim DISABLED 2026-05-24 night** — same
     // recon-4 (P) §F-2 paradigm-boundary issue that blocked the
     // plug-side trim. See `add_plug_pins` in `plug.rs` for the
@@ -1088,9 +1110,9 @@ mod tests {
         // Plate: the flange union adds material → piece_sdf < 0.
         //
         // Fixture: cylinder body along X (radius 10 mm in YZ). The
-        // flange extends `flange_width_m` = 15 mm radially from the
+        // flange extends `flange_width_m` = 16 mm radially from the
         // cylinder surface; we use `wall_thickness_m` = 0.005 (5 mm)
-        // so the band body_dist ∈ [5 mm, 15 mm] is "outside cup-wall
+        // so the band body_dist ∈ [5 mm, 16 mm] is "outside cup-wall
         // shell" but "inside flange lateral reach". A probe at
         // Z = +0.020 m (body_dist = 0.020 - 0.010 = 0.010 = 10 mm)
         // lands in that band.
@@ -1108,7 +1130,7 @@ mod tests {
             .with_flange(crate::flange::FlangeKind::Plate(spec));
         let wall_thickness_m = 0.005;
 
-        // Probe in flange-only band (5 mm < body_dist < 15 mm).
+        // Probe in flange-only band (5 mm < body_dist < 16 mm).
         // body_dist at (0, 0.001, 0.020) ≈ sqrt(0.001² + 0.020²) -
         // 0.010 ≈ 0.010 m = 10 mm. Y=+0.001 is on Negative side
         // for this fixture (split=+Z → binormal=-Y → Negative covers
@@ -1132,7 +1154,7 @@ mod tests {
         );
         assert!(
             sdf_plate < 0.0,
-            "FlangeKind::Plate: probe at body_dist≈10 mm (inside flange's [2 mm, 15 mm] \
+            "FlangeKind::Plate: probe at body_dist≈10 mm (inside flange's [2 mm, 16 mm] \
              lateral reach + thickness region) must be INSIDE material via flange \
              union; got sdf_plate={sdf_plate}"
         );

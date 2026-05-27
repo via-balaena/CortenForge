@@ -75,6 +75,7 @@
 //!
 //! [rmp]: ../../../docs/CASTING_ROADMAP.md
 
+pub mod bolt_pattern;
 pub mod cure;
 pub mod dowel;
 pub mod dowel_hole;

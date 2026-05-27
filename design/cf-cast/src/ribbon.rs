@@ -45,6 +45,7 @@
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
+use crate::bolt_pattern::BoltPatternKind;
 use crate::dowel_hole::DowelHoleKind;
 use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
@@ -300,6 +301,19 @@ pub struct Ribbon {
     /// agnostically to both cup-halves. See [`crate::dowel_hole`]
     /// for the placement contract.
     pub dowel_hole: DowelHoleKind,
+    /// M5 through-bolt clamp pattern kind. Default
+    /// [[`BoltPatternKind::None`]] (no bolt holes — cup pieces
+    /// clamped by hand or external method). §B of
+    /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]] adds
+    /// [`BoltPatternKind::Auto`] via the [`Ribbon::with_bolt_pattern`]
+    /// builder; [`crate::compose_piece_solid`] emits per-bolt
+    /// `MatingTransform::SubtractCylinder` ops applied side-
+    /// agnostically to both cup-halves. Composes on top of §M's
+    /// unified mating plane + symmetric dowel-hole registration; arc-
+    /// length stagger between dowels + bolts is automatic at the
+    /// iter-1 default counts. See [`crate::bolt_pattern`] for the
+    /// placement contract + pour-gate collision-skip behavior.
+    pub bolt_pattern: BoltPatternKind,
     /// Optional pour-end anchor for the plug-floor lock —
     /// `(centroid, outward_axis)` in world-frame coordinates.
     /// [`crate::plug::build_plug_lock_sdf`] +
@@ -459,6 +473,7 @@ impl Ribbon {
             gasket: GasketKind::None,
             flange: FlangeKind::None,
             dowel_hole: DowelHoleKind::None,
+            bolt_pattern: BoltPatternKind::None,
             pour_end_hint: None,
         })
     }
@@ -527,6 +542,19 @@ impl Ribbon {
     #[must_use]
     pub const fn with_dowel_hole(mut self, dowel_hole: DowelHoleKind) -> Self {
         self.dowel_hole = dowel_hole;
+        self
+    }
+
+    /// Builder: set the M5 through-bolt clamp pattern kind. §B of
+    /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]] entry
+    /// point — both cup-halves get identical `SubtractCylinder` bolt-
+    /// clearance through-holes, arc-length-equal-spaced around the
+    /// body silhouette. Composable with all other `with_*` builders;
+    /// the bolt-pattern arc is orthogonal to dowel hole / flange /
+    /// pour gate / plug pins / gasket.
+    #[must_use]
+    pub const fn with_bolt_pattern(mut self, bolt_pattern: BoltPatternKind) -> Self {
+        self.bolt_pattern = bolt_pattern;
         self
     }
 

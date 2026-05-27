@@ -64,6 +64,13 @@ pub struct CastConfig {
     /// arc per [[project-cf-cast-unified-mating-plane-recon]].
     #[serde(default)]
     pub dowel_hole: DowelHoleConfig,
+    /// M5 through-bolt clamp pattern override (default = enabled with
+    /// [`cf_cast::bolt_pattern::BoltPatternSpec::iter1`] geometry).
+    /// Absence of the table means "enabled with iter1 defaults". Set
+    /// `enabled = false` to disable. §B of
+    /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
+    #[serde(default)]
+    pub bolt_pattern: BoltPatternConfig,
 }
 
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
@@ -414,6 +421,61 @@ impl Default for DowelHoleConfig {
     }
 }
 
+/// `[bolt_pattern]` block — M5 through-bolt clamp pattern toggle
+/// plus geometry overrides. Maps to
+/// [`cf_cast::bolt_pattern::BoltPatternKind`].
+///
+/// §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
+/// Defaults to `enabled = true` with
+/// [`cf_cast::bolt_pattern::BoltPatternSpec::iter1`] (5.5 mm M5
+/// clearance × 8 bolts × 9 mm outboard offset × pour-gate collision
+/// skip enabled). Per-field overrides surfaced as optionals; absent
+/// → falls back to the iter1 default for that field.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoltPatternConfig {
+    /// Master toggle. When `false`, the bridge passes
+    /// [`cf_cast::bolt_pattern::BoltPatternKind::None`] (no bolt holes).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Bolt clearance hole diameter (meters). `None` → 5.5 mm
+    /// (M5 ISO 273 medium fit).
+    #[serde(default)]
+    pub clearance_diameter_m: Option<f64>,
+    /// Number of bolts arc-length-equal-spaced around the silhouette.
+    /// `None` → 8 (iter1 default).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// Radial offset from body silhouette to bolt centerline (meters).
+    /// `None` → 9 mm (iter1 default). Must satisfy the §B-S1 cross-
+    /// field invariants in `validate_after_layer_source`.
+    #[serde(default)]
+    pub silhouette_outboard_offset_m: Option<f64>,
+    /// Whether to silently drop bolts colliding with pour-gate
+    /// channels. `None` → `true` (iter1 default). When `false`, every
+    /// bolt is emitted — workshop may need to clear collision-zone
+    /// pour-gate leg by hand.
+    #[serde(default)]
+    pub skip_pour_gate_collision: Option<bool>,
+    /// Extra clearance distance between bolt + pour-gate cylinder
+    /// surfaces (meters). `None` → 1 mm (iter1 default).
+    #[serde(default)]
+    pub pour_gate_clearance_m: Option<f64>,
+}
+
+impl Default for BoltPatternConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            clearance_diameter_m: None,
+            count: None,
+            silhouette_outboard_offset_m: None,
+            skip_pour_gate_collision: None,
+            pour_gate_clearance_m: None,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -688,6 +750,144 @@ impl CastConfig {
             );
         }
 
+        // §B cross-field gates: bolt-pattern requires a flange to
+        // clamp through, and bolt holes must respect inboard +
+        // outboard FDM wall floors. When dowel + bolt patterns are
+        // both enabled, the arc-fraction sets must not collide (radial
+        // sums of cylinder radii < the minimum arc-length separation).
+        if self.bolt_pattern.enabled {
+            ensure!(
+                self.flange.enabled,
+                "cast.toml: [bolt_pattern] is enabled but [flange] is \
+                 disabled. M5 through-bolts clamp through the flange — \
+                 without a flange there is no material to bolt. Either \
+                 enable [flange] or disable [bolt_pattern]."
+            );
+            let flange_iter1 = cf_cast::FlangeSpec::iter1();
+            let bolt_iter1 = cf_cast::bolt_pattern::BoltPatternSpec::iter1();
+            let flange_inner_offset = self
+                .flange
+                .inner_offset_m
+                .unwrap_or(flange_iter1.flange_inner_offset_m);
+            let flange_width = self.flange.width_m.unwrap_or(flange_iter1.flange_width_m);
+            let bolt_diameter = self
+                .bolt_pattern
+                .clearance_diameter_m
+                .unwrap_or(bolt_iter1.clearance_diameter_m);
+            let bolt_offset = self
+                .bolt_pattern
+                .silhouette_outboard_offset_m
+                .unwrap_or(bolt_iter1.silhouette_outboard_offset_m);
+            let bolt_radius = bolt_diameter / 2.0;
+            // 1 mm FDM-floor + 0.75× rule of thumb for PLA bolt
+            // fasteners (workshop-realistic per §B engineering
+            // analysis). Use the larger of the two for the
+            // wall-thickness floor here.
+            const FDM_WALL_FLOOR_M: f64 = 0.001;
+            let bolt_wall_floor = (0.75 * bolt_diameter).max(FDM_WALL_FLOOR_M);
+            let inboard_wall = bolt_offset - bolt_radius - flange_inner_offset;
+            ensure!(
+                inboard_wall >= bolt_wall_floor,
+                "cast.toml: bolt-pattern inboard wall thickness = \
+                 {inboard_wall_mm:.3} mm violates the {floor_mm:.3} mm wall \
+                 floor (0.75× bolt clearance Ø rule for FDM PLA fasteners): \
+                 silhouette_outboard_offset_m {bolt_offset:.4} − \
+                 bolt_radius {bolt_radius:.4} − flange.inner_offset_m \
+                 {flange_inner_offset:.4}. Bolt would crack the inboard wall \
+                 under hand-torque. Move bolts outboard \
+                 (raise bolt_pattern.silhouette_outboard_offset_m), shrink \
+                 the bolt (bolt_pattern.clearance_diameter_m), or narrow \
+                 the flange inner offset (flange.inner_offset_m).",
+                inboard_wall_mm = inboard_wall * 1000.0,
+                floor_mm = bolt_wall_floor * 1000.0,
+            );
+            let outboard_wall = flange_width - bolt_offset - bolt_radius;
+            ensure!(
+                outboard_wall >= bolt_wall_floor,
+                "cast.toml: bolt-pattern outboard wall thickness = \
+                 {outboard_wall_mm:.3} mm violates the {floor_mm:.3} mm wall \
+                 floor (0.75× bolt clearance Ø rule for FDM PLA fasteners): \
+                 flange.width_m {flange_width:.4} − \
+                 silhouette_outboard_offset_m {bolt_offset:.4} − \
+                 bolt_radius {bolt_radius:.4}. Bolt would crack the outboard \
+                 wall under hand-torque. Move bolts inboard (lower \
+                 bolt_pattern.silhouette_outboard_offset_m) or widen the \
+                 flange (flange.width_m, ideally to ≥ {min_flange:.3} mm).",
+                outboard_wall_mm = outboard_wall * 1000.0,
+                floor_mm = bolt_wall_floor * 1000.0,
+                min_flange = (bolt_offset + bolt_radius + bolt_wall_floor) * 1000.0,
+            );
+
+            // Dowel ↔ bolt arc-length stagger invariant: when both
+            // patterns enabled, the minimum arc-fraction separation
+            // across all (dowel, bolt) pairs must give an arc-length
+            // exceeding `dowel_radius + bolt_radius` at the smallest
+            // body silhouette perimeter we'd reasonably ship. We
+            // approximate "smallest perimeter" as 100 mm — well below
+            // the production sock's 200 mm — to give workshop a clean
+            // signal at config-time instead of a confusing runtime
+            // collision near the dome.
+            if self.dowel_hole.enabled {
+                let dowel_iter1 = cf_cast::dowel_hole::DowelHoleSpec::iter1();
+                let dowel_count = self.dowel_hole.count.unwrap_or(dowel_iter1.count);
+                let bolt_count = self.bolt_pattern.count.unwrap_or(bolt_iter1.count);
+                ensure!(
+                    dowel_count > 0,
+                    "cast.toml: dowel_hole.count must be > 0 when \
+                     [dowel_hole] is enabled"
+                );
+                ensure!(
+                    bolt_count > 0,
+                    "cast.toml: bolt_pattern.count must be > 0 when \
+                     [bolt_pattern] is enabled"
+                );
+                let dowel_fractions: Vec<f64> = (0..dowel_count)
+                    .map(|k| (f64::from(k) + 0.5) / f64::from(dowel_count))
+                    .collect();
+                let bolt_fractions: Vec<f64> = (0..bolt_count)
+                    .map(|k| (f64::from(k) + 0.5) / f64::from(bolt_count))
+                    .collect();
+                let mut min_sep_fraction = f64::INFINITY;
+                for db in &dowel_fractions {
+                    for bb in &bolt_fractions {
+                        let sep = (db - bb).abs();
+                        if sep < min_sep_fraction {
+                            min_sep_fraction = sep;
+                        }
+                    }
+                }
+                // Production minimum perimeter assumption.
+                const MIN_PERIMETER_M: f64 = 0.100;
+                let min_sep_arc_m = min_sep_fraction * MIN_PERIMETER_M;
+                let dowel_diameter = self.dowel_hole.diameter_m.unwrap_or(dowel_iter1.diameter_m);
+                let dowel_clearance = self
+                    .dowel_hole
+                    .clearance_m
+                    .unwrap_or(dowel_iter1.clearance_m);
+                let dowel_hole_radius = dowel_diameter / 2.0 + dowel_clearance;
+                let required = dowel_hole_radius + bolt_radius + FDM_WALL_FLOOR_M;
+                ensure!(
+                    min_sep_arc_m >= required,
+                    "cast.toml: dowel ↔ bolt arc-length stagger gives \
+                     {min_arc_mm:.2} mm minimum separation at a 100 mm \
+                     silhouette perimeter, below the required \
+                     {required_mm:.2} mm (dowel_hole_radius \
+                     {dowel_radius_mm:.2} mm + bolt_radius \
+                     {bolt_radius_mm:.2} mm + 1 mm FDM wall). Bolt holes \
+                     would intersect dowel holes near the silhouette. \
+                     Pick non-equal counts for dowel_hole.count + \
+                     bolt_pattern.count (e.g., 4 + 8 default; or 4 + 6, \
+                     4 + 12) so the arc-fraction interleave is finer; \
+                     or widen the radial separation by moving one \
+                     pattern further outboard.",
+                    min_arc_mm = min_sep_arc_m * 1000.0,
+                    required_mm = required * 1000.0,
+                    dowel_radius_mm = dowel_hole_radius * 1000.0,
+                    bolt_radius_mm = bolt_radius * 1000.0,
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -806,11 +1006,17 @@ material = "ECOFLEX_00_30"
 
 [flange]
 enabled = false
+
+# §B requires flange to clamp through; disable both together when
+# disabling flange.
+[bolt_pattern]
+enabled = false
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
         assert!(!cfg.flange.enabled);
         assert!(cfg.flange.width_m.is_none());
+        assert!(!cfg.bolt_pattern.enabled);
     }
 
     #[test]

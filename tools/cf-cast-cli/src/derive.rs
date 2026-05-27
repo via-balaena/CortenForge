@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
+use cf_cast::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
 use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
     CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
@@ -431,6 +432,15 @@ pub fn derive_spec_and_ribbon(
         let dowel_spec = resolve_dowel_hole_spec(&config.dowel_hole);
         ribbon = ribbon.with_dowel_hole(DowelHoleKind::Auto(dowel_spec));
     }
+    if config.bolt_pattern.enabled {
+        // §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
+        // Per-field overrides fall back to BoltPatternSpec::iter1();
+        // cross-field invariants (flange-required, wall-thickness,
+        // dowel-stagger) are gated in
+        // config::validate_after_layer_source.
+        let bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
+        ribbon = ribbon.with_bolt_pattern(BoltPatternKind::Auto(bolt_spec));
+    }
 
     Ok(DerivedSpec { spec, ribbon })
 }
@@ -490,6 +500,29 @@ fn resolve_dowel_hole_spec(config: &crate::config::DowelHoleConfig) -> DowelHole
         silhouette_outboard_offset_m: config
             .silhouette_outboard_offset_m
             .unwrap_or(iter1.silhouette_outboard_offset_m),
+    }
+}
+
+/// Resolve a [`crate::config::BoltPatternConfig`] into a
+/// [`BoltPatternSpec`], falling back to [`BoltPatternSpec::iter1`]
+/// for each `None` per-field override. §B of
+/// [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
+fn resolve_bolt_pattern_spec(config: &crate::config::BoltPatternConfig) -> BoltPatternSpec {
+    let iter1 = BoltPatternSpec::iter1();
+    BoltPatternSpec {
+        clearance_diameter_m: config
+            .clearance_diameter_m
+            .unwrap_or(iter1.clearance_diameter_m),
+        count: config.count.unwrap_or(iter1.count),
+        silhouette_outboard_offset_m: config
+            .silhouette_outboard_offset_m
+            .unwrap_or(iter1.silhouette_outboard_offset_m),
+        skip_pour_gate_collision: config
+            .skip_pour_gate_collision
+            .unwrap_or(iter1.skip_pour_gate_collision),
+        pour_gate_clearance_m: config
+            .pour_gate_clearance_m
+            .unwrap_or(iter1.pour_gate_clearance_m),
     }
 }
 
@@ -606,6 +639,7 @@ mod tests {
             gasket: crate::config::GasketConfig::default(),
             flange: crate::config::FlangeConfig::default(),
             dowel_hole: crate::config::DowelHoleConfig::default(),
+            bolt_pattern: crate::config::BoltPatternConfig::default(),
         }
     }
 
@@ -737,6 +771,10 @@ mod tests {
             matches!(derived.ribbon.dowel_hole, DowelHoleKind::Auto(_)),
             "dowel_hole.enabled=true must produce Auto(_)"
         );
+        assert!(
+            matches!(derived.ribbon.bolt_pattern, BoltPatternKind::Auto(_)),
+            "bolt_pattern.enabled=true must produce Auto(_)"
+        );
     }
 
     #[test]
@@ -745,6 +783,7 @@ mod tests {
         cfg.pour_gate.enabled = false;
         cfg.plug_pins.enabled = false;
         cfg.dowel_hole.enabled = false;
+        cfg.bolt_pattern.enabled = false;
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
@@ -752,6 +791,7 @@ mod tests {
         assert!(matches!(derived.ribbon.pour_gate, PourGateKind::None));
         assert!(matches!(derived.ribbon.plug_pins, PlugPinKind::None));
         assert!(matches!(derived.ribbon.dowel_hole, DowelHoleKind::None));
+        assert!(matches!(derived.ribbon.bolt_pattern, BoltPatternKind::None));
     }
 
     #[test]

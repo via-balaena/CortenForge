@@ -1073,8 +1073,108 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
             );
         }
     }
+    write_v2_bolt_pattern_note(md, ribbon);
     md.push('\n');
     write_v2_plug_anchor_note(md, ribbon);
+}
+
+fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
+    let Some(spec) = ribbon.bolt_pattern.spec() else {
+        return;
+    };
+    // §B of the unified-mating-plane bolt-pattern arc: symmetric
+    // SubtractCylinder holes per bolt, arc-length-equal-spaced
+    // around the body silhouette (interleaved with dowel positions
+    // when both patterns are enabled at default counts). M5
+    // through-bolts + flat washers (×2 per bolt) + hex nuts clamp
+    // the two halves across the gasket.
+    let count = spec.count;
+    let clearance_mm = spec.clearance_diameter_m * 1000.0;
+    let outboard_offset_mm = spec.silhouette_outboard_offset_m * 1000.0;
+    // Minimum bolt length the workshop should source: 2 × flange
+    // thickness (the bolt traverse) + 2 × washer (~1 mm each) + nut
+    // (~4 mm M5) + bolt-head (~3 mm M5). With 4 mm flange thickness
+    // default that's 8 + 2 + 4 + 3 = 17 mm — round up to M5×20 mm
+    // (standard stock length, gives ~3 mm thread excess past the nut
+    // which is workshop-friendly).
+    // Cold-read I3 fix 2026-05-27: prefer FlangeSpec::iter1() over a
+    // hard-coded magic number when the ribbon has no flange. In
+    // practice the cf-cast-cli validator forbids bolt_pattern without
+    // flange + `write_v2_bolt_pattern_note` is gated on
+    // `ribbon.bolt_pattern.spec().is_some()`, so this fallback only
+    // matters for hand-built test ribbons bypassing the validator.
+    let flange_thickness_mm = ribbon.flange.spec().map_or_else(
+        || crate::flange::FlangeSpec::iter1().flange_thickness_m * 1000.0,
+        |f| f.flange_thickness_m * 1000.0,
+    );
+    let bolt_traverse_mm = flange_thickness_mm * 2.0;
+    // Minimum exact length = traverse + 2 × washer (~1 mm each) + nut
+    // (~4 mm M5) + head (~3 mm M5). Round UP to the nearest 5 mm
+    // since fastener catalogs stock M5 in 5 mm increments above 10 mm
+    // (10, 12, 16, 20, 25, …). At the default 4 mm flange this gives
+    // 17 mm minimum → 20 mm workshop pick, with ~3 mm thread excess
+    // past the nut.
+    let min_bolt_length_mm = bolt_traverse_mm + 2.0 + 4.0 + 3.0;
+    let recommended_bolt_length_mm = (min_bolt_length_mm / 5.0).ceil() * 5.0;
+    let _ = writeln!(md);
+    let _ = writeln!(
+        md,
+        "### M5 through-bolt clamp pattern (§B)\n\
+         \n\
+         **{count} bolt clearance holes** ({clearance_mm:.1} mm Ø) carve \
+         through BOTH cup-halves' flange material, arc-length-equal-spaced \
+         around the body silhouette + offset {outboard_offset_mm:.1} mm \
+         outboard from the body perimeter. Identical hole pattern on both \
+         halves; the holes interleave with the §M-S2 dowel-hole positions \
+         (when dowels enabled at default counts) so the two registration + \
+         clamp patterns share the flange band without colliding.\n\
+         \n\
+         **Workshop supplies (per cast assembly)**: {count} × M5 hex bolts \
+         (recommend M5×{recommended:.0} mm to cover the \
+         {bolt_traverse_mm:.0} mm PLA traverse + washers + nut + head, with \
+         a few mm of thread excess), {count_washers} × M5 flat washers \
+         (~10 mm OD; 2 per bolt — one under the head, one under the nut), \
+         {count} × M5 hex nuts.\n\
+         \n\
+         **Assembly order**: register the two halves with the §M dowels \
+         FIRST (the dowel-hole pattern provides lateral alignment so the \
+         bolt-clearance holes match up across the seam). Then insert each \
+         M5 bolt through the matching bolt-clearance holes on the two \
+         halves, slip a washer under each head + nut, and hand-tighten \
+         crosswise (like a car lug pattern) to compress the gasket evenly. \
+         Engine-valve-cover torque level — snug, not stripped; PLA threads \
+         in the workshop user's hand-tools strip well before the gasket \
+         seal pressure is exceeded.\n\
+         \n\
+         The bolt clearance is {clearance_mm:.1} mm with no slide-fit \
+         slack — the washer compensates for FDM hole dimensional error \
+         (~±0.1 mm typical). If a bolt won't seat, lightly ream the hole \
+         with a {clearance_mm:.1} mm drill bit before the next iteration.\n",
+        recommended = recommended_bolt_length_mm,
+        count_washers = count * 2,
+    );
+    if spec.skip_pour_gate_collision {
+        // Cold-read I2 fix 2026-05-27: rename the local from
+        // `clearance_mm` (which shadowed the outer scope's
+        // clearance-Ø value) to `bolt_radius_mm` to match the prose
+        // ("bolt radius" — half the clearance Ø).
+        let bolt_radius_mm = spec.clearance_diameter_m * 500.0;
+        let _ = writeln!(
+            md,
+            "**Pour-gate collision skip**: bolts arc-length-spaced near \
+             the pour-gate V apex are silently dropped at compose time \
+             (within {bolt_radius_mm:.1} mm bolt radius + pour-gate \
+             cylinder radius + {gate_clearance_mm:.1} mm extra PLA wall). \
+             The pattern may look slightly asymmetric near the dome end — \
+             that's the collision-skip working as designed (engine-valve-\
+             cover analog: cover bolts that would land on the pushrod \
+             tubes are simply omitted). If the workshop wants full \
+             symmetry near the pour gate, set \
+             `bolt_pattern.skip_pour_gate_collision = false` in cast.toml \
+             and clear the pour-gate leg by hand at assembly.",
+            gate_clearance_mm = spec.pour_gate_clearance_m * 1000.0,
+        );
+    }
 }
 
 fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {

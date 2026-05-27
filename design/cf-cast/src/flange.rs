@@ -95,11 +95,17 @@ use nalgebra::{Point3, Vector3};
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::silhouette_2d::Silhouette2d;
 
-/// Default flange lateral width (15 mm).
+/// Default flange lateral width (16 mm).
 ///
-/// Picked at recon §F-2: ~10 mm for a standard C-clamp jaw reach
-/// + ~5 mm perimeter clearance.
-const DEFAULT_FLANGE_WIDTH_M: f64 = 0.015;
+/// Picked at recon §F-2: ~10 mm for a standard C-clamp jaw reach plus
+/// ~5 mm perimeter clearance (= 15 mm pre-§B). §B-S1 bumped to 16 mm
+/// to accommodate the M5 through-bolt clamp pattern. With the default
+/// 9 mm silhouette outboard offset, 5.5 mm bolt clearance Ø, and 2 mm
+/// flange inner offset, 16 mm width gives symmetric 4.25 mm inboard
+/// and outboard walls = 0.77× clearance Ø (workshop-realistic FDM-PLA
+/// fastener rule of thumb). Workshop iter-1 dowels (radius 1.6 mm,
+/// offset 8 mm) also gain outboard margin (6.4 mm vs 5.4 mm at 15 mm).
+const DEFAULT_FLANGE_WIDTH_M: f64 = 0.016;
 
 /// Default flange thickness PER HALF (4 mm).
 ///
@@ -787,7 +793,7 @@ mod tests {
         // Probe P_concave: inside the C's mouth, mid-flange-band per
         // 2D silhouette distance.
         // - 2D silhouette dist from (0,0,+10) to notch floor (0,0,-3)
-        //   = 13 mm; inside flange band [inner_offset=2, width=15].
+        //   = 13 mm; inside flange band [inner_offset=2, width=16].
         // - 3D body_dist (pre-fix) ≈ 1.5 mm (Y-distance to lid surface
         //   at Y=±1.5); trips inner check, flange ABSENT (BUG).
         // - 2D silhouette dist (post-fix) = 13 mm; all checks pass,
@@ -799,7 +805,7 @@ mod tests {
             "FALSIFICATION: flange must be PRESENT inside C's mouth \
              concavity at (X=0, Y=0, Z=+10 mm) — 2D silhouette dist to \
              notch floor (0,0,-3) is 13 mm which is inside the flange \
-             band [2, 15] mm. Got SDF = {sdf_mm:.3} mm (positive = \
+             band [2, 16] mm. Got SDF = {sdf_mm:.3} mm (positive = \
              flange absent). Pre-fix 3D `body.evaluate` returns ≈1.5 mm \
              (lid surface at Y=±1.5) tripping the inner check; post-fix \
              2D silhouette returns 13 mm and emits flange material. \
@@ -857,7 +863,7 @@ mod tests {
         assert!(
             sdf_beyond > 0.0,
             "flange must be ABSENT 20 mm past body's -Z silhouette \
-             (flange_width = 15 mm); got SDF = {:.3} mm.",
+             (flange_width = 16 mm); got SDF = {:.3} mm.",
             sdf_beyond * 1000.0,
         );
     }
@@ -993,7 +999,7 @@ mod tests {
 
         // All probes at X=0, Y=0 (seam plane), varying Z. Cylinder
         // silhouette +Z edge is at Z=10 mm; flange band is
-        // Z ∈ [12, 25] mm (inner_offset=2, width=15).
+        // Z ∈ [12, 26] mm (inner_offset=2, width=16).
         let probes: &[(&str, Point3<f64>)] = &[
             (
                 "on +Z perimeter           @ Z=10  mm",
@@ -1016,12 +1022,12 @@ mod tests {
                 Point3::new(0.0, 0.0, 0.020),
             ),
             (
-                "near outer flange edge    @ Z=24  mm",
-                Point3::new(0.0, 0.0, 0.024),
+                "near outer flange edge    @ Z=25  mm",
+                Point3::new(0.0, 0.0, 0.025),
             ),
             (
-                "past outer flange edge    @ Z=26  mm",
-                Point3::new(0.0, 0.0, 0.026),
+                "past outer flange edge    @ Z=27  mm",
+                Point3::new(0.0, 0.0, 0.027),
             ),
         ];
 
