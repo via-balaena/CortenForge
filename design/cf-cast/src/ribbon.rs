@@ -341,6 +341,15 @@ pub struct Ribbon {
     /// example crate uses `first_segment.start` + `-first.tangent`)
     /// or leave unset and rely on the fallback.
     pub pour_end_hint: Option<(Point3<f64>, Vector3<f64>)>,
+    /// When `Some((point, normal))`, the seam is a single FLAT plane
+    /// instead of the per-segment curve-following surface — both
+    /// [`Self::sdf`] and [`Self::seam_plane_reference`] return this
+    /// plane. Set via [`Self::with_planar_seam`] for organic/curved
+    /// parts where the cup halves print mating-face-down and need a
+    /// guaranteed-flat seam (S1 of `CF_CAST_ORGANIC_PARTS_RECON.md`).
+    /// `None` (default) keeps the curve-following ribbon — existing
+    /// near-straight casts are byte-identical.
+    pub planar_seam: Option<(Point3<f64>, Unit<Vector3<f64>>)>,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -475,7 +484,39 @@ impl Ribbon {
             dowel_hole: DowelHoleKind::None,
             bolt_pattern: BoltPatternKind::None,
             pour_end_hint: None,
+            planar_seam: None,
         })
+    }
+
+    /// Builder: collapse the seam to a single FLAT VERTICAL plane (S1
+    /// of `CF_CAST_ORGANIC_PARTS_RECON.md`).
+    ///
+    /// Orientation = the arc-midpoint seam normal projected into the
+    /// horizontal plane (so the cut contains the +Z demold axis and the
+    /// printed mating face is vertical → prints face-down flat);
+    /// position = the arc-midpoint center. On a curved/organic part this
+    /// won't perfectly bisect the bulge, but the mating face is
+    /// **guaranteed planar** so the cup halves seal. Falls back to the
+    /// un-projected seam normal if the part's axis is itself near
+    /// vertical (degenerate horizontal projection).
+    ///
+    /// cf-scan-prep reorients the demold axis to +Z, so a vertical seam
+    /// is the correct "cut it vertically" behavior; re-level the scan
+    /// first if its long axis still leans (see the recon's OQ3).
+    #[must_use]
+    pub fn with_planar_seam(mut self) -> Self {
+        // `planar_seam` is still None here, so this returns the
+        // per-segment arc-midpoint reference (the basis we flatten).
+        let (center, normal) = self.seam_plane_reference();
+        let n = normal.into_inner();
+        let horiz = Vector3::new(n.x, n.y, 0.0);
+        let plane_normal = if horiz.norm() > 1.0e-6 {
+            Unit::new_normalize(horiz)
+        } else {
+            normal
+        };
+        self.planar_seam = Some((center, plane_normal));
+        self
     }
 
     /// Builder: set the pour-gate + air-vent kind. Step 10 entry
@@ -696,6 +737,11 @@ impl Ribbon {
     /// empirically by the `..._under_curved_centerline` variant).
     #[must_use]
     pub fn seam_plane_reference(&self) -> (Point3<f64>, Unit<Vector3<f64>>) {
+        // Planar-seam mode (S1): the flange + gates use this single
+        // flat plane, matching the planar `sdf` cut above.
+        if let Some((point, normal)) = self.planar_seam {
+            return (point, normal);
+        }
         // sample_at_arc_fraction(0.5) is `Some` for any ribbon valid
         // per Ribbon::new (≥1 non-zero-length segment). The
         // unwrap_or_else fallback keeps the lib panic-free under any
@@ -794,6 +840,12 @@ impl Ribbon {
     /// ```
     #[must_use]
     pub fn sdf(&self, query: &Point3<f64>) -> f64 {
+        // Planar-seam mode (S1): signed distance to the single flat
+        // plane, so the cut is a guaranteed-flat plane regardless of
+        // centerline curvature.
+        if let Some((point, normal)) = self.planar_seam {
+            return (query - point).dot(&normal);
+        }
         let (seg_idx, t) = self.closest_segment(query);
         let seg = &self.segments[seg_idx];
         let edge = seg.end - seg.start;
@@ -872,6 +924,35 @@ mod tests {
     fn split_normal_default_is_world_plus_x() {
         let sn = SplitNormal::default();
         assert_eq!(sn.as_vector(), Vector3::new(1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn with_planar_seam_forces_vertical_plane_and_planar_sdf() {
+        // S1: tilted centerline (in YZ) so the raw binormal carries a Z
+        // component; with_planar_seam must flatten it to a vertical plane.
+        let dir = Vector3::new(0.0, 1.0, 4.0).normalize();
+        let points = vec![Point3::origin(), Point3::from(dir * 0.1)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(points, split).unwrap();
+
+        let (_, raw_n) = ribbon.seam_plane_reference();
+        assert!(
+            raw_n.z.abs() > 0.1,
+            "precondition: raw binormal should be Z-tilted, got z={}",
+            raw_n.z
+        );
+
+        let planar = ribbon.with_planar_seam();
+        let (center, n) = planar.seam_plane_reference();
+        assert!(
+            n.z.abs() < 1e-9,
+            "planar seam normal must be horizontal (vertical plane), got z={}",
+            n.z
+        );
+        // sdf is now a flat plane: ±0.01 m along the normal → ∓0.01 signed.
+        let nn = n.into_inner();
+        assert_relative_eq!(planar.sdf(&(center + nn * 0.01)), 0.01, epsilon = 1e-9);
+        assert_relative_eq!(planar.sdf(&(center - nn * 0.01)), -0.01, epsilon = 1e-9);
     }
 
     #[test]

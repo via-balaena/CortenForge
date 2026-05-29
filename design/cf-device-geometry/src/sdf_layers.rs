@@ -99,7 +99,7 @@ impl CapPlanes {
 /// fingertip / nostril / knuckle detail may need 5000+. See spec
 /// §"Open risks #2" — revisit when iter-2 / iter-3 scans surface a
 /// visible quality regression.
-pub const SDF_SOURCE_TARGET_FACES: usize = 2_500;
+pub const SDF_SOURCE_TARGET_FACES: usize = 6_000;
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — mirrors
 /// `ENVELOPE_PROXY_WELD_EPSILON_M` (1 µm). cf-scan-prep's STL loader
@@ -119,11 +119,19 @@ const SDF_SLOPPY_FALLBACK_MULTIPLIER: usize = 4;
 /// + cf-scan-prep's `CLEANUP_DEGENERATE_AREA_M2`.
 const SDF_DEGENERATE_AREA_M2: f64 = 1e-15;
 
-/// Cell pitch (meters) for the cached `ScalarGrid`. 5 mm = the spike's
-/// production setting: < 1 ms MC per extraction, ~20 k grid cells on
-/// the iter-1 AABB (≈ 150 mm × 150 mm × 250 mm). Consumed at scan
-/// load time when each binary inserts the `CachedScanSdf` resource.
-pub const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.005;
+/// Cell pitch (meters) for the cached `ScalarGrid`. 2.5 mm preview
+/// resolution: fine enough that the layer-surface marching cubes
+/// tessellates the sharp cap-plane × offset-wall crease cleanly (a 5 mm
+/// cell tore visible triangular holes in the floor-rim wall on scans
+/// with a flat reconstructed floor — the `max(field, cap_plane)` clip
+/// creates a sharp edge that coarse MC drops triangles at). ~8× the
+/// cells of the original 5 mm spike setting (~200 k grid cells on the
+/// iter-1 AABB), still a few ms per extraction. Extraction only re-runs
+/// on a cavity/layer slider change (cf-device-design's `update_layer_meshes`
+/// change-detection), so idle cost is zero and the finer cell only
+/// affects active-drag frames. Consumed at scan load time when each
+/// binary inserts the `CachedScanSdf` resource.
+pub const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.0025;
 
 /// Margin (meters) added on every side of the scan AABB when
 /// allocating the cached grid. Must cover the maximum-outward layer

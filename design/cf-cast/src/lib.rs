@@ -76,6 +76,7 @@
 //! [rmp]: ../../../docs/CASTING_ROADMAP.md
 
 pub mod bolt_pattern;
+pub mod canal;
 pub mod cure;
 pub mod dowel;
 pub mod dowel_hole;
@@ -98,6 +99,10 @@ pub mod scan_mesh_direct;
 pub mod silhouette_2d;
 mod spec;
 
+pub use canal::{
+    CANAL_DEBRIS_MAX_DROP_FRACTION, CanalFrame, CanalSpec, RingSpec, build_canal_plug,
+    filter_plug_debris,
+};
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use flange::{FlangeKind, FlangeSpec};

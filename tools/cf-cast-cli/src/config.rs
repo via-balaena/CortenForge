@@ -71,6 +71,16 @@ pub struct CastConfig {
     /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
     #[serde(default)]
     pub bolt_pattern: BoltPatternConfig,
+    /// Interior-canal feature override (default = DISABLED). When
+    /// `enabled = true`, the layer-0 plug's scan-derived surface gets
+    /// parametric grip rings + a frenulum D-section pinch + frenulum-
+    /// gated texture + a terminal suction bulb composed on top (the
+    /// Canal Interior arc, Candidate A). Baseline girth is unchanged —
+    /// tightness stays owned by the layer/inset machinery. Mutually
+    /// exclusive with `scan_mesh_direct_plug_layer_0` (both rewrite the
+    /// layer-0 plug). See [`cf_cast::CanalSpec`].
+    #[serde(default)]
+    pub canal: CanalConfig,
 }
 
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
@@ -159,6 +169,15 @@ pub struct CastDefaults {
     /// gates the opt-in accordingly.
     #[serde(default)]
     pub scan_mesh_direct_plug_layer_0: bool,
+    /// Collapse the cup seam to a single FLAT VERTICAL plane instead of
+    /// the curve-following ribbon (S1 of `CF_CAST_ORGANIC_PARTS_RECON.md`).
+    /// For organic/curved parts where the cup halves print
+    /// mating-face-down and need a guaranteed-flat seam to seal. Off by
+    /// default — the curve-following seam is bit-preserved for every
+    /// cast.toml that doesn't opt in. Re-level the scan in cf-scan-prep
+    /// first so the vertical cut bisects cleanly.
+    #[serde(default)]
+    pub planar_seam: bool,
 }
 
 impl Default for CastDefaults {
@@ -171,6 +190,7 @@ impl Default for CastDefaults {
             piece_min_wall_mm: default_piece_min_wall_mm(),
             output_dir: default_output_dir(),
             scan_mesh_direct_plug_layer_0: false,
+            planar_seam: false,
         }
     }
 }
@@ -474,6 +494,48 @@ impl Default for BoltPatternConfig {
             pour_gate_clearance_m: None,
         }
     }
+}
+
+/// `[canal]` block — interior-canal feature toggle + geometry
+/// overrides. Maps to [`cf_cast::CanalSpec`].
+///
+/// Canal Interior arc (Candidate A, 2026-05-28). Defaults to
+/// `enabled = false` — absence of the table (or `enabled = false`)
+/// leaves the layer-0 plug exactly as today (scan-derived negative).
+/// When enabled, fields left unset fall back to
+/// [`cf_cast::CanalSpec::iter1`]. Set `suction_bulge_m = 0.0` to drop
+/// the suction bulb, `texture_amplitude_m = 0.0` to drop ribs, etc.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanalConfig {
+    /// Master toggle. `false` (default) → plug unchanged from the
+    /// scan-derived baseline.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Frenulum direction in the cast world frame (asymmetry axis).
+    /// `None` → [0, 1, 0] (iter1 default).
+    #[serde(default)]
+    pub frenulum_dir: Option<[f64; 3]>,
+    /// Frenulum-gated texture rib amplitude (meters). `None` → 1.5 mm.
+    /// `Some(0.0)` disables texture.
+    #[serde(default)]
+    pub texture_amplitude_m: Option<f64>,
+    /// Texture rib pitch (meters). `None` → 8 mm.
+    #[serde(default)]
+    pub texture_pitch_m: Option<f64>,
+    /// Frenulum-side D-section pinch depth (meters). `None` → 1.5 mm.
+    /// `Some(0.0)` disables the asymmetry.
+    #[serde(default)]
+    pub dsection_depth_m: Option<f64>,
+    /// Terminal suction-bulb outward bulge (meters). `None` → 3 mm.
+    /// `Some(0.0)` disables the bulb (and its wall-thinning risk).
+    #[serde(default)]
+    pub suction_bulge_m: Option<f64>,
+    /// Marching-cubes cell size for the layer-0 plug only (meters).
+    /// `None` → 0.5 mm. Finer than the global `mesh_cell_size_m` so the
+    /// ~1.5 mm texture survives; cups stay coarse. See the S0 probe.
+    #[serde(default)]
+    pub plug_mesh_cell_size_m: Option<f64>,
 }
 
 fn default_true() -> bool {

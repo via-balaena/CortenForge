@@ -191,6 +191,7 @@ fn build_spec() -> CastSpec {
         printer_config,
         mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
         scan_mesh_for_plug_layer_0: None,
+        plug_layer_0_mesh_cell_size_m: None,
     }
 }
 

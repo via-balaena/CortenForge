@@ -256,4 +256,29 @@ pub enum CastError {
         /// Per-pour budget the layer overran ([`crate::CastSpec::mass_budget_kg`]).
         budget_kg: f64,
     },
+
+    /// The canal plug debris filter found a **substantial** disconnected
+    /// component and refused to drop it. The filter is meant to remove
+    /// tiny floating marching-cubes fragments (SDF sign-noise specks)
+    /// while keeping the single real plug body; a large detached
+    /// component instead signals a genuine geometry defect (e.g., the
+    /// floor cap or a feature region tore off the main body), which the
+    /// filter must surface rather than silently delete. The threshold is
+    /// a small fraction of the main body — see
+    /// [`crate::canal::CANAL_DEBRIS_MAX_DROP_FRACTION`].
+    #[error(
+        "canal plug debris filter refused to run for {target}: a detached component has \
+         {detached_faces} faces ({detached_fraction:.1}% of the {main_faces}-face main body) — \
+         too large to be MC debris, this is a real geometry tear. Inspect the plug before casting."
+    )]
+    CanalPlugDetachedComponent {
+        /// Which plug failed.
+        target: CastTarget,
+        /// Face count of the largest detached (non-main) component.
+        detached_faces: usize,
+        /// That component as a percentage of the main body's face count.
+        detached_fraction: f64,
+        /// Face count of the largest (kept) component.
+        main_faces: usize,
+    },
 }

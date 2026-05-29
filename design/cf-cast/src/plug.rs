@@ -488,7 +488,13 @@ pub fn build_cup_cap_trim_transform(ribbon: &Ribbon) -> Option<MatingTransform> 
     // unintended material in synthetic test fixtures.
     let (cap_centroid, cap_normal_vec) = ribbon.pour_end_hint?;
     let kept_normal = UnitVector3::new_normalize(cap_normal_vec);
-    let offset_m = kept_normal.into_inner().dot(&cap_centroid.coords);
+    // Mirror the plug-side fix (§Q-4 S1): bias the trim plane
+    // [`PLUG_CAP_TRIM_BIAS_M`] INTO the kept cup-floor half-space so the
+    // trim face is CONTAINED in pre-trim material, not coincident with
+    // the cup-floor MC surface — paradigm-safe per [`PLUG_CAP_TRIM_BIAS_M`].
+    // This is what re-enables the cup trim disabled 2026-05-24 (the
+    // unbiased plane was face-coincident → recon-4 (P) §F-2 failure).
+    let offset_m = kept_normal.into_inner().dot(&cap_centroid.coords) + PLUG_CAP_TRIM_BIAS_M;
     Some(MatingTransform::SeamTrim {
         normal: kept_normal,
         offset_m,
@@ -839,7 +845,7 @@ mod tests {
             MatingTransform::SeamTrim { normal, offset_m } => {
                 let cap_centroid = Point3::new(0.0, 0.0, -0.054);
                 let cap_normal = Vector3::new(0.0, 0.0, -1.0);
-                let expected_offset = cap_normal.dot(&cap_centroid.coords);
+                let expected_offset = cap_normal.dot(&cap_centroid.coords) + PLUG_CAP_TRIM_BIAS_M;
                 assert_abs_diff_eq!(normal.into_inner().x, cap_normal.x, epsilon = 1.0e-12);
                 assert_abs_diff_eq!(normal.into_inner().y, cap_normal.y, epsilon = 1.0e-12);
                 assert_abs_diff_eq!(normal.into_inner().z, cap_normal.z, epsilon = 1.0e-12);

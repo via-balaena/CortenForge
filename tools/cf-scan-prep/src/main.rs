@@ -259,6 +259,25 @@ enum SimplifyAction {
     /// Restore the originally loaded scan from [`OriginalScanMesh`].
     /// Mirrors the Apply pipeline but skips the meshopt call.
     Reset,
+    /// Weld coincident vertices ([`weld_vertices`] +
+    /// [`remove_unreferenced_vertices`]) WITHOUT decimating. Collapses
+    /// the raw STL's 3-verts-per-triangle soup into shared-index
+    /// topology so the Cap → Scan boundary detector sees real edges
+    /// (an unwelded mesh has every triangle as its own 3-vertex
+    /// "loop"). Synchronous + fast; mutates [`ScanMesh`] in place.
+    Weld,
+}
+
+/// Heuristic: does `mesh` look like raw, unwelded STL soup?
+///
+/// `mesh_io::load_stl` emits 3 unshared vertices per triangle, so a
+/// freshly-loaded scan has `vertex_count == 3 × face_count`. A welded
+/// mesh has `vertex_count ≈ 0.5 × face_count` (Euler: V ≈ F/2). The
+/// `≥ 2 ×` threshold cleanly separates the two and stays robust to
+/// partial welds. Used to surface the "Weld first" warning + to make
+/// the Cap → Scan message actionable when it detects per-triangle loops.
+fn mesh_looks_unwelded(vertex_count: usize, face_count: usize) -> bool {
+    face_count > 0 && vertex_count >= face_count * 2
 }
 
 /// Default target face count for the Simplify panel slider per spec
@@ -4740,6 +4759,10 @@ fn run_render_app(
                     .after(handle_cap_actions),
                 apply_world_transform_to_scan_entity,
                 handle_cap_actions,
+                // Auto-level the floor after a scan / applied trim. Runs
+                // after handle_cap_actions so a fresh cap is visible the
+                // same tick.
+                auto_level_to_floor.after(handle_cap_actions),
                 handle_save_action,
                 mark_cap_stale_on_transform_change,
                 auto_clear_status,
@@ -4968,6 +4991,23 @@ fn handle_simplify_actions(
             simplify_state.was_applied = false;
             scan.0 = cloned;
             status.text = text;
+            status.kind = StatusKind::Normal;
+            status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
+        }
+        SimplifyAction::Weld => {
+            // Weld is fast (spatial hash, no decimation); run it
+            // synchronously. Collapses the raw STL soup into shared
+            // topology so Cap → Scan finds real boundary loops.
+            let before_verts = scan.0.vertices.len();
+            weld_vertices(&mut scan.0, SIMPLIFY_WELD_EPSILON_M);
+            remove_unreferenced_vertices(&mut scan.0);
+            let after_verts = scan.0.vertices.len();
+            status.text = format!(
+                "Welded {} -> {} vertices ({} faces) — Cap → Scan will now find real boundary loops",
+                human_count(before_verts),
+                human_count(after_verts),
+                human_count(scan.0.faces.len()),
+            );
             status.kind = StatusKind::Normal;
             status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
         }
@@ -5469,6 +5509,21 @@ fn handle_cap_actions(
     cap.stale = false;
 
     let n_loops = cap.loops.len();
+
+    // Unwelded-soup guard: a raw STL has no shared edges, so every
+    // triangle is its own 3-vertex boundary loop. Detect that case and
+    // point at the Weld button instead of listing thousands of loops.
+    if mesh_looks_unwelded(scan.0.vertices.len(), scan.0.faces.len()) && n_loops > 100 {
+        status.text = format!(
+            "Detected {} boundary loops — the mesh is unwelded (raw STL soup). \
+             Click [Weld vertices] in the Simplify panel, then re-Scan.",
+            human_count(n_loops),
+        );
+        status.kind = StatusKind::Warning;
+        status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
+        return;
+    }
+
     let centerline_msg = if cap.centerline_polyline.is_empty() {
         String::new()
     } else {
@@ -5483,6 +5538,138 @@ fn handle_cap_actions(
     );
     status.kind = StatusKind::Normal;
     status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
+}
+
+/// AUTOMATICALLY rotate the scan so the floor the device seats on is
+/// horizontal — re-run whenever the floor reference changes (a new Cap →
+/// Scan, or a committed [Apply trim]/[Apply reconstruct]). No button:
+/// the leveling is part of the cap/trim pipeline so the floor is always
+/// level to the *current* floor.
+///
+/// **Levels to the FLOOR the device actually seats on, in priority:**
+/// (1) the reconstructed/chopped floor plane via
+/// [`compute_reconstructed_floor_plane_physics`] once trim is applied —
+/// the exact plane `apply_reconstruction` builds + the .prep.toml records
+/// (stable look-back tangent); else (2) the predicted draft floor cut;
+/// else (3) the raw detected cap loop (fresh scan, no trim). Because the
+/// centerline curves, the reconstructed floor sits at a *different* plane
+/// than the original cut-base cap — leveling the reconstructed plane is
+/// what makes the final floor horizontal.
+///
+/// The reference is in the auto-PCA-baked `ScanMesh` frame — the same
+/// frame `ReorientState` maps FROM — so the leveling rotation is exactly
+/// `rotation_between(floor_normal, nearest ±Z)`, written into the Reorient
+/// Euler angles (REPLACE). A `Local` key (loop size + applied trim) gates
+/// re-running so slider drags don't thrash the orientation. Setting
+/// Reorient does trip the "Transform changed" cap-stale notice — that's
+/// expected/benign here (the level is idempotent + correct; Save bakes it
+/// regardless of the overlay being stale).
+#[allow(clippy::needless_pass_by_value)]
+fn auto_level_to_floor(
+    cap: Res<CapState>,
+    trim: Res<CenterlineTrimState>,
+    mut reorient: ResMut<ReorientState>,
+    mut status: ResMut<StatusBar>,
+    time: Res<Time>,
+    // Tracks the floor reference that was last leveled to, so we re-level
+    // only when it actually changes — NOT every frame, and NOT on a
+    // mere slider drag (which doesn't touch `applied_*`).
+    mut last_key: Local<Option<(usize, u64, u64)>>,
+) {
+    // Re-level on: a new Cap → Scan (loop vertex count changes), or a
+    // committed trim/reconstruct (`applied_floor`/`applied_tip` change —
+    // the floor the device seats on moved). `applied_*` only change on
+    // [Apply trim]/[Apply reconstruct], so dragging sliders is inert.
+    if cap.centerline_polyline.is_empty() {
+        *last_key = None;
+        return;
+    }
+    let loop_sig = cap.loops.first().map_or(0, |l| l.vertex_indices.len());
+    let key = (
+        loop_sig,
+        trim.applied_floor_mm.to_bits(),
+        trim.applied_tip_mm.to_bits(),
+    );
+    if *last_key == Some(key) {
+        return;
+    }
+    *last_key = Some(key);
+
+    let ttl = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
+
+    // Pick the plane the device actually seats on, in priority order:
+    //   1. The ACTUAL reconstructed/chopped floor (applied trim) — same
+    //      plane `apply_reconstruction` builds + the .prep.toml records,
+    //      via the stable look-back tangent. This is the post-reconstruct
+    //      ground truth the workshop wants.
+    //   2. The PREDICTED floor cut from the draft `trim_floor` slider
+    //      (before Apply trim) — the centerline tangent at the cut.
+    //   3. The raw detected cap-loop normal — no trim at all.
+    let (floor_normal, label) = if let Some(plane) = compute_reconstructed_floor_plane_physics(
+        &cap.centerline_polyline,
+        trim.applied_tip_mm,
+        trim.applied_floor_mm,
+    ) {
+        (
+            plane.normal,
+            format!("reconstructed floor @ {:.0} mm", trim.applied_floor_mm),
+        )
+    } else if cap.centerline_polyline.len() >= 2 && trim.trim_floor_mm > 0.0 {
+        let total_m = polyline_arc_length_m(&cap.centerline_polyline);
+        let floor_cut_m = (total_m - trim.trim_floor_mm / 1000.0).max(0.0);
+        match point_along_polyline_at_arc_distance(&cap.centerline_polyline, floor_cut_m) {
+            Some((_, tangent)) => (
+                tangent,
+                format!("predicted floor cut @ {:.0} mm", trim.trim_floor_mm),
+            ),
+            None => (
+                cap.loops.first().map_or(Vector3::z(), |l| l.plane_normal),
+                "cap".to_string(),
+            ),
+        }
+    } else if let Some(first) = cap.loops.first() {
+        (first.plane_normal.normalize(), "cap loop".to_string())
+    } else {
+        status.text = "Level to cap: nothing to level to — Scan (and/or trim) first".to_string();
+        status.kind = StatusKind::Warning;
+        status.auto_clear_at_secs = ttl;
+        return;
+    };
+
+    let tilt_deg = floor_normal
+        .normalize()
+        .z
+        .abs()
+        .clamp(0.0, 1.0)
+        .acos()
+        .to_degrees();
+    let (roll_deg, pitch_deg, yaw_deg) = leveling_euler_deg(floor_normal);
+    *reorient = ReorientState {
+        roll_deg,
+        pitch_deg,
+        yaw_deg,
+    };
+    status.text = format!("Auto-leveled to {label} (corrected {tilt_deg:.1}° tilt)");
+    status.kind = StatusKind::Normal;
+    status.auto_clear_at_secs = ttl;
+}
+
+/// Reorient Euler angles (degrees, intrinsic XYZ) that rotate
+/// `cap_normal` onto the NEAREST vertical axis (±Z) — the floor-leveling
+/// rotation. Nearest-axis targeting avoids flipping a floor-down part
+/// 180°. Returns `(roll, pitch, yaw)`; `(0, 0, 0)` if the normal is
+/// already vertical (degenerate `rotation_between`).
+fn leveling_euler_deg(cap_normal: Vector3<f64>) -> (f64, f64, f64) {
+    let n = cap_normal.normalize();
+    let target = if n.z >= 0.0 {
+        Vector3::new(0.0, 0.0, 1.0)
+    } else {
+        Vector3::new(0.0, 0.0, -1.0)
+    };
+    UnitQuaternion::rotation_between(&n, &target).map_or((0.0, 0.0, 0.0), |q| {
+        let (r, p, y) = q.euler_angles();
+        (r.to_degrees(), p.to_degrees(), y.to_degrees())
+    })
 }
 
 /// Update system: set `CapState::stale = true` when Reorient,
@@ -6045,7 +6232,36 @@ fn render_simplify_section(
                 {
                     state.pending_action = Some(SimplifyAction::Reset);
                 }
+                if ui
+                    .add_enabled(!task_running, egui::Button::new("Weld vertices"))
+                    .on_hover_text(
+                        "Merge coincident vertices into shared topology without decimating. \
+                         Required before Cap → Scan if the mesh is still raw STL soup.",
+                    )
+                    .clicked()
+                {
+                    state.pending_action = Some(SimplifyAction::Weld);
+                }
             });
+
+            // Unwelded-soup warning. A freshly-loaded STL has 3 verts
+            // per triangle (no shared edges), so Cap → Scan would report
+            // one 3-vertex "loop" per triangle. Simplify welds as a side
+            // effect, but a scan that arrives already at/under the target
+            // never gets simplified — so flag it explicitly and point at
+            // the Weld button.
+            if mesh_looks_unwelded(info.vertex_count, info.face_count) {
+                ui.add_space(4.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 200, 80),
+                    format!(
+                        "⚠ Mesh looks unwelded ({} verts for {} faces). Click [Weld vertices] \
+                         before Cap → Scan, or it will report one loop per triangle.",
+                        human_count(info.vertex_count),
+                        human_count(info.face_count),
+                    ),
+                );
+            }
 
             if task_running {
                 ui.add_space(6.0);
@@ -6252,6 +6468,12 @@ fn render_cap_section(ui: &mut egui::Ui, state: &mut CapState, pending: &mut Cap
             if ui.button("Scan").clicked() {
                 pending.rescan = true;
             }
+
+            // Auto-leveling note: leveling is no longer a button. The
+            // scan auto-levels the floor to the build axis, and an
+            // applied trim/reconstruct re-levels to the new floor —
+            // handled by `auto_level_to_floor`.
+            ui.small("(floor auto-levels on Scan + after Apply trim/reconstruct)");
 
             if state.loops.is_empty() {
                 ui.label(
@@ -7363,6 +7585,79 @@ mod tests {
             }
         }
         mesh
+    }
+
+    #[test]
+    fn mesh_looks_unwelded_flags_raw_stl_soup() {
+        // Raw STL load: 3 verts per triangle → 3× faces. Flagged.
+        assert!(mesh_looks_unwelded(600_000, 200_000));
+        // Welded mesh: V ≈ F/2. Not flagged.
+        assert!(!mesh_looks_unwelded(100_000, 200_000));
+        // Exactly at the 2× threshold → flagged.
+        assert!(mesh_looks_unwelded(400_000, 200_000));
+        // Empty mesh → never flagged (avoids div-by-zero / false alarm).
+        assert!(!mesh_looks_unwelded(0, 0));
+    }
+
+    #[test]
+    fn leveling_euler_aligns_tilted_cap_normal_to_vertical() {
+        // The iter-1 clone's cap normal (~5° lean toward -Z).
+        let n = Vector3::new(0.061, -0.059, -0.996);
+        let (r, p, y) = leveling_euler_deg(n);
+        let q = UnitQuaternion::from_euler_angles(r.to_radians(), p.to_radians(), y.to_radians());
+        let leveled = q * n.normalize();
+        // Levels to the NEAREST axis (-Z) — floor stays down, no 180° flip.
+        assert!(
+            (leveled.z - (-1.0)).abs() < 1.0e-6,
+            "cap normal should level to -Z, got {leveled:?}"
+        );
+        assert!(
+            leveled.x.abs() < 1.0e-6 && leveled.y.abs() < 1.0e-6,
+            "leveled normal should be vertical, got {leveled:?}"
+        );
+    }
+
+    #[test]
+    fn leveling_euler_targets_nearest_axis_no_flip() {
+        // A normal leaning toward +Z levels to +Z (not flipped to -Z).
+        let n = Vector3::new(0.05, 0.05, 0.997);
+        let (r, p, y) = leveling_euler_deg(n);
+        let q = UnitQuaternion::from_euler_angles(r.to_radians(), p.to_radians(), y.to_radians());
+        let leveled = q * n.normalize();
+        assert!(
+            (leveled.z - 1.0).abs() < 1.0e-6,
+            "should level to nearest axis +Z, got {leveled:?}"
+        );
+    }
+
+    #[test]
+    fn level_to_floor_cut_makes_curved_centerline_floor_horizontal() {
+        // Curved centerline (tip at [0], floor at [last]) that tilts in
+        // +X near the floor — so the floor cut plane is NOT horizontal.
+        // The reconstruct builds its floor perpendicular to the tangent
+        // at the floor cut; leveling that tangent must make it vertical
+        // (→ floor horizontal), which the raw (tip-end) cap normal would
+        // NOT achieve for a curved part.
+        let poly = vec![
+            Point3::new(0.0, 0.0, 0.10),
+            Point3::new(0.005, 0.0, 0.05),
+            Point3::new(0.030, 0.0, 0.0),
+        ];
+        let total = polyline_arc_length_m(&poly);
+        let (_, floor_tangent) =
+            point_along_polyline_at_arc_distance(&poly, total).expect("tangent at floor end");
+        // Precondition: the floor-end tangent is genuinely tilted.
+        assert!(
+            floor_tangent.normalize().z.abs() < 0.97,
+            "fixture floor tangent should be tilted, got {floor_tangent:?}"
+        );
+        let (r, p, y) = leveling_euler_deg(floor_tangent);
+        let q = UnitQuaternion::from_euler_angles(r.to_radians(), p.to_radians(), y.to_radians());
+        let leveled = q * floor_tangent.normalize();
+        assert!(
+            leveled.x.abs() < 1.0e-6 && leveled.y.abs() < 1.0e-6,
+            "floor-cut tangent should level to vertical, got {leveled:?}"
+        );
     }
 
     /// `simplify_mesh` on a 20×20-cell grid (800 faces) targeting 100

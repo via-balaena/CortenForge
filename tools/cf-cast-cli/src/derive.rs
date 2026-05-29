@@ -12,8 +12,9 @@ use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_cast::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
 use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
-    CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
+    CanalSpec, CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
     MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec, Ribbon, SplitNormal,
+    build_canal_plug,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -339,6 +340,71 @@ pub fn derive_spec_and_ribbon(
         None
     };
 
+    // Canal Interior arc (Candidate A): compose parametric grip +
+    // stimulation features onto the scan-derived layer-0 plug. Baseline
+    // girth is unchanged — the layer/inset machinery (`cavity_inset_m`)
+    // still owns tightness; the canal only ADDS features (grip rings,
+    // frenulum D-section pinch, frenulum-gated texture, terminal suction
+    // bulb). All features pinch the channel INWARD (more wall, safe)
+    // except the suction bulb, which bulges OUTWARD into the inner
+    // silicone shell — that one is wall-gated below.
+    let (plug, plug_layer_0_mesh_cell_size_m) = if config.canal.enabled {
+        // Mutually exclusive with scan-mesh-direct: both rewrite the
+        // layer-0 plug. (scan-mesh-direct copies the scan mesh as-is,
+        // which has no SDF surface to compose canal features onto.)
+        if config.cast.scan_mesh_direct_plug_layer_0 {
+            bail!(
+                "[canal].enabled and [cast].scan_mesh_direct_plug_layer_0 are mutually \
+                 exclusive — both rewrite the layer-0 plug. Disable one (the canal needs \
+                 the SDF/MC plug path to compose its features)."
+            );
+        }
+        let canal_spec = resolve_canal_spec(&config.canal);
+
+        // Wall gate (§6.1, the only outward feature): the suction bulb
+        // bulges the plug outward into the innermost silicone shell. If
+        // the bulge plus the min-wall floor exceeds the inner layer's
+        // thickness, the shell blows out to zero there. Inward features
+        // (rings/D-section/texture) only ADD wall, so they need no gate.
+        if canal_spec.suction_bulge_m > 0.0 {
+            let min_wall_m = config.cast.piece_min_wall_mm / 1000.0;
+            match config.layers.first().map(|l| l.thickness_m) {
+                Some(inner_thickness_m) => {
+                    if canal_spec.suction_bulge_m + min_wall_m > inner_thickness_m {
+                        bail!(
+                            "[canal] suction_bulge_m = {:.1} mm + min wall {:.1} mm exceeds the \
+                             inner layer thickness {:.1} mm — the suction bulb would blow out the \
+                             innermost silicone shell. Reduce suction_bulge_m or thicken layer 0.",
+                            canal_spec.suction_bulge_m * 1e3,
+                            min_wall_m * 1e3,
+                            inner_thickness_m * 1e3,
+                        );
+                    }
+                }
+                None => {
+                    eprintln!(
+                        "[cf-cast] WARNING: [canal] suction bulb enabled but the inner layer \
+                         thickness is unknown (design-sourced layers); the suction-bulb wall gate \
+                         is SKIPPED. Verify the suction-bulb region clears the inner shell in \
+                         cf-view before casting."
+                    );
+                }
+            }
+        }
+
+        // Anchor the canal's frac=0 (mouth) at the cap-plane end. The
+        // cap is the scan's cut base = the cavity's insertion opening;
+        // without this, a centerline that runs deep→mouth (as
+        // cf-scan-prep produced on the iter-1 clone) would invert the
+        // canal and pile the suction bulb onto the flat floor cap.
+        let mouth_anchor = cap_tuples.first().map(|(centroid, _normal)| *centroid);
+        let canal_plug = build_canal_plug(&plug, centerline, mouth_anchor, &canal_spec);
+        let cell = canal_spec.plug_mesh_cell_size_m;
+        (canal_plug, Some(cell))
+    } else {
+        (plug, None)
+    };
+
     let spec = CastSpec {
         layers,
         plug,
@@ -348,6 +414,7 @@ pub fn derive_spec_and_ribbon(
         printer_config,
         mass_budget_kg: config.cast.mass_budget_kg,
         scan_mesh_for_plug_layer_0,
+        plug_layer_0_mesh_cell_size_m,
     };
 
     let split_normal_vec = Vector3::new(
@@ -391,6 +458,13 @@ pub fn derive_spec_and_ribbon(
     // what justifies the hint in the first place.
     if let Some((centroid, normal)) = cap_tuples.first() {
         ribbon = ribbon.with_pour_end_hint(*centroid, *normal);
+    }
+
+    // S1 (CF_CAST_ORGANIC_PARTS_RECON.md): opt-in flat vertical seam for
+    // organic/curved parts. The cup-wall halfspace + flange both read the
+    // ribbon's seam, so this single call flattens both transparently.
+    if config.cast.planar_seam {
+        ribbon = ribbon.with_planar_seam();
     }
 
     if config.pour_gate.enabled {
@@ -484,6 +558,34 @@ fn resolve_flange_spec(config: &crate::config::FlangeConfig) -> FlangeSpec {
         flange_thickness_m: config.thickness_m.unwrap_or(iter1.flange_thickness_m),
         flange_inner_offset_m: config.inner_offset_m.unwrap_or(iter1.flange_inner_offset_m),
     }
+}
+
+/// Resolve a [`crate::config::CanalConfig`] into a [`CanalSpec`],
+/// falling back to [`CanalSpec::iter1`] for each `None` per-field
+/// override. Canal Interior arc (Candidate A) — additive grip +
+/// stimulation features on the layer-0 plug; baseline girth stays
+/// owned by `cavity_inset_m`.
+fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
+    let mut spec = CanalSpec::iter1();
+    if let Some(dir) = config.frenulum_dir {
+        spec.frenulum_dir = Vector3::new(dir[0], dir[1], dir[2]);
+    }
+    if let Some(amp) = config.texture_amplitude_m {
+        spec.texture_amp_m = amp;
+    }
+    if let Some(pitch) = config.texture_pitch_m {
+        spec.texture_pitch_m = pitch;
+    }
+    if let Some(depth) = config.dsection_depth_m {
+        spec.dsection_depth_m = depth;
+    }
+    if let Some(bulge) = config.suction_bulge_m {
+        spec.suction_bulge_m = bulge;
+    }
+    if let Some(cell) = config.plug_mesh_cell_size_m {
+        spec.plug_mesh_cell_size_m = cell;
+    }
+    spec
 }
 
 /// Resolve a [`crate::config::DowelHoleConfig`] into a
@@ -640,6 +742,7 @@ mod tests {
             flange: crate::config::FlangeConfig::default(),
             dowel_hole: crate::config::DowelHoleConfig::default(),
             bolt_pattern: crate::config::BoltPatternConfig::default(),
+            canal: crate::config::CanalConfig::default(),
         }
     }
 
