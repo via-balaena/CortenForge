@@ -63,6 +63,14 @@
 //! the workshop accepts a slight asymmetry near the pour gate; full
 //! rebalance is bookmarked for a future arc).
 //!
+//! When `spec.bracket_pour_gate` is also true (the organic-parts
+//! apex-axial pour, 2026-05-29), a colliding bolt is NOT dropped:
+//! `append_pour_bracket_bolts` steps outward along the silhouette to
+//! the first clearing fraction on EACH side and emits a bolt there, so
+//! the flange the axial pour bore splits at the dome apex stays clamped
+//! on both sides. This supersedes the lossy skip's "lost bolt at the
+//! pour" for that layout.
+//!
 //! # Side-agnostic emission
 //!
 //! Identical transform list applied to BOTH Negative + Positive cup
@@ -158,6 +166,18 @@ pub struct BoltPatternSpec {
     /// Default 1 mm. Only consulted when
     /// `skip_pour_gate_collision = true`.
     pub pour_gate_clearance_m: f64,
+    /// When `true`, a bolt that collides with the pour gate is NOT
+    /// dropped — instead it is replaced by a pair of bolts stepped to
+    /// just outside the clearance zone on EACH side along the
+    /// silhouette, so the flange stays clamped right where the pour
+    /// bore splits it. Default `false` (the lossy skip — existing
+    /// casts byte-identical).
+    ///
+    /// Pairs with [`crate::pour::PourGateLayout::ApexAxial`] (a single
+    /// axial pour bore on the seam splits the flange at the dome
+    /// apex). Only consulted when `skip_pour_gate_collision = true`.
+    /// Organic-parts arc, 2026-05-29.
+    pub bracket_pour_gate: bool,
 }
 
 impl BoltPatternSpec {
@@ -170,6 +190,7 @@ impl BoltPatternSpec {
             silhouette_outboard_offset_m: DEFAULT_OUTBOARD_OFFSET_M,
             skip_pour_gate_collision: true,
             pour_gate_clearance_m: DEFAULT_POUR_GATE_CLEARANCE_M,
+            bracket_pour_gate: false,
         }
     }
 }
@@ -350,6 +371,23 @@ pub fn build_bolt_pattern_transforms(
         if spec.skip_pour_gate_collision
             && collides_with_pour_gate(center_m, radius_m, &pour_xforms, spec.pour_gate_clearance_m)
         {
+            if spec.bracket_pour_gate {
+                // Don't drop the colliding bolt — bracket the pour
+                // bore with a bolt just outside the clearance on each
+                // side so the split flange stays clamped at the apex.
+                append_pour_bracket_bolts(
+                    &mut transforms,
+                    t,
+                    &silhouette,
+                    spec,
+                    seam_midpoint,
+                    binormal,
+                    radius_m,
+                    axis,
+                    half_length_m,
+                    &pour_xforms,
+                );
+            }
             continue;
         }
 
@@ -368,6 +406,91 @@ pub fn build_bolt_pattern_transforms(
     transforms
 }
 
+/// Step away from a pour-gate-colliding bolt fraction in BOTH
+/// directions to the first silhouette fraction whose bolt center
+/// clears the pour-gate clearance zone, and append a bolt at each —
+/// bracketing the pour bore instead of dropping the colliding bolt.
+///
+/// Used only when `spec.bracket_pour_gate` (organic-parts apex-axial
+/// pour). Replaces the lossy skip's "missing bolt at the pour" with a
+/// pair clamping the split flange on each side. A side that can't
+/// clear within `MAX_STEPS` (a runaway pour bore) is silently
+/// skipped; a cleared position that coincides with an
+/// already-emitted bolt is skipped (the neighbor already covers it).
+// Bracketing needs the full placement context (silhouette + seam frame
+// + cylinder params); bundling into a struct would just shuffle the
+// same fields without reducing the call-site count.
+#[allow(clippy::too_many_arguments)]
+fn append_pour_bracket_bolts(
+    transforms: &mut Vec<MatingTransform>,
+    collide_fraction: f64,
+    silhouette: &Silhouette2d,
+    spec: &BoltPatternSpec,
+    seam_midpoint: Point3<f64>,
+    binormal: Vector3<f64>,
+    radius_m: f64,
+    axis: Unit<Vector3<f64>>,
+    half_length_m: f64,
+    pour_xforms: &[MatingTransform],
+) {
+    /// Arc-fraction step when searching outward from the collision.
+    const STEP: f64 = 1.0 / 256.0;
+    /// Search cap per side (~1/4 of the perimeter at STEP).
+    const MAX_STEPS: u32 = 64;
+    // Two distinct bolt centers must not overlap (holes touching).
+    let min_sep = 2.0 * radius_m;
+
+    let center_at = |t: f64| -> Option<Point3<f64>> {
+        let p = silhouette.point_at_arc_fraction(t)?;
+        let n = silhouette.outward_normal_at_arc_fraction(t)?;
+        let candidate = Point3::new(
+            spec.silhouette_outboard_offset_m.mul_add(n.x, p.x),
+            seam_midpoint.y,
+            spec.silhouette_outboard_offset_m.mul_add(n.z, p.z),
+        );
+        let signed = (candidate - seam_midpoint).dot(&binormal);
+        Some(candidate - signed * binormal)
+    };
+
+    for dir in [-1.0_f64, 1.0_f64] {
+        for step in 1..=MAX_STEPS {
+            let t = (dir * STEP)
+                .mul_add(f64::from(step), collide_fraction)
+                .rem_euclid(1.0);
+            let Some(center_m) = center_at(t) else {
+                continue;
+            };
+            if collides_with_pour_gate(center_m, radius_m, pour_xforms, spec.pour_gate_clearance_m)
+            {
+                continue;
+            }
+            // Coincides with a bolt we already placed? That side is
+            // already clamped by the neighbor — stop without doubling.
+            let duplicate = transforms.iter().any(|xf| match xf {
+                MatingTransform::SubtractCylinder { params } => {
+                    (params.parent.center_m - center_m).norm() < min_sep
+                }
+                _ => false,
+            });
+            if duplicate {
+                break;
+            }
+            transforms.push(MatingTransform::SubtractCylinder {
+                params: CylinderParams {
+                    parent: CylinderParent {
+                        center_m,
+                        axis,
+                        half_length_m,
+                    },
+                    radius_m,
+                    segments: DEFAULT_SEGMENTS,
+                },
+            });
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -378,7 +501,7 @@ mod tests {
     )]
 
     use super::*;
-    use crate::pour::{PourGateKind, PourGateSpec};
+    use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec};
     use crate::ribbon::SplitNormal;
     use nalgebra::Vector3;
 
@@ -404,6 +527,73 @@ mod tests {
         assert_eq!(s.silhouette_outboard_offset_m, 0.013);
         assert!(s.skip_pour_gate_collision);
         assert_eq!(s.pour_gate_clearance_m, 0.001);
+        assert!(
+            !s.bracket_pour_gate,
+            "iter-1 default keeps the lossy skip (byte-identical); bracketing \
+             is the organic-parts apex-axial opt-in"
+        );
+    }
+
+    /// Bracketing the pour gate (apex-axial organic-parts opt-in):
+    /// instead of DROPPING bolts that collide with the apex pour bore,
+    /// `bracket_pour_gate = true` adds bolts just outside the
+    /// clearance on each side. Invariants: (a) no emitted bolt
+    /// collides with the pour gate in EITHER mode, (b) the fixture
+    /// actually exercises a collision (skip drops at least one), and
+    /// (c) bracket mode never emits FEWER bolts than skip mode.
+    #[test]
+    fn bracket_pour_gate_brackets_instead_of_dropping() {
+        let (body, bounds, ribbon) = cylinder_fixture();
+        let mut pour = PourGateSpec::iter1();
+        pour.layout = PourGateLayout::ApexAxial;
+        let ribbon = ribbon.with_pour_gate(PourGateKind::Default(pour));
+
+        let spec_skip = BoltPatternSpec::iter1(); // bracket_pour_gate = false
+        let spec_bracket = BoltPatternSpec {
+            bracket_pour_gate: true,
+            ..BoltPatternSpec::iter1()
+        };
+        let flange = FlangeSpec::iter1();
+        let radius = spec_skip.clearance_diameter_m / 2.0;
+        let pour_xforms = build_pour_gate_transforms(&ribbon);
+
+        let skipped = build_bolt_pattern_transforms(&body, &ribbon, &spec_skip, &flange, bounds);
+        let bracketed =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec_bracket, &flange, bounds);
+
+        // (b) the fixture's apex pour bore collides with at least one
+        // arc-spaced bolt (else this test proves nothing).
+        assert!(
+            skipped.len() < spec_skip.count as usize,
+            "fixture must exercise a pour-gate collision; skip emitted all \
+             {} bolts (no collision)",
+            spec_skip.count
+        );
+        // (c) bracketing adds back what skip dropped.
+        assert!(
+            bracketed.len() >= skipped.len(),
+            "bracket mode must not emit fewer bolts than skip; skip {} vs \
+             bracket {}",
+            skipped.len(),
+            bracketed.len()
+        );
+        // (a) no emitted bolt collides with the pour gate, either mode.
+        for xf in bracketed.iter().chain(skipped.iter()) {
+            let MatingTransform::SubtractCylinder { params } = xf else {
+                continue;
+            };
+            assert!(
+                !collides_with_pour_gate(
+                    params.parent.center_m,
+                    radius,
+                    &pour_xforms,
+                    spec_skip.pour_gate_clearance_m,
+                ),
+                "no emitted bolt may collide with the pour gate; \
+                 center {:?} does",
+                params.parent.center_m
+            );
+        }
     }
 
     #[test]

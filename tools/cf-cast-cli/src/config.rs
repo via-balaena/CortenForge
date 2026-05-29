@@ -297,11 +297,24 @@ pub struct PourGateConfig {
     /// [`cf_cast::PourGateKind::None`] (no pour gate, no vent).
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Organic-parts opt-in: when `true`, use the single AXIAL pour
+    /// bore at the dome apex on the seam ([`cf_cast::PourGateLayout::ApexAxial`])
+    /// instead of the iter-1 V-shape — and the funnel un-bends to a
+    /// straight nipple, and the bolt pattern brackets the pour bore
+    /// rather than dropping nearby bolts. No vent is modeled (the
+    /// workshop hand-drills tiny carbide vents at the high spots).
+    /// Default `false` (existing casts byte-identical). Organic-parts
+    /// arc §4.3, 2026-05-29.
+    #[serde(default)]
+    pub apex_axial: bool,
 }
 
 impl Default for PourGateConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            apex_axial: false,
+        }
     }
 }
 

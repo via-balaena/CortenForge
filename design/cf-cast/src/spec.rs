@@ -4436,6 +4436,36 @@ mod tests {
     }
 
     #[test]
+    fn generate_procedure_markdown_v2_apex_pour_prose_describes_apex_bore_and_drilled_vents() {
+        // Apex-axial layout: prose must describe the single apex bore,
+        // hand-drilled vents, and the straight-spout funnel — and must
+        // NOT carry the V-shape "+binormal/-binormal" pour/vent prose.
+        use crate::PourGateLayout;
+        let mut pour_spec = PourGateSpec::iter1();
+        pour_spec.layout = PourGateLayout::ApexAxial;
+        let (spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_pour_gate(PourGateKind::Default(pour_spec));
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("apex pour"),
+            "apex-axial prose must describe the apex pour; got: {md}"
+        );
+        assert!(
+            md.contains("hand-drilled") || md.contains("drill"),
+            "apex-axial prose must describe hand-drilled vents",
+        );
+        assert!(
+            md.contains("straight-spout funnel"),
+            "apex-axial prose must describe the straight-spout funnel",
+        );
+        assert!(
+            !md.contains("V at the dome end of the centerline"),
+            "apex-axial prose must NOT carry the V-shape orientation prose",
+        );
+    }
+
+    #[test]
     fn generate_procedure_markdown_v2_no_vent_prose_notes_disabled() {
         // include_vent=false: prose calls out the disabled vent
         // explicitly so workshop user doesn't expect a vent hole

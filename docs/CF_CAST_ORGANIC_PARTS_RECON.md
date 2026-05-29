@@ -191,40 +191,56 @@ first. §8 OQ3.
 
 ## 4.3 (C) Pour-gate + vent placement (NEW — workshop cf-view 2026-05-28)
 
-> **DECOUPLE DECISION (workshop, 2026-05-29): pour orientation = dome/glans UP
-> (flat floor on the bench); placement = OPPOSITE ENDS.** Physics → **VENT at the
-> dome/glans tip** (highest point, air escapes) and **POUR at the floor/mouth end**
-> (bottom-fill: silicone enters low, rises, pushes all air out the top vent). Most
-> reliable fill (no trapped air).
+> **APEX-POUR PIVOT — IMPLEMENTED 2026-05-29 (supersedes the floor-pour decision
+> below).** Reasoning together with the workshop revised the locked
+> opposite-ends/floor-pour plan: a floor pour only fills the cavity to the top if
+> fed by a riser tall enough to reach the dome apex (connected-vessels: the cavity
+> fills only to the pour source's liquid level), and a downward-pointing floor port
+> can't take a gravity funnel. **The cavity's highest point IS the dome apex**, so
+> pouring there makes complete fill self-evident (full the instant silicone reaches
+> the bore — nothing sits above it) and lets trapped air migrate to that same
+> point. Final design (workshop-locked):
 >
-> **Current code (`pour::build_pour_gate_transforms`):** one `v_apex_anchor` (the
-> centerline end FARTHEST from the cap = the dome) feeds BOTH legs, splayed
-> ±binormal at 30° → pour (+binormal, Positive piece) + vent (−binormal, Negative
-> piece) share the apex → co-located at the dome. That's the coupling.
+> - **POUR — single AXIAL bore at the dome apex, ON the seam.** No splay. Lying in
+>   the seam plane → it splits the flange: separating the two cup halves bisects the
+>   channel into open half-troughs, so the cured sprue lifts out (no pull through a
+>   blind hole) and the two half-bores re-register into one round hole on assembly.
+>   Avoids the crowded floor entirely (plug-lock/dowels/bolts live at the floor).
+> - **VENT — NOT modeled; hand-drilled.** The workshop has 0.1–3.0 mm carbide bits.
+>   Air's ~1000× lower viscosity escapes a sub-mm hole the honey-thick silicone
+>   won't weep through, so tiny drilled vents at the apex + any high spots (tuned to
+>   what a test pour strands) beat a modeled vent — placed empirically, negligible
+>   residue. (Modeled holes are cut post-MC as bit-precise mesh-CSG cylinders, so
+>   the 3 mm MC grid never limited vent size — but hand-drilling is simpler + field-
+>   tunable, and the workshop has the tools.)
+> - **FUNNEL — un-bend it.** The 30° nipple bend existed only to match the V splay;
+>   the apex bore points straight up (+Z up), so the nipple is STRAIGHT (zero tilt),
+>   bowl up. Least-risky version of the "funnel re-placement" — it stays at the dome,
+>   just straight. (`build_funnel_solid` already emits a standalone STL with no world
+>   placement; only the bend angle was coupled to the pour.)
+> - **BOLTS — bracket the pour bore.** The big bore through the flange removes clamp
+>   material at the apex; the §B pattern's pour-gate *collision-skip* (which dropped
+>   the nearby bolt — the known "lost 1 bolt of clamping" weakness) is replaced, for
+>   this layout, by a *bracket*: a bolt stepped to just outside the clearance on EACH
+>   side of the bore. Closes that weakness.
 >
-> **Design:** drop the shared V. Two INDEPENDENT anchors:
-> - **VENT** anchored at the dome end (farthest from cap), along outward (up).
-> - **POUR** anchored at the floor/cap end (nearest cap), along outward (down).
-> No binormal splay needed (they're at opposite ends now). Each still a
-> `SubtractCylinder` leg.
+> **Implementation (opt-in, existing V-at-dome casts byte-identical):**
+> `PourGateLayout::{VAtDome (default), ApexAxial}` on `PourGateSpec`; `build_pour_gate_transforms`
+> branches (apex bore projected onto the seam plane + axis seam-normal component
+> removed so it lies in-plane); `build_funnel_solid` zeroes the tilt for `ApexAxial`;
+> `BoltPatternSpec::bracket_pour_gate` (default false) → `append_pour_bracket_bolts`;
+> cf-cast-cli `[pour_gate].apex_axial = true` (default false) sets the layout + the
+> bolt bracket in `derive.rs`. Procedure prose branches throughout.
 >
-> **Ripples / open work (S4):**
-> - **Which cup piece** does each leg land on? At the seam (binormal≈0) an axial
->   leg straddles both halves; need to bias each onto one piece (or accept it spans
->   the seam like the V apex did) — decide per demold.
-> - **Floor-feature collision:** the pour now sits at the floor end, which is
->   crowded — plug-floor lock + dowel holes + bolt pattern all live there. Must
->   collision-check/space the pour leg against them (mirror the §B bolt pour-gate
->   collision-skip).
-> - **Funnel re-placement:** `build_funnel_solid` sizes + anchors the pour funnel
->   to the pour-gate opening (currently the dome). Moving pour → floor moves the
->   funnel to the base. The funnel is a separate STL + its own mating transforms;
->   re-anchor it to the floor-end pour leg.
-> - **Bottom-fill ergonomics:** pour port at the base means the mold is poured
->   dome-up on a stand / the base is accessible. Confirmed intended (workshop chose
->   opposite-ends + dome-up). Procedure.md prose needs updating to match.
-> - Interacts with (A) planar seam (the seam is now flat/vertical) + (B) flat floor
->   (the pour pierces the floor region).
+> ---
+>
+> **SUPERSEDED — original floor-pour decouple (workshop, 2026-05-29, kept for the
+> trail):** pour orientation = dome/glans UP; placement = OPPOSITE ENDS → VENT at the
+> dome tip, POUR at the floor/mouth end (bottom-fill). Dropped because the floor pour
+> needs a riser to the apex for complete fill and a downward floor port can't take a
+> gravity funnel — apex-pour is strictly simpler and self-verifying for fill. The
+> ripples it flagged (which-piece, floor-feature collision, funnel re-placement,
+> ergonomics) all dissolved or simplified under apex-pour.
 
 On the `3quartachub` cup the pour hole + aeration (vent) hole land **in the
 flange** near the dome end; the workshop wants them **off the flange, at/near the
@@ -256,6 +272,19 @@ Each code phase: cold-read + full gates (`cargo xtask grade-all`), per prior arc
 1. **Planar split vs demoldability:** a flat cut on a curved part can create an
    undercut on one half → won't release. The whole point of the ribbon was
    curve-following demold. Need the curvature ceiling (§8 OQ2).
+   > **EMPIRICAL (2026-05-29, `3quartachub` apex-pour regen):** this is now
+   > confirmed real AND shown to be a no-win for a single flat plane on this part.
+   > The glans leans ~−Y off the shaft. Per-Z-band cup-half measurement: the shaft
+   > bisects evenly (±23 mm both halves) but near the dome one half collapses to a
+   > 4–12 mm sliver while the other wraps the dome (lopsided seam — surfaced by the
+   > apex pour sitting right there). Flipping `split_normal` X→Y to put the seam
+   > plane IN the curve plane (even dome bisection in theory) instead made the body
+   > run **tangent** to the seam plane along the bend → **non-manifold cup MC**
+   > (manifold3d `NotManifold`, fails before any pour/bolt CSG). So: `split_normal=X`
+   > = manifold + lopsided dome; `split_normal=Y` = even dome + non-buildable. A
+   > single flat seam cannot win both; the dome needs a curve-following / hybrid seam
+   > (C-A3) or a 3-piece split. NOT an apex-pour bug (seam geometry is identical to
+   > the V-pour cast); the apex pour only made it visible. Tracked as (A) follow-up.
 2. **Piece imbalance:** a best-fit plane through an asymmetric organic bulge gives
    unequal halves; one may be a thin shard. Gate on min-piece extent.
 3. **Cap tilt / curvature for (B):** a flat trim on a 4.4°-tilted (and domed) cap

@@ -13,8 +13,8 @@ use cf_cast::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
 use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
     CanalSpec, CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
-    MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec, Ribbon, SplitNormal,
-    build_canal_plug,
+    MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateLayout, PourGateSpec, Ribbon,
+    SplitNormal, build_canal_plug,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -468,7 +468,15 @@ pub fn derive_spec_and_ribbon(
     }
 
     if config.pour_gate.enabled {
-        ribbon = ribbon.with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        // Organic-parts opt-in: single axial pour bore at the dome
+        // apex on the seam (splits the flange; straight funnel;
+        // hand-drilled vents) vs the iter-1 V-shape. Organic-parts
+        // arc §4.3, 2026-05-29.
+        let mut pour_spec = PourGateSpec::iter1();
+        if config.pour_gate.apex_axial {
+            pour_spec.layout = PourGateLayout::ApexAxial;
+        }
+        ribbon = ribbon.with_pour_gate(PourGateKind::Default(pour_spec));
     }
     if config.plug_pins.enabled {
         // Post-S4 of the FDM-friendly geometry arc the `pin_length_m`
@@ -512,7 +520,14 @@ pub fn derive_spec_and_ribbon(
         // cross-field invariants (flange-required, wall-thickness,
         // dowel-stagger) are gated in
         // config::validate_after_layer_source.
-        let bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
+        let mut bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
+        // With the apex-axial pour the bore splits the flange at the
+        // dome apex; bracket it (a bolt just outside the clearance on
+        // each side) instead of dropping nearby bolts. Organic-parts
+        // arc §4.3, 2026-05-29.
+        if config.pour_gate.enabled && config.pour_gate.apex_axial {
+            bolt_spec.bracket_pour_gate = true;
+        }
         ribbon = ribbon.with_bolt_pattern(BoltPatternKind::Auto(bolt_spec));
     }
 
@@ -625,6 +640,10 @@ fn resolve_bolt_pattern_spec(config: &crate::config::BoltPatternConfig) -> BoltP
         pour_gate_clearance_m: config
             .pour_gate_clearance_m
             .unwrap_or(iter1.pour_gate_clearance_m),
+        // Set by the caller from `[pour_gate].apex_axial`, not a
+        // `[bolt_pattern]` field — the bracket only makes sense when
+        // the apex-axial pour bore splits the flange.
+        bracket_pour_gate: iter1.bracket_pour_gate,
     }
 }
 

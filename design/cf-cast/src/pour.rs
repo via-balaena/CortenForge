@@ -122,6 +122,42 @@ pub const POUR_GATE_SEGMENTS: u32 = 32;
 /// default.
 pub const V_HALF_ANGLE_RAD: f64 = std::f64::consts::FRAC_PI_6;
 
+/// Pour-channel layout — how the pour (and any modeled vent) are
+/// placed on the body's dome end.
+///
+/// [`Self::VAtDome`] is the iter-1 default (V-shape: pour + vent
+/// splayed `±V_HALF_ANGLE_RAD` from a shared apex). [`Self::ApexAxial`]
+/// is the organic-parts opt-in (a single AXIAL pour bore at the dome
+/// apex, lying IN the seam plane, with NO splay and NO modeled vent).
+///
+/// **Why `ApexAxial` exists (organic-parts arc, 2026-05-29):** the
+/// workshop reasoned through the fill physics for a dome-up mold and
+/// landed on pouring at the single HIGHEST point of the cavity (the
+/// dome apex). That makes "is it full?" trivial — the cavity is full
+/// the instant silicone reaches the pour hole, because there is no
+/// point above it — and lets trapped air migrate up to that same
+/// point. Placing the bore IN the seam plane (axial → zero binormal
+/// component) means it splits the flange: separating the two cup
+/// halves bisects the channel lengthwise into open half-troughs, so
+/// the cured sprue lifts out instead of having to pull through a blind
+/// hole. Air handling moves to tiny hand-drilled carbide vents at the
+/// high spots (air's ~1000× lower viscosity escapes a sub-mm hole the
+/// viscous silicone won't weep through), so no vent is modeled here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PourGateLayout {
+    /// V-shape: pour leg `+binormal` (Positive piece) + optional vent
+    /// leg `-binormal` (Negative piece), both splayed
+    /// `V_HALF_ANGLE_RAD` from the shared dome apex. iter-1 default.
+    #[default]
+    VAtDome,
+    /// Single axial pour bore at the dome apex, lying in the seam
+    /// plane (splits the flange). No splay, no modeled vent
+    /// (`include_vent` is ignored). Pairs with the straight-nipple
+    /// funnel ([`crate::funnel::build_funnel_solid`]) and the
+    /// bolt-pattern pour-bracket (`bolt_pattern::BoltPatternSpec::bracket_pour_gate`).
+    ApexAxial,
+}
+
 /// Cylindrical pour-gate + air-vent geometry spec. All dimensions
 /// in meters.
 #[derive(Debug, Clone, PartialEq)]
@@ -193,7 +229,16 @@ pub struct PourGateSpec {
     /// short straight molds where air escape back through the pour
     /// leg is sufficient (silicone fills bottom-up; air bubbles
     /// rise out the same channel).
+    ///
+    /// Ignored when `layout == PourGateLayout::ApexAxial` (that layout
+    /// models no vent — the workshop hand-drills tiny carbide vents at
+    /// the high spots).
     pub include_vent: bool,
+    /// How the pour (and any modeled vent) are placed. Default
+    /// [`PourGateLayout::VAtDome`] keeps the iter-1 V-shape (existing
+    /// casts byte-identical); [`PourGateLayout::ApexAxial`] is the
+    /// organic-parts single-bore-at-the-apex opt-in.
+    pub layout: PourGateLayout,
 }
 
 impl PourGateSpec {
@@ -220,6 +265,7 @@ impl PourGateSpec {
             gate_half_length_m: 0.045,
             vent_half_length_m: 0.040,
             include_vent: true,
+            layout: PourGateLayout::VAtDome,
         }
     }
 }
@@ -300,6 +346,10 @@ pub fn build_pour_gate_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
         return Vec::new();
     };
 
+    if spec.layout == PourGateLayout::ApexAxial {
+        return build_apex_axial_transforms(ribbon, spec, apex, outward);
+    }
+
     let cos = V_HALF_ANGLE_RAD.cos();
     let sin = V_HALF_ANGLE_RAD.sin();
     let pour_leg_axis = (cos * outward + sin * binormal).normalize();
@@ -322,6 +372,53 @@ pub fn build_pour_gate_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
         ));
     }
     transforms
+}
+
+/// Build the single axial pour leg for [`PourGateLayout::ApexAxial`]
+/// — one [`MatingTransform::SubtractCylinder`] at the dome apex,
+/// lying IN the seam plane (no splay, no vent leg).
+///
+/// Two projections make the bore split the flange cleanly:
+/// - the apex point is projected onto the ribbon's seam plane (the
+///   planar-seam plane when set, else the arc-midpoint reference), so
+///   the bore's centerline sits exactly on the seam, and
+/// - the outward axis has its seam-normal component removed, so the
+///   bore lies entirely IN the seam plane.
+///
+/// The result is a bore that straddles the seam → separating the two
+/// cup halves bisects it lengthwise into open half-troughs (easy
+/// sprue removal) and the two half-bores re-register into one round
+/// hole on assembly (the planar seam guarantees coplanar faces).
+fn build_apex_axial_transforms(
+    ribbon: &Ribbon,
+    spec: &PourGateSpec,
+    apex: Point3<f64>,
+    outward: Vector3<f64>,
+) -> Vec<MatingTransform> {
+    let (seam_mid, seam_normal) = ribbon.seam_plane_reference();
+    let n = seam_normal.into_inner();
+    // Project the apex onto the seam plane (the bore centerline lands
+    // on the seam → it splits the flange symmetrically).
+    let apex_on_seam = apex - (apex - seam_mid).dot(&n) * n;
+    // Remove the seam-normal component from `outward` so the bore lies
+    // IN the seam plane. The dome tangent is near-perpendicular to the
+    // (roughly horizontal) seam normal, so this barely re-aims it.
+    let axis_in_seam = outward - outward.dot(&n) * n;
+    let axis = if axis_in_seam.norm() > 1.0e-9 {
+        axis_in_seam.normalize()
+    } else {
+        // Degenerate: outward parallel to the seam normal (the body
+        // axis lies in the split direction). Fall back to the raw
+        // outward axis — the bore won't split evenly, but this is a
+        // pathological split-normal choice the 2-piece gate rejects.
+        outward.normalize()
+    };
+    vec![leg_transform(
+        apex_on_seam,
+        axis,
+        spec.gate_radius_m,
+        spec.gate_half_length_m,
+    )]
 }
 
 /// Resolve the V apex `(point, outward_axis, binormal)` for this
@@ -578,6 +675,55 @@ mod tests {
             "apex should be at centerline.last(); got x={}",
             apex.x
         );
+    }
+
+    /// `ApexAxial` layout: one leg only (no vent), inner tip at the
+    /// dome apex, axis lying IN the seam plane (zero binormal
+    /// component). Straight +X centerline, +Y split → binormal +Z;
+    /// the apex bore must have no +Z (binormal) component so it splits
+    /// the flange symmetrically.
+    #[test]
+    fn build_pour_gate_transforms_apex_axial_emits_single_seam_aligned_leg() {
+        let mut spec = PourGateSpec::iter1();
+        spec.layout = PourGateLayout::ApexAxial;
+        let ribbon = straight_x_ribbon().with_pour_gate(PourGateKind::Default(spec.clone()));
+        let transforms = build_pour_gate_transforms(&ribbon);
+        assert_eq!(
+            transforms.len(),
+            1,
+            "ApexAxial emits a single pour leg (no vent); got {}",
+            transforms.len()
+        );
+
+        // Apex at centerline[0] = (-0.050, 0, 0); on the seam plane
+        // (y = 0). Inner tip must sit there.
+        let inner = leg_apex(&transforms[0]);
+        assert!(
+            (inner - Point3::new(-0.050, 0.0, 0.0)).norm() < 1.0e-9,
+            "apex-axial inner tip should sit at the dome apex on the seam; got {inner:?}"
+        );
+
+        // Axis must lie in the seam plane: for +Y split the seam
+        // normal is the binormal +Z, so the axis must have ~zero Z.
+        let (_, seam_normal) = ribbon.seam_plane_reference();
+        if let MatingTransform::SubtractCylinder { params } = &transforms[0] {
+            let axis = params.parent.axis.into_inner();
+            let n = seam_normal.into_inner();
+            assert!(
+                axis.dot(&n).abs() < 1.0e-9,
+                "apex-axial bore must lie in the seam plane (zero seam-normal \
+                 component); got axis·n = {}",
+                axis.dot(&n)
+            );
+            // Axis points outward (−X for the centerline[0] dome end).
+            assert!(
+                axis.x < -0.99,
+                "apex-axial bore should point outward along −X; got {axis:?}"
+            );
+            assert!((params.radius_m - spec.gate_radius_m).abs() < f64::EPSILON);
+        } else {
+            panic!("expected SubtractCylinder; got {:?}", transforms[0]);
+        }
     }
 
     /// Iter-1-shaped fixture: trimmed centerline (tip at z=+0.073,
