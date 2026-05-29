@@ -294,30 +294,19 @@ fn build_plug_lock_pose(ribbon: &Ribbon) -> Option<(&PlugPinSpec, PrismaticPinPo
     // the axis direction note above) — gives the captive vertical
     // lock the workshop user requested 2026-05-24.
     let axis_unit = UnitVector3::new_normalize(-outward);
-    // Gram-Schmidt `split_normal` against `axis_unit` to enforce the
-    // [`PrismaticPinPose::new`] orthogonality contract. The cf-scan-
-    // prep cap-plane normal is fitted to point cloud data (PCA on
-    // the cap-plane vertices) while the ribbon's `split_normal` is
-    // a user-axis projection, so production casts often see
-    // ~1-3° between them. The pose's rotation about `axis_unit`
-    // is geometrically immaterial for square-base pins (the
-    // [`PrismaticPinSpec::plug_lock_default`] is square — base.x ==
-    // base.y, tip.x == tip.y), so projecting `split_normal` onto
-    // the plane perpendicular to `axis_unit` and renormalizing
-    // preserves the workshop-meaningful pose while satisfying the
-    // strict orthogonality assertion. If the input vectors are
-    // exactly parallel (|dot| ≈ 1), the projection collapses to
-    // zero — `new_normalize` would emit a degenerate unit-Z
-    // fallback; gate that as `None` so the caller drops the lock
-    // rather than emitting a skewed pose.
-    // Orient the square lock's lateral axis to the SEAM normal so one pair of
-    // its faces is parallel to the seam plane → the seam bisects the pin
-    // symmetrically into two halves ("rotationally square to the two halves").
-    // With a FITTED (apex-anchored) seam the seam normal is diagonal, NOT
-    // `split_normal`, so deriving the lateral axis from `split_normal` (as the
-    // legacy path does) leaves the square skewed ~33° to the seam (workshop
-    // 2026-05-29). Use the fitted seam normal when present; else keep
-    // `split_normal` so binormal/curve-following casts stay byte-identical.
+    // Orient the square lock's lateral axis so one pair of its faces is parallel
+    // to the SEAM plane → the seam bisects the pin symmetrically into two halves
+    // ("rotationally square to the two halves"). The pin's lateral *rotation*
+    // DOES matter here — not for the pin's own square symmetry, but for HOW the
+    // seam slices it. With a FITTED (apex-anchored) seam the seam normal is
+    // diagonal, NOT `split_normal`, so deriving the lateral axis from
+    // `split_normal` would skew the square ~33° to the seam (workshop
+    // 2026-05-29). So: use the fitted seam normal when one is set; else keep
+    // `split_normal` (binormal / curve-following casts stay byte-identical).
+    // Either reference is Gram-Schmidt'd against `axis_unit` to satisfy the
+    // [`PrismaticPinPose::new`] orthogonality contract; if the input is exactly
+    // parallel to the axis (|dot| ≈ 1) the projection collapses to zero — gate
+    // that as `None` so the caller drops the lock rather than emit a skewed pose.
     let ref_vec = match ribbon.seam_plane_basis() {
         Some(_) => ribbon.seam_plane_reference().1.into_inner(),
         None => ribbon.split_normal.as_vector(),

@@ -255,22 +255,23 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
         FUNNEL_CONE_HEIGHT_M + INNER_CAVITY_OVERSHOOT_M,
     );
 
-    // --- Nipple (tilted, axis along (sin(θ), 0, −cos(θ)) from origin
-    // for θ = V_HALF_ANGLE_RAD) ---
+    // --- Nipple (axis along (sin(θ), 0, −cos(θ)) from origin for the
+    // layout-dependent tilt θ — see `tilt_angle` below: V_HALF_ANGLE_RAD for
+    // the V-at-dome layout, 0 (straight down −Z) for the apex-axial layout) ---
     // Construction: build cylinder in its native +Z frame with its
     // TOP at the funnel-local origin (cylinder spans z ∈
     // [−(nipple_h + overlap), +overlap], so top sits +overlap INTO
     // the bowl interior for the SDF weld), then rotate around +Y by
-    // V_HALF_ANGLE_RAD to tilt the cylinder's axis from −Z toward +X.
+    // `tilt_angle` to tilt the cylinder's axis from −Z toward +X.
     let nipple_full_h = FUNNEL_NIPPLE_HEIGHT_M + BOWL_NIPPLE_OVERLAP_M;
-    // Rotate by NEGATIVE V_HALF_ANGLE_RAD around +Y: right-hand rule
-    // around +Y takes −Z → −sin(θ)·X − cos(θ)·Z for positive θ, which
-    // would tilt the nipple toward −X. We want +X tilt (matches the
-    // docstring + the `nipple_tip_is_offset_in_plus_x_by_tilt` test),
-    // so negate the angle. (workshop semantics: the in-plane direction
-    // is irrelevant — workshop user rotates the funnel around the bowl
-    // axis until the nipple aligns with the pour-gate hole anyway —
-    // but the implementation must match the test + doc convention.)
+    // For the V-at-dome layout we rotate by NEGATIVE V_HALF_ANGLE_RAD around
+    // +Y: right-hand rule around +Y takes −Z → −sin(θ)·X − cos(θ)·Z for positive
+    // θ (tilting toward −X); we want +X tilt (matches the docstring + the
+    // `nipple_tip_is_offset_in_plus_x_by_tilt` test), so negate the angle. The
+    // in-plane direction is workshop-irrelevant (the user rotates the funnel
+    // around the bowl axis to align with the hole), but the implementation must
+    // match the test + doc convention. The apex-axial layout uses tilt 0 → a
+    // straight vertical nipple (no rotation).
     // Nipple tilt depends on the pour-gate layout. The V-at-dome
     // layout angles the pour bore `V_HALF_ANGLE_RAD` off the dome's
     // outward axis, so the nipple bends to match (bowl ends up

@@ -1063,4 +1063,44 @@ mod tests {
             Point2::new(0.0, 1.0)
         ));
     }
+
+    #[test]
+    fn from_anchor_normal_is_orthonormal_and_recovers_the_normal() {
+        let normal = Vector3::new(0.6, 0.0, 0.8);
+        let b = SeamPlaneBasis::from_anchor_normal(Point3::origin(), normal);
+        let n = normal.normalize();
+        // u_axis × v_axis recovers the supplied normal.
+        assert!((b.normal() - n).norm() < 1.0e-9);
+        // Right-handed orthonormal frame, all axes in the seam plane (⟂ N).
+        assert!((b.u_axis.norm() - 1.0).abs() < 1.0e-9);
+        assert!((b.v_axis.norm() - 1.0).abs() < 1.0e-9);
+        assert!(b.u_axis.dot(&b.v_axis).abs() < 1.0e-9);
+        assert!(b.u_axis.dot(&n).abs() < 1.0e-9);
+        assert!(b.v_axis.dot(&n).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn from_anchor_normal_falls_back_to_x_seed_when_normal_is_vertical() {
+        // N ∥ +Z makes the +Z projection seed collapse; the +X fallback must
+        // still yield a finite, orthonormal frame whose normal is +Z.
+        let b = SeamPlaneBasis::from_anchor_normal(Point3::origin(), Vector3::z());
+        assert!((b.normal() - Vector3::z()).norm() < 1.0e-9);
+        assert!(b.u_axis.iter().all(|c| c.is_finite()));
+        assert!((b.u_axis.norm() - 1.0).abs() < 1.0e-9);
+        assert!(b.u_axis.dot(&b.v_axis).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn inplane_bounds_spans_the_aabb_for_the_y_normal_basis() {
+        // y_normal basis: u = +X, v = +Z. inplane_bounds must recover the AABB's
+        // X and Z extents (and be independent of the seam's Y offset).
+        let b = SeamPlaneBasis::y_normal(0.003);
+        let aabb = Aabb::new(
+            Point3::new(-0.02, -0.05, -0.03),
+            Point3::new(0.04, 0.05, 0.06),
+        );
+        let (u_min, u_max, v_min, v_max) = b.inplane_bounds(aabb);
+        assert!((u_min - -0.02).abs() < 1.0e-9 && (u_max - 0.04).abs() < 1.0e-9);
+        assert!((v_min - -0.03).abs() < 1.0e-9 && (v_max - 0.06).abs() < 1.0e-9);
+    }
 }

@@ -656,6 +656,16 @@ impl CastConfig {
             "cast.toml: validate_after_layer_source called with empty layers — \
              call validate_layer_source() first (or lift from a design TOML)"
         );
+        // The apex pour bore is projected onto the seam plane so it splits the
+        // flange into open half-troughs; that only works when the seam is a flat
+        // plane (`[cast].planar_seam`). Without it the bore lands on the
+        // per-segment curve-following seam, can't re-register, and the sprue
+        // becomes a blind hole on one half. Require the flat seam.
+        ensure!(
+            !self.pour_gate.apex_axial || self.cast.planar_seam,
+            "cast.toml: [pour_gate].apex_axial requires [cast].planar_seam = true \
+             (the apex bore must lie on a flat seam to split the flange cleanly)"
+        );
         for (i, layer) in self.layers.iter().enumerate() {
             ensure!(
                 layer.thickness_m.is_finite() && layer.thickness_m > 0.0,

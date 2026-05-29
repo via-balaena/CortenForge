@@ -488,6 +488,20 @@ pub fn derive_spec_and_ribbon(
                      normal [{:.3}, {:.3}, {:.3}]",
                     n.x, n.y, n.z,
                 );
+                // The fit optimizes the SPLIT BALANCE, not demoldability — a flat
+                // seam on a strongly-curved part can split 50/50 yet trap an
+                // undercut against the plane on one half. There is no undercut
+                // gate yet (recon CF_CAST_FLAT_FLOOR_RECON / organic-parts OQ2);
+                // surface the risk on high-curvature parts so it isn't silent.
+                let curl_deg = ribbon.max_tangent_rotation_rad().to_degrees();
+                if curl_deg > 30.0 {
+                    eprintln!(
+                        "[cf-cast] WARNING: fitted flat seam on a strongly-curved part \
+                         (max tangent rotation {curl_deg:.0}°) — a flat seam can trap a \
+                         demold undercut on one half; verify the two halves release on \
+                         the physical print.",
+                    );
+                }
                 ribbon.with_planar_seam_at(point, n)
             }
             None => ribbon.with_planar_seam(),

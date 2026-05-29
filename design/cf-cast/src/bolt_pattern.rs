@@ -368,6 +368,7 @@ pub fn build_bolt_pattern_transforms(
     // the flange and place a bolt hugging it on EACH side, so the split flange
     // is clamped at the pour regardless of the arc spacing.
     if spec.bracket_pour_gate && !pour_xforms.is_empty() {
+        let before = transforms.len();
         if let Some(t_pour) = find_pour_arc_fraction(
             &silhouette,
             fitted,
@@ -387,7 +388,19 @@ pub fn build_bolt_pattern_transforms(
                 radius_m,
                 axis,
                 half_length_m,
+                spec.pour_gate_clearance_m,
                 &pour_xforms,
+            );
+        }
+        // Bracketing should land one bolt on EACH side of the bore; fewer means
+        // a side couldn't clear within the search cap (or no pour fraction was
+        // found), leaving the split flange under-clamped there. Surface it
+        // rather than ship it silently.
+        if transforms.len() - before < 2 {
+            eprintln!(
+                "[cf-cast] WARNING: bolt pattern placed only {} flanking bolt(s) at the \
+                 apex pour (expected 2) — the split flange may be under-clamped on one side.",
+                transforms.len() - before,
             );
         }
     }
@@ -564,14 +577,16 @@ fn place_pour_flanking_bolts(
     radius_m: f64,
     axis: Unit<Vector3<f64>>,
     half_length_m: f64,
+    pour_gate_clearance_m: f64,
     pour_xforms: &[MatingTransform],
 ) {
     /// Arc-fraction step when searching outward from the pour.
     const STEP: f64 = 1.0 / 512.0;
     /// Search cap per side (~1/5 of the perimeter at STEP).
     const MAX_STEPS: u32 = 96;
-    // Clear the bore by `clearance` on each side (= the collision threshold).
-    let clear = max_pour_radius(pour_xforms) + radius_m + DEFAULT_POUR_GATE_CLEARANCE_M;
+    // Clear the bore by `clearance` on each side (= the same collision threshold
+    // the reactive skip uses, so proactive + reactive agree on the wall width).
+    let clear = max_pour_radius(pour_xforms) + radius_m + pour_gate_clearance_m;
     let min_sep = 2.0 * radius_m;
 
     for dir in [-1.0_f64, 1.0_f64] {
@@ -1137,5 +1152,38 @@ mod tests {
              ~0.003 — would falsely trigger pour-gate collision skips for \
              bolts well past the pour-gate leg's endpoint)",
         );
+    }
+
+    /// Fitted-seam (organic-parts) path: when the ribbon carries an apex-anchored
+    /// seam plane (`with_planar_seam_at`), bolts must be built through the
+    /// generalized `from_body_in_plane` silhouette and projected onto THAT plane —
+    /// not the legacy Y-normal one. Invariants: (a) the builder still emits bolts,
+    /// and (b) every emitted bolt center lies on the fitted seam plane.
+    #[test]
+    fn fitted_seam_bolts_lie_on_the_fitted_seam_plane() {
+        let (body, bounds, ribbon) = cylinder_fixture();
+        let anchor = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vector3::new(0.3, 0.0, 1.0); // a diagonal (tilted) seam
+        let ribbon = ribbon.with_planar_seam_at(anchor, normal);
+        let n = normal.normalize();
+
+        let spec = BoltPatternSpec::iter1();
+        let flange = FlangeSpec::iter1();
+        let xforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+
+        assert!(
+            !xforms.is_empty(),
+            "fitted-seam builder must still emit bolts",
+        );
+        for t in &xforms {
+            let MatingTransform::SubtractCylinder { params } = t else {
+                continue;
+            };
+            let d = (params.parent.center_m - anchor).dot(&n);
+            assert!(
+                d.abs() < 1.0e-6,
+                "fitted-seam bolt must lie on the seam plane; off by {d:.6} m",
+            );
+        }
     }
 }

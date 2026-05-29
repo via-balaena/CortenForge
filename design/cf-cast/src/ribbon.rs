@@ -182,6 +182,12 @@ impl Sdf for RibbonHalfspaceSdf {
         // `Solid::from_sdf` bridge (which always falls back to finite
         // differences inside `FieldNode::UserFn`) but provided so the
         // `Sdf` impl is contract-complete.
+        //
+        // NOTE: in PLANAR-seam mode (`ribbon.planar_seam` set), `eval` uses the
+        // single flat-plane normal, but this returns the per-segment binormal —
+        // so the analytic grad is INVALID/frame-inconsistent in that mode. Safe
+        // only because it is dead (finite-diff path above); if a future caller
+        // ever consumes this grad, branch on `planar_seam` here first.
         let (seg_idx, _t) = self.ribbon.closest_segment(&p);
         self.ribbon.segments[seg_idx].binormal * self.side.sign()
     }
@@ -1360,5 +1366,41 @@ mod tests {
         // dot(midpoint, binormal) = midpoint.z = +0.020 (binormal +Z).
         let d = midpoint.coords.dot(&binormal.into_inner());
         assert_relative_eq!(d, 0.020, epsilon = 1e-12);
+    }
+
+    /// The byte-identity gate: `seam_plane_basis()` is `Some` ONLY for the
+    /// apex-anchored fitted seam (`with_planar_seam_at`); the curve-following
+    /// default and the binormal `with_planar_seam` keep it `None`, which routes
+    /// flange/bolt/dowel/plug-lock through the legacy byte-identical path.
+    #[test]
+    fn seam_plane_basis_is_some_only_for_with_planar_seam_at() {
+        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        // (a) default curve-following ribbon → None.
+        assert!(
+            Ribbon::new(centerline.clone(), split)
+                .unwrap()
+                .seam_plane_basis()
+                .is_none()
+        );
+        // (b) binormal-flatten with_planar_seam → still None.
+        assert!(
+            Ribbon::new(centerline.clone(), split)
+                .unwrap()
+                .with_planar_seam()
+                .seam_plane_basis()
+                .is_none()
+        );
+        // (c) with_planar_seam_at → Some, with basis normal ∥ the given normal.
+        let normal = Vector3::new(0.8, 0.6, 0.0);
+        let basis = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_planar_seam_at(Point3::new(0.0, 0.01, 0.0), normal)
+            .seam_plane_basis()
+            .expect("with_planar_seam_at sets the basis");
+        assert!(
+            basis.normal().dot(&normal.normalize()).abs() > 1.0 - 1.0e-9,
+            "fitted basis normal must be parallel to the supplied seam normal",
+        );
     }
 }
