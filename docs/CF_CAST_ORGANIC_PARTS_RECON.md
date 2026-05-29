@@ -190,6 +190,42 @@ first. §8 OQ3.
 ---
 
 ## 4.3 (C) Pour-gate + vent placement (NEW — workshop cf-view 2026-05-28)
+
+> **DECOUPLE DECISION (workshop, 2026-05-29): pour orientation = dome/glans UP
+> (flat floor on the bench); placement = OPPOSITE ENDS.** Physics → **VENT at the
+> dome/glans tip** (highest point, air escapes) and **POUR at the floor/mouth end**
+> (bottom-fill: silicone enters low, rises, pushes all air out the top vent). Most
+> reliable fill (no trapped air).
+>
+> **Current code (`pour::build_pour_gate_transforms`):** one `v_apex_anchor` (the
+> centerline end FARTHEST from the cap = the dome) feeds BOTH legs, splayed
+> ±binormal at 30° → pour (+binormal, Positive piece) + vent (−binormal, Negative
+> piece) share the apex → co-located at the dome. That's the coupling.
+>
+> **Design:** drop the shared V. Two INDEPENDENT anchors:
+> - **VENT** anchored at the dome end (farthest from cap), along outward (up).
+> - **POUR** anchored at the floor/cap end (nearest cap), along outward (down).
+> No binormal splay needed (they're at opposite ends now). Each still a
+> `SubtractCylinder` leg.
+>
+> **Ripples / open work (S4):**
+> - **Which cup piece** does each leg land on? At the seam (binormal≈0) an axial
+>   leg straddles both halves; need to bias each onto one piece (or accept it spans
+>   the seam like the V apex did) — decide per demold.
+> - **Floor-feature collision:** the pour now sits at the floor end, which is
+>   crowded — plug-floor lock + dowel holes + bolt pattern all live there. Must
+>   collision-check/space the pour leg against them (mirror the §B bolt pour-gate
+>   collision-skip).
+> - **Funnel re-placement:** `build_funnel_solid` sizes + anchors the pour funnel
+>   to the pour-gate opening (currently the dome). Moving pour → floor moves the
+>   funnel to the base. The funnel is a separate STL + its own mating transforms;
+>   re-anchor it to the floor-end pour leg.
+> - **Bottom-fill ergonomics:** pour port at the base means the mold is poured
+>   dome-up on a stand / the base is accessible. Confirmed intended (workshop chose
+>   opposite-ends + dome-up). Procedure.md prose needs updating to match.
+> - Interacts with (A) planar seam (the seam is now flat/vertical) + (B) flat floor
+>   (the pour pierces the floor region).
+
 On the `3quartachub` cup the pour hole + aeration (vent) hole land **in the
 flange** near the dome end; the workshop wants them **off the flange, at/near the
 mold tip** (the dome apex), so the pour funnel + vent sit on the closed end, not
