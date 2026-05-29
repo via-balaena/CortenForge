@@ -51,6 +51,7 @@ use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
+use crate::silhouette_2d::SeamPlaneBasis;
 
 /// World-frame direction anchoring "which way the mold opens".
 /// Combined with each centerline segment's tangent at Ribbon
@@ -350,6 +351,14 @@ pub struct Ribbon {
     /// `None` (default) keeps the curve-following ribbon — existing
     /// near-straight casts are byte-identical.
     pub planar_seam: Option<(Point3<f64>, Unit<Vector3<f64>>)>,
+    /// When `Some`, the seam plane was FIT to the body (apex-anchored, item A)
+    /// rather than binormal-flattened — carries the full in-plane basis so the
+    /// flange/bolt/dowel silhouette can be built IN the seam plane (arbitrary
+    /// orientation) instead of the X-Z (Y-normal) approximation. Set only by
+    /// [`Self::with_planar_seam_at`]; `None` for [`Self::with_planar_seam`] +
+    /// the curve-following default, which keep the byte-identical legacy
+    /// silhouette path.
+    pub planar_seam_basis: Option<SeamPlaneBasis>,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -485,6 +494,7 @@ impl Ribbon {
             bolt_pattern: BoltPatternKind::None,
             pour_end_hint: None,
             planar_seam: None,
+            planar_seam_basis: None,
         })
     }
 
@@ -531,11 +541,25 @@ impl Ribbon {
     /// cup-wall half-space cut + flange both read it via
     /// [`Self::seam_plane_reference`], so this single call retargets both.
     ///
-    /// `normal` need not be unit-length; it is normalised here.
+    /// `normal` need not be unit-length; it is normalised here. Also stores the
+    /// full in-plane [`SeamPlaneBasis`] (via [`SeamPlaneBasis::from_anchor_normal`])
+    /// so [`Self::seam_plane_basis`] reports it — that routes the flange / bolt /
+    /// dowel silhouette through the fitted plane instead of the X-Z approximation.
     #[must_use]
     pub fn with_planar_seam_at(mut self, point: Point3<f64>, normal: Vector3<f64>) -> Self {
         self.planar_seam = Some((point, Unit::new_normalize(normal)));
+        self.planar_seam_basis = Some(SeamPlaneBasis::from_anchor_normal(point, normal));
         self
+    }
+
+    /// The fitted seam-plane basis, when the seam was set via
+    /// [`Self::with_planar_seam_at`]. `None` for the binormal-flattened
+    /// [`Self::with_planar_seam`] + the curve-following default — those keep the
+    /// byte-identical legacy X-Z silhouette path in the flange/bolt/dowel
+    /// builders.
+    #[must_use]
+    pub const fn seam_plane_basis(&self) -> Option<SeamPlaneBasis> {
+        self.planar_seam_basis
     }
 
     /// Builder: set the pour-gate + air-vent kind. Step 10 entry

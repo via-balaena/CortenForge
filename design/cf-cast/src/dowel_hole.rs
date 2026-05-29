@@ -212,13 +212,29 @@ pub fn build_dowel_hole_transforms(
         + spec.diameter_m / 2.0
         + spec.clearance_m
         + SILHOUETTE_GRID_STEP_M;
-    let silhouette = Silhouette2d::from_body_at_y(
-        layer_body,
-        seam_plane_y,
-        bounds.min.x - pad,
-        bounds.max.x + pad,
-        bounds.min.z - pad,
-        bounds.max.z + pad,
+    // Fitted seam (item A) → sample the silhouette IN the seam plane; else the
+    // legacy X-Z constant-Y silhouette (bit-identical to the pre-generalization
+    // path; `to_world`/`dir_to_world` below reduce to the old (X, Z) maps).
+    let fitted = ribbon.seam_plane_basis();
+    let silhouette = fitted.map_or_else(
+        || {
+            Silhouette2d::from_body_at_y(
+                layer_body,
+                seam_plane_y,
+                bounds.min.x - pad,
+                bounds.max.x + pad,
+                bounds.min.z - pad,
+                bounds.max.z + pad,
+            )
+        },
+        |basis| {
+            let expanded = cf_design::Aabb::new(
+                Point3::new(bounds.min.x - pad, bounds.min.y - pad, bounds.min.z - pad),
+                Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
+            );
+            let (u_min, u_max, v_min, v_max) = basis.inplane_bounds(expanded);
+            Silhouette2d::from_body_in_plane(layer_body, basis, u_min, u_max, v_min, v_max)
+        },
     );
 
     let half_length_m = spec.depth_m + HOLE_AXIAL_SLACK_M;
@@ -256,11 +272,18 @@ pub fn build_dowel_hole_transforms(
         // plane so both halves get equal carve depth. Per
         // [[project-cf-cast-unified-mating-plane-recon]] §M-S1.5
         // (binormal-aligned vertical) extended to dowel positioning.
-        let candidate = Point3::new(
-            spec.silhouette_outboard_offset_m.mul_add(n_out.x, p_silh.x),
-            seam_midpoint.y,
-            spec.silhouette_outboard_offset_m.mul_add(n_out.z, p_silh.z),
-        );
+        let candidate = if fitted.is_some() {
+            // In-plane: map the silhouette point + outward offset through the
+            // fitted basis. The point is already on the seam plane.
+            silhouette.to_world(p_silh)
+                + silhouette.dir_to_world(n_out) * spec.silhouette_outboard_offset_m
+        } else {
+            Point3::new(
+                spec.silhouette_outboard_offset_m.mul_add(n_out.x, p_silh.x),
+                seam_midpoint.y,
+                spec.silhouette_outboard_offset_m.mul_add(n_out.z, p_silh.z),
+            )
+        };
         let signed_dist_from_seam = (candidate - seam_midpoint).dot(&binormal);
         let center_m = candidate - signed_dist_from_seam * binormal;
         transforms.push(MatingTransform::SubtractCylinder {

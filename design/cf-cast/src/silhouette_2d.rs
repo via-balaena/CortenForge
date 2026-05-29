@@ -57,7 +57,7 @@
     clippy::similar_names
 )]
 
-use cf_design::Solid;
+use cf_design::{Aabb, Solid};
 use nalgebra::{Point3, Vector3};
 
 /// Marching-squares grid step (0.5 mm). Picked at recon §F-2: sub-mm
@@ -89,7 +89,7 @@ impl Point2 {
 /// normal (the plane they span IS the seam plane). Returned by
 /// `Ribbon::seam_plane_basis`; consumed by [`Silhouette2d::from_body_in_plane`]
 /// + the flange/bolt/dowel builders.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SeamPlaneBasis {
     /// In-plane origin (a point ON the seam plane).
     pub anchor: Point3<f64>,
@@ -112,6 +112,58 @@ impl SeamPlaneBasis {
             u_axis: Vector3::x(),
             v_axis: Vector3::z(),
         }
+    }
+
+    /// Derive a basis from a seam plane given as `(anchor, normal)`: pick a
+    /// stable in-plane `u_axis` by projecting world `+Z` onto the plane (so `u`
+    /// runs roughly "up" the part — nice for print orientation), falling back to
+    /// `+X` when the normal is ~vertical (`Z ∥ N`); `v_axis = N × u_axis`. The
+    /// resulting `u_axis × v_axis == N`, so the basis's implied normal matches.
+    #[must_use]
+    pub fn from_anchor_normal(anchor: Point3<f64>, normal: Vector3<f64>) -> Self {
+        let n = normal.normalize();
+        let seed = if n.z.abs() < 0.9 {
+            Vector3::z()
+        } else {
+            Vector3::x()
+        };
+        let u_axis = (seed - n * n.dot(&seed)).normalize();
+        let v_axis = n.cross(&u_axis);
+        Self {
+            anchor,
+            u_axis,
+            v_axis,
+        }
+    }
+
+    /// The seam-plane normal implied by this basis (`u_axis × v_axis`, unit).
+    #[must_use]
+    pub fn normal(&self) -> Vector3<f64> {
+        self.u_axis.cross(&self.v_axis)
+    }
+
+    /// In-plane `(u_min, u_max, v_min, v_max)` covering `aabb` — projects all 8
+    /// AABB corners into the basis and takes the extremes. Used to size the
+    /// silhouette grid so it spans the body's full in-plane extent at any seam
+    /// orientation (flange / bolt / dowel builders).
+    #[must_use]
+    pub fn inplane_bounds(&self, aabb: Aabb) -> (f64, f64, f64, f64) {
+        let (mut u_min, mut u_max) = (f64::MAX, f64::MIN);
+        let (mut v_min, mut v_max) = (f64::MAX, f64::MIN);
+        for &cx in &[aabb.min.x, aabb.max.x] {
+            for &cy in &[aabb.min.y, aabb.max.y] {
+                for &cz in &[aabb.min.z, aabb.max.z] {
+                    let rel = Point3::new(cx, cy, cz) - self.anchor;
+                    let u = rel.dot(&self.u_axis);
+                    let v = rel.dot(&self.v_axis);
+                    u_min = u_min.min(u);
+                    u_max = u_max.max(u);
+                    v_min = v_min.min(v);
+                    v_max = v_max.max(v);
+                }
+            }
+        }
+        (u_min, u_max, v_min, v_max)
     }
 
     /// Map an in-plane `(u, v)` point to its world position.

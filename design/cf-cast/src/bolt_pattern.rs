@@ -315,18 +315,32 @@ pub fn build_bolt_pattern_transforms(
     }
     let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
     let binormal = seam_normal.into_inner();
-    let seam_plane_y = seam_midpoint.y;
 
     let radius_m = spec.clearance_diameter_m / 2.0;
     // Silhouette sampling padding: bolt center + radius + grid step.
     let pad = spec.silhouette_outboard_offset_m + radius_m + SILHOUETTE_GRID_STEP_M;
-    let silhouette = Silhouette2d::from_body_at_y(
-        layer_body,
-        seam_plane_y,
-        bounds.min.x - pad,
-        bounds.max.x + pad,
-        bounds.min.z - pad,
-        bounds.max.z + pad,
+    // Fitted seam (item A) → sample IN the seam plane; else the legacy X-Z
+    // constant-Y silhouette (bit-identical to the pre-generalization path).
+    let fitted = ribbon.seam_plane_basis();
+    let silhouette = fitted.map_or_else(
+        || {
+            Silhouette2d::from_body_at_y(
+                layer_body,
+                seam_midpoint.y,
+                bounds.min.x - pad,
+                bounds.max.x + pad,
+                bounds.min.z - pad,
+                bounds.max.z + pad,
+            )
+        },
+        |basis| {
+            let expanded = cf_design::Aabb::new(
+                Point3::new(bounds.min.x - pad, bounds.min.y - pad, bounds.min.z - pad),
+                Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
+            );
+            let (u_min, u_max, v_min, v_max) = basis.inplane_bounds(expanded);
+            Silhouette2d::from_body_in_plane(layer_body, basis, u_min, u_max, v_min, v_max)
+        },
     );
 
     // Through-hole half-length = flange thickness + slack. Cylinder
@@ -360,11 +374,16 @@ pub fn build_bolt_pattern_transforms(
         // for tilted centerlines the cast-Y-constant plane is NOT
         // the seam plane, and an unprojected center would carve the
         // bolt asymmetrically between the two halves.
-        let candidate = Point3::new(
-            spec.silhouette_outboard_offset_m.mul_add(n_out.x, p_silh.x),
-            seam_midpoint.y,
-            spec.silhouette_outboard_offset_m.mul_add(n_out.z, p_silh.z),
-        );
+        let candidate = if fitted.is_some() {
+            silhouette.to_world(p_silh)
+                + silhouette.dir_to_world(n_out) * spec.silhouette_outboard_offset_m
+        } else {
+            Point3::new(
+                spec.silhouette_outboard_offset_m.mul_add(n_out.x, p_silh.x),
+                seam_midpoint.y,
+                spec.silhouette_outboard_offset_m.mul_add(n_out.z, p_silh.z),
+            )
+        };
         let signed_dist_from_seam = (candidate - seam_midpoint).dot(&binormal);
         let center_m = candidate - signed_dist_from_seam * binormal;
 
@@ -379,6 +398,7 @@ pub fn build_bolt_pattern_transforms(
                     &mut transforms,
                     t,
                     &silhouette,
+                    fitted.is_some(),
                     spec,
                     seam_midpoint,
                     binormal,
@@ -425,6 +445,7 @@ fn append_pour_bracket_bolts(
     transforms: &mut Vec<MatingTransform>,
     collide_fraction: f64,
     silhouette: &Silhouette2d,
+    fitted: bool,
     spec: &BoltPatternSpec,
     seam_midpoint: Point3<f64>,
     binormal: Vector3<f64>,
@@ -443,11 +464,17 @@ fn append_pour_bracket_bolts(
     let center_at = |t: f64| -> Option<Point3<f64>> {
         let p = silhouette.point_at_arc_fraction(t)?;
         let n = silhouette.outward_normal_at_arc_fraction(t)?;
-        let candidate = Point3::new(
-            spec.silhouette_outboard_offset_m.mul_add(n.x, p.x),
-            seam_midpoint.y,
-            spec.silhouette_outboard_offset_m.mul_add(n.z, p.z),
-        );
+        // Match the main loop's candidate mapping so bracket bolts land on the
+        // same seam (in-plane for a fitted seam, legacy X-Z otherwise).
+        let candidate = if fitted {
+            silhouette.to_world(p) + silhouette.dir_to_world(n) * spec.silhouette_outboard_offset_m
+        } else {
+            Point3::new(
+                spec.silhouette_outboard_offset_m.mul_add(n.x, p.x),
+                seam_midpoint.y,
+                spec.silhouette_outboard_offset_m.mul_add(n.z, p.z),
+            )
+        };
         let signed = (candidate - seam_midpoint).dot(&binormal);
         Some(candidate - signed * binormal)
     };
