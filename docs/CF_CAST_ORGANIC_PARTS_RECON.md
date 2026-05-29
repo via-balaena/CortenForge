@@ -150,6 +150,32 @@ The **fit method is OPEN (§8 OQ1)** — candidates:
   hybrid — cup wall stays curve-following (good demold), only the flange/clamp
   face is a fitted plane. (May reintroduce the bow at the wall↔flange join.)
 
+> **S0 SEAM-FIT SPIKE (2026-05-29, Python probe on `3quartachub.cleaned.stl`)
+> RESOLVES OQ1 → a refined C-A2: "apex-anchored, balance-swept flat plane".**
+> Workshop method: the seam stays a single FLAT plane, but instead of the current
+> `with_planar_seam` (binormal flattened to HORIZONTAL, positioned at the centerline
+> midpoint — which misses a leaning apex), the plane is
+> (1) **anchored through the cap-centroid → apex axis** (the base→highest-point line,
+> so it follows the part's tilt and passes through the dome tip by construction), and
+> (2) **rotated about that axis to the closest-to-50/50 body split** (the dome/glans
+> is asymmetric, so the azimuth matters — not just the tilt).
+>
+> Probe (191k-tri scan; cap plane from `.prep.toml`; per-height signed extent each
+> side of the seam, area-weighted balance):
+> - part is only **2.5° off vertical** (apex offset 5.7 mm); optimal normal
+>   `(0.77, 0.64, 0.02)` — ~1° from horizontal, diagonal in X-Y, and DIFFERENT from
+>   both the lopsided `Y` and the non-manifold `X`.
+> - **apex-anchored plane: symmetric every height band** (e.g. −16.0/+16.8 mm at the
+>   apex, −21/+21 mid-body) → no sliver, dome bisected evenly, 50.0% overall.
+> - **shipped `normal=Y`: 2:1 skew at the dome** (−18.3/+9.0 at the apex) collapsing
+>   to a **sliver** near the cap (+0.4/+18.9) → reproduces the workshop-observed
+>   lopsided dome exactly.
+>
+> **DECISION: implement the apex-anchored balance-swept fitted plane (C-A2 refined).**
+> Buildability (manifold) still gated on a regen — the diagonal normal cuts an
+> interior chord (contains the base→apex axis), so it should mesh clean unlike the
+> tangent `X` orientation. C-A1/C-A3 not needed for this curvature.
+
 Cross-cutting: the `max_tangent_rotation < 60°` 2-piece gate (`ribbon.rs:595`)
 must be re-examined — a flat cut on a strongly curved part may make one half
 non-demoldable (undercut against the flat plane). The recon must state the
