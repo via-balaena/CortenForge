@@ -63,13 +63,16 @@
 //! the workshop accepts a slight asymmetry near the pour gate; full
 //! rebalance is bookmarked for a future arc).
 //!
-//! When `spec.bracket_pour_gate` is also true (the organic-parts
-//! apex-axial pour, 2026-05-29), a colliding bolt is NOT dropped:
-//! `append_pour_bracket_bolts` steps outward along the silhouette to
-//! the first clearing fraction on EACH side and emits a bolt there, so
-//! the flange the axial pour bore splits at the dome apex stays clamped
-//! on both sides. This supersedes the lossy skip's "lost bolt at the
-//! pour" for that layout.
+//! When `spec.bracket_pour_gate` is true (the organic-parts apex-axial
+//! pour, 2026-05-29) the pour is bracketed PROACTIVELY: before the
+//! arc-spaced loop, `find_pour_arc_fraction` locates where the bore
+//! pierces the flange and `place_pour_flanking_bolts` places a bolt
+//! hugging it on EACH side. The collision-skip above is reactive (it
+//! only fires when an arc-bolt lands inside the clearance zone), which
+//! a bore sitting in a gap between bolt slots never triggers — so the
+//! proactive pair guarantees the split flange is clamped at the pour
+//! regardless of arc spacing. Arc-bolts that then collide with the bore
+//! (or double onto a flanking bolt) are dropped.
 //!
 //! # Side-agnostic emission
 //!
@@ -166,17 +169,17 @@ pub struct BoltPatternSpec {
     /// Default 1 mm. Only consulted when
     /// `skip_pour_gate_collision = true`.
     pub pour_gate_clearance_m: f64,
-    /// When `true`, a bolt that collides with the pour gate is NOT
-    /// dropped — instead it is replaced by a pair of bolts stepped to
-    /// just outside the clearance zone on EACH side along the
-    /// silhouette, so the flange stays clamped right where the pour
-    /// bore splits it. Default `false` (the lossy skip — existing
-    /// casts byte-identical).
+    /// When `true`, place two bolts PROACTIVELY flanking the pour bore
+    /// (one each side, as close as the outboard offset allows), so the
+    /// flange the bore splits stays clamped — regardless of where the
+    /// arc-spaced bolts fall. Default `false` (existing casts
+    /// byte-identical).
     ///
     /// Pairs with [`crate::pour::PourGateLayout::ApexAxial`] (a single
-    /// axial pour bore on the seam splits the flange at the dome
-    /// apex). Only consulted when `skip_pour_gate_collision = true`.
-    /// Organic-parts arc, 2026-05-29.
+    /// axial pour bore on the seam splits the flange at the dome apex).
+    /// Supersedes the reactive collision-bracket, which never fired
+    /// when the bore sat in a gap between bolt slots. Organic-parts
+    /// arc, 2026-05-29.
     pub bracket_pour_gate: bool,
 }
 
@@ -352,8 +355,43 @@ pub fn build_bolt_pattern_transforms(
     let axis = Unit::new_normalize(binormal);
 
     let pour_xforms = build_pour_gate_transforms(ribbon);
+    let offset = spec.silhouette_outboard_offset_m;
+    let fitted = fitted.is_some();
 
-    let mut transforms = Vec::with_capacity(spec.count as usize);
+    let mut transforms = Vec::with_capacity(spec.count as usize + 2);
+
+    // PROACTIVELY flank the pour bore (apex-axial pour). The collision-skip
+    // below is REACTIVE — it only fires when an arc-spaced bolt happens to land
+    // inside the pour's clearance zone, which a bore sitting in a gap between
+    // bolt slots never triggers (workshop 2026-05-29: the nearest bolt was
+    // 16 mm out, so the old bracket never fired). Find where the bore pierces
+    // the flange and place a bolt hugging it on EACH side, so the split flange
+    // is clamped at the pour regardless of the arc spacing.
+    if spec.bracket_pour_gate && !pour_xforms.is_empty() {
+        if let Some(t_pour) = find_pour_arc_fraction(
+            &silhouette,
+            fitted,
+            offset,
+            seam_midpoint,
+            binormal,
+            &pour_xforms,
+        ) {
+            place_pour_flanking_bolts(
+                &mut transforms,
+                t_pour,
+                &silhouette,
+                fitted,
+                offset,
+                seam_midpoint,
+                binormal,
+                radius_m,
+                axis,
+                half_length_m,
+                &pour_xforms,
+            );
+        }
+    }
+
     for k in 0..spec.count {
         // Same (k + 0.5) / count formula as dowel_hole — produces
         // natural arc-length stagger between dowel + bolt patterns
@@ -362,52 +400,27 @@ pub fn build_bolt_pattern_transforms(
         // 10/16, 14/16}). The +0.5 also avoids placing a bolt at the
         // silhouette's polyline-assembly join point.
         let t = (f64::from(k) + 0.5) / f64::from(spec.count);
-        let Some(p_silh) = silhouette.point_at_arc_fraction(t) else {
+        if silhouette.point_at_arc_fraction(t).is_none() {
             return Vec::new();
-        };
-        let Some(n_out) = silhouette.outward_normal_at_arc_fraction(t) else {
+        }
+        // Offset outward from the silhouette, then project onto the seam plane
+        // (in-plane for a fitted seam, legacy X-Z otherwise) — see
+        // `bolt_center_at`.
+        let Some(center_m) =
+            bolt_center_at(&silhouette, fitted, offset, seam_midpoint, binormal, t)
+        else {
             continue;
         };
-        // Offset outward from the silhouette in (X, Z), then project
-        // onto the binormal-aligned seam plane through seam_midpoint.
-        // Same projection §M-S2 dowel-hole uses post cold-read fix —
-        // for tilted centerlines the cast-Y-constant plane is NOT
-        // the seam plane, and an unprojected center would carve the
-        // bolt asymmetrically between the two halves.
-        let candidate = if fitted.is_some() {
-            silhouette.to_world(p_silh)
-                + silhouette.dir_to_world(n_out) * spec.silhouette_outboard_offset_m
-        } else {
-            Point3::new(
-                spec.silhouette_outboard_offset_m.mul_add(n_out.x, p_silh.x),
-                seam_midpoint.y,
-                spec.silhouette_outboard_offset_m.mul_add(n_out.z, p_silh.z),
-            )
-        };
-        let signed_dist_from_seam = (candidate - seam_midpoint).dot(&binormal);
-        let center_m = candidate - signed_dist_from_seam * binormal;
 
         if spec.skip_pour_gate_collision
             && collides_with_pour_gate(center_m, radius_m, &pour_xforms, spec.pour_gate_clearance_m)
         {
-            if spec.bracket_pour_gate {
-                // Don't drop the colliding bolt — bracket the pour
-                // bore with a bolt just outside the clearance on each
-                // side so the split flange stays clamped at the apex.
-                append_pour_bracket_bolts(
-                    &mut transforms,
-                    t,
-                    &silhouette,
-                    fitted.is_some(),
-                    spec,
-                    seam_midpoint,
-                    binormal,
-                    radius_m,
-                    axis,
-                    half_length_m,
-                    &pour_xforms,
-                );
-            }
+            // The proactive flanking pair (above) clamps the pour; drop this
+            // colliding arc-bolt rather than leave it half-carved by the bore.
+            continue;
+        }
+        // Don't double an arc-bolt onto a flanking bolt placed above.
+        if spec.bracket_pour_gate && too_close_to_existing(center_m, &transforms, 2.0 * radius_m) {
             continue;
         }
 
@@ -426,27 +439,126 @@ pub fn build_bolt_pattern_transforms(
     transforms
 }
 
-/// Step away from a pour-gate-colliding bolt fraction in BOTH
-/// directions to the first silhouette fraction whose bolt center
-/// clears the pour-gate clearance zone, and append a bolt at each —
-/// bracketing the pour bore instead of dropping the colliding bolt.
+/// The bolt center for silhouette arc fraction `t`: the silhouette point offset
+/// outward by `offset`, mapped to world (in-plane for a fitted seam, legacy X-Z
+/// otherwise) and projected onto the seam plane through `seam_midpoint`. `None`
+/// when the silhouette has no polyline at `t`.
 ///
-/// Used only when `spec.bracket_pour_gate` (organic-parts apex-axial
-/// pour). Replaces the lossy skip's "missing bolt at the pour" with a
-/// pair clamping the split flange on each side. A side that can't
-/// clear within `MAX_STEPS` (a runaway pour bore) is silently
-/// skipped; a cleared position that coincides with an
-/// already-emitted bolt is skipped (the neighbor already covers it).
-// Bracketing needs the full placement context (silhouette + seam frame
-// + cylinder params); bundling into a struct would just shuffle the
-// same fields without reducing the call-site count.
-#[allow(clippy::too_many_arguments)]
-fn append_pour_bracket_bolts(
-    transforms: &mut Vec<MatingTransform>,
-    collide_fraction: f64,
+/// The legacy (`fitted = false`) branch keeps the exact `mul_add` form so the
+/// Y-normal-seam casts stay bit-identical.
+fn bolt_center_at(
     silhouette: &Silhouette2d,
     fitted: bool,
-    spec: &BoltPatternSpec,
+    offset: f64,
+    seam_midpoint: Point3<f64>,
+    binormal: Vector3<f64>,
+    t: f64,
+) -> Option<Point3<f64>> {
+    let p = silhouette.point_at_arc_fraction(t)?;
+    let n = silhouette.outward_normal_at_arc_fraction(t)?;
+    let candidate = if fitted {
+        silhouette.to_world(p) + silhouette.dir_to_world(n) * offset
+    } else {
+        Point3::new(
+            offset.mul_add(n.x, p.x),
+            seam_midpoint.y,
+            offset.mul_add(n.z, p.z),
+        )
+    };
+    let signed = (candidate - seam_midpoint).dot(&binormal);
+    Some(candidate - signed * binormal)
+}
+
+/// Distance from `p` to the nearest pour-gate cylinder AXIS (finite-segment
+/// clamped), or `f64::MAX` if there are no pour cylinders.
+fn pour_axis_distance(p: Point3<f64>, pour_xforms: &[MatingTransform]) -> f64 {
+    pour_xforms
+        .iter()
+        .filter_map(|t| match t {
+            MatingTransform::SubtractCylinder { params } => Some(point_to_cylinder_axis_distance(
+                p,
+                params.parent.center_m,
+                params.parent.axis.into_inner(),
+                params.parent.half_length_m,
+            )),
+            _ => None,
+        })
+        .fold(f64::MAX, f64::min)
+}
+
+/// `true` if `center` is within `min_sep` of any already-emitted bolt — guards
+/// against doubling an arc-bolt onto a proactively-placed flanking bolt.
+fn too_close_to_existing(
+    center: Point3<f64>,
+    transforms: &[MatingTransform],
+    min_sep: f64,
+) -> bool {
+    transforms.iter().any(|xf| match xf {
+        MatingTransform::SubtractCylinder { params } => {
+            (params.parent.center_m - center).norm() < min_sep
+        }
+        _ => false,
+    })
+}
+
+/// Largest pour-gate cylinder radius in `pour_xforms` (0 if none).
+fn max_pour_radius(pour_xforms: &[MatingTransform]) -> f64 {
+    pour_xforms
+        .iter()
+        .filter_map(|t| match t {
+            MatingTransform::SubtractCylinder { params } => Some(params.radius_m),
+            _ => None,
+        })
+        .fold(0.0_f64, f64::max)
+}
+
+/// Arc fraction where the pour bore pierces the flange — the silhouette
+/// fraction whose bolt center is closest to the pour-gate axis. Dense scan
+/// (arc length is monotone in `t`). `None` if no fraction has a polyline.
+fn find_pour_arc_fraction(
+    silhouette: &Silhouette2d,
+    fitted: bool,
+    offset: f64,
+    seam_midpoint: Point3<f64>,
+    binormal: Vector3<f64>,
+    pour_xforms: &[MatingTransform],
+) -> Option<f64> {
+    /// Arc-fraction scan resolution.
+    const SCAN: u32 = 512;
+    let mut best: Option<(f64, f64)> = None;
+    for i in 0..SCAN {
+        let t = f64::from(i) / f64::from(SCAN);
+        let Some(center) = bolt_center_at(silhouette, fitted, offset, seam_midpoint, binormal, t)
+        else {
+            continue;
+        };
+        let dist = pour_axis_distance(center, pour_xforms);
+        if best.is_none_or(|(best_dist, _)| dist < best_dist) {
+            best = Some((dist, t));
+        }
+    }
+    best.map(|(_, t)| t)
+}
+
+/// Place a bolt hugging the pour bore on EACH side: from `t_pour` (where the
+/// bore pierces the flange) step outward along the silhouette in each direction
+/// until the bolt's PERPENDICULAR distance to the pour axis clears the bore
+/// (`pour_r + bolt_r + clearance`), then emit one bolt there. Emits up to 2.
+///
+/// Stepping along the silhouette moves the bolt LATERALLY around the bore (the
+/// in-plane direction ⟂ the axis), unlike the outward-normal offset — which
+/// near the apex points ALONG the axis and would leave the bolt on the bore.
+/// A side that can't clear within `MAX_STEPS`, or whose clear position doubles
+/// onto an existing bolt, is skipped.
+// Flanking needs the full placement context (silhouette + seam frame + cylinder
+// params); bundling into a struct would just shuffle the same fields.
+#[allow(clippy::too_many_arguments)]
+fn place_pour_flanking_bolts(
+    transforms: &mut Vec<MatingTransform>,
+    t_pour: f64,
+    silhouette: &Silhouette2d,
+    fitted: bool,
+    offset: f64,
     seam_midpoint: Point3<f64>,
     binormal: Vector3<f64>,
     radius_m: f64,
@@ -454,52 +566,30 @@ fn append_pour_bracket_bolts(
     half_length_m: f64,
     pour_xforms: &[MatingTransform],
 ) {
-    /// Arc-fraction step when searching outward from the collision.
-    const STEP: f64 = 1.0 / 256.0;
-    /// Search cap per side (~1/4 of the perimeter at STEP).
-    const MAX_STEPS: u32 = 64;
-    // Two distinct bolt centers must not overlap (holes touching).
+    /// Arc-fraction step when searching outward from the pour.
+    const STEP: f64 = 1.0 / 512.0;
+    /// Search cap per side (~1/5 of the perimeter at STEP).
+    const MAX_STEPS: u32 = 96;
+    // Clear the bore by `clearance` on each side (= the collision threshold).
+    let clear = max_pour_radius(pour_xforms) + radius_m + DEFAULT_POUR_GATE_CLEARANCE_M;
     let min_sep = 2.0 * radius_m;
-
-    let center_at = |t: f64| -> Option<Point3<f64>> {
-        let p = silhouette.point_at_arc_fraction(t)?;
-        let n = silhouette.outward_normal_at_arc_fraction(t)?;
-        // Match the main loop's candidate mapping so bracket bolts land on the
-        // same seam (in-plane for a fitted seam, legacy X-Z otherwise).
-        let candidate = if fitted {
-            silhouette.to_world(p) + silhouette.dir_to_world(n) * spec.silhouette_outboard_offset_m
-        } else {
-            Point3::new(
-                spec.silhouette_outboard_offset_m.mul_add(n.x, p.x),
-                seam_midpoint.y,
-                spec.silhouette_outboard_offset_m.mul_add(n.z, p.z),
-            )
-        };
-        let signed = (candidate - seam_midpoint).dot(&binormal);
-        Some(candidate - signed * binormal)
-    };
 
     for dir in [-1.0_f64, 1.0_f64] {
         for step in 1..=MAX_STEPS {
             let t = (dir * STEP)
-                .mul_add(f64::from(step), collide_fraction)
+                .mul_add(f64::from(step), t_pour)
                 .rem_euclid(1.0);
-            let Some(center_m) = center_at(t) else {
+            let Some(center_m) =
+                bolt_center_at(silhouette, fitted, offset, seam_midpoint, binormal, t)
+            else {
                 continue;
             };
-            if collides_with_pour_gate(center_m, radius_m, pour_xforms, spec.pour_gate_clearance_m)
-            {
+            // Step until LATERALLY clear of the bore (perpendicular distance).
+            if pour_axis_distance(center_m, pour_xforms) < clear {
                 continue;
             }
-            // Coincides with a bolt we already placed? That side is
-            // already clamped by the neighbor — stop without doubling.
-            let duplicate = transforms.iter().any(|xf| match xf {
-                MatingTransform::SubtractCylinder { params } => {
-                    (params.parent.center_m - center_m).norm() < min_sep
-                }
-                _ => false,
-            });
-            if duplicate {
+            // Already clamped by a neighbor on this side? Don't double up.
+            if too_close_to_existing(center_m, transforms, min_sep) {
                 break;
             }
             transforms.push(MatingTransform::SubtractCylinder {
@@ -621,6 +711,58 @@ mod tests {
                 params.parent.center_m
             );
         }
+    }
+
+    /// The proactive fix: `bracket_pour_gate` must land at least TWO bolts
+    /// hugging the pour (one each side), where the reactive skip leaves a gap.
+    /// Counts bolts within `offset + bolt_r + 4 mm` of the pour axis — the
+    /// flanking pair sits at ~the outboard offset, far closer than the
+    /// arc-spaced bolts that miss the pour.
+    #[test]
+    fn bracket_pour_gate_lands_two_bolts_close_to_the_pour() {
+        let (body, bounds, ribbon) = cylinder_fixture();
+        let mut pour = PourGateSpec::iter1();
+        pour.layout = PourGateLayout::ApexAxial;
+        let ribbon = ribbon.with_pour_gate(PourGateKind::Default(pour));
+        let flange = FlangeSpec::iter1();
+
+        let spec_skip = BoltPatternSpec::iter1();
+        let spec_bracket = BoltPatternSpec {
+            bracket_pour_gate: true,
+            ..BoltPatternSpec::iter1()
+        };
+        let radius = spec_skip.clearance_diameter_m / 2.0;
+        let near = spec_skip.silhouette_outboard_offset_m + radius + 0.004;
+
+        let pour_xforms = build_pour_gate_transforms(&ribbon);
+        let count_near = |xs: &[MatingTransform]| {
+            xs.iter()
+                .filter(|xf| match xf {
+                    MatingTransform::SubtractCylinder { params } => {
+                        pour_axis_distance(params.parent.center_m, &pour_xforms) < near
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+
+        let skipped = build_bolt_pattern_transforms(&body, &ribbon, &spec_skip, &flange, bounds);
+        let bracketed =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec_bracket, &flange, bounds);
+
+        assert!(
+            count_near(&bracketed) >= 2,
+            "proactive bracketing must land ≥2 bolts within {near:.3} m of the \
+             pour axis (one each side); got {}",
+            count_near(&bracketed),
+        );
+        assert!(
+            count_near(&bracketed) > count_near(&skipped),
+            "bracket mode must add close bolts the reactive skip doesn't: \
+             skip {} vs bracket {} near the pour",
+            count_near(&skipped),
+            count_near(&bracketed),
+        );
     }
 
     #[test]
