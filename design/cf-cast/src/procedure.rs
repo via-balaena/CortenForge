@@ -29,7 +29,7 @@ use crate::cure::lookup as lookup_cure;
 use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
-use crate::pour::PourGateKind;
+use crate::pour::{PourGateKind, PourGateLayout};
 use crate::pour_volume::PourVolume;
 use crate::prismatic_pin::PrismaticPinSpec;
 use crate::ribbon::Ribbon;
@@ -348,13 +348,18 @@ pub fn generate_procedure_markdown_v2(
         "pour_volumes must be parallel to spec.layers"
     );
 
+    let apex_pour = matches!(
+        &ribbon.pour_gate,
+        PourGateKind::Default(s) if s.layout == PourGateLayout::ApexAxial
+    );
+
     let mut md = String::new();
-    write_header_v2(&mut md, spec);
+    write_header_v2(&mut md, spec, apex_pour);
     write_cast_geometry_v2(&mut md, ribbon);
-    write_print_orientation_v2(&mut md);
+    write_print_orientation_v2(&mut md, apex_pour);
     write_chamfer_recipe_v2(&mut md);
     write_target_fdm_floor_v2(&mut md);
-    write_cfview_sanity_check_v2(&mut md);
+    write_cfview_sanity_check_v2(&mut md, apex_pour);
     write_cap_plane_chamfer_v2(&mut md);
     write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
@@ -405,7 +410,7 @@ fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec) {
     md.push('\n');
 }
 
-fn write_header_v2(md: &mut String, spec: &CastSpec) {
+fn write_header_v2(md: &mut String, spec: &CastSpec, apex_pour: bool) {
     let _ = writeln!(
         md,
         "# Cast Procedure (v2.1 curve-following, detachable-shell)"
@@ -421,16 +426,29 @@ fn write_header_v2(md: &mut String, spec: &CastSpec) {
         spec.layers.len()
     );
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "**Orientation convention**: orient the assembled mold with \
-         **+Z up** during pour + cure. The pour gate + vent form a V \
-         at the dome end of the centerline (opposite the cap plane); \
-         both holes are visible at the TOP of the assembly. Pour leg \
-         on the Positive piece (`_piece_1`, +binormal side of the \
-         seam), vent leg on the Negative piece (`_piece_0`, -binormal \
-         side)."
-    );
+    if apex_pour {
+        let _ = writeln!(
+            md,
+            "**Orientation convention**: orient the assembled mold with \
+             **+Z up** during pour + cure (dome apex on top). A single \
+             straight pour bore sits at the dome apex on the seam (it \
+             splits the flange, so it appears as a half-trough on each \
+             cup half that re-registers into one round hole). Air vents \
+             are hand-drilled (tiny ~0.3-1.0 mm holes) at the apex + any \
+             high spots — see `## Pour Gate + Vent`."
+        );
+    } else {
+        let _ = writeln!(
+            md,
+            "**Orientation convention**: orient the assembled mold with \
+             **+Z up** during pour + cure. The pour gate + vent form a V \
+             at the dome end of the centerline (opposite the cap plane); \
+             both holes are visible at the TOP of the assembly. Pour leg \
+             on the Positive piece (`_piece_1`, +binormal side of the \
+             seam), vent leg on the Negative piece (`_piece_0`, -binormal \
+             side)."
+        );
+    }
     md.push('\n');
     let _ = writeln!(
         md,
@@ -485,7 +503,7 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
 /// dowel-hole pattern (holes carve straight through the seam face,
 /// printable as recessed cavities without internal support when the
 /// seam face is up).
-fn write_print_orientation_v2(md: &mut String) {
+fn write_print_orientation_v2(md: &mut String, apex_pour: bool) {
     let _ = writeln!(md, "## Per-Piece Print Orientation");
     md.push('\n');
     let _ = writeln!(
@@ -499,7 +517,7 @@ fn write_print_orientation_v2(md: &mut String) {
     md.push('\n');
     write_print_orientation_cup_pieces(md);
     write_print_orientation_plug_pieces(md);
-    write_print_orientation_funnel_platform(md);
+    write_print_orientation_funnel_platform(md, apex_pour);
     write_print_orientation_g4_revision(md);
 }
 
@@ -561,27 +579,41 @@ fn write_print_orientation_plug_pieces(md: &mut String) {
     md.push('\n');
 }
 
-fn write_print_orientation_funnel_platform(md: &mut String) {
+fn write_print_orientation_funnel_platform(md: &mut String, apex_pour: bool) {
     let _ = writeln!(md, "### Funnel + platform (one-time prints)");
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "`funnel.stl`: **bent-spout funnel** with a vertical bowl + \
-         angled nipple matching the pour-gate's 30° splay (the cup \
-         pour-gate cylinder is tilted 30° from the dome's outward \
-         axis; the bent nipple lets the workshop user orient the \
-         assembled mold +Z up with the bowl mouth facing straight up \
-         for ladle-pouring). Print with the **bowl-mouth disk DOWN on \
-         the build plate** (mouth disk = first layer; the bowl widens \
-         upward from the mouth; the tilted nipple cantilevers ~7.5 mm \
-         horizontally from the bowl side). **Enable auto-supports in \
-         the slicer**: the cantilevered nipple needs supports to \
-         print clean — cleaned off after the print. Alternative: \
-         rotate the print so the nipple lies along the build plate \
-         (bowl tilted on its side) to avoid supports — slicer choice; \
-         STL is unchanged. Print once for the whole multi-layer \
-         device — reuse across every layer's pour."
-    );
+    if apex_pour {
+        let _ = writeln!(
+            md,
+            "`funnel.stl`: **straight-spout funnel** — a vertical bowl \
+             with a straight (un-bent) vertical nipple, since the apex \
+             pour bore points straight up when the mold is +Z up. Print \
+             with the **bowl-mouth disk DOWN on the build plate** (mouth \
+             disk = first layer; the bowl widens upward; the straight \
+             nipple points down into the bed). No cantilever, so no \
+             supports needed for the spout. Print once for the whole \
+             multi-layer device — reuse across every layer's pour."
+        );
+    } else {
+        let _ = writeln!(
+            md,
+            "`funnel.stl`: **bent-spout funnel** with a vertical bowl + \
+             angled nipple matching the pour-gate's 30° splay (the cup \
+             pour-gate cylinder is tilted 30° from the dome's outward \
+             axis; the bent nipple lets the workshop user orient the \
+             assembled mold +Z up with the bowl mouth facing straight up \
+             for ladle-pouring). Print with the **bowl-mouth disk DOWN on \
+             the build plate** (mouth disk = first layer; the bowl widens \
+             upward from the mouth; the tilted nipple cantilevers ~7.5 mm \
+             horizontally from the bowl side). **Enable auto-supports in \
+             the slicer**: the cantilevered nipple needs supports to \
+             print clean — cleaned off after the print. Alternative: \
+             rotate the print so the nipple lies along the build plate \
+             (bowl tilted on its side) to avoid supports — slicer choice; \
+             STL is unchanged. Print once for the whole multi-layer \
+             device — reuse across every layer's pour."
+        );
+    }
     md.push('\n');
     let _ = writeln!(
         md,
@@ -706,7 +738,7 @@ fn write_target_fdm_floor_v2(md: &mut String) {
     md.push('\n');
 }
 
-fn write_cfview_sanity_check_v2(md: &mut String) {
+fn write_cfview_sanity_check_v2(md: &mut String, apex_pour: bool) {
     let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
     md.push('\n');
     let _ = writeln!(
@@ -751,17 +783,32 @@ fn write_cfview_sanity_check_v2(md: &mut String) {
          not visible from outside)."
     );
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "3. **Funnel** (`funnel.stl`): bent-spout funnel — vertical \
-         bowl + 30°-tilted nipple as one connected body, joined at \
-         the bowl-bottom shoulder. Nipple Ø matches the cup pour-gate \
-         Ø minus the funnel's asymmetric diametral clearance \
-         (`cf-cast` `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). Interior \
-         bore tapers smoothly from the bowl mouth down to the nipple \
-         bore (single conical lumen). No flat flange disk; no \
-         floating components."
-    );
+    if apex_pour {
+        let _ = writeln!(
+            md,
+            "3. **Funnel** (`funnel.stl`): straight-spout funnel — \
+             vertical bowl + straight (un-bent) vertical nipple as one \
+             connected body, joined at the bowl-bottom shoulder. Nipple \
+             Ø matches the cup pour-gate Ø minus the funnel's asymmetric \
+             diametral clearance (`cf-cast` \
+             `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). Interior bore \
+             tapers smoothly from the bowl mouth down to the nipple bore \
+             (single conical lumen). No flat flange disk; no floating \
+             components; the nipple points straight down (no tilt)."
+        );
+    } else {
+        let _ = writeln!(
+            md,
+            "3. **Funnel** (`funnel.stl`): bent-spout funnel — vertical \
+             bowl + 30°-tilted nipple as one connected body, joined at \
+             the bowl-bottom shoulder. Nipple Ø matches the cup pour-gate \
+             Ø minus the funnel's asymmetric diametral clearance \
+             (`cf-cast` `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). Interior \
+             bore tapers smoothly from the bowl mouth down to the nipple \
+             bore (single conical lumen). No flat flange disk; no \
+             floating components."
+        );
+    }
     md.push('\n');
     let _ = writeln!(
         md,
@@ -1560,6 +1607,68 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
     md.push('\n');
 }
 
+/// Apex-axial pour prose (organic-parts §4.3): a single straight bore
+/// at the dome apex on the seam, a straight-spout funnel, and
+/// hand-drilled carbide vents. Replaces the V-shape pour/vent prose
+/// for [`PourGateLayout::ApexAxial`].
+fn write_apex_axial_pour_note(md: &mut String, spec: &crate::pour::PourGateSpec) {
+    let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
+    let gate_length_mm = spec.gate_half_length_m * 2.0 * 1000.0;
+    let _ = writeln!(
+        md,
+        "This cast uses the **apex pour** layout: a single straight \
+         **{gate_dia_mm:.1} mm Ø bore at the dome apex** — the highest \
+         point of the cavity when the mold is oriented +Z up — lying ON \
+         the seam so it splits evenly between the two cup halves \
+         ({gate_length_mm:.1} mm total channel). Pouring at the highest \
+         point makes complete fill self-evident: the cavity is full the \
+         instant silicone reaches the bore, because no point sits above \
+         it, and trapped air migrates up to that same point."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "**Air vents are NOT modeled — drill them.** After printing, \
+         drill tiny (~0.3-1.0 mm) vent holes with a fine bit at the \
+         dome apex beside the pour bore and at any other local high \
+         spots a test pour reveals air stranding (e.g. over the plug \
+         grip rings or suction bulb). Air's very low viscosity escapes \
+         a sub-millimetre hole that the honey-thick silicone will not \
+         weep through, so the vents stay clean and the residue is a \
+         negligible thread. Start with one apex vent; add more only \
+         where a pour shows a trapped bubble."
+    );
+    md.push('\n');
+    let _ = writeln!(
+        md,
+        "Because the pour bore is on the seam, separating the two cup \
+         halves at demold bisects it lengthwise into open half-troughs \
+         — the cured sprue lifts straight out (no pulling through a \
+         blind hole); trim it flush off the cast. The §B bolt pattern \
+         brackets this bore with a bolt just outside the clearance on \
+         each side so the split flange stays clamped at the apex."
+    );
+    md.push('\n');
+    let nipple_clearance_mm = crate::funnel::NIPPLE_DIAMETRAL_CLEARANCE_M * 1000.0;
+    let nipple_outer_dia_mm = gate_dia_mm - nipple_clearance_mm;
+    let _ = writeln!(
+        md,
+        "**Pour funnel** (one-time print: `funnel.stl`). A **straight-\
+         spout** funnel (vertical nipple, no bend) drops into the apex \
+         bore with its bowl mouth facing straight up — the bore points \
+         straight up when the mold is +Z up, so no bent spout is \
+         needed. Nipple Ø {nipple_outer_dia_mm:.2} mm = the \
+         {gate_dia_mm:.1} mm cup bore minus {nipple_clearance_mm:.2} mm \
+         asymmetric diametral clearance (the cup hole stays nominal; \
+         the nipple bears the slack). Ladle silicone slowly into the \
+         vertical bowl. Apply mold release to the nipple before each \
+         pour so cured silicone doesn't lock the funnel onto the cup. \
+         Print once for the whole multi-layer device — reused across \
+         every layer's pour."
+    );
+    md.push('\n');
+}
+
 fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
     let _ = writeln!(md, "## Pour Gate + Vent");
     md.push('\n');
@@ -1573,6 +1682,9 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
                  air-relief holes through the cured cup wall as needed \
                  if bubbles form during cure."
             );
+        }
+        PourGateKind::Default(spec) if spec.layout == PourGateLayout::ApexAxial => {
+            write_apex_axial_pour_note(md, spec);
         }
         PourGateKind::Default(spec) => {
             let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
@@ -1716,11 +1828,28 @@ fn write_per_layer_sections_v2(
             );
         }
         let _ = writeln!(md, "5. Vacuum-degas the mix for 2-3 minutes at ≥27 inHg.");
-        let pour_into = match &ribbon.pour_gate {
-            PourGateKind::Default(_) => {
-                "the pour leg of the V at the dome end (Positive piece, +binormal side)"
+        let pour_sentence = match &ribbon.pour_gate {
+            PourGateKind::Default(s) if s.layout == PourGateLayout::ApexAxial => {
+                "Orient the assembled mold **+Z up** (dome apex on top). Pour \
+                 silicone slowly through the straight funnel into the apex bore \
+                 — the highest point of the cavity — so the shell fills \
+                 bottom-up; trapped air escapes the hand-drilled vent(s) at the \
+                 apex and any high spots. The cast is full the instant silicone \
+                 reaches the bore (no point sits above it)."
             }
-            PourGateKind::None => "the assembled mold cavity",
+            PourGateKind::Default(_) => {
+                "Orient the assembled mold with **+Z up** so the V's pour + vent \
+                 legs are on top. Pour silicone into the pour leg of the V at \
+                 the dome end (Positive piece, +binormal side) at a slow steady \
+                 rate to avoid splashing through the vent; trapped air rises \
+                 into the vent leg (Negative piece, -binormal side) as the \
+                 cavity fills."
+            }
+            PourGateKind::None => {
+                "Orient the assembled mold seam roughly vertical. Pour \
+                 silicone into the assembled mold cavity slowly; drill \
+                 air-relief holes through the cured cup wall as needed."
+            }
         };
         let closing_protocol = match (&ribbon.gasket, ribbon.bolt_pattern.spec()) {
             (GasketKind::Mold(_), _) => {
@@ -1752,11 +1881,7 @@ fn write_per_layer_sections_v2(
              Ease Release 200 standard) and seat the plug into one \
              open cup half so its truncated-pyramid floor lock drops \
              into the cup-piece floor socket. {closing_protocol} \
-             Orient the assembled mold with **+Z up** so the V's \
-             pour + vent legs are on top. Pour silicone into \
-             {pour_into} at a slow steady rate to avoid splashing \
-             through the vent; trapped air rises into the vent leg \
-             (Negative piece, -binormal side) as the cavity fills.",
+             {pour_sentence}",
             pour.layer_index,
         );
         if let Some(protocol) = protocol {

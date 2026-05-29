@@ -104,7 +104,7 @@ use cf_design::Solid;
 use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::mesh_csg::MatingTransform;
-use crate::pour::{PourGateKind, V_HALF_ANGLE_RAD};
+use crate::pour::{PourGateKind, PourGateLayout, V_HALF_ANGLE_RAD};
 use crate::ribbon::Ribbon;
 
 /// Nipple height (m).
@@ -255,23 +255,35 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
         FUNNEL_CONE_HEIGHT_M + INNER_CAVITY_OVERSHOOT_M,
     );
 
-    // --- Nipple (tilted, axis along (sin(θ), 0, −cos(θ)) from origin
-    // for θ = V_HALF_ANGLE_RAD) ---
+    // --- Nipple (axis along (sin(θ), 0, −cos(θ)) from origin for the
+    // layout-dependent tilt θ — see `tilt_angle` below: V_HALF_ANGLE_RAD for
+    // the V-at-dome layout, 0 (straight down −Z) for the apex-axial layout) ---
     // Construction: build cylinder in its native +Z frame with its
     // TOP at the funnel-local origin (cylinder spans z ∈
     // [−(nipple_h + overlap), +overlap], so top sits +overlap INTO
     // the bowl interior for the SDF weld), then rotate around +Y by
-    // V_HALF_ANGLE_RAD to tilt the cylinder's axis from −Z toward +X.
+    // `tilt_angle` to tilt the cylinder's axis from −Z toward +X.
     let nipple_full_h = FUNNEL_NIPPLE_HEIGHT_M + BOWL_NIPPLE_OVERLAP_M;
-    // Rotate by NEGATIVE V_HALF_ANGLE_RAD around +Y: right-hand rule
-    // around +Y takes −Z → −sin(θ)·X − cos(θ)·Z for positive θ, which
-    // would tilt the nipple toward −X. We want +X tilt (matches the
-    // docstring + the `nipple_tip_is_offset_in_plus_x_by_tilt` test),
-    // so negate the angle. (workshop semantics: the in-plane direction
-    // is irrelevant — workshop user rotates the funnel around the bowl
-    // axis until the nipple aligns with the pour-gate hole anyway —
-    // but the implementation must match the test + doc convention.)
-    let tilt = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), -V_HALF_ANGLE_RAD);
+    // For the V-at-dome layout we rotate by NEGATIVE V_HALF_ANGLE_RAD around
+    // +Y: right-hand rule around +Y takes −Z → −sin(θ)·X − cos(θ)·Z for positive
+    // θ (tilting toward −X); we want +X tilt (matches the docstring + the
+    // `nipple_tip_is_offset_in_plus_x_by_tilt` test), so negate the angle. The
+    // in-plane direction is workshop-irrelevant (the user rotates the funnel
+    // around the bowl axis to align with the hole), but the implementation must
+    // match the test + doc convention. The apex-axial layout uses tilt 0 → a
+    // straight vertical nipple (no rotation).
+    // Nipple tilt depends on the pour-gate layout. The V-at-dome
+    // layout angles the pour bore `V_HALF_ANGLE_RAD` off the dome's
+    // outward axis, so the nipple bends to match (bowl ends up
+    // vertical when the mold is +Z up). The apex-axial layout bores
+    // straight along the dome's outward axis (vertical when +Z up), so
+    // the nipple is STRAIGHT (zero tilt) — a plain vertical spout, no
+    // bend to catch the cured sprue.
+    let tilt_angle = match spec.layout {
+        PourGateLayout::VAtDome => -V_HALF_ANGLE_RAD,
+        PourGateLayout::ApexAxial => 0.0,
+    };
+    let tilt = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), tilt_angle);
     let nipple_outer = Solid::cylinder(nipple_outer_r, nipple_full_h / 2.0)
         // Cylinder native: z ∈ [−h/2, +h/2]. Translate so its TOP is
         // at z = +BOWL_NIPPLE_OVERLAP_M (sits INTO bowl).
@@ -366,7 +378,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::pour::{PourGateKind, PourGateSpec};
+    use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec};
     use crate::ribbon::{Ribbon, SplitNormal};
     use nalgebra::Point3;
 
@@ -376,6 +388,52 @@ mod tests {
         Ribbon::new(centerline, split)
             .unwrap()
             .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()))
+    }
+
+    fn apex_axial_ribbon() -> Ribbon {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let mut spec = PourGateSpec::iter1();
+        spec.layout = PourGateLayout::ApexAxial;
+        Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_gate(PourGateKind::Default(spec))
+    }
+
+    /// `ApexAxial` layout → STRAIGHT nipple: the spout points straight
+    /// down (`−Z`) with no `+X` tilt offset. The nipple tip sits at
+    /// `(0, 0, −nipple_h)`; the funnel's `+X` extent comes ONLY from
+    /// the bowl mouth radius, and its `−Z` extent reaches the full
+    /// (un-foreshortened) nipple height — unlike the bent funnel whose
+    /// tip foreshortens to `−nipple_h·cos(θ)`.
+    #[test]
+    fn build_funnel_solid_apex_axial_nipple_is_straight() {
+        let ribbon = apex_axial_ribbon();
+        let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
+        let aabb = funnel.bounds().expect("funnel has finite bounds");
+        // Straight nipple: tip at full −nipple_h (not foreshortened by
+        // cos θ). Allow MC slack.
+        assert!(
+            (aabb.min.z + FUNNEL_NIPPLE_HEIGHT_M).abs() < 0.002,
+            "straight nipple min.z should reach −nipple_h = {}; got {}",
+            -FUNNEL_NIPPLE_HEIGHT_M,
+            aabb.min.z,
+        );
+        // No tilt → +X extent is the bowl mouth, not the bowl PLUS a
+        // tilted nipple. Max.x ≈ bowl top radius.
+        assert!(
+            (aabb.max.x - FUNNEL_TOP_OUTER_RADIUS_M).abs() < 0.002,
+            "straight-nipple funnel +X extent should be the bowl mouth \
+             {FUNNEL_TOP_OUTER_RADIUS_M}; got {}",
+            aabb.max.x,
+        );
+        // Symmetric about the bowl axis (no +X bias from a tilt).
+        assert!(
+            (aabb.max.x + aabb.min.x).abs() < 0.002,
+            "straight nipple → X-symmetric bounds; got max.x={} min.x={}",
+            aabb.max.x,
+            aabb.min.x,
+        );
     }
 
     #[test]

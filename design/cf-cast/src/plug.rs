@@ -294,25 +294,25 @@ fn build_plug_lock_pose(ribbon: &Ribbon) -> Option<(&PlugPinSpec, PrismaticPinPo
     // the axis direction note above) — gives the captive vertical
     // lock the workshop user requested 2026-05-24.
     let axis_unit = UnitVector3::new_normalize(-outward);
-    // Gram-Schmidt `split_normal` against `axis_unit` to enforce the
-    // [`PrismaticPinPose::new`] orthogonality contract. The cf-scan-
-    // prep cap-plane normal is fitted to point cloud data (PCA on
-    // the cap-plane vertices) while the ribbon's `split_normal` is
-    // a user-axis projection, so production casts often see
-    // ~1-3° between them. The pose's rotation about `axis_unit`
-    // is geometrically immaterial for square-base pins (the
-    // [`PrismaticPinSpec::plug_lock_default`] is square — base.x ==
-    // base.y, tip.x == tip.y), so projecting `split_normal` onto
-    // the plane perpendicular to `axis_unit` and renormalizing
-    // preserves the workshop-meaningful pose while satisfying the
-    // strict orthogonality assertion. If the input vectors are
-    // exactly parallel (|dot| ≈ 1), the projection collapses to
-    // zero — `new_normalize` would emit a degenerate unit-Z
-    // fallback; gate that as `None` so the caller drops the lock
-    // rather than emitting a skewed pose.
-    let split_vec = ribbon.split_normal.as_vector();
+    // Orient the square lock's lateral axis so one pair of its faces is parallel
+    // to the SEAM plane → the seam bisects the pin symmetrically into two halves
+    // ("rotationally square to the two halves"). The pin's lateral *rotation*
+    // DOES matter here — not for the pin's own square symmetry, but for HOW the
+    // seam slices it. With a FITTED (apex-anchored) seam the seam normal is
+    // diagonal, NOT `split_normal`, so deriving the lateral axis from
+    // `split_normal` would skew the square ~33° to the seam (workshop
+    // 2026-05-29). So: use the fitted seam normal when one is set; else keep
+    // `split_normal` (binormal / curve-following casts stay byte-identical).
+    // Either reference is Gram-Schmidt'd against `axis_unit` to satisfy the
+    // [`PrismaticPinPose::new`] orthogonality contract; if the input is exactly
+    // parallel to the axis (|dot| ≈ 1) the projection collapses to zero — gate
+    // that as `None` so the caller drops the lock rather than emit a skewed pose.
+    let ref_vec = match ribbon.seam_plane_basis() {
+        Some(_) => ribbon.seam_plane_reference().1.into_inner(),
+        None => ribbon.split_normal.as_vector(),
+    };
     let axis_v = axis_unit.into_inner();
-    let projected = split_vec - axis_v * split_vec.dot(&axis_v);
+    let projected = ref_vec - axis_v * ref_vec.dot(&axis_v);
     if projected.norm_squared() < 1.0e-9 {
         return None;
     }
@@ -488,7 +488,13 @@ pub fn build_cup_cap_trim_transform(ribbon: &Ribbon) -> Option<MatingTransform> 
     // unintended material in synthetic test fixtures.
     let (cap_centroid, cap_normal_vec) = ribbon.pour_end_hint?;
     let kept_normal = UnitVector3::new_normalize(cap_normal_vec);
-    let offset_m = kept_normal.into_inner().dot(&cap_centroid.coords);
+    // Mirror the plug-side fix (§Q-4 S1): bias the trim plane
+    // [`PLUG_CAP_TRIM_BIAS_M`] INTO the kept cup-floor half-space so the
+    // trim face is CONTAINED in pre-trim material, not coincident with
+    // the cup-floor MC surface — paradigm-safe per [`PLUG_CAP_TRIM_BIAS_M`].
+    // This is what re-enables the cup trim disabled 2026-05-24 (the
+    // unbiased plane was face-coincident → recon-4 (P) §F-2 failure).
+    let offset_m = kept_normal.into_inner().dot(&cap_centroid.coords) + PLUG_CAP_TRIM_BIAS_M;
     Some(MatingTransform::SeamTrim {
         normal: kept_normal,
         offset_m,
@@ -839,7 +845,7 @@ mod tests {
             MatingTransform::SeamTrim { normal, offset_m } => {
                 let cap_centroid = Point3::new(0.0, 0.0, -0.054);
                 let cap_normal = Vector3::new(0.0, 0.0, -1.0);
-                let expected_offset = cap_normal.dot(&cap_centroid.coords);
+                let expected_offset = cap_normal.dot(&cap_centroid.coords) + PLUG_CAP_TRIM_BIAS_M;
                 assert_abs_diff_eq!(normal.into_inner().x, cap_normal.x, epsilon = 1.0e-12);
                 assert_abs_diff_eq!(normal.into_inner().y, cap_normal.y, epsilon = 1.0e-12);
                 assert_abs_diff_eq!(normal.into_inner().z, cap_normal.z, epsilon = 1.0e-12);

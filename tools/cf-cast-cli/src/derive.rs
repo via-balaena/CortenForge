@@ -12,8 +12,9 @@ use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_cast::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
 use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
-    CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
-    MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateSpec, Ribbon, SplitNormal,
+    CanalSpec, CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
+    MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateLayout, PourGateSpec, Ribbon,
+    SplitNormal, best_fit_planar_seam, build_canal_plug,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -339,6 +340,71 @@ pub fn derive_spec_and_ribbon(
         None
     };
 
+    // Canal Interior arc (Candidate A): compose parametric grip +
+    // stimulation features onto the scan-derived layer-0 plug. Baseline
+    // girth is unchanged — the layer/inset machinery (`cavity_inset_m`)
+    // still owns tightness; the canal only ADDS features (grip rings,
+    // frenulum D-section pinch, frenulum-gated texture, terminal suction
+    // bulb). All features pinch the channel INWARD (more wall, safe)
+    // except the suction bulb, which bulges OUTWARD into the inner
+    // silicone shell — that one is wall-gated below.
+    let (plug, plug_layer_0_mesh_cell_size_m) = if config.canal.enabled {
+        // Mutually exclusive with scan-mesh-direct: both rewrite the
+        // layer-0 plug. (scan-mesh-direct copies the scan mesh as-is,
+        // which has no SDF surface to compose canal features onto.)
+        if config.cast.scan_mesh_direct_plug_layer_0 {
+            bail!(
+                "[canal].enabled and [cast].scan_mesh_direct_plug_layer_0 are mutually \
+                 exclusive — both rewrite the layer-0 plug. Disable one (the canal needs \
+                 the SDF/MC plug path to compose its features)."
+            );
+        }
+        let canal_spec = resolve_canal_spec(&config.canal);
+
+        // Wall gate (§6.1, the only outward feature): the suction bulb
+        // bulges the plug outward into the innermost silicone shell. If
+        // the bulge plus the min-wall floor exceeds the inner layer's
+        // thickness, the shell blows out to zero there. Inward features
+        // (rings/D-section/texture) only ADD wall, so they need no gate.
+        if canal_spec.suction_bulge_m > 0.0 {
+            let min_wall_m = config.cast.piece_min_wall_mm / 1000.0;
+            match config.layers.first().map(|l| l.thickness_m) {
+                Some(inner_thickness_m) => {
+                    if canal_spec.suction_bulge_m + min_wall_m > inner_thickness_m {
+                        bail!(
+                            "[canal] suction_bulge_m = {:.1} mm + min wall {:.1} mm exceeds the \
+                             inner layer thickness {:.1} mm — the suction bulb would blow out the \
+                             innermost silicone shell. Reduce suction_bulge_m or thicken layer 0.",
+                            canal_spec.suction_bulge_m * 1e3,
+                            min_wall_m * 1e3,
+                            inner_thickness_m * 1e3,
+                        );
+                    }
+                }
+                None => {
+                    eprintln!(
+                        "[cf-cast] WARNING: [canal] suction bulb enabled but the inner layer \
+                         thickness is unknown (design-sourced layers); the suction-bulb wall gate \
+                         is SKIPPED. Verify the suction-bulb region clears the inner shell in \
+                         cf-view before casting."
+                    );
+                }
+            }
+        }
+
+        // Anchor the canal's frac=0 (mouth) at the cap-plane end. The
+        // cap is the scan's cut base = the cavity's insertion opening;
+        // without this, a centerline that runs deep→mouth (as
+        // cf-scan-prep produced on the iter-1 clone) would invert the
+        // canal and pile the suction bulb onto the flat floor cap.
+        let mouth_anchor = cap_tuples.first().map(|(centroid, _normal)| *centroid);
+        let canal_plug = build_canal_plug(&plug, centerline, mouth_anchor, &canal_spec);
+        let cell = canal_spec.plug_mesh_cell_size_m;
+        (canal_plug, Some(cell))
+    } else {
+        (plug, None)
+    };
+
     let spec = CastSpec {
         layers,
         plug,
@@ -348,6 +414,7 @@ pub fn derive_spec_and_ribbon(
         printer_config,
         mass_budget_kg: config.cast.mass_budget_kg,
         scan_mesh_for_plug_layer_0,
+        plug_layer_0_mesh_cell_size_m,
     };
 
     let split_normal_vec = Vector3::new(
@@ -393,8 +460,64 @@ pub fn derive_spec_and_ribbon(
         ribbon = ribbon.with_pour_end_hint(*centroid, *normal);
     }
 
+    // (CF_CAST_ORGANIC_PARTS_RECON.md): opt-in flat seam for organic/curved
+    // parts. The cup-wall halfspace + flange both read the ribbon's seam, so a
+    // single call retargets both.
+    //
+    // Item A §4.1: by default (`planar_seam_fit`, default true) FIT the flat
+    // plane to the body — anchored through the cap-centroid → apex axis and
+    // rotated to the most-even split — so it follows the part's lean and
+    // bisects the dome evenly instead of skimming it into a sliver. The
+    // flange/bolt/dowel silhouette is built in the fitted plane (S2/S3), so it
+    // builds manifold at any orientation. Needs caps for the apex anchor; with
+    // no caps, or with `planar_seam_fit = false` (the escape hatch), it falls
+    // back to the binormal-flatten `with_planar_seam`.
+    if config.cast.planar_seam {
+        let fitted_plane = if config.cast.planar_seam_fit {
+            cap_tuples.first().and_then(|(centroid, normal)| {
+                best_fit_planar_seam(scan_sdf.mesh(), *centroid, *normal)
+            })
+        } else {
+            None
+        };
+        ribbon = match fitted_plane {
+            Some((point, seam_normal)) => {
+                let n = seam_normal.into_inner();
+                eprintln!(
+                    "[cf-cast-cli] planar seam fitted to body (apex-anchored): \
+                     normal [{:.3}, {:.3}, {:.3}]",
+                    n.x, n.y, n.z,
+                );
+                // The fit optimizes the SPLIT BALANCE, not demoldability — a flat
+                // seam on a strongly-curved part can split 50/50 yet trap an
+                // undercut against the plane on one half. There is no undercut
+                // gate yet (recon CF_CAST_FLAT_FLOOR_RECON / organic-parts OQ2);
+                // surface the risk on high-curvature parts so it isn't silent.
+                let curl_deg = ribbon.max_tangent_rotation_rad().to_degrees();
+                if curl_deg > 30.0 {
+                    eprintln!(
+                        "[cf-cast] WARNING: fitted flat seam on a strongly-curved part \
+                         (max tangent rotation {curl_deg:.0}°) — a flat seam can trap a \
+                         demold undercut on one half; verify the two halves release on \
+                         the physical print.",
+                    );
+                }
+                ribbon.with_planar_seam_at(point, n)
+            }
+            None => ribbon.with_planar_seam(),
+        };
+    }
+
     if config.pour_gate.enabled {
-        ribbon = ribbon.with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        // Organic-parts opt-in: single axial pour bore at the dome
+        // apex on the seam (splits the flange; straight funnel;
+        // hand-drilled vents) vs the iter-1 V-shape. Organic-parts
+        // arc §4.3, 2026-05-29.
+        let mut pour_spec = PourGateSpec::iter1();
+        if config.pour_gate.apex_axial {
+            pour_spec.layout = PourGateLayout::ApexAxial;
+        }
+        ribbon = ribbon.with_pour_gate(PourGateKind::Default(pour_spec));
     }
     if config.plug_pins.enabled {
         // Post-S4 of the FDM-friendly geometry arc the `pin_length_m`
@@ -438,7 +561,14 @@ pub fn derive_spec_and_ribbon(
         // cross-field invariants (flange-required, wall-thickness,
         // dowel-stagger) are gated in
         // config::validate_after_layer_source.
-        let bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
+        let mut bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
+        // With the apex-axial pour the bore splits the flange at the
+        // dome apex; bracket it (a bolt just outside the clearance on
+        // each side) instead of dropping nearby bolts. Organic-parts
+        // arc §4.3, 2026-05-29.
+        if config.pour_gate.enabled && config.pour_gate.apex_axial {
+            bolt_spec.bracket_pour_gate = true;
+        }
         ribbon = ribbon.with_bolt_pattern(BoltPatternKind::Auto(bolt_spec));
     }
 
@@ -486,6 +616,34 @@ fn resolve_flange_spec(config: &crate::config::FlangeConfig) -> FlangeSpec {
     }
 }
 
+/// Resolve a [`crate::config::CanalConfig`] into a [`CanalSpec`],
+/// falling back to [`CanalSpec::iter1`] for each `None` per-field
+/// override. Canal Interior arc (Candidate A) — additive grip +
+/// stimulation features on the layer-0 plug; baseline girth stays
+/// owned by `cavity_inset_m`.
+fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
+    let mut spec = CanalSpec::iter1();
+    if let Some(dir) = config.frenulum_dir {
+        spec.frenulum_dir = Vector3::new(dir[0], dir[1], dir[2]);
+    }
+    if let Some(amp) = config.texture_amplitude_m {
+        spec.texture_amp_m = amp;
+    }
+    if let Some(pitch) = config.texture_pitch_m {
+        spec.texture_pitch_m = pitch;
+    }
+    if let Some(depth) = config.dsection_depth_m {
+        spec.dsection_depth_m = depth;
+    }
+    if let Some(bulge) = config.suction_bulge_m {
+        spec.suction_bulge_m = bulge;
+    }
+    if let Some(cell) = config.plug_mesh_cell_size_m {
+        spec.plug_mesh_cell_size_m = cell;
+    }
+    spec
+}
+
 /// Resolve a [`crate::config::DowelHoleConfig`] into a
 /// [`DowelHoleSpec`], falling back to [`DowelHoleSpec::iter1`] for
 /// each `None` per-field override. §M-S2 of
@@ -523,6 +681,10 @@ fn resolve_bolt_pattern_spec(config: &crate::config::BoltPatternConfig) -> BoltP
         pour_gate_clearance_m: config
             .pour_gate_clearance_m
             .unwrap_or(iter1.pour_gate_clearance_m),
+        // Set by the caller from `[pour_gate].apex_axial`, not a
+        // `[bolt_pattern]` field — the bracket only makes sense when
+        // the apex-axial pour bore splits the flange.
+        bracket_pour_gate: iter1.bracket_pour_gate,
     }
 }
 
@@ -640,6 +802,7 @@ mod tests {
             flange: crate::config::FlangeConfig::default(),
             dowel_hole: crate::config::DowelHoleConfig::default(),
             bolt_pattern: crate::config::BoltPatternConfig::default(),
+            canal: crate::config::CanalConfig::default(),
         }
     }
 

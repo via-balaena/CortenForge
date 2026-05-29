@@ -198,6 +198,14 @@ pub struct CastSpec {
     /// the offset cases with an explicit per-layer offset
     /// parameter.
     pub scan_mesh_for_plug_layer_0: Option<Arc<IndexedMesh>>,
+    /// Marching-cubes cell size for the **layer-0 plug only** (meters).
+    /// `None` (default) → use [`Self::mesh_cell_size_m`] like every
+    /// other mesh. `Some(fine)` is set by the canal path so the
+    /// sub-cm grip rings + ~1.5 mm texture survive meshing while the
+    /// cups stay coarse; the layer-0 plug bounding box is small, so
+    /// the cost is bounded. Layers N>0 always use the global cell
+    /// size (they carry no canal features).
+    pub plug_layer_0_mesh_cell_size_m: Option<f64>,
 }
 
 /// Per-layer output of a successful [`CastSpec::export_molds`] run.
@@ -1151,14 +1159,24 @@ fn mesh_and_gate_v2_plugs(
             // pre-MC), the discard would silently skip that
             // composition on the scan-mesh-direct path — pull the
             // mating-transforms construction out independently then.
-            let (mut mesh, path_label) =
-                match (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
-                    (0, Some(scan_mesh)) => (build_plug_body_mesh(scan_mesh), "scan-mesh-direct"),
-                    _ => (
-                        solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?,
-                        "compose+MC",
-                    ),
+            let (mut mesh, path_label) = if let (0, Some(scan_mesh)) =
+                (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref())
+            {
+                (build_plug_body_mesh(scan_mesh), "scan-mesh-direct")
+            } else {
+                // Layer-0 plug uses the per-plug fine cell size when set
+                // (canal path); everything else uses the global cell size.
+                let cell_size_m = if layer_index == 0 {
+                    spec.plug_layer_0_mesh_cell_size_m
+                        .unwrap_or(spec.mesh_cell_size_m)
+                } else {
+                    spec.mesh_cell_size_m
                 };
+                (
+                    solid_to_mm_mesh(&plug_solid, cell_size_m, target)?,
+                    "compose+MC",
+                )
+            };
             // S1.1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md (recon §SMD-7
             // follow-up #1): the cf-scan-prep cleaned scan mesh fails
             // manifold3d's `indexed_mesh_to_manifold` precondition
@@ -1177,6 +1195,15 @@ fn mesh_and_gate_v2_plugs(
             } else {
                 None
             };
+            // Canal plug debris filter (guarded). Only the canal layer-0
+            // plug (flagged by the per-plug fine cell size) runs through
+            // the SDF/MC path that can shed floating fragments on a noisy
+            // scan; drop confirmed debris, but error loudly on any
+            // substantial detachment rather than hide a real tear. No-op
+            // for a clean single-body plug. See `canal::filter_plug_debris`.
+            if layer_index == 0 && spec.plug_layer_0_mesh_cell_size_m.is_some() {
+                crate::canal::filter_plug_debris(&mut mesh, target)?;
+            }
             let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
             let compose_mesh_s = t_compose.elapsed().as_secs_f64();
             let path = out_dir.join(plug_layer_filename(layer_index));
@@ -1974,6 +2001,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         }
     }
 
@@ -2020,6 +2048,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let report = spec.export_molds(&out_dir).unwrap();
 
@@ -2105,6 +2134,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
 
         let report = spec.export_molds(&out_dir).unwrap();
@@ -2139,6 +2169,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-empty-layers");
@@ -2164,6 +2195,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-error-unbounded");
@@ -2464,6 +2496,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         }
     }
 
@@ -2535,6 +2568,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let err = spec.compute_pour_volumes().unwrap_err();
         assert!(matches!(err, CastError::EmptyLayers));
@@ -2548,6 +2582,7 @@ mod tests {
         let spec = CastSpec {
             mass_budget_kg: 0.010,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
             ..pour_volume_fixture()
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2648,6 +2683,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-f3-empty.md");
@@ -2684,6 +2720,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
@@ -2731,6 +2768,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
@@ -2757,6 +2795,7 @@ mod tests {
         let spec = CastSpec {
             mass_budget_kg: 0.010,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
             ..pour_volume_fixture()
         };
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2812,6 +2851,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let standalone_pours = spec.compute_pour_volumes().unwrap();
         let report = spec.export_molds(&out_dir).unwrap();
@@ -2852,6 +2892,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3061,6 +3102,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3146,6 +3188,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3250,6 +3293,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3979,6 +4023,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -4279,6 +4324,7 @@ mod tests {
             printer_config: PrinterConfig::fdm_default(),
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
         };
         let centerline = vec![Point3::new(-0.030, 0.0, 0.0), Point3::new(0.030, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -4386,6 +4432,36 @@ mod tests {
         assert!(
             !md.contains("6.0 mm Ø pour gate"),
             "no-gate prose must not include with-gate dimensions",
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_apex_pour_prose_describes_apex_bore_and_drilled_vents() {
+        // Apex-axial layout: prose must describe the single apex bore,
+        // hand-drilled vents, and the straight-spout funnel — and must
+        // NOT carry the V-shape "+binormal/-binormal" pour/vent prose.
+        use crate::PourGateLayout;
+        let mut pour_spec = PourGateSpec::iter1();
+        pour_spec.layout = PourGateLayout::ApexAxial;
+        let (spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_pour_gate(PourGateKind::Default(pour_spec));
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("apex pour"),
+            "apex-axial prose must describe the apex pour; got: {md}"
+        );
+        assert!(
+            md.contains("hand-drilled") || md.contains("drill"),
+            "apex-axial prose must describe hand-drilled vents",
+        );
+        assert!(
+            md.contains("straight-spout funnel"),
+            "apex-axial prose must describe the straight-spout funnel",
+        );
+        assert!(
+            !md.contains("V at the dome end of the centerline"),
+            "apex-axial prose must NOT carry the V-shape orientation prose",
         );
     }
 

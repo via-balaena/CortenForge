@@ -57,8 +57,8 @@
     clippy::similar_names
 )]
 
-use cf_design::Solid;
-use nalgebra::Point3;
+use cf_design::{Aabb, Solid};
+use nalgebra::{Point3, Vector3};
 
 /// Marching-squares grid step (0.5 mm). Picked at recon §F-2: sub-mm
 /// polyline accuracy + ~0.16 s precompute cost per layer at 200 ×
@@ -82,6 +82,104 @@ impl Point2 {
     }
 }
 
+/// Orthonormal frame of a seam plane.
+///
+/// An in-plane `(u, v)` coordinate maps to world as `anchor + u·u_axis +
+/// v·v_axis`. `u_axis` + `v_axis` are unit, mutually orthogonal, and ⟂ the seam
+/// normal (the plane they span IS the seam plane). Returned by
+/// `Ribbon::seam_plane_basis`; consumed by [`Silhouette2d::from_body_in_plane`]
+/// + the flange/bolt/dowel builders.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SeamPlaneBasis {
+    /// In-plane origin (a point ON the seam plane).
+    pub anchor: Point3<f64>,
+    /// In-plane `+u` world axis (the `Point2::x` direction).
+    pub u_axis: Vector3<f64>,
+    /// In-plane `+v` world axis (the `Point2::z` direction).
+    pub v_axis: Vector3<f64>,
+}
+
+impl SeamPlaneBasis {
+    /// The historical Y-normal seam frame: `anchor = (0, seam_y, 0)`,
+    /// `u_axis = +X`, `v_axis = +Z`. Reproduces the pre-generalization
+    /// constant-Y X-Z silhouette exactly.
+    // Not const: nalgebra's `Vector3::x()` / `Vector3::z()` are not const fns.
+    #[allow(clippy::missing_const_for_fn)]
+    #[must_use]
+    pub fn y_normal(seam_y: f64) -> Self {
+        Self {
+            anchor: Point3::new(0.0, seam_y, 0.0),
+            u_axis: Vector3::x(),
+            v_axis: Vector3::z(),
+        }
+    }
+
+    /// Derive a basis from a seam plane given as `(anchor, normal)`: pick a
+    /// stable in-plane `u_axis` by projecting world `+Z` onto the plane (so `u`
+    /// runs roughly "up" the part — nice for print orientation), falling back to
+    /// `+X` when the normal is ~vertical (`Z ∥ N`); `v_axis = N × u_axis`. The
+    /// resulting `u_axis × v_axis == N`, so the basis's implied normal matches.
+    #[must_use]
+    pub fn from_anchor_normal(anchor: Point3<f64>, normal: Vector3<f64>) -> Self {
+        let n = normal.normalize();
+        let seed = if n.z.abs() < 0.9 {
+            Vector3::z()
+        } else {
+            Vector3::x()
+        };
+        let u_axis = (seed - n * n.dot(&seed)).normalize();
+        let v_axis = n.cross(&u_axis);
+        Self {
+            anchor,
+            u_axis,
+            v_axis,
+        }
+    }
+
+    /// The seam-plane normal implied by this basis (`u_axis × v_axis`, unit).
+    #[must_use]
+    pub fn normal(&self) -> Vector3<f64> {
+        self.u_axis.cross(&self.v_axis)
+    }
+
+    /// In-plane `(u_min, u_max, v_min, v_max)` covering `aabb` — projects all 8
+    /// AABB corners into the basis and takes the extremes. Used to size the
+    /// silhouette grid so it spans the body's full in-plane extent at any seam
+    /// orientation (flange / bolt / dowel builders).
+    #[must_use]
+    pub fn inplane_bounds(&self, aabb: Aabb) -> (f64, f64, f64, f64) {
+        let (mut u_min, mut u_max) = (f64::MAX, f64::MIN);
+        let (mut v_min, mut v_max) = (f64::MAX, f64::MIN);
+        for &cx in &[aabb.min.x, aabb.max.x] {
+            for &cy in &[aabb.min.y, aabb.max.y] {
+                for &cz in &[aabb.min.z, aabb.max.z] {
+                    let rel = Point3::new(cx, cy, cz) - self.anchor;
+                    let u = rel.dot(&self.u_axis);
+                    let v = rel.dot(&self.v_axis);
+                    u_min = u_min.min(u);
+                    u_max = u_max.max(u);
+                    v_min = v_min.min(v);
+                    v_max = v_max.max(v);
+                }
+            }
+        }
+        (u_min, u_max, v_min, v_max)
+    }
+
+    /// Map an in-plane `(u, v)` point to its world position.
+    #[must_use]
+    pub fn to_world(&self, p: Point2) -> Point3<f64> {
+        self.anchor + self.u_axis * p.x + self.v_axis * p.z
+    }
+
+    /// Map an in-plane `(u, v)` DIRECTION to world (no translation). Unit in →
+    /// unit out (the axes are unit-orthonormal).
+    #[must_use]
+    pub fn dir_to_world(&self, p: Point2) -> Vector3<f64> {
+        self.u_axis * p.x + self.v_axis * p.z
+    }
+}
+
 /// Seam-plane silhouette of a body, stored as unordered line segments.
 ///
 /// §F-S1 scope: each marching-squares cell contributes 0–2 segments;
@@ -91,6 +189,8 @@ impl Point2 {
 #[derive(Debug, Clone)]
 pub struct Silhouette2d {
     segments: Vec<[Point2; 2]>,
+    /// Seam-plane frame the segments live in; maps in-plane `(u, v)` to world.
+    basis: SeamPlaneBasis,
 }
 
 impl Silhouette2d {
@@ -102,6 +202,11 @@ impl Silhouette2d {
     /// flange's outward reach so the silhouette is captured everywhere
     /// the flange might lie. Callers pass the same expanded bounds
     /// used for [`Solid::from_sdf`]'s MC region.
+    ///
+    /// This is the Y-normal-seam special case of [`Self::from_body_in_plane`]
+    /// (`anchor = (0, seam_plane_y, 0)`, `u_axis = +X`, `v_axis = +Z`) — kept
+    /// as the bit-identical default path so every existing (binormal-seam) cast
+    /// is unchanged.
     ///
     /// # Panics
     ///
@@ -115,22 +220,61 @@ impl Silhouette2d {
         z_min: f64,
         z_max: f64,
     ) -> Self {
+        Self::from_body_in_plane(
+            body,
+            SeamPlaneBasis::y_normal(seam_plane_y),
+            x_min,
+            x_max,
+            z_min,
+            z_max,
+        )
+    }
+
+    /// Build by sampling `body` SDF on a 2D grid in the seam plane spanned by
+    /// `u_axis` × `v_axis` through `anchor`: grid point `(u, v)` samples
+    /// `body.evaluate(anchor + u·u_axis + v·v_axis)`. Stored [`Point2`]s are the
+    /// in-plane `(u, v)` coordinates (`Point2::x = u`, `Point2::z = v`); map them
+    /// back to world with [`Self::to_world`] / [`Self::dir_to_world`].
+    ///
+    /// `u_axis` + `v_axis` should be orthonormal and perpendicular to the seam
+    /// normal (the plane they span IS the seam plane). The `(u, v)` bounds cover
+    /// the body's in-plane extent PLUS the flange's outward reach.
+    ///
+    /// Generalizes [`Self::from_body_at_y`] to an arbitrary (e.g. apex-anchored
+    /// fitted) seam plane — item A of `CF_CAST_ORGANIC_PARTS_RECON.md` + the
+    /// arbitrary-seam-silhouette arc.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `u_max <= u_min` or `v_max <= v_min`.
+    #[must_use]
+    pub fn from_body_in_plane(
+        body: &Solid,
+        basis: SeamPlaneBasis,
+        u_min: f64,
+        u_max: f64,
+        v_min: f64,
+        v_max: f64,
+    ) -> Self {
         assert!(
-            x_max > x_min && z_max > z_min,
-            "silhouette bounds must be positive: x [{x_min}, {x_max}] z [{z_min}, {z_max}]"
+            u_max > u_min && v_max > v_min,
+            "silhouette bounds must be positive: u [{u_min}, {u_max}] v [{v_min}, {v_max}]"
         );
         let step = SILHOUETTE_GRID_STEP_M;
-        let nx = (((x_max - x_min) / step).ceil() as usize).max(1);
-        let nz = (((z_max - z_min) / step).ceil() as usize).max(1);
+        let nx = (((u_max - u_min) / step).ceil() as usize).max(1);
+        let nz = (((v_max - v_min) / step).ceil() as usize).max(1);
+        // In-plane (u, v) → world sample point.
+        let sample =
+            |u: f64, v: f64| body.evaluate(&(basis.anchor + basis.u_axis * u + basis.v_axis * v));
 
         // Corner SDF grid: (nx + 1) × (nz + 1).
         let stride = nx + 1;
         let mut sdf = vec![0.0_f64; stride * (nz + 1)];
         for j in 0..=nz {
-            let z = (j as f64).mul_add(step, z_min);
+            let z = (j as f64).mul_add(step, v_min);
             for i in 0..=nx {
-                let x = (i as f64).mul_add(step, x_min);
-                sdf[j * stride + i] = body.evaluate(&Point3::new(x, seam_plane_y, z));
+                let x = (i as f64).mul_add(step, u_min);
+                sdf[j * stride + i] = sample(x, z);
             }
         }
 
@@ -142,9 +286,9 @@ impl Silhouette2d {
                 let s10 = sdf[j * stride + i + 1]; // corner 1: bottom-right (x1, z0)
                 let s11 = sdf[(j + 1) * stride + i + 1]; // corner 2: top-right    (x1, z1)
                 let s01 = sdf[(j + 1) * stride + i]; // corner 3: top-left     (x0, z1)
-                let x0 = (i as f64).mul_add(step, x_min);
+                let x0 = (i as f64).mul_add(step, u_min);
                 let x1 = x0 + step;
-                let z0 = (j as f64).mul_add(step, z_min);
+                let z0 = (j as f64).mul_add(step, v_min);
                 let z1 = z0 + step;
                 let p00 = Point2::new(x0, z0);
                 let p10 = Point2::new(x1, z0);
@@ -184,11 +328,8 @@ impl Silhouette2d {
                         // two inside corners are connected through the
                         // center; emit segments that DON'T separate
                         // them. Else separate.
-                        let center = body.evaluate(&Point3::new(
-                            0.5_f64.mul_add(x1 - x0, x0),
-                            seam_plane_y,
-                            0.5_f64.mul_add(z1 - z0, z0),
-                        ));
+                        let center =
+                            sample(0.5_f64.mul_add(x1 - x0, x0), 0.5_f64.mul_add(z1 - z0, z0));
                         if center < 0.0 {
                             segments.push([e_left(), e_top()]);
                             segments.push([e_bottom(), e_right()]);
@@ -207,11 +348,8 @@ impl Silhouette2d {
                         //   inside region; cut off outside corners 0 + 2.
                         // - Center outside: 1 and 3 are isolated inside
                         //   islands; cut off each inside corner separately.
-                        let center = body.evaluate(&Point3::new(
-                            0.5_f64.mul_add(x1 - x0, x0),
-                            seam_plane_y,
-                            0.5_f64.mul_add(z1 - z0, z0),
-                        ));
+                        let center =
+                            sample(0.5_f64.mul_add(x1 - x0, x0), 0.5_f64.mul_add(z1 - z0, z0));
                         if center < 0.0 {
                             // Cut off outside corner 0 (left + bottom edges).
                             segments.push([e_left(), e_bottom()]);
@@ -240,7 +378,28 @@ impl Silhouette2d {
             }
         }
 
-        Self { segments }
+        Self { segments, basis }
+    }
+
+    /// The seam-plane frame these segments live in.
+    #[must_use]
+    pub const fn basis(&self) -> SeamPlaneBasis {
+        self.basis
+    }
+
+    /// Map an in-plane `(u, v)` point (a [`Point2`] from this silhouette) back
+    /// to its world position (delegates to [`SeamPlaneBasis::to_world`]).
+    #[must_use]
+    pub fn to_world(&self, p: Point2) -> Point3<f64> {
+        self.basis.to_world(p)
+    }
+
+    /// Map an in-plane `(u, v)` DIRECTION (e.g. an outward normal from
+    /// [`Self::outward_normal_at_arc_fraction`]) to its world direction
+    /// (delegates to [`SeamPlaneBasis::dir_to_world`]).
+    #[must_use]
+    pub fn dir_to_world(&self, p: Point2) -> Vector3<f64> {
+        self.basis.dir_to_world(p)
     }
 
     /// Signed distance from `(x, z)` to the silhouette curve.
@@ -548,7 +707,7 @@ mod tests {
     )]
 
     use super::*;
-    use nalgebra::{UnitQuaternion, Vector3};
+    use nalgebra::{Point3, UnitQuaternion, Vector3};
 
     /// Cylinder along X, R=10 mm, length 60 mm. At Y=0 the silhouette
     /// is the rectangle X ∈ [-30, 30], Z ∈ [-10, 10].
@@ -595,6 +754,76 @@ mod tests {
             (d_x - 0.005).abs() < SILHOUETTE_GRID_STEP_M,
             "expected ≈+5 mm past +X cap, got {d_x}"
         );
+    }
+
+    /// Byte-identity guard: `from_body_at_y` is the `(X, Z)` basis special case
+    /// of `from_body_in_plane`, so the two must emit the exact same segments —
+    /// the load-bearing invariant that keeps every existing (Y-normal) cast
+    /// unchanged after the arbitrary-seam generalization.
+    #[test]
+    fn from_body_in_plane_with_xz_basis_is_identical_to_from_body_at_y() {
+        let body = cylinder_along_x();
+        let seam_y = 0.003;
+        let at_y = Silhouette2d::from_body_at_y(&body, seam_y, -0.050, 0.050, -0.025, 0.025);
+        let in_plane = Silhouette2d::from_body_in_plane(
+            &body,
+            SeamPlaneBasis {
+                anchor: Point3::new(0.0, seam_y, 0.0),
+                u_axis: Vector3::x(),
+                v_axis: Vector3::z(),
+            },
+            -0.050,
+            0.050,
+            -0.025,
+            0.025,
+        );
+        assert_eq!(at_y.segments.len(), in_plane.segments.len());
+        for (sa, sb) in at_y.segments.iter().zip(&in_plane.segments) {
+            assert_eq!(sa[0], sb[0], "segment start must be bit-identical");
+            assert_eq!(sa[1], sb[1], "segment end must be bit-identical");
+        }
+    }
+
+    /// End-to-end tilted-basis check: a great circle of a sphere sampled in an
+    /// arbitrary (tilted) seam plane must (a) read ≈ −r at the plane center and
+    /// (b) have its silhouette points map back — via `to_world` through the
+    /// tilted basis — onto the sphere surface (`|world| ≈ r`).
+    #[test]
+    fn tilted_basis_silhouette_points_map_back_onto_the_body_surface() {
+        let r = 0.020;
+        let body = Solid::sphere(r);
+        // Orthonormal in-plane basis ⟂ a tilted normal (0.6, 0, 0.8).
+        let u_axis = Vector3::new(0.8, 0.0, -0.6).normalize();
+        let v_axis = Vector3::new(0.6, 0.0, 0.8).cross(&u_axis); // = +Y
+        let sil = Silhouette2d::from_body_in_plane(
+            &body,
+            SeamPlaneBasis {
+                anchor: Point3::origin(),
+                u_axis,
+                v_axis,
+            },
+            -0.030,
+            0.030,
+            -0.030,
+            0.030,
+        );
+        assert!(sil.segment_count() > 0);
+        assert!(
+            (sil.signed_distance_to(0.0, 0.0) - (-r)).abs() < 2.0 * SILHOUETTE_GRID_STEP_M,
+            "plane center is inside the sphere → ≈ -r",
+        );
+        for k in 0..8 {
+            let t = f64::from(k) / 8.0;
+            if let Some(p2) = sil.point_at_arc_fraction(t) {
+                let world = sil.to_world(p2);
+                assert!(
+                    (world.coords.norm() - r).abs() < 2.0 * SILHOUETTE_GRID_STEP_M,
+                    "silhouette point must map onto the sphere surface (|w| ≈ {r}); \
+                     got {}",
+                    world.coords.norm(),
+                );
+            }
+        }
     }
 
     #[test]
@@ -833,5 +1062,45 @@ mod tests {
             Point2::new(-1.0, -1.0),
             Point2::new(0.0, 1.0)
         ));
+    }
+
+    #[test]
+    fn from_anchor_normal_is_orthonormal_and_recovers_the_normal() {
+        let normal = Vector3::new(0.6, 0.0, 0.8);
+        let b = SeamPlaneBasis::from_anchor_normal(Point3::origin(), normal);
+        let n = normal.normalize();
+        // u_axis × v_axis recovers the supplied normal.
+        assert!((b.normal() - n).norm() < 1.0e-9);
+        // Right-handed orthonormal frame, all axes in the seam plane (⟂ N).
+        assert!((b.u_axis.norm() - 1.0).abs() < 1.0e-9);
+        assert!((b.v_axis.norm() - 1.0).abs() < 1.0e-9);
+        assert!(b.u_axis.dot(&b.v_axis).abs() < 1.0e-9);
+        assert!(b.u_axis.dot(&n).abs() < 1.0e-9);
+        assert!(b.v_axis.dot(&n).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn from_anchor_normal_falls_back_to_x_seed_when_normal_is_vertical() {
+        // N ∥ +Z makes the +Z projection seed collapse; the +X fallback must
+        // still yield a finite, orthonormal frame whose normal is +Z.
+        let b = SeamPlaneBasis::from_anchor_normal(Point3::origin(), Vector3::z());
+        assert!((b.normal() - Vector3::z()).norm() < 1.0e-9);
+        assert!(b.u_axis.iter().all(|c| c.is_finite()));
+        assert!((b.u_axis.norm() - 1.0).abs() < 1.0e-9);
+        assert!(b.u_axis.dot(&b.v_axis).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn inplane_bounds_spans_the_aabb_for_the_y_normal_basis() {
+        // y_normal basis: u = +X, v = +Z. inplane_bounds must recover the AABB's
+        // X and Z extents (and be independent of the seam's Y offset).
+        let b = SeamPlaneBasis::y_normal(0.003);
+        let aabb = Aabb::new(
+            Point3::new(-0.02, -0.05, -0.03),
+            Point3::new(0.04, 0.05, 0.06),
+        );
+        let (u_min, u_max, v_min, v_max) = b.inplane_bounds(aabb);
+        assert!((u_min - -0.02).abs() < 1.0e-9 && (u_max - 0.04).abs() < 1.0e-9);
+        assert!((v_min - -0.03).abs() < 1.0e-9 && (v_max - 0.06).abs() < 1.0e-9);
     }
 }

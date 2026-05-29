@@ -429,10 +429,17 @@ pub fn compose_piece_solid(
         // validate_after_layer_source surfaces this as a
         // workshop-actionable config error before reaching here.
     }
-    // **Cup-side cap-plane trim DISABLED 2026-05-24 night** — same
-    // recon-4 (P) §F-2 paradigm-boundary issue that blocked the
-    // plug-side trim. See `add_plug_pins` in `plug.rs` for the
-    // full rationale + follow-up bookmark.
+    // **Cup-side cap-plane trim STAYS DISABLED.** A `SeamTrim` is a
+    // HALFSPACE cut, but the cup STRADDLES the cap plane (cavity walls
+    // above it, floor base below it). Empirically (S2 of
+    // CF_CAST_ORGANIC_PARTS_RECON.md, 2026-05-28): re-enabling the
+    // SeamTrim — even with the plug-side's 1 µm bias — bisected the cup
+    // (a 172 mm full half collapsed to a 23 mm floor stub), because the
+    // halfspace deletes everything on one side. Flattening an INTERNAL
+    // cavity floor while keeping material on both sides needs a BOUNDED
+    // op (C-B2 `UnionCuboid`-style slab), not a halfspace. See the recon
+    // §4.2 / §9 C2. `build_cup_cap_trim_transform` is retained (dormant,
+    // with the bias) for that future slab-anchored reuse.
 
     Ok((base_piece, transforms))
 }

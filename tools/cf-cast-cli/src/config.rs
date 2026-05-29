@@ -71,6 +71,16 @@ pub struct CastConfig {
     /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
     #[serde(default)]
     pub bolt_pattern: BoltPatternConfig,
+    /// Interior-canal feature override (default = DISABLED). When
+    /// `enabled = true`, the layer-0 plug's scan-derived surface gets
+    /// parametric grip rings + a frenulum D-section pinch + frenulum-
+    /// gated texture + a terminal suction bulb composed on top (the
+    /// Canal Interior arc, Candidate A). Baseline girth is unchanged —
+    /// tightness stays owned by the layer/inset machinery. Mutually
+    /// exclusive with `scan_mesh_direct_plug_layer_0` (both rewrite the
+    /// layer-0 plug). See [`cf_cast::CanalSpec`].
+    #[serde(default)]
+    pub canal: CanalConfig,
 }
 
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
@@ -159,6 +169,25 @@ pub struct CastDefaults {
     /// gates the opt-in accordingly.
     #[serde(default)]
     pub scan_mesh_direct_plug_layer_0: bool,
+    /// Collapse the cup seam to a single FLAT VERTICAL plane instead of
+    /// the curve-following ribbon (S1 of `CF_CAST_ORGANIC_PARTS_RECON.md`).
+    /// For organic/curved parts where the cup halves print
+    /// mating-face-down and need a guaranteed-flat seam to seal. Off by
+    /// default — the curve-following seam is bit-preserved for every
+    /// cast.toml that doesn't opt in. Re-level the scan in cf-scan-prep
+    /// first so the vertical cut bisects cleanly.
+    #[serde(default)]
+    pub planar_seam: bool,
+    /// When `planar_seam` is on, FIT the flat seam to the body (apex-anchored,
+    /// balance-swept — item A §4.1) so it follows a leaning part and bisects the
+    /// dome evenly instead of skimming it into a sliver. **Default `true`** —
+    /// the fit is the better seam (the flange/bolt/dowel silhouette is built in
+    /// the fitted plane, so it builds manifold at any orientation). Set `false`
+    /// to force the legacy binormal-flatten seam (the escape hatch); needs the
+    /// scan's `.prep.toml [caps]` for the apex anchor, else falls back to the
+    /// binormal seam automatically.
+    #[serde(default = "default_true")]
+    pub planar_seam_fit: bool,
 }
 
 impl Default for CastDefaults {
@@ -171,6 +200,8 @@ impl Default for CastDefaults {
             piece_min_wall_mm: default_piece_min_wall_mm(),
             output_dir: default_output_dir(),
             scan_mesh_direct_plug_layer_0: false,
+            planar_seam: false,
+            planar_seam_fit: true,
         }
     }
 }
@@ -277,11 +308,24 @@ pub struct PourGateConfig {
     /// [`cf_cast::PourGateKind::None`] (no pour gate, no vent).
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Organic-parts opt-in: when `true`, use the single AXIAL pour
+    /// bore at the dome apex on the seam ([`cf_cast::PourGateLayout::ApexAxial`])
+    /// instead of the iter-1 V-shape — and the funnel un-bends to a
+    /// straight nipple, and the bolt pattern brackets the pour bore
+    /// rather than dropping nearby bolts. No vent is modeled (the
+    /// workshop hand-drills tiny carbide vents at the high spots).
+    /// Default `false` (existing casts byte-identical). Organic-parts
+    /// arc §4.3, 2026-05-29.
+    #[serde(default)]
+    pub apex_axial: bool,
 }
 
 impl Default for PourGateConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            apex_axial: false,
+        }
     }
 }
 
@@ -476,6 +520,48 @@ impl Default for BoltPatternConfig {
     }
 }
 
+/// `[canal]` block — interior-canal feature toggle + geometry
+/// overrides. Maps to [`cf_cast::CanalSpec`].
+///
+/// Canal Interior arc (Candidate A, 2026-05-28). Defaults to
+/// `enabled = false` — absence of the table (or `enabled = false`)
+/// leaves the layer-0 plug exactly as today (scan-derived negative).
+/// When enabled, fields left unset fall back to
+/// [`cf_cast::CanalSpec::iter1`]. Set `suction_bulge_m = 0.0` to drop
+/// the suction bulb, `texture_amplitude_m = 0.0` to drop ribs, etc.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanalConfig {
+    /// Master toggle. `false` (default) → plug unchanged from the
+    /// scan-derived baseline.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Frenulum direction in the cast world frame (asymmetry axis).
+    /// `None` → [0, 1, 0] (iter1 default).
+    #[serde(default)]
+    pub frenulum_dir: Option<[f64; 3]>,
+    /// Frenulum-gated texture rib amplitude (meters). `None` → 1.5 mm.
+    /// `Some(0.0)` disables texture.
+    #[serde(default)]
+    pub texture_amplitude_m: Option<f64>,
+    /// Texture rib pitch (meters). `None` → 8 mm.
+    #[serde(default)]
+    pub texture_pitch_m: Option<f64>,
+    /// Frenulum-side D-section pinch depth (meters). `None` → 1.5 mm.
+    /// `Some(0.0)` disables the asymmetry.
+    #[serde(default)]
+    pub dsection_depth_m: Option<f64>,
+    /// Terminal suction-bulb outward bulge (meters). `None` → 3 mm.
+    /// `Some(0.0)` disables the bulb (and its wall-thinning risk).
+    #[serde(default)]
+    pub suction_bulge_m: Option<f64>,
+    /// Marching-cubes cell size for the layer-0 plug only (meters).
+    /// `None` → 0.5 mm. Finer than the global `mesh_cell_size_m` so the
+    /// ~1.5 mm texture survives; cups stay coarse. See the S0 probe.
+    #[serde(default)]
+    pub plug_mesh_cell_size_m: Option<f64>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -569,6 +655,16 @@ impl CastConfig {
             !self.layers.is_empty(),
             "cast.toml: validate_after_layer_source called with empty layers — \
              call validate_layer_source() first (or lift from a design TOML)"
+        );
+        // The apex pour bore is projected onto the seam plane so it splits the
+        // flange into open half-troughs; that only works when the seam is a flat
+        // plane (`[cast].planar_seam`). Without it the bore lands on the
+        // per-segment curve-following seam, can't re-register, and the sprue
+        // becomes a blind hole on one half. Require the flat seam.
+        ensure!(
+            !self.pour_gate.apex_axial || self.cast.planar_seam,
+            "cast.toml: [pour_gate].apex_axial requires [cast].planar_seam = true \
+             (the apex bore must lie on a flat seam to split the flange cleanly)"
         );
         for (i, layer) in self.layers.iter().enumerate() {
             ensure!(

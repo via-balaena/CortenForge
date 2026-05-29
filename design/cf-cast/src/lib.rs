@@ -76,6 +76,7 @@
 //! [rmp]: ../../../docs/CASTING_ROADMAP.md
 
 pub mod bolt_pattern;
+pub mod canal;
 pub mod cure;
 pub mod dowel;
 pub mod dowel_hole;
@@ -95,9 +96,14 @@ pub mod prismatic_pin;
 mod procedure;
 mod ribbon;
 pub mod scan_mesh_direct;
+pub mod seam_fit;
 pub mod silhouette_2d;
 mod spec;
 
+pub use canal::{
+    CANAL_DEBRIS_MAX_DROP_FRACTION, CanalFrame, CanalSpec, RingSpec, build_canal_plug,
+    filter_plug_debris,
+};
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use flange::{FlangeKind, FlangeSpec};
@@ -117,7 +123,7 @@ pub use plug::{
     PlugPinKind, PlugPinSpec, add_plug_pins, build_cup_cap_trim_transform,
     build_plug_cap_trim_transform, build_plug_lock_socket_transform, build_plug_lock_transform,
 };
-pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_transforms};
+pub use pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
 pub use prismatic_pin::{
     LATERAL_ORTHOGONALITY_TOLERANCE, PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec,
@@ -126,6 +132,7 @@ pub use prismatic_pin::{
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
+pub use seam_fit::best_fit_planar_seam;
 pub use spec::{
     CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
     MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport,

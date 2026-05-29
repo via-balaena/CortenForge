@@ -252,7 +252,16 @@ struct FlangeSdf {
 
 impl Sdf for FlangeSdf {
     fn eval(&self, p: Point3<f64>) -> f64 {
-        let body_dist = self.silhouette.signed_distance_to(p.x, p.z);
+        // Lateral distance to the body's seam-plane cross-section, measured in
+        // the silhouette's OWN plane: project `p` into its `(u, v)` basis. For
+        // the legacy Y-normal basis (anchor `(0, seam_y, 0)`, `u=+X`, `v=+Z`)
+        // this is exactly `signed_distance_to(p.x, p.z)` — bit-identical — while
+        // a fitted (tilted) basis measures in the true seam plane.
+        let basis = self.silhouette.basis();
+        let rel = p - basis.anchor;
+        let body_dist = self
+            .silhouette
+            .signed_distance_to(rel.dot(&basis.u_axis), rel.dot(&basis.v_axis));
         let outer = body_dist - self.flange_width_m;
         let inner = self.flange_inner_offset_m - body_dist;
         // §M-S1.5: signed distance from p to the seam plane measured
@@ -292,19 +301,6 @@ pub(crate) fn build_flange_solid(
     bounds: Aabb,
 ) -> Solid {
     let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
-    // §M-S1.5: binormal == seam_normal == perpendicular to seam plane.
-    // Both the flange's vertical slab AND the cup-wall's halfspace
-    // cut must use this direction so they're coplanar (no tilted-cut
-    // wedge artifact for non-Y-aligned centerlines).
-    let binormal = seam_normal.into_inner();
-    // Silhouette sampling Y is the seam midpoint's Y coordinate.
-    // For nearly-Y-aligned binormals (production iter-1 ~3.4° tilt),
-    // sampling on a constant-Y plane is approximately the body's
-    // seam-plane cross-section to within sub-mm. Fully-correct would
-    // sample on the tilted seam plane itself, but the SDF lateral
-    // metric stays based on the 2D (X, Z) projection regardless, so
-    // the constant-Y approximation is workshop-imperceptible.
-    let seam_plane_y = seam_midpoint.y;
 
     // Expand the bounds outward by flange_width + a small margin so
     // MC samples the flange's outer edge correctly. The flange's
@@ -317,24 +313,46 @@ pub(crate) fn build_flange_solid(
         Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
     );
 
-    // Pre-compute the 2D silhouette at the seam plane over the
-    // expanded XZ bounds. This is the §F-1 fix — the lateral distance
-    // metric is the silhouette's 2D point-to-segment distance, NOT
-    // the body's 3D SDF projected to the seam plane.
-    let silhouette = Silhouette2d::from_body_at_y(
-        layer_body,
-        seam_plane_y,
-        expanded_bounds.min.x,
-        expanded_bounds.max.x,
-        expanded_bounds.min.z,
-        expanded_bounds.max.z,
+    // The §F-1 lateral metric is the silhouette's 2D point-to-segment distance
+    // (NOT the body's 3D SDF projected to the seam plane). Where that silhouette
+    // is sampled depends on the seam:
+    //
+    // - FITTED seam (item A): sample IN the fitted seam plane via its basis, so
+    //   the cross-section is correct at any orientation; the flange slab uses the
+    //   fitted plane (anchor + normal).
+    // - else (binormal / curve-following — the legacy path): sample the X-Z plane
+    //   at the seam-midpoint Y and slab along the binormal. Bit-identical to the
+    //   pre-generalization code (the constant-Y approximation, fine at the small
+    //   iter-1 tilt). `FlangeSdf::eval` projects `body_dist` through the
+    //   silhouette's basis, which for this `SeamPlaneBasis::y_normal` reduces
+    //   exactly to `signed_distance_to(p.x, p.z)`.
+    let (silhouette, slab_origin, slab_normal) = ribbon.seam_plane_basis().map_or_else(
+        || {
+            // Legacy Y-normal path — bit-identical to the pre-generalization code.
+            let sil = Silhouette2d::from_body_at_y(
+                layer_body,
+                seam_midpoint.y,
+                expanded_bounds.min.x,
+                expanded_bounds.max.x,
+                expanded_bounds.min.z,
+                expanded_bounds.max.z,
+            );
+            (sil, seam_midpoint, seam_normal.into_inner())
+        },
+        |basis| {
+            // Fitted seam — sample IN the seam plane; slab uses the fitted plane.
+            let (u_min, u_max, v_min, v_max) = basis.inplane_bounds(expanded_bounds);
+            let sil =
+                Silhouette2d::from_body_in_plane(layer_body, basis, u_min, u_max, v_min, v_max);
+            (sil, basis.anchor, basis.normal())
+        },
     );
 
     Solid::from_sdf(
         FlangeSdf {
             silhouette,
-            seam_midpoint,
-            binormal,
+            seam_midpoint: slab_origin,
+            binormal: slab_normal,
             flange_width_m: spec.flange_width_m,
             flange_thickness_m: spec.flange_thickness_m,
             flange_inner_offset_m: spec.flange_inner_offset_m,
