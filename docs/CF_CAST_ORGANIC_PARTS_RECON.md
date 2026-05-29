@@ -175,6 +175,28 @@ The **fit method is OPEN (§8 OQ1)** — candidates:
 > Buildability (manifold) still gated on a regen — the diagonal normal cuts an
 > interior chord (contains the base→apex axis), so it should mesh clean unlike the
 > tangent `X` orientation. C-A1/C-A3 not needed for this curvature.
+>
+> **IMPLEMENTED + REGEN'd (2026-05-29) — fit works, FLANGE is the remaining blocker.**
+> `seam_fit::best_fit_planar_seam` + `Ribbon::with_planar_seam_at` shipped (tested,
+> clippy-clean); production fit on `3quartachub` returns normal `[0.838, 0.546,
+> −0.001]` (matches the spike). Regen result:
+> - **Layer-0 cup builds, BALANCED** (8016 vs 8139 faces — even halves; the
+>   per-band fit removed the lopsided dome). ✓
+> - **Layer-1/2 cup → non-manifold** (`manifold3d NotManifold`) with the flange on.
+>   Diagnostic (flange+bolt+dowel OFF): **all** layers' cup SHELLS build clean at the
+>   diagonal seam → the seam cut itself is fine; the **FLANGE** is the culprit.
+> - **Root cause:** `flange.rs` reads the fitted plane via `seam_plane_reference`
+>   (consistent), BUT its lateral term + `Silhouette2d` are built in the **X-Z plane
+>   assuming a Y-normal seam** (`flange.rs:40-41,73-75`); a diagonal seam breaks that
+>   2D assumption → malformed flange → non-manifold on the larger outer bodies. Bolt
+>   + dowel use the same X-Z silhouette.
+>
+> **STATUS: fitted seam GATED behind `[cast].planar_seam_fit` (default OFF, EXPERIMENTAL).**
+> Default `planar_seam=true` stays the binormal-flatten (builds, lopsided dome — no
+> regression). **NEXT ARC (the real (A) completion):** generalize `Silhouette2d` +
+> flange + bolt + dowel from "Y-normal seam / X-Z silhouette" to an **arbitrary seam
+> plane** (project the body into the seam-plane 2D basis). Once that lands, flip the
+> default and the leaning dome bisects evenly + builds.
 
 Cross-cutting: the `max_tangent_rotation < 60°` 2-piece gate (`ribbon.rs:595`)
 must be re-examined — a flat cut on a strongly curved part may make one half

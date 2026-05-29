@@ -178,6 +178,16 @@ pub struct CastDefaults {
     /// first so the vertical cut bisects cleanly.
     #[serde(default)]
     pub planar_seam: bool,
+    /// **EXPERIMENTAL / INCOMPLETE.** When `planar_seam` is on, fit the flat
+    /// seam to the body (apex-anchored, balance-swept — item A §4.1) instead of
+    /// the binormal-flatten. The fit bisects a leaning dome evenly and builds
+    /// the cup SHELL, but the flange + bolt + dowel machinery still assumes a
+    /// Y-normal seam (X-Z `Silhouette2d`), so a diagonal fitted seam currently
+    /// produces a **non-manifold flange on the outer layers**. Off by default;
+    /// do NOT enable on a flanged cast until the silhouette/flange is
+    /// generalized to an arbitrary seam plane (the §F-style follow-up arc).
+    #[serde(default)]
+    pub planar_seam_fit: bool,
 }
 
 impl Default for CastDefaults {
@@ -191,6 +201,7 @@ impl Default for CastDefaults {
             output_dir: default_output_dir(),
             scan_mesh_direct_plug_layer_0: false,
             planar_seam: false,
+            planar_seam_fit: false,
         }
     }
 }

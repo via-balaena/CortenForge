@@ -14,7 +14,7 @@ use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
     CanalSpec, CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
     MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateLayout, PourGateSpec, Ribbon,
-    SplitNormal, build_canal_plug,
+    SplitNormal, best_fit_planar_seam, build_canal_plug,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -460,11 +460,38 @@ pub fn derive_spec_and_ribbon(
         ribbon = ribbon.with_pour_end_hint(*centroid, *normal);
     }
 
-    // S1 (CF_CAST_ORGANIC_PARTS_RECON.md): opt-in flat vertical seam for
-    // organic/curved parts. The cup-wall halfspace + flange both read the
-    // ribbon's seam, so this single call flattens both transparently.
+    // (CF_CAST_ORGANIC_PARTS_RECON.md): opt-in flat seam for organic/curved
+    // parts. The cup-wall halfspace + flange both read the ribbon's seam, so a
+    // single call retargets both.
+    //
+    // Item A §4.1 (EXPERIMENTAL, gated on `planar_seam_fit`): fit the flat
+    // plane to the body — anchored through the cap-centroid → apex axis and
+    // rotated to the most-even split — so it follows the part's lean instead of
+    // skimming a leaning dome. The fit bisects + builds the cup shell, but the
+    // flange/bolt/dowel silhouette still assumes a Y-normal seam, so a diagonal
+    // fitted seam is non-manifold on flanged outer layers (see the config
+    // docstring). Until that silhouette is generalized, the DEFAULT stays the
+    // binormal-flatten `with_planar_seam`, which is bit-preserved here.
     if config.cast.planar_seam {
-        ribbon = ribbon.with_planar_seam();
+        let fitted_plane = if config.cast.planar_seam_fit {
+            cap_tuples.first().and_then(|(centroid, normal)| {
+                best_fit_planar_seam(scan_sdf.mesh(), *centroid, *normal)
+            })
+        } else {
+            None
+        };
+        ribbon = match fitted_plane {
+            Some((point, seam_normal)) => {
+                let n = seam_normal.into_inner();
+                eprintln!(
+                    "[cf-cast-cli] planar seam fitted to body (apex-anchored, \
+                     EXPERIMENTAL): normal [{:.3}, {:.3}, {:.3}]",
+                    n.x, n.y, n.z,
+                );
+                ribbon.with_planar_seam_at(point, n)
+            }
+            None => ribbon.with_planar_seam(),
+        };
     }
 
     if config.pour_gate.enabled {

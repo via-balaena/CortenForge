@@ -519,6 +519,25 @@ impl Ribbon {
         self
     }
 
+    /// Builder: set the seam to an EXPLICIT flat plane `(point, normal)`
+    /// (item A of `CF_CAST_ORGANIC_PARTS_RECON.md` §4.1).
+    ///
+    /// Unlike [`Self::with_planar_seam`] (which flattens the arc-midpoint
+    /// binormal to horizontal at the centerline midpoint — fine for a
+    /// near-straight part but lopsided on a leaning dome), this takes a
+    /// plane fitted to the actual body by
+    /// [`crate::seam_fit::best_fit_planar_seam`] (anchored through the
+    /// cap-centroid → apex axis, rotated to the most-even split). The
+    /// cup-wall half-space cut + flange both read it via
+    /// [`Self::seam_plane_reference`], so this single call retargets both.
+    ///
+    /// `normal` need not be unit-length; it is normalised here.
+    #[must_use]
+    pub fn with_planar_seam_at(mut self, point: Point3<f64>, normal: Vector3<f64>) -> Self {
+        self.planar_seam = Some((point, Unit::new_normalize(normal)));
+        self
+    }
+
     /// Builder: set the pour-gate + air-vent kind. Step 10 entry
     /// point — wraps a freshly-constructed [`Ribbon`] with a
     /// [`PourGateKind::Default`] spec (or disables via
