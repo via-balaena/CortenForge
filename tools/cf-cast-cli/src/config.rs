@@ -178,15 +178,15 @@ pub struct CastDefaults {
     /// first so the vertical cut bisects cleanly.
     #[serde(default)]
     pub planar_seam: bool,
-    /// **EXPERIMENTAL / INCOMPLETE.** When `planar_seam` is on, fit the flat
-    /// seam to the body (apex-anchored, balance-swept — item A §4.1) instead of
-    /// the binormal-flatten. The fit bisects a leaning dome evenly and builds
-    /// the cup SHELL, but the flange + bolt + dowel machinery still assumes a
-    /// Y-normal seam (X-Z `Silhouette2d`), so a diagonal fitted seam currently
-    /// produces a **non-manifold flange on the outer layers**. Off by default;
-    /// do NOT enable on a flanged cast until the silhouette/flange is
-    /// generalized to an arbitrary seam plane (the §F-style follow-up arc).
-    #[serde(default)]
+    /// When `planar_seam` is on, FIT the flat seam to the body (apex-anchored,
+    /// balance-swept — item A §4.1) so it follows a leaning part and bisects the
+    /// dome evenly instead of skimming it into a sliver. **Default `true`** —
+    /// the fit is the better seam (the flange/bolt/dowel silhouette is built in
+    /// the fitted plane, so it builds manifold at any orientation). Set `false`
+    /// to force the legacy binormal-flatten seam (the escape hatch); needs the
+    /// scan's `.prep.toml [caps]` for the apex anchor, else falls back to the
+    /// binormal seam automatically.
+    #[serde(default = "default_true")]
     pub planar_seam_fit: bool,
 }
 
@@ -201,7 +201,7 @@ impl Default for CastDefaults {
             output_dir: default_output_dir(),
             scan_mesh_direct_plug_layer_0: false,
             planar_seam: false,
-            planar_seam_fit: false,
+            planar_seam_fit: true,
         }
     }
 }

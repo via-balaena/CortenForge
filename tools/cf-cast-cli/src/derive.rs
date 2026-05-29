@@ -464,14 +464,14 @@ pub fn derive_spec_and_ribbon(
     // parts. The cup-wall halfspace + flange both read the ribbon's seam, so a
     // single call retargets both.
     //
-    // Item A §4.1 (EXPERIMENTAL, gated on `planar_seam_fit`): fit the flat
+    // Item A §4.1: by default (`planar_seam_fit`, default true) FIT the flat
     // plane to the body — anchored through the cap-centroid → apex axis and
-    // rotated to the most-even split — so it follows the part's lean instead of
-    // skimming a leaning dome. The fit bisects + builds the cup shell, but the
-    // flange/bolt/dowel silhouette still assumes a Y-normal seam, so a diagonal
-    // fitted seam is non-manifold on flanged outer layers (see the config
-    // docstring). Until that silhouette is generalized, the DEFAULT stays the
-    // binormal-flatten `with_planar_seam`, which is bit-preserved here.
+    // rotated to the most-even split — so it follows the part's lean and
+    // bisects the dome evenly instead of skimming it into a sliver. The
+    // flange/bolt/dowel silhouette is built in the fitted plane (S2/S3), so it
+    // builds manifold at any orientation. Needs caps for the apex anchor; with
+    // no caps, or with `planar_seam_fit = false` (the escape hatch), it falls
+    // back to the binormal-flatten `with_planar_seam`.
     if config.cast.planar_seam {
         let fitted_plane = if config.cast.planar_seam_fit {
             cap_tuples.first().and_then(|(centroid, normal)| {
@@ -484,8 +484,8 @@ pub fn derive_spec_and_ribbon(
             Some((point, seam_normal)) => {
                 let n = seam_normal.into_inner();
                 eprintln!(
-                    "[cf-cast-cli] planar seam fitted to body (apex-anchored, \
-                     EXPERIMENTAL): normal [{:.3}, {:.3}, {:.3}]",
+                    "[cf-cast-cli] planar seam fitted to body (apex-anchored): \
+                     normal [{:.3}, {:.3}, {:.3}]",
                     n.x, n.y, n.z,
                 );
                 ribbon.with_planar_seam_at(point, n)

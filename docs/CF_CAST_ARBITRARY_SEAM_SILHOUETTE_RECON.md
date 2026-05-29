@@ -10,6 +10,15 @@
 > blocker. This arc removes that blocker so the fitted seam can be the default.
 > **Composes on:** the seam-fit foundation (`5f3673d1`) — `planar_seam_fit` is the
 > opt-in that this arc makes safe + eventually default.
+>
+> **SHIPPED 2026-05-29 (S1–S4 done).** S1 `fdeeafe1` (generalize `Silhouette2d` +
+> `SeamPlaneBasis`, `from_body_at_y` byte-identical), S2+S3 `c2590370` (flange +
+> bolt + dowel route through the basis; legacy bit-identical). S4: the
+> `3quartachub` regen with the fitted seam builds the cup shell **manifold on all
+> 3 layers** (was `NotManifold` on layer 1) with balanced halves (Neg≈Pos), so the
+> **default is flipped** — `planar_seam_fit` defaults `true` (apex-anchored fit
+> when caps exist; `false` = legacy binormal escape hatch; no-caps auto-falls back
+> to binormal). `planar_seam = false` (curve-following) is untouched + byte-identical.
 
 ---
 
