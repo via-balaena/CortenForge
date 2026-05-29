@@ -310,9 +310,20 @@ fn build_plug_lock_pose(ribbon: &Ribbon) -> Option<(&PlugPinSpec, PrismaticPinPo
     // zero — `new_normalize` would emit a degenerate unit-Z
     // fallback; gate that as `None` so the caller drops the lock
     // rather than emitting a skewed pose.
-    let split_vec = ribbon.split_normal.as_vector();
+    // Orient the square lock's lateral axis to the SEAM normal so one pair of
+    // its faces is parallel to the seam plane → the seam bisects the pin
+    // symmetrically into two halves ("rotationally square to the two halves").
+    // With a FITTED (apex-anchored) seam the seam normal is diagonal, NOT
+    // `split_normal`, so deriving the lateral axis from `split_normal` (as the
+    // legacy path does) leaves the square skewed ~33° to the seam (workshop
+    // 2026-05-29). Use the fitted seam normal when present; else keep
+    // `split_normal` so binormal/curve-following casts stay byte-identical.
+    let ref_vec = match ribbon.seam_plane_basis() {
+        Some(_) => ribbon.seam_plane_reference().1.into_inner(),
+        None => ribbon.split_normal.as_vector(),
+    };
     let axis_v = axis_unit.into_inner();
-    let projected = split_vec - axis_v * split_vec.dot(&axis_v);
+    let projected = ref_vec - axis_v * ref_vec.dot(&axis_v);
     if projected.norm_squared() < 1.0e-9 {
         return None;
     }
