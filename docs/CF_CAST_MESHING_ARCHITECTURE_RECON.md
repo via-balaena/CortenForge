@@ -403,10 +403,12 @@ construction. **Solve both defects under one architecture, not separately.**
   memory blows to 2.6GB at 1.5mm. Reframed the priorities below. (Sharpness
   ceiling vs cell size: still worth a quick characterization in S1.)
 - **S1 — Two parallel, independent tracks (both gate on workshop cf-view):**
-  - **S1a — Silhouette optimization (G).** The highest value-per-effort:
-    share the silhouette across sides + stop over-sampling / derive from the
-    scan-mesh slice. Halves the regen with zero geometry change — verify
-    bit-identical output + the wall-time win. Funds everything downstream.
+  - **S1a — Silhouette optimization (G). ✅ PARTLY DONE (§MA-13).** Sharing
+    across sides SHIPPED (`06c0c8d7`), bit-identical, −27% CPU but **0% wall**
+    (the redundant silhouette was on the *parallel* path, not the critical
+    path). The over-sampling cut was SPIKED and **rejected** — it does move
+    wall (−27…−35%) but spends ~2.4–2.7 mm of organic fidelity at the
+    seam/floor high-curvature region (Defect-1 zone). See §MA-13.
   - **S1b — Composition spike (A).** Cap-plane floor cut (bounded box, 1µm
     bias) + seam as exact post-MC CSG; verify the floor↔socket↔seam junction
     goes crisp at the *current* 3mm cell size. Confirms composition fixes the
@@ -470,9 +472,96 @@ actually take. S0's profile will further ground the cost model.
 
 ---
 
+## §MA-13 S1a results + silhouette-cost spike (2026-05-30)
+
+Two measured results landed this session. Validation rig: ORIG vs NEW
+release binaries (NEW = the S1a commit), production canal config +
+`cast.base_mold.canaloff.toml` (production-identical except canal off, so
+the cup-piece silhouette path is fully exercised but the serial 0.5 mm
+canal-plug MC doesn't mask it). Machine: 8 physical / 12 logical cores.
+Byte-diff = `cmp` per STL + aggregate `md5`; geometry delta = numpy
+point-to-surface (dense baseline sampling, not vertex-to-vertex — the
+latter overstates deviation on the flat flange via re-triangulation).
+
+### S1a — share the silhouette across sides (SHIPPED `06c0c8d7`)
+
+`compose_piece_solid` split into `compose_piece_shared` (side-invariant:
+MC bounds + un-split flange `Solid` w/ silhouette + side-agnostic post-MC
+transforms) + `compose_piece_with_shared` (per-side shell ∩ halfspace ∪
+flange). `mesh_and_gate_v2_pieces` builds `shared` ONCE per layer above
+the `rayon::join`. Note the redundancy was broader than §MA-7 framed:
+**flange + dowel + bolt** each rebuilt their silhouette *per side* (6 per
+layer where 3 suffice); all take side-independent inputs.
+
+| metric | ORIG | NEW (S1a) | Δ |
+|---|---|---|---|
+| STL bytes (canal + canal-off) | — | — | **0 — bit-identical (12/12 ×2, md5 match)** |
+| lib tests | 304/0 | 304/0 | — |
+| CPU `user` (canal-off, 3-layer, 3 mm) | 321.6 s | **236.2 s** | **−27%** |
+| wall `real` | 101.4 s | 102.7 s | **≈ 0 (+1.3%, noise)** |
+| realized parallelism | 3.17× | 2.30× | — |
+
+**Why CPU drops but wall doesn't (the load-bearing finding):** a single
+cup half's chain is `silhouette → bake → MC`, run serially within the
+side; the two sides ran *in parallel*, each redundantly building the
+silhouette. With 6 cup-piece tasks on 8 cores the duplicate ran on an
+otherwise-idle core — costing CPU but **free in wall-clock**. S1a moves
+the silhouette to a serial-once step before the join, so the per-layer
+critical path is now `silhouette(~36 s, L1/L2) + bake+MC(~14.5 s) ≈ 51 s`
+— **identical to ORIG's single-side ~51 s**. The redundant silhouette was
+on the *parallel* path, not the critical path. (The §MA-7 "share across
+sides → ~halve the regen" framing implicitly assumed core saturation;
+with spare cores it's a CPU win only.) Still worth shipping: bit-identical,
+−27% CPU (helps the serial-ish grade-all/CI backstop), and the
+"compute-once" structure every downstream wall lever builds on.
+
+### Silhouette over-sampling cut (G-ii) — SPIKED, rejected for now
+
+Swept `SILHOUETTE_GRID_STEP_M` (0.5 → 1 → 2 → 3 mm) on canal-off, post-S1a.
+This *does* shorten the critical path (it cuts the silhouette cost itself):
+
+| step | wall `real` | vs 0.5 mm | F4 criticals |
+|---|---|---|---|
+| 0.5 mm (today) | 102.7 s | — | 0 |
+| 1 mm | 74.8 s | **−27%** | 0 |
+| 2 mm | 68.5 s | **−33%** | 0 |
+| 3 mm | 67.0 s | **−35%** | 0 |
+
+Knee at ~2 mm; F4-clean throughout (Defect-2 not pushed to failure).
+
+**But it is NOT geometrically free.** Point-to-surface deviation vs the
+0.5 mm baseline (cup pieces): typical rms **0.1–0.3 mm**, p95 **0.2–0.6 mm**
+(near the Bambu ~0.2 mm print floor) — *but* localized maxima of
+**~2.4–2.7 mm even at the 1 mm step**. Localized: the worst vertices
+cluster at **z ≈ −73 mm, x≈0, y≈0 — the part's floor end at the
+seam/centerline** (+ some flange-perimeter extremes), i.e. the
+high-curvature end of the body cross-section, **overlapping the Defect-1
+junction** S1b targets. The "below mold resolution anyway" escape **does
+not hold**: silhouette rounding is a *curvature-scale* change the 3 mm
+mold MC faithfully preserves, not something the mold quantizes away.
+
+This is the §MA-3 "neither composition nor DC is free — each *relocates*
+cost" prediction in the data: the over-sampling cut buys ~30% wall by
+spending organic flange/seam fidelity at exactly the corner we want crisp.
+
+**Decision:** ship S1a; **do not ship the over-sampling cut** (it degrades
+the seam/floor region above print resolution, conflicting with S1b's
+crispness goal). The cheap spike earned its keep by telling us *not* to
+spend this lever. Speed should instead come from the **bake/extractor**
+half of the critical path (S2: adaptive grid / grid-DC), where the
+trade-off doesn't touch organic fidelity. A conservative
+silhouette-step-tied-to-cell-size (~1 mm, −27% wall, ~2.4 mm worst-case)
+remains available behind a workshop cf-view gate if a quick win is wanted.
+
+---
+
 ## Successor
 
-S0 (profile + sharpness-ceiling characterization) picks up next — the
-cheapest, most decisive first step; it converts "which option" from
-argument into data and ships no production code, matching the workshop's
-deliberate, correctness-first pacing.
+**S1b (composition spike — exact-CSG floor + seam cuts) picks up next** —
+the workshop's actual #1 complaint (jagged floor→corner→mating-face) and
+the crispness fix whose cost is bounded. S1a is banked (§MA-13); the
+silhouette-cost speed lever is spiked-and-rejected, so the speed question
+defers to S2 (bake/extractor) where it won't fight S1b. Per
+[[feedback-correctness-over-speed]] — the spike converted "coarsen the
+silhouette?" from argument into data (and into a *no*) before any
+production code shipped.
