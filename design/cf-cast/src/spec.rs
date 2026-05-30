@@ -19,7 +19,7 @@ use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
 use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::solid_to_mm_mesh;
-use crate::piece::compose_piece_solid;
+use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared};
 use crate::plug::add_plug_pins;
 use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
@@ -1025,6 +1025,14 @@ fn mesh_and_gate_v2_pieces(
         .enumerate()
         .map(
             |(layer_index, layer)| -> Result<[PendingPiece; 2], CastError> {
+                // §MA-S1a: the flange silhouette extraction + the
+                // side-agnostic post-MC transforms are identical for both
+                // halves of a layer. Build them ONCE here and share across
+                // the two per-side meshing tasks below — removes the
+                // redundant per-side `Silhouette2d` recompute (the S0
+                // dominant cost) with bit-identical output. See
+                // `docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-10 S1a.
+                let shared = compose_piece_shared(&layer.body, spec.wall_thickness_m, ribbon)?;
                 let (neg_res, pos_res) = rayon::join(
                     || {
                         mesh_and_gate_v2_piece(
@@ -1033,6 +1041,7 @@ fn mesh_and_gate_v2_pieces(
                             layer,
                             layer_index,
                             PieceSide::Negative,
+                            &shared,
                             out_dir,
                             layer_count,
                         )
@@ -1044,6 +1053,7 @@ fn mesh_and_gate_v2_pieces(
                             layer,
                             layer_index,
                             PieceSide::Positive,
+                            &shared,
                             out_dir,
                             layer_count,
                         )
@@ -1058,18 +1068,29 @@ fn mesh_and_gate_v2_pieces(
 /// Compose + mesh + F4-gate a single piece. Extracted so
 /// `mesh_and_gate_v2_pieces` stays readable + each call site has
 /// the same target metadata threaded through identically.
+// 8 args: the per-piece identity (spec/ribbon/layer/index/side), the §MA-S1a
+// shared per-layer precompute, and the output target metadata (dir/count).
+// Bundling them into a context struct would add indirection without clarifying
+// this internal helper.
+#[allow(clippy::too_many_arguments)]
 fn mesh_and_gate_v2_piece(
     spec: &CastSpec,
     ribbon: &Ribbon,
     layer: &CastLayer,
     layer_index: usize,
     piece_side: PieceSide,
+    shared: &PieceShared,
     out_dir: &Path,
     layer_count: usize,
 ) -> Result<PendingPiece, CastError> {
     let t_compose = std::time::Instant::now();
-    let (piece_solid, mating_transforms) =
-        compose_piece_solid(&layer.body, spec.wall_thickness_m, ribbon, piece_side)?;
+    let (piece_solid, mating_transforms) = compose_piece_with_shared(
+        &layer.body,
+        spec.wall_thickness_m,
+        ribbon,
+        piece_side,
+        shared,
+    )?;
     let target = CastTarget::MoldPiece {
         layer_index,
         piece_side,

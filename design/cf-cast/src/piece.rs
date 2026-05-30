@@ -109,7 +109,7 @@
 //! eliminates). The mesh-CSG `MatingTransform` variants stay for
 //! the cup pour-gate carve (S7 of the prior mating-features arc).
 
-use cf_design::{Sdf, Solid};
+use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Vector3};
 
 use crate::error::{CastError, CastTarget};
@@ -292,6 +292,63 @@ pub fn compose_piece_solid(
     ribbon: &Ribbon,
     side: PieceSide,
 ) -> Result<(Solid, Vec<MatingTransform>), CastError> {
+    let shared = compose_piece_shared(layer_body, wall_thickness_m, ribbon)?;
+    compose_piece_with_shared(layer_body, wall_thickness_m, ribbon, side, &shared)
+}
+
+/// Side-independent precompute shared by both [`PieceSide`]s of a
+/// layer. Built once by [`compose_piece_shared`] and consumed by
+/// [`compose_piece_with_shared`] for each half.
+///
+/// §MA-S1a (`docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-6 option
+/// G): the flange's `Silhouette2d` extraction is the dominant
+/// per-piece cost (S0 profile §MA-7, ~70% of compose) and is the body
+/// seam-plane cross-section — **identical for both halves**. Holding
+/// it here removes the redundant per-side recomputation with
+/// bit-identical output (each side only adds the cheap halfspace
+/// intersect + body subtract).
+#[derive(Debug, Clone)]
+pub struct PieceShared {
+    /// MC sampling bounds (`body_bounds` expanded by the cup-wall /
+    /// flange reach) — side-independent, reused by both halves.
+    mc_bounds: Aabb,
+    /// The symmetric (pre-halfspace-cut) flange solid, with its 2D
+    /// silhouette already extracted. `None` when the ribbon has no
+    /// flange. Each side cheaply `.intersect`s its own halfspace; the
+    /// expensive `Silhouette2d` build happens ONCE here, not per side.
+    flange_unsplit: Option<Solid>,
+    /// Post-MC mesh-CSG transforms (pour gate, plug-lock socket, dowel
+    /// holes, bolt pattern). All side-agnostic by construction, so
+    /// they are built once and cloned into each side's result.
+    transforms: Vec<MatingTransform>,
+}
+
+/// Build the side-independent half of [`compose_piece_solid`].
+///
+/// Returns the MC bounds, the un-split flange solid (with its
+/// silhouette), and the post-MC `MatingTransform`s — all computed ONCE
+/// per layer and reused for both [`PieceSide`]s via
+/// [`compose_piece_with_shared`].
+///
+/// The `Silhouette2d::from_body_in_plane` extraction (the dominant
+/// per-piece cost, S0 profile §MA-7) samples the same body
+/// cross-section for both halves, so factoring it here removes the
+/// redundant per-side recomputation with bit-identical output. See
+/// `docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-6 option G / §MA-10
+/// S1a. The pour-gate, plug-lock socket, dowel-hole, and bolt-pattern
+/// transform builders are all side-agnostic (none take a `PieceSide`),
+/// so they likewise move here.
+///
+/// # Errors
+///
+/// - [`CastError::InfiniteBounds`] with [`CastTarget::LayerBody`] if
+///   `layer_body.bounds()` returns `None` (same condition as
+///   [`compose_piece_solid`]).
+pub fn compose_piece_shared(
+    layer_body: &Solid,
+    wall_thickness_m: f64,
+    ribbon: &Ribbon,
+) -> Result<PieceShared, CastError> {
     // §Q-1 (2026-05-26): MC bounds are body_bounds expanded by
     // max(wall_thickness, flange_width) + ε. The cup-wall shell
     // SDF + flange SDF must BOTH sample within this region for MC
@@ -311,67 +368,14 @@ pub fn compose_piece_solid(
     let mc_pad = wall_thickness_m.max(flange_extent) + MC_BOUNDS_PAD_M;
     let mc_bounds = body_bounds.expanded(mc_pad);
 
-    // Pre-S4 / recon-4 (P) SDF seam: side-specific half-space
-    // intersect at the SDF level. The biased halfspace's SDF is
-    // exactly linear; MC interpolates seam-cap vertices on the seam
-    // plane to f64 precision per §F-4. S5/S6/S7 mating-features
-    // mesh-CSG cylinder primitives compose post-MC against the
-    // resulting half-shell mesh.
-    // §M-S1 (2026-05-27): overlap_m = 0 throughout (flush mating).
-    // Pre-§M used `RIBBON_PIECE_OVERLAP_M = 0.5 mm` which created a
-    // stepped mating face vs the flange's already-zero overlap.
-    let halfspace = ribbon.halfspace_solid(side, mc_bounds, 0.0);
-
-    // §Q-1: cup-wall as body-tracking shell, not bounding cuboid.
-    // See [`CupWallShellSdf`] docstring for the architectural
-    // rationale. The shell SDF + `mc_bounds` give MC a clean
-    // sampling region around the body's outer shell with no
-    // cuboid SDF zero-set passing through flange interior.
-    let shell = Solid::from_sdf(
-        CupWallShellSdf {
-            body: layer_body.clone(),
-            wall_thickness_m,
-        },
-        mc_bounds,
-    );
-    let mut base_piece = shell.intersect(halfspace);
-
-    // S1 of `docs/CF_CAST_SEAM_FLANGE_RECON.md` §F-13: when
-    // `ribbon.flange` is `FlangeKind::Plate(spec)`, union the
-    // per-side flange SDF into the cup-piece base. The flange is a
-    // flat slab at the seam plane extending OUTWARD from the body
-    // cavity perimeter. Pre-§Q-1 the flange's halfspace cut
-    // explicitly used zero overlap_m so the cup-wall × flange
-    // junction was flush; post-§Q-1 the cup-wall is body-tracking
-    // (shell SDF) and the flange's outer reach is fully inside
-    // `mc_bounds`, so no cuboid face × flange interaction can
-    // produce MC ambiguity. `FlangeKind::None` short-circuits.
-    //
-    // §F-S1 follow-up (2026-05-27): subtract the layer body from the
-    // flange before unioning. The §F-S1 silhouette-based FlangeSdf
-    // uses 2D point-to-silhouette-curve distance, which has no
-    // awareness of the body's 3D extent — at points where the body
-    // bulges in ±Y past the seam-plane silhouette (sock fabric
-    // bunching on top of capsule curves), the flange would otherwise
-    // extend into the body's 3D interior and create floating shards
-    // of cup material inside the body cavity after the cup-piece
-    // union. `flange ∖ body` clips the flange to "outside body in
-    // 3D", restoring 3D-body-respect without losing the §F-S1
-    // concavity fix (flange material in the seam plane outside the
-    // silhouette curve = outside body in 3D too). See workshop
-    // cf-view smoke after §F-S2 production regen for the shard
-    // diagnostic that triggered this follow-up.
-    if let Some(flange_spec) = ribbon.flange.spec() {
-        let flange = crate::flange::build_flange_solid_for_side(
-            layer_body,
-            ribbon,
-            flange_spec,
-            mc_bounds,
-            side,
-        );
-        let flange_clipped = flange.subtract(layer_body.clone());
-        base_piece = base_piece.union(flange_clipped);
-    }
+    // §MA-S1a: build the symmetric (pre-halfspace) flange solid ONCE
+    // here — its `Silhouette2d` extraction (the S0-dominant cost) is
+    // the body's seam-plane cross-section, identical for both halves.
+    // Each side applies the cheap halfspace intersect + body subtract
+    // in `compose_piece_with_shared`. `FlangeKind::None` → `None`.
+    let flange_unsplit = ribbon.flange.spec().map(|flange_spec| {
+        crate::flange::build_flange_solid(layer_body, ribbon, flange_spec, mc_bounds)
+    });
 
     // Post-mortem salvage (2026-05-24): the S4 plug-floor-lock socket
     // is emitted as a POST-MC mesh-CSG transform via
@@ -441,7 +445,103 @@ pub fn compose_piece_solid(
     // §4.2 / §9 C2. `build_cup_cap_trim_transform` is retained (dormant,
     // with the bias) for that future slab-anchored reuse.
 
-    Ok((base_piece, transforms))
+    Ok(PieceShared {
+        mc_bounds,
+        flange_unsplit,
+        transforms,
+    })
+}
+
+/// Assemble one [`PieceSide`]'s mold-piece from a [`PieceShared`].
+///
+/// The cheap, side-dependent half of [`compose_piece_solid`]: the
+/// cup-wall shell ∩ this side's halfspace, ∪ the shared flange clipped
+/// to this side. The transforms are cloned from `shared` (side-agnostic).
+///
+/// Factoring the silhouette-bearing invariant work into
+/// [`compose_piece_shared`] lets a layer's two halves share it
+/// (§MA-S1a). This path is bit-identical to the pre-split
+/// `compose_piece_solid`: the per-side flange is exactly
+/// `build_flange_solid(...) ∩ halfspace(side) ∖ body`, which is what
+/// `build_flange_solid_for_side(...).subtract(body)` computed before —
+/// only now the `build_flange_solid` silhouette is built once and the
+/// resulting `Solid` is cloned per side (clone is `Arc`-cheap and
+/// evaluates identically, so MC samples the same field).
+///
+/// # Errors
+///
+/// Infallible in practice (always returns `Ok`); the `Result` return
+/// mirrors [`compose_piece_solid`] for a uniform call site and to keep
+/// room for future fallible per-side composition steps.
+pub fn compose_piece_with_shared(
+    layer_body: &Solid,
+    wall_thickness_m: f64,
+    ribbon: &Ribbon,
+    side: PieceSide,
+    shared: &PieceShared,
+) -> Result<(Solid, Vec<MatingTransform>), CastError> {
+    let mc_bounds = shared.mc_bounds;
+
+    // Pre-S4 / recon-4 (P) SDF seam: side-specific half-space
+    // intersect at the SDF level. The biased halfspace's SDF is
+    // exactly linear; MC interpolates seam-cap vertices on the seam
+    // plane to f64 precision per §F-4. S5/S6/S7 mating-features
+    // mesh-CSG cylinder primitives compose post-MC against the
+    // resulting half-shell mesh.
+    // §M-S1 (2026-05-27): overlap_m = 0 throughout (flush mating).
+    // Pre-§M used `RIBBON_PIECE_OVERLAP_M = 0.5 mm` which created a
+    // stepped mating face vs the flange's already-zero overlap.
+    let halfspace = ribbon.halfspace_solid(side, mc_bounds, 0.0);
+
+    // §Q-1: cup-wall as body-tracking shell, not bounding cuboid.
+    // See [`CupWallShellSdf`] docstring for the architectural
+    // rationale. The shell SDF + `mc_bounds` give MC a clean
+    // sampling region around the body's outer shell with no
+    // cuboid SDF zero-set passing through flange interior.
+    let shell = Solid::from_sdf(
+        CupWallShellSdf {
+            body: layer_body.clone(),
+            wall_thickness_m,
+        },
+        mc_bounds,
+    );
+    let mut base_piece = shell.intersect(halfspace);
+
+    // S1 of `docs/CF_CAST_SEAM_FLANGE_RECON.md` §F-13: when
+    // `ribbon.flange` is `FlangeKind::Plate(spec)`, union the
+    // per-side flange SDF into the cup-piece base. The flange is a
+    // flat slab at the seam plane extending OUTWARD from the body
+    // cavity perimeter. Pre-§Q-1 the flange's halfspace cut
+    // explicitly used zero overlap_m so the cup-wall × flange
+    // junction was flush; post-§Q-1 the cup-wall is body-tracking
+    // (shell SDF) and the flange's outer reach is fully inside
+    // `mc_bounds`, so no cuboid face × flange interaction can
+    // produce MC ambiguity. `FlangeKind::None` short-circuits
+    // (`shared.flange_unsplit` is `None`).
+    //
+    // §F-S1 follow-up (2026-05-27): subtract the layer body from the
+    // flange before unioning. The §F-S1 silhouette-based FlangeSdf
+    // uses 2D point-to-silhouette-curve distance, which has no
+    // awareness of the body's 3D extent — at points where the body
+    // bulges in ±Y past the seam-plane silhouette (sock fabric
+    // bunching on top of capsule curves), the flange would otherwise
+    // extend into the body's 3D interior and create floating shards
+    // of cup material inside the body cavity after the cup-piece
+    // union. `flange ∖ body` clips the flange to "outside body in
+    // 3D", restoring 3D-body-respect without losing the §F-S1
+    // concavity fix (flange material in the seam plane outside the
+    // silhouette curve = outside body in 3D too). See workshop
+    // cf-view smoke after §F-S2 production regen for the shard
+    // diagnostic that triggered this follow-up.
+    if let Some(flange_unsplit) = &shared.flange_unsplit {
+        let flange = flange_unsplit
+            .clone()
+            .intersect(ribbon.halfspace_solid(side, mc_bounds, 0.0));
+        let flange_clipped = flange.subtract(layer_body.clone());
+        base_piece = base_piece.union(flange_clipped);
+    }
+
+    Ok((base_piece, shared.transforms.clone()))
 }
 
 #[cfg(test)]
