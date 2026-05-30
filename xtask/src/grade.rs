@@ -546,6 +546,26 @@ pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
     Ok(())
 }
 
+/// Partition a sorted crate list into the `i/N` shard (1-based).
+///
+/// Assignment is round-robin (`index % N == i-1`) rather than contiguous
+/// blocks: the caller passes an alphabetically-sorted list, so round-robin
+/// scatters expensive crates (e.g. `cf-cast`, `sim-soft`) across shards
+/// instead of letting them cluster in one block and unbalance wall time.
+/// `None` returns the full list unchanged. The union of all `1..=N` shards
+/// is exactly the input with no overlaps (see `select_shard_partitions`).
+fn select_shard(crate_names: &[String], shard: Option<(usize, usize)>) -> Vec<String> {
+    match shard {
+        None => crate_names.to_vec(),
+        Some((i, n)) => crate_names
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| idx % n == i - 1)
+            .map(|(_, name)| name.clone())
+            .collect(),
+    }
+}
+
 /// Run grading across every workspace member.
 ///
 /// Enumerates workspace crates via `cargo metadata --no-deps` — no
@@ -554,10 +574,13 @@ pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
 /// aggregated and reported in a compact summary. Exits non-zero if
 /// any crate's automated grade is below A.
 ///
+/// `shard` (from `--shard i/N`) restricts grading to a disjoint 1/N slice
+/// so CI can fan grade-all out across N parallel jobs; see [`select_shard`].
+///
 /// Intended as the CI entry point for single-source-of-truth grading:
 /// CI runs `cargo xtask grade-all --skip-coverage --quiet`, checks the
 /// exit code, and surfaces the failure summary on red.
-pub fn run_all(verbosity: Verbosity) -> Result<()> {
+pub fn run_all(verbosity: Verbosity, shard: Option<(usize, usize)>) -> Result<()> {
     let sh = Shell::new()?;
     let workspace_root = find_workspace_root(&sh)?;
     sh.change_dir(&workspace_root);
@@ -573,18 +596,31 @@ pub fn run_all(verbosity: Verbosity) -> Result<()> {
         .context("`cargo metadata`: missing 'packages' array")?;
 
     // --no-deps scopes packages to workspace members only.
-    let mut crate_names: Vec<String> = packages
+    let mut all_crate_names: Vec<String> = packages
         .iter()
         .filter_map(|p| p["name"].as_str().map(String::from))
         .collect();
-    crate_names.sort();
+    all_crate_names.sort();
+    let workspace_total = all_crate_names.len();
+
+    // Apply --shard i/N: each parallel CI job grades a disjoint slice.
+    let crate_names = select_shard(&all_crate_names, shard);
 
     if !verbosity.quiet {
         eprintln!();
-        eprintln!(
-            "  grade-all: evaluating {} workspace crates…",
-            crate_names.len()
-        );
+        match shard {
+            Some((i, n)) => eprintln!(
+                "  grade-all: shard {}/{} — evaluating {} of {} workspace crates…",
+                i,
+                n,
+                crate_names.len(),
+                workspace_total
+            ),
+            None => eprintln!(
+                "  grade-all: evaluating {} workspace crates…",
+                crate_names.len()
+            ),
+        }
         if verbosity.skip_coverage {
             eprintln!("  (coverage skipped via --skip-coverage)");
         }
@@ -2843,6 +2879,65 @@ mod tests {
 
     fn split(s: &str) -> Vec<&str> {
         s.lines().collect()
+    }
+
+    fn names(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("crate-{i:03}")).collect()
+    }
+
+    #[test]
+    fn select_shard_none_returns_everything() {
+        let all = names(10);
+        assert_eq!(select_shard(&all, None), all);
+    }
+
+    #[test]
+    fn select_shard_partitions() {
+        // The union of all N shards must be exactly the input, with no
+        // crate appearing in two shards and none dropped — otherwise CI
+        // would silently skip (or double-grade) a crate.
+        let all = names(295);
+        for n in [1usize, 2, 3, 4, 7] {
+            let mut union: Vec<String> = Vec::new();
+            for i in 1..=n {
+                union.extend(select_shard(&all, Some((i, n))));
+            }
+            union.sort();
+            let mut expected = all.clone();
+            expected.sort();
+            assert_eq!(union, expected, "shards of {n} must reconstruct the input");
+        }
+    }
+
+    #[test]
+    fn select_shard_disjoint() {
+        let all = names(295);
+        let n = 3;
+        let s1 = select_shard(&all, Some((1, n)));
+        let s2 = select_shard(&all, Some((2, n)));
+        let s3 = select_shard(&all, Some((3, n)));
+        for c in &s1 {
+            assert!(!s2.contains(c) && !s3.contains(c), "{c} in multiple shards");
+        }
+        for c in &s2 {
+            assert!(!s3.contains(c), "{c} in multiple shards");
+        }
+    }
+
+    #[test]
+    fn select_shard_balances_within_one() {
+        // Round-robin keeps shard sizes within 1 of each other.
+        let all = names(295);
+        let n = 3;
+        let sizes: Vec<usize> = (1..=n)
+            .map(|i| select_shard(&all, Some((i, n))).len())
+            .collect();
+        let max = sizes.iter().max().unwrap();
+        let min = sizes.iter().min().unwrap();
+        assert!(
+            max - min <= 1,
+            "shard sizes {sizes:?} differ by more than 1"
+        );
     }
 
     #[test]

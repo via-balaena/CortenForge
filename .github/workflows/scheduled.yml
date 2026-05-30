@@ -224,11 +224,56 @@ jobs:
         run: cargo check --all-features
 
   # ============================================================================
+  # CLIPPY TOOLCHAIN-DRIFT EARLY WARNING
+  # ============================================================================
+  # Rust ships a new stable every ~6 weeks, and each one can promote/sharpen
+  # clippy lints (the workspace opts into `pedantic` + `nursery`). PR CI rides
+  # `@stable`, but local dev toolchains lag — so a contributor's local clippy can
+  # pass while the next CI run fails on a lint their toolchain never had. That gap
+  # masked a real failure once (the 1.95 -> 1.96 `suboptimal_flops` sweep). This
+  # weekly job runs clippy on the *current* stable and prints its version, so new
+  # lints surface as a standing signal pointing at the drift — before they block a
+  # PR merge. It mirrors the PR clippy gate exactly (`--all-targets --all-features
+  # -- -D warnings`).
+  clippy-stable-drift:
+    name: Clippy (latest stable drift check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+
+      - name: Install latest stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record toolchain version
+        run: |
+          echo "## Clippy Drift Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Ran against the latest stable toolchain:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          rustc --version >> $GITHUB_STEP_SUMMARY
+          cargo clippy --version >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Run clippy on latest stable
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ============================================================================
   # SUMMARY
   # ============================================================================
   summary:
     name: Weekly Summary
-    needs: [security-audit, coverage, dependencies, mutation-testing, benchmark-baseline, supply-chain, msrv]
+    needs: [security-audit, coverage, dependencies, mutation-testing, benchmark-baseline, supply-chain, msrv, clippy-stable-drift]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -245,3 +290,4 @@ jobs:
           echo "| Benchmarks | ${{ needs.benchmark-baseline.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Supply Chain | ${{ needs.supply-chain.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| MSRV | ${{ needs.msrv.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Clippy Drift | ${{ needs.clippy-stable-drift.result }} |" >> $GITHUB_STEP_SUMMARY

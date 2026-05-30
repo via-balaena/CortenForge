@@ -93,6 +93,14 @@ enum Commands {
         /// for CI use — cargo llvm-cov is too slow at workspace scale.
         #[arg(long)]
         skip_coverage: bool,
+
+        /// Grade only a deterministic 1/N slice of the workspace, as
+        /// `i/N` (1-based; e.g. `--shard 2/3`). Lets CI fan grade-all
+        /// out across N parallel jobs to cut wall time. Crates are
+        /// assigned round-robin over the sorted list so heavy crates
+        /// scatter evenly across shards. Omit to grade everything.
+        #[arg(long, value_parser = parse_shard)]
+        shard: Option<(usize, usize)>,
     },
 
     /// Record A-grade completion for a crate
@@ -143,16 +151,68 @@ fn main() -> Result<()> {
             quiet,
             verbose,
             skip_coverage,
-        } => grade::run_all(grade::Verbosity {
-            quiet,
-            verbose,
-            json: false,
-            skip_coverage,
-        }),
+            shard,
+        } => grade::run_all(
+            grade::Verbosity {
+                quiet,
+                verbose,
+                json: false,
+                skip_coverage,
+            },
+            shard,
+        ),
         Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
+    }
+}
+
+/// clap value parser for `--shard i/N` (1-based shard index over N shards).
+///
+/// Rejects malformed input, a zero shard count, and an index outside
+/// `1..=N` so a typo fails fast at arg-parse time rather than silently
+/// grading the wrong slice in CI.
+fn parse_shard(s: &str) -> Result<(usize, usize), String> {
+    let (i, n) = s
+        .split_once('/')
+        .ok_or_else(|| format!("expected `i/N`, got `{s}`"))?;
+    let i: usize = i
+        .trim()
+        .parse()
+        .map_err(|_| format!("shard index `{i}` is not a number"))?;
+    let n: usize = n
+        .trim()
+        .parse()
+        .map_err(|_| format!("shard count `{n}` is not a number"))?;
+    if n == 0 {
+        return Err("shard count must be ≥ 1".to_string());
+    }
+    if i < 1 || i > n {
+        return Err(format!("shard index {i} out of range 1..={n}"));
+    }
+    Ok((i, n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_shard;
+
+    #[test]
+    fn parse_shard_accepts_valid() {
+        assert_eq!(parse_shard("1/3"), Ok((1, 3)));
+        assert_eq!(parse_shard("3/3"), Ok((3, 3)));
+        assert_eq!(parse_shard(" 2 / 4 "), Ok((2, 4)));
+    }
+
+    #[test]
+    fn parse_shard_rejects_malformed() {
+        assert!(parse_shard("2").is_err()); // missing /N
+        assert!(parse_shard("x/3").is_err()); // non-numeric index
+        assert!(parse_shard("1/y").is_err()); // non-numeric count
+        assert!(parse_shard("0/3").is_err()); // index below 1
+        assert!(parse_shard("4/3").is_err()); // index above count
+        assert!(parse_shard("1/0").is_err()); // zero count
     }
 }

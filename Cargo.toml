@@ -453,6 +453,14 @@ missing_docs = "warn"
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
+# suboptimal_flops (nursery): suggests `a * b + c` -> `a.mul_add(b, c)`. mul_add is
+# *fused* (single rounding), so it CHANGES floating-point results. Empirically (A/B,
+# 2026-05-30) applying it shifted cf-cast SDF values enough to flip marching-cubes
+# topology — the g7/g9 prismatic-pin characterisation tests changed component counts,
+# i.e. it alters physically-validated cast geometry. Byte-identity > the marginal
+# perf/accuracy of one nursery lint, so we opt out workspace-wide. The lint newly
+# fired across 11 crates after the clippy 1.95 -> 1.96 stable bump.
+suboptimal_flops = "allow"
 # unwrap/expect: warn at workspace level (for tests), deny in lib.rs (for library code)
 # See docs/INFRASTRUCTURE.md "Safety Lint Policy" for the rationale.
 unwrap_used = "warn"
