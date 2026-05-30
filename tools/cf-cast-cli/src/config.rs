@@ -188,6 +188,15 @@ pub struct CastDefaults {
     /// binormal seam automatically.
     #[serde(default = "default_true")]
     pub planar_seam_fit: bool,
+    /// §MA-S1b: flatten the cavity floor with exact post-MC CSG (dip-fill
+    /// union + bump-cut subtract at the cap plane) so the floor↔socket↔
+    /// seam junction is crisp instead of marching-cubes-rounded. Needs
+    /// `planar_seam` + a pour-end cap hint (the scan `.prep.toml [caps]`);
+    /// a no-op otherwise. Off by default — opt-in per part, because the
+    /// flattening footprint is the cap-plane cross-section's convex hull
+    /// (correct for convex cavity floors, over-covers non-convex ones).
+    #[serde(default)]
+    pub flat_cavity_floor: bool,
 }
 
 impl Default for CastDefaults {
@@ -202,6 +211,7 @@ impl Default for CastDefaults {
             scan_mesh_direct_plug_layer_0: false,
             planar_seam: false,
             planar_seam_fit: true,
+            flat_cavity_floor: false,
         }
     }
 }

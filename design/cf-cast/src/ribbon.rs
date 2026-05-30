@@ -365,6 +365,15 @@ pub struct Ribbon {
     /// the curve-following default, which keep the byte-identical legacy
     /// silhouette path.
     pub planar_seam_basis: Option<SeamPlaneBasis>,
+    /// §MA-S1b: when `true`, flatten the cavity floor with exact post-MC
+    /// CSG (dip-fill union + bump-cut subtract at the cap plane) so the
+    /// floor↔socket↔seam junction is crisp instead of MC-rounded. No-op
+    /// unless both [`Self::planar_seam`] and [`Self::pour_end_hint`] are
+    /// set (it needs the seam plane + the cap plane). Default `false` —
+    /// opt-in per part because the footprint is the body's cap-plane
+    /// cross-section convex hull (correct for convex floors; over-covers
+    /// non-convex ones). Set via [`Self::with_flat_cavity_floor`].
+    pub flat_cavity_floor: bool,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -501,7 +510,17 @@ impl Ribbon {
             pour_end_hint: None,
             planar_seam: None,
             planar_seam_basis: None,
+            flat_cavity_floor: false,
         })
+    }
+
+    /// Builder: enable §MA-S1b exact-CSG cavity-floor flattening (see
+    /// [`Self::flat_cavity_floor`]). No-op without a planar seam +
+    /// cap-plane hint.
+    #[must_use]
+    pub const fn with_flat_cavity_floor(mut self) -> Self {
+        self.flat_cavity_floor = true;
+        self
     }
 
     /// Builder: collapse the seam to a single FLAT VERTICAL plane (S1

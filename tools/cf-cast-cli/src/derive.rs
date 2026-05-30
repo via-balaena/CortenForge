@@ -508,6 +508,12 @@ pub fn derive_spec_and_ribbon(
         };
     }
 
+    // §MA-S1b: exact-CSG cavity-floor flattening. No-op unless the ribbon
+    // also has a planar seam + pour-end cap hint (set above / below).
+    if config.cast.flat_cavity_floor {
+        ribbon = ribbon.with_flat_cavity_floor();
+    }
+
     if config.pour_gate.enabled {
         // Organic-parts opt-in: single axial pour bore at the dome
         // apex on the seam (splits the flange; straight funnel;

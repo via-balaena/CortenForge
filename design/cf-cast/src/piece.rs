@@ -110,10 +110,10 @@
 //! the cup pour-gate carve (S7 of the prior mating-features arc).
 
 use cf_design::{Aabb, Sdf, Solid};
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Point3, Unit, Vector3};
 
 use crate::error::{CastError, CastTarget};
-use crate::mesh_csg::MatingTransform;
+use crate::mesh_csg::{FloorSlabParams, MatingTransform};
 use crate::plug::build_plug_lock_socket_transform;
 use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
@@ -541,7 +541,137 @@ pub fn compose_piece_with_shared(
         base_piece = base_piece.union(flange_clipped);
     }
 
-    Ok((base_piece, shared.transforms.clone()))
+    // §MA-S1b: prepend the exact post-MC cavity-floor flattening ops
+    // (dip-fill union + bump-cut subtract) BEFORE the shared transforms
+    // so they run ahead of the plug-lock socket subtract — the socket
+    // then carves into a flat exact floor (crisp floor↔socket junction).
+    // Empty unless `ribbon.flat_cavity_floor` is set AND the ribbon has a
+    // planar seam + cap-plane hint (else a no-op).
+    let mut transforms =
+        build_cavity_floor_slab_transforms(layer_body, ribbon, wall_thickness_m, side);
+    transforms.extend(shared.transforms.iter().cloned());
+    Ok((base_piece, transforms))
+}
+
+/// §MA-S1b spike: build the post-MC cavity-floor flattening ops for `side`.
+///
+/// Returns a (dip-filler UNION, bump-cutter SUBTRACT) pair that together
+/// force the cavity floor flat at the cap plane: the union fills MC
+/// undershoot dips, the subtract shaves MC overshoot bumps. Both
+/// footprints follow the body's cap-plane cross-section (ray-sampled)
+/// and are seam-clipped (1 µm CONTAINED bias) to this piece's side, so
+/// the floor↔socket↔seam junction comes out crisp without adding
+/// material past the mating face or notching the organic wall. Returns
+/// an empty `Vec` for a ribbon lacking a planar seam or cap-plane.
+// The ray-march below casts small bounded loop indices (k < SAMPLES = 48,
+// step counts < r_max/step ≈ 300) to f64 and the step bound to usize —
+// all exact / in-range, no meaningful precision or truncation loss.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn build_cavity_floor_slab_transforms(
+    layer_body: &Solid,
+    ribbon: &Ribbon,
+    wall_thickness_m: f64,
+    side: PieceSide,
+) -> Vec<MatingTransform> {
+    const BIAS_M: f64 = 1.0e-6;
+    const SAMPLES: usize = 48;
+    if !ribbon.flat_cavity_floor {
+        return Vec::new();
+    }
+    let Some((cap_centroid, cap_normal_vec)) = ribbon.pour_end_hint else {
+        return Vec::new();
+    };
+    let Some((seam_point, seam_normal)) = ribbon.planar_seam else {
+        return Vec::new();
+    };
+    let n = Unit::new_normalize(cap_normal_vec).into_inner();
+
+    // In-cap-plane orthonormal basis for cross-section ray sampling.
+    let seed = if n.z.abs() < 0.9 {
+        Vector3::z()
+    } else {
+        Vector3::x()
+    };
+    let u = (seed - n * n.dot(&seed)).normalize();
+    let v = n.cross(&u);
+
+    // Ray-sample the body's cap-plane cross-section. Sample 0.5 mm toward
+    // the cavity (−cap_normal = body interior) so the section is cleanly
+    // inside (body.evaluate < 0); march outward to the exit. Each
+    // direction's exit becomes a footprint boundary radius.
+    let p0 = cap_centroid - n * 0.0005;
+    let step = 0.0005_f64;
+    let r_max = 0.150_f64;
+    let margin_m = 0.0005_f64;
+    // Dip-filler depth into the floor base; stay within the floor depth.
+    let total_thick = (wall_thickness_m * 0.8).min(0.004);
+    let max_steps = (r_max / step).ceil() as usize;
+    let mut reaches: Vec<(Vector3<f64>, f64)> = Vec::with_capacity(SAMPLES);
+    for k in 0..SAMPLES {
+        let theta = std::f64::consts::TAU * (k as f64) / (SAMPLES as f64);
+        let dir = u * theta.cos() + v * theta.sin();
+        // March outward until the body cross-section exits (evaluate > 0).
+        let mut reach = r_max;
+        for s in 0..max_steps {
+            let r = step * (s as f64);
+            if layer_body.evaluate(&(p0 + dir * r)) > 0.0 {
+                reach = r;
+                break;
+            }
+        }
+        reaches.push((dir, reach));
+    }
+    if reaches.is_empty() {
+        return Vec::new();
+    }
+
+    // Seam clip: keep this piece's side, biased 1 µm in (CONTAINED).
+    // Negative keeps (p − seam_point)·seam_normal < 0; Positive > 0 →
+    // keep-normal = −side.sign() · seam_normal.
+    let seam_keep_normal = Unit::new_normalize(seam_normal.into_inner() * (-side.sign()));
+    let seam_offset_m = seam_keep_normal.into_inner().dot(&seam_point.coords) + BIAS_M;
+
+    // Dip-filler prism: footprint = cross-section + 0.5 mm (reaches into
+    // the cup wall = CONTAINED), spanning d ∈ [−1 µm (cavity), +thick].
+    let mut fill_pts: Vec<[f64; 3]> = Vec::with_capacity(SAMPLES * 2);
+    // Bump-cutter prism: footprint = cross-section − 0.5 mm (inset off the
+    // wall), spanning d ∈ [−3 mm (cavity), +1 µm (just into floor base)].
+    let mut cut_pts: Vec<[f64; 3]> = Vec::with_capacity(SAMPLES * 2);
+    for &(dir, r) in &reaches {
+        let fill_lat = cap_centroid + dir * (r + margin_m);
+        let fill_top = fill_lat - n * BIAS_M;
+        let fill_bot = fill_lat + n * total_thick;
+        fill_pts.push([fill_top.x, fill_top.y, fill_top.z]);
+        fill_pts.push([fill_bot.x, fill_bot.y, fill_bot.z]);
+
+        let cut_r = (r - margin_m).max(0.0);
+        let cut_lat = cap_centroid + dir * cut_r;
+        let cut_top = cut_lat - n * 0.003; // 3 mm into the cavity (above bumps)
+        let cut_bot = cut_lat + n * BIAS_M; // 1 µm into the floor base
+        cut_pts.push([cut_top.x, cut_top.y, cut_top.z]);
+        cut_pts.push([cut_bot.x, cut_bot.y, cut_bot.z]);
+    }
+
+    vec![
+        MatingTransform::UnionFloorSlab {
+            params: FloorSlabParams {
+                hull_points_m: fill_pts,
+                seam_keep_normal,
+                seam_offset_m,
+            },
+        },
+        MatingTransform::SubtractFloorCap {
+            params: FloorSlabParams {
+                hull_points_m: cut_pts,
+                seam_keep_normal,
+                seam_offset_m,
+            },
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -1373,6 +1503,63 @@ mod tests {
              material inside the body cavity (the §F-S2 workshop cf-view \
              smoke finding). Got piece SDF = {sdf} (negative = wrongly inside \
              cup material at body-interior probe = shard)."
+        );
+    }
+
+    /// §MA-S1b: `build_cavity_floor_slab_transforms` emits the dip-fill
+    /// UNION + bump-cut SUBTRACT pair (in that order) only when the flag
+    /// is set AND the ribbon has a planar seam + cap-plane hint; empty
+    /// otherwise (a clean no-op so default casts are unchanged).
+    #[test]
+    fn flat_cavity_floor_emits_union_then_subtract_pair_only_when_enabled() {
+        // Cuboid body 20 mm; cap = the −Z bottom face with cap_normal −Z
+        // (into the floor-base, AWAY from the body interior — the
+        // production convention), planar seam at Y = 0, wall 5 mm.
+        let body = Solid::cuboid(Vector3::new(0.010, 0.010, 0.010));
+        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
+        let mk_split = || crate::ribbon::SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.010);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let seam_normal = Vector3::new(0.0, 1.0, 0.0);
+
+        let base = Ribbon::new(centerline.clone(), mk_split())
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_planar_seam_at(Point3::origin(), seam_normal);
+
+        // Flag OFF → no-op.
+        assert!(
+            build_cavity_floor_slab_transforms(&body, &base, 0.005, PieceSide::Negative).is_empty(),
+            "no floor ops without the flat_cavity_floor flag",
+        );
+
+        // Flag ON → exactly [UnionFloorSlab, SubtractFloorCap].
+        let on = base.with_flat_cavity_floor();
+        let ops = build_cavity_floor_slab_transforms(&body, &on, 0.005, PieceSide::Negative);
+        assert_eq!(ops.len(), 2, "dip-fill union + bump-cut subtract pair");
+        assert!(
+            matches!(ops[0], MatingTransform::UnionFloorSlab { .. }),
+            "first op must be the dip-fill union (runs before the socket subtract)",
+        );
+        assert!(
+            matches!(ops[1], MatingTransform::SubtractFloorCap { .. }),
+            "second op must be the bump-cut subtract",
+        );
+        // Side-agnostic feature (per-side seam clip): Positive also emits the pair.
+        assert_eq!(
+            build_cavity_floor_slab_transforms(&body, &on, 0.005, PieceSide::Positive).len(),
+            2,
+        );
+
+        // Flag ON but NO cap-plane hint → no-op (needs the cap plane).
+        let no_cap = Ribbon::new(centerline, mk_split())
+            .unwrap()
+            .with_planar_seam_at(Point3::origin(), seam_normal)
+            .with_flat_cavity_floor();
+        assert!(
+            build_cavity_floor_slab_transforms(&body, &no_cap, 0.005, PieceSide::Negative)
+                .is_empty(),
+            "no floor ops without a pour_end_hint cap plane",
         );
     }
 }
