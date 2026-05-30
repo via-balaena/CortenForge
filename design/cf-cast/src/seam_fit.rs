@@ -24,7 +24,7 @@
 //! the cup-wall half-space cut + flange both read it via
 //! [`crate::ribbon::Ribbon::seam_plane_reference`], so one call retargets both.
 //!
-//! Validated by the S0 seam-fit spike on the real `3quartachub` scan (recon
+//! Validated by the S0 seam-fit spike on the real `base_mold` scan (recon
 //! §4.1): the fitted plane is symmetric in every height band (no sliver) where
 //! the shipped binormal seam skewed 2:1 at the dome.
 

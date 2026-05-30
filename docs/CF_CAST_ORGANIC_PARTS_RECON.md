@@ -2,7 +2,7 @@
 
 > **Status:** RECON SCAFFOLD (pre-implementation). Cold-read pass-1 at end (§9).
 > **Date:** 2026-05-28
-> **Trigger:** Workshop cf-view smoke on the `3quartachub` canal cast (the first
+> **Trigger:** Workshop cf-view smoke on the `base_mold` canal cast (the first
 > genuinely curved/organic part). Two flatness assumptions that held on the
 > near-straight `sock_over_capsule` break on a curved part:
 > - **(A)** the cup-piece seam/flange bows off-planar (it follows the curved
@@ -90,7 +90,7 @@ The Explore map surfaced a tension worth nailing before coding: the cup mating
 face is *already* an SDF half-space intersect at a **single** plane
 (`seam_plane_reference`), which should make it flat — yet the workshop sees
 bowing. **S0 (diagnostic, no production code) must pin which of these is the real
-A-failure** on `3quartachub`:
+A-failure** on `base_mold`:
 - **H1 — tilted plane:** the seam plane is flat but tilted (arc-midpoint binormal
   ≠ vertical), so the piece leans / the flange isn't horizontal when set down.
 - **H2 — poor bisection:** the single mid-plane doesn't cleanly bisect a curved
@@ -105,9 +105,9 @@ test harness (`piece.rs:665`).
 
 For **B** the diagnosis is already clear (cup trim disabled + floor follows a
 tilted/curved cap), but S0 should also measure the plug-bottom + cup-floor
-planarity RMS on `3quartachub` to size the trim.
+planarity RMS on `base_mold` to size the trim.
 
-### S0 RESULTS (2026-05-28 — Python plane-fits on the `3quartachub` cast STLs)
+### S0 RESULTS (2026-05-28 — Python plane-fits on the `base_mold` cast STLs)
 **(A) cup mating face: NOT flat — H1 + H2 both real.** piece_0's seam face
 deviates **RMS 3.8 mm / peak 8.4 mm** from its best-fit plane AND that plane is
 tilted **~3.5° from vertical**. So the seam is both *tilted* (H1) and *bowed*
@@ -150,7 +150,7 @@ The **fit method is OPEN (§8 OQ1)** — candidates:
   hybrid — cup wall stays curve-following (good demold), only the flange/clamp
   face is a fitted plane. (May reintroduce the bow at the wall↔flange join.)
 
-> **S0 SEAM-FIT SPIKE (2026-05-29, Python probe on `3quartachub.cleaned.stl`)
+> **S0 SEAM-FIT SPIKE (2026-05-29, Python probe on `base_mold.cleaned.stl`)
 > RESOLVES OQ1 → a refined C-A2: "apex-anchored, balance-swept flat plane".**
 > Workshop method: the seam stays a single FLAT plane, but instead of the current
 > `with_planar_seam` (binormal flattened to HORIZONTAL, positioned at the centerline
@@ -178,7 +178,7 @@ The **fit method is OPEN (§8 OQ1)** — candidates:
 >
 > **IMPLEMENTED + REGEN'd (2026-05-29) — fit works, FLANGE is the remaining blocker.**
 > `seam_fit::best_fit_planar_seam` + `Ribbon::with_planar_seam_at` shipped (tested,
-> clippy-clean); production fit on `3quartachub` returns normal `[0.838, 0.546,
+> clippy-clean); production fit on `base_mold` returns normal `[0.838, 0.546,
 > −0.001]` (matches the spike). Regen result:
 > - **Layer-0 cup builds, BALANCED** (8016 vs 8139 faces — even halves; the
 >   per-band fit removed the lopsided dome). ✓
@@ -230,7 +230,7 @@ plane** so they seat flush. Lowest-risk first cut:
   refactor; almost certainly out of scope for iter-1 (the workshop only needs a
   *flat* mating face, not a cap that follows the dome).
 
-Note the 4.4° cap tilt already observed on `3quartachub` (cf-scan-prep auto-PCA
+Note the 4.4° cap tilt already observed on `base_mold` (cf-scan-prep auto-PCA
 lean): a flat floor trim should be **perpendicular to the demold/build axis**,
 not to the tilted cap normal, OR the scan should be re-leveled in cf-scan-prep
 first. §8 OQ3.
@@ -290,7 +290,7 @@ first. §8 OQ3.
 > ripples it flagged (which-piece, floor-feature collision, funnel re-placement,
 > ergonomics) all dissolved or simplified under apex-pour.
 
-On the `3quartachub` cup the pour hole + aeration (vent) hole land **in the
+On the `base_mold` cup the pour hole + aeration (vent) hole land **in the
 flange** near the dome end; the workshop wants them **off the flange, at/near the
 mold tip** (the dome apex), so the pour funnel + vent sit on the closed end, not
 the clamp face. The pour gate is built by `crate::pour::build_pour_gate_transforms`
@@ -307,10 +307,10 @@ scoped; see OQ5.
 
 | Phase | Scope | Deliverable |
 |---|---|---|
-| **S0** | Diagnostic probe (`#[ignore]`): dump `3quartachub` cup mating-face + plug-bottom + cup-floor vertices, fit planes, report RMS + tilt. Confirm H1/H2/H3 for (A) + size the (B) trims. NO production code. | which failure is real + numbers |
+| **S0** | Diagnostic probe (`#[ignore]`): dump `base_mold` cup mating-face + plug-bottom + cup-floor vertices, fit planes, report RMS + tilt. Confirm H1/H2/H3 for (A) + size the (B) trims. NO production code. | which failure is real + numbers |
 | **S1** | (A) `Ribbon::best_fit_seam_plane()` + wire into `piece.rs` halfspace + `flange.rs`; pick fit method per S0 + OQ1. Flatness gate on a curved fixture. | flat seam/flange on curved parts |
 | **S2** | (B) flat floor mating: C-B1 (re-enable cup trim + bias) or C-B2 (slab) per S0. Both plug-bottom + cup-floor coplanar-flat. Wall/seat gate. | flush flat floor mating |
-| **S3** | Curved-fixture regression + `3quartachub` regen + workshop cf-view/print smoke; tune curvature ceiling + trim bias. | empirical convergence |
+| **S3** | Curved-fixture regression + `base_mold` regen + workshop cf-view/print smoke; tune curvature ceiling + trim bias. | empirical convergence |
 
 Each code phase: cold-read + full gates (`cargo xtask grade-all`), per prior arcs.
 
@@ -320,7 +320,7 @@ Each code phase: cold-read + full gates (`cargo xtask grade-all`), per prior arc
 1. **Planar split vs demoldability:** a flat cut on a curved part can create an
    undercut on one half → won't release. The whole point of the ribbon was
    curve-following demold. Need the curvature ceiling (§8 OQ2).
-   > **EMPIRICAL (2026-05-29, `3quartachub` apex-pour regen):** this is now
+   > **EMPIRICAL (2026-05-29, `base_mold` apex-pour regen):** this is now
    > confirmed real AND shown to be a no-win for a single flat plane on this part.
    > The glans leans ~−Y off the shaft. Per-Z-band cup-half measurement: the shaft
    > bisects evenly (±23 mm both halves) but near the dome one half collapses to a

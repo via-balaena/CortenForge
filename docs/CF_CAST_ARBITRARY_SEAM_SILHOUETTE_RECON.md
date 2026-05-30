@@ -14,7 +14,7 @@
 > **SHIPPED 2026-05-29 (S1–S4 done).** S1 `fdeeafe1` (generalize `Silhouette2d` +
 > `SeamPlaneBasis`, `from_body_at_y` byte-identical), S2+S3 `c2590370` (flange +
 > bolt + dowel route through the basis; legacy bit-identical). S4: the
-> `3quartachub` regen with the fitted seam builds the cup shell **manifold on all
+> `base_mold` regen with the fitted seam builds the cup shell **manifold on all
 > 3 layers** (was `NotManifold` on layer 1) with balanced halves (Neg≈Pos), so the
 > **default is flipped** — `planar_seam_fit` defaults `true` (apex-anchored fit
 > when caps exist; `false` = legacy binormal escape hatch; no-caps auto-falls back
@@ -25,7 +25,7 @@
 ## 1. Problem statement
 
 `best_fit_planar_seam` returns a flat seam plane with an arbitrary (diagonal)
-normal — on `3quartachub`, `[0.838, 0.546, −0.001]`, ~33° off the `Y` axis. The
+normal — on `base_mold`, `[0.838, 0.546, −0.001]`, ~33° off the `Y` axis. The
 cup-wall half-space cut + the seam plane itself handle that fine (the cup shell
 builds on all layers). But three downstream consumers build a **2D silhouette in
 the world X-Z plane at a constant Y**, baking in the assumption that the seam
@@ -113,7 +113,7 @@ seam **basis**. Add `Ribbon::seam_plane_basis() -> (A, U, V, N)`:
 
 ### 3.5 Flip the default (S4)
 Once flange/bolt/dowel build manifold at the fitted seam (regen-verified on
-`3quartachub` + a curved fixture), make `planar_seam` use the fit by default (when
+`base_mold` + a curved fixture), make `planar_seam` use the fit by default (when
 caps exist) and retire / keep `planar_seam_fit` as an override per
 [[feedback-strip-the-knob-when-default-works]].
 
@@ -126,7 +126,7 @@ caps exist) and retire / keep `planar_seam_fit` as an override per
 | **S1** | `Silhouette2d::from_body_in_plane` + stored basis + `to_world`/`dir_to_world`; `from_body_at_y` wrapper. Unit-test in-plane == X-Z when basis is `(X,Z)`. | generalized silhouette, default unchanged |
 | **S2** | `FlangeSdf` uses the basis; `Ribbon::seam_plane_basis()`. Flatness/extent gate on a tilted-seam fixture. | manifold flange at a diagonal seam |
 | **S3** | `bolt_pattern` + `dowel_hole` use the basis. Existing-cast byte-identity test (Y-normal path). | bolts + dowels at a diagonal seam |
-| **S4** | Regen `3quartachub` with `planar_seam_fit` → confirm manifold + balanced + F4; curved-fixture regression; then flip default + grade-all. | fitted seam shippable by default |
+| **S4** | Regen `base_mold` with `planar_seam_fit` → confirm manifold + balanced + F4; curved-fixture regression; then flip default + grade-all. | fitted seam shippable by default |
 
 Each phase: cold-read + full gates (`cargo xtask grade-all`), per prior arcs.
 
