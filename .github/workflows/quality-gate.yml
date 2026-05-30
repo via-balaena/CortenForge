@@ -93,9 +93,22 @@ jobs:
   #
   # --skip-coverage: coverage runs cargo llvm-cov in release (5-10 min per
   # crate); too slow for per-PR CI. It runs locally and in dedicated jobs.
+  #
+  # Sharded across 3 parallel runners via `grade-all --shard i/3` (round-robin
+  # over the sorted crate list, so heavy crates like cf-cast/sim-soft scatter
+  # evenly). This was the sole ~40m long pole; 3 shards take it to ~13m and off
+  # the critical path. The downstream `quality-gate` job `needs: [grade]`, which
+  # waits for all matrix legs and fails if any shard fails — so branch
+  # protection on `Quality Gate` still gates every crate. Each shard keeps its
+  # own rust-cache (matrix value is part of the key). Bump the shard count here
+  # AND the `/3` denominator in the run step together if the workspace grows.
   grade:
-    name: xtask Grade
+    name: xtask Grade (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
 
@@ -115,12 +128,12 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
-      - name: cargo xtask grade-all --skip-coverage
+      - name: cargo xtask grade-all --skip-coverage --shard ${{ matrix.shard }}/3
         env:
           # Emit per-file safety debug + doc stderr tail on F so CI logs
           # surface the actual failure cause rather than opaque counts.
           XTASK_GRADE_DEBUG: "1"
-        run: cargo run -p xtask --release -- grade-all --skip-coverage --quiet
+        run: cargo run -p xtask --release -- grade-all --skip-coverage --quiet --shard ${{ matrix.shard }}/3
 
   # ============================================================================
   # TESTS (DEBUG) - Default features, debug profile — light-crate gate
