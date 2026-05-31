@@ -80,9 +80,10 @@ pub struct PourVolume {
     /// Carried-through copy of the layer's material display name.
     pub material_display_name: String,
     /// Shell volume (only the new material poured for this layer) in
-    /// cubic metres. Riemann-sum approximation at
-    /// [`crate::CastSpec::mesh_cell_size_m`]; see module docstring
-    /// for the bias estimate.
+    /// cubic metres. Riemann-sum approximation at the integration cell,
+    /// which is `mesh_cell_size_m` floored up to at least
+    /// [`POUR_VOLUME_MIN_CELL_SIZE_M`] — decoupled from the mesh cell
+    /// (§MA-17/S2); see module docstring for the bias estimate.
     pub shell_volume_m3: f64,
     /// Pour mass in kilograms — `shell_volume_m3 *
     /// material.density_kg_m3`. Compared against
