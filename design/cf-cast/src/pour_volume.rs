@@ -10,11 +10,21 @@
 //! makes those CSG differences correspond to one physical pour.
 //!
 //! Integration: sample each shell's SDF on a [`mesh_offset::ScalarGrid`]
-//! at [`crate::CastSpec::mesh_cell_size_m`] and count voxels where
-//! the value is strictly negative. Volume = count × `cell_size`³. The
-//! Riemann-sum approximation has bias ≲ one cell of surface area ×
-//! `cell_size` / 2; at 2 mm cells on a 4-6 mm shell that is well below
-//! the 2 lb budget's safety margin.
+//! at [`crate::CastSpec::compute_pour_volumes`]'s integration cell and
+//! count voxels where the value is strictly negative. Volume =
+//! count × `cell_size`³. The Riemann-sum approximation has bias ≲ one
+//! cell of surface area × `cell_size` / 2; at 2 mm cells on a 4-6 mm
+//! shell that is well below the 2 lb budget's safety margin.
+//!
+//! The integration cell is floored at [`POUR_VOLUME_MIN_CELL_SIZE_M`]
+//! and is **decoupled from `mesh_cell_size_m`** (§MA-17/S2). The grid
+//! bake is cubic in `1/cell_size`; at the 0.5 mm production cup cell a
+//! pour-volume grid tied to `mesh_cell_size_m` is 35 M cells per layer
+//! and burns 15+ min — for a *mass-budget* estimate whose accuracy
+//! gains below ~2 mm are sub-0.4 % (measured: 441.24 g @ 2 mm vs
+//! 442.91 g @ 1.5 mm on the `base_mold` shells, both far inside the
+//! 2 lb margin). So pour-volume never samples finer than 2 mm, while
+//! coarser prototyping meshes still integrate at their own cell.
 
 use cf_design::Solid;
 use mesh_offset::ScalarGrid;
@@ -30,6 +40,23 @@ use crate::error::{CastError, CastTarget};
 /// callers must set it explicitly even when adopting the default —
 /// there is no silent fallback.
 pub const DEFAULT_MASS_BUDGET_KG: f64 = 0.907_184_74;
+
+/// Floor on the pour-volume integration cell size (§MA-17/S2).
+///
+/// Pour-volume integration is a Riemann voxel count for a *mass-budget*
+/// estimate, not a surface mesh — its accuracy below ~2 mm is sub-0.4 %
+/// (see module docstring), while the dense grid bake is cubic in
+/// `1/cell_size`. Flooring the integration cell here keeps it cheap and
+/// **decoupled from `mesh_cell_size_m`**, so a fine production cup cell
+/// (0.5 mm) doesn't pay a 35 M-cell, 15+ min integration per layer for
+/// no budget-relevant accuracy.
+///
+/// This is a *floor* (`mesh_cell_size_m.max(..)`): a coarse prototyping
+/// mesh (e.g. 3 mm) still integrates at its own cell. Contrast the
+/// auxiliary-part *ceilings* (`PLATFORM_MAX_CELL_SIZE_M` etc.), which
+/// cap the coarsest cell for surface quality; here the concern is the
+/// opposite — never sample *finer* than the budget needs.
+pub const POUR_VOLUME_MIN_CELL_SIZE_M: f64 = 0.002;
 
 /// Cells of padding on each side of the integration AABB. Matches
 /// `mesher::GRID_PADDING_CELLS` so the pour-volume grid covers the

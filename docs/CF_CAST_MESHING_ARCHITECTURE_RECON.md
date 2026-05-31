@@ -1199,9 +1199,64 @@ is flat (planarity 0.108 mm — §F-4 holds); the edge is the MC faceting of the
 terracing). NOT a fixable CSG artifact like the groove. Smoothing is out
 (would round the flat mating face / §F-4); the only constraint-safe lever is a
 **finer cell**, which sharpens the edge, smooths the walls, AND gives the
-workshop-wanted 0.5 mm surface finish — all at once. Blocker: 0.5 mm OOMs the
-baked-grid MC. So **S2 = fine-cell MC without OOM** is the real next task (it
-unlocks edge + walls + finish together). Per [[feedback-correctness-over-speed]].
+workshop-wanted 0.5 mm surface finish — all at once. Blocker (as framed here):
+"0.5 mm OOMs the baked-grid MC." **⚠️ This OOM framing was WRONG — measured and
+corrected in §MA-18. 0.5 mm does NOT OOM; the real blocker is cubic TIME.**
+Per [[feedback-correctness-over-speed]].
+
+### §MA-18 — S2 measured: NOT an OOM, a cubic-TIME problem (2026-05-31)
+
+Before architecting a fix, profiled the actual 0.5 mm regen (full-feature
+`canaloff`, this 24 GB / 12-core dev machine, `/usr/bin/time -l`). **The §MA-17
+OOM premise was an untested extrapolation and is false:**
+
+| metric | 1.5 mm | 0.5 mm | note |
+|---|---|---|---|
+| peak RSS | 2.46 GB | **8.32 GB** | 24 GB machine → **no OOM**, ~16 GB headroom |
+| wall | 357 s | **3776 s (≈63 min)** | the real blocker |
+| per cup-piece bake (compose+MC) | ~96 s | **~2725 s (~45 min)** | cubic in 1/cell — dominates |
+| cup grid (each) | 11.4 MB | 280 MB | 6 concurrent = 1.68 GB; small slice of the 8.3 GB |
+| exit | 0 | **0 (clean, F4-passed)** | — |
+
+The grid bakes the **full body** AABB (136.5×135.9×224.5 mm = both halves +
+20 mm flange reach; the per-side halfspace cut is in the SDF, so the grid covers
+~2× the surviving half). At 1.5 mm the mesh has ~34 k surface verts out of
+**1.43 M cells** → **~99 % of `solid.evaluate` calls hit deep-interior /
+far-exterior cells that emit no triangle.** That waste *is* the ~45 min/piece.
+
+**Surprise second cubic cost (pure waste): `compute_pour_volumes →
+integrate_negative_sdf_volume`** bakes a dense grid **at `mesh_cell_size_m`**
+just to count negative voxels for the pour *mass* budget. At 0.5 mm it ran
+**17+ min BEFORE meshing even started** (caught via `sample` stack trace; RSS
+flat at 408 MB throughout — it's time, not memory). Mass-budget accuracy below
+~2 mm is sub-0.4 % (measured 441.24 g @ 2 mm vs 442.91 g @ 1.5 mm), and
+platform/funnel/gasket already cap their cells — so this is an idiomatic
+decouple.
+
+**SHIPPED (this session): pour-volume cell floor.** New
+`pour_volume::POUR_VOLUME_MIN_CELL_SIZE_M = 0.002`; `compute_pour_volumes` uses
+`mesh_cell_size_m.max(floor)` (a *floor* — coarse prototyping meshes still
+integrate at their own cell). Gate test
+`pour_volume_integration_cell_is_floored_and_decoupled_from_mesh_cell` (fine cell
+→ bit-identical to the 2 mm integration; 3 mm cell not raised to the floor).
+Removes the whole wasted pre-meshing cubic phase; the 0.5 mm production canal
+regen is now meshing-bound only.
+
+**Narrow-band sparse MC — DESIGNED, NOT BUILT (bookmark).** The composed cup
+field is all `max`/`min`/`negate` over the scan distance ⇒ **1-Lipschitz**, so
+any cell with `|value| > cell_diagonal` provably contains no surface and is safe
+to skip — **bit-identical** to dense MC. A coarse-locate → refine-the-band
+mesher would bake only ~1–3 % of the cells: ~45 min/piece → ~minutes, *and* lower
+memory. (cf-design's interval `adaptive_dc` is NOT reusable — no interval bounds
+for a parry-BVH distance; DC also risks manifoldness/F4 + isn't bit-identical.)
+**DEFERRED** per the workshop decision below: it buys *iteration* speed, which
+isn't the current bottleneck (design is locked; the pending gate is the physical
+print). Build only if post-print iteration makes the 45 min/piece bake a real
+tax. Lives in `mesher.rs` / a new mesh-offset entry point if built.
+
+**Workshop decision (2026-05-31):** ship the pour cap; accept ~63 min for the
+locked 0.5 mm production run; **proceed to physical print**; keep narrow-band as
+this bookmark.
 
 ### Plan
 
@@ -1214,20 +1269,27 @@ unlocks edge + walls + finish together). Per [[feedback-correctness-over-speed]]
   config. ✅**
 - **S16 — floor groove = the S1b slab at fine cells; `flat_cavity_floor=false`
   for flat-capped bodies. ✅** (config; cf-view ✓.) ← committing.
-- **S2 — fine-cell MC without OOM** (edge sharpness + wall terracing + 0.5 mm
-  finish). ← next real task.
+- **S2 — fine-cell MC: measured = cubic TIME, not OOM (§MA-18). ✅ profiled +
+  pour-volume cap SHIPPED.** 0.5 mm completes (8.3 GB / 24 GB, ~63 min). Pour
+  cap removes the wasted pre-meshing cubic phase. Narrow-band sparse MC designed
+  + DEFERRED (iteration speed, not the current gate). 0.5 mm production canal
+  regen launched. ← THIS SESSION.
 
 ---
 
 ## Successor
 
-**S2 — fine-cell MC without OOM picks up next.** It is the root unlock for the
-0.5 mm production surface finish the workshop wants, and it simultaneously
-sharpens the seam EDGE (§MA-17) and removes the cup-wall terracing — all three
-are the same organic-wall-at-1.5 mm faceting. The baked-grid MC OOMs at 0.5 mm;
-investigate sparse/per-piece-bounds/streaming MC. The physical print follows.
-Floor (S16) + slit (S15) + apex flanking (S15f) are resolved. Per
-[[feedback-correctness-over-speed]].
+**Physical print/cast is the gate.** 0.5 mm production canal regen
+(`cast_base_mold_canal_05`, all features, ~63 min) gives the edge + wall finish
+the workshop wants — print it and gate empirically. The §MA-17 "OOMs at 0.5 mm"
+premise was measured false (§MA-18): 0.5 mm completes at 8.3 GB on 24 GB; the
+real cost is the ~45 min/piece cubic grid bake (~99 % of evals on non-surface
+cells). The **pour-volume cap is shipped** (removes a separate wasted cubic
+phase). The **narrow-band sparse MC** (1-Lipschitz field → skip cells with
+`|v| > diag`, bit-identical, ~45 min → ~minutes) is **designed but deferred** —
+it buys iteration speed, not the current gate; build only if post-print
+iteration makes the bake a tax. Floor (S16) + slit (S15) + apex flanking (S15f)
+resolved. Per [[feedback-correctness-over-speed]].
 
 ### Historical: S1b succession note
 
