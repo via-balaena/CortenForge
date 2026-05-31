@@ -555,13 +555,419 @@ remains available behind a workshop cf-view gate if a quick win is wanted.
 
 ---
 
+## §MA-14 Defect 2 — flange-perimeter slivers ("vertical cracks") (2026-05-30 #4)
+
+Workshop cf-view flagged vertical slits/cracks running the full height of
+the flange. This section is the focused recon for the fix (S1b is shipped;
+Defect 2 is the remaining PR-blocker). Per [[feedback-correctness-over-speed]]:
+recon → cold-read → diagnostic spike → Option-1 implementation, each gated
+on workshop cf-view.
+
+### Confirmed (re-probed on the production canal cup pieces, `72496d3e`)
+
+Binary current, tree clean, `flat_cavity_floor=true` (S1b) in the config.
+`/tmp/sliver_probe2.py` + `/tmp/sliver_geom.py`:
+
+| piece | slivers <1e-3 mm² | <1e-4 | span | r |
+|---|---|---|---|---|
+| L0 p0 | 20 | 11 | z[−61, 92] | [2.6, 38.3] |
+| L2 p0 | 37 | 10 | z[−64, 101] | [6.2, **54.9**] |
+| L2 p1 | 31 | 10 | z[−79, 100] | [5.0, **54.9**] |
+
+Geometry of the defect (L2 p0):
+- **24/37 slivers are vertical walls** (|normal·z| < 0.2, normals point
+  radially in XY) → a thin **vertical groove**, not a hole.
+- Edge lengths: short **0.023 mm**, mid/long ~0.06 mm — sub-0.1 mm knife
+  slivers; several are **fully degenerate** (all three verts identical).
+- They ring the **whole silhouette perimeter** at large radius (r out to
+  54.9 mm = the flange outer reach `flange_width_m`=20 mm), full height.
+- **MANIFOLD** (0 non-manifold edges → F4 passes). Structural defect — a
+  weak point + bolt-clamp leak path — not a topological hole.
+
+### Diagnosis (same class as Defect 1, convex perimeter not concave corner)
+
+`piece.rs` composes the flange **in the blended SDF field**:
+`base_piece = (CupWallShellSdf ∩ halfspace).union(flange_unsplit ∩ halfspace ∖ body)`
+then marches-cubes the whole thing. `FlangeSdf::eval = outer.max(inner).max(vertical)`
+is a flat slab in the seam plane: inner edge at `body_dist = flange_inner_offset_m`
+(**default 2 mm — a deliberate gasket-clearance gap outboard of the body
+silhouette**), outer edge at `flange_width_m`=20 mm, half-thickness
+`flange_thickness_m`=4 mm. The `min()` union of the flange's flat faces
+against the **rising organic cup-wall shell surface** near the silhouette
+curve is where two surfaces graze near-tangentially around the whole
+perimeter → MC emits a string of degenerate slivers along the crease (a
+"crack"). Identical root to Defect 1 (MC of a feature-dense organic∩exact
+junction in the blended field); here at a convex perimeter line rather than
+the concave floor corner.
+
+### Spike options (cheapest → heaviest)
+
+1. **CONTAINED bias (recommended first).** Keep the flange in SDF/MC
+   (paradigm-correct — the flange genuinely *welds to bulk* with the
+   cup-wall, so it belongs in SDF per
+   [[project-cf-cast-sdf-meshcsg-paradigm-boundary]]), but **bury the
+   junction** so the flange overlaps the cup-wall volumetrically instead of
+   grazing its surface. Likely lever: extend the flange inner edge *inward*
+   into the cup-wall bulk (reduce/negate `flange_inner_offset_m`, or add a
+   dedicated inward overlap-bias) so the flange's faces emerge from inside
+   solid material, not tangent to the rising shell surface. Direct analog of
+   S1b's 1 µm floor biases. **Flag-gated, default-off, byte-identical off.**
+2. **Post-MC mesh boolean union.** The **coincident-face landmine**: per the
+   paradigm-boundary framework this is precisely what produced the
+   funnel/seam/plug-shaft disconnections (union on coincident faces → two
+   components). The flange↔cup-wall seam would be face-coincident. Only if
+   Option 1 can't bury the tangency, and then only with an overlap-bias that
+   re-converts it to CONTAINED — at which point it offers little over 1.
+3. **DC extractor.** S2-class, heavy; deferred.
+
+### Open questions for the diagnostic spike (do FIRST, before any fix)
+
+- **Which two surfaces kiss, and at what angle?** Sample `FlangeSdf` +
+  `CupWallShellSdf` at a known sliver location (e.g. one of the degenerate
+  triangles above) and walk the field to confirm the flange-face ↔
+  shell-surface grazing and measure the dihedral. Determines the *minimal*
+  bias direction (inward lateral overlap vs seam-normal thickness vs both).
+- **Does the `flange_inner_offset_m`=2 mm gasket gap matter?** The gasket is
+  disabled in iter-1 — confirm, so reducing/overlapping the inner edge
+  inward is safe.
+- **Is the crack at the inner edge, the faces, or both?** The vertical-wall
+  normals (radial) suggest the lateral inner-edge/face crease; confirm.
+
+### Cold-read confirmations (2026-05-30 #4)
+
+- **Flange is on by default**: `FlangeConfig::default` = `enabled=true` with
+  `FlangeSpec::iter1()` (width 20, thickness 4, inner_offset 2 mm). base_mold
+  has no `[flange]` block → these defaults (consistent with r→54.9 mm slivers).
+- **Gasket is OFF** for base_mold (`[gasket] enabled=false`). So the
+  inner_offset's gasket-clearance purpose is moot for this part →
+  **extending the inner edge inward is safe here**. The fix must still be
+  gasket-aware in general (there's a config cross-field invariant that the
+  flange clears the gasket channel when both are on — recon §F-4); flag-gated
+  + the bias only active for this part keeps that clean. Validation runs
+  gasket-off, so no channel-pinch risk.
+- **The flange is `∖ body` clipped** (`piece.rs:540`
+  `flange.subtract(layer_body)`). So a negative `flange_inner_offset_m` does
+  **not** push flange material into the body cavity — the body-subtract caps
+  it at the body surface. Caveat the spike must check: that body-surface cap
+  could relocate the graze to the body surface rather than eliminate it; the
+  shell is *also* body-subtracted there, so they'd share a clean cut, but
+  confirm empirically. The minimal safe bias may be a small inward overlap
+  (inner edge a hair inside the shell's lateral reach, not all the way to the
+  body) — the diagnostic spike sizes it.
+
+### S3b diagnostic spike RESULTS (2026-05-30 #4) — Option 1 OVERTURNED
+
+Throwaway `#[ignore]` test `piece::tests::ma14_sliver_bias_sweep` (delete
+after Defect 2). Synthetic **sphere** body (r 20 mm — no flat caps, so the
+*only* slivers are the flange↔cup-wall interaction; the earlier cylinder
+fixture's 36 end-cap artifact slivers swamped the signal), wall 5 mm, cell
+3 mm, count = mesh faces with area < 1e-3 mm². Findings:
+
+1. **Flange is the cause.** Flange OFF → 0 slivers; flange ON → many. ✓
+2. **`flange_inner_offset_m` (lateral inward overlap) has ZERO effect** —
+   swept +2 → −4 mm, sliver count unchanged. **Option 1 (the approved
+   inward-overlap CONTAINED bias) is dead** — the graze is not at the inner
+   edge.
+3. **`flange_thickness_m` is non-monotonic + cell-size-periodic** — at an
+   axis-aligned seam, the flat flange FACE (a plane at ±thickness) lands
+   on/off the 3 mm MC sample grid: th 4 mm → 128 *exactly-degenerate*
+   slivers (area ~1e-29), th 3/4.5/5/6 mm → 0, th 7 mm (= 4+cell) → 208.
+   A grid-coincidence resonance, not a usable lever.
+4. **Tilt is decisive.** Adding a fitted-seam tilt (production uses an
+   apex-anchored *tilted* seam, not axis-aligned) collapses the catastrophic
+   axis-aligned resonance to a **handful (1–6) of tiny near-degenerate
+   slivers, min area 6e-6…6e-4 mm², INSENSITIVE to both thickness and
+   inner_offset** — matching production's *nonzero* character (min 4.7e-7).
+   The sphere's short equator gives ~6; the production body's long,
+   high-curvature silhouette (z[−64,100]) scales that to ~37.
+
+**Production sliver character (re-probed, `/tmp/degen_probe.py`):** the 37
+are **thin** triangles (3 distinct verts, **median min-edge ~20 µm**, max
+edge up to mm) — NOT collapsed. (The earlier "3 identical verts" read was
+2-decimal print rounding.) They render as cracks in cf-view (a thin sliver
+has an ill-defined normal → shading discontinuity) but are **manifold,
+F4-clean, ~20 µm = well below the 200 µm Bambu print floor**.
+
+**Revised mechanism:** the slivers are an intrinsic MC artifact of the
+**tilted flat flange faces grazing the axis-aligned MC grid at a shallow
+angle** — same MC-junction family as Defect 1, but neither inner-offset nor
+thickness biases it away (a tilted face crosses every grid plane; you can't
+align it out). The recon's original Option-1/Option-2 framing is superseded.
+
+### Revised fix options (post-spike)
+
+- **R1 — Post-MC sliver cleanup (NEW, cheapest).** Run an in-tree
+  `mesh-repair` pass (`remove_degenerate_triangles` /
+  `degenerate_aspect_ratio` + `degenerate_min_edge_length` + `weld_vertices`)
+  on the cup-piece mesh to collapse the ~20 µm slivers on the flat flange
+  face. Manifold-preserving, mesh-level (no SDF-composition change →
+  paradigm-safe), directly removes the cf-view cracks, changes no
+  above-print-resolution geometry. Risk: must NOT weld/damage the
+  bit-precise mating features (pin/socket/seam) — needs a conservative
+  threshold scoped to true slivers (high aspect + sub-print min-edge), and
+  re-validate F4 + mating-face flatness after. Flag-gated default-off.
+- **R2 — DC / sharp-feature extractor (S2-class, root cause, heavy).**
+  Meshes the flange faces without grid-aligned slivers. Broad change;
+  belongs with the S2 cup-wall-resolution work.
+- **R3 — Accept as below-print-resolution ((4') precedent).** They're 20 µm
+  ≪ 200 µm; the cast cannot show them. But the workshop is *actively*
+  objecting via cf-view, and (4') requires workshop-acceptance precedent, so
+  this is weak unless paired with a cf-view-side don't-render-degenerate fix.
+
+### R2/DC feasibility spike RESULTS (2026-05-30 #4) — R2 does NOT deliver
+
+Throwaway `#[ignore]` test `piece::tests::ma14_dc_feasibility` (delete after
+the decision). Meshes the SAME tilted-sphere cup field with MC (today) vs
+cf-design's `Solid::mesh_dc` (the only DC available; cf-cast uses neither
+today), measuring the three make-or-break questions:
+
+| mesher | verts | faces | slivers<1e-3 | watertight (boundary edges) | near-seam vtx scatter (rms) |
+|---|---|---|---|---|---|
+| MC 3 mm | 1954 | 3904 | **2** | **0 ✓** | **3.6 µm** |
+| DC tol 6 mm (0.15 s) | 353 | 796 | 0 | **40 ✗ (holes)** | 9.0 µm |
+| DC tol 3 mm (0.90 s) | 1955 | 3908 | **3** | 0 ✓ | 13.4 µm |
+| DC tol 1.5 mm (5.0 s) | 7978 | 15952 | **10** | 0 ✓ | 8.4 µm |
+
+Three strikes, all against R2:
+1. **DC does NOT eliminate the slivers.** At matched resolution (tol 3 mm,
+   ~same face count) DC yields **3** slivers vs MC's 2 — *more*, not fewer;
+   finer DC yields 10. DC's QEF vertex placement + quad→triangle emission on
+   the tilted flat flange faces sheds its own thin triangles. The premise
+   ("sharp-feature DC → no grid-alignment slivers") does **not hold** for
+   this field — DC would itself need the R1 weld to clean up, so it buys
+   nothing for Defect 2.
+2. **DC regresses the seam mating face.** Near-seam vertices scatter ~3–4×
+   more than MC (rms 13.4 µm vs 3.6 µm at matched resolution) — exactly the
+   §F-4 risk: MC lands seam vertices flat because it linearly interpolates
+   the linear halfspace SDF; DC's QEF minimization does not, so the 1 µm-flat
+   mating face (the surface that *seals the mold*) would degrade.
+3. **DC is watertight-fragile.** Coarse DC (6 mm) emits 40 boundary edges
+   (holes) → would fail F4; only finer tolerances close up.
+
+Caveat (honest): this is cf-design's *uniform* `mesh_dc` out of the box, not
+a bespoke grid-DC with seam-plane snapping (recon's "B2"). A purpose-built
+extractor *could* in principle snap seam verts + special-case the flange —
+but that's a research project (recon MA-9 #5 open questions), not an
+available lever, and it still wouldn't auto-kill the flange-face slivers
+(strike 1 is intrinsic to dual vertex placement on tilted planes). The spike
+tested what actually exists, and it does not solve Defect 2.
+
+**Decision: proceed with R1 (weld-only sliver cleanup).** The DC "root fix"
+intrigue is refuted by data — DC doesn't fix the slivers, regresses the
+mating face, and is watertight-fragile; it would need R1's weld anyway. R1 is
+the correct, validated, reversible fix (when/if a future bespoke extractor
+lands as S2, the weld becomes a no-op and is deleted). Per
+[[feedback-correctness-over-speed]] — the spike converted "is the foundational
+fix better?" from intuition into a measured *no* before betting the
+mating-face precision on it.
+
+### R1 implementation attempts — ALL FAILED (2026-05-30 #4, §MA-14 S3d)
+
+Validated on the real production part (`cast.q4weld_on.toml`, canal-off A/B vs
+`cast.q4weld_off.toml`). The weld-OFF baseline confirms the slivers are
+present (39–78 per cup piece) **and the STLs pass F4** (manifold, watertight —
+written successfully). Then every mutation tried to remove them failed:
+
+| attempt | result |
+|---|---|
+| **weld_vertices 30µm, POST-CSG** | F4 FAIL — 5 non-manifold edges + 10 winding-inconsistent + self-intersections. The blind spatial weld merges vertices across the tight mating-feature walls (socket / pour bore / bolt+dowel). |
+| **weld_vertices 30µm, PRE-CSG** | manifold3d REJECTS the welded raw mesh (`NotManifold`) — the weld creates an edge shared by >2 faces on the complex production flange, so the CSG stage can't even ingest it. |
+| **`Manifold::simplify`** (manifold-safe) | Stays watertight, but does **NOT clear the slivers**: 2→1 on the sphere, never 0, even at 200µm tolerance (the print floor). simplify optimizes vertex count under an error bound; it does not target high-aspect slivers, and leaves the stubborn ones at the flange-edge corner. |
+
+**Root insight:** `weld_vertices` is topology-unaware (clears slivers, breaks
+manifold); `simplify` is manifold-safe (keeps manifold, doesn't clear slivers).
+Neither is a manifold-preserving *targeted sliver collapse*. mesh-repair has no
+such primitive.
+
+### The reframe — what these slivers actually are
+
+The weld-off STLs **pass F4**: manifold, watertight, every edge shared by
+exactly two faces. So the slivers are **not a structural defect / leak path**
+(a watertight surface has no gap) — they are **~20 µm thin triangles on a
+sound, sub-print-resolution surface** that *render* as "cracks" in cf-view
+because a thin triangle has an ill-defined normal (shading artifact). The open
+empirical question that should drive the decision: **does the slicer actually
+choke on them when printing, or is it only a cf-view display artifact?** The
+workshop flagged them in cf-view, not (yet) from a failed slice.
+
+### Remaining real options (none is the "cheap fix" first imagined)
+
+- **R3 — Accept + document** (the (4') below-print-resolution precedent): the
+  STLs are F4-clean + 20 µm ≪ 200 µm print floor. Pair with a cf-view-side
+  "don't shade degenerate triangles" fix so the workshop stops seeing
+  "cracks." Cheapest + safest; contingent on the slicer not choking.
+- **R-collapse — purpose-built manifold-preserving sliver edge-collapse**: a
+  new routine that collapses only the short edge of high-aspect triangles
+  *with link-condition checks* (unlike blind weld) so it stays manifold. The
+  technically-correct removal, but it's new engineering (mesh-repair lacks it).
+- **R-flange-CSG — compose the flange as a post-MC exact mesh-CSG union** of a
+  clean extruded-prism flange (CONTAINED-biased per the paradigm-boundary
+  framework) instead of blending it into the MC field — removes the slivers
+  *at the source* (the flange faces are never MC'd). Real surgery + paradigm
+  risk.
+- **R2 / bespoke extractor** — refuted for this defect (above); S2/future
+  (`docs/CF_CAST_SHARP_FEATURE_EXTRACTOR_RECON.md`).
+
+**Status: BLOCKED on a decision.** The naive R1 weld is dead; the proportionate
+path depends on whether the slivers are a print problem or only a display
+problem — an empirical (slice/print) question for the workshop.
+
+### THE ROOT — it's a geometric feather-edge, NOT a meshing artifact (2026-05-30 #4)
+
+Workshop loaded the cup into Orca and **confirmed the flange slit goes ALL
+THE WAY THROUGH** — a real structural gap that prints, not a cf-view shading
+artifact. (A watertight 2-manifold *can* pinch to a near-zero-thickness web:
+F4 passes, but the web is sub-printable, so it prints as a gap. The earlier
+"watertight ⇒ cosmetic" reasoning was WRONG.)
+
+The decisive test — MC cell-size sweep on the tilted-sphere cup (if it were a
+meshing artifact, finer cells would *fix* it):
+
+| MC cell | slivers | thinnest web |
+|---|---|---|
+| 3.0 mm | 2 | 2.57 µm |
+| 1.5 mm | 50 | 2.43 µm |
+| 0.8 mm | 328 | 1.46 µm |
+| 0.5 mm | 2056 | **0.00 µm** |
+
+Finer cells make it **worse**, and the web thickness stays ~0 at every
+resolution. **Conclusion: the SDF solid itself necks to zero thickness** — a
+flat flange slab unioned with the curved cup-wall **inherently feathers to a
+zero-thickness knife-edge** where the flat face grazes the curve (geometric,
+resolution-independent; the flange-thickness/inner-offset biases of §MA-14 S3b
+can't fix it in the tilted case). MC at any resolution faithfully reproduces a
+~zero web; finer cells just lay more degenerate triangles along it.
+
+**This invalidates the entire meshing-side approach** (R1 weld/simplify, R2
+DC, finer cells) — none can add thickness the geometry doesn't have. **The fix
+must be GEOMETRIC**: the flange↔cup-wall junction must be composed so it never
+feathers — guaranteed finite (≥ printable) thickness. Candidates for a fresh
+recon→spike:
+
+- **Filleted/gusseted root** — thicken the cup-wall→flange transition (a
+  finite-radius fillet or a soft-min union) so the junction is never thinner
+  than ~1 mm, instead of a sharp flat-on-curve tangent.
+- **Clip the flange to its full-thickness region** — emit flange material only
+  where the flat slab is finite-thickness-outside the cup-wall; let the
+  cup-wall itself carry the seam inboard of that. Risk: a notch where they meet.
+- **Flange as a clean post-MC CSG solid** welded to the cup-wall with a
+  guaranteed-overlap (CONTAINED) join — no flat-on-curve tangent in the field.
+
+**R1 weld code/flag to be reverted** (it's a dead end for a geometric defect).
+The §MA-14 arc pivots from "meshing/weld" to "flange-junction geometry."
+
+### Plan (revised)
+
+- **S3a — §MA-14 recon + cold-read. ✅ DONE.**
+- **S3b — diagnostic spike. ✅ DONE — overturned Option 1 (see above).**
+- **S3c — re-decide the fix with the workshop** (R1 / R2 / R3). ← CHECK-IN.
+- **S3d — implement chosen fix, flag-gated default-off**; validate flag-off
+  byte-identical no-op (md5 across all STLs), flag-on slivers gone
+  (`sliver_probe2.py` → ~0) + bbox/mating-face unchanged + F4-clean. Gate
+  before/after STL on workshop cf-view.
+- **S3e — production regen + cf-view + commit.**
+- **S3 OUTCOME (2026-05-30 #4): all meshing-side fixes DEAD; R1 reverted.**
+  Root is a geometric feather-edge (above). Arc pivots to §MA-15.
+
+---
+
+## §MA-15 Flange-junction feather fix (geometric) — ACTIVE
+
+The §MA-14 root: a **flat flange slab unioned (hard `min`) with the curved
+cup-wall shell feathers to a zero-thickness knife-edge** where the flange's
+flat face grazes the curved shell tangentially — a real sub-printable web that
+prints as a through-slit. Resolution-independent; no meshing fix can add the
+missing thickness. The fix must make the junction **finite-thickness by
+construction** (target ≥ ~1 mm, the FDM min-wall floor).
+
+### Candidates
+
+1. **Smooth-union the flange into the cup-wall (LEAD).** Replace the hard
+   `shell.union(flange)` with `shell.smooth_union(flange, k)` (cf-design has
+   it; max material correction `k/4`, blends only in the junction region,
+   matches sharp far away). The smooth-min **fills the feather with a fillet
+   of finite radius** → the junction can't taper below the blend thickness. A
+   filleted clamp-flange root is also *stronger*, not just printable.
+   - **Apply the blend in 3D BEFORE the seam halfspace cut** (`smooth_union`
+     then `∩ halfspace ∖ body`), so the seam mating face stays a clean flat
+     cut of the blended solid — protects §F-4 1 µm flatness (a blend applied
+     *after* the cut would round the mating-face edge).
+   - Risk: the fillet adds a little material at the flange↔wall transition
+     (k/4) and could round the seam edge if applied wrong; both measured in
+     the spike. Pick the smallest `k` that lifts the thinnest web ≥ 1 mm.
+2. **Clip the flange to its full-thickness region** — emit flange only where
+   the slab is finite-thickness-outside the shell; let the cup-wall carry the
+   seam inboard. Risk: a notch/discontinuity where flange meets wall.
+3. **Flange as a clean post-MC CSG solid** welded with guaranteed (CONTAINED)
+   overlap — no flat-on-curve tangent in the field. Heaviest; paradigm risk.
+
+### Spike plan (tilted-sphere fixture, the §MA-14 reproduction)
+
+Sweep `smooth_union` `k`; per `k` measure on the composed cup mesh:
+- **thinnest web** (min sliver altitude) — target **≥ 1 mm** (the slit is gone)
+- **slivers** <1e-3 mm² → ~0
+- **watertight** (boundary edges = 0) + manifold
+- **seam mating-face flatness** (near-plane vertex rms) — must stay ~MC's
+  baseline (≤ ~10 µm; §F-4)
+- **bbox / added material** — bounded by `k/4`
+
+Decision: smallest `k` clearing the web while holding the mating face. If
+smooth-union can't hold the mating face → candidate 2/3.
+
+### LOCALIZATION CORRECTION (2026-05-30 #4) — it's the SEAM cut, not the flange
+
+The smooth_union candidate is DEAD (web stays 2.6 µm at all `k` — a feather is
+a thin *convex fin*, and smooth-min only fills *concave* creases). The
+decomposition put the fixture's feather in `flange ∩ halfspace`, but the
+**sphere fixture mis-localized it** (no pour/floor, trivial wall).
+
+Classifying the REAL production slits (`q4_weld_off` L2 p0) against the fitted
+seam plane (normal `[0.838,0.546,-0.001]`) is decisive: **17 of 19 visible
+through-slits sit at |dist-to-seam| = 0.2 mm — i.e. ON the seam/mating-face
+plane**, spanning the whole piece (r 7→55 mm, z −60→+100). The through-slit is
+the **flat SEAM cut meeting the organic cup-wall/flange surfaces tangentially**
+— the *same class as the cavity-floor feather (Defect 1)* that §MA-S1b fixed
+with exact post-MC CSG, just at the seam instead of the floor.
+
+Today the seam is cut **in the SDF/MC field** (`ribbon.halfspace_solid` ∩,
+pre-MC). Where that flat halfspace grazes the rising organic walls, MC feathers
+the boundary to a sub-µm web → the printable through-slit. **This is recon
+§MA-9 open question #4** ("does the seam stay an SDF halfspace or become a
+post-MC trim?").
+
+**Lead fix (mirrors S1b): exact post-MC seam trim.** Mesh the full organic
+piece (shell ∪ flange, *no* SDF seam cut), then trim at the seam plane with
+manifold3d `trim_by_plane` (already used in-tree, `MatingTransform::SeamTrim`)
+→ a clean planar mating face with a clean boundary polygon, no feather.
+Paradigm caveat ([[project-cf-cast-sdf-meshcsg-paradigm-boundary]] failure #1):
+a post-MC seam *slab* once coincided with the body cavity → thin film; a
+half-space `trim_by_plane` (not a slab) keeping one side avoids that, and S1b's
+floor CSG is the working precedent. Spike must confirm the trimmed mating face
+stays §F-4-flat + watertight + composes with the existing post-MC features.
+
+### Plan
+
+- **S15a — §MA-15 recon (this). ✅**
+- **S15b — smooth_union spike** (above). Gate finding on cf-view reasoning.
+- **S15c — flag-gated impl** (default-off byte-identical); flag-on validate
+  web ≥ 1 mm + slit gone + F4 + seam flat + bbox; production regen; **workshop
+  cf-view + Orca through-slit re-check** (the real gate — slice it).
+- **S15d — cold-read + commit.**
+
+---
+
 ## Successor
 
-**S1b (composition spike — exact-CSG floor + seam cuts) picks up next** —
-the workshop's actual #1 complaint (jagged floor→corner→mating-face) and
-the crispness fix whose cost is bounded. S1a is banked (§MA-13); the
-silhouette-cost speed lever is spiked-and-rejected, so the speed question
-defers to S2 (bake/extractor) where it won't fight S1b. Per
-[[feedback-correctness-over-speed]] — the spike converted "coarsen the
-silhouette?" from argument into data (and into a *no*) before any
-production code shipped.
+**§MA-14 S3 (Defect 2 — flange-perimeter slivers) picks up next** — the last
+PR-blocker after S1b shipped the floor fix (`72496d3e`). Same blended-field-MC
+root as Defect 1; fix mirrors S1b (composition out of the near-tangent regime,
+CONTAINED bias, flag-gated default-off). Recon above; diagnostic spike first.
+S2 (cup-wall resolution, cosmetic) and the physical print follow. Per
+[[feedback-correctness-over-speed]].
+
+### Historical: S1b succession note
+
+S1b (composition spike — exact-CSG floor + seam cuts) was the prior
+successor and **SHIPPED** as `72496d3e` (cf-view ✓). S1a is banked
+(§MA-13); the silhouette-cost speed lever was spiked-and-rejected, so the
+speed question defers to S2 (bake/extractor) where it won't fight S1b.
