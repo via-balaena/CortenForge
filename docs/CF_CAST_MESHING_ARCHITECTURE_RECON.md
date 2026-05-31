@@ -945,6 +945,87 @@ half-space `trim_by_plane` (not a slab) keeping one side avoids that, and S1b's
 floor CSG is the working precedent. Spike must confirm the trimmed mating face
 stays §F-4-flat + watertight + composes with the existing post-MC features.
 
+### PINNED ROOT (2026-05-30 #4, real-geometry probe) — flange↔cup-wall disconnection
+
+Probed the REAL composed cup SDF (`CF_MA15_PROBE` env hook in `cli::run`,
+canaloff layer 2 Negative, `evaluate` sampled as ASCII slices) — the sphere
+fixture mis-localized this. Findings:
+
+- **Seam-normal transects are clean everywhere** (one solid run → empty); the
+  slit is NOT along the seam normal, and the inboard cup-wall slivers (r21)
+  are benign MC artifacts on a clean-solid wall.
+- **The real through-slit is at the FLANGE, and it's a void between two
+  sub-solids.** XY overlay slices (`#`=cup, `o`=body cavity, `·`=void) at
+  z=57.8 AND z=20 both show the cup-wall shell (hugging the body `o`) and the
+  flange plate **separated by a widening empty `·` gap** — full-height.
+
+**Cause:** the `FlangeSdf` is built from the **2D seam-plane silhouette**
+(`Silhouette2d`, + `flange_inner_offset_m`=2 mm), while `CupWallShellSdf`
+tracks the **3D body surface**. The two coincide only *at* the seam plane, so
+flange and cup-wall overlap in just a thin band there; where the organic body
+curves away from the seam plane, that overlap **pinches to zero and the flange
+detaches from the cup-wall** → a vertical through-slot. (A sphere is convex/
+smooth everywhere, so its flange↔wall overlap never pinches — why the proxy
+showed only mild flange-edge slivers, not this disconnection.)
+
+This is a **connection failure between two unioned sub-solids**, not a feather
+of a single surface — which is why smooth_union (concave-crease filler),
+post-MC seam-trim, weld/simplify/DC all missed it.
+
+**Fix LEVER CONFIRMED on real geometry — flange THICKNESS, not inner-offset.**
+Real-geometry fix-tests (re-derive ribbon + recompose, re-map the z=20 slot):
+- `flange_inner_offset_m` −5 mm (deep lateral inward overlap): **gap UNCHANGED**
+  → it is not a lateral-reach problem.
+- `flange_thickness_m` 4 → 12 mm (widen the seam-normal band): **gap CLOSES** —
+  flange and cup-wall merge into one continuous solid.
+
+So the through-slit is the flange detaching from the cup-wall where the organic
+body curves *out of the flange's thin ±`flange_thickness_m` (4 mm) band*;
+widening the band reconnects them. (This reconciles §MA-14 S3b, where thickness
+moved sliver count in the axis-aligned case — thickness was always the lever;
+the sphere just lacked the disconnection to show it.)
+
+**Open design choice for the fix (workshop input needed):** a uniform 12 mm
+half-thickness (= 24 mm closed flange zone) is a lot of PLA and changes the
+clamp plate the workshop tuned to 4 mm. Options: (a) find the *minimum* uniform
+thickness that reconnects everywhere (sweep real geometry — maybe 6–8 mm), or
+(b) a TARGETED fix — keep the 4 mm outboard clamp plate but give the flange a
+thicker **inner root** that spans to the cup-wall (a gusset/skirt that follows
+the body), so only the junction thickens, not the whole plate. (b) is the
+material-frugal answer but more work; (a) is simpler. Decide with the workshop
+(clamp/bending/print intent).
+
+### Thickness sweep on the REAL part — INCONCLUSIVE (metric problem) (2026-05-30 #4)
+
+Regenned canaloff with `[flange] thickness_m` = 4/5/6/8 mm, counted long
+slivers (span > 1 mm) across all 6 cup pieces:
+
+| flange half-thickness | long slivers (all cups) |
+|---|---|
+| 4 mm (today) | 73 |
+| 5 mm | 57 |
+| 6 mm | 51 |
+| 8 mm | 51 (plateau) |
+
+Thickness **reduces but does not eliminate** them, plateauing at 51 — a caveat
+to "12 mm closed it" (that was *one* location, z=20). **The metric is the
+problem:** "span > 1 mm sliver" conflates (a) the real flange↔cup-wall VOIDS
+(thickness fixes) with (b) benign MC-triangulation slivers on clean-solid,
+watertight surfaces (confirmed inboard; thickness can't/needn't touch them).
+So the plateau is ambiguous: either the real voids are gone and 51 = benign
+slivers, OR uniform thickness is insufficient (different perimeter azimuths
+need different band widths) → argues for a body-following gusset over a uniform
+bump. **Sliver-count is the WRONG metric** — it can't isolate through-voids.
+
+**NEXT SESSION — disambiguate with a void-specific SDF measure** (re-add the
+`CF_MA15_PROBE` eval-based slot check, sweep thickness, count remaining SDF
+*voids* not slivers). That decides uniform-bump vs gusset. Validation rigs left
+in `~/scans/`: `cast.q4thick_{5,6,8}.toml` + `q4thick_*` output dirs,
+`cast.q4weld_off.toml` + `q4_weld_off` (4 mm baseline, 78-sliver reference),
+probes `/tmp/slit_classify.py` (slit→seam classification), `/tmp/count_longslivers.py`.
+The `CF_MA15_PROBE` hook (ASCII SDF cross-sections in `cli::run`) was reverted;
+re-add from git history of this session if needed.
+
 ### Plan
 
 - **S15a — §MA-15 recon (this). ✅**
