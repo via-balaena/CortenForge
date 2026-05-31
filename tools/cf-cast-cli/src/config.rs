@@ -328,6 +328,14 @@ pub struct PourGateConfig {
     /// arc §4.3, 2026-05-29.
     #[serde(default)]
     pub apex_axial: bool,
+    /// When `apex_axial`, place pour-flanking bolts (one each side of the bore)
+    /// to clamp the split flange. Default `true`. Set `false` to suppress them
+    /// — the apex pour split is then clamped by the arc-bolt ring + hand
+    /// pressure. Use on parts with a tight/leaning dome apex where a flanking
+    /// bolt can't be placed cleanly (it lands at the apex tip or crowds a
+    /// dowel/neighbour) — workshop 2026-05-31, base_mold.
+    #[serde(default = "default_true")]
+    pub flank_bolts: bool,
 }
 
 impl Default for PourGateConfig {
@@ -335,6 +343,7 @@ impl Default for PourGateConfig {
         Self {
             enabled: true,
             apex_axial: false,
+            flank_bolts: true,
         }
     }
 }

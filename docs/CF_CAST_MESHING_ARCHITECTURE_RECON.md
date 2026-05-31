@@ -1056,24 +1056,177 @@ a fillet/gusset that bulges onto the mating face. The flange connection fix is
 *inboard* of the mating surface; the mating face itself is untouched. Validate
 the mating-face flatness gate on every fix candidate.
 
+### S15b VOID-MEASURE PROBE + HYBRID SPIKE (2026-05-30 #5) — SPIKED, then REJECTED for the resolution fix (§S15e)
+
+**OUTCOME (read first):** the void-measure probe below pinned the slit as a
+real but **~2 mm-thick SDF web** that the 3 mm production MC cell can't resolve
+— i.e. a **mesh-resolution artifact, not a geometry defect**. The hybrid flange
+was built + fully validated (it welds, mating face stays flat, bolts re-lengthened)
+**but then REJECTED** because finer cells fix the same slit with the *original
+flat flange* — no gusset, no bolt hack (see §S15e). The hybrid code was reverted;
+its lasting value is the diagnosis. The diagnostic detail is kept below.
+
+Re-added the `CF_MA15_PROBE` env hook (`design/cf-cast/src/ma15_probe.rs`,
+throwaway) with a **void-specific** measure that finally disambiguates the
+plateau: **connected solid components per XY slice at the production 3 mm MC
+cell** (a flange arm in a separate component = a sub-cell web = the
+through-slit). On the real `canaloff` layer-2 Negative piece:
+
+- **Current production: 38 of 51 z-slices have the flange detached** from the
+  cup-wall at the 3 mm cell — the full-height through-slit, reproduced on real
+  geometry with a clean metric (NOT sliver count). The web is ~2–3 mm thick
+  (1 component up to a 2.5 mm flood-fill cell, splits at 3 mm) — right at the
+  production cell, so 3 mm MC under-resolves it → the printed slit. (This is
+  why finer cells made the *sliver* count worse but the geometry is a genuine
+  thin web — both true.)
+- ASCII overlays confirm the mechanism: the seam plane exits the body at two
+  points; the flange arm at one exit **welds** to the cup-wall, the other
+  **floats** (detached by a void band) wherever the leaning body curves out of
+  the flat clamp band.
+
+**Hybrid construction (chosen + validated):** replace the flange's flat
+seam-normal thickness term with a `min` of (flat clamp) and (3D-body
+connection):
+
+```text
+flange exists where  d2 ∈ [inner_offset, flange_width]   (2D silhouette — unchanged)
+                AND  min( |s| − flange_thickness,         (flat ±thickness clamp plate)
+                          max( d3 − reach, |s| − cap ) )  (3D body connection, capped)
+                     < 0
+```
+
+where `d2` = 2D seam-plane silhouette distance (outboard reach + gasket
+clearance, **unchanged**), `s` = seam-normal coord, `d3` = the **3D body
+distance** (the SAME body `CupWallShellSdf` tracks — this is the "inner
+connection from the 3D cup-wall"). The body term emits flange material within
+`reach` of the body, **capped to ±`cap` seam-normal** so it's a thin
+body-following root, not a full body dilation. Derived params, **no new knobs**:
+`reach = flange_width_m` (20 mm), `cap = 1.5 × flange_thickness_m` (6 mm).
+
+Probe sweep (real geometry, web @ production cell, material vs current):
+
+| construction | welds all z? | material @dome / mid |
+|---|---|---|
+| current (flat ±4 mm) | NO — 38/51 detached, web ~2 mm | baseline |
+| `d3<reach`, no inner-clip | yes (reach 16) | **+211 %** (skin bulge) |
+| + inner-clip `d2>inner` | yes (reach 16) | +88 % |
+| + seam-normal cap `\|s\|<cap` | yes (reach 16, cap 6) | **+47 % dome, +6–7 % mid** |
+| **chosen: reach=width, cap=1.5×thick** | **yes — 0/51 detached** | **+49 % dome, +8–9 % mid** |
+
+The `|s|` cap is the key frugality lever (kills the over-fill far from the
+seam where the broad body is). **Mating face stays flat** by construction (the
+connection is `∩ halfspace` — a planar cut; the flat §F-4 seam is untouched)
+and the **gasket channel stays clear** (the `d2 > inner_offset` clip is
+retained). The smooth_union / thickness-sweep / body-dilation candidates are
+all superseded by this.
+
+**Hybrid implementation (this session, since REVERTED):** `Ribbon::hybrid_flange`
+flag; `FlangeSdf` optional `HybridConnection`; `bolt_pattern` half-length sized
+to the hybrid cap (`HYBRID_FLANGE_CAP_FACTOR`) so through-bolts still pass the
+thicker flange. Workshop Orca gate: slits GONE, 9/9 bolts through, mating face
+flat (24.6 µm). **But meaty (+49 % material at the dome) — and the workshop's
+production target is ~0.5 mm, which exposed §S15e.**
+
+### S15e — the slit is a 3 mm-MESH-RESOLUTION artifact; the fix is finer cells, NOT the hybrid (2026-05-30 #5)
+
+The workshop noted production will run at a **high resolution (~0.5 mm)**. That
+reframed everything. Probe measured the **flat (non-hybrid) flange** detachment
+vs production cell (full z, real `canaloff` L2 N):
+
+| MC cell | flat-flange z-slices detached |
+|---|---|
+| 0.5 mm | **0 / 51** |
+| 1.0 mm | **0 / 51** |
+| 1.5 mm | **0 / 51** |
+| 2.0 mm | **0 / 51** |
+| 3.0 mm | 38 / 51 |
+
+The ~2 mm web resolves at **any cell ≤ 2 mm** → the flat flange connects with
+**no gusset, no bolt-length hack, no meatiness**. The hybrid was a 3 mm-MC
+workaround for a problem finer cells design away. **Decision: revert the hybrid;
+set the production cup cell to 1.5 mm** (verified feasible: full regen 357 s,
+peak RSS 2.6 GB; the flat-flange mesh is one connected contour at every z — slit
+gone). True **0.5 mm** for *surface finish* is a separate, harder goal (the
+dense-grid MC is cubic in RAM/time → 0.5 mm on the full cup likely OOMs) = the
+S2 affordable-fine-meshing work; not a slit blocker. The hybrid's value was
+purely diagnostic (it proved the web is real + 2 mm, hence resolution is the
+lever). Validation rigs: `~/scans/q4flat15/` (1.5 mm flat-flange, slit-free),
+`/tmp/loop_scan.py` (slicer-contour test), `/tmp/cf-cast-cli-NEW`.
+
+**Also surfaced (separate pre-existing issue): apex pour-flanking bolts are
+DROPPED for this part.** The apex-axial pour brackets the bore with a flanking
+bolt each side to clamp the split flange. On base_mold's tight, LEANING dome
+apex those flanking bolts can't be placed cleanly — workshop flagged repeatedly:
+the washer overlaps the open sprue, or the bolt lands at the apex tip, or it
+crowds a dowel. Four geometric criteria were tried (cavity-3D distance,
+centerline distance, normal-vs-pour-axis, washer-on-flange) and NONE cleanly
+isolates the stray: relative to the bore the stray and the good flank bolt are
+geometric twins (same clearances) — they differ only in absolute position, and
+auto-suppression either misfired or relocated the bolt into a dowel. Conclusion:
+a leaning apex can't host a clean flanking bolt; **drop them** via a new
+`[pour_gate].flank_bolts` config (default `true`; set `false` for base_mold).
+The apex split is then clamped by the arc-bolt ring + hand pressure (verify at
+the physical pour; add a hand clamp if it weeps). Result: min hole-to-hole
+distance 22 mm (was a 4.4 mm bolt-dowel pair), clean even ring. The flanking-fix
+spikes (washer-clear-bore, apex-tip heuristic) were reverted — `flank_bolts=false`
+sidesteps the whole problem for this part.
+
+### §MA-16 — floor "regression" at fine cells = the S1b SLAB itself
+
+After 1.5 mm shipped the slit fix, the workshop saw a new floor defect: an
+**octagonal groove ringing the plug-lock socket** (cf-view + Orca). Long
+mis-chase (recorded so the next session doesn't repeat it): it is NOT a deep
+organic bowl — the cleaned scan is **capped flat at the cap plane** (z = −60,
+scan z-min = −60), so the layer body does not extend below the cap and the
+cavity floor is *naturally flat at z = cap* at a fine cell. ROOT: the
+`flat_cavity_floor` SLAB (S1b) itself. Its fill+cut clamp pulls a **bimodal
+floor** (most faces to z = −61.15, islands left at z = −60); that 1.15 mm step,
+traced as the ray-sampled footprint polygon, **is the groove**. A/B at 1.5 mm,
+cavity floor around the socket (r 6–26 mm, off-seam): **slab OFF → flat, std
+0.13 mm; slab ON → bimodal, std 0.47 mm + groove.** FIX: set
+`[cast].flat_cavity_floor = false` for flat-capped bodies meshed at fine cells —
+the slab's value was **cell-dependent** (clamped genuine bumpiness at the 3 mm
+coarse MC the workshop praised; pure downside at 1.5 mm where the floor is
+already clean). NO code change — the flag exists; default stays `true` for
+coarse cells / non-flat-capped bodies. Confirmed in `cast_base_mold_canaloff`.
+
+### §MA-17 — remaining: seam EDGE sharpness = fine-cell MC (OOM-bound)
+
+The last workshop item: the **edge where the cavity wall meets the flat mating
+face** is a jagged MC zigzag, not a crisp line. Characterised: the mating FACE
+is flat (planarity 0.108 mm — §F-4 holds); the edge is the MC faceting of the
+**organic scan wall** cut by the seam plane at 1.5 mm (same root as the cup-wall
+terracing). NOT a fixable CSG artifact like the groove. Smoothing is out
+(would round the flat mating face / §F-4); the only constraint-safe lever is a
+**finer cell**, which sharpens the edge, smooths the walls, AND gives the
+workshop-wanted 0.5 mm surface finish — all at once. Blocker: 0.5 mm OOMs the
+baked-grid MC. So **S2 = fine-cell MC without OOM** is the real next task (it
+unlocks edge + walls + finish together). Per [[feedback-correctness-over-speed]].
+
 ### Plan
 
-- **S15a — §MA-15 recon (this). ✅**
-- **S15b — smooth_union spike** (above). Gate finding on cf-view reasoning.
-- **S15c — flag-gated impl** (default-off byte-identical); flag-on validate
-  web ≥ 1 mm + slit gone + F4 + seam flat + bbox; production regen; **workshop
-  cf-view + Orca through-slit re-check** (the real gate — slice it).
-- **S15d — cold-read + commit.**
+- **S15a — §MA-15 recon. ✅**
+- **S15b — void-measure probe + hybrid spike. ✅** (diagnosis solid; hybrid built.)
+- **S15c — flag-gated hybrid impl + Orca gate. ✅** (welds, but meaty.)
+- **S15e — REVERT hybrid; fix via resolution (1.5 mm production cup cell). ✅
+  workshop-chosen** (above). Flat flange connects at ≤ 2 mm, no meatiness.
+- **S15f — drop apex flanking bolts (`flank_bolts=false`); set 1.5 mm prod
+  config. ✅**
+- **S16 — floor groove = the S1b slab at fine cells; `flat_cavity_floor=false`
+  for flat-capped bodies. ✅** (config; cf-view ✓.) ← committing.
+- **S2 — fine-cell MC without OOM** (edge sharpness + wall terracing + 0.5 mm
+  finish). ← next real task.
 
 ---
 
 ## Successor
 
-**§MA-14 S3 (Defect 2 — flange-perimeter slivers) picks up next** — the last
-PR-blocker after S1b shipped the floor fix (`72496d3e`). Same blended-field-MC
-root as Defect 1; fix mirrors S1b (composition out of the near-tangent regime,
-CONTAINED bias, flag-gated default-off). Recon above; diagnostic spike first.
-S2 (cup-wall resolution, cosmetic) and the physical print follow. Per
+**S2 — fine-cell MC without OOM picks up next.** It is the root unlock for the
+0.5 mm production surface finish the workshop wants, and it simultaneously
+sharpens the seam EDGE (§MA-17) and removes the cup-wall terracing — all three
+are the same organic-wall-at-1.5 mm faceting. The baked-grid MC OOMs at 0.5 mm;
+investigate sparse/per-piece-bounds/streaming MC. The physical print follows.
+Floor (S16) + slit (S15) + apex flanking (S15f) are resolved. Per
 [[feedback-correctness-over-speed]].
 
 ### Historical: S1b succession note

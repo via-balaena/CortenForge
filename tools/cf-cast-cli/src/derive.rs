@@ -572,7 +572,12 @@ pub fn derive_spec_and_ribbon(
         // dome apex; bracket it (a bolt just outside the clearance on
         // each side) instead of dropping nearby bolts. Organic-parts
         // arc §4.3, 2026-05-29.
-        if config.pour_gate.enabled && config.pour_gate.apex_axial {
+        // `flank_bolts` (default true) gates the proactive bracketing: on parts
+        // with a tight/leaning dome apex a flanking bolt can't be placed cleanly
+        // (lands at the apex tip or crowds a dowel), so the part opts out and
+        // the arc-bolt ring + hand pressure clamp the split (workshop
+        // 2026-05-31, base_mold).
+        if config.pour_gate.enabled && config.pour_gate.apex_axial && config.pour_gate.flank_bolts {
             bolt_spec.bracket_pour_gate = true;
         }
         ribbon = ribbon.with_bolt_pattern(BoltPatternKind::Auto(bolt_spec));
