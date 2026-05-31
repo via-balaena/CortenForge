@@ -1026,6 +1026,36 @@ probes `/tmp/slit_classify.py` (slit→seam classification), `/tmp/count_longsli
 The `CF_MA15_PROBE` hook (ASCII SDF cross-sections in `cli::run`) was reverted;
 re-add from git history of this session if needed.
 
+### LEAD FIX DIRECTION (next session) — upstream hybrid flange (#1)
+
+Don't band-aid the symptom (thickness/gusset are downstream of the root). The
+root is that the flange and cup-wall are built from **two different source
+geometries** that agree only at the seam plane. **Fix it upstream: build the
+flange's INNER CONNECTION from the 3D cup-wall, not the 2D silhouette**, so
+flange and wall are connected *by construction* at any body curvature — zero
+void, no thickness tuning. This subsumes the gusset and removes the root.
+
+- **Hybrid (the design to work out):** inner connection/weld from the **3D
+  cup-wall** (`CupWallShellSdf` / body offset — guarantees the merge), outboard
+  reach from the **2D silhouette** (`Silhouette2d` — keeps the §F-1
+  concavity-following the flange needs around the organic perimeter). The 2D
+  source was a deliberate §F-1 choice (3D body distance "falsely tripped the
+  inner check" at silhouette concavities); the hybrid keeps that win while
+  fixing the 3D connection it broke.
+- Thickness sweep becomes **moot** under this fix.
+
+### ⚠️ HARD CONSTRAINT — mating faces MUST be perfectly flat
+
+Workshop (2026-05-30): **the cup-half mating faces have to be perfectly flat —
+a major constraint.** (Workshop also prints the halves *mating-face-down* so
+the bed backstops flatness — but the geometry must not fight it.) **Any flange
+redesign MUST preserve the flat seam mating face** (the §F-4 bit-precise flat
+halfspace cut, 1 µm). The seam cut stays a clean planar cut of the (now
+robustly-connected) piece — do NOT round/blend the seam edge, do NOT introduce
+a fillet/gusset that bulges onto the mating face. The flange connection fix is
+*inboard* of the mating surface; the mating face itself is untouched. Validate
+the mating-face flatness gate on every fix candidate.
+
 ### Plan
 
 - **S15a — §MA-15 recon (this). ✅**
