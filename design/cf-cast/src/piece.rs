@@ -604,8 +604,34 @@ fn build_cavity_floor_slab_transforms(
     // inside (body.evaluate < 0); march outward to the exit. Each
     // direction's exit becomes a footprint boundary radius.
     let p0 = cap_centroid - n * 0.0005;
+    // Precondition: the seed point must be INSIDE the body. The march steps
+    // OUTWARD only, so it finds a wall only when it starts inside. If the
+    // cap centroid is not interior (a concavity/hole, or the convex-hull
+    // centroid of a lobed cross-section landing in a gap), every ray exits
+    // at step 0, collapsing the footprint to a degenerate sub-mm prism
+    // sitting at the centroid (a floating sliver once applied). No-op
+    // instead of emitting that garbage.
+    debug_assert!(
+        layer_body.evaluate(&p0) < 0.0,
+        "flat_cavity_floor: cap centroid not interior to the body — \
+         cross-section ray sampling would collapse",
+    );
+    if layer_body.evaluate(&p0) >= 0.0 {
+        return Vec::new();
+    }
     let step = 0.0005_f64;
-    let r_max = 0.150_f64;
+    // Upper bound on any in-plane reach from an interior point: the body's
+    // own AABB diagonal (capped at a generous fixed ceiling, and used as
+    // the fallback when the body is unbounded). A ray that fails to find a
+    // wall within this bound is a runaway — a body wider than expected, or
+    // a tangent ray skimming solid material — and is DROPPED below rather
+    // than contributing an r_max-radius point to the convex-hull prism.
+    // Without this a single missed ray ballooned the slab to a ~150 mm
+    // prism unioned/subtracted far past the cavity wall.
+    let r_max = layer_body
+        .bounds()
+        .map_or(0.150_f64, |b| (b.max - b.min).norm())
+        .min(0.150_f64);
     let margin_m = 0.0005_f64;
     // Dip-filler depth into the floor base; stay within the floor depth.
     let total_thick = (wall_thickness_m * 0.8).min(0.004);
@@ -615,17 +641,25 @@ fn build_cavity_floor_slab_transforms(
         let theta = std::f64::consts::TAU * (k as f64) / (SAMPLES as f64);
         let dir = u * theta.cos() + v * theta.sin();
         // March outward until the body cross-section exits (evaluate > 0).
-        let mut reach = r_max;
+        // A direction that never exits within r_max is a runaway: drop it
+        // (don't fall back to r_max, which would balloon the hull prism).
+        let mut reach = None;
         for s in 0..max_steps {
             let r = step * (s as f64);
             if layer_body.evaluate(&(p0 + dir * r)) > 0.0 {
-                reach = r;
+                reach = Some(r);
                 break;
             }
         }
-        reaches.push((dir, reach));
+        if let Some(r) = reach {
+            reaches.push((dir, r));
+        }
     }
-    if reaches.is_empty() {
+    // Require a wall in at least half the directions. A footprint built from
+    // a handful of surviving rays (the rest runaway) would chord across huge
+    // gaps and mis-shape the slab; below half coverage, no-op rather than
+    // emit a malformed prism.
+    if reaches.len() < SAMPLES / 2 {
         return Vec::new();
     }
 
@@ -1561,5 +1595,116 @@ mod tests {
                 .is_empty(),
             "no floor ops without a pour_end_hint cap plane",
         );
+    }
+
+    /// §MA-S1b: the emitted [`FloorSlabParams`] must pin the load-bearing
+    /// geometry invariants the op-count test above cannot — the 1 µm
+    /// paradigm-boundary bias SIGNS (union fills dips, subtract shaves
+    /// bumps, both CONTAINED), the per-side seam-keep normal + 1 µm-inboard
+    /// offset (so the slab never crosses the flat mating face, §F-4), and
+    /// that the footprint followed the body wall (ray-march hit a wall, not
+    /// the `r_max` runaway fallback). A sign flip on `BIAS_M` or `-side.sign()`
+    /// would survive the count/order test but fail here.
+    #[test]
+    fn flat_cavity_floor_params_pin_bias_containment_and_seam_side() {
+        const BIAS_M: f64 = 1.0e-6;
+        let body = Solid::cuboid(Vector3::new(0.010, 0.010, 0.010));
+        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.010);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let seam_normal = Vector3::new(0.0, 1.0, 0.0);
+        let n = cap_normal.normalize();
+        // total_thick = (wall * 0.8).min(0.004) — matches the emitter.
+        let total_thick = (0.005_f64 * 0.8).min(0.004);
+
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_planar_seam_at(Point3::origin(), seam_normal)
+            .with_flat_cavity_floor();
+
+        // Borrow the FloorSlabParams out of either floor-slab variant.
+        let params = |t: &MatingTransform| -> FloorSlabParams {
+            match t {
+                MatingTransform::UnionFloorSlab { params }
+                | MatingTransform::SubtractFloorCap { params } => params.clone(),
+                _ => panic!("expected a floor-slab transform"),
+            }
+        };
+        // Signed offset of a hull point off the cap plane along +n
+        // (+n into the floor base, −n into the cavity).
+        let cap_d = |p: &[f64; 3]| (Point3::new(p[0], p[1], p[2]) - cap_centroid).dot(&n);
+        // Lateral radius of a hull point in the cap plane.
+        let lateral_r = |p: &[f64; 3]| {
+            let d = Point3::new(p[0], p[1], p[2]) - cap_centroid;
+            (d - n * d.dot(&n)).norm()
+        };
+
+        for side in [PieceSide::Negative, PieceSide::Positive] {
+            let ops = build_cavity_floor_slab_transforms(&body, &ribbon, 0.005, side);
+            assert_eq!(ops.len(), 2, "{side:?}: dip-fill + bump-cut pair");
+            let fill = params(&ops[0]); // UnionFloorSlab
+            let cut = params(&ops[1]); // SubtractFloorCap
+
+            // (a) bias SIGNS. fill rings interleave [top, bot, …]: top 1 µm
+            // INTO the cavity (−BIAS), bot +total_thick into the floor base
+            // → the union fills dips while staying CONTAINED. cut rings: top
+            // 3 mm into the cavity (above every bump), bot 1 µm into the
+            // floor base → the subtract shaves bumps, base CONTAINED.
+            for (i, p) in fill.hull_points_m.iter().enumerate() {
+                let want = if i % 2 == 0 { -BIAS_M } else { total_thick };
+                assert!(
+                    (cap_d(p) - want).abs() < 1.0e-9,
+                    "{side:?} fill[{i}] cap-offset {} != {want}",
+                    cap_d(p),
+                );
+            }
+            for (i, p) in cut.hull_points_m.iter().enumerate() {
+                let want = if i % 2 == 0 { -0.003 } else { BIAS_M };
+                assert!(
+                    (cap_d(p) - want).abs() < 1.0e-9,
+                    "{side:?} cut[{i}] cap-offset {} != {want}",
+                    cap_d(p),
+                );
+            }
+
+            // (b) seam clip keeps THIS side, biased 1 µm INBOARD. Negative
+            // keeps −seam_normal, Positive keeps +seam_normal; offset =
+            // keep·seam_point (=0 here) + 1 µm so the cut stays strictly
+            // inboard of the flat mating face (never eats it, §F-4).
+            let expect_keep = seam_normal.normalize() * (-side.sign());
+            assert!(
+                (fill.seam_keep_normal.into_inner() - expect_keep).norm() < 1.0e-12,
+                "{side:?} seam_keep_normal must be -side.sign()·seam_normal",
+            );
+            assert!(
+                (fill.seam_offset_m - BIAS_M).abs() < 1.0e-12,
+                "{side:?} seam offset must be 1 µm inboard of the seam point",
+            );
+            // Both ops clip identically (same seam plane).
+            assert!(
+                (fill.seam_keep_normal.into_inner() - cut.seam_keep_normal.into_inner()).norm()
+                    < 1.0e-12
+            );
+            assert!((fill.seam_offset_m - cut.seam_offset_m).abs() < 1.0e-12);
+
+            // (c) footprint followed the wall: finite lateral radius well
+            // under r_max (proves the march hit a wall, not the runaway
+            // fallback) and the fill footprint sits OUTSIDE the cut footprint
+            // (fill = reach + 0.5 mm into the wall, cut = reach − 0.5 mm).
+            for (i, p) in fill.hull_points_m.iter().enumerate() {
+                let r_fill = lateral_r(p);
+                assert!(
+                    r_fill > 0.005 && r_fill < 0.05,
+                    "{side:?} fill[{i}] lateral radius {r_fill} off the wall (or runaway)",
+                );
+                let r_cut = lateral_r(&cut.hull_points_m[i]);
+                assert!(
+                    r_fill > r_cut,
+                    "{side:?} fill radius {r_fill} must exceed cut radius {r_cut}",
+                );
+            }
+        }
     }
 }

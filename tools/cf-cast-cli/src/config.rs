@@ -685,6 +685,19 @@ impl CastConfig {
             "cast.toml: [pour_gate].apex_axial requires [cast].planar_seam = true \
              (the apex bore must lie on a flat seam to split the flange cleanly)"
         );
+        // The §MA-S1b cavity-floor flattening slab is seam-clipped to the flat
+        // seam plane; `build_cavity_floor_slab_transforms` silently no-ops
+        // without `planar_seam` (and without a pour-end cap hint). Fail fast on
+        // the config-time half of that dependency — the same fail-fast pattern
+        // as `apex_axial` above — so `flat_cavity_floor = true` can never be a
+        // silent no-op. (The cap hint comes from the scan `.prep.toml [caps]`,
+        // not the cast TOML, so it stays a runtime concern, not a config gate.)
+        ensure!(
+            !self.cast.flat_cavity_floor || self.cast.planar_seam,
+            "cast.toml: [cast].flat_cavity_floor requires [cast].planar_seam = true \
+             (the floor slab is seam-clipped to a flat seam plane; without it the \
+             flattening is silently skipped)"
+        );
         for (i, layer) in self.layers.iter().enumerate() {
             ensure!(
                 layer.thickness_m.is_finite() && layer.thickness_m > 0.0,
