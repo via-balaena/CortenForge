@@ -2,7 +2,7 @@
 
 > **Status:** RECON SCAFFOLD (pre-implementation). Cold-read at end (§7).
 > **Date:** 2026-05-29
-> **Trigger:** workshop slicer eyeball of the `3quartachub` cast (after the apex
+> **Trigger:** workshop slicer eyeball of the `base_mold` cast (after the apex
 > pour + fitted seam landed). Two observations, one root cause:
 > - the plug-anchor pin / floor-lock are **square to the cap normal, not the
 >   ground or the seam** — i.e. the plug seats along a ~4.3°-tilted axis;
@@ -48,7 +48,7 @@ recorded cap, does `shell = shell.intersect(Solid::plane(cap_normal, offset))`
 (`solid_layered.rs:122`). So the floor of BOTH the plug body and the cup cavity
 is the **scan's cap plane**.
 
-On `3quartachub` that cap normal (from `.prep.toml [caps]`) is
+On `base_mold` that cap normal (from `.prep.toml [caps]`) is
 `[0.058, −0.047, −0.997]` — **~4.3° off vertical** (cf-scan-prep's auto-PCA
 lean). Therefore:
 - **Plug bottom + plug-lock + pin** are flattened/oriented to the **tilted** cap
@@ -74,7 +74,7 @@ plane is level → the plug bottom + plug features are square to the ground (fix
 obs 2 fully) AND the cup floor is level rather than sloped (fixes most of obs 3;
 the MC lumpiness + the want-a-guaranteed-flat-coplanar-face remain). Cheapest per
 the organic-parts §3 finding. cf-scan-prep-side (the canal session added
-`auto_level_to_floor`, but `3quartachub.prep.toml` still records a 4.3° cap —
+`auto_level_to_floor`, but `base_mold.prep.toml` still records a 4.3° cap —
 either it predates the auto-level or the level wasn't re-applied/saved; confirm).
 
 **(L2) Flatten the cup cavity floor in cf-cast (C-B2 bounded slab).** Independent
@@ -129,7 +129,7 @@ floor). Mirror the apex-pour "which frame" care.
 ---
 
 ## 4. Spike (S0, cheap, no production code)
-Measure on the regenerated `3quartachub` cup STLs (Python, like the seam-fit
+Measure on the regenerated `base_mold` cup STLs (Python, like the seam-fit
 spike): the cup cavity-floor planarity — fit a plane to the floor verts, report
 tilt-from-vertical-build-axis + RMS + peak lump. Confirm ~4.3° tilt + size the
 lumpiness. Also measure the plug-bottom plane (should be ~flat at the tilted cap)
@@ -139,10 +139,10 @@ is needed.
 ## 5. Phasing
 | Phase | Scope | Deliverable |
 |---|---|---|
-| **S0** | Spike: measure cup-floor tilt + lumpiness + plug-bottom plane on `3quartachub`. | numbers sizing L1 vs L2 |
+| **S0** | Spike: measure cup-floor tilt + lumpiness + plug-bottom plane on `base_mold`. | numbers sizing L1 vs L2 |
 | **S1** | (workshop) re-level decision (OQ3) + re-prep if chosen. | level cap or not |
 | **S2** | C-B2a slab: `P_floor` + cup-floor union + retarget plug trim to `P_floor`; re-anchor plug-lock/pin to the floor frame. Flatness gate. | flat coplanar floor |
-| **S3** | `3quartachub` regen + workshop eyeball; tune `P_floor` offset + bias. | empirical convergence |
+| **S3** | `base_mold` regen + workshop eyeball; tune `P_floor` offset + bias. | empirical convergence |
 
 ## 6. Open questions for workshop
 - **OQ-B1 (the big one):** re-level the scan upstream (L1), add the cf-cast slab

@@ -19,9 +19,9 @@ use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
 use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::solid_to_mm_mesh;
-use crate::piece::compose_piece_solid;
+use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared};
 use crate::plug::add_plug_pins;
-use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
+use crate::pour_volume::{POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
@@ -634,9 +634,14 @@ impl CastSpec {
                 layer.body.clone().subtract(prev.body.clone())
             };
 
+            // §MA-17/S2: floor the integration cell so a fine production
+            // cup cell (0.5 mm) doesn't pay a cubic, multi-minute
+            // pour-volume bake per layer. Mass-budget accuracy below
+            // ~2 mm is sub-0.4 %; see `POUR_VOLUME_MIN_CELL_SIZE_M`.
+            let pour_volume_cell_m = self.mesh_cell_size_m.max(POUR_VOLUME_MIN_CELL_SIZE_M);
             let shell_volume_m3 = integrate_negative_sdf_volume(
                 &shell,
-                self.mesh_cell_size_m,
+                pour_volume_cell_m,
                 CastTarget::LayerBody { layer_index },
             )?;
             let pour_mass_kg = shell_volume_m3 * layer.material.density_kg_m3;
@@ -1025,6 +1030,14 @@ fn mesh_and_gate_v2_pieces(
         .enumerate()
         .map(
             |(layer_index, layer)| -> Result<[PendingPiece; 2], CastError> {
+                // §MA-S1a: the flange silhouette extraction + the
+                // side-agnostic post-MC transforms are identical for both
+                // halves of a layer. Build them ONCE here and share across
+                // the two per-side meshing tasks below — removes the
+                // redundant per-side `Silhouette2d` recompute (the S0
+                // dominant cost) with bit-identical output. See
+                // `docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-10 S1a.
+                let shared = compose_piece_shared(&layer.body, spec.wall_thickness_m, ribbon)?;
                 let (neg_res, pos_res) = rayon::join(
                     || {
                         mesh_and_gate_v2_piece(
@@ -1033,6 +1046,7 @@ fn mesh_and_gate_v2_pieces(
                             layer,
                             layer_index,
                             PieceSide::Negative,
+                            &shared,
                             out_dir,
                             layer_count,
                         )
@@ -1044,6 +1058,7 @@ fn mesh_and_gate_v2_pieces(
                             layer,
                             layer_index,
                             PieceSide::Positive,
+                            &shared,
                             out_dir,
                             layer_count,
                         )
@@ -1058,18 +1073,29 @@ fn mesh_and_gate_v2_pieces(
 /// Compose + mesh + F4-gate a single piece. Extracted so
 /// `mesh_and_gate_v2_pieces` stays readable + each call site has
 /// the same target metadata threaded through identically.
+// 8 args: the per-piece identity (spec/ribbon/layer/index/side), the §MA-S1a
+// shared per-layer precompute, and the output target metadata (dir/count).
+// Bundling them into a context struct would add indirection without clarifying
+// this internal helper.
+#[allow(clippy::too_many_arguments)]
 fn mesh_and_gate_v2_piece(
     spec: &CastSpec,
     ribbon: &Ribbon,
     layer: &CastLayer,
     layer_index: usize,
     piece_side: PieceSide,
+    shared: &PieceShared,
     out_dir: &Path,
     layer_count: usize,
 ) -> Result<PendingPiece, CastError> {
     let t_compose = std::time::Instant::now();
-    let (piece_solid, mating_transforms) =
-        compose_piece_solid(&layer.body, spec.wall_thickness_m, ribbon, piece_side)?;
+    let (piece_solid, mating_transforms) = compose_piece_with_shared(
+        &layer.body,
+        spec.wall_thickness_m,
+        ribbon,
+        piece_side,
+        shared,
+    )?;
     let target = CastTarget::MoldPiece {
         layer_index,
         piece_side,
@@ -1955,7 +1981,7 @@ mod tests {
 
     use super::{CastError, CastLayer, CastSpec, CastTarget, MeshSummary, clip_above_body};
     use crate::material::MoldingMaterial;
-    use crate::pour_volume::DEFAULT_MASS_BUDGET_KG;
+    use crate::pour_volume::{DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M};
     use cf_design::Solid;
 
     /// Reference material for smoke tests — Ecoflex 00-30 anchor
@@ -2552,6 +2578,47 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn pour_volume_integration_cell_is_floored_and_decoupled_from_mesh_cell() {
+        // §MA-17/S2: pour-volume integration is floored at
+        // POUR_VOLUME_MIN_CELL_SIZE_M (2 mm) so a fine production cup
+        // cell doesn't pay a cubic, multi-minute bake per layer for a
+        // mass-budget estimate. Two invariants:
+        //  (a) a fine mesh cell (0.5 mm) integrates at the 2 mm FLOOR —
+        //      bit-identical to running the mesh itself at 2 mm;
+        //  (b) a mesh cell coarser than the floor (3 mm) is NOT raised
+        //      to it — the floor is a `max()` (a lower bound on the
+        //      cell size), not a clamp-to-constant.
+        let mut fine = pour_volume_fixture();
+        fine.mesh_cell_size_m = 0.0005;
+        let mut at_floor = pour_volume_fixture();
+        at_floor.mesh_cell_size_m = POUR_VOLUME_MIN_CELL_SIZE_M;
+        let mut coarse = pour_volume_fixture();
+        coarse.mesh_cell_size_m = 0.003;
+
+        let v_fine = fine.compute_pour_volumes().unwrap();
+        let v_floor = at_floor.compute_pour_volumes().unwrap();
+        let v_coarse = coarse.compute_pour_volumes().unwrap();
+
+        // (a) the fine mesh cell is floored to 2 mm → bit-identical to
+        // integrating at the floor (proves decoupling from mesh_cell).
+        for (f, fl) in v_fine.iter().zip(&v_floor) {
+            assert_eq!(
+                f.shell_volume_m3.to_bits(),
+                fl.shell_volume_m3.to_bits(),
+                "fine mesh cell must floor to POUR_VOLUME_MIN_CELL_SIZE_M \
+                 (bit-identical to the 2 mm integration)"
+            );
+        }
+        // (b) a coarse mesh cell integrates at its own (coarser) cell,
+        // not the floor — so prototyping meshes stay cheap on their terms.
+        assert_ne!(
+            v_coarse[1].shell_volume_m3.to_bits(),
+            v_floor[1].shell_volume_m3.to_bits(),
+            "a mesh cell coarser than the floor must NOT be raised to it"
+        );
     }
 
     #[test]

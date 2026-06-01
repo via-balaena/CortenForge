@@ -188,6 +188,15 @@ pub struct CastDefaults {
     /// binormal seam automatically.
     #[serde(default = "default_true")]
     pub planar_seam_fit: bool,
+    /// §MA-S1b: flatten the cavity floor with exact post-MC CSG (dip-fill
+    /// union + bump-cut subtract at the cap plane) so the floor↔socket↔
+    /// seam junction is crisp instead of marching-cubes-rounded. Needs
+    /// `planar_seam` + a pour-end cap hint (the scan `.prep.toml [caps]`);
+    /// a no-op otherwise. Off by default — opt-in per part, because the
+    /// flattening footprint is the cap-plane cross-section's convex hull
+    /// (correct for convex cavity floors, over-covers non-convex ones).
+    #[serde(default)]
+    pub flat_cavity_floor: bool,
 }
 
 impl Default for CastDefaults {
@@ -202,6 +211,7 @@ impl Default for CastDefaults {
             scan_mesh_direct_plug_layer_0: false,
             planar_seam: false,
             planar_seam_fit: true,
+            flat_cavity_floor: false,
         }
     }
 }
@@ -318,6 +328,14 @@ pub struct PourGateConfig {
     /// arc §4.3, 2026-05-29.
     #[serde(default)]
     pub apex_axial: bool,
+    /// When `apex_axial`, place pour-flanking bolts (one each side of the bore)
+    /// to clamp the split flange. Default `true`. Set `false` to suppress them
+    /// — the apex pour split is then clamped by the arc-bolt ring + hand
+    /// pressure. Use on parts with a tight/leaning dome apex where a flanking
+    /// bolt can't be placed cleanly (it lands at the apex tip or crowds a
+    /// dowel/neighbour) — workshop 2026-05-31, base_mold.
+    #[serde(default = "default_true")]
+    pub flank_bolts: bool,
 }
 
 impl Default for PourGateConfig {
@@ -325,6 +343,7 @@ impl Default for PourGateConfig {
         Self {
             enabled: true,
             apex_axial: false,
+            flank_bolts: true,
         }
     }
 }
@@ -665,6 +684,19 @@ impl CastConfig {
             !self.pour_gate.apex_axial || self.cast.planar_seam,
             "cast.toml: [pour_gate].apex_axial requires [cast].planar_seam = true \
              (the apex bore must lie on a flat seam to split the flange cleanly)"
+        );
+        // The §MA-S1b cavity-floor flattening slab is seam-clipped to the flat
+        // seam plane; `build_cavity_floor_slab_transforms` silently no-ops
+        // without `planar_seam` (and without a pour-end cap hint). Fail fast on
+        // the config-time half of that dependency — the same fail-fast pattern
+        // as `apex_axial` above — so `flat_cavity_floor = true` can never be a
+        // silent no-op. (The cap hint comes from the scan `.prep.toml [caps]`,
+        // not the cast TOML, so it stays a runtime concern, not a config gate.)
+        ensure!(
+            !self.cast.flat_cavity_floor || self.cast.planar_seam,
+            "cast.toml: [cast].flat_cavity_floor requires [cast].planar_seam = true \
+             (the floor slab is seam-clipped to a flat seam plane; without it the \
+             flattening is silently skipped)"
         );
         for (i, layer) in self.layers.iter().enumerate() {
             ensure!(

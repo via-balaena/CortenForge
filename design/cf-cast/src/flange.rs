@@ -93,7 +93,12 @@
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Vector3};
 
-use crate::ribbon::{PieceSide, Ribbon};
+use crate::ribbon::Ribbon;
+// `PieceSide` is only used by the `#[cfg(test)]` `build_flange_solid_for_side`
+// helper + the unit tests (§MA-S1a moved the production per-side flange split
+// into `piece::compose_piece_with_shared`).
+#[cfg(test)]
+use crate::ribbon::PieceSide;
 use crate::silhouette_2d::Silhouette2d;
 
 /// Default flange lateral width (20 mm).
@@ -370,6 +375,14 @@ pub(crate) fn build_flange_solid(
 /// edge exactly at the seam plane; both depend on the same MC
 /// vertex-placement determinism from the halfspace SDF intersect
 /// per recon-4 (P) §F-4).
+///
+/// §MA-S1a (2026-05-30): the production cup-piece path no longer calls
+/// this — `compose_piece_shared` builds the un-split flange once per
+/// layer (sharing the `Silhouette2d`) and each side applies the
+/// halfspace intersect + body subtract in `compose_piece_with_shared`.
+/// This helper is retained as a focused unit-test fixture for the
+/// flange × halfspace composition, hence `#[cfg(test)]`.
+#[cfg(test)]
 pub(crate) fn build_flange_solid_for_side(
     layer_body: &Solid,
     ribbon: &Ribbon,

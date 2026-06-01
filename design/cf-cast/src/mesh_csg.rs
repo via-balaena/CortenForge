@@ -113,6 +113,38 @@ pub struct CylinderParams {
     pub segments: u32,
 }
 
+/// Cavity-floor slab payload for [`MatingTransform::UnionFloorSlab`]
+/// (§MA-S1b option A, `docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md`).
+///
+/// A flat-topped disc unioned post-MC to replace the MC'd cavity-floor
+/// region with an EXACT plane, so the floor↔socket↔seam junction comes
+/// out crisp at the current cell size instead of MC-rounded. The disc
+/// is built along [`CylinderParent::axis`] (= cap-plane normal,
+/// `+axis` into the floor-base solid), then trimmed to the cup piece's
+/// own seam half-space so it cannot add material past the mating face.
+///
+/// Paradigm-safety ([[project-cf-cast-sdf-meshcsg-paradigm-boundary]]):
+/// the disc top sits 1 µm into the cavity (above every MC floor vertex)
+/// and the seam trim is biased 1 µm INTO the kept side, so both faces
+/// are CONTAINED in pre-existing material — no boolean welds onto a
+/// coincident SDF surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorSlabParams {
+    /// Convex-hull corner points (meters, world) of the slab prism —
+    /// two rings following the body's cap-plane cross-section (+margin):
+    /// the top ring 1 µm into the cavity, the bottom ring into the
+    /// floor base. `Manifold::hull_pts` builds the flat-topped prism so
+    /// its footprint follows the cavity outline (flat floor reaches the
+    /// wall on all sides) instead of a round disc that leaves ring gaps.
+    pub hull_points_m: Vec<[f64; 3]>,
+    /// Seam clip plane normal, oriented so `trim_by_plane` KEEPS this
+    /// cup piece's side (per-`PieceSide`).
+    pub seam_keep_normal: UnitVector3<f64>,
+    /// Seam clip offset (meters): keeps `seam_keep_normal · p >
+    /// seam_offset_m`, already biased 1 µm into the kept side.
+    pub seam_offset_m: f64,
+}
+
 /// One mating-feature mesh-CSG operation.
 ///
 /// Applied between `crate::mesher::solid_to_mm_mesh` and the F4
@@ -194,6 +226,24 @@ pub enum MatingTransform {
         /// `PrismaticPin` geometry + pose payload.
         params: PrismaticPinParams,
     },
+    /// Mesh-union of a flat-topped cavity-floor disc, seam-clipped to
+    /// this cup piece's side. §MA-S1b option A — replaces the MC'd
+    /// cavity-floor region with an exact plane so the floor↔socket↔seam
+    /// junction is crisp at the current cell size. See [`FloorSlabParams`].
+    UnionFloorSlab {
+        /// Cavity-floor disc geometry + seam clip payload.
+        params: FloorSlabParams,
+    },
+    /// Mesh-subtract of a cavity-side prism that shaves MC overshoot
+    /// **bumps** off the cavity floor. Paired with [`Self::UnionFloorSlab`]
+    /// (which fills dips): union raises low spots, this cuts high spots,
+    /// so the floor lands flat at the cap plane. The prism footprint is
+    /// inset from the cavity wall so it can't notch the organic wall, and
+    /// its base face sits 1 µm into the floor-base solid (CONTAINED).
+    SubtractFloorCap {
+        /// Cavity-side prism geometry + seam clip payload.
+        params: FloorSlabParams,
+    },
 }
 
 /// Apply mating-feature mesh-CSG operations between marching-cubes
@@ -260,6 +310,49 @@ fn apply_one(m: &Manifold, t: &MatingTransform) -> Manifold {
         MatingTransform::SubtractTruncatedPyramid { params } => {
             let pyramid = build_truncated_pyramid_via_hull_pts(params);
             m.difference(&pyramid)
+        }
+        MatingTransform::UnionFloorSlab { params } => {
+            // Flat-topped prism whose footprint follows the cavity
+            // cross-section (hull of two world-point rings), then clip
+            // to this piece's seam half-space (1 µm-biased CONTAINED) so
+            // the union can't add material past the mating face, then
+            // union the flat top in.
+            let pts_mm: Vec<[f64; 3]> = params
+                .hull_points_m
+                .iter()
+                .map(|p| {
+                    [
+                        p[0] * METERS_TO_MM,
+                        p[1] * METERS_TO_MM,
+                        p[2] * METERS_TO_MM,
+                    ]
+                })
+                .collect();
+            let slab = Manifold::hull_pts(&pts_mm);
+            let seam_offset_mm = params.seam_offset_m * METERS_TO_MM;
+            let clipped =
+                slab.trim_by_plane_nalgebra(&params.seam_keep_normal.into_inner(), seam_offset_mm);
+            m.union(&clipped)
+        }
+        MatingTransform::SubtractFloorCap { params } => {
+            // Same hull-prism build as UnionFloorSlab, but DIFFERENCED:
+            // shaves MC overshoot bumps off the cavity floor.
+            let pts_mm: Vec<[f64; 3]> = params
+                .hull_points_m
+                .iter()
+                .map(|p| {
+                    [
+                        p[0] * METERS_TO_MM,
+                        p[1] * METERS_TO_MM,
+                        p[2] * METERS_TO_MM,
+                    ]
+                })
+                .collect();
+            let prism = Manifold::hull_pts(&pts_mm);
+            let seam_offset_mm = params.seam_offset_m * METERS_TO_MM;
+            let clipped =
+                prism.trim_by_plane_nalgebra(&params.seam_keep_normal.into_inner(), seam_offset_mm);
+            m.difference(&clipped)
         }
     }
 }

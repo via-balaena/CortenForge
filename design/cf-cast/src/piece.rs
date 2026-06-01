@@ -109,11 +109,11 @@
 //! eliminates). The mesh-CSG `MatingTransform` variants stay for
 //! the cup pour-gate carve (S7 of the prior mating-features arc).
 
-use cf_design::{Sdf, Solid};
-use nalgebra::{Point3, Vector3};
+use cf_design::{Aabb, Sdf, Solid};
+use nalgebra::{Point3, Unit, Vector3};
 
 use crate::error::{CastError, CastTarget};
-use crate::mesh_csg::MatingTransform;
+use crate::mesh_csg::{FloorSlabParams, MatingTransform};
 use crate::plug::build_plug_lock_socket_transform;
 use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
@@ -292,6 +292,63 @@ pub fn compose_piece_solid(
     ribbon: &Ribbon,
     side: PieceSide,
 ) -> Result<(Solid, Vec<MatingTransform>), CastError> {
+    let shared = compose_piece_shared(layer_body, wall_thickness_m, ribbon)?;
+    compose_piece_with_shared(layer_body, wall_thickness_m, ribbon, side, &shared)
+}
+
+/// Side-independent precompute shared by both [`PieceSide`]s of a
+/// layer. Built once by [`compose_piece_shared`] and consumed by
+/// [`compose_piece_with_shared`] for each half.
+///
+/// §MA-S1a (`docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-6 option
+/// G): the flange's `Silhouette2d` extraction is the dominant
+/// per-piece cost (S0 profile §MA-7, ~70% of compose) and is the body
+/// seam-plane cross-section — **identical for both halves**. Holding
+/// it here removes the redundant per-side recomputation with
+/// bit-identical output (each side only adds the cheap halfspace
+/// intersect + body subtract).
+#[derive(Debug, Clone)]
+pub struct PieceShared {
+    /// MC sampling bounds (`body_bounds` expanded by the cup-wall /
+    /// flange reach) — side-independent, reused by both halves.
+    mc_bounds: Aabb,
+    /// The symmetric (pre-halfspace-cut) flange solid, with its 2D
+    /// silhouette already extracted. `None` when the ribbon has no
+    /// flange. Each side cheaply `.intersect`s its own halfspace; the
+    /// expensive `Silhouette2d` build happens ONCE here, not per side.
+    flange_unsplit: Option<Solid>,
+    /// Post-MC mesh-CSG transforms (pour gate, plug-lock socket, dowel
+    /// holes, bolt pattern). All side-agnostic by construction, so
+    /// they are built once and cloned into each side's result.
+    transforms: Vec<MatingTransform>,
+}
+
+/// Build the side-independent half of [`compose_piece_solid`].
+///
+/// Returns the MC bounds, the un-split flange solid (with its
+/// silhouette), and the post-MC `MatingTransform`s — all computed ONCE
+/// per layer and reused for both [`PieceSide`]s via
+/// [`compose_piece_with_shared`].
+///
+/// The `Silhouette2d::from_body_in_plane` extraction (the dominant
+/// per-piece cost, S0 profile §MA-7) samples the same body
+/// cross-section for both halves, so factoring it here removes the
+/// redundant per-side recomputation with bit-identical output. See
+/// `docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-6 option G / §MA-10
+/// S1a. The pour-gate, plug-lock socket, dowel-hole, and bolt-pattern
+/// transform builders are all side-agnostic (none take a `PieceSide`),
+/// so they likewise move here.
+///
+/// # Errors
+///
+/// - [`CastError::InfiniteBounds`] with [`CastTarget::LayerBody`] if
+///   `layer_body.bounds()` returns `None` (same condition as
+///   [`compose_piece_solid`]).
+pub fn compose_piece_shared(
+    layer_body: &Solid,
+    wall_thickness_m: f64,
+    ribbon: &Ribbon,
+) -> Result<PieceShared, CastError> {
     // §Q-1 (2026-05-26): MC bounds are body_bounds expanded by
     // max(wall_thickness, flange_width) + ε. The cup-wall shell
     // SDF + flange SDF must BOTH sample within this region for MC
@@ -311,67 +368,14 @@ pub fn compose_piece_solid(
     let mc_pad = wall_thickness_m.max(flange_extent) + MC_BOUNDS_PAD_M;
     let mc_bounds = body_bounds.expanded(mc_pad);
 
-    // Pre-S4 / recon-4 (P) SDF seam: side-specific half-space
-    // intersect at the SDF level. The biased halfspace's SDF is
-    // exactly linear; MC interpolates seam-cap vertices on the seam
-    // plane to f64 precision per §F-4. S5/S6/S7 mating-features
-    // mesh-CSG cylinder primitives compose post-MC against the
-    // resulting half-shell mesh.
-    // §M-S1 (2026-05-27): overlap_m = 0 throughout (flush mating).
-    // Pre-§M used `RIBBON_PIECE_OVERLAP_M = 0.5 mm` which created a
-    // stepped mating face vs the flange's already-zero overlap.
-    let halfspace = ribbon.halfspace_solid(side, mc_bounds, 0.0);
-
-    // §Q-1: cup-wall as body-tracking shell, not bounding cuboid.
-    // See [`CupWallShellSdf`] docstring for the architectural
-    // rationale. The shell SDF + `mc_bounds` give MC a clean
-    // sampling region around the body's outer shell with no
-    // cuboid SDF zero-set passing through flange interior.
-    let shell = Solid::from_sdf(
-        CupWallShellSdf {
-            body: layer_body.clone(),
-            wall_thickness_m,
-        },
-        mc_bounds,
-    );
-    let mut base_piece = shell.intersect(halfspace);
-
-    // S1 of `docs/CF_CAST_SEAM_FLANGE_RECON.md` §F-13: when
-    // `ribbon.flange` is `FlangeKind::Plate(spec)`, union the
-    // per-side flange SDF into the cup-piece base. The flange is a
-    // flat slab at the seam plane extending OUTWARD from the body
-    // cavity perimeter. Pre-§Q-1 the flange's halfspace cut
-    // explicitly used zero overlap_m so the cup-wall × flange
-    // junction was flush; post-§Q-1 the cup-wall is body-tracking
-    // (shell SDF) and the flange's outer reach is fully inside
-    // `mc_bounds`, so no cuboid face × flange interaction can
-    // produce MC ambiguity. `FlangeKind::None` short-circuits.
-    //
-    // §F-S1 follow-up (2026-05-27): subtract the layer body from the
-    // flange before unioning. The §F-S1 silhouette-based FlangeSdf
-    // uses 2D point-to-silhouette-curve distance, which has no
-    // awareness of the body's 3D extent — at points where the body
-    // bulges in ±Y past the seam-plane silhouette (sock fabric
-    // bunching on top of capsule curves), the flange would otherwise
-    // extend into the body's 3D interior and create floating shards
-    // of cup material inside the body cavity after the cup-piece
-    // union. `flange ∖ body` clips the flange to "outside body in
-    // 3D", restoring 3D-body-respect without losing the §F-S1
-    // concavity fix (flange material in the seam plane outside the
-    // silhouette curve = outside body in 3D too). See workshop
-    // cf-view smoke after §F-S2 production regen for the shard
-    // diagnostic that triggered this follow-up.
-    if let Some(flange_spec) = ribbon.flange.spec() {
-        let flange = crate::flange::build_flange_solid_for_side(
-            layer_body,
-            ribbon,
-            flange_spec,
-            mc_bounds,
-            side,
-        );
-        let flange_clipped = flange.subtract(layer_body.clone());
-        base_piece = base_piece.union(flange_clipped);
-    }
+    // §MA-S1a: build the symmetric (pre-halfspace) flange solid ONCE
+    // here — its `Silhouette2d` extraction (the S0-dominant cost) is
+    // the body's seam-plane cross-section, identical for both halves.
+    // Each side applies the cheap halfspace intersect + body subtract
+    // in `compose_piece_with_shared`. `FlangeKind::None` → `None`.
+    let flange_unsplit = ribbon.flange.spec().map(|flange_spec| {
+        crate::flange::build_flange_solid(layer_body, ribbon, flange_spec, mc_bounds)
+    });
 
     // Post-mortem salvage (2026-05-24): the S4 plug-floor-lock socket
     // is emitted as a POST-MC mesh-CSG transform via
@@ -441,7 +445,267 @@ pub fn compose_piece_solid(
     // §4.2 / §9 C2. `build_cup_cap_trim_transform` is retained (dormant,
     // with the bias) for that future slab-anchored reuse.
 
+    Ok(PieceShared {
+        mc_bounds,
+        flange_unsplit,
+        transforms,
+    })
+}
+
+/// Assemble one [`PieceSide`]'s mold-piece from a [`PieceShared`].
+///
+/// The cheap, side-dependent half of [`compose_piece_solid`]: the
+/// cup-wall shell ∩ this side's halfspace, ∪ the shared flange clipped
+/// to this side. The transforms are cloned from `shared` (side-agnostic).
+///
+/// Factoring the silhouette-bearing invariant work into
+/// [`compose_piece_shared`] lets a layer's two halves share it
+/// (§MA-S1a). This path is bit-identical to the pre-split
+/// `compose_piece_solid`: the per-side flange is exactly
+/// `build_flange_solid(...) ∩ halfspace(side) ∖ body`, which is what
+/// `build_flange_solid_for_side(...).subtract(body)` computed before —
+/// only now the `build_flange_solid` silhouette is built once and the
+/// resulting `Solid` is cloned per side (clone is `Arc`-cheap and
+/// evaluates identically, so MC samples the same field).
+///
+/// # Errors
+///
+/// Infallible in practice (always returns `Ok`); the `Result` return
+/// mirrors [`compose_piece_solid`] for a uniform call site and to keep
+/// room for future fallible per-side composition steps.
+pub fn compose_piece_with_shared(
+    layer_body: &Solid,
+    wall_thickness_m: f64,
+    ribbon: &Ribbon,
+    side: PieceSide,
+    shared: &PieceShared,
+) -> Result<(Solid, Vec<MatingTransform>), CastError> {
+    let mc_bounds = shared.mc_bounds;
+
+    // Pre-S4 / recon-4 (P) SDF seam: side-specific half-space
+    // intersect at the SDF level. The biased halfspace's SDF is
+    // exactly linear; MC interpolates seam-cap vertices on the seam
+    // plane to f64 precision per §F-4. S5/S6/S7 mating-features
+    // mesh-CSG cylinder primitives compose post-MC against the
+    // resulting half-shell mesh.
+    // §M-S1 (2026-05-27): overlap_m = 0 throughout (flush mating).
+    // Pre-§M used `RIBBON_PIECE_OVERLAP_M = 0.5 mm` which created a
+    // stepped mating face vs the flange's already-zero overlap.
+    let halfspace = ribbon.halfspace_solid(side, mc_bounds, 0.0);
+
+    // §Q-1: cup-wall as body-tracking shell, not bounding cuboid.
+    // See [`CupWallShellSdf`] docstring for the architectural
+    // rationale. The shell SDF + `mc_bounds` give MC a clean
+    // sampling region around the body's outer shell with no
+    // cuboid SDF zero-set passing through flange interior.
+    let shell = Solid::from_sdf(
+        CupWallShellSdf {
+            body: layer_body.clone(),
+            wall_thickness_m,
+        },
+        mc_bounds,
+    );
+    let mut base_piece = shell.intersect(halfspace);
+
+    // S1 of `docs/CF_CAST_SEAM_FLANGE_RECON.md` §F-13: when
+    // `ribbon.flange` is `FlangeKind::Plate(spec)`, union the
+    // per-side flange SDF into the cup-piece base. The flange is a
+    // flat slab at the seam plane extending OUTWARD from the body
+    // cavity perimeter. Pre-§Q-1 the flange's halfspace cut
+    // explicitly used zero overlap_m so the cup-wall × flange
+    // junction was flush; post-§Q-1 the cup-wall is body-tracking
+    // (shell SDF) and the flange's outer reach is fully inside
+    // `mc_bounds`, so no cuboid face × flange interaction can
+    // produce MC ambiguity. `FlangeKind::None` short-circuits
+    // (`shared.flange_unsplit` is `None`).
+    //
+    // §F-S1 follow-up (2026-05-27): subtract the layer body from the
+    // flange before unioning. The §F-S1 silhouette-based FlangeSdf
+    // uses 2D point-to-silhouette-curve distance, which has no
+    // awareness of the body's 3D extent — at points where the body
+    // bulges in ±Y past the seam-plane silhouette (sock fabric
+    // bunching on top of capsule curves), the flange would otherwise
+    // extend into the body's 3D interior and create floating shards
+    // of cup material inside the body cavity after the cup-piece
+    // union. `flange ∖ body` clips the flange to "outside body in
+    // 3D", restoring 3D-body-respect without losing the §F-S1
+    // concavity fix (flange material in the seam plane outside the
+    // silhouette curve = outside body in 3D too). See workshop
+    // cf-view smoke after §F-S2 production regen for the shard
+    // diagnostic that triggered this follow-up.
+    if let Some(flange_unsplit) = &shared.flange_unsplit {
+        let flange = flange_unsplit
+            .clone()
+            .intersect(ribbon.halfspace_solid(side, mc_bounds, 0.0));
+        let flange_clipped = flange.subtract(layer_body.clone());
+        base_piece = base_piece.union(flange_clipped);
+    }
+
+    // §MA-S1b: prepend the exact post-MC cavity-floor flattening ops
+    // (dip-fill union + bump-cut subtract) BEFORE the shared transforms
+    // so they run ahead of the plug-lock socket subtract — the socket
+    // then carves into a flat exact floor (crisp floor↔socket junction).
+    // Empty unless `ribbon.flat_cavity_floor` is set AND the ribbon has a
+    // planar seam + cap-plane hint (else a no-op).
+    let mut transforms =
+        build_cavity_floor_slab_transforms(layer_body, ribbon, wall_thickness_m, side);
+    transforms.extend(shared.transforms.iter().cloned());
     Ok((base_piece, transforms))
+}
+
+/// §MA-S1b spike: build the post-MC cavity-floor flattening ops for `side`.
+///
+/// Returns a (dip-filler UNION, bump-cutter SUBTRACT) pair that together
+/// force the cavity floor flat at the cap plane: the union fills MC
+/// undershoot dips, the subtract shaves MC overshoot bumps. Both
+/// footprints follow the body's cap-plane cross-section (ray-sampled)
+/// and are seam-clipped (1 µm CONTAINED bias) to this piece's side, so
+/// the floor↔socket↔seam junction comes out crisp without adding
+/// material past the mating face or notching the organic wall. Returns
+/// an empty `Vec` for a ribbon lacking a planar seam or cap-plane.
+// The ray-march below casts small bounded loop indices (k < SAMPLES = 48,
+// step counts < r_max/step ≈ 300) to f64 and the step bound to usize —
+// all exact / in-range, no meaningful precision or truncation loss.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn build_cavity_floor_slab_transforms(
+    layer_body: &Solid,
+    ribbon: &Ribbon,
+    wall_thickness_m: f64,
+    side: PieceSide,
+) -> Vec<MatingTransform> {
+    const BIAS_M: f64 = 1.0e-6;
+    const SAMPLES: usize = 48;
+    if !ribbon.flat_cavity_floor {
+        return Vec::new();
+    }
+    let Some((cap_centroid, cap_normal_vec)) = ribbon.pour_end_hint else {
+        return Vec::new();
+    };
+    let Some((seam_point, seam_normal)) = ribbon.planar_seam else {
+        return Vec::new();
+    };
+    let n = Unit::new_normalize(cap_normal_vec).into_inner();
+
+    // In-cap-plane orthonormal basis for cross-section ray sampling.
+    let seed = if n.z.abs() < 0.9 {
+        Vector3::z()
+    } else {
+        Vector3::x()
+    };
+    let u = (seed - n * n.dot(&seed)).normalize();
+    let v = n.cross(&u);
+
+    // Ray-sample the body's cap-plane cross-section. Sample 0.5 mm toward
+    // the cavity (−cap_normal = body interior) so the section is cleanly
+    // inside (body.evaluate < 0); march outward to the exit. Each
+    // direction's exit becomes a footprint boundary radius.
+    let p0 = cap_centroid - n * 0.0005;
+    // Precondition: the seed point must be INSIDE the body. The march steps
+    // OUTWARD only, so it finds a wall only when it starts inside. If the
+    // cap centroid is not interior (a concavity/hole, or the convex-hull
+    // centroid of a lobed cross-section landing in a gap), every ray exits
+    // at step 0, collapsing the footprint to a degenerate sub-mm prism
+    // sitting at the centroid (a floating sliver once applied). No-op
+    // instead of emitting that garbage.
+    debug_assert!(
+        layer_body.evaluate(&p0) < 0.0,
+        "flat_cavity_floor: cap centroid not interior to the body — \
+         cross-section ray sampling would collapse",
+    );
+    if layer_body.evaluate(&p0) >= 0.0 {
+        return Vec::new();
+    }
+    let step = 0.0005_f64;
+    // Upper bound on any in-plane reach from an interior point: the body's
+    // own AABB diagonal (capped at a generous fixed ceiling, and used as
+    // the fallback when the body is unbounded). A ray that fails to find a
+    // wall within this bound is a runaway — a body wider than expected, or
+    // a tangent ray skimming solid material — and is DROPPED below rather
+    // than contributing an r_max-radius point to the convex-hull prism.
+    // Without this a single missed ray ballooned the slab to a ~150 mm
+    // prism unioned/subtracted far past the cavity wall.
+    let r_max = layer_body
+        .bounds()
+        .map_or(0.150_f64, |b| (b.max - b.min).norm())
+        .min(0.150_f64);
+    let margin_m = 0.0005_f64;
+    // Dip-filler depth into the floor base; stay within the floor depth.
+    let total_thick = (wall_thickness_m * 0.8).min(0.004);
+    let max_steps = (r_max / step).ceil() as usize;
+    let mut reaches: Vec<(Vector3<f64>, f64)> = Vec::with_capacity(SAMPLES);
+    for k in 0..SAMPLES {
+        let theta = std::f64::consts::TAU * (k as f64) / (SAMPLES as f64);
+        let dir = u * theta.cos() + v * theta.sin();
+        // March outward until the body cross-section exits (evaluate > 0).
+        // A direction that never exits within r_max is a runaway: drop it
+        // (don't fall back to r_max, which would balloon the hull prism).
+        let mut reach = None;
+        for s in 0..max_steps {
+            let r = step * (s as f64);
+            if layer_body.evaluate(&(p0 + dir * r)) > 0.0 {
+                reach = Some(r);
+                break;
+            }
+        }
+        if let Some(r) = reach {
+            reaches.push((dir, r));
+        }
+    }
+    // Require a wall in at least half the directions. A footprint built from
+    // a handful of surviving rays (the rest runaway) would chord across huge
+    // gaps and mis-shape the slab; below half coverage, no-op rather than
+    // emit a malformed prism.
+    if reaches.len() < SAMPLES / 2 {
+        return Vec::new();
+    }
+
+    // Seam clip: keep this piece's side, biased 1 µm in (CONTAINED).
+    // Negative keeps (p − seam_point)·seam_normal < 0; Positive > 0 →
+    // keep-normal = −side.sign() · seam_normal.
+    let seam_keep_normal = Unit::new_normalize(seam_normal.into_inner() * (-side.sign()));
+    let seam_offset_m = seam_keep_normal.into_inner().dot(&seam_point.coords) + BIAS_M;
+
+    // Dip-filler prism: footprint = cross-section + 0.5 mm (reaches into
+    // the cup wall = CONTAINED), spanning d ∈ [−1 µm (cavity), +thick].
+    let mut fill_pts: Vec<[f64; 3]> = Vec::with_capacity(SAMPLES * 2);
+    // Bump-cutter prism: footprint = cross-section − 0.5 mm (inset off the
+    // wall), spanning d ∈ [−3 mm (cavity), +1 µm (just into floor base)].
+    let mut cut_pts: Vec<[f64; 3]> = Vec::with_capacity(SAMPLES * 2);
+    for &(dir, r) in &reaches {
+        let fill_lat = cap_centroid + dir * (r + margin_m);
+        let fill_top = fill_lat - n * BIAS_M;
+        let fill_bot = fill_lat + n * total_thick;
+        fill_pts.push([fill_top.x, fill_top.y, fill_top.z]);
+        fill_pts.push([fill_bot.x, fill_bot.y, fill_bot.z]);
+
+        let cut_r = (r - margin_m).max(0.0);
+        let cut_lat = cap_centroid + dir * cut_r;
+        let cut_top = cut_lat - n * 0.003; // 3 mm into the cavity (above bumps)
+        let cut_bot = cut_lat + n * BIAS_M; // 1 µm into the floor base
+        cut_pts.push([cut_top.x, cut_top.y, cut_top.z]);
+        cut_pts.push([cut_bot.x, cut_bot.y, cut_bot.z]);
+    }
+
+    vec![
+        MatingTransform::UnionFloorSlab {
+            params: FloorSlabParams {
+                hull_points_m: fill_pts,
+                seam_keep_normal,
+                seam_offset_m,
+            },
+        },
+        MatingTransform::SubtractFloorCap {
+            params: FloorSlabParams {
+                hull_points_m: cut_pts,
+                seam_keep_normal,
+                seam_offset_m,
+            },
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -1274,5 +1538,173 @@ mod tests {
              smoke finding). Got piece SDF = {sdf} (negative = wrongly inside \
              cup material at body-interior probe = shard)."
         );
+    }
+
+    /// §MA-S1b: `build_cavity_floor_slab_transforms` emits the dip-fill
+    /// UNION + bump-cut SUBTRACT pair (in that order) only when the flag
+    /// is set AND the ribbon has a planar seam + cap-plane hint; empty
+    /// otherwise (a clean no-op so default casts are unchanged).
+    #[test]
+    fn flat_cavity_floor_emits_union_then_subtract_pair_only_when_enabled() {
+        // Cuboid body 20 mm; cap = the −Z bottom face with cap_normal −Z
+        // (into the floor-base, AWAY from the body interior — the
+        // production convention), planar seam at Y = 0, wall 5 mm.
+        let body = Solid::cuboid(Vector3::new(0.010, 0.010, 0.010));
+        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
+        let mk_split = || crate::ribbon::SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.010);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let seam_normal = Vector3::new(0.0, 1.0, 0.0);
+
+        let base = Ribbon::new(centerline.clone(), mk_split())
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_planar_seam_at(Point3::origin(), seam_normal);
+
+        // Flag OFF → no-op.
+        assert!(
+            build_cavity_floor_slab_transforms(&body, &base, 0.005, PieceSide::Negative).is_empty(),
+            "no floor ops without the flat_cavity_floor flag",
+        );
+
+        // Flag ON → exactly [UnionFloorSlab, SubtractFloorCap].
+        let on = base.with_flat_cavity_floor();
+        let ops = build_cavity_floor_slab_transforms(&body, &on, 0.005, PieceSide::Negative);
+        assert_eq!(ops.len(), 2, "dip-fill union + bump-cut subtract pair");
+        assert!(
+            matches!(ops[0], MatingTransform::UnionFloorSlab { .. }),
+            "first op must be the dip-fill union (runs before the socket subtract)",
+        );
+        assert!(
+            matches!(ops[1], MatingTransform::SubtractFloorCap { .. }),
+            "second op must be the bump-cut subtract",
+        );
+        // Side-agnostic feature (per-side seam clip): Positive also emits the pair.
+        assert_eq!(
+            build_cavity_floor_slab_transforms(&body, &on, 0.005, PieceSide::Positive).len(),
+            2,
+        );
+
+        // Flag ON but NO cap-plane hint → no-op (needs the cap plane).
+        let no_cap = Ribbon::new(centerline, mk_split())
+            .unwrap()
+            .with_planar_seam_at(Point3::origin(), seam_normal)
+            .with_flat_cavity_floor();
+        assert!(
+            build_cavity_floor_slab_transforms(&body, &no_cap, 0.005, PieceSide::Negative)
+                .is_empty(),
+            "no floor ops without a pour_end_hint cap plane",
+        );
+    }
+
+    /// §MA-S1b: the emitted [`FloorSlabParams`] must pin the load-bearing
+    /// geometry invariants the op-count test above cannot — the 1 µm
+    /// paradigm-boundary bias SIGNS (union fills dips, subtract shaves
+    /// bumps, both CONTAINED), the per-side seam-keep normal + 1 µm-inboard
+    /// offset (so the slab never crosses the flat mating face, §F-4), and
+    /// that the footprint followed the body wall (ray-march hit a wall, not
+    /// the `r_max` runaway fallback). A sign flip on `BIAS_M` or `-side.sign()`
+    /// would survive the count/order test but fail here.
+    #[test]
+    fn flat_cavity_floor_params_pin_bias_containment_and_seam_side() {
+        const BIAS_M: f64 = 1.0e-6;
+        let body = Solid::cuboid(Vector3::new(0.010, 0.010, 0.010));
+        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let cap_centroid = Point3::new(0.0, 0.0, -0.010);
+        let cap_normal = Vector3::new(0.0, 0.0, -1.0);
+        let seam_normal = Vector3::new(0.0, 1.0, 0.0);
+        let n = cap_normal.normalize();
+        // total_thick = (wall * 0.8).min(0.004) — matches the emitter.
+        let total_thick = (0.005_f64 * 0.8).min(0.004);
+
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_end_hint(cap_centroid, cap_normal)
+            .with_planar_seam_at(Point3::origin(), seam_normal)
+            .with_flat_cavity_floor();
+
+        // Borrow the FloorSlabParams out of either floor-slab variant.
+        let params = |t: &MatingTransform| -> FloorSlabParams {
+            match t {
+                MatingTransform::UnionFloorSlab { params }
+                | MatingTransform::SubtractFloorCap { params } => params.clone(),
+                _ => panic!("expected a floor-slab transform"),
+            }
+        };
+        // Signed offset of a hull point off the cap plane along +n
+        // (+n into the floor base, −n into the cavity).
+        let cap_d = |p: &[f64; 3]| (Point3::new(p[0], p[1], p[2]) - cap_centroid).dot(&n);
+        // Lateral radius of a hull point in the cap plane.
+        let lateral_r = |p: &[f64; 3]| {
+            let d = Point3::new(p[0], p[1], p[2]) - cap_centroid;
+            (d - n * d.dot(&n)).norm()
+        };
+
+        for side in [PieceSide::Negative, PieceSide::Positive] {
+            let ops = build_cavity_floor_slab_transforms(&body, &ribbon, 0.005, side);
+            assert_eq!(ops.len(), 2, "{side:?}: dip-fill + bump-cut pair");
+            let fill = params(&ops[0]); // UnionFloorSlab
+            let cut = params(&ops[1]); // SubtractFloorCap
+
+            // (a) bias SIGNS. fill rings interleave [top, bot, …]: top 1 µm
+            // INTO the cavity (−BIAS), bot +total_thick into the floor base
+            // → the union fills dips while staying CONTAINED. cut rings: top
+            // 3 mm into the cavity (above every bump), bot 1 µm into the
+            // floor base → the subtract shaves bumps, base CONTAINED.
+            for (i, p) in fill.hull_points_m.iter().enumerate() {
+                let want = if i % 2 == 0 { -BIAS_M } else { total_thick };
+                assert!(
+                    (cap_d(p) - want).abs() < 1.0e-9,
+                    "{side:?} fill[{i}] cap-offset {} != {want}",
+                    cap_d(p),
+                );
+            }
+            for (i, p) in cut.hull_points_m.iter().enumerate() {
+                let want = if i % 2 == 0 { -0.003 } else { BIAS_M };
+                assert!(
+                    (cap_d(p) - want).abs() < 1.0e-9,
+                    "{side:?} cut[{i}] cap-offset {} != {want}",
+                    cap_d(p),
+                );
+            }
+
+            // (b) seam clip keeps THIS side, biased 1 µm INBOARD. Negative
+            // keeps −seam_normal, Positive keeps +seam_normal; offset =
+            // keep·seam_point (=0 here) + 1 µm so the cut stays strictly
+            // inboard of the flat mating face (never eats it, §F-4).
+            let expect_keep = seam_normal.normalize() * (-side.sign());
+            assert!(
+                (fill.seam_keep_normal.into_inner() - expect_keep).norm() < 1.0e-12,
+                "{side:?} seam_keep_normal must be -side.sign()·seam_normal",
+            );
+            assert!(
+                (fill.seam_offset_m - BIAS_M).abs() < 1.0e-12,
+                "{side:?} seam offset must be 1 µm inboard of the seam point",
+            );
+            // Both ops clip identically (same seam plane).
+            assert!(
+                (fill.seam_keep_normal.into_inner() - cut.seam_keep_normal.into_inner()).norm()
+                    < 1.0e-12
+            );
+            assert!((fill.seam_offset_m - cut.seam_offset_m).abs() < 1.0e-12);
+
+            // (c) footprint followed the wall: finite lateral radius well
+            // under r_max (proves the march hit a wall, not the runaway
+            // fallback) and the fill footprint sits OUTSIDE the cut footprint
+            // (fill = reach + 0.5 mm into the wall, cut = reach − 0.5 mm).
+            for (i, p) in fill.hull_points_m.iter().enumerate() {
+                let r_fill = lateral_r(p);
+                assert!(
+                    r_fill > 0.005 && r_fill < 0.05,
+                    "{side:?} fill[{i}] lateral radius {r_fill} off the wall (or runaway)",
+                );
+                let r_cut = lateral_r(&cut.hull_points_m[i]);
+                assert!(
+                    r_fill > r_cut,
+                    "{side:?} fill radius {r_fill} must exceed cut radius {r_cut}",
+                );
+            }
+        }
     }
 }
