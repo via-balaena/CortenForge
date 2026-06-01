@@ -726,3 +726,30 @@ meshopt = "0.6.2"
 # flow. License MIT.
 baby_shark = "0.3"
 
+# Test/dev build speed: optimize the geometry hot path so the debug test
+# suite isn't dominated by unoptimized marching-cubes.
+#
+# Why both profiles: the MC grind lives in `mesh-offset`
+# (`marching_cubes`/`ScalarGrid`) + the per-sample SDF eval in
+# `cf-design`/`cf-cast`. Under `cargo test`, the crate-under-test uses the
+# `test` profile but its DEPENDENCIES build under `dev` — so `mesh-offset`
+# (a dependency) needs `[profile.dev]` while the cf-cast test target needs
+# `[profile.test]`. Setting both covers the whole hot path. Measured pain:
+# `cargo test -p cf-cast --lib` ran ~27 min unoptimized (the multi-layer
+# `export_molds_v2_*` MC tests), and `xtask grade`'s `cargo test` is
+# debug too; the g7/g9 MC probes compound it.
+#
+# `debug-assertions` + `overflow-checks` stay ON, so this is NOT
+# `--release`: it changes neither assertion semantics (no `debug_assert!`
+# is silenced) nor FP results. Rust/LLVM apply no fast-math (no FP
+# reassociation/contraction) at any opt-level, so f64 / marching-cubes
+# output is bit-identical across opt-levels on a given target — the
+# crate's bit-exact gates (`f4_*_bit_precise_flat`,
+# `pin_cylinder_mesh_is_bit_equal_across_pieces`, `pour_mass_*_bit_exact`)
+# verify this. opt-level 2 (not 3) keeps incremental recompiles reasonable
+# for the optimization the MC loops actually need.
+[profile.dev]
+opt-level = 2
+
+[profile.test]
+opt-level = 2
