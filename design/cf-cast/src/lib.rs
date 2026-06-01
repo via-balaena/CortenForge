@@ -97,6 +97,7 @@ mod procedure;
 mod ribbon;
 pub mod scan_mesh_direct;
 pub mod seam_fit;
+pub mod seam_placement;
 pub mod seam_profile;
 pub mod seam_solver;
 pub mod silhouette_2d;

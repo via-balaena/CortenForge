@@ -15,6 +15,7 @@ use mesh_printability::{
 use nalgebra::Vector3;
 
 use crate::bolt_pattern::plan_smart_bolt_placements;
+use crate::dowel_hole::plan_smart_dowel_placements;
 use crate::error::{CastError, CastTarget};
 use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
@@ -1028,29 +1029,48 @@ fn mesh_and_gate_v2_pieces(
 
     let layer_count = spec.layers.len();
 
-    // S3 seam-placement solver: when `[cast].smart_placement` is on (and there
-    // is both a bolt pattern + a flange), solve the bolt positions ONCE across
-    // the whole layer stack so every layer shares one angular pattern (§3.8).
-    // The per-layer center slice is threaded into `compose_piece_shared`; `None`
-    // (the default, or no bolt/flange) leaves the legacy uniform loop untouched.
-    let smart_plan: Option<Vec<Vec<Point2>>> =
-        match (ribbon.bolt_pattern.spec(), ribbon.flange.spec()) {
-            (Some(bolt_spec), Some(flange_spec)) if ribbon.smart_placement => {
+    // S3/S4 seam-placement solver: when `[cast].smart_placement` is on (and there
+    // is a flange), solve the fastener positions ONCE across the whole layer
+    // stack so every layer shares one angular pattern (§3.8). DOWELS are solved
+    // FIRST (registration is primary), then BOLTS exclude the solver-placed dowel
+    // footprints (the dowels-first contract, §3.6). The per-layer center slices
+    // thread into `compose_piece_shared`; `None` (the default, no flange, or the
+    // missing pattern) leaves the legacy uniform loops untouched.
+    let (smart_dowel_plan, smart_bolt_plan): (Option<Vec<Vec<Point2>>>, Option<Vec<Vec<Point2>>>) =
+        if ribbon.smart_placement {
+            if let Some(flange_spec) = ribbon.flange.spec() {
                 let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
                 let mut bounds = Vec::with_capacity(bodies.len());
                 for body in &bodies {
                     bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
                 }
-                Some(plan_smart_bolt_placements(
-                    &bodies,
-                    &bounds,
-                    ribbon,
-                    bolt_spec,
-                    flange_spec,
-                    spec.wall_thickness_m,
-                ))
+                let dowel_plan = ribbon.dowel_hole.spec().map(|dowel_spec| {
+                    plan_smart_dowel_placements(
+                        &bodies,
+                        &bounds,
+                        ribbon,
+                        dowel_spec,
+                        flange_spec,
+                        spec.wall_thickness_m,
+                    )
+                });
+                let bolt_plan = ribbon.bolt_pattern.spec().map(|bolt_spec| {
+                    plan_smart_bolt_placements(
+                        &bodies,
+                        &bounds,
+                        ribbon,
+                        bolt_spec,
+                        flange_spec,
+                        spec.wall_thickness_m,
+                        dowel_plan.as_deref(),
+                    )
+                });
+                (dowel_plan, bolt_plan)
+            } else {
+                (None, None)
             }
-            _ => None,
+        } else {
+            (None, None)
         };
 
     spec.layers
@@ -1058,7 +1078,11 @@ fn mesh_and_gate_v2_pieces(
         .enumerate()
         .map(
             |(layer_index, layer)| -> Result<[PendingPiece; 2], CastError> {
-                let smart_bolts = smart_plan
+                let smart_dowels = smart_dowel_plan
+                    .as_ref()
+                    .and_then(|plan| plan.get(layer_index))
+                    .map(Vec::as_slice);
+                let smart_bolts = smart_bolt_plan
                     .as_ref()
                     .and_then(|plan| plan.get(layer_index))
                     .map(Vec::as_slice);
@@ -1069,8 +1093,13 @@ fn mesh_and_gate_v2_pieces(
                 // redundant per-side `Silhouette2d` recompute (the S0
                 // dominant cost) with bit-identical output. See
                 // `docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-10 S1a.
-                let shared =
-                    compose_piece_shared(&layer.body, spec.wall_thickness_m, ribbon, smart_bolts)?;
+                let shared = compose_piece_shared(
+                    &layer.body,
+                    spec.wall_thickness_m,
+                    ribbon,
+                    smart_dowels,
+                    smart_bolts,
+                )?;
                 let (neg_res, pos_res) = rayon::join(
                     || {
                         mesh_and_gate_v2_piece(

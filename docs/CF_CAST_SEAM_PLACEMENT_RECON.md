@@ -332,7 +332,7 @@ fix for a pinch. S0 makes this call.
 | **S1** substrate + feasibility | Build the §3.1 clean analytic flange path; the 2D feasibility predicate (§3.3); per-layer snap (§3.8). Verify the as-found `file:line` (§2). Pure addition, zero behaviour change. | **DONE (§7.2).** Derivatives staircase-stable (normals < 8°, no false corner spike under 0.5 mm noise); feasibility (Lipschitz center test) + non-convex + corner cases unit-tested. |
 | **S2** solver | `place_fasteners` (§3.5/§3.6): subdivision-first, Poisson fallback, deterministic. | Unit tests green on ≥4 synthetic seams incl. a masked/holed one — count, even spacing, seed honouring, exclusion, determinism under perturbation. |
 | **S3** bolts (gated) | Route bolts through the solver behind `[cast].smart_placement` (default off). 2D placement. Regen `base_mold`, A/B vs current. | **DONE (§7.3).** `base_mold`: washer clears the Ø10 bore on **both** apex sides (+0.5/+0.6 mm); 14 bolts (S0 target 12–14; legacy 7–8); left/right apex symmetric. |
-| **S4** dowels (gated) | Route dowels through the solver (registration-extreme seeds). | No dowel↔bolt footprint overlap in the shared set; registration moment-arm ≥ target. |
+| **S4** dowels (gated) | Route dowels through the solver (registration-extreme seeds). | **DONE (§7.4).** `base_mold` A/B: 2 dowels at the long-axis extremes, all 3 layers share 2 dowels + 15 bolts, apex bracketed both sides every layer, no dowel↔bolt overlap (min 8.9 ≥ 8.6 mm), moment arm 152–177 mm (full long-axis span). |
 | **S4.5** demand flange | §4 (`FlangeKind::Demand`; legacy `Plate` = escape hatch). Flip derive order (flange after placement). *Incremental path only; on the direct path this folds into S3.* | `base_mold` regen: mass/print-time ↓ vs plate; F4 clean; seal-ring continuity test passes; cf-view scallop + apex boss look right. |
 | **S5** promote + delete | Flip `smart_placement` default **on**; delete legacy uniform loops, the three pour paths, the uniform plate, and the `flank_bolts`/`bracket_pour_gate`/`skip_pour_gate_collision` knobs + validators; re-baseline iter-1 byte-identity tests deliberately. | `grade-all` green; byte-identity re-baseline reviewed; no legacy path remains. |
 | **gate** physical | Workshop print + cast `base_mold`: does the scalloped land seal between bolts? does the apex clamp hold? | Empirical — opens iter-N on failure, closes the arc on success. |
@@ -500,6 +500,63 @@ acceptable for opt-in S3, fold into S5's legacy-deletion + silhouette reuse. (b)
 cf-cast-cli bolt↔dowel arc-stagger validator still gates the (now-superseded) legacy bolt
 `count` even under `smart_placement`; harmless at default counts, clean up in S5.
 (c) `[bolt_pattern].max_pitch_m` exposure (§3.7) deferred.
+
+---
+
+## 7.4 S4 RESULTS (2026-06-01)
+
+**Shipped** dowel routing through the solver behind the same `[cast].smart_placement`
+gate (default **off**; legacy byte-identical when off — full cf-cast lib suite
+**339/0**, +5 S4 tests). New shared module `seam_placement.rs` houses the
+plumbing both planners use — `seam_silhouette`, `pour_exclusions`,
+`smart_center_to_world` (moved out of `bolt_pattern.rs`), and the extracted
+`cross_layer_snap` (the §3.8 per-layer snap + all-layer-feasible filter) — so the
+dowel and bolt planners are exact analogues with no bolt↔dowel module dependency.
+
+`plan_smart_dowel_placements` (cf-cast `dowel_hole.rs`): `fill = None` (seeds
+only), seeds = the **two long-axis registration extremes** at maximum moment arm
+(`long_axis_extreme_seeds` — PCA principal axis over the loop's uniform stations,
+min/max projection; deterministic coordinate-axis fallback when near-isotropic,
+Risk #2). Feasibility: footprint = dowel hole + wall (`smart_dowel_footprint`,
+≈ 3.6 mm), `d_floor = wall + footprint + 1 mm` (the computed analogue of the
+legacy hand-set 10 mm offset). The pour bore is excluded as a swept channel so a
+dowel seeded at the apex steps clear of it. `build_dowel_hole_transforms` gained
+`smart_dowels: Option<&[Point2]>`.
+
+**Dowels-first contract wired (§3.6):** `spec::mesh_and_gate_v2_pieces` now solves
+the dowels first, then `plan_smart_bolt_placements` takes the per-layer dowel
+plan and excludes those footprints (disk radius = `smart_dowel_footprint`, so the
+washer keeps wall to each hole) — **replacing** the S3 legacy
+`build_dowel_hole_transforms`-derived dowel exclusions. Both per-layer center
+slices thread through `compose_piece_shared(.., smart_dowels, smart_bolts)`.
+
+- **C1 RESOLVED — real-body A/B on `base_mold` (3 mm probe, release; placement is
+  silhouette-driven / cell-independent).** The 3-layer cross-layer snap, never run
+  end-to-end before, is now confirmed on the real body:
+
+  | layer | perimeter | dowels | moment arm | bolts | apex (+/−) | min bolt↔dowel |
+  |-------|-----------|--------|------------|-------|------------|----------------|
+  | 0     | 336.8 mm  | **2**  | 152.2 mm   | **15**| +9.0/−15.1 | 10.5 mm        |
+  | 1     | 368.4 mm  | **2**  | 170.5 mm   | **15**| +6.3/−9.0  | 8.9 mm         |
+  | 2     | 393.9 mm  | **2**  | 177.3 mm   | **15**| +6.7/−10.4 | 9.4 mm         |
+
+  All 3 layers carry **one shared dowel count (2)** and **one shared bolt count
+  (15)**; the apex is bracketed on **both** sides of the pierce on every layer; the
+  dowel moment arm (152–177 mm) is essentially the body's full long-axis span
+  (maximal registration leverage); and every bolt washer clears every dowel
+  footprint (min 8.9 mm ≥ the 8.6 mm = footprint 3.6 + washer 5.0 requirement) —
+  **no overlap in the shared set.** Outer perimeter 393.9 mm matches the §7.3
+  bookmark exactly. Bolt count rose 14 → 15 vs S3 because the 2 long-axis dowels
+  free the arc space the legacy 4-dowel exclusions occupied.
+
+**Deferred / noted.** (a) Same per-layer silhouette-rebuild duplication as S3 — the
+dowel planner now adds a second set; fold into S5's silhouette reuse. (b) The
+moment-arm gate is qualitative (no hard target in the recon); the 152–177 mm
+result is the geometric maximum, so it passes trivially — pin a number only if the
+physical gate shows dowels too close to the apex. (c) `DowelHoleSpec.count` is now
+superseded by the solver's 2 (the legacy `(k+0.5)/count` loop only runs when
+`smart_placement` is off); the count knob + the bolt↔dowel arc-stagger validator
+both retire in S5.
 
 ---
 

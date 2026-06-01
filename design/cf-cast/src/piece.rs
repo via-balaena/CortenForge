@@ -297,7 +297,7 @@ pub fn compose_piece_solid(
     // the v2 layer pipeline (it needs the whole layer stack to share one bolt
     // pattern), so the single-piece composer always uses the legacy bolt loop —
     // `None` keeps it bit-identical.
-    let shared = compose_piece_shared(layer_body, wall_thickness_m, ribbon, None)?;
+    let shared = compose_piece_shared(layer_body, wall_thickness_m, ribbon, None, None)?;
     compose_piece_with_shared(layer_body, wall_thickness_m, ribbon, side, &shared)
 }
 
@@ -378,8 +378,9 @@ pub(crate) fn layer_mc_bounds(
 /// transform builders are all side-agnostic (none take a `PieceSide`),
 /// so they likewise move here.
 ///
-/// `smart_bolts`, when `Some`, carries the seam-placement solver's per-layer
-/// bolt centers (S3); `None` uses the legacy uniform bolt loop. See
+/// `smart_dowels` / `smart_bolts`, when `Some`, carry the seam-placement
+/// solver's per-layer dowel (S4) / bolt (S3) centers; `None` uses the legacy
+/// uniform loop. See [`crate::dowel_hole::build_dowel_hole_transforms`] /
 /// [`crate::bolt_pattern::build_bolt_pattern_transforms`].
 ///
 /// # Errors
@@ -391,6 +392,7 @@ pub fn compose_piece_shared(
     layer_body: &Solid,
     wall_thickness_m: f64,
     ribbon: &Ribbon,
+    smart_dowels: Option<&[Point2]>,
     smart_bolts: Option<&[Point2]>,
 ) -> Result<PieceShared, CastError> {
     let mc_bounds = layer_mc_bounds(layer_body, wall_thickness_m, ribbon)?;
@@ -433,9 +435,19 @@ pub fn compose_piece_shared(
     // holes from whichever cup-half material exists. Workshop user
     // inserts loose PLA dowels at assembly time to register the two
     // halves laterally. Per [[project-cf-cast-unified-mating-plane-recon]] §M-S2.
+    //
+    // S4 (seam-placement solver): when `smart_dowels` is `Some`, those
+    // pre-solved seam-plane centers drive the emission (the geometry-blind
+    // uniform loop is bypassed); `None` keeps the legacy loop. Dowels are solved
+    // FIRST across the whole layer stack (`spec::plan_smart_dowel_placements`)
+    // and the bolt run excludes their footprints (§3.6), so they thread in here.
     if let Some(dowel_spec) = ribbon.dowel_hole.spec() {
         transforms.extend(crate::dowel_hole::build_dowel_hole_transforms(
-            layer_body, ribbon, dowel_spec, mc_bounds,
+            layer_body,
+            ribbon,
+            dowel_spec,
+            mc_bounds,
+            smart_dowels,
         ));
     }
     // §B (2026-05-27): M5 through-bolt clamp pattern. Identical

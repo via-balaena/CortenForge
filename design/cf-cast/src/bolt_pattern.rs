@@ -86,17 +86,19 @@
 use cf_design::{Aabb, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
-use crate::dowel_hole::{DowelHoleSpec, build_dowel_hole_transforms};
+use crate::dowel_hole::smart_dowel_footprint;
 use crate::flange::FlangeSpec;
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::Ribbon;
+use crate::seam_placement::{
+    cross_layer_snap, pour_exclusions, seam_silhouette, smart_center_to_world,
+};
 use crate::seam_profile::SeamProfile;
 use crate::seam_solver::{
     DEFAULT_MAX_PITCH_M, Exclusion, FastenerClass, Feasibility, Seed, SeedKind, place_fasteners,
-    snap_placement,
 };
-use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M, SeamPlaneBasis, Silhouette2d};
+use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M, Silhouette2d};
 
 /// Default bolt clearance hole diameter (5.5 mm) — standard M5
 /// clearance per ISO 273 medium-fit.
@@ -470,56 +472,6 @@ const BOLT_WASHER_RADIUS_M: f64 = 0.005;
 /// would have excluded).
 const WASHER_CUP_WALL_MARGIN_M: f64 = 0.001;
 
-/// PLA wall the bolt washer keeps around a dowel hole when the dowel footprint
-/// is excluded from the bolt run (§3.6). Added to the dowel hole radius so the
-/// washer edge clears the dowel hole with material between them.
-const SMART_DOWEL_WALL_M: f64 = 0.002;
-
-/// Build the seam-plane silhouette for a layer body — the fitted-seam in-plane
-/// path (item A) or the legacy Y-normal X-Z path, bit-identical to the
-/// pre-extraction inline form. Shared by [`build_bolt_pattern_transforms`] and
-/// [`plan_smart_bolt_placements`].
-fn seam_silhouette(layer_body: &Solid, ribbon: &Ribbon, bounds: Aabb, pad: f64) -> Silhouette2d {
-    let (seam_midpoint, _) = ribbon.seam_plane_reference();
-    ribbon.seam_plane_basis().map_or_else(
-        || {
-            Silhouette2d::from_body_at_y(
-                layer_body,
-                seam_midpoint.y,
-                bounds.min.x - pad,
-                bounds.max.x + pad,
-                bounds.min.z - pad,
-                bounds.max.z + pad,
-            )
-        },
-        |basis| {
-            let expanded = Aabb::new(
-                Point3::new(bounds.min.x - pad, bounds.min.y - pad, bounds.min.z - pad),
-                Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
-            );
-            let (u_min, u_max, v_min, v_max) = basis.inplane_bounds(expanded);
-            Silhouette2d::from_body_in_plane(layer_body, basis, u_min, u_max, v_min, v_max)
-        },
-    )
-}
-
-/// Map a solver-resolved seam-plane center to the world bolt center: lift it off
-/// the seam plane (fitted basis, or the legacy `(x, seam_y, z)` map) and project
-/// onto the binormal-aligned seam plane through `seam_midpoint` — exactly the
-/// projection [`bolt_center_at`] applies, so smart + legacy bolts share a plane.
-fn smart_center_to_world(
-    ribbon: &Ribbon,
-    seam_midpoint: Point3<f64>,
-    binormal: Vector3<f64>,
-    c: Point2,
-) -> Point3<f64> {
-    let candidate = ribbon
-        .seam_plane_basis()
-        .map_or_else(|| Point3::new(c.x, seam_midpoint.y, c.z), |b| b.to_world(c));
-    let signed = (candidate - seam_midpoint).dot(&binormal);
-    candidate - signed * binormal
-}
-
 /// Emit one bolt-hole [`MatingTransform::SubtractCylinder`] per planned center
 /// (S3). The positions come from the solver; the cylinder (axis, half-length,
 /// radius, segments) is identical to the legacy emission.
@@ -566,52 +518,6 @@ fn bolt_feasibility(flange_spec: &FlangeSpec, wall_thickness_m: f64) -> Feasibil
     )
 }
 
-/// Project the pour-gate bores onto the seam plane as swept [`Exclusion::Channel`]
-/// keep-outs (§3.4 — the pour is modelled once, correctly: a capsule, not a point
-/// disk). Each pour cylinder's axis segment `center ± half_length·axis` projects
-/// to the in-plane segment; the capsule radius is the bore radius.
-fn pour_exclusions(pour_xforms: &[MatingTransform], basis: SeamPlaneBasis) -> Vec<Exclusion> {
-    pour_xforms
-        .iter()
-        .filter_map(|t| match t {
-            MatingTransform::SubtractCylinder { params } => {
-                let c = params.parent.center_m;
-                let ax = params.parent.axis.into_inner();
-                let h = params.parent.half_length_m;
-                Some(Exclusion::Channel {
-                    a: basis.project(c - ax * h),
-                    b: basis.project(c + ax * h),
-                    half_width: params.radius_m,
-                })
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Project the dowel holes onto the seam plane as [`Exclusion::Disk`] keep-outs
-/// (§3.6 — the bolt run avoids every already-placed dowel footprint). The disk
-/// radius is the dowel hole radius plus [`SMART_DOWEL_WALL_M`] so the washer
-/// keeps PLA wall around the dowel.
-fn dowel_exclusions(
-    layer_body: &Solid,
-    ribbon: &Ribbon,
-    dowel_spec: &DowelHoleSpec,
-    bounds: Aabb,
-    basis: SeamPlaneBasis,
-) -> Vec<Exclusion> {
-    build_dowel_hole_transforms(layer_body, ribbon, dowel_spec, bounds)
-        .iter()
-        .filter_map(|t| match t {
-            MatingTransform::SubtractCylinder { params } => Some(Exclusion::Disk {
-                center: basis.project(params.parent.center_m),
-                radius: params.radius_m + SMART_DOWEL_WALL_M,
-            }),
-            _ => None,
-        })
-        .collect()
-}
-
 /// The arc length where a pour channel pierces the loop — the loop point nearest
 /// the (in-plane) bore axis segment. Sampled along the segment by minimum
 /// `|signed_distance|` (the crossing sits on the loop, sd ≈ 0), then snapped to
@@ -640,7 +546,7 @@ fn pour_pierce_arc(profile: &SeamProfile, seg_a: Point2, seg_b: Point2) -> f64 {
 /// a swept channel (so its interval edges bracket it — the apex clamp, §3.4) plus
 /// a complementary `PourPierce` seed, and every dowel footprint is excluded
 /// (§3.6). Each resolved center is then snapped onto **every** layer's loop
-/// ([`snap_placement`], §3.8); a position kept only if it is feasible on all
+/// ([`crate::seam_placement::cross_layer_snap`], §3.8); a position kept only if it is feasible on all
 /// layers, so the stack shares one angular pattern (the workshop aligns one
 /// jig). Returns a `Vec` parallel to `layer_bodies` (innermost-first) of the
 /// per-layer centers; positions infeasible on some layer are dropped with a
@@ -648,7 +554,13 @@ fn pour_pierce_arc(profile: &SeamProfile, seg_a: Point2, seg_b: Point2) -> f64 {
 ///
 /// `layer_bounds` are the per-layer MC bounds (parallel to `layer_bodies`) — the
 /// same bounds [`build_bolt_pattern_transforms`] receives, so the silhouettes
-/// match. Reads the pour + dowel patterns off `ribbon`.
+/// match. Reads the pour pattern off `ribbon`.
+///
+/// `smart_dowels` carries the seam-placement-solver dowel centers (S4), per layer
+/// and parallel to `layer_bodies` — those footprints are excluded from the bolt
+/// run (the dowels-first contract, §3.6). `None` (no dowel pattern) excludes only
+/// the pour. The exclusion disk radius is [`smart_dowel_footprint`] (hole + wall),
+/// so the washer keeps PLA wall around each dowel hole.
 #[must_use]
 pub fn plan_smart_bolt_placements(
     layer_bodies: &[&Solid],
@@ -657,9 +569,10 @@ pub fn plan_smart_bolt_placements(
     bolt_spec: &BoltPatternSpec,
     flange_spec: &FlangeSpec,
     wall_thickness_m: f64,
+    smart_dowels: Option<&[Vec<Point2>]>,
 ) -> Vec<Vec<Point2>> {
     let n_layers = layer_bodies.len();
-    let mut result = vec![Vec::new(); n_layers];
+    let result = vec![Vec::new(); n_layers];
     if n_layers == 0 || layer_bounds.len() != n_layers {
         return result;
     }
@@ -670,19 +583,31 @@ pub fn plan_smart_bolt_placements(
     // by the flange reach so the whole perimeter is captured at any seam tilt.
     let pad = flange_spec.flange_width_m + SILHOUETTE_GRID_STEP_M;
     let pour_xforms = build_pour_gate_transforms(ribbon);
-    let dowel_spec = ribbon.dowel_hole.spec();
+    // The solver-placed dowel footprint (hole + wall) the bolt washer must clear,
+    // shared with the dowel planner's own footprint so the two patterns agree.
+    let dowel_excl_radius = ribbon.dowel_hole.spec().map(smart_dowel_footprint);
 
     // Per-layer clean loop + seam-plane exclusions (`None` = silhouette empty).
-    let layers: Vec<Option<(SeamProfile, Vec<Exclusion>)>> = layer_bodies
+    // Exclusions = the pour channel + every solver-placed dowel disk for THIS
+    // layer (dowels run first; bolts exclude them — §3.6).
+    let layers: Vec<crate::seam_placement::LayerLoop> = layer_bodies
         .iter()
         .zip(layer_bounds)
-        .map(|(body, &bounds)| {
+        .enumerate()
+        .map(|(layer_index, (body, &bounds))| {
             let silhouette = seam_silhouette(body, ribbon, bounds, pad);
             let profile = SeamProfile::from_silhouette(&silhouette)?;
             let basis = silhouette.basis();
             let mut excluded = pour_exclusions(&pour_xforms, basis);
-            if let Some(ds) = dowel_spec {
-                excluded.extend(dowel_exclusions(body, ribbon, ds, bounds, basis));
+            if let (Some(radius), Some(centers)) = (
+                dowel_excl_radius,
+                smart_dowels.and_then(|d| d.get(layer_index)),
+            ) {
+                excluded.extend(
+                    centers
+                        .iter()
+                        .map(|&center| Exclusion::Disk { center, radius }),
+                );
             }
             Some((profile, excluded))
         })
@@ -718,39 +643,7 @@ pub fn plan_smart_bolt_placements(
 
     // Cross-layer snap + validate: keep a position only if feasible on EVERY
     // layer, so the stack shares one angular pattern (§3.8).
-    let mut dropped = 0usize;
-    for m in &master {
-        let mut snapped: Vec<Point2> = Vec::with_capacity(n_layers);
-        let mut feasible_on_all = true;
-        for slot in &layers {
-            let Some((profile, excluded)) = slot else {
-                feasible_on_all = false;
-                break;
-            };
-            let Some(resolved) = snap_placement(profile, &feas, excluded, washer_r, m.center)
-            else {
-                feasible_on_all = false;
-                break;
-            };
-            snapped.push(resolved.center);
-        }
-        if feasible_on_all {
-            for (out, c) in result.iter_mut().zip(snapped) {
-                out.push(c);
-            }
-        } else {
-            dropped += 1;
-        }
-    }
-    if dropped > 0 {
-        eprintln!(
-            "[cf-cast] smart bolt placement: dropped {dropped} of {} candidate position(s) \
-             that were infeasible on at least one layer (kept the shared, all-layer-feasible \
-             set).",
-            master.len(),
-        );
-    }
-    result
+    cross_layer_snap(&master, &layers, &feas, washer_r, "bolt")
 }
 
 /// The even-contact bolt pitch for the smart placement solve. iter-1 uses the
@@ -1534,7 +1427,8 @@ mod tests {
         let flange = FlangeSpec::iter1();
         let wall = 0.005;
 
-        let plan = plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &bolt, &flange, wall);
+        let plan =
+            plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &bolt, &flange, wall, None);
         assert_eq!(plan.len(), 1, "one plan entry per layer");
         let centers = &plan[0];
         assert!(!centers.is_empty(), "smart placement produced no bolts");
@@ -1591,7 +1485,8 @@ mod tests {
         let bolt = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
 
-        let plan = plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &bolt, &flange, 0.005);
+        let plan =
+            plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &bolt, &flange, 0.005, None);
         let xforms =
             build_bolt_pattern_transforms(&body, &ribbon, &bolt, &flange, bounds, Some(&plan[0]));
         let pour_xforms = build_pour_gate_transforms(&ribbon);
@@ -1671,6 +1566,7 @@ mod tests {
             &bolt,
             &flange,
             0.005,
+            None,
         );
         assert_eq!(plan.len(), 2);
         assert!(!plan[0].is_empty() && !plan[1].is_empty());
@@ -1679,5 +1575,59 @@ mod tests {
             plan[1].len(),
             "shared pattern: every layer carries the same bolt count"
         );
+    }
+
+    /// The dowels-first contract (§3.6): dowels are solved first, then the bolt
+    /// run excludes their footprints. Every solver bolt washer must clear every
+    /// solver dowel footprint (hole + wall) in the shared set — no overlap.
+    #[test]
+    fn smart_bolts_clear_every_solver_dowel_footprint() {
+        use crate::dowel_hole::{plan_smart_dowel_placements, smart_dowel_footprint};
+
+        let (body, bounds, base) = cylinder_fixture();
+        let mut pour = PourGateSpec::iter1();
+        pour.layout = PourGateLayout::ApexAxial;
+        let ribbon = base
+            .with_pour_gate(PourGateKind::Default(pour))
+            .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
+            .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+            .with_smart_placement(true);
+        let dowel = DowelHoleSpec::iter1();
+        let bolt = BoltPatternSpec::iter1();
+        let flange = FlangeSpec::iter1();
+        let wall = 0.005;
+
+        // Dowels FIRST, then bolts exclude them.
+        let dowel_plan =
+            plan_smart_dowel_placements(&[&body], &[bounds], &ribbon, &dowel, &flange, wall);
+        assert_eq!(dowel_plan[0].len(), 2, "two registration dowels");
+        let bolt_plan = plan_smart_bolt_placements(
+            &[&body],
+            &[bounds],
+            &ribbon,
+            &bolt,
+            &flange,
+            wall,
+            Some(&dowel_plan),
+        );
+        assert!(
+            !bolt_plan[0].is_empty(),
+            "smart placement produced no bolts"
+        );
+
+        // Every bolt washer clears every dowel footprint (hole + wall) — the disk
+        // the bolt run excluded. Compared directly in the seam plane (both
+        // planners return seam-plane centers in the same basis).
+        let min_sep = smart_dowel_footprint(&dowel) + BOLT_WASHER_RADIUS_M;
+        for &bc in &bolt_plan[0] {
+            for &dc in &dowel_plan[0] {
+                let d = (bc.x - dc.x).hypot(bc.z - dc.z);
+                assert!(
+                    d >= min_sep - 1e-6,
+                    "bolt washer fouls a dowel footprint: dist={d} < {min_sep}"
+                );
+            }
+        }
     }
 }
