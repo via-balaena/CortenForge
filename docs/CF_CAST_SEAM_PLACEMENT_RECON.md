@@ -180,6 +180,17 @@ Only when the feasible set is genuinely **hole-riddled** (so even subdivision ca
 (Poisson-disk) insertion + a few capped Lloyd iterations** on the feasible sub-intervals.
 Determinism throughout: ties broken by lowest arc-length; **no RNG**.
 
+> **S2 IMPLEMENTATION NOTE (2026-06-01).** The Poisson/Lloyd fallback proved **unreachable**
+> under the implemented feasibility model and was **not built**. Because the solver scans the
+> *full* radial range at every arc, an arc is infeasible only when **no** offset works there —
+> so the interval partition (step 1) is exact, and every physical obstacle (pour bore, dowel
+> boss, band pinch — all ≫ the 1 mm `arc_step`) splits into its own feasible interval; even
+> subdivision then never lands in a hole. The only residual case is a **sub-`arc_step` hole**
+> (not physical for a fastener), handled by a deterministic **local nudge** of the offending
+> point to the nearest feasible station in its gap — a fraction of the Poisson code, same
+> determinism. (Revisit only if the demand flange's clearance-only feasibility at S4.5 ever
+> produces a genuinely fragmented mask.)
+
 ### 3.6 One solver, run twice
 ```
 place_fasteners(substrate, feasibility, excluded, FastenerClass {

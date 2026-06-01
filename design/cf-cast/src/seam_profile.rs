@@ -33,6 +33,7 @@
 #![allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
     clippy::many_single_char_names,
     clippy::similar_names
@@ -300,6 +301,19 @@ impl SeamProfile {
         self.basis.dir_to_world(p)
     }
 
+    /// Build a [`SeamIndex`] over this loop's segments for fast repeated
+    /// [`signed_distance`](Self::signed_distance) queries.
+    ///
+    /// The seam-placement solver (§3.5/§3.6) evaluates feasibility at
+    /// `O(stations × radial-steps)` trial centres — i.e. `O(n)` distance queries
+    /// — so the brute `O(n)` scan would make the solve `O(n²)` (S1 cold-read
+    /// C6). The index answers each query in `O(1)` amortised and returns results
+    /// **identical** to [`signed_distance`](Self::signed_distance).
+    #[must_use]
+    pub fn spatial_index(&self) -> SeamIndex<'_> {
+        SeamIndex::build(&self.stations)
+    }
+
     // --- internals ---
 
     fn spacing(&self) -> f64 {
@@ -337,6 +351,160 @@ impl SeamProfile {
         } else {
             i
         }
+    }
+}
+
+/// A uniform-grid spatial index over a [`SeamProfile`]'s loop segments.
+///
+/// Buckets each segment (`stations[i] → stations[i+1]`) into the grid cells its
+/// bounding box overlaps, then answers [`signed_distance`](Self::signed_distance)
+/// by (a) an expanding Chebyshev-ring search for the nearest segment and (b) an
+/// even-odd horizontal ray cast restricted to the cell row containing the query.
+/// Both reduce the brute `O(n)` scan to `O(1)` amortised on the near-loop
+/// queries the solver makes; the signed result is bit-for-bit the same as
+/// [`SeamProfile::signed_distance`].
+#[derive(Debug, Clone)]
+pub struct SeamIndex<'a> {
+    stations: &'a [Point2],
+    min: Point2,
+    cell: f64,
+    inv_cell: f64,
+    nx: usize,
+    nz: usize,
+    /// `cells[iz * nx + ix]` = indices of segments whose bbox overlaps the cell.
+    cells: Vec<Vec<u32>>,
+}
+
+impl<'a> SeamIndex<'a> {
+    fn build(stations: &'a [Point2]) -> Self {
+        let n = stations.len();
+        let mut min = Point2::new(f64::INFINITY, f64::INFINITY);
+        let mut max = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for p in stations {
+            min.x = min.x.min(p.x);
+            min.z = min.z.min(p.z);
+            max.x = max.x.max(p.x);
+            max.z = max.z.max(p.z);
+        }
+        let span_x = (max.x - min.x).max(0.0);
+        let span_z = (max.z - min.z).max(0.0);
+        let mut perim = 0.0;
+        for i in 0..n {
+            perim += dist(stations[i], stations[(i + 1) % n]);
+        }
+        let mean_spacing = if n > 0 { perim / n as f64 } else { 1.0 };
+        // ~48 cells across the larger span, but never finer than two station
+        // spacings (so each cell holds only a handful of segments).
+        let span = span_x.max(span_z).max(1e-6);
+        let cell = (span / 48.0).max(2.0 * mean_spacing).max(1e-4);
+        let inv_cell = 1.0 / cell;
+        let nx = (((span_x * inv_cell).floor() as usize) + 1).clamp(1, 256);
+        let nz = (((span_z * inv_cell).floor() as usize) + 1).clamp(1, 256);
+        let mut cells = vec![Vec::new(); nx * nz];
+        let clampi = |v: f64, hi: usize| (v.floor().max(0.0) as usize).min(hi - 1);
+        for i in 0..n {
+            let a = stations[i];
+            let b = stations[(i + 1) % n];
+            let ix0 = clampi((a.x.min(b.x) - min.x) * inv_cell, nx);
+            let ix1 = clampi((a.x.max(b.x) - min.x) * inv_cell, nx);
+            let iz0 = clampi((a.z.min(b.z) - min.z) * inv_cell, nz);
+            let iz1 = clampi((a.z.max(b.z) - min.z) * inv_cell, nz);
+            for iz in iz0..=iz1 {
+                for ix in ix0..=ix1 {
+                    cells[iz * nx + ix].push(i as u32);
+                }
+            }
+        }
+        Self {
+            stations,
+            min,
+            cell,
+            inv_cell,
+            nx,
+            nz,
+            cells,
+        }
+    }
+
+    /// Signed distance from seam-plane point `p` to the loop — identical to
+    /// [`SeamProfile::signed_distance`] but `O(1)` amortised. Negative = inside.
+    #[must_use]
+    pub fn signed_distance(&self, p: Point2) -> f64 {
+        let n = self.stations.len();
+        if n == 0 {
+            return f64::INFINITY;
+        }
+        let cx =
+            (((p.x - self.min.x) * self.inv_cell).floor()).clamp(0.0, (self.nx - 1) as f64) as i64;
+        let cz =
+            (((p.z - self.min.z) * self.inv_cell).floor()).clamp(0.0, (self.nz - 1) as f64) as i64;
+        // (a) nearest segment via expanding Chebyshev rings.
+        let mut best = f64::INFINITY;
+        let max_r = (self.nx + self.nz + 1) as i64;
+        let mut r: i64 = 0;
+        loop {
+            self.scan_ring(p, cx, cz, r, &mut best);
+            // any segment in a ring beyond r is at least r*cell from p.
+            if (r as f64) * self.cell >= best {
+                break;
+            }
+            r += 1;
+            if r > max_r {
+                break;
+            }
+        }
+        // (b) inside/outside parity via a +x ray over the query's cell row.
+        if self.row_crossings(p, cz) % 2 == 1 {
+            -best
+        } else {
+            best
+        }
+    }
+
+    /// Update `best` with the min distance to any segment in the Chebyshev ring
+    /// at radius `r` around cell `(cx, cz)` (the full cell at `r == 0`).
+    fn scan_ring(&self, p: Point2, cx: i64, cz: i64, r: i64, best: &mut f64) {
+        let n = self.stations.len();
+        let lo_x = (cx - r).max(0);
+        let hi_x = (cx + r).min(self.nx as i64 - 1);
+        let lo_z = (cz - r).max(0);
+        let hi_z = (cz + r).min(self.nz as i64 - 1);
+        for iz in lo_z..=hi_z {
+            for ix in lo_x..=hi_x {
+                // only the ring border; the interior was scanned at smaller r.
+                if r > 0 && (ix - cx).abs() != r && (iz - cz).abs() != r {
+                    continue;
+                }
+                for &si in &self.cells[(iz as usize) * self.nx + ix as usize] {
+                    let i = si as usize;
+                    let d = point_to_segment(p, self.stations[i], self.stations[(i + 1) % n]);
+                    if d < *best {
+                        *best = d;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Count even-odd ray crossings (+x ray) over the cell row containing the
+    /// query — every segment that spans `p.z` is bucketed in that row, so this
+    /// matches the full scan's parity. Segments shared across cells are deduped.
+    fn row_crossings(&self, p: Point2, cz: i64) -> u32 {
+        let n = self.stations.len();
+        let mut seen = std::collections::HashSet::new();
+        let mut crossings = 0u32;
+        let row = cz as usize * self.nx;
+        for bucket in &self.cells[row..row + self.nx] {
+            for &si in bucket {
+                if seen.insert(si) {
+                    let i = si as usize;
+                    if ray_cast_crosses(p, self.stations[i], self.stations[(i + 1) % n]) {
+                        crossings += 1;
+                    }
+                }
+            }
+        }
+        crossings
     }
 }
 
@@ -675,6 +843,33 @@ mod tests {
             let gap = (s2 - s).rem_euclid(prof.perimeter());
             let gap = gap.min(prof.perimeter() - gap);
             assert!(gap < 0.0015, "nearest_arc round-trip gap {gap} at s={s}");
+        }
+    }
+
+    /// The spatial index must reproduce the brute `signed_distance` everywhere —
+    /// inside, outside, and across the concave waist of a non-convex loop.
+    #[test]
+    fn spatial_index_matches_brute_signed_distance() {
+        for raw in [
+            circle(0.030, 200),
+            peanut(0.030, 0.4, 360),
+            square(0.040, 40),
+        ] {
+            let prof = SeamProfile::from_polyline(&raw, y_basis(), 0.001, 0.002).unwrap();
+            let index = prof.spatial_index();
+            // sweep a grid spanning well beyond the loop (covers far-outside,
+            // on-loop, and deep-inside queries).
+            for gx in -30..=30 {
+                for gz in -30..=30 {
+                    let p = Point2::new(f64::from(gx) * 0.0025, f64::from(gz) * 0.0025);
+                    let brute = prof.signed_distance(p);
+                    let fast = index.signed_distance(p);
+                    assert!(
+                        (brute - fast).abs() < 1e-9,
+                        "index {fast} vs brute {brute} at {p:?}"
+                    );
+                }
+            }
         }
     }
 
