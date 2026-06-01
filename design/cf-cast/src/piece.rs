@@ -117,6 +117,7 @@ use crate::mesh_csg::{FloorSlabParams, MatingTransform};
 use crate::plug::build_plug_lock_socket_transform;
 use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::{PieceSide, Ribbon};
+use crate::silhouette_2d::Point2;
 
 // §M-S1 (2026-05-27): `RIBBON_PIECE_OVERLAP_M` deleted per
 // [[project-cf-cast-unified-mating-plane-recon]]. Cup-wall halfspace
@@ -292,7 +293,11 @@ pub fn compose_piece_solid(
     ribbon: &Ribbon,
     side: PieceSide,
 ) -> Result<(Solid, Vec<MatingTransform>), CastError> {
-    let shared = compose_piece_shared(layer_body, wall_thickness_m, ribbon)?;
+    // Single-shot path (v1 export + tests): the smart-placement solver runs in
+    // the v2 layer pipeline (it needs the whole layer stack to share one bolt
+    // pattern), so the single-piece composer always uses the legacy bolt loop —
+    // `None` keeps it bit-identical.
+    let shared = compose_piece_shared(layer_body, wall_thickness_m, ribbon, None)?;
     compose_piece_with_shared(layer_body, wall_thickness_m, ribbon, side, &shared)
 }
 
@@ -323,6 +328,40 @@ pub struct PieceShared {
     transforms: Vec<MatingTransform>,
 }
 
+/// MC sampling bounds for a layer: `body_bounds` expanded by
+/// `max(wall_thickness, flange_width) + ε`.
+///
+/// §Q-1 (2026-05-26): the cup-wall shell SDF + flange SDF must BOTH sample
+/// within this region for MC to resolve their outer surfaces correctly.
+/// Pre-§Q-1 the bounds came from `bounding_region.bounds()` (a cuboid sized only
+/// for `wall_thickness_m` past the body) — too small to enclose the flange's
+/// 20 mm lateral reach. See
+/// [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
+///
+/// Shared by [`compose_piece_shared`] and the smart-placement planner
+/// (`spec::plan_smart_bolt_placements`) so both build silhouettes over the same
+/// region.
+///
+/// # Errors
+///
+/// [`CastError::InfiniteBounds`] with [`CastTarget::LayerBody`] if
+/// `layer_body.bounds()` is `None`.
+pub(crate) fn layer_mc_bounds(
+    layer_body: &Solid,
+    wall_thickness_m: f64,
+    ribbon: &Ribbon,
+) -> Result<Aabb, CastError> {
+    let body_bounds =
+        layer_body
+            .bounds()
+            .ok_or(CastError::InfiniteBounds(CastTarget::LayerBody {
+                layer_index: 0,
+            }))?;
+    let flange_extent = ribbon.flange.spec().map_or(0.0, |s| s.flange_width_m);
+    let mc_pad = wall_thickness_m.max(flange_extent) + MC_BOUNDS_PAD_M;
+    Ok(body_bounds.expanded(mc_pad))
+}
+
 /// Build the side-independent half of [`compose_piece_solid`].
 ///
 /// Returns the MC bounds, the un-split flange solid (with its
@@ -339,6 +378,10 @@ pub struct PieceShared {
 /// transform builders are all side-agnostic (none take a `PieceSide`),
 /// so they likewise move here.
 ///
+/// `smart_bolts`, when `Some`, carries the seam-placement solver's per-layer
+/// bolt centers (S3); `None` uses the legacy uniform bolt loop. See
+/// [`crate::bolt_pattern::build_bolt_pattern_transforms`].
+///
 /// # Errors
 ///
 /// - [`CastError::InfiniteBounds`] with [`CastTarget::LayerBody`] if
@@ -348,25 +391,9 @@ pub fn compose_piece_shared(
     layer_body: &Solid,
     wall_thickness_m: f64,
     ribbon: &Ribbon,
+    smart_bolts: Option<&[Point2]>,
 ) -> Result<PieceShared, CastError> {
-    // §Q-1 (2026-05-26): MC bounds are body_bounds expanded by
-    // max(wall_thickness, flange_width) + ε. The cup-wall shell
-    // SDF + flange SDF must BOTH sample within this region for MC
-    // to resolve their outer surfaces correctly. Pre-§Q-1 the
-    // bounds came from `bounding_region.bounds()` which was a
-    // cuboid sized only for `wall_thickness_m` past the body — too
-    // small to enclose the flange's 15+ mm lateral reach (20 mm at
-    // iter-1 defaults). See
-    // [[project-cf-cast-geometry-crispness-q1-finer-cells-blocked]].
-    let body_bounds =
-        layer_body
-            .bounds()
-            .ok_or(CastError::InfiniteBounds(CastTarget::LayerBody {
-                layer_index: 0,
-            }))?;
-    let flange_extent = ribbon.flange.spec().map_or(0.0, |s| s.flange_width_m);
-    let mc_pad = wall_thickness_m.max(flange_extent) + MC_BOUNDS_PAD_M;
-    let mc_bounds = body_bounds.expanded(mc_pad);
+    let mc_bounds = layer_mc_bounds(layer_body, wall_thickness_m, ribbon)?;
 
     // §MA-S1a: build the symmetric (pre-halfspace) flange solid ONCE
     // here — its `Silhouette2d` extraction (the S0-dominant cost) is
@@ -418,6 +445,13 @@ pub fn compose_piece_shared(
     // holes to clamp the assembled mold. Workshop user supplies the
     // M5 bolts + washers + nuts. Per
     // [[project-cf-cast-flange-continuity-bolt-pattern-recon]] §B-S1.
+    //
+    // S3 (seam-placement solver): when `smart_bolts` is `Some`, those
+    // pre-solved seam-plane centers drive the emission (the geometry-
+    // blind uniform loop + pour bracket are bypassed); `None` keeps the
+    // legacy loop. The solver runs once over the whole layer stack
+    // (`spec::plan_smart_bolt_placements`) so all layers share one
+    // pattern, hence it's threaded in rather than computed per-piece.
     if let Some(bolt_spec) = ribbon.bolt_pattern.spec() {
         if let Some(flange_spec) = ribbon.flange.spec() {
             transforms.extend(crate::bolt_pattern::build_bolt_pattern_transforms(
@@ -426,6 +460,7 @@ pub fn compose_piece_shared(
                 bolt_spec,
                 flange_spec,
                 mc_bounds,
+                smart_bolts,
             ));
         }
         // Bolt pattern without a flange has no material to clamp —

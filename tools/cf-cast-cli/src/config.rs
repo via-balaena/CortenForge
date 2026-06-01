@@ -197,6 +197,21 @@ pub struct CastDefaults {
     /// (correct for convex cavity floors, over-covers non-convex ones).
     #[serde(default)]
     pub flat_cavity_floor: bool,
+    /// Route the bolt pattern through the constraint-aware seam-placement
+    /// solver (S3 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`) instead of the
+    /// geometry-blind uniform arc-length loop. When `true`, the bolt count
+    /// emerges from `max_pitch` (~30 mm), the pour bore is excluded once (as a
+    /// swept channel — its interval edges bracket the apex so the flanking
+    /// bolts fall out of the solve), each bolt's radial offset is solved for
+    /// max clearance margin, and the pattern is solved on the outermost layer
+    /// then shared across the stack. Off by default — the legacy uniform path
+    /// is byte-identical for every cast that doesn't opt in. A no-op unless
+    /// `[bolt_pattern]` and `[flange]` are both enabled. When on, the
+    /// `[bolt_pattern]`/`[pour_gate]` placement knobs (`count`,
+    /// `silhouette_outboard_offset_m`, `flank_bolts`, `skip_pour_gate_collision`)
+    /// no longer drive bolt positions — the solver supersedes them.
+    #[serde(default)]
+    pub smart_placement: bool,
 }
 
 impl Default for CastDefaults {
@@ -212,6 +227,7 @@ impl Default for CastDefaults {
             planar_seam: false,
             planar_seam_fit: true,
             flat_cavity_floor: false,
+            smart_placement: false,
         }
     }
 }

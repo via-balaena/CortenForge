@@ -583,6 +583,14 @@ pub fn derive_spec_and_ribbon(
         ribbon = ribbon.with_bolt_pattern(BoltPatternKind::Auto(bolt_spec));
     }
 
+    // S3 seam-placement solver (`docs/CF_CAST_SEAM_PLACEMENT_RECON.md`): route
+    // the bolt pattern through the constraint-aware solver instead of the
+    // geometry-blind uniform loop. Off by default; a no-op without a bolt
+    // pattern + flange (the solver places bolts in the flange band). When on, it
+    // supersedes the legacy bolt-placement knobs (count / offset / flank_bolts /
+    // collision-skip).
+    ribbon = ribbon.with_smart_placement(config.cast.smart_placement);
+
     Ok(DerivedSpec { spec, ribbon })
 }
 

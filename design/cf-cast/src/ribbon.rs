@@ -374,6 +374,16 @@ pub struct Ribbon {
     /// cross-section convex hull (correct for convex floors; over-covers
     /// non-convex ones). Set via [`Self::with_flat_cavity_floor`].
     pub flat_cavity_floor: bool,
+    /// When `true`, route the bolt pattern through the constraint-aware
+    /// seam-placement solver ([`crate::seam_solver::place_fasteners`]) instead
+    /// of the geometry-blind uniform arc-length loop — the count emerges from
+    /// `max_pitch`, the pour bore is excluded once (as a swept channel) so the
+    /// flanking bolts fall out of the partition, and the radial offset is solved
+    /// per bolt (S3 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`). Default `false`
+    /// — the legacy uniform path is bit-identical for every cast that doesn't
+    /// opt in. Gated by `[cast].smart_placement` in cf-cast-cli; a no-op without
+    /// both a bolt pattern and a flange. Set via [`Self::with_smart_placement`].
+    pub smart_placement: bool,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -511,6 +521,7 @@ impl Ribbon {
             planar_seam: None,
             planar_seam_basis: None,
             flat_cavity_floor: false,
+            smart_placement: false,
         })
     }
 
@@ -664,6 +675,15 @@ impl Ribbon {
     #[must_use]
     pub const fn with_bolt_pattern(mut self, bolt_pattern: BoltPatternKind) -> Self {
         self.bolt_pattern = bolt_pattern;
+        self
+    }
+
+    /// Builder: route the bolt pattern through the seam-placement solver (see
+    /// [`Self::smart_placement`]). A no-op unless the ribbon also carries a
+    /// [`BoltPatternKind::Auto`] bolt pattern and a [`FlangeKind::Plate`] flange.
+    #[must_use]
+    pub const fn with_smart_placement(mut self, smart_placement: bool) -> Self {
+        self.smart_placement = smart_placement;
         self
     }
 

@@ -14,17 +14,19 @@ use mesh_printability::{
 };
 use nalgebra::Vector3;
 
+use crate::bolt_pattern::plan_smart_bolt_placements;
 use crate::error::{CastError, CastTarget};
 use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
 use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::solid_to_mm_mesh;
-use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared};
+use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared, layer_mc_bounds};
 use crate::plug::add_plug_pins;
 use crate::pour_volume::{POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
+use crate::silhouette_2d::Point2;
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -1025,11 +1027,41 @@ fn mesh_and_gate_v2_pieces(
     use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
     let layer_count = spec.layers.len();
+
+    // S3 seam-placement solver: when `[cast].smart_placement` is on (and there
+    // is both a bolt pattern + a flange), solve the bolt positions ONCE across
+    // the whole layer stack so every layer shares one angular pattern (§3.8).
+    // The per-layer center slice is threaded into `compose_piece_shared`; `None`
+    // (the default, or no bolt/flange) leaves the legacy uniform loop untouched.
+    let smart_plan: Option<Vec<Vec<Point2>>> =
+        match (ribbon.bolt_pattern.spec(), ribbon.flange.spec()) {
+            (Some(bolt_spec), Some(flange_spec)) if ribbon.smart_placement => {
+                let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
+                let mut bounds = Vec::with_capacity(bodies.len());
+                for body in &bodies {
+                    bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
+                }
+                Some(plan_smart_bolt_placements(
+                    &bodies,
+                    &bounds,
+                    ribbon,
+                    bolt_spec,
+                    flange_spec,
+                    spec.wall_thickness_m,
+                ))
+            }
+            _ => None,
+        };
+
     spec.layers
         .par_iter()
         .enumerate()
         .map(
             |(layer_index, layer)| -> Result<[PendingPiece; 2], CastError> {
+                let smart_bolts = smart_plan
+                    .as_ref()
+                    .and_then(|plan| plan.get(layer_index))
+                    .map(Vec::as_slice);
                 // §MA-S1a: the flange silhouette extraction + the
                 // side-agnostic post-MC transforms are identical for both
                 // halves of a layer. Build them ONCE here and share across
@@ -1037,7 +1069,8 @@ fn mesh_and_gate_v2_pieces(
                 // redundant per-side `Silhouette2d` recompute (the S0
                 // dominant cost) with bit-identical output. See
                 // `docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-10 S1a.
-                let shared = compose_piece_shared(&layer.body, spec.wall_thickness_m, ribbon)?;
+                let shared =
+                    compose_piece_shared(&layer.body, spec.wall_thickness_m, ribbon, smart_bolts)?;
                 let (neg_res, pos_res) = rayon::join(
                     || {
                         mesh_and_gate_v2_piece(

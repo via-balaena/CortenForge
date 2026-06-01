@@ -304,25 +304,36 @@ pub fn place_fasteners(
                 }
             }
             Interval::Open { lo, hi } => {
-                let mut fixed = vec![lo, hi];
-                fixed.extend(
-                    sorted_arcs_in(&anchor_arcs, |a| a >= lo - dedup_tol && a <= hi + dedup_tol)
-                        .into_iter()
-                        .filter(|a| (a - lo).abs() > dedup_tol && (hi - a).abs() > dedup_tol),
-                );
-                fixed.sort_by(f64::total_cmp);
+                // The feasible run goes FORWARD from `lo` to `hi`, which can wrap
+                // past arc 0 (when the infeasible zone — e.g. the pour — sits away
+                // from arc 0, the complementary feasible run is the part that
+                // wraps, so `hi < lo` numerically). Work in forward offsets from
+                // `lo` in `[0, span]` so the fill covers the *feasible* arc, not
+                // the short infeasible gap a numeric `hi - lo` would pick.
+                let span = (hi - lo).rem_euclid(solver.perim);
+                let mut offs = vec![0.0, span];
+                for &a in &anchor_arcs {
+                    let o = (a - lo).rem_euclid(solver.perim);
+                    if o > dedup_tol && o < span - dedup_tol {
+                        offs.push(o);
+                    }
+                }
+                offs.sort_by(f64::total_cmp);
                 // place the boundaries themselves (as close to the obstacle as
                 // feasible) unless an anchor already sits there.
                 for &b in &[lo, hi] {
-                    if !anchor_arcs.iter().any(|&a| (a - b).abs() <= dedup_tol) {
+                    if !anchor_arcs.iter().any(|&a| {
+                        let g = (a - b).rem_euclid(solver.perim);
+                        g.min(solver.perim - g) <= dedup_tol
+                    }) {
                         if let Some(r) = solver.resolve(b) {
                             out.push(r.placement(PlacementOrigin::Boundary));
                         }
                     }
                 }
-                for w in 0..fixed.len().saturating_sub(1) {
-                    let a = fixed[w];
-                    let glen = fixed[w + 1] - a;
+                for w in 0..offs.len().saturating_sub(1) {
+                    let a = lo + offs[w];
+                    let glen = offs[w + 1] - offs[w];
                     solver.fill_gap(a, glen, pitch, &mut out);
                 }
             }
@@ -332,6 +343,41 @@ pub fn place_fasteners(
     out.sort_by(|p, q| p.arc.total_cmp(&q.arc));
     dedup_by_arc(&mut out, solver.perim, dedup_tol);
     out
+}
+
+/// Snap a master placement's seam-plane `center` onto `profile`, returning the
+/// nearest feasible placement (§3.8 per-layer snap).
+///
+/// The seam-placement solver runs once on the **outermost** layer's loop; each
+/// inner layer reuses that shared angular pattern by mapping every master
+/// `center` to the arc on this layer's loop nearest it ([`SeamProfile::nearest_arc`]),
+/// then re-resolving the best radial offset there (the inner loop sits at a
+/// different radius, so `d` is re-fit per layer). If that station is infeasible
+/// the search steps outward to the nearest feasible one (same `snap_anchor`
+/// rule the seeds use). Returns `None` when no feasible station exists near
+/// `center` — the caller then drops the position from the **whole** shared set
+/// (a position is kept only if it is feasible on every layer).
+#[must_use]
+pub fn snap_placement(
+    profile: &SeamProfile,
+    feasibility: &Feasibility,
+    excluded: &[Exclusion],
+    footprint_radius: f64,
+    center: Point2,
+) -> Option<Placement> {
+    let solver = Solver {
+        profile,
+        index: profile.spatial_index(),
+        feas: feasibility,
+        excluded,
+        footprint_r: footprint_radius,
+        perim: profile.perimeter(),
+        arc_step: feasibility.arc_step.max(MIN_STEP_M),
+        d_step: feasibility.d_step.max(MIN_STEP_M),
+    };
+    solver
+        .snap_anchor(profile.nearest_arc(center))
+        .map(|r| r.placement(PlacementOrigin::Seed))
 }
 
 // --- internals ---
@@ -773,6 +819,53 @@ mod tests {
         }
     }
 
+    /// Regression: when the infeasible zone (the pour channel) sits AWAY from
+    /// arc 0, the complementary feasible run wraps past arc 0, so the
+    /// `Interval::Open { lo, hi }` it produces has `lo > hi` numerically. The fill
+    /// must still cover the whole feasible arc (forward/modular), not collapse to
+    /// the short infeasible gap — which previously dropped the entire ring to just
+    /// the two pour brackets.
+    #[test]
+    fn pour_pierce_away_from_arc_zero_still_fills_the_ring() {
+        let prof = profile(&circle(0.030, 256));
+        let perim = prof.perimeter();
+        // pierce at ~0.3 of the loop — its infeasible zone does NOT straddle arc 0.
+        let pierce_arc = perim * 0.3;
+        let p = prof.point_at(pierce_arc);
+        let outn = prof.outward_normal_at(pierce_arc);
+        let channel = Exclusion::Channel {
+            a: Point2::new(p.x - outn.x * 0.005, p.z - outn.z * 0.005),
+            b: Point2::new(p.x + outn.x * 0.030, p.z + outn.z * 0.030),
+            half_width: 0.006,
+        };
+        let out = place_fasteners(
+            &prof,
+            &band(),
+            &[channel],
+            &bolts(vec![Seed {
+                arc: pierce_arc,
+                kind: SeedKind::PourPierce,
+            }]),
+        );
+        // the ring should be (nearly) fully populated, not just the 2 brackets.
+        let expected = (perim / PITCH).ceil() as usize;
+        assert!(
+            out.len() >= expected - 2,
+            "wrapping feasible interval must still fill the ring: got {} vs ~{expected}",
+            out.len()
+        );
+        // coverage gap never exceeds the pitch by much (one small obstacle aside).
+        assert!(
+            max_gap(&out, perim) <= PITCH + 0.012,
+            "coverage gap too large: {} mm",
+            max_gap(&out, perim) * 1000.0
+        );
+        // and nothing intrudes on the channel.
+        for pl in &out {
+            assert!(channel.clearance(pl.center) >= WASHER_R - 1e-9);
+        }
+    }
+
     #[test]
     fn disk_exclusion_is_respected_and_leaves_a_gap() {
         let prof = profile(&circle(0.030, 256));
@@ -897,6 +990,49 @@ mod tests {
         let r3 = run(seeds_b);
         assert_eq!(r1, r2, "same input must give the same output");
         assert_eq!(r1, r3, "seed order must not change the output");
+    }
+
+    /// §3.8 per-layer snap: a master placement solved on the OUTER loop maps to
+    /// the angularly-corresponding arc on an INNER loop, with the radial offset
+    /// re-fit to the inner loop's band (the inner loop sits at a smaller radius).
+    #[test]
+    fn snap_placement_maps_to_inner_loop_at_same_angle() {
+        let outer = profile(&circle(0.030, 256));
+        let inner = profile(&circle(0.020, 256));
+        let master = place_fasteners(&outer, &band(), &[], &bolts(vec![]));
+        // pick the master placement nearest arc 0 (a point on the +x axis).
+        let m = master
+            .iter()
+            .min_by(|a, b| {
+                let ga = a.arc.min(outer.perimeter() - a.arc);
+                let gb = b.arc.min(outer.perimeter() - b.arc);
+                ga.total_cmp(&gb)
+            })
+            .unwrap();
+        // its center sits outboard of the outer loop on ~the +x axis.
+        assert!(m.center.x > 0.020 && m.center.z.abs() < 0.004);
+        let snapped = snap_placement(&inner, &band(), &[], WASHER_R, m.center).unwrap();
+        // lands at the same angle (still on the +x side, near z = 0) but in the
+        // INNER loop's flange band (center x in [inner_radius + band]).
+        assert!(snapped.center.x > 0.020, "snapped inboard of inner body");
+        assert!(snapped.center.z.abs() < 0.004, "snapped off the +x angle");
+        let sd = inner.signed_distance(snapped.center);
+        assert!(
+            (0.002 + WASHER_R - 1e-9..=0.020 - WASHER_R + 1e-9).contains(&sd),
+            "snapped placement out of the inner band: sd={sd}"
+        );
+    }
+
+    /// `snap_placement` returns `None` when no feasible station exists near the
+    /// hint (here: a band whose offset range can never be reached) — the caller
+    /// drops the shared position.
+    #[test]
+    fn snap_placement_returns_none_when_band_unreachable() {
+        let prof = profile(&circle(0.020, 256));
+        // band requires sd ≥ 50 mm but the radial search tops out at 6 mm.
+        let unreachable = Feasibility::band(0.050, 0.060, 0.002, 0.006);
+        let hint = Point2::new(0.026, 0.0);
+        assert!(snap_placement(&prof, &unreachable, &[], WASHER_R, hint).is_none());
     }
 
     /// Degenerate inputs (non-positive pitch / scan steps) must not hang — the

@@ -83,14 +83,20 @@
 //! plane, so a single M5 bolt passes through the corresponding holes
 //! on the two halves to clamp them together.
 
-use cf_design::Solid;
+use cf_design::{Aabb, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
+use crate::dowel_hole::{DowelHoleSpec, build_dowel_hole_transforms};
 use crate::flange::FlangeSpec;
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::Ribbon;
-use crate::silhouette_2d::{SILHOUETTE_GRID_STEP_M, Silhouette2d};
+use crate::seam_profile::SeamProfile;
+use crate::seam_solver::{
+    DEFAULT_MAX_PITCH_M, Exclusion, FastenerClass, Feasibility, Seed, SeedKind, place_fasteners,
+    snap_placement,
+};
+use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M, SeamPlaneBasis, Silhouette2d};
 
 /// Default bolt clearance hole diameter (5.5 mm) — standard M5
 /// clearance per ISO 273 medium-fit.
@@ -305,6 +311,14 @@ fn collides_with_pour_gate(
 /// halves' flange material). `bounds` is the cup-piece's MC bounds
 /// (used to size the silhouette sampling region — same as the
 /// flange's silhouette-construction bounds for consistency).
+///
+/// When `smart_bolts` is `Some`, the geometry-blind uniform loop + pour bracket
+/// are bypassed entirely: the slice carries the per-layer seam-plane centers the
+/// seam-placement solver already resolved + cross-layer-validated (see
+/// [`plan_smart_bolt_placements`]), and each maps straight to a
+/// [`MatingTransform::SubtractCylinder`] (emission unchanged — only the
+/// *positions* come from the solver). `None` keeps the legacy path bit-identical
+/// (S3 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`).
 #[must_use]
 pub fn build_bolt_pattern_transforms(
     layer_body: &Solid,
@@ -312,7 +326,11 @@ pub fn build_bolt_pattern_transforms(
     spec: &BoltPatternSpec,
     flange_spec: &FlangeSpec,
     bounds: cf_design::Aabb,
+    smart_bolts: Option<&[Point2]>,
 ) -> Vec<MatingTransform> {
+    if let Some(centers) = smart_bolts {
+        return emit_smart_bolts(centers, ribbon, spec, flange_spec);
+    }
     if spec.count == 0 {
         return Vec::new();
     }
@@ -324,27 +342,8 @@ pub fn build_bolt_pattern_transforms(
     let pad = spec.silhouette_outboard_offset_m + radius_m + SILHOUETTE_GRID_STEP_M;
     // Fitted seam (item A) → sample IN the seam plane; else the legacy X-Z
     // constant-Y silhouette (bit-identical to the pre-generalization path).
-    let fitted = ribbon.seam_plane_basis();
-    let silhouette = fitted.map_or_else(
-        || {
-            Silhouette2d::from_body_at_y(
-                layer_body,
-                seam_midpoint.y,
-                bounds.min.x - pad,
-                bounds.max.x + pad,
-                bounds.min.z - pad,
-                bounds.max.z + pad,
-            )
-        },
-        |basis| {
-            let expanded = cf_design::Aabb::new(
-                Point3::new(bounds.min.x - pad, bounds.min.y - pad, bounds.min.z - pad),
-                Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
-            );
-            let (u_min, u_max, v_min, v_max) = basis.inplane_bounds(expanded);
-            Silhouette2d::from_body_in_plane(layer_body, basis, u_min, u_max, v_min, v_max)
-        },
-    );
+    let fitted = ribbon.seam_plane_basis().is_some();
+    let silhouette = seam_silhouette(layer_body, ribbon, bounds, pad);
 
     // Through-hole half-length = flange thickness + slack. Cylinder
     // spans ±(flange + slack) in binormal direction, carving through
@@ -356,7 +355,6 @@ pub fn build_bolt_pattern_transforms(
 
     let pour_xforms = build_pour_gate_transforms(ribbon);
     let offset = spec.silhouette_outboard_offset_m;
-    let fitted = fitted.is_some();
 
     let mut transforms = Vec::with_capacity(spec.count as usize + 2);
 
@@ -450,6 +448,316 @@ pub fn build_bolt_pattern_transforms(
         });
     }
     transforms
+}
+
+// === Smart placement (S3, `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`) ===
+
+/// M5 flat-washer footprint radius (5 mm — OD 10 mm). This is the bolt's
+/// *footprint* for feasibility (the washer seats on the flange back face), as
+/// distinct from the `clearance_diameter_m / 2` HOLE radius that gets carved.
+/// The seam solver keeps the whole washer disk inside the flange band + clear of
+/// the pour/dowels (§3.3); the emitted cylinder is still the clearance hole.
+const BOLT_WASHER_RADIUS_M: f64 = 0.005;
+
+/// Safety margin the washer keeps beyond the cup-wall outer step (1 mm, ≈ FDM
+/// extrusion tolerance). The inboard radial floor is `wall_thickness + washer +
+/// this` — the *computed* form of the §3.2 "inboard washer-vs-cup-wall-step
+/// clearance" (the surviving half of the legacy hand-set 13 mm offset; the old
+/// 3 mm margin shrinks to FDM tolerance because the solver's max-margin objective
+/// keeps bolts comfortably outboard in free band regions, so the hard floor only
+/// has to guarantee the washer doesn't overhang the step). Matches the S0
+/// finding that a feasible apex bolt sits at d ≈ 11.5 mm (which a 13 mm floor
+/// would have excluded).
+const WASHER_CUP_WALL_MARGIN_M: f64 = 0.001;
+
+/// PLA wall the bolt washer keeps around a dowel hole when the dowel footprint
+/// is excluded from the bolt run (§3.6). Added to the dowel hole radius so the
+/// washer edge clears the dowel hole with material between them.
+const SMART_DOWEL_WALL_M: f64 = 0.002;
+
+/// Build the seam-plane silhouette for a layer body — the fitted-seam in-plane
+/// path (item A) or the legacy Y-normal X-Z path, bit-identical to the
+/// pre-extraction inline form. Shared by [`build_bolt_pattern_transforms`] and
+/// [`plan_smart_bolt_placements`].
+fn seam_silhouette(layer_body: &Solid, ribbon: &Ribbon, bounds: Aabb, pad: f64) -> Silhouette2d {
+    let (seam_midpoint, _) = ribbon.seam_plane_reference();
+    ribbon.seam_plane_basis().map_or_else(
+        || {
+            Silhouette2d::from_body_at_y(
+                layer_body,
+                seam_midpoint.y,
+                bounds.min.x - pad,
+                bounds.max.x + pad,
+                bounds.min.z - pad,
+                bounds.max.z + pad,
+            )
+        },
+        |basis| {
+            let expanded = Aabb::new(
+                Point3::new(bounds.min.x - pad, bounds.min.y - pad, bounds.min.z - pad),
+                Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
+            );
+            let (u_min, u_max, v_min, v_max) = basis.inplane_bounds(expanded);
+            Silhouette2d::from_body_in_plane(layer_body, basis, u_min, u_max, v_min, v_max)
+        },
+    )
+}
+
+/// Map a solver-resolved seam-plane center to the world bolt center: lift it off
+/// the seam plane (fitted basis, or the legacy `(x, seam_y, z)` map) and project
+/// onto the binormal-aligned seam plane through `seam_midpoint` — exactly the
+/// projection [`bolt_center_at`] applies, so smart + legacy bolts share a plane.
+fn smart_center_to_world(
+    ribbon: &Ribbon,
+    seam_midpoint: Point3<f64>,
+    binormal: Vector3<f64>,
+    c: Point2,
+) -> Point3<f64> {
+    let candidate = ribbon
+        .seam_plane_basis()
+        .map_or_else(|| Point3::new(c.x, seam_midpoint.y, c.z), |b| b.to_world(c));
+    let signed = (candidate - seam_midpoint).dot(&binormal);
+    candidate - signed * binormal
+}
+
+/// Emit one bolt-hole [`MatingTransform::SubtractCylinder`] per planned center
+/// (S3). The positions come from the solver; the cylinder (axis, half-length,
+/// radius, segments) is identical to the legacy emission.
+fn emit_smart_bolts(
+    centers: &[Point2],
+    ribbon: &Ribbon,
+    spec: &BoltPatternSpec,
+    flange_spec: &FlangeSpec,
+) -> Vec<MatingTransform> {
+    let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
+    let binormal = seam_normal.into_inner();
+    let axis = Unit::new_normalize(binormal);
+    let radius_m = spec.clearance_diameter_m / 2.0;
+    let half_length_m = flange_spec.flange_thickness_m + BOLT_AXIAL_SLACK_M;
+    centers
+        .iter()
+        .map(|&c| {
+            let center_m = smart_center_to_world(ribbon, seam_midpoint, binormal, c);
+            MatingTransform::SubtractCylinder {
+                params: CylinderParams {
+                    parent: CylinderParent {
+                        center_m,
+                        axis,
+                        half_length_m,
+                    },
+                    radius_m,
+                    segments: DEFAULT_SEGMENTS,
+                },
+            }
+        })
+        .collect()
+}
+
+/// The flange-band feasibility regime for the bolt washer (§3.3): the washer
+/// disk (radius [`BOLT_WASHER_RADIUS_M`]) must lie in the flange band, the radial
+/// offset floored by the washer-vs-cup-wall-step clearance (§3.2).
+fn bolt_feasibility(flange_spec: &FlangeSpec, wall_thickness_m: f64) -> Feasibility {
+    let d_floor = wall_thickness_m + BOLT_WASHER_RADIUS_M + WASHER_CUP_WALL_MARGIN_M;
+    Feasibility::band(
+        flange_spec.flange_inner_offset_m,
+        flange_spec.flange_width_m,
+        d_floor,
+        flange_spec.flange_width_m,
+    )
+}
+
+/// Project the pour-gate bores onto the seam plane as swept [`Exclusion::Channel`]
+/// keep-outs (§3.4 — the pour is modelled once, correctly: a capsule, not a point
+/// disk). Each pour cylinder's axis segment `center ± half_length·axis` projects
+/// to the in-plane segment; the capsule radius is the bore radius.
+fn pour_exclusions(pour_xforms: &[MatingTransform], basis: SeamPlaneBasis) -> Vec<Exclusion> {
+    pour_xforms
+        .iter()
+        .filter_map(|t| match t {
+            MatingTransform::SubtractCylinder { params } => {
+                let c = params.parent.center_m;
+                let ax = params.parent.axis.into_inner();
+                let h = params.parent.half_length_m;
+                Some(Exclusion::Channel {
+                    a: basis.project(c - ax * h),
+                    b: basis.project(c + ax * h),
+                    half_width: params.radius_m,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Project the dowel holes onto the seam plane as [`Exclusion::Disk`] keep-outs
+/// (§3.6 — the bolt run avoids every already-placed dowel footprint). The disk
+/// radius is the dowel hole radius plus [`SMART_DOWEL_WALL_M`] so the washer
+/// keeps PLA wall around the dowel.
+fn dowel_exclusions(
+    layer_body: &Solid,
+    ribbon: &Ribbon,
+    dowel_spec: &DowelHoleSpec,
+    bounds: Aabb,
+    basis: SeamPlaneBasis,
+) -> Vec<Exclusion> {
+    build_dowel_hole_transforms(layer_body, ribbon, dowel_spec, bounds)
+        .iter()
+        .filter_map(|t| match t {
+            MatingTransform::SubtractCylinder { params } => Some(Exclusion::Disk {
+                center: basis.project(params.parent.center_m),
+                radius: params.radius_m + SMART_DOWEL_WALL_M,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The arc length where a pour channel pierces the loop — the loop point nearest
+/// the (in-plane) bore axis segment. Sampled along the segment by minimum
+/// `|signed_distance|` (the crossing sits on the loop, sd ≈ 0), then snapped to
+/// its arc. Drives the [`SeedKind::PourPierce`] seed (§3.4).
+fn pour_pierce_arc(profile: &SeamProfile, seg_a: Point2, seg_b: Point2) -> f64 {
+    const N: u32 = 64;
+    let mut best = (f64::INFINITY, seg_a);
+    for k in 0..=N {
+        let frac = f64::from(k) / f64::from(N);
+        let pt = Point2::new(
+            seg_a.x + (seg_b.x - seg_a.x) * frac,
+            seg_a.z + (seg_b.z - seg_a.z) * frac,
+        );
+        let dist = profile.signed_distance(pt).abs();
+        if dist < best.0 {
+            best = (dist, pt);
+        }
+    }
+    profile.nearest_arc(best.1)
+}
+
+/// Per-layer seam-plane bolt centers from the seam-placement solver (§3.5/§3.8).
+///
+/// The solver runs **once** on the outermost layer's loop (the largest
+/// silhouette): the count emerges from `max_pitch`, the pour bore is excluded as
+/// a swept channel (so its interval edges bracket it — the apex clamp, §3.4) plus
+/// a complementary `PourPierce` seed, and every dowel footprint is excluded
+/// (§3.6). Each resolved center is then snapped onto **every** layer's loop
+/// ([`snap_placement`], §3.8); a position kept only if it is feasible on all
+/// layers, so the stack shares one angular pattern (the workshop aligns one
+/// jig). Returns a `Vec` parallel to `layer_bodies` (innermost-first) of the
+/// per-layer centers; positions infeasible on some layer are dropped with a
+/// `warn`.
+///
+/// `layer_bounds` are the per-layer MC bounds (parallel to `layer_bodies`) — the
+/// same bounds [`build_bolt_pattern_transforms`] receives, so the silhouettes
+/// match. Reads the pour + dowel patterns off `ribbon`.
+#[must_use]
+pub fn plan_smart_bolt_placements(
+    layer_bodies: &[&Solid],
+    layer_bounds: &[Aabb],
+    ribbon: &Ribbon,
+    bolt_spec: &BoltPatternSpec,
+    flange_spec: &FlangeSpec,
+    wall_thickness_m: f64,
+) -> Vec<Vec<Point2>> {
+    let n_layers = layer_bodies.len();
+    let mut result = vec![Vec::new(); n_layers];
+    if n_layers == 0 || layer_bounds.len() != n_layers {
+        return result;
+    }
+
+    let feas = bolt_feasibility(flange_spec, wall_thickness_m);
+    let washer_r = BOLT_WASHER_RADIUS_M;
+    // Generous window: the body loop sits well inside the MC bounds, padded here
+    // by the flange reach so the whole perimeter is captured at any seam tilt.
+    let pad = flange_spec.flange_width_m + SILHOUETTE_GRID_STEP_M;
+    let pour_xforms = build_pour_gate_transforms(ribbon);
+    let dowel_spec = ribbon.dowel_hole.spec();
+
+    // Per-layer clean loop + seam-plane exclusions (`None` = silhouette empty).
+    let layers: Vec<Option<(SeamProfile, Vec<Exclusion>)>> = layer_bodies
+        .iter()
+        .zip(layer_bounds)
+        .map(|(body, &bounds)| {
+            let silhouette = seam_silhouette(body, ribbon, bounds, pad);
+            let profile = SeamProfile::from_silhouette(&silhouette)?;
+            let basis = silhouette.basis();
+            let mut excluded = pour_exclusions(&pour_xforms, basis);
+            if let Some(ds) = dowel_spec {
+                excluded.extend(dowel_exclusions(body, ribbon, ds, bounds, basis));
+            }
+            Some((profile, excluded))
+        })
+        .collect();
+
+    let Some(Some((outer_profile, outer_excluded))) = layers.last() else {
+        eprintln!(
+            "[cf-cast] WARNING: smart bolt placement — outermost layer silhouette is empty; \
+             no bolts placed."
+        );
+        return result;
+    };
+
+    // Pour-pierce seeds on the outer loop (complementary to the channel's
+    // interval-boundary brackets — §3.4 / S2 decision; dedup collapses overlap).
+    let seeds: Vec<Seed> = outer_excluded
+        .iter()
+        .filter_map(|e| match *e {
+            Exclusion::Channel { a, b, .. } => Some(Seed {
+                arc: pour_pierce_arc(outer_profile, a, b),
+                kind: SeedKind::PourPierce,
+            }),
+            Exclusion::Disk { .. } => None,
+        })
+        .collect();
+
+    let class = FastenerClass {
+        footprint_radius: washer_r,
+        fill: Some(max_pitch(bolt_spec)),
+        seeds,
+    };
+    let master = place_fasteners(outer_profile, &feas, outer_excluded, &class);
+
+    // Cross-layer snap + validate: keep a position only if feasible on EVERY
+    // layer, so the stack shares one angular pattern (§3.8).
+    let mut dropped = 0usize;
+    for m in &master {
+        let mut snapped: Vec<Point2> = Vec::with_capacity(n_layers);
+        let mut feasible_on_all = true;
+        for slot in &layers {
+            let Some((profile, excluded)) = slot else {
+                feasible_on_all = false;
+                break;
+            };
+            let Some(resolved) = snap_placement(profile, &feas, excluded, washer_r, m.center)
+            else {
+                feasible_on_all = false;
+                break;
+            };
+            snapped.push(resolved.center);
+        }
+        if feasible_on_all {
+            for (out, c) in result.iter_mut().zip(snapped) {
+                out.push(c);
+            }
+        } else {
+            dropped += 1;
+        }
+    }
+    if dropped > 0 {
+        eprintln!(
+            "[cf-cast] smart bolt placement: dropped {dropped} of {} candidate position(s) \
+             that were infeasible on at least one layer (kept the shared, all-layer-feasible \
+             set).",
+            master.len(),
+        );
+    }
+    result
+}
+
+/// The even-contact bolt pitch for the smart placement solve. iter-1 uses the
+/// workmanship default ([`DEFAULT_MAX_PITCH_M`], 30 mm); a `[bolt_pattern]`
+/// override lands here in a later phase (§3.7).
+const fn max_pitch(_spec: &BoltPatternSpec) -> f64 {
+    DEFAULT_MAX_PITCH_M
 }
 
 /// The bolt center for silhouette arc fraction `t`: the silhouette point offset
@@ -689,9 +997,10 @@ mod tests {
         let radius = spec_skip.clearance_diameter_m / 2.0;
         let pour_xforms = build_pour_gate_transforms(&ribbon);
 
-        let skipped = build_bolt_pattern_transforms(&body, &ribbon, &spec_skip, &flange, bounds);
+        let skipped =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec_skip, &flange, bounds, None);
         let bracketed =
-            build_bolt_pattern_transforms(&body, &ribbon, &spec_bracket, &flange, bounds);
+            build_bolt_pattern_transforms(&body, &ribbon, &spec_bracket, &flange, bounds, None);
 
         // (b) the fixture's apex pour bore collides with at least one
         // arc-spaced bolt (else this test proves nothing).
@@ -761,9 +1070,10 @@ mod tests {
                 .count()
         };
 
-        let skipped = build_bolt_pattern_transforms(&body, &ribbon, &spec_skip, &flange, bounds);
+        let skipped =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec_skip, &flange, bounds, None);
         let bracketed =
-            build_bolt_pattern_transforms(&body, &ribbon, &spec_bracket, &flange, bounds);
+            build_bolt_pattern_transforms(&body, &ribbon, &spec_bracket, &flange, bounds, None);
 
         assert!(
             count_near(&bracketed) >= 2,
@@ -796,7 +1106,8 @@ mod tests {
             ..BoltPatternSpec::iter1()
         };
         let flange = FlangeSpec::iter1();
-        let transforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+        let transforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds, None);
         assert!(transforms.is_empty());
     }
 
@@ -805,7 +1116,8 @@ mod tests {
         let (body, bounds, ribbon) = cylinder_fixture();
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let transforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+        let transforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds, None);
         assert_eq!(
             transforms.len(),
             spec.count as usize,
@@ -826,7 +1138,8 @@ mod tests {
         let (body, bounds, ribbon) = cylinder_fixture();
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let transforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+        let transforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds, None);
         let expected_radius = spec.clearance_diameter_m / 2.0;
         for t in &transforms {
             let MatingTransform::SubtractCylinder { params } = t else {
@@ -846,7 +1159,8 @@ mod tests {
         let (body, bounds, ribbon) = cylinder_fixture();
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let transforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+        let transforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds, None);
         let (_, seam_normal) = ribbon.seam_plane_reference();
         let binormal = seam_normal.into_inner();
         for t in &transforms {
@@ -866,7 +1180,8 @@ mod tests {
         let (body, bounds, ribbon) = cylinder_fixture();
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let transforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+        let transforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds, None);
         for (i, t) in transforms.iter().enumerate() {
             let MatingTransform::SubtractCylinder { params } = t else {
                 panic!("expected SubtractCylinder, got {t:?}");
@@ -894,7 +1209,8 @@ mod tests {
         let (body, bounds, ribbon) = cylinder_fixture();
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let transforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+        let transforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds, None);
         let expected_half_length = flange.flange_thickness_m + BOLT_AXIAL_SLACK_M;
         for t in &transforms {
             let MatingTransform::SubtractCylinder { params } = t else {
@@ -934,7 +1250,7 @@ mod tests {
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
         let transforms =
-            build_bolt_pattern_transforms(&layer_body, &ribbon, &spec, &flange, bounds);
+            build_bolt_pattern_transforms(&layer_body, &ribbon, &spec, &flange, bounds, None);
         assert_eq!(transforms.len(), spec.count as usize);
 
         let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
@@ -1055,7 +1371,8 @@ mod tests {
             ..BoltPatternSpec::iter1()
         };
         let flange = FlangeSpec::iter1();
-        let transforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+        let transforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds, None);
         assert_eq!(
             transforms.len(),
             spec.count as usize,
@@ -1169,7 +1486,7 @@ mod tests {
 
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let xforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds);
+        let xforms = build_bolt_pattern_transforms(&body, &ribbon, &spec, &flange, bounds, None);
 
         assert!(
             !xforms.is_empty(),
@@ -1185,5 +1502,182 @@ mod tests {
                 "fitted-seam bolt must lie on the seam plane; off by {d:.6} m",
             );
         }
+    }
+
+    // === Smart placement (S3) ===
+
+    use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+    use crate::flange::FlangeKind;
+
+    /// Build the seam profile for a single fixture body the way the planner does,
+    /// so a test can re-check feasibility of each emitted center.
+    fn fixture_profile(body: &Solid, ribbon: &Ribbon, bounds: cf_design::Aabb) -> SeamProfile {
+        let pad = FlangeSpec::iter1().flange_width_m + SILHOUETTE_GRID_STEP_M;
+        let sil = seam_silhouette(body, ribbon, bounds, pad);
+        SeamProfile::from_silhouette(&sil).expect("fixture silhouette must form a loop")
+    }
+
+    /// The smart path emits one bolt per planned center, each clear of the body,
+    /// inside the flange band, and clear of the apex pour bore by the washer.
+    #[test]
+    fn smart_placement_bolts_clear_body_band_and_pour() {
+        let (body, bounds, base) = cylinder_fixture();
+        let mut pour = PourGateSpec::iter1();
+        pour.layout = PourGateLayout::ApexAxial;
+        let ribbon = base
+            .with_pour_gate(PourGateKind::Default(pour))
+            .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
+            .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+            .with_smart_placement(true);
+        let bolt = BoltPatternSpec::iter1();
+        let flange = FlangeSpec::iter1();
+        let wall = 0.005;
+
+        let plan = plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &bolt, &flange, wall);
+        assert_eq!(plan.len(), 1, "one plan entry per layer");
+        let centers = &plan[0];
+        assert!(!centers.is_empty(), "smart placement produced no bolts");
+
+        let xforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &bolt, &flange, bounds, Some(centers));
+        assert_eq!(
+            xforms.len(),
+            centers.len(),
+            "one SubtractCylinder per planned center"
+        );
+
+        let profile = fixture_profile(&body, &ribbon, bounds);
+        let pour_xforms = build_pour_gate_transforms(&ribbon);
+        for t in &xforms {
+            let MatingTransform::SubtractCylinder { params } = t else {
+                panic!("smart emission must be SubtractCylinder");
+            };
+            // hole radius is the clearance hole, not the washer footprint.
+            assert!((params.radius_m - bolt.clearance_diameter_m / 2.0).abs() < 1e-12);
+            // outside the body in 3D.
+            assert!(
+                body.evaluate(&params.parent.center_m) > 0.0,
+                "smart bolt center inside the body"
+            );
+            // washer footprint (5 mm) inside the flange band.
+            let sd = profile.signed_distance(profile.basis().project(params.parent.center_m));
+            assert!(
+                sd >= flange.flange_inner_offset_m + BOLT_WASHER_RADIUS_M - 5e-4
+                    && sd <= flange.flange_width_m - BOLT_WASHER_RADIUS_M + 5e-4,
+                "smart bolt washer out of the flange band: sd={sd}"
+            );
+            // washer clears the pour bore (the original washer-vs-sprue failure).
+            assert!(
+                pour_axis_distance(params.parent.center_m, &pour_xforms)
+                    >= max_pour_radius(&pour_xforms) + BOLT_WASHER_RADIUS_M - 5e-4,
+                "smart bolt washer fouls the pour bore"
+            );
+        }
+    }
+
+    /// The apex pour is bracketed by construction: ≥2 bolts straddle the bore
+    /// (the channel exclusion's interval edges + the pierce seed), one each side.
+    #[test]
+    fn smart_placement_brackets_the_apex_pour_symmetrically() {
+        let (body, bounds, base) = cylinder_fixture();
+        let mut pour = PourGateSpec::iter1();
+        pour.layout = PourGateLayout::ApexAxial;
+        let ribbon = base
+            .with_pour_gate(PourGateKind::Default(pour))
+            .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+            .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+            .with_smart_placement(true);
+        let bolt = BoltPatternSpec::iter1();
+        let flange = FlangeSpec::iter1();
+
+        let plan = plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &bolt, &flange, 0.005);
+        let xforms =
+            build_bolt_pattern_transforms(&body, &ribbon, &bolt, &flange, bounds, Some(&plan[0]));
+        let pour_xforms = build_pour_gate_transforms(&ribbon);
+        let profile = fixture_profile(&body, &ribbon, bounds);
+        let basis = profile.basis();
+        let MatingTransform::SubtractCylinder { params: bore } = &pour_xforms[0] else {
+            panic!("apex pour must emit a cylinder");
+        };
+        // The bore axis projected onto the seam plane → the pierce arc; the two
+        // brackets must straddle it ALONG the loop (one each direction), which is
+        // the geometric "both sides" — the world axes don't separate the sides
+        // when the pierce sits at a rounded end of the silhouette.
+        let bore_axis = bore.parent.axis.into_inner();
+        let h = bore.parent.half_length_m;
+        let a = basis.project(bore.parent.center_m - bore_axis * h);
+        let b = basis.project(bore.parent.center_m + bore_axis * h);
+        let pierce = pour_pierce_arc(&profile, a, b);
+        let perim = profile.perimeter();
+        let (mut near, mut ahead, mut behind) = (0u32, false, false);
+        for t in &xforms {
+            let MatingTransform::SubtractCylinder { params } = t else {
+                continue;
+            };
+            if pour_axis_distance(params.parent.center_m, &pour_xforms) < 0.025 {
+                near += 1;
+                let arc = profile.nearest_arc(basis.project(params.parent.center_m));
+                let mut gap = (arc - pierce).rem_euclid(perim);
+                if gap > perim / 2.0 {
+                    gap -= perim;
+                }
+                if gap > 1e-6 {
+                    ahead = true;
+                } else if gap < -1e-6 {
+                    behind = true;
+                }
+            }
+        }
+        assert!(
+            near >= 2,
+            "apex pour must be bracketed by ≥2 bolts; got {near}"
+        );
+        assert!(
+            ahead && behind,
+            "apex pour must be clamped on BOTH sides of the pierce along the loop; \
+             near={near} ahead={ahead} behind={behind}"
+        );
+    }
+
+    /// Per-layer (§3.8): solving on the outer layer and snapping inward yields the
+    /// SAME number of bolts on every layer (the shared, all-layer-feasible set).
+    #[test]
+    fn smart_placement_shares_one_pattern_across_layers() {
+        // Two nested cylinders along X (inner R=10, outer R=12), innermost-first.
+        let make = |r: f64| {
+            Solid::cylinder(r, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+                &Vector3::y_axis(),
+                std::f64::consts::FRAC_PI_2,
+            ))
+        };
+        let inner = make(0.010);
+        let outer = make(0.012);
+        let (_b, bounds, base) = cylinder_fixture();
+        let mut pour = PourGateSpec::iter1();
+        pour.layout = PourGateLayout::ApexAxial;
+        let ribbon = base
+            .with_pour_gate(PourGateKind::Default(pour))
+            .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+            .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+            .with_smart_placement(true);
+        let bolt = BoltPatternSpec::iter1();
+        let flange = FlangeSpec::iter1();
+
+        let plan = plan_smart_bolt_placements(
+            &[&inner, &outer],
+            &[bounds, bounds],
+            &ribbon,
+            &bolt,
+            &flange,
+            0.005,
+        );
+        assert_eq!(plan.len(), 2);
+        assert!(!plan[0].is_empty() && !plan[1].is_empty());
+        assert_eq!(
+            plan[0].len(),
+            plan[1].len(),
+            "shared pattern: every layer carries the same bolt count"
+        );
     }
 }

@@ -331,7 +331,7 @@ fix for a pinch. S0 makes this call.
 | **S0** measure | Instrument `cast_base_mold_canal_05`: actual bolt centres, washer-vs-pour on *both* apex sides, `flange_room` along the whole seam, which uniform stations land infeasibly. Pin `max_pitch` + corner-curvature threshold. **Decide incremental vs direct (§6).** | Washer-vs-sprue answered numerically; `max_pitch` + threshold pinned; §6 path chosen. |
 | **S1** substrate + feasibility | Build the §3.1 clean analytic flange path; the 2D feasibility predicate (§3.3); per-layer snap (§3.8). Verify the as-found `file:line` (§2). Pure addition, zero behaviour change. | **DONE (§7.2).** Derivatives staircase-stable (normals < 8°, no false corner spike under 0.5 mm noise); feasibility (Lipschitz center test) + non-convex + corner cases unit-tested. |
 | **S2** solver | `place_fasteners` (§3.5/§3.6): subdivision-first, Poisson fallback, deterministic. | Unit tests green on ≥4 synthetic seams incl. a masked/holed one — count, even spacing, seed honouring, exclusion, determinism under perturbation. |
-| **S3** bolts (gated) | Route bolts through the solver behind `[cast].smart_placement` (default off). 2D placement. Regen `base_mold`, A/B vs current. | `base_mold`: washer-clear ≥ target on **both** apex sides; bolt count within ±1 of S0 estimate; left/right apex symmetric. |
+| **S3** bolts (gated) | Route bolts through the solver behind `[cast].smart_placement` (default off). 2D placement. Regen `base_mold`, A/B vs current. | **DONE (§7.3).** `base_mold`: washer clears the Ø10 bore on **both** apex sides (+0.5/+0.6 mm); 14 bolts (S0 target 12–14; legacy 7–8); left/right apex symmetric. |
 | **S4** dowels (gated) | Route dowels through the solver (registration-extreme seeds). | No dowel↔bolt footprint overlap in the shared set; registration moment-arm ≥ target. |
 | **S4.5** demand flange | §4 (`FlangeKind::Demand`; legacy `Plate` = escape hatch). Flip derive order (flange after placement). *Incremental path only; on the direct path this folds into S3.* | `base_mold` regen: mass/print-time ↓ vs plate; F4 clean; seal-ring continuity test passes; cf-view scallop + apex boss look right. |
 | **S5** promote + delete | Flip `smart_placement` default **on**; delete legacy uniform loops, the three pour paths, the uniform plate, and the `flank_bolts`/`bracket_pour_gate`/`skip_pour_gate_collision` knobs + validators; re-baseline iter-1 byte-identity tests deliberately. | `grade-all` green; byte-identity re-baseline reviewed; no legacy path remains. |
@@ -458,6 +458,48 @@ index (S1-C6).
 **Bookmark.** A real-body integration check (build `SeamProfile` from the
 `base_mold` outer silhouette, confirm perimeter ≈ 394 mm + feasibility behaviour)
 is deferred to S3, where the solver is wired and `base_mold` is regenerated anyway.
+
+---
+
+## 7.3 S3 RESULTS (2026-06-01)
+
+**Shipped** bolt routing through the solver behind `[cast].smart_placement`
+(default **off**; legacy byte-identical when off — full cf-cast lib suite 334/0).
+`plan_smart_bolt_placements` (cf-cast `bolt_pattern.rs`) solves on the outermost
+`SeamProfile`, then snaps each placement onto every layer (`seam_solver::snap_placement`,
+§3.8) and keeps only positions feasible on **all** layers; `build_bolt_pattern_transforms`
+gained `smart_bolts: Option<&[Point2]>`. Pour → `Exclusion::Channel` + a `PourPierce`
+seed; dowels → `Disk` exclusions (`SeamPlaneBasis::project` maps the world transforms
+into the seam plane). Feasibility: footprint = washer R (5 mm), band = flange
+`[inner_offset, width]`, `d_floor = wall + washer + 1 mm` (≈ 11 mm — the computed form
+of the legacy 13 mm offset; admits S0's feasible 11.5 mm apex bolt). `max_pitch` =
+`DEFAULT_MAX_PITCH_M` (30 mm).
+
+- **Bookmark resolved.** Outer `SeamProfile` perimeter on `base_mold` = **393.9 mm**
+  (the expected ≈ 394).
+- **Gate met (coarse-cell probe; placement is silhouette-driven, cell-independent):**
+  14 bolts (S0 target 12–14; legacy 7–8 with a *dropped* apex bolt), apex bracketed on
+  **both** sides clearing the Ø10 bore by **+0.5 / +0.6 mm**, left/right symmetric.
+
+**Bug the real-body A/B caught (fixed here, regression-tested).** `place_fasteners`'
+`Interval::Open` arm assumed `lo < hi`. When the infeasible zone (the pour) sits away
+from arc 0, the complementary feasible run **wraps arc 0** → `feasible_intervals` emits
+`Open{lo > hi}` (e.g. lo=111 mm, hi=99 mm). The old arm numeric-sorted to `[99, 111]`
+and filled the **12 mm infeasible gap** instead of the **382 mm feasible arc**,
+collapsing the ring to just the 2 pour brackets. Fix: the Open arm now works in forward
+offsets from `lo` (`span = (hi-lo).rem_euclid(perim)`; modular boundary checks). The S2
+synthetic tests passed only because they placed the pierce at arc 0 (so the infeasible
+zone straddled 0 and the feasible run didn't wrap) — added
+`pour_pierce_away_from_arc_zero_still_fills_the_ring`. **Lesson: test the solver with the
+obstacle OFF arc 0.**
+
+**Deferred / noted.** (a) `plan_smart_bolt_placements` rebuilds the seam + dowel
+silhouettes per layer that the compose pass also builds (silhouette extraction is the
+dominant per-piece cost, §MA-7) — roughly doubles silhouette work on a smart run;
+acceptable for opt-in S3, fold into S5's legacy-deletion + silhouette reuse. (b) The
+cf-cast-cli bolt↔dowel arc-stagger validator still gates the (now-superseded) legacy bolt
+`count` even under `smart_placement`; harmless at default counts, clean up in S5.
+(c) `[bolt_pattern].max_pitch_m` exposure (§3.7) deferred.
 
 ---
 
