@@ -564,32 +564,13 @@ pub fn derive_spec_and_ribbon(
     if config.bolt_pattern.enabled {
         // §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
         // Per-field overrides fall back to BoltPatternSpec::iter1();
-        // cross-field invariants (flange-required, wall-thickness,
-        // dowel-stagger) are gated in
-        // config::validate_after_layer_source.
-        let mut bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
-        // With the apex-axial pour the bore splits the flange at the
-        // dome apex; bracket it (a bolt just outside the clearance on
-        // each side) instead of dropping nearby bolts. Organic-parts
-        // arc §4.3, 2026-05-29.
-        // `flank_bolts` (default true) gates the proactive bracketing: on parts
-        // with a tight/leaning dome apex a flanking bolt can't be placed cleanly
-        // (lands at the apex tip or crowds a dowel), so the part opts out and
-        // the arc-bolt ring + hand pressure clamp the split (workshop
-        // 2026-05-31, base_mold).
-        if config.pour_gate.enabled && config.pour_gate.apex_axial && config.pour_gate.flank_bolts {
-            bolt_spec.bracket_pour_gate = true;
-        }
+        // cross-field invariants (flange-required, wall-thickness) are gated in
+        // config::validate_after_layer_source. Placement (count, positions, pour
+        // bracketing) is the seam-placement solver's job (the default since S5) —
+        // the bore is bracketed by construction via its swept-channel exclusion.
+        let bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
         ribbon = ribbon.with_bolt_pattern(BoltPatternKind::Auto(bolt_spec));
     }
-
-    // S3 seam-placement solver (`docs/CF_CAST_SEAM_PLACEMENT_RECON.md`): route
-    // the bolt pattern through the constraint-aware solver instead of the
-    // geometry-blind uniform loop. Off by default; a no-op without a bolt
-    // pattern + flange (the solver places bolts in the flange band). When on, it
-    // supersedes the legacy bolt-placement knobs (count / offset / flank_bolts /
-    // collision-skip).
-    ribbon = ribbon.with_smart_placement(config.cast.smart_placement);
 
     Ok(DerivedSpec { spec, ribbon })
 }
@@ -694,16 +675,6 @@ fn resolve_bolt_pattern_spec(config: &crate::config::BoltPatternConfig) -> BoltP
         silhouette_outboard_offset_m: config
             .silhouette_outboard_offset_m
             .unwrap_or(iter1.silhouette_outboard_offset_m),
-        skip_pour_gate_collision: config
-            .skip_pour_gate_collision
-            .unwrap_or(iter1.skip_pour_gate_collision),
-        pour_gate_clearance_m: config
-            .pour_gate_clearance_m
-            .unwrap_or(iter1.pour_gate_clearance_m),
-        // Set by the caller from `[pour_gate].apex_axial`, not a
-        // `[bolt_pattern]` field — the bracket only makes sense when
-        // the apex-axial pour bore splits the flange.
-        bracket_pour_gate: iter1.bracket_pour_gate,
     }
 }
 

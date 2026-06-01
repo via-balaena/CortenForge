@@ -24,12 +24,11 @@
 //!   parallel to print Z when the cup piece is mated-face-down on the
 //!   build plate, so the hole prints as a vertical cylinder requiring
 //!   no support).
-//! - **center** = silhouette point at arc fraction
-//!   `(k + 0.5) / count` (k = 0..count) offset OUTWARD from the
-//!   silhouette by `silhouette_outboard_offset_m` in the seam plane.
-//!   The +0.5 offset avoids placing dowels at the silhouette's
-//!   polyline-assembly join point (which may be on an MC corner
-//!   ambiguity).
+//! - **center** = a seam-plane point resolved by the constraint-aware
+//!   seam-placement solver ([`plan_smart_dowel_placements`], the default
+//!   since S5 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`): the two
+//!   registration extremes at maximum moment arm, lifted onto the
+//!   binormal-aligned seam plane. No fixed count / offset.
 //! - **`half_length`** = `depth_m + clearance_slack_m`. The full
 //!   cylinder spans `2 × half_length` straddling the seam plane,
 //!   carving `depth_m` into EACH cup half.
@@ -59,7 +58,7 @@
 )]
 
 use cf_design::{Aabb, Solid};
-use nalgebra::{Point3, Unit};
+use nalgebra::Unit;
 
 use crate::flange::FlangeSpec;
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
@@ -70,7 +69,7 @@ use crate::seam_placement::{
 };
 use crate::seam_profile::SeamProfile;
 use crate::seam_solver::{FastenerClass, Feasibility, Seed, SeedKind, place_fasteners};
-use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M, Silhouette2d};
+use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M};
 
 /// Default dowel diameter (3 mm) — matches standard 3 mm wood-dowel
 /// stock + small PLA-printed dowel sizes (per §M-S2 recon).
@@ -222,136 +221,44 @@ impl DowelHoleKind {
     }
 }
 
-/// Build the side-agnostic dowel-hole [`MatingTransform`] vec for
-/// the given `ribbon.dowel_hole` spec + layer body silhouette.
+/// Build the side-agnostic dowel-hole [`MatingTransform`] vec from the
+/// seam-placement solver's resolved per-layer dowel `centers` (seam-plane points;
+/// see [`plan_smart_dowel_placements`]).
 ///
-/// Returns an empty Vec if the silhouette has no polylines (e.g.,
-/// body extends past silhouette region) — caller treats this as
-/// "no dowel holes for this piece".
-///
-/// `bounds` is the cup-piece's MC bounds (used to size the silhouette
-/// sampling region — same as the flange's silhouette-construction
-/// bounds for consistency).
-///
-/// When `smart_dowels` is `Some`, the geometry-blind uniform loop is bypassed
-/// entirely: the slice carries the per-layer seam-plane centers the
-/// seam-placement solver already resolved + cross-layer-validated (see
-/// [`plan_smart_dowel_placements`]), and each maps straight to a
-/// [`MatingTransform::SubtractCylinder`] (emission unchanged — only the
-/// *positions* come from the solver). `None` keeps the legacy path bit-identical
-/// (S4 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`).
+/// Each center maps straight to a [`MatingTransform::SubtractCylinder`] straddling
+/// the seam plane (carving `depth_m` into each cup half) — the cylinder (axis =
+/// ribbon binormal, half-length = `depth + slack`, radius = `diameter/2 +
+/// clearance`) is identical for both [`crate::ribbon::PieceSide`]s (mesh-CSG
+/// subtract is side-invariant). An empty `centers` slice (no flange, or the solve
+/// placed nothing) yields no holes.
 #[must_use]
 pub fn build_dowel_hole_transforms(
-    layer_body: &Solid,
+    centers: &[Point2],
     ribbon: &Ribbon,
     spec: &DowelHoleSpec,
-    bounds: cf_design::Aabb,
-    smart_dowels: Option<&[Point2]>,
 ) -> Vec<MatingTransform> {
-    if let Some(centers) = smart_dowels {
-        return emit_smart_dowels(centers, ribbon, spec);
-    }
     let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
     let binormal = seam_normal.into_inner();
-    let seam_plane_y = seam_midpoint.y;
-
-    // Silhouette sampling region: same expansion as the flange uses
-    // so the silhouette curve is fully captured for arc-length walks.
-    // Pad by silhouette_outboard_offset + dowel radius + clearance
-    // so the dowel centerline + hole radius stay inside the sampled
-    // grid (otherwise a dowel near the silhouette extreme might fall
-    // off the grid).
-    let pad = spec.silhouette_outboard_offset_m
-        + spec.diameter_m / 2.0
-        + spec.clearance_m
-        + SILHOUETTE_GRID_STEP_M;
-    // Fitted seam (item A) → sample the silhouette IN the seam plane; else the
-    // legacy X-Z constant-Y silhouette (bit-identical to the pre-generalization
-    // path; `to_world`/`dir_to_world` below reduce to the old (X, Z) maps).
-    let fitted = ribbon.seam_plane_basis();
-    let silhouette = fitted.map_or_else(
-        || {
-            Silhouette2d::from_body_at_y(
-                layer_body,
-                seam_plane_y,
-                bounds.min.x - pad,
-                bounds.max.x + pad,
-                bounds.min.z - pad,
-                bounds.max.z + pad,
-            )
-        },
-        |basis| {
-            let expanded = cf_design::Aabb::new(
-                Point3::new(bounds.min.x - pad, bounds.min.y - pad, bounds.min.z - pad),
-                Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
-            );
-            let (u_min, u_max, v_min, v_max) = basis.inplane_bounds(expanded);
-            Silhouette2d::from_body_in_plane(layer_body, basis, u_min, u_max, v_min, v_max)
-        },
-    );
-
+    let axis = Unit::new_normalize(binormal);
     let half_length_m = spec.depth_m + HOLE_AXIAL_SLACK_M;
     let radius_m = spec.diameter_m / 2.0 + spec.clearance_m;
-
-    let mut transforms = Vec::with_capacity(spec.count as usize);
-    if spec.count == 0 {
-        return transforms;
-    }
-    let axis = Unit::new_normalize(binormal);
-    for k in 0..spec.count {
-        // (k + 0.5) / count: midpoint of the k-th arc segment.
-        // Avoids placing a dowel at the silhouette's polyline-
-        // assembly join point (which may be on an MC corner with
-        // ambiguous tangent).
-        let t = (f64::from(k) + 0.5) / f64::from(spec.count);
-        let Some(p_silh) = silhouette.point_at_arc_fraction(t) else {
-            // No polylines (silhouette empty) → no dowels.
-            return Vec::new();
-        };
-        let Some(n_out) = silhouette.outward_normal_at_arc_fraction(t) else {
-            continue;
-        };
-        // Offset outward from the silhouette in (X, Z) by
-        // silhouette_outboard_offset_m, then project the result onto
-        // the binormal-aligned seam plane through seam_midpoint so
-        // the cylinder center sits EXACTLY on the mating plane.
-        //
-        // Cold-read finding 2026-05-27: pre-projection version put
-        // `center_m.y = seam_midpoint.y` (constant-Y plane), which
-        // for the iter-1 ~3.4° tilted centerline placed the cylinder
-        // center up to a few mm off the binormal-aligned seam plane —
-        // making the dowel carve asymmetrically (one half ~9 mm
-        // deep, the other ~2 mm). Now: project onto the binormal
-        // plane so both halves get equal carve depth. Per
-        // [[project-cf-cast-unified-mating-plane-recon]] §M-S1.5
-        // (binormal-aligned vertical) extended to dowel positioning.
-        let candidate = if fitted.is_some() {
-            // In-plane: map the silhouette point + outward offset through the
-            // fitted basis. The point is already on the seam plane.
-            silhouette.to_world(p_silh)
-                + silhouette.dir_to_world(n_out) * spec.silhouette_outboard_offset_m
-        } else {
-            Point3::new(
-                spec.silhouette_outboard_offset_m.mul_add(n_out.x, p_silh.x),
-                seam_midpoint.y,
-                spec.silhouette_outboard_offset_m.mul_add(n_out.z, p_silh.z),
-            )
-        };
-        let signed_dist_from_seam = (candidate - seam_midpoint).dot(&binormal);
-        let center_m = candidate - signed_dist_from_seam * binormal;
-        transforms.push(MatingTransform::SubtractCylinder {
-            params: CylinderParams {
-                parent: CylinderParent {
-                    center_m,
-                    axis,
-                    half_length_m,
+    centers
+        .iter()
+        .map(|&c| {
+            let center_m = smart_center_to_world(ribbon, seam_midpoint, binormal, c);
+            MatingTransform::SubtractCylinder {
+                params: CylinderParams {
+                    parent: CylinderParent {
+                        center_m,
+                        axis,
+                        half_length_m,
+                    },
+                    radius_m,
+                    segments: DEFAULT_SEGMENTS,
                 },
-                radius_m,
-                segments: DEFAULT_SEGMENTS,
-            },
-        });
-    }
-    transforms
+            }
+        })
+        .collect()
 }
 
 // === Smart placement (S4, `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`) ===
@@ -459,47 +366,15 @@ fn long_axis_extreme_seeds(profile: &SeamProfile) -> Vec<Seed> {
     ]
 }
 
-/// Emit one dowel-hole [`MatingTransform::SubtractCylinder`] per solver-placed
-/// center (S4). The positions come from the solver; the cylinder (axis,
-/// half-length, radius, segments) is identical to the legacy emission.
-fn emit_smart_dowels(
-    centers: &[Point2],
-    ribbon: &Ribbon,
-    spec: &DowelHoleSpec,
-) -> Vec<MatingTransform> {
-    let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
-    let binormal = seam_normal.into_inner();
-    let axis = Unit::new_normalize(binormal);
-    let half_length_m = spec.depth_m + HOLE_AXIAL_SLACK_M;
-    let radius_m = spec.diameter_m / 2.0 + spec.clearance_m;
-    centers
-        .iter()
-        .map(|&c| {
-            let center_m = smart_center_to_world(ribbon, seam_midpoint, binormal, c);
-            MatingTransform::SubtractCylinder {
-                params: CylinderParams {
-                    parent: CylinderParent {
-                        center_m,
-                        axis,
-                        half_length_m,
-                    },
-                    radius_m,
-                    segments: DEFAULT_SEGMENTS,
-                },
-            }
-        })
-        .collect()
-}
-
 /// Per-layer seam-plane dowel centers from the seam-placement solver (§3.4/§3.8).
 ///
 /// Dowels run **first** (registration is primary; the bolt run then excludes
 /// these footprints — §3.6). The solver runs **once** on the outermost layer's
 /// loop with `fill = None` (seeds only) and the two long-axis registration
-/// extremes ([`long_axis_extreme_seeds`]) as `Anchor` seeds, the pour bore
+/// extremes (`long_axis_extreme_seeds`) as `Anchor` seeds, the pour bore
 /// excluded as a swept channel so a dowel seeded at the apex steps clear of it.
 /// Each resolved center is then snapped onto **every** layer's loop
-/// ([`crate::seam_placement::cross_layer_snap`], §3.8) and kept only if feasible
+/// (`cross_layer_snap`, §3.8) and kept only if feasible
 /// on all, so the stack shares one dowel pattern. Returns a `Vec` parallel to
 /// `layer_bodies` (innermost-first) of the per-layer centers.
 ///
@@ -581,7 +456,7 @@ mod tests {
 
     use super::*;
     use crate::ribbon::SplitNormal;
-    use nalgebra::Vector3;
+    use nalgebra::{Point3, Vector3};
 
     fn cylinder_fixture() -> (Solid, cf_design::Aabb, Ribbon) {
         // Cylinder along X, R=10 mm, length 60 mm.
@@ -616,102 +491,17 @@ mod tests {
     }
 
     #[test]
-    fn build_transforms_emits_count_subtract_cylinders() {
-        let (body, bounds, ribbon) = cylinder_fixture();
+    fn build_transforms_empty_centers_emits_empty_vec() {
+        let (_body, _bounds, ribbon) = cylinder_fixture();
         let spec = DowelHoleSpec::iter1();
-        let transforms = build_dowel_hole_transforms(&body, &ribbon, &spec, bounds, None);
-        assert_eq!(
-            transforms.len(),
-            spec.count as usize,
-            "must emit one SubtractCylinder per dowel; got {}",
-            transforms.len()
-        );
-        for t in &transforms {
-            assert!(
-                matches!(t, MatingTransform::SubtractCylinder { .. }),
-                "all transforms must be SubtractCylinder; got {t:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn build_transforms_zero_count_emits_empty_vec() {
-        let (body, bounds, ribbon) = cylinder_fixture();
-        let spec = DowelHoleSpec {
-            count: 0,
-            ..DowelHoleSpec::iter1()
-        };
-        let transforms = build_dowel_hole_transforms(&body, &ribbon, &spec, bounds, None);
+        let transforms = build_dowel_hole_transforms(&[], &ribbon, &spec);
         assert!(transforms.is_empty());
     }
 
-    #[test]
-    fn dowel_holes_centered_outboard_of_silhouette() {
-        // Each dowel center must be OUTSIDE the body silhouette by
-        // approximately silhouette_outboard_offset_m. Probe each
-        // cylinder's center in the body SDF — should be at distance
-        // ≈ offset (within the silhouette grid step).
-        let (body, bounds, ribbon) = cylinder_fixture();
-        let spec = DowelHoleSpec::iter1();
-        let transforms = build_dowel_hole_transforms(&body, &ribbon, &spec, bounds, None);
-        for (i, t) in transforms.iter().enumerate() {
-            let MatingTransform::SubtractCylinder { params } = t else {
-                panic!("expected SubtractCylinder, got {t:?}");
-            };
-            let center = params.parent.center_m;
-            // 3D body distance at the cylinder center.
-            let body_dist = body.evaluate(&center);
-            assert!(
-                body_dist > 0.0,
-                "dowel #{i} center {center:?} must be OUTSIDE body in 3D; \
-                 got body_dist = {body_dist:.5} m"
-            );
-            // Tolerance: silhouette_outboard_offset ± grid_step. (3D
-            // body distance can be ≤ 2D silhouette distance for body
-            // with Y extent; for our flat cylinder cross-section at
-            // Y=0 the two metrics agree.)
-            let target = spec.silhouette_outboard_offset_m;
-            let tol = 2.0 * SILHOUETTE_GRID_STEP_M;
-            assert!(
-                (body_dist - target).abs() < tol,
-                "dowel #{i} center distance from body must be ≈ {target:.4} m \
-                 (silhouette_outboard_offset_m); got {body_dist:.5} m \
-                 (tolerance {tol:.4} m)"
-            );
-        }
-    }
-
-    #[test]
-    fn dowel_holes_axis_aligned_with_ribbon_binormal() {
-        let (body, bounds, ribbon) = cylinder_fixture();
-        let spec = DowelHoleSpec::iter1();
-        let transforms = build_dowel_hole_transforms(&body, &ribbon, &spec, bounds, None);
-        let (_, seam_normal) = ribbon.seam_plane_reference();
-        let binormal = seam_normal.into_inner();
-        for t in &transforms {
-            let MatingTransform::SubtractCylinder { params } = t else {
-                continue;
-            };
-            // Dot product of dowel axis with binormal should be ±1.
-            let dot = params.parent.axis.into_inner().dot(&binormal).abs();
-            assert!(
-                (dot - 1.0).abs() < 1e-9,
-                "dowel axis must align with ribbon binormal; got dot = {dot}"
-            );
-        }
-    }
-
-    /// Cold-read regression 2026-05-27: dowel cylinder centers must
-    /// land ON the binormal-aligned seam plane regardless of
-    /// centerline tilt. Pre-fix the code put `center_m.y =
-    /// seam_midpoint.y` (constant-Y plane), which for tilted
-    /// centerlines placed the center off the actual seam plane along
-    /// the binormal direction — making the dowel carve asymmetrically
-    /// between the two cup-halves.
-    ///
-    /// Fixture: tilted centerline (~5.7° XY-plane tilt, similar to
-    /// the §M-S1.5 flange-thickness test). Verify each dowel center
-    /// satisfies `(center - seam_midpoint).dot(&binormal) ≈ 0`.
+    /// Smart dowel emission geometry + regression (cold-read 2026-05-27): centers
+    /// land ON the binormal-aligned seam plane regardless of centerline tilt (pre-fix
+    /// a constant-Y plane carved asymmetrically), with the dowel hole radius
+    /// (diameter/2 + clearance), the depth+slack half-length, and the binormal axis.
     #[test]
     fn dowel_hole_centers_lie_on_binormal_aligned_seam_plane_under_tilted_centerline() {
         let centerline = vec![
@@ -720,49 +510,31 @@ mod tests {
         ];
         let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
-        let layer_body =
-            Solid::cylinder(0.010, 0.060).rotate(nalgebra::UnitQuaternion::from_axis_angle(
-                &Vector3::y_axis(),
-                std::f64::consts::FRAC_PI_2,
-            ));
-        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.030, 0.030));
-        let bounds = bounding_region.bounds().unwrap();
         let spec = DowelHoleSpec::iter1();
-        let transforms = build_dowel_hole_transforms(&layer_body, &ribbon, &spec, bounds, None);
-        assert_eq!(transforms.len(), spec.count as usize);
+        let centers = [Point2::new(0.0, 0.010), Point2::new(0.010, 0.0)];
+        let transforms = build_dowel_hole_transforms(&centers, &ribbon, &spec);
+        assert_eq!(transforms.len(), centers.len());
 
         let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
         let binormal = seam_normal.into_inner();
+        let expected_radius = spec.diameter_m / 2.0 + spec.clearance_m;
+        let expected_half = spec.depth_m + HOLE_AXIAL_SLACK_M;
         for (i, t) in transforms.iter().enumerate() {
             let MatingTransform::SubtractCylinder { params } = t else {
                 continue;
             };
+            assert!((params.radius_m - expected_radius).abs() < 1e-12);
+            assert!((params.parent.half_length_m - expected_half).abs() < 1e-12);
+            let dot = params.parent.axis.into_inner().dot(&binormal).abs();
+            assert!(
+                (dot - 1.0).abs() < 1e-9,
+                "dowel axis must align with ribbon binormal; got dot = {dot}"
+            );
             let dist_from_seam = (params.parent.center_m - seam_midpoint).dot(&binormal);
             assert!(
                 dist_from_seam.abs() < 1e-9,
-                "dowel #{i} center must lie ON the binormal-aligned seam \
-                 plane; got binormal-distance = {dist_from_seam:.6} m \
-                 (pre-fix this could be several mm for tilted centerlines, \
-                 producing asymmetric hole carve across the two cup-halves)"
-            );
-        }
-    }
-
-    #[test]
-    fn dowel_hole_radius_includes_clearance() {
-        let (body, bounds, ribbon) = cylinder_fixture();
-        let spec = DowelHoleSpec::iter1();
-        let transforms = build_dowel_hole_transforms(&body, &ribbon, &spec, bounds, None);
-        let expected_radius = spec.diameter_m / 2.0 + spec.clearance_m;
-        for t in &transforms {
-            let MatingTransform::SubtractCylinder { params } = t else {
-                continue;
-            };
-            assert!(
-                (params.radius_m - expected_radius).abs() < 1e-12,
-                "dowel hole radius = diameter/2 + clearance = {expected_radius:.5} m; \
-                 got {:.5} m",
-                params.radius_m
+                "dowel #{i} center must lie ON the binormal-aligned seam plane; \
+                 got binormal-distance = {dist_from_seam:.6} m"
             );
         }
     }
@@ -845,8 +617,7 @@ mod tests {
         let (_b, bounds, base) = cylinder_fixture();
         let ribbon = base
             .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
-            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
-            .with_smart_placement(true);
+            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
         let dowel = DowelHoleSpec::iter1();
         let flange = FlangeSpec::iter1();
 
@@ -879,13 +650,12 @@ mod tests {
         let (body, bounds, base) = cylinder_fixture();
         let ribbon = base
             .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
-            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
-            .with_smart_placement(true);
+            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
         let dowel = DowelHoleSpec::iter1();
         let flange = FlangeSpec::iter1();
         let plan =
             plan_smart_dowel_placements(&[&body], &[bounds], &ribbon, &dowel, &flange, 0.005);
-        let xforms = build_dowel_hole_transforms(&body, &ribbon, &dowel, bounds, Some(&plan[0]));
+        let xforms = build_dowel_hole_transforms(&plan[0], &ribbon, &dowel);
         assert_eq!(xforms.len(), plan[0].len());
         let expected_radius = dowel.diameter_m / 2.0 + dowel.clearance_m;
         let expected_half = dowel.depth_m + HOLE_AXIAL_SLACK_M;

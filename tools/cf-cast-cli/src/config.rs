@@ -197,22 +197,6 @@ pub struct CastDefaults {
     /// (correct for convex cavity floors, over-covers non-convex ones).
     #[serde(default)]
     pub flat_cavity_floor: bool,
-    /// Route the bolt pattern through the constraint-aware seam-placement
-    /// solver (S3 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`) instead of the
-    /// geometry-blind uniform arc-length loop. When `true`, the bolt count
-    /// emerges from `max_pitch` (~30 mm), the pour bore is excluded once (as a
-    /// swept channel — its interval edges bracket the apex so the flanking
-    /// bolts fall out of the solve), each bolt's radial offset is solved for
-    /// max clearance margin, and the pattern is solved on the outermost layer
-    /// then shared across the stack. **On by default (S5 promote, 2026-06-01)** —
-    /// the constraint-aware solver is the default placement path. A no-op unless
-    /// `[bolt_pattern]` and `[flange]` are both enabled. The
-    /// `[bolt_pattern]`/`[pour_gate]` placement knobs (`count`,
-    /// `silhouette_outboard_offset_m`, `flank_bolts`, `skip_pour_gate_collision`)
-    /// no longer drive bolt positions — the solver supersedes them (these knobs +
-    /// this field are removed in S5b/S5c once the legacy loops are deleted).
-    #[serde(default = "default_true")]
-    pub smart_placement: bool,
 }
 
 impl Default for CastDefaults {
@@ -228,7 +212,6 @@ impl Default for CastDefaults {
             planar_seam: false,
             planar_seam_fit: true,
             flat_cavity_floor: false,
-            smart_placement: true,
         }
     }
 }
@@ -345,14 +328,6 @@ pub struct PourGateConfig {
     /// arc §4.3, 2026-05-29.
     #[serde(default)]
     pub apex_axial: bool,
-    /// When `apex_axial`, place pour-flanking bolts (one each side of the bore)
-    /// to clamp the split flange. Default `true`. Set `false` to suppress them
-    /// — the apex pour split is then clamped by the arc-bolt ring + hand
-    /// pressure. Use on parts with a tight/leaning dome apex where a flanking
-    /// bolt can't be placed cleanly (it lands at the apex tip or crowds a
-    /// dowel/neighbour) — workshop 2026-05-31, base_mold.
-    #[serde(default = "default_true")]
-    pub flank_bolts: bool,
 }
 
 impl Default for PourGateConfig {
@@ -360,7 +335,6 @@ impl Default for PourGateConfig {
         Self {
             enabled: true,
             apex_axial: false,
-            flank_bolts: true,
         }
     }
 }
@@ -531,16 +505,6 @@ pub struct BoltPatternConfig {
     /// field invariants in `validate_after_layer_source`.
     #[serde(default)]
     pub silhouette_outboard_offset_m: Option<f64>,
-    /// Whether to silently drop bolts colliding with pour-gate
-    /// channels. `None` → `true` (iter1 default). When `false`, every
-    /// bolt is emitted — workshop may need to clear collision-zone
-    /// pour-gate leg by hand.
-    #[serde(default)]
-    pub skip_pour_gate_collision: Option<bool>,
-    /// Extra clearance distance between bolt + pour-gate cylinder
-    /// surfaces (meters). `None` → 1 mm (iter1 default).
-    #[serde(default)]
-    pub pour_gate_clearance_m: Option<f64>,
 }
 
 impl Default for BoltPatternConfig {
@@ -550,8 +514,6 @@ impl Default for BoltPatternConfig {
             clearance_diameter_m: None,
             count: None,
             silhouette_outboard_offset_m: None,
-            skip_pour_gate_collision: None,
-            pour_gate_clearance_m: None,
         }
     }
 }
@@ -1006,75 +968,6 @@ impl CastConfig {
                 min_offset_mm =
                     (wall_thickness_m + M5_WASHER_RADIUS_M + CUP_WALL_STEP_MARGIN_M) * 1000.0,
             );
-
-            // Dowel ↔ bolt arc-length stagger invariant: when both
-            // patterns enabled, the minimum arc-fraction separation
-            // across all (dowel, bolt) pairs must give an arc-length
-            // exceeding `dowel_radius + bolt_radius` at the smallest
-            // body silhouette perimeter we'd reasonably ship. We
-            // approximate "smallest perimeter" as 100 mm — well below
-            // the production sock's 200 mm — to give workshop a clean
-            // signal at config-time instead of a confusing runtime
-            // collision near the dome.
-            if self.dowel_hole.enabled {
-                let dowel_iter1 = cf_cast::dowel_hole::DowelHoleSpec::iter1();
-                let dowel_count = self.dowel_hole.count.unwrap_or(dowel_iter1.count);
-                let bolt_count = self.bolt_pattern.count.unwrap_or(bolt_iter1.count);
-                ensure!(
-                    dowel_count > 0,
-                    "cast.toml: dowel_hole.count must be > 0 when \
-                     [dowel_hole] is enabled"
-                );
-                ensure!(
-                    bolt_count > 0,
-                    "cast.toml: bolt_pattern.count must be > 0 when \
-                     [bolt_pattern] is enabled"
-                );
-                let dowel_fractions: Vec<f64> = (0..dowel_count)
-                    .map(|k| (f64::from(k) + 0.5) / f64::from(dowel_count))
-                    .collect();
-                let bolt_fractions: Vec<f64> = (0..bolt_count)
-                    .map(|k| (f64::from(k) + 0.5) / f64::from(bolt_count))
-                    .collect();
-                let mut min_sep_fraction = f64::INFINITY;
-                for db in &dowel_fractions {
-                    for bb in &bolt_fractions {
-                        let sep = (db - bb).abs();
-                        if sep < min_sep_fraction {
-                            min_sep_fraction = sep;
-                        }
-                    }
-                }
-                // Production minimum perimeter assumption.
-                const MIN_PERIMETER_M: f64 = 0.100;
-                let min_sep_arc_m = min_sep_fraction * MIN_PERIMETER_M;
-                let dowel_diameter = self.dowel_hole.diameter_m.unwrap_or(dowel_iter1.diameter_m);
-                let dowel_clearance = self
-                    .dowel_hole
-                    .clearance_m
-                    .unwrap_or(dowel_iter1.clearance_m);
-                let dowel_hole_radius = dowel_diameter / 2.0 + dowel_clearance;
-                let required = dowel_hole_radius + bolt_radius + FDM_WALL_FLOOR_M;
-                ensure!(
-                    min_sep_arc_m >= required,
-                    "cast.toml: dowel ↔ bolt arc-length stagger gives \
-                     {min_arc_mm:.2} mm minimum separation at a 100 mm \
-                     silhouette perimeter, below the required \
-                     {required_mm:.2} mm (dowel_hole_radius \
-                     {dowel_radius_mm:.2} mm + bolt_radius \
-                     {bolt_radius_mm:.2} mm + 1 mm FDM wall). Bolt holes \
-                     would intersect dowel holes near the silhouette. \
-                     Pick non-equal counts for dowel_hole.count + \
-                     bolt_pattern.count (e.g., 4 + 8 default; or 4 + 6, \
-                     4 + 12) so the arc-fraction interleave is finer; \
-                     or widen the radial separation by moving one \
-                     pattern further outboard.",
-                    min_arc_mm = min_sep_arc_m * 1000.0,
-                    required_mm = required * 1000.0,
-                    dowel_radius_mm = dowel_hole_radius * 1000.0,
-                    bolt_radius_mm = bolt_radius * 1000.0,
-                );
-            }
         }
 
         Ok(())

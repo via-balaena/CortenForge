@@ -180,7 +180,7 @@ const MC_BOUNDS_PAD_M: f64 = 0.001;
 /// - outside shell (`body_dist > wall_thickness_m`): `max(pos, neg)
 ///   = pos` → exterior ✓
 ///
-/// Mirrors the [`crate::flange::FlangeSdf`] pattern — wraps a
+/// Mirrors the `crate::flange::FlangeSdf` pattern — wraps a
 /// `Solid` body's `evaluate` + composes via `max()`.
 #[derive(Debug, Clone)]
 struct CupWallShellSdf {
@@ -293,11 +293,53 @@ pub fn compose_piece_solid(
     ribbon: &Ribbon,
     side: PieceSide,
 ) -> Result<(Solid, Vec<MatingTransform>), CastError> {
-    // Single-shot path (v1 export + tests): the smart-placement solver runs in
-    // the v2 layer pipeline (it needs the whole layer stack to share one bolt
-    // pattern), so the single-piece composer always uses the legacy bolt loop —
-    // `None` keeps it bit-identical.
-    let shared = compose_piece_shared(layer_body, wall_thickness_m, ribbon, None, None)?;
+    // Single-piece composer (v1 export + tests). The seam-placement solver is a
+    // whole-layer-stack operation in the v2 pipeline (it shares one pattern across
+    // layers, §3.8); here the single body IS the stack, so it's a 1-layer solve.
+    // Dowels first, then bolts exclude their footprints (§3.6); empty slices (no
+    // flange, or nothing placed) yield no fasteners.
+    let bounds = layer_mc_bounds(layer_body, wall_thickness_m, ribbon)?;
+    let (dowel_plan, bolt_plan) = ribbon.flange.spec().map_or((None, None), |flange_spec| {
+        let bodies = [layer_body];
+        let layer_bounds = [bounds];
+        let dowels = ribbon.dowel_hole.spec().map(|dowel_spec| {
+            crate::dowel_hole::plan_smart_dowel_placements(
+                &bodies,
+                &layer_bounds,
+                ribbon,
+                dowel_spec,
+                flange_spec,
+                wall_thickness_m,
+            )
+        });
+        let bolts = ribbon.bolt_pattern.spec().map(|bolt_spec| {
+            crate::bolt_pattern::plan_smart_bolt_placements(
+                &bodies,
+                &layer_bounds,
+                ribbon,
+                bolt_spec,
+                flange_spec,
+                wall_thickness_m,
+                dowels.as_deref(),
+            )
+        });
+        (dowels, bolts)
+    });
+    let dowel_slice: &[Point2] = dowel_plan
+        .as_ref()
+        .and_then(|d| d.first())
+        .map_or(&[], Vec::as_slice);
+    let bolt_slice: &[Point2] = bolt_plan
+        .as_ref()
+        .and_then(|b| b.first())
+        .map_or(&[], Vec::as_slice);
+    let shared = compose_piece_shared(
+        layer_body,
+        wall_thickness_m,
+        ribbon,
+        dowel_slice,
+        bolt_slice,
+    )?;
     compose_piece_with_shared(layer_body, wall_thickness_m, ribbon, side, &shared)
 }
 
@@ -392,8 +434,8 @@ pub fn compose_piece_shared(
     layer_body: &Solid,
     wall_thickness_m: f64,
     ribbon: &Ribbon,
-    smart_dowels: Option<&[Point2]>,
-    smart_bolts: Option<&[Point2]>,
+    smart_dowels: &[Point2],
+    smart_bolts: &[Point2],
 ) -> Result<PieceShared, CastError> {
     let mc_bounds = layer_mc_bounds(layer_body, wall_thickness_m, ribbon)?;
 
@@ -436,18 +478,16 @@ pub fn compose_piece_shared(
     // inserts loose PLA dowels at assembly time to register the two
     // halves laterally. Per [[project-cf-cast-unified-mating-plane-recon]] §M-S2.
     //
-    // S4 (seam-placement solver): when `smart_dowels` is `Some`, those
-    // pre-solved seam-plane centers drive the emission (the geometry-blind
-    // uniform loop is bypassed); `None` keeps the legacy loop. Dowels are solved
-    // FIRST across the whole layer stack (`spec::plan_smart_dowel_placements`)
-    // and the bolt run excludes their footprints (§3.6), so they thread in here.
+    // Seam-placement solver: `smart_dowels` are the per-layer seam-plane centers
+    // the solver resolved + cross-layer-validated. Dowels are solved FIRST across
+    // the whole layer stack (`spec::plan_smart_dowel_placements`) and the bolt run
+    // excludes their footprints (§3.6), so they thread in here. An empty slice
+    // (the solve placed nothing) emits no dowels.
     if let Some(dowel_spec) = ribbon.dowel_hole.spec() {
         transforms.extend(crate::dowel_hole::build_dowel_hole_transforms(
-            layer_body,
+            smart_dowels,
             ribbon,
             dowel_spec,
-            mc_bounds,
-            smart_dowels,
         ));
     }
     // §B (2026-05-27): M5 through-bolt clamp pattern. Identical
@@ -458,21 +498,17 @@ pub fn compose_piece_shared(
     // M5 bolts + washers + nuts. Per
     // [[project-cf-cast-flange-continuity-bolt-pattern-recon]] §B-S1.
     //
-    // S3 (seam-placement solver): when `smart_bolts` is `Some`, those
-    // pre-solved seam-plane centers drive the emission (the geometry-
-    // blind uniform loop + pour bracket are bypassed); `None` keeps the
-    // legacy loop. The solver runs once over the whole layer stack
-    // (`spec::plan_smart_bolt_placements`) so all layers share one
-    // pattern, hence it's threaded in rather than computed per-piece.
+    // Seam-placement solver: `smart_bolts` are the per-layer seam-plane centers
+    // resolved once over the whole layer stack (`spec::plan_smart_bolt_placements`)
+    // so all layers share one pattern, excluding the dowel footprints (§3.6). An
+    // empty slice emits no bolts.
     if let Some(bolt_spec) = ribbon.bolt_pattern.spec() {
         if let Some(flange_spec) = ribbon.flange.spec() {
             transforms.extend(crate::bolt_pattern::build_bolt_pattern_transforms(
-                layer_body,
+                smart_bolts,
                 ribbon,
                 bolt_spec,
                 flange_spec,
-                mc_bounds,
-                smart_bolts,
             ));
         }
         // Bolt pattern without a flange has no material to clamp —

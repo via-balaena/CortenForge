@@ -1225,28 +1225,6 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
         recommended = recommended_bolt_length_mm,
         count_washers = count * 2,
     );
-    if spec.skip_pour_gate_collision {
-        // Cold-read I2 fix 2026-05-27: rename the local from
-        // `clearance_mm` (which shadowed the outer scope's
-        // clearance-Ø value) to `bolt_radius_mm` to match the prose
-        // ("bolt radius" — half the clearance Ø).
-        let bolt_radius_mm = spec.clearance_diameter_m * 500.0;
-        let _ = writeln!(
-            md,
-            "**Pour-gate collision skip**: bolts arc-length-spaced near \
-             the pour-gate V apex are silently dropped at compose time \
-             (within {bolt_radius_mm:.1} mm bolt radius + pour-gate \
-             cylinder radius + {gate_clearance_mm:.1} mm extra PLA wall). \
-             The pattern may look slightly asymmetric near the dome end — \
-             that's the collision-skip working as designed (engine-valve-\
-             cover analog: cover bolts that would land on the pushrod \
-             tubes are simply omitted). If the workshop wants full \
-             symmetry near the pour gate, set \
-             `bolt_pattern.skip_pour_gate_collision = false` in cast.toml \
-             and clear the pour-gate leg by hand at assembly.",
-            gate_clearance_mm = spec.pour_gate_clearance_m * 1000.0,
-        );
-    }
 }
 
 fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
@@ -1644,9 +1622,11 @@ fn write_apex_axial_pour_note(md: &mut String, spec: &crate::pour::PourGateSpec)
         "Because the pour bore is on the seam, separating the two cup \
          halves at demold bisects it lengthwise into open half-troughs \
          — the cured sprue lifts straight out (no pulling through a \
-         blind hole); trim it flush off the cast. The §B bolt pattern \
-         brackets this bore with a bolt just outside the clearance on \
-         each side so the split flange stays clamped at the apex."
+         blind hole); trim it flush off the cast. The seam-placement \
+         solver brackets this bore by construction — it excludes the \
+         pour as a swept channel, so a bolt lands just outside the \
+         clearance on each side and the split flange stays clamped at \
+         the apex."
     );
     md.push('\n');
     let nipple_clearance_mm = crate::funnel::NIPPLE_DIAMETRAL_CLEARANCE_M * 1000.0;

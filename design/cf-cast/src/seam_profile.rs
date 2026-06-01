@@ -3,14 +3,14 @@
 //!
 //! The seam-placement solver (S2+) places fasteners on a 1-D closed loop. It
 //! must NOT place directly on the raw marching-squares silhouette polyline:
-//! that loop has vertices at the fixed [`SILHOUETTE_GRID_STEP_M`] (0.5 mm) grid
+//! that loop has vertices at the fixed `SILHOUETTE_GRID_STEP_M` (0.5 mm) grid
 //! crossings, so it carries a sub-millimetre staircase and its vertex spacing is
 //! non-uniform. Positions on it are fine (the staircase is ≤ 0.5 mm, below every
 //! fastener tolerance), but its *derivatives* — the outward normal and the
 //! curvature the corner-seeder needs — are dominated by that staircase.
 //!
 //! NOTE (S1, 2026-05-31): the silhouette grid is a FIXED 0.5 mm const
-//! ([`SILHOUETTE_GRID_STEP_M`]), independent of `mesh_cell_size_m`, so placement
+//! (`SILHOUETTE_GRID_STEP_M`), independent of `mesh_cell_size_m`, so placement
 //! is *already* mesh-cell-independent (empirically: `base_mold`'s outer-layer
 //! seam perimeter is identical at 3 mm and 0.5 mm mesh cells). The substrate's
 //! job is therefore NOT to decouple from the mesh cell (already true) but to (a)

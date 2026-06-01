@@ -10,13 +10,13 @@
 //! (here, rather than in either feature module) avoids a bolt↔dowel module
 //! dependency and keeps the two planners exact analogues.
 //!
-//! - [`seam_silhouette`] — the fitted-seam in-plane (or legacy Y-normal) body
+//! - `seam_silhouette` — the fitted-seam in-plane (or legacy Y-normal) body
 //!   cross-section the [`SeamProfile`] loop is built from.
-//! - [`pour_exclusions`] — the pour bores projected onto the seam plane as swept
+//! - `pour_exclusions` — the pour bores projected onto the seam plane as swept
 //!   [`Exclusion::Channel`] keep-outs (§3.4).
-//! - [`smart_center_to_world`] — a solver-resolved seam-plane centre lifted back
+//! - `smart_center_to_world` — a solver-resolved seam-plane centre lifted back
 //!   to the world mating plane (shared by both `emit_smart_*`).
-//! - [`cross_layer_snap`] — the §3.8 per-layer snap + all-layer-feasible filter
+//! - `cross_layer_snap` — the §3.8 per-layer snap + all-layer-feasible filter
 //!   (solve once on the outermost loop, share one angular pattern across the
 //!   stack).
 

@@ -1029,46 +1029,42 @@ fn mesh_and_gate_v2_pieces(
 
     let layer_count = spec.layers.len();
 
-    // S3/S4 seam-placement solver: when `[cast].smart_placement` is on (and there
-    // is a flange), solve the fastener positions ONCE across the whole layer
-    // stack so every layer shares one angular pattern (§3.8). DOWELS are solved
-    // FIRST (registration is primary), then BOLTS exclude the solver-placed dowel
+    // Seam-placement solver (the default placement path since S5): when there is a
+    // flange, solve the fastener positions ONCE across the whole layer stack so
+    // every layer shares one angular pattern (§3.8). DOWELS are solved FIRST
+    // (registration is primary), then BOLTS exclude the solver-placed dowel
     // footprints (the dowels-first contract, §3.6). The per-layer center slices
-    // thread into `compose_piece_shared`; `None` (the default, no flange, or the
-    // missing pattern) leaves the legacy uniform loops untouched.
+    // thread into `compose_piece_shared`; no flange (or no bolt/dowel pattern) →
+    // empty slices, no fasteners.
     let (smart_dowel_plan, smart_bolt_plan): (Option<Vec<Vec<Point2>>>, Option<Vec<Vec<Point2>>>) =
-        if ribbon.smart_placement {
-            if let Some(flange_spec) = ribbon.flange.spec() {
-                let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
-                let mut bounds = Vec::with_capacity(bodies.len());
-                for body in &bodies {
-                    bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
-                }
-                let dowel_plan = ribbon.dowel_hole.spec().map(|dowel_spec| {
-                    plan_smart_dowel_placements(
-                        &bodies,
-                        &bounds,
-                        ribbon,
-                        dowel_spec,
-                        flange_spec,
-                        spec.wall_thickness_m,
-                    )
-                });
-                let bolt_plan = ribbon.bolt_pattern.spec().map(|bolt_spec| {
-                    plan_smart_bolt_placements(
-                        &bodies,
-                        &bounds,
-                        ribbon,
-                        bolt_spec,
-                        flange_spec,
-                        spec.wall_thickness_m,
-                        dowel_plan.as_deref(),
-                    )
-                });
-                (dowel_plan, bolt_plan)
-            } else {
-                (None, None)
+        if let Some(flange_spec) = ribbon.flange.spec() {
+            let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
+            let mut bounds = Vec::with_capacity(bodies.len());
+            for body in &bodies {
+                bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
             }
+            let dowel_plan = ribbon.dowel_hole.spec().map(|dowel_spec| {
+                plan_smart_dowel_placements(
+                    &bodies,
+                    &bounds,
+                    ribbon,
+                    dowel_spec,
+                    flange_spec,
+                    spec.wall_thickness_m,
+                )
+            });
+            let bolt_plan = ribbon.bolt_pattern.spec().map(|bolt_spec| {
+                plan_smart_bolt_placements(
+                    &bodies,
+                    &bounds,
+                    ribbon,
+                    bolt_spec,
+                    flange_spec,
+                    spec.wall_thickness_m,
+                    dowel_plan.as_deref(),
+                )
+            });
+            (dowel_plan, bolt_plan)
         } else {
             (None, None)
         };
@@ -1078,14 +1074,14 @@ fn mesh_and_gate_v2_pieces(
         .enumerate()
         .map(
             |(layer_index, layer)| -> Result<[PendingPiece; 2], CastError> {
-                let smart_dowels = smart_dowel_plan
+                let smart_dowels: &[Point2] = smart_dowel_plan
                     .as_ref()
                     .and_then(|plan| plan.get(layer_index))
-                    .map(Vec::as_slice);
-                let smart_bolts = smart_bolt_plan
+                    .map_or(&[], Vec::as_slice);
+                let smart_bolts: &[Point2] = smart_bolt_plan
                     .as_ref()
                     .and_then(|plan| plan.get(layer_index))
-                    .map(Vec::as_slice);
+                    .map_or(&[], Vec::as_slice);
                 // §MA-S1a: the flange silhouette extraction + the
                 // side-agnostic post-MC transforms are identical for both
                 // halves of a layer. Build them ONCE here and share across
@@ -1457,7 +1453,7 @@ fn mesh_and_gate_v2_funnel(
 /// per-layer mating events). §M-S2 of
 /// [[project-cf-cast-unified-mating-plane-recon]].
 ///
-/// Uses [`DOWEL_MAX_CELL_SIZE_M`] for the same MC-resolution reason
+/// Uses `DOWEL_MAX_CELL_SIZE_M` for the same MC-resolution reason
 /// as the funnel: the default 3 mm dowel diameter would mesh as 1
 /// cell radial at the cast's 3 mm cells (too coarse for a smooth
 /// cylindrical surface). 0.5 mm cells give 6 cells radial = smooth
