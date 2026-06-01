@@ -204,13 +204,14 @@ pub struct CastDefaults {
     /// swept channel — its interval edges bracket the apex so the flanking
     /// bolts fall out of the solve), each bolt's radial offset is solved for
     /// max clearance margin, and the pattern is solved on the outermost layer
-    /// then shared across the stack. Off by default — the legacy uniform path
-    /// is byte-identical for every cast that doesn't opt in. A no-op unless
-    /// `[bolt_pattern]` and `[flange]` are both enabled. When on, the
+    /// then shared across the stack. **On by default (S5 promote, 2026-06-01)** —
+    /// the constraint-aware solver is the default placement path. A no-op unless
+    /// `[bolt_pattern]` and `[flange]` are both enabled. The
     /// `[bolt_pattern]`/`[pour_gate]` placement knobs (`count`,
     /// `silhouette_outboard_offset_m`, `flank_bolts`, `skip_pour_gate_collision`)
-    /// no longer drive bolt positions — the solver supersedes them.
-    #[serde(default)]
+    /// no longer drive bolt positions — the solver supersedes them (these knobs +
+    /// this field are removed in S5b/S5c once the legacy loops are deleted).
+    #[serde(default = "default_true")]
     pub smart_placement: bool,
 }
 
@@ -227,7 +228,7 @@ impl Default for CastDefaults {
             planar_seam: false,
             planar_seam_fit: true,
             flat_cavity_floor: false,
-            smart_placement: false,
+            smart_placement: true,
         }
     }
 }

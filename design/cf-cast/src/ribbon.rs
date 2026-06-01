@@ -379,10 +379,12 @@ pub struct Ribbon {
     /// of the geometry-blind uniform arc-length loop — the count emerges from
     /// `max_pitch`, the pour bore is excluded once (as a swept channel) so the
     /// flanking bolts fall out of the partition, and the radial offset is solved
-    /// per bolt (S3 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`). Default `false`
-    /// — the legacy uniform path is bit-identical for every cast that doesn't
-    /// opt in. Gated by `[cast].smart_placement` in cf-cast-cli; a no-op without
-    /// both a bolt pattern and a flange. Set via [`Self::with_smart_placement`].
+    /// per bolt (S3 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`). Default `true`
+    /// (S5 promote, 2026-06-01) — the constraint-aware solver is the default
+    /// placement path. A no-op without both a bolt pattern and a flange. Gated by
+    /// `[cast].smart_placement` in cf-cast-cli (the field + this gate are removed
+    /// in S5b once the legacy loops are deleted). Set via
+    /// [`Self::with_smart_placement`].
     pub smart_placement: bool,
 }
 
@@ -521,7 +523,7 @@ impl Ribbon {
             planar_seam: None,
             planar_seam_basis: None,
             flat_cavity_floor: false,
-            smart_placement: false,
+            smart_placement: true,
         })
     }
 
