@@ -333,10 +333,9 @@ fix for a pinch. S0 makes this call.
 | **S2** solver | `place_fasteners` (§3.5/§3.6): subdivision-first, Poisson fallback, deterministic. | Unit tests green on ≥4 synthetic seams incl. a masked/holed one — count, even spacing, seed honouring, exclusion, determinism under perturbation. |
 | **S3** bolts (gated) | Route bolts through the solver behind `[cast].smart_placement` (default off). 2D placement. Regen `base_mold`, A/B vs current. | **DONE (§7.3).** `base_mold`: washer clears the Ø10 bore on **both** apex sides (+0.5/+0.6 mm); 14 bolts (S0 target 12–14; legacy 7–8); left/right apex symmetric. |
 | **S4** dowels (gated) | Route dowels through the solver (registration-extreme seeds). | **DONE (§7.4).** `base_mold` A/B: 2 dowels at the long-axis extremes, all 3 layers share 2 dowels + 15 bolts, apex bracketed both sides every layer, no dowel↔bolt overlap (min 8.9 ≥ 8.6 mm), moment arm 152–177 mm (full long-axis span). |
-| **gate A** physical (placement) | Workshop print + cast `base_mold` as-is (uniform `Plate` + smart placement): does the apex clamp hold? do the shared bolts/dowels seat? | Empirical — validates the *placement* solver; failure opens iter-N, success clears the path to S5. |
-| **S5** promote + delete | Flip `smart_placement` default **on**; delete the legacy *placement* machinery — uniform bolt/dowel loops, the three pour paths, the `flank_bolts`/`bracket_pour_gate`/`skip_pour_gate_collision` knobs + the bolt↔dowel arc-stagger validator; fold the duplicate per-layer silhouette rebuilds (§MA-7 reuse); re-baseline iter-1 byte-identity tests deliberately. **Keep the uniform `Plate` flange as the default** — the flange redesign is S4.5, gated separately, so S5 stays a clean "promote the proven solver, delete legacy placement" cut and doesn't fold in unproven seal-geometry risk. | `grade-all` green; byte-identity re-baseline reviewed; no legacy *placement* path remains. |
-| **S4.5** demand flange (optional, post-S5) | §4: add `FlangeKind::Demand` (seal-ring + per-fastener tadpoles) as a SIBLING of `Plate`; flip the derive order (flange generated *after* placement, clearance-only feasibility). Additive — `Plate` stays default until Demand proves out physically. *Incremental path only; on the direct path this folds into S3.* `base_mold` doesn't need it (S0); pursue only for the mass/ergonomics win. | `base_mold` regen: mass/print-time ↓ vs plate; F4 clean; seal-ring continuity test passes; cf-view scallop + apex boss look right — then **gate B** before flipping Demand to default. |
-| **gate B** physical (demand flange) | Workshop print + cast the demand-flange `base_mold`: does the scalloped land seal between bolts? does the apex boss clamp hold? | Empirical — gates flipping `Demand` to default; failure tunes `land_width`/`max_pitch` (§4.4) or reverts to `Plate`. |
+| **S5** promote + delete | Flip `smart_placement` default **on**; delete the legacy *placement* machinery — uniform bolt/dowel loops, the three pour paths, the `flank_bolts`/`bracket_pour_gate`/`skip_pour_gate_collision` knobs + the bolt↔dowel arc-stagger validator; fold the duplicate per-layer silhouette rebuilds (§MA-7 reuse); re-baseline iter-1 byte-identity tests deliberately. **Keep the uniform `Plate` flange as the default** — the flange redesign is S4.5, so S5 stays a clean "promote the proven solver, delete legacy placement" cut with its own scoped re-baseline. | `grade-all` green; byte-identity re-baseline reviewed; no legacy *placement* path remains. |
+| **S4.5** demand flange | §4: add `FlangeKind::Demand` (seal-ring + per-fastener tadpoles); flip the derive order (flange generated *after* placement, clearance-only feasibility). Lands as a sibling of `Plate` (own re-baseline) then **becomes the default for `base_mold`** — this is the print target. *Incremental path only; on the direct path this folds into S3.* | `base_mold` regen: mass/print-time ↓ vs plate; F4 clean; seal-ring continuity test passes; cf-view scallop + apex boss look right. |
+| **gate** physical (print 1) | **PLAN (2026-06-01, user): print 1 happens only after the software is "basically perfect" — i.e. AFTER S5 *and* S4.5 — not on an intermediate uniform-plate build.** Workshop print + cast the finished `base_mold` (smart placement + demand flange): apex clamp holds? shared bolts/dowels seat? scalloped land seals between bolts? | Empirical — the single gate validates placement **and** seal-geometry together. Tradeoff: a failure needs disambiguating (placement vs seal); accepted because the §7.4 A/B already de-risks placement and the user prefers one print of the best software. Failure → iter-N; success closes the arc. |
 
 ---
 
@@ -577,9 +576,10 @@ both retire in S5.
    silhouette, or MC facets fake corners. Threshold tuned in S0.
 6. **F4 exposure of the demand flange** — more boolean junctions; gated at S4.5.
 7. **S5 re-baselines every output** — the deletion is the point, but it must be a deliberate,
-   reviewed re-baseline, not incidental drift. (S4.5, if pursued, re-baselines again when
-   `Demand` becomes the default flange — kept a separate, gate-B-guarded step on purpose, so a
-   placement bug and a seal-geometry bug never share one re-baseline.)
+   reviewed re-baseline, not incidental drift. S4.5 then re-baselines again when `Demand`
+   becomes the default flange — kept a separate software step (own scoped re-baseline) so a
+   placement bug and a seal-geometry bug never share one re-baseline, even though both ship
+   before the single physical print (gate).
 
 ---
 
