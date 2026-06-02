@@ -333,8 +333,8 @@ fix for a pinch. S0 makes this call.
 | **S2** solver | `place_fasteners` (§3.5/§3.6): subdivision-first, Poisson fallback, deterministic. | Unit tests green on ≥4 synthetic seams incl. a masked/holed one — count, even spacing, seed honouring, exclusion, determinism under perturbation. |
 | **S3** bolts (gated) | Route bolts through the solver behind `[cast].smart_placement` (default off). 2D placement. Regen `base_mold`, A/B vs current. | **DONE (§7.3).** `base_mold`: washer clears the Ø10 bore on **both** apex sides (+0.5/+0.6 mm); 14 bolts (S0 target 12–14; legacy 7–8); left/right apex symmetric. |
 | **S4** dowels (gated) | Route dowels through the solver (registration-extreme seeds). | **DONE (§7.4).** `base_mold` A/B: 2 dowels at the long-axis extremes, all 3 layers share 2 dowels + 15 bolts, apex bracketed both sides every layer, no dowel↔bolt overlap (min 8.9 ≥ 8.6 mm), moment arm 152–177 mm (full long-axis span). |
-| **S5** promote + delete | Flip `smart_placement` default **on**; delete the legacy *placement* machinery — uniform bolt/dowel loops, the three pour paths, the `flank_bolts`/`bracket_pour_gate`/`skip_pour_gate_collision` knobs + the bolt↔dowel arc-stagger validator; fold the duplicate per-layer silhouette rebuilds (§MA-7 reuse); re-baseline iter-1 byte-identity tests deliberately. **Keep the uniform `Plate` flange as the default** — the flange redesign is S4.5, so S5 stays a clean "promote the proven solver, delete legacy placement" cut with its own scoped re-baseline. **Full sub-step plan + decisions in §7.5.** | `grade-all` green; byte-identity re-baseline reviewed; no legacy *placement* path remains. |
-| **S4.5** demand flange | §4: add `FlangeKind::Demand` (seal-ring + per-fastener tadpoles); flip the derive order (flange generated *after* placement, clearance-only feasibility). Lands as a sibling of `Plate` (own re-baseline) then **becomes the default for `base_mold`** — this is the print target. *Incremental path only; on the direct path this folds into S3.* | `base_mold` regen: mass/print-time ↓ vs plate; F4 clean; seal-ring continuity test passes; cf-view scallop + apex boss look right. |
+| **S5** promote + delete | Flip `smart_placement` default **on**; delete the legacy *placement* machinery — uniform bolt/dowel loops, the three pour paths, the `flank_bolts`/`bracket_pour_gate`/`skip_pour_gate_collision` knobs + the bolt↔dowel arc-stagger validator; fold the duplicate per-layer silhouette rebuilds (§MA-7 reuse — the byte-identical SOLVE-dedup half, S5d-(A); the re-baselining COMPOSE-share half S5d-(B) defers to S4.5); re-baseline iter-1 byte-identity tests deliberately. **Keep the uniform `Plate` flange as the default** — the flange redesign is S4.5, so S5 stays a clean "promote the proven solver, delete legacy placement" cut with its own scoped re-baseline. **Full sub-step plan + decisions in §7.5.** | `grade-all` green; byte-identity re-baseline reviewed; no legacy *placement* path remains. |
+| **S4.5** demand flange | §4: add `FlangeKind::Demand` (seal-ring + per-fastener tadpoles); flip the derive order (flange generated *after* placement, clearance-only feasibility). Lands as a sibling of `Plate` (own re-baseline) then **becomes the default for `base_mold`** — this is the print target. *Incremental path only; on the direct path this folds into S3.* **Also fold in S5d-(B)** here (unify the solve-pad and flange-pad so a single silhouette per layer serves both the solver and the flange build — the §MA-7 compose-share that can't be byte-identical standalone; it rides this re-baseline for free). | `base_mold` regen: mass/print-time ↓ vs plate; F4 clean; seal-ring continuity test passes; cf-view scallop + apex boss look right. |
 | **gate** physical (print 1) | **PLAN (2026-06-01, user): print 1 happens only after the software is "basically perfect" — i.e. AFTER S5 *and* S4.5 — not on an intermediate uniform-plate build.** Workshop print + cast the finished `base_mold` (smart placement + demand flange): apex clamp holds? shared bolts/dowels seat? scalloped land seals between bolts? | Empirical — the single gate validates placement **and** seal-geometry together. Tradeoff: a failure needs disambiguating (placement vs seal); accepted because the §7.4 A/B already de-risks placement and the user prefers one print of the best software. Failure → iter-N; success closes the arc. |
 
 ---
@@ -581,11 +581,13 @@ both retire in S5.
   too-narrow flange no longer fast-fails at config-parse; it surfaces as the solver's
   `cross_layer_snap` "dropped N" warn (Risk #1).
 
-**Three commits (S5a behaviour, S5b/S5c deletion, S5d optional perf).** The
-**re-baseline invariant (Risk #7):** the *only* commit that changes geometry is **S5a**.
-**S5b/S5c must regen `base_mold` byte-identical to S5a** (release, 3 mm — placement is
-cell-independent) — they remove unreachable/dead code only. A placement change and a
-deletion never share a commit. Commit boundaries are compile-clean (verified): the
+**Four commits (S5a behaviour, S5b/S5c deletion, S5d-(A) solve-dedup perf — all but S5a
+byte-identical).** The **re-baseline invariant (Risk #7):** the *only* commit that changes
+geometry is **S5a**. **S5b/S5c/S5d-(A) must regen `base_mold` byte-identical to S5a**
+(release, 3 mm — placement is cell-independent) — S5b/S5c remove unreachable/dead code, S5d-(A)
+reuses an identical silhouette instead of rebuilding it. A placement change and a
+deletion/refactor never share a commit. (S5d-(B), the only silhouette fold that *can't* be
+byte-identical, is deferred to S4.5 — see the S5d bullet below.) Commit boundaries are compile-clean (verified): the
 `count`/`offset` spec fields are shared by `procedure.rs` + the CLI validators, so they
 survive S5b and die with their consumers in S5c.
 
@@ -628,9 +630,32 @@ survive S5b and die with their consumers in S5c.
   derive plumbing; re-point/delete the config-validation unit tests that fed those
   validators (e.g. the `offset = 0.009` fixtures). Full `grade-all`; regen
   byte-identical to S5a/S5b; a generated `procedure.md` reads correctly.
-- **S5d — fold duplicate per-layer silhouette rebuilds (§MA-7)** — OPTIONAL, last. Touches
-  the flange build path → risks byte-identity; own commit, regen-diff against S5c, dropped
-  if it perturbs the re-baseline.
+- **S5d — fold the duplicate per-layer silhouette rebuilds (§MA-7).** DECISION (2026-06-01,
+  after reading the construction sites): §MA-7 is **two opportunities with opposite risk**, so
+  S5d is **split**, not "optional/maybe-drop":
+  - **S5d-(A) — dedup the SOLVE-phase rebuild → DO NOW (this branch), byte-identical.** On a
+    smart run both `plan_smart_dowel_placements` and `plan_smart_bolt_placements` call
+    `seam_silhouette(body, ribbon, bounds, pad)` with the **identical** `pad = flange_width +
+    SILHOUETTE_GRID_STEP_M` — the bolt planner rebuilds, bit-for-bit, the silhouette the dowel
+    planner already built (3 redundant minutes-each extractions on `base_mold`; the grid is
+    0.5 mm-fixed so this cost is cell-independent). Fix = build each layer's loop
+    (`SeamProfile` + pour exclusions) **once** in `mesh_and_gate_v2_pieces` (a `build_layer_loops`
+    helper in `seam_placement.rs`) and pass `&[LayerLoop]` to both planners; the bolt planner
+    clones each layer's pour-exclusions and appends the dowel disks. **Byte-identical by
+    construction** (same inputs already produce the same `SeamProfile`; reuse just skips the
+    recompute) — it touches ONLY the solver orchestration, NOT the flange/compose path. Solve
+    extractions 6→3 on `base_mold` (total 9→6); ~halves the solve-phase silhouette wall-time,
+    which is exactly what the S4.5 placement probes hammer (they exit before MC). Own commit;
+    verify the 6 cup hashes vs the S5a/b/c baseline + `grade-all`.
+  - **S5d-(B) — share the SOLVE silhouette with the COMPOSE/flange silhouette → DEFER to S4.5.**
+    `build_flange_solid` samples its silhouette with `pad = flange_width` (**no
+    `+ SILHOUETTE_GRID_STEP_M`**), so the compose silhouette is NOT bit-identical to the solve
+    one — unifying the pads to share a single extraction changes either the placements or the
+    flange window → a cup re-baseline. That re-baseline is **free inside S4.5** (which rewrites +
+    re-baselines the flange/compose path for the demand flange anyway) and would be a
+    speed-only re-baseline if done standalone (forbidden by the Risk #7 hygiene). So (B) is a
+    fold-in for S4.5, NOT part of S5. Byte-identical ceiling for S5 is therefore 9→6, achieved
+    by (A).
 
 **Behaviour note (benign, document in S5b):** legacy emitted dowels even without a flange
 (the validator only runs `if dowel_hole.enabled && flange.enabled`); the solver requires a
@@ -658,8 +683,11 @@ confirmed contained:** no consumer of the deleted fields exists outside `cf-cast
 6. **F4 exposure of the demand flange** — more boolean junctions; gated at S4.5.
 7. **S5 re-baselines every output** — the deletion is the point, but it must be a deliberate,
    reviewed re-baseline, not incidental drift. **Precise invariant (per §7.5):** only **S5a**
-   (the default flip) changes geometry; **S5b/S5c regen byte-identical to S5a** — they delete
-   unreachable/dead code only, so a placement change and a deletion never share a commit. The
+   (the default flip) changes geometry; **S5b/S5c/S5d-(A) regen byte-identical to S5a** — S5b/S5c
+   delete unreachable/dead code, S5d-(A) reuses an identical silhouette instead of rebuilding it,
+   so a placement change and a deletion/refactor never share a commit. (S5d-(B), the silhouette
+   fold that *can't* be byte-identical, is deliberately deferred to S4.5's re-baseline — never a
+   speed-only re-baseline.) The
    identity holds for **smart-default configs** (all in-tree + production); `smart_placement =
    false` has no successor (it is the path being deleted). S4.5 then re-baselines again when
    `Demand` becomes the default flange — kept a separate software step (own scoped re-baseline)
