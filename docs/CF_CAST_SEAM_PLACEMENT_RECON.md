@@ -90,7 +90,7 @@ Neither knows *where the seam actually needs a fastener*. Five failures, all obs
 |---|---|---|
 | ordered closed loop | `polylines()`, `longest_polyline_with_arc_length()` | `silhouette_2d.rs:~457/~522` |
 | arc-length point | `point_at_arc_fraction(t) -> Point2` | `silhouette_2d.rs:~561` |
-| outward normal | `outward_normal_at_arc_fraction(t) -> Point2` | `silhouette_2d.rs:~604` |
+| outward normal | `SeamProfile::outward_normal_at(s) -> Point2` (the old `Silhouette2d::outward_normal_at_arc_fraction` was removed on this branch) | `seam_profile.rs:~204` |
 | **signed distance (2D)** | `signed_distance_to(u, v) -> f64` — the feasibility field | `silhouette_2d.rs:~411` |
 | plane↔world | `to_world`, `dir_to_world`, `SeamPlaneBasis::from_anchor_normal` | `silhouette_2d.rs:~393/~123` |
 | seam basis | `Ribbon::seam_plane_basis() -> Option<SeamPlaneBasis>` | `ribbon.rs:~586` |
@@ -954,9 +954,13 @@ improve flow → these gates are an upper bound. Print calibrates.)*
    (`build_apex_axial_transforms` `norm<1e-9` fallback), the funnel can't be cleanly bisected
    (goes lopsided). Pathological + already gated for the bore; the funnel amplifies the visible
    consequence. No new mitigation; the 2-piece gate already rejects this split.
-6. **Placement bracket vs funnel base** — *verify first*: the M5 washer (~5 mm r) likely already
-   clears the funnel base (bore_r + 2.5 mm), so widening the `pour_exclusions` to the base Ø may be
-   a no-op. Only widen if the washer actually overlaps the funnel wall.
+6. **Placement bracket vs funnel base** — **AS-BUILT: widened UNCONDITIONALLY.** The original
+   scope was "verify-first, maybe a no-op (only widen if the washer overlaps the funnel wall),"
+   but the apex pour-exclusion is now *always* the funnel base + comfort
+   (`integral_funnel_exclusion_radius = bore_r + INTEGRAL_FUNNEL_WALL_M(2.5 mm) +
+   INTEGRAL_FUNNEL_FASTENER_CLEARANCE_M(2 mm)`, `pour.rs`). The conservative always-widen is
+   simpler and guarantees the apex bracket bolts clear the funnel cone on every body, with no
+   per-body overlap check — chosen over the conditional approach.
 7. **F4 may flag the funnel spine** (half-pipe top → near-horizontal) — check the cup F4 overhang
    policy on a fixture before the full regen.
 8. **Broad surface area** — V-at-dome KEEPS the separate funnel, so export / procedure /

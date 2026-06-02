@@ -59,7 +59,7 @@ bolt/dowel are correct at any seam orientation — while keeping every existing
 | `from_body_at_y(body, seam_y, x_min..z_max)` | samples `body.evaluate(P)` on an **X-Z grid at fixed Y** | `silhouette_2d.rs:110` |
 | `signed_distance_to(x, z)` | 2D signed distance to the segments | `silhouette_2d.rs:252` |
 | `point_at_arc_fraction(t) -> Point2{x,z}` | arc-length point on the longest polyline | `silhouette_2d.rs:402` |
-| `outward_normal_at_arc_fraction(t) -> Point2{x,z}` | 2D outward normal (a direction) | `silhouette_2d.rs:445` |
+| ~~`outward_normal_at_arc_fraction(t)`~~ → `SeamProfile::outward_normal_at(s)` | 2D outward normal — the `Silhouette2d` method was removed; the live API is on `SeamProfile` | `seam_profile.rs:~204` |
 | `FlangeSdf.eval` | `body_dist = signed_distance_to(p.x, p.z)`; `dist_from_seam = (p−mid)·binormal` | `flange.rs:253` |
 | `build_flange_solid` | builds silhouette at `seam_midpoint.y` | `flange.rs:288` |
 | bolt center map | `Point3(off·n.x+p.x, seam_y, off·n.z+p.z)` then project onto seam plane | `bolt_pattern.rs:342` |

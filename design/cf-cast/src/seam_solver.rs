@@ -1047,6 +1047,55 @@ mod tests {
         assert!(snap_placement(&prof, &unreachable, &[], WASHER_R, hint).is_none());
     }
 
+    /// `separation_radius` (boss) drives dedup, NOT `footprint_radius` (washer) —
+    /// the §7.9 "siamese bosses" decoupling. Two anchors 13 mm apart on the loop
+    /// collapse when `separation_radius = 8 mm` (`dedup_tol = 16 mm > 13`) but
+    /// BOTH survive when `separation_radius = footprint = 5 mm` (`tol = 10 < 13`).
+    /// Pins the decoupling: re-tying `dedup_tol` to `footprint_radius` flips the
+    /// first assertion. (`snap_anchor` resolves at the seed arc on a feasible band,
+    /// so the snapped arc-gap is the seed gap.)
+    #[test]
+    fn place_fasteners_dedup_uses_separation_radius_not_footprint() {
+        let prof = profile(&circle(0.030, 256));
+        let seeds = || {
+            vec![
+                Seed {
+                    arc: 0.0,
+                    kind: SeedKind::Anchor,
+                },
+                Seed {
+                    arc: 0.013,
+                    kind: SeedKind::Anchor,
+                },
+            ]
+        };
+        // Boss radius 8 mm > washer 5 mm → dedup at 16 mm collapses the 13 mm pair.
+        let wide = FastenerClass {
+            footprint_radius: 0.005,
+            separation_radius: 0.008,
+            fill: None,
+            seeds: seeds(),
+        };
+        assert_eq!(
+            place_fasteners(&prof, &band(), &[], &wide).len(),
+            1,
+            "boss-radius separation (16 mm dedup) collapses the 13 mm anchor pair",
+        );
+        // separation == footprint → dedup at 10 mm keeps the 13 mm pair (proves
+        // spacing is decoupled from the washer footprint).
+        let narrow = FastenerClass {
+            footprint_radius: 0.005,
+            separation_radius: 0.005,
+            fill: None,
+            seeds: seeds(),
+        };
+        assert_eq!(
+            place_fasteners(&prof, &band(), &[], &narrow).len(),
+            2,
+            "footprint-radius separation (10 mm dedup) keeps the 13 mm pair",
+        );
+    }
+
     /// Degenerate inputs (non-positive pitch / scan steps) must not hang — the
     /// loop counts derive from `perim / step`, which would be `usize::MAX` if a
     /// step were zero. A non-positive pitch falls back to seeds-only; a zero

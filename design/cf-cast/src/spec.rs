@@ -4517,6 +4517,54 @@ mod tests {
         );
     }
 
+    /// Apex-axial carves its bore via the SDF integral funnel (in
+    /// `compose_piece_with_shared`), NOT a post-MC cylinder. `build_pour_gate_transforms`
+    /// still returns an apex leg for the seam-placement pour-exclusion, but its radius is
+    /// the OVERSIZED `integral_funnel_exclusion_radius` (bore + wall + clearance), and
+    /// `compose_piece_shared` must DROP it from the carve set — else the cup gets a
+    /// ~2×-radius post-MC hole instead of the bore. This pins that load-bearing
+    /// suppression: the composed transforms carry NO `SubtractCylinder` at either the
+    /// exclusion radius or the bore radius (no flange here → no dowel/bolt cylinders).
+    #[test]
+    fn compose_piece_solid_apex_axial_drops_the_oversized_pour_leg_from_the_carve() {
+        use crate::PourGateLayout;
+        use crate::mesh_csg::MatingTransform;
+        let spec = v2_fixture().0;
+        let body = &spec.layers[0].body;
+        let wall_thickness_m = spec.wall_thickness_m;
+        let centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let mut pour = PourGateSpec::iter1();
+        pour.layout = PourGateLayout::ApexAxial;
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_gate(PourGateKind::Default(pour.clone()));
+
+        let (_, transforms) =
+            crate::compose_piece_solid(body, wall_thickness_m, &ribbon, PieceSide::Positive)
+                .unwrap();
+        let excl_r = crate::pour::integral_funnel_exclusion_radius(pour.gate_radius_m);
+        let count_at = |r: f64| {
+            transforms
+                .iter()
+                .filter(|t| {
+                    matches!(t, MatingTransform::SubtractCylinder { params }
+                        if (params.radius_m - r).abs() < 1.0e-9)
+                })
+                .count()
+        };
+        assert_eq!(
+            count_at(excl_r),
+            0,
+            "apex-axial must NOT carve the oversized exclusion-radius pour leg post-MC",
+        );
+        assert_eq!(
+            count_at(pour.gate_radius_m),
+            0,
+            "apex-axial carves the bore via the SDF lumen, not a post-MC cylinder",
+        );
+    }
+
     #[test]
     fn export_molds_v2_no_gasket_produces_empty_gasket_molds() {
         // Default ribbon has `GasketKind::None` → gasket_molds vec is

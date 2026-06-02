@@ -333,12 +333,14 @@ pub struct PourGateConfig {
     #[serde(default)]
     pub apex_axial: bool,
     /// Pour-leg (sprue) radius (meters) — **the per-silicone sprue-size knob**.
-    /// `None` → [`cf_cast::PourGateSpec::iter1`]'s 5 mm (Ø10 mm bore). The separate
-    /// funnel derives its nipple + bowl off this, so one value widens the gate AND
-    /// the funnel throat together — bump it for a thick silicone (e.g. Dragon Skin)
-    /// that crawls through the default Ø6.5 mm funnel throat. Widening the apex bore
-    /// also re-shapes the demand-flange seal land at the apex (the solver handles
-    /// the bracket spacing; re-eyeball the apex). See
+    /// `None` → [`cf_cast::PourGateSpec::iter1`]'s 5 mm (Ø10 mm bore). Bump it for a
+    /// thick silicone (e.g. Dragon Skin) that pours slowly. The pour THROAT depends on
+    /// the layout: **apex-axial** (the integral split funnel) has a lumen continuous
+    /// into the bore — no inserted nipple — so the throat IS the bore Ø (Ø10 mm at the
+    /// default); **V-at-dome** (the legacy separate funnel) derives a narrower nipple
+    /// throat (≈ Ø6.5 mm = bore − 3.5 mm wall) off this. Widening the apex bore also
+    /// re-shapes the demand-flange seal land at the apex (the solver handles the
+    /// bracket spacing; re-eyeball the apex). See
     /// [[project-cf-cast-per-silicone-sprue-funnel]].
     #[serde(default)]
     pub gate_radius_m: Option<f64>,
