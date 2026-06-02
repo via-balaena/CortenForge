@@ -45,10 +45,11 @@ pub struct CastConfig {
     /// defaults". Set `enabled = false` to disable.
     #[serde(default)]
     pub pour_gate: PourGateConfig,
-    /// Per-layer gasket mold override (default = enabled with
-    /// `GasketSpec::iter1()` + Ecoflex 00-30 material). Absence of
-    /// the table means "enabled with iter1 defaults". Set
-    /// `enabled = false` to disable. S3 of the seam-gasket-mold arc.
+    /// Per-layer gasket mold override (**default = disabled** since the S4.5
+    /// demand-flange default flip — the demand flange self-seals, so the gasket is
+    /// opt-in). Set `enabled = true` (with `GasketSpec::iter1()` geometry + Ecoflex
+    /// 00-30) for a gasketed seal — typically alongside `kind = "plate"` or a
+    /// widened demand land. S3 of the seam-gasket-mold arc.
     #[serde(default)]
     pub gasket: GasketConfig,
     /// Seam-plane flange override (default = enabled, `kind = "demand"` —
@@ -343,21 +344,23 @@ impl Default for PourGateConfig {
 /// `[gasket]` block — per-layer gasket mold toggle + material pick.
 /// Maps to [`cf_cast::GasketKind`].
 ///
-/// S3 of the seam-gasket-mold arc per recon §G-7. Defaults to
-/// `enabled = true` with [`cf_cast::GasketSpec::iter1`] geometry +
-/// Ecoflex 00-30 material. Workshop user may flip
-/// `material = "DRAGON_SKIN_10A"` at S6 iter-3 pour if the Ecoflex
-/// pour compresses too freely. Cross-section is pinned trapezoidal
-/// at iter1 (recon §G-7 default; S2 picked); no per-cast TOML
-/// override surfaced — `draft_angle_deg` recalibration belongs to a
-/// downstream S6 / S7 arc, not iter-3.
-#[derive(Debug, Clone, Deserialize)]
+/// S3 of the seam-gasket-mold arc per recon §G-7. **Defaults to `enabled = false`
+/// since the S4.5 demand-flange default flip:** the default flange is now the
+/// demand flange, whose continuous seal-ring land seals PLA-on-PLA on its own, so a
+/// silicone gasket is opt-in (a `kind = "plate"` seal, or a deliberately-widened
+/// demand land — the demand land's 0.5 mm default would otherwise pinch the gasket,
+/// recon §F-4). When enabled it uses [`cf_cast::GasketSpec::iter1`] geometry +
+/// Ecoflex 00-30 (flip `material = "DRAGON_SKIN_10A"` if the Ecoflex pour
+/// compresses too freely). Cross-section is pinned trapezoidal at iter1.
+// Default (enabled=false since the S4.5 demand-flange flip; material=None) is the
+// per-field type default, so it derives — see the struct doc for the rationale.
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GasketConfig {
-    /// Master toggle. When `false`, the bridge passes
-    /// [`cf_cast::GasketKind::None`] (no per-layer gasket molds; cup
-    /// halves hand-clamped without a silicone seal).
-    #[serde(default = "default_true")]
+    /// Master toggle. **Default `false`** (the demand flange self-seals; see the
+    /// struct doc). When `true`, per-layer gasket molds are emitted; when `false`,
+    /// the bridge passes [`cf_cast::GasketKind::None`].
+    #[serde(default)]
     pub enabled: bool,
     /// Gasket material — Smooth-On silicone product key.
     /// Recognized values: `"ECOFLEX_00_30"` (iter1 default),
@@ -366,15 +369,6 @@ pub struct GasketConfig {
     /// (Ecoflex 00-30 per recon §G-1).
     #[serde(default)]
     pub material: Option<String>,
-}
-
-impl Default for GasketConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            material: None,
-        }
-    }
 }
 
 /// `[flange]` block — seam-plane clampable flange toggle + `kind` selector +
@@ -388,11 +382,13 @@ impl Default for GasketConfig {
 /// inner offset). Per-field overrides are surfaced as optionals (Plate fields:
 /// `width_m`/`inner_offset_m`; Demand fields: `land_width_m`/`land_inner_offset_m`/
 /// `web_width_m`/`boss_wall_margin_m`; `thickness_m` is shared); absent → the
-/// matching iter1 default. The cross-field invariant
-/// `inner_offset_m > GasketSpec.channel_width_m / 2` is enforced at
-/// [`CastConfig::validate_after_layer_source`] time when both the
-/// gasket and (plate) flange are enabled (recon §F-4 "gasket-disjoint
-/// invariant").
+/// matching iter1 default. The cross-field gasket-disjoint invariant (recon §F-4)
+/// is enforced at [`CastConfig::validate_after_layer_source`] time when both the
+/// gasket and a flange are enabled, **kind-aware**: it checks the active flange's
+/// inner edge against the gasket half-width — the Plate `inner_offset_m` for
+/// `kind = "plate"`, the Demand `land_inner_offset_m` for the default demand kind.
+/// (The demand land already seals PLA-on-PLA, so the default demand land + a gasket
+/// is rejected as redundant unless the land is widened past the half-width.)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlangeConfig {
@@ -802,24 +798,43 @@ impl CastConfig {
             // / 2). The post-S2 gasket arc doesn't surface a
             // channel-width TOML override, so the iter1 width (1.5 mm
             // → half = 0.75 mm) is the authoritative half-width. The
-            // flange `inner_offset_m` is the bare gap from
-            // body_dist=0 to the flange's inner edge; it must
-            // STRICTLY exceed the half-width so there's lateral air
-            // between gasket and flange.
+            // inner edge is the bare gap from body_dist=0 to where the
+            // flange begins; it must STRICTLY exceed the half-width so
+            // there's lateral air between gasket and flange.
+            //
+            // The check is **kind-aware** (S4.5/3 default flip — the default flange
+            // is now `demand`): validate whichever inner offset the ACTIVE flange
+            // kind builds, resolved the same way derive.rs maps it (`Some("plate")
+            // => Plate, _ => Demand`). The demand seal land defaults to 0.5 mm
+            // (DemandFlangeSpec::iter1) which is INSIDE the 0.75 mm half-width, so a
+            // gasket + a default demand flange is rejected here — the demand land
+            // already seals PLA-on-PLA, so the gasket is redundant; widen
+            // `land_inner_offset_m` past the half-width to keep both, or disable one.
             if self.gasket.enabled {
-                let iter1 = cf_cast::FlangeSpec::iter1();
-                let inner_offset = self
-                    .flange
-                    .inner_offset_m
-                    .unwrap_or(iter1.flange_inner_offset_m);
                 let gasket_half_width = cf_cast::GasketSpec::iter1().cross_section_width_m / 2.0;
+                let (label, inner_offset) = match self.flange.kind.as_deref() {
+                    Some("plate") => (
+                        "flange.inner_offset_m",
+                        self.flange
+                            .inner_offset_m
+                            .unwrap_or(cf_cast::FlangeSpec::iter1().flange_inner_offset_m),
+                    ),
+                    // None or "demand" → the demand flange (the default).
+                    _ => (
+                        "flange.land_inner_offset_m",
+                        self.flange
+                            .land_inner_offset_m
+                            .unwrap_or(cf_cast::DemandFlangeSpec::iter1().land_inner_offset_m),
+                    ),
+                };
                 ensure!(
                     inner_offset > gasket_half_width,
-                    "cast.toml: flange.inner_offset_m = {inner_offset} must exceed half \
-                     the gasket channel width ({gasket_half_width}) when both [gasket] and \
-                     [flange] are enabled (recon §F-4 gasket-disjoint invariant). Either \
-                     widen the flange inner offset, narrow the gasket, or disable one of \
-                     the two blocks."
+                    "cast.toml: {label} = {inner_offset} must exceed half the gasket \
+                     channel width ({gasket_half_width}) when both [gasket] and [flange] \
+                     are enabled (recon §F-4 gasket-disjoint invariant). The demand \
+                     flange's seal land already seals PLA-on-PLA, so a gasket is \
+                     redundant — either disable [gasket], widen the inner offset past \
+                     the half-width, or use `kind = \"plate\"`."
                 );
             }
         }
@@ -886,9 +901,9 @@ material = "ECOFLEX_00_30"
         // Block defaults.
         assert!(cfg.plug_pins.enabled);
         assert!(cfg.pour_gate.enabled);
-        // S3 seam-gasket-mold arc default: enabled + Ecoflex (None →
-        // GasketMaterial::Ecoflex0030 in derive).
-        assert!(cfg.gasket.enabled);
+        // S4.5/3 default flip: the gasket now defaults DISABLED (the default
+        // demand flange self-seals; the gasket is opt-in).
+        assert!(!cfg.gasket.enabled);
         assert!(cfg.gasket.material.is_none());
         // S2 seam-flange arc default: enabled + all iter1 overrides
         // None (derive::resolve_flange_spec falls back to
@@ -926,7 +941,8 @@ enabled = false
         // S3: workshop iter-3 fallback path — material override to
         // Dragon Skin 10A when Ecoflex compresses too freely per
         // recon §G-1. derive::resolve_gasket_material handles the
-        // string → enum lift.
+        // string → enum lift. `enabled = true` is now explicit (the gasket
+        // defaults off since the S4.5 demand-flange flip).
         let text = r#"
 [scan]
 cleaned_stl = "iter1.cleaned.stl"
@@ -937,6 +953,7 @@ thickness_m = 0.005
 material = "ECOFLEX_00_30"
 
 [gasket]
+enabled = true
 material = "DRAGON_SKIN_10A"
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
@@ -977,7 +994,10 @@ enabled = false
     fn parses_flange_block_with_overrides() {
         // S2: partial override — width + thickness picked at non-iter1
         // values, inner_offset left as iter1 default. Validates the
-        // optional-per-field design (recon §F-6).
+        // optional-per-field design (recon §F-6). `kind = "plate"` because
+        // width_m/inner_offset_m are PLATE fields (the default kind is now
+        // demand, S4.5/3) — and with the default gasket on, the Plate 2 mm
+        // inner offset clears the 0.75 mm gasket half-width.
         let text = r#"
 [scan]
 cleaned_stl = "iter1.cleaned.stl"
@@ -988,24 +1008,26 @@ thickness_m = 0.005
 material = "ECOFLEX_00_30"
 
 [flange]
+kind = "plate"
 width_m = 0.020
 thickness_m = 0.005
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
         assert!(cfg.flange.enabled);
+        assert_eq!(cfg.flange.kind.as_deref(), Some("plate"));
         assert!((cfg.flange.width_m.unwrap() - 0.020).abs() < 1e-12);
         assert!((cfg.flange.thickness_m.unwrap() - 0.005).abs() < 1e-12);
         assert!(cfg.flange.inner_offset_m.is_none());
     }
 
     #[test]
-    fn rejects_flange_inner_offset_overlapping_gasket() {
-        // S2 cross-field gate (recon §F-4): with both gasket + flange
-        // enabled, `flange.inner_offset_m` MUST exceed half the gasket
-        // channel width (1.5 mm / 2 = 0.75 mm at iter1). A 0.5 mm
-        // override falls below the threshold → rejected at validate
-        // time.
+    fn rejects_explicit_gasket_with_default_demand_flange_land() {
+        // S4.5/3 + review-fix: the default flange is `demand` with a 0.5 mm seal
+        // land, INSIDE the 0.75 mm gasket half-width. The gasket now defaults OFF,
+        // so a user who EXPLICITLY re-enables it on the default demand land hits the
+        // kind-aware gasket-disjoint gate: the 0.5 mm land would pinch the gasket
+        // (and the land already seals on its own), so the combo is rejected.
         let text = r#"
 [scan]
 cleaned_stl = "iter1.cleaned.stl"
@@ -1015,7 +1037,70 @@ prep_toml = "iter1.cleaned.prep.toml"
 thickness_m = 0.005
 material = "ECOFLEX_00_30"
 
+[gasket]
+enabled = true
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg.validate().expect_err(
+            "explicit gasket + default demand flange (0.5 mm land < 0.75 mm gasket \
+             half-width) must be rejected",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("land_inner_offset_m") && msg.contains("gasket"),
+            "error must name the demand land + the gasket-disjoint invariant; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn accepts_explicit_gasket_with_demand_flange_when_land_widened() {
+        // The kind-aware gate ALLOWS an explicit gasket + the default demand flange
+        // when the seal land is widened past the 0.75 mm gasket half-width
+        // (deliberate belt-and-suspenders).
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+enabled = true
+
 [flange]
+land_inner_offset_m = 0.002
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.gasket.enabled);
+        assert!(cfg.flange.kind.is_none(), "default kind (demand)");
+        assert!((cfg.flange.land_inner_offset_m.unwrap() - 0.002).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rejects_flange_inner_offset_overlapping_gasket() {
+        // S2 cross-field gate (recon §F-4): with both gasket + a PLATE flange
+        // enabled, `flange.inner_offset_m` MUST exceed half the gasket channel width
+        // (1.5 mm / 2 = 0.75 mm at iter1). A 0.5 mm override falls below the
+        // threshold → rejected at validate time. `kind = "plate"` (the default is
+        // now demand, which checks `land_inner_offset_m` instead) + an explicit
+        // `[gasket] enabled = true` (the gasket now defaults off, S4.5/3).
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+enabled = true
+
+[flange]
+kind = "plate"
 inner_offset_m = 0.0005
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
