@@ -38,10 +38,36 @@ const GRID_PADDING_CELLS: usize = 2;
 /// `target` labels the operation for error reporting — per-layer
 /// mold output uses [`CastTarget::Mold`], the shared plug uses
 /// [`CastTarget::Plug`].
+///
+/// For solids whose field is a plain ≤1-Lipschitz distance (every cf-cast
+/// CSG of primitives / scan-distance: plain `min`/`max`, no `smooth_union`
+/// per the flat-mating-face constraint). Solids carrying a non-1-Lipschitz
+/// **additive** feature term (the canal plug's grip-ring / texture
+/// displacement) must use [`solid_to_mm_mesh_with_skin`] instead.
 pub fn solid_to_mm_mesh(
     solid: &Solid,
     cell_size_m: f64,
     target: CastTarget,
+) -> Result<IndexedMesh, CastError> {
+    solid_to_mm_mesh_with_skin(solid, cell_size_m, target, 0.0)
+}
+
+/// As [`solid_to_mm_mesh`], but safe for a solid whose field is a
+/// ≤1-Lipschitz base plus a bounded, non-1-Lipschitz **additive**
+/// perturbation (the canal feature displacement).
+///
+/// `field_skin_m` is an upper bound on the magnitude of that perturbation
+/// (`|f(p) − base(p)| ≤ field_skin_m` for all `p`; for the canal plug it is
+/// `max_inward_depth + suction_bulge`). The narrow-band skip widens its
+/// margin by `2·field_skin_m` so the skip stays byte-identical to the dense
+/// bake even though `f` is not globally 1-Lipschitz — see
+/// `docs/CF_CAST_NARROW_BAND_MC_RECON.md`. Pass `0.0` for plain CSG solids
+/// (then this is byte-identical to [`solid_to_mm_mesh`]).
+pub fn solid_to_mm_mesh_with_skin(
+    solid: &Solid,
+    cell_size_m: f64,
+    target: CastTarget,
+    field_skin_m: f64,
 ) -> Result<IndexedMesh, CastError> {
     let bounds = solid.bounds().ok_or(CastError::InfiniteBounds(target))?;
 
@@ -55,7 +81,7 @@ pub fn solid_to_mm_mesh(
     if std::env::var_os("CF_CAST_FULL_GRID").is_some() {
         fill_grid_full(&mut grid, solid);
     } else {
-        fill_grid_narrow_band(&mut grid, solid);
+        fill_grid_narrow_band(&mut grid, solid, field_skin_m);
     }
 
     let mut mesh = marching_cubes(&grid, &MarchingCubesConfig::default());
@@ -79,9 +105,6 @@ pub fn scale_in_place(mesh: &mut IndexedMesh, factor: f64) {
 
 /// Fill every grid point with the exact SDF (the dense bake). Retained as the
 /// reference path for the narrow-band byte-identity test.
-// Grid-index → f64 casts are exact + non-negative (bounded by the grid
-// dimensions); no precision/sign loss.
-#[allow(clippy::cast_precision_loss)]
 fn fill_grid_full(grid: &mut ScalarGrid, solid: &Solid) {
     let (nx, ny, nz) = grid.dimensions();
     for iz in 0..nz {
@@ -95,21 +118,40 @@ fn fill_grid_full(grid: &mut ScalarGrid, solid: &Solid) {
 }
 
 /// Fill `grid` from `solid`'s SDF evaluating ONLY the near-surface band — the
-/// ~1-Lipschitz "narrow-band" skip (see `docs/CF_CAST_NARROW_BAND_MC_RECON.md`).
+/// "narrow-band" skip (see `docs/CF_CAST_NARROW_BAND_MC_RECON.md`).
 ///
 /// Coarse-to-fine: each `K³`-cell block is classified by one SDF eval at its
-/// centre — if `|SDF(centre)| > circumradius` the block is provably surface-free
-/// (1-Lipschitz) and gets a sign-correct sentinel; otherwise it (plus a 1-point
-/// halo) is evaluated exactly. The result is bit-identical to [`fill_grid_full`]
-/// followed by marching cubes: skipped regions are all-same-sign (no triangles),
-/// and every surface-crossing cell's 8 corners are exact (the halo guarantees
-/// this even across a skip/refine boundary). The win is skipping the ~99% of
-/// cells far from the (thin, 2-D) surface.
-// Grid-index → f64 casts are exact + non-negative; the circumradius carries a
-// conservative +2-cell margin (robust to a field marginally over 1-Lipschitz;
-// the byte-identity test is the exactness gate).
+/// centre — if `|SDF(centre)| > skip_radius` the block is provably surface-free
+/// and gets a sign-correct sentinel; otherwise it (plus a 1-point halo) is
+/// evaluated exactly. The result is bit-identical to [`fill_grid_full`] followed
+/// by marching cubes: skipped regions are all-same-sign (no triangles), and every
+/// surface-crossing cell's 8 corners are exact (the halo guarantees this even
+/// across a skip/refine boundary). The win is skipping the ~99% of cells far from
+/// the (thin, 2-D) surface.
+///
+/// **`skip_radius` and the non-1-Lipschitz case.** The cf-cast base fields are
+/// ≤1-Lipschitz (CSG of exact distances via plain `min`/`max` — the flat-mating
+/// constraint forbids `smooth_union`). For such a field, `|SDF(centre)| >
+/// circumradius + 2·cell` proves no zero within the covered region. The canal
+/// plug, however, adds a bounded but **non**-1-Lipschitz feature term
+/// (`f = base + tex`, `base` ≤1-Lipschitz, `|tex| ≤ field_skin_m`). A zero of `f`
+/// within radius `ρ` of the centre forces `|base(centre)| ≤ field_skin_m + ρ`,
+/// and `|base(centre)| ≥ |f(centre)| − field_skin_m`, so `|f(centre)| > ρ +
+/// 2·field_skin_m` still proves no zero within `ρ`. Hence `skip_radius =
+/// circumradius + 2·cell + 2·field_skin_m` keeps the skip byte-identical for
+/// these fields too. `field_skin_m = 0` recovers the plain ≤1-Lipschitz case.
+///
+/// Classifies each block **once** (the decision is reused across both fill
+/// passes) and returns `(skipped_blocks, refined_blocks)` for test
+/// instrumentation. A non-finite centre eval is treated as `refine` (the
+/// classification is total — a `NaN` centre never silently skips a block).
+// Grid-index → f64 casts are exact + non-negative.
 #[allow(clippy::cast_precision_loss)]
-fn fill_grid_narrow_band(grid: &mut ScalarGrid, solid: &Solid) {
+fn fill_grid_narrow_band(
+    grid: &mut ScalarGrid,
+    solid: &Solid,
+    field_skin_m: f64,
+) -> (usize, usize) {
     let (nx, ny, nz) = grid.dimensions();
     let cell = grid.cell_size();
     let origin = grid.origin();
@@ -122,33 +164,37 @@ fn fill_grid_narrow_band(grid: &mut ScalarGrid, solid: &Solid) {
             origin.z + iz as f64 * cell,
         )
     };
-    // Block centre + circumradius (centre → farthest corner) + a 2-cell margin
-    // (covers the cell that spans into the next block, plus Lipschitz safety).
-    let block_classify = |bx: usize, by: usize, bz: usize| {
-        let ex = (bx + k).min(nx);
-        let ey = (by + k).min(ny);
-        let ez = (bz + k).min(nz);
-        let lo = pos(bx, by, bz);
-        let hi = pos(ex - 1, ey - 1, ez - 1);
-        let centre = Point3::new(
-            f64::midpoint(lo.x, hi.x),
-            f64::midpoint(lo.y, hi.y),
-            f64::midpoint(lo.z, hi.z),
-        );
-        let circumradius = (hi - centre).norm() + 2.0 * cell;
-        let sdf_c = solid.evaluate(&centre);
-        (ex, ey, ez, sdf_c, circumradius)
-    };
 
-    // Pass 1 — sentinel-fill every surface-free (skip) block.
+    // Pass 1 — classify each block ONCE; sentinel-fill the surface-free (skip)
+    // blocks immediately and stash the refine blocks for pass 2 (which must run
+    // AFTER all skip-fills so a refine block's halo overwrites any skip sentinel
+    // at a shared boundary).
+    let mut refine: Vec<(usize, usize, usize, usize, usize, usize)> = Vec::new();
+    let mut skipped = 0_usize;
     let mut bx = 0;
     while bx < nx {
         let mut by = 0;
         while by < ny {
             let mut bz = 0;
             while bz < nz {
-                let (ex, ey, ez, sdf_c, r) = block_classify(bx, by, bz);
-                if sdf_c.abs() > r {
+                let ex = (bx + k).min(nx);
+                let ey = (by + k).min(ny);
+                let ez = (bz + k).min(nz);
+                let lo = pos(bx, by, bz);
+                let hi = pos(ex - 1, ey - 1, ez - 1);
+                let centre = Point3::new(
+                    f64::midpoint(lo.x, hi.x),
+                    f64::midpoint(lo.y, hi.y),
+                    f64::midpoint(lo.z, hi.z),
+                );
+                // circumradius (centre → farthest corner) + 2·cell (the cell that
+                // spans into the next block + the MC halo) + 2·field_skin_m (the
+                // non-1-Lipschitz feature term; see fn doc).
+                let skip_radius = (hi - centre).norm() + 2.0 * cell + 2.0 * field_skin_m;
+                let sdf_c = solid.evaluate(&centre);
+                // Total classification: only a finite centre clearly outside the
+                // skip radius is skipped; NaN / borderline ⇒ refine (exact eval).
+                if sdf_c.is_finite() && sdf_c.abs() > skip_radius {
                     let sentinel = if sdf_c < 0.0 {
                         -FAR_SENTINEL_M
                     } else {
@@ -161,6 +207,9 @@ fn fill_grid_narrow_band(grid: &mut ScalarGrid, solid: &Solid) {
                             }
                         }
                     }
+                    skipped += 1;
+                } else {
+                    refine.push((bx, by, bz, ex, ey, ez));
                 }
                 bz += k;
             }
@@ -171,36 +220,25 @@ fn fill_grid_narrow_band(grid: &mut ScalarGrid, solid: &Solid) {
 
     // Pass 2 — exact-eval every near-surface (refine) block PLUS a 1-point halo,
     // overwriting sentinels at shared boundaries (so a surface cell straddling a
-    // skip/refine seam has all 8 corners exact). Runs after pass 1 so the halo's
-    // exact values win.
-    let mut bx = 0;
-    while bx < nx {
-        let mut by = 0;
-        while by < ny {
-            let mut bz = 0;
-            while bz < nz {
-                let (ex, ey, ez, sdf_c, r) = block_classify(bx, by, bz);
-                if sdf_c.abs() <= r {
-                    let hx0 = bx.saturating_sub(1);
-                    let hy0 = by.saturating_sub(1);
-                    let hz0 = bz.saturating_sub(1);
-                    let hx1 = (ex + 1).min(nx);
-                    let hy1 = (ey + 1).min(ny);
-                    let hz1 = (ez + 1).min(nz);
-                    for iz in hz0..hz1 {
-                        for iy in hy0..hy1 {
-                            for ix in hx0..hx1 {
-                                grid.set(ix, iy, iz, solid.evaluate(&pos(ix, iy, iz)));
-                            }
-                        }
-                    }
+    // skip/refine seam has all 8 corners exact).
+    let refined = refine.len();
+    for (bx, by, bz, ex, ey, ez) in refine {
+        let hx0 = bx.saturating_sub(1);
+        let hy0 = by.saturating_sub(1);
+        let hz0 = bz.saturating_sub(1);
+        let hx1 = (ex + 1).min(nx);
+        let hy1 = (ey + 1).min(ny);
+        let hz1 = (ez + 1).min(nz);
+        for iz in hz0..hz1 {
+            for iy in hy0..hy1 {
+                for ix in hx0..hx1 {
+                    grid.set(ix, iy, iz, solid.evaluate(&pos(ix, iy, iz)));
                 }
-                bz += k;
             }
-            by += k;
         }
-        bx += k;
     }
+
+    (skipped, refined)
 }
 
 #[cfg(test)]
@@ -296,13 +334,38 @@ mod tests {
         );
     }
 
+    /// A `≤1-Lipschitz` displaced sphere stand-in for the canal feature field:
+    /// `base = |p| − r` (exactly 1-Lipschitz) plus the SAME additive form the
+    /// canal texture uses (`amp · 0.5 · (1 + sin(2π·x/pitch))`, bounded by
+    /// `amp`), whose axial slope `amp·π/pitch` pushes the composite field well
+    /// over 1-Lipschitz. Used to exercise the `field_skin_m` skip margin on a
+    /// non-1-Lipschitz field — the production canal plug's failure mode.
+    struct RibbedSphere {
+        r: f64,
+        amp: f64,
+        pitch: f64,
+    }
+    impl cf_design::Sdf for RibbedSphere {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            let base = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt() - self.r;
+            let tex = self.amp * 0.5 * (1.0 + (std::f64::consts::TAU * p.x / self.pitch).sin());
+            base + tex
+        }
+        fn grad(&self, _p: Point3<f64>) -> Vector3<f64> {
+            // Unused: `Solid::from_sdf` bridges via finite differences.
+            Vector3::new(1.0, 0.0, 0.0)
+        }
+    }
+
     /// THE narrow-band gate: marching cubes over the sparse (narrow-band) grid
-    /// must be **bit-identical** to marching cubes over the dense (full) grid —
-    /// across several solids that exercise multiple coarse blocks + skip/refine
-    /// boundaries (sphere, off-origin cuboid, and a CSG union). If this ever
-    /// diverges (a field marginally over 1-Lipschitz), the +2-cell circumradius
-    /// margin needs widening. Same vertices (bit-exact: identical points are
-    /// evaluated identically) and same faces.
+    /// must be **bit-identical** to marching cubes over the dense (full) grid,
+    /// across solids that exercise multiple coarse blocks + skip/refine
+    /// boundaries AND the op families the production cups/plug use: a sphere,
+    /// an off-origin cuboid, a CSG union, a `subtract` (hollow shell — the
+    /// concave thin-wall case), and an `intersect`. The skip path must actually
+    /// fire (asserted via the returned skip count, else the test would pass
+    /// vacuously if narrow-band degenerated to all-refine). Same vertices
+    /// (bit-exact: identical points evaluated identically) and same faces.
     #[test]
     fn narrow_band_fill_is_bit_identical_to_full() {
         use super::{fill_grid_full, fill_grid_narrow_band};
@@ -316,14 +379,24 @@ mod tests {
                 Solid::cuboid(Vector3::new(0.005, 0.005, 0.013))
                     .translate(Vector3::new(0.009, 0.0, 0.0)),
             ),
+            // Hollow shell (concave thin wall) — cf-cast's actual cup geometry.
+            Solid::cuboid(Vector3::new(0.010, 0.010, 0.010))
+                .subtract(Solid::cuboid(Vector3::new(0.008, 0.008, 0.008))),
+            // Lens (intersect of two offset spheres).
+            Solid::sphere(0.012)
+                .translate(Vector3::new(0.004, 0.0, 0.0))
+                .intersect(Solid::sphere(0.012).translate(Vector3::new(-0.004, 0.0, 0.0))),
         ];
         let cell = 0.0015; // enough cells to span several K=8 blocks + their seams
+        let mut total_skipped = 0_usize;
         for (i, solid) in solids.iter().enumerate() {
             let bounds = solid.bounds().unwrap();
             let mut g_full = ScalarGrid::from_bounds(bounds.min, bounds.max, cell, 2);
             let mut g_nb = ScalarGrid::from_bounds(bounds.min, bounds.max, cell, 2);
             fill_grid_full(&mut g_full, solid);
-            fill_grid_narrow_band(&mut g_nb, solid);
+            // Plain CSG solids are ≤1-Lipschitz ⇒ skin = 0.
+            let (skipped, _refined) = fill_grid_narrow_band(&mut g_nb, solid, 0.0);
+            total_skipped += skipped;
             let m_full = marching_cubes(&g_full, &MarchingCubesConfig::default());
             let m_nb = marching_cubes(&g_nb, &MarchingCubesConfig::default());
 
@@ -346,5 +419,74 @@ mod tests {
                 );
             }
         }
+        assert!(
+            total_skipped > 0,
+            "skip path never fired — narrow-band degenerated to all-refine, so the \
+             byte-identity assertions above are vacuous"
+        );
+    }
+
+    /// The `field_skin_m` margin for a **non**-1-Lipschitz field (the canal
+    /// feature failure mode). With the correct skin the narrow-band bake of a
+    /// ribbed (>1-Lipschitz) field must be byte-identical to the dense bake, and
+    /// the skin must be load-bearing — widening it forces strictly more refine
+    /// blocks (the skip band shrinks), proving the margin actually changes the
+    /// classification rather than being inert.
+    #[test]
+    fn narrow_band_field_skin_handles_non_lipschitz_field() {
+        use super::{fill_grid_full, fill_grid_narrow_band};
+        use cf_design::Solid;
+        use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
+        use mesh_types::Aabb;
+
+        // Production canal texture form: amp·0.5·(1+sin), slope amp·π/pitch.
+        // amp=1.5mm, pitch=8mm ⇒ ~0.59 extra ⇒ composite L≈1.59. skin = amp
+        // bounds |tex|.
+        let amp = 0.0015;
+        let sdf = RibbedSphere {
+            r: 0.012,
+            amp,
+            pitch: 0.008,
+        };
+        let bounds = Aabb {
+            min: Point3::new(-0.015, -0.015, -0.015),
+            max: Point3::new(0.015, 0.015, 0.015),
+        };
+        let solid = Solid::from_sdf(sdf, bounds);
+        let b = solid.bounds().unwrap();
+        let cell = 0.0005; // production 0.5 mm cell
+
+        let mut g_full = ScalarGrid::from_bounds(b.min, b.max, cell, 2);
+        let mut g_skin = ScalarGrid::from_bounds(b.min, b.max, cell, 2);
+        fill_grid_full(&mut g_full, &solid);
+        let (_skipped, refined_skin) = fill_grid_narrow_band(&mut g_skin, &solid, amp);
+        let m_full = marching_cubes(&g_full, &MarchingCubesConfig::default());
+        let m_skin = marching_cubes(&g_skin, &MarchingCubesConfig::default());
+
+        assert!(!m_full.vertices.is_empty(), "ribbed full grid should mesh");
+        assert_eq!(
+            m_skin.vertices.len(),
+            m_full.vertices.len(),
+            "skin=amp narrow-band vertex count must match full on the non-Lipschitz field",
+        );
+        assert_eq!(
+            m_skin.faces, m_full.faces,
+            "skin=amp narrow-band faces must match full on the non-Lipschitz field",
+        );
+        for (a, c) in m_skin.vertices.iter().zip(&m_full.vertices) {
+            assert!(
+                (a.x - c.x).abs() < 1e-12 && (a.y - c.y).abs() < 1e-12 && (a.z - c.z).abs() < 1e-12,
+                "ribbed: vertex mismatch skin={a:?} full={c:?}",
+            );
+        }
+
+        // The skin is load-bearing: a larger skin refines strictly more blocks.
+        let mut g_zero = ScalarGrid::from_bounds(b.min, b.max, cell, 2);
+        let (_s0, refined_zero) = fill_grid_narrow_band(&mut g_zero, &solid, 0.0);
+        assert!(
+            refined_skin > refined_zero,
+            "field_skin must widen the refine band (skin refined {refined_skin} \
+             vs skin=0 refined {refined_zero}); a no-op skin would be a silent regression",
+        );
     }
 }

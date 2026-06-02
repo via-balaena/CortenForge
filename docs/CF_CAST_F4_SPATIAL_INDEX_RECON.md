@@ -423,14 +423,5 @@ implementation session BEFORE touching `mesh-printability`:
   inside-mark phase. Gated by a unit byte-identity test +
   real-mesh probe + clippy/fmt/rustdoc clean. See §B-12 S2/S3.
 - Branch: `feat/cf-cast-narrow-band-mc` (narrow-band MC + this
-  F4-S3 share the regen-speedup theme).
-- Branch: `dev`, no push, no PR until arc close (per
-  [[feedback-omnibus-pr-single-branch]]).
-- Parallel arcs in flight on same branch:
-  - Seam-gasket-mold arc through S3
-    ([[project-cf-cast-seam-gasket-mold-s3]], commit `fc9f30e7`).
-  - Parallel-meshing arc through S2
-    ([[project-cf-cast-parallel-meshing-s2]], commit `d3ff8063`).
-  - Seam-flange recon scaffold + cold-read shipped (commits
-    `1da08ab7`, `d4ca615f`); S1 implementation pending workshop
-    user greenlight.
+  F4-S3 share the regen-speedup theme); headed for a PR once the
+  pre-PR review fixes land.

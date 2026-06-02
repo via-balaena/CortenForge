@@ -1857,6 +1857,7 @@ fn mark_inside_voxels(grid: &mut VoxelGrid, mesh: &IndexedMesh) {
 
     // Reused across rows to avoid per-row reallocation.
     let mut candidates: Vec<u32> = Vec::new();
+    let mut crossings: Vec<f64> = Vec::new();
 
     for z in 0..nz {
         let z_center = origin_z + (f64::from(z) + 0.5) * v + ROW_JITTER_Z;
@@ -1883,7 +1884,7 @@ fn mark_inside_voxels(grid: &mut VoxelGrid, mesh: &IndexedMesh) {
             candidates.clear();
             qbvh.intersect_aabb(&query, &mut candidates);
 
-            let mut crossings: Vec<f64> = Vec::new();
+            crossings.clear();
             for &tri in &candidates {
                 let face_idx = tri as usize;
                 if face_idx >= mesh.faces.len() {
@@ -5010,7 +5011,7 @@ mod tests {
 
     #[test]
     fn mark_inside_voxels_bvh_is_byte_identical_to_reference() {
-        // S2 gate (docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md): the BVH-culled
+        // S3 gate (docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md): the BVH-culled
         // `mark_inside_voxels` must produce a byte-for-byte identical voxel
         // grid to the O(ny·nz·n_faces) reference on watertight meshes with
         // interior structure (rows with 0 / 2 / 4 crossings). A divergence
@@ -5049,6 +5050,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn mark_inside_voxels_falls_back_to_reference_when_bvh_build_rejects() {
+        // The BVH path's bit-identity claim explicitly rests on a fallback to
+        // the reference marker when `build_parry_trimesh` rejects the mesh
+        // (degenerate input the watertight precondition would normally exclude:
+        // here a face index past the vertex count). Confirm the fallback fires,
+        // does not panic, and produces a grid identical to the reference.
+        let mut mesh = make_cube_with_inner_cavity(6.0, 2.0);
+        // Append a triangle with clearly out-of-bounds indices → build_parry_trimesh None.
+        mesh.faces.push([u32::MAX, u32::MAX - 1, u32::MAX - 2]);
+        assert!(
+            build_parry_trimesh(&mesh).is_none(),
+            "fixture must make the parry TriMesh builder reject (forcing the fallback)"
+        );
+
+        let mut g_ref = build_trapped_grid(&mesh, 0.5);
+        let mut g_bvh = build_trapped_grid(&mesh, 0.5);
+        mark_inside_voxels_reference(&mut g_ref, &mesh);
+        mark_inside_voxels(&mut g_bvh, &mesh); // must internally fall back
+        assert_eq!(
+            g_ref.states, g_bvh.states,
+            "fallback path must be byte-identical to the reference marker"
+        );
     }
 
     #[test]

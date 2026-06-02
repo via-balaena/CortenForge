@@ -15,17 +15,34 @@ intervals needed.
 
 ## The Lipschitz skip
 
-cf-cast SDFs are ~1-Lipschitz (|∇| ≤ 1): cf-design primitives are exact distance fields, and the
+Most cf-cast SDFs are ≤1-Lipschitz (|∇| ≤ 1): cf-design primitives are exact distance fields, and the
 compositors are plain `min`/`max`/intersect/subtract (the **flat-mating-face constraint forbids
 `smooth_union`**, which is the thing that would break Lipschitz). So for any point `p`,
 `|SDF(q) − SDF(p)| ≤ |q − p|`. Therefore if `|SDF(p)| > R`, no point within distance `R` of `p`
 has `SDF = 0` — the surface is `> R` away.
 
+### The non-1-Lipschitz case (canal feature field) — `field_skin_m`
+
+The canal plug is the exception: its field is `f = base + tex` where `base` is the ≤1-Lipschitz scan
+plug distance and `tex` is the **additive** grip-ring / D-section / texture / suction displacement.
+`tex` is *magnitude*-bounded (`|tex| ≤ A`, `A = max_inward_depth + suction_bulge`) but **not**
+1-Lipschitz: the texture's axial slope `amp·π/pitch ≈ 0.59` at the iter-1 defaults pushes the composite
+gradient to ≈1.59. A naive 1-Lipschitz skip would therefore silently drop texture geometry — and the
+0.5 mm production plug uses exactly this field. The fix exploits that `tex` is magnitude-bounded: a
+zero of `f` within radius `ρ` of `p` forces `|base(p)| ≤ A + ρ` (`base` 1-Lipschitz), and
+`|base(p)| ≥ |f(p)| − A`, so **`|f(p)| > ρ + 2A` still proves no zero within `ρ`**. The skip threshold
+gains `2A`: `skip_radius = circumradius + 2·cell + 2·field_skin_m`. Callers pass `field_skin_m = A` via
+[`solid_to_mm_mesh_with_skin`] (0 for plain CSG ⇒ unchanged). This is provably correct for *any*
+bounded additive perturbation on a 1-Lipschitz base, not just the texture term — no per-feature
+gradient bookkeeping needed.
+
 ## Coarse-to-fine fill (replaces the full triple-loop)
 
 1. **Coarse pass:** for each block of `K³` cells (K = `NARROW_BAND_BLOCK_CELLS`), evaluate the SDF at
-   the block center. If `|SDF(center)| > circumradius` (center→farthest-corner distance + safety
-   margin) → **skip** (record `sign(center)`); else → **refine**.
+   the block center. If `|SDF(center)| > skip_radius` (= `circumradius + 2·cell + 2·field_skin_m`,
+   center→farthest-corner distance + the MC-halo margin + the non-1-Lipschitz skin) **and the eval is
+   finite** → **skip** (record `sign(center)`); else → **refine** (a non-finite center always refines,
+   so the classification is total).
 2. **Skip-fill:** set every grid point in a skip block to `sign · FAR_SENTINEL` (large value, correct
    sign). MC reads only the SIGN of far cells (all-same-sign → no triangle), so the magnitude is
    immaterial.
@@ -45,16 +62,21 @@ crossing edge between its two corner values. So the output is identical to the f
   (which may straddle into a neighbor block) are exactly evaluated — so no crossing edge interpolates
   against a sentinel. *(This halo is the load-bearing detail: without it, a crossing edge from a
   refine corner to a skip-block corner would interpolate a wrong vertex.)*
-- **Skipped regions are all-same-sign.** A skip block has no internal sign change (`|SDF| > R`), so it
-  emits no triangles — exactly as the full grid (which holds large same-sign values there) would.
-  Two *adjacent* skip blocks can't have opposite signs (1-Lipschitz: the cross-block difference
-  `≤ K·cell` can't span `> 2R ≈ 1.7·K·cell`), so sentinels never create a spurious crossing at a
-  skip/skip seam.
+- **Skipped regions are all-same-sign.** A skip block has no internal sign change (`|f| > skip_radius`
+  via the `ρ + 2A` argument above), so it emits no triangles — exactly as the full grid (which holds
+  large same-sign values there) would. Two *adjacent* skip blocks can't have opposite signs: across the
+  ~`K·cell` center-to-center distance `f` changes by at most `K·cell + 2A` (1-Lipschitz base + bounded
+  `tex`), which is `< 2·skip_radius`, so sentinels never create a spurious crossing at a skip/skip seam.
 
-**The 1-Lipschitz property is the only assumption, and it is GATED, not trusted:** a unit test asserts
-`marching_cubes(full) == marching_cubes(narrow)` on a real solid, and a real-body regen A/B compares
-STL hashes. Any divergence (a field marginally over 1-Lipschitz) fails the test → widen the margin or
-fall back. The `circumradius` carries a conservative `+2·cell` margin for robustness.
+**The assumptions are (i) the base field is ≤1-Lipschitz and (ii) any non-1-Lipschitz part is an
+*additive* term of magnitude `≤ field_skin_m` — and they are GATED, not trusted:** the unit test
+`narrow_band_fill_is_bit_identical_to_full` asserts `marching_cubes(full) == marching_cubes(narrow)`
+across sphere / cuboid / union / **subtract (hollow shell) / intersect** fixtures (and checks the skip
+path actually fires), and `narrow_band_field_skin_handles_non_lipschitz_field` asserts byte-identity on
+a **>1-Lipschitz** ribbed field at `skin = amp` plus that the skin is load-bearing (a larger skin
+strictly widens the refine band). A 0.5 mm full-vs-narrow A/B on the real production cast compares STL
+hashes end-to-end. Any divergence fails a test → widen `field_skin_m` or fall back to
+`CF_CAST_FULL_GRID`.
 
 ## Gates
 

@@ -56,6 +56,7 @@ fn reference_spec() -> CastSpec {
         mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
         scan_mesh_for_plug_layer_0: None,
         plug_layer_0_mesh_cell_size_m: None,
+        plug_layer_0_field_skin_m: None,
     }
 }
 
