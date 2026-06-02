@@ -716,20 +716,35 @@ edge; the hole-carve still uses only `center`). `mesh_and_gate_v2_pieces` keeps 
 alive and passes the per-layer `SeamProfile` into `compose_piece_shared` so the seal ring
 reuses it.
 
-**Commit sequencing (Risk #7 — attributable, never conflated):**
-1. **dowel.stl solver-count** (fold-in 2). `mesh_and_gate_v2_pieces` returns the shared
-   placed-dowel count; `export_molds` threads it to `mesh_and_gate_v2_dowel`, replacing
-   `const PRINTABLE_DOWEL_COUNT=4` → `build_dowel_array_mesh(.., count, ..)`. **Only
-   `dowel.stl` changes** (4→2 rods on base_mold); the 6 cup pieces stay byte-identical to
-   the retiring S5 baseline. Fresh baseline captured.
-2. **`FlangeKind::Demand` + `DemandFlangeSdf` + (E1) feasibility flip + threading + CLI
-   `[flange] kind`**, landing as a **dormant sibling** (base_mold still defaults Plate this
-   commit → cups byte-identical). Adds the closed-loop seal-continuity test (material at
-   land mid-width at every arc), the F4 Demand fixture (spoke/boss min widths = print-safe
-   floors), the flat-mating-face gate.
-3. **Flip base_mold default to Demand** — the deliberate cup re-baseline. Fresh baseline;
-   reviewed regen-diff (a cup diff here is *seal-geometry*, not placement — §7.4 A/B already
-   de-risked placement); cf-view eyeball of the scallop + apex boss.
+**Commit sequencing (Risk #7 — attributable, never conflated). ALL COMMITTED on the
+branch (not pushed); commit 2 was split 2a/2b:**
+1. **dowel.stl solver-count** (fold-in 2) — **DONE `9caf8db2`**. `mesh_and_gate_v2_pieces`
+   returns the shared placed-dowel count; `export_molds` threads it to
+   `mesh_and_gate_v2_dowel`, replacing `const PRINTABLE_DOWEL_COUNT=4` →
+   `build_dowel_array_mesh(.., count, ..)`. **Only `dowel.stl` changes** (4→2 rods on
+   base_mold); the 6 cup pieces stay byte-identical to the (then-current) S5 baseline.
+2a. **Flange-kind seam** — **DONE `42166ba1`, byte-identical.** `FlangeKind::lateral_reach_m()`
+   replaces the Plate-only `spec()` as the placement gate; `build_layer_loops` + both
+   planners + their feasibility builders take `&FlangeKind` (`*_feasibility`→`Option`);
+   `compute_smart_placements` helper extracted. Only Plate/None arms — Plate unchanged.
+   (Needed because `Demand.spec()` is `None`, which would have silently disabled placement.)
+2b. **`FlangeKind::Demand` (dormant sibling)** — **DONE `2e3487ce`.** `DemandFlangeSpec` +
+   `DemandFlangeSdf` (`max(min(seal_ring, min tadpoles), slab)`, plain min/max → §F-4 flat
+   face; seal ring from the SHARED `SeamProfile` = the §MA-7 9→3 / S5d-(B) completion for the
+   demand path, Plate `build_flange_solid` untouched) + `sd_tapered_capsule_2d` (iq round
+   cone; `a2≤0`→larger disk = the pin-at-floor degenerate spoke, N4) + (E1) pin-at-floor
+   feasibility arm + `build_tadpoles` + `compute_smart_placements` pre-builds the per-layer
+   demand flange `Solid` → `SmartPlacements` → `compose_piece_shared(demand_flange)` + bolt
+   emission via `thickness_m()` + CLI `[flange] kind` (default still plate this commit →
+   cups byte-identical) + procedure `(Demand,*)` prose + 8 tests + the `derive.rs:88`
+   doc-link fix. Demand A/B F4-passes all 6 cups, ~13 % lighter (scalloped).
+3. **Flip the default to Demand** — **DONE.** CLI `[flange].kind` default → `"demand"`
+   (derive: absent/`"demand"`→Demand, `"plate"`→legacy band) — the deliberate cup
+   re-baseline. **Verified (3 mm release): the default flange now differs from the retiring
+   Plate S5 baseline (flip took); absent-`kind` == explicit `"demand"` (byte-identical);
+   fresh demand baseline at `/tmp/s45_demand_baseline_hashes.txt`.** A cup diff here is
+   *seal-geometry*, not placement (§7.4 A/B de-risked placement). Remaining manual gate =
+   cf-view eyeball of the scallop + apex boss, then the physical print.
 
 Each commit: cf-cast lib + cf-cast-cli green; clippy pedantic+nursery + fmt; `RUSTDOCFLAGS=
 "-D warnings"` doc-link check (the `pub`→`pub(crate)` backtick lint); `grade-all

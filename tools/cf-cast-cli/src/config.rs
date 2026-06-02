@@ -51,10 +51,11 @@ pub struct CastConfig {
     /// `enabled = false` to disable. S3 of the seam-gasket-mold arc.
     #[serde(default)]
     pub gasket: GasketConfig,
-    /// Seam-plane flange override (default = enabled with
-    /// [`cf_cast::FlangeSpec::iter1`] geometry). Absence of the table
-    /// means "enabled with iter1 defaults". Set `enabled = false` to
-    /// disable. S2 of the seam-flange arc per recon §F-6.
+    /// Seam-plane flange override (default = enabled, `kind = "demand"` —
+    /// the scalloped demand flange, recon §4/§7.6). Absence of the table
+    /// means "enabled with demand-flange iter1 defaults". Set `enabled = false`
+    /// to disable, or `kind = "plate"` for the legacy uniform band. S2 of the
+    /// seam-flange arc per recon §F-6 + S4.5.
     #[serde(default)]
     pub flange: FlangeConfig,
     /// Symmetric dowel-hole registration override (default = enabled
@@ -376,17 +377,21 @@ impl Default for GasketConfig {
     }
 }
 
-/// `[flange]` block — seam-plane clampable flange toggle + geometry
-/// overrides. Maps to [`cf_cast::FlangeKind`].
+/// `[flange]` block — seam-plane clampable flange toggle + `kind` selector +
+/// geometry overrides. Maps to [`cf_cast::FlangeKind`].
 ///
-/// S2 of the seam-flange arc per recon §F-6. Defaults to
-/// `enabled = true` with [`cf_cast::FlangeSpec::iter1`] geometry
-/// (20 mm width × 4 mm thickness per half × 2 mm inner offset). Per-
-/// field overrides are surfaced as optionals; absent → falls back to
-/// the iter1 default for that field. The cross-field invariant
+/// S2 of the seam-flange arc per recon §F-6 + S4.5 demand flange (recon §4).
+/// Defaults to `enabled = true` with `kind = "demand"` (the scalloped seal-ring +
+/// per-fastener bosses — the end-state print target, recon §7.6); set
+/// `kind = "plate"` for the legacy uniform band
+/// ([`cf_cast::FlangeSpec::iter1`]: 20 mm width × 4 mm thickness per half × 2 mm
+/// inner offset). Per-field overrides are surfaced as optionals (Plate fields:
+/// `width_m`/`inner_offset_m`; Demand fields: `land_width_m`/`land_inner_offset_m`/
+/// `web_width_m`/`boss_wall_margin_m`; `thickness_m` is shared); absent → the
+/// matching iter1 default. The cross-field invariant
 /// `inner_offset_m > GasketSpec.channel_width_m / 2` is enforced at
 /// [`CastConfig::validate_after_layer_source`] time when both the
-/// gasket and flange are enabled (recon §F-4 "gasket-disjoint
+/// gasket and (plate) flange are enabled (recon §F-4 "gasket-disjoint
 /// invariant").
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -398,7 +403,9 @@ pub struct FlangeConfig {
     pub enabled: bool,
     /// Flange kind: `"plate"` (uniform band) or `"demand"` (scalloped seal-ring +
     /// per-fastener bosses, generated to fit the placed fasteners — recon §4).
-    /// `None` → `"plate"`. The `demand` kind is the end-state / print target.
+    /// `None` → `"demand"` (S4.5/3 default flip, recon §7.6 — the demand flange is
+    /// the end-state / print target). Set `kind = "plate"` to opt back into the
+    /// legacy uniform band.
     #[serde(default)]
     pub kind: Option<String>,
     /// **Plate kind.** Lateral extent (meters) from `inner_offset_m` outward in the

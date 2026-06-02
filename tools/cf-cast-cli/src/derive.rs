@@ -549,12 +549,16 @@ pub fn derive_spec_and_ribbon(
     if config.flange.enabled {
         // S2 of the seam-flange arc per recon §F-6 + S4.5 demand flange (recon §4).
         // `kind` selects the flange shape ("plate" | "demand", validated in
-        // config::validate_after_layer_source so the `_` arm is "plate"); per-field
-        // overrides fall back to the matching iter1() spec. The cross-field
-        // gasket-disjoint invariant (recon §F-4) is enforced in config validate.
+        // config::validate_after_layer_source); per-field overrides fall back to the
+        // matching iter1() spec. The cross-field gasket-disjoint invariant (recon
+        // §F-4) is enforced in config validate.
+        //
+        // DEFAULT = "demand" (S4.5/3, recon §7.6): the scalloped demand flange is
+        // the end-state / print target, so an absent `kind` (and explicit "demand")
+        // selects it; `kind = "plate"` opts back into the legacy uniform band.
         let flange_kind = match config.flange.kind.as_deref() {
-            Some("demand") => FlangeKind::Demand(resolve_demand_flange_spec(&config.flange)),
-            _ => FlangeKind::Plate(resolve_flange_spec(&config.flange)),
+            Some("plate") => FlangeKind::Plate(resolve_flange_spec(&config.flange)),
+            _ => FlangeKind::Demand(resolve_demand_flange_spec(&config.flange)),
         };
         ribbon = ribbon.with_flange(flange_kind);
     }
