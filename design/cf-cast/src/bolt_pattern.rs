@@ -59,7 +59,7 @@
 
 use nalgebra::Unit;
 
-use crate::flange::FlangeSpec;
+use crate::flange::{FlangeKind, FlangeSpec};
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::ribbon::Ribbon;
 use crate::seam_placement::{cross_layer_snap, smart_center_to_world};
@@ -217,17 +217,24 @@ const BOLT_WASHER_RADIUS_M: f64 = 0.005;
 /// would have excluded).
 const WASHER_CUP_WALL_MARGIN_M: f64 = 0.001;
 
-/// The flange-band feasibility regime for the bolt washer (§3.3): the washer
-/// disk (radius [`BOLT_WASHER_RADIUS_M`]) must lie in the flange band, the radial
-/// offset floored by the washer-vs-cup-wall-step clearance (§3.2).
-fn bolt_feasibility(flange_spec: &FlangeSpec, wall_thickness_m: f64) -> Feasibility {
+/// The feasibility regime for the bolt washer (§3.3), per flange kind. `None` when
+/// the ribbon carries no flange ([`FlangeKind::None`]) — the planner is gated on a
+/// flange being present, so this is the defensive short-circuit.
+///
+/// - [`FlangeKind::Plate`]: the incremental band — the washer disk (radius
+///   [`BOLT_WASHER_RADIUS_M`]) must lie in the flange band, the radial offset
+///   floored by the washer-vs-cup-wall-step clearance (§3.2).
+fn bolt_feasibility(flange: &FlangeKind, wall_thickness_m: f64) -> Option<Feasibility> {
     let d_floor = wall_thickness_m + BOLT_WASHER_RADIUS_M + WASHER_CUP_WALL_MARGIN_M;
-    Feasibility::band(
-        flange_spec.flange_inner_offset_m,
-        flange_spec.flange_width_m,
-        d_floor,
-        flange_spec.flange_width_m,
-    )
+    match flange {
+        FlangeKind::None => None,
+        FlangeKind::Plate(spec) => Some(Feasibility::band(
+            spec.flange_inner_offset_m,
+            spec.flange_width_m,
+            d_floor,
+            spec.flange_width_m,
+        )),
+    }
 }
 
 /// The arc length where a pour channel pierces the loop — the loop point nearest
@@ -279,7 +286,7 @@ fn pour_pierce_arc(profile: &SeamProfile, seg_a: Point2, seg_b: Point2) -> f64 {
 pub fn plan_smart_bolt_placements(
     layers: &[crate::seam_placement::LayerLoop],
     bolt_spec: &BoltPatternSpec,
-    flange_spec: &FlangeSpec,
+    flange: &FlangeKind,
     wall_thickness_m: f64,
     dowel_footprint_r: Option<f64>,
     smart_dowels: Option<&[Vec<Point2>]>,
@@ -290,7 +297,9 @@ pub fn plan_smart_bolt_placements(
         return result;
     }
 
-    let feas = bolt_feasibility(flange_spec, wall_thickness_m);
+    let Some(feas) = bolt_feasibility(flange, wall_thickness_m) else {
+        return result;
+    };
     let washer_r = BOLT_WASHER_RADIUS_M;
 
     // The shared per-layer loops (`build_layer_loops`, S5d-(A)) carry the clean
@@ -391,7 +400,7 @@ mod tests {
         bounds: &[cf_design::Aabb],
         ribbon: &Ribbon,
         bolt_spec: &BoltPatternSpec,
-        flange: &FlangeSpec,
+        flange: &FlangeKind,
         wall: f64,
         smart_dowels: Option<&[Vec<Point2>]>,
     ) -> Vec<Vec<Point2>> {
@@ -639,7 +648,15 @@ mod tests {
 
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let plan = plan_bolts(&[&body], &[bounds], &ribbon, &spec, &flange, 0.005, None);
+        let plan = plan_bolts(
+            &[&body],
+            &[bounds],
+            &ribbon,
+            &spec,
+            &ribbon.flange,
+            0.005,
+            None,
+        );
         let xforms = build_bolt_pattern_transforms(&plan[0], &ribbon, &spec, &flange);
 
         assert!(
@@ -676,7 +693,15 @@ mod tests {
         let flange = FlangeSpec::iter1();
         let wall = 0.005;
 
-        let plan = plan_bolts(&[&body], &[bounds], &ribbon, &bolt, &flange, wall, None);
+        let plan = plan_bolts(
+            &[&body],
+            &[bounds],
+            &ribbon,
+            &bolt,
+            &ribbon.flange,
+            wall,
+            None,
+        );
         assert_eq!(plan.len(), 1, "one plan entry per layer");
         let centers = &plan[0];
         assert!(!centers.is_empty(), "smart placement produced no bolts");
@@ -731,7 +756,15 @@ mod tests {
         let bolt = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
 
-        let plan = plan_bolts(&[&body], &[bounds], &ribbon, &bolt, &flange, 0.005, None);
+        let plan = plan_bolts(
+            &[&body],
+            &[bounds],
+            &ribbon,
+            &bolt,
+            &ribbon.flange,
+            0.005,
+            None,
+        );
         let xforms = build_bolt_pattern_transforms(&plan[0], &ribbon, &bolt, &flange);
         let pour_xforms = build_pour_gate_transforms(&ribbon);
         let profile = fixture_profile(&body, &ribbon, bounds);
@@ -800,14 +833,13 @@ mod tests {
             .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
             .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
         let bolt = BoltPatternSpec::iter1();
-        let flange = FlangeSpec::iter1();
 
         let plan = plan_bolts(
             &[&inner, &outer],
             &[bounds, bounds],
             &ribbon,
             &bolt,
-            &flange,
+            &ribbon.flange,
             0.005,
             None,
         );
@@ -837,20 +869,19 @@ mod tests {
             .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
         let dowel = DowelHoleSpec::iter1();
         let bolt = BoltPatternSpec::iter1();
-        let flange = FlangeSpec::iter1();
         let wall = 0.005;
 
         // Dowels FIRST, then bolts exclude them. Both run on the shared loops
         // (S5d-(A)), the way the v2 pipeline feeds them.
-        let loops = build_layer_loops(&[&body], &[bounds], &ribbon, &flange);
-        let dowel_plan = plan_smart_dowel_placements(&loops, &dowel, &flange, wall);
+        let loops = build_layer_loops(&[&body], &[bounds], &ribbon, &ribbon.flange);
+        let dowel_plan = plan_smart_dowel_placements(&loops, &dowel, &ribbon.flange, wall);
         assert_eq!(dowel_plan[0].len(), 2, "two registration dowels");
         let bolt_plan = plan_bolts(
             &[&body],
             &[bounds],
             &ribbon,
             &bolt,
-            &flange,
+            &ribbon.flange,
             wall,
             Some(&dowel_plan),
         );

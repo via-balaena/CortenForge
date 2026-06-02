@@ -59,7 +59,7 @@
 
 use nalgebra::Unit;
 
-use crate::flange::FlangeSpec;
+use crate::flange::FlangeKind;
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::ribbon::Ribbon;
 use crate::seam_placement::{cross_layer_snap, smart_center_to_world};
@@ -233,22 +233,29 @@ pub fn build_dowel_hole_transforms(
 
 // === Smart placement (S4, `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`) ===
 
-/// The flange-band feasibility regime for a dowel footprint (§3.3): the
-/// `footprint` disk (hole + wall) must lie in the flange band, the radial offset
-/// floored by the inboard footprint-vs-cup-wall-step clearance (§3.2) — the
-/// computed analogue of the legacy hand-set 10 mm dowel offset.
+/// The feasibility regime for a dowel footprint (§3.3), per flange kind. `None`
+/// when the ribbon carries no flange ([`FlangeKind::None`]) — the planner is gated
+/// on a flange being present, so this is the defensive short-circuit.
+///
+/// - [`FlangeKind::Plate`]: the incremental band — the `footprint` disk (hole +
+///   wall) must lie in the flange band, the radial offset floored by the inboard
+///   footprint-vs-cup-wall-step clearance (§3.2; the computed analogue of the
+///   legacy hand-set 10 mm dowel offset).
 fn dowel_feasibility(
-    flange_spec: &FlangeSpec,
+    flange: &FlangeKind,
     wall_thickness_m: f64,
     footprint: f64,
-) -> Feasibility {
+) -> Option<Feasibility> {
     let d_floor = wall_thickness_m + footprint + DOWEL_CUP_WALL_MARGIN_M;
-    Feasibility::band(
-        flange_spec.flange_inner_offset_m,
-        flange_spec.flange_width_m,
-        d_floor,
-        flange_spec.flange_width_m,
-    )
+    match flange {
+        FlangeKind::None => None,
+        FlangeKind::Plate(spec) => Some(Feasibility::band(
+            spec.flange_inner_offset_m,
+            spec.flange_width_m,
+            d_floor,
+            spec.flange_width_m,
+        )),
+    }
 }
 
 /// Two registration-extreme seeds at maximum moment arm (§3.4): the loop's
@@ -357,7 +364,7 @@ fn long_axis_extreme_seeds(profile: &SeamProfile) -> Vec<Seed> {
 pub fn plan_smart_dowel_placements(
     layers: &[crate::seam_placement::LayerLoop],
     dowel_spec: &DowelHoleSpec,
-    flange_spec: &FlangeSpec,
+    flange: &FlangeKind,
     wall_thickness_m: f64,
 ) -> Vec<Vec<Point2>> {
     let n_layers = layers.len();
@@ -367,7 +374,9 @@ pub fn plan_smart_dowel_placements(
     }
 
     let footprint = smart_dowel_footprint(dowel_spec);
-    let feas = dowel_feasibility(flange_spec, wall_thickness_m, footprint);
+    let Some(feas) = dowel_feasibility(flange, wall_thickness_m, footprint) else {
+        return result;
+    };
 
     let Some(Some((outer_profile, outer_excluded))) = layers.last() else {
         eprintln!(
@@ -420,7 +429,7 @@ mod tests {
         bounds: &[cf_design::Aabb],
         ribbon: &Ribbon,
         spec: &DowelHoleSpec,
-        flange: &FlangeSpec,
+        flange: &FlangeKind,
         wall: f64,
     ) -> Vec<Vec<Point2>> {
         let loops = build_layer_loops(bodies, bounds, ribbon, flange);
@@ -586,14 +595,13 @@ mod tests {
             .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
             .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
         let dowel = DowelHoleSpec::iter1();
-        let flange = FlangeSpec::iter1();
 
         let plan = plan_dowels(
             &[&inner, &outer],
             &[bounds, bounds],
             &ribbon,
             &dowel,
-            &flange,
+            &ribbon.flange,
             0.005,
         );
         assert_eq!(plan.len(), 2);
@@ -619,8 +627,7 @@ mod tests {
             .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
             .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
         let dowel = DowelHoleSpec::iter1();
-        let flange = FlangeSpec::iter1();
-        let plan = plan_dowels(&[&body], &[bounds], &ribbon, &dowel, &flange, 0.005);
+        let plan = plan_dowels(&[&body], &[bounds], &ribbon, &dowel, &ribbon.flange, 0.005);
         let xforms = build_dowel_hole_transforms(&plan[0], &ribbon, &dowel);
         assert_eq!(xforms.len(), plan[0].len());
         let expected_radius = dowel.diameter_m / 2.0 + dowel.clearance_m;

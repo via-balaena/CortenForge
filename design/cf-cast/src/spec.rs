@@ -1001,6 +1001,72 @@ impl CastSpec {
     }
 }
 
+/// The seam-placement solver's per-layer dowel + bolt centre slices (each `Vec`
+/// parallel to the layer stack, innermost-first; `None` when that fastener class is
+/// disabled). Aliased to keep [`compute_smart_placements`]'s signature legible.
+type SmartPlacementPlans = (Option<Vec<Vec<Point2>>>, Option<Vec<Vec<Point2>>>);
+
+/// Solve the seam-placement fasteners for the whole layer stack (§3.6/§3.8) —
+/// the per-layer dowel + bolt seam-plane centre slices, or `(None, None)` when
+/// there is no flange or no fastener pattern.
+///
+/// Placement happens iff a flange exists (ANY kind — `lateral_reach_m`, not the
+/// Plate-only `spec()`, so the solver runs for `FlangeKind::Demand` too) AND at
+/// least one fastener pattern is enabled. Each layer's seam loop is built ONCE
+/// (S5d-(A), `build_layer_loops`) and shared across both planners — the silhouette
+/// flood-fill is the dominant solve cost (§MA-7), so it must not be rebuilt per
+/// planner. DOWELS are solved FIRST (registration is primary), then BOLTS exclude
+/// the solver-placed dowel footprints (the dowels-first contract, §3.6). The
+/// planners take the `FlangeKind` and derive the per-kind feasibility regime
+/// internally.
+///
+/// # Errors
+///
+/// Propagates [`CastError::InfiniteBounds`] from `layer_mc_bounds` if a layer body
+/// is unbounded.
+fn compute_smart_placements(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+) -> Result<SmartPlacementPlans, CastError> {
+    let want_placement = ribbon.flange.lateral_reach_m().is_some()
+        && (ribbon.dowel_hole.spec().is_some() || ribbon.bolt_pattern.spec().is_some());
+    if !want_placement {
+        return Ok((None, None));
+    }
+    let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
+    let mut bounds = Vec::with_capacity(bodies.len());
+    for body in &bodies {
+        bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
+    }
+    let layer_loops =
+        crate::seam_placement::build_layer_loops(&bodies, &bounds, ribbon, &ribbon.flange);
+    let dowel_plan = ribbon.dowel_hole.spec().map(|dowel_spec| {
+        plan_smart_dowel_placements(
+            &layer_loops,
+            dowel_spec,
+            &ribbon.flange,
+            spec.wall_thickness_m,
+        )
+    });
+    // The dowel footprint disk (hole + wall) the bolt washer must clear, shared with
+    // the dowel planner so the two patterns agree on the wall.
+    let dowel_footprint_r = ribbon
+        .dowel_hole
+        .spec()
+        .map(crate::dowel_hole::smart_dowel_footprint);
+    let bolt_plan = ribbon.bolt_pattern.spec().map(|bolt_spec| {
+        plan_smart_bolt_placements(
+            &layer_loops,
+            bolt_spec,
+            &ribbon.flange,
+            spec.wall_thickness_m,
+            dowel_footprint_r,
+            dowel_plan.as_deref(),
+        )
+    });
+    Ok((dowel_plan, bolt_plan))
+}
+
 /// Compose, mesh, and F4-gate every (layer × piece) pair.
 /// Returns the v2 pending buffer organized as `[Negative, Positive]`
 /// per-layer pairs, so the writer phase consumes them without
@@ -1030,57 +1096,12 @@ fn mesh_and_gate_v2_pieces(
 
     let layer_count = spec.layers.len();
 
-    // Seam-placement solver (the default placement path since S5): when there is a
-    // flange, solve the fastener positions ONCE across the whole layer stack so
-    // every layer shares one angular pattern (§3.8). DOWELS are solved FIRST
-    // (registration is primary), then BOLTS exclude the solver-placed dowel
-    // footprints (the dowels-first contract, §3.6). The per-layer center slices
+    // Seam-placement solver (the default placement path since S5): solve the
+    // fastener positions ONCE across the whole layer stack (`compute_smart_placements`)
+    // so every layer shares one angular pattern (§3.8). The per-layer center slices
     // thread into `compose_piece_shared`; no flange (or no bolt/dowel pattern) →
-    // empty slices, no fasteners.
-    let (smart_dowel_plan, smart_bolt_plan): (Option<Vec<Vec<Point2>>>, Option<Vec<Vec<Point2>>>) =
-        match ribbon.flange.spec() {
-            // Placement happens iff a flange exists AND at least one fastener
-            // pattern is enabled. Build each layer's seam loop ONCE (S5d-(A)) and
-            // share it across both planners — the silhouette flood-fill is the
-            // dominant solve cost (§MA-7), so it must not be rebuilt per planner.
-            Some(flange_spec)
-                if ribbon.dowel_hole.spec().is_some() || ribbon.bolt_pattern.spec().is_some() =>
-            {
-                let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
-                let mut bounds = Vec::with_capacity(bodies.len());
-                for body in &bodies {
-                    bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
-                }
-                let layer_loops =
-                    crate::seam_placement::build_layer_loops(&bodies, &bounds, ribbon, flange_spec);
-                let dowel_plan = ribbon.dowel_hole.spec().map(|dowel_spec| {
-                    plan_smart_dowel_placements(
-                        &layer_loops,
-                        dowel_spec,
-                        flange_spec,
-                        spec.wall_thickness_m,
-                    )
-                });
-                // The dowel footprint disk (hole + wall) the bolt washer must clear,
-                // shared with the dowel planner so the two patterns agree on the wall.
-                let dowel_footprint_r = ribbon
-                    .dowel_hole
-                    .spec()
-                    .map(crate::dowel_hole::smart_dowel_footprint);
-                let bolt_plan = ribbon.bolt_pattern.spec().map(|bolt_spec| {
-                    plan_smart_bolt_placements(
-                        &layer_loops,
-                        bolt_spec,
-                        flange_spec,
-                        spec.wall_thickness_m,
-                        dowel_footprint_r,
-                        dowel_plan.as_deref(),
-                    )
-                });
-                (dowel_plan, bolt_plan)
-            }
-            _ => (None, None),
-        };
+    // `None`, no fasteners.
+    let (smart_dowel_plan, smart_bolt_plan) = compute_smart_placements(spec, ribbon)?;
 
     // The number of printable dowel rods `dowel.stl` lays out = the count the
     // solver actually placed (one shared count across the stack, `cross_layer_snap`).

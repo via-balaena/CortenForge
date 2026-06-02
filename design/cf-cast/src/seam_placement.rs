@@ -23,7 +23,7 @@
 use cf_design::{Aabb, Solid};
 use nalgebra::{Point3, Vector3};
 
-use crate::flange::FlangeSpec;
+use crate::flange::FlangeKind;
 use crate::mesh_csg::MatingTransform;
 use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::Ribbon;
@@ -118,11 +118,13 @@ pub(crate) fn build_layer_loops(
     layer_bodies: &[&Solid],
     layer_bounds: &[Aabb],
     ribbon: &Ribbon,
-    flange_spec: &FlangeSpec,
+    flange: &FlangeKind,
 ) -> Vec<LayerLoop> {
     // Generous window: the body loop sits well inside the MC bounds, padded by the
-    // flange reach so the whole perimeter is captured at any seam tilt.
-    let pad = flange_spec.flange_width_m + SILHOUETTE_GRID_STEP_M;
+    // flange reach so the whole perimeter is captured at any seam tilt. Reach is
+    // flange-kind-agnostic (`lateral_reach_m`); 0 when no flange (caller gates on a
+    // flange being present, so this is the defensive fallback).
+    let pad = flange.lateral_reach_m().unwrap_or(0.0) + SILHOUETTE_GRID_STEP_M;
     let pour_xforms = build_pour_gate_transforms(ribbon);
     layer_bodies
         .iter()

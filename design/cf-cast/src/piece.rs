@@ -299,18 +299,25 @@ pub fn compose_piece_solid(
     // Dowels first, then bolts exclude their footprints (§3.6); empty slices (no
     // flange, or nothing placed) yield no fasteners.
     let bounds = layer_mc_bounds(layer_body, wall_thickness_m, ribbon)?;
-    let (dowel_plan, bolt_plan) = ribbon.flange.spec().map_or((None, None), |flange_spec| {
+    // Placement happens iff a flange exists (ANY kind — `lateral_reach_m`, not the
+    // Plate-only `spec()`). The planners take the `FlangeKind` and derive the
+    // per-kind feasibility regime internally.
+    let (dowel_plan, bolt_plan) = if ribbon.flange.lateral_reach_m().is_some() {
         let bodies = [layer_body];
         let layer_bounds = [bounds];
         // Shared seam loop (S5d-(A)): build the single layer's loop once, feed both
         // planners — same dedup as the v2 stack path, here a 1-element stack.
-        let layer_loops =
-            crate::seam_placement::build_layer_loops(&bodies, &layer_bounds, ribbon, flange_spec);
+        let layer_loops = crate::seam_placement::build_layer_loops(
+            &bodies,
+            &layer_bounds,
+            ribbon,
+            &ribbon.flange,
+        );
         let dowels = ribbon.dowel_hole.spec().map(|dowel_spec| {
             crate::dowel_hole::plan_smart_dowel_placements(
                 &layer_loops,
                 dowel_spec,
-                flange_spec,
+                &ribbon.flange,
                 wall_thickness_m,
             )
         });
@@ -322,14 +329,16 @@ pub fn compose_piece_solid(
             crate::bolt_pattern::plan_smart_bolt_placements(
                 &layer_loops,
                 bolt_spec,
-                flange_spec,
+                &ribbon.flange,
                 wall_thickness_m,
                 dowel_footprint_r,
                 dowels.as_deref(),
             )
         });
         (dowels, bolts)
-    });
+    } else {
+        (None, None)
+    };
     let dowel_slice: &[Point2] = dowel_plan
         .as_ref()
         .and_then(|d| d.first())
@@ -404,7 +413,7 @@ pub(crate) fn layer_mc_bounds(
             .ok_or(CastError::InfiniteBounds(CastTarget::LayerBody {
                 layer_index: 0,
             }))?;
-    let flange_extent = ribbon.flange.spec().map_or(0.0, |s| s.flange_width_m);
+    let flange_extent = ribbon.flange.lateral_reach_m().unwrap_or(0.0);
     let mc_pad = wall_thickness_m.max(flange_extent) + MC_BOUNDS_PAD_M;
     Ok(body_bounds.expanded(mc_pad))
 }

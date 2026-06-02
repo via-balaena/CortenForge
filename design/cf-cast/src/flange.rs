@@ -214,6 +214,21 @@ impl FlangeKind {
             Self::Plate(spec) => Some(spec),
         }
     }
+
+    /// The flange's maximum outboard lateral reach from the body perimeter, in
+    /// meters — `Some` iff a flange is present (any kind), `None` for
+    /// [`Self::None`]. This is the **flange-presence + MC-bounds + silhouette-pad**
+    /// query the placement pipeline uses, independent of the flange *kind* (so the
+    /// seam-placement solver runs for every flange kind, not only
+    /// [`Self::Plate`] — `spec()` would miss a non-plate flange). For
+    /// [`Self::Plate`] the reach is the band `flange_width_m`.
+    #[must_use]
+    pub const fn lateral_reach_m(&self) -> Option<f64> {
+        match self {
+            Self::None => None,
+            Self::Plate(spec) => Some(spec.flange_width_m),
+        }
+    }
 }
 
 /// SDF adapter for the seam-flange (§F-3 option (a) per-perimeter-
