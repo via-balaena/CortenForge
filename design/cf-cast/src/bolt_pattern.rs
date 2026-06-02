@@ -77,28 +77,6 @@ use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M};
 /// clearance per ISO 273 medium-fit.
 const DEFAULT_CLEARANCE_DIAMETER_M: f64 = 0.0055;
 
-/// Default bolt count around the silhouette (8 — even pressure
-/// distribution on the iter-1 sock geometry, ~25 mm spacing on a
-/// typical 200 mm perimeter; engine-valve-cover-equivalent for a
-/// small mold). Workshop user picks per §B recon OQ1.
-const DEFAULT_COUNT: u32 = 8;
-
-/// Default radial offset from the body silhouette curve to the bolt
-/// centerline (13 mm). Workshop user feedback 2026-05-27 cf-view
-/// smoke: the bolt-HEAD/WASHER footprint must clear the cup-wall
-/// outer step (cup-wall extends to `body_dist = wall_thickness_m =
-/// 5 mm`, then steps DOWN past the flange's back face on the cup
-/// piece's outer shell). M5 washer OD = 10 mm = 5 mm radius. Bolt
-/// offset must satisfy `bolt_offset - washer_radius >=
-/// wall_thickness + safety_margin`. With 3 mm safety margin
-/// (absorbs FDM ±0.3 mm tolerance + body-curvature variation up to
-/// 2 mm in the Y direction below the seam plane): 13 mm offset
-/// gives washer inboard edge at `body_dist 8 mm`, cup-wall outer at
-/// 5 mm → **3 mm clearance**. Pre-fix 9 mm offset gave -1 mm
-/// clearance (washer landed ON cup-wall step), would have caused
-/// non-flat washer seating + uneven bolt tension.
-const DEFAULT_OUTBOARD_OFFSET_M: f64 = 0.013;
-
 /// Polygonal facets around each bolt cylinder. 32 segments give
 /// ~0.4 mm chord error at 5.5 mm Ø, well below FDM print resolution
 /// and matching the segment count of the dowel-HOLE
@@ -126,24 +104,19 @@ pub struct BoltPatternSpec {
     /// Bolt clearance hole diameter (meters). Default 5.5 mm (M5
     /// ISO 273 medium fit).
     pub clearance_diameter_m: f64,
-    /// Number of bolts arc-length-equal-spaced around the silhouette.
-    /// Default 8.
-    pub count: u32,
-    /// Radial offset from the body silhouette curve to the bolt
-    /// centerline (meters). Default 13 mm (bumped 9 → 13 mm in iter-1
-    /// so the M5 washer footprint clears the cup-wall outer step;
-    /// see `DEFAULT_OUTBOARD_OFFSET_M` rationale).
-    pub silhouette_outboard_offset_m: f64,
 }
 
 impl BoltPatternSpec {
     /// Workshop iter-1 starting defaults pinned at §B-S1 recon.
+    ///
+    /// Bolt *count* and radial offset are no longer spec fields: the
+    /// seam-placement solver derives them per layer (even spacing at
+    /// ≤30 mm pitch, variable offset from the flange band + washer
+    /// clearance). See `docs/CF_CAST_SEAM_PLACEMENT_RECON.md` §7.5.
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
             clearance_diameter_m: DEFAULT_CLEARANCE_DIAMETER_M,
-            count: DEFAULT_COUNT,
-            silhouette_outboard_offset_m: DEFAULT_OUTBOARD_OFFSET_M,
         }
     }
 }
@@ -379,7 +352,7 @@ pub fn plan_smart_bolt_placements(
 
     let class = FastenerClass {
         footprint_radius: washer_r,
-        fill: Some(max_pitch(bolt_spec)),
+        fill: Some(max_pitch(*bolt_spec)),
         seeds,
     };
     let master = place_fasteners(outer_profile, &feas, outer_excluded, &class);
@@ -392,7 +365,7 @@ pub fn plan_smart_bolt_placements(
 /// The even-contact bolt pitch for the smart placement solve. iter-1 uses the
 /// workmanship default ([`DEFAULT_MAX_PITCH_M`], 30 mm); a `[bolt_pattern]`
 /// override lands here in a later phase (§3.7).
-const fn max_pitch(_spec: &BoltPatternSpec) -> f64 {
+const fn max_pitch(_spec: BoltPatternSpec) -> f64 {
     DEFAULT_MAX_PITCH_M
 }
 
@@ -485,8 +458,6 @@ mod tests {
     fn bolt_pattern_spec_iter1_defaults() {
         let s = BoltPatternSpec::iter1();
         assert_eq!(s.clearance_diameter_m, 0.0055);
-        assert_eq!(s.count, 8);
-        assert_eq!(s.silhouette_outboard_offset_m, 0.013);
     }
 
     #[test]

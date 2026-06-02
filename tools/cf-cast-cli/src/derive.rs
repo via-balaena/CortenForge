@@ -654,10 +654,6 @@ fn resolve_dowel_hole_spec(config: &crate::config::DowelHoleConfig) -> DowelHole
         diameter_m: config.diameter_m.unwrap_or(iter1.diameter_m),
         clearance_m: config.clearance_m.unwrap_or(iter1.clearance_m),
         depth_m: config.depth_m.unwrap_or(iter1.depth_m),
-        count: config.count.unwrap_or(iter1.count),
-        silhouette_outboard_offset_m: config
-            .silhouette_outboard_offset_m
-            .unwrap_or(iter1.silhouette_outboard_offset_m),
     }
 }
 
@@ -671,10 +667,6 @@ fn resolve_bolt_pattern_spec(config: &crate::config::BoltPatternConfig) -> BoltP
         clearance_diameter_m: config
             .clearance_diameter_m
             .unwrap_or(iter1.clearance_diameter_m),
-        count: config.count.unwrap_or(iter1.count),
-        silhouette_outboard_offset_m: config
-            .silhouette_outboard_offset_m
-            .unwrap_or(iter1.silhouette_outboard_offset_m),
     }
 }
 

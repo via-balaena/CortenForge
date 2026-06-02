@@ -1058,32 +1058,33 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
             );
         }
         Some(spec) => {
-            // §M-S2 of the unified-mating-plane arc: symmetric
-            // SubtractCylinder holes per dowel, arc-length-equal-
-            // spaced around the body silhouette, identical on both
-            // cup-halves. Workshop user supplies loose printed PLA
-            // dowels and inserts them through matching holes at
-            // assembly time.
-            let count = spec.count;
+            // §M-S2 of the unified-mating-plane arc: SubtractCylinder
+            // holes per dowel, placed by the seam-placement solver at
+            // the body's long-axis extremes (count emergent per layer),
+            // identical on both cup-halves. Workshop user supplies loose
+            // printed PLA dowels and inserts them through matching holes
+            // at assembly time.
             let diameter_mm = spec.diameter_m * 1000.0;
             let clearance_mm = spec.clearance_m * 1000.0;
             let depth_mm = spec.depth_m * 1000.0;
-            let outboard_offset_mm = spec.silhouette_outboard_offset_m * 1000.0;
             let hole_diameter_mm = 2.0_f64.mul_add(clearance_mm, diameter_mm);
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
-                 curve-following seam. **{count} symmetric dowel \
-                 holes** ({hole_diameter_mm:.2} mm Ø — \
+                 curve-following seam. **Symmetric dowel holes** \
+                 ({hole_diameter_mm:.2} mm Ø — \
                  {diameter_mm:.1} mm nominal dowel × \
                  2 × {clearance_mm:.2} mm radial clearance, \
                  {depth_mm:.1} mm deep per half) are carved through \
-                 BOTH cup-halves' mating faces, arc-length-equal-spaced \
-                 around the body silhouette + offset \
-                 {outboard_offset_mm:.1} mm outboard from the body \
-                 perimeter. The hole pattern is identical on both \
-                 halves.",
+                 BOTH cup-halves' mating faces. The seam-placement \
+                 solver positions the dowels at the body's long-axis \
+                 extremes (maximum moment arm, so a registration pair \
+                 resists lateral skew most effectively); the per-layer \
+                 count is emergent — typically two (one at each \
+                 long-axis end), dropping only where the flange band \
+                 cannot host a feasible hole. The hole pattern is \
+                 identical on both halves.",
             );
             md.push('\n');
             // §M-S2 followup: total tip slack is the SUM of the
@@ -1099,7 +1100,7 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
             let _ = writeln!(
                 md,
                 "**Print `dowel.stl` first.** The export emits a \
-                 single `dowel.stl` containing all {count} printable \
+                 single `dowel.stl` containing all printable \
                  PLA dowels ({diameter_mm:.1} mm Ø × \
                  {dowel_length_mm:.1} mm long — sized so each dowel \
                  inserts ~{insert_depth_mm:.1} mm into each cup-half \
@@ -1133,8 +1134,7 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                  dowel-hole pattern means no asymmetry to worry about \
                  between halves. Document fit issues for the post-\
                  iter-3 dowel-spec decision (revisit \
-                 `DowelHoleSpec::iter1` diameter / clearance / count / \
-                 outboard offset defaults).",
+                 `DowelHoleSpec::iter1` diameter / clearance defaults).",
                 depth_total = depth_mm * 2.0,
             );
         }
@@ -1148,17 +1148,15 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
     let Some(spec) = ribbon.bolt_pattern.spec() else {
         return;
     };
-    // §B of the unified-mating-plane bolt-pattern arc: symmetric
-    // SubtractCylinder holes per bolt, arc-length-equal-spaced
-    // around the body silhouette (interleaved with dowel positions
-    // when both patterns are enabled at default counts). M5
-    // through-bolts + flat washers (×2 per bolt) + hex nuts clamp
-    // the two halves at the flange (across a gasket when one is
+    // §B of the unified-mating-plane bolt-pattern arc: SubtractCylinder
+    // holes per bolt, placed by the seam-placement solver (even spacing
+    // at ≤30 mm pitch, bracketing the pour gate, variable radial offset
+    // from the flange band + washer clearance — count emergent per
+    // layer). M5 through-bolts + flat washers (×2 per bolt) + hex nuts
+    // clamp the two halves at the flange (across a gasket when one is
     // present; iter-1 ships gasketless with mold release + PLA-on-
     // PLA contact under bolt-induced clamp pressure as the seal).
-    let count = spec.count;
     let clearance_mm = spec.clearance_diameter_m * 1000.0;
-    let outboard_offset_mm = spec.silhouette_outboard_offset_m * 1000.0;
     // Minimum bolt length the workshop should source: 2 × flange
     // thickness (the bolt traverse) + 2 × washer (~1 mm each) + nut
     // (~4 mm M5) + bolt-head (~3 mm M5). With 4 mm flange thickness
@@ -1183,26 +1181,28 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
     // 17 mm minimum → 20 mm workshop pick, with ~3 mm thread excess
     // past the nut.
     let min_bolt_length_mm = bolt_traverse_mm + 2.0 + 4.0 + 3.0;
-    let recommended_bolt_length_mm = (min_bolt_length_mm / 5.0).ceil() * 5.0;
+    let recommended = (min_bolt_length_mm / 5.0).ceil() * 5.0;
     let _ = writeln!(md);
     let _ = writeln!(
         md,
         "### M5 through-bolt clamp pattern (§B)\n\
          \n\
-         **{count} bolt clearance holes** ({clearance_mm:.1} mm Ø) carve \
-         through BOTH cup-halves' flange material, arc-length-equal-spaced \
-         around the body silhouette + offset {outboard_offset_mm:.1} mm \
-         outboard from the body perimeter. Identical hole pattern on both \
-         halves; the holes interleave with the §M-S2 dowel-hole positions \
-         (when dowels enabled at default counts) so the two registration + \
-         clamp patterns share the flange band without colliding.\n\
+         **M5 bolt clearance holes** ({clearance_mm:.1} mm Ø) carve \
+         through BOTH cup-halves' flange material. The seam-placement \
+         solver spaces them evenly around the seam loop (≤30 mm pitch), \
+         brackets the pour gate with a bolt on each side, and sizes each \
+         bolt's radial offset so the M5 washer footprint stays inside the \
+         flange band and clear of the cup-wall step, the dowel holes, and \
+         the pour. Identical pattern on both halves of a given layer; the \
+         per-layer hole count is emergent.\n\
          \n\
-         **Workshop supplies (per cast assembly)**: {count} × M5 hex bolts \
-         (recommend M5×{recommended:.0} mm to cover the \
+         **Workshop supplies (per cast assembly)**: per bolt hole — one \
+         M5 hex bolt (recommend M5×{recommended:.0} mm to cover the \
          {bolt_traverse_mm:.0} mm PLA traverse + washers + nut + head, with \
-         a few mm of thread excess), {count_washers} × M5 flat washers \
-         (~10 mm OD; 2 per bolt — one under the head, one under the nut), \
-         {count} × M5 hex nuts.\n\
+         a few mm of thread excess), two M5 flat washers (~10 mm OD; one \
+         under the head, one under the nut), and one M5 hex nut. Count the \
+         holes in the generated `mold_layer_*` pieces (or in cf-view) for \
+         the per-layer quantity.\n\
          \n\
          **Assembly order**: register the two halves with the §M dowels \
          FIRST (the dowel-hole pattern provides lateral alignment so the \
@@ -1222,8 +1222,6 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
          slack — the washer compensates for FDM hole dimensional error \
          (~±0.1 mm typical). If a bolt won't seat, lightly ream the hole \
          with a {clearance_mm:.1} mm drill bit before the next iteration.\n",
-        recommended = recommended_bolt_length_mm,
-        count_washers = count * 2,
     );
 }
 

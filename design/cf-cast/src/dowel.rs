@@ -1,14 +1,15 @@
 //! Printable dowel-array STL emission (the loose PLA dowels that
 //! insert into the [`crate::dowel_hole`] holes at workshop assembly).
 //!
-//! The cup-piece mating faces have N matching `SubtractCylinder`
-//! hole pockets (per [`crate::dowel_hole::DowelHoleSpec::count`]),
-//! one straddling the seam plane at each arc-length-equal position
-//! around the silhouette. This module emits the corresponding
-//! printable dowels: N cylindrical rods, one per dowel-hole pair,
-//! laid out side-by-side in a single STL so the workshop user prints
-//! them once per cast regen and uses them across all 3 layers'
-//! mold-piece pairs.
+//! The cup-piece mating faces carry matching `SubtractCylinder` hole
+//! pockets straddling the seam plane, placed by the seam-placement
+//! solver (at the body's long-axis extremes; count emergent per
+//! layer). This module emits the corresponding printable dowels:
+//! cylindrical rods laid out side-by-side in a single STL so the
+//! workshop user prints them once per cast regen and uses them across
+//! all the layers' mold-piece pairs. The rod count is the `count`
+//! argument to [`build_dowel_array_mesh`] (currently a parked
+//! constant at the call site — see `spec::mesh_and_gate_v2_dowel`).
 //!
 //! # Why direct-mesh, not SDF→MC
 //!
@@ -74,19 +75,25 @@ const DEFAULT_SEGMENTS: u32 = 32;
 
 /// Build the printable dowel-array mesh.
 ///
-/// Contains `spec.count` analytic 32-segment cylinders laid out
-/// along +X starting at `(offset_x_m, 0, 0)`. Each dowel's bottom
-/// face sits at `z = 0` (build-plate ready); cylinder axis = +Z.
+/// Contains `count` analytic 32-segment cylinders laid out along +X
+/// starting at `(offset_x_m, 0, 0)`. Each dowel's bottom face sits at
+/// `z = 0` (build-plate ready); cylinder axis = +Z. The cylinder
+/// geometry (Ø, length) comes from `spec`; only the *number* of rods
+/// is the `count` argument.
 ///
-/// Returns `None` if `spec.count == 0`.
+/// Returns `None` if `count == 0`.
 ///
 /// Bypasses `Solid::from_sdf` + marching-cubes entirely — directly
 /// composes `manifold3d::Manifold` cylinders + unions them, then
 /// converts to [`IndexedMesh`] in mm coords. This avoids MC's
 /// low-poly quantization of small-radius cylinders.
 #[must_use]
-pub fn build_dowel_array_mesh(spec: &DowelHoleSpec, offset_x_m: f64) -> Option<IndexedMesh> {
-    if spec.count == 0 {
+pub fn build_dowel_array_mesh(
+    spec: &DowelHoleSpec,
+    count: u32,
+    offset_x_m: f64,
+) -> Option<IndexedMesh> {
+    if count == 0 {
         return None;
     }
     let radius_m = spec.diameter_m / 2.0;
@@ -98,7 +105,7 @@ pub fn build_dowel_array_mesh(spec: &DowelHoleSpec, offset_x_m: f64) -> Option<I
 
     // Build cylinders 1..count individually + union into one Manifold.
     let mut combined: Option<manifold3d::Manifold> = None;
-    for i in 0..spec.count {
+    for i in 0..count {
         let center_m = Point3::new(f64::from(i).mul_add(pitch, offset_x_m), 0.0, half_length_m);
         let parent = CylinderParent {
             center_m,
@@ -136,11 +143,8 @@ mod tests {
 
     #[test]
     fn build_dowel_array_zero_count_returns_none() {
-        let spec = DowelHoleSpec {
-            count: 0,
-            ..DowelHoleSpec::iter1()
-        };
-        assert!(build_dowel_array_mesh(&spec, 0.0).is_none());
+        let spec = DowelHoleSpec::iter1();
+        assert!(build_dowel_array_mesh(&spec, 0, 0.0).is_none());
     }
 
     #[test]
@@ -151,7 +155,7 @@ mod tests {
         // 21 mm (radius ±1.5). Total X: [-1.5, +22.5] mm.
         // Y: ±1.5 mm. Z: [0, 9] mm.
         let spec = DowelHoleSpec::iter1();
-        let mesh = build_dowel_array_mesh(&spec, 0.0).unwrap();
+        let mesh = build_dowel_array_mesh(&spec, 4, 0.0).unwrap();
         let (lo, hi) = mesh_bounds_mm(&mesh);
         // Tolerance: 0.2 mm chord error at 3 mm Ø for 32-segment cylinder.
         let tol = 0.2_f64;
@@ -175,11 +179,8 @@ mod tests {
 
     #[test]
     fn build_dowel_array_with_offset_x_translates_in_x() {
-        let spec = DowelHoleSpec {
-            count: 1,
-            ..DowelHoleSpec::iter1()
-        };
-        let mesh = build_dowel_array_mesh(&spec, 0.030).unwrap();
+        let spec = DowelHoleSpec::iter1();
+        let mesh = build_dowel_array_mesh(&spec, 1, 0.030).unwrap();
         let (lo, hi) = mesh_bounds_mm(&mesh);
         // Single dowel centered at offset_x = 30 mm, radius 1.5 mm:
         // X extent [28.5, 31.5] mm.
@@ -205,7 +206,7 @@ mod tests {
         // ugly 12-faceted cylinders — 32-segment is way smoother + 7×
         // smaller mesh.
         let spec = DowelHoleSpec::iter1();
-        let mesh = build_dowel_array_mesh(&spec, 0.0).unwrap();
+        let mesh = build_dowel_array_mesh(&spec, 4, 0.0).unwrap();
         assert!(
             mesh.faces.len() < 1000,
             "32-segment cylinder array should have < 1000 faces (MC \

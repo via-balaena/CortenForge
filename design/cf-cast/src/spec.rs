@@ -424,8 +424,8 @@ pub struct GasketMoldArtifact {
 /// Workshop printable dowel-array artifact.
 ///
 /// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Single
-/// STL per cast containing N cylindrical PLA dowels (one per
-/// [`crate::dowel_hole::DowelHoleSpec::count`]) the workshop user
+/// STL per cast containing the cylindrical PLA dowels (rod count set
+/// at the `mesh_and_gate_v2_dowel` call site) the workshop user
 /// prints once + re-uses across all per-layer mating events to
 /// register the two cup-halves at assembly time. Translated
 /// laterally outside the cup-piece bounding region so cf-view
@@ -1468,6 +1468,15 @@ fn mesh_and_gate_v2_dowel(
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Option<PendingDowel>, CastError> {
+    // Number of printable dowel rods to lay out in `dowel.stl`. PARKED
+    // at the historical iter-1 default (4) so S5c stays a byte-identical
+    // deletion. This over-provisions vs the seam-placement solver's
+    // emergent per-layer count (≈2 on base_mold) — harmless (extra rods,
+    // never fewer). FOLLOW-UP (fold into S4.5): thread the solver's
+    // placed-dowel count out of `mesh_and_gate_v2_pieces` so the printed
+    // array exactly matches the holes carved. See
+    // `docs/CF_CAST_SEAM_PLACEMENT_RECON.md` §7.5.
+    const PRINTABLE_DOWEL_COUNT: u32 = 4;
     let Some(dowel_spec) = ribbon.dowel_hole.spec() else {
         return Ok(None);
     };
@@ -1482,7 +1491,9 @@ fn mesh_and_gate_v2_dowel(
     let offset_x = region_bounds.max.x + 0.030;
     let t_compose = std::time::Instant::now();
     let target = CastTarget::Dowel;
-    let Some(mesh) = crate::dowel::build_dowel_array_mesh(dowel_spec, offset_x) else {
+    let Some(mesh) =
+        crate::dowel::build_dowel_array_mesh(dowel_spec, PRINTABLE_DOWEL_COUNT, offset_x)
+    else {
         return Ok(None);
     };
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
@@ -1504,7 +1515,7 @@ fn mesh_and_gate_v2_dowel(
          offset_x = {offset_mm:.1} mm",
         verts = mesh.vertices.len(),
         faces = mesh.faces.len(),
-        count = dowel_spec.count,
+        count = PRINTABLE_DOWEL_COUNT,
         offset_mm = offset_x * 1000.0,
     );
     Ok(Some(PendingDowel {

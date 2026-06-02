@@ -451,15 +451,6 @@ pub struct DowelHoleConfig {
     /// Hole depth PER HALF (meters). `None` → 5 mm (iter1 default).
     #[serde(default)]
     pub depth_m: Option<f64>,
-    /// Number of dowels arc-length-equal-spaced around the silhouette.
-    /// `None` → 4 (iter1 default).
-    #[serde(default)]
-    pub count: Option<u32>,
-    /// Radial offset from the body silhouette curve to the dowel
-    /// centerline (meters). `None` → 10 mm (iter1 default). Must satisfy
-    /// the §M-5-b cross-field invariants in the recon.
-    #[serde(default)]
-    pub silhouette_outboard_offset_m: Option<f64>,
 }
 
 impl Default for DowelHoleConfig {
@@ -469,8 +460,6 @@ impl Default for DowelHoleConfig {
             diameter_m: None,
             clearance_m: None,
             depth_m: None,
-            count: None,
-            silhouette_outboard_offset_m: None,
         }
     }
 }
@@ -482,9 +471,11 @@ impl Default for DowelHoleConfig {
 /// §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
 /// Defaults to `enabled = true` with
 /// [`cf_cast::bolt_pattern::BoltPatternSpec::iter1`] (5.5 mm M5
-/// clearance × 8 bolts × 13 mm outboard offset × pour-gate collision
-/// skip enabled). Per-field overrides surfaced as optionals; absent
-/// → falls back to the iter1 default for that field.
+/// clearance). Bolt *count* and radial offset are no longer config
+/// knobs — the seam-placement solver derives them per layer (even
+/// spacing at ≤30 mm pitch, variable offset from the flange band +
+/// washer clearance). Per-field overrides surfaced as optionals;
+/// absent → falls back to the iter1 default for that field.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoltPatternConfig {
@@ -496,15 +487,6 @@ pub struct BoltPatternConfig {
     /// (M5 ISO 273 medium fit).
     #[serde(default)]
     pub clearance_diameter_m: Option<f64>,
-    /// Number of bolts arc-length-equal-spaced around the silhouette.
-    /// `None` → 8 (iter1 default).
-    #[serde(default)]
-    pub count: Option<u32>,
-    /// Radial offset from body silhouette to bolt centerline (meters).
-    /// `None` → 13 mm (iter1 default). Must satisfy the §B-S1 cross-
-    /// field invariants in `validate_after_layer_source`.
-    #[serde(default)]
-    pub silhouette_outboard_offset_m: Option<f64>,
 }
 
 impl Default for BoltPatternConfig {
@@ -512,8 +494,6 @@ impl Default for BoltPatternConfig {
         Self {
             enabled: true,
             clearance_diameter_m: None,
-            count: None,
-            silhouette_outboard_offset_m: None,
         }
     }
 }
@@ -797,71 +777,14 @@ impl CastConfig {
             }
         }
 
-        // §M-S2 cross-field gate (recon §M-5-b): when both flange +
-        // dowel_hole are enabled, the dowel hole must fit inside the
-        // flange band with FDM-floor wall thickness on both sides
-        // (inboard toward gasket channel + outboard toward flange
-        // outer edge). The iter1 defaults satisfy this with comfortable
-        // 4.4 mm margins; per-field overrides in TOML can violate it,
-        // so gate at parse time. Cold-read finding 2026-05-27.
-        if self.dowel_hole.enabled && self.flange.enabled {
-            let flange_iter1 = cf_cast::FlangeSpec::iter1();
-            let dowel_iter1 = cf_cast::dowel_hole::DowelHoleSpec::iter1();
-            let flange_inner_offset = self
-                .flange
-                .inner_offset_m
-                .unwrap_or(flange_iter1.flange_inner_offset_m);
-            let flange_width = self.flange.width_m.unwrap_or(flange_iter1.flange_width_m);
-            let dowel_diameter = self.dowel_hole.diameter_m.unwrap_or(dowel_iter1.diameter_m);
-            let dowel_clearance = self
-                .dowel_hole
-                .clearance_m
-                .unwrap_or(dowel_iter1.clearance_m);
-            let dowel_offset = self
-                .dowel_hole
-                .silhouette_outboard_offset_m
-                .unwrap_or(dowel_iter1.silhouette_outboard_offset_m);
-            let hole_outer_radius = dowel_diameter / 2.0 + dowel_clearance;
-            // 1 mm FDM-friendly wall floor (the workshop's iter-1
-            // print pipeline can resolve down to ~0.4 mm bead but
-            // <1 mm walls are squish/strip risks).
-            const FDM_WALL_FLOOR_M: f64 = 0.001;
-            let inboard_wall = dowel_offset - hole_outer_radius - flange_inner_offset;
-            ensure!(
-                inboard_wall >= FDM_WALL_FLOOR_M,
-                "cast.toml: dowel-hole inboard wall thickness = \
-                 {inboard_wall_mm:.3} mm violates the {floor_mm:.1} mm FDM \
-                 floor (silhouette_outboard_offset_m {dowel_offset:.4} − \
-                 hole_outer_radius {hole_outer_radius:.4} − \
-                 flange.inner_offset_m {flange_inner_offset:.4}). The dowel \
-                 hole would pierce the gasket channel. Move dowels outboard \
-                 (raise dowel_hole.silhouette_outboard_offset_m), shrink the \
-                 dowel (dowel_hole.diameter_m), or narrow the flange inner \
-                 offset (flange.inner_offset_m).",
-                inboard_wall_mm = inboard_wall * 1000.0,
-                floor_mm = FDM_WALL_FLOOR_M * 1000.0,
-            );
-            let outboard_wall = flange_width - dowel_offset - hole_outer_radius;
-            ensure!(
-                outboard_wall >= FDM_WALL_FLOOR_M,
-                "cast.toml: dowel-hole outboard wall thickness = \
-                 {outboard_wall_mm:.3} mm violates the {floor_mm:.1} mm FDM \
-                 floor (flange.width_m {flange_width:.4} − \
-                 silhouette_outboard_offset_m {dowel_offset:.4} − \
-                 hole_outer_radius {hole_outer_radius:.4}). The dowel hole \
-                 would breach the flange outer perimeter. Move dowels \
-                 inboard (lower dowel_hole.silhouette_outboard_offset_m) or \
-                 widen the flange (flange.width_m).",
-                outboard_wall_mm = outboard_wall * 1000.0,
-                floor_mm = FDM_WALL_FLOOR_M * 1000.0,
-            );
-        }
-
-        // §B cross-field gates: bolt-pattern requires a flange to
-        // clamp through, and bolt holes must respect inboard +
-        // outboard FDM wall floors. When dowel + bolt patterns are
-        // both enabled, the arc-fraction sets must not collide (radial
-        // sums of cylinder radii < the minimum arc-length separation).
+        // §B cross-field gate: bolt-pattern requires a flange to clamp
+        // through. The former inboard/outboard wall + washer-cup-wall-step
+        // offset validators were deleted in S5c — the seam-placement
+        // solver supersedes them: its `d_floor = wall + washer + margin`
+        // + flange-band feasibility guarantee by construction what those
+        // gates checked (recon §7.5 D2). A too-narrow flange now surfaces
+        // as the solver's `cross_layer_snap` "dropped N" warn (Risk #1)
+        // rather than a config-parse failure.
         if self.bolt_pattern.enabled {
             ensure!(
                 self.flange.enabled,
@@ -869,104 +792,6 @@ impl CastConfig {
                  disabled. M5 through-bolts clamp through the flange — \
                  without a flange there is no material to bolt. Either \
                  enable [flange] or disable [bolt_pattern]."
-            );
-            let flange_iter1 = cf_cast::FlangeSpec::iter1();
-            let bolt_iter1 = cf_cast::bolt_pattern::BoltPatternSpec::iter1();
-            let flange_inner_offset = self
-                .flange
-                .inner_offset_m
-                .unwrap_or(flange_iter1.flange_inner_offset_m);
-            let flange_width = self.flange.width_m.unwrap_or(flange_iter1.flange_width_m);
-            let bolt_diameter = self
-                .bolt_pattern
-                .clearance_diameter_m
-                .unwrap_or(bolt_iter1.clearance_diameter_m);
-            let bolt_offset = self
-                .bolt_pattern
-                .silhouette_outboard_offset_m
-                .unwrap_or(bolt_iter1.silhouette_outboard_offset_m);
-            let bolt_radius = bolt_diameter / 2.0;
-            // 1 mm FDM-floor + 0.75× rule of thumb for PLA bolt
-            // fasteners (workshop-realistic per §B engineering
-            // analysis). Use the larger of the two for the
-            // wall-thickness floor here.
-            const FDM_WALL_FLOOR_M: f64 = 0.001;
-            let bolt_wall_floor = (0.75 * bolt_diameter).max(FDM_WALL_FLOOR_M);
-            let inboard_wall = bolt_offset - bolt_radius - flange_inner_offset;
-            ensure!(
-                inboard_wall >= bolt_wall_floor,
-                "cast.toml: bolt-pattern inboard wall thickness = \
-                 {inboard_wall_mm:.3} mm violates the {floor_mm:.3} mm wall \
-                 floor (0.75× bolt clearance Ø rule for FDM PLA fasteners): \
-                 silhouette_outboard_offset_m {bolt_offset:.4} − \
-                 bolt_radius {bolt_radius:.4} − flange.inner_offset_m \
-                 {flange_inner_offset:.4}. Bolt would crack the inboard wall \
-                 under hand-torque. Move bolts outboard \
-                 (raise bolt_pattern.silhouette_outboard_offset_m), shrink \
-                 the bolt (bolt_pattern.clearance_diameter_m), or narrow \
-                 the flange inner offset (flange.inner_offset_m).",
-                inboard_wall_mm = inboard_wall * 1000.0,
-                floor_mm = bolt_wall_floor * 1000.0,
-            );
-            let outboard_wall = flange_width - bolt_offset - bolt_radius;
-            ensure!(
-                outboard_wall >= bolt_wall_floor,
-                "cast.toml: bolt-pattern outboard wall thickness = \
-                 {outboard_wall_mm:.3} mm violates the {floor_mm:.3} mm wall \
-                 floor (0.75× bolt clearance Ø rule for FDM PLA fasteners): \
-                 flange.width_m {flange_width:.4} − \
-                 silhouette_outboard_offset_m {bolt_offset:.4} − \
-                 bolt_radius {bolt_radius:.4}. Bolt would crack the outboard \
-                 wall under hand-torque. Move bolts inboard (lower \
-                 bolt_pattern.silhouette_outboard_offset_m) or widen the \
-                 flange (flange.width_m, ideally to ≥ {min_flange:.3} mm).",
-                outboard_wall_mm = outboard_wall * 1000.0,
-                floor_mm = bolt_wall_floor * 1000.0,
-                min_flange = (bolt_offset + bolt_radius + bolt_wall_floor) * 1000.0,
-            );
-
-            // Cup-wall-step washer-clearance invariant (iter-1 near-
-            // miss anchor): the M5 washer's lateral footprint extends
-            // inboard from the bolt centerline by the washer radius
-            // (~5 mm for standard M5 ~10 mm OD). The washer's inboard
-            // edge must clear the cup-wall outer step at
-            // `body_dist = wall_thickness_m`; otherwise the washer
-            // rests partly on the step and clamp pressure points-
-            // loads onto the cup-wall edge instead of seating flat
-            // against the flange. Workshop user surfaced this 2026-
-            // 05-27 against an earlier bolt_offset = 9 mm config:
-            // 9 − 5 = 4 mm < 5 mm wall → washer overlaps step.
-            // iter-1 bumped to bolt_offset = 13 mm: 13 − 5 = 8 mm vs
-            // 5 mm + 1 mm margin = 6 mm floor → 2 mm slack.
-            const M5_WASHER_RADIUS_M: f64 = 0.005;
-            const CUP_WALL_STEP_MARGIN_M: f64 = 0.001;
-            let wall_thickness_m = self.cast.wall_thickness_m;
-            let cup_wall_step_clearance = bolt_offset - M5_WASHER_RADIUS_M - wall_thickness_m;
-            ensure!(
-                cup_wall_step_clearance >= CUP_WALL_STEP_MARGIN_M,
-                "cast.toml: M5 washer footprint overlaps cup-wall outer \
-                 step — bolt_offset {bolt_offset:.4} − M5 washer radius \
-                 {washer_radius:.4} = {washer_inboard_edge:.4} m, which \
-                 is {overlap_mm:.3} mm {direction} cast.wall_thickness_m \
-                 {wall_mm:.3} mm + {margin_mm:.3} mm margin. Washer \
-                 would rest partly on the cup-wall step instead of \
-                 seating flat against the flange, point-loading the \
-                 step under hand-torque. Move bolts outboard \
-                 (raise bolt_pattern.silhouette_outboard_offset_m to \
-                 ≥ {min_offset_mm:.3} mm) or shrink the cup wall \
-                 (lower cast.wall_thickness_m).",
-                washer_radius = M5_WASHER_RADIUS_M,
-                washer_inboard_edge = bolt_offset - M5_WASHER_RADIUS_M,
-                overlap_mm = (CUP_WALL_STEP_MARGIN_M - cup_wall_step_clearance).abs() * 1000.0,
-                direction = if cup_wall_step_clearance < 0.0 {
-                    "INSIDE"
-                } else {
-                    "below"
-                },
-                wall_mm = wall_thickness_m * 1000.0,
-                margin_mm = CUP_WALL_STEP_MARGIN_M * 1000.0,
-                min_offset_mm =
-                    (wall_thickness_m + M5_WASHER_RADIUS_M + CUP_WALL_STEP_MARGIN_M) * 1000.0,
             );
         }
 
@@ -1393,15 +1218,12 @@ material = "ECOFLEX_00_30"
     }
 
     #[test]
-    fn rejects_bolt_washer_overlapping_cup_wall_step() {
-        // Cup-wall-step washer-clearance invariant (2026-05-27 follow-
-        // up to the iter-1 ultra-review). The historical near-miss:
-        // bolt_pattern.silhouette_outboard_offset_m = 9 mm with the
-        // default 5 mm cast.wall_thickness_m + ~5 mm M5 washer radius
-        // → washer inboard edge at body_dist = 4 mm, overlapping the
-        // cup-wall outer step at body_dist = 5 mm. Validator must
-        // catch this at config time instead of letting the workshop
-        // discover it post-print.
+    fn rejects_bolt_pattern_without_flange() {
+        // §B surviving cross-field gate (S5c): bolts clamp through the
+        // flange, so [bolt_pattern] enabled with [flange] disabled has
+        // no material to bolt. The offset-based wall/washer validators
+        // were deleted in S5c (the seam-placement solver supersedes
+        // them); this flange-presence check is the one that remains.
         let text = r#"
 [scan]
 cleaned_stl = "iter1.cleaned.stl"
@@ -1411,117 +1233,42 @@ prep_toml = "iter1.cleaned.prep.toml"
 thickness_m = 0.006
 material = "ECOFLEX_00_30"
 
-[bolt_pattern]
-silhouette_outboard_offset_m = 0.009
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        let err = cfg
-            .validate()
-            .expect_err("bolt_offset = 9 mm at default wall = 5 mm must fail washer-clearance");
-        let s = err.to_string();
-        assert!(
-            s.contains("washer footprint"),
-            "expected washer-footprint error: {s}"
-        );
-        assert!(
-            s.contains("cup-wall outer step"),
-            "expected cup-wall-step mention: {s}"
-        );
-    }
-
-    #[test]
-    fn accepts_bolt_washer_clears_cup_wall_step_at_iter1_defaults() {
-        // iter-1 defaults (bolt_offset = 13 mm, wall = 5 mm, washer
-        // radius = 5 mm) → washer inboard edge at body_dist = 8 mm,
-        // well clear of the 5 mm cup-wall step (3 mm slack vs 1 mm
-        // margin requirement). Pins the gate's "passes at iter-1
-        // defaults" branch — regression-anchors that the validator
-        // doesn't accidentally reject the production-default config.
-        let text = r#"
-[scan]
-cleaned_stl = "iter1.cleaned.stl"
-prep_toml = "iter1.cleaned.prep.toml"
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn accepts_thin_cup_wall_with_default_bolt_offset() {
-        // Workshop drops wall_thickness_m to 3 mm: washer clearance
-        // = 13 − 5 − 3 = 5 mm slack vs 1 mm margin requirement →
-        // passes. Pins the gate's responsiveness to the cup-wall
-        // input (vs hard-coding the wall floor at 5 mm).
-        let text = r#"
-[scan]
-cleaned_stl = "iter1.cleaned.stl"
-prep_toml = "iter1.cleaned.prep.toml"
-
-[cast]
-wall_thickness_m = 0.003
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn rejects_bolt_offset_below_thick_cup_wall() {
-        // Inverse pairing: with cast.wall_thickness_m bumped to 8 mm,
-        // the iter-1 default 13 mm bolt offset has clearance 13 − 5 −
-        // 8 = 0 mm < 1 mm margin → fail. Pins the gate's coupling on
-        // the wall-thickness side.
-        let text = r#"
-[scan]
-cleaned_stl = "iter1.cleaned.stl"
-prep_toml = "iter1.cleaned.prep.toml"
-
-[cast]
-wall_thickness_m = 0.008
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        let err = cfg
-            .validate()
-            .expect_err("13 mm bolt offset at 8 mm wall must fail");
-        assert!(
-            err.to_string().contains("washer footprint"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn skips_washer_clearance_check_when_bolts_disabled() {
-        // The whole bolt-pattern validator block is gated on
-        // `self.bolt_pattern.enabled`. A bolt_offset value that
-        // WOULD fail the washer check passes silently when bolts are
-        // off (no flange→bolt invariants fire either). Pins the
-        // "no-op when disabled" branch.
-        let text = r#"
-[scan]
-cleaned_stl = "iter1.cleaned.stl"
-prep_toml = "iter1.cleaned.prep.toml"
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[bolt_pattern]
+[flange]
 enabled = false
-silhouette_outboard_offset_m = 0.009
+
+[bolt_pattern]
+enabled = true
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("bolt_pattern without flange must fail");
+        assert!(
+            err.to_string().contains("no material to bolt"),
+            "expected flange-required error: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_bolt_pattern_with_flange_at_defaults() {
+        // The complement: bolts enabled with the flange present (both
+        // default-on) validate cleanly. Regression-anchors that the
+        // surviving check doesn't reject the production-default config
+        // now that the offset-based validators are gone.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[bolt_pattern]
+enabled = true
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
-        assert!(!cfg.bolt_pattern.enabled);
+        assert!(cfg.bolt_pattern.enabled);
     }
 }

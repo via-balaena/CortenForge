@@ -604,9 +604,9 @@ impl Silhouette2d {
     }
 
     /// Outward-pointing 2D unit normal to the silhouette at the
-    /// given arc-length fraction. Used to offset dowel positions
-    /// outboard from the silhouette by `silhouette_outboard_offset_m`
-    /// in [`crate::dowel_hole`].
+    /// given arc-length fraction. Offsets a point radially outboard
+    /// from the silhouette curve (e.g. the seam-placement solver's
+    /// radial fastener offset).
     ///
     /// The local outward direction at arc fraction `t` is the
     /// perpendicular to the local tangent direction (the segment

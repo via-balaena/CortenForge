@@ -84,27 +84,6 @@ const DEFAULT_CLEARANCE_M: f64 = 0.0001;
 /// each side for assembly play).
 const DEFAULT_DEPTH_M: f64 = 0.005;
 
-/// Default hole count around the silhouette (4 — one in each
-/// quadrant for a typical sock-shaped body). Workshop user picks per
-/// §M recon OQ3.
-const DEFAULT_COUNT: u32 = 4;
-
-/// Default radial offset from the body silhouette curve to the dowel
-/// centerline (10 mm). Workshop user feedback 2026-05-27 cf-view
-/// smoke: the dowel hole at the pre-bump 8 mm offset left only 3 mm
-/// of FLAT flange between the cup-wall outer step (at
-/// `body_dist = wall_thickness_m = 5 mm`) and the dowel hole — too
-/// narrow for a 5 mm-wide vice jaw to grip during press-fit dowel
-/// insertion. At 10 mm offset the inboard flat is 5 mm (matches
-/// vice jaw width) and dowel outboard wall is `20 - 10 - 1.6 = 8.4
-/// mm` (still 5.25× hole-Ø safe margin in the post-§B-washer-
-/// clearance 20 mm flange band). Dowel-bolt radial separation
-/// drops 5 → 3 mm but the arc-length stagger (1/16 perimeter ≈
-/// 12.5 mm at iter-1 sock) keeps the 3D distance between dowel +
-/// bolt cylinder centers well above the 4.35 mm cylinder-collision
-/// threshold.
-const DEFAULT_OUTBOARD_OFFSET_M: f64 = 0.010;
-
 /// Polygonal facets around the dowel cylinder. 32 segments give a
 /// ~0.2 mm chord error at 3 mm diameter — workshop-imperceptible at
 /// FDM print resolution. Determinism contract per
@@ -156,27 +135,22 @@ pub struct DowelHoleSpec {
     /// Hole depth PER HALF (meters). The cylinder spans
     /// `2 × depth_m` straddling the seam plane. Default 5 mm.
     pub depth_m: f64,
-    /// Number of dowels arc-length-equal-spaced around the
-    /// silhouette. Default 4.
-    pub count: u32,
-    /// Radial offset from the body silhouette curve to the dowel
-    /// centerline (meters). Default 10 mm (bumped 8 → 10 mm in iter-1
-    /// for vice-jaw flange clearance). Must satisfy the §M-5-b
-    /// cross-field invariants in the recon (inboard + outboard wall
-    /// thicknesses ≥ FDM floor).
-    pub silhouette_outboard_offset_m: f64,
 }
 
 impl DowelHoleSpec {
     /// Workshop iter-1 starting defaults pinned at §M-S2 recon.
+    ///
+    /// Dowel *count* and radial offset are no longer spec fields: the
+    /// seam-placement solver seeds dowels at the body's long-axis
+    /// extremes (maximum moment arm) and solves the radial offset from
+    /// the flange band + footprint clearance. See
+    /// `docs/CF_CAST_SEAM_PLACEMENT_RECON.md` §7.5.
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
             diameter_m: DEFAULT_DIAMETER_M,
             clearance_m: DEFAULT_CLEARANCE_M,
             depth_m: DEFAULT_DEPTH_M,
-            count: DEFAULT_COUNT,
-            silhouette_outboard_offset_m: DEFAULT_OUTBOARD_OFFSET_M,
         }
     }
 }
@@ -478,8 +452,6 @@ mod tests {
         assert_eq!(s.diameter_m, 0.003);
         assert_eq!(s.clearance_m, 0.0001);
         assert_eq!(s.depth_m, 0.005);
-        assert_eq!(s.count, 4);
-        assert_eq!(s.silhouette_outboard_offset_m, 0.010);
     }
 
     #[test]
