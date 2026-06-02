@@ -8,8 +8,10 @@
 //! cylindrical rods laid out side-by-side in a single STL so the
 //! workshop user prints them once per cast regen and uses them across
 //! all the layers' mold-piece pairs. The rod count is the `count`
-//! argument to [`build_dowel_array_mesh`] (currently a parked
-//! constant at the call site — see `spec::mesh_and_gate_v2_dowel`).
+//! argument to [`build_dowel_array_mesh`] — the count the seam-placement
+//! solver actually placed per layer, threaded from
+//! `spec::mesh_and_gate_v2_pieces` to `spec::mesh_and_gate_v2_dowel` so the
+//! printed array matches the holes carved into the cups.
 //!
 //! # Why direct-mesh, not SDF→MC
 //!

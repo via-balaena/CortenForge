@@ -424,8 +424,9 @@ pub struct GasketMoldArtifact {
 /// Workshop printable dowel-array artifact.
 ///
 /// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Single
-/// STL per cast containing the cylindrical PLA dowels (rod count set
-/// at the `mesh_and_gate_v2_dowel` call site) the workshop user
+/// STL per cast containing the cylindrical PLA dowels (rod count = the
+/// seam-placement solver's per-layer placed count, threaded into
+/// `mesh_and_gate_v2_dowel`) the workshop user
 /// prints once + re-uses across all per-layer mating events to
 /// register the two cup-halves at assembly time. Translated
 /// laterally outside the cup-piece bounding region so cf-view
@@ -956,12 +957,12 @@ impl CastSpec {
         let pour_volumes = self.compute_pour_volumes()?;
         check_mass_budget(self, &pour_volumes)?;
 
-        let pending_pieces = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
+        let (pending_pieces, placed_dowel_count) = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
         let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
         let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
         let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
         let pending_gaskets = mesh_and_gate_v2_gaskets(self, ribbon, out_dir)?;
-        let pending_dowel = mesh_and_gate_v2_dowel(self, ribbon, out_dir)?;
+        let pending_dowel = mesh_and_gate_v2_dowel(self, ribbon, out_dir, placed_dowel_count)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
@@ -1024,7 +1025,7 @@ fn mesh_and_gate_v2_pieces(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
-) -> Result<Vec<[PendingPiece; 2]>, CastError> {
+) -> Result<(Vec<[PendingPiece; 2]>, u32), CastError> {
     use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
     let layer_count = spec.layers.len();
@@ -1081,7 +1082,21 @@ fn mesh_and_gate_v2_pieces(
             _ => (None, None),
         };
 
-    spec.layers
+    // The number of printable dowel rods `dowel.stl` lays out = the count the
+    // solver actually placed (one shared count across the stack, `cross_layer_snap`).
+    // Threaded to `mesh_and_gate_v2_dowel` so the printed array matches the holes
+    // carved (no flange / no dowel pattern → 0 → no `dowel.stl`). Supersedes the
+    // parked `PRINTABLE_DOWEL_COUNT = 4` (S4.5 fold-in, recon §7.6).
+    let placed_dowel_count = u32::try_from(
+        smart_dowel_plan
+            .as_ref()
+            .and_then(|plan| plan.first())
+            .map_or(0, Vec::len),
+    )
+    .unwrap_or(u32::MAX);
+
+    let pieces = spec
+        .layers
         .par_iter()
         .enumerate()
         .map(
@@ -1137,7 +1152,8 @@ fn mesh_and_gate_v2_pieces(
                 Ok([neg_res?, pos_res?])
             },
         )
-        .collect::<Result<Vec<[PendingPiece; 2]>, CastError>>()
+        .collect::<Result<Vec<[PendingPiece; 2]>, CastError>>()?;
+    Ok((pieces, placed_dowel_count))
 }
 
 /// Compose + mesh + F4-gate a single piece. Extracted so
@@ -1479,16 +1495,15 @@ fn mesh_and_gate_v2_dowel(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
+    printable_dowel_count: u32,
 ) -> Result<Option<PendingDowel>, CastError> {
-    // Number of printable dowel rods to lay out in `dowel.stl`. PARKED
-    // at the historical iter-1 default (4) so S5c stays a byte-identical
-    // deletion. This over-provisions vs the seam-placement solver's
-    // emergent per-layer count (≈2 on base_mold) — harmless (extra rods,
-    // never fewer). FOLLOW-UP (fold into S4.5): thread the solver's
-    // placed-dowel count out of `mesh_and_gate_v2_pieces` so the printed
-    // array exactly matches the holes carved. See
-    // `docs/CF_CAST_SEAM_PLACEMENT_RECON.md` §7.5.
-    const PRINTABLE_DOWEL_COUNT: u32 = 4;
+    // `printable_dowel_count` = the count the seam-placement solver actually placed
+    // per layer (threaded from `mesh_and_gate_v2_pieces`), so the printed `dowel.stl`
+    // array exactly matches the holes carved into the cup pieces (≈2 on base_mold).
+    // S4.5 fold-in (recon §7.6) — supersedes the parked `PRINTABLE_DOWEL_COUNT = 4`
+    // that over-provisioned vs the solver. A count of 0 (no flange / no dowel
+    // pattern → nothing placed) yields no `dowel.stl` (`build_dowel_array_mesh`
+    // returns `None`).
     let Some(dowel_spec) = ribbon.dowel_hole.spec() else {
         return Ok(None);
     };
@@ -1504,7 +1519,7 @@ fn mesh_and_gate_v2_dowel(
     let t_compose = std::time::Instant::now();
     let target = CastTarget::Dowel;
     let Some(mesh) =
-        crate::dowel::build_dowel_array_mesh(dowel_spec, PRINTABLE_DOWEL_COUNT, offset_x)
+        crate::dowel::build_dowel_array_mesh(dowel_spec, printable_dowel_count, offset_x)
     else {
         return Ok(None);
     };
@@ -1527,7 +1542,7 @@ fn mesh_and_gate_v2_dowel(
          offset_x = {offset_mm:.1} mm",
         verts = mesh.vertices.len(),
         faces = mesh.faces.len(),
-        count = PRINTABLE_DOWEL_COUNT,
+        count = printable_dowel_count,
         offset_mm = offset_x * 1000.0,
     );
     Ok(Some(PendingDowel {
