@@ -42,7 +42,9 @@ pub struct CastConfig {
     pub plug_pins: PlugPinConfig,
     /// Pour gate + air vent override (default = `PourGateSpec::iter1()`,
     /// enabled). Absence of the table means "enabled with iter1
-    /// defaults". Set `enabled = false` to disable.
+    /// defaults". Set `enabled = false` to disable; `gate_radius_m` is the
+    /// per-silicone sprue-size knob (widens gate + funnel together — bump it for a
+    /// thick silicone). See [[project-cf-cast-per-silicone-sprue-funnel]].
     #[serde(default)]
     pub pour_gate: PourGateConfig,
     /// Per-layer gasket mold override (**default = disabled** since the S4.5
@@ -330,6 +332,22 @@ pub struct PourGateConfig {
     /// arc §4.3, 2026-05-29.
     #[serde(default)]
     pub apex_axial: bool,
+    /// Pour-leg (sprue) radius (meters) — **the per-silicone sprue-size knob**.
+    /// `None` → [`cf_cast::PourGateSpec::iter1`]'s 5 mm (Ø10 mm bore). Bump it for a
+    /// thick silicone (e.g. Dragon Skin) that pours slowly. The pour THROAT depends on
+    /// the layout: **apex-axial** (the integral split funnel) has a lumen continuous
+    /// into the bore — no inserted nipple — so the throat IS the bore Ø (Ø10 mm at the
+    /// default); **V-at-dome** (the legacy separate funnel) derives a narrower nipple
+    /// throat (≈ Ø6.5 mm = bore − 3.5 mm wall) off this. Widening the apex bore also
+    /// re-shapes the demand-flange seal land at the apex (the solver handles the
+    /// bracket spacing; re-eyeball the apex). See
+    /// [[project-cf-cast-per-silicone-sprue-funnel]].
+    #[serde(default)]
+    pub gate_radius_m: Option<f64>,
+    /// Vent-leg radius (meters). `None` → iter1's 3 mm (Ø6 mm). Used by the V-shape
+    /// layout; the apex-axial layout models no vent (hand-drilled).
+    #[serde(default)]
+    pub vent_radius_m: Option<f64>,
 }
 
 impl Default for PourGateConfig {
@@ -337,6 +355,8 @@ impl Default for PourGateConfig {
         Self {
             enabled: true,
             apex_axial: false,
+            gate_radius_m: None,
+            vent_radius_m: None,
         }
     }
 }
@@ -762,6 +782,25 @@ impl CastConfig {
         // the constraint is satisfied by construction; the gate is
         // omitted until S7 calibration surfaces a workshop-physical
         // need.
+
+        // Pour-gate radius knobs (the per-silicone sprue-size lever): finite +
+        // positive. The funnel derives its nipple bore off gate_radius_m, so a
+        // too-small gate surfaces as the funnel's F4 ThinWall gate (the realistic
+        // use is WIDENING for a thick silicone). See
+        // [[project-cf-cast-per-silicone-sprue-funnel]].
+        if self.pour_gate.enabled {
+            for (label, v) in [
+                ("pour_gate.gate_radius_m", self.pour_gate.gate_radius_m),
+                ("pour_gate.vent_radius_m", self.pour_gate.vent_radius_m),
+            ] {
+                if let Some(value) = v {
+                    ensure!(
+                        value.is_finite() && value > 0.0,
+                        "cast.toml: {label} = {value} must be finite and > 0"
+                    );
+                }
+            }
+        }
 
         // S2 of the seam-flange arc per recon §F-6. Per-field
         // finiteness + positivity + cross-field gasket-disjoint
@@ -1265,6 +1304,52 @@ material = "ECOFLEX_00_30"
             err.to_string().contains("zero magnitude"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn rejects_nonpositive_pour_gate_radius() {
+        // The per-silicone sprue knob must be finite + > 0.
+        let text = r#"
+[scan]
+cleaned_stl = "s.stl"
+prep_toml = "s.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[pour_gate]
+gate_radius_m = 0.0
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("zero pour_gate.gate_radius_m must fail");
+        assert!(
+            err.to_string().contains("pour_gate.gate_radius_m"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parses_pour_gate_radius_overrides() {
+        let text = r#"
+[scan]
+cleaned_stl = "s.stl"
+prep_toml = "s.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[pour_gate]
+gate_radius_m = 0.008
+vent_radius_m = 0.004
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!((cfg.pour_gate.gate_radius_m.unwrap() - 0.008).abs() < 1e-12);
+        assert!((cfg.pour_gate.vent_radius_m.unwrap() - 0.004).abs() < 1e-12);
     }
 
     #[test]

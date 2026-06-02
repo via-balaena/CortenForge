@@ -229,6 +229,13 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
         PourGateKind::None => return None,
         PourGateKind::Default(spec) => spec,
     };
+    // Apex-axial integrates the funnel INTO the cup pieces (the integral
+    // split funnel — `crate::pour::build_integral_pour_channel`), so there is
+    // NO separate funnel STL for that layout. Only the legacy V-at-dome
+    // layout emits this standalone (inserted-nipple) funnel.
+    if spec.layout == PourGateLayout::ApexAxial {
+        return None;
+    }
     let nipple_outer_r = spec.gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0;
     let nipple_inner_r = nipple_outer_r - FUNNEL_NIPPLE_WALL_M;
     let bowl_top_inner_r = FUNNEL_TOP_OUTER_RADIUS_M - FUNNEL_CONE_WALL_M;
@@ -349,7 +356,10 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
 ///
 /// Returns a cylinder when `r_bot >= r_top` (degenerate / non-
 /// tapered input).
-fn truncated_cone(r_bot: f64, r_top: f64, z_bot: f64, z_top: f64) -> Solid {
+///
+/// `pub(crate)` so the integral split funnel ([`crate::pour`], apex-axial
+/// layout) reuses the same frustum primitive for its in-cup pour cone.
+pub(crate) fn truncated_cone(r_bot: f64, r_top: f64, z_bot: f64, z_top: f64) -> Solid {
     let h = z_top - z_bot;
     if r_bot >= r_top || h <= 0.0 {
         return Solid::cylinder(r_top.max(r_bot), h.abs() / 2.0).translate(Vector3::new(
@@ -400,39 +410,18 @@ mod tests {
             .with_pour_gate(PourGateKind::Default(spec))
     }
 
-    /// `ApexAxial` layout → STRAIGHT nipple: the spout points straight
-    /// down (`−Z`) with no `+X` tilt offset. The nipple tip sits at
-    /// `(0, 0, −nipple_h)`; the funnel's `+X` extent comes ONLY from
-    /// the bowl mouth radius, and its `−Z` extent reaches the full
-    /// (un-foreshortened) nipple height — unlike the bent funnel whose
-    /// tip foreshortens to `−nipple_h·cos(θ)`.
+    /// `ApexAxial` layout → NO separate funnel STL: the funnel is now
+    /// integrated INTO the cup pieces (the integral split funnel —
+    /// `crate::pour::build_integral_pour_channel`), so there is no
+    /// inserted-nipple standalone funnel for this layout. (Recon §7.8 —
+    /// the inserted nipple's wall was a ~5.6× `r⁴` throat constriction;
+    /// the integral funnel's lumen is continuous into the bore.)
     #[test]
-    fn build_funnel_solid_apex_axial_nipple_is_straight() {
+    fn build_funnel_solid_apex_axial_is_none_now_integral() {
         let ribbon = apex_axial_ribbon();
-        let (funnel, _) = build_funnel_solid(&ribbon).expect("funnel should build");
-        let aabb = funnel.bounds().expect("funnel has finite bounds");
-        // Straight nipple: tip at full −nipple_h (not foreshortened by
-        // cos θ). Allow MC slack.
         assert!(
-            (aabb.min.z + FUNNEL_NIPPLE_HEIGHT_M).abs() < 0.002,
-            "straight nipple min.z should reach −nipple_h = {}; got {}",
-            -FUNNEL_NIPPLE_HEIGHT_M,
-            aabb.min.z,
-        );
-        // No tilt → +X extent is the bowl mouth, not the bowl PLUS a
-        // tilted nipple. Max.x ≈ bowl top radius.
-        assert!(
-            (aabb.max.x - FUNNEL_TOP_OUTER_RADIUS_M).abs() < 0.002,
-            "straight-nipple funnel +X extent should be the bowl mouth \
-             {FUNNEL_TOP_OUTER_RADIUS_M}; got {}",
-            aabb.max.x,
-        );
-        // Symmetric about the bowl axis (no +X bias from a tilt).
-        assert!(
-            (aabb.max.x + aabb.min.x).abs() < 0.002,
-            "straight nipple → X-symmetric bounds; got max.x={} min.x={}",
-            aabb.max.x,
-            aabb.min.x,
+            build_funnel_solid(&ribbon).is_none(),
+            "apex-axial emits no separate funnel — it is integral to the cup",
         );
     }
 

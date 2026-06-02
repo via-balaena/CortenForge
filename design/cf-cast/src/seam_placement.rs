@@ -98,6 +98,26 @@ pub(crate) fn pour_exclusions(
         .collect()
 }
 
+/// Widen every pour [`Exclusion::Channel`] by `extra_m` (leaving disks
+/// untouched). Used by the dowel planner to grow the pour keep-out into the
+/// pour-BRACKET zone, so a registration dowel seeded at a long-axis extreme
+/// that coincides with the pour relocates clear of the bracket bolts (the
+/// apex is pour + clamp-bolts only; the dowel registers a clean point nearby).
+#[must_use]
+pub(crate) fn inflate_pour_channels(excluded: &[Exclusion], extra_m: f64) -> Vec<Exclusion> {
+    excluded
+        .iter()
+        .map(|e| match *e {
+            Exclusion::Channel { a, b, half_width } => Exclusion::Channel {
+                a,
+                b,
+                half_width: half_width + extra_m,
+            },
+            other @ Exclusion::Disk { .. } => other,
+        })
+        .collect()
+}
+
 /// Build each layer's clean seam loop + its **pour-only** seam-plane exclusions,
 /// ONCE, to be shared by both fastener planners (S5d-(A),
 /// `docs/CF_CAST_SEAM_PLACEMENT_RECON.md` §7.5).
@@ -201,6 +221,7 @@ pub(crate) fn cross_layer_snap(
     layers: &[LayerLoop],
     feas: &Feasibility,
     footprint_r: f64,
+    min_separation_m: f64,
     label: &str,
 ) -> Vec<Vec<Point2>> {
     let n_layers = layers.len();
@@ -237,7 +258,47 @@ pub(crate) fn cross_layer_snap(
             master.len(),
         );
     }
+
+    // Re-dedup per layer. `place_fasteners` dedups the master on the OUTER
+    // loop, but `snap_placement` projects that shared pattern onto each
+    // layer's own loop — and a SMALLER inner loop COMPRESSES the angular
+    // pattern, landing two distinct master positions close together (a layer
+    // can't host two fasteners that overlap). Collapse any pair closer than
+    // `min_separation_m` on that layer, keeping the first. This is the
+    // BOSS-aware separation (`2 × boss_r`), not the washer diameter — so the
+    // demand-flange bosses don't fuse into a "siamese" blob on the inner loop
+    // (the washer-sized floor let a ~10 mm pair survive whose ~7 mm-radius
+    // bosses still merged).
+    let dedup_tol = min_separation_m.max(1e-4);
+    let mut collapsed = 0usize;
+    for layer in &mut result {
+        collapsed += dedup_coincident(layer, dedup_tol);
+    }
+    if collapsed > 0 {
+        eprintln!(
+            "[cf-cast] smart {label} placement: collapsed {collapsed} coincident position(s) \
+             where the shared pattern compressed onto a smaller inner loop."
+        );
+    }
     result
+}
+
+/// Drop points within `tol` of an already-kept point (greedy, keep-first,
+/// order-preserving). Returns the number dropped. Used to collapse the
+/// post-snap coincidences a smaller inner loop induces in [`cross_layer_snap`].
+fn dedup_coincident(points: &mut Vec<Point2>, tol: f64) -> usize {
+    let mut kept: Vec<Point2> = Vec::with_capacity(points.len());
+    let mut dropped = 0usize;
+    for &p in points.iter() {
+        let coincident = kept.iter().any(|&q| (p.x - q.x).hypot(p.z - q.z) < tol);
+        if coincident {
+            dropped += 1;
+        } else {
+            kept.push(p);
+        }
+    }
+    *points = kept;
+    dropped
 }
 
 #[cfg(test)]
@@ -277,6 +338,7 @@ mod tests {
         let outer = circle_profile(0.010);
         let class = FastenerClass {
             footprint_radius: 0.005,
+            separation_radius: 0.005,
             fill: Some(0.030),
             seeds: Vec::new(),
         };
@@ -292,7 +354,7 @@ mod tests {
         let (outer, master) = master_ring();
         let inner = circle_profile(0.010);
         let layers: Vec<LayerLoop> = vec![Some((inner, Vec::new())), Some((outer, Vec::new()))];
-        let result = cross_layer_snap(&master, &layers, &band(), 0.005, "test");
+        let result = cross_layer_snap(&master, &layers, &band(), 0.005, 0.010, "test");
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].len(), master.len(), "inner keeps every position");
         assert_eq!(result[1].len(), master.len(), "outer keeps every position");
@@ -309,7 +371,7 @@ mod tests {
         let (outer, master) = master_ring();
         // Inner layer unplaceable (empty silhouette → None), outer fully feasible.
         let layers: Vec<LayerLoop> = vec![None, Some((outer, Vec::new()))];
-        let result = cross_layer_snap(&master, &layers, &band(), 0.005, "test");
+        let result = cross_layer_snap(&master, &layers, &band(), 0.005, 0.010, "test");
         assert_eq!(result.len(), 2);
         assert!(
             result.iter().all(Vec::is_empty),
@@ -317,6 +379,26 @@ mod tests {
              (incl. the outer, where the positions are feasible); got {:?}",
             result.iter().map(Vec::len).collect::<Vec<_>>(),
         );
+    }
+
+    /// `dedup_coincident` collapses points within `tol` (keep-first,
+    /// order-preserving) and counts the drops — the post-snap inner-loop
+    /// compression fix. A coincident pair (0.04 mm, like the real layer-0
+    /// bolt bug) collapses to one; legitimately-spaced points survive.
+    #[test]
+    fn dedup_coincident_collapses_only_within_tol() {
+        let mut pts = vec![
+            Point2::new(0.135_71, 0.026_70),
+            Point2::new(0.135_73, 0.026_66), // 0.04 mm from the first → drop
+            Point2::new(0.050_00, 0.000_00), // far → keep
+            Point2::new(0.050_00, 0.005_00), // 5 mm from prev, < 10 mm tol → drop
+        ];
+        let dropped = dedup_coincident(&mut pts, 0.010);
+        assert_eq!(dropped, 2, "the 0.04 mm twin and the 5 mm point collapse");
+        assert_eq!(pts.len(), 2);
+        // Keep-first: the surviving points are the first of each cluster.
+        assert!((pts[0].x - 0.135_71).abs() < 1e-9);
+        assert!((pts[1].x - 0.050_00).abs() < 1e-9 && pts[1].z.abs() < 1e-9);
     }
 
     /// §4.1 tadpole anchors: each fastener's ring anchor is the seal-ring outer edge

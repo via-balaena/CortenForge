@@ -407,7 +407,7 @@ impl Silhouette2d {
     }
 
     /// Map an in-plane `(u, v)` DIRECTION (e.g. an outward normal from
-    /// [`Self::outward_normal_at_arc_fraction`]) to its world direction
+    /// [`crate::seam_profile::SeamProfile`]) to its world direction
     /// (delegates to [`SeamPlaneBasis::dir_to_world`]).
     #[must_use]
     pub fn dir_to_world(&self, p: Point2) -> Vector3<f64> {
@@ -600,63 +600,6 @@ impl Silhouette2d {
             alpha.mul_add(seg_end.x - seg_start.x, seg_start.x),
             alpha.mul_add(seg_end.z - seg_start.z, seg_start.z),
         ))
-    }
-
-    /// Outward-pointing 2D unit normal to the silhouette at the given
-    /// arc-length fraction — the outboard radial direction at that
-    /// point on the curve. (The live placement path takes its outward
-    /// normal from [`crate::seam_profile::SeamProfile`]; this
-    /// silhouette-level helper is currently exercised only by tests.)
-    ///
-    /// The local outward direction at arc fraction `t` is the
-    /// perpendicular to the local tangent direction (the segment
-    /// containing `t`), oriented so it points OUT of the closed
-    /// curve (positive `signed_distance` side).
-    #[must_use]
-    pub fn outward_normal_at_arc_fraction(&self, t: f64) -> Option<Point2> {
-        let (poly, cum, total) = self.longest_polyline_with_arc_length()?;
-        if total <= 0.0 || poly.len() < 2 {
-            return None;
-        }
-        let target = t.clamp(0.0, 1.0) * total;
-        let mut lo = 0_usize;
-        let mut hi = cum.len() - 1;
-        while lo + 1 < hi {
-            let mid = lo.midpoint(hi);
-            if cum[mid] <= target {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        let seg_start = poly[lo];
-        let seg_end = poly[(lo + 1) % poly.len()];
-        let dx = seg_end.x - seg_start.x;
-        let dz = seg_end.z - seg_start.z;
-        let len = dx.mul_add(dx, dz * dz).sqrt();
-        if len <= 0.0 {
-            return None;
-        }
-        // Tangent (unit): (dx, dz) / len.
-        // Two perpendiculars: (dz, -dx)/len  and  (-dz, dx)/len.
-        // Pick the one with positive silhouette_dist sign (outward).
-        let mid = Point2::new(
-            0.5_f64.mul_add(seg_start.x + seg_end.x, 0.0),
-            0.5_f64.mul_add(seg_start.z + seg_end.z, 0.0),
-        );
-        let probe_dist = 1.0e-6_f64;
-        let candidate_a = Point2::new(dz / len, -dx / len);
-        let probe_a = Point2::new(
-            probe_dist.mul_add(candidate_a.x, mid.x),
-            probe_dist.mul_add(candidate_a.z, mid.z),
-        );
-        // Sign at probe_a: positive = outside silhouette = outward.
-        let sign_a = self.signed_distance_to(probe_a.x, probe_a.z);
-        if sign_a > 0.0 {
-            Some(candidate_a)
-        } else {
-            Some(Point2::new(-candidate_a.x, -candidate_a.z))
-        }
     }
 }
 
@@ -1021,30 +964,6 @@ mod tests {
         );
         // Sanity that we actually walked a non-trivial arc length.
         assert!(total > 0.100, "perimeter must be > 0.1m, got {total}");
-    }
-
-    /// §M-S2 outward normal: at multiple arc positions on the
-    /// cylinder silhouette, the outward normal must point AWAY from
-    /// the body interior (positive `signed_distance` side).
-    #[test]
-    fn outward_normal_points_away_from_body() {
-        let body = cylinder_along_x();
-        let sil = Silhouette2d::from_body_at_y(&body, 0.0, -0.050, 0.050, -0.025, 0.025);
-        for i in 0..8 {
-            let t = f64::from(i) / 8.0;
-            let p = sil.point_at_arc_fraction(t).unwrap();
-            let n = sil.outward_normal_at_arc_fraction(t).unwrap();
-            // Probe 1 mm in normal direction from p; signed_distance
-            // should be positive (outside body).
-            let probe_x = 0.001_f64.mul_add(n.x, p.x);
-            let probe_z = 0.001_f64.mul_add(n.z, p.z);
-            let d = sil.signed_distance_to(probe_x, probe_z);
-            assert!(
-                d > 0.0,
-                "outward normal at t={t} must point OUT of body; \
-                 probe 1 mm out got signed_distance = {d:.6} m (should be positive)"
-            );
-        }
     }
 
     #[test]

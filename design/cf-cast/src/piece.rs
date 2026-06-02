@@ -115,7 +115,7 @@ use nalgebra::{Point3, Unit, Vector3};
 use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::{FloorSlabParams, MatingTransform};
 use crate::plug::build_plug_lock_socket_transform;
-use crate::pour::build_pour_gate_transforms;
+use crate::pour::{IntegralPourChannel, build_integral_pour_channel, build_pour_gate_transforms};
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::silhouette_2d::Point2;
 
@@ -530,7 +530,22 @@ pub fn compose_piece_shared(
     // the entire `crate::registration` module). The symmetric dowel-
     // hole pattern shipped in §M-S2 (below) replaces it. See
     // [[project-cf-cast-unified-mating-plane-recon]] §M-S4.
-    let mut transforms = build_pour_gate_transforms(ribbon);
+    // Apex-axial carves its bore via the integral split funnel in the cup
+    // SDF (`compose_piece_with_shared`), NOT a post-MC cylinder — so DROP the
+    // pour leg from the post-MC carve set for that layout (else the bore is
+    // carved twice). `build_pour_gate_transforms` still returns the leg for
+    // the seam-placement solver's pour-exclusion footprint; only the carve is
+    // suppressed here. V-at-dome keeps its post-MC pour + vent legs.
+    let apex_axial = matches!(
+        &ribbon.pour_gate,
+        crate::pour::PourGateKind::Default(spec)
+            if spec.layout == crate::pour::PourGateLayout::ApexAxial
+    );
+    let mut transforms = if apex_axial {
+        Vec::new()
+    } else {
+        build_pour_gate_transforms(ribbon)
+    };
     if let Some(plug_lock_socket) = build_plug_lock_socket_transform(ribbon) {
         transforms.push(plug_lock_socket);
     }
@@ -626,7 +641,44 @@ pub fn compose_piece_with_shared(
     side: PieceSide,
     shared: &PieceShared,
 ) -> Result<(Solid, Vec<MatingTransform>), CastError> {
-    let mc_bounds = shared.mc_bounds;
+    // Integral split funnel + pour bore (apex-axial only — recon §7.8): an
+    // SDF cone+bore fused into the cup so the seam halfspace intersect
+    // bisects it (its axis lies IN the seam plane). `None` for the legacy
+    // V-at-dome layout (its bore is the post-MC `SubtractCylinder` in
+    // `shared.transforms`) or a ribbon without a pour gate. Sized to the
+    // ribbon's gate radius (commit 1: one radius for all layers; per-layer
+    // override threads in here later).
+    let bore_radius_m = match &ribbon.pour_gate {
+        crate::pour::PourGateKind::Default(spec) => spec.gate_radius_m,
+        crate::pour::PourGateKind::None => 0.0,
+    };
+    let channel = build_integral_pour_channel(ribbon, layer_body, bore_radius_m);
+
+    // Expand the cup MC bounds to enclose the funnel protrusion (it sticks
+    // out past the body+flange box). LOCAL to this final cup MC — the
+    // placement/silhouette bounds in `shared` are untouched, so fastener
+    // placement is unaffected by the funnel.
+    let mut mc_bounds = shared.mc_bounds;
+    if let Some(IntegralPourChannel {
+        funnel_cone: Some(cone),
+        ..
+    }) = &channel
+    {
+        if let Some(cb) = cone.bounds() {
+            mc_bounds = Aabb::new(
+                Point3::new(
+                    mc_bounds.min.x.min(cb.min.x),
+                    mc_bounds.min.y.min(cb.min.y),
+                    mc_bounds.min.z.min(cb.min.z),
+                ),
+                Point3::new(
+                    mc_bounds.max.x.max(cb.max.x),
+                    mc_bounds.max.y.max(cb.max.y),
+                    mc_bounds.max.z.max(cb.max.z),
+                ),
+            );
+        }
+    }
 
     // Pre-S4 / recon-4 (P) SDF seam: side-specific half-space
     // intersect at the SDF level. The biased halfspace's SDF is
@@ -685,6 +737,23 @@ pub fn compose_piece_with_shared(
             .intersect(ribbon.halfspace_solid(side, mc_bounds, 0.0));
         let flange_clipped = flange.subtract(layer_body.clone());
         base_piece = base_piece.union(flange_clipped);
+    }
+
+    // Fuse the integral split funnel (recon §7.8): union this side's
+    // half-cone (the seam halfspace bisects the full cone, its axis lying IN
+    // the seam plane), then subtract the full pour lumen — carving the bore
+    // through the wall into the cavity AND the widened funnel lumen. The
+    // full-lumen subtract from a half-piece is side-safe (it only removes
+    // material that exists on this side), so the channel re-registers into
+    // one round hole on assembly and the cured sprue lifts out of the open
+    // half-troughs. `None` (V-at-dome / no pour gate) leaves `base_piece`
+    // unchanged — that layout's bore stays the post-MC `SubtractCylinder`.
+    if let Some(channel) = channel {
+        if let Some(cone) = channel.funnel_cone {
+            let half_cone = cone.intersect(ribbon.halfspace_solid(side, mc_bounds, 0.0));
+            base_piece = base_piece.union(half_cone);
+        }
+        base_piece = base_piece.subtract(channel.lumen);
     }
 
     // §MA-S1b: prepend the exact post-MC cavity-floor flattening ops

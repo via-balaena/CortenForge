@@ -92,7 +92,8 @@
 //!
 //! [`Ribbon::new`]: crate::ribbon::Ribbon::new
 
-use nalgebra::{Point3, Unit, Vector3};
+use cf_design::Solid;
+use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::ribbon::Ribbon;
@@ -343,13 +344,36 @@ pub fn build_pour_gate_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
         PourGateKind::None => return Vec::new(),
         PourGateKind::Default(spec) => spec,
     };
+
+    // Apex-axial: a single bore leg on the seam. This footprint feeds the
+    // seam-placement solver's pour exclusion (the bolts bracket it — see
+    // `crate::seam_placement::build_layer_loops`). The CUP CARVE for this
+    // layout is NOT this post-MC cylinder, though — it's the integral split
+    // funnel + bore fused into the cup SDF
+    // ([`build_integral_pour_channel`]); `crate::piece::compose_piece_shared`
+    // drops this leg from the post-MC carve set for apex-axial so the bore
+    // isn't carved twice.
+    if spec.layout == PourGateLayout::ApexAxial {
+        // The exclusion footprint is the funnel BASE radius (+ comfort gap),
+        // NOT the bore — so the apex-bracketing fasteners clear the funnel
+        // cone, not just the narrower bore. (The SDF carve in
+        // `build_integral_pour_channel` still uses the true bore radius.)
+        let exclusion_r = integral_funnel_exclusion_radius(spec.gate_radius_m);
+        return apex_axial_pose(ribbon)
+            .map(|(apex, axis)| {
+                vec![leg_transform(
+                    apex,
+                    axis,
+                    exclusion_r,
+                    spec.gate_half_length_m,
+                )]
+            })
+            .unwrap_or_default();
+    }
+
     let Some((apex, outward, binormal)) = v_apex_anchor(ribbon) else {
         return Vec::new();
     };
-
-    if spec.layout == PourGateLayout::ApexAxial {
-        return build_apex_axial_transforms(ribbon, spec, apex, outward);
-    }
 
     let cos = V_HALF_ANGLE_RAD.cos();
     let sin = V_HALF_ANGLE_RAD.sin();
@@ -375,35 +399,60 @@ pub fn build_pour_gate_transforms(ribbon: &Ribbon) -> Vec<MatingTransform> {
     transforms
 }
 
-/// Build the single axial pour leg for [`PourGateLayout::ApexAxial`]
-/// — one [`MatingTransform::SubtractCylinder`] at the dome apex,
-/// lying IN the seam plane (no splay, no vent leg).
+/// Funnel-wall thickness for the integral apex split funnel (m).
 ///
-/// Two projections make the bore split the flange cleanly:
+/// 2.5 mm = 5 cells at the 0.5 mm production cup cell — a robust
+/// printable half-shell wall.
+pub(crate) const INTEGRAL_FUNNEL_WALL_M: f64 = 0.0025;
+
+/// Integral-funnel mouth INNER radius as a multiple of the bore radius.
+///
+/// 2.2 → mouth Ø = 2.2 × bore Ø (recon §7.8, balanced catch vs.
+/// cone-stiffness). The pour throat stays the bore Ø (the funnel only
+/// widens above it). `pub(crate)` so `crate::procedure` can cite the
+/// mouth Ø in the workshop prose.
+pub(crate) const INTEGRAL_FUNNEL_MOUTH_FACTOR: f64 = 2.2;
+
+/// Integral-funnel protrusion height above the cup outer surface (m).
+///
+/// 18 mm (recon §7.8) — short + cone-stiff so the bore-bracketing bolt
+/// clamp at the base dominates and the cantilevered mouth can't splay.
+/// `pub(crate)` so `crate::procedure` can cite the height.
+pub(crate) const INTEGRAL_FUNNEL_HEIGHT_M: f64 = 0.018;
+
+/// Comfort gap between a bracketing fastener's footprint and the funnel
+/// base wall (m). The seam-placement pour-exclusion is the funnel BASE
+/// radius (bore + wall) plus this margin, so the apex-bracketing dowel +
+/// bolt clear the funnel cone — not just the bore. Without it they sit
+/// against the funnel (the bore is 2.5 mm narrower than the funnel base).
+const INTEGRAL_FUNNEL_FASTENER_CLEARANCE_M: f64 = 0.002;
+
+/// Seam-placement pour-exclusion radius for the integral apex funnel: the
+/// funnel BASE outer radius (`bore + wall`) plus the fastener comfort gap.
+/// Fasteners bracket THIS (not the bore Ø) so they clear the funnel cone.
+/// The SDF carve still uses the true `bore_radius_m`.
+pub(crate) fn integral_funnel_exclusion_radius(bore_radius_m: f64) -> f64 {
+    bore_radius_m + INTEGRAL_FUNNEL_WALL_M + INTEGRAL_FUNNEL_FASTENER_CLEARANCE_M
+}
+
+/// Resolve the apex-axial pour pose: `(apex_on_seam, axis)`.
+///
 /// - the apex point is projected onto the ribbon's seam plane (the
 ///   planar-seam plane when set, else the arc-midpoint reference), so
 ///   the bore's centerline sits exactly on the seam, and
 /// - the outward axis has its seam-normal component removed, so the
 ///   bore lies entirely IN the seam plane.
 ///
-/// The result is a bore that straddles the seam → separating the two
-/// cup halves bisects it lengthwise into open half-troughs (easy
-/// sprue removal) and the two half-bores re-register into one round
-/// hole on assembly (the planar seam guarantees coplanar faces).
-fn build_apex_axial_transforms(
-    ribbon: &Ribbon,
-    spec: &PourGateSpec,
-    apex: Point3<f64>,
-    outward: Vector3<f64>,
-) -> Vec<MatingTransform> {
+/// A bore on the seam straddles it → separating the two cup halves
+/// bisects it lengthwise into open half-troughs (easy sprue removal)
+/// and the two half-bores re-register into one round hole on assembly
+/// (the planar seam guarantees coplanar faces). Returns `None` when the
+/// ribbon has no apex anchor (no segments).
+fn apex_axial_pose(ribbon: &Ribbon) -> Option<(Point3<f64>, Vector3<f64>)> {
+    let (apex, outward, _binormal) = v_apex_anchor(ribbon)?;
     let (seam_mid, seam_normal) = ribbon.seam_plane_reference();
     let n = seam_normal.into_inner();
-    // Project the apex onto the seam plane (the bore centerline lands
-    // on the seam → it splits the flange symmetrically).
     let apex_on_seam = apex - (apex - seam_mid).dot(&n) * n;
-    // Remove the seam-normal component from `outward` so the bore lies
-    // IN the seam plane. The dome tangent is near-perpendicular to the
-    // (roughly horizontal) seam normal, so this barely re-aims it.
     let axis_in_seam = outward - outward.dot(&n) * n;
     let axis = if axis_in_seam.norm() > 1.0e-9 {
         axis_in_seam.normalize()
@@ -414,12 +463,171 @@ fn build_apex_axial_transforms(
         // pathological split-normal choice the 2-piece gate rejects.
         outward.normalize()
     };
-    vec![leg_transform(
-        apex_on_seam,
-        axis,
-        spec.gate_radius_m,
-        spec.gate_half_length_m,
-    )]
+    Some((apex_on_seam, axis))
+}
+
+/// The integral split funnel + pour bore for the [`PourGateLayout::ApexAxial`]
+/// layout, as SDF [`Solid`]s the cup composer fuses into each half.
+///
+/// The funnel is part of the cup print (recon §7.8): a cone rising from
+/// the apex along the in-seam bore axis, split by the seam halfspace
+/// intersect (its axis lies IN the seam plane), with its lumen
+/// continuous into the bore — no separate inserted nipple, so the throat
+/// is the bore Ø itself (no nipple-wall constriction).
+pub(crate) struct IntegralPourChannel {
+    /// Funnel outer cone (positive material) to UNION into the cup half.
+    /// The caller intersects it with the side halfspace first so each
+    /// piece keeps its own half-cone. `None` when the surface ray-march
+    /// failed (apex not interior / no exit) — a graceful degrade to a
+    /// bore-only channel (still pourable, just no integral catch).
+    pub funnel_cone: Option<Solid>,
+    /// Full pour lumen (straight bore ∪ funnel taper) to SUBTRACT from the
+    /// cup half. Carves the bore through the cup wall into the cavity AND
+    /// the widened funnel lumen. Subtracting the full (un-halved) lumen
+    /// from a half-piece is side-safe (only removes material that exists).
+    pub lumen: Solid,
+}
+
+/// Build the integral split funnel + bore for the apex-axial layout, sized
+/// to `bore_radius_m`.
+///
+/// Returns `None` when the ribbon's pour gate is not an apex-axial
+/// `Default` spec, or when the apex anchor is unresolved. The funnel is
+/// anchored at the cup outer surface via a ray-march along the bore axis
+/// (`crate::piece` supplies `layer_body`); if that march can't find the
+/// surface the channel degrades to bore-only (`funnel_cone = None`).
+#[must_use]
+pub(crate) fn build_integral_pour_channel(
+    ribbon: &Ribbon,
+    layer_body: &Solid,
+    bore_radius_m: f64,
+) -> Option<IntegralPourChannel> {
+    let spec = match &ribbon.pour_gate {
+        PourGateKind::None => return None,
+        PourGateKind::Default(spec) => spec,
+    };
+    if spec.layout != PourGateLayout::ApexAxial {
+        return None;
+    }
+    let (apex, axis) = apex_axial_pose(ribbon)?;
+
+    // Straight bore: same geometry as the retired post-MC apex leg — a
+    // cylinder from the apex (cavity-side inner end) out along the axis by
+    // 2 × gate_half_length, so it breaches the cavity and pierces the wall
+    // to outside. Carves the bore portion of the lumen.
+    let straight_bore = axis_cylinder(apex, axis, bore_radius_m, spec.gate_half_length_m);
+
+    // Ray-march the body surface along the axis to anchor the funnel at the
+    // cup outer surface. Failure (apex not interior / no exit within the body
+    // diagonal) → bore-only degrade.
+    let Some(s_surf) = march_surface_along_axis(layer_body, apex, axis) else {
+        return Some(IntegralPourChannel {
+            funnel_cone: None,
+            lumen: straight_bore,
+        });
+    };
+
+    let wall = INTEGRAL_FUNNEL_WALL_M;
+    let height = INTEGRAL_FUNNEL_HEIGHT_M;
+    let mouth_inner = bore_radius_m * INTEGRAL_FUNNEL_MOUTH_FACTOR;
+    let base_outer = bore_radius_m + wall;
+    let mouth_outer = mouth_inner + wall;
+    // Tip overshoot so MC cuts the mouth rim cleanly (mirrors the funnel
+    // module's `INNER_CAVITY_OVERSHOOT_M`).
+    let overshoot = 0.0005_f64;
+
+    // Build the cone + taper in a local +Z frame where local z = arc-length
+    // `s` from `apex` along `axis`, then rotate +Z → axis and translate to
+    // `apex`. (`s = 0` at the apex, increasing outward.)
+    let to_axis = align_z_to(axis);
+    let place = |s: Solid| s.rotate(to_axis).translate(apex.coords);
+
+    // Funnel outer cone: narrow base (bore_r + wall) at the surface, widening
+    // to the mouth. Its lower band [s_surf, s_surf + wall] overlaps the cup
+    // shell → welds; the rest protrudes.
+    let funnel_cone = place(crate::funnel::truncated_cone(
+        base_outer,
+        mouth_outer,
+        s_surf,
+        s_surf + height,
+    ));
+    // Funnel taper lumen: bore_r at the surface widening to mouth_inner, with
+    // tip overshoot. Unioned with the straight bore → the lumen is bore_r
+    // through the wall/cavity and widens through the funnel.
+    let funnel_taper = place(crate::funnel::truncated_cone(
+        bore_radius_m,
+        mouth_inner,
+        s_surf,
+        s_surf + height + overshoot,
+    ));
+    let lumen = straight_bore.union(funnel_taper);
+
+    Some(IntegralPourChannel {
+        funnel_cone: Some(funnel_cone),
+        lumen,
+    })
+}
+
+/// A cylinder of `radius_m`, `2 × half_length_m` long, with its inner face
+/// at `apex` extending along unit `axis` (matches the retired
+/// `leg_transform` bore geometry).
+fn axis_cylinder(
+    apex: Point3<f64>,
+    axis: Vector3<f64>,
+    radius_m: f64,
+    half_length_m: f64,
+) -> Solid {
+    let center = apex + axis * half_length_m;
+    Solid::cylinder(radius_m, half_length_m)
+        .rotate(align_z_to(axis))
+        .translate(center.coords)
+}
+
+/// Unit quaternion rotating local `+Z` onto unit `axis`. Falls back to a
+/// 180° flip about `+X` for the antiparallel (`axis = −Z`) degenerate case
+/// where `rotation_between` is undefined.
+fn align_z_to(axis: Vector3<f64>) -> UnitQuaternion<f64> {
+    UnitQuaternion::rotation_between(&Vector3::z(), &axis).unwrap_or_else(|| {
+        UnitQuaternion::from_axis_angle(&Vector3::x_axis(), std::f64::consts::PI)
+    })
+}
+
+/// March from `start` along unit `axis` until the body surface exits
+/// (`layer_body.evaluate` crosses 0⁺), returning the arc-length to the
+/// surface. `None` when `start` is not interior, or no exit is found within
+/// the body's AABB diagonal (a runaway / tangent ray). Mirrors the
+/// `crate::piece` cavity-floor cross-section march.
+// The 0.5 mm march casts a small bounded step count (`r_max ≤ 0.15 m` /
+// 0.5 mm ≈ 300) and the loop index to f64 — all exact / in-range, so the
+// `ceil() as usize` truncation, `as f64` precision, and sign casts carry no
+// meaningful loss (`r_max` and the index are non-negative by construction).
+// Same justification as the cavity-floor march in `crate::piece`.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn march_surface_along_axis(
+    layer_body: &Solid,
+    start: Point3<f64>,
+    axis: Vector3<f64>,
+) -> Option<f64> {
+    const STEP_M: f64 = 0.0005;
+    if layer_body.evaluate(&start) >= 0.0 {
+        return None;
+    }
+    let r_max = layer_body
+        .bounds()
+        .map_or(0.150_f64, |b| (b.max - b.min).norm())
+        .min(0.150_f64);
+    let max_steps = (r_max / STEP_M).ceil() as usize;
+    for s in 1..=max_steps {
+        let dist = STEP_M * (s as f64);
+        if layer_body.evaluate(&(start + axis * dist)) > 0.0 {
+            return Some(dist);
+        }
+    }
+    None
 }
 
 /// Resolve the V apex `(point, outward_axis, binormal)` for this
@@ -721,10 +929,81 @@ mod tests {
                 axis.x < -0.99,
                 "apex-axial bore should point outward along −X; got {axis:?}"
             );
-            assert!((params.radius_m - spec.gate_radius_m).abs() < f64::EPSILON);
+            // The exclusion footprint is the funnel BASE radius (+ comfort
+            // gap), not the bore radius — so apex-bracketing fasteners clear
+            // the funnel cone. (The SDF carve uses the true bore radius.)
+            let expect_r = integral_funnel_exclusion_radius(spec.gate_radius_m);
+            assert!(
+                (params.radius_m - expect_r).abs() < f64::EPSILON,
+                "apex-axial exclusion radius should be the funnel base ({expect_r} m); \
+                 got {}",
+                params.radius_m
+            );
+            assert!(
+                params.radius_m > spec.gate_radius_m,
+                "exclusion must be wider than the bore so fasteners clear the funnel"
+            );
         } else {
             panic!("expected SubtractCylinder; got {:?}", transforms[0]);
         }
+    }
+
+    /// The integral split funnel (apex-axial) builds a funnel cone that
+    /// PROTRUDES past the cup outer surface. Body = cuboid half-0.06 centred
+    /// at origin; apex at (−0.05, 0, 0), axis −X → the surface is at x=−0.06
+    /// (`s_surf` ≈ 0.01), so the 18 mm funnel reaches ≈ x = −0.078.
+    #[test]
+    fn integral_pour_channel_funnel_protrudes_past_surface() {
+        let mut spec = PourGateSpec::iter1();
+        spec.layout = PourGateLayout::ApexAxial;
+        let ribbon = straight_x_ribbon().with_pour_gate(PourGateKind::Default(spec));
+        let body = Solid::cuboid(Vector3::new(0.06, 0.06, 0.06));
+
+        let channel =
+            build_integral_pour_channel(&ribbon, &body, 0.005).expect("apex-axial → Some");
+        let cone = channel
+            .funnel_cone
+            .expect("surface ray-march succeeds → funnel cone present");
+        let b = cone.bounds().expect("funnel cone is bounded");
+        assert!(
+            b.min.x < -0.070,
+            "funnel should protrude past the body surface (x=−0.06) along −X; \
+             got min.x={}",
+            b.min.x
+        );
+        // Lumen exists (bore ∪ taper) and is bounded.
+        assert!(channel.lumen.bounds().is_some());
+    }
+
+    /// V-at-dome and no-pour-gate ribbons get no integral channel (the
+    /// builder is apex-axial-only).
+    #[test]
+    fn integral_pour_channel_none_for_non_apex_axial() {
+        let body = Solid::cuboid(Vector3::new(0.06, 0.06, 0.06));
+        let v_ribbon =
+            straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        assert!(build_integral_pour_channel(&v_ribbon, &body, 0.005).is_none());
+        let none_ribbon = straight_x_ribbon();
+        assert!(build_integral_pour_channel(&none_ribbon, &body, 0.005).is_none());
+    }
+
+    /// When the apex is not interior to the body (ray-march can't anchor the
+    /// surface), the channel degrades to bore-only: lumen present, no funnel
+    /// cone. Body = cuboid half-0.04 → apex (−0.05) is OUTSIDE (|x|>0.04).
+    #[test]
+    fn integral_pour_channel_degrades_to_bore_only_when_apex_outside() {
+        let mut spec = PourGateSpec::iter1();
+        spec.layout = PourGateLayout::ApexAxial;
+        let ribbon = straight_x_ribbon().with_pour_gate(PourGateKind::Default(spec));
+        let body = Solid::cuboid(Vector3::new(0.04, 0.04, 0.04));
+
+        let channel =
+            build_integral_pour_channel(&ribbon, &body, 0.005).expect("apex-axial → Some");
+        assert!(
+            channel.funnel_cone.is_none(),
+            "apex outside body → no surface anchor → bore-only degrade"
+        );
+        assert!(channel.lumen.bounds().is_some(), "bore lumen still present");
     }
 
     /// Iter-1-shaped fixture: trimmed centerline (tip at z=+0.073,

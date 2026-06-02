@@ -130,9 +130,11 @@ enabled = false
     assert_eq!(report.v2.layers.len(), 1);
     // 1 layer → 2 piece STLs + 1 plug STL + procedure.md = 4 files.
     let out_dir: PathBuf = tmp.path().join("out");
-    let piece_0 = out_dir.join("mold_layer_0_piece_0.stl");
-    let piece_1 = out_dir.join("mold_layer_0_piece_1.stl");
-    let plug = out_dir.join("plug_layer_0.stl");
+    // STLs live under the `stls/` subfolder; procedure.md sits at the root.
+    let stls = out_dir.join("stls");
+    let piece_0 = stls.join("mold_layer_0_piece_0.stl");
+    let piece_1 = stls.join("mold_layer_0_piece_1.stl");
+    let plug = stls.join("plug_layer_0.stl");
     let procedure = out_dir.join("procedure.md");
     for p in [&piece_0, &piece_1, &plug, &procedure] {
         assert!(p.exists(), "expected output {} to exist", p.display());
@@ -257,9 +259,9 @@ enabled = false
     assert_eq!(report.v2.layers.len(), 1);
     let out_dir: PathBuf = tmp.path().join("out");
     for p in [
-        out_dir.join("mold_layer_0_piece_0.stl"),
-        out_dir.join("mold_layer_0_piece_1.stl"),
-        out_dir.join("plug_layer_0.stl"),
+        out_dir.join("stls").join("mold_layer_0_piece_0.stl"),
+        out_dir.join("stls").join("mold_layer_0_piece_1.stl"),
+        out_dir.join("stls").join("plug_layer_0.stl"),
         out_dir.join("procedure.md"),
     ] {
         assert!(p.exists(), "expected output {} to exist", p.display());
@@ -397,9 +399,9 @@ enabled = false
     assert_eq!(report.layer_count, 1);
     let out_dir: PathBuf = tmp.path().join("out");
     for p in [
-        out_dir.join("mold_layer_0_piece_0.stl"),
-        out_dir.join("mold_layer_0_piece_1.stl"),
-        out_dir.join("plug_layer_0.stl"),
+        out_dir.join("stls").join("mold_layer_0_piece_0.stl"),
+        out_dir.join("stls").join("mold_layer_0_piece_1.stl"),
+        out_dir.join("stls").join("plug_layer_0.stl"),
         out_dir.join("procedure.md"),
     ] {
         assert!(p.exists(), "expected output {} to exist", p.display());
@@ -633,7 +635,7 @@ enabled = false
     let per_piece_bound_cm3 = 2.0 * shell_target_cm3;
 
     for piece in ["mold_layer_0_piece_0.stl", "mold_layer_0_piece_1.stl"] {
-        let p = out_dir.join(piece);
+        let p = out_dir.join("stls").join(piece);
         let v_cm3 = mesh_volume_cm3(&p);
         assert!(
             v_cm3 < per_piece_bound_cm3,

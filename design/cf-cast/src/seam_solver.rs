@@ -179,8 +179,17 @@ pub struct Seed {
 /// One fastener class for a single [`place_fasteners`] run (§3.6).
 #[derive(Debug, Clone)]
 pub struct FastenerClass {
-    /// Footprint radius: the washer radius (bolts) or hole+wall (dowels).
+    /// Footprint radius: the washer radius (bolts) or hole+wall (dowels). Drives
+    /// feasibility + exclusion clearance (the physical part that must fit).
     pub footprint_radius: f64,
+    /// Inter-fastener spacing radius for de-duplication: how far apart two
+    /// same-class placements must be. For a demand flange this is the BOSS
+    /// radius (`footprint + boss_wall_margin`) so adjacent bosses don't merge
+    /// into a fused blob; for plate/none it equals `footprint_radius` (no
+    /// boss). Decoupled from `footprint_radius` so spacing is boss-aware while
+    /// feasibility/clearance stays washer-based (fasteners keep their radial
+    /// band, just space farther along the loop).
+    pub separation_radius: f64,
     /// Even-fill pitch: `Some(max_pitch)` subdivides the feasible arcs to that
     /// pitch (bolts); `None` places only the seeds (loose dowels).
     pub fill: Option<f64>,
@@ -245,7 +254,7 @@ pub fn place_fasteners(
     // the first (lowest arc). This both de-duplicates coincident seeds/boundaries
     // and collapses the two edge bolts of a too-short feasible island into one.
     // (Deliberately NOT tied to the scan resolution `arc_step`.)
-    let dedup_tol = (2.0 * class.footprint_radius).max(1e-4);
+    let dedup_tol = (2.0 * class.separation_radius).max(1e-4);
 
     // 1. resolve seeds → fixed anchors.
     let mut anchors: Vec<Placement> = Vec::new();
@@ -687,6 +696,7 @@ mod tests {
     fn bolts(seeds: Vec<Seed>) -> FastenerClass {
         FastenerClass {
             footprint_radius: WASHER_R,
+            separation_radius: WASHER_R,
             fill: Some(PITCH),
             seeds,
         }
@@ -906,6 +916,7 @@ mod tests {
         let footprint = 0.001;
         let class = FastenerClass {
             footprint_radius: footprint,
+            separation_radius: footprint,
             fill: Some(PITCH),
             // one anchor → a single wrap gap subdivided across the whole ring.
             seeds: vec![Seed {
@@ -945,6 +956,7 @@ mod tests {
         // two registration extremes on the long axis (arc 0 and the far side).
         let dowels = FastenerClass {
             footprint_radius: 0.004,
+            separation_radius: 0.004,
             fill: None,
             seeds: vec![
                 Seed {
@@ -1035,6 +1047,55 @@ mod tests {
         assert!(snap_placement(&prof, &unreachable, &[], WASHER_R, hint).is_none());
     }
 
+    /// `separation_radius` (boss) drives dedup, NOT `footprint_radius` (washer) —
+    /// the §7.9 "siamese bosses" decoupling. Two anchors 13 mm apart on the loop
+    /// collapse when `separation_radius = 8 mm` (`dedup_tol = 16 mm > 13`) but
+    /// BOTH survive when `separation_radius = footprint = 5 mm` (`tol = 10 < 13`).
+    /// Pins the decoupling: re-tying `dedup_tol` to `footprint_radius` flips the
+    /// first assertion. (`snap_anchor` resolves at the seed arc on a feasible band,
+    /// so the snapped arc-gap is the seed gap.)
+    #[test]
+    fn place_fasteners_dedup_uses_separation_radius_not_footprint() {
+        let prof = profile(&circle(0.030, 256));
+        let seeds = || {
+            vec![
+                Seed {
+                    arc: 0.0,
+                    kind: SeedKind::Anchor,
+                },
+                Seed {
+                    arc: 0.013,
+                    kind: SeedKind::Anchor,
+                },
+            ]
+        };
+        // Boss radius 8 mm > washer 5 mm → dedup at 16 mm collapses the 13 mm pair.
+        let wide = FastenerClass {
+            footprint_radius: 0.005,
+            separation_radius: 0.008,
+            fill: None,
+            seeds: seeds(),
+        };
+        assert_eq!(
+            place_fasteners(&prof, &band(), &[], &wide).len(),
+            1,
+            "boss-radius separation (16 mm dedup) collapses the 13 mm anchor pair",
+        );
+        // separation == footprint → dedup at 10 mm keeps the 13 mm pair (proves
+        // spacing is decoupled from the washer footprint).
+        let narrow = FastenerClass {
+            footprint_radius: 0.005,
+            separation_radius: 0.005,
+            fill: None,
+            seeds: seeds(),
+        };
+        assert_eq!(
+            place_fasteners(&prof, &band(), &[], &narrow).len(),
+            2,
+            "footprint-radius separation (10 mm dedup) keeps the 13 mm pair",
+        );
+    }
+
     /// Degenerate inputs (non-positive pitch / scan steps) must not hang — the
     /// loop counts derive from `perim / step`, which would be `usize::MAX` if a
     /// step were zero. A non-positive pitch falls back to seeds-only; a zero
@@ -1045,6 +1106,7 @@ mod tests {
         // zero pitch → seeds only, no subdivision blow-up.
         let zero_pitch = FastenerClass {
             footprint_radius: WASHER_R,
+            separation_radius: WASHER_R,
             fill: Some(0.0),
             seeds: vec![Seed {
                 arc: 0.05,

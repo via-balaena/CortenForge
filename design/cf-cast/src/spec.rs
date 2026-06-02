@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cf_design::{Aabb, IndexedMesh, Solid};
 use mesh_io::save_stl;
@@ -29,6 +30,31 @@ use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 use crate::silhouette_2d::Point2;
+
+/// Subdirectory (under the cast output dir) the v2 pipeline writes its STLs into,
+/// so `procedure.md` sits alone at the output-dir root and the workshop reads it
+/// first, then prints from `stls/`. `cf-viewer` transparently descends into this
+/// subdir when pointed at the cast dir. (v1 `export_molds` stays flat — legacy.)
+const STLS_SUBDIR: &str = "stls";
+
+/// Shared `[k/total]` progress counter for the v2 export's slow MC-bound artifacts
+/// (the `layers × 3` cup pieces + plugs — matching the cf-cast-cli startup headline's
+/// "2 pieces + 1 plug" total). `Copy` so it threads as one arg; [`Self::tick`]
+/// atomically claims the next 1-based sequence number, so the parallel piece-compose
+/// (rayon) and the plug-compose share one monotonic count even across threads. The
+/// trailing platform/funnel/gasket/dowel artifacts are the fast tail (not counted).
+#[derive(Clone, Copy)]
+struct Progress<'a> {
+    done: &'a AtomicUsize,
+    total: usize,
+}
+
+impl Progress<'_> {
+    /// Claim the next completed-artifact number (1-based). Thread-safe.
+    fn tick(self) -> usize {
+        self.done.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -958,8 +984,16 @@ impl CastSpec {
         let pour_volumes = self.compute_pour_volumes()?;
         check_mass_budget(self, &pour_volumes)?;
 
-        let (pending_pieces, placed_dowel_count) = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
-        let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
+        // `[k/total]` progress over the slow MC-bound artifacts (cup pieces + plugs,
+        // `layers × 3`); the trailing funnel/platform/dowel are the fast tail.
+        let progress_done = AtomicUsize::new(0);
+        let progress = Progress {
+            done: &progress_done,
+            total: self.layers.len() * 3,
+        };
+        let (pending_pieces, placed_dowel_count) =
+            mesh_and_gate_v2_pieces(self, ribbon, out_dir, progress)?;
+        let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir, progress)?;
         let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
         let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
         let pending_gaskets = mesh_and_gate_v2_gaskets(self, ribbon, out_dir)?;
@@ -967,6 +1001,13 @@ impl CastSpec {
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
+            source: mesh_io::IoError::from(e),
+        })?;
+        // The v2 STLs are written under `out_dir/stls/` (procedure.md stays at the
+        // root); create it so `write_v2_artifacts`' `save_stl` calls land.
+        let stls_dir = out_dir.join(STLS_SUBDIR);
+        std::fs::create_dir_all(&stls_dir).map_err(|e| CastError::MeshIo {
+            path: stls_dir.clone(),
             source: mesh_io::IoError::from(e),
         })?;
 
@@ -1149,6 +1190,7 @@ fn mesh_and_gate_v2_pieces(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
+    progress: Progress,
 ) -> Result<(Vec<[PendingPiece; 2]>, u32), CastError> {
     use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
@@ -1225,6 +1267,7 @@ fn mesh_and_gate_v2_pieces(
                             &shared,
                             out_dir,
                             layer_count,
+                            progress,
                         )
                     },
                     || {
@@ -1237,6 +1280,7 @@ fn mesh_and_gate_v2_pieces(
                             &shared,
                             out_dir,
                             layer_count,
+                            progress,
                         )
                     },
                 );
@@ -1264,6 +1308,7 @@ fn mesh_and_gate_v2_piece(
     shared: &PieceShared,
     out_dir: &Path,
     layer_count: usize,
+    progress: Progress,
 ) -> Result<PendingPiece, CastError> {
     let t_compose = std::time::Instant::now();
     let (piece_solid, mating_transforms) = compose_piece_with_shared(
@@ -1282,7 +1327,9 @@ fn mesh_and_gate_v2_piece(
     // Empty `mating_transforms` short-circuits to a pass-through.
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-    let path = out_dir.join(mold_piece_filename(layer_index, piece_side));
+    let path = out_dir
+        .join(STLS_SUBDIR)
+        .join(mold_piece_filename(layer_index, piece_side));
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1295,9 +1342,12 @@ fn mesh_and_gate_v2_piece(
             path,
         });
     }
+    let k = progress.tick();
     eprintln!(
-        "[cf-cast] layer {layer_index}/{layer_count_minus_1} piece {piece_side:?} \
-         — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+        "[cf-cast] [{k}/{progress_total}] layer {layer_index}/{layer_count_minus_1} \
+         piece {piece_side:?} — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
+         ({verts} verts / {faces} faces)",
+        progress_total = progress.total,
         layer_count_minus_1 = layer_count.saturating_sub(1),
         verts = mesh.vertices.len(),
         faces = mesh.faces.len(),
@@ -1328,6 +1378,7 @@ fn mesh_and_gate_v2_plugs(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
+    progress: Progress,
 ) -> Result<Vec<PendingPlug>, CastError> {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -1409,7 +1460,9 @@ fn mesh_and_gate_v2_plugs(
             }
             let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
             let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-            let path = out_dir.join(plug_layer_filename(layer_index));
+            let path = out_dir
+                .join(STLS_SUBDIR)
+                .join(plug_layer_filename(layer_index));
             let t_gate = std::time::Instant::now();
             let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
             let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1433,10 +1486,12 @@ fn mesh_and_gate_v2_plugs(
                     )
                 })
                 .unwrap_or_default();
+            let k = progress.tick();
             eprintln!(
-                "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
+                "[cf-cast] [{k}/{progress_total}] layer {layer_index}/{layer_count_minus_1} plug \
                  — {path_label} {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
                  ({verts} verts / {faces} faces){repair_note}",
+                progress_total = progress.total,
                 layer_count_minus_1 = layer_count.saturating_sub(1),
                 verts = mesh.vertices.len(),
                 faces = mesh.faces.len(),
@@ -1478,7 +1533,7 @@ fn mesh_and_gate_v2_platform(
     let mesh = solid_to_mm_mesh(&platform_solid, cell_size_m, target)?;
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-    let path = out_dir.join("platform.stl");
+    let path = out_dir.join(STLS_SUBDIR).join("platform.stl");
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1540,7 +1595,7 @@ fn mesh_and_gate_v2_funnel(
     let mesh = solid_to_mm_mesh(&funnel_solid, cell_size_m, target)?;
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-    let path = out_dir.join("funnel.stl");
+    let path = out_dir.join(STLS_SUBDIR).join("funnel.stl");
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1615,7 +1670,7 @@ fn mesh_and_gate_v2_dowel(
         return Ok(None);
     };
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-    let path = out_dir.join("dowel.stl");
+    let path = out_dir.join(STLS_SUBDIR).join("dowel.stl");
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1733,7 +1788,9 @@ fn mesh_and_gate_v2_gaskets(
             let mesh = solid_to_mm_mesh(&translated, cell_size_m, target)?;
             let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
             let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-            let path = out_dir.join(gasket_mold_filename(layer_index));
+            let path = out_dir
+                .join(STLS_SUBDIR)
+                .join(gasket_mold_filename(layer_index));
             let t_gate = std::time::Instant::now();
             let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
             let gate_s = t_gate.elapsed().as_secs_f64();
@@ -4460,6 +4517,54 @@ mod tests {
         );
     }
 
+    /// Apex-axial carves its bore via the SDF integral funnel (in
+    /// `compose_piece_with_shared`), NOT a post-MC cylinder. `build_pour_gate_transforms`
+    /// still returns an apex leg for the seam-placement pour-exclusion, but its radius is
+    /// the OVERSIZED `integral_funnel_exclusion_radius` (bore + wall + clearance), and
+    /// `compose_piece_shared` must DROP it from the carve set — else the cup gets a
+    /// ~2×-radius post-MC hole instead of the bore. This pins that load-bearing
+    /// suppression: the composed transforms carry NO `SubtractCylinder` at either the
+    /// exclusion radius or the bore radius (no flange here → no dowel/bolt cylinders).
+    #[test]
+    fn compose_piece_solid_apex_axial_drops_the_oversized_pour_leg_from_the_carve() {
+        use crate::PourGateLayout;
+        use crate::mesh_csg::MatingTransform;
+        let spec = v2_fixture().0;
+        let body = &spec.layers[0].body;
+        let wall_thickness_m = spec.wall_thickness_m;
+        let centerline = vec![Point3::new(-0.015, 0.0, 0.0), Point3::new(0.015, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let mut pour = PourGateSpec::iter1();
+        pour.layout = PourGateLayout::ApexAxial;
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_pour_gate(PourGateKind::Default(pour.clone()));
+
+        let (_, transforms) =
+            crate::compose_piece_solid(body, wall_thickness_m, &ribbon, PieceSide::Positive)
+                .unwrap();
+        let excl_r = crate::pour::integral_funnel_exclusion_radius(pour.gate_radius_m);
+        let count_at = |r: f64| {
+            transforms
+                .iter()
+                .filter(|t| {
+                    matches!(t, MatingTransform::SubtractCylinder { params }
+                        if (params.radius_m - r).abs() < 1.0e-9)
+                })
+                .count()
+        };
+        assert_eq!(
+            count_at(excl_r),
+            0,
+            "apex-axial must NOT carve the oversized exclusion-radius pour leg post-MC",
+        );
+        assert_eq!(
+            count_at(pour.gate_radius_m),
+            0,
+            "apex-axial carves the bore via the SDF lumen, not a post-MC cylinder",
+        );
+    }
+
     #[test]
     fn export_molds_v2_no_gasket_produces_empty_gasket_molds() {
         // Default ribbon has `GasketKind::None` → gasket_molds vec is
@@ -4692,8 +4797,8 @@ mod tests {
     #[test]
     fn generate_procedure_markdown_v2_apex_pour_prose_describes_apex_bore_and_drilled_vents() {
         // Apex-axial layout: prose must describe the single apex bore,
-        // hand-drilled vents, and the straight-spout funnel — and must
-        // NOT carry the V-shape "+binormal/-binormal" pour/vent prose.
+        // hand-drilled vents, and the INTEGRAL split funnel (no separate
+        // funnel STL) — and must NOT carry the V-shape pour/vent prose.
         use crate::PourGateLayout;
         let mut pour_spec = PourGateSpec::iter1();
         pour_spec.layout = PourGateLayout::ApexAxial;
@@ -4710,8 +4815,13 @@ mod tests {
             "apex-axial prose must describe hand-drilled vents",
         );
         assert!(
-            md.contains("straight-spout funnel"),
-            "apex-axial prose must describe the straight-spout funnel",
+            md.contains("Integral pour funnel") || md.contains("integral"),
+            "apex-axial prose must describe the integral split funnel; got: {md}"
+        );
+        assert!(
+            !md.contains("straight-spout funnel"),
+            "apex-axial funnel is now integral — must NOT describe a separate \
+             straight-spout funnel STL",
         );
         assert!(
             !md.contains("V at the dome end of the centerline"),
