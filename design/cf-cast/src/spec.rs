@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cf_design::{Aabb, IndexedMesh, Solid};
 use mesh_io::save_stl;
@@ -35,6 +36,25 @@ use crate::silhouette_2d::Point2;
 /// first, then prints from `stls/`. `cf-viewer` transparently descends into this
 /// subdir when pointed at the cast dir. (v1 `export_molds` stays flat — legacy.)
 const STLS_SUBDIR: &str = "stls";
+
+/// Shared `[k/total]` progress counter for the v2 export's slow MC-bound artifacts
+/// (the `layers × 3` cup pieces + plugs — matching the cf-cast-cli startup headline's
+/// "2 pieces + 1 plug" total). `Copy` so it threads as one arg; [`Self::tick`]
+/// atomically claims the next 1-based sequence number, so the parallel piece-compose
+/// (rayon) and the plug-compose share one monotonic count even across threads. The
+/// trailing platform/funnel/gasket/dowel artifacts are the fast tail (not counted).
+#[derive(Clone, Copy)]
+struct Progress<'a> {
+    done: &'a AtomicUsize,
+    total: usize,
+}
+
+impl Progress<'_> {
+    /// Claim the next completed-artifact number (1-based). Thread-safe.
+    fn tick(self) -> usize {
+        self.done.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -964,8 +984,16 @@ impl CastSpec {
         let pour_volumes = self.compute_pour_volumes()?;
         check_mass_budget(self, &pour_volumes)?;
 
-        let (pending_pieces, placed_dowel_count) = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
-        let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
+        // `[k/total]` progress over the slow MC-bound artifacts (cup pieces + plugs,
+        // `layers × 3`); the trailing funnel/platform/dowel are the fast tail.
+        let progress_done = AtomicUsize::new(0);
+        let progress = Progress {
+            done: &progress_done,
+            total: self.layers.len() * 3,
+        };
+        let (pending_pieces, placed_dowel_count) =
+            mesh_and_gate_v2_pieces(self, ribbon, out_dir, progress)?;
+        let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir, progress)?;
         let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
         let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
         let pending_gaskets = mesh_and_gate_v2_gaskets(self, ribbon, out_dir)?;
@@ -1162,6 +1190,7 @@ fn mesh_and_gate_v2_pieces(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
+    progress: Progress,
 ) -> Result<(Vec<[PendingPiece; 2]>, u32), CastError> {
     use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
@@ -1238,6 +1267,7 @@ fn mesh_and_gate_v2_pieces(
                             &shared,
                             out_dir,
                             layer_count,
+                            progress,
                         )
                     },
                     || {
@@ -1250,6 +1280,7 @@ fn mesh_and_gate_v2_pieces(
                             &shared,
                             out_dir,
                             layer_count,
+                            progress,
                         )
                     },
                 );
@@ -1277,6 +1308,7 @@ fn mesh_and_gate_v2_piece(
     shared: &PieceShared,
     out_dir: &Path,
     layer_count: usize,
+    progress: Progress,
 ) -> Result<PendingPiece, CastError> {
     let t_compose = std::time::Instant::now();
     let (piece_solid, mating_transforms) = compose_piece_with_shared(
@@ -1310,9 +1342,12 @@ fn mesh_and_gate_v2_piece(
             path,
         });
     }
+    let k = progress.tick();
     eprintln!(
-        "[cf-cast] layer {layer_index}/{layer_count_minus_1} piece {piece_side:?} \
-         — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+        "[cf-cast] [{k}/{progress_total}] layer {layer_index}/{layer_count_minus_1} \
+         piece {piece_side:?} — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
+         ({verts} verts / {faces} faces)",
+        progress_total = progress.total,
         layer_count_minus_1 = layer_count.saturating_sub(1),
         verts = mesh.vertices.len(),
         faces = mesh.faces.len(),
@@ -1343,6 +1378,7 @@ fn mesh_and_gate_v2_plugs(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
+    progress: Progress,
 ) -> Result<Vec<PendingPlug>, CastError> {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -1450,10 +1486,12 @@ fn mesh_and_gate_v2_plugs(
                     )
                 })
                 .unwrap_or_default();
+            let k = progress.tick();
             eprintln!(
-                "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
+                "[cf-cast] [{k}/{progress_total}] layer {layer_index}/{layer_count_minus_1} plug \
                  — {path_label} {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
                  ({verts} verts / {faces} faces){repair_note}",
+                progress_total = progress.total,
                 layer_count_minus_1 = layer_count.saturating_sub(1),
                 verts = mesh.vertices.len(),
                 faces = mesh.faces.len(),
