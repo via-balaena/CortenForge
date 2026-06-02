@@ -12,9 +12,9 @@ use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_cast::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
 use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
-    CanalSpec, CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
-    MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateLayout, PourGateSpec, Ribbon,
-    SplitNormal, best_fit_planar_seam, build_canal_plug,
+    CanalSpec, CastLayer, CastSpec, DemandFlangeSpec, FlangeKind, FlangeSpec, GasketKind,
+    GasketMaterial, GasketSpec, MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind,
+    PourGateLayout, PourGateSpec, Ribbon, SplitNormal, best_fit_planar_seam, build_canal_plug,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -85,7 +85,7 @@ pub fn display_name_for_anchor(anchor: &str) -> Option<&'static str> {
 /// Build a [`MoldingMaterial`] from one [`LayerConfig`].
 ///
 /// - Density: `layer.density_kg_m3` if `Some`; otherwise
-///   [`density_for_anchor(&layer.material)`].
+///   `density_for_anchor(&layer.material)`.
 /// - Display name: `layer.display_name` if `Some`; otherwise
 ///   [`display_name_for_anchor`]; otherwise the anchor key itself.
 /// - `anchor_key`: `Some(&'static str)` if the anchor is recognized
@@ -547,13 +547,16 @@ pub fn derive_spec_and_ribbon(
         ribbon = ribbon.with_gasket(GasketKind::Mold(gasket_spec));
     }
     if config.flange.enabled {
-        // S2 of the seam-flange arc per recon §F-6. Per-field
-        // overrides fall back to FlangeSpec::iter1() at None; the
-        // cross-field gasket-disjoint invariant (recon §F-4) is
-        // already enforced in config::validate_after_layer_source,
-        // so the spec built here is known-valid.
-        let flange_spec = resolve_flange_spec(&config.flange);
-        ribbon = ribbon.with_flange(FlangeKind::Plate(flange_spec));
+        // S2 of the seam-flange arc per recon §F-6 + S4.5 demand flange (recon §4).
+        // `kind` selects the flange shape ("plate" | "demand", validated in
+        // config::validate_after_layer_source so the `_` arm is "plate"); per-field
+        // overrides fall back to the matching iter1() spec. The cross-field
+        // gasket-disjoint invariant (recon §F-4) is enforced in config validate.
+        let flange_kind = match config.flange.kind.as_deref() {
+            Some("demand") => FlangeKind::Demand(resolve_demand_flange_spec(&config.flange)),
+            _ => FlangeKind::Plate(resolve_flange_spec(&config.flange)),
+        };
+        ribbon = ribbon.with_flange(flange_kind);
     }
     if config.dowel_hole.enabled {
         // §M-S2 of [[project-cf-cast-unified-mating-plane-recon]].
@@ -613,6 +616,25 @@ fn resolve_flange_spec(config: &crate::config::FlangeConfig) -> FlangeSpec {
         flange_width_m: config.width_m.unwrap_or(iter1.flange_width_m),
         flange_thickness_m: config.thickness_m.unwrap_or(iter1.flange_thickness_m),
         flange_inner_offset_m: config.inner_offset_m.unwrap_or(iter1.flange_inner_offset_m),
+    }
+}
+
+/// Resolve a [`crate::config::FlangeConfig`] into a [`cf_cast::DemandFlangeSpec`]
+/// (the demand/scalloped flange — recon §4), falling back to
+/// [`DemandFlangeSpec::iter1`] for each `None` per-field override. Pure (positivity
+/// gated in [`crate::config::CastConfig::validate_after_layer_source`]).
+fn resolve_demand_flange_spec(config: &crate::config::FlangeConfig) -> DemandFlangeSpec {
+    let iter1 = DemandFlangeSpec::iter1();
+    DemandFlangeSpec {
+        land_inner_offset_m: config
+            .land_inner_offset_m
+            .unwrap_or(iter1.land_inner_offset_m),
+        land_width_m: config.land_width_m.unwrap_or(iter1.land_width_m),
+        flange_thickness_m: config.thickness_m.unwrap_or(iter1.flange_thickness_m),
+        web_width_m: config.web_width_m.unwrap_or(iter1.web_width_m),
+        boss_wall_margin_m: config
+            .boss_wall_margin_m
+            .unwrap_or(iter1.boss_wall_margin_m),
     }
 }
 

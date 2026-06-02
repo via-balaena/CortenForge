@@ -1578,6 +1578,71 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                  sweep."
             );
         }
+        (FlangeKind::Demand(demand_spec), GasketKind::None) => {
+            // The demand-flange print target (recon §4): a scalloped flange —
+            // a continuous seal-ring land hugging the cavity + a boss at each
+            // fastener — generated to fit the placed bolts/dowels. Bolts ARE the
+            // clamp (defer the protocol to the §B section above), exactly like the
+            // (Plate, None) + bolts path.
+            let land_width_mm = demand_spec.land_width_m * 1000.0;
+            let land_inner_mm = demand_spec.land_inner_offset_m * 1000.0;
+            let thickness_mm = demand_spec.flange_thickness_m * 1000.0;
+            if ribbon.bolt_pattern.spec().is_some() {
+                let _ = writeln!(
+                    md,
+                    "This cast carries the demand-driven (scalloped) flange \
+                     (`FlangeKind::Demand`: a continuous {land_width_mm:.1} mm-wide \
+                     seal-ring land starting {land_inner_mm:.1} mm out from the \
+                     cavity, {thickness_mm:.1} mm per-half thick, with a boss at \
+                     each fastener) and the §B M5 through-bolt clamp pattern, no \
+                     per-layer gasket (`GasketKind::None`). The M5 through-bolts ARE \
+                     the clamp — see `### M5 through-bolt clamp pattern (§B)` above \
+                     for supplies + the crosswise hand-tighten protocol. The \
+                     **continuous seal-ring land is the PLA-on-PLA seal**; the \
+                     bolts sit on the bosses just outboard of it and clamp the land \
+                     closed. Do NOT add external C-clamps. Material between bosses \
+                     is scalloped away (bays) outboard of the land — that is \
+                     intended (mass + print-time saving); the land itself is \
+                     unbroken all the way around. Watch the land for leaks BETWEEN \
+                     bolts during pour (the mid-bay clamp question, recon §4.3); if \
+                     a bay weeps, the iter-2 lever is a tighter bolt pitch \
+                     (`max_pitch`) or re-enabling the per-layer gasket."
+                );
+            } else {
+                let _ = writeln!(
+                    md,
+                    "This cast carries the demand-driven (scalloped) flange \
+                     (`FlangeKind::Demand`: continuous {land_width_mm:.1} mm seal \
+                     land + per-fastener bosses) but no §B bolt pattern and no \
+                     gasket. The demand flange is designed to be clamped BY the \
+                     bolts at its bosses; without a bolt pattern there is no \
+                     continuous flat C-clamp surface (the flange is scalloped \
+                     between bosses), so enable `[bolt_pattern]` for this flange \
+                     kind. As a stopgap, C-clamp directly on the bosses (one per \
+                     boss, hand-tight) and monitor the seal-ring land for leaks."
+                );
+            }
+        }
+        (FlangeKind::Demand(demand_spec), GasketKind::Mold(_)) => {
+            // Unusual: the demand flange is designed gasket-None (the land is the
+            // seal). Supported for completeness — the gasket sits on the
+            // continuous land and the bosses host the clamp.
+            let land_width_mm = demand_spec.land_width_m * 1000.0;
+            let _ = writeln!(
+                md,
+                "This cast carries the demand-driven (scalloped) flange \
+                 (`FlangeKind::Demand`: continuous {land_width_mm:.1} mm seal land \
+                 + per-fastener bosses) AND per-layer gaskets (`GasketKind::Mold`). \
+                 The demand flange is normally run gasket-None (the continuous land \
+                 IS the PLA-on-PLA seal); with a gasket also present, lay the gasket \
+                 strip on the continuous seal land along the body-cavity perimeter, \
+                 close the halves aligning on the dowels, and clamp via the §B bolts \
+                 at the bosses (or C-clamp the bosses if no bolt pattern). Aim for \
+                 the gasket's design compression; do not over-tighten. Reconsider \
+                 whether the gasket is needed once the bare-land seal is proven at \
+                 the physical gate."
+            );
+        }
     }
     md.push('\n');
 }

@@ -23,7 +23,7 @@
 use cf_design::{Aabb, Solid};
 use nalgebra::{Point3, Vector3};
 
-use crate::flange::FlangeKind;
+use crate::flange::{FlangeKind, Tadpole};
 use crate::mesh_csg::MatingTransform;
 use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::Ribbon;
@@ -134,6 +134,35 @@ pub(crate) fn build_layer_loops(
             let profile = SeamProfile::from_silhouette(&silhouette)?;
             let excluded = pour_exclusions(&pour_xforms, silhouette.basis());
             Some((profile, excluded))
+        })
+        .collect()
+}
+
+/// Build the per-fastener tadpoles (§4.1) for the demand flange. Each fastener
+/// `(center, boss_r)` maps to a [`Tadpole`] whose seal-ring `anchor` is the ring's
+/// outer edge directly under the fastener — the loop point at the fastener's arc
+/// (`nearest_arc`), offset outward along the loop normal by `land_outer_m`
+/// (`= land_inner + land_width`). The spoke runs anchor → center; under the
+/// pin-at-floor radial strategy (E1) the boss usually subsumes the anchor
+/// (degenerate spoke, recon §4.1 N4) and the capsule SDF handles it.
+#[must_use]
+pub(crate) fn build_tadpoles(
+    profile: &SeamProfile,
+    fasteners: &[(Point2, f64)],
+    land_outer_m: f64,
+) -> Vec<Tadpole> {
+    fasteners
+        .iter()
+        .map(|&(center, boss_r)| {
+            let s = profile.nearest_arc(center);
+            let p = profile.point_at(s);
+            let n = profile.outward_normal_at(s);
+            let anchor = Point2::new(p.x + n.x * land_outer_m, p.z + n.z * land_outer_m);
+            Tadpole {
+                anchor,
+                center,
+                boss_r,
+            }
         })
         .collect()
 }

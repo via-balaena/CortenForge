@@ -241,6 +241,12 @@ pub fn build_dowel_hole_transforms(
 ///   wall) must lie in the flange band, the radial offset floored by the inboard
 ///   footprint-vs-cup-wall-step clearance (§3.2; the computed analogue of the
 ///   legacy hand-set 10 mm dowel offset).
+/// - [`FlangeKind::Demand`]: the radial DOF is **pinned at the inboard floor**
+///   (`d_max = d_floor`, decision E1) — the dowel hugs the seal ring at the
+///   footprint-vs-cup-wall-step clearance and the flange is generated to fit it
+///   (§4.2). The band edges only have to not reject the floor placement (`inner =
+///   0`, `width = d_floor + 2·footprint`); the actual seal land + boss are built
+///   by [`crate::flange::build_demand_flange_solid`].
 fn dowel_feasibility(
     flange: &FlangeKind,
     wall_thickness_m: f64,
@@ -254,6 +260,12 @@ fn dowel_feasibility(
             spec.flange_width_m,
             d_floor,
             spec.flange_width_m,
+        )),
+        FlangeKind::Demand(_) => Some(Feasibility::band(
+            0.0,
+            d_floor + 2.0 * footprint,
+            d_floor,
+            d_floor,
         )),
     }
 }

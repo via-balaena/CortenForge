@@ -59,7 +59,7 @@
 
 use nalgebra::Unit;
 
-use crate::flange::{FlangeKind, FlangeSpec};
+use crate::flange::FlangeKind;
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::ribbon::Ribbon;
 use crate::seam_placement::{cross_layer_snap, smart_center_to_world};
@@ -162,22 +162,26 @@ impl BoltPatternKind {
 ///
 /// Each center maps straight to a [`MatingTransform::SubtractCylinder`] carving
 /// through both cup-halves' flange material — the cylinder (axis = ribbon
-/// binormal, half-length = `flange_thickness + slack`, radius = clearance Ø/2) is
+/// binormal, half-length = `flange_thickness_m + slack`, radius = clearance Ø/2) is
 /// identical for both [`crate::ribbon::PieceSide`]s (mesh-CSG subtract is
 /// side-invariant). An empty `centers` slice (no flange, or the solve placed
 /// nothing) yields no holes.
+///
+/// `flange_thickness_m` is the flange's per-half thickness (from
+/// [`crate::flange::FlangeKind::thickness_m`]) — taken directly rather than via a
+/// `FlangeSpec` so this serves every flange kind (Plate + Demand).
 #[must_use]
 pub fn build_bolt_pattern_transforms(
     centers: &[Point2],
     ribbon: &Ribbon,
     spec: &BoltPatternSpec,
-    flange_spec: &FlangeSpec,
+    flange_thickness_m: f64,
 ) -> Vec<MatingTransform> {
     let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
     let binormal = seam_normal.into_inner();
     let axis = Unit::new_normalize(binormal);
     let radius_m = spec.clearance_diameter_m / 2.0;
-    let half_length_m = flange_spec.flange_thickness_m + BOLT_AXIAL_SLACK_M;
+    let half_length_m = flange_thickness_m + BOLT_AXIAL_SLACK_M;
     centers
         .iter()
         .map(|&c| {
@@ -204,7 +208,8 @@ pub fn build_bolt_pattern_transforms(
 /// distinct from the `clearance_diameter_m / 2` HOLE radius that gets carved.
 /// The seam solver keeps the whole washer disk inside the flange band + clear of
 /// the pour/dowels (§3.3); the emitted cylinder is still the clearance hole.
-const BOLT_WASHER_RADIUS_M: f64 = 0.005;
+/// `pub(crate)` so the demand flange can size a bolt boss (`washer + wall_margin`).
+pub(crate) const BOLT_WASHER_RADIUS_M: f64 = 0.005;
 
 /// Safety margin the washer keeps beyond the cup-wall outer step (1 mm, ≈ FDM
 /// extrusion tolerance). The inboard radial floor is `wall_thickness + washer +
@@ -224,6 +229,12 @@ const WASHER_CUP_WALL_MARGIN_M: f64 = 0.001;
 /// - [`FlangeKind::Plate`]: the incremental band — the washer disk (radius
 ///   [`BOLT_WASHER_RADIUS_M`]) must lie in the flange band, the radial offset
 ///   floored by the washer-vs-cup-wall-step clearance (§3.2).
+/// - [`FlangeKind::Demand`]: the radial DOF is **pinned at the inboard floor**
+///   (`d_max = d_floor`, decision E1) — the bolt hugs the seal ring at the
+///   washer-vs-cup-wall clearance and the flange is generated to fit it (§4.2).
+///   The apex is still bracketed by stepping ALONG the arc (the pour channel),
+///   not by pushing `d` outboard. The band edges only have to not reject the
+///   floor placement.
 fn bolt_feasibility(flange: &FlangeKind, wall_thickness_m: f64) -> Option<Feasibility> {
     let d_floor = wall_thickness_m + BOLT_WASHER_RADIUS_M + WASHER_CUP_WALL_MARGIN_M;
     match flange {
@@ -233,6 +244,12 @@ fn bolt_feasibility(flange: &FlangeKind, wall_thickness_m: f64) -> Option<Feasib
             spec.flange_width_m,
             d_floor,
             spec.flange_width_m,
+        )),
+        FlangeKind::Demand(_) => Some(Feasibility::band(
+            0.0,
+            d_floor + 2.0 * BOLT_WASHER_RADIUS_M,
+            d_floor,
+            d_floor,
         )),
     }
 }
@@ -384,7 +401,7 @@ mod tests {
 
     use super::*;
     use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
-    use crate::flange::FlangeKind;
+    use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
     use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
     use crate::ribbon::SplitNormal;
     use crate::seam_placement::{build_layer_loops, seam_silhouette};
@@ -500,7 +517,8 @@ mod tests {
         let (_body, _bounds, ribbon) = cylinder_fixture();
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let transforms = build_bolt_pattern_transforms(&[], &ribbon, &spec, &flange);
+        let transforms =
+            build_bolt_pattern_transforms(&[], &ribbon, &spec, flange.flange_thickness_m);
         assert!(transforms.is_empty());
     }
 
@@ -517,7 +535,8 @@ mod tests {
             Point2::new(0.013, 0.0),
             Point2::new(-0.013, 0.0),
         ];
-        let xforms = build_bolt_pattern_transforms(&centers, &ribbon, &spec, &flange);
+        let xforms =
+            build_bolt_pattern_transforms(&centers, &ribbon, &spec, flange.flange_thickness_m);
         assert_eq!(xforms.len(), centers.len(), "one cylinder per center");
 
         let (_, seam_normal) = ribbon.seam_plane_reference();
@@ -560,7 +579,8 @@ mod tests {
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
         let centers = [Point2::new(0.0, 0.013), Point2::new(0.013, 0.0)];
-        let transforms = build_bolt_pattern_transforms(&centers, &ribbon, &spec, &flange);
+        let transforms =
+            build_bolt_pattern_transforms(&centers, &ribbon, &spec, flange.flange_thickness_m);
         assert_eq!(transforms.len(), centers.len());
 
         let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
@@ -657,7 +677,8 @@ mod tests {
             0.005,
             None,
         );
-        let xforms = build_bolt_pattern_transforms(&plan[0], &ribbon, &spec, &flange);
+        let xforms =
+            build_bolt_pattern_transforms(&plan[0], &ribbon, &spec, flange.flange_thickness_m);
 
         assert!(
             !xforms.is_empty(),
@@ -706,7 +727,8 @@ mod tests {
         let centers = &plan[0];
         assert!(!centers.is_empty(), "smart placement produced no bolts");
 
-        let xforms = build_bolt_pattern_transforms(centers, &ribbon, &bolt, &flange);
+        let xforms =
+            build_bolt_pattern_transforms(centers, &ribbon, &bolt, flange.flange_thickness_m);
         assert_eq!(
             xforms.len(),
             centers.len(),
@@ -765,7 +787,8 @@ mod tests {
             0.005,
             None,
         );
-        let xforms = build_bolt_pattern_transforms(&plan[0], &ribbon, &bolt, &flange);
+        let xforms =
+            build_bolt_pattern_transforms(&plan[0], &ribbon, &bolt, flange.flange_thickness_m);
         let pour_xforms = build_pour_gate_transforms(&ribbon);
         let profile = fixture_profile(&body, &ribbon, bounds);
         let basis = profile.basis();
@@ -902,6 +925,41 @@ mod tests {
                     "bolt washer fouls a dowel footprint: dist={d} < {min_sep}"
                 );
             }
+        }
+    }
+
+    /// Demand-flange feasibility (E1): the radial DOF is pinned at the inboard
+    /// floor, so every planned bolt sits at `d ≈ d_floor` (washer-vs-cup-wall
+    /// clearance) — it hugs the seal ring rather than spreading across a plate band.
+    #[test]
+    fn demand_feasibility_pins_bolts_at_the_inboard_floor() {
+        let (body, bounds, base) = cylinder_fixture();
+        let ribbon = base
+            .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
+            .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
+        let bolt = BoltPatternSpec::iter1();
+        let wall = 0.005;
+        let plan = plan_bolts(
+            &[&body],
+            &[bounds],
+            &ribbon,
+            &bolt,
+            &ribbon.flange,
+            wall,
+            None,
+        );
+        assert!(!plan[0].is_empty(), "demand placement produced no bolts");
+
+        let profile = fixture_profile(&body, &ribbon, bounds);
+        let d_floor = wall + BOLT_WASHER_RADIUS_M + WASHER_CUP_WALL_MARGIN_M;
+        for &c in &plan[0] {
+            // The cylinder is convex, so a centre at radial offset d has signed
+            // distance ≈ d; pinned d = d_floor.
+            let sd = profile.signed_distance(c);
+            assert!(
+                (sd - d_floor).abs() < 1.0e-3,
+                "demand bolt must sit at the inboard floor d ≈ {d_floor} m; got sd = {sd} m"
+            );
         }
     }
 }

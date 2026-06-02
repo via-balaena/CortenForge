@@ -109,7 +109,7 @@ pub use canal::{
 };
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
-pub use flange::{FlangeKind, FlangeSpec};
+pub use flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
 pub use funnel::build_funnel_solid;
 pub use gasket_mold::{
     GASKET_MAX_CELL_SIZE_M, GasketKind, GasketMaterial, GasketSpec, compose_gasket_mold_solid,

@@ -396,31 +396,56 @@ pub struct FlangeConfig {
     /// halves clamped via whatever contoured surface they have).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Lateral extent (meters) from `inner_offset_m` outward in the
+    /// Flange kind: `"plate"` (uniform band) or `"demand"` (scalloped seal-ring +
+    /// per-fastener bosses, generated to fit the placed fasteners — recon §4).
+    /// `None` → `"plate"`. The `demand` kind is the end-state / print target.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// **Plate kind.** Lateral extent (meters) from `inner_offset_m` outward in the
     /// seam plane. `None` → falls back to
     /// [`cf_cast::FlangeSpec::iter1`]'s 20 mm default.
     #[serde(default)]
     pub width_m: Option<f64>,
-    /// Half-thickness (meters) perpendicular to the seam plane.
+    /// Half-thickness (meters) perpendicular to the seam plane (BOTH kinds).
     /// Closed flange-zone thickness ≈ 2 × this. `None` → 4 mm per
     /// half (iter1 default).
     #[serde(default)]
     pub thickness_m: Option<f64>,
-    /// Lateral gap (meters) between body cavity perimeter and
+    /// **Plate kind.** Lateral gap (meters) between body cavity perimeter and
     /// flange inner edge. Must exceed half the gasket channel width
     /// when the gasket is enabled (recon §F-4). `None` → 2 mm
     /// (iter1 default).
     #[serde(default)]
     pub inner_offset_m: Option<f64>,
+    /// **Demand kind.** Continuous seal-land width (meters). `None` → 6 mm
+    /// ([`cf_cast::DemandFlangeSpec::iter1`]).
+    #[serde(default)]
+    pub land_width_m: Option<f64>,
+    /// **Demand kind.** Seal-land inboard start (meters) from the body perimeter.
+    /// `None` → 0.5 mm (gasket-None hug-tight, recon §4.1 N2).
+    #[serde(default)]
+    pub land_inner_offset_m: Option<f64>,
+    /// **Demand kind.** Tadpole spoke (web) width (meters). `None` → 4 mm.
+    #[serde(default)]
+    pub web_width_m: Option<f64>,
+    /// **Demand kind.** PLA wall a boss keeps beyond the fastener footprint
+    /// (meters): `boss_r = footprint + this`. `None` → 2 mm.
+    #[serde(default)]
+    pub boss_wall_margin_m: Option<f64>,
 }
 
 impl Default for FlangeConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            kind: None,
             width_m: None,
             thickness_m: None,
             inner_offset_m: None,
+            land_width_m: None,
+            land_inner_offset_m: None,
+            web_width_m: None,
+            boss_wall_margin_m: None,
         }
     }
 }
@@ -736,10 +761,25 @@ impl CastConfig {
         // finiteness + positivity + cross-field gasket-disjoint
         // invariant (recon §F-4). Skipped when flange disabled.
         if self.flange.enabled {
+            // Reject an unknown flange kind early with a typo-friendly message.
+            if let Some(kind) = self.flange.kind.as_deref() {
+                ensure!(
+                    matches!(kind, "plate" | "demand"),
+                    "cast.toml: flange.kind = {kind:?} is unknown. Recognized: \
+                     \"plate\", \"demand\"."
+                );
+            }
             for (label, v) in [
                 ("flange.width_m", self.flange.width_m),
                 ("flange.thickness_m", self.flange.thickness_m),
                 ("flange.inner_offset_m", self.flange.inner_offset_m),
+                ("flange.land_width_m", self.flange.land_width_m),
+                (
+                    "flange.land_inner_offset_m",
+                    self.flange.land_inner_offset_m,
+                ),
+                ("flange.web_width_m", self.flange.web_width_m),
+                ("flange.boss_wall_margin_m", self.flange.boss_wall_margin_m),
             ] {
                 if let Some(value) = v {
                     ensure!(

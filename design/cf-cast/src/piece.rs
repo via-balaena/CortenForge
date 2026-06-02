@@ -302,7 +302,7 @@ pub fn compose_piece_solid(
     // Placement happens iff a flange exists (ANY kind — `lateral_reach_m`, not the
     // Plate-only `spec()`). The planners take the `FlangeKind` and derive the
     // per-kind feasibility regime internally.
-    let (dowel_plan, bolt_plan) = if ribbon.flange.lateral_reach_m().is_some() {
+    let (dowel_plan, bolt_plan, demand_flange) = if ribbon.flange.lateral_reach_m().is_some() {
         let bodies = [layer_body];
         let layer_bounds = [bounds];
         // Shared seam loop (S5d-(A)): build the single layer's loop once, feed both
@@ -335,9 +335,45 @@ pub fn compose_piece_solid(
                 dowels.as_deref(),
             )
         });
-        (dowels, bolts)
+        // Demand flange (§4): generate the single layer's scalloped flange to fit
+        // the placed fasteners, reusing the shared loop's profile for the seal ring
+        // (consume `layer_loops` after the planners borrowed it). `Plate`/`None`
+        // leave this `None` (the plate flange is built in `compose_piece_shared`).
+        let demand_flange = if let crate::flange::FlangeKind::Demand(demand_spec) = &ribbon.flange {
+            let land_outer = demand_spec.land_inner_offset_m + demand_spec.land_width_m;
+            let bolt_boss_r =
+                crate::bolt_pattern::BOLT_WASHER_RADIUS_M + demand_spec.boss_wall_margin_m;
+            let dowel_boss_r = dowel_footprint_r.map(|f| f + demand_spec.boss_wall_margin_m);
+            layer_loops
+                .into_iter()
+                .next()
+                .flatten()
+                .map(|(profile, _excl)| {
+                    let mut fasteners: Vec<(Point2, f64)> = Vec::new();
+                    if let (Some(plan), Some(boss_r)) = (dowels.as_ref(), dowel_boss_r) {
+                        if let Some(centers) = plan.first() {
+                            fasteners.extend(centers.iter().map(|&c| (c, boss_r)));
+                        }
+                    }
+                    if let Some(centers) = bolts.as_ref().and_then(|p| p.first()) {
+                        fasteners.extend(centers.iter().map(|&c| (c, bolt_boss_r)));
+                    }
+                    let tadpoles =
+                        crate::seam_placement::build_tadpoles(&profile, &fasteners, land_outer);
+                    crate::flange::build_demand_flange_solid(
+                        &profile,
+                        ribbon,
+                        demand_spec,
+                        &tadpoles,
+                        bounds,
+                    )
+                })
+        } else {
+            None
+        };
+        (dowels, bolts, demand_flange)
     } else {
-        (None, None)
+        (None, None, None)
     };
     let dowel_slice: &[Point2] = dowel_plan
         .as_ref()
@@ -353,6 +389,7 @@ pub fn compose_piece_solid(
         ribbon,
         dowel_slice,
         bolt_slice,
+        demand_flange,
     )?;
     compose_piece_with_shared(layer_body, wall_thickness_m, ribbon, side, &shared)
 }
@@ -450,6 +487,7 @@ pub fn compose_piece_shared(
     ribbon: &Ribbon,
     smart_dowels: &[Point2],
     smart_bolts: &[Point2],
+    demand_flange: Option<Solid>,
 ) -> Result<PieceShared, CastError> {
     let mc_bounds = layer_mc_bounds(layer_body, wall_thickness_m, ribbon)?;
 
@@ -457,10 +495,21 @@ pub fn compose_piece_shared(
     // here — its `Silhouette2d` extraction (the S0-dominant cost) is
     // the body's seam-plane cross-section, identical for both halves.
     // Each side applies the cheap halfspace intersect + body subtract
-    // in `compose_piece_with_shared`. `FlangeKind::None` → `None`.
-    let flange_unsplit = ribbon.flange.spec().map(|flange_spec| {
-        crate::flange::build_flange_solid(layer_body, ribbon, flange_spec, mc_bounds)
-    });
+    // in `compose_piece_with_shared`.
+    //
+    // Plate → built here from the body silhouette. Demand → the per-layer
+    // scalloped flange the seam-placement solver pre-built from the placed
+    // fasteners (`spec::compute_smart_placements`), passed in as `demand_flange`
+    // (it needs the placement, which is solved before composing). `None` → no
+    // flange (`FlangeKind::None`, or an empty-silhouette demand layer).
+    let flange_unsplit =
+        match &ribbon.flange {
+            crate::flange::FlangeKind::None => None,
+            crate::flange::FlangeKind::Plate(flange_spec) => Some(
+                crate::flange::build_flange_solid(layer_body, ribbon, flange_spec, mc_bounds),
+            ),
+            crate::flange::FlangeKind::Demand(_) => demand_flange,
+        };
 
     // Post-mortem salvage (2026-05-24): the S4 plug-floor-lock socket
     // is emitted as a POST-MC mesh-CSG transform via
@@ -517,18 +566,18 @@ pub fn compose_piece_shared(
     // so all layers share one pattern, excluding the dowel footprints (§3.6). An
     // empty slice emits no bolts.
     if let Some(bolt_spec) = ribbon.bolt_pattern.spec() {
-        if let Some(flange_spec) = ribbon.flange.spec() {
+        // The bolt cylinder's half-length needs the flange's per-half thickness,
+        // read via `thickness_m()` (Some for ANY flange kind — Plate + Demand —
+        // not the Plate-only `spec()`). No flange → no material to clamp →
+        // silently no-op (cf-cast-cli's validate surfaces it as a config error).
+        if let Some(flange_thickness_m) = ribbon.flange.thickness_m() {
             transforms.extend(crate::bolt_pattern::build_bolt_pattern_transforms(
                 smart_bolts,
                 ribbon,
                 bolt_spec,
-                flange_spec,
+                flange_thickness_m,
             ));
         }
-        // Bolt pattern without a flange has no material to clamp —
-        // silently no-op rather than fail. cf-cast-cli's
-        // validate_after_layer_source surfaces this as a
-        // workshop-actionable config error before reaching here.
     }
     // **Cup-side cap-plane trim STAYS DISABLED.** A `SeamTrim` is a
     // HALFSPACE cut, but the cup STRADDLES the cap plane (cavity walls
