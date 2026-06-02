@@ -302,24 +302,29 @@ pub fn compose_piece_solid(
     let (dowel_plan, bolt_plan) = ribbon.flange.spec().map_or((None, None), |flange_spec| {
         let bodies = [layer_body];
         let layer_bounds = [bounds];
+        // Shared seam loop (S5d-(A)): build the single layer's loop once, feed both
+        // planners — same dedup as the v2 stack path, here a 1-element stack.
+        let layer_loops =
+            crate::seam_placement::build_layer_loops(&bodies, &layer_bounds, ribbon, flange_spec);
         let dowels = ribbon.dowel_hole.spec().map(|dowel_spec| {
             crate::dowel_hole::plan_smart_dowel_placements(
-                &bodies,
-                &layer_bounds,
-                ribbon,
+                &layer_loops,
                 dowel_spec,
                 flange_spec,
                 wall_thickness_m,
             )
         });
+        let dowel_footprint_r = ribbon
+            .dowel_hole
+            .spec()
+            .map(crate::dowel_hole::smart_dowel_footprint);
         let bolts = ribbon.bolt_pattern.spec().map(|bolt_spec| {
             crate::bolt_pattern::plan_smart_bolt_placements(
-                &bodies,
-                &layer_bounds,
-                ribbon,
+                &layer_loops,
                 bolt_spec,
                 flange_spec,
                 wall_thickness_m,
+                dowel_footprint_r,
                 dowels.as_deref(),
             )
         });

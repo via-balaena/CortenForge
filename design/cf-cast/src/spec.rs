@@ -1037,36 +1037,48 @@ fn mesh_and_gate_v2_pieces(
     // thread into `compose_piece_shared`; no flange (or no bolt/dowel pattern) →
     // empty slices, no fasteners.
     let (smart_dowel_plan, smart_bolt_plan): (Option<Vec<Vec<Point2>>>, Option<Vec<Vec<Point2>>>) =
-        if let Some(flange_spec) = ribbon.flange.spec() {
-            let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
-            let mut bounds = Vec::with_capacity(bodies.len());
-            for body in &bodies {
-                bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
+        match ribbon.flange.spec() {
+            // Placement happens iff a flange exists AND at least one fastener
+            // pattern is enabled. Build each layer's seam loop ONCE (S5d-(A)) and
+            // share it across both planners — the silhouette flood-fill is the
+            // dominant solve cost (§MA-7), so it must not be rebuilt per planner.
+            Some(flange_spec)
+                if ribbon.dowel_hole.spec().is_some() || ribbon.bolt_pattern.spec().is_some() =>
+            {
+                let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
+                let mut bounds = Vec::with_capacity(bodies.len());
+                for body in &bodies {
+                    bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
+                }
+                let layer_loops =
+                    crate::seam_placement::build_layer_loops(&bodies, &bounds, ribbon, flange_spec);
+                let dowel_plan = ribbon.dowel_hole.spec().map(|dowel_spec| {
+                    plan_smart_dowel_placements(
+                        &layer_loops,
+                        dowel_spec,
+                        flange_spec,
+                        spec.wall_thickness_m,
+                    )
+                });
+                // The dowel footprint disk (hole + wall) the bolt washer must clear,
+                // shared with the dowel planner so the two patterns agree on the wall.
+                let dowel_footprint_r = ribbon
+                    .dowel_hole
+                    .spec()
+                    .map(crate::dowel_hole::smart_dowel_footprint);
+                let bolt_plan = ribbon.bolt_pattern.spec().map(|bolt_spec| {
+                    plan_smart_bolt_placements(
+                        &layer_loops,
+                        bolt_spec,
+                        flange_spec,
+                        spec.wall_thickness_m,
+                        dowel_footprint_r,
+                        dowel_plan.as_deref(),
+                    )
+                });
+                (dowel_plan, bolt_plan)
             }
-            let dowel_plan = ribbon.dowel_hole.spec().map(|dowel_spec| {
-                plan_smart_dowel_placements(
-                    &bodies,
-                    &bounds,
-                    ribbon,
-                    dowel_spec,
-                    flange_spec,
-                    spec.wall_thickness_m,
-                )
-            });
-            let bolt_plan = ribbon.bolt_pattern.spec().map(|bolt_spec| {
-                plan_smart_bolt_placements(
-                    &bodies,
-                    &bounds,
-                    ribbon,
-                    bolt_spec,
-                    flange_spec,
-                    spec.wall_thickness_m,
-                    dowel_plan.as_deref(),
-                )
-            });
-            (dowel_plan, bolt_plan)
-        } else {
-            (None, None)
+            _ => (None, None),
         };
 
     spec.layers

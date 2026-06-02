@@ -57,19 +57,15 @@
     clippy::similar_names
 )]
 
-use cf_design::{Aabb, Solid};
 use nalgebra::Unit;
 
 use crate::flange::FlangeSpec;
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
-use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::Ribbon;
-use crate::seam_placement::{
-    cross_layer_snap, pour_exclusions, seam_silhouette, smart_center_to_world,
-};
+use crate::seam_placement::{cross_layer_snap, smart_center_to_world};
 use crate::seam_profile::SeamProfile;
 use crate::seam_solver::{FastenerClass, Feasibility, Seed, SeedKind, place_fasteners};
-use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M};
+use crate::silhouette_2d::Point2;
 
 /// Default dowel diameter (3 mm) — matches standard 3 mm wood-dowel
 /// stock + small PLA-printed dowel sizes (per §M-S2 recon).
@@ -350,46 +346,28 @@ fn long_axis_extreme_seeds(profile: &SeamProfile) -> Vec<Seed> {
 /// Each resolved center is then snapped onto **every** layer's loop
 /// (`cross_layer_snap`, §3.8) and kept only if feasible
 /// on all, so the stack shares one dowel pattern. Returns a `Vec` parallel to
-/// `layer_bodies` (innermost-first) of the per-layer centers.
+/// `layers` (innermost-first) of the per-layer centers.
 ///
-/// `layer_bounds` are the per-layer MC bounds (parallel to `layer_bodies`) — the
-/// same bounds [`build_dowel_hole_transforms`] receives, so the silhouettes
-/// match.
+/// `layers` are the per-layer seam loops + pour-only exclusions built ONCE by
+/// `seam_placement::build_layer_loops` and shared with the bolt planner
+/// (S5d-(A) — the silhouette flood-fill is the dominant cost, so it is not rebuilt
+/// per planner). Dowels run first, so the pour-only exclusions are exactly what
+/// this run needs.
 #[must_use]
 pub fn plan_smart_dowel_placements(
-    layer_bodies: &[&Solid],
-    layer_bounds: &[Aabb],
-    ribbon: &Ribbon,
+    layers: &[crate::seam_placement::LayerLoop],
     dowel_spec: &DowelHoleSpec,
     flange_spec: &FlangeSpec,
     wall_thickness_m: f64,
 ) -> Vec<Vec<Point2>> {
-    let n_layers = layer_bodies.len();
+    let n_layers = layers.len();
     let result = vec![Vec::new(); n_layers];
-    if n_layers == 0 || layer_bounds.len() != n_layers {
+    if n_layers == 0 {
         return result;
     }
 
     let footprint = smart_dowel_footprint(dowel_spec);
     let feas = dowel_feasibility(flange_spec, wall_thickness_m, footprint);
-    // Generous window: the body loop sits well inside the MC bounds, padded by
-    // the flange reach so the whole perimeter is captured at any seam tilt
-    // (matches `plan_smart_bolt_placements`).
-    let pad = flange_spec.flange_width_m + SILHOUETTE_GRID_STEP_M;
-    let pour_xforms = build_pour_gate_transforms(ribbon);
-
-    // Per-layer clean loop + seam-plane exclusions (`None` = silhouette empty).
-    // Dowels run first, so only the pour is excluded (no prior fasteners).
-    let layers: Vec<crate::seam_placement::LayerLoop> = layer_bodies
-        .iter()
-        .zip(layer_bounds)
-        .map(|(body, &bounds)| {
-            let silhouette = seam_silhouette(body, ribbon, bounds, pad);
-            let profile = SeamProfile::from_silhouette(&silhouette)?;
-            let excluded = pour_exclusions(&pour_xforms, silhouette.basis());
-            Some((profile, excluded))
-        })
-        .collect();
 
     let Some(Some((outer_profile, outer_excluded))) = layers.last() else {
         eprintln!(
@@ -416,7 +394,7 @@ pub fn plan_smart_dowel_placements(
 
     // Cross-layer snap + validate: keep a position only if feasible on EVERY
     // layer, so the stack shares one dowel pattern (§3.8).
-    cross_layer_snap(&master, &layers, &feas, footprint, "dowel")
+    cross_layer_snap(&master, layers, &feas, footprint, "dowel")
 }
 
 #[cfg(test)]
@@ -430,7 +408,24 @@ mod tests {
 
     use super::*;
     use crate::ribbon::SplitNormal;
+    use crate::seam_placement::build_layer_loops;
+    use cf_design::Solid;
     use nalgebra::{Point3, Vector3};
+
+    /// Test adapter: build the shared per-layer loops (S5d-(A)) the way the v2
+    /// pipeline does, then run the dowel planner — keeps the test call sites on the
+    /// pre-S5d-(A) arg shape after loop construction moved out of the planner.
+    fn plan_dowels(
+        bodies: &[&Solid],
+        bounds: &[cf_design::Aabb],
+        ribbon: &Ribbon,
+        spec: &DowelHoleSpec,
+        flange: &FlangeSpec,
+        wall: f64,
+    ) -> Vec<Vec<Point2>> {
+        let loops = build_layer_loops(bodies, bounds, ribbon, flange);
+        plan_smart_dowel_placements(&loops, spec, flange, wall)
+    }
 
     fn cylinder_fixture() -> (Solid, cf_design::Aabb, Ribbon) {
         // Cylinder along X, R=10 mm, length 60 mm.
@@ -593,7 +588,7 @@ mod tests {
         let dowel = DowelHoleSpec::iter1();
         let flange = FlangeSpec::iter1();
 
-        let plan = plan_smart_dowel_placements(
+        let plan = plan_dowels(
             &[&inner, &outer],
             &[bounds, bounds],
             &ribbon,
@@ -625,8 +620,7 @@ mod tests {
             .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
         let dowel = DowelHoleSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let plan =
-            plan_smart_dowel_placements(&[&body], &[bounds], &ribbon, &dowel, &flange, 0.005);
+        let plan = plan_dowels(&[&body], &[bounds], &ribbon, &dowel, &flange, 0.005);
         let xforms = build_dowel_hole_transforms(&plan[0], &ribbon, &dowel);
         assert_eq!(xforms.len(), plan[0].len());
         let expected_radius = dowel.diameter_m / 2.0 + dowel.clearance_m;

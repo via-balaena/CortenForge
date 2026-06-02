@@ -57,22 +57,17 @@
 //! plane, so a single M5 bolt passes through the corresponding holes
 //! on the two halves to clamp them together.
 
-use cf_design::{Aabb, Solid};
 use nalgebra::Unit;
 
-use crate::dowel_hole::smart_dowel_footprint;
 use crate::flange::FlangeSpec;
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
-use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::Ribbon;
-use crate::seam_placement::{
-    cross_layer_snap, pour_exclusions, seam_silhouette, smart_center_to_world,
-};
+use crate::seam_placement::{cross_layer_snap, smart_center_to_world};
 use crate::seam_profile::SeamProfile;
 use crate::seam_solver::{
     DEFAULT_MAX_PITCH_M, Exclusion, FastenerClass, Feasibility, Seed, SeedKind, place_fasteners,
 };
-use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M};
+use crate::silhouette_2d::Point2;
 
 /// Default bolt clearance hole diameter (5.5 mm) — standard M5
 /// clearance per ISO 273 medium-fit.
@@ -265,68 +260,63 @@ fn pour_pierce_arc(profile: &SeamProfile, seg_a: Point2, seg_b: Point2) -> f64 {
 /// (§3.6). Each resolved center is then snapped onto **every** layer's loop
 /// (`cross_layer_snap`, §3.8); a position kept only if it is feasible on all
 /// layers, so the stack shares one angular pattern (the workshop aligns one
-/// jig). Returns a `Vec` parallel to `layer_bodies` (innermost-first) of the
+/// jig). Returns a `Vec` parallel to `layers` (innermost-first) of the
 /// per-layer centers; positions infeasible on some layer are dropped with a
 /// `warn`.
 ///
-/// `layer_bounds` are the per-layer MC bounds (parallel to `layer_bodies`) — the
-/// same bounds [`build_bolt_pattern_transforms`] receives, so the silhouettes
-/// match. Reads the pour pattern off `ribbon`.
+/// `layers` are the per-layer seam loops + pour-channel exclusions built ONCE by
+/// `seam_placement::build_layer_loops` and shared with the dowel planner
+/// (S5d-(A) — the silhouette flood-fill is the dominant cost, so it is not rebuilt
+/// per planner).
 ///
 /// `smart_dowels` carries the seam-placement-solver dowel centers (S4), per layer
-/// and parallel to `layer_bodies` — those footprints are excluded from the bolt
-/// run (the dowels-first contract, §3.6). `None` (no dowel pattern) excludes only
-/// the pour. The exclusion disk radius is `smart_dowel_footprint` (hole + wall),
-/// so the washer keeps PLA wall around each dowel hole.
+/// and parallel to `layers` — those footprints (radius `dowel_footprint_r` =
+/// `smart_dowel_footprint`, hole + wall) are appended to each layer's exclusions
+/// so the bolt run clears them (the dowels-first contract, §3.6). `None` (no dowel
+/// pattern) excludes only the pour, keeping the washer's PLA wall around each
+/// dowel hole.
 #[must_use]
 pub fn plan_smart_bolt_placements(
-    layer_bodies: &[&Solid],
-    layer_bounds: &[Aabb],
-    ribbon: &Ribbon,
+    layers: &[crate::seam_placement::LayerLoop],
     bolt_spec: &BoltPatternSpec,
     flange_spec: &FlangeSpec,
     wall_thickness_m: f64,
+    dowel_footprint_r: Option<f64>,
     smart_dowels: Option<&[Vec<Point2>]>,
 ) -> Vec<Vec<Point2>> {
-    let n_layers = layer_bodies.len();
+    let n_layers = layers.len();
     let result = vec![Vec::new(); n_layers];
-    if n_layers == 0 || layer_bounds.len() != n_layers {
+    if n_layers == 0 {
         return result;
     }
 
     let feas = bolt_feasibility(flange_spec, wall_thickness_m);
     let washer_r = BOLT_WASHER_RADIUS_M;
-    // Generous window: the body loop sits well inside the MC bounds, padded here
-    // by the flange reach so the whole perimeter is captured at any seam tilt.
-    let pad = flange_spec.flange_width_m + SILHOUETTE_GRID_STEP_M;
-    let pour_xforms = build_pour_gate_transforms(ribbon);
-    // The solver-placed dowel footprint (hole + wall) the bolt washer must clear,
-    // shared with the dowel planner's own footprint so the two patterns agree.
-    let dowel_excl_radius = ribbon.dowel_hole.spec().map(smart_dowel_footprint);
 
-    // Per-layer clean loop + seam-plane exclusions (`None` = silhouette empty).
-    // Exclusions = the pour channel + every solver-placed dowel disk for THIS
-    // layer (dowels run first; bolts exclude them — §3.6).
-    let layers: Vec<crate::seam_placement::LayerLoop> = layer_bodies
+    // The shared per-layer loops (`build_layer_loops`, S5d-(A)) carry the clean
+    // seam profile + pour-channel exclusions. The bolt run additionally excludes
+    // every solver-placed dowel disk for THIS layer (dowels run first — §3.6), so
+    // append those to a clone of the shared pour-only exclusion set. The dowel
+    // footprint radius (`smart_dowel_footprint`, hole + wall) is passed in so the
+    // washer keeps the same PLA wall the dowel planner sized.
+    let layers: Vec<crate::seam_placement::LayerLoop> = layers
         .iter()
-        .zip(layer_bounds)
         .enumerate()
-        .map(|(layer_index, (body, &bounds))| {
-            let silhouette = seam_silhouette(body, ribbon, bounds, pad);
-            let profile = SeamProfile::from_silhouette(&silhouette)?;
-            let basis = silhouette.basis();
-            let mut excluded = pour_exclusions(&pour_xforms, basis);
-            if let (Some(radius), Some(centers)) = (
-                dowel_excl_radius,
-                smart_dowels.and_then(|d| d.get(layer_index)),
-            ) {
-                excluded.extend(
-                    centers
-                        .iter()
-                        .map(|&center| Exclusion::Disk { center, radius }),
-                );
-            }
-            Some((profile, excluded))
+        .map(|(layer_index, slot)| {
+            slot.as_ref().map(|(profile, pour_excluded)| {
+                let mut excluded = pour_excluded.clone();
+                if let (Some(radius), Some(centers)) = (
+                    dowel_footprint_r,
+                    smart_dowels.and_then(|d| d.get(layer_index)),
+                ) {
+                    excluded.extend(
+                        centers
+                            .iter()
+                            .map(|&center| Exclusion::Disk { center, radius }),
+                    );
+                }
+                (profile.clone(), excluded)
+            })
         })
         .collect();
 
@@ -376,15 +366,42 @@ mod tests {
         clippy::unwrap_used,
         clippy::panic,
         clippy::expect_used,
-        clippy::float_cmp
+        clippy::float_cmp,
+        // The `plan_bolts` test adapter mirrors the production planner's
+        // `&BoltPatternSpec` API (now an 8-byte Copy type); the production fn is
+        // exempt as exported API, the private helper would otherwise be flagged.
+        clippy::trivially_copy_pass_by_ref
     )]
 
     use super::*;
     use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
     use crate::flange::FlangeKind;
-    use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec};
+    use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
     use crate::ribbon::SplitNormal;
+    use crate::seam_placement::{build_layer_loops, seam_silhouette};
+    use crate::silhouette_2d::SILHOUETTE_GRID_STEP_M;
+    use cf_design::Solid;
     use nalgebra::{Point3, Vector3};
+
+    /// Test adapter: build the shared per-layer loops (S5d-(A)) the way the v2
+    /// pipeline does, then run the bolt planner — keeps the test call sites on the
+    /// pre-S5d-(A) arg shape after loop construction moved out of the planner.
+    fn plan_bolts(
+        bodies: &[&Solid],
+        bounds: &[cf_design::Aabb],
+        ribbon: &Ribbon,
+        bolt_spec: &BoltPatternSpec,
+        flange: &FlangeSpec,
+        wall: f64,
+        smart_dowels: Option<&[Vec<Point2>]>,
+    ) -> Vec<Vec<Point2>> {
+        let loops = build_layer_loops(bodies, bounds, ribbon, flange);
+        let dowel_r = ribbon
+            .dowel_hole
+            .spec()
+            .map(crate::dowel_hole::smart_dowel_footprint);
+        plan_smart_bolt_placements(&loops, bolt_spec, flange, wall, dowel_r, smart_dowels)
+    }
 
     fn cylinder_fixture() -> (Solid, cf_design::Aabb, Ribbon) {
         // Cylinder along X, R=10 mm, length 60 mm.
@@ -622,8 +639,7 @@ mod tests {
 
         let spec = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
-        let plan =
-            plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &spec, &flange, 0.005, None);
+        let plan = plan_bolts(&[&body], &[bounds], &ribbon, &spec, &flange, 0.005, None);
         let xforms = build_bolt_pattern_transforms(&plan[0], &ribbon, &spec, &flange);
 
         assert!(
@@ -660,8 +676,7 @@ mod tests {
         let flange = FlangeSpec::iter1();
         let wall = 0.005;
 
-        let plan =
-            plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &bolt, &flange, wall, None);
+        let plan = plan_bolts(&[&body], &[bounds], &ribbon, &bolt, &flange, wall, None);
         assert_eq!(plan.len(), 1, "one plan entry per layer");
         let centers = &plan[0];
         assert!(!centers.is_empty(), "smart placement produced no bolts");
@@ -716,8 +731,7 @@ mod tests {
         let bolt = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
 
-        let plan =
-            plan_smart_bolt_placements(&[&body], &[bounds], &ribbon, &bolt, &flange, 0.005, None);
+        let plan = plan_bolts(&[&body], &[bounds], &ribbon, &bolt, &flange, 0.005, None);
         let xforms = build_bolt_pattern_transforms(&plan[0], &ribbon, &bolt, &flange);
         let pour_xforms = build_pour_gate_transforms(&ribbon);
         let profile = fixture_profile(&body, &ribbon, bounds);
@@ -788,7 +802,7 @@ mod tests {
         let bolt = BoltPatternSpec::iter1();
         let flange = FlangeSpec::iter1();
 
-        let plan = plan_smart_bolt_placements(
+        let plan = plan_bolts(
             &[&inner, &outer],
             &[bounds, bounds],
             &ribbon,
@@ -826,11 +840,12 @@ mod tests {
         let flange = FlangeSpec::iter1();
         let wall = 0.005;
 
-        // Dowels FIRST, then bolts exclude them.
-        let dowel_plan =
-            plan_smart_dowel_placements(&[&body], &[bounds], &ribbon, &dowel, &flange, wall);
+        // Dowels FIRST, then bolts exclude them. Both run on the shared loops
+        // (S5d-(A)), the way the v2 pipeline feeds them.
+        let loops = build_layer_loops(&[&body], &[bounds], &ribbon, &flange);
+        let dowel_plan = plan_smart_dowel_placements(&loops, &dowel, &flange, wall);
         assert_eq!(dowel_plan[0].len(), 2, "two registration dowels");
-        let bolt_plan = plan_smart_bolt_placements(
+        let bolt_plan = plan_bolts(
             &[&body],
             &[bounds],
             &ribbon,

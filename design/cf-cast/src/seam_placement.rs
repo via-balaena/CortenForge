@@ -23,11 +23,13 @@
 use cf_design::{Aabb, Solid};
 use nalgebra::{Point3, Vector3};
 
+use crate::flange::FlangeSpec;
 use crate::mesh_csg::MatingTransform;
+use crate::pour::build_pour_gate_transforms;
 use crate::ribbon::Ribbon;
 use crate::seam_profile::SeamProfile;
 use crate::seam_solver::{Exclusion, Feasibility, Placement, snap_placement};
-use crate::silhouette_2d::{Point2, SeamPlaneBasis, Silhouette2d};
+use crate::silhouette_2d::{Point2, SILHOUETTE_GRID_STEP_M, SeamPlaneBasis, Silhouette2d};
 
 /// One layer's clean seam loop + its seam-plane keep-outs, or `None` when the
 /// layer's silhouette is empty (no polyline → no placeable loop). Built once per
@@ -92,6 +94,44 @@ pub(crate) fn pour_exclusions(
                 })
             }
             _ => None,
+        })
+        .collect()
+}
+
+/// Build each layer's clean seam loop + its **pour-only** seam-plane exclusions,
+/// ONCE, to be shared by both fastener planners (S5d-(A),
+/// `docs/CF_CAST_SEAM_PLACEMENT_RECON.md` §7.5).
+///
+/// Both `plan_smart_dowel_placements` and `plan_smart_bolt_placements` otherwise
+/// rebuild the bit-identical per-layer silhouette (same body, same `bounds`, same
+/// `pad = flange_width + SILHOUETTE_GRID_STEP_M`); the silhouette flood-fill is the
+/// dominant solve cost (§MA-7), so building it twice doubles that cost. The pour
+/// channels are common to both runs and included here; the **dowel-disk**
+/// exclusions are layered on per-planner (the bolt run appends them — the
+/// dowels-first contract, §3.6 — while the dowel run uses the pour-only base).
+///
+/// Returns a `Vec` parallel to `layer_bodies` (innermost-first); a layer whose
+/// silhouette is empty becomes `None` (no placeable loop), exactly as the inline
+/// per-planner build did.
+#[must_use]
+pub(crate) fn build_layer_loops(
+    layer_bodies: &[&Solid],
+    layer_bounds: &[Aabb],
+    ribbon: &Ribbon,
+    flange_spec: &FlangeSpec,
+) -> Vec<LayerLoop> {
+    // Generous window: the body loop sits well inside the MC bounds, padded by the
+    // flange reach so the whole perimeter is captured at any seam tilt.
+    let pad = flange_spec.flange_width_m + SILHOUETTE_GRID_STEP_M;
+    let pour_xforms = build_pour_gate_transforms(ribbon);
+    layer_bodies
+        .iter()
+        .zip(layer_bounds)
+        .map(|(body, &bounds)| {
+            let silhouette = seam_silhouette(body, ribbon, bounds, pad);
+            let profile = SeamProfile::from_silhouette(&silhouette)?;
+            let excluded = pour_exclusions(&pour_xforms, silhouette.basis());
+            Some((profile, excluded))
         })
         .collect()
 }
