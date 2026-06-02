@@ -348,7 +348,7 @@ pub fn derive_spec_and_ribbon(
     // bulb). All features pinch the channel INWARD (more wall, safe)
     // except the suction bulb, which bulges OUTWARD into the inner
     // silicone shell — that one is wall-gated below.
-    let (plug, plug_layer_0_mesh_cell_size_m) = if config.canal.enabled {
+    let (plug, plug_layer_0_mesh_cell_size_m, plug_layer_0_field_skin_m) = if config.canal.enabled {
         // Mutually exclusive with scan-mesh-direct: both rewrite the
         // layer-0 plug. (scan-mesh-direct copies the scan mesh as-is,
         // which has no SDF surface to compose canal features onto.)
@@ -400,9 +400,15 @@ pub fn derive_spec_and_ribbon(
         let mouth_anchor = cap_tuples.first().map(|(centroid, _normal)| *centroid);
         let canal_plug = build_canal_plug(&plug, centerline, mouth_anchor, &canal_spec);
         let cell = canal_spec.plug_mesh_cell_size_m;
-        (canal_plug, Some(cell))
+        // The canal field is `base + inset_field`, NOT 1-Lipschitz: the
+        // narrow-band skip needs an upper bound on |inset_field| (the inward
+        // ring/D-section/texture displacement + the outward suction bulge) so
+        // it widens its margin by 2·skin and stays byte-identical to the dense
+        // bake. See `mesher::solid_to_mm_mesh_with_skin`.
+        let skin = canal_spec.max_inward_depth_m() + canal_spec.suction_bulge_m;
+        (canal_plug, Some(cell), Some(skin))
     } else {
-        (plug, None)
+        (plug, None, None)
     };
 
     let spec = CastSpec {
@@ -415,6 +421,7 @@ pub fn derive_spec_and_ribbon(
         mass_budget_kg: config.cast.mass_budget_kg,
         scan_mesh_for_plug_layer_0,
         plug_layer_0_mesh_cell_size_m,
+        plug_layer_0_field_skin_m,
     };
 
     let split_normal_vec = Vector3::new(

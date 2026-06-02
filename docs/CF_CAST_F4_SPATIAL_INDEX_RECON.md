@@ -340,10 +340,36 @@ reference:
   measure per-check timings to identify the new bottleneck.
   Decide: ship as-is (if 1-2 min hit), or scope a follow-up
   S3 for whichever check is now long pole.
-- **S3 (conditional): targeted optimization of new bottleneck**.
-  If self-intersect is the new long pole, BVH-pre-filter that
-  check's AABB pairs. If trapped-volume is the long pole, voxel-
-  grid optimization. Empirical pick at S2 measurement.
+- **S2 MEASURED (2026-06-02).** Per-check `MESH_PRINTABILITY_TIMING`
+  on the post-narrow-band 0.5 mm production long pole
+  (`cast_base_mold_canal_05` layer-2 piece, 530 k faces, welded
+  manifold): **`trapped_volumes` = 138.3 s of 139.5 s total
+  (99.1%)**; every other check < 0.5 s (`thin_walls` 0.47 s —
+  the S1 BVH held; `self_intersecting` 0.38 s; `small_features`
+  0.23 s; rest < 0.12 s). The long pole is the §6.3 voxel
+  inside-mark, decisively — not self-intersect.
+- **S3 SHIPPED (2026-06-02): YZ spatial index on the §6.3
+  inside-mark.** Root cause: `mark_inside_voxels` was
+  `O(ny·nz·n_faces)` — every `+X` scanline row brute-forced
+  Möller-Trumbore against all 530 k faces (~130 B ray-tri tests
+  at the 500-voxel/axis cap). Fix: build the parry3d `TriMesh`
+  once (reusing [`build_parry_trimesh`] from S1) and per row query
+  `qbvh.intersect_aabb` for the triangles overlapping the ray,
+  running the **same** f64 `moller_trumbore` only on those
+  candidates. The BVH culls; it does **not** do the intersection
+  (precision-sensitive inside test stays on f64 Möller-Trumbore per
+  §8.4 row 3). **Byte-identity is provable** (any pierced triangle's
+  YZ AABB ⊇ its projection ∋ the ray point ⇒ always returned;
+  culled faces are exactly the `None` rejects) and **gated**: a
+  unit test asserts indexed == reference grid states on 3
+  watertight fixtures × 2 voxel sizes, and a throwaway real-mesh
+  probe confirmed byte-identical voxel grids on the 530 k-face
+  piece. Measured: REFERENCE 136.857 s → **BVH 0.117 s (~1170×)**;
+  F4 total ~140 s → a few seconds per big piece. The reference
+  loop is preserved as `mark_inside_voxels_reference` (test oracle
+  + degenerate-input fallback). ~150 LOC + 1 test in
+  `validation.rs`; no Cargo change (parry3d-f64 already a dep from
+  S1).
 - **S4: Cold-read pass-1 + omnibus PR** alongside the gasket arc
   + parallel-meshing arc + (if shipped) seam-flange arc.
 
@@ -386,18 +412,16 @@ implementation session BEFORE touching `mesh-printability`:
   Triangle Intersection." — the algorithm both paths share inside
   the per-triangle test.
 
-## Status (open)
+## Status
 
-- Scaffold shipped 2026-05-25 (this commit).
-- Awaiting workshop user approval to proceed to S1.
-- No code change yet; this is design doc only.
-- Branch: `dev`, no push, no PR until arc close (per
-  [[feedback-omnibus-pr-single-branch]]).
-- Parallel arcs in flight on same branch:
-  - Seam-gasket-mold arc through S3
-    ([[project-cf-cast-seam-gasket-mold-s3]], commit `fc9f30e7`).
-  - Parallel-meshing arc through S2
-    ([[project-cf-cast-parallel-meshing-s2]], commit `d3ff8063`).
-  - Seam-flange recon scaffold + cold-read shipped (commits
-    `1da08ab7`, `d4ca615f`); S1 implementation pending workshop
-    user greenlight.
+- Scaffold shipped 2026-05-25.
+- **S1 shipped** (`flag_thin_wall_faces` BVH) — see §B-12.
+- **S2 measured + S3 shipped 2026-06-02** (this commit):
+  `trapped_volumes` pinned as the post-narrow-band long pole
+  (138.3 s / 99.1% of F4) and fixed via the YZ spatial-index cull
+  on `mark_inside_voxels` — byte-identical, ~1170× on the
+  inside-mark phase. Gated by a unit byte-identity test +
+  real-mesh probe + clippy/fmt/rustdoc clean. See §B-12 S2/S3.
+- Branch: `feat/cf-cast-narrow-band-mc` (narrow-band MC + this
+  F4-S3 share the regen-speedup theme); headed for a PR once the
+  pre-PR review fixes land.

@@ -22,7 +22,7 @@ use crate::flange::FlangeKind;
 use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
 use crate::mesh_csg::apply_mating_transforms;
-use crate::mesher::solid_to_mm_mesh;
+use crate::mesher::{solid_to_mm_mesh, solid_to_mm_mesh_with_skin};
 use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared, layer_mc_bounds};
 use crate::plug::add_plug_pins;
 use crate::pour_volume::{POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume, integrate_negative_sdf_volume};
@@ -236,6 +236,15 @@ pub struct CastSpec {
     /// the cost is bounded. Layers N>0 always use the global cell
     /// size (they carry no canal features).
     pub plug_layer_0_mesh_cell_size_m: Option<f64>,
+    /// Narrow-band skip skin for the **layer-0 plug only** (meters): an
+    /// upper bound on the magnitude of the canal feature's non-1-Lipschitz
+    /// additive displacement (`max_inward_depth + suction_bulge`). `None`
+    /// (default) → `0.0`, the plain ≤1-Lipschitz case. The canal path sets
+    /// `Some(skin)` so the narrow-band mesher widens its skip margin by
+    /// `2·skin` and stays byte-identical to the dense bake on the textured
+    /// plug (see `mesher::solid_to_mm_mesh_with_skin`). Layers N>0 carry no
+    /// canal features (skin 0).
+    pub plug_layer_0_field_skin_m: Option<f64>,
 }
 
 /// Per-layer output of a successful [`CastSpec::export_molds`] run.
@@ -1426,8 +1435,17 @@ fn mesh_and_gate_v2_plugs(
                 } else {
                     spec.mesh_cell_size_m
                 };
+                // Layer-0 plug carries the canal feature's non-1-Lipschitz
+                // displacement; pass its skin so the narrow-band skip stays
+                // byte-identical to the dense bake. Layers N>0 are plain CSG
+                // (skin 0 ⇒ identical to `solid_to_mm_mesh`).
+                let field_skin_m = if layer_index == 0 {
+                    spec.plug_layer_0_field_skin_m.unwrap_or(0.0)
+                } else {
+                    0.0
+                };
                 (
-                    solid_to_mm_mesh(&plug_solid, cell_size_m, target)?,
+                    solid_to_mm_mesh_with_skin(&plug_solid, cell_size_m, target, field_skin_m)?,
                     "compose+MC",
                 )
             };
@@ -2272,6 +2290,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         }
     }
 
@@ -2319,6 +2338,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let report = spec.export_molds(&out_dir).unwrap();
 
@@ -2405,6 +2425,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
 
         let report = spec.export_molds(&out_dir).unwrap();
@@ -2440,6 +2461,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-empty-layers");
@@ -2466,6 +2488,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-error-unbounded");
@@ -2767,6 +2790,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         }
     }
 
@@ -2880,6 +2904,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let err = spec.compute_pour_volumes().unwrap_err();
         assert!(matches!(err, CastError::EmptyLayers));
@@ -2894,6 +2919,7 @@ mod tests {
             mass_budget_kg: 0.010,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
             ..pour_volume_fixture()
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2995,6 +3021,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-f3-empty.md");
@@ -3032,6 +3059,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
@@ -3080,6 +3108,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
@@ -3107,6 +3136,7 @@ mod tests {
             mass_budget_kg: 0.010,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
             ..pour_volume_fixture()
         };
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3163,6 +3193,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let standalone_pours = spec.compute_pour_volumes().unwrap();
         let report = spec.export_molds(&out_dir).unwrap();
@@ -3204,6 +3235,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3414,6 +3446,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3500,6 +3533,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -3605,6 +3639,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -4335,6 +4370,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
@@ -4684,6 +4720,7 @@ mod tests {
             mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
             scan_mesh_for_plug_layer_0: None,
             plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
         };
         let centerline = vec![Point3::new(-0.030, 0.0, 0.0), Point3::new(0.030, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
