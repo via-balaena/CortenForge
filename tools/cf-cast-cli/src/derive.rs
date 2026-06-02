@@ -523,6 +523,17 @@ pub fn derive_spec_and_ribbon(
         if config.pour_gate.apex_axial {
             pour_spec.layout = PourGateLayout::ApexAxial;
         }
+        // Per-silicone sprue sizing: `gate_radius_m` widens the pour bore AND the
+        // funnel (funnel.rs derives its nipple/bowl off it) together — the lever for
+        // a thick (e.g. Dragon Skin) silicone that crawls through the default
+        // Ø10 mm gate / Ø6.5 mm funnel throat. `vent_radius_m` tunes the vent.
+        // Both fall back to PourGateSpec::iter1() when absent.
+        if let Some(r) = config.pour_gate.gate_radius_m {
+            pour_spec.gate_radius_m = r;
+        }
+        if let Some(r) = config.pour_gate.vent_radius_m {
+            pour_spec.vent_radius_m = r;
+        }
         ribbon = ribbon.with_pour_gate(PourGateKind::Default(pour_spec));
     }
     if config.plug_pins.enabled {
@@ -963,6 +974,42 @@ mod tests {
         assert!(matches!(derived.ribbon.plug_pins, PlugPinKind::None));
         assert!(matches!(derived.ribbon.dowel_hole, DowelHoleKind::None));
         assert!(matches!(derived.ribbon.bolt_pattern, BoltPatternKind::None));
+    }
+
+    /// The per-silicone sprue knobs thread `[pour_gate].gate_radius_m`/`vent_radius_m`
+    /// into the derived `PourGateSpec` (the funnel then scales off `gate_radius_m`);
+    /// absent → the iter1 defaults (5 mm / 3 mm).
+    #[test]
+    fn derive_threads_pour_gate_radius_overrides_into_the_spec() {
+        let mut cfg = three_layer_config();
+        cfg.pour_gate.gate_radius_m = Some(0.008); // 16 mm bore for a thick silicone
+        cfg.pour_gate.vent_radius_m = Some(0.004);
+        let sdf = unit_cube_sdf();
+        let centerline = straight_x_centerline();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
+        let PourGateKind::Default(spec) = derived.ribbon.pour_gate else {
+            panic!("pour_gate.enabled must produce Default(spec)");
+        };
+        assert!(
+            (spec.gate_radius_m - 0.008).abs() < 1e-12,
+            "gate radius override"
+        );
+        assert!(
+            (spec.vent_radius_m - 0.004).abs() < 1e-12,
+            "vent radius override"
+        );
+
+        // Absent overrides → iter1 defaults (5 mm / 3 mm).
+        let default_cfg = three_layer_config();
+        let default_derived =
+            derive_spec_and_ribbon(&default_cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[])
+                .unwrap();
+        let PourGateKind::Default(d) = default_derived.ribbon.pour_gate else {
+            panic!("expected Default");
+        };
+        assert!((d.gate_radius_m - 0.005).abs() < 1e-12, "default 5 mm gate");
+        assert!((d.vent_radius_m - 0.003).abs() < 1e-12, "default 3 mm vent");
     }
 
     #[test]
