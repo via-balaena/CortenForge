@@ -30,6 +30,12 @@ use crate::ribbon::{PieceSide, Ribbon};
 use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 use crate::silhouette_2d::Point2;
 
+/// Subdirectory (under the cast output dir) the v2 pipeline writes its STLs into,
+/// so `procedure.md` sits alone at the output-dir root and the workshop reads it
+/// first, then prints from `stls/`. `cf-viewer` transparently descends into this
+/// subdir when pointed at the cast dir. (v1 `export_molds` stays flat — legacy.)
+const STLS_SUBDIR: &str = "stls";
+
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
 /// xy-extent generously, never near a 100 mm device.
@@ -969,6 +975,13 @@ impl CastSpec {
             path: out_dir.to_path_buf(),
             source: mesh_io::IoError::from(e),
         })?;
+        // The v2 STLs are written under `out_dir/stls/` (procedure.md stays at the
+        // root); create it so `write_v2_artifacts`' `save_stl` calls land.
+        let stls_dir = out_dir.join(STLS_SUBDIR);
+        std::fs::create_dir_all(&stls_dir).map_err(|e| CastError::MeshIo {
+            path: stls_dir.clone(),
+            source: mesh_io::IoError::from(e),
+        })?;
 
         let platform_count = usize::from(pending_platform.is_some());
         let funnel_count = usize::from(pending_funnel.is_some());
@@ -1282,7 +1295,9 @@ fn mesh_and_gate_v2_piece(
     // Empty `mating_transforms` short-circuits to a pass-through.
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-    let path = out_dir.join(mold_piece_filename(layer_index, piece_side));
+    let path = out_dir
+        .join(STLS_SUBDIR)
+        .join(mold_piece_filename(layer_index, piece_side));
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1409,7 +1424,9 @@ fn mesh_and_gate_v2_plugs(
             }
             let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
             let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-            let path = out_dir.join(plug_layer_filename(layer_index));
+            let path = out_dir
+                .join(STLS_SUBDIR)
+                .join(plug_layer_filename(layer_index));
             let t_gate = std::time::Instant::now();
             let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
             let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1478,7 +1495,7 @@ fn mesh_and_gate_v2_platform(
     let mesh = solid_to_mm_mesh(&platform_solid, cell_size_m, target)?;
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-    let path = out_dir.join("platform.stl");
+    let path = out_dir.join(STLS_SUBDIR).join("platform.stl");
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1540,7 +1557,7 @@ fn mesh_and_gate_v2_funnel(
     let mesh = solid_to_mm_mesh(&funnel_solid, cell_size_m, target)?;
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-    let path = out_dir.join("funnel.stl");
+    let path = out_dir.join(STLS_SUBDIR).join("funnel.stl");
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1615,7 +1632,7 @@ fn mesh_and_gate_v2_dowel(
         return Ok(None);
     };
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-    let path = out_dir.join("dowel.stl");
+    let path = out_dir.join(STLS_SUBDIR).join("dowel.stl");
     let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
     let gate_s = t_gate.elapsed().as_secs_f64();
@@ -1733,7 +1750,9 @@ fn mesh_and_gate_v2_gaskets(
             let mesh = solid_to_mm_mesh(&translated, cell_size_m, target)?;
             let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
             let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-            let path = out_dir.join(gasket_mold_filename(layer_index));
+            let path = out_dir
+                .join(STLS_SUBDIR)
+                .join(gasket_mold_filename(layer_index));
             let t_gate = std::time::Instant::now();
             let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
             let gate_s = t_gate.elapsed().as_secs_f64();

@@ -246,6 +246,29 @@ fn is_sequence_frame_name(name: &str) -> bool {
 /// - `dir` cannot be read.
 /// - no `*.stl` entries match.
 pub fn discover_stl_sequence(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut frames = collect_stls(dir)?;
+    if frames.is_empty() {
+        // cf-cast v2 output nests the STLs under `<cast_dir>/stls/` (with
+        // `procedure.md` at the cast-dir root) so the workshop reads the procedure
+        // first, then prints from `stls/`. Transparently descend one level so
+        // pointing the viewer at the cast dir itself still works.
+        let nested = dir.join("stls");
+        if nested.is_dir() {
+            frames = collect_stls(&nested)?;
+        }
+    }
+    if frames.is_empty() {
+        bail!(
+            "no STL frames found in {} (looking for *.stl, including a ./stls/ subdir)",
+            dir.display(),
+        );
+    }
+    frames.sort();
+    Ok(frames)
+}
+
+/// Collect the `*.stl` files directly in `dir` (non-recursive), unsorted.
+fn collect_stls(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut frames: Vec<PathBuf> = Vec::new();
     let read_dir =
         std::fs::read_dir(dir).with_context(|| format!("reading directory {}", dir.display()))?;
@@ -259,13 +282,6 @@ pub fn discover_stl_sequence(dir: &Path) -> Result<Vec<PathBuf>> {
             frames.push(path);
         }
     }
-    if frames.is_empty() {
-        bail!(
-            "no STL frames found in {} (looking for *.stl)",
-            dir.display(),
-        );
-    }
-    frames.sort();
     Ok(frames)
 }
 
@@ -796,6 +812,47 @@ mod tests {
             msg.contains("PLY sequence frames") && msg.contains("STL files"),
             "error should name both patterns: {msg}",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn discover_stl_sequence_descends_into_stls_subdir() -> Result<()> {
+        // cf-cast v2 layout: procedure.md at the cast-dir root, STLs under stls/.
+        // Pointing the viewer at the cast dir must transparently descend into stls/.
+        let dir = tempfile::tempdir()?;
+        File::create(dir.path().join("procedure.md"))?;
+        let stls = dir.path().join("stls");
+        std::fs::create_dir(&stls)?;
+        for name in [
+            "mold_layer_0_piece_0.stl",
+            "mold_layer_0_piece_1.stl",
+            "plug_layer_0.stl",
+        ] {
+            File::create(stls.join(name))?;
+        }
+        let frames = discover_stl_sequence(dir.path())?;
+        assert_eq!(frames.len(), 3, "must find the 3 STLs in ./stls/");
+        assert!(
+            frames
+                .iter()
+                .all(|f| f.parent().is_some_and(|p| p.ends_with("stls"))),
+            "frames must come from the stls/ subdir: {frames:?}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discover_stl_sequence_prefers_top_level_over_stls_subdir() -> Result<()> {
+        // Legacy flat layout: top-level STLs take precedence; the stls/ fallback
+        // only fires when the top level has none.
+        let dir = tempfile::tempdir()?;
+        File::create(dir.path().join("a.stl"))?;
+        let stls = dir.path().join("stls");
+        std::fs::create_dir(&stls)?;
+        File::create(stls.join("b.stl"))?;
+        let frames = discover_stl_sequence(dir.path())?;
+        assert_eq!(frames.len(), 1, "top-level STL wins; stls/ not consulted");
+        assert!(frames[0].ends_with("a.stl"));
         Ok(())
     }
 

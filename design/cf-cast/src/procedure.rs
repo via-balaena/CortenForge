@@ -426,6 +426,14 @@ fn write_header_v2(md: &mut String, spec: &CastSpec, apex_pour: bool) {
         spec.layers.len()
     );
     md.push('\n');
+    let _ = writeln!(
+        md,
+        "> **📁 Files.** This `procedure.md` sits at the cast-folder root; **every STL \
+         to print is in the `stls/` subfolder.** Read this procedure first, then print \
+         from `stls/` (filenames below are relative to it). `cf-viewer` pointed at \
+         either the cast folder or `stls/` finds them."
+    );
+    md.push('\n');
     if apex_pour {
         let _ = writeln!(
             md,
