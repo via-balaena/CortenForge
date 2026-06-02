@@ -459,9 +459,12 @@ impl Default for FlangeConfig {
 /// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Defaults
 /// to `enabled = true` with
 /// [`cf_cast::dowel_hole::DowelHoleSpec::iter1`] (3 mm diameter ×
-/// 4 holes × 5 mm depth × 10 mm outboard offset × 0.1 mm clearance).
-/// Per-field overrides surfaced as optionals; absent → falls back to
-/// the iter1 default for that field.
+/// 5 mm depth per half × 0.1 mm radial clearance). The hole COUNT and
+/// seam-loop position are **not** config knobs — the seam-placement
+/// solver derives them per layer (dowels at the body's long-axis
+/// extremes, typically 2; the fixed `count`/`offset` fields were
+/// removed in S5c). Per-field overrides surfaced as optionals; absent
+/// → falls back to the iter1 default for that field.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DowelHoleConfig {

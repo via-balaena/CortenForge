@@ -1605,8 +1605,11 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                      intended (mass + print-time saving); the land itself is \
                      unbroken all the way around. Watch the land for leaks BETWEEN \
                      bolts during pour (the mid-bay clamp question, recon §4.3); if \
-                     a bay weeps, the iter-2 lever is a tighter bolt pitch \
-                     (`max_pitch`) or re-enabling the per-layer gasket."
+                     a bay weeps, the iter-2 lever is to re-enable the per-layer \
+                     gasket (`[gasket] enabled = true`, with the seal land widened \
+                     to clear it) for a compressible seal. (A tighter bolt pitch \
+                     would also help, but it is a code-level constant, not yet a \
+                     `cast.toml` knob.)"
                 );
             } else {
                 let _ = writeln!(
