@@ -62,7 +62,9 @@ use nalgebra::Unit;
 use crate::flange::FlangeKind;
 use crate::mesh_csg::{CylinderParams, CylinderParent, MatingTransform};
 use crate::ribbon::Ribbon;
-use crate::seam_placement::{cross_layer_snap, smart_center_to_world};
+use crate::seam_placement::{
+    LayerLoop, cross_layer_snap, inflate_pour_channels, smart_center_to_world,
+};
 use crate::seam_profile::SeamProfile;
 use crate::seam_solver::{FastenerClass, Feasibility, Seed, SeedKind, place_fasteners};
 use crate::silhouette_2d::Point2;
@@ -389,8 +391,35 @@ pub fn plan_smart_dowel_placements(
     let Some(feas) = dowel_feasibility(flange, wall_thickness_m, footprint) else {
         return result;
     };
+    // Relocate the apex dowel off the pour bracket: a registration dowel is
+    // seeded at each long-axis extreme (max anti-rotation leverage), but for a
+    // tall body one extreme is the dome apex — the pour + clamp-bolt zone. Grow
+    // the pour keep-out into the bracket zone for the DOWEL solve so that seed
+    // snaps to a clean point just below the bracket (still high → good
+    // leverage), leaving the apex to the pour + bracket bolts. The other
+    // extreme (the base) is clear and unaffected. Boss-awareness is bolt↔bolt
+    // only (recon §7.8), so dowel SPACING stays footprint-based; this only
+    // moves the one pour-coincident seed.
+    let boss_margin = match flange {
+        crate::flange::FlangeKind::Demand(s) => s.boss_wall_margin_m,
+        _ => 0.0,
+    };
+    // Step ~2 bracket-bolt boss radii past the pour keep-out (the bracket bolt
+    // sits just outside the pour, its boss reaching one boss radius beyond).
+    let bracket_clearance = 2.0 * (crate::bolt_pattern::BOLT_WASHER_RADIUS_M + boss_margin);
+    let dowel_layers: Vec<LayerLoop> = layers
+        .iter()
+        .map(|slot| {
+            slot.as_ref().map(|(profile, excluded)| {
+                (
+                    profile.clone(),
+                    inflate_pour_channels(excluded, bracket_clearance),
+                )
+            })
+        })
+        .collect();
 
-    let Some(Some((outer_profile, outer_excluded))) = layers.last() else {
+    let Some(Some((outer_profile, outer_excluded))) = dowel_layers.last() else {
         eprintln!(
             "[cf-cast] WARNING: smart dowel placement — outermost layer silhouette is empty; \
              no dowels placed."
@@ -408,6 +437,8 @@ pub fn plan_smart_dowel_placements(
     }
     let class = FastenerClass {
         footprint_radius: footprint,
+        // Dowel spacing is footprint-based (boss-awareness is bolt↔bolt only).
+        separation_radius: footprint,
         fill: None,
         seeds,
     };
@@ -415,7 +446,14 @@ pub fn plan_smart_dowel_placements(
 
     // Cross-layer snap + validate: keep a position only if feasible on EVERY
     // layer, so the stack shares one dowel pattern (§3.8).
-    cross_layer_snap(&master, layers, &feas, footprint, "dowel")
+    cross_layer_snap(
+        &master,
+        &dowel_layers,
+        &feas,
+        footprint,
+        2.0 * footprint,
+        "dowel",
+    )
 }
 
 #[cfg(test)]

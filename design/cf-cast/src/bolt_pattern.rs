@@ -211,16 +211,18 @@ pub fn build_bolt_pattern_transforms(
 /// `pub(crate)` so the demand flange can size a bolt boss (`washer + wall_margin`).
 pub(crate) const BOLT_WASHER_RADIUS_M: f64 = 0.005;
 
-/// Safety margin the washer keeps beyond the cup-wall outer step (1 mm, ≈ FDM
-/// extrusion tolerance). The inboard radial floor is `wall_thickness + washer +
-/// this` — the *computed* form of the §3.2 "inboard washer-vs-cup-wall-step
-/// clearance" (the surviving half of the legacy hand-set 13 mm offset; the old
-/// 3 mm margin shrinks to FDM tolerance because the solver's max-margin objective
-/// keeps bolts comfortably outboard in free band regions, so the hard floor only
-/// has to guarantee the washer doesn't overhang the step). Matches the S0
-/// finding that a feasible apex bolt sits at d ≈ 11.5 mm (which a 13 mm floor
-/// would have excluded).
-const WASHER_CUP_WALL_MARGIN_M: f64 = 0.001;
+/// Safety margin the washer keeps beyond the cup-wall outer step. The inboard
+/// radial floor is `wall_thickness + washer + this` — the *computed* form of the
+/// §3.2 "inboard washer-vs-cup-wall-step clearance".
+///
+/// 2 mm (workshop, 2026-06-02): at 1 mm the bolt boss (`washer + boss_margin =
+/// 7 mm`) overlapped the cup-wall band by ~1 mm — the washer cleared the wall by
+/// only 1 mm, too tight to seat a driver against the rising cavity wall. 2 mm
+/// makes the boss just clear the wall band (no more ring-in-wall) and the washer
+/// clear by 2 mm — ample for a precision screwdriver (the assembly tool here).
+/// Verified separately that the 3D `∖ body` clip never bites a boss/washer (the
+/// cavity sits a full wall-thickness inboard).
+const WASHER_CUP_WALL_MARGIN_M: f64 = 0.002;
 
 /// The feasibility regime for the bolt washer (§3.3), per flange kind. `None` when
 /// the ribbon carries no flange ([`FlangeKind::None`]) — the planner is gated on a
@@ -318,13 +320,24 @@ pub fn plan_smart_bolt_placements(
         return result;
     };
     let washer_r = BOLT_WASHER_RADIUS_M;
+    // Demand-flange boss margin: each fastener carries a boss of radius
+    // `footprint + boss_wall_margin`. Spacing must keep BOSSES from merging,
+    // not just washers — so dedup on the boss radius and clear the dowel BOSS
+    // (plate/none flanges have no boss → margin 0 → washer-based, unchanged).
+    let boss_margin = match flange {
+        crate::flange::FlangeKind::Demand(s) => s.boss_wall_margin_m,
+        _ => 0.0,
+    };
+    let bolt_boss_r = washer_r + boss_margin;
 
     // The shared per-layer loops (`build_layer_loops`, S5d-(A)) carry the clean
     // seam profile + pour-channel exclusions. The bolt run additionally excludes
     // every solver-placed dowel disk for THIS layer (dowels run first — §3.6), so
     // append those to a clone of the shared pour-only exclusion set. The dowel
-    // footprint radius (`smart_dowel_footprint`, hole + wall) is passed in so the
-    // washer keeps the same PLA wall the dowel planner sized.
+    // exclusion is the dowel FOOTPRINT (hole + wall) — boss-awareness is
+    // bolt↔bolt only, so a bolt may still sit at footprint+washer from a dowel
+    // (a dowel+bolt boss touch is acceptable; the apex dowel is relocated off
+    // the pour bracket separately).
     let layers: Vec<crate::seam_placement::LayerLoop> = layers
         .iter()
         .enumerate()
@@ -369,14 +382,18 @@ pub fn plan_smart_bolt_placements(
 
     let class = FastenerClass {
         footprint_radius: washer_r,
+        // Space on the BOSS radius so adjacent bolt bosses don't fuse.
+        separation_radius: bolt_boss_r,
         fill: Some(max_pitch(*bolt_spec)),
         seeds,
     };
     let master = place_fasteners(outer_profile, &feas, outer_excluded, &class);
 
     // Cross-layer snap + validate: keep a position only if feasible on EVERY
-    // layer, so the stack shares one angular pattern (§3.8).
-    cross_layer_snap(&master, &layers, &feas, washer_r, "bolt")
+    // layer, so the stack shares one angular pattern (§3.8). Re-dedup at the
+    // boss diameter (not the washer) so the inner-loop compression can't fuse
+    // two bolt bosses.
+    cross_layer_snap(&master, &layers, &feas, washer_r, 2.0 * bolt_boss_r, "bolt")
 }
 
 /// The even-contact bolt pitch for the smart placement solve. iter-1 uses the

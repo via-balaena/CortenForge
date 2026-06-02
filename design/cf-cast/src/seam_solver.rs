@@ -179,8 +179,17 @@ pub struct Seed {
 /// One fastener class for a single [`place_fasteners`] run (§3.6).
 #[derive(Debug, Clone)]
 pub struct FastenerClass {
-    /// Footprint radius: the washer radius (bolts) or hole+wall (dowels).
+    /// Footprint radius: the washer radius (bolts) or hole+wall (dowels). Drives
+    /// feasibility + exclusion clearance (the physical part that must fit).
     pub footprint_radius: f64,
+    /// Inter-fastener spacing radius for de-duplication: how far apart two
+    /// same-class placements must be. For a demand flange this is the BOSS
+    /// radius (`footprint + boss_wall_margin`) so adjacent bosses don't merge
+    /// into a fused blob; for plate/none it equals `footprint_radius` (no
+    /// boss). Decoupled from `footprint_radius` so spacing is boss-aware while
+    /// feasibility/clearance stays washer-based (fasteners keep their radial
+    /// band, just space farther along the loop).
+    pub separation_radius: f64,
     /// Even-fill pitch: `Some(max_pitch)` subdivides the feasible arcs to that
     /// pitch (bolts); `None` places only the seeds (loose dowels).
     pub fill: Option<f64>,
@@ -245,7 +254,7 @@ pub fn place_fasteners(
     // the first (lowest arc). This both de-duplicates coincident seeds/boundaries
     // and collapses the two edge bolts of a too-short feasible island into one.
     // (Deliberately NOT tied to the scan resolution `arc_step`.)
-    let dedup_tol = (2.0 * class.footprint_radius).max(1e-4);
+    let dedup_tol = (2.0 * class.separation_radius).max(1e-4);
 
     // 1. resolve seeds → fixed anchors.
     let mut anchors: Vec<Placement> = Vec::new();
@@ -687,6 +696,7 @@ mod tests {
     fn bolts(seeds: Vec<Seed>) -> FastenerClass {
         FastenerClass {
             footprint_radius: WASHER_R,
+            separation_radius: WASHER_R,
             fill: Some(PITCH),
             seeds,
         }
@@ -906,6 +916,7 @@ mod tests {
         let footprint = 0.001;
         let class = FastenerClass {
             footprint_radius: footprint,
+            separation_radius: footprint,
             fill: Some(PITCH),
             // one anchor → a single wrap gap subdivided across the whole ring.
             seeds: vec![Seed {
@@ -945,6 +956,7 @@ mod tests {
         // two registration extremes on the long axis (arc 0 and the far side).
         let dowels = FastenerClass {
             footprint_radius: 0.004,
+            separation_radius: 0.004,
             fill: None,
             seeds: vec![
                 Seed {
@@ -1045,6 +1057,7 @@ mod tests {
         // zero pitch → seeds only, no subdivision blow-up.
         let zero_pitch = FastenerClass {
             footprint_radius: WASHER_R,
+            separation_radius: WASHER_R,
             fill: Some(0.0),
             seeds: vec![Seed {
                 arc: 0.05,
