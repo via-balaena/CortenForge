@@ -4749,8 +4749,8 @@ mod tests {
     #[test]
     fn generate_procedure_markdown_v2_apex_pour_prose_describes_apex_bore_and_drilled_vents() {
         // Apex-axial layout: prose must describe the single apex bore,
-        // hand-drilled vents, and the straight-spout funnel — and must
-        // NOT carry the V-shape "+binormal/-binormal" pour/vent prose.
+        // hand-drilled vents, and the INTEGRAL split funnel (no separate
+        // funnel STL) — and must NOT carry the V-shape pour/vent prose.
         use crate::PourGateLayout;
         let mut pour_spec = PourGateSpec::iter1();
         pour_spec.layout = PourGateLayout::ApexAxial;
@@ -4767,8 +4767,13 @@ mod tests {
             "apex-axial prose must describe hand-drilled vents",
         );
         assert!(
-            md.contains("straight-spout funnel"),
-            "apex-axial prose must describe the straight-spout funnel",
+            md.contains("Integral pour funnel") || md.contains("integral"),
+            "apex-axial prose must describe the integral split funnel; got: {md}"
+        );
+        assert!(
+            !md.contains("straight-spout funnel"),
+            "apex-axial funnel is now integral — must NOT describe a separate \
+             straight-spout funnel STL",
         );
         assert!(
             !md.contains("V at the dome end of the centerline"),

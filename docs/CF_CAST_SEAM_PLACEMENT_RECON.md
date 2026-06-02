@@ -752,6 +752,288 @@ Each commit: cf-cast lib + cf-cast-cli green; clippy pedantic+nursery + fmt; `RU
 
 ---
 
+## 7.7 PER-LAYER POUR-GATE SIZING PLAN (2026-06-02, agreed + decisions pinned; pre-implementation)
+
+**The gap (workshop-spotted).** A 3-layer cast pours 3 *different* silicones (00-30 ~3k cps,
+Dragon Skin 20A ~20k+ cps, 00-30), but all three cup gates are the **same Ø10 mm** and the cast
+emits **one** funnel. The pipeline *knows* the per-layer recipe (`CastLayer.material:
+MoldingMaterial` — drives cure protocol + procedure names), but the pour gate is **cast-global
+and material-blind**: `ribbon.pour_gate` is one `PourGateSpec`; three consumers all read its single
+`gate_radius_m` — `build_pour_gate_transforms(ribbon)` (→ the per-piece bore, `piece.rs:533`),
+`build_funnel_solid(ribbon)` (→ one funnel, `funnel.rs:572/232`), and `build_layer_loops`
+(→ the fastener gate-exclusion, built once for all layers, `seam_placement.rs:128`). Not a data
+disconnect — an **unbuilt connection**. The risk it leaves: ~20k-cps Dragon Skin pours through a
+throat sized for ~3k-cps 00-30.
+
+**Three decisions pinned (user, 2026-06-02):**
+- **Size home = `MoldingMaterial`.** Add `pour_gate_radius_m: Option<f64>`. `None` → cast default
+  (`ribbon.pour_gate` spec `gate_radius_m`, still set by the global CLI knob). The recipe carries
+  its own throat → "the silicone determines the sprue"; two layers sharing a recipe share the gate.
+  A **calibratable number, not a viscosity formula** — the viscosity *model* stays deferred
+  ([[project-cf-cast-per-silicone-sprue-funnel]]); the print tunes the number.
+- **Scope = mechanism (byte-identical) + a Dragon-Skin bump (deliberate) so Print 1 tests it.**
+- **Funnels named by recipe** — `funnel_ecoflex_00_30.stl`, `funnel_dragon_skin_20a.stl` (sanitized
+  `display_name`), matching the per-layer procedure sections.
+
+**Threading (one new param, default-`None` = byte-identical):**
+- `build_pour_gate_transforms(ribbon, gate_radius_override: Option<f64>)` — `None` → `spec.gate_radius_m`
+  (today); `Some(r)` → `r` for the **pour leg only** (vent stays `spec.vent_radius_m`). Position
+  unchanged (apex-on-seam); only the bore radius varies. Ripple sites: `piece.rs:533`,
+  `seam_placement.rs:128`, `funnel.rs:572`, + bolt_pattern/pour tests (pass `None`).
+- **compose** (`piece.rs:533`) → the layer's resolved radius (`material.pour_gate_radius_m`).
+- **placement** (`seam_placement.rs:128`) → the **MAX** radius across all layers. Fasteners are
+  shared across layers (cross-layer snap, §3.8), so they must clear the *biggest* gate to be valid
+  on every layer. All-equal (today) → max = default → identical placement.
+- **funnel** → emit **one per distinct radius**, named by recipe. One distinct radius (today) →
+  one funnel, byte-identical; two → a second `funnel_*.stl`. Throat sizing per funnel
+  (`gate_radius − NIPPLE_DIAMETRAL_CLEARANCE_M/2`) unchanged.
+- **procedure.md** — each per-layer section names its funnel + gate Ø; the "📁 Files" banner notes
+  the multiple-funnel case.
+- **CLI** — `pour_gate_radius_m` on the per-recipe material config; `derive.rs` sets it on the
+  `MoldingMaterial`. Validate `> 0`; bound it (a gate un-bracketable by fasteners on some layer →
+  error naming the layer).
+
+**Characteristic to evaluate at the print (not a blocker).** The apex bore already breaks the demand
+flange's seal-ring at the apex (it's on the seam, §4.3); a wider Dragon-Skin gate breaks it wider.
+Existing behavior, just more of it — Print 1 evaluates whether that local gap seals under hand-clamp.
+
+**Commit sequencing (Risk #7 — attributable, never conflated):**
+1. **Mechanism — byte-identical.** Field (default `None`) + all threading + per-recipe funnel
+   emission. Every material defaults → all gates = cast default → one distinct radius → one funnel,
+   max = default placement. **Gate: regen byte-identical** to current canal_05 (proves it's pure
+   wiring). Tests: override-`None`-equals-default, per-recipe funnel set from distinct radii,
+   placement-uses-max.
+2. **Dragon-Skin resize — deliberate re-baseline.** Set base_mold's Dragon Skin layer to **8 mm
+   radius = Ø16 → ~Ø15.5 throat** (vs the 5 mm/Ø10 default). **Sizing math (2026-06-02, real
+   numbers):** the DS layer is the worst case on every axis — ~20k cps (6.7× the 00-30 layers),
+   220 g / ~206 mL (the largest pour), 25-min pot life (the shortest). Gravity Poiseuille
+   (`Q = π·r⁴·ΔP/(8·μ·L)`, L≈35 mm throat, ΔP≈470 Pa) gives throat-only fill times: **Ø10 ≈ 21 min
+   (no margin vs the 25-min pot life — risks gelling mid-pour); Ø14 ≈ 5.4 min; Ø16 ≈ 3.2 min.**
+   `r ∝ μ^¼` ⇒ matching the proven 00-30 baseline flow (~1.1 mL/s, fills in ~1-2 min) needs
+   `5·6.67^0.25 = 8 mm → Ø16` — the equal-flow choice (user, 2026-06-02). **Adopted sizing
+   criterion (user, 2026-06-02): every layer's gate clears `Q ≥ 1.0 mL/s` at nominal head**
+   (≈ the proven-comfortable 00-30 rate). Per-material min radius `r = [Q*·8μL/(π·ΔP)]^¼`: 00-30
+   (3 Pa·s) → 4.88 mm (Ø10 default clears it, 1.10 mL/s); 00-30+Slacker (thinner) → smaller (Ø10
+   clears); Dragon Skin (20 Pa·s) → 7.85 mm → **Ø16 (1.08 mL/s, just over the floor)**. So the floor
+   keeps the 00-30 layers at the default Ø10 and lifts only DS to Ø16 — the same split, principled.
+   The mL/s floor is a design *heuristic with margin* (absolute rate depends on head + throat-length
+   estimates, both uncalibrated) — not yet an in-tool auto-sizer; per-recipe radii stay hand-set via
+   the mechanism, and a viscosity→radius auto-sizer (needs viscosity in `MoldingMaterial` + the head/L
+   assumptions pinned) is a **post-print follow-up** once a bench pour validates the model.
+
+   **Reference map — all 8 silicone-table anchors (Smooth-On TDS mixed viscosity, 2026-06-02).**
+   *Pour viscosity is NOT in the repo* — the `sim/L0/soft` silicone table carries cured-elastomer
+   mechanics (shear modulus, Shore, Yeoh, density), not liquid rheology — so these come from TDS and
+   the gate radius is sized externally. **Viscosity ≠ Shore hardness**: Ecoflex 00-10 (the *softest*)
+   is 14k cps, thicker than the firmer 00-50 (8k). Gate Ø to clear `Q ≥ 1.0 mL/s` (`r ∝ μ^¼`,
+   ref 00-30 @ 4.88 mm):
+
+   | Anchor | μ (cps) | r_min | gate Ø | Anchor | μ (cps) | r_min | gate Ø |
+   |---|---:|---:|---|---|---:|---:|---|
+   | Ecoflex 00-20 | 3,000 | 4.88 | Ø10 | Dragon Skin 20A | 20,000 | 7.85 | Ø16 |
+   | Ecoflex 00-30 | 3,000 | 4.88 | Ø10 | Dragon Skin 30A | 20,000 | 7.85 | Ø16 |
+   | Ecoflex 00-50 | 8,000 | 6.24 | Ø13 | Dragon Skin 15 | 21,000 | 7.94 | Ø16 |
+   | Ecoflex 00-10 | 14,000 | 7.18 | Ø15 | Dragon Skin 10A | 23,000 | 8.13 | Ø17 |
+
+   Only the thin Ecoflex 00-20/00-30 ride the default Ø10; the rest need a bump (DS family clusters
+   Ø16-17). Slacker only thins → a blend stays ≤ its base anchor's Ø. For base_mold, the lone
+   deviation is DS 20A → Ø16. (When the auto-sizer is built post-print, this table is its seed data —
+   add `pour_viscosity_cps` to the anchors.) Counter-pressure weighed:
+   the apex bore breaks the demand seal-ring land wider at Ø16 than Ø10 (recon §4.3), but the apex
+   is the pour entry + highest point + bolt-bracketed, so it's the least-bad place to widen; flow
+   safety on a 220 g thick pour wins. Regen → that layer's bore widens + a second
+   `funnel_dragon_skin_20a.stl` appears; **verify the seam-placement solver still brackets the Ø16
+   bore** (placement uses the max radius across layers; the un-bracketable bound-validator fires if
+   not) → reviewed diff + grade-all, on its own commit.
+
+Each commit: cf-cast lib + cf-cast-cli green; clippy pedantic+nursery + fmt; `RUSTDOCFLAGS="-D warnings"`
+doc-link check; `grade-all --skip-coverage` 295/295; real-body regen-diff in **release**; cold-read
+pre-commit. Lands on a fresh branch off the current cleanup batch (or after it merges).
+
+> **⚠ SUPERSEDED in part by §7.8 (2026-06-02).** §7.7's per-layer *gate sizing* stands, but its
+> **separate per-recipe `funnel.stl` emission is replaced** by the §7.8 *integral split funnel*
+> (the funnel becomes part of the cup, so there is no separate funnel artifact for apex-axial and
+> no funnel-naming). And the flow model is corrected: §7.7's mL/s figures were computed at the gate
+> radius, but with the *current separate funnel* the binding throat is the nipple lumen (gate Ø −
+> 3.5 mm) — §7.8 removes the nipple, restoring the bore as the throat (and the §7.7-original
+> gate-radius sizing table).
+
+---
+
+## 7.8 INTEGRAL SPLIT FUNNEL DESIGN (2026-06-02, agreed direction; pre-implementation)
+
+**Genesis.** Mapping §7.7's per-silicone gates surfaced that the *current* separate funnel's nipple
+**inserts into** the bore, and its 1.5 mm wall shrinks the lumen to `gate Ø − 3.5 mm` (Ø6.5 at the
+Ø10 default) — a **~5.6× `r⁴` throat penalty** that the thick layers can't overcome without huge
+gates. User's call: stop fighting it — **make the bore itself the funnel**: an *integral* funnel that
+is part of the cup print, **split down the seam** like the bore/dowels/socket, rising straight out of
+the apex with a **lumen continuous into the bore** (no inserted nipple, no step-down, no constriction).
+NOT grooved into the flange (the demand flange is scalloped to a seal-ring + bosses — no plate to
+groove); its own protruding structure. This **supersedes the separate `funnel.stl`** (§7.7 fold).
+
+**Architecture — SDF-integral union (NOT post-MC).** The funnel is built into the cup-body `Solid`
+in `compose_piece_with_shared`, so the existing **seam halfspace intersect bisects it for free**
+(same mechanism that already halves the shell + flange pre-MC), and MC meshes it natively.
+- *Why not post-MC* (the established mating-feature pattern): a post-MC **union** adds a *full* cone
+  to *each* half → doubles. A seam-clipped additive primitive (like `UnionFloorSlab`) would work but
+  needs a new truncated-cone primitive + seam-clip payload. SDF avoids both, and the funnel is
+  *already* an SDF `Solid` (`funnel.rs::build_funnel_solid` / `truncated_cone`).
+- *Why this is NOT the abandoned-SDF mistake* ([[feedback-read-prior-arc-memory-before-architectural-decisions]]):
+  that was a **1.5 mm pin eaten by 3 mm-cell MC quantization**. The funnel is **cm-scale bulk
+  material with ~2.5 mm walls at 0.5 mm production cells** — orders of magnitude above the
+  quantization floor. Fallback if MC faceting of the lumen proves rough at the chosen cell: a
+  post-MC exact truncated-cone primitive (`Union/SubtractTruncatedCone`). Verified at the production
+  cell in the regen (F4 + cf-view eyeball).
+
+**Geometry (coaxial with the apex-axial bore; axis lies IN the seam plane, so the seam bisects it).**
+Cone widening from the bore at the cup surface up to the pour mouth (outboard tip = +Z top in pour
+orientation):
+- **base outer Ø** = bore Ø + 2·wall; **wall** ≈ 2.5 mm (robust printable half-shell).
+- **mouth inner Ø** = **2.2× bore Ø** (pinned) — Ø10 bore → ~Ø22 mouth, Ø16 bore → ~Ø35.
+- **height** = **18 mm** (pinned) — *modest by design*: short + cone-stiff so the bolt-bracketed
+  base clamp dominates. Catch volume ~1.5 mL (an *aim* funnel; the workshop ladles continuously —
+  a true reservoir, if wanted, is an un-registered cup held above, no leak path).
+- **lumen** = the full pour channel: funnel taper (mouth inner → bore Ø) then straight bore (bore Ø
+  through flange/wall into the cavity). The **throat is the bore Ø** (narrowest); the funnel only
+  ever widens above it.
+
+**Lumen / bore (apex-axial moves fully into SDF).** Build the channel as one negative `Solid`
+(taper + bore cylinder, overlapped to weld) subtracted from the cup body in SDF, **retiring the
+post-MC `SubtractCylinder` pour leg for `ApexAxial`** (`build_apex_axial_transforms` → SDF). The
+seam intersect then bisects the bore into the two half-troughs exactly as today. V-at-dome keeps its
+post-MC bore + separate funnel (legacy).
+
+**Funnel vs. sprue (terminology, since it drives the next point).** The **funnel** is the PLA
+structure — part of the *mold* (integral, prints with each cup). The **sprue** is the *cured
+silicone* that fills the funnel + bore channel — the *waste* trimmed off the cast part at demold.
+The funnel shapes the sprue. So the funnel is **sacrificial sprue-channel territory**: not the cast
+product, NOT a seal surface (the seal is the inboard demand-flange land). That's why it can be crude.
+
+**Seam-split + clamp/leak — NO INTERLOCK (corrected 2026-06-02, supersedes the pinned interlock).**
+The funnel is **two flat half-cones continuing the cup's flat seam**, clamped by the same
+bore-bracketing bolts — exactly like the rest of the mold. The earlier "ship a self-mating interlock
+in commit 1" pin was built on an overstated splay risk: the cold-read found (i) the interlock was
+geometrically incoherent (a planar cut yields *congruent* faces, not complementary tongue/groove —
+a real interlock would have to be side-DEPENDENT), and (ii) the splay force is negligible anyway —
+the funnel is the mold's *highest* point, so head there is a few cm → outward force ≈ `ΔP·area ≈
+525 Pa · ~2 cm² ≈ 0.1 N` (~10 gf) on a short cone-stiff PLA shell rigidly tied to the bolt-clamped
+base. It stays shut for the same reason the cup halves do. Stiffeners that DO ship: cone taper +
+18 mm height keep it stiff. Any faint seam witness line lands on the *waste sprue* → trimmed away.
+**Print 1 evaluates the residual weep**; only if it actually weeps do we add an interlock — and then
+it must be **side-dependent** (tongue on one piece, groove on the other; seal-safe because the
+funnel seam is sacrificial, not the flat seal land) or a side-agnostic cross-pin (loose part).
+
+**Printability.** Cups print seam-down → the funnel axis is parallel to the bed and each half is a
+**half-cone shell lying flat-(seam-)face-down** — zero overhang on the flat face; the curved shell
+arcs from the bed up to a spine (mild self-supporting overhang near the spine, as any half-pipe).
+Protrudes into bed *footprint*, not Z-height. Verify the spine at the chosen wall/Ø in slicer.
+
+**Sprue.** Funnel cone + bore cure as one solid; split with the halves at demold → lifts straight
+out (no blind pull); trim flush at the cup surface. Same as today's bore sprue, plus the cone.
+
+**Per-layer bore sizing — corrected (no nipple → bore IS the throat).** Removing the nipple restores
+the clean `r ∝ μ^¼` at the bore (no −1.75 mm offset), i.e. the §7.7-**original** gate-radius table:
+00-20/30 → Ø10; 00-50 → Ø13; 00-10 → Ø15; **DS 20A/30A → Ø16**; DS 15 → Ø16; DS 10A → Ø17.
+So **DS 20A = Ø16** (the user's pick) is again the 1.0 mL/s / equal-flow number. *(Conservative:
+modeled throat-length ≈ current; a shorter effective throat without the 20 mm nipple would only
+improve flow → these gates are an upper bound. Print calibrates.)*
+
+**Impl constraints (from the 2026-06-02 cold-read / stress-test).**
+1. **`layer_mc_bounds` must enclose the funnel** — it protrudes ~`height`+cone outboard along the
+   bore axis at the apex, *past* today's `max(wall, flange_reach)+pad` box → expand or MC clips the
+   funnel. **Cost: ~10–15% more cup MC cells** (mostly empty space around the cone) → ~+7 min on a
+   ~56 min canal_05 regen + more memory. Standing tax until narrow-band MC (deferred) lands.
+2. **Lumen must breach the cavity** — the SDF lumen has to reach inboard exactly as today's 90 mm
+   `SubtractCylinder` bore does, or the bore is a *blind pocket* (silicone can't enter the cavity).
+3. **Funnel base must overlap-weld into the cup shell** — the cone base meets the *curved* dome
+   surface; needs a `BOWL_NIPPLE_OVERLAP`-style inboard overlap or it floats → non-manifold.
+4. **Bore→SDF facets the bore edge on the mating face** (~0.5 mm at production cell) vs today's
+   post-MC exact cylinder. ACCEPTED (apex/sprue, not the seal land); the alternative (keep bore
+   post-MC, only funnel SDF) has a messier junction.
+5. **Degenerate apex axis inherited** — if the dome outward axis can't lie in the seam plane
+   (`build_apex_axial_transforms` `norm<1e-9` fallback), the funnel can't be cleanly bisected
+   (goes lopsided). Pathological + already gated for the bore; the funnel amplifies the visible
+   consequence. No new mitigation; the 2-piece gate already rejects this split.
+6. **Placement bracket vs funnel base** — *verify first*: the M5 washer (~5 mm r) likely already
+   clears the funnel base (bore_r + 2.5 mm), so widening the `pour_exclusions` to the base Ø may be
+   a no-op. Only widen if the washer actually overlaps the funnel wall.
+7. **F4 may flag the funnel spine** (half-pipe top → near-horizontal) — check the cup F4 overhang
+   policy on a fixture before the full regen.
+8. **Broad surface area** — V-at-dome KEEPS the separate funnel, so export / procedure /
+   progress-counter / v1 + tests all branch on `layout` (apex-axial: no separate `funnel.stl`).
+
+**Code fold-in.**
+- `pour.rs` — new `build_integral_funnel_channel(ribbon, bore_r) -> (outer_cone: Solid, lumen: Solid)`
+  (reuse `funnel.rs::truncated_cone`); `build_pour_gate_transforms` returns empty for `ApexAxial`
+  (bore now SDF).
+- `piece.rs::compose_piece_with_shared` — after `shell ∩ halfspace ∪ flange`:
+  `base = (base ∪ (outer_cone ∩ halfspace)) ∖ lumen` (lumen subtract carves both the funnel hole and
+  the bore; side-safe). Threads the per-layer bore radius (§7.7 mechanism).
+- `funnel.rs` — `build_funnel_solid` / `mesh_and_gate_v2_funnel` no longer emit for `ApexAxial`
+  (separate `funnel.stl` gone for the default); `truncated_cone` reused by the integral builder.
+- `spec.rs` — drop the funnel artifact (+ its progress tick) for `ApexAxial`; per-layer bore radius
+  flows from `MoldingMaterial.pour_gate_radius_m` (§7.7) into the integral builder.
+- `procedure.md` — replace "separate funnel, reused across layers" prose with the integral split
+  funnel (pour into the apex funnel; trim the funnel+bore sprue).
+
+**Commit sequencing (Risk #7).** This is a *deliberate geometry change* throughout (the apex pour
+re-architects), so byte-identity is NOT the gate — reviewed regen-diff + cf-view eyeball + F4 are.
+1. **Integral funnel mechanism** — SDF funnel+bore for `ApexAxial` (two flat half-cones, NO
+   interlock), bounds + placement-bracket updates, retire the separate funnel for apex-axial.
+   Default bore Ø10 (all layers) → one clean regen-diff vs the separate-funnel baseline (the bore
+   region + the new integral funnel; no separate `funnel.stl`). cf-view: funnel splits cleanly,
+   flat half-cones, sprue path obvious.
+2. **Per-layer bore sizing live** (§7.7 mechanism on the integral throat) — DS 20A → Ø16; regen-diff
+   shows only the DS layer's funnel+bore widen; verify the bracket still clears the Ø16 funnel base.
+
+Each: cf-cast lib + cli green; clippy+fmt+rustdoc; grade-all 295/295; release regen-diff + cf-view;
+cold-read pre-commit. Same branch as §7.7 (the per-silicone-pour-gate arc).
+
+**Decisions pinned (user, 2026-06-02):** (1) funnel **mouth = 2.2× bore Ø, height = 18 mm**
+(balanced catch/stiffness); (2) **NO interlock — two flat half-cones** continuing the cup seam,
+clamped like the rest of the mold (splay force ≈ 0.1 N, negligible; the funnel is sacrificial sprue
+territory). Print 1 evaluates weep; add a side-dependent interlock later only if it actually weeps.
+(3) **SDF-integral** approach (post-MC exact cone is the faceting-fallback only).
+
+---
+
+## 7.9 SEAM-PLACEMENT VISUAL CLEANUP (2026-06-02, from the §7.8 cf-view eyeball)
+
+Reviewing the integral-funnel regen surfaced three placement artifacts in the (pre-existing,
+PR #262) seam solver, all about the demand-flange BOSSES (radius `footprint + boss_wall_margin`,
+~7 mm for bolts) being bigger than the WASHER footprint (5 mm) the spacing was sized to. Fixed as
+one cleanup commit (each verified by a throwaway fastener-position probe, then reverted):
+
+1. **Coincident bolts on the inner loop.** `cross_layer_snap` projects the outer-loop master
+   pattern onto each layer; a SMALLER inner loop compresses two distinct positions onto ~one point.
+   It never re-deduped → layer-0 carried a 0.04 mm duplicate (two bolts in one hole). **Fix:**
+   re-dedup each layer's snapped positions.
+2. **Bolt+bolt "siamese" bosses.** Even after (1), bolts at ~10–13 mm survived the washer-sized
+   dedup (`2×5 mm`), and their ~7 mm-radius bosses merged into a fused blob. **Fix:** decouple a
+   `separation_radius` (the BOSS radius) from `footprint_radius` (washer); dedup + `cross_layer_snap`
+   use `2×boss_r ≈ 14 mm`. Feasibility/clearance stays washer-based, so fasteners keep their radial
+   band and only space farther along the loop (counts drop slightly: 15→12-13 bolts/layer — the
+   intended trade; still ample clamping). **Boss-awareness is bolt↔bolt ONLY** (user, 2026-06-02):
+   dowel↔bolt and dowel↔dowel stay footprint-based (a dowel+bolt boss touch is acceptable; sizing
+   the bolt off the dowel BOSS was nudging the apex bracket bolt off the pour).
+0. **Washer-vs-cup-wall clearance bumped 1 mm → 2 mm** (`WASHER_CUP_WALL_MARGIN_M`). At 1 mm the
+   bolt boss (7 mm) overlapped the cup-wall band by ~1 mm and the washer cleared the rising cavity
+   wall by only 1 mm — too tight to seat a driver. 2 mm makes the boss just clear the wall band and
+   the washer clear by 2 mm (ample for the precision screwdriver used here). Verified by probe that
+   the 3D `∖ body` clip never bites a boss/washer: worst boss-ring sits ~4 mm clear of the body,
+   washer-ring ~6 mm, 0 bolts with the body inside the washer ring (the cavity is a full
+   wall-thickness inboard; the boss-into-wall is a flat coplanar union, not a carve).
+3. **Dowel sitting in the apex pour-bracket zone.** Dowels seed at the long-axis extremes (max
+   anti-rotation leverage), but for a tall body one extreme IS the dome apex — the pour + clamp-bolt
+   zone — so a registration dowel landed where a clamp bolt belongs (and crowded the bracket).
+   **Fix:** for the dowel solve only, grow the pour keep-out into the bracket zone
+   (`inflate_pour_channels` by ~`2×bolt_boss_r`) so that seed snaps to a clean point just below the
+   bracket (still high → good leverage; the base extreme is clear + unaffected). The apex is now
+   pour + bracket-bolts only. Trade: the relocated dowel sits ~22 mm off the apex (vs the tip),
+   a modest leverage cost the bolt count covers.
+
+---
+
 ## 8. Risks / unknowns
 
 1. **A pinch the demand flange can't rescue.** If even bosses can't host a feasible bolt

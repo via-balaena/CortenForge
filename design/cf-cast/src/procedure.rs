@@ -593,14 +593,17 @@ fn write_print_orientation_funnel_platform(md: &mut String, apex_pour: bool) {
     if apex_pour {
         let _ = writeln!(
             md,
-            "`funnel.stl`: **straight-spout funnel** — a vertical bowl \
-             with a straight (un-bent) vertical nipple, since the apex \
-             pour bore points straight up when the mold is +Z up. Print \
-             with the **bowl-mouth disk DOWN on the build plate** (mouth \
-             disk = first layer; the bowl widens upward; the straight \
-             nipple points down into the bed). No cantilever, so no \
-             supports needed for the spout. Print once for the whole \
-             multi-layer device — reuse across every layer's pour."
+            "**No separate funnel to print** — the apex pour funnel is \
+             **integral to each cup**: a split cone rising from the apex \
+             bore, half on each cup piece, that forms a full pour funnel \
+             when the two halves are clamped. Its lumen runs continuously \
+             into the bore (no inserted nipple), so there is no throat \
+             constriction. It prints as part of the cup pieces (the half- \
+             cone lies flat on the seam-face-down bed — no extra supports). \
+             Pour silicone straight into the assembled funnel at the apex; \
+             the funnel + bore silicone cures as one sprue that lifts out \
+             of the open half-troughs when the halves separate — trim it \
+             flush off the cast."
         );
     } else {
         let _ = writeln!(
@@ -793,15 +796,13 @@ fn write_cfview_sanity_check_v2(md: &mut String, apex_pour: bool) {
     if apex_pour {
         let _ = writeln!(
             md,
-            "3. **Funnel** (`funnel.stl`): straight-spout funnel — \
-             vertical bowl + straight (un-bent) vertical nipple as one \
-             connected body, joined at the bowl-bottom shoulder. Nipple \
-             Ø matches the cup pour-gate Ø minus the funnel's asymmetric \
-             diametral clearance (`cf-cast` \
-             `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). Interior bore \
-             tapers smoothly from the bowl mouth down to the nipple bore \
-             (single conical lumen). No flat flange disk; no floating \
-             components; the nipple points straight down (no tilt)."
+            "3. **Funnel**: *no separate STL* — the apex pour funnel is \
+             **integral to the cup pieces** (a split cone at the apex, half \
+             on each piece, forming a full funnel when clamped). Its lumen \
+             is continuous into the bore (no inserted nipple → no throat \
+             constriction). It prints with the cups; pour straight into the \
+             assembled funnel and trim the funnel+bore sprue flush after \
+             demold."
         );
     } else {
         let _ = writeln!(
@@ -1659,9 +1660,9 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
 }
 
 /// Apex-axial pour prose (organic-parts §4.3): a single straight bore
-/// at the dome apex on the seam, a straight-spout funnel, and
-/// hand-drilled carbide vents. Replaces the V-shape pour/vent prose
-/// for [`PourGateLayout::ApexAxial`].
+/// at the dome apex on the seam, the integral split funnel (recon §7.8 —
+/// part of the cup, no separate STL), and hand-drilled carbide vents.
+/// Replaces the V-shape pour/vent prose for [`PourGateLayout::ApexAxial`].
 fn write_apex_axial_pour_note(md: &mut String, spec: &crate::pour::PourGateSpec) {
     let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
     let gate_length_mm = spec.gate_half_length_m * 2.0 * 1000.0;
@@ -1702,22 +1703,24 @@ fn write_apex_axial_pour_note(md: &mut String, spec: &crate::pour::PourGateSpec)
          the apex."
     );
     md.push('\n');
-    let nipple_clearance_mm = crate::funnel::NIPPLE_DIAMETRAL_CLEARANCE_M * 1000.0;
-    let nipple_outer_dia_mm = gate_dia_mm - nipple_clearance_mm;
+    let mouth_dia_mm = gate_dia_mm * crate::pour::INTEGRAL_FUNNEL_MOUTH_FACTOR;
+    let funnel_height_mm = crate::pour::INTEGRAL_FUNNEL_HEIGHT_M * 1000.0;
     let _ = writeln!(
         md,
-        "**Pour funnel** (one-time print: `funnel.stl`). A **straight-\
-         spout** funnel (vertical nipple, no bend) drops into the apex \
-         bore with its bowl mouth facing straight up — the bore points \
-         straight up when the mold is +Z up, so no bent spout is \
-         needed. Nipple Ø {nipple_outer_dia_mm:.2} mm = the \
-         {gate_dia_mm:.1} mm cup bore minus {nipple_clearance_mm:.2} mm \
-         asymmetric diametral clearance (the cup hole stays nominal; \
-         the nipple bears the slack). Ladle silicone slowly into the \
-         vertical bowl. Apply mold release to the nipple before each \
-         pour so cured silicone doesn't lock the funnel onto the cup. \
-         Print once for the whole multi-layer device — reused across \
-         every layer's pour."
+        "**Integral pour funnel** (NO separate print). The funnel is built \
+         INTO the cup pieces: a cone rising from the apex bore, split on the \
+         seam so each cup half carries one half-cone — clamping the halves \
+         forms the full funnel. Its lumen runs **continuously into the bore** \
+         (no inserted nipple), so the pour throat is the {gate_dia_mm:.1} mm \
+         bore itself with no wall constriction. Mouth Ø ≈ {mouth_dia_mm:.1} mm, \
+         ~{funnel_height_mm:.0} mm tall. It prints as part of the cups (the \
+         half-cone lies flat on the seam-face-down bed — no extra supports). \
+         Ladle silicone straight into the assembled funnel at the apex; the \
+         funnel + bore silicone cures as one sprue that lifts out of the open \
+         half-troughs when the halves separate (apply mold release first), \
+         then trim it flush off the cast. If the funnel seam weeps during a \
+         pour, band the assembled funnel — it is sacrificial sprue territory, \
+         not a seal surface."
     );
     md.push('\n');
 }
@@ -1884,11 +1887,12 @@ fn write_per_layer_sections_v2(
         let pour_sentence = match &ribbon.pour_gate {
             PourGateKind::Default(s) if s.layout == PourGateLayout::ApexAxial => {
                 "Orient the assembled mold **+Z up** (dome apex on top). Pour \
-                 silicone slowly through the straight funnel into the apex bore \
-                 — the highest point of the cavity — so the shell fills \
-                 bottom-up; trapped air escapes the hand-drilled vent(s) at the \
-                 apex and any high spots. The cast is full the instant silicone \
-                 reaches the bore (no point sits above it)."
+                 silicone slowly into the integral apex funnel (the split cone \
+                 formed when the cup halves clamp) — feeding the bore at the \
+                 highest point of the cavity — so the shell fills bottom-up; \
+                 trapped air escapes the hand-drilled vent(s) at the apex and \
+                 any high spots. The cast is full the instant silicone reaches \
+                 the bore (no point sits above it)."
             }
             PourGateKind::Default(_) => {
                 "Orient the assembled mold with **+Z up** so the V's pour + vent \
