@@ -666,6 +666,77 @@ confirmed contained:** no consumer of the deleted fields exists outside `cf-cast
 
 ---
 
+## 7.6 S4.5 PLAN (2026-06-01, agreed + decisions pinned; pre-implementation)
+
+The demand-driven flange (§4) lands as a sibling of `Plate`, then becomes the
+`base_mold` default = the print target. **Key architectural finding:** placement is
+*already* decoupled from the flange *solid* — the planners read only `flange_spec`'s
+`[inner_offset, width]` numbers as the feasibility band, and the solve already runs
+before `build_flange_solid`. So the §4.2 "dependency flip" is a **feasibility-regime
+swap + a flange-SDF swap**, NOT a control-flow rewrite.
+
+**Two decisions pinned (user, 2026-06-01):**
+- **(E1) Radial offset under `Demand` = pin at the inboard floor.** Collapse the radial
+  DOF: `Feasibility::band(inner = d_floor_sd, width = d_floor_sd + footprint, d_floor,
+  d_max = d_floor)` so every fastener hugs the seal ring at the washer-vs-cup-wall floor
+  (§3.2). Minimal moment/material, shortest tadpole spokes. The apex is still bracketed by
+  stepping ALONG the arc (the pour `Channel` exclusion + `PourPierce` seed), never by
+  pushing `d` outboard — the demand flange makes pushing-out unnecessary (material follows
+  the fastener). Supersedes the plate-era variable-`d` (the S0 11.5/14.5 mm apex asymmetry
+  was a *band* artifact).
+- **(E2) Seal land hugs the cavity (gasket-None).** `land_inner_offset_m ≈ 0.5 mm`
+  (a tiny start for 0.5 mm-grid MC-quantization safety, not the Plate 2 mm gasket-clearance
+  offset, recon §4.1 N2), `land_width_m ≈ 6 mm`. Maximizes PLA-on-PLA seal contact.
+
+**New types (`flange.rs`):** `DemandFlangeSpec { land_inner_offset_m, land_width_m,
+flange_thickness_m, web_width_m, boss_wall_margin_m }` + `FlangeKind::Demand(..)`. Add
+`FlangeKind::lateral_reach_m() -> Option<f64>` (Demand: `land_inner + land_width +
+boss_allowance`; Plate: `flange_width_m`) so `layer_mc_bounds` + `build_layer_loops`'s
+`pad` are correct for both kinds; existing `.spec()` presence-callers unaffected.
+
+**`DemandFlangeSdf` (seal ring + tadpoles + slab):**
+```
+demand_flange_sdf(P) = max(
+    min( seal_ring_band(P),                       // continuous closed land (sd ∈ [land_inner, land_inner+land_width])
+         min_i  capsule(P; anchor_i → center_i,   // per-fastener tadpole, r: web/2 → boss_r_i
+                        boss_r = footprint + boss_wall_margin) ),
+    binormal_slab(P) )                            // |dist_to_seam| − thickness  (identical to FlangeSdf)
+```
+- Seal ring reads the **shared `SeamProfile` signed distance** (NOT a freshly-built
+  `Silhouette2d`) → completes §MA-7 **9→3** for the Demand path (S5d-(B) *dissolves* here,
+  no separate commit; **Plate's `build_flange_solid` is left byte-identical**, untouched).
+- **HARD GATE — `[[project-cf-cast-flat-mating-face-constraint]]`:** union/intersect are
+  plain `min`/`max` ONLY — no `smooth_union`/fillet/gusset. Thickness term is the identical
+  binormal slab Plate uses, so the mating face stays the §F-4 bit-precise planar cut. Run
+  the `mating_face_is_mathematically_flat_and_coplanar` gate on a Demand fixture.
+
+**Threading:** the planner returns `PlacedFastener { center, anchor, boss_r }` per fastener
+(anchor = `center` pulled inboard along `profile.outward_normal_at` to the seal-ring outer
+edge; the hole-carve still uses only `center`). `mesh_and_gate_v2_pieces` keeps `layer_loops`
+alive and passes the per-layer `SeamProfile` into `compose_piece_shared` so the seal ring
+reuses it.
+
+**Commit sequencing (Risk #7 — attributable, never conflated):**
+1. **dowel.stl solver-count** (fold-in 2). `mesh_and_gate_v2_pieces` returns the shared
+   placed-dowel count; `export_molds` threads it to `mesh_and_gate_v2_dowel`, replacing
+   `const PRINTABLE_DOWEL_COUNT=4` → `build_dowel_array_mesh(.., count, ..)`. **Only
+   `dowel.stl` changes** (4→2 rods on base_mold); the 6 cup pieces stay byte-identical to
+   the retiring S5 baseline. Fresh baseline captured.
+2. **`FlangeKind::Demand` + `DemandFlangeSdf` + (E1) feasibility flip + threading + CLI
+   `[flange] kind`**, landing as a **dormant sibling** (base_mold still defaults Plate this
+   commit → cups byte-identical). Adds the closed-loop seal-continuity test (material at
+   land mid-width at every arc), the F4 Demand fixture (spoke/boss min widths = print-safe
+   floors), the flat-mating-face gate.
+3. **Flip base_mold default to Demand** — the deliberate cup re-baseline. Fresh baseline;
+   reviewed regen-diff (a cup diff here is *seal-geometry*, not placement — §7.4 A/B already
+   de-risked placement); cf-view eyeball of the scallop + apex boss.
+
+Each commit: cf-cast lib + cf-cast-cli green; clippy pedantic+nursery + fmt; `RUSTDOCFLAGS=
+"-D warnings"` doc-link check (the `pub`→`pub(crate)` backtick lint); `grade-all
+--skip-coverage` 295/295; real-body probes in **release**; cold-read pre-commit.
+
+---
+
 ## 8. Risks / unknowns
 
 1. **A pinch the demand flange can't rescue.** If even bosses can't host a feasible bolt
