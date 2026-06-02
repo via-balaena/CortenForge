@@ -239,3 +239,130 @@ pub(crate) fn cross_layer_snap(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    // Workspace lint policy allows unwrap/panic in tests; matches the sibling
+    // cf-cast test modules.
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::expect_used,
+        clippy::float_cmp
+    )]
+
+    use super::*;
+    use crate::seam_solver::{FastenerClass, place_fasteners};
+
+    /// A clean circular [`SeamProfile`] of radius `r` in the Y-normal seam plane.
+    fn circle_profile(r: f64) -> SeamProfile {
+        let n: u32 = 360;
+        let raw: Vec<Point2> = (0..n)
+            .map(|i| {
+                let th = std::f64::consts::TAU * f64::from(i) / f64::from(n);
+                Point2::new(r * th.cos(), r * th.sin())
+            })
+            .collect();
+        SeamProfile::from_polyline(&raw, SeamPlaneBasis::y_normal(0.0), 0.001, 0.002).unwrap()
+    }
+
+    /// The incremental band the cross-layer tests place against (washer footprint
+    /// 5 mm, d floored at 11 mm — the bolt regime).
+    fn band() -> Feasibility {
+        Feasibility::band(0.002, 0.020, 0.011, 0.020)
+    }
+
+    /// A realistic master set: an even ring solved on a 10 mm-radius loop.
+    fn master_ring() -> (SeamProfile, Vec<Placement>) {
+        let outer = circle_profile(0.010);
+        let class = FastenerClass {
+            footprint_radius: 0.005,
+            fill: Some(0.030),
+            seeds: Vec::new(),
+        };
+        let master = place_fasteners(&outer, &band(), &[], &class);
+        assert!(master.len() >= 2, "fixture must place a few fasteners");
+        (outer, master)
+    }
+
+    /// §3.8 positive case: when every layer can host the pattern, all master
+    /// positions are kept and every layer carries the SAME count.
+    #[test]
+    fn cross_layer_snap_keeps_positions_feasible_on_all_layers() {
+        let (outer, master) = master_ring();
+        let inner = circle_profile(0.010);
+        let layers: Vec<LayerLoop> = vec![Some((inner, Vec::new())), Some((outer, Vec::new()))];
+        let result = cross_layer_snap(&master, &layers, &band(), 0.005, "test");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].len(), master.len(), "inner keeps every position");
+        assert_eq!(result[1].len(), master.len(), "outer keeps every position");
+    }
+
+    /// §3.8 drop-from-WHOLE-set: a layer that cannot host the pattern (here an empty
+    /// silhouette → `None` slot) drops EVERY master position from the WHOLE stack —
+    /// including the outer layer where each position is feasible. This pins the
+    /// load-bearing "kept only if feasible on every layer" branch (the C2 case): the
+    /// equal-count tests above pass even if this branch were deleted, but this one
+    /// would not (the outer result would be non-empty).
+    #[test]
+    fn cross_layer_snap_drops_whole_set_when_a_layer_cannot_host_it() {
+        let (outer, master) = master_ring();
+        // Inner layer unplaceable (empty silhouette → None), outer fully feasible.
+        let layers: Vec<LayerLoop> = vec![None, Some((outer, Vec::new()))];
+        let result = cross_layer_snap(&master, &layers, &band(), 0.005, "test");
+        assert_eq!(result.len(), 2);
+        assert!(
+            result.iter().all(Vec::is_empty),
+            "an unplaceable layer must drop the whole shared set from EVERY layer \
+             (incl. the outer, where the positions are feasible); got {:?}",
+            result.iter().map(Vec::len).collect::<Vec<_>>(),
+        );
+    }
+
+    /// §4.1 tadpole anchors: each fastener's ring anchor is the seal-ring outer edge
+    /// (`land_outer` signed-distance outboard) at the fastener's own azimuth, and
+    /// `boss_r` passes through. Pins the production anchor computation the
+    /// `DemandFlangeSdf` tests sidestep by hand-building `Tadpole`s.
+    #[test]
+    fn build_tadpoles_anchors_on_the_ring_outer_edge_at_each_azimuth() {
+        let profile = circle_profile(0.010);
+        let land_outer = 0.0065; // land_inner 0.5 + land_width 6 mm
+        // Two fasteners at azimuth 0° and 90°, each at radius 21 mm (d ≈ 11 mm).
+        let fasteners = vec![
+            (Point2::new(0.021, 0.0), 0.007),
+            (Point2::new(0.0, 0.021), 0.0056),
+        ];
+        let tads = build_tadpoles(&profile, &fasteners, land_outer);
+        assert_eq!(tads.len(), 2);
+
+        // Azimuth 0° → anchor at (10 + 6.5, 0) mm on +x.
+        assert!(
+            (tads[0].anchor.x - 0.0165).abs() < 1e-3,
+            "anchor x: {}",
+            tads[0].anchor.x
+        );
+        assert!(
+            tads[0].anchor.z.abs() < 1e-3,
+            "anchor z: {}",
+            tads[0].anchor.z
+        );
+        assert!(
+            (tads[0].boss_r - 0.007).abs() < 1e-12,
+            "boss_r passes through"
+        );
+        assert_eq!(tads[0].center, Point2::new(0.021, 0.0));
+
+        // Azimuth 90° → anchor at (0, 16.5) mm on +z.
+        assert!(
+            tads[1].anchor.x.abs() < 1e-3,
+            "anchor x: {}",
+            tads[1].anchor.x
+        );
+        assert!(
+            (tads[1].anchor.z - 0.0165).abs() < 1e-3,
+            "anchor z: {}",
+            tads[1].anchor.z
+        );
+        assert!((tads[1].boss_r - 0.0056).abs() < 1e-12);
+    }
+}

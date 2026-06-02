@@ -1853,4 +1853,61 @@ mod tests {
             }
         }
     }
+
+    /// End-to-end demand-flange composition (S4.5 review gap): drive the production
+    /// default path — `FlangeKind::Demand` + a bolt/dowel pattern through
+    /// `compose_piece_solid` (fasteners → tadpoles → demand flange → halfspace cut →
+    /// body subtract). The bare `DemandFlangeSdf` is unit-tested in `flange.rs`; this
+    /// pins the actual fasteners→flange→compose chain the CLI default now takes.
+    #[test]
+    fn demand_flange_composes_through_the_piece_pipeline() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+        use crate::flange::{DemandFlangeSpec, FlangeKind};
+
+        // Cylinder along X (R = 10 mm); seam plane = XZ (split_normal +Z, binormal
+        // −Y), so the Negative side keeps the +Y half.
+        let body = Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+            &Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        ));
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split)
+            .unwrap()
+            .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
+            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
+            .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
+
+        let (piece, transforms) =
+            compose_piece_solid(&body, 0.005, &ribbon, PieceSide::Negative).unwrap();
+
+        // The solver placed fasteners → the carve transforms are non-empty (bolt
+        // holes at least), proving the demand placement+emission fired.
+        assert!(
+            !transforms.is_empty(),
+            "demand placement must emit fastener carve transforms"
+        );
+
+        // A seal-land point: just outside the +Z silhouette edge (Z = 13 mm → seal
+        // signed-distance 3 mm, inside the [0.5, 6.5] mm land), on the Negative
+        // (+Y) half, within the thickness slab. The demand flange must be SOLID
+        // there — the continuous seal ring composed into the cup.
+        let in_land_neg = Point3::new(0.0, 0.001, 0.013);
+        assert!(
+            piece.evaluate(&in_land_neg) < 0.0,
+            "demand seal-ring land must be solid on the kept (Negative/+Y) half; got {}",
+            piece.evaluate(&in_land_neg),
+        );
+
+        // The SAME land point on the −Y (Positive) half must be OUTSIDE the Negative
+        // piece — the flange is clipped to this side's halfspace and does NOT cross
+        // the flat seam into the opposite half (review point 3).
+        let in_land_pos = Point3::new(0.0, -0.001, 0.013);
+        assert!(
+            piece.evaluate(&in_land_pos) > 0.0,
+            "Negative piece's demand flange must not cross the seam into the −Y half; got {}",
+            piece.evaluate(&in_land_pos),
+        );
+    }
 }
