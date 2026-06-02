@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 
 use hashbrown::{HashMap, HashSet};
 use mesh_types::{IndexedMesh, Point3, Vector3};
+use parry3d_f64::bounding_volume::Aabb;
 use parry3d_f64::math::{Point as ParryPoint, Real as ParryReal, Vector as ParryVector};
 use parry3d_f64::query::{Ray, RayCast};
 use parry3d_f64::shape::TriMesh;
@@ -1697,8 +1698,9 @@ impl VoxelGrid {
     }
 }
 
-/// Mark inside voxels via per-row scanline + Möller-Trumbore parity
-/// (§6.3 step 6).
+/// Reference O(`ny·nz·n_faces`) inside-voxel marker (§6.3 step 6) — each
+/// `(y, z)` scanline row brute-forces `moller_trumbore` against **every**
+/// face.
 ///
 /// For each `(y, z)` row, cast a `+X` ray from one voxel left of the grid
 /// at `(grid_x_min − voxel_size, y_center + ROW_JITTER_Y, z_center +
@@ -1708,12 +1710,17 @@ impl VoxelGrid {
 /// `VOXEL_INSIDE`. Per row the cost is `O(n_faces + nx)`; per grid
 /// `O(ny × nz × (n_faces + nx))`.
 ///
+/// Preserved as the correctness oracle for the BVH-accelerated
+/// [`mark_inside_voxels`] (a regression test asserts the two produce
+/// identical `grid.states`) and as that function's fallback when the
+/// parry `TriMesh` builder rejects degenerate input.
+///
 // FP-bit preserved on the `(coord + 0.5) * voxel_size` arithmetic: same
 // FP-determinism rationale as `flag_overhang_faces`'s `len = sqrt(...)`
 // site — `mul_add` would shift FP bits and break cross-os voxel
 // parity per §8.4 row 3.
 #[allow(clippy::suboptimal_flops)]
-fn mark_inside_voxels(grid: &mut VoxelGrid, mesh: &IndexedMesh) {
+fn mark_inside_voxels_reference(grid: &mut VoxelGrid, mesh: &IndexedMesh) {
     let (nx, ny, nz) = grid.dims;
     let v = grid.voxel_size;
     let origin_x = grid.origin.x;
@@ -1735,6 +1742,154 @@ fn mark_inside_voxels(grid: &mut VoxelGrid, mesh: &IndexedMesh) {
 
             let mut crossings: Vec<f64> = Vec::new();
             for face in &mesh.faces {
+                let i0 = face[0] as usize;
+                let i1 = face[1] as usize;
+                let i2 = face[2] as usize;
+                if i0 >= mesh.vertices.len()
+                    || i1 >= mesh.vertices.len()
+                    || i2 >= mesh.vertices.len()
+                {
+                    continue;
+                }
+                if let Some(t) = moller_trumbore(
+                    row_origin,
+                    direction,
+                    mesh.vertices[i0],
+                    mesh.vertices[i1],
+                    mesh.vertices[i2],
+                ) {
+                    crossings.push(t);
+                }
+            }
+            crossings.sort_by(f64::total_cmp);
+
+            let mut inside = false;
+            let mut next = 0_usize;
+            for x in 0..nx {
+                let voxel_mid_t = v + (f64::from(x) + 0.5) * v;
+                while next < crossings.len() && crossings[next] < voxel_mid_t {
+                    inside = !inside;
+                    next += 1;
+                }
+                if inside {
+                    let idx = grid.linear_index(x, y, z);
+                    grid.states[idx] = VOXEL_INSIDE;
+                }
+            }
+        }
+    }
+}
+
+/// Margin (mm) added to each per-row query AABB before culling candidate
+/// faces from the BVH in [`mark_inside_voxels`].
+///
+/// Loosening the query AABB can only **add** candidate faces — an added
+/// face the `+X` ray does not actually pierce yields
+/// `moller_trumbore == None` and contributes no crossing — so the
+/// retained crossing set (and every resulting voxel state) is invariant
+/// to this value for any `margin ≥ 0`. A small positive margin defends
+/// against any strict-vs-inclusive AABB-overlap edge case exactly at the
+/// cull boundary; it is correctness insurance, not a tuning knob.
+const ROW_QUERY_MARGIN_MM: f64 = 1.0e-6;
+
+/// BVH-accelerated inside-voxel marker (S3 of
+/// `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` — S1 BVH'd `thin_walls`, S2
+/// measured `trapped_volumes` as the remaining long pole, S3 is this).
+///
+/// Produces a **byte-for-byte identical** `grid.states` to
+/// [`mark_inside_voxels_reference`], but replaces the per-row
+/// `O(n_faces)` Möller-Trumbore sweep with a parry3d BVH cull: each `+X`
+/// scanline queries only the triangles whose AABB overlaps the ray, then
+/// runs the **same** f64 `moller_trumbore` on those candidates. Per-grid
+/// cost drops from `O(ny·nz·n_faces)` to `~O(ny·nz·(log n_faces + k))`
+/// where `k` is the per-row candidate count (a handful for typical mesh
+/// face sizes). On a 530 k-face cup half this is the §6.3 long pole:
+/// ~138 s → single-digit seconds, the bulk of F4.
+///
+/// **Bit-identity argument.** A `+X` ray at `(y_center, z_center)` can
+/// pierce triangle `T` only if `(y_center, z_center)` lies inside `T`'s
+/// YZ projection, which is contained in `T`'s YZ AABB. So every face the
+/// reference path's `moller_trumbore` accepts is returned by the AABB
+/// query (BVH leaf AABB ⊇ triangle AABB ⊇ projection ∋ the ray point,
+/// further loosened by [`ROW_QUERY_MARGIN_MM`]). The culled faces are
+/// exactly those `moller_trumbore` would reject (`None`). The retained
+/// crossings are therefore the same multiset; the sort + parity sweep
+/// are unchanged. (Equal-`t` crossings may be ordered differently than
+/// the reference's face-order, but two crossings sharing a `t` are both
+/// below or both at/above any `voxel_mid_t`, so the per-voxel parity —
+/// and thus every voxel state — is invariant to their relative order.)
+///
+/// The precision-sensitive inside test stays on the f64
+/// `moller_trumbore`, **not** parry's ray cast, per §8.4 row 3 (parry's
+/// intersection would shift FP bits and break cross-OS voxel parity); the
+/// BVH is used **only** to cull candidates.
+///
+/// Falls back to [`mark_inside_voxels_reference`] when
+/// [`build_parry_trimesh`] rejects the mesh (degenerate input the
+/// watertight precondition would normally exclude).
+//
+// FP-bit preserved on the `(coord + 0.5) * voxel_size` arithmetic: same
+// rationale as the reference path.
+#[allow(clippy::suboptimal_flops)]
+fn mark_inside_voxels(grid: &mut VoxelGrid, mesh: &IndexedMesh) {
+    // BVH build failure ⇒ exact reference fallback (no behavior change).
+    let Some(tri_mesh) = build_parry_trimesh(mesh) else {
+        mark_inside_voxels_reference(grid, mesh);
+        return;
+    };
+    let qbvh = tri_mesh.qbvh();
+
+    let (nx, ny, nz) = grid.dims;
+    let v = grid.voxel_size;
+    let origin_x = grid.origin.x;
+    let origin_y = grid.origin.y;
+    let origin_z = grid.origin.z;
+
+    // +X ray direction (unit, axis-aligned for FP determinism).
+    let direction = Vector3::new(1.0, 0.0, 0.0);
+
+    // X-span of the query AABB: cover the whole row (two voxels past each
+    // end, comfortably enclosing the reference ray origin + the last
+    // voxel midpoint). The X bounds only widen the cull; they never drop
+    // a face the ray could cross.
+    let x_lo = origin_x - 2.0 * v;
+    let x_hi = origin_x + (f64::from(nx) + 2.0) * v;
+
+    // Reused across rows to avoid per-row reallocation.
+    let mut candidates: Vec<u32> = Vec::new();
+
+    for z in 0..nz {
+        let z_center = origin_z + (f64::from(z) + 0.5) * v + ROW_JITTER_Z;
+        for y in 0..ny {
+            let y_center = origin_y + (f64::from(y) + 0.5) * v + ROW_JITTER_Y;
+            // Ray origin one voxel-width outside the grid (identical to the
+            // reference path so the resulting `t` values match exactly).
+            let row_origin = Point3::new(origin_x - v, y_center, z_center);
+
+            // Cull to faces whose AABB overlaps this +X row, loosened by
+            // ROW_QUERY_MARGIN_MM (only adds candidates; see const doc).
+            let query = Aabb::new(
+                ParryPoint::new(
+                    x_lo,
+                    y_center - ROW_QUERY_MARGIN_MM,
+                    z_center - ROW_QUERY_MARGIN_MM,
+                ),
+                ParryPoint::new(
+                    x_hi,
+                    y_center + ROW_QUERY_MARGIN_MM,
+                    z_center + ROW_QUERY_MARGIN_MM,
+                ),
+            );
+            candidates.clear();
+            qbvh.intersect_aabb(&query, &mut candidates);
+
+            let mut crossings: Vec<f64> = Vec::new();
+            for &tri in &candidates {
+                let face_idx = tri as usize;
+                if face_idx >= mesh.faces.len() {
+                    continue;
+                }
+                let face = mesh.faces[face_idx];
                 let i0 = face[0] as usize;
                 let i1 = face[1] as usize;
                 let i2 = face[2] as usize;
@@ -4828,6 +4983,72 @@ mod tests {
         c.min_feature_size = 0.8;
         c.layer_height = 0.4;
         c
+    }
+
+    /// Build a `VoxelGrid` for `mesh` at `voxel_size`, mirroring
+    /// `check_trapped_volumes`'s sizing (AABB padded by 2 voxels;
+    /// `dims = ceil(extent / voxel_size).max(1)`), all states
+    /// `VOXEL_UNKNOWN`. Used by the BVH/reference byte-identity test.
+    fn build_trapped_grid(mesh: &IndexedMesh, voxel_size: f64) -> VoxelGrid {
+        let (mn, mx) = compute_bounds(mesh);
+        let pad = 2.0 * voxel_size;
+        let origin = Point3::new(mn.x - pad, mn.y - pad, mn.z - pad);
+        let dim = |lo: f64, hi: f64| -> u32 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let d = ((hi - lo + 2.0 * pad) / voxel_size).ceil().max(1.0) as u32;
+            d
+        };
+        let dims = (dim(mn.x, mx.x), dim(mn.y, mx.y), dim(mn.z, mx.z));
+        let total = dims.0 as usize * dims.1 as usize * dims.2 as usize;
+        VoxelGrid {
+            dims,
+            origin,
+            voxel_size,
+            states: vec![VOXEL_UNKNOWN; total],
+        }
+    }
+
+    #[test]
+    fn mark_inside_voxels_bvh_is_byte_identical_to_reference() {
+        // S2 gate (docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md): the BVH-culled
+        // `mark_inside_voxels` must produce a byte-for-byte identical voxel
+        // grid to the O(ny·nz·n_faces) reference on watertight meshes with
+        // interior structure (rows with 0 / 2 / 4 crossings). A divergence
+        // here means the AABB cull dropped a face the +X ray actually
+        // pierces — the one way the speedup could change geometry.
+        let fixtures = [
+            ("solid_cube", create_watertight_cube()),
+            ("single_cavity", make_cube_with_inner_cavity(6.0, 2.0)),
+            (
+                "two_cavities",
+                make_cube_with_two_inner_cavities(8.0, 1.0, 1.5),
+            ),
+        ];
+        for (name, mesh) in fixtures {
+            // Two voxel sizes: one giving a coarse grid, one finer, so the
+            // assertion spans different row counts + candidate densities.
+            for &voxel_size in &[0.5_f64, 0.23_f64] {
+                let mut g_ref = build_trapped_grid(&mesh, voxel_size);
+                let mut g_bvh = build_trapped_grid(&mesh, voxel_size);
+                assert_eq!(
+                    g_ref.dims, g_bvh.dims,
+                    "{name}: grid sizing must match before marking"
+                );
+                mark_inside_voxels_reference(&mut g_ref, &mesh);
+                mark_inside_voxels(&mut g_bvh, &mesh);
+                assert_eq!(
+                    g_ref.states, g_bvh.states,
+                    "{name} @ voxel {voxel_size}: BVH-culled inside-mark must be \
+                     byte-identical to the brute-force reference"
+                );
+                // Sanity: the cavity fixtures must actually mark some inside
+                // voxels (else the test would pass vacuously on empty grids).
+                assert!(
+                    g_ref.states.contains(&VOXEL_INSIDE),
+                    "{name} @ voxel {voxel_size}: expected some VOXEL_INSIDE"
+                );
+            }
+        }
     }
 
     #[test]
