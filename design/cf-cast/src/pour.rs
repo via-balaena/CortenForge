@@ -153,8 +153,9 @@ pub enum PourGateLayout {
     /// Single axial pour bore at the dome apex, lying in the seam
     /// plane (splits the flange). No splay, no modeled vent
     /// (`include_vent` is ignored). Pairs with the straight-nipple
-    /// funnel ([`crate::funnel::build_funnel_solid`]) and the
-    /// bolt-pattern pour-bracket (`bolt_pattern::BoltPatternSpec::bracket_pour_gate`).
+    /// funnel ([`crate::funnel::build_funnel_solid`]); the seam-placement
+    /// solver brackets the bore by construction (it excludes the pour as a
+    /// swept channel — see [`crate::bolt_pattern::plan_smart_bolt_placements`]).
     ApexAxial,
 }
 

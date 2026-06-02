@@ -97,6 +97,9 @@ mod procedure;
 mod ribbon;
 pub mod scan_mesh_direct;
 pub mod seam_fit;
+pub mod seam_placement;
+pub mod seam_profile;
+pub mod seam_solver;
 pub mod silhouette_2d;
 mod spec;
 
@@ -106,7 +109,7 @@ pub use canal::{
 };
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
-pub use flange::{FlangeKind, FlangeSpec};
+pub use flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
 pub use funnel::build_funnel_solid;
 pub use gasket_mold::{
     GASKET_MAX_CELL_SIZE_M, GasketKind, GasketMaterial, GasketSpec, compose_gasket_mold_solid,
@@ -133,6 +136,11 @@ pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2}
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 pub use seam_fit::best_fit_planar_seam;
+pub use seam_profile::{SeamIndex, SeamProfile};
+pub use seam_solver::{
+    DEFAULT_MAX_PITCH_M, Exclusion, FastenerClass, Feasibility, Placement, PlacementOrigin, Seed,
+    SeedKind, place_fasteners,
+};
 pub use spec::{
     CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
     MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport,

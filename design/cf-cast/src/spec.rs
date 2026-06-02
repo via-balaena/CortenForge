@@ -14,17 +14,21 @@ use mesh_printability::{
 };
 use nalgebra::Vector3;
 
+use crate::bolt_pattern::plan_smart_bolt_placements;
+use crate::dowel_hole::plan_smart_dowel_placements;
 use crate::error::{CastError, CastTarget};
+use crate::flange::FlangeKind;
 use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
 use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::solid_to_mm_mesh;
-use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared};
+use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared, layer_mc_bounds};
 use crate::plug::add_plug_pins;
 use crate::pour_volume::{POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
+use crate::silhouette_2d::Point2;
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -421,8 +425,9 @@ pub struct GasketMoldArtifact {
 /// Workshop printable dowel-array artifact.
 ///
 /// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Single
-/// STL per cast containing N cylindrical PLA dowels (one per
-/// [`crate::dowel_hole::DowelHoleSpec::count`]) the workshop user
+/// STL per cast containing the cylindrical PLA dowels (rod count = the
+/// seam-placement solver's per-layer placed count, threaded into
+/// `mesh_and_gate_v2_dowel`) the workshop user
 /// prints once + re-uses across all per-layer mating events to
 /// register the two cup-halves at assembly time. Translated
 /// laterally outside the cup-piece bounding region so cf-view
@@ -953,12 +958,12 @@ impl CastSpec {
         let pour_volumes = self.compute_pour_volumes()?;
         check_mass_budget(self, &pour_volumes)?;
 
-        let pending_pieces = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
+        let (pending_pieces, placed_dowel_count) = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
         let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
         let pending_platform = mesh_and_gate_v2_platform(self, ribbon, out_dir)?;
         let pending_funnel = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?;
         let pending_gaskets = mesh_and_gate_v2_gaskets(self, ribbon, out_dir)?;
-        let pending_dowel = mesh_and_gate_v2_dowel(self, ribbon, out_dir)?;
+        let pending_dowel = mesh_and_gate_v2_dowel(self, ribbon, out_dir, placed_dowel_count)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
@@ -997,6 +1002,129 @@ impl CastSpec {
     }
 }
 
+/// The seam-placement solver's output for the whole layer stack: the per-layer
+/// dowel + bolt centre slices (for hole carving) and, under
+/// [`FlangeKind::Demand`], the per-layer
+/// pre-built demand flange [`Solid`] (the scalloped seal-ring + bosses, generated
+/// to fit those fasteners). Each `Vec` is parallel to the layer stack
+/// (innermost-first).
+#[derive(Debug, Default)]
+struct SmartPlacements {
+    /// Per-layer dowel hole centres, `None` when no dowel pattern.
+    dowels: Option<Vec<Vec<Point2>>>,
+    /// Per-layer bolt hole centres, `None` when no bolt pattern.
+    bolts: Option<Vec<Vec<Point2>>>,
+    /// Per-layer demand flange (unsplit) — `Some` only for `FlangeKind::Demand`;
+    /// each entry `None` where that layer's silhouette was empty (no flange).
+    demand_flanges: Option<Vec<Option<Solid>>>,
+}
+
+/// Solve the seam-placement fasteners for the whole layer stack (§3.6/§3.8) — the
+/// per-layer dowel + bolt seam-plane centre slices (and, for the demand flange, the
+/// per-layer flange `Solid`), or an empty [`SmartPlacements`] when there is no
+/// flange or no fastener pattern.
+///
+/// Placement happens iff a flange exists (ANY kind — `lateral_reach_m`, not the
+/// Plate-only `spec()`, so the solver runs for `FlangeKind::Demand` too) AND at
+/// least one fastener pattern is enabled. Each layer's seam loop is built ONCE
+/// (S5d-(A), `build_layer_loops`) and shared across both planners — the silhouette
+/// flood-fill is the dominant solve cost (§MA-7), so it must not be rebuilt per
+/// planner. DOWELS are solved FIRST (registration is primary), then BOLTS exclude
+/// the solver-placed dowel footprints (the dowels-first contract, §3.6). The
+/// planners take the `FlangeKind` and derive the per-kind feasibility regime
+/// internally.
+///
+/// # Errors
+///
+/// Propagates [`CastError::InfiniteBounds`] from `layer_mc_bounds` if a layer body
+/// is unbounded.
+fn compute_smart_placements(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+) -> Result<SmartPlacements, CastError> {
+    let want_placement = ribbon.flange.lateral_reach_m().is_some()
+        && (ribbon.dowel_hole.spec().is_some() || ribbon.bolt_pattern.spec().is_some());
+    if !want_placement {
+        return Ok(SmartPlacements::default());
+    }
+    let bodies: Vec<&Solid> = spec.layers.iter().map(|l| &l.body).collect();
+    let mut bounds = Vec::with_capacity(bodies.len());
+    for body in &bodies {
+        bounds.push(layer_mc_bounds(body, spec.wall_thickness_m, ribbon)?);
+    }
+    let layer_loops =
+        crate::seam_placement::build_layer_loops(&bodies, &bounds, ribbon, &ribbon.flange);
+    let dowel_plan = ribbon.dowel_hole.spec().map(|dowel_spec| {
+        plan_smart_dowel_placements(
+            &layer_loops,
+            dowel_spec,
+            &ribbon.flange,
+            spec.wall_thickness_m,
+        )
+    });
+    // The dowel footprint disk (hole + wall) the bolt washer must clear, shared with
+    // the dowel planner so the two patterns agree on the wall.
+    let dowel_footprint_r = ribbon
+        .dowel_hole
+        .spec()
+        .map(crate::dowel_hole::smart_dowel_footprint);
+    let bolt_plan = ribbon.bolt_pattern.spec().map(|bolt_spec| {
+        plan_smart_bolt_placements(
+            &layer_loops,
+            bolt_spec,
+            &ribbon.flange,
+            spec.wall_thickness_m,
+            dowel_footprint_r,
+            dowel_plan.as_deref(),
+        )
+    });
+
+    // Demand flange (§4): generate the per-layer scalloped flange to fit the placed
+    // fasteners. Reuses the SHARED `layer_loops` profile for the seal ring (no
+    // separate silhouette — the §MA-7 9→3 completion / S5d-(B)), so consume
+    // `layer_loops` here, after both planners have borrowed it. The plate flange is
+    // built later in `compose_piece_shared`; demand needs the placed centres, so it
+    // is built here and threaded in.
+    let demand_flanges = if let FlangeKind::Demand(demand_spec) = &ribbon.flange {
+        let land_outer = demand_spec.land_inner_offset_m + demand_spec.land_width_m;
+        let bolt_boss_r =
+            crate::bolt_pattern::BOLT_WASHER_RADIUS_M + demand_spec.boss_wall_margin_m;
+        let dowel_boss_r = dowel_footprint_r.map(|f| f + demand_spec.boss_wall_margin_m);
+        let flanges = layer_loops
+            .into_iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                let (profile, _excl) = slot?;
+                let mut fasteners: Vec<(Point2, f64)> = Vec::new();
+                if let (Some(plan), Some(boss_r)) = (dowel_plan.as_ref(), dowel_boss_r) {
+                    fasteners.extend(plan[i].iter().map(|&c| (c, boss_r)));
+                }
+                if let Some(plan) = bolt_plan.as_ref() {
+                    fasteners.extend(plan[i].iter().map(|&c| (c, bolt_boss_r)));
+                }
+                let tadpoles =
+                    crate::seam_placement::build_tadpoles(&profile, &fasteners, land_outer);
+                Some(crate::flange::build_demand_flange_solid(
+                    &profile,
+                    ribbon,
+                    demand_spec,
+                    &tadpoles,
+                    bounds[i],
+                ))
+            })
+            .collect();
+        Some(flanges)
+    } else {
+        None
+    };
+
+    Ok(SmartPlacements {
+        dowels: dowel_plan,
+        bolts: bolt_plan,
+        demand_flanges,
+    })
+}
+
 /// Compose, mesh, and F4-gate every (layer × piece) pair.
 /// Returns the v2 pending buffer organized as `[Negative, Positive]`
 /// per-layer pairs, so the writer phase consumes them without
@@ -1021,15 +1149,56 @@ fn mesh_and_gate_v2_pieces(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
-) -> Result<Vec<[PendingPiece; 2]>, CastError> {
+) -> Result<(Vec<[PendingPiece; 2]>, u32), CastError> {
     use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
     let layer_count = spec.layers.len();
-    spec.layers
+
+    // Seam-placement solver (the default placement path since S5): solve the
+    // fastener positions ONCE across the whole layer stack (`compute_smart_placements`)
+    // so every layer shares one angular pattern (§3.8). The per-layer center slices
+    // (and, for the demand flange, the per-layer flange `Solid`) thread into
+    // `compose_piece_shared`; no flange (or no bolt/dowel pattern) → empty, no
+    // fasteners.
+    let placements = compute_smart_placements(spec, ribbon)?;
+
+    // The number of printable dowel rods `dowel.stl` lays out = the count the
+    // solver actually placed (one shared count across the stack, `cross_layer_snap`).
+    // Threaded to `mesh_and_gate_v2_dowel` so the printed array matches the holes
+    // carved (no flange / no dowel pattern → 0 → no `dowel.stl`). Supersedes the
+    // parked `PRINTABLE_DOWEL_COUNT = 4` (S4.5 fold-in, recon §7.6).
+    let placed_dowel_count = u32::try_from(
+        placements
+            .dowels
+            .as_ref()
+            .and_then(|plan| plan.first())
+            .map_or(0, Vec::len),
+    )
+    .unwrap_or(u32::MAX);
+
+    let pieces = spec
+        .layers
         .par_iter()
         .enumerate()
         .map(
             |(layer_index, layer)| -> Result<[PendingPiece; 2], CastError> {
+                let smart_dowels: &[Point2] = placements
+                    .dowels
+                    .as_ref()
+                    .and_then(|plan| plan.get(layer_index))
+                    .map_or(&[], Vec::as_slice);
+                let smart_bolts: &[Point2] = placements
+                    .bolts
+                    .as_ref()
+                    .and_then(|plan| plan.get(layer_index))
+                    .map_or(&[], Vec::as_slice);
+                // The pre-built demand flange for this layer (§4), `None` for the
+                // plate flange (built inside `compose_piece_shared`) / no flange.
+                let demand_flange = placements
+                    .demand_flanges
+                    .as_ref()
+                    .and_then(|f| f.get(layer_index))
+                    .and_then(Clone::clone);
                 // §MA-S1a: the flange silhouette extraction + the
                 // side-agnostic post-MC transforms are identical for both
                 // halves of a layer. Build them ONCE here and share across
@@ -1037,7 +1206,14 @@ fn mesh_and_gate_v2_pieces(
                 // redundant per-side `Silhouette2d` recompute (the S0
                 // dominant cost) with bit-identical output. See
                 // `docs/CF_CAST_MESHING_ARCHITECTURE_RECON.md` §MA-10 S1a.
-                let shared = compose_piece_shared(&layer.body, spec.wall_thickness_m, ribbon)?;
+                let shared = compose_piece_shared(
+                    &layer.body,
+                    spec.wall_thickness_m,
+                    ribbon,
+                    smart_dowels,
+                    smart_bolts,
+                    demand_flange,
+                )?;
                 let (neg_res, pos_res) = rayon::join(
                     || {
                         mesh_and_gate_v2_piece(
@@ -1067,7 +1243,8 @@ fn mesh_and_gate_v2_pieces(
                 Ok([neg_res?, pos_res?])
             },
         )
-        .collect::<Result<Vec<[PendingPiece; 2]>, CastError>>()
+        .collect::<Result<Vec<[PendingPiece; 2]>, CastError>>()?;
+    Ok((pieces, placed_dowel_count))
 }
 
 /// Compose + mesh + F4-gate a single piece. Extracted so
@@ -1395,7 +1572,7 @@ fn mesh_and_gate_v2_funnel(
 /// per-layer mating events). §M-S2 of
 /// [[project-cf-cast-unified-mating-plane-recon]].
 ///
-/// Uses [`DOWEL_MAX_CELL_SIZE_M`] for the same MC-resolution reason
+/// Uses `DOWEL_MAX_CELL_SIZE_M` for the same MC-resolution reason
 /// as the funnel: the default 3 mm dowel diameter would mesh as 1
 /// cell radial at the cast's 3 mm cells (too coarse for a smooth
 /// cylindrical surface). 0.5 mm cells give 6 cells radial = smooth
@@ -1409,7 +1586,15 @@ fn mesh_and_gate_v2_dowel(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
+    printable_dowel_count: u32,
 ) -> Result<Option<PendingDowel>, CastError> {
+    // `printable_dowel_count` = the count the seam-placement solver actually placed
+    // per layer (threaded from `mesh_and_gate_v2_pieces`), so the printed `dowel.stl`
+    // array exactly matches the holes carved into the cup pieces (≈2 on base_mold).
+    // S4.5 fold-in (recon §7.6) — supersedes the parked `PRINTABLE_DOWEL_COUNT = 4`
+    // that over-provisioned vs the solver. A count of 0 (no flange / no dowel
+    // pattern → nothing placed) yields no `dowel.stl` (`build_dowel_array_mesh`
+    // returns `None`).
     let Some(dowel_spec) = ribbon.dowel_hole.spec() else {
         return Ok(None);
     };
@@ -1424,7 +1609,9 @@ fn mesh_and_gate_v2_dowel(
     let offset_x = region_bounds.max.x + 0.030;
     let t_compose = std::time::Instant::now();
     let target = CastTarget::Dowel;
-    let Some(mesh) = crate::dowel::build_dowel_array_mesh(dowel_spec, offset_x) else {
+    let Some(mesh) =
+        crate::dowel::build_dowel_array_mesh(dowel_spec, printable_dowel_count, offset_x)
+    else {
         return Ok(None);
     };
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
@@ -1446,7 +1633,7 @@ fn mesh_and_gate_v2_dowel(
          offset_x = {offset_mm:.1} mm",
         verts = mesh.vertices.len(),
         faces = mesh.faces.len(),
-        count = dowel_spec.count,
+        count = printable_dowel_count,
         offset_mm = offset_x * 1000.0,
     );
     Ok(Some(PendingDowel {

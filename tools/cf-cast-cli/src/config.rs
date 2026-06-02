@@ -45,16 +45,18 @@ pub struct CastConfig {
     /// defaults". Set `enabled = false` to disable.
     #[serde(default)]
     pub pour_gate: PourGateConfig,
-    /// Per-layer gasket mold override (default = enabled with
-    /// `GasketSpec::iter1()` + Ecoflex 00-30 material). Absence of
-    /// the table means "enabled with iter1 defaults". Set
-    /// `enabled = false` to disable. S3 of the seam-gasket-mold arc.
+    /// Per-layer gasket mold override (**default = disabled** since the S4.5
+    /// demand-flange default flip — the demand flange self-seals, so the gasket is
+    /// opt-in). Set `enabled = true` (with `GasketSpec::iter1()` geometry + Ecoflex
+    /// 00-30) for a gasketed seal — typically alongside `kind = "plate"` or a
+    /// widened demand land. S3 of the seam-gasket-mold arc.
     #[serde(default)]
     pub gasket: GasketConfig,
-    /// Seam-plane flange override (default = enabled with
-    /// [`cf_cast::FlangeSpec::iter1`] geometry). Absence of the table
-    /// means "enabled with iter1 defaults". Set `enabled = false` to
-    /// disable. S2 of the seam-flange arc per recon §F-6.
+    /// Seam-plane flange override (default = enabled, `kind = "demand"` —
+    /// the scalloped demand flange, recon §4/§7.6). Absence of the table
+    /// means "enabled with demand-flange iter1 defaults". Set `enabled = false`
+    /// to disable, or `kind = "plate"` for the legacy uniform band. S2 of the
+    /// seam-flange arc per recon §F-6 + S4.5.
     #[serde(default)]
     pub flange: FlangeConfig,
     /// Symmetric dowel-hole registration override (default = enabled
@@ -328,14 +330,6 @@ pub struct PourGateConfig {
     /// arc §4.3, 2026-05-29.
     #[serde(default)]
     pub apex_axial: bool,
-    /// When `apex_axial`, place pour-flanking bolts (one each side of the bore)
-    /// to clamp the split flange. Default `true`. Set `false` to suppress them
-    /// — the apex pour split is then clamped by the arc-bolt ring + hand
-    /// pressure. Use on parts with a tight/leaning dome apex where a flanking
-    /// bolt can't be placed cleanly (it lands at the apex tip or crowds a
-    /// dowel/neighbour) — workshop 2026-05-31, base_mold.
-    #[serde(default = "default_true")]
-    pub flank_bolts: bool,
 }
 
 impl Default for PourGateConfig {
@@ -343,7 +337,6 @@ impl Default for PourGateConfig {
         Self {
             enabled: true,
             apex_axial: false,
-            flank_bolts: true,
         }
     }
 }
@@ -351,21 +344,23 @@ impl Default for PourGateConfig {
 /// `[gasket]` block — per-layer gasket mold toggle + material pick.
 /// Maps to [`cf_cast::GasketKind`].
 ///
-/// S3 of the seam-gasket-mold arc per recon §G-7. Defaults to
-/// `enabled = true` with [`cf_cast::GasketSpec::iter1`] geometry +
-/// Ecoflex 00-30 material. Workshop user may flip
-/// `material = "DRAGON_SKIN_10A"` at S6 iter-3 pour if the Ecoflex
-/// pour compresses too freely. Cross-section is pinned trapezoidal
-/// at iter1 (recon §G-7 default; S2 picked); no per-cast TOML
-/// override surfaced — `draft_angle_deg` recalibration belongs to a
-/// downstream S6 / S7 arc, not iter-3.
-#[derive(Debug, Clone, Deserialize)]
+/// S3 of the seam-gasket-mold arc per recon §G-7. **Defaults to `enabled = false`
+/// since the S4.5 demand-flange default flip:** the default flange is now the
+/// demand flange, whose continuous seal-ring land seals PLA-on-PLA on its own, so a
+/// silicone gasket is opt-in (a `kind = "plate"` seal, or a deliberately-widened
+/// demand land — the demand land's 0.5 mm default would otherwise pinch the gasket,
+/// recon §F-4). When enabled it uses [`cf_cast::GasketSpec::iter1`] geometry +
+/// Ecoflex 00-30 (flip `material = "DRAGON_SKIN_10A"` if the Ecoflex pour
+/// compresses too freely). Cross-section is pinned trapezoidal at iter1.
+// Default (enabled=false since the S4.5 demand-flange flip; material=None) is the
+// per-field type default, so it derives — see the struct doc for the rationale.
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GasketConfig {
-    /// Master toggle. When `false`, the bridge passes
-    /// [`cf_cast::GasketKind::None`] (no per-layer gasket molds; cup
-    /// halves hand-clamped without a silicone seal).
-    #[serde(default = "default_true")]
+    /// Master toggle. **Default `false`** (the demand flange self-seals; see the
+    /// struct doc). When `true`, per-layer gasket molds are emitted; when `false`,
+    /// the bridge passes [`cf_cast::GasketKind::None`].
+    #[serde(default)]
     pub enabled: bool,
     /// Gasket material — Smooth-On silicone product key.
     /// Recognized values: `"ECOFLEX_00_30"` (iter1 default),
@@ -376,27 +371,24 @@ pub struct GasketConfig {
     pub material: Option<String>,
 }
 
-impl Default for GasketConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            material: None,
-        }
-    }
-}
-
-/// `[flange]` block — seam-plane clampable flange toggle + geometry
-/// overrides. Maps to [`cf_cast::FlangeKind`].
+/// `[flange]` block — seam-plane clampable flange toggle + `kind` selector +
+/// geometry overrides. Maps to [`cf_cast::FlangeKind`].
 ///
-/// S2 of the seam-flange arc per recon §F-6. Defaults to
-/// `enabled = true` with [`cf_cast::FlangeSpec::iter1`] geometry
-/// (20 mm width × 4 mm thickness per half × 2 mm inner offset). Per-
-/// field overrides are surfaced as optionals; absent → falls back to
-/// the iter1 default for that field. The cross-field invariant
-/// `inner_offset_m > GasketSpec.channel_width_m / 2` is enforced at
-/// [`CastConfig::validate_after_layer_source`] time when both the
-/// gasket and flange are enabled (recon §F-4 "gasket-disjoint
-/// invariant").
+/// S2 of the seam-flange arc per recon §F-6 + S4.5 demand flange (recon §4).
+/// Defaults to `enabled = true` with `kind = "demand"` (the scalloped seal-ring +
+/// per-fastener bosses — the end-state print target, recon §7.6); set
+/// `kind = "plate"` for the legacy uniform band
+/// ([`cf_cast::FlangeSpec::iter1`]: 20 mm width × 4 mm thickness per half × 2 mm
+/// inner offset). Per-field overrides are surfaced as optionals (Plate fields:
+/// `width_m`/`inner_offset_m`; Demand fields: `land_width_m`/`land_inner_offset_m`/
+/// `web_width_m`/`boss_wall_margin_m`; `thickness_m` is shared); absent → the
+/// matching iter1 default. The cross-field gasket-disjoint invariant (recon §F-4)
+/// is enforced at [`CastConfig::validate_after_layer_source`] time when both the
+/// gasket and a flange are enabled, **kind-aware**: it checks the active flange's
+/// inner edge against the gasket half-width — the Plate `inner_offset_m` for
+/// `kind = "plate"`, the Demand `land_inner_offset_m` for the default demand kind.
+/// (The demand land already seals PLA-on-PLA, so the default demand land + a gasket
+/// is rejected as redundant unless the land is widened past the half-width.)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlangeConfig {
@@ -405,31 +397,58 @@ pub struct FlangeConfig {
     /// halves clamped via whatever contoured surface they have).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Lateral extent (meters) from `inner_offset_m` outward in the
+    /// Flange kind: `"plate"` (uniform band) or `"demand"` (scalloped seal-ring +
+    /// per-fastener bosses, generated to fit the placed fasteners — recon §4).
+    /// `None` → `"demand"` (S4.5/3 default flip, recon §7.6 — the demand flange is
+    /// the end-state / print target). Set `kind = "plate"` to opt back into the
+    /// legacy uniform band.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// **Plate kind.** Lateral extent (meters) from `inner_offset_m` outward in the
     /// seam plane. `None` → falls back to
     /// [`cf_cast::FlangeSpec::iter1`]'s 20 mm default.
     #[serde(default)]
     pub width_m: Option<f64>,
-    /// Half-thickness (meters) perpendicular to the seam plane.
+    /// Half-thickness (meters) perpendicular to the seam plane (BOTH kinds).
     /// Closed flange-zone thickness ≈ 2 × this. `None` → 4 mm per
     /// half (iter1 default).
     #[serde(default)]
     pub thickness_m: Option<f64>,
-    /// Lateral gap (meters) between body cavity perimeter and
+    /// **Plate kind.** Lateral gap (meters) between body cavity perimeter and
     /// flange inner edge. Must exceed half the gasket channel width
     /// when the gasket is enabled (recon §F-4). `None` → 2 mm
     /// (iter1 default).
     #[serde(default)]
     pub inner_offset_m: Option<f64>,
+    /// **Demand kind.** Continuous seal-land width (meters). `None` → 6 mm
+    /// ([`cf_cast::DemandFlangeSpec::iter1`]).
+    #[serde(default)]
+    pub land_width_m: Option<f64>,
+    /// **Demand kind.** Seal-land inboard start (meters) from the body perimeter.
+    /// `None` → 0.5 mm (gasket-None hug-tight, recon §4.1 N2).
+    #[serde(default)]
+    pub land_inner_offset_m: Option<f64>,
+    /// **Demand kind.** Tadpole spoke (web) width (meters). `None` → 4 mm.
+    #[serde(default)]
+    pub web_width_m: Option<f64>,
+    /// **Demand kind.** PLA wall a boss keeps beyond the fastener footprint
+    /// (meters): `boss_r = footprint + this`. `None` → 2 mm.
+    #[serde(default)]
+    pub boss_wall_margin_m: Option<f64>,
 }
 
 impl Default for FlangeConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            kind: None,
             width_m: None,
             thickness_m: None,
             inner_offset_m: None,
+            land_width_m: None,
+            land_inner_offset_m: None,
+            web_width_m: None,
+            boss_wall_margin_m: None,
         }
     }
 }
@@ -440,9 +459,12 @@ impl Default for FlangeConfig {
 /// §M-S2 of [[project-cf-cast-unified-mating-plane-recon]]. Defaults
 /// to `enabled = true` with
 /// [`cf_cast::dowel_hole::DowelHoleSpec::iter1`] (3 mm diameter ×
-/// 4 holes × 5 mm depth × 10 mm outboard offset × 0.1 mm clearance).
-/// Per-field overrides surfaced as optionals; absent → falls back to
-/// the iter1 default for that field.
+/// 5 mm depth per half × 0.1 mm radial clearance). The hole COUNT and
+/// seam-loop position are **not** config knobs — the seam-placement
+/// solver derives them per layer (dowels at the body's long-axis
+/// extremes, typically 2; the fixed `count`/`offset` fields were
+/// removed in S5c). Per-field overrides surfaced as optionals; absent
+/// → falls back to the iter1 default for that field.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DowelHoleConfig {
@@ -460,15 +482,6 @@ pub struct DowelHoleConfig {
     /// Hole depth PER HALF (meters). `None` → 5 mm (iter1 default).
     #[serde(default)]
     pub depth_m: Option<f64>,
-    /// Number of dowels arc-length-equal-spaced around the silhouette.
-    /// `None` → 4 (iter1 default).
-    #[serde(default)]
-    pub count: Option<u32>,
-    /// Radial offset from the body silhouette curve to the dowel
-    /// centerline (meters). `None` → 10 mm (iter1 default). Must satisfy
-    /// the §M-5-b cross-field invariants in the recon.
-    #[serde(default)]
-    pub silhouette_outboard_offset_m: Option<f64>,
 }
 
 impl Default for DowelHoleConfig {
@@ -478,8 +491,6 @@ impl Default for DowelHoleConfig {
             diameter_m: None,
             clearance_m: None,
             depth_m: None,
-            count: None,
-            silhouette_outboard_offset_m: None,
         }
     }
 }
@@ -491,9 +502,11 @@ impl Default for DowelHoleConfig {
 /// §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
 /// Defaults to `enabled = true` with
 /// [`cf_cast::bolt_pattern::BoltPatternSpec::iter1`] (5.5 mm M5
-/// clearance × 8 bolts × 13 mm outboard offset × pour-gate collision
-/// skip enabled). Per-field overrides surfaced as optionals; absent
-/// → falls back to the iter1 default for that field.
+/// clearance). Bolt *count* and radial offset are no longer config
+/// knobs — the seam-placement solver derives them per layer (even
+/// spacing at ≤30 mm pitch, variable offset from the flange band +
+/// washer clearance). Per-field overrides surfaced as optionals;
+/// absent → falls back to the iter1 default for that field.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoltPatternConfig {
@@ -505,25 +518,6 @@ pub struct BoltPatternConfig {
     /// (M5 ISO 273 medium fit).
     #[serde(default)]
     pub clearance_diameter_m: Option<f64>,
-    /// Number of bolts arc-length-equal-spaced around the silhouette.
-    /// `None` → 8 (iter1 default).
-    #[serde(default)]
-    pub count: Option<u32>,
-    /// Radial offset from body silhouette to bolt centerline (meters).
-    /// `None` → 13 mm (iter1 default). Must satisfy the §B-S1 cross-
-    /// field invariants in `validate_after_layer_source`.
-    #[serde(default)]
-    pub silhouette_outboard_offset_m: Option<f64>,
-    /// Whether to silently drop bolts colliding with pour-gate
-    /// channels. `None` → `true` (iter1 default). When `false`, every
-    /// bolt is emitted — workshop may need to clear collision-zone
-    /// pour-gate leg by hand.
-    #[serde(default)]
-    pub skip_pour_gate_collision: Option<bool>,
-    /// Extra clearance distance between bolt + pour-gate cylinder
-    /// surfaces (meters). `None` → 1 mm (iter1 default).
-    #[serde(default)]
-    pub pour_gate_clearance_m: Option<f64>,
 }
 
 impl Default for BoltPatternConfig {
@@ -531,10 +525,6 @@ impl Default for BoltPatternConfig {
         Self {
             enabled: true,
             clearance_diameter_m: None,
-            count: None,
-            silhouette_outboard_offset_m: None,
-            skip_pour_gate_collision: None,
-            pour_gate_clearance_m: None,
         }
     }
 }
@@ -777,10 +767,25 @@ impl CastConfig {
         // finiteness + positivity + cross-field gasket-disjoint
         // invariant (recon §F-4). Skipped when flange disabled.
         if self.flange.enabled {
+            // Reject an unknown flange kind early with a typo-friendly message.
+            if let Some(kind) = self.flange.kind.as_deref() {
+                ensure!(
+                    matches!(kind, "plate" | "demand"),
+                    "cast.toml: flange.kind = {kind:?} is unknown. Recognized: \
+                     \"plate\", \"demand\"."
+                );
+            }
             for (label, v) in [
                 ("flange.width_m", self.flange.width_m),
                 ("flange.thickness_m", self.flange.thickness_m),
                 ("flange.inner_offset_m", self.flange.inner_offset_m),
+                ("flange.land_width_m", self.flange.land_width_m),
+                (
+                    "flange.land_inner_offset_m",
+                    self.flange.land_inner_offset_m,
+                ),
+                ("flange.web_width_m", self.flange.web_width_m),
+                ("flange.boss_wall_margin_m", self.flange.boss_wall_margin_m),
             ] {
                 if let Some(value) = v {
                     ensure!(
@@ -796,93 +801,55 @@ impl CastConfig {
             // / 2). The post-S2 gasket arc doesn't surface a
             // channel-width TOML override, so the iter1 width (1.5 mm
             // → half = 0.75 mm) is the authoritative half-width. The
-            // flange `inner_offset_m` is the bare gap from
-            // body_dist=0 to the flange's inner edge; it must
-            // STRICTLY exceed the half-width so there's lateral air
-            // between gasket and flange.
+            // inner edge is the bare gap from body_dist=0 to where the
+            // flange begins; it must STRICTLY exceed the half-width so
+            // there's lateral air between gasket and flange.
+            //
+            // The check is **kind-aware** (S4.5/3 default flip — the default flange
+            // is now `demand`): validate whichever inner offset the ACTIVE flange
+            // kind builds, resolved the same way derive.rs maps it (`Some("plate")
+            // => Plate, _ => Demand`). The demand seal land defaults to 0.5 mm
+            // (DemandFlangeSpec::iter1) which is INSIDE the 0.75 mm half-width, so a
+            // gasket + a default demand flange is rejected here — the demand land
+            // already seals PLA-on-PLA, so the gasket is redundant; widen
+            // `land_inner_offset_m` past the half-width to keep both, or disable one.
             if self.gasket.enabled {
-                let iter1 = cf_cast::FlangeSpec::iter1();
-                let inner_offset = self
-                    .flange
-                    .inner_offset_m
-                    .unwrap_or(iter1.flange_inner_offset_m);
                 let gasket_half_width = cf_cast::GasketSpec::iter1().cross_section_width_m / 2.0;
+                let (label, inner_offset) = match self.flange.kind.as_deref() {
+                    Some("plate") => (
+                        "flange.inner_offset_m",
+                        self.flange
+                            .inner_offset_m
+                            .unwrap_or(cf_cast::FlangeSpec::iter1().flange_inner_offset_m),
+                    ),
+                    // None or "demand" → the demand flange (the default).
+                    _ => (
+                        "flange.land_inner_offset_m",
+                        self.flange
+                            .land_inner_offset_m
+                            .unwrap_or(cf_cast::DemandFlangeSpec::iter1().land_inner_offset_m),
+                    ),
+                };
                 ensure!(
                     inner_offset > gasket_half_width,
-                    "cast.toml: flange.inner_offset_m = {inner_offset} must exceed half \
-                     the gasket channel width ({gasket_half_width}) when both [gasket] and \
-                     [flange] are enabled (recon §F-4 gasket-disjoint invariant). Either \
-                     widen the flange inner offset, narrow the gasket, or disable one of \
-                     the two blocks."
+                    "cast.toml: {label} = {inner_offset} must exceed half the gasket \
+                     channel width ({gasket_half_width}) when both [gasket] and [flange] \
+                     are enabled (recon §F-4 gasket-disjoint invariant). The demand \
+                     flange's seal land already seals PLA-on-PLA, so a gasket is \
+                     redundant — either disable [gasket], widen the inner offset past \
+                     the half-width, or use `kind = \"plate\"`."
                 );
             }
         }
 
-        // §M-S2 cross-field gate (recon §M-5-b): when both flange +
-        // dowel_hole are enabled, the dowel hole must fit inside the
-        // flange band with FDM-floor wall thickness on both sides
-        // (inboard toward gasket channel + outboard toward flange
-        // outer edge). The iter1 defaults satisfy this with comfortable
-        // 4.4 mm margins; per-field overrides in TOML can violate it,
-        // so gate at parse time. Cold-read finding 2026-05-27.
-        if self.dowel_hole.enabled && self.flange.enabled {
-            let flange_iter1 = cf_cast::FlangeSpec::iter1();
-            let dowel_iter1 = cf_cast::dowel_hole::DowelHoleSpec::iter1();
-            let flange_inner_offset = self
-                .flange
-                .inner_offset_m
-                .unwrap_or(flange_iter1.flange_inner_offset_m);
-            let flange_width = self.flange.width_m.unwrap_or(flange_iter1.flange_width_m);
-            let dowel_diameter = self.dowel_hole.diameter_m.unwrap_or(dowel_iter1.diameter_m);
-            let dowel_clearance = self
-                .dowel_hole
-                .clearance_m
-                .unwrap_or(dowel_iter1.clearance_m);
-            let dowel_offset = self
-                .dowel_hole
-                .silhouette_outboard_offset_m
-                .unwrap_or(dowel_iter1.silhouette_outboard_offset_m);
-            let hole_outer_radius = dowel_diameter / 2.0 + dowel_clearance;
-            // 1 mm FDM-friendly wall floor (the workshop's iter-1
-            // print pipeline can resolve down to ~0.4 mm bead but
-            // <1 mm walls are squish/strip risks).
-            const FDM_WALL_FLOOR_M: f64 = 0.001;
-            let inboard_wall = dowel_offset - hole_outer_radius - flange_inner_offset;
-            ensure!(
-                inboard_wall >= FDM_WALL_FLOOR_M,
-                "cast.toml: dowel-hole inboard wall thickness = \
-                 {inboard_wall_mm:.3} mm violates the {floor_mm:.1} mm FDM \
-                 floor (silhouette_outboard_offset_m {dowel_offset:.4} − \
-                 hole_outer_radius {hole_outer_radius:.4} − \
-                 flange.inner_offset_m {flange_inner_offset:.4}). The dowel \
-                 hole would pierce the gasket channel. Move dowels outboard \
-                 (raise dowel_hole.silhouette_outboard_offset_m), shrink the \
-                 dowel (dowel_hole.diameter_m), or narrow the flange inner \
-                 offset (flange.inner_offset_m).",
-                inboard_wall_mm = inboard_wall * 1000.0,
-                floor_mm = FDM_WALL_FLOOR_M * 1000.0,
-            );
-            let outboard_wall = flange_width - dowel_offset - hole_outer_radius;
-            ensure!(
-                outboard_wall >= FDM_WALL_FLOOR_M,
-                "cast.toml: dowel-hole outboard wall thickness = \
-                 {outboard_wall_mm:.3} mm violates the {floor_mm:.1} mm FDM \
-                 floor (flange.width_m {flange_width:.4} − \
-                 silhouette_outboard_offset_m {dowel_offset:.4} − \
-                 hole_outer_radius {hole_outer_radius:.4}). The dowel hole \
-                 would breach the flange outer perimeter. Move dowels \
-                 inboard (lower dowel_hole.silhouette_outboard_offset_m) or \
-                 widen the flange (flange.width_m).",
-                outboard_wall_mm = outboard_wall * 1000.0,
-                floor_mm = FDM_WALL_FLOOR_M * 1000.0,
-            );
-        }
-
-        // §B cross-field gates: bolt-pattern requires a flange to
-        // clamp through, and bolt holes must respect inboard +
-        // outboard FDM wall floors. When dowel + bolt patterns are
-        // both enabled, the arc-fraction sets must not collide (radial
-        // sums of cylinder radii < the minimum arc-length separation).
+        // §B cross-field gate: bolt-pattern requires a flange to clamp
+        // through. The former inboard/outboard wall + washer-cup-wall-step
+        // offset validators were deleted in S5c — the seam-placement
+        // solver supersedes them: its `d_floor = wall + washer + margin`
+        // + flange-band feasibility guarantee by construction what those
+        // gates checked (recon §7.5 D2). A too-narrow flange now surfaces
+        // as the solver's `cross_layer_snap` "dropped N" warn (Risk #1)
+        // rather than a config-parse failure.
         if self.bolt_pattern.enabled {
             ensure!(
                 self.flange.enabled,
@@ -891,173 +858,6 @@ impl CastConfig {
                  without a flange there is no material to bolt. Either \
                  enable [flange] or disable [bolt_pattern]."
             );
-            let flange_iter1 = cf_cast::FlangeSpec::iter1();
-            let bolt_iter1 = cf_cast::bolt_pattern::BoltPatternSpec::iter1();
-            let flange_inner_offset = self
-                .flange
-                .inner_offset_m
-                .unwrap_or(flange_iter1.flange_inner_offset_m);
-            let flange_width = self.flange.width_m.unwrap_or(flange_iter1.flange_width_m);
-            let bolt_diameter = self
-                .bolt_pattern
-                .clearance_diameter_m
-                .unwrap_or(bolt_iter1.clearance_diameter_m);
-            let bolt_offset = self
-                .bolt_pattern
-                .silhouette_outboard_offset_m
-                .unwrap_or(bolt_iter1.silhouette_outboard_offset_m);
-            let bolt_radius = bolt_diameter / 2.0;
-            // 1 mm FDM-floor + 0.75× rule of thumb for PLA bolt
-            // fasteners (workshop-realistic per §B engineering
-            // analysis). Use the larger of the two for the
-            // wall-thickness floor here.
-            const FDM_WALL_FLOOR_M: f64 = 0.001;
-            let bolt_wall_floor = (0.75 * bolt_diameter).max(FDM_WALL_FLOOR_M);
-            let inboard_wall = bolt_offset - bolt_radius - flange_inner_offset;
-            ensure!(
-                inboard_wall >= bolt_wall_floor,
-                "cast.toml: bolt-pattern inboard wall thickness = \
-                 {inboard_wall_mm:.3} mm violates the {floor_mm:.3} mm wall \
-                 floor (0.75× bolt clearance Ø rule for FDM PLA fasteners): \
-                 silhouette_outboard_offset_m {bolt_offset:.4} − \
-                 bolt_radius {bolt_radius:.4} − flange.inner_offset_m \
-                 {flange_inner_offset:.4}. Bolt would crack the inboard wall \
-                 under hand-torque. Move bolts outboard \
-                 (raise bolt_pattern.silhouette_outboard_offset_m), shrink \
-                 the bolt (bolt_pattern.clearance_diameter_m), or narrow \
-                 the flange inner offset (flange.inner_offset_m).",
-                inboard_wall_mm = inboard_wall * 1000.0,
-                floor_mm = bolt_wall_floor * 1000.0,
-            );
-            let outboard_wall = flange_width - bolt_offset - bolt_radius;
-            ensure!(
-                outboard_wall >= bolt_wall_floor,
-                "cast.toml: bolt-pattern outboard wall thickness = \
-                 {outboard_wall_mm:.3} mm violates the {floor_mm:.3} mm wall \
-                 floor (0.75× bolt clearance Ø rule for FDM PLA fasteners): \
-                 flange.width_m {flange_width:.4} − \
-                 silhouette_outboard_offset_m {bolt_offset:.4} − \
-                 bolt_radius {bolt_radius:.4}. Bolt would crack the outboard \
-                 wall under hand-torque. Move bolts inboard (lower \
-                 bolt_pattern.silhouette_outboard_offset_m) or widen the \
-                 flange (flange.width_m, ideally to ≥ {min_flange:.3} mm).",
-                outboard_wall_mm = outboard_wall * 1000.0,
-                floor_mm = bolt_wall_floor * 1000.0,
-                min_flange = (bolt_offset + bolt_radius + bolt_wall_floor) * 1000.0,
-            );
-
-            // Cup-wall-step washer-clearance invariant (iter-1 near-
-            // miss anchor): the M5 washer's lateral footprint extends
-            // inboard from the bolt centerline by the washer radius
-            // (~5 mm for standard M5 ~10 mm OD). The washer's inboard
-            // edge must clear the cup-wall outer step at
-            // `body_dist = wall_thickness_m`; otherwise the washer
-            // rests partly on the step and clamp pressure points-
-            // loads onto the cup-wall edge instead of seating flat
-            // against the flange. Workshop user surfaced this 2026-
-            // 05-27 against an earlier bolt_offset = 9 mm config:
-            // 9 − 5 = 4 mm < 5 mm wall → washer overlaps step.
-            // iter-1 bumped to bolt_offset = 13 mm: 13 − 5 = 8 mm vs
-            // 5 mm + 1 mm margin = 6 mm floor → 2 mm slack.
-            const M5_WASHER_RADIUS_M: f64 = 0.005;
-            const CUP_WALL_STEP_MARGIN_M: f64 = 0.001;
-            let wall_thickness_m = self.cast.wall_thickness_m;
-            let cup_wall_step_clearance = bolt_offset - M5_WASHER_RADIUS_M - wall_thickness_m;
-            ensure!(
-                cup_wall_step_clearance >= CUP_WALL_STEP_MARGIN_M,
-                "cast.toml: M5 washer footprint overlaps cup-wall outer \
-                 step — bolt_offset {bolt_offset:.4} − M5 washer radius \
-                 {washer_radius:.4} = {washer_inboard_edge:.4} m, which \
-                 is {overlap_mm:.3} mm {direction} cast.wall_thickness_m \
-                 {wall_mm:.3} mm + {margin_mm:.3} mm margin. Washer \
-                 would rest partly on the cup-wall step instead of \
-                 seating flat against the flange, point-loading the \
-                 step under hand-torque. Move bolts outboard \
-                 (raise bolt_pattern.silhouette_outboard_offset_m to \
-                 ≥ {min_offset_mm:.3} mm) or shrink the cup wall \
-                 (lower cast.wall_thickness_m).",
-                washer_radius = M5_WASHER_RADIUS_M,
-                washer_inboard_edge = bolt_offset - M5_WASHER_RADIUS_M,
-                overlap_mm = (CUP_WALL_STEP_MARGIN_M - cup_wall_step_clearance).abs() * 1000.0,
-                direction = if cup_wall_step_clearance < 0.0 {
-                    "INSIDE"
-                } else {
-                    "below"
-                },
-                wall_mm = wall_thickness_m * 1000.0,
-                margin_mm = CUP_WALL_STEP_MARGIN_M * 1000.0,
-                min_offset_mm =
-                    (wall_thickness_m + M5_WASHER_RADIUS_M + CUP_WALL_STEP_MARGIN_M) * 1000.0,
-            );
-
-            // Dowel ↔ bolt arc-length stagger invariant: when both
-            // patterns enabled, the minimum arc-fraction separation
-            // across all (dowel, bolt) pairs must give an arc-length
-            // exceeding `dowel_radius + bolt_radius` at the smallest
-            // body silhouette perimeter we'd reasonably ship. We
-            // approximate "smallest perimeter" as 100 mm — well below
-            // the production sock's 200 mm — to give workshop a clean
-            // signal at config-time instead of a confusing runtime
-            // collision near the dome.
-            if self.dowel_hole.enabled {
-                let dowel_iter1 = cf_cast::dowel_hole::DowelHoleSpec::iter1();
-                let dowel_count = self.dowel_hole.count.unwrap_or(dowel_iter1.count);
-                let bolt_count = self.bolt_pattern.count.unwrap_or(bolt_iter1.count);
-                ensure!(
-                    dowel_count > 0,
-                    "cast.toml: dowel_hole.count must be > 0 when \
-                     [dowel_hole] is enabled"
-                );
-                ensure!(
-                    bolt_count > 0,
-                    "cast.toml: bolt_pattern.count must be > 0 when \
-                     [bolt_pattern] is enabled"
-                );
-                let dowel_fractions: Vec<f64> = (0..dowel_count)
-                    .map(|k| (f64::from(k) + 0.5) / f64::from(dowel_count))
-                    .collect();
-                let bolt_fractions: Vec<f64> = (0..bolt_count)
-                    .map(|k| (f64::from(k) + 0.5) / f64::from(bolt_count))
-                    .collect();
-                let mut min_sep_fraction = f64::INFINITY;
-                for db in &dowel_fractions {
-                    for bb in &bolt_fractions {
-                        let sep = (db - bb).abs();
-                        if sep < min_sep_fraction {
-                            min_sep_fraction = sep;
-                        }
-                    }
-                }
-                // Production minimum perimeter assumption.
-                const MIN_PERIMETER_M: f64 = 0.100;
-                let min_sep_arc_m = min_sep_fraction * MIN_PERIMETER_M;
-                let dowel_diameter = self.dowel_hole.diameter_m.unwrap_or(dowel_iter1.diameter_m);
-                let dowel_clearance = self
-                    .dowel_hole
-                    .clearance_m
-                    .unwrap_or(dowel_iter1.clearance_m);
-                let dowel_hole_radius = dowel_diameter / 2.0 + dowel_clearance;
-                let required = dowel_hole_radius + bolt_radius + FDM_WALL_FLOOR_M;
-                ensure!(
-                    min_sep_arc_m >= required,
-                    "cast.toml: dowel ↔ bolt arc-length stagger gives \
-                     {min_arc_mm:.2} mm minimum separation at a 100 mm \
-                     silhouette perimeter, below the required \
-                     {required_mm:.2} mm (dowel_hole_radius \
-                     {dowel_radius_mm:.2} mm + bolt_radius \
-                     {bolt_radius_mm:.2} mm + 1 mm FDM wall). Bolt holes \
-                     would intersect dowel holes near the silhouette. \
-                     Pick non-equal counts for dowel_hole.count + \
-                     bolt_pattern.count (e.g., 4 + 8 default; or 4 + 6, \
-                     4 + 12) so the arc-fraction interleave is finer; \
-                     or widen the radial separation by moving one \
-                     pattern further outboard.",
-                    min_arc_mm = min_sep_arc_m * 1000.0,
-                    required_mm = required * 1000.0,
-                    dowel_radius_mm = dowel_hole_radius * 1000.0,
-                    bolt_radius_mm = bolt_radius * 1000.0,
-                );
-            }
         }
 
         Ok(())
@@ -1104,9 +904,9 @@ material = "ECOFLEX_00_30"
         // Block defaults.
         assert!(cfg.plug_pins.enabled);
         assert!(cfg.pour_gate.enabled);
-        // S3 seam-gasket-mold arc default: enabled + Ecoflex (None →
-        // GasketMaterial::Ecoflex0030 in derive).
-        assert!(cfg.gasket.enabled);
+        // S4.5/3 default flip: the gasket now defaults DISABLED (the default
+        // demand flange self-seals; the gasket is opt-in).
+        assert!(!cfg.gasket.enabled);
         assert!(cfg.gasket.material.is_none());
         // S2 seam-flange arc default: enabled + all iter1 overrides
         // None (derive::resolve_flange_spec falls back to
@@ -1144,7 +944,8 @@ enabled = false
         // S3: workshop iter-3 fallback path — material override to
         // Dragon Skin 10A when Ecoflex compresses too freely per
         // recon §G-1. derive::resolve_gasket_material handles the
-        // string → enum lift.
+        // string → enum lift. `enabled = true` is now explicit (the gasket
+        // defaults off since the S4.5 demand-flange flip).
         let text = r#"
 [scan]
 cleaned_stl = "iter1.cleaned.stl"
@@ -1155,6 +956,7 @@ thickness_m = 0.005
 material = "ECOFLEX_00_30"
 
 [gasket]
+enabled = true
 material = "DRAGON_SKIN_10A"
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
@@ -1195,7 +997,10 @@ enabled = false
     fn parses_flange_block_with_overrides() {
         // S2: partial override — width + thickness picked at non-iter1
         // values, inner_offset left as iter1 default. Validates the
-        // optional-per-field design (recon §F-6).
+        // optional-per-field design (recon §F-6). `kind = "plate"` because
+        // width_m/inner_offset_m are PLATE fields (the default kind is now
+        // demand, S4.5/3) — and with the default gasket on, the Plate 2 mm
+        // inner offset clears the 0.75 mm gasket half-width.
         let text = r#"
 [scan]
 cleaned_stl = "iter1.cleaned.stl"
@@ -1206,24 +1011,26 @@ thickness_m = 0.005
 material = "ECOFLEX_00_30"
 
 [flange]
+kind = "plate"
 width_m = 0.020
 thickness_m = 0.005
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
         assert!(cfg.flange.enabled);
+        assert_eq!(cfg.flange.kind.as_deref(), Some("plate"));
         assert!((cfg.flange.width_m.unwrap() - 0.020).abs() < 1e-12);
         assert!((cfg.flange.thickness_m.unwrap() - 0.005).abs() < 1e-12);
         assert!(cfg.flange.inner_offset_m.is_none());
     }
 
     #[test]
-    fn rejects_flange_inner_offset_overlapping_gasket() {
-        // S2 cross-field gate (recon §F-4): with both gasket + flange
-        // enabled, `flange.inner_offset_m` MUST exceed half the gasket
-        // channel width (1.5 mm / 2 = 0.75 mm at iter1). A 0.5 mm
-        // override falls below the threshold → rejected at validate
-        // time.
+    fn rejects_explicit_gasket_with_default_demand_flange_land() {
+        // S4.5/3 + review-fix: the default flange is `demand` with a 0.5 mm seal
+        // land, INSIDE the 0.75 mm gasket half-width. The gasket now defaults OFF,
+        // so a user who EXPLICITLY re-enables it on the default demand land hits the
+        // kind-aware gasket-disjoint gate: the 0.5 mm land would pinch the gasket
+        // (and the land already seals on its own), so the combo is rejected.
         let text = r#"
 [scan]
 cleaned_stl = "iter1.cleaned.stl"
@@ -1233,7 +1040,70 @@ prep_toml = "iter1.cleaned.prep.toml"
 thickness_m = 0.005
 material = "ECOFLEX_00_30"
 
+[gasket]
+enabled = true
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg.validate().expect_err(
+            "explicit gasket + default demand flange (0.5 mm land < 0.75 mm gasket \
+             half-width) must be rejected",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("land_inner_offset_m") && msg.contains("gasket"),
+            "error must name the demand land + the gasket-disjoint invariant; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn accepts_explicit_gasket_with_demand_flange_when_land_widened() {
+        // The kind-aware gate ALLOWS an explicit gasket + the default demand flange
+        // when the seal land is widened past the 0.75 mm gasket half-width
+        // (deliberate belt-and-suspenders).
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+enabled = true
+
 [flange]
+land_inner_offset_m = 0.002
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.gasket.enabled);
+        assert!(cfg.flange.kind.is_none(), "default kind (demand)");
+        assert!((cfg.flange.land_inner_offset_m.unwrap() - 0.002).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rejects_flange_inner_offset_overlapping_gasket() {
+        // S2 cross-field gate (recon §F-4): with both gasket + a PLATE flange
+        // enabled, `flange.inner_offset_m` MUST exceed half the gasket channel width
+        // (1.5 mm / 2 = 0.75 mm at iter1). A 0.5 mm override falls below the
+        // threshold → rejected at validate time. `kind = "plate"` (the default is
+        // now demand, which checks `land_inner_offset_m` instead) + an explicit
+        // `[gasket] enabled = true` (the gasket now defaults off, S4.5/3).
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.005
+material = "ECOFLEX_00_30"
+
+[gasket]
+enabled = true
+
+[flange]
+kind = "plate"
 inner_offset_m = 0.0005
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
@@ -1483,15 +1353,12 @@ material = "ECOFLEX_00_30"
     }
 
     #[test]
-    fn rejects_bolt_washer_overlapping_cup_wall_step() {
-        // Cup-wall-step washer-clearance invariant (2026-05-27 follow-
-        // up to the iter-1 ultra-review). The historical near-miss:
-        // bolt_pattern.silhouette_outboard_offset_m = 9 mm with the
-        // default 5 mm cast.wall_thickness_m + ~5 mm M5 washer radius
-        // → washer inboard edge at body_dist = 4 mm, overlapping the
-        // cup-wall outer step at body_dist = 5 mm. Validator must
-        // catch this at config time instead of letting the workshop
-        // discover it post-print.
+    fn rejects_bolt_pattern_without_flange() {
+        // §B surviving cross-field gate (S5c): bolts clamp through the
+        // flange, so [bolt_pattern] enabled with [flange] disabled has
+        // no material to bolt. The offset-based wall/washer validators
+        // were deleted in S5c (the seam-placement solver supersedes
+        // them); this flange-presence check is the one that remains.
         let text = r#"
 [scan]
 cleaned_stl = "iter1.cleaned.stl"
@@ -1501,117 +1368,42 @@ prep_toml = "iter1.cleaned.prep.toml"
 thickness_m = 0.006
 material = "ECOFLEX_00_30"
 
-[bolt_pattern]
-silhouette_outboard_offset_m = 0.009
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        let err = cfg
-            .validate()
-            .expect_err("bolt_offset = 9 mm at default wall = 5 mm must fail washer-clearance");
-        let s = err.to_string();
-        assert!(
-            s.contains("washer footprint"),
-            "expected washer-footprint error: {s}"
-        );
-        assert!(
-            s.contains("cup-wall outer step"),
-            "expected cup-wall-step mention: {s}"
-        );
-    }
-
-    #[test]
-    fn accepts_bolt_washer_clears_cup_wall_step_at_iter1_defaults() {
-        // iter-1 defaults (bolt_offset = 13 mm, wall = 5 mm, washer
-        // radius = 5 mm) → washer inboard edge at body_dist = 8 mm,
-        // well clear of the 5 mm cup-wall step (3 mm slack vs 1 mm
-        // margin requirement). Pins the gate's "passes at iter-1
-        // defaults" branch — regression-anchors that the validator
-        // doesn't accidentally reject the production-default config.
-        let text = r#"
-[scan]
-cleaned_stl = "iter1.cleaned.stl"
-prep_toml = "iter1.cleaned.prep.toml"
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn accepts_thin_cup_wall_with_default_bolt_offset() {
-        // Workshop drops wall_thickness_m to 3 mm: washer clearance
-        // = 13 − 5 − 3 = 5 mm slack vs 1 mm margin requirement →
-        // passes. Pins the gate's responsiveness to the cup-wall
-        // input (vs hard-coding the wall floor at 5 mm).
-        let text = r#"
-[scan]
-cleaned_stl = "iter1.cleaned.stl"
-prep_toml = "iter1.cleaned.prep.toml"
-
-[cast]
-wall_thickness_m = 0.003
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn rejects_bolt_offset_below_thick_cup_wall() {
-        // Inverse pairing: with cast.wall_thickness_m bumped to 8 mm,
-        // the iter-1 default 13 mm bolt offset has clearance 13 − 5 −
-        // 8 = 0 mm < 1 mm margin → fail. Pins the gate's coupling on
-        // the wall-thickness side.
-        let text = r#"
-[scan]
-cleaned_stl = "iter1.cleaned.stl"
-prep_toml = "iter1.cleaned.prep.toml"
-
-[cast]
-wall_thickness_m = 0.008
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-"#;
-        let cfg = CastConfig::from_toml_str(text).unwrap();
-        let err = cfg
-            .validate()
-            .expect_err("13 mm bolt offset at 8 mm wall must fail");
-        assert!(
-            err.to_string().contains("washer footprint"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn skips_washer_clearance_check_when_bolts_disabled() {
-        // The whole bolt-pattern validator block is gated on
-        // `self.bolt_pattern.enabled`. A bolt_offset value that
-        // WOULD fail the washer check passes silently when bolts are
-        // off (no flange→bolt invariants fire either). Pins the
-        // "no-op when disabled" branch.
-        let text = r#"
-[scan]
-cleaned_stl = "iter1.cleaned.stl"
-prep_toml = "iter1.cleaned.prep.toml"
-
-[[layers]]
-thickness_m = 0.006
-material = "ECOFLEX_00_30"
-
-[bolt_pattern]
+[flange]
 enabled = false
-silhouette_outboard_offset_m = 0.009
+
+[bolt_pattern]
+enabled = true
+"#;
+        let cfg = CastConfig::from_toml_str(text).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("bolt_pattern without flange must fail");
+        assert!(
+            err.to_string().contains("no material to bolt"),
+            "expected flange-required error: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_bolt_pattern_with_flange_at_defaults() {
+        // The complement: bolts enabled with the flange present (both
+        // default-on) validate cleanly. Regression-anchors that the
+        // surviving check doesn't reject the production-default config
+        // now that the offset-based validators are gone.
+        let text = r#"
+[scan]
+cleaned_stl = "iter1.cleaned.stl"
+prep_toml = "iter1.cleaned.prep.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+
+[bolt_pattern]
+enabled = true
 "#;
         let cfg = CastConfig::from_toml_str(text).unwrap();
         cfg.validate().unwrap();
-        assert!(!cfg.bolt_pattern.enabled);
+        assert!(cfg.bolt_pattern.enabled);
     }
 }

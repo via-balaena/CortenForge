@@ -12,9 +12,9 @@ use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_cast::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
 use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
-    CanalSpec, CastLayer, CastSpec, FlangeKind, FlangeSpec, GasketKind, GasketMaterial, GasketSpec,
-    MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind, PourGateLayout, PourGateSpec, Ribbon,
-    SplitNormal, best_fit_planar_seam, build_canal_plug,
+    CanalSpec, CastLayer, CastSpec, DemandFlangeSpec, FlangeKind, FlangeSpec, GasketKind,
+    GasketMaterial, GasketSpec, MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind,
+    PourGateLayout, PourGateSpec, Ribbon, SplitNormal, best_fit_planar_seam, build_canal_plug,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -85,7 +85,7 @@ pub fn display_name_for_anchor(anchor: &str) -> Option<&'static str> {
 /// Build a [`MoldingMaterial`] from one [`LayerConfig`].
 ///
 /// - Density: `layer.density_kg_m3` if `Some`; otherwise
-///   [`density_for_anchor(&layer.material)`].
+///   `density_for_anchor(&layer.material)`.
 /// - Display name: `layer.display_name` if `Some`; otherwise
 ///   [`display_name_for_anchor`]; otherwise the anchor key itself.
 /// - `anchor_key`: `Some(&'static str)` if the anchor is recognized
@@ -547,13 +547,20 @@ pub fn derive_spec_and_ribbon(
         ribbon = ribbon.with_gasket(GasketKind::Mold(gasket_spec));
     }
     if config.flange.enabled {
-        // S2 of the seam-flange arc per recon §F-6. Per-field
-        // overrides fall back to FlangeSpec::iter1() at None; the
-        // cross-field gasket-disjoint invariant (recon §F-4) is
-        // already enforced in config::validate_after_layer_source,
-        // so the spec built here is known-valid.
-        let flange_spec = resolve_flange_spec(&config.flange);
-        ribbon = ribbon.with_flange(FlangeKind::Plate(flange_spec));
+        // S2 of the seam-flange arc per recon §F-6 + S4.5 demand flange (recon §4).
+        // `kind` selects the flange shape ("plate" | "demand", validated in
+        // config::validate_after_layer_source); per-field overrides fall back to the
+        // matching iter1() spec. The cross-field gasket-disjoint invariant (recon
+        // §F-4) is enforced in config validate.
+        //
+        // DEFAULT = "demand" (S4.5/3, recon §7.6): the scalloped demand flange is
+        // the end-state / print target, so an absent `kind` (and explicit "demand")
+        // selects it; `kind = "plate"` opts back into the legacy uniform band.
+        let flange_kind = match config.flange.kind.as_deref() {
+            Some("plate") => FlangeKind::Plate(resolve_flange_spec(&config.flange)),
+            _ => FlangeKind::Demand(resolve_demand_flange_spec(&config.flange)),
+        };
+        ribbon = ribbon.with_flange(flange_kind);
     }
     if config.dowel_hole.enabled {
         // §M-S2 of [[project-cf-cast-unified-mating-plane-recon]].
@@ -564,22 +571,11 @@ pub fn derive_spec_and_ribbon(
     if config.bolt_pattern.enabled {
         // §B of [[project-cf-cast-flange-continuity-bolt-pattern-recon]].
         // Per-field overrides fall back to BoltPatternSpec::iter1();
-        // cross-field invariants (flange-required, wall-thickness,
-        // dowel-stagger) are gated in
-        // config::validate_after_layer_source.
-        let mut bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
-        // With the apex-axial pour the bore splits the flange at the
-        // dome apex; bracket it (a bolt just outside the clearance on
-        // each side) instead of dropping nearby bolts. Organic-parts
-        // arc §4.3, 2026-05-29.
-        // `flank_bolts` (default true) gates the proactive bracketing: on parts
-        // with a tight/leaning dome apex a flanking bolt can't be placed cleanly
-        // (lands at the apex tip or crowds a dowel), so the part opts out and
-        // the arc-bolt ring + hand pressure clamp the split (workshop
-        // 2026-05-31, base_mold).
-        if config.pour_gate.enabled && config.pour_gate.apex_axial && config.pour_gate.flank_bolts {
-            bolt_spec.bracket_pour_gate = true;
-        }
+        // cross-field invariants (flange-required, wall-thickness) are gated in
+        // config::validate_after_layer_source. Placement (count, positions, pour
+        // bracketing) is the seam-placement solver's job (the default since S5) —
+        // the bore is bracketed by construction via its swept-channel exclusion.
+        let bolt_spec = resolve_bolt_pattern_spec(&config.bolt_pattern);
         ribbon = ribbon.with_bolt_pattern(BoltPatternKind::Auto(bolt_spec));
     }
 
@@ -627,6 +623,25 @@ fn resolve_flange_spec(config: &crate::config::FlangeConfig) -> FlangeSpec {
     }
 }
 
+/// Resolve a [`crate::config::FlangeConfig`] into a [`cf_cast::DemandFlangeSpec`]
+/// (the demand/scalloped flange — recon §4), falling back to
+/// [`DemandFlangeSpec::iter1`] for each `None` per-field override. Pure (positivity
+/// gated in [`crate::config::CastConfig::validate_after_layer_source`]).
+fn resolve_demand_flange_spec(config: &crate::config::FlangeConfig) -> DemandFlangeSpec {
+    let iter1 = DemandFlangeSpec::iter1();
+    DemandFlangeSpec {
+        land_inner_offset_m: config
+            .land_inner_offset_m
+            .unwrap_or(iter1.land_inner_offset_m),
+        land_width_m: config.land_width_m.unwrap_or(iter1.land_width_m),
+        flange_thickness_m: config.thickness_m.unwrap_or(iter1.flange_thickness_m),
+        web_width_m: config.web_width_m.unwrap_or(iter1.web_width_m),
+        boss_wall_margin_m: config
+            .boss_wall_margin_m
+            .unwrap_or(iter1.boss_wall_margin_m),
+    }
+}
+
 /// Resolve a [`crate::config::CanalConfig`] into a [`CanalSpec`],
 /// falling back to [`CanalSpec::iter1`] for each `None` per-field
 /// override. Canal Interior arc (Candidate A) — additive grip +
@@ -665,10 +680,6 @@ fn resolve_dowel_hole_spec(config: &crate::config::DowelHoleConfig) -> DowelHole
         diameter_m: config.diameter_m.unwrap_or(iter1.diameter_m),
         clearance_m: config.clearance_m.unwrap_or(iter1.clearance_m),
         depth_m: config.depth_m.unwrap_or(iter1.depth_m),
-        count: config.count.unwrap_or(iter1.count),
-        silhouette_outboard_offset_m: config
-            .silhouette_outboard_offset_m
-            .unwrap_or(iter1.silhouette_outboard_offset_m),
     }
 }
 
@@ -682,20 +693,6 @@ fn resolve_bolt_pattern_spec(config: &crate::config::BoltPatternConfig) -> BoltP
         clearance_diameter_m: config
             .clearance_diameter_m
             .unwrap_or(iter1.clearance_diameter_m),
-        count: config.count.unwrap_or(iter1.count),
-        silhouette_outboard_offset_m: config
-            .silhouette_outboard_offset_m
-            .unwrap_or(iter1.silhouette_outboard_offset_m),
-        skip_pour_gate_collision: config
-            .skip_pour_gate_collision
-            .unwrap_or(iter1.skip_pour_gate_collision),
-        pour_gate_clearance_m: config
-            .pour_gate_clearance_m
-            .unwrap_or(iter1.pour_gate_clearance_m),
-        // Set by the caller from `[pour_gate].apex_axial`, not a
-        // `[bolt_pattern]` field — the bracket only makes sense when
-        // the apex-axial pour bore splits the flange.
-        bracket_pour_gate: iter1.bracket_pour_gate,
     }
 }
 

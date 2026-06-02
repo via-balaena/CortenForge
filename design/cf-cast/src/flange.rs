@@ -99,7 +99,8 @@ use crate::ribbon::Ribbon;
 // into `piece::compose_piece_with_shared`).
 #[cfg(test)]
 use crate::ribbon::PieceSide;
-use crate::silhouette_2d::Silhouette2d;
+use crate::seam_profile::SeamProfile;
+use crate::silhouette_2d::{Point2, Silhouette2d};
 
 /// Default flange lateral width (20 mm).
 ///
@@ -179,6 +180,93 @@ impl Default for FlangeSpec {
     }
 }
 
+/// Default continuous seal-land inboard start (0.5 mm).
+///
+/// With `[gasket] = None` (current `base_mold`) the PLA-on-PLA land hugs the cavity
+/// to minimise the unsealed lip (recon §4.1 N2 / decision E2) — far tighter than
+/// the [`FlangeKind::Plate`] `flange_inner_offset_m` (2 mm), which only exists to
+/// clear a gasket *channel*. A small non-zero start keeps the land off the body
+/// perimeter by ≥ one 0.5 mm silhouette-grid cell so MC quantisation can't pinch
+/// the seal edge. If a gasket is re-enabled this must grow to clear its channel.
+const DEFAULT_DEMAND_LAND_INNER_OFFSET_M: f64 = 0.0005;
+
+/// Default continuous seal-land width (6 mm), recon §4.1.
+///
+/// The seal-mechanics tunable — the full-width PLA-on-PLA contact band that rings
+/// the cavity continuously (any interruption leaks, §4.3). Bays (scallops) remove
+/// material only *outboard* of `land_inner + land_width`.
+const DEFAULT_DEMAND_LAND_WIDTH_M: f64 = 0.006;
+
+/// Default tadpole spoke (web) width (4 mm) — a print-safe floor (≈ 2.7 cells at
+/// the 1.5 mm production cup cell, well above the ~1 mm FDM wall floor; §4.3 "set
+/// spoke/boss minimum widths to print-safe floors"). Under the pin-at-floor radial
+/// strategy (E1) the boss usually subsumes the ring anchor so the spoke is
+/// near-degenerate (recon §4.1 N4) — this floor only governs the rare far-out
+/// fastener.
+const DEFAULT_DEMAND_WEB_WIDTH_M: f64 = 0.004;
+
+/// Default PLA wall a fastener boss keeps beyond its footprint (2 mm).
+///
+/// `boss_r = fastener_footprint_radius + this` — the washer (bolts) / hole+wall
+/// (dowels) footprint plus this margin. At iter-1 footprints this is a 7 mm bolt
+/// boss and a ~5.6 mm dowel boss.
+const DEFAULT_DEMAND_BOSS_WALL_MARGIN_M: f64 = 0.002;
+
+/// A generous upper bound on a boss's outboard reach (`d_floor + boss_r`), added to
+/// `land_inner + land_width` to size [`FlangeKind::lateral_reach_m`] for the MC
+/// sampling box. The true reach depends on `wall_thickness + washer` (unknown to a
+/// `&FlangeKind`); this constant (14 mm) comfortably encloses the iter-1 ~18 mm
+/// bolt-boss outer edge. The scallop (material removed between bosses) is the
+/// SDF's job, not the bounds box, so a slightly generous box is free.
+const DEMAND_MAX_BOSS_REACH_M: f64 = 0.014;
+
+/// Demand-driven (scalloped) flange geometry. Sibling of [`FlangeSpec`] under
+/// [`FlangeKind::Demand`].
+///
+/// A continuous seal ring unioned with a per-fastener "tadpole" (spoke → boss) —
+/// the end-state flange, *generated to fit the placed fasteners* rather than a
+/// uniform plate (§4 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DemandFlangeSpec {
+    /// Seal-land inboard start (meters) — signed distance from the body perimeter
+    /// at which the continuous contact land begins. Default
+    /// `DEFAULT_DEMAND_LAND_INNER_OFFSET_M` (0.5 mm, gasket-None hug-tight).
+    pub land_inner_offset_m: f64,
+    /// Continuous seal-land width (meters) outboard from `land_inner_offset_m`.
+    /// Default `DEFAULT_DEMAND_LAND_WIDTH_M` (6 mm).
+    pub land_width_m: f64,
+    /// Flange thickness PER HALF (meters) perpendicular to the seam plane —
+    /// identical slab to [`FlangeSpec::flange_thickness_m`]. Default 4 mm.
+    pub flange_thickness_m: f64,
+    /// Tadpole spoke (web) width (meters) — the spoke radius is half this. Default
+    /// `DEFAULT_DEMAND_WEB_WIDTH_M` (4 mm).
+    pub web_width_m: f64,
+    /// PLA wall a boss keeps beyond the fastener footprint (meters):
+    /// `boss_r = footprint + this`. Default `DEFAULT_DEMAND_BOSS_WALL_MARGIN_M`
+    /// (2 mm).
+    pub boss_wall_margin_m: f64,
+}
+
+impl DemandFlangeSpec {
+    /// Workshop iter-1 starting defaults (recon §4 / §7.6 decisions E1+E2).
+    #[must_use]
+    pub const fn iter1() -> Self {
+        Self {
+            land_inner_offset_m: DEFAULT_DEMAND_LAND_INNER_OFFSET_M,
+            land_width_m: DEFAULT_DEMAND_LAND_WIDTH_M,
+            flange_thickness_m: DEFAULT_FLANGE_THICKNESS_M,
+            web_width_m: DEFAULT_DEMAND_WEB_WIDTH_M,
+            boss_wall_margin_m: DEFAULT_DEMAND_BOSS_WALL_MARGIN_M,
+        }
+    }
+}
+
+impl Default for DemandFlangeSpec {
+    fn default() -> Self {
+        Self::iter1()
+    }
+}
+
 /// Seam-flange kind on the [`Ribbon`].
 ///
 /// Matches the existing `RegistrationKind` / `PourGateKind` /
@@ -202,16 +290,66 @@ pub enum FlangeKind {
     /// [`FlangeSpec`]. The flange is unioned into the cup-piece SDF
     /// at the seam plane with per-half halfspace cut applied.
     Plate(FlangeSpec),
+    /// Demand-driven (scalloped) flange: a continuous seal ring unioned with a
+    /// per-fastener tadpole (spoke → boss), *generated to fit* the placed
+    /// fasteners (§4 of `docs/CF_CAST_SEAM_PLACEMENT_RECON.md`). The end-state
+    /// flange + the `base_mold` print target. Parameterized by [`DemandFlangeSpec`].
+    Demand(DemandFlangeSpec),
 }
 
 impl FlangeKind {
     /// Returns the inner [`FlangeSpec`] for [`FlangeKind::Plate`],
-    /// `None` otherwise. Convenience accessor for the export pipeline.
+    /// `None` otherwise (including [`FlangeKind::Demand`], which carries a
+    /// [`DemandFlangeSpec`], not a [`FlangeSpec`] — use [`Self::demand_spec`]).
+    /// Convenience accessor for the Plate-specific build path.
     #[must_use]
     pub const fn spec(&self) -> Option<&FlangeSpec> {
         match self {
-            Self::None => None,
+            Self::None | Self::Demand(_) => None,
             Self::Plate(spec) => Some(spec),
+        }
+    }
+
+    /// Returns the inner [`DemandFlangeSpec`] for [`FlangeKind::Demand`], `None`
+    /// otherwise. Convenience accessor for the demand-flange build path.
+    #[must_use]
+    pub const fn demand_spec(&self) -> Option<&DemandFlangeSpec> {
+        match self {
+            Self::None | Self::Plate(_) => None,
+            Self::Demand(spec) => Some(spec),
+        }
+    }
+
+    /// The flange's maximum outboard lateral reach from the body perimeter, in
+    /// meters — `Some` iff a flange is present (any kind), `None` for
+    /// [`Self::None`]. This is the **flange-presence + MC-bounds + silhouette-pad**
+    /// query the placement pipeline uses, independent of the flange *kind* (so the
+    /// seam-placement solver runs for every flange kind, not only
+    /// [`Self::Plate`] — `spec()` would miss a non-plate flange). For
+    /// [`Self::Plate`] the reach is the band `flange_width_m`; for
+    /// [`Self::Demand`] it is `land_inner + land_width` plus a generous boss-reach
+    /// budget so the MC box encloses every boss (the scallop is the SDF's job).
+    #[must_use]
+    pub const fn lateral_reach_m(&self) -> Option<f64> {
+        match self {
+            Self::None => None,
+            Self::Plate(spec) => Some(spec.flange_width_m),
+            Self::Demand(spec) => {
+                Some(spec.land_inner_offset_m + spec.land_width_m + DEMAND_MAX_BOSS_REACH_M)
+            }
+        }
+    }
+
+    /// The flange's per-half thickness (meters), `Some` for any present flange.
+    /// Both kinds carry a thickness; the bolt/dowel emission reads it for the
+    /// fastener cylinder's half-length, so it must not go through the Plate-only
+    /// [`Self::spec`].
+    #[must_use]
+    pub const fn thickness_m(&self) -> Option<f64> {
+        match self {
+            Self::None => None,
+            Self::Plate(spec) => Some(spec.flange_thickness_m),
+            Self::Demand(spec) => Some(spec.flange_thickness_m),
         }
     }
 }
@@ -361,6 +499,181 @@ pub(crate) fn build_flange_solid(
             flange_width_m: spec.flange_width_m,
             flange_thickness_m: spec.flange_thickness_m,
             flange_inner_offset_m: spec.flange_inner_offset_m,
+        },
+        expanded_bounds,
+    )
+}
+
+// === Demand-driven flange (§4 of docs/CF_CAST_SEAM_PLACEMENT_RECON.md) ===
+
+/// One fastener's "tadpole" demand primitive (§4.1): a spoke from a seal-ring
+/// anchor out to the fastener centre, capped by a boss that hosts the footprint.
+/// All coordinates are in the seam-plane basis (the same basis
+/// [`SeamProfile::signed_distance`] uses), so they compare directly against a
+/// query point projected through [`SeamProfile::basis`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Tadpole {
+    /// Seal-ring anchor — the ring's outer edge directly under the fastener
+    /// (`ring_point + outward_normal · (land_inner + land_width)`).
+    pub anchor: Point2,
+    /// Fastener centre.
+    pub center: Point2,
+    /// Boss radius = fastener footprint + `boss_wall_margin_m`.
+    pub boss_r: f64,
+}
+
+/// 2-D signed distance to a tapered capsule ("round cone"): the convex hull of
+/// disk(`a`, `ra`) and disk(`b`, `rb`) joined by a straight tangent — iq's
+/// round-cone formula specialised to the seam plane. A tadpole's spoke is
+/// `ra = web/2` at the ring anchor tapering to `rb = boss_r` at the fastener.
+///
+/// When the segment is shorter than `|ra − rb|` (so `a2 ≤ 0`) one disk swallows
+/// the other — the near-zero-spoke degenerate case the pin-at-floor radial
+/// strategy makes typical (recon §4.1 N4). The hull is then just the larger disk,
+/// which `min` of the two disk SDFs yields exactly (and is the correct union for
+/// any overlapping pair).
+// iq's round cone uses terse single-letter projected coordinates (y, z, x2, y2,
+// z2, k); renaming them would obscure the reference derivation.
+#[allow(clippy::many_single_char_names, clippy::similar_names)]
+fn sd_tapered_capsule_2d(p: Point2, a: Point2, b: Point2, ra: f64, rb: f64) -> f64 {
+    let bx = b.x - a.x;
+    let bz = b.z - a.z;
+    let l2 = bx * bx + bz * bz;
+    let pax = p.x - a.x;
+    let paz = p.z - a.z;
+    let rr = ra - rb;
+    let a2 = l2 - rr * rr;
+    if a2 <= 1e-18 {
+        // Coincident anchor/centre, or one disk swallows the other → the hull is
+        // the larger disk; min of the two disk SDFs gives it.
+        let da = pax.hypot(paz) - ra;
+        let db = (p.x - b.x).hypot(p.z - b.z) - rb;
+        return da.min(db);
+    }
+    let il2 = 1.0 / l2;
+    let y = pax * bx + paz * bz;
+    let z = y - l2;
+    let qx = pax * l2 - bx * y;
+    let qz = paz * l2 - bz * y;
+    let x2 = qx * qx + qz * qz;
+    let y2 = y * y * l2;
+    let z2 = z * z * l2;
+    let k = rr.signum() * rr * rr * x2;
+    if z.signum() * a2 * z2 > k {
+        return (x2 + z2).sqrt() * il2 - rb;
+    }
+    if y.signum() * a2 * y2 < k {
+        return (x2 + y2).sqrt() * il2 - ra;
+    }
+    ((x2 * a2 * il2).sqrt() + y * rr) * il2 - ra
+}
+
+/// SDF for the demand-driven (scalloped) flange (§4.1): a continuous seal-ring
+/// band unioned with per-fastener tadpoles, intersected with the binormal
+/// thickness slab.
+///
+/// ```text
+/// eval(P) = max(                                  // ∩ thickness slab
+///     min( seal_ring_band(P),                     // continuous closed land
+///          min_i  tadpole_i(P) ),                 // ∪ per-fastener spoke→boss
+///     |dist_to_seam(P)| − thickness )
+/// ```
+///
+/// The lateral terms are evaluated in the seam-plane basis (project `P` through
+/// [`SeamProfile::basis`], then [`SeamProfile::signed_distance`] for the ring);
+/// the slab term is the identical binormal band [`FlangeSdf`] uses, so the §F-4
+/// flat mating face is preserved (the union/intersect are plain `min`/`max` — no
+/// `smooth_union`, no fillet — per
+/// [[project-cf-cast-flat-mating-face-constraint]]). The seal ring is continuous
+/// by construction; bays (scallops) appear only *outboard* of `land_outer` between
+/// tadpoles (§4.3 seal continuity).
+#[derive(Debug, Clone)]
+struct DemandFlangeSdf {
+    profile: SeamProfile,
+    tadpoles: Vec<Tadpole>,
+    /// Seam-plane origin for the binormal slab term (fitted-basis anchor, or the
+    /// legacy seam midpoint) — mirrors [`FlangeSdf::seam_midpoint`].
+    seam_midpoint: Point3<f64>,
+    /// Binormal (slab thickness direction) — mirrors [`FlangeSdf::binormal`].
+    binormal: Vector3<f64>,
+    /// Seal-land inboard edge (signed distance from the body perimeter).
+    land_inner_m: f64,
+    /// Seal-land outboard edge (`land_inner + land_width`).
+    land_outer_m: f64,
+    /// Tadpole spoke radius at the ring anchor (`web_width / 2`).
+    web_r_m: f64,
+    flange_thickness_m: f64,
+}
+
+impl Sdf for DemandFlangeSdf {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        // Lateral query in the profile's own seam-plane basis (same basis the
+        // ring + tadpole coordinates live in).
+        let uv = self.profile.basis().project(p);
+        let sd = self.profile.signed_distance(uv);
+        // Continuous seal-ring band: inside iff land_inner ≤ sd ≤ land_outer.
+        let ring = (self.land_inner_m - sd).max(sd - self.land_outer_m);
+        let mut lateral = ring;
+        for t in &self.tadpoles {
+            lateral = lateral.min(sd_tapered_capsule_2d(
+                uv,
+                t.anchor,
+                t.center,
+                self.web_r_m,
+                t.boss_r,
+            ));
+        }
+        // Binormal thickness slab (identical to FlangeSdf): |dist to seam plane|
+        // ≤ flange_thickness. Keeps the mating face the §F-4 flat planar cut.
+        let slab = (p - self.seam_midpoint).dot(&self.binormal).abs() - self.flange_thickness_m;
+        lateral.max(slab)
+    }
+
+    fn grad(&self, _p: Point3<f64>) -> Vector3<f64> {
+        // `max`/`min` composition's analytical gradient is multivalued at facet
+        // boundaries; `Solid::from_sdf`'s `FieldNode::UserFn` bridges via finite
+        // differences, so this is unused. Pick the binormal (matches FlangeSdf).
+        self.binormal
+    }
+}
+
+/// Build the symmetric (pre-halfspace-cut) demand flange [`Solid`] from a layer's
+/// clean seam `profile` + the placed fastener `tadpoles` (§4).
+///
+/// Mirrors [`build_flange_solid`]'s structure: the slab origin/normal come from
+/// the ribbon's seam plane (fitted basis, or legacy binormal), and the bounds are
+/// expanded by the flange's outboard reach so MC samples the full extent. The
+/// seal ring reads the SHARED `profile` (not a freshly built `Silhouette2d`) —
+/// the §MA-7 9→3 completion (S5d-(B)) for the demand path. The caller applies the
+/// per-side halfspace intersect + body subtract in
+/// `compose_piece_with_shared`, exactly as for the plate flange.
+pub(crate) fn build_demand_flange_solid(
+    profile: &SeamProfile,
+    ribbon: &Ribbon,
+    spec: &DemandFlangeSpec,
+    tadpoles: &[Tadpole],
+    bounds: Aabb,
+) -> Solid {
+    let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
+    let (slab_origin, slab_normal) = ribbon.seam_plane_basis().map_or_else(
+        || (seam_midpoint, seam_normal.into_inner()),
+        |basis| (basis.anchor, basis.normal()),
+    );
+    let pad = spec.land_inner_offset_m + spec.land_width_m + DEMAND_MAX_BOSS_REACH_M;
+    let expanded_bounds = Aabb::new(
+        Point3::new(bounds.min.x - pad, bounds.min.y - pad, bounds.min.z - pad),
+        Point3::new(bounds.max.x + pad, bounds.max.y + pad, bounds.max.z + pad),
+    );
+    Solid::from_sdf(
+        DemandFlangeSdf {
+            profile: profile.clone(),
+            tadpoles: tadpoles.to_vec(),
+            seam_midpoint: slab_origin,
+            binormal: slab_normal,
+            land_inner_m: spec.land_inner_offset_m,
+            land_outer_m: spec.land_inner_offset_m + spec.land_width_m,
+            web_r_m: spec.web_width_m / 2.0,
+            flange_thickness_m: spec.flange_thickness_m,
         },
         expanded_bounds,
     )
@@ -1092,5 +1405,151 @@ mod tests {
                 present,
             );
         }
+    }
+
+    // === Demand flange (§4) ===
+
+    use crate::seam_profile::SeamProfile;
+    use crate::silhouette_2d::SeamPlaneBasis;
+
+    /// A clean circular [`SeamProfile`] of radius `r` in the Y-normal seam plane —
+    /// the demand-flange seal ring reads its signed distance.
+    fn circle_profile(r: f64) -> SeamProfile {
+        let n: u32 = 360;
+        let raw: Vec<Point2> = (0..n)
+            .map(|i| {
+                let th = std::f64::consts::TAU * f64::from(i) / f64::from(n);
+                Point2::new(r * th.cos(), r * th.sin())
+            })
+            .collect();
+        SeamProfile::from_polyline(&raw, SeamPlaneBasis::y_normal(0.0), 0.001, 0.002).unwrap()
+    }
+
+    #[test]
+    fn demand_flange_spec_iter1_defaults() {
+        let s = DemandFlangeSpec::iter1();
+        assert_eq!(s.land_inner_offset_m, 0.0005);
+        assert_eq!(s.land_width_m, 0.006);
+        assert_eq!(s.flange_thickness_m, 0.004);
+        assert_eq!(s.web_width_m, 0.004);
+        assert_eq!(s.boss_wall_margin_m, 0.002);
+    }
+
+    #[test]
+    fn flange_kind_demand_accessors() {
+        let k = FlangeKind::Demand(DemandFlangeSpec::iter1());
+        assert!(k.spec().is_none(), "demand carries no plate FlangeSpec");
+        assert!(k.demand_spec().is_some());
+        assert!(k.lateral_reach_m().unwrap() > 0.0);
+        assert_eq!(k.thickness_m(), Some(0.004));
+    }
+
+    /// The tapered capsule is a true round cone when the segment is longer than the
+    /// radius difference: a point ~1 mm beyond the boss end reads ~1 mm.
+    #[test]
+    fn tapered_capsule_nondegenerate_cone() {
+        let a = Point2::new(0.0, 0.0);
+        let b = Point2::new(0.020, 0.0);
+        let p = Point2::new(0.020, 0.008); // 8 mm off the boss centre, rb = 7 mm
+        let d = sd_tapered_capsule_2d(p, a, b, 0.002, 0.007);
+        assert!(
+            (d - 0.001).abs() < 5e-4,
+            "boss-end clearance ~1 mm; got {d}"
+        );
+        assert!(
+            sd_tapered_capsule_2d(b, a, b, 0.002, 0.007) < 0.0,
+            "boss centre is inside"
+        );
+    }
+
+    /// When the segment is shorter than `|ra − rb|` (the pin-at-floor degenerate
+    /// spoke, recon §4.1 N4) the boss swallows the anchor → the SDF is the boss
+    /// disk: `-rb` at the centre, `dist − rb` outside.
+    #[test]
+    fn tapered_capsule_degenerate_returns_larger_disk() {
+        let a = Point2::new(0.0, 0.0);
+        let b = Point2::new(0.0045, 0.0); // 4.5 mm < |2−7| = 5 mm
+        assert!(
+            (sd_tapered_capsule_2d(b, a, b, 0.002, 0.007) + 0.007).abs() < 1e-9,
+            "boss centre → −rb"
+        );
+        let p = Point2::new(0.0045, 0.008);
+        assert!(
+            (sd_tapered_capsule_2d(p, a, b, 0.002, 0.007) - 0.001).abs() < 1e-9,
+            "8 mm off boss centre → 1 mm outside"
+        );
+    }
+
+    /// §4.3 seal continuity: with NO tadpoles the seal-ring land is present
+    /// continuously all the way around (a closed contact loop); the body-perimeter
+    /// lip (sd < `land_inner`) and the outboard bays (sd > `land_outer`) are absent.
+    #[test]
+    fn demand_seal_ring_is_continuous_and_scalloped() {
+        let (ribbon, _body, bounds) = synthetic_fixture();
+        let spec = DemandFlangeSpec::iter1();
+        let profile = circle_profile(0.010);
+        let flange = build_demand_flange_solid(&profile, &ribbon, &spec, &[], bounds);
+
+        let r_mid = 0.010 + spec.land_inner_offset_m + spec.land_width_m / 2.0;
+        for i in 0..72 {
+            let th = std::f64::consts::TAU * f64::from(i) / 72.0;
+            let p = Point3::new(r_mid * th.cos(), 0.0, r_mid * th.sin());
+            assert!(
+                flange.evaluate(&p) < 0.0,
+                "seal land must be continuous (closed loop); gap at θ = {th}"
+            );
+        }
+        // Body perimeter (sd = 0 < land_inner) → no flange on the lip.
+        assert!(flange.evaluate(&Point3::new(0.010, 0.0, 0.0)) > 0.0);
+        // Outboard of the land, no tadpole → scalloped away.
+        assert!(
+            flange.evaluate(&Point3::new(0.0, 0.0, 0.018)) > 0.0,
+            "bay outboard of the seal land must be scalloped"
+        );
+    }
+
+    /// A tadpole hosts its fastener (boss present at the centre) while the opposite
+    /// bay stays scalloped — the scallop is local to where fasteners aren't.
+    #[test]
+    fn demand_boss_present_only_at_the_fastener() {
+        let (ribbon, _body, bounds) = synthetic_fixture();
+        let spec = DemandFlangeSpec::iter1();
+        let profile = circle_profile(0.010);
+        // Fastener at sd ≈ 11 mm (radius 21 mm) on +x; ring anchor at the land
+        // outer edge (radius 16.5 mm); boss 7 mm.
+        let tad = Tadpole {
+            anchor: Point2::new(0.0165, 0.0),
+            center: Point2::new(0.021, 0.0),
+            boss_r: 0.007,
+        };
+        let flange = build_demand_flange_solid(&profile, &ribbon, &spec, &[tad], bounds);
+        assert!(
+            flange.evaluate(&Point3::new(0.021, 0.0, 0.0)) < 0.0,
+            "boss must host the fastener"
+        );
+        assert!(
+            flange.evaluate(&Point3::new(-0.021, 0.0, 0.0)) > 0.0,
+            "the opposite bay (no tadpole) must stay scalloped"
+        );
+    }
+
+    /// The binormal thickness slab bounds the flange at ±`flange_thickness_m` in the
+    /// mating-face direction — the §F-4 flat planar cut is preserved (plain `max`,
+    /// no fillet/smooth-union; [[project-cf-cast-flat-mating-face-constraint]]).
+    #[test]
+    fn demand_flange_slab_bounds_the_mating_face() {
+        let (ribbon, _body, bounds) = synthetic_fixture();
+        let spec = DemandFlangeSpec::iter1();
+        let profile = circle_profile(0.010);
+        let flange = build_demand_flange_solid(&profile, &ribbon, &spec, &[], bounds);
+        // Binormal is −Y for this fixture (split = +Z); the seam plane is Y = 0.
+        let r_mid = 0.010 + spec.land_inner_offset_m + spec.land_width_m / 2.0;
+        let inside = Point3::new(r_mid, spec.flange_thickness_m - 1e-7, 0.0);
+        let outside = Point3::new(r_mid, spec.flange_thickness_m + 1e-7, 0.0);
+        assert!(flange.evaluate(&inside) < 0.0, "just inside ±thickness");
+        assert!(
+            flange.evaluate(&outside) > 0.0,
+            "past ±thickness must be outside (flat slab mating face)"
+        );
     }
 }

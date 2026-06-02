@@ -316,10 +316,9 @@ pub struct Ribbon {
     /// builder; [`crate::compose_piece_solid`] emits per-bolt
     /// `MatingTransform::SubtractCylinder` ops applied side-
     /// agnostically to both cup-halves. Composes on top of §M's
-    /// unified mating plane + symmetric dowel-hole registration; arc-
-    /// length stagger between dowels + bolts is automatic at the
-    /// iter-1 default counts. See [`crate::bolt_pattern`] for the
-    /// placement contract + pour-gate collision-skip behavior.
+    /// unified mating plane + symmetric dowel-hole registration; the
+    /// seam-placement solver places bolts clear of the dowel holes +
+    /// the pour. See [`crate::bolt_pattern`] for the placement contract.
     pub bolt_pattern: BoltPatternKind,
     /// Optional pour-end anchor for the plug-floor lock —
     /// `(centroid, outward_axis)` in world-frame coordinates.
@@ -641,7 +640,7 @@ impl Ribbon {
     /// Builder: set the symmetric dowel-hole registration kind. §M-S2
     /// of the unified-mating-plane arc entry point — both cup-halves
     /// get identical `SubtractCylinder` holes through their mating
-    /// faces, arc-length-equal-spaced around the body silhouette.
+    /// faces, placed by the seam-placement solver (long-axis extremes).
     /// Composable with all other `with_*` builders; the dowel-hole
     /// arc is orthogonal to flange / pour gate / plug pins / gasket.
     /// §M-S4 of the same arc retired the legacy prismatic-pin
@@ -657,9 +656,9 @@ impl Ribbon {
     /// Builder: set the M5 through-bolt clamp pattern kind. §B of
     /// [[project-cf-cast-flange-continuity-bolt-pattern-recon]] entry
     /// point — both cup-halves get identical `SubtractCylinder` bolt-
-    /// clearance through-holes, arc-length-equal-spaced around the
-    /// body silhouette. Composable with all other `with_*` builders;
-    /// the bolt-pattern arc is orthogonal to dowel hole / flange /
+    /// clearance through-holes, placed by the seam-placement solver
+    /// (even pitch, bracketing the pour). Composable with all other
+    /// `with_*` builders; the bolt-pattern arc is orthogonal to dowel hole / flange /
     /// pour gate / plug pins / gasket.
     #[must_use]
     pub const fn with_bolt_pattern(mut self, bolt_pattern: BoltPatternKind) -> Self {

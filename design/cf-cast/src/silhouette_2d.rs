@@ -178,6 +178,18 @@ impl SeamPlaneBasis {
     pub fn dir_to_world(&self, p: Point2) -> Vector3<f64> {
         self.u_axis * p.x + self.v_axis * p.z
     }
+
+    /// Project a world point onto the seam plane, returning its in-plane
+    /// `(u, v)` coordinates. The inverse of [`Self::to_world`] for points
+    /// already on the plane; for off-plane points it drops the normal
+    /// component (orthogonal projection). Used by the seam-placement solver
+    /// to map the pour bore + dowel world transforms into seam-plane
+    /// exclusions (`docs/CF_CAST_SEAM_PLACEMENT_RECON.md` §3.4).
+    #[must_use]
+    pub fn project(&self, p: Point3<f64>) -> Point2 {
+        let rel = p - self.anchor;
+        Point2::new(rel.dot(&self.u_axis), rel.dot(&self.v_axis))
+    }
 }
 
 /// Seam-plane silhouette of a body, stored as unordered line segments.
@@ -554,9 +566,8 @@ impl Silhouette2d {
     /// vertex (closed loop). Returns `None` if the silhouette has no
     /// polylines.
     ///
-    /// Used by [`crate::dowel_hole`] + future bolt-pattern placement
-    /// for arc-length-equal spacing of post-MC mesh-CSG primitives
-    /// around the body silhouette.
+    /// Samples the silhouette's longest loop at arc-length fraction
+    /// `t` — used for uniform-spacing scans over the body perimeter.
     #[must_use]
     pub fn point_at_arc_fraction(&self, t: f64) -> Option<Point2> {
         let (poly, cum, total) = self.longest_polyline_with_arc_length()?;
@@ -591,10 +602,11 @@ impl Silhouette2d {
         ))
     }
 
-    /// Outward-pointing 2D unit normal to the silhouette at the
-    /// given arc-length fraction. Used to offset dowel positions
-    /// outboard from the silhouette by `silhouette_outboard_offset_m`
-    /// in [`crate::dowel_hole`].
+    /// Outward-pointing 2D unit normal to the silhouette at the given
+    /// arc-length fraction — the outboard radial direction at that
+    /// point on the curve. (The live placement path takes its outward
+    /// normal from [`crate::seam_profile::SeamProfile`]; this
+    /// silhouette-level helper is currently exercised only by tests.)
     ///
     /// The local outward direction at arc fraction `t` is the
     /// perpendicular to the local tangent direction (the segment
@@ -1102,5 +1114,22 @@ mod tests {
         let (u_min, u_max, v_min, v_max) = b.inplane_bounds(aabb);
         assert!((u_min - -0.02).abs() < 1.0e-9 && (u_max - 0.04).abs() < 1.0e-9);
         assert!((v_min - -0.03).abs() < 1.0e-9 && (v_max - 0.06).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn project_is_the_inverse_of_to_world_on_the_plane() {
+        // A tilted seam basis: project ∘ to_world == identity on (u, v), and
+        // projecting an off-plane point drops the seam-normal component.
+        let b = SeamPlaneBasis::from_anchor_normal(
+            Point3::new(0.01, -0.02, 0.03),
+            Vector3::new(0.3, 1.0, 0.2),
+        );
+        let uv = Point2::new(0.012, -0.034);
+        let back = b.project(b.to_world(uv));
+        assert!((back.x - uv.x).abs() < 1.0e-12 && (back.z - uv.z).abs() < 1.0e-12);
+        // Stepping off the plane along its normal must not change (u, v).
+        let off = b.to_world(uv) + b.normal() * 0.05;
+        let proj = b.project(off);
+        assert!((proj.x - uv.x).abs() < 1.0e-12 && (proj.z - uv.z).abs() < 1.0e-12);
     }
 }
