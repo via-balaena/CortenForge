@@ -2,8 +2,9 @@
 //! `docs/CF_CAST_FLANGE_CONTINUITY_BOLT_PATTERN_RECON.md`).
 //!
 //! Both cup-halves get IDENTICAL bolt-clearance holes carved through
-//! their mating faces, arc-length-equal-spaced around the body
-//! silhouette in the flange band. Workshop user inserts an M5 hex
+//! their mating faces in the flange band, placed by the
+//! seam-placement solver (even pitch ≤30 mm, bracketing the pour).
+//! Workshop user inserts an M5 hex
 //! bolt + flat washer through one back face, threads a flat washer +
 //! hex nut on the other side, and hand-tightens to compress the
 //! gasket. Mirrors the engine-valve-cover clamp pattern; replaces the

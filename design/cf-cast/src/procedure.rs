@@ -751,11 +751,10 @@ fn write_cfview_sanity_check_v2(md: &mut String, apex_pour: bool) {
         md,
         "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
          - Dowel holes: cylindrical recessed cavities in BOTH \
-         halves' seam faces, arc-length-equal-spaced around the \
-         body cavity perimeter + offset outboard from the body \
-         silhouette per `DowelHoleSpec` (§M-S2). The hole pattern \
-         is symmetric — the two halves should mirror each other \
-         exactly along the seam plane.\n   \
+         halves' seam faces, placed by the seam-placement solver at \
+         the body's long-axis extremes in the flange band (§M-S2). \
+         The hole pattern is symmetric — the two halves should \
+         mirror each other exactly along the seam plane.\n   \
          - No trapezoidal / truncated-pyramid pin remnants on the \
          seam face (the §M-S4-retired prismatic-pin registration \
          path).\n   \

@@ -2,11 +2,11 @@
 //! `docs/CF_CAST_UNIFIED_MATING_PLANE_RECON.md`).
 //!
 //! Both cup-halves get IDENTICAL dowel holes through their mating
-//! faces, arc-length-equal-spaced around the body silhouette in the
-//! flange band. Workshop user inserts printed-separately PLA dowels
-//! into the holes at assembly time; the dowels register the two
-//! halves laterally (preventing slip in the seam plane) while the
-//! bolts (§B arc) clamp them axially.
+//! faces in the flange band, placed by the seam-placement solver (at
+//! the body's long-axis extremes). Workshop user inserts
+//! printed-separately PLA dowels into the holes at assembly time; the
+//! dowels register the two halves laterally (preventing slip in the
+//! seam plane) while the bolts (§B arc) clamp them axially.
 //!
 //! Replaces the pre-§M asymmetric pin/socket pair pattern (post-
 //! 2026-05-24 salvage mesh-CSG `UnionTruncatedPyramid` +

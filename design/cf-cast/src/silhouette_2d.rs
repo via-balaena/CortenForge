@@ -566,9 +566,8 @@ impl Silhouette2d {
     /// vertex (closed loop). Returns `None` if the silhouette has no
     /// polylines.
     ///
-    /// Used by [`crate::dowel_hole`] + future bolt-pattern placement
-    /// for arc-length-equal spacing of post-MC mesh-CSG primitives
-    /// around the body silhouette.
+    /// Samples the silhouette's longest loop at arc-length fraction
+    /// `t` — used for uniform-spacing scans over the body perimeter.
     #[must_use]
     pub fn point_at_arc_fraction(&self, t: f64) -> Option<Point2> {
         let (poly, cum, total) = self.longest_polyline_with_arc_length()?;
@@ -603,10 +602,11 @@ impl Silhouette2d {
         ))
     }
 
-    /// Outward-pointing 2D unit normal to the silhouette at the
-    /// given arc-length fraction. Offsets a point radially outboard
-    /// from the silhouette curve (e.g. the seam-placement solver's
-    /// radial fastener offset).
+    /// Outward-pointing 2D unit normal to the silhouette at the given
+    /// arc-length fraction — the outboard radial direction at that
+    /// point on the curve. (The live placement path takes its outward
+    /// normal from [`crate::seam_profile::SeamProfile`]; this
+    /// silhouette-level helper is currently exercised only by tests.)
     ///
     /// The local outward direction at arc fraction `t` is the
     /// perpendicular to the local tangent direction (the segment
