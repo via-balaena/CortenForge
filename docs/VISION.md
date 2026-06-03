@@ -1,12 +1,14 @@
 # CortenForge Vision
 
-> An open-source SDK written in pure Rust for designing, simulating, and manufacturing bio-inspired mechanisms and robotics.
+> An open-source SDK written in pure Rust for the mechatronics and simulation space — designing, simulating, and manufacturing physical systems.
+>
+> **[MISSION.md](../MISSION.md) is canonical for *what* we are building and *why*.** This document is the *technical and architectural* vision. Where the two touch on identity or mission, MISSION.md wins.
 
 ---
 
 ## What CortenForge Is
 
-CortenForge is an **open-source, pure-Rust SDK for bio-inspired mechatronics** — spanning the full arc from mechanism design and mesh processing to MuJoCo-grade physics simulation and 3D-printable output. It demonstrates that the Rust programming language is not merely adequate but *ideal* for this domain: real-time simulation, geometric computing, implicit surface modeling, and deterministic builds.
+CortenForge is an **open-source, pure-Rust SDK for the mechatronics and simulation space** — spanning the full arc from design and mesh processing to MuJoCo-grade physics simulation and 3D-printable output. It demonstrates that the Rust programming language is not merely adequate but *ideal* for this domain: real-time simulation, geometric computing, implicit surface modeling, and deterministic builds.
 
 It is not:
 - A game engine (though it runs on one)
@@ -66,19 +68,31 @@ Every Layer 0 crate compiles to:
 This is non-negotiable. Layer 0 is the **permanent foundation**. Bevy could be replaced tomorrow and Layer 0 would remain intact.
 
 ```
-Layer 0 (Pure Rust) — 19 library crates
+Layer 0 (Pure Rust) — ~29 library crates
 ├── mesh/           10 crates — Industrial mesh processing
-├── cf-geometry     Shared geometric kernel (shapes, queries, acceleration)
-├── cf-spatial      Voxel grids, spatial indexing
-├── cf-design       Implicit surface design kernel (AI-native mechanism design)
-└── sim/            6 crates — MuJoCo-aligned physics
+├── design/         7 crates — Geometry, design & fabrication
+│   ├── cf-geometry         Shared geometric kernel (shapes, queries, acceleration)
+│   ├── cf-spatial          Voxel grids, spatial indexing
+│   ├── cf-design           Implicit-surface design kernel (AI-native design)
+│   ├── cf-cap-planes       Open-boundary cap detection for scans
+│   ├── cf-device-types     Layered-device domain types
+│   ├── cf-device-geometry  Cached scan SDF + per-layer extraction
+│   └── cf-cast             Multi-material mold + plug generation for casting
+└── sim/            12 crates — MuJoCo-aligned physics + soft FEM + RL
     ├── sim-types           Pose, Twist, MassProperties, JointState
     ├── sim-simd            SIMD batch operations (Vec3x4/Vec3x8)
     ├── sim-core            Model/Data, FK, CRBA, RNE, Newton/PGS/CG solvers,
     │                       implicit integration, muscles, deformables, constraints
+    ├── sim-soft            Hyperelastic FEM (NeoHookean/Yeoh), SDF→tet, contact
     ├── sim-mjcf            MuJoCo XML parser
     ├── sim-urdf            URDF parser, kinematic tree validation
-    └── sim-conformance-tests   79/79 MuJoCo conformance tests
+    ├── sim-gpu             GPU simulation backend
+    ├── sim-ml-chassis      VecEnv / RL environment chassis
+    ├── sim-rl              RL algorithms (PPO, TD3, SAC, REINFORCE)
+    ├── sim-opt             Optimization (CEM, SA, parallel tempering)
+    ├── sim-therm-env       Thermodynamic environments
+    └── sim-thermostat      Langevin thermostats
+    (+ sim-conformance-tests — 79/79 MuJoCo conformance)
 ```
 
 ### Layer 1: Bevy Integration
@@ -88,8 +102,14 @@ Layer 0 (Pure Rust) — 19 library crates
 Layer 1 is plugins that wire Layer 0 into Bevy's ECS. Components hold data. Systems process it. Resources manage state.
 
 ```
-Layer 1 (Bevy) — 1 crate
-└── sim-bevy        Model/Data sync, debug gizmos, coordinate conversion
+Layer 1 (Bevy) — 4 crates
+├── sim-bevy             Model/Data sync, debug gizmos, coordinate conversion
+├── sim-bevy-soft        Soft-body simulation visualization
+├── sim-ml-chassis-bevy  ML chassis ↔ Bevy integration
+└── cf-bevy-common       Shared Bevy helpers (orbit camera, up-axis)
+
+Tools & apps (binaries) — cf-scan-prep, cf-cast-cli, cf-device-design,
+cf-sim-research, cf-viewer.
 ```
 
 When Bevy breaks (and it will), Layer 1 adapts. Layer 0 is untouched.
@@ -113,37 +133,46 @@ A headless training run uses `sim-core` directly. A visualization demo uses `sim
 | Domain | Strategy | Status |
 |--------|----------|--------|
 | **Mesh Processing** | Build | 10 crates, A-grade |
-| **Design** | Build (cf-design) | Phases 1–4 complete: implicit surfaces, smooth booleans, mechanism assembly, MJCF/STL export |
+| **Design** | Build (cf-design) | Implicit surfaces, smooth booleans, mechanism assembly, MJCF/STL export |
 | **Geometry** | Build (cf-geometry) | Shared kernel — shapes, queries, acceleration structures |
 | **Spatial** | Build (cf-spatial) + kiddo | Voxels ourselves, KD-trees from crate |
 | **Rigid Physics** | Build (sim-core) | MuJoCo-aligned: Model/Data, CRBA, RNE, Newton/PGS/CG solvers, implicit integration, sleeping |
-| **Soft Physics** | Build (sim-core) | Inlined: XPBD deformables, Hill-type muscles |
+| **Soft Physics** | Build (sim-soft, sim-core) | Hyperelastic FEM (NeoHookean/Yeoh), SDF→tet, contact (sim-soft); XPBD deformables + Hill-type muscles (sim-core) |
 | **Collision** | Build (sim-core) | MuJoCo-aligned: analytical + GJK/EPA + BVH mesh |
+| **Scan ingest** | Build (cf-scan-prep) | Scan cleanup, repair, cap detection, centerline |
+| **Fabrication** | Build (cf-cast, mesh-printability) | Multi-material mold/plug generation, pour/vent, printability gating, procedure generation |
+| **RL / Optimization** | Build (sim-ml-chassis, sim-rl, sim-opt) | VecEnv, PPO/TD3/SAC/REINFORCE, CEM, parallel tempering |
 | **Rendering** | Use Bevy | Not our domain |
 | **UI** | Use bevy_egui | Not our domain |
 
 ### Domain Roadmap
 
 ```
-COMPLETE (20 library crates):
+COMPLETE (40+ workspace crates):
 ├── Mesh Domain (10 crates)
 │   mesh, mesh-types, mesh-io, mesh-repair, mesh-measure,
 │   mesh-offset, mesh-shell, mesh-lattice, mesh-sdf, mesh-printability
-├── Design Domain (3 crates)
-│   cf-geometry, cf-spatial, cf-design (Phases 1–4: 656 tests)
-└── Simulation Domain (7 crates: 6 L0 + 1 L1)
-    sim-types, sim-simd, sim-core, sim-mjcf, sim-urdf,
-    sim-conformance-tests, sim-bevy
+├── Design & Fabrication Domain (7 crates)
+│   cf-geometry, cf-spatial, cf-design, cf-cap-planes,
+│   cf-device-types, cf-device-geometry, cf-cast
+├── Simulation Domain (12 L0 + 4 L1)
+│   sim-types, sim-simd, sim-core, sim-soft, sim-mjcf, sim-urdf,
+│   sim-gpu, sim-ml-chassis, sim-rl, sim-opt, sim-therm-env, sim-thermostat,
+│   sim-bevy, sim-bevy-soft, sim-ml-chassis-bevy, cf-bevy-common
+├── Tools & apps (5)
+│   cf-scan-prep, cf-cast-cli, cf-device-design, cf-sim-research, cf-viewer
+└── Dev & test
+    xtask, cf-design-tests, sim-conformance-tests, *-benches
 
-NEXT PHASE:
-├── cf-design Phase 5     Differentiable design optimization
-├── PyO3 bindings         Python access to Layer 0
-└── cortenforge           Bevy SDK umbrella (CfSimPlugin, etc.)
+NEXT PHASE (the capstone connective tissue — see MISSION.md):
+├── Differentiable soft↔rigid coupling   Keystone — gradients through tissue/skeleton/device contact
+├── Co-design optimizer                  Joint design + control-policy optimization
+├── System-ID / sim-to-real calibration  Fit material/tissue models from measurement
+└── PyO3 bindings                        Python access to Layer 0
 
 FUTURE:
 ├── B-Rep upgrade         Ship of Theseus swap of cf-design internals (if Fornjot matures)
 ├── Hardware bridges      ROS2, custom drivers, sim/real parity
-├── GPU simulation        Batched sim via wgpu
 └── surface-types         NURBS surfaces, patches (if needed beyond implicit)
 ```
 
@@ -174,7 +203,7 @@ What they have: Full parametric CAD, B-Rep kernel (Parasolid), assembly constrai
 
 What we have: Shared geometric kernel (cf-geometry), implicit surface design kernel (cf-design) with smooth booleans and mechanism assembly, MuJoCo-aligned physics (sim-core, 79/79 conformance tests), industrial mesh processing (10 crates).
 
-What we're building differently: Not B-Rep-first. Implicit surfaces for AI-native design of bio-inspired mechanisms. The design geometry IS the simulation collider IS the 3D-printable artifact. No export/import gap. See `CF_DESIGN_SPEC.md`.
+What we're building differently: Not B-Rep-first. Implicit surfaces for AI-native design of mechatronic systems. The design geometry IS the simulation collider IS the 3D-printable artifact. No export/import gap. See `CF_DESIGN_SPEC.md`.
 
 B-Rep upgradability preserved via Ship of Theseus architecture — cf-design's `Solid` type is opaque, internals can be swapped to Fornjot B-Rep if/when needed.
 
@@ -191,8 +220,15 @@ The honest assessment: We can get useful CAD interop in a year. Full MuJoCo pari
 
 ## Target Applications
 
-### Bio-Inspired Robotics (Primary)
-- **Design:** Compliant mechanisms, actuator housings, bio-inspired body shells via implicit surfaces
+The flagship — the capstone we are building toward (see [MISSION.md](../MISSION.md)) — is **patient-specific assistive robotics**: a differentiable body-to-device co-design loop culminating in a powered, RL-controlled exoskeleton, which exercises the entire SDK at once. The applications below are among the near-limitless adjacent uses the same components serve.
+
+### Patient-Specific Assistive Robotics (Flagship)
+- **Design:** Custom-fit sockets, orthoses, and exo shells via scan-driven implicit surfaces + graded multi-material
+- **Simulation:** Biomechanics, soft-tissue contact, RL-trained control
+- **Mesh:** Scan repair, multi-material mold generation, printability validation
+
+### Bio-Inspired & Compliant Robotics
+- **Design:** Compliant mechanisms, actuator housings, body shells via implicit surfaces
 - **Simulation:** Locomotion, manipulation, contact-rich tasks with muscles and tendons
 - **Mesh:** Geometry repair, printability analysis, lattice infill for lightweight structures
 
@@ -201,12 +237,7 @@ The honest assessment: We can get useful CAD interop in a year. Full MuJoCo pari
 - **Simulation:** Walking, reaching, whole-body dynamics with MuJoCo-grade contact
 - **Mesh:** Export to STL/3MF for rapid prototyping
 
-### Medical Devices
-- **Design:** Patient-specific implants, surgical tools via code-first implicit surfaces
-- **Simulation:** Device mechanics, tissue interaction modeling
-- **Mesh:** Mesh repair from scan data, printability validation
-
-All three share the same foundation: design in cf-design, simulate in sim-core, manufacture through the mesh pipeline. CortenForge is the shared substrate.
+They share the same foundation: design in cf-design, simulate in sim-core, manufacture through the mesh pipeline. CortenForge is the shared substrate.
 
 ---
 
@@ -264,9 +295,12 @@ There is no "done." Cathedrals are never finished; they're maintained and extend
 But there are milestones:
 
 ### Milestone 1: Foundation ✅
-- 20 library crates across 3 domains (mesh, design, simulation)
-- MuJoCo-aligned physics with 79/79 conformance tests
-- Implicit surface design kernel with mechanism assembly (cf-design Phases 1–4)
+- 40+ crates across mesh, design & fabrication, and simulation
+- MuJoCo-aligned rigid-body physics with 79/79 conformance tests
+- Hyperelastic soft-body FEM (sim-soft: NeoHookean/Yeoh, SDF→tet, contact)
+- Implicit-surface design kernel with mechanism assembly (cf-design)
+- Scan → multi-material mold/cast pipeline (cf-scan-prep, cf-cast)
+- RL chassis + algorithms (sim-ml-chassis, sim-rl, sim-opt) and GPU backend (sim-gpu)
 - Industrial mesh processing pipeline (10 crates)
 - sim-bevy provides Bevy visualization with debug gizmos
 
@@ -326,6 +360,6 @@ We're building something that will run on robots, in vehicles, in medical device
 
 ---
 
-*This document is the north star. When in doubt, check here.*
+*[MISSION.md](../MISSION.md) is the north star for what we are building and why. This document is the technical and architectural vision — when in doubt about identity or mission, check MISSION.md; about architecture, check here.*
 
-*Last updated: 2026-03-19*
+*Last updated: 2026-06-03*

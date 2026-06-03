@@ -4,7 +4,7 @@
 > Like parametric constraints in CAD, these rules let teams scale without chaos.
 
 > **Target**: Industrial-scale reliability. ISO 26262 / IEC 62304 / DO-178C awareness.
-> Enterprise-grade foundation for bio-inspired robotics and physical systems.
+> Enterprise-grade foundation for mechatronics, simulation, and physical systems.
 
 ---
 
