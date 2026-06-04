@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, Project, Step};
+use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, Step};
 use cf_studio_engine::{
     EditSession, ReconstructShape, export_print_package, generate_molds_for_design, run_simplify,
     silicone_catalog,
@@ -27,7 +27,8 @@ use cf_studio_engine::{
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
     StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, cell_size_m_for_quality,
-    format_molds_summary, nav_state, print_step_summary, step_rows,
+    format_molds_summary, format_pour_active, format_pour_plan, nav_state, pour_countdown,
+    print_step_summary, step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
@@ -478,6 +479,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // while it works and applies the MoldOutputs when it lands.
     let molds_inbox: MoldsInbox = Arc::new(Mutex::new(None));
     let molds_start: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
+    // Step-6 pour assistant: which layer is being poured (0-based, session
+    // state — not persisted in the Project, which only records the final
+    // completion) + the running pot-life countdown's deadline (None = no
+    // timer running).
+    let pour_current: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let pour_deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
 
     let ui = AppWindow::new()?;
     refresh(&ui, &project.borrow(), viewed.get());
@@ -595,6 +602,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ui.set_step_message_is_error(false);
                     }
                 }
+            },
+        );
+    }
+
+    // ── tick the step-6 pot-life countdown on the UI thread ───────
+    // When a pour timer is running, refresh the remaining-time line (+ its
+    // urgency colour) twice a second; idle otherwise.
+    let pour_timer = slint::Timer::default();
+    {
+        let (weak, deadline) = (weak.clone(), pour_deadline.clone());
+        pour_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(500),
+            move || {
+                let Some(dl) = deadline.get() else {
+                    return; // no countdown running
+                };
+                let Some(ui) = weak.upgrade() else { return };
+                let remaining = dl
+                    .checked_duration_since(Instant::now())
+                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+                let cd = pour_countdown(remaining);
+                ui.set_pour_timer_text(cd.text.into());
+                ui.set_pour_timer_urgency(cd.urgency);
             },
         );
     }
@@ -732,16 +763,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── navigation (gated by the wizard state) ──────────────────
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let pour_current = pour_current.clone();
         ui.on_back(move || {
             viewed.set(viewed.get().saturating_sub(1));
             if let Some(ui) = weak.upgrade() {
                 ui.set_step_message(SharedString::default());
-                refresh(&ui, &project.borrow(), viewed.get());
+                let p = project.borrow();
+                refresh(&ui, &p, viewed.get());
+                sync_pour_ui(&ui, &p, pour_current.get());
             }
         });
     }
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let pour_current = pour_current.clone();
         ui.on_next(move || {
             let v = viewed.get();
             let step = Step::ALL.get(v).copied().unwrap_or(Step::FIRST);
@@ -751,7 +786,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(ui) = weak.upgrade() {
                 ui.set_step_message(SharedString::default());
-                refresh(&ui, &project.borrow(), viewed.get());
+                let p = project.borrow();
+                refresh(&ui, &p, viewed.get());
+                // Entering step 6 populates the pour panel from the plan.
+                sync_pour_ui(&ui, &p, pour_current.get());
             }
         });
     }
@@ -1215,8 +1253,95 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ── step 6: start the current layer's pot-life countdown ────
+    {
+        let (project, weak) = (project.clone(), weak.clone());
+        let (pour_current, pour_deadline) = (pour_current.clone(), pour_deadline.clone());
+        ui.on_start_pour_timer(move || {
+            let mins = project.borrow().molds().and_then(|m| {
+                m.pour_plan
+                    .steps
+                    .get(pour_current.get())
+                    .map(|s| s.pot_life_minutes)
+            });
+            let Some(mins) = mins else { return };
+            pour_deadline.set(Some(
+                Instant::now() + Duration::from_secs(u64::from(mins) * 60),
+            ));
+            if let Some(ui) = weak.upgrade() {
+                ui.set_pour_timer_running(true);
+                // Paint the full time immediately (the tick is up to 500ms away).
+                let cd = pour_countdown(i64::from(mins) * 60);
+                ui.set_pour_timer_text(cd.text.into());
+                ui.set_pour_timer_urgency(cd.urgency);
+            }
+        });
+    }
+    // ── step 6: mark the current layer poured (advance / finish) ──
+    {
+        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let (pour_current, pour_deadline) = (pour_current.clone(), pour_deadline.clone());
+        ui.on_mark_poured(move || {
+            let total = project
+                .borrow()
+                .molds()
+                .map_or(0, |m| m.pour_plan.steps.len());
+            if total == 0 {
+                return;
+            }
+            let next = pour_current.get() + 1;
+            pour_current.set(next);
+            pour_deadline.set(None); // stop any running countdown
+
+            // The last layer's pour finishes the project.
+            let completed = if next >= total {
+                let recorded = project.borrow_mut().set_pour(PourRecord {
+                    layers_poured: total,
+                });
+                Some(match recorded {
+                    Ok(()) => (
+                        "🎉 All layers poured — your device is complete!".to_string(),
+                        false,
+                    ),
+                    Err(e) => (format!("Couldn't record completion: {e}"), true),
+                })
+            } else {
+                None
+            };
+
+            if let Some(ui) = weak.upgrade() {
+                ui.set_pour_timer_running(false);
+                ui.set_pour_timer_text(SharedString::default());
+                if let Some((msg, is_err)) = completed {
+                    ui.set_step_message(msg.into());
+                    ui.set_step_message_is_error(is_err);
+                }
+                let p = project.borrow();
+                sync_pour_ui(&ui, &p, pour_current.get());
+                refresh(&ui, &p, viewed.get());
+            }
+        });
+    }
+
     ui.run()?;
     Ok(())
+}
+
+/// Push the step-6 pour-assistant state (plan overview, active-layer line,
+/// finished flag) for `current` (0-based) into the UI. The live countdown
+/// text is driven separately by the pour timer.
+fn sync_pour_ui(ui: &AppWindow, project: &Project, current: usize) {
+    let (plan_text, active_text, complete) = match project.molds() {
+        Some(m) => (
+            format_pour_plan(&m.pour_plan),
+            format_pour_active(&m.pour_plan, current),
+            project.pour().is_some(),
+        ),
+        None => (String::new(), String::new(), false),
+    };
+    ui.set_pour_plan_text(plan_text.into());
+    ui.set_pour_active_text(active_text.into());
+    ui.set_pour_complete(complete);
 }
 
 /// Open `dir` in the OS file manager (best-effort; a failure to spawn is

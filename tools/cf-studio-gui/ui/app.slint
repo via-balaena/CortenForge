@@ -117,6 +117,16 @@ export component AppWindow inherits Window {
     // Whether the print files have been exported (gates the Open-folder
     // button + flips the save button to a re-save).
     in property <bool> has-print-export: false;
+    // Step 6 (Pour assistant): the full plan overview + the active-layer
+    // instruction + the live pot-life countdown (text + urgency 0/1/2 for
+    // colour) + whether a countdown is running + whether every layer is
+    // poured (the finished state).
+    in property <string> pour-plan-text: "";
+    in property <string> pour-active-text: "";
+    in property <string> pour-timer-text: "";
+    in property <int> pour-timer-urgency: 0;
+    in property <bool> pour-timer-running: false;
+    in property <bool> pour-complete: false;
 
     callback back();
     callback next();
@@ -137,6 +147,10 @@ export component AppWindow inherits Window {
     // already-exported folder in the OS file manager.
     callback export-print();
     callback open-export-folder();
+    // Step 6: start the current layer's pot-life countdown, and mark the
+    // current layer poured (advancing to the next, or finishing).
+    callback start-pour-timer();
+    callback mark-poured();
     // Mouse-drag in the 3D view: (dx, dy) screen-pixel deltas → orbit.
     callback orbit(length, length);
     // Step-2 edit ops (drive the EditSession; each re-renders the view).
@@ -443,12 +457,72 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                if viewed-number == 6: Text {
-                    text: "“\{viewed-title}” — the controls for this step arrive next.";
-                    horizontal-alignment: center;
-                    font-size: 18px;
-                    color: #666666;
-                    wrap: word-wrap;
+                // Step 6 — the guided pour assistant (plan + pot-life timer).
+                if viewed-number == 6: VerticalLayout {
+                    spacing: 12px;
+                    vertical-stretch: 1;
+                    // Full plan, for reference (innermost layer first).
+                    Rectangle {
+                        background: #f3f4f6;
+                        border-radius: 10px;
+                        VerticalBox {
+                            padding: 12px;
+                            Text {
+                                text: pour-plan-text;
+                                font-size: 14px;
+                                color: #333333;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    // Active layer + timer (hidden once every layer is poured).
+                    if !pour-complete: VerticalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: pour-active-text;
+                            font-size: 16px;
+                            color: #1565c0;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        if pour-timer-running: Text {
+                            text: pour-timer-text;
+                            font-size: 22px;
+                            font-weight: 800;
+                            horizontal-alignment: center;
+                            color: pour-timer-urgency == 2
+                                ? #c62828
+                                : (pour-timer-urgency == 1 ? #e65100 : #2e7d32);
+                        }
+                        HorizontalBox {
+                            alignment: center;
+                            spacing: 8px;
+                            Button {
+                                text: "Start pour timer";
+                                enabled: !pour-timer-running;
+                                clicked => { start-pour-timer(); }
+                            }
+                            Button {
+                                text: "Mark this layer poured →";
+                                primary: true;
+                                clicked => { mark-poured(); }
+                            }
+                        }
+                    }
+                    if pour-complete: Rectangle {
+                        background: #eef3ee;
+                        border-radius: 10px;
+                        VerticalBox {
+                            padding: 16px;
+                            Text {
+                                text: "🎉 All layers poured — your device is complete! Let each layer cure fully before unmolding.";
+                                font-size: 18px;
+                                color: #2e4d2e;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
                 }
 
                 if step-message != "": Text {

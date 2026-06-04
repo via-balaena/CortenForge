@@ -19,7 +19,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use cf_studio_core::{DesignDraft, MoldOutputs, Project, Step};
+use cf_studio_core::{DesignDraft, MoldOutputs, PourPlan, PourStep, Project, Step};
 use cf_studio_engine::{accept_prep, draft_from_design_toml, load_scan};
 
 pub mod viewer;
@@ -181,6 +181,93 @@ pub fn print_step_summary(project: &Project) -> String {
         return format!("Ready to save {pieces} printable file(s) + the step-by-step guide.");
     }
     String::new()
+}
+
+// ── step 6: the pour assistant ──────────────────────────────────────
+
+/// One pour layer's full recipe line, e.g.
+/// `"Ecoflex 00-30 — 500 g, mix 1:1, 25% Slacker · pot life ~25 min · cure ~4 h"`.
+/// Slacker is shown only when present; the cure is omitted for the last
+/// layer (nothing waits on it).
+#[must_use]
+fn pour_recipe_line(step: &PourStep, is_last: bool) -> String {
+    let slacker = step
+        .slacker_fraction
+        .map(|f| format!(", {:.0}% Slacker", f * 100.0))
+        .unwrap_or_default();
+    let cure = if is_last {
+        String::new()
+    } else {
+        format!(" · cure ~{:.0} h", step.cure_time_hours)
+    };
+    format!(
+        "{} — {:.0} g, mix {}{slacker} · pot life ~{} min{cure}",
+        step.material_display_name, step.mass_g, step.mix_ratio_a_to_b, step.pot_life_minutes,
+    )
+}
+
+/// The full pour plan as a numbered overview (innermost layer first), for
+/// the step-6 reference panel. Empty plan → a short placeholder.
+#[must_use]
+pub fn format_pour_plan(plan: &PourPlan) -> String {
+    if plan.steps.is_empty() {
+        return "(no pour layers)".to_string();
+    }
+    let last = plan.steps.len() - 1;
+    let mut s = format!(
+        "Pour plan — {} layer(s), innermost first:",
+        plan.steps.len()
+    );
+    for (i, step) in plan.steps.iter().enumerate() {
+        let _ = write!(s, "\n  {}. {}", i + 1, pour_recipe_line(step, i == last));
+    }
+    s
+}
+
+/// The active-layer instruction for the step-6 pour panel: which layer of
+/// how many, its recipe, and what to do. `current` is 0-based.
+#[must_use]
+pub fn format_pour_active(plan: &PourPlan, current: usize) -> String {
+    let Some(step) = plan.steps.get(current) else {
+        return String::new();
+    };
+    let is_last = current + 1 == plan.steps.len();
+    format!(
+        "Layer {} of {} — {}\nMix it, start the timer, and pour before the working time runs out.",
+        current + 1,
+        plan.steps.len(),
+        pour_recipe_line(step, is_last),
+    )
+}
+
+/// A pot-life countdown's display text + urgency for the step-6 timer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PourCountdown {
+    /// `"M:SS left"`, or a "time's up" line once expired.
+    pub text: String,
+    /// 0 = comfortable, 1 = warning (≤ 5 min left), 2 = expired (≤ 0).
+    pub urgency: i32,
+}
+
+/// Format a pot-life countdown from the seconds remaining (negative or zero
+/// = expired). Warns under five minutes.
+#[must_use]
+pub fn pour_countdown(remaining_secs: i64) -> PourCountdown {
+    if remaining_secs <= 0 {
+        return PourCountdown {
+            text: "0:00 — working time's up. Pour now, or scrape and remix.".to_string(),
+            urgency: 2,
+        };
+    }
+    let text = format!(
+        "⏱ {}:{:02} of working time left",
+        remaining_secs / 60,
+        remaining_secs % 60
+    );
+    PourCountdown {
+        text,
+        urgency: i32::from(remaining_secs <= 300),
+    }
 }
 
 /// Whether Back/Next are available from the `viewed` screen.
@@ -412,6 +499,91 @@ visible = true
         assert!(s.starts_with("✓ Saved to /tmp/print-out"), "got: {s}");
 
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn sample_plan() -> PourPlan {
+        use cf_studio_core::PourStep;
+        PourPlan {
+            steps: vec![
+                PourStep {
+                    layer_index: 0,
+                    material_display_name: "Ecoflex 00-30".to_string(),
+                    mass_g: 500.0,
+                    mix_ratio_a_to_b: "1:1".to_string(),
+                    pot_life_minutes: 25,
+                    cure_time_hours: 4.0,
+                    slacker_fraction: Some(0.25),
+                },
+                PourStep {
+                    layer_index: 1,
+                    material_display_name: "Dragon Skin 20A".to_string(),
+                    mass_g: 250.0,
+                    mix_ratio_a_to_b: "1:1".to_string(),
+                    pot_life_minutes: 25,
+                    cure_time_hours: 5.0,
+                    slacker_fraction: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn pour_plan_text_numbers_layers_and_drops_last_cure() {
+        let s = format_pour_plan(&sample_plan());
+        assert!(s.contains("2 layer(s)"), "got: {s}");
+        assert!(
+            s.contains(
+                "1. Ecoflex 00-30 — 500 g, mix 1:1, 25% Slacker · pot life ~25 min · cure ~4 h"
+            ),
+            "got: {s}"
+        );
+        // Last layer: no cure clause, no slacker.
+        assert!(s.contains("2. Dragon Skin 20A — 250 g, mix 1:1 · pot life ~25 min"));
+        assert!(
+            !s.contains("cure ~5 h"),
+            "last layer's cure is dropped: {s}"
+        );
+        assert_eq!(
+            format_pour_plan(&PourPlan { steps: vec![] }),
+            "(no pour layers)"
+        );
+    }
+
+    #[test]
+    fn pour_active_targets_the_current_layer() {
+        let plan = sample_plan();
+        let a0 = format_pour_active(&plan, 0);
+        assert!(a0.starts_with("Layer 1 of 2 — Ecoflex 00-30"), "got: {a0}");
+        let a1 = format_pour_active(&plan, 1);
+        assert!(
+            a1.starts_with("Layer 2 of 2 — Dragon Skin 20A"),
+            "got: {a1}"
+        );
+        // Past the end → empty (all poured).
+        assert_eq!(format_pour_active(&plan, 2), "");
+    }
+
+    #[test]
+    fn countdown_warns_then_expires() {
+        let ok = pour_countdown(20 * 60); // 20 min
+        assert_eq!(ok.urgency, 0);
+        assert!(ok.text.contains("20:00"), "got: {}", ok.text);
+
+        let warn = pour_countdown(4 * 60 + 30); // 4:30 — under 5 min
+        assert_eq!(warn.urgency, 1);
+        assert!(warn.text.contains("4:30"), "got: {}", warn.text);
+
+        assert_eq!(
+            pour_countdown(300).urgency,
+            1,
+            "5 min is the warn threshold"
+        );
+        assert_eq!(pour_countdown(301).urgency, 0);
+
+        let dead = pour_countdown(0);
+        assert_eq!(dead.urgency, 2);
+        assert!(dead.text.contains("time's up"), "got: {}", dead.text);
+        assert_eq!(pour_countdown(-10).urgency, 2, "negative = expired");
     }
 
     #[test]
