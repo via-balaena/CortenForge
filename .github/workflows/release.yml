@@ -30,24 +30,33 @@ jobs:
   build:
     name: Build Studio (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # Beta legs are non-fatal: if Windows/Linux/Intel-mac fail to build, the
+    # release still goes out with whatever did build. The verified
+    # Apple-Silicon leg (beta: false) stays blocking — if it fails, no release.
+    # (fail-fast: false alone wouldn't do this — it only stops cancellation;
+    # a failed leg would still fail the job and skip the release, which
+    # `needs` it.)
+    continue-on-error: ${{ matrix.beta }}
     strategy:
-      # Don't cancel the other platforms if one leg fails — a beta
-      # (Windows/Linux) hiccup shouldn't drop the verified macOS asset.
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             asset: CortenForge-Studio-linux-x86_64.tar.gz
+            beta: true
           - target: x86_64-apple-darwin
             os: macos-latest
             asset: CortenForge-Studio-macos-x86_64.zip
+            beta: true
           - target: aarch64-apple-darwin
             os: macos-latest
             asset: CortenForge-Studio-macos-arm64.zip
+            beta: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             asset: CortenForge-Studio-windows-x86_64.zip
+            beta: true
 
     steps:
       - uses: actions/checkout@v6
@@ -235,12 +244,16 @@ jobs:
 
             The guided desktop app (scan → clean → design → molds → print → pour):
 
-            - **macOS** (tested): `CortenForge-Studio-macos-arm64.zip` (Apple Silicon)
-              or `-macos-x86_64.zip` (Intel). First launch: right-click the app →
-              **Open** (unsigned during the beta — Gatekeeper asks once).
+            - **macOS, Apple Silicon** (tested): `CortenForge-Studio-macos-arm64.zip`.
+              First launch: right-click the app → **Open** (unsigned during the
+              beta — Gatekeeper asks once).
+            - **macOS, Intel** (beta): `CortenForge-Studio-macos-x86_64.zip` — same
+              right-click → Open.
             - **Windows** (beta): `CortenForge-Studio-windows-x86_64.zip`. Unblock
               via *More info → Run anyway* if SmartScreen warns.
             - **Linux** (beta): `CortenForge-Studio-linux-x86_64.tar.gz`.
+
+            Beta builds may be missing if that platform didn't build for this tag.
 
             Builds are not yet code-signed; that's a planned upgrade.
 
