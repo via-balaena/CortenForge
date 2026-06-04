@@ -1,0 +1,48 @@
+[package]
+name = "cf-studio-gui"
+description = "CortenForge Studio — the polished, accessible Slint GUI frontend for the guided scan→cast workflow. A thin client over cf-studio-engine + the cf-studio-core Project state machine (the same boundary the cf-studio CLI uses). See MISSION.md. G1: the app shell + state binding; step controls + 3D preview follow."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace tool; no `[package.metadata.cortenforge]` block (matches the
+# cf-studio / cf-cast-cli precedent). The Project→display mapping lives in
+# the lib (testable, headless); main.rs is the Slint event-loop glue,
+# which needs a display to *run* but compiles headlessly.
+
+[[bin]]
+name = "cf-studio-gui"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# `deny`, not `forbid`: Slint's generated code uses `#[allow(unsafe_code)]`
+# for its VTable statics, which `forbid` cannot permit. `deny` still blocks
+# unsafe in our own code (no inner allow), while letting the generated UI
+# code allow its own.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+# The Project state machine + Step (the spine).
+cf-studio-core = { workspace = true }
+# The step executors (used as step controls land in later phases).
+cf-studio-engine = { workspace = true }
+# The polished, accessible UI toolkit (direct dep, no workspace pin —
+# brand-new to the workspace; isolated to this GUI crate so its heavy
+# tree never touches the headless spine/engine/CLI).
+slint = "1"
+
+[build-dependencies]
+# Compiles the `.slint` markup at build time.
+slint-build = "1"

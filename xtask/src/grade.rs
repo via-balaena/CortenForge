@@ -2323,6 +2323,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-studio-core"
             | "cf-studio-engine"
             | "cf-studio"
+            | "cf-studio-gui"
     ) {
         return false;
     }
@@ -3750,6 +3751,7 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-studio-core"));
         assert!(!applies_to_crate("cf-studio-engine"));
         assert!(!applies_to_crate("cf-studio"));
+        assert!(!applies_to_crate("cf-studio-gui"));
     }
 
     #[test]

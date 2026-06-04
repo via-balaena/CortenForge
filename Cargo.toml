@@ -28,6 +28,9 @@ members = [
     # Headless CLI frontend for Studio — thin client over the engine +
     # the Project state machine; the Slint GUI's behavioral reference.
     "tools/cf-studio",
+    # Polished/accessible Slint GUI frontend for Studio (the product
+    # surface) — a thin client over the engine, like the CLI.
+    "tools/cf-studio-gui",
     # Layered-silicone-device design + testing suite (Bevy + egui GUI).
     # Consumes cf-scan-prep outputs; produces a `<scan>.design.toml`
     # that cf-cast-cli will consume (slice 9). The meat of the program

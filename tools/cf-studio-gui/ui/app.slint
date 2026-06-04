@@ -1,0 +1,102 @@
+import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+// One row of the workflow checklist, prepared for display by the Rust
+// side (mark/here are precomputed so the markup stays simple).
+export struct StepRow {
+    number: int,
+    title: string,
+    mark: string,    // "✓" if done, "○" otherwise
+    here: string,    // "   ← you are here" on the project's current step, else ""
+    viewing: bool,   // the step currently shown in the body
+}
+
+export component AppWindow inherits Window {
+    title: "CortenForge Studio";
+    preferred-width: 900px;
+    preferred-height: 640px;
+    min-width: 640px;
+    min-height: 480px;
+
+    in property <string> project-name: "Untitled";
+    in property <[StepRow]> steps;
+    in property <int> viewed-number: 1;
+    in property <int> total-steps: 6;
+    in property <string> viewed-title;
+    in property <bool> can-back: false;
+    in property <bool> can-next: true;
+
+    callback back();
+    callback next();
+    callback help();
+
+    VerticalBox {
+        padding: 28px;
+        spacing: 16px;
+
+        // ── header ──────────────────────────────────────────────
+        Text {
+            text: "CortenForge Studio  ·  \{project-name}";
+            font-size: 15px;
+            color: #888888;
+        }
+        Text {
+            text: "Step \{viewed-number} of \{total-steps}";
+            font-size: 15px;
+            color: #888888;
+        }
+        Text {
+            text: viewed-title;
+            font-size: 30px;
+            font-weight: 800;
+        }
+
+        // ── body (per-step controls land here in later phases) ──
+        Rectangle {
+            background: #f3f4f6;
+            border-radius: 14px;
+            vertical-stretch: 1;
+            VerticalBox {
+                alignment: center;
+                Text {
+                    text: "“\{viewed-title}” — the controls for this step arrive next.";
+                    horizontal-alignment: center;
+                    font-size: 18px;
+                    color: #666666;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // ── progress checklist (reflects the real project state) ──
+        VerticalBox {
+            spacing: 6px;
+            for row in steps: Text {
+                text: "\{row.mark}  Step \{row.number}: \{row.title}\{row.here}";
+                font-size: 17px;
+                font-weight: row.viewing ? 700 : 400;
+                color: row.viewing ? #1565c0 : #222222;
+            }
+        }
+
+        // ── footer ──────────────────────────────────────────────
+        HorizontalBox {
+            spacing: 12px;
+            Button {
+                text: "← Back";
+                enabled: can-back;
+                clicked => { back(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: "Help";
+                clicked => { help(); }
+            }
+            Button {
+                text: "Next →";
+                enabled: can-next;
+                primary: true;
+                clicked => { next(); }
+            }
+        }
+    }
+}
