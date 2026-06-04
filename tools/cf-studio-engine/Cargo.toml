@@ -30,10 +30,11 @@ cf-studio-core = { workspace = true }
 # game engine comes along. (The `bevy` feature is opt-in, and we never
 # opt in here.)
 cf-device-types = { workspace = true }
-# Load + validate the raw scan file, auto-detecting STL/OBJ/PLY by
-# extension (mesh-io's default features; scanners export these). 3MF/STEP
-# are opt-in mesh-io features, not enabled here. L0, no Bevy — headless.
-mesh-io = { workspace = true }
+# Load + validate the raw scan file, auto-detecting STL/OBJ/PLY/3MF by
+# extension (scanners + phone-app scanners export these; 3MF via the
+# `threemf` feature, which pulls zip). STEP stays opt-out (heavy CAD deps).
+# No Bevy — headless.
+mesh-io = { workspace = true, features = ["threemf"] }
 # Reuse the cast pipeline's REAL prep parsers so the wizard validates
 # exactly what the cast requires — centerline (cf-cast-cli) + cap planes
 # (cf-cap-planes) — rather than a divergent re-check. cf-cast-cli also

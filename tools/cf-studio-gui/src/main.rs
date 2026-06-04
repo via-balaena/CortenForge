@@ -812,7 +812,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_pick_scan(move || {
             let Some(path) = rfd::FileDialog::new()
                 .set_title("Choose your 3D scan")
-                .add_filter("3D scan", &["stl", "obj", "ply"])
+                .add_filter("3D scan", &["stl", "obj", "ply", "3mf"])
                 .pick_file()
             else {
                 return;

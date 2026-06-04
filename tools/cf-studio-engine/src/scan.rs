@@ -38,9 +38,10 @@ impl LoadedScan {
 }
 
 /// Load + validate a scan file, auto-detecting the format (STL / OBJ /
-/// PLY) by extension (case-insensitively). 3MF / STEP are available too
-/// if `mesh-io`'s `threemf` / `step` features are enabled — they are
-/// not, by default, since scanners export STL/OBJ/PLY.
+/// PLY / 3MF) by extension (case-insensitively). 3MF is enabled via
+/// `mesh-io`'s `threemf` feature (declared in this crate's Cargo.toml).
+/// STEP stays opt-out (heavy CAD deps); enable `mesh-io`'s `step` feature
+/// to add it.
 ///
 /// # Errors
 /// - [`EngineError::ScanLoad`] if the file is missing or can't be parsed.
