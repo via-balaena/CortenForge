@@ -47,6 +47,15 @@ allow = [
     # since font-asset licenses don't infect software using the font.
     "OFL-1.1",          # SIL Open Font License 1.1 (Google Fonts default)
     "Ubuntu-font-1.0",  # Ubuntu Font Licence v1.0
+    # BSL-1.0 (Boost, permissive) — clipboard-win + error-code, pulled in
+    # via Slint's winit backend (copypasta).
+    "BSL-1.0",
+    # Slint (the Cendrillon GUI toolkit) is tri-licensed
+    # "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR
+    # LicenseRef-Slint-Software-3.0". We use it under its royalty-free
+    # desktop license, so allowing this ref satisfies the OR without
+    # accepting GPL/copyleft workspace-wide (Cendrillon stays non-GPL).
+    "LicenseRef-Slint-Royalty-free-2.0",
 ]
 confidence-threshold = 0.8
 
