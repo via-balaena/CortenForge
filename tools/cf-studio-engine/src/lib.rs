@@ -18,12 +18,14 @@
 
 pub mod design;
 pub mod error;
+pub mod mold;
 pub mod pour;
 pub mod prep;
 pub mod scan;
 
 pub use design::{design_toml_from_draft, save_design_from_draft};
 pub use error::{EngineError, Result};
+pub use mold::generate_molds;
 pub use pour::{LayerPour, build_pour_plan};
 pub use prep::accept_prep;
 pub use scan::{LoadedScan, load_scan};

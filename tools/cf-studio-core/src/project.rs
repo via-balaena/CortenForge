@@ -117,6 +117,10 @@ pub struct MoldOutputs {
     pub mold_stls: Vec<PathBuf>,
     /// Plug STL paths (one per layer).
     pub plug_stls: Vec<PathBuf>,
+    /// Other printable STLs the cast emits (e.g. the workshop platform
+    /// and registration dowels) — not mold halves or plugs, but still
+    /// part of what the user prints.
+    pub accessory_stls: Vec<PathBuf>,
     /// The generated human-readable procedure document.
     pub procedure_path: PathBuf,
     /// Total silicone mass across all layers, in grams.
@@ -517,6 +521,7 @@ mod tests {
             out_dir: PathBuf::from("out"),
             mold_stls: vec![PathBuf::from("out/mold_layer_0_piece_0.stl")],
             plug_stls: vec![PathBuf::from("out/plug_layer_0.stl")],
+            accessory_stls: vec![PathBuf::from("out/platform.stl")],
             procedure_path: PathBuf::from("out/procedure.md"),
             total_mass_g: 842.9,
             pour_plan: PourPlan::default(),

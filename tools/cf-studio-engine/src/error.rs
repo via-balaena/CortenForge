@@ -70,4 +70,9 @@ pub enum EngineError {
         /// The material key with no cure data.
         key: String,
     },
+
+    /// The cast / mold-generation run failed (validation, printability
+    /// gate, mass budget, or reading back the outputs).
+    #[error("mold generation failed: {0}")]
+    MoldGen(String),
 }
