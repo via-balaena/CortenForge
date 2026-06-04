@@ -14,19 +14,20 @@ mod ui {
 }
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, Project, Step};
 use cf_studio_engine::{
-    EditSession, ReconstructShape, generate_molds_for_design, run_simplify, silicone_catalog,
+    EditSession, ReconstructShape, export_print_package, generate_molds_for_design, run_simplify,
+    silicone_catalog,
 };
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
     StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, cell_size_m_for_quality,
-    format_molds_summary, nav_state, step_rows,
+    format_molds_summary, nav_state, print_step_summary, step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
@@ -1147,8 +1148,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ── step 5: save the printable files into a chosen folder ───
+    {
+        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        ui.on_export_print(move || {
+            // The molds must be made (the wizard gate ensures it on step 5).
+            let Some(molds) = project.borrow().molds().cloned() else {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_step_message("Make the molds first (step 4).".into());
+                    ui.set_step_message_is_error(true);
+                }
+                return;
+            };
+            let Some(dest) = rfd::FileDialog::new()
+                .set_title("Choose a folder to save the printable files")
+                .pick_folder()
+            else {
+                return; // cancelled
+            };
+            // Copy is a few seconds even at 0.5 mm (hundreds of MB on SSD);
+            // run inline — far short of the cast's minutes.
+            let (text, is_err) = match export_print_package(&molds, &dest) {
+                Ok(report) => {
+                    // Bind so the borrow_mut RefMut drops before refresh's
+                    // project.borrow() below (the match-scrutinee footgun).
+                    let recorded = project.borrow_mut().set_print(report.export);
+                    match recorded {
+                        Ok(()) => {
+                            reveal_in_file_manager(&dest);
+                            let guide = if report.procedure_copied {
+                                " + the guide"
+                            } else {
+                                ""
+                            };
+                            (
+                                format!(
+                                    "✓ Saved {} file(s){guide} to {} — opening it now. \
+                                     Print each piece, then click Next →.",
+                                    report.stl_count,
+                                    dest.display(),
+                                ),
+                                false,
+                            )
+                        }
+                        Err(e) => (format!("Copied the files, but couldn't record: {e}"), true),
+                    }
+                }
+                Err(e) => (format!("{e}"), true),
+            };
+            if let Some(ui) = weak.upgrade() {
+                ui.set_step_message(text.into());
+                ui.set_step_message_is_error(is_err);
+                refresh(&ui, &project.borrow(), viewed.get());
+            }
+        });
+    }
+    {
+        let (project, weak) = (project.clone(), weak.clone());
+        ui.on_open_export_folder(move || {
+            if let Some(dir) = project.borrow().print().map(|p| p.export_dir.clone()) {
+                reveal_in_file_manager(&dir);
+            } else if let Some(ui) = weak.upgrade() {
+                ui.set_step_message("Nothing exported yet — save the files first.".into());
+                ui.set_step_message_is_error(true);
+            }
+        });
+    }
+
     ui.run()?;
     Ok(())
+}
+
+/// Open `dir` in the OS file manager (best-effort; a failure to spawn is
+/// silently ignored — it's a convenience, not part of the workflow).
+fn reveal_in_file_manager(dir: &Path) {
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+    let _ = std::process::Command::new(program).arg(dir).spawn();
 }
 
 /// After a step action: surface its message + re-render from the project.
@@ -1193,6 +1273,9 @@ fn refresh(ui: &AppWindow, project: &Project, viewed_idx: usize) {
     ui.set_can_back(nav.can_back);
     ui.set_can_next(nav.can_next);
     ui.set_has_scan(project.is_complete(Step::AddScan));
+    // Step-5 print state (persists across nav, like the molds summary).
+    ui.set_print_summary(print_step_summary(project).into());
+    ui.set_has_print_export(project.print().is_some());
 }
 
 /// Set the step-message text + its error styling from a step outcome.

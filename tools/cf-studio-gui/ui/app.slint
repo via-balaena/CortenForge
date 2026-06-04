@@ -111,6 +111,12 @@ export component AppWindow inherits Window {
     // total silicone mass, pour plan, output folder). Empty until a run
     // completes; survives leaving + returning to the step.
     in property <string> molds-summary: "";
+    // Step 5 (Print): status line — "ready to save N file(s)" before
+    // export, "saved to <dir>" after. Empty until the molds are made.
+    in property <string> print-summary: "";
+    // Whether the print files have been exported (gates the Open-folder
+    // button + flips the save button to a re-save).
+    in property <bool> has-print-export: false;
 
     callback back();
     callback next();
@@ -127,6 +133,10 @@ export component AppWindow inherits Window {
     // Step 4: run the cast at a quality preset (0 = Standard 1.5 mm,
     // 1 = Fine 0.5 mm). Long-running — driven async on a background thread.
     callback make-molds(int);
+    // Step 5: copy the printable files into a chosen folder, and reveal an
+    // already-exported folder in the OS file manager.
+    callback export-print();
+    callback open-export-folder();
     // Mouse-drag in the 3D view: (dx, dy) screen-pixel deltas → orbit.
     callback orbit(length, length);
     // Step-2 edit ops (drive the EditSession; each re-renders the view).
@@ -395,7 +405,45 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                if viewed-number >= 5: Text {
+                // Step 5 — save the printable files + hand off to the slicer.
+                if viewed-number == 5: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    Text {
+                        text: "Your mold pieces are ready to print. Save them to a folder, then open that folder in your slicer (like OrcaSlicer) and print each piece. The printed molds are what you'll pour silicone into.";
+                        horizontal-alignment: center;
+                        font-size: 16px;
+                        color: #444444;
+                        wrap: word-wrap;
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Button {
+                            text: has-print-export ? "Save again…" : "Save files for printing…";
+                            primary: true;
+                            clicked => { export-print(); }
+                        }
+                        if has-print-export: Button {
+                            text: "Open folder";
+                            clicked => { open-export-folder(); }
+                        }
+                    }
+                    if print-summary != "": Rectangle {
+                        background: #eef3ee;
+                        border-radius: 10px;
+                        VerticalBox {
+                            padding: 14px;
+                            Text {
+                                text: print-summary;
+                                font-size: 16px;
+                                color: #2e4d2e;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                if viewed-number == 6: Text {
                     text: "“\{viewed-title}” — the controls for this step arrive next.";
                     horizontal-alignment: center;
                     font-size: 18px;

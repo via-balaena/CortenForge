@@ -165,6 +165,24 @@ pub fn format_molds_summary(out: &MoldOutputs) -> String {
     s
 }
 
+/// The step-5 (Print) status line, derived from project state: once the
+/// files are exported, where they went; before that, how many printables
+/// are waiting to be saved; nothing if the molds aren't made yet.
+#[must_use]
+pub fn print_step_summary(project: &Project) -> String {
+    if let Some(export) = project.print() {
+        return format!(
+            "✓ Saved to {} — open that folder in your slicer to print each piece.",
+            export.export_dir.display()
+        );
+    }
+    if let Some(molds) = project.molds() {
+        let pieces = molds.mold_stls.len() + molds.plug_stls.len() + molds.accessory_stls.len();
+        return format!("Ready to save {pieces} printable file(s) + the step-by-step guide.");
+    }
+    String::new()
+}
+
 /// Whether Back/Next are available from the `viewed` screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavState {
@@ -345,6 +363,53 @@ visible = true
 
         let mut p = Project::new("t");
         assert!(apply_prep(&mut p, &cleaned, &prep).is_err());
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn print_step_summary_reflects_project_state() {
+        use cf_studio_core::{MoldOutputs, PourPlan, PrintExport};
+
+        let d = dir("printsummary");
+        let stl = d.join("s.stl");
+        let cleaned = d.join("c.stl");
+        let prep = d.join("p.prep.toml");
+        let design = d.join("x.design.toml");
+        std::fs::write(&stl, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&cleaned, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&prep, PREP_WITH_CENTERLINE).unwrap();
+        std::fs::write(&design, DESIGN_TOML).unwrap();
+
+        let mut p = Project::new("t");
+        // Fresh / pre-molds: nothing to show.
+        assert_eq!(print_step_summary(&p), "");
+
+        apply_scan(&mut p, &stl).unwrap();
+        apply_prep(&mut p, &cleaned, &prep).unwrap();
+        apply_design(&mut p, &design).unwrap();
+
+        // Molds made, not yet exported → "ready to save N".
+        p.set_molds(MoldOutputs {
+            out_dir: PathBuf::from("/tmp/out"),
+            mold_stls: vec![PathBuf::from("a.stl"), PathBuf::from("b.stl")],
+            plug_stls: vec![PathBuf::from("p.stl")],
+            accessory_stls: vec![PathBuf::from("plat.stl")],
+            procedure_path: PathBuf::from("proc.md"),
+            total_mass_g: 100.0,
+            pour_plan: PourPlan { steps: vec![] },
+        })
+        .unwrap();
+        let s = print_step_summary(&p);
+        assert!(s.contains("Ready to save 4 printable"), "got: {s}");
+
+        // Exported → "saved to <dir>" takes precedence.
+        p.set_print(PrintExport {
+            export_dir: PathBuf::from("/tmp/print-out"),
+        })
+        .unwrap();
+        let s = print_step_summary(&p);
+        assert!(s.starts_with("✓ Saved to /tmp/print-out"), "got: {s}");
 
         let _ = std::fs::remove_dir_all(&d);
     }
