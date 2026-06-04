@@ -26,4 +26,20 @@ pub enum EngineError {
     /// Writing the `.design.toml` to disk failed.
     #[error("could not write design file: {0}")]
     WriteDesign(String),
+
+    /// The chosen scan file could not be loaded as a mesh.
+    #[error("could not load scan at {path}: {reason}")]
+    ScanLoad {
+        /// The scan path.
+        path: String,
+        /// Why the load failed.
+        reason: String,
+    },
+
+    /// The scan loaded but has no geometry (no vertices or no faces).
+    #[error("scan at {path} has no geometry — it is empty or not a surface mesh")]
+    EmptyScan {
+        /// The scan path.
+        path: String,
+    },
 }

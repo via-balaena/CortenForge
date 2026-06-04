@@ -18,9 +18,11 @@
 
 pub mod design;
 pub mod error;
+pub mod scan;
 
 pub use design::{design_toml_from_draft, save_design_from_draft};
 pub use error::{EngineError, Result};
+pub use scan::{LoadedScan, load_scan};
 
 // Re-export the spine so a frontend needs only this one crate to reach
 // the workflow types (`Project`, `Step`, `DesignDraft`, …): the engine
