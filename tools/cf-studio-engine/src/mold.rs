@@ -115,7 +115,7 @@ pub fn generate_molds(
         .iter()
         .map(|l| l.pour_volume.pour_mass_kg)
         .collect();
-    let pour_plan = build_pour_plan(&pour_inputs(draft, &masses_kg))?;
+    let pour_plan = build_pour_plan(&pour_inputs(draft, &masses_kg)?)?;
 
     let stls = collect_stls(&report.out_dir)?;
     Ok(MoldOutputs {
@@ -132,8 +132,21 @@ pub fn generate_molds(
 /// Zip the design (anchor keys + Slacker) with the run's per-layer masses
 /// into [`LayerPour`]s, converting **kg → g**. Slacker is lifted only
 /// when non-zero, matching the cast pipeline's own convention.
-fn pour_inputs(draft: &DesignDraft, layer_masses_kg: &[f64]) -> Vec<LayerPour> {
-    draft
+///
+/// # Errors
+/// [`EngineError::MoldGen`] if the design's layer count doesn't match the
+/// run's — `generate_molds` is public and takes an arbitrary `CastConfig`
+/// whose design need not agree with `draft`, and a silent `zip` truncation
+/// would drop pour steps while `total_mass_g` still reports the full mass.
+fn pour_inputs(draft: &DesignDraft, layer_masses_kg: &[f64]) -> Result<Vec<LayerPour>> {
+    if draft.layers.len() != layer_masses_kg.len() {
+        return Err(EngineError::MoldGen(format!(
+            "design has {} layer(s) but the cast produced {} — they must match",
+            draft.layers.len(),
+            layer_masses_kg.len()
+        )));
+    }
+    Ok(draft
         .layers
         .iter()
         .zip(layer_masses_kg)
@@ -142,7 +155,7 @@ fn pour_inputs(draft: &DesignDraft, layer_masses_kg: &[f64]) -> Vec<LayerPour> {
             mass_g: mass_kg * 1000.0,
             slacker_fraction: (layer.slacker_fraction > 0.0).then_some(layer.slacker_fraction),
         })
-        .collect()
+        .collect())
 }
 
 /// The cast run's `.stl` outputs, bucketed for the UI.
@@ -231,13 +244,28 @@ mod tests {
             ],
         };
         // Use kg values whose ×1000 is exact in f64 to keep the assert clean.
-        let inputs = pour_inputs(&draft, &[0.5, 0.25]);
+        let inputs = pour_inputs(&draft, &[0.5, 0.25]).unwrap();
         assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[0].mass_g, 500.0); // 0.5 kg → 500 g
         assert_eq!(inputs[0].anchor_key, "ECOFLEX_00_30");
         assert_eq!(inputs[0].slacker_fraction, Some(0.25));
         assert_eq!(inputs[1].mass_g, 250.0);
         assert_eq!(inputs[1].slacker_fraction, None); // 0.0 → None
+    }
+
+    #[test]
+    fn pour_inputs_rejects_layer_count_mismatch() {
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![LayerDraft {
+                thickness_m: 0.0175,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.0,
+            }],
+        };
+        // 1 design layer vs 2 cast masses → error, not a silent truncation.
+        let err = pour_inputs(&draft, &[0.5, 0.25]).unwrap_err();
+        assert!(matches!(err, EngineError::MoldGen(_)), "got: {err:?}");
     }
 
     #[test]

@@ -171,8 +171,9 @@ export component AppWindow inherits Window {
     callback set-layer-thickness(int, int);
     callback set-layer-slacker(int, int);
     callback use-design(int);
-    // Step 4: run the cast at a quality preset (0 = Standard 1.5 mm,
-    // 1 = Fine 0.5 mm). Long-running — driven async on a background thread.
+    // Step 4: run the cast at a quality preset matching the picker order
+    // (0 = Fine 0.5 mm print quality, 1 = Fast 1.5 mm preview). Long-running
+    // — driven async on a background thread.
     callback make-molds(int);
     // Step 5: copy the printable files into a chosen folder, and reveal an
     // already-exported folder in the OS file manager.

@@ -40,11 +40,6 @@ pub struct PrintExportReport {
 pub fn export_print_package(molds: &MoldOutputs, dest_dir: &Path) -> Result<PrintExportReport> {
     std::fs::create_dir_all(dest_dir)
         .map_err(|e| EngineError::ExportPrint(format!("create {}: {e}", dest_dir.display())))?;
-    // Resolve the destination once (it exists now) so we can detect a file
-    // that's already in place — see `copy_into`.
-    let dest_canon = std::fs::canonicalize(dest_dir)
-        .map_err(|e| EngineError::ExportPrint(format!("resolve {}: {e}", dest_dir.display())))?;
-
     let mut stl_count = 0;
     for src in molds
         .mold_stls
@@ -52,14 +47,14 @@ pub fn export_print_package(molds: &MoldOutputs, dest_dir: &Path) -> Result<Prin
         .chain(&molds.plug_stls)
         .chain(&molds.accessory_stls)
     {
-        copy_into(src, dest_dir, &dest_canon)?;
+        copy_into(src, dest_dir)?;
         stl_count += 1;
     }
 
     // The procedure is a nicety, not load-bearing — copy it if the run
     // emitted one, but don't fail the export if it's missing.
     let procedure_copied = if molds.procedure_path.is_file() {
-        copy_into(&molds.procedure_path, dest_dir, &dest_canon)?;
+        copy_into(&molds.procedure_path, dest_dir)?;
         true
     } else {
         false
@@ -74,22 +69,26 @@ pub fn export_print_package(molds: &MoldOutputs, dest_dir: &Path) -> Result<Prin
     })
 }
 
-/// Copy `src` into `dest_dir` under its filename. If `src` is *already* the
-/// file at that destination (the user picked the folder the file lives in,
-/// e.g. the cast's own `stls/`), skip it — `std::fs::copy` of a file onto
-/// itself truncates it to zero bytes. `dest_canon` is the canonicalized
-/// `dest_dir`, so the comparison resolves symlinks (`/Users` vs
-/// `/System/Volumes/Data/Users` on macOS, …).
-fn copy_into(src: &Path, dest_dir: &Path, dest_canon: &Path) -> Result<()> {
+/// Copy `src` into `dest_dir` under its filename. Skips the copy when the
+/// destination already resolves to the same file as `src` — the user picked
+/// the folder the file lives in (e.g. the cast's own `stls/`), or a symlink
+/// at the destination points back at `src` — because `std::fs::copy` of a
+/// file onto itself truncates it to zero bytes. Both paths are canonicalized
+/// (resolving symlinks, `..`, and macOS `/Users` aliasing); `canonicalize` of
+/// the destination only succeeds if it already exists, so a not-yet-present
+/// destination simply copies.
+fn copy_into(src: &Path, dest_dir: &Path) -> Result<()> {
     let name = src.file_name().ok_or_else(|| {
         EngineError::ExportPrint(format!("source has no filename: {}", src.display()))
     })?;
-    if let Ok(src_canon) = std::fs::canonicalize(src) {
-        if src_canon == dest_canon.join(name) {
+    let dest = dest_dir.join(name);
+    if let (Ok(src_canon), Ok(dest_canon)) =
+        (std::fs::canonicalize(src), std::fs::canonicalize(&dest))
+    {
+        if src_canon == dest_canon {
             return Ok(()); // already in place — copying onto itself would zero it
         }
     }
-    let dest = dest_dir.join(name);
     std::fs::copy(src, &dest).map_err(|e| {
         EngineError::ExportPrint(format!("copy {} → {}: {e}", src.display(), dest.display()))
     })?;
