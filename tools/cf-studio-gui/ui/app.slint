@@ -24,10 +24,15 @@ export component AppWindow inherits Window {
     in property <string> viewed-title;
     in property <bool> can-back: false;
     in property <bool> can-next: true;
+    in property <string> step-message: "";
+    in property <bool> step-message-is-error: false;
 
     callback back();
     callback next();
     callback help();
+    callback pick-scan();
+    callback pick-prep();
+    callback pick-design();
 
     VerticalBox {
         padding: 28px;
@@ -50,18 +55,40 @@ export component AppWindow inherits Window {
             font-weight: 800;
         }
 
-        // ── body (per-step controls land here in later phases) ──
+        // ── body (per-step controls) ────────────────────────────
         Rectangle {
             background: #f3f4f6;
             border-radius: 14px;
             vertical-stretch: 1;
             VerticalBox {
                 alignment: center;
-                Text {
+                spacing: 16px;
+
+                if viewed-number == 1: Button {
+                    text: "Choose scan file…";
+                    clicked => { pick-scan(); }
+                }
+                if viewed-number == 2: Button {
+                    text: "Choose cleaned scan + prep…";
+                    clicked => { pick-prep(); }
+                }
+                if viewed-number == 3: Button {
+                    text: "Choose design file…";
+                    clicked => { pick-design(); }
+                }
+                if viewed-number >= 4: Text {
                     text: "“\{viewed-title}” — the controls for this step arrive next.";
                     horizontal-alignment: center;
                     font-size: 18px;
                     color: #666666;
+                    wrap: word-wrap;
+                }
+
+                if step-message != "": Text {
+                    text: step-message;
+                    horizontal-alignment: center;
+                    font-size: 17px;
+                    color: step-message-is-error ? #c62828 : #2e7d32;
                     wrap: word-wrap;
                 }
             }

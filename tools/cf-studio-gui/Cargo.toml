@@ -42,6 +42,9 @@ cf-studio-engine = { workspace = true }
 # brand-new to the workspace; isolated to this GUI crate so its heavy
 # tree never touches the headless spine/engine/CLI).
 slint = "1"
+# Native open/save file dialogs for the step screens (scan / prep /
+# design pickers). Direct dep; isolated to the GUI crate.
+rfd = "0.15"
 
 [build-dependencies]
 # Compiles the `.slint` markup at build time.
