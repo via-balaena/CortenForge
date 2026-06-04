@@ -45,8 +45,14 @@ jobs:
             os: ubuntu-latest
             asset: Cendrillon-linux-x86_64.tar.gz
             beta: true
+          # Native Intel runner, not cross-compiled on the arm64 `macos-latest`.
+          # The Manifold CSG C++/TBB deps build for the runner's host arch, so
+          # cross-compiling x86_64 on arm64 produced arm64 objects that the
+          # linker rejected ("found architecture 'arm64', required 'x86_64'").
+          # macos-13 is GitHub's last Intel image — stays beta so its eventual
+          # removal can't block a release.
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
             asset: Cendrillon-macos-x86_64.zip
             beta: true
           - target: aarch64-apple-darwin
@@ -80,8 +86,9 @@ jobs:
       # cut from already-green main. So the release does NOT re-run the whole
       # workspace test suite (slow stochastic-physics + cf-cast grade tests)
       # or build crates it doesn't ship; it builds exactly the one artifact
-      # it publishes. This also avoids running x86_64 test binaries on the
-      # arm64 macOS runner (the x86_64-apple-darwin leg cross-compiles).
+      # it publishes. Each target builds natively on its own runner (incl. the
+      # x86_64-apple-darwin leg on the macos-13 Intel image), so there is no
+      # cross-compilation here.
       # --locked: build the committed Cargo.lock exactly. The Windows build
       # depends on gpu-allocator being pinned to windows 0.62.2 (to match
       # wgpu-hal); without --locked a re-resolve could drag it back onto an
@@ -182,15 +189,21 @@ jobs:
       - name: Generate changelog from commits
         id: changelog
         run: |
-          # Get the previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          # Nearest version tag that is an ANCESTOR of this one (git describe
+          # walks ancestry, so a tag on a squash-merged side branch — not in
+          # this commit's history — is correctly skipped). `--match 'v[0-9]*'`
+          # keeps any non-version tag from being picked as the baseline.
+          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || echo "")
 
           if [ -z "$PREV_TAG" ]; then
-            # First release
-            COMMITS=$(git log --pretty=format:"- %s" HEAD)
+            # No ancestor tag (genuine first release, or earlier tags live on
+            # squash-merged branches outside this history). Do NOT fall back to
+            # `git log HEAD` — that dumps the entire repo history into the notes.
+            # A short note is the honest, readable result.
+            COMMITS="- Initial tagged release from this history."
           else
-            # Get commits since last tag
-            COMMITS=$(git log --pretty=format:"- %s" ${PREV_TAG}..HEAD)
+            # Commits since the previous ancestor tag.
+            COMMITS=$(git log --pretty=format:"- %s" "${PREV_TAG}..HEAD")
           fi
 
           # Categorize commits
@@ -263,21 +276,21 @@ jobs:
           body: |
             # CortenForge ${{ steps.version.outputs.version }}
 
-            ${{ needs.changelog.outputs.changelog }}
+            **Cendrillon** — the guided desktop app that takes a 3D scan all the
+            way to printable, silicone-cast molds, step by step — built on the
+            CortenForge SDK.
 
-            ## Download — Cendrillon
+            **⬇ Easiest install: [cortenforge.com](https://cortenforge.com)** — one-click downloads + setup steps.
 
-            The guided desktop app (scan → clean → design → molds → print → pour):
-
-            - **macOS, Apple Silicon** (tested): `Cendrillon-macos-arm64.zip`
-            - **macOS, Intel** (beta): `Cendrillon-macos-x86_64.zip`
-            - **Windows** (beta): `Cendrillon-windows-x86_64.zip`
-            - **Linux** (beta): `Cendrillon-linux-x86_64.tar.gz`
+            ## Download
+            - **macOS, Apple Silicon** (tested) — `Cendrillon-macos-arm64.zip`
+            - **macOS, Intel** (beta) — `Cendrillon-macos-x86_64.zip`
+            - **Windows** (beta) — `Cendrillon-windows-x86_64.zip`
+            - **Linux** (beta) — `Cendrillon-linux-x86_64.tar.gz`
 
             Beta builds may be missing if that platform didn't build for this tag.
 
-            ### First time you open it (it's unsigned for now)
-
+            ## First time you open it (unsigned for now)
             - **macOS** — unzip, drag `Cendrillon.app` to Applications, and
               double-click. macOS will say it can't verify the developer — open
               **System Settings → Privacy & Security**, scroll down, and click
@@ -289,20 +302,12 @@ jobs:
 
             Code-signing + notarization (a one-click launch) is a planned upgrade.
 
-            ## Verification
+            ## What's new
 
-            This release includes:
-            - **SBOM**: Software Bill of Materials in CycloneDX format
-            - All builds verified against A-grade quality standard
+            ${{ needs.changelog.outputs.changelog }}
 
-            ### Quality Metrics
-            - Test Coverage: ≥90%
-            - Zero Clippy warnings
-            - Zero documentation warnings
-            - Zero unwrap/expect in library code
-            - All Layer 0 crates are Bevy-free
-
-            See [STANDARDS.md](./docs/STANDARDS.md) for the full quality specification.
+            ---
+            SBOM (CycloneDX) attached. All builds meet the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
           files: |
             artifacts/*.cdx.json
             artifacts/Cendrillon-*
