@@ -213,27 +213,28 @@ jobs:
           REFACTORS=$(echo "$COMMITS" | grep "^- refactor" || true)
           OTHER=$(echo "$COMMITS" | grep -v "^- feat\|^- fix\|^- docs\|^- refactor" || true)
 
-          # Build changelog
+          # Build changelog. Category headers are h3 (###) so they nest under
+          # the release body's "## What's new" h2 instead of colliding with it.
           CHANGELOG=""
 
           if [ -n "$FEATURES" ]; then
-            CHANGELOG="${CHANGELOG}## Features\n\n${FEATURES}\n\n"
+            CHANGELOG="${CHANGELOG}### Features\n\n${FEATURES}\n\n"
           fi
 
           if [ -n "$FIXES" ]; then
-            CHANGELOG="${CHANGELOG}## Bug Fixes\n\n${FIXES}\n\n"
+            CHANGELOG="${CHANGELOG}### Bug Fixes\n\n${FIXES}\n\n"
           fi
 
           if [ -n "$DOCS" ]; then
-            CHANGELOG="${CHANGELOG}## Documentation\n\n${DOCS}\n\n"
+            CHANGELOG="${CHANGELOG}### Documentation\n\n${DOCS}\n\n"
           fi
 
           if [ -n "$REFACTORS" ]; then
-            CHANGELOG="${CHANGELOG}## Refactoring\n\n${REFACTORS}\n\n"
+            CHANGELOG="${CHANGELOG}### Refactoring\n\n${REFACTORS}\n\n"
           fi
 
           if [ -n "$OTHER" ]; then
-            CHANGELOG="${CHANGELOG}## Other Changes\n\n${OTHER}\n\n"
+            CHANGELOG="${CHANGELOG}### Other Changes\n\n${OTHER}\n\n"
           fi
 
           # Output for GitHub Actions
