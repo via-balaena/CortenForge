@@ -107,6 +107,10 @@ export component AppWindow inherits Window {
     // names for each layer's material picker.
     in property <[LayerRow]> layers;
     in property <[string]> material-names;
+    // Step 4: a persistent summary of the generated molds (piece counts,
+    // total silicone mass, pour plan, output folder). Empty until a run
+    // completes; survives leaving + returning to the step.
+    in property <string> molds-summary: "";
 
     callback back();
     callback next();
@@ -120,6 +124,9 @@ export component AppWindow inherits Window {
     callback set-layer-thickness(int, int);
     callback set-layer-slacker(int, int);
     callback use-design(int);
+    // Step 4: run the cast at a quality preset (0 = Standard 1.5 mm,
+    // 1 = Fine 0.5 mm). Long-running — driven async on a background thread.
+    callback make-molds(int);
     // Mouse-drag in the 3D view: (dx, dy) screen-pixel deltas → orbit.
     callback orbit(length, length);
     // Step-2 edit ops (drive the EditSession; each re-renders the view).
@@ -345,7 +352,48 @@ export component AppWindow inherits Window {
                         Button { text: "…or load a file"; clicked => { pick-design(); } }
                     }
                 }
-                if viewed-number >= 4: Text {
+                // Step 4 — make the printable mold pieces (runs the cast).
+                if viewed-number == 4: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    Text {
+                        text: "CortenForge builds the printable mold from your cleaned scan and silicone design. This runs the full cast — it can take several minutes, and the window stays responsive while it works.";
+                        horizontal-alignment: center;
+                        font-size: 16px;
+                        color: #444444;
+                        wrap: word-wrap;
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Text { text: "Quality"; vertical-alignment: center; color: #333333; }
+                        quality-combo := ComboBox {
+                            model: ["Standard — 1.5 mm", "Fine — 0.5 mm (slower)"];
+                            current-index: 0;
+                            enabled: !busy;
+                        }
+                        Button {
+                            text: busy ? "Making molds…" : "Make molds";
+                            primary: true;
+                            enabled: !busy;
+                            clicked => { make-molds(quality-combo.current-index); }
+                        }
+                    }
+                    if molds-summary != "": Rectangle {
+                        background: #eef3ee;
+                        border-radius: 10px;
+                        VerticalBox {
+                            padding: 14px;
+                            Text {
+                                text: molds-summary;
+                                font-size: 16px;
+                                color: #2e4d2e;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                if viewed-number >= 5: Text {
                     text: "“\{viewed-title}” — the controls for this step arrive next.";
                     horizontal-alignment: center;
                     font-size: 18px;
@@ -379,17 +427,20 @@ export component AppWindow inherits Window {
             spacing: 12px;
             Button {
                 text: "← Back";
-                enabled: can-back;
+                // Hold navigation while a background run (simplify / mold-gen)
+                // is in flight, so it can't be interrupted mid-flight.
+                enabled: can-back && !busy;
                 clicked => { back(); }
             }
             Rectangle { horizontal-stretch: 1; }
             Button {
                 text: "Help";
+                enabled: !busy;
                 clicked => { help(); }
             }
             Button {
                 text: "Next →";
-                enabled: can-next;
+                enabled: can-next && !busy;
                 primary: true;
                 clicked => { next(); }
             }

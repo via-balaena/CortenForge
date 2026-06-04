@@ -17,10 +17,12 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use cf_studio_core::{DesignDraft, LayerDraft, Project, Step};
-use cf_studio_engine::{EditSession, ReconstructShape, run_simplify, silicone_catalog};
+use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, Project, Step};
+use cf_studio_engine::{
+    EditSession, ReconstructShape, generate_molds_for_design, run_simplify, silicone_catalog,
+};
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
     StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, nav_state, step_rows,
@@ -434,6 +436,12 @@ type EditCell = Rc<RefCell<Option<EditSession>>>;
 /// the thread boundary.
 type SimplifyInbox = Arc<Mutex<Option<Result<(IndexedMesh, usize, f64), ()>>>>;
 
+/// Hand-off slot for an async mold-generation outcome: the [`MoldOutputs`]
+/// on success, or a user-facing error string (the engine error is
+/// `to_string`'d on the worker so only `Send` data crosses the boundary).
+/// The polling timer drains it on the UI thread.
+type MoldsInbox = Arc<Mutex<Option<Result<MoldOutputs, String>>>>;
+
 /// Scans carry no unit metadata; the workshop scanner exports millimeters,
 /// and the cast pipeline works in meters. (A units selector can override
 /// this later; mm is the base_mold default + the cf-scan-prep default.)
@@ -463,6 +471,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // a background thread — the polling timer below applies it on the UI
     // thread, keeping the window responsive during the ~10-40s decimation.
     let simplify_inbox: SimplifyInbox = Arc::new(Mutex::new(None));
+    // Inbox + start-time for an async mold-generation run (step 4). The run
+    // is minutes-long; the polling timer below shows an elapsed-time line
+    // while it works and applies the MoldOutputs when it lands.
+    let molds_inbox: MoldsInbox = Arc::new(Mutex::new(None));
+    let molds_start: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
 
     let ui = AppWindow::new()?;
     refresh(&ui, &project.borrow(), viewed.get());
@@ -511,6 +524,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             ui.set_step_message_is_error(true);
                         }
+                    }
+                }
+            },
+        );
+    }
+
+    // ── poll the async mold-generation inbox on the UI thread ──────
+    // Every tick: drain a finished run (apply it + complete step 4), else
+    // refresh the elapsed-time line so the user sees it's still working.
+    let molds_timer = slint::Timer::default();
+    {
+        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let (inbox, start) = (molds_inbox.clone(), molds_start.clone());
+        molds_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(200),
+            move || {
+                // 1. A finished run lands here.
+                if let Some(result) = inbox.lock().ok().and_then(|mut g| g.take()) {
+                    start.set(None);
+                    let Some(ui) = weak.upgrade() else { return };
+                    ui.set_busy(false);
+                    match result {
+                        Ok(outputs) => {
+                            let summary = format_molds_summary(&outputs);
+                            match project.borrow_mut().set_molds(outputs) {
+                                Ok(()) => {
+                                    ui.set_molds_summary(summary.into());
+                                    ui.set_step_message("✓ Molds ready — click Next →.".into());
+                                    ui.set_step_message_is_error(false);
+                                    refresh(&ui, &project.borrow(), viewed.get());
+                                }
+                                Err(e) => {
+                                    ui.set_step_message(
+                                        format!("Molds made, but couldn't record them: {e}").into(),
+                                    );
+                                    ui.set_step_message_is_error(true);
+                                }
+                            }
+                        }
+                        Err(msg) => {
+                            ui.set_step_message(format!("Mold generation failed: {msg}").into());
+                            ui.set_step_message_is_error(true);
+                        }
+                    }
+                    return;
+                }
+                // 2. A run is in flight — show elapsed time (whole seconds, so
+                // the property only changes ~1×/s even though we poll faster).
+                if let Some(t0) = start.get() {
+                    if let Some(ui) = weak.upgrade() {
+                        let secs = t0.elapsed().as_secs();
+                        ui.set_step_message(
+                            format!(
+                                "Making molds… {}:{:02} elapsed  \
+                                 (several minutes; the window stays responsive)",
+                                secs / 60,
+                                secs % 60,
+                            )
+                            .into(),
+                        );
+                        ui.set_step_message_is_error(false);
                     }
                 }
             },
@@ -1004,8 +1079,99 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ── step 4: make the molds (run the cast async) ─────────────
+    {
+        let (project, weak) = (project.clone(), weak.clone());
+        let (inbox, start) = (molds_inbox.clone(), molds_start.clone());
+        ui.on_make_molds(move |quality_idx| {
+            // Pull the inputs from the project: the cleaned scan + prep
+            // (step 2) and the in-app design (step 3). The wizard gate
+            // ensures both exist, but guard anyway.
+            let inputs = {
+                let p = project.borrow();
+                match (p.prep(), p.design()) {
+                    (Some(prep), Some(design)) => Some((
+                        prep.cleaned_stl.clone(),
+                        prep.prep_toml.clone(),
+                        design.clone(),
+                    )),
+                    _ => None,
+                }
+            };
+            let Some((cleaned_stl, prep_toml, draft)) = inputs else {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_step_message(
+                        "Finish steps 2 and 3 first (clean the scan, choose a design).".into(),
+                    );
+                    ui.set_step_message_is_error(true);
+                }
+                return;
+            };
+            // Quality → marching-cubes cell size. 1.5 mm is the workshop
+            // standard (3 mm drops the flange web); 0.5 mm is the slow finish.
+            let cell_size_m = if quality_idx == 1 { 0.0005 } else { 0.0015 };
+
+            if let Some(ui) = weak.upgrade() {
+                ui.set_busy(true);
+                ui.set_molds_summary(SharedString::default());
+                ui.set_step_message("Making molds… starting…".into());
+                ui.set_step_message_is_error(false);
+            }
+            start.set(Some(Instant::now()));
+            let inbox = inbox.clone();
+            std::thread::spawn(move || {
+                // catch_unwind so a panic in the cast still reports back —
+                // otherwise `busy` would stick and lock the UI.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    generate_molds_for_design(&cleaned_stl, &prep_toml, &draft, cell_size_m, None)
+                }));
+                let result = match outcome {
+                    Ok(Ok(o)) => Ok(o),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("internal error (panic) during mold generation".to_string()),
+                };
+                if let Ok(mut g) = inbox.lock() {
+                    *g = Some(result);
+                }
+            });
+        });
+    }
+
     ui.run()?;
     Ok(())
+}
+
+/// A human-readable summary of a completed mold run for the step-4 results
+/// panel: piece counts, total silicone, the per-layer pour list, and where
+/// the files landed.
+fn format_molds_summary(out: &MoldOutputs) -> String {
+    use std::fmt::Write as _;
+    let mut s = format!(
+        "✓ {} mold piece(s) + {} plug(s)",
+        out.mold_stls.len(),
+        out.plug_stls.len(),
+    );
+    if !out.accessory_stls.is_empty() {
+        let _ = write!(s, " + {} accessory part(s)", out.accessory_stls.len());
+    }
+    let _ = write!(
+        s,
+        "\nTotal silicone: {:.0} g across {} pour(s):",
+        out.total_mass_g,
+        out.pour_plan.steps.len(),
+    );
+    for step in &out.pour_plan.steps {
+        let _ = write!(
+            s,
+            "\n  • Layer {}: {} — {:.0} g (pot life ~{} min)",
+            step.layer_index + 1,
+            step.material_display_name,
+            step.mass_g,
+            step.pot_life_minutes,
+        );
+    }
+    let _ = write!(s, "\nSaved to: {}", out.out_dir.display());
+    s
 }
 
 /// After a step action: surface its message + re-render from the project.
