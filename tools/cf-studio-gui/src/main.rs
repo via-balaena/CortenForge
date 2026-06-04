@@ -776,7 +776,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Some(path) = scan_path.borrow().clone() else {
                 return;
             };
-            let output_dir = path
+            let default_dir = path
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."));
@@ -785,6 +785,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("scan")
                 .to_string();
+
+            // Don't silently clobber existing outputs: if they're already
+            // there, let the user overwrite, pick a different folder, or
+            // cancel.
+            let output_dir = {
+                let exists = default_dir.join(format!("{stem}.cleaned.stl")).exists()
+                    || default_dir.join(format!("{stem}.prep.toml")).exists();
+                if exists {
+                    let choice = rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Warning)
+                        .set_title("Output already exists")
+                        .set_description(format!(
+                            "{stem}.cleaned.stl / .prep.toml already exist in {}.\n\n\
+                             Overwrite them, or choose a different folder?",
+                            default_dir.display(),
+                        ))
+                        .set_buttons(rfd::MessageButtons::YesNoCancel)
+                        .show();
+                    match choice {
+                        rfd::MessageDialogResult::Yes => default_dir,
+                        rfd::MessageDialogResult::No => {
+                            match rfd::FileDialog::new()
+                                .set_title("Choose a folder to save the cleaned scan")
+                                .pick_folder()
+                            {
+                                Some(dir) => dir,
+                                None => {
+                                    if let Some(ui) = weak.upgrade() {
+                                        ui.set_step_message("Save cancelled.".into());
+                                        ui.set_step_message_is_error(false);
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                        _ => {
+                            if let Some(ui) = weak.upgrade() {
+                                ui.set_step_message("Save cancelled.".into());
+                                ui.set_step_message_is_error(false);
+                            }
+                            return;
+                        }
+                    }
+                } else {
+                    default_dir
+                }
+            };
             let smoothing = usize::try_from(smoothing).unwrap_or(0);
             let result = {
                 let guard = edit.borrow();
