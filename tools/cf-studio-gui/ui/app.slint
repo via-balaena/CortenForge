@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, SpinBox } from "std-widgets.slint";
 
 // One row of the workflow checklist, prepared for display by the Rust
 // side (mark/here are precomputed so the markup stays simple).
@@ -8,6 +8,55 @@ export struct StepRow {
     mark: string,    // "✓" if done, "○" otherwise
     here: string,    // "   ← you are here" on the project's current step, else ""
     viewing: bool,   // the step currently shown in the body
+}
+
+// The live 3D viewport: a wgpu-rendered Image (filled from Rust) with a
+// drag-to-orbit TouchArea and an optional placeholder hint. Reused by the
+// step-1 scan view and the step-2 editor.
+component ScanViewport inherits Rectangle {
+    in property <image> view;
+    in property <bool> show-hint;
+    in property <string> hint;
+    callback orbit(length, length);
+
+    vertical-stretch: 1;
+    // Low floor so the body yields room to the footer on short windows;
+    // it grows to fill on taller ones.
+    min-height: 150px;
+    background: #e9ebef;
+    border-radius: 10px;
+    clip: true;
+
+    Image {
+        source: view;
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+    }
+    if show-hint: Text {
+        text: hint;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: 17px;
+        color: #888888;
+        wrap: word-wrap;
+    }
+    TouchArea {
+        property <length> px;
+        property <length> py;
+        mouse-cursor: grab;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                self.px = self.mouse-x;
+                self.py = self.mouse-y;
+            }
+        }
+        moved => {
+            root.orbit(self.mouse-x - self.px, self.mouse-y - self.py);
+            self.px = self.mouse-x;
+            self.py = self.mouse-y;
+        }
+    }
 }
 
 export component AppWindow inherits Window {
@@ -28,19 +77,26 @@ export component AppWindow inherits Window {
     in property <bool> can-next: true;
     in property <string> step-message: "";
     in property <bool> step-message-is-error: false;
-    // The live 3D scan view (rendered by wgpu into a Slint Image) + whether
-    // a scan has been loaded yet (drives the placeholder hint).
+    // The live 3D view (rendered by wgpu into a Slint Image) + whether a
+    // scan has been loaded yet (drives the step-1 placeholder hint).
     in property <image> scan-view;
     in property <bool> has-scan: false;
+    // Step-2 editor: working-mesh stats line ("N faces · M vertices").
+    in property <string> edit-stats: "";
 
     callback back();
     callback next();
     callback help();
     callback pick-scan();
-    callback pick-prep();
     callback pick-design();
     // Mouse-drag in the 3D view: (dx, dy) screen-pixel deltas → orbit.
     callback orbit(length, length);
+    // Step-2 edit ops (drive the EditSession; each re-renders the view).
+    callback simplify(int);
+    callback weld();
+    callback auto-center();
+    callback auto-orient();
+    callback reset-edit();
 
     VerticalBox {
         padding: 28px;
@@ -72,58 +128,55 @@ export component AppWindow inherits Window {
                 alignment: center;
                 spacing: 16px;
 
+                // Step 1 — add the scan, see it live.
                 if viewed-number == 1: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
-                    // ── live 3D scan viewport (drag to orbit) ──
-                    Rectangle {
-                        vertical-stretch: 1;
-                        // Low floor so the body yields room to the footer on
-                        // short windows; it grows to fill on taller ones.
-                        min-height: 150px;
-                        background: #e9ebef;
-                        border-radius: 10px;
-                        clip: true;
-                        Image {
-                            source: scan-view;
-                            width: 100%;
-                            height: 100%;
-                            image-fit: contain;
-                        }
-                        if !has-scan: Text {
-                            text: "Choose a scan to see it here — then drag to spin it.";
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            font-size: 17px;
-                            color: #888888;
-                            wrap: word-wrap;
-                        }
-                        TouchArea {
-                            property <length> px;
-                            property <length> py;
-                            mouse-cursor: has-scan ? MouseCursor.grab : MouseCursor.default;
-                            pointer-event(e) => {
-                                if (e.kind == PointerEventKind.down) {
-                                    self.px = self.mouse-x;
-                                    self.py = self.mouse-y;
-                                }
-                            }
-                            moved => {
-                                root.orbit(self.mouse-x - self.px, self.mouse-y - self.py);
-                                self.px = self.mouse-x;
-                                self.py = self.mouse-y;
-                            }
-                        }
+                    ScanViewport {
+                        view: scan-view;
+                        show-hint: !has-scan;
+                        hint: "Choose a scan to see it here — then drag to spin it.";
+                        orbit(dx, dy) => { root.orbit(dx, dy); }
                     }
                     Button {
                         text: has-scan ? "Choose a different scan…" : "Choose scan file…";
                         clicked => { pick-scan(); }
                     }
                 }
-                if viewed-number == 2: Button {
-                    text: "Choose cleaned scan + prep…";
-                    clicked => { pick-prep(); }
+
+                // Step 2 — clean the scan, live, in the same viewport.
+                if viewed-number == 2: VerticalLayout {
+                    spacing: 12px;
+                    vertical-stretch: 1;
+                    ScanViewport {
+                        view: scan-view;
+                        show-hint: !has-scan;
+                        hint: "Add a scan in step 1 first.";
+                        orbit(dx, dy) => { root.orbit(dx, dy); }
+                    }
+                    Text {
+                        text: edit-stats;
+                        horizontal-alignment: center;
+                        font-size: 15px;
+                        color: #555555;
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Button { text: "Auto-center"; clicked => { auto-center(); } }
+                        Button { text: "Auto-orient"; clicked => { auto-orient(); } }
+                        Button { text: "Weld"; clicked => { weld(); } }
+                        Text { text: "Simplify to"; vertical-alignment: center; }
+                        target-spin := SpinBox {
+                            minimum: 1000;
+                            maximum: 1000000;
+                            value: 200000;
+                        }
+                        Button { text: "Simplify"; clicked => { simplify(target-spin.value); } }
+                        Button { text: "Reset"; clicked => { reset-edit(); } }
+                    }
                 }
+
                 if viewed-number == 3: Button {
                     text: "Choose design file…";
                     clicked => { pick-design(); }

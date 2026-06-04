@@ -62,6 +62,9 @@ rfd = "0.15"
 mesh-io = { workspace = true }
 nalgebra = { workspace = true }
 bytemuck = { version = "1", features = ["derive"] }
+# `IndexedMesh` — render the live working mesh the step-2 EditSession
+# mutates (converted to viewer vertices each edit). Bevy-free, L0.
+mesh-types = { workspace = true }
 
 [build-dependencies]
 # Compiles the `.slint` markup at build time.

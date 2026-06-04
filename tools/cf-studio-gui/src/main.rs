@@ -14,11 +14,13 @@ mod ui {
 }
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use cf_studio_core::{Project, Step};
-use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, load_mesh_data};
-use cf_studio_gui::{StepOutcome, apply_design, apply_prep, apply_scan, nav_state, step_rows};
+use cf_studio_engine::EditSession;
+use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
+use cf_studio_gui::{StepOutcome, apply_design, apply_scan, nav_state, step_rows};
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use ui::{AppWindow, StepRow};
@@ -195,6 +197,35 @@ impl Scene {
         }
     }
 
+    /// Swap in a new mesh (after a step-2 edit), recreating the vertex /
+    /// index buffers but PRESERVING the orbit angle. The target + framing
+    /// radius update, so edits that move the mesh (auto-center / orient)
+    /// re-center the view while in-place edits (weld / simplify) keep the
+    /// user's exact viewpoint.
+    fn set_mesh(&mut self, mesh: &MeshData) {
+        let vbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("verts"),
+            size: std::mem::size_of_val(mesh.vertices.as_slice()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&vbuf, 0, bytemuck::cast_slice(&mesh.vertices));
+        let ibuf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("indices"),
+            size: std::mem::size_of_val(mesh.indices.as_slice()) as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&ibuf, 0, bytemuck::cast_slice(&mesh.indices));
+        self.vbuf = vbuf;
+        self.ibuf = ibuf;
+        self.index_count = mesh.index_count();
+        self.radius = mesh.radius;
+        self.camera.target = mesh.center;
+    }
+
     /// Render the current camera into a fresh texture → Slint `Image`.
     fn render(&self) -> Result<slint::Image, String> {
         self.queue.write_buffer(
@@ -281,6 +312,14 @@ impl Scene {
 /// scan view can be built/re-rendered on demand later.
 type GpuHandles = Rc<RefCell<Option<(wgpu::Device, wgpu::Queue)>>>;
 
+/// The live step-2 scan-editing session (created when a scan is picked).
+type EditCell = Rc<RefCell<Option<EditSession>>>;
+
+/// Scans carry no unit metadata; the workshop scanner exports millimeters,
+/// and the cast pipeline works in meters. (A units selector can override
+/// this later; mm is the base_mold default + the cf-scan-prep default.)
+const SCAN_SCALE_TO_M: f64 = 0.001;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Bring up Slint on the wgpu-28 backend so the rendering notifier hands
     // us a device/queue we can render the scan view with.
@@ -296,6 +335,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GPU handles (filled at RenderingSetup) + the live scan scene.
     let gpu: GpuHandles = Rc::new(RefCell::new(None));
     let scene: Rc<RefCell<Option<Scene>>> = Rc::new(RefCell::new(None));
+    // The chosen scan file + the step-2 edit session over its mesh. The
+    // session is created at pick time and rendered on both step 1 (the
+    // scan) and step 2 (the same mesh, being cleaned).
+    let scan_path: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+    let edit: EditCell = Rc::new(RefCell::new(None));
 
     let ui = AppWindow::new()?;
     refresh(&ui, &project.borrow(), viewed.get());
@@ -346,10 +390,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Placeholder — a help panel / per-step guidance arrives later.
     });
 
-    // ── step 1: pick a scan → record it + build the live 3D view ──
+    // ── step 1: pick a scan → record it + open the live edit session ──
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
         let (gpu, scene) = (gpu.clone(), scene.clone());
+        let (scan_path, edit) = (scan_path.clone(), edit.clone());
         ui.on_pick_scan(move || {
             let Some(path) = rfd::FileDialog::new()
                 .set_title("Choose your 3D scan")
@@ -360,20 +405,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let outcome = apply_scan(&mut project.borrow_mut(), &path);
 
-            // On success, render the scan into the live viewport. The GPU
-            // handles are present once the window has rendered a frame.
+            // On success, open the edit session over the scan and render
+            // its working mesh. The same session + scene back step 1 (the
+            // scan) and step 2 (cleaning it). GPU handles are present once
+            // the window has rendered a frame.
             if outcome.is_ok() {
-                if let Some((device, queue)) = gpu.borrow().clone() {
-                    match load_mesh_data(&path) {
-                        Ok(mesh) => {
-                            let built = Scene::build(&device, &queue, &mesh);
+                *scan_path.borrow_mut() = Some(path.clone());
+                match EditSession::load(&path, SCAN_SCALE_TO_M) {
+                    Ok(session) => {
+                        if let Some((device, queue)) = gpu.borrow().clone() {
+                            let md = mesh_data_from_indexed(session.working());
+                            let built = Scene::build(&device, &queue, &md);
                             if let (Some(ui), Ok(img)) = (weak.upgrade(), built.render()) {
                                 ui.set_scan_view(img);
+                                ui.set_edit_stats(stats_line(&session).into());
                             }
                             *scene.borrow_mut() = Some(built);
                         }
-                        Err(e) => eprintln!("scan loaded but preview failed: {e}"),
+                        *edit.borrow_mut() = Some(session);
                     }
+                    Err(e) => eprintln!("scan loaded but edit session failed: {e}"),
                 }
             }
             update(&weak, &project, viewed.get(), &outcome);
@@ -395,26 +446,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ── step 2 / 3 pickers (unchanged) ──────────────────────────
+    // ── step 2: live edit ops (drive the EditSession, re-render) ──
     {
-        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
-        ui.on_pick_prep(move || {
-            let Some(cleaned) = rfd::FileDialog::new()
-                .set_title("Choose the cleaned scan (STL)")
-                .add_filter("STL", &["stl"])
-                .pick_file()
-            else {
-                return;
+        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        ui.on_weld(move || {
+            let msg = {
+                let mut e = edit.borrow_mut();
+                let Some(s) = e.as_mut() else { return };
+                let (before, after) = s.weld();
+                format!("✓ Welded vertices: {before} → {after}")
             };
-            let Some(prep) = rfd::FileDialog::new()
-                .set_title("Choose the .prep.toml")
-                .add_filter("prep", &["toml"])
-                .pick_file()
-            else {
-                return;
+            apply_edit(&weak, &scene, &edit, &msg);
+        });
+    }
+    {
+        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        ui.on_simplify(move |target| {
+            let msg = {
+                let mut e = edit.borrow_mut();
+                let Some(s) = e.as_mut() else { return };
+                let target = usize::try_from(target).unwrap_or(200_000);
+                let secs = s.simplify(target);
+                format!("✓ Simplified to {} faces ({secs:.1}s)", s.face_count())
             };
-            let outcome = apply_prep(&mut project.borrow_mut(), &cleaned, &prep);
-            update(&weak, &project, viewed.get(), &outcome);
+            apply_edit(&weak, &scene, &edit, &msg);
+        });
+    }
+    {
+        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        ui.on_auto_center(move || {
+            {
+                let mut e = edit.borrow_mut();
+                let Some(s) = e.as_mut() else { return };
+                s.auto_center();
+            }
+            apply_edit(&weak, &scene, &edit, "✓ Recentered to origin");
+        });
+    }
+    {
+        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        ui.on_auto_orient(move || {
+            let msg = {
+                let mut e = edit.borrow_mut();
+                let Some(s) = e.as_mut() else { return };
+                match s.auto_orient_pca() {
+                    Some(_) => "✓ Oriented to the cast frame",
+                    None => "Couldn't find a dominant axis to orient by",
+                }
+            };
+            apply_edit(&weak, &scene, &edit, msg);
+        });
+    }
+    {
+        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        ui.on_reset_edit(move || {
+            {
+                let mut e = edit.borrow_mut();
+                let Some(s) = e.as_mut() else { return };
+                s.reset();
+            }
+            apply_edit(&weak, &scene, &edit, "↺ Reset to the original scan");
         });
     }
     {
@@ -488,4 +579,45 @@ fn set_message(ui: &AppWindow, outcome: &StepOutcome) {
     };
     ui.set_step_message(text.into());
     ui.set_step_message_is_error(is_error);
+}
+
+/// The step-2 working-mesh stats line.
+fn stats_line(session: &EditSession) -> String {
+    format!(
+        "{} faces · {} vertices",
+        session.face_count(),
+        session.vertex_count()
+    )
+}
+
+/// After a step-2 edit: re-render the viewport from the session's working
+/// mesh (preserving the orbit angle), then surface the new stats + a
+/// result message.
+fn apply_edit(
+    weak: &slint::Weak<AppWindow>,
+    scene: &Rc<RefCell<Option<Scene>>>,
+    edit: &EditCell,
+    message: &str,
+) {
+    let eguard = edit.borrow();
+    let Some(session) = eguard.as_ref() else {
+        return;
+    };
+    let md = mesh_data_from_indexed(session.working());
+    let img = {
+        let mut sguard = scene.borrow_mut();
+        let Some(s) = sguard.as_mut() else {
+            return;
+        };
+        s.set_mesh(&md);
+        s.render()
+    };
+    if let Some(ui) = weak.upgrade() {
+        if let Ok(img) = img {
+            ui.set_scan_view(img);
+        }
+        ui.set_edit_stats(stats_line(session).into());
+        ui.set_step_message(message.into());
+        ui.set_step_message_is_error(false);
+    }
 }

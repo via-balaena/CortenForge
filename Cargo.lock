@@ -2439,8 +2439,12 @@ dependencies = [
  "cf-cast",
  "cf-cast-cli",
  "cf-device-types",
+ "cf-scan-prep-core",
  "cf-studio-core",
  "mesh-io",
+ "mesh-repair",
+ "mesh-types",
+ "nalgebra 0.34.2",
  "thiserror 2.0.18",
 ]
 
@@ -2452,6 +2456,7 @@ dependencies = [
  "cf-studio-core",
  "cf-studio-engine",
  "mesh-io",
+ "mesh-types",
  "nalgebra 0.34.2",
  "rfd",
  "slint",

@@ -79,6 +79,21 @@ pub fn load_mesh_data(path: &Path) -> Result<MeshData, String> {
     Ok(mesh_data_from_geometry(&positions, &mesh.faces))
 }
 
+/// Build render-ready [`MeshData`] from an in-memory [`IndexedMesh`] — the
+/// live working mesh the step-2 [`EditSession`] mutates. Re-derived after
+/// every edit so the viewport reflects the current state.
+///
+/// [`EditSession`]: cf_studio_engine::EditSession
+#[must_use]
+pub fn mesh_data_from_indexed(mesh: &mesh_types::IndexedMesh) -> MeshData {
+    let positions: Vec<[f32; 3]> = mesh
+        .vertices
+        .iter()
+        .map(|v| [v.x as f32, v.y as f32, v.z as f32])
+        .collect();
+    mesh_data_from_geometry(&positions, &mesh.faces)
+}
+
 /// Build render-ready [`MeshData`] from raw positions + triangle faces.
 /// Smooth (area-weighted) normals; bounding sphere from the AABB.
 ///
