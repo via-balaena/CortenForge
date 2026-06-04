@@ -238,6 +238,13 @@ export component AppWindow inherits Window {
                         enabled: !busy;
                         clicked => { pick-scan(); }
                     }
+                    Text {
+                        text: "💡 Leave the bottom open — scan it like it's on a lazy Susan and don't bother closing or capping the floor in your scanning software. CortenForge trims and rebuilds the floor for you in the next step.";
+                        horizontal-alignment: center;
+                        font-size: 13px;
+                        color: #777777;
+                        wrap: word-wrap;
+                    }
                 }
 
                 // Step 2 — clean the scan, live, in the same viewport.
