@@ -69,7 +69,12 @@ fn refresh(ui: &AppWindow, project: &Project, viewed_idx: usize) {
             number: r.number,
             title: r.title.into(),
             mark: if r.done { "✓" } else { "○" }.into(),
-            here: if r.current {
+            // "you are here" marks the screen being shown (the wizard
+            // cursor), not the project's internal current step — so the
+            // arrow and the highlighted title stay together as you
+            // navigate. (`r.current` is retained in the data for G2's
+            // Next-gating: you can't advance past the furthest real step.)
+            here: if r.viewing {
                 SharedString::from("   ← you are here")
             } else {
                 SharedString::default()
