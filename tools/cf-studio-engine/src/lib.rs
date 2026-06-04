@@ -22,6 +22,7 @@ pub mod error;
 pub mod mold;
 pub mod pour;
 pub mod prep;
+pub mod print;
 pub mod scan;
 
 pub use design::{
@@ -38,6 +39,7 @@ pub use mold::{generate_molds, generate_molds_for_design};
 pub use cf_cast_cli::CastConfig;
 pub use pour::{LayerPour, build_pour_plan};
 pub use prep::accept_prep;
+pub use print::{PrintExportReport, export_print_package};
 pub use scan::{LoadedScan, load_scan};
 
 // Re-export the spine so a frontend needs only this one crate to reach

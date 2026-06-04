@@ -80,4 +80,9 @@ pub enum EngineError {
     /// (non-finite transform, TOML serialization, or the atomic file write).
     #[error("could not save the cleaned scan: {0}")]
     Save(String),
+
+    /// Copying the printable files into the step-5 export folder failed
+    /// (the destination couldn't be created, or a file copy errored).
+    #[error("could not export the print files: {0}")]
+    ExportPrint(String),
 }
