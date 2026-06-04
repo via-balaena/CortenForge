@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_scan_prep_core::DetectedCapLoop;
+use cf_scan_prep_core::{AppliedReconstruct, DetectedCapLoop, ReconstructShape};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use nalgebra::{UnitQuaternion, Vector3};
@@ -67,6 +67,15 @@ pub struct EditSession {
     /// `[transform]` block at save. Persists across mesh edits (it's an
     /// orientation intent, not geometry); only `reset` clears it.
     reorient_rotation: UnitQuaternion<f64>,
+    /// Applied centerline trim at the tip end, in mm (0 = no trim). Like
+    /// reorient, trim is a DERIVED op: it chops the displayed/saved mesh
+    /// along the centerline, but never mutates `working`.
+    trim_tip_mm: f64,
+    /// Applied centerline trim at the floor end, in mm (0 = no trim).
+    trim_floor_mm: f64,
+    /// Applied floor reconstruction (closes the chopped floor with an
+    /// extruded profile), or `None` for a flat cap. Gated on a floor trim.
+    reconstruct: Option<AppliedReconstruct>,
 }
 
 /// Summary of a [`EditSession::detect_caps`] pass, for the frontend to
@@ -142,6 +151,9 @@ impl EditSession {
             cap_loops: Vec::new(),
             centerline: Vec::new(),
             reorient_rotation: UnitQuaternion::identity(),
+            trim_tip_mm: 0.0,
+            trim_floor_mm: 0.0,
+            reconstruct: None,
         }
     }
 
@@ -309,31 +321,172 @@ impl EditSession {
         if self.centerline.is_empty() {
             return None;
         }
-        let floor_normal = self.cap_loops.first()?.plane_normal.normalize();
+        let floor_normal = self.floor_normal()?;
         let rotation = floor_leveling_rotation(floor_normal)?;
         self.reorient_rotation = rotation;
         let tilt_deg = floor_normal.z.abs().clamp(0.0, 1.0).acos().to_degrees();
         Some(tilt_deg)
     }
 
-    /// The working mesh with the unbaked reorient rotation applied (pivoted
-    /// about the AABB centroid) — what the viewport should render. The
-    /// rotation is baked into the cleaned mesh only at save; this is
-    /// display-only. Returns a clone of `working` when no reorient is set.
+    /// The floor-plane normal to level by, in priority order (mirrors the
+    /// cf-scan-prep tool's `auto_level_to_floor`): (1) the reconstructed /
+    /// predicted-cut floor when a floor trim is applied — the plane the
+    /// device actually seats on; (2) failing that, the centerline tangent
+    /// at the predicted floor cut; (3) the raw detected cap-loop normal.
+    fn floor_normal(&self) -> Option<Vector3<f64>> {
+        // (1) the reconstructed floor plane (valid only with a floor trim).
+        if let Some(plane) = cf_scan_prep_core::compute_reconstructed_floor_plane_physics(
+            &self.centerline,
+            self.trim_tip_mm,
+            self.trim_floor_mm,
+        ) {
+            return Some(plane.normal.normalize());
+        }
+        // (2) the centerline tangent at the predicted floor cut.
+        if self.centerline.len() >= 2 && self.trim_floor_mm > 0.0 {
+            let total_m = cf_scan_prep_core::polyline_arc_length_m(&self.centerline);
+            let floor_cut_m = (total_m - self.trim_floor_mm * 0.001).max(0.0);
+            if let Some((_, tangent)) = cf_scan_prep_core::point_along_polyline_at_arc_distance(
+                &self.centerline,
+                floor_cut_m,
+            ) {
+                return Some(tangent.normalize());
+            }
+        }
+        // (3) the raw detected cap-loop normal.
+        self.cap_loops.first().map(|l| l.plane_normal.normalize())
+    }
+
+    /// Applied tip-end centerline trim, mm (0 = none).
     #[must_use]
-    pub fn display_mesh(&self) -> IndexedMesh {
-        if self.reorient_rotation == UnitQuaternion::identity() {
+    pub fn trim_tip_mm(&self) -> f64 {
+        self.trim_tip_mm
+    }
+
+    /// Applied floor-end centerline trim, mm (0 = none).
+    #[must_use]
+    pub fn trim_floor_mm(&self) -> f64 {
+        self.trim_floor_mm
+    }
+
+    /// The applied floor reconstruction, if any.
+    #[must_use]
+    pub fn reconstruct(&self) -> Option<AppliedReconstruct> {
+        self.reconstruct
+    }
+
+    /// Whether floor reconstruction is available — it needs a committed
+    /// floor trim to reconstruct down to.
+    #[must_use]
+    pub fn reconstruct_available(&self) -> bool {
+        self.trim_floor_mm > 0.0
+    }
+
+    /// Set the applied centerline trim (mm from each end; negatives clamp
+    /// to 0). Trim is a derived op — it chops the displayed/saved mesh
+    /// along the centerline, never `working`. Changing the floor trim
+    /// drops any reconstruction (it was fit to the old cut) — the
+    /// directional-workflow trip-wire from the Bevy tool.
+    pub fn apply_trim(&mut self, tip_mm: f64, floor_mm: f64) {
+        let floor_mm = floor_mm.max(0.0);
+        if (floor_mm - self.trim_floor_mm).abs() > f64::EPSILON {
+            self.reconstruct = None;
+        }
+        self.trim_tip_mm = tip_mm.max(0.0);
+        self.trim_floor_mm = floor_mm;
+    }
+
+    /// Clear the trim (and any reconstruction).
+    pub fn clear_trim(&mut self) {
+        self.trim_tip_mm = 0.0;
+        self.trim_floor_mm = 0.0;
+        self.reconstruct = None;
+    }
+
+    /// Apply floor reconstruction (`reference_mm` = the zone above the cut
+    /// to sample the cross-section from; `shape` = constant/taper/
+    /// extrapolate). No-op returning `false` if there's no floor trim to
+    /// reconstruct down to.
+    pub fn apply_reconstruct(&mut self, reference_mm: f64, shape: ReconstructShape) -> bool {
+        if !self.reconstruct_available() {
+            return false;
+        }
+        self.reconstruct = Some(AppliedReconstruct {
+            reference_mm: reference_mm.max(0.0),
+            shape,
+        });
+        true
+    }
+
+    /// Drop the floor reconstruction (revert to a flat cap).
+    pub fn clear_reconstruct(&mut self) {
+        self.reconstruct = None;
+    }
+
+    /// The working mesh with the derived ops applied — centerline trim +
+    /// floor reconstruction (or flat cap of the cut) — but NOT the reorient
+    /// (that's display-only, applied by [`display_mesh`]). Mirrors the
+    /// cf-scan-prep tool's trim → weld → reconstruct/auto-cap composition.
+    /// Returns a clone of `working` when no trim is applied (or there's no
+    /// centerline to trim along).
+    ///
+    /// [`display_mesh`]: Self::display_mesh
+    #[must_use]
+    fn processed_mesh(&self) -> IndexedMesh {
+        if self.centerline.len() < 2 || (self.trim_tip_mm <= 0.0 && self.trim_floor_mm <= 0.0) {
             return self.working.clone();
         }
-        let centroid = self.working.aabb().center();
-        let mut out = self.working.clone();
-        for v in &mut out.vertices {
-            *v = cf_scan_prep_core::bake_vertex_with_pivot(
-                v,
-                self.reorient_rotation,
-                &centroid,
-                Vector3::zeros(),
-            );
+        let mut trimmed = cf_scan_prep_core::trim_mesh_along_centerline(
+            &self.working,
+            &self.centerline,
+            self.trim_tip_mm,
+            self.trim_floor_mm,
+        );
+        // Weld the cut boundary's duplicate intersection vertices so the cut
+        // forms ONE closed loop (not per-edge fragments) — the same fix the
+        // Bevy tool applies before reconstruct / auto-cap.
+        weld_vertices(&mut trimmed, WELD_EPSILON_M);
+        match self.reconstruct {
+            Some(ar) if self.trim_floor_mm > 0.0 => {
+                let trimmed_centerline = cf_scan_prep_core::trim_centerline_polyline(
+                    &self.centerline,
+                    self.trim_tip_mm,
+                    self.trim_floor_mm,
+                );
+                cf_scan_prep_core::apply_reconstruction(
+                    trimmed,
+                    &trimmed_centerline,
+                    self.trim_floor_mm,
+                    ar.reference_mm,
+                    ar.shape,
+                )
+            }
+            _ => {
+                cf_scan_prep_core::auto_cap_open_boundaries(&mut trimmed);
+                trimmed
+            }
+        }
+    }
+
+    /// What the viewport should render: the processed mesh (trim +
+    /// reconstruct) with the unbaked reorient applied, pivoted about the
+    /// UN-trimmed working centroid — the exact pivot the save bake
+    /// (`build_cleaned_mesh`) uses, so display == what gets written. The
+    /// reorient is baked into the cleaned mesh only at save; this is
+    /// display-only.
+    #[must_use]
+    pub fn display_mesh(&self) -> IndexedMesh {
+        let mut out = self.processed_mesh();
+        if self.reorient_rotation != UnitQuaternion::identity() {
+            let pivot = self.working.aabb().center();
+            for v in &mut out.vertices {
+                *v = cf_scan_prep_core::bake_vertex_with_pivot(
+                    v,
+                    self.reorient_rotation,
+                    &pivot,
+                    Vector3::zeros(),
+                );
+            }
         }
         out
     }
@@ -347,6 +500,9 @@ impl EditSession {
         self.auto_center_offset_m = Vector3::zeros();
         self.auto_pca_quat = None;
         self.reorient_rotation = UnitQuaternion::identity();
+        self.trim_tip_mm = 0.0;
+        self.trim_floor_mm = 0.0;
+        self.reconstruct = None;
         self.clear_caps();
     }
 
@@ -723,5 +879,72 @@ mod tests {
             s.working().vertices,
             "display is rotated after leveling",
         );
+    }
+
+    #[test]
+    fn apply_trim_changes_the_displayed_mesh() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        assert!(s.has_centerline());
+        let before = s.working().faces.len();
+        s.apply_trim(0.0, 300.0); // chop 300 mm off the ~1 m-tall tube's floor
+        assert_ne!(
+            s.display_mesh().faces.len(),
+            before,
+            "the floor trim chopped (+ re-capped) the mesh",
+        );
+    }
+
+    #[test]
+    fn reconstruct_needs_a_floor_trim() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        assert!(
+            !s.apply_reconstruct(25.0, ReconstructShape::Constant),
+            "no floor trim → reconstruct unavailable",
+        );
+        s.apply_trim(0.0, 200.0);
+        assert!(
+            s.apply_reconstruct(25.0, ReconstructShape::Constant),
+            "floor trim → reconstruct available",
+        );
+        assert!(s.reconstruct().is_some());
+    }
+
+    #[test]
+    fn changing_the_floor_trim_drops_reconstruct() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        s.apply_trim(0.0, 200.0);
+        s.apply_reconstruct(25.0, ReconstructShape::Taper);
+        assert!(s.reconstruct().is_some());
+        s.apply_trim(0.0, 250.0); // floor cut moved → old reconstruction is stale
+        assert!(
+            s.reconstruct().is_none(),
+            "moving the floor cut drops the now-stale reconstruction",
+        );
+    }
+
+    #[test]
+    fn reset_clears_trim_and_reconstruct() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        s.apply_trim(10.0, 200.0);
+        s.apply_reconstruct(25.0, ReconstructShape::Constant);
+        s.reset();
+        assert_eq!(s.trim_tip_mm(), 0.0);
+        assert_eq!(s.trim_floor_mm(), 0.0);
+        assert!(s.reconstruct().is_none());
+    }
+
+    #[test]
+    fn level_to_floor_uses_the_trim_floor() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        s.apply_trim(0.0, 200.0);
+        // With a floor trim, leveling uses the predicted/reconstructed cut
+        // floor (not the raw cap) — still returns a tilt + sets the reorient.
+        assert!(s.level_to_floor().is_some());
+        assert_ne!(s.reorient_rotation(), UnitQuaternion::identity());
     }
 }
