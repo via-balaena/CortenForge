@@ -523,12 +523,14 @@ export component AppWindow inherits Window {
                         alignment: center;
                         spacing: 8px;
                         Button {
-                            text: has-print-export ? "Save again…" : "Save files for printing…";
+                            text: busy ? "Saving…" : (has-print-export ? "Save again…" : "Save files for printing…");
                             primary: true;
+                            enabled: !busy;
                             clicked => { export-print(); }
                         }
                         if has-print-export: Button {
                             text: "Open folder";
+                            enabled: !busy;
                             clicked => { open-export-folder(); }
                         }
                     }

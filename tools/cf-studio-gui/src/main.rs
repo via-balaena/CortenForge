@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, Step};
 use cf_studio_engine::{
-    EditSession, ReconstructShape, export_print_package, generate_molds_for_design, run_simplify,
-    silicone_catalog,
+    EditSession, PrintExportReport, ReconstructShape, export_print_package,
+    generate_molds_for_design, run_simplify, silicone_catalog,
 };
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
@@ -445,6 +445,11 @@ type SimplifyInbox = Arc<Mutex<Option<Result<(IndexedMesh, usize, f64), ()>>>>;
 /// The polling timer drains it on the UI thread.
 type MoldsInbox = Arc<Mutex<Option<Result<MoldOutputs, String>>>>;
 
+/// Hand-off slot for an async print-export outcome (the file copy can be
+/// hundreds of MB at 0.5 mm, which would freeze the UI thread). Holds the
+/// [`PrintExportReport`] on success or a user-facing error string.
+type PrintInbox = Arc<Mutex<Option<Result<PrintExportReport, String>>>>;
+
 /// Scans carry no unit metadata; the workshop scanner exports millimeters,
 /// and the cast pipeline works in meters. (A units selector can override
 /// this later; mm is the base_mold default + the cf-scan-prep default.)
@@ -479,6 +484,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // while it works and applies the MoldOutputs when it lands.
     let molds_inbox: MoldsInbox = Arc::new(Mutex::new(None));
     let molds_start: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
+    // Step-5 print-export runs on a background thread too (the copy can be
+    // hundreds of MB); the polling timer applies the result.
+    let print_inbox: PrintInbox = Arc::new(Mutex::new(None));
     // Step-6 pour assistant: which layer is being poured (0-based, session
     // state — not persisted in the Project, which only records the final
     // completion) + the running pot-life countdown's deadline (None = no
@@ -633,6 +641,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cd = pour_countdown(remaining);
                 ui.set_pour_timer_text(cd.text.into());
                 ui.set_pour_timer_urgency(cd.urgency);
+            },
+        );
+    }
+
+    // ── poll the async print-export inbox on the UI thread ─────────
+    let print_timer = slint::Timer::default();
+    {
+        let (project, viewed, weak, inbox) = (
+            project.clone(),
+            viewed.clone(),
+            weak.clone(),
+            print_inbox.clone(),
+        );
+        print_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(150),
+            move || {
+                let Some(result) = inbox.lock().ok().and_then(|mut g| g.take()) else {
+                    return;
+                };
+                let Some(ui) = weak.upgrade() else { return };
+                ui.set_busy(false);
+                let (text, is_err) = match result {
+                    Ok(report) => {
+                        let dest = report.export.export_dir.clone();
+                        let stl_count = report.stl_count;
+                        let guide = if report.procedure_copied { " + the guide" } else { "" };
+                        // Bind so the borrow_mut RefMut drops before refresh's borrow.
+                        let recorded = project.borrow_mut().set_print(report.export);
+                        match recorded {
+                            Ok(()) => {
+                                reveal_in_file_manager(&dest);
+                                (
+                                    format!(
+                                        "✓ Saved {stl_count} file(s){guide} to {} — opening it now. \
+                                         Print each piece, then click Next →.",
+                                        dest.display(),
+                                    ),
+                                    false,
+                                )
+                            }
+                            Err(e) => (format!("Copied the files, but couldn't record: {e}"), true),
+                        }
+                    }
+                    Err(msg) => (format!("Couldn't save the files: {msg}"), true),
+                };
+                ui.set_step_message(text.into());
+                ui.set_step_message_is_error(is_err);
+                refresh(&ui, &project.borrow(), viewed.get());
             },
         );
     }
@@ -1195,7 +1252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── step 5: save the printable files into a chosen folder ───
     {
-        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let (project, weak, inbox) = (project.clone(), weak.clone(), print_inbox.clone());
         ui.on_export_print(move || {
             // The molds must be made (the wizard gate ensures it on step 5).
             let Some(molds) = project.borrow().molds().cloned() else {
@@ -1211,41 +1268,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             else {
                 return; // cancelled
             };
-            // Copy is a few seconds even at 0.5 mm (hundreds of MB on SSD);
-            // run inline — far short of the cast's minutes.
-            let (text, is_err) = match export_print_package(&molds, &dest) {
-                Ok(report) => {
-                    // Bind so the borrow_mut RefMut drops before refresh's
-                    // project.borrow() below (the match-scrutinee footgun).
-                    let recorded = project.borrow_mut().set_print(report.export);
-                    match recorded {
-                        Ok(()) => {
-                            reveal_in_file_manager(&dest);
-                            let guide = if report.procedure_copied {
-                                " + the guide"
-                            } else {
-                                ""
-                            };
-                            (
-                                format!(
-                                    "✓ Saved {} file(s){guide} to {} — opening it now. \
-                                     Print each piece, then click Next →.",
-                                    report.stl_count,
-                                    dest.display(),
-                                ),
-                                false,
-                            )
-                        }
-                        Err(e) => (format!("Copied the files, but couldn't record: {e}"), true),
-                    }
-                }
-                Err(e) => (format!("{e}"), true),
-            };
+            // The copy can be hundreds of MB at 0.5 mm — run it off the UI
+            // thread so the window doesn't freeze; the print timer applies the
+            // result. busy gates Save/Back/Next for the duration.
             if let Some(ui) = weak.upgrade() {
-                ui.set_step_message(text.into());
-                ui.set_step_message_is_error(is_err);
-                refresh(&ui, &project.borrow(), viewed.get());
+                ui.set_busy(true);
+                ui.set_step_message("Saving the printable files…".into());
+                ui.set_step_message_is_error(false);
             }
+            let inbox = inbox.clone();
+            std::thread::spawn(move || {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    export_print_package(&molds, &dest)
+                }));
+                let result = match outcome {
+                    Ok(Ok(r)) => Ok(r),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("internal error (panic) during export".to_string()),
+                };
+                if let Ok(mut g) = inbox.lock() {
+                    *g = Some(result);
+                }
+            });
         });
     }
     {
