@@ -2434,8 +2434,11 @@ dependencies = [
 name = "cf-studio-gui"
 version = "1.0.0"
 dependencies = [
+ "bytemuck",
  "cf-studio-core",
  "cf-studio-engine",
+ "mesh-io",
+ "nalgebra 0.34.2",
  "rfd",
  "slint",
  "slint-build",

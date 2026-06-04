@@ -54,6 +54,11 @@ slint = { version = "1", features = ["unstable-wgpu-28"] }
 # Native open/save file dialogs for the step screens (scan / prep /
 # design pickers). Direct dep; isolated to the GUI crate.
 rfd = "0.15"
+# 3D scan/mold viewer (spike + the live preview): load meshes, do the
+# camera/normal math, and cast vertex/uniform data to GPU bytes.
+mesh-io = { workspace = true }
+nalgebra = { workspace = true }
+bytemuck = { version = "1", features = ["derive"] }
 
 [build-dependencies]
 # Compiles the `.slint` markup at build time.
