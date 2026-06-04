@@ -25,12 +25,12 @@ component ScanViewport inherits Rectangle {
     in property <image> view;
     in property <bool> show-hint;
     in property <string> hint;
+    // Fixed height (overridden per step) — the body is scrollable, where a
+    // stretchy viewport would collapse to nothing.
+    in property <length> view-height: 300px;
     callback orbit(length, length);
 
-    vertical-stretch: 1;
-    // Low floor so the body yields room to the footer on short windows;
-    // it grows to fill on taller ones.
-    min-height: 150px;
+    height: root.view-height;
     background: #e9ebef;
     border-radius: 10px;
     clip: true;
@@ -214,13 +214,17 @@ export component AppWindow inherits Window {
             font-weight: 800;
         }
 
-        // ── body (per-step controls) ────────────────────────────
+        // ── body (per-step controls) — scrollable so the checklist +
+        // footer (Back/Next) stay fixed and always reachable ──────
         Rectangle {
             background: #f3f4f6;
             border-radius: 14px;
             vertical-stretch: 1;
+            clip: true;
+            body-scroll := ScrollView {
             VerticalBox {
-                alignment: center;
+                width: body-scroll.visible-width;
+                padding: 18px;
                 spacing: 16px;
 
                 // Step 1 — add the scan, see it live.
@@ -229,6 +233,7 @@ export component AppWindow inherits Window {
                     vertical-stretch: 1;
                     ScanViewport {
                         view: scan-view;
+                        view-height: 360px;
                         show-hint: !has-scan;
                         hint: "Choose a scan to see it here — then drag to spin it.";
                         orbit(dx, dy) => { root.orbit(dx, dy); }
@@ -257,6 +262,7 @@ export component AppWindow inherits Window {
                     vertical-stretch: 1;
                     ScanViewport {
                         view: scan-view;
+                        view-height: 240px;
                         show-hint: !has-scan;
                         hint: "Add a scan in step 1 first.";
                         orbit(dx, dy) => { root.orbit(dx, dy); }
@@ -603,6 +609,7 @@ export component AppWindow inherits Window {
                     color: step-message-is-error ? #c62828 : #2e7d32;
                     wrap: word-wrap;
                 }
+            }
             }
         }
 
