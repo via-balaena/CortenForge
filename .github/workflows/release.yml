@@ -31,16 +31,23 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
+      # Don't cancel the other platforms if one leg fails — a beta
+      # (Windows/Linux) hiccup shouldn't drop the verified macOS asset.
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            asset: CortenForge-Studio-linux-x86_64.tar.gz
           - target: x86_64-apple-darwin
             os: macos-latest
+            asset: CortenForge-Studio-macos-x86_64.zip
           - target: aarch64-apple-darwin
             os: macos-latest
+            asset: CortenForge-Studio-macos-arm64.zip
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            asset: CortenForge-Studio-windows-x86_64.zip
 
     steps:
       - uses: actions/checkout@v6
@@ -58,6 +65,45 @@ jobs:
 
       - name: Run tests
         run: cargo test --release --target ${{ matrix.target }}
+
+      # ── package CortenForge Studio (the guided GUI) as a download ──
+      - name: Build CortenForge Studio
+        run: cargo build --release -p cf-studio-gui --target ${{ matrix.target }}
+
+      - name: Package Studio (macOS .app)
+        if: runner.os == 'macOS'
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          app="CortenForge Studio.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp "target/${{ matrix.target }}/release/cf-studio-gui" "$app/Contents/MacOS/"
+          chmod +x "$app/Contents/MacOS/cf-studio-gui"
+          sed "s/__VERSION__/${version}/g" tools/cf-studio-gui/macos/Info.plist \
+            > "$app/Contents/Info.plist"
+          mkdir -p dist
+          # ditto preserves the bundle layout + executable bit in the zip.
+          ditto -c -k --keepParent "$app" "dist/${{ matrix.asset }}"
+
+      - name: Package Studio (Linux tar.gz)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          tar czf "dist/${{ matrix.asset }}" -C "target/${{ matrix.target }}/release" cf-studio-gui
+
+      - name: Package Studio (Windows zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Force `
+            -Path "target/${{ matrix.target }}/release/cf-studio-gui.exe" `
+            -DestinationPath "dist/${{ matrix.asset }}"
+
+      - name: Upload Studio artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: studio-${{ matrix.target }}
+          path: dist/${{ matrix.asset }}
 
   # ============================================================================
   # GENERATE SBOM
@@ -165,6 +211,13 @@ jobs:
           name: sbom
           path: ./artifacts
 
+      - name: Download Studio downloads
+        uses: actions/download-artifact@v7
+        with:
+          pattern: studio-*
+          merge-multiple: true
+          path: ./artifacts
+
       - name: Extract version
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
@@ -177,6 +230,19 @@ jobs:
             # CortenForge ${{ steps.version.outputs.version }}
 
             ${{ needs.changelog.outputs.changelog }}
+
+            ## Download — CortenForge Studio
+
+            The guided desktop app (scan → clean → design → molds → print → pour):
+
+            - **macOS** (tested): `CortenForge-Studio-macos-arm64.zip` (Apple Silicon)
+              or `-macos-x86_64.zip` (Intel). First launch: right-click the app →
+              **Open** (unsigned during the beta — Gatekeeper asks once).
+            - **Windows** (beta): `CortenForge-Studio-windows-x86_64.zip`. Unblock
+              via *More info → Run anyway* if SmartScreen warns.
+            - **Linux** (beta): `CortenForge-Studio-linux-x86_64.tar.gz`.
+
+            Builds are not yet code-signed; that's a planned upgrade.
 
             ## Verification
 
@@ -195,6 +261,7 @@ jobs:
           files: |
             artifacts/sbom.cdx.json
             artifacts/sbom.cdx.xml
+            artifacts/CortenForge-Studio-*
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:
