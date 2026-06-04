@@ -89,6 +89,11 @@ jobs:
           chmod +x "$app/Contents/MacOS/cf-studio-gui"
           sed "s/__VERSION__/${version}/g" tools/cf-studio-gui/macos/Info.plist \
             > "$app/Contents/Info.plist"
+          # Ad-hoc sign the bundle (best-effort, free). Doesn't satisfy
+          # Gatekeeper — users still approve once via "Open Anyway" — but it
+          # avoids the scarier "app is damaged and can't be opened" error a
+          # bundle with no signature can trigger on Apple Silicon.
+          codesign --force --deep --sign - "$app" || true
           mkdir -p dist
           # ditto preserves the bundle layout + executable bit in the zip.
           ditto -c -k --keepParent "$app" "dist/${{ matrix.asset }}"
@@ -244,18 +249,25 @@ jobs:
 
             The guided desktop app (scan → clean → design → molds → print → pour):
 
-            - **macOS, Apple Silicon** (tested): `Cendrillon-macos-arm64.zip`.
-              First launch: right-click the app → **Open** (unsigned during the
-              beta — Gatekeeper asks once).
-            - **macOS, Intel** (beta): `Cendrillon-macos-x86_64.zip` — same
-              right-click → Open.
-            - **Windows** (beta): `Cendrillon-windows-x86_64.zip`. Unblock
-              via *More info → Run anyway* if SmartScreen warns.
-            - **Linux** (beta): `Cendrillon-linux-x86_64.tar.gz`.
+            - **macOS, Apple Silicon** (tested): `Cendrillon-macos-arm64.zip`
+            - **macOS, Intel** (beta): `Cendrillon-macos-x86_64.zip`
+            - **Windows** (beta): `Cendrillon-windows-x86_64.zip`
+            - **Linux** (beta): `Cendrillon-linux-x86_64.tar.gz`
 
             Beta builds may be missing if that platform didn't build for this tag.
 
-            Builds are not yet code-signed; that's a planned upgrade.
+            ### First time you open it (it's unsigned for now)
+
+            - **macOS** — unzip, drag `Cendrillon.app` to Applications, and
+              double-click. macOS will say it can't verify the developer — open
+              **System Settings → Privacy & Security**, scroll down, and click
+              **Open Anyway**, then open it again. You only do this once.
+            - **Windows** — unzip and run `cf-studio-gui.exe`. If SmartScreen
+              warns, click **More info → Run anyway**.
+            - **Linux** — `tar xzf` and run the `cf-studio-gui` binary (needs a
+              working Vulkan/GL driver).
+
+            Code-signing + notarization (a one-click launch) is a planned upgrade.
 
             ## Verification
 
