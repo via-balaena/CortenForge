@@ -334,20 +334,16 @@ mod tests {
         assert!(matches!(err, EngineError::MoldGen(_)), "got: {err:?}");
     }
 
-    /// The wizard mold-gen path (for_design recipe) on the real base_mold
-    /// at Standard 1.5 mm — the GUI's default quality (~minutes, much faster
-    /// than the 0.5 mm finish). Verifies the for_design recipe actually casts
-    /// (planar seam + apex pour + plug pins, canal off = the validated
-    /// canaloff recipe). Writes base_mold.design.toml next to the scan (same
-    /// content the wizard already wrote) and casts to a throwaway dir.
-    /// Run: `cargo test -p cf-studio-engine -- --ignored for_design_casts`.
-    #[test]
-    #[ignore = "integration: ~minutes, needs ~/scans/base_mold files"]
-    fn generate_molds_for_design_casts_base_mold_at_standard() {
+    /// Drive the wizard mold-gen path (for_design recipe) on the real
+    /// base_mold at `cell_size_m`, into a throwaway dir, and assert it casts
+    /// (6 mold halves + 3 plugs + 3-step pour plan). Shared by the per-
+    /// resolution integration tests. Uses the in-app stack the GUI defaults
+    /// to (whole-mm 18 / 7 / 5) and writes base_mold.design.toml next to the
+    /// scan (same content the wizard already wrote).
+    fn cast_real_base_mold_via_wizard(cell_size_m: f64, out_name: &str) {
         let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
         let cleaned = scans.join("base_mold.cleaned.stl");
         let prep = scans.join("base_mold.prep.toml");
-        // The in-app stack the GUI defaults to (whole-mm: 18 / 7 / 5).
         let draft = DesignDraft {
             cavity_inset_m: 0.005,
             layers: vec![
@@ -373,8 +369,8 @@ mod tests {
             &cleaned,
             &prep,
             &draft,
-            0.0015,
-            Some(Path::new("cast_base_mold_studio_verify_1p5")),
+            cell_size_m,
+            Some(Path::new(out_name)),
         )
         .unwrap();
 
@@ -383,7 +379,25 @@ mod tests {
         assert_eq!(out.pour_plan.steps.len(), 3);
         assert!(out.total_mass_g > 0.0);
 
-        let _ = std::fs::remove_dir_all(scans.join("cast_base_mold_studio_verify_1p5"));
+        let _ = std::fs::remove_dir_all(scans.join(out_name));
+    }
+
+    /// Fine 0.5 mm — the GUI **default** (print quality; the physical
+    /// fit-test print was 0.5 mm). Confirms the for_design recipe casts
+    /// canal-*off* at 0.5 mm (only canal-*on* @0.5 mm was previously
+    /// validated). Slow ~15 min. Run:
+    /// `cargo test -p cf-studio-engine -- --ignored for_design_casts`.
+    #[test]
+    #[ignore = "integration: ~15 min, needs ~/scans/base_mold files"]
+    fn generate_molds_for_design_casts_base_mold_at_fine() {
+        cast_real_base_mold_via_wizard(0.0005, "cast_base_mold_studio_verify_0p5");
+    }
+
+    /// Fast 1.5 mm preview — much quicker (~minutes) than the 0.5 mm finish.
+    #[test]
+    #[ignore = "integration: ~minutes, needs ~/scans/base_mold files"]
+    fn generate_molds_for_design_casts_base_mold_at_fast() {
+        cast_real_base_mold_via_wizard(0.0015, "cast_base_mold_studio_verify_1p5");
     }
 
     /// End-to-end integration on the real base_mold (slow ~13 min, needs

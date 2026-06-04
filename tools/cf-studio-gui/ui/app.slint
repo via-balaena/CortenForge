@@ -357,7 +357,7 @@ export component AppWindow inherits Window {
                     spacing: 14px;
                     vertical-stretch: 1;
                     Text {
-                        text: "CortenForge builds the printable mold from your cleaned scan and silicone design. This runs the full cast — it can take several minutes, and the window stays responsive while it works.";
+                        text: "CortenForge builds the printable mold from your cleaned scan and silicone design. This runs the full cast — print quality takes around fifteen minutes (the faster preview is a few), and the window stays responsive while it works.";
                         horizontal-alignment: center;
                         font-size: 16px;
                         color: #444444;
@@ -368,7 +368,9 @@ export component AppWindow inherits Window {
                         spacing: 8px;
                         Text { text: "Quality"; vertical-alignment: center; color: #333333; }
                         quality-combo := ComboBox {
-                            model: ["Standard — 1.5 mm", "Fine — 0.5 mm (slower)"];
+                            // 0.5 mm is the print-quality default (the physical
+                            // fit-test print was 0.5 mm); 1.5 mm is a faster preview.
+                            model: ["Fine — 0.5 mm (print quality)", "Fast — 1.5 mm (preview)"];
                             current-index: 0;
                             enabled: !busy;
                         }

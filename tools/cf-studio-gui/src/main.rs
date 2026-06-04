@@ -1107,9 +1107,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 return;
             };
-            // Quality → marching-cubes cell size. 1.5 mm is the workshop
-            // standard (3 mm drops the flange web); 0.5 mm is the slow finish.
-            let cell_size_m = if quality_idx == 1 { 0.0005 } else { 0.0015 };
+            // Quality → marching-cubes cell size, matching the picker order:
+            // index 0 = Fine 0.5 mm (the print-quality default), index 1 =
+            // Fast 1.5 mm preview. (3 mm is never offered — it drops the
+            // flange web.)
+            let cell_size_m = if quality_idx == 1 { 0.0015 } else { 0.0005 };
 
             if let Some(ui) = weak.upgrade() {
                 ui.set_busy(true);
