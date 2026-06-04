@@ -43,19 +43,19 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            asset: CortenForge-Studio-linux-x86_64.tar.gz
+            asset: Cendrillon-linux-x86_64.tar.gz
             beta: true
           - target: x86_64-apple-darwin
             os: macos-latest
-            asset: CortenForge-Studio-macos-x86_64.zip
+            asset: Cendrillon-macos-x86_64.zip
             beta: true
           - target: aarch64-apple-darwin
             os: macos-latest
-            asset: CortenForge-Studio-macos-arm64.zip
+            asset: Cendrillon-macos-arm64.zip
             beta: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            asset: CortenForge-Studio-windows-x86_64.zip
+            asset: Cendrillon-windows-x86_64.zip
             beta: true
 
     steps:
@@ -76,14 +76,14 @@ jobs:
       # or build crates it doesn't ship; it builds exactly the one artifact
       # it publishes. This also avoids running x86_64 test binaries on the
       # arm64 macOS runner (the x86_64-apple-darwin leg cross-compiles).
-      - name: Build CortenForge Studio
+      - name: Build Cendrillon
         run: cargo build --release -p cf-studio-gui --target ${{ matrix.target }}
 
       - name: Package Studio (macOS .app)
         if: runner.os == 'macOS'
         run: |
           version="${GITHUB_REF#refs/tags/v}"
-          app="CortenForge Studio.app"
+          app="Cendrillon.app"
           mkdir -p "$app/Contents/MacOS"
           cp "target/${{ matrix.target }}/release/cf-studio-gui" "$app/Contents/MacOS/"
           chmod +x "$app/Contents/MacOS/cf-studio-gui"
@@ -240,18 +240,18 @@ jobs:
 
             ${{ needs.changelog.outputs.changelog }}
 
-            ## Download — CortenForge Studio
+            ## Download — Cendrillon
 
             The guided desktop app (scan → clean → design → molds → print → pour):
 
-            - **macOS, Apple Silicon** (tested): `CortenForge-Studio-macos-arm64.zip`.
+            - **macOS, Apple Silicon** (tested): `Cendrillon-macos-arm64.zip`.
               First launch: right-click the app → **Open** (unsigned during the
               beta — Gatekeeper asks once).
-            - **macOS, Intel** (beta): `CortenForge-Studio-macos-x86_64.zip` — same
+            - **macOS, Intel** (beta): `Cendrillon-macos-x86_64.zip` — same
               right-click → Open.
-            - **Windows** (beta): `CortenForge-Studio-windows-x86_64.zip`. Unblock
+            - **Windows** (beta): `Cendrillon-windows-x86_64.zip`. Unblock
               via *More info → Run anyway* if SmartScreen warns.
-            - **Linux** (beta): `CortenForge-Studio-linux-x86_64.tar.gz`.
+            - **Linux** (beta): `Cendrillon-linux-x86_64.tar.gz`.
 
             Beta builds may be missing if that platform didn't build for this tag.
 
@@ -274,7 +274,7 @@ jobs:
           files: |
             artifacts/sbom.cdx.json
             artifacts/sbom.cdx.xml
-            artifacts/CortenForge-Studio-*
+            artifacts/Cendrillon-*
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:

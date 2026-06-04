@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- macOS .app bundle metadata for CortenForge Studio. The release
-     workflow copies this into `CortenForge Studio.app/Contents/Info.plist`
+<!-- macOS .app bundle metadata for Cendrillon. The release
+     workflow copies this into `Cendrillon.app/Contents/Info.plist`
      and substitutes __VERSION__ with the release tag. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>CortenForge Studio</string>
+  <string>Cendrillon</string>
   <key>CFBundleDisplayName</key>
-  <string>CortenForge Studio</string>
+  <string>Cendrillon</string>
   <key>CFBundleIdentifier</key>
-  <string>com.cortenforge.studio</string>
+  <string>com.cortenforge.cendrillon</string>
   <key>CFBundleVersion</key>
   <string>__VERSION__</string>
   <key>CFBundleShortVersionString</key>
