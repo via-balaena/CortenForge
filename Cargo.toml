@@ -657,6 +657,11 @@ cf-design-tests = { path = "design/cf-design-tests" }
 # Cast tooling
 cf-cast = { path = "design/cf-cast" }
 
+# Scan→cast bridge — consumed as a LIBRARY by cf-studio-engine
+# (`run()` for mold generation + `parse_centerline_from_prep_toml`).
+# Also builds the `cf-cast-cli` binary.
+cf-cast-cli = { path = "tools/cf-cast-cli" }
+
 # CortenForge Studio — guided scan→cast wizard (see MISSION.md).
 # cf-studio-core: headless workflow spine. cf-studio-engine: the
 # SDK-boundary orchestrator built on the spine + the SDK crates.

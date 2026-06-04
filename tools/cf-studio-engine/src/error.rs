@@ -42,4 +42,22 @@ pub enum EngineError {
         /// The scan path.
         path: String,
     },
+
+    /// The `.prep.toml` could not be read or parsed.
+    #[error("prep file at {path} is unreadable or invalid: {reason}")]
+    PrepInvalid {
+        /// The prep-file path.
+        path: String,
+        /// Why it failed.
+        reason: String,
+    },
+
+    /// The `.prep.toml` has no centerline — the cast pipeline needs one.
+    #[error(
+        "prep file at {path} has no centerline — re-run cf-scan-prep to compute the centerline polyline"
+    )]
+    NoCenterline {
+        /// The prep-file path.
+        path: String,
+    },
 }

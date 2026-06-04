@@ -34,5 +34,13 @@ cf-device-types = { workspace = true }
 # extension (mesh-io's default features; scanners export these). 3MF/STEP
 # are opt-in mesh-io features, not enabled here. L0, no Bevy — headless.
 mesh-io = { workspace = true }
+# Reuse the cast pipeline's REAL prep parsers so the wizard validates
+# exactly what the cast requires — centerline (cf-cast-cli) + cap planes
+# (cf-cap-planes) — rather than a divergent re-check. cf-cast-cli also
+# provides `run()` for mold generation (P2d). This pulls cf-cast
+# (parry3d / manifold3d / marching cubes) — the first heavy SDK dep, but
+# still no Bevy; the engine stays headless.
+cf-cast-cli = { workspace = true }
+cf-cap-planes = { workspace = true }
 # Typed boundary errors (errors are values; no unwrap in library code).
 thiserror = { workspace = true }
