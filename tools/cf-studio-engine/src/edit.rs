@@ -536,6 +536,16 @@ impl EditSession {
         stl_units_label: &'static str,
         smoothing_iters: usize,
     ) -> Result<SaveReport> {
+        // The cast needs the centerline (cf-cap-planes / curve-following);
+        // without it `build_cleaned_mesh` caps nothing → an open base, and
+        // the prep.toml has no `[centerline]` → `accept_prep` would reject
+        // it. Refuse here so we never write an invalid cast input.
+        if self.centerline.len() < 2 {
+            return Err(EngineError::Save(
+                "no centerline yet — run cap detection (Find floor) first; the cast needs it"
+                    .into(),
+            ));
+        }
         let rotation = self.reorient_rotation;
         let translation = Vector3::zeros();
         if !rotation.into_inner().coords.iter().all(|c| c.is_finite())
@@ -1150,6 +1160,23 @@ mod tests {
         );
         let toml = std::fs::read_to_string(&report.prep_toml).unwrap();
         eprintln!("----- base_mold.prep.toml -----\n{toml}");
+    }
+
+    #[test]
+    fn save_without_a_centerline_is_refused() {
+        let s = session(open_quad()); // no detect_caps → no centerline
+        let dir = std::env::temp_dir().join(format!("cf-edit-nosave-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = s.save(&dir, "q", "mm", 0).unwrap_err();
+        assert!(
+            matches!(err, EngineError::Save(_)),
+            "save refuses without a centerline (would write an open base): {err}"
+        );
+        assert!(
+            !dir.join("q.cleaned.stl").exists(),
+            "nothing written when refused"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

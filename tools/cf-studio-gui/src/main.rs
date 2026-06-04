@@ -566,6 +566,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
         let (edit, scan_path) = (edit.clone(), scan_path.clone());
         ui.on_save(move |smoothing| {
+            // The cast needs a centerline; require Find floor first (a clean
+            // prompt before the engine would refuse + before the save freeze).
+            if !edit
+                .borrow()
+                .as_ref()
+                .is_some_and(EditSession::has_centerline)
+            {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_step_message(
+                        "Click Find floor first — it traces the centerline the cast needs.".into(),
+                    );
+                    ui.set_step_message_is_error(true);
+                }
+                return;
+            }
             let Some(path) = scan_path.borrow().clone() else {
                 return;
             };
