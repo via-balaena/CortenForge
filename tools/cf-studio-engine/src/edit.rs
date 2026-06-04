@@ -8,9 +8,10 @@
 //! session ultimately produces the cleaned STL + `.prep.toml` the cast
 //! pipeline consumes.
 //!
-//! Built phase by phase, per the agreed step-2 op order. **Phase 1 (here):**
-//! load / simplify / weld / reset + auto-center / auto-orient. Capping,
-//! centerline + trim / reconstruct, and the save path land in later phases.
+//! Built phase by phase, per the agreed step-2 op order. **Phase 1:** load
+//! (auto-center + auto-orient at load) / weld / simplify / reset. **Phase
+//! 2a:** cap detection + the interior centerline. Leveling, trim /
+//! reconstruct, and the save path land in later phases.
 
 use std::path::{Path, PathBuf};
 
@@ -221,10 +222,35 @@ impl EditSession {
     /// state. Returns a [`CapScan`] summary.
     pub fn detect_caps(&mut self) -> CapScan {
         let raw_loops = cf_scan_prep_core::detect_boundary_loops(&self.working);
-        self.cap_loops = raw_loops
+        let valid: Vec<_> = raw_loops
             .iter()
             .filter(|loop_data| loop_data.is_valid())
-            .map(|loop_data| cf_scan_prep_core::build_detected_cap_loop(&self.working, loop_data))
+            .collect();
+
+        // Raw unwelded soup → thousands of per-triangle "loops". Detecting
+        // them is cheap, but fitting a plane to each + tracing a meaningless
+        // centerline is not — and the result is useless until the user
+        // welds. Short-circuit with the "weld first" flag instead (the
+        // cf-scan-prep tool builds them anyway then warns; skipping the
+        // wasted work is strictly better for a guided wizard). The
+        // loop-count gate avoids false-positives on tiny meshes, where the
+        // `v >= 2f` heuristic alone trips.
+        if cf_scan_prep_core::mesh_looks_unwelded(
+            self.working.vertices.len(),
+            self.working.faces.len(),
+        ) && valid.len() > UNWELDED_LOOP_WARN
+        {
+            self.clear_caps();
+            return CapScan {
+                loop_count: 0,
+                centerline_segments: 0,
+                looks_unwelded: true,
+            };
+        }
+
+        self.cap_loops = valid
+            .iter()
+            .map(|&loop_data| cf_scan_prep_core::build_detected_cap_loop(&self.working, loop_data))
             .collect();
         self.centerline = match self.cap_loops.first() {
             Some(first) => {
@@ -240,10 +266,7 @@ impl EditSession {
         CapScan {
             loop_count: self.cap_loops.len(),
             centerline_segments: self.centerline.len().saturating_sub(1),
-            looks_unwelded: cf_scan_prep_core::mesh_looks_unwelded(
-                self.working.vertices.len(),
-                self.working.faces.len(),
-            ) && self.cap_loops.len() > UNWELDED_LOOP_WARN,
+            looks_unwelded: false,
         }
     }
 
@@ -366,6 +389,23 @@ mod tests {
             ],
             faces: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
         }
+    }
+
+    /// `n` disjoint triangles as vertex soup (3 unshared vertices each) —
+    /// what a raw, unwelded STL of `n` faces looks like to boundary
+    /// detection: every triangle is its own loop.
+    fn soup_many(n: usize) -> IndexedMesh {
+        let mut vertices = Vec::with_capacity(n * 3);
+        let mut faces = Vec::with_capacity(n);
+        for i in 0..n {
+            let x = i as f64;
+            let base = (i * 3) as u32;
+            vertices.push(Point3::new(x, 0.0, 0.0));
+            vertices.push(Point3::new(x + 0.5, 0.0, 0.0));
+            vertices.push(Point3::new(x, 0.5, 0.0));
+            faces.push([base, base + 1, base + 2]);
+        }
+        IndexedMesh { vertices, faces }
     }
 
     /// A mesh translated far from the origin (for the auto-center test).
@@ -496,6 +536,20 @@ mod tests {
         assert!(s.centerline().is_empty());
         assert!(!s.has_centerline());
         assert_eq!(scan.centerline_segments, 0);
+    }
+
+    #[test]
+    fn detect_caps_short_circuits_on_unwelded_soup() {
+        // 101 disjoint triangles: unwelded (303 ≥ 2·101) AND > 100 loops.
+        let mut s = session(soup_many(101));
+        let scan = s.detect_caps();
+        assert!(scan.looks_unwelded, "raw soup is flagged for welding");
+        assert_eq!(
+            scan.loop_count, 0,
+            "no cap loops built from soup — weld first"
+        );
+        assert!(s.cap_loops().is_empty());
+        assert!(s.centerline().is_empty());
     }
 
     #[test]
