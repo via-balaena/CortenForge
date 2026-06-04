@@ -21,3 +21,8 @@ pub mod error;
 
 pub use design::{design_toml_from_draft, save_design_from_draft};
 pub use error::{EngineError, Result};
+
+// Re-export the spine so a frontend needs only this one crate to reach
+// the workflow types (`Project`, `Step`, `DesignDraft`, …): the engine
+// is the single front door.
+pub use cf_studio_core;

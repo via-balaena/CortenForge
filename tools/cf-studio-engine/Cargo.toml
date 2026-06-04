@@ -1,6 +1,6 @@
 [package]
 name = "cf-studio-engine"
-description = "SDK-boundary orchestrator for CortenForge Studio — executes the guided scan→cast workflow steps by calling the SDK crates (mesh-io, cf-device-types, cf-cast). Built on the headless cf-studio-core spine; consumed by the cf-studio CLI + the Slint GUI. See MISSION.md."
+description = "SDK-boundary orchestrator for CortenForge Studio — executes the guided scan→cast workflow steps by calling the SDK crates. Built on the headless cf-studio-core spine; consumed by the cf-studio CLI + the Slint GUI. See MISSION.md."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

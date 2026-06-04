@@ -53,7 +53,9 @@ pub fn design_toml_from_draft(cleaned_stl: &Path, draft: &DesignDraft) -> Result
         });
     }
     let design = build_design_toml(cleaned_stl, &cavity, &LayersState { layers });
-    validate_design_toml(&design).map_err(|e| EngineError::InvalidDesign(e.to_string()))?;
+    // `{:#}` captures anyhow's full context chain (plain `to_string()`
+    // would show only the outermost message and drop the cause).
+    validate_design_toml(&design).map_err(|e| EngineError::InvalidDesign(format!("{e:#}")))?;
     Ok(design)
 }
 
@@ -68,7 +70,9 @@ pub fn save_design_from_draft(
     path: &Path,
 ) -> Result<DesignToml> {
     let design = design_toml_from_draft(cleaned_stl, draft)?;
-    save_design_toml(&design, path).map_err(|e| EngineError::WriteDesign(e.to_string()))?;
+    // `{:#}` keeps the full anyhow chain (e.g. the underlying io error
+    // beneath save_design_toml's "rename …" context).
+    save_design_toml(&design, path).map_err(|e| EngineError::WriteDesign(format!("{e:#}")))?;
     Ok(design)
 }
 
@@ -135,6 +139,22 @@ mod tests {
             cavity_inset_m: 0.005,
             layers: vec![],
         };
+        let err = design_toml_from_draft(Path::new("s.stl"), &d).unwrap_err();
+        assert!(matches!(err, EngineError::InvalidDesign(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn negative_thickness_is_rejected_as_invalid_design() {
+        let mut d = draft();
+        d.layers[0].thickness_m = -0.001;
+        let err = design_toml_from_draft(Path::new("s.stl"), &d).unwrap_err();
+        assert!(matches!(err, EngineError::InvalidDesign(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn negative_cavity_inset_is_rejected_as_invalid_design() {
+        let mut d = draft();
+        d.cavity_inset_m = -0.001;
         let err = design_toml_from_draft(Path::new("s.stl"), &d).unwrap_err();
         assert!(matches!(err, EngineError::InvalidDesign(_)), "got: {err:?}");
     }
