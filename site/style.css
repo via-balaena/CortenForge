@@ -116,6 +116,15 @@ section p {
   background: #fafbfc;
 }
 
+.eyebrow {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6b7280;
+  margin-bottom: 0.3rem;
+}
+
 .card h2 {
   font-size: 1.45rem;
   font-weight: 700;
