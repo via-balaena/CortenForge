@@ -8,8 +8,80 @@ use std::path::{Path, PathBuf};
 use cf_cast_cli::{CastConfig, run_with_config};
 use cf_studio_core::{DesignDraft, MoldOutputs};
 
+use crate::design::save_design_from_draft;
 use crate::error::{EngineError, Result};
 use crate::pour::{LayerPour, build_pour_plan};
+
+/// Generate the molds for the **guided-wizard** path, from the project's
+/// own artifacts: the cleaned scan + its `.prep.toml` (step 2) and the
+/// in-app [`DesignDraft`] (step 3). This is the single call a frontend
+/// makes for "Make molds" — it is the composition that:
+///
+/// 1. writes the `design.toml` next to the cleaned scan (step 3 keeps the
+///    draft only in memory, so it's materialized here, derived from the
+///    scan's stem: `foo.cleaned.stl` → `foo.design.toml`);
+/// 2. builds a typed [`CastConfig`] via [`CastConfig::for_design`] at the
+///    chosen `mesh_cell_size_m` (the quality knob), with relative paths so
+///    everything resolves under the scan's directory; and
+/// 3. runs the cast via [`generate_molds`].
+///
+/// All arguments are `Send`, so a frontend can call this straight off a
+/// background thread (the run is minutes-long). `cleaned_stl` must be an
+/// absolute path to a `*.stl` in the scan directory; its parent is the
+/// cast run's `base_dir`.
+///
+/// # Errors
+/// - [`EngineError::MoldGen`] if a path lacks a filename, the design write
+///   fails, or the cast run / output read-back fails.
+/// - [`EngineError::WriteDesign`] / [`EngineError::InvalidDesign`] /
+///   [`EngineError::UnknownMaterial`] if the draft can't be materialized.
+/// - [`EngineError::PourDataUnavailable`] if a layer has no cure data.
+pub fn generate_molds_for_design(
+    cleaned_stl: &Path,
+    prep_toml: &Path,
+    draft: &DesignDraft,
+    mesh_cell_size_m: f64,
+    output_dir_override: Option<&Path>,
+) -> Result<MoldOutputs> {
+    let base_dir = cleaned_stl.parent().unwrap_or_else(|| Path::new("."));
+    let cleaned_name = file_name(cleaned_stl)?;
+    let prep_name = file_name(prep_toml)?;
+    let design_name = design_filename(&cleaned_name);
+    let design_path = base_dir.join(&design_name);
+
+    // Materialize the in-app design. Anchor it to the cleaned scan's
+    // filename (relative — it's informational; the config's scan block is
+    // authoritative for the run).
+    save_design_from_draft(Path::new(&cleaned_name), draft, &design_path)?;
+
+    let config = CastConfig::for_design(
+        PathBuf::from(&cleaned_name),
+        PathBuf::from(&prep_name),
+        PathBuf::from(&design_name),
+        mesh_cell_size_m,
+    );
+    generate_molds(config, draft, base_dir, output_dir_override)
+}
+
+/// The filename component of `p` as an owned `String`, or a `MoldGen`
+/// error naming the offending path.
+fn file_name(p: &Path) -> Result<String> {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| EngineError::MoldGen(format!("path has no file name: {}", p.display())))
+}
+
+/// Derive the `design.toml` filename from a cleaned-scan filename by
+/// stripping a trailing `.cleaned.stl` (or bare `.stl`) and appending
+/// `.design.toml`: `base_mold.cleaned.stl` → `base_mold.design.toml`.
+fn design_filename(cleaned_name: &str) -> String {
+    let stem = cleaned_name
+        .strip_suffix(".cleaned.stl")
+        .or_else(|| cleaned_name.strip_suffix(".stl"))
+        .unwrap_or(cleaned_name);
+    format!("{stem}.design.toml")
+}
 
 /// Generate the molds for a project: run the cast pipeline typed, then
 /// gather the outputs.
@@ -166,6 +238,70 @@ mod tests {
         assert_eq!(inputs[0].slacker_fraction, Some(0.25));
         assert_eq!(inputs[1].mass_g, 250.0);
         assert_eq!(inputs[1].slacker_fraction, None); // 0.0 → None
+    }
+
+    #[test]
+    fn design_filename_strips_cleaned_stl_then_appends_design_toml() {
+        assert_eq!(
+            design_filename("base_mold.cleaned.stl"),
+            "base_mold.design.toml"
+        );
+        // Bare .stl (a scan saved without the .cleaned infix).
+        assert_eq!(design_filename("foo.stl"), "foo.design.toml");
+        // No recognized suffix → append as-is (defensive, shouldn't happen).
+        assert_eq!(design_filename("weird"), "weird.design.toml");
+    }
+
+    #[test]
+    fn file_name_extracts_component_or_errors() {
+        assert_eq!(
+            file_name(Path::new("/home/u/scans/base_mold.cleaned.stl")).unwrap(),
+            "base_mold.cleaned.stl"
+        );
+        // Root has no filename component.
+        assert!(matches!(
+            file_name(Path::new("/")).unwrap_err(),
+            EngineError::MoldGen(_)
+        ));
+    }
+
+    #[test]
+    fn generate_molds_for_design_writes_the_design_toml_before_running() {
+        // The cast run itself is the slow part (covered by the #[ignore]
+        // integration); here we only assert the design.toml is materialized
+        // next to the scan, by pointing at a scan dir with no real geometry
+        // so the run fails fast *after* the write.
+        let dir = temp_dir("for-design-write");
+        let cleaned = dir.join("base_mold.cleaned.stl");
+        let prep = dir.join("base_mold.prep.toml");
+        std::fs::write(&cleaned, b"not a real stl").unwrap();
+        std::fs::write(&prep, b"[centerline]\npoints_m = [[0,0,0],[0,0,0.01]]\n").unwrap();
+
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![LayerDraft {
+                thickness_m: 0.0175,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.25,
+            }],
+        };
+
+        // We don't care whether the cast run succeeds — only that the
+        // design.toml was written first (the materialization is the new glue).
+        let _ = generate_molds_for_design(&cleaned, &prep, &draft, 0.003, None);
+        let design_path = dir.join("base_mold.design.toml");
+        assert!(
+            design_path.exists(),
+            "design.toml materialized next to the scan"
+        );
+        let written = std::fs::read_to_string(&design_path).unwrap();
+        assert!(written.contains("ECOFLEX_00_30"), "with the draft's layer");
+        assert!(
+            written.contains("base_mold.cleaned.stl"),
+            "anchored to the cleaned scan filename"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

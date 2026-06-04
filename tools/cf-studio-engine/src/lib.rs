@@ -32,7 +32,7 @@ pub use edit::{EditSession, run_simplify};
 // (the GUI) needs to name — re-exported through the engine front door.
 pub use cf_scan_prep_core::ReconstructShape;
 pub use error::{EngineError, Result};
-pub use mold::generate_molds;
+pub use mold::{generate_molds, generate_molds_for_design};
 // Re-export the config type `generate_molds` takes, so a frontend can
 // build/parse it without a separate cf-cast-cli dependency.
 pub use cf_cast_cli::CastConfig;
