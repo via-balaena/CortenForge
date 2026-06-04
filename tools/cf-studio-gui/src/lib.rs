@@ -21,6 +21,8 @@ use std::path::Path;
 use cf_studio_core::{Project, Step};
 use cf_studio_engine::{accept_prep, draft_from_design_toml, load_scan};
 
+pub mod viewer;
+
 /// A workflow step as the checklist shows it. `done` / `current` come
 /// from the real project; `viewing` is whether this is the step shown in
 /// the wizard body right now.

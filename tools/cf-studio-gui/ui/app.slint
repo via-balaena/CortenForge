@@ -13,9 +13,11 @@ export struct StepRow {
 export component AppWindow inherits Window {
     title: "CortenForge Studio";
     preferred-width: 900px;
-    preferred-height: 640px;
+    preferred-height: 780px;
     min-width: 640px;
-    min-height: 480px;
+    // Tall enough that the footer (Back / Help / Next) is always on-screen
+    // even if the OS restores a shorter window from a previous run.
+    min-height: 700px;
 
     in property <string> project-name: "Untitled";
     in property <[StepRow]> steps;
@@ -26,6 +28,10 @@ export component AppWindow inherits Window {
     in property <bool> can-next: true;
     in property <string> step-message: "";
     in property <bool> step-message-is-error: false;
+    // The live 3D scan view (rendered by wgpu into a Slint Image) + whether
+    // a scan has been loaded yet (drives the placeholder hint).
+    in property <image> scan-view;
+    in property <bool> has-scan: false;
 
     callback back();
     callback next();
@@ -33,6 +39,8 @@ export component AppWindow inherits Window {
     callback pick-scan();
     callback pick-prep();
     callback pick-design();
+    // Mouse-drag in the 3D view: (dx, dy) screen-pixel deltas → orbit.
+    callback orbit(length, length);
 
     VerticalBox {
         padding: 28px;
@@ -64,9 +72,53 @@ export component AppWindow inherits Window {
                 alignment: center;
                 spacing: 16px;
 
-                if viewed-number == 1: Button {
-                    text: "Choose scan file…";
-                    clicked => { pick-scan(); }
+                if viewed-number == 1: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    // ── live 3D scan viewport (drag to orbit) ──
+                    Rectangle {
+                        vertical-stretch: 1;
+                        // Low floor so the body yields room to the footer on
+                        // short windows; it grows to fill on taller ones.
+                        min-height: 150px;
+                        background: #e9ebef;
+                        border-radius: 10px;
+                        clip: true;
+                        Image {
+                            source: scan-view;
+                            width: 100%;
+                            height: 100%;
+                            image-fit: contain;
+                        }
+                        if !has-scan: Text {
+                            text: "Choose a scan to see it here — then drag to spin it.";
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            font-size: 17px;
+                            color: #888888;
+                            wrap: word-wrap;
+                        }
+                        TouchArea {
+                            property <length> px;
+                            property <length> py;
+                            mouse-cursor: has-scan ? MouseCursor.grab : MouseCursor.default;
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down) {
+                                    self.px = self.mouse-x;
+                                    self.py = self.mouse-y;
+                                }
+                            }
+                            moved => {
+                                root.orbit(self.mouse-x - self.px, self.mouse-y - self.py);
+                                self.px = self.mouse-x;
+                                self.py = self.mouse-y;
+                            }
+                        }
+                    }
+                    Button {
+                        text: has-scan ? "Choose a different scan…" : "Choose scan file…";
+                        clicked => { pick-scan(); }
+                    }
                 }
                 if viewed-number == 2: Button {
                     text: "Choose cleaned scan + prep…";

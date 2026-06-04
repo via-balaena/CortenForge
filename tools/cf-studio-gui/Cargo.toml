@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 publish = false
+# Two bins (the app + the throwaway 3D spike); make plain `cargo run` launch
+# the app.
+default-run = "cf-studio-gui"
 
 # Workspace tool; no `[package.metadata.cortenforge]` block (matches the
 # cf-studio / cf-cast-cli precedent). The Project→display mapping lives in
