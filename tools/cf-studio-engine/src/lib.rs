@@ -17,6 +17,7 @@
 //! is built up, one proven layer at a time.
 
 pub mod design;
+pub mod edit;
 pub mod error;
 pub mod mold;
 pub mod pour;
@@ -24,6 +25,7 @@ pub mod prep;
 pub mod scan;
 
 pub use design::{design_toml_from_draft, draft_from_design_toml, save_design_from_draft};
+pub use edit::EditSession;
 pub use error::{EngineError, Result};
 pub use mold::generate_molds;
 // Re-export the config type `generate_molds` takes, so a frontend can

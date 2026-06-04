@@ -45,5 +45,19 @@ cf-cap-planes = { workspace = true }
 # cf_cast::cure::lookup — per-silicone mix ratio / pot life / cure time
 # for the structured pour plan (the Step-6 pour-assistant's data).
 cf-cast = { workspace = true }
+# The headless scan-prep algorithms (simplify / cap / centerline / trim /
+# reconstruct + the cleaned-mesh & .prep.toml builders) that the step-2
+# EditSession drives — the same code the Bevy cf-scan-prep tool uses, so
+# Studio's editor + that tool stay functionally identical. Bevy-free.
+cf-scan-prep-core = { workspace = true }
+# `IndexedMesh` (the working mesh the EditSession mutates) + `Bounded::aabb`.
+mesh-types = { workspace = true }
+# `weld_vertices` + `remove_unreferenced_vertices` for the standalone Weld
+# op (simplify welds internally; this exposes weld on its own per the
+# step-2 op set).
+mesh-repair = { workspace = true }
+# `UnitQuaternion` / `Vector3` — the PCA-orient + recenter transform state
+# the EditSession accumulates for the .prep.toml provenance.
+nalgebra = { workspace = true }
 # Typed boundary errors (errors are values; no unwrap in library code).
 thiserror = { workspace = true }
