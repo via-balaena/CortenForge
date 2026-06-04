@@ -7,9 +7,8 @@
 //! All the logic lives here in the lib so it is testable; `main.rs` is a
 //! thin `clap` dispatcher.
 //!
-//! This first slice covers project management + the two input steps that
-//! need no extra input design: `new`, `status`, `scan`, `prep`. The
-//! design / molds / pour commands follow.
+//! Commands cover the full workflow: project management (`new`, `status`)
+//! plus the six steps — `scan`, `prep`, `design`, `molds`, `print`, `pour`.
 
 use std::path::Path;
 
