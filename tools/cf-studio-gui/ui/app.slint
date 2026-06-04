@@ -46,7 +46,7 @@ component ScanViewport inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
         font-size: 17px;
-        color: #888888;
+        color: #5a5a5a;
         wrap: word-wrap;
     }
     TouchArea {
@@ -102,6 +102,11 @@ export component AppWindow inherits Window {
     // even if the OS restores a shorter window from a previous run (and
     // with room for the step-2 trim row).
     min-height: 850px;
+    // Force a consistent light theme (the app is designed light: light body
+    // panel, dark text). Without this the window inherits the OS scheme — on
+    // macOS dark mode the off-panel text (progress checklist) went dark-on-
+    // dark and vanished.
+    background: #dce0e5;
 
     in property <string> project-name: "Untitled";
     in property <[StepRow]> steps;
@@ -201,17 +206,19 @@ export component AppWindow inherits Window {
         Text {
             text: "CortenForge Studio  ·  \{project-name}";
             font-size: 15px;
-            color: #888888;
+            color: #5a5a5a;
         }
         Text {
             text: "Step \{viewed-number} of \{total-steps}";
             font-size: 15px;
-            color: #888888;
+            color: #5a5a5a;
         }
         Text {
             text: viewed-title;
             font-size: 30px;
             font-weight: 800;
+            // Explicit so it doesn't follow the OS scheme (light-on-light).
+            color: #1a1a1a;
         }
 
         // ── body (per-step controls) — scrollable so the checklist +
