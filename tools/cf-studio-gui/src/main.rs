@@ -549,7 +549,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match result {
                         Ok(outputs) => {
                             let summary = format_molds_summary(&outputs);
-                            match project.borrow_mut().set_molds(outputs) {
+                            // Bind to a local so the borrow_mut RefMut drops
+                            // here — holding it as the match scrutinee would
+                            // keep it alive across the arm, colliding with the
+                            // project.borrow() in refresh (RefCell panic).
+                            let recorded = project.borrow_mut().set_molds(outputs);
+                            match recorded {
                                 Ok(()) => {
                                     ui.set_molds_summary(summary.into());
                                     ui.set_step_message("✓ Molds ready — click Next →.".into());
