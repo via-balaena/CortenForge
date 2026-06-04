@@ -3327,3 +3327,345 @@ pub fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> Simpli
         elapsed_secs: start.elapsed().as_secs_f64(),
     }
 }
+
+// ===== Move 2: orchestration fns (plain-data) =====
+
+/// Identify the floor loop in [`CapState::loops`] for the
+/// reconstruction-plane override: the LARGEST valid loop, matching
+/// [`find_floor_loop_index`]'s pick-by-count heuristic (`MIN_RIM_LOOP_VERTS`
+/// = 10). The cut rim is overwhelmingly the largest loop on practical
+/// scans; small loops are scanner-noise stragglers and should keep
+/// their detected planes. Returns `None` when no sufficiently-large
+/// loop exists (in which case the override is skipped).
+pub fn floor_loop_index(loops: &[DetectedCapLoop]) -> Option<usize> {
+    const MIN_RIM_LOOP_VERTS: usize = 10;
+    loops
+        .iter()
+        .enumerate()
+        .filter(|(_, cl)| cl.vertex_indices.len() >= MIN_RIM_LOOP_VERTS)
+        .max_by_key(|(_, cl)| cl.vertex_indices.len())
+        .map(|(i, _)| i)
+}
+
+/// Build the cleaned IndexedMesh from the working scan + Reorient +
+/// Recenter + included cap loops.
+///
+/// Pipeline:
+/// 1. Clone `scan` into `out`.
+/// 2. Bake rotation + translation into vertex positions (in place).
+///    After this step `out.vertices` are in world frame.
+/// 3. For each included cap loop, ear-clip its 2D projection and
+///    append triangles (using existing loop vertex indices — no new
+///    vertices added). Cap faces inherit the world-frame coordinates
+///    from step 2.
+///
+/// CSP.4c — Clip-floor step removed (the feature itself retired
+/// alongside `ClipState`). Centerline trim handles the workshop
+/// "shave the noisy end" use case the clip used to cover.
+///
+/// **Cap normal orientation**: the spec mandates that the cap's
+/// outward normal point away from the mesh interior. We orient the
+/// triangulation's vertex winding to match the loop's stored
+/// `plane_normal` (which `build_detected_cap_loop` already flipped
+/// to face outward).
+pub fn build_cleaned_mesh(
+    scan: &IndexedMesh,
+    rotation: UnitQuaternion<f64>,
+    translation_m: Vector3<f64>,
+    cap_loops: &[DetectedCapLoop],
+) -> IndexedMesh {
+    let translation = translation_m;
+    // Pivot the bake rotation around the raw scan AABB centroid so
+    // rotation rotates the mesh in place (matches the viewport's
+    // centroid-pivot Transform composition). Empty mesh → centroid
+    // at origin (matches `IndexedMesh::aabb()` returning
+    // `Aabb::empty()`); the loop below is a no-op anyway.
+    let centroid = scan.aabb().center();
+
+    let mut out = scan.clone();
+
+    // Step 2: bake transforms. Compute centroid-pivoted rotation +
+    // recenter translation for each vertex from the ORIGINAL
+    // (pre-bake) coordinates so cap triangulation can still reference
+    // the original positions for plane fit etc. We then mutate
+    // `out.vertices` in place.
+    for v in out.vertices.iter_mut() {
+        *v = bake_vertex_with_pivot(v, rotation, &centroid, translation);
+    }
+
+    // Step 3: triangulate + append included caps. Loop vertex
+    // indices were captured at scan time + reference positions in
+    // `scan.0.vertices` — which after our in-place transform are
+    // now in world frame. So both the original-loop-positions math
+    // (for the 2D projection) AND the resulting face indices stay
+    // valid.
+    for cap_loop in cap_loops {
+        if !cap_loop.include {
+            continue;
+        }
+        // Loop's stored `plane_centroid` and `plane_normal` are in
+        // pre-bake physics-local frame. Bake centroid through the
+        // same pivot transform as the vertices; rotate the plane
+        // normal (a direction, no pivot or translation).
+        let centroid_world =
+            bake_vertex_with_pivot(&cap_loop.plane_centroid, rotation, &centroid, translation);
+        let normal_world = rotation.transform_vector(&cap_loop.plane_normal);
+
+        // CSP.3a — project each loop vertex onto the fit plane
+        // BEFORE the ear-clip. The boundary loop's points have
+        // sub-mm wobble for typical R² ≈ 0.9 fixtures; without this
+        // projection the resulting cap faces lie OFF the plane
+        // (because ear-clip's 2D projection is into the plane, but
+        // the final 3D faces draw from the unprojected vertex
+        // positions). Snapping the rim onto the plane keeps the cap
+        // planar at the cost of moving the scan-body rim ring by
+        // the wobble magnitude — sub-mm, well below the 2 mm SDF
+        // cell + below the meshopt target_error threshold. The
+        // alternative (append separate cap vertices) leaves a
+        // sub-mm seam gap that breaks watertightness for mesh_sdf.
+        // All loop indices are validated below; we project only the
+        // ones that exist in the current `out.vertices`.
+        for &idx in &cap_loop.vertex_indices {
+            if let Some(p) = out.vertices.get(idx as usize).copied() {
+                let signed = (p.coords - centroid_world.coords).dot(&normal_world);
+                let projected = p.coords - normal_world * signed;
+                out.vertices[idx as usize] = Point3::from(projected);
+            }
+        }
+
+        let loop_points_world: Vec<Point3<f64>> = cap_loop
+            .vertex_indices
+            .iter()
+            .filter_map(|&idx| out.vertices.get(idx as usize).copied())
+            .collect();
+        if loop_points_world.len() != cap_loop.vertex_indices.len() {
+            // Some indices invalid (mesh changed after scan); skip
+            // this loop rather than emit malformed faces.
+            continue;
+        }
+
+        let verts_2d = project_loop_to_plane_2d(&loop_points_world, centroid_world, normal_world);
+
+        // Centroid-fan replacement for the ear-clip path (S1.1
+        // 2026-05-26) — produces a non-overlapping fan from a fresh
+        // centroid vertex to each perimeter edge. Manifold by
+        // construction for star-shaped projected polygons; eliminates
+        // the duplicate-face + non-manifold-edge artifacts the ear-
+        // clip's fan-fallback emitted on self-intersecting
+        // projections. Same helper as `auto_cap_open_boundaries`.
+        emit_centroid_fan_cap(
+            &mut out,
+            &cap_loop.vertex_indices,
+            &loop_points_world,
+            &verts_2d,
+        );
+    }
+
+    out
+}
+
+/// Build the `.prep.toml` string from the current cf-scan-prep state.
+/// Includes provenance for every transform / cap / centerline /
+/// simplify-at-save so v2 cf-cast (or a future audit) can reconstruct
+/// what cf-scan-prep did to produce the cleaned STL.
+///
+/// `pivot_centroid_m` is the raw scan AABB centroid (in physics-frame
+/// meters). The centerline polyline is baked through the same
+/// centroid-pivot transform `bake_vertex_with_pivot` uses for mesh
+/// vertices, so the polyline coordinates emitted into `.prep.toml`
+/// agree with the cleaned STL on disk.
+///
+/// `simplify_target_face_count`, `original_face_count`, and
+/// `cleaned_aabb_m` feed the spec-promised `[simplify]` and
+/// `[output.aabb_m]` blocks. The caller computes them from the live
+/// `SimplifyState` / `OriginalScanMesh` / final cleaned mesh AABB so
+/// this function stays pure (no Res lookups).
+#[allow(clippy::too_many_arguments)]
+pub fn build_prep_toml_string(
+    source_stl: &Path,
+    stl_units_label: &'static str,
+    auto_center_offset_m: Vector3<f64>,
+    auto_pca_quat: Option<UnitQuaternion<f64>>,
+    rotation_physics: UnitQuaternion<f64>,
+    euler_deg: [f64; 3],
+    translation_m: Vector3<f64>,
+    centerline_polyline: &[Point3<f64>],
+    cap_loops: &[DetectedCapLoop],
+    applied_tip_mm: f64,
+    applied_floor_mm: f64,
+    applied_reconstruct: Option<AppliedReconstruct>,
+    centerline_trim_capped: usize,
+    cleaned_stl_name: &str,
+    rotation_for_centerline: UnitQuaternion<f64>,
+    translation_for_centerline_m: Vector3<f64>,
+    pivot_centroid_m: Point3<f64>,
+    simplify_target_face_count: usize,
+    simplify_ran: bool,
+    original_face_count: usize,
+    achieved_face_count: usize,
+    smoothing_iterations: usize,
+    cleaned_aabb_m: &Aabb,
+    reconstructed_floor: Option<ReconstructedFloorPlane>,
+) -> Result<String> {
+    let q = rotation_physics;
+    let timestamp = chrono_like_timestamp();
+
+    // Project the centerline polyline into world frame so v2 cf-cast
+    // can consume it directly without redoing transform math. Same
+    // centroid-pivot transform as `build_cleaned_mesh` uses for mesh
+    // vertices. CSP.4b — if the user dialed trim, emit the
+    // POST-TRIM polyline so the TOML record matches what's actually
+    // in the cleaned STL on disk.
+    let baked_polyline: Vec<Point3<f64>> = centerline_polyline
+        .iter()
+        .map(|p| {
+            bake_vertex_with_pivot(
+                p,
+                rotation_for_centerline,
+                &pivot_centroid_m,
+                translation_for_centerline_m,
+            )
+        })
+        .collect();
+    // CSP.4b.6 — use APPLIED trim values (what the displayed +
+    // saved mesh was cut with), not the slider values (which may
+    // be ahead of the user's last Apply click).
+    let trimmed_polyline =
+        trim_centerline_polyline(&baked_polyline, applied_tip_mm, applied_floor_mm);
+    let centerline_world: Vec<[f64; 3]> =
+        trimmed_polyline.iter().map(|p| [p.x, p.y, p.z]).collect();
+
+    let toml_struct = PrepToml {
+        scan_prep: PrepScanPrepBlock {
+            source_stl: source_stl.display().to_string(),
+            tool_version: env!("CARGO_PKG_VERSION"),
+            generated_at: timestamp,
+            stl_units_at_load: stl_units_label,
+            auto_center_offset_m: [
+                auto_center_offset_m.x,
+                auto_center_offset_m.y,
+                auto_center_offset_m.z,
+            ],
+            auto_pca_quaternion: auto_pca_quat.map(|q| [q.w, q.i, q.j, q.k]),
+        },
+        simplify: PrepSimplifyBlock {
+            // `applied = true` iff the user clicked [Apply Simplify]
+            // against the currently-loaded mesh — threaded directly
+            // from `SimplifyState::was_applied`. Replaces a prior
+            // face-count-inference (`achieved < original`) which
+            // produced false positives once save-time simplify was
+            // retired (commit `a66a3cda`, 2026-05-15) and the
+            // save-time cleanup pass became the only face-dropper
+            // for the "user never clicked Apply" case.
+            applied: simplify_ran,
+            algorithm: SIMPLIFY_ALGORITHM_NAME,
+            algorithm_version: SIMPLIFY_ALGORITHM_VERSION,
+            target_face_count: simplify_target_face_count,
+            achieved_face_count,
+            original_face_count,
+            boundary_preserved: true,
+        },
+        smoothing: PrepSmoothingBlock {
+            algorithm: SMOOTHING_ALGORITHM_NAME,
+            iterations: smoothing_iterations,
+            lambda: TAUBIN_DEFAULT_LAMBDA,
+            mu: TAUBIN_DEFAULT_MU,
+        },
+        transform: PrepTransformBlock {
+            rotation: PrepRotationBlock {
+                quaternion: [q.w, q.i, q.j, q.k],
+                roll_deg: euler_deg[0],
+                pitch_deg: euler_deg[1],
+                yaw_deg: euler_deg[2],
+            },
+            translation: PrepTranslationBlock {
+                m: [translation_m.x, translation_m.y, translation_m.z],
+            },
+        },
+        caps: PrepCapsBlock {
+            applied: cap_loops.iter().any(|l| l.include),
+            loops: cap_loops
+                .iter()
+                .enumerate()
+                .map(|(i, cl)| {
+                    // Reconstruction override: when the user applied
+                    // centerline-driven floor reconstruction, the
+                    // cleaned mesh's actual floor sits at the
+                    // post-reconstruction plane (NOT at this loop's
+                    // pre-reconstruction fit plane). Identify the
+                    // floor loop with the same pick-by-count
+                    // heuristic `find_floor_loop_index` uses (the
+                    // largest valid loop is overwhelmingly the cut
+                    // rim on practical scans) and override its plane.
+                    // Other loops (top-end caps, scanner-noise
+                    // stragglers below the size threshold) keep their
+                    // detected planes verbatim.
+                    let is_floor_loop =
+                        reconstructed_floor.is_some() && floor_loop_index(cap_loops) == Some(i);
+                    let (centroid, normal, r_squared) = match reconstructed_floor {
+                        Some(rf) if is_floor_loop => (rf.centroid_m, rf.normal, 1.0_f64),
+                        _ => (cl.plane_centroid, cl.plane_normal, cl.plane_fit_r_squared),
+                    };
+                    PrepCapLoop {
+                        loop_index: i,
+                        vertex_count: cl.vertex_indices.len(),
+                        plane_fit_r_squared: r_squared,
+                        plane_normal: [normal.x, normal.y, normal.z],
+                        plane_centroid_m: [centroid.x, centroid.y, centroid.z],
+                        included: cl.include,
+                    }
+                })
+                .collect(),
+        },
+        centerline: if centerline_world.is_empty() {
+            None
+        } else {
+            Some(PrepCenterlineBlock {
+                points_m: centerline_world,
+                algorithm: "cross_section_centroids",
+            })
+        },
+        centerline_trim: PrepCenterlineTrimBlock {
+            // CSP.4b.6 — record APPLIED values (what was actually
+            // cut into the saved STL), not slider values (the
+            // user's draft preview position).
+            trim_tip_mm: applied_tip_mm,
+            trim_floor_mm: applied_floor_mm,
+            capped_loops: centerline_trim_capped,
+            // CSP.4e.5 — reconstruct sub-block. Present only when
+            // floor reconstruction was applied (and the floor was
+            // chopped — the gate match in `handle_save_action`
+            // ensures both).
+            reconstruct: applied_reconstruct.and_then(|ar| {
+                if applied_floor_mm > 0.0 {
+                    Some(PrepReconstructSubBlock {
+                        shape: match ar.shape {
+                            ReconstructShape::Constant => "constant",
+                            ReconstructShape::Taper => "taper",
+                            ReconstructShape::Extrapolate => "extrapolate",
+                        },
+                        reference_mm: ar.reference_mm,
+                    })
+                } else {
+                    None
+                }
+            }),
+        },
+        output: PrepOutputBlock {
+            cleaned_stl: cleaned_stl_name.to_string(),
+            aabb_m: PrepAabbBlock {
+                min: [
+                    cleaned_aabb_m.min.x,
+                    cleaned_aabb_m.min.y,
+                    cleaned_aabb_m.min.z,
+                ],
+                max: [
+                    cleaned_aabb_m.max.x,
+                    cleaned_aabb_m.max.y,
+                    cleaned_aabb_m.max.z,
+                ],
+            },
+        },
+    };
+    toml::to_string_pretty(&toml_struct).context("serialize PrepToml to TOML")
+}
