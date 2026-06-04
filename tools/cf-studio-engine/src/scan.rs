@@ -38,7 +38,9 @@ impl LoadedScan {
 }
 
 /// Load + validate a scan file, auto-detecting the format (STL / OBJ /
-/// PLY / 3MF / STEP) by extension.
+/// PLY) by extension (case-insensitively). 3MF / STEP are available too
+/// if `mesh-io`'s `threemf` / `step` features are enabled — they are
+/// not, by default, since scanners export STL/OBJ/PLY.
 ///
 /// # Errors
 /// - [`EngineError::ScanLoad`] if the file is missing or can't be parsed.
@@ -82,16 +84,21 @@ endsolid t
     /// An STL that parses but contains no facets.
     const EMPTY_STL: &str = "solid empty\nendsolid empty\n";
 
-    fn temp_dir() -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("cf-studio-engine-scan-test-{}", std::process::id()));
+    /// A per-test temp subdir (keyed by PID **and** a unique label) so
+    /// tests running in parallel never share a directory — otherwise one
+    /// test's `remove_dir` teardown can race a sibling's write.
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cf-studio-engine-scan-test-{}-{label}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     #[test]
     fn loads_a_valid_stl_and_reports_stats() {
-        let dir = temp_dir();
+        let dir = temp_dir("valid");
         let path = dir.join("tri.stl");
         std::fs::write(&path, ONE_TRIANGLE_STL).unwrap();
 
@@ -113,7 +120,7 @@ endsolid t
 
     #[test]
     fn empty_mesh_is_rejected() {
-        let dir = temp_dir();
+        let dir = temp_dir("empty");
         let path = dir.join("empty.stl");
         std::fs::write(&path, EMPTY_STL).unwrap();
 

@@ -30,8 +30,9 @@ cf-studio-core = { workspace = true }
 # game engine comes along. (The `bevy` feature is opt-in, and we never
 # opt in here.)
 cf-device-types = { workspace = true }
-# Load + validate the raw scan file, auto-detecting STL/OBJ/PLY/3MF/STEP
-# by extension. L0, no Bevy — the engine stays headless.
+# Load + validate the raw scan file, auto-detecting STL/OBJ/PLY by
+# extension (mesh-io's default features; scanners export these). 3MF/STEP
+# are opt-in mesh-io features, not enabled here. L0, no Bevy — headless.
 mesh-io = { workspace = true }
 # Typed boundary errors (errors are values; no unwrap in library code).
 thiserror = { workspace = true }
