@@ -404,40 +404,39 @@ export component AppWindow inherits Window {
                         cavity-spin := SpinBox { minimum: 0; maximum: 30; value: 5; }
                         Text { text: "mm"; vertical-alignment: center; color: #333333; }
                     }
-                    ScrollView {
-                        vertical-stretch: 1;
-                        min-height: 120px;
-                        VerticalLayout {
+                    // Layer rows flow at full height; the body scrolls if the
+                    // stack gets long (no nested scroll area, which would
+                    // collapse to its min-height inside the scrollable body).
+                    VerticalLayout {
+                        spacing: 6px;
+                        for layer[idx] in layers: HorizontalBox {
+                            alignment: center;
                             spacing: 6px;
-                            for layer[idx] in layers: HorizontalBox {
-                                alignment: center;
-                                spacing: 6px;
-                                Text {
-                                    text: "Layer \{idx + 1}";
-                                    vertical-alignment: center;
-                                    color: #333333;
-                                }
-                                ComboBox {
-                                    model: material-names;
-                                    current-index: layer.material-index;
-                                    selected => { set-layer-material(idx, self.current-index); }
-                                }
-                                SpinBox {
-                                    minimum: 1;
-                                    maximum: 100;
-                                    value: layer.thickness-mm;
-                                    edited(v) => { set-layer-thickness(idx, v); }
-                                }
-                                Text { text: "mm"; vertical-alignment: center; color: #333333; }
-                                SpinBox {
-                                    minimum: 0;
-                                    maximum: 100;
-                                    value: layer.slacker-pct;
-                                    edited(v) => { set-layer-slacker(idx, v); }
-                                }
-                                Text { text: "% slacker"; vertical-alignment: center; color: #333333; }
-                                Button { text: "✕"; clicked => { remove-layer(idx); } }
+                            Text {
+                                text: "Layer \{idx + 1}";
+                                vertical-alignment: center;
+                                color: #333333;
                             }
+                            ComboBox {
+                                model: material-names;
+                                current-index: layer.material-index;
+                                selected => { set-layer-material(idx, self.current-index); }
+                            }
+                            SpinBox {
+                                minimum: 1;
+                                maximum: 100;
+                                value: layer.thickness-mm;
+                                edited(v) => { set-layer-thickness(idx, v); }
+                            }
+                            Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                            SpinBox {
+                                minimum: 0;
+                                maximum: 100;
+                                value: layer.slacker-pct;
+                                edited(v) => { set-layer-slacker(idx, v); }
+                            }
+                            Text { text: "% slacker"; vertical-alignment: center; color: #333333; }
+                            Button { text: "✕"; clicked => { remove-layer(idx); } }
                         }
                     }
                     HorizontalBox {
