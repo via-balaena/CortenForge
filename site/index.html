@@ -21,10 +21,34 @@
     <p class="eyebrow">Featured app &middot; built with CortenForge</p>
     <h2>Cendrillon</h2>
     <p class="card-lead">A guided desktop tool that takes a 3D scan all the way to printable, silicone-cast molds, step by step.</p>
-    <p><a class="button" href="https://github.com/via-balaena/CortenForge/releases/latest">Download for macOS, Windows &amp; Linux</a></p>
-    <p class="note">macOS (Apple Silicon) is tested; macOS (Intel), Windows &amp; Linux are in beta and may be missing from a given release.</p>
-    <p class="note"><strong>Unsigned for now, so the first time you open it: on macOS, approve it under System Settings &rarr; Privacy &amp; Security (&ldquo;Open Anyway&rdquo;); on Windows, click More info &rarr; Run anyway. Just once.</strong></p>
-    <p class="note">Prefer to check first? The full source is on <a href="https://github.com/via-balaena/CortenForge">GitHub</a> &mdash; you can read every line before you download, so you can verify there's nothing untoward in it.</p>
+
+    <!-- Direct per-platform downloads via GitHub's stable latest-release URLs
+         (…/releases/latest/download/<asset>), so the buttons keep working
+         across releases without pointing users at the GitHub release page. -->
+    <div class="downloads">
+      <a class="button" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-macos-arm64.zip">
+        Download for Mac<span class="button-sub">Apple Silicon &middot; tested</span>
+      </a>
+      <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-windows-x86_64.zip">
+        Download for Windows<span class="button-sub">beta</span>
+      </a>
+      <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-linux-x86_64.tar.gz">
+        Download for Linux<span class="button-sub">beta</span>
+      </a>
+    </div>
+    <p class="note">On an older Intel Mac? The Intel build is in beta &mdash; find it (and every other download) on the <a href="https://github.com/via-balaena/CortenForge/releases/latest">releases page</a>.</p>
+
+    <details class="firstrun" open>
+      <summary>First time you open it (it's unsigned for now)</summary>
+      <ul class="firstrun-steps">
+        <li><strong>Mac</strong> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer: open <strong>System Settings &rarr; Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>, then open it again. You only do this once.</li>
+        <li><strong>Windows</strong> &mdash; unzip and run <code>cf-studio-gui.exe</code>. If SmartScreen warns, click <strong>More info &rarr; Run anyway</strong>.</li>
+        <li><strong>Linux</strong> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary (needs a working Vulkan/GL driver).</li>
+      </ul>
+      <p class="note">Code-signing &amp; notarization (a one-click launch) is a planned upgrade.</p>
+    </details>
+
+    <p class="note">Prefer to check first? The full source is on <a href="https://github.com/via-balaena/CortenForge">GitHub</a> &mdash; you can read every line before you download.</p>
   </section>
 
   <!-- The kit itself -->
