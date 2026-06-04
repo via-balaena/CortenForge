@@ -55,6 +55,7 @@ pub fn cmd_scan(project_path: &Path, scan_file: &Path) -> Result<()> {
     let mut project = load(project_path)?;
     let loaded = load_scan(scan_file).context("validate scan")?;
     project.set_scan(loaded.artifact());
+    advance_after_step(&mut project);
     save(&project, project_path)?;
     println!(
         "✓ Added scan: {} ({} vertices, {} faces)",
@@ -78,6 +79,7 @@ pub fn cmd_prep(project_path: &Path, cleaned_stl: &Path, prep_toml: &Path) -> Re
     project
         .set_prep(prep)
         .context("record prep on the project (is the scan step done?)")?;
+    advance_after_step(&mut project);
     save(&project, project_path)?;
     println!("✓ Accepted cleaned scan + prep.");
     print_status(&project);
@@ -85,6 +87,15 @@ pub fn cmd_prep(project_path: &Path, cleaned_stl: &Path, prep_toml: &Path) -> Re
 }
 
 // ── helpers ─────────────────────────────────────────────────────────
+
+/// Completing a step advances the wizard to the next one, so `status`
+/// (and the GUI, which this CLI mirrors) shows the *next* step as
+/// current. A no-op at the final step. The step just set is complete, so
+/// the only thing `advance` can report here is "already at the end" —
+/// which is exactly the no-op we want, hence the deliberate ignore.
+fn advance_after_step(project: &mut Project) {
+    let _ = project.advance();
+}
 
 fn load(project_path: &Path) -> Result<Project> {
     Project::load(project_path).with_context(|| {
@@ -194,14 +205,18 @@ points_m = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.01]]
 
         cmd_new(&proj, "flow").unwrap();
         cmd_scan(&proj, &stl).unwrap();
-        // Reload between commands → exercises autosave/resume.
-        assert!(Project::load(&proj).unwrap().is_complete(Step::AddScan));
+        // Reload between commands → exercises autosave/resume; and
+        // completing scan advanced the wizard to step 2.
+        let mid = Project::load(&proj).unwrap();
+        assert!(mid.is_complete(Step::AddScan));
+        assert_eq!(mid.current_step(), Step::CleanScan);
 
         cmd_prep(&proj, &cleaned, &prep).unwrap();
         let after = Project::load(&proj).unwrap();
         assert!(after.is_complete(Step::AddScan));
         assert!(after.is_complete(Step::CleanScan));
-        assert_eq!(after.current_step(), Step::CleanScan);
+        // Completing prep advanced to step 3.
+        assert_eq!(after.current_step(), Step::DesignLayers);
 
         let _ = std::fs::remove_dir_all(&d);
     }
