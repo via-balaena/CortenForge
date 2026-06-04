@@ -1,0 +1,34 @@
+[package]
+name = "cf-studio-engine"
+description = "SDK-boundary orchestrator for CortenForge Studio — executes the guided scan→cast workflow steps by calling the SDK crates (mesh-io, cf-device-types, cf-cast). Built on the headless cf-studio-core spine; consumed by the cf-studio CLI + the Slint GUI. See MISSION.md."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# This is the layer that knows about the SDK crates, so the spine
+# (cf-studio-core) can stay pure + fast to build/test. Same strict lint
+# posture as the spine: forbid unsafe, deny the panicking shortcuts.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+# The workflow spine — `DesignDraft` and the other step artifacts.
+cf-studio-core = { workspace = true }
+# Headless reuse of the device-design types (cavity + layer stack +
+# silicone catalog + `.design.toml` read/write). cf-device-types'
+# `default = []` is empty, so a plain dep pulls NO Bevy — the payoff of
+# making that crate Bevy-optional; build this crate in isolation and no
+# game engine comes along. (The `bevy` feature is opt-in, and we never
+# opt in here.)
+cf-device-types = { workspace = true }
+# Typed boundary errors (errors are values; no unwrap in library code).
+thiserror = { workspace = true }

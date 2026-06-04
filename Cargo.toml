@@ -22,6 +22,9 @@ members = [
     # Headless workflow core for the guided scan→cast Studio wizard.
     # The CLI + Slint GUI are thin clients over this. See MISSION.md.
     "tools/cf-studio-core",
+    # SDK-boundary orchestrator for Studio — runs the workflow steps by
+    # calling the SDK crates; built on cf-studio-core.
+    "tools/cf-studio-engine",
     # Layered-silicone-device design + testing suite (Bevy + egui GUI).
     # Consumes cf-scan-prep outputs; produces a `<scan>.design.toml`
     # that cf-cast-cli will consume (slice 9). The meat of the program
@@ -653,6 +656,12 @@ cf-design-tests = { path = "design/cf-design-tests" }
 
 # Cast tooling
 cf-cast = { path = "design/cf-cast" }
+
+# CortenForge Studio — guided scan→cast wizard (see MISSION.md).
+# cf-studio-core: headless workflow spine. cf-studio-engine: the
+# SDK-boundary orchestrator built on the spine + the SDK crates.
+cf-studio-core = { path = "tools/cf-studio-core" }
+cf-studio-engine = { path = "tools/cf-studio-engine" }
 
 # Shared cap-plane abstraction
 cf-cap-planes = { path = "design/cf-cap-planes" }

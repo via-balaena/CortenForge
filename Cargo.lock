@@ -2077,6 +2077,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-studio-engine"
+version = "1.0.0"
+dependencies = [
+ "cf-device-types",
+ "cf-studio-core",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cf-viewer"
 version = "1.0.0"
 dependencies = [
