@@ -196,15 +196,21 @@ impl OrbitCamera {
     /// Column-major MVP for a square viewport, near/far derived from
     /// `radius` so the mesh is never clipped. Includes the OpenGL→wgpu
     /// depth-range correction (z ∈ [-1,1] → [0,1]).
+    ///
+    /// **+Z is up** — the cast-frame convention (`UpAxis::PlusZ`, the
+    /// demolding direction). A scan auto-oriented with its long axis along
+    /// +Z therefore stands vertical in the viewport, matching the
+    /// cf-scan-prep tool. Elevation is the angle above the XY plane;
+    /// azimuth sweeps around +Z.
     #[must_use]
     pub fn mvp(&self, radius: f32) -> [f32; 16] {
         let fov = FOV_Y_DEG.to_radians();
         let (ce, se) = (self.elevation.cos(), self.elevation.sin());
         let (ca, sa) = (self.azimuth.cos(), self.azimuth.sin());
         let target = Point3::new(self.target[0], self.target[1], self.target[2]);
-        let dir = Vector3::new(ce * sa, se, ce * ca);
+        let dir = Vector3::new(ce * sa, ce * ca, se);
         let eye = target + dir * self.distance;
-        let view = Matrix4::look_at_rh(&eye, &target, &Vector3::y());
+        let view = Matrix4::look_at_rh(&eye, &target, &Vector3::z());
 
         let near = (self.distance - radius).max(self.distance * 0.05);
         let far = self.distance + radius * 2.0;
