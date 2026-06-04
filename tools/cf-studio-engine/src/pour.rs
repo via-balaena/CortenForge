@@ -22,7 +22,9 @@ use crate::error::{EngineError, Result};
 pub struct LayerPour {
     /// Silicone catalog key, e.g. `"ECOFLEX_00_30"`.
     pub anchor_key: String,
-    /// Poured mass for this layer, in grams.
+    /// Poured mass for this layer, in **grams**. The cast run reports
+    /// `pour_mass_kg` (kilograms), so the caller converts (× 1000) — be
+    /// careful of a 1000× slip at that boundary.
     pub mass_g: f64,
     /// Slacker fraction, if any.
     pub slacker_fraction: Option<f64>,
@@ -31,6 +33,9 @@ pub struct LayerPour {
 /// Assemble the ordered [`PourPlan`] (innermost layer first) the Step-6
 /// assistant renders. Each layer's mix ratio / pot life / cure time come
 /// from `cf-cast`'s cure-protocol table; the display name from the catalog.
+///
+/// `layers` must be in **pour order (innermost first)**, one entry per
+/// cast layer — the slice position becomes each step's `layer_index`.
 ///
 /// # Errors
 /// [`EngineError::PourDataUnavailable`] if a layer's silicone has no
