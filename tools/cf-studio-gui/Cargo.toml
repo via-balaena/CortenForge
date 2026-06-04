@@ -18,6 +18,12 @@ publish = false
 name = "cf-studio-gui"
 path = "src/main.rs"
 
+# 3D-preview spike (stage 1): prove wgpu renders into a Slint Image.
+# Throwaway-grade exploration; the working approach folds into the lib.
+[[bin]]
+name = "spike-wgpu"
+path = "src/bin/spike_wgpu.rs"
+
 [lib]
 path = "src/lib.rs"
 
@@ -40,8 +46,11 @@ cf-studio-core = { workspace = true }
 cf-studio-engine = { workspace = true }
 # The polished, accessible UI toolkit (direct dep, no workspace pin —
 # brand-new to the workspace; isolated to this GUI crate so its heavy
-# tree never touches the headless spine/engine/CLI).
-slint = "1"
+# tree never touches the headless spine/engine/CLI). The
+# `unstable-wgpu-28` feature exposes the WGPU integration (render a
+# wgpu texture → Slint `Image`) for the 3D scan/mold view; wgpu is
+# re-exported as `slint::wgpu_28::wgpu` so versions always match.
+slint = { version = "1", features = ["unstable-wgpu-28"] }
 # Native open/save file dialogs for the step screens (scan / prep /
 # design pickers). Direct dep; isolated to the GUI crate.
 rfd = "0.15"
