@@ -115,7 +115,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -157,7 +157,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -196,7 +196,12 @@ jobs:
             -p sim-urdf -p sim-gpu -p sim-soft -p sim-ml-chassis-bevy \
             -p sim-therm-env -p cf-geometry -p cf-spatial -p cf-design \
             -p cf-design-tests -p cf-viewer -p cf-bevy-common \
-            -p sim-bevy-soft
+            -p sim-bevy-soft \
+            -p cf-studio-core -p cf-studio-engine -p cf-studio-gui \
+            -p cf-studio -p cf-scan-prep-core -p cf-cast-cli
+          # mesh-io's 3MF unit-scaling tests are behind the non-default
+          # `threemf` feature, so run that crate again with it enabled.
+          cargo test -p mesh-io --features threemf
         shell: bash
 
   # ============================================================================
@@ -224,7 +229,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -293,6 +298,14 @@ jobs:
         run: cargo test -p sim-core -p sim-mjcf -p mesh-io -p mesh-printability
         shell: bash
 
+      # Build Cendrillon (the only thing released for Windows) on each OS,
+      # --locked, so a lockfile drift that breaks the Windows build — e.g. a
+      # cargo update dropping gpu-allocator's windows 0.62.2 pin — fails the
+      # PR here instead of silently dropping the Windows download at release.
+      - name: Build Cendrillon (guards the Windows windows-crate pin)
+        run: cargo build --locked -p cf-studio-gui
+        shell: bash
+
   # ============================================================================
   # FEATURE COMBOS - Non-default feature paths
   # ============================================================================
@@ -314,7 +327,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
