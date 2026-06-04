@@ -60,4 +60,14 @@ pub enum EngineError {
         /// The prep-file path.
         path: String,
     },
+
+    /// A layer's silicone has no cure-protocol entry (mix ratio / pot
+    /// life / cure time), so the pour assistant has no timing to guide it.
+    #[error(
+        "no pour data for silicone {key:?} — missing a cure-protocol entry (mix ratio / pot life / cure time)"
+    )]
+    PourDataUnavailable {
+        /// The material key with no cure data.
+        key: String,
+    },
 }

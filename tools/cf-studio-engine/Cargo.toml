@@ -42,5 +42,8 @@ mesh-io = { workspace = true }
 # still no Bevy; the engine stays headless.
 cf-cast-cli = { workspace = true }
 cf-cap-planes = { workspace = true }
+# cf_cast::cure::lookup — per-silicone mix ratio / pot life / cure time
+# for the structured pour plan (the Step-6 pour-assistant's data).
+cf-cast = { workspace = true }
 # Typed boundary errors (errors are values; no unwrap in library code).
 thiserror = { workspace = true }

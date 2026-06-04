@@ -2081,6 +2081,7 @@ name = "cf-studio-engine"
 version = "1.0.0"
 dependencies = [
  "cf-cap-planes",
+ "cf-cast",
  "cf-cast-cli",
  "cf-device-types",
  "cf-studio-core",
