@@ -659,5 +659,14 @@ export component AppWindow inherits Window {
                 clicked => { next(); }
             }
         }
+
+        // Cendrillon's UI is built with Slint (used under its royalty-free
+        // desktop license) — credit where it's due.
+        Text {
+            text: "Built with Slint";
+            font-size: 12px;
+            color: #8a909a;
+            horizontal-alignment: right;
+        }
     }
 }
