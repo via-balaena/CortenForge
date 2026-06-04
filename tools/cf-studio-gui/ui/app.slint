@@ -498,8 +498,9 @@ export component AppWindow inherits Window {
                             alignment: center;
                             spacing: 8px;
                             Button {
-                                text: "Start pour timer";
-                                enabled: !pour-timer-running;
+                                // Always enabled: re-clicking restarts the clock
+                                // (e.g. after the pot life expired and you remixed).
+                                text: pour-timer-running ? "Restart timer" : "Start pour timer";
                                 clicked => { start-pour-timer(); }
                             }
                             Button {

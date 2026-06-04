@@ -546,6 +546,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
         let (inbox, start) = (molds_inbox.clone(), molds_start.clone());
+        let (pour_current, pour_deadline) = (pour_current.clone(), pour_deadline.clone());
         molds_timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(200),
@@ -565,6 +566,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let recorded = project.borrow_mut().set_molds(outputs);
                             match recorded {
                                 Ok(()) => {
+                                    // New molds → a fresh pour (set_molds cleared
+                                    // any prior print/pour); reset the step-6
+                                    // progress so it starts at layer 1, not stale.
+                                    pour_current.set(0);
+                                    pour_deadline.set(None);
+                                    ui.set_pour_timer_running(false);
                                     ui.set_molds_summary(summary.into());
                                     ui.set_step_message("✓ Molds ready — click Next →.".into());
                                     ui.set_step_message_is_error(false);
