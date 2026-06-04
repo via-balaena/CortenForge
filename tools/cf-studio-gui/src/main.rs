@@ -19,14 +19,16 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cf_studio_core::{Project, Step};
-use cf_studio_engine::{EditSession, ReconstructShape, run_simplify};
+use cf_studio_core::{DesignDraft, LayerDraft, Project, Step};
+use cf_studio_engine::{EditSession, ReconstructShape, run_simplify, silicone_catalog};
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
-use cf_studio_gui::{StepOutcome, apply_design, apply_prep, apply_scan, nav_state, step_rows};
+use cf_studio_gui::{
+    StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, nav_state, step_rows,
+};
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
-use ui::{AppWindow, StepRow};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use ui::{AppWindow, LayerRow, StepRow};
 
 /// Offscreen render-target edge (px). The view is square; Slint scales it
 /// into the viewport with `image-fit: contain`.
@@ -528,6 +530,121 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     *gpu.borrow_mut() = Some((device.clone(), queue.clone()));
                 }
             })?;
+    }
+
+    // ── step 3: silicone layer-stack editor ─────────────────────
+    let catalog: Rc<Vec<(&'static str, &'static str)>> = Rc::new(silicone_catalog());
+    {
+        let names: Vec<SharedString> = catalog
+            .iter()
+            .map(|(_, display)| SharedString::from(*display))
+            .collect();
+        ui.set_material_names(ModelRc::new(VecModel::from(names)));
+    }
+    let idx_of = |key: &str| {
+        catalog
+            .iter()
+            .position(|(k, _)| *k == key)
+            .map_or(0, |i| i32::try_from(i).unwrap_or(0))
+    };
+    // Default stack ≈ the base_mold recipe — a sensible starting point the
+    // user edits freely. Thickness is whole-mm here; load a .design.toml for
+    // sub-mm precision.
+    let layers_model = Rc::new(VecModel::from(vec![
+        LayerRow {
+            material_index: idx_of("ECOFLEX_00_30"),
+            thickness_mm: 18,
+            slacker_pct: 25,
+        },
+        LayerRow {
+            material_index: idx_of("DRAGON_SKIN_10A"),
+            thickness_mm: 8,
+            slacker_pct: 0,
+        },
+        LayerRow {
+            material_index: idx_of("DRAGON_SKIN_20A"),
+            thickness_mm: 5,
+            slacker_pct: 0,
+        },
+    ]));
+    ui.set_layers(ModelRc::from(layers_model.clone()));
+    {
+        let layers_model = layers_model.clone();
+        let default_idx = idx_of("DRAGON_SKIN_10A");
+        ui.on_add_layer(move || {
+            layers_model.push(LayerRow {
+                material_index: default_idx,
+                thickness_mm: 5,
+                slacker_pct: 0,
+            });
+        });
+    }
+    {
+        let layers_model = layers_model.clone();
+        ui.on_remove_layer(move |idx| {
+            let i = idx.max(0) as usize;
+            // Keep at least one layer (the cast needs a stack).
+            if i < layers_model.row_count() && layers_model.row_count() > 1 {
+                layers_model.remove(i);
+            }
+        });
+    }
+    {
+        let layers_model = layers_model.clone();
+        ui.on_set_layer_material(move |idx, mat| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = layers_model.row_data(i) {
+                row.material_index = mat;
+                layers_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let layers_model = layers_model.clone();
+        ui.on_set_layer_thickness(move |idx, mm| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = layers_model.row_data(i) {
+                row.thickness_mm = mm;
+                layers_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let layers_model = layers_model.clone();
+        ui.on_set_layer_slacker(move |idx, pct| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = layers_model.row_data(i) {
+                row.slacker_pct = pct;
+                layers_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let (layers_model, catalog) = (layers_model.clone(), catalog.clone());
+        ui.on_use_design(move |cavity_mm| {
+            let layers: Vec<LayerDraft> = (0..layers_model.row_count())
+                .filter_map(|i| layers_model.row_data(i))
+                .map(|row| {
+                    let key = usize::try_from(row.material_index)
+                        .ok()
+                        .and_then(|i| catalog.get(i))
+                        .map_or("ECOFLEX_00_30", |(k, _)| *k)
+                        .to_string();
+                    LayerDraft {
+                        thickness_m: f64::from(row.thickness_mm) / 1000.0,
+                        material_key: key,
+                        slacker_fraction: f64::from(row.slacker_pct) / 100.0,
+                    }
+                })
+                .collect();
+            let draft = DesignDraft {
+                cavity_inset_m: f64::from(cavity_mm) / 1000.0,
+                layers,
+            };
+            let outcome = apply_design_draft(&mut project.borrow_mut(), draft);
+            update(&weak, &project, viewed.get(), &outcome);
+        });
     }
 
     // ── navigation (gated by the wizard state) ──────────────────

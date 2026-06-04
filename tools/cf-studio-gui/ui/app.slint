@@ -1,4 +1,12 @@
-import { Button, VerticalBox, HorizontalBox, SpinBox, ComboBox } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, SpinBox, ComboBox, ScrollView } from "std-widgets.slint";
+
+// One silicone layer in the step-3 stack editor (innermost first). The Rust
+// side owns these in a VecModel; the row widgets write back via callbacks.
+export struct LayerRow {
+    material-index: int,  // index into `material-names` / the catalog
+    thickness-mm: int,
+    slacker-pct: int,
+}
 
 // One row of the workflow checklist, prepared for display by the Rust
 // side (mark/here are precomputed so the markup stays simple).
@@ -95,12 +103,23 @@ export component AppWindow inherits Window {
     // pick-scan buttons so an intervening edit can't be clobbered by the
     // late-arriving result. Orbit stays live.
     in property <bool> busy: false;
+    // Step 3 design editor: the silicone layer stack + the catalog's display
+    // names for each layer's material picker.
+    in property <[LayerRow]> layers;
+    in property <[string]> material-names;
 
     callback back();
     callback next();
     callback help();
     callback pick-scan();
     callback pick-design();
+    // Step-3 layer-stack edits + commit (cavity inset mm).
+    callback add-layer();
+    callback remove-layer(int);
+    callback set-layer-material(int, int);
+    callback set-layer-thickness(int, int);
+    callback set-layer-slacker(int, int);
+    callback use-design(int);
     // Mouse-drag in the 3D view: (dx, dy) screen-pixel deltas → orbit.
     callback orbit(length, length);
     // Step-2 edit ops (drive the EditSession; each re-renders the view).
@@ -263,9 +282,68 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if viewed-number == 3: Button {
-                    text: "Choose design file…";
-                    clicked => { pick-design(); }
+                // Step 3 — choose the silicone layer stack + cavity inset.
+                if viewed-number == 3: VerticalLayout {
+                    spacing: 12px;
+                    vertical-stretch: 1;
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Text {
+                            text: "Cavity inset (snugness)";
+                            vertical-alignment: center;
+                            color: #333333;
+                        }
+                        cavity-spin := SpinBox { minimum: 0; maximum: 30; value: 5; }
+                        Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        min-height: 120px;
+                        VerticalLayout {
+                            spacing: 6px;
+                            for layer[idx] in layers: HorizontalBox {
+                                alignment: center;
+                                spacing: 6px;
+                                Text {
+                                    text: "Layer \{idx + 1}";
+                                    vertical-alignment: center;
+                                    color: #333333;
+                                }
+                                ComboBox {
+                                    model: material-names;
+                                    current-index: layer.material-index;
+                                    selected => { set-layer-material(idx, self.current-index); }
+                                }
+                                SpinBox {
+                                    minimum: 1;
+                                    maximum: 100;
+                                    value: layer.thickness-mm;
+                                    edited(v) => { set-layer-thickness(idx, v); }
+                                }
+                                Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 100;
+                                    value: layer.slacker-pct;
+                                    edited(v) => { set-layer-slacker(idx, v); }
+                                }
+                                Text { text: "% slacker"; vertical-alignment: center; color: #333333; }
+                                Button { text: "✕"; clicked => { remove-layer(idx); } }
+                            }
+                        }
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Button { text: "+ Add layer"; clicked => { add-layer(); } }
+                        Button {
+                            text: "Use this design";
+                            primary: true;
+                            clicked => { use-design(cavity-spin.value); }
+                        }
+                        Button { text: "…or load a file"; clicked => { pick-design(); } }
+                    }
                 }
                 if viewed-number >= 4: Text {
                     text: "“\{viewed-title}” — the controls for this step arrive next.";
