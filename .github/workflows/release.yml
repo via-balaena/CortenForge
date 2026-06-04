@@ -147,10 +147,13 @@ jobs:
       - name: Generate SBOM (CycloneDX)
         run: cargo cyclonedx --format json
 
-      - name: Collect SBOMs
+      # cargo-cyclonedx writes one <crate>.cdx.json per workspace member
+      # (~280 of them). Keep only the shipped app's SBOM — attaching all of
+      # them as release assets is noise AND trips GitHub's upload rate limit.
+      - name: Collect Studio SBOM
         run: |
           mkdir -p sbom-out
-          find . -name '*.cdx.json' -not -path './sbom-out/*' -exec cp {} sbom-out/ \;
+          find . -name 'cf-studio-gui.cdx.json' -not -path './sbom-out/*' -exec cp {} sbom-out/ \;
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v6
