@@ -377,10 +377,22 @@ impl Project {
     /// a previously-good file. This is the autosave primitive.
     ///
     /// # Errors
-    /// [`StudioError::Serialize`] or [`StudioError::Io`].
+    /// [`StudioError::Serialize`] (including a project that would not load
+    /// back — see below) or [`StudioError::Io`].
     pub fn save(&self, path: &Path) -> Result<()> {
         let body = serde_json::to_string_pretty(self)
             .map_err(|e| StudioError::Serialize(e.to_string()))?;
+        // Verify the JSON round-trips before we replace the previous good
+        // file. serde encodes a non-finite f64 (NaN / ±Inf) as the literal
+        // `null`, which then fails to deserialize back into the non-Option
+        // float artifacts (e.g. a degenerate cast mass / cure time). Catching
+        // it here keeps the durability guarantee honest: an unloadable
+        // autosave can never overwrite a working project file.
+        serde_json::from_str::<Self>(&body).map_err(|e| {
+            StudioError::Serialize(format!(
+                "refusing to write a project that would not load back: {e}"
+            ))
+        })?;
         let mut tmp = path.to_path_buf().into_os_string();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
@@ -706,6 +718,33 @@ mod tests {
         p.save(&path).unwrap();
         let loaded = Project::load(&path).unwrap();
         assert_eq!(p, loaded);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn save_refuses_a_non_loadable_project_and_keeps_the_good_file() {
+        let dir =
+            std::env::temp_dir().join(format!("cf-studio-core-nanguard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.json");
+
+        // A good project is on disk.
+        let good = fully_completed();
+        good.save(&path).unwrap();
+
+        // A non-finite cast mass serializes to JSON `null`, which won't load
+        // back. save() must refuse it (before touching the file) rather than
+        // overwrite the working project.
+        let mut bad = good.clone();
+        bad.molds.as_mut().unwrap().total_mass_g = f64::NAN;
+        assert!(
+            bad.save(&path).is_err(),
+            "save must refuse a project that would not round-trip"
+        );
+        // The previously-good file is untouched and still loads.
+        assert_eq!(Project::load(&path).unwrap(), good);
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
