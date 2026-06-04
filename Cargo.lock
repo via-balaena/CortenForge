@@ -2346,12 +2346,26 @@ name = "cf-scan-prep"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "baby_shark",
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
+ "cf-scan-prep-core",
  "cf-viewer",
  "clap",
+ "mesh-io",
+ "mesh-repair",
+ "mesh-types",
+ "nalgebra 0.34.2",
+ "serde",
+ "toml 1.1.0+spec-1.1.0",
+]
+
+[[package]]
+name = "cf-scan-prep-core"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "baby_shark",
  "mesh-io",
  "mesh-repair",
  "mesh-types",

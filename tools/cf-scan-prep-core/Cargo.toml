@@ -1,0 +1,51 @@
+[package]
+name = "cf-scan-prep-core"
+description = "Headless, Bevy-free mesh-editing core for scan preprocessing — the scan repair / cap / centerline / trim / reconstruct algorithms + the .prep.toml schema, shared by the cf-scan-prep Bevy tool and CortenForge Studio."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-tool library (no `[package.metadata.cortenforge]` tier block —
+# matches the cf-scan-prep / cf-studio-* precedent). This is the pure-compute
+# half of cf-scan-prep, extracted so a second frontend (Studio's Slint+wgpu
+# scan editor) can drive the exact same algorithms the Bevy tool does — no
+# behavior drift. Every fn here operates on `mesh_types::IndexedMesh` +
+# nalgebra; NOTHING here may depend on Bevy/egui/rendering.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The shared mesh representation (`IndexedMesh`, `Aabb`, `Bounded::aabb()`,
+# `Point3`) every algorithm reads/writes. Bevy-free.
+mesh-types = { workspace = true }
+# STL load/save (the scan in, the cleaned scan out). Bevy-free.
+mesh-io = { workspace = true }
+# Shared mesh algorithms the scan-prep ops build on: `weld_vertices`,
+# `remove_unreferenced_vertices`, `holes` (boundary-loop detection),
+# `taubin_smooth_vertices`, `remove_degenerate_triangles`,
+# `remove_small_components`, `MeshAdjacency`. Bevy-free.
+mesh-repair = { workspace = true }
+# Boundary-preserving quadric edge-collapse decimation (the Simplify op).
+baby_shark = { workspace = true }
+# `Point3` / `Vector3` / `Matrix3` / `UnitQuaternion<f64>` — the geometry
+# math behind PCA orient, plane fits, centerline tangents, transform bakes.
+nalgebra = { workspace = true }
+# `.prep.toml` provenance schema (centerline points + cap planes + transform
+# record) that cf-cast consumes; `Serialize` derives + `toml` serialization.
+serde = { workspace = true }
+toml = { workspace = true }
+# Error chaining for the reconstruction / save-prep paths.
+anyhow = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

@@ -2315,6 +2315,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
         "cf-viewer"
             | "cf-bevy-common"
             | "cf-scan-prep"
+            | "cf-scan-prep-core"
             | "cf-cast-cli"
             | "cf-device-design"
             | "cf-sim-research"
@@ -3743,6 +3744,7 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-viewer"));
         assert!(!applies_to_crate("cf-bevy-common"));
         assert!(!applies_to_crate("cf-scan-prep"));
+        assert!(!applies_to_crate("cf-scan-prep-core"));
         assert!(!applies_to_crate("cf-cast-cli"));
         assert!(!applies_to_crate("cf-device-design"));
         assert!(!applies_to_crate("cf-sim-research"));
