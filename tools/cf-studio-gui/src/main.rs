@@ -25,7 +25,8 @@ use cf_studio_engine::{
 };
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
-    StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, nav_state, step_rows,
+    StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, cell_size_m_for_quality,
+    format_molds_summary, nav_state, step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
@@ -584,7 +585,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ui.set_step_message(
                             format!(
                                 "Making molds… {}:{:02} elapsed  \
-                                 (several minutes; the window stays responsive)",
+                                 (this can take a while — the window stays responsive)",
                                 secs / 60,
                                 secs % 60,
                             )
@@ -1089,6 +1090,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (project, weak) = (project.clone(), weak.clone());
         let (inbox, start) = (molds_inbox.clone(), molds_start.clone());
         ui.on_make_molds(move |quality_idx| {
+            // Re-entrancy guard: a run already in flight (the UI disables the
+            // button via `busy`, but a queued click could still arrive). Don't
+            // spawn a second 15-min cast into the same output dir.
+            if start.get().is_some() {
+                return;
+            }
             // Pull the inputs from the project: the cleaned scan + prep
             // (step 2) and the in-app design (step 3). The wizard gate
             // ensures both exist, but guard anyway.
@@ -1112,11 +1119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 return;
             };
-            // Quality → marching-cubes cell size, matching the picker order:
-            // index 0 = Fine 0.5 mm (the print-quality default), index 1 =
-            // Fast 1.5 mm preview. (3 mm is never offered — it drops the
-            // flange web.)
-            let cell_size_m = if quality_idx == 1 { 0.0015 } else { 0.0005 };
+            let cell_size_m = cell_size_m_for_quality(quality_idx);
 
             if let Some(ui) = weak.upgrade() {
                 ui.set_busy(true);
@@ -1146,39 +1149,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.run()?;
     Ok(())
-}
-
-/// A human-readable summary of a completed mold run for the step-4 results
-/// panel: piece counts, total silicone, the per-layer pour list, and where
-/// the files landed.
-fn format_molds_summary(out: &MoldOutputs) -> String {
-    use std::fmt::Write as _;
-    let mut s = format!(
-        "✓ {} mold piece(s) + {} plug(s)",
-        out.mold_stls.len(),
-        out.plug_stls.len(),
-    );
-    if !out.accessory_stls.is_empty() {
-        let _ = write!(s, " + {} accessory part(s)", out.accessory_stls.len());
-    }
-    let _ = write!(
-        s,
-        "\nTotal silicone: {:.0} g across {} pour(s):",
-        out.total_mass_g,
-        out.pour_plan.steps.len(),
-    );
-    for step in &out.pour_plan.steps {
-        let _ = write!(
-            s,
-            "\n  • Layer {}: {} — {:.0} g (pot life ~{} min)",
-            step.layer_index + 1,
-            step.material_display_name,
-            step.mass_g,
-            step.pot_life_minutes,
-        );
-    }
-    let _ = write!(s, "\nSaved to: {}", out.out_dir.display());
-    s
 }
 
 /// After a step action: surface its message + re-render from the project.

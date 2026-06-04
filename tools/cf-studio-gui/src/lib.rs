@@ -16,9 +16,10 @@
 //! The Slint event-loop + `rfd` file-dialog glue lives in `main.rs` (it
 //! needs a display to *run*, but compiles headlessly).
 
+use std::fmt::Write as _;
 use std::path::Path;
 
-use cf_studio_core::{DesignDraft, Project, Step};
+use cf_studio_core::{DesignDraft, MoldOutputs, Project, Step};
 use cf_studio_engine::{accept_prep, draft_from_design_toml, load_scan};
 
 pub mod viewer;
@@ -115,6 +116,53 @@ pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutc
     );
     project.set_design(draft).map_err(|e| e.to_string())?;
     Ok(message)
+}
+
+/// Marching-cubes cell size (meters) for the step-4 quality-picker index.
+/// Index 0 = Fine 0.5 mm (the print-quality default — the physical fit-test
+/// print was 0.5 mm); index 1 = Fast 1.5 mm preview. Any other index falls
+/// back to the print-quality default. 3 mm is never offered (it drops the
+/// flange web). **Must stay in lockstep with the picker's `model` order in
+/// `app.slint`** — the test pins it.
+#[must_use]
+pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
+    match quality_idx {
+        1 => 0.0015,
+        _ => 0.0005,
+    }
+}
+
+/// A human-readable summary of a completed mold run for the step-4 results
+/// panel: piece counts, total silicone, the per-layer pour list, and where
+/// the files landed.
+#[must_use]
+pub fn format_molds_summary(out: &MoldOutputs) -> String {
+    let mut s = format!(
+        "✓ {} mold piece(s) + {} plug(s)",
+        out.mold_stls.len(),
+        out.plug_stls.len(),
+    );
+    if !out.accessory_stls.is_empty() {
+        let _ = write!(s, " + {} accessory part(s)", out.accessory_stls.len());
+    }
+    let _ = write!(
+        s,
+        "\nTotal silicone: {:.0} g across {} pour(s):",
+        out.total_mass_g,
+        out.pour_plan.steps.len(),
+    );
+    for step in &out.pour_plan.steps {
+        let _ = write!(
+            s,
+            "\n  • Layer {}: {} — {:.0} g (pot life ~{} min)",
+            step.layer_index + 1,
+            step.material_display_name,
+            step.mass_g,
+            step.pot_life_minutes,
+        );
+    }
+    let _ = write!(s, "\nSaved to: {}", out.out_dir.display());
+    s
 }
 
 /// Whether Back/Next are available from the `viewed` screen.
@@ -299,6 +347,74 @@ visible = true
         assert!(apply_prep(&mut p, &cleaned, &prep).is_err());
 
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn quality_index_maps_to_cell_size() {
+        // Index 0 (the picker default) must be the 0.5 mm print quality;
+        // this is the mapping that was wrong once already.
+        assert_eq!(
+            cell_size_m_for_quality(0),
+            0.0005,
+            "default = print quality"
+        );
+        assert_eq!(cell_size_m_for_quality(1), 0.0015, "fast preview");
+        // Out-of-range indices fall back to the safe print-quality default.
+        assert_eq!(cell_size_m_for_quality(99), 0.0005);
+        assert_eq!(cell_size_m_for_quality(-1), 0.0005);
+    }
+
+    #[test]
+    fn molds_summary_lists_counts_mass_and_pours() {
+        use cf_studio_core::{PourPlan, PourStep};
+
+        let out = MoldOutputs {
+            out_dir: PathBuf::from("/tmp/scans/out"),
+            mold_stls: vec![PathBuf::from("a.stl"), PathBuf::from("b.stl")],
+            plug_stls: vec![PathBuf::from("p.stl")],
+            accessory_stls: vec![PathBuf::from("platform.stl")],
+            procedure_path: PathBuf::from("procedure.md"),
+            total_mass_g: 842.0,
+            pour_plan: PourPlan {
+                steps: vec![PourStep {
+                    layer_index: 0,
+                    material_display_name: "Ecoflex 00-30".to_string(),
+                    mass_g: 500.0,
+                    mix_ratio_a_to_b: "1:1".to_string(),
+                    pot_life_minutes: 25,
+                    cure_time_hours: 4.0,
+                    slacker_fraction: Some(0.25),
+                }],
+            },
+        };
+        let s = format_molds_summary(&out);
+        assert!(s.contains("2 mold piece(s) + 1 plug(s)"), "got: {s}");
+        assert!(s.contains("1 accessory part(s)"), "got: {s}");
+        assert!(s.contains("842 g across 1 pour(s)"), "got: {s}");
+        // 1-based layer label, display name, grams, pot life.
+        assert!(
+            s.contains("Layer 1: Ecoflex 00-30 — 500 g (pot life ~25 min)"),
+            "got: {s}"
+        );
+        assert!(s.contains("Saved to: /tmp/scans/out"), "got: {s}");
+    }
+
+    #[test]
+    fn molds_summary_omits_accessories_when_none() {
+        use cf_studio_core::PourPlan;
+
+        let out = MoldOutputs {
+            out_dir: PathBuf::from("/tmp/out"),
+            mold_stls: vec![PathBuf::from("a.stl")],
+            plug_stls: vec![],
+            accessory_stls: vec![],
+            procedure_path: PathBuf::from("p.md"),
+            total_mass_g: 0.0,
+            pour_plan: PourPlan { steps: vec![] },
+        };
+        let s = format_molds_summary(&out);
+        assert!(!s.contains("accessory"), "no accessory clause: {s}");
+        assert!(s.contains("0 pour(s)"), "got: {s}");
     }
 
     #[test]
