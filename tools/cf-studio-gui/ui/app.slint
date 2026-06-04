@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox, SpinBox } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, SpinBox, ComboBox } from "std-widgets.slint";
 
 // One row of the workflow checklist, prepared for display by the Rust
 // side (mark/here are precomputed so the markup stays simple).
@@ -67,7 +67,7 @@ export component AppWindow inherits Window {
     // Tall enough that the footer (Back / Help / Next) is always on-screen
     // even if the OS restores a shorter window from a previous run (and
     // with room for the step-2 trim row).
-    min-height: 760px;
+    min-height: 800px;
 
     in property <string> project-name: "Untitled";
     in property <[StepRow]> steps;
@@ -88,6 +88,9 @@ export component AppWindow inherits Window {
     in property <bool> has-centerline: false;
     // Upper bound (mm) for the trim sliders = the centerline arc length.
     in property <int> trim-max-mm: 100;
+    // Whether a floor trim is applied — gates the reconstruct row (you
+    // reconstruct down to a chopped floor).
+    in property <bool> has-floor-trim: false;
 
     callback back();
     callback next();
@@ -104,6 +107,8 @@ export component AppWindow inherits Window {
     callback weld();
     callback find-floor();
     callback apply-trim(int, int);
+    // (shape-index 0=constant/1=taper/2=extrapolate, reference-mm)
+    callback apply-reconstruct(int, int);
     callback reset-edit();
 
     VerticalBox {
@@ -203,6 +208,28 @@ export component AppWindow inherits Window {
                         Button {
                             text: "Apply trim";
                             clicked => { apply-trim(tip-spin.value, floor-spin.value); }
+                        }
+                    }
+                    // Reconstruct row — appears once a floor trim is applied;
+                    // closes the chopped floor with a profiled cap.
+                    if has-floor-trim: HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Text { text: "Floor shape"; vertical-alignment: center; color: #333333; }
+                        shape-combo := ComboBox {
+                            model: ["Constant", "Taper", "Extrapolate"];
+                            current-index: 0;
+                        }
+                        Text { text: "from"; vertical-alignment: center; color: #333333; }
+                        ref-spin := SpinBox {
+                            minimum: 5;
+                            maximum: trim-max-mm;
+                            value: 25;
+                        }
+                        Text { text: "mm above cut"; vertical-alignment: center; color: #333333; }
+                        Button {
+                            text: "Reconstruct floor";
+                            clicked => { apply-reconstruct(shape-combo.current-index, ref-spin.value); }
                         }
                     }
                 }

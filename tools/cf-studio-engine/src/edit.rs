@@ -295,12 +295,18 @@ impl EditSession {
         }
     }
 
-    /// Drop cap/centerline state — called by every mesh-mutating op so the
-    /// frontend re-runs `detect_caps` against the current geometry rather
-    /// than trusting stale loops.
+    /// Drop ALL centerline-derived state — cap loops, the centerline, and
+    /// the centerline-relative trim + reconstruction — called by every
+    /// mesh-mutating op. A mesh change invalidates the old centerline, so
+    /// the trim (defined as arc-distances along it) is stale too; clearing
+    /// it keeps the engine state and the frontend's trim controls in sync
+    /// (re-run `detect_caps` + re-trim against the current geometry).
     fn clear_caps(&mut self) {
         self.cap_loops.clear();
         self.centerline.clear();
+        self.trim_tip_mm = 0.0;
+        self.trim_floor_mm = 0.0;
+        self.reconstruct = None;
     }
 
     /// The unbaked reorient rotation (e.g. from [`level_to_floor`]). Apply
@@ -507,9 +513,7 @@ impl EditSession {
         self.auto_center_offset_m = Vector3::zeros();
         self.auto_pca_quat = None;
         self.reorient_rotation = UnitQuaternion::identity();
-        self.trim_tip_mm = 0.0;
-        self.trim_floor_mm = 0.0;
-        self.reconstruct = None;
+        // trim + reconstruct are cleared by clear_caps (centerline-derived).
         self.clear_caps();
     }
 
@@ -930,6 +934,19 @@ mod tests {
             s.reconstruct().is_none(),
             "moving the floor cut drops the now-stale reconstruction",
         );
+    }
+
+    #[test]
+    fn a_mesh_edit_clears_pending_trim() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        s.apply_trim(0.0, 200.0);
+        s.apply_reconstruct(25.0, ReconstructShape::Constant);
+        assert_eq!(s.trim_floor_mm(), 200.0);
+        s.weld(); // a mesh change invalidates the centerline-relative trim
+        assert_eq!(s.trim_floor_mm(), 0.0, "welding drops the stale trim");
+        assert!(s.reconstruct().is_none());
+        assert!(!s.has_centerline());
     }
 
     #[test]

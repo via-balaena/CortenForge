@@ -26,6 +26,9 @@ pub mod scan;
 
 pub use design::{design_toml_from_draft, draft_from_design_toml, save_design_from_draft};
 pub use edit::EditSession;
+// The reconstruct-shape choice an `EditSession::apply_reconstruct` caller
+// (the GUI) needs to name — re-exported through the engine front door.
+pub use cf_scan_prep_core::ReconstructShape;
 pub use error::{EngineError, Result};
 pub use mold::generate_molds;
 // Re-export the config type `generate_molds` takes, so a frontend can

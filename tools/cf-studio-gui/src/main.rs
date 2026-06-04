@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cf_studio_core::{Project, Step};
-use cf_studio_engine::EditSession;
+use cf_studio_engine::{EditSession, ReconstructShape};
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{StepOutcome, apply_design, apply_scan, nav_state, step_rows};
 use slint::wgpu_28::wgpu;
@@ -526,6 +526,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     {
         let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        ui.on_apply_reconstruct(move |shape_idx, reference_mm| {
+            let shape = match shape_idx {
+                1 => ReconstructShape::Taper,
+                2 => ReconstructShape::Extrapolate,
+                _ => ReconstructShape::Constant,
+            };
+            let (msg, is_err) = {
+                let mut e = edit.borrow_mut();
+                let Some(s) = e.as_mut() else { return };
+                if s.apply_reconstruct(f64::from(reference_mm), shape) {
+                    s.level_to_floor();
+                    (
+                        format!("✓ Reconstructed the floor ({reference_mm} mm reference zone)."),
+                        false,
+                    )
+                } else {
+                    (
+                        "Apply a floor trim first, then reconstruct.".to_string(),
+                        true,
+                    )
+                }
+            };
+            apply_edit(&weak, &scene, &edit, &msg, is_err);
+        });
+    }
+    {
+        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
         ui.on_reset_edit(move || {
             {
                 let mut e = edit.borrow_mut();
@@ -664,5 +691,8 @@ fn apply_edit(
         ui.set_has_centerline(session.has_centerline());
         let max_mm = session.centerline_arc_length_mm().round() as i32;
         ui.set_trim_max_mm(max_mm.clamp(10, 100_000));
+        // Reconstruct is available once a floor trim is applied (and the
+        // centerline it was trimmed along still exists).
+        ui.set_has_floor_trim(session.reconstruct_available() && session.has_centerline());
     }
 }
