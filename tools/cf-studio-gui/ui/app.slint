@@ -62,11 +62,12 @@ component ScanViewport inherits Rectangle {
 export component AppWindow inherits Window {
     title: "CortenForge Studio";
     preferred-width: 900px;
-    preferred-height: 780px;
+    preferred-height: 840px;
     min-width: 640px;
     // Tall enough that the footer (Back / Help / Next) is always on-screen
-    // even if the OS restores a shorter window from a previous run.
-    min-height: 700px;
+    // even if the OS restores a shorter window from a previous run (and
+    // with room for the step-2 trim row).
+    min-height: 760px;
 
     in property <string> project-name: "Untitled";
     in property <[StepRow]> steps;
@@ -83,6 +84,10 @@ export component AppWindow inherits Window {
     in property <bool> has-scan: false;
     // Step-2 editor: working-mesh stats line ("N faces · M vertices").
     in property <string> edit-stats: "";
+    // Whether a centerline exists (after Find floor) — gates the trim row.
+    in property <bool> has-centerline: false;
+    // Upper bound (mm) for the trim sliders = the centerline arc length.
+    in property <int> trim-max-mm: 100;
 
     callback back();
     callback next();
@@ -98,6 +103,7 @@ export component AppWindow inherits Window {
     callback simplify(int);
     callback weld();
     callback find-floor();
+    callback apply-trim(int, int);
     callback reset-edit();
 
     VerticalBox {
@@ -166,7 +172,7 @@ export component AppWindow inherits Window {
                         alignment: center;
                         spacing: 8px;
                         Button { text: "Weld"; clicked => { weld(); } }
-                        Text { text: "Simplify to"; vertical-alignment: center; }
+                        Text { text: "Simplify to"; vertical-alignment: center; color: #333333; }
                         target-spin := SpinBox {
                             minimum: 1000;
                             maximum: 1000000;
@@ -175,6 +181,29 @@ export component AppWindow inherits Window {
                         Button { text: "Simplify"; clicked => { simplify(target-spin.value); } }
                         Button { text: "Find floor"; clicked => { find-floor(); } }
                         Button { text: "Reset"; clicked => { reset-edit(); } }
+                    }
+                    // Trim row — appears once Find floor has traced a
+                    // centerline to chop along.
+                    if has-centerline: HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Text { text: "Trim  tip"; vertical-alignment: center; color: #333333; }
+                        tip-spin := SpinBox {
+                            minimum: 0;
+                            maximum: trim-max-mm;
+                            value: 0;
+                        }
+                        Text { text: "mm   floor"; vertical-alignment: center; color: #333333; }
+                        floor-spin := SpinBox {
+                            minimum: 0;
+                            maximum: trim-max-mm;
+                            value: 0;
+                        }
+                        Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                        Button {
+                            text: "Apply trim";
+                            clicked => { apply-trim(tip-spin.value, floor-spin.value); }
+                        }
                     }
                 }
 

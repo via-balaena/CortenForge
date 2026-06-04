@@ -232,6 +232,13 @@ impl EditSession {
         !self.centerline.is_empty()
     }
 
+    /// Total centerline arc length in mm (0 if no centerline) — the upper
+    /// bound a frontend should clamp trim sliders to.
+    #[must_use]
+    pub fn centerline_arc_length_mm(&self) -> f64 {
+        cf_scan_prep_core::polyline_arc_length_m(&self.centerline) * 1000.0
+    }
+
     /// Detect open-boundary cap loops + compute the interior centerline —
     /// the "Cap → Scan" step, mirroring the cf-scan-prep tool's
     /// `handle_cap_actions`: keep only valid loops, fit each loop's plane,

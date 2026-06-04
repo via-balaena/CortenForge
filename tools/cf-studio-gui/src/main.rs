@@ -511,6 +511,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     {
         let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        ui.on_apply_trim(move |tip, floor| {
+            let msg = {
+                let mut e = edit.borrow_mut();
+                let Some(s) = e.as_mut() else { return };
+                s.apply_trim(f64::from(tip), f64::from(floor));
+                // Re-level onto the new cut floor (the predicted/reconstructed
+                // floor path now that there's a trim).
+                s.level_to_floor();
+                format!("✓ Trimmed — tip {tip} mm, floor {floor} mm — and re-leveled.")
+            };
+            apply_edit(&weak, &scene, &edit, &msg, false);
+        });
+    }
+    {
+        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
         ui.on_reset_edit(move || {
             {
                 let mut e = edit.borrow_mut();
@@ -618,7 +633,17 @@ fn apply_edit(
     let Some(session) = eguard.as_ref() else {
         return;
     };
-    let md = mesh_data_from_indexed(&session.display_mesh());
+    let display = session.display_mesh();
+    // Over-trim guard: an empty mesh would mean 0-size wgpu buffers. Don't
+    // render it — keep the last good view + tell the user to ease off.
+    if display.faces.is_empty() {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_step_message("That trim removes the whole mesh — reduce it.".into());
+            ui.set_step_message_is_error(true);
+        }
+        return;
+    }
+    let md = mesh_data_from_indexed(&display);
     let img = {
         let mut sguard = scene.borrow_mut();
         let Some(s) = sguard.as_mut() else {
@@ -634,5 +659,10 @@ fn apply_edit(
         ui.set_edit_stats(stats_line(session).into());
         ui.set_step_message(message.into());
         ui.set_step_message_is_error(is_error);
+        // Trim controls appear once a centerline exists; bound the sliders
+        // to its arc length.
+        ui.set_has_centerline(session.has_centerline());
+        let max_mm = session.centerline_arc_length_mm().round() as i32;
+        ui.set_trim_max_mm(max_mm.clamp(10, 100_000));
     }
 }
