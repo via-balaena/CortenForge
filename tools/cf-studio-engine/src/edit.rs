@@ -93,6 +93,18 @@ pub struct CapScan {
     pub looks_unwelded: bool,
 }
 
+/// What [`EditSession::save`] wrote: the cleaned-scan STL + the `.prep.toml`
+/// the cast pipeline consumes, plus the final face count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveReport {
+    /// Path to the written `{stem}.cleaned.stl`.
+    pub cleaned_stl: PathBuf,
+    /// Path to the written `{stem}.prep.toml`.
+    pub prep_toml: PathBuf,
+    /// Face count of the cleaned mesh on disk.
+    pub face_count: usize,
+}
+
 impl EditSession {
     /// Load a scan (STL / OBJ / PLY, auto-detected by extension) and
     /// **prepare** it the way the cf-scan-prep Bevy tool does at load:
@@ -502,6 +514,140 @@ impl EditSession {
             }
         }
         out
+    }
+
+    /// Write the cleaned scan + `.prep.toml` to `output_dir` (named
+    /// `{stem}.cleaned.stl` / `{stem}.prep.toml`) — the step-2 output the
+    /// rest of the wizard (and the cast pipeline) consumes. Mirrors the
+    /// cf-scan-prep tool's `handle_save_action`: bake the reorient + cap the
+    /// detected loops (`build_cleaned_mesh`), trim + reconstruct/flat-cap
+    /// along the baked centerline, run the disk-cleanup pass (incl.
+    /// `smoothing_iters` Taubin smoothing), then emit the provenance TOML.
+    /// Studio has no manual recenter, so the baked translation is zero.
+    /// `stl_units_label` is recorded as provenance only.
+    ///
+    /// # Errors
+    /// [`EngineError::Save`] on a non-finite transform, TOML serialization,
+    /// or the atomic file write.
+    pub fn save(
+        &self,
+        output_dir: &Path,
+        stem: &str,
+        stl_units_label: &'static str,
+        smoothing_iters: usize,
+    ) -> Result<SaveReport> {
+        let rotation = self.reorient_rotation;
+        let translation = Vector3::zeros();
+        if !rotation.into_inner().coords.iter().all(|c| c.is_finite())
+            || !self.trim_tip_mm.is_finite()
+            || !self.trim_floor_mm.is_finite()
+        {
+            return Err(EngineError::Save(
+                "non-finite transform / trim values".into(),
+            ));
+        }
+        let pivot = self.working.aabb().center();
+
+        // 1. Bake the reorient + cap the detected loops.
+        let mut cleaned = cf_scan_prep_core::build_cleaned_mesh(
+            &self.working,
+            rotation,
+            translation,
+            &self.cap_loops,
+        );
+
+        // 2. Trim (+ reconstruct / flat-cap) in the baked world frame —
+        //    bake the centerline through the same transform first.
+        let mut trim_capped = 0_usize;
+        if (self.trim_tip_mm > 0.0 || self.trim_floor_mm > 0.0) && self.centerline.len() >= 2 {
+            let centerline_world: Vec<Point3<f64>> = self
+                .centerline
+                .iter()
+                .map(|p| {
+                    cf_scan_prep_core::bake_vertex_with_pivot(p, rotation, &pivot, translation)
+                })
+                .collect();
+            cleaned = cf_scan_prep_core::trim_mesh_along_centerline(
+                &cleaned,
+                &centerline_world,
+                self.trim_tip_mm,
+                self.trim_floor_mm,
+            );
+            weld_vertices(&mut cleaned, WELD_EPSILON_M);
+            match self.reconstruct {
+                Some(ar) if self.trim_floor_mm > 0.0 => {
+                    let trimmed_centerline = cf_scan_prep_core::trim_centerline_polyline(
+                        &centerline_world,
+                        self.trim_tip_mm,
+                        self.trim_floor_mm,
+                    );
+                    cleaned = cf_scan_prep_core::apply_reconstruction(
+                        cleaned,
+                        &trimmed_centerline,
+                        self.trim_floor_mm,
+                        ar.reference_mm,
+                        ar.shape,
+                    );
+                }
+                _ => trim_capped = cf_scan_prep_core::auto_cap_open_boundaries(&mut cleaned),
+            }
+        }
+
+        // 3. Disk-cleanup pass (incl. Taubin surface smoothing).
+        cf_scan_prep_core::cleanup_cleaned_mesh_for_disk(&mut cleaned, smoothing_iters);
+
+        // 4. Provenance TOML.
+        let cleaned_stl_name = format!("{stem}.cleaned.stl");
+        let cleaned_aabb = cleaned.aabb();
+        let reconstructed_floor = cf_scan_prep_core::compute_reconstructed_floor_plane_physics(
+            &self.centerline,
+            self.trim_tip_mm,
+            self.trim_floor_mm,
+        );
+        let euler = rotation.euler_angles();
+        let toml = cf_scan_prep_core::build_prep_toml_string(
+            &self.source_path,
+            stl_units_label,
+            self.auto_center_offset_m,
+            self.auto_pca_quat,
+            rotation,
+            [
+                euler.0.to_degrees(),
+                euler.1.to_degrees(),
+                euler.2.to_degrees(),
+            ],
+            translation,
+            &self.centerline,
+            &self.cap_loops,
+            self.trim_tip_mm,
+            self.trim_floor_mm,
+            self.reconstruct,
+            trim_capped,
+            &cleaned_stl_name,
+            rotation,
+            translation,
+            pivot,
+            self.simplify_target,
+            self.simplify_applied,
+            self.original_face_count,
+            cleaned.faces.len(),
+            smoothing_iters,
+            &cleaned_aabb,
+            reconstructed_floor,
+        )
+        .map_err(|e| EngineError::Save(e.to_string()))?;
+
+        // 5. Atomic write.
+        let cleaned_stl = output_dir.join(&cleaned_stl_name);
+        let prep_toml = output_dir.join(format!("{stem}.prep.toml"));
+        cf_scan_prep_core::atomic_write_save(&cleaned, &cleaned_stl, &prep_toml, &toml)
+            .map_err(|e| EngineError::Save(e.to_string()))?;
+
+        Ok(SaveReport {
+            cleaned_stl,
+            prep_toml,
+            face_count: cleaned.faces.len(),
+        })
     }
 
     /// Restore the working mesh to the originally-loaded scan and clear
@@ -959,6 +1105,82 @@ mod tests {
         assert_eq!(s.trim_tip_mm(), 0.0);
         assert_eq!(s.trim_floor_mm(), 0.0);
         assert!(s.reconstruct().is_none());
+    }
+
+    /// Integration probe: run the GUI's Save pipeline (load → weld →
+    /// find-floor → save) on the real `~/scans/base_mold.stl` and write to a
+    /// temp dir (never `~/scans`). Manual: `cargo test -p cf-studio-engine
+    /// save_real_base_mold --ignored -- --nocapture`. Mirrors the base_mold
+    /// mold-gen integration probe.
+    #[test]
+    #[ignore = "needs ~/scans/base_mold.stl; writes to a temp dir"]
+    fn save_real_base_mold_to_tempdir() {
+        let scan =
+            std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("scans/base_mold.stl");
+        if !scan.exists() {
+            eprintln!("SKIP: {scan:?} not found");
+            return;
+        }
+        let mut s = EditSession::load(&scan, 0.001).unwrap();
+        eprintln!(
+            "loaded: {} faces, {} verts",
+            s.face_count(),
+            s.vertex_count()
+        );
+        let (vb, va) = s.weld();
+        eprintln!("welded: {vb} -> {va} verts");
+        let scan_result = s.detect_caps();
+        eprintln!("detect_caps: {scan_result:?}");
+        let tilt = s.level_to_floor();
+        eprintln!("level_to_floor tilt: {tilt:?}");
+
+        let dir = std::env::temp_dir().join("cf-studio-save-check");
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = s.save(&dir, "base_mold", "mm", 8).unwrap();
+        let stl_bytes = std::fs::metadata(&report.cleaned_stl).unwrap().len();
+        eprintln!(
+            "SAVED: {:?}\n  {} faces, {stl_bytes} bytes\n  prep: {:?}",
+            report.cleaned_stl, report.face_count, report.prep_toml,
+        );
+        let reloaded = mesh_io::load_stl(&report.cleaned_stl).unwrap();
+        eprintln!(
+            "cleaned STL reloads: {} faces, {} verts",
+            reloaded.faces.len(),
+            reloaded.vertices.len()
+        );
+        let toml = std::fs::read_to_string(&report.prep_toml).unwrap();
+        eprintln!("----- base_mold.prep.toml -----\n{toml}");
+    }
+
+    #[test]
+    fn save_writes_cleaned_stl_and_prep_toml() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let dir = std::env::temp_dir().join(format!("cf-edit-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let report = s.save(&dir, "tube", "mm", 0).unwrap();
+        assert!(report.cleaned_stl.exists(), "cleaned STL written");
+        assert!(report.prep_toml.exists(), "prep.toml written");
+        assert!(report.face_count > 0);
+
+        let toml_str = std::fs::read_to_string(&report.prep_toml).unwrap();
+        assert!(
+            toml_str.contains("[scan_prep]"),
+            "prep has the scan_prep block"
+        );
+        assert!(
+            toml_str.contains("cleaned_stl"),
+            "prep records the cleaned STL"
+        );
+
+        let reloaded = mesh_io::load_stl(&report.cleaned_stl).unwrap();
+        assert!(
+            !reloaded.faces.is_empty(),
+            "the cleaned STL reloads as a mesh"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -75,4 +75,9 @@ pub enum EngineError {
     /// gate, mass budget, or reading back the outputs).
     #[error("mold generation failed: {0}")]
     MoldGen(String),
+
+    /// Writing the cleaned scan + `.prep.toml` from the step-2 editor failed
+    /// (non-finite transform, TOML serialization, or the atomic file write).
+    #[error("could not save the cleaned scan: {0}")]
+    Save(String),
 }

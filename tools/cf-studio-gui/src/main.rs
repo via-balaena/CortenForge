@@ -20,7 +20,7 @@ use std::rc::Rc;
 use cf_studio_core::{Project, Step};
 use cf_studio_engine::{EditSession, ReconstructShape};
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
-use cf_studio_gui::{StepOutcome, apply_design, apply_scan, nav_state, step_rows};
+use cf_studio_gui::{StepOutcome, apply_design, apply_prep, apply_scan, nav_state, step_rows};
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use ui::{AppWindow, StepRow};
@@ -560,6 +560,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 s.reset();
             }
             apply_edit(&weak, &scene, &edit, "↺ Reset to the original scan", false);
+        });
+    }
+    {
+        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let (edit, scan_path) = (edit.clone(), scan_path.clone());
+        ui.on_save(move |smoothing| {
+            let Some(path) = scan_path.borrow().clone() else {
+                return;
+            };
+            let output_dir = path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("scan")
+                .to_string();
+            let smoothing = usize::try_from(smoothing).unwrap_or(0);
+            let result = {
+                let guard = edit.borrow();
+                let Some(s) = guard.as_ref() else {
+                    return;
+                };
+                s.save(&output_dir, &stem, "mm", smoothing)
+            };
+            let (text, is_err) = match result {
+                Ok(report) => {
+                    // Accept the written output as the cleaned-scan input —
+                    // this completes step 2 and unblocks Next.
+                    match apply_prep(
+                        &mut project.borrow_mut(),
+                        &report.cleaned_stl,
+                        &report.prep_toml,
+                    ) {
+                        Ok(_) => (
+                            format!(
+                                "✓ Saved {stem}.cleaned.stl ({} faces) + {stem}.prep.toml — \
+                                 step complete, click Next →.",
+                                report.face_count,
+                            ),
+                            false,
+                        ),
+                        Err(e) => (
+                            format!("Saved the files, but they didn't validate: {e}"),
+                            true,
+                        ),
+                    }
+                }
+                Err(e) => (format!("Save failed: {e}"), true),
+            };
+            if let Some(ui) = weak.upgrade() {
+                ui.set_step_message(text.into());
+                ui.set_step_message_is_error(is_err);
+                refresh(&ui, &project.borrow(), viewed.get());
+            }
         });
     }
     {

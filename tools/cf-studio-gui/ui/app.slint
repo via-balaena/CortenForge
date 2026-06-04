@@ -62,12 +62,12 @@ component ScanViewport inherits Rectangle {
 export component AppWindow inherits Window {
     title: "CortenForge Studio";
     preferred-width: 900px;
-    preferred-height: 840px;
+    preferred-height: 900px;
     min-width: 640px;
     // Tall enough that the footer (Back / Help / Next) is always on-screen
     // even if the OS restores a shorter window from a previous run (and
     // with room for the step-2 trim row).
-    min-height: 800px;
+    min-height: 850px;
 
     in property <string> project-name: "Untitled";
     in property <[StepRow]> steps;
@@ -110,6 +110,8 @@ export component AppWindow inherits Window {
     // (shape-index 0=constant/1=taper/2=extrapolate, reference-mm)
     callback apply-reconstruct(int, int);
     callback reset-edit();
+    // (taubin smoothing iterations) → write cleaned.stl + .prep.toml.
+    callback save(int);
 
     VerticalBox {
         padding: 28px;
@@ -230,6 +232,24 @@ export component AppWindow inherits Window {
                         Button {
                             text: "Reconstruct floor";
                             clicked => { apply-reconstruct(shape-combo.current-index, ref-spin.value); }
+                        }
+                    }
+                    // Save row — write the cleaned scan + .prep.toml (with
+                    // surface smoothing) and complete the step.
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Text { text: "Surface smoothing"; vertical-alignment: center; color: #333333; }
+                        smooth-spin := SpinBox {
+                            minimum: 0;
+                            maximum: 30;
+                            value: 8;
+                        }
+                        Text { text: "iterations"; vertical-alignment: center; color: #333333; }
+                        Button {
+                            text: "Save cleaned scan";
+                            primary: true;
+                            clicked => { save(smooth-spin.value); }
                         }
                     }
                 }
