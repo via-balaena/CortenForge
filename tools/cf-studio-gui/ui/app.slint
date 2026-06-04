@@ -91,6 +91,10 @@ export component AppWindow inherits Window {
     // Whether a floor trim is applied — gates the reconstruct row (you
     // reconstruct down to a chopped floor).
     in property <bool> has-floor-trim: false;
+    // True while a background Simplify is running — disables the edit +
+    // pick-scan buttons so an intervening edit can't be clobbered by the
+    // late-arriving result. Orbit stays live.
+    in property <bool> busy: false;
 
     callback back();
     callback next();
@@ -155,6 +159,7 @@ export component AppWindow inherits Window {
                     }
                     Button {
                         text: has-scan ? "Choose a different scan…" : "Choose scan file…";
+                        enabled: !busy;
                         clicked => { pick-scan(); }
                     }
                 }
@@ -178,16 +183,17 @@ export component AppWindow inherits Window {
                     HorizontalBox {
                         alignment: center;
                         spacing: 8px;
-                        Button { text: "Weld"; clicked => { weld(); } }
+                        Button { text: "Weld"; enabled: !busy; clicked => { weld(); } }
                         Text { text: "Simplify to"; vertical-alignment: center; color: #333333; }
                         target-spin := SpinBox {
+                            enabled: !busy;
                             minimum: 1000;
                             maximum: 1000000;
                             value: 200000;
                         }
-                        Button { text: "Simplify"; clicked => { simplify(target-spin.value); } }
-                        Button { text: "Find floor"; clicked => { find-floor(); } }
-                        Button { text: "Reset"; clicked => { reset-edit(); } }
+                        Button { text: "Simplify"; enabled: !busy; clicked => { simplify(target-spin.value); } }
+                        Button { text: "Find floor"; enabled: !busy; clicked => { find-floor(); } }
+                        Button { text: "Reset"; enabled: !busy; clicked => { reset-edit(); } }
                     }
                     // Trim row — appears once Find floor has traced a
                     // centerline to chop along.
@@ -209,6 +215,7 @@ export component AppWindow inherits Window {
                         Text { text: "mm"; vertical-alignment: center; color: #333333; }
                         Button {
                             text: "Apply trim";
+                            enabled: !busy;
                             clicked => { apply-trim(tip-spin.value, floor-spin.value); }
                         }
                     }
@@ -231,6 +238,7 @@ export component AppWindow inherits Window {
                         Text { text: "mm above cut"; vertical-alignment: center; color: #333333; }
                         Button {
                             text: "Reconstruct floor";
+                            enabled: !busy;
                             clicked => { apply-reconstruct(shape-combo.current-index, ref-spin.value); }
                         }
                     }
@@ -249,6 +257,7 @@ export component AppWindow inherits Window {
                         Button {
                             text: "Save cleaned scan";
                             primary: true;
+                            enabled: !busy;
                             clicked => { save(smooth-spin.value); }
                         }
                     }

@@ -691,14 +691,36 @@ impl EditSession {
     /// Decimate toward `target_faces` (boundary-preserving quadric edge
     /// collapse). A no-op if the mesh already has `<= target_faces`.
     /// Returns the decimation wall-clock seconds. Records `[simplify]`
-    /// provenance.
+    /// provenance. Synchronous — for headless callers; a GUI should run the
+    /// heavy work off-thread via [`run_simplify`] + [`apply_simplified`].
+    ///
+    /// [`apply_simplified`]: Self::apply_simplified
     pub fn simplify(&mut self, target_faces: usize) -> f64 {
-        let result = cf_scan_prep_core::simplify_mesh(&self.working, target_faces);
-        self.working = result.mesh;
+        let (mesh, secs) = run_simplify(&self.working, target_faces);
+        self.apply_simplified(mesh, target_faces);
+        secs
+    }
+
+    /// A clone of the current working mesh — what a frontend hands to a
+    /// background [`run_simplify`] thread.
+    #[must_use]
+    pub fn working_clone(&self) -> IndexedMesh {
+        self.working.clone()
+    }
+
+    /// Install a simplify result computed off-thread (via [`run_simplify`]
+    /// on a clone of [`working_clone`]). Records the `[simplify]` provenance
+    /// and clears stale cap/centerline/trim state, exactly like the
+    /// synchronous [`simplify`].
+    ///
+    /// [`run_simplify`]: run_simplify
+    /// [`working_clone`]: Self::working_clone
+    /// [`simplify`]: Self::simplify
+    pub fn apply_simplified(&mut self, simplified: IndexedMesh, target_faces: usize) {
+        self.working = simplified;
         self.simplify_applied = true;
         self.simplify_target = target_faces;
         self.clear_caps();
-        result.elapsed_secs
     }
 
     /// Recenter the working mesh's AABB centroid onto the origin; returns
@@ -724,6 +746,18 @@ impl EditSession {
         self.clear_caps();
         q
     }
+}
+
+/// Run the heavy boundary-preserving decimation toward `target_faces`,
+/// detached from any [`EditSession`] — so a frontend can run it on a
+/// background thread (the working mesh is `Send`) and hand the result to
+/// [`EditSession::apply_simplified`], keeping the UI responsive. Returns the
+/// decimated mesh + the wall-clock seconds. No-op above the current face
+/// count.
+#[must_use]
+pub fn run_simplify(original: &IndexedMesh, target_faces: usize) -> (IndexedMesh, f64) {
+    let result = cf_scan_prep_core::simplify_mesh(original, target_faces);
+    (result.mesh, result.elapsed_secs)
 }
 
 /// The rotation that levels a floor plane: aligns `normal` to the nearest
@@ -1163,6 +1197,21 @@ mod tests {
         );
         let toml = std::fs::read_to_string(&report.prep_toml).unwrap();
         eprintln!("----- base_mold.prep.toml -----\n{toml}");
+    }
+
+    #[test]
+    fn run_simplify_then_apply_matches_sync_simplify() {
+        // The off-thread split (run_simplify → apply_simplified) lands the
+        // same working mesh + provenance as the synchronous simplify.
+        let mut sync = session(soup_quad());
+        let _ = sync.simplify(1000); // no-op target, but marks applied
+
+        let mut split = session(soup_quad());
+        let (mesh, _secs) = run_simplify(&split.working_clone(), 1000);
+        split.apply_simplified(mesh, 1000);
+
+        assert_eq!(split.face_count(), sync.face_count());
+        assert!(split.simplify_applied());
     }
 
     #[test]

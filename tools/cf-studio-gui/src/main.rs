@@ -16,11 +16,14 @@ mod ui {
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cf_studio_core::{Project, Step};
-use cf_studio_engine::{EditSession, ReconstructShape};
+use cf_studio_engine::{EditSession, ReconstructShape, run_simplify};
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{StepOutcome, apply_design, apply_prep, apply_scan, nav_state, step_rows};
+use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use ui::{AppWindow, StepRow};
@@ -315,6 +318,13 @@ type GpuHandles = Rc<RefCell<Option<(wgpu::Device, wgpu::Queue)>>>;
 /// The live step-2 scan-editing session (created when a scan is picked).
 type EditCell = Rc<RefCell<Option<EditSession>>>;
 
+/// Hand-off slot for an async Simplify outcome: `Ok((decimated mesh, target
+/// face count, elapsed seconds))`, or `Err(())` if the worker panicked. The
+/// background thread fills it; the UI-thread timer drains it (and always
+/// clears `busy`, even on the panic path). `Arc<Mutex>` because it crosses
+/// the thread boundary.
+type SimplifyInbox = Arc<Mutex<Option<Result<(IndexedMesh, usize, f64), ()>>>>;
+
 /// Scans carry no unit metadata; the workshop scanner exports millimeters,
 /// and the cast pipeline works in meters. (A units selector can override
 /// this later; mm is the base_mold default + the cf-scan-prep default.)
@@ -340,10 +350,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // scan) and step 2 (the same mesh, being cleaned).
     let scan_path: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
     let edit: EditCell = Rc::new(RefCell::new(None));
+    // Inbox for an async Simplify result (mesh, target, elapsed) computed on
+    // a background thread — the polling timer below applies it on the UI
+    // thread, keeping the window responsive during the ~10-40s decimation.
+    let simplify_inbox: SimplifyInbox = Arc::new(Mutex::new(None));
 
     let ui = AppWindow::new()?;
     refresh(&ui, &project.borrow(), viewed.get());
     let weak = ui.as_weak();
+
+    // ── poll the async-simplify inbox on the UI thread ──────────
+    let simplify_timer = slint::Timer::default();
+    {
+        let (edit, scene, weak, inbox) = (
+            edit.clone(),
+            scene.clone(),
+            weak.clone(),
+            simplify_inbox.clone(),
+        );
+        simplify_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(80),
+            move || {
+                let Some(outcome) = inbox.lock().ok().and_then(|mut g| g.take()) else {
+                    return;
+                };
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_busy(false);
+                }
+                match outcome {
+                    Ok((mesh, target, secs)) => {
+                        {
+                            let mut e = edit.borrow_mut();
+                            if let Some(s) = e.as_mut() {
+                                s.apply_simplified(mesh, target);
+                            }
+                        }
+                        apply_edit(
+                            &weak,
+                            &scene,
+                            &edit,
+                            &format!("✓ Simplified to {target} faces ({secs:.1}s)."),
+                            false,
+                        );
+                    }
+                    Err(()) => {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.set_step_message(
+                                "Simplify failed unexpectedly — try a higher target face count."
+                                    .into(),
+                            );
+                            ui.set_step_message_is_error(true);
+                        }
+                    }
+                }
+            },
+        );
+    }
 
     // ── capture the wgpu device/queue once Slint sets rendering up ──
     {
@@ -460,16 +523,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     {
-        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        let (edit, weak, inbox) = (edit.clone(), weak.clone(), simplify_inbox.clone());
         ui.on_simplify(move |target| {
-            let msg = {
-                let mut e = edit.borrow_mut();
-                let Some(s) = e.as_mut() else { return };
-                let target = usize::try_from(target).unwrap_or(200_000);
-                let secs = s.simplify(target);
-                format!("✓ Simplified to {} faces ({secs:.1}s)", s.face_count())
+            let target = usize::try_from(target).unwrap_or(200_000);
+            // Snapshot the working mesh, then decimate on a background thread
+            // (it's the only ~10-40s op) so the window stays responsive; the
+            // polling timer applies the result.
+            let working = {
+                let e = edit.borrow();
+                let Some(s) = e.as_ref() else { return };
+                s.working_clone()
             };
-            apply_edit(&weak, &scene, &edit, &msg, false);
+            if let Some(ui) = weak.upgrade() {
+                ui.set_busy(true);
+                ui.set_step_message(
+                    format!("Simplifying to {target} faces… (this can take ~10–40 s)").into(),
+                );
+                ui.set_step_message_is_error(false);
+            }
+            let inbox = inbox.clone();
+            std::thread::spawn(move || {
+                // catch_unwind so a (near-impossible) decimation panic still
+                // reports back — otherwise busy would stick + lock the UI.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_simplify(&working, target)
+                }));
+                let result = outcome
+                    .map(|(mesh, secs)| (mesh, target, secs))
+                    .map_err(|_| ());
+                if let Ok(mut g) = inbox.lock() {
+                    *g = Some(result);
+                }
+            });
         });
     }
     {
