@@ -82,8 +82,12 @@ jobs:
       # or build crates it doesn't ship; it builds exactly the one artifact
       # it publishes. This also avoids running x86_64 test binaries on the
       # arm64 macOS runner (the x86_64-apple-darwin leg cross-compiles).
+      # --locked: build the committed Cargo.lock exactly. The Windows build
+      # depends on gpu-allocator being pinned to windows 0.62.2 (to match
+      # wgpu-hal); without --locked a re-resolve could drag it back onto an
+      # older windows and reintroduce the D3D12 type mismatch.
       - name: Build Cendrillon
-        run: cargo build --release -p cf-studio-gui --target ${{ matrix.target }}
+        run: cargo build --release --locked -p cf-studio-gui --target ${{ matrix.target }}
 
       - name: Package Studio (macOS .app)
         if: runner.os == 'macOS'
