@@ -108,7 +108,7 @@ section p {
   margin-bottom: 0.6rem;
 }
 
-/* Cendrillon — the flagship app, set apart as a card. */
+/* Cendrillon — a featured app built with the SDK, set apart as a card. */
 .card {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -138,18 +138,75 @@ section p {
   margin-bottom: 1.3rem;
 }
 
+/* Stacked, full-width download buttons — easy targets, clear hierarchy
+   (primary = the tested Mac build; secondary = the beta platforms). */
+.downloads {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+
 .button {
-  display: inline-block;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   background: var(--accent);
   color: #ffffff;
   text-decoration: none;
   padding: 0.7rem 1.4rem;
   border-radius: 8px;
   font-weight: 600;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .button:hover { background: #1d4ed8; }
+
+/* Beta platforms: outlined rather than solid, so the tested build leads. */
+.button-secondary {
+  background: #ffffff;
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+
+.button-secondary:hover {
+  background: #f5f8ff;
+  border-color: var(--accent);
+}
+
+.button-sub {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 500;
+  opacity: 0.85;
+  margin-top: 0.1rem;
+}
+
+/* Install help, tucked behind a disclosure so the card stays uncluttered. */
+.firstrun {
+  text-align: left;
+  margin-bottom: 0.8rem;
+}
+
+.firstrun > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--heading);
+  text-align: center;
+  list-style-position: inside;
+}
+
+.firstrun-steps {
+  list-style: disc;
+  display: block;
+  margin: 0.7rem 0 0.4rem;
+  padding-left: 1.2rem;
+  font-size: 0.85rem;
+  color: #666666;
+}
+
+.firstrun-steps li { margin-bottom: 0.5rem; }
 
 .note {
   font-size: 0.85rem;
