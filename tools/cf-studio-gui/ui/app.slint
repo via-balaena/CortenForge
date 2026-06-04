@@ -97,6 +97,7 @@ export component AppWindow inherits Window {
     // Recenter sliders, which arrive with the parity phase.)
     callback simplify(int);
     callback weld();
+    callback find-floor();
     callback reset-edit();
 
     VerticalBox {
@@ -172,6 +173,7 @@ export component AppWindow inherits Window {
                             value: 200000;
                         }
                         Button { text: "Simplify"; clicked => { simplify(target-spin.value); } }
+                        Button { text: "Find floor"; clicked => { find-floor(); } }
                         Button { text: "Reset"; clicked => { reset-edit(); } }
                     }
                 }

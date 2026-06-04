@@ -414,7 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match EditSession::load(&path, SCAN_SCALE_TO_M) {
                     Ok(session) => {
                         if let Some((device, queue)) = gpu.borrow().clone() {
-                            let md = mesh_data_from_indexed(session.working());
+                            let md = mesh_data_from_indexed(&session.display_mesh());
                             let built = Scene::build(&device, &queue, &md);
                             if let (Some(ui), Ok(img)) = (weak.upgrade(), built.render()) {
                                 ui.set_scan_view(img);
@@ -456,7 +456,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let (before, after) = s.weld();
                 format!("✓ Welded vertices: {before} → {after}")
             };
-            apply_edit(&weak, &scene, &edit, &msg);
+            apply_edit(&weak, &scene, &edit, &msg, false);
         });
     }
     {
@@ -469,7 +469,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let secs = s.simplify(target);
                 format!("✓ Simplified to {} faces ({secs:.1}s)", s.face_count())
             };
-            apply_edit(&weak, &scene, &edit, &msg);
+            apply_edit(&weak, &scene, &edit, &msg, false);
+        });
+    }
+    {
+        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
+        ui.on_find_floor(move || {
+            let (msg, is_err) = {
+                let mut e = edit.borrow_mut();
+                let Some(s) = e.as_mut() else { return };
+                let scan = s.detect_caps();
+                if scan.looks_unwelded {
+                    (
+                        "Looks like a raw scan — click Weld first, then Find floor.".to_string(),
+                        true,
+                    )
+                } else if scan.loop_count == 0 {
+                    ("No open edges found to stand it on.".to_string(), true)
+                } else {
+                    match s.level_to_floor() {
+                        Some(tilt) => (
+                            format!(
+                                "✓ Found floor — {} open loop(s), {}-segment centerline. \
+                                 Stood upright (corrected {tilt:.0}° tilt).",
+                                scan.loop_count, scan.centerline_segments,
+                            ),
+                            false,
+                        ),
+                        None => (
+                            format!(
+                                "Found {} loop(s) but couldn't trace a centerline to level by.",
+                                scan.loop_count,
+                            ),
+                            true,
+                        ),
+                    }
+                }
+            };
+            apply_edit(&weak, &scene, &edit, &msg, is_err);
         });
     }
     {
@@ -480,7 +517,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(s) = e.as_mut() else { return };
                 s.reset();
             }
-            apply_edit(&weak, &scene, &edit, "↺ Reset to the original scan");
+            apply_edit(&weak, &scene, &edit, "↺ Reset to the original scan", false);
         });
     }
     {
@@ -565,20 +602,23 @@ fn stats_line(session: &EditSession) -> String {
     )
 }
 
-/// After a step-2 edit: re-render the viewport from the session's working
-/// mesh (preserving the orbit angle), then surface the new stats + a
-/// result message.
+/// After a step-2 edit: re-render the viewport from the session's DISPLAY
+/// mesh (the working mesh with any unbaked reorient applied, so a leveled
+/// scan stays upright — and edits after leveling keep that orientation),
+/// preserving the orbit angle, then surface the new stats + a result
+/// message (`is_error` colors it red for "can't do that" cases).
 fn apply_edit(
     weak: &slint::Weak<AppWindow>,
     scene: &Rc<RefCell<Option<Scene>>>,
     edit: &EditCell,
     message: &str,
+    is_error: bool,
 ) {
     let eguard = edit.borrow();
     let Some(session) = eguard.as_ref() else {
         return;
     };
-    let md = mesh_data_from_indexed(session.working());
+    let md = mesh_data_from_indexed(&session.display_mesh());
     let img = {
         let mut sguard = scene.borrow_mut();
         let Some(s) = sguard.as_mut() else {
@@ -593,6 +633,6 @@ fn apply_edit(
         }
         ui.set_edit_stats(stats_line(session).into());
         ui.set_step_message(message.into());
-        ui.set_step_message_is_error(false);
+        ui.set_step_message_is_error(is_error);
     }
 }
