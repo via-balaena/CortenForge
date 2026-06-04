@@ -28,7 +28,7 @@ jobs:
   # BUILD AND TEST
   # ============================================================================
   build:
-    name: Build (${{ matrix.target }})
+    name: Build Studio (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       # Don't cancel the other platforms if one leg fails — a beta
@@ -60,13 +60,13 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Run tests
-        run: cargo test --release --target ${{ matrix.target }}
-
-      # ── package CortenForge Studio (the guided GUI) as a download ──
+      # Correctness is gated on main by quality-gate.yml (full debug +
+      # release test suites, grade-all, cross-OS checks) — a tag is only ever
+      # cut from already-green main. So the release does NOT re-run the whole
+      # workspace test suite (slow stochastic-physics + cf-cast grade tests)
+      # or build crates it doesn't ship; it builds exactly the one artifact
+      # it publishes. This also avoids running x86_64 test binaries on the
+      # arm64 macOS runner (the x86_64-apple-darwin leg cross-compiles).
       - name: Build CortenForge Studio
         run: cargo build --release -p cf-studio-gui --target ${{ matrix.target }}
 
