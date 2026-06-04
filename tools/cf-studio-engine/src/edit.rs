@@ -48,16 +48,24 @@ pub struct EditSession {
 }
 
 impl EditSession {
-    /// Load a scan STL and scale it into meters (`scale_to_m` = meters per
-    /// STL unit; `0.001` for a millimeter scan, `1.0` if already meters).
-    /// The loaded+scaled mesh becomes both the reset target and the
-    /// working mesh.
+    /// Load a scan (STL / OBJ / PLY, auto-detected by extension) and
+    /// **prepare** it the way the cf-scan-prep Bevy tool does at load:
+    /// scale into meters (`scale_to_m` = meters per file unit; `0.001` for
+    /// a millimeter scan, `1.0` if already meters), then auto-center the
+    /// AABB centroid onto the origin, then PCA-orient to the cast frame.
+    ///
+    /// Order matters: centering first means the PCA rotation (which pivots
+    /// about the origin) pivots about the centroid — matching the Bevy
+    /// tool's `try_load_scan` exactly, so the two frontends start from an
+    /// identical prepared mesh. The prepared mesh becomes both the reset
+    /// target and the working mesh; the auto-center offset + PCA quaternion
+    /// are recorded for the `[scan_prep]` provenance block.
     ///
     /// # Errors
     /// - [`EngineError::ScanLoad`] if the file is missing or unparseable.
     /// - [`EngineError::EmptyScan`] if it parses but has no geometry.
     pub fn load(path: &Path, scale_to_m: f64) -> Result<Self> {
-        let mut mesh = mesh_io::load_stl(path).map_err(|e| EngineError::ScanLoad {
+        let mut mesh = mesh_io::load_mesh(path).map_err(|e| EngineError::ScanLoad {
             path: path.display().to_string(),
             reason: e.to_string(),
         })?;
@@ -69,7 +77,15 @@ impl EditSession {
         if (scale_to_m - 1.0).abs() > f64::EPSILON {
             cf_scan_prep_core::scale_vertices_in_place(&mut mesh, scale_to_m);
         }
-        Ok(Self::from_mesh(path.to_path_buf(), mesh))
+        // Prepare exactly as the Bevy tool's try_load_scan: center, then
+        // orient (centering first so PCA's origin-pivot == centroid-pivot).
+        let auto_center_offset_m = cf_scan_prep_core::auto_center_in_place(&mut mesh);
+        let auto_pca_quat = cf_scan_prep_core::auto_pca_in_place(&mut mesh);
+
+        let mut session = Self::from_mesh(path.to_path_buf(), mesh);
+        session.auto_center_offset_m = auto_center_offset_m;
+        session.auto_pca_quat = auto_pca_quat;
+        Ok(session)
     }
 
     /// Build a session from an in-memory mesh already in meters (used by
@@ -129,6 +145,20 @@ impl EditSession {
     #[must_use]
     pub fn aabb(&self) -> Aabb {
         self.working.aabb()
+    }
+
+    /// The auto-center offset applied (at load + any later `auto_center`
+    /// calls), in meters — the `[scan_prep].auto_center_offset_m` provenance.
+    #[must_use]
+    pub fn auto_center_offset_m(&self) -> Vector3<f64> {
+        self.auto_center_offset_m
+    }
+
+    /// The accumulated PCA-orient rotation, if any — the
+    /// `[scan_prep].auto_pca_quaternion` provenance.
+    #[must_use]
+    pub fn auto_pca_quat(&self) -> Option<UnitQuaternion<f64>> {
+        self.auto_pca_quat
     }
 
     /// Restore the working mesh to the originally-loaded scan and clear
@@ -278,5 +308,41 @@ mod tests {
         let _ = s.simplify(1000); // target >> 2 faces
         assert_eq!(s.face_count(), 2, "no decimation when target exceeds faces");
         assert!(s.simplify_applied(), "the op still records as applied");
+    }
+
+    /// `load` prepares the scan like the Bevy tool: an off-origin scan
+    /// comes back auto-centered, with the offset recorded for provenance.
+    #[test]
+    fn load_auto_centers_and_records_offset() {
+        // An off-center triangle (~(10, 10, 10)) as a tiny ASCII STL.
+        let stl = "solid s\n\
+            facet normal 0 0 1\n\
+            outer loop\n\
+            vertex 10 10 10\n\
+            vertex 11 10 10\n\
+            vertex 10 11 10\n\
+            endloop\n\
+            endfacet\n\
+            endsolid s\n";
+        let dir = std::env::temp_dir().join(format!("cf-edit-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("offset.stl");
+        std::fs::write(&path, stl).unwrap();
+
+        let s = EditSession::load(&path, 1.0).unwrap(); // already "meters"
+        // After centering (then a PCA rotation about the origin), the
+        // mesh sits near the origin — not out at its original ~(10,10,10).
+        // (The bbox center isn't exactly 0 because PCA rotates the AABB.)
+        assert!(
+            s.aabb().center().coords.norm() < 1.0,
+            "load brings the off-origin scan to near the origin, got {:?}",
+            s.aabb().center(),
+        );
+        assert!(
+            s.auto_center_offset_m().norm() > 1.0,
+            "the non-trivial centering offset (~17) is recorded for provenance",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

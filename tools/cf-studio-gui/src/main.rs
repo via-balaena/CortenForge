@@ -474,31 +474,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     {
         let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
-        ui.on_auto_center(move || {
-            {
-                let mut e = edit.borrow_mut();
-                let Some(s) = e.as_mut() else { return };
-                s.auto_center();
-            }
-            apply_edit(&weak, &scene, &edit, "✓ Recentered to origin");
-        });
-    }
-    {
-        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
-        ui.on_auto_orient(move || {
-            let msg = {
-                let mut e = edit.borrow_mut();
-                let Some(s) = e.as_mut() else { return };
-                match s.auto_orient_pca() {
-                    Some(_) => "✓ Oriented to the cast frame",
-                    None => "Couldn't find a dominant axis to orient by",
-                }
-            };
-            apply_edit(&weak, &scene, &edit, msg);
-        });
-    }
-    {
-        let (scene, edit, weak) = (scene.clone(), edit.clone(), weak.clone());
         ui.on_reset_edit(move || {
             {
                 let mut e = edit.borrow_mut();

@@ -92,10 +92,11 @@ export component AppWindow inherits Window {
     // Mouse-drag in the 3D view: (dx, dy) screen-pixel deltas → orbit.
     callback orbit(length, length);
     // Step-2 edit ops (drive the EditSession; each re-renders the view).
+    // (Auto-center + auto-orient run automatically at load, matching the
+    // cf-scan-prep tool; the manual transform controls are Reorient /
+    // Recenter sliders, which arrive with the parity phase.)
     callback simplify(int);
     callback weld();
-    callback auto-center();
-    callback auto-orient();
     callback reset-edit();
 
     VerticalBox {
@@ -163,8 +164,6 @@ export component AppWindow inherits Window {
                     HorizontalBox {
                         alignment: center;
                         spacing: 8px;
-                        Button { text: "Auto-center"; clicked => { auto-center(); } }
-                        Button { text: "Auto-orient"; clicked => { auto-orient(); } }
                         Button { text: "Weld"; clicked => { weld(); } }
                         Text { text: "Simplify to"; vertical-alignment: center; }
                         target-spin := SpinBox {
