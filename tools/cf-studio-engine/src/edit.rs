@@ -8,10 +8,13 @@
 //! session ultimately produces the cleaned STL + `.prep.toml` the cast
 //! pipeline consumes.
 //!
-//! Built phase by phase, per the agreed step-2 op order. **Phase 1:** load
-//! (auto-center + auto-orient at load) / weld / simplify / reset. **Phase
-//! 2a:** cap detection + the interior centerline. Leveling, trim /
-//! reconstruct, and the save path land in later phases.
+//! The full step-2 op set, mirroring the cf-scan-prep tool: load
+//! (auto-center + auto-orient) / weld / simplify / reset; cap detection +
+//! interior centerline (`detect_caps`); floor leveling (`level_to_floor`);
+//! centerline trim + floor reconstruction (derived, display-only until
+//! save); and `save` → the cleaned STL + `.prep.toml` the cast consumes.
+//! Reorient/recenter are baked only at save (the `[transform]` block);
+//! trim/reconstruct are applied to the displayed/saved mesh, never `working`.
 
 use std::path::{Path, PathBuf};
 
