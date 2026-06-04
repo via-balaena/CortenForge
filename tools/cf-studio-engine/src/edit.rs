@@ -14,8 +14,9 @@
 
 use std::path::{Path, PathBuf};
 
+use cf_scan_prep_core::DetectedCapLoop;
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
-use mesh_types::{Aabb, Bounded, IndexedMesh};
+use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::error::{EngineError, Result};
@@ -23,6 +24,16 @@ use crate::error::{EngineError, Result};
 /// Weld tolerance in meters — matches cf-scan-prep's
 /// `SIMPLIFY_WELD_EPSILON_M` so the two tools weld identically.
 const WELD_EPSILON_M: f64 = 1e-6;
+/// Cross-section slabs sampled along the spine for the centerline — matches
+/// the cf-scan-prep tool's `handle_cap_actions` (30).
+const CENTERLINE_SLICES: usize = 30;
+/// Moving-average smoothing passes on the raw centerline centroids — matches
+/// cf-scan-prep (3); tames the few-mm per-slab wobble on noisy scans.
+const CENTERLINE_SMOOTH_ITERS: usize = 3;
+/// Above this many detected loops on an unwelded mesh, flag "weld first"
+/// rather than treat the vertex-soup triangles as real boundaries — matches
+/// cf-scan-prep's guard (100).
+const UNWELDED_LOOP_WARN: usize = 100;
 
 /// An interactive scan-editing session over a working [`IndexedMesh`].
 ///
@@ -45,6 +56,26 @@ pub struct EditSession {
     auto_center_offset_m: Vector3<f64>,
     /// Accumulated PCA-orient rotation (auto-orient provenance).
     auto_pca_quat: Option<UnitQuaternion<f64>>,
+    /// Detected open-boundary cap loops (from the last `detect_caps`).
+    /// Cleared whenever a mesh-mutating op makes them stale.
+    cap_loops: Vec<DetectedCapLoop>,
+    /// The interior centerline polyline (from the last `detect_caps`).
+    centerline: Vec<Point3<f64>>,
+}
+
+/// Summary of a [`EditSession::detect_caps`] pass, for the frontend to
+/// surface: how many open-boundary loops were found, how long the centerline
+/// came out, and whether the mesh looks like unwelded vertex soup (in which
+/// case the user should Weld first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapScan {
+    /// Number of valid open-boundary loops detected.
+    pub loop_count: usize,
+    /// Centerline segment count (`points - 1`; 0 if no centerline).
+    pub centerline_segments: usize,
+    /// The mesh looks like raw, unwelded STL soup (too many loops) — the
+    /// frontend should prompt for a Weld before trusting the result.
+    pub looks_unwelded: bool,
 }
 
 impl EditSession {
@@ -102,6 +133,8 @@ impl EditSession {
             simplify_target: 0,
             auto_center_offset_m: Vector3::zeros(),
             auto_pca_quat: None,
+            cap_loops: Vec::new(),
+            centerline: Vec::new(),
         }
     }
 
@@ -161,6 +194,67 @@ impl EditSession {
         self.auto_pca_quat
     }
 
+    /// The cap loops found by the last [`detect_caps`](Self::detect_caps).
+    #[must_use]
+    pub fn cap_loops(&self) -> &[DetectedCapLoop] {
+        &self.cap_loops
+    }
+
+    /// The interior centerline from the last [`detect_caps`](Self::detect_caps)
+    /// (empty until one is run, or if no boundary loop was found).
+    #[must_use]
+    pub fn centerline(&self) -> &[Point3<f64>] {
+        &self.centerline
+    }
+
+    /// Whether a centerline is available (needed for leveling + trim).
+    #[must_use]
+    pub fn has_centerline(&self) -> bool {
+        !self.centerline.is_empty()
+    }
+
+    /// Detect open-boundary cap loops + compute the interior centerline —
+    /// the "Cap → Scan" step, mirroring the cf-scan-prep tool's
+    /// `handle_cap_actions`: keep only valid loops, fit each loop's plane,
+    /// then trace the cross-section centerline along the first loop's
+    /// outward normal (smoothed). Replaces any previous cap/centerline
+    /// state. Returns a [`CapScan`] summary.
+    pub fn detect_caps(&mut self) -> CapScan {
+        let raw_loops = cf_scan_prep_core::detect_boundary_loops(&self.working);
+        self.cap_loops = raw_loops
+            .iter()
+            .filter(|loop_data| loop_data.is_valid())
+            .map(|loop_data| cf_scan_prep_core::build_detected_cap_loop(&self.working, loop_data))
+            .collect();
+        self.centerline = match self.cap_loops.first() {
+            Some(first) => {
+                let raw = cf_scan_prep_core::compute_centerline_polyline(
+                    &self.working,
+                    first.plane_normal,
+                    CENTERLINE_SLICES,
+                );
+                cf_scan_prep_core::smooth_polyline(&raw, CENTERLINE_SMOOTH_ITERS)
+            }
+            None => Vec::new(),
+        };
+        CapScan {
+            loop_count: self.cap_loops.len(),
+            centerline_segments: self.centerline.len().saturating_sub(1),
+            looks_unwelded: cf_scan_prep_core::mesh_looks_unwelded(
+                self.working.vertices.len(),
+                self.working.faces.len(),
+            ) && self.cap_loops.len() > UNWELDED_LOOP_WARN,
+        }
+    }
+
+    /// Drop cap/centerline state — called by every mesh-mutating op so the
+    /// frontend re-runs `detect_caps` against the current geometry rather
+    /// than trusting stale loops.
+    fn clear_caps(&mut self) {
+        self.cap_loops.clear();
+        self.centerline.clear();
+    }
+
     /// Restore the working mesh to the originally-loaded scan and clear
     /// all applied ops + accumulated transform provenance.
     pub fn reset(&mut self) {
@@ -169,6 +263,7 @@ impl EditSession {
         self.simplify_target = 0;
         self.auto_center_offset_m = Vector3::zeros();
         self.auto_pca_quat = None;
+        self.clear_caps();
     }
 
     /// Weld coincident vertices then drop the unreferenced ones. Raw STL
@@ -179,6 +274,7 @@ impl EditSession {
         let before = self.working.vertices.len();
         weld_vertices(&mut self.working, WELD_EPSILON_M);
         remove_unreferenced_vertices(&mut self.working);
+        self.clear_caps();
         (before, self.working.vertices.len())
     }
 
@@ -191,6 +287,7 @@ impl EditSession {
         self.working = result.mesh;
         self.simplify_applied = true;
         self.simplify_target = target_faces;
+        self.clear_caps();
         result.elapsed_secs
     }
 
@@ -199,6 +296,7 @@ impl EditSession {
     pub fn auto_center(&mut self) -> Vector3<f64> {
         let offset = cf_scan_prep_core::auto_center_in_place(&mut self.working);
         self.auto_center_offset_m += offset;
+        self.clear_caps();
         offset
     }
 
@@ -213,6 +311,7 @@ impl EditSession {
                 None => rot,
             });
         }
+        self.clear_caps();
         q
     }
 }
@@ -238,6 +337,34 @@ mod tests {
                 Point3::new(0.0, 1.0, 0.0), // dup of #2
             ],
             faces: vec![[0, 1, 2], [3, 4, 5]],
+        }
+    }
+
+    /// A welded quad (4 shared vertices, 2 triangles) — its perimeter is a
+    /// single open-boundary loop.
+    fn open_quad() -> IndexedMesh {
+        IndexedMesh {
+            vertices: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            faces: vec![[0, 1, 2], [0, 2, 3]],
+        }
+    }
+
+    /// A closed (watertight) tetrahedron — every edge is shared by two
+    /// faces, so it has no open boundary.
+    fn tetra() -> IndexedMesh {
+        IndexedMesh {
+            vertices: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 1.0),
+            ],
+            faces: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
         }
     }
 
@@ -344,5 +471,43 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detect_caps_finds_the_open_boundary_loop() {
+        let mut s = session(open_quad());
+        let scan = s.detect_caps();
+        assert!(
+            scan.loop_count >= 1,
+            "the open quad's perimeter is a boundary loop"
+        );
+        assert_eq!(s.cap_loops().len(), scan.loop_count);
+        assert!(!scan.looks_unwelded, "a single-loop mesh isn't soup");
+    }
+
+    #[test]
+    fn detect_caps_on_a_closed_mesh_has_no_loops_or_centerline() {
+        let mut s = session(tetra());
+        let scan = s.detect_caps();
+        assert_eq!(
+            scan.loop_count, 0,
+            "a closed tetrahedron has no open boundary"
+        );
+        assert!(s.centerline().is_empty());
+        assert!(!s.has_centerline());
+        assert_eq!(scan.centerline_segments, 0);
+    }
+
+    #[test]
+    fn a_mesh_edit_clears_stale_caps() {
+        let mut s = session(open_quad());
+        s.detect_caps();
+        assert!(!s.cap_loops().is_empty(), "caps detected on the quad");
+        s.reset();
+        assert!(
+            s.cap_loops().is_empty(),
+            "reset drops the now-stale cap loops"
+        );
+        assert!(s.centerline().is_empty());
     }
 }
