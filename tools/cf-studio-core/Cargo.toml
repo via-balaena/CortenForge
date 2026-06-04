@@ -1,0 +1,36 @@
+[package]
+name = "cf-studio-core"
+description = "Headless workflow core for CortenForge Studio — the six-step scan→cast guided wizard as a UI-agnostic state machine. Orchestrates the SDK crates; the CLI and the Slint GUI are thin clients over this. See MISSION.md."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Headless by construction: NO Bevy, NO rendering, NO UI, and (in P1)
+# no SDK crates either — the spine is a pure, serializable workflow
+# state machine. The SDK boundary (cf-cast / scan-prep / device-types)
+# is wired in a later layer, deliberately kept off the foundation so
+# this crate stays trivially testable and dependency-light.
+#
+# Lint posture mirrors cf-device-types (a sibling shared-support crate):
+# forbid unsafe, deny the panicking shortcuts. Library code returns
+# errors as values.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+# serde derives on the Project + artifact structs; serde_json is the
+# on-disk project-file format (internal app state, not user-edited —
+# JSON round-trips the nested Option/Vec shape more naturally than TOML).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# thiserror: typed library error enum (errors are values; no unwrap).
+thiserror = { workspace = true }

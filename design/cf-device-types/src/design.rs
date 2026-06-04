@@ -1,8 +1,6 @@
 //! User-dialed device-design state: the cavity inset, the ordered
 //! layer stack, the silicone catalog the Layers panel offers.
 
-use bevy::prelude::Resource;
-
 /// Cavity panel state — the user-dialed `inset_m` by which the
 /// cavity surface sits INSIDE the scan surface. Casting context: the
 /// cavity is the void the appendage slides into; smaller than the
@@ -15,7 +13,8 @@ use bevy::prelude::Resource;
 /// later slice may add the insertable-length clip
 /// (`docs/ENGINEERING_SUITE_DESIGN.md` § 4) so the cavity covers
 /// only the inserted portion, with a tangent-perpendicular end cap.
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "bevy", derive(bevy::prelude::Resource))]
 pub struct CavityState {
     /// Distance (meters) by which the cavity surface sits inside the
     /// scan surface. The cavity surface is the uniform-offset
@@ -195,7 +194,8 @@ impl LayerSpec {
 /// add/remove controls preserve this (the "Remove layer" button is
 /// hidden when only one layer remains; "+ Add layer" is hidden at
 /// the cap).
-#[derive(Resource, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "bevy", derive(bevy::prelude::Resource))]
 pub struct LayersState {
     /// Innermost-first ordered layer stack. Maintained between
     /// `1` and [`LAYER_COUNT_MAX`] entries by the panel's add/remove

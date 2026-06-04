@@ -6,7 +6,7 @@
 
 ## Philosophy
 
-CortenForge is an open-source SDK written in pure Rust for designing, engineering, and manufacturing bio-inspired mechanisms and robotics. Our code must be as reliable as the things built with it.
+CortenForge is an open-source SDK written in pure Rust for the mechatronics and simulation space — spanning design, simulation, and manufacturing. Our code must be as reliable as the things built with it.
 
 We maintain **A-grade academic standards** for all code. This is the cultural foundation of the project. Every contributor—human or AI—operates under the same standards.
 

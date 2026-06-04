@@ -28,19 +28,35 @@ jobs:
   # BUILD AND TEST
   # ============================================================================
   build:
-    name: Build (${{ matrix.target }})
+    name: Build Studio (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # Beta legs are non-fatal: if Windows/Linux/Intel-mac fail to build, the
+    # release still goes out with whatever did build. The verified
+    # Apple-Silicon leg (beta: false) stays blocking — if it fails, no release.
+    # (fail-fast: false alone wouldn't do this — it only stops cancellation;
+    # a failed leg would still fail the job and skip the release, which
+    # `needs` it.)
+    continue-on-error: ${{ matrix.beta }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            asset: Cendrillon-linux-x86_64.tar.gz
+            beta: true
           - target: x86_64-apple-darwin
             os: macos-latest
+            asset: Cendrillon-macos-x86_64.zip
+            beta: true
           - target: aarch64-apple-darwin
             os: macos-latest
+            asset: Cendrillon-macos-arm64.zip
+            beta: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            asset: Cendrillon-windows-x86_64.zip
+            beta: true
 
     steps:
       - uses: actions/checkout@v6
@@ -53,11 +69,65 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+      # Slint/winit on Linux build against system fontconfig (the
+      # yeslogic-fontconfig-sys C build dep).
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
 
-      - name: Run tests
-        run: cargo test --release --target ${{ matrix.target }}
+      # Correctness is gated on main by quality-gate.yml (full debug +
+      # release test suites, grade-all, cross-OS checks) — a tag is only ever
+      # cut from already-green main. So the release does NOT re-run the whole
+      # workspace test suite (slow stochastic-physics + cf-cast grade tests)
+      # or build crates it doesn't ship; it builds exactly the one artifact
+      # it publishes. This also avoids running x86_64 test binaries on the
+      # arm64 macOS runner (the x86_64-apple-darwin leg cross-compiles).
+      # --locked: build the committed Cargo.lock exactly. The Windows build
+      # depends on gpu-allocator being pinned to windows 0.62.2 (to match
+      # wgpu-hal); without --locked a re-resolve could drag it back onto an
+      # older windows and reintroduce the D3D12 type mismatch.
+      - name: Build Cendrillon
+        run: cargo build --release --locked -p cf-studio-gui --target ${{ matrix.target }}
+
+      - name: Package Studio (macOS .app)
+        if: runner.os == 'macOS'
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          app="Cendrillon.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp "target/${{ matrix.target }}/release/cf-studio-gui" "$app/Contents/MacOS/"
+          chmod +x "$app/Contents/MacOS/cf-studio-gui"
+          sed "s/__VERSION__/${version}/g" tools/cf-studio-gui/macos/Info.plist \
+            > "$app/Contents/Info.plist"
+          # Ad-hoc sign the bundle (best-effort, free). Doesn't satisfy
+          # Gatekeeper — users still approve once via "Open Anyway" — but it
+          # avoids the scarier "app is damaged and can't be opened" error a
+          # bundle with no signature can trigger on Apple Silicon.
+          codesign --force --deep --sign - "$app" || true
+          mkdir -p dist
+          # ditto preserves the bundle layout + executable bit in the zip.
+          ditto -c -k --keepParent "$app" "dist/${{ matrix.asset }}"
+
+      - name: Package Studio (Linux tar.gz)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          tar czf "dist/${{ matrix.asset }}" -C "target/${{ matrix.target }}/release" cf-studio-gui
+
+      - name: Package Studio (Windows zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Force `
+            -Path "target/${{ matrix.target }}/release/cf-studio-gui.exe" `
+            -DestinationPath "dist/${{ matrix.asset }}"
+
+      - name: Upload Studio artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: studio-${{ matrix.target }}
+          path: dist/${{ matrix.asset }}
 
   # ============================================================================
   # GENERATE SBOM
@@ -65,6 +135,8 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
+    # Supplementary — must never block the actual downloads.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -74,18 +146,25 @@ jobs:
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx
 
+      # Current cargo-cyclonedx has no --output-file; it writes a
+      # <crate>.cdx.json per package. Generate, then gather them.
       - name: Generate SBOM (CycloneDX)
+        run: cargo cyclonedx --format json
+
+      # cargo-cyclonedx writes one <crate>.cdx.json per workspace member
+      # (~280 of them). Keep only the shipped app's SBOM — attaching all of
+      # them as release assets is noise AND trips GitHub's upload rate limit.
+      - name: Collect Studio SBOM
         run: |
-          cargo cyclonedx --format json --output-file sbom.cdx.json
-          cargo cyclonedx --format xml --output-file sbom.cdx.xml
+          mkdir -p sbom-out
+          find . -name 'cf-studio-gui.cdx.json' -not -path './sbom-out/*' -exec cp {} sbom-out/ \;
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v6
         with:
           name: sbom
-          path: |
-            sbom.cdx.json
-            sbom.cdx.xml
+          path: sbom-out/
+          if-no-files-found: warn
 
   # ============================================================================
   # GENERATE CHANGELOG
@@ -161,8 +240,16 @@ jobs:
 
       - name: Download SBOM
         uses: actions/download-artifact@v7
+        continue-on-error: true
         with:
           name: sbom
+          path: ./artifacts
+
+      - name: Download Studio downloads
+        uses: actions/download-artifact@v7
+        with:
+          pattern: studio-*
+          merge-multiple: true
           path: ./artifacts
 
       - name: Extract version
@@ -177,6 +264,30 @@ jobs:
             # CortenForge ${{ steps.version.outputs.version }}
 
             ${{ needs.changelog.outputs.changelog }}
+
+            ## Download — Cendrillon
+
+            The guided desktop app (scan → clean → design → molds → print → pour):
+
+            - **macOS, Apple Silicon** (tested): `Cendrillon-macos-arm64.zip`
+            - **macOS, Intel** (beta): `Cendrillon-macos-x86_64.zip`
+            - **Windows** (beta): `Cendrillon-windows-x86_64.zip`
+            - **Linux** (beta): `Cendrillon-linux-x86_64.tar.gz`
+
+            Beta builds may be missing if that platform didn't build for this tag.
+
+            ### First time you open it (it's unsigned for now)
+
+            - **macOS** — unzip, drag `Cendrillon.app` to Applications, and
+              double-click. macOS will say it can't verify the developer — open
+              **System Settings → Privacy & Security**, scroll down, and click
+              **Open Anyway**, then open it again. You only do this once.
+            - **Windows** — unzip and run `cf-studio-gui.exe`. If SmartScreen
+              warns, click **More info → Run anyway**.
+            - **Linux** — `tar xzf` and run the `cf-studio-gui` binary (needs a
+              working Vulkan/GL driver).
+
+            Code-signing + notarization (a one-click launch) is a planned upgrade.
 
             ## Verification
 
@@ -193,8 +304,9 @@ jobs:
 
             See [STANDARDS.md](./docs/STANDARDS.md) for the full quality specification.
           files: |
-            artifacts/sbom.cdx.json
-            artifacts/sbom.cdx.xml
+            artifacts/*.cdx.json
+            artifacts/Cendrillon-*
+          fail_on_unmatched_files: false
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:

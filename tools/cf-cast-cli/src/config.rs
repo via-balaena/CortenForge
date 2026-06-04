@@ -87,6 +87,65 @@ pub struct CastConfig {
     pub canal: CanalConfig,
 }
 
+impl CastConfig {
+    /// Build a config for the guided-wizard path: a cleaned scan + its
+    /// `.prep.toml` + a `.design.toml` (the layer stack), with the
+    /// **validated workshop production recipe** — the settings the
+    /// base_mold class of part actually casts cleanly with (mirrors the
+    /// out-of-tree `cast.base_mold.canaloff.toml`, which is validated):
+    ///
+    /// - `planar_seam = true` — the cup halves print mating-face-down, so
+    ///   the seam must be flat (the hard flat-mating-face constraint); also
+    ///   a prerequisite for the apex pour.
+    /// - `split_normal = [1, 0, 0]` — split into left/right halves across
+    ///   the part's width. The scan stands apex-up after step-2 PCA
+    ///   orientation, so the default top/bottom `[0,0,-1]` split is wrong.
+    /// - `pour_gate.apex_axial = true` — a single axial pour bore at the
+    ///   dome apex (the organic-parts pour), not the iter-1 V-shape.
+    /// - plug-floor lock pins on; gasket off (the demand flange self-seals);
+    ///   canal off (the scan-specific frenulum canal is a separate opt-in,
+    ///   not a wizard default — base_mold casts cleanly without it).
+    ///
+    /// `mesh_cell_size_m` is the marching-cubes resolution (time ↔ quality).
+    /// The layer stack is taken from the design, so `[[layers]]` stays empty
+    /// (the design-set ⟺ empty-layers gate holds by construction).
+    ///
+    /// Paths are relative to the cast run's `base_dir` (typically the scan
+    /// folder), matching how `run_with_config` resolves them.
+    #[must_use]
+    pub fn for_design(
+        cleaned_stl: PathBuf,
+        prep_toml: PathBuf,
+        design_toml: PathBuf,
+        mesh_cell_size_m: f64,
+    ) -> Self {
+        Self {
+            scan: ScanConfig {
+                cleaned_stl,
+                prep_toml,
+            },
+            cast: CastDefaults {
+                mesh_cell_size_m,
+                planar_seam: true,
+                split_normal: [1.0, 0.0, 0.0],
+                ..CastDefaults::default()
+            },
+            design: Some(DesignSourceConfig { path: design_toml }),
+            layers: Vec::new(),
+            plug_pins: PlugPinConfig::default(), // enabled by default
+            pour_gate: PourGateConfig {
+                apex_axial: true,
+                ..PourGateConfig::default()
+            },
+            gasket: GasketConfig::default(),
+            flange: FlangeConfig::default(),
+            dowel_hole: DowelHoleConfig::default(),
+            bolt_pattern: BoltPatternConfig::default(),
+            canal: CanalConfig::default(),
+        }
+    }
+}
+
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
 /// cf-device-design output for this scan, so the engineered layer
 /// stack feeds the cast directly (no hand-duplication between
@@ -908,6 +967,68 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn for_design_builds_a_valid_design_sourced_config() {
+        let c = CastConfig::for_design(
+            PathBuf::from("base_mold.cleaned.stl"),
+            PathBuf::from("base_mold.prep.toml"),
+            PathBuf::from("base_mold.design.toml"),
+            0.0015,
+        );
+        assert_eq!(c.scan.cleaned_stl, PathBuf::from("base_mold.cleaned.stl"));
+        assert_eq!(c.scan.prep_toml, PathBuf::from("base_mold.prep.toml"));
+        assert!(c.design.is_some(), "design-sourced");
+        assert!(
+            c.layers.is_empty(),
+            "layers come from the design, not inline"
+        );
+        assert!((c.cast.mesh_cell_size_m - 0.0015).abs() < 1e-12);
+        // The design-set ⟺ empty-layers cross-field gate holds (the pre-lift
+        // check; layers are lifted from the design by the run, then
+        // validate_after_layer_source applies).
+        c.validate_layer_source()
+            .expect("for_design satisfies the layer-source gate");
+        // It must also pass the full validate() once we lift a dummy layer —
+        // in particular the apex_axial ⟹ planar_seam coupling.
+        let mut lifted = c.clone();
+        lifted.design = None;
+        lifted.layers = vec![LayerConfig {
+            thickness_m: 0.005,
+            material: "ECOFLEX_00_30".to_string(),
+            density_kg_m3: None,
+            display_name: None,
+            slacker_fraction: None,
+        }];
+        lifted
+            .validate()
+            .expect("for_design's geometry recipe is self-consistent");
+    }
+
+    #[test]
+    fn for_design_matches_the_validated_canaloff_recipe() {
+        // The out-of-tree cast.base_mold.canaloff.toml is the validated
+        // production recipe that casts base_mold cleanly. for_design must
+        // emit the same cast/pour_gate/plug_pins/gasket/canal settings (only
+        // the cell size + the canal frenulum_dir, a no-op while off, differ).
+        let c = CastConfig::for_design(
+            PathBuf::from("base_mold.cleaned.stl"),
+            PathBuf::from("base_mold.prep.toml"),
+            PathBuf::from("base_mold.design.toml"),
+            0.0015,
+        );
+        assert!(c.cast.planar_seam, "planar seam (flat mating face)");
+        assert!(!c.cast.flat_cavity_floor);
+        assert_eq!(c.cast.split_normal, [1.0, 0.0, 0.0], "left/right split");
+        assert!((c.cast.wall_thickness_m - 0.005).abs() < 1e-12);
+        assert!((c.cast.piece_min_wall_mm - 0.1).abs() < 1e-12);
+        assert!(!c.cast.scan_mesh_direct_plug_layer_0);
+        assert!(c.plug_pins.enabled, "plug-floor lock pins on");
+        assert!(c.pour_gate.enabled);
+        assert!(c.pour_gate.apex_axial, "apex axial pour bore");
+        assert!(!c.gasket.enabled, "gasket off (demand flange self-seals)");
+        assert!(!c.canal.enabled, "canal off (scan-specific opt-in)");
+    }
 
     fn minimal_config_text() -> &'static str {
         r#"

@@ -2305,17 +2305,26 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d) is the shared
     // device-side compute + rendering primitives crate (cached SDF +
     // iso extraction + clip-plane material) consumed by the same two
-    // binaries — Bevy-using, same exemption shape.
+    // binaries — Bevy-using, same exemption shape. cf-studio-core +
+    // cf-studio-engine (the guided-workflow Studio spine + its
+    // SDK-boundary orchestrator; see MISSION.md) are workspace tools
+    // under `tools/` carrying the cf- prefix — same Q8 path-based-filter
+    // exemption, no SDK tier.
     if matches!(
         crate_name,
         "cf-viewer"
             | "cf-bevy-common"
             | "cf-scan-prep"
+            | "cf-scan-prep-core"
             | "cf-cast-cli"
             | "cf-device-design"
             | "cf-sim-research"
             | "cf-device-types"
             | "cf-device-geometry"
+            | "cf-studio-core"
+            | "cf-studio-engine"
+            | "cf-studio"
+            | "cf-studio-gui"
     ) {
         return false;
     }
@@ -3735,11 +3744,16 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-viewer"));
         assert!(!applies_to_crate("cf-bevy-common"));
         assert!(!applies_to_crate("cf-scan-prep"));
+        assert!(!applies_to_crate("cf-scan-prep-core"));
         assert!(!applies_to_crate("cf-cast-cli"));
         assert!(!applies_to_crate("cf-device-design"));
         assert!(!applies_to_crate("cf-sim-research"));
         assert!(!applies_to_crate("cf-device-types"));
         assert!(!applies_to_crate("cf-device-geometry"));
+        assert!(!applies_to_crate("cf-studio-core"));
+        assert!(!applies_to_crate("cf-studio-engine"));
+        assert!(!applies_to_crate("cf-studio"));
+        assert!(!applies_to_crate("cf-studio-gui"));
     }
 
     #[test]

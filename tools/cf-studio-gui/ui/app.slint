@@ -1,0 +1,675 @@
+import { Button, VerticalBox, HorizontalBox, SpinBox, ComboBox, ScrollView } from "std-widgets.slint";
+
+// One silicone layer in the step-3 stack editor (innermost first). The Rust
+// side owns these in a VecModel; the row widgets write back via callbacks.
+export struct LayerRow {
+    material-index: int,  // index into `material-names` / the catalog
+    thickness-mm: int,
+    slacker-pct: int,
+}
+
+// One row of the workflow checklist, prepared for display by the Rust
+// side (mark/here are precomputed so the markup stays simple).
+export struct StepRow {
+    number: int,
+    title: string,
+    mark: string,    // "✓" if done, "○" otherwise
+    here: string,    // "   ← you are here" on the project's current step, else ""
+    viewing: bool,   // the step currently shown in the body
+}
+
+// The live 3D viewport: a wgpu-rendered Image (filled from Rust) with a
+// drag-to-orbit TouchArea and an optional placeholder hint. Reused by the
+// step-1 scan view and the step-2 editor.
+component ScanViewport inherits Rectangle {
+    in property <image> view;
+    in property <bool> show-hint;
+    in property <string> hint;
+    // Fixed height (overridden per step) — the body is scrollable, where a
+    // stretchy viewport would collapse to nothing.
+    in property <length> view-height: 300px;
+    callback orbit(length, length);
+
+    height: root.view-height;
+    background: #e9ebef;
+    border-radius: 10px;
+    clip: true;
+
+    Image {
+        source: view;
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+    }
+    if show-hint: Text {
+        text: hint;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: 17px;
+        color: #5a5a5a;
+        wrap: word-wrap;
+    }
+    TouchArea {
+        property <length> px;
+        property <length> py;
+        mouse-cursor: grab;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                self.px = self.mouse-x;
+                self.py = self.mouse-y;
+            }
+        }
+        moved => {
+            root.orbit(self.mouse-x - self.px, self.mouse-y - self.py);
+            self.px = self.mouse-x;
+            self.py = self.mouse-y;
+        }
+    }
+}
+
+// One numbered sub-step of the step-2 cleanup flow: a sequence heading
+// ("First — …", "Then — …") + a one-line plain-language hint, with its
+// controls injected below via @children. Laid out top-to-bottom so the
+// cleanup page reads as an obvious order rather than a flat toolbar.
+component CleanupSection inherits VerticalLayout {
+    in property <string> heading;
+    in property <string> hint;
+    in property <bool> done: false;
+    spacing: 4px;
+    Text {
+        text: root.done ? root.heading + "   ✓" : root.heading;
+        font-size: 15px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        color: root.done ? #2e7d32 : #1a1a1a;
+    }
+    if root.hint != "": Text {
+        text: root.hint;
+        font-size: 13px;
+        horizontal-alignment: center;
+        color: #5f5f5f;
+        wrap: word-wrap;
+    }
+    @children
+}
+
+export component AppWindow inherits Window {
+    title: "Cendrillon";
+    preferred-width: 900px;
+    preferred-height: 900px;
+    min-width: 640px;
+    // Tall enough that the footer (Back / Help / Next) is always on-screen
+    // even if the OS restores a shorter window from a previous run (and
+    // with room for the step-2 trim row).
+    min-height: 850px;
+    // Force a consistent light theme (the app is designed light: light body
+    // panel, dark text). Without this the window inherits the OS scheme — on
+    // macOS dark mode the off-panel text (progress checklist) went dark-on-
+    // dark and vanished.
+    background: #dce0e5;
+
+    in property <string> project-name: "Untitled";
+    in property <[StepRow]> steps;
+    in property <int> viewed-number: 1;
+    in property <int> total-steps: 6;
+    in property <string> viewed-title;
+    in property <bool> can-back: false;
+    in property <bool> can-next: true;
+    in property <string> step-message: "";
+    in property <bool> step-message-is-error: false;
+    // The live 3D view (rendered by wgpu into a Slint Image) + whether a
+    // scan has been loaded yet (drives the step-1 placeholder hint).
+    in property <image> scan-view;
+    in property <bool> has-scan: false;
+    // Step-2 editor: working-mesh stats line ("N faces · M vertices").
+    in property <string> edit-stats: "";
+    // Whether a centerline exists (after Find floor) — gates the trim row.
+    in property <bool> has-centerline: false;
+    // Upper bound (mm) for the trim sliders = the centerline arc length.
+    in property <int> trim-max-mm: 100;
+    // Whether a floor trim is applied — gates the reconstruct row (you
+    // reconstruct down to a chopped floor).
+    in property <bool> has-floor-trim: false;
+    // True while a background Simplify is running — disables the edit +
+    // pick-scan buttons so an intervening edit can't be clobbered by the
+    // late-arriving result. Orbit stays live.
+    in property <bool> busy: false;
+    // Step 3 design editor: the silicone layer stack + the catalog's display
+    // names for each layer's material picker.
+    in property <[LayerRow]> layers;
+    in property <[string]> material-names;
+    // Step 4: a persistent summary of the generated molds (piece counts,
+    // total silicone mass, pour plan, output folder). Empty until a run
+    // completes; survives leaving + returning to the step.
+    in property <string> molds-summary: "";
+    // Step 5 (Print): status line — "ready to save N file(s)" before
+    // export, "saved to <dir>" after. Empty until the molds are made.
+    in property <string> print-summary: "";
+    // Whether the print files have been exported (gates the Open-folder
+    // button + flips the save button to a re-save).
+    in property <bool> has-print-export: false;
+    // Step 6 (Pour assistant): the full plan overview + the active-layer
+    // instruction + the live pot-life countdown (text + urgency 0/1/2 for
+    // colour) + whether a countdown is running + whether every layer is
+    // poured (the finished state).
+    in property <string> pour-plan-text: "";
+    in property <string> pour-active-text: "";
+    in property <string> pour-timer-text: "";
+    in property <int> pour-timer-urgency: 0;
+    in property <bool> pour-timer-running: false;
+    in property <bool> pour-complete: false;
+
+    callback back();
+    callback next();
+    callback help();
+    callback pick-scan();
+    callback pick-design();
+    // Step-3 layer-stack edits + commit (cavity inset mm).
+    callback add-layer();
+    callback remove-layer(int);
+    callback set-layer-material(int, int);
+    callback set-layer-thickness(int, int);
+    callback set-layer-slacker(int, int);
+    callback use-design(int);
+    // Step 4: run the cast at a quality preset matching the picker order
+    // (0 = Fine 0.5 mm print quality, 1 = Fast 1.5 mm preview). Long-running
+    // — driven async on a background thread.
+    callback make-molds(int);
+    // Step 5: copy the printable files into a chosen folder, and reveal an
+    // already-exported folder in the OS file manager.
+    callback export-print();
+    callback open-export-folder();
+    // Step 6: start the current layer's pot-life countdown, and mark the
+    // current layer poured (advancing to the next, or finishing).
+    callback start-pour-timer();
+    callback mark-poured();
+    // Mouse-drag in the 3D view: (dx, dy) screen-pixel deltas → orbit.
+    callback orbit(length, length);
+    // Step-2 edit ops (drive the EditSession; each re-renders the view).
+    // (Auto-center + auto-orient run automatically at load, matching the
+    // cf-scan-prep tool; the manual transform controls are Reorient /
+    // Recenter sliders, which arrive with the parity phase.)
+    callback simplify(int);
+    callback weld();
+    callback find-floor();
+    callback apply-trim(int, int);
+    // (shape-index 0=constant/1=taper/2=extrapolate, reference-mm)
+    callback apply-reconstruct(int, int);
+    callback reset-edit();
+    // (taubin smoothing iterations) → write cleaned.stl + .prep.toml.
+    callback save(int);
+
+    VerticalBox {
+        padding: 28px;
+        spacing: 16px;
+
+        // ── header ──────────────────────────────────────────────
+        Text {
+            text: "Cendrillon";
+            font-size: 15px;
+            color: #5a5a5a;
+        }
+        Text {
+            text: "Step \{viewed-number} of \{total-steps}";
+            font-size: 15px;
+            color: #5a5a5a;
+        }
+        Text {
+            text: viewed-title;
+            font-size: 30px;
+            font-weight: 800;
+            // Explicit so it doesn't follow the OS scheme (light-on-light).
+            color: #1a1a1a;
+        }
+
+        // ── body (per-step controls) — scrollable so the checklist +
+        // footer (Back/Next) stay fixed and always reachable ──────
+        Rectangle {
+            background: #f3f4f6;
+            border-radius: 14px;
+            vertical-stretch: 1;
+            clip: true;
+            body-scroll := ScrollView {
+            VerticalBox {
+                width: body-scroll.visible-width;
+                padding: 18px;
+                spacing: 16px;
+
+                // Step 1 — add the scan, see it live.
+                if viewed-number == 1: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    ScanViewport {
+                        view: scan-view;
+                        view-height: 360px;
+                        show-hint: !has-scan;
+                        hint: "Choose a scan to see it here — then drag to spin it.";
+                        orbit(dx, dy) => { root.orbit(dx, dy); }
+                    }
+                    Button {
+                        text: has-scan ? "Choose a different scan…" : "Choose scan file…";
+                        enabled: !busy;
+                        clicked => { pick-scan(); }
+                    }
+                    Text {
+                        text: "Works with STL, OBJ, PLY, and 3MF scans.";
+                        horizontal-alignment: center;
+                        font-size: 13px;
+                        color: #5f5f5f;
+                    }
+                    Text {
+                        text: "💡 Leave the bottom open — scan it like it's on a lazy Susan and don't bother closing or capping the floor in your scanning software. CortenForge trims and rebuilds the floor for you in the next step.";
+                        horizontal-alignment: center;
+                        font-size: 17px;
+                        font-weight: 600;
+                        color: #444444;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // Step 2 — clean the scan, live, in the same viewport.
+                // Laid out as an ordered sequence (First → Then → Next →
+                // Finally) so the cleanup order is obvious, with later steps
+                // revealed as earlier ones complete.
+                if viewed-number == 2: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    ScanViewport {
+                        view: scan-view;
+                        view-height: 240px;
+                        show-hint: !has-scan;
+                        hint: "Add a scan in step 1 first.";
+                        orbit(dx, dy) => { root.orbit(dx, dy); }
+                    }
+                    Text {
+                        text: edit-stats;
+                        horizontal-alignment: center;
+                        font-size: 15px;
+                        color: #555555;
+                    }
+
+                    // First — tidy the raw scan.
+                    CleanupSection {
+                        heading: "First — tidy the scan";
+                        hint: "Merge duplicate points so the rest works. A very heavy scan can be lightened, too.";
+                        HorizontalBox {
+                            alignment: center;
+                            spacing: 8px;
+                            Button { text: "Weld points"; enabled: !busy; clicked => { weld(); } }
+                            Text { text: "Simplify to"; vertical-alignment: center; color: #333333; }
+                            target-spin := SpinBox {
+                                enabled: !busy;
+                                minimum: 1000;
+                                maximum: 1000000;
+                                value: 200000;
+                            }
+                            Button { text: "Simplify"; enabled: !busy; clicked => { simplify(target-spin.value); } }
+                        }
+                    }
+
+                    // Then — stand it upright (find floor + level). Required.
+                    CleanupSection {
+                        heading: "Then — stand it upright";
+                        hint: "Finds the open end and stands the scan vertical. Needed before you can save.";
+                        done: has-centerline;
+                        HorizontalBox {
+                            alignment: center;
+                            Button {
+                                text: has-centerline ? "Find floor again" : "Find floor";
+                                enabled: !busy;
+                                clicked => { find-floor(); }
+                            }
+                        }
+                    }
+
+                    // Next — trim the ragged open end (appears after upright).
+                    if has-centerline: CleanupSection {
+                        heading: "Next — trim the open end";
+                        hint: "Trim the ragged open edge. Removing about 10 mm from the floor is a good start.";
+                        HorizontalBox {
+                            alignment: center;
+                            spacing: 8px;
+                            Text { text: "from tip"; vertical-alignment: center; color: #333333; }
+                            tip-spin := SpinBox { minimum: 0; maximum: trim-max-mm; value: 0; }
+                            Text { text: "mm    from floor"; vertical-alignment: center; color: #333333; }
+                            floor-spin := SpinBox { minimum: 0; maximum: trim-max-mm; value: 10; }
+                            Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                            Button {
+                                text: "Apply trim";
+                                enabled: !busy;
+                                clicked => { apply-trim(tip-spin.value, floor-spin.value); }
+                            }
+                        }
+                        // Re-cap the chopped floor (optional) — titled so it's
+                        // clear this rebuilds the floor you just trimmed off.
+                        if has-floor-trim: VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Rebuild the trimmed floor";
+                                font-size: 13px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                color: #1a1a1a;
+                            }
+                            Text {
+                                text: "Close the open end back up with a clean floor, rebuilt from the scan's shape just above the cut.";
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                color: #5f5f5f;
+                                wrap: word-wrap;
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Shape"; vertical-alignment: center; color: #333333; }
+                                shape-combo := ComboBox {
+                                    model: ["Flat", "Taper", "Extrapolate"];
+                                    current-index: 0;
+                                }
+                                Text { text: "from"; vertical-alignment: center; color: #333333; }
+                                ref-spin := SpinBox { minimum: 5; maximum: trim-max-mm; value: 25; }
+                                Text { text: "mm above cut"; vertical-alignment: center; color: #333333; }
+                                Button {
+                                    text: "Reconstruct floor";
+                                    enabled: !busy;
+                                    clicked => { apply-reconstruct(shape-combo.current-index, ref-spin.value); }
+                                }
+                            }
+                        }
+                    }
+
+                    // Finally — save (disabled until upright).
+                    CleanupSection {
+                        heading: "Finally — save your cleaned scan";
+                        hint: has-centerline ? "" : "Do “stand it upright” above first.";
+                        HorizontalBox {
+                            alignment: center;
+                            spacing: 8px;
+                            Text { text: "Smoothing"; vertical-alignment: center; color: #333333; }
+                            smooth-spin := SpinBox { minimum: 0; maximum: 30; value: 8; }
+                            Button {
+                                text: "Save cleaned scan";
+                                primary: true;
+                                enabled: !busy && has-centerline;
+                                clicked => { save(smooth-spin.value); }
+                            }
+                        }
+                    }
+
+                    // Start over (secondary; small, centered).
+                    HorizontalBox {
+                        alignment: center;
+                        Button { text: "Start over"; enabled: !busy; clicked => { reset-edit(); } }
+                    }
+                }
+
+                // Step 3 — choose the silicone layer stack + cavity inset.
+                if viewed-number == 3: VerticalLayout {
+                    spacing: 12px;
+                    vertical-stretch: 1;
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Text {
+                            text: "Cavity inset (snugness)";
+                            vertical-alignment: center;
+                            color: #333333;
+                        }
+                        cavity-spin := SpinBox { minimum: 0; maximum: 30; value: 5; }
+                        Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                    }
+                    // Layer rows flow at full height; the body scrolls if the
+                    // stack gets long (no nested scroll area, which would
+                    // collapse to its min-height inside the scrollable body).
+                    VerticalLayout {
+                        spacing: 6px;
+                        for layer[idx] in layers: HorizontalBox {
+                            alignment: center;
+                            spacing: 6px;
+                            Text {
+                                text: "Layer \{idx + 1}";
+                                vertical-alignment: center;
+                                color: #333333;
+                            }
+                            ComboBox {
+                                model: material-names;
+                                current-index: layer.material-index;
+                                selected => { set-layer-material(idx, self.current-index); }
+                            }
+                            SpinBox {
+                                minimum: 1;
+                                maximum: 100;
+                                value: layer.thickness-mm;
+                                edited(v) => { set-layer-thickness(idx, v); }
+                            }
+                            Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                            SpinBox {
+                                minimum: 0;
+                                maximum: 100;
+                                value: layer.slacker-pct;
+                                edited(v) => { set-layer-slacker(idx, v); }
+                            }
+                            Text { text: "% slacker"; vertical-alignment: center; color: #333333; }
+                            Button { text: "✕"; clicked => { remove-layer(idx); } }
+                        }
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Button { text: "+ Add layer"; clicked => { add-layer(); } }
+                        Button {
+                            text: "Use this design";
+                            primary: true;
+                            clicked => { use-design(cavity-spin.value); }
+                        }
+                        Button { text: "…or load a file"; clicked => { pick-design(); } }
+                    }
+                }
+                // Step 4 — make the printable mold pieces (runs the cast).
+                if viewed-number == 4: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    Text {
+                        text: "CortenForge builds the printable mold from your cleaned scan and silicone design. This runs the full cast — print quality takes around fifteen minutes (the faster preview is a few), and the window stays responsive while it works.";
+                        horizontal-alignment: center;
+                        font-size: 16px;
+                        color: #444444;
+                        wrap: word-wrap;
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Text { text: "Quality"; vertical-alignment: center; color: #333333; }
+                        quality-combo := ComboBox {
+                            // 0.5 mm is the print-quality default (the physical
+                            // fit-test print was 0.5 mm); 1.5 mm is a faster preview.
+                            model: ["Fine — 0.5 mm (print quality)", "Fast — 1.5 mm (preview)"];
+                            current-index: 0;
+                            enabled: !busy;
+                        }
+                        Button {
+                            text: busy ? "Making molds…" : "Make molds";
+                            primary: true;
+                            enabled: !busy;
+                            clicked => { make-molds(quality-combo.current-index); }
+                        }
+                    }
+                    if molds-summary != "": Rectangle {
+                        background: #eef3ee;
+                        border-radius: 10px;
+                        VerticalBox {
+                            padding: 14px;
+                            Text {
+                                text: molds-summary;
+                                font-size: 16px;
+                                color: #2e4d2e;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                // Step 5 — save the printable files + hand off to the slicer.
+                if viewed-number == 5: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    Text {
+                        text: "Your mold pieces are ready to print. Save them to a folder, then open that folder in your slicer (like OrcaSlicer) and print each piece. The printed molds are what you'll pour silicone into.";
+                        horizontal-alignment: center;
+                        font-size: 16px;
+                        color: #444444;
+                        wrap: word-wrap;
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Button {
+                            text: busy ? "Saving…" : (has-print-export ? "Save again…" : "Save files for printing…");
+                            primary: true;
+                            enabled: !busy;
+                            clicked => { export-print(); }
+                        }
+                        if has-print-export: Button {
+                            text: "Open folder";
+                            enabled: !busy;
+                            clicked => { open-export-folder(); }
+                        }
+                    }
+                    if print-summary != "": Rectangle {
+                        background: #eef3ee;
+                        border-radius: 10px;
+                        VerticalBox {
+                            padding: 14px;
+                            Text {
+                                text: print-summary;
+                                font-size: 16px;
+                                color: #2e4d2e;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                // Step 6 — the guided pour assistant (plan + pot-life timer).
+                if viewed-number == 6: VerticalLayout {
+                    spacing: 12px;
+                    vertical-stretch: 1;
+                    // Full plan, for reference (innermost layer first).
+                    Rectangle {
+                        background: #f3f4f6;
+                        border-radius: 10px;
+                        VerticalBox {
+                            padding: 12px;
+                            Text {
+                                text: pour-plan-text;
+                                font-size: 14px;
+                                color: #333333;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    // Active layer + timer (hidden once every layer is poured).
+                    if !pour-complete: VerticalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: pour-active-text;
+                            font-size: 16px;
+                            color: #1565c0;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        if pour-timer-running: Text {
+                            text: pour-timer-text;
+                            font-size: 22px;
+                            font-weight: 800;
+                            horizontal-alignment: center;
+                            color: pour-timer-urgency == 2
+                                ? #c62828
+                                : (pour-timer-urgency == 1 ? #e65100 : #2e7d32);
+                        }
+                        HorizontalBox {
+                            alignment: center;
+                            spacing: 8px;
+                            Button {
+                                // Always enabled: re-clicking restarts the clock
+                                // (e.g. after the pot life expired and you remixed).
+                                text: pour-timer-running ? "Restart timer" : "Start pour timer";
+                                clicked => { start-pour-timer(); }
+                            }
+                            Button {
+                                text: "Mark this layer poured →";
+                                primary: true;
+                                clicked => { mark-poured(); }
+                            }
+                        }
+                    }
+                    if pour-complete: Rectangle {
+                        background: #eef3ee;
+                        border-radius: 10px;
+                        VerticalBox {
+                            padding: 16px;
+                            Text {
+                                text: "🎉 All layers poured — your device is complete! Let each layer cure fully before unmolding.";
+                                font-size: 18px;
+                                color: #2e4d2e;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                if step-message != "": Text {
+                    text: step-message;
+                    horizontal-alignment: center;
+                    font-size: 17px;
+                    color: step-message-is-error ? #c62828 : #2e7d32;
+                    wrap: word-wrap;
+                }
+            }
+            }
+        }
+
+        // ── progress checklist (reflects the real project state) ──
+        VerticalBox {
+            spacing: 6px;
+            for row in steps: Text {
+                text: "\{row.mark}  Step \{row.number}: \{row.title}\{row.here}";
+                font-size: 17px;
+                font-weight: row.viewing ? 700 : 400;
+                color: row.viewing ? #1565c0 : #222222;
+            }
+        }
+
+        // ── footer ──────────────────────────────────────────────
+        HorizontalBox {
+            spacing: 12px;
+            Button {
+                text: "← Back";
+                // Hold navigation while a background run (simplify / mold-gen)
+                // is in flight, so it can't be interrupted mid-flight.
+                enabled: can-back && !busy;
+                clicked => { back(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: "Help";
+                enabled: !busy;
+                clicked => { help(); }
+            }
+            Button {
+                text: "Next →";
+                enabled: can-next && !busy;
+                primary: true;
+                clicked => { next(); }
+            }
+        }
+
+        // Cendrillon's UI is built with Slint (used under its royalty-free
+        // desktop license) — credit where it's due.
+        Text {
+            text: "UI built with Slint";
+            font-size: 12px;
+            color: #8a909a;
+            horizontal-alignment: right;
+        }
+    }
+}

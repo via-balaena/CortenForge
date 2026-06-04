@@ -90,9 +90,32 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
 
     let cast_toml_text = fs::read_to_string(cast_toml_path)
         .with_context(|| format!("read cast TOML at {}", cast_toml_path.display()))?;
-    let mut config = config::CastConfig::from_toml_str(&cast_toml_text)
+    let config = config::CastConfig::from_toml_str(&cast_toml_text)
         .with_context(|| format!("parse cast TOML at {}", cast_toml_path.display()))?;
 
+    run_with_config(config, &cast_toml_dir, output_dir_override)
+}
+
+/// Run the cast pipeline from an already-parsed [`CastConfig`].
+///
+/// The typed entry point: programmatic consumers (e.g. `cf-studio-engine`)
+/// build a [`CastConfig`] in code and call this directly, with no
+/// `cast.toml` to author + re-parse. [`run`] is the thin file wrapper over
+/// it (read the TOML → `CastConfig::from_toml_str` → here).
+///
+/// `base_dir` is the directory the config's relative paths
+/// (`scan.cleaned_stl`, `scan.prep_toml`, `design.path`, `cast.output_dir`)
+/// resolve against — for [`run`] that is the cast TOML's parent directory.
+///
+/// # Errors
+/// Every failure mode after the TOML parse: layer-source validation,
+/// design-TOML load, scan/prep load, ribbon derivation, mold export, and
+/// procedure write.
+pub fn run_with_config(
+    mut config: CastConfig,
+    base_dir: &Path,
+    output_dir_override: Option<&Path>,
+) -> Result<RunReport> {
     // Slice 9 — interleaved validation: first the cross-field gate
     // (`[design]` ↔ `[[layers]]` mutual exclusion), then the
     // design.toml lift if applicable, then the per-layer + numeric
@@ -109,7 +132,7 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     // press-fit reservation into the mold geometry.
     let mut cavity_inset_m: f64 = 0.0;
     if let Some(design_cfg) = &config.design {
-        let design_path = resolve_relative(&cast_toml_dir, &design_cfg.path);
+        let design_path = resolve_relative(base_dir, &design_cfg.path);
         let design = design_ref::load_design_ref(&design_path)
             .with_context(|| format!("load design TOML at {}", design_path.display()))?;
         config.layers = derive_layers_from_design(&design);
@@ -126,8 +149,8 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         .validate_after_layer_source()
         .context("cast TOML semantic validation (post-layer-source)")?;
 
-    let scan_stl_path = resolve_relative(&cast_toml_dir, &config.scan.cleaned_stl);
-    let prep_toml_path = resolve_relative(&cast_toml_dir, &config.scan.prep_toml);
+    let scan_stl_path = resolve_relative(base_dir, &config.scan.cleaned_stl);
+    let prep_toml_path = resolve_relative(base_dir, &config.scan.prep_toml);
 
     // Flood-fill bounds must enclose every point `derive_spec_and_ribbon`
     // queries — the consumer-side `sdf_bounds = scan_aabb.expanded(
@@ -147,10 +170,11 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         .with_context(|| format!("read prep TOML at {}", prep_toml_path.display()))?;
     let centerline = prep::parse_centerline_from_prep_toml(&prep_text)
         .with_context(|| format!("parse centerline from {}", prep_toml_path.display()))?;
-    if centerline.is_empty() {
+    if centerline.len() < 2 {
         bail!(
-            "centerline polyline in {} is empty — cf-scan-prep emits the [centerline] block only when a centerline is present; ensure the Cap panel was applied + centerline polyline was computed before saving",
-            prep_toml_path.display()
+            "centerline polyline in {} has fewer than 2 points (got {}) — cf_cast::Ribbon::new requires at least 2; ensure the Cap panel was applied + the centerline polyline was computed before saving",
+            prep_toml_path.display(),
+            centerline.len()
         );
     }
     // Lift the `[caps]` block out of the same .prep.toml. Empty when
@@ -181,8 +205,8 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     let DerivedSpec { spec, ribbon } = derived;
 
     let out_dir = match output_dir_override {
-        Some(p) => cast_toml_dir.join(p),
-        None => cast_toml_dir.join(&config.cast.output_dir),
+        Some(p) => base_dir.join(p),
+        None => base_dir.join(&config.cast.output_dir),
     };
 
     // Slice 9.7 — orchestration progress for workshop runs (large

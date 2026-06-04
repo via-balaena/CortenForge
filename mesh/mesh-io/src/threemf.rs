@@ -14,12 +14,15 @@
 //!
 //! - Mesh geometry (vertices and triangles)
 //! - Multiple objects in a single file
+//! - `<model unit="…">` is honored on load — coordinates are normalized to
+//!   millimetres (the 3MF default), so consumers get a consistent unit
 //!
 //! # Limitations
 //!
 //! - Materials, colors, and textures are not currently supported
 //! - Beam lattice extension is not supported
-//! - Build items (transformations) are ignored
+//! - Build items (transformations) are ignored — meshes load in their
+//!   object-local coordinates
 //!
 //! # Example
 //!
@@ -148,6 +151,9 @@ fn parse_3mf_model(content: &str) -> IoResult<IndexedMesh> {
     let mut in_vertices = false;
     let mut in_triangles = false;
     let mut current_vertex_offset: u32 = 0;
+    // 3MF coordinates are in the `<model unit="…">` unit (default millimetre).
+    // `Some(f)` is the factor to scale to millimetres; `None` = already mm.
+    let mut unit_scale: Option<f64> = None;
 
     let mut buf = Vec::new();
 
@@ -156,6 +162,9 @@ fn parse_3mf_model(content: &str) -> IoResult<IndexedMesh> {
             Ok(Event::Start(ref e) | Event::Empty(ref e)) => {
                 let local_name = e.local_name();
                 match local_name.as_ref() {
+                    b"model" => {
+                        unit_scale = model_unit_scale(e);
+                    }
                     b"mesh" => {
                         in_mesh = true;
                         // Track vertex offset for this mesh object
@@ -198,7 +207,38 @@ fn parse_3mf_model(content: &str) -> IoResult<IndexedMesh> {
         buf.clear();
     }
 
+    // Normalize the model's declared unit to millimetres so every consumer
+    // gets a consistent unit regardless of how the exporter wrote the file
+    // (phone/photogrammetry apps often export metres, not the mm default).
+    if let Some(scale) = unit_scale {
+        for v in &mut mesh.vertices {
+            v.coords *= scale;
+        }
+    }
+
     Ok(mesh)
+}
+
+/// Factor to scale a 3MF `<model unit="…">` value to millimetres (mesh-io's
+/// canonical unit for 3MF), or `None` when no scaling is needed. Per the 3MF
+/// core spec the unit is one of micron / millimeter / centimeter / inch /
+/// foot / meter; millimetre, an absent unit, or an unrecognized value all
+/// return `None` (millimetre is the spec default).
+fn model_unit_scale(element: &BytesStart<'_>) -> Option<f64> {
+    for attr in element.attributes().flatten() {
+        if attr.key.local_name().as_ref() == b"unit" {
+            return match attr.value.as_ref() {
+                b"micron" => Some(0.001),
+                b"centimeter" => Some(10.0),
+                b"inch" => Some(25.4),
+                b"foot" => Some(304.8),
+                b"meter" => Some(1000.0),
+                // "millimeter" and anything unrecognized → already millimetre.
+                _ => None,
+            };
+        }
+    }
+    None
 }
 
 /// Parse a vertex element from XML attributes.
@@ -591,6 +631,50 @@ mod tests {
         if let Ok(m) = mesh {
             assert_eq!(m.vertex_count(), 3);
             assert_eq!(m.face_count(), 1);
+        }
+    }
+
+    /// A model in a given `unit`, with a single vertex at (1, 2, 3), parsed.
+    fn parse_unit_model(unit_attr: &str) -> IndexedMesh {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<model {unit_attr} xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources><object id="1" type="model"><mesh>
+    <vertices>
+      <vertex x="1" y="2" z="3"/>
+      <vertex x="0" y="0" z="0"/>
+      <vertex x="0" y="1" z="0"/>
+    </vertices>
+    <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+  </mesh></object></resources>
+</model>"#
+        );
+        parse_3mf_model(&xml).expect("valid 3MF model")
+    }
+
+    #[test]
+    fn unit_meter_normalizes_to_mm() {
+        let m = parse_unit_model(r#"unit="meter""#);
+        // metre → mm is ×1000.
+        assert!((m.vertices[0].x - 1000.0).abs() < 1e-6);
+        assert!((m.vertices[0].y - 2000.0).abs() < 1e-6);
+        assert!((m.vertices[0].z - 3000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unit_inch_normalizes_to_mm() {
+        let m = parse_unit_model(r#"unit="inch""#);
+        assert!((m.vertices[0].x - 25.4).abs() < 1e-6);
+        assert!((m.vertices[0].y - 50.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unit_millimeter_and_absent_are_unchanged() {
+        for attr in [r#"unit="millimeter""#, ""] {
+            let m = parse_unit_model(attr);
+            assert!((m.vertices[0].x - 1.0).abs() < 1e-9, "attr {attr:?}");
+            assert!((m.vertices[0].y - 2.0).abs() < 1e-9, "attr {attr:?}");
+            assert!((m.vertices[0].z - 3.0).abs() < 1e-9, "attr {attr:?}");
         }
     }
 }

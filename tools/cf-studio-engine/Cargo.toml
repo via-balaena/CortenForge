@@ -1,0 +1,64 @@
+[package]
+name = "cf-studio-engine"
+description = "SDK-boundary orchestrator for CortenForge Studio — executes the guided scan→cast workflow steps by calling the SDK crates. Built on the headless cf-studio-core spine; consumed by the cf-studio CLI + the Slint GUI. See MISSION.md."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# This is the layer that knows about the SDK crates, so the spine
+# (cf-studio-core) can stay pure + fast to build/test. Same strict lint
+# posture as the spine: forbid unsafe, deny the panicking shortcuts.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+# The workflow spine — `DesignDraft` and the other step artifacts.
+cf-studio-core = { workspace = true }
+# Headless reuse of the device-design types (cavity + layer stack +
+# silicone catalog + `.design.toml` read/write). cf-device-types'
+# `default = []` is empty, so a plain dep pulls NO Bevy — the payoff of
+# making that crate Bevy-optional; build this crate in isolation and no
+# game engine comes along. (The `bevy` feature is opt-in, and we never
+# opt in here.)
+cf-device-types = { workspace = true }
+# Load + validate the raw scan file, auto-detecting STL/OBJ/PLY/3MF by
+# extension (scanners + phone-app scanners export these; 3MF via the
+# `threemf` feature, which pulls zip). STEP stays opt-out (heavy CAD deps).
+# No Bevy — headless.
+mesh-io = { workspace = true, features = ["threemf"] }
+# Reuse the cast pipeline's REAL prep parsers so the wizard validates
+# exactly what the cast requires — centerline (cf-cast-cli) + cap planes
+# (cf-cap-planes) — rather than a divergent re-check. cf-cast-cli also
+# provides `run()` for mold generation (P2d). This pulls cf-cast
+# (parry3d / manifold3d / marching cubes) — the first heavy SDK dep, but
+# still no Bevy; the engine stays headless.
+cf-cast-cli = { workspace = true }
+cf-cap-planes = { workspace = true }
+# cf_cast::cure::lookup — per-silicone mix ratio / pot life / cure time
+# for the structured pour plan (the Step-6 pour-assistant's data).
+cf-cast = { workspace = true }
+# The headless scan-prep algorithms (simplify / cap / centerline / trim /
+# reconstruct + the cleaned-mesh & .prep.toml builders) that the step-2
+# EditSession drives — the same code the Bevy cf-scan-prep tool uses, so
+# Studio's editor + that tool stay functionally identical. Bevy-free.
+cf-scan-prep-core = { workspace = true }
+# `IndexedMesh` (the working mesh the EditSession mutates) + `Bounded::aabb`.
+mesh-types = { workspace = true }
+# `weld_vertices` + `remove_unreferenced_vertices` for the standalone Weld
+# op (simplify welds internally; this exposes weld on its own per the
+# step-2 op set).
+mesh-repair = { workspace = true }
+# `UnitQuaternion` / `Vector3` — the PCA-orient + recenter transform state
+# the EditSession accumulates for the .prep.toml provenance.
+nalgebra = { workspace = true }
+# Typed boundary errors (errors are values; no unwrap in library code).
+thiserror = { workspace = true }

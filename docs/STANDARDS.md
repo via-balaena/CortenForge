@@ -7,11 +7,11 @@
 ## Philosophy
 
 ```
-"An open-source SDK written in pure Rust for designing, engineering,
-and manufacturing bio-inspired mechanisms and robotics."
+"An open-source SDK written in pure Rust for the mechatronics
+and simulation space — design, simulation, and manufacturing."
 ```
 
-We build infrastructure for bio-inspired robotics and manufacturing. The domains we serve — simulation, fabrication, control — demand correctness. Our code must be as reliable as the things built with it.
+We build an SDK for mechatronics and simulation. The domains we serve — design, simulation, fabrication, control — demand correctness. Our code must be as reliable as the things built with it.
 
 This document defines what "reliable" means, quantitatively.
 

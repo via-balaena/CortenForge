@@ -31,14 +31,21 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 
+[features]
+# Off by default → a headless, types-only crate. Enabling `bevy` adds
+# the `#[derive(Resource)]` on the resource types for the Bevy crates.
+default = []
+bevy = ["dep:bevy"]
+
 [dependencies]
-# `#[derive(Resource)]` for the Bevy resources (`ScanMesh`,
-# `CavityState`, `LayersState`, `Centerline`, `ScanInfo`,
-# `ScanFilePath`, `ScanMeshVisible`). Minimal feature set — only the
-# ECS surface is needed here; the cf-device-design / cf-sim-research
-# binaries layer rendering features on top via Cargo's additive
-# feature unification.
-bevy = { workspace = true, default-features = false }
+# Optional Bevy `#[derive(Resource)]` for the resource types
+# (`ScanMesh`, `CavityState`, `LayersState`, `Centerline`, `ScanInfo`,
+# `ScanFilePath`, `ScanMeshVisible`), gated behind the `bevy` feature
+# so this stays a headless, types-only crate by default. Headless
+# consumers (e.g. cf-studio-core) depend with `default-features = false`
+# and never pull Bevy; the Bevy crates (cf-device-design,
+# cf-sim-research, cf-device-geometry) opt in via `features = ["bevy"]`.
+bevy = { workspace = true, default-features = false, optional = true }
 
 # `IndexedMesh` for `ScanMesh`; `Point3` for `Centerline::points_m`.
 mesh-types = { workspace = true }
