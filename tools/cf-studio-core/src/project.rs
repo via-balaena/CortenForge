@@ -377,8 +377,8 @@ impl Project {
     /// a previously-good file. This is the autosave primitive.
     ///
     /// # Errors
-    /// [`StudioError::Serialize`] (including a project that would not load
-    /// back — see below) or [`StudioError::Io`].
+    /// [`StudioError::Serialize`] (including a project whose JSON would not
+    /// parse back — see below) or [`StudioError::Io`].
     pub fn save(&self, path: &Path) -> Result<()> {
         let body = serde_json::to_string_pretty(self)
             .map_err(|e| StudioError::Serialize(e.to_string()))?;
@@ -386,11 +386,13 @@ impl Project {
         // file. serde encodes a non-finite f64 (NaN / ±Inf) as the literal
         // `null`, which then fails to deserialize back into the non-Option
         // float artifacts (e.g. a degenerate cast mass / cure time). Catching
-        // it here keeps the durability guarantee honest: an unloadable
-        // autosave can never overwrite a working project file.
+        // it here keeps the durability guarantee honest: an unparseable
+        // autosave can never overwrite a working project file. (This checks
+        // deserialization only, not `load`'s `validate` — `save` is the
+        // no-corruption primitive, not a workflow-invariant gate.)
         serde_json::from_str::<Self>(&body).map_err(|e| {
             StudioError::Serialize(format!(
-                "refusing to write a project that would not load back: {e}"
+                "refusing to write a project whose JSON would not parse back: {e}"
             ))
         })?;
         let mut tmp = path.to_path_buf().into_os_string();
