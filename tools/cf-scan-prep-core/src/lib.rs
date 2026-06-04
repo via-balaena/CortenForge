@@ -754,7 +754,7 @@ pub fn perpendicular_basis_for(n: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) 
 /// `applied_floor_mm`, the cleaned mesh's actual closed-floor plane
 /// sits at `centerline_last + (-inward_tangent) * extension_m` — NOT
 /// at the original cut boundary's fit plane that
-/// [`CapState::loops`] records (those were detected from the raw scan
+/// [`PrepCapsBlock`]'s `loops` records (those were detected from the raw scan
 /// BEFORE reconstruction added the extrusion + cap fan).
 ///
 /// Without this override, downstream consumers (cf-cap-planes →
@@ -2985,8 +2985,7 @@ pub fn bake_vertex_with_pivot(
 }
 
 /// Compute the principal-axis rotation that aligns a scan's
-/// long axis with `+Z` (the cast-frame demolding axis per
-/// [`SCAN_UP_AXIS`]).
+/// long axis with `+Z` (the cast-frame demolding axis).
 ///
 /// PCA on the mean-centered vertex positions: 3×3 covariance,
 /// symmetric eigendecomposition, principal eigenvector = the
@@ -3330,7 +3329,7 @@ pub fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> Simpli
 
 // ===== Move 2: orchestration fns (plain-data) =====
 
-/// Identify the floor loop in [`CapState::loops`] for the
+/// Identify the floor loop in the [`DetectedCapLoop`] list for the
 /// reconstruction-plane override: the LARGEST valid loop, matching
 /// [`find_floor_loop_index`]'s pick-by-count heuristic (`MIN_RIM_LOOP_VERTS`
 /// = 10). The cut rim is overwhelmingly the largest loop on practical

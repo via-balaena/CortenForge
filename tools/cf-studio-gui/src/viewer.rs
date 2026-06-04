@@ -79,7 +79,7 @@ pub fn load_mesh_data(path: &Path) -> Result<MeshData, String> {
     Ok(mesh_data_from_geometry(&positions, &mesh.faces))
 }
 
-/// Build render-ready [`MeshData`] from an in-memory [`IndexedMesh`] — the
+/// Build render-ready [`MeshData`] from an in-memory [`mesh_types::IndexedMesh`] — the
 /// live working mesh the step-2 [`EditSession`] mutates. Re-derived after
 /// every edit so the viewport reflects the current state.
 ///
@@ -195,7 +195,7 @@ impl OrbitCamera {
 
     /// Column-major MVP for a square viewport, near/far derived from
     /// `radius` so the mesh is never clipped. Includes the OpenGL→wgpu
-    /// depth-range correction (z ∈ [-1,1] → [0,1]).
+    /// depth-range correction (z ∈ `[-1,1]` → `[0,1]`).
     ///
     /// **+Z is up** — the cast-frame convention (`UpAxis::PlusZ`, the
     /// demolding direction). A scan auto-oriented with its long axis along

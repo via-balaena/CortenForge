@@ -54,6 +54,17 @@ cf-studio-engine = { workspace = true }
 # wgpu texture → Slint `Image`) for the 3D scan/mold view; wgpu is
 # re-exported as `slint::wgpu_28::wgpu` so versions always match.
 slint = { version = "1", features = ["unstable-wgpu-28"] }
+# Build fix, not used in our code: naga 28.0.0 (pulled transitively via
+# slint → wgpu) sets `default-features = false` on codespan-reporting, yet
+# its error `Display` impl uses `codespan_reporting::term::termcolor::*` —
+# which only exists when codespan's `termcolor` feature is on. No wgpu/slint
+# edge enables it, so naga fails to compile ("`String: WriteColor` is not
+# satisfied") on the Linux/Windows CI legs (it happens to resolve on macOS
+# via an Apple-only graph edge). Depending on naga directly with `termcolor`
+# turns it on for every target via cargo's additive feature unification.
+# Pinned to 28 to match slint 1.15's wgpu-core 28. Drop when naga ships a
+# release that enables its own `termcolor` (or stops stripping codespan's).
+naga = { version = "28", features = ["termcolor"] }
 # Native open/save file dialogs for the step screens (scan / prep /
 # design pickers). Direct dep; isolated to the GUI crate.
 rfd = "0.15"

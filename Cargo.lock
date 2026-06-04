@@ -2457,6 +2457,7 @@ dependencies = [
  "cf-studio-engine",
  "mesh-io",
  "mesh-types",
+ "naga 28.0.0",
  "nalgebra 0.34.2",
  "rfd",
  "slint",
