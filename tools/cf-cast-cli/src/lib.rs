@@ -170,10 +170,11 @@ pub fn run_with_config(
         .with_context(|| format!("read prep TOML at {}", prep_toml_path.display()))?;
     let centerline = prep::parse_centerline_from_prep_toml(&prep_text)
         .with_context(|| format!("parse centerline from {}", prep_toml_path.display()))?;
-    if centerline.is_empty() {
+    if centerline.len() < 2 {
         bail!(
-            "centerline polyline in {} is empty — cf-scan-prep emits the [centerline] block only when a centerline is present; ensure the Cap panel was applied + centerline polyline was computed before saving",
-            prep_toml_path.display()
+            "centerline polyline in {} has fewer than 2 points (got {}) — cf_cast::Ribbon::new requires at least 2; ensure the Cap panel was applied + the centerline polyline was computed before saving",
+            prep_toml_path.display(),
+            centerline.len()
         );
     }
     // Lift the `[caps]` block out of the same .prep.toml. Empty when
