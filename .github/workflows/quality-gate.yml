@@ -63,6 +63,15 @@ env:
   #   xtask grade_documentation).
   RUSTDOCFLAGS: "-D warnings"
 
+# One in-flight run per ref. A new push to a PR/branch cancels the superseded
+# run rather than queueing behind it (this whole gate is ~13 jobs incl. 3
+# grade shards + cross-OS, so stacked runs starve the runner pool and the
+# newest commit waits longest). Never cancel on main — every landed commit's
+# gate should complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   # ============================================================================
   # FORMATTING - Must be exact
