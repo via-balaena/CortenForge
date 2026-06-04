@@ -334,6 +334,58 @@ mod tests {
         assert!(matches!(err, EngineError::MoldGen(_)), "got: {err:?}");
     }
 
+    /// The wizard mold-gen path (for_design recipe) on the real base_mold
+    /// at Standard 1.5 mm — the GUI's default quality (~minutes, much faster
+    /// than the 0.5 mm finish). Verifies the for_design recipe actually casts
+    /// (planar seam + apex pour + plug pins, canal off = the validated
+    /// canaloff recipe). Writes base_mold.design.toml next to the scan (same
+    /// content the wizard already wrote) and casts to a throwaway dir.
+    /// Run: `cargo test -p cf-studio-engine -- --ignored for_design_casts`.
+    #[test]
+    #[ignore = "integration: ~minutes, needs ~/scans/base_mold files"]
+    fn generate_molds_for_design_casts_base_mold_at_standard() {
+        let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
+        let cleaned = scans.join("base_mold.cleaned.stl");
+        let prep = scans.join("base_mold.prep.toml");
+        // The in-app stack the GUI defaults to (whole-mm: 18 / 7 / 5).
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![
+                LayerDraft {
+                    thickness_m: 0.018,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.25,
+                },
+                LayerDraft {
+                    thickness_m: 0.007,
+                    material_key: "DRAGON_SKIN_10A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+                LayerDraft {
+                    thickness_m: 0.005,
+                    material_key: "DRAGON_SKIN_20A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+            ],
+        };
+
+        let out = generate_molds_for_design(
+            &cleaned,
+            &prep,
+            &draft,
+            0.0015,
+            Some(Path::new("cast_base_mold_studio_verify_1p5")),
+        )
+        .unwrap();
+
+        assert_eq!(out.mold_stls.len(), 6, "2 halves × 3 layers");
+        assert_eq!(out.plug_stls.len(), 3, "1 plug × 3 layers");
+        assert_eq!(out.pour_plan.steps.len(), 3);
+        assert!(out.total_mass_g > 0.0);
+
+        let _ = std::fs::remove_dir_all(scans.join("cast_base_mold_studio_verify_1p5"));
+    }
+
     /// End-to-end integration on the real base_mold (slow ~13 min, needs
     /// the `~/scans/base_mold*` files). Run manually:
     /// `cargo test -p cf-studio-engine -- --ignored generate_molds`.
