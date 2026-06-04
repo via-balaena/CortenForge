@@ -62,6 +62,11 @@ pub struct EditSession {
     cap_loops: Vec<DetectedCapLoop>,
     /// The interior centerline polyline (from the last `detect_caps`).
     centerline: Vec<Point3<f64>>,
+    /// The UNBAKED reorient rotation (e.g. from `level_to_floor`) — applied
+    /// to the DISPLAY only; baked into the cleaned mesh + recorded as the
+    /// `[transform]` block at save. Persists across mesh edits (it's an
+    /// orientation intent, not geometry); only `reset` clears it.
+    reorient_rotation: UnitQuaternion<f64>,
 }
 
 /// Summary of a [`EditSession::detect_caps`] pass, for the frontend to
@@ -136,6 +141,7 @@ impl EditSession {
             auto_pca_quat: None,
             cap_loops: Vec::new(),
             centerline: Vec::new(),
+            reorient_rotation: UnitQuaternion::identity(),
         }
     }
 
@@ -278,6 +284,60 @@ impl EditSession {
         self.centerline.clear();
     }
 
+    /// The unbaked reorient rotation (e.g. from [`level_to_floor`]). Apply
+    /// it to the display; bake it into the cleaned mesh only at save.
+    ///
+    /// [`level_to_floor`]: Self::level_to_floor
+    #[must_use]
+    pub fn reorient_rotation(&self) -> UnitQuaternion<f64> {
+        self.reorient_rotation
+    }
+
+    /// Level the scan onto its floor: set the (unbaked) reorient rotation so
+    /// the floor cap's plane becomes horizontal, standing the piece upright.
+    /// Mirrors the cf-scan-prep tool's `auto_level_to_floor` cap-loop path —
+    /// it aligns the floor normal to the NEAREST Z pole (shortest rotation,
+    /// so the piece isn't flipped). The reconstructed / predicted-cut floor
+    /// paths arrive with trim in Phase 3.
+    ///
+    /// Requires a centerline + at least one cap loop (run [`detect_caps`]
+    /// first), matching the Bevy tool's gate. Returns the corrected tilt in
+    /// degrees, or `None` if there's nothing to level to.
+    ///
+    /// [`detect_caps`]: Self::detect_caps
+    pub fn level_to_floor(&mut self) -> Option<f64> {
+        if self.centerline.is_empty() {
+            return None;
+        }
+        let floor_normal = self.cap_loops.first()?.plane_normal.normalize();
+        let rotation = floor_leveling_rotation(floor_normal)?;
+        self.reorient_rotation = rotation;
+        let tilt_deg = floor_normal.z.abs().clamp(0.0, 1.0).acos().to_degrees();
+        Some(tilt_deg)
+    }
+
+    /// The working mesh with the unbaked reorient rotation applied (pivoted
+    /// about the AABB centroid) — what the viewport should render. The
+    /// rotation is baked into the cleaned mesh only at save; this is
+    /// display-only. Returns a clone of `working` when no reorient is set.
+    #[must_use]
+    pub fn display_mesh(&self) -> IndexedMesh {
+        if self.reorient_rotation == UnitQuaternion::identity() {
+            return self.working.clone();
+        }
+        let centroid = self.working.aabb().center();
+        let mut out = self.working.clone();
+        for v in &mut out.vertices {
+            *v = cf_scan_prep_core::bake_vertex_with_pivot(
+                v,
+                self.reorient_rotation,
+                &centroid,
+                Vector3::zeros(),
+            );
+        }
+        out
+    }
+
     /// Restore the working mesh to the originally-loaded scan and clear
     /// all applied ops + accumulated transform provenance.
     pub fn reset(&mut self) {
@@ -286,6 +346,7 @@ impl EditSession {
         self.simplify_target = 0;
         self.auto_center_offset_m = Vector3::zeros();
         self.auto_pca_quat = None;
+        self.reorient_rotation = UnitQuaternion::identity();
         self.clear_caps();
     }
 
@@ -337,6 +398,20 @@ impl EditSession {
         self.clear_caps();
         q
     }
+}
+
+/// The rotation that levels a floor plane: aligns `normal` to the nearest
+/// Z pole (`+Z` if it already points up-ish, else `−Z`) via the shortest
+/// rotation. Mirrors the cf-scan-prep tool's `leveling_euler_deg` (in
+/// quaternion form). `None` only for an unnormalizable input.
+fn floor_leveling_rotation(normal: Vector3<f64>) -> Option<UnitQuaternion<f64>> {
+    let n = normal.normalize();
+    let target = if n.z >= 0.0 {
+        Vector3::z()
+    } else {
+        -Vector3::z()
+    };
+    UnitQuaternion::rotation_between(&n, &target)
 }
 
 #[cfg(test)]
@@ -404,6 +479,35 @@ mod tests {
             vertices.push(Point3::new(x + 0.5, 0.0, 0.0));
             vertices.push(Point3::new(x, 0.5, 0.0));
             faces.push([base, base + 1, base + 2]);
+        }
+        IndexedMesh { vertices, faces }
+    }
+
+    /// A welded square tube along +Z (`rings` levels, open at both ends),
+    /// then tilted `tilt_rad` about X — two open-boundary loops + a spine,
+    /// with the floor planes tilted off horizontal.
+    fn open_tube(rings: usize, tilt_rad: f64) -> IndexedMesh {
+        let mut vertices = Vec::new();
+        for r in 0..rings {
+            let z = r as f64 / (rings - 1) as f64;
+            vertices.push(Point3::new(0.0, 0.0, z));
+            vertices.push(Point3::new(1.0, 0.0, z));
+            vertices.push(Point3::new(1.0, 1.0, z));
+            vertices.push(Point3::new(0.0, 1.0, z));
+        }
+        let mut faces = Vec::new();
+        for r in 0..rings - 1 {
+            let b = (r * 4) as u32;
+            let t = ((r + 1) * 4) as u32;
+            for k in 0..4u32 {
+                let k2 = (k + 1) % 4;
+                faces.push([b + k, b + k2, t + k2]);
+                faces.push([b + k, t + k2, t + k]);
+            }
+        }
+        let q = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), tilt_rad);
+        for v in &mut vertices {
+            *v = q.transform_point(v);
         }
         IndexedMesh { vertices, faces }
     }
@@ -563,5 +667,61 @@ mod tests {
             "reset drops the now-stale cap loops"
         );
         assert!(s.centerline().is_empty());
+    }
+
+    #[test]
+    fn leveling_rotation_brings_a_tilted_normal_vertical() {
+        let tilt = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 30f64.to_radians());
+        let n = tilt * Vector3::z();
+        let q = floor_leveling_rotation(n).unwrap();
+        let leveled = q * n;
+        assert!(
+            (leveled.z.abs() - 1.0).abs() < 1e-9,
+            "normal is vertical after leveling: {leveled:?}"
+        );
+    }
+
+    #[test]
+    fn level_to_floor_needs_a_centerline() {
+        let mut s = session(open_quad()); // flat → no centerline
+        s.detect_caps();
+        assert!(
+            s.level_to_floor().is_none(),
+            "can't level without a centerline"
+        );
+        assert_eq!(s.reorient_rotation(), UnitQuaternion::identity());
+    }
+
+    #[test]
+    fn level_to_floor_uprights_a_tilted_tube() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        let scan = s.detect_caps();
+        assert!(scan.loop_count >= 2, "the tube has two open ends");
+        assert!(s.has_centerline(), "the tube has a spine");
+        let tilt = s.level_to_floor().expect("a tilted tube can be leveled");
+        assert!(tilt > 5.0, "the ~20deg tilt is detected, got {tilt}");
+        let n = s.cap_loops()[0].plane_normal.normalize();
+        let leveled = s.reorient_rotation() * n;
+        assert!(
+            (leveled.z.abs() - 1.0).abs() < 1e-6,
+            "floor normal is vertical after leveling: {leveled:?}"
+        );
+    }
+
+    #[test]
+    fn display_mesh_applies_the_reorient() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        assert_eq!(
+            s.display_mesh().vertices,
+            s.working().vertices,
+            "display == working before leveling",
+        );
+        s.detect_caps();
+        s.level_to_floor().expect("tube levels");
+        assert_ne!(
+            s.display_mesh().vertices,
+            s.working().vertices,
+            "display is rotated after leveling",
+        );
     }
 }
