@@ -100,12 +100,33 @@ ul a {
 
 ul a:hover { text-decoration: underline; }
 
-#download {
-  margin-bottom: 2.5rem;
+section {
+  margin: 2.6rem 0;
 }
 
-#download p {
+section p {
   margin-bottom: 0.6rem;
+}
+
+/* Cendrillon — the flagship app, set apart as a card. */
+.card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.8rem 1.6rem;
+  background: #fafbfc;
+}
+
+.card h2 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: -0.01em;
+  color: var(--heading);
+  margin-bottom: 0.5rem;
+}
+
+.card-lead {
+  margin-bottom: 1.3rem;
 }
 
 .button {
@@ -123,7 +144,7 @@ ul a:hover { text-decoration: underline; }
 
 .note {
   font-size: 0.85rem;
-  color: #888888;
+  color: #666666;
 }
 
 @media (max-width: 600px) {
