@@ -13,6 +13,18 @@ use cf_studio_core::{DesignDraft, LayerDraft};
 
 use crate::error::{EngineError, Result};
 
+/// The silicone catalog as `(key, display-name)` pairs, innermost-stack
+/// order irrelevant — for a frontend's material picker. The index a UI
+/// shows maps back to the key here (`silicone_catalog()[i].0`), which is
+/// what a [`LayerDraft`]'s `material_key` must be.
+#[must_use]
+pub fn silicone_catalog() -> Vec<(&'static str, &'static str)> {
+    LAYER_MATERIALS
+        .iter()
+        .map(|(key, display, _density)| (*key, *display))
+        .collect()
+}
+
 /// Recover the catalog's `&'static str` key matching an owned key, or
 /// `None` if the silicone isn't in the catalog.
 fn resolve_anchor(key: &str) -> Option<&'static str> {
@@ -144,6 +156,24 @@ mod tests {
         assert_eq!(design.layers[1].material_anchor_key, "DRAGON_SKIN_10A");
         assert_eq!(design.layers[2].material_anchor_key, "DRAGON_SKIN_20A");
         assert_eq!(design.scan_ref.cleaned_stl, "base_mold.cleaned.stl");
+    }
+
+    #[test]
+    fn silicone_catalog_exposes_known_silicones_with_display_names() {
+        let cat = silicone_catalog();
+        assert!(!cat.is_empty());
+        let ecoflex = cat.iter().find(|(k, _)| *k == "ECOFLEX_00_30");
+        assert!(ecoflex.is_some(), "the catalog includes ECOFLEX_00_30");
+        assert!(
+            ecoflex.unwrap().1.contains("Ecoflex"),
+            "with a human display name"
+        );
+        assert!(
+            cat.iter().any(|(k, _)| *k == "DRAGON_SKIN_20A"),
+            "and the firmer Dragon Skins"
+        );
+        // Every catalog key resolves back through the draft → toml path.
+        assert!(cat.iter().all(|(k, _)| resolve_anchor(k).is_some()));
     }
 
     #[test]

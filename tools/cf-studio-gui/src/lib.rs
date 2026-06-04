@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use cf_studio_core::{Project, Step};
+use cf_studio_core::{DesignDraft, Project, Step};
 use cf_studio_engine::{accept_prep, draft_from_design_toml, load_scan};
 
 pub mod viewer;
@@ -93,6 +93,21 @@ pub fn apply_prep(project: &mut Project, cleaned_stl: &Path, prep_toml: &Path) -
 /// The failure message if the design is invalid or the scan isn't cleaned.
 pub fn apply_design(project: &mut Project, design_toml: &Path) -> StepOutcome {
     let draft = draft_from_design_toml(design_toml).map_err(|e| e.to_string())?;
+    let message = format!(
+        "✓ Design set: {} layer(s), {:.1} mm cavity inset.",
+        draft.layers.len(),
+        draft.cavity_inset_m * 1000.0
+    );
+    project.set_design(draft).map_err(|e| e.to_string())?;
+    Ok(message)
+}
+
+/// Step 3 action — set a layer design built in-app (the layer-stack
+/// editor), rather than loaded from a file.
+///
+/// # Errors
+/// The failure message if the design is invalid or the scan isn't cleaned.
+pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutcome {
     let message = format!(
         "✓ Design set: {} layer(s), {:.1} mm cavity inset.",
         draft.layers.len(),
@@ -234,6 +249,38 @@ visible = true
         apply_prep(&mut p, &cleaned, &prep).unwrap();
         assert!(p.is_complete(Step::CleanScan));
         let msg = apply_design(&mut p, &design).unwrap();
+        assert!(msg.contains("Design set"), "got: {msg}");
+        assert!(p.is_complete(Step::DesignLayers));
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn apply_design_draft_completes_step_3() {
+        use cf_studio_core::LayerDraft;
+
+        let d = dir("draftdesign");
+        let stl = d.join("s.stl");
+        let cleaned = d.join("c.stl");
+        let prep = d.join("p.prep.toml");
+        std::fs::write(&stl, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&cleaned, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&prep, PREP_WITH_CENTERLINE).unwrap();
+
+        let mut p = Project::new("t");
+        apply_scan(&mut p, &stl).unwrap();
+        apply_prep(&mut p, &cleaned, &prep).unwrap();
+
+        // A design built in-app (the layer-stack editor's output).
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![LayerDraft {
+                thickness_m: 0.0175,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.25,
+            }],
+        };
+        let msg = apply_design_draft(&mut p, draft).unwrap();
         assert!(msg.contains("Design set"), "got: {msg}");
         assert!(p.is_complete(Step::DesignLayers));
 

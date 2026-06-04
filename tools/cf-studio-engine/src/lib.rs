@@ -24,7 +24,9 @@ pub mod pour;
 pub mod prep;
 pub mod scan;
 
-pub use design::{design_toml_from_draft, draft_from_design_toml, save_design_from_draft};
+pub use design::{
+    design_toml_from_draft, draft_from_design_toml, save_design_from_draft, silicone_catalog,
+};
 pub use edit::{EditSession, run_simplify};
 // The reconstruct-shape choice an `EditSession::apply_reconstruct` caller
 // (the GUI) needs to name — re-exported through the engine front door.
