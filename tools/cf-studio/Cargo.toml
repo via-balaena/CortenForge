@@ -1,0 +1,41 @@
+[package]
+name = "cf-studio"
+description = "CortenForge Studio — the headless CLI frontend for the guided scan→cast workflow. A thin client over cf-studio-engine + the cf-studio-core Project state machine; each command runs one step and autosaves, so the workflow resumes across invocations. Also the Slint GUI's behavioral reference. See MISSION.md."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace tool; no `[package.metadata.cortenforge]` block (matches the
+# cf-cast-cli / cf-studio-engine precedent). Logic lives in the lib so it
+# is testable; main.rs is a thin clap dispatcher.
+
+[[bin]]
+name = "cf-studio"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+# The step executors (load_scan, accept_prep, …) — re-exports the spine.
+cf-studio-engine = { workspace = true }
+# The Project state machine + Step + artifacts (direct, for clean names).
+cf-studio-core = { workspace = true }
+# CLI-facing error chain (binaries use anyhow; the lib + engine return
+# typed errors, which `?` lifts into anyhow here).
+anyhow = { workspace = true }
+# Argument parsing. Direct dep with `derive` (no workspace pin — matches
+# cf-cast-cli / cf-scan-prep precedent).
+clap = { version = "4", features = ["derive"] }

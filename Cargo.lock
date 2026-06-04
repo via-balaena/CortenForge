@@ -2068,6 +2068,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-studio"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-studio-core",
+ "cf-studio-engine",
+ "clap",
+]
+
+[[package]]
 name = "cf-studio-core"
 version = "1.0.0"
 dependencies = [
