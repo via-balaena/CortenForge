@@ -40,6 +40,27 @@ enum Command {
         /// The `.prep.toml` (cap planes + centerline).
         prep_toml: PathBuf,
     },
+    /// Step 3 — set the layer design from a `.design.toml`.
+    Design {
+        /// The `.design.toml` (cavity inset + layer stack).
+        design_toml: PathBuf,
+    },
+    /// Step 4 — generate the molds (runs the cast; can take minutes).
+    Molds {
+        /// The `cast.toml` describing the cast configuration.
+        cast_toml: PathBuf,
+    },
+    /// Step 5 — record the folder you exported the printable files to.
+    Print {
+        /// The export folder.
+        export_dir: PathBuf,
+    },
+    /// Step 6 — show the guided pour plan (add `--complete` when done).
+    Pour {
+        /// Record the pour as finished and complete the project.
+        #[arg(long)]
+        complete: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -52,5 +73,9 @@ fn main() -> Result<()> {
             cleaned_stl,
             prep_toml,
         } => cf_studio::cmd_prep(&cli.project, &cleaned_stl, &prep_toml),
+        Command::Design { design_toml } => cf_studio::cmd_design(&cli.project, &design_toml),
+        Command::Molds { cast_toml } => cf_studio::cmd_molds(&cli.project, &cast_toml),
+        Command::Print { export_dir } => cf_studio::cmd_print(&cli.project, &export_dir),
+        Command::Pour { complete } => cf_studio::cmd_pour(&cli.project, complete),
     }
 }

@@ -6,10 +6,10 @@
 use std::path::Path;
 
 use cf_device_types::design_toml::{
-    DesignToml, build_design_toml, save_design_toml, validate_design_toml,
+    DesignToml, build_design_toml, load_design_toml, save_design_toml, validate_design_toml,
 };
 use cf_device_types::{CavityState, LAYER_MATERIALS, LayerSpec, LayersState};
-use cf_studio_core::DesignDraft;
+use cf_studio_core::{DesignDraft, LayerDraft};
 
 use crate::error::{EngineError, Result};
 
@@ -74,6 +74,30 @@ pub fn save_design_from_draft(
     // beneath save_design_toml's "rename …" context).
     save_design_toml(&design, path).map_err(|e| EngineError::WriteDesign(format!("{e:#}")))?;
     Ok(design)
+}
+
+/// Load a `.design.toml` back into the spine's owned [`DesignDraft`] —
+/// the inverse of [`design_toml_from_draft`]. Used by a frontend resuming
+/// from a design the user (or `cf-device-design`) already saved.
+///
+/// # Errors
+/// [`EngineError::InvalidDesign`] if the file can't be read/parsed or
+/// fails `cf-device-types` validation (unknown silicone, no layers, …).
+pub fn draft_from_design_toml(path: &Path) -> Result<DesignDraft> {
+    let design =
+        load_design_toml(path).map_err(|e| EngineError::InvalidDesign(format!("{e:#}")))?;
+    Ok(DesignDraft {
+        cavity_inset_m: design.cavity.inset_m,
+        layers: design
+            .layers
+            .iter()
+            .map(|l| LayerDraft {
+                thickness_m: l.thickness_m,
+                material_key: l.material_anchor_key.clone(),
+                slacker_fraction: l.slacker_fraction,
+            })
+            .collect(),
+    })
 }
 
 #[cfg(test)]

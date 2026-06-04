@@ -23,9 +23,12 @@ pub mod pour;
 pub mod prep;
 pub mod scan;
 
-pub use design::{design_toml_from_draft, save_design_from_draft};
+pub use design::{design_toml_from_draft, draft_from_design_toml, save_design_from_draft};
 pub use error::{EngineError, Result};
 pub use mold::generate_molds;
+// Re-export the config type `generate_molds` takes, so a frontend can
+// build/parse it without a separate cf-cast-cli dependency.
+pub use cf_cast_cli::CastConfig;
 pub use pour::{LayerPour, build_pour_plan};
 pub use prep::accept_prep;
 pub use scan::{LoadedScan, load_scan};
