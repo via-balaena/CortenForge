@@ -2068,6 +2068,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-studio-core"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cf-viewer"
 version = "1.0.0"
 dependencies = [

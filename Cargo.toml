@@ -19,6 +19,9 @@ members = [
     # writes v2.1 mold pieces + plugs + procedure.md.
     # See `project_scan_to_cast_bridge_design.md`.
     "tools/cf-cast-cli",
+    # Headless workflow core for the guided scan→cast Studio wizard.
+    # The CLI + Slint GUI are thin clients over this. See MISSION.md.
+    "tools/cf-studio-core",
     # Layered-silicone-device design + testing suite (Bevy + egui GUI).
     # Consumes cf-scan-prep outputs; produces a `<scan>.design.toml`
     # that cf-cast-cli will consume (slice 9). The meat of the program

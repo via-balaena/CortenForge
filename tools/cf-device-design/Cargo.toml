@@ -45,7 +45,7 @@ cf-cap-planes = { workspace = true }
 # `main.rs` per `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` Phase 1 so the
 # sibling `tools/cf-sim-research/` binary can describe a layered-
 # silicone device the same way as cf-device-design.
-cf-device-types = { workspace = true }
+cf-device-types = { workspace = true, features = ["bevy"] }
 # Shared device-side geometric primitives — cached SDF + iso
 # extraction (`sdf_layers`) + `spawn_cavity_mesh` + bevy-mesh adapters
 # + clip_plane material/plugin/state. Lifted from this crate's

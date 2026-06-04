@@ -61,7 +61,7 @@ cf-bevy-common = { workspace = true }
 # `RenderScale` for the same uniform conversion.
 cf-viewer = { workspace = true }
 # `Centerline` resource for the clip-plane resolution math.
-cf-device-types = { workspace = true }
+cf-device-types = { workspace = true, features = ["bevy"] }
 # `Point3` / `Vector3` for the centerline + plane math.
 mesh-types = { workspace = true }
 

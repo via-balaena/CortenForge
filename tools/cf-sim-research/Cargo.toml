@@ -33,7 +33,7 @@ path = "src/main.rs"
 # loader. The shared cf-device-types contract is the load-bearing
 # reason cf-sim-research describes a layered-silicone device the
 # same way cf-device-design does.
-cf-device-types = { workspace = true }
+cf-device-types = { workspace = true, features = ["bevy"] }
 
 # cf-viewer library — `RenderScale` / `compute_render_scale` /
 # `scale_aabb` / `setup_camera_and_lighting`. cf-sim-research does

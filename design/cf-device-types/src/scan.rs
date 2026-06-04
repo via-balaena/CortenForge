@@ -3,27 +3,28 @@
 
 use std::path::PathBuf;
 
-use bevy::prelude::Resource;
 use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
 /// Bevy resource carrying the loaded cleaned scan in physics-frame
 /// meters. Mirror of cf-scan-prep's `ScanMesh` (same posture).
-#[derive(Resource)]
+#[cfg_attr(feature = "bevy", derive(bevy::prelude::Resource))]
 pub struct ScanMesh(pub IndexedMesh);
 
 /// The on-disk path the cleaned scan loaded from, kept for the
 /// design-TOML's `scan_ref.cleaned_stl` provenance line. The design
 /// panel + Save section read this to know what the design is anchored
 /// against.
-#[derive(Resource, Debug, Clone)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "bevy", derive(bevy::prelude::Resource))]
 pub struct ScanFilePath(pub PathBuf);
 
 /// Whether the scan mesh entity is visible this frame. Toggled by
 /// the "Show scan mesh" checkbox in the Scan Info panel. Useful when
 /// inspecting the cavity mesh, which sits INSIDE the scan and is
 /// occluded by the scan mesh when both are drawn.
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "bevy", derive(bevy::prelude::Resource))]
 pub struct ScanMeshVisible(pub bool);
 
 impl Default for ScanMeshVisible {
@@ -34,7 +35,8 @@ impl Default for ScanMeshVisible {
 
 /// Bevy resource carrying scan-info readouts surfaced in the Scan
 /// Info panel. Computed once at startup; immutable post-construction.
-#[derive(Resource, Debug, Clone)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "bevy", derive(bevy::prelude::Resource))]
 pub struct ScanInfo {
     /// Display label for the loaded scan — typically the cleaned-STL
     /// file name.
@@ -61,7 +63,8 @@ pub struct ScanInfo {
 /// post-bake physics-frame meters — matches the cleaned STL's
 /// coordinate system). Empty when no `.prep.toml` is present or its
 /// `[centerline]` block is absent.
-#[derive(Resource, Default, Clone)]
+#[derive(Default, Clone)]
+#[cfg_attr(feature = "bevy", derive(bevy::prelude::Resource))]
 pub struct Centerline {
     /// Polyline points in post-bake physics-frame meters.
     pub points_m: Vec<Point3<f64>>,
