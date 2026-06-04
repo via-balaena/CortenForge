@@ -87,6 +87,46 @@ pub struct CastConfig {
     pub canal: CanalConfig,
 }
 
+impl CastConfig {
+    /// Build a config for the guided-wizard path: a cleaned scan + its
+    /// `.prep.toml` + a `.design.toml` (the layer stack), with workshop-
+    /// default cast geometry (flange / dowels / bolts / pour-gate at their
+    /// iter1 defaults; canal + gasket off — the demand flange self-seals).
+    /// `mesh_cell_size_m` is the marching-cubes resolution (time ↔ quality).
+    /// The layer stack is taken from the design, so `[[layers]]` stays empty
+    /// (the design-set ⟺ empty-layers gate holds by construction).
+    ///
+    /// Paths are relative to the cast run's `base_dir` (typically the scan
+    /// folder), matching how `run_with_config` resolves them.
+    #[must_use]
+    pub fn for_design(
+        cleaned_stl: PathBuf,
+        prep_toml: PathBuf,
+        design_toml: PathBuf,
+        mesh_cell_size_m: f64,
+    ) -> Self {
+        Self {
+            scan: ScanConfig {
+                cleaned_stl,
+                prep_toml,
+            },
+            cast: CastDefaults {
+                mesh_cell_size_m,
+                ..CastDefaults::default()
+            },
+            design: Some(DesignSourceConfig { path: design_toml }),
+            layers: Vec::new(),
+            plug_pins: PlugPinConfig::default(),
+            pour_gate: PourGateConfig::default(),
+            gasket: GasketConfig::default(),
+            flange: FlangeConfig::default(),
+            dowel_hole: DowelHoleConfig::default(),
+            bolt_pattern: BoltPatternConfig::default(),
+            canal: CanalConfig::default(),
+        }
+    }
+}
+
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
 /// cf-device-design output for this scan, so the engineered layer
 /// stack feeds the cast directly (no hand-duplication between
@@ -908,6 +948,29 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn for_design_builds_a_valid_design_sourced_config() {
+        let c = CastConfig::for_design(
+            PathBuf::from("base_mold.cleaned.stl"),
+            PathBuf::from("base_mold.prep.toml"),
+            PathBuf::from("base_mold.design.toml"),
+            0.0015,
+        );
+        assert_eq!(c.scan.cleaned_stl, PathBuf::from("base_mold.cleaned.stl"));
+        assert_eq!(c.scan.prep_toml, PathBuf::from("base_mold.prep.toml"));
+        assert!(c.design.is_some(), "design-sourced");
+        assert!(
+            c.layers.is_empty(),
+            "layers come from the design, not inline"
+        );
+        assert!((c.cast.mesh_cell_size_m - 0.0015).abs() < 1e-12);
+        // The design-set ⟺ empty-layers cross-field gate holds (the pre-lift
+        // check; layers are lifted from the design by the run, then
+        // validate_after_layer_source applies).
+        c.validate_layer_source()
+            .expect("for_design satisfies the layer-source gate");
+    }
 
     fn minimal_config_text() -> &'static str {
         r#"
