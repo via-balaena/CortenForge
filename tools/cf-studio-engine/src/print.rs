@@ -40,6 +40,10 @@ pub struct PrintExportReport {
 pub fn export_print_package(molds: &MoldOutputs, dest_dir: &Path) -> Result<PrintExportReport> {
     std::fs::create_dir_all(dest_dir)
         .map_err(|e| EngineError::ExportPrint(format!("create {}: {e}", dest_dir.display())))?;
+    // Resolve the destination once (it exists now) so we can detect a file
+    // that's already in place — see `copy_into`.
+    let dest_canon = std::fs::canonicalize(dest_dir)
+        .map_err(|e| EngineError::ExportPrint(format!("resolve {}: {e}", dest_dir.display())))?;
 
     let mut stl_count = 0;
     for src in molds
@@ -48,27 +52,14 @@ pub fn export_print_package(molds: &MoldOutputs, dest_dir: &Path) -> Result<Prin
         .chain(&molds.plug_stls)
         .chain(&molds.accessory_stls)
     {
-        let name = src.file_name().ok_or_else(|| {
-            EngineError::ExportPrint(format!("source has no filename: {}", src.display()))
-        })?;
-        let dest = dest_dir.join(name);
-        std::fs::copy(src, &dest).map_err(|e| {
-            EngineError::ExportPrint(format!("copy {} → {}: {e}", src.display(), dest.display()))
-        })?;
+        copy_into(src, dest_dir, &dest_canon)?;
         stl_count += 1;
     }
 
     // The procedure is a nicety, not load-bearing — copy it if the run
     // emitted one, but don't fail the export if it's missing.
     let procedure_copied = if molds.procedure_path.is_file() {
-        let name = molds.procedure_path.file_name().ok_or_else(|| {
-            EngineError::ExportPrint(format!(
-                "procedure has no filename: {}",
-                molds.procedure_path.display()
-            ))
-        })?;
-        std::fs::copy(&molds.procedure_path, dest_dir.join(name))
-            .map_err(|e| EngineError::ExportPrint(format!("copy procedure.md: {e}")))?;
+        copy_into(&molds.procedure_path, dest_dir, &dest_canon)?;
         true
     } else {
         false
@@ -81,6 +72,28 @@ pub fn export_print_package(molds: &MoldOutputs, dest_dir: &Path) -> Result<Prin
         stl_count,
         procedure_copied,
     })
+}
+
+/// Copy `src` into `dest_dir` under its filename. If `src` is *already* the
+/// file at that destination (the user picked the folder the file lives in,
+/// e.g. the cast's own `stls/`), skip it — `std::fs::copy` of a file onto
+/// itself truncates it to zero bytes. `dest_canon` is the canonicalized
+/// `dest_dir`, so the comparison resolves symlinks (`/Users` vs
+/// `/System/Volumes/Data/Users` on macOS, …).
+fn copy_into(src: &Path, dest_dir: &Path, dest_canon: &Path) -> Result<()> {
+    let name = src.file_name().ok_or_else(|| {
+        EngineError::ExportPrint(format!("source has no filename: {}", src.display()))
+    })?;
+    if let Ok(src_canon) = std::fs::canonicalize(src) {
+        if src_canon == dest_canon.join(name) {
+            return Ok(()); // already in place — copying onto itself would zero it
+        }
+    }
+    let dest = dest_dir.join(name);
+    std::fs::copy(src, &dest).map_err(|e| {
+        EngineError::ExportPrint(format!("copy {} → {}: {e}", src.display(), dest.display()))
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -177,6 +190,31 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn export_into_source_dir_is_a_safe_noop() {
+        // The footgun: pick the folder the files already live in. Copying a
+        // file onto itself truncates it to zero bytes — this must skip it.
+        let src = temp_dir("selfcopy");
+        let molds = molds_with_files(&src);
+
+        let report = export_print_package(&molds, &src).unwrap();
+        assert_eq!(report.stl_count, 4, "all still counted (already in place)");
+        assert!(report.procedure_copied);
+        // Every file must keep its content (was written non-empty), not be
+        // zeroed by a self-copy.
+        for name in [
+            "mold_layer_0_piece_0.stl",
+            "plug_layer_0.stl",
+            "platform.stl",
+            "procedure.md",
+        ] {
+            let bytes = std::fs::read(src.join(name)).unwrap();
+            assert!(!bytes.is_empty(), "{name} must not be truncated to 0 bytes");
+        }
+
+        let _ = std::fs::remove_dir_all(&src);
     }
 
     #[test]
