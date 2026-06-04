@@ -312,22 +312,40 @@ export component AppWindow inherits Window {
                                 clicked => { apply-trim(tip-spin.value, floor-spin.value); }
                             }
                         }
-                        // Re-cap the chopped floor (optional).
-                        if has-floor-trim: HorizontalBox {
-                            alignment: center;
-                            spacing: 8px;
-                            Text { text: "Re-cap the floor:"; vertical-alignment: center; color: #333333; }
-                            shape-combo := ComboBox {
-                                model: ["Flat", "Taper", "Extrapolate"];
-                                current-index: 0;
+                        // Re-cap the chopped floor (optional) — titled so it's
+                        // clear this rebuilds the floor you just trimmed off.
+                        if has-floor-trim: VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Rebuild the trimmed floor";
+                                font-size: 13px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                color: #1a1a1a;
                             }
-                            Text { text: "from"; vertical-alignment: center; color: #333333; }
-                            ref-spin := SpinBox { minimum: 5; maximum: trim-max-mm; value: 25; }
-                            Text { text: "mm above cut"; vertical-alignment: center; color: #333333; }
-                            Button {
-                                text: "Reconstruct floor";
-                                enabled: !busy;
-                                clicked => { apply-reconstruct(shape-combo.current-index, ref-spin.value); }
+                            Text {
+                                text: "Close the open end back up with a clean floor, rebuilt from the scan's shape just above the cut.";
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                color: #777777;
+                                wrap: word-wrap;
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Shape"; vertical-alignment: center; color: #333333; }
+                                shape-combo := ComboBox {
+                                    model: ["Flat", "Taper", "Extrapolate"];
+                                    current-index: 0;
+                                }
+                                Text { text: "from"; vertical-alignment: center; color: #333333; }
+                                ref-spin := SpinBox { minimum: 5; maximum: trim-max-mm; value: 25; }
+                                Text { text: "mm above cut"; vertical-alignment: center; color: #333333; }
+                                Button {
+                                    text: "Reconstruct floor";
+                                    enabled: !busy;
+                                    clicked => { apply-reconstruct(shape-combo.current-index, ref-spin.value); }
+                                }
                             }
                         }
                     }
