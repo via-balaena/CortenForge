@@ -52,9 +52,9 @@ pub enum EngineError {
         reason: String,
     },
 
-    /// The `.prep.toml` has no centerline — the cast pipeline needs one.
+    /// The `.prep.toml` has no usable centerline (the cast needs ≥2 points).
     #[error(
-        "prep file at {path} has no centerline — re-run cf-scan-prep to compute the centerline polyline"
+        "prep file at {path} has no usable centerline (needs at least 2 points) — re-run cf-scan-prep to compute the centerline polyline"
     )]
     NoCenterline {
         /// The prep-file path.

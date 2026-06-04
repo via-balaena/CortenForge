@@ -6,8 +6,8 @@
 //! validating it against exactly what the cast pipeline requires:
 //!
 //! - the cleaned STL loads and has geometry, and
-//! - the `.prep.toml` yields a **non-empty centerline** (a load-bearing
-//!   precondition for `cf_cast::Ribbon`), and
+//! - the `.prep.toml` yields a centerline of **at least 2 points** (the
+//!   load-bearing precondition for `cf_cast::Ribbon::new`), and
 //! - if a `[caps]` block is present, it parses.
 //!
 //! We deliberately reuse the cast pipeline's own parsers
@@ -34,7 +34,8 @@ use crate::scan::load_scan;
 /// - [`EngineError::ScanLoad`] / [`EngineError::EmptyScan`] if the cleaned
 ///   STL is missing, unreadable, or empty (reusing the scan-load checks).
 /// - [`EngineError::PrepInvalid`] if the `.prep.toml` can't be read/parsed.
-/// - [`EngineError::NoCenterline`] if it parses but has no centerline.
+/// - [`EngineError::NoCenterline`] if it parses but has fewer than 2
+///   centerline points.
 pub fn accept_prep(cleaned_stl: &Path, prep_toml: &Path) -> Result<PrepInput> {
     // 1. The cleaned scan must load and have geometry. Reuse the
     //    scan-load validation (its errors name the offending path).
@@ -46,14 +47,18 @@ pub fn accept_prep(cleaned_stl: &Path, prep_toml: &Path) -> Result<PrepInput> {
         reason: e.to_string(),
     })?;
 
-    // 3. It must yield a non-empty centerline — the cast pipeline bails
-    //    without one, so we catch it here at step 2 of the wizard.
+    // 3. It must yield a centerline of >= 2 points. cf_cast::Ribbon::new
+    //    rejects < 2 (RibbonError::InsufficientPoints), so we catch a
+    //    degenerate centerline here at step 2 rather than letting it blow
+    //    up deep in the 15-minute mold-gen. (cf-cast-cli's own guard only
+    //    checks is_empty, so >= 2 is the stronger, correct precondition —
+    //    and a real cf-scan-prep centerline polyline has many points.)
     let centerline =
         parse_centerline_from_prep_toml(&text).map_err(|e| EngineError::PrepInvalid {
             path: prep_toml.display().to_string(),
             reason: format!("{e:#}"),
         })?;
-    if centerline.is_empty() {
+    if centerline.len() < 2 {
         return Err(EngineError::NoCenterline {
             path: prep_toml.display().to_string(),
         });
@@ -104,6 +109,12 @@ points_m = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.01]]
 points_m = []
 ";
 
+    /// A `.prep.toml` with a single-point centerline (Ribbon needs >= 2).
+    const PREP_ONE_POINT_CENTERLINE: &str = "\
+[centerline]
+points_m = [[0.0, 0.0, 0.0]]
+";
+
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "cf-studio-engine-prep-test-{}-{label}",
@@ -138,6 +149,20 @@ points_m = []
     fn empty_centerline_is_rejected() {
         let dir = temp_dir("empty-cl");
         let (stl, prep) = write_pair(&dir, PREP_EMPTY_CENTERLINE);
+
+        let err = accept_prep(&stl, &prep).unwrap_err();
+        assert!(
+            matches!(err, EngineError::NoCenterline { .. }),
+            "got: {err:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn single_point_centerline_is_rejected() {
+        let dir = temp_dir("one-pt-cl");
+        let (stl, prep) = write_pair(&dir, PREP_ONE_POINT_CENTERLINE);
 
         let err = accept_prep(&stl, &prep).unwrap_err();
         assert!(
