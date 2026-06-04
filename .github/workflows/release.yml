@@ -69,6 +69,12 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # Slint/winit on Linux build against system fontconfig (the
+      # yeslogic-fontconfig-sys C build dep).
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+
       # Correctness is gated on main by quality-gate.yml (full debug +
       # release test suites, grade-all, cross-OS checks) — a tag is only ever
       # cut from already-green main. So the release does NOT re-run the whole
@@ -125,6 +131,8 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
+    # Supplementary — must never block the actual downloads.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -134,18 +142,22 @@ jobs:
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx
 
+      # Current cargo-cyclonedx has no --output-file; it writes a
+      # <crate>.cdx.json per package. Generate, then gather them.
       - name: Generate SBOM (CycloneDX)
+        run: cargo cyclonedx --format json
+
+      - name: Collect SBOMs
         run: |
-          cargo cyclonedx --format json --output-file sbom.cdx.json
-          cargo cyclonedx --format xml --output-file sbom.cdx.xml
+          mkdir -p sbom-out
+          find . -name '*.cdx.json' -not -path './sbom-out/*' -exec cp {} sbom-out/ \;
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v6
         with:
           name: sbom
-          path: |
-            sbom.cdx.json
-            sbom.cdx.xml
+          path: sbom-out/
+          if-no-files-found: warn
 
   # ============================================================================
   # GENERATE CHANGELOG
@@ -221,6 +233,7 @@ jobs:
 
       - name: Download SBOM
         uses: actions/download-artifact@v7
+        continue-on-error: true
         with:
           name: sbom
           path: ./artifacts
@@ -284,9 +297,9 @@ jobs:
 
             See [STANDARDS.md](./docs/STANDARDS.md) for the full quality specification.
           files: |
-            artifacts/sbom.cdx.json
-            artifacts/sbom.cdx.xml
+            artifacts/*.cdx.json
             artifacts/Cendrillon-*
+          fail_on_unmatched_files: false
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:
