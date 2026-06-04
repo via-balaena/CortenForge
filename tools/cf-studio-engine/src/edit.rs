@@ -254,6 +254,44 @@ impl EditSession {
         cf_scan_prep_core::polyline_arc_length_m(&self.centerline) * 1000.0
     }
 
+    /// The centerline as the viewport should draw it: trimmed to match the
+    /// displayed mesh, then baked through the same reorient (about the
+    /// working centroid) as [`display_mesh`] — so the overlaid line tracks
+    /// the rendered geometry. Empty until [`detect_caps`] runs.
+    ///
+    /// [`display_mesh`]: Self::display_mesh
+    /// [`detect_caps`]: Self::detect_caps
+    #[must_use]
+    pub fn display_centerline(&self) -> Vec<Point3<f64>> {
+        if self.centerline.len() < 2 {
+            return Vec::new();
+        }
+        let trimmed = if self.trim_tip_mm > 0.0 || self.trim_floor_mm > 0.0 {
+            cf_scan_prep_core::trim_centerline_polyline(
+                &self.centerline,
+                self.trim_tip_mm,
+                self.trim_floor_mm,
+            )
+        } else {
+            self.centerline.clone()
+        };
+        if self.reorient_rotation == UnitQuaternion::identity() {
+            return trimmed;
+        }
+        let pivot = self.working.aabb().center();
+        trimmed
+            .iter()
+            .map(|p| {
+                cf_scan_prep_core::bake_vertex_with_pivot(
+                    p,
+                    self.reorient_rotation,
+                    &pivot,
+                    Vector3::zeros(),
+                )
+            })
+            .collect()
+    }
+
     /// Detect open-boundary cap loops + compute the interior centerline —
     /// the "Cap → Scan" step, mirroring the cf-scan-prep tool's
     /// `handle_cap_actions`: keep only valid loops, fit each loop's plane,
@@ -1014,6 +1052,20 @@ mod tests {
         );
         assert!(s.cap_loops().is_empty());
         assert!(s.centerline().is_empty());
+    }
+
+    #[test]
+    fn display_centerline_empty_until_caps_then_populated() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        assert!(
+            s.display_centerline().is_empty(),
+            "no centerline to draw before detect_caps"
+        );
+        s.detect_caps();
+        assert!(
+            s.display_centerline().len() >= 2,
+            "the centerline is drawable after detect_caps"
+        );
     }
 
     #[test]

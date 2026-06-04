@@ -63,17 +63,40 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
 }
 ";
 
+/// Cyan overlay line (the centerline), drawn over the mesh with the same
+/// MVP. `depth_compare: Always` so the interior line shows through the
+/// surface; positions only (no normals).
+const LINE_SHADER: &str = r"
+struct Uniforms { mvp: mat4x4<f32> };
+@group(0) @binding(0) var<uniform> u: Uniforms;
+
+@vertex
+fn vs(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
+    return u.mvp * vec4<f32>(pos, 1.0);
+}
+
+@fragment
+fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.05, 0.85, 0.95, 1.0);
+}
+";
+
 /// GPU resources + camera for the currently-shown mesh. Built from
 /// Slint's device/queue once a scan is loaded; re-rendered on orbit.
 struct Scene {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    /// Line-strip pipeline for the centerline overlay (shares the uniform).
+    line_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     index_count: u32,
+    /// Centerline overlay: vertex buffer + point count (0 = nothing to draw).
+    line_vbuf: Option<wgpu::Buffer>,
+    line_count: u32,
     camera: OrbitCamera,
     radius: f32,
 }
@@ -186,18 +209,92 @@ impl Scene {
             cache: None,
         });
 
+        // Line-strip pipeline for the centerline overlay — reuses the same
+        // bind group layout (MVP); depth_compare Always so it draws on top.
+        let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("line-shader"),
+            source: wgpu::ShaderSource::Wgsl(LINE_SHADER.into()),
+        });
+        let line_attrs = [wgpu::VertexAttribute {
+            offset: 0,
+            shader_location: 0,
+            format: wgpu::VertexFormat::Float32x3,
+        }];
+        let line_vbl = wgpu::VertexBufferLayout {
+            array_stride: (std::mem::size_of::<f32>() * 3) as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &line_attrs,
+        };
+        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("line-pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &line_shader,
+                entry_point: Some("vs"),
+                buffers: &[line_vbl],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &line_shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineStrip,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             device: device.clone(),
             queue: queue.clone(),
             pipeline,
+            line_pipeline,
             bind_group,
             uniform,
             vbuf,
             ibuf,
             index_count: mesh.index_count(),
+            line_vbuf: None,
+            line_count: 0,
             camera: OrbitCamera::framing(mesh.center, mesh.radius),
             radius: mesh.radius,
         }
+    }
+
+    /// Replace the centerline overlay (display-frame points). Empty / <2
+    /// points clears it.
+    fn set_overlay(&mut self, points: &[[f32; 3]]) {
+        if points.len() < 2 {
+            self.line_vbuf = None;
+            self.line_count = 0;
+            return;
+        }
+        let vbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("centerline"),
+            size: std::mem::size_of_val(points) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&vbuf, 0, bytemuck::cast_slice(points));
+        self.line_vbuf = Some(vbuf);
+        self.line_count = points.len() as u32;
     }
 
     /// Swap in a new mesh (after a step-2 edit), recreating the vertex /
@@ -304,6 +401,16 @@ impl Scene {
             pass.set_vertex_buffer(0, self.vbuf.slice(..));
             pass.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+            // Centerline overlay (on top, via the line pipeline's depth=Always).
+            if let Some(line_vbuf) = &self.line_vbuf {
+                if self.line_count >= 2 {
+                    pass.set_pipeline(&self.line_pipeline);
+                    pass.set_bind_group(0, &self.bind_group, &[]);
+                    pass.set_vertex_buffer(0, line_vbuf.slice(..));
+                    pass.draw(0..self.line_count, 0..1);
+                }
+            }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -827,12 +934,18 @@ fn apply_edit(
         return;
     }
     let md = mesh_data_from_indexed(&display);
+    let overlay: Vec<[f32; 3]> = session
+        .display_centerline()
+        .iter()
+        .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+        .collect();
     let img = {
         let mut sguard = scene.borrow_mut();
         let Some(s) = sguard.as_mut() else {
             return;
         };
         s.set_mesh(&md);
+        s.set_overlay(&overlay);
         s.render()
     };
     if let Some(ui) = weak.upgrade() {
