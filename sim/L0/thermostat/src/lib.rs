@@ -65,6 +65,7 @@
 //! - [`docs/thermo_computing/02_foundations/chassis_design.md`](https://github.com/bigmark222/cortenforge/blob/main/docs/thermo_computing/02_foundations/chassis_design.md)
 //!   — the seven bolt-pattern decisions this crate inherits.
 
+pub mod baoab;
 mod component;
 mod diagnose;
 mod double_well;
@@ -81,6 +82,7 @@ mod stack;
 
 pub mod test_utils;
 
+pub use baoab::Baoab1D;
 pub use component::{PassiveComponent, Stochastic};
 pub use diagnose::Diagnose;
 pub use double_well::DoubleWellPotential;

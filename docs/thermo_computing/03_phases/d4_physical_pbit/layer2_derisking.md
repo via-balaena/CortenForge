@@ -102,6 +102,29 @@ Where EM is valid (overdamped, γ≥3) the sim matches the analytic rate.
 real device is high-Q (deeply underdamped), and we cannot predict or validate its
 switching rate in-sim until the integrator is fixed. R6 is promoted to next.
 
+## R6 — DONE (BAOAB integrator + the rate-engine finding)
+
+`sim_thermostat::Baoab1D` (`src/baoab.rs`) — a standalone 1-DOF BAOAB Langevin
+integrator with the **exact** Ornstein–Uhlenbeck velocity step. Validated:
+`⟨v²⟩ = kT/m` to ~1%, **dt-independent** across dt = 0.001–0.02 (BAOAB's hallmark;
+EM is dt-biased). Re-running the R1 γ-sweep through BAOAB
+(`tests/baoab_turnover.rs`):
+
+- BAOAB shows the **turnover** and matches the analytic rate overdamped (γ≥3,
+  BAOAB/k_turnover 0.89–0.99).
+- BAOAB shows the **energy-diffusion suppression EM completely missed**: at γ=0.1,
+  BAOAB/k_S ≈ **0.84** (suppressed below the spatial-diffusion rate) where EM gave
+  ≈1.0. So BAOAB is the correct integrator for the underdamped regime.
+- **Finding:** but BAOAB (the trustworthy reference) shows the Meľnikov–Meshkov
+  *analytic* factor **over-suppresses at moderate δ≈0.5** (BAOAB/k_turnover ≈ 3.2 at
+  γ=0.1, i.e. the real rate is far less suppressed than the formula predicts).
+  **⇒ For quantitative high-Q rate predictions, use the BAOAB integrator
+  directly; treat the MM closed form as a rough guide.** (A deep-δ≪1 check, where
+  the `Υ→δ` asymptote is exact, is a worthwhile follow-up.)
+
+This closes the R1/R6 dependency: we now have a trustworthy underdamped rate
+engine, and we know the analytic formula's limits.
+
 ## Success criterion for Layer 2 (the gate to spend money)
 
 Before any part is ordered we should have, in software:
