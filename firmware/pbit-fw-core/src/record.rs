@@ -18,8 +18,10 @@ use crate::MAX_HALL;
 /// counts (one per p-bit); `ax/ay/az` are the base accelerometer ADC counts (the
 /// measured bath). The matching header comes from [`csv_header`](Self::csv_header).
 pub struct LogRecord {
-    /// Microseconds since acquisition start.
-    pub t_us: u32,
+    /// Microseconds since acquisition start. `u64` so it never wraps — a `u32`
+    /// microsecond counter rolls over at ~71.6 min and the cold-calibration /
+    /// rare-escape regime needs multi-hour captures.
+    pub t_us: u64,
     /// Commanded drive, scaled to `i16` (`-1..=1` ↔ `-32767..=32767`).
     pub drive: i16,
     /// Hall-sensor readings (raw ADC counts), one per p-bit.

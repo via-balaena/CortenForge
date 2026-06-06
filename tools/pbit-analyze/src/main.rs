@@ -33,9 +33,16 @@ fn main() -> Result<()> {
         "NON-exponential"
     };
 
+    let mode = if a.bimodal {
+        "bimodal (switching two-well)"
+    } else {
+        "single well (cold — calibration regime)"
+    };
+
     println!("pbit-analyze — {path}  (channel {channel})");
     println!("  samples       {}", a.n_samples);
     println!("  duration      {:.3} s", a.duration_s);
+    println!("  mode          {mode}");
     println!(
         "  wells         lo={:.4}  hi={:.4}  sep={:.4}",
         a.well_lo,
@@ -48,9 +55,16 @@ fn main() -> Result<()> {
         "  dwell         mean={:.4} s   CV={:.3}  [{dwell_verdict}]",
         a.dwell_mean_s, a.dwell_cv
     );
+    // kT_eff = M·ω_a²·⟨δx²⟩·pos_per_count² (pbit_analyze::kt_eff) once the rig
+    // constants are measured (a G5 step); a clean readout needs a single-well run.
     println!(
-        "  in-well var   {:.6} (counts²)   → feed to kt_eff() with the rig calibration",
-        a.in_well_var
+        "  in-well var   {:.6} (counts²){}",
+        a.in_well_var,
+        if a.bimodal {
+            "   [bimodal — calibrate kT_eff from a cold single-well run]"
+        } else {
+            "   [→ kT_eff via M·ω_a²·var·(pos/count)²]"
+        }
     );
     println!(
         "  accel RMS     {:.4} (counts, bath-level proxy)",

@@ -54,7 +54,7 @@ fn build_csv(rate_hz: f64, dt: f64, sigma: f64, centre: f64, n: usize, seed: u64
         }
         let pos = state * centre + sigma * gauss(&mut rng);
         let rec = LogRecord {
-            t_us: (i as f64 * dt * 1e6) as u32,
+            t_us: (i as f64 * dt * 1e6) as u64,
             drive: 0,
             hall: [pos as i16, 0, 0, 0, 0, 0, 0, 0],
             n_hall: 1,

@@ -63,6 +63,7 @@ impl Error for ParseError {}
 /// Returns [`ParseError`] on a row with too few fields or a non-numeric value.
 pub fn parse_csv(text: &str) -> Result<Vec<Sample>, ParseError> {
     let mut out = Vec::new();
+    let mut expected_cols: Option<usize> = None;
     for (idx, raw) in text.lines().enumerate() {
         let line_no = idx + 1;
         let line = raw.trim();
@@ -91,6 +92,19 @@ pub fn parse_csv(text: &str) -> Result<Vec<Sample>, ParseError> {
                     cols.len()
                 ),
             });
+        }
+        // Enforce rectangular data: a ragged row (e.g. a truncated serial line)
+        // would otherwise yield Samples with mismatched hall lengths and panic
+        // a later channel index. Reject it cleanly with the offending line.
+        match expected_cols {
+            None => expected_cols = Some(cols.len()),
+            Some(n) if cols.len() != n => {
+                return Err(ParseError {
+                    line: line_no,
+                    msg: format!("ragged row: {} fields, expected {n}", cols.len()),
+                });
+            }
+            Some(_) => {}
         }
         let parse_at = |i: usize| -> Result<f64, ParseError> {
             cols[i].trim().parse().map_err(|e| ParseError {
@@ -126,9 +140,13 @@ pub struct WellAnalysis {
     pub n_samples: usize,
     /// Total record duration (s).
     pub duration_s: f64,
-    /// Auto-detected lower and upper well centres (input units).
+    /// Whether the record is bimodal (a switching two-well signal). `false`
+    /// means a single occupied well — the cold calibration regime — where
+    /// `well_lo == well_hi` (the global mean) and `n_switches == 0`.
+    pub bimodal: bool,
+    /// Lower well centre (input units); equal to `well_hi` in single-well mode.
     pub well_lo: f64,
-    /// Auto-detected upper well centre (input units).
+    /// Upper well centre (input units); equal to `well_lo` in single-well mode.
     pub well_hi: f64,
     /// Number of detected well-to-well transitions.
     pub n_switches: usize,
@@ -138,11 +156,19 @@ pub struct WellAnalysis {
     pub dwell_mean_s: f64,
     /// Coefficient of variation of dwell times (≈ 1 ⇒ exponential).
     pub dwell_cv: f64,
-    /// In-well variance `⟨δx²⟩` about the assigned well centre (input units²).
+    /// In-well variance `⟨δx²⟩` (input units²). In single-well mode, taken about
+    /// the global mean over all samples (the unbiased calibration value); in
+    /// bimodal mode, about the assigned well centre over deep-in-well samples.
     pub in_well_var: f64,
     /// Accelerometer RMS about its mean (bath-level proxy, raw counts).
     pub accel_rms: f64,
 }
+
+/// Well separation must exceed this multiple of the within-cluster spread for a
+/// record to count as bimodal (a real two-well switching signal). Below it, the
+/// signal is treated as a single occupied well. Empirically two-means on a single
+/// Gaussian gives a separation/spread ratio ≈ 2.7, a true two-well signal ≫ 10.
+const BIMODAL_SEPARATION_FACTOR: f64 = 4.0;
 
 /// Analyse one Hall channel for switching and in-well statistics.
 ///
@@ -151,7 +177,9 @@ pub struct WellAnalysis {
 /// index is invalid or there are fewer than two samples.
 #[must_use]
 pub fn analyze_channel(samples: &[Sample], channel: usize) -> Option<WellAnalysis> {
-    if samples.len() < 2 || channel >= samples[0].hall.len() {
+    // Guard against too-few samples and against any (e.g. hand-built or ragged)
+    // sample lacking the channel — not just `samples[0]`.
+    if samples.len() < 2 || samples.iter().any(|s| channel >= s.hall.len()) {
         return None;
     }
     let pos: Vec<f64> = samples.iter().map(|s| s.hall[channel]).collect();
@@ -180,32 +208,68 @@ pub fn analyze_channel(samples: &[Sample], channel: usize) -> Option<WellAnalysi
             hi = hi_sum / hi_n as f64;
         }
     }
-    let (well_lo, well_hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
-    let mid = f64::midpoint(well_lo, well_hi);
-    let half_sep = (well_hi - well_lo) * 0.5;
-    let band = half_sep * 0.5; // hysteresis half-width
+    let (cl_lo, cl_hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
 
-    // Hysteretic state machine + dwell + in-well variance.
-    let mut state_hi = pos[0] >= mid;
-    let mut last_switch_t = samples[0].t_s;
-    let mut dwell: Vec<f64> = Vec::new();
-    let (mut var_acc, mut var_n) = (0.0_f64, 0u64);
-    for (s, &p) in samples.iter().zip(&pos) {
-        if state_hi && p < mid - band {
-            state_hi = false;
-            dwell.push(s.t_s - last_switch_t);
-            last_switch_t = s.t_s;
-        } else if !state_hi && p > mid + band {
-            state_hi = true;
-            dwell.push(s.t_s - last_switch_t);
-            last_switch_t = s.t_s;
+    // Pooled within-cluster spread, to distinguish a true two-well (switching)
+    // record from a single occupied well (the cold calibration regime). On a
+    // unimodal signal two-means splits the lone Gaussian into two spurious
+    // half-centres; gating on separation-vs-spread avoids reading a fake ⟨δx²⟩
+    // (biased ~3× low) and fabricating switches on a non-switching record.
+    let within_ss: f64 = pos
+        .iter()
+        .map(|&p| {
+            let c = if (p - cl_lo).abs() <= (p - cl_hi).abs() {
+                cl_lo
+            } else {
+                cl_hi
+            };
+            (p - c) * (p - c)
+        })
+        .sum();
+    let within_std = (within_ss / pos.len() as f64).sqrt();
+    let separation = cl_hi - cl_lo;
+    let bimodal = separation > BIMODAL_SEPARATION_FACTOR * within_std;
+
+    let (well_lo, well_hi, dwell, in_well_var) = if bimodal {
+        // Switching two-well signal: hysteretic state machine + dwell + in-well
+        // variance about the assigned well centre over deep-in-well samples.
+        // NB: the `|p - mid| > band` gate truncates the barrier-side tail, so
+        // this hot-regime variance is biased low — calibrate kT_eff cold instead.
+        let mid = f64::midpoint(cl_lo, cl_hi);
+        let band = separation * 0.25; // hysteresis half-width
+        let mut state_hi = pos[0] >= mid;
+        let mut last_switch_t = samples[0].t_s;
+        let mut dwell: Vec<f64> = Vec::new();
+        let (mut var_acc, mut var_n) = (0.0_f64, 0u64);
+        for (s, &p) in samples.iter().zip(&pos) {
+            if state_hi && p < mid - band {
+                state_hi = false;
+                dwell.push(s.t_s - last_switch_t);
+                last_switch_t = s.t_s;
+            } else if !state_hi && p > mid + band {
+                state_hi = true;
+                dwell.push(s.t_s - last_switch_t);
+                last_switch_t = s.t_s;
+            }
+            if (p - mid).abs() > band {
+                let centre = if state_hi { cl_hi } else { cl_lo };
+                var_acc += (p - centre) * (p - centre);
+                var_n += 1;
+            }
         }
-        if (p - mid).abs() > band {
-            let centre = if state_hi { well_hi } else { well_lo };
-            var_acc += (p - centre) * (p - centre);
-            var_n += 1;
-        }
-    }
+        let v = if var_n > 0 {
+            var_acc / var_n as f64
+        } else {
+            f64::NAN
+        };
+        (cl_lo, cl_hi, dwell, v)
+    } else {
+        // Single occupied well: ⟨δx²⟩ about the global mean over ALL samples —
+        // no clustering, no band gate — the unbiased calibration measurement.
+        let m = mean(&pos);
+        let var = pos.iter().map(|&p| (p - m) * (p - m)).sum::<f64>() / pos.len() as f64;
+        (m, m, Vec::new(), var)
+    };
 
     let n_switches = dwell.len();
     let switch_rate_hz = if duration_s > 0.0 {
@@ -215,16 +279,12 @@ pub fn analyze_channel(samples: &[Sample], channel: usize) -> Option<WellAnalysi
     };
     let dwell_mean_s = mean(&dwell);
     let dwell_cv = coefficient_of_variation(&dwell);
-    let in_well_var = if var_n > 0 {
-        var_acc / var_n as f64
-    } else {
-        f64::NAN
-    };
     let accel_rms = accel_rms(samples);
 
     Some(WellAnalysis {
         n_samples: samples.len(),
         duration_s,
+        bimodal,
         well_lo,
         well_hi,
         n_switches,
@@ -240,8 +300,9 @@ pub fn analyze_channel(samples: &[Sample], channel: usize) -> Option<WellAnalysi
 ///
 /// `kT_eff = M · ω_a² · ⟨δx²⟩`, where `in_well_var` is in raw counts² and
 /// `pos_per_count` converts counts → physical position. **Calibrate cold**
-/// (`kT_eff ≪ ΔV`): at switching temperatures anharmonicity biases this low
-/// (D4 S2 finding).
+/// (`kT_eff ≪ ΔV`, a single occupied well): pass the `in_well_var` from a
+/// single-well capture (`WellAnalysis::bimodal == false`). At switching
+/// temperatures the band-gate truncation biases `⟨δx²⟩` low (D4 S2 finding).
 #[must_use]
 pub fn kt_eff(in_well_var: f64, mass: f64, omega_a: f64, pos_per_count: f64) -> f64 {
     let var_phys = in_well_var * pos_per_count * pos_per_count;
@@ -359,6 +420,10 @@ mod tests {
         let samples = synth_telegraph(rate, dt, sigma, centre, 200_000, 12345);
         let a = analyze_channel(&samples, 0).expect("analysis");
 
+        assert!(
+            a.bimodal,
+            "a switching two-well signal must be flagged bimodal"
+        );
         // Well centres ≈ ±centre.
         assert!((a.well_hi - centre).abs() < 0.05, "well_hi {}", a.well_hi);
         assert!((a.well_lo + centre).abs() < 0.05, "well_lo {}", a.well_lo);
@@ -398,5 +463,40 @@ mod tests {
         let var = 0.3 / 24.0;
         let recovered = kt_eff(var, 1.0, omega_a, 1.0);
         assert!((recovered - 0.3).abs() < 1e-9, "kt_eff {recovered}");
+    }
+
+    #[test]
+    fn cold_single_well_recovers_unbiased_variance() {
+        // rate 0 → never switches → one occupied well (the kT_eff calibration
+        // regime). Two-means must NOT split the lone Gaussian into fake wells.
+        let (sigma, centre) = (0.15, 1.0);
+        let samples = synth_telegraph(0.0, 0.001, sigma, centre, 100_000, 777);
+        let a = analyze_channel(&samples, 0).expect("analysis");
+
+        assert!(
+            !a.bimodal,
+            "a cold single-mode signal must not be flagged bimodal"
+        );
+        assert_eq!(a.n_switches, 0, "single well has no switches");
+        assert_eq!(a.well_lo, a.well_hi, "single-well centres collapse to one");
+        assert!((a.well_hi - centre).abs() < 0.02, "centre {}", a.well_hi);
+        // ⟨δx²⟩ ≈ σ² — unbiased (no two-means split, no band truncation).
+        let var_ratio = a.in_well_var / (sigma * sigma);
+        assert!(
+            (0.9..1.1).contains(&var_ratio),
+            "var {} ({var_ratio:.3}x)",
+            a.in_well_var
+        );
+    }
+
+    #[test]
+    fn parse_csv_rejects_ragged_rows() {
+        // A truncated/extended serial line must error cleanly, not slip through
+        // to panic analyze_channel later.
+        let csv = "t_us,drive,h0,ax,ay,az\n0,0,10,0,0,0\n1000,0,10,20,0,0,0\n";
+        assert!(
+            parse_csv(csv).is_err(),
+            "ragged row (7 fields vs 6) must be rejected"
+        );
     }
 }

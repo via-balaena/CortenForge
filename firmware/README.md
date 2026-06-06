@@ -55,5 +55,7 @@ cargo build --release            # target set in .cargo/config.toml
 t_us,drive,h0,h1,...,h{n_hall-1},ax,ay,az
 ```
 
+`t_us` is a **`u64`** microsecond counter (deliberately not `u32`, which would
+wrap at ~71.6 min — too short for the cold, rarely-switching calibration regime).
 The S3 analysis/calibration tool parses exactly this. If the format changes, it
 changes in `pbit-fw-core::record` and both sides stay in sync.
