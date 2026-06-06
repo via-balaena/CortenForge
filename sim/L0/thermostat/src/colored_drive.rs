@@ -53,6 +53,8 @@ impl ColoredDriveSim {
     /// correlation time `tau` whose white-noise limit is a thermal bath at
     /// `kt_eff`. Timestep `dt`, seed `seed`, starts at `x_init` (zero velocity).
     #[must_use]
+    // integrator config: 8 physical parameters; a config struct would add
+    // ceremony without clarity for a numerical constructor.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         well: &DoubleWellPotential,
