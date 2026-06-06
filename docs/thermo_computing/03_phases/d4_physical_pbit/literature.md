@@ -21,10 +21,12 @@ friction."
   `I(E_b)` = action of the barrier orbit (analytic for the quartic well). Note
   it is **∝ γ** — opposite to the spatial-diffusion form.
 - **Turnover bridge (Meľnikov–Meshkov 1986)**: `k = G_TST · κ_SD · Υ(δ)`, with
-  depopulation factor `Υ(δ) = exp[(1/2π)∫ ln(1 − exp(−δ(t²+¼)/2)) dt]`,
+  depopulation factor `Υ(δ) = exp[(1/π)∫₀^∞ ln(1 − exp(−δ(λ²+¼)))/(λ²+¼) dλ]`,
   `δ = β·⟨ΔE⟩` (reduced energy lost to the bath per barrier→well→barrier round
   trip). **Accurate only to ~±20% in the turnover region**; PGH (1989) extends to
-  full friction + memory.
+  full friction + memory. **(Correction: the auto-summary dropped the `1/(λ²+¼)`
+  denominator; without it `Υ↛δ` as `δ→0` — caught by the R1 unit test. The form
+  above is the standard HTB Eq. 4.55.)**
 - Sources: Hänggi–Talkner–Borkovec, *Rev. Mod. Phys.* 62, 251 (1990), Eqs.
   4.33/4.49/4.50; Pollak, *ChemPhysChem* (2023) doi:10.1002/cphc.202300272.
 

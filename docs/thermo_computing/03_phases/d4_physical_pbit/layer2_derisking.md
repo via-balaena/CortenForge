@@ -43,8 +43,10 @@ the same discipline as G1.
   = barrier-orbit action (analytic for the quartic well). **∝ γ** — this is the
   branch the cantilever lives in.
 - **Turnover (Meľnikov–Meshkov) — VERIFIED form:** `k = G_TST·κ_SD·Υ(δ)`,
-  `Υ(δ) = exp[(1/2π)∫ ln(1 − exp(−δ(t²+¼)/2)) dt]`, `δ = β·⟨ΔE⟩` (energy lost per
-  round trip). Good to **~±20%** near the turnover. Refs pinned in `literature.md`.
+  `Υ(δ) = exp[(1/π)∫₀^∞ ln(1 − exp(−δ(λ²+¼)))/(λ²+¼) dλ]`, `δ = β·⟨ΔE⟩` (energy
+  lost per round trip). Good to **~±20%** near the turnover. **DONE + unit-tested**
+  in `sim_thermostat::DoubleWellPotential::{barrier_action, depopulation_factor,
+  kramers_rate_turnover}` (`S(E_b)=(8/3)x₀√(MΔV)`).
 - **Effective temperature (R2) — VERIFIED:** external non-FDT noise gives
   Arrhenius escape at `kT → kT + D·κ₀²`, **but only for short correlation time**;
   band-limited drive breaks Boltzmann (worst at the barrier top). Design rule:
@@ -79,6 +81,26 @@ attempt frequency landing at 20–70 Hz is well inside what a tactile shaker
 delivers. Open knobs to still optimize once R1/R2 land: magnet size (sets the
 absolute ΔV scale and the gap), beam stiffness (sets `ω_a`), and `Q` (sets the
 drive-to-`kT_eff` conversion).
+
+## R1 — analytic DONE; in-sim validation BLOCKED on R6 (now proven)
+
+The turnover physics is implemented and unit-tested in `sim-thermostat`
+(`barrier_action`, `depopulation_factor`, `kramers_rate_turnover`, 13 lib tests):
+`Υ ≤ 1` always, `→1` at high friction, `→δ` at low friction, and the shipped
+`kramers_rate` is an upper bound that overestimates underdamped. The corrected MM
+formula (denominator restored) was caught by the `Υ→δ` unit test.
+
+**Finding (γ-sweep, `sim/L0/therm-env/tests/kramers_turnover.rs`):** the
+**Euler–Maruyama Langevin sim does NOT reproduce the energy-diffusion regime.** At
+γ=0.1 (δ≈0.46) the turnover predicts ~4× suppression (`Υ≈0.26`), but the EM sim
+still tracks the spatial-diffusion rate (`sim/k_S ≈ 1.0`, `sim/k_turnover ≈ 3.8`).
+A 4× gap is far beyond the formula's ±20%, so this is the **integrator**, not the
+formula — EM over-thermalizes and never sees the energy-diffusion bottleneck.
+Where EM is valid (overdamped, γ≥3) the sim matches the analytic rate.
+
+**Consequence:** **R6 (BAOAB) is now a hard prerequisite**, not optional — the
+real device is high-Q (deeply underdamped), and we cannot predict or validate its
+switching rate in-sim until the integrator is fixed. R6 is promoted to next.
 
 ## Success criterion for Layer 2 (the gate to spend money)
 
