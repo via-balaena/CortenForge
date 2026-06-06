@@ -120,8 +120,8 @@ cf-design side: parametric curved beam via `Solid::pipe_spline` / `loft`
 - **S3** — analysis/calibration tool: ingest sensor-log CSV `(t, x)` → `⟨x²⟩`,
   `γ` (ring-down fit), transition events, dwell-time distribution; fit
   `(ΔV, x₀, kT_eff)`; overlay measured vs predicted; emit the sim-to-real gap.
-- **S4** — rig spec + BOM + microcontroller firmware sketch (ADC logging +
-  band-limited noise generation).
+- **S4** — rig spec + BOM ([`bom.md`](bom.md)) + microcontroller firmware sketch
+  (ADC logging + band-limited noise generation).
 
 **Physical (user runs, software supports):** print sweep & pick bistable; build rig;
 measure static force–displacement (optional), ring-down (`γ`), in-well noise
