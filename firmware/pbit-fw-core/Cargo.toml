@@ -1,0 +1,19 @@
+[package]
+name = "pbit-fw-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# D4 physical-pbit firmware: the host-testable, `no_std` core shared by the
+# Teensy 4.1 binary (`firmware/pbit-fw`, a separate embedded project). Holds the
+# drive-signal generator (the "temperature" knob) and the CSV log contract that
+# the S3 analysis tool parses. Hardware peripheral glue lives in the embedded
+# binary; this crate is pure logic so it can be unit-tested on the host.
+
+[dependencies]
+# no_std float math (sinf) for the sinusoidal stochastic-resonance probe.
+libm = "0.2"
+
+[lints]
+workspace = true

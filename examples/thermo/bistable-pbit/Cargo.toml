@@ -1,0 +1,20 @@
+[package]
+name = "example-thermo-bistable-pbit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# D4 physical-pbit arc (docs/thermo_computing/03_phases/d4_physical_pbit/recon.md).
+# Generates a printable sweep of clamped-clamped pre-curved bistable beams.
+# Pairs cf-design (geometry) with mesh-io (STL writing) — the same split
+# cf-cast uses, since mesh-io is deliberately kept out of cf-design's dep graph.
+
+[dependencies]
+cf-design = { workspace = true }
+mesh-io = { workspace = true }
+nalgebra = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "pbit-analyze"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# D4 physical-pbit (S3): host-side analysis/calibration tool. Ingests the
+# Teensy's CSV stream (the `pbit-fw-core::LogRecord` format), extracts switching
+# rate, dwell-time statistics, in-well jitter, and bath level, and converts to a
+# physical kT_eff + a sim-to-real Kramers comparison.
+# See docs/thermo_computing/03_phases/d4_physical_pbit/recon.md.
+
+[[bin]]
+name = "pbit-analyze"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+
+[dev-dependencies]
+# Validates the firmware → analysis data contract by round-tripping synthetic
+# data through the real on-wire CSV format.
+pbit-fw-core = { workspace = true }
+
+[lints]
+workspace = true

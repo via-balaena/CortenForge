@@ -78,7 +78,7 @@ We measure success not only by the capstone, but by how readily someone reaches 
 
 ## The capstone demonstration
 
-The SDK's domain is patient-specific **assistive and rehabilitation robotics**. The greater good is personalized assistive technology — and because the deliverable is a *kit*, the leverage is wider than any one device: it is every clinician, researcher, and builder the SDK equips.
+The SDK's domain is the whole mechatronics and simulation space (§1); **patient-specific assistive and rehabilitation robotics is the flagship application we drive toward** — the proving ground that disciplines the kit, not its boundary. We pick it because it is the hardest, highest-stakes exercise of the components, and because the greater good is personalized assistive technology. And because the deliverable is a *kit*, the leverage is wider than any one device — or any one field: it is every clinician, researcher, and builder the SDK equips, including in domains we never imagined.
 
 The ceiling-defining capstone we are building toward is a **powered, RL-controlled orthosis/exosuit** — the only endpoint that exercises the *entire* SDK at once: scan-derived twin, full rigid-body dynamics, muscles and tendons, soft-tissue contact at the human interface, a control policy trained in the differentiable simulator, and a physically manufactured device. A **passive prosthetic socket** is a deliberate waypoint along the way — same loop, lower stakes, a place to prove fidelity and sim-to-real calibration before control and actuation enter. We aim all the way.
 
