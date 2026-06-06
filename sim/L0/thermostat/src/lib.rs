@@ -66,6 +66,7 @@
 //!   — the seven bolt-pattern decisions this crate inherits.
 
 pub mod baoab;
+pub mod colored_drive;
 mod component;
 mod diagnose;
 mod double_well;
@@ -83,6 +84,7 @@ mod stack;
 pub mod test_utils;
 
 pub use baoab::Baoab1D;
+pub use colored_drive::ColoredDriveSim;
 pub use component::{PassiveComponent, Stochastic};
 pub use diagnose::Diagnose;
 pub use double_well::DoubleWellPotential;

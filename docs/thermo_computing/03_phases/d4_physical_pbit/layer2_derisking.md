@@ -125,6 +125,28 @@ EM is dt-biased). Re-running the R1 γ-sweep through BAOAB
 This closes the R1/R6 dependency: we now have a trustworthy underdamped rate
 engine, and we know the analytic formula's limits.
 
+## R2 — DONE (the injected-noise bath is thermal only when broadband)
+
+`sim_thermostat::ColoredDriveSim` (`src/colored_drive.rs`) models the macroscopic
+shaker-driven beam: intrinsic damping + an **external OU colored force** (not
+FDT-paired), no room-temperature noise. Thermal-ness is tested by whether the
+**kinetic** temperature `m⟨v²⟩` and the **configurational** temperature
+`⟨V′²⟩/⟨V″⟩` agree (they must, for any Boltzmann state).
+
+**Result** (`tests/colored_bath.rs`, τ-sweep at fixed white-limit `kT_eff`):
+
+| τ·ω_a | 0.018 | 0.089 | 0.27 | 0.89 | 2.7 | 8.9 |
+|---|---|---|---|---|---|---|
+| kin/conf | 1.00 | 0.99 | 0.97 | 0.91 | 0.77 | 0.51 |
+
+The injected noise behaves as a **thermal bath when broadband** (`τ·ω_a ≪ 1`);
+as the band narrows, kinetic and configurational temperatures diverge — the
+Boltzmann picture (and the Kramers/Arrhenius prediction the whole stack assumes)
+breaks. **Quantitative rig rule: drive the shaker with broadband noise of
+bandwidth ≳ a few × the cantilever resonance `ω_a`** (`τ·ω_a ≲ 0.3` keeps the bath
+within ~5% of thermal). This composes with R3 (`ω_a ≈ 20–70 Hz`): a drive band of
+a few hundred Hz suffices — easily within a tactile shaker's range.
+
 ## Success criterion for Layer 2 (the gate to spend money)
 
 Before any part is ordered we should have, in software:
