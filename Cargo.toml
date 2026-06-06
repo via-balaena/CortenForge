@@ -66,6 +66,15 @@ members = [
     # Umbrella crate (re-exports all mesh-* crates)
     "mesh/mesh",
 
+    # Examples — thermo (D4 physical-pbit arc)
+    "examples/thermo/bistable-pbit",
+
+    # Firmware — D4 physical-pbit (host-testable core; embedded binary is excluded)
+    "firmware/pbit-fw-core",
+
+    # Tools — D4 physical-pbit analysis/calibration
+    "tools/pbit-analyze",
+
     # Examples — fundamentals
     "examples/fundamentals/design/hello-solid",
     "examples/fundamentals/design/bio-shapes",
@@ -670,6 +679,9 @@ cf-cast = { path = "design/cf-cast" }
 # (`run()` for mold generation + `parse_centerline_from_prep_toml`).
 # Also builds the `cf-cast-cli` binary.
 cf-cast-cli = { path = "tools/cf-cast-cli" }
+
+# D4 physical-pbit (firmware core + analysis tool)
+pbit-fw-core = { path = "firmware/pbit-fw-core" }
 
 # CortenForge Studio — guided scan→cast wizard (see MISSION.md).
 # cf-studio-core: headless workflow spine. cf-studio-engine: the

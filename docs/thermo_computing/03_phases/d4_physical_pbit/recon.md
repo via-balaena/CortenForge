@@ -1,0 +1,188 @@
+# D4 — The Physical p-bit (sim-to-real foundational arc)
+
+> Recon + plan. Status: **G0 approved 2026-06-05**, software-only G1 in progress.
+> This is the canonical in-repo record; the working plan that spawned it was
+> approved in-session.
+
+## Why this, why now
+
+The thermo stack is mature and real — ~718 tests across `sim-thermostat`,
+`sim-opt`, `sim-rl`, `sim-ml-chassis`, `sim-therm-env`; Langevin FDT, Kramers
+rates, Ising coupling, Boltzmann learning all validated; plus a written
+biological-navigation paper whose contribution is a clean boundary
+(*statistical-mechanical* questions transfer to the Langevin domain,
+*dynamical-systems* ones don't).
+
+**Every one of those results is simulation-only.** The whole edifice rests on a
+single untested assumption: that the Langevin double-well simulation corresponds
+to a real physical device. The CortenForge thesis
+([`../../01_vision/synthesis.md`](../../01_vision/synthesis.md)) is explicit —
+*"print the result and measure whether reality agrees."* That has never been done
+for a thermodynamic element. This arc is the foundation **under** the foundation.
+
+Three reasons it's the right foundational move:
+
+1. **It's the paper's own named next step** — Open Question 10
+   ([`../../02_foundations/open_questions.md`](../../02_foundations/open_questions.md)):
+   "how do these design rules map to real hardware?", called "the next major step."
+2. **It's the moat** — [`../../01_vision/vision.md`](../../01_vision/vision.md):
+   Extropic/Normal can't fab cheaply, software-only stacks can't fab at all. Cheap
+   printed mechanical p-bits *validated against sim* is the thing only CortenForge
+   can do, and it's unproven until one exists.
+3. **It de-risks the assistive-robotics north star too** — MISSION.md's co-design
+   loop bets everything on sim-to-real for a complex worn device; proving the
+   *methodology* on a 1-DOF beam first is the responsible order, at ~1/1000th the
+   cost.
+
+**Outcome:** a measured, thermally-activated switching curve from a printed
+bistable beam, overlaid on the Langevin sim's Kramers prediction — the first
+physical credential for the whole thermo stack. Match → the moat is real.
+No match → the most valuable thing we could learn, for the price of one print.
+
+## Sequencing decision
+
+**Kramers escape law first; rig built SR-ready.** The foundational claim is
+"printed beam + injected noise = thermally-activated double-well the sim
+predicts." Kramers tests exactly that with the simplest rig (broadband noise in,
+switching events out, no tuned periodic signal), and Phase 3 already validated the
+law in sim, so we have a ground-truth prediction: `log(rate)` vs `1/kT_eff` is a
+straight Arrhenius line of slope `−ΔV`. Stochastic resonance (the paper's marquee
+P2) is the natural second experiment — add a sub-threshold periodic drive to the
+*same* rig, no rework.
+
+## Physical design
+
+> **Realization revised 2026-06-05 (G2 feedback).** The first cut was a *printed
+> PLA buckled beam*; a trial print showed why that's a poor element — PLA is
+> brittle (cracks after few snaps), creeps (the wells drift), and its layer
+> adhesion is weakest exactly along the bending axis, so the barrier is
+> inconsistent and short-lived. The bistability is therefore moved **out of the
+> printed plastic** and into a durable, conservative element; the prints become
+> rigid mounts only (PLA is fine for that). The S1 printed-beam sweep
+> (`examples/thermo/bistable-pbit`) is retained as a quick negative-control /
+> teaching artifact, not the measurement device.
+
+- **Device:** a **magnetoelastic cantilever** (Moon & Holmes 1979) — a thin
+  spring-steel strip clamped at one end, with permanent magnets near the free tip
+  pulling it toward two stable positions. One DOF: tip lateral position `x` = the
+  order parameter, two stable states. This is the canonical *experimental*
+  double-well in nonlinear dynamics and exactly what tabletop stochastic-resonance
+  rigs use. Spring steel doesn't creep or fatigue (millions of switches); the
+  barrier `ΔV` and separation `x₀` are **tuned by the magnet gap** instead of by
+  reprinting. Orient so the snap axis is horizontal (gravity doesn't bias the wells).
+- **Bath = injected mechanical noise.** A macroscopic element won't switch from
+  room-temperature `kT`; the effective thermal bath is broadband noise from a base
+  **shaker** (tactile transducer) the whole cantilever+magnets+sensor assembly
+  rides on. Noise power = the temperature knob. `kT_eff` is **calibrated from
+  in-well equipartition**: `kT_eff = M·ω_a²·⟨δx²⟩` — the theorem Phase 1 validated.
+  **S2 finding (2026-06-05):** this calibration is only quantitative when the bit
+  is *cold* (`kT_eff ≪ ΔV`, rarely switching) — at the switching temperatures
+  `kT ≈ ΔV` anharmonicity suppresses `⟨δx²⟩` ~40% below the harmonic value, so read
+  `kT_eff` at low drive deep in one well, not while it's flipping. The
+  drive is generated by the MCU (PWM + RC filter → amp); an **accelerometer on the
+  moving base measures the actual injected vibration**, so the bath is known from
+  reality rather than the commanded signal.
+- **Measurement = one cheap sensor.** A small neodymium magnet at the cantilever
+  tip + an analog Hall sensor (DRV5055), logged by a **Teensy 4.1** ADC at ~10–20
+  kHz (firmware in Rust; see `firmware/`). Continuous position gives `⟨x²⟩`
+  (calibration) and ring-down `γ`; its sign gives which-well state (switching rate
+  + dwell-times). A strain-gauge + INA125 path is carried as a backup sensor. No
+  high-speed camera / CV.
+- **Scales to the chain (Step 2):** one shaker drives an entire row of cantilevers
+  on the common base; coupling is magnet-to-magnet; an analog mux reads up to
+  `MAX_HALL = 8` Hall channels on the one Teensy.
+
+## Simulation mapping (reuse — nothing new on the physics side)
+
+| Need | Reuse | File |
+|------|-------|------|
+| Energy `V(x)=a(x²−x₀²)²`, accessors | `DoubleWellPotential::new(delta_v, x_0, dof)` | `sim/L0/thermostat/src/double_well.rs` |
+| Predicted escape rate (Kramers–Grote–Hynes) | `DoubleWellPotential::kramers_rate(gamma, mass, k_b_t)` | `double_well.rs` |
+| Langevin bath + `kT_eff` knob | `LangevinThermostat::new(...).with_ctrl_temperature(0)` | `sim/L0/thermostat/src/langevin.rs` |
+| Periodic drive (SR, phase 2) | `OscillatingField::new(A0, ω, φ, dof)` | `sim/L0/thermostat/src/oscillating_field.rs` |
+| Assemble particle + landscape + sweep | `ThermCircuitEnv::builder(...)` | `sim/L0/therm-env/src/builder.rs` |
+| Experiment pattern to copy | d2a/d2b SR setup; Phase 3 Kramers validation | `sim/L0/thermostat/tests/d2a_*.rs`, `d2b_*.rs` |
+
+cf-design side: parametric curved beam via `Solid::pipe_spline` / `loft`
+(`design/cf-design/src/solid.rs`), STL via `mechanism::stl::generate`
+(`design/cf-design/src/mechanism/stl.rs`), mass/inertia via `mass_properties()`
+(`design/cf-design/src/mechanism/mass.rs`).
+
+## Work breakdown
+
+**Software (in-repo, headless):**
+- **S1** — cf-design parametric bistable curved-beam module (span/rise/thickness/
+  width + rigid clamp blocks) → STL; rise/thickness print sweep; mass/inertia per
+  candidate.
+- **S2** — in-silico Kramers prediction harness: given `(ΔV, x₀, γ, mass, kT_eff)`,
+  emit predicted in-well `⟨x²⟩`, dwell-time histograms, and the `log(rate)` vs
+  `1/kT_eff` Arrhenius curve. Asserts against `kramers_rate()`.
+- **S3** — analysis/calibration tool: ingest sensor-log CSV `(t, x)` → `⟨x²⟩`,
+  `γ` (ring-down fit), transition events, dwell-time distribution; fit
+  `(ΔV, x₀, kT_eff)`; overlay measured vs predicted; emit the sim-to-real gap.
+- **S4** — rig spec + BOM + microcontroller firmware sketch (ADC logging +
+  band-limited noise generation).
+
+**Physical (user runs, software supports):** print sweep & pick bistable; build rig;
+measure static force–displacement (optional), ring-down (`γ`), in-well noise
+(`⟨x²⟩`→`kT_eff`), noise sweep (switching); hand logs to S3.
+
+**Collaborative:** fit sim params from measurements; run sim at calibrated params vs
+measured switching → the gap; agree → first physical-validation finding; disagree →
+diagnose against R1–R4.
+
+## Gates (sharpen-the-axe — each passes with margin before the next)
+
+- **G0** recon approved. ✅
+- **G1** *software-only, no hardware*: printable bistable STL + clean predicted
+  Kramers curve in silico. Immediately shippable.
+- **G2** one printed beam confirmed bistable by hand (retires R1 cheaply, before rig).
+- **G3** rig logs clean in-well position: histogram Gaussian, `⟨x²⟩ ∝` noise power →
+  `kT_eff` calibrated (retires R2).
+- **G4** noise sweep → countable switching, dwell-times exponential (Poisson escape).
+- **G5** measured vs predicted Kramers curve overlaid → **THE result**.
+- **G6** *(stretch)* add periodic drive → physical SR curve vs sim SR.
+
+## Risks
+
+- **R1 — Bistability.** Cheap geometry spike: print 2–3 rise/thickness ratios,
+  verify two stable states by hand (G2) before rig effort.
+- **R2 — Is injected noise a *thermal* (Boltzmann) bath?** Check in-well histogram is
+  Gaussian and `⟨x²⟩ ∝` drive power. If too colored/resonant, whiten the drive or
+  widen its band vs. the well frequency.
+- **R3 — Damping regime.** A printed beam is likely underdamped (high Q). The sim's
+  `kramers_rate` is the spatial-diffusion (moderate/high-friction) form; a very
+  underdamped resonator obeys the *energy-diffusion* (low-friction) regime where rate
+  scales **with** `γ`. Measure Q via ring-down, tune noise level (add damping if
+  needed) to land in a tractable regime, and use the correct Kramers regime in the
+  comparison. Named here, not discovered at G5.
+- **R4 — Sensor noise / state classification.** Characterize the sensor noise floor;
+  ensure which-well classification is clean vs. in-well fluctuation amplitude.
+
+## Scope discipline (explicitly NOT in this arc)
+
+- Not differentiable physics (everything here is gradient-free).
+- Not the assistive-robotics co-design loop (this de-risks its methodology).
+- Not a coupled array yet — **one** element first; coupling is the follow-on.
+- No high-speed camera / CV pipeline.
+
+## Verification
+
+Software gates are fully headless, and the calibration pipeline is validated against
+sim ground truth *before* any hardware:
+
+- **S1:** manifold STL (non-empty mesh, finite `mass_properties`) per swept candidate.
+- **S2:** **DONE** (`sim/L0/therm-env/tests/kramers_pbit.rs`). The sim reproduces
+  the Kramers law on the real code path: Arrhenius slope **−3.25 vs −ΔV=−3.0** (8%,
+  within the 20% gate), per-`kT` rate within **~10%** of analytic `kramers_rate`,
+  dwell-time **CV ≈ 0.9** (exponential), **cold equipartition ratio 1.13**. Run:
+  `cargo test -p sim-therm-env --release --test kramers_pbit -- --ignored`.
+- **S3 (key): DONE** (`tools/pbit-analyze`). Recovers switching rate, dwell CV,
+  in-well variance, and `kt_eff` from a CSV; well centres via two-means (robust to
+  unequal dwell fractions). Validated two ways: a controlled-telegraph unit test
+  recovers known rate/CV/variance to <15%, and a **firmware-contract round-trip**
+  frames synthetic data through the real `pbit_fw_core::LogRecord` CSV and recovers
+  it — proving the analysis math *and* the firmware↔analysis data contract before
+  any hardware. `cargo test -p pbit-analyze` (4 tests, clippy/fmt clean).
+- **Physical:** the G5 overlay — measured switching rate vs. Langevin prediction at
+  calibrated parameters, reported honestly as a gap number.
