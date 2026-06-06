@@ -8,12 +8,15 @@
 //! operating range.
 //!
 //! Key result (see the tests): magnetise the tip magnet **along the motion axis**
-//! and offset the Hall sensor **perpendicular** to it by `d ≳ 2·x₀`; then the
-//! perpendicular field component is an odd, near-linear, monotonic function of
-//! tip position with a sensitivity of order 10 mT/mm — micron-scale position
-//! resolution with a DRV5055 + the Teensy ADC, far finer than the in-well jitter
-//! we must measure. The only constraint from the well magnets is that the total
-//! DC field (tens of mT) sets which DRV5055 range variant to use.
+//! and offset the Hall sensor **perpendicular** by `d`; then `B_z ∝ x/(x²+d²)^{5/2}`
+//! is odd and **monotonic only for `|x| < d/2`** (it folds at the inflection
+//! `x = d/2`). So `d ≳ 2·x_max`, where `x_max` is the peak excursion that must read
+//! cleanly: the wells `±x₀` for which-well counting + in-well variance, larger if
+//! continuous position through the transit overshoot is required. Sensitivity
+//! `∝ 1/d⁴` — **~20 mT/mm at the shallow operating point** (`x₀≈2 mm`, `d≈5 mm`),
+//! ~5 mT/mm at the deep end (`x₀≈3.5 mm`, `d≈7 mm`) — so `d` is chosen against the
+//! magnet gap and the micron-scale resolution coarsens accordingly. The well
+//! magnets add only a DC offset (tens of mT) that sets the DRV5055 range variant.
 
 #![allow(clippy::cast_precision_loss, clippy::doc_markdown, clippy::float_cmp)]
 
@@ -152,8 +155,9 @@ mod tests {
     use crate::magnetoelastic::Magnet;
 
     /// The recommended geometry — tip magnet along the motion axis, sensor offset
-    /// perpendicular by d ≳ 2·x₀ — gives a monotonic, sensitive, micron-resolving
-    /// readout, and the fixed magnets are only a DC offset.
+    /// perpendicular by d ≳ 2·x_max — gives a readout monotonic through the wells,
+    /// sensitive, and micron-resolving, with the fixed magnets only a DC offset.
+    /// Also demonstrates the d/2 fold that fixes the d ≳ 2·x_max rule.
     #[test]
     fn perpendicular_offset_readout_is_monotonic_sensitive_and_fine() {
         let tip_m = Magnet {
@@ -190,10 +194,20 @@ mod tests {
             sensor_axis: [0.0, 0.0, 1.0], // read B_z
         };
 
-        // Monotonic over the operating range ±x₀.
+        // Monotonic through the wells ±x₀ (which-well counting + in-well variance).
         assert!(
             rig.is_monotonic(x_0, 400),
             "readout must be monotonic over ±x₀"
+        );
+
+        // ...but it folds at the inflection x = d/2 = 1.25·x₀ here, so it is NOT
+        // monotonic over the larger transit excursion. This makes the design rule
+        // d ≳ 2·x_max explicit: with d=5 mm a ±1.5·x₀ swing already exceeds d/2.
+        // (Fine for hysteretic which-well counting; continuous position is only
+        // valid for |x| < d/2 — push d larger, trading sensitivity ∝ 1/d⁴.)
+        assert!(
+            !rig.is_monotonic(1.5 * x_0, 400),
+            "with d=5mm/x₀=2mm the readout SHOULD fold past d/2 — demonstrating d≳2·x_max"
         );
 
         // Odd response: B(+x) = −B(−x) (so + and − wells are distinguishable).

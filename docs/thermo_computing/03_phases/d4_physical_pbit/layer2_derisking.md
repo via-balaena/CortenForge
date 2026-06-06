@@ -112,18 +112,22 @@ EM is dt-biased). Re-running the R1 γ-sweep through BAOAB
 
 - BAOAB shows the **turnover** and matches the analytic rate overdamped (γ≥3,
   BAOAB/k_turnover 0.89–0.99).
-- BAOAB shows the **energy-diffusion suppression EM completely missed**: at γ=0.1,
-  BAOAB/k_S ≈ **0.84** (suppressed below the spatial-diffusion rate) where EM gave
-  ≈1.0. So BAOAB is the correct integrator for the underdamped regime.
-- **Finding:** but BAOAB (the trustworthy reference) shows the Meľnikov–Meshkov
-  *analytic* factor **over-suppresses at moderate δ≈0.5** (BAOAB/k_turnover ≈ 3.2 at
-  γ=0.1, i.e. the real rate is far less suppressed than the formula predicts).
-  **⇒ For quantitative high-Q rate predictions, use the BAOAB integrator
-  directly; treat the MM closed form as a rough guide.** (A deep-δ≪1 check, where
-  the `Υ→δ` asymptote is exact, is a worthwhile follow-up.)
+- BAOAB tracks the friction dependence EM erases (γ=0.1: BAOAB/k_S ≈ 0.84–1.0
+  across seeds vs EM's ≈1.0).
 
-This closes the R1/R6 dependency: we now have a trustworthy underdamped rate
-engine, and we know the analytic formula's limits.
+**Scope / ultra-review correction — what this run does NOT establish.** The
+γ-sweep is at `ΔV/kT = 3`, where the simulated rate is **γ-independent (the TST
+plateau)**, not energy-diffusion-limited (a genuine energy-diffusion regime needs
+`rate ∝ γ`, which is absent here). So this run **cannot test the absolute
+underdamped rate or the MM factor**: the earlier "MM over-suppresses at δ≈0.5"
+reading conflated "sim sits in the TST plateau" with "formula wrong" and is
+**withdrawn**. The MM factor itself is correctly implemented (`Υ→δ` as `δ→0`,
+`Υ→1` at large `δ`, verified). **Operational stance:** BAOAB is the best-available
+underdamped integrator (equipartition validated, dt-independent); the MM closed
+form is a ±20% guide untested in our regime — so predict high-Q rates with BAOAB.
+**Required before trusting an absolute underdamped rate (pending):** a
+deep-well/`δ≪1` run where escape is genuinely energy-diffusion-limited
+(`rate ∝ γ`, `Υ→δ` exact).
 
 ## R2 — DONE (the injected-noise bath is thermal only when broadband)
 
@@ -139,13 +143,21 @@ FDT-paired), no room-temperature noise. Thermal-ness is tested by whether the
 |---|---|---|---|---|---|---|
 | kin/conf | 1.00 | 0.99 | 0.97 | 0.91 | 0.77 | 0.51 |
 
-The injected noise behaves as a **thermal bath when broadband** (`τ·ω_a ≪ 1`);
-as the band narrows, kinetic and configurational temperatures diverge — the
-Boltzmann picture (and the Kramers/Arrhenius prediction the whole stack assumes)
-breaks. **Quantitative rig rule: drive the shaker with broadband noise of
-bandwidth ≳ a few × the cantilever resonance `ω_a`** (`τ·ω_a ≲ 0.3` keeps the bath
-within ~5% of thermal). This composes with R3 (`ω_a ≈ 20–70 Hz`): a drive band of
-a few hundred Hz suffices — easily within a tactile shaker's range.
+The in-well stationary state keeps a **Boltzmann shape** (kinetic ≈ configurational
+temperature) when broadband (`τ·ω_a ≪ 1`); as the band narrows the two diverge.
+**Quantitative rig rule: drive broadband, bandwidth ≳ a few × `ω_a`** (`τ·ω_a ≲ 0.3`
+keeps kin/conf within ~5%). Composes with R3 (`ω_a ≈ 20–70 Hz`): a few-hundred-Hz
+band suffices — within a tactile shaker's range.
+
+**Scope / ultra-review corrections.** (1) The kin/conf ratio tests Boltzmann
+*shape*, not the absolute temperature: even at `τ·ω_a ≈ 0.27` the OU rolloff
+under-drives the well, so the realized `kT` is already ~10% below the nominal
+`kT_eff` (a ~2–3× Arrhenius-rate shift in a deep well). **The operating
+temperature must be calibrated against the *measured* in-well variance, not the
+commanded drive.** (2) The test samples only the in-well (harmonic) region of a
+deep no-escape well, so it does **not** probe the barrier-top non-Boltzmann
+distortion (the literature-flagged colored-noise failure mode that governs
+escape), nor Arrhenius escape or `T_eff(noise power)` — those remain to validate.
 
 ## R4 — DONE (magnetostatic sensing model)
 
@@ -155,36 +167,50 @@ contribute only a **constant DC offset** — the design problem is the
 *x-dependence*. Result (`tests/`):
 
 - **Recommended geometry:** magnetise the tip magnet **along the motion axis** and
-  offset the Hall sensor **perpendicular** by `d ≳ 2·x₀`. The perpendicular field
-  component is then an **odd, near-linear, monotonic** function of tip position
-  (so + and − wells are distinguishable, and position is recoverable).
-- **Sensitivity** ≈ `3μ₀·m_tip/(4π·d⁴)` ≈ **20 mT/mm** for the R3 tip magnet at
-  d=5 mm.
-- **Resolution** ≈ **3 µm/ADC-count** (DRV5055A4 at 12.5 mV/mT + Teensy 12-bit
-  ADC) — far finer than the sub-mm in-well jitter we must measure.
+  offset the Hall sensor **perpendicular** by `d ≳ 2·x_max` — where `x_max` is the
+  *peak* tip excursion (well throw + underdamped overshoot during a transit +
+  thermal jitter), **not** merely `x₀`. `B_z ∝ x/(x²+d²)^{5/2}` inflects at
+  `x = d/2`, so the whole crossing must stay inside `|x| < d/2` for a monotonic
+  readout; practically `d ≳ 4·x₀`.
+- **Sensitivity** ≈ `3μ₀·m_tip/(4π·d⁴)` — **~20 mT/mm at the shallow operating
+  point** (`x₀ ≈ 2 mm`, `d ≈ 5 mm`); it falls as `1/d⁴`, so the deep end of the R3
+  window (`x₀ ≈ 3.5 mm` → `d ≈ 7 mm`) gives **~5 mT/mm**. `d` must be chosen against
+  the actual magnet gap / `x₀`, not fixed.
+- **Resolution** ≈ **3 µm/ADC-count at the shallow point** (DRV5055A4, Teensy
+  12-bit) — far finer than the sub-mm jitter; ~12 µm at the deep end.
 - **Well-magnet constraint:** only a DC offset (the tip response is odd, ~zero at
-  centre); the total DC field is tens of mT, so pick the wide-range DRV5055
-  variant (A3/A4) to avoid saturation. The `49E` fallback would also work but is
-  noisier.
+  centre); total DC field is tens of mT, so pick a wide-range DRV5055 variant
+  (A3/A4). `49E` works but is noisier.
 
-## Layer 2 — COMPLETE (the gate to spend money is met)
+## Layer 2 — geometry/sensing/bandwidth VALIDATED; absolute rate PENDING
 
-All six de-risking workstreams done; the physical build now executes a plan we
-already trust:
+The de-risking that licenses **ordering parts** is done. Per the ultra-review, the
+absolute underdamped switch-*rate* prediction is **not yet** certified — so this is
+scoped honestly rather than declared "complete".
 
 | Risk | Status |
 |---|---|
-| R1 friction regime | ✅ turnover physics; shipped rate was wrong-regime |
-| R6 integrator | ✅ BAOAB — the trustworthy underdamped rate engine |
+| R1 friction regime | ✅ turnover physics (analytic); shipped rate was wrong-regime |
+| R6 integrator | ✅ BAOAB validated for equipartition (dt-independent) · ⚠ absolute underdamped *rate* not yet validated (TST-plateau sweep; deep-δ run pending) |
 | R3 potential / rig spec | ✅ operate near the bifurcation (gap ~9 mm); ω_a 20–70 Hz |
-| R2 bath / bandwidth | ✅ drive broadband, bandwidth ≳ a few × ω_a |
-| R4 sensing | ✅ tip-along-motion + perpendicular Hall offset; ~3 µm resolution |
-| R7 literature | ✅ formulas pinned, platform precedent (Spano 1992) |
+| R2 bath / bandwidth | ✅ Boltzmann *shape* vs bandwidth (drive ≳ few × ω_a) · ⚠ absolute T_eff, Arrhenius escape, barrier-top distortion not yet tested |
+| R4 sensing | ✅ tip-along-motion + perpendicular Hall (d ≳ 2·x_max); ~3 µm res at the shallow point |
+| R7 literature | ✅ formulas pinned; platform precedent (Spano 1992) |
 
-The original gate — *correct physics for the real Q, a physics-derived rig spec,
-a validated bath, known error bars, sensing designed* — is satisfied. The
-remaining work (S1b printed brackets, S4b firmware bring-up, the physical gates
-G2–G5) is execution against this plan, pending the ordered parts.
+**Licensed now:** the **rig geometry (R3), sensing (R4), and drive-bandwidth (R2
+shape)** are validated, so ordering the printed brackets + Hall sensor + shaker is
+justified — the device *will be* a measurable bistable system.
+
+**Still to validate (the two deferred checks) — these gate *quantitative rate
+agreement*, not feasibility, and can run while parts ship:**
+1. a deep-well / `δ≪1` BAOAB run to anchor the absolute underdamped rate (where
+   `Υ→δ` is exact and escape is genuinely energy-diffusion-limited, `rate ∝ γ`);
+2. an Arrhenius-escape / `T_eff(noise-power)` test under colored drive (shallow
+   barrier, so the trajectory visits the saddle), to confirm escape — not just
+   in-well shape — survives the injected bath.
+
+The remaining build work (S1b printed brackets, S4b firmware bring-up, the
+physical gates G2–G5) is execution against this plan.
 
 ## Success criterion for Layer 2 (the gate to spend money)
 

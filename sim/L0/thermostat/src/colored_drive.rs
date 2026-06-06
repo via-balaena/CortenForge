@@ -13,10 +13,13 @@
 //!
 //! `η` has correlation time `τ` (inverse bandwidth); its white-noise limit
 //! (`τ→0`) is intensity `2γ·kT_eff`, i.e. an ordinary thermal bath at `kT_eff`.
-//! The test of "thermal-ness" is whether the **kinetic** temperature `m⟨v²⟩` and
-//! the **configurational** temperature `mω_a²⟨δx²⟩` agree (equipartition) — they
-//! do for short `τ` (wide bandwidth) and diverge for long `τ` (narrow band),
-//! which sets the hard rig rule: drive the shaker with broadband noise.
+//! The diagnostic is Boltzmann **shape**: whether the **kinetic** temperature
+//! `m⟨v²⟩` and the **configurational** temperature `⟨V′²⟩/⟨V″⟩` agree
+//! (equipartition). They do for short `τ` (wide bandwidth) and diverge for long
+//! `τ`, setting the rig rule: drive the shaker with broadband noise. **Note:**
+//! the ratio measures *shape*, not absolute temperature — the OU rolloff also
+//! suppresses the absolute `kT` (~10% at `τ·ω_a ≈ 0.3`), so the operating point
+//! must be calibrated against the measured in-well variance.
 //!
 //! Integrated BAOAB-style (damping-only O step, since the colored force is the
 //! energy source) for underdamped fidelity.

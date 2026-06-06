@@ -2,11 +2,12 @@
 //!
 //! Drives a deep quartic well (no escape) with external OU colored noise of
 //! correlation time `τ` and measures the kinetic temperature `m⟨v²⟩` against the
-//! configurational temperature `⟨V′²⟩/⟨V″⟩`. For a true Boltzmann (thermal) state
-//! these are equal (equipartition). The sweep finds the bandwidth condition: the
-//! bath is thermal while `τ·ω_a ≪ 1` (drive bandwidth ≫ the well frequency) and
-//! becomes non-thermal (kinetic ≪ configurational) as `τ·ω_a` grows — the hard
-//! rig rule that the shaker must be driven with *broadband* noise.
+//! configurational temperature `⟨V′²⟩/⟨V″⟩`. For a Boltzmann state these are equal
+//! (equipartition). The sweep finds the bandwidth condition: the in-well state
+//! keeps a Boltzmann *shape* while `τ·ω_a ≪ 1` and departs as `τ·ω_a` grows — the
+//! rig rule that the shaker must be driven *broadband*. **Scope:** this tests
+//! shape, not absolute temperature (the OU rolloff also suppresses `kT`), and the
+//! deep no-escape well does not probe escape / barrier-top distortion.
 //!
 //! Heavy; run with `--release`:
 //! `cargo test -p sim-thermostat --release --test colored_bath -- --ignored --nocapture`
@@ -103,9 +104,10 @@ fn injected_noise_is_thermal_only_when_broadband() {
         );
     }
 
-    // Quantitative rule: staying within 5% of thermal (ratio > 0.95) requires
-    // τ·ω_a ≲ 0.3, i.e. drive bandwidth ≳ a few × ω_a. The τ·ω_a ≈ 0.27 point
-    // is still ~5%-thermal; the τ·ω_a ≈ 2.7 point has clearly departed.
+    // Quantitative rule: keeping the Boltzmann SHAPE (kin/conf ratio > 0.95)
+    // requires τ·ω_a ≲ 0.3, i.e. drive bandwidth ≳ a few × ω_a. NOTE this is shape
+    // only — at τ·ω_a ≈ 0.27 the ABSOLUTE kT is already ~10% below kT_eff (the OU
+    // rolloff under-drives the well), so calibrate kT from the measured variance.
     let near = rows.iter().find(|r| (0.2..0.35).contains(&r.1)).copied();
     let far = rows.iter().find(|r| (2.0..4.0).contains(&r.1)).copied();
     if let (Some(near), Some(far)) = (near, far) {
@@ -124,16 +126,16 @@ fn injected_noise_is_thermal_only_when_broadband() {
     }
 
     println!(
-        "\nR2 result: injected noise is a thermal bath only when broadband (τ·ω_a ≪ 1). As the"
+        "\nR2 result: injected noise preserves the in-well BOLTZMANN SHAPE only when broadband"
+    );
+    println!("(τ·ω_a ≪ 1). RIG RULE: drive broadband — bandwidth ≳ a few × ω_a (τ·ω_a ≲ 0.3 keeps");
+    println!(
+        "kin/conf within ~5%). SCOPE: this is SHAPE, not absolute T — the realized kT is already"
     );
     println!(
-        "drive band narrows the kinetic and configurational temperatures diverge — the Boltzmann"
+        "~10% below nominal at τ·ω_a≈0.3 (OU rolloff); calibrate kT from the MEASURED in-well variance."
     );
     println!(
-        "picture (and the Arrhenius/Kramers prediction) breaks. RIG RULE: drive the shaker with"
+        "Escape / barrier-top distortion / T_eff(noise power) under colored drive are not yet tested."
     );
-    println!(
-        "broadband noise — bandwidth ≳ a few × the cantilever resonance ω_a (τ·ω_a ≲ 0.3 keeps"
-    );
-    println!("the bath within ~5% of thermal).");
 }
