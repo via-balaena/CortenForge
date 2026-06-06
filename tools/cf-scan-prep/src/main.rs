@@ -3302,37 +3302,66 @@ fn render_save_section(
 /// never panics — disk-full / read-only / permission errors surface
 /// as red status-bar messages so the user can retry after fixing the
 /// underlying condition.
-#[allow(clippy::too_many_arguments)]
-fn handle_save_action(
-    mut pending: ResMut<SavePendingAction>,
-    scan: Res<ScanMesh>,
-    original: Res<OriginalScanMesh>,
-    reorient: Res<ReorientState>,
-    recenter: Res<RecenterState>,
-    cap: Res<CapState>,
-    simplify: Res<SimplifyState>,
-    smoothing: Res<SmoothingState>,
-    centerline_trim: Res<CenterlineTrimState>,
-    output_dir: Res<SaveOutputDir>,
-    source: Res<SourceStlPath>,
-    stl_units: Res<StlUnitsResource>,
-    auto_center: Res<AutoCenterOffset>,
-    auto_pca: Res<AutoPcaQuaternion>,
-    mut status: ResMut<StatusBar>,
-    time: Res<Time>,
-) {
-    if !pending.save_now {
-        return;
-    }
-    pending.save_now = false;
+/// Inputs to [`save_cleaned_scan`], borrowed from the ECS resources by the
+/// [`handle_save_action`] system. Bundling them lets the save pipeline be a
+/// plain function, unit-testable without spinning up a Bevy world.
+struct SaveInputs<'a> {
+    scan: &'a IndexedMesh,
+    original: &'a IndexedMesh,
+    reorient: &'a ReorientState,
+    recenter: &'a RecenterState,
+    cap: &'a CapState,
+    simplify: &'a SimplifyState,
+    smoothing: &'a SmoothingState,
+    centerline_trim: &'a CenterlineTrimState,
+    source_stl: &'a Path,
+    output_dir: &'a Path,
+    stl_units: StlUnits,
+    auto_center_offset_m: Vector3<f64>,
+    auto_pca_quat: Option<UnitQuaternion<f64>>,
+}
 
-    let stem = source
-        .0
+/// Structured result of a successful save — the pieces the status bar formats.
+struct SaveOutcome {
+    triangle_count: usize,
+    trim_status_suffix: String,
+    simplify_status_suffix: String,
+    cleanup_status_suffix: String,
+}
+
+/// Why a save failed. The system maps each to a red status message.
+#[derive(Debug)]
+enum SaveError {
+    /// A transform/trim value was NaN/Inf — refuse to write garbage to disk.
+    NonFiniteTransform,
+    /// `.prep.toml` serialization failed.
+    TomlBuild(anyhow::Error),
+    /// Writing the `.cleaned.stl` / `.prep.toml` to disk failed.
+    Write(anyhow::Error),
+}
+
+/// The cleaned-scan save pipeline, extracted from [`handle_save_action`] so it
+/// is a pure, unit-testable function: bake → centerline-trim →
+/// reconstruct/auto-cap → hygiene cleanup → build `.prep.toml` → atomic write.
+/// Behavior is identical to the prior inline system body (gated by a golden
+/// test); the ECS system is now a thin shim that maps the result to the status
+/// bar.
+fn save_cleaned_scan(inputs: &SaveInputs) -> Result<SaveOutcome, SaveError> {
+    let scan = inputs.scan;
+    let reorient = inputs.reorient;
+    let recenter = inputs.recenter;
+    let cap = inputs.cap;
+    let centerline_trim = inputs.centerline_trim;
+    let smoothing = inputs.smoothing;
+    let simplify = inputs.simplify;
+
+    let stem = inputs
+        .source_stl
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("scan");
-    let cleaned_stl_path = output_dir.0.join(format!("{stem}.cleaned.stl"));
-    let prep_toml_path = output_dir.0.join(format!("{stem}.prep.toml"));
+    let cleaned_stl_path = inputs.output_dir.join(format!("{stem}.cleaned.stl"));
+    let prep_toml_path = inputs.output_dir.join(format!("{stem}.prep.toml"));
 
     // Reject non-finite transforms before touching the disk. Per spec
     // §Architectural decisions §FS error handling, malformed slider
@@ -3349,13 +3378,10 @@ fn handle_save_action(
         || !centerline_trim.applied_tip_mm.is_finite()
         || !centerline_trim.applied_floor_mm.is_finite()
     {
-        status.text = "Save failed: non-finite transform / trim values".into();
-        status.kind = StatusKind::Error;
-        status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
-        return;
+        return Err(SaveError::NonFiniteTransform);
     }
 
-    let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &cap);
+    let mut cleaned = build_cleaned_mesh(scan, reorient, recenter, cap);
 
     // CSP.4b — centerline trim. Apply user-requested trims to the
     // cleaned mesh + auto-cap the resulting boundaries. The
@@ -3370,7 +3396,7 @@ fn handle_save_action(
         recenter.ty_mm * 0.001,
         recenter.tz_mm * 0.001,
     );
-    let trim_pivot_centroid_m = scan.0.aabb().center();
+    let trim_pivot_centroid_m = scan.aabb().center();
     // CSP.4b.6 — use APPLIED trim values, not slider values. The
     // save-time cut must match the displayed mesh (what the user
     // sees), not the draft slider position.
@@ -3493,12 +3519,12 @@ fn handle_save_action(
         recenter.ty_mm * 0.001,
         recenter.tz_mm * 0.001,
     );
-    let pivot_centroid_m = scan.0.aabb().center();
+    let pivot_centroid_m = scan.aabb().center();
     // `[simplify]` provenance inputs: the as-loaded face count (in
     // OriginalScanMesh, untouched by Apply / Reset / save-time
     // budget) drives `original_face_count`; the final cleaned mesh's
     // face count is what landed on disk.
-    let original_face_count = original.0.faces.len();
+    let original_face_count = inputs.original.faces.len();
     let cleaned_aabb_m = cleaned.aabb();
     // Reconstructed-floor cap plane override (see
     // `ReconstructedFloorPlane` docstring). Computed in PRE-BAKE
@@ -3518,14 +3544,14 @@ fn handle_save_action(
         None
     };
     let toml_str = match build_prep_toml_string(
-        &source.0,
-        stl_units.0,
-        auto_center.0,
-        auto_pca.0,
-        &reorient,
-        &recenter,
-        &cap,
-        &centerline_trim,
+        inputs.source_stl,
+        inputs.stl_units,
+        inputs.auto_center_offset_m,
+        inputs.auto_pca_quat,
+        reorient,
+        recenter,
+        cap,
+        centerline_trim,
         trim_capped,
         &format!("{stem}.cleaned.stl"),
         rotation,
@@ -3540,29 +3566,95 @@ fn handle_save_action(
         reconstructed_floor,
     ) {
         Ok(s) => s,
-        Err(e) => {
-            status.text = format!("Save failed: building .prep.toml ({e:#})");
-            status.kind = StatusKind::Error;
-            status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
-            return;
-        }
+        Err(e) => return Err(SaveError::TomlBuild(e)),
     };
 
     match atomic_write_save(&cleaned, &cleaned_stl_path, &prep_toml_path, &toml_str) {
-        Ok(()) => {
-            status.text = format!(
-                "Saved {stem}.cleaned.stl ({} triangles{trim_status_suffix}{simplify_status_suffix}{cleanup_status_suffix}) + {stem}.prep.toml",
-                human_count(triangle_count),
-            );
-            status.kind = StatusKind::Normal;
-            status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
-        }
-        Err(e) => {
-            status.text = format!("Save failed: {e:#}");
-            status.kind = StatusKind::Error;
-            status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 8.0);
-        }
+        Ok(()) => Ok(SaveOutcome {
+            triangle_count,
+            trim_status_suffix,
+            simplify_status_suffix,
+            cleanup_status_suffix,
+        }),
+        Err(e) => Err(SaveError::Write(e)),
     }
+}
+
+/// ECS save system — a thin shim: guard the trigger, bundle the resources, run
+/// [`save_cleaned_scan`], and map its result to the status bar.
+#[allow(clippy::too_many_arguments)]
+fn handle_save_action(
+    mut pending: ResMut<SavePendingAction>,
+    scan: Res<ScanMesh>,
+    original: Res<OriginalScanMesh>,
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+    cap: Res<CapState>,
+    simplify: Res<SimplifyState>,
+    smoothing: Res<SmoothingState>,
+    centerline_trim: Res<CenterlineTrimState>,
+    output_dir: Res<SaveOutputDir>,
+    source: Res<SourceStlPath>,
+    stl_units: Res<StlUnitsResource>,
+    auto_center: Res<AutoCenterOffset>,
+    auto_pca: Res<AutoPcaQuaternion>,
+    mut status: ResMut<StatusBar>,
+    time: Res<Time>,
+) {
+    if !pending.save_now {
+        return;
+    }
+    pending.save_now = false;
+
+    let stem = source
+        .0
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("scan")
+        .to_string();
+    let inputs = SaveInputs {
+        scan: &scan.0,
+        original: &original.0,
+        reorient: &reorient,
+        recenter: &recenter,
+        cap: &cap,
+        simplify: &simplify,
+        smoothing: &smoothing,
+        centerline_trim: &centerline_trim,
+        source_stl: &source.0,
+        output_dir: &output_dir.0,
+        stl_units: stl_units.0,
+        auto_center_offset_m: auto_center.0,
+        auto_pca_quat: auto_pca.0,
+    };
+
+    let (text, kind, dwell_secs) = match save_cleaned_scan(&inputs) {
+        Ok(o) => (
+            format!(
+                "Saved {stem}.cleaned.stl ({} triangles{}{}{}) + {stem}.prep.toml",
+                human_count(o.triangle_count),
+                o.trim_status_suffix,
+                o.simplify_status_suffix,
+                o.cleanup_status_suffix,
+            ),
+            StatusKind::Normal,
+            6.0,
+        ),
+        Err(SaveError::NonFiniteTransform) => (
+            "Save failed: non-finite transform / trim values".to_string(),
+            StatusKind::Error,
+            6.0,
+        ),
+        Err(SaveError::TomlBuild(e)) => (
+            format!("Save failed: building .prep.toml ({e:#})"),
+            StatusKind::Error,
+            6.0,
+        ),
+        Err(SaveError::Write(e)) => (format!("Save failed: {e:#}"), StatusKind::Error, 8.0),
+    };
+    status.text = text;
+    status.kind = kind;
+    status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + dwell_secs);
 }
 
 /// Bottom status bar. Renders nothing when `status.text` is empty so an
@@ -6368,6 +6460,90 @@ mod tests {
     }
 
     /// `build_cleaned_mesh` bakes Reorient + Recenter into vertex
+    /// End-to-end save: `save_cleaned_scan` runs the full pipeline (bake →
+    /// hygiene cleanup → build `.prep.toml` → atomic write) on a synthetic cube
+    /// and writes both artifacts with a parseable `.prep.toml`. This is the
+    /// regression gate the extraction enables — the orchestration was previously
+    /// locked inside an ECS system and could not be exercised in a unit test.
+    #[test]
+    fn save_cleaned_scan_writes_both_artifacts_end_to_end() {
+        // A unit cube (12 triangles) — above CLEANUP_MIN_COMPONENT_FACES (10),
+        // so it survives the hygiene cleanup with all faces intact.
+        let mut scan = IndexedMesh::with_capacity(8, 12);
+        for c in [
+            (0.0, 0.0, 0.0),
+            (0.04, 0.0, 0.0),
+            (0.04, 0.04, 0.0),
+            (0.0, 0.04, 0.0),
+            (0.0, 0.0, 0.04),
+            (0.04, 0.0, 0.04),
+            (0.04, 0.04, 0.04),
+            (0.0, 0.04, 0.04),
+        ] {
+            scan.vertices.push(Point3::new(c.0, c.1, c.2));
+        }
+        for f in [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 7, 6],
+            [3, 6, 2],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ] {
+            scan.faces.push(f);
+        }
+
+        let dir = std::env::temp_dir().join("cf_scan_prep_save_cleaned_scan_e2e");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let source = std::path::PathBuf::from("/tmp/widget.stl");
+
+        let reorient = ReorientState::default();
+        let recenter = RecenterState::default();
+        let cap = CapState::default();
+        let simplify = SimplifyState::default();
+        let smoothing = SmoothingState::default();
+        let trim = CenterlineTrimState::default();
+        let inputs = SaveInputs {
+            scan: &scan,
+            original: &scan,
+            reorient: &reorient,
+            recenter: &recenter,
+            cap: &cap,
+            simplify: &simplify,
+            smoothing: &smoothing,
+            centerline_trim: &trim,
+            source_stl: &source,
+            output_dir: &dir,
+            stl_units: StlUnits::Mm,
+            auto_center_offset_m: Vector3::zeros(),
+            auto_pca_quat: None,
+        };
+
+        let outcome = save_cleaned_scan(&inputs).expect("save_cleaned_scan should succeed");
+
+        // Identity transform + no trim + a clean closed solid → all 12 faces.
+        assert_eq!(outcome.triangle_count, 12);
+        let stl_path = dir.join("widget.cleaned.stl");
+        let toml_path = dir.join("widget.prep.toml");
+        assert!(stl_path.exists(), "cleaned STL written");
+        assert!(toml_path.exists(), "prep.toml written");
+        assert!(
+            std::fs::metadata(&stl_path).expect("stl metadata").len() > 0,
+            "cleaned STL non-empty",
+        );
+        let toml_str = std::fs::read_to_string(&toml_path).expect("read prep.toml");
+        toml::from_str::<toml::Value>(&toml_str).expect("prep.toml parses");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// positions: an identity Reorient + +x translation moves all
     /// vertices by +x. Default state means no caps are appended.
     #[test]
