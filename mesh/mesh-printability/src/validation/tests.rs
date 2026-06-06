@@ -1,6 +1,14 @@
 //! Tests for printability validation (extracted from validation.rs).
 
-#![allow(clippy::expect_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::panic,
+    clippy::float_cmp
+)]
 
 use super::*;
 use mesh_types::Point3;
@@ -1353,11 +1361,6 @@ fn test_thin_wall_borderline_no_issue() {
 /// fixture for the BVH-vs-reference regression test + runtime
 /// gate without coupling to specific hardware via the production
 /// 400 k-face gasket mesh.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless
-)]
 fn make_subdivided_slab(thickness: f64, subdiv: u32) -> IndexedMesh {
     let n = subdiv as usize;
     // Build a regular grid of vertices on each of the 6 faces.
@@ -1437,7 +1440,6 @@ fn make_subdivided_slab(thickness: f64, subdiv: u32) -> IndexedMesh {
 }
 
 #[test]
-#[allow(clippy::panic, clippy::float_cmp)]
 fn thin_wall_bvh_matches_reference_o_n_squared() {
     // S1 of `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-3 #1:
     // BVH-accelerated `flag_thin_wall_faces` must produce
@@ -1761,7 +1763,6 @@ fn append_closed_cuboid(
 ) {
     // `vertices.len()` is bounded by the test fixtures' small tri
     // counts (≤ 100); usize → u32 is safe at this scale.
-    #[allow(clippy::cast_possible_truncation)]
     let base: u32 = vertices.len() as u32;
     vertices.extend_from_slice(&[
         Point3::new(min.x, min.y, min.z),
@@ -2331,11 +2332,8 @@ fn build_trapped_grid(mesh: &IndexedMesh, voxel_size: f64) -> VoxelGrid {
     let (mn, mx) = compute_bounds(mesh);
     let pad = 2.0 * voxel_size;
     let origin = Point3::new(mn.x - pad, mn.y - pad, mn.z - pad);
-    let dim = |lo: f64, hi: f64| -> u32 {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let d = ((hi - lo + 2.0 * pad) / voxel_size).ceil().max(1.0) as u32;
-        d
-    };
+    let dim =
+        |lo: f64, hi: f64| -> u32 { ((hi - lo + 2.0 * pad) / voxel_size).ceil().max(1.0) as u32 };
     let dims = (dim(mn.x, mx.x), dim(mn.y, mx.y), dim(mn.z, mx.z));
     let total = dims.0 as usize * dims.1 as usize * dims.2 as usize;
     VoxelGrid {
@@ -2920,7 +2918,6 @@ fn append_unit_cube_at(
     side: f64,
 ) {
     // Cast: `vertices.len()` ≤ mesh vertex count, well under 2^32.
-    #[allow(clippy::cast_possible_truncation)]
     let i = vertices.len() as u32;
     let x0 = origin.x;
     let y0 = origin.y;
@@ -2974,7 +2971,6 @@ fn test_small_feature_floating_triangle_detected() {
     // Append the floating triangle at +X = 200 mm (well outside the
     // cube) so the two are not edge-adjacent.
     // Cast as in `append_unit_cube_at`.
-    #[allow(clippy::cast_possible_truncation)]
     let base = vertices.len() as u32;
     vertices.extend_from_slice(&[
         Point3::new(200.0, 0.0, 0.0),
@@ -3113,7 +3109,6 @@ fn test_small_feature_two_floating_fragments() {
 
     // Fragment A at (200, 0, 0).
     // Cast as in `append_unit_cube_at`.
-    #[allow(clippy::cast_possible_truncation)]
     let base_a = vertices.len() as u32;
     vertices.extend_from_slice(&[
         Point3::new(200.0, 0.0, 0.0),
@@ -3123,7 +3118,6 @@ fn test_small_feature_two_floating_fragments() {
     faces.push([base_a, base_a + 1, base_a + 2]);
 
     // Fragment B at (300, 0, 0).
-    #[allow(clippy::cast_possible_truncation)]
     let base_b = vertices.len() as u32;
     vertices.extend_from_slice(&[
         Point3::new(300.0, 0.0, 0.0),
@@ -3252,7 +3246,6 @@ fn test_small_feature_sort_stable() {
     let mut vertices: Vec<Point3<f64>> = Vec::new();
     let mut faces: Vec<[u32; 3]> = Vec::new();
     // Cast as in `append_unit_cube_at`.
-    #[allow(clippy::cast_possible_truncation)]
     let base_a = vertices.len() as u32;
     vertices.extend_from_slice(&[
         Point3::new(0.0, 0.0, 0.0),
@@ -3260,7 +3253,6 @@ fn test_small_feature_sort_stable() {
         Point3::new(0.0, 0.1, 0.0),
     ]);
     faces.push([base_a, base_a + 1, base_a + 2]); // face 0
-    #[allow(clippy::cast_possible_truncation)]
     let base_b = vertices.len() as u32;
     vertices.extend_from_slice(&[
         Point3::new(50.0, 0.0, 0.0),
