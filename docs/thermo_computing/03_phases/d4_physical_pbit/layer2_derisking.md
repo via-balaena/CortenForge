@@ -48,6 +48,33 @@ the same discipline as G1.
   interaction of the tip moment with each fixed magnet; modal mass
   `m ≈ 0.24·m_beam + m_tip`. Numerically locate minima/barrier → `ΔV, ω_a, ω_b`.
 
+## R3 — DONE (forward model + rig spec)
+
+`tools/pbit-analyze/src/magnetoelastic.rs` (model + 6 tests) and the
+`pbit-design` binary (`cargo run -p pbit-analyze --bin pbit-design --release`).
+
+**Headline finding — you cannot run a deep magnetoelastic well thermally.** For
+the default rig (45×6×0.08 mm spring steel, Ø5×2 mm tip / Ø8×3 mm fixed magnets,
+±5 mm spread), the deep-well configs (small gap) have ΔV up to tens of mJ and
+attempt frequencies ~1 kHz; sustaining `ΔV/kT_eff = 3` there would need
+**thousands of g** of shaker drive — impossible. The binding constraint is drive
+acceleration (`ω_a²·rms`), not amplitude.
+
+**The feasible regime is near the bifurcation.** Two wells appear at a critical
+magnet gap (~10 mm here); operating just inside it gives a *shallow, tunable*
+barrier. Feasible window for the default rig: **gap ≈ 8.0–9.5 mm**, where
+`ΔV ≈ 1.8–122 µJ`, attempt frequency `≈ 20–70 Hz` (shaker-friendly), and the
+required drive is `≤ 25 g` (0.5–16 g). The **magnet gap is the primary
+`ΔV/kT_eff` knob** — exactly the adjustable bracket in the BOM.
+
+**Rig-spec implications carried into S1b:** the design wants a *shallow* well
+(operate near the bifurcation), a low-frequency mode (tens of Hz), and a
+**finely adjustable magnet gap** with sub-0.5 mm resolution around ~9 mm. The
+attempt frequency landing at 20–70 Hz is well inside what a tactile shaker
+delivers. Open knobs to still optimize once R1/R2 land: magnet size (sets the
+absolute ΔV scale and the gap), beam stiffness (sets `ω_a`), and `Q` (sets the
+drive-to-`kT_eff` conversion).
+
 ## Success criterion for Layer 2 (the gate to spend money)
 
 Before any part is ordered we should have, in software:
