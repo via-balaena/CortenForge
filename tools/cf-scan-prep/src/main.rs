@@ -6459,7 +6459,6 @@ mod tests {
         assert!((r_sq - 0.99).abs() < 1e-12);
     }
 
-    /// `build_cleaned_mesh` bakes Reorient + Recenter into vertex
     /// End-to-end save: `save_cleaned_scan` runs the full pipeline (bake →
     /// hygiene cleanup → build `.prep.toml` → atomic write) on a synthetic cube
     /// and writes both artifacts with a parseable `.prep.toml`. This is the
@@ -6544,6 +6543,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `build_cleaned_mesh` bakes Reorient + Recenter into vertex
     /// positions: an identity Reorient + +x translation moves all
     /// vertices by +x. Default state means no caps are appended.
     #[test]
