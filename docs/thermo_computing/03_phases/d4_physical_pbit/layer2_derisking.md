@@ -38,12 +38,17 @@ the same discipline as G1.
 
 - **Spatial-diffusion (have it):** `k_S = (ω_a/2π)(λ_+/ω_b)·exp(−ΔV/kT)`,
   `λ_+ = −γ̃/2 + √((γ̃/2)² + ω_b²)`, `γ̃ = γ/M`.
-- **Energy-diffusion (low friction, to add):** `k_E ≈ (γ̃·S_b/kT)·(ω_a/2π)·exp(−ΔV/kT)`,
-  where `S_b` is the barrier-orbit action (analytic for the quartic well).
-- **Turnover (Meľnikov–Meshkov, to add):** `k = k_S · Υ(δ)` with the depopulation
-  factor `Υ(δ) = exp[ (1/π)∫₀^∞ ln(1−e^{−δ(λ²+¼)})/(λ²+¼) dλ ]`, `δ = γ̃·S_b/kT`.
-  **Pin the exact form to Hänggi–Talkner–Borkovec (Rev. Mod. Phys. 1990) once the
-  literature pass returns — do not ship from memory.**
+- **Energy-diffusion (low friction, to add) — VERIFIED ([`literature.md`](literature.md)):**
+  `k = γ·β·I(E_b)·exp(−β·E_b)`, valid for `kT/E_b ≪ 1` and `γ·I(E_b) ≪ kT`; `I(E_b)`
+  = barrier-orbit action (analytic for the quartic well). **∝ γ** — this is the
+  branch the cantilever lives in.
+- **Turnover (Meľnikov–Meshkov) — VERIFIED form:** `k = G_TST·κ_SD·Υ(δ)`,
+  `Υ(δ) = exp[(1/2π)∫ ln(1 − exp(−δ(t²+¼)/2)) dt]`, `δ = β·⟨ΔE⟩` (energy lost per
+  round trip). Good to **~±20%** near the turnover. Refs pinned in `literature.md`.
+- **Effective temperature (R2) — VERIFIED:** external non-FDT noise gives
+  Arrhenius escape at `kT → kT + D·κ₀²`, **but only for short correlation time**;
+  band-limited drive breaks Boltzmann (worst at the barrier top). Design rule:
+  keep the drive bandwidth wide vs `ω_a`.
 - **Magnetoelastic potential:** elastic `½k_beam·x²` (`k_beam = 3EI/L³`) + dipole
   interaction of the tip moment with each fixed magnet; modal mass
   `m ≈ 0.24·m_beam + m_tip`. Numerically locate minima/barrier → `ΔV, ω_a, ω_b`.
