@@ -147,6 +147,45 @@ bandwidth ≳ a few × the cantilever resonance `ω_a`** (`τ·ω_a ≲ 0.3` kee
 within ~5% of thermal). This composes with R3 (`ω_a ≈ 20–70 Hz`): a drive band of
 a few hundred Hz suffices — easily within a tactile shaker's range.
 
+## R4 — DONE (magnetostatic sensing model)
+
+`pbit_analyze::sensing` — point-dipole field model of the Hall readout (tip magnet
++ the two static well magnets). Key insight: the well magnets are fixed, so they
+contribute only a **constant DC offset** — the design problem is the
+*x-dependence*. Result (`tests/`):
+
+- **Recommended geometry:** magnetise the tip magnet **along the motion axis** and
+  offset the Hall sensor **perpendicular** by `d ≳ 2·x₀`. The perpendicular field
+  component is then an **odd, near-linear, monotonic** function of tip position
+  (so + and − wells are distinguishable, and position is recoverable).
+- **Sensitivity** ≈ `3μ₀·m_tip/(4π·d⁴)` ≈ **20 mT/mm** for the R3 tip magnet at
+  d=5 mm.
+- **Resolution** ≈ **3 µm/ADC-count** (DRV5055A4 at 12.5 mV/mT + Teensy 12-bit
+  ADC) — far finer than the sub-mm in-well jitter we must measure.
+- **Well-magnet constraint:** only a DC offset (the tip response is odd, ~zero at
+  centre); the total DC field is tens of mT, so pick the wide-range DRV5055
+  variant (A3/A4) to avoid saturation. The `49E` fallback would also work but is
+  noisier.
+
+## Layer 2 — COMPLETE (the gate to spend money is met)
+
+All six de-risking workstreams done; the physical build now executes a plan we
+already trust:
+
+| Risk | Status |
+|---|---|
+| R1 friction regime | ✅ turnover physics; shipped rate was wrong-regime |
+| R6 integrator | ✅ BAOAB — the trustworthy underdamped rate engine |
+| R3 potential / rig spec | ✅ operate near the bifurcation (gap ~9 mm); ω_a 20–70 Hz |
+| R2 bath / bandwidth | ✅ drive broadband, bandwidth ≳ a few × ω_a |
+| R4 sensing | ✅ tip-along-motion + perpendicular Hall offset; ~3 µm resolution |
+| R7 literature | ✅ formulas pinned, platform precedent (Spano 1992) |
+
+The original gate — *correct physics for the real Q, a physics-derived rig spec,
+a validated bath, known error bars, sensing designed* — is satisfied. The
+remaining work (S1b printed brackets, S4b firmware bring-up, the physical gates
+G2–G5) is execution against this plan, pending the ordered parts.
+
 ## Success criterion for Layer 2 (the gate to spend money)
 
 Before any part is ordered we should have, in software:

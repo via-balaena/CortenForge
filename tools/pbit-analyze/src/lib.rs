@@ -20,6 +20,7 @@
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
 pub mod magnetoelastic;
+pub mod sensing;
 
 use std::error::Error;
 use std::fmt;
