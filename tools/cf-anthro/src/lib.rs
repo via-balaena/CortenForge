@@ -10,6 +10,32 @@
 //! first via `cf-scan-prep-core::auto_pca_in_place`; the synthetic legs in
 //! [`synthetic`] are built that way). Detection is orientation-agnostic about
 //! which end is the hip — it labels the thicker end as proximal.
+//!
+//! **What's validated (and what isn't).** This is the v1 detector, validated on
+//! synthetic legs with known ground truth — which proves the *numerics* (the
+//! area-minimum search, parabola refine, robustness to ~1 mm noise) but NOT the
+//! anatomical premise that "cross-sectional-area minimum = knee joint line"
+//! (the generator places the knee *at* the area minimum, so that part is
+//! circular). That premise is validated only when real leg scans + an
+//! independent landmark ground truth arrive.
+//!
+//! **Real-scan readiness (v2 — not handled yet).** Spelled out so they aren't
+//! silent surprises:
+//! - **Multi-contour slices.** `mesh-measure`'s `cross_section`/`area_at_height`
+//!   blend multiple contours into one value, so a slice that cuts the limb in
+//!   2+ loops (bent/flexed knee, fibular head, an un-cleaned stray island)
+//!   corrupts the area profile. We *tripwire* on it ([`DetectError::
+//!   MultiContourSection`]) at the knee section, but the profile sweep itself
+//!   isn't guarded — the real fix is per-contour measures in mesh-measure.
+//! - **PCA / pose.** Detection assumes the limb axis is +z; a tilted or curved
+//!   (varus/valgus/flexed) limb breaks horizontal-slice area. v2 must align via
+//!   PCA and slice perpendicular to the centerline.
+//! - **Epicondyle axis.** Width is the wider of the section's *world* x/y bbox;
+//!   correct only when the medio-lateral axis is x/y. v2 should use the section's
+//!   principal (caliper) axis.
+//! - **Maxima robustness.** The thigh/calf maxima are the two largest by area; a
+//!   patella/vastus bulge could outrank the calf on a real scan. v2 should select
+//!   by prominence + an anatomical prior (knee in the middle third).
 
 pub mod markers;
 pub mod synthetic;
@@ -44,8 +70,36 @@ pub struct Landmarks {
 /// Number of axial samples for the area profile.
 const N_SAMPLES: usize = 240;
 
+/// Why landmark detection couldn't produce a result (degrade gracefully rather
+/// than panic — a scan pipeline must not crash on a bad input).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DetectError {
+    /// Mesh has no vertices.
+    EmptyMesh,
+    /// Fewer than two girth maxima (thigh + calf) in the area profile.
+    TooFewGirthMaxima(usize),
+    /// No area minimum between the two maxima.
+    NoKneeMinimum,
+    /// A horizontal slice cut the limb in more than one loop. `area_at_height`
+    /// silently blends multiple contours (a mesh-measure limitation), so the
+    /// area profile would be corrupted — bail rather than trust it. This never
+    /// happens on a clean single-limb scan; it is the headline v2 real-scan item
+    /// (see the crate-level "Real-scan readiness" notes).
+    MultiContourSection(usize),
+}
+
+impl std::fmt::Display for DetectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "landmark detection failed: {self:?}")
+    }
+}
+impl std::error::Error for DetectError {}
+
 /// Detect knee + derived landmarks on a z-aligned limb scan.
-pub fn detect_landmarks(mesh: &IndexedMesh) -> Landmarks {
+pub fn detect_landmarks(mesh: &IndexedMesh) -> Result<Landmarks, DetectError> {
+    if mesh.vertices.is_empty() {
+        return Err(DetectError::EmptyMesh);
+    }
     let (zmin, zmax) = z_range(mesh);
     let len = zmax - zmin;
     // Trim the ends: the flat end-caps degenerate the cross-section area.
@@ -62,11 +116,9 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Landmarks {
     // The two most prominent interior maxima are the thigh and calf bulges.
     let mut maxima = local_maxima(&area, 6);
     maxima.sort_by(|&a, &b| area[b].total_cmp(&area[a]));
-    assert!(
-        maxima.len() >= 2,
-        "expected thigh + calf girth maxima in the area profile, found {}",
-        maxima.len()
-    );
+    if maxima.len() < 2 {
+        return Err(DetectError::TooFewGirthMaxima(maxima.len()));
+    }
     let (m1, m2) = (maxima[0], maxima[1]); // m1 = larger (thigh side)
     let (lo_i, hi_i) = (m1.min(m2), m1.max(m2));
 
@@ -74,10 +126,13 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Landmarks {
     // to sub-sample precision (the knee is a smooth minimum).
     let knee_i = (lo_i + 1..hi_i)
         .min_by(|&a, &b| area[a].total_cmp(&area[b]))
-        .expect("no samples between the thigh and calf maxima");
+        .ok_or(DetectError::NoKneeMinimum)?;
     let knee_z = parabolic_min_z(&zs, &area, knee_i);
 
     let sec = cross_section(mesh, Point3::new(0.0, 0.0, knee_z), Vector3::z());
+    if sec.contour_count > 1 {
+        return Err(DetectError::MultiContourSection(sec.contour_count));
+    }
     let (mn, mx) = sec.bounds;
     let (wx, wy) = (mx.x - mn.x, mx.y - mn.y);
     let epicondyle_width_m = wx.max(wy);
@@ -105,7 +160,7 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Landmarks {
     };
     let ankle_z = if hip_z == zmax { zmin } else { zmax };
 
-    Landmarks {
+    Ok(Landmarks {
         knee_z,
         knee_point: sec.centroid,
         epicondyle_width_m,
@@ -118,7 +173,7 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Landmarks {
         calf_girth_m: circumference_at_height(mesh, calf_z),
         thigh_z,
         calf_z,
-    }
+    })
 }
 
 impl Landmarks {
@@ -180,7 +235,9 @@ fn parabolic_min_z(zs: &[f64], a: &[f64], i: usize) -> f64 {
     if denom.abs() < 1e-15 {
         return zs[i];
     }
-    let delta = 0.5 * (y0 - y2) / denom; // in samples, in (-1, 1) near a min
+    // Clamp to the bracket: if the argmin sat at a sub-range boundary the triple
+    // may not bracket the min and the vertex could fall outside ±½ sample.
+    let delta = (0.5 * (y0 - y2) / denom).clamp(-0.5, 0.5);
     zs[i] + delta * (zs[i + 1] - zs[i])
 }
 

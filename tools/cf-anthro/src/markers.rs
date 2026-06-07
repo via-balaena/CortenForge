@@ -59,12 +59,13 @@ pub fn cube(c: Point3<f64>, half: f64) -> IndexedMesh {
 }
 
 /// A thin square-section rod between two points (a segment marker, e.g. the
-/// limb axis / centerline). Axis-aligned square cross-section of half-width `r`.
+/// limb axis or the epicondyle bar). Axis-aligned box spanning a..b, inflated by
+/// `r` on **every** axis so it keeps thickness even when the endpoints share a
+/// coordinate (e.g. a purely horizontal bar at one z).
 pub fn rod(a: Point3<f64>, b: Point3<f64>, r: f64) -> IndexedMesh {
-    // Build an axis-aligned box spanning a..b, inflated by r in the thin axes.
     let (lo, hi) = (
-        Point3::new(a.x.min(b.x) - r, a.y.min(b.y) - r, a.z.min(b.z)),
-        Point3::new(a.x.max(b.x) + r, a.y.max(b.y) + r, a.z.max(b.z)),
+        Point3::new(a.x.min(b.x) - r, a.y.min(b.y) - r, a.z.min(b.z) - r),
+        Point3::new(a.x.max(b.x) + r, a.y.max(b.y) + r, a.z.max(b.z) + r),
     );
     let center = Point3::new(
         (lo.x + hi.x) * 0.5,

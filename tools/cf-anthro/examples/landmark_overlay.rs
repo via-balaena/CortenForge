@@ -19,7 +19,7 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
 
     let (mesh, gt) = LegSpec::default_leg().build(220, 96);
-    let lm = detect_landmarks(&mesh);
+    let lm = detect_landmarks(&mesh).expect("detection on synthetic leg");
 
     // radius at a girth (band sits just outside the surface)
     let r_at = |girth: f64| girth / TAU;

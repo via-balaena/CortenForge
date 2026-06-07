@@ -8,6 +8,11 @@
 //! thigh and calf girth maxima. Cross-sections are elliptical (M-L wider than
 //! A-P), so the epicondyle (medio-lateral) width is a genuine, detectable
 //! quantity, not just the diameter.
+//!
+//! Note the validation this enables is numerics-only: the knee is *placed at*
+//! the area minimum here and the detector *finds* the area minimum, so a passing
+//! test does not confirm the anatomical premise (area-min ⇒ joint line) — that
+//! needs real scans + independent landmark truth.
 
 use mesh_types::{IndexedMesh, Point3};
 use std::f64::consts::TAU;

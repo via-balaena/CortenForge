@@ -4,6 +4,12 @@
 //! synthetic limbs whose knee/width/lengths we set exactly. Exit criteria
 //! (recon S2): knee-line ±10 mm, epicondyle width ±8 mm, segment length ±5%.
 //! Run with `--nocapture` to see the scorecard.
+//!
+//! CAVEAT (honesty): the generator places the knee *at* the area minimum and the
+//! detector *finds* the area minimum, so this proves the numerics (search,
+//! parabola refine, noise robustness) — NOT the anatomical premise that the
+//! area minimum is the knee joint line. That awaits real scans + an independent
+//! landmark ground truth (see the crate-level "Real-scan readiness" notes).
 
 use cf_anthro::detect_landmarks;
 use cf_anthro::synthetic::LegSpec;
@@ -75,7 +81,8 @@ fn detects_landmarks_within_tolerance() {
         if c.noise_m > 0.0 {
             jitter(&mut mesh, c.noise_m);
         }
-        let lm = detect_landmarks(&mesh);
+        let lm =
+            detect_landmarks(&mesh).expect("detection should succeed on a clean synthetic leg");
 
         let knee_dmm = (lm.knee_z - gt.knee_z) * 1000.0;
         let epi_dmm = (lm.epicondyle_width_m - gt.epicondyle_width_m) * 1000.0;
