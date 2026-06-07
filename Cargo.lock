@@ -2212,6 +2212,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-anthro"
+version = "1.0.0"
+dependencies = [
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-measure",
+ "mesh-types",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
 name = "cf-bevy-common"
 version = "1.0.0"
 dependencies = [
