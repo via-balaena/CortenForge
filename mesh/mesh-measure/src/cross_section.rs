@@ -33,8 +33,13 @@ pub struct CrossSection {
     pub points: Vec<Point3<f64>>,
     /// Total perimeter (sum over contours).
     pub perimeter: f64,
-    /// Total enclosed area (sum over contours — each contour's own |area|, so
-    /// two disjoint loops add rather than blend).
+    /// Total area: the sum of each contour's own `|area|`. Disjoint loops add
+    /// (correct). NESTED loops (an annulus / hollow section) also add rather
+    /// than subtracting the hole, so this OVER-reports a shape with holes — for
+    /// those, take per-loop area from [`contours`] / [`largest_contour`].
+    ///
+    /// [`contours`]: CrossSection::contours
+    /// [`largest_contour`]: CrossSection::largest_contour
     pub area: f64,
     /// Area-weighted centroid across contours.
     pub centroid: Point3<f64>,

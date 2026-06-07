@@ -115,7 +115,10 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Result<Landmarks, DetectError> {
     let zs: Vec<f64> = (0..N_SAMPLES)
         .map(|i| lo + (hi - lo) * (i as f64) / ((N_SAMPLES - 1) as f64))
         .collect();
-    // Limb (largest-contour) area along the axis — robust to stray noise islands.
+    // Limb (largest-contour) area along the axis — robust to stray noise
+    // islands. Assumes the limb is the largest loop at every height (true for an
+    // extended limb; a blob bigger than the limb at some z would mislead the
+    // profile — a v2 real-scan concern, not on the validated synthetic legs).
     let raw: Vec<f64> = zs
         .iter()
         .map(|&z| limb_contour(mesh, z).map(|c| c.area).unwrap_or(0.0))
@@ -146,6 +149,10 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Result<Landmarks, DetectError> {
     // small noise island, which we ignore).
     let mut areas: Vec<f64> = sec.contours.iter().map(|c| c.area).collect();
     areas.sort_by(|a, b| b.total_cmp(a));
+    if areas.is_empty() || areas[0] <= 0.0 {
+        // Degenerate knee slice (no/zero-area loop) — don't measure garbage.
+        return Err(DetectError::NoKneeMinimum);
+    }
     if areas.len() >= 2 && areas[1] > 0.3 * areas[0] {
         return Err(DetectError::MultiContourSection(sec.contour_count));
     }
