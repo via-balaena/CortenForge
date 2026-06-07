@@ -321,6 +321,24 @@ only the params differ.
   anything.
 - **Exit:** landmark residual **<5 mm RMS**; scaled bone lengths within **±3%** of scan segments.
 
+**S3 progress (2026-06-07) — `ScanSource` SHIPPED (`cf-msk-fit`).** `ScanSource { landmarks }`
+impls `cf_msk_lib::ParamSource`: the scan demoted from "the pipeline" to one `ParamSource` beside
+`CanonicalSource`, feeding the same `realize → emit` path. **Refactor-safety checkpoint PASSES** —
+`ScanSource`'s scale **exactly equals** `Fitter::scale()` (`thigh_length / template_femur_len`, to
+1e-12; `scan_source_scale_matches_fitter`). Validated end-to-end on the **synthetic fixture** (no
+real scan): `synthetic leg → detect_landmarks → ScanSource → realize → emit` yields a loadable MJCF
+with the detected size flowing into the scale (`tests/scan_source.rs`, 3 CI tests). grade A; fmt +
+clippy `-D warnings` clean; `cf-msk-fit` (g1_gate/placement) + `cf-msk-lib` still green.
+**v1 = single uniform scale** (matches `place_knee`): the knee-only template has **no defined tibia
+length** (no ankle), so the scan's `shank_length_m` can't drive a per-segment tibia scale yet —
+`realize` *supports* anisotropic scaling (Spike B), but the scan can only drive the femur until the
+template gains an ankle. Captures the scan's **size**, not pose/orientation (that's `Fitter::pose`'s
+overlay). **DEFERRED:** per-segment `ScaleRule` from the scan (waits for tibia length / a 2nd joint);
+landmark-residual + bone-length exit metrics (need the pose/placement, not just scale).
+**⚠ cf-anthro flag (follow-up, NOT this increment):** at mesh resolution `build(240,64)` the detector
+put the knee ~27 mm low (failing its own 5% gate); `build(220,96)` (a validated config) detects in
+gate. A resolution sensitivity worth a look in `cf-anthro::detect_landmarks`.
+
 ### S4 — Articulation inside the skin envelope
 Drive the scaled knee hinge through 0→100°; sample bone-geom + tendon-path points; query the
 scan SDF; report worst-case protrusion per angle. Visual gate via `cf-viewer`/`sim-bevy`.

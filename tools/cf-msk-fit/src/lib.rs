@@ -17,11 +17,49 @@
 //!   convention; if a real scan's M-L axis differs, it gets re-pinned at v2.
 
 use cf_anthro::Landmarks;
+use cf_msk_lib::{BodyParams, ParamSource};
 use cf_osim::oracle::{Kinematics, Variant};
 use cf_osim::osim::Subgraph;
 use nalgebra::{Matrix3, Point3, Vector3};
 
 pub mod scorecard;
+
+/// The scan as a **parameter source** — `cf-anthro` landmarks → [`BodyParams`]
+/// that morph the template (the parametric-builder-first seam). This is the scan
+/// path demoted from "the pipeline" to one [`ParamSource`] alongside
+/// `cf_msk_lib::CanonicalSource`; the same `realize → emit` path consumes both.
+///
+/// **v1 = a single uniform scale** `thigh_length / template_femur_length`, the
+/// exact quantity [`Fitter`] computes (see `scan_source_scale_matches_fitter`).
+/// The shank inherits the femur scale: the knee-only template has no defined
+/// tibia length (no ankle), so the scan's `shank_length_m` cannot yet drive a
+/// per-segment tibia scale — that waits for an ankle, *not* for `realize`, which
+/// already supports anisotropic scaling. v1 captures the scan's **size** (scale),
+/// not its pose/orientation (the rigid placement [`Fitter::pose`] does for the
+/// render overlay).
+pub struct ScanSource {
+    landmarks: Landmarks,
+}
+
+impl ScanSource {
+    pub fn new(landmarks: Landmarks) -> Self {
+        Self { landmarks }
+    }
+
+    /// Template femur length (hip→knee at extension) — the same quantity
+    /// [`Fitter::new`] measures to set its scale.
+    fn template_femur_len(template: &Subgraph) -> f64 {
+        let kin = Kinematics::new(template);
+        let at0 = |body: &str| kin.body_pose(body, 0.0, Variant::TRUTH) * Point3::origin();
+        (at0("femur_r") - at0("tibia_r")).norm()
+    }
+}
+
+impl ParamSource for ScanSource {
+    fn params(&self, template: &Subgraph) -> BodyParams {
+        BodyParams::uniform(self.landmarks.thigh_length_m / Self::template_femur_len(template))
+    }
+}
 
 /// A bone as a segment from its proximal to distal end (scan frame, meters).
 #[derive(Debug, Clone, Copy)]
