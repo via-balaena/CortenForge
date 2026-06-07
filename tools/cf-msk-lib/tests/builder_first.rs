@@ -191,3 +191,47 @@ fn uniform_scale_is_exact_dilation() {
         }
     }
 }
+
+#[test]
+fn anisotropic_morph_scales_each_segment_by_its_factor() {
+    use cf_osim::osim::Kind;
+    let t = template();
+    // Per-segment scales all distinct — exercises the path uniform params can't.
+    let p = BodyParams {
+        pelvis_scale: 1.0,
+        femur_scale: 2.0,
+        tibia_scale: 0.5,
+    };
+    let r = realize(&t, &p);
+
+    assert_eq!(t.muscles.len(), r.muscles.len());
+    for (mo, mr) in t.muscles.iter().zip(&r.muscles) {
+        assert_eq!(mo.path.len(), mr.path.len());
+        for (po, pr) in mo.path.iter().zip(&mr.path) {
+            // Moving (patella) points carry a zero location (the splines hold the
+            // position); their scaling is covered by the dilation test.
+            if matches!(po.kind, Kind::Moving(_)) {
+                continue;
+            }
+            let factor = match po.body.as_str() {
+                "femur_r" => 2.0,
+                "tibia_r" => 0.5,
+                _ => 1.0, // pelvis / ground
+            };
+            let expected = po.location * factor;
+            assert!(
+                (pr.location - expected).norm() < 1e-12,
+                "{} on {}: {:?} != expected {:?}",
+                po.name,
+                po.body,
+                pr.location,
+                expected
+            );
+        }
+    }
+
+    // The anisotropic morph must still emit a model the importer accepts.
+    let model = load_model(&emit_coupled_knee(&r).mjcf)
+        .expect("anisotropic morph must emit a loadable model");
+    assert!(model.ntendon >= 4);
+}
