@@ -45,6 +45,10 @@ members = [
     # the insertion-sim + heat-map + sliding-intruder rendering from
     # cf-device-design. See `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4.
     "tools/cf-sim-research",
+    # OpenSim (.osim) → MJCF bridge for the musculoskeletal-builder arc
+    # (scan → bones/tendons model, Mission #4). Started as the S0 bridge
+    # spike; see docs/msk_builder/.
+    "tools/cf-osim",
 
     # Shared Bevy-0.18 helpers (orbit camera + up-axis convention) consumed by
     # cf-viewer + sim-bevy + sim-bevy-soft.

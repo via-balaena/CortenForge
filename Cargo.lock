@@ -2352,6 +2352,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-osim"
+version = "1.0.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra 0.34.2",
+ "quick-xml 0.39.2",
+ "serde_json",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "cf-scan-prep"
 version = "1.0.0"
 dependencies = [
