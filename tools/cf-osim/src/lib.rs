@@ -1,11 +1,12 @@
 //! cf-osim — OpenSim (`.osim`) → MJCF bridge for the musculoskeletal-builder arc.
 //!
-//! Status: **S0 bridge spike** (the first action of the G1 knee-kinematics phase).
+//! Status: **S1 — coupled knee converter** (promoted from the S0 spike; the S0
+//! pure-hinge baseline was rejected for the coupled tibiofemoral model).
 //! See `docs/msk_builder/03_phases/g1_knee_kinematics/recon.md`.
 //!
-//! The S0 goal is a *number*: does a converted gait2392 knee reproduce the
-//! OpenSim oracle's joint center + moment-arm curves within tolerance? This
-//! crate starts throwaway-grade and is promoted to the clean converter at S1.
+//! Goal: does a converted gait2392 knee reproduce the OpenSim oracle's joint
+//! center + moment-arm curves within tolerance? Validated against real OpenSim
+//! 4.6 to ~0.3 mm RMSE (`tests/opensim_cross_check.rs`).
 //!
 //! Today this module ships only the **moment-arm extraction** helpers — the
 //! quantity the whole program is graded on — so the R4 micro-spike can prove

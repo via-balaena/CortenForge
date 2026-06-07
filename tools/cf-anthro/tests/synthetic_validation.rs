@@ -11,8 +11,8 @@
 //! area minimum is the knee joint line. That awaits real scans + an independent
 //! landmark ground truth (see the crate-level "Real-scan readiness" notes).
 
-use cf_anthro::detect_landmarks;
 use cf_anthro::synthetic::LegSpec;
+use cf_anthro::{DetectError, detect_landmarks};
 use mesh_types::IndexedMesh;
 
 struct Case {
@@ -151,5 +151,38 @@ fn ignores_noise_island() {
     assert!(
         knee_dmm.abs() < 10.0,
         "knee off by {knee_dmm:.2}mm with a noise island present — largest-contour failed"
+    );
+}
+
+// --- Error paths: detection degrades gracefully (bails, never panics) ---
+
+// (TooFewGirthMaxima / NoKneeMinimum need a profile with no clean bulges or no
+// interior minimum — awkward to construct deterministically from the marker
+// primitives, so they're left to real-scan fixtures; EmptyMesh and the
+// MultiContourSection bail below are the cheaply-reachable variants.)
+
+#[test]
+fn empty_mesh_errors() {
+    let err = detect_landmarks(&IndexedMesh::default()).unwrap_err();
+    assert!(matches!(err, DetectError::EmptyMesh), "got {err:?}");
+}
+
+#[test]
+fn rival_contour_at_knee_bails_multicontour() {
+    // A LARGE off-axis blob at the knee (rivals the limb's area, unlike the
+    // small island above) is genuinely ambiguous → bail rather than guess.
+    let (mut mesh, gt) = LegSpec::default_leg().build(160, 64);
+    let blob = cf_anthro::markers::cube(mesh_types::Point3::new(0.18, 0.0, gt.knee_z), 0.030);
+    let base = mesh.vertices.len() as u32;
+    mesh.vertices.extend(blob.vertices.iter().copied());
+    mesh.faces.extend(
+        blob.faces
+            .iter()
+            .map(|f| [f[0] + base, f[1] + base, f[2] + base]),
+    );
+    let err = detect_landmarks(&mesh).unwrap_err();
+    assert!(
+        matches!(err, DetectError::MultiContourSection(_)),
+        "got {err:?}"
     );
 }

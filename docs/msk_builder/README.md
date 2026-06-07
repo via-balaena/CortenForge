@@ -22,8 +22,8 @@ A literature-validated **OpenSim** lower-limb model, bridged into our **MJCF**, 
 curves) to grade against. That lets the first software gate be checked **with no hardware** — a
 *literature model* stands in for a physical measurement at this stage. (Precision: "oracle" means
 that validated model's geometry; "validated against measurement" in the mission sense — a real
-instrumented body — remains a later gate, and even the OpenSim cross-check itself is still pending,
-see the G1 recon §"S1 remaining".)
+instrumented body — remains a later gate. The oracle↔OpenSim cross-check is **done** (0.3 mm RMSE;
+see the Status section below).)
 
 ## Folder map (mirrors `docs/thermo_computing/`)
 

@@ -199,7 +199,10 @@ pub fn cross_section(
         .collect();
     let contour_count = contours.len();
 
-    let all_points: Vec<Point3<f64>> = contours.iter().flat_map(|c| c.points.clone()).collect();
+    let all_points: Vec<Point3<f64>> = contours
+        .iter()
+        .flat_map(|c| c.points.iter().copied())
+        .collect();
     let area: f64 = contours.iter().map(|c| c.area).sum();
     let perimeter: f64 = contours.iter().map(|c| c.perimeter).sum();
     let total_w: f64 = contours.iter().map(|c| c.area).sum();
