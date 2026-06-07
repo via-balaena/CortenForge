@@ -17,6 +17,9 @@ path = "src/lib.rs"
 cf-osim = { path = "../cf-osim" }
 # Detected scan landmarks (knee point, limb axis, segment lengths).
 cf-anthro = { path = "../cf-anthro" }
+# The parameter spine: ScanSource impls cf-msk-lib's ParamSource, producing
+# BodyParams that morph the template (the scan-as-a-parameter-source seam).
+cf-msk-lib = { path = "../cf-msk-lib" }
 # Mesh types + STL I/O for the bones-in-scan overlay.
 mesh-types = { workspace = true }
 mesh-io = { workspace = true }
@@ -25,3 +28,7 @@ nalgebra = { workspace = true }
 mesh-sdf = { workspace = true }
 # Reading the vendored real-OpenSim moment-arm reference (G1 scorecard).
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# Load the morphed MJCF to prove the scan→params→model path emits a valid model.
+sim-mjcf = { path = "../../sim/L0/mjcf" }

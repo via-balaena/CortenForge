@@ -282,6 +282,23 @@ canonical knee, no scan).
   within S0 tolerance; the canonical (no-scan) body emits and passes the same oracle check.
   *(This bundle is the ground truth the rest of the program is graded on.)*
 
+**S1 progress (2026-06-07) — library/parameter spine SHIPPED (`tools/cf-msk-lib`).** New crate with
+`BodyParams` (per-segment scale; `IDENTITY`/`uniform`), the pure `realize(template, params)` morph
+(ported verbatim from the validated spike), the `ParamSource` trait + `CanonicalSource`, and
+`build_canonical(template)` — the headline **builder-first artifact**. `tests/builder_first.rs` (4
+CI tests, not `#[ignore]`): the canonical **no-scan** knee reproduces the oracle **<5 mm** for all
+four muscles (the S1 gate, through the production API); `build_canonical` is **byte-identical** to
+`emit_coupled_knee` (the morph layer is a true no-op); a committed `tests/assets/knee_ref.xml`
+snapshot pins the canonical MJCF bytes; a uniform scale is an exact dilation. grade = A (Safety 0 /
+deps justified); fmt + clippy `-D warnings` clean; `cf-osim` cross-check + spikes still green.
+**Two S1 items DEFERRED (deliberate, tracked):** (a) **generalizing the IR** into source-agnostic
+`Segment`/`Joint`/`MusclePath` — v1 reuses `cf_osim::osim::Subgraph` as the template (re-exported as
+`cf_msk_lib::Template`); generalizing one joint is premature, do it when a 2nd joint needs it; (b)
+the **`cf-mjcf-emit` crate split** — `emit_coupled_knee` already works, so the split is cosmetic for
+now (`cf-msk-lib` depends on `cf-osim` for both template + emit; the dependency inverts when the IR
+generalizes). Also not yet done: the serialized `knee_oracle.json` bundle (the vendored OpenSim JSON
+already serves as the moment-arm anchor) and promoting `cf-osim` panics → `Result`.
+
 ### S2 — Landmark detection on the scan *(heuristics-first, no ML)*
 From a cleaned leg scan, detect: knee joint-line height (cross-sectional-area minimum along the
 centerline between thigh & calf girth maxima), epicondyle mediolateral width (OBB extent at that
@@ -303,6 +320,39 @@ only the params differ.
   pre-refactor `cf-msk-fit::place_knee` result — a refactor-safety gate before per-segment scaling moves
   anything.
 - **Exit:** landmark residual **<5 mm RMS**; scaled bone lengths within **±3%** of scan segments.
+
+**S3 progress (2026-06-07) — `ScanSource` SHIPPED (`cf-msk-fit`).** `ScanSource { landmarks }`
+impls `cf_msk_lib::ParamSource`: the scan demoted from "the pipeline" to one `ParamSource` beside
+`CanonicalSource`, feeding the same `realize → emit` path. **Refactor-safety checkpoint PASSES** —
+`ScanSource`'s scale **exactly equals** `Fitter::scale()` (`thigh_length / template_femur_len`, to
+1e-12; `scan_source_scale_matches_fitter`). Validated end-to-end on the **synthetic fixture** (no
+real scan): `synthetic leg → detect_landmarks → ScanSource → realize → emit` yields a loadable MJCF
+with the detected size flowing into the scale (`tests/scan_source.rs`, 3 CI tests). grade A; fmt +
+clippy `-D warnings` clean; `cf-msk-fit` (g1_gate/placement) + `cf-msk-lib` still green.
+**v1 = single uniform scale** (matches `place_knee`): the knee-only template has **no defined tibia
+length** (no ankle), so the scan's `shank_length_m` can't drive a per-segment tibia scale yet —
+`realize` *supports* anisotropic scaling (Spike B), but the scan can only drive the femur until the
+template gains an ankle. Captures the scan's **size**, not pose/orientation (that's `Fitter::pose`'s
+overlay). **DEFERRED:** per-segment `ScaleRule` from the scan (waits for tibia length / a 2nd joint);
+landmark-residual + bone-length exit metrics (need the pose/placement, not just scale).
+**✅ cf-anthro flat-minimum fragility — DIAGNOSED + ROBUST-FIXED (2026-06-07).** The `build(240,64)`
+wobble (knee ~27 mm low) was a **grid phase-lock at `n_rings == N_SAMPLES`**: the knee is a *flat* area
+minimum, so the bare argmin is ripple-sensitive, and a regular mesh whose ring count equals the
+detector's profile sample count beats the two grids into a spurious minimum (proven by moving
+`N_SAMPLES` 240→200 — the lock followed to `n_rings==200`). **A first pass decoupled the grids
+(`N_SAMPLES`→prime 401); that was reviewed and rejected as a band-aid** (it leaves the underlying
+flat-min fragility, which periodic *real-scan* noise could also trip). **Replaced by a robust
+two-stage minimum-finder** `robust_min_z`: **locate** the broad bowl on a heavy low-pass (the ripple
+is high-frequency → smoothed away; the bowl is low-frequency → survives), then **refine** the unbiased
+sub-mm minimum locally on the lightly-smoothed profile. Locate-then-refine is the key: a single wide
+filter is ripple-immune but biases the asymmetric bowl ~8 mm, a single narrow one is accurate but
+fragile — neither alone is both. `N_SAMPLES` reverted to 240, proving the *finder* is the fix: every
+resolution **including the lock** now detects to ~1.4 mm. Getting there took empirical tuning (wide
+LS-parabola → −8 mm bias; argmin-centered → worse at the lock; the two-stage won). **Boundary (honest):**
+it assumes the true bowl is *prominent* vs the ripple (holds for real anatomy; a spurious trough whose
+*smoothed* tail dips below a shallow bowl could still fool it — surfaced via a unit test). Guarded by
+`robust_min_z` unit tests + `tests/resolution_robustness.rs` (CI sweep incl. the old 240 failure);
+`synthetic_validation` 4/4 (noisy + scaled legs); `cf-msk-fit` unaffected.
 
 ### S4 — Articulation inside the skin envelope
 Drive the scaled knee hinge through 0→100°; sample bone-geom + tendon-path points; query the

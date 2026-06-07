@@ -2367,12 +2367,24 @@ name = "cf-msk-fit"
 version = "1.0.0"
 dependencies = [
  "cf-anthro",
+ "cf-msk-lib",
  "cf-osim",
  "mesh-io",
  "mesh-sdf",
  "mesh-types",
  "nalgebra 0.34.2",
  "serde_json",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "cf-msk-lib"
+version = "1.0.0"
+dependencies = [
+ "cf-osim",
+ "nalgebra 0.34.2",
+ "sim-core",
+ "sim-mjcf",
 ]
 
 [[package]]
