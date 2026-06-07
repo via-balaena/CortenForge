@@ -1,0 +1,31 @@
+[package]
+name = "cf-anthro"
+description = "Anatomical landmark detection on a cleaned body-part scan — knee joint line, epicondyle width, segment lengths, girths — for the musculoskeletal-builder arc (scan → bones/tendons, Mission #4). See docs/msk_builder/ phase S2."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-tool library (no `[package.metadata.cortenforge]` tier block —
+# matches the cf-scan-prep-core / cf-osim tools precedent). Heuristics-first
+# (no ML): the knee reads as a cross-sectional-area minimum along the limb axis
+# between the thigh and calf girth maxima.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# IndexedMesh + Point3/Vector3 (the scan representation).
+mesh-types = { workspace = true }
+# Cross-section area/perimeter + OBB along the limb axis.
+mesh-measure = { workspace = true }
+# Vec/quat math.
+nalgebra = { workspace = true }
+# STL/OBJ I/O — load real scans; write landmark-overlay assemblies for review.
+mesh-io = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

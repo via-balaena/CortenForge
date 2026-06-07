@@ -1,0 +1,34 @@
+[package]
+name = "cf-osim"
+description = "OpenSim (.osim) → MJCF bridge for the musculoskeletal-builder arc. Reads a validated OpenSim model and emits MJCF our sim engine imports, plus moment-arm extraction for oracle validation. See docs/msk_builder/."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-tool library (no `[package.metadata.cortenforge]` tier block —
+# matches the cf-scan-prep-core / cf-studio-* tools precedent). Started as the
+# S0 bridge spike (throwaway-grade internals); promoted to the clean converter
+# at S1. See docs/msk_builder/03_phases/g1_knee_kinematics/recon.md.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The MJCF importer we emit into + load through (load_model, model_from_mjcf).
+sim-mjcf = { path = "../../sim/L0/mjcf" }
+# Model / Data — forward kinematics + tendon Jacobian (ten_J) for moment arms.
+sim-core = { path = "../../sim/L0/core" }
+# Vec/quat math for frames, axes, path points.
+nalgebra = { workspace = true }
+# .osim is XML; same parser the MJCF importer uses.
+quick-xml = { workspace = true }
+
+[dev-dependencies]
+# Float-tolerance assertions for the spike / oracle-comparison tests.
+approx = { workspace = true }
+# Read the vendored real-OpenSim moment-arm reference (the cross-check anchor).
+serde_json = { workspace = true }

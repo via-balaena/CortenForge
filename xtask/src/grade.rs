@@ -2309,7 +2309,10 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // cf-studio-engine (the guided-workflow Studio spine + its
     // SDK-boundary orchestrator; see MISSION.md) are workspace tools
     // under `tools/` carrying the cf- prefix — same Q8 path-based-filter
-    // exemption, no SDK tier.
+    // exemption, no SDK tier. cf-osim + cf-anthro + cf-msk-fit (the
+    // musculoskeletal-builder arc; Mission deliverable #4 — OpenSim→IR
+    // bridge, scan landmark detection, place/scale/articulate) are
+    // `tools/` workspace tools with the cf- prefix — same exemption.
     if matches!(
         crate_name,
         "cf-viewer"
@@ -2325,6 +2328,9 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-studio-engine"
             | "cf-studio"
             | "cf-studio-gui"
+            | "cf-osim"
+            | "cf-anthro"
+            | "cf-msk-fit"
     ) {
         return false;
     }

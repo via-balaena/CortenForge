@@ -1,0 +1,27 @@
+[package]
+name = "cf-msk-fit"
+description = "Place + scale the OpenSim knee skeleton (cf-osim) onto detected scan landmarks (cf-anthro) — the scan↔model bridge of the musculoskeletal-builder arc (Mission #4), phase S3. Outputs bones + muscle/tendon paths in the scan frame."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The validated OpenSim knee subgraph + its forward kinematics.
+cf-osim = { path = "../cf-osim" }
+# Detected scan landmarks (knee point, limb axis, segment lengths).
+cf-anthro = { path = "../cf-anthro" }
+# Mesh types + STL I/O for the bones-in-scan overlay.
+mesh-types = { workspace = true }
+mesh-io = { workspace = true }
+nalgebra = { workspace = true }
+# Skin-envelope containment (flood-filled signed distance) for the G1 scorecard.
+mesh-sdf = { workspace = true }
+# Reading the vendored real-OpenSim moment-arm reference (G1 scorecard).
+serde_json = { workspace = true }
