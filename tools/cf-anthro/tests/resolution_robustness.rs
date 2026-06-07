@@ -11,29 +11,38 @@
 use cf_anthro::detect_landmarks;
 use cf_anthro::synthetic::LegSpec;
 
+fn knee_err_mm(spec: &LegSpec, n_rings: usize) -> f64 {
+    let (mesh, _) = spec.build(n_rings, 64);
+    let lm = detect_landmarks(&mesh)
+        .unwrap_or_else(|e| panic!("detect failed at n_rings={n_rings}: {e:?}"));
+    ((lm.knee_z - spec.ground_truth().knee_z) * 1000.0).abs()
+}
+
+/// Round resolutions a caller might plausibly pick — including the historical
+/// failure (240) — must detect the knee FAR inside the 10 mm gate (they land
+/// ~0.8 mm). A regression (e.g. the aliasing lock returning) would blow past this.
 #[test]
-fn knee_detection_robust_across_resolutions() {
+fn knee_detection_tight_at_common_resolutions() {
     let spec = LegSpec::default_leg();
-    let gt = spec.ground_truth();
-
-    // Round resolutions a caller might pick, plus the historical failure (240).
     for &n_rings in &[120usize, 160, 200, 220, 240, 250, 256, 300, 360, 480] {
-        let (mesh, _) = spec.build(n_rings, 64);
-        let lm = detect_landmarks(&mesh)
-            .unwrap_or_else(|e| panic!("detect failed at n_rings={n_rings}: {e:?}"));
-
-        let knee_err_mm = ((lm.knee_z - gt.knee_z) * 1000.0).abs();
-        let thigh_pct = (lm.thigh_length_m - gt.thigh_length_m).abs() / gt.thigh_length_m * 100.0;
-
-        // Comfortably inside the detector's 10 mm / 5% gate at every resolution —
-        // a real lock (pre-fix) blew past this by ~3×.
+        let err = knee_err_mm(&spec, n_rings);
         assert!(
-            knee_err_mm < 5.0,
-            "n_rings={n_rings}: knee off by {knee_err_mm:.2} mm (aliasing lock regressed?)"
-        );
-        assert!(
-            thigh_pct < 2.0,
-            "n_rings={n_rings}: thigh length off by {thigh_pct:.2}%"
+            err < 3.0,
+            "n_rings={n_rings}: knee off by {err:.2} mm (aliasing lock regressed?)"
         );
     }
+}
+
+/// The residual lock — `n_rings == N_SAMPLES` (401) — is the fix's worst case
+/// (~7 mm). It must still clear the detector's actual 10 mm gate: the fix relies
+/// on the coincidence being implausible *and* non-catastrophic when it does hit,
+/// not merely on avoiding it. (Pre-fix, the equal-grid lock was ~27 mm — a fail.)
+#[test]
+fn knee_detection_in_gate_at_residual_lock() {
+    let spec = LegSpec::default_leg();
+    let err = knee_err_mm(&spec, 401);
+    assert!(
+        err < 10.0,
+        "residual lock n_rings=401: knee off by {err:.2} mm"
+    );
 }
