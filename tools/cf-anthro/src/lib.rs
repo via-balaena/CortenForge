@@ -77,7 +77,18 @@ pub struct Landmarks {
 }
 
 /// Number of axial samples for the area profile.
-const N_SAMPLES: usize = 240;
+///
+/// **A non-round prime on purpose.** The knee is a *flat* area minimum, so the
+/// argmin is sensitive to any periodic ripple in the profile. When the input is a
+/// regular tessellation whose ring count *equals* this sample count, the two grids
+/// phase-lock and the slice-sampled area ripples enough to walk the detected knee
+/// tens of mm (found at `n_rings == N_SAMPLES` on synthetic legs; see
+/// `tests/resolution_robustness.rs`). A non-round prime makes that exact coincidence
+/// implausible for any hand-picked mesh resolution, and even at the residual lock
+/// (`n_rings == 401`) the error stays in gate. Real scans are irregular triangle
+/// soup with no global ring grid, so they cannot lock — this is a synthetic-mesh
+/// hardening, not a real-scan fix. A larger count also sharpens the sub-mm refine.
+const N_SAMPLES: usize = 401;
 
 /// Why landmark detection couldn't produce a result (degrade gracefully rather
 /// than panic — a scan pipeline must not crash on a bad input).
