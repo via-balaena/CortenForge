@@ -120,6 +120,21 @@ center / deep-flexion fidelity (>100°), muscle force / activation (G2), soft ti
 - **D11 — Joint coupling stays symbolic through the morph.** Scaling changes geometry, not the
   rolling-glide relation — consistent with "1-DOF *coordinate* knee at G1, coupling carried."
 
+**Spike-backed 2026-06-07** (`tools/cf-osim/tests/spike_param_morph.rs`, throwaway `#[ignore]`; a
+prototype `BodyParams`+`realize` over the existing `Subgraph` IR, graded through the validated
+`emit_coupled_knee` + `coupled_moment_arm` harness). **Spike A (D7/D8/D11):** the param→morph layer
+is exact — identity params reproduce the S1 moment arms to **0.0 mm** (literal `0.00e0`); a uniform
+scale `s=1.137` scales every muscle's moment arm by **exactly ×1.137000** with shape corr **1.000000**
+(the analytic dilation anchor); four randomized per-segment scale sets each emit a model that loads
+with finite, sensible moment arms. **Spike B (D9/D11):** under anisotropic (femur≠tibia) scaling —
+the non-dilation case — moment-arm **shape correlation stays ≥ 0.9728** across all four muscles and
+all test cases (most ≥ 0.99; a "realistic" f1.08/t0.94 stays ≥ 0.9928), clearing §7's scaled-subject
+**corr ≥ 0.95** bar. *Signal for S3:* the hamstrings are the most tibia-scale-sensitive (semimem
+0.9728 at tibia +20%) — the `ScaleRule` should watch that. *Limit:* this measures the morph's
+internal shape-stability and seam-fidelity, **not** accuracy against a real scaled subject (no such
+ground truth exists); the symbolic-coupling choice (D11) keeps gait2392's coupling relation and
+scales it, the same modelling assumption OpenSim's Scale tool makes.
+
 ### Open (resolve during S0, before committing the program)
 - **O1 — Does the gait2392 knee's coupled tibial translation matter at <100°?** *Confirmed
   concrete:* the vendored model's `knee_r` is a `CustomJoint` whose `knee_angle_r` drives
