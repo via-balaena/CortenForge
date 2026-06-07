@@ -52,6 +52,9 @@ members = [
     # Anatomical landmark detection on a body-part scan (knee line, epicondyle
     # width, segment lengths) for the musculoskeletal-builder arc, phase S2.
     "tools/cf-anthro",
+    # Place + scale the OpenSim knee skeleton onto detected scan landmarks
+    # (the scan↔model bridge) for the musculoskeletal-builder arc, phase S3.
+    "tools/cf-msk-fit",
 
     # Shared Bevy-0.18 helpers (orbit camera + up-axis convention) consumed by
     # cf-viewer + sim-bevy + sim-bevy-soft.

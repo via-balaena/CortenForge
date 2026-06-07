@@ -2,8 +2,52 @@
 //! `--assembly` mode (each piece gets its own color). Markers protrude beyond
 //! the limb surface so they read clearly against an opaque scan.
 
-use mesh_types::{IndexedMesh, Point3};
+use mesh_types::{IndexedMesh, Point3, Vector3};
 use std::f64::consts::TAU;
+
+/// A capped cylinder (tube) of radius `r` between arbitrary points `a` and `b`,
+/// `n` sides — for bones and muscle/tendon paths in any 3D orientation (unlike
+/// [`rod`], whose box is axis-aligned). Degenerate (a≈b) → empty.
+pub fn tube(a: Point3<f64>, b: Point3<f64>, r: f64, n: usize) -> IndexedMesh {
+    let axis = b - a;
+    let len = axis.norm();
+    if len < 1e-9 {
+        return IndexedMesh::new();
+    }
+    let w = axis / len;
+    // Orthonormal basis perpendicular to the axis.
+    let t = if w.x.abs() < 0.9 {
+        Vector3::x()
+    } else {
+        Vector3::y()
+    };
+    let u = t.cross(&w).normalize();
+    let v = w.cross(&u);
+
+    let mut vertices = Vec::with_capacity(2 * n + 2);
+    for j in 0..n {
+        let ang = TAU * (j as f64) / (n as f64);
+        let dir = u * ang.cos() + v * ang.sin();
+        vertices.push(a + dir * r);
+        vertices.push(b + dir * r);
+    }
+    let ca = vertices.len();
+    vertices.push(a);
+    let cb = vertices.len();
+    vertices.push(b);
+
+    let mut faces = Vec::with_capacity(4 * n);
+    for j in 0..n {
+        let (a0, b0) = ((2 * j) as u32, (2 * j + 1) as u32);
+        let k = (j + 1) % n;
+        let (a1, b1) = ((2 * k) as u32, (2 * k + 1) as u32);
+        faces.push([a0, a1, b1]);
+        faces.push([a0, b1, b0]);
+        faces.push([ca as u32, a1, a0]); // cap a
+        faces.push([cb as u32, b0, b1]); // cap b
+    }
+    IndexedMesh { vertices, faces }
+}
 
 /// An open cylindrical band (a "bracelet") of radius `r`, height `h`, centered
 /// at `(cx, cy, z)` with its axis along +z — rings the limb at a landmark.

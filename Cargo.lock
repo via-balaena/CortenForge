@@ -2363,6 +2363,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-msk-fit"
+version = "1.0.0"
+dependencies = [
+ "cf-anthro",
+ "cf-osim",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
 name = "cf-osim"
 version = "1.0.0"
 dependencies = [
