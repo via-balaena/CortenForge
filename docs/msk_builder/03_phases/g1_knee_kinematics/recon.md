@@ -335,16 +335,24 @@ length** (no ankle), so the scan's `shank_length_m` can't drive a per-segment ti
 template gains an ankle. Captures the scan's **size**, not pose/orientation (that's `Fitter::pose`'s
 overlay). **DEFERRED:** per-segment `ScaleRule` from the scan (waits for tibia length / a 2nd joint);
 landmark-residual + bone-length exit metrics (need the pose/placement, not just scale).
-**✅ cf-anthro aliasing lock — DIAGNOSED + FIXED (2026-06-07).** The `build(240,64)` wobble (knee
-~27 mm low) was a **grid phase-lock at `n_rings == N_SAMPLES`**: the knee is a *flat* area minimum, so
-the argmin is ripple-sensitive, and a regular mesh whose ring count equals the detector's profile
-sample count beats the two grids into a spurious minimum. Proven by moving `N_SAMPLES` 240→200 (the
-lock moved to `n_rings==200`); a resolution sweep showed *only* the exact-equal value fails, every
-other resolution is fine to ~1.4 mm. Smoothing made it worse (the locked profile is corrupted), so
-the fix is to **decouple the grids: `N_SAMPLES` is now a non-round prime (401)** — all common
-resolutions are in gate *and* more accurate (~0.8 mm), and even the residual lock at `n_rings==401`
-stays in gate (+6.9 mm). Real scans (irregular soup, no ring grid) were never affected. Guarded by
-`cf-anthro/tests/resolution_robustness.rs` (CI, sweeps resolutions incl. the old 240).
+**✅ cf-anthro flat-minimum fragility — DIAGNOSED + ROBUST-FIXED (2026-06-07).** The `build(240,64)`
+wobble (knee ~27 mm low) was a **grid phase-lock at `n_rings == N_SAMPLES`**: the knee is a *flat* area
+minimum, so the bare argmin is ripple-sensitive, and a regular mesh whose ring count equals the
+detector's profile sample count beats the two grids into a spurious minimum (proven by moving
+`N_SAMPLES` 240→200 — the lock followed to `n_rings==200`). **A first pass decoupled the grids
+(`N_SAMPLES`→prime 401); that was reviewed and rejected as a band-aid** (it leaves the underlying
+flat-min fragility, which periodic *real-scan* noise could also trip). **Replaced by a robust
+two-stage minimum-finder** `robust_min_z`: **locate** the broad bowl on a heavy low-pass (the ripple
+is high-frequency → smoothed away; the bowl is low-frequency → survives), then **refine** the unbiased
+sub-mm minimum locally on the lightly-smoothed profile. Locate-then-refine is the key: a single wide
+filter is ripple-immune but biases the asymmetric bowl ~8 mm, a single narrow one is accurate but
+fragile — neither alone is both. `N_SAMPLES` reverted to 240, proving the *finder* is the fix: every
+resolution **including the lock** now detects to ~1.4 mm. Getting there took empirical tuning (wide
+LS-parabola → −8 mm bias; argmin-centered → worse at the lock; the two-stage won). **Boundary (honest):**
+it assumes the true bowl is *prominent* vs the ripple (holds for real anatomy; a spurious trough whose
+*smoothed* tail dips below a shallow bowl could still fool it — surfaced via a unit test). Guarded by
+`robust_min_z` unit tests + `tests/resolution_robustness.rs` (CI sweep incl. the old 240 failure);
+`synthetic_validation` 4/4 (noisy + scaled legs); `cf-msk-fit` unaffected.
 
 ### S4 — Articulation inside the skin envelope
 Drive the scaled knee hinge through 0→100°; sample bone-geom + tendon-path points; query the

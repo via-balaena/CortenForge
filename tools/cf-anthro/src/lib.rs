@@ -77,18 +77,7 @@ pub struct Landmarks {
 }
 
 /// Number of axial samples for the area profile.
-///
-/// **A non-round prime on purpose.** The knee is a *flat* area minimum, so the
-/// argmin is sensitive to any periodic ripple in the profile. When the input is a
-/// regular tessellation whose ring count *equals* this sample count, the two grids
-/// phase-lock and the slice-sampled area ripples enough to walk the detected knee
-/// tens of mm (found at `n_rings == N_SAMPLES` on synthetic legs; see
-/// `tests/resolution_robustness.rs`). A non-round prime makes that exact coincidence
-/// implausible for any hand-picked mesh resolution, and even at the residual lock
-/// (`n_rings == 401`) the error stays in gate. Real scans are irregular triangle
-/// soup with no global ring grid, so they cannot lock — this is a synthetic-mesh
-/// hardening, not a real-scan fix. A larger count also sharpens the sub-mm refine.
-const N_SAMPLES: usize = 401;
+const N_SAMPLES: usize = 240;
 
 /// Why landmark detection couldn't produce a result (degrade gracefully rather
 /// than panic — a scan pipeline must not crash on a bad input).
@@ -147,12 +136,12 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Result<Landmarks, DetectError> {
     let (m1, m2) = (maxima[0], maxima[1]); // m1 = larger (thigh side)
     let (lo_i, hi_i) = (m1.min(m2), m1.max(m2));
 
-    // Knee = the area minimum strictly between the two maxima, parabola-refined
-    // to sub-sample precision (the knee is a smooth minimum).
-    let knee_i = (lo_i + 1..hi_i)
-        .min_by(|&a, &b| area[a].total_cmp(&area[b]))
-        .ok_or(DetectError::NoKneeMinimum)?;
-    let knee_z = parabolic_min_z(&zs, &area, knee_i);
+    // Knee = the area minimum between the two maxima — found robustly (the minimum
+    // is flat, so a bare argmin is walked by profile ripple); see `robust_min_z`.
+    if hi_i <= lo_i + 1 {
+        return Err(DetectError::NoKneeMinimum);
+    }
+    let knee_z = robust_min_z(&zs, &area, lo_i, hi_i);
 
     let sec = cross_section(mesh, Point3::new(0.0, 0.0, knee_z), Vector3::z());
     // Take the limb (largest) contour; only bail if a SECOND contour rivals it
@@ -260,6 +249,46 @@ fn smooth(a: &[f64], w: usize) -> Vec<f64> {
         .collect()
 }
 
+/// Robust sub-sample z of the knee within the valley `[lo, hi]` (the two bracketing
+/// girth maxima).
+///
+/// The knee minimum is FLAT, so a bare argmin is fragile — any periodic ripple in
+/// the area profile (mesh-tessellation aliasing, scan noise) walks it across the
+/// flat bottom (a regular mesh with `n_rings == N_SAMPLES` once shifted it ~27 mm).
+/// Frequency separation fixes this: the true knee is a *broad* (low-frequency) bowl,
+/// the ripple/spurious troughs are *high-frequency*. So we **locate** the bowl on a
+/// heavy low-pass (which the ripple can't survive) and then **refine** the unbiased
+/// sub-mm minimum locally on the lightly-smoothed profile. Locating and measuring
+/// are split deliberately: a single wide filter is ripple-immune but biases the
+/// asymmetric bowl's apparent min by ~8 mm, while a single narrow one is accurate
+/// but ripple-fragile — neither alone is both.
+fn robust_min_z(zs: &[f64], a: &[f64], lo: usize, hi: usize) -> f64 {
+    // Two stages, so detection is BOTH robust and accurate:
+    //  1. LOCATE the broad bowl on a heavy low-pass. The grid-aliasing ripple has a
+    //     period of ~10-12 samples; a box window wider than that pushes it past the
+    //     filter's first null, so it can't create a spurious minimum. (The low-pass
+    //     biases the bowl's apparent min by ~8 mm via the asymmetric shoulders — so
+    //     we only trust it to LOCATE, not to measure.)
+    //  2. REFINE on the lightly-smoothed profile, but search only a small window
+    //     around the located bowl, so ripple troughs elsewhere can't win. This
+    //     recovers the unbiased sub-mm minimum.
+    // Both widths tuned empirically (see tests/resolution_robustness.rs).
+    const LOCATE_SMOOTH: usize = 12;
+    const REFINE_HALF: usize = 3;
+
+    let lp = smooth(a, LOCATE_SMOOTH);
+    let k_broad = (lo + 1..hi)
+        .min_by(|&i, &j| lp[i].total_cmp(&lp[j]))
+        .unwrap_or(lo + 1);
+
+    let r0 = k_broad.saturating_sub(REFINE_HALF).max(lo + 1);
+    let r1 = (k_broad + REFINE_HALF + 1).min(hi);
+    let k = (r0..r1)
+        .min_by(|&i, &j| a[i].total_cmp(&a[j]))
+        .unwrap_or(k_broad);
+    parabolic_min_z(zs, a, k)
+}
+
 /// Sub-sample z of a local minimum at index `i`, by fitting a parabola through
 /// the three bracketing samples (uniform spacing assumed).
 fn parabolic_min_z(zs: &[f64], a: &[f64], i: usize) -> f64 {
@@ -282,4 +311,58 @@ fn local_maxima(a: &[f64], w: usize) -> Vec<usize> {
     (w..a.len().saturating_sub(w))
         .filter(|&i| (i - w..=i + w).all(|j| j == i || a[j] < a[i] || (a[j] == a[i] && j < i)))
         .collect()
+}
+
+#[cfg(test)]
+mod robust_min_tests {
+    use super::robust_min_z;
+
+    // zs at 1 cm spacing, so index i sits at z = 0.01·i.
+    fn zs(n: usize) -> Vec<f64> {
+        (0..n).map(|i| i as f64 * 0.01).collect()
+    }
+
+    #[test]
+    fn finds_clean_bowl_vertex() {
+        let z = zs(120);
+        // A broad bowl with its vertex at index 60.5 (between samples).
+        let a: Vec<f64> = (0..120)
+            .map(|i| {
+                let x = i as f64 - 60.5;
+                1.0 + 0.0008 * x * x
+            })
+            .collect();
+        let knee = robust_min_z(&z, &a, 10, 110);
+        assert!((knee - 0.605).abs() < 0.005, "vertex off: {knee}");
+    }
+
+    #[test]
+    fn rejects_spurious_ripple_trough() {
+        let z = zs(120);
+        // A PROMINENT bowl (vertex at 60) — as a real area minimum is, relative to
+        // ripple — plus a NARROW (high-frequency) spurious trough at index 42 that
+        // dips below the true bowl bottom. A bare argmin picks 42; the robust finder
+        // must smooth the narrow trough away and return the broad bowl.
+        let mut a: Vec<f64> = (0..120)
+            .map(|i| {
+                let x = i as f64 - 60.0;
+                0.005 * x * x // bowl bottom = 0 at index 60
+            })
+            .collect();
+        a[41] = 0.2;
+        a[42] = -0.1; // below the bowl bottom (0.0)
+        a[43] = 0.2;
+        let bare_argmin = (10..110).min_by(|&i, &j| a[i].total_cmp(&a[j])).unwrap();
+        assert_eq!(
+            bare_argmin, 42,
+            "test setup: the notch should beat the bowl"
+        );
+
+        // The robust finder must ignore the narrow notch and return the broad bowl.
+        let knee = robust_min_z(&z, &a, 10, 110);
+        assert!(
+            (knee - 0.60).abs() < 0.02,
+            "fooled by the spurious trough: {knee}"
+        );
+    }
 }
