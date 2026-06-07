@@ -21,3 +21,7 @@ cf-anthro = { path = "../cf-anthro" }
 mesh-types = { workspace = true }
 mesh-io = { workspace = true }
 nalgebra = { workspace = true }
+# Skin-envelope containment (flood-filled signed distance) for the G1 scorecard.
+mesh-sdf = { workspace = true }
+# Reading the vendored real-OpenSim moment-arm reference (G1 scorecard).
+serde_json = { workspace = true }

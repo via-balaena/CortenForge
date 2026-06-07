@@ -21,6 +21,8 @@ use cf_osim::oracle::{Kinematics, Variant};
 use cf_osim::osim::Subgraph;
 use nalgebra::{Matrix3, Point3, Vector3};
 
+pub mod scorecard;
+
 /// A bone as a segment from its proximal to distal end (scan frame, meters).
 #[derive(Debug, Clone, Copy)]
 pub struct Bone {
@@ -117,6 +119,11 @@ impl<'a> Fitter<'a> {
             // Tibia long axis is −y in the tibia frame; length scan-shank/scale.
             tibia_distal_loc: Vector3::new(0.0, -lm.shank_length_m / scale, 0.0),
         }
+    }
+
+    /// The uniform model→scan scale (thigh length / OpenSim femur length).
+    pub fn scale(&self) -> f64 {
+        self.scale
     }
 
     /// Pose the skeleton at knee flexion angle `theta` (rad; 0 = extension,
