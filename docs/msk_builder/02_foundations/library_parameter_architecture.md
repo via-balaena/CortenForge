@@ -29,10 +29,11 @@ Where the parameters come from is **pluggable**; the body builder doesn't know o
      • ShapeModelSource  → a few SSM PCs (tier b)
 ```
 
-The key move: today `cf-msk-fit::place(Landmarks, Subgraph) -> Placement` fuses **scan extraction**,
-**the morph**, and an ad-hoc **render overlay** into one function. We split those into three named
-seams — `ParamSource`, `realize()`, `cf-mjcf-emit` — so the scan stops being special and the output
-becomes a real MJCF body instead of a render-only overlay.
+The key move: today `cf-msk-fit::place_knee(&Subgraph, &Landmarks) -> Placement` fuses **the
+landmark→placement step** (params + morph) with the output, and emits an ad-hoc **render overlay**
+(`Bone`/`PlacedMuscle`), not MJCF. We split those into three named seams — `ParamSource`,
+`realize()`, `cf-mjcf-emit` — so the scan stops being special and the output becomes a real MJCF
+body. (Mesh→`Landmarks` extraction already lives separately, in `cf-anthro`.)
 
 ## The four core abstractions
 
@@ -151,9 +152,9 @@ is today's `cf-msk-fit`, demoted from "the pipeline" to "one source among three.
 
 | Concern | Today | After |
 |---|---|---|
-| IR | `cf-osim::Subgraph` (knee-only, in the importer crate) | `cf-msk-lib::ir` (general, source-agnostic) |
+| IR | `cf-osim::Subgraph` (knee-only, in the `cf-osim` bridge) | `cf-msk-lib::ir` (general, source-agnostic) |
 | Build a body with no scan | not possible | `CanonicalSource` → `realize` → emit |
-| Scan's role | the pipeline entry point (`place(…)`) | one `ParamSource` among three |
+| Scan's role | the pipeline entry point (`place_knee(…)`) | one `ParamSource` among three |
 | Morph | single similarity transform, inside `place` | `realize()`, per-segment, rules in the library |
 | Output | `Placement` render overlay (bones as segments) | real MJCF body via `cf-mjcf-emit` |
 | Emit | `cf-osim::emit` | `cf-mjcf-emit` (migrated) |

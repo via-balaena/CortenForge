@@ -81,8 +81,8 @@ center / deep-flexion fidelity (>100°), muscle force / activation (G2), soft ti
 | Capability | Current | G1 end-state | Disposition | Where |
 |---|---|---|---|---|
 | `.osim` → biomech IR | none | knee subgraph (2 bodies, 1 joint, 4 muscles, wraps) parsed | **build** | `tools/cf-osim/` |
-| Anatomical IR + library | `cf-osim::Subgraph` (knee-only, in importer) | source-agnostic IR + `BodyTemplate` w/ per-segment scaling rules | **build (extract)** | `tools/cf-msk-lib/` |
-| Parameter interface | scan fused into `place()` | `BodyParams` (named, `Measurable`-gated) + `ParamSource` trait; `Canonical`/`Randomizer` sources | **build** | `tools/cf-msk-lib/` |
+| Anatomical IR + library | `cf-osim::Subgraph` (knee-only, in `cf-osim`) | source-agnostic IR + `BodyTemplate` w/ per-segment scaling rules | **build (extract)** | `tools/cf-msk-lib/` |
+| Parameter interface | scan fused into `place_knee()` | `BodyParams` (named, `Measurable`-gated) + `ParamSource` trait; `Canonical`/`Randomizer` sources | **build** | `tools/cf-msk-lib/` |
 | MJCF emitter | import-only | deterministic emitter the importer round-trips | **build** | `sim/L0/mjcf-emit/` |
 | Moment-arm extraction | exists (`ten_J`) | projected onto knee DOF, sampled over ROM | **reuse** | `sim/L0/core/tendon/spatial.rs` |
 | Knee landmark detection | centerline/girth only | joint-line, epicondyle width, segment lengths | **build** | `tools/cf-anthro/` |
@@ -285,7 +285,7 @@ only the params differ.
   `ScaleRule` in `cf-msk-lib` (the recon's `ScaleSpec`, now living on the segment). Closed-form
   per-axis scale from paired distances first; upgrade to Procrustes/LM only if residual demands.
 - **Checkpoint (no behavior change):** `ScanSource` routed through the new seam must reproduce the
-  pre-refactor `cf-msk-fit::place` result — a refactor-safety gate before per-segment scaling moves
+  pre-refactor `cf-msk-fit::place_knee` result — a refactor-safety gate before per-segment scaling moves
   anything.
 - **Exit:** landmark residual **<5 mm RMS**; scaled bone lengths within **±3%** of scan segments.
 
