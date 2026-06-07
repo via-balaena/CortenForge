@@ -1,13 +1,22 @@
-# Musculoskeletal Builder — scan → bones/tendons movable model
+# Musculoskeletal Builder — parametric bones/tendons movable body
 
-*Established 2026-06-07.*
+*Established 2026-06-07. Reframed 2026-06-07 to parametric-builder-first (see `01_vision/vision.md`).*
 
-> **Take a 3D human body scan and produce a simulatable bones/tendons articulated model.**
+> **Build a simulatable bones/tendons articulated body parametrically from a validated anatomical
+> library; fold a 3D scan in — when one exists — as an optional parameter source, not a prerequisite.**
 
 This is **Mission deliverable #4 — the person-specific musculoskeletal model builder**
 (`MISSION.md`: "scan → scaled skeleton + muscle routing"). It is the **"Body in → Twin
 built"** half of the differentiable body-to-device loop (thesis steps 1–2) and the substrate
 the powered knee-orthosis capstone is eventually built on.
+
+**Builder-first.** The body generates from an anatomical part library (seeded from the validated
+OpenSim corpus) and **needs no scan to exist** — that removes the sub-$1000 scanner as a blocking
+dependency on everything downstream (exo, RL, system-ID). A scan, when available, contributes a
+small **parameter** vector (lengths, girths, joint centers) that morphs the canonical body toward a
+person; it never supplies raw geometry. It is an **accuracy upgrade, not a prerequisite**. See
+`01_vision/vision.md` for the full reframe, the (a)/(b)/(c) scan-deformation fork, and the honesty
+caveat (synthetic body validates the *machinery*, not personhood).
 
 It is green-field — no anatomy/skeleton code exists yet — but it stands on a strong recyclable
 base (a MuJoCo-aligned rigid-body engine with spatial tendons + a Hill muscle model, and a
@@ -17,9 +26,10 @@ generalizing.**
 
 ## The keystone idea
 
-A literature-validated **OpenSim** lower-limb model, bridged into our **MJCF**, serves as
-*both* the **template** we scale to a scan *and* an **oracle** (its joint centers and moment-arm
-curves) to grade against. That lets the first software gate be checked **with no hardware** — a
+A literature-validated **OpenSim** lower-limb model, bridged into our **MJCF**, serves *three*
+roles at once: the **library seed** the parametric body is built from, the **template** we
+scale/morph to a person, *and* an **oracle** (its joint centers and moment-arm curves) to grade
+against. That lets the first software gate be checked **with no hardware** — a
 *literature model* stands in for a physical measurement at this stage. (Precision: "oracle" means
 that validated model's geometry; "validated against measurement" in the mission sense — a real
 instrumented body — remains a later gate. The oracle↔OpenSim cross-check is **done** (0.3 mm RMSE;
@@ -29,15 +39,16 @@ see the Status section below).)
 
 | Path | Contents |
 |---|---|
-| `01_vision/vision.md` | Vision, the keystone oracle idea, the four locked decisions, mission linkage |
+| `01_vision/vision.md` | Vision (parametric-builder-first), the keystone oracle idea, the scan-as-parameter-source fork, the honesty caveat, the four locked decisions, mission linkage |
 | `02_foundations/existing_substrate.md` | What the repo already gives us to recycle, with file paths |
+| `02_foundations/library_parameter_architecture.md` | Architecture sketch: the anatomical IR/library, `BodyParams`, the `realize()` morph, the pluggable `ParamSource` interface, crate boundaries, build order |
 | `03_phases/g1_knee_kinematics/recon.md` | The active RECON: empirical baseline → thesis → end-state → gap table → decisions → sub-leaf ladder (S0→S5) → risks → G1 validation |
 
 ## Phase map
 
 | Phase | Gate | Definition of done |
 |---|---|---|
-| **G1 — Knee kinematics** *(active)* | software, no hardware | scan → landmarks → scaled knee skeleton+tendons in MJCF that articulates inside the skin envelope, with joint center + moment-arm curves matching the OpenSim oracle within tolerance |
+| **G1 — Knee kinematics** *(active)* | software, no hardware | a canonical knee skeleton+tendons in MJCF (scan-fitted via landmarks → scaling when a scan exists) that articulates inside the skin envelope, with joint center + moment-arm curves matching the OpenSim oracle within tolerance |
 | **G2 — Muscle-driven** *(future)* | software | Hill muscles/tendons actuate the joint; force-length / moment-arm behavior under load |
 | **G3+ — Sim-to-real** *(future)* | physical | validated against a real measurement (ROM / moment arm); ties into system-identification (Mission deliverable #3) |
 

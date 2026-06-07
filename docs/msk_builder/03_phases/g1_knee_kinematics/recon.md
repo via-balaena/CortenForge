@@ -6,9 +6,14 @@ OpenSim-geometry oracle within 5 mm for all 4 muscles; **the oracle itself is no
 real OpenSim 4.6 to 0.3 mm RMSE** (`opensim_cross_check.rs`), so the figures have an independent
 anchor. Reviewed 2026-06-07 (adversarial 3-reviewer pass: no math/physics bugs; convention verified
 vs OpenSim docs; linear→cubic splines, guards, claim re-scoping applied). Decisions locked (§5).
-**Phase goal:** scan → landmarks → scaled knee skeleton+tendons in MJCF that articulates inside
-the skin envelope, with joint center + moment-arm curves matching the OpenSim oracle within
-tolerance. Purely kinematic — no muscle force, no hardware.
+**Reframed 2026-06-07 to parametric-builder-first** — the builder produces a *canonical* knee from
+the validated library with **no scan required**; a scan, when present, is one `ParamSource` among
+several (`../../02_foundations/library_parameter_architecture.md`). This changes the entry point,
+**not** any S0/S1 result below.
+**Phase goal:** produce a knee skeleton+tendons in MJCF — *canonical* (library defaults, no scan) or
+*scan-fitted* (landmarks → parameters → morph) — that articulates inside the skin envelope, with
+joint center + moment-arm curves matching the OpenSim oracle within tolerance. Purely kinematic —
+no muscle force, no hardware.
 **Predecessor:** none (first phase). **Successor:** G2 (Hill-muscle-driven motion).
 **Mission linkage:** deliverable #4 (musculoskeletal model builder), thesis steps 1–2.
 
@@ -35,11 +40,11 @@ There is **no** anatomical landmark detection, **no** mesh segmentation into ana
 
 ## 2. Architectural thesis
 
-Three moves make G1 tractable and *validated in software*:
+Four moves make G1 tractable and *validated in software*:
 
 1. **Stand on validated anatomy, don't re-derive it.** A bridged OpenSim lower-limb model
-   carries literature-validated joint centers and muscle paths. We morph it to the scan rather
-   than synthesize muscle routing — keeping the research risk off the thing we can't easily check.
+   carries literature-validated joint centers and muscle paths. We morph it rather than
+   synthesize muscle routing — keeping the research risk off the thing we can't easily check.
 2. **The template is also the oracle.** Because we compute moment arms in-engine from `ten_J`, we
    can grade our converted/scaled knee against the *same* OpenSim model's published curves. The
    first gate needs no hardware.
@@ -47,12 +52,21 @@ Three moves make G1 tractable and *validated in software*:
    import-only, the "programmatic builder" is a deterministic XML emitter (`cf-mjcf-emit`) that
    the existing importer accepts and round-trips. This is the smallest thing that unblocks
    everything else.
+4. **Parameters morph an anatomical IR; the scan is just one source of parameters.** The library
+   (`cf-msk-lib`) holds a generalized biomech IR + a pure `realize(template, params) -> BodySpec`
+   morph; a `ParamSource` trait feeds it. `CanonicalSource` (library defaults) gives a full body
+   with **no scan** — so the scanner stops being a blocking dependency. `ScanSource` (cf-anthro
+   landmarks → params, tier a) and `RandomizerSource` (free training data) are siblings, not the
+   pipeline. The raw scan mesh is never deformed (tier c is rejected). Full sketch:
+   `../../02_foundations/library_parameter_architecture.md`.
 
 ## 3. End-state definition (G1)
 
-Given a cleaned leg scan (from `cf-scan-prep`), the builder produces a `knee_<subject>.xml` MJCF
-that:
-- places a 1-DOF knee hinge at the anatomical joint center/axis derived from scan landmarks;
+The builder produces a `knee.xml` MJCF — from `CanonicalSource` (library defaults, **no scan**) or,
+given a cleaned leg scan (from `cf-scan-prep`), from `ScanSource` (`knee_<subject>.xml`). Both flow
+through the same `realize` → `cf-mjcf-emit` path; only the `BodyParams` differ. The emitted model:
+- places a 1-DOF knee hinge at the anatomical joint center/axis (canonical, or derived from scan
+  landmarks);
 - carries the four representative crossing muscles (rectus femoris, one vastus, biceps femoris
   long head, semimembranosus) as spatial tendons with their wrap geoms;
 - articulates 0→100° flexion with **all bone & tendon geometry inside the scan skin envelope**;
@@ -67,10 +81,12 @@ center / deep-flexion fidelity (>100°), muscle force / activation (G2), soft ti
 | Capability | Current | G1 end-state | Disposition | Where |
 |---|---|---|---|---|
 | `.osim` → biomech IR | none | knee subgraph (2 bodies, 1 joint, 4 muscles, wraps) parsed | **build** | `tools/cf-osim/` |
+| Anatomical IR + library | `cf-osim::Subgraph` (knee-only, in importer) | source-agnostic IR + `BodyTemplate` w/ per-segment scaling rules | **build (extract)** | `tools/cf-msk-lib/` |
+| Parameter interface | scan fused into `place()` | `BodyParams` (named, `Measurable`-gated) + `ParamSource` trait; `Canonical`/`Randomizer` sources | **build** | `tools/cf-msk-lib/` |
 | MJCF emitter | import-only | deterministic emitter the importer round-trips | **build** | `sim/L0/mjcf-emit/` |
 | Moment-arm extraction | exists (`ten_J`) | projected onto knee DOF, sampled over ROM | **reuse** | `sim/L0/core/tendon/spatial.rs` |
 | Knee landmark detection | centerline/girth only | joint-line, epicondyle width, segment lengths | **build** | `tools/cf-anthro/` |
-| Scaling / registration | none | per-segment scale + placement → `ScaleSpec` | **build** | `tools/cf-msk-fit/` |
+| Morph + scan registration | none | pure `realize()` (per-segment scale, rules in the library) + `ScanSource` (landmarks → `BodyParams`) | **build** | `cf-msk-lib` (morph) + `cf-msk-fit` (`ScanSource`) |
 | Skin-envelope containment | `flood_filled_sdf` exists | per-angle worst-case protrusion over ROM | **build (thin)** | `tools/cf-msk-fit/` + `mesh-sdf` |
 | Oracle comparison harness | none | G1 scorecard (axis, moment-arm RMSE, protrusion) | **build** | `cf-msk-validate` |
 | Watertight scan ingest | shipped | reuse as-is | **reuse** | `cf-scan-prep-core` |
@@ -91,6 +107,18 @@ center / deep-flexion fidelity (>100°), muscle force / activation (G2), soft ti
   geometry, not the muscle force model). Rajagopal = secondary cross-check only.
 - **D6 — G1 ROM bounded to 0–100°**, where a fixed hinge is honest; 100–120° flagged (R3).
   *(Confirmed: the vendored model's `knee_angle_r` spans −120°…+10°.)*
+
+### Architecture (folded in 2026-06-07 — `02_foundations/library_parameter_architecture.md`)
+- **D7 — Parameters morph the IR, then emit MJCF.** The raw scan mesh is never deformed (tier c
+  rejected). Emit from the morphed IR via `cf-mjcf-emit`.
+- **D8 — One `BodyParams`, many `ParamSource`s.** Decouples scan from builder; `CanonicalSource`
+  makes the program builder-first; `RandomizerSource` yields free training data.
+- **D9 — Scaling rules live on the segment, not in the solver.** Adding a bone never edits
+  `realize()`.
+- **D10 — `Measurable` is a type, not a comment.** A `ScanSource` may only set scanner-measurable
+  params (lengths/girths/centers); the rest fall back to template defaults / anthropometric priors.
+- **D11 — Joint coupling stays symbolic through the morph.** Scaling changes geometry, not the
+  rolling-glide relation — consistent with "1-DOF *coordinate* knee at G1, coupling carried."
 
 ### Open (resolve during S0, before committing the program)
 - **O1 — Does the gait2392 knee's coupled tibial translation matter at <100°?** *Confirmed
@@ -223,15 +251,21 @@ anchor. (2) freeze a `knee_ref.xml` MJCF template for downstream grading (the va
 splines) so the model self-actuates, and measure the poly-fit residual; (5) upgrade conditional
 points from "dropped" to a proper membership toggle / wrap geom.
 
-### S1 — Frozen oracle template
+### S1 — Frozen oracle template + the library/parameter spine
 Promote the spike to a clean deterministic converter; commit the reference (unscaled) knee MJCF
 + a serialized **oracle bundle** (joint center, axis, per-muscle moment-arm curves, path points
-in canonical frames).
-- **Builds:** `cf-osim` (reader + IR), `cf-mjcf-emit` (emitter).
+in canonical frames). Stand up the builder spine: extract the source-agnostic IR into `cf-msk-lib`,
+and prove the **builder-first** path end-to-end (`CanonicalSource` → `realize` → `cf-mjcf-emit` → a
+canonical knee, no scan).
+- **Builds:** `cf-osim` (reader → IR + oracle), `cf-msk-lib` (IR extracted from `cf-osim::Subgraph`,
+  `BodyTemplate`, `BodyParams`, `CanonicalSource`, `realize()` — uniform scale first),
+  `cf-mjcf-emit` (emitter; `cf-osim::emit` migrates here).
 - **Artifact:** committed `knee_ref.xml` + `knee_oracle.json`; a passing test that re-derives
-  moment arms from the *imported* emitted model and matches the bundle.
+  moment arms from the *imported* emitted model and matches the bundle; **plus** a builder-first
+  test: `CanonicalSource → realize → emit` reproduces `knee_ref.xml` from library defaults alone.
 - **Exit:** byte-stable emit; importer accepts it; in-engine moment arms reproduce the oracle
-  within S0 tolerance. *(This bundle is the ground truth the rest of the program is graded on.)*
+  within S0 tolerance; the canonical (no-scan) body emits and passes the same oracle check.
+  *(This bundle is the ground truth the rest of the program is graded on.)*
 
 ### S2 — Landmark detection on the scan *(heuristics-first, no ML)*
 From a cleaned leg scan, detect: knee joint-line height (cross-sectional-area minimum along the
@@ -242,12 +276,17 @@ level), segment lengths (centerline arc-length), girths.
 - **Exit (vs hand-annotation on ≥3 scans):** knee-line **±10 mm**; epicondyle width **±8 mm**;
   segment length **±5%**.
 
-### S3 — Scaling / registration solver
-Solve per-segment anisotropic scale + rigid placement morphing the S1 template so its model
-landmarks coincide with the S2 detected scan landmarks.
-- **Builds:** `cf-msk-fit` → a `ScaleSpec` (per-body scale vector + placement) consumed by the
-  S1 emitter to write a *scaled* `knee_<subject>.xml`. Closed-form per-axis scale from paired
-  distances first; upgrade to Procrustes/LM only if residual demands.
+### S3 — `ScanSource` + per-segment morph
+Make the scan one `ParamSource`: map the S2 detected landmarks → `BodyParams` (`ScanSource`), and
+upgrade `realize()` from uniform to per-segment anisotropic scale so the morphed template's model
+landmarks coincide with the scan's. Same `realize` → `cf-mjcf-emit` path as the canonical body —
+only the params differ.
+- **Builds:** `cf-msk-fit::ScanSource` (`cf_anthro::Landmarks` → `BodyParams`); the per-segment
+  `ScaleRule` in `cf-msk-lib` (the recon's `ScaleSpec`, now living on the segment). Closed-form
+  per-axis scale from paired distances first; upgrade to Procrustes/LM only if residual demands.
+- **Checkpoint (no behavior change):** `ScanSource` routed through the new seam must reproduce the
+  pre-refactor `cf-msk-fit::place` result — a refactor-safety gate before per-segment scaling moves
+  anything.
 - **Exit:** landmark residual **<5 mm RMS**; scaled bone lengths within **±3%** of scan segments.
 
 ### S4 — Articulation inside the skin envelope
@@ -264,8 +303,11 @@ comparison (§7) against the S1 oracle bundle.
 - **Exit:** all §7 tolerances met on the scan bank. G2 explicitly deferred.
 
 ### Suggested execution order
-S0 → (gate decision on O1/O2) → S1 → S2 ∥ S3-prep → S3 → S4 → S5. S2 can proceed in parallel
-with S1 once S0 passes, since it only needs scans, not the oracle.
+S0 → (gate decision on O1/O2) → S1 → S2 ∥ S3-prep → S3 → S4 → S5. **S1 already yields a usable
+canonical (no-scan) knee** via `CanonicalSource` — the scan path (S2/S3) is additive personalization,
+not a prerequisite for a body to exist. S2 can proceed in parallel with S1 once S0 passes, since it
+only needs scans, not the oracle. `RandomizerSource` (training data) is a cheap add once `realize()`
+exists (post-S1); tier-(b) `ShapeModelSource` is post-G1.
 
 ## 7. G1 validation strategy (what is compared, metric, tolerance)
 
@@ -288,10 +330,11 @@ per-muscle moment-arm RMSE, max protrusion) + overlay plots land in this doc at 
 
 | Crate / module | Path | Role | Slice |
 |---|---|---|---|
-| `cf-osim` | `tools/cf-osim/` | `.osim` XML → neutral biomech IR | S0/S1 |
-| `cf-mjcf-emit` | `sim/L0/mjcf-emit/` | IR + `ScaleSpec` → MJCF XML the importer accepts (lives next to `sim/L0/mjcf` to share schema types + round-trip test) | S0/S1 |
+| `cf-osim` | `tools/cf-osim/` | `.osim` XML → biomech IR (library seed) + oracle (`Kinematics`, the grader) | S0/S1 |
+| `cf-msk-lib` | `tools/cf-msk-lib/` | the IR (extracted from `cf-osim::Subgraph`), `BodyTemplate`, `BodyParams`, `realize()` morph, `ParamSource` trait + `Canonical`/`Randomizer` sources | S1 |
+| `cf-mjcf-emit` | `sim/L0/mjcf-emit/` | IR → MJCF XML the importer accepts (`cf-osim::emit` migrates here; lives next to `sim/L0/mjcf` to share schema types + round-trip test) | S0/S1 |
 | `cf-anthro` | `tools/cf-anthro/` | scan landmark detection → `landmarks.toml` | S2 |
-| `cf-msk-fit` | `tools/cf-msk-fit/` | scaling/registration solver (`ScaleSpec`) + envelope containment | S3/S4 |
+| `cf-msk-fit` | `tools/cf-msk-fit/` | `ScanSource` (`Landmarks` → `BodyParams`) + per-segment registration + envelope containment | S3/S4 |
 | `cf-msk-validate` | `tools/cf-msk-validate/` (or module in `cf-msk-fit`) | oracle comparison harness; G1 scorecard | S5 |
 
 ## 9. Risks + de-risking spikes
