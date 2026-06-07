@@ -19,14 +19,15 @@
 //! circular). That premise is validated only when real leg scans + an
 //! independent landmark ground truth arrive.
 //!
+//! **Multi-contour slices — handled (v1).** `mesh-measure::cross_section` now
+//! measures each loop separately and exposes them; this detector tracks the
+//! **largest** contour at every height, so a stray noise island is ignored
+//! rather than blended into the area profile. A genuinely ambiguous slice (two
+//! comparable loops — a flexed joint) still bails ([`DetectError::
+//! MultiContourSection`]) rather than guess.
+//!
 //! **Real-scan readiness (v2 — not handled yet).** Spelled out so they aren't
 //! silent surprises:
-//! - **Multi-contour slices.** `mesh-measure`'s `cross_section`/`area_at_height`
-//!   blend multiple contours into one value, so a slice that cuts the limb in
-//!   2+ loops (bent/flexed knee, fibular head, an un-cleaned stray island)
-//!   corrupts the area profile. We *tripwire* on it ([`DetectError::
-//!   MultiContourSection`]) at the knee section, but the profile sweep itself
-//!   isn't guarded — the real fix is per-contour measures in mesh-measure.
 //! - **PCA / pose.** Detection assumes the limb axis is +z; a tilted or curved
 //!   (varus/valgus/flexed) limb breaks horizontal-slice area. v2 must align via
 //!   PCA and slice perpendicular to the centerline.
@@ -40,8 +41,16 @@
 pub mod markers;
 pub mod synthetic;
 
-use mesh_measure::{area_at_height, circumference_at_height, cross_section};
+use mesh_measure::{Contour, cross_section};
 use mesh_types::{IndexedMesh, Point3, Vector3};
+
+/// The limb (largest) contour of a horizontal slice at height `z` — ignores
+/// small stray islands (scan noise) so the area/girth profile tracks the limb.
+fn limb_contour(mesh: &IndexedMesh, z: f64) -> Option<Contour> {
+    cross_section(mesh, Point3::new(0.0, 0.0, z), Vector3::z())
+        .largest_contour()
+        .cloned()
+}
 
 /// Detected anatomical landmarks (all lengths in meters, in the scan frame).
 #[derive(Debug, Clone)]
@@ -80,11 +89,9 @@ pub enum DetectError {
     TooFewGirthMaxima(usize),
     /// No area minimum between the two maxima.
     NoKneeMinimum,
-    /// A horizontal slice cut the limb in more than one loop. `area_at_height`
-    /// silently blends multiple contours (a mesh-measure limitation), so the
-    /// area profile would be corrupted — bail rather than trust it. This never
-    /// happens on a clean single-limb scan; it is the headline v2 real-scan item
-    /// (see the crate-level "Real-scan readiness" notes).
+    /// The knee slice has two contours of comparable size — a genuinely
+    /// ambiguous cut (a flexed joint, or two limb segments in one plane), not a
+    /// small noise island (those are handled by taking the largest contour).
     MultiContourSection(usize),
 }
 
@@ -108,7 +115,11 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Result<Landmarks, DetectError> {
     let zs: Vec<f64> = (0..N_SAMPLES)
         .map(|i| lo + (hi - lo) * (i as f64) / ((N_SAMPLES - 1) as f64))
         .collect();
-    let raw: Vec<f64> = zs.iter().map(|&z| area_at_height(mesh, z)).collect();
+    // Limb (largest-contour) area along the axis — robust to stray noise islands.
+    let raw: Vec<f64> = zs
+        .iter()
+        .map(|&z| limb_contour(mesh, z).map(|c| c.area).unwrap_or(0.0))
+        .collect();
     // Light smoothing (window ~ a few mm) for noise robustness without smearing
     // the knee feature. The thigh/calf maxima are broad, so this is plenty.
     let area = smooth(&raw, 2);
@@ -130,13 +141,19 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Result<Landmarks, DetectError> {
     let knee_z = parabolic_min_z(&zs, &area, knee_i);
 
     let sec = cross_section(mesh, Point3::new(0.0, 0.0, knee_z), Vector3::z());
-    if sec.contour_count > 1 {
+    // Take the limb (largest) contour; only bail if a SECOND contour rivals it
+    // (a genuinely ambiguous slice — a flexed joint or two limb segments — not a
+    // small noise island, which we ignore).
+    let mut areas: Vec<f64> = sec.contours.iter().map(|c| c.area).collect();
+    areas.sort_by(|a, b| b.total_cmp(a));
+    if areas.len() >= 2 && areas[1] > 0.3 * areas[0] {
         return Err(DetectError::MultiContourSection(sec.contour_count));
     }
-    let (mn, mx) = sec.bounds;
+    let knee_c = sec.largest_contour().ok_or(DetectError::NoKneeMinimum)?;
+    let (mn, mx) = knee_c.bounds;
     let (wx, wy) = (mx.x - mn.x, mx.y - mn.y);
     let epicondyle_width_m = wx.max(wy);
-    let c = sec.centroid;
+    let c = knee_c.centroid;
     // Endpoints along whichever horizontal axis is wider (the M-L axis).
     let (epicondyle_a, epicondyle_b) = if wx >= wy {
         (
@@ -160,17 +177,18 @@ pub fn detect_landmarks(mesh: &IndexedMesh) -> Result<Landmarks, DetectError> {
     };
     let ankle_z = if hip_z == zmax { zmin } else { zmax };
 
+    let girth = |z: f64| limb_contour(mesh, z).map(|c| c.perimeter).unwrap_or(0.0);
     Ok(Landmarks {
         knee_z,
-        knee_point: sec.centroid,
+        knee_point: c,
         epicondyle_width_m,
         epicondyle_a,
         epicondyle_b,
         thigh_length_m: (hip_z - knee_z).abs(),
         shank_length_m: (knee_z - ankle_z).abs(),
-        knee_girth_m: circumference_at_height(mesh, knee_z),
-        thigh_girth_m: circumference_at_height(mesh, thigh_z),
-        calf_girth_m: circumference_at_height(mesh, calf_z),
+        knee_girth_m: knee_c.perimeter,
+        thigh_girth_m: girth(thigh_z),
+        calf_girth_m: girth(calf_z),
         thigh_z,
         calf_z,
     })

@@ -28,15 +28,17 @@ use mesh_types::{IndexedMesh, Point3, Vector3};
 /// ```
 #[derive(Debug, Clone)]
 pub struct CrossSection {
-    /// Points on the cross-section boundary (may contain multiple contours).
+    /// Points on the cross-section boundary (all contours, flattened — for
+    /// drawing). For per-loop measurements use [`CrossSection::contours`].
     pub points: Vec<Point3<f64>>,
-    /// Perimeter length (total length of all contours).
+    /// Total perimeter (sum over contours).
     pub perimeter: f64,
-    /// Area enclosed by the cross-section.
+    /// Total enclosed area (sum over contours — each contour's own |area|, so
+    /// two disjoint loops add rather than blend).
     pub area: f64,
-    /// Centroid of the cross-section.
+    /// Area-weighted centroid across contours.
     pub centroid: Point3<f64>,
-    /// Bounding box of the cross-section (min, max).
+    /// Bounding box over all contours (min, max).
     pub bounds: (Point3<f64>, Point3<f64>),
     /// Plane origin point.
     pub plane_origin: Point3<f64>,
@@ -44,6 +46,28 @@ pub struct CrossSection {
     pub plane_normal: Vector3<f64>,
     /// Number of separate contours found.
     pub contour_count: usize,
+    /// The individual closed loops, each with its own area/perimeter/centroid/
+    /// bounds. A horizontal slice through a limb is normally one contour; a
+    /// second loop appears from a noise island, the fibular head, or a flexed
+    /// joint — callers that want "the limb" should use [`largest_contour`].
+    ///
+    /// [`largest_contour`]: CrossSection::largest_contour
+    pub contours: Vec<Contour>,
+}
+
+/// One closed loop of a cross-section, with its own measurements.
+#[derive(Debug, Clone)]
+pub struct Contour {
+    /// Ordered boundary points of this loop.
+    pub points: Vec<Point3<f64>>,
+    /// Enclosed area (`|shoelace|`).
+    pub area: f64,
+    /// Loop perimeter.
+    pub perimeter: f64,
+    /// Point-mean centroid of this loop.
+    pub centroid: Point3<f64>,
+    /// Bounding box of this loop (min, max).
+    pub bounds: (Point3<f64>, Point3<f64>),
 }
 
 impl Default for CrossSection {
@@ -57,6 +81,7 @@ impl Default for CrossSection {
             plane_origin: Point3::origin(),
             plane_normal: Vector3::z(),
             contour_count: 0,
+            contours: Vec::new(),
         }
     }
 }
@@ -74,6 +99,15 @@ impl CrossSection {
     #[must_use]
     pub const fn is_closed(&self) -> bool {
         self.contour_count > 0
+    }
+
+    /// The contour with the largest enclosed area — "the limb" when stray
+    /// islands or a second loop are present. `None` if there are no contours.
+    #[must_use]
+    pub fn largest_contour(&self) -> Option<&Contour> {
+        self.contours
+            .iter()
+            .max_by(|a, b| a.area.total_cmp(&b.area))
     }
 }
 
@@ -151,31 +185,32 @@ pub fn cross_section(
         };
     }
 
-    // Chain segments into contours
-    let contours = chain_segments(&segments);
+    // Chain segments into separate closed loops, and measure each loop on its
+    // OWN points — NOT a single shoelace over the concatenation, which would
+    // wrap across loop boundaries and blend disjoint contours into garbage.
+    let contours: Vec<Contour> = chain_segments(&segments)
+        .into_iter()
+        .map(|pts| build_contour(pts, normal))
+        .collect();
     let contour_count = contours.len();
 
-    // Flatten all points for calculations
-    let all_points: Vec<Point3<f64>> = contours.into_iter().flatten().collect();
-
-    // Calculate perimeter
-    let mut perimeter = 0.0;
-    for segment in &segments {
-        perimeter += (segment.1 - segment.0).norm();
-    }
-
-    // Calculate area using the shoelace formula (projected to 2D on plane)
-    let area = calculate_cross_section_area(&all_points, normal);
-
-    // Calculate centroid
-    let centroid = if all_points.is_empty() {
+    let all_points: Vec<Point3<f64>> = contours.iter().flat_map(|c| c.points.clone()).collect();
+    let area: f64 = contours.iter().map(|c| c.area).sum();
+    let perimeter: f64 = contours.iter().map(|c| c.perimeter).sum();
+    let total_w: f64 = contours.iter().map(|c| c.area).sum();
+    let centroid = if total_w > 1e-15 {
+        let acc: Vector3<f64> = contours
+            .iter()
+            .map(|c| c.centroid.coords * c.area)
+            .sum::<Vector3<f64>>()
+            / total_w;
+        Point3::from(acc)
+    } else if all_points.is_empty() {
         plane_point
     } else {
         let sum: Vector3<f64> = all_points.iter().map(|p| p.coords).sum();
         Point3::from(sum / all_points.len() as f64)
     };
-
-    // Calculate bounds
     let (min, max) = compute_points_bounds(&all_points);
 
     CrossSection {
@@ -187,7 +222,46 @@ pub fn cross_section(
         plane_origin: plane_point,
         plane_normal: normal,
         contour_count,
+        contours,
     }
+}
+
+/// Measure a single closed loop (area via shoelace, perimeter, point-mean
+/// centroid, bounds).
+fn build_contour(points: Vec<Point3<f64>>, normal: Vector3<f64>) -> Contour {
+    let area = calculate_cross_section_area(&points, normal);
+    let perimeter = contour_perimeter(&points);
+    let centroid = if points.is_empty() {
+        Point3::origin()
+    } else {
+        let sum: Vector3<f64> = points.iter().map(|p| p.coords).sum();
+        Point3::from(sum / points.len() as f64)
+    };
+    let bounds = compute_points_bounds(&points);
+    Contour {
+        points,
+        area,
+        perimeter,
+        centroid,
+        bounds,
+    }
+}
+
+/// Perimeter of an ordered loop: consecutive edge lengths, closing the loop if
+/// the endpoints aren't already coincident.
+fn contour_perimeter(pts: &[Point3<f64>]) -> f64 {
+    if pts.len() < 2 {
+        return 0.0;
+    }
+    let mut per = 0.0;
+    for w in pts.windows(2) {
+        per += (w[1] - w[0]).norm();
+    }
+    let gap = (pts[pts.len() - 1] - pts[0]).norm();
+    if gap > 1e-6 {
+        per += gap;
+    }
+    per
 }
 
 /// Extract multiple cross-sections at regular intervals.
@@ -439,6 +513,55 @@ fn compute_points_bounds(points: &[Point3<f64>]) -> (Point3<f64>, Point3<f64>) {
 mod tests {
     use super::*;
     use mesh_types::unit_cube;
+
+    /// Two disjoint unit cubes, the second offset by `gap_x` in +x.
+    fn two_disjoint_cubes(gap_x: f64) -> IndexedMesh {
+        let mut m = unit_cube();
+        let b = unit_cube();
+        let base = u32::try_from(m.vertices.len()).unwrap_or_default();
+        for v in &b.vertices {
+            m.vertices.push(Point3::new(v.x + gap_x, v.y, v.z));
+        }
+        for f in &b.faces {
+            m.faces.push([f[0] + base, f[1] + base, f[2] + base]);
+        }
+        m
+    }
+
+    #[test]
+    fn multi_contour_measures_are_per_loop_not_blended() {
+        // Regression: a slice through two disjoint loops used to flatten all
+        // points and run ONE shoelace across the loop boundary → garbage area.
+        let z = 0.5;
+        let single_area = area_at_height(&unit_cube(), z);
+        let single_perim = circumference_at_height(&unit_cube(), z);
+        assert!(single_area > 0.0);
+
+        let two = two_disjoint_cubes(3.0);
+        let sec = cross_section(&two, Point3::new(0.0, 0.0, z), Vector3::z());
+
+        assert_eq!(sec.contour_count, 2, "two disjoint cubes → two contours");
+        assert_eq!(sec.contours.len(), 2);
+        // Total area = SUM of the two loops, not a wrapped-shoelace artifact.
+        assert!(
+            (sec.area - 2.0 * single_area).abs() < 0.02 * single_area,
+            "blended area {} != 2 × {single_area}",
+            sec.area
+        );
+        assert!((sec.perimeter - 2.0 * single_perim).abs() < 0.02 * single_perim);
+        // The "limb" accessor returns one cube's worth, not the union.
+        let lc_area = sec.largest_contour().map_or(0.0, |c| c.area);
+        assert!(
+            (lc_area - single_area).abs() < 0.02 * single_area,
+            "largest-contour area {lc_area} != {single_area}"
+        );
+        // Each loop's centroid sits at its own cube, not the midpoint between.
+        let cxs: Vec<f64> = sec.contours.iter().map(|c| c.centroid.x).collect();
+        assert!(
+            cxs.iter().any(|&x| x < 1.0) && cxs.iter().any(|&x| x > 2.0),
+            "contour centroids should be at the two cubes, got {cxs:?}"
+        );
+    }
 
     fn create_test_cube(size: f64) -> IndexedMesh {
         let mut cube = unit_cube();

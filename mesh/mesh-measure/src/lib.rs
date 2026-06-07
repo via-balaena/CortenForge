@@ -63,7 +63,7 @@ mod obb;
 
 // Re-export main types and functions
 pub use cross_section::{
-    CrossSection, area_at_height, circumference_at_height, cross_section, cross_sections,
+    Contour, CrossSection, area_at_height, circumference_at_height, cross_section, cross_sections,
 };
 pub use dimensions::{Dimensions, dimensions};
 pub use distance::{

@@ -128,3 +128,28 @@ fn detects_landmarks_within_tolerance() {
     println!("all synthetic legs within tolerance (knee ±10mm, width ±8mm, length ±5%)");
     println!("================================================================\n");
 }
+
+/// A stray disconnected island (scan noise / un-cleaned blob) near the knee must
+/// NOT corrupt the area profile — the detector tracks the largest contour, so
+/// the small island is ignored and the knee is still found.
+#[test]
+fn ignores_noise_island() {
+    let (mut mesh, gt) = LegSpec::default_leg().build(160, 64);
+    // ~1 cm cube floating 15 cm off-axis at knee height — a separate contour.
+    let island = cf_anthro::markers::cube(mesh_types::Point3::new(0.15, 0.0, gt.knee_z), 0.005);
+    let base = mesh.vertices.len() as u32;
+    mesh.vertices.extend(island.vertices.iter().copied());
+    mesh.faces.extend(
+        island
+            .faces
+            .iter()
+            .map(|f| [f[0] + base, f[1] + base, f[2] + base]),
+    );
+
+    let lm = detect_landmarks(&mesh).expect("a small island should be ignored, not fatal");
+    let knee_dmm = (lm.knee_z - gt.knee_z) * 1000.0;
+    assert!(
+        knee_dmm.abs() < 10.0,
+        "knee off by {knee_dmm:.2}mm with a noise island present — largest-contour failed"
+    );
+}
