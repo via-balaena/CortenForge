@@ -2376,6 +2376,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-msk-lib"
+version = "1.0.0"
+dependencies = [
+ "cf-osim",
+ "nalgebra 0.34.2",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "cf-osim"
 version = "1.0.0"
 dependencies = [

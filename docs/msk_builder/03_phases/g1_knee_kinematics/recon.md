@@ -282,6 +282,23 @@ canonical knee, no scan).
   within S0 tolerance; the canonical (no-scan) body emits and passes the same oracle check.
   *(This bundle is the ground truth the rest of the program is graded on.)*
 
+**S1 progress (2026-06-07) — library/parameter spine SHIPPED (`tools/cf-msk-lib`).** New crate with
+`BodyParams` (per-segment scale; `IDENTITY`/`uniform`), the pure `realize(template, params)` morph
+(ported verbatim from the validated spike), the `ParamSource` trait + `CanonicalSource`, and
+`build_canonical(template)` — the headline **builder-first artifact**. `tests/builder_first.rs` (4
+CI tests, not `#[ignore]`): the canonical **no-scan** knee reproduces the oracle **<5 mm** for all
+four muscles (the S1 gate, through the production API); `build_canonical` is **byte-identical** to
+`emit_coupled_knee` (the morph layer is a true no-op); a committed `tests/assets/knee_ref.xml`
+snapshot pins the canonical MJCF bytes; a uniform scale is an exact dilation. grade = A (Safety 0 /
+deps justified); fmt + clippy `-D warnings` clean; `cf-osim` cross-check + spikes still green.
+**Two S1 items DEFERRED (deliberate, tracked):** (a) **generalizing the IR** into source-agnostic
+`Segment`/`Joint`/`MusclePath` — v1 reuses `cf_osim::osim::Subgraph` as the template (re-exported as
+`cf_msk_lib::Template`); generalizing one joint is premature, do it when a 2nd joint needs it; (b)
+the **`cf-mjcf-emit` crate split** — `emit_coupled_knee` already works, so the split is cosmetic for
+now (`cf-msk-lib` depends on `cf-osim` for both template + emit; the dependency inverts when the IR
+generalizes). Also not yet done: the serialized `knee_oracle.json` bundle (the vendored OpenSim JSON
+already serves as the moment-arm anchor) and promoting `cf-osim` panics → `Result`.
+
 ### S2 — Landmark detection on the scan *(heuristics-first, no ML)*
 From a cleaned leg scan, detect: knee joint-line height (cross-sectional-area minimum along the
 centerline between thigh & calf girth maxima), epicondyle mediolateral width (OBB extent at that
