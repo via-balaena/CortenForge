@@ -119,6 +119,7 @@ pub fn parse(xml: &str) -> Node {
                 stack.last_mut().unwrap().children.push(node);
             }
             Ok(Event::Eof) => break,
+            // the vendored .osim is well-formed; a parse error = corrupt asset.
             Err(e) => panic!("XML parse error: {e}"),
             _ => {}
         }

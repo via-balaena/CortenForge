@@ -220,6 +220,7 @@ fn push_fixed(body: &str, line: &str, pelvis: &mut String, femur: &mut String, t
         "pelvis" | "ground" => pelvis.push_str(line),
         "femur_r" => femur.push_str(line),
         "tibia_r" => tibia.push_str(line),
+        // S0 emits only the knee subgraph; any other body is a caller bug.
         other => panic!("S0 knee-only model has no body '{other}'"),
     }
 }

@@ -238,11 +238,13 @@ fn parse_muscle(root: &Node, name: &str) -> Muscle {
     let node = ["Millard2012EquilibriumMuscle", "Thelen2003Muscle"]
         .iter()
         .find_map(|tag| root.find_with_attr(tag, "name", name))
+        // the four G1 muscles are always present in gait2392.
         .unwrap_or_else(|| panic!("muscle '{name}' not found"));
 
     let objects = node
         .find("PathPointSet")
         .and_then(|s| s.child("objects"))
+        // every gait2392 muscle carries a PathPointSet/objects block.
         .unwrap_or_else(|| panic!("muscle '{name}' has no PathPointSet/objects"));
 
     let path = objects
@@ -321,6 +323,7 @@ fn spline_from(node: &Node) -> Spline {
             .unwrap_or(0.0);
         return Spline::constant(v * scale);
     }
+    // gait2392's knee uses only SimmSpline + Constant function shapes.
     panic!(
         "spline_from: <{}> has an unsupported function shape (not SimmSpline/Constant)",
         node.name
@@ -329,6 +332,7 @@ fn spline_from(node: &Node) -> Spline {
 
 fn transform_axis<'a>(spatial: &'a Node, axis_name: &str) -> &'a Node {
     spatial
+        // the knee CustomJoint always defines this TransformAxis.
         .find_with_attr("TransformAxis", "name", axis_name)
         .unwrap_or_else(|| panic!("TransformAxis '{axis_name}' not found"))
 }
@@ -374,6 +378,7 @@ fn assert_zero_function(spatial: &Node, name: &str) {
 
 fn find_named<'a>(root: &'a Node, tag: &str, name: &str) -> &'a Node {
     root.find_with_attr(tag, "name", name)
+        // callers pass element names known to exist in the vendored model.
         .unwrap_or_else(|| panic!("<{tag} name=\"{name}\"> not found"))
 }
 

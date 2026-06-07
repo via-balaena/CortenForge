@@ -40,6 +40,7 @@ pub fn joint_id(model: &Model, name: &str) -> usize {
         .jnt_name
         .iter()
         .position(|n| n.as_deref() == Some(name))
+        // gait2392 always defines this joint; absence = a corrupt asset.
         .unwrap_or_else(|| panic!("joint '{name}' not found in model"))
 }
 
@@ -49,6 +50,7 @@ pub fn tendon_id(model: &Model, name: &str) -> usize {
         .tendon_name
         .iter()
         .position(|n| n.as_deref() == Some(name))
+        // gait2392 always defines this tendon; absence = a corrupt asset.
         .unwrap_or_else(|| panic!("tendon '{name}' not found in model"))
 }
 

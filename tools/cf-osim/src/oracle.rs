@@ -94,6 +94,7 @@ impl<'a> Kinematics<'a> {
             "pelvis" | "ground" => Isometry3::identity(),
             "femur_r" => self.femur(),
             "tibia_r" => self.tibia(theta, variant.freeze_coupling),
+            // S0 knee-only model; any other body name is a caller bug.
             other => panic!("S0 knee-only model has no body '{other}'"),
         }
     }
