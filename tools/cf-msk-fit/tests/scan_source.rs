@@ -99,3 +99,27 @@ fn synthetic_scan_builds_loadable_model() {
     assert_eq!(emitted.muscles.len(), 4, "all four muscles emitted");
     assert!(model.ntendon >= 4, "tendons present in the loaded model");
 }
+
+#[test]
+fn scan_source_scale_tracks_leg_size() {
+    let t = template();
+
+    // A longer leg (axis stretched 1.3×) has a longer thigh → a larger scale.
+    let scale_of = |length_scale: f64| {
+        let (mesh, _) = LegSpec::default_leg()
+            .scaled(1.0, length_scale)
+            .build(220, 96);
+        let lm = detect_landmarks(&mesh).expect("detect on scaled synthetic leg");
+        ScanSource::new(lm).params(&t).femur_scale
+    };
+
+    let base = scale_of(1.0);
+    let longer = scale_of(1.3);
+
+    // Detected size flows into the model scale: a 1.3× leg scales markedly more,
+    // and roughly in proportion (the thigh length stretches ~1.3×).
+    assert!(
+        longer > base * 1.2,
+        "longer leg should scale more: base {base:.3}, longer {longer:.3}"
+    );
+}

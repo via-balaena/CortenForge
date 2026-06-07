@@ -57,7 +57,15 @@ impl ScanSource {
 
 impl ParamSource for ScanSource {
     fn params(&self, template: &Subgraph) -> BodyParams {
-        BodyParams::uniform(self.landmarks.thigh_length_m / Self::template_femur_len(template))
+        let femur_len = Self::template_femur_len(template);
+        // Precondition guard, mirroring `Fitter::new`: a degenerate template or a
+        // zero-length thigh would otherwise emit a NaN/inf scale silently.
+        debug_assert!(
+            femur_len > 1e-6 && self.landmarks.thigh_length_m > 1e-6,
+            "degenerate template femur ({femur_len}) or thigh length ({})",
+            self.landmarks.thigh_length_m
+        );
+        BodyParams::uniform(self.landmarks.thigh_length_m / femur_len)
     }
 }
 
