@@ -6,7 +6,7 @@
 
 use cf_anthro::detect_landmarks;
 use cf_anthro::synthetic::LegSpec;
-use cf_msk_fit::place_knee;
+use cf_msk_fit::{Fitter, Placement, place_knee};
 use cf_osim::oracle::{Kinematics, Variant};
 use cf_osim::osim::parse_knee_subgraph;
 use mesh_types::Point3;
@@ -99,5 +99,48 @@ fn transform_is_self_consistent_at_the_hip() {
     assert!(
         rf.polyline[0].z > p.femur.distal.z,
         "rect_fem origin should be proximal to the knee"
+    );
+}
+
+#[test]
+fn flexion_moves_tibia_and_muscles_but_not_the_femur() {
+    let (leg, _gt) = LegSpec::default_leg().build(160, 64);
+    let lm = detect_landmarks(&leg).expect("detect");
+    let sub = parse_knee_subgraph(&gait2392());
+    let fit = Fitter::new(&sub, &lm);
+    let ext = fit.pose(0.0);
+    let flex = fit.pose(-90f64.to_radians());
+
+    // The femur is fixed — knee flexion doesn't move the thigh bone.
+    assert!(
+        (ext.femur.proximal - flex.femur.proximal).norm() < 1e-12,
+        "femur moved"
+    );
+    assert!((ext.femur.distal - flex.femur.distal).norm() < 1e-12);
+
+    // The tibia swings substantially about the knee, keeping its (rigid) length.
+    let swing = (ext.tibia.distal - flex.tibia.distal).norm();
+    assert!(swing > 0.1, "tibia barely swung ({swing} m) at 90° flexion");
+    let len = |p: &Placement| (p.tibia.proximal - p.tibia.distal).norm();
+    assert!(
+        (len(&ext) - len(&flex)).abs() < 1e-9,
+        "tibia length changed under flexion"
+    );
+
+    // Muscle paths re-route with flexion (the moment arms at work).
+    let path = |p: &Placement, n: &str| -> f64 {
+        p.muscles
+            .iter()
+            .find(|m| m.name == n)
+            .unwrap()
+            .polyline
+            .windows(2)
+            .map(|w| (w[1] - w[0]).norm())
+            .sum()
+    };
+    let d = (path(&ext, "semimem_r") - path(&flex, "semimem_r")).abs();
+    assert!(
+        d > 0.01,
+        "semimem length barely changed with flexion ({d} m)"
     );
 }
