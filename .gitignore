@@ -146,3 +146,7 @@ examples/cast/*/out/*.stl
 # /CortenForge/
 # /mesh/
 # /lumen-geometry/
+
+# Python bytecode (from the OpenSim asset generators)
+__pycache__/
+*.pyc
