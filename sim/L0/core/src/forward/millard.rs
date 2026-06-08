@@ -91,6 +91,7 @@ fn calc_u(ax: f64, px: &[f64; 6]) -> f64 {
 /// joins `(x0,y0)` with tangent `dydx0` to `(x1,y1)` with tangent `dydx1`,
 /// rounded by corner-fraction `c ∈ [0,1]`. Port of
 /// `SegmentedQuinticBezierToolkit::calcQuinticBezierCornerControlPoints`.
+// Short knot/slope/control-point names (x0, y0, dydx0, …) mirror the ported OpenSim source.
 #[allow(clippy::similar_names, clippy::many_single_char_names)]
 fn corner(
     x0: f64,
@@ -215,6 +216,7 @@ impl MillardCurves {
 /// and gait2392 use; note the standalone `ActiveForceLengthCurve` *class* default is
 /// 0.1, so this is bound to the validation target. The other knots/slopes match the
 /// class defaults.
+// Short knot/slope/control-point names (x0, y0, dydx0, …) mirror the ported OpenSim source.
 #[allow(clippy::similar_names, clippy::many_single_char_names)]
 fn active_force_length_curve() -> SmoothSegmentedFunction {
     let (x0, x1, x2, x3) = (0.4441, 0.73, 1.0, 1.8123);
@@ -265,6 +267,7 @@ fn active_force_length_curve() -> SmoothSegmentedFunction {
 /// (`createFiberForceLengthCurve`): strain at zero force 0.0, strain at one
 /// norm force 0.7, low-force stiffness 0.2, one-norm-force stiffness 2/0.7,
 /// curviness 0.75.
+// Short knot/slope/control-point names (x0, y0, dydx0, …) mirror the ported OpenSim source.
 #[allow(clippy::similar_names, clippy::many_single_char_names)]
 fn passive_force_length_curve() -> SmoothSegmentedFunction {
     let e_zero: f64 = 0.0;
@@ -301,6 +304,7 @@ fn passive_force_length_curve() -> SmoothSegmentedFunction {
 /// Default Millard fiber-force-velocity curve (`createFiberForceVelocityCurve`):
 /// max eccentric multiplier 1.4, concentric slopes 0/0.25, isometric slope 5.0,
 /// eccentric slopes 0/0.15, concentric curviness 0.6, eccentric 0.9.
+// Short knot/slope/control-point names (x0, y0, dydx0, …) mirror the ported OpenSim source.
 #[allow(clippy::similar_names, clippy::many_single_char_names)]
 fn force_velocity_curve() -> SmoothSegmentedFunction {
     let fmax_e = 1.4;
@@ -342,13 +346,13 @@ fn force_velocity_curve() -> SmoothSegmentedFunction {
 /// alternative to four bare same-typed `f64` arguments).
 #[derive(Clone, Copy, Debug)]
 pub struct MillardMuscleParams {
-    /// Max isometric force [N].
+    /// Max isometric force, newtons.
     pub f0: f64,
-    /// Optimal fiber length [m].
+    /// Optimal fiber length, meters.
     pub l0: f64,
-    /// Tendon slack length [m].
+    /// Tendon slack length, meters.
     pub lts: f64,
-    /// Pennation angle at optimal fiber length [rad].
+    /// Pennation angle at optimal fiber length, radians.
     pub penn0: f64,
 }
 
@@ -360,7 +364,7 @@ pub struct MillardMuscleParams {
 /// force-velocity factor is 1.
 ///
 /// - `p`: the muscle's [`MillardMuscleParams`]
-/// - `mtu`: musculotendon (path) length [m]
+/// - `mtu`: musculotendon (path) length, meters
 /// - `act`: activation in `[0,1]`
 // `imprecise_flops`: keep the naive `sqrt(a²+b²)` (not `hypot`) to match OpenSim's
 // MuscleFixedWidthPennationModel bit-for-bit.
@@ -461,5 +465,24 @@ mod spotcheck {
             "PFL(1)={}",
             c.passive_fl(1.0)
         );
+    }
+
+    /// Force assembly at optimal fiber length, zero pennation (cos = 1, AFL = 1,
+    /// passive = 0): the path force is exactly `act · F0`, and activation scales it.
+    #[test]
+    fn isometric_force_at_optimal_length() {
+        let c = MillardCurves::default();
+        // mtu = lts + l0 ⇒ along-tendon = l0, penn0 = 0 ⇒ fiber = l0 ⇒ norm_len = 1.
+        let p = MillardMuscleParams {
+            f0: 1000.0,
+            l0: 0.1,
+            lts: 0.2,
+            penn0: 0.0,
+        };
+        let mtu = p.lts + p.l0;
+        assert!((millard_isometric_path_force(&c, p, mtu, 1.0) - 1000.0).abs() < 1e-9);
+        assert!((millard_isometric_path_force(&c, p, mtu, 0.5) - 500.0).abs() < 1e-9);
+        // Passive-only (activation 0) at resting length is 0 N.
+        assert!(millard_isometric_path_force(&c, p, mtu, 0.0).abs() < 1e-9);
     }
 }
