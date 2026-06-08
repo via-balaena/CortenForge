@@ -116,6 +116,15 @@ impl RandomizerConfig {
             "max_decoupling must be ≥ 0 ({})",
             self.max_decoupling
         );
+        // A decoupled draw needs a positive window, else it collapses to stature
+        // (a "decoupled" body that is actually coupled). Forbid that contradiction so
+        // the realized decoupled fraction always matches `decoupled_fraction`.
+        assert!(
+            self.decoupled_fraction == 0.0 || self.max_decoupling > 0.0,
+            "max_decoupling must be > 0 when decoupled_fraction > 0 (got {} with fraction {})",
+            self.max_decoupling,
+            self.decoupled_fraction
+        );
         assert!(
             (0.0..=1.0).contains(&self.female_fraction),
             "female_fraction must be in [0,1] ({})",
@@ -290,6 +299,16 @@ mod tests {
             ..RandomizerConfig::default()
         });
         assert!(r.population(9, 200).iter().all(|s| s.sex == Sex::Male));
+    }
+
+    #[test]
+    #[should_panic(expected = "max_decoupling must be > 0 when decoupled_fraction")]
+    fn rejects_decoupled_fraction_without_a_window() {
+        let _ = RandomizerSource::with_config(RandomizerConfig {
+            decoupled_fraction: 0.2,
+            max_decoupling: 0.0,
+            ..RandomizerConfig::default()
+        });
     }
 
     #[test]
