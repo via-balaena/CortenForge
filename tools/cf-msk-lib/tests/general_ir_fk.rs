@@ -1,34 +1,37 @@
 //! A1 checkpoint — the **general kinematic-tree IR** reproduces the validated
 //! knee oracle to machine zero.
 //!
-//! This is the productionized, CI-enforced form of the throwaway A1 spike
-//! (`cf-osim`'s `spike_general_fk.rs`): it builds the source-agnostic
-//! [`cf_msk_lib::Model`] from the knee subgraph (`Model::from_subgraph` — pelvis
-//! → femur[hip welded at neutral] → tibia[knee coupled]) and grades its
-//! transform-axis FK against `cf_osim::oracle::Kinematics` (`Variant::TRUTH`) for
-//! all four muscles across the 0→100° flexion sweep.
+//! Builds the source-agnostic [`cf_msk_lib::Model`] straight from the `.osim`
+//! reader (`cf_osim::parse_leg_chain` — pelvis → femur[hip welded at neutral] →
+//! tibia[knee coupled]) and grades its transform-axis FK against
+//! `cf_osim::oracle::Kinematics` (`Variant::TRUTH`) for all four muscles across
+//! the 0→100° flexion sweep.
 //!
-//! The general FK is the *same math* as the bespoke `Kinematics::femur()/tibia()`,
+//! The general FK is the *same math* as the oracle's bespoke `femur()/tibia()`,
 //! routed through a generic tree walker + transform-axis composition — so they
 //! must agree to ~machine epsilon. A nonzero residual here means the IR
-//! generalization diverged from the validated knee path, which gates the whole
-//! leg-region arc.
+//! generalization (or the parser) diverged from the validated knee path, which
+//! gates the whole leg-region arc.
+//!
+//! (cf-osim is a DEV dependency here — the normal dependency points cf-osim →
+//! cf-msk-lib; a dev-dependency cycle is permitted because it does not affect the
+//! normal build graph.)
 
-use cf_msk_lib::Model;
+use cf_msk_lib::{Model, Muscle};
 use cf_osim::oracle::{Kinematics, Variant};
-use cf_osim::osim::{Muscle, Subgraph, parse_knee_subgraph};
+use cf_osim::parse_leg_chain;
 use nalgebra::Point3;
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
 const DEG: f64 = PI / 180.0;
 
-fn template() -> Subgraph {
+fn model() -> Model {
     let path = format!(
         "{}/../../sim/L0/tests/assets/opensim_gait2392/gait2392.osim",
         env!("CARGO_MANIFEST_DIR")
     );
-    parse_knee_subgraph(&std::fs::read_to_string(path).expect("read gait2392.osim"))
+    parse_leg_chain(&std::fs::read_to_string(path).expect("read gait2392.osim"))
 }
 
 /// Muscle path length at knee angle `theta` via the general IR FK: sum of the
@@ -52,15 +55,14 @@ fn ir_moment_arm(model: &Model, m: &Muscle, theta: f64, eps: f64) -> f64 {
 
 #[test]
 fn general_ir_fk_reproduces_knee_oracle_to_machine_zero() {
-    let sub = template();
-    let oracle = Kinematics::new(&sub);
-    let model = Model::from_subgraph(&sub);
+    let model = model();
+    let oracle = Kinematics::new(&model);
 
     let angles: Vec<f64> = (0..=20).map(|i| -(i as f64) * 5.0 * DEG).collect();
     let eps = 0.5 * DEG;
 
     let mut worst = 0.0_f64;
-    for m in &sub.muscles {
+    for m in &model.muscles {
         for &th in &angles {
             let ours = ir_moment_arm(&model, m, th, eps);
             let truth = oracle.moment_arm(m, th, eps, Variant::TRUTH);
@@ -78,11 +80,11 @@ fn general_ir_fk_reproduces_knee_oracle_to_machine_zero() {
     assert!(worst < 1e-9, "worst |Δ moment arm| = {worst:.2e} mm");
 }
 
-/// The bridge wires the chain the spike validated: pelvis (root) → femur_r (hip
-/// welded, just the offset) → tibia_r (knee: 1 rotation + 3 coupled translations).
+/// The parser wires the chain the spike validated: pelvis (root) → femur_r (hip
+/// welded, just the offset) → tibia_r (knee: 1 rotation + 3 translation axes).
 #[test]
-fn from_subgraph_builds_the_knee_chain() {
-    let model = Model::from_subgraph(&template());
+fn parse_leg_chain_builds_the_knee_chain() {
+    let model = model();
     assert_eq!(
         model
             .bodies
@@ -95,9 +97,10 @@ fn from_subgraph_builds_the_knee_chain() {
     assert_eq!(model.bodies[1].parent, Some(0));
     assert_eq!(model.bodies[2].parent, Some(1));
     assert!(model.bodies[1].joint.is_empty(), "hip is welded at neutral");
-    // tibia: one rotation (the flexion hinge) + three translation axes (tx/ty/tz).
+    // tibia: three rotation axes (one driven flexion + two zero) + three
+    // translation axes (two coupled splines + one zero) — the gait2392 knee.
     let tibia = &model.bodies[2].joint;
-    assert_eq!(tibia.iter().filter(|a| a.rotation).count(), 1);
+    assert_eq!(tibia.iter().filter(|a| a.rotation).count(), 3);
     assert_eq!(tibia.iter().filter(|a| !a.rotation).count(), 3);
     assert_eq!(model.coordinates.len(), 1);
     assert_eq!(model.coordinates[0].name, "knee_angle_r");

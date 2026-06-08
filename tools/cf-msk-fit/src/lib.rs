@@ -17,9 +17,8 @@
 //!   convention; if a real scan's M-L axis differs, it gets re-pinned at v2.
 
 use cf_anthro::Landmarks;
-use cf_msk_lib::{BodyParams, ParamSource};
+use cf_msk_lib::{BodyParams, Model, ParamSource};
 use cf_osim::oracle::{Kinematics, Variant};
-use cf_osim::osim::Subgraph;
 use nalgebra::{Matrix3, Point3, Vector3};
 
 pub mod scorecard;
@@ -48,7 +47,7 @@ impl ScanSource {
 
     /// Template femur length (hip→knee at extension) — the same quantity
     /// [`Fitter::new`] measures to set its scale.
-    fn template_femur_len(template: &Subgraph) -> f64 {
+    fn template_femur_len(template: &Model) -> f64 {
         let kin = Kinematics::new(template);
         let at0 = |body: &str| kin.body_pose(body, 0.0, Variant::TRUTH) * Point3::origin();
         (at0("femur_r") - at0("tibia_r")).norm()
@@ -56,7 +55,7 @@ impl ScanSource {
 }
 
 impl ParamSource for ScanSource {
-    fn params(&self, template: &Subgraph) -> BodyParams {
+    fn params(&self, template: &Model) -> BodyParams {
         let femur_len = Self::template_femur_len(template);
         // Precondition guard, mirroring `Fitter::new`: a degenerate template or a
         // zero-length thigh would otherwise emit a NaN/inf scale silently.
@@ -108,8 +107,8 @@ pub struct Placement {
 /// A fitted knee: the similarity transform (scan ← OpenSim, anchored at full
 /// extension) plus the geometry to pose the skeleton at any flexion angle.
 pub struct Fitter<'a> {
-    sub: &'a Subgraph,
-    kin: Kinematics<'a>,
+    model: &'a Model,
+    kin: Kinematics,
     r: Matrix3<f64>,
     scale: f64,
     knee_osim: Point3<f64>,
@@ -122,8 +121,8 @@ pub struct Fitter<'a> {
 
 impl<'a> Fitter<'a> {
     /// Build the placement transform from the model + landmarks (at θ=0).
-    pub fn new(sub: &'a Subgraph, lm: &Landmarks) -> Self {
-        let kin = Kinematics::new(sub);
+    pub fn new(model: &'a Model, lm: &Landmarks) -> Self {
+        let kin = Kinematics::new(model);
         let v = Variant::TRUTH;
         let at0 = |body: &str, loc: Vector3<f64>| kin.body_pose(body, 0.0, v) * Point3::from(loc);
 
@@ -155,7 +154,7 @@ impl<'a> Fitter<'a> {
         );
 
         Fitter {
-            sub,
+            model,
             kin,
             r,
             scale,
@@ -196,7 +195,7 @@ impl<'a> Fitter<'a> {
             distal: xform(world("tibia_r", self.tibia_distal_loc)),
         };
         let muscles = self
-            .sub
+            .model
             .muscles
             .iter()
             .map(|m| PlacedMuscle {
@@ -220,7 +219,7 @@ impl<'a> Fitter<'a> {
     }
 }
 
-/// Place the OpenSim knee subgraph onto the detected landmarks at full extension.
-pub fn place_knee(sub: &Subgraph, lm: &Landmarks) -> Placement {
-    Fitter::new(sub, lm).pose(0.0)
+/// Place the OpenSim knee model onto the detected landmarks at full extension.
+pub fn place_knee(model: &Model, lm: &Landmarks) -> Placement {
+    Fitter::new(model, lm).pose(0.0)
 }

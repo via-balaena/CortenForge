@@ -17,12 +17,10 @@
 //! kind }` sketch — keeping the coordinate on the axis matches the source model
 //! one-to-one and is what the validated spike used.
 //!
-//! v1 reuses `cf-osim`'s [`Spline`] and muscle path types (`Muscle`/`PathPoint`)
-//! verbatim; the direct `.osim → Model` parser and the dependency inversion that
-//! moves those types here are the next increment (recon leg-region A1, PR-2). For
-//! now [`Model::from_subgraph`] bridges the existing knee `Subgraph` into the IR
-//! so the general FK can be exercised and oracle-checked additively, with nothing
-//! removed from the validated knee path.
+//! This crate owns the model types ([`Spline`], [`Muscle`]/[`crate::PathPoint`]); the
+//! `.osim` reader produces a [`Model`] directly (`cf_osim::parse_leg_chain`), so
+//! the dependency points cf-osim → cf-msk-lib. The general FK here is graded
+//! against the validated knee oracle to machine zero in `tests/general_ir_fk.rs`.
 //!
 //! **FK convention** (the thing the spike validated): the joint transform at
 //! coordinates `q` composes the rotation axes (product) and translation axes
@@ -32,7 +30,8 @@
 //! the knee oracle was validated against. Rotation order only matters away from
 //! neutral; A1 holds the multi-DOF hip at neutral.
 
-use cf_osim::osim::{Muscle, Spline, Subgraph};
+use crate::muscle::Muscle;
+use crate::spline::Spline;
 use nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
 use std::collections::HashMap;
 
@@ -89,10 +88,9 @@ pub type Joint = Vec<TransformAxis>;
 
 /// A generalized coordinate (DOF) of the model.
 ///
-/// `range` is `None` when the source can't supply it — the [`Model::from_subgraph`]
-/// bridge has no range information, whereas the direct `.osim` parser (PR-2) fills
-/// it. FK does not use `default`/`range`; they exist for the emitter (joint ranges)
-/// and for posing the model at its defaults.
+/// `range` is `None` when the source can't supply it. FK does not use
+/// `default`/`range`; they exist for the emitter (joint ranges) and for posing the
+/// model at its defaults.
 #[derive(Debug, Clone)]
 pub struct Coordinate {
     pub name: String,
@@ -165,67 +163,6 @@ impl Model {
         match self.index_of(name) {
             Some(idx) => self.world_pose(idx, q),
             None => Isometry3::identity(),
-        }
-    }
-
-    /// Build the general tree that represents the knee chain from the parsed knee
-    /// [`Subgraph`] — the productionized form of the A1 spike's `knee_chain_model`:
-    /// `pelvis` (root) → `femur_r` (hip held at neutral: just the `hip_in_pelvis`
-    /// offset, no DOFs) → `tibia_r` (the coupled knee: a unit-gain flexion rotation
-    /// about the flexion axis plus the three coordinate-coupled translation splines
-    /// along the femur x/y/z axes).
-    ///
-    /// This is the additive PR-1 bridge: it lets the general FK be exercised and
-    /// oracle-checked without inverting the cf-osim ↔ cf-msk-lib dependency. The
-    /// direct `.osim → Model` parser (which also reads the real hip joint for A2)
-    /// replaces it in PR-2.
-    pub fn from_subgraph(sub: &Subgraph) -> Model {
-        let k = &sub.knee;
-        // The three knee translation splines, each along its femur basis axis.
-        let translation = |axis: Vector3<f64>, spline: &Spline| TransformAxis {
-            rotation: false,
-            axis,
-            coordinate: "knee_angle_r".into(),
-            function: TransformFn::Spline(spline.clone()),
-        };
-        let bodies = vec![
-            Body {
-                name: "pelvis".into(),
-                parent: None,
-                location_in_parent: Vector3::zeros(),
-                joint: vec![],
-            },
-            Body {
-                name: "femur_r".into(),
-                parent: Some(0),
-                location_in_parent: sub.hip_in_pelvis,
-                joint: vec![], // hip welded at neutral for the knee study
-            },
-            Body {
-                name: "tibia_r".into(),
-                parent: Some(1),
-                location_in_parent: Vector3::zeros(),
-                joint: vec![
-                    TransformAxis {
-                        rotation: true,
-                        axis: k.flexion_axis,
-                        coordinate: "knee_angle_r".into(),
-                        function: TransformFn::Linear { coeff: 1.0 },
-                    },
-                    translation(Vector3::x(), &k.tx),
-                    translation(Vector3::y(), &k.ty),
-                    translation(Vector3::z(), &k.tz),
-                ],
-            },
-        ];
-        Model {
-            bodies,
-            coordinates: vec![Coordinate {
-                name: "knee_angle_r".into(),
-                default: 0.0,
-                range: None,
-            }],
-            muscles: sub.muscles.clone(),
         }
     }
 }

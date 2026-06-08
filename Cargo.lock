@@ -2363,10 +2363,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-mjcf-emit"
+version = "1.0.0"
+dependencies = [
+ "cf-msk-lib",
+ "cf-osim",
+ "nalgebra 0.34.2",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "cf-msk-fit"
 version = "1.0.0"
 dependencies = [
  "cf-anthro",
+ "cf-mjcf-emit",
  "cf-msk-lib",
  "cf-osim",
  "mesh-io",
@@ -2383,8 +2395,6 @@ version = "1.0.0"
 dependencies = [
  "cf-osim",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -2392,6 +2402,7 @@ name = "cf-osim"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
+ "cf-msk-lib",
  "nalgebra 0.34.2",
  "quick-xml 0.39.2",
  "serde_json",

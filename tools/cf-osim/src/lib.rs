@@ -1,21 +1,24 @@
-//! cf-osim — OpenSim (`.osim`) → MJCF bridge for the musculoskeletal-builder arc.
+//! cf-osim — OpenSim (`.osim`) reader for the musculoskeletal-builder arc.
 //!
-//! Status: **S1 — coupled knee converter** (promoted from the S0 spike; the S0
-//! pure-hinge baseline was rejected for the coupled tibiofemoral model).
-//! See `docs/msk_builder/03_phases/g1_knee_kinematics/recon.md`.
+//! Status: **leg-region A1** — [`parse_leg_chain`] reads the gait2392 chain
+//! (pelvis → femur → tibia, hip welded at neutral) into `cf_msk_lib`'s
+//! source-agnostic [`Model`](cf_msk_lib::Model); [`oracle`] computes the
+//! OpenSim-geometry ground-truth moment arms from that `Model`. Emission lives in
+//! the sibling `cf-mjcf-emit` crate. See
+//! `docs/msk_builder/03_phases/leg_region/recon.md`.
 //!
 //! Goal: does a converted gait2392 knee reproduce the OpenSim oracle's joint
-//! center + moment-arm curves within tolerance? Validated against real OpenSim
-//! 4.6 to ~0.3 mm RMSE (`tests/opensim_cross_check.rs`).
+//! center + moment-arm curves within tolerance? The oracle is validated against
+//! real OpenSim 4.6 to ~0.3 mm RMSE (`tests/opensim_cross_check.rs`).
 //!
-//! Today this module ships only the **moment-arm extraction** helpers — the
-//! quantity the whole program is graded on — so the R4 micro-spike can prove
-//! the emit→import→moment-arm loop closes before any `.osim` parsing exists.
+//! This `lib.rs` also ships the **moment-arm extraction** helpers (read from a
+//! loaded MJCF's tendon Jacobian) — the quantity the whole program is graded on.
 
-pub mod emit;
 pub mod oracle;
 pub mod osim;
 pub mod xml;
+
+pub use osim::parse_leg_chain;
 
 use sim_core::{MjJointType, Model};
 

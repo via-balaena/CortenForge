@@ -33,7 +33,7 @@ fn aabb_of(m: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
 fn g1_gate_moment_arms_joint_center_and_containment() {
     let (leg, _gt) = LegSpec::default_leg().build(220, 96);
     let lm = detect_landmarks(&leg).expect("detect landmarks");
-    let sub = cf_osim::osim::parse_knee_subgraph(
+    let sub = cf_osim::parse_leg_chain(
         &std::fs::read_to_string(format!("{}/gait2392.osim", assets())).unwrap(),
     );
     let fit = Fitter::new(&sub, &lm);

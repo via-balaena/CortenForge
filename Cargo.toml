@@ -55,10 +55,14 @@ members = [
     # Place + scale the OpenSim knee skeleton onto detected scan landmarks
     # (the scan↔model bridge) for the musculoskeletal-builder arc, phase S3.
     "tools/cf-msk-fit",
-    # Library/parameter spine: morph a template (OpenSim knee) into a body via
-    # BodyParams + realize() + ParamSource. Builder-first (CanonicalSource =
-    # a body with NO scan). See docs/msk_builder/, phase S1.
+    # Library/parameter spine: the source-agnostic kinematic-tree IR (Model) +
+    # morph a template into a body via BodyParams + realize() + ParamSource.
+    # Builder-first (CanonicalSource = a body with NO scan). See docs/msk_builder/.
     "tools/cf-msk-lib",
+    # MJCF emitter: lower a cf-msk-lib Model into MJCF the sim engine imports,
+    # plus the no-scan build_canonical artifact. The deferred cf-mjcf-emit crate
+    # split (leg-region A1). See docs/msk_builder/03_phases/leg_region/.
+    "tools/cf-mjcf-emit",
 
     # Shared Bevy-0.18 helpers (orbit camera + up-axis convention) consumed by
     # cf-viewer + sim-bevy + sim-bevy-soft.

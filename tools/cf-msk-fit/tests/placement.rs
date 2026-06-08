@@ -8,7 +8,7 @@ use cf_anthro::detect_landmarks;
 use cf_anthro::synthetic::LegSpec;
 use cf_msk_fit::{Fitter, Placement, place_knee};
 use cf_osim::oracle::{Kinematics, Variant};
-use cf_osim::osim::parse_knee_subgraph;
+use cf_osim::parse_leg_chain;
 use mesh_types::Point3;
 use nalgebra::Vector3;
 
@@ -24,7 +24,7 @@ fn gait2392() -> String {
 fn places_knee_at_landmark_and_scales_bones() {
     let (leg, _gt) = LegSpec::default_leg().build(160, 64);
     let lm = detect_landmarks(&leg).expect("detect landmarks");
-    let sub = parse_knee_subgraph(&gait2392());
+    let sub = parse_leg_chain(&gait2392());
     let p = place_knee(&sub, &lm);
 
     // The joint center is exactly the detected knee, and both bones meet there.
@@ -90,7 +90,7 @@ fn transform_is_self_consistent_at_the_hip() {
     // the same similarity transform the muscles use (no kink at the femur).
     let (leg, _gt) = LegSpec::default_leg().build(160, 64);
     let lm = detect_landmarks(&leg).expect("detect");
-    let sub = parse_knee_subgraph(&gait2392());
+    let sub = parse_leg_chain(&gait2392());
     let p = place_knee(&sub, &lm);
 
     // rect_fem_r originates on the pelvis (above the hip); its first point should
@@ -106,7 +106,7 @@ fn transform_is_self_consistent_at_the_hip() {
 fn flexion_moves_tibia_and_muscles_but_not_the_femur() {
     let (leg, _gt) = LegSpec::default_leg().build(160, 64);
     let lm = detect_landmarks(&leg).expect("detect");
-    let sub = parse_knee_subgraph(&gait2392());
+    let sub = parse_leg_chain(&gait2392());
     let fit = Fitter::new(&sub, &lm);
     let ext = fit.pose(0.0);
     let flex = fit.pose(-90f64.to_radians());

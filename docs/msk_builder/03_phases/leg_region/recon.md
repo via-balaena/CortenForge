@@ -58,12 +58,17 @@ The hardest part (the FK convention on a tree) is retired before any clean build
 
 ## Execution ladder
 
-- **A1 — general IR + emit, no-regression on the knee.** *(spike done)* Implement the general IR
-  (extract into `cf-msk-lib`), the general parser (`cf-osim` reads all chain joints/bodies into it),
-  the general oracle FK, and the general emitter (`cf-mjcf-emit`). **Exit:** `build_canonical`
-  reproduces today's knee MJCF byte/oracle-identical *through the general path* — the same
-  no-behavior-change checkpoint used for ScanSource. This is also where the deferred `cf-mjcf-emit`
-  crate split finally lands.
+- **A1 — general IR + emit, no-regression on the knee.** *(DONE — PR-1: general IR + FK in
+  `cf-msk-lib`; PR-2: the structural cutover.)* The general IR lives in `cf-msk-lib`; `cf-osim`'s
+  `parse_leg_chain` reads the chain into a `Model`; the oracle reads the knee from that `Model` with
+  its validated math unchanged; the general emitter is the new `cf-mjcf-emit` crate (the deferred
+  split). **Exit (as delivered, through the general path):** (1) the general IR FK reproduces the
+  oracle's moment arms to **machine zero** (`general_ir_fk`); (2) `build_canonical` reproduces the
+  oracle within the **5 mm S1 gate** for all four muscles (`bifemlh_r`, with no dropped conditional,
+  matches to ~machine precision), and is byte-stable against the general emitter's own committed
+  snapshot (`knee_ref.xml`). Note: the emitted MJCF is **not** byte-identical to the retired bespoke
+  emitter (the general emitter uses principled names/structure); functional no-regression is the
+  oracle gate, not byte-identity to the old emitter.
 - **A2 — extend to thigh–knee–shank.** Unweld the hip (3-DOF, held at a default pose) so the femur
   is placed by the hip joint; keep knee coupled. Add hip-spanning muscles to the representative set
   if needed for plausibility (e.g. a glute, iliopsoas). Oracle-validate every joint's moment arms.
