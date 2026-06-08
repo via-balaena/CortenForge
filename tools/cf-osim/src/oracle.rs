@@ -56,7 +56,18 @@ impl<'a> Kinematics<'a> {
             .path
             .iter()
             .filter(|p| p.active(theta))
-            .map(|p| self.model.body_pose(&p.body, q) * Point3::from(p.location_at(theta, false)))
+            .map(|p| {
+                // `body_pose` maps an unknown name to the world frame for ground
+                // convenience; a muscle point must ride a real body, else it would
+                // be silently placed at the origin. Fail loudly (the emitter does too).
+                assert!(
+                    self.model.index_of(&p.body).is_some(),
+                    "muscle point '{}' rides unknown body '{}'",
+                    p.name,
+                    p.body
+                );
+                self.model.body_pose(&p.body, q) * Point3::from(p.location_at(theta, false))
+            })
             .collect();
         pts.windows(2).map(|w| (w[1] - w[0]).norm()).sum()
     }
