@@ -7,7 +7,7 @@
 use cf_anthro::detect_landmarks;
 use cf_anthro::synthetic::LegSpec;
 use cf_msk_fit::{Fitter, Placement, place_knee};
-use cf_osim::oracle::{Kinematics, Variant};
+use cf_osim::oracle::{Kinematics, Pose};
 use cf_osim::parse_leg_chain;
 use mesh_types::Point3;
 use nalgebra::Vector3;
@@ -64,8 +64,9 @@ fn places_knee_at_landmark_and_scales_bones() {
 
     // Scale = thigh / OpenSim femur length (and is sane, ≈1 here).
     let kin = Kinematics::new(&sub);
-    let knee_o = kin.body_pose("tibia_r", 0.0, Variant::TRUTH) * Point3::origin();
-    let hip_o = kin.body_pose("femur_r", 0.0, Variant::TRUTH) * Point3::origin();
+    let neutral = Pose::new();
+    let knee_o = kin.body_pose("tibia_r", &neutral) * Point3::origin();
+    let hip_o = kin.body_pose("femur_r", &neutral) * Point3::origin();
     let model_femur = (hip_o - knee_o).norm();
     assert!(
         (p.scale - lm.thigh_length_m / model_femur).abs() < 1e-12,

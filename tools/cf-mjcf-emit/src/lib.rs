@@ -34,8 +34,8 @@
 //! conditional/moving points) matches the oracle to ~machine precision, anchoring
 //! that the emit geometry + coupled driving are exact. Byte stability is guarded by
 //! a committed snapshot of *this* emitter's canonical output
-//! (`tests/assets/knee_ref.xml`). The FK-vs-oracle *machine-zero* property is the
-//! separate `cf-msk-lib` `general_ir_fk` checkpoint.
+//! (`tests/assets/knee_ref.xml`). The underlying FK is the oracle itself, anchored
+//! against real OpenSim 4.6 in `cf-osim`'s `opensim_cross_check`.
 
 use cf_msk_lib::ir::TransformFn;
 use cf_msk_lib::{Body, CanonicalSource, Kind, Model, ParamSource, Spline, TransformAxis, realize};

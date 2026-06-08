@@ -21,7 +21,7 @@
 
 use cf_mjcf_emit::{build, build_canonical, emit};
 use cf_msk_lib::{BodyParams, CanonicalSource, Model, realize};
-use cf_osim::oracle::{Kinematics, Variant};
+use cf_osim::oracle::Kinematics;
 use cf_osim::parse_leg_chain;
 use cf_osim::{coupled_moment_arm, joint_id, tendon_id};
 use sim_mjcf::load_model;
@@ -95,7 +95,8 @@ fn canonical_knee_reproduces_oracle() {
             .iter()
             .zip(curve)
             .map(|(&th, &ours)| {
-                let oracle = kin.moment_arm(m, th, eps, Variant::TRUTH) * 1000.0;
+                let q = HashMap::from([("knee_angle_r".to_string(), th)]);
+                let oracle = kin.moment_arm(m, &q, "knee_angle_r", eps) * 1000.0;
                 (ours - oracle).powi(2)
             })
             .sum::<f64>()
