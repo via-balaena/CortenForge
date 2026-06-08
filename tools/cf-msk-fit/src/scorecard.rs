@@ -10,7 +10,7 @@
 //! placement — it equals the S1 cf-osim↔OpenSim agreement (~0.3 mm), re-derived
 //! through the `pose()` muscle-assembly path. Its value is a REGRESSION check:
 //! it catches a bug where `pose()` diverges from the oracle (wrong body lookup,
-//! dropped conditional point, `Variant` drift). Placement itself is graded by the
+//! dropped conditional point, pose-map drift). Placement itself is graded by the
 //! joint-center anchor + envelope containment, not by this.
 
 use crate::Fitter;

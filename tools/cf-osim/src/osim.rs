@@ -23,8 +23,15 @@ use nalgebra::Vector3;
 /// two flexors built from plain points.
 pub const TARGET_MUSCLES: [&str; 4] = ["rect_fem_r", "vas_int_r", "bifemlh_r", "semimem_r"];
 
-/// Parse the gait2392 leg chain (pelvis → femur → tibia, hip welded at neutral)
-/// plus the target muscles into the [`Model`] IR.
+/// Parse the gait2392 leg chain (pelvis → femur → tibia) plus the target muscles
+/// into the [`Model`] IR.
+///
+/// A2 **unwelds the hip**: the femur is placed by the hip `CustomJoint` read
+/// generically — its 3 rotation DOFs (flexion/adduction/rotation) plus its
+/// (zero) translation axes — and the hip coordinates join the knee coordinate as
+/// model DOFs. The coordinates' OpenSim defaults are all 0, so the canonical
+/// (default-pose) body still places the femur at the hip offset with the knee
+/// coupled — i.e. A1's neutral pose — while the hip is now articulable.
 pub fn parse_leg_chain(osim_xml: &str) -> Model {
     let root = xml::parse(osim_xml);
     let hip = find_custom_joint(&root, "hip_r");
@@ -36,13 +43,13 @@ pub fn parse_leg_chain(osim_xml: &str) -> Model {
         location_in_parent: Vector3::zeros(),
         joint: vec![],
     };
-    // Femur: hip welded at neutral → placed by the hip joint's location_in_parent,
-    // no DOFs. (A2 unwelds it: parse the hip SpatialTransform into this joint.)
+    // Femur: the hip CustomJoint, read generically (3 rotation DOFs + zero
+    // translations) — unwelded, placed by the hip joint as it articulates.
     let femur = Body {
         name: "femur_r".into(),
         parent: Some(0),
         location_in_parent: joint_location(hip),
-        joint: vec![],
+        joint: parse_spatial_transform(hip),
     };
     // Tibia: the knee CustomJoint, read generically.
     let tibia = Body {
@@ -52,10 +59,13 @@ pub fn parse_leg_chain(osim_xml: &str) -> Model {
         joint: parse_spatial_transform(knee),
     };
 
+    // Hip coordinates (proximal) then the knee coordinate.
+    let mut coordinates = parse_coordinates(hip);
+    coordinates.extend(parse_coordinates(knee));
+
     Model {
         bodies: vec![pelvis, femur, tibia],
-        // Only the knee's coordinate is free for A1 (the hip is welded).
-        coordinates: parse_coordinates(knee),
+        coordinates,
         muscles: TARGET_MUSCLES
             .iter()
             .map(|m| parse_muscle(&root, m))
@@ -247,16 +257,30 @@ fn parse_path_point(c: &Node) -> Option<PathPoint> {
                 kind: Kind::Conditional { lo: r[0], hi: r[1] },
             })
         }
-        "MovingPathPoint" => Some(PathPoint {
-            name,
-            body,
-            location: Vector3::zeros(),
-            kind: Kind::Moving(Box::new(MovingSplines {
-                x: parse_spline(c.child("x_location")?),
-                y: parse_spline(c.child("y_location")?),
-                z: parse_spline(c.child("z_location")?),
-            })),
-        }),
+        "MovingPathPoint" => {
+            // gait2392's MovingPathPoints drive all three axes off one coordinate;
+            // assert that so a multi-coordinate moving point can't be mis-modelled
+            // (the IR stores a single driving coordinate).
+            let coordinate = c.child("x_coordinate")?.text_trim().to_string();
+            for axis in ["y_coordinate", "z_coordinate"] {
+                let other = c.child(axis).map(|n| n.text_trim().to_string());
+                assert!(
+                    other.as_deref() == Some(coordinate.as_str()),
+                    "MovingPathPoint '{name}' {axis} {other:?} != x_coordinate '{coordinate}'"
+                );
+            }
+            Some(PathPoint {
+                name,
+                body,
+                location: Vector3::zeros(),
+                kind: Kind::Moving(Box::new(MovingSplines {
+                    coordinate,
+                    x: parse_spline(c.child("x_location")?),
+                    y: parse_spline(c.child("y_location")?),
+                    z: parse_spline(c.child("z_location")?),
+                })),
+            })
+        }
         _ => None,
     }
 }

@@ -19,8 +19,8 @@
 //!
 //! This crate owns the model types ([`Spline`], [`Muscle`]/[`crate::PathPoint`]); the
 //! `.osim` reader produces a [`Model`] directly (`cf_osim::parse_leg_chain`), so
-//! the dependency points cf-osim → cf-msk-lib. The general FK here is graded
-//! against the validated knee oracle to machine zero in `tests/general_ir_fk.rs`.
+//! the dependency points cf-osim → cf-msk-lib. This FK *is* `cf-osim`'s oracle,
+//! anchored against real OpenSim 4.6 in `cf-osim`'s `opensim_cross_check`.
 //!
 //! **FK convention** (the thing the spike validated): the joint transform at
 //! coordinates `q` composes the rotation axes (product) and translation axes

@@ -18,7 +18,7 @@
 
 use cf_anthro::Landmarks;
 use cf_msk_lib::{BodyParams, Model, ParamSource};
-use cf_osim::oracle::{Kinematics, Variant};
+use cf_osim::oracle::{Kinematics, Pose};
 use nalgebra::{Matrix3, Point3, Vector3};
 
 pub mod scorecard;
@@ -49,7 +49,8 @@ impl ScanSource {
     /// [`Fitter::new`] measures to set its scale.
     fn template_femur_len(template: &Model) -> f64 {
         let kin = Kinematics::new(template);
-        let at0 = |body: &str| kin.body_pose(body, 0.0, Variant::TRUTH) * Point3::origin();
+        let neutral = Pose::new();
+        let at0 = |body: &str| kin.body_pose(body, &neutral) * Point3::origin();
         (at0("femur_r") - at0("tibia_r")).norm()
     }
 }
@@ -108,7 +109,7 @@ pub struct Placement {
 /// extension) plus the geometry to pose the skeleton at any flexion angle.
 pub struct Fitter<'a> {
     model: &'a Model,
-    kin: Kinematics,
+    kin: Kinematics<'a>,
     r: Matrix3<f64>,
     scale: f64,
     knee_osim: Point3<f64>,
@@ -123,8 +124,8 @@ impl<'a> Fitter<'a> {
     /// Build the placement transform from the model + landmarks (at θ=0).
     pub fn new(model: &'a Model, lm: &Landmarks) -> Self {
         let kin = Kinematics::new(model);
-        let v = Variant::TRUTH;
-        let at0 = |body: &str, loc: Vector3<f64>| kin.body_pose(body, 0.0, v) * Point3::from(loc);
+        let neutral = Pose::new();
+        let at0 = |body: &str, loc: Vector3<f64>| kin.body_pose(body, &neutral) * Point3::from(loc);
 
         let knee_osim = at0("tibia_r", Vector3::zeros());
         let hip_osim = at0("femur_r", Vector3::zeros());
@@ -176,9 +177,10 @@ impl<'a> Fitter<'a> {
     /// about the knee with the coupled joint, and the muscle points (incl. the
     /// patella moving point) re-evaluate at `theta`.
     pub fn pose(&self, theta: f64) -> Placement {
-        let v = Variant::TRUTH;
+        // Knee flexion only; the hip stays at its neutral default (absent → 0).
+        let q = Pose::from([("knee_angle_r".to_string(), theta)]);
         let world =
-            |body: &str, loc: Vector3<f64>| self.kin.body_pose(body, theta, v) * Point3::from(loc);
+            |body: &str, loc: Vector3<f64>| self.kin.body_pose(body, &q) * Point3::from(loc);
         let xform = |q: Point3<f64>| self.kp + self.scale * (self.r * (q - self.knee_osim));
 
         let femur = Bone {
@@ -204,7 +206,7 @@ impl<'a> Fitter<'a> {
                     .path
                     .iter()
                     .filter(|pp| pp.active(theta))
-                    .map(|pp| xform(world(&pp.body, pp.location_at(theta, false))))
+                    .map(|pp| xform(world(&pp.body, pp.location_at(theta))))
                     .collect(),
             })
             .collect();

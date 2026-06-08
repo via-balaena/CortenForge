@@ -62,16 +62,27 @@ The hardest part (the FK convention on a tree) is retired before any clean build
   `cf-msk-lib`; PR-2: the structural cutover.)* The general IR lives in `cf-msk-lib`; `cf-osim`'s
   `parse_leg_chain` reads the chain into a `Model`; the oracle reads the knee from that `Model` with
   its validated math unchanged; the general emitter is the new `cf-mjcf-emit` crate (the deferred
-  split). **Exit (as delivered, through the general path):** (1) the general IR FK reproduces the
-  oracle's moment arms to **machine zero** (`general_ir_fk`); (2) `build_canonical` reproduces the
-  oracle within the **5 mm S1 gate** for all four muscles (`bifemlh_r`, with no dropped conditional,
-  matches to ~machine precision), and is byte-stable against the general emitter's own committed
-  snapshot (`knee_ref.xml`). Note: the emitted MJCF is **not** byte-identical to the retired bespoke
-  emitter (the general emitter uses principled names/structure); functional no-regression is the
-  oracle gate, not byte-identity to the old emitter.
-- **A2 — extend to thigh–knee–shank.** Unweld the hip (3-DOF, held at a default pose) so the femur
-  is placed by the hip joint; keep knee coupled. Add hip-spanning muscles to the representative set
-  if needed for plausibility (e.g. a glute, iliopsoas). Oracle-validate every joint's moment arms.
+  split). **Exit (as delivered, through the general path):** (1) at A1 the general IR FK reproduced
+  the bespoke oracle's moment arms to **machine zero** (`general_ir_fk`); A2 then folded the oracle
+  *into* that FK (the bespoke knee math + the self-check were retired — the FK is now the oracle,
+  anchored directly by the real-OpenSim cross-check). (2) `build_canonical` reproduces the oracle
+  within the **5 mm S1 gate** for all four muscles (`bifemlh_r`, with no dropped conditional, matches
+  to ~machine precision), and is byte-stable against the general emitter's own committed snapshot
+  (`knee_ref.xml`). Note: the emitted MJCF is **not** byte-identical to the retired bespoke emitter
+  (the general emitter uses principled names/structure); functional no-regression is the oracle gate,
+  not byte-identity to the old emitter.
+- **A2 — extend to thigh–knee–shank.** *(DONE — PR-1: oracle generalized to a multi-coordinate
+  pose; PR-2: the hip unweld.)* `parse_leg_chain` reads the hip `CustomJoint` into the femur joint
+  (3 rotation DOFs + zero translations) + adds the hip coordinates; the general emitter gives the
+  femur its 3 hip hinges automatically; the knee stays coupled. No new muscles needed — 3 of the 4
+  existing muscles (rect_fem_r/bifemlh_r/semimem_r) already span the hip (vas_int_r is femur-only).
+  The IR now retains each `MovingPathPoint`'s driving coordinate (so the patella is driven correctly
+  once >1 free DOF exists). **R-rot RETIRED:** the real-OpenSim cross-check
+  (`moment_arms_opensim.json`, generated via opensim 4.6) is evaluated at a **multi-DOF base pose**
+  (3 simultaneous non-zero hip rotations) — the oracle reproduces OpenSim's hip moment arms to
+  ~0.001 mm (knee 0.078 mm), pinning the rotation-composition order. The emitted twin reproduces the
+  oracle about every DOF at that pose (MuJoCo multi-hinge == our FK). Plausibility: vas_int_r (femur-
+  only) has ~0 hip moment arm; the hip-spanning muscles ~50–63 mm.
 - **A3 — real anthropometric `BodyParams`.** Generalize from per-segment *scale* to *lengths/girths*
   (+ a sex/percentile default, joint default poses). `CanonicalSource` becomes a dial-able generator.
   No oracle for a dialed body ⇒ validate by shape-correlation + plausibility (the §7 idea).
@@ -80,9 +91,9 @@ The hardest part (the FK convention on a tree) is retired before any clean build
 ## Risks
 
 - **R-FK — tree-FK convention.** *Retired by the A1 spike (0.0 mm).*
-- **R-rot — multi-DOF rotation order.** The hip's 3 rotations compose in a specific order away from
-  neutral. A1 holds the hip at neutral (order-independent); A2 must pin the order vs OpenSim when the
-  hip articulates. Bounded, not yet exercised.
+- **R-rot — multi-DOF rotation order.** *Retired by A2:* the real-OpenSim cross-check at a multi-DOF
+  base pose (3 simultaneous non-zero hip rotations) reproduces OpenSim's hip moment arms to ~0.001 mm,
+  pinning the composition order (R1·R2·R3 intrinsic, SpatialTransform order).
 - **R-wrap — wrap surfaces.** *Retired:* gait2392 is wrap-free across the whole model.
 - **R-emit — general emitter fidelity.** The general `cf-mjcf-emit` must round-trip an arbitrary
   chain through the import-only engine. De-risk = the A1 no-regression checkpoint (reproduce the knee

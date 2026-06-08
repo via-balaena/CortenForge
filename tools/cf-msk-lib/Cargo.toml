@@ -20,11 +20,3 @@ path = "src/lib.rs"
 [dependencies]
 # Vec/quat math for the IR frames + scaling path-point locations on the morph.
 nalgebra = { workspace = true }
-
-[dev-dependencies]
-# The leg-region cutover inverts the dependency: cf-osim now reads `.osim` into
-# this crate's `Model` (a normal dep cf-osim → cf-msk-lib). cf-osim's parser +
-# oracle are used here ONLY in the general-FK-vs-oracle checkpoint test, so they
-# enter as a DEV dependency — a dev-dependency cycle, which Cargo permits because
-# it does not affect the normal build graph.
-cf-osim = { path = "../cf-osim" }

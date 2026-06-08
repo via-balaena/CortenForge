@@ -5,6 +5,10 @@
       <site name="bifemlh_r_0" pos="-0.129056 -0.105091 0.0711466"/>
       <site name="semimem_r_0" pos="-0.12213 -0.0998655 0.0732675"/>
       <body name="femur_r" pos="-0.0724375965748068 -0.0677245422007741 0.0855521826590717">
+        <joint name="hip_flexion_r" type="hinge" axis="0 0 1"/>
+        <joint name="hip_adduction_r" type="hinge" axis="1 0 0"/>
+        <joint name="hip_rotation_r" type="hinge" axis="0 1 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
         <site name="vas_int_r_0" pos="0.03327 -0.220729 0.0355644"/>
         <site name="vas_int_r_1" pos="0.0384325 -0.239085 0.0326963"/>
         <body name="tibia_r_tx" pos="0 0 0">
