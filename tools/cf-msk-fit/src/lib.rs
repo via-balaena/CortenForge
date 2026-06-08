@@ -1,18 +1,21 @@
-//! cf-msk-fit — place the validated OpenSim knee onto a scan's landmarks.
+//! cf-msk-fit — the scan as a parameter source, plus the render-overlay placement.
 //!
-//! S3 of the musculoskeletal-builder arc: the bridge where the model (cf-osim's
-//! gait2392 knee, validated against real OpenSim) meets the scan (cf-anthro's
-//! detected knee point, limb axis, and segment lengths). This v1 uses a single
-//! **similarity transform** (rotate OpenSim → scan frame, scale, translate) that
-//! pins the knee joint center to the detected knee and lines the femur up the
-//! thigh; it produces the femur/tibia bones and the muscle/tendon paths in the
-//! scan frame, ready to render inside the scan.
+//! Two consumers of the scan landmarks live here:
+//! - [`ScanSource`] — the scan as a [`cf_msk_lib::ParamSource`] for the
+//!   `realize → emit` builder path. As of A3 it derives a **per-segment
+//!   anisotropic** scale (femur from thigh length, tibia from shank length — see
+//!   its docs); the shank no longer inherits the femur scale.
+//! - [`Fitter`] / [`place_knee`] — the render overlay (cf-osim's gait2392 knee,
+//!   validated against real OpenSim, posed in the scan frame for visualization).
+//!   This path still uses a single **similarity transform** (rotate OpenSim → scan
+//!   frame, scale, translate) pinning the knee center to the detected knee.
 //!
-//! Approximations (v1, called out honestly):
-//! - A SINGLE scale (thigh / OpenSim-femur length) is applied to the whole
-//!   model, so the shank muscles inherit the femur scale. A proper per-segment
-//!   anisotropic scale (the recon's `ScaleSpec`) is the S3 follow-up.
-//! - The transform is built at full knee extension (θ=0).
+//! Approximations (called out honestly):
+//! - The [`Fitter`] overlay uses a single euclidean scale (thigh / OpenSim-femur
+//!   length); the per-segment anisotropic morph lives on the [`ScanSource`] →
+//!   `realize` path. Girth (transverse) on `ScanSource` stays at the template
+//!   default until the generator supplies an anthropometric reference (A3-PR3).
+//! - The [`Fitter`] transform is built at full knee extension (θ=0).
 //! - Medio-lateral / antero-posterior orientation follows gait2392's frame
 //!   convention; if a real scan's M-L axis differs, it gets re-pinned at v2.
 
@@ -28,14 +31,15 @@ pub mod scorecard;
 /// path demoted from "the pipeline" to one [`ParamSource`] alongside
 /// `cf_msk_lib::CanonicalSource`; the same `realize → emit` path consumes both.
 ///
-/// **v1 = a single uniform scale** `thigh_length / template_femur_length`, the
-/// exact quantity [`Fitter`] computes (see `scan_source_scale_matches_fitter`).
-/// The shank inherits the femur scale: the knee-only template has no defined
-/// tibia length (no ankle), so the scan's `shank_length_m` cannot yet drive a
-/// per-segment tibia scale — that waits for an ankle, *not* for `realize`, which
-/// already supports anisotropic scaling. v1 captures the scan's **size** (scale),
-/// not its pose/orientation (the rigid placement [`Fitter::pose`] does for the
-/// render overlay).
+/// As of A3 this is a **per-segment anisotropic** scale: the femur's axial scale
+/// is `thigh_length / template_femur_axial` and the tibia's is `shank_length /
+/// template_tibia_axial` — the scan's `shank_length_m` finally drives the tibia
+/// independently, now that the ankle (`talus_r`) gives the tibia a defined length
+/// (this was the documented v1 block). Girth (transverse) stays at the template
+/// default here: a girth→scale derivation needs an anthropometric *reference*
+/// girth, which arrives with the percentile generator (A3-PR3). v1 still captures
+/// only the scan's **size** (per-segment scale), not its pose/orientation (the
+/// rigid placement [`Fitter::pose`] does that for the render overlay).
 pub struct ScanSource {
     landmarks: Landmarks,
 }
@@ -44,28 +48,24 @@ impl ScanSource {
     pub fn new(landmarks: Landmarks) -> Self {
         Self { landmarks }
     }
-
-    /// Template femur length (hip→knee at extension) — the same quantity
-    /// [`Fitter::new`] measures to set its scale.
-    fn template_femur_len(template: &Model) -> f64 {
-        let kin = Kinematics::new(template);
-        let neutral = Pose::new();
-        let at0 = |body: &str| kin.body_pose(body, &neutral) * Point3::origin();
-        (at0("femur_r") - at0("tibia_r")).norm()
-    }
 }
 
 impl ParamSource for ScanSource {
     fn params(&self, template: &Model) -> BodyParams {
-        let femur_len = Self::template_femur_len(template);
-        // Precondition guard, mirroring `Fitter::new`: a degenerate template or a
-        // zero-length thigh would otherwise emit a NaN/inf scale silently.
-        debug_assert!(
-            femur_len > 1e-6 && self.landmarks.thigh_length_m > 1e-6,
-            "degenerate template femur ({femur_len}) or thigh length ({})",
-            self.landmarks.thigh_length_m
+        // Precondition guard, enforced in ALL builds (not debug-only): degenerate
+        // landmark lengths (a failed/empty scan) would otherwise produce a
+        // NaN/zero/negative scale that silently corrupts the emitted model.
+        assert!(
+            self.landmarks.thigh_length_m > 1e-6 && self.landmarks.shank_length_m > 1e-6,
+            "degenerate thigh ({}) or shank ({}) length",
+            self.landmarks.thigh_length_m,
+            self.landmarks.shank_length_m,
         );
-        BodyParams::uniform(self.landmarks.thigh_length_m / femur_len)
+        BodyParams::from_lengths(
+            template,
+            self.landmarks.thigh_length_m,
+            self.landmarks.shank_length_m,
+        )
     }
 }
 

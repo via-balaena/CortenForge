@@ -59,6 +59,13 @@ model via Apache-2.0 OpenSim.
   moment arms about all four DOFs (3 hip + knee) at a **multi-DOF base pose** (several
   non-zero hip rotations at once), so it pins the hip rotation-composition order (R-rot).
   Actual: hip ~0.001 mm, knee ~0.08 mm. Each generator's header has the `uv` commands.
+- `scaled_moment_arms_opensim.json` (generator `gen_scaled_moment_arms.py`) — leg-region
+  **A3** differential oracle: knee moment arms over 0…−100° for a grid of per-axis scale
+  configs (length & girth on each segment), computed by real OpenSim's **ScaleTool**. The
+  cross-check `realize`s the same factors and grades our morphed model against OpenSim's
+  scaled model — i.e. it proves the per-axis morph *is* OpenSim's scaling, which is what
+  makes a *dialed* (no-real-subject) body validatable. Actual: ~0.31–0.37 mm RMSE across
+  all configs (no worse than the unscaled cross-check — scaling adds no error).
 
 ## Not vendored (yet)
 

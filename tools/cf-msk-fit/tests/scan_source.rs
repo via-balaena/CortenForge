@@ -6,19 +6,19 @@
 //! `ScanSource` consumes. These run in CI (not `#[ignore]`).
 //!
 //! Coverage:
-//! * `scan_source_scale_matches_fitter` — the refactor-safety checkpoint: the
-//!   scale `ScanSource` puts into `BodyParams` is *exactly* the scale the
-//!   validated `Fitter` (`place_knee`) computes. The seam reproduces the prior
-//!   behavior.
-//! * `scan_source_is_uniform_v1` — v1 is a single uniform scale (all three
-//!   per-segment factors equal); pins the documented v1 approximation.
+//! * `scan_source_drives_per_segment_lengths` — A3: the femur axial scale is
+//!   `thigh_length / template_femur_axial` and the tibia's is `shank_length /
+//!   template_tibia_axial` (shank finally drives the tibia, now that the ankle
+//!   exists); girth (transverse) stays at the template default.
+//! * `scan_source_femur_close_to_fitter` — sanity that the per-segment refactor
+//!   didn't move femur sizing far from the validated `Fitter` (axial ≈ euclidean).
 //! * `synthetic_scan_builds_loadable_model` — the full path
 //!   `synthetic leg → detect → ScanSource → realize → emit` yields an MJCF that
 //!   loads, with the detected thigh size flowing into the model scale.
 //!
-//! The morph *physics* (uniform scale = exact moment-arm dilation) is proven in
-//! `cf-msk-lib`'s `uniform_scale_is_exact_dilation`; here we prove the **seam**
-//! (landmarks → the right scale) and that the pipeline wires up end to end.
+//! The morph *physics* (uniform scale = exact moment-arm dilation; length
+//! round-trip) is proven in `cf-msk-lib`; here we prove the **seam** (landmarks →
+//! the right per-segment scale) and that the pipeline wires up end to end.
 
 use cf_anthro::synthetic::LegSpec;
 use cf_anthro::{Landmarks, detect_landmarks};
@@ -46,34 +46,63 @@ fn synthetic_landmarks() -> (Landmarks, f64) {
 }
 
 #[test]
-fn scan_source_scale_matches_fitter() {
+fn scan_source_drives_per_segment_lengths() {
     let t = template();
     let (lm, _) = synthetic_landmarks();
+    let p = ScanSource::new(lm.clone()).params(&t);
 
-    // The seam (ScanSource) and the validated placement (Fitter) must compute the
-    // SAME scale from the same landmarks — the no-behavior-change checkpoint.
-    let via_source = ScanSource::new(lm.clone()).params(&t).femur_scale;
-    let via_fitter = Fitter::new(&t, &lm).scale();
+    // Femur axial scale = thigh / template femur axial length; tibia axial scale =
+    // shank / template tibia axial length. The shank now drives the tibia
+    // INDEPENDENTLY (the documented v1 block, lifted by the ankle).
+    let femur_axial = t.segment_axial_length("femur_r", "tibia_r");
+    let tibia_axial = t.segment_axial_length("tibia_r", "talus_r");
+    assert!((p.femur.axial - lm.thigh_length_m / femur_axial).abs() < 1e-12);
+    assert!((p.tibia.axial - lm.shank_length_m / tibia_axial).abs() < 1e-12);
 
+    // Girth (transverse) stays at the template default until the generator/scan
+    // supplies an anthropometric reference (A3-PR3); the pelvis is untouched.
+    assert_eq!(p.femur.transverse, 1.0);
+    assert_eq!(p.tibia.transverse, 1.0);
+    assert_eq!(p.pelvis, cf_msk_lib::SegmentScale::IDENTITY);
+
+    // Both per-segment scales are physiological.
     assert!(
-        (via_source - via_fitter).abs() < 1e-12,
-        "ScanSource scale {via_source} != Fitter scale {via_fitter}"
+        p.femur.axial > 0.5 && p.femur.axial < 2.0,
+        "femur {}",
+        p.femur.axial
+    );
+    assert!(
+        p.tibia.axial > 0.5 && p.tibia.axial < 2.0,
+        "tibia {}",
+        p.tibia.axial
     );
 }
 
 #[test]
-fn scan_source_is_uniform_v1() {
+#[should_panic(expected = "degenerate thigh")]
+fn scan_source_panics_on_degenerate_length() {
+    // A failed scan (zero thigh length) must fail loudly in ALL builds, not
+    // silently emit a NaN/zero scale (the assert is runtime, not debug-only).
+    let t = template();
+    let (mut lm, _) = synthetic_landmarks();
+    lm.thigh_length_m = 0.0;
+    let _ = ScanSource::new(lm).params(&t);
+}
+
+#[test]
+fn scan_source_femur_close_to_fitter() {
     let t = template();
     let (lm, _) = synthetic_landmarks();
-    let p = ScanSource::new(lm).params(&t);
 
-    // v1 single-scale: every segment factor equal (shank inherits the femur scale).
-    assert_eq!(p.femur_scale, p.tibia_scale);
-    assert_eq!(p.femur_scale, p.pelvis_scale);
+    // The per-segment femur scale (axial) should stay close to the validated
+    // `Fitter`'s single euclidean scale — they differ only by the small condylar
+    // transverse offset in the hip→knee vector, not by a refactor bug.
+    let via_source = ScanSource::new(lm.clone()).params(&t).femur.axial;
+    let via_fitter = Fitter::new(&t, &lm).scale();
+    let rel = (via_source - via_fitter).abs() / via_fitter;
     assert!(
-        p.femur_scale > 0.5 && p.femur_scale < 2.0,
-        "scale {} insane",
-        p.femur_scale
+        rel < 0.02,
+        "femur axial scale {via_source} vs Fitter euclidean {via_fitter} (rel {rel:.3})"
     );
 }
 
@@ -111,7 +140,7 @@ fn scan_source_scale_tracks_leg_size() {
             .scaled(1.0, length_scale)
             .build(220, 96);
         let lm = detect_landmarks(&mesh).expect("detect on scaled synthetic leg");
-        ScanSource::new(lm).params(&t).femur_scale
+        ScanSource::new(lm).params(&t).femur.axial
     };
 
     let base = scale_of(1.0);

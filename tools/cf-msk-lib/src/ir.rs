@@ -165,6 +165,33 @@ impl Model {
             None => Isometry3::identity(),
         }
     }
+
+    /// The default pose: every coordinate at its `default` value. The canonical
+    /// (neutral standing) configuration the body is measured/morphed at.
+    pub fn default_pose(&self) -> HashMap<String, f64> {
+        self.coordinates
+            .iter()
+            .map(|c| (c.name.clone(), c.default))
+            .collect()
+    }
+
+    /// The **axial length** of the segment between two bodies, at the default pose:
+    /// the distal body's frame origin expressed in the proximal body's frame,
+    /// projected onto the proximal frame's long axis (body-frame *y* — the gait2392
+    /// limb long axis), as a magnitude.
+    ///
+    /// This is the quantity a per-axis morph scales *exactly*: scaling the
+    /// proximal segment's axial (*y*) factor by `k` scales this by `k`, independent
+    /// of any small transverse (condylar) offset that makes the Euclidean
+    /// hip→knee distance scale only approximately. It is the length A3 dials.
+    /// `femur` axial = `segment_axial_length("femur_r", "tibia_r")` (hip→knee);
+    /// `tibia` axial = `segment_axial_length("tibia_r", "talus_r")` (knee→ankle).
+    pub fn segment_axial_length(&self, proximal: &str, distal: &str) -> f64 {
+        let q = self.default_pose();
+        let distal_o = self.body_pose(distal, &q) * nalgebra::Point3::origin();
+        let in_proximal = self.body_pose(proximal, &q).inverse() * distal_o;
+        in_proximal.y.abs()
+    }
 }
 
 #[cfg(test)]
