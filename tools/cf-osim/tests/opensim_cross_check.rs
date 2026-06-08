@@ -17,9 +17,22 @@
 //!   `gen_leg_moment_arms.py`). Passing this pins the hip rotation-*composition
 //!   order* (R-rot) against real OpenSim, not just one rotation in isolation.
 //!
+//! * `morph_matches_real_opensim_scaletool` — the A3 **differential oracle**:
+//!   our per-axis morph (`cf_msk_lib::realize`) graded against OpenSim's own
+//!   ScaleTool (`scaled_moment_arms_opensim.json`, generator
+//!   `gen_scaled_moment_arms.py`). For a grid of per-axis scale configs (length &
+//!   girth on each segment), OpenSim scales gait2392 and we `realize` the same
+//!   factors; the knee moment arms of our morphed model must match OpenSim's
+//!   scaled model. This is what makes a *dialed* body validatable: the morph IS
+//!   OpenSim's scaling. (Graded on the oracle — which keeps the conditional
+//!   path-points — not the emitted MJCF, whose deep-flexion residual is the
+//!   separate, known dropped-conditional S1 approximation.)
+//!
 //! Together they confirm our oracle (= the FK the emitter ships) is a faithful
-//! reproduction of OpenSim's leg muscle geometry across both joints + the ROM.
+//! reproduction of OpenSim's leg muscle geometry across both joints + the ROM, and
+//! that morphing it tracks OpenSim's own scaling.
 
+use cf_msk_lib::{BodyParams, SegmentScale, realize};
 use cf_osim::oracle::{Kinematics, Pose};
 use cf_osim::parse_leg_chain;
 use std::f64::consts::PI;
@@ -125,4 +138,85 @@ fn oracle_matches_real_opensim_multidof() {
         }
     }
     println!("worst (coord,muscle) RMSE: {worst:.3}mm\n");
+}
+
+/// Read a config's per-body Vec3 factors (`[x, y, z]`, y=axial, x=z=transverse)
+/// into a [`BodyParams`]. A `talus_r` factor (in the uniform config) is ignored:
+/// the talus has no independent scale — its length scales via the tibia parent and
+/// it carries no muscle points.
+fn body_params_from_factors(factors: &serde_json::Value) -> BodyParams {
+    let seg = |name: &str| -> SegmentScale {
+        match factors.get(name) {
+            Some(v) => {
+                let a = v.as_array().unwrap();
+                let (x, y, z) = (
+                    a[0].as_f64().unwrap(),
+                    a[1].as_f64().unwrap(),
+                    a[2].as_f64().unwrap(),
+                );
+                assert!(
+                    (x - z).abs() < 1e-12,
+                    "{name}: transverse x != z ({x} vs {z})"
+                );
+                SegmentScale {
+                    axial: y,
+                    transverse: x,
+                }
+            }
+            None => SegmentScale::IDENTITY,
+        }
+    };
+    BodyParams {
+        pelvis: seg("pelvis"),
+        femur: seg("femur_r"),
+        tibia: seg("tibia_r"),
+    }
+}
+
+#[test]
+fn morph_matches_real_opensim_scaletool() {
+    let template = parse_leg_chain(&std::fs::read_to_string(asset("gait2392.osim")).unwrap());
+    let reference = json("scaled_moment_arms_opensim.json");
+    let configs = reference["configs"].as_object().unwrap();
+
+    println!(
+        "\n===== morph (realize) vs REAL {} ScaleTool =====",
+        reference["source"].as_str().unwrap()
+    );
+    let mut worst = 0.0_f64;
+    for (name, cfg) in configs {
+        // `realize` the SAME factors OpenSim scaled with, then grade the morphed
+        // model's oracle moment arms against OpenSim's scaled model.
+        let params = body_params_from_factors(&cfg["factors"]);
+        let model = realize(&template, &params);
+        let kin = Kinematics::new(&model);
+        let mut cfg_worst = 0.0_f64;
+        for m in &model.muscles {
+            let rows = cfg["muscles"][&m.name].as_array().unwrap();
+            let (mut sse, mut maxd, mut n) = (0.0, 0.0_f64, 0.0);
+            for row in rows {
+                let theta = row["angle_rad"].as_f64().unwrap();
+                let q = Pose::from([("knee_angle_r".to_string(), theta)]);
+                let osim_mm = row["moment_arm_m"].as_f64().unwrap() * 1000.0;
+                let ours_mm = kin.moment_arm(m, &q, "knee_angle_r", EPS) * 1000.0;
+                let d = (osim_mm - ours_mm).abs();
+                sse += d * d;
+                maxd = maxd.max(d);
+                n += 1.0;
+            }
+            let rmse = (sse / n).sqrt();
+            cfg_worst = cfg_worst.max(rmse);
+            assert!(
+                rmse < GATE_MM,
+                "{name}/{}: morph vs real OpenSim ScaleTool RMSE {rmse:.3}mm exceeds {GATE_MM}mm \
+                 (max|Δ| {maxd:.3}mm)",
+                m.name
+            );
+        }
+        worst = worst.max(cfg_worst);
+        println!("  {name:<22} worst-muscle RMSE {cfg_worst:>6.3}mm");
+    }
+    // The scaled configs must agree no worse than the unscaled cross-check — i.e.
+    // morphing adds essentially no error: the morph IS OpenSim's scaling.
+    println!("worst RMSE across all scale configs: {worst:.3}mm\n");
 }

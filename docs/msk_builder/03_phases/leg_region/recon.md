@@ -132,8 +132,15 @@ proportions," never a validated individual.
   (`with_girth_scales`; the real girth→scale *derivation* needs an anthropometric reference → arrives
   with the generator in PR3). Pin the scale convention with the length + girth round-trip.
   No-regression: 4 muscles unchanged by the ankle.
-- **A3-PR2** — differential oracle (spike OpenSim ScaleTool first; then vendored ref + `cf-osim`
-  cross-check over the anisotropic grid). Lands before the generator so the machinery is anchored.
+- **A3-PR2** — differential oracle. *(DONE.)* Spike confirmed real OpenSim 4.6 `Model.scale` with
+  manual per-axis `Vec3` factors reproduces our morph (femur/tibia long axis = body-frame *y* in
+  both; uniform AND anisotropic). Productionized: `gen_scaled_moment_arms.py` →
+  `scaled_moment_arms_opensim.json` (a grid of length/girth configs over the knee ROM) + a `cf-osim`
+  cross-check that `realize`s the same factors and grades the **oracle-on-realized model** (keeps the
+  conditional points; the emit's deep-flexion residual is the separate S1 dropped-conditional
+  approximation) vs OpenSim's ScaleTool. **Result: 0.31–0.37 mm RMSE across all configs — no worse
+  than the unscaled cross-check, so the morph adds no error: the morph IS OpenSim's scaling.** Tier 1
+  holds for anisotropic length + girth.
 - **A3-PR3** — sex/percentile generator (`CanonicalSource`→dial-able `AnthroSource`): published table
   → lengths+girths+joint default poses → `BodyParams`. Validated by Tier 3.
 - **A3-PR4** — three-tier scorecard harness (extends the g1 scorecard) + A4 randomizer prep.
