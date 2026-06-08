@@ -10,6 +10,13 @@
 //! (a list of transform axes) plus straight-segment muscle paths cover the whole
 //! leg with no wrap math.
 //!
+//! The IR mirrors OpenSim's own structure: a [`TransformAxis`] carries its
+//! `coordinate`, `axis`, and `function` as siblings (the `<coordinates>`/`<axis>`/
+//! `<function>` elements of a `CustomJoint` `SpatialTransform`). This is
+//! intentionally flatter than the leg-region recon's `TransformFn { coordinate,
+//! kind }` sketch — keeping the coordinate on the axis matches the source model
+//! one-to-one and is what the validated spike used.
+//!
 //! v1 reuses `cf-osim`'s [`Spline`] and muscle path types (`Muscle`/`PathPoint`)
 //! verbatim; the direct `.osim → Model` parser and the dependency inversion that
 //! moves those types here are the next increment (recon leg-region A1, PR-2). For
@@ -58,21 +65,21 @@ impl TransformFn {
 }
 
 /// One transform axis of a `CustomJoint`: a rotation about / translation along
-/// `axis`, by `func` of the coordinate named `coord`.
+/// `axis`, by `function` of the coordinate named `coordinate`.
 ///
-/// `coord` may be empty for a constant axis whose function ignores the
-/// coordinate (gait2392 leaves `<coordinates>` blank for such axes); the value
-/// then evaluates with `q = 0`, which a [`TransformFn::Constant`] ignores anyway.
+/// `coordinate` may be empty for a constant axis whose function ignores it
+/// (gait2392 leaves `<coordinates>` blank for such axes); the value then evaluates
+/// with `q = 0`, which a [`TransformFn::Constant`] ignores anyway.
 #[derive(Debug, Clone)]
 pub struct TransformAxis {
     /// `true` = rotation about `axis`; `false` = translation along `axis`.
     pub rotation: bool,
     /// The axis (body frame) the transform acts about/along.
     pub axis: Vector3<f64>,
-    /// The coordinate that drives `func` (empty for a coordinate-independent axis).
-    pub coord: String,
+    /// The coordinate that drives `function` (empty for a coordinate-independent axis).
+    pub coordinate: String,
     /// The transform amount as a function of the coordinate.
-    pub func: TransformFn,
+    pub function: TransformFn,
 }
 
 /// A joint = the ordered list of its transform axes (OpenSim `SpatialTransform`:
@@ -100,8 +107,30 @@ pub struct Coordinate {
 pub struct Body {
     pub name: String,
     pub parent: Option<usize>,
-    pub loc_in_parent: Vector3<f64>,
+    pub location_in_parent: Vector3<f64>,
     pub joint: Joint,
+}
+
+impl Body {
+    /// This body's joint transform at coordinates `q`: compose the rotation axes
+    /// (product) and translation axes (sum), then `x → R·x + t`
+    /// (`Isometry3::from_parts(translation, rotation)` — the validated CustomJoint
+    /// convention). A coordinate absent from `q` reads as 0.
+    pub fn joint_xform(&self, q: &HashMap<String, f64>) -> Isometry3<f64> {
+        let mut rot = UnitQuaternion::identity();
+        let mut trans = Vector3::zeros();
+        for ax in &self.joint {
+            let val = ax
+                .function
+                .eval(q.get(&ax.coordinate).copied().unwrap_or(0.0));
+            if ax.rotation {
+                rot *= UnitQuaternion::from_axis_angle(&Unit::new_normalize(ax.axis), val);
+            } else {
+                trans += ax.axis * val;
+            }
+        }
+        Isometry3::from_parts(Translation3::from(trans), rot)
+    }
 }
 
 /// A source-agnostic musculoskeletal kinematic tree: a `Body` tree, its
@@ -119,24 +148,6 @@ impl Model {
         self.bodies.iter().position(|b| b.name == name)
     }
 
-    /// The joint transform for `body` at coordinates `q`: compose the rotation
-    /// axes (product) and translation axes (sum), then `x → R·x + t`
-    /// (`Isometry3::from_parts(translation, rotation)` — the validated CustomJoint
-    /// convention). A coordinate absent from `q` reads as 0.
-    pub fn joint_xform(&self, body: &Body, q: &HashMap<String, f64>) -> Isometry3<f64> {
-        let mut rot = UnitQuaternion::identity();
-        let mut trans = Vector3::zeros();
-        for ax in &body.joint {
-            let val = ax.func.eval(q.get(&ax.coord).copied().unwrap_or(0.0));
-            if ax.rotation {
-                rot *= UnitQuaternion::from_axis_angle(&Unit::new_normalize(ax.axis), val);
-            } else {
-                trans += ax.axis * val;
-            }
-        }
-        Isometry3::from_parts(Translation3::from(trans), rot)
-    }
-
     /// World pose of body `idx` at coordinates `q` — walk the parent chain.
     pub fn world_pose(&self, idx: usize, q: &HashMap<String, f64>) -> Isometry3<f64> {
         let b = &self.bodies[idx];
@@ -144,7 +155,7 @@ impl Model {
             Some(p) => self.world_pose(p, q),
             None => Isometry3::identity(),
         };
-        parent * Translation3::from(b.loc_in_parent) * self.joint_xform(b, q)
+        parent * Translation3::from(b.location_in_parent) * b.joint_xform(q)
     }
 
     /// World pose of the body named `name` at coordinates `q`. A name not in the
@@ -170,48 +181,40 @@ impl Model {
     /// replaces it in PR-2.
     pub fn from_subgraph(sub: &Subgraph) -> Model {
         let k = &sub.knee;
+        // The three knee translation splines, each along its femur basis axis.
+        let translation = |axis: Vector3<f64>, spline: &Spline| TransformAxis {
+            rotation: false,
+            axis,
+            coordinate: "knee_angle_r".into(),
+            function: TransformFn::Spline(spline.clone()),
+        };
         let bodies = vec![
             Body {
                 name: "pelvis".into(),
                 parent: None,
-                loc_in_parent: Vector3::zeros(),
+                location_in_parent: Vector3::zeros(),
                 joint: vec![],
             },
             Body {
                 name: "femur_r".into(),
                 parent: Some(0),
-                loc_in_parent: sub.hip_in_pelvis,
+                location_in_parent: sub.hip_in_pelvis,
                 joint: vec![], // hip welded at neutral for the knee study
             },
             Body {
                 name: "tibia_r".into(),
                 parent: Some(1),
-                loc_in_parent: Vector3::zeros(),
+                location_in_parent: Vector3::zeros(),
                 joint: vec![
                     TransformAxis {
                         rotation: true,
                         axis: k.flexion_axis,
-                        coord: "knee_angle_r".into(),
-                        func: TransformFn::Linear { coeff: 1.0 },
+                        coordinate: "knee_angle_r".into(),
+                        function: TransformFn::Linear { coeff: 1.0 },
                     },
-                    TransformAxis {
-                        rotation: false,
-                        axis: Vector3::x(),
-                        coord: "knee_angle_r".into(),
-                        func: TransformFn::Spline(k.tx.clone()),
-                    },
-                    TransformAxis {
-                        rotation: false,
-                        axis: Vector3::y(),
-                        coord: "knee_angle_r".into(),
-                        func: TransformFn::Spline(k.ty.clone()),
-                    },
-                    TransformAxis {
-                        rotation: false,
-                        axis: Vector3::z(),
-                        coord: "knee_angle_r".into(),
-                        func: TransformFn::Spline(k.tz.clone()),
-                    },
+                    translation(Vector3::x(), &k.tx),
+                    translation(Vector3::y(), &k.ty),
+                    translation(Vector3::z(), &k.tz),
                 ],
             },
         ];
@@ -244,35 +247,30 @@ mod tests {
         let body = Body {
             name: "b".into(),
             parent: None,
-            loc_in_parent: Vector3::zeros(),
+            location_in_parent: Vector3::zeros(),
             joint: vec![
                 TransformAxis {
                     rotation: false,
                     axis: Vector3::x(),
-                    coord: "q".into(),
-                    func: TransformFn::Constant(0.3),
+                    coordinate: "q".into(),
+                    function: TransformFn::Constant(0.3),
                 },
                 TransformAxis {
                     rotation: false,
                     axis: Vector3::y(),
-                    coord: "q".into(),
-                    func: TransformFn::Constant(0.4),
+                    coordinate: "q".into(),
+                    function: TransformFn::Constant(0.4),
                 },
                 TransformAxis {
                     rotation: true,
                     axis: Vector3::z(),
-                    coord: "q".into(),
-                    func: TransformFn::Linear { coeff: 1.0 },
+                    coordinate: "q".into(),
+                    function: TransformFn::Linear { coeff: 1.0 },
                 },
             ],
         };
-        let model = Model {
-            bodies: vec![],
-            coordinates: vec![],
-            muscles: vec![],
-        };
         let q = HashMap::from([("q".to_string(), std::f64::consts::FRAC_PI_2)]);
-        let x = model.joint_xform(&body, &q);
+        let x = body.joint_xform(&q);
         // Translation = (0.3, 0.4, 0); rotation = +90° about z maps x̂ → ŷ.
         assert!((x.translation.vector - Vector3::new(0.3, 0.4, 0.0)).norm() < 1e-12);
         let mapped = x * nalgebra::Point3::new(1.0, 0.0, 0.0);
@@ -287,13 +285,13 @@ mod tests {
                 Body {
                     name: "root".into(),
                     parent: None,
-                    loc_in_parent: Vector3::new(1.0, 0.0, 0.0),
+                    location_in_parent: Vector3::new(1.0, 0.0, 0.0),
                     joint: vec![],
                 },
                 Body {
                     name: "child".into(),
                     parent: Some(0),
-                    loc_in_parent: Vector3::new(0.0, 2.0, 0.0),
+                    location_in_parent: Vector3::new(0.0, 2.0, 0.0),
                     joint: vec![],
                 },
             ],
