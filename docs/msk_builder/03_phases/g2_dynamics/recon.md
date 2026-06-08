@@ -1,0 +1,171 @@
+# G2 — muscle-DRIVEN twin + validate DYNAMICS (forces) vs OpenSim
+
+**Status:** RECON + PR1 IN PROGRESS (2026-06-08). Builds on the leg-region
+kinematics arc A1–A4 (`../leg_region/recon.md`, all merged #277–#285), which
+validated the twin's *kinematics* (moment arms) against real OpenSim to sub-mm.
+G2 extends that software-validation strategy from **kinematics → forces/dynamics**.
+
+**Goal:** make the leg twin **muscle-driven** and prove its **muscle forces /
+joint torques** match a literature-validated reference (gait2392 in OpenSim 4.6),
+in software, no hardware — the same "bridge the OpenSim model as both template and
+oracle" keystone the kinematics arc used.
+
+**Why this is the foundational next step (decided 2026-06-08, head-engineer call):**
+everything the capstone needs — RL control, the differentiable co-design loop,
+sim-to-real — runs on *dynamics*, not kinematics. The force model was the weakest
+validated link (the FOUNDATION-TRUST AUDIT flagged that the engine's native Hill
+model is numerically tested but never reconciled vs OpenSim Thelen/Millard).
+Foundational order: kinematics ✅ → **dynamics fidelity (G2)** → differentiability
+(the soft↔rigid keystone crate) → co-design/RL. Don't compose control/optimization
+on an unvalidated forward model — sim-to-real would fail silently.
+
+---
+
+## The spike (DONE) — measure the gap, then decide
+
+First slice was a throwaway `#[ignore]` spike (now retired) measuring the engine's
+**native Hill** muscle force vs **real OpenSim Millard**, the #1 G2 risk, front-loaded.
+
+**Apples-to-apples setup** (kept for the productionized cross-check):
+- OpenSim `Millard2012EquilibriumMuscle` with `ignore_tendon_compliance=True`
+  (RIGID tendon) — matches our engine's algebraic fiber geometry (our Hill has no
+  fiber-length state / equilibrium solve).
+- ISOMETRIC (qvel = 0 → force-velocity factor 1 on both sides), so the gap
+  isolates the force-LENGTH + passive + pennation model differences.
+- the SAME parameters (F0, L0, Lts, pennation) on both sides.
+- our force evaluated at OpenSim's reported MTU length, so the already-validated
+  sub-mm geometry doesn't pollute the force-model gap.
+
+Reference: `sim/L0/tests/assets/opensim_gait2392/gen_muscle_forces.py` →
+vendored `muscle_forces_opensim.json` (4 muscles × knee ROM × activations 1.0/0.5).
+
+**Result (the gap is real and structured):**
+
+| Regime (normalized fiber length) | Hill gap vs Millard |
+|---|---|
+| Near optimal (plateau, ~0.85–1.1) | 0.5–3 % ✅ (confirms F0/L0/Lts setup is right) |
+| Descending limb (>1.2) | −15 % to −27 % (worst −266 N, rect_fem) |
+| Short fibers (<0.75) | +37 % to +61 % (Gaussian rises too steep) |
+| Below ~0.5 | −100 % (our hard cutoff 0.5 vs Millard's ~0.44 floor) |
+| High pennation (semimem 0.26 rad) | extra −15 % (fixed vs variable pennation) |
+
+Overall RMSE 77.7 N, worst 292 N / 140 % on muscles with F0 ≈ 900–1365 N. The
+knee ROM sweeps these muscles across normalized fiber length **0.44–1.46**, so the
+gap is in play across the working range. Clean signal: plateau agrees, limbs
+diverge ⇒ pure curve-*shape* difference, not a setup bug.
+
+**Decision (user, "measure first then decide"): BUILD A FAITHFUL MILLARD MODEL.**
+The gap is too large and too operating-point-dependent to wave away for a twin
+whose whole validation strategy is borrowing OpenSim's literature validation (a
+−27 % rect_fem error mid-flexion would silently mislead RL/co-design). gait2392
+ships `Millard2012EquilibriumMuscle` ⇒ match *Millard's* curves (not Thelen) for
+bit-faithfulness to the vendored model.
+
+---
+
+## Implementation decision — port the analytic curves, don't sample
+
+OpenSim's Millard curves are `SmoothSegmentedFunction`s: C2 quintic-Bézier splines
+built by `SmoothSegmentedFunctionFactory` from documented default parameters. Two
+options to reproduce them:
+
+- **(A) port the analytic Bézier** (`SmoothSegmentedFunction` +
+  `SegmentedQuinticBezierToolkit` + the 3 factory constructors). Exact derivatives,
+  no embedded OpenSim data tables, the engine becomes genuinely Millard-capable.
+- (B) sample the curves and spline a vendored table. Less code, but an
+  approximation with embedded data, and a data dependency in the engine core.
+
+**Chosen: (A).** It's the principled "build the model" answer, keeps the engine
+core data-free, and gives exact analytic derivatives for the differentiable
+co-design loop downstream. The densely-sampled curves become the *validation*
+ground truth, not the implementation. (Fallback to (B), same validation target,
+only if the Bézier port had proved disproportionate — it did not.)
+
+### What "faithful Millard" needs (rigid tendon, the matched regime)
+1. **Active force-length curve** — `createFiberActiveForceLengthCurve(0.4441, 0.73,
+   1.0, 1.8123, ylow=0, dydx=0.8616, curviness=1.0)`, 5 elbow segments.
+2. **Passive (fiber) force-length curve** — `createFiberForceLengthCurve(eZero=0,
+   eIso=0.7, kLow=0.2, kIso=2/0.7, curviness=0.75)`, 2 segments.
+3. **Force-velocity curve** — `createFiberForceVelocityCurve(fmaxE=1.4, dydxC=0,
+   dydxNearC=0.25, dydxIso=5.0, dydxE=0, dydxNearE=0.15, concCurv=0.6, eccCurv=0.9)`,
+   4 segments. (Used at FV=1 isometrically in PR1; exercised in PR2.)
+4. **Variable-width (constant-height) pennation**: `h = L0·sin(penn0)`;
+   `fiber = sqrt((mtu−Lts)² + h²)`; `cos(penn) = (mtu−Lts)/fiber`.
+5. **Force along path** = `F0·(a·AFL·FV + PFL)·cos(penn)` (+ `β·v̇_norm` fiber
+   damping, 0 at isometric — PR2).
+
+All four target muscles share OpenSim's *default* curve parameters and
+`fiber_damping = 0.1` (asserted in the generator), so one shared curve set suffices.
+
+### Min-fiber clamp (noted, immaterial to force here)
+OpenSim clamps normalized fiber length to ~0.4441; for our muscle set the clamp
+region is where AFL = 0 and PFL = 0 on both sides, so force = 0 regardless. The
+port relies on the curve's flat extrapolation below domain (AFL → 0) instead of an
+explicit clamp; the cross-check confirms this is exact for this scope.
+
+---
+
+## Validation (two tiers, both in CI, no OpenSim install)
+
+`tools/cf-osim/tests/millard_force_cross_check.rs` grades against vendored JSON:
+
+1. **CURVE unit check** — our `MillardCurves` (active-FL / passive-FL /
+   force-velocity) vs `millard_curves_opensim.json` (200 dense samples per curve,
+   `gen_millard_curves.py`). Gate 1e-5; **achieved ~1e-12** (Bézier + Newton
+   reproduces `SmoothSegmentedFunction` to machine precision).
+2. **FORCE integration check** — our `millard_isometric_path_force` vs
+   `muscle_forces_opensim.json` (4 muscles × ROM × a∈{1.0,0.5}). Gate 1e-6 relative
+   (generous headroom over cross-platform sin/sqrt last-ulp); **achieved worst
+   |gap| 1.57e-9 N, RMSE 2e-10 N** — machine-exact, because our model *is*
+   OpenSim's Millard evaluated at the same MTU length. The native Hill's 15–60 %
+   gap is closed.
+
+Plus a self-contained in-crate anchor test (`millard.rs::spotcheck`) so sim-core
+has muscle-curve coverage without depending on cf-osim.
+
+**Honesty:** PR1 validates the force MODEL at matched geometry (OpenSim's MTU
+length). End-to-end (engine computes its own MTU) adds the sub-mm kinematic
+residual → a tiny force residual, graded once the model is wired into the engine
+(PR3). Force-VELOCITY is unvalidated until PR2 (the spike/PR1 are isometric).
+
+---
+
+## Slicing (each its own PR; n+1 cold-read cleanup; pre-PR local ultra-review)
+
+- **G2-PR1 — faithful Millard curves + isometric force.** *(IN PROGRESS / largely
+  done.)* `sim/L0/core/src/forward/millard.rs` (`SmoothSegmentedFunction`,
+  `MillardCurves`, `millard_isometric_path_force`) + the two-tier cross-check + the
+  two reference generators. Curves 1e-12, force 1e-9 N vs real OpenSim. No engine
+  pipeline changes yet (additive pub functions).
+- **G2-PR2 — force-velocity (non-isometric).** New reference sweeping fiber/joint
+  velocity → forces; validate the FV term + fiber damping. The spike/PR1 are
+  isometric (FV=1); this closes the velocity axis.
+- **G2-PR3 — wire Millard into the engine as a driven actuator.** A
+  `GainType::MillardMuscle` / `BiasType::MillardMuscle` (+ MJCF emit) so the leg
+  twin self-actuates from activations, or drive via direct activation; honor the
+  engine's negative-tension gain/bias convention. Then the **muscle-DRIVEN leg-twin
+  example** (folds in the audit's deferred Hill *visual* example — drive the twin
+  with activations and watch it move) + **joint-torque / forward-dynamics**
+  validation vs OpenSim (the full dynamics gate).
+
+## Risks / open items
+- **R-pennation-edge** — semimem's tendon-slack ≈ MTU at deep flexion (along-tendon
+  ~3.6 mm) drives pennation toward 90°; force is ~0 there (both sides), but if PR3's
+  engine integration evaluates near the singularity, revisit the `cos_penn` floor.
+- **R-FV** — force-velocity + damping unvalidated until PR2.
+- **F0 provenance** — `getMaxIsometricForce` returns post-init values (e.g.
+  rect_fem 1169 N) that differ from a raw-XML grep (819 N belonged to another
+  muscle in file order); PR1 is self-consistent (reads params from the JSON), but
+  PR3's emit must source F0 from the parsed muscle object, not a positional grep.
+- **Elastic tendon** — out of scope (our engine + the comparison are rigid-tendon,
+  matching `ignore_tendon_compliance`); revisit only if a muscle's compliant tendon
+  matters for the capstone.
+
+## OpenSim refs / regeneration
+OpenSim 4.6 at `/tmp/osim-venv` (wiped on reboot; recreate:
+`uv venv --python 3.12 /tmp/osim-venv && VIRTUAL_ENV=/tmp/osim-venv uv pip install opensim`).
+Generators in `sim/L0/tests/assets/opensim_gait2392/`: `gen_muscle_forces.py`
+(force reference), `gen_millard_curves.py` (curve reference). Millard source ported
+from `opensim-org/opensim-core` `OpenSim/Common/{SmoothSegmentedFunction,
+SegmentedQuinticBezierToolkit,SmoothSegmentedFunctionFactory}` +
+`OpenSim/Actuators/{ActiveForceLength,FiberForceLength,ForceVelocity}Curve`.

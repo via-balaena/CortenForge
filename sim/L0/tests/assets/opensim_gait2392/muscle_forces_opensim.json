@@ -1,0 +1,2656 @@
+{
+ "source": "OpenSim 4.6-2026-04-25-d8b9379",
+ "model": "gait2392.osim",
+ "muscle_model": "Millard2012EquilibriumMuscle, ignore_tendon_compliance=True (rigid)",
+ "coordinate": "knee_angle_r",
+ "regime": "isometric (qvel=0), activation set directly on state",
+ "convention": "force_along_path = getActuation (tension>0); moment = force*moment_arm",
+ "activations": [
+  1.0,
+  0.5
+ ],
+ "params": {
+  "rect_fem_r": {
+   "max_isometric_force_N": 1169.0,
+   "optimal_fiber_length_m": 0.130462347889869,
+   "tendon_slack_length_m": 0.354766033735608,
+   "pennation_at_optimal_rad": 0.08726646,
+   "max_contraction_velocity_lopt_per_s": 10.0
+  },
+  "vas_int_r": {
+   "max_isometric_force_N": 1365.0,
+   "optimal_fiber_length_m": 0.101374267400811,
+   "tendon_slack_length_m": 0.158470119155291,
+   "pennation_at_optimal_rad": 0.05235988,
+   "max_contraction_velocity_lopt_per_s": 10.0
+  },
+  "bifemlh_r": {
+   "max_isometric_force_N": 896.0,
+   "optimal_fiber_length_m": 0.12363108064316,
+   "tendon_slack_length_m": 0.369759011831837,
+   "pennation_at_optimal_rad": 0.0,
+   "max_contraction_velocity_lopt_per_s": 10.0
+  },
+  "semimem_r": {
+   "max_isometric_force_N": 1288.0,
+   "optimal_fiber_length_m": 0.0909853547142785,
+   "tendon_slack_length_m": 0.408296779280325,
+   "pennation_at_optimal_rad": 0.26179939,
+   "max_contraction_velocity_lopt_per_s": 10.0
+  }
+ },
+ "muscles": {
+  "rect_fem_r": [
+   {
+    "angle_deg": -0.0,
+    "angle_rad": -0.0,
+    "mtu_length_m": 0.4695771936796208,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1097.4365991134957,
+      "active_fiber_force_N": 1102.8054652756261,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1097.4365991134957,
+      "normalized_fiber_length": 0.8843381986385389,
+      "fiber_length_m": 0.11537283772308113,
+      "pennation_angle_rad": 0.0987150072058061,
+      "moment_arm_m": 0.050088357737347586,
+      "knee_moment_Nm": 54.96879697045488
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 548.7182995567479,
+      "active_fiber_force_N": 551.4027326378131,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 548.7182995567479,
+      "normalized_fiber_length": 0.8843381986385389,
+      "fiber_length_m": 0.11537283772308113,
+      "pennation_angle_rad": 0.0987150072058061,
+      "moment_arm_m": 0.050088357737347586,
+      "knee_moment_Nm": 27.48439848522744
+     }
+    }
+   },
+   {
+    "angle_deg": -5.0,
+    "angle_rad": -0.08726646259971647,
+    "mtu_length_m": 0.4738888381076417,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1130.291865289495,
+      "active_fiber_force_N": 1135.4293115647706,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1130.291865289495,
+      "normalized_fiber_length": 0.9172320434393371,
+      "fiber_length_m": 0.11966424594691821,
+      "pennation_angle_rad": 0.09516395503043862,
+      "moment_arm_m": 0.04879930836549918,
+      "knee_moment_Nm": 55.15746127727733
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 565.1459326447475,
+      "active_fiber_force_N": 567.7146557823853,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 565.1459326447475,
+      "normalized_fiber_length": 0.9172320434393371,
+      "fiber_length_m": 0.11966424594691821,
+      "pennation_angle_rad": 0.09516395503043862,
+      "moment_arm_m": 0.04879930836549918,
+      "knee_moment_Nm": 27.578730638638664
+     }
+    }
+   },
+   {
+    "angle_deg": -10.0,
+    "angle_rad": -0.17453292519943295,
+    "mtu_length_m": 0.47813046079778243,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1158.1268459696694,
+      "active_fiber_force_N": 1163.0358022396547,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1158.1268459696694,
+      "normalized_fiber_length": 0.9496021977979078,
+      "fiber_length_m": 0.12388733228609483,
+      "pennation_angle_rad": 0.09191066579984207,
+      "moment_arm_m": 0.04875588631429297,
+      "knee_moment_Nm": 56.465500839627886
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 579.0634229848347,
+      "active_fiber_force_N": 581.5179011198273,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 579.0634229848347,
+      "normalized_fiber_length": 0.9496021977979078,
+      "fiber_length_m": 0.12388733228609483,
+      "pennation_angle_rad": 0.09191066579984207,
+      "moment_arm_m": 0.04875588631429297,
+      "knee_moment_Nm": 28.232750419813943
+     }
+    }
+   },
+   {
+    "angle_deg": -15.0,
+    "angle_rad": -0.2617993877991494,
+    "mtu_length_m": 0.48244140146718917,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1164.313998493989,
+      "active_fiber_force_N": 1168.922181014475,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1164.313998493989,
+      "normalized_fiber_length": 0.9825109697774489,
+      "fiber_length_m": 0.1281806879447181,
+      "pennation_angle_rad": 0.08882389472699662,
+      "moment_arm_m": 0.050070198089226775,
+      "knee_moment_Nm": 58.29743254265371
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 582.1569992469945,
+      "active_fiber_force_N": 584.4610905072375,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 582.1569992469945,
+      "normalized_fiber_length": 0.9825109697774489,
+      "fiber_length_m": 0.1281806879447181,
+      "pennation_angle_rad": 0.08882389472699662,
+      "moment_arm_m": 0.050070198089226775,
+      "knee_moment_Nm": 29.148716271326855
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "angle_rad": -0.3490658503988659,
+    "mtu_length_m": 0.4868556896630653,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1165.1705824272503,
+      "active_fiber_force_N": 1168.9184103401192,
+      "passive_fiber_force_N": 0.5612262470622978,
+      "fiber_force_along_tendon_N": 1165.1705824272503,
+      "normalized_fiber_length": 1.0162177389877778,
+      "fiber_length_m": 0.13257815219567956,
+      "pennation_angle_rad": 0.0858703201532907,
+      "moment_arm_m": 0.05091739683776065,
+      "knee_moment_Nm": 59.32745292913301
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 582.864870392563,
+      "active_fiber_force_N": 584.4592051700596,
+      "passive_fiber_force_N": 0.5612262470622978,
+      "fiber_force_along_tendon_N": 582.864870392563,
+      "normalized_fiber_length": 1.0162177389877778,
+      "fiber_length_m": 0.13257815219567956,
+      "pennation_angle_rad": 0.0858703201532907,
+      "moment_arm_m": 0.05091739683776065,
+      "knee_moment_Nm": 29.677961908568058
+     }
+    }
+   },
+   {
+    "angle_deg": -25.0,
+    "angle_rad": -0.4363323129985824,
+    "mtu_length_m": 0.4913064775087523,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1168.3818999187638,
+      "active_fiber_force_N": 1164.7715252968765,
+      "passive_fiber_force_N": 7.654676638669495,
+      "fiber_force_along_tendon_N": 1168.3818999187638,
+      "normalized_fiber_length": 1.0502116102207726,
+      "fiber_length_m": 0.13701307245060193,
+      "pennation_angle_rad": 0.08308429730522537,
+      "moment_arm_m": 0.05103922176324931,
+      "knee_moment_Nm": 59.63330289412034
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 588.0050858169683,
+      "active_fiber_force_N": 582.3857626484382,
+      "passive_fiber_force_N": 7.654676638669495,
+      "fiber_force_along_tendon_N": 588.0050858169683,
+      "normalized_fiber_length": 1.0502116102207726,
+      "fiber_length_m": 0.13701307245060193,
+      "pennation_angle_rad": 0.08308429730522537,
+      "moment_arm_m": 0.05103922176324931,
+      "knee_moment_Nm": 30.011321972930684
+     }
+    }
+   },
+   {
+    "angle_deg": -30.0,
+    "angle_rad": -0.5235987755982988,
+    "mtu_length_m": 0.4957456415097179,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1151.7066812664527,
+      "active_fiber_force_N": 1139.6118637348818,
+      "passive_fiber_force_N": 15.834692705973644,
+      "fiber_force_along_tendon_N": 1151.7066812664527,
+      "normalized_fiber_length": 1.084124312961297,
+      "fiber_length_m": 0.14143740327342194,
+      "pennation_angle_rad": 0.08047960404071075,
+      "moment_arm_m": 0.05054196995298676,
+      "knee_moment_Nm": 58.20952447922315
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 583.7450606282415,
+      "active_fiber_force_N": 569.8059318674409,
+      "passive_fiber_force_N": 15.834692705973644,
+      "fiber_force_along_tendon_N": 583.7450606282415,
+      "normalized_fiber_length": 1.084124312961297,
+      "fiber_length_m": 0.14143740327342194,
+      "pennation_angle_rad": 0.08047960404071075,
+      "moment_arm_m": 0.05054196995298676,
+      "knee_moment_Nm": 29.503625314477016
+     }
+    }
+   },
+   {
+    "angle_deg": -35.0,
+    "angle_rad": -0.6108652381980153,
+    "mtu_length_m": 0.5001089062524864,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1115.1503611265352,
+      "active_fiber_force_N": 1093.7901289863348,
+      "passive_fiber_force_N": 24.76757110623669,
+      "fiber_force_along_tendon_N": 1115.1503611265352,
+      "normalized_fiber_length": 1.1174639245402762,
+      "fiber_length_m": 0.14578696727775184,
+      "pennation_angle_rad": 0.07807352331915766,
+      "moment_arm_m": 0.04944409684069419,
+      "knee_moment_Nm": 55.1376024474755
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 569.9212427561527,
+      "active_fiber_force_N": 546.8950644931674,
+      "passive_fiber_force_N": 24.76757110623669,
+      "fiber_force_along_tendon_N": 569.9212427561527,
+      "normalized_fiber_length": 1.1174639245402762,
+      "fiber_length_m": 0.14578696727775184,
+      "pennation_angle_rad": 0.07807352331915766,
+      "moment_arm_m": 0.04944409684069419,
+      "knee_moment_Nm": 28.179241118403993
+     }
+    }
+   },
+   {
+    "angle_deg": -40.0,
+    "angle_rad": -0.6981317007977318,
+    "mtu_length_m": 0.5043736959743229,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1075.3906946571412,
+      "active_fiber_force_N": 1043.1744611058846,
+      "passive_fiber_force_N": 35.31768630286462,
+      "fiber_force_along_tendon_N": 1075.3906946571412,
+      "normalized_fiber_length": 1.1500569840942332,
+      "fiber_length_m": 0.1500391343520754,
+      "pennation_angle_rad": 0.07585657324620321,
+      "moment_arm_m": 0.048291233841050205,
+      "knee_moment_Nm": 51.931943506177426
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 555.303408406333,
+      "active_fiber_force_N": 521.5872305529423,
+      "passive_fiber_force_N": 35.31768630286462,
+      "fiber_force_along_tendon_N": 555.303408406333,
+      "normalized_fiber_length": 1.1500569840942332,
+      "fiber_length_m": 0.1500391343520754,
+      "pennation_angle_rad": 0.07585657324620321,
+      "moment_arm_m": 0.048291233841050205,
+      "knee_moment_Nm": 26.81628674808243
+     }
+    }
+   },
+   {
+    "angle_deg": -45.0,
+    "angle_rad": -0.7853981633974483,
+    "mtu_length_m": 0.5085333504544646,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1038.0184265340922,
+      "active_fiber_force_N": 992.2484659276372,
+      "passive_fiber_force_N": 48.60407184273388,
+      "fiber_force_along_tendon_N": 1038.0184265340922,
+      "normalized_fiber_length": 1.1818517106946225,
+      "fiber_length_m": 0.15418714903487862,
+      "pennation_angle_rad": 0.07381207841169374,
+      "moment_arm_m": 0.04700140586946159,
+      "knee_moment_Nm": 48.78832536550877
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 543.2450777850971,
+      "active_fiber_force_N": 496.1242329638186,
+      "passive_fiber_force_N": 48.60407184273388,
+      "fiber_force_along_tendon_N": 543.2450777850971,
+      "normalized_fiber_length": 1.1818517106946225,
+      "fiber_length_m": 0.15418714903487862,
+      "pennation_angle_rad": 0.07381207841169374,
+      "moment_arm_m": 0.04700140586946159,
+      "knee_moment_Nm": 25.533282387564583
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "angle_rad": -0.8726646259971648,
+    "mtu_length_m": 0.5125702564604855,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1005.388554563717,
+      "active_fiber_force_N": 942.2364951566267,
+      "passive_fiber_force_N": 65.75861183046042,
+      "fiber_force_along_tendon_N": 1005.388554563717,
+      "normalized_fiber_length": 1.2127126768401855,
+      "fiber_length_m": 0.15821334313637855,
+      "pennation_angle_rad": 0.07193042863364042,
+      "moment_arm_m": 0.04548032861412661,
+      "knee_moment_Nm": 45.72540184643961
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 535.4885613215677,
+      "active_fiber_force_N": 471.11824757831334,
+      "passive_fiber_force_N": 65.75861183046042,
+      "fiber_force_along_tendon_N": 535.4885613215677,
+      "normalized_fiber_length": 1.2127126768401855,
+      "fiber_length_m": 0.15821334313637855,
+      "pennation_angle_rad": 0.07193042863364042,
+      "moment_arm_m": 0.04548032861412661,
+      "knee_moment_Nm": 24.354195738010787
+     }
+    }
+   },
+   {
+    "angle_deg": -55.0,
+    "angle_rad": -0.9599310885968813,
+    "mtu_length_m": 0.5164649161188234,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 978.8862288612506,
+      "active_fiber_force_N": 893.7121431410321,
+      "passive_fiber_force_N": 87.59129735681904,
+      "fiber_force_along_tendon_N": 978.8862288612507,
+      "normalized_fiber_length": 1.2424900821046059,
+      "fiber_length_m": 0.16209817334124296,
+      "pennation_angle_rad": 0.07020367775745803,
+      "moment_arm_m": 0.043744620086424955,
+      "knee_moment_Nm": 42.82100618936864
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 533.1308827661675,
+      "active_fiber_force_N": 446.85607157051606,
+      "passive_fiber_force_N": 87.59129735681904,
+      "fiber_force_along_tendon_N": 533.1308827661675,
+      "normalized_fiber_length": 1.2424900821046059,
+      "fiber_length_m": 0.16209817334124296,
+      "pennation_angle_rad": 0.07020367775745803,
+      "moment_arm_m": 0.043744620086424955,
+      "knee_moment_Nm": 23.32160792294636
+     }
+    }
+   },
+   {
+    "angle_deg": -60.0,
+    "angle_rad": -1.0471975511965976,
+    "mtu_length_m": 0.5201995393933841,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 959.0447619454579,
+      "active_fiber_force_N": 847.0375724020647,
+      "passive_fiber_force_N": 114.269813105028,
+      "fiber_force_along_tendon_N": 959.044761945458,
+      "normalized_fiber_length": 1.2710472167356364,
+      "fiber_length_m": 0.1658238041742143,
+      "pennation_angle_rad": 0.06862387389730251,
+      "moment_arm_m": 0.04181681671036731,
+      "knee_moment_Nm": 40.10419902731107
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 536.5228094304042,
+      "active_fiber_force_N": 423.51878620103236,
+      "passive_fiber_force_N": 114.269813105028,
+      "fiber_force_along_tendon_N": 536.5228094304042,
+      "normalized_fiber_length": 1.2710472167356364,
+      "fiber_length_m": 0.1658238041742143,
+      "pennation_angle_rad": 0.06862387389730251,
+      "moment_arm_m": 0.04181681671036731,
+      "knee_moment_Nm": 22.435675982882543
+     }
+    }
+   },
+   {
+    "angle_deg": -65.0,
+    "angle_rad": -1.1344640137963142,
+    "mtu_length_m": 0.5237591520846814,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 945.599867475262,
+      "active_fiber_force_N": 802.4692978266838,
+      "passive_fiber_force_N": 145.26858609826672,
+      "fiber_force_along_tendon_N": 945.599867475262,
+      "normalized_fiber_length": 1.298268943006116,
+      "fiber_length_m": 0.1693752144970764,
+      "pennation_angle_rad": 0.06718279635544804,
+      "moment_arm_m": 0.0397412977749071,
+      "knee_moment_Nm": 37.57936590924708
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 545.2703699694054,
+      "active_fiber_force_N": 401.2346489133419,
+      "passive_fiber_force_N": 145.26858609826672,
+      "fiber_force_along_tendon_N": 545.2703699694054,
+      "normalized_fiber_length": 1.298268943006116,
+      "fiber_length_m": 0.1693752144970764,
+      "pennation_angle_rad": 0.06718279635544804,
+      "moment_arm_m": 0.0397412977749071,
+      "knee_moment_Nm": 21.6697521407879
+     }
+    }
+   },
+   {
+    "angle_deg": -70.0,
+    "angle_rad": -1.2217304763960306,
+    "mtu_length_m": 0.5271308120945256,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 937.7773149916374,
+      "active_fiber_force_N": 760.2071106062324,
+      "passive_fiber_force_N": 179.60848197824097,
+      "fiber_force_along_tendon_N": 937.7773149916374,
+      "normalized_fiber_length": 1.3240557096900298,
+      "fiber_length_m": 0.17273941662314804,
+      "pennation_angle_rad": 0.06587245702130937,
+      "moment_arm_m": 0.03749773239421367,
+      "knee_moment_Nm": 35.16452280292064
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 558.498130518123,
+      "active_fiber_force_N": 380.1035553031162,
+      "passive_fiber_force_N": 179.60848197824097,
+      "fiber_force_along_tendon_N": 558.498130518123,
+      "normalized_fiber_length": 1.3240557096900298,
+      "fiber_length_m": 0.17273941662314804,
+      "pennation_angle_rad": 0.06587245702130937,
+      "moment_arm_m": 0.03749773239421367,
+      "knee_moment_Nm": 20.942413440837196
+     }
+    }
+   },
+   {
+    "angle_deg": -75.0,
+    "angle_rad": -1.3089969389957472,
+    "mtu_length_m": 0.5302969484715722,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 934.6364939595949,
+      "active_fiber_force_N": 720.4932004125936,
+      "passive_fiber_force_N": 216.10219684571817,
+      "fiber_force_along_tendon_N": 934.6364939595949,
+      "normalized_fiber_length": 1.3482726056644019,
+      "fiber_length_m": 0.17589880973056934,
+      "pennation_angle_rad": 0.06468762562051732,
+      "moment_arm_m": 0.035020892452864716,
+      "knee_moment_Nm": 32.73180413748152
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 575.1433549122589,
+      "active_fiber_force_N": 360.2466002062968,
+      "passive_fiber_force_N": 216.10219684571817,
+      "fiber_force_along_tendon_N": 575.1433549122589,
+      "normalized_fiber_length": 1.3482726056644019,
+      "fiber_length_m": 0.17589880973056934,
+      "pennation_angle_rad": 0.06468762562051732,
+      "moment_arm_m": 0.035020892452864716,
+      "knee_moment_Nm": 20.14203357736202
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "angle_rad": -1.3962634015954636,
+    "mtu_length_m": 0.5332346229762265,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 935.2522631124365,
+      "active_fiber_force_N": 683.628641670086,
+      "passive_fiber_force_N": 253.5198798129902,
+      "fiber_force_along_tendon_N": 935.2522631124365,
+      "normalized_fiber_length": 1.3707436955065475,
+      "fiber_length_m": 0.17883044087101985,
+      "pennation_angle_rad": 0.06362573302284229,
+      "moment_arm_m": 0.03225258400881642,
+      "knee_moment_Nm": 30.164302185469538
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 594.1295810648742,
+      "active_fiber_force_N": 341.814320835043,
+      "passive_fiber_force_N": 253.5198798129902,
+      "fiber_force_along_tendon_N": 594.1295810648742,
+      "normalized_fiber_length": 1.3707436955065475,
+      "fiber_length_m": 0.17883044087101985,
+      "pennation_angle_rad": 0.06362573302284229,
+      "moment_arm_m": 0.03225258400881642,
+      "knee_moment_Nm": 19.16221422541776
+     }
+    }
+   },
+   {
+    "angle_deg": -85.0,
+    "angle_rad": -1.4835298641951802,
+    "mtu_length_m": 0.5364085831536158,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 939.7057944510826,
+      "active_fiber_force_N": 643.7872648097076,
+      "passive_fiber_force_N": 297.7578792051293,
+      "fiber_force_along_tendon_N": 939.7057944510825,
+      "normalized_fiber_length": 1.395023879158129,
+      "fiber_length_m": 0.18199809063740238,
+      "pennation_angle_rad": 0.06251687876344424,
+      "moment_arm_m": 0.03409461740381495,
+      "knee_moment_Nm": 32.038909533957636
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 618.4409953168401,
+      "active_fiber_force_N": 321.8936324048538,
+      "passive_fiber_force_N": 297.7578792051293,
+      "fiber_force_along_tendon_N": 618.4409953168401,
+      "normalized_fiber_length": 1.395023879158129,
+      "fiber_length_m": 0.18199809063740238,
+      "pennation_angle_rad": 0.06251687876344424,
+      "moment_arm_m": 0.03409461740381495,
+      "knee_moment_Nm": 21.085509122162176
+     }
+    }
+   },
+   {
+    "angle_deg": -90.0,
+    "angle_rad": -1.5707963267948966,
+    "mtu_length_m": 0.5393330795412463,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 947.3698097738081,
+      "active_fiber_force_N": 607.0705285532939,
+      "passive_fiber_force_N": 342.0953877951935,
+      "fiber_force_along_tendon_N": 947.3698097738081,
+      "normalized_fiber_length": 1.41739718125962,
+      "fiber_length_m": 0.18491696415961223,
+      "pennation_angle_rad": 0.06152880638489203,
+      "moment_arm_m": 0.032897105631823846,
+      "knee_moment_Nm": 31.16572470452983
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 644.4089252493457,
+      "active_fiber_force_N": 303.53526427664696,
+      "passive_fiber_force_N": 342.0953877951935,
+      "fiber_force_along_tendon_N": 644.4089252493458,
+      "normalized_fiber_length": 1.41739718125962,
+      "fiber_length_m": 0.18491696415961223,
+      "pennation_angle_rad": 0.06152880638489203,
+      "moment_arm_m": 0.032897105631823846,
+      "knee_moment_Nm": 21.1991884840178
+     }
+    }
+   },
+   {
+    "angle_deg": -95.0,
+    "angle_rad": -1.6580627893946132,
+    "mtu_length_m": 0.5421452982006338,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 958.1083011599804,
+      "active_fiber_force_N": 571.7600065794044,
+      "passive_fiber_force_N": 388.1106953301667,
+      "fiber_force_along_tendon_N": 958.1083011599804,
+      "normalized_fiber_length": 1.4389127893142781,
+      "fiber_length_m": 0.18772394090270111,
+      "pennation_angle_rad": 0.06060764883752174,
+      "moment_arm_m": 0.031530692977984304,
+      "knee_moment_Nm": 30.209818683533467
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 672.7531968291571,
+      "active_fiber_force_N": 285.8800032897022,
+      "passive_fiber_force_N": 388.1106953301667,
+      "fiber_force_along_tendon_N": 672.7531968291571,
+      "normalized_fiber_length": 1.4389127893142781,
+      "fiber_length_m": 0.18772394090270111,
+      "pennation_angle_rad": 0.06060764883752174,
+      "moment_arm_m": 0.031530692977984304,
+      "knee_moment_Nm": 21.212374499177596
+     }
+    }
+   },
+   {
+    "angle_deg": -100.0,
+    "angle_rad": -1.7453292519943295,
+    "mtu_length_m": 0.5448329142351562,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 971.6128975082685,
+      "active_fiber_force_N": 538.0123494050611,
+      "passive_fiber_force_N": 435.3376476191492,
+      "fiber_force_along_tendon_N": 971.6128975082685,
+      "normalized_fiber_length": 1.4594762007954185,
+      "fiber_length_m": 0.19040669184515618,
+      "pennation_angle_rad": 0.05975268727224153,
+      "moment_arm_m": 0.030050564818264364,
+      "knee_moment_Nm": 29.197516354833873
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 703.086807561776,
+      "active_fiber_force_N": 269.00617470253053,
+      "passive_fiber_force_N": 435.3376476191492,
+      "fiber_force_along_tendon_N": 703.086807561776,
+      "normalized_fiber_length": 1.4594762007954185,
+      "fiber_length_m": 0.19040669184515618,
+      "pennation_angle_rad": 0.05975268727224153,
+      "moment_arm_m": 0.030050564818264364,
+      "knee_moment_Nm": 21.128155683501713
+     }
+    }
+   }
+  ],
+  "vas_int_r": [
+   {
+    "angle_deg": -0.0,
+    "angle_rad": -0.0,
+    "mtu_length_m": 0.21212311711315004,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 285.0131480885121,
+      "active_fiber_force_N": 286.40324453273877,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 285.0131480885121,
+      "normalized_fiber_length": 0.531837925434157,
+      "fiber_length_m": 0.05391468006685481,
+      "pennation_angle_rad": 0.09856536003885581,
+      "moment_arm_m": 0.05037138021273687,
+      "knee_moment_Nm": 14.35650564799552
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 142.50657404425604,
+      "active_fiber_force_N": 143.20162226636938,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 142.50657404425604,
+      "normalized_fiber_length": 0.531837925434157,
+      "fiber_length_m": 0.05391468006685481,
+      "pennation_angle_rad": 0.09856536003885581,
+      "moment_arm_m": 0.05037138021273687,
+      "knee_moment_Nm": 7.17825282399776
+     }
+    }
+   },
+   {
+    "angle_deg": -5.0,
+    "angle_rad": -0.08726646259971647,
+    "mtu_length_m": 0.21636497038639466,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 485.5278452123297,
+      "active_fiber_force_N": 487.56231452596114,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 485.5278452123297,
+      "normalized_fiber_length": 0.5734931061278882,
+      "fiber_length_m": 0.05813744349313022,
+      "pennation_angle_rad": 0.09138536203715643,
+      "moment_arm_m": 0.04707991039747267,
+      "knee_moment_Nm": 22.858607448074462
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 242.76392260616484,
+      "active_fiber_force_N": 243.78115726298057,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 242.76392260616484,
+      "normalized_fiber_length": 0.5734931061278882,
+      "fiber_length_m": 0.05813744349313022,
+      "pennation_angle_rad": 0.09138536203715643,
+      "moment_arm_m": 0.04707991039747267,
+      "knee_moment_Nm": 11.429303724037231
+     }
+    }
+   },
+   {
+    "angle_deg": -10.0,
+    "angle_rad": -0.17453292519943295,
+    "mtu_length_m": 0.22039886213051404,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 676.67474089236,
+      "active_fiber_force_N": 679.153455719958,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 676.67474089236,
+      "normalized_fiber_length": 0.6131298860250729,
+      "fiber_length_m": 0.06215559301733451,
+      "pennation_angle_rad": 0.08546267825351227,
+      "moment_arm_m": 0.04581230945643134,
+      "knee_moment_Nm": 31.00003263111129
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 338.33737044618,
+      "active_fiber_force_N": 339.576727859979,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 338.33737044618,
+      "normalized_fiber_length": 0.6131298860250729,
+      "fiber_length_m": 0.06215559301733451,
+      "pennation_angle_rad": 0.08546267825351227,
+      "moment_arm_m": 0.04581230945643134,
+      "knee_moment_Nm": 15.500016315555644
+     }
+    }
+   },
+   {
+    "angle_deg": -15.0,
+    "angle_rad": -0.2617993877991494,
+    "mtu_length_m": 0.22441316118729776,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 863.9798482239095,
+      "active_fiber_force_N": 866.7716872254986,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 863.9798482239095,
+      "normalized_fiber_length": 0.6525929126738937,
+      "fiber_length_m": 0.06615612843327741,
+      "pennation_angle_rad": 0.08028316102693404,
+      "moment_arm_m": 0.04624591811872012,
+      "knee_moment_Nm": 39.955541317187155
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 431.98992411195474,
+      "active_fiber_force_N": 433.3858436127493,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 431.98992411195474,
+      "normalized_fiber_length": 0.6525929126738937,
+      "fiber_length_m": 0.06615612843327741,
+      "pennation_angle_rad": 0.08028316102693404,
+      "moment_arm_m": 0.04624591811872012,
+      "knee_moment_Nm": 19.977770658593577
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "angle_rad": -0.3490658503988659,
+    "mtu_length_m": 0.2284632401241641,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1023.9297978432438,
+      "active_fiber_force_N": 1026.8671958694244,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1023.9297978432439,
+      "normalized_fiber_length": 0.692423388051525,
+      "fiber_length_m": 0.07019391369491082,
+      "pennation_angle_rad": 0.07565590626332268,
+      "moment_arm_m": 0.046435284774616316,
+      "knee_moment_Nm": 47.54647175206634
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 511.9648989216219,
+      "active_fiber_force_N": 513.4335979347122,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 511.96489892162197,
+      "normalized_fiber_length": 0.692423388051525,
+      "fiber_length_m": 0.07019391369491082,
+      "pennation_angle_rad": 0.07565590626332268,
+      "moment_arm_m": 0.046435284774616316,
+      "knee_moment_Nm": 23.77323587603317
+     }
+    }
+   },
+   {
+    "angle_deg": -25.0,
+    "angle_rad": -0.4363323129985824,
+    "mtu_length_m": 0.23250602897947817,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1100.9072967292873,
+      "active_fiber_force_N": 1103.7304551565855,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1100.9072967292873,
+      "normalized_fiber_length": 0.7321953475967521,
+      "fiber_length_m": 0.0742257669569029,
+      "pennation_angle_rad": 0.07153914153406024,
+      "moment_arm_m": 0.04624188907955827,
+      "knee_moment_Nm": 50.90803310223205
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 550.4536483646436,
+      "active_fiber_force_N": 551.8652275782928,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 550.4536483646436,
+      "normalized_fiber_length": 0.7321953475967521,
+      "fiber_length_m": 0.0742257669569029,
+      "pennation_angle_rad": 0.07153914153406024,
+      "moment_arm_m": 0.04624188907955827,
+      "knee_moment_Nm": 25.454016551116023
+     }
+    }
+   },
+   {
+    "angle_deg": -30.0,
+    "angle_rad": -0.5235987755982988,
+    "mtu_length_m": 0.23652694839337665,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1151.9753466619645,
+      "active_fiber_force_N": 1154.6332945925888,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1151.9753466619645,
+      "normalized_fiber_length": 0.7717632042312177,
+      "fiber_length_m": 0.07823692943584218,
+      "pennation_angle_rad": 0.06786557620540958,
+      "moment_arm_m": 0.045808698688620454,
+      "knee_moment_Nm": 52.77049155195703
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 575.9876733309823,
+      "active_fiber_force_N": 577.3166472962944,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 575.9876733309823,
+      "normalized_fiber_length": 0.7717632042312177,
+      "fiber_length_m": 0.07823692943584218,
+      "pennation_angle_rad": 0.06786557620540958,
+      "moment_arm_m": 0.045808698688620454,
+      "knee_moment_Nm": 26.385245775978515
+     }
+    }
+   },
+   {
+    "angle_deg": -35.0,
+    "angle_rad": -0.6108652381980153,
+    "mtu_length_m": 0.24048809704943022,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1198.686798054457,
+      "active_fiber_force_N": 1201.1920985667896,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1198.686798054457,
+      "normalized_fiber_length": 0.810752083950127,
+      "fiber_length_m": 0.08218939855412494,
+      "pennation_angle_rad": 0.06459727384801879,
+      "moment_arm_m": 0.04497420661116938,
+      "knee_moment_Nm": 53.90998771778222
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 599.3433990272285,
+      "active_fiber_force_N": 600.5960492833948,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 599.3433990272285,
+      "normalized_fiber_length": 0.810752083950127,
+      "fiber_length_m": 0.08218939855412494,
+      "pennation_angle_rad": 0.06459727384801879,
+      "moment_arm_m": 0.04497420661116938,
+      "knee_moment_Nm": 26.95499385889111
+     }
+    }
+   },
+   {
+    "angle_deg": -40.0,
+    "angle_rad": -0.6981317007977318,
+    "mtu_length_m": 0.24437708868131564,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1243.890338550352,
+      "active_fiber_force_N": 1246.2602799082738,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1243.890338550352,
+      "normalized_fiber_length": 0.8490383932607437,
+      "fiber_length_m": 0.08607064511196956,
+      "pennation_angle_rad": 0.061680554271228295,
+      "moment_arm_m": 0.04416128170689165,
+      "knee_moment_Nm": 54.93179165320292
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 621.945169275176,
+      "active_fiber_force_N": 623.1301399541369,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 621.945169275176,
+      "normalized_fiber_length": 0.8490383932607437,
+      "fiber_length_m": 0.08607064511196956,
+      "pennation_angle_rad": 0.061680554271228295,
+      "moment_arm_m": 0.04416128170689165,
+      "knee_moment_Nm": 27.46589582660146
+     }
+    }
+   },
+   {
+    "angle_deg": -45.0,
+    "angle_rad": -0.7853981633974483,
+    "mtu_length_m": 0.24819375156845686,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1288.125549644851,
+      "active_fiber_force_N": 1290.3755945767132,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1288.125549644851,
+      "normalized_fiber_length": 0.8866190630276992,
+      "fiber_length_m": 0.08988035797802649,
+      "pennation_angle_rad": 0.05906302010664111,
+      "moment_arm_m": 0.04328079389718906,
+      "knee_moment_Nm": 55.75109642788217
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 644.0627748224255,
+      "active_fiber_force_N": 645.1877972883566,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 644.0627748224255,
+      "normalized_fiber_length": 0.8866190630276992,
+      "fiber_length_m": 0.08988035797802649,
+      "pennation_angle_rad": 0.05906302010664111,
+      "moment_arm_m": 0.04328079389718906,
+      "knee_moment_Nm": 27.875548213941084
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "angle_rad": -0.8726646259971648,
+    "mtu_length_m": 0.2519259928248632,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1330.5680174783297,
+      "active_fiber_force_N": 1332.7104157521321,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1330.5680174783297,
+      "normalized_fiber_length": 0.9233738791259196,
+      "fiber_length_m": 0.0936063505334351,
+      "pennation_angle_rad": 0.05670944579196104,
+      "moment_arm_m": 0.0422279152334739,
+      "knee_moment_Nm": 56.18711345444632
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 665.2840087391648,
+      "active_fiber_force_N": 666.3552078760661,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 665.2840087391648,
+      "normalized_fiber_length": 0.9233738791259196,
+      "fiber_length_m": 0.0936063505334351,
+      "pennation_angle_rad": 0.05670944579196104,
+      "moment_arm_m": 0.0422279152334739,
+      "knee_moment_Nm": 28.09355672722316
+     }
+    }
+   },
+   {
+    "angle_deg": -55.0,
+    "angle_rad": -0.9599310885968813,
+    "mtu_length_m": 0.25555921757767985,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1360.420180709676,
+      "active_fiber_force_N": 1362.4498912254546,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1360.420180709676,
+      "normalized_fiber_length": 0.9591581300950365,
+      "fiber_length_m": 0.09723395275991609,
+      "pennation_angle_rad": 0.05459158579656245,
+      "moment_arm_m": 0.0410137920552748,
+      "knee_moment_Nm": 55.79599039942602
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 680.210090354838,
+      "active_fiber_force_N": 681.2249456127273,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 680.210090354838,
+      "normalized_fiber_length": 0.9591581300950365,
+      "fiber_length_m": 0.09723395275991609,
+      "pennation_angle_rad": 0.05459158579656245,
+      "moment_arm_m": 0.0410137920552748,
+      "knee_moment_Nm": 27.89799519971301
+     }
+    }
+   },
+   {
+    "angle_deg": -60.0,
+    "angle_rad": -1.0471975511965976,
+    "mtu_length_m": 0.2590800322947011,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1363.1030159313514,
+      "active_fiber_force_N": 1364.9969783181084,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 1363.1030159313514,
+      "normalized_fiber_length": 0.993839048954933,
+      "fiber_length_m": 0.10074970550212507,
+      "pennation_angle_rad": 0.05268476613970735,
+      "moment_arm_m": 0.03965486208106253,
+      "knee_moment_Nm": 54.05366209903812
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 681.5515079656757,
+      "active_fiber_force_N": 682.4984891590542,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 681.5515079656757,
+      "normalized_fiber_length": 0.993839048954933,
+      "fiber_length_m": 0.10074970550212507,
+      "pennation_angle_rad": 0.05268476613970735,
+      "moment_arm_m": 0.03965486208106253,
+      "knee_moment_Nm": 27.02683104951906
+     }
+    }
+   },
+   {
+    "angle_deg": -65.0,
+    "angle_rad": -1.1344640137963142,
+    "mtu_length_m": 0.2624773443022056,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1365.4124611718098,
+      "active_fiber_force_N": 1364.459470355658,
+      "passive_fiber_force_N": 2.728326264378001,
+      "fiber_force_along_tendon_N": 1365.4124611718098,
+      "normalized_fiber_length": 1.0273066331759233,
+      "fiber_length_m": 0.1041424573342029,
+      "pennation_angle_rad": 0.05096688957942567,
+      "moment_arm_m": 0.038190270710359096,
+      "knee_moment_Nm": 52.145471523449096
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 684.0686223102656,
+      "active_fiber_force_N": 682.229735177829,
+      "passive_fiber_force_N": 2.728326264378001,
+      "fiber_force_along_tendon_N": 684.0686223102656,
+      "normalized_fiber_length": 1.0273066331759233,
+      "fiber_length_m": 0.1041424573342029,
+      "pennation_angle_rad": 0.05096688957942567,
+      "moment_arm_m": 0.038190270710359096,
+      "knee_moment_Nm": 26.124765870491434
+     }
+    }
+   },
+   {
+    "angle_deg": -70.0,
+    "angle_rad": -1.2217304763960306,
+    "mtu_length_m": 0.265741671742326,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1365.310401196721,
+      "active_fiber_force_N": 1355.4885701154253,
+      "passive_fiber_force_N": 11.490702009468736,
+      "fiber_force_along_tendon_N": 1365.310401196721,
+      "normalized_fiber_length": 1.0594668395350293,
+      "fiber_length_m": 0.10740267469331617,
+      "pennation_angle_rad": 0.04941850483426124,
+      "moment_arm_m": 0.03659447933775459,
+      "knee_moment_Nm": 49.96282326621483
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 688.3935374153457,
+      "active_fiber_force_N": 677.7442850577127,
+      "passive_fiber_force_N": 11.490702009468736,
+      "fiber_force_along_tendon_N": 688.3935374153456,
+      "normalized_fiber_length": 1.0594668395350293,
+      "fiber_length_m": 0.10740267469331617,
+      "pennation_angle_rad": 0.04941850483426124,
+      "moment_arm_m": 0.03659447933775459,
+      "knee_moment_Nm": 25.19140308118966
+     }
+    }
+   },
+   {
+    "angle_deg": -75.0,
+    "angle_rad": -1.3089969389957472,
+    "mtu_length_m": 0.2688583738284537,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1340.822210202994,
+      "active_fiber_force_N": 1322.092515328148,
+      "passive_fiber_force_N": 20.27744448803048,
+      "fiber_force_along_tendon_N": 1340.822210202994,
+      "normalized_fiber_length": 1.0901748722010023,
+      "fiber_length_m": 0.11051567900814936,
+      "pennation_angle_rad": 0.048025398228553076,
+      "moment_arm_m": 0.03479567303815348,
+      "knee_moment_Nm": 46.65481122851768
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 680.5381374210494,
+      "active_fiber_force_N": 661.046257664074,
+      "passive_fiber_force_N": 20.27744448803048,
+      "fiber_force_along_tendon_N": 680.5381374210494,
+      "normalized_fiber_length": 1.0901748722010023,
+      "fiber_length_m": 0.11051567900814936,
+      "pennation_angle_rad": 0.048025398228553076,
+      "moment_arm_m": 0.03479567303815348,
+      "knee_moment_Nm": 23.679782519696797
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "angle_rad": -1.3962634015954636,
+    "mtu_length_m": 0.2718068535284272,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1302.170138896665,
+      "active_fiber_force_N": 1274.07519187463,
+      "passive_fiber_force_N": 29.520930332652583,
+      "fiber_force_along_tendon_N": 1302.170138896665,
+      "normalized_fiber_length": 1.1192272982092868,
+      "fiber_length_m": 0.11346084741095547,
+      "pennation_angle_rad": 0.04677785314766159,
+      "moment_arm_m": 0.032728725759076496,
+      "knee_moment_Nm": 42.6183693676075
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 665.8293883737905,
+      "active_fiber_force_N": 637.037595937315,
+      "passive_fiber_force_N": 29.520930332652583,
+      "fiber_force_along_tendon_N": 665.8293883737905,
+      "normalized_fiber_length": 1.1192272982092868,
+      "fiber_length_m": 0.11346084741095547,
+      "pennation_angle_rad": 0.04677785314766159,
+      "moment_arm_m": 0.032728725759076496,
+      "knee_moment_Nm": 21.791747454419426
+     }
+    }
+   },
+   {
+    "angle_deg": -85.0,
+    "angle_rad": -1.4835298641951802,
+    "mtu_length_m": 0.27513244208638044,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1255.2547935823502,
+      "active_fiber_force_N": 1214.4819956118968,
+      "passive_fiber_force_N": 42.07019261147737,
+      "fiber_force_along_tendon_N": 1255.2547935823502,
+      "normalized_fiber_length": 1.1519974909826434,
+      "fiber_length_m": 0.11678290169593784,
+      "pennation_angle_rad": 0.04544626085300601,
+      "moment_arm_m": 0.03450711050057232,
+      "knee_moment_Nm": 43.31521586851926
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 648.6407742845348,
+      "active_fiber_force_N": 607.2409978059484,
+      "passive_fiber_force_N": 42.07019261147737,
+      "fiber_force_along_tendon_N": 648.6407742845348,
+      "normalized_fiber_length": 1.1519974909826434,
+      "fiber_length_m": 0.11678290169593784,
+      "pennation_angle_rad": 0.04544626085300601,
+      "moment_arm_m": 0.03450711050057232,
+      "knee_moment_Nm": 22.382718873413232
+     }
+    }
+   },
+   {
+    "angle_deg": -90.0,
+    "angle_rad": -1.5707963267948966,
+    "mtu_length_m": 0.27809648310496893,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1215.027266560812,
+      "active_fiber_force_N": 1159.8287812678777,
+      "passive_fiber_force_N": 56.392871124204156,
+      "fiber_force_along_tendon_N": 1215.027266560812,
+      "normalized_fiber_length": 1.1812066426399923,
+      "fiber_length_m": 0.11974395804660078,
+      "pennation_angle_rad": 0.04432170937075543,
+      "moment_arm_m": 0.03339186840586572,
+      "knee_moment_Nm": 40.57203059453737
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 635.6823786405934,
+      "active_fiber_force_N": 579.9143906339389,
+      "passive_fiber_force_N": 56.392871124204156,
+      "fiber_force_along_tendon_N": 635.6823786405934,
+      "normalized_fiber_length": 1.1812066426399923,
+      "fiber_length_m": 0.11974395804660078,
+      "pennation_angle_rad": 0.04432170937075543,
+      "moment_arm_m": 0.03339186840586572,
+      "knee_moment_Nm": 21.2266223354944
+     }
+    }
+   },
+   {
+    "angle_deg": -95.0,
+    "angle_rad": -1.6580627893946132,
+    "mtu_length_m": 0.2809557838496796,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1179.7634179930453,
+      "active_fiber_force_N": 1106.5326772501078,
+      "passive_fiber_force_N": 74.3369738782171,
+      "fiber_force_along_tendon_N": 1179.7634179930453,
+      "normalized_fiber_length": 1.2093849792934954,
+      "fiber_length_m": 0.12260051628142307,
+      "pennation_angle_rad": 0.043288372516442714,
+      "moment_arm_m": 0.032117146997357314,
+      "knee_moment_Nm": 37.89063511778734
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 627.0153766718785,
+      "active_fiber_force_N": 553.2663386250539,
+      "passive_fiber_force_N": 74.3369738782171,
+      "fiber_force_along_tendon_N": 627.0153766718785,
+      "normalized_fiber_length": 1.2093849792934954,
+      "fiber_length_m": 0.12260051628142307,
+      "pennation_angle_rad": 0.043288372516442714,
+      "moment_arm_m": 0.032117146997357314,
+      "knee_moment_Nm": 20.137945022174087
+     }
+    }
+   },
+   {
+    "angle_deg": -100.0,
+    "angle_rad": -1.7453292519943295,
+    "mtu_length_m": 0.28369911557553856,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1150.6168380480192,
+      "active_fiber_force_N": 1055.1201270730548,
+      "passive_fiber_force_N": 96.52888280951105,
+      "fiber_force_along_tendon_N": 1150.6168380480192,
+      "normalized_fiber_length": 1.236421603848566,
+      "fiber_length_m": 0.12534133428868413,
+      "pennation_angle_rad": 0.04234122049393685,
+      "moment_arm_m": 0.030743911668969618,
+      "knee_moment_Nm": 35.374462433777424
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 623.529603154543,
+      "active_fiber_force_N": 527.5600635365274,
+      "passive_fiber_force_N": 96.52888280951105,
+      "fiber_force_along_tendon_N": 623.529603154543,
+      "normalized_fiber_length": 1.236421603848566,
+      "fiber_length_m": 0.12534133428868413,
+      "pennation_angle_rad": 0.04234122049393685,
+      "moment_arm_m": 0.030743911668969618,
+      "knee_moment_Nm": 19.16973904237095
+     }
+    }
+   }
+  ],
+  "bifemlh_r": [
+   {
+    "angle_deg": -0.0,
+    "angle_rad": -0.0,
+    "mtu_length_m": 0.47659938218017844,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 829.7471562448688,
+      "active_fiber_force_N": 829.7471562448688,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 829.7471562448688,
+      "normalized_fiber_length": 0.8641869810773386,
+      "fiber_length_m": 0.10684037034834143,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.02645493156341601,
+      "knee_moment_Nm": -21.950904233397058
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 414.8735781224344,
+      "active_fiber_force_N": 414.8735781224344,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 414.8735781224344,
+      "normalized_fiber_length": 0.8641869810773386,
+      "fiber_length_m": 0.10684037034834143,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.02645493156341601,
+      "knee_moment_Nm": -10.975452116698529
+     }
+    }
+   },
+   {
+    "angle_deg": -5.0,
+    "angle_rad": -0.08726646259971647,
+    "mtu_length_m": 0.4742008305416862,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 814.7755076862326,
+      "active_fiber_force_N": 814.7755076862326,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 814.7755076862326,
+      "normalized_fiber_length": 0.8447861020587749,
+      "fiber_length_m": 0.1044418187098492,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.028483844654400507,
+      "knee_moment_Nm": -23.207938989144957
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 407.3877538431163,
+      "active_fiber_force_N": 407.3877538431163,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 407.3877538431163,
+      "normalized_fiber_length": 0.8447861020587749,
+      "fiber_length_m": 0.1044418187098492,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.028483844654400507,
+      "knee_moment_Nm": -11.603969494572478
+     }
+    }
+   },
+   {
+    "angle_deg": -10.0,
+    "angle_rad": -0.17453292519943295,
+    "mtu_length_m": 0.4716339539741845,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 798.7431883157892,
+      "active_fiber_force_N": 798.7431883157892,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 798.7431883157892,
+      "normalized_fiber_length": 0.8240237132310775,
+      "fiber_length_m": 0.10187494214234749,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.030308310174248867,
+      "knee_moment_Nm": -24.208556301043412
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 399.3715941578946,
+      "active_fiber_force_N": 399.3715941578946,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 399.3715941578946,
+      "normalized_fiber_length": 0.8240237132310775,
+      "fiber_length_m": 0.10187494214234749,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.030308310174248867,
+      "knee_moment_Nm": -12.104278150521706
+     }
+    }
+   },
+   {
+    "angle_deg": -15.0,
+    "angle_rad": -0.2617993877991494,
+    "mtu_length_m": 0.46892258622362937,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 781.7539813435792,
+      "active_fiber_force_N": 781.7539813435792,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 781.7539813435792,
+      "normalized_fiber_length": 0.8020925957770366,
+      "fiber_length_m": 0.09916357439179235,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03173420075188401,
+      "knee_moment_Nm": -24.80833778254173
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 390.8769906717896,
+      "active_fiber_force_N": 390.8769906717896,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 390.8769906717896,
+      "normalized_fiber_length": 0.8020925957770366,
+      "fiber_length_m": 0.09916357439179235,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03173420075188401,
+      "knee_moment_Nm": -12.404168891270865
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "angle_rad": -0.3490658503988659,
+    "mtu_length_m": 0.4661130773651286,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 763.9565176642353,
+      "active_fiber_force_N": 763.9565176642353,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 763.9565176642353,
+      "normalized_fiber_length": 0.7793676560298063,
+      "fiber_length_m": 0.09635406553329157,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03254935707928828,
+      "knee_moment_Nm": -24.866293486502798
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 381.97825883211766,
+      "active_fiber_force_N": 381.97825883211766,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 381.97825883211766,
+      "normalized_fiber_length": 0.7793676560298063,
+      "fiber_length_m": 0.09635406553329157,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03254935707928828,
+      "knee_moment_Nm": -12.433146743251399
+     }
+    }
+   },
+   {
+    "angle_deg": -25.0,
+    "angle_rad": -0.4363323129985824,
+    "mtu_length_m": 0.46325539503059593,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 745.3391555334122,
+      "active_fiber_force_N": 745.3391555334122,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 745.3391555334122,
+      "normalized_fiber_length": 0.7562530612234981,
+      "fiber_length_m": 0.09349638319875891,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03289318574639299,
+      "knee_moment_Nm": -24.516579287020217
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 372.6695777667061,
+      "active_fiber_force_N": 372.6695777667061,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 372.6695777667061,
+      "normalized_fiber_length": 0.7562530612234981,
+      "fiber_length_m": 0.09349638319875891,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03289318574639299,
+      "knee_moment_Nm": -12.258289643510109
+     }
+    }
+   },
+   {
+    "angle_deg": -30.0,
+    "angle_rad": -0.5235987755982988,
+    "mtu_length_m": 0.4603811396241846,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 725.246790390825,
+      "active_fiber_force_N": 725.246790390825,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 725.246790390825,
+      "normalized_fiber_length": 0.7330044137842074,
+      "fiber_length_m": 0.09062212779234757,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.0329274067248286,
+      "knee_moment_Nm": -23.88049604307521
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 362.6233951954125,
+      "active_fiber_force_N": 362.6233951954125,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 362.6233951954125,
+      "normalized_fiber_length": 0.7330044137842074,
+      "fiber_length_m": 0.09062212779234757,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.0329274067248286,
+      "knee_moment_Nm": -11.940248021537604
+     }
+    }
+   },
+   {
+    "angle_deg": -35.0,
+    "angle_rad": -0.6108652381980153,
+    "mtu_length_m": 0.45751641187359904,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 700.973520257376,
+      "active_fiber_force_N": 700.973520257376,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 700.973520257376,
+      "normalized_fiber_length": 0.7098328315600408,
+      "fiber_length_m": 0.08775740004176202,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03268887943219484,
+      "knee_moment_Nm": -22.91403888885455
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 350.486760128688,
+      "active_fiber_force_N": 350.486760128688,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 350.486760128688,
+      "normalized_fiber_length": 0.7098328315600408,
+      "fiber_length_m": 0.08775740004176202,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03268887943219484,
+      "knee_moment_Nm": -11.457019444427274
+     }
+    }
+   },
+   {
+    "angle_deg": -40.0,
+    "angle_rad": -0.6981317007977318,
+    "mtu_length_m": 0.45468272833431667,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 662.702590929621,
+      "active_fiber_force_N": 662.702590929621,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 662.702590929621,
+      "normalized_fiber_length": 0.6869123529510953,
+      "fiber_length_m": 0.08492371650247965,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03221399482418663,
+      "knee_moment_Nm": -21.34829783418188
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 331.3512954648105,
+      "active_fiber_force_N": 331.3512954648105,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 331.3512954648105,
+      "normalized_fiber_length": 0.6869123529510953,
+      "fiber_length_m": 0.08492371650247965,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03221399482418663,
+      "knee_moment_Nm": -10.67414891709094
+     }
+    }
+   },
+   {
+    "angle_deg": -45.0,
+    "angle_rad": -0.7853981633974483,
+    "mtu_length_m": 0.4519008559027565,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 604.0724440543963,
+      "active_fiber_force_N": 604.0724440543963,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 604.0724440543963,
+      "normalized_fiber_length": 0.664410952679512,
+      "fiber_length_m": 0.08214184407091951,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03150382649250744,
+      "knee_moment_Nm": -19.03059346639461
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 302.03622202719816,
+      "active_fiber_force_N": 302.03622202719816,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 302.03622202719816,
+      "normalized_fiber_length": 0.664410952679512,
+      "fiber_length_m": 0.08214184407091951,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.03150382649250744,
+      "knee_moment_Nm": -9.515296733197305
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "angle_rad": -0.8726646259971648,
+    "mtu_length_m": 0.44919102245422876,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 537.9783580590578,
+      "active_fiber_force_N": 537.9783580590578,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 537.9783580590578,
+      "normalized_fiber_length": 0.6424922455515751,
+      "fiber_length_m": 0.07943201062239175,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.030561805589382256,
+      "knee_moment_Nm": -16.441589990296
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 268.9891790295289,
+      "active_fiber_force_N": 268.9891790295289,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 268.9891790295289,
+      "normalized_fiber_length": 0.6424922455515751,
+      "fiber_length_m": 0.07943201062239175,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.030561805589382256,
+      "knee_moment_Nm": -8.220794995148
+     }
+    }
+   },
+   {
+    "angle_deg": -55.0,
+    "angle_rad": -0.9599310885968813,
+    "mtu_length_m": 0.4465736965813976,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 471.6936678010229,
+      "active_fiber_force_N": 471.6936678010229,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 471.6936678010229,
+      "normalized_fiber_length": 0.6213217934353665,
+      "fiber_length_m": 0.0768146847495606,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.029383367960531277,
+      "knee_moment_Nm": -13.859948605650061
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 235.84683390051146,
+      "active_fiber_force_N": 235.84683390051146,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 235.84683390051146,
+      "normalized_fiber_length": 0.6213217934353665,
+      "fiber_length_m": 0.0768146847495606,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.029383367960531277,
+      "knee_moment_Nm": -6.9299743028250305
+     }
+    }
+   },
+   {
+    "angle_deg": -60.0,
+    "angle_rad": -1.0471975511965976,
+    "mtu_length_m": 0.4440695247541231,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 407.57127621332586,
+      "active_fiber_force_N": 407.57127621332586,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 407.57127621332586,
+      "normalized_fiber_length": 0.6010665969730595,
+      "fiber_length_m": 0.07431051292228608,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.027969014432925505,
+      "knee_moment_Nm": -11.399366906856379
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 203.78563810666293,
+      "active_fiber_force_N": 203.78563810666293,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 203.78563810666293,
+      "normalized_fiber_length": 0.6010665969730595,
+      "fiber_length_m": 0.07431051292228608,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.027969014432925505,
+      "knee_moment_Nm": -5.6996834534281895
+     }
+    }
+   },
+   {
+    "angle_deg": -65.0,
+    "angle_rad": -1.1344640137963142,
+    "mtu_length_m": 0.44169910491307507,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 346.70871815010435,
+      "active_fiber_force_N": 346.70871815010435,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 346.70871815010435,
+      "normalized_fiber_length": 0.5818932642745464,
+      "fiber_length_m": 0.07194009308123805,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.02631666637526619,
+      "knee_moment_Nm": -9.124217664952493
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 173.35435907505217,
+      "active_fiber_force_N": 173.35435907505217,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 173.35435907505217,
+      "normalized_fiber_length": 0.5818932642745464,
+      "fiber_length_m": 0.07194009308123805,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.02631666637526619,
+      "knee_moment_Nm": -4.562108832476246
+     }
+    }
+   },
+   {
+    "angle_deg": -70.0,
+    "angle_rad": -1.2217304763960306,
+    "mtu_length_m": 0.43948334100876485,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 289.817192303341,
+      "active_fiber_force_N": 289.817192303341,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 289.817192303341,
+      "normalized_fiber_length": 0.5639708786350837,
+      "fiber_length_m": 0.06972432917692784,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.02442581839023408,
+      "knee_moment_Nm": -7.079022105568954
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 144.9085961516705,
+      "active_fiber_force_N": 144.9085961516705,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 144.9085961516705,
+      "normalized_fiber_length": 0.5639708786350837,
+      "fiber_length_m": 0.06972432917692784,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.02442581839023408,
+      "knee_moment_Nm": -3.539511052784477
+     }
+    }
+   },
+   {
+    "angle_deg": -75.0,
+    "angle_rad": -1.3089969389957472,
+    "mtu_length_m": 0.4374427047537271,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 237.4649871421903,
+      "active_fiber_force_N": 237.4649871421903,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 237.4649871421903,
+      "normalized_fiber_length": 0.5474650271580777,
+      "fiber_length_m": 0.06768369292189008,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.022304437380115085,
+      "knee_moment_Nm": -5.296522935682817
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 118.73249357109515,
+      "active_fiber_force_N": 118.73249357109515,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 118.73249357109515,
+      "normalized_fiber_length": 0.5474650271580777,
+      "fiber_length_m": 0.06768369292189008,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.022304437380115085,
+      "knee_moment_Nm": -2.6482614678414085
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "angle_rad": -1.3962634015954636,
+    "mtu_length_m": 0.4355968570082605,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 190.2003694446272,
+      "active_fiber_force_N": 190.2003694446272,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 190.2003694446272,
+      "normalized_fiber_length": 0.5325347383030097,
+      "fiber_length_m": 0.06583784517642349,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.019964029874471732,
+      "knee_moment_Nm": -3.797165857728098
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 95.1001847223136,
+      "active_fiber_force_N": 95.1001847223136,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 95.1001847223136,
+      "normalized_fiber_length": 0.5325347383030097,
+      "fiber_length_m": 0.06583784517642349,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.019964029874471732,
+      "knee_moment_Nm": -1.898582928864049
+     }
+    }
+   },
+   {
+    "angle_deg": -85.0,
+    "angle_rad": -1.4835298641951802,
+    "mtu_length_m": 0.4339641473276189,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 148.54956547526035,
+      "active_fiber_force_N": 148.54956547526035,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 148.54956547526035,
+      "normalized_fiber_length": 0.5193284339323947,
+      "fiber_length_m": 0.06420513549578188,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.017423628436967716,
+      "knee_moment_Nm": -2.5882724333139437
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 74.27478273763018,
+      "active_fiber_force_N": 74.27478273763018,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 74.27478273763018,
+      "normalized_fiber_length": 0.5193284339323947,
+      "fiber_length_m": 0.06420513549578188,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.017423628436967716,
+      "knee_moment_Nm": -1.2941362166569719
+     }
+    }
+   },
+   {
+    "angle_deg": -90.0,
+    "angle_rad": -1.5707963267948966,
+    "mtu_length_m": 0.43256098965888284,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 113.00103253125863,
+      "active_fiber_force_N": 113.00103253125863,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 113.00103253125863,
+      "normalized_fiber_length": 0.5079788795854095,
+      "fiber_length_m": 0.06280197782704583,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.014707010060348163,
+      "knee_moment_Nm": -1.6619073222669507
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 56.500516265629315,
+      "active_fiber_force_N": 56.500516265629315,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 56.500516265629315,
+      "normalized_fiber_length": 0.5079788795854095,
+      "fiber_length_m": 0.06280197782704583,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.014707010060348163,
+      "knee_moment_Nm": -0.8309536611334754
+     }
+    }
+   },
+   {
+    "angle_deg": -95.0,
+    "angle_rad": -1.6580627893946132,
+    "mtu_length_m": 0.43140168250958966,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 83.99223935428867,
+      "active_fiber_force_N": 83.99223935428867,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 83.99223935428867,
+      "normalized_fiber_length": 0.4986017298973038,
+      "fiber_length_m": 0.06164267067775264,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.011839493433786145,
+      "knee_moment_Nm": -0.994425566324095
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 41.996119677144335,
+      "active_fiber_force_N": 41.996119677144335,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 41.996119677144335,
+      "normalized_fiber_length": 0.4986017298973038,
+      "fiber_length_m": 0.06164267067775264,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.011839493433786145,
+      "knee_moment_Nm": -0.4972127831620475
+     }
+    }
+   },
+   {
+    "angle_deg": -100.0,
+    "angle_rad": -1.7453292519943295,
+    "mtu_length_m": 0.43049816787058814,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 61.863026059306186,
+      "active_fiber_force_N": 61.863026059306186,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 61.863026059306186,
+      "normalized_fiber_length": 0.491293578627403,
+      "fiber_length_m": 0.06073915603875113,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.00884970108995382,
+      "knee_moment_Nm": -0.5474692891448836
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 30.931513029653093,
+      "active_fiber_force_N": 30.931513029653093,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 30.931513029653093,
+      "normalized_fiber_length": 0.491293578627403,
+      "fiber_length_m": 0.06073915603875113,
+      "pennation_angle_rad": 0.0,
+      "moment_arm_m": -0.00884970108995382,
+      "knee_moment_Nm": -0.2737346445724418
+     }
+    }
+   }
+  ],
+  "semimem_r": [
+   {
+    "angle_deg": -0.0,
+    "angle_rad": -0.0,
+    "mtu_length_m": 0.4714999255165103,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 986.9443252436074,
+      "active_fiber_force_N": 1053.2235561090317,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 986.9443252436074,
+      "normalized_fiber_length": 0.7413019028517276,
+      "fiber_length_m": 0.06744761658133405,
+      "pennation_angle_rad": 0.356654489699093,
+      "moment_arm_m": -0.030474097647252216,
+      "knee_moment_Nm": -30.076237739875143
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 493.4721626218037,
+      "active_fiber_force_N": 526.6117780545159,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 493.4721626218037,
+      "normalized_fiber_length": 0.7413019028517276,
+      "fiber_length_m": 0.06744761658133405,
+      "pennation_angle_rad": 0.356654489699093,
+      "moment_arm_m": -0.030474097647252216,
+      "knee_moment_Nm": -15.038118869937572
+     }
+    }
+   },
+   {
+    "angle_deg": -5.0,
+    "angle_rad": -0.08726646259971647,
+    "mtu_length_m": 0.4687479327000475,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 944.102382293973,
+      "active_fiber_force_N": 1013.2066788389925,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 944.102382293973,
+      "normalized_fiber_length": 0.713036972499308,
+      "fiber_length_m": 0.06487592186724478,
+      "pennation_angle_rad": 0.37146536587572615,
+      "moment_arm_m": -0.032562802667442915,
+      "knee_moment_Nm": -30.742619572501397
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 472.0511911469865,
+      "active_fiber_force_N": 506.60333941949625,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 472.0511911469865,
+      "normalized_fiber_length": 0.713036972499308,
+      "fiber_length_m": 0.06487592186724478,
+      "pennation_angle_rad": 0.37146536587572615,
+      "moment_arm_m": -0.032562802667442915,
+      "knee_moment_Nm": -15.371309786250698
+     }
+    }
+   },
+   {
+    "angle_deg": -10.0,
+    "angle_rad": -0.17453292519943295,
+    "mtu_length_m": 0.46582299229847784,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 870.3199978486507,
+      "active_fiber_force_N": 940.4180859060109,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 870.3199978486507,
+      "normalized_fiber_length": 0.6831818227691209,
+      "fiber_length_m": 0.062159540478995814,
+      "pennation_angle_rad": 0.3885464145150714,
+      "moment_arm_m": -0.03443304123245952,
+      "knee_moment_Nm": -29.967764371356672
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 435.15999892432535,
+      "active_fiber_force_N": 470.20904295300545,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 435.15999892432535,
+      "normalized_fiber_length": 0.6831818227691209,
+      "fiber_length_m": 0.062159540478995814,
+      "pennation_angle_rad": 0.3885464145150714,
+      "moment_arm_m": -0.03443304123245952,
+      "knee_moment_Nm": -14.983882185678336
+     }
+    }
+   },
+   {
+    "angle_deg": -15.0,
+    "angle_rad": -0.2617993877991494,
+    "mtu_length_m": 0.4627515139429125,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 748.5789262513221,
+      "active_fiber_force_N": 815.5765552553524,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 748.5789262513221,
+      "normalized_fiber_length": 0.6520656005698465,
+      "fiber_length_m": 0.05932841996482653,
+      "pennation_angle_rad": 0.40816069835226776,
+      "moment_arm_m": -0.035845459947466796,
+      "knee_moment_Nm": -26.833155918459465
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 374.28946312566103,
+      "active_fiber_force_N": 407.7882776276762,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 374.28946312566103,
+      "normalized_fiber_length": 0.6520656005698465,
+      "fiber_length_m": 0.05932841996482653,
+      "pennation_angle_rad": 0.40816069835226776,
+      "moment_arm_m": -0.035845459947466796,
+      "knee_moment_Nm": -13.416577959229732
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "angle_rad": -0.3490658503988659,
+    "mtu_length_m": 0.4595875397335789,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 612.00839103855,
+      "active_fiber_force_N": 673.4299291723414,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 612.00839103855,
+      "normalized_fiber_length": 0.6203012876290059,
+      "fiber_length_m": 0.0564383326846488,
+      "pennation_angle_rad": 0.4304142610611206,
+      "moment_arm_m": -0.036544961006745175,
+      "knee_moment_Nm": -22.365822786304665
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 306.004195519275,
+      "active_fiber_force_N": 336.7149645861707,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 306.004195519275,
+      "normalized_fiber_length": 0.6203012876290059,
+      "fiber_length_m": 0.0564383326846488,
+      "pennation_angle_rad": 0.4304142610611206,
+      "moment_arm_m": -0.036544961006745175,
+      "knee_moment_Nm": -11.182911393152333
+     }
+    }
+   },
+   {
+    "angle_deg": -25.0,
+    "angle_rad": -0.4363323129985824,
+    "mtu_length_m": 0.45638866185131793,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 474.8266371384043,
+      "active_fiber_force_N": 528.6951799043082,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 474.82663713840424,
+      "normalized_fiber_length": 0.5885326512519433,
+      "fiber_length_m": 0.05354785203509283,
+      "pennation_angle_rad": 0.4553426458118957,
+      "moment_arm_m": -0.03671443260479042,
+      "knee_moment_Nm": -17.432990568177217
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 237.41331856920215,
+      "active_fiber_force_N": 264.3475899521541,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 237.41331856920212,
+      "normalized_fiber_length": 0.5885326512519433,
+      "fiber_length_m": 0.05354785203509283,
+      "pennation_angle_rad": 0.4553426458118957,
+      "moment_arm_m": -0.03671443260479042,
+      "knee_moment_Nm": -8.716495284088609
+     }
+    }
+   },
+   {
+    "angle_deg": -30.0,
+    "angle_rad": -0.5235987755982988,
+    "mtu_length_m": 0.4531891640298854,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 341.44623478471465,
+      "active_fiber_force_N": 385.571732075722,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 341.44623478471465,
+      "normalized_fiber_length": 0.5571652759878309,
+      "fiber_length_m": 0.05069388027023168,
+      "pennation_angle_rad": 0.4831018961612535,
+      "moment_arm_m": -0.03655725978505772,
+      "knee_moment_Nm": -12.482338707654625
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 170.72311739235732,
+      "active_fiber_force_N": 192.785866037861,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 170.72311739235732,
+      "normalized_fiber_length": 0.5571652759878309,
+      "fiber_length_m": 0.05069388027023168,
+      "pennation_angle_rad": 0.4831018961612535,
+      "moment_arm_m": -0.03655725978505772,
+      "knee_moment_Nm": -6.2411693538273125
+     }
+    }
+   },
+   {
+    "angle_deg": -35.0,
+    "angle_rad": -0.6108652381980153,
+    "mtu_length_m": 0.44998393194349834,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 213.11036998866845,
+      "active_fiber_force_N": 244.76197522187726,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 213.11036998866845,
+      "normalized_fiber_length": 0.526223339523966,
+      "fiber_length_m": 0.047878617205520266,
+      "pennation_angle_rad": 0.5142047399153933,
+      "moment_arm_m": -0.03697220163840714,
+      "knee_moment_Nm": -7.8791595704566
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 106.55518499433423,
+      "active_fiber_force_N": 122.38098761093863,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 106.55518499433423,
+      "normalized_fiber_length": 0.526223339523966,
+      "fiber_length_m": 0.047878617205520266,
+      "pennation_angle_rad": 0.5142047399153933,
+      "moment_arm_m": -0.03697220163840714,
+      "knee_moment_Nm": -3.9395797852283
+     }
+    }
+   },
+   {
+    "angle_deg": -40.0,
+    "angle_rad": -0.6981317007977318,
+    "mtu_length_m": 0.44673192404032724,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 91.03560147237549,
+      "active_fiber_force_N": 106.76369893931795,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 91.03560147237549,
+      "normalized_fiber_length": 0.49541525405502845,
+      "fiber_length_m": 0.04507553262106116,
+      "pennation_angle_rad": 0.5496965406552924,
+      "moment_arm_m": -0.037518452124217616,
+      "knee_moment_Nm": -3.4155148554406747
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 45.517800736187745,
+      "active_fiber_force_N": 53.381849469658974,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 45.517800736187745,
+      "normalized_fiber_length": 0.49541525405502845,
+      "fiber_length_m": 0.04507553262106116,
+      "pennation_angle_rad": 0.5496965406552924,
+      "moment_arm_m": -0.037518452124217616,
+      "knee_moment_Nm": -1.7077574277203373
+     }
+    }
+   },
+   {
+    "angle_deg": -45.0,
+    "angle_rad": -0.7853981633974483,
+    "mtu_length_m": 0.4434429027043313,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 4.572484143938881,
+      "active_fiber_force_N": 5.503971987559971,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 4.572484143938881,
+      "normalized_fiber_length": 0.46497536501092296,
+      "fiber_length_m": 0.042305948518919945,
+      "pennation_angle_rad": 0.590323244626294,
+      "moment_arm_m": -0.037817758568372856,
+      "knee_moment_Nm": -0.1729211014131936
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 2.2862420719694403,
+      "active_fiber_force_N": 2.7519859937799853,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 2.2862420719694403,
+      "normalized_fiber_length": 0.46497536501092296,
+      "fiber_length_m": 0.042305948518919945,
+      "pennation_angle_rad": 0.590323244626294,
+      "moment_arm_m": -0.037817758568372856,
+      "knee_moment_Nm": -0.0864605507065968
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "angle_rad": -0.8726646259971648,
+    "mtu_length_m": 0.44013920564079534,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.03785162450091648,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.03785162450091648,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -55.0,
+    "angle_rad": -0.9599310885968813,
+    "mtu_length_m": 0.4368447612727957,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.03760329575341265,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.03760329575341265,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -60.0,
+    "angle_rad": -1.0471975511965976,
+    "mtu_length_m": 0.43358475541649866,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.037060761105754805,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.037060761105754805,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -65.0,
+    "angle_rad": -1.1344640137963142,
+    "mtu_length_m": 0.43038521255395934,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.03621668418085893,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.03621668418085893,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -70.0,
+    "angle_rad": -1.2217304763960306,
+    "mtu_length_m": 0.42727263787970954,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.0350672310902542,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.0350672310902542,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -75.0,
+    "angle_rad": -1.3089969389957472,
+    "mtu_length_m": 0.4242737645186482,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.03361062162346087,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.03361062162346087,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "angle_rad": -1.3962634015954636,
+    "mtu_length_m": 0.42141536125647067,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.031848752730083904,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.031848752730083904,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -85.0,
+    "angle_rad": -1.4835298641951802,
+    "mtu_length_m": 0.41872376816662193,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.029789383584664764,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.029789383584664764,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -90.0,
+    "angle_rad": -1.5707963267948966,
+    "mtu_length_m": 0.41622441455320647,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.027445477341229405,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.027445477341229405,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -95.0,
+    "angle_rad": -1.6580627893946132,
+    "mtu_length_m": 0.41394139826028137,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.02483463542970454,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.02483463542970454,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -100.0,
+    "angle_rad": -1.7453292519943295,
+    "mtu_length_m": 0.4118970700391487,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.021979283624629514,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "active_fiber_force_N": 0.0,
+      "passive_fiber_force_N": 0.0,
+      "fiber_force_along_tendon_N": 0.0,
+      "normalized_fiber_length": 0.4441,
+      "fiber_length_m": 0.04040659602861108,
+      "pennation_angle_rad": 0.6221633728165656,
+      "moment_arm_m": -0.021979283624629514,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   }
+  ]
+ }
+}
