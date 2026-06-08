@@ -27,12 +27,16 @@
 //! * `girth_morph_drives_moment_arms_end_to_end` — `with_girth_scales` exercised
 //!   through realize→emit→load: girth measurably moves the moment arms (~20–30%,
 //!   not second-order) and stays finite (the transverse path is live, not dead).
+//! * `emit_tracks_oracle_under_scaling` — the shipped MJCF (which drops conditional
+//!   path-points) stays within the S1 5 mm gate of the oracle when the body is
+//!   *dialed*, confirming that emit↔oracle gap is orthogonal to scaling (cf-osim's
+//!   differential oracle grades the oracle-vs-OpenSim; this guards the emit path).
 //! * `length_round_trip_on_real_template` — Tier-2 internal consistency on the real
 //!   gait2392 proportions: dialing real femur/tibia axial lengths and re-measuring
 //!   reproduces the targets exactly (the convention pin, anchored on real geometry).
 
 use cf_mjcf_emit::{build, build_canonical, emit};
-use cf_msk_lib::{BodyParams, CanonicalSource, Model, realize};
+use cf_msk_lib::{BodyParams, CanonicalSource, Model, SegmentScale, realize};
 use cf_osim::oracle::Kinematics;
 use cf_osim::parse_leg_chain;
 use cf_osim::{coupled_moment_arm, joint_id, tendon_id};
@@ -247,7 +251,6 @@ fn canonical_reproduces_oracle_at_multidof_base_pose() {
 
 #[test]
 fn anisotropic_morph_emits_loadable_model() {
-    use cf_msk_lib::SegmentScale;
     let t = template();
     // Per-axis anisotropy: distinct axial (length) and transverse (girth) factors
     // per segment — the A3 full-girth morph.
@@ -301,6 +304,62 @@ fn girth_morph_drives_moment_arms_end_to_end() {
         any_changed,
         "girth had no effect on any moment arm — the transverse path is dead"
     );
+}
+
+#[test]
+fn emit_tracks_oracle_under_scaling() {
+    // The SHIPPED artifact (the emitted MJCF) drops ConditionalPathPoints, so even
+    // unscaled it sits within the S1 5 mm gate of the oracle. cf-osim's differential
+    // oracle grades the *oracle*-on-realized vs OpenSim ScaleTool (proving the morph
+    // machinery); this complements it by checking the EMIT path under anisotropic
+    // scaling — the conditional-drop residual must stay within the same 5 mm gate
+    // when the body is dialed, confirming that gap is orthogonal to scaling (not a
+    // residual that blows up under morphing).
+    let t = template();
+    let angles = sweep();
+    let eps = 0.5 * DEG;
+    let seg = |a: f64, tr: f64| SegmentScale {
+        axial: a,
+        transverse: tr,
+    };
+    let configs = [
+        ("femur_axial_1.2", seg(1.2, 1.0), SegmentScale::IDENTITY),
+        (
+            "tibia_transverse_1.2",
+            SegmentScale::IDENTITY,
+            seg(1.0, 1.2),
+        ),
+        ("realistic_mix", seg(1.10, 1.05), seg(1.08, 0.95)),
+    ];
+    for (name, femur, tibia) in configs {
+        let p = BodyParams {
+            pelvis: SegmentScale::IDENTITY,
+            femur,
+            tibia,
+        };
+        let model = realize(&t, &p);
+        let kin = cf_osim::oracle::Kinematics::new(&model);
+        for (mname, ec) in &moment_arm_curves(&emit(&model)) {
+            let m = model.muscles.iter().find(|mm| &mm.name == mname).unwrap();
+            let n = angles.len() as f64;
+            let rmse = (angles
+                .iter()
+                .zip(ec)
+                .map(|(&th, &emit_mm)| {
+                    let q = HashMap::from([("knee_angle_r".to_string(), th)]);
+                    let oracle_mm = kin.moment_arm(m, &q, "knee_angle_r", eps) * 1000.0;
+                    (emit_mm - oracle_mm).powi(2)
+                })
+                .sum::<f64>()
+                / n)
+                .sqrt();
+            assert!(
+                rmse < 5.0,
+                "{name}/{mname}: emit vs oracle UNDER SCALING RMSE {rmse:.2}mm exceeds the 5mm \
+                 S1 gate — the conditional-drop residual is not orthogonal to scaling"
+            );
+        }
+    }
 }
 
 #[test]

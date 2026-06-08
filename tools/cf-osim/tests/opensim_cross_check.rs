@@ -22,15 +22,21 @@
 //!   ScaleTool (`scaled_moment_arms_opensim.json`, generator
 //!   `gen_scaled_moment_arms.py`). For a grid of per-axis scale configs (length &
 //!   girth on each segment), OpenSim scales gait2392 and we `realize` the same
-//!   factors; the knee moment arms of our morphed model must match OpenSim's
-//!   scaled model. This is what makes a *dialed* body validatable: the morph IS
-//!   OpenSim's scaling. (Graded on the oracle — which keeps the conditional
-//!   path-points — not the emitted MJCF, whose deep-flexion residual is the
-//!   separate, known dropped-conditional S1 approximation.)
+//!   factors; the **knee** moment arms (4 muscles, 0…−100° ROM, neutral hip) of our
+//!   morphed model must match OpenSim's scaled model to within ~the unscaled band.
+//!   This is what makes a *dialed* body validatable: for this scope, the morph
+//!   reproduces OpenSim's ScaleTool. **Scope/caveats:** graded on the **oracle**
+//!   (which keeps the conditional path-points), so it validates the *morph
+//!   machinery* — NOT the emitted MJCF (whose deep-flexion residual is the
+//!   separate, known dropped-conditional S1 approximation; that the residual stays
+//!   within the S1 gate *under scaling* is checked by cf-mjcf-emit's
+//!   `emit_tracks_oracle_under_scaling`). Knee moment arms only (hip-under-scaling
+//!   not graded); the pelvis is the fixed root (knee moment arms are translation-
+//!   invariant to it), so it is exercised only in the uniform config.
 //!
-//! Together they confirm our oracle (= the FK the emitter ships) is a faithful
-//! reproduction of OpenSim's leg muscle geometry across both joints + the ROM, and
-//! that morphing it tracks OpenSim's own scaling.
+//! Together: the first two confirm our oracle (= the FK the emitter ships)
+//! reproduces OpenSim's leg muscle geometry across both joints + the ROM
+//! *unscaled*; the third confirms morphing the knee tracks OpenSim's own scaling.
 
 use cf_msk_lib::{BodyParams, SegmentScale, realize};
 use cf_osim::oracle::{Kinematics, Pose};
@@ -173,14 +179,50 @@ fn body_params_from_factors(factors: &serde_json::Value) -> BodyParams {
     }
 }
 
+/// The scale configs the vendored JSON must carry. A drift guard: if the
+/// generator's grid changes but the JSON is not regenerated (or vice versa), the
+/// test must fail loudly rather than silently grade a stale/partial grid.
+const EXPECTED_CONFIGS: [&str; 6] = [
+    "uniform_1.137",
+    "femur_axial_1.2",
+    "femur_transverse_1.3",
+    "tibia_axial_0.9",
+    "tibia_transverse_1.2",
+    "realistic_mix",
+];
+
+/// Tight gate for the differential oracle: the morph must track OpenSim's
+/// ScaleTool to within the SAME sub-mm band as the *unscaled* cross-check
+/// (`oracle_matches_real_opensim_knee_rom`, ~0.3 mm). Set ~2× the measured worst
+/// (~0.37 mm) so a precision/convention regression is caught here long before it
+/// would reach the loose 2 mm `GATE_MM` — and so "morphing adds ~no error" is
+/// machine-checked, not just asserted in prose.
+const SCALED_GATE_MM: f64 = 0.8;
+
 #[test]
 fn morph_matches_real_opensim_scaletool() {
     let template = parse_leg_chain(&std::fs::read_to_string(asset("gait2392.osim")).unwrap());
     let reference = json("scaled_moment_arms_opensim.json");
     let configs = reference["configs"].as_object().unwrap();
 
+    // Drift guard: the JSON's config grid must match the generator's (above).
+    assert_eq!(
+        configs.len(),
+        EXPECTED_CONFIGS.len(),
+        "scaled_moment_arms_opensim.json has {} configs, expected {} — regenerate it \
+         (gen_scaled_moment_arms.py) after changing the grid",
+        configs.len(),
+        EXPECTED_CONFIGS.len()
+    );
+    for name in EXPECTED_CONFIGS {
+        assert!(
+            configs.contains_key(name),
+            "config '{name}' missing from the JSON"
+        );
+    }
+
     println!(
-        "\n===== morph (realize) vs REAL {} ScaleTool =====",
+        "\n===== morph (realize) vs REAL {} ScaleTool (gate {SCALED_GATE_MM} mm) =====",
         reference["source"].as_str().unwrap()
     );
     let mut worst = 0.0_f64;
@@ -192,7 +234,16 @@ fn morph_matches_real_opensim_scaletool() {
         let kin = Kinematics::new(&model);
         let mut cfg_worst = 0.0_f64;
         for m in &model.muscles {
-            let rows = cfg["muscles"][&m.name].as_array().unwrap();
+            // Drift guard: every muscle of the model must be present in the config.
+            let rows = cfg["muscles"]
+                .get(&m.name)
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "muscle '{}' missing in config '{name}' — regenerate JSON",
+                        m.name
+                    )
+                });
             let (mut sse, mut maxd, mut n) = (0.0, 0.0_f64, 0.0);
             for row in rows {
                 let theta = row["angle_rad"].as_f64().unwrap();
@@ -207,16 +258,23 @@ fn morph_matches_real_opensim_scaletool() {
             let rmse = (sse / n).sqrt();
             cfg_worst = cfg_worst.max(rmse);
             assert!(
-                rmse < GATE_MM,
-                "{name}/{}: morph vs real OpenSim ScaleTool RMSE {rmse:.3}mm exceeds {GATE_MM}mm \
-                 (max|Δ| {maxd:.3}mm)",
+                rmse < SCALED_GATE_MM,
+                "{name}/{}: morph vs real OpenSim ScaleTool RMSE {rmse:.3}mm exceeds \
+                 {SCALED_GATE_MM}mm (max|Δ| {maxd:.3}mm) — scaling should add ~no error",
                 m.name
             );
         }
         worst = worst.max(cfg_worst);
         println!("  {name:<22} worst-muscle RMSE {cfg_worst:>6.3}mm");
     }
-    // The scaled configs must agree no worse than the unscaled cross-check — i.e.
-    // morphing adds essentially no error: the morph IS OpenSim's scaling.
-    println!("worst RMSE across all scale configs: {worst:.3}mm\n");
+    // Machine-check the headline claim: morphing tracks OpenSim within the unscaled
+    // band (the per-config gate above already enforces this; this is the summary).
+    assert!(
+        worst < SCALED_GATE_MM,
+        "worst scaled RMSE {worst:.3}mm exceeds {SCALED_GATE_MM}mm"
+    );
+    println!(
+        "worst RMSE across all scale configs: {worst:.3}mm \
+         (vs ~0.3mm unscaled — scaling adds ~no error)\n"
+    );
 }

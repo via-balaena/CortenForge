@@ -137,10 +137,14 @@ proportions," never a validated individual.
   both; uniform AND anisotropic). Productionized: `gen_scaled_moment_arms.py` →
   `scaled_moment_arms_opensim.json` (a grid of length/girth configs over the knee ROM) + a `cf-osim`
   cross-check that `realize`s the same factors and grades the **oracle-on-realized model** (keeps the
-  conditional points; the emit's deep-flexion residual is the separate S1 dropped-conditional
-  approximation) vs OpenSim's ScaleTool. **Result: 0.31–0.37 mm RMSE across all configs — no worse
-  than the unscaled cross-check, so the morph adds no error: the morph IS OpenSim's scaling.** Tier 1
-  holds for anisotropic length + girth.
+  conditional points — so it validates the *morph machinery*, not the emitted MJCF; the emit's
+  deep-flexion residual is the separate S1 dropped-conditional approximation, shown to stay within
+  the 5 mm gate *under* scaling by `emit_tracks_oracle_under_scaling`) vs OpenSim's ScaleTool.
+  **Result: 0.31–0.37 mm RMSE — within the same sub-mm band as the unscaled cross-check (~0.3 mm),
+  machine-checked by a tight 0.8 mm gate: for this scope, the morph reproduces OpenSim's ScaleTool.**
+  Scope: knee moment arms (4 muscles, 0…−100°, neutral hip, gait2392); hip-under-scaling not graded;
+  pelvis is the fixed root (knee moment arms are translation-invariant to it). Tier 1 holds for
+  anisotropic length + girth on this scope.
 - **A3-PR3** — sex/percentile generator (`CanonicalSource`→dial-able `AnthroSource`): published table
   → lengths+girths+joint default poses → `BodyParams`. Validated by Tier 3.
 - **A3-PR4** — three-tier scorecard harness (extends the g1 scorecard) + A4 randomizer prep.
