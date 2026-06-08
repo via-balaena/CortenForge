@@ -49,10 +49,14 @@ vendored `muscle_forces_opensim.json` (4 muscles × knee ROM × activations 1.0/
 | Below ~0.5 | −100 % (our hard cutoff 0.5 vs Millard's ~0.44 floor) |
 | High pennation (semimem 0.26 rad) | extra −15 % (fixed vs variable pennation) |
 
-Overall RMSE 77.7 N, worst 292 N / 140 % on muscles with F0 ≈ 900–1365 N. The
-knee ROM sweeps these muscles across normalized fiber length **0.44–1.46**, so the
-gap is in play across the working range. Clean signal: plateau agrees, limbs
-diverge ⇒ pure curve-*shape* difference, not a setup bug.
+Overall RMSE 77.7 N, worst 292 N / 140 % (overall worst point) on muscles with
+F0 ≈ 900–1365 N; the per-regime figures above are the worst within each band (e.g.
+−266 N is the worst on rect_fem's descending limb). The knee ROM sweeps these
+muscles across normalized fiber length **0.44–1.46**, so the gap is in play across
+the working range. Clean signal: plateau agrees, limbs diverge ⇒ pure curve-*shape*
+difference, not a setup bug. *(These figures are from the now-retired throwaway
+spike — illustrative magnitudes that motivated the decision, not a CI-gated result;
+the committed cross-check instead gates the Millard reproduction.)*
 
 **Decision (user, "measure first then decide"): BUILD A FAITHFUL MILLARD MODEL.**
 The gap is too large and too operating-point-dependent to wave away for a twin
@@ -153,10 +157,12 @@ residual → a tiny force residual, graded once the model is wired into the engi
   ~3.6 mm) drives pennation toward 90°; force is ~0 there (both sides), but if PR3's
   engine integration evaluates near the singularity, revisit the `cos_penn` floor.
 - **R-FV** — force-velocity + damping unvalidated until PR2.
-- **F0 provenance** — `getMaxIsometricForce` returns post-init values (e.g.
-  rect_fem 1169 N) that differ from a raw-XML grep (819 N belonged to another
-  muscle in file order); PR1 is self-consistent (reads params from the JSON), but
-  PR3's emit must source F0 from the parsed muscle object, not a positional grep.
+- **F0 provenance** — rect_fem_r's max isometric force *is* 1169 N in the gait2392
+  XML and via `getMaxIsometricForce` (no divergence). The hazard is purely that a
+  naive positional/line-order grep over `gait2392.osim` can pick up a *different*
+  muscle's `<max_isometric_force>` (e.g. `glut_med1_r`'s 819 N, which sits before
+  `rect_fem_r` in file order). PR1 is self-consistent (reads params from the JSON);
+  PR3's emit must source F0 from the *parsed muscle object*, not a positional grep.
 - **Elastic tendon** — out of scope (our engine + the comparison are rigid-tendon,
   matching `ignore_tendon_compliance`); revisit only if a muscle's compliant tendon
   matters for the capstone.

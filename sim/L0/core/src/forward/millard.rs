@@ -13,8 +13,8 @@
 //! parameters. The curves are analytic (exact derivatives, no embedded data
 //! tables), which matters for the differentiable co-design loop downstream.
 //!
-//! Validated to ~1e-6 against densely sampled real OpenSim 4.6 curve values
-//! (`tools/cf-osim` cross-checks, vendored `millard_curves_opensim.json`).
+//! Validated to ~1e-12 against densely sampled real OpenSim 4.6 curve values
+//! (gate 1e-5; `tools/cf-osim` cross-checks, vendored `millard_curves_opensim.json`).
 //!
 //! References:
 //! - Millard, Uchida, Seth, Delp (2013) "Flexing computational muscle", J Biomech Eng.
@@ -56,7 +56,9 @@ fn bezier_u(u: f64, p: &[f64; 6], order: u32) -> f64 {
 /// linear initial guess (the segment's x is monotone, so Newton converges in a
 /// handful of iterations). Port of `SegmentedQuinticBezierToolkit::calcU`.
 fn calc_u(ax: f64, px: &[f64; 6]) -> f64 {
-    const UTOL: f64 = 1e-12;
+    // Match OpenSim's tolerance/iteration budget exactly (SmoothSegmentedFunction.cpp:
+    // UTOL = eps*1e2, MAXITER = 20).
+    const UTOL: f64 = f64::EPSILON * 1e2;
     const MAXITER: u32 = 20;
     let span = px[5] - px[0];
     let mut u = if span.abs() > 1e-15 {
@@ -64,8 +66,8 @@ fn calc_u(ax: f64, px: &[f64; 6]) -> f64 {
     } else {
         0.5
     };
+    let mut f = bezier_u(u, px, 0) - ax;
     for _ in 0..MAXITER {
-        let f = bezier_u(u, px, 0) - ax;
         if f.abs() <= UTOL {
             break;
         }
@@ -74,7 +76,14 @@ fn calc_u(ax: f64, px: &[f64; 6]) -> f64 {
             break;
         }
         u = (u - f / df).clamp(0.0, 1.0);
+        f = bezier_u(u, px, 0) - ax;
     }
+    // The Bézier x-segments are monotone, so Newton from the linear guess always
+    // converges; surface any pathology in dev/test (OpenSim hard-errors here).
+    debug_assert!(
+        f.abs() < 1e-9,
+        "calc_u did not converge: residual {f:e} for x={ax}"
+    );
     u
 }
 
@@ -201,6 +210,11 @@ impl MillardCurves {
 /// Default Millard active-force-length curve (`createFiberActiveForceLengthCurve`,
 /// curviness 1.0): min 0.4441, transition 0.73, peak 1.0, max 1.8123, shallow
 /// ascending slope 0.8616.
+///
+/// `ylow` (shoulder/minimum value) is 0.0, the value `Millard2012EquilibriumMuscle`
+/// and gait2392 use; note the standalone `ActiveForceLengthCurve` *class* default is
+/// 0.1, so this is bound to the validation target. The other knots/slopes match the
+/// class defaults.
 #[allow(clippy::similar_names, clippy::many_single_char_names)]
 fn active_force_length_curve() -> SmoothSegmentedFunction {
     let (x0, x1, x2, x3) = (0.4441, 0.73, 1.0, 1.8123);
@@ -324,6 +338,20 @@ fn force_velocity_curve() -> SmoothSegmentedFunction {
     }
 }
 
+/// A muscle's intrinsic force-generating parameters (a grouped, transposition-safe
+/// alternative to four bare same-typed `f64` arguments).
+#[derive(Clone, Copy, Debug)]
+pub struct MillardMuscleParams {
+    /// Max isometric force [N].
+    pub f0: f64,
+    /// Optimal fiber length [m].
+    pub l0: f64,
+    /// Tendon slack length [m].
+    pub lts: f64,
+    /// Pennation angle at optimal fiber length [rad].
+    pub penn0: f64,
+}
+
 /// Isometric Millard muscle force along the tendon/path, in newtons (tension
 /// positive).
 ///
@@ -331,38 +359,34 @@ fn force_velocity_curve() -> SmoothSegmentedFunction {
 /// engine) + variable-width (constant-height) pennation. At isometric the
 /// force-velocity factor is 1.
 ///
+/// - `p`: the muscle's [`MillardMuscleParams`]
 /// - `mtu`: musculotendon (path) length [m]
 /// - `act`: activation in `[0,1]`
-/// - `f0`: max isometric force [N]; `l0`: optimal fiber length [m];
-///   `lts`: tendon slack length [m]; `penn0`: pennation at optimal fiber length [rad]
 // `imprecise_flops`: keep the naive `sqrt(a²+b²)` (not `hypot`) to match OpenSim's
 // MuscleFixedWidthPennationModel bit-for-bit.
 #[allow(clippy::imprecise_flops)]
 #[must_use]
 pub fn millard_isometric_path_force(
     curves: &MillardCurves,
+    p: MillardMuscleParams,
     mtu: f64,
     act: f64,
-    f0: f64,
-    l0: f64,
-    lts: f64,
-    penn0: f64,
 ) -> f64 {
     // Rigid tendon: the fiber's projection along the tendon is the path length
     // minus the (constant) tendon slack length. Constant-height pennation gives
     // the true fiber length and the pennation angle.
-    let along_tendon = mtu - lts;
-    let height = l0 * penn0.sin();
+    let along_tendon = mtu - p.lts;
+    let height = p.l0 * p.penn0.sin();
     let fiber_len = (along_tendon * along_tendon + height * height).sqrt();
     let cos_penn = if fiber_len > 1e-12 {
         along_tendon / fiber_len
     } else {
         1.0
     };
-    let norm_len = fiber_len / l0.max(1e-12);
+    let norm_len = fiber_len / p.l0.max(1e-12);
     let active = act * curves.active_fl(norm_len);
     let passive = curves.passive_fl(norm_len);
-    f0 * (active + passive) * cos_penn
+    p.f0 * (active + passive) * cos_penn
 }
 
 #[cfg(test)]
@@ -414,5 +438,28 @@ mod spotcheck {
                 c.force_velocity(x)
             );
         }
+    }
+
+    /// Exact curve anchors (the dense 1e-4 grid skips x = 1.0 / 0.0). These land
+    /// on segment knots and must be exact: AFL peaks at 1, FV is 1 at isometric,
+    /// passive force is 0 at the resting fiber length.
+    #[test]
+    fn curve_anchors_are_exact() {
+        let c = MillardCurves::default();
+        assert!(
+            (c.active_fl(1.0) - 1.0).abs() < 1e-12,
+            "AFL(1)={}",
+            c.active_fl(1.0)
+        );
+        assert!(
+            (c.force_velocity(0.0) - 1.0).abs() < 1e-12,
+            "FV(0)={}",
+            c.force_velocity(0.0)
+        );
+        assert!(
+            c.passive_fl(1.0).abs() < 1e-12,
+            "PFL(1)={}",
+            c.passive_fl(1.0)
+        );
     }
 }
