@@ -108,6 +108,12 @@ const REF_PCT: f64 = 0.5;
 
 /// A sex/percentile anthropometric body generator (a [`ParamSource`]).
 ///
+/// Scales the template **relative to a fixed reference** — 50th-percentile male —
+/// at which it reproduces the template exactly; elsewhere lengths scale by the
+/// stature ratio and girths by the girth ratio vs that reference. Percentiles are
+/// in the open interval `(0, 1)` (the 0th/100th are ±∞ z-scores); they are
+/// validated when [`params`](ParamSource::params) is called, not at construction.
+///
 /// ```
 /// # use cf_msk_lib::anthro::{AnthroSource, Sex};
 /// // A 90th-percentile female; girth tracks stature unless set separately.
@@ -135,6 +141,13 @@ impl AnthroSource {
 
     /// Set the girth percentile independently of stature (e.g. a tall lean or a
     /// short stocky build).
+    ///
+    /// Note: an **extreme** stature/girth decoupling (the two percentiles far
+    /// apart) produces large transverse-only attachment offsets that distort
+    /// moment-arm curve *shape* (the most girth-sensitive hamstring drops to ~0.87
+    /// correlation vs canonical). The **default** coupled family (girth tracks
+    /// stature, [`AnthroSource::new`]) is the validated regime (≥0.95); see
+    /// `cf-osim`'s `anthro_validation` tests.
     pub fn with_girth_percentile(mut self, p: f64) -> Self {
         self.girth_percentile = p;
         self
@@ -143,10 +156,14 @@ impl AnthroSource {
 
 impl ParamSource for AnthroSource {
     fn params(&self, template: &Template) -> BodyParams {
+        // Open interval (both ends excluded): the 0th/100th percentiles are ±∞
+        // z-scores (`probit`'s domain), so reject them here at the API boundary with
+        // a clear message rather than panicking deeper in `probit`. (A half-open
+        // `0.0..1.0` would wrongly admit 0.0, so compare explicitly.)
+        let in_open = |p: f64| p > 0.0 && p < 1.0;
         assert!(
-            (0.0..=1.0).contains(&self.stature_percentile)
-                && (0.0..=1.0).contains(&self.girth_percentile),
-            "percentiles must be in [0,1] (stature {}, girth {})",
+            in_open(self.stature_percentile) && in_open(self.girth_percentile),
+            "percentiles must be in (0,1) (stature {}, girth {})",
             self.stature_percentile,
             self.girth_percentile
         );
@@ -292,6 +309,23 @@ mod tests {
     #[should_panic(expected = "percentiles must be in")]
     fn rejects_out_of_range_percentile() {
         let _ = AnthroSource::new(Sex::Male, 1.5).params(&chain_template());
+    }
+
+    /// The open-interval boundary (0.0 / 1.0) is rejected at the API boundary with
+    /// the clear `params` message — not deeper inside `probit` (its domain is the
+    /// open interval, the 0th/100th percentiles being ±∞ z-scores).
+    #[test]
+    #[should_panic(expected = "percentiles must be in (0,1)")]
+    fn rejects_boundary_percentile_zero() {
+        let _ = AnthroSource::new(Sex::Male, 0.0).params(&chain_template());
+    }
+
+    #[test]
+    #[should_panic(expected = "percentiles must be in (0,1)")]
+    fn rejects_boundary_girth_one() {
+        let _ = AnthroSource::new(Sex::Male, 0.5)
+            .with_girth_percentile(1.0)
+            .params(&chain_template());
     }
 
     /// A minimal four-body chain with a defined femur (0.45) and tibia (0.40) axial

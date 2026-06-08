@@ -145,20 +145,21 @@ proportions," never a validated individual.
   Scope: knee moment arms (4 muscles, 0…−100°, neutral hip, gait2392); hip-under-scaling not graded;
   pelvis is the fixed root (knee moment arms are translation-invariant to it). Tier 1 holds for
   anisotropic length + girth on this scope.
-- **A3-PR3** — sex/percentile generator. *(DONE.)* `cf_msk_lib::AnthroSource { sex, percentile }`
-  (+ independent girth percentile) scales the template **proportionally** from published stature/girth
-  distributions (ANSUR II stature; Winter segment∝stature; representative ANSUR girths), with the
-  template as the **reference percentile** (50th-male) so it reproduces the template exactly there and
-  dials an honest *relative* family (validates machinery, not personhood; the definitional
-  trochanter-vs-hip-joint mismatch is sidestepped). `probit` (Acklam) maps percentile→z; no dep, crate
-  stays pure. **Joint default poses are out of scope** (a `BodyParams` is size, not pose; the body is
-  built at neutral). **Tier-3 validation:** internal consistency (reference⇒identity, monotonicity,
-  round-trip — cf-msk-lib unit tests) + plausibility (segment lengths physiological/ordered across
+- **A3-PR3** — sex/percentile generator. *(DONE.)* `cf_msk_lib::AnthroSource::new(sex,
+  stature_percentile)` (+ `.with_girth_percentile(p)`; percentiles in the open interval `(0,1)`)
+  scales the template **proportionally** from published stature/girth distributions (ANSUR II stature;
+  Winter segment∝stature; representative ANSUR girths), with the template as the **reference
+  percentile** (50th-male) so it reproduces the template exactly there and dials an honest *relative*
+  family (validates machinery, not personhood; the definitional trochanter-vs-hip-joint mismatch is
+  sidestepped). `probit` (Acklam) maps percentile→z; no dep, crate stays pure. **Joint default poses
+  are out of scope** (a `BodyParams` is size, not pose; the body is built at neutral). **Tier-3
+  validation:** internal consistency (reference⇒identity, monotonicity, boundary-rejection —
+  cf-msk-lib unit tests) + plausibility (segment lengths physiological/ordered across sampled
   percentiles, real gait2392) + shape-correlation (`cf-osim/tests/anthro_validation.rs`): the
-  **default coupled** family (girth tracks stature) clears the §7 ≥0.95 bar (worst **0.979**) across
-  both sexes/full range; an **extreme decoupled** build (tall+lean / short+stocky) is the documented
-  boundary — the most girth-sensitive hamstring dips to **~0.87** (reported, loose 0.80 sanity floor),
-  consistent with PR1's "girth is ~20–30%, not second-order."
+  **default coupled** family (girth tracks stature) clears the §7 ≥0.95 bar (worst **0.979** among
+  sampled percentiles 0.01–0.99, both sexes); an **extreme decoupled** build (tall+lean / short+stocky)
+  is the documented boundary — the most girth-sensitive hamstring dips to **~0.87** (reported, loose
+  0.80 sanity floor), consistent with PR1's "girth is ~20–30%, not second-order."
 - **A3-PR4** — three-tier scorecard harness (extends the g1 scorecard) + A4 randomizer prep.
 
 ## Risks

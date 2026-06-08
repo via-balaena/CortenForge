@@ -11,7 +11,8 @@
 //! * **Shape-correlation** — a dialed body's knee moment-arm *curves* stay
 //!   correlated with the canonical (50th-male = template) across the percentile
 //!   range. The **default** generator (girth tracks stature, `AnthroSource::new`)
-//!   clears the recon §7 bar (≥ 0.95) for all muscles/percentiles/both sexes:
+//!   clears the recon §7 bar (≥ 0.95) for every muscle at the sampled percentiles
+//!   (0.01–0.99), both sexes:
 //!   proportional scaling changes magnitudes, not curve shape. An **extreme
 //!   decoupled** build (short+stocky / tall+lean, stature and girth percentiles far
 //!   apart) is the documented boundary — the most girth-sensitive hamstring dips to
@@ -92,8 +93,9 @@ fn dialed_lengths_are_plausible_and_ordered() {
     // Reference (male 50th) reproduces the template length.
     assert!((femur(Sex::Male, 0.5) - t.segment_axial_length("femur_r", "tibia_r")).abs() < 1e-9);
 
-    // Plausibility across the range, both sexes (real gait2392 proportions).
-    for &p in &[0.01, 0.25, 0.5, 0.75, 0.99] {
+    // Plausibility across sampled percentiles incl. the near-extremes the open
+    // interval admits, both sexes (real gait2392 proportions).
+    for &p in &[0.001, 0.01, 0.25, 0.5, 0.75, 0.99, 0.999] {
         for s in [Sex::Male, Sex::Female] {
             let (f, ti) = (femur(s, p), tibia(s, p));
             assert!(
@@ -125,8 +127,8 @@ fn dialed_moment_arm_shape_stays_correlated() {
         worst
     };
 
-    // DEFAULT family: girth tracks stature (`new`), full percentile range, both
-    // sexes. The realistic dial — must clear the §7 bar (≥ 0.95) for every muscle.
+    // DEFAULT family: girth tracks stature (`new`), sampled percentiles spanning
+    // 0.01–0.99, both sexes. The realistic dial — must clear §7 (≥ 0.95) per muscle.
     let realistic = [
         AnthroSource::new(Sex::Male, 0.01),
         AnthroSource::new(Sex::Male, 0.99),
