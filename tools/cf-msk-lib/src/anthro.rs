@@ -139,6 +139,18 @@ impl AnthroSource {
         }
     }
 
+    /// Whether girth tracks stature (the `new` default) — i.e. this is a **coupled**
+    /// body, the validated regime. `false` once [`with_girth_percentile`] dials girth
+    /// apart from stature (a decoupled build). This is exact provenance the scorecard
+    /// uses to pick the shape-corr gate, so it never has to *infer* the regime from
+    /// the morphed factors (which is ambiguous against a cross-sex reference). The
+    /// equality is exact: `new` copies the one percentile into both fields.
+    ///
+    /// [`with_girth_percentile`]: AnthroSource::with_girth_percentile
+    pub fn is_coupled(&self) -> bool {
+        self.girth_percentile == self.stature_percentile
+    }
+
     /// Set the girth percentile independently of stature (e.g. a tall lean or a
     /// short stocky build).
     ///
@@ -147,7 +159,7 @@ impl AnthroSource {
     /// moment-arm curve *shape* (the most girth-sensitive hamstring drops to ~0.87
     /// correlation vs canonical). The **default** coupled family (girth tracks
     /// stature, [`AnthroSource::new`]) is the validated regime (≥0.95); see
-    /// `cf-osim`'s `anthro_validation` tests.
+    /// `cf-osim`'s `scorecard` module + `a3_gate` tests.
     pub fn with_girth_percentile(mut self, p: f64) -> Self {
         self.girth_percentile = p;
         self

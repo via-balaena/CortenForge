@@ -182,13 +182,24 @@ fn body_params_from_factors(factors: &serde_json::Value) -> BodyParams {
 /// The scale configs the vendored JSON must carry. A drift guard: if the
 /// generator's grid changes but the JSON is not regenerated (or vice versa), the
 /// test must fail loudly rather than silently grade a stale/partial grid.
-const EXPECTED_CONFIGS: [&str; 6] = [
+const EXPECTED_CONFIGS: [&str; 13] = [
     "uniform_1.137",
     "femur_axial_1.2",
+    "femur_axial_0.9",
     "femur_transverse_1.3",
+    "femur_transverse_0.85",
     "tibia_axial_0.9",
     "tibia_transverse_1.2",
+    "tibia_transverse_0.85",
     "realistic_mix",
+    // The generator's own coupled output at the sampled (0.01–0.99) percentile
+    // extremes, both sexes — added in A3-PR4 so the differential oracle directly
+    // grades what `AnthroSource` emits, and the whole coupled family across the
+    // advertised range lands inside the T1-coverage envelope.
+    "gen_male_01",
+    "gen_male_99",
+    "gen_female_01",
+    "gen_female_99",
 ];
 
 /// Tight gate for the differential oracle: the morph must track OpenSim's

@@ -155,12 +155,32 @@ proportions," never a validated individual.
   are out of scope** (a `BodyParams` is size, not pose; the body is built at neutral). **Tier-3
   validation:** internal consistency (reference⇒identity, monotonicity, boundary-rejection —
   cf-msk-lib unit tests) + plausibility (segment lengths physiological/ordered across sampled
-  percentiles, real gait2392) + shape-correlation (`cf-osim/tests/anthro_validation.rs`): the
-  **default coupled** family (girth tracks stature) clears the §7 ≥0.95 bar (worst **0.979** among
-  sampled percentiles 0.01–0.99, both sexes); an **extreme decoupled** build (tall+lean / short+stocky)
-  is the documented boundary — the most girth-sensitive hamstring dips to **~0.87** (reported, loose
-  0.80 sanity floor), consistent with PR1's "girth is ~20–30%, not second-order."
-- **A3-PR4** — three-tier scorecard harness (extends the g1 scorecard) + A4 randomizer prep.
+  percentiles, real gait2392) + shape-correlation (now consolidated into the PR4 scorecard/gate —
+  see A3-PR4): the **default coupled** family (girth tracks stature) clears the §7 ≥0.95 bar (worst
+  **0.979** among sampled percentiles 0.01–0.99, both sexes); an **extreme decoupled** build
+  (tall+lean / short+stocky) is the documented boundary — the most girth-sensitive hamstring dips to
+  **~0.87** (reported, loose 0.80 sanity floor), consistent with PR1's "girth is ~20–30%, not
+  second-order."
+- **A3-PR4** — three-tier scorecard harness + A4 randomizer prep. *(DONE.)* Consolidated the
+  scattered A3 validation into ONE grader, `cf_osim::scorecard` (it *mirrors the pattern* of the g1
+  scorecard — an independent grader over a generated body, no `Fitter`/scan — rather than extending
+  it; lives in `cf-osim`, the only crate with both the oracle and the real-OpenSim references).
+  **The keystone (tier-applicability):** a per-body card cannot re-run OpenSim, so the honest grade
+  is **T2 (exact axial-length scaling) + T3 (per-body oracle FK: plausibility + shape-corr) + T1 as
+  *coverage*** — `DiffOracleEnvelope` checks whether the body's per-axis factors fall inside the
+  differential-oracle grid's tested per-axis ranges (an axis-box claim; combined points graded only
+  at the `gen_*`/`realistic_mix` configs), with the one-time T1 grid result **cited**, not recomputed.
+  `Regime::{Coupled,Decoupled,Unknown}`: shape-corr is **gated ≥0.95 for the coupled regime** and
+  **reported** for the decoupled tail (≥0.80 floor) — a tall-lean body's curve shape legitimately
+  differs, so hard-gating it would be dishonest. Regime comes from generator provenance
+  (`AnthroSource::is_coupled`), never inferred for generated bodies; `Regime::infer` is a conservative
+  (biased-to-strict) fallback for unlabelled params. `Scorecard::grade` /
+  `grade_population`(`BodyEntry`) → `BodyScorecard` / `PopulationScorecard` (the API A4's
+  `RandomizerSource` feeds). `examples/a3_scorecard` (printed report) + `tests/a3_gate` (the formal
+  gate, superseding the retired `cf-osim/tests/anthro_validation.rs`). The differential-oracle grid
+  was extended to bracket the generator's factor range (single-axis <1 configs + the generator's own
+  coupled extremes at the sampled 1st/99th percentiles, both sexes → the whole coupled family is
+  in-envelope; morph still tracks ScaleTool to worst **0.369 mm** under the 0.8 mm gate).
 
 ## Risks
 
