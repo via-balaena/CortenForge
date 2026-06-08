@@ -19,10 +19,14 @@
 //! **reports** against the loose floor rather than hard-gates. This covers the
 //! harder anisotropic regime for training while staying honest: the population
 //! validates **coverage + the machinery, not personhood** (see the scorecard's
-//! tier-applicability matrix). Stature/girth percentiles are sampled **uniform on
-//! the percentile axis** — which, since a percentile *is* the population CDF
-//! coordinate, reproduces the underlying measurement distribution by rank — within
-//! the validated `(pct_lo, pct_hi)` range.
+//! tier-applicability matrix). The **stature** percentile (and a coupled body's
+//! girth, which equals it) is sampled **uniform on the percentile axis** — which,
+//! since a percentile *is* the population CDF coordinate, reproduces the underlying
+//! measurement distribution by rank — within the validated `(pct_lo, pct_hi)` range.
+//! A **decoupled** body's girth percentile is then sampled uniformly within a
+//! `max_decoupling`-wide window around its stature percentile (clipped to the range)
+//! — a deliberate, bounded anisotropy *device*, not a claim about real joint
+//! frequencies, so its girth axis is uniform-within-window, not population-uniform.
 //!
 //! The PRNG is a tiny seeded **SplitMix64** ([`Rng`]) so populations are exactly
 //! reproducible and the crate stays dependency-free (no `rand`).
@@ -73,8 +77,10 @@ pub struct RandomizerConfig {
     /// Fraction of draws that are *decoupled* (girth dialed apart from stature).
     /// Default `0.2` — a minority tail for anisotropic coverage.
     pub decoupled_fraction: f64,
-    /// Max `|stature_pct − girth_pct|` for a decoupled draw (keeps the tail bounded,
-    /// not pathological). Default `0.5`.
+    /// Max `|stature_pct − girth_pct|` for a decoupled draw — the girth percentile is
+    /// sampled uniformly within this window around stature (clipped to the range), so
+    /// this bound holds *exactly* (keeps the tail bounded, not pathological).
+    /// Default `0.5`.
     pub max_decoupling: f64,
     /// P(female) for each draw. Default `0.5`.
     pub female_fraction: f64,
@@ -133,7 +139,7 @@ pub struct RandomizerSource {
 impl RandomizerSource {
     /// A sampler with default [`RandomizerConfig`].
     pub fn new() -> Self {
-        RandomizerSource::default()
+        RandomizerSource::with_config(RandomizerConfig::default())
     }
 
     /// A sampler with a custom config.
@@ -158,12 +164,16 @@ impl RandomizerSource {
         };
         let stature_pct = rng.range(c.pct_lo, c.pct_hi);
         if rng.unit() < c.decoupled_fraction {
-            // Bounded decoupling: offset the girth percentile within ±max_decoupling,
-            // clamped back into the sampled range. (A tiny offset is honestly ~coupled
-            // and `is_coupled()` will report it as such — the fraction is the *attempt*
-            // rate, the provenance is exact.)
-            let delta = rng.range(-c.max_decoupling, c.max_decoupling);
-            let girth_pct = (stature_pct + delta).clamp(c.pct_lo, c.pct_hi);
+            // Bounded decoupling: sample the girth percentile UNIFORMLY within the
+            // `max_decoupling`-wide window around stature, intersected with the range.
+            // Sampling the window directly (vs offsetting then clamping) keeps the
+            // bound `|girth − stature| ≤ max_decoupling` exact AND avoids piling
+            // probability mass as atoms on pct_lo/pct_hi. A continuous draw never
+            // equals stature, so every such body is genuinely decoupled: the realized
+            // decoupled fraction == `decoupled_fraction` (the unit test relies on this).
+            let lo = (stature_pct - c.max_decoupling).max(c.pct_lo);
+            let hi = (stature_pct + c.max_decoupling).min(c.pct_hi);
+            let girth_pct = rng.range(lo, hi);
             AnthroSource::new(sex, stature_pct).with_girth_percentile(girth_pct)
         } else {
             AnthroSource::new(sex, stature_pct)
@@ -229,6 +239,25 @@ mod tests {
                 s.girth_percentile
             );
         }
+    }
+
+    #[test]
+    fn decoupling_is_bounded_by_max_decoupling() {
+        // The load-bearing "bounded" invariant: every body's stature/girth gap is
+        // within max_decoupling (coupled bodies have gap 0). Pins the ≥0.80 regime.
+        let r = RandomizerSource::new();
+        let max = r.config().max_decoupling;
+        for s in r.population(777, 1000) {
+            let gap = (s.stature_percentile - s.girth_percentile).abs();
+            assert!(gap <= max + 1e-12, "decoupling gap {gap} exceeds max {max}");
+        }
+    }
+
+    #[test]
+    fn default_population_has_both_sexes() {
+        let pop = RandomizerSource::new().population(31, 200);
+        assert!(pop.iter().any(|s| s.sex == Sex::Male), "no males drawn");
+        assert!(pop.iter().any(|s| s.sex == Sex::Female), "no females drawn");
     }
 
     #[test]

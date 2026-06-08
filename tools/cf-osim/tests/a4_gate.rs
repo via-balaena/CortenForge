@@ -90,6 +90,14 @@ fn a4_gate_default_population_passes() {
         "decoupled worst shape-corr {:.4} < 0.80 floor",
         pop.worst_corr_decoupled
     );
+    // Pin the advertised actuals (not just the floors), so a regression that quietly
+    // erodes the margin is caught here. If these tighten legitimately, bump them.
+    assert!(
+        pop.worst_corr_coupled > 0.97 && pop.worst_corr_decoupled > 0.91,
+        "headline margins regressed: coupled {:.4} (>0.97?), decoupled {:.4} (>0.91?)",
+        pop.worst_corr_coupled,
+        pop.worst_corr_decoupled
+    );
     // The whole coupled-by-default family lands in the differential-oracle envelope.
     assert_eq!(
         pop.n_in_envelope, N,
