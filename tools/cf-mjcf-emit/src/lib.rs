@@ -204,7 +204,6 @@ struct EmitCtx<'a> {
     patellae: HashMap<&'a str, Vec<PatellaSpec>>,
 }
 
-/// The coordinate that drives moving path points (and any free DOF without its own
 /// Classify a joint's axes into folded constants, coupled translations, and free
 /// DOFs (in declaration order). Panics on shapes A1 does not handle.
 fn classify(body: &Body) -> (Vector3<f64>, Vec<&TransformAxis>, Vec<&TransformAxis>) {

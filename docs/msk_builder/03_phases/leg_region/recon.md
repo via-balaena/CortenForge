@@ -62,13 +62,15 @@ The hardest part (the FK convention on a tree) is retired before any clean build
   `cf-msk-lib`; PR-2: the structural cutover.)* The general IR lives in `cf-msk-lib`; `cf-osim`'s
   `parse_leg_chain` reads the chain into a `Model`; the oracle reads the knee from that `Model` with
   its validated math unchanged; the general emitter is the new `cf-mjcf-emit` crate (the deferred
-  split). **Exit (as delivered, through the general path):** (1) the general IR FK reproduces the
-  oracle's moment arms to **machine zero** (`general_ir_fk`); (2) `build_canonical` reproduces the
-  oracle within the **5 mm S1 gate** for all four muscles (`bifemlh_r`, with no dropped conditional,
-  matches to ~machine precision), and is byte-stable against the general emitter's own committed
-  snapshot (`knee_ref.xml`). Note: the emitted MJCF is **not** byte-identical to the retired bespoke
-  emitter (the general emitter uses principled names/structure); functional no-regression is the
-  oracle gate, not byte-identity to the old emitter.
+  split). **Exit (as delivered, through the general path):** (1) at A1 the general IR FK reproduced
+  the bespoke oracle's moment arms to **machine zero** (`general_ir_fk`); A2 then folded the oracle
+  *into* that FK (the bespoke knee math + the self-check were retired — the FK is now the oracle,
+  anchored directly by the real-OpenSim cross-check). (2) `build_canonical` reproduces the oracle
+  within the **5 mm S1 gate** for all four muscles (`bifemlh_r`, with no dropped conditional, matches
+  to ~machine precision), and is byte-stable against the general emitter's own committed snapshot
+  (`knee_ref.xml`). Note: the emitted MJCF is **not** byte-identical to the retired bespoke emitter
+  (the general emitter uses principled names/structure); functional no-regression is the oracle gate,
+  not byte-identity to the old emitter.
 - **A2 — extend to thigh–knee–shank.** *(DONE — PR-1: oracle generalized to a multi-coordinate
   pose; PR-2: the hip unweld.)* `parse_leg_chain` reads the hip `CustomJoint` into the femur joint
   (3 rotation DOFs + zero translations) + adds the hip coordinates; the general emitter gives the

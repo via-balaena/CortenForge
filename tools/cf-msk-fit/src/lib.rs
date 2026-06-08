@@ -206,7 +206,7 @@ impl<'a> Fitter<'a> {
                     .path
                     .iter()
                     .filter(|pp| pp.active(theta))
-                    .map(|pp| xform(world(&pp.body, pp.location_at(theta, false))))
+                    .map(|pp| xform(world(&pp.body, pp.location_at(theta))))
                     .collect(),
             })
             .collect();

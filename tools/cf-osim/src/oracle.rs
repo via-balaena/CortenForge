@@ -16,6 +16,7 @@
 //! self-check vs a bespoke knee implementation is retired now that the general FK
 //! *is* the oracle).
 
+use cf_msk_lib::muscle::Kind;
 use cf_msk_lib::{Model, Muscle};
 use nalgebra::{Isometry3, Point3};
 use std::collections::HashMap;
@@ -23,11 +24,15 @@ use std::collections::HashMap;
 /// A pose: generalized-coordinate values keyed by name. Absent coordinates are 0.
 pub type Pose = HashMap<String, f64>;
 
-/// The coordinate that parameterizes a muscle's conditional / moving path points.
-/// gait2392's `ConditionalPathPoint`s and `MovingPathPoint`s are all functions of
-/// the knee angle; the IR does not retain each point's own driving coordinate (an
-/// A1/A2 limitation, matching `cf-mjcf-emit`'s primary-coordinate assumption), so
-/// the knee coordinate's value in the pose drives point activity + location.
+/// The coordinate that gates a `ConditionalPathPoint`'s membership.
+///
+/// A `MovingPathPoint`'s location is evaluated at its *own* retained coordinate
+/// (`MovingSplines.coordinate`, the same one the emitter drives the patella with),
+/// so moving points generalize beyond one DOF. A `ConditionalPathPoint`, however,
+/// carries no coordinate in the IR (`Kind::Conditional` is just `{lo, hi}`), so
+/// membership is gated on this one — the knee angle. gait2392's conditionals are
+/// all knee-driven, so this is exact today; retaining the conditional's coordinate
+/// (to drop this constant) is a future generalization.
 const MUSCLE_PARAM_COORD: &str = "knee_angle_r";
 
 /// Forward kinematics + muscle geometry over the leg-chain [`Model`].
@@ -47,11 +52,13 @@ impl<'a> Kinematics<'a> {
     }
 
     /// Muscle path length at pose `q` (m): the sum of straight segments between the
-    /// muscle's active path points, each placed by the general FK. Conditional
-    /// membership and moving-point location use the muscle-parameter coordinate's
-    /// value in `q` (the knee angle — see the `MUSCLE_PARAM_COORD` note above).
+    /// muscle's active path points, each placed by the general FK. A moving point's
+    /// location is evaluated at its own retained coordinate's value in `q` (matching
+    /// the emitter); conditional membership uses `MUSCLE_PARAM_COORD` (conditionals
+    /// carry no coordinate in the IR).
     pub fn path_length(&self, muscle: &Muscle, q: &Pose) -> f64 {
-        let theta = q.get(MUSCLE_PARAM_COORD).copied().unwrap_or(0.0);
+        let val = |name: &str| q.get(name).copied().unwrap_or(0.0);
+        let theta = val(MUSCLE_PARAM_COORD);
         let pts: Vec<Point3<f64>> = muscle
             .path
             .iter()
@@ -66,7 +73,13 @@ impl<'a> Kinematics<'a> {
                     p.name,
                     p.body
                 );
-                self.model.body_pose(&p.body, q) * Point3::from(p.location_at(theta, false))
+                // A moving point follows its own driving coordinate (as the emitter
+                // drives the patella); fixed/conditional points are θ-independent.
+                let pt = match &p.kind {
+                    Kind::Moving(s) => val(&s.coordinate),
+                    _ => theta,
+                };
+                self.model.body_pose(&p.body, q) * Point3::from(p.location_at(pt))
             })
             .collect();
         pts.windows(2).map(|w| (w[1] - w[0]).norm()).sum()

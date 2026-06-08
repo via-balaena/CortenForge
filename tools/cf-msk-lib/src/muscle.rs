@@ -58,22 +58,12 @@ impl PathPoint {
         }
     }
 
-    /// Activity used by a given variant. When `freeze_conditional`, a
-    /// `ConditionalPathPoint` is included iff it is active at θ=0 (matching the
-    /// fixed-site emit, which can't toggle path membership with angle).
-    pub fn active_under(&self, theta: f64, freeze_conditional: bool) -> bool {
-        self.active(if freeze_conditional { 0.0 } else { theta })
-    }
-
-    /// Location in its body frame at coordinate value `theta`. When `freeze_moving`,
-    /// a `MovingPathPoint` is pinned to its θ=0 location (the G1 patella
-    /// approximation, O2); plain/conditional points are unaffected.
-    pub fn location_at(&self, theta: f64, freeze_moving: bool) -> Vector3<f64> {
+    /// Location in its body frame at coordinate value `theta`. A `MovingPathPoint`
+    /// evaluates its per-axis splines at `theta` (its driving coordinate's value);
+    /// plain/conditional points are θ-independent.
+    pub fn location_at(&self, theta: f64) -> Vector3<f64> {
         match &self.kind {
-            Kind::Moving(s) => {
-                let t = if freeze_moving { 0.0 } else { theta };
-                Vector3::new(s.x.eval(t), s.y.eval(t), s.z.eval(t))
-            }
+            Kind::Moving(s) => Vector3::new(s.x.eval(theta), s.y.eval(theta), s.z.eval(theta)),
             _ => self.location,
         }
     }
