@@ -120,9 +120,14 @@ pub trait ParamSource {
 ```
 
 `CanonicalSource` is what makes the program **builder-first**: a full, simulatable body with zero
-scan input. `RandomizerSource` is the **free-training-data** generator (sample each `ByScanner`
-param across its range → a population of bodies for the detector / RL / system-ID). `ScanSource`
-is today's `cf-msk-fit`, demoted from "the pipeline" to "one source among three."
+scan input. `RandomizerSource` is the **free-training-data** generator → a population of bodies for
+the detector / RL / system-ID. *(As shipped in leg-region A4, it is a population **sampler over the
+validated `AnthroSource` family** — it draws `(sex, stature/girth percentile)` and reuses
+`AnthroSource`, returning `Vec<AnthroSource>`; it does not itself implement `ParamSource`. Each
+sampled `AnthroSource` is the per-body `ParamSource`, with `is_coupled()` provenance the scorecard
+uses directly. This composition is preferred over a standalone per-param sampler: it reuses the
+OpenSim-graded morph instead of re-deriving one.)* `ScanSource` is today's `cf-msk-fit`, demoted from
+"the pipeline" to "one source among three."
 
 ## Crate layout & dependency graph
 

@@ -88,7 +88,19 @@ The hardest part (the FK convention on a tree) is retired before any clean build
   **The oracle is not lost — it relocates** to the morph (see *A3 plan* below): the per-axis morph
   *is* OpenSim's ScaleTool, so real OpenSim 4.6 grades it (Tier 1). The *parameter-choice* layer is
   what has no moment-arm oracle ⇒ shape-correlation + plausibility + anthro-table cross-check (§7).
-- **A4 — `RandomizerSource`.** Sample the parameter space → a population of leg twins (training data).
+- **A4 — `RandomizerSource`.** *(DONE.)* `cf_msk_lib::RandomizerSource` samples a population over the
+  validated `AnthroSource` family (it does **not** invent a morph — it draws `(sex, stature pct,
+  girth pct)` and reuses `AnthroSource`, so each body keeps `is_coupled()` provenance). Sampling
+  (the confirmed product call): **coupled-by-default + a bounded decoupled tail** — most draws couple
+  girth to stature (the validated ≥0.95 regime); a `decoupled_fraction` (default 0.2) are
+  `max_decoupling`-bounded anisotropic builds the scorecard **reports** (≥0.80 floor). Percentiles are
+  uniform on the percentile axis within `(pct_lo, pct_hi)` (default 0.01–0.99). A tiny seeded
+  **SplitMix64** `Rng` keeps the crate dependency-free and populations exactly reproducible. The A3
+  `cf_osim::scorecard::grade_population` grades the population: a default 500-body population is
+  all-T2-exact, all-plausible, all-in-envelope, coupled worst ~0.977 (≥0.95), bounded-decoupled worst
+  ~0.96 (≥0.80; the window sampler keeps the tail well clear of the floor). `examples/a4_population` + `tests/a4_gate`. Validates **coverage + the machinery, not
+  personhood**. (On-disk MJCF emit of the population is a deferred follow-up — no consumer needs the
+  files yet.)
 
 ## A3 plan (locked 2026-06-07)
 
