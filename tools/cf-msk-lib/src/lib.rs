@@ -31,13 +31,19 @@
 //! * [`ParamSource`] + [`CanonicalSource`] — the pluggable parameter interface.
 //!   `CanonicalSource` is **builder-first**: it emits the canonical body from
 //!   library defaults with **no scan**.
+//! * [`AnthroSource`] — the **dial-able** generator: a sex/percentile family of
+//!   bodies (no scan), scaling the template proportionally from published
+//!   stature/girth distributions. Validates the *machinery*, not personhood (see
+//!   the [`anthro`] module).
 
+pub mod anthro;
 pub mod ir;
 pub mod muscle;
 pub mod spline;
 
 use nalgebra::Vector3;
 
+pub use anthro::{AnthroSource, Sex};
 pub use ir::{Body, Coordinate, Joint, Model, TransformAxis, TransformFn};
 pub use muscle::{Kind, MovingSplines, Muscle, PathPoint};
 pub use spline::Spline;
