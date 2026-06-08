@@ -22,17 +22,18 @@
 
 use cf_anthro::synthetic::LegSpec;
 use cf_anthro::{Landmarks, detect_landmarks};
+use cf_mjcf_emit::build;
 use cf_msk_fit::{Fitter, ScanSource};
-use cf_msk_lib::{ParamSource, build};
-use cf_osim::osim::{Subgraph, parse_knee_subgraph};
+use cf_msk_lib::{Model, ParamSource};
+use cf_osim::parse_leg_chain;
 use sim_mjcf::load_model;
 
-fn template() -> Subgraph {
+fn template() -> Model {
     let path = format!(
         "{}/../../sim/L0/tests/assets/opensim_gait2392/gait2392.osim",
         env!("CARGO_MANIFEST_DIR")
     );
-    parse_knee_subgraph(&std::fs::read_to_string(path).expect("read gait2392.osim"))
+    parse_leg_chain(&std::fs::read_to_string(path).expect("read gait2392.osim"))
 }
 
 /// Detect landmarks on a clean default synthetic leg — the fixture, no real scan.

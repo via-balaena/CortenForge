@@ -1,6 +1,6 @@
 [package]
 name = "cf-osim"
-description = "OpenSim (.osim) → MJCF bridge for the musculoskeletal-builder arc. Reads a validated OpenSim model and emits MJCF our sim engine imports, plus moment-arm extraction for oracle validation. See docs/msk_builder/."
+description = "OpenSim (.osim) reader for the musculoskeletal-builder arc: parses the gait2392 leg chain into cf-msk-lib's source-agnostic Model IR, plus the oracle (OpenSim-geometry moment arms) and moment-arm extraction for validation. See docs/msk_builder/."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,8 +18,9 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-# The MJCF importer we emit into + load through (load_model, model_from_mjcf).
-sim-mjcf = { path = "../../sim/L0/mjcf" }
+# The source-agnostic kinematic-tree IR (Model) the parser produces + the oracle
+# reads. The leg-region cutover inverts the old direction (now cf-osim → cf-msk-lib).
+cf-msk-lib = { path = "../cf-msk-lib" }
 # Model / Data — forward kinematics + tendon Jacobian (ten_J) for moment arms.
 sim-core = { path = "../../sim/L0/core" }
 # Vec/quat math for frames, axes, path points.
@@ -28,6 +29,8 @@ nalgebra = { workspace = true }
 quick-xml = { workspace = true }
 
 [dev-dependencies]
+# The MJCF importer the r4 micro-spike loads through (load_model) — test-only.
+sim-mjcf = { path = "../../sim/L0/mjcf" }
 # Float-tolerance assertions for the spike / oracle-comparison tests.
 approx = { workspace = true }
 # Read the vendored real-OpenSim moment-arm reference (the cross-check anchor).

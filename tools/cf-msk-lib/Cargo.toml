@@ -1,6 +1,6 @@
 [package]
 name = "cf-msk-lib"
-description = "Library/parameter spine for the musculoskeletal-builder arc: morph a template (an OpenSim knee subgraph) into a body via BodyParams + realize() + ParamSource. Builder-first — CanonicalSource emits a body with no scan. See docs/msk_builder/."
+description = "Library/parameter spine for the musculoskeletal-builder arc: the source-agnostic kinematic-tree IR (Model) plus morph a template into a body via BodyParams + realize() + ParamSource. Builder-first — CanonicalSource emits a body with no scan. See docs/msk_builder/."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,14 +18,13 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-# The template (Subgraph IR) + the MJCF emitter we morph and emit through.
-# v1 reuses cf-osim's Subgraph as the template; the source-agnostic IR
-# extraction (recon S1, deferred) inverts this dependency later.
-cf-osim = { path = "../cf-osim" }
-# Vec math for scaling path-point locations on the cloned template.
+# Vec/quat math for the IR frames + scaling path-point locations on the morph.
 nalgebra = { workspace = true }
 
 [dev-dependencies]
-# Load + forward the emitted MJCF to grade the canonical body vs the oracle.
-sim-mjcf = { path = "../../sim/L0/mjcf" }
-sim-core = { path = "../../sim/L0/core" }
+# The leg-region cutover inverts the dependency: cf-osim now reads `.osim` into
+# this crate's `Model` (a normal dep cf-osim → cf-msk-lib). cf-osim's parser +
+# oracle are used here ONLY in the general-FK-vs-oracle checkpoint test, so they
+# enter as a DEV dependency — a dev-dependency cycle, which Cargo permits because
+# it does not affect the normal build graph.
+cf-osim = { path = "../cf-osim" }

@@ -1,0 +1,34 @@
+[package]
+name = "cf-mjcf-emit"
+description = "MJCF emitter for the musculoskeletal-builder arc: lower a cf-msk-lib Model (a kinematic tree of CustomJoint transform axes + straight-segment muscle paths) into MJCF our sim engine imports, plus the builder-first build_canonical (no-scan) artifact. See docs/msk_builder/."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-tool library (no `[package.metadata.cortenforge]` tier block —
+# matches the cf-osim / cf-msk-lib / cf-anthro / cf-msk-fit precedent). The
+# deferred cf-mjcf-emit crate split (recon leg-region A1): general Model → MJCF,
+# replacing cf-osim's bespoke knee emitter. See
+# docs/msk_builder/03_phases/leg_region/recon.md.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The source-agnostic kinematic-tree IR (Model) + the morph (realize) + the
+# parameter sources we lower to MJCF.
+cf-msk-lib = { path = "../cf-msk-lib" }
+# Vec math for path-point/axis vectors when emitting body frames.
+nalgebra = { workspace = true }
+
+[dev-dependencies]
+# Parse the vendored gait2392 into a Model + the oracle to grade the emitted MJCF.
+# (cf-osim → cf-msk-lib is the normal dep; this dev dep does not affect that graph.)
+cf-osim = { path = "../cf-osim" }
+# Load + forward the emitted MJCF; read its tendon Jacobian for moment arms.
+sim-mjcf = { path = "../../sim/L0/mjcf" }
+sim-core = { path = "../../sim/L0/core" }

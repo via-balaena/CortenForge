@@ -12,7 +12,7 @@
 //! "vs oracle" figure elsewhere ultimately leans on.
 
 use cf_osim::oracle::{Kinematics, Variant};
-use cf_osim::osim::parse_knee_subgraph;
+use cf_osim::parse_leg_chain;
 use std::f64::consts::PI;
 
 fn asset(name: &str) -> String {
@@ -24,8 +24,8 @@ fn asset(name: &str) -> String {
 
 #[test]
 fn oracle_matches_real_opensim() {
-    let sub = parse_knee_subgraph(&std::fs::read_to_string(asset("gait2392.osim")).unwrap());
-    let kin = Kinematics::new(&sub);
+    let model = parse_leg_chain(&std::fs::read_to_string(asset("gait2392.osim")).unwrap());
+    let kin = Kinematics::new(&model);
     let eps = 0.5 * PI / 180.0;
 
     let reference: serde_json::Value = serde_json::from_str(
@@ -42,7 +42,7 @@ fn oracle_matches_real_opensim() {
     );
 
     let mut worst = 0.0_f64;
-    for m in &sub.muscles {
+    for m in &model.muscles {
         let rows = reference["muscles"][&m.name].as_array().unwrap();
         let (mut sse, mut maxd, mut maxa, mut n) = (0.0, 0.0, 0.0, 0.0);
         for row in rows {

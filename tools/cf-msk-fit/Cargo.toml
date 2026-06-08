@@ -13,7 +13,8 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-# The validated OpenSim knee subgraph + its forward kinematics.
+# The OpenSim reader (.osim → Model) + the validated knee oracle (forward
+# kinematics / moment arms).
 cf-osim = { path = "../cf-osim" }
 # Detected scan landmarks (knee point, limb axis, segment lengths).
 cf-anthro = { path = "../cf-anthro" }
@@ -30,5 +31,7 @@ mesh-sdf = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# Emit the morphed Model to MJCF (the `build` path) in the scan-source tests.
+cf-mjcf-emit = { path = "../cf-mjcf-emit" }
 # Load the morphed MJCF to prove the scan→params→model path emits a valid model.
 sim-mjcf = { path = "../../sim/L0/mjcf" }

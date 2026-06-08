@@ -2310,10 +2310,11 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // SDK-boundary orchestrator; see MISSION.md) are workspace tools
     // under `tools/` carrying the cf- prefix — same Q8 path-based-filter
     // exemption, no SDK tier. cf-osim + cf-anthro + cf-msk-fit + cf-msk-lib
-    // (the musculoskeletal-builder arc; Mission deliverable #4 — OpenSim→IR
-    // bridge, scan landmark detection, place/scale/articulate, and the
-    // library/parameter spine that morphs a template into a body) are
-    // `tools/` workspace tools with the cf- prefix — same exemption.
+    // + cf-mjcf-emit (the musculoskeletal-builder arc; Mission deliverable #4 —
+    // OpenSim→IR bridge, scan landmark detection, place/scale/articulate, the
+    // library/parameter spine that morphs a template into a body, and the
+    // Model→MJCF emitter) are `tools/` workspace tools with the cf- prefix —
+    // same exemption.
     if matches!(
         crate_name,
         "cf-viewer"
@@ -2333,6 +2334,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-anthro"
             | "cf-msk-fit"
             | "cf-msk-lib"
+            | "cf-mjcf-emit"
     ) {
         return false;
     }
@@ -3762,6 +3764,12 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-studio-engine"));
         assert!(!applies_to_crate("cf-studio"));
         assert!(!applies_to_crate("cf-studio-gui"));
+        // musculoskeletal-builder arc tools (Mission #4) — same exemption shape.
+        assert!(!applies_to_crate("cf-osim"));
+        assert!(!applies_to_crate("cf-anthro"));
+        assert!(!applies_to_crate("cf-msk-fit"));
+        assert!(!applies_to_crate("cf-msk-lib"));
+        assert!(!applies_to_crate("cf-mjcf-emit"));
     }
 
     #[test]

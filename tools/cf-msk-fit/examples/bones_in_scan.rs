@@ -53,7 +53,7 @@ fn main() {
         "{}/../../sim/L0/tests/assets/opensim_gait2392/gait2392.osim",
         env!("CARGO_MANIFEST_DIR")
     );
-    let sub = cf_osim::osim::parse_knee_subgraph(&std::fs::read_to_string(&osim).unwrap());
+    let sub = cf_osim::parse_leg_chain(&std::fs::read_to_string(&osim).unwrap());
     let placed = place_knee(&sub, &lm);
 
     let write = |name: &str, m: &IndexedMesh| save_stl(m, format!("{out}/{name}"), true).unwrap();

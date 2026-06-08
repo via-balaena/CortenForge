@@ -45,7 +45,7 @@ fn main() {
         "{}/../../sim/L0/tests/assets/opensim_gait2392",
         env!("CARGO_MANIFEST_DIR")
     );
-    let sub = cf_osim::osim::parse_knee_subgraph(
+    let sub = cf_osim::parse_leg_chain(
         &std::fs::read_to_string(format!("{assets}/gait2392.osim")).unwrap(),
     );
     let fit = Fitter::new(&sub, &lm);
