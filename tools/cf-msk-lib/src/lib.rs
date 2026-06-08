@@ -21,13 +21,14 @@
 //!   `CanonicalSource` is **builder-first**: it emits the canonical body from
 //!   library defaults with **no scan**.
 //!
-//! **What v1 reuses vs. defers.** The "template" is `cf_osim::osim::Subgraph` (the
-//! validated gait2392 knee), re-exported here as [`Template`]; emission is
-//! `cf_osim::emit::emit_coupled_knee`. The source-agnostic IR extraction and the
-//! `cf-mjcf-emit` crate split (recon S1) are deliberately deferred until a second
-//! joint actually needs them — generalizing one joint is premature. This crate is
-//! the smallest real increment that makes the builder-first claim concrete and
-//! oracle-validated.
+//! **What v1 reuses vs. defers.** The morph/emit "template" is still
+//! `cf_osim::osim::Subgraph` (the validated gait2392 knee), re-exported here as
+//! [`Template`]; emission is `cf_osim::emit::emit_coupled_knee`. The leg-region
+//! arc (recon `03_phases/leg_region`) generalizes this: the source-agnostic
+//! kinematic-tree IR now lives in [`ir`] ([`Model`] et al.) and is exercised
+//! additively via [`Model::from_subgraph`] (PR-1, the productionized A1 spike).
+//! Routing `realize`/`build` through the IR and the `cf-mjcf-emit` crate split are
+//! the PR-2 cutover.
 //!
 //! **Validation.** [`realize`] is ported verbatim from the throwaway morph spike
 //! (`cf-osim/tests/spike_param_morph.rs`), which proved identity params are exact,
@@ -36,6 +37,9 @@
 //! grades the canonical (no-scan) body against the OpenSim oracle.
 
 use cf_osim::osim::{Kind, Subgraph};
+
+pub mod ir;
+pub use ir::{Body, Coordinate, Joint, Model, TransformAxis, TransformFn};
 
 pub use cf_osim::emit::Emitted;
 /// The body template this crate morphs. v1 = the validated OpenSim knee subgraph;
