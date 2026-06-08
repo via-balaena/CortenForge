@@ -81,8 +81,9 @@ def _norm_at(meansd, p):
 
 
 def gen_factors(sex, stature_pct, girth_pct):
-    """The per-body Vec3 factors `AnthroSource{sex, stature_pct}.with_girth(girth_pct)`
-    produces: axial = stature ratio (both segments), transverse = girth ratio."""
+    """The per-body Vec3 factors `AnthroSource::new(sex, stature_pct)
+    .with_girth_percentile(girth_pct)` produces: axial = stature ratio (both
+    segments), transverse = girth ratio."""
     t, ref = TABLE[sex], TABLE[REF_SEX]
     axial = _norm_at(t["stature"], stature_pct) / _norm_at(ref["stature"], REF_PCT)
     thigh = _norm_at(t["thigh"], girth_pct) / _norm_at(ref["thigh"], REF_PCT)
@@ -92,8 +93,8 @@ def gen_factors(sex, stature_pct, girth_pct):
 
 # Scale grid — single-axis perturbations (length=axial=y, girth=transverse=x,z on
 # each segment) bracketing the generator's range on BOTH sides, a "realistic
-# subject" mix, and the generator's ACTUAL coupled output at the 5th/95th male
-# extremes. Bodies omitted stay at scale 1.
+# subject" mix, and the generator's ACTUAL coupled output at the sampled 1st/99th
+# percentile extremes, both sexes. Bodies omitted stay at scale 1.
 CONFIGS = {
     "uniform_1.137": {"pelvis": (1.137,) * 3, "femur_r": (1.137,) * 3,
                       "tibia_r": (1.137,) * 3, "talus_r": (1.137,) * 3},

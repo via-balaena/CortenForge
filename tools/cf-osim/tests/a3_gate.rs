@@ -14,9 +14,9 @@
 //! scaling; T3 proves plausibility, NOT personhood.
 
 use cf_msk_lib::anthro::{AnthroSource, Sex};
-use cf_msk_lib::{BodyParams, ParamSource, realize};
+use cf_msk_lib::{ParamSource, realize};
 use cf_osim::parse_leg_chain;
-use cf_osim::scorecard::{DiffOracleEnvelope, Regime, Scorecard};
+use cf_osim::scorecard::{BodyEntry, DiffOracleEnvelope, Regime, Scorecard};
 
 fn assets() -> String {
     format!(
@@ -38,35 +38,30 @@ fn envelope() -> DiffOracleEnvelope {
 }
 
 /// The representative dial set: the canonical reference + a coupled percentile
-/// sweep (both sexes) + the two extreme decoupled boundary builds.
-fn dial_set(t: &cf_msk_lib::Model) -> Vec<(String, BodyParams, Regime)> {
-    let mut bodies = vec![(
-        "canonical".to_string(),
-        BodyParams::IDENTITY,
+/// sweep (both sexes) + the two extreme decoupled boundary builds. The regime is
+/// taken from the source's own provenance (`AnthroSource::is_coupled`), never
+/// inferred — dogfooding the path A4 uses.
+fn dial_set(t: &cf_msk_lib::Model) -> Vec<BodyEntry> {
+    let entry = |label: &str, src: AnthroSource| {
+        BodyEntry::new(label, src.params(t), Regime::from_coupled(src.is_coupled()))
+    };
+    let mut bodies = vec![BodyEntry::new(
+        "canonical",
+        AnthroSource::new(Sex::Male, 0.5).params(t),
         Regime::Coupled,
     )];
     for sex in [Sex::Male, Sex::Female] {
         for &p in &[0.05, 0.5, 0.95] {
-            bodies.push((
-                format!("{sex:?}_{p}"),
-                AnthroSource::new(sex, p).params(t),
-                Regime::Coupled,
-            ));
+            bodies.push(entry(&format!("{sex:?}_{p}"), AnthroSource::new(sex, p)));
         }
     }
-    bodies.push((
-        "tall_lean".to_string(),
-        AnthroSource::new(Sex::Male, 0.90)
-            .with_girth_percentile(0.05)
-            .params(t),
-        Regime::Decoupled,
+    bodies.push(entry(
+        "tall_lean",
+        AnthroSource::new(Sex::Male, 0.90).with_girth_percentile(0.05),
     ));
-    bodies.push((
-        "short_stocky".to_string(),
-        AnthroSource::new(Sex::Female, 0.10)
-            .with_girth_percentile(0.90)
-            .params(t),
-        Regime::Decoupled,
+    bodies.push(entry(
+        "short_stocky",
+        AnthroSource::new(Sex::Female, 0.10).with_girth_percentile(0.90),
     ));
     bodies
 }
@@ -83,11 +78,10 @@ fn a3_gate_population_passes() {
     for c in &pop.cards {
         assert!(
             c.t2.exact(),
-            "{}: Tier-2 morph not exact (femur resid {:.1e}, tibia {:.1e}, det {})",
+            "{}: Tier-2 morph not exact (femur resid {:.1e}, tibia {:.1e})",
             c.label,
             c.t2.femur_axial_residual_m,
-            c.t2.tibia_axial_residual_m,
-            c.t2.deterministic
+            c.t2.tibia_axial_residual_m
         );
         assert!(
             c.t3.lengths_plausible,
@@ -103,10 +97,11 @@ fn a3_gate_population_passes() {
     assert!(pop.passes(), "A3 population gate failed");
 }
 
-/// The whole coupled generated family lands INSIDE the differential-oracle envelope
-/// — the purpose of the A3-PR4 grid extension (the grid now carries the generator's
-/// own coupled extremes for both sexes, so coupled bodies are interpolated within an
-/// OpenSim-graded region, not extrapolated).
+/// Every per-axis factor of the coupled generated family (both sexes, the sampled
+/// 0.01–0.99 range) falls within the grid's tested per-axis ranges — the purpose of
+/// the A3-PR4 grid extension (the grid now carries the generator's own coupled
+/// extremes for both sexes). This is an axis-box coverage claim (combined points are
+/// directly graded only at the `gen_*`/`realistic_mix` configs), not a dense proof.
 #[test]
 fn a3_gate_coupled_family_in_envelope() {
     let t = template();
@@ -122,6 +117,34 @@ fn a3_gate_coupled_family_in_envelope() {
                 card.t1.in_envelope,
                 "{sex:?} {p}: coupled body extrapolated beyond the grid: {:?}",
                 card.t1.extrapolated
+            );
+            assert!(
+                card.t3.lengths_plausible,
+                "{sex:?} {p}: implausible lengths"
+            );
+        }
+    }
+}
+
+/// Plausibility holds even at the near-extreme percentiles the open interval admits
+/// (0.001/0.999), both sexes — carried over from the retired
+/// `anthro_validation::dialed_lengths_are_plausible_and_ordered` (these sit just
+/// outside the 0.01–0.99 grid, so this asserts plausibility only, not in-envelope).
+#[test]
+fn a3_gate_near_extreme_percentiles_plausible() {
+    let t = template();
+    let sc = Scorecard::new(&t, envelope());
+    for sex in [Sex::Male, Sex::Female] {
+        for &p in &[0.001, 0.999] {
+            let card = sc.grade(
+                &format!("{sex:?}_{p}"),
+                &AnthroSource::new(sex, p).params(&t),
+                Regime::Coupled,
+            );
+            assert!(
+                card.t3.lengths_plausible,
+                "{sex:?} {p}: implausible lengths (femur {:.3}, tibia {:.3})",
+                card.t3.femur_axial_m, card.t3.tibia_axial_m
             );
         }
     }

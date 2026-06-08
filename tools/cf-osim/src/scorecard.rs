@@ -17,8 +17,8 @@
 //! | Tier | Grades | Per body? | Can claim | Cannot claim |
 //! |------|--------|-----------|-----------|--------------|
 //! | **T1 differential oracle** | the morph *operator* (`realize` vs OpenSim ScaleTool) | **No** — one-time over a scale grid | "per-axis morphing reproduces ScaleTool to ~0.3 mm *within the validated factor envelope*" | a body's parameter *choice*; factors outside the grid |
-//! | **T1-coverage** (here, per body) | is this body's scale config inside the T1 envelope? | **Yes** (free) | "in-envelope (interpolated, OpenSim-graded region)" / "extrapolated" | that an extrapolated body is *wrong* — only that T1 didn't cover it |
-//! | **T2 internal consistency** | the `realize()` result for *this* body | **Yes, exact** | "lengths/girths realize exactly; deterministic" | plausibility or OpenSim agreement |
+//! | **T1-coverage** (here, per body) | is this body's scale config inside the T1 envelope? | **Yes** (free) | "each per-axis factor within the tested range (axis-box; combined points graded only at the `gen_*`/`realistic_mix` extremes)" / "extrapolated" | dense-hypercube coverage; that an extrapolated body is *wrong* — only that T1 didn't cover it |
+//! | **T2 internal consistency** | the `realize()` result for *this* body | **Yes, exact** | "femur/tibia axial lengths realize to `template × factor` exactly" | plausibility or OpenSim agreement |
 //! | **T3 plausibility + shape-corr** | this body's realized proportions + curve shape vs canonical | **Yes** (oracle FK) | "proportions physiological; curve shape correlated (≥0.95 coupled / reported tail)" | **personhood** |
 //!
 //! So T1 enters a per-body card not as a recomputed RMSE (we do **not** re-run
@@ -169,24 +169,23 @@ pub struct T1Coverage {
 // --- Tier 2: internal consistency (exact) ------------------------------------
 
 /// Tier-2 internal consistency for one body — exact, computed directly (no oracle,
-/// no OpenSim). The morph guarantee: a segment's realized axial length equals the
-/// template's times the dialed axial factor, exactly; and `realize` is deterministic.
+/// no OpenSim). The morph guarantee checked here: a segment's realized **axial**
+/// length equals the template's times the dialed axial factor, exactly. (`realize`
+/// is a pure function of `(template, params)` — deterministic by construction, see
+/// `cf_msk_lib` — so determinism is not re-measured per body.) The girth/transverse
+/// exactness is unit-tested in `cf-msk-lib` (`girth_round_trip_scales_transverse_only`).
 #[derive(Debug, Clone, Copy)]
 pub struct T2Consistency {
     /// `|realized_femur_axial − template_femur_axial · femur.axial|` (m).
     pub femur_axial_residual_m: f64,
     /// `|realized_tibia_axial − template_tibia_axial · tibia.axial|` (m).
     pub tibia_axial_residual_m: f64,
-    /// Re-running `realize` reproduces the same measurable geometry.
-    pub deterministic: bool,
 }
 
 impl T2Consistency {
-    /// Exact to within floating-point round-off.
+    /// The realized axial lengths match `template × factor` to floating-point round-off.
     pub fn exact(&self) -> bool {
-        self.femur_axial_residual_m < 1e-9
-            && self.tibia_axial_residual_m < 1e-9
-            && self.deterministic
+        self.femur_axial_residual_m < 1e-9 && self.tibia_axial_residual_m < 1e-9
     }
 }
 
@@ -207,6 +206,17 @@ pub enum Regime {
 }
 
 impl Regime {
+    /// Map generator provenance to a regime: `AnthroSource::is_coupled()` (or any
+    /// source's "girth tracks stature") → [`Regime::Coupled`], else
+    /// [`Regime::Decoupled`]. The preferred path — exact, no inference.
+    pub fn from_coupled(coupled: bool) -> Regime {
+        if coupled {
+            Regime::Coupled
+        } else {
+            Regime::Decoupled
+        }
+    }
+
     /// The shape-corr floor this regime is held to.
     pub fn corr_floor(self) -> f64 {
         match self {
@@ -215,18 +225,29 @@ impl Regime {
         }
     }
 
-    /// Infer the regime from the morph alone (when there is no generator
-    /// provenance). **Decoupled** when, on either limb segment, length and girth
-    /// pull in *opposite* directions by more than a small tolerance (the tall+lean /
-    /// short+stocky signature: axial > 1 with transverse < 1, or vice versa). The
-    /// coupled family (girth tracks stature) always moves both the same way.
+    /// Infer the regime from the morph alone — a **conservative fallback** for
+    /// genuinely unlabelled external params. **Prefer provenance:** a generated body
+    /// already knows its regime (`AnthroSource::regime`), so pass an explicit
+    /// [`Regime`] to [`Scorecard::grade`]; this heuristic is for params with no
+    /// source.
+    ///
+    /// It is biased to the **strict** [`Regime::Coupled`] gate (0.95) — the *safe*
+    /// direction: a mis-strict body fails loudly rather than slipping through the
+    /// loose floor. It returns [`Regime::Decoupled`] **only** for the unambiguous
+    /// tall+lean quadrant (axial > 1 **and** transverse < 1 on a limb segment),
+    /// which a coupled body never occupies. The opposite quadrant (axial < 1 &
+    /// transverse > 1) is genuinely ambiguous — it is both "short+stocky decoupled"
+    /// AND, against the male-50th reference, a *coupled* mid/high-percentile female
+    /// (shorter than the male reference yet thicker-thighed) — so it conservatively
+    /// stays Coupled. That overlap is exactly why factors-only inference cannot be
+    /// trusted in the unsafe direction, and why provenance is the real answer.
     pub fn infer(params: &BodyParams) -> Regime {
         const TOL: f64 = 0.03;
-        let opposed = |s: SegmentScale| {
-            let (da, dt) = (s.axial - 1.0, s.transverse - 1.0);
-            da.abs() > TOL && dt.abs() > TOL && da.signum() != dt.signum()
-        };
-        if opposed(params.femur) || opposed(params.tibia) {
+        // Tall+lean: longer than reference yet leaner. No coupled body lands here
+        // (coupled moves length and girth the same way; the only coupled "opposed"
+        // case is the cross-sex axial<1/transverse>1 quadrant, handled as Coupled).
+        let tall_lean = |s: SegmentScale| s.axial > 1.0 + TOL && s.transverse < 1.0 - TOL;
+        if tall_lean(params.femur) || tall_lean(params.tibia) {
             Regime::Decoupled
         } else {
             Regime::Coupled
@@ -351,21 +372,16 @@ impl<'a> Scorecard<'a> {
             cited: T1_CITATION,
         };
 
-        // T2 — exact axial-length scaling + determinism.
+        // T2 — exact axial-length scaling (realize is pure, so no determinism re-run).
         let femur_axial = model.segment_axial_length("femur_r", "tibia_r");
         let tibia_axial = model.segment_axial_length("tibia_r", "talus_r");
         let femur_expected =
             self.template.segment_axial_length("femur_r", "tibia_r") * params.femur.axial;
         let tibia_expected =
             self.template.segment_axial_length("tibia_r", "talus_r") * params.tibia.axial;
-        let again = realize(self.template, params);
-        let deterministic = (again.segment_axial_length("femur_r", "tibia_r") - femur_axial).abs()
-            < 1e-15
-            && (again.segment_axial_length("tibia_r", "talus_r") - tibia_axial).abs() < 1e-15;
         let t2 = T2Consistency {
             femur_axial_residual_m: (femur_axial - femur_expected).abs(),
             tibia_axial_residual_m: (tibia_axial - tibia_expected).abs(),
-            deterministic,
         };
 
         // T3 — plausibility + shape-corr vs canonical.
@@ -399,14 +415,41 @@ impl<'a> Scorecard<'a> {
         }
     }
 
-    /// Grade a whole population (the API A4's `RandomizerSource` feeds). Each entry
-    /// is `(label, params, regime)`; returns the per-body cards plus the aggregate.
-    pub fn grade_population(&self, bodies: &[(String, BodyParams, Regime)]) -> PopulationScorecard {
+    /// Grade a whole population (the API A4's `RandomizerSource` feeds). Returns the
+    /// per-body cards plus the aggregate.
+    pub fn grade_population(&self, bodies: &[BodyEntry]) -> PopulationScorecard {
         let cards: Vec<BodyScorecard> = bodies
             .iter()
-            .map(|(label, params, regime)| self.grade(label, params, *regime))
+            .map(|b| self.grade(&b.label, &b.params, b.regime))
             .collect();
         PopulationScorecard::from_cards(cards)
+    }
+}
+
+/// One body to grade in a population: its label, the params that morph the template,
+/// and its [`Regime`] (use `AnthroSource::regime` for generated bodies). A named
+/// struct (not a positional tuple) so the population surface A4 wires into stays
+/// extensible. `From<(&str, BodyParams, Regime)>` keeps construction terse.
+#[derive(Debug, Clone)]
+pub struct BodyEntry {
+    pub label: String,
+    pub params: BodyParams,
+    pub regime: Regime,
+}
+
+impl BodyEntry {
+    pub fn new(label: impl Into<String>, params: BodyParams, regime: Regime) -> Self {
+        BodyEntry {
+            label: label.into(),
+            params,
+            regime,
+        }
+    }
+}
+
+impl From<(&str, BodyParams, Regime)> for BodyEntry {
+    fn from((label, params, regime): (&str, BodyParams, Regime)) -> Self {
+        BodyEntry::new(label, params, regime)
     }
 }
 
@@ -485,6 +528,9 @@ impl PopulationScorecard {
         worsts.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median_worst_corr = if worsts.is_empty() {
             1.0
+        } else if worsts.len().is_multiple_of(2) {
+            // Even n: average the two central order statistics.
+            0.5 * (worsts[worsts.len() / 2 - 1] + worsts[worsts.len() / 2])
         } else {
             worsts[worsts.len() / 2]
         };
@@ -502,11 +548,14 @@ impl PopulationScorecard {
         }
     }
 
-    /// The population gate: every Tier-2 morph exact, every body plausible, and the
-    /// **coupled** bodies clear the ≥0.95 shape-corr bar. The decoupled tail is
-    /// reported (`worst_corr_decoupled`), not gated here.
+    /// The population gate: a non-empty population where **every** body passes its
+    /// own card — Tier-2 exact, plausible lengths, and shape-corr above its regime
+    /// floor (coupled ≥0.95, decoupled ≥0.80). Delegating to the per-body
+    /// [`BodyScorecard::passes`] means the decoupled floor is enforced too (not
+    /// waived) and an all-decoupled population can't pass vacuously on the coupled
+    /// bar. T1 coverage is reported (`n_in_envelope`), not gated.
     pub fn passes(&self) -> bool {
-        self.all_t2_exact && self.n_lengths_plausible == self.n && self.worst_corr_coupled >= 0.95
+        self.n > 0 && self.cards.iter().all(BodyScorecard::passes)
     }
 }
 
@@ -535,15 +584,63 @@ mod tests {
     }
 
     #[test]
-    fn regime_infer_separates_coupled_from_decoupled() {
+    fn regime_infer_is_conservative() {
+        let t = template();
         // Coupled: girth tracks stature (both > 1).
-        let coupled = AnthroSource::new(Sex::Male, 0.9).params(&template());
-        assert_eq!(Regime::infer(&coupled), Regime::Coupled);
-        // Decoupled: tall + lean (axial > 1, transverse < 1).
-        let lean = AnthroSource::new(Sex::Male, 0.9)
-            .with_girth_percentile(0.05)
-            .params(&template());
-        assert_eq!(Regime::infer(&lean), Regime::Decoupled);
+        assert_eq!(
+            Regime::infer(&AnthroSource::new(Sex::Male, 0.9).params(&t)),
+            Regime::Coupled
+        );
+        // Decoupled: tall + lean (axial > 1, transverse < 1) — the unambiguous quadrant.
+        let lean = AnthroSource::new(Sex::Male, 0.9).with_girth_percentile(0.05);
+        assert_eq!(Regime::infer(&lean.params(&t)), Regime::Decoupled);
+
+        // THE HIGH-#1 REGRESSION: a *coupled* mid/high-percentile female sits at
+        // axial < 1 (shorter than the male-50th reference) AND transverse > 1
+        // (thicker-thighed) — the old sign-vs-1.0 heuristic wrongly flagged this
+        // Decoupled and silently loosened the gate. `infer` must NOT do that.
+        for &p in &[0.70, 0.80, 0.87] {
+            let f = AnthroSource::new(Sex::Female, p).params(&t);
+            assert!(
+                f.femur.axial < 1.0 && f.femur.transverse > 1.0,
+                "fixture sanity at {p}"
+            );
+            assert_eq!(
+                Regime::infer(&f),
+                Regime::Coupled,
+                "coupled female {p} must not be inferred Decoupled (unsafe loosening)"
+            );
+        }
+        // Provenance is exact and the preferred path.
+        assert_eq!(
+            Regime::from_coupled(AnthroSource::new(Sex::Female, 0.8).is_coupled()),
+            Regime::Coupled
+        );
+        assert_eq!(
+            Regime::from_coupled(
+                AnthroSource::new(Sex::Female, 0.8)
+                    .with_girth_percentile(0.2)
+                    .is_coupled()
+            ),
+            Regime::Decoupled
+        );
+    }
+
+    #[test]
+    fn unknown_regime_uses_loose_floor() {
+        assert_eq!(Regime::Unknown.corr_floor(), 0.80);
+        assert_eq!(Regime::Coupled.corr_floor(), 0.95);
+        assert_eq!(Regime::Decoupled.corr_floor(), 0.80);
+    }
+
+    #[test]
+    fn pearson_flat_curve_fallback() {
+        // Two flat curves → matching-flat treated as perfect.
+        assert!((pearson(&[3.0, 3.0, 3.0], &[3.0, 3.0, 3.0]) - 1.0).abs() < 1e-12);
+        // One flat, one varying → uncorrelated.
+        assert!(pearson(&[1.0, 1.0, 1.0], &[1.0, 2.0, 3.0]).abs() < 1e-12);
+        // Two perfectly-correlated varying curves → ~1.
+        assert!((pearson(&[1.0, 2.0, 3.0], &[2.0, 4.0, 6.0]) - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -611,33 +708,96 @@ mod tests {
     fn population_aggregate_counts_and_gate() {
         let t = template();
         let sc = Scorecard::new(&t, envelope());
-        let bodies = vec![
+        let bodies: Vec<BodyEntry> = vec![
             (
-                "m50".to_string(),
+                "m50",
                 AnthroSource::new(Sex::Male, 0.5).params(&t),
                 Regime::Coupled,
-            ),
+            )
+                .into(),
             (
-                "f50".to_string(),
+                "f50",
                 AnthroSource::new(Sex::Female, 0.5).params(&t),
                 Regime::Coupled,
-            ),
+            )
+                .into(),
             (
-                "tall_lean".to_string(),
+                "tall_lean",
                 AnthroSource::new(Sex::Male, 0.9)
                     .with_girth_percentile(0.1)
                     .params(&t),
                 Regime::Decoupled,
-            ),
+            )
+                .into(),
         ];
         let pop = sc.grade_population(&bodies);
         assert_eq!(pop.n, 3);
         assert_eq!(pop.n_coupled, 2);
         assert_eq!(pop.n_decoupled, 1);
+        assert_eq!(pop.n_in_envelope, 3);
+        assert_eq!(pop.n_lengths_plausible, 3);
         assert!(pop.all_t2_exact);
         assert!(
             pop.passes(),
             "coupled members + plausibility must gate green"
         );
+    }
+
+    /// The failing path + the aggregate counters under a bad body: a wildly long
+    /// femur is out-of-envelope (reported) AND implausible (gated) → the population
+    /// must NOT pass, and `n_in_envelope`/`n_lengths_plausible` must count it out.
+    #[test]
+    fn population_fails_and_counts_a_bad_body() {
+        let t = template();
+        let sc = Scorecard::new(&t, envelope());
+        let giant = BodyParams {
+            femur: SegmentScale {
+                axial: 5.0,
+                transverse: 1.0,
+            },
+            ..BodyParams::IDENTITY
+        };
+        let bodies: Vec<BodyEntry> = vec![
+            (
+                "good",
+                AnthroSource::new(Sex::Male, 0.5).params(&t),
+                Regime::Coupled,
+            )
+                .into(),
+            ("giant", giant, Regime::Coupled).into(),
+        ];
+        let pop = sc.grade_population(&bodies);
+        assert_eq!(pop.n, 2);
+        assert_eq!(pop.n_in_envelope, 1, "giant is out-of-envelope");
+        assert_eq!(pop.n_lengths_plausible, 1, "giant femur is implausible");
+        assert!(pop.all_t2_exact, "morph stays exact even for the giant");
+        assert!(
+            !pop.passes(),
+            "an implausible body must fail the population gate"
+        );
+    }
+
+    /// An all-decoupled population can't pass vacuously on the (empty) coupled bar,
+    /// and the decoupled floor IS enforced by the per-body delegation.
+    #[test]
+    fn all_decoupled_population_gated_on_the_floor() {
+        let t = template();
+        let sc = Scorecard::new(&t, envelope());
+        let bodies: Vec<BodyEntry> = vec![
+            (
+                "lean",
+                AnthroSource::new(Sex::Male, 0.9)
+                    .with_girth_percentile(0.1)
+                    .params(&t),
+                Regime::Decoupled,
+            )
+                .into(),
+        ];
+        let pop = sc.grade_population(&bodies);
+        assert_eq!(pop.n_coupled, 0);
+        // Passes only because the lone decoupled body clears its 0.80 floor — not
+        // because the coupled bar is vacuously true.
+        assert!(pop.passes());
+        assert!(pop.worst_corr_decoupled >= 0.80);
     }
 }

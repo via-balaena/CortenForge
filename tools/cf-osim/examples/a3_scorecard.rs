@@ -7,7 +7,7 @@
 //! `g1_scorecard` did for the *placed/scanned* knee:
 //!   [T1] differential-oracle COVERAGE — are the body's per-axis factors inside the
 //!        OpenSim-graded grid envelope? (the grid result is cited, not recomputed)
-//!   [T2] internal consistency — axial lengths realize exactly; deterministic.
+//!   [T2] internal consistency — femur/tibia axial lengths realize exactly.
 //!   [T3] plausibility + shape-corr vs canonical — gated ≥0.95 for the coupled
 //!        regime, reported (≥0.80 floor) for the decoupled tail.
 //! Honesty: T1+T2 prove the machinery matches OpenSim's scaling; T3 proves
@@ -16,7 +16,7 @@
 use cf_msk_lib::anthro::{AnthroSource, Sex};
 use cf_msk_lib::{BodyParams, ParamSource};
 use cf_osim::parse_leg_chain;
-use cf_osim::scorecard::{DiffOracleEnvelope, Regime, Scorecard};
+use cf_osim::scorecard::{BodyEntry, DiffOracleEnvelope, Regime, Scorecard};
 
 fn assets() -> String {
     format!(
@@ -40,34 +40,34 @@ fn main() {
 
     // The dial set: the canonical reference, a coupled percentile sweep (both
     // sexes, girth tracks stature), and two extreme decoupled builds (the boundary).
-    let mut bodies: Vec<(String, BodyParams, Regime)> = vec![(
-        "canonical (50th-M)".to_string(),
+    // Regime is from each source's own provenance (`is_coupled`), never inferred.
+    let entry = |label: String, src: AnthroSource| {
+        BodyEntry::new(
+            label,
+            src.params(&template),
+            Regime::from_coupled(src.is_coupled()),
+        )
+    };
+    let mut bodies: Vec<BodyEntry> = vec![BodyEntry::new(
+        "canonical (50th-M)",
         BodyParams::IDENTITY,
         Regime::Coupled,
     )];
     for sex in [Sex::Male, Sex::Female] {
         for &p in &[0.05, 0.5, 0.95] {
-            let src = AnthroSource::new(sex, p);
-            bodies.push((
+            bodies.push(entry(
                 format!("{sex:?} {:.0}th", p * 100.0),
-                src.params(&template),
-                Regime::Coupled,
+                AnthroSource::new(sex, p),
             ));
         }
     }
-    bodies.push((
+    bodies.push(entry(
         "M 90th + lean (girth 5th)".to_string(),
-        AnthroSource::new(Sex::Male, 0.90)
-            .with_girth_percentile(0.05)
-            .params(&template),
-        Regime::Decoupled,
+        AnthroSource::new(Sex::Male, 0.90).with_girth_percentile(0.05),
     ));
-    bodies.push((
+    bodies.push(entry(
         "F 10th + stocky (girth 90th)".to_string(),
-        AnthroSource::new(Sex::Female, 0.10)
-            .with_girth_percentile(0.90)
-            .params(&template),
-        Regime::Decoupled,
+        AnthroSource::new(Sex::Female, 0.10).with_girth_percentile(0.90),
     ));
 
     let pop = sc.grade_population(&bodies);
@@ -98,9 +98,10 @@ fn main() {
 
     println!("\n--- population aggregate ({} bodies) ---", pop.n);
     println!(
-        "  in differential-oracle envelope : {}/{}",
+        "  in differential-oracle envelope : {}/{}  (per-axis coverage; combined points",
         pop.n_in_envelope, pop.n
     );
+    println!("                                    graded only at the gen_*/realistic_mix configs)");
     println!(
         "  lengths plausible               : {}/{}",
         pop.n_lengths_plausible, pop.n
