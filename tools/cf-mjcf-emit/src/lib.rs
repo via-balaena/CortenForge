@@ -140,16 +140,13 @@ pub fn emit(model: &Model) -> Emitted {
         .position(|b| b.parent.is_none())
         // a leg chain always has a root (pelvis).
         .unwrap_or_else(|| panic!("model has no root body"));
-    emit_body(
+    let ctx = EmitCtx {
         model,
-        root,
-        2,
-        &mut body_xml,
-        &sites,
-        &patellae,
-        &mut driven,
-        &primary,
-    );
+        sites,
+        patellae,
+        primary,
+    };
+    emit_body(&ctx, root, 2, &mut body_xml, &mut driven);
 
     let mut tendon_xml = String::new();
     for (name, seq) in &tendons {
@@ -197,6 +194,16 @@ struct PatellaSpec {
     x: Spline,
     y: Spline,
     z: Spline,
+}
+
+/// Read-only context threaded through the recursive body walk: the tree, the sites
+/// and patellae grouped by owning body, and the coordinate that drives moving
+/// points. The accumulators (`out`, `driven`) stay explicit `&mut` parameters.
+struct EmitCtx<'a> {
+    model: &'a Model,
+    sites: HashMap<&'a str, Vec<SiteSpec>>,
+    patellae: HashMap<&'a str, Vec<PatellaSpec>>,
+    primary: String,
 }
 
 /// The coordinate that drives moving path points (and any free DOF without its own
@@ -247,18 +254,14 @@ fn classify(body: &Body) -> (Vector3<f64>, Vec<&TransformAxis>, Vec<&TransformAx
     (const_trans, coupled, free)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_body(
-    model: &Model,
+    ctx: &EmitCtx,
     idx: usize,
     depth: usize,
     out: &mut String,
-    sites: &HashMap<&str, Vec<SiteSpec>>,
-    patellae: &HashMap<&str, Vec<PatellaSpec>>,
     driven: &mut Vec<DrivenJoint>,
-    primary: &str,
 ) {
-    let b = &model.bodies[idx];
+    let b = &ctx.model.bodies[idx];
     let (const_trans, coupled, free) = classify(b);
     let pos = b.location_in_parent + const_trans;
 
@@ -331,7 +334,7 @@ fn emit_body(
         let _ = writeln!(out, "{}{MAIN_INERTIAL}", ind(cd));
     }
 
-    if let Some(body_sites) = sites.get(b.name.as_str()) {
+    if let Some(body_sites) = ctx.sites.get(b.name.as_str()) {
         for s in body_sites {
             let _ = writeln!(
                 out,
@@ -343,16 +346,16 @@ fn emit_body(
         }
     }
 
-    if let Some(body_patellae) = patellae.get(b.name.as_str()) {
+    if let Some(body_patellae) = ctx.patellae.get(b.name.as_str()) {
         for pat in body_patellae {
-            emit_patella(out, cd, pat, primary, driven);
+            emit_patella(out, cd, pat, &ctx.primary, driven);
         }
     }
 
     // Anatomical children.
-    for (child_idx, child) in model.bodies.iter().enumerate() {
+    for (child_idx, child) in ctx.model.bodies.iter().enumerate() {
         if child.parent == Some(idx) {
-            emit_body(model, child_idx, cd, out, sites, patellae, driven, primary);
+            emit_body(ctx, child_idx, cd, out, driven);
         }
     }
 
