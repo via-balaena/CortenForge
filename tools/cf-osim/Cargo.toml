@@ -27,11 +27,13 @@ sim-core = { path = "../../sim/L0/core" }
 nalgebra = { workspace = true }
 # .osim is XML; same parser the MJCF importer uses.
 quick-xml = { workspace = true }
+# The A3 scorecard's differential-oracle envelope is built from the vendored
+# `scaled_moment_arms_opensim.json` (`DiffOracleEnvelope::from_grid_json` takes a
+# `&serde_json::Value`, so the library stays path-free).
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # The MJCF importer the r4 micro-spike loads through (load_model) — test-only.
 sim-mjcf = { path = "../../sim/L0/mjcf" }
 # Float-tolerance assertions for the spike / oracle-comparison tests.
 approx = { workspace = true }
-# Read the vendored real-OpenSim moment-arm reference (the cross-check anchor).
-serde_json = { workspace = true }

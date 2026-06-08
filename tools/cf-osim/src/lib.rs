@@ -16,6 +16,7 @@
 
 pub mod oracle;
 pub mod osim;
+pub mod scorecard;
 pub mod xml;
 
 pub use osim::parse_leg_chain;
