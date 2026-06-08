@@ -35,10 +35,15 @@
 //!   bodies (no scan), scaling the template proportionally from published
 //!   stature/girth distributions. Validates the *machinery*, not personhood (see
 //!   the [`anthro`] module).
+//! * [`RandomizerSource`] — samples a **population** over the [`AnthroSource`] family
+//!   (a seeded, dependency-free PRNG): coupled-by-default with a bounded decoupled
+//!   tail (free training data; see the [`randomizer`] module). Validates *coverage +
+//!   the machinery*, not personhood.
 
 pub mod anthro;
 pub mod ir;
 pub mod muscle;
+pub mod randomizer;
 pub mod spline;
 
 use nalgebra::Vector3;
@@ -46,6 +51,7 @@ use nalgebra::Vector3;
 pub use anthro::{AnthroSource, Sex};
 pub use ir::{Body, Coordinate, Joint, Model, TransformAxis, TransformFn};
 pub use muscle::{Kind, MovingSplines, Muscle, PathPoint};
+pub use randomizer::{RandomizerConfig, RandomizerSource, Rng};
 pub use spline::Spline;
 
 /// The body template this crate morphs: the source-agnostic kinematic-tree
