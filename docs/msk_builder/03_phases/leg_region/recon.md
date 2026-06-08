@@ -85,8 +85,57 @@ The hardest part (the FK convention on a tree) is retired before any clean build
   only) has ~0 hip moment arm; the hip-spanning muscles ~50–63 mm.
 - **A3 — real anthropometric `BodyParams`.** Generalize from per-segment *scale* to *lengths/girths*
   (+ a sex/percentile default, joint default poses). `CanonicalSource` becomes a dial-able generator.
-  No oracle for a dialed body ⇒ validate by shape-correlation + plausibility (the §7 idea).
+  **The oracle is not lost — it relocates** to the morph (see *A3 plan* below): the per-axis morph
+  *is* OpenSim's ScaleTool, so real OpenSim 4.6 grades it (Tier 1). The *parameter-choice* layer is
+  what has no moment-arm oracle ⇒ shape-correlation + plausibility + anthro-table cross-check (§7).
 - **A4 — `RandomizerSource`.** Sample the parameter space → a population of leg twins (training data).
+
+## A3 plan (locked 2026-06-07)
+
+**Structural facts from the cold-read that shape A3:**
+- **Where lengths live:** `knee_r.location_in_parent = (0,0,0)` ⇒ the **femur length is the knee
+  joint's coupled translation at neutral** (in the femur frame). `ankle_r.location_in_parent =
+  (0,−0.425,0)` ⇒ the **tibia length is the ankle offset** — *which the IR does not parse* (the
+  chain stops at the tibia). So a real shank length is literally unrepresentable until the ankle
+  exists. **Decision: A3 adds the ankle** (`ankle_r`→a `talus` length-grounding body) — the A1 parser
+  already handles its 1-rotation+constants form, our 4 muscles don't cross it (oracle-preserving
+  no-regression checkpoint), and it is the only way to *define* a tibia length to dial.
+- **Latent scale-convention inconsistency in `realize`:** `location_in_parent` scales with the body's
+  *own* segment, but joint translations scale with the *parent*. Uniform-scale (exact dilation) and
+  shape-correlation are both blind to this — it only bites once params mean real anisotropic
+  lengths. The **differential oracle (Tier 1) + length round-trip (Tier 2) adjudicate and pin it.**
+- **Full per-axis (anisotropic) morph:** OpenSim ScaleTool is per-axis (x,y,z) per body. `realize`
+  grows from a scalar-per-segment to a per-segment **`Vector3` scale**, applied component-wise in the
+  body frame (limb long axis = body-frame *y*): **length → axial (y); girth → transverse (x,z).**
+  This makes the morph a one-to-one match for OpenSim's ScaleTool, which is what makes Tier 1 tight.
+  Girth scale is grounded relative to the anthro table (`table_girth(p) / table_girth(canonical)`),
+  not a bone-mesh envelope (we don't vendor bone meshes).
+
+**Validation = a three-tier pyramid (the keystone):**
+1. **Differential oracle** *(machinery; spike-gated)* — drive real OpenSim 4.6 ScaleTool with the same
+   per-axis factors → `scaled_moment_arms_opensim.json`; grade the realized+emitted twin vs it over an
+   anisotropic grid. Upgrades "uniform = exact dilation (analytic)" to "anisotropic = matches
+   OpenSim's own scaling (empirical)." Spike first; degrade to the analytic anchor if non-reproducible.
+2. **Internal consistency** *(derivation)* — uniform → ×s exact (keep); **length & girth round-trip**
+   (dial L → realize → measure == L); determinism/idempotence.
+3. **Plausibility / shape-corr / anthro cross-check** *(the parameter-choice layer — no moment-arm
+   oracle)* — shape-corr ≥0.95 vs canonical across a percentile sweep (extends Spike B); segment-ratio
+   & MA-magnitude bounds; generator output == published table.
+
+Honesty (vision's two-claims rule): **Tier 1+2 prove the machinery is correct and matches OpenSim's
+scaling; Tier 3 proves plausibility, not personhood.** A dialed body is "a clone of someone with these
+proportions," never a validated individual.
+
+**Slicing (each its own PR; n+1 cold-read cleanup; pre-PR local ultra-review):**
+- **A3-PR1** — ankle (`talus`) + real lengths **and** girths in `BodyParams` + per-axis `realize`
+  + length→axial / girth→transverse derivations; pin the scale convention with the length/girth
+  round-trip; migrate `ScanSource` to the now-real per-segment tibia scale. No-regression: 4 muscles
+  unchanged by the ankle.
+- **A3-PR2** — differential oracle (spike OpenSim ScaleTool first; then vendored ref + `cf-osim`
+  cross-check over the anisotropic grid). Lands before the generator so the machinery is anchored.
+- **A3-PR3** — sex/percentile generator (`CanonicalSource`→dial-able `AnthroSource`): published table
+  → lengths+girths+joint default poses → `BodyParams`. Validated by Tier 3.
+- **A3-PR4** — three-tier scorecard harness (extends the g1 scorecard) + A4 randomizer prep.
 
 ## Risks
 
@@ -98,8 +147,10 @@ The hardest part (the FK convention on a tree) is retired before any clean build
 - **R-emit — general emitter fidelity.** The general `cf-mjcf-emit` must round-trip an arbitrary
   chain through the import-only engine. De-risk = the A1 no-regression checkpoint (reproduce the knee
   bytes) before extending.
-- **R-val — no oracle for dialed bodies (A3).** A custom-proportion body has no real subject. Fall
-  back to internal-consistency (uniform scale = exact dilation, already proven) + shape-correlation.
+- **R-val — no oracle for dialed bodies (A3).** *Reframed (see A3 plan):* the oracle **relocates**,
+  it isn't lost — the per-axis morph *is* OpenSim's ScaleTool, so real OpenSim 4.6 grades the morph
+  machinery (Tier 1, spike-gated). Only the *parameter-choice* layer (which factors a percentile body
+  "should" have) has no moment-arm oracle → internal-consistency + shape-correlation + anthro-table.
 
 ## First concrete action
 

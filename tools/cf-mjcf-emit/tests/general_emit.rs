@@ -24,6 +24,9 @@
 //!   by exactly `s`, shape preserved (ported from the validated morph spike).
 //! * `anisotropic_morph_emits_loadable_model` — a per-segment morph still emits a
 //!   model the importer accepts.
+//! * `length_round_trip_on_real_template` — Tier-2 internal consistency on the real
+//!   gait2392 proportions: dialing real femur/tibia axial lengths and re-measuring
+//!   reproduces the targets exactly (the convention pin, anchored on real geometry).
 
 use cf_mjcf_emit::{build, build_canonical, emit};
 use cf_msk_lib::{BodyParams, CanonicalSource, Model, realize};
@@ -241,13 +244,41 @@ fn canonical_reproduces_oracle_at_multidof_base_pose() {
 
 #[test]
 fn anisotropic_morph_emits_loadable_model() {
+    use cf_msk_lib::SegmentScale;
     let t = template();
+    // Per-axis anisotropy: distinct axial (length) and transverse (girth) factors
+    // per segment — the A3 full-girth morph.
     let p = BodyParams {
-        pelvis_scale: 1.0,
-        femur_scale: 2.0,
-        tibia_scale: 0.5,
+        pelvis: SegmentScale::IDENTITY,
+        femur: SegmentScale {
+            axial: 2.0,
+            transverse: 1.4,
+        },
+        tibia: SegmentScale {
+            axial: 0.5,
+            transverse: 0.8,
+        },
     };
     let model = load_model(&emit(&realize(&t, &p)).mjcf)
         .expect("anisotropic morph must emit a loadable model");
     assert!(model.ntendon >= 4);
+}
+
+#[test]
+fn length_round_trip_on_real_template() {
+    let t = template();
+    // Real gait2392 axial lengths (sanity: physiological femur/tibia).
+    let f0 = t.segment_axial_length("femur_r", "tibia_r");
+    let t0 = t.segment_axial_length("tibia_r", "talus_r");
+    assert!((0.40..0.50).contains(&f0), "template femur axial {f0}");
+    assert!((0.40..0.45).contains(&t0), "template tibia axial {t0}");
+
+    // Dial a taller subject: realize → re-measure reproduces the targets exactly,
+    // and the morphed model still emits something the importer accepts.
+    for &(fl, tl) in &[(0.50, 0.46), (0.38, 0.40)] {
+        let r = realize(&t, &BodyParams::from_lengths(&t, fl, tl));
+        assert!((r.segment_axial_length("femur_r", "tibia_r") - fl).abs() < 1e-12);
+        assert!((r.segment_axial_length("tibia_r", "talus_r") - tl).abs() < 1e-12);
+        load_model(&emit(&r).mjcf).expect("length-dialed model must load");
+    }
 }

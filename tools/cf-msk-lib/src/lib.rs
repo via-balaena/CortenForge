@@ -18,9 +18,10 @@
 //!
 //! * [`Model`] (in [`ir`]) — the template: a `Body` tree of `CustomJoint` transform
 //!   axes plus straight-segment muscle paths. Produced by `cf_osim::parse_leg_chain`.
-//! * [`BodyParams`] — the parameters that morph a template into a body. v1 carries
-//!   per-segment **scale** factors (the canonical/uniform slice the morph spike
-//!   validated); scan-facing length/girth/center params arrive with `ScanSource`.
+//! * [`BodyParams`] — the parameters that morph a template into a body: a per-axis
+//!   [`SegmentScale`] per segment (length → axial, girth → transverse). The
+//!   user-facing dial is real lengths/girths ([`BodyParams::from_lengths`]); the
+//!   scale is the internal morph currency, matching OpenSim's ScaleTool per-axis.
 //! * [`realize`] — a pure function that applies the morph to a [`Model`], returning a
 //!   new `Model`. It scales geometry only and leaves the joint-coupling spline
 //!   *relationships* intact ("coupling stays symbolic", recon D11).
@@ -32,6 +33,8 @@ pub mod ir;
 pub mod muscle;
 pub mod spline;
 
+use nalgebra::Vector3;
+
 pub use ir::{Body, Coordinate, Joint, Model, TransformAxis, TransformFn};
 pub use muscle::{Kind, MovingSplines, Muscle, PathPoint};
 pub use spline::Spline;
@@ -40,47 +43,123 @@ pub use spline::Spline;
 /// [`Model`] produced by the `.osim` reader (`cf_osim::parse_leg_chain`).
 pub type Template = Model;
 
+/// Per-axis scale of one segment, in its body frame. For the gait2392 limb the
+/// long axis is body-frame **y**, so [`axial`](Self::axial) (segment *length*)
+/// drives *y* and [`transverse`](Self::transverse) (segment *girth*) drives *x*
+/// and *z* together (a limb girth is one axisymmetric circumference, so *x* = *z*).
+/// A uniform value (`axial == transverse`) is an isotropic scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SegmentScale {
+    /// Scale along the long (axial, *y*) axis — driven by segment **length**.
+    pub axial: f64,
+    /// Scale across the transverse (*x*, *z*) axes — driven by segment **girth**.
+    pub transverse: f64,
+}
+
+impl SegmentScale {
+    /// No scaling.
+    pub const IDENTITY: SegmentScale = SegmentScale {
+        axial: 1.0,
+        transverse: 1.0,
+    };
+
+    /// An isotropic scale (axial == transverse).
+    pub fn uniform(s: f64) -> Self {
+        SegmentScale {
+            axial: s,
+            transverse: s,
+        }
+    }
+
+    /// The per-axis scale vector in the body frame: `(transverse, axial, transverse)`
+    /// — *x* and *z* transverse, *y* axial. This is what [`realize`] multiplies
+    /// component-wise into frame-resident geometry.
+    pub fn vector(self) -> Vector3<f64> {
+        Vector3::new(self.transverse, self.axial, self.transverse)
+    }
+}
+
 /// Parameters that morph a [`Template`] into a specific body.
 ///
-/// v1 carries per-segment uniform **scale** factors — the slice the builder-first
-/// (canonical / uniform) and anisotropic paths need, validated by the morph spike.
-/// Scan-facing parameters (segment **lengths**, girths, joint **centers** — the
-/// scanner-`Measurable` quantities a `ScanSource` derives) and the length→scale
-/// derivation live with `ScanSource` (cf-msk-fit). Kept a plain, extensible struct
-/// on purpose.
+/// A3 generalizes the morph from a scalar per-segment scale to a **per-axis**
+/// [`SegmentScale`] (length → axial, girth → transverse) — a one-to-one match for
+/// OpenSim's ScaleTool, which is what lets real OpenSim grade the morph (the
+/// differential oracle). The user-facing dial is real **lengths/girths**;
+/// [`BodyParams::from_lengths`] derives the scale currency from them against a
+/// template. Scan-facing parameters (joint **centers**, the `Measurable`
+/// quantities a `ScanSource` derives) live with `ScanSource` (cf-msk-fit).
 ///
-/// Scale convention matches the morph rule in [`realize`]: a point on a body is
-/// scaled about that body's proximal-joint frame origin (the OpenSim Scale-tool
-/// convention). A joint's coupled translation splines scale with the parent
-/// segment (they are expressed in the parent frame); the patella moving point
-/// scales with the tibia.
+/// Scale convention (pinned by the length round-trip + the differential oracle):
+/// geometry scales with the segment whose **body frame expresses it** —
+/// `location_in_parent` and a joint's translation axes live in the **parent**
+/// frame (so they scale with the parent segment: the knee coupling and the femur
+/// length scale with the femur; the ankle offset / tibia length scales with the
+/// tibia), while a muscle path point and the patella moving point live in their
+/// **own** body frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BodyParams {
     /// Scale for points anchored to the pelvis / ground (proximal anchors).
-    pub pelvis_scale: f64,
+    pub pelvis: SegmentScale,
     /// Scale for the femur segment and the knee coupling (condyle) geometry.
-    pub femur_scale: f64,
+    pub femur: SegmentScale,
     /// Scale for the tibia segment and the patella moving point.
-    pub tibia_scale: f64,
+    pub tibia: SegmentScale,
 }
 
 impl BodyParams {
     /// The identity morph — `realize` with these reproduces the template exactly.
     /// This is what [`CanonicalSource`] returns (builder-first defaults).
     pub const IDENTITY: BodyParams = BodyParams {
-        pelvis_scale: 1.0,
-        femur_scale: 1.0,
-        tibia_scale: 1.0,
+        pelvis: SegmentScale::IDENTITY,
+        femur: SegmentScale::IDENTITY,
+        tibia: SegmentScale::IDENTITY,
     };
 
-    /// A single scale applied to every segment — an exact uniform dilation of the
-    /// whole body (all moment arms scale by `s`, shape unchanged).
+    /// A single isotropic scale applied to every segment — an exact uniform
+    /// dilation of the whole body (all moment arms scale by `s`, shape unchanged).
     pub fn uniform(s: f64) -> Self {
         BodyParams {
-            pelvis_scale: s,
-            femur_scale: s,
-            tibia_scale: s,
+            pelvis: SegmentScale::uniform(s),
+            femur: SegmentScale::uniform(s),
+            tibia: SegmentScale::uniform(s),
         }
+    }
+
+    /// Derive the morph that gives the femur and tibia these **axial lengths**
+    /// (meters), leaving girth (transverse) at the template default. The reference
+    /// lengths are measured from `template` ([`Model::segment_axial_length`]), so
+    /// realizing the result and re-measuring reproduces the targets exactly — the
+    /// length round-trip (see the crate tests). Needs the ankle (`talus_r`) for the
+    /// tibia length; on a knee-only template the tibia length is undefined.
+    pub fn from_lengths(template: &Template, femur_len_m: f64, tibia_len_m: f64) -> Self {
+        let f = template.segment_axial_length("femur_r", "tibia_r");
+        let t = template.segment_axial_length("tibia_r", "talus_r");
+        debug_assert!(
+            f > 1e-6 && t > 1e-6,
+            "degenerate template axial lengths (femur {f}, tibia {t}) — \
+             is the ankle (talus_r) present?"
+        );
+        BodyParams {
+            pelvis: SegmentScale::IDENTITY,
+            femur: SegmentScale {
+                axial: femur_len_m / f,
+                transverse: 1.0,
+            },
+            tibia: SegmentScale {
+                axial: tibia_len_m / t,
+                transverse: 1.0,
+            },
+        }
+    }
+
+    /// Set the femur/tibia **transverse (girth)** scale factors, leaving axial
+    /// (length) untouched. The factors are scales relative to the template; the
+    /// real girth→scale derivation (a measured circumference / an anthropometric
+    /// reference) lands with the generator/scan that owns the reference.
+    pub fn with_girth_scales(mut self, femur_transverse: f64, tibia_transverse: f64) -> Self {
+        self.femur.transverse = femur_transverse;
+        self.tibia.transverse = tibia_transverse;
+        self
     }
 }
 
@@ -92,37 +171,48 @@ impl Default for BodyParams {
 
 /// Apply `params` to `template`, returning a new morphed [`Model`].
 ///
-/// A pure function. Each body's placement (`location_in_parent`) scales with that
-/// body's segment, its joint's coupled translation outputs scale with the **parent**
-/// segment (they live in the parent frame — e.g. the knee coupling scales with the
-/// femur), and each muscle path point / patella spline scales with its owning body.
+/// A pure function implementing OpenSim's ScaleTool convention per-axis: geometry
+/// scales **component-wise in the frame that expresses it**.
+/// - `location_in_parent` and a joint's translation axes live in the **parent**
+///   frame, so they scale with the parent segment's [`SegmentScale`] (the knee
+///   coupling — which carries the femur length — scales with the femur; the ankle
+///   offset — the tibia length — scales with the tibia).
+/// - A muscle path point and the patella moving point live in their **own** body
+///   frame, so they scale with that body.
+///
 /// Rotation axes and the spline *knots* (the θ-dependence) are untouched — scaling
-/// changes geometry, not the rolling-glide *relationship* (D11). Body-frame origins
-/// sit at the proximal joint, so scaling a location is "scale the segment about its
-/// proximal joint" — the OpenSim Scale-tool convention. Moment arms are
-/// translation-invariant, so a body's `location_in_parent` (pure placement) scales
-/// for internal consistency only; it does not affect moment arms.
+/// changes geometry, not the rolling-glide *relationship* (D11). A uniform
+/// [`BodyParams::uniform`] therefore reproduces an exact dilation (every moment arm
+/// ×s); an anisotropic morph changes proportions while keeping the coupling.
 pub fn realize(template: &Template, params: &BodyParams) -> Model {
-    let scale_for = |body: &str| match body {
-        "femur_r" => params.femur_scale,
-        "tibia_r" => params.tibia_scale,
-        _ => params.pelvis_scale, // pelvis / ground (proximal anchors)
+    let scale_for = |body: &str| -> Vector3<f64> {
+        match body {
+            "femur_r" => params.femur,
+            "tibia_r" => params.tibia,
+            _ => params.pelvis, // pelvis / ground / talus (proximal anchors)
+        }
+        .vector()
     };
 
     let mut out = template.clone();
     let names: Vec<String> = out.bodies.iter().map(|b| b.name.clone()).collect();
 
     for b in &mut out.bodies {
-        b.location_in_parent *= scale_for(&b.name);
-        // Coupled translations are expressed in the parent frame, so they scale
-        // with the parent segment (the knee coupling scales with the femur).
-        let parent_scale = b.parent.map_or(1.0, |p| scale_for(&names[p]));
+        // `location_in_parent` and the translation axes live in the PARENT frame.
+        let parent_scale = b
+            .parent
+            .map_or_else(|| Vector3::repeat(1.0), |p| scale_for(&names[p]));
+        b.location_in_parent = b.location_in_parent.component_mul(&parent_scale);
         for ax in &mut b.joint {
             if !ax.rotation {
+                // The scale of this axis's (canonical) direction: project the
+                // per-axis scale onto the unit axis. For e_i this picks
+                // `parent_scale[i]`; gait2392's translation axes are canonical.
+                let f = ax.axis.component_mul(&parent_scale).dot(&ax.axis);
                 match &mut ax.function {
-                    TransformFn::Spline(s) => s.scale *= parent_scale,
-                    TransformFn::Constant(v) => *v *= parent_scale,
-                    TransformFn::Linear { coeff } => *coeff *= parent_scale,
+                    TransformFn::Spline(s) => s.scale *= f,
+                    TransformFn::Constant(v) => *v *= f,
+                    TransformFn::Linear { coeff } => *coeff *= f,
                 }
             }
         }
@@ -131,12 +221,12 @@ pub fn realize(template: &Template, params: &BodyParams) -> Model {
     for muscle in &mut out.muscles {
         for point in &mut muscle.path {
             let k = scale_for(&point.body);
-            point.location *= k;
+            point.location = point.location.component_mul(&k);
             if let Kind::Moving(splines) = &mut point.kind {
-                // Patella moving point: its location splines ride the tibia frame.
-                splines.x.scale *= k;
-                splines.y.scale *= k;
-                splines.z.scale *= k;
+                // Patella moving point: its location splines ride its body frame.
+                splines.x.scale *= k.x;
+                splines.y.scale *= k.y;
+                splines.z.scale *= k.z;
             }
         }
     }
@@ -193,34 +283,45 @@ mod tests {
     fn realize_scales_placement_and_muscle_points() {
         let t = minimal_template();
         let p = BodyParams {
-            pelvis_scale: 1.0,
-            femur_scale: 2.0,
-            tibia_scale: 0.5,
+            pelvis: SegmentScale::IDENTITY,
+            femur: SegmentScale {
+                axial: 2.0,
+                transverse: 3.0,
+            },
+            tibia: SegmentScale {
+                axial: 0.5,
+                transverse: 0.7,
+            },
         };
         let r = realize(&t, &p);
-        // femur placement scales with the femur.
+        // The femur's `location_in_parent` lives in the PELVIS frame, so it scales
+        // with the pelvis (identity here) — NOT the femur. The femur *length* lives
+        // in the child joint's translation and scales with the femur (see the
+        // coupled-translation test below).
         assert_eq!(
             r.bodies[1].location_in_parent,
-            t.bodies[1].location_in_parent * 2.0
+            t.bodies[1].location_in_parent
         );
-        // muscle points scale with their owning body.
+        // muscle points scale component-wise (x,z transverse; y axial) with body.
         for (mo, mr) in t.muscles.iter().zip(&r.muscles) {
             for (po, pr) in mo.path.iter().zip(&mr.path) {
-                let k = match po.body.as_str() {
-                    "femur_r" => 2.0,
-                    "tibia_r" => 0.5,
-                    _ => 1.0,
+                let s = match po.body.as_str() {
+                    "femur_r" => p.femur,
+                    "tibia_r" => p.tibia,
+                    _ => SegmentScale::IDENTITY,
                 };
-                assert!((pr.location - po.location * k).norm() < 1e-12);
+                let expected = po.location.component_mul(&s.vector());
+                assert!((pr.location - expected).norm() < 1e-12);
             }
         }
     }
 
-    /// The morph's per-frame scaling rule: a joint's coupled translation outputs
-    /// scale with the **parent** segment (they live in the parent frame — the knee
-    /// coupling scales with the femur), a body's placement scales with itself, and
-    /// rotation axes are untouched. This pins the rule numerically (the emitted-MJCF
-    /// path only asserts loadability).
+    /// The morph's per-frame scaling rule, **per axis**: a joint's translation
+    /// outputs live in the parent frame and scale with the parent segment along the
+    /// axis's direction (the knee `tx` with the femur's transverse, `ty` with the
+    /// femur's axial); a body's `location_in_parent` also lives in the parent frame
+    /// (so it scales with the parent); rotation axes are untouched. Pins the rule
+    /// numerically (the emitted-MJCF path only asserts loadability).
     #[test]
     fn realize_scales_coupled_translation_with_parent_segment() {
         use crate::ir::{TransformAxis, TransformFn};
@@ -275,17 +376,25 @@ mod tests {
         let r = realize(
             &model,
             &BodyParams {
-                pelvis_scale: 1.0,
-                femur_scale: 2.0,
-                tibia_scale: 0.5,
+                pelvis: SegmentScale::IDENTITY,
+                femur: SegmentScale {
+                    axial: 2.0,
+                    transverse: 3.0,
+                },
+                tibia: SegmentScale {
+                    axial: 0.5,
+                    transverse: 0.7,
+                },
             },
         );
         let tibia = &r.bodies[2].joint;
-        // Coupled translations scale with the PARENT (femur = 2.0), NOT tibia (0.5).
+        // Translations scale with the PARENT (femur) along the axis's direction:
+        // `tx` (x-axis) with femur transverse (3.0) → 0.1·3 = 0.3.
         match &tibia[0].function {
-            TransformFn::Constant(v) => assert!((*v - 0.2).abs() < 1e-12, "constant tx {v} != 0.2"),
+            TransformFn::Constant(v) => assert!((*v - 0.3).abs() < 1e-12, "constant tx {v} != 0.3"),
             other => panic!("expected Constant, got {other:?}"),
         }
+        // `ty` (y-axis) with femur axial (2.0) → spline scale 1·2 = 2.0.
         match &tibia[1].function {
             TransformFn::Spline(s) => {
                 assert!(
@@ -301,9 +410,133 @@ mod tests {
             TransformFn::Linear { coeff } => assert!((*coeff - 1.0).abs() < 1e-12),
             other => panic!("expected Linear, got {other:?}"),
         }
-        // A body's placement scales with itself: tibia × tibia_scale, femur × femur_scale.
-        assert!((r.bodies[2].location_in_parent - Vector3::new(0.0, -0.05, 0.0)).norm() < 1e-12);
-        assert!((r.bodies[1].location_in_parent - Vector3::new(0.0, -0.8, 0.0)).norm() < 1e-12);
+        // `location_in_parent` lives in the parent frame: the tibia's (femur frame)
+        // scales with the femur component-wise → (0,−0.1,0)·(3,2,3) = (0,−0.2,0);
+        // the femur's (pelvis frame) scales with the pelvis (identity) → unchanged.
+        assert!((r.bodies[2].location_in_parent - Vector3::new(0.0, -0.2, 0.0)).norm() < 1e-12);
+        assert!((r.bodies[1].location_in_parent - Vector3::new(0.0, -0.4, 0.0)).norm() < 1e-12);
+    }
+
+    /// **The length round-trip — Tier-2 internal consistency, the convention pin.**
+    /// Dial real axial lengths, realize, re-measure: the morph reproduces the
+    /// targets *exactly*. This is what would FAIL under the pre-A3 convention
+    /// (`location_in_parent` scaling with the own body), so it pins the corrected
+    /// "offset scales with the frame that expresses it" rule. It deliberately
+    /// exercises BOTH length encodings present in gait2392: the femur length lives
+    /// in the knee *joint translation* (scales with the parent femur); the tibia
+    /// length lives in the talus `location_in_parent` (scales with the parent tibia).
+    #[test]
+    fn length_round_trip_reproduces_dialed_axial_lengths() {
+        let t = chain_template();
+        // template axial lengths: femur 0.45 (knee joint ty), tibia 0.40 (talus offset).
+        assert!((t.segment_axial_length("femur_r", "tibia_r") - 0.45).abs() < 1e-12);
+        assert!((t.segment_axial_length("tibia_r", "talus_r") - 0.40).abs() < 1e-12);
+
+        for &(fl, tl) in &[(0.6, 0.5), (0.30, 0.55), (0.45, 0.40)] {
+            let r = realize(&t, &BodyParams::from_lengths(&t, fl, tl));
+            assert!(
+                (r.segment_axial_length("femur_r", "tibia_r") - fl).abs() < 1e-12,
+                "femur length round-trip: dialed {fl}, got {}",
+                r.segment_axial_length("femur_r", "tibia_r")
+            );
+            assert!(
+                (r.segment_axial_length("tibia_r", "talus_r") - tl).abs() < 1e-12,
+                "tibia length round-trip: dialed {tl}, got {}",
+                r.segment_axial_length("tibia_r", "talus_r")
+            );
+        }
+    }
+
+    /// The girth (transverse) round-trip: dialing a segment's transverse scale
+    /// scales that segment's muscle-point *x,z* components exactly while leaving the
+    /// axial (*y*) component — and the other segment — untouched. The full-girth
+    /// morph machinery (length and girth are independent per-axis dials).
+    #[test]
+    fn girth_round_trip_scales_transverse_only() {
+        let t = chain_template();
+        let p = BodyParams::from_lengths(&t, 0.45, 0.40).with_girth_scales(1.5, 0.8);
+        let r = realize(&t, &p);
+        // femur point (0.10, 0.20, 0.05): x,z ×1.5, y unchanged (axial dialed to 1).
+        let fp = r.muscles[0].path[0].location;
+        assert!(
+            (fp - Vector3::new(0.15, 0.20, 0.075)).norm() < 1e-12,
+            "femur pt {fp:?}"
+        );
+        // tibia point (0.02, -0.10, -0.03): x,z ×0.8, y unchanged.
+        let tp = r.muscles[0].path[1].location;
+        assert!(
+            (tp - Vector3::new(0.016, -0.10, -0.024)).norm() < 1e-12,
+            "tibia pt {tp:?}"
+        );
+    }
+
+    /// A four-body chain (pelvis → femur → tibia → talus) with known axial lengths,
+    /// mirroring gait2392's two length encodings (knee joint translation for the
+    /// femur, talus offset for the tibia). Pure — no vendored `.osim`.
+    fn chain_template() -> Template {
+        use crate::ir::{TransformAxis, TransformFn};
+        use crate::muscle::{Kind, Muscle, PathPoint};
+        Model {
+            bodies: vec![
+                Body {
+                    name: "pelvis".into(),
+                    parent: None,
+                    location_in_parent: Vector3::zeros(),
+                    joint: vec![],
+                },
+                Body {
+                    name: "femur_r".into(),
+                    parent: Some(0),
+                    location_in_parent: Vector3::new(0.0, -0.05, 0.0), // hip in pelvis
+                    joint: vec![],
+                },
+                Body {
+                    name: "tibia_r".into(),
+                    parent: Some(1),
+                    location_in_parent: Vector3::zeros(), // knee at femur origin (gait2392)
+                    joint: vec![
+                        // femur length: a constant -0.45 translation along y (femur frame).
+                        TransformAxis {
+                            rotation: false,
+                            axis: Vector3::y(),
+                            coordinate: String::new(),
+                            function: TransformFn::Constant(-0.45),
+                        },
+                        // knee flexion hinge about z (identity at default q=0).
+                        TransformAxis {
+                            rotation: true,
+                            axis: Vector3::z(),
+                            coordinate: "knee".into(),
+                            function: TransformFn::Linear { coeff: 1.0 },
+                        },
+                    ],
+                },
+                Body {
+                    name: "talus_r".into(),
+                    parent: Some(2),
+                    location_in_parent: Vector3::new(0.0, -0.40, 0.0), // tibia length
+                    joint: vec![],
+                },
+            ],
+            coordinates: vec![],
+            muscles: vec![Muscle {
+                name: "m".to_string(),
+                path: vec![
+                    PathPoint {
+                        name: "o".to_string(),
+                        body: "femur_r".to_string(),
+                        location: Vector3::new(0.10, 0.20, 0.05),
+                        kind: Kind::Fixed,
+                    },
+                    PathPoint {
+                        name: "i".to_string(),
+                        body: "tibia_r".to_string(),
+                        location: Vector3::new(0.02, -0.10, -0.03),
+                        kind: Kind::Fixed,
+                    },
+                ],
+            }],
+        }
     }
 
     /// A degenerate one-muscle template — exercises the morph plumbing without the

@@ -27,11 +27,20 @@ fn parse_leg_chain_builds_the_thigh_knee_shank_chain() {
             .iter()
             .map(|b| b.name.as_str())
             .collect::<Vec<_>>(),
-        ["pelvis", "femur_r", "tibia_r"]
+        ["pelvis", "femur_r", "tibia_r", "talus_r"]
     );
     assert_eq!(model.bodies[0].parent, None);
     assert_eq!(model.bodies[1].parent, Some(0));
     assert_eq!(model.bodies[2].parent, Some(1));
+    assert_eq!(model.bodies[3].parent, Some(2));
+
+    // A3: the ankle is added so the tibia has a distal endpoint — the talus
+    // `location_in_parent` (in the tibia frame) is the dialable tibia length.
+    assert!(
+        (model.bodies[3].location_in_parent - nalgebra::Vector3::new(0.0, -0.42506489, 0.0)).norm()
+            < 1e-9,
+        "talus offset = tibia length"
+    );
 
     // A2: the hip is UNWELDED — the femur carries the hip CustomJoint: three
     // rotation DOFs (flexion/adduction/rotation) + three (zero) translation axes.
@@ -53,7 +62,13 @@ fn parse_leg_chain_builds_the_thigh_knee_shank_chain() {
     assert_eq!(tibia.iter().filter(|a| a.rotation).count(), 3);
     assert_eq!(tibia.iter().filter(|a| !a.rotation).count(), 3);
 
-    // Coordinates: the three hip DOFs (proximal) then the knee.
+    // talus: the ankle hinge (one driven rotation about the oblique talocrural
+    // axis + two zero constant rotations) + three (zero) constant translations.
+    let talus = &model.bodies[3].joint;
+    assert_eq!(talus.iter().filter(|a| a.rotation).count(), 3);
+    assert_eq!(talus.iter().filter(|a| !a.rotation).count(), 3);
+
+    // Coordinates: the three hip DOFs (proximal), then the knee, then the ankle.
     let coords: Vec<&str> = model.coordinates.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
         coords,
@@ -61,7 +76,8 @@ fn parse_leg_chain_builds_the_thigh_knee_shank_chain() {
             "hip_flexion_r",
             "hip_adduction_r",
             "hip_rotation_r",
-            "knee_angle_r"
+            "knee_angle_r",
+            "ankle_angle_r"
         ]
     );
 }

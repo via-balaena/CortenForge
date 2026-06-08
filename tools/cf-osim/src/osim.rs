@@ -1,4 +1,4 @@
-//! Reader for the gait2392 **leg chain** (pelvis → femur → tibia) into the
+//! Reader for the gait2392 **leg chain** (pelvis → femur → tibia → talus) into the
 //! source-agnostic [`Model`] IR (`cf_msk_lib`).
 //!
 //! `.osim` version: OpenSim 3.x (`Version="30000"`), where each `Body` owns the
@@ -8,10 +8,11 @@
 //! coupled DOF) of a named coordinate. gait2392 is wrap-free, so muscle paths are
 //! straight-segment polylines between active path points.
 //!
-//! A1 reads the chain with the **hip welded at neutral**: the femur is placed by
-//! the hip joint's `location_in_parent` with no DOFs, and only the knee's
-//! coordinate is a free DOF. Unwelding the hip (parsing its `SpatialTransform`
-//! into the femur joint + adding its coordinates) is the A2 step.
+//! The whole chain is read generically: **A2** unwelds the hip (the femur is
+//! placed by the hip `CustomJoint` — 3 rotation DOFs — not a static offset), and
+//! **A3** adds the ankle so the tibia has a distal endpoint (`talus_r`) and thus a
+//! real, dialable length. The coordinates' OpenSim defaults are all 0, so the
+//! canonical (default-pose) body is the neutral standing leg.
 
 use crate::xml::{self, Node};
 use cf_msk_lib::ir::{Body, Coordinate, Model, TransformAxis, TransformFn};
@@ -36,6 +37,7 @@ pub fn parse_leg_chain(osim_xml: &str) -> Model {
     let root = xml::parse(osim_xml);
     let hip = find_custom_joint(&root, "hip_r");
     let knee = find_custom_joint(&root, "knee_r");
+    let ankle = find_custom_joint(&root, "ankle_r");
 
     let pelvis = Body {
         name: "pelvis".into(),
@@ -58,13 +60,28 @@ pub fn parse_leg_chain(osim_xml: &str) -> Model {
         location_in_parent: joint_location(knee),
         joint: parse_spatial_transform(knee),
     };
+    // Talus: the ankle CustomJoint, read generically. A3 adds it as the **length-
+    // grounding distal endpoint of the tibia**: `ankle_r.location_in_parent =
+    // (0,−0.425,0)` (in the tibia frame) *is* the tibia length, which is otherwise
+    // unrepresentable while the tibia is a leaf — so dialing a real shank length
+    // (A3) needs it. The four target muscles do not cross the ankle, so the talus
+    // is inert for the moment-arm oracle (a no-regression checkpoint). Its ankle
+    // hinge is about gait2392's oblique talocrural axis with zero constant
+    // rotations/translations, which the general emitter handles as a plain hinge.
+    let talus = Body {
+        name: "talus_r".into(),
+        parent: Some(2),
+        location_in_parent: joint_location(ankle),
+        joint: parse_spatial_transform(ankle),
+    };
 
-    // Hip coordinates (proximal) then the knee coordinate.
+    // Hip coordinates (proximal), then the knee coordinate, then the ankle.
     let mut coordinates = parse_coordinates(hip);
     coordinates.extend(parse_coordinates(knee));
+    coordinates.extend(parse_coordinates(ankle));
 
     Model {
-        bodies: vec![pelvis, femur, tibia],
+        bodies: vec![pelvis, femur, tibia, talus],
         coordinates,
         muscles: TARGET_MUSCLES
             .iter()

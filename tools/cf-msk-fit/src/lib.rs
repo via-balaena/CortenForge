@@ -28,14 +28,15 @@ pub mod scorecard;
 /// path demoted from "the pipeline" to one [`ParamSource`] alongside
 /// `cf_msk_lib::CanonicalSource`; the same `realize → emit` path consumes both.
 ///
-/// **v1 = a single uniform scale** `thigh_length / template_femur_length`, the
-/// exact quantity [`Fitter`] computes (see `scan_source_scale_matches_fitter`).
-/// The shank inherits the femur scale: the knee-only template has no defined
-/// tibia length (no ankle), so the scan's `shank_length_m` cannot yet drive a
-/// per-segment tibia scale — that waits for an ankle, *not* for `realize`, which
-/// already supports anisotropic scaling. v1 captures the scan's **size** (scale),
-/// not its pose/orientation (the rigid placement [`Fitter::pose`] does for the
-/// render overlay).
+/// As of A3 this is a **per-segment anisotropic** scale: the femur's axial scale
+/// is `thigh_length / template_femur_axial` and the tibia's is `shank_length /
+/// template_tibia_axial` — the scan's `shank_length_m` finally drives the tibia
+/// independently, now that the ankle (`talus_r`) gives the tibia a defined length
+/// (this was the documented v1 block). Girth (transverse) stays at the template
+/// default here: a girth→scale derivation needs an anthropometric *reference*
+/// girth, which arrives with the percentile generator (A3-PR3). v1 still captures
+/// only the scan's **size** (per-segment scale), not its pose/orientation (the
+/// rigid placement [`Fitter::pose`] does that for the render overlay).
 pub struct ScanSource {
     landmarks: Landmarks,
 }
@@ -44,28 +45,23 @@ impl ScanSource {
     pub fn new(landmarks: Landmarks) -> Self {
         Self { landmarks }
     }
-
-    /// Template femur length (hip→knee at extension) — the same quantity
-    /// [`Fitter::new`] measures to set its scale.
-    fn template_femur_len(template: &Model) -> f64 {
-        let kin = Kinematics::new(template);
-        let neutral = Pose::new();
-        let at0 = |body: &str| kin.body_pose(body, &neutral) * Point3::origin();
-        (at0("femur_r") - at0("tibia_r")).norm()
-    }
 }
 
 impl ParamSource for ScanSource {
     fn params(&self, template: &Model) -> BodyParams {
-        let femur_len = Self::template_femur_len(template);
-        // Precondition guard, mirroring `Fitter::new`: a degenerate template or a
-        // zero-length thigh would otherwise emit a NaN/inf scale silently.
+        // Precondition guard: a degenerate template or zero-length segment would
+        // otherwise emit a NaN/inf scale silently.
         debug_assert!(
-            femur_len > 1e-6 && self.landmarks.thigh_length_m > 1e-6,
-            "degenerate template femur ({femur_len}) or thigh length ({})",
-            self.landmarks.thigh_length_m
+            self.landmarks.thigh_length_m > 1e-6 && self.landmarks.shank_length_m > 1e-6,
+            "degenerate thigh ({}) or shank ({}) length",
+            self.landmarks.thigh_length_m,
+            self.landmarks.shank_length_m,
         );
-        BodyParams::uniform(self.landmarks.thigh_length_m / femur_len)
+        BodyParams::from_lengths(
+            template,
+            self.landmarks.thigh_length_m,
+            self.landmarks.shank_length_m,
+        )
     }
 }
 

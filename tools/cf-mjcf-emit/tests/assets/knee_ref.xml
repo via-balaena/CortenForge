@@ -37,6 +37,10 @@
                 <inertial pos="0 0 0" mass="0.01" diaginertia="0.001 0.001 0.001"/>
                 <site name="vas_int_r_2" pos="0 0 0"/>
               </body>
+              <body name="talus_r" pos="0 -0.42506489 0">
+                <joint name="ankle_angle_r" type="hinge" axis="-0.10501355 -0.17402245 0.97912632"/>
+                <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+              </body>
             </body>
           </body>
         </body>
