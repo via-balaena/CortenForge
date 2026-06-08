@@ -24,6 +24,9 @@
 //!   by exactly `s`, shape preserved (ported from the validated morph spike).
 //! * `anisotropic_morph_emits_loadable_model` — a per-segment morph still emits a
 //!   model the importer accepts.
+//! * `girth_morph_drives_moment_arms_end_to_end` — `with_girth_scales` exercised
+//!   through realize→emit→load: girth measurably moves the moment arms (~20–30%,
+//!   not second-order) and stays finite (the transverse path is live, not dead).
 //! * `length_round_trip_on_real_template` — Tier-2 internal consistency on the real
 //!   gait2392 proportions: dialing real femur/tibia axial lengths and re-measuring
 //!   reproduces the targets exactly (the convention pin, anchored on real geometry).
@@ -262,6 +265,42 @@ fn anisotropic_morph_emits_loadable_model() {
     let model = load_model(&emit(&realize(&t, &p)).mjcf)
         .expect("anisotropic morph must emit a loadable model");
     assert!(model.ntendon >= 4);
+}
+
+#[test]
+fn girth_morph_drives_moment_arms_end_to_end() {
+    // The full-girth machinery end-to-end on the real template: dialing girth
+    // (transverse only, lengths untouched) emits a loadable model whose moment
+    // arms are finite and MEASURABLY changed — proof the transverse path is live,
+    // not a no-op. (Girth is NOT second-order: moving attachment points off the
+    // bone axis shifts moment arms ~20–30%.) Note `with_girth_scales` is exercised
+    // through `realize → emit → load → moment arms`, not just unit-tested.
+    // The MAGNITUDE oracle (vs real OpenSim ScaleTool) and the §7 shape-correlation
+    // bounds are A3-PR2/PR4; here we only assert the path is real and finite.
+    let t = template();
+    let base = moment_arm_curves(&build_canonical(&t));
+    let girthed = moment_arm_curves(&emit(&realize(
+        &t,
+        &BodyParams::IDENTITY.with_girth_scales(1.4, 0.8),
+    )));
+
+    let mut any_changed = false;
+    for ((name, b), (_, g)) in base.iter().zip(&girthed) {
+        assert!(
+            g.iter().all(|v| v.is_finite()),
+            "{name}: non-finite moment arm under girth morph"
+        );
+        if b.iter()
+            .zip(g)
+            .any(|(x, y)| (x - y).abs() > 0.01 * x.abs().max(1e-6))
+        {
+            any_changed = true;
+        }
+    }
+    assert!(
+        any_changed,
+        "girth had no effect on any moment arm — the transverse path is dead"
+    );
 }
 
 #[test]

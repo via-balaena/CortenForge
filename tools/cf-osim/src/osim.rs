@@ -24,15 +24,16 @@ use nalgebra::Vector3;
 /// two flexors built from plain points.
 pub const TARGET_MUSCLES: [&str; 4] = ["rect_fem_r", "vas_int_r", "bifemlh_r", "semimem_r"];
 
-/// Parse the gait2392 leg chain (pelvis → femur → tibia) plus the target muscles
-/// into the [`Model`] IR.
+/// Parse the gait2392 leg chain (pelvis → femur → tibia → talus) plus the target
+/// muscles into the [`Model`] IR.
 ///
 /// A2 **unwelds the hip**: the femur is placed by the hip `CustomJoint` read
 /// generically — its 3 rotation DOFs (flexion/adduction/rotation) plus its
 /// (zero) translation axes — and the hip coordinates join the knee coordinate as
-/// model DOFs. The coordinates' OpenSim defaults are all 0, so the canonical
-/// (default-pose) body still places the femur at the hip offset with the knee
-/// coupled — i.e. A1's neutral pose — while the hip is now articulable.
+/// model DOFs. A3 adds the **ankle** (`talus_r`), the inert distal endpoint that
+/// gives the tibia a dialable length. The coordinates' OpenSim defaults are all 0,
+/// so the canonical (default-pose) body still places the femur at the hip offset
+/// with the knee coupled — i.e. A1's neutral pose — while the hip is articulable.
 pub fn parse_leg_chain(osim_xml: &str) -> Model {
     let root = xml::parse(osim_xml);
     let hip = find_custom_joint(&root, "hip_r");

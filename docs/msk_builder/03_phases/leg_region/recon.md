@@ -127,10 +127,11 @@ scaling; Tier 3 proves plausibility, not personhood.** A dialed body is "a clone
 proportions," never a validated individual.
 
 **Slicing (each its own PR; n+1 cold-read cleanup; pre-PR local ultra-review):**
-- **A3-PR1** — ankle (`talus`) + real lengths **and** girths in `BodyParams` + per-axis `realize`
-  + length→axial / girth→transverse derivations; pin the scale convention with the length/girth
-  round-trip; migrate `ScanSource` to the now-real per-segment tibia scale. No-regression: 4 muscles
-  unchanged by the ankle.
+- **A3-PR1** — ankle (`talus`) + real **lengths** (end-to-end: `from_lengths` + `ScanSource` drives
+  per-segment tibia scale) + per-axis **girth** *machinery* in `BodyParams`/`realize`
+  (`with_girth_scales`; the real girth→scale *derivation* needs an anthropometric reference → arrives
+  with the generator in PR3). Pin the scale convention with the length + girth round-trip.
+  No-regression: 4 muscles unchanged by the ankle.
 - **A3-PR2** — differential oracle (spike OpenSim ScaleTool first; then vendored ref + `cf-osim`
   cross-check over the anisotropic grid). Lands before the generator so the machinery is anchored.
 - **A3-PR3** — sex/percentile generator (`CanonicalSource`→dial-able `AnthroSource`): published table

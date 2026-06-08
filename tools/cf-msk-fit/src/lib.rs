@@ -1,18 +1,21 @@
-//! cf-msk-fit — place the validated OpenSim knee onto a scan's landmarks.
+//! cf-msk-fit — the scan as a parameter source, plus the render-overlay placement.
 //!
-//! S3 of the musculoskeletal-builder arc: the bridge where the model (cf-osim's
-//! gait2392 knee, validated against real OpenSim) meets the scan (cf-anthro's
-//! detected knee point, limb axis, and segment lengths). This v1 uses a single
-//! **similarity transform** (rotate OpenSim → scan frame, scale, translate) that
-//! pins the knee joint center to the detected knee and lines the femur up the
-//! thigh; it produces the femur/tibia bones and the muscle/tendon paths in the
-//! scan frame, ready to render inside the scan.
+//! Two consumers of the scan landmarks live here:
+//! - [`ScanSource`] — the scan as a [`cf_msk_lib::ParamSource`] for the
+//!   `realize → emit` builder path. As of A3 it derives a **per-segment
+//!   anisotropic** scale (femur from thigh length, tibia from shank length — see
+//!   its docs); the shank no longer inherits the femur scale.
+//! - [`Fitter`] / [`place_knee`] — the render overlay (cf-osim's gait2392 knee,
+//!   validated against real OpenSim, posed in the scan frame for visualization).
+//!   This path still uses a single **similarity transform** (rotate OpenSim → scan
+//!   frame, scale, translate) pinning the knee center to the detected knee.
 //!
-//! Approximations (v1, called out honestly):
-//! - A SINGLE scale (thigh / OpenSim-femur length) is applied to the whole
-//!   model, so the shank muscles inherit the femur scale. A proper per-segment
-//!   anisotropic scale (the recon's `ScaleSpec`) is the S3 follow-up.
-//! - The transform is built at full knee extension (θ=0).
+//! Approximations (called out honestly):
+//! - The [`Fitter`] overlay uses a single euclidean scale (thigh / OpenSim-femur
+//!   length); the per-segment anisotropic morph lives on the [`ScanSource`] →
+//!   `realize` path. Girth (transverse) on `ScanSource` stays at the template
+//!   default until the generator supplies an anthropometric reference (A3-PR3).
+//! - The [`Fitter`] transform is built at full knee extension (θ=0).
 //! - Medio-lateral / antero-posterior orientation follows gait2392's frame
 //!   convention; if a real scan's M-L axis differs, it gets re-pinned at v2.
 
@@ -49,9 +52,10 @@ impl ScanSource {
 
 impl ParamSource for ScanSource {
     fn params(&self, template: &Model) -> BodyParams {
-        // Precondition guard: a degenerate template or zero-length segment would
-        // otherwise emit a NaN/inf scale silently.
-        debug_assert!(
+        // Precondition guard, enforced in ALL builds (not debug-only): degenerate
+        // landmark lengths (a failed/empty scan) would otherwise produce a
+        // NaN/zero/negative scale that silently corrupts the emitted model.
+        assert!(
             self.landmarks.thigh_length_m > 1e-6 && self.landmarks.shank_length_m > 1e-6,
             "degenerate thigh ({}) or shank ({}) length",
             self.landmarks.thigh_length_m,

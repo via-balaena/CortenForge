@@ -19,9 +19,12 @@
 //! * [`Model`] (in [`ir`]) — the template: a `Body` tree of `CustomJoint` transform
 //!   axes plus straight-segment muscle paths. Produced by `cf_osim::parse_leg_chain`.
 //! * [`BodyParams`] — the parameters that morph a template into a body: a per-axis
-//!   [`SegmentScale`] per segment (length → axial, girth → transverse). The
-//!   user-facing dial is real lengths/girths ([`BodyParams::from_lengths`]); the
-//!   scale is the internal morph currency, matching OpenSim's ScaleTool per-axis.
+//!   [`SegmentScale`] per segment (length → axial, girth → transverse). Real
+//!   lengths are dialed via [`BodyParams::from_lengths`]; girth (transverse) is the
+//!   machinery [`BodyParams::with_girth_scales`] sets, with the real
+//!   girth→scale *derivation* (it needs an anthropometric reference) arriving with
+//!   the generator (A3-PR3). The scale is the internal morph currency, matching
+//!   OpenSim's ScaleTool per-axis.
 //! * [`realize`] — a pure function that applies the morph to a [`Model`], returning a
 //!   new `Model`. It scales geometry only and leaves the joint-coupling spline
 //!   *relationships* intact ("coupling stays symbolic", recon D11).
@@ -98,7 +101,9 @@ impl SegmentScale {
 /// **own** body frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BodyParams {
-    /// Scale for points anchored to the pelvis / ground (proximal anchors).
+    /// Scale for points anchored to the pelvis / ground (the root anchor). v1 has
+    /// no length/girth *dial* for the pelvis (it is the fixed root, and the leg
+    /// twin's measurable params are the femur/tibia); set it directly if needed.
     pub pelvis: SegmentScale,
     /// Scale for the femur segment and the knee coupling (condyle) geometry.
     pub femur: SegmentScale,
@@ -134,7 +139,11 @@ impl BodyParams {
     pub fn from_lengths(template: &Template, femur_len_m: f64, tibia_len_m: f64) -> Self {
         let f = template.segment_axial_length("femur_r", "tibia_r");
         let t = template.segment_axial_length("tibia_r", "talus_r");
-        debug_assert!(
+        // Structural precondition, enforced in ALL builds (not debug-only): a
+        // template missing the ankle (`talus_r`) has no tibia length, so the
+        // division below would silently produce an Inf/NaN scale. Fail loudly at
+        // the API boundary instead.
+        assert!(
             f > 1e-6 && t > 1e-6,
             "degenerate template axial lengths (femur {f}, tibia {t}) — \
              is the ankle (talus_r) present?"
@@ -185,11 +194,17 @@ impl Default for BodyParams {
 /// [`BodyParams::uniform`] therefore reproduces an exact dilation (every moment arm
 /// ×s); an anisotropic morph changes proportions while keeping the coupling.
 pub fn realize(template: &Template, params: &BodyParams) -> Model {
+    // Maps a body name to its segment scale. The pelvis (root anchor) is the
+    // fallback; the talus also falls here, which is moot in v1 — it is the inert
+    // length-grounding ankle endpoint with NO muscle points or dialable geometry
+    // of its own (its `location_in_parent`, the tibia length, scales with its
+    // PARENT tibia below, not via this map). Adding a distal segment with its own
+    // geometry (e.g. a real foot) would need its own `BodyParams` entry here.
     let scale_for = |body: &str| -> Vector3<f64> {
         match body {
             "femur_r" => params.femur,
             "tibia_r" => params.tibia,
-            _ => params.pelvis, // pelvis / ground / talus (proximal anchors)
+            _ => params.pelvis,
         }
         .vector()
     };
@@ -468,6 +483,105 @@ mod tests {
             (tp - Vector3::new(0.016, -0.10, -0.024)).norm() < 1e-12,
             "tibia pt {tp:?}"
         );
+        // Girth must NOT change the segment lengths — assert axial lengths directly
+        // (not just implicitly via the unchanged muscle-point y-components above).
+        assert!((r.segment_axial_length("femur_r", "tibia_r") - 0.45).abs() < 1e-12);
+        assert!((r.segment_axial_length("tibia_r", "talus_r") - 0.40).abs() < 1e-12);
+    }
+
+    /// `from_lengths` fails loudly (in release too) on a template with no ankle —
+    /// the tibia length is undefined, so a silent Inf/NaN scale must not slip out.
+    #[test]
+    #[should_panic(expected = "is the ankle (talus_r) present?")]
+    fn from_lengths_panics_without_ankle() {
+        // `minimal_template` is pelvis+femur only — no tibia, no talus.
+        let _ = BodyParams::from_lengths(&minimal_template(), 0.4, 0.4);
+    }
+
+    /// Pelvis anisotropy IS applied (the pelvis code path isn't dead): a muscle
+    /// point anchored to the pelvis scales component-wise with the pelvis scale.
+    #[test]
+    fn pelvis_anisotropy_scales_pelvis_points() {
+        use crate::muscle::{Kind, Muscle, PathPoint};
+        let mut t = chain_template();
+        t.muscles.push(Muscle {
+            name: "p".to_string(),
+            path: vec![PathPoint {
+                name: "o".to_string(),
+                body: "pelvis".to_string(),
+                location: Vector3::new(0.10, 0.20, 0.04),
+                kind: Kind::Fixed,
+            }],
+        });
+        let p = BodyParams {
+            pelvis: SegmentScale {
+                axial: 0.9,
+                transverse: 1.1,
+            },
+            femur: SegmentScale::IDENTITY,
+            tibia: SegmentScale::IDENTITY,
+        };
+        let r = realize(&t, &p);
+        let pt = r.muscles[1].path[0].location;
+        // x,z ×1.1 (transverse), y ×0.9 (axial).
+        assert!(
+            (pt - Vector3::new(0.11, 0.18, 0.044)).norm() < 1e-12,
+            "pelvis pt {pt:?}"
+        );
+    }
+
+    /// The per-axis projection factor is correct for an OBLIQUE translation axis
+    /// (gait2392 has none, but the formula must hold if a future model does): a
+    /// translation along a non-canonical direction scales by the anisotropic scale
+    /// projected onto that direction.
+    #[test]
+    fn oblique_translation_axis_scales_by_projection() {
+        use crate::ir::{TransformAxis, TransformFn};
+        let axis = Vector3::new(1.0, 1.0, 0.0).normalize(); // 45° in the x–y plane
+        let model = Model {
+            bodies: vec![
+                Body {
+                    name: "pelvis".into(),
+                    parent: None,
+                    location_in_parent: Vector3::zeros(),
+                    joint: vec![],
+                },
+                Body {
+                    name: "femur_r".into(),
+                    parent: Some(0),
+                    location_in_parent: Vector3::zeros(),
+                    joint: vec![],
+                },
+                Body {
+                    name: "tibia_r".into(),
+                    parent: Some(1), // parent = femur
+                    location_in_parent: Vector3::zeros(),
+                    joint: vec![TransformAxis {
+                        rotation: false,
+                        axis,
+                        coordinate: String::new(),
+                        function: TransformFn::Constant(1.0),
+                    }],
+                },
+            ],
+            coordinates: vec![],
+            muscles: vec![],
+        };
+        // femur transverse(x)=2, axial(y)=4 → vector (2,4,2); project onto the unit
+        // 45° axis: (2,4,0)·(1,1,0)/√2·… → f = (axis∘scale)·axis = 2·0.5 + 4·0.5 = 3.
+        let p = BodyParams {
+            pelvis: SegmentScale::IDENTITY,
+            femur: SegmentScale {
+                axial: 4.0,
+                transverse: 2.0,
+            },
+            tibia: SegmentScale::IDENTITY,
+        };
+        let r = realize(&model, &p);
+        match &r.bodies[2].joint[0].function {
+            TransformFn::Constant(v) => assert!((*v - 3.0).abs() < 1e-12, "got {v}, want 3.0"),
+            other => panic!("expected Constant, got {other:?}"),
+        }
     }
 
     /// A four-body chain (pelvis → femur → tibia → talus) with known axial lengths,

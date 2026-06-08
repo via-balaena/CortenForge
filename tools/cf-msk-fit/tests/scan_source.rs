@@ -79,6 +79,17 @@ fn scan_source_drives_per_segment_lengths() {
 }
 
 #[test]
+#[should_panic(expected = "degenerate thigh")]
+fn scan_source_panics_on_degenerate_length() {
+    // A failed scan (zero thigh length) must fail loudly in ALL builds, not
+    // silently emit a NaN/zero scale (the assert is runtime, not debug-only).
+    let t = template();
+    let (mut lm, _) = synthetic_landmarks();
+    lm.thigh_length_m = 0.0;
+    let _ = ScanSource::new(lm).params(&t);
+}
+
+#[test]
 fn scan_source_femur_close_to_fitter() {
     let t = template();
     let (lm, _) = synthetic_landmarks();
