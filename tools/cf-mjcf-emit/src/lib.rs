@@ -86,8 +86,6 @@ impl Emitted {
 
 /// Emit MJCF for `model`: walk the body tree and lower each joint + muscle path.
 pub fn emit(model: &Model) -> Emitted {
-    let primary = primary_coordinate(model);
-
     // Assign each active path point a site, grouped by the body it rides. A
     // `MovingPathPoint` becomes a patella sub-body; conditionals are dropped.
     let mut sites: HashMap<&str, Vec<SiteSpec>> = HashMap::new();
@@ -118,6 +116,7 @@ pub fn emit(model: &Model) -> Emitted {
                     .or_default()
                     .push(PatellaSpec {
                         site: site.clone(),
+                        coordinate: s.coordinate.clone(),
                         x: s.x.clone(),
                         y: s.y.clone(),
                         z: s.z.clone(),
@@ -144,7 +143,6 @@ pub fn emit(model: &Model) -> Emitted {
         model,
         sites,
         patellae,
-        primary,
     };
     emit_body(&ctx, root, 2, &mut body_xml, &mut driven);
 
@@ -188,42 +186,25 @@ struct SiteSpec {
 }
 
 /// A `MovingPathPoint`: a patella sub-body with three coupled slide DOFs tracing
-/// the per-axis location splines.
+/// the per-axis location splines, driven by `coordinate` (from the IR).
 struct PatellaSpec {
     site: String,
+    coordinate: String,
     x: Spline,
     y: Spline,
     z: Spline,
 }
 
-/// Read-only context threaded through the recursive body walk: the tree, the sites
-/// and patellae grouped by owning body, and the coordinate that drives moving
-/// points. The accumulators (`out`, `driven`) stay explicit `&mut` parameters.
+/// Read-only context threaded through the recursive body walk: the tree and the
+/// sites + patellae grouped by owning body. The accumulators (`out`, `driven`)
+/// stay explicit `&mut` parameters.
 struct EmitCtx<'a> {
     model: &'a Model,
     sites: HashMap<&'a str, Vec<SiteSpec>>,
     patellae: HashMap<&'a str, Vec<PatellaSpec>>,
-    primary: String,
 }
 
 /// The coordinate that drives moving path points (and any free DOF without its own
-/// coordinate). A1 chains have exactly one free coordinate (the knee angle); a
-/// `MovingPathPoint`'s driving coordinate is not retained in the IR, so it is
-/// assumed to be this one. (A2's multi-DOF hip makes this per-point — the parser
-/// must then retain each moving point's coordinate.)
-fn primary_coordinate(model: &Model) -> String {
-    // Prefer a coordinate that actually drives a free (Linear) DOF; fall back to
-    // the first declared coordinate.
-    model
-        .bodies
-        .iter()
-        .flat_map(|b| &b.joint)
-        .find(|a| matches!(a.function, TransformFn::Linear { .. }) && !a.coordinate.is_empty())
-        .map(|a| a.coordinate.clone())
-        .or_else(|| model.coordinates.first().map(|c| c.name.clone()))
-        .unwrap_or_default()
-}
-
 /// Classify a joint's axes into folded constants, coupled translations, and free
 /// DOFs (in declaration order). Panics on shapes A1 does not handle.
 fn classify(body: &Body) -> (Vector3<f64>, Vec<&TransformAxis>, Vec<&TransformAxis>) {
@@ -348,7 +329,7 @@ fn emit_body(
 
     if let Some(body_patellae) = ctx.patellae.get(b.name.as_str()) {
         for pat in body_patellae {
-            emit_patella(out, cd, pat, &ctx.primary, driven);
+            emit_patella(out, cd, pat, driven);
         }
     }
 
@@ -369,13 +350,7 @@ fn emit_body(
 
 /// A patella body: three coupled slide DOFs tracing the moving point's location
 /// splines, with the muscle's site at the body origin.
-fn emit_patella(
-    out: &mut String,
-    depth: usize,
-    pat: &PatellaSpec,
-    primary: &str,
-    driven: &mut Vec<DrivenJoint>,
-) {
+fn emit_patella(out: &mut String, depth: usize, pat: &PatellaSpec, driven: &mut Vec<DrivenJoint>) {
     let _ = writeln!(
         out,
         "{}<body name=\"{}_pat\" pos=\"0 0 0\">",
@@ -396,7 +371,7 @@ fn emit_patella(
         );
         driven.push(DrivenJoint {
             joint: jname,
-            coordinate: primary.to_string(),
+            coordinate: pat.coordinate.clone(),
             function: TransformFn::Spline(spline.clone()),
         });
     }

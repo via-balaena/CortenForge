@@ -13,9 +13,16 @@ use crate::spline::Spline;
 use nalgebra::Vector3;
 
 /// The per-axis location splines of a `MovingPathPoint` (boxed in [`Kind`] so the
-/// enum stays small).
+/// enum stays small), plus the coordinate that drives them.
+///
+/// `coordinate` is the generalized coordinate the location splines are functions
+/// of (gait2392's patella points are driven by the knee angle). Retaining it — vs
+/// assuming a single muscle-parameter coordinate — is what lets a moving point be
+/// driven correctly once the chain has more than one free DOF (the A2 hip): the
+/// emitter wires the patella's coupled slides to *this* coordinate, not a guess.
 #[derive(Debug, Clone)]
 pub struct MovingSplines {
+    pub coordinate: String,
     pub x: Spline,
     pub y: Spline,
     pub z: Spline,

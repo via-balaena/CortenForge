@@ -12,8 +12,14 @@
 //!   have two; `bifemlh_r` has none and matches the oracle to ~machine precision,
 //!   asserted below as a tight anchor that the emit geometry + coupled driving are
 //!   exact.)
+//! * `canonical_reproduces_oracle_at_multidof_base_pose` — the emitted twin
+//!   reproduces the oracle's moment arms about EVERY DOF (incl. the unwelded hip)
+//!   at a pose with several non-zero hip rotations, confirming MuJoCo's
+//!   multiple-hinges-on-one-body composition matches our FK (A2).
 //! * `canonical_matches_frozen_reference` — the committed `knee_ref.xml` pins the
 //!   exact bytes of *this* emitter's canonical output (catches any emitter change).
+//! * `canonical_equals_explicit_identity_build` — the param/morph layer is a true
+//!   no-op at identity (`build_canonical` == `emit` on the raw template).
 //! * `uniform_scale_is_exact_dilation` — a uniform morph scales every moment arm
 //!   by exactly `s`, shape preserved (ported from the validated morph spike).
 //! * `anisotropic_morph_emits_loadable_model` — a per-segment morph still emits a
@@ -159,6 +165,76 @@ fn uniform_scale_is_exact_dilation() {
                 "{name}: uniform scale not an exact dilation ({ui} vs {})",
                 s * bi
             );
+        }
+    }
+}
+
+#[test]
+fn canonical_reproduces_oracle_at_multidof_base_pose() {
+    // The emitted (simulatable) twin must reproduce the oracle's moment arms about
+    // EVERY DOF — incl. the unwelded hip — at a pose with several non-zero hip
+    // rotations at once. This confirms MuJoCo's multiple-hinges-on-one-body
+    // composition matches our FK (and so, with the real-OpenSim cross-check, the
+    // emitted twin matches OpenSim) for the hip, not just the knee.
+    let t = template();
+    let emitted = build_canonical(&t);
+    let model = load_model(&emitted.mjcf).expect("emitted MJCF must load");
+    let kin = Kinematics::new(&t);
+    let eps = 0.5 * DEG;
+
+    let adr: HashMap<String, usize> = emitted
+        .driven
+        .iter()
+        .map(|d| {
+            (
+                d.joint.clone(),
+                model.jnt_qpos_adr[joint_id(&model, &d.joint)],
+            )
+        })
+        .collect();
+
+    // The same multi-DOF base pose the real-OpenSim cross-check uses.
+    let base = HashMap::from([
+        ("hip_flexion_r".to_string(), 0.3),
+        ("hip_adduction_r".to_string(), -0.2),
+        ("hip_rotation_r".to_string(), 0.15),
+        ("knee_angle_r".to_string(), -0.6),
+    ]);
+
+    for coord in [
+        "hip_flexion_r",
+        "hip_adduction_r",
+        "hip_rotation_r",
+        "knee_angle_r",
+    ] {
+        let drive = |v: f64, q: &mut [f64]| {
+            let mut coords = base.clone();
+            coords.insert(coord.to_string(), v);
+            for (joint, val) in emitted.qpos_targets(&coords) {
+                q[adr[&joint]] = val;
+            }
+        };
+        for m in &t.muscles {
+            let tdn = tendon_id(&model, &m.name);
+            let emit_ma = coupled_moment_arm(&model, tdn, base[coord], eps, &drive) * 1000.0;
+            let oracle_ma = kin.moment_arm(m, &base, coord, eps) * 1000.0;
+            let d = (emit_ma - oracle_ma).abs();
+            // The 5 mm gate (dropped-conditional approximation), about every DOF.
+            assert!(
+                d < 5.0,
+                "{} about {coord}: emit {emit_ma:.2} vs oracle {oracle_ma:.2} mm (Δ {d:.2} > 5 mm)",
+                m.name
+            );
+            // bifemlh_r has no dropped conditional/patella, so the emit reproduces
+            // the oracle to ~machine precision about every DOF — the tight anchor
+            // that the hip multi-hinge composition is exact, not just within 5 mm.
+            if m.name == "bifemlh_r" {
+                assert!(
+                    d < 1e-2,
+                    "{} about {coord}: emit vs oracle Δ {d:.2e} mm — expected ~0",
+                    m.name
+                );
+            }
         }
     }
 }

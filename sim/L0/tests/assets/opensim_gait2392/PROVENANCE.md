@@ -46,13 +46,19 @@ sets the honest validated-ROM bound (target 0–100°, flag 100–120°).
 
 ## Also vendored — the real-OpenSim moment-arm reference
 
-`knee_moment_arms_opensim.json` (+ generator `gen_moment_arms.py`) — the four target
-muscles' knee moment arms over 0…−100° flexion, computed by **real OpenSim 4.6** (the
-`opensim` PyPI wheel) on this exact model. This is the **independent anchor** for the
-cf-osim oracle: `tools/cf-osim/tests/opensim_cross_check.rs` grades our re-derivation
-against it and requires sub-2 mm RMSE (actual: ~0.3 mm). Committed so the cross-check
-runs in CI with no OpenSim install; regenerate with `gen_moment_arms.py` (header has the
-`uv` commands). Both files are derived from the Apache-2.0 model via Apache-2.0 OpenSim.
+Two references, both computed by **real OpenSim 4.6** (the `opensim` PyPI wheel) on this
+exact model — the **independent anchors** for the cf-osim oracle
+(`tools/cf-osim/tests/opensim_cross_check.rs`, sub-2 mm RMSE gate). Committed so the
+cross-check runs in CI with no OpenSim install. Both are derived from the Apache-2.0
+model via Apache-2.0 OpenSim.
+
+- `knee_moment_arms_opensim.json` (generator `gen_moment_arms.py`) — the four target
+  muscles' knee moment arms over 0…−100° flexion at the **neutral hip** (the broad
+  coupled-knee ROM study; actual RMSE ~0.3 mm). Also used by cf-msk-fit's G1 scorecard.
+- `moment_arms_opensim.json` (generator `gen_leg_moment_arms.py`) — leg-region **A2**:
+  moment arms about all four DOFs (3 hip + knee) at a **multi-DOF base pose** (several
+  non-zero hip rotations at once), so it pins the hip rotation-composition order (R-rot).
+  Actual: hip ~0.001 mm, knee ~0.08 mm. Each generator's header has the `uv` commands.
 
 ## Not vendored (yet)
 

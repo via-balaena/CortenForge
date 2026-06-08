@@ -19,7 +19,7 @@ fn model() -> cf_msk_lib::Model {
 }
 
 #[test]
-fn parse_leg_chain_builds_the_knee_chain() {
+fn parse_leg_chain_builds_the_thigh_knee_shank_chain() {
     let model = model();
     assert_eq!(
         model
@@ -32,15 +32,36 @@ fn parse_leg_chain_builds_the_knee_chain() {
     assert_eq!(model.bodies[0].parent, None);
     assert_eq!(model.bodies[1].parent, Some(0));
     assert_eq!(model.bodies[2].parent, Some(1));
-    // A1: the hip is welded at neutral (femur placed by the hip offset, no DOFs).
-    // A2 unwelds this — when it does, this assertion is the deliberate change site.
-    assert!(model.bodies[1].joint.is_empty(), "hip is welded at neutral");
+
+    // A2: the hip is UNWELDED — the femur carries the hip CustomJoint: three
+    // rotation DOFs (flexion/adduction/rotation) + three (zero) translation axes.
+    let femur = &model.bodies[1].joint;
+    assert_eq!(
+        femur.iter().filter(|a| a.rotation).count(),
+        3,
+        "hip rotations"
+    );
+    assert_eq!(
+        femur.iter().filter(|a| !a.rotation).count(),
+        3,
+        "hip translations"
+    );
+
     // tibia: three rotation axes (one driven flexion + two zero) + three
     // translation axes (two coupled splines + one zero) — the gait2392 knee.
     let tibia = &model.bodies[2].joint;
     assert_eq!(tibia.iter().filter(|a| a.rotation).count(), 3);
     assert_eq!(tibia.iter().filter(|a| !a.rotation).count(), 3);
-    // Only the knee's coordinate is free for A1 (the hip is welded).
-    assert_eq!(model.coordinates.len(), 1);
-    assert_eq!(model.coordinates[0].name, "knee_angle_r");
+
+    // Coordinates: the three hip DOFs (proximal) then the knee.
+    let coords: Vec<&str> = model.coordinates.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        coords,
+        [
+            "hip_flexion_r",
+            "hip_adduction_r",
+            "hip_rotation_r",
+            "knee_angle_r"
+        ]
+    );
 }
