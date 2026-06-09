@@ -185,6 +185,7 @@ impl ModelBuilder {
             | ActuatorDynamics::Integrator
             | ActuatorDynamics::Muscle
             | ActuatorDynamics::HillMuscle
+            | ActuatorDynamics::MillardMuscle
             | ActuatorDynamics::User => 1,
         };
 

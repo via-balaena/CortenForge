@@ -65,7 +65,7 @@ pub use integration::{mjd_quat_integrate, mjd_sub_quat};
 // Crate-internal re-exports
 pub(crate) use hybrid::{mjd_actuator_vel, mjd_rne_vel};
 
-use crate::types::{Data, Integrator, Model, StepError};
+use crate::types::{BiasType, Data, GainType, Integrator, Model, StepError};
 use nalgebra::DMatrix;
 
 // ============================================================================
@@ -202,8 +202,22 @@ pub fn mjd_transition(
     data: &Data,
     config: &DerivativeConfig,
 ) -> Result<TransitionMatrices, StepError> {
-    let can_analytical =
-        config.use_analytical && !matches!(model.integrator, Integrator::RungeKutta4);
+    // MillardMuscle's analytic actuator Jacobian (the Bézier FV-curve derivative +
+    // the β·v̄ damping derivative) is not yet implemented, so a model containing one
+    // takes the full finite-difference path for an EXACT transition matrix rather than
+    // an incomplete analytic one (R-implicit-deriv). The forward simulation is
+    // unaffected; only this derivative output is routed.
+    let has_millard = model
+        .actuator_gaintype
+        .iter()
+        .any(|g| matches!(g, GainType::MillardMuscle))
+        || model
+            .actuator_biastype
+            .iter()
+            .any(|b| matches!(b, BiasType::MillardMuscle));
+    let can_analytical = config.use_analytical
+        && !matches!(model.integrator, Integrator::RungeKutta4)
+        && !has_millard;
     if can_analytical {
         mjd_transition_hybrid(model, data, config)
     } else {

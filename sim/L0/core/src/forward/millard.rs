@@ -189,6 +189,16 @@ impl Default for MillardCurves {
     }
 }
 
+/// The default Millard2012 curves, built once and shared (process-wide).
+///
+/// gait2392's muscles all use the default-parameter curves, so the engine's per-step
+/// force computation can borrow this rather than rebuild the Bézier segments each call.
+#[must_use]
+pub fn default_millard_curves() -> &'static MillardCurves {
+    static CURVES: std::sync::OnceLock<MillardCurves> = std::sync::OnceLock::new();
+    CURVES.get_or_init(MillardCurves::default)
+}
+
 impl MillardCurves {
     /// Active force-length multiplier at normalized fiber length `norm_len`.
     #[must_use]
@@ -370,6 +380,53 @@ pub struct MillardMuscleParams {
     pub vmax: f64,
 }
 
+/// Rigid-tendon fiber kinematics shared by the path force and the engine gain/bias:
+/// returns `(normalized fiber length, normalized fiber velocity, cos(pennation))`
+/// from the musculotendon length + lengthening rate, with OpenSim's min-fiber clamp
+/// (below the floor the fiber length AND velocity are frozen).
+// `imprecise_flops`: keep the naive `sqrt(a²+b²)` (not `hypot`) to match OpenSim's
+// MuscleFixedWidthPennationModel bit-for-bit.
+#[allow(clippy::imprecise_flops)]
+fn fiber_kinematics(p: MillardMuscleParams, mtu: f64, mtu_vel: f64) -> (f64, f64, f64) {
+    // Caller invariants (OpenSim hard-errors on these; we surface them in dev/test
+    // and otherwise let a NaN propagate loudly rather than silently zero the force).
+    debug_assert!(
+        mtu.is_finite() && mtu_vel.is_finite(),
+        "fiber_kinematics: non-finite input (mtu={mtu}, mtu_vel={mtu_vel})"
+    );
+    debug_assert!(
+        p.l0 > 0.0 && p.vmax > 0.0,
+        "fiber_kinematics: l0 and vmax must be positive (l0={}, vmax={})",
+        p.l0,
+        p.vmax
+    );
+    // Rigid tendon: the fiber's projection along the tendon is the path length minus
+    // the (constant) tendon slack length. Constant-height pennation gives the true
+    // fiber length and the pennation angle.
+    let along_tendon = mtu - p.lts;
+    let height = p.l0 * p.penn0.sin();
+    let fiber_len = (along_tendon * along_tendon + height * height).sqrt();
+    let cos_penn = if fiber_len > 1e-12 {
+        along_tendon / fiber_len
+    } else {
+        1.0
+    };
+    // Fiber velocity (rigid tendon, constant height): d(fiber)/dt = cos(penn)·d(mtu)/dt,
+    // normalized by the maximum shortening rate (vmax · L0). Below the floor, OpenSim
+    // clamps the fiber at the minimum length and freezes its velocity (so the damping
+    // term vanishes, not just the active force).
+    let raw_norm_len = fiber_len / p.l0.max(1e-12);
+    if raw_norm_len < MIN_NORM_FIBER_LENGTH {
+        (MIN_NORM_FIBER_LENGTH, 0.0, cos_penn)
+    } else {
+        (
+            raw_norm_len,
+            cos_penn * mtu_vel / (p.l0 * p.vmax).max(1e-12),
+            cos_penn,
+        )
+    }
+}
+
 /// Millard muscle force along the tendon/path, in newtons (tension positive), at a
 /// known musculotendon length and lengthening rate.
 ///
@@ -381,9 +438,6 @@ pub struct MillardMuscleParams {
 /// - `mtu`: musculotendon (path) length, meters
 /// - `mtu_vel`: musculotendon lengthening rate, meters per second (shortening < 0)
 /// - `act`: activation in `[0,1]`
-// `imprecise_flops`: keep the naive `sqrt(a²+b²)` (not `hypot`) to match OpenSim's
-// MuscleFixedWidthPennationModel bit-for-bit.
-#[allow(clippy::imprecise_flops)]
 #[must_use]
 pub fn millard_path_force(
     curves: &MillardCurves,
@@ -392,43 +446,8 @@ pub fn millard_path_force(
     mtu_vel: f64,
     act: f64,
 ) -> f64 {
-    // Caller invariants (OpenSim hard-errors on these; we surface them in dev/test
-    // and otherwise let a NaN propagate loudly rather than silently zero the force).
-    debug_assert!(
-        mtu.is_finite() && mtu_vel.is_finite() && act.is_finite(),
-        "millard_path_force: non-finite input (mtu={mtu}, mtu_vel={mtu_vel}, act={act})"
-    );
-    debug_assert!(
-        p.l0 > 0.0 && p.vmax > 0.0,
-        "millard_path_force: l0 and vmax must be positive (l0={}, vmax={})",
-        p.l0,
-        p.vmax
-    );
-    // Rigid tendon: the fiber's projection along the tendon is the path length
-    // minus the (constant) tendon slack length. Constant-height pennation gives
-    // the true fiber length and the pennation angle.
-    let along_tendon = mtu - p.lts;
-    let height = p.l0 * p.penn0.sin();
-    let fiber_len = (along_tendon * along_tendon + height * height).sqrt();
-    let cos_penn = if fiber_len > 1e-12 {
-        along_tendon / fiber_len
-    } else {
-        1.0
-    };
-    // Fiber velocity (rigid tendon, constant height): d(fiber)/dt = cos(penn)·d(mtu)/dt.
-    // Normalize by the maximum shortening rate (vmax · L0), per OpenSim. Below the
-    // floor, OpenSim clamps the fiber at the minimum length and freezes its velocity
-    // (so the damping term vanishes, not just the active force).
-    let raw_norm_len = fiber_len / p.l0.max(1e-12);
-    let (norm_len, norm_vel) = if raw_norm_len < MIN_NORM_FIBER_LENGTH {
-        (MIN_NORM_FIBER_LENGTH, 0.0)
-    } else {
-        (
-            raw_norm_len,
-            cos_penn * mtu_vel / (p.l0 * p.vmax).max(1e-12),
-        )
-    };
-
+    debug_assert!(act.is_finite(), "millard_path_force: non-finite act={act}");
+    let (norm_len, norm_vel, cos_penn) = fiber_kinematics(p, mtu, mtu_vel);
     let active = act * curves.active_fl(norm_len) * curves.force_velocity(norm_vel);
     let passive = curves.passive_fl(norm_len);
     let damping = FIBER_DAMPING * norm_vel;
@@ -439,6 +458,37 @@ pub fn millard_path_force(
     // propagates loudly instead of masquerading as a silent zero force.
     let force = p.f0 * (active + passive + damping) * cos_penn;
     if force < 0.0 { 0.0 } else { force }
+}
+
+/// Active-force GAIN (per unit activation) for the engine actuation pipeline.
+///
+/// In the engine's negative-tension convention: `−F0·AFL(l̄)·FV(v̄)·cos(penn)`. Multiply
+/// by activation to get the active force. Pairs with [`millard_passive_bias`]; the
+/// engine assembles `gain·activation + bias` and floors the tendon force via the
+/// actuator force range. See [`millard_path_force`] for the standalone equivalent.
+#[must_use]
+pub fn millard_active_gain(
+    curves: &MillardCurves,
+    p: MillardMuscleParams,
+    mtu: f64,
+    mtu_vel: f64,
+) -> f64 {
+    let (norm_len, norm_vel, cos_penn) = fiber_kinematics(p, mtu, mtu_vel);
+    -p.f0 * curves.active_fl(norm_len) * curves.force_velocity(norm_vel) * cos_penn
+}
+
+/// Passive + damping BIAS for the engine actuation pipeline, in the engine's
+/// negative-tension convention: `−F0·(PFL(l̄) + β·v̄)·cos(penn)`. Pairs with
+/// [`millard_active_gain`].
+#[must_use]
+pub fn millard_passive_bias(
+    curves: &MillardCurves,
+    p: MillardMuscleParams,
+    mtu: f64,
+    mtu_vel: f64,
+) -> f64 {
+    let (norm_len, norm_vel, cos_penn) = fiber_kinematics(p, mtu, mtu_vel);
+    -p.f0 * (curves.passive_fl(norm_len) + FIBER_DAMPING * norm_vel) * cos_penn
 }
 
 /// Isometric Millard muscle force along the tendon/path (i.e. [`millard_path_force`]

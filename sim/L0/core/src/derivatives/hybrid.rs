@@ -183,7 +183,10 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
 
                 -f0 * fl * dfv_dnv * dnv_dv * cos_penn
             }
-            GainType::User => continue,
+            // MillardMuscle: the analytic Bézier FV-curve velocity-derivative (and the
+            // β·v̄ damping derivative) is deferred — omit this actuator from the implicit
+            // velocity-Jacobian (explicit integration is unaffected). See recon R-implicit-deriv.
+            GainType::MillardMuscle | GainType::User => continue,
         };
 
         // ∂bias/∂V for this actuator
@@ -191,7 +194,9 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         let dbias_dv = match model.actuator_biastype[i] {
             BiasType::Affine => model.actuator_biasprm[i][2],
             BiasType::None | BiasType::Muscle | BiasType::HillMuscle => 0.0,
-            BiasType::User => continue,
+            // MillardMuscle bias has a velocity-dependent damping term; its analytic
+            // derivative is deferred (skip — see the gain arm above).
+            BiasType::MillardMuscle | BiasType::User => continue,
         };
 
         let dforce_dv = dgain_dv * input + dbias_dv;
@@ -906,7 +911,8 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
                 let dnl_dl = 1.0 / (cos_penn * optimal_fiber_length).max(1e-10);
                 -f0 * dfl_dnl * dnl_dl * fv * cos_penn
             }
-            GainType::User => continue,
+            // MillardMuscle analytic derivatives deferred (see ∂gain/∂V above).
+            GainType::MillardMuscle | GainType::User => continue,
         };
 
         // Compute ∂bias/∂L
@@ -920,7 +926,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
             // these bias types are excluded from analytical position columns via
             // the eligibility check. BiasType::None has no length dependence.
             BiasType::None | BiasType::Muscle | BiasType::HillMuscle => 0.0,
-            BiasType::User => continue,
+            BiasType::MillardMuscle | BiasType::User => continue,
         };
 
         let dforce_dl = dgain_dl * input + dbias_dl;
@@ -1904,7 +1910,9 @@ pub fn mjd_transition_hybrid(
 
         let is_muscle = matches!(
             model.actuator_dyntype[actuator_idx],
-            ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle
+            ActuatorDynamics::Muscle
+                | ActuatorDynamics::HillMuscle
+                | ActuatorDynamics::MillardMuscle
         );
 
         for k in 0..act_num {
@@ -1927,9 +1935,13 @@ pub fn mjd_transition_hybrid(
                         + model.actuator_gainprm[actuator_idx][2]
                             * data.actuator_velocity[actuator_idx]
                 }
-                GainType::Muscle | GainType::HillMuscle | GainType::User => {
-                    // Muscle/HillMuscle: guarded by is_muscle check above
-                    // User: no analytical derivative — fall back to FD
+                GainType::Muscle
+                | GainType::HillMuscle
+                | GainType::MillardMuscle
+                | GainType::User => {
+                    // Muscle/HillMuscle/MillardMuscle: handled by the is_muscle FD path
+                    // above (this arm is unreachable for them). User: no analytical
+                    // derivative — fall back to FD.
                     act_fd_indices.push(state_col);
                     continue;
                 }
@@ -2022,10 +2034,15 @@ pub fn mjd_transition_hybrid(
                     | ActuatorTransmission::SliderCrank
             )
         })
-        && !model
-            .actuator_biastype
-            .iter()
-            .any(|t| matches!(t, BiasType::Muscle | BiasType::HillMuscle));
+        && !model.actuator_biastype.iter().any(|t| {
+            // MillardMuscle's analytic position derivative is deferred (R-implicit-deriv).
+            // The public `mjd_transition` already routes Millard models to full FD; this
+            // keeps a direct `mjd_transition_hybrid` call's position columns correct too.
+            matches!(
+                t,
+                BiasType::Muscle | BiasType::HillMuscle | BiasType::MillardMuscle
+            )
+        });
 
     // Save nominal state for FD perturbation loop (needed by activation/B matrix FD too)
     let qpos_0 = data.qpos.clone();
@@ -2490,7 +2507,10 @@ pub fn mjd_transition_hybrid(
                         + model.actuator_gainprm[actuator_idx][2]
                             * data.actuator_velocity[actuator_idx]
                 }
-                GainType::Muscle | GainType::HillMuscle | GainType::User => {
+                GainType::Muscle
+                | GainType::HillMuscle
+                | GainType::MillardMuscle
+                | GainType::User => {
                     ctrl_fd_indices.push(actuator_idx);
                     continue;
                 }

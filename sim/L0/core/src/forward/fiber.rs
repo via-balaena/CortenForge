@@ -224,7 +224,9 @@ impl Model {
         for i in 0..self.nu {
             if !matches!(
                 self.actuator_dyntype[i],
-                ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle
+                ActuatorDynamics::Muscle
+                    | ActuatorDynamics::HillMuscle
+                    | ActuatorDynamics::MillardMuscle
             ) {
                 continue;
             }

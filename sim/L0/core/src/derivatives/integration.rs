@@ -192,7 +192,9 @@ pub(super) fn compute_integration_derivatives(
                     dact_dact[(j, j)] = 1.0;
                     dact_dactdot[(j, j)] = h;
                 }
-                ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle => {
+                ActuatorDynamics::Muscle
+                | ActuatorDynamics::HillMuscle
+                | ActuatorDynamics::MillardMuscle => {
                     // Approximate: ignores ∂act_dot/∂act from act-dependent
                     // time constants. Not consumed by hybrid (Muscle uses FD).
                     let at_boundary = data.act[j] <= 0.0 || data.act[j] >= 1.0;
