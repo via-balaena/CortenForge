@@ -686,6 +686,17 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
         let force = gain * input + bias;
 
+        // A muscle pulls, never pushes (engine convention: tension is ≤ 0). For
+        // MillardMuscle the β·v̄ fiber-damping term can drive the assembled force
+        // positive at fast shortening, so floor it here — independent of whether the
+        // user set actuator_forcerange (HillMuscle's force is always ≤ 0, so it
+        // never needs this). Matches the standalone millard_path_force's max(0, …).
+        let force = if model.actuator_gaintype[i] == GainType::MillardMuscle {
+            force.min(0.0)
+        } else {
+            force
+        };
+
         // Clamp to force range
         let force = force.clamp(
             model.actuator_forcerange[i].0,
@@ -819,8 +830,8 @@ mod millard_engine_tests {
 
     /// Single-hinge body whose joint-transmission actuator is a Millard muscle. The
     /// joint coordinate doubles as the MTU length (gear 1), so setting qpos/qvel sets
-    /// the muscle length/lengthening rate directly. `forcerange = (-inf, 0]` applies
-    /// the muscle's non-negative tension floor (the engine convention is force ≤ 0).
+    /// the muscle length/lengthening rate directly. The force range is left unbounded
+    /// so the muscle's non-negative tension floor must come from the force model.
     fn build() -> Model {
         let mut model = Model::empty();
         model.nbody = 2;
@@ -876,7 +887,9 @@ mod millard_engine_tests {
         model.actuator_trnid = vec![[0, usize::MAX]];
         model.actuator_gear = vec![[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]];
         model.actuator_ctrlrange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
-        model.actuator_forcerange = vec![(f64::NEG_INFINITY, 0.0)];
+        // DEFAULT (unbounded) force range on purpose: the muscle's non-negative floor
+        // must come from the force model itself, not from a configured forcerange.
+        model.actuator_forcerange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
         model.actuator_name = vec![Some("millard".into())];
         model.actuator_act_adr = vec![0];
         model.actuator_act_num = vec![1];
@@ -909,13 +922,16 @@ mod millard_engine_tests {
         let curves = default_millard_curves();
         let p = params();
         // (mtu length, mtu velocity, activation) across the regimes: isometric near
-        // optimal, eccentric (lengthening), shortening (floors toward 0), and the
-        // min-fiber clamp (norm_len < 0.4441 ⇒ 0 N).
+        // optimal, eccentric (lengthening), plain shortening, the min-fiber curve
+        // clamp (norm_len < 0.4441 ⇒ 0 N), and — the load-bearing case for the floor —
+        // fast shortening at zero activation where the β·v̄ damping drives the
+        // assembled force POSITIVE (a push) and the non-negative floor pins it to 0.
         for (len, vel, act) in [
             (0.30, 0.0, 1.0),
             (0.30, 0.3, 1.0),
             (0.30, -0.5, 0.5),
             (0.22, 0.2, 1.0),
+            (0.30, -1.0, 0.0),
         ] {
             let mut data = model.make_data();
             data.qpos[0] = len;

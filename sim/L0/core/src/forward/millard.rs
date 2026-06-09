@@ -446,6 +446,7 @@ pub fn millard_path_force(
     mtu_vel: f64,
     act: f64,
 ) -> f64 {
+    debug_assert!(act.is_finite(), "millard_path_force: non-finite act={act}");
     let (norm_len, norm_vel, cos_penn) = fiber_kinematics(p, mtu, mtu_vel);
     let active = act * curves.active_fl(norm_len) * curves.force_velocity(norm_vel);
     let passive = curves.passive_fl(norm_len);

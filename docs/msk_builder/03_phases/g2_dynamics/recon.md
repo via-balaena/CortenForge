@@ -161,8 +161,10 @@ residual → a tiny force residual, graded once the model is wired into the engi
   `millard_passive_bias` (sharing `fiber_kinematics` with `millard_path_force`, so no
   drift — both cross-checks stay machine-exact); `default_millard_curves()` (a
   process-wide `OnceLock`) avoids rebuilding the Bézier per step; `fiber.rs` F0
-  auto-resolution includes Millard. The engine's negative-tension convention + the
-  non-negative tendon floor map to `actuator_forcerange = (−∞, 0]`. **Validation
+  auto-resolution includes Millard. The engine convention is force ≤ 0 (tension); the
+  muscle's non-negative tendon floor (which the `β·v̄` damping can otherwise breach at
+  fast shortening) is applied **in the force model** for MillardMuscle — `force.min(0)`,
+  independent of any configured `actuator_forcerange`. **Validation
   (`actuation.rs::millard_engine_tests`): a programmatic Millard joint-actuator's
   `forward()` reproduces the standalone `millard_path_force` to <1e-9 across all
   regimes (isometric / eccentric / shortening-floored / min-fiber clamp)** — ties the
@@ -176,13 +178,16 @@ residual → a tiny force residual, graded once the model is wired into the engi
   forward-dynamics** validation vs OpenSim (the full dynamics gate).
 
 ## Risks / open items
-- **R-implicit-deriv** — PR3a omits Millard actuators from the analytic actuator
-  velocity/position Jacobians (`derivatives/hybrid.rs`), `continue`-ing like the
-  `User` arm (the Bézier FV-curve derivative + the `β·v̄` damping derivative are
-  deferred). Forward dynamics with explicit integrators is unaffected (force is
-  exact); only the *implicit* integrator's stability term for these actuators is
-  approximate. Add the analytic curve derivative (a `SmoothSegmentedFunction::slope`)
-  if PR3b's dynamics gate uses an implicit integrator and needs it.
+- **R-implicit-deriv** — the analytic actuator Jacobian for Millard (the Bézier
+  FV-curve derivative + the `β·v̄` damping derivative) is not yet implemented. So:
+  (1) `mjd_transition` routes any model containing a Millard actuator to the **full
+  finite-difference** path → the transition matrices (A,B) stay EXACT for derivative
+  consumers; (2) the analytic arms in `derivatives/hybrid.rs` `continue` for Millard
+  (like `User`), so the *forward* implicit integrator treats Millard's velocity
+  dependence **explicitly** (valid, stable for β=0.1, not wrong dynamics). Forward
+  dynamics with explicit integrators is fully exact. Implement the analytic curve
+  derivative (a `SmoothSegmentedFunction::slope`) when an implicit-integrator
+  differentiable use needs the in-loop analytic term.
 - **R-pennation-edge** — semimem's tendon-slack ≈ MTU at deep flexion (along-tendon
   ~3.6 mm) drives pennation toward 90°; force is ~0 there (both sides), but if PR3's
   engine integration evaluates near the singularity, revisit the `cos_penn` floor.

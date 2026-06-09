@@ -1910,7 +1910,9 @@ pub fn mjd_transition_hybrid(
 
         let is_muscle = matches!(
             model.actuator_dyntype[actuator_idx],
-            ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle
+            ActuatorDynamics::Muscle
+                | ActuatorDynamics::HillMuscle
+                | ActuatorDynamics::MillardMuscle
         );
 
         for k in 0..act_num {
@@ -1937,8 +1939,9 @@ pub fn mjd_transition_hybrid(
                 | GainType::HillMuscle
                 | GainType::MillardMuscle
                 | GainType::User => {
-                    // Muscle/HillMuscle: guarded by is_muscle check above
-                    // User: no analytical derivative — fall back to FD
+                    // Muscle/HillMuscle/MillardMuscle: handled by the is_muscle FD path
+                    // above (this arm is unreachable for them). User: no analytical
+                    // derivative — fall back to FD.
                     act_fd_indices.push(state_col);
                     continue;
                 }
@@ -2031,10 +2034,15 @@ pub fn mjd_transition_hybrid(
                     | ActuatorTransmission::SliderCrank
             )
         })
-        && !model
-            .actuator_biastype
-            .iter()
-            .any(|t| matches!(t, BiasType::Muscle | BiasType::HillMuscle));
+        && !model.actuator_biastype.iter().any(|t| {
+            // MillardMuscle's analytic position derivative is deferred (R-implicit-deriv).
+            // The public `mjd_transition` already routes Millard models to full FD; this
+            // keeps a direct `mjd_transition_hybrid` call's position columns correct too.
+            matches!(
+                t,
+                BiasType::Muscle | BiasType::HillMuscle | BiasType::MillardMuscle
+            )
+        });
 
     // Save nominal state for FD perturbation loop (needed by activation/B matrix FD too)
     let qpos_0 = data.qpos.clone();
