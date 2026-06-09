@@ -13,7 +13,7 @@
 //! * **Dynamic (the solver holds the manifold under motion):** short forward-
 //!   dynamics sweeps seeded with constraint-consistent initial velocities across the
 //!   whole ROM — including DEEP FLEXION, the hardest region — keep every coupled
-//!   slide on its manifold (`q_slide = poly(knee)`) to ~1 mm while the knee moves
+//!   slide on its manifold (`q_slide = poly(knee)`) to ~0.09 mm while the knee moves
 //!   under its own dynamics. The thing that was impossible with kinematic driving.
 
 use cf_mjcf_emit::emit;
@@ -265,8 +265,9 @@ fn equality_constraint_holds_manifold_under_forward_dynamics() {
         "forward-dynamics samples must cover deep flexion, reached only {:.1}°",
         kmin / DEG
     );
-    // ~1.1 mm worst is in the deepest-flexion sample (steepest patella slopes, ≈2%
-    // of the 57 mm excursion) — far under the ~8.5 mm a too-soft constraint produces.
+    // ~0.09 mm worst: the near-rigid equality impedance (G3-PR2b) tightened the hold
+    // from PR1's ~1.1 mm, far under the ~8.5 mm a too-soft constraint produces. The
+    // 1.5 mm gate is a loose one-sided bound that survives both impedances.
     assert!(
         worst < 1.5e-3,
         "coupled slides must stay on the constraint manifold under dynamics, worst {:.4} mm",

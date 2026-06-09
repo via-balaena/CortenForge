@@ -1,0 +1,125 @@
+{
+ "source": "OpenSim 4.6-2026-04-25-d8b9379",
+ "model": "gait2392.osim",
+ "muscle_model": "Millard2012EquilibriumMuscle, ignore_tendon_compliance=True (rigid)",
+ "setup": "reduced right leg 5-DOF (hip3+knee+ankle), pelvis+contralateral+torso+subtalar+mtp LOCKED, GRAVITY OFF, activations set directly, speeds zeroed",
+ "free_coords": [
+  "hip_flexion_r",
+  "hip_adduction_r",
+  "hip_rotation_r",
+  "knee_angle_r",
+  "ankle_angle_r"
+ ],
+ "muscles": [
+  "rect_fem_r",
+  "vas_int_r",
+  "bifemlh_r",
+  "semimem_r"
+ ],
+ "units": "knee_udot in rad/s^2; inertias in kg, m, kg*m^2; iquat (w,x,y,z) body->principal",
+ "inertias": {
+  "femur_r": {
+   "mass": 8.98403823076288,
+   "com": [
+    0.0,
+    -0.195031,
+    0.0
+   ],
+   "idiag": [
+    0.170221,
+    0.044621,
+    0.179501
+   ],
+   "iquat": [
+    1.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  "tibia_r": {
+   "mass": 3.58100089669871,
+   "com": [
+    0.0,
+    -0.184557,
+    0.0
+   ],
+   "idiag": [
+    0.0475694,
+    0.00481357,
+    0.0482301
+   ],
+   "iquat": [
+    1.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  "talus_r": {
+   "mass": 1.5131479446441554,
+   "com": [
+    0.06139470077875656,
+    -0.018594906036001536,
+    0.005927793716328349
+   ],
+   "idiag": [
+    0.0028419484404440852,
+    0.008316557958097739,
+    0.008472635516397951
+   ],
+   "iquat": [
+    0.9927829234066448,
+    0.09849054973488997,
+    0.022173284485582933,
+    -0.0647303951802902
+   ]
+  }
+ },
+ "cases": [
+  {
+   "knee_rad": -0.3,
+   "activation": 1.0,
+   "full_activation_knee_udot": 542.2021493774787,
+   "solo_knee_udot": {
+    "rect_fem_r": 385.6552520333356,
+    "vas_int_r": 384.2538381100437,
+    "bifemlh_r": -99.47843036242844,
+    "semimem_r": -128.2285104034721
+   }
+  },
+  {
+   "knee_rad": -0.55,
+   "activation": 1.0,
+   "full_activation_knee_udot": 573.8007512710284,
+   "solo_knee_udot": {
+    "rect_fem_r": 313.55071384405517,
+    "vas_int_r": 390.0926796733811,
+    "bifemlh_r": -82.16825436908059,
+    "semimem_r": -47.67438787732707
+   }
+  },
+  {
+   "knee_rad": -0.8,
+   "activation": 1.0,
+   "full_activation_knee_udot": 487.58279801746505,
+   "solo_knee_udot": {
+    "rect_fem_r": 209.8897427615789,
+    "vas_int_r": 329.5076520931616,
+    "bifemlh_r": -51.59894537359622,
+    "semimem_r": -0.2156514636795478
+   }
+  },
+  {
+   "knee_rad": -1.5,
+   "activation": 1.0,
+   "full_activation_knee_udot": 221.5640170468895,
+   "solo_knee_udot": {
+    "rect_fem_r": 78.77409748912797,
+    "vas_int_r": 144.83268316732102,
+    "bifemlh_r": -2.0427636095596737,
+    "semimem_r": 0.0
+   }
+  }
+ ]
+}

@@ -102,30 +102,43 @@ constraints (don't read accel through it without zero velocity).
    PR1 added now actually work. (Latent in PR1 #290 — its loaded ranges were also
    degree-shrunk; PR2a corrects it.)
 
-3. **RESIDUAL COUPLED-FORCE ERROR (limits off).** Even with limits disabled, the
-   per-muscle knee udot is wrong: quads **~1.5–1.6× too high** (rect_fem twin +624
-   vs OS +386), hamstrings **WRONG SIGN** (bifemlh twin +43 vs OS −99 flexion). The
-   ankle whips (−3014 vs −360, downstream of the knee error). The muscle FORCES are
-   machine-exact (G2/PR1) and inertia is right, so this is a **multi-DOF coupled-knee
-   force-transmission error under dynamics** — the equality-constraint + separate-
-   slide-DOF representation (PR1) reproduces KINEMATICS (0.35mm) but not the coupled
-   generalized force in forward dynamics. (Also suspect: the free-ankle/foot
-   dynamics, given the ankle whip; needs isolation.)
+3. **RESIDUAL COUPLED-FORCE ERROR — ✅ FIXED (PR2b, 2026-06-09).** Even with limits
+   disabled, the per-muscle knee udot was wrong: quads ~1.5–1.6× too high,
+   hamstrings WRONG SIGN (bifemlh +43 vs OS −99), ankle whipping. **ROOT CAUSE
+   (nailed by an acceleration-residual probe):** the emitted equality-constraint
+   IMPEDANCE (`solimp="0.99 0.9999 …"`) was too SOFT to couple the **heavy
+   shank+foot-bearing tibia slides** at the ACCELERATION level — the slides had a
+   ~19 rad/s² acceleration residual (`qacc_slide ≠ poly'·qacc_knee`, even
+   wrong-sign), so the knee's effective forward-dynamics inertia was wrong (~0.10 vs
+   the true ~0.44) → it over-accelerated. The near-massless patella slides (tiny
+   load) held fine; only the shank-bearing tibia slides failed. **FIX: harden the
+   equality impedance to near-rigid `solimp="0.9999 0.99999 0.0001 0.5 2"`** (keep
+   the stable `solref="0.004 1"` — solimp is the lever; solref unchanged). The
+   acceleration residual drops to ~0.2, and **the forward-dynamics knee acceleration
+   now matches OpenSim to 3.2% across the functional ROM** (was 132%); the
+   hamstring sign is correct. The harder constraint also *improves* PR1's
+   manifold-hold (1.10 mm → 0.086 mm) and stays stable under integration. The
+   residual (deep-flexion 12.7%, semimem ~22%) is the emit's documented
+   dropped-conditional via-point GEOMETRY (PR1's static moment-arm limit), NOT a
+   dynamics error. **NOTE on inertia:** the gate INJECTS gait2392 segment inertias
+   (the emit ships placeholder inertias), so it validates the forward-dynamics
+   SOLVER + coupling + force, not anthropometry — real anthropometric inertias (IR
+   plumbing) for correct *absolute* shipped-twin motion remain a separate follow-up.
 
-**OpenSim oracle scripts (throwaway, in `/tmp`): `g3_fd_oracle.py` (5-DOF reduced
-fwd-dyn + effective-inertia KE), `g3_foot_inertia.py` (exact composite foot
-inertia), `g3_permuscle2.py` (per-muscle).** They'll be productionized into a
-`gen_forward_dynamics.py` once the bugs are understood.
+**PR2b productionized:** `gen_forward_dynamics.py` → vendored `forward_dynamics_opensim.json`
+(reduced 5-DOF oracle + the inertias to inject); CI cross-check `forward_dynamics_gate.rs`
+(GATE functional ROM <8%, reports deep-flexion/per-muscle geometry). The throwaway
+`/tmp/g3_*.py` + in-repo spike are retired.
 
 **IMPLICATION / RESHAPED PLAN:** PR2 ≠ "add a gate." The spike (front-loading the
-#1 risk, exactly as intended) found the twin does NOT move correctly under muscle
-force. Closing G3 requires: **(PR2a) ✅ DONE 2026-06-09** — fixed the joint-limit
-phantom (the `<compiler angle="radian"/>` bug above) + regression test;
-**(PR2b)** find + fix the residual coupled-knee force-transmission error (finding 3:
-quads ~1.5×, hams wrong-sign, ankle whips — may need a true function-coupled
-reduced-coordinate joint in the engine instead of slide-DOFs+equality, OR isolate it
-to the foot/ankle); **(PR2c)** THEN the OpenSim-Manager gate. The throwaway spike +
-`/tmp/g3_*.py` oracle scripts stay for PR2b.
+#1 risk, exactly as intended) found the twin did NOT move correctly under muscle
+force. Closing G3 required: **(PR2a) ✅ DONE 2026-06-09** — joint-limit phantom (the
+`<compiler angle="radian"/>` bug); **(PR2b) ✅ DONE 2026-06-09** — coupled-knee
+force-transmission error (stiffen the equality impedance) + the OpenSim-Manager
+forward-dynamics gate (3.2% functional). **REMAINING G3 follow-up:** real
+anthropometric segment inertias in the emitted twin (IR/parse/scale plumbing) so the
+shipped twin — not just the inertia-injected gate — produces correct absolute
+forward-dynamics motion.
 
 ## G3 = two deliverables
 

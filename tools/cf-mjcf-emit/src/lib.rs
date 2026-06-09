@@ -13,11 +13,14 @@
 //!   the spline manifold by a degree-8 polynomial **joint-equality constraint** to
 //!   the driving coordinate, so the coupled knee can **move under torque** (forward
 //!   dynamics) with the slides staying coupled to the angle, instead of being posed
-//!   kinematically — G3. (This closes the *kinematic/coupling* gap: the constraint
-//!   reproduces the SimmSpline pose to ≤0.17 mm and holds the manifold under motion;
-//!   matching OpenSim's forward-dynamics *acceleration* is a separate follow-up.)
-//!   The kinematic `qpos_targets` path still poses it directly; the two agree to
-//!   ≤0.17 mm across the ROM, so kinematic-only callers are unaffected.
+//!   kinematically — G3. The constraint reproduces the SimmSpline pose to ≤0.17 mm,
+//!   holds the manifold under motion, and (with a near-rigid impedance, G3-PR2b)
+//!   matches OpenSim's forward-dynamics knee acceleration to ~3% across the
+//!   functional ROM (`forward_dynamics_gate.rs`). The kinematic `qpos_targets` path
+//!   still poses it directly; the two agree to ≤0.17 mm across the ROM, so
+//!   kinematic-only callers are unaffected. (The forward-dynamics gate injects
+//!   gait2392 segment inertias — the emit ships placeholder inertias, so the
+//!   *shipped* twin needs real anthropometric inertias for correct absolute motion.)
 //! * **constant** — folded into the child body's `pos` (translation) or skipped
 //!   when it is an identity rotation (gait2392's zero rotation2/3 and the zero
 //!   `tz`).
@@ -173,6 +176,12 @@ pub fn emit(model: &Model) -> Emitted {
     // The coordinate's free joint carries the ROM range limit (emitted below) so the
     // polynomial can't be evaluated outside its fit range, where it would
     // extrapolate away from the (flat-clamped) SimmSpline (G3 spike "R-extrapolation").
+    // The impedance is NEAR-RIGID (`solimp="0.9999 0.99999 …"`, G3-PR2b): the default
+    // softer impedance failed to couple the heavy shank+foot-bearing tibia slides at
+    // the ACCELERATION level (the knee's forward-dynamics inertia came out wrong, so
+    // it over-accelerated ~2.4×); near-rigid impedance closes that to a 3.2% match vs
+    // OpenSim forward dynamics (`forward_dynamics_gate.rs`) and tightens the manifold
+    // hold, while the stable `solref="0.004 1"` (4× timestep) keeps integration stable.
     let free_joint_names: std::collections::HashSet<&str> = driven
         .iter()
         .filter(|d| matches!(d.function, TransformFn::Linear { .. }))
@@ -224,7 +233,7 @@ pub fn emit(model: &Model) -> Emitted {
         }
         let _ = writeln!(
             equality_xml,
-            "    <joint joint1=\"{}\" joint2=\"{}\" polycoef=\"{poly}\" solref=\"0.004 1\" solimp=\"0.99 0.9999 0.001 0.5 2\"/>",
+            "    <joint joint1=\"{}\" joint2=\"{}\" polycoef=\"{poly}\" solref=\"0.004 1\" solimp=\"0.9999 0.99999 0.0001 0.5 2\"/>",
             d.joint, d.coordinate
         );
     }
