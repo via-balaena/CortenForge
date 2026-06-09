@@ -26,8 +26,9 @@
 //!   the generator (A3-PR3). The scale is the internal morph currency, matching
 //!   OpenSim's ScaleTool per-axis.
 //! * [`realize`] — a pure function that applies the morph to a [`Model`], returning a
-//!   new `Model`. It scales geometry only and leaves the joint-coupling spline
-//!   *relationships* intact ("coupling stays symbolic", recon D11).
+//!   new `Model`. It scales geometry **and** each segment's mass distribution
+//!   (inertia, matching OpenSim ScaleTool — mass ∝ volume) while leaving the
+//!   joint-coupling spline *relationships* intact ("coupling stays symbolic", recon D11).
 //! * [`ParamSource`] + [`CanonicalSource`] — the pluggable parameter interface.
 //!   `CanonicalSource` is **builder-first**: it emits the canonical body from
 //!   library defaults with **no scan**.
@@ -206,25 +207,29 @@ impl Default for BodyParams {
 /// [`BodyParams::uniform`] therefore reproduces an exact dilation (every moment arm
 /// ×s); an anisotropic morph changes proportions while keeping the coupling.
 ///
-/// **Mass distribution ([`Body::inertia`]) is NOT scaled here yet** — it rides
-/// through unchanged, so a *dialed* body currently carries the template's
-/// (canonical) mass/CoM/inertia. Correct for the canonical (identity) body the emit
-/// ships and grades; the per-axis inertia scale-morph (matching OpenSim ScaleTool:
-/// mass ∝ volume, inertia per the axisymmetric tensor rule) is a separate increment.
+/// Each body's mass distribution ([`Body::inertia`]) is scaled per-segment by
+/// [`scale_inertia`] (mass ∝ volume, CoM component-wise, inertia by the two-branch
+/// ScaleTool rule), matching OpenSim ScaleTool — so a *dialed* body carries correct
+/// inertia, not the template's. The IDENTITY morph is an exact no-op. See
+/// [`scale_inertia`] for the convention and its OpenSim-validated gate.
 pub fn realize(template: &Template, params: &BodyParams) -> Model {
-    // Maps a body name to its segment scale. The pelvis (root anchor) is the
-    // fallback; the talus also falls here, which is moot in v1 — it is the inert
-    // length-grounding ankle endpoint with NO muscle points or dialable geometry
-    // of its own (its `location_in_parent`, the tibia length, scales with its
-    // PARENT tibia below, not via this map). Adding a distal segment with its own
-    // geometry (e.g. a real foot) would need its own `BodyParams` entry here.
-    let scale_for = |body: &str| -> Vector3<f64> {
+    // Maps a body name to its [`SegmentScale`]. The pelvis (root anchor) is the
+    // fallback; the talus also falls here — it is the inert length-grounding ankle
+    // endpoint with no muscle points or dialable geometry of its own (its
+    // `location_in_parent`, the tibia length, scales with its PARENT tibia below, not
+    // via this map). Its INERTIA, however, is scaled by this (pelvis) factor below —
+    // moot at the IDENTITY default, and an isotropic dilation under a uniform body
+    // scale. Every shipped source keeps `params.pelvis` isotropic (IDENTITY or
+    // uniform), so the off-axis lumped-foot composite only ever hits the
+    // products-safe isotropic branch of `scale_inertia` (which otherwise asserts).
+    // Adding a distal segment with its own geometry (e.g. a real foot) would need its
+    // own `BodyParams` entry here.
+    let seg_for = |body: &str| -> SegmentScale {
         match body {
             "femur_r" => params.femur,
             "tibia_r" => params.tibia,
             _ => params.pelvis,
         }
-        .vector()
     };
 
     let mut out = template.clone();
@@ -234,7 +239,7 @@ pub fn realize(template: &Template, params: &BodyParams) -> Model {
         // `location_in_parent` and the translation axes live in the PARENT frame.
         let parent_scale = b
             .parent
-            .map_or_else(|| Vector3::repeat(1.0), |p| scale_for(&names[p]));
+            .map_or_else(|| Vector3::repeat(1.0), |p| seg_for(&names[p]).vector());
         b.location_in_parent = b.location_in_parent.component_mul(&parent_scale);
         for ax in &mut b.joint {
             if !ax.rotation {
@@ -249,11 +254,17 @@ pub fn realize(template: &Template, params: &BodyParams) -> Model {
                 }
             }
         }
+        // The mass distribution lives in the body's OWN frame, so it scales with the
+        // body's own segment (like a muscle point), matching OpenSim ScaleTool.
+        let own_scale = seg_for(&b.name);
+        if let Some(inertia) = &mut b.inertia {
+            scale_inertia(inertia, own_scale);
+        }
     }
 
     for muscle in &mut out.muscles {
         for point in &mut muscle.path {
-            let k = scale_for(&point.body);
+            let k = seg_for(&point.body).vector();
             point.location = point.location.component_mul(&k);
             if let Kind::Moving(splines) = &mut point.kind {
                 // Patella moving point: its location splines ride its body frame.
@@ -264,6 +275,69 @@ pub fn realize(template: &Template, params: &BodyParams) -> Model {
         }
     }
     out
+}
+
+/// Scale a body's [`Inertia`] under a per-segment [`SegmentScale`], matching OpenSim
+/// ScaleTool's convention (`Model::scale` with `preserveMassDistribution = false`,
+/// i.e. mass ∝ volume). The formula matches ScaleTool machine-exactly; the
+/// realize-vs-OpenSim gate is rounding-limited to ~1e-5 (OpenSim returns inertia
+/// 6-decimal-rounded — see `opensim_cross_check::morph_inertia_matches_real_opensim_scaletool`).
+///
+/// The [`SegmentScale`] applies `transverse` to BOTH body-frame *x* and *z* (a limb
+/// girth is one axisymmetric circumference) and `axial` to *y* (the long axis), so
+/// the body-frame factors are always `(transverse, axial, transverse)` — `sx == sz`.
+/// With `vol = axial · transverse²`:
+/// - **mass** → `vol · mass`.
+/// - **CoM** → component-wise `com · (transverse, axial, transverse)`.
+/// - **inertia**, two branches (the exact ScaleTool behavior):
+///   - **isotropic** (`axial == transverse = s`, incl. the IDENTITY no-op): every
+///     tensor component → `× s⁵` — an exact uniform dilation that preserves any
+///     anisotropy and off-diagonal products (so the lumped-foot composite stays valid).
+///   - **anisotropic** (`axial ≠ transverse`): ScaleTool forces axisymmetry about the
+///     long axis, `Iyy → vol · transverse² · Iyy` and `Ixx = Izz → vol · (axial² ·
+///     (Ixx − Iyy/2) + transverse² · (Iyy/2))`, collapsing the two transverse moments
+///     to one. For gait2392 this discards a real `Ixx`/`Izz` difference of ~5% (femur)
+///     / ~1.4% (tibia) — ANY non-uniform dial (incl. a pure-length one) triggers it,
+///     not just a girth dial. Only the diagonal femur/tibia segments ever reach this
+///     branch — it is valid only for a diagonal (products-0) tensor, asserted.
+fn scale_inertia(inertia: &mut Inertia, scale: SegmentScale) {
+    let (a, t) = (scale.axial, scale.transverse);
+    let vol = a * t * t;
+    inertia.mass *= vol;
+    inertia.com = inertia.com.component_mul(&scale.vector());
+    let tn = &mut inertia.tensor;
+    // The `==` is deliberate and mirrors OpenSim's own exact-equality branch:
+    // isotropic preserves the true anisotropy, anisotropic forces axisymmetry, so the
+    // two are genuinely discontinuous at `axial == transverse`. NOT a float-fragility
+    // smell to paper over with a tolerance.
+    if a == t {
+        // Isotropic dilation: every second moment ×s² and mass ×s³ ⇒ ×s⁵ on every
+        // tensor component (products included) — exact for any rigid body.
+        let f = a.powi(5);
+        for c in tn.iter_mut() {
+            *c *= f;
+        }
+    } else {
+        // ScaleTool's axisymmetric anisotropic rule — only valid for a DIAGONAL
+        // tensor (it collapses the two transverse moments). Every shipped source keeps
+        // `params.pelvis` isotropic (IDENTITY or uniform), and the off-axis lumped-foot
+        // composite (talus) falls to that pelvis scale, so it never reaches here; only
+        // the diagonal femur/tibia do. Fail loud if a body with products ever arrives —
+        // i.e. a caller dialed `params.pelvis` anisotropically (unsupported: there is no
+        // ScaleTool oracle for scaling the off-axis composite anisotropically).
+        assert!(
+            tn[3] == 0.0 && tn[4] == 0.0 && tn[5] == 0.0,
+            "anisotropic inertia scale ({a} axial / {t} transverse) requires a diagonal \
+             (products-0) tensor — a body with off-diagonal products (the lumped-foot \
+             composite) reached the axisymmetric branch, which means `params.pelvis` was \
+             dialed anisotropically (only the diagonal femur/tibia support that)"
+        );
+        let (ixx, iyy) = (tn[0], tn[1]);
+        let ix = vol * (a * a * (ixx - iyy / 2.0) + t * t * (iyy / 2.0));
+        tn[0] = ix;
+        tn[1] = vol * (t * t) * iyy;
+        tn[2] = ix;
+    }
 }
 
 /// A pluggable source of [`BodyParams`] — the parameter interface. Where the
@@ -681,6 +755,99 @@ mod tests {
                 ],
             }],
         }
+    }
+
+    /// A representative diagonal segment inertia (femur-like) for the scale tests.
+    fn seg_inertia() -> Inertia {
+        Inertia {
+            mass: 8.984,
+            com: Vector3::new(0.0, -0.195, 0.0),
+            tensor: [0.170, 0.0446, 0.1795, 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// The IDENTITY scale leaves a body's inertia exactly unchanged.
+    #[test]
+    fn scale_inertia_identity_is_noop() {
+        let mut i = Inertia {
+            // include products to confirm they ride through unchanged at identity.
+            tensor: [0.17, 0.045, 0.18, 0.01, 0.02, 0.03],
+            ..seg_inertia()
+        };
+        let before = i;
+        scale_inertia(&mut i, SegmentScale::IDENTITY);
+        assert_eq!(i, before);
+    }
+
+    /// A uniform (isotropic) scale is an exact dilation: mass ×s³, CoM ×s, every
+    /// inertia component (products too) ×s⁵.
+    #[test]
+    fn scale_inertia_uniform_is_s5_dilation() {
+        let s = 1.2;
+        let orig = Inertia {
+            tensor: [0.17, 0.045, 0.18, 0.01, 0.02, 0.03],
+            ..seg_inertia()
+        };
+        let mut i = orig;
+        scale_inertia(&mut i, SegmentScale::uniform(s));
+        assert!((i.mass - orig.mass * s.powi(3)).abs() < 1e-12);
+        assert!((i.com - orig.com * s).norm() < 1e-12);
+        for k in 0..6 {
+            assert!(
+                (i.tensor[k] - orig.tensor[k] * s.powi(5)).abs() < 1e-12,
+                "tensor[{k}]"
+            );
+        }
+    }
+
+    /// An anisotropic scale (axial ≠ transverse) follows OpenSim ScaleTool's
+    /// axisymmetric rule: `Ixx == Izz` (forced), `Iyy = vol·t²·Iyy`, products stay 0,
+    /// mass = vol·mass. Pins the formula independent of the OpenSim oracle.
+    #[test]
+    fn scale_inertia_anisotropic_forces_axisymmetry() {
+        let (a, t) = (0.9, 1.1);
+        let orig = seg_inertia(); // diagonal (products 0)
+        let mut i = orig;
+        scale_inertia(
+            &mut i,
+            SegmentScale {
+                axial: a,
+                transverse: t,
+            },
+        );
+        let vol = a * t * t;
+        assert!(
+            (i.tensor[0] - i.tensor[2]).abs() < 1e-15,
+            "Ixx must equal Izz"
+        );
+        let (ixx0, iyy0) = (orig.tensor[0], orig.tensor[1]);
+        let ix = vol * (a * a * (ixx0 - iyy0 / 2.0) + t * t * (iyy0 / 2.0));
+        assert!((i.tensor[0] - ix).abs() < 1e-15, "Ixx=Izz value");
+        assert!(
+            (i.tensor[1] - vol * t * t * iyy0).abs() < 1e-15,
+            "Iyy value"
+        );
+        assert_eq!(&i.tensor[3..], &[0.0, 0.0, 0.0], "products stay 0");
+        assert!((i.mass - orig.mass * vol).abs() < 1e-12, "mass ∝ volume");
+    }
+
+    /// `realize` actually applies the inertia morph end-to-end: a body's inertia is
+    /// scaled by its OWN segment factor (femur by `params.femur`).
+    #[test]
+    fn realize_scales_body_inertia() {
+        let mut t = minimal_template();
+        t.bodies[1].inertia = Some(seg_inertia()); // femur_r
+        let p = BodyParams {
+            femur: SegmentScale {
+                axial: 1.3,
+                transverse: 1.0,
+            },
+            ..BodyParams::IDENTITY
+        };
+        let r = realize(&t, &p);
+        let mut expect = seg_inertia();
+        scale_inertia(&mut expect, p.femur);
+        assert_eq!(r.bodies[1].inertia, Some(expect));
     }
 
     /// A degenerate one-muscle template — exercises the morph plumbing without the

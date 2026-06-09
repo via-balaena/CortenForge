@@ -153,11 +153,46 @@ def moment_arms(factors):
     return out
 
 
+def scaled_inertias(factors):
+    """Per-body scaled mass distribution under `factors`, scaled with
+    preserveMassDistribution=FALSE (mass ∝ volume) — the convention the twin's
+    inertia morph (`cf_msk_lib::realize`) matches. Reads the dialed, diagonal
+    segments femur_r + tibia_r. NOTE this is a SEPARATE scale call from `moment_arms`
+    (which uses preserve=True): geometry/moment arms are identical either way, but
+    inertia needs the mass-scaling convention. The talus is the lumped-foot composite
+    the twin builds (no single OpenSim body to scale), so it is not graded here."""
+    model = osim.Model(OSIM)
+    state = model.initSystem()
+    if factors:
+        scales = osim.ScaleSet()
+        for body, (sx, sy, sz) in factors.items():
+            sc = osim.Scale()
+            sc.setSegmentName(body)
+            sc.setScaleFactors(osim.Vec3(sx, sy, sz))
+            sc.setApply(True)
+            scales.cloneAndAppend(sc)
+        if not model.scale(state, scales, False):  # preserveMassDist=False -> mass ∝ volume
+            raise RuntimeError("model.scale returned False")
+    bs = model.getBodySet()
+    out = {}
+    for name in ["femur_r", "tibia_r"]:
+        b = bs.get(name)
+        inertia = b.getInertia()
+        out[name] = {
+            "mass": b.getMass(),
+            "com": [b.getMassCenter().get(i) for i in range(3)],
+            "moments": [inertia.getMoments().get(i) for i in range(3)],
+            "products": [inertia.getProducts().get(i) for i in range(3)],
+        }
+    return out
+
+
 configs = {}
 for name, factors in CONFIGS.items():
     configs[name] = {
         "factors": {b: list(v) for b, v in factors.items()},
         "muscles": moment_arms(factors),
+        "inertias": scaled_inertias(factors),
     }
 
 with open(OUT, "w") as f:
@@ -166,7 +201,9 @@ with open(OUT, "w") as f:
         "model": OSIM.split("/")[-1],
         "coordinate": "knee_angle_r",
         "convention": "moment_arm = -d(length)/d(coordinate), meters; "
-                      "factors are body-frame Vec3 [x,y,z], y=axial(length), x=z=transverse(girth)",
+                      "factors are body-frame Vec3 [x,y,z], y=axial(length), x=z=transverse(girth); "
+                      "inertias scaled with preserveMassDistribution=False (mass prop volume), "
+                      "mass kg, com m, moments/products kg*m^2 about com in body frame",
         "configs": configs,
     }, f, indent=1)
 
