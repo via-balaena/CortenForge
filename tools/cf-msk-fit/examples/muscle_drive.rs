@@ -13,9 +13,12 @@
 //! colormap it. The forces vary purely with pose here (the force-LENGTH effect of the
 //! OpenSim-validated Millard model), since activation is held at 1.0.
 //!
-//! Free forward dynamics (watch it fall under muscle force) is deferred: the emitted
-//! coupled knee is driven kinematically, not via equality constraints, so the slides
-//! can't yet move freely — a documented G2 follow-up.
+//! This example drives the twin KINEMATICALLY (knee angle swept via `qpos_targets`)
+//! to visualize the force-length effect. As of G3-PR1 the emitted twin now carries
+//! the coupled knee as engine equality constraints (so it *can* move under its own
+//! muscle force in forward dynamics — see `cf-mjcf-emit`'s `coupled_knee_equality`
+//! tests); a live forward-dynamics demo (watch it move under muscle force) is the
+//! G3-PR3 follow-up.
 
 use cf_anthro::detect_landmarks;
 use cf_anthro::markers::{cube, tube};

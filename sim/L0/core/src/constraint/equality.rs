@@ -208,11 +208,33 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
     }
 }
 
+/// Evaluate `poly(q)` and `poly'(q)` for a joint-equality polynomial in one Horner
+/// pass. `coef[k]` is the coefficient of `qᵏ`, so the full degree-`N` polynomial is
+/// `Σ coef[k]·qᵏ` over all slots (trailing zeros contribute nothing — a degree-4
+/// constraint with `coef[5..]=0` is algebraically the old fixed quartic; the legacy
+/// linear/constant couplings, like gear/mimic, also evaluate bit-identically).
+/// gait2392's coupled knee needs degree-8 to track the tibiofemoral roll-glide
+/// SimmSpline to ≤0.17 mm (G3 spike); `eq_data` carries up to 11 coefficients
+/// (degree-10 ceiling).
+fn eval_poly_and_deriv(coef: &[f64], q: f64) -> (f64, f64) {
+    // Horner with synthetic derivative: walk coefficients high → low.
+    let n = coef.len();
+    let mut p = coef[n - 1]; // poly value
+    let mut d = 0.0; // poly derivative
+    for k in (0..n - 1).rev() {
+        d = d * q + p;
+        p = p * q + coef[k];
+    }
+    (p, d)
+}
+
 /// Extract joint equality constraint Jacobian (1 row).
 ///
 /// MuJoCo convention: `joint1 = poly(joint2)`.
 /// Two-joint: constraint is `q1 − poly(q2) = 0`, Jacobian has +1 at dof1 and -poly'(q2) at dof2.
 /// Single-joint: constraint is `q1 − c0 = 0`, Jacobian has +1 at dof1.
+/// The polynomial degree is whatever `eq_data` carries (up to degree 10) — see
+/// [`eval_poly_and_deriv`].
 pub fn extract_joint_equality_jacobian(
     model: &Model,
     data: &Data,
@@ -224,10 +246,6 @@ pub fn extract_joint_equality_jacobian(
     let nv = model.nv;
 
     let c0 = eq_data[0];
-    let c1 = eq_data[1];
-    let c2 = eq_data[2];
-    let c3 = eq_data[3];
-    let c4 = eq_data[4];
 
     let qpos1_adr = model.jnt_qpos_adr[joint1_id];
     let dof1_adr = model.jnt_dof_adr[joint1_id];
@@ -244,11 +262,8 @@ pub fn extract_joint_equality_jacobian(
         let q2 = data.qpos[qpos2_adr];
         let qd2 = data.qvel[dof2_adr];
 
-        // poly(q2) = c0 + c1*q2 + c2*q2² + c3*q2³ + c4*q2⁴
-        let q1_target = c0 + c1 * q2 + c2 * q2 * q2 + c3 * q2 * q2 * q2 + c4 * q2 * q2 * q2 * q2;
-
-        // poly'(q2) = c1 + 2*c2*q2 + 3*c3*q2² + 4*c4*q2³
-        let dpoly_dq2 = c1 + 2.0 * c2 * q2 + 3.0 * c3 * q2 * q2 + 4.0 * c4 * q2 * q2 * q2;
+        // poly(q2) = Σ eq_data[k]·q2ᵏ ; poly'(q2) = Σ k·eq_data[k]·q2ᵏ⁻¹ (degree ≤ 10).
+        let (q1_target, dpoly_dq2) = eval_poly_and_deriv(eq_data, q2);
         let qd1_target = dpoly_dq2 * qd2;
 
         let pos_error = q1 - q1_target;

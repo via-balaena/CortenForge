@@ -9,9 +9,15 @@
 //! * **free DOF** — a rotation/translation with a `LinearFunction` (e.g. the knee
 //!   flexion hinge): a free MJCF joint whose coordinate the caller sets directly.
 //! * **coupled DOF** — a translation with a `SimmSpline` (e.g. the tibial
-//!   roll-glide): an interposed wrapper *body* carrying a `slide` joint, driven
-//!   kinematically by the caller from the spline (the validated S1 representation,
-//!   the only way to reproduce the coupled knee without an equality constraint).
+//!   roll-glide): an interposed wrapper *body* carrying a `slide` joint, held on
+//!   the spline manifold by a degree-8 polynomial **joint-equality constraint** to
+//!   the driving coordinate, so the coupled knee can **move under torque** (forward
+//!   dynamics) with the slides staying coupled to the angle, instead of being posed
+//!   kinematically — G3. (This closes the *kinematic/coupling* gap: the constraint
+//!   reproduces the SimmSpline pose to ≤0.17 mm and holds the manifold under motion;
+//!   matching OpenSim's forward-dynamics *acceleration* is a separate follow-up.)
+//!   The kinematic `qpos_targets` path still poses it directly; the two agree to
+//!   ≤0.17 mm across the ROM, so kinematic-only callers are unaffected.
 //! * **constant** — folded into the child body's `pos` (translation) or skipped
 //!   when it is an identity rotation (gait2392's zero rotation2/3 and the zero
 //!   `tz`).
@@ -39,9 +45,17 @@
 
 use cf_msk_lib::ir::TransformFn;
 use cf_msk_lib::{Body, CanonicalSource, Kind, Model, ParamSource, Spline, TransformAxis, realize};
-use nalgebra::Vector3;
+use nalgebra::{DMatrix, DVector, Vector3};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+
+/// Degree of the polynomial that holds each coupled slide on its SimmSpline
+/// manifold via an engine joint-equality constraint. The G3 spike measured the fit
+/// vs the real gait2392 couplings: quartic misses the patella couplings (~1.4 mm),
+/// degree-8 holds every coupling to ≤0.17 mm over the working ROM. The engine's
+/// `EqualityType::Joint` carries up to 11 coefficients (degree-10 ceiling), so
+/// degree-8 (9 coefficients) fits with room to spare.
+const COUPLING_DEG: usize = 8;
 
 const TINY: &str = r#"<inertial pos="0 0 0" mass="0.01" diaginertia="0.001 0.001 0.001"/>"#;
 const MAIN_INERTIAL: &str = r#"<inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>"#;
@@ -146,6 +160,80 @@ pub fn emit(model: &Model) -> Emitted {
     };
     emit_body(&ctx, root, 2, &mut body_xml, &mut driven);
 
+    // Equality constraints: hold each coupled (Spline-driven) slide on its coupling
+    // manifold with a degree-8 polynomial equality to its driving coordinate's free
+    // joint — `q_slide = poly8(q_coord)`. This is what lets the coupled knee MOVE
+    // under torque (forward dynamics) instead of being posed kinematically: the
+    // engine's constraint solver keeps the slides coupled while the knee
+    // accelerates (the full leg twin holds the manifold to ~0.35 mm near extension,
+    // ~1 mm in the hardest deep-flexion region — see coupled_knee_equality.rs). The
+    // polynomial reproduces the SimmSpline to ≤0.17 mm across the coordinate's ROM,
+    // so the kinematic `qpos_targets` path still works unchanged — at any posed
+    // configuration the constraint residual is ~0 and `forward()` is unperturbed.
+    // The coordinate's free joint carries the ROM range limit (emitted below) so the
+    // polynomial can't be evaluated outside its fit range, where it would
+    // extrapolate away from the (flat-clamped) SimmSpline (G3 spike "R-extrapolation").
+    let free_joint_names: std::collections::HashSet<&str> = driven
+        .iter()
+        .filter(|d| matches!(d.function, TransformFn::Linear { .. }))
+        .map(|d| d.joint.as_str())
+        .collect();
+    let mut equality_xml = String::new();
+    for d in &driven {
+        let TransformFn::Spline(_) = &d.function else {
+            continue;
+        };
+        // joint2 = the free joint named after the driving coordinate. A coupling
+        // whose coordinate has no free joint or no usable ROM is left WITHOUT an
+        // equality constraint (and without a range limit, below) — we can't bound the
+        // degree-8 fit, and a zero-width range would divide by 0 in the u-rescale.
+        // Such a slide stays driveable kinematically (`qpos_targets`) but does NOT
+        // hold under forward dynamics — a known limitation for a source that omits
+        // coordinate ROMs (gait2392 always supplies them, so every real coupling here
+        // is constrained). This is the documented exception to the recon invariant
+        // "every kinematically-driven slide becomes a constraint or weld", not a
+        // silent bug; revisit if a scan/randomizer source ever ships rangeless coords.
+        if !free_joint_names.contains(d.coordinate.as_str()) {
+            continue;
+        }
+        let Some((lo, hi)) = coord_range(model, &d.coordinate) else {
+            continue;
+        };
+        if (hi - lo).abs() < 1e-9 {
+            continue;
+        }
+        let coeffs = fit_coupling_poly(&d.function, lo, hi);
+        let mut poly = String::new();
+        for (i, c) in coeffs.iter().enumerate() {
+            if i > 0 {
+                poly.push(' ');
+            }
+            // Snap SVD round-off (|c| ≲ 1e-12, e.g. the ~1e-17 high-order terms a
+            // constant coupling produces) to exactly 0, and emit the rest at FIXED
+            // 12-decimal precision. The fit is only good to ~0.17 mm (≫ 1e-12), so
+            // truncating the f64 tail is lossless — and it makes the polycoef (hence
+            // the byte snapshot) deterministic across platforms/toolchains, where the
+            // raw SVD tail can differ at ULP (FMA/reorder; cf-mjcf-emit's snapshot is
+            // byte-checked ubuntu-only).
+            let c = if c.abs() < 1e-12 { 0.0 } else { *c };
+            if c == 0.0 {
+                poly.push('0');
+            } else {
+                let _ = write!(poly, "{c:.12}");
+            }
+        }
+        let _ = writeln!(
+            equality_xml,
+            "    <joint joint1=\"{}\" joint2=\"{}\" polycoef=\"{poly}\" solref=\"0.004 1\" solimp=\"0.99 0.9999 0.001 0.5 2\"/>",
+            d.joint, d.coordinate
+        );
+    }
+    let equality_block = if equality_xml.is_empty() {
+        String::new()
+    } else {
+        format!("  <equality>\n{equality_xml}  </equality>\n")
+    };
+
     let mut tendon_xml = String::new();
     for (name, seq) in &tendons {
         let _ = writeln!(tendon_xml, "    <spatial name=\"{name}\">");
@@ -180,8 +268,21 @@ pub fn emit(model: &Model) -> Emitted {
         format!("  <actuator>\n{actuator_xml}  </actuator>\n")
     };
 
+    // A forward-dynamics timestep: the engine default (10 ms) is far too coarse for
+    // muscle dynamics and for the coupled-knee equality constraints (a stiff joint
+    // coupling needs the solref timeconst ≥ 2·timestep). 1 ms is the standard
+    // musculoskeletal integration step. Kinematic posing (`qpos_targets` + a single
+    // `forward()`) does not integrate, so this is inert for the moment-arm path.
+    let option_block = "  <option timestep=\"0.001\"/>\n";
+    // `<compiler angle="radian"/>` is REQUIRED: all emitted joint ranges (and the
+    // model's coordinates generally) are in radians, but MJCF defaults to
+    // `angle="degree"` and converts `range` accordingly — without this, a range like
+    // the knee's `-2.0943951 0.17453293` is read as degrees and shrunk ~57× into a
+    // bogus radian range the joint is always outside, so the limit fires constantly
+    // and injects a phantom constraint force that corrupts forward dynamics (G3 PR2a).
+    let compiler_block = "  <compiler angle=\"radian\"/>\n";
     let mjcf = format!(
-        "<mujoco>\n  <worldbody>\n{body_xml}  </worldbody>\n  <tendon>\n{tendon_xml}  </tendon>\n{actuator_block}</mujoco>\n"
+        "<mujoco>\n{compiler_block}{option_block}  <worldbody>\n{body_xml}  </worldbody>\n{equality_block}  <tendon>\n{tendon_xml}  </tendon>\n{actuator_block}</mujoco>\n"
     );
     Emitted {
         mjcf,
@@ -320,9 +421,18 @@ fn emit_body(
         } else {
             ax.coordinate.clone()
         };
+        // Every coordinate with a source ROM gets its range limit; for a coordinate
+        // that drives equality-coupled slides this additionally keeps the coupling
+        // polynomial inside its fit range so the constraint can't extrapolate (G3
+        // "R-extrapolation"). Limits act only under dynamics — kinematic
+        // `qpos_targets` posing is unaffected.
+        let range_attr = match coord_range(ctx.model, &ax.coordinate) {
+            Some((lo, hi)) => format!(" range=\"{lo} {hi}\" limited=\"true\""),
+            None => String::new(),
+        };
         let _ = writeln!(
             out,
-            "{}<joint name=\"{jname}\" type=\"{jtype}\" axis=\"{}\"/>",
+            "{}<joint name=\"{jname}\" type=\"{jtype}\" axis=\"{}\"{range_attr}/>",
             ind(cd),
             v3(ax.axis)
         );
@@ -402,6 +512,82 @@ fn emit_patella(out: &mut String, depth: usize, pat: &PatellaSpec, driven: &mut 
     let _ = writeln!(out, "{}{TINY}", ind(c));
     let _ = writeln!(out, "{}<site name=\"{}\" pos=\"0 0 0\"/>", ind(c), pat.site);
     let _ = writeln!(out, "{}</body>", ind(depth));
+}
+
+/// The ROM `(min, max)` of a coordinate, if the source supplied one.
+fn coord_range(model: &Model, name: &str) -> Option<(f64, f64)> {
+    model
+        .coordinates
+        .iter()
+        .find(|c| c.name == name)
+        .and_then(|c| c.range)
+}
+
+/// Fit a degree-[`COUPLING_DEG`] polynomial (coefficients of `θᵏ`, raw radians) to
+/// the coupling function `f` over the coordinate ROM `[lo, hi]`, for an engine
+/// joint-equality `q_slide = Σ cₖ·θᵏ`. Fits in the scaled variable `u = (θ-mid)/half
+/// ∈ [-1, 1]` (well-conditioned Vandermonde at degree 8), then expands back to raw
+/// `θ` coefficients algebraically — so the constraint, evaluated by the engine in
+/// raw joint coordinates, is exact to the fit.
+fn fit_coupling_poly(f: &TransformFn, lo: f64, hi: f64) -> Vec<f64> {
+    let mid = 0.5 * (lo + hi);
+    let half = 0.5 * (hi - lo);
+    let n = 400;
+    let mut us = Vec::with_capacity(n);
+    let mut ys = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = lo + (hi - lo) * i as f64 / (n - 1) as f64;
+        us.push((x - mid) / half);
+        ys.push(f.eval(x));
+    }
+    let cu = lsq_poly(&us, &ys, COUPLING_DEG);
+    // u = a·θ + b, so substitute and collect powers of θ.
+    u_coeffs_to_raw(&cu, 1.0 / half, -mid / half)
+}
+
+/// Least-squares polynomial fit (coefficients `c0..cDeg`) via SVD.
+fn lsq_poly(us: &[f64], ys: &[f64], deg: usize) -> Vec<f64> {
+    let rows = us.len();
+    let mut a = DMatrix::<f64>::zeros(rows, deg + 1);
+    for (i, &u) in us.iter().enumerate() {
+        let mut p = 1.0;
+        for j in 0..=deg {
+            a[(i, j)] = p;
+            p *= u;
+        }
+    }
+    let b = DVector::from_row_slice(ys);
+    let svd = a.svd(true, true);
+    // The Vandermonde of u ∈ [-1,1] at degree 8 is well-conditioned; an SVD solve
+    // failure would mean a degenerate fit setup (the caller skips zero-width ROMs),
+    // i.e. an unrecoverable bug — fail loud rather than emit garbage coefficients.
+    match svd.solve(&b, 1e-12) {
+        Ok(c) => c.iter().copied().collect(),
+        Err(e) => panic!("coupling polynomial SVD solve failed: {e}"),
+    }
+}
+
+/// Convert polynomial coefficients in `u = a·θ + b` to coefficients in raw `θ`:
+/// `Σ cu[k]·uᵏ = Σ cu[k]·(a·θ+b)ᵏ`, expanded by the binomial theorem.
+fn u_coeffs_to_raw(cu: &[f64], a: f64, b: f64) -> Vec<f64> {
+    let n = cu.len();
+    let mut craw = vec![0.0; n];
+    for (k, &ck) in cu.iter().enumerate() {
+        // (a·θ + b)ᵏ = Σ_{j=0}^{k} C(k,j)·aʲ·b^{k-j}·θʲ
+        for (j, cr) in craw.iter_mut().enumerate().take(k + 1) {
+            *cr += ck * binom(k, j) * a.powi(j as i32) * b.powi((k - j) as i32);
+        }
+    }
+    craw
+}
+
+/// Binomial coefficient C(n, k) as an `f64` (n, k small — degree ≤ 10).
+fn binom(n: usize, k: usize) -> f64 {
+    let mut r = 1.0;
+    for i in 0..k {
+        r = r * (n - i) as f64 / (i + 1) as f64;
+    }
+    r
 }
 
 fn ind(depth: usize) -> String {
