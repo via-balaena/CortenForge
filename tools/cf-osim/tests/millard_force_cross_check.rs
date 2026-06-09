@@ -107,6 +107,7 @@ fn millard_isometric_force_matches_real_opensim() {
             l0: p["optimal_fiber_length_m"].as_f64().unwrap(),
             lts: p["tendon_slack_length_m"].as_f64().unwrap(),
             penn0: p["pennation_at_optimal_rad"].as_f64().unwrap(),
+            vmax: p["max_contraction_velocity_lopt_per_s"].as_f64().unwrap(),
         };
 
         let mut worst_rel = 0.0_f64;

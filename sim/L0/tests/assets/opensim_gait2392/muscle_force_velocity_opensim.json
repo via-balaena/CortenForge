@@ -1,0 +1,1914 @@
+{
+ "source": "OpenSim 4.6-2026-04-25-d8b9379",
+ "model": "gait2392.osim",
+ "muscle_model": "Millard2012EquilibriumMuscle, ignore_tendon_compliance=True (rigid), fiber_damping=0.1",
+ "coordinate": "knee_angle_r",
+ "regime": "non-isometric (knee speed set), activation set directly on state",
+ "convention": "force_along_path = getActuation (tension>0); mtu_velocity = lengthening speed (>0 lengthening)",
+ "angles_deg": [
+  -20.0,
+  -50.0,
+  -80.0
+ ],
+ "knee_speeds_rad_s": [
+  -20.0,
+  -10.0,
+  -4.0,
+  0.0,
+  4.0,
+  10.0,
+  20.0
+ ],
+ "activations": [
+  1.0,
+  0.5
+ ],
+ "params": {
+  "rect_fem_r": {
+   "max_isometric_force_N": 1169.0,
+   "optimal_fiber_length_m": 0.130462347889869,
+   "tendon_slack_length_m": 0.354766033735608,
+   "pennation_at_optimal_rad": 0.08726646,
+   "max_contraction_velocity_lopt_per_s": 10.0
+  },
+  "vas_int_r": {
+   "max_isometric_force_N": 1365.0,
+   "optimal_fiber_length_m": 0.101374267400811,
+   "tendon_slack_length_m": 0.158470119155291,
+   "pennation_at_optimal_rad": 0.05235988,
+   "max_contraction_velocity_lopt_per_s": 10.0
+  },
+  "bifemlh_r": {
+   "max_isometric_force_N": 896.0,
+   "optimal_fiber_length_m": 0.12363108064316,
+   "tendon_slack_length_m": 0.369759011831837,
+   "pennation_at_optimal_rad": 0.0,
+   "max_contraction_velocity_lopt_per_s": 10.0
+  },
+  "semimem_r": {
+   "max_isometric_force_N": 1288.0,
+   "optimal_fiber_length_m": 0.0909853547142785,
+   "tendon_slack_length_m": 0.408296779280325,
+   "pennation_at_optimal_rad": 0.26179939,
+   "max_contraction_velocity_lopt_per_s": 10.0
+  }
+ },
+ "muscles": {
+  "rect_fem_r": [
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.4868556896630653,
+    "mtu_velocity_m_per_s": 1.018347936755213,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1691.4637785308503,
+      "normalized_fiber_velocity": 0.7776923821383942,
+      "fiber_velocity_m_per_s": 1.0145957410984012,
+      "normalized_fiber_length": 1.0162177389877778
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 891.3001009700452,
+      "normalized_fiber_velocity": 0.7776923821383942,
+      "fiber_velocity_m_per_s": 1.0145957410984012,
+      "normalized_fiber_length": 1.0162177389877778
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.4868556896630653,
+    "mtu_velocity_m_per_s": 0.5091739683776065,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1573.9456202770539,
+      "normalized_fiber_velocity": 0.3888461910691971,
+      "fiber_velocity_m_per_s": 0.5072978705492006,
+      "normalized_fiber_length": 1.0162177389877778
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 809.8967055803058,
+      "normalized_fiber_velocity": 0.3888461910691971,
+      "fiber_velocity_m_per_s": 0.5072978705492006,
+      "normalized_fiber_length": 1.0162177389877778
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.4868556896630653,
+    "mtu_velocity_m_per_s": 0.2036695873510426,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1479.005477112786,
+      "normalized_fiber_velocity": 0.15553847642767885,
+      "fiber_velocity_m_per_s": 0.20291914821968024,
+      "normalized_fiber_length": 1.0162177389877778
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 748.840044240467,
+      "normalized_fiber_velocity": 0.15553847642767885,
+      "fiber_velocity_m_per_s": 0.20291914821968024,
+      "normalized_fiber_length": 1.0162177389877778
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.4868556896630653,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1165.1705824272503,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 1.0162177389877778
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 582.864870392563,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 1.0162177389877778
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.4868556896630653,
+    "mtu_velocity_m_per_s": -0.2036695873510426,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 586.4544015017035,
+      "normalized_fiber_velocity": -0.15553847642767885,
+      "fiber_velocity_m_per_s": -0.20291914821968024,
+      "normalized_fiber_length": 1.0162177389877778
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 284.44905342465313,
+      "normalized_fiber_velocity": -0.15553847642767885,
+      "fiber_velocity_m_per_s": -0.20291914821968024,
+      "normalized_fiber_length": 1.0162177389877778
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.4868556896630653,
+    "mtu_velocity_m_per_s": -0.5091739683776065,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 238.33665823083595,
+      "normalized_fiber_velocity": -0.3888461910691971,
+      "fiber_velocity_m_per_s": -0.5072978705492006,
+      "normalized_fiber_length": 1.0162177389877778
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 96.80359203151464,
+      "normalized_fiber_velocity": -0.3888461910691971,
+      "fiber_velocity_m_per_s": -0.5072978705492006,
+      "normalized_fiber_length": 1.0162177389877778
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.4868556896630653,
+    "mtu_velocity_m_per_s": -1.018347936755213,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.7776923821383942,
+      "fiber_velocity_m_per_s": -1.0145957410984012,
+      "normalized_fiber_length": 1.0162177389877778
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.7776923821383942,
+      "fiber_velocity_m_per_s": -1.0145957410984012,
+      "normalized_fiber_length": 1.0162177389877778
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.5125702564604855,
+    "mtu_velocity_m_per_s": 0.9096065722825324,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1426.383703175534,
+      "normalized_fiber_velocity": 0.6954147731401095,
+      "fiber_velocity_m_per_s": 0.9072544406115929,
+      "normalized_fiber_length": 1.2127126768401855
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 786.5280209491825,
+      "normalized_fiber_velocity": 0.6954147731401095,
+      "fiber_velocity_m_per_s": 0.9072544406115929,
+      "normalized_fiber_length": 1.2127126768401855
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.5125702564604855,
+    "mtu_velocity_m_per_s": 0.4548032861412662,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1332.008930437848,
+      "normalized_fiber_velocity": 0.34770738657005473,
+      "fiber_velocity_m_per_s": 0.45362722030579644,
+      "normalized_fiber_length": 1.2127126768401855
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 719.0696919194863,
+      "normalized_fiber_velocity": 0.34770738657005473,
+      "fiber_velocity_m_per_s": 0.45362722030579644,
+      "normalized_fiber_length": 1.2127126768401855
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.5125702564604855,
+    "mtu_velocity_m_per_s": 0.18192131445650644,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1253.6143820205011,
+      "normalized_fiber_velocity": 0.13908295462802187,
+      "fiber_velocity_m_per_s": 0.18145088812231852,
+      "normalized_fiber_length": 1.2127126768401855
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 667.7098521143009,
+      "normalized_fiber_velocity": 0.13908295462802187,
+      "fiber_velocity_m_per_s": 0.18145088812231852,
+      "normalized_fiber_length": 1.2127126768401855
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.5125702564604855,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1005.388554563717,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 1.2127126768401855
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 535.4885613215677,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 1.2127126768401855
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.5125702564604855,
+    "mtu_velocity_m_per_s": -0.18192131445650644,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 563.1567949784688,
+      "normalized_fiber_velocity": -0.13908295462802187,
+      "fiber_velocity_m_per_s": -0.18145088812231852,
+      "normalized_fiber_length": 1.2127126768401855
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 306.26430446460233,
+      "normalized_fiber_velocity": -0.13908295462802187,
+      "fiber_velocity_m_per_s": -0.18145088812231852,
+      "normalized_fiber_length": 1.2127126768401855
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.5125702564604855,
+    "mtu_velocity_m_per_s": -0.4548032861412662,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 289.40658932988356,
+      "normalized_fiber_velocity": -0.34770738657005473,
+      "fiber_velocity_m_per_s": -0.45362722030579644,
+      "normalized_fiber_length": 1.2127126768401855
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 157.2266360437978,
+      "normalized_fiber_velocity": -0.34770738657005473,
+      "fiber_velocity_m_per_s": -0.45362722030579644,
+      "normalized_fiber_length": 1.2127126768401855
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.5125702564604855,
+    "mtu_velocity_m_per_s": -0.9096065722825324,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 48.402325241493564,
+      "normalized_fiber_velocity": -0.6954147731401095,
+      "fiber_velocity_m_per_s": -0.9072544406115929,
+      "normalized_fiber_length": 1.2127126768401855
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 16.453561338749687,
+      "normalized_fiber_velocity": -0.6954147731401095,
+      "fiber_velocity_m_per_s": -0.9072544406115929,
+      "normalized_fiber_length": 1.2127126768401855
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.5332346229762265,
+    "mtu_velocity_m_per_s": 0.6450516801763285,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1217.998467288723,
+      "normalized_fiber_velocity": 0.4934346736485869,
+      "fiber_velocity_m_per_s": 0.6437464605446591,
+      "normalized_fiber_length": 1.3707436955065475
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 764.2855814425956,
+      "normalized_fiber_velocity": 0.4934346736485869,
+      "fiber_velocity_m_per_s": 0.6437464605446591,
+      "normalized_fiber_length": 1.3707436955065475
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.5332346229762265,
+    "mtu_velocity_m_per_s": 0.32252584008816426,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1156.694769387259,
+      "normalized_fiber_velocity": 0.24671733682429345,
+      "fiber_velocity_m_per_s": 0.32187323027232956,
+      "normalized_fiber_length": 1.3707436955065475
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 719.2422833470744,
+      "normalized_fiber_velocity": 0.24671733682429345,
+      "fiber_velocity_m_per_s": 0.32187323027232956,
+      "normalized_fiber_length": 1.3707436955065475
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.5332346229762265,
+    "mtu_velocity_m_per_s": 0.1290103360352657,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1099.7570055014642,
+      "normalized_fiber_velocity": 0.0986869347297174,
+      "fiber_velocity_m_per_s": 0.12874929210893185,
+      "normalized_fiber_length": 1.3707436955065475
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 682.1385319173038,
+      "normalized_fiber_velocity": 0.0986869347297174,
+      "fiber_velocity_m_per_s": 0.12874929210893185,
+      "normalized_fiber_length": 1.3707436955065475
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.5332346229762265,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 935.2522631124365,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 1.3707436955065475
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 594.1295810648742,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 1.3707436955065475
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.5332346229762265,
+    "mtu_velocity_m_per_s": -0.1290103360352657,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 670.1137229239058,
+      "normalized_fiber_velocity": -0.0986869347297174,
+      "fiber_velocity_m_per_s": -0.12874929210893185,
+      "normalized_fiber_length": 1.3707436955065475
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 455.80373131269334,
+      "normalized_fiber_velocity": -0.0986869347297174,
+      "fiber_velocity_m_per_s": -0.12874929210893185,
+      "normalized_fiber_length": 1.3707436955065475
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.5332346229762265,
+    "mtu_velocity_m_per_s": -0.32252584008816426,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 491.1981137082039,
+      "normalized_fiber_velocity": -0.24671733682429345,
+      "fiber_velocity_m_per_s": -0.32187323027232956,
+      "normalized_fiber_length": 1.3707436955065475
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 357.7110572179689,
+      "normalized_fiber_velocity": -0.24671733682429345,
+      "fiber_velocity_m_per_s": -0.32187323027232956,
+      "normalized_fiber_length": 1.3707436955065475
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.5332346229762265,
+    "mtu_velocity_m_per_s": -0.6450516801763285,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 306.204715226391,
+      "normalized_fiber_velocity": -0.4934346736485869,
+      "fiber_velocity_m_per_s": -0.6437464605446591,
+      "normalized_fiber_length": 1.3707436955065475
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 250.82290883227344,
+      "normalized_fiber_velocity": -0.4934346736485869,
+      "fiber_velocity_m_per_s": -0.6437464605446591,
+      "normalized_fiber_length": 1.3707436955065475
+     }
+    }
+   }
+  ],
+  "vas_int_r": [
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.2284632401241641,
+    "mtu_velocity_m_per_s": 0.9287056954923265,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1552.2249120344468,
+      "normalized_fiber_velocity": 0.9134952255902452,
+      "fiber_velocity_m_per_s": 0.9260490926834968,
+      "normalized_fiber_length": 0.692423388051525
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 838.2801615936836,
+      "normalized_fiber_velocity": 0.9134952255902452,
+      "fiber_velocity_m_per_s": 0.9260490926834968,
+      "normalized_fiber_length": 0.692423388051525
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.2284632401241641,
+    "mtu_velocity_m_per_s": 0.46435284774616326,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1417.8118483024728,
+      "normalized_fiber_velocity": 0.4567476127951226,
+      "fiber_velocity_m_per_s": 0.4630245463417484,
+      "normalized_fiber_length": 0.692423388051525
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 739.9897769394665,
+      "normalized_fiber_velocity": 0.4567476127951226,
+      "fiber_velocity_m_per_s": 0.4630245463417484,
+      "normalized_fiber_length": 0.692423388051525
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.2284632401241641,
+    "mtu_velocity_m_per_s": 0.18574113909846526,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1319.0144422455367,
+      "normalized_fiber_velocity": 0.18269904511804902,
+      "fiber_velocity_m_per_s": 0.18520981853669932,
+      "normalized_fiber_length": 0.692423388051525
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 671.9407622380604,
+      "normalized_fiber_velocity": 0.18269904511804902,
+      "fiber_velocity_m_per_s": 0.18520981853669932,
+      "normalized_fiber_length": 0.692423388051525
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.2284632401241641,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1023.9297978432438,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.692423388051525
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 511.9648989216219,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.692423388051525
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.2284632401241641,
+    "mtu_velocity_m_per_s": -0.18574113909846526,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 463.1058574091564,
+      "normalized_fiber_velocity": -0.18269904511804902,
+      "fiber_velocity_m_per_s": -0.18520981853669932,
+      "normalized_fiber_length": 0.692423388051525
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 219.11938758928613,
+      "normalized_fiber_velocity": -0.18269904511804902,
+      "fiber_velocity_m_per_s": -0.18520981853669932,
+      "normalized_fiber_length": 0.692423388051525
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.2284632401241641,
+    "mtu_velocity_m_per_s": -0.46435284774616326,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 130.2593099638401,
+      "normalized_fiber_velocity": -0.4567476127951226,
+      "fiber_velocity_m_per_s": -0.4630245463417484,
+      "normalized_fiber_length": 0.692423388051525
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 34.04580219368991,
+      "normalized_fiber_velocity": -0.4567476127951226,
+      "fiber_velocity_m_per_s": -0.4630245463417484,
+      "normalized_fiber_length": 0.692423388051525
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.2284632401241641,
+    "mtu_velocity_m_per_s": -0.9287056954923265,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.9134952255902452,
+      "fiber_velocity_m_per_s": -0.9260490926834968,
+      "normalized_fiber_length": 0.692423388051525
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.9134952255902452,
+      "fiber_velocity_m_per_s": -0.9260490926834968,
+      "normalized_fiber_length": 0.692423388051525
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.2519259928248632,
+    "mtu_velocity_m_per_s": 0.8445583046694778,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1952.5471919611946,
+      "normalized_fiber_velocity": 0.8317698927065733,
+      "fiber_velocity_m_per_s": 0.8432006351918003,
+      "normalized_fiber_length": 0.9233738791259196
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 1032.950633300032,
+      "normalized_fiber_velocity": 0.8317698927065733,
+      "fiber_velocity_m_per_s": 0.8432006351918003,
+      "normalized_fiber_length": 0.9233738791259196
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.2519259928248632,
+    "mtu_velocity_m_per_s": 0.4222791523347389,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1808.9504212456645,
+      "normalized_fiber_velocity": 0.41588494635328666,
+      "fiber_velocity_m_per_s": 0.42160031759590016,
+      "normalized_fiber_length": 0.9233738791259196
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 932.8137292825497,
+      "normalized_fiber_velocity": 0.41588494635328666,
+      "fiber_velocity_m_per_s": 0.42160031759590016,
+      "normalized_fiber_length": 0.9233738791259196
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.2519259928248632,
+    "mtu_velocity_m_per_s": 0.1689116609338956,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1696.6704751414109,
+      "normalized_fiber_velocity": 0.1663539785413147,
+      "fiber_velocity_m_per_s": 0.1686401270383601,
+      "normalized_fiber_length": 0.9233738791259196
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 859.6706450345924,
+      "normalized_fiber_velocity": 0.1663539785413147,
+      "fiber_velocity_m_per_s": 0.1686401270383601,
+      "normalized_fiber_length": 0.9233738791259196
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.2519259928248632,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1330.5680174783297,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.9233738791259196
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 665.2840087391648,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.9233738791259196
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.2519259928248632,
+    "mtu_velocity_m_per_s": -0.1689116609338956,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 644.3794771909347,
+      "normalized_fiber_velocity": -0.1663539785413147,
+      "fiber_velocity_m_per_s": -0.1686401270383601,
+      "normalized_fiber_length": 0.9233738791259196
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 310.85433113158035,
+      "normalized_fiber_velocity": -0.1663539785413147,
+      "fiber_velocity_m_per_s": -0.1686401270383601,
+      "normalized_fiber_length": 0.9233738791259196
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.2519259928248632,
+    "mtu_velocity_m_per_s": -0.4222791523347389,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 235.918813979403,
+      "normalized_fiber_velocity": -0.41588494635328666,
+      "fiber_velocity_m_per_s": -0.42160031759590016,
+      "normalized_fiber_length": 0.9233738791259196
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 89.6208883299841,
+      "normalized_fiber_velocity": -0.41588494635328666,
+      "fiber_velocity_m_per_s": -0.42160031759590016,
+      "normalized_fiber_length": 0.9233738791259196
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.2519259928248632,
+    "mtu_velocity_m_per_s": -0.8445583046694778,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.8317698927065733,
+      "fiber_velocity_m_per_s": -0.8432006351918003,
+      "normalized_fiber_length": 0.9233738791259196
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.8317698927065733,
+      "fiber_velocity_m_per_s": -0.8432006351918003,
+      "normalized_fiber_length": 0.9233738791259196
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.2718068535284272,
+    "mtu_velocity_m_per_s": 0.6545745151815298,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1840.6203389276816,
+      "normalized_fiber_velocity": 0.6449945367511573,
+      "fiber_velocity_m_per_s": 0.6538584864067403,
+      "normalized_fiber_length": 1.1192272982092868
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 979.0272117769064,
+      "normalized_fiber_velocity": 0.6449945367511573,
+      "fiber_velocity_m_per_s": 0.6538584864067403,
+      "normalized_fiber_length": 1.1192272982092868
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.2718068535284272,
+    "mtu_velocity_m_per_s": 0.3272872575907649,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1727.1861244597546,
+      "normalized_fiber_velocity": 0.3224972683755786,
+      "fiber_velocity_m_per_s": 0.32692924320337013,
+      "normalized_fiber_length": 1.1192272982092868
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 900.3237428491393,
+      "normalized_fiber_velocity": 0.3224972683755786,
+      "fiber_velocity_m_per_s": 0.32692924320337013,
+      "normalized_fiber_length": 1.1192272982092868
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.2718068535284272,
+    "mtu_velocity_m_per_s": 0.13091490303630599,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1627.8129042433243,
+      "normalized_fiber_velocity": 0.12899890735023148,
+      "fiber_velocity_m_per_s": 0.13077169728134808,
+      "normalized_fiber_length": 1.1192272982092868
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 837.4453157246417,
+      "normalized_fiber_velocity": 0.12899890735023148,
+      "fiber_velocity_m_per_s": 0.13077169728134808,
+      "normalized_fiber_length": 1.1192272982092868
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.2718068535284272,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1302.170138896665,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 1.1192272982092868
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 665.8293883737905,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 1.1192272982092868
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.2718068535284272,
+    "mtu_velocity_m_per_s": -0.13091490303630599,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 731.1230520578836,
+      "normalized_fiber_velocity": -0.12899890735023148,
+      "fiber_velocity_m_per_s": -0.13077169728134808,
+      "normalized_fiber_length": 1.1192272982092868
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 371.5113002768783,
+      "normalized_fiber_velocity": -0.12899890735023148,
+      "fiber_velocity_m_per_s": -0.13077169728134808,
+      "normalized_fiber_length": 1.1192272982092868
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.2718068535284272,
+    "mtu_velocity_m_per_s": -0.3272872575907649,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 375.62900719030085,
+      "normalized_fiber_velocity": -0.3224972683755786,
+      "fiber_velocity_m_per_s": -0.32692924320337013,
+      "normalized_fiber_length": 1.1192272982092868
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 180.57246082680467,
+      "normalized_fiber_velocity": -0.3224972683755786,
+      "fiber_velocity_m_per_s": -0.32692924320337013,
+      "normalized_fiber_length": 1.1192272982092868
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.2718068535284272,
+    "mtu_velocity_m_per_s": -0.6545745151815298,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 50.48308187116232,
+      "normalized_fiber_velocity": -0.6449945367511573,
+      "fiber_velocity_m_per_s": -0.6538584864067403,
+      "normalized_fiber_length": 1.1192272982092868
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.6449945367511573,
+      "fiber_velocity_m_per_s": -0.6538584864067403,
+      "normalized_fiber_length": 1.1192272982092868
+     }
+    }
+   }
+  ],
+  "bifemlh_r": [
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.4661130773651286,
+    "mtu_velocity_m_per_s": -0.6509871415857654,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 61.13288688279006,
+      "normalized_fiber_velocity": -0.5265562172547279,
+      "fiber_velocity_m_per_s": -0.6509871415857654,
+      "normalized_fiber_length": 0.7793676560298063
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 6.976724908383218,
+      "normalized_fiber_velocity": -0.5265562172547279,
+      "fiber_velocity_m_per_s": -0.6509871415857654,
+      "normalized_fiber_length": 0.7793676560298063
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.4661130773651286,
+    "mtu_velocity_m_per_s": -0.3254935707928827,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 260.24546388247677,
+      "normalized_fiber_velocity": -0.26327810862736395,
+      "fiber_velocity_m_per_s": -0.3254935707928827,
+      "normalized_fiber_length": 0.7793676560298063
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 118.32787267473248,
+      "normalized_fiber_velocity": -0.26327810862736395,
+      "fiber_velocity_m_per_s": -0.3254935707928827,
+      "normalized_fiber_length": 0.7793676560298063
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.4661130773651286,
+    "mtu_velocity_m_per_s": -0.1301974283171531,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 459.06535276573015,
+      "normalized_fiber_velocity": -0.10531124345094561,
+      "fiber_velocity_m_per_s": -0.1301974283171531,
+      "normalized_fiber_length": 0.7793676560298063
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 224.81473267626268,
+      "normalized_fiber_velocity": -0.10531124345094561,
+      "fiber_velocity_m_per_s": -0.1301974283171531,
+      "normalized_fiber_length": 0.7793676560298063
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.4661130773651286,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 763.9565176642353,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.7793676560298063
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 381.97825883211766,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.7793676560298063
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.4661130773651286,
+    "mtu_velocity_m_per_s": 0.1301974283171531,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 948.088677852302,
+      "normalized_fiber_velocity": 0.10531124345094561,
+      "fiber_velocity_m_per_s": 0.1301974283171531,
+      "normalized_fiber_length": 0.7793676560298063
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 478.7622826327534,
+      "normalized_fiber_velocity": 0.10531124345094561,
+      "fiber_velocity_m_per_s": 0.1301974283171531,
+      "normalized_fiber_length": 0.7793676560298063
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.4661130773651286,
+    "mtu_velocity_m_per_s": 0.3254935707928827,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1006.3710399689764,
+      "normalized_fiber_velocity": 0.26327810862736395,
+      "fiber_velocity_m_per_s": 0.3254935707928827,
+      "normalized_fiber_length": 0.7793676560298063
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 514.9803792509941,
+      "normalized_fiber_velocity": 0.26327810862736395,
+      "fiber_velocity_m_per_s": 0.3254935707928827,
+      "normalized_fiber_length": 0.7793676560298063
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.4661130773651286,
+    "mtu_velocity_m_per_s": 0.6509871415857654,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1067.3900154489952,
+      "normalized_fiber_velocity": 0.5265562172547279,
+      "fiber_velocity_m_per_s": 0.6509871415857654,
+      "normalized_fiber_length": 0.7793676560298063
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 557.2847262575094,
+      "normalized_fiber_velocity": 0.5265562172547279,
+      "fiber_velocity_m_per_s": 0.6509871415857654,
+      "normalized_fiber_length": 0.7793676560298063
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.44919102245422876,
+    "mtu_velocity_m_per_s": -0.6112361117876451,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 42.70133728295955,
+      "normalized_fiber_velocity": -0.49440327513748245,
+      "fiber_velocity_m_per_s": -0.6112361117876451,
+      "normalized_fiber_length": 0.6424922455515751
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.49440327513748245,
+      "fiber_velocity_m_per_s": -0.6112361117876451,
+      "normalized_fiber_length": 0.6424922455515751
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.44919102245422876,
+    "mtu_velocity_m_per_s": -0.30561805589382257,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 188.05345625014817,
+      "normalized_fiber_velocity": -0.24720163756874122,
+      "fiber_velocity_m_per_s": -0.30561805589382257,
+      "normalized_fiber_length": 0.6424922455515751
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 82.95209476199449,
+      "normalized_fiber_velocity": -0.24720163756874122,
+      "fiber_velocity_m_per_s": -0.30561805589382257,
+      "normalized_fiber_length": 0.6424922455515751
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.44919102245422876,
+    "mtu_velocity_m_per_s": -0.12224722235752905,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 328.88271104755063,
+      "normalized_fiber_velocity": -0.09888065502749652,
+      "fiber_velocity_m_per_s": -0.12224722235752905,
+      "normalized_fiber_length": 0.6424922455515751
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 160.01150217854345,
+      "normalized_fiber_velocity": -0.09888065502749652,
+      "fiber_velocity_m_per_s": -0.12224722235752905,
+      "normalized_fiber_length": 0.6424922455515751
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.44919102245422876,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 537.9783580590578,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.6424922455515751
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 268.9891790295289,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.6424922455515751
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.44919102245422876,
+    "mtu_velocity_m_per_s": 0.12224722235752905,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 667.5506623546947,
+      "normalized_fiber_velocity": 0.09888065502749652,
+      "fiber_velocity_m_per_s": 0.12224722235752905,
+      "normalized_fiber_length": 0.6424922455515751
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 338.2051845225792,
+      "normalized_fiber_velocity": 0.09888065502749652,
+      "fiber_velocity_m_per_s": 0.12224722235752905,
+      "normalized_fiber_length": 0.6424922455515751
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.44919102245422876,
+    "mtu_velocity_m_per_s": 0.30561805589382257,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 712.1130339494562,
+      "normalized_fiber_velocity": 0.24720163756874122,
+      "fiber_velocity_m_per_s": 0.30561805589382257,
+      "normalized_fiber_length": 0.6424922455515751
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 367.1311503378077,
+      "normalized_fiber_velocity": 0.24720163756874122,
+      "fiber_velocity_m_per_s": 0.30561805589382257,
+      "normalized_fiber_length": 0.6424922455515751
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.44919102245422876,
+    "mtu_velocity_m_per_s": 0.6112361117876451,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 759.9262317541601,
+      "normalized_fiber_velocity": 0.49440327513748245,
+      "fiber_velocity_m_per_s": 0.6112361117876451,
+      "normalized_fiber_length": 0.6424922455515751
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 402.11238260323927,
+      "normalized_fiber_velocity": 0.49440327513748245,
+      "fiber_velocity_m_per_s": 0.6112361117876451,
+      "normalized_fiber_length": 0.6424922455515751
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.4355968570082605,
+    "mtu_velocity_m_per_s": -0.39928059748943484,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 29.273741177459996,
+      "normalized_fiber_velocity": -0.3229613422549384,
+      "fiber_velocity_m_per_s": -0.39928059748943484,
+      "normalized_fiber_length": 0.5325347383030097
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.1682024557087587,
+      "normalized_fiber_velocity": -0.3229613422549384,
+      "fiber_velocity_m_per_s": -0.39928059748943484,
+      "normalized_fiber_length": 0.5325347383030097
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.4355968570082605,
+    "mtu_velocity_m_per_s": -0.19964029874471742,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 82.34845870200873,
+      "normalized_fiber_velocity": -0.1614806711274692,
+      "fiber_velocity_m_per_s": -0.19964029874471742,
+      "normalized_fiber_length": 0.5325347383030097
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 33.939895284493744,
+      "normalized_fiber_velocity": -0.1614806711274692,
+      "fiber_velocity_m_per_s": -0.19964029874471742,
+      "normalized_fiber_length": 0.5325347383030097
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.4355968570082605,
+    "mtu_velocity_m_per_s": -0.07985611949788696,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 131.37707455738087,
+      "normalized_fiber_velocity": -0.06459226845098767,
+      "fiber_velocity_m_per_s": -0.07985611949788696,
+      "normalized_fiber_length": 0.5325347383030097
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 62.79480365208617,
+      "normalized_fiber_velocity": -0.06459226845098767,
+      "fiber_velocity_m_per_s": -0.07985611949788696,
+      "normalized_fiber_length": 0.5325347383030097
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.4355968570082605,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 190.2003694446272,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.5325347383030097
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 95.1001847223136,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.5325347383030097
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.4355968570082605,
+    "mtu_velocity_m_per_s": 0.07985611949788696,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 232.73335095808352,
+      "normalized_fiber_velocity": 0.06459226845098767,
+      "fiber_velocity_m_per_s": 0.07985611949788696,
+      "normalized_fiber_length": 0.5325347383030097
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 119.260409105646,
+      "normalized_fiber_velocity": 0.06459226845098767,
+      "fiber_velocity_m_per_s": 0.07985611949788696,
+      "normalized_fiber_length": 0.5325347383030097
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.4355968570082605,
+    "mtu_velocity_m_per_s": 0.19964029874471742,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 253.40992919013416,
+      "normalized_fiber_velocity": 0.1614806711274692,
+      "fiber_velocity_m_per_s": 0.19964029874471742,
+      "normalized_fiber_length": 0.5325347383030097
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 133.9392986615777,
+      "normalized_fiber_velocity": 0.1614806711274692,
+      "fiber_velocity_m_per_s": 0.19964029874471742,
+      "normalized_fiber_length": 0.5325347383030097
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.4355968570082605,
+    "mtu_velocity_m_per_s": 0.39928059748943484,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 276.10200838530216,
+      "normalized_fiber_velocity": 0.3229613422549384,
+      "fiber_velocity_m_per_s": 0.39928059748943484,
+      "normalized_fiber_length": 0.5325347383030097
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 152.51967232567233,
+      "normalized_fiber_velocity": 0.3229613422549384,
+      "fiber_velocity_m_per_s": 0.39928059748943484,
+      "normalized_fiber_length": 0.5325347383030097
+     }
+    }
+   }
+  ],
+  "semimem_r": [
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.4595875397335789,
+    "mtu_velocity_m_per_s": -0.7308992201349033,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.7300472490563332,
+      "fiber_velocity_m_per_s": -0.664236079135737,
+      "normalized_fiber_length": 0.6203012876290059
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": -0.7300472490563332,
+      "fiber_velocity_m_per_s": -0.664236079135737,
+      "normalized_fiber_length": 0.6203012876290059
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.4595875397335789,
+    "mtu_velocity_m_per_s": -0.36544961006745164,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 119.30655347900309,
+      "normalized_fiber_velocity": -0.3650236245281666,
+      "fiber_velocity_m_per_s": -0.3321180395678685,
+      "normalized_fiber_length": 0.6203012876290059
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 38.289806335084215,
+      "normalized_fiber_velocity": -0.3650236245281666,
+      "fiber_velocity_m_per_s": -0.3321180395678685,
+      "normalized_fiber_length": 0.6203012876290059
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.4595875397335789,
+    "mtu_velocity_m_per_s": -0.14617984402698067,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 310.0930884343969,
+      "normalized_fiber_velocity": -0.14600944981126668,
+      "fiber_velocity_m_per_s": -0.13284721582714742,
+      "normalized_fiber_length": 0.6203012876290059
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 146.50115605543152,
+      "normalized_fiber_velocity": -0.14600944981126668,
+      "fiber_velocity_m_per_s": -0.13284721582714742,
+      "normalized_fiber_length": 0.6203012876290059
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.4595875397335789,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 612.00839103855,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.6203012876290059
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 306.004195519275,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.6203012876290059
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.4595875397335789,
+    "mtu_velocity_m_per_s": 0.14617984402698067,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 782.0704241656161,
+      "normalized_fiber_velocity": 0.14600944981126668,
+      "fiber_velocity_m_per_s": 0.13284721582714742,
+      "normalized_fiber_length": 0.6203012876290059
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 399.58060024457495,
+      "normalized_fiber_velocity": 0.14600944981126668,
+      "fiber_velocity_m_per_s": 0.13284721582714742,
+      "normalized_fiber_length": 0.6203012876290059
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.4595875397335789,
+    "mtu_velocity_m_per_s": 0.36544961006745164,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 843.055282481079,
+      "normalized_fiber_velocity": 0.3650236245281666,
+      "fiber_velocity_m_per_s": 0.3321180395678685,
+      "normalized_fiber_length": 0.6203012876290059
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 442.89111164495677,
+      "normalized_fiber_velocity": 0.3650236245281666,
+      "fiber_velocity_m_per_s": 0.3321180395678685,
+      "normalized_fiber_length": 0.6203012876290059
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.4595875397335789,
+    "mtu_velocity_m_per_s": 0.7308992201349033,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 922.031377374463,
+      "normalized_fiber_velocity": 0.7300472490563332,
+      "fiber_velocity_m_per_s": 0.664236079135737,
+      "normalized_fiber_length": 0.6203012876290059
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 503.7426294960661,
+      "normalized_fiber_velocity": 0.7300472490563332,
+      "fiber_velocity_m_per_s": 0.664236079135737,
+      "normalized_fiber_length": 0.6203012876290059
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.44013920564079534,
+    "mtu_velocity_m_per_s": -0.7570324900183295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.44013920564079534,
+    "mtu_velocity_m_per_s": -0.37851624500916475,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.44013920564079534,
+    "mtu_velocity_m_per_s": -0.15140649800366593,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.44013920564079534,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.44013920564079534,
+    "mtu_velocity_m_per_s": 0.15140649800366593,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.44013920564079534,
+    "mtu_velocity_m_per_s": 0.37851624500916475,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.44013920564079534,
+    "mtu_velocity_m_per_s": 0.7570324900183295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -20.0,
+    "mtu_length_m": 0.42141536125647067,
+    "mtu_velocity_m_per_s": -0.6369750546016782,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -10.0,
+    "mtu_length_m": 0.42141536125647067,
+    "mtu_velocity_m_per_s": -0.3184875273008391,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": -4.0,
+    "mtu_length_m": 0.42141536125647067,
+    "mtu_velocity_m_per_s": -0.12739501092033564,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 0.0,
+    "mtu_length_m": 0.42141536125647067,
+    "mtu_velocity_m_per_s": 0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 4.0,
+    "mtu_length_m": 0.42141536125647067,
+    "mtu_velocity_m_per_s": 0.12739501092033564,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 10.0,
+    "mtu_length_m": 0.42141536125647067,
+    "mtu_velocity_m_per_s": 0.3184875273008391,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "knee_speed_rad_s": 20.0,
+    "mtu_length_m": 0.42141536125647067,
+    "mtu_velocity_m_per_s": 0.6369750546016782,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "normalized_fiber_velocity": 0.0,
+      "fiber_velocity_m_per_s": 0.0,
+      "normalized_fiber_length": 0.4441
+     }
+    }
+   }
+  ]
+ }
+}

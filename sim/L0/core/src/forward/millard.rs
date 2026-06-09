@@ -342,8 +342,20 @@ fn force_velocity_curve() -> SmoothSegmentedFunction {
     }
 }
 
+/// Millard2012's default fiber-damping coefficient (`fiber_damping = 0.1`), the
+/// value gait2392's muscles use. Adds a force `β·v̄` proportional to normalized
+/// fiber velocity, so even a passive fiber resists rapid length change.
+const FIBER_DAMPING: f64 = 0.1;
+
+/// Minimum normalized fiber length OpenSim clamps to (= the active-force-length
+/// curve's domain minimum, 0.4441). When the kinematic fiber would fall below it,
+/// OpenSim holds the fiber at this length AND freezes its velocity to zero — so the
+/// active (FV) and damping terms vanish there. Force is 0 either way (AFL and PFL
+/// are both 0 at/below it), but freezing the velocity is what kills the damping term.
+const MIN_NORM_FIBER_LENGTH: f64 = 0.4441;
+
 /// A muscle's intrinsic force-generating parameters (a grouped, transposition-safe
-/// alternative to four bare same-typed `f64` arguments).
+/// alternative to bare same-typed `f64` arguments).
 #[derive(Clone, Copy, Debug)]
 pub struct MillardMuscleParams {
     /// Max isometric force, newtons.
@@ -354,26 +366,30 @@ pub struct MillardMuscleParams {
     pub lts: f64,
     /// Pennation angle at optimal fiber length, radians.
     pub penn0: f64,
+    /// Max contraction velocity, in optimal fiber lengths per second (gait2392: 10).
+    pub vmax: f64,
 }
 
-/// Isometric Millard muscle force along the tendon/path, in newtons (tension
-/// positive).
+/// Millard muscle force along the tendon/path, in newtons (tension positive), at a
+/// known musculotendon length and lengthening rate.
 ///
 /// Rigid tendon (matching gait2392's `ignore_tendon_compliance=True` and our
-/// engine) + variable-width (constant-height) pennation. At isometric the
-/// force-velocity factor is 1.
+/// engine) + variable-width (constant-height) pennation + fiber damping. The
+/// normalized fiber force is `a·AFL(l̄)·FV(v̄) + PFL(l̄) + β·v̄`, scaled by `F0·cos(penn)`.
 ///
 /// - `p`: the muscle's [`MillardMuscleParams`]
 /// - `mtu`: musculotendon (path) length, meters
+/// - `mtu_vel`: musculotendon lengthening rate, meters per second (shortening < 0)
 /// - `act`: activation in `[0,1]`
 // `imprecise_flops`: keep the naive `sqrt(a²+b²)` (not `hypot`) to match OpenSim's
 // MuscleFixedWidthPennationModel bit-for-bit.
 #[allow(clippy::imprecise_flops)]
 #[must_use]
-pub fn millard_isometric_path_force(
+pub fn millard_path_force(
     curves: &MillardCurves,
     p: MillardMuscleParams,
     mtu: f64,
+    mtu_vel: f64,
     act: f64,
 ) -> f64 {
     // Rigid tendon: the fiber's projection along the tendon is the path length
@@ -387,10 +403,39 @@ pub fn millard_isometric_path_force(
     } else {
         1.0
     };
-    let norm_len = fiber_len / p.l0.max(1e-12);
-    let active = act * curves.active_fl(norm_len);
+    // Fiber velocity (rigid tendon, constant height): d(fiber)/dt = cos(penn)·d(mtu)/dt.
+    // Normalize by the maximum shortening rate (vmax · L0), per OpenSim. Below the
+    // floor, OpenSim clamps the fiber at the minimum length and freezes its velocity
+    // (so the damping term vanishes, not just the active force).
+    let raw_norm_len = fiber_len / p.l0.max(1e-12);
+    let (norm_len, norm_vel) = if raw_norm_len < MIN_NORM_FIBER_LENGTH {
+        (MIN_NORM_FIBER_LENGTH, 0.0)
+    } else {
+        (
+            raw_norm_len,
+            cos_penn * mtu_vel / (p.l0 * p.vmax).max(1e-12),
+        )
+    };
+
+    let active = act * curves.active_fl(norm_len) * curves.force_velocity(norm_vel);
     let passive = curves.passive_fl(norm_len);
-    p.f0 * (active + passive) * cos_penn
+    let damping = FIBER_DAMPING * norm_vel;
+    // A muscle pulls, never pushes: OpenSim floors the tendon force at 0 (which the
+    // damping term can otherwise drive negative at high shortening). At isometric the
+    // force is always ≥ 0, so this leaves the PR1 isometric result unchanged.
+    (p.f0 * (active + passive + damping) * cos_penn).max(0.0)
+}
+
+/// Isometric Millard muscle force along the tendon/path (i.e. [`millard_path_force`]
+/// with zero lengthening rate → force-velocity factor 1, zero damping).
+#[must_use]
+pub fn millard_isometric_path_force(
+    curves: &MillardCurves,
+    p: MillardMuscleParams,
+    mtu: f64,
+    act: f64,
+) -> f64 {
+    millard_path_force(curves, p, mtu, 0.0, act)
 }
 
 #[cfg(test)]
@@ -478,11 +523,42 @@ mod spotcheck {
             l0: 0.1,
             lts: 0.2,
             penn0: 0.0,
+            vmax: 10.0,
         };
         let mtu = p.lts + p.l0;
         assert!((millard_isometric_path_force(&c, p, mtu, 1.0) - 1000.0).abs() < 1e-9);
         assert!((millard_isometric_path_force(&c, p, mtu, 0.5) - 500.0).abs() < 1e-9);
         // Passive-only (activation 0) at resting length is 0 N.
         assert!(millard_isometric_path_force(&c, p, mtu, 0.0).abs() < 1e-9);
+    }
+
+    /// Force-velocity behavior at optimal length (cos = 1, AFL = 1, passive = 0):
+    /// the isometric wrapper equals zero-velocity; shortening (mtu_vel < 0) reduces
+    /// active force (FV < 1) and adds negative damping; lengthening raises it.
+    #[test]
+    fn force_velocity_reduces_shortening_force() {
+        let c = MillardCurves::default();
+        let p = MillardMuscleParams {
+            f0: 1000.0,
+            l0: 0.1,
+            lts: 0.2,
+            penn0: 0.0,
+            vmax: 10.0,
+        };
+        let mtu = p.lts + p.l0;
+        let iso = millard_path_force(&c, p, mtu, 0.0, 1.0);
+        assert!((iso - millard_isometric_path_force(&c, p, mtu, 1.0)).abs() < 1e-12);
+        // vmax·l0 = 1.0 m/s; shortening at 0.3 m/s → norm_vel = -0.3 → FV < 1.
+        let shortening = millard_path_force(&c, p, mtu, -0.3, 1.0);
+        let lengthening = millard_path_force(&c, p, mtu, 0.3, 1.0);
+        assert!(shortening < iso, "shortening {shortening} !< iso {iso}");
+        assert!(lengthening > iso, "lengthening {lengthening} !> iso {iso}");
+        // At max shortening FV(-1)=0 and damping β·(-1)=-0.1 would give a negative
+        // fiber force; a muscle can't push, so the tendon force is floored at 0.
+        let max_short = millard_path_force(&c, p, mtu, -1.0, 1.0);
+        assert!(
+            max_short.abs() < 1e-12,
+            "max_short={max_short} should clamp to 0"
+        );
     }
 }

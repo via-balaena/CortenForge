@@ -42,6 +42,7 @@ pub(crate) use acceleration::mj_fwd_acceleration;
 pub use actuation::{hill_active_fl, hill_force_velocity, hill_passive_fl};
 pub use millard::{
     MillardCurves, MillardMuscleParams, SmoothSegmentedFunction, millard_isometric_path_force,
+    millard_path_force,
 };
 pub use muscle::{
     muscle_activation_dynamics, muscle_gain_length, muscle_gain_velocity, muscle_passive_force,
