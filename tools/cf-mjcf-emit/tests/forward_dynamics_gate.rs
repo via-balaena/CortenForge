@@ -3,19 +3,21 @@
 //! "activations → motion" check that closes the G3 loop.
 //!
 //! Apples-to-apples with `gen_forward_dynamics.py`: reduced 5-DOF right leg, GRAVITY
-//! OFF (isolate muscle→accel), rigid tendon, activations set directly, and the
-//! gait2392 segment inertias INJECTED (the emit ships placeholder inertias, so the
-//! gate injects the matched mass matrix to validate the forward-dynamics SOLVER +
-//! the coupled-knee equality constraint + the Millard force — not anthropometry,
-//! which is a separate concern). The slides are posed ON the constraint manifold
-//! (`poly(knee)`), and only the 4 right-leg muscles apply force.
+//! OFF (isolate muscle→accel), rigid tendon, activations set directly. The emit now
+//! ships the **real gait2392 segment inertias** (femur/tibia direct, talus = the
+//! locked-foot composite), so the gate validates the SHIPPED twin's forward dynamics
+//! end-to-end — solver + coupled-knee equality constraint + Millard force AND
+//! anthropometry — with NO injected mass matrix (it used to inject; now it cross-
+//! checks that the emitted inertias equal the oracle's instead). The slides are posed
+//! ON the constraint manifold (`poly(knee)`), and only the 4 right-leg muscles apply
+//! force.
 //!
 //! **GATE:** at the functional-ROM sample angles (knee −0.3/−0.55/−0.8 rad ≈
 //! 17°/31°/46°), the full-activation knee acceleration matches OpenSim within 8% —
 //! possible because G3-PR2b stiffened the coupled-knee equality impedance enough to
 //! couple the heavy shank+foot-bearing tibia slides at the ACCELERATION level (a
 //! too-soft constraint left the knee's effective inertia wrong and the udot ~2.4×
-//! too high). The 8% budget leaves headroom over the ~3.2% actual match (for
+//! too high). The 8% budget leaves headroom over the ~2.6% actual match (for
 //! cross-platform float/solver variance) while staying well below the
 //! geometry-limited deep-flexion residual. **REPORTED:** deep flexion + per-muscle, where the
 //! residual is the emit's dropped-conditional via-point GEOMETRY (semimem extension,
@@ -64,20 +66,60 @@ fn forward_dynamics_matches_opensim() {
     )
     .unwrap();
 
-    // Match OpenSim: gravity off + inject the gait2392 segment inertias.
+    // Match OpenSim's gravity-off setup. The segment inertias are NO LONGER injected:
+    // the emit now ships the real gait2392 anthropometric inertias (femur/tibia direct,
+    // talus = the locked-foot composite — `cf_osim::parse_leg_chain`), so the twin
+    // carries its own mass matrix. This gate now validates the SHIPPED twin's forward
+    // dynamics end-to-end, anthropometry included — the injection it used to need is
+    // gone. (Cross-check that the emitted inertias match the oracle's: below.)
     model.gravity = Vector3::zeros();
+
+    // The emitted twin's segment inertias must equal the gait2392 values the OpenSim
+    // oracle was computed with — otherwise the udot match below would be a coincidence
+    // of two different mass matrices. femur/tibia compare to the direct body inertia;
+    // talus to the locked-foot composite. (Loaded as principal diag + iquat; compare
+    // in the body frame via the inertia matrix R·diag·Rᵀ to stay representation-agnostic.)
     for (name, iner) in d["inertias"].as_object().unwrap() {
-        let b = model.body_name_to_id[name];
-        model.body_mass[b] = iner["mass"].as_f64().unwrap();
-        model.body_ipos[b] = v3(&iner["com"]);
-        model.body_inertia[b] = v3(&iner["idiag"]);
-        let q = iner["iquat"].as_array().unwrap();
-        model.body_iquat[b] = UnitQuaternion::from_quaternion(Quaternion::new(
-            q[0].as_f64().unwrap(),
-            q[1].as_f64().unwrap(),
-            q[2].as_f64().unwrap(),
-            q[3].as_f64().unwrap(),
-        ));
+        let b = *model
+            .body_name_to_id
+            .get(name)
+            .unwrap_or_else(|| panic!("oracle inertia body '{name}' is not in the emitted twin"));
+        assert!(
+            (model.body_mass[b] - iner["mass"].as_f64().unwrap()).abs() < 1e-6,
+            "emitted {name} mass {} != oracle {}",
+            model.body_mass[b],
+            iner["mass"]
+        );
+        assert!(
+            (model.body_ipos[b] - v3(&iner["com"])).norm() < 1e-6,
+            "emitted {name} CoM != oracle"
+        );
+        // Reconstruct the inertia tensor in the body frame (R·diag·Rᵀ) on both sides:
+        // the principal diag + iquat are eigendecomposition-order/sign ambiguous, the
+        // full tensor is not.
+        let r = model.body_iquat[b].to_rotation_matrix();
+        let got = r.matrix()
+            * nalgebra::Matrix3::from_diagonal(&model.body_inertia[b])
+            * r.matrix().transpose();
+        let oq = iner["iquat"].as_array().unwrap();
+        let orq = UnitQuaternion::from_quaternion(Quaternion::new(
+            oq[0].as_f64().unwrap(),
+            oq[1].as_f64().unwrap(),
+            oq[2].as_f64().unwrap(),
+            oq[3].as_f64().unwrap(),
+        ))
+        .to_rotation_matrix();
+        let want = orq.matrix()
+            * nalgebra::Matrix3::from_diagonal(&v3(&iner["idiag"]))
+            * orq.matrix().transpose();
+        // Tolerance is loose for two distinct reasons: the femur/tibia `idiag` in the
+        // JSON are 6-decimal-rounded (~3e-7 vs the full-precision .osim parse), and the
+        // talus composite differs from the JSON's (full-precision) numpy composite at
+        // the f64 level (~1e-8, a composition-order gap — not rounding).
+        assert!(
+            (got - want).abs().max() < 1e-5,
+            "emitted {name} inertia tensor != oracle"
+        );
     }
 
     let adr: HashMap<String, usize> = emitted
@@ -185,8 +227,8 @@ fn forward_dynamics_matches_opensim() {
         worst_deep * 100.0
     );
 
-    // 8% budget: headroom over the ~3.2% actual match (cross-platform float/solver
-    // variance), well under the geometry-limited deep-flexion residual (~12.7%).
+    // 8% budget: headroom over the ~2.6% actual match (cross-platform float/solver
+    // variance), well under the geometry-limited deep-flexion residual (~14.3%).
     assert!(
         worst_func < 0.08,
         "functional-ROM forward-dynamics knee acceleration vs OpenSim worst {:.1}% exceeds 8%",

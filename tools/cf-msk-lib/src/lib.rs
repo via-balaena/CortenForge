@@ -49,7 +49,7 @@ pub mod spline;
 use nalgebra::Vector3;
 
 pub use anthro::{AnthroSource, Sex};
-pub use ir::{Body, Coordinate, Joint, Model, TransformAxis, TransformFn};
+pub use ir::{Body, Coordinate, Inertia, Joint, Model, TransformAxis, TransformFn};
 pub use muscle::{Kind, MovingSplines, Muscle, MuscleForce, PathPoint};
 pub use randomizer::{RandomizerConfig, RandomizerSource, Rng};
 pub use spline::Spline;
@@ -205,6 +205,12 @@ impl Default for BodyParams {
 /// changes geometry, not the rolling-glide *relationship* (D11). A uniform
 /// [`BodyParams::uniform`] therefore reproduces an exact dilation (every moment arm
 /// ×s); an anisotropic morph changes proportions while keeping the coupling.
+///
+/// **Mass distribution ([`Body::inertia`]) is NOT scaled here yet** — it rides
+/// through unchanged, so a *dialed* body currently carries the template's
+/// (canonical) mass/CoM/inertia. Correct for the canonical (identity) body the emit
+/// ships and grades; the per-axis inertia scale-morph (matching OpenSim ScaleTool:
+/// mass ∝ volume, inertia per the axisymmetric tensor rule) is a separate increment.
 pub fn realize(template: &Template, params: &BodyParams) -> Model {
     // Maps a body name to its segment scale. The pelvis (root anchor) is the
     // fallback; the talus also falls here, which is moot in v1 — it is the inert
@@ -360,12 +366,14 @@ mod tests {
                     parent: None,
                     location_in_parent: Vector3::zeros(),
                     joint: vec![],
+                    inertia: None,
                 },
                 Body {
                     name: "femur_r".into(),
                     parent: Some(0),
                     location_in_parent: Vector3::new(0.0, -0.4, 0.0),
                     joint: vec![],
+                    inertia: None,
                 },
                 Body {
                     name: "tibia_r".into(),
@@ -395,6 +403,7 @@ mod tests {
                             function: TransformFn::Linear { coeff: 1.0 },
                         },
                     ],
+                    inertia: None,
                 },
             ],
             coordinates: vec![],
@@ -558,12 +567,14 @@ mod tests {
                     parent: None,
                     location_in_parent: Vector3::zeros(),
                     joint: vec![],
+                    inertia: None,
                 },
                 Body {
                     name: "femur_r".into(),
                     parent: Some(0),
                     location_in_parent: Vector3::zeros(),
                     joint: vec![],
+                    inertia: None,
                 },
                 Body {
                     name: "tibia_r".into(),
@@ -575,6 +586,7 @@ mod tests {
                         coordinate: String::new(),
                         function: TransformFn::Constant(1.0),
                     }],
+                    inertia: None,
                 },
             ],
             coordinates: vec![],
@@ -610,12 +622,14 @@ mod tests {
                     parent: None,
                     location_in_parent: Vector3::zeros(),
                     joint: vec![],
+                    inertia: None,
                 },
                 Body {
                     name: "femur_r".into(),
                     parent: Some(0),
                     location_in_parent: Vector3::new(0.0, -0.05, 0.0), // hip in pelvis
                     joint: vec![],
+                    inertia: None,
                 },
                 Body {
                     name: "tibia_r".into(),
@@ -637,12 +651,14 @@ mod tests {
                             function: TransformFn::Linear { coeff: 1.0 },
                         },
                     ],
+                    inertia: None,
                 },
                 Body {
                     name: "talus_r".into(),
                     parent: Some(2),
                     location_in_parent: Vector3::new(0.0, -0.40, 0.0), // tibia length
                     joint: vec![],
+                    inertia: None,
                 },
             ],
             coordinates: vec![],
@@ -678,12 +694,14 @@ mod tests {
                     parent: None,
                     location_in_parent: Vector3::zeros(),
                     joint: vec![],
+                    inertia: None,
                 },
                 Body {
                     name: "femur_r".into(),
                     parent: Some(0),
                     location_in_parent: Vector3::new(0.0, -0.4, 0.0),
                     joint: vec![],
+                    inertia: None,
                 },
             ],
             coordinates: vec![],

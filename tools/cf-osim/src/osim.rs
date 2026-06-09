@@ -15,9 +15,9 @@
 //! canonical (default-pose) body is the neutral standing leg.
 
 use crate::xml::{self, Node};
-use cf_msk_lib::ir::{Body, Coordinate, Model, TransformAxis, TransformFn};
+use cf_msk_lib::ir::{Body, Coordinate, Inertia, Model, TransformAxis, TransformFn};
 use cf_msk_lib::{Kind, MovingSplines, Muscle, PathPoint, Spline};
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 
 /// The four muscles the builder converts + validates: two extensors whose
 /// effective insertion rides a `MovingPathPoint` (the patella emulation), and
@@ -45,6 +45,7 @@ pub fn parse_leg_chain(osim_xml: &str) -> Model {
         parent: None,
         location_in_parent: Vector3::zeros(),
         joint: vec![],
+        inertia: Some(parse_inertia(&root, "pelvis")),
     };
     // Femur: the hip CustomJoint, read generically (3 rotation DOFs + zero
     // translations) — unwelded, placed by the hip joint as it articulates.
@@ -53,6 +54,7 @@ pub fn parse_leg_chain(osim_xml: &str) -> Model {
         parent: Some(0),
         location_in_parent: joint_location(hip),
         joint: parse_spatial_transform(hip),
+        inertia: Some(parse_inertia(&root, "femur_r")),
     };
     // Tibia: the knee CustomJoint, read generically.
     let tibia = Body {
@@ -60,6 +62,7 @@ pub fn parse_leg_chain(osim_xml: &str) -> Model {
         parent: Some(1),
         location_in_parent: joint_location(knee),
         joint: parse_spatial_transform(knee),
+        inertia: Some(parse_inertia(&root, "tibia_r")),
     };
     // Talus: the ankle CustomJoint, read generically. A3 adds it as the **length-
     // grounding distal endpoint of the tibia**: `ankle_r.location_in_parent =
@@ -74,6 +77,11 @@ pub fn parse_leg_chain(osim_xml: &str) -> Model {
         parent: Some(2),
         location_in_parent: joint_location(ankle),
         joint: parse_spatial_transform(ankle),
+        // The twin's single `talus_r` body is the LUMPED foot: OpenSim's reduced
+        // model locks subtalar/mtp, so the foot is rigid = talus+calcn+toes composed
+        // about the talus frame (not the bare 0.097 kg talus). This is exactly the
+        // composite the forward-dynamics gate used to inject.
+        inertia: Some(foot_composite(&root)),
     };
 
     // Hip coordinates (proximal), then the knee coordinate, then the ankle.
@@ -103,6 +111,104 @@ fn joint_location(joint: &Node) -> Vector3<f64> {
         .map(vec3)
         // a CustomJoint always carries location_in_parent (default 0).
         .unwrap_or_else(Vector3::zeros)
+}
+
+/// Parse a body's mass distribution from its `<Body>` node: `<mass>`,
+/// `<mass_center>`, and the six `<inertia_*>` components (`xx, yy, zz, xy, xz, yz`,
+/// about the mass center in the body frame). gait2392 bodies always carry all of
+/// these; femur/tibia have zero products (diagonal).
+fn parse_inertia(root: &Node, body_name: &str) -> Inertia {
+    let b = root
+        .find_with_attr("Body", "name", body_name)
+        // the leg-chain bodies are always present in the vendored gait2392.
+        .unwrap_or_else(|| panic!("<Body name=\"{body_name}\"> not found"));
+    let mass = b
+        .child("mass")
+        .and_then(|n| n.floats().first().copied())
+        // every gait2392 body carries a <mass>.
+        .unwrap_or_else(|| panic!("body '{body_name}' has no <mass>"));
+    let com = b
+        .child("mass_center")
+        .map(vec3)
+        // every gait2392 body carries a <mass_center> (default 0).
+        .unwrap_or_else(Vector3::zeros);
+    let comp = |tag: &str| {
+        b.child(tag)
+            .and_then(|n| n.floats().first().copied())
+            .unwrap_or(0.0)
+    };
+    Inertia {
+        mass,
+        com,
+        tensor: [
+            comp("inertia_xx"),
+            comp("inertia_yy"),
+            comp("inertia_zz"),
+            comp("inertia_xy"),
+            comp("inertia_xz"),
+            comp("inertia_yz"),
+        ],
+    }
+}
+
+/// The symmetric inertia tensor `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` as a 3×3 matrix.
+fn tensor_to_matrix(t: &[f64; 6]) -> Matrix3<f64> {
+    Matrix3::new(t[0], t[3], t[4], t[3], t[1], t[5], t[4], t[5], t[2])
+}
+
+/// Compose the rigid **foot** inertia (talus + calcn + toes) about the talus body
+/// frame — the lumped foot the twin's single `talus_r` body carries.
+///
+/// OpenSim's reduced forward-dynamics model LOCKS subtalar/mtp, so the foot is a
+/// rigid composite, and the four target muscles do not cross the ankle — so the twin
+/// represents the whole foot as one body at the talus. At the default pose
+/// subtalar/mtp are at their locked coordinate 0 with `orientation_in_parent = 0`, so
+/// the three foot frames are PARALLEL: the composition is a pure parallel-axis sum
+/// (no relative rotation). Reproduces OpenSim's `getInertia` of the locked-foot
+/// composite to ~1e-8 (recon `recon_inertias.md`). This is exactly the composite the
+/// forward-dynamics gate used to inject.
+fn foot_composite(root: &Node) -> Inertia {
+    // Each foot body's frame ORIGIN in the talus frame (translations only — frames
+    // parallel at the default pose): talus at 0, calcn at the subtalar offset, toes
+    // at subtalar + mtp.
+    let subtalar = joint_location(find_custom_joint(root, "subtalar_r"));
+    let mtp = joint_location(find_custom_joint(root, "mtp_r"));
+    let origin = |body: &str| match body {
+        "talus_r" => Vector3::zeros(),
+        "calcn_r" => subtalar,
+        "toes_r" => subtalar + mtp,
+        // foot_composite is only ever called over these three bodies.
+        _ => unreachable!("foot_composite body '{body}'"),
+    };
+
+    let mut mass = 0.0;
+    let mut i_origin = Matrix3::zeros(); // inertia about the talus frame origin
+    let mut m_p = Vector3::zeros(); // Σ mₖ·pₖ (for the composite CoM)
+    for name in ["talus_r", "calcn_r", "toes_r"] {
+        let part = parse_inertia(root, name);
+        // The part's CoM in the talus frame (frames parallel, so no rotation).
+        let p = origin(name) + part.com;
+        // Parallel-axis: inertia about the talus origin = I_com + m(|p|²·I − p·pᵀ).
+        let shift = part.mass * (p.dot(&p) * Matrix3::identity() - p * p.transpose());
+        i_origin += tensor_to_matrix(&part.tensor) + shift;
+        m_p += part.mass * p;
+        mass += part.mass;
+    }
+    let com = m_p / mass;
+    // Shift the about-origin inertia to the composite CoM.
+    let i_com = i_origin - mass * (com.dot(&com) * Matrix3::identity() - com * com.transpose());
+    Inertia {
+        mass,
+        com,
+        tensor: [
+            i_com[(0, 0)],
+            i_com[(1, 1)],
+            i_com[(2, 2)],
+            i_com[(0, 1)],
+            i_com[(0, 2)],
+            i_com[(1, 2)],
+        ],
+    }
 }
 
 /// Read a `CustomJoint`'s `CoordinateSet` into the IR coordinates (name, default,
