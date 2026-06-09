@@ -19,11 +19,13 @@ twin's emitted forward dynamics:
   after setValue(...,True) leaves residual velocity -> garbage udot).
 - Only the 4 right-leg muscles apply force; everything else disabled.
 
-The JSON also carries the gait2392 segment inertias the twin must inject to match
-OpenSim's mass matrix (femur + tibia direct; the foot is the talus+calcn+toes
-composite about the talus frame, since subtalar/mtp are locked) — the twin is
-emitted with placeholder inertias, so the gate injects these to validate the
-forward-dynamics SOLVER + coupling + force, not anthropometry.
+The JSON also carries the gait2392 segment inertias these accelerations were
+computed with (femur + tibia direct; the foot is the talus+calcn+toes composite
+about the talus frame, since subtalar/mtp are locked). The twin now EMITS these
+same inertias (`cf_osim::parse_leg_chain` reads femur/tibia and composes the
+locked-foot composite), so the gate no longer injects them — it cross-checks that
+the emitted inertias equal these, then validates the shipped twin's forward
+dynamics end-to-end (solver + coupling + force + anthropometry).
 """
 import json
 import sys
@@ -93,7 +95,8 @@ fs = model.getForceSet()
 muscs = {n: osim.Muscle.safeDownCast(fs.get(n)) for n in MUSCLES}
 knee = cs.get("knee_angle_r")
 
-# Segment inertias for the twin to inject (femur/tibia direct, foot composite).
+# Segment inertias the twin emits + the gate cross-checks (femur/tibia direct, foot
+# composite).
 bs = model.getBodySet()
 inertias = {}
 for name in ["femur_r", "tibia_r"]:

@@ -120,10 +120,14 @@ constraints (don't read accel through it without zero velocity).
    manifold-hold (1.10 mm → 0.086 mm) and stays stable under integration. The
    residual (deep-flexion 12.7%, semimem ~22%) is the emit's documented
    dropped-conditional via-point GEOMETRY (PR1's static moment-arm limit), NOT a
-   dynamics error. **NOTE on inertia:** the gate INJECTS gait2392 segment inertias
-   (the emit ships placeholder inertias), so it validates the forward-dynamics
-   SOLVER + coupling + force, not anthropometry — real anthropometric inertias (IR
-   plumbing) for correct *absolute* shipped-twin motion remain a separate follow-up.
+   dynamics error. **NOTE on inertia (as of PR2b):** the gate INJECTED gait2392
+   segment inertias (the emit shipped placeholder inertias), so it validated the
+   forward-dynamics SOLVER + coupling + force, not anthropometry. ✅ **Now DONE** —
+   the real-inertia sub-arc (`recon_inertias.md`) threads real inertias through
+   IR/parse/emit, so the emit ships them and the gate no longer injects (it
+   cross-checks emitted==oracle); the shipped twin matches OpenSim ~2.6% functional
+   WITHOUT injection. The 3.2% / 12.7% figures here are the PR2b-era injected
+   (6-decimal-rounded) numbers; full-precision emitted inertias give ~2.6% / 14.3%.
 
 **PR2b productionized:** `gen_forward_dynamics.py` → vendored `forward_dynamics_opensim.json`
 (reduced 5-DOF oracle + the inertias to inject); CI cross-check `forward_dynamics_gate.rs`
@@ -135,10 +139,12 @@ constraints (don't read accel through it without zero velocity).
 force. Closing G3 required: **(PR2a) ✅ DONE 2026-06-09** — joint-limit phantom (the
 `<compiler angle="radian"/>` bug); **(PR2b) ✅ DONE 2026-06-09** — coupled-knee
 force-transmission error (stiffen the equality impedance) + the OpenSim-Manager
-forward-dynamics gate (3.2% functional). **REMAINING G3 follow-up:** real
-anthropometric segment inertias in the emitted twin (IR/parse/scale plumbing) so the
-shipped twin — not just the inertia-injected gate — produces correct absolute
-forward-dynamics motion.
+forward-dynamics gate (3.2% functional). **G3 follow-up — real anthropometric segment
+inertias in the emitted twin (IR/parse/emit plumbing): ✅ DELIVERED in the real-inertia
+sub-arc (`recon_inertias.md`)** — the shipped twin now produces correct absolute
+forward-dynamics motion without injection (gate cross-checks emitted==oracle, ~2.6%
+functional). The inertia *scale-morph* for dialed bodies (matching OpenSim ScaleTool)
+is the remaining increment, scoped in `recon_inertias.md`.
 
 ## G3 = two deliverables
 

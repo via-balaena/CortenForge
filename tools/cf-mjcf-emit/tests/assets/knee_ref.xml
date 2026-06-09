@@ -10,7 +10,7 @@
         <joint name="hip_flexion_r" type="hinge" axis="0 0 1" range="-2.0943951 2.0943951" limited="true"/>
         <joint name="hip_adduction_r" type="hinge" axis="1 0 0" range="-2.0943951 2.0943951" limited="true"/>
         <joint name="hip_rotation_r" type="hinge" axis="0 1 0" range="-2.0943951 2.0943951" limited="true"/>
-        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+        <inertial pos="0 -0.195031 0" mass="8.98403823076288" fullinertia="0.170220714339411 0.0446209639530494 0.179500857839617 0 0 0"/>
         <site name="vas_int_r_0" pos="0.03327 -0.220729 0.0355644"/>
         <site name="vas_int_r_1" pos="0.0384325 -0.239085 0.0326963"/>
         <body name="tibia_r_tx" pos="0 0 0">
@@ -21,7 +21,7 @@
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.001 0.001 0.001"/>
             <body name="tibia_r" pos="0 0 0">
               <joint name="knee_angle_r" type="hinge" axis="0 0 1" range="-2.0943951 0.17453293" limited="true"/>
-              <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+              <inertial pos="0 -0.184557 0" mass="3.58100089669871" fullinertia="0.0475693660337908 0.00481356680103835 0.048230051673149 0 0 0"/>
               <site name="bifemlh_r_1" pos="-0.0297545 -0.0355868 0.0290922"/>
               <site name="bifemlh_r_2" pos="-0.0231314 -0.0556538 0.0339063"/>
               <site name="semimem_r_1" pos="-0.0266901 -0.0471624 -0.0193454"/>
@@ -41,7 +41,7 @@
               </body>
               <body name="talus_r" pos="0 -0.42506489 0">
                 <joint name="ankle_angle_r" type="hinge" axis="-0.10501355 -0.17402245 0.97912632" range="-1.57079633 1.57079633" limited="true"/>
-                <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                <inertial pos="0.06139465713129579 -0.018594887441921136 0.005927790510310554" mass="1.5131479446441554" fullinertia="0.0029441428792817007 0.00823829501093673 0.008448675939952258 0.0006723861759138235 0.00031270369227255764 -0.00006893180220688582"/>
               </body>
             </body>
           </body>

@@ -98,15 +98,36 @@ pub struct Coordinate {
     pub range: Option<(f64, f64)>,
 }
 
+/// A body's mass distribution: total mass (kg), center of mass in the body frame
+/// (m), and the symmetric inertia tensor about that CoM in the body frame, stored
+/// as the six independent components `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` (kg·m², the
+/// MuJoCo `fullinertia` order). The general emitter lowers this to
+/// `<inertial pos mass fullinertia>`; the loader eigendecomposes to principal axes,
+/// so no eigendecomposition is needed here. gait2392's femur/tibia are diagonal
+/// (products 0); the lumped foot (the `talus_r` composite) carries products.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Inertia {
+    pub mass: f64,
+    pub com: Vector3<f64>,
+    /// `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` about [`com`](Self::com), body frame.
+    pub tensor: [f64; 6],
+}
+
 /// A body in the kinematic tree: its parent (index into [`Model::bodies`], `None`
-/// for the root), the fixed offset to the joint frame (`location_in_parent`), and
-/// the joint that connects it to its parent.
+/// for the root), the fixed offset to the joint frame (`location_in_parent`), the
+/// joint that connects it to its parent, and its mass distribution.
+///
+/// `inertia` is `None` when the source has no mass data (a synthetic/kinematic-only
+/// body), mirroring [`crate::Muscle::force`]. The emitter requires it on any body
+/// that carries a free DOF (a moving body needs a mass matrix) and fails loud
+/// otherwise; a welded root (the pelvis) needs none.
 #[derive(Debug, Clone)]
 pub struct Body {
     pub name: String,
     pub parent: Option<usize>,
     pub location_in_parent: Vector3<f64>,
     pub joint: Joint,
+    pub inertia: Option<Inertia>,
 }
 
 impl Body {
@@ -232,6 +253,7 @@ mod tests {
                     function: TransformFn::Linear { coeff: 1.0 },
                 },
             ],
+            inertia: None,
         };
         let q = HashMap::from([("q".to_string(), std::f64::consts::FRAC_PI_2)]);
         let x = body.joint_xform(&q);
@@ -251,12 +273,14 @@ mod tests {
                     parent: None,
                     location_in_parent: Vector3::new(1.0, 0.0, 0.0),
                     joint: vec![],
+                    inertia: None,
                 },
                 Body {
                     name: "child".into(),
                     parent: Some(0),
                     location_in_parent: Vector3::new(0.0, 2.0, 0.0),
                     joint: vec![],
+                    inertia: None,
                 },
             ],
             coordinates: vec![],

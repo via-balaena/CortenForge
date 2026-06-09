@@ -18,9 +18,11 @@
 //!   matches OpenSim's forward-dynamics knee acceleration to ~3% across the
 //!   functional ROM (`forward_dynamics_gate.rs`). The kinematic `qpos_targets` path
 //!   still poses it directly; the two agree to ≤0.17 mm across the ROM, so
-//!   kinematic-only callers are unaffected. (The forward-dynamics gate injects
-//!   gait2392 segment inertias — the emit ships placeholder inertias, so the
-//!   *shipped* twin needs real anthropometric inertias for correct absolute motion.)
+//!   kinematic-only callers are unaffected. The emit ships the **real gait2392
+//!   anthropometric segment inertias** (femur/tibia direct, talus = the locked-foot
+//!   composite — from `cf_osim::parse_leg_chain`), as `<inertial fullinertia>` on
+//!   each anatomical body, so the *shipped* twin moves correctly under its own muscle
+//!   force without any injected mass matrix.
 //! * **constant** — folded into the child body's `pos` (translation) or skipped
 //!   when it is an identity rotation (gait2392's zero rotation2/3 and the zero
 //!   `tz`).
@@ -47,7 +49,9 @@
 //! against real OpenSim 4.6 in `cf-osim`'s `opensim_cross_check`.
 
 use cf_msk_lib::ir::TransformFn;
-use cf_msk_lib::{Body, CanonicalSource, Kind, Model, ParamSource, Spline, TransformAxis, realize};
+use cf_msk_lib::{
+    Body, CanonicalSource, Inertia, Kind, Model, ParamSource, Spline, TransformAxis, realize,
+};
 use nalgebra::{DMatrix, DVector, Vector3};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -60,8 +64,14 @@ use std::fmt::Write as _;
 /// degree-8 (9 coefficients) fits with room to spare.
 const COUPLING_DEG: usize = 8;
 
+/// The (near-massless) inertia for the emit-synthesized DOF carriers: the coupled-
+/// slide wrapper bodies and the patella sub-body. These are not anatomical segments
+/// — they exist only to host MuJoCo slide joints (the tibia's massless coupled DOFs,
+/// the patella moving point), so they carry a tiny placeholder inertia. The real
+/// segment mass lives on the anatomical body. This is exactly the config the
+/// forward-dynamics gate validated (it injected real inertia only into the anatomical
+/// femur/tibia/talus, leaving these wrappers tiny).
 const TINY: &str = r#"<inertial pos="0 0 0" mass="0.01" diaginertia="0.001 0.001 0.001"/>"#;
-const MAIN_INERTIAL: &str = r#"<inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>"#;
 
 /// A joint whose position is driven kinematically by a model coordinate:
 /// `qpos = function.eval(coordinate_value)`. Covers both the free DOFs (a `Linear`
@@ -179,7 +189,7 @@ pub fn emit(model: &Model) -> Emitted {
     // The impedance is NEAR-RIGID (`solimp="0.9999 0.99999 …"`, G3-PR2b): the default
     // softer impedance failed to couple the heavy shank+foot-bearing tibia slides at
     // the ACCELERATION level (the knee's forward-dynamics inertia came out wrong, so
-    // it over-accelerated ~2.4×); near-rigid impedance closes that to a 3.2% match vs
+    // it over-accelerated ~2.4×); near-rigid impedance closes that to a ~2.6% match vs
     // OpenSim forward dynamics (`forward_dynamics_gate.rs`) and tightens the manifold
     // hold, while the stable `solref="0.004 1"` (4× timestep) keeps integration stable.
     let free_joint_names: std::collections::HashSet<&str> = driven
@@ -452,10 +462,20 @@ fn emit_body(
         });
     }
 
-    // A body that carries a free DOF needs real inertia; a welded body (root /
-    // hip-at-neutral) needs none (MuJoCo only requires inertia on moving bodies).
+    // A body that carries a free DOF needs real inertia (MuJoCo requires a mass
+    // matrix on moving bodies); a welded body (the root pelvis) needs none. Emit the
+    // body's real anatomical mass distribution as `fullinertia` (the loader
+    // eigendecomposes to principal axes). A moving body without inertia would yield a
+    // physically meaningless twin (and fail to load), so fail loud — matching the
+    // dangling-site convention above.
     if !free.is_empty() {
-        let _ = writeln!(out, "{}{MAIN_INERTIAL}", ind(cd));
+        let inertia = b.inertia.unwrap_or_else(|| {
+            panic!(
+                "body '{}' carries a free DOF but has no inertia — a moving body needs a mass matrix",
+                b.name
+            )
+        });
+        let _ = writeln!(out, "{}{}", ind(cd), inertial_xml(&inertia));
     }
 
     if let Some(body_sites) = ctx.sites.get(b.name.as_str()) {
@@ -605,6 +625,26 @@ fn ind(depth: usize) -> String {
 
 fn v3(v: Vector3<f64>) -> String {
     format!("{} {} {}", v.x, v.y, v.z)
+}
+
+/// A body's `<inertial>` element: CoM as `pos`, mass, and the full symmetric inertia
+/// tensor as `fullinertia="Ixx Iyy Izz Ixy Ixz Iyz"`. Emitting the full tensor (not
+/// `diaginertia + quat`) keeps the emitter free of an eigendecomposition — the loader
+/// diagonalizes it. The foot composite is off-axis (nonzero products), so the full
+/// form is required there; femur/tibia have zero products (a diagonal tensor).
+fn inertial_xml(i: &Inertia) -> String {
+    let t = i.tensor;
+    format!(
+        "<inertial pos=\"{}\" mass=\"{}\" fullinertia=\"{} {} {} {} {} {}\"/>",
+        v3(i.com),
+        i.mass,
+        t[0],
+        t[1],
+        t[2],
+        t[3],
+        t[4],
+        t[5]
+    )
 }
 
 /// The basis-axis letter of a unit axis, for naming slide joints. Falls back to

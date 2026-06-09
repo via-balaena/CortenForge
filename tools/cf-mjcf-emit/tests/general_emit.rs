@@ -416,3 +416,32 @@ fn kinematic_only_emit_has_no_actuator_block() {
     );
     load_model(&mjcf).expect("kinematic-only MJCF must load");
 }
+
+#[test]
+#[should_panic(expected = "carries a free DOF but has no inertia")]
+fn free_dof_body_without_inertia_panics() {
+    // A moving body (one carrying a free DOF) needs a mass matrix — emitting it
+    // without inertia would yield a meaningless / unloadable twin, so the emit fails
+    // loud. femur_r carries the hip DOFs; strip its inertia to trip the guard.
+    let mut t = template();
+    t.bodies
+        .iter_mut()
+        .find(|b| b.name == "femur_r")
+        .unwrap()
+        .inertia = None;
+    let _ = emit(&t);
+}
+
+#[test]
+fn welded_body_without_inertia_emits_and_loads() {
+    // The other half of the guard: a WELDED body (no free DOF) needs no inertia.
+    // Stripping the root pelvis's inertia still emits a loadable twin (MuJoCo requires
+    // a mass matrix only on moving bodies; the root emits no `<inertial>` regardless).
+    let mut t = template();
+    t.bodies
+        .iter_mut()
+        .find(|b| b.name == "pelvis")
+        .unwrap()
+        .inertia = None;
+    load_model(&emit(&t).mjcf).expect("welded-None twin must still load");
+}
