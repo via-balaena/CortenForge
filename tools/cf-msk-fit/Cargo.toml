@@ -35,3 +35,5 @@ serde_json = { workspace = true }
 cf-mjcf-emit = { path = "../cf-mjcf-emit" }
 # Load the morphed MJCF to prove the scan→params→model path emits a valid model.
 sim-mjcf = { path = "../../sim/L0/mjcf" }
+# Drive the emitted muscle-driven twin (read actuator force) in the muscle_drive example.
+sim-core = { path = "../../sim/L0/core" }

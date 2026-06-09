@@ -170,12 +170,24 @@ residual → a tiny force residual, graded once the model is wired into the engi
   regimes (isometric / eccentric / shortening-floored / min-fiber clamp)** — ties the
   engine pipeline to PR1/PR2's OpenSim-validated force. (`sim-mjcf` gets only the
   `act_num` arm; the `"millardmuscle"` MJCF parse is PR3b.)
-- **G2-PR3b — emit + drive the leg twin + the dynamics gate.** MJCF parse
-  (`compute_general_millardmuscle`) + `cf-mjcf-emit` emits `<general>` Millard
-  actuators (today it emits only spatial tendons) so the leg twin self-actuates; the
-  **muscle-DRIVEN leg-twin example** (folds in the audit's deferred Hill *visual*
-  example — drive the twin with activations and watch it move) + **joint-torque /
-  forward-dynamics** validation vs OpenSim (the full dynamics gate).
+- **G2-PR3b — emit + drive the leg twin + the dynamics gate.** *(DONE.)* The IR muscle
+  carries optional `MuscleForce`; `cf_osim::parse_muscle` reads the 5 Millard params;
+  `cf-mjcf-emit` emits a `<general dyntype="millardmuscle">` actuator per muscle on its
+  spatial tendon; `sim-mjcf` parses `"millardmuscle"` (`compute_general_millardmuscle`
+  + validation, unit-tested mirroring HillMuscle). **Validation** (`muscle_driven_dynamics.rs`):
+  the **machine-exact gate** = the loaded twin's actuator force == standalone
+  `millard_path_force` at its own actuator length (worst 2.3e-13 N) → proves the
+  emit→parse→tendon-transmission→dispatch wiring; the **reported** end-to-end knee joint
+  moment vs OpenSim (`gen_muscle_joint_moments.py`) is ~1–2% for the quads/bifemlh but
+  ~25% for semimem — the dominant residual is the emit's **dropped-conditional via-point**
+  (a conditional path point active over part of the ROM is dropped, bending the moment
+  arm: the quads at deep flexion, semimem at extension where its conditional is active
+  ≈0…−32°), a documented emit-geometry limit (A1 5 mm gate), not the force model. The
+  **muscle-DRIVEN visual example** (`cf-msk-fit/examples/muscle_drive.rs`) sweeps the knee
+  ROM with each muscle tinted/thickened by its live Millard force — the validated
+  force-length dynamics made visible (the audit's deferred Hill visual example). Free
+  forward dynamics (move under muscle force) is deferred — the coupled knee is driven
+  kinematically, not via equality constraints (`R-coupled-dyn`).
 
 ## Risks / open items
 - **R-implicit-deriv** — the analytic actuator Jacobian for Millard (the Bézier

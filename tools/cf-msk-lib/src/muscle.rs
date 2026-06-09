@@ -69,9 +69,29 @@ impl PathPoint {
     }
 }
 
-/// A muscle: an ordered path of points.
+/// A muscle's Millard2012 force-generating parameters (the engine's
+/// `sim_core::MillardMuscleParams`, kept here dependency-free). `None` on a muscle
+/// means only its path geometry was parsed (the kinematic-only path); the muscle
+/// actuator emit needs these.
+#[derive(Debug, Clone, Copy)]
+pub struct MuscleForce {
+    /// Max isometric force, newtons.
+    pub f0: f64,
+    /// Optimal fiber length, meters.
+    pub l0: f64,
+    /// Tendon slack length, meters.
+    pub lts: f64,
+    /// Max contraction velocity, optimal fiber lengths per second.
+    pub vmax: f64,
+    /// Pennation angle at optimal fiber length, radians.
+    pub penn0: f64,
+}
+
+/// A muscle: an ordered path of points, plus optional force-generating parameters.
 #[derive(Debug, Clone)]
 pub struct Muscle {
     pub name: String,
     pub path: Vec<PathPoint>,
+    /// Millard force parameters, if parsed (needed to emit a driven actuator).
+    pub force: Option<MuscleForce>,
 }

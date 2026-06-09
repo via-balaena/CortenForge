@@ -50,7 +50,7 @@ use nalgebra::Vector3;
 
 pub use anthro::{AnthroSource, Sex};
 pub use ir::{Body, Coordinate, Joint, Model, TransformAxis, TransformFn};
-pub use muscle::{Kind, MovingSplines, Muscle, PathPoint};
+pub use muscle::{Kind, MovingSplines, Muscle, MuscleForce, PathPoint};
 pub use randomizer::{RandomizerConfig, RandomizerSource, Rng};
 pub use spline::Spline;
 
@@ -518,6 +518,7 @@ mod tests {
         let mut t = chain_template();
         t.muscles.push(Muscle {
             name: "p".to_string(),
+            force: None,
             path: vec![PathPoint {
                 name: "o".to_string(),
                 body: "pelvis".to_string(),
@@ -647,6 +648,7 @@ mod tests {
             coordinates: vec![],
             muscles: vec![Muscle {
                 name: "m".to_string(),
+                force: None,
                 path: vec![
                     PathPoint {
                         name: "o".to_string(),
@@ -687,6 +689,7 @@ mod tests {
             coordinates: vec![],
             muscles: vec![Muscle {
                 name: "probe".to_string(),
+                force: None,
                 path: vec![
                     PathPoint {
                         name: "o".to_string(),

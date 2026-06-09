@@ -155,8 +155,33 @@ pub fn emit(model: &Model) -> Emitted {
         let _ = writeln!(tendon_xml, "    </spatial>");
     }
 
+    // A driven muscle actuator per muscle that carries Millard force parameters: a
+    // `<general dyntype="millardmuscle">` on the muscle's spatial tendon. gainprm
+    // layout (shared with HillMuscle): [_, _, F0, _, L0, Lts, vmax, penn, _]. The
+    // engine floors the tendon force at 0 in the force model, so no forcerange is
+    // needed. Activation is clamped to [0,1]. Muscles with no force params emit no
+    // actuator (the kinematic-only path is unchanged).
+    let mut actuator_xml = String::new();
+    for m in &model.muscles {
+        if let Some(f) = m.force {
+            let name = &m.name;
+            let _ = writeln!(
+                actuator_xml,
+                "    <general name=\"{name}\" tendon=\"{name}\" dyntype=\"millardmuscle\" \
+                 ctrllimited=\"true\" ctrlrange=\"0 1\" actlimited=\"true\" actrange=\"0 1\" \
+                 gainprm=\"0 0 {} 0 {} {} {} {} 0\"/>",
+                f.f0, f.l0, f.lts, f.vmax, f.penn0
+            );
+        }
+    }
+    let actuator_block = if actuator_xml.is_empty() {
+        String::new()
+    } else {
+        format!("  <actuator>\n{actuator_xml}  </actuator>\n")
+    };
+
     let mjcf = format!(
-        "<mujoco>\n  <worldbody>\n{body_xml}  </worldbody>\n  <tendon>\n{tendon_xml}  </tendon>\n</mujoco>\n"
+        "<mujoco>\n  <worldbody>\n{body_xml}  </worldbody>\n  <tendon>\n{tendon_xml}  </tendon>\n{actuator_block}</mujoco>\n"
     );
     Emitted {
         mjcf,

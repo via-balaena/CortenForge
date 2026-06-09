@@ -1,0 +1,1534 @@
+{
+ "source": "OpenSim 4.6-2026-04-25-d8b9379",
+ "model": "gait2392.osim",
+ "muscle_model": "Millard2012EquilibriumMuscle, ignore_tendon_compliance=True (rigid)",
+ "coordinate": "knee_angle_r",
+ "regime": "isometric, activation set directly on state",
+ "convention": "knee_moment = getActuation \u00b7 computeMomentArm (N\u00b7m)",
+ "activations": [
+  1.0,
+  0.5
+ ],
+ "muscles": {
+  "rect_fem_r": [
+   {
+    "angle_deg": -0.0,
+    "angle_rad": -0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1097.4365991134957,
+      "moment_arm_m": 0.050088357737347586,
+      "knee_moment_Nm": 54.96879697045488
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 548.7182995567479,
+      "moment_arm_m": 0.050088357737347586,
+      "knee_moment_Nm": 27.48439848522744
+     }
+    }
+   },
+   {
+    "angle_deg": -5.0,
+    "angle_rad": -0.08726646259971647,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1130.291865289495,
+      "moment_arm_m": 0.04879930836549918,
+      "knee_moment_Nm": 55.15746127727733
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 565.1459326447475,
+      "moment_arm_m": 0.04879930836549918,
+      "knee_moment_Nm": 27.578730638638664
+     }
+    }
+   },
+   {
+    "angle_deg": -10.0,
+    "angle_rad": -0.17453292519943295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1158.1268459696694,
+      "moment_arm_m": 0.04875588631429297,
+      "knee_moment_Nm": 56.465500839627886
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 579.0634229848347,
+      "moment_arm_m": 0.04875588631429297,
+      "knee_moment_Nm": 28.232750419813943
+     }
+    }
+   },
+   {
+    "angle_deg": -15.0,
+    "angle_rad": -0.2617993877991494,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1164.313998493989,
+      "moment_arm_m": 0.050070198089226775,
+      "knee_moment_Nm": 58.29743254265371
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 582.1569992469945,
+      "moment_arm_m": 0.050070198089226775,
+      "knee_moment_Nm": 29.148716271326855
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "angle_rad": -0.3490658503988659,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1165.1705824272503,
+      "moment_arm_m": 0.05091739683776065,
+      "knee_moment_Nm": 59.32745292913301
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 582.864870392563,
+      "moment_arm_m": 0.05091739683776065,
+      "knee_moment_Nm": 29.677961908568058
+     }
+    }
+   },
+   {
+    "angle_deg": -25.0,
+    "angle_rad": -0.4363323129985824,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1168.3818999187638,
+      "moment_arm_m": 0.05103922176324931,
+      "knee_moment_Nm": 59.63330289412034
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 588.0050858169683,
+      "moment_arm_m": 0.05103922176324931,
+      "knee_moment_Nm": 30.011321972930684
+     }
+    }
+   },
+   {
+    "angle_deg": -30.0,
+    "angle_rad": -0.5235987755982988,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1151.7066812664527,
+      "moment_arm_m": 0.05054196995298676,
+      "knee_moment_Nm": 58.20952447922315
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 583.7450606282415,
+      "moment_arm_m": 0.05054196995298676,
+      "knee_moment_Nm": 29.503625314477016
+     }
+    }
+   },
+   {
+    "angle_deg": -35.0,
+    "angle_rad": -0.6108652381980153,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1115.1503611265352,
+      "moment_arm_m": 0.04944409684069419,
+      "knee_moment_Nm": 55.1376024474755
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 569.9212427561527,
+      "moment_arm_m": 0.04944409684069419,
+      "knee_moment_Nm": 28.179241118403993
+     }
+    }
+   },
+   {
+    "angle_deg": -40.0,
+    "angle_rad": -0.6981317007977318,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1075.3906946571412,
+      "moment_arm_m": 0.048291233841050205,
+      "knee_moment_Nm": 51.931943506177426
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 555.303408406333,
+      "moment_arm_m": 0.048291233841050205,
+      "knee_moment_Nm": 26.81628674808243
+     }
+    }
+   },
+   {
+    "angle_deg": -45.0,
+    "angle_rad": -0.7853981633974483,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1038.0184265340922,
+      "moment_arm_m": 0.04700140586946159,
+      "knee_moment_Nm": 48.78832536550877
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 543.2450777850971,
+      "moment_arm_m": 0.04700140586946159,
+      "knee_moment_Nm": 25.533282387564583
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "angle_rad": -0.8726646259971648,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1005.388554563717,
+      "moment_arm_m": 0.04548032861412661,
+      "knee_moment_Nm": 45.72540184643961
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 535.4885613215677,
+      "moment_arm_m": 0.04548032861412661,
+      "knee_moment_Nm": 24.354195738010787
+     }
+    }
+   },
+   {
+    "angle_deg": -55.0,
+    "angle_rad": -0.9599310885968813,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 978.8862288612506,
+      "moment_arm_m": 0.043744620086424955,
+      "knee_moment_Nm": 42.82100618936864
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 533.1308827661675,
+      "moment_arm_m": 0.043744620086424955,
+      "knee_moment_Nm": 23.32160792294636
+     }
+    }
+   },
+   {
+    "angle_deg": -60.0,
+    "angle_rad": -1.0471975511965976,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 959.0447619454579,
+      "moment_arm_m": 0.04181681671036731,
+      "knee_moment_Nm": 40.10419902731107
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 536.5228094304042,
+      "moment_arm_m": 0.04181681671036731,
+      "knee_moment_Nm": 22.435675982882543
+     }
+    }
+   },
+   {
+    "angle_deg": -65.0,
+    "angle_rad": -1.1344640137963142,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 945.599867475262,
+      "moment_arm_m": 0.0397412977749071,
+      "knee_moment_Nm": 37.57936590924708
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 545.2703699694054,
+      "moment_arm_m": 0.0397412977749071,
+      "knee_moment_Nm": 21.6697521407879
+     }
+    }
+   },
+   {
+    "angle_deg": -70.0,
+    "angle_rad": -1.2217304763960306,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 937.7773149916374,
+      "moment_arm_m": 0.03749773239421367,
+      "knee_moment_Nm": 35.16452280292064
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 558.498130518123,
+      "moment_arm_m": 0.03749773239421367,
+      "knee_moment_Nm": 20.942413440837196
+     }
+    }
+   },
+   {
+    "angle_deg": -75.0,
+    "angle_rad": -1.3089969389957472,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 934.6364939595949,
+      "moment_arm_m": 0.035020892452864716,
+      "knee_moment_Nm": 32.73180413748152
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 575.1433549122589,
+      "moment_arm_m": 0.035020892452864716,
+      "knee_moment_Nm": 20.14203357736202
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "angle_rad": -1.3962634015954636,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 935.2522631124365,
+      "moment_arm_m": 0.03225258400881642,
+      "knee_moment_Nm": 30.164302185469538
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 594.1295810648742,
+      "moment_arm_m": 0.03225258400881642,
+      "knee_moment_Nm": 19.16221422541776
+     }
+    }
+   },
+   {
+    "angle_deg": -85.0,
+    "angle_rad": -1.4835298641951802,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 939.7057944510826,
+      "moment_arm_m": 0.03409461740381495,
+      "knee_moment_Nm": 32.038909533957636
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 618.4409953168401,
+      "moment_arm_m": 0.03409461740381495,
+      "knee_moment_Nm": 21.085509122162176
+     }
+    }
+   },
+   {
+    "angle_deg": -90.0,
+    "angle_rad": -1.5707963267948966,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 947.3698097738081,
+      "moment_arm_m": 0.032897105631823846,
+      "knee_moment_Nm": 31.16572470452983
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 644.4089252493457,
+      "moment_arm_m": 0.032897105631823846,
+      "knee_moment_Nm": 21.1991884840178
+     }
+    }
+   },
+   {
+    "angle_deg": -95.0,
+    "angle_rad": -1.6580627893946132,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 958.1083011599804,
+      "moment_arm_m": 0.031530692977984304,
+      "knee_moment_Nm": 30.209818683533467
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 672.7531968291571,
+      "moment_arm_m": 0.031530692977984304,
+      "knee_moment_Nm": 21.212374499177596
+     }
+    }
+   },
+   {
+    "angle_deg": -100.0,
+    "angle_rad": -1.7453292519943295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 971.6128975082685,
+      "moment_arm_m": 0.030050564818264364,
+      "knee_moment_Nm": 29.197516354833873
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 703.086807561776,
+      "moment_arm_m": 0.030050564818264364,
+      "knee_moment_Nm": 21.128155683501713
+     }
+    }
+   }
+  ],
+  "vas_int_r": [
+   {
+    "angle_deg": -0.0,
+    "angle_rad": -0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 285.0131480885121,
+      "moment_arm_m": 0.05037138021273687,
+      "knee_moment_Nm": 14.35650564799552
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 142.50657404425604,
+      "moment_arm_m": 0.05037138021273687,
+      "knee_moment_Nm": 7.17825282399776
+     }
+    }
+   },
+   {
+    "angle_deg": -5.0,
+    "angle_rad": -0.08726646259971647,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 485.5278452123297,
+      "moment_arm_m": 0.04707991039747267,
+      "knee_moment_Nm": 22.858607448074462
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 242.76392260616484,
+      "moment_arm_m": 0.04707991039747267,
+      "knee_moment_Nm": 11.429303724037231
+     }
+    }
+   },
+   {
+    "angle_deg": -10.0,
+    "angle_rad": -0.17453292519943295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 676.67474089236,
+      "moment_arm_m": 0.04581230945643134,
+      "knee_moment_Nm": 31.00003263111129
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 338.33737044618,
+      "moment_arm_m": 0.04581230945643134,
+      "knee_moment_Nm": 15.500016315555644
+     }
+    }
+   },
+   {
+    "angle_deg": -15.0,
+    "angle_rad": -0.2617993877991494,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 863.9798482239095,
+      "moment_arm_m": 0.04624591811872012,
+      "knee_moment_Nm": 39.955541317187155
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 431.98992411195474,
+      "moment_arm_m": 0.04624591811872012,
+      "knee_moment_Nm": 19.977770658593577
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "angle_rad": -0.3490658503988659,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1023.9297978432438,
+      "moment_arm_m": 0.046435284774616316,
+      "knee_moment_Nm": 47.54647175206634
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 511.9648989216219,
+      "moment_arm_m": 0.046435284774616316,
+      "knee_moment_Nm": 23.77323587603317
+     }
+    }
+   },
+   {
+    "angle_deg": -25.0,
+    "angle_rad": -0.4363323129985824,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1100.9072967292873,
+      "moment_arm_m": 0.04624188907955827,
+      "knee_moment_Nm": 50.90803310223205
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 550.4536483646436,
+      "moment_arm_m": 0.04624188907955827,
+      "knee_moment_Nm": 25.454016551116023
+     }
+    }
+   },
+   {
+    "angle_deg": -30.0,
+    "angle_rad": -0.5235987755982988,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1151.9753466619645,
+      "moment_arm_m": 0.045808698688620454,
+      "knee_moment_Nm": 52.77049155195703
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 575.9876733309823,
+      "moment_arm_m": 0.045808698688620454,
+      "knee_moment_Nm": 26.385245775978515
+     }
+    }
+   },
+   {
+    "angle_deg": -35.0,
+    "angle_rad": -0.6108652381980153,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1198.686798054457,
+      "moment_arm_m": 0.04497420661116938,
+      "knee_moment_Nm": 53.90998771778222
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 599.3433990272285,
+      "moment_arm_m": 0.04497420661116938,
+      "knee_moment_Nm": 26.95499385889111
+     }
+    }
+   },
+   {
+    "angle_deg": -40.0,
+    "angle_rad": -0.6981317007977318,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1243.890338550352,
+      "moment_arm_m": 0.04416128170689165,
+      "knee_moment_Nm": 54.93179165320292
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 621.945169275176,
+      "moment_arm_m": 0.04416128170689165,
+      "knee_moment_Nm": 27.46589582660146
+     }
+    }
+   },
+   {
+    "angle_deg": -45.0,
+    "angle_rad": -0.7853981633974483,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1288.125549644851,
+      "moment_arm_m": 0.04328079389718906,
+      "knee_moment_Nm": 55.75109642788217
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 644.0627748224255,
+      "moment_arm_m": 0.04328079389718906,
+      "knee_moment_Nm": 27.875548213941084
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "angle_rad": -0.8726646259971648,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1330.5680174783297,
+      "moment_arm_m": 0.0422279152334739,
+      "knee_moment_Nm": 56.18711345444632
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 665.2840087391648,
+      "moment_arm_m": 0.0422279152334739,
+      "knee_moment_Nm": 28.09355672722316
+     }
+    }
+   },
+   {
+    "angle_deg": -55.0,
+    "angle_rad": -0.9599310885968813,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1360.420180709676,
+      "moment_arm_m": 0.0410137920552748,
+      "knee_moment_Nm": 55.79599039942602
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 680.210090354838,
+      "moment_arm_m": 0.0410137920552748,
+      "knee_moment_Nm": 27.89799519971301
+     }
+    }
+   },
+   {
+    "angle_deg": -60.0,
+    "angle_rad": -1.0471975511965976,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1363.1030159313514,
+      "moment_arm_m": 0.03965486208106253,
+      "knee_moment_Nm": 54.05366209903812
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 681.5515079656757,
+      "moment_arm_m": 0.03965486208106253,
+      "knee_moment_Nm": 27.02683104951906
+     }
+    }
+   },
+   {
+    "angle_deg": -65.0,
+    "angle_rad": -1.1344640137963142,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1365.4124611718098,
+      "moment_arm_m": 0.038190270710359096,
+      "knee_moment_Nm": 52.145471523449096
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 684.0686223102656,
+      "moment_arm_m": 0.038190270710359096,
+      "knee_moment_Nm": 26.124765870491434
+     }
+    }
+   },
+   {
+    "angle_deg": -70.0,
+    "angle_rad": -1.2217304763960306,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1365.310401196721,
+      "moment_arm_m": 0.03659447933775459,
+      "knee_moment_Nm": 49.96282326621483
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 688.3935374153457,
+      "moment_arm_m": 0.03659447933775459,
+      "knee_moment_Nm": 25.19140308118966
+     }
+    }
+   },
+   {
+    "angle_deg": -75.0,
+    "angle_rad": -1.3089969389957472,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1340.822210202994,
+      "moment_arm_m": 0.03479567303815348,
+      "knee_moment_Nm": 46.65481122851768
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 680.5381374210494,
+      "moment_arm_m": 0.03479567303815348,
+      "knee_moment_Nm": 23.679782519696797
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "angle_rad": -1.3962634015954636,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1302.170138896665,
+      "moment_arm_m": 0.032728725759076496,
+      "knee_moment_Nm": 42.6183693676075
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 665.8293883737905,
+      "moment_arm_m": 0.032728725759076496,
+      "knee_moment_Nm": 21.791747454419426
+     }
+    }
+   },
+   {
+    "angle_deg": -85.0,
+    "angle_rad": -1.4835298641951802,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1255.2547935823502,
+      "moment_arm_m": 0.03450711050057232,
+      "knee_moment_Nm": 43.31521586851926
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 648.6407742845348,
+      "moment_arm_m": 0.03450711050057232,
+      "knee_moment_Nm": 22.382718873413232
+     }
+    }
+   },
+   {
+    "angle_deg": -90.0,
+    "angle_rad": -1.5707963267948966,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1215.027266560812,
+      "moment_arm_m": 0.03339186840586572,
+      "knee_moment_Nm": 40.57203059453737
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 635.6823786405934,
+      "moment_arm_m": 0.03339186840586572,
+      "knee_moment_Nm": 21.2266223354944
+     }
+    }
+   },
+   {
+    "angle_deg": -95.0,
+    "angle_rad": -1.6580627893946132,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1179.7634179930453,
+      "moment_arm_m": 0.032117146997357314,
+      "knee_moment_Nm": 37.89063511778734
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 627.0153766718785,
+      "moment_arm_m": 0.032117146997357314,
+      "knee_moment_Nm": 20.137945022174087
+     }
+    }
+   },
+   {
+    "angle_deg": -100.0,
+    "angle_rad": -1.7453292519943295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 1150.6168380480192,
+      "moment_arm_m": 0.030743911668969618,
+      "knee_moment_Nm": 35.374462433777424
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 623.529603154543,
+      "moment_arm_m": 0.030743911668969618,
+      "knee_moment_Nm": 19.16973904237095
+     }
+    }
+   }
+  ],
+  "bifemlh_r": [
+   {
+    "angle_deg": -0.0,
+    "angle_rad": -0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 829.7471562448688,
+      "moment_arm_m": -0.02645493156341601,
+      "knee_moment_Nm": -21.950904233397058
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 414.8735781224344,
+      "moment_arm_m": -0.02645493156341601,
+      "knee_moment_Nm": -10.975452116698529
+     }
+    }
+   },
+   {
+    "angle_deg": -5.0,
+    "angle_rad": -0.08726646259971647,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 814.7755076862326,
+      "moment_arm_m": -0.028483844654400507,
+      "knee_moment_Nm": -23.207938989144957
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 407.3877538431163,
+      "moment_arm_m": -0.028483844654400507,
+      "knee_moment_Nm": -11.603969494572478
+     }
+    }
+   },
+   {
+    "angle_deg": -10.0,
+    "angle_rad": -0.17453292519943295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 798.7431883157892,
+      "moment_arm_m": -0.030308310174248867,
+      "knee_moment_Nm": -24.208556301043412
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 399.3715941578946,
+      "moment_arm_m": -0.030308310174248867,
+      "knee_moment_Nm": -12.104278150521706
+     }
+    }
+   },
+   {
+    "angle_deg": -15.0,
+    "angle_rad": -0.2617993877991494,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 781.7539813435792,
+      "moment_arm_m": -0.03173420075188401,
+      "knee_moment_Nm": -24.80833778254173
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 390.8769906717896,
+      "moment_arm_m": -0.03173420075188401,
+      "knee_moment_Nm": -12.404168891270865
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "angle_rad": -0.3490658503988659,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 763.9565176642353,
+      "moment_arm_m": -0.03254935707928828,
+      "knee_moment_Nm": -24.866293486502798
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 381.97825883211766,
+      "moment_arm_m": -0.03254935707928828,
+      "knee_moment_Nm": -12.433146743251399
+     }
+    }
+   },
+   {
+    "angle_deg": -25.0,
+    "angle_rad": -0.4363323129985824,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 745.3391555334122,
+      "moment_arm_m": -0.03289318574639299,
+      "knee_moment_Nm": -24.516579287020217
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 372.6695777667061,
+      "moment_arm_m": -0.03289318574639299,
+      "knee_moment_Nm": -12.258289643510109
+     }
+    }
+   },
+   {
+    "angle_deg": -30.0,
+    "angle_rad": -0.5235987755982988,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 725.246790390825,
+      "moment_arm_m": -0.0329274067248286,
+      "knee_moment_Nm": -23.88049604307521
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 362.6233951954125,
+      "moment_arm_m": -0.0329274067248286,
+      "knee_moment_Nm": -11.940248021537604
+     }
+    }
+   },
+   {
+    "angle_deg": -35.0,
+    "angle_rad": -0.6108652381980153,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 700.973520257376,
+      "moment_arm_m": -0.03268887943219484,
+      "knee_moment_Nm": -22.91403888885455
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 350.486760128688,
+      "moment_arm_m": -0.03268887943219484,
+      "knee_moment_Nm": -11.457019444427274
+     }
+    }
+   },
+   {
+    "angle_deg": -40.0,
+    "angle_rad": -0.6981317007977318,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 662.702590929621,
+      "moment_arm_m": -0.03221399482418663,
+      "knee_moment_Nm": -21.34829783418188
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 331.3512954648105,
+      "moment_arm_m": -0.03221399482418663,
+      "knee_moment_Nm": -10.67414891709094
+     }
+    }
+   },
+   {
+    "angle_deg": -45.0,
+    "angle_rad": -0.7853981633974483,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 604.0724440543963,
+      "moment_arm_m": -0.03150382649250744,
+      "knee_moment_Nm": -19.03059346639461
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 302.03622202719816,
+      "moment_arm_m": -0.03150382649250744,
+      "knee_moment_Nm": -9.515296733197305
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "angle_rad": -0.8726646259971648,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 537.9783580590578,
+      "moment_arm_m": -0.030561805589382256,
+      "knee_moment_Nm": -16.441589990296
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 268.9891790295289,
+      "moment_arm_m": -0.030561805589382256,
+      "knee_moment_Nm": -8.220794995148
+     }
+    }
+   },
+   {
+    "angle_deg": -55.0,
+    "angle_rad": -0.9599310885968813,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 471.6936678010229,
+      "moment_arm_m": -0.029383367960531277,
+      "knee_moment_Nm": -13.859948605650061
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 235.84683390051146,
+      "moment_arm_m": -0.029383367960531277,
+      "knee_moment_Nm": -6.9299743028250305
+     }
+    }
+   },
+   {
+    "angle_deg": -60.0,
+    "angle_rad": -1.0471975511965976,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 407.57127621332586,
+      "moment_arm_m": -0.027969014432925505,
+      "knee_moment_Nm": -11.399366906856379
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 203.78563810666293,
+      "moment_arm_m": -0.027969014432925505,
+      "knee_moment_Nm": -5.6996834534281895
+     }
+    }
+   },
+   {
+    "angle_deg": -65.0,
+    "angle_rad": -1.1344640137963142,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 346.70871815010435,
+      "moment_arm_m": -0.02631666637526619,
+      "knee_moment_Nm": -9.124217664952493
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 173.35435907505217,
+      "moment_arm_m": -0.02631666637526619,
+      "knee_moment_Nm": -4.562108832476246
+     }
+    }
+   },
+   {
+    "angle_deg": -70.0,
+    "angle_rad": -1.2217304763960306,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 289.817192303341,
+      "moment_arm_m": -0.02442581839023408,
+      "knee_moment_Nm": -7.079022105568954
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 144.9085961516705,
+      "moment_arm_m": -0.02442581839023408,
+      "knee_moment_Nm": -3.539511052784477
+     }
+    }
+   },
+   {
+    "angle_deg": -75.0,
+    "angle_rad": -1.3089969389957472,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 237.4649871421903,
+      "moment_arm_m": -0.022304437380115085,
+      "knee_moment_Nm": -5.296522935682817
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 118.73249357109515,
+      "moment_arm_m": -0.022304437380115085,
+      "knee_moment_Nm": -2.6482614678414085
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "angle_rad": -1.3962634015954636,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 190.2003694446272,
+      "moment_arm_m": -0.019964029874471732,
+      "knee_moment_Nm": -3.797165857728098
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 95.1001847223136,
+      "moment_arm_m": -0.019964029874471732,
+      "knee_moment_Nm": -1.898582928864049
+     }
+    }
+   },
+   {
+    "angle_deg": -85.0,
+    "angle_rad": -1.4835298641951802,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 148.54956547526035,
+      "moment_arm_m": -0.017423628436967716,
+      "knee_moment_Nm": -2.5882724333139437
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 74.27478273763018,
+      "moment_arm_m": -0.017423628436967716,
+      "knee_moment_Nm": -1.2941362166569719
+     }
+    }
+   },
+   {
+    "angle_deg": -90.0,
+    "angle_rad": -1.5707963267948966,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 113.00103253125863,
+      "moment_arm_m": -0.014707010060348163,
+      "knee_moment_Nm": -1.6619073222669507
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 56.500516265629315,
+      "moment_arm_m": -0.014707010060348163,
+      "knee_moment_Nm": -0.8309536611334754
+     }
+    }
+   },
+   {
+    "angle_deg": -95.0,
+    "angle_rad": -1.6580627893946132,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 83.99223935428867,
+      "moment_arm_m": -0.011839493433786145,
+      "knee_moment_Nm": -0.994425566324095
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 41.996119677144335,
+      "moment_arm_m": -0.011839493433786145,
+      "knee_moment_Nm": -0.4972127831620475
+     }
+    }
+   },
+   {
+    "angle_deg": -100.0,
+    "angle_rad": -1.7453292519943295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 61.863026059306186,
+      "moment_arm_m": -0.00884970108995382,
+      "knee_moment_Nm": -0.5474692891448836
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 30.931513029653093,
+      "moment_arm_m": -0.00884970108995382,
+      "knee_moment_Nm": -0.2737346445724418
+     }
+    }
+   }
+  ],
+  "semimem_r": [
+   {
+    "angle_deg": -0.0,
+    "angle_rad": -0.0,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 986.9443252436074,
+      "moment_arm_m": -0.030474097647252216,
+      "knee_moment_Nm": -30.076237739875143
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 493.4721626218037,
+      "moment_arm_m": -0.030474097647252216,
+      "knee_moment_Nm": -15.038118869937572
+     }
+    }
+   },
+   {
+    "angle_deg": -5.0,
+    "angle_rad": -0.08726646259971647,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 944.102382293973,
+      "moment_arm_m": -0.032562802667442915,
+      "knee_moment_Nm": -30.742619572501397
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 472.0511911469865,
+      "moment_arm_m": -0.032562802667442915,
+      "knee_moment_Nm": -15.371309786250698
+     }
+    }
+   },
+   {
+    "angle_deg": -10.0,
+    "angle_rad": -0.17453292519943295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 870.3199978486507,
+      "moment_arm_m": -0.03443304123245952,
+      "knee_moment_Nm": -29.967764371356672
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 435.15999892432535,
+      "moment_arm_m": -0.03443304123245952,
+      "knee_moment_Nm": -14.983882185678336
+     }
+    }
+   },
+   {
+    "angle_deg": -15.0,
+    "angle_rad": -0.2617993877991494,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 748.5789262513221,
+      "moment_arm_m": -0.035845459947466796,
+      "knee_moment_Nm": -26.833155918459465
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 374.28946312566103,
+      "moment_arm_m": -0.035845459947466796,
+      "knee_moment_Nm": -13.416577959229732
+     }
+    }
+   },
+   {
+    "angle_deg": -20.0,
+    "angle_rad": -0.3490658503988659,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 612.00839103855,
+      "moment_arm_m": -0.036544961006745175,
+      "knee_moment_Nm": -22.365822786304665
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 306.004195519275,
+      "moment_arm_m": -0.036544961006745175,
+      "knee_moment_Nm": -11.182911393152333
+     }
+    }
+   },
+   {
+    "angle_deg": -25.0,
+    "angle_rad": -0.4363323129985824,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 474.8266371384043,
+      "moment_arm_m": -0.03671443260479042,
+      "knee_moment_Nm": -17.432990568177217
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 237.41331856920215,
+      "moment_arm_m": -0.03671443260479042,
+      "knee_moment_Nm": -8.716495284088609
+     }
+    }
+   },
+   {
+    "angle_deg": -30.0,
+    "angle_rad": -0.5235987755982988,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 341.44623478471465,
+      "moment_arm_m": -0.03655725978505772,
+      "knee_moment_Nm": -12.482338707654625
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 170.72311739235732,
+      "moment_arm_m": -0.03655725978505772,
+      "knee_moment_Nm": -6.2411693538273125
+     }
+    }
+   },
+   {
+    "angle_deg": -35.0,
+    "angle_rad": -0.6108652381980153,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 213.11036998866845,
+      "moment_arm_m": -0.03697220163840714,
+      "knee_moment_Nm": -7.8791595704566
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 106.55518499433423,
+      "moment_arm_m": -0.03697220163840714,
+      "knee_moment_Nm": -3.9395797852283
+     }
+    }
+   },
+   {
+    "angle_deg": -40.0,
+    "angle_rad": -0.6981317007977318,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 91.03560147237549,
+      "moment_arm_m": -0.037518452124217616,
+      "knee_moment_Nm": -3.4155148554406747
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 45.517800736187745,
+      "moment_arm_m": -0.037518452124217616,
+      "knee_moment_Nm": -1.7077574277203373
+     }
+    }
+   },
+   {
+    "angle_deg": -45.0,
+    "angle_rad": -0.7853981633974483,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 4.572484143938881,
+      "moment_arm_m": -0.037817758568372856,
+      "knee_moment_Nm": -0.1729211014131936
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 2.2862420719694403,
+      "moment_arm_m": -0.037817758568372856,
+      "knee_moment_Nm": -0.0864605507065968
+     }
+    }
+   },
+   {
+    "angle_deg": -50.0,
+    "angle_rad": -0.8726646259971648,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.03785162450091648,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.03785162450091648,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -55.0,
+    "angle_rad": -0.9599310885968813,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.03760329575341265,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.03760329575341265,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -60.0,
+    "angle_rad": -1.0471975511965976,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.037060761105754805,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.037060761105754805,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -65.0,
+    "angle_rad": -1.1344640137963142,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.03621668418085893,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.03621668418085893,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -70.0,
+    "angle_rad": -1.2217304763960306,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.0350672310902542,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.0350672310902542,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -75.0,
+    "angle_rad": -1.3089969389957472,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.03361062162346087,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.03361062162346087,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -80.0,
+    "angle_rad": -1.3962634015954636,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.031848752730083904,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.031848752730083904,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -85.0,
+    "angle_rad": -1.4835298641951802,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.029789383584664764,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.029789383584664764,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -90.0,
+    "angle_rad": -1.5707963267948966,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.027445477341229405,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.027445477341229405,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -95.0,
+    "angle_rad": -1.6580627893946132,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.02483463542970454,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.02483463542970454,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   },
+   {
+    "angle_deg": -100.0,
+    "angle_rad": -1.7453292519943295,
+    "by_activation": {
+     "1.00": {
+      "activation": 1.0,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.021979283624629514,
+      "knee_moment_Nm": -0.0
+     },
+     "0.50": {
+      "activation": 0.5,
+      "force_along_path_N": 0.0,
+      "moment_arm_m": -0.021979283624629514,
+      "knee_moment_Nm": -0.0
+     }
+    }
+   }
+  ]
+ }
+}
