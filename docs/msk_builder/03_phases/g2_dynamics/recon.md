@@ -166,6 +166,14 @@ residual → a tiny force residual, graded once the model is wired into the engi
 - **R-pennation-edge** — semimem's tendon-slack ≈ MTU at deep flexion (along-tendon
   ~3.6 mm) drives pennation toward 90°; force is ~0 there (both sides), but if PR3's
   engine integration evaluates near the singularity, revisit the `cos_penn` floor.
+- **R-minfiber** — the min-fiber clamp (`MIN_NORM_FIBER_LENGTH = 0.4441`, = the AFL
+  domain minimum) is exercised/validated only by semimem (the one muscle reaching it).
+  OpenSim's actual `minimumFiberLength` is pennation-model-derived; it coincides with
+  0.4441 here. The clamp is force-immaterial where AFL+PFL are already 0, but a
+  low-pennation muscle whose OpenSim minimum sits *below* 0.4441 could, under
+  lengthening in the `[opensim_min, 0.4441)` band, carry a small damping force our
+  clamp would zero. Not seen in gait2392's tested set; pin the exact derivation if PR3
+  exercises that regime.
 - **R-FV** — *Retired by PR2:* force-velocity + fiber damping validated machine-exact
   (worst 1.6e-11 N) vs real OpenSim over a knee angle × speed × activation grid.
 - **F0 provenance** — rect_fem_r's max isometric force *is* 1169 N in the gait2392
