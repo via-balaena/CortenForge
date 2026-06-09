@@ -17,7 +17,22 @@ use crate::types::validation::{MIN_VAL, is_bad};
 use crate::types::warning::{Warning, mj_warning};
 use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL, DISABLE_GRAVITY};
 
+use super::millard::{
+    MillardMuscleParams, default_millard_curves, millard_active_gain, millard_passive_bias,
+};
 use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force};
+
+/// Map an actuator's `gainprm` (the HillMuscle/MillardMuscle layout) to the Millard
+/// parameter struct: `[2]`=F0, `[4]`=L0, `[5]`=Lts, `[6]`=vmax, `[7]`=pennation.
+fn millard_params(prm: &[f64; 9]) -> MillardMuscleParams {
+    MillardMuscleParams {
+        f0: prm[2],
+        l0: prm[4],
+        lts: prm[5],
+        vmax: prm[6],
+        penn0: prm[7],
+    }
+}
 
 // ── Hill-type muscle curve functions (CortenForge extension) ──
 // Native to sim-core. Simple mathematical functions with stable formulations.
@@ -493,8 +508,10 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
         let input = match model.actuator_dyntype[i] {
             ActuatorDynamics::None => ctrl,
-            ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle => {
-                // HillMuscle reuses MuJoCo-conformant muscle activation dynamics.
+            ActuatorDynamics::Muscle
+            | ActuatorDynamics::HillMuscle
+            | ActuatorDynamics::MillardMuscle => {
+                // Hill/Millard reuse MuJoCo-conformant muscle activation dynamics.
                 let act_adr = model.actuator_act_adr[i];
                 // act_dot computed from UNCLAMPED current activation (MuJoCo convention)
                 data.act_dot[act_adr] =
@@ -596,6 +613,17 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
                 -f0 * fl * fv * cos_penn
             }
+            GainType::MillardMuscle => {
+                // Millard2012 active force gain (per unit activation): the faithful
+                // OpenSim force model (validated vs OpenSim 4.6). Same gainprm layout
+                // as HillMuscle; `length`/`velocity` are the MTU length/lengthening rate.
+                millard_active_gain(
+                    default_millard_curves(),
+                    millard_params(&model.actuator_gainprm[i]),
+                    length,
+                    velocity,
+                )
+            }
             GainType::User => {
                 if let Some(ref cb) = model.cb_act_gain {
                     (cb.0)(model, data, i)
@@ -637,6 +665,15 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
                 let fp = hill_passive_fl(norm_len);
                 -f0 * fp * cos_penn
+            }
+            BiasType::MillardMuscle => {
+                // Millard2012 passive + fiber-damping bias (shares gainprm layout).
+                millard_passive_bias(
+                    default_millard_curves(),
+                    millard_params(&model.actuator_gainprm[i]),
+                    length,
+                    velocity,
+                )
             }
             BiasType::User => {
                 if let Some(ref cb) = model.cb_act_bias {
@@ -746,6 +783,153 @@ pub fn mj_gravcomp_to_actuator(model: &Model, data: &mut Data) {
         let dofnum = model.jnt_type[jnt].nv();
         for i in 0..dofnum {
             data.qfrc_actuator[dofadr + i] += data.qfrc_gravcomp[dofadr + i];
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
+mod millard_engine_tests {
+    //! Ties the engine actuation pipeline (the `GainType::MillardMuscle` +
+    //! `BiasType::MillardMuscle` dispatch, the `forcerange` non-negative floor) to
+    //! the OpenSim-validated standalone `millard_path_force`: a forward pass over a
+    //! Millard joint-actuator must reproduce it across the force regimes.
+    use crate::forward::{MillardMuscleParams, default_millard_curves, millard_path_force};
+    use crate::types::{
+        ActuatorDynamics, ActuatorTransmission, BiasType, GainType, MjJointType, Model,
+    };
+    use nalgebra::{DVector, UnitQuaternion, Vector3};
+
+    // gait2392-like Millard params (high pennation to exercise cos(penn)).
+    const F0: f64 = 1000.0;
+    const L0: f64 = 0.1;
+    const LTS: f64 = 0.2;
+    const VMAX: f64 = 10.0;
+    const PENN: f64 = 0.26;
+
+    fn params() -> MillardMuscleParams {
+        MillardMuscleParams {
+            f0: F0,
+            l0: L0,
+            lts: LTS,
+            vmax: VMAX,
+            penn0: PENN,
+        }
+    }
+
+    /// Single-hinge body whose joint-transmission actuator is a Millard muscle. The
+    /// joint coordinate doubles as the MTU length (gear 1), so setting qpos/qvel sets
+    /// the muscle length/lengthening rate directly. `forcerange = (-inf, 0]` applies
+    /// the muscle's non-negative tension floor (the engine convention is force ≤ 0).
+    fn build() -> Model {
+        let mut model = Model::empty();
+        model.nbody = 2;
+        model.body_parent = vec![0, 0];
+        model.body_rootid = vec![0, 1];
+        model.body_jnt_adr = vec![0, 0];
+        model.body_jnt_num = vec![0, 1];
+        model.body_dof_adr = vec![0, 0];
+        model.body_dof_num = vec![0, 1];
+        model.body_geom_adr = vec![0, 0];
+        model.body_geom_num = vec![0, 0];
+        model.body_pos = vec![Vector3::zeros(), Vector3::zeros()];
+        model.body_quat = vec![UnitQuaternion::identity(); 2];
+        model.body_ipos = vec![Vector3::zeros(); 2];
+        model.body_iquat = vec![UnitQuaternion::identity(); 2];
+        model.body_mass = vec![0.0, 1.0];
+        model.body_inertia = vec![Vector3::zeros(), Vector3::new(0.1, 0.1, 0.1)];
+        model.body_name = vec![Some("world".into()), Some("arm".into())];
+        model.body_subtreemass = vec![1.0, 1.0];
+
+        model.njnt = 1;
+        model.nq = 1;
+        model.nv = 1;
+        model.jnt_type = vec![MjJointType::Hinge];
+        model.jnt_body = vec![1];
+        model.jnt_qpos_adr = vec![0];
+        model.jnt_dof_adr = vec![0];
+        model.jnt_pos = vec![Vector3::zeros()];
+        model.jnt_axis = vec![Vector3::y()];
+        model.jnt_limited = vec![false];
+        model.jnt_range = vec![(-10.0, 10.0)];
+        model.jnt_stiffness = vec![0.0];
+        model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0];
+        model.jnt_damping = vec![0.0];
+        model.jnt_armature = vec![0.0];
+        model.jnt_solref = vec![[0.02, 1.0]];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.jnt_name = vec![Some("hinge".into())];
+        model.jnt_margin = vec![0.0];
+
+        model.dof_body = vec![1];
+        model.dof_jnt = vec![0];
+        model.dof_parent = vec![None];
+        model.dof_armature = vec![0.0];
+        model.dof_damping = vec![0.0];
+        model.dof_frictionloss = vec![0.0];
+
+        model.nu = 1;
+        model.na = 1;
+        model.actuator_trntype = vec![ActuatorTransmission::Joint];
+        model.actuator_dyntype = vec![ActuatorDynamics::MillardMuscle];
+        model.actuator_trnid = vec![[0, usize::MAX]];
+        model.actuator_gear = vec![[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]];
+        model.actuator_ctrlrange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
+        model.actuator_forcerange = vec![(f64::NEG_INFINITY, 0.0)];
+        model.actuator_name = vec![Some("millard".into())];
+        model.actuator_act_adr = vec![0];
+        model.actuator_act_num = vec![1];
+        model.actuator_gaintype = vec![GainType::MillardMuscle];
+        model.actuator_biastype = vec![BiasType::MillardMuscle];
+        model.actuator_dynprm = vec![[0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]];
+        // gainprm layout: [2]=F0, [4]=L0, [5]=Lts, [6]=vmax, [7]=penn (F0>0 ⇒ no auto-resolve).
+        model.actuator_gainprm = vec![[0.0, 0.0, F0, 0.0, L0, LTS, VMAX, PENN, 0.0]];
+        model.actuator_biasprm = vec![[0.0, 0.0, F0, 0.0, L0, LTS, VMAX, PENN, 0.0]];
+        model.actuator_lengthrange = vec![(0.0, 0.0)];
+        model.actuator_acc0 = vec![0.0];
+        model.actuator_actlimited = vec![true];
+        model.actuator_actrange = vec![(0.0, 1.0)];
+        model.actuator_actearly = vec![false];
+
+        model.qpos0 = DVector::zeros(1);
+        model.timestep = 0.001;
+        model.body_ancestor_joints = vec![vec![]; 2];
+        model.body_ancestor_mask = vec![vec![]; 2];
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+        model.compute_actuator_params();
+        model
+    }
+
+    #[test]
+    fn engine_reproduces_standalone_millard_force() {
+        let model = build();
+        let curves = default_millard_curves();
+        let p = params();
+        // (mtu length, mtu velocity, activation) across the regimes: isometric near
+        // optimal, eccentric (lengthening), shortening (floors toward 0), and the
+        // min-fiber clamp (norm_len < 0.4441 ⇒ 0 N).
+        for (len, vel, act) in [
+            (0.30, 0.0, 1.0),
+            (0.30, 0.3, 1.0),
+            (0.30, -0.5, 0.5),
+            (0.22, 0.2, 1.0),
+        ] {
+            let mut data = model.make_data();
+            data.qpos[0] = len;
+            data.qvel[0] = vel;
+            data.act[0] = act;
+            data.ctrl[0] = act;
+            data.forward(&model).expect("forward failed");
+            // Engine convention: muscle force ≤ 0 (tension); standalone returns ≥ 0.
+            let want = -millard_path_force(curves, p, len, vel, act);
+            let got = data.actuator_force[0];
+            assert!(
+                (got - want).abs() < 1e-9,
+                "len={len} vel={vel} act={act}: engine {got} vs standalone {want}"
+            );
         }
     }
 }

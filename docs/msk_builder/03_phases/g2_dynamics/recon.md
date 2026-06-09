@@ -154,15 +154,35 @@ residual → a tiny force residual, graded once the model is wired into the engi
   can't drive it negative; (2) at the **min-fiber clamp** (`norm_len < 0.4441`) OpenSim
   freezes fiber *velocity* to 0, not just length, so damping vanishes there too. PR1
   isometric check unchanged (both clamps are inert at v=0 / above the floor).
-- **G2-PR3 — wire Millard into the engine as a driven actuator.** A
-  `GainType::MillardMuscle` / `BiasType::MillardMuscle` (+ MJCF emit) so the leg
-  twin self-actuates from activations, or drive via direct activation; honor the
-  engine's negative-tension gain/bias convention. Then the **muscle-DRIVEN leg-twin
-  example** (folds in the audit's deferred Hill *visual* example — drive the twin
-  with activations and watch it move) + **joint-torque / forward-dynamics**
-  validation vs OpenSim (the full dynamics gate).
+- **G2-PR3a — wire Millard into the engine as a driven actuator.** *(DONE.)*
+  `ActuatorDynamics`/`GainType`/`BiasType::MillardMuscle` (`enums.rs`); the actuation
+  dispatch (`actuation.rs`) computes the active gain `−F0·AFL·FV·cos` and the
+  passive+damping bias `−F0·(PFL+β·v̄)·cos` via the new `millard_active_gain` /
+  `millard_passive_bias` (sharing `fiber_kinematics` with `millard_path_force`, so no
+  drift — both cross-checks stay machine-exact); `default_millard_curves()` (a
+  process-wide `OnceLock`) avoids rebuilding the Bézier per step; `fiber.rs` F0
+  auto-resolution includes Millard. The engine's negative-tension convention + the
+  non-negative tendon floor map to `actuator_forcerange = (−∞, 0]`. **Validation
+  (`actuation.rs::millard_engine_tests`): a programmatic Millard joint-actuator's
+  `forward()` reproduces the standalone `millard_path_force` to <1e-9 across all
+  regimes (isometric / eccentric / shortening-floored / min-fiber clamp)** — ties the
+  engine pipeline to PR1/PR2's OpenSim-validated force. (`sim-mjcf` gets only the
+  `act_num` arm; the `"millardmuscle"` MJCF parse is PR3b.)
+- **G2-PR3b — emit + drive the leg twin + the dynamics gate.** MJCF parse
+  (`compute_general_millardmuscle`) + `cf-mjcf-emit` emits `<general>` Millard
+  actuators (today it emits only spatial tendons) so the leg twin self-actuates; the
+  **muscle-DRIVEN leg-twin example** (folds in the audit's deferred Hill *visual*
+  example — drive the twin with activations and watch it move) + **joint-torque /
+  forward-dynamics** validation vs OpenSim (the full dynamics gate).
 
 ## Risks / open items
+- **R-implicit-deriv** — PR3a omits Millard actuators from the analytic actuator
+  velocity/position Jacobians (`derivatives/hybrid.rs`), `continue`-ing like the
+  `User` arm (the Bézier FV-curve derivative + the `β·v̄` damping derivative are
+  deferred). Forward dynamics with explicit integrators is unaffected (force is
+  exact); only the *implicit* integrator's stability term for these actuators is
+  approximate. Add the analytic curve derivative (a `SmoothSegmentedFunction::slope`)
+  if PR3b's dynamics gate uses an implicit integrator and needs it.
 - **R-pennation-edge** — semimem's tendon-slack ≈ MTU at deep flexion (along-tendon
   ~3.6 mm) drives pennation toward 90°; force is ~0 there (both sides), but if PR3's
   engine integration evaluates near the singularity, revisit the `cos_penn` floor.

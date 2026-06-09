@@ -207,6 +207,11 @@ pub enum ActuatorDynamics {
     /// but pairs with `GainType::HillMuscle` / `BiasType::HillMuscle` for
     /// Hill-type force generation (Gaussian FL, Hill FV, pennation angle).
     HillMuscle,
+    /// Millard2012-equilibrium muscle activation dynamics (CortenForge extension).
+    /// Same `muscle_activation_dynamics()` as `Muscle`, paired with
+    /// `GainType::MillardMuscle` / `BiasType::MillardMuscle` for the faithful
+    /// OpenSim-Millard force model (validated vs OpenSim 4.6; see `forward::millard`).
+    MillardMuscle,
     /// User-defined dynamics (via `cb_act_dyn` callback).
     /// MuJoCo reference: `mjDYN_USER`.
     User,
@@ -227,6 +232,10 @@ pub enum GainType {
     /// Hill-type muscle active force (CortenForge extension).
     /// gain = −F0 × FL(L_norm) × FV(V_norm) × cos(α).
     HillMuscle,
+    /// Millard2012 muscle active force (CortenForge extension).
+    /// gain = −F0 × AFL(l̄) × FV(v̄) × cos(penn), the per-activation active force
+    /// (paired with `BiasType::MillardMuscle`). See `forward::millard_active_gain`.
+    MillardMuscle,
     /// User-defined gain (via `cb_act_gain` callback).
     /// MuJoCo reference: `mjGAIN_USER`.
     User,
@@ -247,6 +256,9 @@ pub enum BiasType {
     /// Hill-type muscle passive force (CortenForge extension).
     /// bias = −F0 × FP(L_norm) × cos(α).
     HillMuscle,
+    /// Millard2012 muscle passive + damping force (CortenForge extension).
+    /// bias = −F0 × (PFL(l̄) + β·v̄) × cos(penn). See `forward::millard_passive_bias`.
+    MillardMuscle,
     /// User-defined bias (via `cb_act_bias` callback).
     /// MuJoCo reference: `mjBIAS_USER`.
     User,
