@@ -139,11 +139,21 @@ residual → a tiny force residual, graded once the model is wired into the engi
 - **G2-PR1 — faithful Millard curves + isometric force.** *(IN PROGRESS / largely
   done.)* `sim/L0/core/src/forward/millard.rs` (`SmoothSegmentedFunction`,
   `MillardCurves`, `millard_isometric_path_force`) + the two-tier cross-check + the
-  two reference generators. Curves 1e-12, force 1e-9 N vs real OpenSim. No engine
-  pipeline changes yet (additive pub functions).
-- **G2-PR2 — force-velocity (non-isometric).** New reference sweeping fiber/joint
-  velocity → forces; validate the FV term + fiber damping. The spike/PR1 are
-  isometric (FV=1); this closes the velocity axis.
+  two reference generators. Curves ~1e-12, isometric force worst ~5.5e-11 N vs real
+  OpenSim. No engine pipeline changes yet (additive pub functions).
+- **G2-PR2 — force-velocity (non-isometric).** *(DONE.)* `millard_path_force(.., mtu,
+  mtu_vel, act)` adds the FV factor (fiber velocity = `cos(penn)·v_mt`, normalized by
+  `L0·vmax`) + the `β·v̄` fiber-damping term (β=0.1); `millard_isometric_path_force`
+  is now a `mtu_vel=0` wrapper. New reference `gen_muscle_force_velocity.py` →
+  `muscle_force_velocity_opensim.json` (knee angle × speed × activation, shortening
+  through lengthening). `millard_fv_cross_check.rs` grades (A) force and (B) an
+  independent normalized-fiber-velocity check vs OpenSim's recorded value. **Result:
+  machine-exact — worst |gap| 1.6e-11 N, fiber velocity 2.2e-16, across all 4 muscles.**
+  **Two model behaviors the velocity sweep forced out (both validated):** (1) the
+  tendon force is **floored at 0** — a muscle pulls, never pushes, so the damping term
+  can't drive it negative; (2) at the **min-fiber clamp** (`norm_len < 0.4441`) OpenSim
+  freezes fiber *velocity* to 0, not just length, so damping vanishes there too. PR1
+  isometric check unchanged (both clamps are inert at v=0 / above the floor).
 - **G2-PR3 — wire Millard into the engine as a driven actuator.** A
   `GainType::MillardMuscle` / `BiasType::MillardMuscle` (+ MJCF emit) so the leg
   twin self-actuates from activations, or drive via direct activation; honor the
@@ -156,7 +166,20 @@ residual → a tiny force residual, graded once the model is wired into the engi
 - **R-pennation-edge** — semimem's tendon-slack ≈ MTU at deep flexion (along-tendon
   ~3.6 mm) drives pennation toward 90°; force is ~0 there (both sides), but if PR3's
   engine integration evaluates near the singularity, revisit the `cos_penn` floor.
-- **R-FV** — force-velocity + damping unvalidated until PR2.
+- **R-minfiber** — OpenSim's `minimumFiberLength / L0 = max(0.4441, sin(penn0))` (the
+  AFL-curve minimum vs the pennation-model minimum, verified by probing OpenSim 4.6).
+  For all four gait2392 muscles `penn0 ≤ 0.26` (`sin ≤ 0.26 < 0.4441`), so the AFL
+  floor 0.4441 dominates and our `MIN_NORM_FIBER_LENGTH = 0.4441` clamp is **exact and
+  general for this family** — not a semimem coincidence. **Edge (high pennation,
+  `penn0 > ~26°` ⇒ `sin(penn0) > 0.4441`):** OpenSim pins the fiber at `sin(penn0)`,
+  but our constant-height `raw_norm_len = √(along² + h²)/L0` (`h = L0·sin(penn0)`)
+  can never fall below `sin(penn0) > 0.4441`, so the 0.4441 clamp never fires and the
+  fiber *re-grows* into the active domain as `|along|` increases (force hundreds of N
+  where OpenSim gives 0). No gait2392 muscle reaches this; if PR3 wires one, clamp the
+  fiber length to `max(0.4441, sin(penn0))·L0` and recompute `cos(penn)` from the
+  clamped geometry. (Overlaps R-pennation-edge.)
+- **R-FV** — *Retired by PR2:* force-velocity + fiber damping validated machine-exact
+  (worst 1.6e-11 N) vs real OpenSim over a knee angle × speed × activation grid.
 - **F0 provenance** — rect_fem_r's max isometric force *is* 1169 N in the gait2392
   XML and via `getMaxIsometricForce` (no divergence). The hazard is purely that a
   naive positional/line-order grep over `gait2392.osim` can pick up a *different*
