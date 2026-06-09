@@ -1,8 +1,10 @@
 # G3 — FORWARD-DYNAMICS FIDELITY (close + validate activations → MOTION)
 
 **Status:** RECON + SPIKE DONE (2026-06-08); architecture resolved (Option C).
-**PR1 IMPLEMENTED (2026-06-09, branch `feat/msk-g3-equality-coupled-knee`, not yet
-merged); next = PR2.** The foundation-first arc after G2 (dynamics /
+**PR1 = PR #290 (CI green, open).** **PR2 SPIKE (2026-06-09) FOUND THE TWIN's
+FORWARD DYNAMICS IS BROKEN — see the `★★ PR2 SPIKE FINDINGS` block below. PR2 is
+NOT "add a gate"; it is "find + fix the forward-dynamics bugs the spike surfaced."**
+The foundation-first arc after G2 (dynamics /
 forces, all 4 PRs merged: #286/#287/#288/#289 → main `58fb2551`). G2 validated
 muscle **forces** and instantaneous **joint torques** vs OpenSim machine-exact —
 but only **statically** (poses set by hand). G3 closes and validates the
@@ -64,6 +66,66 @@ LIVING muscle-driven sim** — the twin moves under force, the payoff that makes
 visible.
 
 ---
+
+## ★★ PR2 SPIKE FINDINGS (2026-06-09) — the twin's forward dynamics is BROKEN
+
+Branch `feat/msk-g3-forward-dynamics-gate` (off PR1). Built an OpenSim `Manager`
+forward-dynamics oracle and a throwaway twin-side spike
+(`tools/cf-mjcf-emit/tests/spike_forward_dynamics.rs`, `#[ignore]`). Setup: reduced
+RIGHT LEG (5 DOF: hip 3 + knee + ankle; pelvis welded, contralateral/torso/
+subtalar/mtp locked — matches the twin), rigid tendon, **gravity OFF** (isolate
+muscle→accel), activations set directly, velocities zeroed. gait2392 segment
+inertias injected into the twin (femur/tibia exact; foot = talus+calcn+toes
+composite computed exactly about the talus frame). Confound gotchas nailed: OpenSim
+`state.setU(0)` is required (per-coord `setSpeedValue` + `setValue(...,True)` leaves
+residual velocity → garbage udot); lock-via-`set_locked` keeps mobilities + adds
+constraints (don't read accel through it without zero velocity).
+
+**Result: the twin's forward-dynamics qacc does NOT match OpenSim.** Three findings:
+
+1. **INERTIA IS CORRECT.** Effective knee inertia (`qvelᵀMqvel` at unit knee speed,
+   constraint-consistent) = **0.444** kg·m² vs OpenSim **0.442**. So the segment
+   masses + coupled-knee inertia are right; the error is NOT inertia.
+
+2. **JOINT ROM LIMITS FIRE MID-RANGE → phantom forces. ✅ FIXED (PR2a, 2026-06-09).**
+   With ZERO force, zero velocity, gravity off, every joint mid-range, the no-force
+   baseline knee udot was **638 rad/s²** (must be 0); only `qfrc_constraint` (≈86) was
+   nonzero. **ROOT CAUSE: the emit's MJCF lacked `<compiler angle="radian"/>`, so
+   MJCF's default `angle="degree"` converted the emitted joint `range` (which is in
+   RADIANS) as degrees — shrinking e.g. the knee's `-2.0943951 0.17453293` ~57× into a
+   bogus range (-0.0366, 0.00305) the joint is ALWAYS outside → the limit fires
+   constantly.** Proven by a minimal single-hinge repro (range "-2.0 0.2" loaded as
+   (-0.0349, 0.00349)). **FIX: emit `<compiler angle="radian"/>`** (`cf-mjcf-emit`);
+   no-force baseline → exactly 0 with limits ON, and the deep-flexion error is no
+   longer limit-driven. Regression test `emitted_joint_limits_are_radian_no_midrange_phantom`
+   (asserts radian range + zero mid-range no-force qacc). The R-extrapolation limits
+   PR1 added now actually work. (Latent in PR1 #290 — its loaded ranges were also
+   degree-shrunk; PR2a corrects it.)
+
+3. **RESIDUAL COUPLED-FORCE ERROR (limits off).** Even with limits disabled, the
+   per-muscle knee udot is wrong: quads **~1.5–1.6× too high** (rect_fem twin +624
+   vs OS +386), hamstrings **WRONG SIGN** (bifemlh twin +43 vs OS −99 flexion). The
+   ankle whips (−3014 vs −360, downstream of the knee error). The muscle FORCES are
+   machine-exact (G2/PR1) and inertia is right, so this is a **multi-DOF coupled-knee
+   force-transmission error under dynamics** — the equality-constraint + separate-
+   slide-DOF representation (PR1) reproduces KINEMATICS (0.35mm) but not the coupled
+   generalized force in forward dynamics. (Also suspect: the free-ankle/foot
+   dynamics, given the ankle whip; needs isolation.)
+
+**OpenSim oracle scripts (throwaway, in `/tmp`): `g3_fd_oracle.py` (5-DOF reduced
+fwd-dyn + effective-inertia KE), `g3_foot_inertia.py` (exact composite foot
+inertia), `g3_permuscle2.py` (per-muscle).** They'll be productionized into a
+`gen_forward_dynamics.py` once the bugs are understood.
+
+**IMPLICATION / RESHAPED PLAN:** PR2 ≠ "add a gate." The spike (front-loading the
+#1 risk, exactly as intended) found the twin does NOT move correctly under muscle
+force. Closing G3 requires: **(PR2a) ✅ DONE 2026-06-09** — fixed the joint-limit
+phantom (the `<compiler angle="radian"/>` bug above) + regression test;
+**(PR2b)** find + fix the residual coupled-knee force-transmission error (finding 3:
+quads ~1.5×, hams wrong-sign, ankle whips — may need a true function-coupled
+reduced-coordinate joint in the engine instead of slide-DOFs+equality, OR isolate it
+to the foot/ankle); **(PR2c)** THEN the OpenSim-Manager gate. The throwaway spike +
+`/tmp/g3_*.py` oracle scripts stay for PR2b.
 
 ## G3 = two deliverables
 

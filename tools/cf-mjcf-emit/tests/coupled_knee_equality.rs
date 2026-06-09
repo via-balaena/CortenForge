@@ -75,6 +75,66 @@ fn joint_couplings(model: &sim_core::Model) -> Vec<Coupling> {
         .collect()
 }
 
+/// G3-PR2a regression: the emit declares `<compiler angle="radian"/>`, so the
+/// joint ranges are the coordinate ROMs in RADIANS — not silently treated as
+/// degrees and shrunk ~57× into a bogus range the joint is always outside (which
+/// makes the limit fire mid-range and inject a phantom constraint force that
+/// corrupts forward dynamics). Asserts the loaded range is radians, and that a
+/// MID-RANGE twin with NO force/gravity/velocity has zero acceleration.
+#[test]
+fn emitted_joint_limits_are_radian_no_midrange_phantom() {
+    let template = parse_leg_chain(&std::fs::read_to_string(asset("gait2392.osim")).unwrap());
+    let emitted = emit(&template);
+    let mut model = load_model(&emitted.mjcf).expect("emitted twin must load");
+
+    // The knee range must be the gait2392 ROM in radians, not degree-shrunk.
+    let kj = model
+        .jnt_name
+        .iter()
+        .position(|n| n.as_deref() == Some("knee_angle_r"))
+        .unwrap();
+    let (lo, hi) = model.jnt_range[kj];
+    assert!(
+        (lo + 2.0943951).abs() < 1e-6 && (hi - 0.17453293).abs() < 1e-6,
+        "knee range must be radians (-2.0943951, 0.17453293), got ({lo}, {hi})"
+    );
+
+    // A mid-range twin with NO muscle force (F0=0), gravity off, zero velocity must
+    // have ~0 acceleration. A limit firing mid-range (wrong range) would inject a
+    // phantom force; this is the behavioral guard for the degree/radian bug.
+    model.gravity = nalgebra::Vector3::zeros();
+    for aid in 0..model.actuator_gainprm.len() {
+        model.actuator_gainprm[aid][2] = 0.0; // F0 = 0 ⇒ no active and no passive force
+    }
+    let adr: HashMap<String, usize> = emitted
+        .driven
+        .iter()
+        .map(|j| {
+            let jid = model
+                .jnt_name
+                .iter()
+                .position(|n| n.as_deref() == Some(&j.joint))
+                .unwrap();
+            (j.joint.clone(), model.jnt_qpos_adr[jid])
+        })
+        .collect();
+    let couplings = joint_couplings(&model);
+    let mut data = model.make_data();
+    let coords = HashMap::from([("knee_angle_r".to_string(), -0.5)]); // mid-range
+    for (joint, val) in emitted.qpos_targets(&coords) {
+        data.qpos[adr[&joint]] = val;
+    }
+    for c in &couplings {
+        data.qpos[c.slide_qpos] = poly(&c.coef, data.qpos[c.knee_qpos]);
+    }
+    data.forward(&model).expect("forward");
+    let worst = data.qacc.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+    assert!(
+        worst < 1e-6,
+        "mid-range no-force twin must not accelerate (limit phantom?), worst |qacc| = {worst}"
+    );
+}
+
 #[test]
 fn equality_constraint_reproduces_kinematic_pose_across_rom() {
     let template = parse_leg_chain(&std::fs::read_to_string(asset("gait2392.osim")).unwrap());

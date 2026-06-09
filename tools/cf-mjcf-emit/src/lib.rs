@@ -262,8 +262,15 @@ pub fn emit(model: &Model) -> Emitted {
     // musculoskeletal integration step. Kinematic posing (`qpos_targets` + a single
     // `forward()`) does not integrate, so this is inert for the moment-arm path.
     let option_block = "  <option timestep=\"0.001\"/>\n";
+    // `<compiler angle="radian"/>` is REQUIRED: all emitted joint ranges (and the
+    // model's coordinates generally) are in radians, but MJCF defaults to
+    // `angle="degree"` and converts `range` accordingly — without this, a range like
+    // the knee's `-2.0943951 0.17453293` is read as degrees and shrunk ~57× into a
+    // bogus radian range the joint is always outside, so the limit fires constantly
+    // and injects a phantom constraint force that corrupts forward dynamics (G3 PR2a).
+    let compiler_block = "  <compiler angle=\"radian\"/>\n";
     let mjcf = format!(
-        "<mujoco>\n{option_block}  <worldbody>\n{body_xml}  </worldbody>\n{equality_block}  <tendon>\n{tendon_xml}  </tendon>\n{actuator_block}</mujoco>\n"
+        "<mujoco>\n{compiler_block}{option_block}  <worldbody>\n{body_xml}  </worldbody>\n{equality_block}  <tendon>\n{tendon_xml}  </tendon>\n{actuator_block}</mujoco>\n"
     );
     Emitted {
         mjcf,

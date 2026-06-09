@@ -1,4 +1,5 @@
 <mujoco>
+  <compiler angle="radian"/>
   <option timestep="0.001"/>
   <worldbody>
     <body name="pelvis" pos="0 0 0">
