@@ -1136,6 +1136,8 @@ mod tests {
             ("filter", ActuatorDynamics::Filter, 1),
             ("filterexact", ActuatorDynamics::FilterExact, 1),
             ("muscle", ActuatorDynamics::Muscle, 1),
+            ("hillmuscle", ActuatorDynamics::HillMuscle, 1),
+            ("millardmuscle", ActuatorDynamics::MillardMuscle, 1),
         ];
         for (dyntype_str, expected_dyn, expected_act_num) in &cases {
             let xml =
@@ -1275,5 +1277,90 @@ mod tests {
         assert_eq!(model.actuator_gaintype[0], GainType::Affine);
         // biastype is auto-set to HillMuscle (not overridden)
         assert_eq!(model.actuator_biastype[0], BiasType::HillMuscle);
+    }
+
+    // ── MillardMuscle (CortenForge extension), mirroring the HillMuscle suite ──
+
+    #[test]
+    fn test_millardmuscle_parsing_roundtrip() {
+        let xml = general_actuator_model(
+            r#"<general name="mil1" joint="j" dyntype="millardmuscle"
+                       gainprm="0 0 819 0 0.0564 0.0822 10.0 0.139626 0"/>"#,
+        );
+        let model = load_model(&xml).expect("should parse MillardMuscle");
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::MillardMuscle);
+        assert_eq!(model.actuator_gaintype[0], GainType::MillardMuscle);
+        assert_eq!(model.actuator_biastype[0], BiasType::MillardMuscle);
+        assert_eq!(model.actuator_act_num[0], 1);
+        assert!(model.actuator_actlimited[0]);
+        assert_eq!(model.actuator_actrange[0], (0.0, 1.0));
+        assert!((model.actuator_gainprm[0][2] - 819.0).abs() < 1e-10); // F0
+        assert!((model.actuator_gainprm[0][4] - 0.0564).abs() < 1e-10); // L0
+        assert!((model.actuator_gainprm[0][7] - 0.139_626).abs() < 1e-10); // penn
+    }
+
+    #[test]
+    fn test_millardmuscle_auto_defaults() {
+        let xml = general_actuator_model(r#"<general joint="j" dyntype="millardmuscle"/>"#);
+        let model = load_model(&xml).expect("should parse MillardMuscle with defaults");
+        assert_eq!(model.actuator_gaintype[0], GainType::MillardMuscle);
+        assert_eq!(model.actuator_biastype[0], BiasType::MillardMuscle);
+        assert!((model.actuator_gainprm[0][4] - 0.10).abs() < 1e-10); // opt_len
+        assert!((model.actuator_gainprm[0][6] - 10.0).abs() < 1e-10); // vmax
+        assert!((model.actuator_dynprm[0][0] - 0.01).abs() < 1e-10); // tau_act
+        assert!((model.actuator_dynprm[0][1] - 0.04).abs() < 1e-10); // tau_deact
+    }
+
+    #[test]
+    fn test_millardmuscle_validation_zero_optlen() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="millardmuscle"
+                       gainprm="0 0 800 0 0.0 0.20 10.0 0.0 0"/>"#,
+        );
+        let err = load_model(&xml).unwrap_err().to_string();
+        assert!(err.contains("optimal_fiber_length"), "got: {err}");
+    }
+
+    #[test]
+    fn test_millardmuscle_validation_negative_slack() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="millardmuscle"
+                       gainprm="0 0 800 0 0.10 -0.01 10.0 0.0 0"/>"#,
+        );
+        let err = load_model(&xml).unwrap_err().to_string();
+        assert!(err.contains("tendon_slack_length"), "got: {err}");
+    }
+
+    #[test]
+    fn test_millardmuscle_validation_negative_vmax() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="millardmuscle"
+                       gainprm="0 0 800 0 0.10 0.20 -1.0 0.0 0"/>"#,
+        );
+        let err = load_model(&xml).unwrap_err().to_string();
+        assert!(err.contains("max_contraction_velocity"), "got: {err}");
+    }
+
+    #[test]
+    fn test_millardmuscle_validation_bad_pennation() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="millardmuscle"
+                       gainprm="0 0 800 0 0.10 0.20 10.0 1.6 0"/>"#,
+        );
+        let err = load_model(&xml).unwrap_err().to_string();
+        assert!(err.contains("pennation_angle"), "got: {err}");
+    }
+
+    #[test]
+    fn test_millardmuscle_gaintype_override() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="millardmuscle" gaintype="affine"
+                       gainprm="100 0 0" dynprm="0.01 0.04 0.0"/>"#,
+        );
+        let model = load_model(&xml).expect("should parse with override");
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::MillardMuscle);
+        assert_eq!(model.actuator_gaintype[0], GainType::Affine);
+        // biastype is auto-set to MillardMuscle (not overridden).
+        assert_eq!(model.actuator_biastype[0], BiasType::MillardMuscle);
     }
 }

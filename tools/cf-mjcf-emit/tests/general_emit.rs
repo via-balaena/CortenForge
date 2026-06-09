@@ -380,3 +380,39 @@ fn length_round_trip_on_real_template() {
         load_model(&emit(&r).mjcf).expect("length-dialed model must load");
     }
 }
+
+#[test]
+fn emitted_twin_registers_millard_actuators() {
+    // The canonical (force-carrying) template emits a driven Millard actuator per
+    // muscle that the importer registers as a MillardMuscle on its tendon.
+    use sim_core::{ActuatorDynamics, BiasType, GainType};
+    let model = load_model(&cf_mjcf_emit::build_canonical(&template()).mjcf)
+        .expect("muscle-driven canonical MJCF must load");
+    for m in ["rect_fem_r", "vas_int_r", "bifemlh_r", "semimem_r"] {
+        let aid = model
+            .actuator_name
+            .iter()
+            .position(|n| n.as_deref() == Some(m))
+            .unwrap_or_else(|| panic!("actuator {m} missing"));
+        assert_eq!(model.actuator_dyntype[aid], ActuatorDynamics::MillardMuscle);
+        assert_eq!(model.actuator_gaintype[aid], GainType::MillardMuscle);
+        assert_eq!(model.actuator_biastype[aid], BiasType::MillardMuscle);
+        assert_eq!(model.actuator_actrange[aid], (0.0, 1.0));
+    }
+}
+
+#[test]
+fn kinematic_only_emit_has_no_actuator_block() {
+    // A muscle with no force params (the kinematic-only path) emits no actuator —
+    // the emit is unchanged for force=None, and the MJCF still loads.
+    let mut t = template();
+    for m in &mut t.muscles {
+        m.force = None;
+    }
+    let mjcf = emit(&t).mjcf;
+    assert!(
+        !mjcf.contains("<actuator>"),
+        "force=None must emit no actuator block"
+    );
+    load_model(&mjcf).expect("kinematic-only MJCF must load");
+}

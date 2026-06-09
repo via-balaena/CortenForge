@@ -3,18 +3,24 @@
 //! actuators are driven at known activations and the results checked two ways.
 //!
 //! **Gate (machine-exact):** the loaded twin's actuator force equals the OpenSim-
-//! validated standalone `millard_path_force` evaluated at the twin's OWN tendon length.
-//! This proves the emit → MJCF-parse → tendon-transmission → Millard-dispatch wiring is
-//! correct (the force the driven twin produces IS the validated force). It is exact
-//! because both sides are the same force model at the same length — no geometry confound.
+//! validated standalone `millard_path_force` evaluated at the twin's OWN actuator
+//! (musculotendon) length. This proves the emit → MJCF-parse → tendon-transmission →
+//! Millard-dispatch wiring is correct (the force the driven twin produces IS the
+//! validated force). It is exact because both sides are the same force model at the
+//! same length — no geometry confound. (It anchors the *wiring*: that the params land
+//! in the right slots vs OpenSim is anchored separately by the knee_ref.xml snapshot
+//! and the joint-moment report below.)
 //!
 //! **Reported (end-to-end vs OpenSim):** the per-muscle knee joint moment
 //! (−actuator_force × coupled moment arm) vs real OpenSim. This is the literal "joint
 //! torque vs OpenSim" number, but it folds in the emit's GEOMETRY fidelity (the force
-//! model is exact; the emit reproduces moment arms to the A1 5 mm gate). Across the
-//! functional ROM it is ~1–2%, degrading near force-transition boundaries (the min-fiber
-//! clamp for the hamstrings; the dropped-conditional via-point at deep flexion for the
-//! quads) where the steep force curve amplifies the emit's sub-mm geometry residual.
+//! model is exact). The dominant residual is the emit's **dropped-conditional via-point**
+//! approximation (a conditional path point active over part of the ROM in OpenSim is
+//! dropped by the emit, bending the moment arm there): it bites the quads at DEEP
+//! flexion and the semimem hamstring at EXTENSION (its conditional is active ≈0…−32°),
+//! where the arm error locally exceeds the A1 5 mm bound. So per muscle: the quads and
+//! bifemlh are ~1–2% across the functional ROM, but semimem reaches ~25% even in the
+//! functional band (its extension moment-arm error, our ~24 mm vs OpenSim ~30 mm).
 //! That is the emit's documented geometry limit, not a dynamics bug — hence reported.
 //!
 //! References: `gen_muscle_forces.py` (params) / `gen_muscle_joint_moments.py`.
@@ -113,10 +119,11 @@ fn muscle_driven_twin_force_and_torque_vs_opensim() {
                 let force = data.actuator_force[aid]; // ≤ 0 (tension)
 
                 // Gate A: the loaded twin's actuator force IS the validated Millard force
-                // (engine convention is negative tension) at the twin's own tendon length
-                // (static ⇒ tendon velocity 0).
+                // (engine convention is negative tension) at the twin's own actuator
+                // (musculotendon) length — actuator_length = gear · tendon length, so this
+                // is gear-correct (the emit uses gear 1). Static ⇒ tendon velocity 0.
                 let standalone =
-                    -millard_path_force(curves, params, data.ten_length[tid], 0.0, act);
+                    -millard_path_force(curves, params, data.actuator_length[aid], 0.0, act);
                 worst_force_gap = worst_force_gap.max((force - standalone).abs());
 
                 // Reported: end-to-end knee joint moment vs OpenSim.
@@ -140,8 +147,9 @@ fn muscle_driven_twin_force_and_torque_vs_opensim() {
     }
     println!(
         "  Gate A (loaded force vs standalone) worst {worst_force_gap:.2e} N\n  \
-         Joint moment vs OpenSim: functional worst {:.2}%, deep-flexion worst {:.0}% \
-         (reported — emit geometry: min-fiber clamp + dropped conditional)   (n={n})\n",
+         Joint moment vs OpenSim: functional worst {:.2}% (semimem extension arm), \
+         deep-flexion worst {:.0}% (quad arm) — reported, the emit's dropped-conditional \
+         via-point geometry   (n={n})\n",
         moment_func * 100.0,
         moment_deep * 100.0
     );
