@@ -47,8 +47,9 @@ axis is body-frame **y** (the gait2392 limb convention), with factors
 Rationale: the entire A3 validation strategy is "OpenSim ScaleTool IS the oracle for
 a dialed body" (no real subject exists). The geometry morph already matches
 ScaleTool; matching the inertia keeps ONE convention and — crucially — keeps the
-inertia morph **gradeable** against real OpenSim (machine-exact gate), which a
-physically-"more-correct" transform could not be. The axisymmetric-forcing quirk is
+inertia morph **gradeable** against real OpenSim (a tight 1e-5 gate, rounding-limited
+by OpenSim's 6-decimal `getMoments` — the formula itself matches ScaleTool's
+convention machine-exactly), which a physically-"more-correct" transform could not be. The axisymmetric-forcing quirk is
 ≤5% for the near-axisymmetric leg segments (femur Ixx/Izz differ 5%, tibia 1.4%) and
 the canonical/gate body (identity scale) is unaffected (raw values either way). The
 isotropic/anisotropic discontinuity is OpenSim's; we replicate it (branch on
@@ -116,15 +117,33 @@ needed in Rust** — just compose the symmetric tensor. femur/tibia have zero pr
   don't assume) and `muscle_driven_dynamics.rs` (G2 static torque gate is
   inertia-independent — joint torque = moment arm × force; verify it still passes).
 
-**PR2 — scale-morph inertia; ScaleTool oracle.**
-- `realize`: scale femur/tibia `Inertia` (mass∝vol, com∝factors, inertia per the
-  two-branch formula above); talus/pelvis unscaled (identity). Only axis-aligned
-  (products-0) inertia is scaled by the diagonal formula; assert that precondition.
-- `gen_scaled_inertia.py` → `scaled_inertia_opensim.json` (drive `Model::scale`,
-  `preserveMassDistribution=False`, read back scaled mass/com/inertia over a factor
-  grid mirroring `gen_scaled_moment_arms.py`).
-- validation gate: realize at each grid factor, assert mass/com/inertia match
-  OpenSim machine-exactly (~1e-12).
+**PR2 — scale-morph inertia; ScaleTool oracle. ✅ COMMITTED + PUSHED 2026-06-09
+(branch `feat/msk-g3-inertia-scale-morph`, commit `cd4d3181`; PR not yet opened).**
+- `realize`: scales EVERY body's `Inertia` by its own segment scale via
+  `scale_inertia` (mass ∝ vol, com ∝ factors, inertia per the two-branch formula).
+  Since `SegmentScale` always has `sx==sz` (transverse on both x,z), the branch is
+  simply isotropic (`axial==transverse` → ×s⁵ on all 6 components, products-safe) vs
+  anisotropic (`axial≠transverse` → the forced-axisymmetric diagonal rule, asserts
+  products-0). femur/tibia get their own dial; pelvis/talus fall to the
+  never-anisotropic pelvis scale (so the off-axis lumped-foot composite only ever
+  hits the products-safe isotropic branch — moot at IDENTITY default).
+- Oracle: EXTENDED `gen_scaled_moment_arms.py` (NOT a new file) with a per-config
+  `inertias` block — a SEPARATE `Model::scale(..., preserveMassDistribution=False)`
+  call (mass ∝ volume) reading femur_r/tibia_r mass/com/moments/products. Geometry/
+  moment arms are identical either preserve flag, so the existing moment-arm gate is
+  byte-unchanged. Regenerated `scaled_moment_arms_opensim.json`.
+- validation gate `morph_inertia_matches_real_opensim_scaletool` (in
+  `opensim_cross_check.rs`, reusing `body_params_from_factors`): realize at each grid
+  factor, compare femur/tibia inertia to OpenSim. **Worst Δ 5.4e-7 across all 13
+  configs**, gate 1e-5. **★ FINDING: OpenSim's `getInertia().getMoments()` returns the
+  inertia 6-DECIMAL-ROUNDED** (femur Ixx 0.170221 vs the .osim's 0.170220714339411),
+  so the oracle is only 6-decimal-precise; `realize` scales the FULL-precision .osim
+  parse (more accurate), so it diverges from the rounded oracle by ~1e-7..1e-6 (the
+  rounding propagated through scaling) — NOT a formula error (which would be
+  percent-scale). The formula itself is machine-exact vs ScaleTool's convention
+  (the 1e-9 spike match used OpenSim's own rounded original as input). Plus 4 formula-
+  level unit tests in cf-msk-lib (identity no-op / uniform ×s⁵ / anisotropic
+  axisymmetry / realize end-to-end) that pin the morph WITHOUT the OpenSim oracle.
 
 Each PR: n+1 cold-read + pre-PR local ultra-review; don't push/open PRs without
 user go-ahead.

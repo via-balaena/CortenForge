@@ -289,3 +289,81 @@ fn morph_matches_real_opensim_scaletool() {
          (vs ~0.3mm unscaled — scaling adds ~no error)\n"
     );
 }
+
+/// G3 inertia scale-morph: `realize` scales each dialed segment's MASS DISTRIBUTION
+/// to match OpenSim ScaleTool's convention (`Model::scale` with
+/// `preserveMassDistribution=false`, mass ∝ volume) — to within a tight 1e-5 gate
+/// (rounding-limited, see below). For every scale config in the same oracle JSON, the
+/// realized `femur_r`/`tibia_r` inertia must equal OpenSim's scaled body across mass,
+/// CoM, and all 6 tensor components. The inertia analogue of
+/// `morph_matches_real_opensim_scaletool` (geometry) — together they pin the whole
+/// per-axis morph against real OpenSim.
+///
+/// The two-branch formula IS OpenSim's ScaleTool inertia convention: isotropic →
+/// ×s⁵ dilation; anisotropic → the axisymmetric rule `Iyy=vol·t²·Iyy`,
+/// `Ixx=Izz=vol·(a²(Ixx−Iyy/2)+t²·Iyy/2)`. So the formula is exact vs ScaleTool — but
+/// the gate is ~1e-6, not machine: OpenSim quantizes the loaded segment inertia to
+/// **6 decimals** (so `getInertia().getMoments()` on the UNSCALED model already reads
+/// femur Ixx 0.170221 vs the .osim's 0.170220714339411), and that quantized value is
+/// what gets scaled. `realize` scales the FULL-precision .osim parse (more accurate),
+/// so it diverges from the rounded oracle by the rounding propagated through scaling
+/// (~1e-7..1e-6) — far below any real
+/// formula error (which would be percent-scale). The talus (lumped-foot composite)
+/// has no single OpenSim body to scale, so it is not graded here — its inertia rides
+/// the (never-anisotropic) pelvis scale; see `recon_inertias.md`.
+#[test]
+fn morph_inertia_matches_real_opensim_scaletool() {
+    let template = parse_leg_chain(&std::fs::read_to_string(asset("gait2392.osim")).unwrap());
+    let reference = json("scaled_moment_arms_opensim.json");
+    let configs = reference["configs"].as_object().unwrap();
+
+    // Gate at 1e-5: comfortably above the ~1e-6 worst rounding-propagation (OpenSim
+    // quantizes the loaded segment inertia to 6 decimals, then scales that), and far
+    // below any real formula error (a wrong branch/coefficient diverges at percent
+    // scale). Cleanly separates "oracle rounding noise" from "morph diverged from ScaleTool".
+    const INERTIA_GATE: f64 = 1e-5;
+    println!(
+        "\n===== inertia morph (realize) vs REAL {} ScaleTool (gate {INERTIA_GATE:.0e}) =====",
+        reference["source"].as_str().unwrap()
+    );
+    let comp = |v: &serde_json::Value, i: usize| v.as_array().unwrap()[i].as_f64().unwrap();
+    let mut worst = 0.0_f64;
+    for (name, cfg) in configs {
+        let params = body_params_from_factors(&cfg["factors"]);
+        let model = realize(&template, &params);
+        // Drift guard: the JSON must carry the inertia block (regenerate after a grid
+        // change — `gen_scaled_moment_arms.py`).
+        let inertias = cfg["inertias"].as_object().unwrap_or_else(|| {
+            panic!("config '{name}' missing the inertias block — regenerate JSON")
+        });
+        let mut cfg_worst = 0.0_f64;
+        for (body, want) in inertias {
+            let got = model
+                .bodies
+                .iter()
+                .find(|b| &b.name == body)
+                .and_then(|b| b.inertia)
+                .unwrap_or_else(|| panic!("realized model has no inertia for '{body}'"));
+            let mut d = (got.mass - want["mass"].as_f64().unwrap()).abs();
+            for i in 0..3 {
+                d = d.max((got.com[i] - comp(&want["com"], i)).abs());
+                // tensor = [Ixx,Iyy,Izz,Ixy,Ixz,Iyz]; OpenSim = moments(xx,yy,zz) + products(xy,xz,yz).
+                d = d.max((got.tensor[i] - comp(&want["moments"], i)).abs());
+                // femur/tibia are diagonal, so the products grade is structurally 0 == 0
+                // (it pins that the morph introduces no products); the non-trivial
+                // products path — isotropic ×s⁵ on a tensor WITH products — is covered
+                // by the `scale_inertia` unit tests in cf-msk-lib.
+                d = d.max((got.tensor[3 + i] - comp(&want["products"], i)).abs());
+            }
+            cfg_worst = cfg_worst.max(d);
+        }
+        worst = worst.max(cfg_worst);
+        println!("  {name:<22} worst Δ {cfg_worst:.2e}");
+        assert!(
+            cfg_worst < INERTIA_GATE,
+            "{name}: realized inertia vs OpenSim ScaleTool worst Δ {cfg_worst:.2e} exceeds \
+             {INERTIA_GATE:.0e} — the scale-morph diverged from ScaleTool's convention"
+        );
+    }
+    println!("worst Δ across all scale configs: {worst:.2e} (oracle is 6-decimal-precise)\n");
+}
