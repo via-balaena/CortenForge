@@ -221,7 +221,10 @@ impl ModelBuilder {
 
     /// Process a single Joint equality constraint (polynomial coupling).
     ///
-    /// `eq_data[0..5]` = polynomial coefficients (q1 = c0 + c1*q2 + c2*q2² + ...).
+    /// `eq_data[0..11]` = polynomial coefficients (q1 = c0 + c1*q2 + c2*q2² + ...).
+    /// MuJoCo's own joint equality is a quartic (5 coefficients); we accept up to
+    /// degree 10 (11 coefficients) because gait2392's coupled-knee roll-glide
+    /// SimmSpline needs degree 8 to track to ≤0.17 mm (the G3 forward-dynamics arc).
     fn process_joint_equality(
         &mut self,
         joint_eq: &MjcfJointEquality,
@@ -248,7 +251,7 @@ impl ModelBuilder {
         };
 
         let mut data = [0.0; 11];
-        for (i, &coef) in joint_eq.polycoef.iter().take(5).enumerate() {
+        for (i, &coef) in joint_eq.polycoef.iter().take(11).enumerate() {
             data[i] = coef;
         }
 
@@ -568,9 +571,10 @@ mod tests {
         assert_relative_eq!(model.eq_data[0][9], 0.0, epsilon = 1e-12);
     }
 
-    /// Joint equality packs polycoef into `eq_data[0..5]` and resolves
-    /// both joint names. The 5-element cap (indices beyond 4 dropped) is
-    /// not exercised here — would need a 6+ coefficient input.
+    /// Joint equality packs polycoef into `eq_data` and resolves both joint names.
+    /// This case is a quartic (5 coefficients); the higher-degree packing (up to 11)
+    /// is exercised end-to-end by the degree-8 coupling test in the engine
+    /// integration suite (`equality_constraints::test_joint_equality_degree8_*`).
     #[test]
     fn joint_equality_polycoef_packed_into_data() {
         let xml = r#"

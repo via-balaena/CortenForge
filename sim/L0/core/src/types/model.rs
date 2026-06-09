@@ -810,7 +810,8 @@ pub struct Model {
     /// Constraint parameters (meaning depends on type).
     /// - Connect: anchor point in body1 frame [x, y, z]
     /// - Weld: relative pose [x, y, z, qw, qx, qy, qz] + torque scale
-    /// - Joint: polycoef[0..5] for polynomial coupling
+    /// - Joint: polycoef[0..11] for polynomial coupling (degree ≤ 10; trailing zeros
+    ///   give a lower degree, e.g. a quartic uses [0..5])
     /// - Tendon: polycoef[0..5] for polynomial coupling
     /// - Distance: target distance in `[0]`; `[1..10]` unused
     pub eq_data: Vec<[f64; 11]>,

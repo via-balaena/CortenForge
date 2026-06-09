@@ -1340,3 +1340,83 @@ fn test_weld_to_mocap_force_asymmetry() {
         epsilon = 1e-10
     );
 }
+
+/// Test: HIGH-DEGREE joint coupling (degree 8) holds under motion.
+///
+/// MuJoCo's joint equality is a quartic (5 coefficients); we extended it to
+/// degree 10 so the gait2392 coupled-knee roll-glide SimmSpline can be tracked by
+/// a degree-8 polynomial (the G3 forward-dynamics arc). This verifies the engine
+/// actually uses the high-order coefficients — both the polynomial VALUE (position
+/// coupling) and its DERIVATIVE (velocity coupling) — by driving j2 through a
+/// range where the degree-8 term is non-negligible and checking j1 tracks
+/// `poly8(j2)` throughout. A degree-4-truncating engine would diverge here (the
+/// final-angle discriminator below quantifies by how much).
+#[test]
+fn test_joint_equality_degree8_tracks_under_motion() {
+    // poly8(q) = 0.4q − 0.1q² + 0.15q⁸ — the c8 term matters once q approaches 1.
+    let coef = [0.0, 0.4, -0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.15];
+    let poly = |c: &[f64], q: f64| -> f64 {
+        c.iter()
+            .enumerate()
+            .map(|(k, &ck)| ck * q.powi(k as i32))
+            .sum()
+    };
+
+    // Zero gravity, no damping: j2 carries its initial spin; the constraint drags
+    // j1 along the degree-8 curve. Tracking under motion exercises poly AND poly'.
+    let mjcf = r#"
+        <mujoco model="joint_degree8">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="link1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05 0.3" mass="1.0"/>
+                </body>
+                <body name="link2" pos="1 0 1">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05 0.3" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <joint joint1="j1" joint2="j2" polycoef="0 0.4 -0.1 0 0 0 0 0 0.15" solref="0.01 1"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    // Start on the manifold (j2=0 ⇒ j1=poly8(0)=0), give j2 a spin.
+    data.qpos[1] = 0.0;
+    data.qpos[0] = poly(&coef, 0.0);
+    data.qvel[1] = 2.0;
+    data.forward(&model).expect("forward");
+
+    let mut worst = 0.0_f64;
+    let mut max_q2 = 0.0_f64;
+    for _ in 0..800 {
+        data.step(&model).expect("step failed");
+        let (q1, q2) = (data.qpos[0], data.qpos[1]);
+        worst = worst.max((q1 - poly(&coef, q2)).abs());
+        max_q2 = max_q2.max(q2);
+    }
+
+    // j2 must sweep far enough that the degree-8 term genuinely engages, and a
+    // degree-4 truncation (dropping c8) would have produced a much larger error
+    // than our tracking tolerance — so passing the track ⇒ the engine used c8.
+    let deg4_only = poly(&coef[..5], max_q2); // == old quartic path
+    let deg8 = poly(&coef, max_q2);
+    assert!(
+        max_q2 > 0.9,
+        "j2 should sweep into the high-order regime, reached {max_q2}"
+    );
+    assert!(
+        (deg8 - deg4_only).abs() > 0.05,
+        "test must be discriminating: deg8 vs deg4 differ by {} at q2={max_q2}",
+        (deg8 - deg4_only).abs()
+    );
+    assert!(
+        worst < 0.02,
+        "degree-8 coupling should track poly8(j2) under motion, worst error {worst} rad"
+    );
+}
