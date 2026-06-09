@@ -11,9 +11,13 @@
 //! * **coupled DOF** — a translation with a `SimmSpline` (e.g. the tibial
 //!   roll-glide): an interposed wrapper *body* carrying a `slide` joint, held on
 //!   the spline manifold by a degree-8 polynomial **joint-equality constraint** to
-//!   the driving coordinate (so the coupled knee moves correctly under forward
-//!   dynamics — G3). The kinematic `qpos_targets` path still poses it directly; the
-//!   two agree to ≤0.17 mm across the ROM, so kinematic-only callers are unaffected.
+//!   the driving coordinate, so the coupled knee can **move under torque** (forward
+//!   dynamics) with the slides staying coupled to the angle, instead of being posed
+//!   kinematically — G3. (This closes the *kinematic/coupling* gap: the constraint
+//!   reproduces the SimmSpline pose to ≤0.17 mm and holds the manifold under motion;
+//!   matching OpenSim's forward-dynamics *acceleration* is a separate follow-up.)
+//!   The kinematic `qpos_targets` path still poses it directly; the two agree to
+//!   ≤0.17 mm across the ROM, so kinematic-only callers are unaffected.
 //! * **constant** — folded into the child body's `pos` (translation) or skipped
 //!   when it is an identity rotation (gait2392's zero rotation2/3 and the zero
 //!   `tz`).
@@ -205,10 +209,18 @@ pub fn emit(model: &Model) -> Emitted {
                 poly.push(' ');
             }
             // Snap SVD round-off (|c| ≲ 1e-12, e.g. the ~1e-17 high-order terms a
-            // constant coupling produces) to exactly 0 — a clean, platform-stable
-            // polycoef instead of baking solver noise into the byte snapshot.
+            // constant coupling produces) to exactly 0, and emit the rest at FIXED
+            // 12-decimal precision. The fit is only good to ~0.17 mm (≫ 1e-12), so
+            // truncating the f64 tail is lossless — and it makes the polycoef (hence
+            // the byte snapshot) deterministic across platforms/toolchains, where the
+            // raw SVD tail can differ at ULP (FMA/reorder; cf-mjcf-emit's snapshot is
+            // byte-checked ubuntu-only).
             let c = if c.abs() < 1e-12 { 0.0 } else { *c };
-            let _ = write!(poly, "{c}");
+            if c == 0.0 {
+                poly.push('0');
+            } else {
+                let _ = write!(poly, "{c:.12}");
+            }
         }
         let _ = writeln!(
             equality_xml,
