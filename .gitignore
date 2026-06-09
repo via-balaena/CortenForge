@@ -150,3 +150,7 @@ examples/cast/*/out/*.stl
 # Python bytecode (from the OpenSim asset generators)
 __pycache__/
 *.pyc
+
+# OpenSim writes this log next to whatever cwd the reference generators run in
+opensim.log
+**/opensim.log

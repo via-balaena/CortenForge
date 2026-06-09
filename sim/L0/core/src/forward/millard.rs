@@ -392,6 +392,18 @@ pub fn millard_path_force(
     mtu_vel: f64,
     act: f64,
 ) -> f64 {
+    // Caller invariants (OpenSim hard-errors on these; we surface them in dev/test
+    // and otherwise let a NaN propagate loudly rather than silently zero the force).
+    debug_assert!(
+        mtu.is_finite() && mtu_vel.is_finite() && act.is_finite(),
+        "millard_path_force: non-finite input (mtu={mtu}, mtu_vel={mtu_vel}, act={act})"
+    );
+    debug_assert!(
+        p.l0 > 0.0 && p.vmax > 0.0,
+        "millard_path_force: l0 and vmax must be positive (l0={}, vmax={})",
+        p.l0,
+        p.vmax
+    );
     // Rigid tendon: the fiber's projection along the tendon is the path length
     // minus the (constant) tendon slack length. Constant-height pennation gives
     // the true fiber length and the pennation angle.
@@ -422,8 +434,11 @@ pub fn millard_path_force(
     let damping = FIBER_DAMPING * norm_vel;
     // A muscle pulls, never pushes: OpenSim floors the tendon force at 0 (which the
     // damping term can otherwise drive negative at high shortening). At isometric the
-    // force is always ≥ 0, so this leaves the PR1 isometric result unchanged.
-    (p.f0 * (active + passive + damping) * cos_penn).max(0.0)
+    // force is always ≥ 0, so this leaves the PR1 isometric result unchanged. Written
+    // as a branch (not `.max(0.0)`, which would swallow a NaN into 0) so a bad input
+    // propagates loudly instead of masquerading as a silent zero force.
+    let force = p.f0 * (active + passive + damping) * cos_penn;
+    if force < 0.0 { 0.0 } else { force }
 }
 
 /// Isometric Millard muscle force along the tendon/path (i.e. [`millard_path_force`]
@@ -560,5 +575,25 @@ mod spotcheck {
             max_short.abs() < 1e-12,
             "max_short={max_short} should clamp to 0"
         );
+    }
+
+    /// Min-fiber clamp freezes fiber VELOCITY, not just length: below the floor the
+    /// damping term must vanish. A LENGTHENING velocity (where damping would be
+    /// strictly positive if not frozen) must still give exactly 0 N.
+    #[test]
+    fn min_fiber_clamp_freezes_velocity() {
+        let c = MillardCurves::default();
+        let p = MillardMuscleParams {
+            f0: 1000.0,
+            l0: 0.1,
+            lts: 0.2,
+            penn0: 0.0,
+            vmax: 10.0,
+        };
+        // mtu = lts + 0.4·l0 ⇒ raw_norm_len = 0.4 < 0.4441 (clamped); penn0 = 0.
+        let mtu = p.lts + 0.4 * p.l0;
+        // Lengthening: an unfrozen β·v̄ would be > 0, yet the frozen clamp gives 0.
+        assert!(millard_path_force(&c, p, mtu, 0.5, 1.0).abs() < 1e-12);
+        assert!(millard_path_force(&c, p, mtu, 0.5, 0.0).abs() < 1e-12);
     }
 }
