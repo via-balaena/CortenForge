@@ -67,4 +67,10 @@
       <site site="semimem_r_1"/>
     </spatial>
   </tendon>
+  <actuator>
+    <general name="rect_fem_r" tendon="rect_fem_r" dyntype="millardmuscle" ctrllimited="true" ctrlrange="0 1" actlimited="true" actrange="0 1" gainprm="0 0 1169 0 0.130462347889869 0.354766033735608 10 0.08726646 0"/>
+    <general name="vas_int_r" tendon="vas_int_r" dyntype="millardmuscle" ctrllimited="true" ctrlrange="0 1" actlimited="true" actrange="0 1" gainprm="0 0 1365 0 0.101374267400811 0.158470119155291 10 0.05235988 0"/>
+    <general name="bifemlh_r" tendon="bifemlh_r" dyntype="millardmuscle" ctrllimited="true" ctrlrange="0 1" actlimited="true" actrange="0 1" gainprm="0 0 896 0 0.12363108064316 0.369759011831837 10 0 0"/>
+    <general name="semimem_r" tendon="semimem_r" dyntype="millardmuscle" ctrllimited="true" ctrlrange="0 1" actlimited="true" actrange="0 1" gainprm="0 0 1288 0 0.0909853547142785 0.408296779280325 10 0.26179939 0"/>
+  </actuator>
 </mujoco>

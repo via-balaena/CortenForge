@@ -32,3 +32,5 @@ cf-osim = { path = "../cf-osim" }
 # Load + forward the emitted MJCF; read its tendon Jacobian for moment arms.
 sim-mjcf = { path = "../../sim/L0/mjcf" }
 sim-core = { path = "../../sim/L0/core" }
+# Read the vendored OpenSim joint-moment reference for the muscle-driven dynamics gate.
+serde_json = { workspace = true }

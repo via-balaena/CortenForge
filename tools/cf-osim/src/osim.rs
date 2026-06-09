@@ -249,7 +249,25 @@ fn parse_muscle(root: &Node, name: &str) -> Muscle {
             .iter()
             .filter_map(parse_path_point)
             .collect(),
+        force: parse_muscle_force(node),
     }
+}
+
+/// Read a muscle's Millard2012 force parameters from its `.osim` node. Returns
+/// `None` if any are missing (so a non-force-parameterized model degrades to the
+/// kinematic-only path); all four gait2392 target muscles carry the full set.
+fn parse_muscle_force(node: &Node) -> Option<cf_msk_lib::MuscleForce> {
+    let f = |tag: &str| {
+        node.child(tag)
+            .and_then(|n| n.text_trim().parse::<f64>().ok())
+    };
+    Some(cf_msk_lib::MuscleForce {
+        f0: f("max_isometric_force")?,
+        l0: f("optimal_fiber_length")?,
+        lts: f("tendon_slack_length")?,
+        vmax: f("max_contraction_velocity")?,
+        penn0: f("pennation_angle_at_optimal")?,
+    })
 }
 
 fn parse_path_point(c: &Node) -> Option<PathPoint> {
