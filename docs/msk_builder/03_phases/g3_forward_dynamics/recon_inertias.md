@@ -117,8 +117,8 @@ needed in Rust** — just compose the symmetric tensor. femur/tibia have zero pr
   don't assume) and `muscle_driven_dynamics.rs` (G2 static torque gate is
   inertia-independent — joint torque = moment arm × force; verify it still passes).
 
-**PR2 — scale-morph inertia; ScaleTool oracle. ✅ IMPLEMENTED (branch
-`feat/msk-g3-inertia-scale-morph`, uncommitted).**
+**PR2 — scale-morph inertia; ScaleTool oracle. ✅ COMMITTED + PUSHED 2026-06-09
+(branch `feat/msk-g3-inertia-scale-morph`, commit `cd4d3181`; PR not yet opened).**
 - `realize`: scales EVERY body's `Inertia` by its own segment scale via
   `scale_inertia` (mass ∝ vol, com ∝ factors, inertia per the two-branch formula).
   Since `SegmentScale` always has `sx==sz` (transverse on both x,z), the branch is

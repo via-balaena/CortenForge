@@ -207,11 +207,11 @@ impl Default for BodyParams {
 /// [`BodyParams::uniform`] therefore reproduces an exact dilation (every moment arm
 /// ×s); an anisotropic morph changes proportions while keeping the coupling.
 ///
-/// Each body's mass distribution ([`Body::inertia`]) is scaled per-segment by
-/// [`scale_inertia`] (mass ∝ volume, CoM component-wise, inertia by the two-branch
-/// ScaleTool rule), matching OpenSim ScaleTool — so a *dialed* body carries correct
-/// inertia, not the template's. The IDENTITY morph is an exact no-op. See
-/// [`scale_inertia`] for the convention and its OpenSim-validated gate.
+/// Each body's mass distribution ([`Body::inertia`]) is scaled per-segment by the
+/// private `scale_inertia` (mass ∝ volume, CoM component-wise, inertia by the
+/// two-branch ScaleTool rule), matching OpenSim ScaleTool — so a *dialed* body carries
+/// correct inertia, not the template's. The IDENTITY morph is an exact no-op.
+/// `scale_inertia`'s own docs carry the convention and its OpenSim-validated gate.
 pub fn realize(template: &Template, params: &BodyParams) -> Model {
     // Maps a body name to its [`SegmentScale`]. The pelvis (root anchor) is the
     // fallback; the talus also falls here — it is the inert length-grounding ankle
