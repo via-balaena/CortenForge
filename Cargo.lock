@@ -2387,6 +2387,7 @@ dependencies = [
  "mesh-types",
  "nalgebra 0.34.2",
  "serde_json",
+ "sim-core",
  "sim-mjcf",
 ]
 
