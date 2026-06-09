@@ -538,12 +538,14 @@ fn lsq_poly(us: &[f64], ys: &[f64], deg: usize) -> Vec<f64> {
         }
     }
     let b = DVector::from_row_slice(ys);
-    a.svd(true, true)
-        .solve(&b, 1e-12)
-        .unwrap_or_else(|e| panic!("coupling polynomial SVD solve failed: {e}"))
-        .iter()
-        .copied()
-        .collect()
+    let svd = a.svd(true, true);
+    // The Vandermonde of u ∈ [-1,1] at degree 8 is well-conditioned; an SVD solve
+    // failure would mean a degenerate fit setup (the caller skips zero-width ROMs),
+    // i.e. an unrecoverable bug — fail loud rather than emit garbage coefficients.
+    match svd.solve(&b, 1e-12) {
+        Ok(c) => c.iter().copied().collect(),
+        Err(e) => panic!("coupling polynomial SVD solve failed: {e}"),
+    }
 }
 
 /// Convert polynomial coefficients in `u = a·θ + b` to coefficients in raw `θ`:
