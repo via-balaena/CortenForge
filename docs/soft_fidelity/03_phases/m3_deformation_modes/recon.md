@@ -195,6 +195,30 @@ acquired-oracle half of S0 (digitizing Hossain) is still needed for S1+ calibrat
 the banked Phase-H near-incompressibility work into M3's critical path — a scoping decision for the
 user.** Spike `tests/spike_modes_s0.rs` is throwaway/uncommitted — delete when S1 lands.
 
+## Progress · S1 — SHIPPED (2026-06-10, branch `feat/soft-fidelity-m3-modes`, NOT pushed)
+
+The reframed cross-mode validation, productionized + committed:
+- **Analytical multi-mode response** in `material/uniaxial.rs`: `DeformationMode {Uniaxial, Planar,
+  Equibiaxial}` + `free_transverse<M>(material, mode, λ)` (root-find the free thickness stretch s.t.
+  `P₃₃=0` on the real `first_piola`); `free_transverse_uniaxial` now delegates (M1/M2 suite
+  unchanged — full regression green). Unit tests: thickness-traction-zero per mode, ET>PT>UT stress
+  ordering + planar held-width reaction.
+- **Vendored Hossain same-source oracle** `tests/assets/hossain_2021/ecoflex_00_30_multimode.json`
+  (UT 12 / PT 9 / ET 31 pts, nominal→Cauchy) + raw digitized CSVs + `PROVENANCE.md` (figure-digitized
+  tier; the ~1.75× variability finding documented).
+- **Gate** `tests/multimode_measured_accuracy.rs` (3 tests, green): (1) calibrate to Hossain
+  uniaxial at ν=0.499 → predict **planar 2.3 %, equibiaxial 7.9 %** over λ≤2 (μ=28 kPa, C₂≈0.1 kPa)
+  — the 2-term Yeoh form is adequate cross-mode; (2) near-incompressibility **halves** the
+  equibiaxial error (ν=0.40 14.6 % → ν=0.499 7.9 %, 1.85×) — the concrete payoff justifying the
+  upgrade; (3) inter-source material variability **1.72×** (Hossain/Marechal at λ=1.5) ≫ the model
+  error — the floor. grade A; sim-soft suite green (45 binaries). Throwaway spikes deleted.
+
+**Net M3 result (analytical):** at ν→0.499 the substrate reproduces the measured *cross-mode*
+behavior to ~2 % (planar) / ~8 % (equibiaxial) — well inside the material floor. The near-
+incompressibility upgrade is justified (halves cross-mode error) and right-sized (I₂ residual ~8 %
+is below the floor → skip). **Next: the near-incompressibility build (its recon's S1/S2) for the
+inhomogeneous/solver side, or call M3's model-form question answered and move on.**
+
 ## 7. Risks
 
 - **R1 (#1) — the model fails multi-mode AND neither a joint 2-term refit nor ν fixes it**, so a
