@@ -63,7 +63,7 @@ pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};
 pub use material::{
     ConstructionSource, InversionHandling, Material, MaterialField, MaterialFieldKind,
     MeasuredMaterialError, NeoHookean, ShoreInterpolationError, ShoreReading, SiliconeMaterial,
-    ValidityDomain, Yeoh,
+    UniaxialResponse, ValidityDomain, Yeoh, fit_yeoh_uniaxial, free_transverse_uniaxial,
 };
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
