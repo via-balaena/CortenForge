@@ -229,6 +229,41 @@ suite green.
 - Interior must start *near* affine (perturbed), not from rest: a rest start over-stretches
   the boundary-adjacent elements past the fail-closed validity gate (σ<2).
 
+## 9.9 — S3 SHIPPED as Path-3 (2026-06-10, same branch, NOT pushed) — M1 COMPLETE
+
+**Audit-first overwrite → pivoted to Path-3 by the audit (user-approved).** Per the
+"audit-first overwrite" instruction, the Ecoflex 00-30 anchor was first overwritten in place
+(measured μ/C₂ + `Measured` provenance) and the workspace exercised. **Audit verdict:
+overwriting the anchor is unsound** — `build --all-targets` clean (0 compile breaks; no
+downstream asserts the old values), but **4 `silicone_table` tests fail from one root cause:
+a measured anchor cannot live in a datasheet family.** (i) `from_effective_shore` hits the
+`anchor_name` `unreachable!()` (a `Measured` entry in `ECOFLEX_FAMILY`); (ii) Shore-monotonicity
+breaks — measured 00-30 (16.9 kPa) is *softer* than datasheet 00-20 (18 kPa); (iii) provenance
+test; (iv) C₂-vs-TDS calibration. **Deciding fact: a coherent default-flip needs measured data
+for the WHOLE family; Marechal only measured 00-10 & 00-30 → can't re-base.** So the measured
+value belongs in **Path-3**, exactly as the table design intends. Overwrite reverted.
+
+**Shipped (Path-3):** `pub const ECOFLEX_00_30_MEASURED` (`silicone_table.rs`) — the curve-fit
+`μ=16.918 kPa, λ=4μ, C₂=0.218 kPa`, `ConstructionSource::Measured` (cited), **deliberately NOT
+in `ECOFLEX_FAMILY`** (family stays a coherent datasheet basis). Built as a struct literal (not
+`from_measured`, which re-applies the σ₁₀₀/3 formula we're escaping). Prominent module-doc
+"Measured calibration" note documenting the 2.3× gap + when to prefer the measured const. Gate
+`published_measured_table_entry_matches_measurement` (in `uniaxial_measured_accuracy.rs`):
+measured const reproduces the curve **6.5 % RMS** over λ≤2, carries `Measured` provenance, and
+a `const {}` compile-time invariant pins it < 0.85× the datasheet μ. Datasheet anchor + all
+downstream consumers (cf-cast/cf-studio/cf-device) **unchanged** (zero blast radius). grade A;
+full sim-soft suite green.
+
+**Banked gap:** datasheet one-point Ecoflex 00-30 over-predicts measured uniaxial true stress
+**~85 % RMS over λ≤2**; the measured Path-3 calibration reaches **~6.5 %**. Root cause: the
+Smooth-On TDS 100 %-modulus is **2.32× too stiff** vs Marechal's measured value.
+
+**Deferred (named):** flipping the *default* for downstream consumers needs a fully-measured
+Ecoflex family (re-measure 00-20/00-50, or adopt a measured family source) — a data-acquisition
+task, not a code edit. Plus the M2 roller-BC follow-up from S2.
+
+**★ M1 (silicone uniaxial measured accuracy) COMPLETE — S0→S3 done; branch has 3 commits.**
+
 ## 9. M1 validation gate (definition of done)
 
 CI-runnable, network-free: `sim-soft` Dragon Skin 30 uniaxial true-stress–stretch matches

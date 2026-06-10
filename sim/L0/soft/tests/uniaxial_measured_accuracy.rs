@@ -14,10 +14,13 @@
 //!    parameter problem, not a solver problem (the ν = 0.40 compressible
 //!    form is adequate here; near-incompressibility is not required).
 //!
-//! Assertions key off the vendored datasheet *snapshot*, not the live
-//! `silicone_table`, so they stay stable when S3 re-fits the table to
-//! measurement; the live-table error is reported (un-asserted) as a
-//! before/after readout.
+//! The measured fit is published as the Path-3
+//! [`ECOFLEX_00_30_MEASURED`](sim_soft::material::silicone_table::ECOFLEX_00_30_MEASURED)
+//! const and graded by `published_measured_table_entry_matches_measurement`
+//! below. The datasheet `ECOFLEX_00_30` anchor is intentionally left
+//! unchanged (it anchors the Shore-interpolation family) — the gap-gate
+//! keys off the vendored datasheet *snapshot* and the un-asserted
+//! live-table readout shows it still at ~85 %.
 //!
 //! See `docs/soft_fidelity/03_phases/m1_silicone_uniaxial/recon.md`.
 
@@ -32,8 +35,8 @@
     clippy::cast_precision_loss
 )]
 
-use sim_soft::material::silicone_table::ECOFLEX_00_30;
-use sim_soft::{Yeoh, fit_yeoh_uniaxial, free_transverse_uniaxial};
+use sim_soft::material::silicone_table::{ECOFLEX_00_30, ECOFLEX_00_30_MEASURED};
+use sim_soft::{ConstructionSource, Yeoh, fit_yeoh_uniaxial, free_transverse_uniaxial};
 
 const WINDOW: (f64, f64) = (1.1, 2.0); // device window; toe (λ<1.1) excluded — near-zero σ
 const GATE_RMS: f64 = 0.10; // M1 tolerance: ≤10% RMS relative error over the window
@@ -137,4 +140,37 @@ fn measured_fit_reaches_measured_accuracy() {
         fit.mu() < 0.85 * datasheet_baseline().mu(),
         "fit μ should drop well below the datasheet μ"
     );
+}
+
+#[test]
+fn published_measured_table_entry_matches_measurement() {
+    // The Path-3 ECOFLEX_00_30_MEASURED const must reproduce the measured
+    // curve within the M1 gate, and carry Measured provenance.
+    let curve = measured_curve();
+    let (rms, n) = rms_rel_err(
+        &ECOFLEX_00_30_MEASURED.to_yeoh(),
+        &curve,
+        WINDOW.0,
+        WINDOW.1,
+    );
+    eprintln!(
+        "ECOFLEX_00_30_MEASURED: RMS rel err {:.1}% over λ≤2 (n={n})",
+        rms * 100.0
+    );
+    assert!(
+        rms <= GATE_RMS,
+        "measured table entry RMS {:.1}% exceeds {:.0}% gate",
+        rms * 100.0,
+        GATE_RMS * 100.0
+    );
+    assert!(
+        matches!(
+            ECOFLEX_00_30_MEASURED.source,
+            ConstructionSource::Measured { .. }
+        ),
+        "the measured entry must carry Measured provenance"
+    );
+    // ...and it must be materially softer than the datasheet anchor
+    // (compile-time invariant — both are consts).
+    const { assert!(ECOFLEX_00_30_MEASURED.mu < 0.85 * ECOFLEX_00_30.mu) };
 }
