@@ -320,6 +320,26 @@ materials, not overfit to 00-30:
   (44 binaries); silicone_table lib tests green (the new standalone Measured const left the
   Shore family coherent).
 
+## Progress · S4 — DONE (2026-06-10) — mode-oracle recon → see `s4_mode_oracle_recon.md`
+
+Literature scan (no code). **Answer: YES, credible published multi-mode silicone data exists** —
+best matched by the **Hossain group's Ecoflex multi-Shore set (00-10…00-50; uniaxial + planar +
+equibiaxial)**, our exact anchor family (Liao, Hossain, Yao, Mech. Mater. 144:103366, 2020 +
+companion). Provenance caveat: it is **figure-data → digitization tier** (WebPlotDigitizer,
+~1–3 % reading error), one tier below M1's machine-readable Marechal raw; the cleanest *open-raw*
+option (PDMS, Mendeley CC-BY) is the wrong material. Meunier 2008 (unfilled RTV, 5 modes incl.
+pure-shear + bulge) is the gold-standard *method* on a different silicone.
+
+**Recommendation:** (1) **declare M2 COMPLETE** — spine delivered (roller BCs #296 + free-lateral
+coupon #296 + cross-material generalization #297). (2) **Promote deformation modes (b) to its own
+phase M3-modes** — viable (data exists, roller BCs already unblock equibiaxial/planar coupons,
+highest fidelity ceiling) but research-grade: a new oracle pipeline + the cross-mode model-form
+question that legitimately pulls in the deferred **near-incompressibility (e)** (ν=0.40 likely
+binds in equibiaxial — M1-S0 flagged this) and possibly a richer model. (3) **Strategic fork for
+the user:** (A) deepen substrate fidelity → M3-modes, vs (B) move up to the now-unblocked Layer-2
+keystone (soft↔rigid coupling). Lean (A) — don't let the keystone inherit unvalidated cross-mode
+error — but the user owns the call. Full detail + sources in `s4_mode_oracle_recon.md`.
+
 ## 8. M2 validation gate (definition of done)
 
 CI-runnable, network-free: (1) roller/per-axis Dirichlet BCs expressible and threaded through

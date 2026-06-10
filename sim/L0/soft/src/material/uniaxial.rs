@@ -42,42 +42,70 @@ pub struct UniaxialResponse {
     pub nominal_stress: f64,
 }
 
-/// Solve the free-transverse uniaxial-tension response of `material` at
-/// the given `axial_stretch` (≥ 1).
+/// Homogeneous tension deformation mode for [`free_transverse`].
 ///
-/// Root-finds the transverse stretch `λ_t ∈ (0, 1]` that zeroes the
-/// lateral first-Piola component `P₁₁` (traction-free lateral faces) by
-/// bisection — `P₁₁(λ_t)` is monotone increasing, negative as `λ_t → 0`
-/// and `≥ 0` at `λ_t = 1` under axial tension, so the bracket `[ε, 1]`
-/// always contains the root.
+/// Each drives one or two in-plane axes by `λ` and leaves the out-of-plane
+/// (thickness) direction traction-free:
+/// - `Uniaxial`: `F = diag(λ, λ_t, λ_t)` — both lateral directions free, equal.
+/// - `Planar` (pure shear): `F = diag(λ, 1, λ_t)` — width held at 1, thickness
+///   free. The constrained-width direction carries a non-zero reaction stress.
+/// - `Equibiaxial`: `F = diag(λ, λ, λ_t)` — two axes driven equally, thickness
+///   free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeformationMode {
+    /// Uniaxial tension.
+    Uniaxial,
+    /// Planar tension (pure shear): in-plane width fixed.
+    Planar,
+    /// Equibiaxial tension: two in-plane axes driven equally.
+    Equibiaxial,
+}
+
+/// Solve the homogeneous free-transverse response of `material` in `mode` at
+/// the driven `axial_stretch` (≥ 1).
+///
+/// Root-finds the free (out-of-plane / thickness) stretch `λ_t ∈ (0, 1]` that
+/// zeroes its first-Piola traction `P₃₃` (traction-free thickness face) by
+/// bisection — `P₃₃(λ_t)` is monotone increasing, negative as `λ_t → 0` and
+/// `≥ 0` at `λ_t = 1` under tension, so the bracket `[ε, 1]` contains the root.
+/// (For `Uniaxial`, `P₃₃ ≡ P₂₂` by symmetry.) Evaluated on the real
+/// [`Material::first_piola`], so it exercises the *same* constitutive surface
+/// the FEM solver uses. The reported stresses are along the driven axis;
+/// `UniaxialResponse::transverse_stretch` is the free (thickness) stretch.
 ///
 /// # Panics
-/// Panics if `axial_stretch < 1.0` (this is the tension-only primitive;
-/// compression flips the transverse bracket) or if the lateral bracket
-/// does not straddle zero (a non-physical material, e.g. one that expands
-/// laterally under axial tension).
+/// Panics if `axial_stretch < 1.0` (tension-only) or if the thickness bracket
+/// does not straddle zero (a non-physical material that expands under tension).
 #[must_use]
-pub fn free_transverse_uniaxial<M: Material>(material: &M, axial_stretch: f64) -> UniaxialResponse {
+pub fn free_transverse<M: Material>(
+    material: &M,
+    mode: DeformationMode,
+    axial_stretch: f64,
+) -> UniaxialResponse {
     assert!(
         axial_stretch >= 1.0,
-        "free_transverse_uniaxial is tension-only (axial_stretch ≥ 1); got {axial_stretch}"
+        "free_transverse is tension-only (axial_stretch ≥ 1); got {axial_stretch}"
     );
-    let lateral_traction = |lt: f64| -> f64 {
-        let f = Matrix3::new(axial_stretch, 0.0, 0.0, 0.0, lt, 0.0, 0.0, 0.0, lt);
-        material.first_piola(&f)[(1, 1)]
+    let f_of = |t: f64| -> Matrix3<f64> {
+        let driven2 = match mode {
+            DeformationMode::Equibiaxial => axial_stretch,
+            DeformationMode::Uniaxial => t,
+            DeformationMode::Planar => 1.0,
+        };
+        Matrix3::new(axial_stretch, 0.0, 0.0, 0.0, driven2, 0.0, 0.0, 0.0, t)
     };
+    // Thickness (index 2) is the traction-free direction in every mode.
+    let thickness_traction = |t: f64| material.first_piola(&f_of(t))[(2, 2)];
 
     let (mut lo, mut hi) = (1.0e-3_f64, 1.0_f64);
-    let (flo, fhi) = (lateral_traction(lo), lateral_traction(hi));
-    // Bisection precondition; `P₁₁` is monotone in `λ_t` for an isotropic
-    // hyperelastic material under axial tension.
+    let (flo, fhi) = (thickness_traction(lo), thickness_traction(hi));
     assert!(
         flo <= 0.0 && fhi >= 0.0,
-        "no transverse bracket at axial_stretch={axial_stretch}: P11({lo})={flo}, P11({hi})={fhi}"
+        "no thickness bracket for {mode:?} at axial_stretch={axial_stretch}: P33({lo})={flo}, P33({hi})={fhi}"
     );
     for _ in 0..200 {
         let mid = 0.5 * (lo + hi);
-        if lateral_traction(mid) > 0.0 {
+        if thickness_traction(mid) > 0.0 {
             hi = mid;
         } else {
             lo = mid;
@@ -87,9 +115,9 @@ pub fn free_transverse_uniaxial<M: Material>(material: &M, axial_stretch: f64) -
         }
     }
     let lt = 0.5 * (lo + hi);
-    let f = Matrix3::new(axial_stretch, 0.0, 0.0, 0.0, lt, 0.0, 0.0, 0.0, lt);
+    let f = f_of(lt);
     let p = material.first_piola(&f);
-    let j = axial_stretch * lt * lt;
+    let j = f.determinant();
     let nominal = p[(0, 0)];
     UniaxialResponse {
         axial_stretch,
@@ -97,6 +125,14 @@ pub fn free_transverse_uniaxial<M: Material>(material: &M, axial_stretch: f64) -
         cauchy_stress: nominal * axial_stretch / j,
         nominal_stress: nominal,
     }
+}
+
+/// Uniaxial-tension special case of [`free_transverse`] (`F = diag(λ, λ_t,
+/// λ_t)`, both lateral faces traction-free). Retained as the canonical M1/M2
+/// entry point.
+#[must_use]
+pub fn free_transverse_uniaxial<M: Material>(material: &M, axial_stretch: f64) -> UniaxialResponse {
+    free_transverse(material, DeformationMode::Uniaxial, axial_stretch)
 }
 
 /// Calibrate a compressible 2-parameter [`Yeoh`] to a measured uniaxial
@@ -256,6 +292,78 @@ mod tests {
         // Poisson check: λ_t ≈ 1 − ν·ε, ν = 0.40.
         let nu = lam_l / (2.0 * (lam_l + mu));
         assert!((r.transverse_stretch - (1.0 - nu * eps)).abs() < 1.0e-6);
+    }
+
+    /// Defining condition for the other modes: at the solved `λ_t`, the
+    /// thickness traction `P₃₃` vanishes across the sweep (planar holds the
+    /// width at 1; equibiaxial drives two axes by λ).
+    #[test]
+    fn free_transverse_zeroes_thickness_traction_planar_equibiaxial() {
+        let mat = ECOFLEX_00_30.to_yeoh();
+        for mode in [DeformationMode::Planar, DeformationMode::Equibiaxial] {
+            for &lam in &[1.1, 1.5, 2.0, 3.0] {
+                let r = free_transverse(&mat, mode, lam);
+                let driven2 = match mode {
+                    DeformationMode::Equibiaxial => lam,
+                    _ => 1.0,
+                };
+                let f = Matrix3::new(
+                    lam,
+                    0.0,
+                    0.0,
+                    0.0,
+                    driven2,
+                    0.0,
+                    0.0,
+                    0.0,
+                    r.transverse_stretch,
+                );
+                let p33 = mat.first_piola(&f)[(2, 2)];
+                assert!(
+                    p33.abs() < 1.0,
+                    "thickness traction not zeroed for {mode:?} at λ={lam}: P33={p33}"
+                );
+            }
+        }
+    }
+
+    /// Physical cross-mode structure: at a fixed stretch the axial Cauchy stress
+    /// orders `equibiaxial > planar > uniaxial` (stiffer modes), and planar's
+    /// held width (`λ₂ = 1`) carries a non-zero reaction while its thickness is
+    /// traction-free.
+    #[test]
+    fn mode_stress_ordering_and_planar_width_reaction() {
+        let mat = ECOFLEX_00_30.to_yeoh();
+        let lam = 1.8;
+        let uniaxial_stress = free_transverse(&mat, DeformationMode::Uniaxial, lam).cauchy_stress;
+        let planar_stress = free_transverse(&mat, DeformationMode::Planar, lam).cauchy_stress;
+        let equibiaxial_stress =
+            free_transverse(&mat, DeformationMode::Equibiaxial, lam).cauchy_stress;
+        assert!(
+            equibiaxial_stress > planar_stress && planar_stress > uniaxial_stress,
+            "expected ET>PT>UT axial stress; got UT={uniaxial_stress} PT={planar_stress} ET={equibiaxial_stress}"
+        );
+        let planar = free_transverse(&mat, DeformationMode::Planar, lam);
+        let fgrad = Matrix3::new(
+            lam,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            planar.transverse_stretch,
+        );
+        let pk = mat.first_piola(&fgrad);
+        assert!(
+            pk[(1, 1)].abs() > 1.0,
+            "planar held-width reaction should be non-zero"
+        );
+        assert!(
+            pk[(2, 2)].abs() < 1.0,
+            "planar thickness should be traction-free"
+        );
     }
 
     /// The fitter must recover the parameters of a synthetic curve

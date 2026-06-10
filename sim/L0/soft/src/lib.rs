@@ -61,9 +61,10 @@ pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeN
 pub use element::{Element, Tet4};
 pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};
 pub use material::{
-    ConstructionSource, InversionHandling, Material, MaterialField, MaterialFieldKind,
-    MeasuredMaterialError, NeoHookean, ShoreInterpolationError, ShoreReading, SiliconeMaterial,
-    UniaxialResponse, ValidityDomain, Yeoh, fit_yeoh_uniaxial, free_transverse_uniaxial,
+    ConstructionSource, DeformationMode, InversionHandling, Material, MaterialField,
+    MaterialFieldKind, MeasuredMaterialError, NeoHookean, ShoreInterpolationError, ShoreReading,
+    SiliconeMaterial, UniaxialResponse, ValidityDomain, Yeoh, fit_yeoh_uniaxial, free_transverse,
+    free_transverse_uniaxial,
 };
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,

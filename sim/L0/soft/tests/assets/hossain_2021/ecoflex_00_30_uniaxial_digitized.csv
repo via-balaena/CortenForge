@@ -1,0 +1,19 @@
+# Ecoflex 00-30 uniaxial, FIRST-CYCLE loading, digitized (WebPlotDigitizer) from
+# Liao/Yang/Hossain, Int. J. Mech. Sci. 206:106624 (2021), Fig 4(a), Swansea Cronfa cronfa57203.
+# Columns: nominal_strain [-], nominal_stress [MPa]  (nominal = 1st-Piola/engineering)
+# stretch = 1 + nominal_strain. WIP — planar (Fig 8a) + equibiaxial (Fig 12a) pending.
+# NOTE: this curve is ~1.75x STIFFER than the Marechal 2021 measurement of the same
+# nominal material (inter-source/batch variability) — see near_incompressibility/M3 recon.
+nominal_strain,nominal_stress_MPa
+0.016597510373443924,0.0013289036544850141
+0.1908713692946058,0.013953488372092981
+0.37344398340248985,0.023255813953488358
+0.5560165975103735,0.031229235880398665
+0.7219917012448134,0.039867109634551534
+0.9211618257261409,0.047840531561461785
+1.112033195020747,0.055149501661129585
+1.311203319502075,0.06445182724252496
+1.50207468879668,0.07441860465116279
+1.692946058091286,0.08504983388704318
+1.8506224066390038,0.09634551495016608
+2.0082987551867215,0.10830564784053154
