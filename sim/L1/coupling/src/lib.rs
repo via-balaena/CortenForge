@@ -209,7 +209,10 @@ impl StaggeredCoupling {
             .map(|r| r.force_on_soft)
             .sum();
 
-        // (4) route the reaction (−force_on_soft) + axis damping → rigid xfrc.
+        // (4) route the reaction (−force_on_soft) + axis damping → rigid xfrc as
+        // a pure force at the body COM. The contact moment (Σ rᵢ × fᵢ) is omitted
+        // — exact for the ~symmetric scene here; a deferred generalization for
+        // off-centre contact (alongside general posed primitives).
         let v_axis = self.data.qvel[2]; // free-joint linear z velocity
         let mut sf = SpatialVector::zeros(); // [angular(3), linear(3)]
         sf[3] = -force_on_soft.x;
