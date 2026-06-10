@@ -134,8 +134,8 @@ fn measured_fit_reaches_measured_accuracy() {
         GATE_RMS * 100.0
     );
     // The fit must materially soften μ relative to the datasheet value
-    // (the datasheet is ~2.3× too stiff): a sanity check that it is a real
-    // measured fit, not the datasheet params in disguise.
+    // (datasheet μ ~1.4× the fit; its σ₁₀₀ input is ~2.3× measured): a
+    // sanity check that it is a real measured fit, not datasheet in disguise.
     assert!(
         fit.mu() < 0.85 * datasheet_baseline().mu(),
         "fit μ should drop well below the datasheet μ"

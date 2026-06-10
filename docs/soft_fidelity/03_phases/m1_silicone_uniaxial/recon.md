@@ -150,7 +150,7 @@ fit is **to failure**, where C₂/C₃ carry the high-stretch upturn; the in-win
 is smaller. This is precisely why D4 (window) + S0 (measure, don't compare catalog numbers)
 exist. Do not treat the 5× as the answer; treat it as the question.
 
-## 9.5 — S0 FINDINGS (DONE 2026-06-09, spike `tests/spike_uniaxial_s0.rs`, throwaway)
+## Progress · S0 — FINDINGS (DONE 2026-06-09, spike `tests/spike_uniaxial_s0.rs`, throwaway)
 
 Zenodo `3611329` downloaded; Ecoflex 00-30 measured curve (706 pts, λ∈[1.05,17.07], true
 stress MPa) parsed; analytical **compressible-Yeoh free-transverse uniaxial** solver
@@ -180,7 +180,7 @@ Every S0 question answered:
 **~85 % → ~6 % RMS**. R1 retired for tension. C₃ out. ν=0.40 kept (Fork-B: absorb into μ).
 The spike `tests/spike_uniaxial_s0.rs` is throwaway/uncommitted — **delete when S1 lands.**
 
-## 9.7 — S1 SHIPPED (2026-06-09, branch `feat/soft-fidelity-m1-silicone-uniaxial`, NOT pushed)
+## Progress · S1 — SHIPPED (2026-06-09, branch `feat/soft-fidelity-m1-silicone-uniaxial`, NOT pushed)
 
 Committed leaf. **Vendored asset** `sim/L0/soft/tests/assets/marechal_2021/`
 (`ecoflex_00_30_uniaxial.json` = 100-pt curated subsample λ≤3.3 + datasheet-baseline
@@ -203,7 +203,7 @@ apt validators (the solver's defining residual + the linear-elastic limit + fit
 identifiability) — Table II is incompressible, different physics from our compressible
 ν=0.40 model, so a direct equality would be wrong; it stays a documented reference.
 
-## 9.8 — S2 SHIPPED (2026-06-10, same branch, NOT pushed)
+## Progress · S2 — SHIPPED (2026-06-10, same branch, NOT pushed)
 
 `tests/uniaxial_fem_coupon.rs` — a **constant-strain patch test** separating solver error
 from model error. Imposes the analytical homogeneous uniaxial deformation `F=diag(λ,λ_t,λ_t)`
@@ -229,7 +229,7 @@ suite green.
 - Interior must start *near* affine (perturbed), not from rest: a rest start over-stretches
   the boundary-adjacent elements past the fail-closed validity gate (σ<2).
 
-## 9.9 — S3 SHIPPED as Path-3 (2026-06-10, same branch, NOT pushed) — M1 COMPLETE
+## Progress · S3 — SHIPPED as Path-3 (2026-06-10, same branch, NOT pushed) — M1 COMPLETE
 
 **Audit-first overwrite → pivoted to Path-3 by the audit (user-approved).** Per the
 "audit-first overwrite" instruction, the Ecoflex 00-30 anchor was first overwritten in place

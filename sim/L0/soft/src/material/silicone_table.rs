@@ -103,10 +103,12 @@
 //! The one-point-datasheet conversion above is now **independently
 //! checked against measured data** for Ecoflex 00-30: Marechal et al.
 //! 2021's ASTM D412 uniaxial tension (Zenodo `10.5281/zenodo.3611329`)
-//! shows the Smooth-On TDS 100 %-modulus is **~2.3× too stiff** vs
-//! measurement (datasheet `μ ≈ 23 kPa` vs measured `μ ≈ 17 kPa`); the
-//! one-point params over-predict the measured true-stress curve by
-//! **~85 % RMS** over λ ≤ 2, where a curve fit reaches **~6 %**. The
+//! shows the Smooth-On TDS 100 %-modulus `σ₁₀₀` — the single point this
+//! table's `μ = σ₁₀₀/3` is derived from — is **~2.3× the measured value**.
+//! As a result the one-point params **over-predict the measured
+//! true-stress curve by ~85 % RMS** over λ ≤ 2, where a curve fit reaches
+//! **~6 %** (the fitted `μ` drops from 23 kPa to ~17 kPa — a ~1.4× shift in
+//! `μ`, distinct from the 2.3× `σ₁₀₀` ratio). The
 //! measured fit is published as the Path-3 [`ECOFLEX_00_30_MEASURED`]
 //! const (`ConstructionSource::Measured`) and graded by
 //! `tests/uniaxial_measured_accuracy.rs`. Prefer it over [`ECOFLEX_00_30`]
@@ -601,9 +603,11 @@ pub const ECOFLEX_00_30: SiliconeMaterial = SiliconeMaterial::from_anchor(
 /// Marechal et al. 2021's measured ASTM D412 uniaxial true-stress curve
 /// over the device window λ ≤ 2 (Zenodo `10.5281/zenodo.3611329`) — see
 /// `tests/uniaxial_measured_accuracy.rs`. This corrects the datasheet
-/// [`ECOFLEX_00_30`], whose TDS-100 %-modulus `μ` is ~2.3× too stiff vs
-/// measurement (85 % → 6 % RMS over λ ≤ 2). Density, Shore, and validity
-/// bounds (a separate elongation-at-break property) are unchanged.
+/// [`ECOFLEX_00_30`], whose one-point TDS `μ` (from a `σ₁₀₀` that is ~2.3×
+/// the measured value) over-predicts the measured uniaxial curve by ~85 %
+/// RMS over λ ≤ 2; this fit reaches ~6 % (`μ` 23 → ~17 kPa). Density,
+/// Shore, and validity bounds (a separate elongation-at-break property)
+/// are unchanged.
 ///
 /// Tagged [`ConstructionSource::Measured`] and **deliberately NOT part of
 /// the `from_effective_shore` Shore-interpolation family** — see the
