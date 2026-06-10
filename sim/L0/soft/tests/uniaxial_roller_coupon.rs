@@ -1,11 +1,14 @@
 //! M2-S2 — roller free-lateral uniaxial coupon (the genuine free-lateral
-//! solve that supersedes M1's constant-strain patch test).
+//! solve M1's constant-strain patch test stood in for).
 //!
 //! M1's `uniaxial_fem_coupon.rs` could only run a *constant-strain patch
 //! test*: it imposed the full analytical `F = diag(λ, λ_t, λ_t)` on the
 //! boundary (every boundary DOF pinned to the affine field), because the
 //! Phase-2 BC surface was full-3-DOF-pin only — there was no way to leave a
-//! face free to contract. M2-S1 added **roller / per-axis Dirichlet BCs**,
+//! face free to contract. (That patch test is kept for its distinct
+//! multi-element constant-strain verification on the NH path; this coupon
+//! adds the free-lateral `λ_t` re-discovery it could not do.) M2-S1 added
+//! **roller / per-axis Dirichlet BCs**,
 //! so this coupon does the real thing: it drives the axial faces, leaves the
 //! lateral faces **free**, and lets the solver **independently re-discover**
 //! the transverse stretch `λ_t`. `λ_t` is *solved*, not prescribed.

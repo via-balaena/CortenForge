@@ -855,14 +855,19 @@ pub struct BoundaryConditions {
     /// Vertex IDs whose displacement is pinned to their rest position
     /// (full Dirichlet — all three xyz DOFs constrained).
     pub pinned_vertices: Vec<VertexId>,
-    /// **Roller / per-axis Dirichlet** constraints: each entry pins a
-    /// vertex to its rest position on a *subset* of axes while leaving
-    /// the rest free. The mask is `[x, y, z]`; `true` constrains that
-    /// DOF to rest (the roller's normal direction), `false` leaves it
-    /// free. This expresses symmetry-plane / sliding boundaries (e.g.
-    /// the `1/8`-symmetry uniaxial coupon: `[true,false,false]` on the
-    /// `x=0` face) that a full pin cannot. A full pin belongs in
-    /// `pinned_vertices`, not here. Contracts (checked in `new()`): IDs
+    /// **Roller / per-axis Dirichlet** constraints: each entry holds a
+    /// vertex fixed on a *subset* of axes while leaving the rest free.
+    /// The mask is `[x, y, z]`; `true` holds that DOF at its **initial
+    /// position** throughout the solve (the constrained / normal
+    /// direction) — its rest position for a symmetry-plane roller, or a
+    /// prescribed offset for a displacement-driven face (the solver
+    /// holds a constrained DOF at the value supplied in the initial
+    /// `x_prev`, exactly as `pinned_vertices` does); `false` leaves it
+    /// free. This expresses symmetry-plane / sliding / driven boundaries
+    /// (e.g. the `1/8`-symmetry uniaxial coupon: `[true,false,false]` on
+    /// both the `x=0` symmetry face and the driven `x=L` face) that a
+    /// full pin cannot. A full pin belongs in `pinned_vertices`, not
+    /// here. Contracts (checked in `new()`): IDs
     /// in range; no all-`false` mask (free vertices need no entry); no
     /// vertex shared with `pinned_vertices` (a full pin already
     /// constrains every axis); no vertex listed twice; and no vertex
