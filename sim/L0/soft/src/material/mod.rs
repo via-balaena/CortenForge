@@ -46,6 +46,26 @@ pub trait Material: Send + Sync {
     /// Region of deformation-gradient space where the energy is
     /// physically admissible (e.g. `J > 0` for compressible hyperelastic).
     fn validity(&self) -> ValidityDomain;
+
+    /// Gradient of the first Piola stress w.r.t. each calibration parameter:
+    /// `∂P/∂p_k` for `k` in a fixed, per-material parameter order. The
+    /// material-parameter analog of [`Self::tangent`] (which is `∂P/∂F`) — the
+    /// ingredient for differentiating a soft solve w.r.t. its material
+    /// parameters (`∂r/∂p_k = ∂f_int/∂p_k` assembles from these, keystone S5).
+    ///
+    /// Default empty: a material exposes no differentiable parameters until it
+    /// overrides this (so an un-adapted material yields a *zero* contribution,
+    /// never a silently-wrong gradient). [`NeoHookean`] overrides it with
+    /// `[∂P/∂μ, ∂P/∂λ]` in `(μ, λ)` order; the closed forms follow from
+    /// `P = μ(F − F⁻ᵀ) + λ ln(J) F⁻ᵀ`:
+    /// `∂P/∂μ = F − F⁻ᵀ`, `∂P/∂λ = ln(J) · F⁻ᵀ`.
+    ///
+    /// The returned `Vec`'s length and ordering are the material's parameter
+    /// count and convention; consumers index by the same convention the
+    /// material documents.
+    fn first_piola_param_grad(&self, _f: &Matrix3<f64>) -> Vec<Matrix3<f64>> {
+        Vec::new()
+    }
 }
 
 /// Domain of deformation gradients on which the material's energy is
