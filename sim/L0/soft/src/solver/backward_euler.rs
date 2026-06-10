@@ -1983,6 +1983,76 @@ where
             .map(|((c, r), v)| Triplet::new(r, c, v))
             .collect()
     }
+
+    /// Forward sensitivity `∂x*/∂δ` of the converged step's soft
+    /// equilibrium to a unit *rigid translation* of the contact
+    /// primitive(s) along the world direction `dir`, holding
+    /// `(x_prev, v_prev, θ, dt)` fixed — the keystone S3 implicit factor
+    /// (the soft re-equilibration the explicit coupled-step Jacobian was
+    /// missing).
+    ///
+    /// At the converged step `r(x*; pose) = 0` the implicit function
+    /// theorem gives `∂x*/∂δ = −A⁻¹·(∂r/∂δ)` with `A = ∂r/∂x|_{x*}` — the
+    /// SAME tangent the forward Newton step converged with (re-factored at
+    /// `x_final` via `factor_at_position`, the factor [`NewtonStepVjp`] also
+    /// reuses for the load adjoint `∂x*/∂θ`). The plane pose enters the
+    /// residual only through the contact term, so `(∂r/∂δ)` is gathered
+    /// from the active set via
+    /// [`ContactModel::pose_residual_derivative`]; the free-DOF system is
+    /// solved with the factored tangent and scattered back to a full-DOF
+    /// vector (zeros on pinned / roller DOFs).
+    ///
+    /// `x_final` is the converged position from the matching
+    /// [`Solver::step`] / [`Solver::replay_step`]; `dt` is that step's
+    /// time-step (the tangent's `M/Δt²` inertia term must match). The
+    /// result is length `n_dof` (`3·n_vertices`) in the solver's DOF
+    /// layout. For a pose-independent contact ([`NullContact`]) the
+    /// active set yields no pose contributions and the result is all
+    /// zeros.
+    ///
+    /// Scope: contact-engaged, stable-active-set regime (the penalty
+    /// active-set boundary is non-smooth — IPC the deferred cure) and
+    /// constant-normal (plane) primitives (`∂n̂/∂δ = 0`); see
+    /// `docs/keystone/s3_soft_pose_sensitivity_recon.md`. FD-validated
+    /// against a re-solve in `tests/soft_pose_sensitivity.rs`.
+    ///
+    /// [`NewtonStepVjp`]: crate::differentiable::newton_vjp::NewtonStepVjp
+    /// [`ContactModel::pose_residual_derivative`]: crate::contact::ContactModel::pose_residual_derivative
+    /// [`NullContact`]: crate::contact::NullContact
+    #[must_use]
+    pub fn equilibrium_pose_sensitivity(&self, x_final: &[f64], dt: f64, dir: Vec3) -> Vec<f64> {
+        debug_assert!(x_final.len() == self.n_dof);
+        // (∂r/∂δ)_full — the plane pose enters the residual only through
+        // the contact term, so this is the active-set sum.
+        let positions = slice_to_vec3s(x_final);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        let mut dr_dpose = vec![0.0_f64; self.n_dof];
+        for pair in &pairs {
+            let g = self.contact.pose_residual_derivative(pair, &positions, dir);
+            for &(vid, d) in &g.contributions {
+                let v = vid as usize;
+                dr_dpose[3 * v] += d.x;
+                dr_dpose[3 * v + 1] += d.y;
+                dr_dpose[3 * v + 2] += d.z;
+            }
+        }
+        // Solve A·w_free = −(∂r/∂δ)_free reusing the tangent at x_final.
+        let factor = self.factor_at_position(x_final, dt, 0.0);
+        let mut rhs: Vec<f64> = self
+            .free_dof_indices
+            .iter()
+            .map(|&idx| -dr_dpose[idx])
+            .collect();
+        let rhs_mat: MatMut<'_, f64> =
+            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
+        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        // Scatter w_free → full-DOF ∂x*/∂δ (constrained DOFs stay 0).
+        let mut sensitivity = vec![0.0_f64; self.n_dof];
+        for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
+            sensitivity[full_idx] = rhs[k];
+        }
+        sensitivity
+    }
 }
 
 impl<E, Msh, C, M, const N: usize, const G: usize> Solver for CpuNewtonSolver<E, Msh, C, M, N, G>

@@ -832,6 +832,39 @@ impl ContactModel for PenaltyRigidContact {
     fn ccd_toi(&self, _pair: &ContactPair, _x0: &[Vec3], _x1: &[Vec3]) -> f64 {
         f64::INFINITY
     }
+
+    fn pose_residual_derivative(
+        &self,
+        pair: &ContactPair,
+        positions: &[Vec3],
+        dir: Vec3,
+    ) -> ContactGradient {
+        let &ContactPair::Vertex {
+            vertex_id,
+            primitive_id,
+        } = pair;
+        let p = Point3::from(positions[vertex_id as usize]);
+        let prim = &self.primitives[primitive_id as usize];
+        let d = prim.eval(p);
+        self.pair_contribution(d)
+            .map_or_else(ContactGradient::default, |c| {
+                // Residual contact term is `+(dE/dsd)·n̂` (the +f_int
+                // scatter in `assemble_global_int_force`). Translating the
+                // primitive by `δ·dir` shifts the field, `sd(p;δ) =
+                // sd₀(p − δ·dir)` ⇒ `∂sd/∂δ = −∇sd·dir = −n̂·dir`. With a
+                // constant normal (plane: `∂n̂/∂δ = 0`), the per-vertex
+                // residual derivative is `d²E/dsd² · (∂sd/∂δ) · n̂`. `n̂` is
+                // the same normal `gradient` uses (`averaged_normal`, which
+                // equals `prim.grad` for the default `normal_avg_k == 1` /
+                // the plane scope this is validated on).
+                let n = self.averaged_normal(prim.as_ref(), p);
+                let dsd_ddelta = -n.dot(&dir);
+                let contribution = c.d2_energy_d_sd2 * dsd_ddelta * n;
+                ContactGradient {
+                    contributions: vec![(vertex_id, contribution)],
+                }
+            })
+    }
 }
 
 impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidContact {
