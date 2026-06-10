@@ -7,7 +7,9 @@ Consumed by the M1 uniaxial measured-accuracy gate — see
 ## What this is
 
 `ecoflex_00_30_uniaxial.json` — a **curated subsample** (stretch ≤ 3.3, 100 points,
-monotonic) of the measured **uniaxial tensile** true-stress–stretch curve for **Ecoflex
+monotonic **in stretch**; the first sample's stress is a near-zero toe value, slightly
+negative from measurement noise) of the measured **uniaxial tensile**
+true-stress–stretch curve for **Ecoflex
 00-30**, used to validate that `sim-soft`'s hyperelastic material response reproduces a
 *measured* curve rather than a single datasheet point. The full published curve runs to
 stretch ≈ 17 (to failure); we vendor only the device-relevant low-stretch portion needed for

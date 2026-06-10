@@ -58,7 +58,7 @@ best available measurement, honestly scoped.)
 
 | Phase | Gate | Definition of done |
 |---|---|---|
-| **M1 — Silicone uniaxial** *(active)* | software, published-data oracle | One silicone (Dragon Skin 30) simulated under displacement-controlled uniaxial tension in `sim-soft` reproduces Marechal's measured true-stress–stretch curve within tolerance over the device-relevant stretch window; the gap vs the current one-point datasheet params is quantified |
+| **M1 — Silicone uniaxial** *(active)* | software, published-data oracle | One silicone (Ecoflex 00-30) simulated under uniaxial tension in `sim-soft` reproduces Marechal's measured true-stress–stretch curve within tolerance over the device-relevant stretch window; the gap vs the current one-point datasheet params is quantified |
 | **M2 — More materials / modes** *(future)* | software | Generalize across the anchor family; add simple-shear / equibiaxial modes; near-incompressibility (Tet10 + F-bar) if M1 shows ν=0.40 caps accuracy |
 | **M3 — Human soft tissue** *(future)* | software → physical | Published human soft-tissue data (e.g. residual-limb indentation, relevant to the socket waypoint); eventually a real instrumented measurement |
 

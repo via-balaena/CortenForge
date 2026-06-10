@@ -106,13 +106,21 @@ pub fn free_transverse_uniaxial<M: Material>(material: &M, axial_stretch: f64) -
 /// selects the stretch range to fit (M1 fits the **device** window, not
 /// the to-failure tail — a to-failure fit trades away low-stretch
 /// accuracy). Poisson ratio is held at the `silicone_table` convention
-/// `ν = 0.40` (`λ = 4 μ`); only `(μ, C₂)` are free. Minimises the RMS
-/// true-stress residual via a two-stage grid (coarse box → local refine),
-/// evaluating each candidate through [`free_transverse_uniaxial`] so the
-/// fit targets the *same* compressible response the solver produces.
+/// `ν = 0.40` (`λ = 4 μ`); only `(μ, C₂)` are free. Minimises the
+/// **absolute** RMS true-stress residual (a *relative* objective would
+/// over-weight the near-zero toe) via a two-stage grid — a coarse box, then
+/// a local refine centred on the coarse optimum — evaluating each candidate
+/// through [`free_transverse_uniaxial`] so the fit targets the *same*
+/// compressible response the solver produces. The grid is scaled for the
+/// kPa-class silicones in [`crate::material::silicone_table`].
+///
+/// Returns a bare [`Yeoh`] with **no validity bounds**; attach
+/// [`Yeoh::with_principal_stretch_bounds`] if the solver's stretch gate is
+/// required.
 ///
 /// # Panics
-/// Panics if no `curve` samples fall inside `window`.
+/// Panics if no `curve` samples fall inside `window`. Expects `window.0 > 1`
+/// (uniaxial tension — the small-strain scale estimate is singular at λ = 1).
 // The `f64` casts are small grid indices (`i`, `k`, `n` ≤ a few dozen)
 // and the sample count (`pts.len()`), all far inside f64's exact-integer
 // range — no precision is lost.
@@ -141,9 +149,22 @@ pub fn fit_yeoh_uniaxial(curve: &[(f64, f64)], window: (f64, f64)) -> Yeoh {
         (sse / pts.len() as f64).sqrt()
     };
 
-    // Scale guess: small-strain secant μ ≈ σ/(λ²−1/λ) at the first point.
-    let (l0, s0) = pts[0];
-    let mu_guess = (s0 / (l0 * l0 - 1.0 / l0)).abs().max(1.0);
+    // Scale guess: small-strain secant μ ≈ σ/(λ²−1/λ), taken as the MEDIAN
+    // over the in-window points (robust to single-point toe noise). The
+    // denominator is > 0 for λ > 1; points with a near-singular denominator
+    // (λ ≈ 1) are skipped, and `.abs()` tolerates near-zero toe stress whose
+    // sign is measurement noise.
+    let mut secants: Vec<f64> = pts
+        .iter()
+        .filter(|&&(l, _)| (l * l - 1.0 / l) > 1.0e-3)
+        .map(|&(l, s)| (s / (l * l - 1.0 / l)).abs())
+        .collect();
+    secants.sort_by(f64::total_cmp);
+    let mu_guess = secants
+        .get(secants.len() / 2)
+        .copied()
+        .unwrap_or(1.0)
+        .max(1.0);
 
     // Stage 1 — coarse grid over a wide box around the guess.
     let grid = |mu_lo: f64, mu_hi: f64, c2_lo: f64, c2_hi: f64, n: usize| {
@@ -161,11 +182,15 @@ pub fn fit_yeoh_uniaxial(curve: &[(f64, f64)], window: (f64, f64)) -> Yeoh {
         best
     };
     let coarse = grid(0.2 * mu_guess, 2.0 * mu_guess, 0.0, 2.0 * mu_guess, 40);
-    // Stage 2 — refine in a local box around the coarse optimum.
+    // Stage 2 — refine in a local box *centred on the coarse optimum*. Bounds
+    // are relative to that optimum so the box always brackets it; the μ floor
+    // is a tiny positive (NOT 1.0, which could invert the box for a soft fit),
+    // and the C₂ span scales with the found C₂ so it isn't starved when C₂ is
+    // large relative to μ.
     let mu_span = 0.1 * mu_guess;
-    let c2_span = 0.1 * mu_guess;
+    let c2_span = (0.1 * mu_guess).max(0.25 * coarse.2);
     let fine = grid(
-        (coarse.1 - mu_span).max(1.0),
+        (coarse.1 - mu_span).max(1.0e-9),
         coarse.1 + mu_span,
         (coarse.2 - c2_span).max(0.0),
         coarse.2 + c2_span,
@@ -226,6 +251,8 @@ mod tests {
             "small-strain σ {} vs Eε {expected}",
             r.cauchy_stress
         );
+        // Nominal (engineering) ≈ Cauchy (true) at small strain since J ≈ 1.
+        assert!((r.nominal_stress - r.cauchy_stress).abs() / r.cauchy_stress < 1.0e-3);
         // Poisson check: λ_t ≈ 1 − ν·ε, ν = 0.40.
         let nu = lam_l / (2.0 * (lam_l + mu));
         assert!((r.transverse_stretch - (1.0 - nu * eps)).abs() < 1.0e-6);
@@ -251,6 +278,34 @@ mod tests {
         assert!(
             (fit.c2() - 800.0).abs() < 250.0,
             "C₂ recovered {}",
+            fit.c2()
+        );
+    }
+}
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+
+    #[test]
+    fn fit_with_very_small_stretch() {
+        // Synthetic curve starting very close to λ = 1
+        let curve = vec![
+            (1.001, -100.0),
+            (1.01, 500.0),
+            (1.1, 2000.0),
+            (1.5, 5000.0),
+            (2.0, 8000.0),
+        ];
+
+        // Window that includes the problematic first point
+        let window = (1.0, 2.0);
+
+        // This will call fit with the bad window
+        let fit = fit_yeoh_uniaxial(&curve, window);
+        eprintln!(
+            "Fit with window (1.0, 2.0) succeeded: μ={}, C₂={}",
+            fit.mu(),
             fit.c2()
         );
     }

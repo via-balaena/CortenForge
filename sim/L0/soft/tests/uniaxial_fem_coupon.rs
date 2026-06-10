@@ -51,7 +51,11 @@ use sim_soft::{
 
 const L: f64 = 0.1; // decimeter cube edge (crate-canonical scale)
 const N: usize = 4; // cells per axis (nz must be even); (N+1)³ nodes, (N−1)³ interior
-const STATIC_DT: f64 = 1.0e3; // collapses inertia M/dt² → static equilibrium (IV-3 precedent)
+// dt this large makes the inertial term M/dt² negligible against stiffness, so
+// a single backward-Euler `replay_step` reaches static equilibrium (asserted via
+// `final_residual_norm < cfg.tol` below). Mirrors IV-3 (`bonded_bilayer_beam`)
+// STATIC_DT, scaled up from its dt=1 for extra margin.
+const STATIC_DT: f64 = 1.0e3;
 
 // Representative Ecoflex-class compressible Neo-Hookean (ν = 0.40, λ = 4μ).
 const MU: f64 = 16_900.0;
@@ -130,6 +134,14 @@ fn fem_coupon_reproduces_analytical_homogeneous_uniaxial() {
             &Tensor::zeros(&[0]),
             cfg.dt,
         );
+        // The static solve must actually converge (else "nodes on the affine
+        // field" could be a non-equilibrium coincidence).
+        assert!(
+            step.final_residual_norm < cfg.tol,
+            "λ={lam}: Newton did not converge — residual {:.2e} ≥ tol {:.2e}",
+            step.final_residual_norm,
+            cfg.tol
+        );
         let xf = step.x_final;
 
         // (1) PATCH TEST: free interior nodes land on the homogeneous affine
@@ -148,10 +160,11 @@ fn fem_coupon_reproduces_analytical_homogeneous_uniaxial() {
             "λ={lam}: interior node deviates {max_dev:.2e} m from the homogeneous affine field"
         );
 
-        // (2) STRESS PIPELINE: an interior-touching element's recovered F
-        // matches diag(λ, λ_t, λ_t), its lateral traction is ~0 (the
-        // analytical primitive's free-transverse condition), and its axial
-        // Cauchy stress equals the analytical value.
+        // (2) STRESS PIPELINE — distinct from (1): exercises F→first_piola→
+        // Cauchy on the solved field, not just nodal geometry. An
+        // interior-touching element's recovered F matches diag(λ, λ_t, λ_t),
+        // its lateral traction is ~0 (the analytical primitive's free-transverse
+        // condition), and its axial Cauchy stress equals the analytical value.
         let interior = |v: VertexId| !on_boundary(rest[v as usize]);
         let tet = *tets
             .iter()

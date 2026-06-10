@@ -614,9 +614,9 @@ pub const ECOFLEX_00_30: SiliconeMaterial = SiliconeMaterial::from_anchor(
 /// module-level "Measured calibration" note for why the datasheet family
 /// stays a single coherent basis.
 pub const ECOFLEX_00_30_MEASURED: SiliconeMaterial = SiliconeMaterial {
-    mu: 16_918.0,
-    lambda: 67_672.0,
-    c2: 218.0,
+    mu: 16_679.0,
+    lambda: 66_716.0,
+    c2: 239.0,
     density: 1070.0,
     validity_max_principal_stretch: 8.00,
     validity_min_principal_stretch: YEOH_MIN_PRINCIPAL_STRETCH,

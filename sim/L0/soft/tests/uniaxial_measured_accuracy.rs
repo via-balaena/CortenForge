@@ -38,8 +38,11 @@
 use sim_soft::material::silicone_table::{ECOFLEX_00_30, ECOFLEX_00_30_MEASURED};
 use sim_soft::{ConstructionSource, Yeoh, fit_yeoh_uniaxial, free_transverse_uniaxial};
 
-const WINDOW: (f64, f64) = (1.1, 2.0); // device window; toe (λ<1.1) excluded — near-zero σ
-const GATE_RMS: f64 = 0.10; // M1 tolerance: ≤10% RMS relative error over the window
+// Device window λ ≤ 2; toe (λ<1.1) excluded — σ there is ~1–4 kPa, low signal
+// that inflates relative error. S0 found ~6% achievable, so the gate sits at
+// 10% (≈4 pp margin). See recon.md §"Progress · S0".
+const WINDOW: (f64, f64) = (1.1, 2.0);
+const GATE_RMS: f64 = 0.10;
 
 const ASSET: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -88,6 +91,9 @@ fn rms_rel_err(mat: &Yeoh, curve: &[(f64, f64)], lo: f64, hi: f64) -> (f64, usiz
             continue;
         }
         let model = free_transverse_uniaxial(mat, lam).cauchy_stress;
+        // Floor the denominator at 1 Pa so relative error stays well-defined if
+        // the window ever dips into near-zero toe stress; inert for λ≥1.1 here
+        // (σ ∈ ~[4, 59] kPa).
         let re = (model - sig) / sig.abs().max(1.0);
         sse += re * re;
         n += 1;

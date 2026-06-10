@@ -4,7 +4,9 @@
 direction (Layer-1 soft-FEM fidelity) and the first target (silicone, uniaxial).*
 
 > **Validate that `sim-soft`'s hyperelastic material response reproduces a *measured*
-> uniaxial true-stress–stretch curve for one silicone (Dragon Skin 30), over the
+> uniaxial true-stress–stretch curve for one silicone (Ecoflex 00-30 — switched from
+> Dragon Skin 30 in S0 because only Ecoflex 00-10/00-30 carry real data in the Zenodo
+> snapshot; the pre-S0 planning sections below still reference Dragon Skin 30), over the
 > device-relevant stretch window, within a stated tolerance — and quantify the gap vs the
 > current one-point datasheet params.** Oracle = Marechal et al. 2021 (ASTM D412, Zenodo
 > `10.5281/zenodo.3611329`).
@@ -47,14 +49,14 @@ and produces an actionable number: *how wrong was the one-point datasheet fit, a
 
 ## 3. End-state (M1 done)
 
-A committed, CI-runnable gate: `sim-soft` Dragon Skin 30 under displacement-controlled
-uniaxial tension reproduces Marechal's measured true-stress–stretch curve within tolerance
+A committed, CI-runnable gate: `sim-soft` Ecoflex 00-30 under uniaxial
+tension reproduces Marechal's measured true-stress–stretch curve within tolerance
 **over the device-relevant window**, with: (a) a vendored curated reference asset
 (measured curve + Marechal params + provenance), (b) an analytical compressible-Yeoh
 uniaxial solver + a FEM coupon harness that agree with each other (solver-vs-analytical)
 and with measurement (model-vs-measured), (c) a `fit_yeoh_to_curve` utility producing
 window-optimal params, (d) the one-point-vs-measured gap banked as a number, (e)
-`silicone_table.rs` Dragon Skin 30 re-tagged Path-3 (measured) with citation.
+`silicone_table.rs` Ecoflex 00-30 gains a Path-3 (measured) const with citation.
 
 ## 4. Gap table
 
@@ -266,7 +268,7 @@ task, not a code edit. Plus the M2 roller-BC follow-up from S2.
 
 ## 9. M1 validation gate (definition of done)
 
-CI-runnable, network-free: `sim-soft` Dragon Skin 30 uniaxial true-stress–stretch matches
+CI-runnable, network-free: `sim-soft` Ecoflex 00-30 uniaxial true-stress–stretch matches
 Marechal's measured mean curve to within **[tol set in S0]** over **[window set in S0]**;
 FEM coupon ≡ analytical (solver fidelity) to mesh tolerance; the one-point-vs-measured gap is
 banked; provenance upgraded. Honest scope: validated against a *published measurement*, not
