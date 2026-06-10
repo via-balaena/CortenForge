@@ -11571,6 +11571,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-coupling"
+version = "1.0.0"
+dependencies = [
+ "nalgebra 0.34.2",
+ "sim-core",
+ "sim-mjcf",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "sim-gpu"
 version = "1.0.0"
 dependencies = [
