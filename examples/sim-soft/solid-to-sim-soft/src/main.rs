@@ -621,6 +621,7 @@ fn build_boundary_conditions(
 
     let bc = BoundaryConditions {
         pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
         loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::FullVector)).collect(),
     };
     (bc, loaded, theta)

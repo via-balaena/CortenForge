@@ -79,6 +79,7 @@ impl SoftScene {
         }
         let bc = BoundaryConditions {
             pinned_vertices: vec![0, 1, 2],
+            roller_vertices: Vec::new(),
             loaded_vertices: vec![(3, LoadAxis::AxisZ)],
         };
         let initial = SceneInitial {
@@ -294,6 +295,7 @@ impl SoftScene {
 
         let bc = BoundaryConditions {
             pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
             loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::FullVector)).collect(),
         };
 
@@ -437,6 +439,7 @@ impl SoftScene {
 
         let bc = BoundaryConditions {
             pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
             loaded_vertices: Vec::new(),
         };
 
@@ -680,6 +683,7 @@ impl SoftScene {
 
         let bc = BoundaryConditions {
             pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
             loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
         };
 
@@ -808,6 +812,7 @@ impl SoftScene {
 
         let bc = BoundaryConditions {
             pinned_vertices: Vec::new(),
+            roller_vertices: Vec::new(),
             loaded_vertices: Vec::new(),
         };
 
@@ -833,23 +838,64 @@ const SPHERE_BBOX_MARGIN_RATIO: f64 = 6.0;
 /// Boundary conditions for a soft-body scene.
 ///
 /// Carries the Dirichlet pinned-vertex set (those whose displacement is
-/// fixed at the rest configuration) plus the load-application list
-/// (vertices that receive external traction, paired with the load axis
-/// describing which θ component drives which DOF).
+/// fixed at the rest configuration), an optional **per-axis (roller)**
+/// constraint list (vertices Dirichlet-pinned to rest on *some* axes
+/// while free on the others), plus the load-application list (vertices
+/// that receive external traction, paired with the load axis describing
+/// which θ component drives which DOF).
 ///
 /// `CpuNewtonSolver::new` consumes this at construction time —
-/// validates pinned/loaded vertex IDs and the no-overlap contract,
+/// validates pinned/roller/loaded vertex IDs and the overlap contracts,
 /// then derives the cache (free-DOF index map, lumped per-DOF mass,
-/// sparse pattern) from `pinned_vertices`; the assembly path reads
-/// `loaded_vertices` per Newton iter via `assemble_external_force`.
+/// sparse pattern) per DOF from `pinned_vertices` ∪ `roller_vertices`;
+/// the assembly path reads `loaded_vertices` per Newton iter via
+/// `assemble_external_force`.
 #[derive(Clone, Debug)]
 pub struct BoundaryConditions {
     /// Vertex IDs whose displacement is pinned to their rest position
     /// (full Dirichlet — all three xyz DOFs constrained).
     pub pinned_vertices: Vec<VertexId>,
+    /// **Roller / per-axis Dirichlet** constraints: each entry holds a
+    /// vertex fixed on a *subset* of axes while leaving the rest free.
+    /// The mask is `[x, y, z]`; `true` holds that DOF at its **initial
+    /// position** throughout the solve (the constrained / normal
+    /// direction) — its rest position for a symmetry-plane roller, or a
+    /// prescribed offset for a displacement-driven face (the solver
+    /// holds a constrained DOF at the value supplied in the initial
+    /// `x_prev`, exactly as `pinned_vertices` does); `false` leaves it
+    /// free. This expresses symmetry-plane / sliding / driven boundaries
+    /// (e.g. the `1/8`-symmetry uniaxial coupon: `[true,false,false]` on
+    /// both the `x=0` symmetry face and the driven `x=L` face) that a
+    /// full pin cannot. A full pin belongs in `pinned_vertices`, not
+    /// here. Contracts (checked in `new()`): IDs
+    /// in range; no all-`false` mask (free vertices need no entry); no
+    /// vertex shared with `pinned_vertices` (a full pin already
+    /// constrains every axis); no vertex listed twice; and no vertex
+    /// shared with `loaded_vertices` (a loaded vertex must be free on
+    /// all three axes — the assembly + autograd VJP resolve all xyz
+    /// free-DOF indices). Empty in the common full-pin case.
+    pub roller_vertices: Vec<(VertexId, [bool; 3])>,
     /// Vertex IDs that receive external traction, paired with the load
     /// axis describing which θ component drives which DOF.
     pub loaded_vertices: Vec<(VertexId, LoadAxis)>,
+}
+
+impl BoundaryConditions {
+    /// Full-pin + loaded BCs with no roller constraints — the common
+    /// case. Keeps the schema-stable two-field shape ergonomic now that
+    /// a third (`roller_vertices`) exists; equivalent to the struct
+    /// literal with `roller_vertices: Vec::new()`.
+    #[must_use]
+    pub const fn new(
+        pinned_vertices: Vec<VertexId>,
+        loaded_vertices: Vec<(VertexId, LoadAxis)>,
+    ) -> Self {
+        Self {
+            pinned_vertices,
+            roller_vertices: Vec::new(),
+            loaded_vertices,
+        }
+    }
 }
 
 /// How a θ component maps to a vertex's DOFs.

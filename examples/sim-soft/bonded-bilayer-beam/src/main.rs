@@ -503,6 +503,7 @@ fn run_scene(field: &MaterialField) -> SceneSnapshot {
     let theta_per_vertex = TIP_FORCE_TOTAL / loaded.len() as f64;
     let bc = BoundaryConditions {
         pinned_vertices: pinned.clone(),
+        roller_vertices: Vec::new(),
         loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
     };
 

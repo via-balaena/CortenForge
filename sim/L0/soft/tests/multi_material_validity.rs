@@ -88,6 +88,7 @@ fn canonical_field() -> MaterialField {
 fn single_tet_bc() -> BoundaryConditions {
     BoundaryConditions {
         pinned_vertices: vec![0, 1, 2],
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(3, LoadAxis::AxisZ)],
     }
 }
@@ -210,6 +211,7 @@ fn iv_7_first_violator_wins_names_lowest_tet_id() {
     // (BC layout follows IV-1's `two_isolated_tets` pattern.)
     let bc = BoundaryConditions {
         pinned_vertices: vec![0, 1, 2, 3, 5, 6, 7],
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(4, LoadAxis::AxisZ)],
     };
     let solver: CpuTet4NHSolver<HandBuiltTetMesh> =

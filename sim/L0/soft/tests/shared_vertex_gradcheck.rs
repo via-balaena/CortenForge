@@ -96,6 +96,7 @@ fn build_shared_face_solver() -> (
 
     let bc = BoundaryConditions {
         pinned_vertices: vec![0, 1, 2, 4],
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(3, LoadAxis::AxisZ)],
     };
 

@@ -22,11 +22,13 @@
 //! `material::uniaxial` unit tests + `yeoh_contract.rs`.
 //!
 //! Scope: this imposes the full affine field on the boundary (a constant-
-//! strain patch test). Independently *re-discovering* `λ_t` from a
-//! traction-driven solve with traction-free lateral faces needs per-axis
-//! (roller) Dirichlet BCs, which the Phase-2 BC surface
-//! (`pinned_vertices` = full 3-DOF) does not yet expose — a deferred API
-//! follow-up (M2). See `docs/soft_fidelity/03_phases/m1_silicone_uniaxial/recon.md`.
+//! strain patch test) — a standard FEM verification kept for its multi-element
+//! constant-strain coverage on the `NeoHookean` path. Independently
+//! *re-discovering* `λ_t` from a solve with **free lateral faces** needs
+//! per-axis (roller) Dirichlet BCs, which M2-S1 added; that genuine
+//! free-lateral coupon (on the measured `Yeoh`) lives in
+//! `uniaxial_roller_coupon.rs`. See
+//! `docs/soft_fidelity/03_phases/m2_roller_bc_and_modes/recon.md`.
 
 #![allow(
     // Vertex/DOF index arithmetic and the small `N`-per-axis cell count
@@ -121,6 +123,7 @@ fn fem_coupon_reproduces_analytical_homogeneous_uniaxial() {
 
         let bc = BoundaryConditions {
             pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
             loaded_vertices: vec![],
         };
         let mut cfg = SolverConfig::skeleton();

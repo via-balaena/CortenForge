@@ -97,6 +97,7 @@ fn build_two_tet_solver() -> (
 
     let bc = BoundaryConditions {
         pinned_vertices: vec![0, 1, 2, 4, 5, 6],
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(3, LoadAxis::AxisZ), (7, LoadAxis::AxisZ)],
     };
 

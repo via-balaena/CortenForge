@@ -393,6 +393,51 @@ where
             );
         }
 
+        // Roller / per-axis Dirichlet validation + dense mask. A roller
+        // pins a vertex to rest on the `true` axes of its mask while
+        // leaving the `false` axes free — the per-DOF generalization of
+        // `pinned_vertices`. `roller_mask[v]` defaults to all-free; the
+        // per-DOF free-DOF construction below consults it per axis.
+        let mut roller_mask = vec![[false; 3]; n_vertices];
+        let mut roller_seen: BTreeSet<VertexId> = BTreeSet::new();
+        for &(v, mask) in &boundary_conditions.roller_vertices {
+            assert!(
+                v < n_vertices_u32,
+                "BoundaryConditions.roller_vertices contains vertex ID {v}, \
+                 out of range for {n_vertices}-vertex mesh",
+            );
+            assert!(
+                mask.iter().any(|&b| b),
+                "BoundaryConditions.roller_vertices entry for vertex ID {v} has \
+                 an all-false mask (no axis constrained) — a free vertex needs no \
+                 entry; use a mask with at least one constrained axis",
+            );
+            assert!(
+                roller_seen.insert(v),
+                "BoundaryConditions.roller_vertices lists vertex ID {v} twice \
+                 (ambiguous per-axis mask)",
+            );
+            assert!(
+                !pinned_set.contains(&v),
+                "BoundaryConditions vertex ID {v} is in both pinned_vertices and \
+                 roller_vertices — a full pin already constrains every axis, so a \
+                 roller on the same vertex is ambiguous",
+            );
+            roller_mask[v as usize] = mask;
+        }
+        // A loaded vertex must be free on ALL three axes: the external-force
+        // assembly and the autograd VJP both resolve its xyz free-DOF indices
+        // (`full_to_free_idx[3v + {0,1,2}]` must be `Some`). Loaded ∩ pinned is
+        // rejected above; reject loaded ∩ roller here for the same reason.
+        for &(v, _) in &boundary_conditions.loaded_vertices {
+            assert!(
+                !roller_seen.contains(&v),
+                "BoundaryConditions.loaded_vertices contains vertex ID {v}, \
+                 which is also roller-constrained — a loaded vertex must be free \
+                 on all three axes (assembly + VJP resolve all xyz free indices)",
+            );
+        }
+
         // Tet incidence walk. Used immediately below to (a) reject
         // loads on unreferenced vertices and (b) auto-pin
         // unreferenced vertices into `effective_pinned`. An orphan
@@ -485,16 +530,23 @@ where
 
         // 3. Free-DOF index mapping. Walks vertices in natural order
         // (deterministic per scope §15 D-3 + Decision M); uses
-        // `effective_pinned` (user pins UNION auto-pinned orphans)
-        // built at validation time. No HashMap on numeric paths per
-        // Decision M.
+        // `effective_pinned` (user pins UNION auto-pinned orphans) and
+        // `roller_mask` (per-axis Dirichlet) built at validation time.
+        // No HashMap on numeric paths per Decision M.
+        //
+        // Per-DOF freedom: a full pin fixes all three axes; a roller
+        // fixes only its `true` axes. A fully-free vertex pushes 3v,
+        // 3v+1, 3v+2 in order, so a scene with no rollers yields a
+        // BIT-IDENTICAL free-DOF map to the pre-roller per-vertex
+        // construction (regression-guarded in tests).
         let mut free_dof_indices = Vec::with_capacity(n_dof);
         for v in 0..n_vertices as VertexId {
-            if !effective_pinned.contains(&v) {
-                let v_idx = v as usize;
-                free_dof_indices.push(3 * v_idx);
-                free_dof_indices.push(3 * v_idx + 1);
-                free_dof_indices.push(3 * v_idx + 2);
+            let v_idx = v as usize;
+            let full_pin = effective_pinned.contains(&v);
+            for ax in 0..3 {
+                if !full_pin && !roller_mask[v_idx][ax] {
+                    free_dof_indices.push(3 * v_idx + ax);
+                }
             }
         }
         let n_free = free_dof_indices.len();
@@ -2243,6 +2295,8 @@ mod tests {
     use faer::sparse::Triplet;
     use faer::{Conj, MatMut};
 
+    use sim_ml_chassis::Tensor;
+
     use super::{FactoredFreeTangent, SolverFailure};
     use crate::contact::NullContact;
     use crate::material::MaterialField;
@@ -2269,6 +2323,7 @@ mod tests {
     fn build_3free_solver() -> SkeletonSolver {
         build(BoundaryConditions {
             pinned_vertices: vec![0, 1, 2],
+            roller_vertices: Vec::new(),
             loaded_vertices: vec![(3, LoadAxis::AxisZ)],
         })
     }
@@ -2278,6 +2333,7 @@ mod tests {
     fn pinned_vertex_out_of_range_panics() {
         let bc = BoundaryConditions {
             pinned_vertices: vec![0, 1, 2, 99],
+            roller_vertices: Vec::new(),
             loaded_vertices: vec![(3, LoadAxis::AxisZ)],
         };
         let _ = build(bc);
@@ -2288,6 +2344,7 @@ mod tests {
     fn loaded_vertex_out_of_range_panics() {
         let bc = BoundaryConditions {
             pinned_vertices: vec![0, 1, 2],
+            roller_vertices: Vec::new(),
             loaded_vertices: vec![(42, LoadAxis::AxisZ)],
         };
         let _ = build(bc);
@@ -2298,9 +2355,167 @@ mod tests {
     fn loaded_vertex_overlapping_pinned_panics() {
         let bc = BoundaryConditions {
             pinned_vertices: vec![0, 1, 2, 3],
+            roller_vertices: Vec::new(),
             loaded_vertices: vec![(3, LoadAxis::AxisZ)],
         };
         let _ = build(bc);
+    }
+
+    // --- M2-S1: roller / per-axis Dirichlet BCs ---
+
+    /// A roller frees exactly the unconstrained axes of its vertex while
+    /// pinning the `true` axes. Pin 0/1 fully, roller vertex 2 on x only
+    /// (`[true,false,false]`) so its y,z stay free, vertex 3 fully free.
+    /// Free DOFs (ascending) = {2y, 2z, 3x, 3y, 3z}.
+    #[test]
+    fn roller_frees_only_unconstrained_axes() {
+        let solver = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1],
+            roller_vertices: vec![(2, [true, false, false])],
+            loaded_vertices: vec![],
+        });
+        assert_eq!(
+            solver.free_dof_indices,
+            vec![3 * 2 + 1, 3 * 2 + 2, 3 * 3, 3 * 3 + 1, 3 * 3 + 2],
+            "roller on x must free only y,z of v2 plus all DOFs of v3"
+        );
+        assert_eq!(solver.n_free, 5);
+        // The pinned axis maps to None; the free axes map to Some.
+        assert!(
+            solver.full_to_free_idx[3 * 2].is_none(),
+            "v2 x is roller-pinned → not a free DOF"
+        );
+        assert!(
+            solver.full_to_free_idx[3 * 2 + 1].is_some(),
+            "v2 y is free → a free DOF"
+        );
+    }
+
+    /// No-roller scenes yield a BIT-IDENTICAL free-DOF map to the
+    /// pre-roller per-vertex construction: pinning 0/1/2 leaves exactly
+    /// vertex 3's three DOFs free, in order.
+    #[test]
+    fn no_rollers_free_dof_map_is_unchanged() {
+        let solver = build_3free_solver();
+        assert_eq!(solver.free_dof_indices, vec![9, 10, 11]);
+    }
+
+    /// An all-`true` roller is equivalent to a full pin — the two
+    /// constructions produce identical free-DOF maps. (Full pins still
+    /// belong in `pinned_vertices`; this pins the equivalence.)
+    #[test]
+    fn all_true_roller_equals_full_pin() {
+        let via_pin = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            roller_vertices: Vec::new(),
+            loaded_vertices: vec![],
+        });
+        let via_roller = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1],
+            roller_vertices: vec![(2, [true, true, true])],
+            loaded_vertices: vec![],
+        });
+        assert_eq!(via_pin.free_dof_indices, via_roller.free_dof_indices);
+    }
+
+    /// The ergonomic `BoundaryConditions::new` constructor leaves the
+    /// roller list empty (the common full-pin case).
+    #[test]
+    fn new_constructor_has_no_rollers() {
+        let bc = BoundaryConditions::new(vec![0, 1, 2], vec![(3, LoadAxis::AxisZ)]);
+        assert!(bc.roller_vertices.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "roller_vertices contains vertex ID 99")]
+    fn roller_vertex_out_of_range_panics() {
+        let _ = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            roller_vertices: vec![(99, [true, false, false])],
+            loaded_vertices: vec![],
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "all-false mask")]
+    fn roller_all_false_mask_panics() {
+        let _ = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            roller_vertices: vec![(3, [false, false, false])],
+            loaded_vertices: vec![],
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "lists vertex ID 3 twice")]
+    fn roller_duplicate_vertex_panics() {
+        let _ = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            roller_vertices: vec![(3, [true, false, false]), (3, [false, true, false])],
+            loaded_vertices: vec![],
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "in both pinned_vertices and roller_vertices")]
+    fn roller_overlapping_pinned_panics() {
+        let _ = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            roller_vertices: vec![(2, [true, false, false])],
+            loaded_vertices: vec![],
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "also roller-constrained")]
+    fn loaded_overlapping_roller_panics() {
+        let _ = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1],
+            roller_vertices: vec![(3, [true, false, false])],
+            loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+        });
+    }
+
+    /// A roller is a Dirichlet constraint held at the vertex's **initial
+    /// `x_prev`**, not at rest: a roller DOF driven to a nonzero offset must
+    /// stay exactly there through the solve. Anchors v0/v1/v3 fully pinned
+    /// (removes all rigid-body modes); v2 is a roller on x only, driven to
+    /// `rest.x + offset`, with y,z free. This is the displacement-driven
+    /// roller the M2 free-lateral coupon relies on to drive its `x=L` face.
+    #[test]
+    fn driven_roller_holds_dof_at_nonzero_initial_offset() {
+        let offset = 0.01_f64;
+        let solver = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 3],
+            roller_vertices: vec![(2, [true, false, false])],
+            loaded_vertices: vec![],
+        });
+        // SingleTetMesh rest: v0=(0,0,0), v1=(.1,0,0), v2=(0,.1,0), v3=(0,0,.1).
+        let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+        let mut x_prev = rest;
+        x_prev[3 * 2] = offset; // drive v2.x off rest (rest v2.x = 0)
+        let mut cfg = SolverConfig::skeleton();
+        cfg.dt = 1.0e3; // static: large dt makes M/dt² negligible
+        let step = solver.replay_step(
+            &Tensor::from_slice(&x_prev, &[12]),
+            &Tensor::zeros(&[12]),
+            &Tensor::zeros(&[0]),
+            cfg.dt,
+        );
+        let xf = step.x_final;
+        assert!(
+            (xf[3 * 2] - offset).abs() < 1.0e-12,
+            "driven roller DOF must stay at its x_prev offset {offset}, got {}",
+            xf[3 * 2]
+        );
+        // The full-pin anchors stay at rest; v2's free y,z are solved (the
+        // roller did not pin them — proven by the free-DOF count test above).
+        assert!(
+            (xf[0]).abs() < 1.0e-12
+                && (xf[3] - 0.1).abs() < 1.0e-12
+                && (xf[9 + 2] - 0.1).abs() < 1.0e-12,
+            "fully-pinned anchors must stay at rest"
+        );
     }
 
     /// SPD case: `A = [[2, 1, 0], [1, 3, 1], [0, 1, 4]]` (Sylvester:
@@ -2421,6 +2636,7 @@ mod tests {
             cfg,
             BoundaryConditions {
                 pinned_vertices: vec![0, 1, 2],
+                roller_vertices: Vec::new(),
                 loaded_vertices: vec![(3, LoadAxis::AxisZ)],
             },
         );
@@ -2506,6 +2722,7 @@ mod tests {
             cfg,
             BoundaryConditions {
                 pinned_vertices: vec![0, 1, 2],
+                roller_vertices: Vec::new(),
                 loaded_vertices: vec![(3, LoadAxis::AxisZ)],
             },
         );
@@ -2553,6 +2770,7 @@ mod tests {
             cfg,
             BoundaryConditions {
                 pinned_vertices: vec![0, 1, 2],
+                roller_vertices: Vec::new(),
                 loaded_vertices: vec![(3, LoadAxis::AxisZ)],
             },
         );
@@ -2590,6 +2808,7 @@ mod tests {
             cfg,
             BoundaryConditions {
                 pinned_vertices: vec![0, 1, 2],
+                roller_vertices: Vec::new(),
                 loaded_vertices: vec![(3, LoadAxis::AxisZ)],
             },
         );
@@ -2644,6 +2863,7 @@ mod tests {
             cfg,
             BoundaryConditions {
                 pinned_vertices: vec![0, 1, 2],
+                roller_vertices: Vec::new(),
                 loaded_vertices: vec![(3, LoadAxis::AxisZ)],
             },
         );
@@ -2693,6 +2913,7 @@ mod tests {
             baseline_cfg,
             BoundaryConditions {
                 pinned_vertices: vec![0, 1, 2],
+                roller_vertices: Vec::new(),
                 loaded_vertices: vec![(3, LoadAxis::AxisZ)],
             },
         );
@@ -2722,6 +2943,7 @@ mod tests {
             lm_cfg,
             BoundaryConditions {
                 pinned_vertices: vec![0, 1, 2],
+                roller_vertices: Vec::new(),
                 loaded_vertices: vec![(3, LoadAxis::AxisZ)],
             },
         );
