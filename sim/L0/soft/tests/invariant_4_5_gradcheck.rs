@@ -75,6 +75,7 @@ fn build_solver_stage_2() -> (SkeletonSolver, sim_soft::SceneInitial, SolverConf
     let (mesh, _default_stage_1_bc, initial) = SoftScene::one_tet_cube();
     let bc = BoundaryConditions {
         pinned_vertices: vec![0, 1, 2],
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(3, LoadAxis::FullVector)],
     };
     let solver: SkeletonSolver = CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);

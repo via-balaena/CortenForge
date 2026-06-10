@@ -399,6 +399,7 @@ fn run_at_refinement(
     let theta_per_vertex = f_total / loaded.len() as f64;
     let bc = BoundaryConditions {
         pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
         loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
     };
 

@@ -362,6 +362,7 @@ fn build_solver(
     cfg.density = 0.0;
     let bc = BoundaryConditions {
         pinned_vertices: boundary,
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![],
     };
     let solver = CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);

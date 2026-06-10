@@ -154,6 +154,7 @@ fn build_forward_map(
 
     let bc = BoundaryConditions {
         pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(load, LoadAxis::AxisZ)],
     };
 

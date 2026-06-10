@@ -886,6 +886,7 @@ fn build_boundary_conditions(
 
     BoundaryConditions {
         pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
         loaded_vertices: Vec::new(),
     }
 }

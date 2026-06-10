@@ -121,6 +121,7 @@ fn fem_coupon_reproduces_analytical_homogeneous_uniaxial() {
 
         let bc = BoundaryConditions {
             pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
             loaded_vertices: vec![],
         };
         let mut cfg = SolverConfig::skeleton();

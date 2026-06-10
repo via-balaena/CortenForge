@@ -90,6 +90,7 @@ fn build_forward_map_two_isolated() -> SkeletonForwardMap {
     };
     let bc = BoundaryConditions {
         pinned_vertices: vec![0, 1, 2, 4, 5, 6],
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(3, LoadAxis::AxisZ), (7, LoadAxis::AxisZ)],
     };
     let solver: Box<dyn Solver<Tape = CpuTape>> =

@@ -370,6 +370,7 @@ fn run_two_isolated_tets_x_final() -> Vec<f64> {
     let v_prev = Tensor::zeros(&[n_dof]);
     let bc = BoundaryConditions {
         pinned_vertices: vec![0, 1, 2, 4, 5, 6],
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(3, LoadAxis::AxisZ), (7, LoadAxis::AxisZ)],
     };
     let mut solver: CpuTet4NHSolver<HandBuiltTetMesh> =
@@ -395,6 +396,7 @@ fn run_shared_face_x_final() -> Vec<f64> {
     let v_prev = Tensor::zeros(&[n_dof]);
     let bc = BoundaryConditions {
         pinned_vertices: vec![0, 1, 2, 4],
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(3, LoadAxis::AxisZ)],
     };
     let solver: CpuTet4NHSolver<HandBuiltTetMesh> =
@@ -449,6 +451,7 @@ fn run_sdf_sphere_evaluate() -> (f64, f64) {
     };
     let bc = BoundaryConditions {
         pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
         loaded_vertices: vec![(load, LoadAxis::AxisZ)],
     };
 
