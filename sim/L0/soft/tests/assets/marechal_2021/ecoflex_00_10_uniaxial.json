@@ -1,0 +1,426 @@
+{
+ "source": "Marechal, Balland, Lindenroth, Petrou, Kontovounisios, Bello (2021), 'Toward a Common Framework and Database of Materials for Soft Robotics', Soft Robotics 8(3):284-297",
+ "data_doi": "10.5281/zenodo.3611329",
+ "data_record": "LucMarechal/Soft-Robotics-Materials v0.0",
+ "material": "Ecoflex 00-10",
+ "test": "ASTM D412 uniaxial tension, laser extensometer, 450 mm/min",
+ "specimen_mm": {
+  "thickness_mm": 3,
+  "width_mm": 6,
+  "length_mm": 33,
+  "cross_section_cm2": 0.18,
+  "speed_mm_min": 450,
+  "machine": "Instron"
+ },
+ "convention": "stretch = exp(true_strain); cauchy_stress_pa = true_stress_MPa * 1e6 (true/Cauchy stress)",
+ "note": "Curated subsample (stretch <= 3.3, monotonic) of the to-failure measured curve, for regression testing of sim-soft uniaxial fidelity. Ecoflex 00-10 is the softest Ecoflex grade.",
+ "current_silicone_table_params": {
+  "comment": "sim-soft datasheet-anchored params (mu=sigma100/3 from Smooth-On TDS), the baseline this arc replaces",
+  "mu_pa": 18000.0,
+  "lambda_pa": 72000.0,
+  "c2_pa": 1690.0,
+  "nu": 0.4
+ },
+ "measured": [
+  {
+   "stretch": 1.04457,
+   "cauchy_stress_pa": -1358.242
+  },
+  {
+   "stretch": 1.06795,
+   "cauchy_stress_pa": 436.4
+  },
+  {
+   "stretch": 1.09084,
+   "cauchy_stress_pa": 2227.353
+  },
+  {
+   "stretch": 1.11362,
+   "cauchy_stress_pa": 2337.458
+  },
+  {
+   "stretch": 1.13636,
+   "cauchy_stress_pa": 2477.129
+  },
+  {
+   "stretch": 1.15909,
+   "cauchy_stress_pa": 3524.141
+  },
+  {
+   "stretch": 1.18182,
+   "cauchy_stress_pa": 4095.956
+  },
+  {
+   "stretch": 1.20455,
+   "cauchy_stress_pa": 4112.759
+  },
+  {
+   "stretch": 1.22727,
+   "cauchy_stress_pa": 4724.699
+  },
+  {
+   "stretch": 1.25,
+   "cauchy_stress_pa": 5136.202
+  },
+  {
+   "stretch": 1.27273,
+   "cauchy_stress_pa": 6221.492
+  },
+  {
+   "stretch": 1.29545,
+   "cauchy_stress_pa": 7035.378
+  },
+  {
+   "stretch": 1.31819,
+   "cauchy_stress_pa": 7320.84
+  },
+  {
+   "stretch": 1.34091,
+   "cauchy_stress_pa": 7855.056
+  },
+  {
+   "stretch": 1.36364,
+   "cauchy_stress_pa": 8232.202
+  },
+  {
+   "stretch": 1.38636,
+   "cauchy_stress_pa": 9228.045
+  },
+  {
+   "stretch": 1.40909,
+   "cauchy_stress_pa": 9515.735
+  },
+  {
+   "stretch": 1.43183,
+   "cauchy_stress_pa": 10655.333
+  },
+  {
+   "stretch": 1.45455,
+   "cauchy_stress_pa": 10856.144
+  },
+  {
+   "stretch": 1.47728,
+   "cauchy_stress_pa": 11311.003
+  },
+  {
+   "stretch": 1.5,
+   "cauchy_stress_pa": 11862.934
+  },
+  {
+   "stretch": 1.52272,
+   "cauchy_stress_pa": 12905.548
+  },
+  {
+   "stretch": 1.54546,
+   "cauchy_stress_pa": 13529.719
+  },
+  {
+   "stretch": 1.56819,
+   "cauchy_stress_pa": 14148.711
+  },
+  {
+   "stretch": 1.59091,
+   "cauchy_stress_pa": 14628.4
+  },
+  {
+   "stretch": 1.61364,
+   "cauchy_stress_pa": 15295.326
+  },
+  {
+   "stretch": 1.63637,
+   "cauchy_stress_pa": 16041.056
+  },
+  {
+   "stretch": 1.65909,
+   "cauchy_stress_pa": 17002.818
+  },
+  {
+   "stretch": 1.68183,
+   "cauchy_stress_pa": 17978.858
+  },
+  {
+   "stretch": 1.70455,
+   "cauchy_stress_pa": 18508.05
+  },
+  {
+   "stretch": 1.72727,
+   "cauchy_stress_pa": 18888.546
+  },
+  {
+   "stretch": 1.75001,
+   "cauchy_stress_pa": 20004.29
+  },
+  {
+   "stretch": 1.77273,
+   "cauchy_stress_pa": 20872.819
+  },
+  {
+   "stretch": 1.79546,
+   "cauchy_stress_pa": 21172.325
+  },
+  {
+   "stretch": 1.81818,
+   "cauchy_stress_pa": 22256.617
+  },
+  {
+   "stretch": 1.84091,
+   "cauchy_stress_pa": 22938.78
+  },
+  {
+   "stretch": 1.86364,
+   "cauchy_stress_pa": 23875.615
+  },
+  {
+   "stretch": 1.88636,
+   "cauchy_stress_pa": 24715.262
+  },
+  {
+   "stretch": 1.9091,
+   "cauchy_stress_pa": 25648.049
+  },
+  {
+   "stretch": 1.93182,
+   "cauchy_stress_pa": 26425.941
+  },
+  {
+   "stretch": 1.95455,
+   "cauchy_stress_pa": 27900.976
+  },
+  {
+   "stretch": 1.97728,
+   "cauchy_stress_pa": 28555.42
+  },
+  {
+   "stretch": 2.00001,
+   "cauchy_stress_pa": 29582.039
+  },
+  {
+   "stretch": 2.02273,
+   "cauchy_stress_pa": 30034.604
+  },
+  {
+   "stretch": 2.04545,
+   "cauchy_stress_pa": 30804.407
+  },
+  {
+   "stretch": 2.06818,
+   "cauchy_stress_pa": 32197.978
+  },
+  {
+   "stretch": 2.09091,
+   "cauchy_stress_pa": 33122.761
+  },
+  {
+   "stretch": 2.11364,
+   "cauchy_stress_pa": 34689.867
+  },
+  {
+   "stretch": 2.13637,
+   "cauchy_stress_pa": 35498.356
+  },
+  {
+   "stretch": 2.1591,
+   "cauchy_stress_pa": 35643.511
+  },
+  {
+   "stretch": 2.18182,
+   "cauchy_stress_pa": 37737.938
+  },
+  {
+   "stretch": 2.20454,
+   "cauchy_stress_pa": 38426.984
+  },
+  {
+   "stretch": 2.22728,
+   "cauchy_stress_pa": 40435.488
+  },
+  {
+   "stretch": 2.25,
+   "cauchy_stress_pa": 40545.027
+  },
+  {
+   "stretch": 2.27273,
+   "cauchy_stress_pa": 42580.909
+  },
+  {
+   "stretch": 2.29545,
+   "cauchy_stress_pa": 43152.464
+  },
+  {
+   "stretch": 2.31818,
+   "cauchy_stress_pa": 44277.659
+  },
+  {
+   "stretch": 2.34091,
+   "cauchy_stress_pa": 45635.658
+  },
+  {
+   "stretch": 2.36363,
+   "cauchy_stress_pa": 46484.34
+  },
+  {
+   "stretch": 2.38636,
+   "cauchy_stress_pa": 48449.624
+  },
+  {
+   "stretch": 2.40909,
+   "cauchy_stress_pa": 49356.666
+  },
+  {
+   "stretch": 2.43182,
+   "cauchy_stress_pa": 50668.497
+  },
+  {
+   "stretch": 2.45454,
+   "cauchy_stress_pa": 51893.309
+  },
+  {
+   "stretch": 2.47728,
+   "cauchy_stress_pa": 53333.91
+  },
+  {
+   "stretch": 2.5,
+   "cauchy_stress_pa": 54393.177
+  },
+  {
+   "stretch": 2.52273,
+   "cauchy_stress_pa": 56179.363
+  },
+  {
+   "stretch": 2.54546,
+   "cauchy_stress_pa": 57721.57
+  },
+  {
+   "stretch": 2.56819,
+   "cauchy_stress_pa": 59392.008
+  },
+  {
+   "stretch": 2.59091,
+   "cauchy_stress_pa": 61064.086
+  },
+  {
+   "stretch": 2.61363,
+   "cauchy_stress_pa": 61795.622
+  },
+  {
+   "stretch": 2.63636,
+   "cauchy_stress_pa": 63544.552
+  },
+  {
+   "stretch": 2.65909,
+   "cauchy_stress_pa": 65148.393
+  },
+  {
+   "stretch": 2.68182,
+   "cauchy_stress_pa": 66591.475
+  },
+  {
+   "stretch": 2.70454,
+   "cauchy_stress_pa": 68932.304
+  },
+  {
+   "stretch": 2.72727,
+   "cauchy_stress_pa": 70305.623
+  },
+  {
+   "stretch": 2.75,
+   "cauchy_stress_pa": 72232.055
+  },
+  {
+   "stretch": 2.77272,
+   "cauchy_stress_pa": 73660.38
+  },
+  {
+   "stretch": 2.79545,
+   "cauchy_stress_pa": 75427.296
+  },
+  {
+   "stretch": 2.81818,
+   "cauchy_stress_pa": 77654.067
+  },
+  {
+   "stretch": 2.84091,
+   "cauchy_stress_pa": 78768.269
+  },
+  {
+   "stretch": 2.86363,
+   "cauchy_stress_pa": 80666.223
+  },
+  {
+   "stretch": 2.88637,
+   "cauchy_stress_pa": 82844.664
+  },
+  {
+   "stretch": 2.90909,
+   "cauchy_stress_pa": 85474.713
+  },
+  {
+   "stretch": 2.93181,
+   "cauchy_stress_pa": 87068.416
+  },
+  {
+   "stretch": 2.95454,
+   "cauchy_stress_pa": 88924.026
+  },
+  {
+   "stretch": 2.97728,
+   "cauchy_stress_pa": 90648.31
+  },
+  {
+   "stretch": 2.99999,
+   "cauchy_stress_pa": 93347.267
+  },
+  {
+   "stretch": 3.02273,
+   "cauchy_stress_pa": 95933.748
+  },
+  {
+   "stretch": 3.04545,
+   "cauchy_stress_pa": 97648.403
+  },
+  {
+   "stretch": 3.06819,
+   "cauchy_stress_pa": 99207.59
+  },
+  {
+   "stretch": 3.09091,
+   "cauchy_stress_pa": 102603.495
+  },
+  {
+   "stretch": 3.11363,
+   "cauchy_stress_pa": 104658.053
+  },
+  {
+   "stretch": 3.13636,
+   "cauchy_stress_pa": 107161.639
+  },
+  {
+   "stretch": 3.1591,
+   "cauchy_stress_pa": 110069.667
+  },
+  {
+   "stretch": 3.18181,
+   "cauchy_stress_pa": 111842.099
+  },
+  {
+   "stretch": 3.20454,
+   "cauchy_stress_pa": 114263.124
+  },
+  {
+   "stretch": 3.22728,
+   "cauchy_stress_pa": 117010.516
+  },
+  {
+   "stretch": 3.24999,
+   "cauchy_stress_pa": 119860.399
+  },
+  {
+   "stretch": 3.27272,
+   "cauchy_stress_pa": 122390.896
+  },
+  {
+   "stretch": 3.29545,
+   "cauchy_stress_pa": 125203.415
+  }
+ ]
+}
