@@ -15,6 +15,16 @@ The repo already holds a detailed banked plan for this (the "Phase-H L2" leg): t
 01-mixed-up,02-f-bar}.md` and `docs/sim-research/PHASE_H_ROADMAP.md`. This recon adopts that
 plan, reconciles it with the M3-S0 finding, and sets the de-risk order.
 
+> **★ SCOPE (re-sized 2026-06-10, see `recon.md` §REFRAME):** treat this as **solver capability /
+> correctness** — the engine *should* represent near-incompressible materials without locking,
+> regardless of which silicone — **not** a high-precision fidelity closer. The constitutive ν-effect
+> it removes (~20 % in equibiaxial) and the I₂-spread (~29 %) are both **below the ~1.75×
+> inter-source material-variability floor** discovered while sourcing the multi-mode oracle. So the
+> validation gates here are analytical / locking-benchmark (cantilever, Cook's) and the *cross-mode
+> shape* improvement — not "closes the measured absolute-stress gap to 6 %." Build it because it is
+> correct and unblocks inhomogeneous near-incompressible sims (contact, the co-design loop), and
+> right-size the effort accordingly.
+
 ---
 
 ## 0. The key distinction this recon turns on: *constitutive* ν vs *element locking*

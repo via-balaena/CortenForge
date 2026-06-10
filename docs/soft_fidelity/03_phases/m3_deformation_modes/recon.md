@@ -4,12 +4,47 @@
 (deepen substrate fidelity → modes) at the M2-S4 fork. Follows the M1/M2 differential-oracle
 doctrine. See `../m2_roller_bc_and_modes/s4_mode_oracle_recon.md` for why modes is its own phase.*
 
-> **Validate that `sim-soft` reproduces *measured* equibiaxial-tension and planar-tension
-> (pure-shear) true-stress–stretch behavior for Ecoflex 00-30 within tolerance over the
-> device window — the canonical test a *uniaxial-only* fit fails — and decide, from the
-> residual, whether the compressible 2-term Yeoh (ν = 0.40) suffices across modes or whether
-> the deferred near-incompressibility (Tet10 + F-bar / mixed-u-p) or a richer model must come
-> forward.** Oracle = the Hossain group's Ecoflex multi-mode dataset (digitized; see S4 memo).
+> **Validate that `sim-soft` reproduces the measured *cross-mode* behavior — the
+> uniaxial→planar→equibiaxial *relationship* — for Ecoflex, and decide from the residual whether
+> the compressible 2-term Yeoh (ν = 0.40) suffices across modes or whether near-incompressibility
+> / a richer model is needed.** Oracle = the Hossain group's Ecoflex multi-mode dataset (Liao/Yang/
+> Hossain, *Int. J. Mech. Sci.* 206:106624, 2021, Swansea Cronfa `cronfa57203`; uniaxial + planar +
+> equibiaxial; digitized).
+
+---
+
+## ★ REFRAME (2026-06-10) — target the cross-mode SHAPE, not absolute modulus
+
+A foundational finding while sourcing the oracle **redirected this phase's target** (user-approved):
+
+**Two peer-reviewed "measured" Ecoflex 00-30 uniaxial datasets disagree by ~1.75×.** The Hossain
+2021 curve (digitized from `cronfa57203` Fig 4a) is **~1.70–1.97× stiffer than the Marechal 2021
+curve** M1/M2 calibrated to (λ1.5: 1.70× / λ2.0: 1.76× / λ2.5: 1.85×; steady ratio ⇒ not a
+digitization artifact — saved at `sim/L0/soft/tests/assets/hossain_2021/ecoflex_00_30_uniaxial_
+digitized.csv`). At λ=2 nominal: datasheet TDS 69 kPa, **Hossain ~51 kPa, Marechal ~30 kPa**.
+Silicone modulus genuinely varies ~1.5–2× with batch / mix ratio / cure / lab (not rate — Hossain
+tested slower, yet stiffer). So:
+
+- **Material variability (~1.75×) is the dominant Layer-1 uncertainty — it dwarfs the 6 % M1 fit,
+  the 20 % ν-effect, and the 29 % I₂-spread.** Chasing 6 % absolute-stress fidelity against any
+  single curve is below the material-variability floor.
+- **It recontextualizes M1:** "the datasheet is 2.3× too stiff vs measured" was vs Marechal's
+  specimen specifically; the TDS is only ~1.35× above Hossain.
+
+**Reframed target:** validate the **cross-mode relationship**, which is far more material-invariant
+than absolute modulus. Calibrate to a *single source's* uniaxial (absorbing that batch's modulus),
+then **predict that same source's planar + equibiaxial** and grade the residual — the model-form
+fidelity (the thing ν / I₂ actually move), cleanly isolated from material variability. **Hossain
+has all three modes on consistent material → it is the same-batch multi-mode oracle** (Marechal,
+uniaxial-only, stays the M1/M2 anchor + a variability data point). The absolute-modulus scatter is
+documented as the material-characterization floor — addressable only by measuring the *actual*
+device material (the deferred hardware tensile gate). Consequently the near-incompressibility
+upgrade is scoped as **solver capability / correctness**, not a high-precision fidelity closer (see
+`near_incompressibility_recon.md`).
+
+The sections below predate this reframe; read them through it — "match measured absolute stress to
+X %" becomes "match the same-source cross-mode *relationship*; report absolute fidelity only within
+the ~1.75× material floor."
 
 ---
 
@@ -123,6 +158,42 @@ is needed, with a measured trigger; (e) digitized multi-mode oracle assets, vend
 Each leaf: n+1 cold-read + pre-PR local ultra-review ([[feedback-pre-pr-local-ultra-review]]);
 no push / PR without user go-ahead. Slicing head-engineer-owned
 ([[feedback-head-engineer-owns-technical-calls]]).
+
+## Progress · S0 (analytical half) — FINDINGS (2026-06-10, data-free; spike `tests/spike_modes_s0.rs`, throwaway/uncommitted)
+
+The foundational model-form interrogation, run with **zero oracle data** (only the
+already-vendored machine-readable Marechal uniaxial curve + the math). Both data-free questions
+answered, and they **redirect the phase**:
+
+- **★ (1) ν = 0.40 binds progressively harder across modes.** Compressible ν=0.40 (the real
+  production `first_piola`) vs the incompressible closed form, *same* Yeoh params
+  (`ECOFLEX_00_30_MEASURED`): max deviation over λ≤2 = **uniaxial 10 % → planar 16 % →
+  equibiaxial 20 %**. The volumetric penalty roughly *doubles* from uniaxial to equibiaxial
+  (equibiaxial loads the volumetric response hardest). Sanity-checked: compressible σ_uni(λ=2) =
+  58.6 kPa (= the M2-S2 coupon value) vs incompressible 65.1 kPa = exactly 10 %. M1 absorbed the
+  uniaxial penalty into a refit; a 20 % equibiaxial penalty **cannot** be absorbed that way. ⇒
+  **the deferred near-incompressibility (Tet10 + F-bar / mixed-u-p, "Phase-H") is now triggered by
+  a number** for multi-mode fidelity (G5/R3 fire).
+- **★ (2) Uniaxial calibration does NOT determine equibiaxial (I₂-blindness).** An incompressible
+  I₁-only Yeoh (C1=7200, C2=360; uniaxial RMS 3.9 %) and an incompressible I₁+I₂ Mooney-Rivlin
+  (C10=7700, C01=0; uniaxial RMS 6.8 %), **both fit to the same measured uniaxial curve**, predict
+  equibiaxial stresses that **diverge by up to 29 % at λ=2** (6 %/9 %/19 %/29 % at λ=1.1/1.5/1.75/
+  2.0) — with no equibiaxial data used to fit either. (Treloar's classic result, quantified on
+  Ecoflex.) The best Mooney-Rivlin fit drove C01→0 because uniaxial is I₂-insensitive — itself the
+  point: uniaxial cannot pin the cross-mode response, so **multi-mode data is load-bearing**, not
+  optional.
+
+**★ S0 VERDICT — M3 is a SUBSTRATE-UPGRADE phase, not a "validate the current model" phase.** The
+shipped 2-term Yeoh at ν=0.40, fit to uniaxial, is structurally untrustworthy in equibiaxial on
+*two independent counts* (ν binds ~20 %; uniaxial-fit carries ~29 % model-form uncertainty). So D5
+resolves, before any data, to: **(a) bring in near-incompressibility** (pull deferred Phase-H
+forward: Tet10 + F-bar or a mixed u-p formulation, ν→~0.499) — a model/solver-side upgrade
+needing no oracle to *build*; **and (b) calibrate/validate against MULTI-MODE data** (the Hossain
+equibiaxial+planar oracle is now clearly required — uniaxial can't pin I₂/cross-mode). The
+acquired-oracle half of S0 (digitizing Hossain) is still needed for S1+ calibration, but the
+*model-form decision* is already made. **This is a larger commitment than "grade vs data": it pulls
+the banked Phase-H near-incompressibility work into M3's critical path — a scoping decision for the
+user.** Spike `tests/spike_modes_s0.rs` is throwaway/uncommitted — delete when S1 lands.
 
 ## 7. Risks
 
