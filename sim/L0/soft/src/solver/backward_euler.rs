@@ -2295,6 +2295,8 @@ mod tests {
     use faer::sparse::Triplet;
     use faer::{Conj, MatMut};
 
+    use sim_ml_chassis::Tensor;
+
     use super::{FactoredFreeTangent, SolverFailure};
     use crate::contact::NullContact;
     use crate::material::MaterialField;
@@ -2472,6 +2474,48 @@ mod tests {
             roller_vertices: vec![(3, [true, false, false])],
             loaded_vertices: vec![(3, LoadAxis::AxisZ)],
         });
+    }
+
+    /// A roller is a Dirichlet constraint held at the vertex's **initial
+    /// `x_prev`**, not at rest: a roller DOF driven to a nonzero offset must
+    /// stay exactly there through the solve. Anchors v0/v1/v3 fully pinned
+    /// (removes all rigid-body modes); v2 is a roller on x only, driven to
+    /// `rest.x + offset`, with y,z free. This is the displacement-driven
+    /// roller the M2 free-lateral coupon relies on to drive its `x=L` face.
+    #[test]
+    fn driven_roller_holds_dof_at_nonzero_initial_offset() {
+        let offset = 0.01_f64;
+        let solver = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 3],
+            roller_vertices: vec![(2, [true, false, false])],
+            loaded_vertices: vec![],
+        });
+        // SingleTetMesh rest: v0=(0,0,0), v1=(.1,0,0), v2=(0,.1,0), v3=(0,0,.1).
+        let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+        let mut x_prev = rest;
+        x_prev[3 * 2] = offset; // drive v2.x off rest (rest v2.x = 0)
+        let mut cfg = SolverConfig::skeleton();
+        cfg.dt = 1.0e3; // static: large dt makes M/dt² negligible
+        let step = solver.replay_step(
+            &Tensor::from_slice(&x_prev, &[12]),
+            &Tensor::zeros(&[12]),
+            &Tensor::zeros(&[0]),
+            cfg.dt,
+        );
+        let xf = step.x_final;
+        assert!(
+            (xf[3 * 2] - offset).abs() < 1.0e-12,
+            "driven roller DOF must stay at its x_prev offset {offset}, got {}",
+            xf[3 * 2]
+        );
+        // The full-pin anchors stay at rest; v2's free y,z are solved (the
+        // roller did not pin them — proven by the free-DOF count test above).
+        assert!(
+            (xf[0]).abs() < 1.0e-12
+                && (xf[3] - 0.1).abs() < 1.0e-12
+                && (xf[9 + 2] - 0.1).abs() < 1.0e-12,
+            "fully-pinned anchors must stay at rest"
+        );
     }
 
     /// SPD case: `A = [[2, 1, 0], [1, 3, 1], [0, 1, 4]]` (Sylvester:

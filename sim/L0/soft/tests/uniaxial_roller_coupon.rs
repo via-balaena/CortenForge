@@ -182,12 +182,16 @@ fn roller_coupon_rediscovers_lateral_stretch_and_matches_measured() {
             }
         }
 
-        // Warm-start at the affine field, then PERTURB the free DOFs so the
-        // solver must actively drive them back — a non-vacuous re-discovery.
-        // The constrained DOFs equal their affine values exactly (x=0→0,
-        // x=L→λL, y=0→0, z=0→0), so the roller holds each at the right place;
-        // the free +y/+z face and interior DOFs are the unknowns that must
-        // converge onto λ_t.
+        // Warm-start from a NEUTRAL guess that does NOT encode the answer: the
+        // axial DOFs sit at the driven affine (the axial stretch λ is
+        // *prescribed* by the x=0 / x=L faces, not discovered), but the free
+        // LATERAL DOFs sit at REST — `λ_t = 1`, no contraction. The solver must
+        // discover the lateral contraction λ_t from that neutral basin, so the
+        // re-discovery is genuine (not a relaxation of a pre-seeded λ_t). The
+        // constrained DOFs equal their exact values under this seed (x=0→0,
+        // x=L→λL, y=0→0, z=0→0); a tiny perturbation breaks symmetry on the
+        // free DOFs.
+        let seed = |p: Vec3| Vec3::new(p.x * lam, p.y, p.z);
         let perturb = |v: usize| {
             let f = |k: usize| (k % 7) as f64 - 3.0; // deterministic, in [−3, 3]
             1.0e-4 * Vec3::new(f(v), f(v + 1), f(v + 2))
@@ -201,7 +205,7 @@ fn roller_coupon_rediscovers_lateral_stretch_and_matches_measured() {
         };
         let mut x_prev = vec![0.0_f64; 3 * n];
         for (v, &p) in rest.iter().enumerate() {
-            let base = affine(p);
+            let base = seed(p);
             let pert = perturb(v);
             for ax in 0..3 {
                 // perturb only free DOFs; constrained DOFs stay exact.
@@ -261,8 +265,13 @@ fn roller_coupon_rediscovers_lateral_stretch_and_matches_measured() {
             "λ={lam}: re-discovered λ_t {lat_recovered:.6} vs analytic {lat:.6}"
         );
 
-        // (2) STRESS: an element's recovered F ≡ diag(λ, λ_t, λ_t), its axial
-        // Cauchy stress ≡ the analytical value, and its lateral traction ~0.
+        // (2) STRESS: an element's recovered F ≡ diag(λ, λ_t, λ_t) and its
+        // axial Cauchy stress ≡ the analytical value. (The trailing P₁₁≈0
+        // check is a cheap self-consistency guard, not independent signal:
+        // once F matches the analytical diagonal, P₁₁≈0 follows because
+        // `free_transverse_uniaxial` root-found λ_t against this same
+        // `first_piola`. The genuine free-lateral result is the λ_t
+        // re-discovery above, from a neutral-λ_t warm-start.)
         let f = deformation_gradient(&rest, &xf, tets[0]);
         let f_expected = Matrix3::from_diagonal(&Vec3::new(lam, lat, lat));
         assert!(
@@ -281,7 +290,7 @@ fn roller_coupon_rediscovers_lateral_stretch_and_matches_measured() {
         let axial = p[(0, 0)].abs().max(1.0);
         assert!(
             p[(1, 1)].abs() / axial < 1.0e-6,
-            "λ={lam}: lateral traction not free"
+            "λ={lam}: lateral first-Piola traction P₁₁ not ~0 on the recovered F"
         );
 
         // Report the direct FEM-vs-measurement deviation at the nearest

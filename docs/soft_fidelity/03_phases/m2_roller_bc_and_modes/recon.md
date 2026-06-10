@@ -114,7 +114,7 @@ A committed, CI-runnable result set:
    unchanged (full pin = all-axes mask).
 2. A **free-lateral traction uniaxial coupon** (`tests/`) that, under axial traction + roller
    symmetry BCs, independently recovers λ_t and σ_true matching `free_transverse_uniaxial`
-   and the measured Marechal curve — superseding the S2 patch test.
+   and the measured Marechal curve — the free-lateral solve the kept patch test stood in for.
 3. **Ecoflex 00-10** validated through the same machinery: vendored oracle asset, window fit,
    measured-accuracy gate, Path-3 `ECOFLEX_00_10_MEASURED` const — proving non-overfit.
 4. A **mode-oracle recon memo** (in this folder) recording whether a credible published
@@ -182,8 +182,8 @@ A committed, CI-runnable result set:
   other two DOFs (free-DOF count is exact); full-pin call sites unchanged (bit-identical
   free-DOF map); the validation contracts reject the right misconfigurations. Keep the public
   surface minimal and keystone-shaped.
-- **S2 — free-lateral traction coupon + supersede the patch test.** Replace/augment
-  `uniaxial_fem_coupon.rs` with the symmetry-cell coupon (D4): axial traction, roller min-
+- **S2 — free-lateral traction coupon (the free-lateral solve the kept patch test stood in
+  for).** Add the symmetry-cell coupon (D4) alongside `uniaxial_fem_coupon.rs`: axial drive, roller min-
   faces, free lateral. Gate: FEM independently recovers λ_t and σ_true ≡ `free_transverse_
   uniaxial` (solver fidelity) AND matches the measured Marechal curve over λ≤2 (model
   fidelity), now without any prescribed lateral stretch. This is the real S2 the M1 patch
@@ -243,7 +243,8 @@ when S1 landed (de-risk banked here + in memory).
 
 Production **roller / per-axis Dirichlet BC primitive**:
 - `BoundaryConditions` gains `roller_vertices: Vec<(VertexId, [bool; 3])>` (mask `[x,y,z]`,
-  `true` = that DOF pinned to rest) + a `const fn new(pinned, loaded)` ergonomic constructor
+  `true` = that DOF held at its initial `x_prev` value — rest for a symmetry plane, a
+  prescribed offset for a displacement-driven face) + a `const fn new(pinned, loaded)` constructor
   (empty rollers) (`readout/scene.rs`). `pinned_vertices` unchanged → full-pin scenes stay
   back-compatible.
 - `CpuNewtonSolver::new` (`solver/backward_euler.rs`): builds a dense `roller_mask` +
@@ -256,10 +257,13 @@ Production **roller / per-axis Dirichlet BC primitive**:
   free-DOF map to the pre-roller construction (regression-tested). The symbolic pattern, lumped
   mass, and per-iter assembly already read `full_to_free_idx` per-DOF, so they propagate
   untouched.
-- **9 unit tests** (solver test module): roller frees exactly the unconstrained axes;
+- **10 unit tests** (solver test module): roller frees exactly the unconstrained axes;
   no-roller map unchanged (= [9,10,11] for the 1-tet scene); all-`true` roller ≡ full pin;
-  constructor leaves rollers empty; + 5 `#[should_panic]` validation contracts.
-- All BC construction sites updated (34 in sim-soft incl. lib/tests + 11 in examples/tools).
+  constructor leaves rollers empty; a **driven roller holds its DOF at a nonzero `x_prev`
+  offset** through a solve (the displacement-driven mechanism); + 5 `#[should_panic]`
+  validation contracts.
+- All BC construction sites updated (34 pre-existing in sim-soft lib/tests + 12 in
+  examples/tools; the new roller unit tests add their own).
   sim-soft suite green (44 binaries); **workspace `build --all-targets` clean**; grade **A**
   (all automated tiers; manual API-design tier `?` as expected).
 
@@ -274,8 +278,9 @@ through the real `CpuTet4YeohSolver` on the **measured** material (`ECOFLEX_00_3
   on the hot path — zero production-mesh churn (no generic refactor of `HandBuiltTetMesh`).
 - A `1/8`-symmetry cell: rollers on the three min faces (`x=0`/`y=0`/`z=0`, removing exactly
   the 6 rigid-body modes), `x=L` driven to `(λ−1)L`, **`+y`/`+z` faces free**. Free DOFs
-  warm-started at the affine field then perturbed; the lateral faces' contraction is **solved,
-  not prescribed**.
+  warm-started from a **neutral** guess (lateral at REST, `λ_t=1` — the axial is prescribed by
+  the driven faces, not the claim), then perturbed; the lateral contraction is **discovered
+  from a neutral basin, not seeded** (an ultra-review hardening over the initial affine seed).
 - **Two gates, both green:** (1) solver fidelity — across λ∈{1.1,1.25,1.5,1.75,1.9} the FEM
   **re-discovers λ_t** (a direct read-off from a free `+y`-face node matches
   `free_transverse_uniaxial` to <1e-6) + recovered `F ≡ diag(λ,λ_t,λ_t)` + axial Cauchy ≡
@@ -296,7 +301,7 @@ Then S3 (Ecoflex 00-10) and S4 (mode-oracle recon).
 CI-runnable, network-free: (1) roller/per-axis Dirichlet BCs expressible and threaded through
 the solver, full-pin map bit-identical, DOF-aware contracts tested; (2) the free-lateral
 traction coupon independently recovers λ_t and σ_true ≡ analytical and ≡ measured over λ≤2,
-superseding the patch test; (3) Ecoflex 00-10 reproduces its measured curve within tol over
+(the kept patch test stood in for it); (3) Ecoflex 00-10 reproduces its measured curve within tol over
 its window, with a Path-3 const + banked gap; (4) the mode-oracle recon memo records the (b)
 decision. Honest scope: still validated against a *published measurement* (now two materials,
 genuine free-lateral solve), not our own cast — the hardware tensile gate remains M3+.
@@ -307,7 +312,8 @@ genuine free-lateral solve), not our own cast — the hardware tensile gate rema
   `pick_vertices_by_predicate`); solver `sim/L0/soft/src/solver/backward_euler.rs`
   (free-DOF construction 486–504, `full_to_free_idx`, validation 356–438).
 - Reuse: `material/uniaxial.rs` (`free_transverse_uniaxial`, `fit_yeoh_uniaxial`);
-  `tests/uniaxial_fem_coupon.rs` (S2 patch test to supersede); `tests/uniaxial_measured_
+  `tests/uniaxial_fem_coupon.rs` (M1 patch test, kept; the roller coupon is its free-lateral
+  sibling); `tests/uniaxial_measured_
   accuracy.rs` (gate harness); `tests/invariant_iv_1_uniform_passthrough.rs`.
 - Oracle: Marechal et al. 2021, Soft Robotics 8(3):284–297; data Zenodo `10.5281/zenodo.3611329`
   (Ecoflex 00-10 + 00-30 only have real curves; regen recipe in
