@@ -111,6 +111,24 @@ crosses both engines (rigid settled height ← soft material stiffness), it is w
 FD value is now the **oracle** for the analytic assembly (S1/S2). Differentiability of the coupled
 step is well-posed in the smooth regime. **NEXT = S1** (analytic `∂force/∂height = −κ·n`, FD-gated).
 
+## Progress · S1 — analytic contact-force-vs-pose factor SHIPPED (2026-06-10, branch `feat/keystone-s2-differentiability`)
+
+The first analytic factor, in `sim-coupling`:
+- `StaggeredCoupling::contact_force_at_height(height)` — total `force_on_soft` at the current soft
+  config with the plane at `height` (no re-solve/mutate); the forward building block.
+- `StaggeredCoupling::contact_force_height_jacobian(height)` — analytic `∂force/∂height` holding
+  positions fixed: each active pair contributes `−κ·n` (plane normal `n=−ẑ` ⇒ `+κẑ`), total
+  `+κ·N_active·ẑ`. (Plus `fresh_mesh`/`positions` helper extraction; `step` reuses them.)
+- **Committed FD gate `tests/contact_force_jacobian.rs`:** at a deeply-engaged config (plane
+  penetrates the top face ~1 mm; active set = the 25 top vertices, stable across the FD step),
+  **analytic `∂force_z/∂height = 750000` (= κ·25) matches central FD to rel 2.4e-12** — machine-exact.
+- grade **A** (Coverage A+/Doc A/Clippy A/Safety A/Deps A); full suite green.
+
+This is the explicit (fixed-position) partial — one factor of the coupled-step Jacobian. **NEXT =
+S2:** the other missing factor `∂s'/∂xfrc` (FD over the rigid step's `xfrc_applied`) + `A` from
+`transition_derivatives`, assembled into the coupled-step Jacobian and gated against the S0 FD
+oracle (the total settled-system derivative).
+
 ## 6. Risks
 
 - **R1 (#1) — the coupled step may not be usefully smooth** (penalty active-set non-smoothness;

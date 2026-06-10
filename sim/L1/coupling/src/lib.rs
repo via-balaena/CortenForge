@@ -158,6 +158,62 @@ impl StaggeredCoupling {
         PenaltyRigidContact::with_params(vec![plane], self.kappa, self.d_hat)
     }
 
+    /// A fresh rest-topology soft mesh (the solver consumes one per step, and
+    /// `per_pair_readout` needs one too; topology + rest geometry are fixed).
+    fn fresh_mesh(&self) -> HandBuiltTetMesh {
+        HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &self.field)
+    }
+
+    /// Current soft vertex positions as points (vertex-major xyz → `Vec3`s).
+    fn positions(&self) -> Vec<Vec3> {
+        self.x
+            .chunks_exact(3)
+            .map(|c| Vec3::new(c[0], c[1], c[2]))
+            .collect()
+    }
+
+    /// `(total force_on_soft, active-pair count)` at the current soft
+    /// configuration with the contact plane placed at `height` — does not
+    /// re-solve or mutate. The shared building block for the contact-force
+    /// readout and its analytic pose-sensitivity.
+    fn contact_readout(&self, height: f64) -> (Vec3, usize) {
+        let positions = self.positions();
+        let readout = self
+            .build_contact(height)
+            .per_pair_readout(&self.fresh_mesh(), &positions);
+        (readout.iter().map(|r| r.force_on_soft).sum(), readout.len())
+    }
+
+    /// Total contact force the soft body exerts, evaluated at the current soft
+    /// configuration with the contact plane at `height` (no re-solve, no
+    /// mutation). The forward building block for finite-difference and analytic
+    /// contact-force sensitivities w.r.t. the rigid pose.
+    #[must_use]
+    pub fn contact_force_at_height(&self, height: f64) -> Vec3 {
+        self.contact_readout(height).0
+    }
+
+    /// Analytic `∂(total force_on_soft)/∂(plane height)` at the current soft
+    /// configuration, holding the soft positions fixed.
+    ///
+    /// For the downward penalty plane, each active pair has
+    /// `force_on_soft = κ(d̂ − sd)·n` with `sd = height − z` and `n = −ẑ`, so
+    /// `∂force/∂height = −κ·n = +κ·ẑ` per pair; the total is `−κ·n·N_active`.
+    /// This is the explicit (fixed-position) partial — one factor of the coupled
+    /// step's Jacobian, not the total settled-system derivative. Valid in the
+    /// contact-engaged regime where the active set is stable across the
+    /// perturbation; at the active-set boundary the true derivative is
+    /// non-smooth (penalty cap; IPC is the deferred cure). FD-checked against
+    /// [`Self::contact_force_at_height`].
+    // `n_active` ≤ the soft vertex count (~125); the usize→f64 cast is exact here.
+    #[allow(clippy::cast_precision_loss)]
+    #[must_use]
+    pub fn contact_force_height_jacobian(&self, height: f64) -> Vec3 {
+        let n_active = self.contact_readout(height).1;
+        // ∂force/∂height = −κ·n per active pair; plane normal n = −ẑ ⇒ +κ·ẑ.
+        Vec3::new(0.0, 0.0, self.kappa * (n_active as f64))
+    }
+
     /// Advance the coupled system by one lockstep step. Returns the contact
     /// force on the soft body and the rigid body's current height.
     ///
@@ -175,11 +231,10 @@ impl StaggeredCoupling {
         let n = self.n_vertices;
 
         // (1)+(2) pose the contact from the rigid body; one dynamic soft step.
-        let mesh = HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &self.field);
         let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
         let contact = self.build_contact(height);
         let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> =
-            CpuNewtonSolver::new(Tet4, mesh, contact, self.cfg, bc);
+            CpuNewtonSolver::new(Tet4, self.fresh_mesh(), contact, self.cfg, bc);
         let res = solver.replay_step(
             &Tensor::from_slice(&self.x, &[3 * n]),
             &Tensor::from_slice(&self.v, &[3 * n]),
@@ -194,20 +249,7 @@ impl StaggeredCoupling {
         self.x = x_final;
 
         // (3) total contact force on the soft body.
-        let positions: Vec<Vec3> = self
-            .x
-            .chunks_exact(3)
-            .map(|c| Vec3::new(c[0], c[1], c[2]))
-            .collect();
-        let force_on_soft: Vec3 = self
-            .build_contact(height)
-            .per_pair_readout(
-                &HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &self.field),
-                &positions,
-            )
-            .iter()
-            .map(|r| r.force_on_soft)
-            .sum();
+        let force_on_soft = self.contact_force_at_height(height);
 
         // (4) route the reaction (−force_on_soft) + axis damping → rigid xfrc as
         // a pure force at the body COM. The contact moment (Σ rᵢ × fᵢ) is omitted
