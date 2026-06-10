@@ -1,0 +1,24 @@
+[package]
+name = "cf-codesign"
+description = "Co-design optimizer (mission connective-tissue #2): gradient-based optimization over the differentiable soft↔rigid coupling — tune a soft-body design parameter so a rigid-side outcome hits a target. Consumes the keystone gradient (sim-coupling) and reuses the chassis Adam optimizer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace tool composing the sim stack; no `[package.metadata.cortenforge]`
+# tier block — tier metadata is for sim L0/L1 libraries, not tools (matches
+# `tools/cf-device-design` / `tools/cf-mjcf-emit` precedent).
+
+[dependencies]
+# The keystone gradient substrate: the differentiable soft↔rigid coupling.
+sim-coupling = { path = "../../sim/L1/coupling" }
+# Builds the rigid side (a sim-core Model) from a minimal MJCF string.
+sim-mjcf = { path = "../../sim/L0/mjcf" }
+# The gradient optimizer (Adam) — reused, not reinvented (sim-opt is gradient-free).
+sim-ml-chassis = { workspace = true }
+
+[dev-dependencies]

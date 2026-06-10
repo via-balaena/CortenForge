@@ -2314,7 +2314,10 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // OpenSim→IR bridge, scan landmark detection, place/scale/articulate, the
     // library/parameter spine that morphs a template into a body, and the
     // Model→MJCF emitter) are `tools/` workspace tools with the cf- prefix —
-    // same exemption.
+    // same exemption. cf-codesign (the co-design optimizer; Mission
+    // deliverable #2 — gradient-based optimization over the differentiable
+    // soft↔rigid coupling, consuming sim-coupling + reusing the chassis Adam)
+    // is a `tools/` workspace tool with the cf- prefix — same exemption.
     if matches!(
         crate_name,
         "cf-viewer"
@@ -2335,6 +2338,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-msk-fit"
             | "cf-msk-lib"
             | "cf-mjcf-emit"
+            | "cf-codesign"
     ) {
         return false;
     }
@@ -3770,6 +3774,7 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-msk-fit"));
         assert!(!applies_to_crate("cf-msk-lib"));
         assert!(!applies_to_crate("cf-mjcf-emit"));
+        assert!(!applies_to_crate("cf-codesign"));
     }
 
     #[test]

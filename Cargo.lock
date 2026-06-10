@@ -2278,6 +2278,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-codesign"
+version = "1.0.0"
+dependencies = [
+ "sim-coupling",
+ "sim-mjcf",
+ "sim-ml-chassis",
+]
+
+[[package]]
 name = "cf-design"
 version = "1.0.0"
 dependencies = [

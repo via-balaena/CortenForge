@@ -63,6 +63,9 @@ members = [
     # plus the no-scan build_canonical artifact. The deferred cf-mjcf-emit crate
     # split (leg-region A1). See docs/msk_builder/03_phases/leg_region/.
     "tools/cf-mjcf-emit",
+    # Co-design optimizer (mission connective-tissue #2): gradient-based
+    # optimization over the differentiable soft↔rigid coupling. See docs/codesign/.
+    "tools/cf-codesign",
 
     # Shared Bevy-0.18 helpers (orbit camera + up-axis convention) consumed by
     # cf-viewer + sim-bevy + sim-bevy-soft.
