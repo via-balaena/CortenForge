@@ -124,6 +124,31 @@ limitations are documented, not hidden.
 Each leaf: n+1 cold-read + pre-PR local ultra-review ([[feedback-pre-pr-local-ultra-review]]); no
 push/PR without go-ahead. Slicing head-engineer-owned ([[feedback-head-engineer-owns-technical-calls]]).
 
+## Progress · S0 — forward-coupling spike DONE (2026-06-10, throwaway, deleted) — ★ R1 RETIRED
+
+First-ever linking of `sim-soft` + `sim-core` in one binary (throwaway crate `sim/L1/coupling-spike`,
+since deleted). Staggered two-way loop on the minimal scene: a `sim-core` rigid platen (freejoint box,
+0.2 kg) falls under gravity onto a pinned soft block (`HandBuiltTetMesh::uniform_block`, NH), lockstep
+dt=1e-3. Per step: read `data.xpos[platen].z` → pose a downward `RigidPlane(normal −z, offset −h)` →
+dynamic soft Newton step → `contact.per_pair_readout` → Σ`force_on_soft` → route `−force_on_soft` to
+`data.xfrc_applied[platen]` (+ light manual damping) → `data.step`.
+
+**Result: the platen falls, contacts (~step 150), overshoots, and SETTLES to contact_F = 1.9630 N vs
+platen weight 1.9620 N — a 0.05 % force balance — stable across all 1500 steps, no divergence.** So:
+- **★ R1 (staggered two-way stability) RETIRED** — the partitioned loop is stable + settles smoothly.
+- **Force balance holds** (soft reaction = rigid weight to 0.05 %): Newton's-3rd-law transmission +
+  system equilibrium both work.
+- **The seam is sufficient (R5 retired)** — `Data.xpos`→`RigidPlane` pose (rigid→soft) and
+  `force_on_soft`→`xfrc_applied` (soft→rigid) need NO new engine APIs; the two engines link cleanly.
+- **★ Key lesson for S1:** the coupled soft solve must be **DYNAMIC** (small dt) — the inertia term
+  `M/dt²` regularizes the contact Newton solve; a quasi-static (huge-dt) solve could not make the
+  no-contact→contact jump (Newton non-convergence). Lockstep dt + backward-Euler velocity update.
+
+Spike caveats (honest, to address in S1): manual platen damping to settle (real coupling has
+material/contact damping); the solver+mesh were rebuilt each step (perf — S1 should re-pose the
+contact in place); light overshoot before settling. The forward coupling is sound; differentiability
+(S2) remains the open research leaf.
+
 ## 7. Risks
 
 - **R1 (#1) — staggered two-way coupling may be unstable** (added-mass / stiff-contact instability
