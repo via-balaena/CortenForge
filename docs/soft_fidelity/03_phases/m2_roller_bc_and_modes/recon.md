@@ -263,8 +263,33 @@ Production **roller / per-axis Dirichlet BC primitive**:
   sim-soft suite green (44 binaries); **workspace `build --all-targets` clean**; grade **A**
   (all automated tiers; manual API-design tier `?` as expected).
 
-**Next: S2** — replace the S2 patch test with a genuine roller free-lateral traction coupon
-(the spike's construction, now in production through the new BC primitive + the real solver).
+## Progress · S2 — SHIPPED (2026-06-10, same branch, NOT pushed)
+
+The genuine **roller free-lateral uniaxial coupon** (`tests/uniaxial_roller_coupon.rs`), run
+through the real `CpuTet4YeohSolver` on the **measured** material (`ECOFLEX_00_30_MEASURED`):
+- A test-local `YeohBox` implements `Mesh<Yeoh>` by **delegating** topology + the diagnostic
+  surfaces (adjacency/quality/interface_flags/boundary_faces) to an inner `HandBuiltTetMesh`
+  (the validated box generator) and overriding only `materials()` to carry the measured Yeoh.
+  The solver reads only the 5 topology+material methods, so the delegated aux is never touched
+  on the hot path — zero production-mesh churn (no generic refactor of `HandBuiltTetMesh`).
+- A `1/8`-symmetry cell: rollers on the three min faces (`x=0`/`y=0`/`z=0`, removing exactly
+  the 6 rigid-body modes), `x=L` driven to `(λ−1)L`, **`+y`/`+z` faces free**. Free DOFs
+  warm-started at the affine field then perturbed; the lateral faces' contraction is **solved,
+  not prescribed**.
+- **Two gates, both green:** (1) solver fidelity — across λ∈{1.1,1.25,1.5,1.75,1.9} the FEM
+  **re-discovers λ_t** (a direct read-off from a free `+y`-face node matches
+  `free_transverse_uniaxial` to <1e-6) + recovered `F ≡ diag(λ,λ_t,λ_t)` + axial Cauchy ≡
+  analytical (<1e-6 rel) + lateral traction ~0; (2) model fidelity — the measured Yeoh
+  reproduces Marechal's curve at **5.8 % RMS over λ≤2** (M1 gate re-asserted on the asset).
+  Chained: the coupon reproduces *measurement* to ~5.8 %. Solver-driven λ capped at 1.9
+  (deviation 0.9 < the Yeoh validity ceiling 1.0); RMS is analytical over full λ≤2.
+- The M1 constant-strain patch test (`uniaxial_fem_coupon.rs`) is **kept** (distinct
+  multi-element constant-strain verification on the NH path) with its header truthed-up (the
+  free-lateral re-discovery it deferred to M2 now lives in the roller coupon). grade A; suite
+  green (44 binaries).
+
+**Next: S1+S2 = PR-A** — n+1 cold-read + pre-PR local ultra-review, then propose the PR.
+Then S3 (Ecoflex 00-10) and S4 (mode-oracle recon).
 
 ## 8. M2 validation gate (definition of done)
 
