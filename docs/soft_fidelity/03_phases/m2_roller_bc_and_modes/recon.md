@@ -296,6 +296,30 @@ through the real `CpuTet4YeohSolver` on the **measured** material (`ECOFLEX_00_3
 **Next: S1+S2 = PR-A** — n+1 cold-read + pre-PR local ultra-review, then propose the PR.
 Then S3 (Ecoflex 00-10) and S4 (mode-oracle recon).
 
+## Progress · S3 — SHIPPED (2026-06-10, branch `feat/soft-fidelity-m2-s3-ecoflex-00-10`, NOT pushed)
+
+Ecoflex 00-10 (the softest grade; the only other anchor with real data in the Zenodo snapshot)
+through the **exact M1/S2 measured-fidelity machinery** — proving it generalizes across
+materials, not overfit to 00-30:
+- **Vendored** `tests/assets/marechal_2021/ecoflex_00_10_uniaxial.json` — a 100-pt curated
+  subsample (λ ≤ 3.3, monotonic; 39 in the λ∈[1.1,2] window) of the measured ASTM D412 curve,
+  regenerated from Zenodo `3611329` via the documented recipe, same schema as 00-30 +
+  the 00-10 datasheet baseline snapshot. `PROVENANCE.md` updated to cover both assets.
+- **Path-3 const** `ECOFLEX_00_10_MEASURED` (`silicone_table.rs`) — the `fit_yeoh_uniaxial`
+  output over λ≤2: `μ = 8112 Pa, λ = 4μ, C₂ = 136 Pa`, `ConstructionSource::Measured`,
+  density/Shore/validity unchanged, **NOT in `ECOFLEX_FAMILY`** (the M1 single-provenance-family
+  gotcha holds). Stays softer than `ECOFLEX_00_30_MEASURED` (correct grade ordering).
+- **Gate** (`uniaxial_measured_accuracy.rs`, refactored to be asset-parameterized): the three
+  M1 claims now run for **both** grades. 00-10: datasheet **195 % RMS** over λ≤2 → measured fit
+  **5.9 %** (μ 18 → 8.1 kPa; the TDS over-stiffness is even larger than 00-30's). Two
+  compile-time `const{}` invariants pin 00-10 measured < 0.85× its datasheet μ AND < 00-30
+  measured μ.
+- **Banked gap:** datasheet Ecoflex 00-10 over-predicts measured uniaxial true stress **~195 %
+  RMS over λ≤2**; the measured Path-3 calibration reaches **~5.9 %**. The machinery transferred
+  with zero changes (same fitter, same window, same gate harness). grade A; suite green
+  (44 binaries); silicone_table lib tests green (the new standalone Measured const left the
+  Shore family coherent).
+
 ## 8. M2 validation gate (definition of done)
 
 CI-runnable, network-free: (1) roller/per-axis Dirichlet BCs expressible and threaded through

@@ -6,15 +6,16 @@ Consumed by the M1 uniaxial measured-accuracy gate — see
 
 ## What this is
 
-`ecoflex_00_30_uniaxial.json` — a **curated subsample** (stretch ≤ 3.3, 100 points,
-monotonic **in stretch**; the first sample's stress is a near-zero toe value, slightly
-negative from measurement noise) of the measured **uniaxial tensile**
-true-stress–stretch curve for **Ecoflex
-00-30**, used to validate that `sim-soft`'s hyperelastic material response reproduces a
-*measured* curve rather than a single datasheet point. The full published curve runs to
-stretch ≈ 17 (to failure); we vendor only the device-relevant low-stretch portion needed for
-the M1 gate. The JSON also records the current datasheet-anchored `silicone_table` params as
-the baseline this arc replaces.
+`ecoflex_00_30_uniaxial.json` and `ecoflex_00_10_uniaxial.json` — **curated subsamples**
+(stretch ≤ 3.3, 100 points, monotonic **in stretch**; the first sample's stress is a near-zero
+toe value, slightly negative from measurement noise) of the measured **uniaxial tensile**
+true-stress–stretch curves for **Ecoflex 00-30** (M1) and **Ecoflex 00-10** (M2-S3 — the
+softest Ecoflex grade; the only other anchor with real data in the snapshot), used to validate
+that `sim-soft`'s hyperelastic material response reproduces a *measured* curve rather than a
+single datasheet point. The full published curves run to stretch ≈ 17 (to failure); we vendor
+only the device-relevant low-stretch portion needed for the gates. Each JSON also records the
+current datasheet-anchored `silicone_table` params for that grade as the baseline this arc
+replaces.
 
 **Convention** (as published, and as encoded in the JSON): the source reports **true
 (Cauchy) stress** vs **true strain**; we store **stretch = exp(true_strain)** and

@@ -626,6 +626,34 @@ pub const ECOFLEX_00_30_MEASURED: SiliconeMaterial = SiliconeMaterial {
     },
 };
 
+/// Ecoflex 00-10 — **measured** Path-3 calibration (M2-S3 soft-fidelity arc).
+///
+/// `(μ, C₂)` are a compressible 2-term Yeoh fit (ν = 0.40, λ = 4μ) to
+/// Marechal et al. 2021's measured ASTM D412 uniaxial true-stress curve for
+/// the softest Ecoflex grade, over the device window λ ≤ 2 (Zenodo
+/// `10.5281/zenodo.3611329`) — see `tests/uniaxial_measured_accuracy.rs`. This
+/// corrects the datasheet [`ECOFLEX_00_10`], whose one-point TDS `μ`
+/// over-predicts the measured uniaxial curve by ~195 % RMS over λ ≤ 2; this
+/// fit reaches ~6 % (`μ` 18 → ~8.1 kPa). Density, Shore, and validity bounds
+/// (a separate elongation-at-break property) are unchanged.
+///
+/// Tagged [`ConstructionSource::Measured`] and **deliberately NOT part of the
+/// `from_effective_shore` Shore-interpolation family** — see the module-level
+/// "Measured calibration" note. It stays softer than [`ECOFLEX_00_30_MEASURED`]
+/// (00-10 is the softer grade), preserving the measured softness ordering.
+pub const ECOFLEX_00_10_MEASURED: SiliconeMaterial = SiliconeMaterial {
+    mu: 8_112.0,
+    lambda: 32_448.0,
+    c2: 136.0,
+    density: 1040.0,
+    validity_max_principal_stretch: 7.20,
+    validity_min_principal_stretch: YEOH_MIN_PRINCIPAL_STRETCH,
+    shore: ShoreReading::DoubleZero(10.0),
+    source: ConstructionSource::Measured {
+        user_description: "Marechal et al. 2021 ASTM D412 uniaxial Yeoh fit over λ≤2; Zenodo 10.5281/zenodo.3611329",
+    },
+};
+
 /// Ecoflex 00-50 — Shore 00-50; firmest in the Ecoflex line. `λ_break`
 /// = 10.80 (980 % elongation per TDS — `λ = 1 + ε`).
 pub const ECOFLEX_00_50: SiliconeMaterial = SiliconeMaterial::from_anchor(
