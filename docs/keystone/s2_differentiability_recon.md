@@ -129,6 +129,25 @@ S2:** the other missing factor `∂s'/∂xfrc` (FD over the rigid step's `xfrc_a
 `transition_derivatives`, assembled into the coupled-step Jacobian and gated against the S0 FD
 oracle (the total settled-system derivative).
 
+## Progress · S2 — explicit coupled-step velocity Jacobian ASSEMBLED + FD-gated (2026-06-10)
+
+Both interface factors now compose into one validated coupled-step gradient, in `sim-coupling`:
+- New `StaggeredCoupling::rigid_step_probe(applied_fz) → (z', vz')` — a one-off rigid step from the
+  current rigid state with an externally supplied vertical force (reconstructs a scratch `Data`,
+  since `Data` is not `Clone`); the rigid factor `∂s'/∂xfrc`.
+- **Committed gate `tests/coupled_step_jacobian.rs`:** (1) the FD rigid factor `∂vz'/∂fz` = 5.000e-3
+  **matches the closed-form free-body semi-implicit-Euler `dt/m`** exactly; (2) the explicit
+  single-step `∂vz'/∂height` = `r·(−∂force_z/∂height)` = (rigid factor) × (analytic S1 soft factor)
+  = **−3750**, matches a black-box explicit FD to **rel 1.8e-12**; sign physical (raising the plane
+  → less force → lower vz').
+- grade **A**; full suite (4 tests) green.
+
+This is the **explicit** (fixed soft-positions) coupled-step velocity Jacobian — analytic where
+possible (soft factor `−κ·n`, rigid factor `dt/m`), FD-gated. **NEXT = S3:** the implicit
+soft-re-equilibration term `∂x*/∂(plane pose)` (needs a soft-pose VJP — the soft tape is load-only
+today), to upgrade the explicit Jacobian to the *total* single-step derivative; then the soft-tape
+`VjpOp` crossing (one `tape.backward` across both engines) + the material-parameter VJP.
+
 ## 6. Risks
 
 - **R1 (#1) — the coupled step may not be usefully smooth** (penalty active-set non-smoothness;

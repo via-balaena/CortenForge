@@ -214,6 +214,33 @@ impl StaggeredCoupling {
         Vec3::new(0.0, 0.0, self.kappa * (n_active as f64))
     }
 
+    /// One-off rigid step from the *current* rigid state with an externally
+    /// supplied vertical force `applied_fz` (newtons, world `+z`), returning the
+    /// rigid body's `(next height, next vertical velocity)`. Does NOT advance
+    /// `self` — it reconstructs a scratch `Data` at the current `(qpos, qvel)`,
+    /// so it is a pure probe of the rigid step's response to an applied force
+    /// (the rigid factor `∂s'/∂xfrc` of the coupled-step Jacobian). For the
+    /// free-body platen under semi-implicit Euler this response is analytically
+    /// `∂vz'/∂fz = dt/m`, `∂z'/∂fz = dt²/m`.
+    ///
+    /// # Panics
+    /// Panics if the scratch forward/step diverges (a mis-constructed model).
+    // Scratch forward/step on a valid model do not fail; a divergence is a
+    // programmer error surfaced loudly (see `step`'s rationale).
+    #[allow(clippy::expect_used)]
+    #[must_use]
+    pub fn rigid_step_probe(&self, applied_fz: f64) -> (f64, f64) {
+        let mut scratch = self.model.make_data();
+        scratch.qpos.copy_from(&self.data.qpos);
+        scratch.qvel.copy_from(&self.data.qvel);
+        scratch.forward(&self.model).expect("probe forward");
+        let mut sf = SpatialVector::zeros();
+        sf[5] = applied_fz; // linear z
+        scratch.xfrc_applied[self.body] = sf;
+        scratch.step(&self.model).expect("probe step");
+        (scratch.xpos[self.body].z, scratch.qvel[2])
+    }
+
     /// Advance the coupled system by one lockstep step. Returns the contact
     /// force on the soft body and the rigid body's current height.
     ///
