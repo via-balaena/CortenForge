@@ -140,6 +140,44 @@ pub trait ContactModel: Send + Sync {
     /// Continuous-collision time of impact along the segment `x0 → x1`.
     /// `f64::INFINITY` means no contact within the step.
     fn ccd_toi(&self, pair: &ContactPair, x0: &[Vec3], x1: &[Vec3]) -> f64;
+
+    /// Sensitivity of this pair's contact-residual contribution to a
+    /// unit *rigid translation* of its primitive along the world
+    /// direction `dir` — `∂(∂E/∂x_pair)/∂δ`, the per-vertex 3-vector that
+    /// adds into the global residual derivative `∂r/∂δ`.
+    ///
+    /// This is the kinematic-pose analog of [`Self::gradient`]: where
+    /// `gradient` differentiates the contact residual w.r.t. the soft
+    /// vertex position, this differentiates it w.r.t. moving the rigid
+    /// obstacle. It is the keystone S3 missing factor — the soft solver's
+    /// IFT machinery (`∂x*/∂θ = −A⁻¹∂r/∂θ`) is otherwise load-only and
+    /// cannot see the contact-plane pose (baked in at construction).
+    ///
+    /// Default: empty (a pose-independent / kinematic-free contact such
+    /// as [`NullContact`] contributes nothing). [`PenaltyRigidContact`]
+    /// overrides it: for a translated rigid SDF `sd(p; δ) = sd₀(p − δ·dir)`
+    /// so `∂sd/∂δ = −∇sd·dir = −n̂·dir`, and (planes: `∂n̂/∂δ = 0`)
+    /// `∂r_v/∂δ = d²E/dsd² · (−n̂·dir) · n̂`.
+    ///
+    /// **Contract for new contact models**: any *pose-dependent* contact
+    /// MUST override this — the default returns zero, so a forgotten
+    /// override yields a silently-zero pose gradient (the IFT pose
+    /// sensitivity built on it would be wrong, not merely unsupported)
+    /// rather than a compile error.
+    ///
+    /// **Scope** — engaged regime (the active set must be stable across
+    /// the pose perturbation; the penalty active-set boundary is
+    /// non-smooth, IPC the deferred cure) and the constant-normal
+    /// (plane) case (`∂n̂/∂δ = 0`); curved-primitive normal curvature is
+    /// a documented deferral. See `docs/keystone/s3_soft_pose_sensitivity_recon.md`.
+    fn pose_residual_derivative(
+        &self,
+        _pair: &ContactPair,
+        _positions: &[Vec3],
+        _dir: Vec3,
+    ) -> ContactGradient {
+        ContactGradient::default()
+    }
 }
 
 /// Active-pair selection for a [`ContactModel`] over a particular

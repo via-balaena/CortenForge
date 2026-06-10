@@ -34,7 +34,7 @@
 use sim_core::{Data, Model, SpatialVector};
 use sim_ml_chassis::Tensor;
 use sim_soft::{
-    BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
+    BoundaryConditions, ContactPair, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
     PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, Solver, SolverConfig, Tet4, Vec3,
     VertexId,
 };
@@ -250,6 +250,122 @@ impl StaggeredCoupling {
         (scratch.xpos[self.body].z, scratch.qvel[2])
     }
 
+    /// Non-mutating soft re-solve: build the soft solver with the contact
+    /// plane at `height` and take one dynamic step from the CURRENT
+    /// `(self.x, self.v)`, returning the solver (so the caller can read its
+    /// pose sensitivity) and the converged `x_final`. Does not advance `self`.
+    fn soft_resolve(&self, height: f64) -> (PenaltyRigidContactSolver<HandBuiltTetMesh>, Vec<f64>) {
+        let n = self.n_vertices;
+        let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+            Tet4,
+            self.fresh_mesh(),
+            self.build_contact(height),
+            self.cfg,
+            bc,
+        );
+        let x_final = solver
+            .replay_step(
+                &Tensor::from_slice(&self.x, &[3 * n]),
+                &Tensor::from_slice(&self.v, &[3 * n]),
+                &Tensor::zeros(&[0]),
+                self.cfg.dt,
+            )
+            .x_final;
+        (solver, x_final)
+    }
+
+    /// Total contact force on the soft body AFTER one *re-equilibrated*
+    /// dynamic soft step with the plane at `height`, evaluated from the
+    /// current `(self.x, self.v)` — does not advance `self`.
+    ///
+    /// Unlike [`Self::contact_force_at_height`] (which holds the soft
+    /// positions fixed and only re-poses the plane), this RE-SOLVES the
+    /// soft equilibrium `x*(height)` first, then reads the force there. So
+    /// finite-differencing it w.r.t. `height` captures the implicit
+    /// soft-re-equilibration that [`Self::contact_force_height_total_jacobian`]
+    /// supplies analytically — it is the black-box oracle for the total
+    /// derivative.
+    #[must_use]
+    pub fn resolved_contact_force(&self, height: f64) -> Vec3 {
+        let (_solver, x_final) = self.soft_resolve(height);
+        let positions: Vec<Vec3> = x_final
+            .chunks_exact(3)
+            .map(|c| Vec3::new(c[0], c[1], c[2]))
+            .collect();
+        self.build_contact(height)
+            .per_pair_readout(&self.fresh_mesh(), &positions)
+            .iter()
+            .map(|r| r.force_on_soft)
+            .sum()
+    }
+
+    /// Total single-step derivative `d(force_on_soft)/d(plane height)`
+    /// INCLUDING soft re-equilibration — the keystone S3 deliverable that
+    /// lifts the explicit (fixed-soft-position) coupled-step Jacobian to the
+    /// TOTAL:
+    ///
+    /// ```text
+    /// d force/d h  =  ∂force/∂h|_x   +   (∂force/∂x)·(∂x*/∂h)
+    ///                 └ explicit (S1) ┘    └──── implicit (S3) ────┘
+    /// ```
+    ///
+    /// evaluated at the post-step equilibrium `x*` re-solved from the
+    /// current `(self.x, self.v)` and plane height. The explicit term is the
+    /// S1 fixed-position partial (`−κ·(∂sd/∂h)·n̂` per active pair); the
+    /// implicit term contracts the penalty force Jacobian
+    /// `∂force/∂x = −κ·n̂⊗n̂` (active, hard penalty) against the soft solver's
+    /// pose sensitivity `∂x*/∂h` (`equilibrium_pose_sensitivity`). Does not
+    /// advance `self`.
+    ///
+    /// Physically the implicit term largely cancels the explicit one in the
+    /// engaged regime: when the plane rises the soft body follows, so the
+    /// signed distances — hence the force — barely change. The explicit-only
+    /// factor ([`Self::contact_force_height_jacobian`]) therefore grossly
+    /// overestimates the true sensitivity; this method is the corrected
+    /// total. Validated against a black-box central FD of
+    /// [`Self::resolved_contact_force`] in the contact-engaged, stable-
+    /// active-set regime (the penalty active-set boundary is non-smooth;
+    /// IPC the deferred cure). Hard-penalty scope (`d²E/dsd² = κ`); see
+    /// `docs/keystone/s3_soft_pose_sensitivity_recon.md`.
+    ///
+    /// `height` is the contact-plane pose (the same parameter
+    /// [`Self::contact_force_height_jacobian`] / [`Self::resolved_contact_force`]
+    /// take) — supplied explicitly rather than read from the rigid pose so the
+    /// derivative can be probed at a deeply-engaged height regardless of the
+    /// current platen position.
+    // `kappa` is the hard-penalty `d²E/dsd²`; the coupling runs hard penalty
+    // (no smoothing window), so it is the exact per-active-pair curvature.
+    #[must_use]
+    pub fn contact_force_height_total_jacobian(&self, height: f64) -> Vec3 {
+        // Raising the plane height = translating the rigid primitive +ẑ.
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+        let (solver, x_final) = self.soft_resolve(height);
+        let dxstar = solver.equilibrium_pose_sensitivity(&x_final, self.cfg.dt, dir);
+        let positions: Vec<Vec3> = x_final
+            .chunks_exact(3)
+            .map(|c| Vec3::new(c[0], c[1], c[2]))
+            .collect();
+        let readout = self
+            .build_contact(height)
+            .per_pair_readout(&self.fresh_mesh(), &positions);
+        let mut explicit = Vec3::zeros();
+        let mut implicit = Vec3::zeros();
+        for r in &readout {
+            let ContactPair::Vertex { vertex_id, .. } = r.pair;
+            let n_hat = r.normal;
+            // ∂sd/∂h = −n̂·ẑ for translating the plane +ẑ (here +1, n̂=−ẑ).
+            let dsd_dh = -n_hat.z;
+            // explicit: ∂force/∂h|_x = −κ·(∂sd/∂h)·n̂ per active pair.
+            explicit += -self.kappa * dsd_dh * n_hat;
+            // implicit: (∂force/∂x = −κ·n̂⊗n̂) · ∂x*/∂h.
+            let v = vertex_id as usize;
+            let dxs = Vec3::new(dxstar[3 * v], dxstar[3 * v + 1], dxstar[3 * v + 2]);
+            implicit += -self.kappa * n_hat.dot(&dxs) * n_hat;
+        }
+        explicit + implicit
+    }
+
     /// Advance the coupled system by one lockstep step. Returns the contact
     /// force on the soft body and the rigid body's current height.
     ///
@@ -356,6 +472,52 @@ mod tests {
             -last.force_on_soft.z > 0.0,
             "expected an upward contact reaction once engaged; got {:?}",
             last.force_on_soft
+        );
+    }
+
+    /// Lib-level smoke test of the differentiability probes (the scientific
+    /// FD validation lives in the `tests/` gates `contact_force_jacobian`,
+    /// `coupled_step_jacobian`, `coupled_total_jacobian`). Exercises every
+    /// probe at a deeply-engaged height (the rest top face is at z=0.1; the
+    /// plane at h=0.099 penetrates ~1 mm so the 25 top vertices are active)
+    /// and pins the qualitative relationships the gates quantify.
+    #[test]
+    fn differentiability_probes_are_finite_and_consistent() {
+        let c = coupling();
+        let h = 0.099;
+
+        // S1 explicit (fixed-soft-position) factor — `+κ·N_active·ẑ`, positive.
+        let explicit = c.contact_force_height_jacobian(h);
+        assert!(
+            explicit.z > 0.0 && explicit.z.is_finite(),
+            "explicit ∂force/∂h.z should be +κ·N > 0, got {explicit:?}"
+        );
+
+        // Forward building blocks: fixed-position vs re-solved contact force.
+        let f_fixed = c.contact_force_at_height(h);
+        let f_resolved = c.resolved_contact_force(h);
+        assert!(
+            f_fixed.z != 0.0 && f_resolved.z.is_finite(),
+            "engaged contact force should be nonzero/finite: fixed {f_fixed:?}, resolved {f_resolved:?}"
+        );
+
+        // S2 rigid factor probe: a free body accelerates under an applied force.
+        let (z_up, vz_up) = c.rigid_step_probe(1.0);
+        let (_z_dn, vz_dn) = c.rigid_step_probe(-1.0);
+        assert!(
+            z_up.is_finite() && vz_up > vz_dn,
+            "more upward force ⇒ higher next vz: vz(+1)={vz_up}, vz(-1)={vz_dn}"
+        );
+
+        // S3 total factor: the implicit soft re-equilibration reduces the
+        // explicit-only sensitivity (the soft body follows the rising plane).
+        let total = c.contact_force_height_total_jacobian(h);
+        assert!(
+            total.z.is_finite() && total.z.abs() < explicit.z.abs(),
+            "total ∂force/∂h.z ({}) should be finite and smaller in magnitude \
+             than the explicit-only partial ({}) — implicit re-equilibration",
+            total.z,
+            explicit.z,
         );
     }
 }
