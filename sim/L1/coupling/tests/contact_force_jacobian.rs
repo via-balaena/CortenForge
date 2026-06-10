@@ -59,6 +59,10 @@ fn analytic_contact_force_height_jacobian_matches_finite_difference() {
         analytic.z
     );
     // Analytic matches the finite difference to tight relative tolerance.
+    assert!(
+        fd.z.abs() > 1.0,
+        "degenerate gate: FD slope ≈ 0 ({fd:?}) — active set not engaged?"
+    );
     let rel = (analytic.z - fd.z).abs() / fd.z.abs();
     assert!(
         rel < 1e-4,

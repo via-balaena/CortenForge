@@ -20,8 +20,8 @@ factor derivatives, and what exists today:
 |---|---|---|
 | `∂s'/∂s` (`A`) | rigid next-state vs rigid state | **available** — `Data::transition_derivatives → TransitionMatrices.A` (dense forward Jacobian, tangent space `2nv+na`) |
 | `∂plane_pose/∂s` | contact plane height vs rigid state | **trivial** — `height = xpos[body].z − clearance`, `∂height/∂z = 1` |
-| `∂force_on_soft/∂plane_pose` | contact force vs plane height | **MISSING** — force is read off-tape from primal positions; plane offset is never a tape `Var`. Analytic value is `−κ·n` summed over active pairs (derivable, unwritten) |
-| `∂s'/∂xfrc` | rigid next-state vs applied Cartesian force | **MISSING** — `B` is `∂x'/∂ctrl` only; `xfrc_applied` is not in `B` and is auto-zeroed each `step`. Needs FD over `xfrc` or a new column-builder |
+| `∂force_on_soft/∂plane_pose` | contact force vs plane height | **✅ shipped (S1)** — analytic `+κ·N_active·ẑ` (the explicit, fixed-position partial), FD-gated machine-exact. (Originally MISSING: force read off-tape; plane offset never a `Var`.) |
+| `∂s'/∂xfrc` | rigid next-state vs applied Cartesian force | **✅ shipped (S2)** — `rigid_step_probe`, FD = closed-form free-body `dt/m`. (Originally MISSING from `B` = ctrl-only; `xfrc` auto-zeroed each `step` — handled by reconstructing a scratch `Data`.) |
 
 Plus the soft-state-mediated path: the soft tape gives `∂x*/∂θ` (load) only — **not**
 `∂x*/∂(plane pose)` or `∂x*/∂(material)`. So the soft solve's contribution to the coupling
@@ -84,9 +84,12 @@ material-parameter autograd are the leaves beyond v1.
   μ-invariance hold? This proves differentiability + yields the oracle.
 - **S1 — analytic contact-force-vs-pose derivative.** `∂force_on_soft/∂(plane height) = −κ·n`
   summed over active pairs — a small routine (sim-soft contact or sim-coupling), unit + FD checked.
-- **S2 — analytic coupled-step Jacobian assembly.** Compose `A` (rigid) × `∂plane/∂s` + the S1
-  contact-force factor + FD `∂s'/∂xfrc`; gate the assembled `ds'/ds` (or a scalar gradient) against
-  the S0 FD oracle. = a differentiable coupled step.
+- **S2 — explicit coupled-step velocity Jacobian assembly.** *(Shipped — see Progress · S2.)*
+  Compose the rigid force-response factor (`∂vz'/∂fz = dt/m`, closed-form free body / `rigid_step_probe`)
+  with the analytic S1 soft factor into the explicit `∂vz'/∂height`, FD-gated. (The free-body rigid
+  factor is exactly affine, so this validates the composition *wiring* + the `dt/m` scale rather than
+  an independent non-affine path; the full state Jacobian `ds'/ds` via the dense `A` from
+  `transition_derivatives` is deferred — `A` was not needed for the velocity component here.)
 - **S3 — soft-tape `VjpOp` crossing.** Adapt the rigid Jacobian into a chassis `VjpOp` so one
   `tape.backward` crosses both engines; then the co-design gradient w.r.t. soft material params
   (needs the soft material VJP, currently load-only — its own sub-task).
@@ -136,10 +139,16 @@ Both interface factors now compose into one validated coupled-step gradient, in 
   current rigid state with an externally supplied vertical force (reconstructs a scratch `Data`,
   since `Data` is not `Clone`); the rigid factor `∂s'/∂xfrc`.
 - **Committed gate `tests/coupled_step_jacobian.rs`:** (1) the FD rigid factor `∂vz'/∂fz` = 5.000e-3
-  **matches the closed-form free-body semi-implicit-Euler `dt/m`** exactly; (2) the explicit
-  single-step `∂vz'/∂height` = `r·(−∂force_z/∂height)` = (rigid factor) × (analytic S1 soft factor)
-  = **−3750**, matches a black-box explicit FD to **rel 1.8e-12**; sign physical (raising the plane
-  → less force → lower vz').
+  **equals the closed-form free-body semi-implicit-Euler `dt/m`**; (2) the explicit single-step
+  `∂vz'/∂height` = `r·(−∂force_z/∂height)` = (rigid factor) × (analytic S1 soft factor) = **−3750**,
+  equals a black-box explicit FD to **rel 1.8e-12**; sign physical (raising the plane → less force
+  → lower vz'). **Truth-in-claims (from the pre-PR ultra-review):** the free-body rigid response is
+  *exactly affine* in the applied force and the contact force is linear in height within a stable
+  active set, so the explicit map `height → vz'` is affine and the FD-equals-assembly agreement holds
+  *by construction*. This gate therefore validates the composition **wiring** (the `−force→xfrc`
+  sign, the multiplication order, the `SpatialVector` slot, the physical sign) + the `dt/m` scale —
+  the *independent* numeric soft check is S1's `contact_force_jacobian.rs`; the implicit
+  re-equilibration is S3.
 - grade **A**; full suite (4 tests) green.
 
 This is the **explicit** (fixed soft-positions) coupled-step velocity Jacobian — analytic where

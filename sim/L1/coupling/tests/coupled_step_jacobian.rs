@@ -8,9 +8,21 @@
 //! the contact-engaged-regime building block; the implicit soft-re-equilibration
 //! term (`∂x*/∂height`, needs a soft-pose VJP) is the S3 leaf.
 //!
-//! Gates: (1) the rigid factor matches the closed-form free-body semi-implicit
-//! Euler response `dt/m`; (2) the analytically-assembled `∂vz'/∂height` matches a
-//! black-box explicit finite difference. See `docs/keystone/s2_differentiability_recon.md`.
+//! Gates: (1) the rigid factor equals the closed-form free-body semi-implicit
+//! Euler response `dt/m`; (2) the assembled `∂vz'/∂height` equals a black-box
+//! explicit finite difference.
+//!
+//! NOTE on what (2) does — and does not — prove: the free-body platen is exactly
+//! affine in the applied force (`vz' = b + (dt/m)·fz`), and the contact force is
+//! linear in `height` within a stable active set, so the explicit map
+//! `height → vz'` is affine and the black-box FD equals the assembled product by
+//! construction. This gate therefore validates the composition **wiring** (the
+//! `xfrc = −force_on_soft` sign, the factor-multiplication order, the
+//! `SpatialVector` slot, the physical sign) and the `dt/m` scale — NOT an
+//! independent non-affine path. The genuinely independent numeric check of the
+//! soft factor (`analytic κ·N_active` vs FD of the force) is `contact_force_jacobian.rs`
+//! (S1); the implicit soft re-equilibration is the S3 leaf. See
+//! `docs/keystone/s2_differentiability_recon.md`.
 
 #![allow(clippy::expect_used)]
 
@@ -40,13 +52,16 @@ fn explicit_velocity_jacobian_wrt_height_matches_assembly_and_fd() {
     );
 
     // --- rigid factor ∂vz'/∂fz (FD over the rigid step) vs closed-form dt/m ---
+    // The free body is exactly affine in fz, so the central FD returns the exact
+    // slope dt/m for any df (this checks the dt/m *scale* + the fz→qvel[2] slot
+    // wiring, not FD-truncation accuracy — hence the machine-precision bound).
     let (f0, df) = (5.0_f64, 1.0e-2);
     let r =
         (coupling.rigid_step_probe(f0 + df).1 - coupling.rigid_step_probe(f0 - df).1) / (2.0 * df);
     let analytic_rigid = DT / MASS; // semi-implicit Euler free body
     eprintln!("rigid factor ∂vz'/∂fz: FD={r:.6e}  dt/m={analytic_rigid:.6e}");
     assert!(
-        (r - analytic_rigid).abs() / analytic_rigid < 1e-6,
+        (r - analytic_rigid).abs() / analytic_rigid < 1e-12,
         "rigid factor {r} != dt/m {analytic_rigid}"
     );
 
@@ -67,10 +82,15 @@ fn explicit_velocity_jacobian_wrt_height_matches_assembly_and_fd() {
     let black_box = (vz_plus - vz_minus) / (2.0 * dh);
 
     eprintln!("∂vz'/∂height: assembled={assembled:.6e}  black-box FD={black_box:.6e}");
+    assert!(
+        black_box.abs() > 1.0,
+        "degenerate gate: black-box slope ≈ 0 ({black_box}) — no active contact?"
+    );
+    // Affine by construction (see module note): expect agreement to machine precision.
     let rel = (assembled - black_box).abs() / black_box.abs();
     assert!(
-        rel < 1e-6,
-        "assembled vs black-box mismatch (rel {rel:.2e}): {assembled} vs {black_box}"
+        rel < 1e-9,
+        "composition-wiring mismatch (rel {rel:.2e}): {assembled} vs {black_box}"
     );
     // Physical: raising the plane reduces penetration → less up-force → lower vz' (< 0).
     assert!(
@@ -78,6 +98,6 @@ fn explicit_velocity_jacobian_wrt_height_matches_assembly_and_fd() {
         "expected ∂vz'/∂height < 0; got {assembled}"
     );
     eprintln!(
-        "✓ explicit coupled-step velocity Jacobian: analytic-soft × rigid-factor = black-box (rel {rel:.2e})"
+        "✓ explicit coupled-step velocity Jacobian: composition wiring validated (affine identity, rel {rel:.2e})"
     );
 }

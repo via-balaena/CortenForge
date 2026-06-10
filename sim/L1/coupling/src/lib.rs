@@ -20,12 +20,16 @@
 //! interface force balance holds and a rigid body settles when the soft
 //! reaction matches its weight.
 //!
-//! Scope (keystone v1, forward): penalty contact (a non-smooth stepping stone to
-//! IPC); a single body-posed plane against a hand-built soft block; the soft
-//! solver is rebuilt per step (re-posing the contact in place is a deferred
-//! optimisation). Differentiability — chaining the rigid engine's dense
-//! Jacobians into the soft autograd tape — is the next (research) leaf and is
-//! out of scope here.
+//! Scope: penalty contact (a non-smooth stepping stone to IPC); a single
+//! body-posed plane against a hand-built soft block; the soft solver is rebuilt
+//! per step (re-posing in place is a deferred optimisation). Differentiability
+//! is added incrementally: the *explicit* (fixed-soft-position) factors of the
+//! coupled-step Jacobian live here now — the analytic contact-force-vs-pose
+//! derivative ([`StaggeredCoupling::contact_force_height_jacobian`]) and the
+//! rigid force response ([`StaggeredCoupling::rigid_step_probe`]). The *implicit*
+//! soft re-equilibration term (`∂x*/∂pose`, needs a soft-pose VJP) and the full
+//! soft-tape `VjpOp` crossing (one `tape.backward` across both engines) are the
+//! next research leaves.
 
 use sim_core::{Data, Model, SpatialVector};
 use sim_ml_chassis::Tensor;
@@ -197,8 +201,9 @@ impl StaggeredCoupling {
     /// configuration, holding the soft positions fixed.
     ///
     /// For the downward penalty plane, each active pair has
-    /// `force_on_soft = κ(d̂ − sd)·n` with `sd = height − z` and `n = −ẑ`, so
-    /// `∂force/∂height = −κ·n = +κ·ẑ` per pair; the total is `−κ·n·N_active`.
+    /// `force_on_soft = κ(d̂ − sd)·n̂` with `sd = height − z` and unit normal
+    /// `n̂ = −ẑ`, so `∂force/∂height = −κ·n̂ = +κ·ẑ` per pair; over `N_active`
+    /// pairs the total is `+κ·N_active·ẑ`.
     /// This is the explicit (fixed-position) partial — one factor of the coupled
     /// step's Jacobian, not the total settled-system derivative. Valid in the
     /// contact-engaged regime where the active set is stable across the
@@ -223,9 +228,14 @@ impl StaggeredCoupling {
     /// free-body platen under semi-implicit Euler this response is analytically
     /// `∂vz'/∂fz = dt/m`, `∂z'/∂fz = dt²/m`.
     ///
+    /// The scratch reproduces the current `(qpos, qvel)` only — faithful for the
+    /// keystone scene (a free-joint body with no actuators, `ctrl`, `act`, or
+    /// mocap state). `step` runs its own `forward`, which is what consumes the
+    /// `xfrc_applied` set here.
+    ///
     /// # Panics
-    /// Panics if the scratch forward/step diverges (a mis-constructed model).
-    // Scratch forward/step on a valid model do not fail; a divergence is a
+    /// Panics if the scratch step diverges (a mis-constructed model).
+    // A scratch step on a valid model does not fail; a divergence is a
     // programmer error surfaced loudly (see `step`'s rationale).
     #[allow(clippy::expect_used)]
     #[must_use]
@@ -233,9 +243,8 @@ impl StaggeredCoupling {
         let mut scratch = self.model.make_data();
         scratch.qpos.copy_from(&self.data.qpos);
         scratch.qvel.copy_from(&self.data.qvel);
-        scratch.forward(&self.model).expect("probe forward");
         let mut sf = SpatialVector::zeros();
-        sf[5] = applied_fz; // linear z
+        sf[5] = applied_fz; // linear z (SpatialVector layout [angular(3), linear(3)])
         scratch.xfrc_applied[self.body] = sf;
         scratch.step(&self.model).expect("probe step");
         (scratch.xpos[self.body].z, scratch.qvel[2])
