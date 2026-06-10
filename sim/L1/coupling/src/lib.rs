@@ -23,21 +23,129 @@
 //! Scope: penalty contact (a non-smooth stepping stone to IPC); a single
 //! body-posed plane against a hand-built soft block; the soft solver is rebuilt
 //! per step (re-posing in place is a deferred optimisation). Differentiability
-//! is added incrementally: the *explicit* (fixed-soft-position) factors of the
-//! coupled-step Jacobian live here now — the analytic contact-force-vs-pose
-//! derivative ([`StaggeredCoupling::contact_force_height_jacobian`]) and the
-//! rigid force response ([`StaggeredCoupling::rigid_step_probe`]). The *implicit*
-//! soft re-equilibration term (`∂x*/∂pose`, needs a soft-pose VJP) and the full
-//! soft-tape `VjpOp` crossing (one `tape.backward` across both engines) are the
-//! next research leaves.
+//! was added incrementally and now spans both engines:
+//! - the *explicit* (fixed-soft-position) coupled-step factors — the analytic
+//!   contact-force-vs-pose derivative ([`StaggeredCoupling::contact_force_height_jacobian`])
+//!   and the rigid force response ([`StaggeredCoupling::rigid_step_probe`]);
+//! - the *implicit* soft re-equilibration term lifting them to the total
+//!   single-step derivative ([`StaggeredCoupling::contact_force_height_total_jacobian`],
+//!   via the soft solver's `equilibrium_pose_sensitivity`);
+//! - the full **soft-tape `VjpOp` crossing** — ONE `tape.backward` across both
+//!   engines ([`StaggeredCoupling::coupled_step_load_gradient`], chaining the
+//!   soft Newton load adjoint with [`ContactForceVjp`] and [`RigidStepVjp`]).
+//!
+//! The remaining research leaf is the soft **material-parameter** VJP (the soft
+//! tape is load-only today), which the co-design optimizer ultimately needs and
+//! which rides the same crossing.
 
 use sim_core::{Data, Model, SpatialVector};
-use sim_ml_chassis::Tensor;
+use sim_ml_chassis::autograd::VjpOp;
+use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{
-    BoundaryConditions, ContactPair, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, Solver, SolverConfig, Tet4, Vec3,
-    VertexId,
+    BoundaryConditions, ContactPair, CpuNewtonSolver, HandBuiltTetMesh, LoadAxis, MaterialField,
+    Mesh, PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, Solver, SolverConfig, Tet4,
+    Vec3, VertexId,
 };
+
+/// Chassis-tape [`VjpOp`] adapting a `sim-core` rigid step's response into the
+/// soft autograd tape — the soft↔rigid crossing's rigid half (keystone S4).
+///
+/// The rigid engine has no reverse-mode tape; its sensitivity is a dense
+/// Jacobian. This wraps the single scalar factor `∂vz'/∂xfrc_z` (the platen's
+/// next vertical velocity vs an applied vertical force) so a chassis
+/// `Tape::backward` flowing into the rigid node continues back through the
+/// applied force. Parent = the `xfrc_z` (shape `[1]`) node; output = `vz'`
+/// (shape `[1]`); the VJP accumulates `∂L/∂vz' · ∂vz'/∂xfrc_z` into the parent.
+///
+/// For the free-joint platen under semi-implicit Euler the factor is the
+/// closed-form `dt/m` (S2-validated); [`StaggeredCoupling::rigid_vz_response`]
+/// computes it by central FD over [`StaggeredCoupling::rigid_step_probe`] so the
+/// op is not hard-wired to the free-body case.
+#[derive(Clone, Copy, Debug)]
+pub struct RigidStepVjp {
+    dvz_dfz: f64,
+}
+
+impl RigidStepVjp {
+    /// Construct from the rigid response factor `∂vz'/∂xfrc_z` (e.g. from
+    /// [`StaggeredCoupling::rigid_vz_response`]).
+    #[must_use]
+    pub const fn new(dvz_dfz: f64) -> Self {
+        Self { dvz_dfz }
+    }
+}
+
+impl VjpOp for RigidStepVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::RigidStepVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [1] && parent_cotans.len() == 1,
+            "RigidStepVjp: expected scalar cotangent [1] and 1 parent (xfrc_z [1]); \
+             got cot {:?}, {} parents",
+            cotangent.shape(),
+            parent_cotans.len(),
+        );
+        parent_cotans[0].as_mut_slice()[0] += cotangent.as_slice()[0] * self.dvz_dfz;
+    }
+}
+
+/// Chassis-tape [`VjpOp`] for the penalty contact-force readout — the
+/// crossing's soft-contact half (keystone S4).
+///
+/// Parent = the soft positions `x*` (shape `3·n_vertices`); output = the total
+/// `force_on_soft.z` (shape `[1]`). The VJP applies the per-active-pair contact-force
+/// Jacobian `∂fz/∂x_v = −κ·n̂_z·n̂` (the S3 `−κ·n̂⊗n̂` factor, z-row), turning a
+/// downstream `∂L/∂fz` into the `∂L/∂x*` cotangent that the soft
+/// `NewtonStepVjp` then carries back to the soft parameters. Hard-penalty scope
+/// (`d²E/dsd² = κ`); active set captured at construction (engaged regime).
+#[derive(Clone, Debug)]
+pub struct ContactForceVjp {
+    /// `(vertex_id, outward unit normal n̂)` for each active contact pair at the
+    /// linearization positions.
+    active: Vec<(usize, Vec3)>,
+    kappa: f64,
+}
+
+impl ContactForceVjp {
+    /// Construct from the active-pair `(vertex_id, normal)` list and the penalty
+    /// stiffness `κ`.
+    #[must_use]
+    pub fn new(active: Vec<(usize, Vec3)>, kappa: f64) -> Self {
+        Self { active, kappa }
+    }
+}
+
+impl VjpOp for ContactForceVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::ContactForceVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [1] && parent_cotans.len() == 1,
+            "ContactForceVjp: expected scalar cotangent [1] and 1 parent (x* [n_dof]); \
+             got cot {:?}, {} parents",
+            cotangent.shape(),
+            parent_cotans.len(),
+        );
+        let c = cotangent.as_slice()[0];
+        let slot = parent_cotans[0].as_mut_slice();
+        for &(v, n) in &self.active {
+            // ∂fz/∂x_v = −κ·n̂_z·n̂ (z-row of the −κ·n̂⊗n̂ contact-force Jacobian).
+            let g = -self.kappa * n.z;
+            slot[3 * v] += c * g * n.x;
+            slot[3 * v + 1] += c * g * n.y;
+            slot[3 * v + 2] += c * g * n.z;
+        }
+    }
+}
 
 /// Result of one coupled step.
 #[derive(Clone, Copy, Debug)]
@@ -275,6 +383,29 @@ impl StaggeredCoupling {
         (solver, x_final)
     }
 
+    /// Build a soft solver over `self`'s block with the contact plane at
+    /// `height` and a scalar `+ẑ` (`LoadAxis::AxisZ`) load on `loaded` (atop
+    /// the fixed pinned base). Shared by [`Self::coupled_step_load_gradient`]
+    /// (tape `step`) and [`Self::coupled_step_load_vz`] (tape-free
+    /// `replay_step`) so the loaded-BC mapping has one source of truth.
+    fn build_loaded_solver(
+        &self,
+        height: f64,
+        loaded: &[VertexId],
+    ) -> PenaltyRigidContactSolver<HandBuiltTetMesh> {
+        let bc = BoundaryConditions::new(
+            self.pinned.clone(),
+            loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
+        );
+        CpuNewtonSolver::new(
+            Tet4,
+            self.fresh_mesh(),
+            self.build_contact(height),
+            self.cfg,
+            bc,
+        )
+    }
+
     /// Total contact force on the soft body AFTER one *re-equilibrated*
     /// dynamic soft step with the plane at `height`, evaluated from the
     /// current `(self.x, self.v)` — does not advance `self`.
@@ -364,6 +495,159 @@ impl StaggeredCoupling {
             implicit += -self.kappa * n_hat.dot(&dxs) * n_hat;
         }
         explicit + implicit
+    }
+
+    /// The rigid body's `(next vertical velocity vz', ∂vz'/∂xfrc_z)` for an
+    /// applied vertical force `applied_fz`, from the current rigid state — the
+    /// scalar factor for [`RigidStepVjp`]. Does NOT advance `self`.
+    ///
+    /// `vz'` is [`Self::rigid_step_probe`]; the factor is a central FD over it.
+    /// For the free-joint platen under semi-implicit Euler the response is
+    /// *exactly affine* in the force (`vz' = vz0 + (dt/m)·fz`), so the FD step
+    /// `h` is immaterial and recovers the closed-form `dt/m` to machine
+    /// precision (S2). **Scope:** the single scalar factor `∂vz'/∂xfrc_z` and
+    /// its `h`-independence are valid only for a free / axis-decoupled body. A
+    /// constrained or rotationally-coupled rigid configuration is non-affine in
+    /// the force (then `h` is a truncation knob and a vertical force also
+    /// induces horizontal/rotational response the scalar factor drops) — that
+    /// case needs the full `∂s'/∂xfrc` (sim-core's `transition_derivatives`
+    /// Jacobian) and is out of this keystone scene's scope.
+    #[must_use]
+    pub fn rigid_vz_response(&self, applied_fz: f64) -> (f64, f64) {
+        let vz = self.rigid_step_probe(applied_fz).1;
+        // Affine free body ⇒ the FD step size is immaterial; pick a benign one.
+        let h = 1.0e-2;
+        let dvz_dfz = (self.rigid_step_probe(applied_fz + h).1
+            - self.rigid_step_probe(applied_fz - h).1)
+            / (2.0 * h);
+        (vz, dvz_dfz)
+    }
+
+    /// **The keystone soft-tape `VjpOp` crossing.** One chassis `Tape::backward`
+    /// crossing BOTH engines: the gradient of the platen's next vertical
+    /// velocity `vz'` w.r.t. a scalar `+ẑ` load `theta` applied to the
+    /// `loaded` soft vertices. Returns `(vz', ∂vz'/∂theta)`. Does NOT advance
+    /// `self`.
+    ///
+    /// Builds one differentiable coupled step on a single tape:
+    /// ```text
+    /// theta ─(soft Solver::step, NewtonStepVjp)→ x* ─(ContactForceVjp)→ fz
+    ///        ─(neg)→ xfrc_z ─(RigidStepVjp)→ vz'
+    /// ```
+    /// then `tape.backward(vz')` and reads `grad(theta)`. The cotangent flows
+    /// `vz' → xfrc → force → x* → theta`: the rigid + contact-force `VjpOp`s
+    /// compose with the soft Newton load adjoint, so the reverse pass crosses
+    /// the soft↔rigid interface on one tape — the gradient substrate the
+    /// co-design optimizer consumes. (The handle is the soft LOAD `theta`, which
+    /// the existing soft tape supports; differentiating soft MATERIAL params is
+    /// the next leaf — it needs a soft material VJP — and rides the same
+    /// crossing.)
+    ///
+    /// Reuses `self`'s soft block (rest geometry / material / pinned base) and
+    /// rigid state; the contact plane is held at `height` and fixed across the
+    /// step (staggered) — supplied explicitly (the same convention as
+    /// [`Self::contact_force_height_jacobian`]) so the gradient can be probed at
+    /// a deeply-engaged height regardless of the current platen position.
+    /// FD-validated against the full coupled step in
+    /// `tests/coupled_load_gradient.rs`. Engaged, stable-active-set,
+    /// hard-penalty scope (the penalty active-set boundary is non-smooth — IPC
+    /// deferred). See `docs/keystone/s4_vjp_crossing_recon.md`.
+    ///
+    /// # Panics
+    /// Panics if the soft solver's tape step does not expose `x_final_var` (a
+    /// solver-contract violation — `Solver::step` always pushes it).
+    // expect_used: the missing-var case is a solver-contract bug surfaced
+    // loudly, mirroring `step`'s divergence-panic rationale.
+    #[allow(clippy::expect_used)]
+    #[must_use]
+    pub fn coupled_step_load_gradient(
+        &self,
+        height: f64,
+        loaded: &[VertexId],
+        theta: f64,
+    ) -> (f64, f64) {
+        let n = self.n_vertices;
+        let mut solver = self.build_loaded_solver(height, loaded);
+
+        // Build the one-step tape: theta → x* → fz → xfrc → vz'.
+        let mut tape = Tape::new();
+        let theta_var = tape.param_tensor(Tensor::from_slice(&[theta], &[1]));
+        let step = solver.step(
+            &mut tape,
+            &Tensor::from_slice(&self.x, &[3 * n]),
+            &Tensor::from_slice(&self.v, &[3 * n]),
+            theta_var,
+            self.cfg.dt,
+        );
+        let xstar_var = step
+            .x_final_var
+            .expect("Solver::step must push x_final_var onto the tape");
+
+        // Contact force on the soft body at x*, with the active set + normals.
+        let positions: Vec<Vec3> = step
+            .x_final
+            .chunks_exact(3)
+            .map(|c| Vec3::new(c[0], c[1], c[2]))
+            .collect();
+        let readout = self
+            .build_contact(height)
+            .per_pair_readout(&self.fresh_mesh(), &positions);
+        let fz: f64 = readout.iter().map(|r| r.force_on_soft.z).sum();
+        let active: Vec<(usize, Vec3)> = readout
+            .iter()
+            .map(|r| {
+                let ContactPair::Vertex { vertex_id, .. } = r.pair;
+                (vertex_id as usize, r.normal)
+            })
+            .collect();
+        let force_var = tape.push_custom(
+            &[xstar_var],
+            Tensor::from_slice(&[fz], &[1]),
+            Box::new(ContactForceVjp::new(active, self.kappa)),
+        );
+
+        // Reaction onto the rigid body, then the rigid step's velocity response.
+        let xfrc_var = tape.neg(force_var); // xfrc_z = −force_on_soft.z
+        let xfrc_z = tape.value_tensor(xfrc_var).as_slice()[0];
+        let (vz, dvz_dfz) = self.rigid_vz_response(xfrc_z);
+        let vz_var = tape.push_custom(
+            &[xfrc_var],
+            Tensor::from_slice(&[vz], &[1]),
+            Box::new(RigidStepVjp::new(dvz_dfz)),
+        );
+
+        tape.backward(vz_var);
+        let grad = tape.grad_tensor(theta_var).as_slice()[0];
+        (vz, grad)
+    }
+
+    /// Forward-only companion to [`Self::coupled_step_load_gradient`]: the
+    /// platen's next vertical velocity `vz'` for the load `theta` (re-solve the
+    /// soft step → contact force → rigid step), with NO tape. The black-box
+    /// oracle for finite-differencing the cross-engine gradient. Does NOT
+    /// advance `self`.
+    #[must_use]
+    pub fn coupled_step_load_vz(&self, height: f64, loaded: &[VertexId], theta: f64) -> f64 {
+        let n = self.n_vertices;
+        let solver = self.build_loaded_solver(height, loaded);
+        let st = solver.replay_step(
+            &Tensor::from_slice(&self.x, &[3 * n]),
+            &Tensor::from_slice(&self.v, &[3 * n]),
+            &Tensor::from_slice(&[theta], &[1]),
+            self.cfg.dt,
+        );
+        let positions: Vec<Vec3> = st
+            .x_final
+            .chunks_exact(3)
+            .map(|c| Vec3::new(c[0], c[1], c[2]))
+            .collect();
+        let fz: f64 = self
+            .build_contact(height)
+            .per_pair_readout(&self.fresh_mesh(), &positions)
+            .iter()
+            .map(|r| r.force_on_soft.z)
+            .sum();
+        self.rigid_step_probe(-fz).1
     }
 
     /// Advance the coupled system by one lockstep step. Returns the contact
@@ -518,6 +802,46 @@ mod tests {
              than the explicit-only partial ({}) — implicit re-equilibration",
             total.z,
             explicit.z,
+        );
+    }
+
+    /// Lib-level smoke test of the S4 cross-engine tape crossing (the scientific
+    /// FD validation is in `tests/{rigid_step_vjp,coupled_load_gradient}.rs`).
+    /// Exercises `rigid_vz_response`, `coupled_step_load_gradient` (one
+    /// `tape.backward` across both engines), and the forward oracle
+    /// `coupled_step_load_vz` at a deeply-engaged height with a loaded top face.
+    #[test]
+    fn cross_engine_crossing_smoke() {
+        let c = coupling();
+        let mesh = HandBuiltTetMesh::uniform_block(4, 0.1, &MaterialField::uniform(3.0e4, 1.2e5));
+        let loaded: Vec<VertexId> =
+            sim_soft::pick_vertices_by_predicate(&mesh, |p| (p.z - 0.1).abs() < 1e-9);
+        assert!(!loaded.is_empty());
+
+        // Rigid response factor is the free-body dt/m (= 5e-3).
+        let (_vz, dvz_dfz) = c.rigid_vz_response(5.0);
+        assert!(
+            (dvz_dfz - 1.0e-3 / 0.2).abs() < 1e-9,
+            "∂vz'/∂fz should be dt/m"
+        );
+
+        let h = 0.099;
+        let theta0 = 5.0;
+        let (vz, grad) = c.coupled_step_load_gradient(h, &loaded, theta0);
+        assert!(vz.is_finite() && grad.is_finite());
+        // The cross-engine gradient is nonzero (load couples through to vz')
+        // and consistent with the forward oracle's local slope sign.
+        assert!(
+            grad.abs() > 1e-4,
+            "expected a nonzero cross-engine gradient"
+        );
+        let eps = 1.0e-4;
+        let fd = (c.coupled_step_load_vz(h, &loaded, theta0 + eps)
+            - c.coupled_step_load_vz(h, &loaded, theta0 - eps))
+            / (2.0 * eps);
+        assert!(
+            (grad - fd).abs() / fd.abs() < 1e-6,
+            "smoke: tape grad {grad} vs FD {fd}"
         );
     }
 }
