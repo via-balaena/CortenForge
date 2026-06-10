@@ -203,6 +203,32 @@ apt validators (the solver's defining residual + the linear-elastic limit + fit
 identifiability) — Table II is incompressible, different physics from our compressible
 ν=0.40 model, so a direct equality would be wrong; it stays a documented reference.
 
+## 9.8 — S2 SHIPPED (2026-06-10, same branch, NOT pushed)
+
+`tests/uniaxial_fem_coupon.rs` — a **constant-strain patch test** separating solver error
+from model error. Imposes the analytical homogeneous uniaxial deformation `F=diag(λ,λ_t,λ_t)`
+(λ_t from `free_transverse_uniaxial`) as boundary Dirichlet on a `cantilever_bilayer_beam`
+box of `Tet4`; free interior nodes start **perturbed off** the affine field; one static
+`replay_step` (STATIC_DT=1e3 collapses inertia). Asserts, for λ∈{1.1,1.25,1.5}: (1) every
+free interior node is driven back onto the homogeneous affine field (max dev < 1e-6 m); (2)
+an interior element's recovered `F` ≡ `diag(λ,λ_t,λ_t)` (< 1e-6), its lateral traction ~0,
+and its axial Cauchy ≡ the analytical value. ⇒ the solver adds no error to a homogeneous
+uniaxial state, so the S1 measured gap is **model/param error, not solver error**. grade A;
+suite green.
+
+**KEY DECISIONS / LIMITATIONS (head-engineer, documented in-file):**
+- **Runs on `NeoHookean`** — `HandBuiltTetMesh` only implements `Mesh<NeoHookean>` (no Yeoh
+  box mesh; the Yeoh path needs `SdfMeshedTetMesh<Yeoh>` + a box SDF the crate lacks). The
+  solver's assembly/Dirichlet/Newton path is **generic over `M: Material`**, so this
+  validates the machinery the Yeoh material also flows through; Yeoh constitutive fidelity is
+  covered by S1 + the `material::uniaxial` unit tests + `yeoh_contract.rs`.
+- **Constant-strain patch test, not a free-lateral traction solve.** The recon's "free
+  lateral faces" form (independently *re-discovering* λ_t under traction) needs **per-axis
+  (roller) Dirichlet BCs** — the Phase-2 BC surface is full-3-DOF pins only. **→ M2 API
+  follow-up: add roller/per-axis Dirichlet (also needed by the keystone soft↔rigid coupling).**
+- Interior must start *near* affine (perturbed), not from rest: a rest start over-stretches
+  the boundary-adjacent elements past the fail-closed validity gate (σ<2).
+
 ## 9. M1 validation gate (definition of done)
 
 CI-runnable, network-free: `sim-soft` Dragon Skin 30 uniaxial true-stress–stretch matches
