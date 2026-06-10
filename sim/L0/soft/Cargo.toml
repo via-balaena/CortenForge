@@ -80,6 +80,9 @@ pollster = { workspace = true, optional = true }
 [dev-dependencies]
 # 5-digit gradcheck tolerance assertions (Phase-B tests).
 approx = { workspace = true }
+# Parse the vendored Marechal-2021 measured-tensile reference asset
+# (`tests/assets/marechal_2021/`) for the M1 uniaxial fidelity gate.
+serde_json = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # wasm_js backend opt-in for getrandom (transitively pulled via

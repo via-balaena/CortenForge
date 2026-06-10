@@ -97,6 +97,31 @@
 //! introduces volumetric locking error that calibration absorbs into
 //! the effective μ at post-cast time. Tet10 + F-bar at Phase H recovers
 //! the near-incompressible regime without the ν shift.
+//!
+//! # Measured calibration (M1 soft-fidelity arc)
+//!
+//! The one-point-datasheet conversion above is now **independently
+//! checked against measured data** for Ecoflex 00-30: Marechal et al.
+//! 2021's ASTM D412 uniaxial tension (Zenodo `10.5281/zenodo.3611329`)
+//! shows the Smooth-On TDS 100 %-modulus `σ₁₀₀` — the single point this
+//! table's `μ = σ₁₀₀/3` is derived from — is **~2.3× the measured value**.
+//! As a result the one-point params **over-predict the measured
+//! true-stress curve by ~85 % RMS** over λ ≤ 2, where a curve fit reaches
+//! **~6 %** (the fitted `μ` drops from 23 kPa to ~17 kPa — a ~1.4× shift in
+//! `μ`, distinct from the 2.3× `σ₁₀₀` ratio). The
+//! measured fit is published as the Path-3 [`ECOFLEX_00_30_MEASURED`]
+//! const (`ConstructionSource::Measured`) and graded by
+//! `tests/uniaxial_measured_accuracy.rs`. Prefer it over [`ECOFLEX_00_30`]
+//! when absolute uniaxial fidelity matters.
+//!
+//! The datasheet anchors are intentionally **left in place**: they form a
+//! coherent single-basis family for the `from_effective_shore` Shore
+//! interpolation, and only Ecoflex 00-10/00-30 carry measured data — a
+//! mixed measured/datasheet family would break interpolation,
+//! Shore-monotonicity, and provenance. Re-basing the whole default to
+//! measurement is gated on measured data for the full family (a
+//! data-acquisition task), not done here. See
+//! `docs/soft_fidelity/03_phases/m1_silicone_uniaxial/recon.md`.
 
 use super::{NeoHookean, Yeoh};
 
@@ -571,6 +596,35 @@ pub const ECOFLEX_00_30: SiliconeMaterial = SiliconeMaterial::from_anchor(
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::DoubleZero(30.0),
 );
+
+/// Ecoflex 00-30 — **measured** Path-3 calibration (M1 soft-fidelity arc).
+///
+/// `(μ, C₂)` are a compressible 2-term Yeoh fit (ν = 0.40, λ = 4μ) to
+/// Marechal et al. 2021's measured ASTM D412 uniaxial true-stress curve
+/// over the device window λ ≤ 2 (Zenodo `10.5281/zenodo.3611329`) — see
+/// `tests/uniaxial_measured_accuracy.rs`. This corrects the datasheet
+/// [`ECOFLEX_00_30`], whose one-point TDS `μ` (from a `σ₁₀₀` that is ~2.3×
+/// the measured value) over-predicts the measured uniaxial curve by ~85 %
+/// RMS over λ ≤ 2; this fit reaches ~6 % (`μ` 23 → ~17 kPa). Density,
+/// Shore, and validity bounds (a separate elongation-at-break property)
+/// are unchanged.
+///
+/// Tagged [`ConstructionSource::Measured`] and **deliberately NOT part of
+/// the `from_effective_shore` Shore-interpolation family** — see the
+/// module-level "Measured calibration" note for why the datasheet family
+/// stays a single coherent basis.
+pub const ECOFLEX_00_30_MEASURED: SiliconeMaterial = SiliconeMaterial {
+    mu: 16_679.0,
+    lambda: 66_716.0,
+    c2: 239.0,
+    density: 1070.0,
+    validity_max_principal_stretch: 8.00,
+    validity_min_principal_stretch: YEOH_MIN_PRINCIPAL_STRETCH,
+    shore: ShoreReading::DoubleZero(30.0),
+    source: ConstructionSource::Measured {
+        user_description: "Marechal et al. 2021 ASTM D412 uniaxial Yeoh fit over λ≤2; Zenodo 10.5281/zenodo.3611329",
+    },
+};
 
 /// Ecoflex 00-50 — Shore 00-50; firmest in the Ecoflex line. `λ_break`
 /// = 10.80 (980 % elongation per TDS — `λ = 1 + ε`).

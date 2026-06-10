@@ -11697,6 +11697,7 @@ dependencies = [
  "mesh-types",
  "nalgebra 0.34.2",
  "pollster",
+ "serde_json",
  "sim-ml-chassis",
  "wgpu 27.0.1",
 ]

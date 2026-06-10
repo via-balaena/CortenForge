@@ -13,6 +13,7 @@ use nalgebra::{Matrix3, SMatrix};
 pub mod material_field;
 pub mod neo_hookean;
 pub mod silicone_table;
+pub mod uniaxial;
 pub mod yeoh;
 
 pub use material_field::{BuildableFromField, MaterialField, MaterialFieldKind};
@@ -21,6 +22,7 @@ pub use silicone_table::{
     ConstructionSource, MeasuredMaterialError, ShoreInterpolationError, ShoreReading,
     SiliconeMaterial,
 };
+pub use uniaxial::{UniaxialResponse, fit_yeoh_uniaxial, free_transverse_uniaxial};
 pub use yeoh::Yeoh;
 
 /// Constitutive-model surface: energy density and its first two
