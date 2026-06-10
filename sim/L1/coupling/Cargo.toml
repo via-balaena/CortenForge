@@ -1,0 +1,28 @@
+[package]
+name = "sim-coupling"
+description = "Layer-2 keystone: staggered forward soft↔rigid coupling between sim-soft (FEM) and sim-core (rigid). Exchanges rigid pose (→ soft contact) and the soft contact reaction (→ rigid xfrc) once per lockstep step. See docs/keystone/."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.cortenforge]
+tier = "L1"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Soft FEM substrate (validated, Layer-1): the deformable body + penalty contact.
+sim-soft = { path = "../../L0/soft" }
+# Rigid-body engine: the body whose pose drives the contact + receives the reaction.
+sim-core = { path = "../../L0/core" }
+# Loads a minimal MJCF into a sim-core Model (the rigid side's constructor).
+sim-mjcf = { path = "../../L0/mjcf" }
+# Vec/quat math at the coupling seam.
+nalgebra = { workspace = true }
+# Tensor<f64> for the soft solver's step interface.
+sim-ml-chassis = { workspace = true }

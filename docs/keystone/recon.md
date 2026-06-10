@@ -149,6 +149,27 @@ material/contact damping); the solver+mesh were rebuilt each step (perf — S1 s
 contact in place); light overshoot before settling. The forward coupling is sound; differentiability
 (S2) remains the open research leaf.
 
+## Progress · S1 — SHIPPED (2026-06-10, branch `feat/keystone-soft-rigid-coupling`, NOT pushed)
+
+The forward coupling productionized as the **`sim-coupling`** crate (`sim/L1/coupling`, tier L1,
+deps on both L0 engines + sim-mjcf) — the first crate to link `sim-soft` + `sim-core`:
+- `StaggeredCoupling` owns the rigid `Model`/`Data` + a pinned Neo-Hookean soft block + the contact
+  params; `step()` runs the staggered exchange (read `data.xpos[body].z` → pose a downward
+  `RigidPlane` → dynamic soft Newton step → Σ`force_on_soft` → `−force_on_soft`→`xfrc_applied` →
+  `data.step`), returning `CoupledStep { force_on_soft, rigid_z }`. Dynamic soft per the S0 lesson.
+- **Committed forward gate** `tests/forward_coupling_gate.rs` (non-`#[ignore]`): a rigid platen
+  falls onto the soft block and **settles to contact_F 1.9613 N vs weight 1.9620 N (0.04 %) — stable**
+  — asserting stability + force balance. + a lib unit test for coverage.
+- grade **A** (Coverage A+, Documentation A, Clippy A, Safety A, Deps A; Layer L1, WASM n/a); both
+  tests green; workspace builds with the new member.
+
+**Deferred (named, in the crate doc):** re-pose the contact in place (avoid the per-step solver
+rebuild); a `Result`-returning `step` + non-panic LM policy (robustness); general posed primitives
+(`PosedSdf`) + general soft bodies; the Hertz-analytical equilibrium gate. **Next = S2:
+differentiability** — adapt `sim-core`'s dense `TransitionMatrices` into the soft autograd tape as a
+`VjpOp` so one `tape.backward` crosses both engines (FD-gradient-checked) — the open research leaf
+(R2), capped by penalty non-smoothness (R3) until IPC.
+
 ## 7. Risks
 
 - **R1 (#1) — staggered two-way coupling may be unstable** (added-mass / stiff-contact instability

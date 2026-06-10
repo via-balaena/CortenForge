@@ -472,6 +472,8 @@ members = [
     "sim/L1/bevy",
     "sim/L1/ml-chassis-bevy",
     "sim/L1/sim-bevy-soft",
+    # Layer-2 keystone: staggered forward soft↔rigid coupling (sim-soft ↔ sim-core).
+    "sim/L1/coupling",
 ]
 
 # Exclude directories that aren't workspace members
