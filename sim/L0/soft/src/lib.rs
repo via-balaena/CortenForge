@@ -57,7 +57,9 @@ pub use contact::{
     ActivePairsFor, ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout,
     NullContact, PenaltyRigidContact, RigidPlane, filter_pair_readouts_to_referenced,
 };
-pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
+pub use differentiable::{
+    CpuDifferentiable, Differentiable, MaterialStepVjp, NewtonStepVjp, TapeNodeKey,
+};
 pub use element::{Element, Tet4};
 pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};
 pub use material::{

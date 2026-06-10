@@ -268,3 +268,103 @@ impl VjpOp for NewtonStepVjp {
         }
     }
 }
+
+// ── MaterialStepVjp ───────────────────────────────────────────────────────
+
+/// Custom VJP differentiating `x*` w.r.t. a scalar **material parameter** `p_k`
+/// (keystone S5) — the material-parameter sibling of [`NewtonStepVjp`].
+///
+/// Where [`NewtonStepVjp`] differentiates the converged step w.r.t. the load θ,
+/// this differentiates it w.r.t. a material parameter. The material parameters
+/// enter the residual only through the elastic internal force, so
+/// `∂r/∂p_k = ∂f_int/∂p_k` (assembled from the stress derivative `∂P/∂p_k`); the
+/// IFT adjoint is then the SAME two-step factor-reuse as the load VJP — solve
+/// `A · λ = g_free` with the tangent factored at `x_final`, then contract
+/// `∂L/∂p_k = −λ^T · (∂r/∂p_k)_free`. The only difference from [`NewtonStepVjp`]
+/// is the RHS factor: a *computed* `(∂r/∂p_k)_free` vector rather than the load
+/// case's `−1` on the loaded DOFs.
+///
+/// Constructed by `CpuNewtonSolver::material_step_vjp`; the single output is the
+/// scalar `∂L/∂p_k` accumulated into the material-parameter parent.
+pub struct MaterialStepVjp {
+    factor: FactoredFreeTangent,
+    /// Total DOF count, asserted on the cotangent shape.
+    n_dof: usize,
+    /// Free-DOF full indices (ascending), to gather `g_free` from the cotangent.
+    free_dof_indices: Vec<usize>,
+    /// `(∂r/∂p_k)_free` — the material-residual sensitivity gathered onto the
+    /// free DOFs, in `free_dof_indices` order. The contraction RHS.
+    dr_dp_free: Vec<f64>,
+}
+
+impl MaterialStepVjp {
+    /// Construct a material-parameter VJP for one converged Newton step.
+    /// Crate-private: built only by [`CpuNewtonSolver::material_step_vjp`].
+    #[must_use]
+    pub(crate) fn new(
+        factor: FactoredFreeTangent,
+        n_dof: usize,
+        free_dof_indices: Vec<usize>,
+        dr_dp_free: Vec<f64>,
+    ) -> Self {
+        debug_assert_eq!(free_dof_indices.len(), dr_dp_free.len());
+        Self {
+            factor,
+            n_dof,
+            free_dof_indices,
+            dr_dp_free,
+        }
+    }
+}
+
+// Hand-rolled Debug: `factor` (faer factors) doesn't derive Debug, and the
+// `free_dof_indices` / `dr_dp_free` vectors are summarized by their shared
+// length (`n_free`) rather than dumped. `finish_non_exhaustive` records that
+// fields are intentionally elided.
+impl fmt::Debug for MaterialStepVjp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MaterialStepVjp")
+            .field("op_id", &"sim_soft::MaterialStepVjp")
+            .field("factor", &"<FactoredFreeTangent>")
+            .field("n_dof", &self.n_dof)
+            .field("n_free", &self.free_dof_indices.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl VjpOp for MaterialStepVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_soft::MaterialStepVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong output/parent shape pushed).
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [self.n_dof],
+            "MaterialStepVjp: cotangent must have shape [{}], got {:?}",
+            self.n_dof,
+            cotangent.shape(),
+        );
+        assert!(
+            parent_cotans.len() == 1 && parent_cotans[0].shape() == [1],
+            "MaterialStepVjp: expected 1 scalar parent (the material param [1]); \
+             got {} parents, shape {:?}",
+            parent_cotans.len(),
+            parent_cotans.first().map(Tensor::shape),
+        );
+
+        // g_free, then solve A · λ = g_free with the factor at x_final.
+        let cot = cotangent.as_slice();
+        let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
+        let n_free = rhs.len();
+        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
+        self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        // rhs now holds λ (free-DOF indexing). grad_p = −λ^T · (∂r/∂p)_free.
+        let mut grad = 0.0_f64;
+        for (lam, drdp) in rhs.iter().zip(&self.dr_dp_free) {
+            grad -= lam * drdp;
+        }
+        parent_cotans[0].as_mut_slice()[0] += grad;
+    }
+}

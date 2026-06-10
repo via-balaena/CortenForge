@@ -104,6 +104,14 @@ impl Material for NeoHookean {
             inversion: InversionHandling::RequireOrientation,
         }
     }
+
+    /// `[∂P/∂μ, ∂P/∂λ]` in `(μ, λ)` order. From `P = μ(F − F⁻ᵀ) + λ ln(J) F⁻ᵀ`:
+    /// `∂P/∂μ = F − F⁻ᵀ`, `∂P/∂λ = ln(J) · F⁻ᵀ` (both independent of `μ, λ`).
+    fn first_piola_param_grad(&self, f: &Matrix3<f64>) -> Vec<Matrix3<f64>> {
+        let f_inv_t = invert_transpose(f);
+        let ln_j = f.determinant().ln();
+        vec![f - f_inv_t, ln_j * f_inv_t]
+    }
 }
 
 // NH declares `InversionHandling::RequireOrientation`; non-invertible F

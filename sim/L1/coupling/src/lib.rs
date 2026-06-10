@@ -40,7 +40,7 @@
 
 use sim_core::{Data, Model, SpatialVector};
 use sim_ml_chassis::autograd::VjpOp;
-use sim_ml_chassis::{Tape, Tensor};
+use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
     BoundaryConditions, ContactPair, CpuNewtonSolver, HandBuiltTetMesh, LoadAxis, MaterialField,
     Mesh, PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, Solver, SolverConfig, Tet4,
@@ -174,6 +174,11 @@ pub struct StaggeredCoupling {
 
     // soft block (rebuilt per step; topology + pinned set are fixed)
     field: MaterialField,
+    /// Neo-Hookean Lamé parameters of the (uniform) block — stored alongside
+    /// `field` so the material-gradient FD oracle can rebuild the block with one
+    /// parameter perturbed (keystone S5).
+    mu: f64,
+    lambda: f64,
     n_per_edge: usize,
     edge: f64,
     pinned: Vec<VertexId>,
@@ -217,7 +222,8 @@ impl StaggeredCoupling {
         d_hat: f64,
         rigid_damping: f64,
     ) -> Self {
-        let field = MaterialField::uniform(mu, 4.0 * mu);
+        let lambda = 4.0 * mu;
+        let field = MaterialField::uniform(mu, lambda);
         let mesh = HandBuiltTetMesh::uniform_block(n_per_edge, edge, &field);
         let n_vertices = mesh.n_vertices();
         let pinned: Vec<VertexId> =
@@ -237,6 +243,8 @@ impl StaggeredCoupling {
             body,
             contact_clearance,
             field,
+            mu,
+            lambda,
             n_per_edge,
             edge,
             pinned,
@@ -582,10 +590,27 @@ impl StaggeredCoupling {
         let xstar_var = step
             .x_final_var
             .expect("Solver::step must push x_final_var onto the tape");
+        let vz = self.run_crossing_tail(&mut tape, xstar_var, height, &step.x_final);
+        let grad = tape.grad_tensor(theta_var).as_slice()[0];
+        (vz, grad)
+    }
 
+    /// The S4 crossing tail on the shared tape: from the soft `x*` node
+    /// (`xstar_var`, value shape `[3·n_vertices]`, evaluated at `x_final`),
+    /// append `x* →[ContactForceVjp] fz →[neg] xfrc →[RigidStepVjp] vz'`, run
+    /// `tape.backward(vz')`, and return `vz'`. The caller reads `grad` on
+    /// whatever leaf feeds `xstar_var` (the load `θ` or a material parameter).
+    /// Shared by [`Self::coupled_step_load_gradient`] and
+    /// [`Self::coupled_step_material_gradient`].
+    fn run_crossing_tail(
+        &self,
+        tape: &mut Tape,
+        xstar_var: Var,
+        height: f64,
+        x_final: &[f64],
+    ) -> f64 {
         // Contact force on the soft body at x*, with the active set + normals.
-        let positions: Vec<Vec3> = step
-            .x_final
+        let positions: Vec<Vec3> = x_final
             .chunks_exact(3)
             .map(|c| Vec3::new(c[0], c[1], c[2]))
             .collect();
@@ -605,7 +630,6 @@ impl StaggeredCoupling {
             Tensor::from_slice(&[fz], &[1]),
             Box::new(ContactForceVjp::new(active, self.kappa)),
         );
-
         // Reaction onto the rigid body, then the rigid step's velocity response.
         let xfrc_var = tape.neg(force_var); // xfrc_z = −force_on_soft.z
         let xfrc_z = tape.value_tensor(xfrc_var).as_slice()[0];
@@ -615,10 +639,103 @@ impl StaggeredCoupling {
             Tensor::from_slice(&[vz], &[1]),
             Box::new(RigidStepVjp::new(dvz_dfz)),
         );
-
         tape.backward(vz_var);
-        let grad = tape.grad_tensor(theta_var).as_slice()[0];
+        vz
+    }
+
+    /// **The co-design gradient via the keystone crossing.** One chassis
+    /// `Tape::backward` across both engines: the gradient of the platen's next
+    /// vertical velocity `vz'` w.r.t. the soft block's Neo-Hookean material
+    /// parameter (`param_idx`: `0 = μ`, `1 = λ`), holding the other fixed.
+    /// Returns `(vz', ∂vz'/∂p)`. Does NOT advance `self`.
+    ///
+    /// Routes the material parameter through the SAME S4 chain the load gradient
+    /// uses — only the soft node differs (the reverse-mode `MaterialStepVjp`
+    /// from `sim-soft` in place of the load adjoint):
+    /// ```text
+    /// p ─[MaterialStepVjp]→ x* ─[ContactForceVjp]→ fz ─[neg]→ xfrc ─[RigidStepVjp]→ vz'
+    /// ```
+    /// `tape.backward(vz')` flows `vz' → xfrc → force → x* → p`. A stiffer soft
+    /// body deforms less under the platen, changing the contact force — hence
+    /// the platen's motion: this is the gradient the co-design optimizer
+    /// consumes. (The keystone block ties `λ = 4μ`; a total `d/dμ` along that
+    /// line is `∂/∂μ + 4·∂/∂λ` — a linear combination of the two `param_idx`
+    /// results.) FD-validated against [`Self::coupled_step_material_vz`].
+    /// Engaged / stable-active-set / hard-penalty scope.
+    ///
+    /// # Panics
+    /// Panics if `param_idx` is not a valid Neo-Hookean parameter index
+    /// (`0 = μ`, `1 = λ`).
+    #[must_use]
+    pub fn coupled_step_material_gradient(&self, height: f64, param_idx: usize) -> (f64, f64) {
+        assert!(
+            param_idx <= 1,
+            "material param index {param_idx} out of range (0 = μ, 1 = λ)"
+        );
+        let n = self.n_vertices;
+        let (solver, x_final) = self.soft_resolve(height);
+
+        // p (leaf) → x* via the soft material VJP, then the shared crossing tail.
+        let mut tape = Tape::new();
+        let p0 = if param_idx == 0 { self.mu } else { self.lambda };
+        let p_var = tape.param_tensor(Tensor::from_slice(&[p0], &[1]));
+        let xstar_var = tape.push_custom(
+            &[p_var],
+            Tensor::from_slice(&x_final, &[3 * n]),
+            Box::new(solver.material_step_vjp(&x_final, self.cfg.dt, param_idx)),
+        );
+        let vz = self.run_crossing_tail(&mut tape, xstar_var, height, &x_final);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
         (vz, grad)
+    }
+
+    /// Forward-only companion to [`Self::coupled_step_material_gradient`]: the
+    /// platen's next `vz'` with the soft block's material parameter `param_idx`
+    /// set to `value` (the other held at `self`'s value), via a tape-free
+    /// re-solve (soft step → contact force → rigid step). The black-box oracle
+    /// for finite-differencing `∂vz'/∂p`. Does NOT advance `self`.
+    ///
+    /// # Panics
+    /// Panics if `param_idx` is not a valid Neo-Hookean parameter index
+    /// (`0 = μ`, `1 = λ`).
+    #[must_use]
+    pub fn coupled_step_material_vz(&self, height: f64, param_idx: usize, value: f64) -> f64 {
+        assert!(
+            param_idx <= 1,
+            "material param index {param_idx} out of range (0 = μ, 1 = λ)"
+        );
+        let n = self.n_vertices;
+        let (mu, lambda) = if param_idx == 0 {
+            (value, self.lambda)
+        } else {
+            (self.mu, value)
+        };
+        let field = MaterialField::uniform(mu, lambda);
+        let mesh = HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &field);
+        let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> =
+            CpuNewtonSolver::new(Tet4, mesh, self.build_contact(height), self.cfg, bc);
+        let st = solver.replay_step(
+            &Tensor::from_slice(&self.x, &[3 * n]),
+            &Tensor::from_slice(&self.v, &[3 * n]),
+            &Tensor::zeros(&[0]),
+            self.cfg.dt,
+        );
+        let positions: Vec<Vec3> = st
+            .x_final
+            .chunks_exact(3)
+            .map(|c| Vec3::new(c[0], c[1], c[2]))
+            .collect();
+        let fz: f64 = self
+            .build_contact(height)
+            .per_pair_readout(
+                &HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &field),
+                &positions,
+            )
+            .iter()
+            .map(|r| r.force_on_soft.z)
+            .sum();
+        self.rigid_step_probe(-fz).1
     }
 
     /// Forward-only companion to [`Self::coupled_step_load_gradient`]: the
@@ -842,6 +959,26 @@ mod tests {
         assert!(
             (grad - fd).abs() / fd.abs() < 1e-6,
             "smoke: tape grad {grad} vs FD {fd}"
+        );
+    }
+
+    /// Lib-level smoke test of the S5 co-design crossing `∂vz'/∂μ` (the
+    /// scientific FD validation is in `tests/coupled_material_gradient.rs`):
+    /// the material parameter rides the same crossing via `MaterialStepVjp`.
+    #[test]
+    fn material_crossing_smoke() {
+        let c = coupling();
+        let h = 0.099;
+        let (vz, grad_mu) = c.coupled_step_material_gradient(h, 0);
+        assert!(vz.is_finite() && grad_mu.is_finite());
+        assert!(grad_mu.abs() > 1e-9, "expected a nonzero ∂vz'/∂μ");
+        let eps = 3.0e4 * 1e-6;
+        let fd = (c.coupled_step_material_vz(h, 0, 3.0e4 + eps)
+            - c.coupled_step_material_vz(h, 0, 3.0e4 - eps))
+            / (2.0 * eps);
+        assert!(
+            (grad_mu - fd).abs() / fd.abs() < 1e-5,
+            "smoke: material tape grad {grad_mu} vs FD {fd}"
         );
     }
 }

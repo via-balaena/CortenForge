@@ -45,7 +45,7 @@ use super::lm::{LmConfig, LmState};
 use super::{CpuTape, NewtonStep, Solver, SolverFailure};
 use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
-use crate::differentiable::newton_vjp::NewtonStepVjp;
+use crate::differentiable::newton_vjp::{MaterialStepVjp, NewtonStepVjp};
 use crate::element::Element;
 use crate::material::{InversionHandling, Material};
 use crate::mesh::{Mesh, TetId, VertexId};
@@ -2052,6 +2052,130 @@ where
             sensitivity[full_idx] = rhs[k];
         }
         sensitivity
+    }
+
+    /// Forward sensitivity `∂x*/∂p_k` of the converged step's soft equilibrium
+    /// to the `k`-th material parameter (`param_idx`; for [`crate::NeoHookean`]:
+    /// `0 = μ`, `1 = λ`), holding `(x_prev, v_prev, θ, dt)` fixed — the keystone
+    /// S5 material-parameter sensitivity.
+    ///
+    /// The material parameters enter the residual only through the elastic
+    /// internal force, so `∂r/∂p_k = ∂f_int/∂p_k` assembles exactly like
+    /// `f_int` (`assemble_global_int_force`) but with the per-element stress
+    /// derivative `∂P/∂p_k` from [`Material::first_piola_param_grad`] in
+    /// place of `P`. Then the IFT gives `∂x*/∂p_k = −A⁻¹·(∂r/∂p_k)`, solved with
+    /// the SAME tangent `A` factored at `x_final` (`factor_at_position`) that the
+    /// forward Newton step, the load adjoint, and the pose sensitivity reuse.
+    /// The result is length `n_dof` (zeros on pinned / roller DOFs).
+    ///
+    /// The material path is **contact-independent** (penalty contact does not
+    /// depend on the material parameters) — contact enters only through the
+    /// tangent `A`, so this is valid with or without contact. A per-tet material
+    /// that exposes no differentiable parameters (the default
+    /// `first_piola_param_grad`) contributes zero; the result is all-zeros if no
+    /// tet exposes parameters.
+    ///
+    /// # Panics
+    /// Panics if `param_idx` is out of range for a tet whose material *does*
+    /// expose parameters (a usage error — the index must match the material's
+    /// parameter convention).
+    //
+    // Lint allows mirror `assemble_global_int_force` (the loop this method
+    // re-runs with ∂P/∂p_k for P): `as TetId` is the Mesh-trait API tax,
+    // `for a in 0..4` iterates Tet4's 4 nodes by index (used for both verts[a]
+    // and grad_x_n[(a, j)]).
+    #[must_use]
+    pub fn equilibrium_material_sensitivity(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        param_idx: usize,
+    ) -> Vec<f64> {
+        debug_assert!(x_final.len() == self.n_dof);
+        let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
+        // Solve A·w_free = −(∂r/∂p_k)_free reusing the tangent at x_final.
+        let factor = self.factor_at_position(x_final, dt, 0.0);
+        let mut rhs: Vec<f64> = self
+            .free_dof_indices
+            .iter()
+            .map(|&idx| -dr_dp[idx])
+            .collect();
+        let rhs_mat: MatMut<'_, f64> =
+            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
+        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        let mut sensitivity = vec![0.0_f64; self.n_dof];
+        for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
+            sensitivity[full_idx] = rhs[k];
+        }
+        sensitivity
+    }
+
+    /// `(∂r/∂p_k)_full = ∂f_int/∂p_k` — the `f_int` assembly
+    /// (`assemble_global_int_force`) re-run with the per-element stress
+    /// derivative `∂P/∂p_k` (entry `param_idx` of
+    /// [`Material::first_piola_param_grad`]) in place of `P`. Shared by
+    /// [`Self::equilibrium_material_sensitivity`] (forward) and
+    /// [`Self::material_step_vjp`] (reverse).
+    //
+    // Lint allows mirror `assemble_global_int_force` (see that method).
+    #[allow(clippy::cast_possible_truncation, clippy::needless_range_loop)]
+    fn assemble_material_residual_grad(&self, x_final: &[f64], param_idx: usize) -> Vec<f64> {
+        let materials = self.mesh.materials();
+        let mut dr_dp = vec![0.0_f64; self.n_dof];
+        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+            let verts = self.mesh.tet_vertices(tet_id as TetId);
+            let x_elem = extract_element_dof_values(x_final, &verts);
+            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+            let dp = materials[tet_id].first_piola_param_grad(&f);
+            if dp.is_empty() {
+                continue; // material exposes no differentiable params → zero
+            }
+            assert!(
+                param_idx < dp.len(),
+                "material param index {param_idx} out of range for tet {tet_id}'s material \
+                 ({} differentiable parameter(s) per first_piola_param_grad)",
+                dp.len(),
+            );
+            let dp_dpk = dp[param_idx];
+            for a in 0..4 {
+                let v = verts[a] as usize;
+                for i in 0..3 {
+                    let mut sum = 0.0;
+                    for j in 0..3 {
+                        sum += dp_dpk[(i, j)] * geom.grad_x_n[(a, j)];
+                    }
+                    dr_dp[3 * v + i] += geom.volume * sum;
+                }
+            }
+        }
+        dr_dp
+    }
+
+    /// Build a [`MaterialStepVjp`] for one converged step — the reverse-mode
+    /// (tape) sibling of [`Self::equilibrium_material_sensitivity`]: pushed onto
+    /// a chassis tape with the material parameter as parent, it turns a
+    /// downstream `∂L/∂x*` cotangent into `∂L/∂p_k` (keystone S5). The op stashes
+    /// the tangent factored at `x_final` plus `(∂r/∂p_k)_free`, and its VJP
+    /// solves `A·λ = g_free` then contracts `−λ^T·(∂r/∂p_k)_free` — the same
+    /// adjoint as [`NewtonStepVjp`], with the material RHS factor.
+    ///
+    /// `x_final` is the converged position; `dt` is the step's time-step (the
+    /// tangent's `M/Δt²` term must match); `param_idx` selects the material
+    /// parameter (`NeoHookean`: `0 = μ`, `1 = λ`). The pushed node's value should
+    /// be the `x_final` tensor (shape `[n_dof]`) and its single parent the
+    /// material-parameter `Var` (shape `[1]`).
+    #[must_use]
+    pub fn material_step_vjp(&self, x_final: &[f64], dt: f64, param_idx: usize) -> MaterialStepVjp {
+        debug_assert!(x_final.len() == self.n_dof);
+        let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
+        let dr_dp_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
+        let factor = self.factor_at_position(x_final, dt, 0.0);
+        MaterialStepVjp::new(
+            factor,
+            self.n_dof,
+            self.free_dof_indices.clone(),
+            dr_dp_free,
+        )
     }
 }
 
