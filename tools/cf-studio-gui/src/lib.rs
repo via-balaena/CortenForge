@@ -20,7 +20,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use cf_studio_core::{DesignDraft, MoldOutputs, PourPlan, PourStep, Project, Step};
-use cf_studio_engine::{accept_prep, draft_from_design_toml, load_scan};
+use cf_studio_engine::{
+    PartId, PartSelection, PieceSide, accept_prep, draft_from_design_toml, load_scan,
+};
 
 pub mod viewer;
 
@@ -129,6 +131,58 @@ pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
     match quality_idx {
         1 => 0.0015,
         _ => 0.0005,
+    }
+}
+
+/// Enumerate the generatable parts for a design with `layer_count` layers,
+/// in display order, as `(id, label)`. Mirrors what the wizard's for_design
+/// recipe emits: per layer two cup halves + one plug, then the shared
+/// workshop platform + dowels (the apex pour funnel is integral, and the
+/// gasket is off, so neither is offered). The step-4 part picker renders the
+/// labels; the ids build the [`PartSelection`].
+#[must_use]
+pub fn enumerate_parts(layer_count: usize) -> Vec<(PartId, String)> {
+    let mut parts = Vec::with_capacity(layer_count * 3 + 2);
+    for i in 0..layer_count {
+        let n = i + 1;
+        parts.push((
+            PartId::Cup {
+                layer_index: i,
+                side: PieceSide::Negative,
+            },
+            format!("Layer {n} — cup (left)"),
+        ));
+        parts.push((
+            PartId::Cup {
+                layer_index: i,
+                side: PieceSide::Positive,
+            },
+            format!("Layer {n} — cup (right)"),
+        ));
+        parts.push((PartId::Plug { layer_index: i }, format!("Layer {n} — plug")));
+    }
+    parts.push((PartId::Platform, "Platform".to_string()));
+    parts.push((PartId::Dowel, "Dowels".to_string()));
+    parts
+}
+
+/// Build a [`PartSelection`] from the enumerated `parts` and a parallel
+/// `checked` mask. When everything is checked it returns
+/// [`PartSelection::all`] — the validated full-cast path — so the common
+/// case never routes through the partial export; otherwise it selects
+/// exactly the checked parts.
+#[must_use]
+pub fn part_selection_from_checks(parts: &[(PartId, String)], checked: &[bool]) -> PartSelection {
+    if checked.len() == parts.len() && checked.iter().all(|&c| c) {
+        PartSelection::all()
+    } else {
+        PartSelection::from_ids(
+            parts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| checked.get(*i).copied().unwrap_or(false))
+                .map(|(_, (id, _))| *id),
+        )
     }
 }
 
@@ -599,6 +653,43 @@ visible = true
         // Out-of-range indices fall back to the safe print-quality default.
         assert_eq!(cell_size_m_for_quality(99), 0.0005);
         assert_eq!(cell_size_m_for_quality(-1), 0.0005);
+    }
+
+    #[test]
+    fn enumerate_parts_lists_cups_plugs_then_accessories() {
+        let parts = enumerate_parts(2);
+        // 2 layers × (2 cups + 1 plug) + platform + dowels = 8.
+        assert_eq!(parts.len(), 2 * 3 + 2);
+        assert_eq!(parts[0].1, "Layer 1 — cup (left)");
+        assert_eq!(parts[2].1, "Layer 1 — plug");
+        assert_eq!(parts[5].1, "Layer 2 — plug");
+        assert_eq!(parts[6].0, PartId::Platform);
+        assert_eq!(parts[7].0, PartId::Dowel);
+    }
+
+    #[test]
+    fn all_checked_yields_the_full_selection() {
+        let parts = enumerate_parts(2);
+        let checked = vec![true; parts.len()];
+        let sel = part_selection_from_checks(&parts, &checked);
+        assert!(sel.is_all(), "all checked → the validated full-cast path");
+    }
+
+    #[test]
+    fn subset_selects_only_checked_parts() {
+        let parts = enumerate_parts(2);
+        // Check only "Layer 1 — plug" (index 2).
+        let mut checked = vec![false; parts.len()];
+        checked[2] = true;
+        let sel = part_selection_from_checks(&parts, &checked);
+        assert!(!sel.is_all());
+        assert!(sel.includes(PartId::Plug { layer_index: 0 }));
+        assert!(!sel.includes(PartId::Plug { layer_index: 1 }));
+        assert!(!sel.includes(PartId::Platform));
+        assert!(!sel.includes(PartId::Cup {
+            layer_index: 0,
+            side: PieceSide::Negative
+        }));
     }
 
     #[test]

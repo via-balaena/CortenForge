@@ -23,19 +23,19 @@ use cf_studio_core::{
     DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, RidgeOptions, RidgeRing, Step,
 };
 use cf_studio_engine::{
-    EditSession, PrintExportReport, ReconstructShape, export_print_package,
+    EditSession, PartId, PartSelection, PrintExportReport, ReconstructShape, export_print_package,
     generate_molds_for_design, run_simplify, silicone_catalog,
 };
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
     StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, cell_size_m_for_quality,
-    format_molds_summary, format_pour_active, format_pour_plan, nav_state, pour_countdown,
-    print_step_summary, step_rows,
+    enumerate_parts, format_molds_summary, format_pour_active, format_pour_plan, nav_state,
+    part_selection_from_checks, pour_countdown, print_step_summary, step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use ui::{AppWindow, LayerRow, RingRow, StepRow};
+use ui::{AppWindow, LayerRow, PartRow, RingRow, StepRow};
 
 /// Offscreen render-target edge (px). The view is square; Slint scales it
 /// into the viewport with `image-fit: contain`.
@@ -798,9 +798,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
+    // The step-4 part picker's models, declared here so the design handlers
+    // below can rebuild them when the committed layer count changes. The
+    // rows model (labels + checked) is parallel to the Rust-owned `Vec<PartId>`.
+    let part_ids: Rc<RefCell<Vec<PartId>>> = Rc::new(RefCell::new(Vec::new()));
+    let parts_model: Rc<VecModel<PartRow>> = Rc::new(VecModel::default());
+    ui.set_parts(ModelRc::from(parts_model.clone()));
+    rebuild_parts_model(&parts_model, &part_ids, layers_model.row_count());
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
         let (layers_model, catalog) = (layers_model.clone(), catalog.clone());
+        let (parts_model, part_ids) = (parts_model.clone(), part_ids.clone());
         ui.on_use_design(move |cavity_mm| {
             let layers: Vec<LayerDraft> = (0..layers_model.row_count())
                 .filter_map(|i| layers_model.row_data(i))
@@ -822,6 +830,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 layers,
             };
             let outcome = apply_design_draft(&mut project.borrow_mut(), draft);
+            // The committed design fixes the layer count → rebuild the part
+            // picker (all parts checked) to match.
+            if let Some(design) = project.borrow().design() {
+                rebuild_parts_model(&parts_model, &part_ids, design.layers.len());
+            }
             update(&weak, &project, viewed.get(), &outcome);
         });
     }
@@ -888,6 +901,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 rings_model.set_row_data(i, row);
             }
         });
+    }
+
+    // ── step 4: the "parts to generate" picker callbacks ────────
+    // (the models are declared above the design handlers so they can rebuild
+    // them; make-molds reads the checked mask + the ids to build the selection.)
+    {
+        let parts_model = parts_model.clone();
+        ui.on_set_part_checked(move |idx, checked| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = parts_model.row_data(i) {
+                row.checked = checked;
+                parts_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let parts_model = parts_model.clone();
+        ui.on_select_all_parts(move || set_all_parts(&parts_model, true));
+    }
+    {
+        let parts_model = parts_model.clone();
+        ui.on_select_no_parts(move || set_all_parts(&parts_model, false));
     }
 
     // ── navigation (gated by the wizard state) ──────────────────
@@ -1241,6 +1276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let (parts_model, part_ids) = (parts_model.clone(), part_ids.clone());
         ui.on_pick_design(move || {
             let Some(path) = rfd::FileDialog::new()
                 .set_title("Choose the design file")
@@ -1250,6 +1286,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let outcome = apply_design(&mut project.borrow_mut(), &path);
+            // A loaded design fixes the layer count → rebuild the part picker.
+            if let Some(design) = project.borrow().design() {
+                rebuild_parts_model(&parts_model, &part_ids, design.layers.len());
+            }
             update(&weak, &project, viewed.get(), &outcome);
         });
     }
@@ -1259,11 +1299,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (project, weak) = (project.clone(), weak.clone());
         let (inbox, start) = (molds_inbox.clone(), molds_start.clone());
         let rings_model = rings_model.clone();
+        let (parts_model, part_ids) = (parts_model.clone(), part_ids.clone());
         ui.on_make_molds(move |quality_idx| {
             // Re-entrancy guard: a run already in flight (the UI disables the
             // button via `busy`, but a queued click could still arrive). Don't
             // spawn a second 15-min cast into the same output dir.
             if start.get().is_some() {
+                return;
+            }
+            // Need at least one part selected (an empty selection would mesh
+            // nothing).
+            if !any_part_checked(&parts_model) {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_step_message("Pick at least one part to generate.".into());
+                    ui.set_step_message_is_error(true);
+                }
                 return;
             }
             // Pull the inputs from the project: the cleaned scan + prep
@@ -1296,6 +1346,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .upgrade()
                 .map(|ui| ridge_options_from_ui(&ui, &rings_model))
                 .unwrap_or_default();
+            // Snapshot the part picker into a PartSelection (all checked →
+            // the full-cast path; a subset skips the rest).
+            let selection = part_selection_from_ui(&parts_model, &part_ids);
 
             if let Some(ui) = weak.upgrade() {
                 ui.set_busy(true);
@@ -1315,6 +1368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &draft,
                         cell_size_m,
                         &ridges,
+                        &selection,
                         None,
                     )
                 }));
@@ -1461,6 +1515,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Push the step-6 pour-assistant state (plan overview, active-layer line,
 /// finished flag) for `current` (0-based) into the UI. The live countdown
 /// text is driven separately by the pour timer.
+/// Rebuild the step-4 part picker for a `layer_count`-layer design: refill
+/// the Rust-owned `ids` with the enumerated [`PartId`]s and the UI `rows`
+/// with their labels (all checked = full cast). Called whenever the
+/// committed design changes.
+fn rebuild_parts_model(rows: &VecModel<PartRow>, ids: &RefCell<Vec<PartId>>, layer_count: usize) {
+    let parts = enumerate_parts(layer_count);
+    let new_rows: Vec<PartRow> = parts
+        .iter()
+        .map(|(_, label)| PartRow {
+            label: SharedString::from(label.as_str()),
+            checked: true,
+        })
+        .collect();
+    *ids.borrow_mut() = parts.into_iter().map(|(id, _)| id).collect();
+    rows.set_vec(new_rows);
+}
+
+/// Set every part row's checkbox to `checked` (the All / None buttons).
+fn set_all_parts(rows: &VecModel<PartRow>, checked: bool) {
+    for i in 0..rows.row_count() {
+        if let Some(mut row) = rows.row_data(i) {
+            row.checked = checked;
+            rows.set_row_data(i, row);
+        }
+    }
+}
+
+/// Read the part picker into a [`PartSelection`]: the checked rows mapped
+/// back through the parallel `ids`. All checked → [`PartSelection::all`].
+fn part_selection_from_ui(rows: &VecModel<PartRow>, ids: &RefCell<Vec<PartId>>) -> PartSelection {
+    let ids = ids.borrow();
+    let parts: Vec<(PartId, String)> = ids.iter().map(|id| (*id, String::new())).collect();
+    let checked: Vec<bool> = (0..rows.row_count())
+        .map(|i| rows.row_data(i).is_some_and(|r| r.checked))
+        .collect();
+    part_selection_from_checks(&parts, &checked)
+}
+
+/// `true` when at least one part is checked (make-molds needs ≥1 piece).
+fn any_part_checked(rows: &VecModel<PartRow>) -> bool {
+    (0..rows.row_count()).any(|i| rows.row_data(i).is_some_and(|r| r.checked))
+}
+
 /// A grip-ring's owned [`RidgeRing`] → the UI's integer-unit [`RingRow`]
 /// (axial fraction → %, half-width fraction → %, depth m → tenths-of-mm).
 fn ring_row_from_ridge(ring: &RidgeRing) -> RingRow {

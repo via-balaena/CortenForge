@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_cast_cli::{CanalConfig, CastConfig, RingConfig, run_with_config};
+use cf_cast_cli::{
+    CanalConfig, CastConfig, PartSelection, RingConfig, run_selected_with_config, run_with_config,
+};
 use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
 
 use crate::design::save_design_from_draft;
@@ -32,6 +34,12 @@ use crate::pour::{LayerPour, build_pour_plan};
 /// plug (and meshes the plug at the finer 0.5 mm cell so the ribs survive,
 /// independent of `mesh_cell_size_m`).
 ///
+/// `selection` chooses which mold pieces to generate. [`PartSelection::all`]
+/// runs the full cast (the default wizard path, byte-identical to before);
+/// a narrower selection meshes **only** the chosen pieces (e.g. one layer-0
+/// plug) and skips the rest — the time-saving "regenerate just this part"
+/// flow. The pour plan stays complete for every layer regardless.
+///
 /// All arguments are `Send`, so a frontend can call this straight off a
 /// background thread (the run is minutes-long). `cleaned_stl` must be an
 /// absolute path to a `*.stl` in the scan directory; its parent is the
@@ -49,6 +57,7 @@ pub fn generate_molds_for_design(
     draft: &DesignDraft,
     mesh_cell_size_m: f64,
     ridges: &RidgeOptions,
+    selection: &PartSelection,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
     let base_dir = cleaned_stl.parent().unwrap_or_else(|| Path::new("."));
@@ -69,7 +78,44 @@ pub fn generate_molds_for_design(
         mesh_cell_size_m,
         canal_config_from_ridges(ridges),
     );
-    generate_molds(config, draft, base_dir, output_dir_override)
+    // Full selection → the validated full export (unchanged); a subset →
+    // the selective export that skips unselected pieces' marching cubes.
+    if selection.is_all() {
+        generate_molds(config, draft, base_dir, output_dir_override)
+    } else {
+        generate_selected_molds(config, draft, base_dir, output_dir_override, selection)
+    }
+}
+
+/// Run the cast for a subset of parts ([`run_selected_with_config`]) and
+/// assemble a [`MoldOutputs`]. The pour plan is built from the per-layer
+/// masses the selective run still computes for **every** layer, and the STL
+/// buckets come from globbing what landed on disk (so only generated pieces
+/// appear).
+///
+/// # Errors
+/// [`EngineError::MoldGen`] if the cast run / output read-back fails;
+/// [`EngineError::PourDataUnavailable`] if a layer has no cure data.
+fn generate_selected_molds(
+    config: CastConfig,
+    draft: &DesignDraft,
+    base_dir: &Path,
+    output_dir_override: Option<&Path>,
+    selection: &PartSelection,
+) -> Result<MoldOutputs> {
+    let report = run_selected_with_config(config, base_dir, output_dir_override, selection)
+        .map_err(|e| EngineError::MoldGen(format!("{e:#}")))?;
+    let pour_plan = build_pour_plan(&pour_inputs(draft, &report.layer_pour_masses_kg)?)?;
+    let stls = collect_stls(&report.out_dir)?;
+    Ok(MoldOutputs {
+        out_dir: report.out_dir,
+        mold_stls: stls.mold,
+        plug_stls: stls.plug,
+        accessory_stls: stls.accessory,
+        procedure_path: report.procedure_path,
+        total_mass_g: report.total_mass_g,
+        pour_plan,
+    })
 }
 
 /// Map the wizard's owned, sanitized [`RidgeOptions`] onto cf-cast-cli's
@@ -436,6 +482,7 @@ mod tests {
             &draft,
             0.003,
             &RidgeOptions::default(),
+            &PartSelection::all(),
             None,
         );
         let design_path = dir.join("base_mold.design.toml");
@@ -489,7 +536,12 @@ mod tests {
     /// resolution integration tests. Uses the in-app stack the GUI defaults
     /// to (whole-mm 18 / 7 / 5) and writes base_mold.design.toml next to the
     /// scan (same content the wizard already wrote).
-    fn cast_real_base_mold_via_wizard(cell_size_m: f64, ridges: &RidgeOptions, out_name: &str) {
+    fn cast_real_base_mold_via_wizard(
+        cell_size_m: f64,
+        ridges: &RidgeOptions,
+        selection: &PartSelection,
+        out_name: &str,
+    ) {
         let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
         let cleaned = scans.join("base_mold.cleaned.stl");
         let prep = scans.join("base_mold.prep.toml");
@@ -520,6 +572,7 @@ mod tests {
             &draft,
             cell_size_m,
             ridges,
+            selection,
             Some(Path::new(out_name)),
         )
         .unwrap();
@@ -543,6 +596,7 @@ mod tests {
         cast_real_base_mold_via_wizard(
             0.0005,
             &RidgeOptions::default(),
+            &PartSelection::all(),
             "cast_base_mold_studio_verify_0p5",
         );
     }
@@ -554,6 +608,7 @@ mod tests {
         cast_real_base_mold_via_wizard(
             0.0015,
             &RidgeOptions::default(),
+            &PartSelection::all(),
             "cast_base_mold_studio_verify_1p5",
         );
     }
@@ -573,8 +628,65 @@ mod tests {
                 enabled: true,
                 ..RidgeOptions::default()
             },
+            &PartSelection::all(),
             "cast_base_mold_studio_verify_ridges",
         );
+    }
+
+    /// Selective export through the wizard: generate ONLY the layer-0 plug
+    /// and confirm just that one STL lands (no cups, no other plugs), while
+    /// the pour plan still covers all 3 layers. The whole point of the
+    /// feature — re-print one piece without the full cast. Faster than a full
+    /// run (only one plug is meshed). Run:
+    /// `cargo test -p cf-studio-engine -- --ignored generate_only_layer0_plug`.
+    #[test]
+    #[ignore = "integration: needs ~/scans/base_mold files"]
+    fn generate_only_layer0_plug_via_wizard() {
+        let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
+        let cleaned = scans.join("base_mold.cleaned.stl");
+        let prep = scans.join("base_mold.prep.toml");
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![
+                LayerDraft {
+                    thickness_m: 0.018,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.25,
+                },
+                LayerDraft {
+                    thickness_m: 0.007,
+                    material_key: "DRAGON_SKIN_10A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+                LayerDraft {
+                    thickness_m: 0.005,
+                    material_key: "DRAGON_SKIN_20A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+            ],
+        };
+        let selection = PartSelection::from_ids([cf_cast_cli::PartId::Plug { layer_index: 0 }]);
+        let out_name = "cast_base_mold_studio_verify_plug_only";
+
+        let out = generate_molds_for_design(
+            &cleaned,
+            &prep,
+            &draft,
+            0.0015,
+            &RidgeOptions::default(),
+            &selection,
+            Some(Path::new(out_name)),
+        )
+        .unwrap();
+
+        assert!(out.mold_stls.is_empty(), "no cup halves generated");
+        assert_eq!(out.plug_stls.len(), 1, "only the layer-0 plug");
+        assert!(out.plug_stls[0].ends_with("plug_layer_0.stl"));
+        assert!(out.accessory_stls.is_empty(), "no platform/dowel");
+        // Pour plan still spans all 3 layers (instructions, not files).
+        assert_eq!(out.pour_plan.steps.len(), 3);
+
+        let _ = std::fs::remove_dir_all(scans.join(out_name));
     }
 
     /// End-to-end integration on the real base_mold (slow ~13 min, needs

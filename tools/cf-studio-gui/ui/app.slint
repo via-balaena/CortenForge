@@ -18,6 +18,14 @@ export struct RingRow {
     width-pct: int,        // half-width of the ring's axial support, %
 }
 
+// One generatable cast part in the step-4 part picker. The Rust side owns
+// these in a VecModel (parallel to its own `Vec<PartId>`); a checkbox writes
+// `checked` back via `set-part-checked`.
+export struct PartRow {
+    label: string,
+    checked: bool,
+}
+
 // One row of the workflow checklist, prepared for display by the Rust
 // side (mark/here are precomputed so the markup stays simple).
 export struct StepRow {
@@ -164,6 +172,11 @@ export component AppWindow inherits Window {
     in-out property <int> ridge-side-pinch-tenths-mm: 15;       // 1.5 mm
     in-out property <int> ridge-tip-relief-tenths-mm: 30;       // 3.0 mm
     in-out property <int> ridge-orientation-deg: 0;
+    // Step 4: the generatable parts (per-layer cups/plugs + accessories),
+    // each with a checkbox. Default all-checked = full cast; uncheck to
+    // generate only some pieces. Rust-owned VecModel, rebuilt when the
+    // design's layer count changes; make-molds reads the checked mask.
+    in property <[PartRow]> parts;
     // Step 5 (Print): status line — "ready to save N file(s)" before
     // export, "saved to <dir>" after. Empty until the molds are made.
     in property <string> print-summary: "";
@@ -204,6 +217,10 @@ export component AppWindow inherits Window {
     callback set-ring-position(int, int);
     callback set-ring-depth(int, int);
     callback set-ring-width(int, int);
+    // Step-4 part picker: toggle one part, or select all / none.
+    callback set-part-checked(int, bool);
+    callback select-all-parts();
+    callback select-no-parts();
     // Step 5: copy the printable files into a chosen folder, and reveal an
     // already-exported folder in the OS file manager.
     callback export-print();
@@ -524,15 +541,67 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // Choose which parts to generate. Everything is checked by
+                    // default (a full cast); uncheck to regenerate just the
+                    // piece(s) you need (e.g. one plug) and skip the rest.
+                    Rectangle {
+                        background: #eef1f4;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 8px;
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text {
+                                    text: "Parts to generate";
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                    color: #333333;
+                                    vertical-alignment: center;
+                                }
+                                Button { text: "All"; enabled: !busy; clicked => { select-all-parts(); } }
+                                Button { text: "None"; enabled: !busy; clicked => { select-no-parts(); } }
+                            }
+                            for part[idx] in parts: HorizontalBox {
+                                alignment: start;
+                                spacing: 6px;
+                                // Empty-text CheckBox + an explicitly-coloured
+                                // Text: the widget's built-in label uses the
+                                // theme foreground (white on a dark-mode OS),
+                                // invisible on the light panel — every other
+                                // label in this app sets #333333 for the same
+                                // reason.
+                                CheckBox {
+                                    checked: part.checked;
+                                    enabled: !busy;
+                                    toggled => { set-part-checked(idx, self.checked); }
+                                }
+                                Text {
+                                    text: part.label;
+                                    color: #333333;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
                     // Optional interior ridges (advanced). Off by default —
                     // the plug stays smooth. When on, an advanced panel reveals
                     // the grip-ring editor + the texture / pinch / relief knobs.
                     HorizontalBox {
                         alignment: center;
+                        spacing: 6px;
+                        // Empty-text CheckBox + coloured Text (see the parts
+                        // grid below) so the label is visible on a dark-mode OS.
                         CheckBox {
-                            text: "Add interior ridges (advanced)";
                             checked <=> ridges-enabled;
                             enabled: !busy;
+                        }
+                        Text {
+                            text: "Add interior ridges (advanced)";
+                            color: #333333;
+                            vertical-alignment: center;
                         }
                     }
                     if ridges-enabled: Rectangle {

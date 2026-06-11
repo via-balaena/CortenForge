@@ -55,6 +55,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+pub use cf_cast::{PartId, PartSelection, PieceSide};
 pub use config::{
     CanalConfig, CastConfig, CastDefaults, DesignSourceConfig, LayerConfig, PlugPinConfig,
     PourGateConfig, RingConfig, ScanConfig,
@@ -96,26 +97,29 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     run_with_config(config, &cast_toml_dir, output_dir_override)
 }
 
-/// Run the cast pipeline from an already-parsed [`CastConfig`].
-///
-/// The typed entry point: programmatic consumers (e.g. `cf-studio-engine`)
-/// build a [`CastConfig`] in code and call this directly, with no
-/// `cast.toml` to author + re-parse. [`run`] is the thin file wrapper over
-/// it (read the TOML → `CastConfig::from_toml_str` → here).
-///
-/// `base_dir` is the directory the config's relative paths
-/// (`scan.cleaned_stl`, `scan.prep_toml`, `design.path`, `cast.output_dir`)
-/// resolve against — for [`run`] that is the cast TOML's parent directory.
+/// The derived inputs shared by [`run_with_config`] +
+/// [`run_selected_with_config`]: the lifted config + the [`CastSpec`] /
+/// [`Ribbon`] / output dir / cavity inset, ready for either export.
+struct Prepared {
+    config: CastConfig,
+    spec: cf_cast::CastSpec,
+    ribbon: cf_cast::Ribbon,
+    out_dir: PathBuf,
+    cavity_inset_m: f64,
+}
+
+/// Front half of the cast pipeline shared by the full + selective exports:
+/// validate, lift the design layers, load the scan SDF + centerline + caps,
+/// derive the [`CastSpec`] + [`Ribbon`], and resolve the output dir.
 ///
 /// # Errors
-/// Every failure mode after the TOML parse: layer-source validation,
-/// design-TOML load, scan/prep load, ribbon derivation, mold export, and
-/// procedure write.
-pub fn run_with_config(
+/// Layer-source validation, design-TOML load, scan/prep load, or ribbon
+/// derivation failures.
+fn prepare_cast(
     mut config: CastConfig,
     base_dir: &Path,
     output_dir_override: Option<&Path>,
-) -> Result<RunReport> {
+) -> Result<Prepared> {
     // Slice 9 — interleaved validation: first the cross-field gate
     // (`[design]` ↔ `[[layers]]` mutual exclusion), then the
     // design.toml lift if applicable, then the per-layer + numeric
@@ -209,6 +213,43 @@ pub fn run_with_config(
         None => base_dir.join(&config.cast.output_dir),
     };
 
+    Ok(Prepared {
+        config,
+        spec,
+        ribbon,
+        out_dir,
+        cavity_inset_m,
+    })
+}
+
+/// Run the cast pipeline from an already-parsed [`CastConfig`].
+///
+/// The typed entry point: programmatic consumers (e.g. `cf-studio-engine`)
+/// build a [`CastConfig`] in code and call this directly, with no
+/// `cast.toml` to author + re-parse. [`run`] is the thin file wrapper over
+/// it (read the TOML → `CastConfig::from_toml_str` → here).
+///
+/// `base_dir` is the directory the config's relative paths
+/// (`scan.cleaned_stl`, `scan.prep_toml`, `design.path`, `cast.output_dir`)
+/// resolve against — for [`run`] that is the cast TOML's parent directory.
+///
+/// # Errors
+/// Every failure mode after the TOML parse: layer-source validation,
+/// design-TOML load, scan/prep load, ribbon derivation, mold export, and
+/// procedure write.
+pub fn run_with_config(
+    config: CastConfig,
+    base_dir: &Path,
+    output_dir_override: Option<&Path>,
+) -> Result<RunReport> {
+    let Prepared {
+        config,
+        spec,
+        ribbon,
+        out_dir,
+        cavity_inset_m,
+    } = prepare_cast(config, base_dir, output_dir_override)?;
+
     // Slice 9.7 — orchestration progress for workshop runs (large
     // scans at sub-5 mm cells take minutes; without this the run is
     // a black box between "loaded design" and the final write).
@@ -296,6 +337,104 @@ pub fn run_with_config(
         arc_length_mm: ribbon.arc_length() * 1000.0,
         max_tangent_rotation_deg: ribbon.max_tangent_rotation_rad().to_degrees(),
     })
+}
+
+/// Run the cast pipeline but export ONLY `selection`'s parts — the
+/// time-saving partial sibling of [`run_with_config`].
+///
+/// Reuses the same front half (validate / derive) and still writes a
+/// complete `procedure.md` (whole-device instructions) and per-layer pour
+/// masses for **every** layer, so a frontend's pour plan stays complete
+/// even when only a subset of molds was generated. Unselected pieces are
+/// never meshed (the time saving).
+///
+/// # Errors
+/// As [`run_with_config`], plus selective-export meshing failures.
+pub fn run_selected_with_config(
+    config: CastConfig,
+    base_dir: &Path,
+    output_dir_override: Option<&Path>,
+    selection: &cf_cast::PartSelection,
+) -> Result<SelectedRunReport> {
+    let Prepared {
+        config,
+        spec,
+        ribbon,
+        out_dir,
+        cavity_inset_m,
+    } = prepare_cast(config, base_dir, output_dir_override)?;
+
+    eprintln!("[cf-cast-cli] exporting selected parts…");
+    let t_export = std::time::Instant::now();
+    let report = spec
+        .export_selected(&ribbon, &out_dir, selection)
+        .context("export_selected (per-piece partial cast)")?;
+    eprintln!(
+        "[cf-cast-cli] export_selected wrote {n} STL(s) in {:.1}s",
+        t_export.elapsed().as_secs_f64(),
+        n = report.written.len(),
+    );
+
+    // procedure.md is whole-device instruction prose (spec/ribbon based), so
+    // write it regardless of which parts were generated, with the same
+    // press-fit + slacker injections the full export applies. The pour
+    // volumes are computed for every layer (no marching cubes), so the
+    // injections + masses below are complete on a partial run.
+    let procedure_path = out_dir.join("procedure.md");
+    spec.write_procedure_v2(&ribbon, &procedure_path)
+        .context("write_procedure_v2")?;
+    procedure_post::inject_press_fit_section(&procedure_path, cavity_inset_m)
+        .context("post-process procedure.md to surface press-fit reservation")?;
+    debug_assert_eq!(
+        config.layers.len(),
+        report.layer_pours.len(),
+        "config.layers and report.layer_pours must be 1:1"
+    );
+    let slacker_recipes: Vec<procedure_post::SlackerLayerRecipe> = config
+        .layers
+        .iter()
+        .zip(report.layer_pours.iter())
+        .map(|(layer_cfg, pour)| procedure_post::SlackerLayerRecipe {
+            display_name: pour.material_display_name.clone(),
+            pour_mass_kg: pour.pour_mass_kg,
+            slacker_fraction: layer_cfg.slacker_fraction,
+        })
+        .collect();
+    procedure_post::inject_slacker_recipe_section(&procedure_path, &slacker_recipes)
+        .context("post-process procedure.md to surface slacker recipe")?;
+    eprintln!("[cf-cast-cli] done — {}", procedure_path.display());
+
+    Ok(SelectedRunReport {
+        out_dir,
+        procedure_path,
+        total_mass_g: report
+            .layer_pours
+            .iter()
+            .map(|p| p.pour_mass_kg * 1000.0)
+            .sum(),
+        layer_pour_masses_kg: report.layer_pours.iter().map(|p| p.pour_mass_kg).collect(),
+        written: report.written,
+    })
+}
+
+/// Summary of a successful [`run_selected_with_config`] — the partial-cast
+/// sibling of [`RunReport`]. Carries the written paths + the per-layer pour
+/// masses for every layer (so the pour plan survives a partial run).
+#[derive(Debug)]
+pub struct SelectedRunReport {
+    /// Resolved output directory (where the selected STLs + procedure.md
+    /// were written).
+    pub out_dir: PathBuf,
+    /// Path to the written procedure.md.
+    pub procedure_path: PathBuf,
+    /// Sum of `pour_mass_kg * 1000` across all layers (grams).
+    pub total_mass_g: f64,
+    /// Per-layer pour masses (kg), innermost-first, for **every** layer
+    /// (1:1 with the design) — so a partial run still drives a complete
+    /// pour plan.
+    pub layer_pour_masses_kg: Vec<f64>,
+    /// Filesystem paths of the STLs actually written this run.
+    pub written: Vec<PathBuf>,
 }
 
 /// Console-printable summary of a successful [`run`].
