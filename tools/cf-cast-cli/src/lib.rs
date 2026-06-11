@@ -55,7 +55,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-pub use cf_cast::{PartId, PartSelection, PieceSide};
+pub use cf_cast::{CastMode, PartId, PartSelection, PieceSide};
 pub use config::{
     CanalConfig, CastConfig, CastDefaults, DesignSourceConfig, LayerConfig, PlugPinConfig,
     PourGateConfig, RingConfig, ScanConfig,

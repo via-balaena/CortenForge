@@ -3493,6 +3493,77 @@ mod tests {
         }
     }
 
+    /// 2-layer fixture (cuboid shells + capsule plug) for tests that must
+    /// tell layer-0 from layer-1 artifacts — e.g. bonded mode dropping
+    /// `plug_layer_1`. 12 mm cells to stay tractable under coverage.
+    fn two_layer_fixture() -> (CastSpec, Ribbon) {
+        let spec = CastSpec {
+            layers: vec![
+                CastLayer {
+                    body: Solid::cuboid(Vector3::new(0.020, 0.020, 0.015)),
+                    material: reference_material(),
+                },
+                CastLayer {
+                    body: Solid::cuboid(Vector3::new(0.030, 0.030, 0.025)),
+                    material: reference_material(),
+                },
+            ],
+            plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
+            bounding_region: Solid::cuboid(Vector3::new(0.045, 0.045, 0.035)),
+            wall_thickness_m: 0.020,
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
+        };
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        (spec, ribbon)
+    }
+
+    /// Bonded mode ([`crate::CastMode::Bonded`]) drops the per-layer plugs
+    /// above layer 0: the bonded selection through `export_selected` writes
+    /// both layers' cups + only `plug_layer_0` — never `plug_layer_1` — while
+    /// the pour plan still spans every layer.
+    #[test]
+    fn export_selected_bonded_emits_only_plug_zero() {
+        use crate::cast_mode::CastMode;
+
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-bonded-two-layer");
+        clean_dir(&dir);
+
+        let (spec, ribbon) = two_layer_fixture();
+        let sel = CastMode::Bonded.part_selection(spec.layers.len());
+        let report = spec.export_selected(&ribbon, &dir, &sel).unwrap();
+
+        let mut names: Vec<String> = std::fs::read_dir(dir.join("stls"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert!(
+            names.contains(&"plug_layer_0.stl".to_string()),
+            "layer-0 plug kept: {names:?}"
+        );
+        assert!(
+            !names.contains(&"plug_layer_1.stl".to_string()),
+            "layer-1 plug dropped: {names:?}"
+        );
+        let cups = names
+            .iter()
+            .filter(|n| n.starts_with("mold_layer_"))
+            .count();
+        assert_eq!(cups, 4, "both layers' cup halves: {names:?}");
+        // Pour plan stays complete (both layers), even though only one plug.
+        assert_eq!(report.layer_pours.len(), 2);
+
+        clean_dir(&dir);
+    }
+
     /// The selected-export path must write **byte-identical** STLs to the
     /// full export for the same parts (it reuses the same leaf meshing +
     /// filenames), and must write *only* the selected parts. This is the
