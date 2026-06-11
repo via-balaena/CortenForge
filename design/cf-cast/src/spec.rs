@@ -16,6 +16,7 @@ use mesh_printability::{
 use nalgebra::Vector3;
 
 use crate::bolt_pattern::plan_smart_bolt_placements;
+use crate::cast_mode::CastMode;
 use crate::dowel_hole::plan_smart_dowel_placements;
 use crate::error::{CastError, CastTarget};
 use crate::flange::FlangeKind;
@@ -27,7 +28,7 @@ use crate::part_selection::{PartId, PartSelection};
 use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared, layer_mc_bounds};
 use crate::plug::add_plug_pins;
 use crate::pour_volume::{POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume, integrate_negative_sdf_volume};
-use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
+use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2_for_mode};
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 use crate::silhouette_2d::Point2;
@@ -913,6 +914,24 @@ impl CastSpec {
     ///   pour mass exceeds [`Self::mass_budget_kg`].
     /// - [`CastError::MeshIo`] on filesystem write failure.
     pub fn write_procedure_v2(&self, ribbon: &Ribbon, path: &Path) -> Result<(), CastError> {
+        // The detachable model is the historical default — byte-identical.
+        self.write_procedure_v2_for_mode(ribbon, path, CastMode::Detachable)
+    }
+
+    /// Write the v2 procedure markdown for an explicit [`CastMode`]
+    /// ([`Self::write_procedure_v2`] is the `Detachable` shorthand).
+    /// `Bonded` emits the cast-in-place / bond-as-you-go procedure (one plug,
+    /// pour each layer onto the previous cured one).
+    ///
+    /// # Errors
+    /// As [`Self::write_procedure_v2`] (empty layers, too-curved centerline,
+    /// mass budget, filesystem write).
+    pub fn write_procedure_v2_for_mode(
+        &self,
+        ribbon: &Ribbon,
+        path: &Path,
+        mode: CastMode,
+    ) -> Result<(), CastError> {
         if self.layers.is_empty() {
             return Err(CastError::EmptyLayers);
         }
@@ -927,7 +946,7 @@ impl CastSpec {
         }
         let pour_volumes = self.compute_pour_volumes()?;
         check_mass_budget(self, &pour_volumes)?;
-        let markdown = generate_procedure_markdown_v2(self, &pour_volumes, ribbon);
+        let markdown = generate_procedure_markdown_v2_for_mode(self, &pour_volumes, ribbon, mode);
         std::fs::write(path, markdown).map_err(|e| CastError::MeshIo {
             path: path.to_path_buf(),
             source: mesh_io::IoError::from(e),
@@ -3562,6 +3581,48 @@ mod tests {
         assert_eq!(report.layer_pours.len(), 2);
 
         clean_dir(&dir);
+    }
+
+    /// The bonded procedure markdown describes cast-in-place / one plug, and
+    /// differs from the detachable procedure (which keeps its nesting prose +
+    /// per-layer plugs). No meshing — pure markdown.
+    #[test]
+    fn bonded_procedure_describes_cast_in_place_one_plug() {
+        use crate::cast_mode::CastMode;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        let (spec, ribbon) = two_layer_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let bonded =
+            generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, CastMode::Bonded);
+
+        assert!(bonded.contains("bonded cast-in-place"), "bonded title");
+        assert!(bonded.contains("plug_layer_0"), "the one plug");
+        assert!(
+            bonded.contains("onto the previous cured layer"),
+            "bond-as-you-go framing"
+        );
+        assert!(
+            bonded.contains("leave layer 0 on the plug"),
+            "leave-in-place between layers"
+        );
+        assert!(
+            !bonded.contains("plug_layer_1"),
+            "no per-layer plug above 0 in bonded mode"
+        );
+        assert!(
+            !bonded.contains("standalone silicone tube"),
+            "no detachable nesting prose"
+        );
+
+        // Detachable differs and keeps its per-layer plug + nesting prose.
+        let detach =
+            generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, CastMode::Detachable);
+        assert_ne!(bonded, detach);
+        assert!(
+            detach.contains("plug_layer_1"),
+            "detachable prints each plug"
+        );
     }
 
     /// The selected-export path must write **byte-identical** STLs to the
