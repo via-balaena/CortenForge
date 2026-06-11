@@ -146,9 +146,21 @@ cavity — cleaner. This is another reason texturing pairs naturally with bonded
 
 ## 7. Slice plan (proposed)
 
-- **S0 — spike (de-risk R2/R3):** apply the canal field to one layer body on
-  `base_mold`, mesh the cup, eyeball the cavity undercut + measure ridge depth vs
-  demoldability. Bounds the default depth/profile. *No ship.*
+- **S0 — spike (de-risk R2/R3): ✅ DONE** (`tests/s0_shell_texture_probe.rs`).
+  Applied the canal field to a synthetic cylindrical shell body via the existing
+  `build_canal_plug` (it wraps any `Solid`). **Findings:**
+  - **Mechanism works** — the field composes onto a layer *body* and meshes
+    clean (no artifacts), confirming exterior ridges reuse the canal machinery
+    unchanged.
+  - **Q-survives** — an axisymmetric 2 mm ring recovers **100% @0.5 mm AND
+    101% @1.5 mm**. Unlike the *interior* fine texture-ribs (which needed 0.5 mm
+    per [[CF_CAST_CANAL_INTERIOR_RECON]]), broad rings survive even the fast
+    1.5 mm preview → **exterior ring texture does not force the fine cell.**
+  - **Q-undercut (R2)** — a 2 mm ring on a 10 mm-radius part = **20% radial
+    undercut → demoldable** for soft silicone (Ecoflex 00-30 elongates >800%).
+  - **Bounds banked:** keep ridge depth **< ~30% of local radius** (rigid cup
+    would tear it above that); default to **≤ 2 mm rounded** rings. **R3 gate
+    (S3):** ridge depth **< layer thickness**.
 - **S1 — SDK `CastMode::Bonded`:** emit only `plug_layer_0`; detachable unchanged
   + byte-identical. Tests + the single-plug output assertion.
 - **S2 — SDK bonded procedure:** cast-in-place `write_procedure_v2` variant.
@@ -171,4 +183,13 @@ Each slice: recon→(spike)→sliced PR→n+1 cold-read→pre-PR local ultra-rev
 - New **optional Texture page after Design**.
 
 ## 9. Cold-read pass-1
-_(pending — fill after first read-through)_
+- S0 settled the two fabrication unknowns (survival + demoldability) in the
+  *symmetric ring* case — the "even exterior ridge" the user asked for. The
+  one-sided texture/D-section cases are interior-only (the canal) and unchanged,
+  so the spike covers the new surface area.
+- **Re-scope from S0:** exterior rings survive at 1.5 mm, so S3/S4 need not force
+  the 0.5 mm plug-cell on shell texture — exterior ridges are cheap. (Interior
+  canal still uses 0.5 mm.)
+- Open: S0 used a clean cylinder; the real organic body curves, so S3 should
+  re-check survival on a `base_mold` layer body before shipping (cheap re-run of
+  the probe pointed at a real body).
