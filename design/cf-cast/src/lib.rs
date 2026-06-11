@@ -87,6 +87,7 @@ pub mod gasket_mold;
 mod material;
 pub mod mesh_csg;
 mod mesher;
+pub mod part_selection;
 pub mod piece;
 pub mod platform;
 pub mod plug;
@@ -120,6 +121,7 @@ pub use mesh_csg::{
     build_cylinder_along_axis, build_half_space_slab, build_truncated_pyramid_via_hull_pts,
     geometric_equivalence, weld_in_place,
 };
+pub use part_selection::{PartId, PartSelection};
 pub use piece::compose_piece_solid;
 pub use platform::build_platform_solid;
 pub use plug::{
@@ -143,6 +145,6 @@ pub use seam_solver::{
 };
 pub use spec::{
     CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
-    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport,
-    V2MoldExportReport,
+    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, SelectedExportReport,
+    V2LayerReport, V2MoldExportReport,
 };
