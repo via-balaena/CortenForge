@@ -102,9 +102,15 @@ impl CastConfig {
     ///   orientation, so the default top/bottom `[0,0,-1]` split is wrong.
     /// - `pour_gate.apex_axial = true` — a single axial pour bore at the
     ///   dome apex (the organic-parts pour), not the iter-1 V-shape.
-    /// - plug-floor lock pins on; gasket off (the demand flange self-seals);
-    ///   canal off (the scan-specific frenulum canal is a separate opt-in,
-    ///   not a wizard default — base_mold casts cleanly without it).
+    /// - plug-floor lock pins on; gasket off (the demand flange self-seals).
+    ///
+    /// `canal` is the interior-ridge feature for the layer-0 plug. Pass
+    /// [`CanalConfig::default`] (`enabled = false`) for the historical
+    /// wizard default — base_mold casts cleanly without it; the
+    /// scan-specific frenulum canal is an opt-in the frontend now exposes.
+    /// When `canal.enabled` is true the plug grows the configured rings /
+    /// texture / pinch / relief features (and meshes at the finer
+    /// `plug_mesh_cell_size_m`, default 0.5 mm, so the ribs survive).
     ///
     /// `mesh_cell_size_m` is the marching-cubes resolution (time ↔ quality).
     /// The layer stack is taken from the design, so `[[layers]]` stays empty
@@ -118,6 +124,7 @@ impl CastConfig {
         prep_toml: PathBuf,
         design_toml: PathBuf,
         mesh_cell_size_m: f64,
+        canal: CanalConfig,
     ) -> Self {
         Self {
             scan: ScanConfig {
@@ -141,7 +148,7 @@ impl CastConfig {
             flange: FlangeConfig::default(),
             dowel_hole: DowelHoleConfig::default(),
             bolt_pattern: BoltPatternConfig::default(),
-            canal: CanalConfig::default(),
+            canal,
         }
     }
 }
@@ -608,6 +615,20 @@ impl Default for BoltPatternConfig {
     }
 }
 
+/// `[[canal.rings]]` entry — one axisymmetric grip ring override.
+/// Mirrors [`cf_cast::RingSpec`]; when `[canal].rings` is present it
+/// replaces the iter1 ring set wholesale (an empty list drops all rings).
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RingConfig {
+    /// Axial position as a fraction of canal length (0 = mouth, 1 = tip).
+    pub center_frac: f64,
+    /// Inward pinch depth in meters (peak of the ring).
+    pub depth_m: f64,
+    /// Half-width of the ring's axial support, as a fraction of length.
+    pub half_width_frac: f64,
+}
+
 /// `[canal]` block — interior-canal feature toggle + geometry
 /// overrides. Maps to [`cf_cast::CanalSpec`].
 ///
@@ -624,6 +645,11 @@ pub struct CanalConfig {
     /// scan-derived baseline.
     #[serde(default)]
     pub enabled: bool,
+    /// Axisymmetric grip rings. `None` → the iter1 ring set (one
+    /// corona-catch entry ring + two mid-canal rings). `Some(list)`
+    /// replaces it wholesale; `Some(vec![])` drops all rings.
+    #[serde(default)]
+    pub rings: Option<Vec<RingConfig>>,
     /// Frenulum direction in the cast world frame (asymmetry axis).
     /// `None` → [0, 1, 0] (iter1 default).
     #[serde(default)]
@@ -975,6 +1001,7 @@ mod tests {
             PathBuf::from("base_mold.prep.toml"),
             PathBuf::from("base_mold.design.toml"),
             0.0015,
+            CanalConfig::default(),
         );
         assert_eq!(c.scan.cleaned_stl, PathBuf::from("base_mold.cleaned.stl"));
         assert_eq!(c.scan.prep_toml, PathBuf::from("base_mold.prep.toml"));
@@ -1009,13 +1036,15 @@ mod tests {
     fn for_design_matches_the_validated_canaloff_recipe() {
         // The out-of-tree cast.base_mold.canaloff.toml is the validated
         // production recipe that casts base_mold cleanly. for_design must
-        // emit the same cast/pour_gate/plug_pins/gasket/canal settings (only
-        // the cell size + the canal frenulum_dir, a no-op while off, differ).
+        // emit the same cast/pour_gate/plug_pins/gasket settings; passing a
+        // default (disabled) canal reproduces the historical canal-off
+        // wizard default (only the cell size differs).
         let c = CastConfig::for_design(
             PathBuf::from("base_mold.cleaned.stl"),
             PathBuf::from("base_mold.prep.toml"),
             PathBuf::from("base_mold.design.toml"),
             0.0015,
+            CanalConfig::default(),
         );
         assert!(c.cast.planar_seam, "planar seam (flat mating face)");
         assert!(!c.cast.flat_cavity_floor);
@@ -1027,7 +1056,40 @@ mod tests {
         assert!(c.pour_gate.enabled);
         assert!(c.pour_gate.apex_axial, "apex axial pour bore");
         assert!(!c.gasket.enabled, "gasket off (demand flange self-seals)");
-        assert!(!c.canal.enabled, "canal off (scan-specific opt-in)");
+        assert!(!c.canal.enabled, "default canal off (scan-specific opt-in)");
+    }
+
+    #[test]
+    fn for_design_carries_an_enabled_canal_through() {
+        // The frontend's interior-ridge opt-in: an enabled canal (with
+        // per-ring + texture overrides) must survive onto the config so the
+        // cast grows the ridges on the layer-0 plug.
+        let canal = CanalConfig {
+            enabled: true,
+            rings: Some(vec![RingConfig {
+                center_frac: 0.2,
+                depth_m: 0.0025,
+                half_width_frac: 0.05,
+            }]),
+            texture_amplitude_m: Some(0.0015),
+            ..CanalConfig::default()
+        };
+        let c = CastConfig::for_design(
+            PathBuf::from("base_mold.cleaned.stl"),
+            PathBuf::from("base_mold.prep.toml"),
+            PathBuf::from("base_mold.design.toml"),
+            0.0005,
+            canal,
+        );
+        assert!(c.canal.enabled, "ridges enabled");
+        assert_eq!(
+            c.canal.rings.as_deref().map(<[_]>::len),
+            Some(1),
+            "the one ring override is carried through"
+        );
+        // The recipe is otherwise unchanged from the canal-off path.
+        assert!(c.cast.planar_seam);
+        assert!(c.pour_gate.apex_axial);
     }
 
     fn minimal_config_text() -> &'static str {

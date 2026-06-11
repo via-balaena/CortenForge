@@ -69,6 +69,84 @@ pub struct LayerDraft {
     pub slacker_fraction: f64,
 }
 
+/// One axisymmetric grip ring in the interior-ridge feature. Mirrors
+/// `cf_cast::RingSpec` in the wizard's owned, sanitized vocabulary — a
+/// smooth inward pinch of the plug channel that becomes a protruding
+/// grip ridge in the cured silicone.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RidgeRing {
+    /// Axial position along the channel as a fraction (0 = opening,
+    /// 1 = deep end).
+    pub position_frac: f64,
+    /// Inward pinch depth in meters (peak of the ring).
+    pub depth_m: f64,
+    /// Half-width of the ring's axial support, as a fraction of length.
+    pub half_width_frac: f64,
+}
+
+/// The optional interior-ridge feature for the layer-0 plug — the
+/// frontend's sanitized view of `cf_cast`'s "canal" feature. `enabled =
+/// false` (the default) leaves the plug at its smooth scan-derived
+/// baseline, i.e. the historical wizard behavior.
+///
+/// When enabled, the plug grows: axisymmetric grip `rings`; one-sided
+/// fine surface texture (`texture_depth_m` / `texture_spacing_m`); a
+/// one-sided `side_pinch_depth_m`; and a `tip_relief_depth_m` outward
+/// pocket near the deep end. The one-sided features are oriented by
+/// `orientation_deg` (0° = the validated default axis), swept around the
+/// channel axis.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RidgeOptions {
+    /// Master toggle. `false` → no ridges (the smooth baseline plug).
+    pub enabled: bool,
+    /// Axisymmetric grip rings (full rings around the plug).
+    pub rings: Vec<RidgeRing>,
+    /// Fine surface-texture rib depth in meters (`0.0` disables texture).
+    pub texture_depth_m: f64,
+    /// Fine surface-texture rib spacing (pitch) in meters.
+    pub texture_spacing_m: f64,
+    /// One-sided pinch depth in meters (`0.0` disables the asymmetry).
+    pub side_pinch_depth_m: f64,
+    /// Outward tip-relief pocket depth in meters (`0.0` disables it).
+    pub tip_relief_depth_m: f64,
+    /// Orientation of the one-sided features around the channel axis, in
+    /// degrees (`0.0` = the validated default direction).
+    pub orientation_deg: f64,
+}
+
+impl Default for RidgeOptions {
+    /// Off, but pre-populated with the validated `cf_cast::CanalSpec::iter1`
+    /// values so flipping `enabled` reproduces the historical canal cast and
+    /// the advanced UI opens on sensible starting numbers.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rings: vec![
+                RidgeRing {
+                    position_frac: 0.10,
+                    depth_m: 0.003,
+                    half_width_frac: 0.04,
+                },
+                RidgeRing {
+                    position_frac: 0.40,
+                    depth_m: 0.002,
+                    half_width_frac: 0.04,
+                },
+                RidgeRing {
+                    position_frac: 0.55,
+                    depth_m: 0.002,
+                    half_width_frac: 0.04,
+                },
+            ],
+            texture_depth_m: 0.0015,
+            texture_spacing_m: 0.008,
+            side_pinch_depth_m: 0.0015,
+            tip_relief_depth_m: 0.003,
+            orientation_deg: 0.0,
+        }
+    }
+}
+
 /// Artifact of [`Step::DesignLayers`] — cavity inset + the layer stack.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DesignDraft {

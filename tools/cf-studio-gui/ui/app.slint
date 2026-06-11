@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox, SpinBox, ComboBox, ScrollView } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, SpinBox, ComboBox, CheckBox, ScrollView } from "std-widgets.slint";
 
 // One silicone layer in the step-3 stack editor (innermost first). The Rust
 // side owns these in a VecModel; the row widgets write back via callbacks.
@@ -6,6 +6,16 @@ export struct LayerRow {
     material-index: int,  // index into `material-names` / the catalog
     thickness-mm: int,
     slacker-pct: int,
+}
+
+// One axisymmetric grip ring in the step-4 interior-ridge editor. The Rust
+// side owns these in a VecModel (mirroring LayerRow); rows write back via
+// the set-ring-* callbacks. Integer UI units: position/width as percents,
+// depth in tenths of a millimetre (so 0.1 mm resolution on a plain SpinBox).
+export struct RingRow {
+    position-pct: int,     // axial position, 0 = opening … 100 = deep end
+    depth-tenths-mm: int,  // inward pinch depth, ×0.1 mm
+    width-pct: int,        // half-width of the ring's axial support, %
 }
 
 // One row of the workflow checklist, prepared for display by the Rust
@@ -142,6 +152,18 @@ export component AppWindow inherits Window {
     // total silicone mass, pour plan, output folder). Empty until a run
     // completes; survives leaving + returning to the step.
     in property <string> molds-summary: "";
+    // Step 4 (advanced): the optional interior-ridge feature for the plug.
+    // `ridges-enabled` toggles the whole feature; the scalar knobs hold the
+    // sanitized sub-feature values the Rust side reads at make-molds time
+    // (lengths in tenths-of-mm, orientation in degrees). The grip rings are
+    // a Rust-owned VecModel (mirrors `layers`).
+    in-out property <bool> ridges-enabled: false;
+    in property <[RingRow]> ridge-rings;
+    in-out property <int> ridge-texture-depth-tenths-mm: 15;    // 1.5 mm
+    in-out property <int> ridge-texture-spacing-tenths-mm: 80;  // 8.0 mm
+    in-out property <int> ridge-side-pinch-tenths-mm: 15;       // 1.5 mm
+    in-out property <int> ridge-tip-relief-tenths-mm: 30;       // 3.0 mm
+    in-out property <int> ridge-orientation-deg: 0;
     // Step 5 (Print): status line — "ready to save N file(s)" before
     // export, "saved to <dir>" after. Empty until the molds are made.
     in property <string> print-summary: "";
@@ -173,8 +195,15 @@ export component AppWindow inherits Window {
     callback use-design(int);
     // Step 4: run the cast at a quality preset matching the picker order
     // (0 = Fine 0.5 mm print quality, 1 = Fast 1.5 mm preview). Long-running
-    // — driven async on a background thread.
+    // — driven async on a background thread. The ridge state is read off the
+    // properties above at click time.
     callback make-molds(int);
+    // Step-4 interior-ridge grip-ring editor (mirrors the layer callbacks).
+    callback add-ring();
+    callback remove-ring(int);
+    callback set-ring-position(int, int);
+    callback set-ring-depth(int, int);
+    callback set-ring-width(int, int);
     // Step 5: copy the printable files into a chosen folder, and reveal an
     // already-exported folder in the OS file manager.
     callback export-print();
@@ -492,6 +521,141 @@ export component AppWindow inherits Window {
                             primary: true;
                             enabled: !busy;
                             clicked => { make-molds(quality-combo.current-index); }
+                        }
+                    }
+
+                    // Optional interior ridges (advanced). Off by default —
+                    // the plug stays smooth. When on, an advanced panel reveals
+                    // the grip-ring editor + the texture / pinch / relief knobs.
+                    HorizontalBox {
+                        alignment: center;
+                        CheckBox {
+                            text: "Add interior ridges (advanced)";
+                            checked <=> ridges-enabled;
+                            enabled: !busy;
+                        }
+                    }
+                    if ridges-enabled: Rectangle {
+                        background: #f4f1ea;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+                            Text {
+                                text: "Ridges mesh the plug at fine 0.5 mm detail, so a run with ridges takes print-quality time regardless of the Quality setting above.";
+                                font-size: 14px;
+                                color: #6b5f44;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+
+                            // Grip rings — full rings around the plug.
+                            Text {
+                                text: "Grip rings";
+                                font-size: 15px;
+                                font-weight: 600;
+                                color: #333333;
+                            }
+                            VerticalLayout {
+                                spacing: 6px;
+                                for ring[idx] in ridge-rings: HorizontalBox {
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Ring \{idx + 1}";
+                                        vertical-alignment: center;
+                                        color: #333333;
+                                    }
+                                    SpinBox {
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: ring.position-pct;
+                                        edited(v) => { set-ring-position(idx, v); }
+                                    }
+                                    Text { text: "% along"; vertical-alignment: center; color: #333333; }
+                                    SpinBox {
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: ring.depth-tenths-mm;
+                                        edited(v) => { set-ring-depth(idx, v); }
+                                    }
+                                    Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
+                                    SpinBox {
+                                        minimum: 1;
+                                        maximum: 50;
+                                        value: ring.width-pct;
+                                        edited(v) => { set-ring-width(idx, v); }
+                                    }
+                                    Text { text: "% wide"; vertical-alignment: center; color: #333333; }
+                                    Button { text: "✕"; clicked => { remove-ring(idx); } }
+                                }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                Button { text: "+ Add ring"; clicked => { add-ring(); } }
+                            }
+
+                            // Surface texture + one-sided shaping knobs.
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Surface texture depth"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-texture-depth-tenths-mm;
+                                    edited(v) => { ridge-texture-depth-tenths-mm = v; }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Surface texture spacing"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 10;
+                                    maximum: 300;
+                                    value: ridge-texture-spacing-tenths-mm;
+                                    edited(v) => { ridge-texture-spacing-tenths-mm = v; }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Side pinch depth"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-side-pinch-tenths-mm;
+                                    edited(v) => { ridge-side-pinch-tenths-mm = v; }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Tip relief depth"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-tip-relief-tenths-mm;
+                                    edited(v) => { ridge-tip-relief-tenths-mm = v; }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Feature orientation"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 360;
+                                    value: ridge-orientation-deg;
+                                    edited(v) => { ridge-orientation-deg = v; }
+                                }
+                                Text { text: "°"; vertical-alignment: center; color: #333333; }
+                            }
                         }
                     }
                     if molds-summary != "": Rectangle {

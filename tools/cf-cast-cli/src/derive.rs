@@ -14,7 +14,8 @@ use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
     CanalSpec, CastLayer, CastSpec, DemandFlangeSpec, FlangeKind, FlangeSpec, GasketKind,
     GasketMaterial, GasketSpec, MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind,
-    PourGateLayout, PourGateSpec, Ribbon, SplitNormal, best_fit_planar_seam, build_canal_plug,
+    PourGateLayout, PourGateSpec, Ribbon, RingSpec, SplitNormal, best_fit_planar_seam,
+    build_canal_plug,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -667,6 +668,16 @@ fn resolve_demand_flange_spec(config: &crate::config::FlangeConfig) -> DemandFla
 /// owned by `cavity_inset_m`.
 fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
     let mut spec = CanalSpec::iter1();
+    if let Some(rings) = &config.rings {
+        spec.rings = rings
+            .iter()
+            .map(|r| RingSpec {
+                center_frac: r.center_frac,
+                depth_m: r.depth_m,
+                half_width_frac: r.half_width_frac,
+            })
+            .collect();
+    }
     if let Some(dir) = config.frenulum_dir {
         spec.frenulum_dir = Vector3::new(dir[0], dir[1], dir[2]);
     }

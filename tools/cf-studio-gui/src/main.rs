@@ -19,7 +19,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, Step};
+use cf_studio_core::{
+    DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, RidgeOptions, RidgeRing, Step,
+};
 use cf_studio_engine::{
     EditSession, PrintExportReport, ReconstructShape, export_print_package,
     generate_molds_for_design, run_simplify, silicone_catalog,
@@ -33,7 +35,7 @@ use cf_studio_gui::{
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use ui::{AppWindow, LayerRow, StepRow};
+use ui::{AppWindow, LayerRow, RingRow, StepRow};
 
 /// Offscreen render-target edge (px). The view is square; Slint scales it
 /// into the viewport with `image-fit: contain`.
@@ -824,6 +826,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ── step 4: interior-ridge grip-ring editor ─────────────────
+    // The rings VecModel mirrors the layer stack. Seeded from the validated
+    // RidgeOptions::default() rings, converted to the UI's integer units
+    // (position/width as %, depth in tenths-of-mm). on_make_molds reads this
+    // model + the ridge property knobs to build the RidgeOptions it casts.
+    let rings_model = Rc::new(VecModel::from(
+        RidgeOptions::default()
+            .rings
+            .iter()
+            .map(ring_row_from_ridge)
+            .collect::<Vec<_>>(),
+    ));
+    ui.set_ridge_rings(ModelRc::from(rings_model.clone()));
+    {
+        let rings_model = rings_model.clone();
+        ui.on_add_ring(move || {
+            // A new ring lands mid-channel, a conservative 2 mm deep.
+            rings_model.push(RingRow {
+                position_pct: 50,
+                depth_tenths_mm: 20,
+                width_pct: 4,
+            });
+        });
+    }
+    {
+        let rings_model = rings_model.clone();
+        ui.on_remove_ring(move |idx| {
+            let i = idx.max(0) as usize;
+            if i < rings_model.row_count() {
+                rings_model.remove(i);
+            }
+        });
+    }
+    {
+        let rings_model = rings_model.clone();
+        ui.on_set_ring_position(move |idx, pct| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = rings_model.row_data(i) {
+                row.position_pct = pct;
+                rings_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let rings_model = rings_model.clone();
+        ui.on_set_ring_depth(move |idx, tenths| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = rings_model.row_data(i) {
+                row.depth_tenths_mm = tenths;
+                rings_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let rings_model = rings_model.clone();
+        ui.on_set_ring_width(move |idx, pct| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = rings_model.row_data(i) {
+                row.width_pct = pct;
+                rings_model.set_row_data(i, row);
+            }
+        });
+    }
+
     // ── navigation (gated by the wizard state) ──────────────────
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
@@ -1192,6 +1258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let (project, weak) = (project.clone(), weak.clone());
         let (inbox, start) = (molds_inbox.clone(), molds_start.clone());
+        let rings_model = rings_model.clone();
         ui.on_make_molds(move |quality_idx| {
             // Re-entrancy guard: a run already in flight (the UI disables the
             // button via `busy`, but a queued click could still arrive). Don't
@@ -1223,6 +1290,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let cell_size_m = cell_size_m_for_quality(quality_idx);
+            // Snapshot the interior-ridge controls now (before the long async
+            // run) so the cast uses the values as they were at click time.
+            let ridges = weak
+                .upgrade()
+                .map(|ui| ridge_options_from_ui(&ui, &rings_model))
+                .unwrap_or_default();
 
             if let Some(ui) = weak.upgrade() {
                 ui.set_busy(true);
@@ -1236,7 +1309,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // catch_unwind so a panic in the cast still reports back —
                 // otherwise `busy` would stick and lock the UI.
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    generate_molds_for_design(&cleaned_stl, &prep_toml, &draft, cell_size_m, None)
+                    generate_molds_for_design(
+                        &cleaned_stl,
+                        &prep_toml,
+                        &draft,
+                        cell_size_m,
+                        &ridges,
+                        None,
+                    )
                 }));
                 let result = match outcome {
                     Ok(Ok(o)) => Ok(o),
@@ -1381,6 +1461,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Push the step-6 pour-assistant state (plan overview, active-layer line,
 /// finished flag) for `current` (0-based) into the UI. The live countdown
 /// text is driven separately by the pour timer.
+/// A grip-ring's owned [`RidgeRing`] → the UI's integer-unit [`RingRow`]
+/// (axial fraction → %, half-width fraction → %, depth m → tenths-of-mm).
+fn ring_row_from_ridge(ring: &RidgeRing) -> RingRow {
+    RingRow {
+        position_pct: (ring.position_frac * 100.0).round() as i32,
+        depth_tenths_mm: (ring.depth_m * 10_000.0).round() as i32,
+        width_pct: (ring.half_width_frac * 100.0).round() as i32,
+    }
+}
+
+/// Read the step-4 interior-ridge controls off the UI + the rings VecModel
+/// into an owned [`RidgeOptions`] (the inverse of [`ring_row_from_ridge`] +
+/// the property getters). Integer UI units convert back to meters/fractions:
+/// percents ÷100, tenths-of-mm ÷10 000 (→ meters). When the toggle is off
+/// this still reads the knobs, but the engine maps `enabled = false` to the
+/// no-op canal-off config, so the values are inert.
+fn ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> RidgeOptions {
+    let tenths_mm_to_m = |t: i32| f64::from(t) / 10_000.0;
+    let rings = (0..rings.row_count())
+        .filter_map(|i| rings.row_data(i))
+        .map(|row| RidgeRing {
+            position_frac: f64::from(row.position_pct) / 100.0,
+            depth_m: tenths_mm_to_m(row.depth_tenths_mm),
+            half_width_frac: f64::from(row.width_pct) / 100.0,
+        })
+        .collect();
+    RidgeOptions {
+        enabled: ui.get_ridges_enabled(),
+        rings,
+        texture_depth_m: tenths_mm_to_m(ui.get_ridge_texture_depth_tenths_mm()),
+        texture_spacing_m: tenths_mm_to_m(ui.get_ridge_texture_spacing_tenths_mm()),
+        side_pinch_depth_m: tenths_mm_to_m(ui.get_ridge_side_pinch_tenths_mm()),
+        tip_relief_depth_m: tenths_mm_to_m(ui.get_ridge_tip_relief_tenths_mm()),
+        orientation_deg: f64::from(ui.get_ridge_orientation_deg()),
+    }
+}
+
 fn sync_pour_ui(ui: &AppWindow, project: &Project, current: usize) {
     let (plan_text, active_text, complete) = match project.molds() {
         Some(m) => (

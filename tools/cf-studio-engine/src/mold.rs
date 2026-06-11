@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_cast_cli::{CastConfig, run_with_config};
-use cf_studio_core::{DesignDraft, MoldOutputs};
+use cf_cast_cli::{CanalConfig, CastConfig, RingConfig, run_with_config};
+use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
 
 use crate::design::save_design_from_draft;
 use crate::error::{EngineError, Result};
@@ -25,6 +25,13 @@ use crate::pour::{LayerPour, build_pour_plan};
 ///    everything resolves under the scan's directory; and
 /// 3. runs the cast via [`generate_molds`].
 ///
+/// `ridges` is the optional interior-ridge ("canal") feature for the
+/// layer-0 plug. A default (`enabled = false`) [`RidgeOptions`] reproduces
+/// the historical canal-off wizard cast exactly; an enabled one grows the
+/// configured grip rings / surface texture / side pinch / tip relief on the
+/// plug (and meshes the plug at the finer 0.5 mm cell so the ribs survive,
+/// independent of `mesh_cell_size_m`).
+///
 /// All arguments are `Send`, so a frontend can call this straight off a
 /// background thread (the run is minutes-long). `cleaned_stl` must be an
 /// absolute path to a `*.stl` in the scan directory; its parent is the
@@ -41,6 +48,7 @@ pub fn generate_molds_for_design(
     prep_toml: &Path,
     draft: &DesignDraft,
     mesh_cell_size_m: f64,
+    ridges: &RidgeOptions,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
     let base_dir = cleaned_stl.parent().unwrap_or_else(|| Path::new("."));
@@ -59,8 +67,47 @@ pub fn generate_molds_for_design(
         PathBuf::from(&prep_name),
         PathBuf::from(&design_name),
         mesh_cell_size_m,
+        canal_config_from_ridges(ridges),
     );
     generate_molds(config, draft, base_dir, output_dir_override)
+}
+
+/// Map the wizard's owned, sanitized [`RidgeOptions`] onto cf-cast-cli's
+/// [`CanalConfig`]. A disabled `ridges` yields `CanalConfig::default()`
+/// (the no-op the cast pipeline bit-preserves), so the canal-off path stays
+/// byte-identical. When enabled, every field is set explicitly from the
+/// options so the UI is the single source of truth (no reliance on the
+/// `CanalSpec::iter1` fallbacks). `orientation_deg` maps to a frenulum
+/// direction in the channel's cross-section: `θ → [sin θ, cos θ, 0]`, so
+/// `0°` is the validated `[0, 1, 0]` default.
+fn canal_config_from_ridges(ridges: &RidgeOptions) -> CanalConfig {
+    if !ridges.enabled {
+        return CanalConfig::default();
+    }
+    let theta = ridges.orientation_deg.to_radians();
+    CanalConfig {
+        enabled: true,
+        rings: Some(
+            ridges
+                .rings
+                .iter()
+                .map(|r| RingConfig {
+                    center_frac: r.position_frac,
+                    depth_m: r.depth_m,
+                    half_width_frac: r.half_width_frac,
+                })
+                .collect(),
+        ),
+        frenulum_dir: Some([theta.sin(), theta.cos(), 0.0]),
+        texture_amplitude_m: Some(ridges.texture_depth_m),
+        texture_pitch_m: Some(ridges.texture_spacing_m),
+        dsection_depth_m: Some(ridges.side_pinch_depth_m),
+        suction_bulge_m: Some(ridges.tip_relief_depth_m),
+        // Plug-only mesh resolution stays at the CanalConfig default
+        // (0.5 mm) so the ~1.5 mm ribs survive regardless of the cups'
+        // mesh_cell_size_m.
+        plug_mesh_cell_size_m: None,
+    }
 }
 
 /// The filename component of `p` as an owned `String`, or a `MoldGen`
@@ -227,6 +274,73 @@ mod tests {
     }
 
     #[test]
+    fn disabled_ridges_map_to_the_default_canal_off_config() {
+        // The canal-off path must stay the bit-preserved no-op: a disabled
+        // RidgeOptions yields exactly CanalConfig::default().
+        let canal = canal_config_from_ridges(&RidgeOptions::default());
+        assert!(!canal.enabled, "ridges off → canal disabled");
+        assert!(canal.rings.is_none(), "no ring overrides → iter1 fallback");
+        assert!(canal.frenulum_dir.is_none());
+        assert!(canal.texture_amplitude_m.is_none());
+    }
+
+    #[test]
+    fn enabled_ridges_map_every_field_explicitly() {
+        let ridges = RidgeOptions {
+            enabled: true,
+            rings: vec![
+                cf_studio_core::RidgeRing {
+                    position_frac: 0.1,
+                    depth_m: 0.003,
+                    half_width_frac: 0.04,
+                },
+                cf_studio_core::RidgeRing {
+                    position_frac: 0.5,
+                    depth_m: 0.002,
+                    half_width_frac: 0.05,
+                },
+            ],
+            texture_depth_m: 0.0012,
+            texture_spacing_m: 0.007,
+            side_pinch_depth_m: 0.001,
+            tip_relief_depth_m: 0.0025,
+            orientation_deg: 0.0,
+        };
+        let canal = canal_config_from_ridges(&ridges);
+        assert!(canal.enabled);
+        let rings = canal.rings.expect("rings carried through");
+        assert_eq!(rings.len(), 2);
+        assert_eq!(rings[1].center_frac, 0.5);
+        assert_eq!(rings[1].depth_m, 0.002);
+        assert_eq!(canal.texture_amplitude_m, Some(0.0012));
+        assert_eq!(canal.texture_pitch_m, Some(0.007));
+        assert_eq!(canal.dsection_depth_m, Some(0.001));
+        assert_eq!(canal.suction_bulge_m, Some(0.0025));
+        // 0° orientation → the validated [0, 1, 0] default direction.
+        let dir = canal.frenulum_dir.expect("orientation mapped");
+        assert!(dir[0].abs() < 1e-12, "x ≈ 0");
+        assert!((dir[1] - 1.0).abs() < 1e-12, "y ≈ 1");
+        assert_eq!(dir[2], 0.0);
+    }
+
+    #[test]
+    fn ridge_orientation_rotates_in_the_cross_section() {
+        // 90° puts the asymmetry axis on +X; the channel-axis (z) component
+        // stays zero so the projection keeps it perpendicular to the axis.
+        let ridges = RidgeOptions {
+            enabled: true,
+            orientation_deg: 90.0,
+            ..RidgeOptions::default()
+        };
+        let dir = canal_config_from_ridges(&ridges)
+            .frenulum_dir
+            .expect("orientation mapped");
+        assert!((dir[0] - 1.0).abs() < 1e-12, "x ≈ 1 at 90°");
+        assert!(dir[1].abs() < 1e-12, "y ≈ 0 at 90°");
+        assert_eq!(dir[2], 0.0);
+    }
+
+    #[test]
     fn pour_inputs_converts_kg_to_grams_and_maps_slacker() {
         let draft = DesignDraft {
             cavity_inset_m: 0.005,
@@ -316,7 +430,14 @@ mod tests {
 
         // We don't care whether the cast run succeeds — only that the
         // design.toml was written first (the materialization is the new glue).
-        let _ = generate_molds_for_design(&cleaned, &prep, &draft, 0.003, None);
+        let _ = generate_molds_for_design(
+            &cleaned,
+            &prep,
+            &draft,
+            0.003,
+            &RidgeOptions::default(),
+            None,
+        );
         let design_path = dir.join("base_mold.design.toml");
         assert!(
             design_path.exists(),
@@ -368,7 +489,7 @@ mod tests {
     /// resolution integration tests. Uses the in-app stack the GUI defaults
     /// to (whole-mm 18 / 7 / 5) and writes base_mold.design.toml next to the
     /// scan (same content the wizard already wrote).
-    fn cast_real_base_mold_via_wizard(cell_size_m: f64, out_name: &str) {
+    fn cast_real_base_mold_via_wizard(cell_size_m: f64, ridges: &RidgeOptions, out_name: &str) {
         let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
         let cleaned = scans.join("base_mold.cleaned.stl");
         let prep = scans.join("base_mold.prep.toml");
@@ -398,6 +519,7 @@ mod tests {
             &prep,
             &draft,
             cell_size_m,
+            ridges,
             Some(Path::new(out_name)),
         )
         .unwrap();
@@ -418,14 +540,41 @@ mod tests {
     #[test]
     #[ignore = "integration: ~15 min, needs ~/scans/base_mold files"]
     fn generate_molds_for_design_casts_base_mold_at_fine() {
-        cast_real_base_mold_via_wizard(0.0005, "cast_base_mold_studio_verify_0p5");
+        cast_real_base_mold_via_wizard(
+            0.0005,
+            &RidgeOptions::default(),
+            "cast_base_mold_studio_verify_0p5",
+        );
     }
 
     /// Fast 1.5 mm preview — much quicker (~minutes) than the 0.5 mm finish.
     #[test]
     #[ignore = "integration: ~minutes, needs ~/scans/base_mold files"]
     fn generate_molds_for_design_casts_base_mold_at_fast() {
-        cast_real_base_mold_via_wizard(0.0015, "cast_base_mold_studio_verify_1p5");
+        cast_real_base_mold_via_wizard(
+            0.0015,
+            &RidgeOptions::default(),
+            "cast_base_mold_studio_verify_1p5",
+        );
+    }
+
+    /// Interior-ridges ON through the wizard for_design recipe (planar seam
+    /// with apex pour and demand flange). Canal-on and the for_design recipe
+    /// were each validated separately but never together — this is the gate
+    /// that confirms the ridge opt-in casts clean molds. Slow (the plug meshes
+    /// at 0.5 mm regardless of the cup cell size). Run:
+    /// `cargo test -p cf-studio-engine -- --ignored casts_base_mold_with_ridges`.
+    #[test]
+    #[ignore = "integration: slow, needs ~/scans/base_mold files"]
+    fn generate_molds_for_design_casts_base_mold_with_ridges() {
+        cast_real_base_mold_via_wizard(
+            0.0015,
+            &RidgeOptions {
+                enabled: true,
+                ..RidgeOptions::default()
+            },
+            "cast_base_mold_studio_verify_ridges",
+        );
     }
 
     /// End-to-end integration on the real base_mold (slow ~13 min, needs
