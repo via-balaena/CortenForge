@@ -164,8 +164,16 @@ cavity — cleaner. This is another reason texturing pairs naturally with bonded
 - **S1 — SDK `CastMode::Bonded`:** emit only `plug_layer_0`; detachable unchanged
   + byte-identical. Tests + the single-plug output assertion.
 - **S2 — SDK bonded procedure:** cast-in-place `write_procedure_v2` variant.
-- **S3 — SDK shell texture:** `ShellTextureSpec` on layer bodies via the canal
-  field; depth⊂thickness gate (R3); demoldable defaults from S0.
+- **S3 — SDK shell texture: ✅ DONE.** `[shell_texture]` config (cf-cast-cli) →
+  axisymmetric **rings only** (the one-sided canal features would make the
+  exterior lopsided), composed onto **every layer body's outer surface** in
+  `derive_spec_and_ribbon` via `build_canal_plug` (reused). **R3 gate**: ridge
+  depth must be `< the thinnest layer` (else it breaches that layer) — errors
+  in derive. Tests: gate + a body-displacement check. Bodies mesh at the global
+  cell (broad rings survive it — S0), so no fine-cell forcing. **Deferred to the
+  integration cast (S5 / a real run):** the empirical real-curved-body survival
+  recheck (S0 used a clean cylinder) — same pattern as the other #[ignore]d
+  integration gates.
 - **S4 — Cendrillon Texture page:** new Step + state machine + nav + move the
   interior-ridge panel here; add exterior/shell ridge controls.
 - **S5 — Cendrillon bonded default:** wire `CastMode::Bonded` + bonded procedure;

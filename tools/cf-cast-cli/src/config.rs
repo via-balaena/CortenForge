@@ -85,6 +85,16 @@ pub struct CastConfig {
     /// layer-0 plug). See [`cf_cast::CanalSpec`].
     #[serde(default)]
     pub canal: CanalConfig,
+    /// Exterior / inter-layer shell texture (default = DISABLED). When
+    /// `enabled = true`, the SAME canal feature field is composed onto
+    /// **every layer body's outer surface** (axisymmetric grip rings +
+    /// optional fine texture), so the device carries ridges on its outside
+    /// and — cast bonded — each layer mechanically keys into the next.
+    /// Applied to the cup cavities, so a ridge depth must stay below the
+    /// layer thickness (gated in `derive_spec_and_ribbon`). See
+    /// `docs/CF_CAST_BONDED_INPLACE_TEXTURE_RECON.md`.
+    #[serde(default)]
+    pub shell_texture: ShellTextureConfig,
 }
 
 impl CastConfig {
@@ -149,6 +159,7 @@ impl CastConfig {
             dowel_hole: DowelHoleConfig::default(),
             bolt_pattern: BoltPatternConfig::default(),
             canal,
+            shell_texture: ShellTextureConfig::default(),
         }
     }
 }
@@ -627,6 +638,31 @@ pub struct RingConfig {
     pub depth_m: f64,
     /// Half-width of the ring's axial support, as a fraction of length.
     pub half_width_frac: f64,
+}
+
+/// `[shell_texture]` block — exterior / inter-layer ridge feature on the
+/// layer **bodies** (vs `[canal]`, which textures the layer-0 plug). Defaults
+/// to `enabled = false` (bodies unchanged). When enabled, the rings (and
+/// optional fine texture) are composed onto every layer body's outer surface
+/// via the same `cf_cast::build_canal_plug` field machinery.
+///
+/// Only the **axisymmetric grip rings** are exposed: shell ridges must be even
+/// all the way around (the "layer evenness" the bonded model wants), and only
+/// the canal's `rings` are axisymmetric. The canal's one-sided features
+/// (frenulum-gated texture ribs / D-section / suction bulb) are interior-anatomy
+/// specific and intentionally absent here — they would make the exterior
+/// lopsided.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellTextureConfig {
+    /// Master toggle. `false` (default) → layer bodies unchanged.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Axisymmetric grip rings on the body's outer surface. `None` → the
+    /// iter1 ring set; `Some(list)` replaces it; `Some(vec![])` drops all
+    /// rings (a no-op texture).
+    #[serde(default)]
+    pub rings: Option<Vec<RingConfig>>,
 }
 
 /// `[canal]` block — interior-canal feature toggle + geometry
