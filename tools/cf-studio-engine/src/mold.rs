@@ -5,8 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_cast_cli::{CastConfig, run_with_config};
-use cf_studio_core::{DesignDraft, MoldOutputs};
+use cf_cast_cli::{
+    CanalConfig, CastConfig, CastMode, PartSelection, RingConfig, run_selected_with_config,
+    run_with_config,
+};
+use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
 
 use crate::design::save_design_from_draft;
 use crate::error::{EngineError, Result};
@@ -25,6 +28,20 @@ use crate::pour::{LayerPour, build_pour_plan};
 ///    everything resolves under the scan's directory; and
 /// 3. runs the cast via [`generate_molds`].
 ///
+/// `ridges` is the optional surface texture chosen in "Shape your piece" (the
+/// same field the live preview showed). It is composed onto the cleaned-scan
+/// surface, so it rides every offset — the plug *and* every shell carry the
+/// identical displacement and the wall thicknesses stay constant. A default
+/// (disabled) [`RidgeOptions`] reproduces the historical no-texture cast
+/// exactly. The cavity inset comes from `draft.cavity_inset_m` (set on the
+/// same step).
+///
+/// `selection` chooses which mold pieces to generate. [`PartSelection::all`]
+/// runs the full cast (the default wizard path, byte-identical to before);
+/// a narrower selection meshes **only** the chosen pieces (e.g. one layer-0
+/// plug) and skips the rest — the time-saving "regenerate just this part"
+/// flow. The pour plan stays complete for every layer regardless.
+///
 /// All arguments are `Send`, so a frontend can call this straight off a
 /// background thread (the run is minutes-long). `cleaned_stl` must be an
 /// absolute path to a `*.stl` in the scan directory; its parent is the
@@ -36,11 +53,18 @@ use crate::pour::{LayerPour, build_pour_plan};
 /// - [`EngineError::WriteDesign`] / [`EngineError::InvalidDesign`] /
 ///   [`EngineError::UnknownMaterial`] if the draft can't be materialized.
 /// - [`EngineError::PourDataUnavailable`] if a layer has no cure data.
+// The wizard's single "make molds" entry point genuinely needs all of these
+// inputs (scan paths, design, quality, ridges, part selection, cast mode);
+// bundling them into a struct would just move the argument list, not shorten it.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_molds_for_design(
     cleaned_stl: &Path,
     prep_toml: &Path,
     draft: &DesignDraft,
     mesh_cell_size_m: f64,
+    ridges: &RidgeOptions,
+    selection: &PartSelection,
+    cast_mode: CastMode,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
     let base_dir = cleaned_stl.parent().unwrap_or_else(|| Path::new("."));
@@ -59,8 +83,100 @@ pub fn generate_molds_for_design(
         PathBuf::from(&prep_name),
         PathBuf::from(&design_name),
         mesh_cell_size_m,
+        canal_config_from_ridges(ridges),
     );
-    generate_molds(config, draft, base_dir, output_dir_override)
+    // Detachable + everything selected → the validated full export (byte-
+    // identical detachable cast). Otherwise — a subset, OR any bonded cast —
+    // route through the selective export, which skips unselected pieces'
+    // marching cubes and emits the procedure for `cast_mode`.
+    if cast_mode == CastMode::Detachable && selection.is_all() {
+        generate_molds(config, draft, base_dir, output_dir_override)
+    } else {
+        generate_selected_molds(
+            config,
+            draft,
+            base_dir,
+            output_dir_override,
+            selection,
+            cast_mode,
+        )
+    }
+}
+
+/// Run the cast for a subset of parts ([`run_selected_with_config`]) and
+/// assemble a [`MoldOutputs`]. The pour plan is built from the per-layer
+/// masses the selective run still computes for **every** layer, and the STL
+/// buckets come from globbing what landed on disk (so only generated pieces
+/// appear).
+///
+/// # Errors
+/// [`EngineError::MoldGen`] if the cast run / output read-back fails;
+/// [`EngineError::PourDataUnavailable`] if a layer has no cure data.
+fn generate_selected_molds(
+    config: CastConfig,
+    draft: &DesignDraft,
+    base_dir: &Path,
+    output_dir_override: Option<&Path>,
+    selection: &PartSelection,
+    cast_mode: CastMode,
+) -> Result<MoldOutputs> {
+    let report =
+        run_selected_with_config(config, base_dir, output_dir_override, selection, cast_mode)
+            .map_err(|e| EngineError::MoldGen(format!("{e:#}")))?;
+    let pour_plan = build_pour_plan(&pour_inputs(draft, &report.layer_pour_masses_kg)?)?;
+    // Bucket from the run's AUTHORITATIVE written-paths list, NOT by globbing
+    // the output dir: the dir is persistent and never cleared, so globbing
+    // would merge stale pieces from a prior full run (possibly pre-edit
+    // geometry) with the freshly regenerated piece. Only `report.written`
+    // reflects what THIS selective run actually produced.
+    let stls = categorize_stls(report.written);
+    Ok(MoldOutputs {
+        out_dir: report.out_dir,
+        mold_stls: stls.mold,
+        plug_stls: stls.plug,
+        accessory_stls: stls.accessory,
+        procedure_path: report.procedure_path,
+        total_mass_g: report.total_mass_g,
+        pour_plan,
+    })
+}
+
+/// Map the wizard's owned, sanitized [`RidgeOptions`] onto cf-cast-cli's
+/// [`CanalConfig`]. A disabled `ridges` yields `CanalConfig::default()`
+/// (the no-op the cast pipeline bit-preserves), so the canal-off path stays
+/// byte-identical. When enabled, every field is set explicitly from the
+/// options so the UI is the single source of truth (no reliance on the
+/// `CanalSpec::iter1` fallbacks). `orientation_deg` maps to a frenulum
+/// direction in the channel's cross-section: `θ → [sin θ, cos θ, 0]`, so
+/// `0°` is the validated `[0, 1, 0]` default.
+pub(crate) fn canal_config_from_ridges(ridges: &RidgeOptions) -> CanalConfig {
+    if !ridges.enabled {
+        return CanalConfig::default();
+    }
+    let theta = ridges.orientation_deg.to_radians();
+    CanalConfig {
+        enabled: true,
+        rings: Some(
+            ridges
+                .rings
+                .iter()
+                .map(|r| RingConfig {
+                    center_frac: r.position_frac,
+                    depth_m: r.depth_m,
+                    half_width_frac: r.half_width_frac,
+                })
+                .collect(),
+        ),
+        frenulum_dir: Some([theta.sin(), theta.cos(), 0.0]),
+        texture_amplitude_m: Some(ridges.texture_depth_m),
+        texture_pitch_m: Some(ridges.texture_spacing_m),
+        dsection_depth_m: Some(ridges.side_pinch_depth_m),
+        suction_bulge_m: Some(ridges.tip_relief_depth_m),
+        // Plug-only mesh resolution stays at the CanalConfig default
+        // (0.5 mm) so the ~1.5 mm ribs survive regardless of the cups'
+        // mesh_cell_size_m.
+        plug_mesh_cell_size_m: None,
+    }
 }
 
 /// The filename component of `p` as an owned `String`, or a `MoldGen`
@@ -166,24 +282,14 @@ struct CategorizedStls {
     accessory: Vec<PathBuf>,
 }
 
-/// Read + categorize the `.stl` files the run wrote under `out_dir/stls`,
-/// by filename: `mold_layer_*` → mold halves, `plug_layer_*` → plugs,
-/// everything else (platform, dowel, funnel) → accessories. Globbing the
-/// directory is robust to which optional artifacts the run emitted.
-fn collect_stls(out_dir: &Path) -> Result<CategorizedStls> {
-    let stls_dir = out_dir.join("stls");
-    let entries = std::fs::read_dir(&stls_dir).map_err(|e| {
-        EngineError::MoldGen(format!("read output dir {}: {e}", stls_dir.display()))
-    })?;
+/// Categorize STL paths by filename: `mold_layer_*` → mold halves,
+/// `plug_layer_*` → plugs, everything else (platform, dowel, funnel) →
+/// accessories. Sorted within each bucket. Non-`.stl` paths are dropped.
+fn categorize_stls(paths: impl IntoIterator<Item = PathBuf>) -> CategorizedStls {
     let mut mold = Vec::new();
     let mut plug = Vec::new();
     let mut accessory = Vec::new();
-    for entry in entries {
-        let path = entry
-            .map_err(|e| {
-                EngineError::MoldGen(format!("read dir entry in {}: {e}", stls_dir.display()))
-            })?
-            .path();
+    for path in paths {
         if path.extension().and_then(|e| e.to_str()) != Some("stl") {
             continue;
         }
@@ -202,11 +308,34 @@ fn collect_stls(out_dir: &Path) -> Result<CategorizedStls> {
     mold.sort();
     plug.sort();
     accessory.sort();
-    Ok(CategorizedStls {
+    CategorizedStls {
         mold,
         plug,
         accessory,
-    })
+    }
+}
+
+/// Read + categorize the `.stl` files the run wrote under `out_dir/stls` by
+/// globbing the directory (robust to which optional artifacts the run
+/// emitted). Used by the **full-cast** path, where every file in the dir
+/// belongs to this run. The selective path must NOT glob (the dir is
+/// persistent + may hold stale pieces) — it categorizes the run's authoritative
+/// written-paths list via [`categorize_stls`].
+fn collect_stls(out_dir: &Path) -> Result<CategorizedStls> {
+    let stls_dir = out_dir.join("stls");
+    let entries = std::fs::read_dir(&stls_dir).map_err(|e| {
+        EngineError::MoldGen(format!("read output dir {}: {e}", stls_dir.display()))
+    })?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| {
+                EngineError::MoldGen(format!("read dir entry in {}: {e}", stls_dir.display()))
+            })?
+            .path();
+        paths.push(path);
+    }
+    Ok(categorize_stls(paths))
 }
 
 #[cfg(test)]
@@ -224,6 +353,73 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn disabled_ridges_map_to_the_default_canal_off_config() {
+        // The canal-off path must stay the bit-preserved no-op: a disabled
+        // RidgeOptions yields exactly CanalConfig::default().
+        let canal = canal_config_from_ridges(&RidgeOptions::default());
+        assert!(!canal.enabled, "ridges off → canal disabled");
+        assert!(canal.rings.is_none(), "no ring overrides → iter1 fallback");
+        assert!(canal.frenulum_dir.is_none());
+        assert!(canal.texture_amplitude_m.is_none());
+    }
+
+    #[test]
+    fn enabled_ridges_map_every_field_explicitly() {
+        let ridges = RidgeOptions {
+            enabled: true,
+            rings: vec![
+                cf_studio_core::RidgeRing {
+                    position_frac: 0.1,
+                    depth_m: 0.003,
+                    half_width_frac: 0.04,
+                },
+                cf_studio_core::RidgeRing {
+                    position_frac: 0.5,
+                    depth_m: 0.002,
+                    half_width_frac: 0.05,
+                },
+            ],
+            texture_depth_m: 0.0012,
+            texture_spacing_m: 0.007,
+            side_pinch_depth_m: 0.001,
+            tip_relief_depth_m: 0.0025,
+            orientation_deg: 0.0,
+        };
+        let canal = canal_config_from_ridges(&ridges);
+        assert!(canal.enabled);
+        let rings = canal.rings.expect("rings carried through");
+        assert_eq!(rings.len(), 2);
+        assert_eq!(rings[1].center_frac, 0.5);
+        assert_eq!(rings[1].depth_m, 0.002);
+        assert_eq!(canal.texture_amplitude_m, Some(0.0012));
+        assert_eq!(canal.texture_pitch_m, Some(0.007));
+        assert_eq!(canal.dsection_depth_m, Some(0.001));
+        assert_eq!(canal.suction_bulge_m, Some(0.0025));
+        // 0° orientation → the validated [0, 1, 0] default direction.
+        let dir = canal.frenulum_dir.expect("orientation mapped");
+        assert!(dir[0].abs() < 1e-12, "x ≈ 0");
+        assert!((dir[1] - 1.0).abs() < 1e-12, "y ≈ 1");
+        assert_eq!(dir[2], 0.0);
+    }
+
+    #[test]
+    fn ridge_orientation_rotates_in_the_cross_section() {
+        // 90° puts the asymmetry axis on +X; the channel-axis (z) component
+        // stays zero so the projection keeps it perpendicular to the axis.
+        let ridges = RidgeOptions {
+            enabled: true,
+            orientation_deg: 90.0,
+            ..RidgeOptions::default()
+        };
+        let dir = canal_config_from_ridges(&ridges)
+            .frenulum_dir
+            .expect("orientation mapped");
+        assert!((dir[0] - 1.0).abs() < 1e-12, "x ≈ 1 at 90°");
+        assert!(dir[1].abs() < 1e-12, "y ≈ 0 at 90°");
+        assert_eq!(dir[2], 0.0);
     }
 
     #[test]
@@ -316,7 +512,16 @@ mod tests {
 
         // We don't care whether the cast run succeeds — only that the
         // design.toml was written first (the materialization is the new glue).
-        let _ = generate_molds_for_design(&cleaned, &prep, &draft, 0.003, None);
+        let _ = generate_molds_for_design(
+            &cleaned,
+            &prep,
+            &draft,
+            0.003,
+            &RidgeOptions::default(),
+            &PartSelection::all(),
+            CastMode::Detachable,
+            None,
+        );
         let design_path = dir.join("base_mold.design.toml");
         assert!(
             design_path.exists(),
@@ -357,6 +562,30 @@ mod tests {
     }
 
     #[test]
+    fn categorize_stls_buckets_only_the_given_paths() {
+        // The selective-export fix: bucket the run's authoritative written-paths
+        // list, NOT a glob of the persistent dir — so a stale prior-run STL that
+        // happens to sit in the same folder is never reported. categorize_stls
+        // only ever sees the list it's handed.
+        let cat = categorize_stls(vec![
+            PathBuf::from("out/stls/plug_layer_0.stl"),
+            PathBuf::from("out/stls/procedure.md"), // non-stl, dropped
+        ]);
+        assert_eq!(cat.plug.len(), 1, "only the one regenerated plug");
+        assert!(cat.mold.is_empty(), "no cup halves in the written list");
+        assert!(cat.accessory.is_empty(), "no platform/dowel; .md dropped");
+        // A stale full-run STL on disk is irrelevant — it's not in the list, so
+        // it can't be mis-attributed to this run.
+        assert!(
+            !cat.plug
+                .iter()
+                .chain(&cat.mold)
+                .chain(&cat.accessory)
+                .any(|p| p.ends_with("mold_layer_0_piece_0.stl")),
+        );
+    }
+
+    #[test]
     fn missing_output_dir_is_a_mold_gen_error() {
         let err = collect_stls(Path::new("/no/such/out")).unwrap_err();
         assert!(matches!(err, EngineError::MoldGen(_)), "got: {err:?}");
@@ -368,7 +597,12 @@ mod tests {
     /// resolution integration tests. Uses the in-app stack the GUI defaults
     /// to (whole-mm 18 / 7 / 5) and writes base_mold.design.toml next to the
     /// scan (same content the wizard already wrote).
-    fn cast_real_base_mold_via_wizard(cell_size_m: f64, out_name: &str) {
+    fn cast_real_base_mold_via_wizard(
+        cell_size_m: f64,
+        ridges: &RidgeOptions,
+        selection: &PartSelection,
+        out_name: &str,
+    ) {
         let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
         let cleaned = scans.join("base_mold.cleaned.stl");
         let prep = scans.join("base_mold.prep.toml");
@@ -398,6 +632,9 @@ mod tests {
             &prep,
             &draft,
             cell_size_m,
+            ridges,
+            selection,
+            CastMode::Detachable,
             Some(Path::new(out_name)),
         )
         .unwrap();
@@ -418,14 +655,101 @@ mod tests {
     #[test]
     #[ignore = "integration: ~15 min, needs ~/scans/base_mold files"]
     fn generate_molds_for_design_casts_base_mold_at_fine() {
-        cast_real_base_mold_via_wizard(0.0005, "cast_base_mold_studio_verify_0p5");
+        cast_real_base_mold_via_wizard(
+            0.0005,
+            &RidgeOptions::default(),
+            &PartSelection::all(),
+            "cast_base_mold_studio_verify_0p5",
+        );
     }
 
     /// Fast 1.5 mm preview — much quicker (~minutes) than the 0.5 mm finish.
     #[test]
     #[ignore = "integration: ~minutes, needs ~/scans/base_mold files"]
     fn generate_molds_for_design_casts_base_mold_at_fast() {
-        cast_real_base_mold_via_wizard(0.0015, "cast_base_mold_studio_verify_1p5");
+        cast_real_base_mold_via_wizard(
+            0.0015,
+            &RidgeOptions::default(),
+            &PartSelection::all(),
+            "cast_base_mold_studio_verify_1p5",
+        );
+    }
+
+    /// Interior-ridges ON through the wizard for_design recipe (planar seam
+    /// with apex pour and demand flange). Canal-on and the for_design recipe
+    /// were each validated separately but never together — this is the gate
+    /// that confirms the ridge opt-in casts clean molds. Slow (the plug meshes
+    /// at 0.5 mm regardless of the cup cell size). Run:
+    /// `cargo test -p cf-studio-engine -- --ignored casts_base_mold_with_ridges`.
+    #[test]
+    #[ignore = "integration: slow, needs ~/scans/base_mold files"]
+    fn generate_molds_for_design_casts_base_mold_with_ridges() {
+        cast_real_base_mold_via_wizard(
+            0.0015,
+            &RidgeOptions {
+                enabled: true,
+                ..RidgeOptions::default()
+            },
+            &PartSelection::all(),
+            "cast_base_mold_studio_verify_ridges",
+        );
+    }
+
+    /// Selective export through the wizard: generate ONLY the layer-0 plug
+    /// and confirm just that one STL lands (no cups, no other plugs), while
+    /// the pour plan still covers all 3 layers. The whole point of the
+    /// feature — re-print one piece without the full cast. Faster than a full
+    /// run (only one plug is meshed). Run:
+    /// `cargo test -p cf-studio-engine -- --ignored generate_only_layer0_plug`.
+    #[test]
+    #[ignore = "integration: needs ~/scans/base_mold files"]
+    fn generate_only_layer0_plug_via_wizard() {
+        let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
+        let cleaned = scans.join("base_mold.cleaned.stl");
+        let prep = scans.join("base_mold.prep.toml");
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![
+                LayerDraft {
+                    thickness_m: 0.018,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.25,
+                },
+                LayerDraft {
+                    thickness_m: 0.007,
+                    material_key: "DRAGON_SKIN_10A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+                LayerDraft {
+                    thickness_m: 0.005,
+                    material_key: "DRAGON_SKIN_20A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+            ],
+        };
+        let selection = PartSelection::from_ids([cf_cast_cli::PartId::Plug { layer_index: 0 }]);
+        let out_name = "cast_base_mold_studio_verify_plug_only";
+
+        let out = generate_molds_for_design(
+            &cleaned,
+            &prep,
+            &draft,
+            0.0015,
+            &RidgeOptions::default(),
+            &selection,
+            CastMode::Detachable,
+            Some(Path::new(out_name)),
+        )
+        .unwrap();
+
+        assert!(out.mold_stls.is_empty(), "no cup halves generated");
+        assert_eq!(out.plug_stls.len(), 1, "only the layer-0 plug");
+        assert!(out.plug_stls[0].ends_with("plug_layer_0.stl"));
+        assert!(out.accessory_stls.is_empty(), "no platform/dowel");
+        // Pour plan still spans all 3 layers (instructions, not files).
+        assert_eq!(out.pour_plan.steps.len(), 3);
+
+        let _ = std::fs::remove_dir_all(scans.join(out_name));
     }
 
     /// End-to-end integration on the real base_mold (slow ~13 min, needs

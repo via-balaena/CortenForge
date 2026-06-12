@@ -14,7 +14,8 @@ use cf_cast::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use cf_cast::{
     CanalSpec, CastLayer, CastSpec, DemandFlangeSpec, FlangeKind, FlangeSpec, GasketKind,
     GasketMaterial, GasketSpec, MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind,
-    PourGateLayout, PourGateSpec, Ribbon, SplitNormal, best_fit_planar_seam, build_canal_plug,
+    PourGateLayout, PourGateSpec, Ribbon, RingSpec, SplitNormal, best_fit_planar_seam,
+    build_canal_plug, build_canal_plug_framed,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -263,23 +264,58 @@ pub fn derive_spec_and_ribbon(
         -cavity_inset_m,
     );
 
+    // The SHARED canal frame basis: the (innermost) plug's own axial span.
+    // The plug and every layer body are offsets of the same scan with
+    // DIFFERENT AABBs, so the canal field must be framed off ONE span — else a
+    // ring at `center_frac` would normalize to a different world position on
+    // each body and the inter-layer wall would drift. Framing the plug + all
+    // bodies off this one basis keeps the displacement identical at each world
+    // point across surfaces, so the wall stays constant. The plug itself frames
+    // off its own bounds (this value), so its texture is unchanged. See
+    // `cf_cast::build_canal_plug_framed`. Matches `build_canal_plug`'s fallback
+    // so the plug path stays byte-identical.
+    let canal_frame_bounds = plug
+        .bounds()
+        .unwrap_or_else(|| Aabb::new(Point3::origin(), Point3::new(0.1, 0.1, 0.1)));
+
     // Layer bodies — cumulative outward offset, shifted inward by
     // `cavity_inset_m` so the whole stack sits on top of the inset
     // plug surface (preserves inter-layer thickness, matches
     // cf-device-design's `outer.subtract(cavity)` body-construction
     // logic). Same Arc-clone pattern: every layer threads the same
     // shared closed + open SDFs into `pinned_floor_shell`.
+    // Compose the texture (the SAME canal field as the plug) onto every layer
+    // BODY too, not just the plug. The plug + every body are offsets of the one
+    // scan surface, so the identical displacement rides through all offsets:
+    // the ridges appear on every surface AND the wall thicknesses stay constant
+    // (the field moves consecutive surfaces together, so no per-layer depth gate
+    // is needed — the wall is preserved by construction). See
+    // `docs/CF_CAST_SCAN_SURFACE_TEXTURE_RECON.md`.
+    let body_texture = if config.canal.enabled {
+        let spec = resolve_canal_spec(&config.canal);
+        let mouth_anchor = cap_tuples.first().map(|(centroid, _normal)| *centroid);
+        Some((spec, mouth_anchor))
+    } else {
+        None
+    };
+
     let mut layers = Vec::with_capacity(config.layers.len());
     let mut cumulative_so_far = 0.0;
     for layer_cfg in &config.layers {
         cumulative_so_far += layer_cfg.thickness_m;
-        let body = pinned_floor_shell(
+        let mut body = pinned_floor_shell(
             closed_sdf_arc.clone(),
             open_sdf_arc.clone(),
             sdf_bounds,
             &cap_tuples,
             cumulative_so_far - cavity_inset_m,
         );
+        if let Some((spec, mouth_anchor)) = &body_texture {
+            // Frame off the SHARED plug span (not this body's bigger bounds) so
+            // the rings line up across layers and the wall stays constant.
+            body =
+                build_canal_plug_framed(&body, centerline, *mouth_anchor, spec, canal_frame_bounds);
+        }
         let material = build_material(layer_cfg).with_context(|| {
             format!(
                 "build material for layer with thickness {} m",
@@ -389,6 +425,25 @@ pub fn derive_spec_and_ribbon(
                          cf-view before casting."
                     );
                 }
+            }
+
+            // Cup-wall gate: the unified texture now puts the SAME outward
+            // suction bulge on every layer body, including the outermost one.
+            // The mold cup is `bounding_region ∖ outer_body` built from the
+            // UN-textured body, so the outermost piece's wall is thinned by up
+            // to `suction_bulge_m`. If the bulge + the min-wall floor exceeds
+            // the configured cup wall thickness, the outer mold piece blows out.
+            let cup_wall_m = config.cast.wall_thickness_m;
+            if canal_spec.suction_bulge_m + min_wall_m > cup_wall_m {
+                bail!(
+                    "[canal] suction_bulge_m = {:.1} mm + min wall {:.1} mm exceeds the mold \
+                     cup wall thickness {:.1} mm ([cast].wall_thickness_m) — the bulge on the \
+                     outermost body would blow out the outer mold piece. Reduce suction_bulge_m \
+                     or thicken the cup wall.",
+                    canal_spec.suction_bulge_m * 1e3,
+                    min_wall_m * 1e3,
+                    cup_wall_m * 1e3,
+                );
             }
         }
 
@@ -663,10 +718,26 @@ fn resolve_demand_flange_spec(config: &crate::config::FlangeConfig) -> DemandFla
 /// Resolve a [`crate::config::CanalConfig`] into a [`CanalSpec`],
 /// falling back to [`CanalSpec::iter1`] for each `None` per-field
 /// override. Canal Interior arc (Candidate A) — additive grip +
-/// stimulation features on the layer-0 plug; baseline girth stays
-/// owned by `cavity_inset_m`.
-fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
+/// stimulation features composed onto the plug + every layer body;
+/// baseline girth stays owned by `cavity_inset_m`.
+///
+/// This is the CANONICAL `CanalConfig → CanalSpec` mapping the cast uses.
+/// A frontend's live preview should resolve its spec through this same
+/// function (e.g. `resolve_canal_spec(&canal_config_from_ridges(opts))`) so
+/// the preview cannot drift from what the cast actually cuts.
+#[must_use]
+pub fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
     let mut spec = CanalSpec::iter1();
+    if let Some(rings) = &config.rings {
+        spec.rings = rings
+            .iter()
+            .map(|r| RingSpec {
+                center_frac: r.center_frac,
+                depth_m: r.depth_m,
+                half_width_frac: r.half_width_frac,
+            })
+            .collect();
+    }
     if let Some(dir) = config.frenulum_dir {
         spec.frenulum_dir = Vector3::new(dir[0], dir[1], dir[2]);
     }
@@ -1047,6 +1118,49 @@ mod tests {
         let err = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[])
             .expect_err("empty layers must fail");
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn canal_texture_displaces_the_layer_bodies_too() {
+        // The unified model: enabling `canal` composes the SAME field onto
+        // every layer body, not just the layer-0 plug. The layer-0 body's
+        // surface must differ from the un-textured derivation at a ring band.
+        // No depth gate is needed — the identical displacement rides every
+        // offset, so the inter-layer wall stays constant by construction.
+        let sdf = unit_cube_sdf();
+        let centerline = straight_x_centerline();
+        let plain = derive_spec_and_ribbon(
+            &three_layer_config(),
+            &sdf,
+            unit_cube_aabb(),
+            &centerline,
+            0.0,
+            &[],
+        )
+        .unwrap();
+        let mut cfg = three_layer_config();
+        cfg.canal = crate::config::CanalConfig {
+            enabled: true,
+            ..crate::config::CanalConfig::default() // iter1 rings + features
+        };
+        let textured =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
+
+        let b_plain = &plain.spec.layers[0].body;
+        let b_tex = &textured.spec.layers[0].body;
+        // Sample along the body axis (X) just inside the +Y surface; the
+        // textured ⊖ plain difference IS the ring inset field at each frac.
+        let mut max_diff = 0.0_f64;
+        for i in 0..=200 {
+            let x = -0.056 + 0.112 * f64::from(i) / 200.0;
+            let p = Point3::new(x, 0.05, 0.0);
+            max_diff = max_diff.max((b_tex.evaluate(&p) - b_plain.evaluate(&p)).abs());
+        }
+        assert!(
+            max_diff > 0.001,
+            "the canal field should displace the body surface; max diff {:.3} mm",
+            max_diff * 1e3
+        );
     }
 
     /// Slice 9.6 — when `cavity_inset_m > 0`, the plug iso-surface

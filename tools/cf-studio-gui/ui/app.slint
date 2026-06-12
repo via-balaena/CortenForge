@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox, SpinBox, ComboBox, ScrollView } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, LineEdit, ComboBox, CheckBox, ScrollView } from "std-widgets.slint";
 
 // One silicone layer in the step-3 stack editor (innermost first). The Rust
 // side owns these in a VecModel; the row widgets write back via callbacks.
@@ -6,6 +6,24 @@ export struct LayerRow {
     material-index: int,  // index into `material-names` / the catalog
     thickness-mm: int,
     slacker-pct: int,
+}
+
+// One axisymmetric grip ring in the step-4 interior-ridge editor. The Rust
+// side owns these in a VecModel (mirroring LayerRow); rows write back via
+// the set-ring-* callbacks. Integer UI units: position/width as percents,
+// depth in tenths of a millimetre (so 0.1 mm resolution on a plain SpinBox).
+export struct RingRow {
+    position-pct: int,     // axial position, 0 = opening … 100 = deep end
+    depth-tenths-mm: int,  // inward pinch depth, ×0.1 mm
+    width-pct: int,        // half-width of the ring's axial support, %
+}
+
+// One generatable cast part in the step-4 part picker. The Rust side owns
+// these in a VecModel (parallel to its own `Vec<PartId>`); a checkbox writes
+// `checked` back via `set-part-checked`.
+export struct PartRow {
+    label: string,
+    checked: bool,
 }
 
 // One row of the workflow checklist, prepared for display by the Rust
@@ -93,6 +111,75 @@ component CleanupSection inherits VerticalLayout {
     @children
 }
 
+// A numeric stepper — a drop-in for std-widgets `SpinBox` (same `minimum` /
+// `maximum` / `value` / `enabled` / `edited(int)` interface) that deliberately
+// does NOT react to the mouse wheel. The built-in SpinBox steps its value on
+// scroll, which fights the page ScrollView (and the live preview); this widget
+// is a plain text field + −/+ buttons, so scrolling over it just scrolls the
+// page. Type a number or click the arrows to change it.
+component StepBox inherits HorizontalLayout {
+    in property <int> minimum: 0;
+    in property <int> maximum: 1000000;
+    in-out property <int> value: 0;
+    in property <bool> enabled: true;
+    callback edited(int);
+    // Set by typing, cleared on commit — so focus-out only re-notifies when the
+    // user actually changed something (no spurious re-mesh on a bare click-in/out).
+    property <bool> pending: false;
+
+    spacing: 4px;
+    alignment: stretch;
+
+    function clamp(v: int) -> int {
+        return v < root.minimum ? root.minimum : (v > root.maximum ? root.maximum : v);
+    }
+    // Apply + notify (the `edited` re-mesh) and clear the pending edit.
+    function commit(v: int) {
+        root.pending = false;
+        root.value = root.clamp(v);
+        root.edited(root.value);
+    }
+
+    Button {
+        text: "−";
+        enabled: root.enabled && root.value > root.minimum;
+        clicked => { root.commit(root.value - 1); }
+    }
+    edit := LineEdit {
+        horizontal-stretch: 1;
+        min-width: 56px;
+        enabled: root.enabled;
+        input-type: number;
+        horizontal-alignment: center;
+        text: "\{root.value}";
+        // Typing keeps `value` current (so the field is right) but does NOT
+        // re-mesh — that would freeze the UI mid-type. The value is APPLIED (the
+        // bound property updated + the preview re-meshed) on Enter, on the −/+
+        // buttons, or on focus-out — so a typed-but-not-Entered value is never
+        // silently dropped by a later Continue / Use this design / Make molds.
+        edited => {
+            if (self.text != "") {
+                // Keep `value` current per keystroke but do NOT clamp here —
+                // clamping mid-type snaps the field to the bound on overshoot
+                // (jarring). The value is clamped on commit (Enter / blur / +-).
+                root.value = self.text.to-float();
+                root.pending = true;
+            }
+        }
+        accepted => { root.commit(root.value); }
+        changed has-focus => {
+            if (!self.has-focus && root.pending) {
+                root.commit(root.value);
+            }
+        }
+    }
+    Button {
+        text: "+";
+        enabled: root.enabled && root.value < root.maximum;
+        clicked => { root.commit(root.value + 1); }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Cendrillon";
     preferred-width: 900px;
@@ -111,7 +198,7 @@ export component AppWindow inherits Window {
     in property <string> project-name: "Untitled";
     in property <[StepRow]> steps;
     in property <int> viewed-number: 1;
-    in property <int> total-steps: 6;
+    in property <int> total-steps: 7;
     in property <string> viewed-title;
     in property <bool> can-back: false;
     in property <bool> can-next: true;
@@ -142,6 +229,36 @@ export component AppWindow inherits Window {
     // total silicone mass, pour plan, output folder). Empty until a run
     // completes; survives leaving + returning to the step.
     in property <string> molds-summary: "";
+    // Step 3 "Shape your piece": the cavity inset (snugness, mm) + the optional
+    // surface-ridge feature. `cavity-inset-mm` turns the scan into the plug;
+    // `ridges-enabled` toggles the ridges; the scalar knobs hold the sanitized
+    // sub-feature values (lengths in tenths-of-mm, orientation in degrees). The
+    // one field rides every offset (plug + shells). The grip rings are a
+    // Rust-owned VecModel (mirrors `layers`).
+    in-out property <int> cavity-inset-mm: 5;
+    in-out property <bool> ridges-enabled: false;
+    // Per-feature toggles (default on, so flipping `ridges-enabled` reproduces
+    // the validated full canal). Each gates whether that feature contributes:
+    // off → that part of the field is dropped (rings emptied / depth 0 / 0°).
+    in-out property <bool> rings-enabled: true;
+    in-out property <bool> texture-enabled: true;
+    in-out property <bool> side-pinch-enabled: true;
+    in-out property <bool> tip-relief-enabled: true;
+    in-out property <bool> orientation-enabled: true;
+    in property <[RingRow]> ridge-rings;
+    in-out property <int> ridge-texture-depth-tenths-mm: 15;    // 1.5 mm
+    in-out property <int> ridge-texture-spacing-tenths-mm: 80;  // 8.0 mm
+    in-out property <int> ridge-side-pinch-tenths-mm: 15;       // 1.5 mm
+    in-out property <int> ridge-tip-relief-tenths-mm: 30;       // 3.0 mm
+    in-out property <int> ridge-orientation-deg: 0;
+    // Step 3: the live plug preview (wgpu-rendered) of the real cleaned scan
+    // offset inward by the inset + textured with the ridges.
+    in property <image> texture-preview;
+    // Step 5: the generatable parts (per-layer cups/plugs + accessories),
+    // each with a checkbox. Default all-checked = full cast; uncheck to
+    // generate only some pieces. Rust-owned VecModel, rebuilt when the
+    // design's layer count changes; make-molds reads the checked mask.
+    in property <[PartRow]> parts;
     // Step 5 (Print): status line — "ready to save N file(s)" before
     // export, "saved to <dir>" after. Empty until the molds are made.
     in property <string> print-summary: "";
@@ -164,17 +281,35 @@ export component AppWindow inherits Window {
     callback help();
     callback pick-scan();
     callback pick-design();
-    // Step-3 layer-stack edits + commit (cavity inset mm).
+    // Step-4 layer-stack edits + commit (the cavity inset lives on step 3).
     callback add-layer();
     callback remove-layer(int);
     callback set-layer-material(int, int);
     callback set-layer-thickness(int, int);
     callback set-layer-slacker(int, int);
-    callback use-design(int);
-    // Step 4: run the cast at a quality preset matching the picker order
+    callback use-design();
+    // Step 5: run the cast at a quality preset matching the picker order
     // (0 = Fine 0.5 mm print quality, 1 = Fast 1.5 mm preview). Long-running
-    // — driven async on a background thread.
+    // — driven async on a background thread. The ridge state is read off the
+    // plug committed on step 3.
     callback make-molds(int);
+    // Step-3 surface-ridge grip-ring editor (mirrors the layer callbacks).
+    callback add-ring();
+    callback remove-ring(int);
+    callback set-ring-position(int, int);
+    callback set-ring-depth(int, int);
+    callback set-ring-width(int, int);
+    // Step 3: commit the shaped plug (cavity inset mm + ridges) and advance.
+    callback commit-plug(int);
+    // Step 3: page entry (build the cached real-scan preview) / a control
+    // changed (re-mesh from the cache); and drag-to-orbit the preview viewport.
+    callback shape-enter();
+    callback shape-changed();
+    callback texture-orbit(length, length);
+    // Step-4 part picker: toggle one part, or select all / none.
+    callback set-part-checked(int, bool);
+    callback select-all-parts();
+    callback select-no-parts();
     // Step 5: copy the printable files into a chosen folder, and reveal an
     // already-exported folder in the OS file manager.
     callback export-print();
@@ -222,30 +357,58 @@ export component AppWindow inherits Window {
             color: #1a1a1a;
         }
 
-        // ── body (per-step controls) — scrollable so the checklist +
-        // footer (Back/Next) stay fixed and always reachable ──────
+        // ── body: a persistent 3D viewbox (fixed, for the steps where you
+        // view the plug while editing it) above an independently-scrolling
+        // controls area, so the view stays put while you scroll the controls.
+        // The footer (Back/Next) stays fixed below. ──────
         Rectangle {
             background: #f3f4f6;
             border-radius: 14px;
             vertical-stretch: 1;
             clip: true;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+
+                // The fixed viewbox — only the view-bearing steps (1/2 the
+                // scan, 3 the plug). It never scrolls; the controls below do.
+                if viewed-number == 1 || viewed-number == 2: ScanViewport {
+                    view: scan-view;
+                    view-height: 320px;
+                    show-hint: !has-scan;
+                    hint: viewed-number == 2
+                        ? "Add a scan in step 1 first."
+                        : "Choose a scan to see it here — then drag to spin it.";
+                    orbit(dx, dy) => { root.orbit(dx, dy); }
+                }
+                if viewed-number == 3: ScanViewport {
+                    view: texture-preview;
+                    view-height: 320px;
+                    orbit(dx, dy) => { texture-orbit(dx, dy); }
+                }
+
             body-scroll := ScrollView {
+                vertical-stretch: 1;
             VerticalBox {
                 width: body-scroll.visible-width;
-                padding: 18px;
+                padding: 0px;
                 spacing: 16px;
+
+                // The status line sits at the top of the controls (right under
+                // the viewbox) so it's always visible — not buried at the
+                // bottom of a long, scrolling step.
+                if step-message != "": Text {
+                    text: step-message;
+                    horizontal-alignment: center;
+                    font-size: 17px;
+                    color: step-message-is-error ? #c62828 : #2e7d32;
+                    wrap: word-wrap;
+                }
 
                 // Step 1 — add the scan, see it live.
                 if viewed-number == 1: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
-                    ScanViewport {
-                        view: scan-view;
-                        view-height: 360px;
-                        show-hint: !has-scan;
-                        hint: "Choose a scan to see it here — then drag to spin it.";
-                        orbit(dx, dy) => { root.orbit(dx, dy); }
-                    }
                     Button {
                         text: has-scan ? "Choose a different scan…" : "Choose scan file…";
                         enabled: !busy;
@@ -274,13 +437,6 @@ export component AppWindow inherits Window {
                 if viewed-number == 2: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
-                    ScanViewport {
-                        view: scan-view;
-                        view-height: 240px;
-                        show-hint: !has-scan;
-                        hint: "Add a scan in step 1 first.";
-                        orbit(dx, dy) => { root.orbit(dx, dy); }
-                    }
                     Text {
                         text: edit-stats;
                         horizontal-alignment: center;
@@ -297,7 +453,7 @@ export component AppWindow inherits Window {
                             spacing: 8px;
                             Button { text: "Weld points"; enabled: !busy; clicked => { weld(); } }
                             Text { text: "Simplify to"; vertical-alignment: center; color: #333333; }
-                            target-spin := SpinBox {
+                            target-spin := StepBox {
                                 enabled: !busy;
                                 minimum: 1000;
                                 maximum: 1000000;
@@ -330,9 +486,9 @@ export component AppWindow inherits Window {
                             alignment: center;
                             spacing: 8px;
                             Text { text: "from tip"; vertical-alignment: center; color: #333333; }
-                            tip-spin := SpinBox { minimum: 0; maximum: trim-max-mm; value: 0; }
+                            tip-spin := StepBox { minimum: 0; maximum: trim-max-mm; value: 0; }
                             Text { text: "mm    from floor"; vertical-alignment: center; color: #333333; }
-                            floor-spin := SpinBox { minimum: 0; maximum: trim-max-mm; value: 10; }
+                            floor-spin := StepBox { minimum: 0; maximum: trim-max-mm; value: 10; }
                             Text { text: "mm"; vertical-alignment: center; color: #333333; }
                             Button {
                                 text: "Apply trim";
@@ -367,7 +523,7 @@ export component AppWindow inherits Window {
                                     current-index: 0;
                                 }
                                 Text { text: "from"; vertical-alignment: center; color: #333333; }
-                                ref-spin := SpinBox { minimum: 5; maximum: trim-max-mm; value: 25; }
+                                ref-spin := StepBox { minimum: 5; maximum: trim-max-mm; value: 25; }
                                 Text { text: "mm above cut"; vertical-alignment: center; color: #333333; }
                                 Button {
                                     text: "Reconstruct floor";
@@ -386,7 +542,7 @@ export component AppWindow inherits Window {
                             alignment: center;
                             spacing: 8px;
                             Text { text: "Smoothing"; vertical-alignment: center; color: #333333; }
-                            smooth-spin := SpinBox { minimum: 0; maximum: 30; value: 8; }
+                            smooth-spin := StepBox { minimum: 0; maximum: 30; value: 8; }
                             Button {
                                 text: "Save cleaned scan";
                                 primary: true;
@@ -403,20 +559,17 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // Step 3 — choose the silicone layer stack + cavity inset.
-                if viewed-number == 3: VerticalLayout {
+                // Step 4 — choose the silicone layer stack (built outward off
+                // the shaped plug; the cavity inset lives on "Shape your piece").
+                if viewed-number == 4: VerticalLayout {
                     spacing: 12px;
                     vertical-stretch: 1;
-                    HorizontalBox {
-                        alignment: center;
-                        spacing: 8px;
-                        Text {
-                            text: "Cavity inset (snugness)";
-                            vertical-alignment: center;
-                            color: #333333;
-                        }
-                        cavity-spin := SpinBox { minimum: 0; maximum: 30; value: 5; }
-                        Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                    Text {
+                        text: "Choose the silicone layers, innermost first — soft inside, firmer outside. These build outward off the plug you just shaped.";
+                        horizontal-alignment: center;
+                        font-size: 16px;
+                        color: #444444;
+                        wrap: word-wrap;
                     }
                     // Layer rows flow at full height; the body scrolls if the
                     // stack gets long (no nested scroll area, which would
@@ -436,20 +589,20 @@ export component AppWindow inherits Window {
                                 current-index: layer.material-index;
                                 selected => { set-layer-material(idx, self.current-index); }
                             }
-                            SpinBox {
-                                minimum: 1;
-                                maximum: 100;
-                                value: layer.thickness-mm;
-                                edited(v) => { set-layer-thickness(idx, v); }
-                            }
-                            Text { text: "mm"; vertical-alignment: center; color: #333333; }
-                            SpinBox {
+                            StepBox {
                                 minimum: 0;
                                 maximum: 100;
                                 value: layer.slacker-pct;
                                 edited(v) => { set-layer-slacker(idx, v); }
                             }
                             Text { text: "% slacker"; vertical-alignment: center; color: #333333; }
+                            StepBox {
+                                minimum: 1;
+                                maximum: 100;
+                                value: layer.thickness-mm;
+                                edited(v) => { set-layer-thickness(idx, v); }
+                            }
+                            Text { text: "mm"; vertical-alignment: center; color: #333333; }
                             Button { text: "✕"; clicked => { remove-layer(idx); } }
                         }
                     }
@@ -460,13 +613,228 @@ export component AppWindow inherits Window {
                         Button {
                             text: "Use this design";
                             primary: true;
-                            clicked => { use-design(cavity-spin.value); }
+                            clicked => { use-design(); }
                         }
                         Button { text: "…or load a file"; clicked => { pick-design(); } }
                     }
                 }
-                // Step 4 — make the printable mold pieces (runs the cast).
-                if viewed-number == 4: VerticalLayout {
+                // Step 3 — Shape your piece: cavity inset (snugness) + the
+                // surface ridges, previewed on the REAL cleaned scan. One edit
+                // surface that propagates to the plug and every shell.
+                if viewed-number == 3: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    init => { shape-enter(); }
+                    Text {
+                        text: "Shape your piece: set how snugly it fits, and optionally add ridges. The ridges ride the whole piece, so the wall stays even. The preview above is your real scan — drag to rotate; your part is cast at full detail.";
+                        horizontal-alignment: center;
+                        font-size: 16px;
+                        color: #444444;
+                        wrap: word-wrap;
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Text {
+                            text: "Cavity inset (snugness)";
+                            vertical-alignment: center;
+                            color: #333333;
+                        }
+                        StepBox {
+                            minimum: 0;
+                            maximum: 30;
+                            value: cavity-inset-mm;
+                            edited(v) => { cavity-inset-mm = v; shape-changed(); }
+                        }
+                        Text { text: "mm"; vertical-alignment: center; color: #333333; }
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 6px;
+                        CheckBox {
+                            checked <=> ridges-enabled;
+                            enabled: !busy;
+                            toggled => { shape-changed(); }
+                        }
+                        Text {
+                            text: "Add surface ridges (advanced)";
+                            color: #333333;
+                            vertical-alignment: center;
+                        }
+                    }
+                    if ridges-enabled: Rectangle {
+                        background: #f4f1ea;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+                            Text {
+                                text: "Ridges mesh the piece at fine 0.5 mm detail, so a run with them takes print-quality time.";
+                                font-size: 14px;
+                                color: #6b5f44;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+                            // Grip rings — toggle the whole ring set on/off.
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 6px;
+                                CheckBox {
+                                    checked <=> rings-enabled;
+                                    enabled: !busy;
+                                    toggled => { shape-changed(); }
+                                }
+                                Text {
+                                    text: "Grip rings";
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                    color: #333333;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 6px;
+                                for ring[idx] in ridge-rings: HorizontalBox {
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Text { text: "Ring \{idx + 1}"; vertical-alignment: center; color: #333333; }
+                                    StepBox {
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: ring.position-pct;
+                                        enabled: rings-enabled && !busy;
+                                        edited(v) => { set-ring-position(idx, v); shape-changed(); }
+                                    }
+                                    Text { text: "% along"; vertical-alignment: center; color: #333333; }
+                                    StepBox {
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: ring.depth-tenths-mm;
+                                        enabled: rings-enabled && !busy;
+                                        edited(v) => { set-ring-depth(idx, v); shape-changed(); }
+                                    }
+                                    Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
+                                    StepBox {
+                                        minimum: 1;
+                                        maximum: 50;
+                                        value: ring.width-pct;
+                                        enabled: rings-enabled && !busy;
+                                        edited(v) => { set-ring-width(idx, v); shape-changed(); }
+                                    }
+                                    Text { text: "% wide"; vertical-alignment: center; color: #333333; }
+                                    Button { text: "✕"; enabled: rings-enabled && !busy; clicked => { remove-ring(idx); shape-changed(); } }
+                                }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                Button { text: "+ Add ring"; enabled: rings-enabled && !busy; clicked => { add-ring(); shape-changed(); } }
+                            }
+                            // Surface texture — one toggle for the fine ribs
+                            // (depth + spacing).
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                CheckBox {
+                                    checked <=> texture-enabled;
+                                    enabled: !busy;
+                                    toggled => { shape-changed(); }
+                                }
+                                Text { text: "Surface texture depth"; vertical-alignment: center; color: #333333; }
+                                StepBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-texture-depth-tenths-mm;
+                                    enabled: texture-enabled && !busy;
+                                    edited(v) => { ridge-texture-depth-tenths-mm = v; shape-changed(); }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Surface texture spacing"; vertical-alignment: center; color: #333333; }
+                                StepBox {
+                                    minimum: 10;
+                                    maximum: 300;
+                                    value: ridge-texture-spacing-tenths-mm;
+                                    enabled: texture-enabled && !busy;
+                                    edited(v) => { ridge-texture-spacing-tenths-mm = v; shape-changed(); }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            // Side pinch — one-sided flattening.
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                CheckBox {
+                                    checked <=> side-pinch-enabled;
+                                    enabled: !busy;
+                                    toggled => { shape-changed(); }
+                                }
+                                Text { text: "Side pinch depth"; vertical-alignment: center; color: #333333; }
+                                StepBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-side-pinch-tenths-mm;
+                                    enabled: side-pinch-enabled && !busy;
+                                    edited(v) => { ridge-side-pinch-tenths-mm = v; shape-changed(); }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            // Tip relief — outward pocket near the deep end.
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                CheckBox {
+                                    checked <=> tip-relief-enabled;
+                                    enabled: !busy;
+                                    toggled => { shape-changed(); }
+                                }
+                                Text { text: "Tip relief depth"; vertical-alignment: center; color: #333333; }
+                                StepBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-tip-relief-tenths-mm;
+                                    enabled: tip-relief-enabled && !busy;
+                                    edited(v) => { ridge-tip-relief-tenths-mm = v; shape-changed(); }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            // Feature orientation — the angle for the one-sided
+                            // features (side pinch / texture). Off → 0°.
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                CheckBox {
+                                    checked <=> orientation-enabled;
+                                    enabled: !busy;
+                                    toggled => { shape-changed(); }
+                                }
+                                Text { text: "Feature orientation"; vertical-alignment: center; color: #333333; }
+                                StepBox {
+                                    minimum: 0;
+                                    maximum: 360;
+                                    value: ridge-orientation-deg;
+                                    enabled: orientation-enabled && !busy;
+                                    edited(v) => { ridge-orientation-deg = v; shape-changed(); }
+                                }
+                                Text { text: "°"; vertical-alignment: center; color: #333333; }
+                            }
+                        }
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        Button {
+                            text: "Continue";
+                            primary: true;
+                            enabled: !busy;
+                            clicked => { commit-plug(cavity-inset-mm); }
+                        }
+                    }
+                }
+
+                // Step 5 — make the printable mold pieces (runs the cast).
+                if viewed-number == 5: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
                     Text {
@@ -494,6 +862,52 @@ export component AppWindow inherits Window {
                             clicked => { make-molds(quality-combo.current-index); }
                         }
                     }
+
+                    // Choose which parts to generate. Everything is checked by
+                    // default (a full cast); uncheck to regenerate just the
+                    // piece(s) you need (e.g. one plug) and skip the rest.
+                    Rectangle {
+                        background: #eef1f4;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 8px;
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text {
+                                    text: "Parts to generate";
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                    color: #333333;
+                                    vertical-alignment: center;
+                                }
+                                Button { text: "All"; enabled: !busy; clicked => { select-all-parts(); } }
+                                Button { text: "None"; enabled: !busy; clicked => { select-no-parts(); } }
+                            }
+                            for part[idx] in parts: HorizontalBox {
+                                alignment: start;
+                                spacing: 6px;
+                                // Empty-text CheckBox + an explicitly-coloured
+                                // Text: the widget's built-in label uses the
+                                // theme foreground (white on a dark-mode OS),
+                                // invisible on the light panel — every other
+                                // label in this app sets #333333 for the same
+                                // reason.
+                                CheckBox {
+                                    checked: part.checked;
+                                    enabled: !busy;
+                                    toggled => { set-part-checked(idx, self.checked); }
+                                }
+                                Text {
+                                    text: part.label;
+                                    color: #333333;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
                     if molds-summary != "": Rectangle {
                         background: #eef3ee;
                         border-radius: 10px;
@@ -508,8 +922,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // Step 5 — save the printable files + hand off to the slicer.
-                if viewed-number == 5: VerticalLayout {
+                // Step 6 — save the printable files + hand off to the slicer.
+                if viewed-number == 6: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
                     Text {
@@ -548,8 +962,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // Step 6 — the guided pour assistant (plan + pot-life timer).
-                if viewed-number == 6: VerticalLayout {
+                // Step 7 — the guided pour assistant (plan + pot-life timer).
+                if viewed-number == 7: VerticalLayout {
                     spacing: 12px;
                     vertical-stretch: 1;
                     // Full plan, for reference (innermost layer first).
@@ -616,26 +1030,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-
-                if step-message != "": Text {
-                    text: step-message;
-                    horizontal-alignment: center;
-                    font-size: 17px;
-                    color: step-message-is-error ? #c62828 : #2e7d32;
-                    wrap: word-wrap;
-                }
             }
             }
-        }
-
-        // ── progress checklist (reflects the real project state) ──
-        VerticalBox {
-            spacing: 6px;
-            for row in steps: Text {
-                text: "\{row.mark}  Step \{row.number}: \{row.title}\{row.here}";
-                font-size: 17px;
-                font-weight: row.viewing ? 700 : 400;
-                color: row.viewing ? #1565c0 : #222222;
             }
         }
 

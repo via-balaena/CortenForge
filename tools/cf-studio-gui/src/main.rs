@@ -19,21 +19,31 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, Step};
-use cf_studio_engine::{
-    EditSession, PrintExportReport, ReconstructShape, export_print_package,
-    generate_molds_for_design, run_simplify, silicone_catalog,
+use cf_studio_core::{
+    DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourRecord, Project, RidgeOptions, RidgeRing,
+    Step,
 };
+use cf_studio_engine::{
+    CastMode, EditSession, PartId, PartSelection, PlugPreview, PrintExportReport, ReconstructShape,
+    export_print_package, generate_molds_for_design, proxy_preview_mesh, run_simplify,
+    silicone_catalog,
+};
+
+/// Cendrillon casts **bonded** (one plug, cast-in-place) — the product default
+/// per `docs/CF_CAST_BONDED_INPLACE_TEXTURE_RECON.md`. The SDK keeps the
+/// detachable model for other consumers; this is where the app pins its choice.
+const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
-    StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, cell_size_m_for_quality,
-    format_molds_summary, format_pour_active, format_pour_plan, nav_state, pour_countdown,
+    RidgeControls, StepOutcome, apply_design, apply_design_draft, apply_plug, apply_prep,
+    apply_scan, cell_size_m_for_quality, enumerate_parts, format_molds_summary, format_pour_active,
+    format_pour_plan, gate_ridge_options, nav_state, part_selection_from_checks, pour_countdown,
     print_step_summary, step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use ui::{AppWindow, LayerRow, StepRow};
+use ui::{AppWindow, LayerRow, PartRow, RingRow, StepRow};
 
 /// Offscreen render-target edge (px). The view is square; Slint scales it
 /// into the viewport with `image-fit: contain`.
@@ -470,6 +480,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GPU handles (filled at RenderingSetup) + the live scan scene.
     let gpu: GpuHandles = Rc::new(RefCell::new(None));
     let scene: Rc<RefCell<Option<Scene>>> = Rc::new(RefCell::new(None));
+    // "Shape your piece" live preview: a second, independent scene (its own
+    // mesh + orbit camera) for the textured plug render.
+    let texture_scene: Rc<RefCell<Option<Scene>>> = Rc::new(RefCell::new(None));
+    // The cached real-scan plug preview: the cleaned-scan flood-fill SDF +
+    // centerline, built once on page entry (the flood-fill is the slow part)
+    // so each inset / ridge edit only re-offsets + re-textures + re-meshes.
+    // `None` until built / if the scan can't be loaded (→ the proxy fallback).
+    let shape_preview: Rc<RefCell<Option<PlugPreview>>> = Rc::new(RefCell::new(None));
     // The chosen scan file + the step-2 edit session over its mesh. The
     // session is created at pick time and rendered on both step 1 (the
     // scan) and step 2 (the same mesh, being cleaned).
@@ -796,10 +814,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
+    // The step-4 part picker's models, declared here so the design handlers
+    // below can rebuild them when the committed layer count changes. The
+    // rows model (labels + checked) is parallel to the Rust-owned `Vec<PartId>`.
+    let part_ids: Rc<RefCell<Vec<PartId>>> = Rc::new(RefCell::new(Vec::new()));
+    let parts_model: Rc<VecModel<PartRow>> = Rc::new(VecModel::default());
+    ui.set_parts(ModelRc::from(parts_model.clone()));
+    rebuild_parts_model(&parts_model, &part_ids, layers_model.row_count());
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
         let (layers_model, catalog) = (layers_model.clone(), catalog.clone());
-        ui.on_use_design(move |cavity_mm| {
+        let (parts_model, part_ids) = (parts_model.clone(), part_ids.clone());
+        ui.on_use_design(move || {
             let layers: Vec<LayerDraft> = (0..layers_model.row_count())
                 .filter_map(|i| layers_model.row_data(i))
                 .map(|row| {
@@ -815,12 +841,183 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 })
                 .collect();
+            // The cavity inset is owned by the "Shape your piece" step; the
+            // layer stack builds outward off that shaped plug.
+            let cavity_inset_m = project.borrow().plug().map_or(0.0, |pl| pl.cavity_inset_m);
             let draft = DesignDraft {
-                cavity_inset_m: f64::from(cavity_mm) / 1000.0,
+                cavity_inset_m,
                 layers,
             };
             let outcome = apply_design_draft(&mut project.borrow_mut(), draft);
+            // The committed design fixes the layer count → rebuild the part
+            // picker (all parts checked) to match.
+            if let Some(design) = project.borrow().design() {
+                rebuild_parts_model(&parts_model, &part_ids, design.layers.len());
+            }
             update(&weak, &project, viewed.get(), &outcome);
+        });
+    }
+
+    // ── step 3 "Shape your piece": the surface-ridge grip-ring editor ──
+    // The rings VecModel mirrors the layer stack. Seeded from the validated
+    // RidgeOptions::default() rings, converted to the UI's integer units
+    // (position/width as %, depth in tenths-of-mm). commit-plug reads this
+    // model + the ridge property knobs to build the RidgeOptions it commits.
+    let rings_model = Rc::new(VecModel::from(
+        RidgeOptions::default()
+            .rings
+            .iter()
+            .map(ring_row_from_ridge)
+            .collect::<Vec<_>>(),
+    ));
+    ui.set_ridge_rings(ModelRc::from(rings_model.clone()));
+    {
+        let rings_model = rings_model.clone();
+        ui.on_add_ring(move || {
+            // A new ring lands mid-channel, a conservative 2 mm deep.
+            rings_model.push(RingRow {
+                position_pct: 50,
+                depth_tenths_mm: 20,
+                width_pct: 4,
+            });
+        });
+    }
+    {
+        let rings_model = rings_model.clone();
+        ui.on_remove_ring(move |idx| {
+            let i = idx.max(0) as usize;
+            if i < rings_model.row_count() {
+                rings_model.remove(i);
+            }
+        });
+    }
+    {
+        let rings_model = rings_model.clone();
+        ui.on_set_ring_position(move |idx, pct| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = rings_model.row_data(i) {
+                row.position_pct = pct;
+                rings_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let rings_model = rings_model.clone();
+        ui.on_set_ring_depth(move |idx, tenths| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = rings_model.row_data(i) {
+                row.depth_tenths_mm = tenths;
+                rings_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let rings_model = rings_model.clone();
+        ui.on_set_ring_width(move |idx, pct| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = rings_model.row_data(i) {
+                row.width_pct = pct;
+                rings_model.set_row_data(i, row);
+            }
+        });
+    }
+
+    // ── step 3 "Shape your piece": commit the plug (Continue) + advance ──
+    // Build the PlugDraft from the cavity inset (the spin passes its mm) + the
+    // ridge controls, then advance to the layer stack.
+    {
+        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let rings_model_c = rings_model.clone();
+        ui.on_commit_plug(move |cavity_mm| {
+            let Some(ui) = weak.upgrade() else { return };
+            let plug = PlugDraft {
+                cavity_inset_m: f64::from(cavity_mm) / 1000.0,
+                ridges: ridge_options_from_ui(&ui, &rings_model_c),
+            };
+            let outcome = apply_plug(&mut project.borrow_mut(), plug);
+            if outcome.is_ok() {
+                let _ = project.borrow_mut().advance();
+            }
+            viewed.set(project.borrow().current_step().index());
+            update(&weak, &project, viewed.get(), &outcome);
+        });
+    }
+
+    // ── step 5 (Make molds): the "parts to generate" picker callbacks ──
+    // (the models are declared above the design handlers so they can rebuild
+    // them; make-molds reads the checked mask + the ids to build the selection.)
+    {
+        let parts_model = parts_model.clone();
+        ui.on_set_part_checked(move |idx, checked| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = parts_model.row_data(i) {
+                row.checked = checked;
+                parts_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let parts_model = parts_model.clone();
+        ui.on_select_all_parts(move || set_all_parts(&parts_model, true));
+    }
+    {
+        let parts_model = parts_model.clone();
+        ui.on_select_no_parts(move || set_all_parts(&parts_model, false));
+    }
+
+    // ── step 3 "Shape your piece": the live plug preview ──
+    // On page entry, (re)build the cached real-scan SDF from the cleaned scan;
+    // then render. The build is the slow part — done once here, not per edit.
+    {
+        let (weak, gpu, texture_scene, shape_preview, project) = (
+            weak.clone(),
+            gpu.clone(),
+            texture_scene.clone(),
+            shape_preview.clone(),
+            project.clone(),
+        );
+        let rings_model = rings_model.clone();
+        ui.on_shape_enter(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            // Build the cache from the project's cleaned scan + prep. On any
+            // failure leave it None → the proxy fallback still previews.
+            let built = project
+                .borrow()
+                .prep()
+                .map(|prep| PlugPreview::load(&prep.cleaned_stl, &prep.prep_toml));
+            *shape_preview.borrow_mut() = match built {
+                Some(Ok(p)) => Some(p),
+                _ => None,
+            };
+            refresh_shape_preview(&ui, &gpu, &texture_scene, &shape_preview, &rings_model);
+        });
+    }
+    // On any inset / ridge edit, re-mesh from the cached SDF (cheap).
+    {
+        let (weak, gpu, texture_scene, shape_preview) = (
+            weak.clone(),
+            gpu.clone(),
+            texture_scene.clone(),
+            shape_preview.clone(),
+        );
+        let rings_model = rings_model.clone();
+        ui.on_shape_changed(move || {
+            if let Some(ui) = weak.upgrade() {
+                refresh_shape_preview(&ui, &gpu, &texture_scene, &shape_preview, &rings_model);
+            }
+        });
+    }
+    {
+        let (weak, texture_scene) = (weak.clone(), texture_scene.clone());
+        ui.on_texture_orbit(move |dx, dy| {
+            let mut guard = texture_scene.borrow_mut();
+            let Some(s) = guard.as_mut() else {
+                return;
+            };
+            s.camera.orbit(dx, dy);
+            if let (Some(ui), Ok(img)) = (weak.upgrade(), s.render()) {
+                ui.set_texture_preview(img);
+            }
         });
     }
 
@@ -1175,6 +1372,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let (parts_model, part_ids) = (parts_model.clone(), part_ids.clone());
         ui.on_pick_design(move || {
             let Some(path) = rfd::FileDialog::new()
                 .set_title("Choose the design file")
@@ -1184,19 +1382,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let outcome = apply_design(&mut project.borrow_mut(), &path);
+            // A loaded design fixes the layer count → rebuild the part picker.
+            if let Some(design) = project.borrow().design() {
+                rebuild_parts_model(&parts_model, &part_ids, design.layers.len());
+            }
             update(&weak, &project, viewed.get(), &outcome);
         });
     }
 
-    // ── step 4: make the molds (run the cast async) ─────────────
+    // ── step 5: make the molds (run the cast async) ─────────────
     {
         let (project, weak) = (project.clone(), weak.clone());
         let (inbox, start) = (molds_inbox.clone(), molds_start.clone());
+        let (parts_model, part_ids) = (parts_model.clone(), part_ids.clone());
         ui.on_make_molds(move |quality_idx| {
             // Re-entrancy guard: a run already in flight (the UI disables the
             // button via `busy`, but a queued click could still arrive). Don't
             // spawn a second 15-min cast into the same output dir.
             if start.get().is_some() {
+                return;
+            }
+            // Need at least one part selected (an empty selection would mesh
+            // nothing).
+            if !any_part_checked(&parts_model) {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_step_message("Pick at least one part to generate.".into());
+                    ui.set_step_message_is_error(true);
+                }
                 return;
             }
             // Pull the inputs from the project: the cleaned scan + prep
@@ -1223,6 +1435,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let cell_size_m = cell_size_m_for_quality(quality_idx);
+            // The surface ridges were committed on "Shape your piece" as part
+            // of the plug. The one field rides every offset (plug + shells).
+            let ridges = project
+                .borrow()
+                .plug()
+                .map(|pl| pl.ridges.clone())
+                .unwrap_or_default();
+            // Snapshot the part picker into a PartSelection (all checked →
+            // the full-cast path; a subset skips the rest).
+            let selection = part_selection_from_ui(&parts_model, &part_ids);
 
             if let Some(ui) = weak.upgrade() {
                 ui.set_busy(true);
@@ -1236,7 +1458,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // catch_unwind so a panic in the cast still reports back —
                 // otherwise `busy` would stick and lock the UI.
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    generate_molds_for_design(&cleaned_stl, &prep_toml, &draft, cell_size_m, None)
+                    generate_molds_for_design(
+                        &cleaned_stl,
+                        &prep_toml,
+                        &draft,
+                        cell_size_m,
+                        &ridges,
+                        &selection,
+                        CENDRILLON_CAST_MODE,
+                        None,
+                    )
                 }));
                 let result = match outcome {
                     Ok(Ok(o)) => Ok(o),
@@ -1381,6 +1612,144 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Push the step-6 pour-assistant state (plan overview, active-layer line,
 /// finished flag) for `current` (0-based) into the UI. The live countdown
 /// text is driven separately by the pour timer.
+/// Rebuild the step-4 part picker for a `layer_count`-layer design: refill
+/// the Rust-owned `ids` with the enumerated [`PartId`]s and the UI `rows`
+/// with their labels (all checked = full cast). Called whenever the
+/// committed design changes.
+fn rebuild_parts_model(rows: &VecModel<PartRow>, ids: &RefCell<Vec<PartId>>, layer_count: usize) {
+    let parts = enumerate_parts(layer_count, CENDRILLON_CAST_MODE);
+    let new_rows: Vec<PartRow> = parts
+        .iter()
+        .map(|(_, label)| PartRow {
+            label: SharedString::from(label.as_str()),
+            checked: true,
+        })
+        .collect();
+    *ids.borrow_mut() = parts.into_iter().map(|(id, _)| id).collect();
+    rows.set_vec(new_rows);
+}
+
+/// Set every part row's checkbox to `checked` (the All / None buttons).
+fn set_all_parts(rows: &VecModel<PartRow>, checked: bool) {
+    for i in 0..rows.row_count() {
+        if let Some(mut row) = rows.row_data(i) {
+            row.checked = checked;
+            rows.set_row_data(i, row);
+        }
+    }
+}
+
+/// Read the part picker into a [`PartSelection`]: the checked rows mapped
+/// back through the parallel `ids`. All checked → [`PartSelection::all`].
+fn part_selection_from_ui(rows: &VecModel<PartRow>, ids: &RefCell<Vec<PartId>>) -> PartSelection {
+    let ids = ids.borrow();
+    let parts: Vec<(PartId, String)> = ids.iter().map(|id| (*id, String::new())).collect();
+    let checked: Vec<bool> = (0..rows.row_count())
+        .map(|i| rows.row_data(i).is_some_and(|r| r.checked))
+        .collect();
+    part_selection_from_checks(&parts, &checked, CENDRILLON_CAST_MODE)
+}
+
+/// `true` when at least one part is checked (make-molds needs ≥1 piece).
+fn any_part_checked(rows: &VecModel<PartRow>) -> bool {
+    (0..rows.row_count()).any(|i| rows.row_data(i).is_some_and(|r| r.checked))
+}
+
+/// A grip-ring's owned [`RidgeRing`] → the UI's integer-unit [`RingRow`]
+/// (axial fraction → %, half-width fraction → %, depth m → tenths-of-mm).
+fn ring_row_from_ridge(ring: &RidgeRing) -> RingRow {
+    RingRow {
+        position_pct: (ring.position_frac * 100.0).round() as i32,
+        depth_tenths_mm: (ring.depth_m * 10_000.0).round() as i32,
+        width_pct: (ring.half_width_frac * 100.0).round() as i32,
+    }
+}
+
+/// Read the "Shape your piece" ridge controls off the UI + the rings VecModel
+/// into an owned [`RidgeOptions`] (the inverse of [`ring_row_from_ridge`] +
+/// the property getters). Integer UI units convert back to meters/fractions
+/// (percents ÷100, tenths-of-mm ÷10 000 → meters), then the pure, tested
+/// [`gate_ridge_options`] applies the per-feature toggles (off → that feature
+/// contributes nothing). The master `ridges-enabled` gates the whole field on
+/// top (off → the engine maps to the no-op canal-off cast).
+fn ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> RidgeOptions {
+    let tenths_mm_to_m = |t: i32| f64::from(t) / 10_000.0;
+    let rings = (0..rings.row_count())
+        .filter_map(|i| rings.row_data(i))
+        .map(|row| RidgeRing {
+            position_frac: f64::from(row.position_pct) / 100.0,
+            depth_m: tenths_mm_to_m(row.depth_tenths_mm),
+            half_width_frac: f64::from(row.width_pct) / 100.0,
+        })
+        .collect();
+    gate_ridge_options(RidgeControls {
+        enabled: ui.get_ridges_enabled(),
+        rings_enabled: ui.get_rings_enabled(),
+        rings,
+        texture_enabled: ui.get_texture_enabled(),
+        texture_depth_m: tenths_mm_to_m(ui.get_ridge_texture_depth_tenths_mm()),
+        texture_spacing_m: tenths_mm_to_m(ui.get_ridge_texture_spacing_tenths_mm()),
+        side_pinch_enabled: ui.get_side_pinch_enabled(),
+        side_pinch_depth_m: tenths_mm_to_m(ui.get_ridge_side_pinch_tenths_mm()),
+        tip_relief_enabled: ui.get_tip_relief_enabled(),
+        tip_relief_depth_m: tenths_mm_to_m(ui.get_ridge_tip_relief_tenths_mm()),
+        orientation_enabled: ui.get_orientation_enabled(),
+        orientation_deg: f64::from(ui.get_ridge_orientation_deg()),
+    })
+}
+
+/// Render `mesh` into the shared `texture-preview` image (preserving orbit on
+/// a re-render). A no-op until the GPU handles are ready.
+fn render_texture_preview(
+    ui: &AppWindow,
+    gpu: &GpuHandles,
+    texture_scene: &RefCell<Option<Scene>>,
+    mesh: &mesh_types::IndexedMesh,
+) {
+    let Some((device, queue)) = gpu.borrow().clone() else {
+        return;
+    };
+    let md = mesh_data_from_indexed(mesh);
+    let img = {
+        let mut guard = texture_scene.borrow_mut();
+        match guard.as_mut() {
+            Some(s) => {
+                s.set_mesh(&md);
+                s.render()
+            }
+            None => {
+                let s = Scene::build(&device, &queue, &md);
+                let r = s.render();
+                *guard = Some(s);
+                r
+            }
+        }
+    };
+    if let Ok(img) = img {
+        ui.set_texture_preview(img);
+    }
+}
+
+/// Regenerate the "Shape your piece" plug preview from the current cavity
+/// inset + ridge controls. Uses the cached real-scan SDF when available (the
+/// faithful plug); falls back to the flat-floor proxy when the scan couldn't
+/// be loaded.
+fn refresh_shape_preview(
+    ui: &AppWindow,
+    gpu: &GpuHandles,
+    texture_scene: &RefCell<Option<Scene>>,
+    shape_preview: &RefCell<Option<PlugPreview>>,
+    rings: &VecModel<RingRow>,
+) {
+    let ridges = ridge_options_from_ui(ui, rings);
+    let cavity_inset_m = f64::from(ui.get_cavity_inset_mm()) / 1000.0;
+    let mesh = match shape_preview.borrow().as_ref() {
+        Some(preview) => preview.mesh(&ridges, cavity_inset_m),
+        None => proxy_preview_mesh(&ridges),
+    };
+    render_texture_preview(ui, gpu, texture_scene, &mesh);
+}
+
 fn sync_pour_ui(ui: &AppWindow, project: &Project, current: usize) {
     let (plan_text, active_text, complete) = match project.molds() {
         Some(m) => (
@@ -1444,7 +1813,7 @@ fn refresh(ui: &AppWindow, project: &Project, viewed_idx: usize) {
     ui.set_project_name(project.name.clone().into());
     ui.set_steps(ModelRc::new(VecModel::from(rows)));
     ui.set_viewed_number(i32::try_from(viewed_step.number()).unwrap_or(0));
-    ui.set_total_steps(i32::try_from(Step::TOTAL).unwrap_or(6));
+    ui.set_total_steps(i32::try_from(Step::TOTAL).unwrap_or(7));
     ui.set_viewed_title(viewed_step.title().into());
     ui.set_can_back(nav.can_back);
     ui.set_can_next(nav.can_next);

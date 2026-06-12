@@ -19,8 +19,12 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use cf_studio_core::{DesignDraft, MoldOutputs, PourPlan, PourStep, Project, Step};
-use cf_studio_engine::{accept_prep, draft_from_design_toml, load_scan};
+use cf_studio_core::{
+    DesignDraft, MoldOutputs, PourPlan, PourStep, Project, RidgeOptions, RidgeRing, Step,
+};
+use cf_studio_engine::{
+    CastMode, PartId, PartSelection, PieceSide, accept_prep, draft_from_design_toml, load_scan,
+};
 
 pub mod viewer;
 
@@ -41,8 +45,8 @@ pub struct StepRow {
     pub viewing: bool,
 }
 
-/// Build the six checklist rows for `project`, marking `viewed` as the
-/// step shown in the body.
+/// Build the [`Step::TOTAL`] checklist rows for `project`, marking `viewed`
+/// as the step shown in the body.
 #[must_use]
 pub fn step_rows(project: &Project, viewed: Step) -> Vec<StepRow> {
     Step::ALL
@@ -118,6 +122,89 @@ pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutc
     Ok(message)
 }
 
+/// Commit the shaped plug ([`cf_studio_core::Step::ShapePiece`]) — the cavity
+/// inset (snugness) + the surface ridges, tuned against the live preview. A
+/// default [`cf_studio_core::PlugDraft`] (zero inset, ridges off) is the
+/// smooth, snug-fit baseline. The ridges ride every offset, so the same field
+/// shapes the plug and every shell at a constant wall.
+///
+/// # Errors
+/// Surfaces [`cf_studio_core::StudioError`] as a string if the scan has not
+/// been cleaned.
+pub fn apply_plug(project: &mut Project, plug: cf_studio_core::PlugDraft) -> StepOutcome {
+    let message = format!(
+        "✓ Shaped piece: {:.1} mm inset{}.",
+        plug.cavity_inset_m * 1000.0,
+        if plug.ridges.enabled {
+            ", ridges on"
+        } else {
+            ", no ridges"
+        }
+    );
+    project.set_plug(plug).map_err(|e| e.to_string())?;
+    Ok(message)
+}
+
+/// The "Shape your piece" ridge controls, read off the UI in SI units, plus
+/// the per-feature toggles. Pure input to [`gate_ridge_options`] (the UI/model
+/// reads live in `main.rs`; this keeps the gating logic testable).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RidgeControls {
+    /// Master toggle (the whole ridge feature).
+    pub enabled: bool,
+    /// Grip rings on/off + the ring set.
+    pub rings_enabled: bool,
+    /// The ring set (already in SI units).
+    pub rings: Vec<RidgeRing>,
+    /// Surface texture on/off + its depth / spacing (meters).
+    pub texture_enabled: bool,
+    pub texture_depth_m: f64,
+    pub texture_spacing_m: f64,
+    /// Side pinch on/off + depth (meters).
+    pub side_pinch_enabled: bool,
+    pub side_pinch_depth_m: f64,
+    /// Tip relief on/off + depth (meters).
+    pub tip_relief_enabled: bool,
+    pub tip_relief_depth_m: f64,
+    /// Feature orientation on/off + angle (degrees).
+    pub orientation_enabled: bool,
+    pub orientation_deg: f64,
+}
+
+/// Apply the per-feature toggles to build the owned [`RidgeOptions`]: a feature
+/// that is OFF contributes nothing (rings emptied / depth `0.0` / orientation
+/// `0°`), so the user can mix and match (e.g. grip rings without the fine
+/// texture). The SAME gated value feeds the live preview and the cast, so what
+/// you toggle is what gets cut.
+#[must_use]
+pub fn gate_ridge_options(c: RidgeControls) -> RidgeOptions {
+    RidgeOptions {
+        enabled: c.enabled,
+        rings: if c.rings_enabled { c.rings } else { Vec::new() },
+        texture_depth_m: if c.texture_enabled {
+            c.texture_depth_m
+        } else {
+            0.0
+        },
+        texture_spacing_m: c.texture_spacing_m,
+        side_pinch_depth_m: if c.side_pinch_enabled {
+            c.side_pinch_depth_m
+        } else {
+            0.0
+        },
+        tip_relief_depth_m: if c.tip_relief_enabled {
+            c.tip_relief_depth_m
+        } else {
+            0.0
+        },
+        orientation_deg: if c.orientation_enabled {
+            c.orientation_deg
+        } else {
+            0.0
+        },
+    }
+}
+
 /// Marching-cubes cell size (meters) for the step-4 quality-picker index.
 /// Index 0 = Fine 0.5 mm (the print-quality default — the physical fit-test
 /// print was 0.5 mm); index 1 = Fast 1.5 mm preview. Any other index falls
@@ -129,6 +216,72 @@ pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
     match quality_idx {
         1 => 0.0015,
         _ => 0.0005,
+    }
+}
+
+/// Enumerate the generatable parts for a design with `layer_count` layers,
+/// in display order, as `(id, label)`. Per layer: two cup halves + a plug,
+/// then the shared workshop platform + dowels (the apex pour funnel is
+/// integral, and the gasket is off, so neither is offered).
+///
+/// In [`CastMode::Bonded`] only the **layer-0** plug is offered — the
+/// per-layer plugs above 0 are redundant (the cured layer N is the plug for
+/// layer N+1), so they are not listed (or generated). The step-4 part picker
+/// renders the labels; the ids build the [`PartSelection`].
+#[must_use]
+pub fn enumerate_parts(layer_count: usize, mode: CastMode) -> Vec<(PartId, String)> {
+    let mut parts = Vec::with_capacity(layer_count * 3 + 2);
+    for i in 0..layer_count {
+        let n = i + 1;
+        parts.push((
+            PartId::Cup {
+                layer_index: i,
+                side: PieceSide::Negative,
+            },
+            format!("Layer {n} — cup (left)"),
+        ));
+        parts.push((
+            PartId::Cup {
+                layer_index: i,
+                side: PieceSide::Positive,
+            },
+            format!("Layer {n} — cup (right)"),
+        ));
+        // Bonded casts with one plug (layer 0); detachable prints one per layer.
+        if mode == CastMode::Detachable || i == 0 {
+            parts.push((PartId::Plug { layer_index: i }, format!("Layer {n} — plug")));
+        }
+    }
+    parts.push((PartId::Platform, "Platform".to_string()));
+    parts.push((PartId::Dowel, "Dowels".to_string()));
+    parts
+}
+
+/// Build a [`PartSelection`] from the enumerated `parts` and a parallel
+/// `checked` mask.
+///
+/// In [`CastMode::Detachable`], "everything checked" returns
+/// [`PartSelection::all`] — the validated full-cast path. In
+/// [`CastMode::Bonded`] it always selects exactly the checked parts (never
+/// `all`), so the cast routes through the selective + bonded-procedure path
+/// (and `parts` already omits the redundant plugs).
+#[must_use]
+pub fn part_selection_from_checks(
+    parts: &[(PartId, String)],
+    checked: &[bool],
+    mode: CastMode,
+) -> PartSelection {
+    let all_checked = checked.len() == parts.len() && checked.iter().all(|&c| c);
+    if all_checked && mode == CastMode::Detachable {
+        PartSelection::all()
+    } else {
+        PartSelection::from_ids(
+            parts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| checked.get(*i).copied().unwrap_or(false))
+                .map(|(_, (id, _))| *id),
+        )
     }
 }
 
@@ -339,10 +492,49 @@ visible = true
     }
 
     #[test]
-    fn fresh_project_has_six_rows_all_undone_at_step_one() {
+    fn apply_plug_skips_with_default_and_gates_on_clean_scan() {
+        use cf_studio_core::PlugDraft;
+        let mut p = Project::new("t");
+        // Before the scan is cleaned, the plug step can't be committed.
+        assert!(apply_plug(&mut p, PlugDraft::default()).is_err());
+
+        let d = dir("plug");
+        let stl = d.join("s.stl");
+        std::fs::write(&stl, ONE_TRIANGLE_STL).unwrap();
+        let cleaned = d.join("s.cleaned.stl");
+        std::fs::write(&cleaned, ONE_TRIANGLE_STL).unwrap();
+        let prep = d.join("s.prep.toml");
+        std::fs::write(&prep, "[centerline]\npoints_m = [[0,0,0],[0,0,0.01]]\n").unwrap();
+        apply_scan(&mut p, &stl).unwrap();
+        apply_prep(&mut p, &cleaned, &prep).unwrap();
+
+        // The default plug (no ridges) is the skip — records + advances.
+        let msg = apply_plug(&mut p, PlugDraft::default()).unwrap();
+        assert!(msg.contains("no ridges"), "got: {msg}");
+        assert!(p.is_complete(Step::ShapePiece));
+
+        // Ridges on reports them.
+        let msg = apply_plug(
+            &mut p,
+            PlugDraft {
+                cavity_inset_m: 0.004,
+                ridges: cf_studio_core::RidgeOptions {
+                    enabled: true,
+                    ..cf_studio_core::RidgeOptions::default()
+                },
+            },
+        )
+        .unwrap();
+        assert!(msg.contains("ridges on"), "got: {msg}");
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn fresh_project_has_seven_rows_all_undone_at_step_one() {
         let p = Project::new("t");
         let rows = step_rows(&p, Step::AddScan);
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
         assert!(
             rows.iter().all(|r| !r.done),
             "nothing done on a fresh project"
@@ -359,10 +551,10 @@ visible = true
     fn viewing_marks_the_previewed_step_independent_of_current() {
         let p = Project::new("t"); // still at AddScan
         let rows = step_rows(&p, Step::MakeMolds);
-        assert!(rows[3].viewing, "MakeMolds (index 3) is being viewed");
+        assert!(rows[4].viewing, "MakeMolds (index 4) is being viewed");
         assert!(!rows[0].viewing);
         assert!(rows[0].current, "but the project is still on AddScan");
-        assert!(!rows[3].current);
+        assert!(!rows[4].current);
     }
 
     #[test]
@@ -401,6 +593,7 @@ visible = true
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
         assert!(p.is_complete(Step::CleanScan));
+        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
         let msg = apply_design(&mut p, &design).unwrap();
         assert!(msg.contains("Design set"), "got: {msg}");
         assert!(p.is_complete(Step::DesignLayers));
@@ -423,6 +616,7 @@ visible = true
         let mut p = Project::new("t");
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
+        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
 
         // A design built in-app (the layer-stack editor's output).
         let draft = DesignDraft {
@@ -474,6 +668,7 @@ visible = true
 
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
+        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
         apply_design(&mut p, &design).unwrap();
 
         // Molds made, not yet exported → "ready to save N".
@@ -586,6 +781,78 @@ visible = true
         assert_eq!(pour_countdown(-10).urgency, 2, "negative = expired");
     }
 
+    fn full_controls() -> RidgeControls {
+        RidgeControls {
+            enabled: true,
+            rings_enabled: true,
+            rings: vec![RidgeRing {
+                position_frac: 0.4,
+                depth_m: 0.002,
+                half_width_frac: 0.04,
+            }],
+            texture_enabled: true,
+            texture_depth_m: 0.0015,
+            texture_spacing_m: 0.008,
+            side_pinch_enabled: true,
+            side_pinch_depth_m: 0.0015,
+            tip_relief_enabled: true,
+            tip_relief_depth_m: 0.003,
+            orientation_enabled: true,
+            orientation_deg: 30.0,
+        }
+    }
+
+    #[test]
+    fn gate_ridge_options_passes_everything_when_all_on() {
+        let o = gate_ridge_options(full_controls());
+        assert!(o.enabled);
+        assert_eq!(o.rings.len(), 1);
+        assert_eq!(o.texture_depth_m, 0.0015);
+        assert_eq!(o.side_pinch_depth_m, 0.0015);
+        assert_eq!(o.tip_relief_depth_m, 0.003);
+        assert_eq!(o.orientation_deg, 30.0);
+    }
+
+    #[test]
+    fn gate_ridge_options_zeroes_each_disabled_feature_independently() {
+        // Each toggle off drops ONLY its own feature — the others pass through.
+        let rings_off = gate_ridge_options(RidgeControls {
+            rings_enabled: false,
+            ..full_controls()
+        });
+        assert!(rings_off.rings.is_empty(), "rings dropped");
+        assert_eq!(rings_off.texture_depth_m, 0.0015, "texture untouched");
+
+        let texture_off = gate_ridge_options(RidgeControls {
+            texture_enabled: false,
+            ..full_controls()
+        });
+        assert_eq!(texture_off.texture_depth_m, 0.0, "texture dropped");
+        assert_eq!(texture_off.rings.len(), 1, "rings untouched");
+        // Spacing is carried regardless (inert when depth is 0).
+        assert_eq!(texture_off.texture_spacing_m, 0.008);
+
+        let pinch_off = gate_ridge_options(RidgeControls {
+            side_pinch_enabled: false,
+            ..full_controls()
+        });
+        assert_eq!(pinch_off.side_pinch_depth_m, 0.0);
+        assert_eq!(pinch_off.tip_relief_depth_m, 0.003, "tip relief untouched");
+
+        let relief_off = gate_ridge_options(RidgeControls {
+            tip_relief_enabled: false,
+            ..full_controls()
+        });
+        assert_eq!(relief_off.tip_relief_depth_m, 0.0);
+
+        let orient_off = gate_ridge_options(RidgeControls {
+            orientation_enabled: false,
+            ..full_controls()
+        });
+        assert_eq!(orient_off.orientation_deg, 0.0);
+        assert_eq!(orient_off.side_pinch_depth_m, 0.0015, "pinch untouched");
+    }
+
     #[test]
     fn quality_index_maps_to_cell_size() {
         // Index 0 (the picker default) must be the 0.5 mm print quality;
@@ -599,6 +866,72 @@ visible = true
         // Out-of-range indices fall back to the safe print-quality default.
         assert_eq!(cell_size_m_for_quality(99), 0.0005);
         assert_eq!(cell_size_m_for_quality(-1), 0.0005);
+    }
+
+    #[test]
+    fn enumerate_parts_detachable_lists_a_plug_per_layer() {
+        let parts = enumerate_parts(2, CastMode::Detachable);
+        // 2 layers × (2 cups + 1 plug) + platform + dowels = 8.
+        assert_eq!(parts.len(), 2 * 3 + 2);
+        assert_eq!(parts[0].1, "Layer 1 — cup (left)");
+        assert_eq!(parts[2].1, "Layer 1 — plug");
+        assert_eq!(parts[5].1, "Layer 2 — plug");
+        assert_eq!(parts[6].0, PartId::Platform);
+        assert_eq!(parts[7].0, PartId::Dowel);
+    }
+
+    #[test]
+    fn enumerate_parts_bonded_lists_only_the_layer0_plug() {
+        let parts = enumerate_parts(3, CastMode::Bonded);
+        // 3 layers × 2 cups + 1 plug (layer 0 only) + platform + dowels = 9.
+        assert_eq!(parts.len(), 3 * 2 + 1 + 2);
+        let plugs: Vec<_> = parts
+            .iter()
+            .filter(|(id, _)| matches!(id, PartId::Plug { .. }))
+            .collect();
+        assert_eq!(plugs.len(), 1, "bonded lists only one plug");
+        assert_eq!(plugs[0].0, PartId::Plug { layer_index: 0 });
+    }
+
+    #[test]
+    fn all_checked_detachable_yields_the_full_selection() {
+        let parts = enumerate_parts(2, CastMode::Detachable);
+        let checked = vec![true; parts.len()];
+        let sel = part_selection_from_checks(&parts, &checked, CastMode::Detachable);
+        assert!(sel.is_all(), "all checked → the validated full-cast path");
+    }
+
+    #[test]
+    fn all_checked_bonded_is_not_the_full_selection() {
+        let parts = enumerate_parts(2, CastMode::Bonded);
+        let checked = vec![true; parts.len()];
+        let sel = part_selection_from_checks(&parts, &checked, CastMode::Bonded);
+        assert!(
+            !sel.is_all(),
+            "bonded never routes to the full detachable export"
+        );
+        assert!(sel.includes(PartId::Plug { layer_index: 0 }));
+        assert!(
+            !sel.includes(PartId::Plug { layer_index: 1 }),
+            "no layer-1 plug"
+        );
+    }
+
+    #[test]
+    fn subset_selects_only_checked_parts() {
+        let parts = enumerate_parts(2, CastMode::Detachable);
+        // Check only "Layer 1 — plug" (index 2).
+        let mut checked = vec![false; parts.len()];
+        checked[2] = true;
+        let sel = part_selection_from_checks(&parts, &checked, CastMode::Detachable);
+        assert!(!sel.is_all());
+        assert!(sel.includes(PartId::Plug { layer_index: 0 }));
+        assert!(!sel.includes(PartId::Plug { layer_index: 1 }));
+        assert!(!sel.includes(PartId::Platform));
+        assert!(!sel.includes(PartId::Cup {
+            layer_index: 0,
+            side: PieceSide::Negative
+        }));
     }
 
     #[test]

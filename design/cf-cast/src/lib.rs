@@ -77,6 +77,7 @@
 
 pub mod bolt_pattern;
 pub mod canal;
+pub mod cast_mode;
 pub mod cure;
 pub mod dowel;
 pub mod dowel_hole;
@@ -87,11 +88,13 @@ pub mod gasket_mold;
 mod material;
 pub mod mesh_csg;
 mod mesher;
+pub mod part_selection;
 pub mod piece;
 pub mod platform;
 pub mod plug;
 pub mod pour;
 mod pour_volume;
+pub mod preview;
 pub mod prismatic_pin;
 mod procedure;
 mod ribbon;
@@ -105,8 +108,9 @@ mod spec;
 
 pub use canal::{
     CANAL_DEBRIS_MAX_DROP_FRACTION, CanalFrame, CanalSpec, RingSpec, build_canal_plug,
-    filter_plug_debris,
+    build_canal_plug_framed, filter_plug_debris,
 };
+pub use cast_mode::CastMode;
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
@@ -120,6 +124,7 @@ pub use mesh_csg::{
     build_cylinder_along_axis, build_half_space_slab, build_truncated_pyramid_via_hull_pts,
     geometric_equivalence, weld_in_place,
 };
+pub use part_selection::{PartId, PartSelection};
 pub use piece::compose_piece_solid;
 pub use platform::build_platform_solid;
 pub use plug::{
@@ -128,11 +133,15 @@ pub use plug::{
 };
 pub use pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume};
+pub use preview::{preview_textured_plug, preview_textured_solid};
 pub use prismatic_pin::{
     LATERAL_ORTHOGONALITY_TOLERANCE, PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec,
     build_prismatic_pin_sdf,
 };
-pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
+pub use procedure::{
+    generate_procedure_markdown, generate_procedure_markdown_v2,
+    generate_procedure_markdown_v2_for_mode,
+};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 pub use seam_fit::best_fit_planar_seam;
@@ -143,6 +152,6 @@ pub use seam_solver::{
 };
 pub use spec::{
     CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
-    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, V2LayerReport,
-    V2MoldExportReport,
+    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, SelectedExportReport,
+    V2LayerReport, V2MoldExportReport,
 };

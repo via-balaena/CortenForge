@@ -16,6 +16,7 @@ use mesh_printability::{
 use nalgebra::Vector3;
 
 use crate::bolt_pattern::plan_smart_bolt_placements;
+use crate::cast_mode::CastMode;
 use crate::dowel_hole::plan_smart_dowel_placements;
 use crate::error::{CastError, CastTarget};
 use crate::flange::FlangeKind;
@@ -23,10 +24,11 @@ use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
 use crate::mesh_csg::apply_mating_transforms;
 use crate::mesher::{solid_to_mm_mesh, solid_to_mm_mesh_with_skin};
+use crate::part_selection::{PartId, PartSelection};
 use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared, layer_mc_bounds};
 use crate::plug::add_plug_pins;
 use crate::pour_volume::{POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume, integrate_negative_sdf_volume};
-use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
+use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2_for_mode};
 use crate::ribbon::{PieceSide, Ribbon};
 use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 use crate::silhouette_2d::Point2;
@@ -228,22 +230,29 @@ pub struct CastSpec {
     /// the offset cases with an explicit per-layer offset
     /// parameter.
     pub scan_mesh_for_plug_layer_0: Option<Arc<IndexedMesh>>,
-    /// Marching-cubes cell size for the **layer-0 plug only** (meters).
-    /// `None` (default) → use [`Self::mesh_cell_size_m`] like every
-    /// other mesh. `Some(fine)` is set by the canal path so the
-    /// sub-cm grip rings + ~1.5 mm texture survive meshing while the
-    /// cups stay coarse; the layer-0 plug bounding box is small, so
-    /// the cost is bounded. Layers N>0 always use the global cell
-    /// size (they carry no canal features).
+    /// Marching-cubes cell size for the **plugs** (meters). `None` (default) →
+    /// use [`Self::mesh_cell_size_m`] like every other mesh. `Some(fine)` is
+    /// set by the canal path so the sub-cm grip rings + ~1.5 mm texture survive
+    /// meshing. Applies to every plug — layer-0's plug AND the N>0 plugs (the
+    /// textured layer bodies), which all carry the canal field post scan-surface
+    /// unification; plug bounding boxes are small, so the cost is bounded. The
+    /// cup pieces stay at the global cell (large; texture there is coarser —
+    /// fine at the production 0.5 mm config). (Name kept for compatibility.)
     pub plug_layer_0_mesh_cell_size_m: Option<f64>,
-    /// Narrow-band skip skin for the **layer-0 plug only** (meters): an
-    /// upper bound on the magnitude of the canal feature's non-1-Lipschitz
-    /// additive displacement (`max_inward_depth + suction_bulge`). `None`
-    /// (default) → `0.0`, the plain ≤1-Lipschitz case. The canal path sets
-    /// `Some(skin)` so the narrow-band mesher widens its skip margin by
-    /// `2·skin` and stays byte-identical to the dense bake on the textured
-    /// plug (see `mesher::solid_to_mm_mesh_with_skin`). Layers N>0 carry no
-    /// canal features (skin 0).
+    /// Narrow-band skip skin for the **canal feature field** (meters): an
+    /// upper bound on the magnitude of the canal's non-1-Lipschitz additive
+    /// displacement (`max_inward_depth + suction_bulge`). `None` (default) →
+    /// `0.0`, the plain ≤1-Lipschitz case. The canal path sets `Some(skin)` so
+    /// the narrow-band mesher widens its skip margin by `2·skin` and stays
+    /// byte-identical to the dense bake on any textured surface (see
+    /// `mesher::solid_to_mm_mesh_with_skin`).
+    ///
+    /// Post scan-surface unification the SAME canal field is composed onto the
+    /// layer-0 plug **and every layer body**, so this one skin also guards the
+    /// cup pieces (`bounding ∖ textured_body`) and the N>0 plugs (which are the
+    /// textured layer bodies). When the canal is off it is `None` everywhere,
+    /// so every mesh stays byte-identical to the pre-canal path. (Name kept for
+    /// compatibility; it is really the canal-field skin, not plug-0-specific.)
     pub plug_layer_0_field_skin_m: Option<f64>,
 }
 
@@ -516,6 +525,24 @@ pub struct V2MoldExportReport {
     /// fit into the cup-piece mating-face dowel-hole pockets. §M-S2
     /// of [[project-cf-cast-unified-mating-plane-recon]].
     pub dowel: Option<DowelArtifact>,
+}
+
+/// Report from a [`CastSpec::export_selected`] run.
+///
+/// The partial-cast sibling of [`V2MoldExportReport`], carrying only what a
+/// subset export needs: the paths actually written, and the per-layer pour
+/// volumes for **every** layer (so a complete pour plan survives a partial
+/// geometry run).
+#[derive(Debug, Clone)]
+pub struct SelectedExportReport {
+    /// Per-layer pour volume + mass, innermost-first, for **all** layers
+    /// (1:1 with `CastSpec::layers`) regardless of which parts were
+    /// generated — volume integration is cheap and MC-free.
+    pub layer_pours: Vec<PourVolume>,
+    /// Filesystem paths of the STLs written this run (the selected parts
+    /// that the recipe actually produces; an unselected or recipe-absent
+    /// part contributes nothing).
+    pub written: Vec<PathBuf>,
 }
 
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
@@ -894,6 +921,24 @@ impl CastSpec {
     ///   pour mass exceeds [`Self::mass_budget_kg`].
     /// - [`CastError::MeshIo`] on filesystem write failure.
     pub fn write_procedure_v2(&self, ribbon: &Ribbon, path: &Path) -> Result<(), CastError> {
+        // The detachable model is the historical default — byte-identical.
+        self.write_procedure_v2_for_mode(ribbon, path, CastMode::Detachable)
+    }
+
+    /// Write the v2 procedure markdown for an explicit [`CastMode`]
+    /// ([`Self::write_procedure_v2`] is the `Detachable` shorthand).
+    /// `Bonded` emits the cast-in-place / bond-as-you-go procedure (one plug,
+    /// pour each layer onto the previous cured one).
+    ///
+    /// # Errors
+    /// As [`Self::write_procedure_v2`] (empty layers, too-curved centerline,
+    /// mass budget, filesystem write).
+    pub fn write_procedure_v2_for_mode(
+        &self,
+        ribbon: &Ribbon,
+        path: &Path,
+        mode: CastMode,
+    ) -> Result<(), CastError> {
         if self.layers.is_empty() {
             return Err(CastError::EmptyLayers);
         }
@@ -908,7 +953,7 @@ impl CastSpec {
         }
         let pour_volumes = self.compute_pour_volumes()?;
         check_mass_budget(self, &pour_volumes)?;
-        let markdown = generate_procedure_markdown_v2(self, &pour_volumes, ribbon);
+        let markdown = generate_procedure_markdown_v2_for_mode(self, &pour_volumes, ribbon, mode);
         std::fs::write(path, markdown).map_err(|e| CastError::MeshIo {
             path: path.to_path_buf(),
             source: mesh_io::IoError::from(e),
@@ -1048,6 +1093,215 @@ impl CastSpec {
             funnel: funnel_out,
             gasket_molds: gasket_molds_out,
             dowel: dowel_out,
+        })
+    }
+
+    /// Export only the [`selection`](PartSelection)'s parts — the
+    /// time-saving sibling of [`Self::export_molds_v2`]. Unselected cup
+    /// halves / plugs are never meshed (the marching-cubes cost is what a
+    /// full cast spends minutes on), so re-printing a single piece is fast.
+    ///
+    /// Each generated piece reuses the exact same leaf meshing + filename
+    /// the full export uses, so a selected piece is byte-identical to its
+    /// full-cast counterpart (`export_selected` with [`PartSelection::all`]
+    /// writes the same STL bytes as `export_molds_v2`).
+    ///
+    /// The returned [`SelectedExportReport`] carries the written paths plus
+    /// the per-layer pour volumes for **every** layer (volume integration
+    /// is cheap and has no marching cubes), so a frontend can still build a
+    /// complete pour plan even when only a subset of molds was generated.
+    ///
+    /// # Errors
+    /// [`CastError::EmptyLayers`] / [`CastError::CenterlineTooCurved`] /
+    /// budget + meshing failures, exactly as [`Self::export_molds_v2`].
+    // Linear orchestration: validate → pour volumes → seam solve → per-part
+    // mesh/write. Splitting it would scatter the shared `written`/`progress`
+    // state across helpers without clarifying the (already sequential) flow.
+    #[allow(clippy::too_many_lines)]
+    pub fn export_selected(
+        &self,
+        ribbon: &Ribbon,
+        out_dir: &Path,
+        selection: &PartSelection,
+    ) -> Result<SelectedExportReport, CastError> {
+        if self.layers.is_empty() {
+            return Err(CastError::EmptyLayers);
+        }
+        let max_rotation = ribbon.max_tangent_rotation_rad();
+        if max_rotation > MAX_TANGENT_ROTATION_RAD {
+            return Err(CastError::CenterlineTooCurved {
+                max_rotation_rad: max_rotation,
+                max_rotation_deg: max_rotation.to_degrees(),
+                threshold_rad: MAX_TANGENT_ROTATION_RAD,
+                threshold_deg: MAX_TANGENT_ROTATION_RAD.to_degrees(),
+            });
+        }
+
+        // Pour volumes for EVERY layer (cheap, no MC) so the pour plan stays
+        // complete regardless of which molds were generated.
+        let pour_volumes = self.compute_pour_volumes()?;
+        check_mass_budget(self, &pour_volumes)?;
+
+        let layer_count = self.layers.len();
+        let cup = |layer_index: usize, side: PieceSide| PartId::Cup { layer_index, side };
+
+        // Progress total = the selected MC-heavy parts (cups + plugs); the
+        // accessories are the fast tail (uncounted), matching export_molds_v2.
+        let mut mc_total = 0usize;
+        for i in 0..layer_count {
+            mc_total += usize::from(selection.includes(cup(i, PieceSide::Negative)));
+            mc_total += usize::from(selection.includes(cup(i, PieceSide::Positive)));
+            mc_total += usize::from(selection.includes(PartId::Plug { layer_index: i }));
+        }
+        let progress_done = AtomicUsize::new(0);
+        let progress = Progress {
+            done: &progress_done,
+            total: mc_total,
+        };
+
+        // The seam solve is needed when any cup is selected (the flange /
+        // fastener silhouette) or the dowel array is (its rod count comes from
+        // the placement). Solved once and shared, exactly as the full export.
+        let any_cup = (0..layer_count).any(|i| {
+            selection.includes(cup(i, PieceSide::Negative))
+                || selection.includes(cup(i, PieceSide::Positive))
+        });
+        let placements = if any_cup || selection.includes(PartId::Dowel) {
+            Some(compute_smart_placements(self, ribbon)?)
+        } else {
+            None
+        };
+
+        std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
+            path: out_dir.to_path_buf(),
+            source: mesh_io::IoError::from(e),
+        })?;
+        let stls_dir = out_dir.join(STLS_SUBDIR);
+        std::fs::create_dir_all(&stls_dir).map_err(|e| CastError::MeshIo {
+            path: stls_dir.clone(),
+            source: mesh_io::IoError::from(e),
+        })?;
+
+        let mut written: Vec<PathBuf> = Vec::new();
+        let save = |mesh: &IndexedMesh, path: &Path| -> Result<(), CastError> {
+            save_stl(mesh, path, true).map_err(|source| CastError::MeshIo {
+                path: path.to_path_buf(),
+                source,
+            })
+        };
+
+        // Cups + plugs, per layer.
+        for (layer_index, layer) in self.layers.iter().enumerate() {
+            let want_neg = selection.includes(cup(layer_index, PieceSide::Negative));
+            let want_pos = selection.includes(cup(layer_index, PieceSide::Positive));
+            // `placements` is always `Some` here (it is solved whenever any cup
+            // is selected); the `if let` avoids an `expect` on that invariant.
+            if let Some(pl) = placements.as_ref().filter(|_| want_neg || want_pos) {
+                let smart_dowels: &[Point2] = pl
+                    .dowels
+                    .as_ref()
+                    .and_then(|plan| plan.get(layer_index))
+                    .map_or(&[], Vec::as_slice);
+                let smart_bolts: &[Point2] = pl
+                    .bolts
+                    .as_ref()
+                    .and_then(|plan| plan.get(layer_index))
+                    .map_or(&[], Vec::as_slice);
+                let demand_flange = pl
+                    .demand_flanges
+                    .as_ref()
+                    .and_then(|f| f.get(layer_index))
+                    .and_then(Clone::clone);
+                let shared = compose_piece_shared(
+                    &layer.body,
+                    self.wall_thickness_m,
+                    ribbon,
+                    smart_dowels,
+                    smart_bolts,
+                    demand_flange,
+                )?;
+                for (want, side) in [
+                    (want_neg, PieceSide::Negative),
+                    (want_pos, PieceSide::Positive),
+                ] {
+                    if want {
+                        let p = mesh_and_gate_v2_piece(
+                            self,
+                            ribbon,
+                            layer,
+                            layer_index,
+                            side,
+                            &shared,
+                            out_dir,
+                            layer_count,
+                            progress,
+                        )?;
+                        save(&p.mesh, &p.path)?;
+                        written.push(p.path);
+                    }
+                }
+            }
+            if selection.includes(PartId::Plug { layer_index }) {
+                let p = mesh_and_gate_v2_one_plug(
+                    self,
+                    ribbon,
+                    out_dir,
+                    progress,
+                    layer_index,
+                    layer_count,
+                )?;
+                save(&p.mesh, &p.path)?;
+                written.push(p.path);
+            }
+        }
+
+        // Shared accessories (the fast tail).
+        if selection.includes(PartId::Platform) {
+            if let Some(p) = mesh_and_gate_v2_platform(self, ribbon, out_dir)? {
+                save(&p.mesh, &p.path)?;
+                written.push(p.path);
+            }
+        }
+        if selection.includes(PartId::Funnel) {
+            if let Some(f) = mesh_and_gate_v2_funnel(self, ribbon, out_dir)? {
+                save(&f.mesh, &f.path)?;
+                written.push(f.path);
+            }
+        }
+        if selection.includes(PartId::Dowel) {
+            // Rod count = the per-layer dowels the solver placed (same source
+            // the full export threads from the pieces pass), so the printed
+            // array matches the holes carved into the cups.
+            let count = u32::try_from(
+                placements
+                    .as_ref()
+                    .and_then(|pl| pl.dowels.as_ref())
+                    .and_then(|plan| plan.first())
+                    .map_or(0, Vec::len),
+            )
+            .unwrap_or(u32::MAX);
+            if let Some(d) = mesh_and_gate_v2_dowel(self, ribbon, out_dir, count)? {
+                save(&d.mesh, &d.path)?;
+                written.push(d.path);
+            }
+        }
+        // Gaskets: the batch helper meshes all layers' gaskets (cheap flat
+        // trays; off entirely in the wizard recipe), then we write only the
+        // selected layers'.
+        if (0..layer_count).any(|i| selection.includes(PartId::GasketMold { layer_index: i })) {
+            for g in mesh_and_gate_v2_gaskets(self, ribbon, out_dir)? {
+                if selection.includes(PartId::GasketMold {
+                    layer_index: g.layer_index,
+                }) {
+                    save(&g.mesh, &g.path)?;
+                    written.push(g.path);
+                }
+            }
+        }
+
+        Ok(SelectedExportReport {
+            layer_pours: pour_volumes,
+            written,
         })
     }
 }
@@ -1331,7 +1585,18 @@ fn mesh_and_gate_v2_piece(
         layer_index,
         piece_side,
     };
-    let mesh = solid_to_mm_mesh(&piece_solid, spec.mesh_cell_size_m, target)?;
+    // The cup piece is `bounding ∖ layer_body`; post scan-surface unification
+    // the layer body carries the canal field, so the cup's inner surface is
+    // the textured (non-1-Lipschitz) body surface. Pass the canal-field skin so
+    // the narrow-band skip doesn't sentinel-fill surface-crossing cells and
+    // drop ring/texture geometry. Canal off → skin `None` → plain mesh, byte-
+    // identical to before.
+    let mesh = match spec.plug_layer_0_field_skin_m {
+        Some(skin) if skin > 0.0 => {
+            solid_to_mm_mesh_with_skin(&piece_solid, spec.mesh_cell_size_m, target, skin)?
+        }
+        _ => solid_to_mm_mesh(&piece_solid, spec.mesh_cell_size_m, target)?,
+    };
     // Post-MC mesh-CSG stage (S3 plumbing; S4/S5/S6 emit transforms).
     // Empty `mating_transforms` short-circuits to a pass-through.
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
@@ -1394,134 +1659,146 @@ fn mesh_and_gate_v2_plugs(
     let layer_count = spec.layers.len();
     (0..layer_count)
         .into_par_iter()
-        .map(|layer_index| -> Result<PendingPlug, CastError> {
-            let t_compose = std::time::Instant::now();
-            let base_plug = if layer_index == 0 {
-                spec.plug.clone()
-            } else {
-                spec.layers[layer_index - 1].body.clone()
-            };
-            let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
-            let target = CastTarget::Plug {
-                layer_index: Some(layer_index),
-            };
-            // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
-            // feature flag is set, layer 0 bypasses the SDF → MC
-            // pipeline and copies the cf-scan-prep cleaned scan mesh
-            // directly. Mating-feature transforms still apply post-
-            // copy (cap-plane SeamTrim + plug-lock pyramid union).
-            // Layers 1+ stay on the SDF/MC path until S2 of the
-            // recon extends scan-mesh-direct to the offset cases.
-            //
-            // Caveat: `add_plug_pins` is currently pure-transforms
-            // (returns its `base_plug` input unchanged + a Vec of
-            // mating transforms), so discarding `plug_solid` on the
-            // scan-mesh-direct branch is just a cheap `Solid::clone`
-            // waste. If `add_plug_pins` ever re-grows SDF-side
-            // composition (e.g., a §G-7-style plug-shaft re-added
-            // pre-MC), the discard would silently skip that
-            // composition on the scan-mesh-direct path — pull the
-            // mating-transforms construction out independently then.
-            let (mut mesh, path_label) = if let (0, Some(scan_mesh)) =
-                (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref())
-            {
-                (build_plug_body_mesh(scan_mesh), "scan-mesh-direct")
-            } else {
-                // Layer-0 plug uses the per-plug fine cell size when set
-                // (canal path); everything else uses the global cell size.
-                let cell_size_m = if layer_index == 0 {
-                    spec.plug_layer_0_mesh_cell_size_m
-                        .unwrap_or(spec.mesh_cell_size_m)
-                } else {
-                    spec.mesh_cell_size_m
-                };
-                // Layer-0 plug carries the canal feature's non-1-Lipschitz
-                // displacement; pass its skin so the narrow-band skip stays
-                // byte-identical to the dense bake. Layers N>0 are plain CSG
-                // (skin 0 ⇒ identical to `solid_to_mm_mesh`).
-                let field_skin_m = if layer_index == 0 {
-                    spec.plug_layer_0_field_skin_m.unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-                (
-                    solid_to_mm_mesh_with_skin(&plug_solid, cell_size_m, target, field_skin_m)?,
-                    "compose+MC",
-                )
-            };
-            // S1.1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md (recon §SMD-7
-            // follow-up #1): the cf-scan-prep cleaned scan mesh fails
-            // manifold3d's `indexed_mesh_to_manifold` precondition
-            // ("every edge shared by exactly two faces") even after
-            // cf-scan-prep's STL serialization. Welds the soup back
-            // into shared-index topology so manifold3d's
-            // `indexed_mesh_to_manifold` accepts the mesh. See
-            // `repair_scan_mesh_for_mesh_csg`'s docstring for the
-            // full S1.1 history (baby_shark + centroid-fan upstream
-            // fixes mean this repair can stay weld-only).
-            let repair_summary = if path_label == "scan-mesh-direct" {
-                Some(
-                    repair_scan_mesh_for_mesh_csg(&mut mesh)
-                        .map_err(|source| CastError::ScanMeshRepair { target, source })?,
-                )
-            } else {
-                None
-            };
-            // Canal plug debris filter (guarded). Only the canal layer-0
-            // plug (flagged by the per-plug fine cell size) runs through
-            // the SDF/MC path that can shed floating fragments on a noisy
-            // scan; drop confirmed debris, but error loudly on any
-            // substantial detachment rather than hide a real tear. No-op
-            // for a clean single-body plug. See `canal::filter_plug_debris`.
-            if layer_index == 0 && spec.plug_layer_0_mesh_cell_size_m.is_some() {
-                crate::canal::filter_plug_debris(&mut mesh, target)?;
-            }
-            let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
-            let compose_mesh_s = t_compose.elapsed().as_secs_f64();
-            let path = out_dir
-                .join(STLS_SUBDIR)
-                .join(plug_layer_filename(layer_index));
-            let t_gate = std::time::Instant::now();
-            let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
-            let gate_s = t_gate.elapsed().as_secs_f64();
-            let blocking = blocking_critical_count(&validation, target);
-            if blocking > 0 {
-                return Err(CastError::PrintabilityCritical {
-                    target,
-                    issue_count: blocking,
-                    path,
-                });
-            }
-            let repair_note = repair_summary
-                .map(|s| {
-                    format!(
-                        ", repair welds={} degens={} dupes={} unref={} holes={}",
-                        s.base.vertices_welded,
-                        s.base.degenerates_removed,
-                        s.base.duplicates_removed,
-                        s.base.unreferenced_removed,
-                        s.holes_filled,
-                    )
-                })
-                .unwrap_or_default();
-            let k = progress.tick();
-            eprintln!(
-                "[cf-cast] [{k}/{progress_total}] layer {layer_index}/{layer_count_minus_1} plug \
-                 — {path_label} {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
-                 ({verts} verts / {faces} faces){repair_note}",
-                progress_total = progress.total,
-                layer_count_minus_1 = layer_count.saturating_sub(1),
-                verts = mesh.vertices.len(),
-                faces = mesh.faces.len(),
-            );
-            Ok(PendingPlug {
-                layer_index,
-                mesh,
-                validation,
-                path,
-            })
+        .map(|layer_index| {
+            mesh_and_gate_v2_one_plug(spec, ribbon, out_dir, progress, layer_index, layer_count)
         })
         .collect::<Result<Vec<PendingPlug>, CastError>>()
+}
+
+/// Compose + mesh + F4-gate a SINGLE layer's plug. Extracted verbatim from
+/// the per-layer closure inside [`mesh_and_gate_v2_plugs`] so the
+/// selected-export path can mesh one plug without the full fan-out;
+/// behavior (and output bytes) are identical to the inlined version.
+fn mesh_and_gate_v2_one_plug(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+    progress: Progress,
+    layer_index: usize,
+    layer_count: usize,
+) -> Result<PendingPlug, CastError> {
+    let t_compose = std::time::Instant::now();
+    let base_plug = if layer_index == 0 {
+        spec.plug.clone()
+    } else {
+        spec.layers[layer_index - 1].body.clone()
+    };
+    let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
+    let target = CastTarget::Plug {
+        layer_index: Some(layer_index),
+    };
+    // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
+    // feature flag is set, layer 0 bypasses the SDF → MC
+    // pipeline and copies the cf-scan-prep cleaned scan mesh
+    // directly. Mating-feature transforms still apply post-
+    // copy (cap-plane SeamTrim + plug-lock pyramid union).
+    // Layers 1+ stay on the SDF/MC path until S2 of the
+    // recon extends scan-mesh-direct to the offset cases.
+    //
+    // Caveat: `add_plug_pins` is currently pure-transforms
+    // (returns its `base_plug` input unchanged + a Vec of
+    // mating transforms), so discarding `plug_solid` on the
+    // scan-mesh-direct branch is just a cheap `Solid::clone`
+    // waste. If `add_plug_pins` ever re-grows SDF-side
+    // composition (e.g., a §G-7-style plug-shaft re-added
+    // pre-MC), the discard would silently skip that
+    // composition on the scan-mesh-direct path — pull the
+    // mating-transforms construction out independently then.
+    let (mut mesh, path_label) =
+        if let (0, Some(scan_mesh)) = (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
+            (build_plug_body_mesh(scan_mesh), "scan-mesh-direct")
+        } else {
+            // Every plug uses the per-plug fine cell size when set (the canal
+            // path): layer-0's plug and the N>0 plugs (the textured layer
+            // bodies) all carry the canal field now, so they all need the fine
+            // cell for the sub-cm rings + ~1.5 mm texture to survive meshing.
+            // Canal off → `None` → the global cell, byte-identical to before.
+            let cell_size_m = spec
+                .plug_layer_0_mesh_cell_size_m
+                .unwrap_or(spec.mesh_cell_size_m);
+            // Every plug carries the canal feature's non-1-Lipschitz
+            // displacement now: layer-0's plug is the textured plug, and the
+            // N>0 plugs ARE the textured layer bodies (post scan-surface
+            // unification). Pass the canal-field skin so the narrow-band skip
+            // stays byte-identical to the dense bake. Canal off → `None` →
+            // 0.0, plain CSG, identical to before.
+            let field_skin_m = spec.plug_layer_0_field_skin_m.unwrap_or(0.0);
+            (
+                solid_to_mm_mesh_with_skin(&plug_solid, cell_size_m, target, field_skin_m)?,
+                "compose+MC",
+            )
+        };
+    // S1.1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md (recon §SMD-7
+    // follow-up #1): the cf-scan-prep cleaned scan mesh fails
+    // manifold3d's `indexed_mesh_to_manifold` precondition
+    // ("every edge shared by exactly two faces") even after
+    // cf-scan-prep's STL serialization. Welds the soup back
+    // into shared-index topology so manifold3d's
+    // `indexed_mesh_to_manifold` accepts the mesh. See
+    // `repair_scan_mesh_for_mesh_csg`'s docstring for the
+    // full S1.1 history (baby_shark + centroid-fan upstream
+    // fixes mean this repair can stay weld-only).
+    let repair_summary = if path_label == "scan-mesh-direct" {
+        Some(
+            repair_scan_mesh_for_mesh_csg(&mut mesh)
+                .map_err(|source| CastError::ScanMeshRepair { target, source })?,
+        )
+    } else {
+        None
+    };
+    // Canal plug debris filter (guarded). Only the canal layer-0
+    // plug (flagged by the per-plug fine cell size) runs through
+    // the SDF/MC path that can shed floating fragments on a noisy
+    // scan; drop confirmed debris, but error loudly on any
+    // substantial detachment rather than hide a real tear. No-op
+    // for a clean single-body plug. See `canal::filter_plug_debris`.
+    if layer_index == 0 && spec.plug_layer_0_mesh_cell_size_m.is_some() {
+        crate::canal::filter_plug_debris(&mut mesh, target)?;
+    }
+    let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
+    let compose_mesh_s = t_compose.elapsed().as_secs_f64();
+    let path = out_dir
+        .join(STLS_SUBDIR)
+        .join(plug_layer_filename(layer_index));
+    let t_gate = std::time::Instant::now();
+    let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+    let gate_s = t_gate.elapsed().as_secs_f64();
+    let blocking = blocking_critical_count(&validation, target);
+    if blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target,
+            issue_count: blocking,
+            path,
+        });
+    }
+    let repair_note = repair_summary
+        .map(|s| {
+            format!(
+                ", repair welds={} degens={} dupes={} unref={} holes={}",
+                s.base.vertices_welded,
+                s.base.degenerates_removed,
+                s.base.duplicates_removed,
+                s.base.unreferenced_removed,
+                s.holes_filled,
+            )
+        })
+        .unwrap_or_default();
+    let k = progress.tick();
+    eprintln!(
+        "[cf-cast] [{k}/{progress_total}] layer {layer_index}/{layer_count_minus_1} plug \
+                 — {path_label} {compose_mesh_s:.1}s, F4 {gate_s:.1}s \
+                 ({verts} verts / {faces} faces){repair_note}",
+        progress_total = progress.total,
+        layer_count_minus_1 = layer_count.saturating_sub(1),
+        verts = mesh.vertices.len(),
+        faces = mesh.faces.len(),
+    );
+    Ok(PendingPlug {
+        layer_index,
+        mesh,
+        validation,
+        path,
+    })
 }
 
 /// Mesh + F4-gate the workshop platform STL, or return
@@ -3241,6 +3518,211 @@ mod tests {
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
         (spec, ribbon)
+    }
+
+    fn clean_dir(out_dir: &std::path::Path) {
+        match std::fs::remove_dir_all(out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+    }
+
+    /// 2-layer fixture (cuboid shells + capsule plug) for tests that must
+    /// tell layer-0 from layer-1 artifacts — e.g. bonded mode dropping
+    /// `plug_layer_1`. 12 mm cells to stay tractable under coverage.
+    fn two_layer_fixture() -> (CastSpec, Ribbon) {
+        let spec = CastSpec {
+            layers: vec![
+                CastLayer {
+                    body: Solid::cuboid(Vector3::new(0.020, 0.020, 0.015)),
+                    material: reference_material(),
+                },
+                CastLayer {
+                    body: Solid::cuboid(Vector3::new(0.030, 0.030, 0.025)),
+                    material: reference_material(),
+                },
+            ],
+            plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
+            bounding_region: Solid::cuboid(Vector3::new(0.045, 0.045, 0.035)),
+            wall_thickness_m: 0.020,
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+            scan_mesh_for_plug_layer_0: None,
+            plug_layer_0_mesh_cell_size_m: None,
+            plug_layer_0_field_skin_m: None,
+        };
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        (spec, ribbon)
+    }
+
+    /// Bonded mode ([`crate::CastMode::Bonded`]) drops the per-layer plugs
+    /// above layer 0: the bonded selection through `export_selected` writes
+    /// both layers' cups + only `plug_layer_0` — never `plug_layer_1` — while
+    /// the pour plan still spans every layer.
+    #[test]
+    fn export_selected_bonded_emits_only_plug_zero() {
+        use crate::cast_mode::CastMode;
+
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-bonded-two-layer");
+        clean_dir(&dir);
+
+        let (spec, ribbon) = two_layer_fixture();
+        let sel = CastMode::Bonded.part_selection(spec.layers.len());
+        let report = spec.export_selected(&ribbon, &dir, &sel).unwrap();
+
+        let mut names: Vec<String> = std::fs::read_dir(dir.join("stls"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert!(
+            names.contains(&"plug_layer_0.stl".to_string()),
+            "layer-0 plug kept: {names:?}"
+        );
+        assert!(
+            !names.contains(&"plug_layer_1.stl".to_string()),
+            "layer-1 plug dropped: {names:?}"
+        );
+        let cups = names
+            .iter()
+            .filter(|n| n.starts_with("mold_layer_"))
+            .count();
+        assert_eq!(cups, 4, "both layers' cup halves: {names:?}");
+        // Pour plan stays complete (both layers), even though only one plug.
+        assert_eq!(report.layer_pours.len(), 2);
+
+        clean_dir(&dir);
+    }
+
+    /// The bonded procedure markdown describes cast-in-place / one plug, and
+    /// differs from the detachable procedure (which keeps its nesting prose +
+    /// per-layer plugs). No meshing — pure markdown.
+    #[test]
+    fn bonded_procedure_describes_cast_in_place_one_plug() {
+        use crate::cast_mode::CastMode;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        let (spec, ribbon) = two_layer_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let bonded =
+            generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, CastMode::Bonded);
+
+        assert!(bonded.contains("bonded cast-in-place"), "bonded title");
+        assert!(bonded.contains("plug_layer_0"), "the one plug");
+        assert!(
+            bonded.contains("onto the previous cured layer"),
+            "bond-as-you-go framing"
+        );
+        assert!(
+            bonded.contains("leave layer 0 on the plug"),
+            "leave-in-place between layers"
+        );
+        assert!(
+            !bonded.contains("plug_layer_1"),
+            "no per-layer plug above 0 in bonded mode"
+        );
+        assert!(
+            !bonded.contains("standalone silicone tube"),
+            "no detachable nesting prose"
+        );
+
+        // Detachable differs and keeps its per-layer plug + nesting prose.
+        let detach =
+            generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, CastMode::Detachable);
+        assert_ne!(bonded, detach);
+        assert!(
+            detach.contains("plug_layer_1"),
+            "detachable prints each plug"
+        );
+    }
+
+    /// The selected-export path must write **byte-identical** STLs to the
+    /// full export for the same parts (it reuses the same leaf meshing +
+    /// filenames), and must write *only* the selected parts. This is the
+    /// load-bearing guarantee that "regenerate just this piece" produces the
+    /// same geometry as a full cast.
+    #[test]
+    fn export_selected_plug_is_byte_identical_to_full_and_writes_only_it() {
+        use crate::part_selection::{PartId, PartSelection};
+
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        let full_dir = base.join("cf-cast-selected-full");
+        let sel_dir = base.join("cf-cast-selected-plug");
+        clean_dir(&full_dir);
+        clean_dir(&sel_dir);
+
+        let (spec, ribbon) = v2_fixture();
+        let full = spec.export_molds_v2(&ribbon, &full_dir).unwrap();
+        let sel = spec
+            .export_selected(
+                &ribbon,
+                &sel_dir,
+                &PartSelection::from_ids([PartId::Plug { layer_index: 0 }]),
+            )
+            .unwrap();
+
+        // Only the plug was written.
+        assert_eq!(sel.written.len(), 1, "exactly one STL written");
+        assert!(sel.written[0].ends_with("plug_layer_0.stl"));
+        let sel_stls: Vec<String> = std::fs::read_dir(sel_dir.join("stls"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(sel_stls, vec!["plug_layer_0.stl".to_string()], "no cups");
+
+        // Byte-identity vs the full cast's plug.
+        let full_plug_bytes = std::fs::read(&full.layers[0].plug.path).unwrap();
+        let sel_plug_bytes = std::fs::read(sel_dir.join("stls").join("plug_layer_0.stl")).unwrap();
+        assert_eq!(
+            full_plug_bytes, sel_plug_bytes,
+            "selected plug bytes match the full-cast plug"
+        );
+
+        // The pour plan survives a partial run: all layers' pour volumes.
+        assert_eq!(sel.layer_pours.len(), spec.layers.len());
+
+        clean_dir(&full_dir);
+        clean_dir(&sel_dir);
+    }
+
+    /// `PartSelection::all()` through `export_selected` writes the same STL
+    /// file set as a full `export_molds_v2` (the identity property).
+    #[test]
+    fn export_selected_all_matches_full_cast_file_set() {
+        use crate::part_selection::PartSelection;
+
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        let full_dir = base.join("cf-cast-selected-all-full");
+        let all_dir = base.join("cf-cast-selected-all-sel");
+        clean_dir(&full_dir);
+        clean_dir(&all_dir);
+
+        let (spec, ribbon) = v2_fixture();
+        spec.export_molds_v2(&ribbon, &full_dir).unwrap();
+        spec.export_selected(&ribbon, &all_dir, &PartSelection::all())
+            .unwrap();
+
+        let names = |d: &std::path::Path| -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(d.join("stls"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            names(&full_dir),
+            names(&all_dir),
+            "select-all writes the same file set as the full cast"
+        );
+
+        clean_dir(&full_dir);
+        clean_dir(&all_dir);
     }
 
     #[test]

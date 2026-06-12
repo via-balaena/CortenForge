@@ -8,12 +8,14 @@
 //! thin `clap` dispatcher.
 //!
 //! Commands cover the full workflow: project management (`new`, `status`)
-//! plus the six steps — `scan`, `prep`, `design`, `molds`, `print`, `pour`.
+//! plus the steps — `scan`, `prep`, `design`, `molds`, `print`, `pour`. The
+//! GUI's `ShapePiece` step (cavity inset + ridges) is folded into `design`
+//! here (the `.design.toml` carries the inset; the CLI exposes no ridges).
 
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use cf_studio_core::{PourPlan, PourRecord, PrintExport, Project, Step};
+use cf_studio_core::{PlugDraft, PourPlan, PourRecord, PrintExport, Project, RidgeOptions, Step};
 use cf_studio_engine::{
     CastConfig, accept_prep, draft_from_design_toml, generate_molds, load_scan,
 };
@@ -87,8 +89,15 @@ pub fn cmd_prep(project_path: &Path, cleaned_stl: &Path, prep_toml: &Path) -> Re
     Ok(())
 }
 
-/// `design <design.toml>` — step 3: load a layer design (cavity inset +
-/// the soft→firm stack) from a `.design.toml`.
+/// `design <design.toml>` — load a layer design (cavity inset + the
+/// soft→firm stack) from a `.design.toml`.
+///
+/// The GUI splits this into two steps — `ShapePiece` (cavity inset + surface
+/// ridges, previewed) then `DesignLayers` (the stack). The headless CLI is
+/// driven by a `.design.toml`, which already carries the inset, so it folds
+/// both: it records a smooth plug (no ridges — the CLI doesn't expose them)
+/// from the design's inset, then the layer stack. Net result is the same
+/// project state the GUI reaches.
 ///
 /// # Errors
 /// If the project can't be loaded, the design is invalid, the scan isn't
@@ -98,9 +107,15 @@ pub fn cmd_design(project_path: &Path, design_toml: &Path) -> Result<()> {
     let draft = draft_from_design_toml(design_toml).context("load layer design")?;
     let layer_count = draft.layers.len();
     let inset_mm = draft.cavity_inset_m * 1000.0;
+    // ShapePiece: a smooth plug at the design's inset (the CLI exposes no
+    // ridges). Must precede `set_design` (which now requires ShapePiece).
     project
-        .set_design(draft)
-        .context("record design (is the scan cleaned yet?)")?;
+        .set_plug(PlugDraft {
+            cavity_inset_m: draft.cavity_inset_m,
+            ridges: RidgeOptions::default(),
+        })
+        .context("record the shaped plug (is the scan cleaned yet?)")?;
+    project.set_design(draft).context("record design")?;
     advance_after_step(&mut project);
     save(&project, project_path)?;
     println!("✓ Design set: {layer_count} layer(s), {inset_mm:.1} mm cavity inset.");
@@ -351,8 +366,8 @@ points_m = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.01]]
         let after = Project::load(&proj).unwrap();
         assert!(after.is_complete(Step::AddScan));
         assert!(after.is_complete(Step::CleanScan));
-        // Completing prep advanced to step 3.
-        assert_eq!(after.current_step(), Step::DesignLayers);
+        // Completing prep advanced to step 3 (ShapePiece, before DesignLayers).
+        assert_eq!(after.current_step(), Step::ShapePiece);
 
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -410,6 +425,11 @@ visible = true
         p.set_prep(PrepInput {
             cleaned_stl: "c.stl".into(),
             prep_toml: "p.toml".into(),
+        })
+        .unwrap();
+        p.set_plug(PlugDraft {
+            cavity_inset_m: 0.005,
+            ridges: RidgeOptions::default(),
         })
         .unwrap();
         p.set_design(DesignDraft {

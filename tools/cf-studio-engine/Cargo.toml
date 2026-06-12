@@ -46,6 +46,10 @@ cf-cap-planes = { workspace = true }
 # cf_cast::cure::lookup — per-silicone mix ratio / pot life / cure time
 # for the structured pour plan (the Step-6 pour-assistant's data).
 cf-cast = { workspace = true }
+# The SDF kernel — `Solid::from_sdf` / `offset` to build the real plug
+# (cleaned-scan SDF offset inward by the cavity inset) for the live
+# "Shape your piece" preview. Headless, no Bevy.
+cf-design = { workspace = true }
 # The headless scan-prep algorithms (simplify / cap / centerline / trim /
 # reconstruct + the cleaned-mesh & .prep.toml builders) that the step-2
 # EditSession drives — the same code the Bevy cf-scan-prep tool uses, so

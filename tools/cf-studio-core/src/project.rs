@@ -29,7 +29,7 @@ use crate::step::Step;
 /// The project-file schema version this build reads and writes.
 /// Bumped only when the on-disk shape changes; a project declaring a
 /// higher version is rejected by [`Project::load`].
-pub const PROJECT_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_SCHEMA_VERSION: u32 = 4;
 
 // ── per-step artifacts ──────────────────────────────────────────────
 //
@@ -69,19 +69,121 @@ pub struct LayerDraft {
     pub slacker_fraction: f64,
 }
 
-/// Artifact of [`Step::DesignLayers`] — cavity inset + the layer stack.
+/// One axisymmetric grip ring in the surface-ridge feature. Mirrors
+/// `cf_cast::RingSpec` in the wizard's owned, sanitized vocabulary — a
+/// smooth inward pinch of the plug channel that becomes a protruding
+/// grip ridge in the cured silicone.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RidgeRing {
+    /// Axial position along the channel as a fraction (0 = opening,
+    /// 1 = deep end).
+    pub position_frac: f64,
+    /// Inward pinch depth in meters (peak of the ring).
+    pub depth_m: f64,
+    /// Half-width of the ring's axial support, as a fraction of length.
+    pub half_width_frac: f64,
+}
+
+/// The optional surface-ridge feature — the frontend's sanitized view of
+/// `cf_cast`'s "canal" feature. `enabled = false` (the default) leaves the
+/// piece at its smooth scan-derived baseline, i.e. the historical wizard
+/// behavior.
+///
+/// The field is composed onto the **cleaned scan surface**, so it rides
+/// through every offset — the plug *and* every shell carry the identical
+/// displacement and the wall thicknesses stay constant (see
+/// `docs/CF_CAST_SCAN_SURFACE_TEXTURE_RECON.md`). One ridge set, applied
+/// everywhere — there is no separate interior/exterior choice.
+///
+/// When enabled, the piece grows: axisymmetric grip `rings`; fine surface
+/// texture (`texture_depth_m` / `texture_spacing_m`); a one-sided
+/// `side_pinch_depth_m`; and a `tip_relief_depth_m` outward pocket near the
+/// deep end. The one-sided features are oriented by `orientation_deg`
+/// (0° = the validated default axis), swept around the channel axis.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DesignDraft {
+pub struct RidgeOptions {
+    /// Master toggle. `false` → no ridges (the smooth baseline piece).
+    pub enabled: bool,
+    /// Axisymmetric grip rings (full rings around the piece).
+    pub rings: Vec<RidgeRing>,
+    /// Fine surface-texture rib depth in meters (`0.0` disables texture).
+    pub texture_depth_m: f64,
+    /// Fine surface-texture rib spacing (pitch) in meters.
+    pub texture_spacing_m: f64,
+    /// One-sided pinch depth in meters (`0.0` disables the asymmetry).
+    pub side_pinch_depth_m: f64,
+    /// Outward tip-relief pocket depth in meters (`0.0` disables it).
+    pub tip_relief_depth_m: f64,
+    /// Orientation of the one-sided features around the channel axis, in
+    /// degrees (`0.0` = the validated default direction).
+    pub orientation_deg: f64,
+}
+
+impl Default for RidgeOptions {
+    /// Off, but pre-populated with the validated `cf_cast::CanalSpec::iter1`
+    /// values so flipping `enabled` reproduces the historical canal cast and
+    /// the advanced UI opens on sensible starting numbers.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rings: vec![
+                RidgeRing {
+                    position_frac: 0.10,
+                    depth_m: 0.003,
+                    half_width_frac: 0.04,
+                },
+                RidgeRing {
+                    position_frac: 0.40,
+                    depth_m: 0.002,
+                    half_width_frac: 0.04,
+                },
+                RidgeRing {
+                    position_frac: 0.55,
+                    depth_m: 0.002,
+                    half_width_frac: 0.04,
+                },
+            ],
+            texture_depth_m: 0.0015,
+            texture_spacing_m: 0.008,
+            side_pinch_depth_m: 0.0015,
+            tip_relief_depth_m: 0.003,
+            orientation_deg: 0.0,
+        }
+    }
+}
+
+/// Artifact of [`Step::ShapePiece`] — the shaped plug: the cavity inset
+/// (snugness) plus the surface ridges. This is the single edit surface the
+/// user tunes against a live preview of the real cleaned scan; the inset
+/// turns the scan into the plug, and the ridges ride every offset (plug +
+/// shells) so the wall thickness stays constant. The downstream
+/// [`DesignDraft`] reuses this inset; the layer stack builds outward off it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PlugDraft {
     /// How far the cavity is inset from the scan surface, in meters
     /// (the "snugness" of the fit / press-fit reservation).
+    pub cavity_inset_m: f64,
+    /// The surface-ridge feature (off by default → the smooth plug).
+    pub ridges: RidgeOptions,
+}
+
+/// Artifact of [`Step::DesignLayers`] — cavity inset + the layer stack. The
+/// inset is carried here too (sourced from the [`PlugDraft`]) because this is
+/// the engine-facing `.design.toml` type: it fully describes the cast cavity
+/// + stack on its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DesignDraft {
+    /// How far the cavity is inset from the scan surface, in meters.
+    /// Mirrors [`PlugDraft::cavity_inset_m`] — the plug step owns the value;
+    /// this copy makes the design self-contained for the cast engine.
     pub cavity_inset_m: f64,
     /// The ordered (innermost-first) layer stack.
     pub layers: Vec<LayerDraft>,
 }
 
 /// One layer's pour instructions, derived from the cast run. This is
-/// the structured data the Step-6 pour assistant renders (mass, mix
-/// ratio, pot-life timer, cure wait) — not free-form markdown.
+/// the structured data the pour assistant renders (mass, mix ratio,
+/// pot-life timer, cure wait) — not free-form markdown.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PourStep {
     /// Zero-based layer index, innermost first.
@@ -146,7 +248,7 @@ pub struct PourRecord {
 
 // ── the project ─────────────────────────────────────────────────────
 
-/// A guided-workflow project: the user's progress through the six
+/// A guided-workflow project: the user's progress through the seven
 /// steps, plus each completed step's artifact. Serializable for
 /// autosave/resume; mutated only through the invariant-preserving
 /// methods below.
@@ -160,6 +262,8 @@ pub struct Project {
     current_step: Step,
     scan: Option<ScanInput>,
     prep: Option<PrepInput>,
+    #[serde(default)]
+    plug: Option<PlugDraft>,
     design: Option<DesignDraft>,
     molds: Option<MoldOutputs>,
     print: Option<PrintExport>,
@@ -176,6 +280,7 @@ impl Project {
             current_step: Step::FIRST,
             scan: None,
             prep: None,
+            plug: None,
             design: None,
             molds: None,
             print: None,
@@ -203,6 +308,7 @@ impl Project {
         match step {
             Step::AddScan => self.scan.is_some(),
             Step::CleanScan => self.prep.is_some(),
+            Step::ShapePiece => self.plug.is_some(),
             Step::DesignLayers => self.design.is_some(),
             Step::MakeMolds => self.molds.is_some(),
             Step::Print => self.print.is_some(),
@@ -232,6 +338,12 @@ impl Project {
     #[must_use]
     pub fn prep(&self) -> Option<&PrepInput> {
         self.prep.as_ref()
+    }
+
+    /// The shaped-plug draft, if [`Step::ShapePiece`] is complete.
+    #[must_use]
+    pub fn plug(&self) -> Option<&PlugDraft> {
+        self.plug.as_ref()
     }
 
     /// The design draft, if [`Step::DesignLayers`] is complete.
@@ -323,12 +435,26 @@ impl Project {
         Ok(())
     }
 
-    /// Record the layer design ([`Step::DesignLayers`]).
+    /// Record the shaped-plug draft ([`Step::ShapePiece`]) — the cavity
+    /// inset + the surface ridges. Pass a default [`PlugDraft`] (zero
+    /// inset, ridges off) for the smooth, snug-fit baseline.
     ///
     /// # Errors
     /// [`StudioError::StepNotReady`] if the scan has not been cleaned.
-    pub fn set_design(&mut self, design: DesignDraft) -> Result<()> {
+    pub fn set_plug(&mut self, plug: PlugDraft) -> Result<()> {
         self.require_complete(Step::CleanScan)?;
+        self.plug = Some(plug);
+        self.clear_after(Step::ShapePiece);
+        self.current_step = Step::ShapePiece;
+        Ok(())
+    }
+
+    /// Record the layer design ([`Step::DesignLayers`]).
+    ///
+    /// # Errors
+    /// [`StudioError::StepNotReady`] if the piece has not been shaped.
+    pub fn set_design(&mut self, design: DesignDraft) -> Result<()> {
+        self.require_complete(Step::ShapePiece)?;
         self.design = Some(design);
         self.clear_after(Step::DesignLayers);
         self.current_step = Step::DesignLayers;
@@ -338,7 +464,7 @@ impl Project {
     /// Record the generated molds ([`Step::MakeMolds`]).
     ///
     /// # Errors
-    /// [`StudioError::StepNotReady`] if there is no design yet.
+    /// [`StudioError::StepNotReady`] if the design is not yet done.
     pub fn set_molds(&mut self, molds: MoldOutputs) -> Result<()> {
         self.require_complete(Step::DesignLayers)?;
         self.molds = Some(molds);
@@ -424,10 +550,58 @@ impl Project {
             path: path.display().to_string(),
             source: e,
         })?;
-        let project: Self =
+        let mut project: Self =
             serde_json::from_str(&text).map_err(|e| StudioError::Deserialize(e.to_string()))?;
+        project.migrate();
         project.validate()?;
         Ok(project)
+    }
+
+    /// In-place forward migrations of a just-loaded project.
+    ///
+    /// **v1–v3 → v4: the ShapePiece step.** Earlier schemas folded the cavity
+    /// inset into `DesignLayers` and carried the texture as separate optional
+    /// `interior_texture` / `exterior_texture` artifacts (now dropped — serde
+    /// ignores the unknown fields). v4 inserts `ShapePiece` *before*
+    /// `DesignLayers`, which can leave a pre-v4 project in two illegal states:
+    ///
+    /// 1. **Design present, no plug** → "DesignLayers complete, ShapePiece
+    ///    incomplete" breaks the contiguous-prefix invariant. Backfill the plug
+    ///    from the design's inset (ridges default to off — the old per-step
+    ///    texture choice is not recovered).
+    /// 2. **Parked on (or past) a now-earlier incomplete step** — e.g. a v3
+    ///    autosave with scan+prep done and `current_step = DesignLayers` but no
+    ///    design: after the reorg `ShapePiece` sits before `DesignLayers` and is
+    ///    incomplete, so `current_step` is unreachable. Clamp `current_step`
+    ///    DOWN to the furthest reachable step (never forward) so `load()`
+    ///    repairs the project instead of rejecting it (which would silently lose
+    ///    the user's scan/prep work).
+    ///
+    /// Then stamp the current schema version.
+    fn migrate(&mut self) {
+        if self.plug.is_none() {
+            if let Some(design) = &self.design {
+                self.plug = Some(PlugDraft {
+                    cavity_inset_m: design.cavity_inset_m,
+                    ridges: RidgeOptions::default(),
+                });
+            }
+        }
+        // The furthest legal `current_step` is the first incomplete step (every
+        // step before it is complete — the contiguous-prefix invariant). Only
+        // clamp DOWN: a pre-v4 `current_step` may now sit past a freshly
+        // inserted incomplete step; we never advance the user past where they
+        // were.
+        let furthest_reachable = Step::ALL
+            .into_iter()
+            .find(|&s| !self.is_complete(s))
+            .unwrap_or(Step::LAST);
+        if self.current_step > furthest_reachable {
+            self.current_step = furthest_reachable;
+        }
+        if self.schema_version < PROJECT_SCHEMA_VERSION {
+            self.schema_version = PROJECT_SCHEMA_VERSION;
+        }
     }
 
     /// Check the workflow invariants. Run automatically by
@@ -486,6 +660,7 @@ impl Project {
         match step {
             Step::AddScan => self.scan = None,
             Step::CleanScan => self.prep = None,
+            Step::ShapePiece => self.plug = None,
             Step::DesignLayers => self.design = None,
             Step::MakeMolds => self.molds = None,
             Step::Print => self.print = None,
@@ -518,6 +693,12 @@ mod tests {
         PrepInput {
             cleaned_stl: PathBuf::from("scan.cleaned.stl"),
             prep_toml: PathBuf::from("scan.prep.toml"),
+        }
+    }
+    fn plug() -> PlugDraft {
+        PlugDraft {
+            cavity_inset_m: 0.005,
+            ridges: RidgeOptions::default(),
         }
     }
     fn design() -> DesignDraft {
@@ -555,6 +736,7 @@ mod tests {
         let mut p = Project::new("test");
         p.set_scan(scan());
         p.set_prep(prep()).unwrap();
+        p.set_plug(plug()).unwrap();
         p.set_design(design()).unwrap();
         p.set_molds(molds()).unwrap();
         p.set_print(print()).unwrap();
@@ -581,6 +763,9 @@ mod tests {
         assert_eq!(p.advance().unwrap(), Step::CleanScan);
 
         p.set_prep(prep()).unwrap();
+        assert_eq!(p.advance().unwrap(), Step::ShapePiece);
+
+        p.set_plug(plug()).unwrap();
         assert_eq!(p.advance().unwrap(), Step::DesignLayers);
 
         p.set_design(design()).unwrap();
@@ -631,9 +816,16 @@ mod tests {
             }
         ));
         assert!(matches!(
-            p.set_design(design()).unwrap_err(),
+            p.set_plug(plug()).unwrap_err(),
             StudioError::StepNotReady {
                 from: Step::CleanScan,
+                ..
+            }
+        ));
+        assert!(matches!(
+            p.set_design(design()).unwrap_err(),
+            StudioError::StepNotReady {
+                from: Step::ShapePiece,
                 ..
             }
         ));
@@ -649,19 +841,21 @@ mod tests {
     #[test]
     fn editing_an_earlier_step_invalidates_downstream() {
         let mut p = fully_completed();
-        // Go back and re-pick the layer design.
+        // Go back and re-shape the plug.
         p.go_back().unwrap(); // Pour -> Print
         p.go_back().unwrap(); // Print -> MakeMolds
         p.go_back().unwrap(); // MakeMolds -> DesignLayers
-        assert_eq!(p.current_step(), Step::DesignLayers);
+        p.go_back().unwrap(); // DesignLayers -> ShapePiece
+        assert_eq!(p.current_step(), Step::ShapePiece);
 
-        p.set_design(design()).unwrap();
-        // Everything after the design is now stale and cleared.
-        assert!(p.is_complete(Step::DesignLayers));
+        p.set_plug(plug()).unwrap();
+        // Everything after the plug is now stale and cleared.
+        assert!(p.is_complete(Step::ShapePiece));
+        assert!(!p.is_complete(Step::DesignLayers));
         assert!(!p.is_complete(Step::MakeMolds));
         assert!(!p.is_complete(Step::Print));
         assert!(!p.is_complete(Step::Pour));
-        assert_eq!(p.current_step(), Step::DesignLayers);
+        assert_eq!(p.current_step(), Step::ShapePiece);
         // ...but the scan + prep upstream are untouched.
         assert!(p.is_complete(Step::AddScan));
         assert!(p.is_complete(Step::CleanScan));
@@ -675,6 +869,7 @@ mod tests {
         assert!(p.is_complete(Step::AddScan));
         for step in [
             Step::CleanScan,
+            Step::ShapePiece,
             Step::DesignLayers,
             Step::MakeMolds,
             Step::Print,
@@ -765,6 +960,73 @@ mod tests {
     }
 
     #[test]
+    fn migrate_backfills_the_plug_for_a_pre_v4_project() {
+        // A v3 project: design (with the inset) + molds present, no `plug`
+        // field, and the dropped `interior_texture` / `exterior_texture`.
+        // Loading it must backfill the plug (from the design inset) so the
+        // contiguous-prefix invariant holds, and stamp the current version.
+        let mut value = serde_json::to_value(fully_completed()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("plug");
+        obj.insert("schema_version".into(), serde_json::json!(3));
+        obj.insert("interior_texture".into(), serde_json::json!(null));
+        obj.insert("exterior_texture".into(), serde_json::json!(null));
+
+        let dir =
+            std::env::temp_dir().join(format!("cf-studio-core-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.json");
+        std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        let loaded = Project::load(&path).unwrap();
+        assert!(loaded.is_complete(Step::ShapePiece), "plug backfilled");
+        assert_eq!(loaded.plug().unwrap().cavity_inset_m, 0.005, "from design");
+        assert_eq!(loaded.schema_version(), PROJECT_SCHEMA_VERSION, "restamped");
+        loaded.validate().unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn migrate_clamps_current_step_for_a_pre_v4_parked_on_design_screen() {
+        // The data-loss case: a v3 autosave with scan+prep done, NO design,
+        // parked on "DesignLayers" (the old app's prep spine persisted exactly
+        // this). v4 inserts ShapePiece before DesignLayers, so current_step is
+        // now unreachable. load() must REPAIR (clamp current_step down to the
+        // reachable ShapePiece), not reject — rejecting would lose scan/prep.
+        let mut p = Project::new("v3parked");
+        p.set_scan(scan());
+        p.set_prep(prep()).unwrap();
+        let mut value = serde_json::to_value(&p).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("schema_version".into(), serde_json::json!(3));
+        obj.insert("plug".into(), serde_json::Value::Null);
+        obj.insert("current_step".into(), serde_json::json!("DesignLayers"));
+        // (a real v3 file would also carry interior_texture/exterior_texture;
+        // serde ignores the unknown fields.)
+
+        let dir =
+            std::env::temp_dir().join(format!("cf-studio-core-parked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.json");
+        std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        let loaded = Project::load(&path).expect("a parked-on-design v3 project must still load");
+        assert_eq!(
+            loaded.current_step(),
+            Step::ShapePiece,
+            "current_step clamped down to the furthest reachable step"
+        );
+        assert!(loaded.is_complete(Step::CleanScan), "scan/prep preserved");
+        assert!(!loaded.is_complete(Step::ShapePiece), "no plug yet");
+        loaded.validate().unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
     fn validate_rejects_a_completion_gap() {
         // molds present but design missing — not a contiguous prefix.
         let mut value = serde_json::to_value(fully_completed()).unwrap();
@@ -778,7 +1040,7 @@ mod tests {
     #[test]
     fn validate_rejects_an_unreachable_current_step() {
         // Only the scan is done, but the user is parked on DesignLayers
-        // (which would require CleanScan complete).
+        // (which would require ShapePiece complete).
         let mut p = Project::new("unreachable");
         p.set_scan(scan());
         let mut value = serde_json::to_value(&p).unwrap();
@@ -793,7 +1055,7 @@ mod tests {
         let mut p = Project::new("partial");
         p.set_scan(scan());
         p.set_prep(prep()).unwrap();
-        // On CleanScan, design not yet done — perfectly legal.
+        // On CleanScan, plug not yet done — perfectly legal.
         p.validate().unwrap();
         assert_eq!(p.current_step(), Step::CleanScan);
         assert_eq!(p.furthest_completed(), Some(Step::CleanScan));
