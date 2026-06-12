@@ -21,7 +21,7 @@ use std::path::Path;
 
 use cf_studio_core::{DesignDraft, MoldOutputs, PourPlan, PourStep, Project, Step};
 use cf_studio_engine::{
-    PartId, PartSelection, PieceSide, accept_prep, draft_from_design_toml, load_scan,
+    CastMode, PartId, PartSelection, PieceSide, accept_prep, draft_from_design_toml, load_scan,
 };
 
 pub mod viewer;
@@ -160,13 +160,16 @@ pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
 }
 
 /// Enumerate the generatable parts for a design with `layer_count` layers,
-/// in display order, as `(id, label)`. Mirrors what the wizard's for_design
-/// recipe emits: per layer two cup halves + one plug, then the shared
-/// workshop platform + dowels (the apex pour funnel is integral, and the
-/// gasket is off, so neither is offered). The step-4 part picker renders the
-/// labels; the ids build the [`PartSelection`].
+/// in display order, as `(id, label)`. Per layer: two cup halves + a plug,
+/// then the shared workshop platform + dowels (the apex pour funnel is
+/// integral, and the gasket is off, so neither is offered).
+///
+/// In [`CastMode::Bonded`] only the **layer-0** plug is offered — the
+/// per-layer plugs above 0 are redundant (the cured layer N is the plug for
+/// layer N+1), so they are not listed (or generated). The step-4 part picker
+/// renders the labels; the ids build the [`PartSelection`].
 #[must_use]
-pub fn enumerate_parts(layer_count: usize) -> Vec<(PartId, String)> {
+pub fn enumerate_parts(layer_count: usize, mode: CastMode) -> Vec<(PartId, String)> {
     let mut parts = Vec::with_capacity(layer_count * 3 + 2);
     for i in 0..layer_count {
         let n = i + 1;
@@ -184,7 +187,10 @@ pub fn enumerate_parts(layer_count: usize) -> Vec<(PartId, String)> {
             },
             format!("Layer {n} — cup (right)"),
         ));
-        parts.push((PartId::Plug { layer_index: i }, format!("Layer {n} — plug")));
+        // Bonded casts with one plug (layer 0); detachable prints one per layer.
+        if mode == CastMode::Detachable || i == 0 {
+            parts.push((PartId::Plug { layer_index: i }, format!("Layer {n} — plug")));
+        }
     }
     parts.push((PartId::Platform, "Platform".to_string()));
     parts.push((PartId::Dowel, "Dowels".to_string()));
@@ -192,13 +198,21 @@ pub fn enumerate_parts(layer_count: usize) -> Vec<(PartId, String)> {
 }
 
 /// Build a [`PartSelection`] from the enumerated `parts` and a parallel
-/// `checked` mask. When everything is checked it returns
-/// [`PartSelection::all`] — the validated full-cast path — so the common
-/// case never routes through the partial export; otherwise it selects
-/// exactly the checked parts.
+/// `checked` mask.
+///
+/// In [`CastMode::Detachable`], "everything checked" returns
+/// [`PartSelection::all`] — the validated full-cast path. In
+/// [`CastMode::Bonded`] it always selects exactly the checked parts (never
+/// `all`), so the cast routes through the selective + bonded-procedure path
+/// (and `parts` already omits the redundant plugs).
 #[must_use]
-pub fn part_selection_from_checks(parts: &[(PartId, String)], checked: &[bool]) -> PartSelection {
-    if checked.len() == parts.len() && checked.iter().all(|&c| c) {
+pub fn part_selection_from_checks(
+    parts: &[(PartId, String)],
+    checked: &[bool],
+    mode: CastMode,
+) -> PartSelection {
+    let all_checked = checked.len() == parts.len() && checked.iter().all(|&c| c);
+    if all_checked && mode == CastMode::Detachable {
         PartSelection::all()
     } else {
         PartSelection::from_ids(
@@ -708,8 +722,8 @@ visible = true
     }
 
     #[test]
-    fn enumerate_parts_lists_cups_plugs_then_accessories() {
-        let parts = enumerate_parts(2);
+    fn enumerate_parts_detachable_lists_a_plug_per_layer() {
+        let parts = enumerate_parts(2, CastMode::Detachable);
         // 2 layers × (2 cups + 1 plug) + platform + dowels = 8.
         assert_eq!(parts.len(), 2 * 3 + 2);
         assert_eq!(parts[0].1, "Layer 1 — cup (left)");
@@ -720,20 +734,49 @@ visible = true
     }
 
     #[test]
-    fn all_checked_yields_the_full_selection() {
-        let parts = enumerate_parts(2);
+    fn enumerate_parts_bonded_lists_only_the_layer0_plug() {
+        let parts = enumerate_parts(3, CastMode::Bonded);
+        // 3 layers × 2 cups + 1 plug (layer 0 only) + platform + dowels = 9.
+        assert_eq!(parts.len(), 3 * 2 + 1 + 2);
+        let plugs: Vec<_> = parts
+            .iter()
+            .filter(|(id, _)| matches!(id, PartId::Plug { .. }))
+            .collect();
+        assert_eq!(plugs.len(), 1, "bonded lists only one plug");
+        assert_eq!(plugs[0].0, PartId::Plug { layer_index: 0 });
+    }
+
+    #[test]
+    fn all_checked_detachable_yields_the_full_selection() {
+        let parts = enumerate_parts(2, CastMode::Detachable);
         let checked = vec![true; parts.len()];
-        let sel = part_selection_from_checks(&parts, &checked);
+        let sel = part_selection_from_checks(&parts, &checked, CastMode::Detachable);
         assert!(sel.is_all(), "all checked → the validated full-cast path");
     }
 
     #[test]
+    fn all_checked_bonded_is_not_the_full_selection() {
+        let parts = enumerate_parts(2, CastMode::Bonded);
+        let checked = vec![true; parts.len()];
+        let sel = part_selection_from_checks(&parts, &checked, CastMode::Bonded);
+        assert!(
+            !sel.is_all(),
+            "bonded never routes to the full detachable export"
+        );
+        assert!(sel.includes(PartId::Plug { layer_index: 0 }));
+        assert!(
+            !sel.includes(PartId::Plug { layer_index: 1 }),
+            "no layer-1 plug"
+        );
+    }
+
+    #[test]
     fn subset_selects_only_checked_parts() {
-        let parts = enumerate_parts(2);
+        let parts = enumerate_parts(2, CastMode::Detachable);
         // Check only "Layer 1 — plug" (index 2).
         let mut checked = vec![false; parts.len()];
         checked[2] = true;
-        let sel = part_selection_from_checks(&parts, &checked);
+        let sel = part_selection_from_checks(&parts, &checked, CastMode::Detachable);
         assert!(!sel.is_all());
         assert!(sel.includes(PartId::Plug { layer_index: 0 }));
         assert!(!sel.includes(PartId::Plug { layer_index: 1 }));

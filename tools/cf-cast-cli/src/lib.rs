@@ -355,6 +355,7 @@ pub fn run_selected_with_config(
     base_dir: &Path,
     output_dir_override: Option<&Path>,
     selection: &cf_cast::PartSelection,
+    cast_mode: cf_cast::CastMode,
 ) -> Result<SelectedRunReport> {
     let Prepared {
         config,
@@ -381,8 +382,8 @@ pub fn run_selected_with_config(
     // volumes are computed for every layer (no marching cubes), so the
     // injections + masses below are complete on a partial run.
     let procedure_path = out_dir.join("procedure.md");
-    spec.write_procedure_v2(&ribbon, &procedure_path)
-        .context("write_procedure_v2")?;
+    spec.write_procedure_v2_for_mode(&ribbon, &procedure_path, cast_mode)
+        .context("write_procedure_v2_for_mode")?;
     procedure_post::inject_press_fit_section(&procedure_path, cavity_inset_m)
         .context("post-process procedure.md to surface press-fit reservation")?;
     debug_assert_eq!(

@@ -24,9 +24,14 @@ use cf_studio_core::{
     ShellRidgeOptions, Step, TextureDraft,
 };
 use cf_studio_engine::{
-    EditSession, PartId, PartSelection, PrintExportReport, ReconstructShape, export_print_package,
-    generate_molds_for_design, run_simplify, silicone_catalog,
+    CastMode, EditSession, PartId, PartSelection, PrintExportReport, ReconstructShape,
+    export_print_package, generate_molds_for_design, run_simplify, silicone_catalog,
 };
+
+/// Cendrillon casts **bonded** (one plug, cast-in-place) — the product default
+/// per `docs/CF_CAST_BONDED_INPLACE_TEXTURE_RECON.md`. The SDK keeps the
+/// detachable model for other consumers; this is where the app pins its choice.
+const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
     StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, apply_texture,
@@ -1446,6 +1451,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cell_size_m,
                         &texture,
                         &selection,
+                        CENDRILLON_CAST_MODE,
                         None,
                     )
                 }));
@@ -1597,7 +1603,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// with their labels (all checked = full cast). Called whenever the
 /// committed design changes.
 fn rebuild_parts_model(rows: &VecModel<PartRow>, ids: &RefCell<Vec<PartId>>, layer_count: usize) {
-    let parts = enumerate_parts(layer_count);
+    let parts = enumerate_parts(layer_count, CENDRILLON_CAST_MODE);
     let new_rows: Vec<PartRow> = parts
         .iter()
         .map(|(_, label)| PartRow {
@@ -1627,7 +1633,7 @@ fn part_selection_from_ui(rows: &VecModel<PartRow>, ids: &RefCell<Vec<PartId>>) 
     let checked: Vec<bool> = (0..rows.row_count())
         .map(|i| rows.row_data(i).is_some_and(|r| r.checked))
         .collect();
-    part_selection_from_checks(&parts, &checked)
+    part_selection_from_checks(&parts, &checked, CENDRILLON_CAST_MODE)
 }
 
 /// `true` when at least one part is checked (make-molds needs ≥1 piece).

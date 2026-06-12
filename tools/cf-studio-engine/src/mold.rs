@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use cf_cast_cli::{
-    CanalConfig, CastConfig, PartSelection, RingConfig, ShellTextureConfig,
+    CanalConfig, CastConfig, CastMode, PartSelection, RingConfig, ShellTextureConfig,
     run_selected_with_config, run_with_config,
 };
 use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions, ShellRidgeOptions, TextureDraft};
@@ -50,6 +50,10 @@ use crate::pour::{LayerPour, build_pour_plan};
 /// - [`EngineError::WriteDesign`] / [`EngineError::InvalidDesign`] /
 ///   [`EngineError::UnknownMaterial`] if the draft can't be materialized.
 /// - [`EngineError::PourDataUnavailable`] if a layer has no cure data.
+// The wizard's single "make molds" entry point genuinely needs all of these
+// inputs (scan paths, design, quality, texture, part selection, cast mode);
+// bundling them into a struct would just move the argument list, not shorten it.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_molds_for_design(
     cleaned_stl: &Path,
     prep_toml: &Path,
@@ -57,6 +61,7 @@ pub fn generate_molds_for_design(
     mesh_cell_size_m: f64,
     texture: &TextureDraft,
     selection: &PartSelection,
+    cast_mode: CastMode,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
     let base_dir = cleaned_stl.parent().unwrap_or_else(|| Path::new("."));
@@ -78,12 +83,21 @@ pub fn generate_molds_for_design(
         canal_config_from_ridges(&texture.interior),
         shell_texture_config_from(&texture.exterior),
     );
-    // Full selection → the validated full export (unchanged); a subset →
-    // the selective export that skips unselected pieces' marching cubes.
-    if selection.is_all() {
+    // Detachable + everything selected → the validated full export (byte-
+    // identical detachable cast). Otherwise — a subset, OR any bonded cast —
+    // route through the selective export, which skips unselected pieces'
+    // marching cubes and emits the procedure for `cast_mode`.
+    if cast_mode == CastMode::Detachable && selection.is_all() {
         generate_molds(config, draft, base_dir, output_dir_override)
     } else {
-        generate_selected_molds(config, draft, base_dir, output_dir_override, selection)
+        generate_selected_molds(
+            config,
+            draft,
+            base_dir,
+            output_dir_override,
+            selection,
+            cast_mode,
+        )
     }
 }
 
@@ -102,9 +116,11 @@ fn generate_selected_molds(
     base_dir: &Path,
     output_dir_override: Option<&Path>,
     selection: &PartSelection,
+    cast_mode: CastMode,
 ) -> Result<MoldOutputs> {
-    let report = run_selected_with_config(config, base_dir, output_dir_override, selection)
-        .map_err(|e| EngineError::MoldGen(format!("{e:#}")))?;
+    let report =
+        run_selected_with_config(config, base_dir, output_dir_override, selection, cast_mode)
+            .map_err(|e| EngineError::MoldGen(format!("{e:#}")))?;
     let pour_plan = build_pour_plan(&pour_inputs(draft, &report.layer_pour_masses_kg)?)?;
     let stls = collect_stls(&report.out_dir)?;
     Ok(MoldOutputs {
@@ -118,14 +134,6 @@ fn generate_selected_molds(
     })
 }
 
-/// Map the wizard's owned, sanitized [`RidgeOptions`] onto cf-cast-cli's
-/// [`CanalConfig`]. A disabled `ridges` yields `CanalConfig::default()`
-/// (the no-op the cast pipeline bit-preserves), so the canal-off path stays
-/// byte-identical. When enabled, every field is set explicitly from the
-/// options so the UI is the single source of truth (no reliance on the
-/// `CanalSpec::iter1` fallbacks). `orientation_deg` maps to a frenulum
-/// direction in the channel's cross-section: `θ → [sin θ, cos θ, 0]`, so
-/// `0°` is the validated `[0, 1, 0]` default.
 /// Map the owned [`ShellRidgeOptions`] onto cf-cast-cli's
 /// [`ShellTextureConfig`] (axisymmetric exterior / inter-layer rings on every
 /// layer body). Disabled → `ShellTextureConfig::default()` (the no-op the cast
@@ -151,6 +159,14 @@ fn shell_texture_config_from(exterior: &ShellRidgeOptions) -> ShellTextureConfig
     }
 }
 
+/// Map the wizard's owned, sanitized [`RidgeOptions`] onto cf-cast-cli's
+/// [`CanalConfig`]. A disabled `ridges` yields `CanalConfig::default()`
+/// (the no-op the cast pipeline bit-preserves), so the canal-off path stays
+/// byte-identical. When enabled, every field is set explicitly from the
+/// options so the UI is the single source of truth (no reliance on the
+/// `CanalSpec::iter1` fallbacks). `orientation_deg` maps to a frenulum
+/// direction in the channel's cross-section: `θ → [sin θ, cos θ, 0]`, so
+/// `0°` is the validated `[0, 1, 0]` default.
 fn canal_config_from_ridges(ridges: &RidgeOptions) -> CanalConfig {
     if !ridges.enabled {
         return CanalConfig::default();
@@ -531,6 +547,7 @@ mod tests {
             0.003,
             &TextureDraft::default(),
             &PartSelection::all(),
+            CastMode::Detachable,
             None,
         );
         let design_path = dir.join("base_mold.design.toml");
@@ -621,6 +638,7 @@ mod tests {
             cell_size_m,
             texture,
             selection,
+            CastMode::Detachable,
             Some(Path::new(out_name)),
         )
         .unwrap();
@@ -726,6 +744,7 @@ mod tests {
             0.0015,
             &TextureDraft::default(),
             &selection,
+            CastMode::Detachable,
             Some(Path::new(out_name)),
         )
         .unwrap();
