@@ -1,6 +1,6 @@
 # CF-CAST Bonded Cast-in-Place + Shell Texturing Recon
 
-> **Status:** RECON SCAFFOLD (pre-implementation). Cold-read pass-1 at end (§9).
+> **Status:** ✅ COMPLETE (S0–S5 all merged to the feature branch). Cold-read pass-1 at §9.
 > **Date:** 2026-06-11
 > **Trigger:** Cendrillon design session while wiring the interior-ridge (canal)
 > toggle + the "parts to generate" picker. The user (product owner) pulled two
@@ -181,8 +181,17 @@ cavity — cleaner. This is another reason texturing pairs naturally with bonded
   (interior panel relocated + a new exterior shell-ring editor + Continue),
   `apply_texture`, the later pages renumbered 5/6/7. Skippable. All four crates
   green.
-- **S5 — Cendrillon bonded default:** wire `CastMode::Bonded` + bonded procedure;
-  parts picker reflects the single plug.
+- **S5 — Cendrillon bonded default: ✅ DONE.** `CastMode` threads GUI→engine→cli;
+  a `CENDRILLON_CAST_MODE = Bonded` constant drives it. `run_selected_with_config`
+  emits the procedure for the mode; `enumerate_parts(mode)` lists only the
+  layer-0 plug in bonded; `part_selection_from_checks(mode)` never collapses a
+  bonded cast to the full detachable export. The part picker shows one plug;
+  Make-molds writes the bonded procedure.
+
+> **★ ARC COMPLETE (S0–S5).** Every slice keeps detachable byte-identical. The
+> only remaining items are EMPIRICAL: the #[ignore]d integration casts (ridges-on,
+> plug-only, bonded) + the real-curved-body shell-ridge survival recheck — all
+> need `~/scans/base_mold` + minutes, run on demand.
 
 Each slice: recon→(spike)→sliced PR→n+1 cold-read→pre-PR local ultra-review, per
 [[feedback-pre-pr-local-ultra-review]] + [[feedback-head-engineer-owns-technical-calls]].
