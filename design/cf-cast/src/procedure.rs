@@ -498,6 +498,10 @@ fn write_header_v2_bonded(md: &mut String, spec: &CastSpec, apex_pour: bool) {
 /// Bonded-mode per-layer procedure: cast layer 0 on the plug, then pour each
 /// subsequent layer onto the previous cured one (it bonds), leaving the
 /// growing part on the plug until the last layer demolds.
+// Linear per-layer `writeln!`s over the layer loop (mix/pour/cure prose);
+// factoring per-layer subsections into helpers would just shuffle the prose
+// into named functions without reducing complexity — same rationale as the
+// detachable writer below.
 #[allow(clippy::too_many_lines)]
 fn write_per_layer_sections_v2_bonded(
     md: &mut String,
