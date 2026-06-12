@@ -43,23 +43,6 @@ pub fn preview_textured_plug(
     mesh_textured_proxy(&body, spec, half_height_m, cell_size_m)
 }
 
-/// Mesh a Z-aligned **shell proxy** — a both-ends-rounded capsule (the
-/// device's outer body) textured with `spec`'s field.
-///
-/// The exterior shell ridges live on this surface; the rounded shape
-/// distinguishes it from the flat-floor plug. Otherwise identical to
-/// [`preview_textured_plug`].
-#[must_use]
-pub fn preview_textured_capsule(
-    spec: &CanalSpec,
-    radius_m: f64,
-    half_height_m: f64,
-    cell_size_m: f64,
-) -> IndexedMesh {
-    let body = Solid::capsule(radius_m, half_height_m);
-    mesh_textured_proxy(&body, spec, half_height_m, cell_size_m)
-}
-
 /// Shared: compose the canal field onto `body` (mouth = the −Z end) and mesh it
 /// at `cell_size_m`.
 fn mesh_textured_proxy(

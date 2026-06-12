@@ -2,12 +2,12 @@
 //!
 //! Maps the owned [`RidgeOptions`] (interior canal) / [`ShellRidgeOptions`]
 //! (exterior shell rings) onto a `cf_cast::CanalSpec` and renders a coarse
-//! textured proxy. The **interior** preview is a flat-floor plug; the
-//! **exterior** preview is a rounded shell — each shows the *pattern* its
-//! knobs produce on the appropriate surface, fast enough to update live; the
-//! real part is cast at full detail.
+//! textured proxy. Both use the same flat-floor, domed-top plug shape (the
+//! shell is cast on the plug, so its outside is flat-bottomed too) — the
+//! interior preview shows ridges inside the channel, the exterior on the outer
+//! surface. Each updates live; the real part is cast at full detail.
 
-use cf_cast::{CanalSpec, RingSpec, preview_textured_capsule, preview_textured_plug};
+use cf_cast::{CanalSpec, RingSpec, preview_textured_plug};
 use cf_studio_core::{RidgeOptions, ShellRidgeOptions};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
@@ -35,9 +35,11 @@ pub fn interior_preview_mesh(interior: &RidgeOptions) -> IndexedMesh {
     )
 }
 
-/// The exterior-ridge preview: the axisymmetric rings on a **shell** proxy (a
-/// rounded capsule — the device's outer body). A disabled `exterior` renders
-/// the smooth shell.
+/// The exterior-ridge preview: the axisymmetric rings on the **shell's outer
+/// surface**. Uses the same flat-floor plug shape as the interior preview —
+/// the shell is cast on the plug, so its outside is flat-bottomed + domed too;
+/// the rings just sit on the outer surface. A disabled `exterior` renders the
+/// smooth shell.
 #[must_use]
 pub fn exterior_preview_mesh(exterior: &ShellRidgeOptions) -> IndexedMesh {
     let spec = if exterior.enabled {
@@ -45,7 +47,7 @@ pub fn exterior_preview_mesh(exterior: &ShellRidgeOptions) -> IndexedMesh {
     } else {
         smooth_spec()
     };
-    preview_textured_capsule(
+    preview_textured_plug(
         &spec,
         PREVIEW_RADIUS_M,
         PREVIEW_HALF_HEIGHT_M,
