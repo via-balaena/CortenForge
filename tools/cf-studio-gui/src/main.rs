@@ -24,8 +24,9 @@ use cf_studio_core::{
     ShellRidgeOptions, Step, TextureDraft,
 };
 use cf_studio_engine::{
-    CastMode, EditSession, PartId, PartSelection, PrintExportReport, ReconstructShape,
-    export_print_package, generate_molds_for_design, run_simplify, silicone_catalog,
+    CastMode, EditSession, PartId, PartSelection, PreviewShowing, PrintExportReport,
+    ReconstructShape, export_print_package, generate_molds_for_design, run_simplify,
+    silicone_catalog, texture_preview_mesh,
 };
 
 /// Cendrillon casts **bonded** (one plug, cast-in-place) — the product default
@@ -479,6 +480,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GPU handles (filled at RenderingSetup) + the live scan scene.
     let gpu: GpuHandles = Rc::new(RefCell::new(None));
     let scene: Rc<RefCell<Option<Scene>>> = Rc::new(RefCell::new(None));
+    // Step-4 live texture preview: a second, independent scene (its own mesh +
+    // orbit camera) for the textured-proxy render.
+    let texture_scene: Rc<RefCell<Option<Scene>>> = Rc::new(RefCell::new(None));
     // The chosen scan file + the step-2 edit session over its mesh. The
     // session is created at pick time and rendered on both step 1 (the
     // scan) and step 2 (the same mesh, being cleaned).
@@ -1009,6 +1013,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let parts_model = parts_model.clone();
         ui.on_select_no_parts(move || set_all_parts(&parts_model, false));
+    }
+
+    // ── step 4: live texture preview (regenerate on any change; orbit) ──
+    {
+        let (weak, gpu, texture_scene) = (weak.clone(), gpu.clone(), texture_scene.clone());
+        let (rings_model, shell_rings_model) = (rings_model.clone(), shell_rings_model.clone());
+        ui.on_texture_changed(move || {
+            if let Some(ui) = weak.upgrade() {
+                refresh_texture_preview(
+                    &ui,
+                    &gpu,
+                    &texture_scene,
+                    &rings_model,
+                    &shell_rings_model,
+                );
+            }
+        });
+    }
+    {
+        let (weak, texture_scene) = (weak.clone(), texture_scene.clone());
+        ui.on_texture_orbit(move |dx, dy| {
+            let mut guard = texture_scene.borrow_mut();
+            let Some(s) = guard.as_mut() else {
+                return;
+            };
+            s.camera.orbit(dx, dy);
+            if let (Some(ui), Ok(img)) = (weak.upgrade(), s.render()) {
+                ui.set_texture_preview(img);
+            }
+        });
     }
 
     // ── navigation (gated by the wizard state) ──────────────────
@@ -1694,6 +1728,52 @@ fn shell_ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> She
         enabled: ui.get_shell_ridges_enabled(),
         rings,
     }
+}
+
+/// Regenerate the step-4 live texture preview from the current controls: read
+/// the interior + exterior settings, mesh a coarse textured proxy, render it
+/// into the `texture-preview` image, and label what it shows. A no-op until
+/// the GPU handles are ready. Cheap (coarse proxy) — runs on the UI thread.
+fn refresh_texture_preview(
+    ui: &AppWindow,
+    gpu: &GpuHandles,
+    texture_scene: &RefCell<Option<Scene>>,
+    rings: &VecModel<RingRow>,
+    shell_rings: &VecModel<RingRow>,
+) {
+    let Some((device, queue)) = gpu.borrow().clone() else {
+        return;
+    };
+    let interior = ridge_options_from_ui(ui, rings);
+    let exterior = shell_ridge_options_from_ui(ui, shell_rings);
+    let (mesh, showing) = texture_preview_mesh(&interior, &exterior);
+    let md = mesh_data_from_indexed(&mesh);
+    let img = {
+        let mut guard = texture_scene.borrow_mut();
+        match guard.as_mut() {
+            Some(s) => {
+                s.set_mesh(&md);
+                s.render()
+            }
+            None => {
+                let s = Scene::build(&device, &queue, &md);
+                let r = s.render();
+                *guard = Some(s);
+                r
+            }
+        }
+    };
+    if let Ok(img) = img {
+        ui.set_texture_preview(img);
+    }
+    ui.set_texture_preview_label(
+        match showing {
+            PreviewShowing::Interior => "Interior ridges",
+            PreviewShowing::Exterior => "Exterior shell ridges",
+            PreviewShowing::Smooth => "Smooth",
+        }
+        .into(),
+    );
 }
 
 fn sync_pour_ui(ui: &AppWindow, project: &Project, current: usize) {

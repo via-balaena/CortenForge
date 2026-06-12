@@ -177,6 +177,10 @@ export component AppWindow inherits Window {
     // VecModel (mirrors `ridge-rings`).
     in-out property <bool> shell-ridges-enabled: false;
     in property <[RingRow]> shell-rings;
+    // Step 4: the live texture preview (wgpu-rendered) + a label of what it
+    // shows ("Interior ridges" / "Exterior shell ridges" / "Smooth").
+    in property <image> texture-preview;
+    in property <string> texture-preview-label: "Smooth";
     // Step 5: the generatable parts (per-layer cups/plugs + accessories),
     // each with a checkbox. Default all-checked = full cast; uncheck to
     // generate only some pieces. Rust-owned VecModel, rebuilt when the
@@ -230,6 +234,10 @@ export component AppWindow inherits Window {
     callback set-shell-ring-width(int, int);
     // Step 4: commit the texture choice (interior + exterior) and advance.
     callback commit-texture();
+    // Step 4: a texture control changed → regenerate the live preview; and
+    // drag-to-orbit the preview viewport.
+    callback texture-changed();
+    callback texture-orbit(length, length);
     // Step-4 part picker: toggle one part, or select all / none.
     callback set-part-checked(int, bool);
     callback select-all-parts();
@@ -528,11 +536,29 @@ export component AppWindow inherits Window {
                 if viewed-number == 4: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
+                    // Render the preview as soon as the page is shown.
+                    init => { texture-changed(); }
                     Text {
                         text: "Optionally add ridges to your piece. This step is skippable — just press Continue to make a smooth piece. Interior ridges go on the inside; exterior shell ridges go on the outside of every layer (and key the layers together when cast bonded).";
                         horizontal-alignment: center;
                         font-size: 16px;
                         color: #444444;
+                        wrap: word-wrap;
+                    }
+
+                    // Live preview — drag to orbit. Shows the ridge pattern on a
+                    // representative shape (not your exact part; that's cast at
+                    // full detail).
+                    ScanViewport {
+                        view: texture-preview;
+                        view-height: 280px;
+                        orbit(dx, dy) => { texture-orbit(dx, dy); }
+                    }
+                    Text {
+                        text: "Preview: " + texture-preview-label + " — drag to rotate. Your part is cast at full detail.";
+                        horizontal-alignment: center;
+                        font-size: 13px;
+                        color: #666666;
                         wrap: word-wrap;
                     }
 
@@ -543,6 +569,7 @@ export component AppWindow inherits Window {
                         CheckBox {
                             checked <=> ridges-enabled;
                             enabled: !busy;
+                            toggled => { texture-changed(); }
                         }
                         Text {
                             text: "Add interior ridges (advanced)";
@@ -579,29 +606,29 @@ export component AppWindow inherits Window {
                                         minimum: 0;
                                         maximum: 100;
                                         value: ring.position-pct;
-                                        edited(v) => { set-ring-position(idx, v); }
+                                        edited(v) => { set-ring-position(idx, v); texture-changed(); }
                                     }
                                     Text { text: "% along"; vertical-alignment: center; color: #333333; }
                                     SpinBox {
                                         minimum: 0;
                                         maximum: 100;
                                         value: ring.depth-tenths-mm;
-                                        edited(v) => { set-ring-depth(idx, v); }
+                                        edited(v) => { set-ring-depth(idx, v); texture-changed(); }
                                     }
                                     Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
                                     SpinBox {
                                         minimum: 1;
                                         maximum: 50;
                                         value: ring.width-pct;
-                                        edited(v) => { set-ring-width(idx, v); }
+                                        edited(v) => { set-ring-width(idx, v); texture-changed(); }
                                     }
                                     Text { text: "% wide"; vertical-alignment: center; color: #333333; }
-                                    Button { text: "✕"; clicked => { remove-ring(idx); } }
+                                    Button { text: "✕"; clicked => { remove-ring(idx); texture-changed(); } }
                                 }
                             }
                             HorizontalBox {
                                 alignment: center;
-                                Button { text: "+ Add ring"; clicked => { add-ring(); } }
+                                Button { text: "+ Add ring"; clicked => { add-ring(); texture-changed(); } }
                             }
                             HorizontalBox {
                                 alignment: center;
@@ -611,7 +638,7 @@ export component AppWindow inherits Window {
                                     minimum: 0;
                                     maximum: 50;
                                     value: ridge-texture-depth-tenths-mm;
-                                    edited(v) => { ridge-texture-depth-tenths-mm = v; }
+                                    edited(v) => { ridge-texture-depth-tenths-mm = v; texture-changed(); }
                                 }
                                 Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
                             }
@@ -623,7 +650,7 @@ export component AppWindow inherits Window {
                                     minimum: 10;
                                     maximum: 300;
                                     value: ridge-texture-spacing-tenths-mm;
-                                    edited(v) => { ridge-texture-spacing-tenths-mm = v; }
+                                    edited(v) => { ridge-texture-spacing-tenths-mm = v; texture-changed(); }
                                 }
                                 Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
                             }
@@ -635,7 +662,7 @@ export component AppWindow inherits Window {
                                     minimum: 0;
                                     maximum: 50;
                                     value: ridge-side-pinch-tenths-mm;
-                                    edited(v) => { ridge-side-pinch-tenths-mm = v; }
+                                    edited(v) => { ridge-side-pinch-tenths-mm = v; texture-changed(); }
                                 }
                                 Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
                             }
@@ -647,7 +674,7 @@ export component AppWindow inherits Window {
                                     minimum: 0;
                                     maximum: 50;
                                     value: ridge-tip-relief-tenths-mm;
-                                    edited(v) => { ridge-tip-relief-tenths-mm = v; }
+                                    edited(v) => { ridge-tip-relief-tenths-mm = v; texture-changed(); }
                                 }
                                 Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
                             }
@@ -659,7 +686,7 @@ export component AppWindow inherits Window {
                                     minimum: 0;
                                     maximum: 360;
                                     value: ridge-orientation-deg;
-                                    edited(v) => { ridge-orientation-deg = v; }
+                                    edited(v) => { ridge-orientation-deg = v; texture-changed(); }
                                 }
                                 Text { text: "°"; vertical-alignment: center; color: #333333; }
                             }
@@ -673,6 +700,7 @@ export component AppWindow inherits Window {
                         CheckBox {
                             checked <=> shell-ridges-enabled;
                             enabled: !busy;
+                            toggled => { texture-changed(); }
                         }
                         Text {
                             text: "Add exterior shell ridges (advanced)";
@@ -703,29 +731,29 @@ export component AppWindow inherits Window {
                                         minimum: 0;
                                         maximum: 100;
                                         value: ring.position-pct;
-                                        edited(v) => { set-shell-ring-position(idx, v); }
+                                        edited(v) => { set-shell-ring-position(idx, v); texture-changed(); }
                                     }
                                     Text { text: "% along"; vertical-alignment: center; color: #333333; }
                                     SpinBox {
                                         minimum: 0;
                                         maximum: 50;
                                         value: ring.depth-tenths-mm;
-                                        edited(v) => { set-shell-ring-depth(idx, v); }
+                                        edited(v) => { set-shell-ring-depth(idx, v); texture-changed(); }
                                     }
                                     Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
                                     SpinBox {
                                         minimum: 1;
                                         maximum: 50;
                                         value: ring.width-pct;
-                                        edited(v) => { set-shell-ring-width(idx, v); }
+                                        edited(v) => { set-shell-ring-width(idx, v); texture-changed(); }
                                     }
                                     Text { text: "% wide"; vertical-alignment: center; color: #333333; }
-                                    Button { text: "✕"; clicked => { remove-shell-ring(idx); } }
+                                    Button { text: "✕"; clicked => { remove-shell-ring(idx); texture-changed(); } }
                                 }
                             }
                             HorizontalBox {
                                 alignment: center;
-                                Button { text: "+ Add ring"; clicked => { add-shell-ring(); } }
+                                Button { text: "+ Add ring"; clicked => { add-shell-ring(); texture-changed(); } }
                             }
                         }
                     }

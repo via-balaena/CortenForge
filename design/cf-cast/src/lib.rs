@@ -94,6 +94,7 @@ pub mod platform;
 pub mod plug;
 pub mod pour;
 mod pour_volume;
+pub mod preview;
 pub mod prismatic_pin;
 mod procedure;
 mod ribbon;
@@ -132,6 +133,7 @@ pub use plug::{
 };
 pub use pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume};
+pub use preview::preview_textured_capsule;
 pub use prismatic_pin::{
     LATERAL_ORTHOGONALITY_TOLERANCE, PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec,
     build_prismatic_pin_sdf,
