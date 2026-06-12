@@ -115,7 +115,7 @@ component CleanupSection inherits VerticalLayout {
 // `maximum` / `value` / `enabled` / `edited(int)` interface) that deliberately
 // does NOT react to the mouse wheel. The built-in SpinBox steps its value on
 // scroll, which fights the page ScrollView (and the live preview); this widget
-// is a plain text field + ▲/▼ buttons, so scrolling over it just scrolls the
+// is a plain text field + −/+ buttons, so scrolling over it just scrolls the
 // page. Type a number or click the arrows to change it.
 component StepBox inherits HorizontalLayout {
     in property <int> minimum: 0;
@@ -123,6 +123,9 @@ component StepBox inherits HorizontalLayout {
     in-out property <int> value: 0;
     in property <bool> enabled: true;
     callback edited(int);
+    // Set by typing, cleared on commit — so focus-out only re-notifies when the
+    // user actually changed something (no spurious re-mesh on a bare click-in/out).
+    property <bool> pending: false;
 
     spacing: 4px;
     alignment: stretch;
@@ -130,8 +133,9 @@ component StepBox inherits HorizontalLayout {
     function clamp(v: int) -> int {
         return v < root.minimum ? root.minimum : (v > root.maximum ? root.maximum : v);
     }
-    // Set + notify (the `edited` re-mesh) right away — buttons, Enter.
+    // Apply + notify (the `edited` re-mesh) and clear the pending edit.
     function commit(v: int) {
+        root.pending = false;
         root.value = root.clamp(v);
         root.edited(root.value);
     }
@@ -148,15 +152,23 @@ component StepBox inherits HorizontalLayout {
         input-type: number;
         horizontal-alignment: center;
         text: "\{root.value}";
-        // Typing keeps `value` current (so the field + any `.value` readers are
-        // correct) but does NOT re-mesh — that would freeze the UI mid-type.
-        // Press Enter (or use the −/+ buttons) to apply + update the preview.
+        // Typing keeps `value` current (so the field is right) but does NOT
+        // re-mesh — that would freeze the UI mid-type. The value is APPLIED (the
+        // bound property updated + the preview re-meshed) on Enter, on the −/+
+        // buttons, or on focus-out — so a typed-but-not-Entered value is never
+        // silently dropped by a later Continue / Use this design / Make molds.
         edited => {
             if (self.text != "") {
                 root.value = root.clamp(self.text.to-float());
+                root.pending = true;
             }
         }
-        accepted => { root.edited(root.value); }
+        accepted => { root.commit(root.value); }
+        changed has-focus => {
+            if (!self.has-focus && root.pending) {
+                root.commit(root.value);
+            }
+        }
     }
     Button {
         text: "+";

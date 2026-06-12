@@ -377,13 +377,45 @@ pub fn build_canal_plug(
     mouth_anchor: Option<Point3<f64>>,
     spec: &CanalSpec,
 ) -> Solid {
+    let frame_bounds = base_plug
+        .bounds()
+        .unwrap_or_else(|| Aabb::new(Point3::origin(), Point3::new(0.1, 0.1, 0.1)));
+    build_canal_plug_framed(base_plug, centerline, mouth_anchor, spec, frame_bounds)
+}
+
+/// Like [`build_canal_plug`] but with an EXPLICIT `frame_bounds`.
+///
+/// `frame_bounds` sets the canal frame's axial-span normalization
+/// (`frac = 0..1`), decoupled from `base_plug`'s own bounds (which still set
+/// the marching-cubes grid extent).
+///
+/// This is what lets the texture ride EVERY offset consistently. The plug and
+/// each (progressively larger) layer body are offsets of the same scan, but
+/// have *different* AABBs. If each framed off its own bounds (as the plain
+/// [`build_canal_plug`] does), a ring at a given `center_frac` would normalize
+/// to a **different world-axial position on every body**, so the rings would
+/// drift apart and the inter-layer wall would NOT be constant. Framing the
+/// plug and all bodies off the SAME `frame_bounds` makes
+/// `inset_field(frac, axial, cosθ)` identical at each world point across the
+/// surfaces, so every surface shifts by the same amount and the wall stays
+/// constant. Pass the (innermost) plug's bounds as the shared basis. See the
+/// cross-body wall test in `cf-cast-cli`.
+#[must_use]
+pub fn build_canal_plug_framed(
+    base_plug: &Solid,
+    centerline: &[Point3<f64>],
+    mouth_anchor: Option<Point3<f64>>,
+    spec: &CanalSpec,
+    frame_bounds: Aabb,
+) -> Solid {
+    let frame = CanalFrame::new(centerline, spec.frenulum_dir, frame_bounds, mouth_anchor);
+
+    // The MC grid still spans THIS body's own bounds (so the whole body is
+    // meshed), expanded outward by the suction bulge so MC sees the bulged
+    // tip; inward features stay inside the base bounds.
     let base_bounds = base_plug
         .bounds()
         .unwrap_or_else(|| Aabb::new(Point3::origin(), Point3::new(0.1, 0.1, 0.1)));
-    let frame = CanalFrame::new(centerline, spec.frenulum_dir, base_bounds, mouth_anchor);
-
-    // Expand bounds outward by the suction bulge so MC sees the bulged
-    // tip; inward features stay inside the base bounds.
     let pad = spec.suction_bulge_m + 0.001;
     let bounds = Aabb::new(
         Point3::new(
@@ -713,5 +745,75 @@ mod tests {
         let (frac, axial, cos_theta) = frame.project(p);
         let expected = base.evaluate(&p) + inset_field(&spec, frac, axial, cos_theta);
         assert_relative_eq!(plug.evaluate(&p), expected, epsilon = 1.0e-9);
+    }
+
+    /// The wall-preservation invariant (the headline of the scan-surface
+    /// texture unification): when the plug and a LARGER layer body are framed
+    /// off the SAME span, the canal displacement they each receive is identical
+    /// at every world point — so both surfaces shift together and the
+    /// inter-layer wall stays constant. A rings-only spec makes the
+    /// displacement a pure function of the axial fraction, so any drift shows
+    /// up directly.
+    ///
+    /// Also asserts the discriminating case: framing the body off its OWN
+    /// (different) bounds — the plain `build_canal_plug` — moves the ring to a
+    /// different world position, which is the bug `build_canal_plug_framed`
+    /// fixes.
+    #[test]
+    fn shared_frame_keeps_the_ring_displacement_equal_across_offset_bodies() {
+        // Plug + a larger body, both domed-tip (asymmetric: the dome grows more
+        // than the flat floor under an offset — exactly the real plug/shell
+        // geometry), sharing one axis.
+        let plug = Solid::cylinder(0.010, 0.040)
+            .union(Solid::sphere(0.010).translate(Vector3::new(0.0, 0.0, 0.040)));
+        let body = Solid::cylinder(0.018, 0.048)
+            .union(Solid::sphere(0.018).translate(Vector3::new(0.0, 0.0, 0.048)));
+        let centerline = vec![Point3::new(0.0, 0.0, -0.07), Point3::new(0.0, 0.0, 0.07)];
+
+        // Rings only → displacement = f(frac) alone (axisymmetric).
+        let mut spec = CanalSpec::iter1();
+        spec.texture_amp_m = 0.0;
+        spec.dsection_depth_m = 0.0;
+        spec.suction_bulge_m = 0.0;
+
+        let shared = plug.bounds().unwrap();
+        let plug_tex = build_canal_plug_framed(&plug, &centerline, None, &spec, shared);
+        let body_shared = build_canal_plug_framed(&body, &centerline, None, &spec, shared);
+        // The bug: body framed off its OWN bounds.
+        let body_perbody = build_canal_plug(&body, &centerline, None, &spec);
+
+        // Displacement = textured.eval - base.eval = the canal inset field.
+        let plug_disp = |z: f64| {
+            let p = Point3::new(0.004, 0.0, z);
+            plug_tex.evaluate(&p) - plug.evaluate(&p)
+        };
+        let body_shared_disp = |z: f64| {
+            let p = Point3::new(0.004, 0.0, z);
+            body_shared.evaluate(&p) - body.evaluate(&p)
+        };
+        let body_perbody_disp = |z: f64| {
+            let p = Point3::new(0.004, 0.0, z);
+            body_perbody.evaluate(&p) - body.evaluate(&p)
+        };
+
+        let mut max_shared_drift = 0.0_f64;
+        let mut max_perbody_drift = 0.0_f64;
+        for i in 0..=120 {
+            let z = -0.02 + 0.07 * f64::from(i) / 120.0;
+            max_shared_drift = max_shared_drift.max((plug_disp(z) - body_shared_disp(z)).abs());
+            max_perbody_drift = max_perbody_drift.max((plug_disp(z) - body_perbody_disp(z)).abs());
+        }
+
+        // Fix: the shared frame makes the displacement IDENTICAL → wall constant.
+        assert!(
+            max_shared_drift < 1.0e-9,
+            "shared-frame ring displacement must match the plug everywhere; drift {max_shared_drift}"
+        );
+        // The test discriminates: per-body framing genuinely drifts the ring
+        // (this is the wall defect the fix removes).
+        assert!(
+            max_perbody_drift > 5.0e-4,
+            "per-body framing should drift the ring (the bug); drift {max_perbody_drift}"
+        );
     }
 }

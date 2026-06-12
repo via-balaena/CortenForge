@@ -1831,7 +1831,7 @@ fn refresh(ui: &AppWindow, project: &Project, viewed_idx: usize) {
     ui.set_project_name(project.name.clone().into());
     ui.set_steps(ModelRc::new(VecModel::from(rows)));
     ui.set_viewed_number(i32::try_from(viewed_step.number()).unwrap_or(0));
-    ui.set_total_steps(i32::try_from(Step::TOTAL).unwrap_or(6));
+    ui.set_total_steps(i32::try_from(Step::TOTAL).unwrap_or(7));
     ui.set_viewed_title(viewed_step.title().into());
     ui.set_can_back(nav.can_back);
     ui.set_can_next(nav.can_next);

@@ -15,7 +15,7 @@ use cf_cast::{
     CanalSpec, CastLayer, CastSpec, DemandFlangeSpec, FlangeKind, FlangeSpec, GasketKind,
     GasketMaterial, GasketSpec, MoldingMaterial, PlugPinKind, PlugPinSpec, PourGateKind,
     PourGateLayout, PourGateSpec, Ribbon, RingSpec, SplitNormal, best_fit_planar_seam,
-    build_canal_plug,
+    build_canal_plug, build_canal_plug_framed,
 };
 use cf_design::pinned_floor_shell;
 use cf_geometry::Aabb;
@@ -264,6 +264,20 @@ pub fn derive_spec_and_ribbon(
         -cavity_inset_m,
     );
 
+    // The SHARED canal frame basis: the (innermost) plug's own axial span.
+    // The plug and every layer body are offsets of the same scan with
+    // DIFFERENT AABBs, so the canal field must be framed off ONE span — else a
+    // ring at `center_frac` would normalize to a different world position on
+    // each body and the inter-layer wall would drift. Framing the plug + all
+    // bodies off this one basis keeps the displacement identical at each world
+    // point across surfaces, so the wall stays constant. The plug itself frames
+    // off its own bounds (this value), so its texture is unchanged. See
+    // `cf_cast::build_canal_plug_framed`. Matches `build_canal_plug`'s fallback
+    // so the plug path stays byte-identical.
+    let canal_frame_bounds = plug
+        .bounds()
+        .unwrap_or_else(|| Aabb::new(Point3::origin(), Point3::new(0.1, 0.1, 0.1)));
+
     // Layer bodies — cumulative outward offset, shifted inward by
     // `cavity_inset_m` so the whole stack sits on top of the inset
     // plug surface (preserves inter-layer thickness, matches
@@ -297,7 +311,10 @@ pub fn derive_spec_and_ribbon(
             cumulative_so_far - cavity_inset_m,
         );
         if let Some((spec, mouth_anchor)) = &body_texture {
-            body = build_canal_plug(&body, centerline, *mouth_anchor, spec);
+            // Frame off the SHARED plug span (not this body's bigger bounds) so
+            // the rings line up across layers and the wall stays constant.
+            body =
+                build_canal_plug_framed(&body, centerline, *mouth_anchor, spec, canal_frame_bounds);
         }
         let material = build_material(layer_cfg).with_context(|| {
             format!(
@@ -408,6 +425,25 @@ pub fn derive_spec_and_ribbon(
                          cf-view before casting."
                     );
                 }
+            }
+
+            // Cup-wall gate: the unified texture now puts the SAME outward
+            // suction bulge on every layer body, including the outermost one.
+            // The mold cup is `bounding_region ∖ outer_body` built from the
+            // UN-textured body, so the outermost piece's wall is thinned by up
+            // to `suction_bulge_m`. If the bulge + the min-wall floor exceeds
+            // the configured cup wall thickness, the outer mold piece blows out.
+            let cup_wall_m = config.cast.wall_thickness_m;
+            if canal_spec.suction_bulge_m + min_wall_m > cup_wall_m {
+                bail!(
+                    "[canal] suction_bulge_m = {:.1} mm + min wall {:.1} mm exceeds the mold \
+                     cup wall thickness {:.1} mm ([cast].wall_thickness_m) — the bulge on the \
+                     outermost body would blow out the outer mold piece. Reduce suction_bulge_m \
+                     or thicken the cup wall.",
+                    canal_spec.suction_bulge_m * 1e3,
+                    min_wall_m * 1e3,
+                    cup_wall_m * 1e3,
+                );
             }
         }
 

@@ -43,13 +43,27 @@ the shaped plug.
 `1 Add scan → 2 Clean → 3 Shape your piece (inset + ridges, REAL-scan preview)
 → 4 Choose how it feels (the layer stack) → 5 Make molds → 6 Print → 7 Pour`
 
+> **Update (shipped + post-ultra-review, 2026-06-11):** implemented on branch
+> `feat/cendrillon-ridges-and-part-selector`, then hardened by a local
+> ultra-review. Two corrections to the plan below: (1) wall-preservation is NOT
+> automatic — `build_canal_plug` frames `frac` off each body's own AABB, so the
+> plug + bodies must share ONE frame (`build_canal_plug_framed`, framed off the
+> plug span) or the rings drift apart; pinned by the cross-body wall test in
+> `cf-cast`. (2) The old `shell_texture` R3 depth-gate was **dropped** (not
+> kept): inward features only add wall, and the one OUTWARD feature (suction
+> bulge) is now covered by a new cup-wall gate in `derive.rs`. The textured cup
+> pieces + N>0 plugs also need the canal-field skin (`plug_layer_0_field_skin_m`,
+> now the shared canal skin) so the narrow-band mesher doesn't drop ring geometry.
+
 ## 4. Implementation
 
 - **cf-cast-cli (`derive.rs`):** apply the (one) canal/texture field to the plug
   **AND every layer body** with the same spec — currently it's plug-only +
   separate `shell_texture` on bodies. **Unify:** the `canal` config IS the
-  texture; drop `shell_texture` (subsumed). R3 depth-gate stays. Bodies that
-  carry the texture need the finer plug-cell (texture survival).
+  texture; drop `shell_texture` (subsumed). Frame all bodies off ONE shared span
+  (the plug's) so the rings line up and the wall stays constant (the old R3 gate
+  is replaced by a suction cup-wall gate). Bodies that carry the texture mesh
+  with the canal-field skin; cup-cell texture is coarser than the plug cell.
 - **cf-studio-core:** Step reorg — drop `InteriorTexture`/`ExteriorTexture`; add
   `ShapePiece` (before `DesignLayers`). New `PlugDraft { cavity_inset_m, ridges:
   RidgeOptions }` artifact; `DesignDraft` keeps `{ cavity_inset_m, layers }` as

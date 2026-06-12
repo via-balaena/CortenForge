@@ -562,11 +562,22 @@ impl Project {
     /// **v1–v3 → v4: the ShapePiece step.** Earlier schemas folded the cavity
     /// inset into `DesignLayers` and carried the texture as separate optional
     /// `interior_texture` / `exterior_texture` artifacts (now dropped — serde
-    /// ignores the unknown fields). A pre-v4 project with a design but no plug
-    /// would read as "DesignLayers complete, ShapePiece incomplete" and break
-    /// the contiguous-prefix invariant. Backfill the plug from the design's
-    /// inset (ridges default to off — the old per-step texture choice is not
-    /// recovered) so the prefix stays intact, then stamp the current version.
+    /// ignores the unknown fields). v4 inserts `ShapePiece` *before*
+    /// `DesignLayers`, which can leave a pre-v4 project in two illegal states:
+    ///
+    /// 1. **Design present, no plug** → "DesignLayers complete, ShapePiece
+    ///    incomplete" breaks the contiguous-prefix invariant. Backfill the plug
+    ///    from the design's inset (ridges default to off — the old per-step
+    ///    texture choice is not recovered).
+    /// 2. **Parked on (or past) a now-earlier incomplete step** — e.g. a v3
+    ///    autosave with scan+prep done and `current_step = DesignLayers` but no
+    ///    design: after the reorg `ShapePiece` sits before `DesignLayers` and is
+    ///    incomplete, so `current_step` is unreachable. Clamp `current_step`
+    ///    DOWN to the furthest reachable step (never forward) so `load()`
+    ///    repairs the project instead of rejecting it (which would silently lose
+    ///    the user's scan/prep work).
+    ///
+    /// Then stamp the current schema version.
     fn migrate(&mut self) {
         if self.plug.is_none() {
             if let Some(design) = &self.design {
@@ -575,6 +586,18 @@ impl Project {
                     ridges: RidgeOptions::default(),
                 });
             }
+        }
+        // The furthest legal `current_step` is the first incomplete step (every
+        // step before it is complete — the contiguous-prefix invariant). Only
+        // clamp DOWN: a pre-v4 `current_step` may now sit past a freshly
+        // inserted incomplete step; we never advance the user past where they
+        // were.
+        let furthest_reachable = Step::ALL
+            .into_iter()
+            .find(|&s| !self.is_complete(s))
+            .unwrap_or(Step::LAST);
+        if self.current_step > furthest_reachable {
+            self.current_step = furthest_reachable;
         }
         if self.schema_version < PROJECT_SCHEMA_VERSION {
             self.schema_version = PROJECT_SCHEMA_VERSION;
@@ -959,6 +982,44 @@ mod tests {
         assert!(loaded.is_complete(Step::ShapePiece), "plug backfilled");
         assert_eq!(loaded.plug().unwrap().cavity_inset_m, 0.005, "from design");
         assert_eq!(loaded.schema_version(), PROJECT_SCHEMA_VERSION, "restamped");
+        loaded.validate().unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn migrate_clamps_current_step_for_a_pre_v4_parked_on_design_screen() {
+        // The data-loss case: a v3 autosave with scan+prep done, NO design,
+        // parked on "DesignLayers" (the old app's prep spine persisted exactly
+        // this). v4 inserts ShapePiece before DesignLayers, so current_step is
+        // now unreachable. load() must REPAIR (clamp current_step down to the
+        // reachable ShapePiece), not reject — rejecting would lose scan/prep.
+        let mut p = Project::new("v3parked");
+        p.set_scan(scan());
+        p.set_prep(prep()).unwrap();
+        let mut value = serde_json::to_value(&p).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("schema_version".into(), serde_json::json!(3));
+        obj.insert("plug".into(), serde_json::Value::Null);
+        obj.insert("current_step".into(), serde_json::json!("DesignLayers"));
+        // (a real v3 file would also carry interior_texture/exterior_texture;
+        // serde ignores the unknown fields.)
+
+        let dir =
+            std::env::temp_dir().join(format!("cf-studio-core-parked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.json");
+        std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        let loaded = Project::load(&path).expect("a parked-on-design v3 project must still load");
+        assert_eq!(
+            loaded.current_step(),
+            Step::ShapePiece,
+            "current_step clamped down to the furthest reachable step"
+        );
+        assert!(loaded.is_complete(Step::CleanScan), "scan/prep preserved");
+        assert!(!loaded.is_complete(Step::ShapePiece), "no plug yet");
         loaded.validate().unwrap();
 
         let _ = std::fs::remove_file(&path);

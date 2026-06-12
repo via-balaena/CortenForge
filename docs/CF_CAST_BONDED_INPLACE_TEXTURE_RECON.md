@@ -1,6 +1,17 @@
 # CF-CAST Bonded Cast-in-Place + Shell Texturing Recon
 
-> **Status:** ✅ COMPLETE (S0–S5 all merged to the feature branch). Cold-read pass-1 at §9.
+> **⚠️ SUPERSEDED (2026-06-11) by [`CF_CAST_SCAN_SURFACE_TEXTURE_RECON.md`](CF_CAST_SCAN_SURFACE_TEXTURE_RECON.md).**
+> The shell-texturing model below (a separate `[shell_texture]` config /
+> `ShellTextureSpec`, the `TextureDraft { interior, exterior }` split, and a
+> standalone `Step::Texture` page) was reframed before final merge: the ridge
+> field is now composed onto the **cleaned scan surface once** and rides every
+> offset (one `RidgeOptions`, no interior/exterior split). The artifacts named in
+> §4/§7 below (`shell_texture`, `ShellTextureSpec`, two-part `TextureDraft`, the
+> dedicated Texture step) **do not exist in the shipped branch** — see the
+> superseding recon for what actually shipped. The bonded `CastMode` /
+> single-plug parts model (the other half of this doc) DID ship.
+>
+> **Status:** partial — bonded `CastMode` shipped; the shell-texture S3–S5 design was superseded. Cold-read pass-1 at §9.
 > **Date:** 2026-06-11
 > **Trigger:** Cendrillon design session while wiring the interior-ridge (canal)
 > toggle + the "parts to generate" picker. The user (product owner) pulled two

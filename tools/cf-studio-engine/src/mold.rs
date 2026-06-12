@@ -124,7 +124,12 @@ fn generate_selected_molds(
         run_selected_with_config(config, base_dir, output_dir_override, selection, cast_mode)
             .map_err(|e| EngineError::MoldGen(format!("{e:#}")))?;
     let pour_plan = build_pour_plan(&pour_inputs(draft, &report.layer_pour_masses_kg)?)?;
-    let stls = collect_stls(&report.out_dir)?;
+    // Bucket from the run's AUTHORITATIVE written-paths list, NOT by globbing
+    // the output dir: the dir is persistent and never cleared, so globbing
+    // would merge stale pieces from a prior full run (possibly pre-edit
+    // geometry) with the freshly regenerated piece. Only `report.written`
+    // reflects what THIS selective run actually produced.
+    let stls = categorize_stls(report.written);
     Ok(MoldOutputs {
         out_dir: report.out_dir,
         mold_stls: stls.mold,
@@ -277,24 +282,14 @@ struct CategorizedStls {
     accessory: Vec<PathBuf>,
 }
 
-/// Read + categorize the `.stl` files the run wrote under `out_dir/stls`,
-/// by filename: `mold_layer_*` → mold halves, `plug_layer_*` → plugs,
-/// everything else (platform, dowel, funnel) → accessories. Globbing the
-/// directory is robust to which optional artifacts the run emitted.
-fn collect_stls(out_dir: &Path) -> Result<CategorizedStls> {
-    let stls_dir = out_dir.join("stls");
-    let entries = std::fs::read_dir(&stls_dir).map_err(|e| {
-        EngineError::MoldGen(format!("read output dir {}: {e}", stls_dir.display()))
-    })?;
+/// Categorize STL paths by filename: `mold_layer_*` → mold halves,
+/// `plug_layer_*` → plugs, everything else (platform, dowel, funnel) →
+/// accessories. Sorted within each bucket. Non-`.stl` paths are dropped.
+fn categorize_stls(paths: impl IntoIterator<Item = PathBuf>) -> CategorizedStls {
     let mut mold = Vec::new();
     let mut plug = Vec::new();
     let mut accessory = Vec::new();
-    for entry in entries {
-        let path = entry
-            .map_err(|e| {
-                EngineError::MoldGen(format!("read dir entry in {}: {e}", stls_dir.display()))
-            })?
-            .path();
+    for path in paths {
         if path.extension().and_then(|e| e.to_str()) != Some("stl") {
             continue;
         }
@@ -313,11 +308,34 @@ fn collect_stls(out_dir: &Path) -> Result<CategorizedStls> {
     mold.sort();
     plug.sort();
     accessory.sort();
-    Ok(CategorizedStls {
+    CategorizedStls {
         mold,
         plug,
         accessory,
-    })
+    }
+}
+
+/// Read + categorize the `.stl` files the run wrote under `out_dir/stls` by
+/// globbing the directory (robust to which optional artifacts the run
+/// emitted). Used by the **full-cast** path, where every file in the dir
+/// belongs to this run. The selective path must NOT glob (the dir is
+/// persistent + may hold stale pieces) — it categorizes the run's authoritative
+/// written-paths list via [`categorize_stls`].
+fn collect_stls(out_dir: &Path) -> Result<CategorizedStls> {
+    let stls_dir = out_dir.join("stls");
+    let entries = std::fs::read_dir(&stls_dir).map_err(|e| {
+        EngineError::MoldGen(format!("read output dir {}: {e}", stls_dir.display()))
+    })?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| {
+                EngineError::MoldGen(format!("read dir entry in {}: {e}", stls_dir.display()))
+            })?
+            .path();
+        paths.push(path);
+    }
+    Ok(categorize_stls(paths))
 }
 
 #[cfg(test)]
@@ -541,6 +559,30 @@ mod tests {
         assert_eq!(cat.accessory.len(), 2, "platform + dowel; .md ignored");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn categorize_stls_buckets_only_the_given_paths() {
+        // The selective-export fix: bucket the run's authoritative written-paths
+        // list, NOT a glob of the persistent dir — so a stale prior-run STL that
+        // happens to sit in the same folder is never reported. categorize_stls
+        // only ever sees the list it's handed.
+        let cat = categorize_stls(vec![
+            PathBuf::from("out/stls/plug_layer_0.stl"),
+            PathBuf::from("out/stls/procedure.md"), // non-stl, dropped
+        ]);
+        assert_eq!(cat.plug.len(), 1, "only the one regenerated plug");
+        assert!(cat.mold.is_empty(), "no cup halves in the written list");
+        assert!(cat.accessory.is_empty(), "no platform/dowel; .md dropped");
+        // A stale full-run STL on disk is irrelevant — it's not in the list, so
+        // it can't be mis-attributed to this run.
+        assert!(
+            !cat.plug
+                .iter()
+                .chain(&cat.mold)
+                .chain(&cat.accessory)
+                .any(|p| p.ends_with("mold_layer_0_piece_0.stl")),
+        );
     }
 
     #[test]

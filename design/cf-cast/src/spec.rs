@@ -238,14 +238,20 @@ pub struct CastSpec {
     /// the cost is bounded. Layers N>0 always use the global cell
     /// size (they carry no canal features).
     pub plug_layer_0_mesh_cell_size_m: Option<f64>,
-    /// Narrow-band skip skin for the **layer-0 plug only** (meters): an
-    /// upper bound on the magnitude of the canal feature's non-1-Lipschitz
-    /// additive displacement (`max_inward_depth + suction_bulge`). `None`
-    /// (default) → `0.0`, the plain ≤1-Lipschitz case. The canal path sets
-    /// `Some(skin)` so the narrow-band mesher widens its skip margin by
-    /// `2·skin` and stays byte-identical to the dense bake on the textured
-    /// plug (see `mesher::solid_to_mm_mesh_with_skin`). Layers N>0 carry no
-    /// canal features (skin 0).
+    /// Narrow-band skip skin for the **canal feature field** (meters): an
+    /// upper bound on the magnitude of the canal's non-1-Lipschitz additive
+    /// displacement (`max_inward_depth + suction_bulge`). `None` (default) →
+    /// `0.0`, the plain ≤1-Lipschitz case. The canal path sets `Some(skin)` so
+    /// the narrow-band mesher widens its skip margin by `2·skin` and stays
+    /// byte-identical to the dense bake on any textured surface (see
+    /// `mesher::solid_to_mm_mesh_with_skin`).
+    ///
+    /// Post scan-surface unification the SAME canal field is composed onto the
+    /// layer-0 plug **and every layer body**, so this one skin also guards the
+    /// cup pieces (`bounding ∖ textured_body`) and the N>0 plugs (which are the
+    /// textured layer bodies). When the canal is off it is `None` everywhere,
+    /// so every mesh stays byte-identical to the pre-canal path. (Name kept for
+    /// compatibility; it is really the canal-field skin, not plug-0-specific.)
     pub plug_layer_0_field_skin_m: Option<f64>,
 }
 
@@ -1578,7 +1584,18 @@ fn mesh_and_gate_v2_piece(
         layer_index,
         piece_side,
     };
-    let mesh = solid_to_mm_mesh(&piece_solid, spec.mesh_cell_size_m, target)?;
+    // The cup piece is `bounding ∖ layer_body`; post scan-surface unification
+    // the layer body carries the canal field, so the cup's inner surface is
+    // the textured (non-1-Lipschitz) body surface. Pass the canal-field skin so
+    // the narrow-band skip doesn't sentinel-fill surface-crossing cells and
+    // drop ring/texture geometry. Canal off → skin `None` → plain mesh, byte-
+    // identical to before.
+    let mesh = match spec.plug_layer_0_field_skin_m {
+        Some(skin) if skin > 0.0 => {
+            solid_to_mm_mesh_with_skin(&piece_solid, spec.mesh_cell_size_m, target, skin)?
+        }
+        _ => solid_to_mm_mesh(&piece_solid, spec.mesh_cell_size_m, target)?,
+    };
     // Post-MC mesh-CSG stage (S3 plumbing; S4/S5/S6 emit transforms).
     // Empty `mating_transforms` short-circuits to a pass-through.
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
@@ -1698,15 +1715,13 @@ fn mesh_and_gate_v2_one_plug(
             } else {
                 spec.mesh_cell_size_m
             };
-            // Layer-0 plug carries the canal feature's non-1-Lipschitz
-            // displacement; pass its skin so the narrow-band skip stays
-            // byte-identical to the dense bake. Layers N>0 are plain CSG
-            // (skin 0 ⇒ identical to `solid_to_mm_mesh`).
-            let field_skin_m = if layer_index == 0 {
-                spec.plug_layer_0_field_skin_m.unwrap_or(0.0)
-            } else {
-                0.0
-            };
+            // Every plug carries the canal feature's non-1-Lipschitz
+            // displacement now: layer-0's plug is the textured plug, and the
+            // N>0 plugs ARE the textured layer bodies (post scan-surface
+            // unification). Pass the canal-field skin so the narrow-band skip
+            // stays byte-identical to the dense bake. Canal off → `None` →
+            // 0.0, plain CSG, identical to before.
+            let field_skin_m = spec.plug_layer_0_field_skin_m.unwrap_or(0.0);
             (
                 solid_to_mm_mesh_with_skin(&plug_solid, cell_size_m, target, field_skin_m)?,
                 "compose+MC",

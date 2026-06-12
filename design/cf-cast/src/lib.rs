@@ -108,7 +108,7 @@ mod spec;
 
 pub use canal::{
     CANAL_DEBRIS_MAX_DROP_FRACTION, CanalFrame, CanalSpec, RingSpec, build_canal_plug,
-    filter_plug_debris,
+    build_canal_plug_framed, filter_plug_debris,
 };
 pub use cast_mode::CastMode;
 pub use cure::CureProtocol;
