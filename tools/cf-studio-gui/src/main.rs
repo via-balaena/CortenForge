@@ -24,9 +24,9 @@ use cf_studio_core::{
     ShellRidgeOptions, Step, TextureDraft,
 };
 use cf_studio_engine::{
-    CastMode, EditSession, PartId, PartSelection, PreviewShowing, PrintExportReport,
-    ReconstructShape, export_print_package, generate_molds_for_design, run_simplify,
-    silicone_catalog, texture_preview_mesh,
+    CastMode, EditSession, PartId, PartSelection, PrintExportReport, ReconstructShape,
+    export_print_package, exterior_preview_mesh, generate_molds_for_design, interior_preview_mesh,
+    run_simplify, silicone_catalog,
 };
 
 /// Cendrillon casts **bonded** (one plug, cast-in-place) — the product default
@@ -35,10 +35,10 @@ use cf_studio_engine::{
 const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
-    StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, apply_texture,
-    cell_size_m_for_quality, enumerate_parts, format_molds_summary, format_pour_active,
-    format_pour_plan, nav_state, part_selection_from_checks, pour_countdown, print_step_summary,
-    step_rows,
+    StepOutcome, apply_design, apply_design_draft, apply_exterior_texture, apply_interior_texture,
+    apply_prep, apply_scan, cell_size_m_for_quality, enumerate_parts, format_molds_summary,
+    format_pour_active, format_pour_plan, nav_state, part_selection_from_checks, pour_countdown,
+    print_step_summary, step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
@@ -973,18 +973,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ── step 4: commit the texture choice (interior + exterior) + advance ──
+    // ── step 4: commit the interior ridges (Continue) + advance ──
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
-        let (rings_model_c, shell_rings_model_c) = (rings_model.clone(), shell_rings_model.clone());
-        ui.on_commit_texture(move || {
+        let rings_model_c = rings_model.clone();
+        ui.on_commit_interior(move || {
             let Some(ui) = weak.upgrade() else { return };
-            let texture = TextureDraft {
-                interior: ridge_options_from_ui(&ui, &rings_model_c),
-                exterior: shell_ridge_options_from_ui(&ui, &shell_rings_model_c),
-            };
-            let outcome = apply_texture(&mut project.borrow_mut(), texture);
-            // Skippable step — a successful Continue moves forward to Make molds.
+            let interior = ridge_options_from_ui(&ui, &rings_model_c);
+            let outcome = apply_interior_texture(&mut project.borrow_mut(), interior);
+            if outcome.is_ok() {
+                let _ = project.borrow_mut().advance();
+            }
+            viewed.set(project.borrow().current_step().index());
+            update(&weak, &project, viewed.get(), &outcome);
+        });
+    }
+    // ── step 5: commit the exterior shell ridges (Continue) + advance ──
+    {
+        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let shell_rings_model_c = shell_rings_model.clone();
+        ui.on_commit_exterior(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let exterior = shell_ridge_options_from_ui(&ui, &shell_rings_model_c);
+            let outcome = apply_exterior_texture(&mut project.borrow_mut(), exterior);
             if outcome.is_ok() {
                 let _ = project.borrow_mut().advance();
             }
@@ -1015,19 +1026,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_select_no_parts(move || set_all_parts(&parts_model, false));
     }
 
-    // ── step 4: live texture preview (regenerate on any change; orbit) ──
+    // ── step 4/5: live texture previews (regenerate on any change; orbit) ──
     {
         let (weak, gpu, texture_scene) = (weak.clone(), gpu.clone(), texture_scene.clone());
-        let (rings_model, shell_rings_model) = (rings_model.clone(), shell_rings_model.clone());
-        ui.on_texture_changed(move || {
+        let rings_model = rings_model.clone();
+        ui.on_interior_changed(move || {
             if let Some(ui) = weak.upgrade() {
-                refresh_texture_preview(
-                    &ui,
-                    &gpu,
-                    &texture_scene,
-                    &rings_model,
-                    &shell_rings_model,
-                );
+                refresh_interior_preview(&ui, &gpu, &texture_scene, &rings_model);
+            }
+        });
+    }
+    {
+        let (weak, gpu, texture_scene) = (weak.clone(), gpu.clone(), texture_scene.clone());
+        let shell_rings_model = shell_rings_model.clone();
+        ui.on_exterior_changed(move || {
+            if let Some(ui) = weak.upgrade() {
+                refresh_exterior_preview(&ui, &gpu, &texture_scene, &shell_rings_model);
             }
         });
     }
@@ -1459,9 +1473,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let cell_size_m = cell_size_m_for_quality(quality_idx);
-            // The texture was committed on the step-4 Texture page; read it back
-            // (default = no texture if somehow unset).
-            let texture = project.borrow().texture().cloned().unwrap_or_default();
+            // The interior + exterior textures were committed on steps 4 & 5;
+            // combine them into the engine's TextureDraft (defaults if unset).
+            let texture = {
+                let p = project.borrow();
+                TextureDraft {
+                    interior: p.interior_texture().cloned().unwrap_or_default(),
+                    exterior: p.exterior_texture().cloned().unwrap_or_default(),
+                }
+            };
             // Snapshot the part picker into a PartSelection (all checked →
             // the full-cast path; a subset skips the rest).
             let selection = part_selection_from_ui(&parts_model, &part_ids);
@@ -1730,24 +1750,18 @@ fn shell_ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> She
     }
 }
 
-/// Regenerate the step-4 live texture preview from the current controls: read
-/// the interior + exterior settings, mesh a coarse textured proxy, render it
-/// into the `texture-preview` image, and label what it shows. A no-op until
-/// the GPU handles are ready. Cheap (coarse proxy) — runs on the UI thread.
-fn refresh_texture_preview(
+/// Render `mesh` into the shared `texture-preview` image (preserving orbit on
+/// a re-render). A no-op until the GPU handles are ready.
+fn render_texture_preview(
     ui: &AppWindow,
     gpu: &GpuHandles,
     texture_scene: &RefCell<Option<Scene>>,
-    rings: &VecModel<RingRow>,
-    shell_rings: &VecModel<RingRow>,
+    mesh: &mesh_types::IndexedMesh,
 ) {
     let Some((device, queue)) = gpu.borrow().clone() else {
         return;
     };
-    let interior = ridge_options_from_ui(ui, rings);
-    let exterior = shell_ridge_options_from_ui(ui, shell_rings);
-    let (mesh, showing) = texture_preview_mesh(&interior, &exterior);
-    let md = mesh_data_from_indexed(&mesh);
+    let md = mesh_data_from_indexed(mesh);
     let img = {
         let mut guard = texture_scene.borrow_mut();
         match guard.as_mut() {
@@ -1766,14 +1780,28 @@ fn refresh_texture_preview(
     if let Ok(img) = img {
         ui.set_texture_preview(img);
     }
-    ui.set_texture_preview_label(
-        match showing {
-            PreviewShowing::Interior => "Interior ridges",
-            PreviewShowing::Exterior => "Exterior shell ridges",
-            PreviewShowing::Smooth => "Smooth",
-        }
-        .into(),
-    );
+}
+
+/// Regenerate the interior (plug) preview from the current interior controls.
+fn refresh_interior_preview(
+    ui: &AppWindow,
+    gpu: &GpuHandles,
+    texture_scene: &RefCell<Option<Scene>>,
+    rings: &VecModel<RingRow>,
+) {
+    let mesh = interior_preview_mesh(&ridge_options_from_ui(ui, rings));
+    render_texture_preview(ui, gpu, texture_scene, &mesh);
+}
+
+/// Regenerate the exterior (shell) preview from the current exterior controls.
+fn refresh_exterior_preview(
+    ui: &AppWindow,
+    gpu: &GpuHandles,
+    texture_scene: &RefCell<Option<Scene>>,
+    shell_rings: &VecModel<RingRow>,
+) {
+    let mesh = exterior_preview_mesh(&shell_ridge_options_from_ui(ui, shell_rings));
+    render_texture_preview(ui, gpu, texture_scene, &mesh);
 }
 
 fn sync_pour_ui(ui: &AppWindow, project: &Project, current: usize) {

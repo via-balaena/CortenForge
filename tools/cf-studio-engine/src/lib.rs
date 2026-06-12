@@ -41,7 +41,7 @@ pub use mold::{generate_molds, generate_molds_for_design};
 pub use cf_cast_cli::{CastConfig, CastMode, PartId, PartSelection, PieceSide};
 pub use pour::{LayerPour, build_pour_plan};
 pub use prep::accept_prep;
-pub use preview::{PreviewShowing, texture_preview_mesh};
+pub use preview::{exterior_preview_mesh, interior_preview_mesh};
 pub use print::{PrintExportReport, export_print_package};
 pub use scan::{LoadedScan, load_scan};
 

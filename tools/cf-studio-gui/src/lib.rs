@@ -120,28 +120,49 @@ pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutc
     Ok(message)
 }
 
-/// Commit the optional surface-texture choice ([`cf_studio_core::Step::Texture`]).
-/// A default (both off) `texture` is the "skip" — it records a smooth piece and
-/// lets the user advance.
+/// Commit the optional interior-ridge choice
+/// ([`cf_studio_core::Step::InteriorTexture`]). A disabled `interior` is the
+/// "skip" — records a smooth inside and advances.
 ///
 /// # Errors
 /// Surfaces [`cf_studio_core::StudioError`] as a string if the design step is
 /// not yet complete.
-pub fn apply_texture(project: &mut Project, texture: cf_studio_core::TextureDraft) -> StepOutcome {
-    let message = match (texture.interior.enabled, texture.exterior.enabled) {
-        (false, false) => "✓ No texture — a smooth piece.".to_string(),
-        (interior, exterior) => format!(
-            "✓ Texture set ({}{}{}).",
-            if interior { "interior ridges" } else { "" },
-            if interior && exterior { " + " } else { "" },
-            if exterior {
-                "exterior shell ridges"
-            } else {
-                ""
-            },
-        ),
-    };
-    project.set_texture(texture).map_err(|e| e.to_string())?;
+pub fn apply_interior_texture(
+    project: &mut Project,
+    interior: cf_studio_core::RidgeOptions,
+) -> StepOutcome {
+    let message = if interior.enabled {
+        "✓ Interior ridges set."
+    } else {
+        "✓ No interior ridges."
+    }
+    .to_string();
+    project
+        .set_interior_texture(interior)
+        .map_err(|e| e.to_string())?;
+    Ok(message)
+}
+
+/// Commit the optional exterior shell-ridge choice
+/// ([`cf_studio_core::Step::ExteriorTexture`]). A disabled `exterior` is the
+/// "skip".
+///
+/// # Errors
+/// Surfaces [`cf_studio_core::StudioError`] as a string if the interior-texture
+/// step is not yet complete.
+pub fn apply_exterior_texture(
+    project: &mut Project,
+    exterior: cf_studio_core::ShellRidgeOptions,
+) -> StepOutcome {
+    let message = if exterior.enabled {
+        "✓ Exterior shell ridges set."
+    } else {
+        "✓ No exterior ridges."
+    }
+    .to_string();
+    project
+        .set_exterior_texture(exterior)
+        .map_err(|e| e.to_string())?;
     Ok(message)
 }
 
@@ -432,13 +453,12 @@ visible = true
     }
 
     #[test]
-    fn apply_texture_skips_with_a_default_and_gates_on_design() {
-        use cf_studio_core::TextureDraft;
+    fn apply_texture_steps_skip_with_defaults_and_gate_in_order() {
+        use cf_studio_core::{RidgeOptions, ShellRidgeOptions};
         let mut p = Project::new("t");
-        // Before the design step, texture can't be committed.
-        assert!(apply_texture(&mut p, TextureDraft::default()).is_err());
+        // Before design, neither texture step can be committed.
+        assert!(apply_interior_texture(&mut p, RidgeOptions::default()).is_err());
 
-        // After scan+prep+design, a default texture is the "skip".
         let d = dir("tex");
         let stl = d.join("s.stl");
         std::fs::write(&stl, ONE_TRIANGLE_STL).unwrap();
@@ -452,16 +472,23 @@ visible = true
         apply_prep(&mut p, &cleaned, &prep).unwrap();
         apply_design(&mut p, &design).unwrap();
 
-        let msg = apply_texture(&mut p, TextureDraft::default()).unwrap();
-        assert!(msg.contains("No texture"), "got: {msg}");
-        assert!(p.is_complete(Step::Texture));
+        // Exterior can't go before interior.
+        assert!(apply_exterior_texture(&mut p, ShellRidgeOptions::default()).is_err());
+
+        let msg = apply_interior_texture(&mut p, RidgeOptions::default()).unwrap();
+        assert!(msg.contains("No interior"), "got: {msg}");
+        assert!(p.is_complete(Step::InteriorTexture));
+
+        let msg = apply_exterior_texture(&mut p, ShellRidgeOptions::default()).unwrap();
+        assert!(msg.contains("No exterior"), "got: {msg}");
+        assert!(p.is_complete(Step::ExteriorTexture));
     }
 
     #[test]
-    fn fresh_project_has_seven_rows_all_undone_at_step_one() {
+    fn fresh_project_has_eight_rows_all_undone_at_step_one() {
         let p = Project::new("t");
         let rows = step_rows(&p, Step::AddScan);
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), 8);
         assert!(
             rows.iter().all(|r| !r.done),
             "nothing done on a fresh project"
@@ -478,10 +505,10 @@ visible = true
     fn viewing_marks_the_previewed_step_independent_of_current() {
         let p = Project::new("t"); // still at AddScan
         let rows = step_rows(&p, Step::MakeMolds);
-        assert!(rows[4].viewing, "MakeMolds (index 4) is being viewed");
+        assert!(rows[5].viewing, "MakeMolds (index 5) is being viewed");
         assert!(!rows[0].viewing);
         assert!(rows[0].current, "but the project is still on AddScan");
-        assert!(!rows[4].current);
+        assert!(!rows[5].current);
     }
 
     #[test]
@@ -594,7 +621,8 @@ visible = true
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
         apply_design(&mut p, &design).unwrap();
-        apply_texture(&mut p, cf_studio_core::TextureDraft::default()).unwrap();
+        apply_interior_texture(&mut p, cf_studio_core::RidgeOptions::default()).unwrap();
+        apply_exterior_texture(&mut p, cf_studio_core::ShellRidgeOptions::default()).unwrap();
 
         // Molds made, not yet exported → "ready to save N".
         p.set_molds(MoldOutputs {

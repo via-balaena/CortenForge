@@ -1,11 +1,10 @@
 //! Live texture preview — a coarse, representative textured-proxy mesh for a
-//! frontend's "tune the ridges" UI (Cendrillon's Texture step).
+//! frontend's "tune the ridges" UI (Cendrillon's Texture steps).
 //!
-//! This is **not** a cast artifact: it textures a simple plug-shaped proxy
-//! (flat floor, domed top) with the *same* canal field the cast applies (so
-//! the ridge pattern matches what
-//! a real cast produces), but at a coarse cell size so it re-meshes in
-//! milliseconds — fast enough to update live as the user drags a slider. The
+//! Not a cast artifact. It textures a simple proxy (a flat-floor plug or a
+//! rounded shell) with the *same* canal field the cast applies — so the ridge
+//! pattern matches a real cast — but at a coarse cell size, so it re-meshes in
+//! milliseconds: fast enough to update live as the user drags a slider. The
 //! real part is cast at full detail by the normal pipeline.
 
 use cf_design::{Aabb, Solid};
@@ -37,19 +36,47 @@ pub fn preview_textured_plug(
     half_height_m: f64,
     cell_size_m: f64,
 ) -> IndexedMesh {
-    // Flat-bottomed cylinder + a top hemisphere dome = a plug-shaped proxy.
+    // Flat-bottomed cylinder + a top hemisphere dome = a plug-shaped proxy
+    // (the interior ridges live inside this).
     let body = Solid::cylinder(radius_m, half_height_m)
         .union(Solid::sphere(radius_m).translate(Vector3::new(0.0, 0.0, half_height_m)));
+    mesh_textured_proxy(&body, spec, half_height_m, cell_size_m)
+}
+
+/// Mesh a Z-aligned **shell proxy** — a both-ends-rounded capsule (the
+/// device's outer body) textured with `spec`'s field.
+///
+/// The exterior shell ridges live on this surface; the rounded shape
+/// distinguishes it from the flat-floor plug. Otherwise identical to
+/// [`preview_textured_plug`].
+#[must_use]
+pub fn preview_textured_capsule(
+    spec: &CanalSpec,
+    radius_m: f64,
+    half_height_m: f64,
+    cell_size_m: f64,
+) -> IndexedMesh {
+    let body = Solid::capsule(radius_m, half_height_m);
+    mesh_textured_proxy(&body, spec, half_height_m, cell_size_m)
+}
+
+/// Shared: compose the canal field onto `body` (mouth = the −Z end) and mesh it
+/// at `cell_size_m`.
+fn mesh_textured_proxy(
+    body: &Solid,
+    spec: &CanalSpec,
+    half_height_m: f64,
+    cell_size_m: f64,
+) -> IndexedMesh {
     let centerline = vec![
-        Point3::new(0.0, 0.0, -half_height_m), // flat floor = mouth (frac 0)
+        Point3::new(0.0, 0.0, -half_height_m), // −Z end = mouth (frac 0)
         Point3::new(0.0, 0.0, half_height_m),
     ];
-    let textured = build_canal_plug(&body, &centerline, None, spec);
+    let textured = build_canal_plug(body, &centerline, None, spec);
 
     let bounds = textured.bounds().unwrap_or_else(|| {
-        let r = radius_m + spec.suction_bulge_m + 0.002;
-        let h = half_height_m + radius_m + 0.002;
-        Aabb::new(Point3::new(-r, -r, -h), Point3::new(r, r, h))
+        let r = 0.05 + spec.suction_bulge_m;
+        Aabb::new(Point3::new(-r, -r, -r), Point3::new(r, r, r))
     });
     let mut grid = ScalarGrid::from_bounds(
         bounds.min,

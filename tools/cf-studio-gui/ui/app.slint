@@ -177,10 +177,9 @@ export component AppWindow inherits Window {
     // VecModel (mirrors `ridge-rings`).
     in-out property <bool> shell-ridges-enabled: false;
     in property <[RingRow]> shell-rings;
-    // Step 4: the live texture preview (wgpu-rendered) + a label of what it
-    // shows ("Interior ridges" / "Exterior shell ridges" / "Smooth").
+    // Step 4 / 5: the live texture preview (wgpu-rendered). Shared by both
+    // texture pages; each renders its own proxy (plug vs shell) into it.
     in property <image> texture-preview;
-    in property <string> texture-preview-label: "Smooth";
     // Step 5: the generatable parts (per-layer cups/plugs + accessories),
     // each with a checkbox. Default all-checked = full cast; uncheck to
     // generate only some pieces. Rust-owned VecModel, rebuilt when the
@@ -232,11 +231,13 @@ export component AppWindow inherits Window {
     callback set-shell-ring-position(int, int);
     callback set-shell-ring-depth(int, int);
     callback set-shell-ring-width(int, int);
-    // Step 4: commit the texture choice (interior + exterior) and advance.
-    callback commit-texture();
-    // Step 4: a texture control changed → regenerate the live preview; and
-    // drag-to-orbit the preview viewport.
-    callback texture-changed();
+    // Step 4 / 5: commit the interior / exterior texture choice and advance.
+    callback commit-interior();
+    callback commit-exterior();
+    // An interior / exterior control changed → regenerate the matching live
+    // preview; and drag-to-orbit the (shared) preview viewport.
+    callback interior-changed();
+    callback exterior-changed();
     callback texture-orbit(length, length);
     // Step-4 part picker: toggle one part, or select all / none.
     callback set-part-checked(int, bool);
@@ -532,44 +533,37 @@ export component AppWindow inherits Window {
                         Button { text: "…or load a file"; clicked => { pick-design(); } }
                     }
                 }
-                // Step 4 — optional surface texture (interior + exterior ridges).
+                // Step 4 — optional INTERIOR ridges (the canal, on the plug).
                 if viewed-number == 4: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
-                    // Render the preview as soon as the page is shown.
-                    init => { texture-changed(); }
+                    init => { interior-changed(); }
                     Text {
-                        text: "Optionally add ridges to your piece. This step is skippable — just press Continue to make a smooth piece. Interior ridges go on the inside; exterior shell ridges go on the outside of every layer (and key the layers together when cast bonded).";
+                        text: "Optionally add ridges to the INSIDE of your piece (the channel). Skippable — just press Continue for a smooth inside.";
                         horizontal-alignment: center;
                         font-size: 16px;
                         color: #444444;
                         wrap: word-wrap;
                     }
-
-                    // Live preview — drag to orbit. Shows the ridge pattern on a
-                    // representative shape (not your exact part; that's cast at
-                    // full detail).
                     ScanViewport {
                         view: texture-preview;
                         view-height: 280px;
                         orbit(dx, dy) => { texture-orbit(dx, dy); }
                     }
                     Text {
-                        text: "Preview: " + texture-preview-label + " — drag to rotate. Your part is cast at full detail.";
+                        text: "Preview: interior (the plug) — drag to rotate. Your part is cast at full detail.";
                         horizontal-alignment: center;
                         font-size: 13px;
                         color: #666666;
                         wrap: word-wrap;
                     }
-
-                    // Interior ridges (the canal, on the inner plug).
                     HorizontalBox {
                         alignment: center;
                         spacing: 6px;
                         CheckBox {
                             checked <=> ridges-enabled;
                             enabled: !busy;
-                            toggled => { texture-changed(); }
+                            toggled => { interior-changed(); }
                         }
                         Text {
                             text: "Add interior ridges (advanced)";
@@ -606,29 +600,29 @@ export component AppWindow inherits Window {
                                         minimum: 0;
                                         maximum: 100;
                                         value: ring.position-pct;
-                                        edited(v) => { set-ring-position(idx, v); texture-changed(); }
+                                        edited(v) => { set-ring-position(idx, v); interior-changed(); }
                                     }
                                     Text { text: "% along"; vertical-alignment: center; color: #333333; }
                                     SpinBox {
                                         minimum: 0;
                                         maximum: 100;
                                         value: ring.depth-tenths-mm;
-                                        edited(v) => { set-ring-depth(idx, v); texture-changed(); }
+                                        edited(v) => { set-ring-depth(idx, v); interior-changed(); }
                                     }
                                     Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
                                     SpinBox {
                                         minimum: 1;
                                         maximum: 50;
                                         value: ring.width-pct;
-                                        edited(v) => { set-ring-width(idx, v); texture-changed(); }
+                                        edited(v) => { set-ring-width(idx, v); interior-changed(); }
                                     }
                                     Text { text: "% wide"; vertical-alignment: center; color: #333333; }
-                                    Button { text: "✕"; clicked => { remove-ring(idx); texture-changed(); } }
+                                    Button { text: "✕"; clicked => { remove-ring(idx); interior-changed(); } }
                                 }
                             }
                             HorizontalBox {
                                 alignment: center;
-                                Button { text: "+ Add ring"; clicked => { add-ring(); texture-changed(); } }
+                                Button { text: "+ Add ring"; clicked => { add-ring(); interior-changed(); } }
                             }
                             HorizontalBox {
                                 alignment: center;
@@ -638,7 +632,7 @@ export component AppWindow inherits Window {
                                     minimum: 0;
                                     maximum: 50;
                                     value: ridge-texture-depth-tenths-mm;
-                                    edited(v) => { ridge-texture-depth-tenths-mm = v; texture-changed(); }
+                                    edited(v) => { ridge-texture-depth-tenths-mm = v; interior-changed(); }
                                 }
                                 Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
                             }
@@ -650,7 +644,7 @@ export component AppWindow inherits Window {
                                     minimum: 10;
                                     maximum: 300;
                                     value: ridge-texture-spacing-tenths-mm;
-                                    edited(v) => { ridge-texture-spacing-tenths-mm = v; texture-changed(); }
+                                    edited(v) => { ridge-texture-spacing-tenths-mm = v; interior-changed(); }
                                 }
                                 Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
                             }
@@ -662,7 +656,7 @@ export component AppWindow inherits Window {
                                     minimum: 0;
                                     maximum: 50;
                                     value: ridge-side-pinch-tenths-mm;
-                                    edited(v) => { ridge-side-pinch-tenths-mm = v; texture-changed(); }
+                                    edited(v) => { ridge-side-pinch-tenths-mm = v; interior-changed(); }
                                 }
                                 Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
                             }
@@ -674,7 +668,7 @@ export component AppWindow inherits Window {
                                     minimum: 0;
                                     maximum: 50;
                                     value: ridge-tip-relief-tenths-mm;
-                                    edited(v) => { ridge-tip-relief-tenths-mm = v; texture-changed(); }
+                                    edited(v) => { ridge-tip-relief-tenths-mm = v; interior-changed(); }
                                 }
                                 Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
                             }
@@ -686,21 +680,54 @@ export component AppWindow inherits Window {
                                     minimum: 0;
                                     maximum: 360;
                                     value: ridge-orientation-deg;
-                                    edited(v) => { ridge-orientation-deg = v; texture-changed(); }
+                                    edited(v) => { ridge-orientation-deg = v; interior-changed(); }
                                 }
                                 Text { text: "°"; vertical-alignment: center; color: #333333; }
                             }
                         }
                     }
+                    HorizontalBox {
+                        alignment: center;
+                        Button {
+                            text: "Continue";
+                            primary: true;
+                            enabled: !busy;
+                            clicked => { commit-interior(); }
+                        }
+                    }
+                }
 
-                    // Exterior / inter-layer shell ridges (every layer's outer surface).
+                // Step 5 — optional EXTERIOR shell ridges (every layer's outside).
+                if viewed-number == 5: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    init => { exterior-changed(); }
+                    Text {
+                        text: "Optionally add ridges to the OUTSIDE of every layer's shell. Cast bonded, these key the layers together. Skippable — Continue for a smooth outside.";
+                        horizontal-alignment: center;
+                        font-size: 16px;
+                        color: #444444;
+                        wrap: word-wrap;
+                    }
+                    ScanViewport {
+                        view: texture-preview;
+                        view-height: 280px;
+                        orbit(dx, dy) => { texture-orbit(dx, dy); }
+                    }
+                    Text {
+                        text: "Preview: exterior shell — drag to rotate. Your part is cast at full detail.";
+                        horizontal-alignment: center;
+                        font-size: 13px;
+                        color: #666666;
+                        wrap: word-wrap;
+                    }
                     HorizontalBox {
                         alignment: center;
                         spacing: 6px;
                         CheckBox {
                             checked <=> shell-ridges-enabled;
                             enabled: !busy;
-                            toggled => { texture-changed(); }
+                            toggled => { exterior-changed(); }
                         }
                         Text {
                             text: "Add exterior shell ridges (advanced)";
@@ -731,45 +758,44 @@ export component AppWindow inherits Window {
                                         minimum: 0;
                                         maximum: 100;
                                         value: ring.position-pct;
-                                        edited(v) => { set-shell-ring-position(idx, v); texture-changed(); }
+                                        edited(v) => { set-shell-ring-position(idx, v); exterior-changed(); }
                                     }
                                     Text { text: "% along"; vertical-alignment: center; color: #333333; }
                                     SpinBox {
                                         minimum: 0;
                                         maximum: 50;
                                         value: ring.depth-tenths-mm;
-                                        edited(v) => { set-shell-ring-depth(idx, v); texture-changed(); }
+                                        edited(v) => { set-shell-ring-depth(idx, v); exterior-changed(); }
                                     }
                                     Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
                                     SpinBox {
                                         minimum: 1;
                                         maximum: 50;
                                         value: ring.width-pct;
-                                        edited(v) => { set-shell-ring-width(idx, v); texture-changed(); }
+                                        edited(v) => { set-shell-ring-width(idx, v); exterior-changed(); }
                                     }
                                     Text { text: "% wide"; vertical-alignment: center; color: #333333; }
-                                    Button { text: "✕"; clicked => { remove-shell-ring(idx); texture-changed(); } }
+                                    Button { text: "✕"; clicked => { remove-shell-ring(idx); exterior-changed(); } }
                                 }
                             }
                             HorizontalBox {
                                 alignment: center;
-                                Button { text: "+ Add ring"; clicked => { add-shell-ring(); texture-changed(); } }
+                                Button { text: "+ Add ring"; clicked => { add-shell-ring(); exterior-changed(); } }
                             }
                         }
                     }
-
                     HorizontalBox {
                         alignment: center;
                         Button {
                             text: "Continue";
                             primary: true;
                             enabled: !busy;
-                            clicked => { commit-texture(); }
+                            clicked => { commit-exterior(); }
                         }
                     }
                 }
-                // Step 5 — make the printable mold pieces (runs the cast).
-                if viewed-number == 5: VerticalLayout {
+                // Step 6 — make the printable mold pieces (runs the cast).
+                if viewed-number == 6: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
                     Text {
@@ -857,8 +883,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // Step 6 — save the printable files + hand off to the slicer.
-                if viewed-number == 6: VerticalLayout {
+                // Step 7 — save the printable files + hand off to the slicer.
+                if viewed-number == 7: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
                     Text {
@@ -897,8 +923,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // Step 7 — the guided pour assistant (plan + pot-life timer).
-                if viewed-number == 7: VerticalLayout {
+                // Step 8 — the guided pour assistant (plan + pot-life timer).
+                if viewed-number == 8: VerticalLayout {
                     spacing: 12px;
                     vertical-stretch: 1;
                     // Full plan, for reference (innermost layer first).

@@ -1,55 +1,56 @@
-//! Live texture-preview meshing for the wizard's Texture step.
+//! Live texture-preview meshing for the wizard's two Texture steps.
 //!
 //! Maps the owned [`RidgeOptions`] (interior canal) / [`ShellRidgeOptions`]
 //! (exterior shell rings) onto a `cf_cast::CanalSpec` and renders a coarse
-//! textured capsule via [`cf_cast::preview_textured_plug`]. The proxy is a
-//! fixed representative tube — it shows the *pattern* the knobs produce, fast
-//! enough to update live; the real part is cast at full detail.
+//! textured proxy. The **interior** preview is a flat-floor plug; the
+//! **exterior** preview is a rounded shell — each shows the *pattern* its
+//! knobs produce on the appropriate surface, fast enough to update live; the
+//! real part is cast at full detail.
 
-use cf_cast::{CanalSpec, RingSpec, preview_textured_plug};
+use cf_cast::{CanalSpec, RingSpec, preview_textured_capsule, preview_textured_plug};
 use cf_studio_core::{RidgeOptions, ShellRidgeOptions};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
 
 /// Representative proxy dimensions (meters) + the coarse preview cell size.
-/// A ~24 mm-diameter, 80 mm tube reads clearly and meshes in milliseconds.
+/// A ~24 mm-diameter, 80 mm proxy reads clearly and meshes in milliseconds.
 const PREVIEW_RADIUS_M: f64 = 0.012;
 const PREVIEW_HALF_HEIGHT_M: f64 = 0.040;
 const PREVIEW_CELL_M: f64 = 0.0015;
 
-/// Which texture the preview is currently rendering (so the UI can label it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreviewShowing {
-    /// The interior canal (on the plug).
-    Interior,
-    /// The exterior / inter-layer shell rings.
-    Exterior,
-    /// Neither enabled — a smooth proxy.
-    Smooth,
-}
-
-/// Build the live preview mesh for the current texture settings. Interior takes
-/// priority when both are on (it's the richer feature); otherwise the exterior
-/// shell, else a smooth proxy. Returns the mesh + what it's showing.
+/// The interior-ridge preview: the canal field on a **plug** proxy (flat floor,
+/// domed top). A disabled `interior` renders the smooth plug.
 #[must_use]
-pub fn texture_preview_mesh(
-    interior: &RidgeOptions,
-    exterior: &ShellRidgeOptions,
-) -> (IndexedMesh, PreviewShowing) {
-    let (spec, showing) = if interior.enabled {
-        (interior_spec(interior), PreviewShowing::Interior)
-    } else if exterior.enabled {
-        (exterior_spec(exterior), PreviewShowing::Exterior)
+pub fn interior_preview_mesh(interior: &RidgeOptions) -> IndexedMesh {
+    let spec = if interior.enabled {
+        interior_spec(interior)
     } else {
-        (smooth_spec(), PreviewShowing::Smooth)
+        smooth_spec()
     };
-    let mesh = preview_textured_plug(
+    preview_textured_plug(
         &spec,
         PREVIEW_RADIUS_M,
         PREVIEW_HALF_HEIGHT_M,
         PREVIEW_CELL_M,
-    );
-    (mesh, showing)
+    )
+}
+
+/// The exterior-ridge preview: the axisymmetric rings on a **shell** proxy (a
+/// rounded capsule — the device's outer body). A disabled `exterior` renders
+/// the smooth shell.
+#[must_use]
+pub fn exterior_preview_mesh(exterior: &ShellRidgeOptions) -> IndexedMesh {
+    let spec = if exterior.enabled {
+        exterior_spec(exterior)
+    } else {
+        smooth_spec()
+    };
+    preview_textured_capsule(
+        &spec,
+        PREVIEW_RADIUS_M,
+        PREVIEW_HALF_HEIGHT_M,
+        PREVIEW_CELL_M,
+    )
 }
 
 /// Interior canal spec from [`RidgeOptions`] — the same field mapping the cast
@@ -100,34 +101,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn picks_interior_then_exterior_then_smooth() {
-        let on_int = RidgeOptions {
-            enabled: true,
-            ..RidgeOptions::default()
-        };
-        let on_ext = ShellRidgeOptions {
-            enabled: true,
-            ..ShellRidgeOptions::default()
-        };
-        assert_eq!(
-            texture_preview_mesh(&on_int, &on_ext).1,
-            PreviewShowing::Interior,
-            "interior wins when both on"
+    fn interior_and_exterior_previews_produce_meshes() {
+        // Both on + off cases mesh (smooth proxy when off).
+        assert!(
+            !interior_preview_mesh(&RidgeOptions::default())
+                .vertices
+                .is_empty()
         );
-        assert_eq!(
-            texture_preview_mesh(&RidgeOptions::default(), &on_ext).1,
-            PreviewShowing::Exterior
+        assert!(
+            !interior_preview_mesh(&RidgeOptions {
+                enabled: true,
+                ..RidgeOptions::default()
+            })
+            .vertices
+            .is_empty()
         );
-        assert_eq!(
-            texture_preview_mesh(&RidgeOptions::default(), &ShellRidgeOptions::default()).1,
-            PreviewShowing::Smooth
+        assert!(
+            !exterior_preview_mesh(&ShellRidgeOptions::default())
+                .vertices
+                .is_empty()
         );
-    }
-
-    #[test]
-    fn every_mode_produces_a_mesh() {
-        let (mesh, _) =
-            texture_preview_mesh(&RidgeOptions::default(), &ShellRidgeOptions::default());
-        assert!(!mesh.vertices.is_empty());
+        assert!(
+            !exterior_preview_mesh(&ShellRidgeOptions {
+                enabled: true,
+                ..ShellRidgeOptions::default()
+            })
+            .vertices
+            .is_empty()
+        );
     }
 }
