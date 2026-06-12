@@ -6,9 +6,10 @@
 use std::path::{Path, PathBuf};
 
 use cf_cast_cli::{
-    CanalConfig, CastConfig, PartSelection, RingConfig, run_selected_with_config, run_with_config,
+    CanalConfig, CastConfig, PartSelection, RingConfig, ShellTextureConfig,
+    run_selected_with_config, run_with_config,
 };
-use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
+use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions, ShellRidgeOptions, TextureDraft};
 
 use crate::design::save_design_from_draft;
 use crate::error::{EngineError, Result};
@@ -27,12 +28,10 @@ use crate::pour::{LayerPour, build_pour_plan};
 ///    everything resolves under the scan's directory; and
 /// 3. runs the cast via [`generate_molds`].
 ///
-/// `ridges` is the optional interior-ridge ("canal") feature for the
-/// layer-0 plug. A default (`enabled = false`) [`RidgeOptions`] reproduces
-/// the historical canal-off wizard cast exactly; an enabled one grows the
-/// configured grip rings / surface texture / side pinch / tip relief on the
-/// plug (and meshes the plug at the finer 0.5 mm cell so the ribs survive,
-/// independent of `mesh_cell_size_m`).
+/// `texture` is the optional surface texture (step "Add surface texture"):
+/// `texture.interior` is the canal on the layer-0 plug, and `texture.exterior`
+/// is the axisymmetric shell ridges on every layer body. A default (both off)
+/// [`TextureDraft`] reproduces the historical no-texture wizard cast exactly.
 ///
 /// `selection` chooses which mold pieces to generate. [`PartSelection::all`]
 /// runs the full cast (the default wizard path, byte-identical to before);
@@ -56,7 +55,7 @@ pub fn generate_molds_for_design(
     prep_toml: &Path,
     draft: &DesignDraft,
     mesh_cell_size_m: f64,
-    ridges: &RidgeOptions,
+    texture: &TextureDraft,
     selection: &PartSelection,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
@@ -76,7 +75,8 @@ pub fn generate_molds_for_design(
         PathBuf::from(&prep_name),
         PathBuf::from(&design_name),
         mesh_cell_size_m,
-        canal_config_from_ridges(ridges),
+        canal_config_from_ridges(&texture.interior),
+        shell_texture_config_from(&texture.exterior),
     );
     // Full selection → the validated full export (unchanged); a subset →
     // the selective export that skips unselected pieces' marching cubes.
@@ -126,6 +126,31 @@ fn generate_selected_molds(
 /// `CanalSpec::iter1` fallbacks). `orientation_deg` maps to a frenulum
 /// direction in the channel's cross-section: `θ → [sin θ, cos θ, 0]`, so
 /// `0°` is the validated `[0, 1, 0]` default.
+/// Map the owned [`ShellRidgeOptions`] onto cf-cast-cli's
+/// [`ShellTextureConfig`] (axisymmetric exterior / inter-layer rings on every
+/// layer body). Disabled → `ShellTextureConfig::default()` (the no-op the cast
+/// bit-preserves). When enabled, the rings are passed through; depth⊂thickness
+/// is gated downstream in `derive_spec_and_ribbon`.
+fn shell_texture_config_from(exterior: &ShellRidgeOptions) -> ShellTextureConfig {
+    if !exterior.enabled {
+        return ShellTextureConfig::default();
+    }
+    ShellTextureConfig {
+        enabled: true,
+        rings: Some(
+            exterior
+                .rings
+                .iter()
+                .map(|r| RingConfig {
+                    center_frac: r.position_frac,
+                    depth_m: r.depth_m,
+                    half_width_frac: r.half_width_frac,
+                })
+                .collect(),
+        ),
+    }
+}
+
 fn canal_config_from_ridges(ridges: &RidgeOptions) -> CanalConfig {
     if !ridges.enabled {
         return CanalConfig::default();
@@ -331,6 +356,29 @@ mod tests {
     }
 
     #[test]
+    fn shell_texture_maps_disabled_to_off_and_enabled_to_rings() {
+        // Disabled → the no-op default (bodies unchanged).
+        let off = shell_texture_config_from(&ShellRidgeOptions::default());
+        assert!(!off.enabled);
+        assert!(off.rings.is_none());
+
+        // Enabled → the rings carried through.
+        let on = shell_texture_config_from(&ShellRidgeOptions {
+            enabled: true,
+            rings: vec![cf_studio_core::RidgeRing {
+                position_frac: 0.3,
+                depth_m: 0.002,
+                half_width_frac: 0.05,
+            }],
+        });
+        assert!(on.enabled);
+        let rings = on.rings.expect("rings carried through");
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].center_frac, 0.3);
+        assert_eq!(rings[0].depth_m, 0.002);
+    }
+
+    #[test]
     fn enabled_ridges_map_every_field_explicitly() {
         let ridges = RidgeOptions {
             enabled: true,
@@ -481,7 +529,7 @@ mod tests {
             &prep,
             &draft,
             0.003,
-            &RidgeOptions::default(),
+            &TextureDraft::default(),
             &PartSelection::all(),
             None,
         );
@@ -538,7 +586,7 @@ mod tests {
     /// scan (same content the wizard already wrote).
     fn cast_real_base_mold_via_wizard(
         cell_size_m: f64,
-        ridges: &RidgeOptions,
+        texture: &TextureDraft,
         selection: &PartSelection,
         out_name: &str,
     ) {
@@ -571,7 +619,7 @@ mod tests {
             &prep,
             &draft,
             cell_size_m,
-            ridges,
+            texture,
             selection,
             Some(Path::new(out_name)),
         )
@@ -595,7 +643,7 @@ mod tests {
     fn generate_molds_for_design_casts_base_mold_at_fine() {
         cast_real_base_mold_via_wizard(
             0.0005,
-            &RidgeOptions::default(),
+            &TextureDraft::default(),
             &PartSelection::all(),
             "cast_base_mold_studio_verify_0p5",
         );
@@ -607,7 +655,7 @@ mod tests {
     fn generate_molds_for_design_casts_base_mold_at_fast() {
         cast_real_base_mold_via_wizard(
             0.0015,
-            &RidgeOptions::default(),
+            &TextureDraft::default(),
             &PartSelection::all(),
             "cast_base_mold_studio_verify_1p5",
         );
@@ -624,9 +672,12 @@ mod tests {
     fn generate_molds_for_design_casts_base_mold_with_ridges() {
         cast_real_base_mold_via_wizard(
             0.0015,
-            &RidgeOptions {
-                enabled: true,
-                ..RidgeOptions::default()
+            &TextureDraft {
+                interior: RidgeOptions {
+                    enabled: true,
+                    ..RidgeOptions::default()
+                },
+                ..TextureDraft::default()
             },
             &PartSelection::all(),
             "cast_base_mold_studio_verify_ridges",
@@ -673,7 +724,7 @@ mod tests {
             &prep,
             &draft,
             0.0015,
-            &RidgeOptions::default(),
+            &TextureDraft::default(),
             &selection,
             Some(Path::new(out_name)),
         )

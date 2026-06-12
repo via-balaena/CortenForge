@@ -135,6 +135,7 @@ impl CastConfig {
         design_toml: PathBuf,
         mesh_cell_size_m: f64,
         canal: CanalConfig,
+        shell_texture: ShellTextureConfig,
     ) -> Self {
         Self {
             scan: ScanConfig {
@@ -159,7 +160,7 @@ impl CastConfig {
             dowel_hole: DowelHoleConfig::default(),
             bolt_pattern: BoltPatternConfig::default(),
             canal,
-            shell_texture: ShellTextureConfig::default(),
+            shell_texture,
         }
     }
 }
@@ -1038,6 +1039,7 @@ mod tests {
             PathBuf::from("base_mold.design.toml"),
             0.0015,
             CanalConfig::default(),
+            ShellTextureConfig::default(),
         );
         assert_eq!(c.scan.cleaned_stl, PathBuf::from("base_mold.cleaned.stl"));
         assert_eq!(c.scan.prep_toml, PathBuf::from("base_mold.prep.toml"));
@@ -1081,6 +1083,7 @@ mod tests {
             PathBuf::from("base_mold.design.toml"),
             0.0015,
             CanalConfig::default(),
+            ShellTextureConfig::default(),
         );
         assert!(c.cast.planar_seam, "planar seam (flat mating face)");
         assert!(!c.cast.flat_cavity_floor);
@@ -1116,6 +1119,7 @@ mod tests {
             PathBuf::from("base_mold.design.toml"),
             0.0005,
             canal,
+            ShellTextureConfig::default(),
         );
         assert!(c.canal.enabled, "ridges enabled");
         assert_eq!(

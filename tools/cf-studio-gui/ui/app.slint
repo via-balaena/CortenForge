@@ -172,7 +172,12 @@ export component AppWindow inherits Window {
     in-out property <int> ridge-side-pinch-tenths-mm: 15;       // 1.5 mm
     in-out property <int> ridge-tip-relief-tenths-mm: 30;       // 3.0 mm
     in-out property <int> ridge-orientation-deg: 0;
-    // Step 4: the generatable parts (per-layer cups/plugs + accessories),
+    // Step 4 (exterior): axisymmetric shell ridges on every layer body — the
+    // even exterior / inter-layer rings. `shell-rings` is a Rust-owned
+    // VecModel (mirrors `ridge-rings`).
+    in-out property <bool> shell-ridges-enabled: false;
+    in property <[RingRow]> shell-rings;
+    // Step 5: the generatable parts (per-layer cups/plugs + accessories),
     // each with a checkbox. Default all-checked = full cast; uncheck to
     // generate only some pieces. Rust-owned VecModel, rebuilt when the
     // design's layer count changes; make-molds reads the checked mask.
@@ -217,6 +222,14 @@ export component AppWindow inherits Window {
     callback set-ring-position(int, int);
     callback set-ring-depth(int, int);
     callback set-ring-width(int, int);
+    // Step-4 exterior shell-ring editor (mirrors the interior one).
+    callback add-shell-ring();
+    callback remove-shell-ring(int);
+    callback set-shell-ring-position(int, int);
+    callback set-shell-ring-depth(int, int);
+    callback set-shell-ring-width(int, int);
+    // Step 4: commit the texture choice (interior + exterior) and advance.
+    callback commit-texture();
     // Step-4 part picker: toggle one part, or select all / none.
     callback set-part-checked(int, bool);
     callback select-all-parts();
@@ -511,8 +524,224 @@ export component AppWindow inherits Window {
                         Button { text: "…or load a file"; clicked => { pick-design(); } }
                     }
                 }
-                // Step 4 — make the printable mold pieces (runs the cast).
+                // Step 4 — optional surface texture (interior + exterior ridges).
                 if viewed-number == 4: VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 1;
+                    Text {
+                        text: "Optionally add ridges to your piece. This step is skippable — just press Continue to make a smooth piece. Interior ridges go on the inside; exterior shell ridges go on the outside of every layer (and key the layers together when cast bonded).";
+                        horizontal-alignment: center;
+                        font-size: 16px;
+                        color: #444444;
+                        wrap: word-wrap;
+                    }
+
+                    // Interior ridges (the canal, on the inner plug).
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 6px;
+                        CheckBox {
+                            checked <=> ridges-enabled;
+                            enabled: !busy;
+                        }
+                        Text {
+                            text: "Add interior ridges (advanced)";
+                            color: #333333;
+                            vertical-alignment: center;
+                        }
+                    }
+                    if ridges-enabled: Rectangle {
+                        background: #f4f1ea;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+                            Text {
+                                text: "Interior ridges mesh the inner plug at fine 0.5 mm detail, so a run with them takes print-quality time.";
+                                font-size: 14px;
+                                color: #6b5f44;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Grip rings";
+                                font-size: 15px;
+                                font-weight: 600;
+                                color: #333333;
+                            }
+                            VerticalLayout {
+                                spacing: 6px;
+                                for ring[idx] in ridge-rings: HorizontalBox {
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Text { text: "Ring \{idx + 1}"; vertical-alignment: center; color: #333333; }
+                                    SpinBox {
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: ring.position-pct;
+                                        edited(v) => { set-ring-position(idx, v); }
+                                    }
+                                    Text { text: "% along"; vertical-alignment: center; color: #333333; }
+                                    SpinBox {
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: ring.depth-tenths-mm;
+                                        edited(v) => { set-ring-depth(idx, v); }
+                                    }
+                                    Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
+                                    SpinBox {
+                                        minimum: 1;
+                                        maximum: 50;
+                                        value: ring.width-pct;
+                                        edited(v) => { set-ring-width(idx, v); }
+                                    }
+                                    Text { text: "% wide"; vertical-alignment: center; color: #333333; }
+                                    Button { text: "✕"; clicked => { remove-ring(idx); } }
+                                }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                Button { text: "+ Add ring"; clicked => { add-ring(); } }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Surface texture depth"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-texture-depth-tenths-mm;
+                                    edited(v) => { ridge-texture-depth-tenths-mm = v; }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Surface texture spacing"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 10;
+                                    maximum: 300;
+                                    value: ridge-texture-spacing-tenths-mm;
+                                    edited(v) => { ridge-texture-spacing-tenths-mm = v; }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Side pinch depth"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-side-pinch-tenths-mm;
+                                    edited(v) => { ridge-side-pinch-tenths-mm = v; }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Tip relief depth"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 50;
+                                    value: ridge-tip-relief-tenths-mm;
+                                    edited(v) => { ridge-tip-relief-tenths-mm = v; }
+                                }
+                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Feature orientation"; vertical-alignment: center; color: #333333; }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 360;
+                                    value: ridge-orientation-deg;
+                                    edited(v) => { ridge-orientation-deg = v; }
+                                }
+                                Text { text: "°"; vertical-alignment: center; color: #333333; }
+                            }
+                        }
+                    }
+
+                    // Exterior / inter-layer shell ridges (every layer's outer surface).
+                    HorizontalBox {
+                        alignment: center;
+                        spacing: 6px;
+                        CheckBox {
+                            checked <=> shell-ridges-enabled;
+                            enabled: !busy;
+                        }
+                        Text {
+                            text: "Add exterior shell ridges (advanced)";
+                            color: #333333;
+                            vertical-alignment: center;
+                        }
+                    }
+                    if shell-ridges-enabled: Rectangle {
+                        background: #eaf0f4;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+                            Text {
+                                text: "Even rings on the outside of every layer. Keep them shallow (≤ a few mm) so the cured silicone releases from the mold; deeper than the layer is rejected.";
+                                font-size: 14px;
+                                color: #4a5a66;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+                            VerticalLayout {
+                                spacing: 6px;
+                                for ring[idx] in shell-rings: HorizontalBox {
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Text { text: "Ring \{idx + 1}"; vertical-alignment: center; color: #333333; }
+                                    SpinBox {
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: ring.position-pct;
+                                        edited(v) => { set-shell-ring-position(idx, v); }
+                                    }
+                                    Text { text: "% along"; vertical-alignment: center; color: #333333; }
+                                    SpinBox {
+                                        minimum: 0;
+                                        maximum: 50;
+                                        value: ring.depth-tenths-mm;
+                                        edited(v) => { set-shell-ring-depth(idx, v); }
+                                    }
+                                    Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
+                                    SpinBox {
+                                        minimum: 1;
+                                        maximum: 50;
+                                        value: ring.width-pct;
+                                        edited(v) => { set-shell-ring-width(idx, v); }
+                                    }
+                                    Text { text: "% wide"; vertical-alignment: center; color: #333333; }
+                                    Button { text: "✕"; clicked => { remove-shell-ring(idx); } }
+                                }
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                Button { text: "+ Add ring"; clicked => { add-shell-ring(); } }
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        alignment: center;
+                        Button {
+                            text: "Continue";
+                            primary: true;
+                            enabled: !busy;
+                            clicked => { commit-texture(); }
+                        }
+                    }
+                }
+                // Step 5 — make the printable mold pieces (runs the cast).
+                if viewed-number == 5: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
                     Text {
@@ -586,147 +815,6 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Optional interior ridges (advanced). Off by default —
-                    // the plug stays smooth. When on, an advanced panel reveals
-                    // the grip-ring editor + the texture / pinch / relief knobs.
-                    HorizontalBox {
-                        alignment: center;
-                        spacing: 6px;
-                        // Empty-text CheckBox + coloured Text (see the parts
-                        // grid below) so the label is visible on a dark-mode OS.
-                        CheckBox {
-                            checked <=> ridges-enabled;
-                            enabled: !busy;
-                        }
-                        Text {
-                            text: "Add interior ridges (advanced)";
-                            color: #333333;
-                            vertical-alignment: center;
-                        }
-                    }
-                    if ridges-enabled: Rectangle {
-                        background: #f4f1ea;
-                        border-radius: 10px;
-                        VerticalLayout {
-                            padding: 14px;
-                            spacing: 10px;
-                            Text {
-                                text: "Ridges mesh the plug at fine 0.5 mm detail, so a run with ridges takes print-quality time regardless of the Quality setting above.";
-                                font-size: 14px;
-                                color: #6b5f44;
-                                wrap: word-wrap;
-                                horizontal-alignment: center;
-                            }
-
-                            // Grip rings — full rings around the plug.
-                            Text {
-                                text: "Grip rings";
-                                font-size: 15px;
-                                font-weight: 600;
-                                color: #333333;
-                            }
-                            VerticalLayout {
-                                spacing: 6px;
-                                for ring[idx] in ridge-rings: HorizontalBox {
-                                    alignment: center;
-                                    spacing: 6px;
-                                    Text {
-                                        text: "Ring \{idx + 1}";
-                                        vertical-alignment: center;
-                                        color: #333333;
-                                    }
-                                    SpinBox {
-                                        minimum: 0;
-                                        maximum: 100;
-                                        value: ring.position-pct;
-                                        edited(v) => { set-ring-position(idx, v); }
-                                    }
-                                    Text { text: "% along"; vertical-alignment: center; color: #333333; }
-                                    SpinBox {
-                                        minimum: 0;
-                                        maximum: 100;
-                                        value: ring.depth-tenths-mm;
-                                        edited(v) => { set-ring-depth(idx, v); }
-                                    }
-                                    Text { text: "×0.1 mm deep"; vertical-alignment: center; color: #333333; }
-                                    SpinBox {
-                                        minimum: 1;
-                                        maximum: 50;
-                                        value: ring.width-pct;
-                                        edited(v) => { set-ring-width(idx, v); }
-                                    }
-                                    Text { text: "% wide"; vertical-alignment: center; color: #333333; }
-                                    Button { text: "✕"; clicked => { remove-ring(idx); } }
-                                }
-                            }
-                            HorizontalBox {
-                                alignment: center;
-                                Button { text: "+ Add ring"; clicked => { add-ring(); } }
-                            }
-
-                            // Surface texture + one-sided shaping knobs.
-                            HorizontalBox {
-                                alignment: center;
-                                spacing: 8px;
-                                Text { text: "Surface texture depth"; vertical-alignment: center; color: #333333; }
-                                SpinBox {
-                                    minimum: 0;
-                                    maximum: 50;
-                                    value: ridge-texture-depth-tenths-mm;
-                                    edited(v) => { ridge-texture-depth-tenths-mm = v; }
-                                }
-                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
-                            }
-                            HorizontalBox {
-                                alignment: center;
-                                spacing: 8px;
-                                Text { text: "Surface texture spacing"; vertical-alignment: center; color: #333333; }
-                                SpinBox {
-                                    minimum: 10;
-                                    maximum: 300;
-                                    value: ridge-texture-spacing-tenths-mm;
-                                    edited(v) => { ridge-texture-spacing-tenths-mm = v; }
-                                }
-                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
-                            }
-                            HorizontalBox {
-                                alignment: center;
-                                spacing: 8px;
-                                Text { text: "Side pinch depth"; vertical-alignment: center; color: #333333; }
-                                SpinBox {
-                                    minimum: 0;
-                                    maximum: 50;
-                                    value: ridge-side-pinch-tenths-mm;
-                                    edited(v) => { ridge-side-pinch-tenths-mm = v; }
-                                }
-                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
-                            }
-                            HorizontalBox {
-                                alignment: center;
-                                spacing: 8px;
-                                Text { text: "Tip relief depth"; vertical-alignment: center; color: #333333; }
-                                SpinBox {
-                                    minimum: 0;
-                                    maximum: 50;
-                                    value: ridge-tip-relief-tenths-mm;
-                                    edited(v) => { ridge-tip-relief-tenths-mm = v; }
-                                }
-                                Text { text: "×0.1 mm"; vertical-alignment: center; color: #333333; }
-                            }
-                            HorizontalBox {
-                                alignment: center;
-                                spacing: 8px;
-                                Text { text: "Feature orientation"; vertical-alignment: center; color: #333333; }
-                                SpinBox {
-                                    minimum: 0;
-                                    maximum: 360;
-                                    value: ridge-orientation-deg;
-                                    edited(v) => { ridge-orientation-deg = v; }
-                                }
-                                Text { text: "°"; vertical-alignment: center; color: #333333; }
-                            }
-                        }
-                    }
                     if molds-summary != "": Rectangle {
                         background: #eef3ee;
                         border-radius: 10px;
@@ -741,8 +829,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // Step 5 — save the printable files + hand off to the slicer.
-                if viewed-number == 5: VerticalLayout {
+                // Step 6 — save the printable files + hand off to the slicer.
+                if viewed-number == 6: VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 1;
                     Text {
@@ -781,8 +869,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // Step 6 — the guided pour assistant (plan + pot-life timer).
-                if viewed-number == 6: VerticalLayout {
+                // Step 7 — the guided pour assistant (plan + pot-life timer).
+                if viewed-number == 7: VerticalLayout {
                     spacing: 12px;
                     vertical-stretch: 1;
                     // Full plan, for reference (innermost layer first).

@@ -29,7 +29,7 @@ use crate::step::Step;
 /// The project-file schema version this build reads and writes.
 /// Bumped only when the on-disk shape changes; a project declaring a
 /// higher version is rejected by [`Project::load`].
-pub const PROJECT_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_SCHEMA_VERSION: u32 = 2;
 
 // ── per-step artifacts ──────────────────────────────────────────────
 //
@@ -147,6 +147,58 @@ impl Default for RidgeOptions {
     }
 }
 
+/// The exterior / inter-layer shell ridges — axisymmetric grip rings on
+/// **every layer's outer surface** (vs [`RidgeOptions`], the interior canal
+/// on the layer-0 plug). When cast bonded, these key each layer into the next
+/// (the mechanical inter-layer bond) and give the device exterior texture.
+/// `enabled = false` (default) leaves the shells smooth.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShellRidgeOptions {
+    /// Master toggle. `false` → smooth shells.
+    pub enabled: bool,
+    /// Axisymmetric grip rings, applied to every layer body's outer surface.
+    pub rings: Vec<RidgeRing>,
+}
+
+impl Default for ShellRidgeOptions {
+    /// Off, pre-filled with three evenly-spaced rings (≤2 mm, demoldable per
+    /// the S0 spike) so the advanced UI opens on sensible numbers.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rings: vec![
+                RidgeRing {
+                    position_frac: 0.25,
+                    depth_m: 0.002,
+                    half_width_frac: 0.05,
+                },
+                RidgeRing {
+                    position_frac: 0.50,
+                    depth_m: 0.002,
+                    half_width_frac: 0.05,
+                },
+                RidgeRing {
+                    position_frac: 0.75,
+                    depth_m: 0.002,
+                    half_width_frac: 0.05,
+                },
+            ],
+        }
+    }
+}
+
+/// Artifact of [`Step::Texture`] — the optional surface texture: the interior
+/// ridges (canal, layer-0 plug) and the exterior / inter-layer shell ridges.
+/// A default `TextureDraft` (both off) is the "no texture" skip — the step is
+/// optional, so committing the default is how a user passes it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TextureDraft {
+    /// Interior ridges on the layer-0 plug (the canal).
+    pub interior: RidgeOptions,
+    /// Exterior / inter-layer ridges on every shell.
+    pub exterior: ShellRidgeOptions,
+}
+
 /// Artifact of [`Step::DesignLayers`] — cavity inset + the layer stack.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DesignDraft {
@@ -239,6 +291,8 @@ pub struct Project {
     scan: Option<ScanInput>,
     prep: Option<PrepInput>,
     design: Option<DesignDraft>,
+    #[serde(default)]
+    texture: Option<TextureDraft>,
     molds: Option<MoldOutputs>,
     print: Option<PrintExport>,
     pour: Option<PourRecord>,
@@ -255,6 +309,7 @@ impl Project {
             scan: None,
             prep: None,
             design: None,
+            texture: None,
             molds: None,
             print: None,
             pour: None,
@@ -282,6 +337,7 @@ impl Project {
             Step::AddScan => self.scan.is_some(),
             Step::CleanScan => self.prep.is_some(),
             Step::DesignLayers => self.design.is_some(),
+            Step::Texture => self.texture.is_some(),
             Step::MakeMolds => self.molds.is_some(),
             Step::Print => self.print.is_some(),
             Step::Pour => self.pour.is_some(),
@@ -316,6 +372,14 @@ impl Project {
     #[must_use]
     pub fn design(&self) -> Option<&DesignDraft> {
         self.design.as_ref()
+    }
+
+    /// The texture draft, if [`Step::Texture`] is complete. A committed
+    /// default (both off) means the user passed the optional step without
+    /// adding texture.
+    #[must_use]
+    pub fn texture(&self) -> Option<&TextureDraft> {
+        self.texture.as_ref()
     }
 
     /// The mold outputs, if [`Step::MakeMolds`] is complete.
@@ -413,12 +477,26 @@ impl Project {
         Ok(())
     }
 
-    /// Record the generated molds ([`Step::MakeMolds`]).
+    /// Record the surface-texture choice ([`Step::Texture`]). This is the
+    /// optional step's commit — pass a default [`TextureDraft`] (both off) to
+    /// skip texture and just advance.
     ///
     /// # Errors
     /// [`StudioError::StepNotReady`] if there is no design yet.
-    pub fn set_molds(&mut self, molds: MoldOutputs) -> Result<()> {
+    pub fn set_texture(&mut self, texture: TextureDraft) -> Result<()> {
         self.require_complete(Step::DesignLayers)?;
+        self.texture = Some(texture);
+        self.clear_after(Step::Texture);
+        self.current_step = Step::Texture;
+        Ok(())
+    }
+
+    /// Record the generated molds ([`Step::MakeMolds`]).
+    ///
+    /// # Errors
+    /// [`StudioError::StepNotReady`] if the texture step is not yet passed.
+    pub fn set_molds(&mut self, molds: MoldOutputs) -> Result<()> {
+        self.require_complete(Step::Texture)?;
         self.molds = Some(molds);
         self.clear_after(Step::MakeMolds);
         self.current_step = Step::MakeMolds;
@@ -502,10 +580,25 @@ impl Project {
             path: path.display().to_string(),
             source: e,
         })?;
-        let project: Self =
+        let mut project: Self =
             serde_json::from_str(&text).map_err(|e| StudioError::Deserialize(e.to_string()))?;
+        project.migrate();
         project.validate()?;
         Ok(project)
+    }
+
+    /// In-place forward migrations of a just-loaded project.
+    ///
+    /// **v1 → v2 (the optional Texture step):** a pre-Texture project that
+    /// already had molds (or beyond) carries no texture artifact, which would
+    /// read as "Texture incomplete but MakeMolds complete" and fail the
+    /// contiguous-prefix invariant. Backfill a default (no-texture) draft so
+    /// the prefix stays intact — equivalent to the user having skipped the new
+    /// optional step.
+    fn migrate(&mut self) {
+        if self.texture.is_none() && self.molds.is_some() {
+            self.texture = Some(TextureDraft::default());
+        }
     }
 
     /// Check the workflow invariants. Run automatically by
@@ -565,6 +658,7 @@ impl Project {
             Step::AddScan => self.scan = None,
             Step::CleanScan => self.prep = None,
             Step::DesignLayers => self.design = None,
+            Step::Texture => self.texture = None,
             Step::MakeMolds => self.molds = None,
             Step::Print => self.print = None,
             Step::Pour => self.pour = None,
@@ -608,6 +702,9 @@ mod tests {
             }],
         }
     }
+    fn texture() -> TextureDraft {
+        TextureDraft::default()
+    }
     fn molds() -> MoldOutputs {
         MoldOutputs {
             out_dir: PathBuf::from("out"),
@@ -634,6 +731,7 @@ mod tests {
         p.set_scan(scan());
         p.set_prep(prep()).unwrap();
         p.set_design(design()).unwrap();
+        p.set_texture(texture()).unwrap();
         p.set_molds(molds()).unwrap();
         p.set_print(print()).unwrap();
         p.set_pour(pour()).unwrap();
@@ -662,6 +760,9 @@ mod tests {
         assert_eq!(p.advance().unwrap(), Step::DesignLayers);
 
         p.set_design(design()).unwrap();
+        assert_eq!(p.advance().unwrap(), Step::Texture);
+
+        p.set_texture(texture()).unwrap();
         assert_eq!(p.advance().unwrap(), Step::MakeMolds);
 
         p.set_molds(molds()).unwrap();
@@ -718,7 +819,7 @@ mod tests {
         assert!(matches!(
             p.set_molds(molds()).unwrap_err(),
             StudioError::StepNotReady {
-                from: Step::DesignLayers,
+                from: Step::Texture,
                 ..
             }
         ));
@@ -730,12 +831,14 @@ mod tests {
         // Go back and re-pick the layer design.
         p.go_back().unwrap(); // Pour -> Print
         p.go_back().unwrap(); // Print -> MakeMolds
-        p.go_back().unwrap(); // MakeMolds -> DesignLayers
+        p.go_back().unwrap(); // MakeMolds -> Texture
+        p.go_back().unwrap(); // Texture -> DesignLayers
         assert_eq!(p.current_step(), Step::DesignLayers);
 
         p.set_design(design()).unwrap();
         // Everything after the design is now stale and cleared.
         assert!(p.is_complete(Step::DesignLayers));
+        assert!(!p.is_complete(Step::Texture));
         assert!(!p.is_complete(Step::MakeMolds));
         assert!(!p.is_complete(Step::Print));
         assert!(!p.is_complete(Step::Pour));
@@ -754,6 +857,7 @@ mod tests {
         for step in [
             Step::CleanScan,
             Step::DesignLayers,
+            Step::Texture,
             Step::MakeMolds,
             Step::Print,
             Step::Pour,

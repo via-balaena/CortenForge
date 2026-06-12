@@ -20,7 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cf_studio_core::{
-    DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, RidgeOptions, RidgeRing, Step,
+    DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, RidgeOptions, RidgeRing,
+    ShellRidgeOptions, Step, TextureDraft,
 };
 use cf_studio_engine::{
     EditSession, PartId, PartSelection, PrintExportReport, ReconstructShape, export_print_package,
@@ -28,9 +29,10 @@ use cf_studio_engine::{
 };
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
-    StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, cell_size_m_for_quality,
-    enumerate_parts, format_molds_summary, format_pour_active, format_pour_plan, nav_state,
-    part_selection_from_checks, pour_countdown, print_step_summary, step_rows,
+    StepOutcome, apply_design, apply_design_draft, apply_prep, apply_scan, apply_texture,
+    cell_size_m_for_quality, enumerate_parts, format_molds_summary, format_pour_active,
+    format_pour_plan, nav_state, part_selection_from_checks, pour_countdown, print_step_summary,
+    step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
@@ -903,6 +905,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ── step 4: the exterior shell-ring editor (mirrors the interior one) ──
+    let shell_rings_model = Rc::new(VecModel::from(
+        ShellRidgeOptions::default()
+            .rings
+            .iter()
+            .map(ring_row_from_ridge)
+            .collect::<Vec<_>>(),
+    ));
+    ui.set_shell_rings(ModelRc::from(shell_rings_model.clone()));
+    {
+        let shell_rings_model = shell_rings_model.clone();
+        ui.on_add_shell_ring(move || {
+            shell_rings_model.push(RingRow {
+                position_pct: 50,
+                depth_tenths_mm: 20,
+                width_pct: 5,
+            });
+        });
+    }
+    {
+        let shell_rings_model = shell_rings_model.clone();
+        ui.on_remove_shell_ring(move |idx| {
+            let i = idx.max(0) as usize;
+            if i < shell_rings_model.row_count() {
+                shell_rings_model.remove(i);
+            }
+        });
+    }
+    {
+        let shell_rings_model = shell_rings_model.clone();
+        ui.on_set_shell_ring_position(move |idx, pct| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = shell_rings_model.row_data(i) {
+                row.position_pct = pct;
+                shell_rings_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let shell_rings_model = shell_rings_model.clone();
+        ui.on_set_shell_ring_depth(move |idx, tenths| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = shell_rings_model.row_data(i) {
+                row.depth_tenths_mm = tenths;
+                shell_rings_model.set_row_data(i, row);
+            }
+        });
+    }
+    {
+        let shell_rings_model = shell_rings_model.clone();
+        ui.on_set_shell_ring_width(move |idx, pct| {
+            let i = idx.max(0) as usize;
+            if let Some(mut row) = shell_rings_model.row_data(i) {
+                row.width_pct = pct;
+                shell_rings_model.set_row_data(i, row);
+            }
+        });
+    }
+
+    // ── step 4: commit the texture choice (interior + exterior) + advance ──
+    {
+        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
+        let (rings_model_c, shell_rings_model_c) = (rings_model.clone(), shell_rings_model.clone());
+        ui.on_commit_texture(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let texture = TextureDraft {
+                interior: ridge_options_from_ui(&ui, &rings_model_c),
+                exterior: shell_ridge_options_from_ui(&ui, &shell_rings_model_c),
+            };
+            let outcome = apply_texture(&mut project.borrow_mut(), texture);
+            // Skippable step — a successful Continue moves forward to Make molds.
+            if outcome.is_ok() {
+                let _ = project.borrow_mut().advance();
+            }
+            viewed.set(project.borrow().current_step().index());
+            update(&weak, &project, viewed.get(), &outcome);
+        });
+    }
+
     // ── step 4: the "parts to generate" picker callbacks ────────
     // (the models are declared above the design handlers so they can rebuild
     // them; make-molds reads the checked mask + the ids to build the selection.)
@@ -1294,11 +1375,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ── step 4: make the molds (run the cast async) ─────────────
+    // ── step 5: make the molds (run the cast async) ─────────────
     {
         let (project, weak) = (project.clone(), weak.clone());
         let (inbox, start) = (molds_inbox.clone(), molds_start.clone());
-        let rings_model = rings_model.clone();
         let (parts_model, part_ids) = (parts_model.clone(), part_ids.clone());
         ui.on_make_molds(move |quality_idx| {
             // Re-entrancy guard: a run already in flight (the UI disables the
@@ -1340,12 +1420,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let cell_size_m = cell_size_m_for_quality(quality_idx);
-            // Snapshot the interior-ridge controls now (before the long async
-            // run) so the cast uses the values as they were at click time.
-            let ridges = weak
-                .upgrade()
-                .map(|ui| ridge_options_from_ui(&ui, &rings_model))
-                .unwrap_or_default();
+            // The texture was committed on the step-4 Texture page; read it back
+            // (default = no texture if somehow unset).
+            let texture = project.borrow().texture().cloned().unwrap_or_default();
             // Snapshot the part picker into a PartSelection (all checked →
             // the full-cast path; a subset skips the rest).
             let selection = part_selection_from_ui(&parts_model, &part_ids);
@@ -1367,7 +1444,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &prep_toml,
                         &draft,
                         cell_size_m,
-                        &ridges,
+                        &texture,
                         &selection,
                         None,
                     )
@@ -1592,6 +1669,24 @@ fn ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> RidgeOpti
         side_pinch_depth_m: tenths_mm_to_m(ui.get_ridge_side_pinch_tenths_mm()),
         tip_relief_depth_m: tenths_mm_to_m(ui.get_ridge_tip_relief_tenths_mm()),
         orientation_deg: f64::from(ui.get_ridge_orientation_deg()),
+    }
+}
+
+/// Read the exterior shell-ring controls into an owned [`ShellRidgeOptions`]
+/// (the `shell-ridges-enabled` toggle + the `shell-rings` editor). Same
+/// integer-unit conversions as [`ridge_options_from_ui`].
+fn shell_ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> ShellRidgeOptions {
+    let rings = (0..rings.row_count())
+        .filter_map(|i| rings.row_data(i))
+        .map(|row| RidgeRing {
+            position_frac: f64::from(row.position_pct) / 100.0,
+            depth_m: f64::from(row.depth_tenths_mm) / 10_000.0,
+            half_width_frac: f64::from(row.width_pct) / 100.0,
+        })
+        .collect();
+    ShellRidgeOptions {
+        enabled: ui.get_shell_ridges_enabled(),
+        rings,
     }
 }
 

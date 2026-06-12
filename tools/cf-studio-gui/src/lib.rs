@@ -43,8 +43,8 @@ pub struct StepRow {
     pub viewing: bool,
 }
 
-/// Build the six checklist rows for `project`, marking `viewed` as the
-/// step shown in the body.
+/// Build the [`Step::TOTAL`] checklist rows for `project`, marking `viewed`
+/// as the step shown in the body.
 #[must_use]
 pub fn step_rows(project: &Project, viewed: Step) -> Vec<StepRow> {
     Step::ALL
@@ -117,6 +117,31 @@ pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutc
         draft.cavity_inset_m * 1000.0
     );
     project.set_design(draft).map_err(|e| e.to_string())?;
+    Ok(message)
+}
+
+/// Commit the optional surface-texture choice ([`cf_studio_core::Step::Texture`]).
+/// A default (both off) `texture` is the "skip" — it records a smooth piece and
+/// lets the user advance.
+///
+/// # Errors
+/// Surfaces [`cf_studio_core::StudioError`] as a string if the design step is
+/// not yet complete.
+pub fn apply_texture(project: &mut Project, texture: cf_studio_core::TextureDraft) -> StepOutcome {
+    let message = match (texture.interior.enabled, texture.exterior.enabled) {
+        (false, false) => "✓ No texture — a smooth piece.".to_string(),
+        (interior, exterior) => format!(
+            "✓ Texture set ({}{}{}).",
+            if interior { "interior ridges" } else { "" },
+            if interior && exterior { " + " } else { "" },
+            if exterior {
+                "exterior shell ridges"
+            } else {
+                ""
+            },
+        ),
+    };
+    project.set_texture(texture).map_err(|e| e.to_string())?;
     Ok(message)
 }
 
@@ -393,10 +418,36 @@ visible = true
     }
 
     #[test]
-    fn fresh_project_has_six_rows_all_undone_at_step_one() {
+    fn apply_texture_skips_with_a_default_and_gates_on_design() {
+        use cf_studio_core::TextureDraft;
+        let mut p = Project::new("t");
+        // Before the design step, texture can't be committed.
+        assert!(apply_texture(&mut p, TextureDraft::default()).is_err());
+
+        // After scan+prep+design, a default texture is the "skip".
+        let d = dir("tex");
+        let stl = d.join("s.stl");
+        std::fs::write(&stl, ONE_TRIANGLE_STL).unwrap();
+        let cleaned = d.join("s.cleaned.stl");
+        std::fs::write(&cleaned, ONE_TRIANGLE_STL).unwrap();
+        let prep = d.join("s.prep.toml");
+        std::fs::write(&prep, "[centerline]\npoints_m = [[0,0,0],[0,0,0.01]]\n").unwrap();
+        let design = d.join("s.design.toml");
+        std::fs::write(&design, DESIGN_TOML).unwrap();
+        apply_scan(&mut p, &stl).unwrap();
+        apply_prep(&mut p, &cleaned, &prep).unwrap();
+        apply_design(&mut p, &design).unwrap();
+
+        let msg = apply_texture(&mut p, TextureDraft::default()).unwrap();
+        assert!(msg.contains("No texture"), "got: {msg}");
+        assert!(p.is_complete(Step::Texture));
+    }
+
+    #[test]
+    fn fresh_project_has_seven_rows_all_undone_at_step_one() {
         let p = Project::new("t");
         let rows = step_rows(&p, Step::AddScan);
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
         assert!(
             rows.iter().all(|r| !r.done),
             "nothing done on a fresh project"
@@ -413,10 +464,10 @@ visible = true
     fn viewing_marks_the_previewed_step_independent_of_current() {
         let p = Project::new("t"); // still at AddScan
         let rows = step_rows(&p, Step::MakeMolds);
-        assert!(rows[3].viewing, "MakeMolds (index 3) is being viewed");
+        assert!(rows[4].viewing, "MakeMolds (index 4) is being viewed");
         assert!(!rows[0].viewing);
         assert!(rows[0].current, "but the project is still on AddScan");
-        assert!(!rows[3].current);
+        assert!(!rows[4].current);
     }
 
     #[test]
@@ -529,6 +580,7 @@ visible = true
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
         apply_design(&mut p, &design).unwrap();
+        apply_texture(&mut p, cf_studio_core::TextureDraft::default()).unwrap();
 
         // Molds made, not yet exported → "ready to save N".
         p.set_molds(MoldOutputs {

@@ -16,6 +16,9 @@ pub enum Step {
     CleanScan,
     /// Cavity inset + the soft→firm silicone layer stack.
     DesignLayers,
+    /// Optional surface texture: interior ridges (the plug) + exterior /
+    /// inter-layer shell ridges. Skippable — defaults to no texture.
+    Texture,
     /// Generate the printable mold pieces + plugs.
     MakeMolds,
     /// Export the mold files for the 3-D printer.
@@ -26,10 +29,11 @@ pub enum Step {
 
 impl Step {
     /// Every step, in workflow order.
-    pub const ALL: [Step; 6] = [
+    pub const ALL: [Step; 7] = [
         Step::AddScan,
         Step::CleanScan,
         Step::DesignLayers,
+        Step::Texture,
         Step::MakeMolds,
         Step::Print,
         Step::Pour,
@@ -42,7 +46,7 @@ impl Step {
     pub const LAST: Step = Step::Pour;
 
     /// Total number of steps (for "Step N of [`TOTAL`](Step::TOTAL)").
-    pub const TOTAL: usize = 6;
+    pub const TOTAL: usize = 7;
 
     /// Zero-based position of this step in the workflow.
     #[must_use]
@@ -51,13 +55,14 @@ impl Step {
             Step::AddScan => 0,
             Step::CleanScan => 1,
             Step::DesignLayers => 2,
-            Step::MakeMolds => 3,
-            Step::Print => 4,
-            Step::Pour => 5,
+            Step::Texture => 3,
+            Step::MakeMolds => 4,
+            Step::Print => 5,
+            Step::Pour => 6,
         }
     }
 
-    /// One-based step number, for display ("Step 3 of 6").
+    /// One-based step number, for display ("Step 3 of 7").
     #[must_use]
     pub const fn number(self) -> usize {
         self.index() + 1
@@ -69,7 +74,8 @@ impl Step {
         match self {
             Step::AddScan => Some(Step::CleanScan),
             Step::CleanScan => Some(Step::DesignLayers),
-            Step::DesignLayers => Some(Step::MakeMolds),
+            Step::DesignLayers => Some(Step::Texture),
+            Step::Texture => Some(Step::MakeMolds),
             Step::MakeMolds => Some(Step::Print),
             Step::Print => Some(Step::Pour),
             Step::Pour => None,
@@ -83,7 +89,8 @@ impl Step {
             Step::AddScan => None,
             Step::CleanScan => Some(Step::AddScan),
             Step::DesignLayers => Some(Step::CleanScan),
-            Step::MakeMolds => Some(Step::DesignLayers),
+            Step::Texture => Some(Step::DesignLayers),
+            Step::MakeMolds => Some(Step::Texture),
             Step::Print => Some(Step::MakeMolds),
             Step::Pour => Some(Step::Print),
         }
@@ -96,6 +103,7 @@ impl Step {
             Step::AddScan => "Add your scan",
             Step::CleanScan => "Clean up the scan",
             Step::DesignLayers => "Choose how it should feel",
+            Step::Texture => "Add surface texture",
             Step::MakeMolds => "Make your molds",
             Step::Print => "3D print the molds",
             Step::Pour => "Pour the silicone",
@@ -113,7 +121,8 @@ mod tests {
     fn declaration_order_is_workflow_order() {
         assert!(Step::AddScan < Step::CleanScan);
         assert!(Step::CleanScan < Step::DesignLayers);
-        assert!(Step::DesignLayers < Step::MakeMolds);
+        assert!(Step::DesignLayers < Step::Texture);
+        assert!(Step::Texture < Step::MakeMolds);
         assert!(Step::MakeMolds < Step::Print);
         assert!(Step::Print < Step::Pour);
     }
