@@ -85,4 +85,10 @@ pub enum EngineError {
     /// (the destination couldn't be created, or a file copy errored).
     #[error("could not export the print files: {0}")]
     ExportPrint(String),
+
+    /// Building the live "Shape your piece" preview failed (the cleaned scan
+    /// or its `.prep.toml` could not be read / parsed, or the flood-fill SDF
+    /// build failed). The frontend falls back to the proxy preview.
+    #[error("could not build the shape preview: {0}")]
+    Preview(String),
 }

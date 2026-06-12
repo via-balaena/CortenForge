@@ -85,16 +85,6 @@ pub struct CastConfig {
     /// layer-0 plug). See [`cf_cast::CanalSpec`].
     #[serde(default)]
     pub canal: CanalConfig,
-    /// Exterior / inter-layer shell texture (default = DISABLED). When
-    /// `enabled = true`, the SAME canal feature field is composed onto
-    /// **every layer body's outer surface** (axisymmetric grip rings +
-    /// optional fine texture), so the device carries ridges on its outside
-    /// and — cast bonded — each layer mechanically keys into the next.
-    /// Applied to the cup cavities, so a ridge depth must stay below the
-    /// layer thickness (gated in `derive_spec_and_ribbon`). See
-    /// `docs/CF_CAST_BONDED_INPLACE_TEXTURE_RECON.md`.
-    #[serde(default)]
-    pub shell_texture: ShellTextureConfig,
 }
 
 impl CastConfig {
@@ -135,7 +125,6 @@ impl CastConfig {
         design_toml: PathBuf,
         mesh_cell_size_m: f64,
         canal: CanalConfig,
-        shell_texture: ShellTextureConfig,
     ) -> Self {
         Self {
             scan: ScanConfig {
@@ -160,7 +149,6 @@ impl CastConfig {
             dowel_hole: DowelHoleConfig::default(),
             bolt_pattern: BoltPatternConfig::default(),
             canal,
-            shell_texture,
         }
     }
 }
@@ -641,37 +629,17 @@ pub struct RingConfig {
     pub half_width_frac: f64,
 }
 
-/// `[shell_texture]` block — exterior / inter-layer ridge feature on the
-/// layer **bodies** (vs `[canal]`, which textures the layer-0 plug). Defaults
-/// to `enabled = false` (bodies unchanged). When enabled, the rings (and
-/// optional fine texture) are composed onto every layer body's outer surface
-/// via the same `cf_cast::build_canal_plug` field machinery.
-///
-/// Only the **axisymmetric grip rings** are exposed: shell ridges must be even
-/// all the way around (the "layer evenness" the bonded model wants), and only
-/// the canal's `rings` are axisymmetric. The canal's one-sided features
-/// (frenulum-gated texture ribs / D-section / suction bulb) are interior-anatomy
-/// specific and intentionally absent here — they would make the exterior
-/// lopsided.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShellTextureConfig {
-    /// Master toggle. `false` (default) → layer bodies unchanged.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Axisymmetric grip rings on the body's outer surface. `None` → the
-    /// iter1 ring set; `Some(list)` replaces it; `Some(vec![])` drops all
-    /// rings (a no-op texture).
-    #[serde(default)]
-    pub rings: Option<Vec<RingConfig>>,
-}
-
 /// `[canal]` block — interior-canal feature toggle + geometry
 /// overrides. Maps to [`cf_cast::CanalSpec`].
 ///
 /// Canal Interior arc (Candidate A, 2026-05-28). Defaults to
 /// `enabled = false` — absence of the table (or `enabled = false`)
-/// leaves the layer-0 plug exactly as today (scan-derived negative).
+/// leaves the plug + layer bodies exactly as today (scan-derived
+/// negatives). When enabled the SAME field is composed onto the plug
+/// **and every layer body** (they are all offsets of the one scan
+/// surface, so the identical displacement rides through every offset
+/// and the wall thicknesses stay constant — see
+/// `docs/CF_CAST_SCAN_SURFACE_TEXTURE_RECON.md`).
 /// When enabled, fields left unset fall back to
 /// [`cf_cast::CanalSpec::iter1`]. Set `suction_bulge_m = 0.0` to drop
 /// the suction bulb, `texture_amplitude_m = 0.0` to drop ribs, etc.
@@ -1039,7 +1007,6 @@ mod tests {
             PathBuf::from("base_mold.design.toml"),
             0.0015,
             CanalConfig::default(),
-            ShellTextureConfig::default(),
         );
         assert_eq!(c.scan.cleaned_stl, PathBuf::from("base_mold.cleaned.stl"));
         assert_eq!(c.scan.prep_toml, PathBuf::from("base_mold.prep.toml"));
@@ -1083,7 +1050,6 @@ mod tests {
             PathBuf::from("base_mold.design.toml"),
             0.0015,
             CanalConfig::default(),
-            ShellTextureConfig::default(),
         );
         assert!(c.cast.planar_seam, "planar seam (flat mating face)");
         assert!(!c.cast.flat_cavity_floor);
@@ -1119,7 +1085,6 @@ mod tests {
             PathBuf::from("base_mold.design.toml"),
             0.0005,
             canal,
-            ShellTextureConfig::default(),
         );
         assert!(c.canal.enabled, "ridges enabled");
         assert_eq!(

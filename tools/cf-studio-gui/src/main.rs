@@ -20,13 +20,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cf_studio_core::{
-    DesignDraft, LayerDraft, MoldOutputs, PourRecord, Project, RidgeOptions, RidgeRing,
-    ShellRidgeOptions, Step, TextureDraft,
+    DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourRecord, Project, RidgeOptions, RidgeRing,
+    Step,
 };
 use cf_studio_engine::{
-    CastMode, EditSession, PartId, PartSelection, PrintExportReport, ReconstructShape,
-    export_print_package, exterior_preview_mesh, generate_molds_for_design, interior_preview_mesh,
-    run_simplify, silicone_catalog,
+    CastMode, EditSession, PartId, PartSelection, PlugPreview, PrintExportReport, ReconstructShape,
+    export_print_package, generate_molds_for_design, proxy_preview_mesh, run_simplify,
+    silicone_catalog,
 };
 
 /// Cendrillon casts **bonded** (one plug, cast-in-place) — the product default
@@ -35,10 +35,10 @@ use cf_studio_engine::{
 const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
-    StepOutcome, apply_design, apply_design_draft, apply_exterior_texture, apply_interior_texture,
-    apply_prep, apply_scan, cell_size_m_for_quality, enumerate_parts, format_molds_summary,
-    format_pour_active, format_pour_plan, nav_state, part_selection_from_checks, pour_countdown,
-    print_step_summary, step_rows,
+    StepOutcome, apply_design, apply_design_draft, apply_plug, apply_prep, apply_scan,
+    cell_size_m_for_quality, enumerate_parts, format_molds_summary, format_pour_active,
+    format_pour_plan, nav_state, part_selection_from_checks, pour_countdown, print_step_summary,
+    step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
@@ -480,9 +480,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GPU handles (filled at RenderingSetup) + the live scan scene.
     let gpu: GpuHandles = Rc::new(RefCell::new(None));
     let scene: Rc<RefCell<Option<Scene>>> = Rc::new(RefCell::new(None));
-    // Step-4 live texture preview: a second, independent scene (its own mesh +
-    // orbit camera) for the textured-proxy render.
+    // "Shape your piece" live preview: a second, independent scene (its own
+    // mesh + orbit camera) for the textured plug render.
     let texture_scene: Rc<RefCell<Option<Scene>>> = Rc::new(RefCell::new(None));
+    // The cached real-scan plug preview: the cleaned-scan flood-fill SDF +
+    // centerline, built once on page entry (the flood-fill is the slow part)
+    // so each inset / ridge edit only re-offsets + re-textures + re-meshes.
+    // `None` until built / if the scan can't be loaded (→ the proxy fallback).
+    let shape_preview: Rc<RefCell<Option<PlugPreview>>> = Rc::new(RefCell::new(None));
     // The chosen scan file + the step-2 edit session over its mesh. The
     // session is created at pick time and rendered on both step 1 (the
     // scan) and step 2 (the same mesh, being cleaned).
@@ -820,7 +825,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
         let (layers_model, catalog) = (layers_model.clone(), catalog.clone());
         let (parts_model, part_ids) = (parts_model.clone(), part_ids.clone());
-        ui.on_use_design(move |cavity_mm| {
+        ui.on_use_design(move || {
             let layers: Vec<LayerDraft> = (0..layers_model.row_count())
                 .filter_map(|i| layers_model.row_data(i))
                 .map(|row| {
@@ -836,8 +841,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 })
                 .collect();
+            // The cavity inset is owned by the "Shape your piece" step; the
+            // layer stack builds outward off that shaped plug.
+            let cavity_inset_m = project.borrow().plug().map_or(0.0, |pl| pl.cavity_inset_m);
             let draft = DesignDraft {
-                cavity_inset_m: f64::from(cavity_mm) / 1000.0,
+                cavity_inset_m,
                 layers,
             };
             let outcome = apply_design_draft(&mut project.borrow_mut(), draft);
@@ -850,11 +858,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ── step 4: interior-ridge grip-ring editor ─────────────────
+    // ── step 3 "Shape your piece": the surface-ridge grip-ring editor ──
     // The rings VecModel mirrors the layer stack. Seeded from the validated
     // RidgeOptions::default() rings, converted to the UI's integer units
-    // (position/width as %, depth in tenths-of-mm). on_make_molds reads this
-    // model + the ridge property knobs to build the RidgeOptions it casts.
+    // (position/width as %, depth in tenths-of-mm). commit-plug reads this
+    // model + the ridge property knobs to build the RidgeOptions it commits.
     let rings_model = Rc::new(VecModel::from(
         RidgeOptions::default()
             .rings
@@ -914,88 +922,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ── step 4: the exterior shell-ring editor (mirrors the interior one) ──
-    let shell_rings_model = Rc::new(VecModel::from(
-        ShellRidgeOptions::default()
-            .rings
-            .iter()
-            .map(ring_row_from_ridge)
-            .collect::<Vec<_>>(),
-    ));
-    ui.set_shell_rings(ModelRc::from(shell_rings_model.clone()));
-    {
-        let shell_rings_model = shell_rings_model.clone();
-        ui.on_add_shell_ring(move || {
-            shell_rings_model.push(RingRow {
-                position_pct: 50,
-                depth_tenths_mm: 20,
-                width_pct: 5,
-            });
-        });
-    }
-    {
-        let shell_rings_model = shell_rings_model.clone();
-        ui.on_remove_shell_ring(move |idx| {
-            let i = idx.max(0) as usize;
-            if i < shell_rings_model.row_count() {
-                shell_rings_model.remove(i);
-            }
-        });
-    }
-    {
-        let shell_rings_model = shell_rings_model.clone();
-        ui.on_set_shell_ring_position(move |idx, pct| {
-            let i = idx.max(0) as usize;
-            if let Some(mut row) = shell_rings_model.row_data(i) {
-                row.position_pct = pct;
-                shell_rings_model.set_row_data(i, row);
-            }
-        });
-    }
-    {
-        let shell_rings_model = shell_rings_model.clone();
-        ui.on_set_shell_ring_depth(move |idx, tenths| {
-            let i = idx.max(0) as usize;
-            if let Some(mut row) = shell_rings_model.row_data(i) {
-                row.depth_tenths_mm = tenths;
-                shell_rings_model.set_row_data(i, row);
-            }
-        });
-    }
-    {
-        let shell_rings_model = shell_rings_model.clone();
-        ui.on_set_shell_ring_width(move |idx, pct| {
-            let i = idx.max(0) as usize;
-            if let Some(mut row) = shell_rings_model.row_data(i) {
-                row.width_pct = pct;
-                shell_rings_model.set_row_data(i, row);
-            }
-        });
-    }
-
-    // ── step 4: commit the interior ridges (Continue) + advance ──
+    // ── step 3 "Shape your piece": commit the plug (Continue) + advance ──
+    // Build the PlugDraft from the cavity inset (the spin passes its mm) + the
+    // ridge controls, then advance to the layer stack.
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
         let rings_model_c = rings_model.clone();
-        ui.on_commit_interior(move || {
+        ui.on_commit_plug(move |cavity_mm| {
             let Some(ui) = weak.upgrade() else { return };
-            let interior = ridge_options_from_ui(&ui, &rings_model_c);
-            let outcome = apply_interior_texture(&mut project.borrow_mut(), interior);
-            if outcome.is_ok() {
-                let _ = project.borrow_mut().advance();
-            }
-            viewed.set(project.borrow().current_step().index());
-            update(&weak, &project, viewed.get(), &outcome);
-        });
-    }
-    // ── step 5: commit the exterior shell ridges (Continue) + advance ──
-    {
-        let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
-        let shell_rings_model_c = shell_rings_model.clone();
-        ui.on_commit_exterior(move || {
-            let Some(ui) = weak.upgrade() else { return };
-            let exterior = shell_ridge_options_from_ui(&ui, &shell_rings_model_c);
-            let outcome = apply_exterior_texture(&mut project.borrow_mut(), exterior);
+            let plug = PlugDraft {
+                cavity_inset_m: f64::from(cavity_mm) / 1000.0,
+                ridges: ridge_options_from_ui(&ui, &rings_model_c),
+            };
+            let outcome = apply_plug(&mut project.borrow_mut(), plug);
             if outcome.is_ok() {
                 let _ = project.borrow_mut().advance();
             }
@@ -1004,7 +943,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ── step 4: the "parts to generate" picker callbacks ────────
+    // ── step 5 (Make molds): the "parts to generate" picker callbacks ──
     // (the models are declared above the design handlers so they can rebuild
     // them; make-molds reads the checked mask + the ids to build the selection.)
     {
@@ -1026,22 +965,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_select_no_parts(move || set_all_parts(&parts_model, false));
     }
 
-    // ── step 4/5: live texture previews (regenerate on any change; orbit) ──
+    // ── step 3 "Shape your piece": the live plug preview ──
+    // On page entry, (re)build the cached real-scan SDF from the cleaned scan;
+    // then render. The build is the slow part — done once here, not per edit.
     {
-        let (weak, gpu, texture_scene) = (weak.clone(), gpu.clone(), texture_scene.clone());
+        let (weak, gpu, texture_scene, shape_preview, project) = (
+            weak.clone(),
+            gpu.clone(),
+            texture_scene.clone(),
+            shape_preview.clone(),
+            project.clone(),
+        );
         let rings_model = rings_model.clone();
-        ui.on_interior_changed(move || {
-            if let Some(ui) = weak.upgrade() {
-                refresh_interior_preview(&ui, &gpu, &texture_scene, &rings_model);
-            }
+        ui.on_shape_enter(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            // Build the cache from the project's cleaned scan + prep. On any
+            // failure leave it None → the proxy fallback still previews.
+            let built = project
+                .borrow()
+                .prep()
+                .map(|prep| PlugPreview::load(&prep.cleaned_stl, &prep.prep_toml));
+            *shape_preview.borrow_mut() = match built {
+                Some(Ok(p)) => Some(p),
+                _ => None,
+            };
+            refresh_shape_preview(&ui, &gpu, &texture_scene, &shape_preview, &rings_model);
         });
     }
+    // On any inset / ridge edit, re-mesh from the cached SDF (cheap).
     {
-        let (weak, gpu, texture_scene) = (weak.clone(), gpu.clone(), texture_scene.clone());
-        let shell_rings_model = shell_rings_model.clone();
-        ui.on_exterior_changed(move || {
+        let (weak, gpu, texture_scene, shape_preview) = (
+            weak.clone(),
+            gpu.clone(),
+            texture_scene.clone(),
+            shape_preview.clone(),
+        );
+        let rings_model = rings_model.clone();
+        ui.on_shape_changed(move || {
             if let Some(ui) = weak.upgrade() {
-                refresh_exterior_preview(&ui, &gpu, &texture_scene, &shell_rings_model);
+                refresh_shape_preview(&ui, &gpu, &texture_scene, &shape_preview, &rings_model);
             }
         });
     }
@@ -1473,15 +1435,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let cell_size_m = cell_size_m_for_quality(quality_idx);
-            // The interior + exterior textures were committed on steps 4 & 5;
-            // combine them into the engine's TextureDraft (defaults if unset).
-            let texture = {
-                let p = project.borrow();
-                TextureDraft {
-                    interior: p.interior_texture().cloned().unwrap_or_default(),
-                    exterior: p.exterior_texture().cloned().unwrap_or_default(),
-                }
-            };
+            // The surface ridges were committed on "Shape your piece" as part
+            // of the plug. The one field rides every offset (plug + shells).
+            let ridges = project
+                .borrow()
+                .plug()
+                .map(|pl| pl.ridges.clone())
+                .unwrap_or_default();
             // Snapshot the part picker into a PartSelection (all checked →
             // the full-cast path; a subset skips the rest).
             let selection = part_selection_from_ui(&parts_model, &part_ids);
@@ -1503,7 +1463,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &prep_toml,
                         &draft,
                         cell_size_m,
-                        &texture,
+                        &ridges,
                         &selection,
                         CENDRILLON_CAST_MODE,
                         None,
@@ -1705,48 +1665,54 @@ fn ring_row_from_ridge(ring: &RidgeRing) -> RingRow {
     }
 }
 
-/// Read the step-4 interior-ridge controls off the UI + the rings VecModel
+/// Read the "Shape your piece" ridge controls off the UI + the rings VecModel
 /// into an owned [`RidgeOptions`] (the inverse of [`ring_row_from_ridge`] +
 /// the property getters). Integer UI units convert back to meters/fractions:
-/// percents ÷100, tenths-of-mm ÷10 000 (→ meters). When the toggle is off
-/// this still reads the knobs, but the engine maps `enabled = false` to the
-/// no-op canal-off config, so the values are inert.
+/// percents ÷100, tenths-of-mm ÷10 000 (→ meters).
+///
+/// Each feature has its own toggle: when off, that feature contributes nothing
+/// (rings emptied / depth 0 / orientation 0°), so the user can mix and match —
+/// e.g. grip rings without the fine texture. The master `ridges-enabled` gates
+/// the whole field on top (off → the engine maps to the no-op canal-off cast).
 fn ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> RidgeOptions {
     let tenths_mm_to_m = |t: i32| f64::from(t) / 10_000.0;
-    let rings = (0..rings.row_count())
-        .filter_map(|i| rings.row_data(i))
-        .map(|row| RidgeRing {
-            position_frac: f64::from(row.position_pct) / 100.0,
-            depth_m: tenths_mm_to_m(row.depth_tenths_mm),
-            half_width_frac: f64::from(row.width_pct) / 100.0,
-        })
-        .collect();
+    let rings = if ui.get_rings_enabled() {
+        (0..rings.row_count())
+            .filter_map(|i| rings.row_data(i))
+            .map(|row| RidgeRing {
+                position_frac: f64::from(row.position_pct) / 100.0,
+                depth_m: tenths_mm_to_m(row.depth_tenths_mm),
+                half_width_frac: f64::from(row.width_pct) / 100.0,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let texture_depth_m = if ui.get_texture_enabled() {
+        tenths_mm_to_m(ui.get_ridge_texture_depth_tenths_mm())
+    } else {
+        0.0
+    };
     RidgeOptions {
         enabled: ui.get_ridges_enabled(),
         rings,
-        texture_depth_m: tenths_mm_to_m(ui.get_ridge_texture_depth_tenths_mm()),
+        texture_depth_m,
         texture_spacing_m: tenths_mm_to_m(ui.get_ridge_texture_spacing_tenths_mm()),
-        side_pinch_depth_m: tenths_mm_to_m(ui.get_ridge_side_pinch_tenths_mm()),
-        tip_relief_depth_m: tenths_mm_to_m(ui.get_ridge_tip_relief_tenths_mm()),
-        orientation_deg: f64::from(ui.get_ridge_orientation_deg()),
-    }
-}
-
-/// Read the exterior shell-ring controls into an owned [`ShellRidgeOptions`]
-/// (the `shell-ridges-enabled` toggle + the `shell-rings` editor). Same
-/// integer-unit conversions as [`ridge_options_from_ui`].
-fn shell_ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> ShellRidgeOptions {
-    let rings = (0..rings.row_count())
-        .filter_map(|i| rings.row_data(i))
-        .map(|row| RidgeRing {
-            position_frac: f64::from(row.position_pct) / 100.0,
-            depth_m: f64::from(row.depth_tenths_mm) / 10_000.0,
-            half_width_frac: f64::from(row.width_pct) / 100.0,
-        })
-        .collect();
-    ShellRidgeOptions {
-        enabled: ui.get_shell_ridges_enabled(),
-        rings,
+        side_pinch_depth_m: if ui.get_side_pinch_enabled() {
+            tenths_mm_to_m(ui.get_ridge_side_pinch_tenths_mm())
+        } else {
+            0.0
+        },
+        tip_relief_depth_m: if ui.get_tip_relief_enabled() {
+            tenths_mm_to_m(ui.get_ridge_tip_relief_tenths_mm())
+        } else {
+            0.0
+        },
+        orientation_deg: if ui.get_orientation_enabled() {
+            f64::from(ui.get_ridge_orientation_deg())
+        } else {
+            0.0
+        },
     }
 }
 
@@ -1782,25 +1748,23 @@ fn render_texture_preview(
     }
 }
 
-/// Regenerate the interior (plug) preview from the current interior controls.
-fn refresh_interior_preview(
+/// Regenerate the "Shape your piece" plug preview from the current cavity
+/// inset + ridge controls. Uses the cached real-scan SDF when available (the
+/// faithful plug); falls back to the flat-floor proxy when the scan couldn't
+/// be loaded.
+fn refresh_shape_preview(
     ui: &AppWindow,
     gpu: &GpuHandles,
     texture_scene: &RefCell<Option<Scene>>,
+    shape_preview: &RefCell<Option<PlugPreview>>,
     rings: &VecModel<RingRow>,
 ) {
-    let mesh = interior_preview_mesh(&ridge_options_from_ui(ui, rings));
-    render_texture_preview(ui, gpu, texture_scene, &mesh);
-}
-
-/// Regenerate the exterior (shell) preview from the current exterior controls.
-fn refresh_exterior_preview(
-    ui: &AppWindow,
-    gpu: &GpuHandles,
-    texture_scene: &RefCell<Option<Scene>>,
-    shell_rings: &VecModel<RingRow>,
-) {
-    let mesh = exterior_preview_mesh(&shell_ridge_options_from_ui(ui, shell_rings));
+    let ridges = ridge_options_from_ui(ui, rings);
+    let cavity_inset_m = f64::from(ui.get_cavity_inset_mm()) / 1000.0;
+    let mesh = match shape_preview.borrow().as_ref() {
+        Some(preview) => preview.mesh(&ridges, cavity_inset_m),
+        None => proxy_preview_mesh(&ridges),
+    };
     render_texture_preview(ui, gpu, texture_scene, &mesh);
 }
 

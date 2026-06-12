@@ -270,29 +270,15 @@ pub fn derive_spec_and_ribbon(
     // cf-device-design's `outer.subtract(cavity)` body-construction
     // logic). Same Arc-clone pattern: every layer threads the same
     // shared closed + open SDFs into `pinned_floor_shell`.
-    // Shell texture (exterior / inter-layer ridges): compose the canal field
-    // onto every layer body's outer surface. The mouth anchor + the R3 gate
-    // (ridge depth must stay below the thinnest layer, else the ridge breaches
-    // it) are resolved once before the loop.
-    let shell_texture = if config.shell_texture.enabled {
-        let spec = resolve_shell_texture_spec(&config.shell_texture);
-        let max_depth = spec.max_inward_depth_m();
-        let min_thickness = config
-            .layers
-            .iter()
-            .map(|l| l.thickness_m)
-            .fold(f64::INFINITY, f64::min);
-        if max_depth >= min_thickness {
-            bail!(
-                "[shell_texture] ridge depth {:.2} mm ≥ the thinnest layer {:.2} mm — it would \
-                 breach that layer. Reduce the ring depth / texture amplitude, or thicken the \
-                 layer (recon R3: depth < layer thickness).",
-                max_depth * 1e3,
-                min_thickness * 1e3,
-            );
-        }
-        // Anchor `frac = 0` at the mouth (cap-plane centroid), same as the
-        // canal plug, so the ring zones line up along the body.
+    // Compose the texture (the SAME canal field as the plug) onto every layer
+    // BODY too, not just the plug. The plug + every body are offsets of the one
+    // scan surface, so the identical displacement rides through all offsets:
+    // the ridges appear on every surface AND the wall thicknesses stay constant
+    // (the field moves consecutive surfaces together, so no per-layer depth gate
+    // is needed — the wall is preserved by construction). See
+    // `docs/CF_CAST_SCAN_SURFACE_TEXTURE_RECON.md`.
+    let body_texture = if config.canal.enabled {
+        let spec = resolve_canal_spec(&config.canal);
         let mouth_anchor = cap_tuples.first().map(|(centroid, _normal)| *centroid);
         Some((spec, mouth_anchor))
     } else {
@@ -310,7 +296,7 @@ pub fn derive_spec_and_ribbon(
             &cap_tuples,
             cumulative_so_far - cavity_inset_m,
         );
-        if let Some((spec, mouth_anchor)) = &shell_texture {
+        if let Some((spec, mouth_anchor)) = &body_texture {
             body = build_canal_plug(&body, centerline, *mouth_anchor, spec);
         }
         let material = build_material(layer_cfg).with_context(|| {
@@ -698,31 +684,6 @@ fn resolve_demand_flange_spec(config: &crate::config::FlangeConfig) -> DemandFla
 /// override. Canal Interior arc (Candidate A) — additive grip +
 /// stimulation features on the layer-0 plug; baseline girth stays
 /// owned by `cavity_inset_m`.
-/// Resolve a [`crate::config::ShellTextureConfig`] into a [`CanalSpec`] for
-/// texturing a layer **body**: start from the iter1 rings (or the override),
-/// and zero every one-sided feature (frenulum-gated texture, D-section pinch,
-/// suction bulb) so the shell ridges are purely axisymmetric. The body meshes
-/// at the global cell size (broad rings survive it — S0), so no per-plug fine
-/// cell is set.
-fn resolve_shell_texture_spec(config: &crate::config::ShellTextureConfig) -> CanalSpec {
-    let mut spec = CanalSpec::iter1();
-    if let Some(rings) = &config.rings {
-        spec.rings = rings
-            .iter()
-            .map(|r| RingSpec {
-                center_frac: r.center_frac,
-                depth_m: r.depth_m,
-                half_width_frac: r.half_width_frac,
-            })
-            .collect();
-    }
-    // Axisymmetric only — strip the interior-anatomy one-sided features.
-    spec.texture_amp_m = 0.0;
-    spec.dsection_depth_m = 0.0;
-    spec.suction_bulge_m = 0.0;
-    spec
-}
-
 fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
     let mut spec = CanalSpec::iter1();
     if let Some(rings) = &config.rings {
@@ -897,7 +858,6 @@ mod tests {
             dowel_hole: crate::config::DowelHoleConfig::default(),
             bolt_pattern: crate::config::BoltPatternConfig::default(),
             canal: crate::config::CanalConfig::default(),
-            shell_texture: crate::config::ShellTextureConfig::default(),
         }
     }
 
@@ -1119,32 +1079,12 @@ mod tests {
     }
 
     #[test]
-    fn shell_texture_ridge_deeper_than_layer_errors() {
-        // R3 gate: a 10 mm ring on a 4 mm-thinnest layer would breach it.
-        let mut cfg = three_layer_config();
-        cfg.shell_texture = crate::config::ShellTextureConfig {
-            enabled: true,
-            rings: Some(vec![crate::config::RingConfig {
-                center_frac: 0.5,
-                depth_m: 0.010,
-                half_width_frac: 0.05,
-            }]),
-        };
-        let sdf = unit_cube_sdf();
-        let centerline = straight_x_centerline();
-        let err = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[])
-            .expect_err("ridge deeper than the thinnest layer must fail");
-        assert!(
-            err.to_string().contains("shell_texture"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn shell_texture_displaces_the_layer_bodies() {
-        // Enabling shell texture (iter1 rings ≤3 mm < the 4 mm thinnest layer)
-        // composes the ring field onto every layer body — the layer-0 body's
+    fn canal_texture_displaces_the_layer_bodies_too() {
+        // The unified model: enabling `canal` composes the SAME field onto
+        // every layer body, not just the layer-0 plug. The layer-0 body's
         // surface must differ from the un-textured derivation at a ring band.
+        // No depth gate is needed — the identical displacement rides every
+        // offset, so the inter-layer wall stays constant by construction.
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let plain = derive_spec_and_ribbon(
@@ -1157,9 +1097,9 @@ mod tests {
         )
         .unwrap();
         let mut cfg = three_layer_config();
-        cfg.shell_texture = crate::config::ShellTextureConfig {
+        cfg.canal = crate::config::CanalConfig {
             enabled: true,
-            rings: None, // iter1 axisymmetric rings
+            ..crate::config::CanalConfig::default() // iter1 rings + features
         };
         let textured =
             derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
@@ -1176,7 +1116,7 @@ mod tests {
         }
         assert!(
             max_diff > 0.001,
-            "shell rings should displace the body surface; max diff {:.3} mm",
+            "the canal field should displace the body surface; max diff {:.3} mm",
             max_diff * 1e3
         );
     }

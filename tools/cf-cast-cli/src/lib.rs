@@ -58,7 +58,7 @@ use anyhow::{Context, Result, bail};
 pub use cf_cast::{CastMode, PartId, PartSelection, PieceSide};
 pub use config::{
     CanalConfig, CastConfig, CastDefaults, DesignSourceConfig, LayerConfig, PlugPinConfig,
-    PourGateConfig, RingConfig, ScanConfig, ShellTextureConfig,
+    PourGateConfig, RingConfig, ScanConfig,
 };
 pub use derive::{
     DerivedSpec, density_for_anchor, derive_spec_and_ribbon, display_name_for_anchor,

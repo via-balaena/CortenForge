@@ -1,4 +1,4 @@
-//! The six ordered workflow steps.
+//! The seven ordered workflow steps.
 //!
 //! [`Step`] derives `Ord` by declaration order, so `AddScan < Pour`
 //! holds and the state machine can reason about "earlier" / "later"
@@ -14,12 +14,12 @@ pub enum Step {
     AddScan,
     /// Repair + seal the scan into a castable, watertight body.
     CleanScan,
-    /// Cavity inset + the soft→firm silicone layer stack.
+    /// Shape the plug: cavity inset (snugness) + the surface ridges,
+    /// previewed on the real cleaned scan. The single edit surface that
+    /// propagates to the plug and every shell (constant wall).
+    ShapePiece,
+    /// The soft→firm silicone layer stack, built outward off the shaped plug.
     DesignLayers,
-    /// Optional interior ridges on the plug (the canal). Skippable.
-    InteriorTexture,
-    /// Optional exterior / inter-layer shell ridges. Skippable.
-    ExteriorTexture,
     /// Generate the printable mold pieces + plugs.
     MakeMolds,
     /// Export the mold files for the 3-D printer.
@@ -30,12 +30,11 @@ pub enum Step {
 
 impl Step {
     /// Every step, in workflow order.
-    pub const ALL: [Step; 8] = [
+    pub const ALL: [Step; 7] = [
         Step::AddScan,
         Step::CleanScan,
+        Step::ShapePiece,
         Step::DesignLayers,
-        Step::InteriorTexture,
-        Step::ExteriorTexture,
         Step::MakeMolds,
         Step::Print,
         Step::Pour,
@@ -48,7 +47,7 @@ impl Step {
     pub const LAST: Step = Step::Pour;
 
     /// Total number of steps (for "Step N of [`TOTAL`](Step::TOTAL)").
-    pub const TOTAL: usize = 8;
+    pub const TOTAL: usize = 7;
 
     /// Zero-based position of this step in the workflow.
     #[must_use]
@@ -56,16 +55,15 @@ impl Step {
         match self {
             Step::AddScan => 0,
             Step::CleanScan => 1,
-            Step::DesignLayers => 2,
-            Step::InteriorTexture => 3,
-            Step::ExteriorTexture => 4,
-            Step::MakeMolds => 5,
-            Step::Print => 6,
-            Step::Pour => 7,
+            Step::ShapePiece => 2,
+            Step::DesignLayers => 3,
+            Step::MakeMolds => 4,
+            Step::Print => 5,
+            Step::Pour => 6,
         }
     }
 
-    /// One-based step number, for display ("Step 3 of 8").
+    /// One-based step number, for display ("Step 3 of 7").
     #[must_use]
     pub const fn number(self) -> usize {
         self.index() + 1
@@ -76,10 +74,9 @@ impl Step {
     pub const fn next(self) -> Option<Step> {
         match self {
             Step::AddScan => Some(Step::CleanScan),
-            Step::CleanScan => Some(Step::DesignLayers),
-            Step::DesignLayers => Some(Step::InteriorTexture),
-            Step::InteriorTexture => Some(Step::ExteriorTexture),
-            Step::ExteriorTexture => Some(Step::MakeMolds),
+            Step::CleanScan => Some(Step::ShapePiece),
+            Step::ShapePiece => Some(Step::DesignLayers),
+            Step::DesignLayers => Some(Step::MakeMolds),
             Step::MakeMolds => Some(Step::Print),
             Step::Print => Some(Step::Pour),
             Step::Pour => None,
@@ -92,10 +89,9 @@ impl Step {
         match self {
             Step::AddScan => None,
             Step::CleanScan => Some(Step::AddScan),
-            Step::DesignLayers => Some(Step::CleanScan),
-            Step::InteriorTexture => Some(Step::DesignLayers),
-            Step::ExteriorTexture => Some(Step::InteriorTexture),
-            Step::MakeMolds => Some(Step::ExteriorTexture),
+            Step::ShapePiece => Some(Step::CleanScan),
+            Step::DesignLayers => Some(Step::ShapePiece),
+            Step::MakeMolds => Some(Step::DesignLayers),
             Step::Print => Some(Step::MakeMolds),
             Step::Pour => Some(Step::Print),
         }
@@ -107,9 +103,8 @@ impl Step {
         match self {
             Step::AddScan => "Add your scan",
             Step::CleanScan => "Clean up the scan",
+            Step::ShapePiece => "Shape your piece",
             Step::DesignLayers => "Choose how it should feel",
-            Step::InteriorTexture => "Add interior ridges",
-            Step::ExteriorTexture => "Add exterior ridges",
             Step::MakeMolds => "Make your molds",
             Step::Print => "3D print the molds",
             Step::Pour => "Pour the silicone",
@@ -126,10 +121,9 @@ mod tests {
     #[test]
     fn declaration_order_is_workflow_order() {
         assert!(Step::AddScan < Step::CleanScan);
-        assert!(Step::CleanScan < Step::DesignLayers);
-        assert!(Step::DesignLayers < Step::InteriorTexture);
-        assert!(Step::InteriorTexture < Step::ExteriorTexture);
-        assert!(Step::ExteriorTexture < Step::MakeMolds);
+        assert!(Step::CleanScan < Step::ShapePiece);
+        assert!(Step::ShapePiece < Step::DesignLayers);
+        assert!(Step::DesignLayers < Step::MakeMolds);
         assert!(Step::MakeMolds < Step::Print);
         assert!(Step::Print < Step::Pour);
     }

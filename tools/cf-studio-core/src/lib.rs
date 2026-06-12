@@ -54,8 +54,7 @@ pub mod step;
 pub use error::{Result, StudioError};
 pub use progress::{NoopSink, Progress, ProgressSink};
 pub use project::{
-    DesignDraft, LayerDraft, MoldOutputs, PROJECT_SCHEMA_VERSION, PourPlan, PourRecord, PourStep,
-    PrepInput, PrintExport, Project, RidgeOptions, RidgeRing, ScanInput, ShellRidgeOptions,
-    TextureDraft,
+    DesignDraft, LayerDraft, MoldOutputs, PROJECT_SCHEMA_VERSION, PlugDraft, PourPlan, PourRecord,
+    PourStep, PrepInput, PrintExport, Project, RidgeOptions, RidgeRing, ScanInput,
 };
 pub use step::Step;

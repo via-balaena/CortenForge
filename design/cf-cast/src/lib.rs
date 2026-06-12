@@ -133,7 +133,7 @@ pub use plug::{
 };
 pub use pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume};
-pub use preview::preview_textured_plug;
+pub use preview::{preview_textured_plug, preview_textured_solid};
 pub use prismatic_pin::{
     LATERAL_ORTHOGONALITY_TOLERANCE, PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec,
     build_prismatic_pin_sdf,

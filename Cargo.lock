@@ -2517,6 +2517,7 @@ dependencies = [
  "cf-cap-planes",
  "cf-cast",
  "cf-cast-cli",
+ "cf-design",
  "cf-device-types",
  "cf-scan-prep-core",
  "cf-studio-core",
