@@ -174,8 +174,13 @@ cavity — cleaner. This is another reason texturing pairs naturally with bonded
   integration cast (S5 / a real run):** the empirical real-curved-body survival
   recheck (S0 used a clean cylinder) — same pattern as the other #[ignore]d
   integration gates.
-- **S4 — Cendrillon Texture page:** new Step + state machine + nav + move the
-  interior-ridge panel here; add exterior/shell ridge controls.
+- **S4 — Cendrillon Texture page: ✅ DONE.** New `Step::Texture` (7 steps) +
+  `TextureDraft { interior, exterior }` artifact + `set_texture` gate; schema
+  v1→v2 + a load-migration backfill. Engine `generate_molds_for_design` takes
+  `&TextureDraft`; for_design takes `shell_texture`. GUI: a step-4 Texture page
+  (interior panel relocated + a new exterior shell-ring editor + Continue),
+  `apply_texture`, the later pages renumbered 5/6/7. Skippable. All four crates
+  green.
 - **S5 — Cendrillon bonded default:** wire `CastMode::Bonded` + bonded procedure;
   parts picker reflects the single plug.
 
