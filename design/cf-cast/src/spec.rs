@@ -230,13 +230,14 @@ pub struct CastSpec {
     /// the offset cases with an explicit per-layer offset
     /// parameter.
     pub scan_mesh_for_plug_layer_0: Option<Arc<IndexedMesh>>,
-    /// Marching-cubes cell size for the **layer-0 plug only** (meters).
-    /// `None` (default) → use [`Self::mesh_cell_size_m`] like every
-    /// other mesh. `Some(fine)` is set by the canal path so the
-    /// sub-cm grip rings + ~1.5 mm texture survive meshing while the
-    /// cups stay coarse; the layer-0 plug bounding box is small, so
-    /// the cost is bounded. Layers N>0 always use the global cell
-    /// size (they carry no canal features).
+    /// Marching-cubes cell size for the **plugs** (meters). `None` (default) →
+    /// use [`Self::mesh_cell_size_m`] like every other mesh. `Some(fine)` is
+    /// set by the canal path so the sub-cm grip rings + ~1.5 mm texture survive
+    /// meshing. Applies to every plug — layer-0's plug AND the N>0 plugs (the
+    /// textured layer bodies), which all carry the canal field post scan-surface
+    /// unification; plug bounding boxes are small, so the cost is bounded. The
+    /// cup pieces stay at the global cell (large; texture there is coarser —
+    /// fine at the production 0.5 mm config). (Name kept for compatibility.)
     pub plug_layer_0_mesh_cell_size_m: Option<f64>,
     /// Narrow-band skip skin for the **canal feature field** (meters): an
     /// upper bound on the magnitude of the canal's non-1-Lipschitz additive
@@ -1707,14 +1708,14 @@ fn mesh_and_gate_v2_one_plug(
         if let (0, Some(scan_mesh)) = (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
             (build_plug_body_mesh(scan_mesh), "scan-mesh-direct")
         } else {
-            // Layer-0 plug uses the per-plug fine cell size when set
-            // (canal path); everything else uses the global cell size.
-            let cell_size_m = if layer_index == 0 {
-                spec.plug_layer_0_mesh_cell_size_m
-                    .unwrap_or(spec.mesh_cell_size_m)
-            } else {
-                spec.mesh_cell_size_m
-            };
+            // Every plug uses the per-plug fine cell size when set (the canal
+            // path): layer-0's plug and the N>0 plugs (the textured layer
+            // bodies) all carry the canal field now, so they all need the fine
+            // cell for the sub-cm rings + ~1.5 mm texture to survive meshing.
+            // Canal off → `None` → the global cell, byte-identical to before.
+            let cell_size_m = spec
+                .plug_layer_0_mesh_cell_size_m
+                .unwrap_or(spec.mesh_cell_size_m);
             // Every plug carries the canal feature's non-1-Lipschitz
             // displacement now: layer-0's plug is the textured plug, and the
             // N>0 plugs ARE the textured layer bodies (post scan-surface

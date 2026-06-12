@@ -718,9 +718,15 @@ fn resolve_demand_flange_spec(config: &crate::config::FlangeConfig) -> DemandFla
 /// Resolve a [`crate::config::CanalConfig`] into a [`CanalSpec`],
 /// falling back to [`CanalSpec::iter1`] for each `None` per-field
 /// override. Canal Interior arc (Candidate A) — additive grip +
-/// stimulation features on the layer-0 plug; baseline girth stays
-/// owned by `cavity_inset_m`.
-fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
+/// stimulation features composed onto the plug + every layer body;
+/// baseline girth stays owned by `cavity_inset_m`.
+///
+/// This is the CANONICAL `CanalConfig → CanalSpec` mapping the cast uses.
+/// A frontend's live preview should resolve its spec through this same
+/// function (e.g. `resolve_canal_spec(&canal_config_from_ridges(opts))`) so
+/// the preview cannot drift from what the cast actually cuts.
+#[must_use]
+pub fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
     let mut spec = CanalSpec::iter1();
     if let Some(rings) = &config.rings {
         spec.rings = rings

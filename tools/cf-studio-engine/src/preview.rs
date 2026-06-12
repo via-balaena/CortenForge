@@ -1,11 +1,19 @@
 //! Live preview meshing for the wizard's "Shape your piece" step.
 //!
-//! The faithful preview is the **real plug**: the cleaned-scan flood-fill SDF
-//! offset inward by the cavity inset, textured with the *same* `cf_cast`
-//! canal field the cast composes. [`PlugPreview`] caches the slow part (the
+//! The preview is a close approximation of the **real plug**: the cleaned-scan
+//! flood-fill SDF offset inward by the cavity inset, textured with the *same*
+//! `cf_cast` canal field (resolved through the cast's canonical mapping, so the
+//! ridge values match exactly). [`PlugPreview`] caches the slow part (the
 //! flood-fill SDF + the prep centerline / mouth anchor) so each inset / ridge
 //! edit only re-offsets + re-textures + re-meshes at a coarse cell size — fast
 //! enough to update live as the user drags a control.
+//!
+//! It is an *approximation*, not a pixel-exact twin: the preview offsets the
+//! scan with a plain `Solid::offset` over padded scan bounds, whereas the cast
+//! builds the plug with `cf_design::pinned_floor_shell` (cap-pinned floor) over
+//! its own eval bounds. So the floor/cap and the frac-keyed ring positions can
+//! drift by a small amount from the final cast. The ridge *field* and its
+//! parameters are exact; the base plug shape is representative.
 //!
 //! When no cleaned scan is loaded (or it can't be parsed), the frontend falls
 //! back to [`proxy_preview_mesh`]: a flat-floor plug proxy textured with the
@@ -14,14 +22,17 @@
 use std::path::Path;
 
 use cf_cap_planes::{CapPlane, parse_cap_planes};
-use cf_cast::{CanalSpec, RingSpec, preview_textured_plug, preview_textured_solid};
-use cf_cast_cli::{SharedScanSdf, load_scan_sdf, parse_centerline_from_prep_toml};
+use cf_cast::{CanalSpec, preview_textured_plug, preview_textured_solid};
+use cf_cast_cli::{
+    SharedScanSdf, load_scan_sdf, parse_centerline_from_prep_toml, resolve_canal_spec,
+};
 use cf_design::{Aabb, Solid};
-use cf_studio_core::{RidgeOptions, RidgeRing};
+use cf_studio_core::RidgeOptions;
 use mesh_types::IndexedMesh;
-use nalgebra::{Point3, Vector3};
+use nalgebra::Point3;
 
 use crate::error::{EngineError, Result};
+use crate::mold::canal_config_from_ridges;
 
 /// Coarse preview cell size + flood-fill resolution (meters). ~2 mm meshes a
 /// small plug in well under a second, so the slider stays interactive.
@@ -113,38 +124,62 @@ pub fn proxy_preview_mesh(ridges: &RidgeOptions) -> IndexedMesh {
 
 /// Map the owned [`RidgeOptions`] onto a `cf_cast::CanalSpec` — the one
 /// unified field the cast applies to the plug + every shell (rings + texture +
-/// side pinch + tip relief + orientation). A disabled `ridges` yields a
-/// feature-free spec (the smooth piece).
+/// side pinch + tip relief + orientation).
+///
+/// Resolves through the EXACT path the cast uses
+/// (`canal_config_from_ridges` → `cf_cast_cli::resolve_canal_spec`), so the
+/// preview's spec is identical to the cast's by construction — no second
+/// hand-maintained mapping to drift. A disabled `ridges` yields a feature-free
+/// spec (the smooth piece) — the cast simply skips the canal entirely in that
+/// case, so a smooth preview matches a smooth plug.
 fn canal_spec_from(o: &RidgeOptions) -> CanalSpec {
-    let mut spec = CanalSpec::iter1();
     if !o.enabled {
+        let mut spec = CanalSpec::iter1();
         spec.rings.clear();
         spec.texture_amp_m = 0.0;
         spec.dsection_depth_m = 0.0;
         spec.suction_bulge_m = 0.0;
         return spec;
     }
-    spec.rings = o.rings.iter().map(ring_spec).collect();
-    spec.texture_amp_m = o.texture_depth_m;
-    spec.texture_pitch_m = o.texture_spacing_m;
-    spec.dsection_depth_m = o.side_pinch_depth_m;
-    spec.suction_bulge_m = o.tip_relief_depth_m;
-    let theta = o.orientation_deg.to_radians();
-    spec.frenulum_dir = Vector3::new(theta.sin(), theta.cos(), 0.0);
-    spec
-}
-
-fn ring_spec(r: &RidgeRing) -> RingSpec {
-    RingSpec {
-        center_frac: r.position_frac,
-        depth_m: r.depth_m,
-        half_width_frac: r.half_width_frac,
-    }
+    resolve_canal_spec(&canal_config_from_ridges(o))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabled_ridges_resolve_to_the_cast_spec_fields() {
+        // The preview spec is composed through the cast's canonical resolver,
+        // so the wizard's values must arrive in the CanalSpec the cast cuts.
+        let o = RidgeOptions {
+            enabled: true,
+            texture_depth_m: 0.0012,
+            texture_spacing_m: 0.007,
+            side_pinch_depth_m: 0.0011,
+            tip_relief_depth_m: 0.0025,
+            orientation_deg: 90.0,
+            ..RidgeOptions::default()
+        };
+        let spec = canal_spec_from(&o);
+        assert!(!spec.rings.is_empty(), "rings carried through");
+        assert!((spec.texture_amp_m - 0.0012).abs() < 1e-12);
+        assert!((spec.texture_pitch_m - 0.007).abs() < 1e-12);
+        assert!((spec.dsection_depth_m - 0.0011).abs() < 1e-12);
+        assert!((spec.suction_bulge_m - 0.0025).abs() < 1e-12);
+        // 90° → frenulum_dir = [sin90, cos90, 0] = [1, 0, 0].
+        assert!((spec.frenulum_dir.x - 1.0).abs() < 1e-9);
+        assert!(spec.frenulum_dir.y.abs() < 1e-9);
+    }
+
+    #[test]
+    fn disabled_ridges_resolve_to_a_smooth_spec() {
+        let spec = canal_spec_from(&RidgeOptions::default());
+        assert!(spec.rings.is_empty(), "no rings when off");
+        assert!(spec.texture_amp_m.abs() < 1e-12);
+        assert!(spec.dsection_depth_m.abs() < 1e-12);
+        assert!(spec.suction_bulge_m.abs() < 1e-12);
+    }
 
     #[test]
     fn proxy_preview_meshes_on_and_off() {

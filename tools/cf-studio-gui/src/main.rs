@@ -35,10 +35,10 @@ use cf_studio_engine::{
 const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
-    StepOutcome, apply_design, apply_design_draft, apply_plug, apply_prep, apply_scan,
-    cell_size_m_for_quality, enumerate_parts, format_molds_summary, format_pour_active,
-    format_pour_plan, nav_state, part_selection_from_checks, pour_countdown, print_step_summary,
-    step_rows,
+    RidgeControls, StepOutcome, apply_design, apply_design_draft, apply_plug, apply_prep,
+    apply_scan, cell_size_m_for_quality, enumerate_parts, format_molds_summary, format_pour_active,
+    format_pour_plan, gate_ridge_options, nav_state, part_selection_from_checks, pour_countdown,
+    print_step_summary, step_rows,
 };
 use mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
@@ -1667,53 +1667,35 @@ fn ring_row_from_ridge(ring: &RidgeRing) -> RingRow {
 
 /// Read the "Shape your piece" ridge controls off the UI + the rings VecModel
 /// into an owned [`RidgeOptions`] (the inverse of [`ring_row_from_ridge`] +
-/// the property getters). Integer UI units convert back to meters/fractions:
-/// percents ÷100, tenths-of-mm ÷10 000 (→ meters).
-///
-/// Each feature has its own toggle: when off, that feature contributes nothing
-/// (rings emptied / depth 0 / orientation 0°), so the user can mix and match —
-/// e.g. grip rings without the fine texture. The master `ridges-enabled` gates
-/// the whole field on top (off → the engine maps to the no-op canal-off cast).
+/// the property getters). Integer UI units convert back to meters/fractions
+/// (percents ÷100, tenths-of-mm ÷10 000 → meters), then the pure, tested
+/// [`gate_ridge_options`] applies the per-feature toggles (off → that feature
+/// contributes nothing). The master `ridges-enabled` gates the whole field on
+/// top (off → the engine maps to the no-op canal-off cast).
 fn ridge_options_from_ui(ui: &AppWindow, rings: &VecModel<RingRow>) -> RidgeOptions {
     let tenths_mm_to_m = |t: i32| f64::from(t) / 10_000.0;
-    let rings = if ui.get_rings_enabled() {
-        (0..rings.row_count())
-            .filter_map(|i| rings.row_data(i))
-            .map(|row| RidgeRing {
-                position_frac: f64::from(row.position_pct) / 100.0,
-                depth_m: tenths_mm_to_m(row.depth_tenths_mm),
-                half_width_frac: f64::from(row.width_pct) / 100.0,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let texture_depth_m = if ui.get_texture_enabled() {
-        tenths_mm_to_m(ui.get_ridge_texture_depth_tenths_mm())
-    } else {
-        0.0
-    };
-    RidgeOptions {
+    let rings = (0..rings.row_count())
+        .filter_map(|i| rings.row_data(i))
+        .map(|row| RidgeRing {
+            position_frac: f64::from(row.position_pct) / 100.0,
+            depth_m: tenths_mm_to_m(row.depth_tenths_mm),
+            half_width_frac: f64::from(row.width_pct) / 100.0,
+        })
+        .collect();
+    gate_ridge_options(RidgeControls {
         enabled: ui.get_ridges_enabled(),
+        rings_enabled: ui.get_rings_enabled(),
         rings,
-        texture_depth_m,
+        texture_enabled: ui.get_texture_enabled(),
+        texture_depth_m: tenths_mm_to_m(ui.get_ridge_texture_depth_tenths_mm()),
         texture_spacing_m: tenths_mm_to_m(ui.get_ridge_texture_spacing_tenths_mm()),
-        side_pinch_depth_m: if ui.get_side_pinch_enabled() {
-            tenths_mm_to_m(ui.get_ridge_side_pinch_tenths_mm())
-        } else {
-            0.0
-        },
-        tip_relief_depth_m: if ui.get_tip_relief_enabled() {
-            tenths_mm_to_m(ui.get_ridge_tip_relief_tenths_mm())
-        } else {
-            0.0
-        },
-        orientation_deg: if ui.get_orientation_enabled() {
-            f64::from(ui.get_ridge_orientation_deg())
-        } else {
-            0.0
-        },
-    }
+        side_pinch_enabled: ui.get_side_pinch_enabled(),
+        side_pinch_depth_m: tenths_mm_to_m(ui.get_ridge_side_pinch_tenths_mm()),
+        tip_relief_enabled: ui.get_tip_relief_enabled(),
+        tip_relief_depth_m: tenths_mm_to_m(ui.get_ridge_tip_relief_tenths_mm()),
+        orientation_enabled: ui.get_orientation_enabled(),
+        orientation_deg: f64::from(ui.get_ridge_orientation_deg()),
+    })
 }
 
 /// Render `mesh` into the shared `texture-preview` image (preserving orbit on

@@ -19,7 +19,9 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use cf_studio_core::{DesignDraft, MoldOutputs, PourPlan, PourStep, Project, Step};
+use cf_studio_core::{
+    DesignDraft, MoldOutputs, PourPlan, PourStep, Project, RidgeOptions, RidgeRing, Step,
+};
 use cf_studio_engine::{
     CastMode, PartId, PartSelection, PieceSide, accept_prep, draft_from_design_toml, load_scan,
 };
@@ -141,6 +143,66 @@ pub fn apply_plug(project: &mut Project, plug: cf_studio_core::PlugDraft) -> Ste
     );
     project.set_plug(plug).map_err(|e| e.to_string())?;
     Ok(message)
+}
+
+/// The "Shape your piece" ridge controls, read off the UI in SI units, plus
+/// the per-feature toggles. Pure input to [`gate_ridge_options`] (the UI/model
+/// reads live in `main.rs`; this keeps the gating logic testable).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RidgeControls {
+    /// Master toggle (the whole ridge feature).
+    pub enabled: bool,
+    /// Grip rings on/off + the ring set.
+    pub rings_enabled: bool,
+    /// The ring set (already in SI units).
+    pub rings: Vec<RidgeRing>,
+    /// Surface texture on/off + its depth / spacing (meters).
+    pub texture_enabled: bool,
+    pub texture_depth_m: f64,
+    pub texture_spacing_m: f64,
+    /// Side pinch on/off + depth (meters).
+    pub side_pinch_enabled: bool,
+    pub side_pinch_depth_m: f64,
+    /// Tip relief on/off + depth (meters).
+    pub tip_relief_enabled: bool,
+    pub tip_relief_depth_m: f64,
+    /// Feature orientation on/off + angle (degrees).
+    pub orientation_enabled: bool,
+    pub orientation_deg: f64,
+}
+
+/// Apply the per-feature toggles to build the owned [`RidgeOptions`]: a feature
+/// that is OFF contributes nothing (rings emptied / depth `0.0` / orientation
+/// `0°`), so the user can mix and match (e.g. grip rings without the fine
+/// texture). The SAME gated value feeds the live preview and the cast, so what
+/// you toggle is what gets cut.
+#[must_use]
+pub fn gate_ridge_options(c: RidgeControls) -> RidgeOptions {
+    RidgeOptions {
+        enabled: c.enabled,
+        rings: if c.rings_enabled { c.rings } else { Vec::new() },
+        texture_depth_m: if c.texture_enabled {
+            c.texture_depth_m
+        } else {
+            0.0
+        },
+        texture_spacing_m: c.texture_spacing_m,
+        side_pinch_depth_m: if c.side_pinch_enabled {
+            c.side_pinch_depth_m
+        } else {
+            0.0
+        },
+        tip_relief_depth_m: if c.tip_relief_enabled {
+            c.tip_relief_depth_m
+        } else {
+            0.0
+        },
+        orientation_deg: if c.orientation_enabled {
+            c.orientation_deg
+        } else {
+            0.0
+        },
+    }
 }
 
 /// Marching-cubes cell size (meters) for the step-4 quality-picker index.
@@ -717,6 +779,78 @@ visible = true
         assert_eq!(dead.urgency, 2);
         assert!(dead.text.contains("time's up"), "got: {}", dead.text);
         assert_eq!(pour_countdown(-10).urgency, 2, "negative = expired");
+    }
+
+    fn full_controls() -> RidgeControls {
+        RidgeControls {
+            enabled: true,
+            rings_enabled: true,
+            rings: vec![RidgeRing {
+                position_frac: 0.4,
+                depth_m: 0.002,
+                half_width_frac: 0.04,
+            }],
+            texture_enabled: true,
+            texture_depth_m: 0.0015,
+            texture_spacing_m: 0.008,
+            side_pinch_enabled: true,
+            side_pinch_depth_m: 0.0015,
+            tip_relief_enabled: true,
+            tip_relief_depth_m: 0.003,
+            orientation_enabled: true,
+            orientation_deg: 30.0,
+        }
+    }
+
+    #[test]
+    fn gate_ridge_options_passes_everything_when_all_on() {
+        let o = gate_ridge_options(full_controls());
+        assert!(o.enabled);
+        assert_eq!(o.rings.len(), 1);
+        assert_eq!(o.texture_depth_m, 0.0015);
+        assert_eq!(o.side_pinch_depth_m, 0.0015);
+        assert_eq!(o.tip_relief_depth_m, 0.003);
+        assert_eq!(o.orientation_deg, 30.0);
+    }
+
+    #[test]
+    fn gate_ridge_options_zeroes_each_disabled_feature_independently() {
+        // Each toggle off drops ONLY its own feature — the others pass through.
+        let rings_off = gate_ridge_options(RidgeControls {
+            rings_enabled: false,
+            ..full_controls()
+        });
+        assert!(rings_off.rings.is_empty(), "rings dropped");
+        assert_eq!(rings_off.texture_depth_m, 0.0015, "texture untouched");
+
+        let texture_off = gate_ridge_options(RidgeControls {
+            texture_enabled: false,
+            ..full_controls()
+        });
+        assert_eq!(texture_off.texture_depth_m, 0.0, "texture dropped");
+        assert_eq!(texture_off.rings.len(), 1, "rings untouched");
+        // Spacing is carried regardless (inert when depth is 0).
+        assert_eq!(texture_off.texture_spacing_m, 0.008);
+
+        let pinch_off = gate_ridge_options(RidgeControls {
+            side_pinch_enabled: false,
+            ..full_controls()
+        });
+        assert_eq!(pinch_off.side_pinch_depth_m, 0.0);
+        assert_eq!(pinch_off.tip_relief_depth_m, 0.003, "tip relief untouched");
+
+        let relief_off = gate_ridge_options(RidgeControls {
+            tip_relief_enabled: false,
+            ..full_controls()
+        });
+        assert_eq!(relief_off.tip_relief_depth_m, 0.0);
+
+        let orient_off = gate_ridge_options(RidgeControls {
+            orientation_enabled: false,
+            ..full_controls()
+        });
+        assert_eq!(orient_off.orientation_deg, 0.0);
+        assert_eq!(orient_off.side_pinch_depth_m, 0.0015, "pinch untouched");
     }
 
     #[test]

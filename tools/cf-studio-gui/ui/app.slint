@@ -159,7 +159,10 @@ component StepBox inherits HorizontalLayout {
         // silently dropped by a later Continue / Use this design / Make molds.
         edited => {
             if (self.text != "") {
-                root.value = root.clamp(self.text.to-float());
+                // Keep `value` current per keystroke but do NOT clamp here —
+                // clamping mid-type snaps the field to the bound on overshoot
+                // (jarring). The value is clamped on commit (Enter / blur / +-).
+                root.value = self.text.to-float();
                 root.pending = true;
             }
         }

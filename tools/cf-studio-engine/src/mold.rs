@@ -149,7 +149,7 @@ fn generate_selected_molds(
 /// `CanalSpec::iter1` fallbacks). `orientation_deg` maps to a frenulum
 /// direction in the channel's cross-section: `θ → [sin θ, cos θ, 0]`, so
 /// `0°` is the validated `[0, 1, 0]` default.
-fn canal_config_from_ridges(ridges: &RidgeOptions) -> CanalConfig {
+pub(crate) fn canal_config_from_ridges(ridges: &RidgeOptions) -> CanalConfig {
     if !ridges.enabled {
         return CanalConfig::default();
     }
