@@ -2,11 +2,11 @@
 //!
 //! Maps the owned [`RidgeOptions`] (interior canal) / [`ShellRidgeOptions`]
 //! (exterior shell rings) onto a `cf_cast::CanalSpec` and renders a coarse
-//! textured capsule via [`cf_cast::preview_textured_capsule`]. The proxy is a
+//! textured capsule via [`cf_cast::preview_textured_plug`]. The proxy is a
 //! fixed representative tube — it shows the *pattern* the knobs produce, fast
 //! enough to update live; the real part is cast at full detail.
 
-use cf_cast::{CanalSpec, RingSpec, preview_textured_capsule};
+use cf_cast::{CanalSpec, RingSpec, preview_textured_plug};
 use cf_studio_core::{RidgeOptions, ShellRidgeOptions};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
@@ -43,7 +43,7 @@ pub fn texture_preview_mesh(
     } else {
         (smooth_spec(), PreviewShowing::Smooth)
     };
-    let mesh = preview_textured_capsule(
+    let mesh = preview_textured_plug(
         &spec,
         PREVIEW_RADIUS_M,
         PREVIEW_HALF_HEIGHT_M,

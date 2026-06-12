@@ -1,8 +1,9 @@
 //! Live texture preview — a coarse, representative textured-proxy mesh for a
 //! frontend's "tune the ridges" UI (Cendrillon's Texture step).
 //!
-//! This is **not** a cast artifact: it textures a simple capsule proxy with
-//! the *same* canal field the cast applies (so the ridge pattern matches what
+//! This is **not** a cast artifact: it textures a simple plug-shaped proxy
+//! (flat floor, domed top) with the *same* canal field the cast applies (so
+//! the ridge pattern matches what
 //! a real cast produces), but at a coarse cell size so it re-meshes in
 //! milliseconds — fast enough to update live as the user drags a slider. The
 //! real part is cast at full detail by the normal pipeline.
@@ -10,30 +11,37 @@
 use cf_design::{Aabb, Solid};
 use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
 use mesh_types::IndexedMesh;
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
 
 use crate::canal::{CanalSpec, build_canal_plug};
 
 /// MC grid padding (matches the production mesher's `GRID_PADDING_CELLS`).
 const PREVIEW_GRID_PADDING_CELLS: usize = 2;
 
-/// Mesh a Z-aligned capsule (radius / half-height in meters) textured with
-/// `spec`'s canal field, at `cell_size_m` marching-cubes resolution.
+/// Mesh a Z-aligned **plug proxy** (radius / half-height in meters) textured
+/// with `spec`'s canal field, at `cell_size_m` marching-cubes resolution.
+///
+/// The proxy is a cylinder with a **flat bottom** (z = −`half_height_m`, the
+/// mouth / cap-plane floor, where the canal frame's `frac = 0` sits) and a
+/// **domed top** (a hemisphere, the deep end) — resembling the real plug far
+/// better than a both-ends-rounded capsule.
 ///
 /// Reuses [`build_canal_plug`] — the exact field the cast composes — so the
 /// rings / texture / pinch / relief / orientation render faithfully. Pass a
 /// coarse `cell_size_m` (≈1.5–2 mm) for an interactive, near-instant preview;
 /// a feature-free `spec` (no rings, zero amplitudes) yields the smooth proxy.
 #[must_use]
-pub fn preview_textured_capsule(
+pub fn preview_textured_plug(
     spec: &CanalSpec,
     radius_m: f64,
     half_height_m: f64,
     cell_size_m: f64,
 ) -> IndexedMesh {
-    let body = Solid::capsule(radius_m, half_height_m);
+    // Flat-bottomed cylinder + a top hemisphere dome = a plug-shaped proxy.
+    let body = Solid::cylinder(radius_m, half_height_m)
+        .union(Solid::sphere(radius_m).translate(Vector3::new(0.0, 0.0, half_height_m)));
     let centerline = vec![
-        Point3::new(0.0, 0.0, -half_height_m),
+        Point3::new(0.0, 0.0, -half_height_m), // flat floor = mouth (frac 0)
         Point3::new(0.0, 0.0, half_height_m),
     ];
     let textured = build_canal_plug(&body, &centerline, None, spec);
@@ -67,15 +75,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn smooth_spec_meshes_a_clean_capsule() {
-        // A feature-free spec → a plain capsule (no radial modulation).
+    fn smooth_spec_meshes_a_clean_plug() {
+        // A feature-free spec → a plain plug proxy (no radial modulation).
         let mut spec = CanalSpec::iter1();
         spec.rings.clear();
         spec.texture_amp_m = 0.0;
         spec.dsection_depth_m = 0.0;
         spec.suction_bulge_m = 0.0;
-        let mesh = preview_textured_capsule(&spec, 0.010, 0.040, 0.002);
-        assert!(!mesh.vertices.is_empty(), "the capsule meshes");
+        let mesh = preview_textured_plug(&spec, 0.010, 0.040, 0.002);
+        assert!(!mesh.vertices.is_empty(), "the proxy meshes");
         // Radius is ~10 mm everywhere in the cylindrical mid-section.
         let mid: Vec<f64> = mesh
             .vertices
@@ -91,7 +99,7 @@ mod tests {
     fn rings_modulate_the_preview_surface() {
         // The default iter1 rings should leave a visible radial dip.
         let spec = CanalSpec::iter1();
-        let mesh = preview_textured_capsule(&spec, 0.010, 0.040, 0.0015);
+        let mesh = preview_textured_plug(&spec, 0.010, 0.040, 0.0015);
         let radii: Vec<f64> = mesh
             .vertices
             .iter()
