@@ -1362,12 +1362,15 @@ impl<P: DiffPolicy> JointTarget<P> {
     /// **standard** `eps` and a single `lr ~ 0.03` (both the relative-`μ` and the
     /// linear-`θ` steps are `O(1)`). See `examples/joint_inverse_design.rs`.
     ///
-    /// Note: the **load-bearing** conditioning for the joint loop is the internal
-    /// log-μ reparametrization (it lets one `lr` serve the `3e4`-scale `μ` and the
-    /// `O(1)` `θ`, and already lifts the `p`-space gradient near/above the standard
-    /// `eps`); the `loss_scale` lever here is additional headroom, not strictly
-    /// required for convergence (unlike the single-axis policy target, where the
-    /// signed-parameter case makes `loss_scale` itself load-bearing).
+    /// Note on conditioning: the log-μ reparametrization is what lets one `lr` serve
+    /// the `3e4`-scale `μ` and the `O(1)` `θ` (relative vs linear steps), and it
+    /// already lifts the `p`-space gradient near/above the standard `eps`, so the
+    /// `loss_scale` lever here is additional headroom rather than strictly required
+    /// (unlike the single-axis policy target, where the signed-parameter case makes
+    /// `loss_scale` itself the conditioning lever). The under-determination (θ can
+    /// compensate for a stuck μ) prevents a clean negative control that isolates the
+    /// log-μ lever, so log-μ + `loss_scale` ship as a unit; that both axes actually
+    /// move is shown directly by the recovery gate.
     #[must_use]
     pub fn recommended_normalized(&self, residual_scale: f64) -> Normalized<'_> {
         Normalized::with_residual_scale(self, residual_scale, false)

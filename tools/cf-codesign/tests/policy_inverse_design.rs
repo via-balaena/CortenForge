@@ -173,4 +173,22 @@ fn normalization_is_load_bearing() {
          got |z-tgt| {}",
         (z_final - target_z).abs()
     );
+    // Verify the STATED mechanism (not just the symptom): the raw loss gradient has
+    // collapsed below Adam's standard eps, which is why the run stalls. (The
+    // `Normalized` run keeps the gradient above eps via the loss_scale lever.)
+    let final_grad_inf = result
+        .history
+        .last()
+        .expect("nonempty descent history")
+        .grad_inf;
+    eprintln!(
+        "raw final |grad|∞ = {final_grad_inf:.3e} (Adam eps = {:.0e})",
+        cfg.eps
+    );
+    assert!(
+        final_grad_inf < cfg.eps,
+        "raw run should stall because its gradient collapsed below eps, \
+         got |grad|∞ {final_grad_inf} vs eps {}",
+        cfg.eps
+    );
 }

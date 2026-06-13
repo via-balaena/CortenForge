@@ -91,8 +91,11 @@ fn joint_loss_gradient_matches_fd() {
             "{}: grad={:.6e} fd={fd:.6e} rel={rel:.3e} abs={abs:.3e}",
             names[i], grad[i]
         );
+        // 1e-5 (matching the policy-loss test and the underlying gradient blocks);
+        // the composition is linear so it achieves ~5e-7 here, leaving a healthy
+        // margin while still catching a real 1e-5-scale glue regression.
         assert!(
-            rel < 1e-4 || abs < 1e-16,
+            rel < 1e-5 || abs < 1e-16,
             "∂loss/∂{} {} vs FD {fd} (rel {rel:e} abs {abs:e})",
             names[i],
             grad[i]

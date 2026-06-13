@@ -179,8 +179,10 @@ closed-loop FD oracle:
 | `w_vz` | 2.189e-4 | **1.3e-8** (recurrent: velocity feedback; abs 2.9e-12 = FD floor) |
 | `b`    | 1.376e-4 | **4.7e-11** (bias) |
 
-Forward `z_N`: tape == oracle to `<1e-12`. **VERDICT (conjecture §2 confirmed):
-closed-loop BPTT through the state→control recurrence is machine-exact and FREE
+Forward `z_N`: tape == oracle to `<1e-12`. (`w_vz`'s rel ~1e-8 is FD-floor-limited
+— its abs error 2.9e-12 is at the central-FD noise floor; `w_z`/`b` are `<1e-10`.)
+**VERDICT (conjecture §2 confirmed): closed-loop BPTT through the state→control
+recurrence is FD-floor-exact and FREE
 via the tape** — feeding the loop-carried state vars into a policy node (built from
 chassis primitives) and the policy output into `VzControlCarryVjp` is all it takes;
 no hand-rolled `PolicyVjp`. The `w_z`/`w_vz` gradients (which exist *only* through
@@ -221,9 +223,10 @@ normalization buys ~3 orders of deep convergence.
 - *sim-coupling:* `coupled_trajectory_joint_gradient(policy, params, n_steps)` →
   `(z_N, ∂z_N/∂μ_total, [∂z_N/∂θ])` — BOTH the μ design leaf (combined-weights soft
   node) AND the θ policy leaves on one tape, both read from one backward. Gate
-  `tests/coupled_joint_gradient.rs` (both blocks FD-exact; joint θ block ==
-  policy-only **bit-identical** ⇒ the material leaf doesn't perturb policy, fusion
-  sound) + lib smoke.
+  `tests/coupled_joint_gradient.rs` (both blocks FD-exact; the joint θ block
+  matches the policy-only method to machine zero — two deterministic builds, gated
+  at rel <1e-9 — ⇒ the material leaf doesn't perturb policy, fusion sound) + lib
+  smoke.
 - *cf-codesign:* `JointTarget<P>` over `p = [ln μ, θ…]` — owns the **mixed
   conditioning**: positive μ log-reparametrized *internally* (`μ = exp(p[0])`, the
   `μ·(…)` chain rule applied in `evaluate`), signed θ linear, the whole `p`-vector
