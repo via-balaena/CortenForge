@@ -66,7 +66,12 @@
 
 // `register_vjp`, `ift_adjoint`, `time_adjoint`, `fd_wrapper` are all
 // `unimplemented!("skeleton phase 2 — ...")` by design (BF-4 / BF-6 +
-// Phase E+/G deferrals); real bodies land when their phases do.
+// Phase E+/G deferrals); real bodies land when their phases do. Like
+// `ift_adjoint` (superseded by `push_custom` bundling the VJP at forward time),
+// the multi-step `time_adjoint` is realized NOT through this trait method but by
+// composing per-step VJPs on the tape: [`StateStepVjp`] (the prev-state
+// `∂x*/∂(x_prev, v_prev)` primitive) chained across steps via `push_custom`, so
+// one `tape.backward` crosses step boundaries. The trait method stays a stub.
 #![allow(clippy::unimplemented)]
 
 use std::fmt;
@@ -366,5 +371,270 @@ impl VjpOp for MaterialStepVjp {
             grad -= lam * drdp;
         }
         parent_cotans[0].as_mut_slice()[0] += grad;
+    }
+}
+
+// ── StateStepVjp ──────────────────────────────────────────────────────────
+
+/// Custom VJP differentiating `x*` w.r.t. the PREVIOUS step's state
+/// `(x_prev, v_prev)` — the multi-step time-adjoint primitive, the prev-state
+/// sibling of [`NewtonStepVjp`] / [`MaterialStepVjp`].
+///
+/// Where the load/material VJPs each differentiate the converged step w.r.t. a
+/// scalar parameter, this differentiates it w.r.t. the two vector inputs that
+/// thread one step to the next. The previous state enters the backward-Euler
+/// residual `r = (M/Δt²)·(x − x̂) + f_int − f_ext` ONLY through the predictor
+/// `x̂ = x_prev + Δt·v_prev`, so
+///
+/// ```text
+///     ∂r/∂x_prev = −(M/Δt²)·I        ∂r/∂v_prev = −(M/Δt)·I        (diagonal, lumped mass)
+/// ```
+///
+/// and the IFT VJP is the SAME two-step factor-reuse as the siblings — solve
+/// `A · λ = g_free` with the tangent factored at `x_final` (`A` symmetric for
+/// `NeoHookean`), then, because `∂r/∂x_prev` is the symmetric diagonal
+/// `−(M/Δt²)`,
+///
+/// ```text
+///     ∂L/∂x_prev[i] = +(M/Δt²)[i] · λ_full[i]      ∂L/∂v_prev[i] = +(M/Δt)[i] · λ_full[i]
+/// ```
+///
+/// (`λ_full` = λ scattered onto full DOFs, zero on pinned/roller DOFs). ONE
+/// adjoint solve yields BOTH parent cotangents.
+///
+/// **Two parents, in order:** `x_prev` (shape `[n_dof]`) then `v_prev` (shape
+/// `[n_dof]`). The world-pinned base is held at the incoming `x_prev` by the
+/// Dirichlet BC and is a CONSTANT outside the differentiable rollout thread; the
+/// VJP correctly returns zero cotangent on those DOFs (λ is scattered onto the
+/// free DOFs only), so the threaded parents are the FREE state. The free-to-free
+/// block depends on `x_prev` only through the inertia diagonal (`f_int` depends on
+/// the unknown `x`, not on `x_prev`), so the `(M/Δt²)·λ` form is exact for it.
+///
+/// Constructed by `CpuNewtonSolver::state_step_vjp`.
+pub struct StateStepVjp {
+    factor: FactoredFreeTangent,
+    /// Total DOF count, asserted on the cotangent + parent shapes.
+    n_dof: usize,
+    /// Free-DOF full indices (ascending), to gather `g_free` and scatter `λ`.
+    free_dof_indices: Vec<usize>,
+    /// `M/Δt²` per full DOF — the `∂L/∂x_prev` scale on `λ_full`.
+    m_over_dt2: Vec<f64>,
+    /// `M/Δt` per full DOF — the `∂L/∂v_prev` scale on `λ_full`.
+    m_over_dt: Vec<f64>,
+}
+
+impl StateStepVjp {
+    /// Construct a prev-state VJP for one converged Newton step.
+    /// Crate-private: built only by [`CpuNewtonSolver::state_step_vjp`].
+    #[must_use]
+    pub(crate) fn new(
+        factor: FactoredFreeTangent,
+        n_dof: usize,
+        free_dof_indices: Vec<usize>,
+        m_over_dt2: Vec<f64>,
+        m_over_dt: Vec<f64>,
+    ) -> Self {
+        debug_assert_eq!(m_over_dt2.len(), n_dof);
+        debug_assert_eq!(m_over_dt.len(), n_dof);
+        Self {
+            factor,
+            n_dof,
+            free_dof_indices,
+            m_over_dt2,
+            m_over_dt,
+        }
+    }
+}
+
+// Hand-rolled Debug: `factor` (faer factors) doesn't derive Debug; the mass
+// vectors are summarized by length.
+impl fmt::Debug for StateStepVjp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StateStepVjp")
+            .field("op_id", &"sim_soft::StateStepVjp")
+            .field("factor", &"<FactoredFreeTangent>")
+            .field("n_dof", &self.n_dof)
+            .field("n_free", &self.free_dof_indices.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl VjpOp for StateStepVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_soft::StateStepVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong output/parent shape pushed).
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [self.n_dof],
+            "StateStepVjp: cotangent must have shape [{}], got {:?}",
+            self.n_dof,
+            cotangent.shape(),
+        );
+        assert!(
+            parent_cotans.len() == 2
+                && parent_cotans[0].shape() == [self.n_dof]
+                && parent_cotans[1].shape() == [self.n_dof],
+            "StateStepVjp: expected 2 parents (x_prev [{}], v_prev [{}]); got {} parents \
+             with shapes {:?}, {:?}",
+            self.n_dof,
+            self.n_dof,
+            parent_cotans.len(),
+            parent_cotans.first().map(Tensor::shape),
+            parent_cotans.get(1).map(Tensor::shape),
+        );
+
+        // g_free, then solve A · λ = g_free with the factor at x_final.
+        let cot = cotangent.as_slice();
+        let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
+        let n_free = rhs.len();
+        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
+        self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        // rhs now holds λ (free-DOF indexing). Scatter into the parent cotangents
+        // at the free DOFs (pinned/roller DOFs stay 0 — λ is zero there):
+        //   ∂L/∂x_prev = (M/Δt²)·λ_full ,  ∂L/∂v_prev = (M/Δt)·λ_full.
+        let (xprev_cot, vprev_cot) = parent_cotans.split_at_mut(1);
+        let xprev = xprev_cot[0].as_mut_slice();
+        let vprev = vprev_cot[0].as_mut_slice();
+        for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
+            let lam = rhs[k];
+            xprev[full_idx] += self.m_over_dt2[full_idx] * lam;
+            vprev[full_idx] += self.m_over_dt[full_idx] * lam;
+        }
+    }
+}
+
+// ── TrajectoryStepVjp ─────────────────────────────────────────────────────
+
+/// Custom VJP for one converged Newton step differentiated w.r.t. ALL of its
+/// coupled-trajectory inputs at once — the unified multi-step primitive (the
+/// keystone time-adjoint, PR2).
+///
+/// It lets one `tape.backward` cross both step boundaries AND the soft↔rigid
+/// interface over a rollout. It fuses the four single-input adjoints —
+/// [`StateStepVjp`] (prev state),
+/// [`MaterialStepVjp`] (material), and the contact-pose sensitivity
+/// (`CpuNewtonSolver::equilibrium_pose_sensitivity`) — into ONE op so a single
+/// shared adjoint solve `A·λ = g_free` (the factor at `x_final`) produces every
+/// parent cotangent. **Four parents, in order:**
+/// 1. `x_prev` (`[n_dof]`): `∂L/∂x_prev = (M/Δt²)·λ_full`,
+/// 2. `v_prev` (`[n_dof]`): `∂L/∂v_prev = (M/Δt)·λ_full`,
+/// 3. `param`  (`[1]`, a material parameter): `∂L/∂param = −λ^T·(∂r/∂param)_free`,
+/// 4. `pose`   (`[1]`, the contact primitive's translation along a fixed world
+///    direction `dir`): `∂L/∂pose = −λ^T·(∂r/∂pose)_free`.
+///
+/// The pinned base carries zero cotangent on the state parents (λ scatters onto
+/// free DOFs only). Hard-penalty, engaged, stable-within-step active-set scope —
+/// the active set + factor are captured at construction. Constructed by
+/// `CpuNewtonSolver::trajectory_step_vjp`.
+pub struct TrajectoryStepVjp {
+    factor: FactoredFreeTangent,
+    n_dof: usize,
+    free_dof_indices: Vec<usize>,
+    /// `M/Δt²` per full DOF — the `∂L/∂x_prev` scale on `λ_full`.
+    m_over_dt2: Vec<f64>,
+    /// `M/Δt` per full DOF — the `∂L/∂v_prev` scale on `λ_full`.
+    m_over_dt: Vec<f64>,
+    /// `(∂r/∂param)_free` — the material-residual sensitivity, free-DOF order.
+    dr_dparam_free: Vec<f64>,
+    /// `(∂r/∂pose)_free` — the contact-pose-residual sensitivity, free-DOF order.
+    dr_dpose_free: Vec<f64>,
+}
+
+impl TrajectoryStepVjp {
+    /// Crate-private: built only by `CpuNewtonSolver::trajectory_step_vjp`.
+    #[must_use]
+    pub(crate) fn new(
+        factor: FactoredFreeTangent,
+        n_dof: usize,
+        free_dof_indices: Vec<usize>,
+        m_over_dt2: Vec<f64>,
+        m_over_dt: Vec<f64>,
+        dr_dparam_free: Vec<f64>,
+        dr_dpose_free: Vec<f64>,
+    ) -> Self {
+        let n_free = free_dof_indices.len();
+        debug_assert_eq!(m_over_dt2.len(), n_dof);
+        debug_assert_eq!(m_over_dt.len(), n_dof);
+        debug_assert_eq!(dr_dparam_free.len(), n_free);
+        debug_assert_eq!(dr_dpose_free.len(), n_free);
+        Self {
+            factor,
+            n_dof,
+            free_dof_indices,
+            m_over_dt2,
+            m_over_dt,
+            dr_dparam_free,
+            dr_dpose_free,
+        }
+    }
+}
+
+impl fmt::Debug for TrajectoryStepVjp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TrajectoryStepVjp")
+            .field("op_id", &"sim_soft::TrajectoryStepVjp")
+            .field("factor", &"<FactoredFreeTangent>")
+            .field("n_dof", &self.n_dof)
+            .field("n_free", &self.free_dof_indices.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl VjpOp for TrajectoryStepVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_soft::TrajectoryStepVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong output/parent shape pushed).
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [self.n_dof],
+            "TrajectoryStepVjp: cotangent must have shape [{}], got {:?}",
+            self.n_dof,
+            cotangent.shape(),
+        );
+        assert!(
+            parent_cotans.len() == 4
+                && parent_cotans[0].shape() == [self.n_dof]
+                && parent_cotans[1].shape() == [self.n_dof]
+                && parent_cotans[2].shape() == [1]
+                && parent_cotans[3].shape() == [1],
+            "TrajectoryStepVjp: expected 4 parents (x_prev [{n}], v_prev [{n}], param [1], \
+             pose [1]); got {} parents",
+            parent_cotans.len(),
+            n = self.n_dof,
+        );
+
+        // One shared adjoint solve A·λ = g_free.
+        let cot = cotangent.as_slice();
+        let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
+        let n_free = rhs.len();
+        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
+        self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        // rhs now holds λ (free-DOF order).
+
+        // Scalar parents 3,4: −λ^T·(∂r/∂·)_free.
+        let mut grad_param = 0.0_f64;
+        let mut grad_pose = 0.0_f64;
+        for (k, &lam) in rhs.iter().enumerate() {
+            grad_param -= lam * self.dr_dparam_free[k];
+            grad_pose -= lam * self.dr_dpose_free[k];
+        }
+        // State parents 1,2: (M/Δt²)·λ_full and (M/Δt)·λ_full (free DOFs only).
+        let (state, scal) = parent_cotans.split_at_mut(2);
+        let (xprev_c, vprev_c) = state.split_at_mut(1);
+        let xprev = xprev_c[0].as_mut_slice();
+        let vprev = vprev_c[0].as_mut_slice();
+        for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
+            let lam = rhs[k];
+            xprev[full_idx] += self.m_over_dt2[full_idx] * lam;
+            vprev[full_idx] += self.m_over_dt[full_idx] * lam;
+        }
+        scal[0].as_mut_slice()[0] += grad_param;
+        scal[1].as_mut_slice()[0] += grad_pose;
     }
 }

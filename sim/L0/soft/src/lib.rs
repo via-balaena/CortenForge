@@ -58,7 +58,8 @@ pub use contact::{
     NullContact, PenaltyRigidContact, RigidPlane, filter_pair_readouts_to_referenced,
 };
 pub use differentiable::{
-    CpuDifferentiable, Differentiable, MaterialStepVjp, NewtonStepVjp, TapeNodeKey,
+    CpuDifferentiable, Differentiable, MaterialStepVjp, NewtonStepVjp, StateStepVjp, TapeNodeKey,
+    TrajectoryStepVjp,
 };
 pub use element::{Element, Tet4};
 pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};
