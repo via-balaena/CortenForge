@@ -201,6 +201,45 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
     }
 }
 
+/// Build a [`StaggeredCoupling`] (a soft block under a rigid platen) from the
+/// shared coupling parameters — the construction both [`SoftMaterialTarget`] and
+/// [`SoftMaterialTrajectoryTarget`] use. They differ only in the outcome they read
+/// (single-step `vz'` vs trajectory `z_N`), not in how the scene is built.
+//
+// expect: a malformed fixture MJCF / coupling is a caller error surfaced loudly —
+// the canonical fixture idiom, mirroring `sim-coupling`'s tests.
+#[allow(clippy::expect_used, clippy::too_many_arguments)]
+fn build_coupling(
+    mjcf: &str,
+    body: usize,
+    contact_clearance: f64,
+    n_per_edge: usize,
+    edge: f64,
+    mu: f64,
+    dt: f64,
+    kappa: f64,
+    d_hat: f64,
+    rigid_damping: f64,
+) -> StaggeredCoupling {
+    let model = sim_mjcf::load_model(mjcf).expect("co-design coupling fixture: MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model)
+        .expect("co-design coupling fixture: initial forward");
+    StaggeredCoupling::new(
+        model,
+        data,
+        body,
+        contact_clearance,
+        n_per_edge,
+        edge,
+        mu,
+        dt,
+        kappa,
+        d_hat,
+        rigid_damping,
+    )
+}
+
 /// A co-design problem over a soft block's Neo-Hookean stiffness: tune the
 /// material parameter `μ` (with the keystone's `λ = 4μ` tie — i.e. scale the
 /// stiffness at fixed Poisson ratio) so the platen's next-step vertical
@@ -277,18 +316,9 @@ impl SoftMaterialTarget {
     }
 
     /// Build the coupling at stiffness `mu` (`λ = 4μ` via `StaggeredCoupling`).
-    //
-    // expect: a malformed fixture MJCF / coupling is a caller error surfaced
-    // loudly — the canonical fixture idiom, mirroring `sim-coupling`'s tests.
-    #[allow(clippy::expect_used)]
     fn build(&self, mu: f64) -> StaggeredCoupling {
-        let model = sim_mjcf::load_model(&self.mjcf).expect("SoftMaterialTarget: MJCF loads");
-        let mut data = model.make_data();
-        data.forward(&model)
-            .expect("SoftMaterialTarget: initial forward");
-        StaggeredCoupling::new(
-            model,
-            data,
+        build_coupling(
+            &self.mjcf,
             self.body,
             self.contact_clearance,
             self.n_per_edge,
@@ -466,19 +496,9 @@ impl SoftMaterialTrajectoryTarget {
     }
 
     /// Build the coupling at stiffness `mu` (`λ = 4μ` via `StaggeredCoupling`).
-    //
-    // expect: a malformed fixture MJCF / coupling is a caller error surfaced
-    // loudly — the canonical fixture idiom, mirroring `sim-coupling`'s tests.
-    #[allow(clippy::expect_used)]
     fn build(&self, mu: f64) -> StaggeredCoupling {
-        let model =
-            sim_mjcf::load_model(&self.mjcf).expect("SoftMaterialTrajectoryTarget: MJCF loads");
-        let mut data = model.make_data();
-        data.forward(&model)
-            .expect("SoftMaterialTrajectoryTarget: initial forward");
-        StaggeredCoupling::new(
-            model,
-            data,
+        build_coupling(
+            &self.mjcf,
             self.body,
             self.contact_clearance,
             self.n_per_edge,
