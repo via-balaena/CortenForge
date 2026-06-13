@@ -47,6 +47,20 @@ use sim_soft::{
     Vec3, VertexId,
 };
 
+/// Scatter the penalty contact-force-vs-position Jacobian `∂fz/∂x_v = −κ·n̂_z·n̂`
+/// (the z-row of the `−κ·n̂⊗n̂` per-pair Jacobian) onto `slot`, scaled by the
+/// upstream scalar cotangent `c`. Shared by [`ContactForceVjp`] (single-step
+/// crossing) and [`ContactForceTrajVjp`] (the trajectory readout, which adds its
+/// own `∂fz/∂z` term).
+fn scatter_dfz_dxstar(active: &[(usize, Vec3)], kappa: f64, c: f64, slot: &mut [f64]) {
+    for &(v, n) in active {
+        let g = -kappa * n.z;
+        slot[3 * v] += c * g * n.x;
+        slot[3 * v + 1] += c * g * n.y;
+        slot[3 * v + 2] += c * g * n.z;
+    }
+}
+
 /// Chassis-tape [`VjpOp`] adapting a `sim-core` rigid step's response into the
 /// soft autograd tape — the soft↔rigid crossing's rigid half (keystone S4).
 ///
@@ -137,13 +151,7 @@ impl VjpOp for ContactForceVjp {
         );
         let c = cotangent.as_slice()[0];
         let slot = parent_cotans[0].as_mut_slice();
-        for &(v, n) in &self.active {
-            // ∂fz/∂x_v = −κ·n̂_z·n̂ (z-row of the −κ·n̂⊗n̂ contact-force Jacobian).
-            let g = -self.kappa * n.z;
-            slot[3 * v] += c * g * n.x;
-            slot[3 * v + 1] += c * g * n.y;
-            slot[3 * v + 2] += c * g * n.z;
-        }
+        scatter_dfz_dxstar(&self.active, self.kappa, c, slot);
     }
 }
 
@@ -216,15 +224,9 @@ impl VjpOp for ContactForceTrajVjp {
         );
         let c = cotangent.as_slice()[0];
         let (xstar, z) = parent_cotans.split_at_mut(1);
-        let xs = xstar[0].as_mut_slice();
-        for &(v, n) in &self.active {
-            // ∂fz/∂x_v = −κ·n̂_z·n̂.
-            let g = -self.kappa * n.z;
-            xs[3 * v] += c * g * n.x;
-            xs[3 * v + 1] += c * g * n.y;
-            xs[3 * v + 2] += c * g * n.z;
-        }
-        // ∂fz/∂z = +κ·N_active (∂height/∂z = 1).
+        // ∂fz/∂x* = −κ·n̂_z·n̂ (shared with ContactForceVjp).
+        scatter_dfz_dxstar(&self.active, self.kappa, c, xstar[0].as_mut_slice());
+        // ∂fz/∂z = +κ·N_active (∂height/∂z = 1) — the trajectory-only term.
         z[0].as_mut_slice()[0] += c * self.kappa * (self.active.len() as f64);
     }
 }
@@ -936,9 +938,11 @@ impl StaggeredCoupling {
     /// free-body `Δt/m` and damping `a = 1 − Δt·c/m`). See
     /// `docs/keystone/time_adjoint_recon.md`.
     ///
-    /// **Accuracy / scope (penalty R3).** Each per-step factor is machine-exact,
-    /// and the composed gradient matches the full-coupled FD to ~1e-3 while the
-    /// contact is FIRMLY engaged (`sd ≪ d̂`, a stable active set). With penalty
+    /// **Accuracy / scope (penalty R3).** Each per-step factor is machine-exact
+    /// (`TrajectoryStepVjp` is gated against re-solve FD in
+    /// `sim-soft/tests/trajectory_step_vjp.rs`; the rigid carry against sim-core),
+    /// and the composed gradient matches the full-coupled FD to ~3e-4 (rel) while
+    /// the contact is FIRMLY engaged (`sd ≪ d̂`, a stable active set). With penalty
     /// contact, static force balance settles at the band edge (`sd ≈ d̂`, where
     /// the C⁰ force → 0): `z_N(μ)` stays smooth, but the penalty force's
     /// derivative kinks at the active-set boundary, so this per-step
@@ -963,13 +967,16 @@ impl StaggeredCoupling {
     ) -> (f64, f64) {
         assert!(
             param_idx <= 1,
-            "material param index {param_idx} out of range"
+            "material param index {param_idx} out of range (0 = μ, 1 = λ)"
         );
         let n = self.n_vertices;
         let dt = self.cfg.dt;
         let dir = Vec3::new(0.0, 0.0, 1.0);
-        // Rigid carry coefficients: dt/m from the free-body probe; the damping
-        // factor a = 1 − Δt·c/m = 1 − c·(Δt/m).
+        // Rigid carry coefficients: dt/m from the free-body probe (machine-gated
+        // in tests/rigid_step_vjp.rs); the damping factor a = 1 − Δt·c/m = 1 −
+        // c·(Δt/m). The full carry vz' = a·vz − (Δt/m)·fz + Δt·g reproduces the
+        // real sim-core damped step to ~1e-16 (verified during development); a
+        // regression is caught by the tightened end-to-end gate.
         let dt_over_m = self.rigid_vz_response(0.0).1;
         let a = 1.0 - self.rigid_damping * dt_over_m;
 

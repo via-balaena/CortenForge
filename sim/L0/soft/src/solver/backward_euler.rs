@@ -2024,20 +2024,7 @@ where
     #[must_use]
     pub fn equilibrium_pose_sensitivity(&self, x_final: &[f64], dt: f64, dir: Vec3) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
-        // (∂r/∂δ)_full — the plane pose enters the residual only through
-        // the contact term, so this is the active-set sum.
-        let positions = slice_to_vec3s(x_final);
-        let pairs = self.contact.active_pairs(&self.mesh, &positions);
-        let mut dr_dpose = vec![0.0_f64; self.n_dof];
-        for pair in &pairs {
-            let g = self.contact.pose_residual_derivative(pair, &positions, dir);
-            for &(vid, d) in &g.contributions {
-                let v = vid as usize;
-                dr_dpose[3 * v] += d.x;
-                dr_dpose[3 * v + 1] += d.y;
-                dr_dpose[3 * v + 2] += d.z;
-            }
-        }
+        let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
         // Solve A·w_free = −(∂r/∂δ)_free reusing the tangent at x_final.
         let factor = self.factor_at_position(x_final, dt, 0.0);
         let mut rhs: Vec<f64> = self
@@ -2110,6 +2097,28 @@ where
             sensitivity[full_idx] = rhs[k];
         }
         sensitivity
+    }
+
+    /// `(∂r/∂δ)_full` — the contact-plane pose enters the residual only through
+    /// the contact term, so this is the active-pair sum of
+    /// [`ContactModel::pose_residual_derivative`](crate::contact::ContactModel::pose_residual_derivative)
+    /// for a unit rigid translation along `dir`. Shared (kept in lockstep) by
+    /// [`Self::equilibrium_pose_sensitivity`] (forward; negates + solves) and
+    /// [`Self::trajectory_step_vjp`] (reverse; gathers the free DOFs).
+    fn assemble_pose_residual_grad(&self, x_final: &[f64], dir: Vec3) -> Vec<f64> {
+        let positions = slice_to_vec3s(x_final);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        let mut dr_dpose = vec![0.0_f64; self.n_dof];
+        for pair in &pairs {
+            let g = self.contact.pose_residual_derivative(pair, &positions, dir);
+            for &(vid, d) in &g.contributions {
+                let v = vid as usize;
+                dr_dpose[3 * v] += d.x;
+                dr_dpose[3 * v + 1] += d.y;
+                dr_dpose[3 * v + 2] += d.z;
+            }
+        }
+        dr_dpose
     }
 
     /// `(∂r/∂p_k)_full = ∂f_int/∂p_k` — the `f_int` assembly
@@ -2288,20 +2297,9 @@ where
         // Material RHS (∂r/∂param)_free (S5).
         let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
         let dr_dparam_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
-        // Contact-pose RHS (∂r/∂pose)_free (S3): plane pose enters only the
-        // contact term, summed over the active set.
-        let positions = slice_to_vec3s(x_final);
-        let pairs = self.contact.active_pairs(&self.mesh, &positions);
-        let mut dr_dpose = vec![0.0_f64; self.n_dof];
-        for pair in &pairs {
-            let g = self.contact.pose_residual_derivative(pair, &positions, dir);
-            for &(vid, d) in &g.contributions {
-                let v = vid as usize;
-                dr_dpose[3 * v] += d.x;
-                dr_dpose[3 * v + 1] += d.y;
-                dr_dpose[3 * v + 2] += d.z;
-            }
-        }
+        // Contact-pose RHS (∂r/∂pose)_free (S3) — shared with the forward
+        // `equilibrium_pose_sensitivity` (kept in lockstep).
+        let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
         let dr_dpose_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect();
         // State scales (PR1) + the shared factor at x_final.
         let dt2 = dt * dt;

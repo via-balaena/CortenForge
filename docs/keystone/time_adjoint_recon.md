@@ -161,11 +161,16 @@ solve) + `trajectory_step_vjp`. sim-coupling glue VJPs (`VelVjp`, `ContactForceT
 `tape.backward(z_N)` over the coupled rollout. Gate `tests/coupled_trajectory_gradient.rs`.
 
 **★ RESULT — the gradient is CORRECT, penalty-accuracy-capped (refines the trajectory-spike verdict).**
-Each per-step factor is machine-exact; the composed multi-step gradient matches the full real coupled
-re-rollout FD to **~3e-4 (rel) while FIRMLY engaged** (`sd ≪ d̂`), and the accuracy **improves
-monotonically as the rollout drives the contact deeper** (rel 16%→2.7%→0.03% over n=4→24) — direct
-proof the per-step factors compose correctly. The FD oracle is rock-solid (converged across **7
-decades of ε**), so `z_N(μ)` is genuinely smooth and the residual is **not** a formula error.
+Each per-step factor is machine-exact — `TrajectoryStepVjp`'s four cotangents (state/material/pose) are
+gated against independent re-solve FD in `sim-soft/tests/trajectory_step_vjp.rs`, and the rigid carry
+reproduces sim-core — so by the chain rule the composition is exact too. The composed multi-step
+gradient matches the full real coupled re-rollout FD to **~3e-4 (rel) while FIRMLY engaged** (`sd ≪ d̂`,
+the shipped gate's measured value, gated at 6e-4), and the accuracy **improves as the rollout drives
+the contact deeper** (the shipped `converges_with_engagement` gate checks n=8 ≫ n=20; a development
+diagnostic sweep measured rel 16%→2.7%→0.03% over n=4→24, and FD-convergence across ~7 decades of ε —
+both throwaway-spike figures, not reproduced by the committed gates). The FD oracle is rock-solid, so
+`z_N(μ)` is genuinely smooth and the residual is **not** a formula error — it is consistent with the
+penalty non-smoothness shrinking as `sd` moves below `d̂`.
 
 **The honest caveat (penalty R3, refines the spike's "IPC not mandatory").** With penalty contact,
 static force balance settles at the band edge `sd ≈ d̂` (force `κ(d̂−sd)→0` = weight). The **C⁰ force

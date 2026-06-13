@@ -19,7 +19,7 @@
 //! smooth (the FD converges across decades of ε), but its derivative kinks at the
 //! active-set boundary, so a per-step linearization (active set frozen at μ) is
 //! exact only while the contact is firmly engaged (`sd ≪ d̂`). The gradient is
-//! validated there to ~1e-3; it degrades as the platen reaches marginal contact
+//! validated there to ~3e-4 (gated at 6e-4); it degrades as the platen reaches marginal contact
 //! or bounces through make/break events — the documented limit IPC would lift.
 //! The forward dynamics are validated at any length (the tape replays the real
 //! coupled rollout exactly).
@@ -97,16 +97,22 @@ fn trajectory_gradient_engaged_matches_full_fd() {
          total(tape)={grad_total:.6e} FD={fd:.6e} rel={rel:.3e}"
     );
     assert!(grad_total.abs() > 1e-9, "gradient implausibly ~0");
+    // Measured engaged residual is ~3.4e-4 (the penalty floor); gate at 6e-4
+    // (~1.75x margin) so a multi-step-Jacobian regression in the glue VJPs —
+    // which the forward rollout, taken from the real `step`, cannot reveal — is
+    // caught rather than absorbed by slack.
     assert!(
-        rel < 2e-3,
+        rel < 6e-4,
         "one-tape total dz_N/dμ {grad_total} disagrees with full-coupled FD {fd} (rel {rel:e})"
     );
 }
 
 /// The gradient ACCURACY improves as the rollout drives the contact from its
-/// initial light touch into firm engagement — direct evidence the per-step
-/// factors compose correctly (the residual is the penalty non-smoothness, which
-/// shrinks as `sd` moves below `d̂`, not a formula error).
+/// initial light touch into firm engagement — consistent with the residual being
+/// the penalty non-smoothness (which shrinks as `sd` moves below `d̂`), not a
+/// formula error. (Formula correctness rests on the per-step machine-exact gates:
+/// the soft `TrajectoryStepVjp` in `sim-soft/tests/trajectory_step_vjp.rs`; this
+/// trend is corroborating, not proof.)
 #[test]
 fn trajectory_gradient_converges_with_engagement() {
     let fd_rel = |n: usize| {
@@ -120,7 +126,7 @@ fn trajectory_gradient_converges_with_engagement() {
     let deep = fd_rel(20); // firmly engaged
     eprintln!("rel: n=8 {early:.3e} → n=20 {deep:.3e}");
     assert!(
-        deep < early && deep < 2e-3,
-        "deep-engagement gradient ({deep:e}) should be more accurate than the early touch ({early:e})"
+        deep < 0.5 * early && deep < 6e-4,
+        "deep-engagement gradient ({deep:e}) should be markedly more accurate than the early touch ({early:e})"
     );
 }
