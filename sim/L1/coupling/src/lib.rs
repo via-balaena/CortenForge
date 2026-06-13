@@ -302,9 +302,12 @@ impl VjpOp for VzCarryVjp {
 }
 
 /// Chassis-tape [`VjpOp`] for the rigid platen's position update
-/// `z' = z + Δt·vz'` along a trajectory — the rigid carry's position half.
-/// Parents `[z, vz_next]` (`[1]`, `[1]`), output `z'` (`[1]`);
-/// `∂z'/∂z = 1`, `∂z'/∂vz_next = Δt`.
+/// `z' = z + Δt·vz` along a trajectory — the rigid carry's position half. The
+/// velocity is the PRE-update `vz` (the step's starting velocity), NOT the freshly
+/// updated `vz'`: sim-core integrates position with the old velocity, so this step's
+/// contact force reaches the height only on the NEXT step (verified `z_next ==
+/// z + dt·vz_prev` to machine zero). Parents `[z, vz]` (`[1]`, `[1]`), output `z'`
+/// (`[1]`); `∂z'/∂z = 1`, `∂z'/∂vz = Δt`.
 #[derive(Clone, Copy, Debug)]
 struct ZCarryVjp {
     dt: f64,
@@ -323,7 +326,7 @@ impl VjpOp for ZCarryVjp {
                 && parent_cotans.len() == 2
                 && parent_cotans[0].shape() == [1]
                 && parent_cotans[1].shape() == [1],
-            "ZCarryVjp: expected cot [1] + 2 scalar parents (z, vz_next)",
+            "ZCarryVjp: expected cot [1] + 2 scalar parents (z, vz)",
         );
         let c = cotangent.as_slice()[0];
         parent_cotans[0].as_mut_slice()[0] += c;
@@ -552,8 +555,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `self` — it reconstructs a scratch `Data` at the current `(qpos, qvel)`,
     /// so it is a pure probe of the rigid step's response to an applied force
     /// (the rigid factor `∂s'/∂xfrc` of the coupled-step Jacobian). For the
-    /// free-body platen under semi-implicit Euler this response is analytically
-    /// `∂vz'/∂fz = dt/m`, `∂z'/∂fz = dt²/m`.
+    /// free-body platen the velocity response is analytically `∂vz'/∂fz = dt/m`
+    /// (the quantity actually consumed). The single-step height response is `0`, not
+    /// `dt²/m`: sim-core integrates position with the step's STARTING velocity, so the
+    /// force reaches the height only on the next step (see `ZCarryVjp`).
     ///
     /// The scratch reproduces the current `(qpos, qvel)` only — faithful for the
     /// keystone scene (a free-joint body with no actuators, `ctrl`, `act`, or
@@ -982,9 +987,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `[x_prev, v_prev, p, z_prev]` (the prev soft state, the material param, and
     /// the plane height `z_prev − clearance`); the next velocity
     /// `v = (x* − x_prev)/Δt` (`VelVjp`), the contact force
-    /// `fz(x*, z_prev)` (`ContactForceTrajVjp`), and the rigid semi-implicit
-    /// step `vz' = a·vz − (Δt/m)·fz` (`VzCarryVjp`), `z' = z + Δt·vz'`
-    /// (`ZCarryVjp`) chain the rigid state forward. `tape.backward(z_N)` then
+    /// `fz(x*, z_prev)` (`ContactForceTrajVjp`), and the rigid carry
+    /// `vz' = a·vz − (Δt/m)·fz` (`VzCarryVjp`), `z' = z + Δt·vz`
+    /// (`ZCarryVjp`, position integrated with the step's STARTING velocity — see
+    /// its doc) chain the rigid state forward. `tape.backward(z_N)` then
     /// accumulates every per-step ∂/∂p (direct material + the state/contact/rigid
     /// feedback) into `p`. FD-validated against the full real coupled re-rollout.
     ///
@@ -1109,7 +1115,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let z_next = self.data.xpos[self.body].z;
             let vz_next = self.data.qvel[2];
 
-            // Rigid carry nodes: vz' = a·vz − (Δt/m)·fz; z' = z + Δt·vz'.
+            // Rigid carry nodes: vz' = a·vz − (Δt/m)·fz; z' = z + Δt·vz (the OLD
+            // velocity — sim-core integrates position with the pre-update velocity,
+            // so this step's contact force reaches z only NEXT step; verified
+            // `z_next == z + dt·vz_prev` to machine zero). The z-update's velocity
+            // parent is therefore `vz_var` (vz at the step's start), NOT the
+            // freshly-updated `vz_next_var`.
             let vz_next_var = tape.push_custom(
                 &[vz_var, fz_var],
                 Tensor::from_slice(&[vz_next], &[1]),
@@ -1119,7 +1130,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 }),
             );
             let z_next_var = tape.push_custom(
-                &[z_var, vz_next_var],
+                &[z_var, vz_var],
                 Tensor::from_slice(&[z_next], &[1]),
                 Box::new(ZCarryVjp { dt }),
             );

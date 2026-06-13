@@ -6,14 +6,15 @@
 //! across engagement depths — confirming the generic refactor + IPC contact + the
 //! per-pair-curvature gradient factors (PR2) compose correctly for one step.
 //!
-//! ## Open item (focused follow-up, see `docs/ipc/recon.md` §9)
-//! The MULTI-step coupled trajectory gradient with IPC is much better than penalty
-//! (penalty degraded 5–25% through marginal/bouncing contact; IPC reaches ~0.3% at
-//! a well-chosen κ) but is **not yet machine-clean** in this marginally-engaged
-//! falling-platen scene (the platen weight balances the barrier near `d̂`). Single
-//! step is machine-exact and the forward rollout is exact, so the residual is a
-//! multi-step-only, IPC-only effect under investigation. `diag_ipc_multi_step_residual`
-//! (ignored) reproduces it for the debugging pass.
+//! ## Multi-step gradient (resolved — `docs/ipc/recon.md` §9)
+//! The MULTI-step coupled trajectory gradient with IPC is now MACHINE-EXACT through
+//! the contact make/break event (`ipc_multi_step_gradient_matches_fd`), across a κ
+//! sweep. The earlier 0.3–7% IPC residual (and penalty's 5–25%) was an off-by-one in
+//! the rigid position carry — sim-core integrates the platen height with the step's
+//! STARTING velocity, so a step's contact force reaches `z` only NEXT step, but
+//! `ZCarryVjp` had wired `z` to the freshly-updated `vz'`. It was never an IPC effect
+//! (penalty shared it); IPC's distinct contributions are the machine-exact
+//! single-step gradient and structural non-penetration.
 
 #![allow(clippy::expect_used)]
 
@@ -73,14 +74,14 @@ fn ipc_single_step_gradient_matches_fd() {
     }
 }
 
-/// REPRO for the focused follow-up (recon §9): the multi-step IPC trajectory
-/// gradient vs full-coupled FD across a κ sweep. Single-step is machine-exact and
-/// the forward is exact, yet the composed multi-step gradient retains a residual
-/// (best ~0.3% at κ≈3e3; 7% at κ=3e4) in this marginally-engaged scene. Run with
-/// `--ignored` during the debugging pass.
+/// The headline gate: the MULTI-step coupled trajectory gradient `dz_N/dμ` with IPC
+/// matches the full-coupled FD oracle to MACHINE precision across a κ sweep, over a
+/// 90-step rollout that descends through the contact make/break boundary. This is the
+/// regime the keystone time-adjoint reported as penalty's 5–25% degradation; with the
+/// rigid position-carry off-by-one fixed it is machine-exact (the residual was that
+/// bug, not penalty's C⁰ kink — shared with penalty, see `coupled_trajectory_gradient.rs`).
 #[test]
-#[ignore]
-fn diag_ipc_multi_step_residual() {
+fn ipc_multi_step_gradient_matches_fd() {
     let n = 90;
     for &kappa in &[3.0e4_f64, 3.0e3, 1.0e3, 3.0e2] {
         let total = build_k(MU0, kappa)
@@ -100,9 +101,11 @@ fn diag_ipc_multi_step_residual() {
             z
         };
         let fd = (roll(MU0 + eps) - roll(MU0 - eps)) / (2.0 * eps);
-        eprintln!(
-            "κ={kappa:>7.0}: total(tape)={total:.4e} FD={fd:.4e} rel={:.3e}",
-            (total - fd).abs() / fd.abs().max(1e-30)
+        let rel = (total - fd).abs() / fd.abs().max(1e-30);
+        eprintln!("κ={kappa:>7.0}: total(tape)={total:.4e} FD={fd:.4e} rel={rel:.3e}");
+        assert!(
+            total.abs() > 1e-9 && rel < 1e-6,
+            "IPC multi-step dz_N/dμ vs full-coupled FD at κ={kappa}: rel {rel:e}"
         );
     }
 }

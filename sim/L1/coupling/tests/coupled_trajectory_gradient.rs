@@ -14,15 +14,17 @@
 //! oracle (it re-runs the real Newton solves and sim-core steps), in the
 //! deeply-engaged, stable-active-set regime the keystone is scoped to.
 //!
-//! **Scope (penalty R3).** With penalty contact, static force balance settles at
-//! the band edge (`sd ≈ d̂`, where the C⁰ force → 0). The C⁰ force keeps `z_N(μ)`
-//! smooth (the FD converges across decades of ε), but its derivative kinks at the
-//! active-set boundary, so a per-step linearization (active set frozen at μ) is
-//! exact only while the contact is firmly engaged (`sd ≪ d̂`). The gradient is
-//! validated there to ~3e-4 (gated at 6e-4); it degrades as the platen reaches marginal contact
-//! or bounces through make/break events — the documented limit IPC would lift.
-//! The forward dynamics are validated at any length (the tape replays the real
-//! coupled rollout exactly).
+//! **Accuracy.** The composed gradient is MACHINE-EXACT (~3e-8 rel) at every
+//! rollout length and engagement depth — light touch, firm engagement, and through
+//! the contact make/break event alike. The earlier ~3e-4 "penalty floor" (and the
+//! 5–25% make/break degradation the keystone time-adjoint reported) was an
+//! off-by-one in the rigid position carry, NOT penalty non-smoothness: sim-core
+//! integrates the platen height with the step's STARTING velocity
+//! (`z_{k+1} = z_k + Δt·vz_k`), so this step's contact force reaches `z` only on the
+//! NEXT step, but `ZCarryVjp` had wired the height to the freshly-updated `vz'`
+//! (`docs/ipc/recon.md` §9). With the carry corrected the forward — already exact,
+//! since the tape replays the real `step` values — is unchanged, and the gradient
+//! now matches the full-coupled FD to machine precision for BOTH penalty and IPC.
 
 #![allow(clippy::expect_used)]
 
@@ -97,24 +99,24 @@ fn trajectory_gradient_engaged_matches_full_fd() {
          total(tape)={grad_total:.6e} FD={fd:.6e} rel={rel:.3e}"
     );
     assert!(grad_total.abs() > 1e-9, "gradient implausibly ~0");
-    // Measured engaged residual is ~3.4e-4 (the penalty floor); gate at 6e-4
-    // (~1.75x margin) so a multi-step-Jacobian regression in the glue VJPs —
-    // which the forward rollout, taken from the real `step`, cannot reveal — is
-    // caught rather than absorbed by slack.
+    // Machine-exact (~3e-8) since the rigid position-carry off-by-one fix; gate at
+    // 1e-6 so a multi-step-Jacobian regression in the glue VJPs — which the forward
+    // rollout, taken from the real `step`, cannot reveal — is caught immediately.
     assert!(
-        rel < 6e-4,
+        rel < 1e-6,
         "one-tape total dz_N/dμ {grad_total} disagrees with full-coupled FD {fd} (rel {rel:e})"
     );
 }
 
-/// The gradient ACCURACY improves as the rollout drives the contact from its
-/// initial light touch into firm engagement — consistent with the residual being
-/// the penalty non-smoothness (which shrinks as `sd` moves below `d̂`), not a
-/// formula error. (Formula correctness rests on the per-step machine-exact gates:
-/// the soft `TrajectoryStepVjp` in `sim-soft/tests/trajectory_step_vjp.rs`; this
-/// trend is corroborating, not proof.)
+/// The gradient is machine-exact at EVERY rollout length — the initial light touch,
+/// the firmly-engaged middle, AND the marginal/make-break tail alike. Before the
+/// rigid position-carry fix the relative error grew sharply on short rollouts (the
+/// off-by-one's fixed per-step contribution loomed large in the small early
+/// gradient and shrank only by dilution as the rollout lengthened); now it is flat
+/// at the machine floor, confirming the residual was the carry bug, not an
+/// engagement-dependent non-smoothness.
 #[test]
-fn trajectory_gradient_converges_with_engagement() {
+fn trajectory_gradient_machine_exact_at_all_lengths() {
     let fd_rel = |n: usize| {
         let g = build(MU0).coupled_trajectory_material_gradient(n, 0).1
             + 4.0 * build(MU0).coupled_trajectory_material_gradient(n, 1).1;
@@ -122,11 +124,20 @@ fn trajectory_gradient_converges_with_engagement() {
         let fd = (final_z(MU0 + eps, n) - final_z(MU0 - eps, n)) / (2.0 * eps);
         (g - fd).abs() / fd.abs().max(1e-30)
     };
-    let early = fd_rel(8); // light touch
-    let deep = fd_rel(20); // firmly engaged
-    eprintln!("rel: n=8 {early:.3e} → n=20 {deep:.3e}");
-    assert!(
-        deep < 0.5 * early && deep < 6e-4,
-        "deep-engagement gradient ({deep:e}) should be markedly more accurate than the early touch ({early:e})"
-    );
+    for &n in &[5_usize, 8, 20, 40] {
+        // Absolute error too: by n=40 the gradient passes through ~0 (the platen
+        // settles to the band edge), so the relative metric inflates near the
+        // zero-crossing even though the absolute error stays at the machine floor.
+        let g = build(MU0).coupled_trajectory_material_gradient(n, 0).1
+            + 4.0 * build(MU0).coupled_trajectory_material_gradient(n, 1).1;
+        let eps = MU0 * 5e-4;
+        let fd = (final_z(MU0 + eps, n) - final_z(MU0 - eps, n)) / (2.0 * eps);
+        let rel = fd_rel(n);
+        let abs = (g - fd).abs();
+        eprintln!("n={n}: rel={rel:.3e} abs={abs:.3e}");
+        assert!(
+            rel < 1e-6 || abs < 1e-11,
+            "dz_N/dμ at n={n} should be machine-exact vs full-coupled FD, got rel {rel:e} abs {abs:e}"
+        );
+    }
 }

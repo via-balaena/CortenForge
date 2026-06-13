@@ -181,18 +181,64 @@ non-penetration vs smoothness each buy — but the deliverable is IPC.
 - **PR2 ✅ committed `a74040cf`:** the coupling's contact-force gradient factors use
   per-pair curvature `cᵥ = n̂ᵀ·H·n̂` (κ penalty / κ·b'' IPC). Behavior-preserving
   (all penalty gates unchanged); varying-cᵥ unit-tested.
-- **PR3 ◑ PARTIAL (this commit):** `StaggeredCoupling<C = PenaltyRigidContact>` made
-  generic over the contact via the local `PlaneContact` bridge trait — penalty
+- **PR3 ✅ (generic coupling on IPC):** `StaggeredCoupling<C = PenaltyRigidContact>`
+  made generic over the contact via the local `PlaneContact` bridge trait — penalty
   default (all gates unchanged), IPC opt-in. **Single-step IPC coupled gradient is
-  machine-exact** (rel 2e-9), forward rollout exact, non-penetration holds. The
-  HEADLINE (multi-step make/break gradient clean) is **NOT yet fully delivered** —
-  see §9.
+  machine-exact** (rel 2e-9), forward rollout exact, non-penetration holds.
+- **PR4 ✅ (the multi-step gradient — headline):** the make/break multi-step gradient
+  is now MACHINE-EXACT for both penalty and IPC after fixing the rigid position-carry
+  off-by-one (§9). This delivered the headline AND fixed the merged keystone
+  time-adjoint's reported degradation — which turned out to be the carry bug, not the
+  C⁰ kink. The forward is unchanged (a Jacobian-only fix).
 
-## 9. OPEN — the multi-step IPC trajectory gradient residual (focused follow-up)
+## 9. RESOLVED — the multi-step gradient residual was a rigid-carry off-by-one (2026-06-13)
 
-**Symptom.** The composed multi-step coupled trajectory gradient `dz_N/dμ` with IPC
-matches the full-coupled FD oracle to only ~0.3–7% (κ-dependent, best ~0.3% at
-κ≈3e3), NOT machine-clean — though far better than penalty's measured 5–25%.
+**Root cause (a one-line wiring bug, NOT IPC, NOT make/break, NOT a contact-model
+effect).** sim-core integrates the platen height with the step's STARTING velocity —
+empirically `z_{k+1} = z_k + Δt·vz_k` to machine zero (velocity is updated with this
+step's force, but position uses the pre-update velocity), so a step's contact force
+reaches the height only on the NEXT step. The tape's `ZCarryVjp` had wired the height
+to the freshly-updated `vz'` (`z' = z + Δt·vz_next`) — a one-step-early Jacobian. The
+forward was unaffected (the tape replays the real `step` values), so the bug hid
+behind a bit-exact forward; only the gradient lagged. **Fix:** point `z_next`'s
+velocity parent at `vz_var` (the step's starting velocity), not `vz_next_var`
+(`sim/L1/coupling/src/lib.rs`, the `ZCarryVjp` push).
+
+**Result: machine-exact for BOTH penalty and IPC** across the κ sweep and the full
+make/break rollout (rel ~3e-8, was IPC 0.3–7% / penalty 5–25%). The keystone
+time-adjoint's reported "penalty make/break degradation" was substantially THIS bug,
+not the C⁰ kink. IPC's distinct value is the machine-exact single-step gradient and
+structural non-penetration, not a unique multi-step-gradient advantage.
+
+**Gates.** `coupled_trajectory_gradient.rs` (penalty) now asserts machine-exact at all
+lengths; `ipc_trajectory_gradient.rs::ipc_multi_step_gradient_matches_fd` (IPC, the
+headline) asserts rel < 1e-6 over a 90-step make/break rollout across κ. New sim-soft
+gates `ipc_trajectory_step_vjp.rs` validate `TrajectoryStepVjp`'s four cotangents
+under IPC's varying `b''` for BOTH uniform and contact-concentrated (sparse) seeds —
+the localization probes that proved the soft VJP was never the source.
+
+### How it was localized (the probe ladder, for the record)
+
+1. **Soft VJP clean.** An IPC variant of `trajectory_step_vjp.rs` showed all four
+   parents (incl. the `b''`-carrying pose cotangent) match re-solve FD to ~7 digits
+   at every engagement depth and for a sparse contact-pattern cotangent ⇒ the soft
+   fused VJP is NOT the source.
+2. **Factors clean.** `∂fz/∂z = Σcᵥ` matched FD to 7.8e-10; the rigid carry's linear
+   model reproduced the real engine's `vz'` to 2.8e-12; forward bit-exact (diff 0).
+3. **Not IPC / not make/break.** Penalty exhibited the SAME residual magnitude; it
+   persisted with a stable, deeply-engaged, smooth active set ⇒ not the C⁰ kink and
+   not marginal-`b'''`.
+4. **The off-by-one signature.** Error grew on short rollouts and shrank ~`C/n` while
+   oscillating in sign with the platen's settling — a fixed per-step contribution
+   diluting in the growing total. Tail-isolation then showed `g_tape(n) = FD(n+1)`
+   exactly (`FD(1)=0` — z doesn't depend on the first force), and a direct probe
+   confirmed `z_next = z + Δt·vz_prev` (not `vz_next`). One-line fix.
+
+### (historical) Original symptom
+
+The composed multi-step coupled trajectory gradient `dz_N/dμ` with IPC matched the
+full-coupled FD oracle to only ~0.3–7% (κ-dependent, best ~0.3% at κ≈3e3), NOT
+machine-clean — though better than penalty's measured 5–25%.
 
 **What's ruled out (measured):**
 - Single-step coupled IPC gradient: machine-exact (rel 2e-9) at ALL engagement
