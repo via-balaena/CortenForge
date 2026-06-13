@@ -36,11 +36,13 @@ const PLATEN_MJCF: &str = r#"<mujoco>
 
 const N_STEPS: usize = 20; // engaged; slope dz_N/dμ ~ 1e-7, well clear of settling
 
-// A platen started ABOVE contact: it falls under gravity and MAKES contact partway
-// through the rollout (active set 0 → engaged) — a genuine contact-onset event the
-// inverse-design scene above (engaged from step 0) never exercises. Damping 8 (vs the
-// engaged scene's 60) lets the platen actually descend into contact; matches the
-// keystone/IPC make/break gates' fixture.
+// A platen started ABOVE contact: it falls under gravity, makes contact, rebounds
+// and BREAKS contact, then re-makes — a genuine make/break/re-make (bounce) the
+// inverse-design scene above (engaged from step 0) never exercises. Traced active
+// set over the 80-step rollout: no contact ~steps 0–63, engaged ~64–67, broken
+// ~68–77 (rebound), re-engaged ~78–79. Damping 8 (vs the engaged scene's 60) lets
+// the platen actually descend into contact; matches the keystone/IPC make/break
+// gates' fixture.
 const MAKE_CONTACT_MJCF: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
   <worldbody>
@@ -132,19 +134,20 @@ fn recovers_known_material_from_target_trajectory() {
 }
 
 /// Showcase — the co-design gradient stays machine-exact when the N-step rollout
-/// CROSSES a contact MAKE event. The platen starts above contact (z = 0.125),
-/// falls under gravity, and makes contact partway through (~step 70 of 80, active
-/// set 0 → engaged) — an active-set change the inverse-design scene above (engaged
-/// from step 0) never exercises. The gradient-of-objective vs a central FD of the
-/// same objective stays machine-exact (~4e-8) through that transition.
+/// crosses contact MAKE/BREAK events. The platen starts above contact (z = 0.125),
+/// falls under gravity, makes contact (~step 64 of 80), rebounds and BREAKS contact
+/// (~steps 68–77), then re-makes (~step 78) — two onsets and a release the
+/// inverse-design scene above (engaged from step 0) never exercises. The
+/// gradient-of-objective vs a central FD of the same objective stays machine-exact
+/// (~4e-8) across all of them.
 ///
-/// Scope: this carries the *gradient-correctness-through-contact-onset* proof; the
+/// Scope: this carries the *gradient-correctness-through-make/break* proof; the
 /// engaged scene above carries the *convergence* proof (a full recovery here would
 /// need ~80-step rollouts × hundreds of iters — minutes). The substrate's
 /// independent make/break validation (vs a re-rolled FD oracle) lives in
 /// `sim-coupling`'s `coupled_trajectory_gradient` / `ipc_trajectory_gradient`.
 #[test]
-fn trajectory_gradient_matches_fd_through_contact_make() {
+fn trajectory_gradient_matches_fd_through_make_break() {
     let n = 80;
     let p = SoftMaterialTrajectoryTarget::new(
         MAKE_CONTACT_MJCF.to_string(),
@@ -168,18 +171,24 @@ fn trajectory_gradient_matches_fd_through_contact_make() {
 
     let rel = (grad[0] - fd).abs() / fd.abs();
     eprintln!(
-        "through-make dLoss/dμ: analytic={:.6e}  FD={fd:.6e}  rel={rel:.3e}",
+        "through-make/break dLoss/dμ: analytic={:.6e}  FD={fd:.6e}  rel={rel:.3e}",
         grad[0]
     );
-    // Nonzero ⇒ contact really was made mid-rollout: a never-made rollout leaves
-    // z_N μ-independent and the gradient exactly 0 (the failure mode at too-small n).
+    // Proof contact really was made: z_N drops into the band (~0.1145) vs ~0.120 if
+    // the platen never reached contact — a ~5 mm margin, drift-proof even if float
+    // drift shifts the onset step a little. (Without it the rollout is a no-op and
+    // the gradient is identically 0, the failure mode at too-small n.)
     assert!(
-        grad[0].abs() > 1e-11,
-        "gradient ~0 — the platen never made contact (raise n)",
+        p.forward_z(mu) < 0.115,
+        "platen never made contact — z_N {} ≥ 0.115 (raise n)",
+        p.forward_z(mu),
     );
+    // The gradient is also genuinely nonzero through the make/break (a no-contact
+    // rollout leaves z_N μ-independent ⇒ gradient exactly 0).
+    assert!(grad[0].abs() > 1e-11, "gradient ~0 through make/break");
     assert!(
         rel < 1e-5,
-        "gradient {} disagrees with FD {fd} through the make event (rel {rel:e})",
+        "gradient {} disagrees with FD {fd} through make/break (rel {rel:e})",
         grad[0],
     );
 }
