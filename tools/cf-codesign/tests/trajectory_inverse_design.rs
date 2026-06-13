@@ -7,19 +7,23 @@
 //! MULTI-step gradient `d z_N/d μ` (one `tape.backward` across both engines and
 //! every step boundary), the first consumer of `coupled_trajectory_material_gradient`.
 //!
-//! Two checks: (1) the problem's analytic gradient matches a central FD of its
-//! trajectory loss (the gradient is correct for the objective, machine-exact);
-//! (2) the optimizer recovers `μ*` to tolerance and reports `converged`.
+//! Three checks: (1) the raw problem's analytic gradient matches a central FD of
+//! its trajectory loss (the consumed keystone gradient is correct for the
+//! objective, machine-exact); (2) the [`Normalized`]-wrapped gradient matches an
+//! FD in the optimizer's (log-μ) space (the `1/L²` loss-scale and `dμ/dp = μ`
+//! chain-rule bookkeeping is correct); (3) the optimizer recovers `μ*` to
+//! tolerance **with the standard `eps = 1e-8`** and reports `converged`.
 //!
-//! **Conditioning note.** `z_N` is a position, so `∂z_N/∂μ ~ 1e-7` and the loss
-//! gradient is `~1e-10` — below Adam's default `eps = 1e-8`. The recovery run
-//! therefore sets `OptConfig::eps` below the gradient scale (without it Adam
-//! degenerates to eps-dominated SGD and crawls); see `docs/codesign/recon.md`
-//! §v2.3–v2.4.
+//! **Conditioning note.** `z_N` is a position, so `∂z_N/∂μ ~ 1e-7` and the raw
+//! loss gradient is `~2e-10` — below Adam's standard `eps = 1e-8`, so optimizing
+//! the raw target crawls. The recovery run therefore wraps the target in
+//! [`Normalized`] (a dimensionless residual + log-μ relative steps), which lifts
+//! the gradient above the standard `eps` — no special `eps` needed. See
+//! `docs/codesign/recon.md` §v3.
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, SoftMaterialTrajectoryTarget, optimize};
+use cf_codesign::{CoDesignProblem, Normalized, OptConfig, SoftMaterialTrajectoryTarget, optimize};
 
 // Platen started already in contact (plane at z − clearance = 0.103 vs the soft
 // block's top face at z = 0.1) so the rollout is engaged from step 0 (it deepens
@@ -81,6 +85,55 @@ fn trajectory_gradient_matches_fd() {
     );
 }
 
+/// The [`Normalized`] wrapper's gradient (in the optimizer's log-μ space) matches
+/// a central FD of the *normalized* loss in that space — confirming the
+/// chain-rule bookkeeping: the `1/L²` loss-scale and the `dμ/dp = μ` log factor.
+/// This is the new surface v3 adds; the raw keystone gradient is gated above.
+#[test]
+fn normalized_gradient_matches_fd() {
+    // Residual scale L = the 0.1 m block edge; log-μ relative steps.
+    let target =
+        SoftMaterialTrajectoryTarget::for_inverse_design(PLATEN_MJCF.to_string(), N_STEPS, 0.0);
+    let problem = Normalized::with_residual_scale(&target, 0.1, true);
+
+    let mu = 3.5e4;
+    let p = problem.to_normalized(&[mu]); // log-μ space
+    let (_loss, grad) = problem.evaluate(&p);
+
+    // FD of the normalized loss in the SAME (log-μ) space the gradient lives in.
+    let eps = 1e-6;
+    let loss_at = |dp: f64| problem.evaluate(&[p[0] + dp]).0;
+    let fd = (loss_at(eps) - loss_at(-eps)) / (2.0 * eps);
+
+    let rel = (grad[0] - fd).abs() / fd.abs();
+    eprintln!(
+        "normalized dLoss/d(lnμ): analytic={:.6e}  FD={fd:.6e}  rel={rel:.3e}",
+        grad[0]
+    );
+    assert!(
+        rel < 1e-5,
+        "normalized gradient {} disagrees with FD {fd} (rel {rel:e})",
+        grad[0],
+    );
+
+    // Also exercise the log_space = false branch (dx/dp = 1.0, loss-scale only):
+    // the gradient must match an FD of the same scaled loss in PHYSICAL μ-space.
+    let linear = Normalized::new(&target, 1.0 / (0.1 * 0.1), false);
+    let (_, lg) = linear.evaluate(&[mu]);
+    let le = mu * 1e-6;
+    let lfd = (linear.evaluate(&[mu + le]).0 - linear.evaluate(&[mu - le]).0) / (2.0 * le);
+    let lrel = (lg[0] - lfd).abs() / lfd.abs();
+    eprintln!(
+        "linear (loss-scale only) dLoss/dμ: analytic={:.6e}  FD={lfd:.6e}  rel={lrel:.3e}",
+        lg[0]
+    );
+    assert!(
+        lrel < 1e-5,
+        "linear-branch gradient {} disagrees with FD {lfd} (rel {lrel:e})",
+        lg[0]
+    );
+}
+
 #[test]
 fn recovers_known_material_from_target_trajectory() {
     let mu_star = 4.0e4;
@@ -90,34 +143,65 @@ fn recovers_known_material_from_target_trajectory() {
         SoftMaterialTrajectoryTarget::for_inverse_design(PLATEN_MJCF.to_string(), N_STEPS, 0.0);
     let target_z = setup.forward_z(mu_star);
 
-    let problem = SoftMaterialTrajectoryTarget::for_inverse_design(
+    let target = SoftMaterialTrajectoryTarget::for_inverse_design(
         PLATEN_MJCF.to_string(),
         N_STEPS,
         target_z,
     );
 
-    // Optimize from a different stiffness with the target's recommended config
-    // (its `eps = 1e-12` is below the ~1e-10 loss gradient, so Adam keeps its
-    // scale-invariance — the default `eps = 1e-8` would crawl). This also
-    // exercises `recommended_config` as the discoverable, correct-by-default path.
+    // NEGATIVE CONTROL — normalization is load-bearing, not incidental: the RAW
+    // target with the STANDARD eps does NOT recover (the ~2e-10 gradient is
+    // eps-dominated and Adam crawls). Bounded iters keep it cheap; the spike's
+    // 300-iter run reached only rel 0.26.
     let mu0 = 2.0e4;
-    let cfg = problem.recommended_config();
-    let result = optimize(&problem, &[mu0], &cfg);
+    let crawl = optimize(
+        &target,
+        &[mu0],
+        &OptConfig {
+            max_iters: 80,
+            ..OptConfig::default()
+        },
+    );
+    let crawl_rel = (crawl.params[0] - mu_star).abs() / mu_star;
+    eprintln!("negative control (raw + standard eps, 80 iters): rel={crawl_rel:.3e}");
+    assert!(
+        crawl_rel > 1e-2,
+        "raw target with standard eps unexpectedly converged (rel {crawl_rel:e}) — \
+         the negative control is meant to crawl",
+    );
 
+    // Condition the (weakly-sensitive) objective: a dimensionless residual
+    // (L = 0.1 m block edge) + log-μ relative steps. `recommended_config` uses the
+    // STANDARD `eps = 1e-8` — the v3 point: normalization, not a tiny per-scene eps.
+    let problem = Normalized::with_residual_scale(&target, 0.1, true);
+    let cfg = problem.recommended_config();
+    assert_eq!(
+        cfg.eps,
+        OptConfig::default().eps,
+        "must use the standard eps"
+    );
+
+    // The bracketing entry point: x0 and result.params are in PHYSICAL μ units.
+    let result = problem.optimize(&[mu0], &cfg);
     let mu = result.params[0];
+
+    // The bracketing remap covers history too: the first record starts at μ₀ (a
+    // physical ~2e4), NOT its log-space image (~10) — pins the history remap loop.
+    let first = result.history.first().expect("history non-empty");
+    assert!(
+        (first.params[0] - mu0).abs() < 1.0,
+        "history params not mapped to physical units: {} (expected ≈ μ₀ {mu0})",
+        first.params[0],
+    );
+
     let rel_mu = (mu - mu_star).abs() / mu_star;
     eprintln!(
-        "trajectory inverse design: μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) rel={rel_mu:.3e}  \
-         loss={:.3e}  iters={}  converged={}",
+        "trajectory inverse design (standard eps): μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) \
+         rel={rel_mu:.3e}  loss={:.3e}  iters={}  converged={}",
         result.loss, result.iters, result.converged,
     );
 
     assert!(result.converged, "optimizer did not converge in max_iters");
-    assert!(
-        result.loss < 1e-18,
-        "final loss {} not below tol",
-        result.loss
-    );
     // Robust gate (the measured recovery is far tighter, ~1e-6 or better); loose
     // here so cross-OS float drift in the coupled rollout can't flake it.
     assert!(
@@ -125,10 +209,10 @@ fn recovers_known_material_from_target_trajectory() {
         "did not recover μ*: μ={mu} μ*={mu_star} (rel {rel_mu:e})",
     );
     // The descent made real progress (the loss dropped by orders).
-    let first_loss = result.history.first().expect("history non-empty").loss;
     assert!(
-        first_loss > 1e3 * result.loss,
-        "loss barely moved: first={first_loss:e} final={:e}",
+        first.loss > 1e3 * result.loss,
+        "loss barely moved: first={:e} final={:e}",
+        first.loss,
         result.loss,
     );
 }

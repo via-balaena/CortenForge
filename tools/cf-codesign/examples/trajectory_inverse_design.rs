@@ -11,7 +11,7 @@
 
 #![allow(clippy::expect_used, clippy::print_stdout)]
 
-use cf_codesign::{SoftMaterialTrajectoryTarget, optimize};
+use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget};
 
 // Platen started already in contact so the rollout is engaged from step 0.
 const PLATEN_MJCF: &str = r#"<mujoco>
@@ -37,7 +37,7 @@ fn main() {
          (produced by μ* = {mu_star})"
     );
 
-    let problem = SoftMaterialTrajectoryTarget::for_inverse_design(
+    let target = SoftMaterialTrajectoryTarget::for_inverse_design(
         PLATEN_MJCF.to_string(),
         n_steps,
         target_z,
@@ -45,24 +45,30 @@ fn main() {
     let mu0 = 2.0e4;
     println!("Optimizing soft stiffness from μ₀ = {mu0} (λ = 4μ) ...\n");
 
-    // z_N is a position: ∂z_N/∂μ ~ 1e-7, so the loss gradient ~1e-10 is below
-    // Adam's default eps (1e-8). The target's recommended config lowers eps below
-    // the gradient scale (the default would crawl) — the batteries-included path.
+    // z_N is a position: ∂z_N/∂μ ~ 1e-7, so the raw loss gradient ~2e-10 is below
+    // Adam's standard eps (1e-8) and the optimizer would crawl. Condition the
+    // objective with `Normalized` — a dimensionless residual (L = 0.1 m block edge)
+    // plus log-μ relative steps — so the STANDARD eps keeps its scale-invariance.
+    let problem = Normalized::with_residual_scale(&target, 0.1, true);
     let cfg = problem.recommended_config();
-    let result = optimize(&problem, &[mu0], &cfg);
+    // `optimize` brackets the physical↔log-μ mapping: x0 and result/history params
+    // are all in physical μ units.
+    let result = problem.optimize(&[mu0], &cfg);
 
+    // μ is physical; loss/|grad| are in the NORMALIZED (dimensionless / log-μ) space
+    // the optimizer worked in.
     for (k, rec) in result.history.iter().enumerate() {
         if k % 40 == 0 {
             println!(
-                "  iter {k:3}: μ = {:>9.2}   loss = {:.3e}   |grad| = {:.3e}",
+                "  iter {k:3}: μ = {:>9.2}   loss(norm) = {:.3e}   |grad|(norm) = {:.3e}",
                 rec.params[0], rec.loss, rec.grad_inf,
             );
         }
     }
+    let mu = result.params[0];
     println!(
-        "\nRecovered μ = {:.3} (μ* = {mu_star}, rel error {:.2e}) in {} iters; converged = {}",
-        result.params[0],
-        (result.params[0] - mu_star).abs() / mu_star,
+        "\nRecovered μ = {mu:.3} (μ* = {mu_star}, rel error {:.2e}) in {} iters; converged = {}",
+        (mu - mu_star).abs() / mu_star,
         result.iters,
         result.converged,
     );

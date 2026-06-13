@@ -244,6 +244,11 @@ otherwise reused verbatim; only the objective impl and the optimizer *constructi
 
 ## v2.6 Validation gate (v2)
 
+> **⚠ SUPERSEDED by §v3** (2026-06-13): the `eps = 1e-12` /
+> `SoftMaterialTrajectoryTarget::recommended_config` path below was a conditioning band-aid and has
+> been RETIRED. The shipped gate now wraps the target in `Normalized` and recovers μ* with the
+> STANDARD `eps = 1e-8` (rel 4.72e-7). This section is kept for history.
+
 CI-runnable, **measured on the shipped gate** (`tests/trajectory_inverse_design.rs`, eps = 1e-12,
 loss_tol = 1e-18 via `SoftMaterialTrajectoryTarget::recommended_config`): (1) the problem's analytic
 gradient matches a central FD of the trajectory loss to **rel 9.3e-9** (gradient correct for the
@@ -269,3 +274,186 @@ gates establish it independently against a re-rolled FD oracle); the keystone's 
   `sim/L1/coupling/tests/coupled_trajectory_gradient.rs`, `ipc_trajectory_gradient.rs`.
 - Optimizer: `sim/L0/ml-chassis/src/optimizer.rs` (`OptimizerConfig::Adam { eps }`).
 - Time-adjoint / IPC recons: `docs/keystone/time_adjoint_recon.md`, `docs/ipc/recon.md`.
+
+---
+
+# v3 — the NORMALIZED / dimensionless objective (opened 2026-06-13)
+
+*The refinement deferred when shipping v2. v2 shipped a working trajectory loop but only by
+papering over a conditioning smell with a tiny Adam `eps`. This session removes the smell: make the
+objective WELL-SCALED so `OptConfig::default()` (eps = 1e-8) recovers μ* to ~1e-6 with NO special
+eps. Measure-first — the spike's verdict drives the abstraction (bake-in vs general wrapper).*
+
+> **The trajectory loss `½(z_N − z*)²` is dimensionally raw: `z_N` is a position (~0.12 m), so
+> `∂z_N/∂μ ~ 1e-7` and the loss gradient `~2e-10` falls BELOW Adam's default `eps = 1e-8`. Adam's
+> update `lr·m̂/(√v̂ + eps)` is scale-invariant ONLY when `|grad| ≫ eps`; below eps the `+eps`
+> dominates the denominator and Adam degenerates to eps-dominated SGD that crawls. v2 fixed it by
+> dropping `eps` to 1e-12 (`recommended_config`). That works but is a band-aid. The clean fix: a
+> dimensionless residual (and possibly a relative parameter) so the gradient lands well above the
+> default eps and `OptConfig::default()` Just Works.**
+
+## v3.1 The scaling, worked out from the Adam update (the basis for the spike)
+
+`step = lr · m̂ / (√v̂ + eps)` (`optimizer.rs:244`). With `m̂, √v̂ ∝ |grad|`: when `|grad| ≫ eps`
+the step is `~ lr · sign(grad)` (scale-invariant — gradient *magnitude* cancels); when `|grad| ≲ eps`
+the step is `~ lr · grad / eps` (proportional to grad, i.e. ordinary SGD with effective rate
+`lr/eps` — and since `grad` is tiny, it crawls). So the lever that matters is the gradient magnitude
+relative to eps, NOT the loss magnitude per se.
+
+Two independent normalizations move the gradient magnitude:
+
+- **Residual normalization** — report `r = (z_N − z*)/L` for a characteristic length `L`, loss
+  `½r²`. This scales the loss by `1/L²` and **the loss-gradient by `1/L²`** (loss-grad
+  `= r · (∂z_N/∂μ)/L = (z_N − z*)(∂z_N/∂μ)/L²`; the original raw gradient is the `L = 1` case). So
+  `L = 0.1` (block edge) → ×100; `L = d̂ = 0.01` (contact band) → ×1e4. Keeps the parameter PHYSICAL
+  (μ), so the tuned `lr = 2e3` still applies.
+- **Parameter normalization** — optimize in `p = μ/μ_ref` (linear) or `p = ln μ` (log). The chain
+  rule multiplies the gradient by `dμ/dp` = `μ_ref` (linear) or `μ` (log) ≈ 3e4. The bigger lever,
+  AND it makes Adam steps *relative* (a step in `ln μ` is a fractional change in μ; log also enforces
+  μ > 0 for free, no lower-bound clamp). BUT it changes the parameter space, so the tuned `lr = 2e3`
+  no longer applies (a step in `p ~ O(1)` wants `lr ~ O(0.01–0.1)`) — a re-tune the wrapper/target
+  must supply.
+
+**The subtlety the spike must pin down (worked numbers, μ ≈ 4e4, slope ∂z_N/∂μ ≈ 1e-7):**
+a smooth loss has `grad → 0` at the optimum, so with ANY fixed eps the *late* phase eventually
+crawls. What makes an objective "work with default eps" is the EARLY/MID phase being above eps (fast
+descent) with `loss_tol` stopping it at the target recovery — exactly how the single-step v1 path
+(early grad ~2e-7 > eps) reaches 2.7e-6 while the trajectory (grad ~2e-10 < eps from step 0) never
+gets the fast phase. So:
+- residual-norm with `L = d̂` lifts the EARLY grad to ~1e-6 (≫ eps) → fast early descent restored
+  with default eps; but near the optimum grad dips back under eps, so the achievable recovery is set
+  by `loss_tol` on the normalized loss (a per-objective stopping choice, not a scaling band-aid).
+- log-μ on TOP keeps the gradient `× μ` lifted relative to the residual, holding it above eps down to
+  much tighter recovery — at the cost of an `lr` re-tune. The spike measures whether residual-norm
+  alone hits ~1e-6, or whether log-μ is needed.
+
+**`loss_tol` re-tune (the flagged gotcha):** a normalized loss has a different scale, so the
+absolute `loss_tol = 1e-10` default maps to a different recovery. With `L = d̂`, `loss_tol = 1e-10`
+⇒ normalized residual `~1.4e-5` ⇒ μ error `~3.5e-5`; reaching ~1e-6 wants `loss_tol ~ 1e-13`. This
+is a stopping threshold, NOT the eps smell — re-tune it for the normalized scale (or scale `L` so the
+default lands where we want). The WIN this session banks is **default eps**, the documented smell.
+
+## v3.2 The design fork (the real output)
+
+- **(A) Bake normalization into `SoftMaterialTrajectoryTarget`** — it picks a sensible `L` (block
+  edge / `d̂` / `|z*|`) and reports `r = (z_N − z*)/L`. Simplest; zero new surface; but every future
+  weakly-sensitive design var (geometry, lattice, policy) re-solves the same scaling wall.
+- **(B) A general `CoDesignProblem` normalization wrapper/decorator** that rescales ANY objective's
+  loss + gradient (and optionally reparametrizes the design vars). More composable — the mission's
+  quality bar (SDK) — and the next design vars hit the EXACT same small-sensitivity wall. Lean = (B)
+  if it stays clean; the spike confirms it stays clean and that the wrapped objective recovers ≥ as
+  well as a bake-in.
+
+Sub-question for (B): how general? A pure **loss/gradient scaler** (multiply loss & grad by a
+constant `k`) is a ~5-line decorator that needs no parameter-space change and preserves `lr` — but
+the constant must come from somewhere (caller-supplied `L`, or auto-probed from `|grad(x0)|`). A
+**reparametrizing** wrapper (log/linear param transform) is more machinery (un-normalize `x0`,
+transform the gradient by `dμ/dp`, denormalize the result) but delivers relative steps. The spike
+measures which is actually needed for ~1e-6.
+
+## v3.3 S0 spike (THROWAWAY, `#[ignore]`) — the plan
+
+Inline in `cf-codesign` (`tests/zzz_normalize_spike.rs`, deleted after) — wrap the EXISTING
+`SoftMaterialTrajectoryTarget` (already a `CoDesignProblem`) with candidate normalizers and run
+`optimize` head-to-head on the engaged scene (n = 20, μ* = 4e4, μ₀ = 2e4). Measure for each: final
+rel-μ recovery, loss, iters, converged. Variants:
+
+0. **Baseline-today** — raw problem, `recommended_config()` (eps = 1e-12). Reproduce rel ~2.9e-7.
+0b. **Baseline-crawl** — raw problem, `OptConfig::default()` (eps = 1e-8). Reproduce the crawl.
+1. **Residual-norm only** (`k = 1/L²`, L ∈ {0.1, 0.01}), `OptConfig::default()` eps = 1e-8, sweep
+   `loss_tol`. Does default eps recover ~1e-6?
+2. **Log-μ only**, eps = 1e-8, re-tuned `lr`. Does it recover ~1e-6?
+3. **Residual-norm + log-μ**, eps = 1e-8. The robust combo.
+4. **Auto-probe scaler** — `k = 1/|grad(x0)|`, eps = 1e-8 (the fully-objective-agnostic wrapper).
+
+**FD-gate the normalized gradient** for the chosen variant (analytic grad in the OPTIMIZER's
+parameter space vs central FD of the normalized loss in that space) — confirms the chain-rule
+bookkeeping (the `1/L²` loss-scale and, if reparametrized, the `dμ/dp` factor). Watch the λ = 4μ
+ctor tie: the inner gradient is already the TOTAL `∂/∂μ + 4∂/∂λ`, and the FD must move along that
+same line (rebuild-path FD), as the v2 gates do.
+
+**Decision rule:** pick the SIMPLEST variant that recovers ~1e-6 with default eps; then decide A vs B
+on whether the general wrapper stays clean and recovers ≥ the bake-in.
+
+## v3.4 ★ S0 SPIKE DONE 2026-06-13 — measured, verdict: FORK B (general wrapper, both levers)
+
+Throwaway `tests/zzz_normalize_spike.rs` (deleted) wrapped the existing `SoftMaterialTrajectoryTarget`
+with candidate normalizers and ran `optimize` head-to-head (n = 20, μ* = 4e4, μ₀ = 2e4, target_z =
+0.125455). All normalized runs used the **standard eps = 1e-8**:
+
+| Variant | μ recovery (rel) | iters | conv | vs default |
+|---|---|---|---|---|
+| 0  raw + recommended (eps **1e-12**) | 2.93e-7 | 229 | ✓ | the v2 band-aid |
+| 0b raw + **default eps 1e-8** | **0.26 (CRAWL)** | 300 | ✗ | the smell |
+| 1  resid L = 0.01, lt = 1e-13 | **1.16e-6** | 186 | ✓ | loss_tol only (lr = 2e3 kept) |
+| 1  resid L = 0.1, lt = 1e-13 | 4.6e-6 | 157 | ✓ | loss_tol only |
+| 2  **log-μ**, lr = 0.05 | **1.87e-7** | 218 | ✓ | lr + loss_tol |
+| 3  resid(L = .01) + log-μ, lr = 0.05 | 4.1e-7 | 180 | ✓ | lr + loss_tol |
+| 4  auto-probe k = 1/‖g(x₀)‖, lt = 1e-13 | 5.8e-10 | 316 | ✓ | loss_tol only |
+
+Each row isolates a single lever (or one L). The **shipped gate** uses BOTH levers at the gate scene
+— `with_residual_scale(L = 0.1, log_space = true)`, `lr = 0.05`, `loss_tol = 1e-15` — and recovers
+**rel 4.717e-7 in 180 iters** with the standard eps (re-tuned from variant 3's `L = 0.01 / lt = 1e-13`
+row: the larger L = block-edge makes the loss 100× smaller so `loss_tol` tightens by ~100× for a
+comparable recovery). The standout single-lever numbers above (e.g. **1.87e-7 is log-μ ALONE**, k = 1)
+isolate *why* each lever helps, not the shipped config.
+
+**Findings:**
+1. **The crawl is real** (0b: rel 0.26, never converges) and **every normalized variant fixes it
+   with the standard eps = 1e-8** — the eps band-aid is removable.
+2. **The PARAMETER (log-μ) normalization is the stronger lever, an inversion of the v3.1 prior.**
+   log-μ ALONE recovers to 1.87e-7 (matching the eps = 1e-12 baseline) because `dμ/dp = μ ≈ 3e4`
+   lifts the gradient above eps *throughout* descent (relative steps). Residual-norm alone tops out
+   ~1e-6: its gradient dips back under eps near the optimum (a smooth loss has `grad → 0` there), so
+   only the early phase is fast — it helps but is secondary.
+3. **FD bookkeeping exact** (`spike_normalized_gradient_fd`): the loss-scale `k` and the `dμ/dp = μ`
+   chain factor each match a central FD to **rel 9.7e-9** (LossScaled grad 1.143e-4, LogParam grad
+   4.002e0 — both at target = 0, μ = 3.5e4).
+4. Only `lr`/`loss_tol` track the normalized space (lr matches the relative-step scale, loss_tol the
+   dimensionless loss scale — the flagged gotcha, handled). **eps stays standard 1e-8.**
+
+**★ VERDICT — Fork B, a general `Normalized` wrapper doing BOTH levers.** The complete dimensionless
+objective = `loss_scale` (residual / L → a dimensionless, interpretable loss, so `loss_tol` is a
+relative-tolerance²) + `log_space` (optimize positive design vars in ln-space → relative steps that
+hold the gradient above the standard eps, and enforce `> 0` structurally). Chosen over bake-in (A)
+because: (i) the spike shows B stays clean (one struct, two fields: `loss_scale`, `log_space`; +
+`to_physical`/`to_normalized` helpers) and *outperforms* a residual-only bake-in (1.8e-7 vs 1.16e-6);
+(ii) composability is the mission's SDK quality bar and the next design vars (geometry / lattice /
+policy) hit the EXACT same small-sensitivity wall — log-of-a-positive-scale-parameter + dimensionless
+residual is reusable connective tissue, not a one-off; (iii) the eps band-aid (`recommended_config`
+eps = 1e-12) is RETIRED — the new path uses the standard eps and the wrapper supplies the
+parameter-space-appropriate `lr` (and dimensionless `loss_tol`), which is principled per-objective
+tuning rather than a per-scene magic eps tracking an un-normalized gradient.
+
+**Why standard-eps now generalizes (the real improvement, not aesthetics):** eps = 1e-12 was fragile
+— it only works while the un-normalized gradient stays above 1e-12; a smaller scene or a different
+design var would need 1e-16, etc. A log-parametrized, dimensionless objective keeps an O(1)-ish
+gradient across parameter magnitudes and scenes, so the STANDARD eps = 1e-8 holds without per-scene
+retuning (`lr` and `loss_tol` remain per-objective tunables — see below). The win is
+robustness/generality, not a single config that works everywhere.
+
+## v3.5 Ladder / slicing (post-spike — single PR)
+
+- **S0 spike** (§v3.4) — DONE: verdict Fork B (both levers); FD-exact.
+- **PR (this leaf) — SHIPPED:** a general `Normalized` CoDesignProblem wrapper (`new` /
+  `with_residual_scale` with finite-positive input guards; `to_physical` / `to_normalized`; a
+  `recommended_config` starting point [`lr = 0.05` in log-space, `loss_tol = 1e-15`, standard eps];
+  and a bracketing `optimize(x0_physical, cfg)` that maps params/history back to physical units — the
+  footgun-free entry point so a `log_space` wrapper can't be driven with an un-transformed `x0`).
+  Gate `tests/trajectory_inverse_design.rs`: raw FD (rel 9.3e-9) + **normalized-gradient FD** in
+  log-μ space (rel 8.8e-9, confirms the `1/L²` and `dμ/dp = μ` bookkeeping) + a `log_space = false`
+  loss-scale-only FD + **a negative control** (raw target + standard eps does NOT recover, 80 iters)
+  + recovery to **rel 4.72e-7 with the standard eps** (asserts `cfg.eps == default`) + the make/break
+  showcase (unchanged). **Retired** `SoftMaterialTrajectoryTarget::recommended_config` (eps band-aid);
+  `OptConfig::eps` stays exposed (general knob) but nothing in cf-codesign overrides it. Single-step
+  v1 `SoftMaterialTarget` path + gate UNTOUCHED. grade A. Pre-PR local ultra-review (35 agents, 28
+  findings / 0 refuted / 0 correctness defects) — fixes folded in: input guards (the one medium),
+  the bracketing `optimize`, the negative control, total `lower_bounds` (non-positive log-floor → −∞,
+  no panic), and doc unifications.
+
+## v3.6 Key files / pointers (v3)
+
+- The wrapper + targets: `tools/cf-codesign/src/lib.rs`.
+- Adam update (the eps mechanism): `sim/L0/ml-chassis/src/optimizer.rs:244` (`lr·m̂/(√v̂ + eps)`).
+- v2 gate to rewrite onto the standard eps: `tools/cf-codesign/tests/trajectory_inverse_design.rs`.
+
