@@ -131,14 +131,24 @@ fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64])
 /// the proximal joint). FD-validated against a real scratch step in
 /// `tests/rigid_multidof_response.rs` (hinge + 2-link, machine-exact).
 ///
-/// **Velocity vs position.** Under semi-implicit Euler this is the *velocity*
-/// response; sim-core integrates `qpos` with the post-update velocity, so the
-/// state carry over a trajectory threads this column (the velocity rows) together
-/// with the dense state transition `A` ([`Data::transition_derivatives`]) for the
-/// position rows. The exact composition into a multi-step coupled carry is the
-/// follow-on leaf (FD-gated end-to-end — the staggered contact/height timing does
-/// not follow naively from the bare-step linearization; see
-/// `docs/keystone/multidof_rigid_recon.md`).
+/// **Scope of the bare `M⁻¹` form.** This is exact for the keystone scenes — an
+/// undamped mechanism under the (semi-implicit) Euler integrator (`n_link_pendulum`
+/// and the platen have zero joint stiffness/damping/armature). With nonzero joint
+/// damping/stiffness, the Euler path solves `(M + Δt·D + Δt²·K)·qacc = F`, so the
+/// true factor is `Δt·M_impl⁻¹·Jᵀ` (not the bare `Δt·M⁻¹·Jᵀ`); a non-Euler
+/// integrator likewise changes the velocity update. Out of this leaf's scope — see
+/// `docs/keystone/multidof_rigid_recon.md`.
+///
+/// **Velocity vs position.** This is the *velocity* response only. Composing it
+/// into a multi-step coupled carry (which threads it with the dense state
+/// transition `A`, [`Data::transition_derivatives`], for the position rows) is the
+/// FD-gated follow-on leaf — and the staggered-coupling position carry does NOT
+/// follow naively from the bare integrator: the merged scalar carry integrates the
+/// height with the step's STARTING (pre-update) velocity (the convention
+/// `ZCarryVjp` encodes, FD-validated; flipping it to the freshly-updated velocity
+/// breaks the trajectory gate — the #307 fix). The multi-DOF composition must be
+/// FD-gated against a re-rolled full-coupled oracle, not derived from the bare-step
+/// linearization; see `docs/keystone/multidof_rigid_recon.md` §8a.
 ///
 /// To route a pure contact force `f` applied at an off-COM point `r_c`, the caller
 /// sets `xfrc_applied[body] = [(r_c − xipos) × f ; f]` (the contact moment) so the

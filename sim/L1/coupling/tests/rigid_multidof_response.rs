@@ -96,6 +96,11 @@ fn two_link_xfrc_column_matches_fd_and_couples_offdiagonal() {
     let mut data = model.make_data();
     data.qpos[0] = 0.2;
     data.qpos[1] = -0.4;
+    // Nonzero joint velocities: the column is qvel-independent by construction
+    // (Δt·M⁻¹·Jᵀ) and the central FD over xfrc cancels the Coriolis/bias baseline,
+    // so the match must hold away from rest too — exercises that invariance.
+    data.qvel[0] = 0.7;
+    data.qvel[1] = -1.3;
     data.forward(&model).expect("forward");
 
     let analytic = rigid_xfrc_column(&model, &data, 2); // 2 × 6
