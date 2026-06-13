@@ -13,10 +13,12 @@ use crate::Vec3;
 use crate::mesh::VertexId;
 use nalgebra::Matrix3;
 
+pub mod ipc;
 pub mod null;
 pub mod penalty;
 pub mod rigid;
 
+pub use ipc::IpcRigidContact;
 pub use null::NullContact;
 pub use penalty::{PenaltyRigidContact, filter_pair_readouts_to_referenced};
 pub use rigid::RigidPlane;

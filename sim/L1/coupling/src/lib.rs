@@ -42,22 +42,59 @@ use sim_core::{Data, Model, SpatialVector};
 use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
-    BoundaryConditions, ContactPair, CpuNewtonSolver, HandBuiltTetMesh, LoadAxis, MaterialField,
-    Mesh, PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, Solver, SolverConfig, Tet4,
-    Vec3, VertexId,
+    ActivePairsFor, BoundaryConditions, ContactModel, ContactPair, ContactPairReadout,
+    CpuNewtonSolver, HandBuiltTetMesh, IpcRigidContact, LoadAxis, MaterialField, Mesh, NeoHookean,
+    PenaltyRigidContact, RigidPlane, Solver, SolverConfig, Tet4, Vec3, VertexId,
 };
+use std::marker::PhantomData;
 
-/// Scatter the penalty contact-force-vs-position Jacobian `∂fz/∂x_v = −κ·n̂_z·n̂`
-/// (the z-row of the `−κ·n̂⊗n̂` per-pair Jacobian) onto `slot`, scaled by the
-/// upstream scalar cotangent `c`. Shared by [`ContactForceVjp`] (single-step
-/// crossing) and [`ContactForceTrajVjp`] (the trajectory readout, which adds its
-/// own `∂fz/∂z` term).
-fn scatter_dfz_dxstar(active: &[(usize, Vec3)], kappa: f64, c: f64, slot: &mut [f64]) {
-    for &(v, n) in active {
-        let g = -kappa * n.z;
-        slot[3 * v] += c * g * n.x;
-        slot[3 * v + 1] += c * g * n.y;
-        slot[3 * v + 2] += c * g * n.z;
+/// A rigid-primitive contact constructible from a downward plane + `(κ, d̂)`, with
+/// an active-pair readout over the keystone block — the bridge that lets
+/// [`StaggeredCoupling`] run over either [`PenaltyRigidContact`] (the stepping
+/// stone) or [`IpcRigidContact`] (the C²-barrier successor). Defined here (a local
+/// trait) so the soft-side contact types need no change.
+pub trait PlaneContact: ContactModel + ActivePairsFor<NeoHookean> + Sized {
+    /// Build the contact from a single downward plane and the penalty/barrier
+    /// parameters `(κ, d̂)`.
+    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self;
+    /// Per-active-pair readout at `positions` (the inherent `per_pair_readout`,
+    /// surfaced through the trait so the coupling can call it generically).
+    fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout>;
+}
+
+impl PlaneContact for PenaltyRigidContact {
+    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self {
+        Self::with_params(vec![plane], kappa, d_hat)
+    }
+    fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout> {
+        self.per_pair_readout(mesh, positions)
+    }
+}
+
+impl PlaneContact for IpcRigidContact {
+    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self {
+        Self::with_params(vec![plane], kappa, d_hat)
+    }
+    fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout> {
+        self.per_pair_readout(mesh, positions)
+    }
+}
+
+/// The soft Newton solver the coupling builds per step, over contact type `C`.
+type SoftSolver<C> = CpuNewtonSolver<Tet4, HandBuiltTetMesh, C, NeoHookean, 4, 1>;
+
+/// Scatter the contact-force-vs-position Jacobian `∂fz/∂x_v = −cᵥ·n̂_z·n̂` (the
+/// z-row of the `−cᵥ·n̂⊗n̂` per-pair Jacobian) onto `slot`, scaled by the upstream
+/// scalar cotangent `cot`. `active` is per active pair `(vertex_id, n̂, curvature)`
+/// where `curvature = d²E/dsd² = n̂ᵀ·H_pair·n̂` is the contact's local stiffness
+/// (`κ` for penalty, `κ·b''(sd)` for IPC). Shared by [`ContactForceVjp`] (single-
+/// step crossing) and [`ContactForceTrajVjp`] (which adds its own `∂fz/∂z` term).
+fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64]) {
+    for &(v, n, curv) in active {
+        let g = -curv * n.z;
+        slot[3 * v] += cot * g * n.x;
+        slot[3 * v + 1] += cot * g * n.y;
+        slot[3 * v + 2] += cot * g * n.z;
     }
 }
 
@@ -108,29 +145,29 @@ impl VjpOp for RigidStepVjp {
     }
 }
 
-/// Chassis-tape [`VjpOp`] for the penalty contact-force readout — the
-/// crossing's soft-contact half (keystone S4).
+/// Chassis-tape [`VjpOp`] for the contact-force readout — the crossing's
+/// soft-contact half (keystone S4).
 ///
 /// Parent = the soft positions `x*` (shape `3·n_vertices`); output = the total
 /// `force_on_soft.z` (shape `[1]`). The VJP applies the per-active-pair contact-force
-/// Jacobian `∂fz/∂x_v = −κ·n̂_z·n̂` (the S3 `−κ·n̂⊗n̂` factor, z-row), turning a
-/// downstream `∂L/∂fz` into the `∂L/∂x*` cotangent that the soft
-/// `NewtonStepVjp` then carries back to the soft parameters. Hard-penalty scope
-/// (`d²E/dsd² = κ`); active set captured at construction (engaged regime).
+/// Jacobian `∂fz/∂x_v = −cᵥ·n̂_z·n̂` (the S3 `−cᵥ·n̂⊗n̂` factor, z-row, where the
+/// per-pair curvature `cᵥ = d²E/dsd²` is `κ` for penalty, `κ·b''(sd)` for IPC),
+/// turning a downstream `∂L/∂fz` into the `∂L/∂x*` cotangent that the soft
+/// `NewtonStepVjp` then carries back to the soft parameters. Active set + curvature
+/// captured at construction (engaged regime).
 #[derive(Clone, Debug)]
 pub struct ContactForceVjp {
-    /// `(vertex_id, outward unit normal n̂)` for each active contact pair at the
-    /// linearization positions.
-    active: Vec<(usize, Vec3)>,
-    kappa: f64,
+    /// `(vertex_id, outward unit normal n̂, curvature cᵥ = d²E/dsd²)` for each
+    /// active contact pair at the linearization positions.
+    active: Vec<(usize, Vec3, f64)>,
 }
 
 impl ContactForceVjp {
-    /// Construct from the active-pair `(vertex_id, normal)` list and the penalty
-    /// stiffness `κ`.
+    /// Construct from the active-pair `(vertex_id, normal, curvature)` list, where
+    /// `curvature = d²E/dsd² = n̂ᵀ·H_pair·n̂` (`κ` for penalty, `κ·b''(sd)` for IPC).
     #[must_use]
-    pub fn new(active: Vec<(usize, Vec3)>, kappa: f64) -> Self {
-        Self { active, kappa }
+    pub fn new(active: Vec<(usize, Vec3, f64)>) -> Self {
+        Self { active }
     }
 }
 
@@ -151,7 +188,7 @@ impl VjpOp for ContactForceVjp {
         );
         let c = cotangent.as_slice()[0];
         let slot = parent_cotans[0].as_mut_slice();
-        scatter_dfz_dxstar(&self.active, self.kappa, c, slot);
+        scatter_dfz_dxstar(&self.active, c, slot);
     }
 }
 
@@ -196,12 +233,13 @@ impl VjpOp for VelVjp {
 /// Chassis-tape [`VjpOp`] for the contact-force readout along a trajectory:
 /// `fz = Σ force_on_soft.z` at the post-step soft config `x*` with the plane at
 /// height `z − clearance`. Parents `[x_star, z]` (`[n_dof]`, `[1]`), output `fz`
-/// (`[1]`). `∂fz/∂x* = −κ·n̂_z·n̂` per active pair (the S3 factor) and
-/// `∂fz/∂z = ∂fz/∂height = +κ·N_active` (the S1 explicit factor, `∂height/∂z=1`).
+/// (`[1]`). `∂fz/∂x* = −cᵥ·n̂_z·n̂` per active pair (the S3 factor) and
+/// `∂fz/∂z = ∂fz/∂height = +Σ cᵥ` (the S1 explicit factor, `∂height/∂z=1`), where
+/// the per-pair curvature `cᵥ = d²E/dsd²` is `κ` for penalty (so `Σ cᵥ = κ·N`),
+/// `κ·b''(sd)` for IPC.
 #[derive(Clone, Debug)]
 struct ContactForceTrajVjp {
-    active: Vec<(usize, Vec3)>,
-    kappa: f64,
+    active: Vec<(usize, Vec3, f64)>,
     n_dof: usize,
 }
 
@@ -211,8 +249,7 @@ impl VjpOp for ContactForceTrajVjp {
     }
 
     // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
-    // cast_precision_loss: `active.len()` ≤ the soft vertex count (~125); exact as f64.
-    #[allow(clippy::panic, clippy::cast_precision_loss)]
+    #[allow(clippy::panic)]
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
         assert!(
             cotangent.shape() == [1]
@@ -224,10 +261,11 @@ impl VjpOp for ContactForceTrajVjp {
         );
         let c = cotangent.as_slice()[0];
         let (xstar, z) = parent_cotans.split_at_mut(1);
-        // ∂fz/∂x* = −κ·n̂_z·n̂ (shared with ContactForceVjp).
-        scatter_dfz_dxstar(&self.active, self.kappa, c, xstar[0].as_mut_slice());
-        // ∂fz/∂z = +κ·N_active (∂height/∂z = 1) — the trajectory-only term.
-        z[0].as_mut_slice()[0] += c * self.kappa * (self.active.len() as f64);
+        // ∂fz/∂x* = −cᵥ·n̂_z·n̂ (shared with ContactForceVjp).
+        scatter_dfz_dxstar(&self.active, c, xstar[0].as_mut_slice());
+        // ∂fz/∂z = +Σ cᵥ (∂height/∂z = 1) — the trajectory-only term.
+        let sum_curv: f64 = self.active.iter().map(|&(_, _, curv)| curv).sum();
+        z[0].as_mut_slice()[0] += c * sum_curv;
     }
 }
 
@@ -264,9 +302,12 @@ impl VjpOp for VzCarryVjp {
 }
 
 /// Chassis-tape [`VjpOp`] for the rigid platen's position update
-/// `z' = z + Δt·vz'` along a trajectory — the rigid carry's position half.
-/// Parents `[z, vz_next]` (`[1]`, `[1]`), output `z'` (`[1]`);
-/// `∂z'/∂z = 1`, `∂z'/∂vz_next = Δt`.
+/// `z' = z + Δt·vz` along a trajectory — the rigid carry's position half. The
+/// velocity is the PRE-update `vz` (the step's starting velocity), NOT the freshly
+/// updated `vz'`: sim-core integrates position with the old velocity, so this step's
+/// contact force reaches the height only on the NEXT step (verified `z_next ==
+/// z + dt·vz_prev` to machine zero). Parents `[z, vz]` (`[1]`, `[1]`), output `z'`
+/// (`[1]`); `∂z'/∂z = 1`, `∂z'/∂vz = Δt`.
 #[derive(Clone, Copy, Debug)]
 struct ZCarryVjp {
     dt: f64,
@@ -285,7 +326,7 @@ impl VjpOp for ZCarryVjp {
                 && parent_cotans.len() == 2
                 && parent_cotans[0].shape() == [1]
                 && parent_cotans[1].shape() == [1],
-            "ZCarryVjp: expected cot [1] + 2 scalar parents (z, vz_next)",
+            "ZCarryVjp: expected cot [1] + 2 scalar parents (z, vz)",
         );
         let c = cotangent.as_slice()[0];
         parent_cotans[0].as_mut_slice()[0] += c;
@@ -312,7 +353,7 @@ pub struct CoupledStep {
 /// downward half-space (`RigidPlane` normal `−z`) whose height tracks the rigid
 /// body's reference height minus `contact_clearance` (e.g. a platen's half
 /// thickness), so the soft block's top feels the descending body.
-pub struct StaggeredCoupling {
+pub struct StaggeredCoupling<C: PlaneContact = PenaltyRigidContact> {
     model: Model,
     data: Data,
     body: usize,
@@ -336,9 +377,10 @@ pub struct StaggeredCoupling {
     kappa: f64,
     d_hat: f64,
     rigid_damping: f64,
+    _contact: PhantomData<C>,
 }
 
-impl StaggeredCoupling {
+impl<C: PlaneContact> StaggeredCoupling<C> {
     /// Build a coupling of a Neo-Hookean soft block and the rigid `body` in
     /// `model`/`data`.
     ///
@@ -401,6 +443,7 @@ impl StaggeredCoupling {
             kappa,
             d_hat,
             rigid_damping,
+            _contact: PhantomData,
         }
     }
 
@@ -417,11 +460,11 @@ impl StaggeredCoupling {
         self.data.xpos[self.body].z - self.contact_clearance
     }
 
-    fn build_contact(&self, height: f64) -> PenaltyRigidContact {
+    fn build_contact(&self, height: f64) -> C {
         // Downward ceiling at `height`: normal −z, offset −height ⇒ a soft
         // vertex below the plane has positive signed distance `height − z`.
         let plane = RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), -height);
-        PenaltyRigidContact::with_params(vec![plane], self.kappa, self.d_hat)
+        C::from_plane(plane, self.kappa, self.d_hat)
     }
 
     /// A fresh rest-topology soft mesh (the solver consumes one per step, and
@@ -446,7 +489,7 @@ impl StaggeredCoupling {
         let positions = self.positions();
         let readout = self
             .build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions);
+            .pair_readout(&self.fresh_mesh(), &positions);
         (readout.iter().map(|r| r.force_on_soft).sum(), readout.len())
     }
 
@@ -459,26 +502,51 @@ impl StaggeredCoupling {
         self.contact_readout(height).0
     }
 
+    /// Per active contact pair at `positions` with the plane at `height`:
+    /// `(vertex_id, outward normal n̂, curvature cᵥ)` where the local contact
+    /// curvature `cᵥ = d²E/dsd² = n̂ᵀ·H_pair·n̂` is read from the contact's Hessian
+    /// (`κ` for penalty, `κ·b''(sd)` for IPC) — the general per-pair stiffness the
+    /// contact-force gradient factors use, in place of a hard-coded `κ`. Does not
+    /// re-solve or mutate.
+    fn active_pair_curvatures(&self, height: f64, positions: &[Vec3]) -> Vec<(usize, Vec3, f64)> {
+        let contact = self.build_contact(height);
+        contact
+            .pair_readout(&self.fresh_mesh(), positions)
+            .iter()
+            .map(|r| {
+                let ContactPair::Vertex { vertex_id, .. } = r.pair;
+                // H_pair = cᵥ·n̂⊗n̂ ⇒ cᵥ = n̂·(H·n̂).
+                let curv = contact
+                    .hessian(&r.pair, positions)
+                    .contributions
+                    .first()
+                    .map_or(0.0, |e| r.normal.dot(&(e.2 * r.normal)));
+                (vertex_id as usize, r.normal, curv)
+            })
+            .collect()
+    }
+
     /// Analytic `∂(total force_on_soft)/∂(plane height)` at the current soft
     /// configuration, holding the soft positions fixed.
     ///
-    /// For the downward penalty plane, each active pair has
-    /// `force_on_soft = κ(d̂ − sd)·n̂` with `sd = height − z` and unit normal
-    /// `n̂ = −ẑ`, so `∂force/∂height = −κ·n̂ = +κ·ẑ` per pair; over `N_active`
-    /// pairs the total is `+κ·N_active·ẑ`.
+    /// For the downward plane, each active pair has `∂force/∂height = −cᵥ·n̂` with
+    /// curvature `cᵥ = d²E/dsd²` and unit normal `n̂ = −ẑ`, so the per-pair
+    /// contribution is `+cᵥ·ẑ`; over the active set the total is `+(Σ cᵥ)·ẑ`. For
+    /// penalty `cᵥ = κ` so this reduces to `κ·N_active·ẑ`; for IPC `cᵥ = κ·b''(sd)`.
     /// This is the explicit (fixed-position) partial — one factor of the coupled
     /// step's Jacobian, not the total settled-system derivative. Valid in the
     /// contact-engaged regime where the active set is stable across the
-    /// perturbation; at the active-set boundary the true derivative is
-    /// non-smooth (penalty cap; IPC is the deferred cure). FD-checked against
+    /// perturbation; at the active-set boundary the penalty derivative is
+    /// non-smooth (the IPC barrier smooths it). FD-checked against
     /// [`Self::contact_force_at_height`].
-    // `n_active` ≤ the soft vertex count (~125); the usize→f64 cast is exact here.
-    #[allow(clippy::cast_precision_loss)]
     #[must_use]
     pub fn contact_force_height_jacobian(&self, height: f64) -> Vec3 {
-        let n_active = self.contact_readout(height).1;
-        // ∂force/∂height = −κ·n per active pair; plane normal n = −ẑ ⇒ +κ·ẑ.
-        Vec3::new(0.0, 0.0, self.kappa * (n_active as f64))
+        let sum_curv: f64 = self
+            .active_pair_curvatures(height, &self.positions())
+            .iter()
+            .map(|&(_, _, c)| c)
+            .sum();
+        Vec3::new(0.0, 0.0, sum_curv)
     }
 
     /// One-off rigid step from the *current* rigid state with an externally
@@ -487,8 +555,10 @@ impl StaggeredCoupling {
     /// `self` — it reconstructs a scratch `Data` at the current `(qpos, qvel)`,
     /// so it is a pure probe of the rigid step's response to an applied force
     /// (the rigid factor `∂s'/∂xfrc` of the coupled-step Jacobian). For the
-    /// free-body platen under semi-implicit Euler this response is analytically
-    /// `∂vz'/∂fz = dt/m`, `∂z'/∂fz = dt²/m`.
+    /// free-body platen the velocity response is analytically `∂vz'/∂fz = dt/m`
+    /// (the quantity actually consumed). The single-step height response is `0`, not
+    /// `dt²/m`: sim-core integrates position with the step's STARTING velocity, so the
+    /// force reaches the height only on the next step (see `ZCarryVjp`).
     ///
     /// The scratch reproduces the current `(qpos, qvel)` only — faithful for the
     /// keystone scene (a free-joint body with no actuators, `ctrl`, `act`, or
@@ -516,10 +586,10 @@ impl StaggeredCoupling {
     /// plane at `height` and take one dynamic step from the CURRENT
     /// `(self.x, self.v)`, returning the solver (so the caller can read its
     /// pose sensitivity) and the converged `x_final`. Does not advance `self`.
-    fn soft_resolve(&self, height: f64) -> (PenaltyRigidContactSolver<HandBuiltTetMesh>, Vec<f64>) {
+    fn soft_resolve(&self, height: f64) -> (SoftSolver<C>, Vec<f64>) {
         let n = self.n_vertices;
         let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        let solver: SoftSolver<C> = CpuNewtonSolver::new(
             Tet4,
             self.fresh_mesh(),
             self.build_contact(height),
@@ -542,11 +612,7 @@ impl StaggeredCoupling {
     /// the fixed pinned base). Shared by [`Self::coupled_step_load_gradient`]
     /// (tape `step`) and [`Self::coupled_step_load_vz`] (tape-free
     /// `replay_step`) so the loaded-BC mapping has one source of truth.
-    fn build_loaded_solver(
-        &self,
-        height: f64,
-        loaded: &[VertexId],
-    ) -> PenaltyRigidContactSolver<HandBuiltTetMesh> {
+    fn build_loaded_solver(&self, height: f64, loaded: &[VertexId]) -> SoftSolver<C> {
         let bc = BoundaryConditions::new(
             self.pinned.clone(),
             loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
@@ -579,7 +645,7 @@ impl StaggeredCoupling {
             .map(|c| Vec3::new(c[0], c[1], c[2]))
             .collect();
         self.build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions)
+            .pair_readout(&self.fresh_mesh(), &positions)
             .iter()
             .map(|r| r.force_on_soft)
             .sum()
@@ -631,22 +697,16 @@ impl StaggeredCoupling {
             .chunks_exact(3)
             .map(|c| Vec3::new(c[0], c[1], c[2]))
             .collect();
-        let readout = self
-            .build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions);
         let mut explicit = Vec3::zeros();
         let mut implicit = Vec3::zeros();
-        for r in &readout {
-            let ContactPair::Vertex { vertex_id, .. } = r.pair;
-            let n_hat = r.normal;
+        for (v, n_hat, curv) in self.active_pair_curvatures(height, &positions) {
             // ∂sd/∂h = −n̂·ẑ for translating the plane +ẑ (here +1, n̂=−ẑ).
             let dsd_dh = -n_hat.z;
-            // explicit: ∂force/∂h|_x = −κ·(∂sd/∂h)·n̂ per active pair.
-            explicit += -self.kappa * dsd_dh * n_hat;
-            // implicit: (∂force/∂x = −κ·n̂⊗n̂) · ∂x*/∂h.
-            let v = vertex_id as usize;
+            // explicit: ∂force/∂h|_x = −cᵥ·(∂sd/∂h)·n̂ per active pair.
+            explicit += -curv * dsd_dh * n_hat;
+            // implicit: (∂force/∂x = −cᵥ·n̂⊗n̂) · ∂x*/∂h.
             let dxs = Vec3::new(dxstar[3 * v], dxstar[3 * v + 1], dxstar[3 * v + 2]);
-            implicit += -self.kappa * n_hat.dot(&dxs) * n_hat;
+            implicit += -curv * n_hat.dot(&dxs) * n_hat;
         }
         explicit + implicit
     }
@@ -760,21 +820,17 @@ impl StaggeredCoupling {
             .chunks_exact(3)
             .map(|c| Vec3::new(c[0], c[1], c[2]))
             .collect();
-        let readout = self
+        let fz: f64 = self
             .build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions);
-        let fz: f64 = readout.iter().map(|r| r.force_on_soft.z).sum();
-        let active: Vec<(usize, Vec3)> = readout
+            .pair_readout(&self.fresh_mesh(), &positions)
             .iter()
-            .map(|r| {
-                let ContactPair::Vertex { vertex_id, .. } = r.pair;
-                (vertex_id as usize, r.normal)
-            })
-            .collect();
+            .map(|r| r.force_on_soft.z)
+            .sum();
+        let active = self.active_pair_curvatures(height, &positions);
         let force_var = tape.push_custom(
             &[xstar_var],
             Tensor::from_slice(&[fz], &[1]),
-            Box::new(ContactForceVjp::new(active, self.kappa)),
+            Box::new(ContactForceVjp::new(active)),
         );
         // Reaction onto the rigid body, then the rigid step's velocity response.
         let xfrc_var = tape.neg(force_var); // xfrc_z = −force_on_soft.z
@@ -859,7 +915,7 @@ impl StaggeredCoupling {
         let field = MaterialField::uniform(mu, lambda);
         let mesh = HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &field);
         let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> =
+        let solver: SoftSolver<C> =
             CpuNewtonSolver::new(Tet4, mesh, self.build_contact(height), self.cfg, bc);
         let st = solver.replay_step(
             &Tensor::from_slice(&self.x, &[3 * n]),
@@ -874,7 +930,7 @@ impl StaggeredCoupling {
             .collect();
         let fz: f64 = self
             .build_contact(height)
-            .per_pair_readout(
+            .pair_readout(
                 &HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &field),
                 &positions,
             )
@@ -906,7 +962,7 @@ impl StaggeredCoupling {
             .collect();
         let fz: f64 = self
             .build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions)
+            .pair_readout(&self.fresh_mesh(), &positions)
             .iter()
             .map(|r| r.force_on_soft.z)
             .sum();
@@ -931,9 +987,10 @@ impl StaggeredCoupling {
     /// `[x_prev, v_prev, p, z_prev]` (the prev soft state, the material param, and
     /// the plane height `z_prev − clearance`); the next velocity
     /// `v = (x* − x_prev)/Δt` (`VelVjp`), the contact force
-    /// `fz(x*, z_prev)` (`ContactForceTrajVjp`), and the rigid semi-implicit
-    /// step `vz' = a·vz − (Δt/m)·fz` (`VzCarryVjp`), `z' = z + Δt·vz'`
-    /// (`ZCarryVjp`) chain the rigid state forward. `tape.backward(z_N)` then
+    /// `fz(x*, z_prev)` (`ContactForceTrajVjp`), and the rigid carry
+    /// `vz' = a·vz − (Δt/m)·fz` (`VzCarryVjp`), `z' = z + Δt·vz`
+    /// (`ZCarryVjp`, position integrated with the step's STARTING velocity — see
+    /// its doc) chain the rigid state forward. `tape.backward(z_N)` then
     /// accumulates every per-step ∂/∂p (direct material + the state/contact/rigid
     /// feedback) into `p`. FD-validated against the full real coupled re-rollout.
     ///
@@ -1029,24 +1086,18 @@ impl StaggeredCoupling {
                 .chunks_exact(3)
                 .map(|c| Vec3::new(c[0], c[1], c[2]))
                 .collect();
-            let readout = self
+            let force_on_soft: Vec3 = self
                 .build_contact(height)
-                .per_pair_readout(&self.fresh_mesh(), &positions);
-            let fz: f64 = readout.iter().map(|r| r.force_on_soft.z).sum();
-            let active: Vec<(usize, Vec3)> = readout
+                .pair_readout(&self.fresh_mesh(), &positions)
                 .iter()
-                .map(|r| {
-                    let ContactPair::Vertex { vertex_id, .. } = r.pair;
-                    (vertex_id as usize, r.normal)
-                })
-                .collect();
-            let force_on_soft: Vec3 = readout.iter().map(|r| r.force_on_soft).sum();
+                .map(|r| r.force_on_soft)
+                .sum();
+            let active = self.active_pair_curvatures(height, &positions);
             let fz_var = tape.push_custom(
                 &[x_next_var, z_var],
-                Tensor::from_slice(&[fz], &[1]),
+                Tensor::from_slice(&[force_on_soft.z], &[1]),
                 Box::new(ContactForceTrajVjp {
                     active,
-                    kappa: self.kappa,
                     n_dof: 3 * n,
                 }),
             );
@@ -1064,7 +1115,12 @@ impl StaggeredCoupling {
             let z_next = self.data.xpos[self.body].z;
             let vz_next = self.data.qvel[2];
 
-            // Rigid carry nodes: vz' = a·vz − (Δt/m)·fz; z' = z + Δt·vz'.
+            // Rigid carry nodes: vz' = a·vz − (Δt/m)·fz; z' = z + Δt·vz (the OLD
+            // velocity — sim-core integrates position with the pre-update velocity,
+            // so this step's contact force reaches z only NEXT step; verified
+            // `z_next == z + dt·vz_prev` to machine zero). The z-update's velocity
+            // parent is therefore `vz_var` (vz at the step's start), NOT the
+            // freshly-updated `vz_next_var`.
             let vz_next_var = tape.push_custom(
                 &[vz_var, fz_var],
                 Tensor::from_slice(&[vz_next], &[1]),
@@ -1074,7 +1130,7 @@ impl StaggeredCoupling {
                 }),
             );
             let z_next_var = tape.push_custom(
-                &[z_var, vz_next_var],
+                &[z_var, vz_var],
                 Tensor::from_slice(&[z_next], &[1]),
                 Box::new(ZCarryVjp { dt }),
             );
@@ -1113,7 +1169,7 @@ impl StaggeredCoupling {
         // (1)+(2) pose the contact from the rigid body; one dynamic soft step.
         let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
         let contact = self.build_contact(height);
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> =
+        let solver: SoftSolver<C> =
             CpuNewtonSolver::new(Tet4, self.fresh_mesh(), contact, self.cfg, bc);
         let res = solver.replay_step(
             &Tensor::from_slice(&self.x, &[3 * n]),
@@ -1158,6 +1214,35 @@ impl StaggeredCoupling {
 mod tests {
     use super::*;
     use sim_mjcf::load_model;
+    use sim_ml_chassis::autograd::VjpOp;
+
+    /// The generalized contact-force factors use PER-PAIR curvature `cᵥ = d²E/dsd²`
+    /// (`κ·b''(sd)` for IPC), not just penalty's constant `κ`: `ContactForceVjp`
+    /// scatters `−cᵥ·n̂_z·n̂` per pair, and `ContactForceTrajVjp`'s `∂fz/∂z` sums
+    /// `cᵥ`. Distinct per-pair curvatures verify the generalization beyond the
+    /// constant-`κ` penalty path the keystone gates exercise.
+    #[test]
+    fn contact_force_factors_use_per_pair_curvature() {
+        let n = Vec3::new(0.0, 0.0, -1.0); // plane normal −ẑ
+        let active = vec![(0_usize, n, 2.0), (1_usize, n, 5.0)]; // distinct cᵥ
+        // ContactForceVjp: ∂fz/∂x_v z-component = −cᵥ·n̂_z·n̂_z = −cᵥ (cot=1).
+        let mut parent = vec![Tensor::zeros(&[6])];
+        ContactForceVjp::new(active.clone()).vjp(&Tensor::from_slice(&[1.0], &[1]), &mut parent);
+        let g = parent[0].as_slice();
+        assert!(
+            (g[2] + 2.0).abs() < 1e-12 && (g[5] + 5.0).abs() < 1e-12,
+            "∂fz/∂x* should carry per-pair curvature, got {g:?}"
+        );
+        // ContactForceTrajVjp: ∂fz/∂z = Σ cᵥ = 7.
+        let traj = ContactForceTrajVjp { active, n_dof: 6 };
+        let mut parents = vec![Tensor::zeros(&[6]), Tensor::zeros(&[1])];
+        traj.vjp(&Tensor::from_slice(&[1.0], &[1]), &mut parents);
+        assert!(
+            (parents[1].as_slice()[0] - 7.0).abs() < 1e-12,
+            "∂fz/∂z should be Σ cᵥ = 7, got {}",
+            parents[1].as_slice()[0]
+        );
+    }
 
     const PLATEN_MJCF: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
