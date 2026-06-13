@@ -36,6 +36,21 @@ const PLATEN_MJCF: &str = r#"<mujoco>
 
 const N_STEPS: usize = 20; // engaged; slope dz_N/dμ ~ 1e-7, well clear of settling
 
+// A platen started ABOVE contact: it falls under gravity and MAKES contact partway
+// through the rollout (active set 0 → engaged) — a genuine contact-onset event the
+// inverse-design scene above (engaged from step 0) never exercises. Damping 8 (vs the
+// engaged scene's 60) lets the platen actually descend into contact; matches the
+// keystone/IPC make/break gates' fixture.
+const MAKE_CONTACT_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.125">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
 #[test]
 fn trajectory_gradient_matches_fd() {
     // Target irrelevant to the gradient-of-loss check; use 0 so the loss is
@@ -113,5 +128,58 @@ fn recovers_known_material_from_target_trajectory() {
         first_loss > 1e3 * result.loss,
         "loss barely moved: first={first_loss:e} final={:e}",
         result.loss,
+    );
+}
+
+/// Showcase — the co-design gradient stays machine-exact when the N-step rollout
+/// CROSSES a contact MAKE event. The platen starts above contact (z = 0.125),
+/// falls under gravity, and makes contact partway through (~step 70 of 80, active
+/// set 0 → engaged) — an active-set change the inverse-design scene above (engaged
+/// from step 0) never exercises. The gradient-of-objective vs a central FD of the
+/// same objective stays machine-exact (~4e-8) through that transition.
+///
+/// Scope: this carries the *gradient-correctness-through-contact-onset* proof; the
+/// engaged scene above carries the *convergence* proof (a full recovery here would
+/// need ~80-step rollouts × hundreds of iters — minutes). The substrate's
+/// independent make/break validation (vs a re-rolled FD oracle) lives in
+/// `sim-coupling`'s `coupled_trajectory_gradient` / `ipc_trajectory_gradient`.
+#[test]
+fn trajectory_gradient_matches_fd_through_contact_make() {
+    let n = 80;
+    let p = SoftMaterialTrajectoryTarget::new(
+        MAKE_CONTACT_MJCF.to_string(),
+        1,
+        0.005,
+        4,
+        0.1,
+        1.0e-3,
+        3.0e4,
+        1.0e-2,
+        8.0,
+        n,
+        0.0,
+    );
+    let mu = 3.5e4;
+    let (_loss, grad) = p.evaluate(&[mu]);
+
+    let eps = mu * 1e-6;
+    let loss_at = |m: f64| p.evaluate(&[m]).0;
+    let fd = (loss_at(mu + eps) - loss_at(mu - eps)) / (2.0 * eps);
+
+    let rel = (grad[0] - fd).abs() / fd.abs();
+    eprintln!(
+        "through-make dLoss/dμ: analytic={:.6e}  FD={fd:.6e}  rel={rel:.3e}",
+        grad[0]
+    );
+    // Nonzero ⇒ contact really was made mid-rollout: a never-made rollout leaves
+    // z_N μ-independent and the gradient exactly 0 (the failure mode at too-small n).
+    assert!(
+        grad[0].abs() > 1e-11,
+        "gradient ~0 — the platen never made contact (raise n)",
+    );
+    assert!(
+        rel < 1e-5,
+        "gradient {} disagrees with FD {fd} through the make event (rel {rel:e})",
+        grad[0],
     );
 }

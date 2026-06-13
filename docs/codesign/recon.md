@@ -235,7 +235,9 @@ otherwise reused verbatim; only the objective impl and the optimizer *constructi
   once eps is tuned.
 - **PR (this leaf):** `OptConfig.eps` threaded through `optimize` (default 1e-8) +
   `SoftMaterialTrajectoryTarget` + a trajectory inverse-design gate (gradient-vs-FD machine-exact;
-  recovers μ* to tolerance; `converged`) + a worked example. grade A. Single-step path untouched.
+  recovers μ* to tolerance; `converged`) + a **make-event showcase gate** (a platen starting above
+  contact that falls and makes contact mid-rollout — gradient stays machine-exact through the
+  active-set change) + a worked example. grade A. Single-step path untouched.
 - **(later)** richer trajectory objectives (waypoints / multi-target), multi-parameter, the policy
   half (RL) — the trajectory gradient also feeds a control/policy outer loop.
 
@@ -247,11 +249,17 @@ gradient matches a central FD of the trajectory loss to **rel 9.3e-9** (gradient
 objective, not just a descent direction); (2) the optimizer recovers `μ* = 4e4` from `μ₀ = 2e4` to
 **rel 2.93e-7** (μ = 39999.9883, loss 5.5e-19, 229 iters, `converged = true`) — descending orders of
 magnitude. (The §v2.3 spike figures rel ~1e-10 / loss ~1e-26 / ~370 iters were a tighter throwaway
-run, not this gate.) Honest scope: single design parameter, a contact-engaged (deepening/settling)
-rollout — no make/break event in this scene, though the consumed gradient is itself machine-exact
-through genuine make/break (the keystone/IPC gates, which start above contact, establish that); the
-keystone's penalty contact (machine-clean multi-step after the #307 carry fix); the eval rebuilds the
-coupling per parameter (R2 — acceptable at this scene size).
+run, not this gate.) (3) a **make-event showcase** (`trajectory_gradient_matches_fd_through_contact_make`):
+a platen started above contact (z = 0.125, damping 8) falls and makes contact ~step 70 of 80, and the
+gradient-of-objective stays machine-exact vs FD (**rel ~4e-8**) through that active-set change — the
+*convergence* scene above is engaged-from-step-0, so this carries the gradient-correctness-through-
+contact-onset proof separately (a full recovery over an 80-step rollout would be minutes). Honest
+scope: single design parameter; the convergence gate's rollout is contact-engaged (deepening/settling)
+with no make/break event, while the consumed gradient is itself machine-exact through genuine
+make/break (the keystone/IPC gates, which start above contact, establish that independently, and the
+make-event showcase confirms it at the objective level); the keystone's penalty contact (machine-clean
+multi-step after the #307 carry fix); the eval rebuilds the coupling per parameter (R2 — acceptable at
+this scene size).
 
 ## v2.7 Key files / pointers (v2)
 
