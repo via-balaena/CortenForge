@@ -143,6 +143,10 @@ pub struct OptResult {
 /// adaptive scaling handles the design parameters' wide magnitude range (e.g.
 /// `μ ~ 3e4` with a gradient `~1e-5`).
 ///
+/// For a [`Normalized`] problem with a reparametrized (e.g. log) space, prefer
+/// [`Normalized::optimize`], which brackets the physical↔normalized mapping so
+/// `x0` and the result stay in physical units.
+///
 /// # Panics
 /// Panics if `x0.len() != problem.n_params()`.
 #[must_use]
@@ -301,8 +305,9 @@ impl<'a> Normalized<'a> {
     /// `log_space` flag is forwarded (see the type docs).
     ///
     /// # Panics
-    /// Panics unless `residual_scale` is finite, strictly positive, and small
-    /// enough that `1/L²` does not overflow to `inf`.
+    /// Panics unless `residual_scale` is finite and strictly positive; and, if it
+    /// is so small that `1/L²` overflows to `inf`, the forwarded [`new`](Self::new)
+    /// finite-`loss_scale` check fires.
     #[must_use]
     pub fn with_residual_scale(
         inner: &'a dyn CoDesignProblem,
@@ -341,6 +346,9 @@ impl<'a> Normalized<'a> {
 
     /// Map optimizer-space parameters (e.g. an [`OptResult`]'s `params`) back to
     /// physical values (`exp` when [`log_space`](Self) is set, else identity).
+    /// Ordinary callers should prefer [`Self::optimize`], which applies this
+    /// mapping for them; this is exposed for manual control (e.g. finite-difference
+    /// checks in the optimizer's own space).
     #[must_use]
     pub fn to_physical(&self, normalized: &[f64]) -> Vec<f64> {
         if self.log_space {
@@ -355,9 +363,9 @@ impl<'a> Normalized<'a> {
     /// [`log_space`](Self) the parameter step is fractional, so it uses a small
     /// relative `lr = 0.05` (the default `2e3` is a physical-μ step and would
     /// explode in log-space); otherwise it keeps the default `lr`. `loss_tol` is
-    /// tightened to `1e-15` on the (typically dimensionless) loss so the weakly
-    /// sensitive recovery descends deep enough; treat both as tunable starting
-    /// values, not universal constants.
+    /// tightened to `1e-15` (on the typically dimensionless loss) and `max_iters`
+    /// raised to `400` so the weakly sensitive recovery descends deep enough; treat
+    /// all three as tunable starting values, not universal constants.
     #[must_use]
     pub fn recommended_config(&self) -> OptConfig {
         OptConfig {
@@ -379,6 +387,11 @@ impl<'a> Normalized<'a> {
     /// (possibly log) space, so a `log_space` wrapper can't be driven with an
     /// un-transformed `x0` by mistake. (`loss`/`grad_inf` stay in the normalized
     /// space the optimizer worked in.)
+    ///
+    /// # Panics
+    /// Panics if `x0_physical.len() != n_params()` (via [`optimize`]), or — in
+    /// [`log_space`](Self) — if any `x0_physical` is not strictly positive (via
+    /// [`to_normalized`](Self::to_normalized)).
     #[must_use]
     pub fn optimize(&self, x0_physical: &[f64], cfg: &OptConfig) -> OptResult {
         let mut result = optimize(self, &self.to_normalized(x0_physical), cfg);
@@ -638,14 +651,14 @@ impl CoDesignProblem for SoftMaterialTarget {
 /// index** (twice total), unlike the single-step target's one shared build.
 ///
 /// ```no_run
-/// use cf_codesign::{Normalized, optimize, SoftMaterialTrajectoryTarget};
+/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget};
 /// # const MJCF: &str = "";
 /// let target = SoftMaterialTrajectoryTarget::for_inverse_design(MJCF.to_string(), 20, 0.124);
 /// // z_N is weakly sensitive — condition it so the STANDARD eps converges.
 /// let problem = Normalized::with_residual_scale(&target, 0.1, true);
 /// let cfg = problem.recommended_config();
-/// let x0 = problem.to_normalized(&[20_000.0]);
-/// let result = optimize(&problem, &x0, &cfg);
+/// // `optimize` brackets the physical↔normalized mapping (x0 + result in μ units).
+/// let result = problem.optimize(&[20_000.0], &cfg);
 /// assert!(result.converged);
 /// ```
 pub struct SoftMaterialTrajectoryTarget {

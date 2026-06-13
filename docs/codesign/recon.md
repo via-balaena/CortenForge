@@ -244,6 +244,11 @@ otherwise reused verbatim; only the objective impl and the optimizer *constructi
 
 ## v2.6 Validation gate (v2)
 
+> **⚠ SUPERSEDED by §v3** (2026-06-13): the `eps = 1e-12` /
+> `SoftMaterialTrajectoryTarget::recommended_config` path below was a conditioning band-aid and has
+> been RETIRED. The shipped gate now wraps the target in `Normalized` and recovers μ* with the
+> STANDARD `eps = 1e-8` (rel 4.72e-7). This section is kept for history.
+
 CI-runnable, **measured on the shipped gate** (`tests/trajectory_inverse_design.rs`, eps = 1e-12,
 loss_tol = 1e-18 via `SoftMaterialTrajectoryTarget::recommended_config`): (1) the problem's analytic
 gradient matches a central FD of the trajectory loss to **rel 9.3e-9** (gradient correct for the

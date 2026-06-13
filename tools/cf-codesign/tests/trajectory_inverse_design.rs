@@ -185,6 +185,15 @@ fn recovers_known_material_from_target_trajectory() {
     let result = problem.optimize(&[mu0], &cfg);
     let mu = result.params[0];
 
+    // The bracketing remap covers history too: the first record starts at μ₀ (a
+    // physical ~2e4), NOT its log-space image (~10) — pins the history remap loop.
+    let first = result.history.first().expect("history non-empty");
+    assert!(
+        (first.params[0] - mu0).abs() < 1.0,
+        "history params not mapped to physical units: {} (expected ≈ μ₀ {mu0})",
+        first.params[0],
+    );
+
     let rel_mu = (mu - mu_star).abs() / mu_star;
     eprintln!(
         "trajectory inverse design (standard eps): μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) \
@@ -200,10 +209,10 @@ fn recovers_known_material_from_target_trajectory() {
         "did not recover μ*: μ={mu} μ*={mu_star} (rel {rel_mu:e})",
     );
     // The descent made real progress (the loss dropped by orders).
-    let first_loss = result.history.first().expect("history non-empty").loss;
     assert!(
-        first_loss > 1e3 * result.loss,
-        "loss barely moved: first={first_loss:e} final={:e}",
+        first.loss > 1e3 * result.loss,
+        "loss barely moved: first={:e} final={:e}",
+        first.loss,
         result.loss,
     );
 }

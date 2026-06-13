@@ -45,7 +45,7 @@ fn main() {
     let mu0 = 2.0e4;
     println!("Optimizing soft stiffness from μ₀ = {mu0} (λ = 4μ) ...\n");
 
-    // z_N is a position: ∂z_N/∂μ ~ 1e-7, so the raw loss gradient ~1e-10 is below
+    // z_N is a position: ∂z_N/∂μ ~ 1e-7, so the raw loss gradient ~2e-10 is below
     // Adam's standard eps (1e-8) and the optimizer would crawl. Condition the
     // objective with `Normalized` — a dimensionless residual (L = 0.1 m block edge)
     // plus log-μ relative steps — so the STANDARD eps keeps its scale-invariance.
@@ -55,10 +55,12 @@ fn main() {
     // are all in physical μ units.
     let result = problem.optimize(&[mu0], &cfg);
 
+    // μ is physical; loss/|grad| are in the NORMALIZED (dimensionless / log-μ) space
+    // the optimizer worked in.
     for (k, rec) in result.history.iter().enumerate() {
         if k % 40 == 0 {
             println!(
-                "  iter {k:3}: μ = {:>9.2}   loss = {:.3e}   |grad| = {:.3e}",
+                "  iter {k:3}: μ = {:>9.2}   loss(norm) = {:.3e}   |grad|(norm) = {:.3e}",
                 rec.params[0], rec.loss, rec.grad_inf,
             );
         }
