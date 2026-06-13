@@ -457,3 +457,85 @@ robustness/generality, not a single config that works everywhere.
 - Adam update (the eps mechanism): `sim/L0/ml-chassis/src/optimizer.rs:244` (`lr·m̂/(√v̂ + eps)`).
 - v2 gate to rewrite onto the standard eps: `tools/cf-codesign/tests/trajectory_inverse_design.rs`.
 
+---
+
+# The POLICY half — open-loop control inverse design (opened 2026-06-13)
+
+The DESIGN half (v1/v2/v3) optimizes a soft MATERIAL μ. The mission's outer loop
+differentiates w.r.t. *both* design AND policy parameters; this section closes
+the policy half: optimize the **control inputs** applied each step so a coupled
+soft↔rigid trajectory hits a target. Keystone-side recon:
+`docs/keystone/control_gradient_recon.md`.
+
+## P.1 What the substrate now provides
+
+A new keystone primitive `StaggeredCoupling::coupled_trajectory_control_gradient`
+(`sim/L1/coupling`, merged as the first leaf of this arc): roll the coupled
+system forward applying a per-step vertical control force to the platen, on ONE
+chassis tape, then a single `tape.backward(z_N)` gives `∂z_N/∂u_k` for EVERY
+control input. The control force adds to the platen's `xfrc_applied`, so
+`∂vz'/∂u_k = +Δt/m` — it rides the same rigid carry as the contact reaction (a
+3-parent `VzControlCarryVjp`), and the rest of the per-step tape is identical to
+the material gradient. **S0 spike: machine-exact (~1e-11) vs the independent
+re-rolled coupled-FD oracle for all controls; open-loop confirmed tractable.**
+
+## P.2 Design — `ControlScheduleTarget`
+
+`n_params = n_steps`; `evaluate(controls)` builds a fresh coupling (the `&mut`
+rollout) and reads `(z_N, [∂z_N/∂u_k])` in ONE backward; loss `½(z_N − z*)²`,
+gradient `residual · ∂z_N/∂u`. The soft material is held fixed (joint design+policy
+is a follow-on). `lower_bounds = None` — control forces are SIGNED.
+
+**Under-determination (honest):** N controls for one scalar target ⇒ the inverse
+is under-determined (and the LAST control has zero effect on `z_N` — its velocity
+bump never integrates into a height). The objective is **behavior recovery** (hit
+the target platen height), the natural open-loop trajectory-opt framing, not
+unique-parameter recovery. All `∂z_N/∂u_k ≥ 0`, so the loss is well-behaved.
+
+## P.3 Conditioning — the SIGNED-parameter case (the real difference from v3)
+
+`z_N` is a position so `∂z_N/∂u_k ~ 1e-5` and the raw loss gradient (`~3e-10`) is
+below Adam's standard `eps = 1e-8` — the same scaling smell v3 diagnosed. But a
+control force is **signed**, so the v3 **log-space lever does NOT apply** (it needs
+positive params). The fix is the `Normalized` **`loss_scale` lever ALONE**
+(dimensionless residual `1/L²`) + a control-appropriate `lr` (an O(1)-newton step,
+not the default physical-μ step). **Measured: loss_scale-only converges to
+|z_N − target| ~1e-13** (the v3 worry that residual-norm alone tops out ~1e-6 did
+NOT bite here — the gradient stays above eps until the residual is ~1e-12 with a
+large enough loss_scale; `recommended_normalized(1e-3)` → loss_scale 1e6). A
+negative-control gate confirms normalization is load-bearing (same lr, raw target
+stalls at ~7e-6). `recommended_normalized(residual_scale)` returns the wrapper;
+the caller sets `lr ≈ 0.02` explicitly (documented, not band-aided).
+
+## P.4 Ladder / slicing
+
+- **PR-A** (sim-coupling): `coupled_trajectory_control_gradient` +
+  `coupled_trajectory_control_z` oracle + `VzControlCarryVjp` + FD gate. grade A.
+- **PR-B** (cf-codesign): `ControlScheduleTarget` + inverse-design gate (loss-FD,
+  behavior recovery, negative control) + worked example + the bundled
+  `Normalized::evaluate` `is_finite` hardening (deferred from the v3 review).
+  grade A.
+
+## P.5 Validation gate (policy)
+
+`tools/cf-codesign/tests/control_inverse_design.rs`:
+1. `control_loss_gradient_matches_fd` — `residual · ∂z_N/∂u` vs central FD of the
+   loss, per control input (~1e-11).
+2. `inverse_design_recovers_target_behavior` — from `u = 0`, recover a schedule
+   driving `z_N` to a reference behavior (|z_N − target| 9e-14, 249 iters,
+   standard eps).
+3. `normalization_is_load_bearing` — raw target (same lr, no `Normalized`) does
+   NOT reach the target (the load-bearing negative control).
+
++ worked `examples/control_inverse_design.rs` (the recovered schedule is uniform
+with the no-effect final control left at 0 — a clean signature of the rigid
+carry).
+
+## P.6 Next
+
+- Closed-loop feedback policy (`u_k = π_θ(state_k)`, differentiate the policy's
+  state dependence — a small extra `state_k → u_k` chain on the same tape).
+- Joint design+policy (both the μ leaf and the control leaves on one tape, one
+  backward — the mission's "both" in one outer loop).
+- Then lattice-as-design-var (mission #5), system-ID, the capstone exo loop.
+
