@@ -18,6 +18,12 @@
 //!   N-step contact-engaged coupled rollout* (the keystone multi-step gradient
 //!   `∂z_N/∂μ`, one `tape.backward` across both engines and every step boundary).
 //!
+//! A weakly-sensitive objective (a tiny gradient, like the position-valued
+//! trajectory outcome `z_N`) is conditioned for the optimizer by the general
+//! [`Normalized`] wrapper — a dimensionless residual plus log-space (relative)
+//! parameter steps — so the **standard** Adam `eps` keeps its scale-invariance
+//! instead of crawling (rather than chasing a fragile per-scene tiny `eps`).
+//!
 //! Scope: a single design parameter, the keystone's contact-engaged regime.
 //! Multi-parameter / manufacturing-constrained / policy co-optimization are
 //! documented follow-ons (`docs/codesign/recon.md`).
@@ -70,14 +76,16 @@ pub struct OptConfig {
     /// Stop when the (absolute) loss falls below this.
     pub loss_tol: f64,
     /// Adam's numerical-stability constant `ε` (the `+ε` in
-    /// `lr·m̂/(√v̂ + ε)`). The default `1e-8` is Adam's standard value and fine
-    /// when the gradient is well above it. **Set it BELOW the gradient
-    /// magnitude for weakly-sensitive objectives:** if `‖gradient‖ ≲ ε`, the `ε`
-    /// term dominates the denominator and Adam loses its scale-invariance,
-    /// degenerating into tiny SGD-like steps that crawl (e.g. a trajectory
-    /// outcome `z_N` whose `∂z_N/∂μ ~ 1e-7` yields a `~1e-10` loss gradient —
-    /// see [`SoftMaterialTrajectoryTarget`]). Below the gradient scale, Adam
-    /// recovers full scale-invariance and converges normally.
+    /// `lr·m̂/(√v̂ + ε)`). The default `1e-8` is Adam's standard value and is
+    /// scale-invariant when the gradient is well above it; if `‖gradient‖ ≲ ε`
+    /// the `ε` term dominates the denominator and Adam degenerates into tiny
+    /// SGD-like steps that crawl. **For a weakly-sensitive objective (a tiny
+    /// gradient, e.g. a position-valued trajectory outcome `z_N` whose
+    /// `∂z_N/∂μ ~ 1e-7` gives a `~2e-10` loss gradient), prefer conditioning the
+    /// objective with [`Normalized`] so the gradient rises above this standard
+    /// `ε`** — a robust, scale-aware fix — rather than chasing a fragile per-scene
+    /// tiny `ε` (which only works while the un-normalized gradient stays above it).
+    /// `ε` remains exposed as the legitimate general Adam knob it is.
     pub eps: f64,
 }
 
@@ -86,8 +94,8 @@ impl Default for OptConfig {
     /// (gradient criterion disabled — stop on the absolute loss or the iteration
     /// cap), and `eps = 1e-8` (Adam's standard value). Tuned for the keystone
     /// `μ ~ 3e4` single-step stiffness scene; opt into a gradient-based stop by
-    /// setting `grad_tol > 0`, and lower `eps` for weakly-sensitive objectives
-    /// (see [`OptConfig::eps`]).
+    /// setting `grad_tol > 0`, and condition a weakly-sensitive objective with
+    /// [`Normalized`] rather than shrinking `eps` (see [`OptConfig::eps`]).
     fn default() -> Self {
         Self {
             lr: 2.0e3,
@@ -198,6 +206,231 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
         iters: cfg.max_iters,
         converged: false,
         history,
+    }
+}
+
+/// A [`CoDesignProblem`] decorator that **conditions** an objective for gradient
+/// descent: it rescales the loss/gradient and (optionally) reparametrizes the
+/// design variables into a better-scaled space, so a stock Adam (`OptConfig`'s
+/// standard `eps = 1e-8`) keeps its scale-invariance instead of crawling.
+///
+/// # Why this exists
+///
+/// Adam's update is `lr · m̂ / (√v̂ + eps)` — scale-invariant (the gradient
+/// *magnitude* cancels) ONLY while `‖grad‖ ≫ eps`; below `eps` the `+ eps`
+/// dominates the denominator and Adam degenerates into eps-dominated SGD that
+/// crawls. A weakly-sensitive design objective — e.g. a position-valued outcome
+/// against a large-magnitude parameter, where `∂(outcome)/∂μ` is tiny — produces
+/// a gradient *below* the standard `eps`, so the optimizer stalls. Rather than
+/// chase a per-scene tiny `eps` (fragile — the right value tracks the
+/// un-normalized gradient and shrinks with the scene), normalize the objective so
+/// its gradient is `O(1)`-ish and the STANDARD `eps` works across magnitudes and
+/// scenes (`lr` and `loss_tol` remain per-objective tunables).
+///
+/// # The two levers (both validated by the v3 spike, `docs/codesign/recon.md`)
+///
+/// - **`loss_scale` — a dimensionless residual.** The loss and its gradient are
+///   multiplied by `loss_scale`. For a residual objective `½(y − y*)²`, passing
+///   `loss_scale = 1/L²` (a characteristic length `L` carrying `y`'s unit) yields
+///   `½((y − y*)/L)²` — a dimensionless loss, so `loss_tol` reads as a
+///   relative-tolerance². (See [`Self::with_residual_scale`].) On its own a
+///   constant `loss_scale` only shifts the gradient up by a fixed factor, which can
+///   leave it near `eps` near the optimum (the gradient still → 0 there); it is the
+///   weaker lever.
+/// - **`log_space` — relative parameter steps.** When set, the optimizer works in
+///   `p = ln(param)` and this wrapper maps to/from the physical value. The chain
+///   rule multiplies the gradient by `dμ/dp = μ`, which lifts a tiny `∂/∂μ` above
+///   `eps` *throughout* descent (the stronger lever for positive scale parameters
+///   like stiffness); an Adam step becomes a *fractional* change in the parameter,
+///   and `param > 0` is enforced structurally (a finite lower bound still maps
+///   through `ln` and runs as a no-op safety net). Use a smaller, relative `lr`
+///   (≈ 0.05) in this space — see [`Self::recommended_config`].
+///
+/// Both compose: the gradient the optimizer sees is `loss_scale · (dμ/dp) ·
+/// ∂loss/∂μ`. The transforms apply element-wise, so this generalizes to any
+/// vector of positive design variables (geometry, lattice density, …), which is
+/// why it lives as a general combinator rather than being baked into one target.
+/// Put **both** levers on a SINGLE wrapper — nesting a `Normalized` inside another
+/// would double-apply the `ln`/`exp` reparametrization.
+///
+/// # Example
+///
+/// ```no_run
+/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget};
+/// # const MJCF: &str = "";
+/// let target = SoftMaterialTrajectoryTarget::for_inverse_design(MJCF.to_string(), 20, 0.124);
+/// // Dimensionless residual (L = the 0.1 m block edge) + log-μ relative steps.
+/// let problem = Normalized::with_residual_scale(&target, 0.1, true);
+/// let cfg = problem.recommended_config();          // standard eps = 1e-8
+/// // `optimize` brackets the physical↔normalized mapping: x0 and the result's
+/// // params are in PHYSICAL units (no manual to_normalized / to_physical).
+/// let result = problem.optimize(&[20_000.0], &cfg);
+/// let mu = result.params[0];
+/// ```
+pub struct Normalized<'a> {
+    inner: &'a dyn CoDesignProblem,
+    /// Multiplier applied to the loss and its gradient.
+    loss_scale: f64,
+    /// Whether the optimizer's parameter space is `ln(param)` (relative steps).
+    log_space: bool,
+}
+
+impl<'a> Normalized<'a> {
+    /// Wrap `inner` with an explicit `loss_scale` and `log_space` flag.
+    ///
+    /// # Panics
+    /// Panics unless `loss_scale` is finite and strictly positive — a zero,
+    /// negative, or non-finite scale would silently flip the descent direction,
+    /// fake a converged (zero) loss, or poison the gradient with `NaN`/`inf`.
+    #[must_use]
+    pub fn new(inner: &'a dyn CoDesignProblem, loss_scale: f64, log_space: bool) -> Self {
+        assert!(
+            loss_scale.is_finite() && loss_scale > 0.0,
+            "loss_scale must be finite and > 0, got {loss_scale}",
+        );
+        Self {
+            inner,
+            loss_scale,
+            log_space,
+        }
+    }
+
+    /// Wrap a **residual** objective `½(y − y*)²` so its residual is measured in
+    /// units of the characteristic length `residual_scale` (`L`): sets
+    /// `loss_scale = 1/L²`, giving the dimensionless loss `½((y − y*)/L)²`. The
+    /// `log_space` flag is forwarded (see the type docs).
+    ///
+    /// # Panics
+    /// Panics unless `residual_scale` is finite, strictly positive, and small
+    /// enough that `1/L²` does not overflow to `inf`.
+    #[must_use]
+    pub fn with_residual_scale(
+        inner: &'a dyn CoDesignProblem,
+        residual_scale: f64,
+        log_space: bool,
+    ) -> Self {
+        assert!(
+            residual_scale.is_finite() && residual_scale > 0.0,
+            "residual_scale must be finite and > 0, got {residual_scale}",
+        );
+        // `new` rejects the residual `inf`/0 cases (L→0 ⇒ 1/L²→inf; L→inf ⇒ 0).
+        Self::new(inner, residual_scale.powi(-2), log_space)
+    }
+
+    /// Map physical design parameters to the space the optimizer works in
+    /// (`ln` when [`log_space`](Self) is set, else identity). Use it on the
+    /// initial guess `x0` before [`optimize`].
+    ///
+    /// # Panics
+    /// In `log_space`, panics if any parameter is not strictly positive
+    /// (`ln` of a non-positive value is undefined).
+    #[must_use]
+    pub fn to_normalized(&self, physical: &[f64]) -> Vec<f64> {
+        if self.log_space {
+            physical
+                .iter()
+                .map(|&x| {
+                    assert!(x > 0.0, "log_space requires positive params, got {x}");
+                    x.ln()
+                })
+                .collect()
+        } else {
+            physical.to_vec()
+        }
+    }
+
+    /// Map optimizer-space parameters (e.g. an [`OptResult`]'s `params`) back to
+    /// physical values (`exp` when [`log_space`](Self) is set, else identity).
+    #[must_use]
+    pub fn to_physical(&self, normalized: &[f64]) -> Vec<f64> {
+        if self.log_space {
+            normalized.iter().map(|&p| p.exp()).collect()
+        } else {
+            normalized.to_vec()
+        }
+    }
+
+    /// A starting-point [`OptConfig`] for the normalized space, on the **standard
+    /// `eps = 1e-8`** (the point of normalizing — no special eps). In
+    /// [`log_space`](Self) the parameter step is fractional, so it uses a small
+    /// relative `lr = 0.05` (the default `2e3` is a physical-μ step and would
+    /// explode in log-space); otherwise it keeps the default `lr`. `loss_tol` is
+    /// tightened to `1e-15` on the (typically dimensionless) loss so the weakly
+    /// sensitive recovery descends deep enough; treat both as tunable starting
+    /// values, not universal constants.
+    #[must_use]
+    pub fn recommended_config(&self) -> OptConfig {
+        OptConfig {
+            lr: if self.log_space {
+                0.05
+            } else {
+                OptConfig::default().lr
+            },
+            loss_tol: 1.0e-15,
+            max_iters: 400,
+            ..OptConfig::default()
+        }
+    }
+
+    /// Run [`optimize`] with the physical↔normalized mapping bracketed: `x0` is
+    /// given in **physical** units and the returned [`OptResult`]'s `params` (and
+    /// every `history` record's `params`) are mapped back to physical units. This
+    /// is the footgun-free entry point — a caller never touches the optimizer's
+    /// (possibly log) space, so a `log_space` wrapper can't be driven with an
+    /// un-transformed `x0` by mistake. (`loss`/`grad_inf` stay in the normalized
+    /// space the optimizer worked in.)
+    #[must_use]
+    pub fn optimize(&self, x0_physical: &[f64], cfg: &OptConfig) -> OptResult {
+        let mut result = optimize(self, &self.to_normalized(x0_physical), cfg);
+        result.params = self.to_physical(&result.params);
+        for rec in &mut result.history {
+            rec.params = self.to_physical(&rec.params);
+        }
+        result
+    }
+}
+
+impl CoDesignProblem for Normalized<'_> {
+    fn n_params(&self) -> usize {
+        self.inner.n_params()
+    }
+
+    fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
+        let physical = self.to_physical(params);
+        let (loss, grad) = self.inner.evaluate(&physical);
+        debug_assert_eq!(
+            grad.len(),
+            physical.len(),
+            "inner CoDesignProblem returned a gradient of the wrong length",
+        );
+        // dL_norm/dp = loss_scale · (dx/dp) · ∂L/∂x, with dx/dp = x in log-space
+        // (chain rule, since x = exp(p)) or 1 otherwise.
+        let scaled = grad
+            .iter()
+            .zip(&physical)
+            .map(|(&g, &x)| {
+                let dx_dp = if self.log_space { x } else { 1.0 };
+                self.loss_scale * dx_dp * g
+            })
+            .collect();
+        (loss * self.loss_scale, scaled)
+    }
+
+    fn lower_bounds(&self) -> Option<Vec<f64>> {
+        // In log-space `param > 0` is automatic (exp is always positive), so a
+        // finite positive floor maps through `ln` (a no-op safety net), and a
+        // non-positive floor — meaningless in log-space — maps to −∞ (no clamp)
+        // rather than panicking, keeping this a total combinator. The loss_scale
+        // does not affect bounds.
+        self.inner.lower_bounds().map(|lb| {
+            if self.log_space {
+                lb.iter()
+                    .map(|&b| if b > 0.0 { b.ln() } else { f64::NEG_INFINITY })
+                    .collect()
+            } else {
+                lb
+            }
+        })
     }
 }
 
@@ -391,25 +624,28 @@ impl CoDesignProblem for SoftMaterialTarget {
 /// which start the platen above contact) establish that independently.
 ///
 /// **Conditioning.** `z_N` is a position, so `∂z_N/∂μ` is small (`~1e-7` for the
-/// keystone scene) and the loss gradient is `~1e-10`. That is *below* Adam's
-/// default `eps = 1e-8`, so the optimizer must run with a smaller
-/// [`OptConfig::eps`] (below the gradient scale) or it crawls — see that field's
-/// docs and [`Self::recommended_config`]. The objective is monotone in μ (a
-/// stiffer block holds the platen higher), so `target_z = z_N(μ*)` has the
-/// unique minimizer `μ*`.
+/// keystone scene) and the raw loss gradient is `~2e-10` — *below* Adam's
+/// standard `eps = 1e-8`, so optimizing this target directly would crawl
+/// (eps-dominated, see [`OptConfig::eps`]). The fix is to condition the objective
+/// with [`Normalized`] (a dimensionless residual + log-μ relative steps), which
+/// lifts the gradient above the standard `eps` — so you keep `eps = 1e-8` rather
+/// than chasing a fragile per-scene tiny value. See [`Normalized`] and
+/// `docs/codesign/recon.md` §v3. The objective is monotone in μ (a stiffer block
+/// holds the platen higher), so `target_z = z_N(μ*)` has the unique minimizer `μ*`.
 ///
 /// Because `coupled_trajectory_material_gradient` takes `&mut self` (it advances
 /// the rollout), each `evaluate` rebuilds the coupling **once per parameter
 /// index** (twice total), unlike the single-step target's one shared build.
 ///
 /// ```no_run
-/// use cf_codesign::{optimize, SoftMaterialTrajectoryTarget};
+/// use cf_codesign::{Normalized, optimize, SoftMaterialTrajectoryTarget};
 /// # const MJCF: &str = "";
-/// // z_N is weakly sensitive, so use the target's recommended config (it sets
-/// // Adam's eps below the ~1e-10 loss gradient) rather than `OptConfig::default`.
 /// let target = SoftMaterialTrajectoryTarget::for_inverse_design(MJCF.to_string(), 20, 0.124);
-/// let cfg = target.recommended_config();
-/// let result = optimize(&target, &[20_000.0], &cfg);
+/// // z_N is weakly sensitive — condition it so the STANDARD eps converges.
+/// let problem = Normalized::with_residual_scale(&target, 0.1, true);
+/// let cfg = problem.recommended_config();
+/// let x0 = problem.to_normalized(&[20_000.0]);
+/// let result = optimize(&problem, &x0, &cfg);
 /// assert!(result.converged);
 /// ```
 pub struct SoftMaterialTrajectoryTarget {
@@ -476,23 +712,6 @@ impl SoftMaterialTrajectoryTarget {
         Self::new(
             mjcf, 1, 0.005, 4, 0.1, 1.0e-3, 3.0e4, 1.0e-2, 60.0, n_steps, target_z,
         )
-    }
-
-    /// An [`OptConfig`] tuned for this (weakly-sensitive) trajectory objective —
-    /// the batteries-included counterpart to [`Self::for_inverse_design`]. It
-    /// lowers Adam's `eps` to `1e-12` (below the `~1e-10` loss gradient, so the
-    /// optimizer keeps its scale-invariance instead of crawling — see
-    /// [`OptConfig::eps`]) and tightens `loss_tol`/`max_iters` for the deep
-    /// convergence the small `z_N` slope needs. Prefer this over
-    /// [`OptConfig::default`], whose `eps = 1e-8` is too large for `z_N`.
-    #[must_use]
-    pub fn recommended_config(&self) -> OptConfig {
-        OptConfig {
-            eps: 1.0e-12,
-            loss_tol: 1.0e-18,
-            max_iters: 400,
-            ..OptConfig::default()
-        }
     }
 
     /// Build the coupling at stiffness `mu` (`λ = 4μ` via `StaggeredCoupling`).
