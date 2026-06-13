@@ -1000,18 +1000,21 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// free-body `Δt/m` and damping `a = 1 − Δt·c/m`). See
     /// `docs/keystone/time_adjoint_recon.md`.
     ///
-    /// **Accuracy / scope (penalty R3).** Each per-step factor is machine-exact
+    /// **Accuracy / scope.** Each per-step factor is machine-exact
     /// (`TrajectoryStepVjp` is gated against re-solve FD in
     /// `sim-soft/tests/trajectory_step_vjp.rs`; the rigid carry against sim-core),
-    /// and the composed gradient matches the full-coupled FD to ~3e-4 (rel) while
-    /// the contact is FIRMLY engaged (`sd ≪ d̂`, a stable active set). With penalty
-    /// contact, static force balance settles at the band edge (`sd ≈ d̂`, where
-    /// the C⁰ force → 0): `z_N(μ)` stays smooth, but the penalty force's
-    /// derivative kinks at the active-set boundary, so this per-step
-    /// linearization (active set frozen at the rollout's μ) loses accuracy as the
-    /// platen reaches marginal contact or bounces through make/break events. That
-    /// non-smoothness — not a formula error — is the documented limit IPC would
-    /// lift. Free-body rigid factor (the keystone platen).
+    /// and the composed multi-step gradient is machine-exact too — it matches the
+    /// full-coupled FD to ~3e-8 (rel) at every rollout length and engagement
+    /// depth, through genuine contact make/break alike (gated in
+    /// `tests/coupled_trajectory_gradient.rs` for penalty and
+    /// `tests/ipc_trajectory_gradient.rs` for IPC). The earlier ~3e-4 "penalty
+    /// floor" — and the make/break degradation the keystone time-adjoint reported
+    /// — was a rigid position-carry off-by-one, NOT penalty non-smoothness:
+    /// sim-core integrates the height with the step's STARTING velocity
+    /// (`z_{k+1} = z_k + Δt·vz_k`), so this step's contact force reaches `z` only
+    /// next step, but `ZCarryVjp` had wired it to the freshly-updated `vz'` (see
+    /// `docs/ipc/recon.md` §9). With the carry corrected both penalty and IPC are
+    /// machine-clean. Free-body rigid factor (the keystone platen).
     ///
     /// # Panics
     /// Panics if the rigid step diverges (a mis-constructed coupling), or if the
