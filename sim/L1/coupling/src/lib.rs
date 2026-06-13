@@ -53,7 +53,7 @@
 //!   ONE tape, read `(∂z_N/∂μ_total, ∂z_N/∂θ)` from one `tape.backward` — the
 //!   mission's "one outer loop differentiating w.r.t. *both* design and policy".
 
-use sim_core::{Data, Model, SpatialVector};
+use sim_core::{DMatrix, Data, Model, SpatialVector, mj_jac_point};
 use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
@@ -111,6 +111,57 @@ fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64])
         slot[3 * v + 1] += cot * g * n.y;
         slot[3 * v + 2] += cot * g * n.z;
     }
+}
+
+/// The rigid engine's **multi-DOF** velocity response to an applied spatial force
+/// on `body` — the matrix successor to the scalar free-body `∂vz'/∂fz = dt/m`
+/// ([`StaggeredCoupling::rigid_vz_response`]).
+///
+/// Returns `∂qvel'/∂xfrc_applied[body] = Δt · M⁻¹ · J_comᵀ` (shape `nv × 6`), where
+/// `J_com` is the body's COM spatial Jacobian (`mj_jac_point` at `xipos`, rows 0–2
+/// angular / 3–5 linear — the `[τ; f]` layout the integrator projects through
+/// `mj_apply_ft`), `M = data.qM` the joint-space mass matrix, and `Δt =
+/// model.timestep`. Evaluated at the current configuration of `data`.
+///
+/// This is the rigid factor of the coupled-step Jacobian generalized off the
+/// free-body platen: for a single free body the column collapses to the scalar
+/// `dt/m` on the contact axis; for an **articulated** mechanism a contact force at
+/// a point maps to a generalized joint acceleration coupled across joints (the
+/// off-diagonal terms the scalar drops — e.g. a force on a distal link accelerates
+/// the proximal joint). FD-validated against a real scratch step in
+/// `tests/rigid_multidof_response.rs` (hinge + 2-link, machine-exact).
+///
+/// **Velocity vs position.** Under semi-implicit Euler this is the *velocity*
+/// response; sim-core integrates `qpos` with the post-update velocity, so the
+/// state carry over a trajectory threads this column (the velocity rows) together
+/// with the dense state transition `A` ([`Data::transition_derivatives`]) for the
+/// position rows. The exact composition into a multi-step coupled carry is the
+/// follow-on leaf (FD-gated end-to-end — the staggered contact/height timing does
+/// not follow naively from the bare-step linearization; see
+/// `docs/keystone/multidof_rigid_recon.md`).
+///
+/// To route a pure contact force `f` applied at an off-COM point `r_c`, the caller
+/// sets `xfrc_applied[body] = [(r_c − xipos) × f ; f]` (the contact moment) so the
+/// column — defined w.r.t. the COM-interpreted `xfrc` the integrator consumes —
+/// maps it correctly.
+///
+/// # Panics
+/// Panics if `M` is singular (a degenerate model — should not occur for a
+/// well-posed mechanism).
+// expect_used: a singular mass matrix is a malformed-model programmer error
+// surfaced loudly, mirroring `rigid_step_probe`'s divergence-panic rationale.
+#[allow(clippy::expect_used)]
+#[must_use]
+pub fn rigid_xfrc_column(model: &Model, data: &Data, body: usize) -> DMatrix<f64> {
+    // J at the body COM (xipos): 6×nv, rows 0–2 angular, 3–5 linear — the same
+    // point and frame the integrator's `mj_apply_ft` uses for `xfrc_applied`.
+    let jac = mj_jac_point(model, data, body, &data.xipos[body]); // 6 × nv
+    let minv = data
+        .qM
+        .clone()
+        .try_inverse()
+        .expect("joint-space mass matrix M must be invertible");
+    model.timestep * minv * jac.transpose() // (nv × nv)·(nv × 6) = nv × 6
 }
 
 /// Chassis-tape [`VjpOp`] adapting a `sim-core` rigid step's response into the
@@ -2139,6 +2190,26 @@ mod tests {
         assert!(
             (grad_mu - fd).abs() / fd.abs() < 1e-5,
             "smoke: material tape grad {grad_mu} vs FD {fd}"
+        );
+    }
+
+    /// Lib-level smoke test of the multi-DOF rigid factor `rigid_xfrc_column`
+    /// (the scientific FD validation — hinge / 2-link / free-body — is in
+    /// `tests/rigid_multidof_response.rs`): on the free platen the column reduces
+    /// to the scalar `dt/m` on the contact axis, tying the matrix factor to the
+    /// merged `rigid_vz_response`.
+    #[test]
+    fn rigid_xfrc_column_free_body_smoke() {
+        let model = load_model(PLATEN_MJCF).expect("platen MJCF loads");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let col = rigid_xfrc_column(&model, &data, 1);
+        assert_eq!(col.shape(), (6, 6)); // free joint: nv=6, 6 spatial-force columns
+        // ∂vz'/∂f_z (qvel[2] vs xfrc[5]) is the free-body dt/m.
+        assert!(
+            (col[(2, 5)] - 1.0e-3 / 0.2).abs() < 1e-12,
+            "free-body ∂vz'/∂f_z must be dt/m, got {}",
+            col[(2, 5)]
         );
     }
 
