@@ -159,3 +159,104 @@ history. Honest scope: single design parameter, single coupled step, contact-eng
   `Adam`, `step_in_place`).
 - Composition precedent: `tools/cf-device-design` (a tools/ crate consuming the sim stack).
 - Keystone recons: `docs/keystone/{recon, s2_…, s3_…, s4_…, s5_…}.md`.
+
+---
+
+# v2 — the TRAJECTORY half (opened 2026-06-13)
+
+*The first real consumer of the keystone's now-machine-clean MULTI-step coupled gradient
+(`coupled_trajectory_material_gradient`, made machine-exact through contact make/break by the IPC
+arc #307). v1 consumed only the single-step gradient; nothing consumed the trajectory gradient yet
+— that's the gap this closes.*
+
+> **Close the trajectory co-design loop: a `SoftMaterialTrajectoryTarget` whose cost is
+> `½(z_N − z*)²` after an N-step contact-engaged coupled rollout, with the gradient
+> `∂z_N/∂μ + 4·∂z_N/∂λ` read from `coupled_trajectory_material_gradient(n, idx)` — recovering a
+> known μ* over a whole trajectory. Reuses the Adam `optimize` loop + `CoDesignProblem` trait; the
+> only new objective code swaps the single-step gradient for the trajectory one.**
+
+## v2.1 What the substrate now provides
+
+The keystone (merged #306 time-adjoint, #307 IPC fix) exposes the multi-step design gradient:
+- `coupled_trajectory_material_gradient(n_steps, param_idx) → (z_N, ∂z_N/∂p)` — the platen's FINAL
+  height after `n_steps` of the REAL coupled `step` dynamics, and its sensitivity to the soft
+  material parameter (0=μ, 1=λ), via ONE `tape.backward(z_N)` across both engines AND every step
+  boundary. **`&mut self`** — it advances the coupling, so each call consumes a fresh build (unlike
+  the single-step `&self` gradient, which one build can call twice for idx 0 and 1).
+- The block ties `λ = 4μ` at construction, so a rebuild-path FD along that line measures the TOTAL
+  `d/dμ|_{λ=4μ} = ∂/∂μ + 4·∂/∂λ` — the documented S5 linear combination. The objective gradient
+  uses the same total.
+
+## v2.2 Design — `SoftMaterialTrajectoryTarget`
+
+A new `CoDesignProblem` parallel to `SoftMaterialTarget`, the single-step path left untouched:
+- Holds the MJCF + block/contact params + `n_steps` + `target_z`. The platen MJCF starts already
+  in contact (e.g. `pos.z = 0.108`, plane at `z − clearance`), so the rollout is engaged from
+  step 0 — no separate probe `height` (the rollout reads `self.plane_height()` internally each step).
+- `evaluate([μ])`: build a fresh coupling at μ, call `coupled_trajectory_material_gradient(n, 0)` →
+  `(z_N, ∂z_N/∂μ)`, then a SECOND fresh build for `(n, 1)` → `∂z_N/∂λ` (two builds because the
+  method mutates `self`). `loss = ½(z_N − z*)²`, `grad = (z_N − z*)·(∂z_N/∂μ + 4·∂z_N/∂λ)`.
+- `forward_z(μ)` runs the rollout and returns `z_N` (to set up an inverse-design target).
+
+## v2.3 S0 spike (THROWAWAY, deleted) — measured, three findings
+
+A `#[ignore]`'d spike in `cf-codesign` prototyped the problem inline and ran the keystone
+platen-on-block scene (start `z = 0.108`, n = 20, damping 60, κ = μ = 3e4, d̂ = 1e-2):
+
+1. **★ Gradient FD-gate: MACHINE-EXACT.** `d/dμ ½(z_N − z*)²` analytic `1.143423e-8` vs central FD
+   of the trajectory loss (fresh coupling rebuilt + real `step` loop per μ±ε — an INDEPENDENT
+   oracle) `1.143423e-8`, **rel 9.3e-9**. The trajectory gradient is consumed correctly.
+2. **Conditioning: monotone & invertible, weakly sensitive.** `z_N(μ)` rises monotonically
+   (`z(2e4) = 0.1234 < z(4e4) = 0.1255`) ⇒ a unique minimizer; slope `dz_N/dμ ≈ 1e-7` (n ≤ 20;
+   it falls to ~4e-8 by n = 30 as the platen settles). The whole μ ∈ [2e4, 4e4] range moves `z_N`
+   by only ~2 mm — weak sensitivity, but that's the physics (a position outcome), not a defect.
+3. **★ Inverse-design recovery + the ONE design refinement.** With the chassis Adam at its default
+   `eps = 1e-8`, recovery CRAWLED (rel ~5e-2 after 1200 iters). Root cause: the objective gradient
+   is `residual·slope ≈ 2e-3 · 1e-7 ≈ 2e-10`, BELOW Adam's `eps`, so `lr·m̂/(√v̂ + eps)` is
+   eps-dominated and Adam degenerates to tiny SGD-like steps (loses its scale-invariance). Dropping
+   `eps` below the gradient scale restores it: recovery to **rel ~1e-10** (loss ~1e-26) in ~370
+   iters, robust across `lr ∈ [2e3, 1e4]` and `eps ∈ [1e-12, 1e-16]`. (The single-step v1 escaped
+   this only narrowly — its gradient ~2e-7 sits just above eps.)
+
+## v2.4 Decision (head-engineer) — expose Adam `eps` in `OptConfig`
+
+The spike forced one refinement to the shared loop: **add an `eps` field to `OptConfig`** (default
+`1e-8`, so the single-step `SoftMaterialTarget` gate is byte-for-byte unchanged) and have `optimize`
+build the optimizer with the full `OptimizerConfig::Adam { … eps … }` instead of the
+`OptimizerConfig::adam(lr)` shortcut. Rationale: `eps` is a legitimate, pre-existing Adam knob;
+exposing it is NOT reinventing the optimizer, and it's a GENERAL need — any small-sensitivity design
+variable (a position-valued trajectory outcome today, geometry/lattice tomorrow) produces gradients
+that fall below the default eps. The `optimize` loop logic and the `CoDesignProblem` trait are
+otherwise reused verbatim; only the objective impl and the optimizer *construction* change.
+
+## v2.5 Ladder / slicing
+
+- **S0 spike (THROWAWAY, `#[ignore]`).** §v2.3 — DONE: gradient machine-exact, recovery rel ~1e-10
+  once eps is tuned.
+- **PR (this leaf):** `OptConfig.eps` threaded through `optimize` (default 1e-8) +
+  `SoftMaterialTrajectoryTarget` + a trajectory inverse-design gate (gradient-vs-FD machine-exact;
+  recovers μ* to tolerance; `converged`) + a worked example. grade A. Single-step path untouched.
+- **(later)** richer trajectory objectives (waypoints / multi-target), multi-parameter, the policy
+  half (RL) — the trajectory gradient also feeds a control/policy outer loop.
+
+## v2.6 Validation gate (v2)
+
+CI-runnable, **measured on the shipped gate** (`tests/trajectory_inverse_design.rs`, eps = 1e-12,
+loss_tol = 1e-18 via `SoftMaterialTrajectoryTarget::recommended_config`): (1) the problem's analytic
+gradient matches a central FD of the trajectory loss to **rel 9.3e-9** (gradient correct for the
+objective, not just a descent direction); (2) the optimizer recovers `μ* = 4e4` from `μ₀ = 2e4` to
+**rel 2.93e-7** (μ = 39999.9883, loss 5.5e-19, 229 iters, `converged = true`) — descending orders of
+magnitude. (The §v2.3 spike figures rel ~1e-10 / loss ~1e-26 / ~370 iters were a tighter throwaway
+run, not this gate.) Honest scope: single design parameter, a contact-engaged (deepening/settling)
+rollout — no make/break event in this scene, though the consumed gradient is itself machine-exact
+through genuine make/break (the keystone/IPC gates, which start above contact, establish that); the
+keystone's penalty contact (machine-clean multi-step after the #307 carry fix); the eval rebuilds the
+coupling per parameter (R2 — acceptable at this scene size).
+
+## v2.7 Key files / pointers (v2)
+
+- Trajectory gradient: `sim/L1/coupling/src/lib.rs` (`coupled_trajectory_material_gradient`).
+- Keystone trajectory gate (the FD-oracle `final_z` pattern to mirror):
+  `sim/L1/coupling/tests/coupled_trajectory_gradient.rs`, `ipc_trajectory_gradient.rs`.
+- Optimizer: `sim/L0/ml-chassis/src/optimizer.rs` (`OptimizerConfig::Adam { eps }`).
+- Time-adjoint / IPC recons: `docs/keystone/time_adjoint_recon.md`, `docs/ipc/recon.md`.
