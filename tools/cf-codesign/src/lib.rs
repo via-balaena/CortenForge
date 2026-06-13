@@ -10,10 +10,10 @@
 //! objective) and reuses the chassis Adam optimizer
 //! ([`sim_ml_chassis::OptimizerConfig`]) rather than reinventing one. The mission
 //! aims at "one outer loop differentiating w.r.t. **both** design and policy
-//! parameters"; the concrete problems here exercise each axis **separately** so
-//! far (a single design parameter OR a control schedule — the joint loop is a
-//! follow-on), each backed by a worked **inverse-design** demo that recovers a
-//! target behavior:
+//! parameters"; the concrete problems here exercise each axis separately (a single
+//! design parameter, a control schedule, or a closed-loop policy) AND **jointly**
+//! ([`JointTarget`] — both axes on one tape, one backward), each backed by a worked
+//! **inverse-design** demo that recovers a target behavior:
 //!
 //! *Design axis* — tune a soft body's Neo-Hookean material so a rigid-side
 //! outcome hits a target:
@@ -24,13 +24,26 @@
 //!   `∂z_N/∂μ`, one `tape.backward` across both engines and every step boundary).
 //!
 //! *Policy axis* — tune the control inputs applied each step:
-//! - [`ControlScheduleTarget`] — an open-loop per-step platen control-force
+//! - [`ControlScheduleTarget`] — an **open-loop** per-step platen control-force
 //!   schedule `u_0 … u_{N−1}` so the platen's height after the coupled rollout
 //!   hits a target (the keystone multi-step *control* gradient `∂z_N/∂u_k`, the
 //!   whole vector from one `tape.backward`). The control force adds to the
 //!   platen's `xfrc_applied`, so it rides the same coupled tape as the material
-//!   gradient. (Closed-loop feedback policies and joint design+policy
-//!   optimization are documented follow-ons.)
+//!   gradient.
+//! - [`FeedbackPolicyTarget`] — a **closed-loop** state-feedback policy
+//!   `u_k = π_θ(state_k)` ([`DiffPolicy`]/[`LinearFeedback`]) whose parameters θ
+//!   are tuned so the platen's height after the rollout hits a target (the
+//!   keystone closed-loop *policy* gradient `∂z_N/∂θ`, backprop-through-time
+//!   across the state→control recurrence from one `tape.backward`).
+//!
+//! *Joint axis* — the mission's "one outer loop differentiating w.r.t. **both**
+//! design and policy parameters":
+//! - [`JointTarget`] — optimize the soft material `μ` **and** a feedback policy `θ`
+//!   *together* so the platen's height hits a target, reading BOTH gradient blocks
+//!   `(∂z_N/∂μ_total, ∂z_N/∂θ)` from ONE
+//!   [`StaggeredCoupling::coupled_trajectory_joint_gradient`] backward. It owns the
+//!   mixed conditioning (positive `μ` log-reparametrized internally, signed `θ`
+//!   linear) so a single `loss_scale`-conditioned Adam loop drives both.
 //!
 //! A weakly-sensitive objective (a tiny gradient, like the position-valued
 //! trajectory outcome `z_N`) is conditioned for the optimizer by the general
@@ -38,10 +51,11 @@
 //! parameter steps — so the **standard** Adam `eps` keeps its scale-invariance
 //! instead of crawling (rather than chasing a fragile per-scene tiny `eps`).
 //!
-//! Scope: a single design parameter (material) or an open-loop control schedule,
-//! the keystone's contact-engaged regime. Closed-loop feedback policies, *joint*
-//! design+policy optimization, and manufacturing-constrained co-optimization are
-//! documented follow-ons (`docs/codesign/recon.md`).
+//! Scope: a single design parameter (material), an open-loop control schedule, a
+//! closed-loop state-feedback policy, or joint design+policy, all in the keystone's
+//! contact-engaged regime. Richer policies (MLP), multi-parameter design, and
+//! manufacturing-constrained co-optimization are documented follow-ons
+//! (`docs/codesign/recon.md`).
 //!
 //! ```no_run
 //! use cf_codesign::{optimize, OptConfig, SoftMaterialTarget};
@@ -52,7 +66,7 @@
 //! assert!(result.converged);
 //! ```
 
-use sim_coupling::StaggeredCoupling;
+use sim_coupling::{DiffPolicy, LinearFeedback, StaggeredCoupling};
 use sim_ml_chassis::OptimizerConfig;
 
 /// A differentiable design objective the [`optimize`] loop drives: it maps a
@@ -1010,6 +1024,418 @@ impl CoDesignProblem for ControlScheduleTarget {
     // here by construction (it is the signed-parameter case).
 }
 
+/// A co-design problem over a **closed-loop feedback policy**: tune the policy
+/// parameters `θ` of `u_k = π_θ(state_k)` ([`DiffPolicy`]) so the platen's height
+/// after an `n_steps` coupled rollout hits `target_z`. Loss `½(z_N − target_z)²`.
+///
+/// The closed-loop analogue of [`ControlScheduleTarget`]. There the parameters are
+/// a per-step *schedule* (each `u_k` free); here they are the *policy weights*,
+/// shared across every step, and the control at each step is a function of the
+/// platen state — a genuine feedback law. Each
+/// [`evaluate`](CoDesignProblem::evaluate) reads `(z_N, ∂z_N/∂θ)` from one
+/// [`StaggeredCoupling::coupled_trajectory_policy_gradient`] — a single
+/// `tape.backward` that backpropagates through time across the state→control
+/// recurrence, so the feedback weights' gradient (which flows *only* through the
+/// recurrence) is captured exactly.
+///
+/// **Under-determination (honest scope).** A `P`-parameter policy against one
+/// scalar target `z_N` is under-determined for `P > 1`: gradient descent finds *a*
+/// policy achieving `z_N = target_z`, not a unique one. The objective is
+/// behavior-recovery (hit the target platen height), the natural trajectory-
+/// optimization framing — not parameter recovery.
+///
+/// **Conditioning.** `z_N` is a position so `∂z_N/∂θ` is small (`~1e-5..1e-4`) and
+/// the raw loss gradient falls below Adam's standard `eps`. Condition with
+/// [`Normalized`]. The first policy ([`LinearFeedback`]) has **signed** weights, so
+/// the log-space lever does NOT apply — use the `loss_scale` (dimensionless-
+/// residual) lever only (`log_space = false`) with a state-feedback-appropriate
+/// `lr`. See [`Self::recommended_normalized`]. (A positive-gain PD parametrization,
+/// if added, may re-open the log-space lever — re-measure then.)
+///
+/// Generic over the policy `P` so a richer policy (e.g. an MLP `DiffPolicy`) plugs
+/// into the same loop; the concrete `FeedbackPolicyTarget<LinearFeedback>` coerces
+/// to `&dyn CoDesignProblem` for [`optimize`]/[`Normalized`].
+pub struct FeedbackPolicyTarget<P: DiffPolicy> {
+    mjcf: String,
+    /// Rigid body index in the model (the platen).
+    body: usize,
+    contact_clearance: f64,
+    n_per_edge: usize,
+    edge: f64,
+    /// Fixed soft-block stiffness `μ` (the material is not a design variable here).
+    mu: f64,
+    dt: f64,
+    kappa: f64,
+    d_hat: f64,
+    rigid_damping: f64,
+    /// Number of coupled steps in the rollout.
+    n_steps: usize,
+    /// Target platen height after the rollout.
+    target_z: f64,
+    /// The feedback policy whose parameters are optimized.
+    policy: P,
+}
+
+impl<P: DiffPolicy> FeedbackPolicyTarget<P> {
+    /// Construct with explicit coupling parameters, a fixed soft stiffness `mu`,
+    /// and the feedback `policy`.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        mjcf: String,
+        body: usize,
+        contact_clearance: f64,
+        n_per_edge: usize,
+        edge: f64,
+        mu: f64,
+        dt: f64,
+        kappa: f64,
+        d_hat: f64,
+        rigid_damping: f64,
+        n_steps: usize,
+        target_z: f64,
+        policy: P,
+    ) -> Self {
+        Self {
+            mjcf,
+            body,
+            contact_clearance,
+            n_per_edge,
+            edge,
+            mu,
+            dt,
+            kappa,
+            d_hat,
+            rigid_damping,
+            n_steps,
+            target_z,
+            policy,
+        }
+    }
+
+    /// Build the coupling at the fixed stiffness `mu` (`λ = 4μ`).
+    fn build(&self) -> StaggeredCoupling {
+        build_coupling(
+            &self.mjcf,
+            self.body,
+            self.contact_clearance,
+            self.n_per_edge,
+            self.edge,
+            self.mu,
+            self.dt,
+            self.kappa,
+            self.d_hat,
+            self.rigid_damping,
+        )
+    }
+
+    /// The platen's height `z_N` after the `n_steps` closed-loop coupled rollout
+    /// under the policy params — the forward outcome (no gradient). Used to set up
+    /// an inverse-design target.
+    #[must_use]
+    pub fn forward_z(&self, params: &[f64]) -> f64 {
+        self.build()
+            .coupled_trajectory_policy_z(&self.policy, params, self.n_steps)
+    }
+
+    /// The target this problem optimizes toward.
+    #[must_use]
+    pub const fn target_z(&self) -> f64 {
+        self.target_z
+    }
+
+    /// A [`Normalized`] wrapper conditioning this target for the standard Adam
+    /// `eps`: a dimensionless residual (`loss_scale = 1/L²`, `L` the characteristic
+    /// platen-height scale) with `log_space = false` (the first policy's weights are
+    /// signed — log-space requires positive parameters). Drive it with
+    /// [`Normalized::optimize`] and an [`OptConfig`] on the **standard** `eps` but a
+    /// state-feedback-appropriate `lr`. See `examples/policy_inverse_design.rs`.
+    #[must_use]
+    pub fn recommended_normalized(&self, residual_scale: f64) -> Normalized<'_> {
+        Normalized::with_residual_scale(self, residual_scale, false)
+    }
+}
+
+impl FeedbackPolicyTarget<LinearFeedback> {
+    /// Convenience for the worked closed-loop demo with the keystone fixture (the
+    /// `platen` body 1, clearance 5 mm, 4³ block edge 0.1 m, μ = 3e4, dt 1 ms,
+    /// κ = 3e4, d̂ = 1e-2, damping 60 — the contact-engaged rollout) and a
+    /// [`LinearFeedback`] policy `u = w_z·z + w_vz·vz + b`. The platen MJCF should
+    /// start already in contact (e.g. `pos.z = 0.108`). `target_z` is the platen
+    /// height to drive to (e.g. set it to [`Self::forward_z`] of a reference policy).
+    #[must_use]
+    pub fn linear_for_inverse_design(mjcf: String, n_steps: usize, target_z: f64) -> Self {
+        Self::new(
+            mjcf,
+            1,
+            0.005,
+            4,
+            0.1,
+            3.0e4,
+            1.0e-3,
+            3.0e4,
+            1.0e-2,
+            60.0,
+            n_steps,
+            target_z,
+            LinearFeedback,
+        )
+    }
+}
+
+impl<P: DiffPolicy> CoDesignProblem for FeedbackPolicyTarget<P> {
+    fn n_params(&self) -> usize {
+        self.policy.n_params()
+    }
+
+    /// `(loss, gradient)` at the policy parameters `params`.
+    ///
+    /// # Panics
+    /// Panics if `params.len() != policy.n_params()` (the gradient call asserts it).
+    fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
+        // One closed-loop coupled rollout yields z_N and the whole ∂z_N/∂θ vector.
+        let (z_n, dz_dtheta) =
+            self.build()
+                .coupled_trajectory_policy_gradient(&self.policy, params, self.n_steps);
+        let residual = z_n - self.target_z;
+        let grad = dz_dtheta.iter().map(|&g| residual * g).collect();
+        (0.5 * residual * residual, grad)
+    }
+
+    // The first policy's weights are signed (no lower bound), so `lower_bounds =
+    // None` keeps the `Normalized` log-space lever inapplicable by construction
+    // (the signed-parameter case, like `ControlScheduleTarget`).
+}
+
+/// **The joint design+policy co-design problem** — the mission's "one outer loop
+/// differentiating w.r.t. **both** design and policy parameters". It optimizes the
+/// soft material design variable `μ` (stiffness scale, `λ = 4μ`) AND a closed-loop
+/// feedback policy `u_k = π_θ(state_k)` *together* so the platen's height after the
+/// coupled rollout hits `target_z`. Each [`evaluate`](CoDesignProblem::evaluate)
+/// reads BOTH gradient blocks `(∂z_N/∂μ_total, ∂z_N/∂θ)` from ONE
+/// [`StaggeredCoupling::coupled_trajectory_joint_gradient`] backward pass.
+///
+/// **Mixed conditioning (the joint-specific choice).** `μ` is a *positive* scale
+/// parameter (the log-space lever applies — relative steps, as the v3 material
+/// target found) while the policy weights `θ` are *signed* (log-space does not
+/// apply — `loss_scale` only, as the control/policy targets found). A single
+/// [`Normalized`] `log_space` flag cannot serve both. This target therefore owns
+/// the **`μ` log-reparametrization internally**: its parameter vector is
+/// `p = [ln μ, θ_0, θ_1, …]` (so the `μ` slot takes *relative* Adam steps and `μ`
+/// stays positive by construction), and `evaluate` applies the `dμ/d(ln μ) = μ`
+/// chain rule to the `μ` gradient component while passing the `θ` components
+/// through linearly. The whole `p`-vector is then uniformly linear, so a single
+/// [`Normalized`] with the `loss_scale` (dimensionless-residual) lever and one `lr`
+/// conditions both blocks (the relative-`μ` and linear-`θ` steps are both `O(1)`).
+/// Use [`Self::recommended_normalized`] + [`Self::x0`].
+///
+/// **Under-determination.** `1 + P` parameters against one scalar target is
+/// under-determined — this is behavior-recovery (hit `target_z`), the natural
+/// co-design framing, not unique `(μ*, θ*)` recovery.
+///
+/// Generic over the policy `P`; `JointTarget<LinearFeedback>` coerces to
+/// `&dyn CoDesignProblem`.
+pub struct JointTarget<P: DiffPolicy> {
+    mjcf: String,
+    body: usize,
+    contact_clearance: f64,
+    n_per_edge: usize,
+    edge: f64,
+    dt: f64,
+    kappa: f64,
+    d_hat: f64,
+    rigid_damping: f64,
+    n_steps: usize,
+    target_z: f64,
+    policy: P,
+}
+
+impl<P: DiffPolicy> JointTarget<P> {
+    /// Construct with explicit coupling parameters and the feedback `policy`.
+    /// (`μ` is a design variable here, not a constructor argument — it enters
+    /// through the optimized parameter vector as `ln μ`.)
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        mjcf: String,
+        body: usize,
+        contact_clearance: f64,
+        n_per_edge: usize,
+        edge: f64,
+        dt: f64,
+        kappa: f64,
+        d_hat: f64,
+        rigid_damping: f64,
+        n_steps: usize,
+        target_z: f64,
+        policy: P,
+    ) -> Self {
+        Self {
+            mjcf,
+            body,
+            contact_clearance,
+            n_per_edge,
+            edge,
+            dt,
+            kappa,
+            d_hat,
+            rigid_damping,
+            n_steps,
+            target_z,
+            policy,
+        }
+    }
+
+    /// Build the coupling at the physical stiffness `mu` (`λ = 4μ`).
+    fn build_at(&self, mu: f64) -> StaggeredCoupling {
+        build_coupling(
+            &self.mjcf,
+            self.body,
+            self.contact_clearance,
+            self.n_per_edge,
+            self.edge,
+            mu,
+            self.dt,
+            self.kappa,
+            self.d_hat,
+            self.rigid_damping,
+        )
+    }
+
+    /// The platen's height `z_N` after the closed-loop rollout at physical
+    /// stiffness `mu` under policy params `theta` — the forward outcome (no
+    /// gradient). Takes PHYSICAL `μ` (not `ln μ`); used to set up the target.
+    #[must_use]
+    pub fn forward_z(&self, mu: f64, theta: &[f64]) -> f64 {
+        self.build_at(mu)
+            .coupled_trajectory_policy_z(&self.policy, theta, self.n_steps)
+    }
+
+    /// Assemble an optimizer start vector `p = [ln μ0, θ0…]` from a PHYSICAL
+    /// `(mu0, theta0)`. The optimizer works in this `p`-space (see the type docs).
+    ///
+    /// # Panics
+    /// Panics if `mu0 <= 0` (its logarithm is the optimized parameter) or
+    /// `theta0.len() != policy.n_params()`.
+    #[must_use]
+    pub fn x0(&self, mu0: f64, theta0: &[f64]) -> Vec<f64> {
+        assert!(
+            mu0 > 0.0,
+            "mu0 must be positive (the optimized param is ln μ), got {mu0}"
+        );
+        assert_eq!(
+            theta0.len(),
+            self.policy.n_params(),
+            "theta0 length {} != policy n_params {}",
+            theta0.len(),
+            self.policy.n_params(),
+        );
+        let mut p = Vec::with_capacity(1 + theta0.len());
+        p.push(mu0.ln());
+        p.extend_from_slice(theta0);
+        p
+    }
+
+    /// Read the PHYSICAL design `(μ, θ)` back out of an optimizer parameter vector
+    /// `p = [ln μ, θ…]` (`μ = exp(p[0])`).
+    ///
+    /// # Panics
+    /// Panics if `p` is empty.
+    #[must_use]
+    pub fn to_physical(&self, p: &[f64]) -> (f64, Vec<f64>) {
+        assert!(!p.is_empty(), "joint parameter vector must be non-empty");
+        (p[0].exp(), p[1..].to_vec())
+    }
+
+    /// The target this problem optimizes toward.
+    #[must_use]
+    pub const fn target_z(&self) -> f64 {
+        self.target_z
+    }
+
+    /// A [`Normalized`] wrapper conditioning this target for the standard Adam
+    /// `eps`: a dimensionless residual (`loss_scale = 1/L²`) with `log_space =
+    /// false` — the `μ` log-reparametrization is already done *inside* this target
+    /// (the parameter vector is `[ln μ, θ…]`), so `Normalized` only needs to supply
+    /// the `loss_scale` lever uniformly over the now-linear `p`-vector. Drive it
+    /// with [`Normalized::optimize`] (or [`optimize`]) and an [`OptConfig`] on the
+    /// **standard** `eps` and a single `lr ~ 0.03` (both the relative-`μ` and the
+    /// linear-`θ` steps are `O(1)`). See `examples/joint_inverse_design.rs`.
+    ///
+    /// Note: the **load-bearing** conditioning for the joint loop is the internal
+    /// log-μ reparametrization (it lets one `lr` serve the `3e4`-scale `μ` and the
+    /// `O(1)` `θ`, and already lifts the `p`-space gradient near/above the standard
+    /// `eps`); the `loss_scale` lever here is additional headroom, not strictly
+    /// required for convergence (unlike the single-axis policy target, where the
+    /// signed-parameter case makes `loss_scale` itself load-bearing).
+    #[must_use]
+    pub fn recommended_normalized(&self, residual_scale: f64) -> Normalized<'_> {
+        Normalized::with_residual_scale(self, residual_scale, false)
+    }
+}
+
+impl JointTarget<LinearFeedback> {
+    /// Convenience for the worked joint demo with the keystone fixture (the
+    /// `platen` body 1, clearance 5 mm, 4³ block edge 0.1 m, dt 1 ms, κ = 3e4,
+    /// d̂ = 1e-2, damping 60) and a [`LinearFeedback`] policy. The platen MJCF
+    /// should start already in contact (e.g. `pos.z = 0.108`).
+    #[must_use]
+    pub fn linear_for_inverse_design(mjcf: String, n_steps: usize, target_z: f64) -> Self {
+        Self::new(
+            mjcf,
+            1,
+            0.005,
+            4,
+            0.1,
+            1.0e-3,
+            3.0e4,
+            1.0e-2,
+            60.0,
+            n_steps,
+            target_z,
+            LinearFeedback,
+        )
+    }
+}
+
+impl<P: DiffPolicy> CoDesignProblem for JointTarget<P> {
+    fn n_params(&self) -> usize {
+        1 + self.policy.n_params()
+    }
+
+    /// `(loss, gradient)` at `p = [ln μ, θ…]`. The `μ` component of the gradient
+    /// carries the `dμ/d(ln μ) = μ` chain-rule factor; the `θ` components are
+    /// linear. One joint backward yields both blocks.
+    ///
+    /// # Panics
+    /// Panics if `p.len() != 1 + policy.n_params()`.
+    fn evaluate(&self, p: &[f64]) -> (f64, Vec<f64>) {
+        assert_eq!(
+            p.len(),
+            1 + self.policy.n_params(),
+            "joint param length {} != 1 + policy n_params {}",
+            p.len(),
+            1 + self.policy.n_params(),
+        );
+        let mu = p[0].exp();
+        let theta = &p[1..];
+        // ONE backward over the coupled rollout → both gradient blocks.
+        let (z_n, dz_dmu, dz_dtheta) =
+            self.build_at(mu)
+                .coupled_trajectory_joint_gradient(&self.policy, theta, self.n_steps);
+        let residual = z_n - self.target_z;
+        let mut grad = Vec::with_capacity(p.len());
+        // d loss / d(ln μ) = residual · ∂z/∂μ_total · μ (the log-μ chain rule).
+        grad.push(residual * dz_dmu * mu);
+        // d loss / dθ_i = residual · ∂z/∂θ_i (linear).
+        grad.extend(dz_dtheta.iter().map(|&g| residual * g));
+        (0.5 * residual * residual, grad)
+    }
+
+    // μ is reparametrized as ln μ (positive by construction, no bound needed) and
+    // the θ weights are signed (no bound) — so `lower_bounds = None`.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,5 +1503,100 @@ mod tests {
         let (loss, grad) = wrapped.evaluate(&[1.0]);
         assert!((loss - 1.0).abs() < 1e-15, "loss scaled by loss_scale");
         assert!((grad[0] - 1.5).abs() < 1e-15, "grad scaled by loss_scale");
+    }
+
+    // Platen already in contact (the keystone trajectory fixture).
+    const POLICY_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.108">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+    /// Lib-level smoke test of [`FeedbackPolicyTarget`] (the scientific FD
+    /// validation is in `tests/policy_inverse_design.rs`): the linear feedback
+    /// policy advertises 3 params, the loss/gradient are finite with the correct
+    /// `residual · ∂z_N/∂θ` sign wiring, and the feedback-weight gradients are
+    /// nonzero (the closed-loop recurrence is live, not just the bias).
+    #[test]
+    fn feedback_policy_target_smoke() {
+        let n_steps = 6;
+        let setup =
+            FeedbackPolicyTarget::linear_for_inverse_design(POLICY_MJCF.to_string(), n_steps, 0.0);
+        assert_eq!(setup.n_params(), 3);
+
+        let theta = [-15.0_f64, -3.0, 1.2];
+        // Make the target the policy's OWN outcome ⇒ zero residual ⇒ zero gradient.
+        let z_star = setup.forward_z(&theta);
+        let at_target = FeedbackPolicyTarget::linear_for_inverse_design(
+            POLICY_MJCF.to_string(),
+            n_steps,
+            z_star,
+        );
+        let (loss0, grad0) = at_target.evaluate(&theta);
+        assert!(
+            loss0 < 1e-20 && grad0.iter().all(|g| g.abs() < 1e-12),
+            "zero residual ⇒ zero grad"
+        );
+
+        // Off-target: finite loss, the feedback weights carry nonzero gradient.
+        let off = FeedbackPolicyTarget::linear_for_inverse_design(
+            POLICY_MJCF.to_string(),
+            n_steps,
+            z_star + 1e-3,
+        );
+        let (loss, grad) = off.evaluate(&theta);
+        assert_eq!(grad.len(), 3);
+        assert!(loss > 0.0 && loss.is_finite() && grad.iter().all(|g| g.is_finite()));
+        assert!(
+            grad[0].abs() > 1e-12 && grad[1].abs() > 1e-12,
+            "feedback-weight gradients should be nonzero (recurrence live), got {grad:?}"
+        );
+    }
+
+    /// Lib-level smoke test of [`JointTarget`] (the scientific FD validation is in
+    /// `tests/joint_inverse_design.rs`): `n_params = 1 + policy` over `[ln μ, θ]`,
+    /// the `x0`/`to_physical` round-trip, a zero-residual point gives zero gradient,
+    /// and an off-target point gives a finite gradient whose design (`ln μ`) and
+    /// policy components are both live.
+    #[test]
+    fn joint_target_smoke() {
+        let n_steps = 6;
+        let setup = JointTarget::linear_for_inverse_design(POLICY_MJCF.to_string(), n_steps, 0.0);
+        assert_eq!(setup.n_params(), 4);
+
+        // x0 / to_physical round-trip.
+        let p0 = setup.x0(3.0e4, &[-15.0, -3.0, 1.2]);
+        let (mu_rt, th_rt) = setup.to_physical(&p0);
+        assert!((mu_rt - 3.0e4).abs() < 1e-6 && (th_rt[0] + 15.0).abs() < 1e-12);
+
+        // Zero residual ⇒ zero gradient (target = the point's own outcome).
+        let z_star = setup.forward_z(3.0e4, &[-15.0, -3.0, 1.2]);
+        let at = JointTarget::linear_for_inverse_design(POLICY_MJCF.to_string(), n_steps, z_star);
+        let (loss0, grad0) = at.evaluate(&p0);
+        assert!(
+            loss0 < 1e-20 && grad0.iter().all(|g| g.abs() < 1e-12),
+            "zero residual ⇒ zero grad"
+        );
+
+        // Off-target: finite gradient, both the design (ln μ) and policy blocks live.
+        let off =
+            JointTarget::linear_for_inverse_design(POLICY_MJCF.to_string(), n_steps, z_star + 1e-3);
+        let (loss, grad) = off.evaluate(&p0);
+        assert_eq!(grad.len(), 4);
+        assert!(loss > 0.0 && grad.iter().all(|g| g.is_finite()));
+        assert!(
+            grad[0].abs() > 1e-12,
+            "design (ln μ) block should be live, got {}",
+            grad[0]
+        );
+        assert!(
+            grad[1..].iter().any(|g| g.abs() > 1e-12),
+            "policy block should be live, got {:?}",
+            &grad[1..]
+        );
     }
 }
