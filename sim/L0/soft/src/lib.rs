@@ -55,7 +55,8 @@ pub mod viz;
 pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{
     ActivePairsFor, ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout,
-    NullContact, PenaltyRigidContact, RigidPlane, filter_pair_readouts_to_referenced,
+    IpcRigidContact, NullContact, PenaltyRigidContact, RigidPlane,
+    filter_pair_readouts_to_referenced,
 };
 pub use differentiable::{
     CpuDifferentiable, Differentiable, MaterialStepVjp, NewtonStepVjp, StateStepVjp, TapeNodeKey,
@@ -159,3 +160,17 @@ pub type PenaltyRigidContactSolver<Msh> = solver::CpuNewtonSolver<
 /// load-bearing F4 consumer of the Yeoh arc) builds against this alias.
 pub type PenaltyRigidContactYeohSolver<Msh> =
     solver::CpuNewtonSolver<element::Tet4, Msh, contact::PenaltyRigidContact, material::Yeoh, 4, 1>;
+
+/// IPC-flavored sibling of [`PenaltyRigidContactSolver`] — pinned to
+/// [`IpcRigidContact`] (the C²-barrier successor to penalty).
+///
+/// `NeoHookean` + `Tet4`, generic over the mesh impl. Specialize via `Msh` (e.g.
+/// `IpcRigidContactSolver<HandBuiltTetMesh>` for the keystone block scenes).
+pub type IpcRigidContactSolver<Msh> = solver::CpuNewtonSolver<
+    element::Tet4,
+    Msh,
+    contact::IpcRigidContact,
+    material::NeoHookean,
+    4,
+    1,
+>;
