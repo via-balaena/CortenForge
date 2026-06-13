@@ -2025,20 +2025,32 @@ where
     pub fn equilibrium_pose_sensitivity(&self, x_final: &[f64], dt: f64, dir: Vec3) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
         let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
-        // Solve A·w_free = −(∂r/∂δ)_free reusing the tangent at x_final.
-        let factor = self.factor_at_position(x_final, dt, 0.0);
-        let mut rhs: Vec<f64> = self
+        // A·w_free = −(∂r/∂δ)_free reusing the tangent at x_final.
+        let rhs: Vec<f64> = self
             .free_dof_indices
             .iter()
-            .map(|&idx| -dr_dpose[idx])
+            .map(|&i| -dr_dpose[i])
             .collect();
+        self.solve_free_and_scatter(x_final, dt, rhs)
+    }
+
+    /// Reuse the tangent `A` factored at `x_final` to solve the free-DOF adjoint
+    /// system `A·w_free = rhs_free` and scatter the result onto full DOFs (pinned
+    /// / roller DOFs stay 0) — `−A⁻¹·(∂r/∂·)` for a pre-gathered, pre-signed
+    /// `rhs_free = (−∂r/∂·)_free`. The shared back-half of the forward equilibrium
+    /// sensitivities ([`Self::equilibrium_pose_sensitivity`] /
+    /// [`Self::equilibrium_material_sensitivity`] /
+    /// [`Self::equilibrium_state_sensitivity`]), which differ only in how they
+    /// assemble `rhs_free`.
+    fn solve_free_and_scatter(&self, x_final: &[f64], dt: f64, mut rhs_free: Vec<f64>) -> Vec<f64> {
+        debug_assert_eq!(rhs_free.len(), self.n_free);
+        let factor = self.factor_at_position(x_final, dt, 0.0);
         let rhs_mat: MatMut<'_, f64> =
-            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
+            MatMut::from_column_major_slice_mut(&mut rhs_free, self.n_free, 1);
         factor.solve_in_place_with_conj(Conj::No, rhs_mat);
-        // Scatter w_free → full-DOF ∂x*/∂δ (constrained DOFs stay 0).
         let mut sensitivity = vec![0.0_f64; self.n_dof];
         for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
-            sensitivity[full_idx] = rhs[k];
+            sensitivity[full_idx] = rhs_free[k];
         }
         sensitivity
     }
@@ -2082,21 +2094,9 @@ where
     ) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
         let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
-        // Solve A·w_free = −(∂r/∂p_k)_free reusing the tangent at x_final.
-        let factor = self.factor_at_position(x_final, dt, 0.0);
-        let mut rhs: Vec<f64> = self
-            .free_dof_indices
-            .iter()
-            .map(|&idx| -dr_dp[idx])
-            .collect();
-        let rhs_mat: MatMut<'_, f64> =
-            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
-        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
-        let mut sensitivity = vec![0.0_f64; self.n_dof];
-        for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
-            sensitivity[full_idx] = rhs[k];
-        }
-        sensitivity
+        // A·w_free = −(∂r/∂p_k)_free reusing the tangent at x_final.
+        let rhs: Vec<f64> = self.free_dof_indices.iter().map(|&i| -dr_dp[i]).collect();
+        self.solve_free_and_scatter(x_final, dt, rhs)
     }
 
     /// `(∂r/∂δ)_full` — the contact-plane pose enters the residual only through
@@ -2219,25 +2219,17 @@ where
     ) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
         debug_assert!(dx_prev.len() == self.n_dof && dv_prev.len() == self.n_dof);
-        let factor = self.factor_at_position(x_final, dt, 0.0);
         let dt2 = dt * dt;
         // RHS_free = −(∂r/∂x_prev·dx_prev + ∂r/∂v_prev·dv_prev)_free
         //          = ((M/Δt²)·dx_prev + (M/Δt)·dv_prev)_free.
-        let mut rhs: Vec<f64> = self
+        let rhs: Vec<f64> = self
             .free_dof_indices
             .iter()
             .map(|&i| {
                 self.mass_per_dof[i] / dt2 * dx_prev[i] + self.mass_per_dof[i] / dt * dv_prev[i]
             })
             .collect();
-        let rhs_mat: MatMut<'_, f64> =
-            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
-        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
-        let mut sensitivity = vec![0.0_f64; self.n_dof];
-        for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
-            sensitivity[full_idx] = rhs[k];
-        }
-        sensitivity
+        self.solve_free_and_scatter(x_final, dt, rhs)
     }
 
     /// Build a [`StateStepVjp`] for one converged step — the reverse-mode (tape)

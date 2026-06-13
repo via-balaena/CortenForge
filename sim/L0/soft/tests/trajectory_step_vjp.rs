@@ -200,6 +200,8 @@ fn trajectory_step_vjp_all_four_parents_match_fd() {
         rev_xprev.abs() > 1e-6 && rel(rev_xprev, fd_xprev) < 1e-5,
         "x_prev cotangent"
     );
+    // v_prev tolerates a looser FD bound: its factor is M/Δt (vs M/Δt² for
+    // x_prev), so the term — and its FD signal-to-noise — is Δt(=1e-3) smaller.
     assert!(
         rev_vprev.abs() > 1e-9 && rel(rev_vprev, fd_vprev) < 1e-4,
         "v_prev cotangent"
