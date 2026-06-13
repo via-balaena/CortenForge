@@ -172,7 +172,57 @@ non-penetration vs smoothness each buy — but the deliverable is IPC.
   step. Out of scope for the small-dt keystone coupling; flagged for the robustness
   follow-on.
 
-## 8. Scope & ritual
+## 8. PR1–PR3 STATUS (2026-06-13)
+
+- **PR1 ✅ MERGED-quality (committed `2da19b61`):** `IpcRigidContact` ContactModel
+  (barrier b/b'/b''). Gates: barrier energy/grad/Hessian FD machine-exact (SPD);
+  **R2 retired** — the divergent barrier CONVERGES over a 400-step loaded settle and
+  NEVER penetrates (worst gap 6.3e-4 > 0); IPC pose vs re-solve FD rel 6.2e-10.
+- **PR2 ✅ committed `a74040cf`:** the coupling's contact-force gradient factors use
+  per-pair curvature `cᵥ = n̂ᵀ·H·n̂` (κ penalty / κ·b'' IPC). Behavior-preserving
+  (all penalty gates unchanged); varying-cᵥ unit-tested.
+- **PR3 ◑ PARTIAL (this commit):** `StaggeredCoupling<C = PenaltyRigidContact>` made
+  generic over the contact via the local `PlaneContact` bridge trait — penalty
+  default (all gates unchanged), IPC opt-in. **Single-step IPC coupled gradient is
+  machine-exact** (rel 2e-9), forward rollout exact, non-penetration holds. The
+  HEADLINE (multi-step make/break gradient clean) is **NOT yet fully delivered** —
+  see §9.
+
+## 9. OPEN — the multi-step IPC trajectory gradient residual (focused follow-up)
+
+**Symptom.** The composed multi-step coupled trajectory gradient `dz_N/dμ` with IPC
+matches the full-coupled FD oracle to only ~0.3–7% (κ-dependent, best ~0.3% at
+κ≈3e3), NOT machine-clean — though far better than penalty's measured 5–25%.
+
+**What's ruled out (measured):**
+- Single-step coupled IPC gradient: machine-exact (rel 2e-9) at ALL engagement
+  depths incl. marginal (sd≈0.0098). So the single-step factors are correct.
+- Forward rollout: the tape's inlined forward == `step()` rollout to 0.0 (so the
+  gradient is for the same trajectory the FD measures).
+- FD oracle: converged across 5 decades of ε (so the residual is a real analytic
+  error, not FD truncation).
+- Floor / penetration: min gap 8–9e-3 ≫ floor; no penetration.
+
+**Localization (the cold-start plan).** The residual is a **multi-step-only,
+IPC-only** factor. The single-step path uses `run_crossing_tail` (material VJP +
+`ContactForceVjp`, no pose/state parents); the multi-step path adds
+`TrajectoryStepVjp` (4-parent: state + material + **pose**) and `ContactForceTrajVjp`
+(the **z-parent** `∂fz/∂z = Σ κ·b''`). The sim-soft `trajectory_step_vjp.rs` gate
+validated `TrajectoryStepVjp`'s four cotangents only with **penalty** contact; PR1's
+pose check used the FORWARD `equilibrium_pose_sensitivity`, not the reverse
+`TrajectoryStepVjp` pose cotangent with IPC in the tangent. **Next step:** re-run /
+add an IPC variant of `sim-soft/tests/trajectory_step_vjp.rs` to check
+`TrajectoryStepVjp`'s pose + state cotangents vs re-solve FD **with `IpcRigidContact`**
+(varying b''). If those are clean → the bug is in the coupling chain
+(`ContactForceTrajVjp` z-parent or the rigid carry); if off → it's the sim-soft fused
+VJP under varying curvature. Repro: `cargo test -p sim-coupling --test
+ipc_trajectory_gradient diag_ipc_multi_step_residual -- --ignored --nocapture`.
+A secondary hypothesis: the scene is intrinsically **marginally engaged** (platen
+weight balances the barrier near `d̂`, where b''→0 and b''' is large); a
+firmly-engaged scene (smaller d̂ / heavier load) may be machine-clean — worth
+constructing to separate "marginal regime" from "factor bug".
+
+## 10. Scope & ritual
 
 Per leaf: recon → S0 spike (measure, throwaway) → sliced PRs → n+1 cold-read →
 pre-PR local ultra-review; no push without go-ahead; grade A per crate. v1 IPC =

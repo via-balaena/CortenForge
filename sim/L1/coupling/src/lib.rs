@@ -42,10 +42,46 @@ use sim_core::{Data, Model, SpatialVector};
 use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
-    BoundaryConditions, ContactModel, ContactPair, CpuNewtonSolver, HandBuiltTetMesh, LoadAxis,
-    MaterialField, Mesh, PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, Solver,
-    SolverConfig, Tet4, Vec3, VertexId,
+    ActivePairsFor, BoundaryConditions, ContactModel, ContactPair, ContactPairReadout,
+    CpuNewtonSolver, HandBuiltTetMesh, IpcRigidContact, LoadAxis, MaterialField, Mesh, NeoHookean,
+    PenaltyRigidContact, RigidPlane, Solver, SolverConfig, Tet4, Vec3, VertexId,
 };
+use std::marker::PhantomData;
+
+/// A rigid-primitive contact constructible from a downward plane + `(κ, d̂)`, with
+/// an active-pair readout over the keystone block — the bridge that lets
+/// [`StaggeredCoupling`] run over either [`PenaltyRigidContact`] (the stepping
+/// stone) or [`IpcRigidContact`] (the C²-barrier successor). Defined here (a local
+/// trait) so the soft-side contact types need no change.
+pub trait PlaneContact: ContactModel + ActivePairsFor<NeoHookean> + Sized {
+    /// Build the contact from a single downward plane and the penalty/barrier
+    /// parameters `(κ, d̂)`.
+    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self;
+    /// Per-active-pair readout at `positions` (the inherent `per_pair_readout`,
+    /// surfaced through the trait so the coupling can call it generically).
+    fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout>;
+}
+
+impl PlaneContact for PenaltyRigidContact {
+    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self {
+        Self::with_params(vec![plane], kappa, d_hat)
+    }
+    fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout> {
+        self.per_pair_readout(mesh, positions)
+    }
+}
+
+impl PlaneContact for IpcRigidContact {
+    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self {
+        Self::with_params(vec![plane], kappa, d_hat)
+    }
+    fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout> {
+        self.per_pair_readout(mesh, positions)
+    }
+}
+
+/// The soft Newton solver the coupling builds per step, over contact type `C`.
+type SoftSolver<C> = CpuNewtonSolver<Tet4, HandBuiltTetMesh, C, NeoHookean, 4, 1>;
 
 /// Scatter the contact-force-vs-position Jacobian `∂fz/∂x_v = −cᵥ·n̂_z·n̂` (the
 /// z-row of the `−cᵥ·n̂⊗n̂` per-pair Jacobian) onto `slot`, scaled by the upstream
@@ -314,7 +350,7 @@ pub struct CoupledStep {
 /// downward half-space (`RigidPlane` normal `−z`) whose height tracks the rigid
 /// body's reference height minus `contact_clearance` (e.g. a platen's half
 /// thickness), so the soft block's top feels the descending body.
-pub struct StaggeredCoupling {
+pub struct StaggeredCoupling<C: PlaneContact = PenaltyRigidContact> {
     model: Model,
     data: Data,
     body: usize,
@@ -338,9 +374,10 @@ pub struct StaggeredCoupling {
     kappa: f64,
     d_hat: f64,
     rigid_damping: f64,
+    _contact: PhantomData<C>,
 }
 
-impl StaggeredCoupling {
+impl<C: PlaneContact> StaggeredCoupling<C> {
     /// Build a coupling of a Neo-Hookean soft block and the rigid `body` in
     /// `model`/`data`.
     ///
@@ -403,6 +440,7 @@ impl StaggeredCoupling {
             kappa,
             d_hat,
             rigid_damping,
+            _contact: PhantomData,
         }
     }
 
@@ -419,11 +457,11 @@ impl StaggeredCoupling {
         self.data.xpos[self.body].z - self.contact_clearance
     }
 
-    fn build_contact(&self, height: f64) -> PenaltyRigidContact {
+    fn build_contact(&self, height: f64) -> C {
         // Downward ceiling at `height`: normal −z, offset −height ⇒ a soft
         // vertex below the plane has positive signed distance `height − z`.
         let plane = RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), -height);
-        PenaltyRigidContact::with_params(vec![plane], self.kappa, self.d_hat)
+        C::from_plane(plane, self.kappa, self.d_hat)
     }
 
     /// A fresh rest-topology soft mesh (the solver consumes one per step, and
@@ -448,7 +486,7 @@ impl StaggeredCoupling {
         let positions = self.positions();
         let readout = self
             .build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions);
+            .pair_readout(&self.fresh_mesh(), &positions);
         (readout.iter().map(|r| r.force_on_soft).sum(), readout.len())
     }
 
@@ -470,7 +508,7 @@ impl StaggeredCoupling {
     fn active_pair_curvatures(&self, height: f64, positions: &[Vec3]) -> Vec<(usize, Vec3, f64)> {
         let contact = self.build_contact(height);
         contact
-            .per_pair_readout(&self.fresh_mesh(), positions)
+            .pair_readout(&self.fresh_mesh(), positions)
             .iter()
             .map(|r| {
                 let ContactPair::Vertex { vertex_id, .. } = r.pair;
@@ -543,10 +581,10 @@ impl StaggeredCoupling {
     /// plane at `height` and take one dynamic step from the CURRENT
     /// `(self.x, self.v)`, returning the solver (so the caller can read its
     /// pose sensitivity) and the converged `x_final`. Does not advance `self`.
-    fn soft_resolve(&self, height: f64) -> (PenaltyRigidContactSolver<HandBuiltTetMesh>, Vec<f64>) {
+    fn soft_resolve(&self, height: f64) -> (SoftSolver<C>, Vec<f64>) {
         let n = self.n_vertices;
         let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        let solver: SoftSolver<C> = CpuNewtonSolver::new(
             Tet4,
             self.fresh_mesh(),
             self.build_contact(height),
@@ -569,11 +607,7 @@ impl StaggeredCoupling {
     /// the fixed pinned base). Shared by [`Self::coupled_step_load_gradient`]
     /// (tape `step`) and [`Self::coupled_step_load_vz`] (tape-free
     /// `replay_step`) so the loaded-BC mapping has one source of truth.
-    fn build_loaded_solver(
-        &self,
-        height: f64,
-        loaded: &[VertexId],
-    ) -> PenaltyRigidContactSolver<HandBuiltTetMesh> {
+    fn build_loaded_solver(&self, height: f64, loaded: &[VertexId]) -> SoftSolver<C> {
         let bc = BoundaryConditions::new(
             self.pinned.clone(),
             loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
@@ -606,7 +640,7 @@ impl StaggeredCoupling {
             .map(|c| Vec3::new(c[0], c[1], c[2]))
             .collect();
         self.build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions)
+            .pair_readout(&self.fresh_mesh(), &positions)
             .iter()
             .map(|r| r.force_on_soft)
             .sum()
@@ -783,7 +817,7 @@ impl StaggeredCoupling {
             .collect();
         let fz: f64 = self
             .build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions)
+            .pair_readout(&self.fresh_mesh(), &positions)
             .iter()
             .map(|r| r.force_on_soft.z)
             .sum();
@@ -876,7 +910,7 @@ impl StaggeredCoupling {
         let field = MaterialField::uniform(mu, lambda);
         let mesh = HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &field);
         let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> =
+        let solver: SoftSolver<C> =
             CpuNewtonSolver::new(Tet4, mesh, self.build_contact(height), self.cfg, bc);
         let st = solver.replay_step(
             &Tensor::from_slice(&self.x, &[3 * n]),
@@ -891,7 +925,7 @@ impl StaggeredCoupling {
             .collect();
         let fz: f64 = self
             .build_contact(height)
-            .per_pair_readout(
+            .pair_readout(
                 &HandBuiltTetMesh::uniform_block(self.n_per_edge, self.edge, &field),
                 &positions,
             )
@@ -923,7 +957,7 @@ impl StaggeredCoupling {
             .collect();
         let fz: f64 = self
             .build_contact(height)
-            .per_pair_readout(&self.fresh_mesh(), &positions)
+            .pair_readout(&self.fresh_mesh(), &positions)
             .iter()
             .map(|r| r.force_on_soft.z)
             .sum();
@@ -1048,7 +1082,7 @@ impl StaggeredCoupling {
                 .collect();
             let force_on_soft: Vec3 = self
                 .build_contact(height)
-                .per_pair_readout(&self.fresh_mesh(), &positions)
+                .pair_readout(&self.fresh_mesh(), &positions)
                 .iter()
                 .map(|r| r.force_on_soft)
                 .sum();
@@ -1124,7 +1158,7 @@ impl StaggeredCoupling {
         // (1)+(2) pose the contact from the rigid body; one dynamic soft step.
         let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
         let contact = self.build_contact(height);
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> =
+        let solver: SoftSolver<C> =
             CpuNewtonSolver::new(Tet4, self.fresh_mesh(), contact, self.cfg, bc);
         let res = solver.replay_step(
             &Tensor::from_slice(&self.x, &[3 * n]),

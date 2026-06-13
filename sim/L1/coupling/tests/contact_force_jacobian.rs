@@ -29,7 +29,7 @@ fn analytic_contact_force_height_jacobian_matches_finite_difference() {
     let mut data = model.make_data();
     data.forward(&model).expect("initial forward");
     // Rest config (block top at z = 0.1, bottom pinned). μ = 30 kPa, κ = 30 kPa, d̂ = 1 cm.
-    let coupling = StaggeredCoupling::new(
+    let coupling: StaggeredCoupling = StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 12.0,
     );
 

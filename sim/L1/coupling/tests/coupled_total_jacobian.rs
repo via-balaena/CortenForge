@@ -45,7 +45,7 @@ fn total_force_jacobian_wrt_height_matches_resolve_fd() {
     data.forward(&model).expect("initial forward");
     // Same block / contact params as the S1/S2 gates (n_per_edge=4, edge=0.1,
     // μ=3e4, dt=1e-3, κ=3e4, d̂=1e-2). The soft state starts at rest.
-    let coupling = StaggeredCoupling::new(
+    let coupling: StaggeredCoupling = StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, KAPPA, 1.0e-2, 12.0,
     );
 

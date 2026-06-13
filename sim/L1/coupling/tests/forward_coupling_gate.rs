@@ -38,7 +38,7 @@ fn rigid_platen_settles_on_soft_block_at_force_balance() {
     data.forward(&model).expect("initial forward");
 
     let weight = 0.2 * 9.81;
-    let mut coupling = StaggeredCoupling::new(
+    let mut coupling: StaggeredCoupling = StaggeredCoupling::new(
         model, data, /* body */ 1, /* contact_clearance (platen half-thickness) */ 0.005,
         /* n_per_edge */ 4, /* edge */ 0.1, /* mu */ 3.0e4, /* dt */ 1.0e-3,
         /* kappa */ 3.0e4, /* d_hat */ 1.0e-2, /* rigid_damping */ 8.0,

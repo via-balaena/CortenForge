@@ -47,7 +47,7 @@ fn explicit_velocity_jacobian_wrt_height_matches_assembly_and_fd() {
     let model = load_model(PLATEN_MJCF).expect("platen MJCF loads");
     let mut data = model.make_data();
     data.forward(&model).expect("initial forward");
-    let coupling = StaggeredCoupling::new(
+    let coupling: StaggeredCoupling = StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 12.0,
     );
 
