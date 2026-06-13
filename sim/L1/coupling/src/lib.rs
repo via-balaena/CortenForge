@@ -38,11 +38,20 @@
 //!   **time-adjoint** ([`StaggeredCoupling::coupled_trajectory_material_gradient`]),
 //!   one `tape.backward` over an N-step coupled rollout — the gradient the
 //!   co-design optimizer's *design* half consumes;
-//! - the multi-step **control gradient**
+//! - the multi-step **open-loop control gradient**
 //!   ([`StaggeredCoupling::coupled_trajectory_control_gradient`]) — `∂z_N/∂u_k`
-//!   for a per-step platen control force, the gradient the co-design optimizer's
-//!   *policy* half consumes (the control input adds to `xfrc_applied`, so it
-//!   rides the same rigid carry as the contact reaction).
+//!   for a per-step platen control force (the control input adds to
+//!   `xfrc_applied`, so it rides the same rigid carry as the contact reaction);
+//! - the multi-step **closed-loop policy gradient**
+//!   ([`StaggeredCoupling::coupled_trajectory_policy_gradient`]) — `∂z_N/∂θ` for a
+//!   state-feedback policy `u_k = π_θ(state_k)` ([`DiffPolicy`]/[`LinearFeedback`]),
+//!   backprop-through-time across the state→control recurrence on the same tape,
+//!   the gradient the co-design optimizer's *policy* half consumes;
+//! - the **joint design+policy gradient**
+//!   ([`StaggeredCoupling::coupled_trajectory_joint_gradient`]) — BOTH the soft
+//!   material design variable `μ` (λ = 4μ) AND the policy parameters `θ` live on
+//!   ONE tape, read `(∂z_N/∂μ_total, ∂z_N/∂θ)` from one `tape.backward` — the
+//!   mission's "one outer loop differentiating w.r.t. *both* design and policy".
 
 use sim_core::{Data, Model, SpatialVector};
 use sim_ml_chassis::autograd::VjpOp;
@@ -385,6 +394,75 @@ pub struct CoupledStep {
     pub force_on_soft: Vec3,
     /// Current height of the contacting rigid body's reference point.
     pub rigid_z: f64,
+}
+
+/// The platen state a [`DiffPolicy`] observes each step — the minimal observation
+/// (height `z` and vertical velocity `vz`, both already loop-carried chassis-tape
+/// scalar [`Var`]s). Richer observations (contact force, soft-state summaries) are
+/// a documented follow-on; they would add fields here.
+#[derive(Clone, Copy, Debug)]
+pub struct PolicyState {
+    /// Platen reference height `z` at the start of the step (`[1]`-shaped var).
+    pub z: Var,
+    /// Platen vertical velocity `vz` at the start of the step (`[1]`-shaped var).
+    pub vz: Var,
+}
+
+/// A differentiable closed-loop feedback policy `u_k = π_θ(state_k)`: it maps the
+/// per-step platen state to a vertical **control force** on the platen, with
+/// parameters θ shared across every step.
+///
+/// Two views of the same function are required, and **must agree**:
+/// - [`eval`](Self::eval) — a plain (non-tape) `f64` evaluation, used by the
+///   forward oracle [`StaggeredCoupling::coupled_trajectory_policy_z`] and to drive
+///   the real physics.
+/// - [`emit`](Self::emit) — builds the policy as a sub-expression on the chassis
+///   tape from the θ parameter leaves and the [`PolicyState`] vars, returning the
+///   control output var. The chassis autograd carries both `∂u/∂θ` and `∂u/∂state`,
+///   so [`StaggeredCoupling::coupled_trajectory_policy_gradient`] gets the
+///   closed-loop gradient `∂z_N/∂θ` (backprop-through-time across the
+///   state→control recurrence) from one `tape.backward` — no hand-rolled adjoint.
+///
+/// The two views must compute the identical function of `(θ, z, vz)`; the gate's
+/// forward-match assertion (tape `z_N` == oracle `z_N`) catches any divergence.
+pub trait DiffPolicy {
+    /// Number of policy parameters θ (the gradient length).
+    fn n_params(&self) -> usize;
+
+    /// Plain evaluation `u = π_θ(z, vz)` from real state — drives the physics and
+    /// the forward oracle.
+    fn eval(&self, params: &[f64], z: f64, vz: f64) -> f64;
+
+    /// Emit the control output var onto `tape` from the parameter leaves `params`
+    /// and the current platen `state`. The returned var is `[1]`-shaped.
+    fn emit(&self, tape: &mut Tape, params: &[Var], state: PolicyState) -> Var;
+}
+
+/// A linear state-feedback policy `u = w_z·z + w_vz·vz + b`, parameters
+/// θ = `[w_z, w_vz, b]` (all **signed**). A genuine feedback law — the control
+/// depends on the platen state — physically a PD-style controller about the
+/// implicit setpoint `z_ref = −b/w_z` (with `w_z` the proportional and `w_vz` the
+/// derivative gain, both as signed weights). The smallest closed-loop policy that
+/// exercises the recurrence; a multilayer policy is a follow-on `DiffPolicy` impl
+/// (e.g. via the chassis `affine`/`tanh` primitives).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LinearFeedback;
+
+impl DiffPolicy for LinearFeedback {
+    fn n_params(&self) -> usize {
+        3
+    }
+
+    fn eval(&self, params: &[f64], z: f64, vz: f64) -> f64 {
+        params[0] * z + params[1] * vz + params[2]
+    }
+
+    fn emit(&self, tape: &mut Tape, params: &[Var], state: PolicyState) -> Var {
+        let t1 = tape.mul(params[0], state.z);
+        let t2 = tape.mul(params[1], state.vz);
+        let s = tape.add(t1, t2);
+        tape.add(s, params[2])
+    }
 }
 
 /// A staggered forward coupling of a hand-built soft block (bottom face pinned)
@@ -1392,6 +1470,407 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self.data.xpos[self.body].z
     }
 
+    /// Roll the coupled soft↔rigid system forward `n_steps` under a **closed-loop
+    /// feedback policy** `u_k = π_θ(state_k)` ([`DiffPolicy`]), recording one
+    /// chassis tape, then ONE `tape.backward(z_N)` gives the gradient of the
+    /// platen's final height w.r.t. the policy parameters θ:
+    /// `(z_N, [∂z_N/∂θ_0 … ∂z_N/∂θ_{P−1}])`, where `P = policy.n_params()`.
+    ///
+    /// This is the **closed-loop** analogue of
+    /// [`Self::coupled_trajectory_control_gradient`]. There, each control `u_k` is
+    /// an *independent* parameter leaf (an open-loop schedule). Here the policy
+    /// parameters θ are leaves created once and **shared across every step**, and
+    /// the control at step k is a *tape node* `u_k = π_θ(z_k, vz_k)` built from θ
+    /// and the **loop-carried** state vars `z_var`/`vz_var` (already on the tape).
+    /// Because those state vars depend on the policy's own outputs at earlier steps
+    /// (via the velocity carry), the reverse pass accumulates `∂z_N/∂θ` over the
+    /// whole **recurrence** — backprop-through-time — for free: the policy is just
+    /// extra tape edges, not a new gradient primitive (the chassis autograd carries
+    /// `∂u/∂θ` and `∂u/∂state` through [`DiffPolicy::emit`]). Material parameters are
+    /// held fixed (a *joint* design+policy gradient is
+    /// [`Self::coupled_trajectory_joint_gradient`]).
+    ///
+    /// Like the sibling trajectory-gradient methods this takes `&mut self` (it runs
+    /// the real rollout in place; `Data` is not `Clone`), so build a fresh coupling
+    /// per call. Forward values come from the real coupled dynamics (the policy's
+    /// [`DiffPolicy::eval`] feeds the real `xfrc_applied`, identical to the tape
+    /// node's value); the per-node Jacobians are the analytic/factored
+    /// sensitivities. FD-validated against [`Self::coupled_trajectory_policy_z`]
+    /// (the real re-rolled closed-loop oracle) in `tests/coupled_policy_gradient.rs`.
+    ///
+    /// # Panics
+    /// Panics if the rigid step diverges or the soft solver does not converge —
+    /// surfaced loudly as in [`Self::step`].
+    #[must_use]
+    // One coherent per-step tape-construction loop (mirrors the control gradient);
+    // splitting it would scatter the recurrence's shared state.
+    // expect_used: a rigid-step divergence is a programmer error surfaced loudly,
+    // not recoverable for keystone-v1 (mirrors `step`'s rationale).
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_policy_gradient<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+    ) -> (f64, Vec<f64>) {
+        assert_eq!(
+            params.len(),
+            policy.n_params(),
+            "policy params length {} != n_params {}",
+            params.len(),
+            policy.n_params(),
+        );
+        let n = self.n_vertices;
+        let dt = self.cfg.dt;
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+        // Free-body rigid carry coefficients (see coupled_trajectory_material_gradient).
+        let dt_over_m = self.rigid_vz_response(0.0).1;
+        let a = 1.0 - self.rigid_damping * dt_over_m;
+
+        let mut tape = Tape::new();
+        // Material leaf is NOT differentiated here; the soft node still needs a
+        // parent for it, so make it a constant (its unread gradient stays valid).
+        let mu_var = tape.constant_tensor(Tensor::from_slice(&[self.mu], &[1]));
+        // The policy parameter leaves (the gradient targets), shared across steps.
+        let param_vars: Vec<Var> = params
+            .iter()
+            .map(|&p| tape.param_tensor(Tensor::from_slice(&[p], &[1])))
+            .collect();
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut z_var =
+            tape.constant_tensor(Tensor::from_slice(&[self.data.xpos[self.body].z], &[1]));
+        let mut vz_var = tape.constant_tensor(Tensor::from_slice(&[self.data.qvel[2]], &[1]));
+        let mut z_final = self.data.xpos[self.body].z;
+
+        for _ in 0..n_steps {
+            let height = self.plane_height();
+            let vz_k = self.data.qvel[2];
+
+            // Policy NODE: u_k = π_θ(z_k, vz_k) from the CURRENT loop-carried state
+            // vars. Its forward value (== eval at the real state) drives the
+            // physics; its var feeds the control parent of `VzControlCarryVjp`.
+            let u_var = policy.emit(
+                &mut tape,
+                &param_vars,
+                PolicyState {
+                    z: z_var,
+                    vz: vz_var,
+                },
+            );
+            let u_k = tape.value_tensor(u_var).as_slice()[0];
+
+            // (1)+(2) one dynamic soft step from the current (self.x, self.v).
+            let (solver, x_next) = self.soft_resolve(height);
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, mu_var, z_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp(&x_next, dt, 0, dir)),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (3) contact force at the post-step config, plane at `height`.
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0], c[1], c[2]))
+                .collect();
+            let force_on_soft: Vec3 = self
+                .build_contact(height)
+                .pair_readout(&self.fresh_mesh(), &positions)
+                .iter()
+                .map(|r| r.force_on_soft)
+                .sum();
+            let active = self.active_pair_curvatures(height, &positions);
+            let fz_var = tape.push_custom(
+                &[x_next_var, z_var],
+                Tensor::from_slice(&[force_on_soft.z], &[1]),
+                Box::new(ContactForceTrajVjp {
+                    active,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (4)+(5) route the reaction + damping + the policy control force onto
+            // the rigid body and step it (the real coupled dynamics).
+            let mut sf = SpatialVector::zeros();
+            sf[3] = -force_on_soft.x;
+            sf[4] = -force_on_soft.y;
+            sf[5] = -force_on_soft.z - self.rigid_damping * vz_k + u_k;
+            self.data.xfrc_applied[self.body] = sf;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in coupled policy trajectory");
+            let z_next = self.data.xpos[self.body].z;
+            let vz_next = self.data.qvel[2];
+
+            // Rigid carry: vz' = a·vz − (Δt/m)·fz + (Δt/m)·u; z' = z + Δt·vz (the
+            // OLD velocity — sim-core integrates position with the pre-update
+            // velocity, so this step's force/control reaches z only NEXT step).
+            let vz_next_var = tape.push_custom(
+                &[vz_var, fz_var, u_var],
+                Tensor::from_slice(&[vz_next], &[1]),
+                Box::new(VzControlCarryVjp {
+                    a,
+                    neg_dt_over_m: -dt_over_m,
+                    dt_over_m,
+                }),
+            );
+            let z_next_var = tape.push_custom(
+                &[z_var, vz_var],
+                Tensor::from_slice(&[z_next], &[1]),
+                Box::new(ZCarryVjp { dt }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            z_var = z_next_var;
+            vz_var = vz_next_var;
+            z_final = z_next;
+        }
+
+        tape.backward(z_var);
+        let grad = param_vars
+            .iter()
+            .map(|&p_var| tape.grad_tensor(p_var).as_slice()[0])
+            .collect();
+        (z_final, grad)
+    }
+
+    /// Forward-only companion to [`Self::coupled_trajectory_policy_gradient`]: the
+    /// platen's final height `z_N` after the real `n_steps` closed-loop coupled
+    /// rollout under `policy`/`params` (no tape; the policy re-evaluated each step
+    /// from the real state via [`DiffPolicy::eval`]). The black-box oracle for
+    /// finite-differencing `∂z_N/∂θ`. Advances `self` (build a fresh coupling per
+    /// call).
+    ///
+    /// # Panics
+    /// Panics if `params.len() != policy.n_params()`, or if the rigid step diverges
+    /// / the soft solver does not converge.
+    #[must_use]
+    // expect_used: a rigid-step divergence / soft non-convergence is a programmer
+    // error surfaced loudly, not recoverable for keystone-v1 (mirrors `step`).
+    #[allow(clippy::expect_used)]
+    pub fn coupled_trajectory_policy_z<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+    ) -> f64 {
+        assert_eq!(
+            params.len(),
+            policy.n_params(),
+            "policy params length {} != n_params {}",
+            params.len(),
+            policy.n_params(),
+        );
+        let dt = self.cfg.dt;
+        for _ in 0..n_steps {
+            let height = self.plane_height();
+            let z_k = self.data.xpos[self.body].z;
+            let vz_k = self.data.qvel[2];
+            let u_k = policy.eval(params, z_k, vz_k);
+            let (_solver, x_next) = self.soft_resolve(height);
+            for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
+                *vi = (xf - xo) / dt;
+            }
+            self.x = x_next;
+            let force_on_soft = self.contact_force_at_height(height);
+            let mut sf = SpatialVector::zeros();
+            sf[3] = -force_on_soft.x;
+            sf[4] = -force_on_soft.y;
+            sf[5] = -force_on_soft.z - self.rigid_damping * vz_k + u_k;
+            self.data.xfrc_applied[self.body] = sf;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in coupled policy rollout");
+        }
+        self.data.xpos[self.body].z
+    }
+
+    /// **Joint design + policy gradient** — the mission's "one outer loop
+    /// differentiating w.r.t. **both** design and policy parameters". Roll the
+    /// coupled system forward `n_steps` under a closed-loop feedback policy
+    /// `u_k = π_θ(state_k)` ([`DiffPolicy`]) on ONE chassis tape, with **both** the
+    /// soft material design variable `μ` (the stiffness scale, with the `λ = 4μ`
+    /// tie) AND the policy parameters `θ` live as tape leaves, then a single
+    /// `tape.backward(z_N)` reads BOTH gradients at once:
+    /// `(z_N, ∂z_N/∂μ_total, [∂z_N/∂θ_0 …])`, where `∂z_N/∂μ_total` is the total
+    /// `∂z_N/∂μ + 4·∂z_N/∂λ` along the stiffness-scale line.
+    ///
+    /// This is the union of [`Self::coupled_trajectory_material_gradient`] (the
+    /// design leaf) and [`Self::coupled_trajectory_policy_gradient`] (the policy
+    /// leaves): per step the soft node carries the material design variable as a
+    /// parent built with `trajectory_step_vjp_combined(&[1, 4], …)` (so its single
+    /// parent's cotangent is the λ = 4μ total in ONE backward), and the policy node
+    /// feeds the control parent of `VzControlCarryVjp`. The reverse pass therefore
+    /// accumulates the material gradient (through the soft re-equilibration at every
+    /// step) and the policy gradient (backprop-through-time across the state→control
+    /// recurrence) simultaneously — both design and policy, one tape, one backward.
+    ///
+    /// Takes `&mut self` (runs the real rollout in place), so build a fresh coupling
+    /// per call. FD-validated against `coupled_trajectory_policy_z` on couplings
+    /// rebuilt at `μ ± ε` (material block) and at `θ ± ε` (policy) in
+    /// `tests/coupled_joint_gradient.rs`.
+    ///
+    /// # Panics
+    /// Panics if `params.len() != policy.n_params()`, or if the rigid step diverges
+    /// / the soft solver does not converge — surfaced loudly as in [`Self::step`].
+    #[must_use]
+    // One coherent per-step tape-construction loop (fuses the material design leaf
+    // and the policy leaves); splitting it would scatter the recurrence's state.
+    // expect_used: a rigid-step divergence is a programmer error surfaced loudly.
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_joint_gradient<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+    ) -> (f64, f64, Vec<f64>) {
+        assert_eq!(
+            params.len(),
+            policy.n_params(),
+            "policy params length {} != n_params {}",
+            params.len(),
+            policy.n_params(),
+        );
+        let n = self.n_vertices;
+        let dt = self.cfg.dt;
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+        let dt_over_m = self.rigid_vz_response(0.0).1;
+        let a = 1.0 - self.rigid_damping * dt_over_m;
+
+        let mut tape = Tape::new();
+        // The MATERIAL design leaf (value = μ; its gradient is the λ = 4μ total via
+        // the combined-weights soft VJP) AND the policy param leaves — both live.
+        let mu_var = tape.param_tensor(Tensor::from_slice(&[self.mu], &[1]));
+        let param_vars: Vec<Var> = params
+            .iter()
+            .map(|&p| tape.param_tensor(Tensor::from_slice(&[p], &[1])))
+            .collect();
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut z_var =
+            tape.constant_tensor(Tensor::from_slice(&[self.data.xpos[self.body].z], &[1]));
+        let mut vz_var = tape.constant_tensor(Tensor::from_slice(&[self.data.qvel[2]], &[1]));
+        let mut z_final = self.data.xpos[self.body].z;
+
+        for _ in 0..n_steps {
+            let height = self.plane_height();
+            let vz_k = self.data.qvel[2];
+
+            // Policy NODE: u_k = π_θ(z_k, vz_k) from the current state vars.
+            let u_var = policy.emit(
+                &mut tape,
+                &param_vars,
+                PolicyState {
+                    z: z_var,
+                    vz: vz_var,
+                },
+            );
+            let u_k = tape.value_tensor(u_var).as_slice()[0];
+
+            // (1)+(2) one dynamic soft step. The soft node's material parent is the
+            // stiffness-scale design variable: weights [1, 4] ⇒ ∂/∂μ_total.
+            let (solver, x_next) = self.soft_resolve(height);
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, mu_var, z_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp_combined(&x_next, dt, &[1.0, 4.0], dir)),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (3) contact force at the post-step config, plane at `height`.
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0], c[1], c[2]))
+                .collect();
+            let force_on_soft: Vec3 = self
+                .build_contact(height)
+                .pair_readout(&self.fresh_mesh(), &positions)
+                .iter()
+                .map(|r| r.force_on_soft)
+                .sum();
+            let active = self.active_pair_curvatures(height, &positions);
+            let fz_var = tape.push_custom(
+                &[x_next_var, z_var],
+                Tensor::from_slice(&[force_on_soft.z], &[1]),
+                Box::new(ContactForceTrajVjp {
+                    active,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (4)+(5) reaction + damping + policy control force onto the platen.
+            let mut sf = SpatialVector::zeros();
+            sf[3] = -force_on_soft.x;
+            sf[4] = -force_on_soft.y;
+            sf[5] = -force_on_soft.z - self.rigid_damping * vz_k + u_k;
+            self.data.xfrc_applied[self.body] = sf;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in coupled joint trajectory");
+            let z_next = self.data.xpos[self.body].z;
+            let vz_next = self.data.qvel[2];
+
+            let vz_next_var = tape.push_custom(
+                &[vz_var, fz_var, u_var],
+                Tensor::from_slice(&[vz_next], &[1]),
+                Box::new(VzControlCarryVjp {
+                    a,
+                    neg_dt_over_m: -dt_over_m,
+                    dt_over_m,
+                }),
+            );
+            let z_next_var = tape.push_custom(
+                &[z_var, vz_var],
+                Tensor::from_slice(&[z_next], &[1]),
+                Box::new(ZCarryVjp { dt }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            z_var = z_next_var;
+            vz_var = vz_next_var;
+            z_final = z_next;
+        }
+
+        tape.backward(z_var);
+        let dz_dmu = tape.grad_tensor(mu_var).as_slice()[0];
+        let dz_dtheta = param_vars
+            .iter()
+            .map(|&p_var| tape.grad_tensor(p_var).as_slice()[0])
+            .collect();
+        (z_final, dz_dmu, dz_dtheta)
+    }
+
     /// Advance the coupled system by one lockstep step. Returns the contact
     /// force on the soft body and the rigid body's current height.
     ///
@@ -1727,5 +2206,91 @@ mod tests {
             "smoke: control tape grad {} vs FD {fd}",
             grad[k]
         );
+    }
+
+    /// Lib-level smoke test of the closed-loop policy gradient (the scientific FD
+    /// validation is in `tests/coupled_policy_gradient.rs`): one `tape.backward`
+    /// over a short closed-loop rollout under `LinearFeedback` gives one finite
+    /// gradient per policy parameter, the feedback-weight gradients are nonzero
+    /// (the recurrence is live), the forward replays the real dynamics, and a
+    /// feedback weight matches an independent FD of the real re-rollout.
+    #[test]
+    fn policy_gradient_smoke() {
+        let theta = [-20.0_f64, -5.0, 2.0];
+        let n = 8;
+        let (z_tape, grad) =
+            coupling().coupled_trajectory_policy_gradient(&LinearFeedback, &theta, n);
+        assert_eq!(grad.len(), 3);
+        assert!(grad.iter().all(|g| g.is_finite()), "gradients finite");
+        // Feedback-weight gradients are nonzero: the recurrence is exercised, not
+        // just the bias.
+        assert!(
+            grad[0].abs() > 1e-9 && grad[1].abs() > 1e-9,
+            "feedback-weight gradients should be nonzero, got {grad:?}"
+        );
+
+        // Forward reproduces the real closed-loop rollout.
+        let z_ref = coupling().coupled_trajectory_policy_z(&LinearFeedback, &theta, n);
+        assert!(
+            (z_tape - z_ref).abs() < 1e-12,
+            "tape forward z_N {z_tape} != real rollout {z_ref}"
+        );
+
+        // The proportional weight w_z vs an independent FD of the real re-rollout
+        // (its gradient flows only through the state→control recurrence).
+        let eps = 1e-2;
+        let mut up = theta;
+        let mut dn = theta;
+        up[0] += eps;
+        dn[0] -= eps;
+        let fd = (coupling().coupled_trajectory_policy_z(&LinearFeedback, &up, n)
+            - coupling().coupled_trajectory_policy_z(&LinearFeedback, &dn, n))
+            / (2.0 * eps);
+        assert!(
+            (grad[0] - fd).abs() / fd.abs().max(1e-30) < 1e-5,
+            "smoke: policy w_z tape grad {} vs FD {fd}",
+            grad[0]
+        );
+    }
+
+    /// Lib-level smoke test of the JOINT design+policy gradient (the scientific FD
+    /// validation is in `tests/coupled_joint_gradient.rs`): one `tape.backward`
+    /// yields BOTH a finite material gradient `∂z_N/∂μ_total` AND the policy
+    /// gradient `∂z_N/∂θ`, the forward replays the real rollout, and the joint
+    /// policy block matches the policy-only method (the material leaf does not
+    /// perturb the policy gradient).
+    #[test]
+    fn joint_gradient_smoke() {
+        let theta = [-20.0_f64, -5.0, 2.0];
+        let n = 8;
+        let (z_tape, dz_dmu, dz_dtheta) =
+            coupling().coupled_trajectory_joint_gradient(&LinearFeedback, &theta, n);
+        assert_eq!(dz_dtheta.len(), 3);
+        // Both blocks finite (the `coupling()` fixture starts above contact, so at
+        // n=8 the block may be undeformed ⇒ ∂z/∂μ can be 0; the engaged μ gradient
+        // is validated nonzero + FD-exact in `tests/coupled_joint_gradient.rs`). The
+        // policy block is genuinely live (control always moves z).
+        assert!(
+            dz_dmu.is_finite() && dz_dtheta.iter().all(|g| g.is_finite()),
+            "joint gradients finite: μ={dz_dmu}, θ={dz_dtheta:?}"
+        );
+        assert!(
+            dz_dtheta.iter().any(|g| g.abs() > 1e-9),
+            "policy block should be live, got {dz_dtheta:?}"
+        );
+
+        // Forward reproduces the real closed-loop rollout.
+        let z_ref = coupling().coupled_trajectory_policy_z(&LinearFeedback, &theta, n);
+        assert!(
+            (z_tape - z_ref).abs() < 1e-12,
+            "tape z_N {z_tape} != real {z_ref}"
+        );
+
+        // The policy block equals the policy-only method (fusion is sound).
+        let (_zp, g_theta) =
+            coupling().coupled_trajectory_policy_gradient(&LinearFeedback, &theta, n);
+        for (&gj, &gp) in dz_dtheta.iter().zip(&g_theta) {
+            assert!((gj - gp).abs() < 1e-14, "joint θ {gj} != policy-only {gp}");
+        }
     }
 }

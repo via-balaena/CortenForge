@@ -246,3 +246,83 @@ fn trajectory_step_vjp_lambda_parent_matches_fd() {
         "λ cotangent rev {g_lambda} != FD {fd_lambda}"
     );
 }
+
+/// The COMBINED-weights VJP (`trajectory_step_vjp_combined`) routes the *total*
+/// gradient of a tied design variable through ONE material parent: with weights
+/// `[1, 4]` (the coupling's stiffness scale `μ = p, λ = 4p`) the parent cotangent
+/// equals `∂/∂μ + 4·∂/∂λ`, matched two ways — (a) against the sum of the two
+/// single-`param_idx` cotangents (a pure linearity check), and (b) against an
+/// independent re-solve FD that rebuilds the block along the `λ = 4μ` line (the
+/// genuine total derivative). This is the gradient the joint design+policy loop
+/// reads from one backward.
+#[test]
+fn trajectory_step_vjp_combined_weights_match_total() {
+    let (height, x_prev, v_prev) = settle();
+    let n = x_prev.len();
+    let s = solver(height, MU, LAMBDA);
+    let x_final = solve_step(height, MU, LAMBDA, &x_prev, &v_prev);
+    let dir = Vec3::new(0.0, 0.0, 1.0);
+    let sum = |x: &[f64]| -> f64 { x.iter().sum() };
+
+    // (a) combined [1, 4] cotangent on a single design-variable parent.
+    let mut tape = Tape::new();
+    let xprev_var = tape.param_tensor(Tensor::from_slice(&x_prev, &[n]));
+    let vprev_var = tape.param_tensor(Tensor::from_slice(&v_prev, &[n]));
+    let p_var = tape.param_tensor(Tensor::from_slice(&[MU], &[1])); // design var value = μ
+    let pose_var = tape.param_tensor(Tensor::from_slice(&[height], &[1]));
+    let xstar = tape.push_custom(
+        &[xprev_var, vprev_var, p_var, pose_var],
+        Tensor::from_slice(&x_final, &[n]),
+        Box::new(s.trajectory_step_vjp_combined(&x_final, DT, &[1.0, 4.0], dir)),
+    );
+    tape.backward(xstar);
+    let g_combined = tape.grad_tensor(p_var).as_slice()[0];
+
+    // (b) sum of the two single-param cotangents (linearity).
+    let g_single_sum = {
+        let single = |idx: usize, val: f64| {
+            let mut t = Tape::new();
+            let xp = t.param_tensor(Tensor::from_slice(&x_prev, &[n]));
+            let vp = t.param_tensor(Tensor::from_slice(&v_prev, &[n]));
+            let pv = t.param_tensor(Tensor::from_slice(&[val], &[1]));
+            let po = t.param_tensor(Tensor::from_slice(&[height], &[1]));
+            let xs = t.push_custom(
+                &[xp, vp, pv, po],
+                Tensor::from_slice(&x_final, &[n]),
+                Box::new(s.trajectory_step_vjp(&x_final, DT, idx, dir)),
+            );
+            t.backward(xs);
+            t.grad_tensor(pv).as_slice()[0]
+        };
+        single(0, MU) + 4.0 * single(1, LAMBDA)
+    };
+
+    // (c) independent re-solve FD along the λ = 4μ line (μ → μ+ε, λ → 4(μ+ε)).
+    let eps = MU * 1e-6;
+    let fd_total = (sum(&solve_step(
+        height,
+        MU + eps,
+        4.0 * (MU + eps),
+        &x_prev,
+        &v_prev,
+    )) - sum(&solve_step(
+        height,
+        MU - eps,
+        4.0 * (MU - eps),
+        &x_prev,
+        &v_prev,
+    ))) / (2.0 * eps);
+
+    eprintln!(
+        "combined [1,4]: rev={g_combined:.6e} single-sum={g_single_sum:.6e} fd(line)={fd_total:.6e}"
+    );
+    let rel = |a: f64, b: f64| (a - b).abs() / b.abs().max(1e-12);
+    assert!(
+        rel(g_combined, g_single_sum) < 1e-12,
+        "combined cotangent {g_combined} != single-param sum {g_single_sum} (linearity)"
+    );
+    assert!(
+        g_combined.abs() > 1e-9 && rel(g_combined, fd_total) < 1e-5,
+        "combined cotangent {g_combined} != rebuild-line FD {fd_total}"
+    );
+}

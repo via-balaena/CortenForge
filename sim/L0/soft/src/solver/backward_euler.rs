@@ -2162,6 +2162,34 @@ where
         dr_dp
     }
 
+    /// `(∂r/∂p)_full` for a **linear combination** of the material parameters,
+    /// `Σ_k weights[k]·(∂r/∂p_k)` — the residual sensitivity to a single design
+    /// variable `p` that drives several material parameters at once via
+    /// `p_k = p_k(p)` with `weights[k] = dp_k/dp`. Used for a tied reparametrization
+    /// such as the coupling's stiffness scale `μ = p, λ = 4p` (`weights = [1, 4]`),
+    /// so its total sensitivity rides ONE tape parent — `∂/∂p = Σ_k (dp_k/dp)·∂/∂p_k`.
+    /// `weights.len()` is the number of driven material parameters; a zero weight
+    /// skips that parameter. Delegates to
+    /// [`Self::assemble_material_residual_grad`] per parameter (so it inherits the
+    /// same per-element stress-derivative assembly), then accumulates.
+    fn assemble_material_residual_grad_combined(
+        &self,
+        x_final: &[f64],
+        weights: &[f64],
+    ) -> Vec<f64> {
+        let mut acc = vec![0.0_f64; self.n_dof];
+        for (k, &w) in weights.iter().enumerate() {
+            if w == 0.0 {
+                continue;
+            }
+            let dr_k = self.assemble_material_residual_grad(x_final, k);
+            for (a, &d) in acc.iter_mut().zip(&dr_k) {
+                *a += w * d;
+            }
+        }
+        acc
+    }
+
     /// Build a [`MaterialStepVjp`] for one converged step — the reverse-mode
     /// (tape) sibling of [`Self::equilibrium_material_sensitivity`]: pushed onto
     /// a chassis tape with the material parameter as parent, it turns a
@@ -2294,6 +2322,48 @@ where
         let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
         let dr_dpose_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect();
         // State scales (PR1) + the shared factor at x_final.
+        let dt2 = dt * dt;
+        let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
+        let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
+        let factor = self.factor_at_position(x_final, dt, 0.0);
+        TrajectoryStepVjp::new(
+            factor,
+            self.n_dof,
+            self.free_dof_indices.clone(),
+            m_over_dt2,
+            m_over_dt,
+            dr_dparam_free,
+            dr_dpose_free,
+        )
+    }
+
+    /// Like [`Self::trajectory_step_vjp`] but the material parent is a single
+    /// **design variable** that drives a linear combination of the material
+    /// parameters, `p_k = p_k(p)` with `param_weights[k] = dp_k/dp`. The op's
+    /// `param` cotangent is then the *total* `∂L/∂p = Σ_k (dp_k/dp)·∂L/∂p_k` from
+    /// ONE adjoint solve — letting a tied reparametrization (e.g. the coupling's
+    /// stiffness scale `μ = p, λ = 4p`, `param_weights = [1, 4]`) ride one tape
+    /// parent so a single `tape.backward` yields its total gradient (rather than
+    /// summing two separate `param_idx` backward passes). All other parents
+    /// (`x_prev`, `v_prev`, `pose`) and the shared factor are identical to
+    /// [`Self::trajectory_step_vjp`]; with a unit weight vector (`1` at one index)
+    /// it reduces to that method exactly. Same engaged / stable-active-set /
+    /// hard-penalty scope.
+    #[must_use]
+    pub fn trajectory_step_vjp_combined(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        param_weights: &[f64],
+        dir: Vec3,
+    ) -> TrajectoryStepVjp {
+        debug_assert!(x_final.len() == self.n_dof);
+        // Material RHS for the tied design variable: Σ_k weights[k]·(∂r/∂p_k)_free.
+        let dr_dp = self.assemble_material_residual_grad_combined(x_final, param_weights);
+        let dr_dparam_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
+        // Contact-pose RHS (∂r/∂pose)_free (S3) — identical to the single-param path.
+        let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
+        let dr_dpose_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect();
         let dt2 = dt * dt;
         let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
         let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
