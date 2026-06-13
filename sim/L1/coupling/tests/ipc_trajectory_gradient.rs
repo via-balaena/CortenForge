@@ -13,8 +13,10 @@
 //! the rigid position carry — sim-core integrates the platen height with the step's
 //! STARTING velocity, so a step's contact force reaches `z` only NEXT step, but
 //! `ZCarryVjp` had wired `z` to the freshly-updated `vz'`. It was never an IPC effect
-//! (penalty shared it); IPC's distinct contributions are the machine-exact
-//! single-step gradient and structural non-penetration.
+//! (penalty shared it). Both penalty and IPC now have machine-exact single- AND
+//! multi-step gradients — single-step exactness is shared, not IPC-specific. IPC's
+//! genuine, non-shared distinction is structural non-penetration (the per-element
+//! reward requirement) and the divergent C²-barrier as a robustness property.
 
 #![allow(clippy::expect_used)]
 

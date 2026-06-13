@@ -207,8 +207,12 @@ velocity parent at `vz_var` (the step's starting velocity), not `vz_next_var`
 **Result: machine-exact for BOTH penalty and IPC** across the κ sweep and the full
 make/break rollout (rel ~3e-8, was IPC 0.3–7% / penalty 5–25%). The keystone
 time-adjoint's reported "penalty make/break degradation" was substantially THIS bug,
-not the C⁰ kink. IPC's distinct value is the machine-exact single-step gradient and
-structural non-penetration, not a unique multi-step-gradient advantage.
+not the C⁰ kink. Both penalty AND IPC now have machine-exact single-step AND
+multi-step gradients (single-step exactness is NOT IPC-specific — penalty's coupled
+single-step matches FD to ~7e-9 too). IPC's genuine, non-shared distinction is
+**structural non-penetration** (the per-element-reward requirement penalty cannot
+meet) and the divergent C²-barrier as a robustness property — NOT a measured
+gradient-accuracy advantage in these scenes.
 
 **Gates.** `coupled_trajectory_gradient.rs` (penalty) now asserts machine-exact at all
 lengths; `ipc_trajectory_gradient.rs::ipc_multi_step_gradient_matches_fd` (IPC, the
