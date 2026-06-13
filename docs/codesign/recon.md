@@ -470,7 +470,7 @@ soft↔rigid trajectory hits a target. Keystone-side recon:
 ## P.1 What the substrate now provides
 
 A new keystone primitive `StaggeredCoupling::coupled_trajectory_control_gradient`
-(`sim/L1/coupling`, merged as the first leaf of this arc): roll the coupled
+(`sim/L1/coupling`, the first leaf of this arc — PR-A): roll the coupled
 system forward applying a per-step vertical control force to the platen, on ONE
 chassis tape, then a single `tape.backward(z_N)` gives `∂z_N/∂u_k` for EVERY
 control input. The control force adds to the platen's `xfrc_applied`, so

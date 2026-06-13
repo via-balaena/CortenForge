@@ -8,12 +8,14 @@
 //!
 //! The optimizer is generic over a [`CoDesignProblem`] (a differentiable design
 //! objective) and reuses the chassis Adam optimizer
-//! ([`sim_ml_chassis::OptimizerConfig`]) rather than reinventing one. The
-//! concrete problems span both halves of the mission's "one outer loop
-//! differentiating w.r.t. **both** design and policy parameters", each backed by
-//! a worked **inverse-design** demo that recovers a target behavior:
+//! ([`sim_ml_chassis::OptimizerConfig`]) rather than reinventing one. The mission
+//! aims at "one outer loop differentiating w.r.t. **both** design and policy
+//! parameters"; the concrete problems here exercise each axis **separately** so
+//! far (a single design parameter OR a control schedule — the joint loop is a
+//! follow-on), each backed by a worked **inverse-design** demo that recovers a
+//! target behavior:
 //!
-//! *Design half* — tune a soft body's Neo-Hookean material so a rigid-side
+//! *Design axis* — tune a soft body's Neo-Hookean material so a rigid-side
 //! outcome hits a target:
 //! - [`SoftMaterialTarget`] (v1) — the rigid body's *next-step velocity* (the
 //!   keystone single-step gradient `∂vz'/∂μ`).
@@ -21,7 +23,7 @@
 //!   N-step contact-engaged coupled rollout* (the keystone multi-step gradient
 //!   `∂z_N/∂μ`, one `tape.backward` across both engines and every step boundary).
 //!
-//! *Policy half* — tune the control inputs applied each step:
+//! *Policy axis* — tune the control inputs applied each step:
 //! - [`ControlScheduleTarget`] — an open-loop per-step platen control-force
 //!   schedule `u_0 … u_{N−1}` so the platen's height after the coupled rollout
 //!   hits a target (the keystone multi-step *control* gradient `∂z_N/∂u_k`, the
@@ -424,21 +426,6 @@ impl CoDesignProblem for Normalized<'_> {
     fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
         let physical = self.to_physical(params);
         let (loss, grad) = self.inner.evaluate(&physical);
-        // A `log_space` parameter `p` is unbounded above, so `μ = exp(p)` can
-        // overflow to `+inf` and feed a NaN/inf loss back; without this guard the
-        // optimizer would record `converged = false` with garbage params and no
-        // loud failure. Unreachable at the shipped configs (`lr · max_iters` keeps
-        // `p ≈ O(10)`, far from the `p ≈ 709` overflow), so it is pure insurance —
-        // but a `debug_assert!` would compile out of release-heavy CI and real
-        // long runs (the only place a runaway could occur), so it must be a plain
-        // `assert!`. Cost is one `is_finite` per iteration, negligible against the
-        // coupled rollout it guards. The general safety net any reusable
-        // combinator should carry.
-        assert!(
-            loss.is_finite(),
-            "inner CoDesignProblem returned a non-finite loss {loss} at params {physical:?} \
-             (a log_space parameter may have overflowed to ±inf)",
-        );
         debug_assert_eq!(
             grad.len(),
             physical.len(),
@@ -446,7 +433,7 @@ impl CoDesignProblem for Normalized<'_> {
         );
         // dL_norm/dp = loss_scale · (dx/dp) · ∂L/∂x, with dx/dp = x in log-space
         // (chain rule, since x = exp(p)) or 1 otherwise.
-        let scaled = grad
+        let scaled: Vec<f64> = grad
             .iter()
             .zip(&physical)
             .map(|(&g, &x)| {
@@ -454,7 +441,27 @@ impl CoDesignProblem for Normalized<'_> {
                 self.loss_scale * dx_dp * g
             })
             .collect();
-        (loss * self.loss_scale, scaled)
+        let scaled_loss = loss * self.loss_scale;
+        // A `log_space` parameter `p` is unbounded above, so `μ = exp(p)` can
+        // overflow to `+inf` and poison the run — silently, since the optimizer
+        // would only record `converged = false` with garbage params. The
+        // load-bearing quantity is the GRADIENT (`opt.step_in_place` feeds it into
+        // `params`), and the `exp(p)` overflow lands in `dx/dp` here, so guard the
+        // scaled gradient AND the loss (the convergence test reads the loss; and
+        // `grad_inf`'s `f64::max` would mask a NaN gradient component, leaving the
+        // step to corrupt `params` undetected). Unreachable at the shipped configs
+        // (`lr · max_iters` keeps `p ≈ O(10)`, far from the `p ≈ 709` overflow), so
+        // it is pure insurance — but a `debug_assert!` would compile out of
+        // release-heavy CI and real long runs (the only place a runaway could
+        // occur), so it must be a plain `assert!`. The cost is one `is_finite` per
+        // value per iteration, negligible against the coupled rollout it guards —
+        // the safety net any reusable combinator should carry.
+        assert!(
+            scaled_loss.is_finite() && scaled.iter().all(|g| g.is_finite()),
+            "Normalized produced a non-finite loss/gradient at params {physical:?} \
+             (loss {scaled_loss}; a log_space parameter may have overflowed to ±inf)",
+        );
+        (scaled_loss, scaled)
     }
 
     fn lower_bounds(&self) -> Option<Vec<f64>> {
@@ -934,10 +941,21 @@ impl ControlScheduleTarget {
 
     /// The platen's height `z_N` after the `n_steps` coupled rollout under the
     /// control schedule `controls` — the forward outcome (no gradient). Used to
-    /// set up an inverse-design target. `controls.len()` must equal
-    /// [`n_steps`](Self::n_params).
+    /// set up an inverse-design target.
+    ///
+    /// # Panics
+    /// Panics if `controls.len() != n_steps` (the rollout length is the schedule
+    /// length, so a mismatch would silently run a different-length rollout than
+    /// [`n_params`](CoDesignProblem::n_params) advertises).
     #[must_use]
     pub fn forward_z(&self, controls: &[f64]) -> f64 {
+        assert_eq!(
+            controls.len(),
+            self.n_steps,
+            "control schedule length {} != n_steps {}",
+            controls.len(),
+            self.n_steps,
+        );
         self.build().coupled_trajectory_control_z(controls)
     }
 
@@ -950,10 +968,12 @@ impl ControlScheduleTarget {
     /// A [`Normalized`] wrapper conditioning this target for the standard Adam
     /// `eps`: a dimensionless residual (`loss_scale = 1/L²`, `L` the
     /// characteristic platen-height scale) with `log_space = false` (control
-    /// forces are signed — log-space requires positive parameters). Pair it with
-    /// [`Normalized::recommended_config`]'s standard-`eps` config but a control-
-    /// appropriate `lr` (the default physical-`μ` `lr` is far too large for an
-    /// O(1)-newton control step — see the example and `docs/codesign/recon.md`).
+    /// forces are signed — log-space requires positive parameters). Drive it with
+    /// [`Normalized::optimize`] and an [`OptConfig`] on the **standard** `eps` but
+    /// a control-appropriate `lr` (an `O(1)`-newton step, e.g. `lr = 0.02` — the
+    /// default physical-`μ` `lr = 2e3` is far too large for a control force, and
+    /// is why this returns only the wrapper, not a full config). See
+    /// `examples/control_inverse_design.rs` and `docs/codesign/recon.md`.
     #[must_use]
     pub fn recommended_normalized(&self, residual_scale: f64) -> Normalized<'_> {
         Normalized::with_residual_scale(self, residual_scale, false)
@@ -965,7 +985,19 @@ impl CoDesignProblem for ControlScheduleTarget {
         self.n_steps
     }
 
+    /// `(loss, gradient)` at the control schedule `params`.
+    ///
+    /// # Panics
+    /// Panics if `params.len() != n_steps` (the rollout length is the schedule
+    /// length; [`optimize`] already guards this, but a direct caller must match).
     fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
+        assert_eq!(
+            params.len(),
+            self.n_steps,
+            "control schedule length {} != n_steps {}",
+            params.len(),
+            self.n_steps,
+        );
         // One coupled rollout yields z_N and the whole control gradient vector.
         let (z_n, dz_du) = self.build().coupled_trajectory_control_gradient(params);
         let residual = z_n - self.target_z;
@@ -995,6 +1027,19 @@ mod tests {
         }
     }
 
+    /// A stub returning a FINITE loss but a non-finite GRADIENT — the load-bearing
+    /// case (the gradient is what `step_in_place` feeds into the params, and a NaN
+    /// component is masked by `grad_inf`'s `f64::max`).
+    struct NonFiniteGrad;
+    impl CoDesignProblem for NonFiniteGrad {
+        fn n_params(&self) -> usize {
+            1
+        }
+        fn evaluate(&self, _params: &[f64]) -> (f64, Vec<f64>) {
+            (1.0, vec![f64::NAN])
+        }
+    }
+
     /// [`Normalized::evaluate`] panics (loudly) when the inner loss is non-finite,
     /// rather than scaling `inf`/`NaN` onward into a silent `converged = false`
     /// run. The guard is a plain `assert!` (always on, including release-heavy CI).
@@ -1002,6 +1047,16 @@ mod tests {
     #[should_panic(expected = "non-finite loss")]
     fn normalized_rejects_non_finite_inner_loss() {
         let wrapped = Normalized::new(&NonFiniteLoss, 1.0, false);
+        let _ = wrapped.evaluate(&[1.0]);
+    }
+
+    /// The guard also covers a non-finite GRADIENT with a finite loss — the case
+    /// `grad_inf`'s `f64::max` would otherwise mask, letting a NaN step corrupt the
+    /// params undetected.
+    #[test]
+    #[should_panic(expected = "non-finite loss/gradient")]
+    fn normalized_rejects_non_finite_inner_gradient() {
+        let wrapped = Normalized::new(&NonFiniteGrad, 1.0, false);
         let _ = wrapped.evaluate(&[1.0]);
     }
 

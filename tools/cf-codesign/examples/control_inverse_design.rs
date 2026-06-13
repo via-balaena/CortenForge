@@ -5,7 +5,8 @@
 //! produces it, by optimizing with the keystone's MULTI-step CONTROL gradient
 //! `∂z_N/∂u_k` — one `tape.backward` across both engines and every step boundary.
 //! This is the control analogue of `trajectory_inverse_design` (which recovers a
-//! soft MATERIAL): the other half of the mission's "both design and policy". Run:
+//! soft MATERIAL): the policy axis of the co-design loop (optimizing design and
+//! policy *jointly* in one outer loop is a documented follow-on). Run:
 //!
 //! ```text
 //! cargo run -p cf-codesign --example control_inverse_design
