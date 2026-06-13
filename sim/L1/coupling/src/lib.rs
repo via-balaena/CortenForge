@@ -147,6 +147,150 @@ impl VjpOp for ContactForceVjp {
     }
 }
 
+/// Chassis-tape [`VjpOp`] for the backward-Euler velocity readout
+/// `v = (x_curr − x_prev)/Δt` — the linear node threading consecutive soft
+/// positions into the next step's `v_prev` over a coupled trajectory
+/// (keystone time-adjoint, PR2). Parents `[x_curr, x_prev]` (each `[n_dof]`),
+/// output `v` (`[n_dof]`); `∂L/∂x_curr += g/Δt`, `∂L/∂x_prev += −g/Δt`.
+#[derive(Clone, Copy, Debug)]
+struct VelVjp {
+    inv_dt: f64,
+    n_dof: usize,
+}
+
+impl VjpOp for VelVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::VelVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [self.n_dof]
+                && parent_cotans.len() == 2
+                && parent_cotans[0].shape() == [self.n_dof]
+                && parent_cotans[1].shape() == [self.n_dof],
+            "VelVjp: expected cot [{n}] + 2 parents [{n}]",
+            n = self.n_dof,
+        );
+        let g = cotangent.as_slice();
+        let (curr, prev) = parent_cotans.split_at_mut(1);
+        let c = curr[0].as_mut_slice();
+        let p = prev[0].as_mut_slice();
+        for i in 0..self.n_dof {
+            c[i] += g[i] * self.inv_dt;
+            p[i] -= g[i] * self.inv_dt;
+        }
+    }
+}
+
+/// Chassis-tape [`VjpOp`] for the contact-force readout along a trajectory:
+/// `fz = Σ force_on_soft.z` at the post-step soft config `x*` with the plane at
+/// height `z − clearance`. Parents `[x_star, z]` (`[n_dof]`, `[1]`), output `fz`
+/// (`[1]`). `∂fz/∂x* = −κ·n̂_z·n̂` per active pair (the S3 factor) and
+/// `∂fz/∂z = ∂fz/∂height = +κ·N_active` (the S1 explicit factor, `∂height/∂z=1`).
+#[derive(Clone, Debug)]
+struct ContactForceTrajVjp {
+    active: Vec<(usize, Vec3)>,
+    kappa: f64,
+    n_dof: usize,
+}
+
+impl VjpOp for ContactForceTrajVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::ContactForceTrajVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    // cast_precision_loss: `active.len()` ≤ the soft vertex count (~125); exact as f64.
+    #[allow(clippy::panic, clippy::cast_precision_loss)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [1]
+                && parent_cotans.len() == 2
+                && parent_cotans[0].shape() == [self.n_dof]
+                && parent_cotans[1].shape() == [1],
+            "ContactForceTrajVjp: expected cot [1] + parents (x* [{}], z [1])",
+            self.n_dof,
+        );
+        let c = cotangent.as_slice()[0];
+        let (xstar, z) = parent_cotans.split_at_mut(1);
+        let xs = xstar[0].as_mut_slice();
+        for &(v, n) in &self.active {
+            // ∂fz/∂x_v = −κ·n̂_z·n̂.
+            let g = -self.kappa * n.z;
+            xs[3 * v] += c * g * n.x;
+            xs[3 * v + 1] += c * g * n.y;
+            xs[3 * v + 2] += c * g * n.z;
+        }
+        // ∂fz/∂z = +κ·N_active (∂height/∂z = 1).
+        z[0].as_mut_slice()[0] += c * self.kappa * (self.active.len() as f64);
+    }
+}
+
+/// Chassis-tape [`VjpOp`] for the rigid platen's semi-implicit-Euler velocity
+/// update `vz' = a·vz − (Δt/m)·fz + Δt·g` along a trajectory, with
+/// `a = 1 − Δt·c/m` (linear contact-axis damping `c`) — the rigid carry's
+/// velocity half. Parents `[vz, fz]` (`[1]`, `[1]`), output `vz'` (`[1]`); the
+/// constant gravity term drops out. `∂vz'/∂vz = a`, `∂vz'/∂fz = −Δt/m`.
+#[derive(Clone, Copy, Debug)]
+struct VzCarryVjp {
+    a: f64,
+    neg_dt_over_m: f64,
+}
+
+impl VjpOp for VzCarryVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::VzCarryVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [1]
+                && parent_cotans.len() == 2
+                && parent_cotans[0].shape() == [1]
+                && parent_cotans[1].shape() == [1],
+            "VzCarryVjp: expected cot [1] + 2 scalar parents (vz, fz)",
+        );
+        let c = cotangent.as_slice()[0];
+        parent_cotans[0].as_mut_slice()[0] += c * self.a;
+        parent_cotans[1].as_mut_slice()[0] += c * self.neg_dt_over_m;
+    }
+}
+
+/// Chassis-tape [`VjpOp`] for the rigid platen's position update
+/// `z' = z + Δt·vz'` along a trajectory — the rigid carry's position half.
+/// Parents `[z, vz_next]` (`[1]`, `[1]`), output `z'` (`[1]`);
+/// `∂z'/∂z = 1`, `∂z'/∂vz_next = Δt`.
+#[derive(Clone, Copy, Debug)]
+struct ZCarryVjp {
+    dt: f64,
+}
+
+impl VjpOp for ZCarryVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::ZCarryVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [1]
+                && parent_cotans.len() == 2
+                && parent_cotans[0].shape() == [1]
+                && parent_cotans[1].shape() == [1],
+            "ZCarryVjp: expected cot [1] + 2 scalar parents (z, vz_next)",
+        );
+        let c = cotangent.as_slice()[0];
+        parent_cotans[0].as_mut_slice()[0] += c;
+        parent_cotans[1].as_mut_slice()[0] += c * self.dt;
+    }
+}
+
 /// Result of one coupled step.
 #[derive(Clone, Copy, Debug)]
 pub struct CoupledStep {
@@ -767,6 +911,177 @@ impl StaggeredCoupling {
         self.rigid_step_probe(-fz).1
     }
 
+    /// **The keystone multi-step time-adjoint.** Roll the coupled system forward
+    /// `n_steps` (advancing `self`, exactly as repeated [`Self::step`]) while
+    /// recording a single chassis tape, then ONE `tape.backward` gives the
+    /// gradient of the platen's final height `z_N` w.r.t. the soft block's
+    /// Neo-Hookean material parameter (`param_idx`: `0 = μ`, `1 = λ`). Returns
+    /// `(z_N, ∂z_N/∂p)`.
+    ///
+    /// The tape threads the full coupled recurrence so the reverse pass crosses
+    /// BOTH step boundaries and the soft↔rigid interface over the whole rollout:
+    /// per step the soft solve is a `TrajectoryStepVjp` node with parents
+    /// `[x_prev, v_prev, p, z_prev]` (the prev soft state, the material param, and
+    /// the plane height `z_prev − clearance`); the next velocity
+    /// `v = (x* − x_prev)/Δt` (`VelVjp`), the contact force
+    /// `fz(x*, z_prev)` (`ContactForceTrajVjp`), and the rigid semi-implicit
+    /// step `vz' = a·vz − (Δt/m)·fz` (`VzCarryVjp`), `z' = z + Δt·vz'`
+    /// (`ZCarryVjp`) chain the rigid state forward. `tape.backward(z_N)` then
+    /// accumulates every per-step ∂/∂p (direct material + the state/contact/rigid
+    /// feedback) into `p`. FD-validated against the full real coupled re-rollout.
+    ///
+    /// Forward values come from the real coupled dynamics (identical to
+    /// [`Self::step`]); the per-node Jacobians are the analytic/factored
+    /// sensitivities (the soft IFT factor, the contact penalty factors, the
+    /// free-body `Δt/m` and damping `a = 1 − Δt·c/m`). See
+    /// `docs/keystone/time_adjoint_recon.md`.
+    ///
+    /// **Accuracy / scope (penalty R3).** Each per-step factor is machine-exact,
+    /// and the composed gradient matches the full-coupled FD to ~1e-3 while the
+    /// contact is FIRMLY engaged (`sd ≪ d̂`, a stable active set). With penalty
+    /// contact, static force balance settles at the band edge (`sd ≈ d̂`, where
+    /// the C⁰ force → 0): `z_N(μ)` stays smooth, but the penalty force's
+    /// derivative kinks at the active-set boundary, so this per-step
+    /// linearization (active set frozen at the rollout's μ) loses accuracy as the
+    /// platen reaches marginal contact or bounces through make/break events. That
+    /// non-smoothness — not a formula error — is the documented limit IPC would
+    /// lift. Free-body rigid factor (the keystone platen).
+    ///
+    /// # Panics
+    /// Panics if the rigid step diverges (a mis-constructed coupling), or if the
+    /// soft solver does not converge — surfaced loudly as in [`Self::step`].
+    #[must_use]
+    // One coherent per-step tape-construction loop (5 chained nodes + the real
+    // coupled step); splitting it would scatter the recurrence's shared state.
+    // expect_used: a rigid-step divergence is a programmer error surfaced loudly,
+    // not recoverable for keystone-v1 (mirrors `step`'s rationale).
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_material_gradient(
+        &mut self,
+        n_steps: usize,
+        param_idx: usize,
+    ) -> (f64, f64) {
+        assert!(
+            param_idx <= 1,
+            "material param index {param_idx} out of range"
+        );
+        let n = self.n_vertices;
+        let dt = self.cfg.dt;
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+        // Rigid carry coefficients: dt/m from the free-body probe; the damping
+        // factor a = 1 − Δt·c/m = 1 − c·(Δt/m).
+        let dt_over_m = self.rigid_vz_response(0.0).1;
+        let a = 1.0 - self.rigid_damping * dt_over_m;
+
+        let mut tape = Tape::new();
+        // Material leaf (the gradient target) + the constant initial state.
+        let p0 = if param_idx == 0 { self.mu } else { self.lambda };
+        let p_var = tape.param_tensor(Tensor::from_slice(&[p0], &[1]));
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut z_var =
+            tape.constant_tensor(Tensor::from_slice(&[self.data.xpos[self.body].z], &[1]));
+        let mut vz_var = tape.constant_tensor(Tensor::from_slice(&[self.data.qvel[2]], &[1]));
+        let mut z_final = self.data.xpos[self.body].z;
+
+        for _ in 0..n_steps {
+            let height = self.plane_height();
+            let vz_k = self.data.qvel[2];
+
+            // (1)+(2) one dynamic soft step from the current (self.x, self.v).
+            let (solver, x_next) = self.soft_resolve(height);
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+
+            // Soft node: x* with parents [x_prev, v_prev, p, z_prev].
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, z_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp(&x_next, dt, param_idx, dir)),
+            );
+            // Velocity node: v = (x* − x_prev)/Δt.
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (3) contact force at the post-step config, plane at `height`.
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0], c[1], c[2]))
+                .collect();
+            let readout = self
+                .build_contact(height)
+                .per_pair_readout(&self.fresh_mesh(), &positions);
+            let fz: f64 = readout.iter().map(|r| r.force_on_soft.z).sum();
+            let active: Vec<(usize, Vec3)> = readout
+                .iter()
+                .map(|r| {
+                    let ContactPair::Vertex { vertex_id, .. } = r.pair;
+                    (vertex_id as usize, r.normal)
+                })
+                .collect();
+            let force_on_soft: Vec3 = readout.iter().map(|r| r.force_on_soft).sum();
+            let fz_var = tape.push_custom(
+                &[x_next_var, z_var],
+                Tensor::from_slice(&[fz], &[1]),
+                Box::new(ContactForceTrajVjp {
+                    active,
+                    kappa: self.kappa,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (4)+(5) route the reaction (+ damping) onto the rigid body and
+            // step it (the real coupled dynamics, identical to `step`).
+            let mut sf = SpatialVector::zeros();
+            sf[3] = -force_on_soft.x;
+            sf[4] = -force_on_soft.y;
+            sf[5] = -force_on_soft.z - self.rigid_damping * vz_k;
+            self.data.xfrc_applied[self.body] = sf;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in coupled trajectory");
+            let z_next = self.data.xpos[self.body].z;
+            let vz_next = self.data.qvel[2];
+
+            // Rigid carry nodes: vz' = a·vz − (Δt/m)·fz; z' = z + Δt·vz'.
+            let vz_next_var = tape.push_custom(
+                &[vz_var, fz_var],
+                Tensor::from_slice(&[vz_next], &[1]),
+                Box::new(VzCarryVjp {
+                    a,
+                    neg_dt_over_m: -dt_over_m,
+                }),
+            );
+            let z_next_var = tape.push_custom(
+                &[z_var, vz_next_var],
+                Tensor::from_slice(&[z_next], &[1]),
+                Box::new(ZCarryVjp { dt }),
+            );
+
+            // Advance the soft state and the tape handles.
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            z_var = z_next_var;
+            vz_var = vz_next_var;
+            z_final = z_next;
+        }
+
+        tape.backward(z_var);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (z_final, grad)
+    }
+
     /// Advance the coupled system by one lockstep step. Returns the contact
     /// force on the soft body and the rigid body's current height.
     ///
@@ -959,6 +1274,33 @@ mod tests {
         assert!(
             (grad - fd).abs() / fd.abs() < 1e-6,
             "smoke: tape grad {grad} vs FD {fd}"
+        );
+    }
+
+    /// Lib-level smoke test of the multi-step time-adjoint (the scientific FD
+    /// validation is in `tests/coupled_trajectory_gradient.rs`): one
+    /// `tape.backward` over a coupled rollout that crosses the contact make event
+    /// gives a finite gradient, and the tape's forward rollout reproduces the
+    /// real `step` dynamics exactly.
+    #[test]
+    fn trajectory_gradient_smoke() {
+        // Independent couplings: one for the tape gradient, one for the real
+        // reference rollout (the gradient call advances its own coupling).
+        let (z_tape, grad) = coupling().coupled_trajectory_material_gradient(80, 0);
+        let mut c_ref = coupling();
+        let mut z_ref = c_ref.data().xpos[1].z;
+        for _ in 0..80 {
+            z_ref = c_ref.step().rigid_z;
+        }
+        assert!(
+            (z_tape - z_ref).abs() < 1e-12,
+            "tape forward z_N {z_tape} != real rollout {z_ref}"
+        );
+        // Past the make event the gradient is finite and nonzero (the block
+        // stiffness bears the platen).
+        assert!(
+            grad.is_finite() && grad.abs() > 1e-12,
+            "expected a finite nonzero ∂z_N/∂μ"
         );
     }
 
