@@ -45,7 +45,9 @@ use super::lm::{LmConfig, LmState};
 use super::{CpuTape, NewtonStep, Solver, SolverFailure};
 use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
-use crate::differentiable::newton_vjp::{MaterialStepVjp, NewtonStepVjp};
+use crate::differentiable::newton_vjp::{
+    MaterialStepVjp, NewtonStepVjp, StateStepVjp, TrajectoryStepVjp,
+};
 use crate::element::Element;
 use crate::material::{InversionHandling, Material};
 use crate::mesh::{Mesh, TetId, VertexId};
@@ -2022,34 +2024,33 @@ where
     #[must_use]
     pub fn equilibrium_pose_sensitivity(&self, x_final: &[f64], dt: f64, dir: Vec3) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
-        // (∂r/∂δ)_full — the plane pose enters the residual only through
-        // the contact term, so this is the active-set sum.
-        let positions = slice_to_vec3s(x_final);
-        let pairs = self.contact.active_pairs(&self.mesh, &positions);
-        let mut dr_dpose = vec![0.0_f64; self.n_dof];
-        for pair in &pairs {
-            let g = self.contact.pose_residual_derivative(pair, &positions, dir);
-            for &(vid, d) in &g.contributions {
-                let v = vid as usize;
-                dr_dpose[3 * v] += d.x;
-                dr_dpose[3 * v + 1] += d.y;
-                dr_dpose[3 * v + 2] += d.z;
-            }
-        }
-        // Solve A·w_free = −(∂r/∂δ)_free reusing the tangent at x_final.
-        let factor = self.factor_at_position(x_final, dt, 0.0);
-        let mut rhs: Vec<f64> = self
+        let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
+        // A·w_free = −(∂r/∂δ)_free reusing the tangent at x_final.
+        let rhs: Vec<f64> = self
             .free_dof_indices
             .iter()
-            .map(|&idx| -dr_dpose[idx])
+            .map(|&i| -dr_dpose[i])
             .collect();
+        self.solve_free_and_scatter(x_final, dt, rhs)
+    }
+
+    /// Reuse the tangent `A` factored at `x_final` to solve the free-DOF adjoint
+    /// system `A·w_free = rhs_free` and scatter the result onto full DOFs (pinned
+    /// / roller DOFs stay 0) — `−A⁻¹·(∂r/∂·)` for a pre-gathered, pre-signed
+    /// `rhs_free = (−∂r/∂·)_free`. The shared back-half of the forward equilibrium
+    /// sensitivities ([`Self::equilibrium_pose_sensitivity`] /
+    /// [`Self::equilibrium_material_sensitivity`] /
+    /// [`Self::equilibrium_state_sensitivity`]), which differ only in how they
+    /// assemble `rhs_free`.
+    fn solve_free_and_scatter(&self, x_final: &[f64], dt: f64, mut rhs_free: Vec<f64>) -> Vec<f64> {
+        debug_assert_eq!(rhs_free.len(), self.n_free);
+        let factor = self.factor_at_position(x_final, dt, 0.0);
         let rhs_mat: MatMut<'_, f64> =
-            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
+            MatMut::from_column_major_slice_mut(&mut rhs_free, self.n_free, 1);
         factor.solve_in_place_with_conj(Conj::No, rhs_mat);
-        // Scatter w_free → full-DOF ∂x*/∂δ (constrained DOFs stay 0).
         let mut sensitivity = vec![0.0_f64; self.n_dof];
         for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
-            sensitivity[full_idx] = rhs[k];
+            sensitivity[full_idx] = rhs_free[k];
         }
         sensitivity
     }
@@ -2093,21 +2094,31 @@ where
     ) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
         let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
-        // Solve A·w_free = −(∂r/∂p_k)_free reusing the tangent at x_final.
-        let factor = self.factor_at_position(x_final, dt, 0.0);
-        let mut rhs: Vec<f64> = self
-            .free_dof_indices
-            .iter()
-            .map(|&idx| -dr_dp[idx])
-            .collect();
-        let rhs_mat: MatMut<'_, f64> =
-            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
-        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
-        let mut sensitivity = vec![0.0_f64; self.n_dof];
-        for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
-            sensitivity[full_idx] = rhs[k];
+        // A·w_free = −(∂r/∂p_k)_free reusing the tangent at x_final.
+        let rhs: Vec<f64> = self.free_dof_indices.iter().map(|&i| -dr_dp[i]).collect();
+        self.solve_free_and_scatter(x_final, dt, rhs)
+    }
+
+    /// `(∂r/∂δ)_full` — the contact-plane pose enters the residual only through
+    /// the contact term, so this is the active-pair sum of
+    /// [`ContactModel::pose_residual_derivative`](crate::contact::ContactModel::pose_residual_derivative)
+    /// for a unit rigid translation along `dir`. Shared (kept in lockstep) by
+    /// [`Self::equilibrium_pose_sensitivity`] (forward; negates + solves) and
+    /// [`Self::trajectory_step_vjp`] (reverse; gathers the free DOFs).
+    fn assemble_pose_residual_grad(&self, x_final: &[f64], dir: Vec3) -> Vec<f64> {
+        let positions = slice_to_vec3s(x_final);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        let mut dr_dpose = vec![0.0_f64; self.n_dof];
+        for pair in &pairs {
+            let g = self.contact.pose_residual_derivative(pair, &positions, dir);
+            for &(vid, d) in &g.contributions {
+                let v = vid as usize;
+                dr_dpose[3 * v] += d.x;
+                dr_dpose[3 * v + 1] += d.y;
+                dr_dpose[3 * v + 2] += d.z;
+            }
         }
-        sensitivity
+        dr_dpose
     }
 
     /// `(∂r/∂p_k)_full = ∂f_int/∂p_k` — the `f_int` assembly
@@ -2175,6 +2186,126 @@ where
             self.n_dof,
             self.free_dof_indices.clone(),
             dr_dp_free,
+        )
+    }
+
+    /// Forward sensitivity of the converged step to the PREVIOUS state — the
+    /// multi-step time-adjoint primitive (keystone time-adjoint leaf). Returns
+    /// the directional derivative `∂x*` (length `n_dof`, zeros on pinned/roller
+    /// DOFs) for a perturbation `(dx_prev, dv_prev)` of the previous position and
+    /// velocity.
+    ///
+    /// The previous state enters the backward-Euler residual
+    /// `r = (M/Δt²)·(x − x̂) + f_int − f_ext` ONLY through the predictor
+    /// `x̂ = x_prev + Δt·v_prev`, so `∂r/∂x_prev = −(M/Δt²)`,
+    /// `∂r/∂v_prev = −(M/Δt)` (diagonal, lumped mass). The IFT then gives
+    /// `∂x* = −A⁻¹·(∂r/∂x_prev·dx_prev + ∂r/∂v_prev·dv_prev)
+    ///      = A⁻¹·((M/Δt²)·dx_prev + (M/Δt)·dv_prev)`, solved with the SAME
+    /// tangent `A` factored at `x_final` (`factor_at_position`) the forward
+    /// Newton step, the load adjoint, the pose sensitivity, and the material
+    /// sensitivity reuse. The RHS is gathered over the FREE DOFs only — the
+    /// world-pinned base is a constant outside the differentiable thread (see
+    /// [`StateStepVjp`]). The reverse-mode dual is [`Self::state_step_vjp`].
+    // `dx_prev`/`dv_prev` are the perturbations of `x_prev`/`v_prev`; the
+    // parallel naming is the clearest scheme (renaming would obscure the pair).
+    #[allow(clippy::similar_names)]
+    #[must_use]
+    pub fn equilibrium_state_sensitivity(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        dx_prev: &[f64],
+        dv_prev: &[f64],
+    ) -> Vec<f64> {
+        debug_assert!(x_final.len() == self.n_dof);
+        debug_assert!(dx_prev.len() == self.n_dof && dv_prev.len() == self.n_dof);
+        let dt2 = dt * dt;
+        // RHS_free = −(∂r/∂x_prev·dx_prev + ∂r/∂v_prev·dv_prev)_free
+        //          = ((M/Δt²)·dx_prev + (M/Δt)·dv_prev)_free.
+        let rhs: Vec<f64> = self
+            .free_dof_indices
+            .iter()
+            .map(|&i| {
+                self.mass_per_dof[i] / dt2 * dx_prev[i] + self.mass_per_dof[i] / dt * dv_prev[i]
+            })
+            .collect();
+        self.solve_free_and_scatter(x_final, dt, rhs)
+    }
+
+    /// Build a [`StateStepVjp`] for one converged step — the reverse-mode (tape)
+    /// sibling of [`Self::equilibrium_state_sensitivity`]: pushed onto a chassis
+    /// tape with `x_prev` and `v_prev` as the two parents, it turns a downstream
+    /// `∂L/∂x*` cotangent into `(∂L/∂x_prev, ∂L/∂v_prev)`. This is the primitive
+    /// that threads one soft step's adjoint to the previous step's, so one
+    /// `tape.backward` can cross step boundaries over a rollout (the multi-step
+    /// time-adjoint).
+    ///
+    /// The op stashes the tangent factored at `x_final` plus the per-DOF scales
+    /// `M/Δt²` and `M/Δt`; its VJP solves `A·λ = g_free` (the same adjoint as
+    /// [`NewtonStepVjp`]) then writes `∂L/∂x_prev = (M/Δt²)·λ_full`,
+    /// `∂L/∂v_prev = (M/Δt)·λ_full`. The pushed node's value should be the
+    /// `x_final` tensor (shape `[n_dof]`); its parents the `x_prev` then `v_prev`
+    /// `Var`s (each shape `[n_dof]`).
+    #[must_use]
+    pub fn state_step_vjp(&self, x_final: &[f64], dt: f64) -> StateStepVjp {
+        debug_assert!(x_final.len() == self.n_dof);
+        let factor = self.factor_at_position(x_final, dt, 0.0);
+        let dt2 = dt * dt;
+        let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
+        let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
+        StateStepVjp::new(
+            factor,
+            self.n_dof,
+            self.free_dof_indices.clone(),
+            m_over_dt2,
+            m_over_dt,
+        )
+    }
+
+    /// Build a [`TrajectoryStepVjp`] — the unified multi-step / soft↔rigid VJP
+    /// fusing the prev-state ([`Self::state_step_vjp`]), material
+    /// ([`Self::material_step_vjp`]), and contact-pose
+    /// ([`Self::equilibrium_pose_sensitivity`]) adjoints into ONE op with a
+    /// single shared `A·λ = g_free` solve. Pushed onto a chassis tape with four
+    /// parents in order `[x_prev, v_prev, param, pose]`, it lets one
+    /// `tape.backward` cross both step boundaries and the soft↔rigid interface
+    /// over a coupled rollout (keystone time-adjoint, PR2).
+    ///
+    /// `param_idx` selects the differentiated material parameter (`NeoHookean`:
+    /// `0 = μ`, `1 = λ`); `dir` is the contact primitive's translation direction
+    /// (the keystone plane rises along `+ẑ`). The pushed node's value is the
+    /// `x_final` tensor (`[n_dof]`); the `param`/`pose` parents are scalars `[1]`,
+    /// the state parents are `[n_dof]`. Engaged / stable-active-set / hard-penalty
+    /// scope (the active set and factor are captured here).
+    #[must_use]
+    pub fn trajectory_step_vjp(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        param_idx: usize,
+        dir: Vec3,
+    ) -> TrajectoryStepVjp {
+        debug_assert!(x_final.len() == self.n_dof);
+        // Material RHS (∂r/∂param)_free (S5).
+        let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
+        let dr_dparam_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
+        // Contact-pose RHS (∂r/∂pose)_free (S3) — shared with the forward
+        // `equilibrium_pose_sensitivity` (kept in lockstep).
+        let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
+        let dr_dpose_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect();
+        // State scales (PR1) + the shared factor at x_final.
+        let dt2 = dt * dt;
+        let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
+        let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
+        let factor = self.factor_at_position(x_final, dt, 0.0);
+        TrajectoryStepVjp::new(
+            factor,
+            self.n_dof,
+            self.free_dof_indices.clone(),
+            m_over_dt2,
+            m_over_dt,
+            dr_dparam_free,
+            dr_dpose_free,
         )
     }
 }
