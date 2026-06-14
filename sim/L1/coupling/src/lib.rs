@@ -1604,6 +1604,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         );
         // The loaded carry holds the contact wrench during its FD; a damping force
         // −c·vz would not have its velocity-coupling captured. v1 scope: no damping.
+        // EXACT-zero is the intended semantics (not a tolerance): any nonzero damping
+        // must fail, and 0.0 is exactly representable / passed as a literal.
         assert!(
             self.rigid_damping == 0.0,
             "articulated path requires rigid_damping = 0 (v1 scope)"
@@ -1630,7 +1632,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let height = self.tip_plane_height();
 
             // Pose seam: h = (tip height) from the rigid state. Value is the real
-            // plane height; ∂h/∂q = J_z (∂h/∂qvel = 0).
+            // plane height; ∂h/∂q = J_z (∂h/∂qvel = 0). Both `height` and `jz` read
+            // the current `xipos`, which sim-core's step leaves at the PRE-integrate
+            // FK config (forward-then-integrate, no trailing FK) — a one-step
+            // attribution shift shared verbatim with the oracle
+            // (`coupled_trajectory_articulated_z`), so the gate's independent FD match
+            // (6e-6, below the geometric-stiffness floor) validates it self-consistently.
             let jz = self.pose_seam_jz();
             let h_var = tape.push_custom(
                 &[s_var],
@@ -2710,7 +2717,7 @@ mod tests {
 
         // One control input vs an independent FD of the real coupled re-rollout.
         let k = 1;
-        let eps = 1e-6;
+        let eps = 1e-2;
         let mut up = controls.clone();
         let mut dn = controls.clone();
         up[k] += eps;
@@ -2755,7 +2762,7 @@ mod tests {
 
         // The proportional weight w_z vs an independent FD of the real re-rollout
         // (its gradient flows only through the state→control recurrence).
-        let eps = 1e-6;
+        let eps = 1e-2;
         let mut up = theta;
         let mut dn = theta;
         up[0] += eps;

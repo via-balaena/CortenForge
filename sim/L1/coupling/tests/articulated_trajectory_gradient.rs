@@ -93,6 +93,11 @@ fn articulated_gradient_matches_full_coupled_fd() {
     // n = 10, vs the free-body platen's machine-exact — the articulated body has a
     // real geometric stiffness the analytic factor omits); a machine-exact analytic
     // term is a follow-on. See docs/keystone/multidof_rigid_recon.md §8c.
+    // This match is what discriminates the multi-DOF carry from a scalar dt/m: the
+    // tilted hinge's contact axis has J_z ≈ 0.028 ≠ 1, so a dt/m carry would be ~35×
+    // wrong on the contact axis — far outside this gate. (The dt/m-vs-multi-DOF
+    // distinction is asserted directly at the primitive level, including a free-body
+    // collapse-to-dt/m check, in tests/rigid_multidof_response.rs.)
     let rel = (total - fd).abs() / fd.abs().max(1e-30);
     println!("n={n}: tape total={total:.8e} FD={fd:.8e} rel={rel:.3e}");
     assert!(
