@@ -206,6 +206,36 @@ quality follow-on (the analogue of penalty→IPC: correct structure now, machine
 later). This keeps the free-body platen path machine-exact (no geometric stiffness)
 and the articulated path FD-accurate (~1e-5, co-design-adequate).
 
+## 8d. PR2 BUILD RESULT (2026-06-13) — articulated coupled gradient on main path
+
+Built `coupled_trajectory_material_gradient_articulated` (+ `coupled_trajectory_articulated_z`
+oracle, `PoseSeamVjp`, `RigidStateCarryVjp`, `loaded_state_jacobian`) for a tilted
+Y-hinge pressing on the soft block; gate `tests/articulated_trajectory_gradient.rs`.
+The merged platen path is byte-untouched (the multi-DOF path is parallel).
+
+**THE PRECISE CARRY (refines §8c):** the §8a "use the loaded Jacobian" was right but
+needs ONE more distinction, found during the build by FD-mapping vs n:
+- **`J_state` = the FULL loaded single-step Jacobian** `∂[qpos';qvel']/∂[qpos;qvel]`
+  (both blocks, post-update — incl the position-state coupling `Δt·∂qvel'/∂qpos`
+  AND the geometric stiffness `∂(Jᵀw)/∂q`; FD'd at eps 1e-6, eps-robust).
+- **`g = ∂[qpos';qvel']/∂(force_on_soft.z)`: velocity rows `−g_v` (`rigid_xfrc_column`),
+  but POSITION rows ZEROED** — the exact multi-DOF generalization of the scalar
+  `ZCarryVjp`'s `∂z'/∂fz = 0`. Wiring `∂qpos'/∂fz = Δt·g_v` here (the "true" post
+  term) injects a SPURIOUS first-step gradient: the soft solve from rest has
+  `dfz/dμ ≈ 0`, so `d(tip_z_1)/dμ = 0` (FD-confirmed), but the post-force term
+  propagates the soft node's tiny `∂x*/∂μ` → 11% error. Dropping ONLY the force
+  position-term (keeping the full state position-coupling) → **n=1 exactly 0, n=2
+  machine-exact (1.3e-9), n=10 rel 6.3e-6** vs the re-rolled full-coupled FD oracle.
+- The residual ~6e-6 at n=10 (vs the free body's machine-exact) is the articulated
+  body's geometric-stiffness carry, FD-accurate — co-design-adequate; an analytic
+  `∂(Jᵀw)/∂q` term is the documented follow-on. **The §8a magic = drop the force
+  term from the POSITION carry (not the state term).**
+
+**SCOPE (documented):** hinge (raw `[qpos;qvel]`, no quaternion joints),
+`rigid_damping = 0` (asserted), contact at the body COM (pure-force routing,
+moment `r×f` deferred — the omission is consistent between gradient + oracle, so the
+gradient is exact for that model). grade A all tiers; 36 coupling tests green.
+
 ## 8b. Slicing decision (head-eng call)
 
 - **PR1 — the rigid multi-DOF primitive, IN ISOLATION.** A matrix-valued
