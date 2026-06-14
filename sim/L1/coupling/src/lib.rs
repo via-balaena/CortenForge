@@ -457,8 +457,8 @@ impl VjpOp for ZCarryVjp {
 /// Chassis-tape [`VjpOp`] for the **multi-DOF** pose seam of an articulated rigid
 /// body: the contact-plane height tracks the contacting point's world height
 /// `h(q) = (FK of the contact point).z`, so `∂h/∂q = J_z` (the world-z row of the
-/// body Jacobian at the contact point). Parent `[s]` (the rigid state `[dq(nv);
-/// qvel(nv)]`, shape `[2·nv]`), output `h` (`[1]`); `∂h/∂dq = J_z`, `∂h/∂qvel = 0`.
+/// body Jacobian at the contact point). Parent `[s]` (the rigid state `[qpos(nv);
+/// qvel(nv)]`, shape `[2·nv]`), output `h` (`[1]`); `∂h/∂qpos = J_z`, `∂h/∂qvel = 0`.
 /// Generalizes the platen's scalar `∂plane/∂z = 1` (the 1-DOF special case where
 /// `J_z = [1]`). Keystone multi-DOF coupling, PR2.
 #[derive(Clone, Debug)]
@@ -484,7 +484,7 @@ impl VjpOp for PoseSeamVjp {
         );
         let c = cotangent.as_slice()[0];
         let slot = parent_cotans[0].as_mut_slice();
-        // ∂h/∂dq = J_z (position half); ∂h/∂qvel = 0 (velocity half untouched).
+        // ∂h/∂qpos = J_z (position half); ∂h/∂qvel = 0 (velocity half untouched).
         for (i, &j) in self.jz.iter().enumerate() {
             slot[i] += c * j;
         }
@@ -492,7 +492,7 @@ impl VjpOp for PoseSeamVjp {
 }
 
 /// Chassis-tape [`VjpOp`] for the **multi-DOF** rigid state carry of an articulated
-/// body: `s' = J_state · s + g · fz`, where `s = [dq(nv); qvel(nv)]` is the rigid
+/// body: `s' = J_state · s + g · fz`, where `s = [qpos(nv); qvel(nv)]` is the rigid
 /// state, `J_state` is the **loaded** single-step transition Jacobian
 /// `∂(state')/∂(state)` (with the contact reaction held — it includes the
 /// applied-force geometric/load stiffness `∂(Jᵀw)/∂q` that the unloaded
@@ -504,7 +504,7 @@ impl VjpOp for PoseSeamVjp {
 /// platen uses. Keystone multi-DOF coupling, PR2.
 #[derive(Clone, Debug)]
 struct RigidStateCarryVjp {
-    /// The loaded transition Jacobian `J_state` (`2·nv × 2·nv`), row-major.
+    /// The loaded transition Jacobian `J_state` (`2·nv × 2·nv`), indexed logically `j_state[(row, col)]`.
     j_state: DMatrix<f64>,
     /// The contact-force response column `g = ∂(state')/∂(force_on_soft.z)`
     /// (length `2·nv`; already sign-adjusted — the reaction enters as `−fz`).
@@ -1549,6 +1549,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .step(&self.model)
                 .expect("rigid step diverged in articulated rollout");
         }
+        // Return the post-step tip height (the stale-but-consistent FK config the
+        // gradient method's objective also reads — do not re-forward).
         self.data.xipos[self.body].z
     }
 
@@ -1568,9 +1570,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `TrajectoryStepVjp` as the platen path, pose parent `= h`), the velocity
     /// readout, the contact force `fz(x*, h)`, and the multi-DOF rigid carry
     /// `s' = J_state·s + g·fz` (`RigidStateCarryVjp`) where `J_state` is the
-    /// LOADED single-step Jacobian (`loaded_state_jacobian`) and
-    /// `g = −[Δt·g_v; g_v]` the contact-force response (`g_v` = the f_z column of
-    /// [`rigid_xfrc_column`]; the reaction enters as `−fz`).
+    /// LOADED single-step Jacobian (`loaded_state_jacobian`) and `g` the contact-force
+    /// response: its VELOCITY rows are `−g_v` (`g_v` = the f_z column of
+    /// [`rigid_xfrc_column`]; the reaction enters as `−fz`) and its POSITION rows are
+    /// ZEROED — the §8a fix (`∂qpos'/∂fz = 0`, mirroring the scalar `ZCarryVjp`; the
+    /// "true post" `−Δt·g_v` position term injects a spurious first-step gradient).
     ///
     /// **Accuracy / scope.** The velocity-response `G` and the pose seam are
     /// analytic (machine-exact); the state carry `J_state` is finite-differenced
@@ -1632,12 +1636,21 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let height = self.tip_plane_height();
 
             // Pose seam: h = (tip height) from the rigid state. Value is the real
-            // plane height; ∂h/∂q = J_z (∂h/∂qvel = 0). Both `height` and `jz` read
-            // the current `xipos`, which sim-core's step leaves at the PRE-integrate
-            // FK config (forward-then-integrate, no trailing FK) — a one-step
-            // attribution shift shared verbatim with the oracle
-            // (`coupled_trajectory_articulated_z`), so the gate's independent FD match
-            // (6e-6, below the geometric-stiffness floor) validates it self-consistently.
+            // plane height; ∂h/∂q = J_z (∂h/∂qvel = 0).
+            //
+            // EVALUATION POINT (load-bearing): `height`, `jz`, and `g` (below) all read
+            // `self.data` at the PRE-integrate FK config sim-core's `step` leaves behind
+            // (forward-then-integrate, no trailing FK), while the loaded carry `J_state`
+            // (a fresh scratch forward) and the carried state are at the post-step qpos.
+            // This one-step skew is NOT a bug to "fix" by re-forwarding: the §8a
+            // force-drop carry is calibrated to exactly this staggered timing (it mirrors
+            // the merged platen, which poses from the same stale `xpos`), and the oracle
+            // `coupled_trajectory_articulated_z` reads the identical stale config — so the
+            // forward values match and the independent FD gate validates the gradient
+            // against the self-consistent forward model. (Re-forwarding to align the
+            // factors at the post-step qpos changes the forward model AND breaks the §8a
+            // structure → ~10% error; verified. The residual ~6e-6 at n=10 reflects this
+            // skew plus the FD'd geometric stiffness — see multidof_rigid_recon.md §8d.)
             let jz = self.pose_seam_jz();
             let h_var = tape.push_custom(
                 &[s_var],
@@ -1739,7 +1752,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             s_var = s_next_var;
         }
 
-        // Objective: the tip world height after the rollout = PoseSeam(s_N).
+        // Objective: the tip world height after the rollout = PoseSeam(s_N). Read the
+        // post-step `xipos` (the pre-integrate FK config, the same stale-but-consistent
+        // convention the loop + the oracle use — do NOT re-forward, see the loop note).
         let tip_z = self.data.xipos[self.body].z;
         let jz_final = self.pose_seam_jz();
         let obj_var = tape.push_custom(
@@ -2632,9 +2647,11 @@ mod tests {
         data.forward(&model).expect("forward");
         let col = rigid_xfrc_column(&model, &data, 1);
         assert_eq!(col.shape(), (6, 6)); // free joint: nv=6, 6 spatial-force columns
-        // ∂vz'/∂f_z (qvel[2] vs xfrc[5]) is the free-body dt/m.
+        // ∂vz'/∂f_z (qvel[2] vs xfrc[5]) is the free-body dt/m (read from the model,
+        // not hardcoded, so it can't go stale if the fixture changes).
+        let dt_over_m = model.timestep / model.body_mass[1];
         assert!(
-            (col[(2, 5)] - 1.0e-3 / 0.2).abs() < 1e-12,
+            (col[(2, 5)] - dt_over_m).abs() < 1e-12,
             "free-body ∂vz'/∂f_z must be dt/m, got {}",
             col[(2, 5)]
         );

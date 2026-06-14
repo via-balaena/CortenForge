@@ -177,11 +177,13 @@ FD oracle, with the contact chain `dfz/dκ = pen − κ·(J_z·dq/dκ)`:
 - **(1) fully self-FD'd step Jacobians** (`J_state`, `J_xfrc` by central FD of the
   real step, xfrc held) → matches the oracle to **rel 2e-5** (FD-noise floor). **⇒
   the carry recurrence `ds_{k+1} = J_state·ds_k + J_xfrc·dfz/dκ` and the staggered
-  contact chain are STRUCTURALLY CORRECT.** The position rows use `G_pos =
-  Δt·G_vel` (the true post-update single-step response, per M0) — so the scalar
-  §8a `vz_var` (pre-update) quirk does NOT generalize; it was a property of that
-  specific hand-built factoring, not a rule. **PR2 uses the true loaded step
-  Jacobian.**
+  contact chain are STRUCTURALLY CORRECT.** ⚠ **SUPERSEDED by §8d:** this spike used
+  an analytic SPRING whose `dfz/dκ = pen ≠ 0` at the first step, so it never probed
+  the rest-state-zero case and concluded "the §8a `vz_var` quirk does NOT generalize;
+  use `G_pos = Δt·G_vel`". The real soft contact has `dfz/dμ ≈ 0` at the first step,
+  and §8d found the OPPOSITE: the §8a force-drop (zero the force-response POSITION
+  rows) DOES generalize and is required. PR2 uses the loaded step Jacobian for
+  `J_state` but zeroes `∂qpos'/∂fz` (see §8d).
 - **(2) `transition_derivatives` (dense A) + `rigid_xfrc_column` (G)** → rel **2e-4**,
   10× worse. Since `rigid_xfrc_column` is machine-exact (PR1), the gap is `A`.
 
@@ -226,10 +228,19 @@ needs ONE more distinction, found during the build by FD-mapping vs n:
   propagates the soft node's tiny `∂x*/∂μ` → 11% error. Dropping ONLY the force
   position-term (keeping the full state position-coupling) → **n=1 exactly 0, n=2
   machine-exact (1.3e-9), n=10 rel 6.3e-6** vs the re-rolled full-coupled FD oracle.
-- The residual ~6e-6 at n=10 (vs the free body's machine-exact) is the articulated
-  body's geometric-stiffness carry, FD-accurate — co-design-adequate; an analytic
-  `∂(Jᵀw)/∂q` term is the documented follow-on. **The §8a magic = drop the force
-  term from the POSITION carry (not the state term).**
+- The residual ~6e-6 at n=10 (vs the free body's machine-exact) has TWO sources,
+  both articulated-only (zero for the platen): (i) a one-step EVALUATION-POINT skew —
+  the config-dependent analytic factors (`pose_seam_jz`, `rigid_xfrc_column`) read
+  `self.data` at the pre-integrate FK config sim-core's `step` leaves behind (`xipos`/
+  `qM` lag `qpos` by one step), while the loaded `J_state` (scratch-forward) is at the
+  post-step config; this skew is LOAD-BEARING, not a bug — re-forwarding to align them
+  changes the forward model AND breaks the §8a structure (~10% error, verified), and
+  the oracle reads the identical stale config so the gate validates against the
+  self-consistent forward model; (ii) the FD'd geometric-stiffness carry. Both are
+  below the co-design-adequate floor; an analytic `∂(Jᵀw)/∂q` term (machine-exact) and
+  a non-stale eval scheme are documented follow-ons. **The §8a magic = drop the force
+  term from the POSITION carry (not the state term).** (Earlier drafts attributed the
+  6e-6 solely to geometric stiffness — corrected: the eval-point skew dominates.)
 
 **SCOPE (documented):** hinge (raw `[qpos;qvel]`, no quaternion joints),
 `rigid_damping = 0` (asserted), contact at the body COM (pure-force routing,
