@@ -164,6 +164,48 @@ machine-exact and ready (PR1, isolated, hinge/2-link FD gate). The coupled-scene
 composition (contact moment + pose seam + carry timing) is the higher-risk follow-on
 (PR2), to be FD-gated end-to-end.
 
+## 8c. PR2 S0 spike (2026-06-13, throwaway — measured, then deleted)
+
+Throwaway `tests/zzz_pr2_carry_spike.rs`: a single Y-hinge with an **analytic
+two-sided linear "contact"** `fz = κ·(h0 − tip_z)` routed as +z xfrc at the tip
+(smooth, always-engaged — no active-set kink, no soft FEM). This reproduces the
+STAGGERED structure (`fz_k` depends on the start-of-step tip height → couples back
+through the rigid state) in isolation, so it measures ONLY the multi-DOF rigid
+carry. Two analytic builds of `d(qpos_N)/dκ` over a 12-step rollout, vs a re-rolled
+FD oracle, with the contact chain `dfz/dκ = pen − κ·(J_z·dq/dκ)`:
+
+- **(1) fully self-FD'd step Jacobians** (`J_state`, `J_xfrc` by central FD of the
+  real step, xfrc held) → matches the oracle to **rel 2e-5** (FD-noise floor). **⇒
+  the carry recurrence `ds_{k+1} = J_state·ds_k + J_xfrc·dfz/dκ` and the staggered
+  contact chain are STRUCTURALLY CORRECT.** The position rows use `G_pos =
+  Δt·G_vel` (the true post-update single-step response, per M0) — so the scalar
+  §8a `vz_var` (pre-update) quirk does NOT generalize; it was a property of that
+  specific hand-built factoring, not a rule. **PR2 uses the true loaded step
+  Jacobian.**
+- **(2) `transition_derivatives` (dense A) + `rigid_xfrc_column` (G)** → rel **2e-4**,
+  10× worse. Since `rigid_xfrc_column` is machine-exact (PR1), the gap is `A`.
+
+**★ THE KEY FINDING (decisive, element-wise confirmed):** `transition_derivatives`'
+dense `A` is the **UNLOADED** transition — it matches the FD'd Jacobian computed at
+**xfrc = 0** to 5.6e-8, but differs from the FD'd **loaded** (contact xfrc held)
+Jacobian by **7e-2**. So `A` DROPS the applied contact force's configuration
+coupling — the **geometric / load stiffness** `∂(Jᵀ·w)/∂q` (the wrench `w` produces
+a generalized force `Jᵀ(q)·w` whose `q`-dependence, via `∂J/∂q`, is a real
+state-coupling when a force is held). **This term is identically zero for the
+free-body platen (`J = I`, constant `M`) — which is precisely why the scalar
+keystone got machine-exact and never encountered it — but it is a genuine ~7%
+effect for an articulated body**, and using the bare unloaded `A` gives a ~2e-4
+co-design gradient.
+
+**⇒ PR2 design (head-eng call):** the multi-DOF state carry must be the **LOADED**
+single-step Jacobian (contact xfrc held), NOT bare `transition_derivatives`. v1:
+**FD the loaded carry per step** (robust, correct to FD precision; the velocity-
+response `G` stays the analytic machine-exact `rigid_xfrc_column`). A **machine-exact
+analytic carry via the geometric-stiffness term `∂(Jᵀw)/∂q`** is a documented
+quality follow-on (the analogue of penalty→IPC: correct structure now, machine-exact
+later). This keeps the free-body platen path machine-exact (no geometric stiffness)
+and the articulated path FD-accurate (~1e-5, co-design-adequate).
+
 ## 8b. Slicing decision (head-eng call)
 
 - **PR1 — the rigid multi-DOF primitive, IN ISOLATION.** A matrix-valued
