@@ -307,6 +307,7 @@ pub fn run_with_config(
             |(layer_cfg, mold_artifact)| procedure_post::SlackerLayerRecipe {
                 display_name: mold_artifact.material_display_name.clone(),
                 pour_mass_kg: mold_artifact.pour_volume.pour_mass_kg,
+                shell_volume_m3: mold_artifact.pour_volume.shell_volume_m3,
                 slacker_fraction: layer_cfg.slacker_fraction,
             },
         )
@@ -399,6 +400,7 @@ pub fn run_selected_with_config(
         .map(|(layer_cfg, pour)| procedure_post::SlackerLayerRecipe {
             display_name: pour.material_display_name.clone(),
             pour_mass_kg: pour.pour_mass_kg,
+            shell_volume_m3: pour.shell_volume_m3,
             slacker_fraction: layer_cfg.slacker_fraction,
         })
         .collect();

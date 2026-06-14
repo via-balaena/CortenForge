@@ -518,7 +518,7 @@ enabled = false
         "procedure.md must contain the Slacker Recipe section when slacker > 0; got:\n{proc_text}",
     );
     assert!(
-        proc_text.contains("15.0%"),
+        proc_text.contains("15% Slacker"),
         "procedure.md must surface the slacker fraction (15%); got:\n{proc_text}",
     );
     // No inset → no Press-Fit section.
