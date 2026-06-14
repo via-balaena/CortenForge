@@ -88,6 +88,17 @@ fn single_hinge_xfrc_column_matches_fd() {
         "hinge must respond to f_x (moment arm)"
     );
     assert!(analytic[(0, 5)].abs() > 1e-6, "hinge must respond to f_z");
+    // ...and is exactly DEAF to the components orthogonal to the Y-hinge axis
+    // (τ_x, τ_z, f_y produce no rotation about Y) — the structure the scalar can't
+    // express. These rows are ~0 in the FD too, but assert them directly so a
+    // spurious cross-coupling can't hide behind the aggregate FD match.
+    for &(comp, name) in &[(0, "τ_x"), (2, "τ_z"), (4, "f_y")] {
+        assert!(
+            analytic[(0, comp)].abs() < 1e-12,
+            "Y-hinge must be deaf to {name}, got {:.3e}",
+            analytic[(0, comp)]
+        );
+    }
 }
 
 #[test]
@@ -111,12 +122,18 @@ fn two_link_xfrc_column_matches_fd_and_couples_offdiagonal() {
         "2-link xfrc column must match FD, got rel {err:.3e}"
     );
 
-    // Off-diagonal: a force on the DISTAL link (body 2) accelerates the PROXIMAL
-    // joint (row 0) — the multi-DOF coupling the scalar dt/m cannot represent.
+    // Off-diagonal: a +z force on the DISTAL link (body 2) accelerates BOTH the
+    // proximal joint (row 0) and the distal joint (row 1) — the multi-DOF coupling
+    // the scalar dt/m cannot represent (a scalar would touch one DOF only).
     assert!(
         analytic[(0, 5)].abs() > 1e-6,
         "+z force on distal link must move proximal joint, got {:.3e}",
         analytic[(0, 5)]
+    );
+    assert!(
+        analytic[(1, 5)].abs() > 1e-6,
+        "+z force on distal link must move distal joint, got {:.3e}",
+        analytic[(1, 5)]
     );
 }
 
@@ -138,7 +155,7 @@ fn free_body_column_collapses_to_dt_over_m() {
     data.forward(&model).expect("forward");
 
     let analytic = rigid_xfrc_column(&model, &data, 1); // 6 × 6
-    let dt_over_m = model.timestep / 0.2;
+    let dt_over_m = model.timestep / model.body_mass[1]; // mass read from the model, not hardcoded
     assert!(
         (analytic[(2, 5)] - dt_over_m).abs() < 1e-12,
         "free-body ∂vz'/∂f_z must be dt/m = {dt_over_m:.6e}, got {:.6e}",
@@ -146,7 +163,7 @@ fn free_body_column_collapses_to_dt_over_m() {
     );
 
     // And it agrees with FD across the full 6×6.
-    let fd = fd_column(&model, &data.qpos, &data.qvel, 1, 1e-3);
+    let fd = fd_column(&model, &data.qpos, &data.qvel, 1, 1e-4);
     let (err, _) = max_relative_error(&analytic, &fd, 1e-10);
     assert!(
         err < 1e-6,

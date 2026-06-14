@@ -117,11 +117,17 @@ fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64])
 /// on `body` — the matrix successor to the scalar free-body `∂vz'/∂fz = dt/m`
 /// ([`StaggeredCoupling::rigid_vz_response`]).
 ///
-/// Returns `∂qvel'/∂xfrc_applied[body] = Δt · M⁻¹ · J_comᵀ` (shape `nv × 6`), where
-/// `J_com` is the body's COM spatial Jacobian (`mj_jac_point` at `xipos`, rows 0–2
-/// angular / 3–5 linear — the `[τ; f]` layout the integrator projects through
-/// `mj_apply_ft`), `M = data.qM` the joint-space mass matrix, and `Δt =
-/// model.timestep`. Evaluated at the current configuration of `data`.
+/// Returns `∂qvel'/∂xfrc_applied[body] = Δt · M⁻¹ · J_comᵀ` — the `nv × 6` input
+/// (`G`) block of the coupled-step Jacobian `[A | G]` (the "xfrc column" of the
+/// recon), one column per spatial-force component. `J_com` is the body's COM
+/// spatial Jacobian (`mj_jac_point` at `xipos`, rows 0–2 angular / 3–5 linear —
+/// the `[τ; f]` layout the integrator projects through `mj_apply_ft`), `M =
+/// data.qM` the joint-space mass matrix, and `Δt = model.timestep`.
+///
+/// Reads the live `data.qM` / `data.xipos` (it does not re-step), so `data` must be
+/// at a **forwarded** configuration (call `data.forward(model)` — or any `step` —
+/// first); a stale/un-forwarded `data` yields a wrong column or trips the `M`
+/// invertibility panic.
 ///
 /// This is the rigid factor of the coupled-step Jacobian generalized off the
 /// free-body platen: for a single free body the column collapses to the scalar
@@ -132,12 +138,13 @@ fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64])
 /// `tests/rigid_multidof_response.rs` (hinge + 2-link, machine-exact).
 ///
 /// **Scope of the bare `M⁻¹` form.** This is exact for the keystone scenes — an
-/// undamped mechanism under the (semi-implicit) Euler integrator (`n_link_pendulum`
-/// and the platen have zero joint stiffness/damping/armature). With nonzero joint
+/// undamped mechanism under the (semi-implicit) Euler integrator. With nonzero joint
 /// damping/stiffness, the Euler path solves `(M + Δt·D + Δt²·K)·qacc = F`, so the
 /// true factor is `Δt·M_impl⁻¹·Jᵀ` (not the bare `Δt·M⁻¹·Jᵀ`); a non-Euler
-/// integrator likewise changes the velocity update. Out of this leaf's scope — see
-/// `docs/keystone/multidof_rigid_recon.md`.
+/// integrator likewise changes the velocity update. (Joint *armature* is fine — it
+/// is folded into `M = qM`, so `M⁻¹` already accounts for it; only the implicit
+/// `D`/`K` terms, which never enter `qM`, break the form.) Out of this leaf's
+/// scope — see `docs/keystone/multidof_rigid_recon.md`.
 ///
 /// **Velocity vs position.** This is the *velocity* response only. Composing it
 /// into a multi-step coupled carry (which threads it with the dense state
