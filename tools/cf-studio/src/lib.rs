@@ -219,16 +219,26 @@ fn print_pour_plan(plan: &PourPlan) {
         plan.steps.len()
     );
     for step in &plan.steps {
-        let slacker = step
-            .slacker_fraction
-            .map(|f| format!(", {:.0}% Slacker", f * 100.0))
-            .unwrap_or_default();
+        // `mass_g` is the cavity-fill TOTAL mix mass; for a Slacker layer split it
+        // so base + Slacker = mass_g (base = A + B at 1:1, Slacker = sf·base by
+        // weight), NOT a full base pour with Slacker added on top.
+        let recipe = match step.slacker_fraction {
+            Some(sf) if sf > 0.0 => {
+                let base = step.mass_g / (1.0 + sf);
+                let part = base / 2.0;
+                format!(
+                    "{part:.0} g A + {part:.0} g B + {:.0} g Slacker = {:.0} g mix ({:.0}% of base)",
+                    sf * base,
+                    step.mass_g,
+                    sf * 100.0,
+                )
+            }
+            _ => format!("{:.0} g, mix {}", step.mass_g, step.mix_ratio_a_to_b),
+        };
         println!(
-            "  Layer {}: {} — {:.0} g, mix {}{slacker}",
+            "  Layer {}: {} — {recipe}",
             step.layer_index + 1,
             step.material_display_name,
-            step.mass_g,
-            step.mix_ratio_a_to_b,
         );
         println!(
             "      working time {} min · cure {:.0} h",

@@ -338,24 +338,41 @@ pub fn print_step_summary(project: &Project) -> String {
 
 // ── step 6: the pour assistant ──────────────────────────────────────
 
-/// One pour layer's full recipe line, e.g.
-/// `"Ecoflex 00-30 — 500 g, mix 1:1, 25% Slacker · pot life ~25 min · cure ~4 h"`.
-/// Slacker is shown only when present; the cure is omitted for the last
-/// layer (nothing waits on it).
+/// One pour layer's full recipe line. Without Slacker, e.g.
+/// `"Dragon Skin 20A — 250 g, mix 1:1 · pot life ~25 min · cure ~5 h"`. With
+/// Slacker, the cavity-fill mass is broken into the corrected mix —
+/// `"Ecoflex 00-30 — 200 g A + 200 g B + 100 g Slacker = 500 g mix (25% of base)
+/// · pot life ~25 min · cure ~4 h"` — so the base is scaled DOWN to share the
+/// cavity with the Slacker (NOT a full base pour with Slacker added on top). The
+/// cure is omitted for the last layer (nothing waits on it).
 #[must_use]
 fn pour_recipe_line(step: &PourStep, is_last: bool) -> String {
-    let slacker = step
-        .slacker_fraction
-        .map(|f| format!(", {:.0}% Slacker", f * 100.0))
-        .unwrap_or_default();
     let cure = if is_last {
         String::new()
     } else {
         format!(" · cure ~{:.0} h", step.cure_time_hours)
     };
+    // `mass_g` is the cavity-fill TOTAL mix mass (base density ≈ base+Slacker mix
+    // density — Slacker publishes no density). For a Slacker layer, split it so
+    // base + Slacker = mass_g: base = mass_g/(1+sf) = A + B (1:1, the ratio for
+    // every Slacker-compatible Smooth-On platinum silicone), Slacker = sf·base by
+    // weight. Without Slacker, show the mass + A:B ratio as before.
+    let recipe = match step.slacker_fraction {
+        Some(sf) => {
+            let base = step.mass_g / (1.0 + sf);
+            let part = base / 2.0;
+            let slacker = sf * base;
+            format!(
+                "{part:.0} g A + {part:.0} g B + {slacker:.0} g Slacker = {:.0} g mix ({:.0}% of base)",
+                step.mass_g,
+                sf * 100.0,
+            )
+        }
+        None => format!("{:.0} g, mix {}", step.mass_g, step.mix_ratio_a_to_b),
+    };
     format!(
-        "{} — {:.0} g, mix {}{slacker} · pot life ~{} min{cure}",
-        step.material_display_name, step.mass_g, step.mix_ratio_a_to_b, step.pot_life_minutes,
+        "{} — {recipe} · pot life ~{} min{cure}",
+        step.material_display_name, step.pot_life_minutes,
     )
 }
 
@@ -726,9 +743,11 @@ visible = true
     fn pour_plan_text_numbers_layers_and_drops_last_cure() {
         let s = format_pour_plan(&sample_plan());
         assert!(s.contains("2 layer(s)"), "got: {s}");
+        // 500 g cavity-fill mix, 25% Slacker → base 400 g (200 A + 200 B) +
+        // 100 g Slacker = 500 g (no overfill), NOT 500 g base + 125 g Slacker.
         assert!(
             s.contains(
-                "1. Ecoflex 00-30 — 500 g, mix 1:1, 25% Slacker · pot life ~25 min · cure ~4 h"
+                "1. Ecoflex 00-30 — 200 g A + 200 g B + 100 g Slacker = 500 g mix (25% of base) · pot life ~25 min · cure ~4 h"
             ),
             "got: {s}"
         );

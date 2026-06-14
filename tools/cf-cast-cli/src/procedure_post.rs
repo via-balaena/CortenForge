@@ -36,24 +36,33 @@ const GUIDANCE_ANCHOR: &str = "## Generic Smooth-On Guidance";
 
 /// Slice 9.5 — per-layer Slacker recipe input. Carries everything
 /// the procedure surface needs in one row: the layer's display name,
-/// its base-silicone pour mass (kg, lifted from cf-cast's
-/// `PourVolume`), and the optional Slacker mass fraction (None if
-/// this layer doesn't use Slacker — the section is then skipped for
-/// that row's contribution, and emits no section at all if every
-/// row is None).
+/// the cavity-fill volume + mass (lifted from cf-cast's `PourVolume`),
+/// and the optional Slacker mass fraction (None if this layer doesn't
+/// use Slacker — the section is then skipped for that row's
+/// contribution, and emits no section at all if every row is None).
 #[derive(Debug, Clone)]
 pub struct SlackerLayerRecipe {
     /// Material display name (e.g., `"Ecoflex 00-30"`) — must match
     /// the entry in cf-cast's `## Materials Summary` table for the
     /// same layer index so the user can cross-reference rows.
     pub display_name: String,
-    /// Base silicone pour mass in kilograms (lifted from
-    /// `cf_cast::PourVolume::pour_mass_kg`). The Slacker mass is
-    /// computed as `slacker_fraction * pour_mass_kg`.
+    /// Cavity-fill mass for the BASE silicone alone, in kilograms
+    /// (`cf_cast::PourVolume::pour_mass_kg` = `shell_volume_m3 *
+    /// base_density`). Because the cured base+Slacker mix density is
+    /// taken ≈ the base silicone's (Slacker publishes no density — see
+    /// `inject_slacker_recipe_into_markdown`), this is also the
+    /// COMBINED base+Slacker mix mass that fills the cavity; the base is
+    /// scaled down from it, NOT topped up with Slacker.
     pub pour_mass_kg: f64,
-    /// Optional Slacker mass fraction (0.0–1.0). `None` means the
-    /// layer does NOT use Slacker — its row is omitted from the
-    /// recipe table.
+    /// Cavity-fill VOLUME in cubic metres (`cf_cast::PourVolume::shell_volume_m3`)
+    /// — the fixed target the mix must fill. Drives the base TDS specific
+    /// gravity (`pour_mass_kg / shell_volume_m3`, = the material density)
+    /// for the mL columns and the displayed cavity volume.
+    pub shell_volume_m3: f64,
+    /// Optional Slacker mass fraction (0.0–1.0) relative to the BASE
+    /// (Part A + Part B) mass, matching the Slacker TB convention
+    /// (`100B + 50 Slacker + 100A` ⇒ `50/200 = 0.25`). `None` means the
+    /// layer does NOT use Slacker — its row is omitted from the table.
     pub slacker_fraction: Option<f64>,
 }
 
@@ -174,44 +183,88 @@ pub(crate) fn inject_slacker_recipe_into_markdown(
         );
     }
 
-    // Build the recipe table — one row per layer that opts in to
-    // Slacker, indexed by position. Layers without Slacker (None)
-    // are omitted entirely from the table; if every entry is None,
-    // the file-path caller returns Ok early without invoking us,
-    // so reaching this point means at least one row will emit.
+    // Build the recipe — one subsection per layer that opts in to Slacker.
+    // Layers without Slacker (None) are skipped; if every entry is None the
+    // file-path caller returns Ok early, so reaching here means ≥1 emits.
+    //
+    // VOLUME-CORRECT MIX (the fix to the earlier overfill): the cavity-fill
+    // VOLUME is the fixed target. Slacker is mixed BY WEIGHT as a fraction of
+    // the BASE (Part A + Part B, 1:1) mass — `slacker = sf · base` — so the
+    // base+Slacker mixture TOGETHER fills the cavity; the base is scaled DOWN,
+    // not topped up with Slacker on a full base pour. Smooth-On's Slacker TB
+    // publishes no density, so the mix density is taken ≈ the base silicone's
+    // (the documented "close enough" approximation already used in the
+    // sim-design recipe path), under which the cavity-fill mix mass equals the
+    // base's cavity-fill mass `pour_mass_kg`:
+    //     base + slacker = pour_mass_g  ⇒  base = pour_mass_g / (1 + sf)
+    // A flat +20% over-pour (sprue fill + cup cling + degas foam) is applied to
+    // that CORRECTED total — never stacked on a base-full + Slacker overfill.
     const KG_TO_G: f64 = 1000.0;
-    let mut table = String::new();
-    table.push_str("## Slacker Recipe\n\n");
-    table.push_str(
-        "The following layers use **Smooth-On Slacker** softener mixed into \
-         the base silicone by mass. The base-mass column mirrors the per-layer \
-         pour mass in `## Materials Summary` — combine each row with the listed \
-         Slacker mass at mix time (cure-anchored to the base silicone's TDS, \
-         not Slacker's; the additive is rheology-only).\n\n",
+    const M3_TO_CC: f64 = 1.0e6;
+    const OVERAGE: f64 = 1.20; // +20% over-pour
+    let mut out = String::new();
+    out.push_str("## Slacker Recipe\n\n");
+    out.push_str(
+        "**Smooth-On Slacker** softens the base silicone. It is mixed BY WEIGHT \
+         (the Slacker TB requires a gram scale and publishes no specific gravity) \
+         as a fraction of the **base** mass, where base = Part A + Part B (1:1 by \
+         weight) — e.g. 25% Slacker is `100B + 50 Slacker, then 100A`. The base + \
+         Slacker mixture TOGETHER fills the cavity: the base is scaled down so the \
+         combined volume matches the cavity, NOT a full base pour with Slacker \
+         added on top (which would overfill by the Slacker fraction). Cure is \
+         anchored to the base silicone's TDS (Slacker only lengthens cure time).\n\n",
     );
-    table.push_str("| Layer | Material | Base Mass | Slacker Mass | Fraction |\n");
-    table.push_str("|------:|----------|----------:|-------------:|---------:|\n");
+    out.push_str(
+        "Specific gravities — base silicone from the Smooth-On TDS (per layer \
+         below; e.g. Ecoflex 00-30 = 1.07 g/cc). **Slacker has no published SG**, \
+         so the mix density is taken ≈ the base silicone's; measure Slacker by \
+         weight. Part A / Part B volumes use the base TDS SG; the Slacker volume \
+         is not separately resolvable from a TDS value (weight only). The +20% \
+         column is the over-pour to mix (sprue fill, cup cling, degas foam).\n\n",
+    );
     for (idx, recipe) in layers.iter().enumerate() {
         let Some(sf) = recipe.slacker_fraction else {
             continue;
         };
-        let base_g = recipe.pour_mass_kg * KG_TO_G;
-        let slacker_g = base_g * sf;
+        // Cavity-fill total mix mass (= base cavity-fill mass under mix≈base
+        // density) and the base TDS specific gravity (= material density).
+        let mix_fill_g = recipe.pour_mass_kg * KG_TO_G;
+        let cavity_cc = recipe.shell_volume_m3 * M3_TO_CC;
+        let sg = if recipe.shell_volume_m3 > 0.0 {
+            recipe.pour_mass_kg / recipe.shell_volume_m3 / KG_TO_G // kg/m³ → g/cc
+        } else {
+            0.0
+        };
+        // Split: base = mix/(1+sf), each part = base/2, slacker = sf·base.
+        let base_fill_g = mix_fill_g / (1.0 + sf);
+        let part_fill_g = base_fill_g / 2.0;
+        let slacker_fill_g = sf * base_fill_g;
+        // +20% over-pour on the corrected total (ratios preserved).
+        let part_g = part_fill_g * OVERAGE;
+        let slacker_g = slacker_fill_g * OVERAGE;
+        let total_g = mix_fill_g * OVERAGE;
+        // Volumes on the over-pour, base TDS SG (Slacker weight-only).
+        let part_ml = if sg > 0.0 { part_g / sg } else { 0.0 };
+        let total_ml = if sg > 0.0 { total_g / sg } else { 0.0 };
+
         let _ = std::fmt::Write::write_fmt(
-            &mut table,
+            &mut out,
             format_args!(
-                "| {} | {} | {:.2} g | {:.2} g | {:.1}% |\n",
-                idx,
-                recipe.display_name,
-                base_g,
-                slacker_g,
-                sf * 100.0,
+                "### Layer {idx} — {name}, {pct:.0}% Slacker\n\n\
+                 Cavity-fill volume ≈ {cavity_cc:.0} mL (fixed target) · base SG {sg:.2} g/cc.\n\n\
+                 | Component | Cavity-fill (g) | +20% pour (g) | +20% pour (mL) |\n\
+                 |-----------|----------------:|--------------:|---------------:|\n\
+                 | Part A | {part_fill_g:.2} | {part_g:.2} | {part_ml:.1} |\n\
+                 | Part B | {part_fill_g:.2} | {part_g:.2} | {part_ml:.1} |\n\
+                 | Slacker ({pct:.0}% of base) | {slacker_fill_g:.2} | {slacker_g:.2} | weight only |\n\
+                 | **Total mix** | **{mix_fill_g:.2}** | **{total_g:.2}** | **≈{total_ml:.0}** |\n\n",
+                name = recipe.display_name,
+                pct = sf * 100.0,
             ),
         );
     }
-    table.push('\n');
 
-    let patched = original.replacen(GUIDANCE_ANCHOR, &format!("{table}{GUIDANCE_ANCHOR}"), 1);
+    let patched = original.replacen(GUIDANCE_ANCHOR, &format!("{out}{GUIDANCE_ANCHOR}"), 1);
     Ok(patched)
 }
 
@@ -293,10 +346,13 @@ Some guidance.\n";
         assert_eq!(FIXTURE_V2.matches(MATERIALS_ANCHOR).count(), 1);
     }
 
+    // Cavity-fill mass at the Ecoflex-00-30 TDS density (1070 kg/m³, SG 1.07),
+    // so the derived base SG in the table comes out 1.07 g/cc.
     fn slacker_layer(name: &str, mass_kg: f64, sf: Option<f64>) -> SlackerLayerRecipe {
         SlackerLayerRecipe {
             display_name: name.to_string(),
             pour_mass_kg: mass_kg,
+            shell_volume_m3: mass_kg / 1070.0,
             slacker_fraction: sf,
         }
     }
@@ -324,17 +380,32 @@ Some guidance.\n";
             materials_idx < slacker_idx,
             "Materials must remain above Slacker; got materials={materials_idx}, slacker={slacker_idx}",
         );
-        // Layer 0: 142 g base × 0.10 = 14.20 g Slacker.
+        // Layer 0: 142.00 g total mix fills the cavity (NOT base-full + Slacker
+        // on top). base = 142/1.10 = 129.09 → A=B=64.55 g, Slacker = 12.91 g;
+        // base+Slacker = 142.00 (no overfill). +20% over-pour: total 170.40 g,
+        // Slacker 15.49 g. Base SG 1.07; Slacker is weight-only.
         assert!(
-            patched.contains("142.00 g")
-                && patched.contains("14.20 g")
-                && patched.contains("10.0%"),
-            "layer-0 row not formatted as expected; got:\n{patched}",
+            patched.contains("### Layer 0 — Ecoflex 00-30, 10% Slacker")
+                && patched.contains("142.00") // cavity-fill total mix
+                && patched.contains("12.91") // Slacker (cavity-fill)
+                && patched.contains("170.40") // +20% total
+                && patched.contains("15.49") // Slacker (+20%)
+                && patched.contains("weight only")
+                && patched.contains("1.07"), // base TDS SG
+            "layer-0 recipe not formatted as expected; got:\n{patched}",
         );
-        // Layer 1: 80 g base × 0.05 = 4.00 g Slacker.
+        // base+Slacker == cavity-fill mass (no overfill): 64.55+64.55+12.91 = 142.00.
         assert!(
-            patched.contains("80.00 g") && patched.contains("4.00 g") && patched.contains("5.0%"),
-            "layer-1 row not formatted as expected; got:\n{patched}",
+            !patched.contains("156.20") // 142 + 14.20 (the old base-full+Slacker overfill)
+                && !patched.contains("14.20 g"),
+            "must not reproduce the base-full + Slacker-on-top overfill; got:\n{patched}",
+        );
+        // Layer 1: 80.00 g total mix, +20% = 96.00 g.
+        assert!(
+            patched.contains("### Layer 1 — Dragon Skin 10A, 5% Slacker")
+                && patched.contains("80.00")
+                && patched.contains("96.00"),
+            "layer-1 recipe not formatted as expected; got:\n{patched}",
         );
     }
 
@@ -347,8 +418,16 @@ Some guidance.\n";
         ];
         let patched = inject_slacker_recipe_into_markdown(FIXTURE_V2, &layers).unwrap();
         assert!(patched.contains("## Slacker Recipe"));
-        // Layer 0's slacker row present (142 * 0.15 = 21.30 g).
-        assert!(patched.contains("21.30 g") && patched.contains("15.0%"));
+        // Layer 0's recipe present: 15% Slacker, base = 142/1.15 = 123.48 →
+        // Slacker (cavity-fill) = 18.52 g, base+Slacker = 142.00 (no overfill).
+        assert!(
+            patched.contains("### Layer 0 — Ecoflex 00-30, 15% Slacker")
+                && patched.contains("18.52")
+                && patched.contains("142.00"),
+            "layer-0 (15% Slacker) recipe not formatted as expected; got:\n{patched}",
+        );
+        // Not the old overfill (142 * 0.15 = 21.30 g Slacker on a full base pour).
+        assert!(!patched.contains("21.30 g"));
         // Layer 1's material name does not appear in the Slacker
         // section (it WILL appear in cf-cast's existing
         // `## Materials Summary` since the fixture has it too —
