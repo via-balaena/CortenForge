@@ -491,24 +491,134 @@ impl VjpOp for PoseSeamVjp {
     }
 }
 
+/// Chassis-tape [`VjpOp`] for the contact **wrench** readout along an articulated
+/// trajectory: the full reaction spatial force `w = [τ; f]` the soft body applies
+/// to the rigid body at its COM `c = xipos`, generalizing the scalar
+/// [`ContactForceTrajVjp`] (which carries only `force_on_soft.z`) to the off-COM
+/// contact MOMENT. Parents `[x*, h, s]` (`[n_dof]`, `[1]`, `[2·nv]`), output `w`
+/// (`[6]`, layout `[τ(3); f(3)]`):
+///
+/// ```text
+/// f = −Σ gᵢ                       (reaction force, rows 3–5)
+/// τ = −Σ (rᵢ − c) × gᵢ           (moment about the COM c, rows 0–2)
+/// ```
+///
+/// with per-pair soft-force `gᵢ = force_on_softᵢ` at world point `rᵢ = x*[vᵢ]`.
+/// `∂w/∂x*` has TWO parts per pair (`d = rᵢ − c`, curvature `cᵥ`, normal `n̂`,
+/// `∂gᵢ/∂x_v = −cᵥ n̂⊗n̂`):
+/// - force rows: `∂f/∂x_v = +cᵥ n̂⊗n̂`;
+/// - torque rows: `∂τ/∂x_v = [gᵢ]_× + cᵥ [d]_× (n̂⊗n̂)` — the explicit `rᵢ`-part
+///   `[gᵢ]_×` plus the `gᵢ`-part `cᵥ[d]_×(n̂⊗n̂)`.
+///
+/// `w` also depends on the plane height `h` (the pose seam, `= h(q)`) through each
+/// pair's force magnitude `gᵢ = cᵥ(d̂ − sdᵢ)n̂` with `sdᵢ = h − z_vᵢ`, so
+/// `∂gᵢ/∂h = −cᵥ n̂` (the S1 explicit force-vs-height factor): `∂f/∂h = Σ cᵥ n̂` and
+/// `∂τ/∂h = Σ cᵥ (dᵢ × n̂)`. This is the moment generalization of the merged scalar
+/// `ContactForceTrajVjp`'s `∂fz/∂h = +Σ cᵥ`; the implicit soft re-equilibration
+/// w.r.t. `h` flows separately through the soft node's pose parent.
+///
+/// `∂w/∂s` enters only through `c = xipos(q)`: `∂τ/∂qpos = [f]_× · J_lin` (with
+/// `J_lin` the COM linear Jacobian, `∂τ/∂qvel = 0`, `∂f/∂s = 0`). This c(q) channel
+/// is distinct from the h(q) channel and is small in the keystone scene; it does
+/// NOT double-count the loaded `J_state` (which holds the wrench fixed while
+/// perturbing `q`). See `docs/keystone/contact_moment_recon.md` §3.
+#[derive(Clone, Debug)]
+struct ContactWrenchTrajVjp {
+    /// Per active pair `(vertex_id, soft-force gᵢ, normal n̂, curvature cᵥ,
+    /// moment arm d = rᵢ − c)` at the linearization config.
+    active: Vec<(usize, Vec3, Vec3, f64, Vec3)>,
+    /// The reaction force `f = −Σ gᵢ` (cached for `∂τ/∂c = [f]_×`).
+    force: Vec3,
+    /// The COM linear Jacobian `J_lin = ∂c/∂qpos` (`3 × nv`).
+    jlin: DMatrix<f64>,
+    /// Soft-DOF count `3·n_vertices` (parent `x*` length).
+    n_dof: usize,
+    /// Rigid-DOF count `nv` (parent `s` length is `2·nv`).
+    nv: usize,
+}
+
+impl VjpOp for ContactWrenchTrajVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::ContactWrenchTrajVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    // needless_range_loop: the `∂L/∂qpos = J_linᵀ·m` contraction indexes the 2-D
+    // `jlin` by (row, col j) and `s_slot` by j; explicit indices read clearer here.
+    #[allow(clippy::panic, clippy::needless_range_loop)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [6]
+                && parent_cotans.len() == 3
+                && parent_cotans[0].shape() == [self.n_dof]
+                && parent_cotans[1].shape() == [1]
+                && parent_cotans[2].shape() == [2 * self.nv],
+            "ContactWrenchTrajVjp: expected cot [6] + parents (x* [{}], h [1], s [{}])",
+            self.n_dof,
+            2 * self.nv,
+        );
+        let cot = cotangent.as_slice();
+        let cot_t = Vec3::new(cot[0], cot[1], cot[2]); // cotangent on τ
+        let cot_f = Vec3::new(cot[3], cot[4], cot[5]); // cotangent on f
+
+        // ∂L/∂x*: per pair, the transpose-applied 6×3 block (see the type doc).
+        //   force rows:  +cᵥ (n̂·cot_f) n̂
+        //   torque rows: −(gᵢ × cot_τ)  −  cᵥ (n̂·(d × cot_τ)) n̂
+        let xs = parent_cotans[0].as_mut_slice();
+        for &(v, g, n, curv, d) in &self.active {
+            let term =
+                curv * n.dot(&cot_f) * n - g.cross(&cot_t) - curv * n.dot(&d.cross(&cot_t)) * n;
+            xs[3 * v] += term.x;
+            xs[3 * v + 1] += term.y;
+            xs[3 * v + 2] += term.z;
+        }
+
+        // ∂L/∂h: the explicit force/moment-vs-height feedback (∂gᵢ/∂h = −cᵥ n̂).
+        //   ∂f/∂h = Σ cᵥ n̂ ;  ∂τ/∂h = Σ cᵥ (d × n̂).
+        let dh: f64 = self
+            .active
+            .iter()
+            .map(|&(_, _, n, curv, d)| curv * (n.dot(&cot_f) + d.cross(&n).dot(&cot_t)))
+            .sum();
+        parent_cotans[1].as_mut_slice()[0] += dh;
+
+        // ∂L/∂s: only the qpos rows, only the moment's c(q)-dependence.
+        //   ∂L/∂qpos = J_linᵀ · m,  m = −(f × cot_τ)  (= [f]_×ᵀ cot_τ).
+        let m = -self.force.cross(&cot_t);
+        let s_slot = parent_cotans[2].as_mut_slice();
+        for j in 0..self.nv {
+            s_slot[j] +=
+                self.jlin[(0, j)] * m.x + self.jlin[(1, j)] * m.y + self.jlin[(2, j)] * m.z;
+            // qvel rows (nv + j) untouched: ∂w/∂qvel = 0.
+        }
+    }
+}
+
 /// Chassis-tape [`VjpOp`] for the **multi-DOF** rigid state carry of an articulated
-/// body: `s' = J_state · s + g · fz`, where `s = [qpos(nv); qvel(nv)]` is the rigid
-/// state, `J_state` is the **loaded** single-step transition Jacobian
-/// `∂(state')/∂(state)` (with the contact reaction held — it includes the
-/// applied-force geometric/load stiffness `∂(Jᵀw)/∂q` that the unloaded
-/// `transition_derivatives` drops; see `docs/keystone/multidof_rigid_recon.md`
-/// §8c), and `g = ∂(state')/∂(force_on_soft.z)` is the contact-force response
-/// column. Parents `[s, fz]` (`[2·nv]`, `[1]`), output `s'` (`[2·nv]`);
-/// `∂L/∂s += J_stateᵀ·cot`, `∂L/∂fz += gᵀ·cot`. The matrix-valued successor to the
-/// scalar `VzCarryVjp` (velocity half) + `ZCarryVjp` (position half) the free-body
-/// platen uses. Keystone multi-DOF coupling, PR2.
+/// body: `s' = J_state · s + G · w`, where `s = [qpos(nv); qvel(nv)]` is the rigid
+/// state, `w = [τ; f]` is the contact **wrench** ([`ContactWrenchTrajVjp`]),
+/// `J_state` is the **loaded** single-step transition Jacobian `∂(state')/∂(state)`
+/// (with the contact wrench held — it includes the applied-force geometric/load
+/// stiffness `∂(Jᵀw)/∂q` that the unloaded `transition_derivatives` drops; see
+/// `docs/keystone/multidof_rigid_recon.md` §8c), and `G = ∂(state')/∂w` is the
+/// 6-component wrench response. `G`'s VELOCITY rows are the full `nv × 6`
+/// [`rigid_xfrc_column`] (`Δt·M⁻¹·Jᵀ`); its POSITION rows are ZEROED — the §8a fix
+/// (the wrench reaches `qpos` only next step, through `qvel`, exactly as the scalar
+/// `ZCarryVjp`'s `∂z'/∂fz = 0`). NO sign flip — `w` is the reaction wrench directly
+/// (the negation lives in [`ContactWrenchTrajVjp`]).
+///
+/// Parents `[s, w]` (`[2·nv]`, `[6]`), output `s'` (`[2·nv]`);
+/// `∂L/∂s += J_stateᵀ·cot`, `∂L/∂w[k] += Σᵢ G_vel[(i,k)]·cot[nv+i]`. The
+/// matrix-valued successor to the scalar `VzCarryVjp` + `ZCarryVjp` the free-body
+/// platen uses; generalized from the f_z-only column to the full spatial wrench.
+/// Keystone contact-moment leaf.
 #[derive(Clone, Debug)]
 struct RigidStateCarryVjp {
     /// The loaded transition Jacobian `J_state` (`2·nv × 2·nv`), indexed logically `j_state[(row, col)]`.
     j_state: DMatrix<f64>,
-    /// The contact-force response column `g = ∂(state')/∂(force_on_soft.z)`
-    /// (length `2·nv`; already sign-adjusted — the reaction enters as `−fz`).
-    g: Vec<f64>,
+    /// The wrench response `G_vel = ∂(qvel')/∂w` (`nv × 6` = [`rigid_xfrc_column`];
+    /// the position rows of the full `G` are zero, §8a).
+    g_vel: DMatrix<f64>,
 }
 
 impl VjpOp for RigidStateCarryVjp {
@@ -521,13 +631,14 @@ impl VjpOp for RigidStateCarryVjp {
     // col j); explicit indices read clearer than zipped row/col iterators here.
     #[allow(clippy::panic, clippy::needless_range_loop)]
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
-        let n = self.g.len(); // 2·nv
+        let n = self.j_state.nrows(); // 2·nv
+        let nv = self.g_vel.nrows();
         assert!(
             cotangent.shape() == [n]
                 && parent_cotans.len() == 2
                 && parent_cotans[0].shape() == [n]
-                && parent_cotans[1].shape() == [1],
-            "RigidStateCarryVjp: expected cot [2·nv] + parents (s [2·nv], fz [1])",
+                && parent_cotans[1].shape() == [6],
+            "RigidStateCarryVjp: expected cot [2·nv] + parents (s [2·nv], w [6])",
         );
         let cot = cotangent.as_slice();
         // ∂L/∂s += J_stateᵀ·cot.
@@ -539,9 +650,15 @@ impl VjpOp for RigidStateCarryVjp {
             }
             s_slot[j] += acc;
         }
-        // ∂L/∂fz += gᵀ·cot.
-        let gdot: f64 = self.g.iter().zip(cot).map(|(gi, ci)| gi * ci).sum();
-        parent_cotans[1].as_mut_slice()[0] += gdot;
+        // ∂L/∂w[k] += Σᵢ G_vel[(i,k)]·cot[nv+i] (position rows of G are zero).
+        let w_slot = parent_cotans[1].as_mut_slice();
+        for k in 0..6 {
+            let mut acc = 0.0;
+            for i in 0..nv {
+                acc += self.g_vel[(i, k)] * cot[nv + i];
+            }
+            w_slot[k] += acc;
+        }
     }
 }
 
@@ -804,6 +921,60 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 (vertex_id as usize, r.normal, curv)
             })
             .collect()
+    }
+
+    /// Per active contact pair at `positions` with the plane at `height`, the data
+    /// the contact-MOMENT routing + its [`ContactWrenchTrajVjp`] gradient need:
+    /// `(vertex_id, soft-force gᵢ, normal n̂, curvature cᵥ, world position rᵢ)`.
+    /// Sister of [`Self::active_pair_curvatures`] that also carries the per-pair
+    /// force `gᵢ = force_on_softᵢ` and contact point `rᵢ`. Does not re-solve/mutate.
+    fn active_pair_wrench_data(
+        &self,
+        height: f64,
+        positions: &[Vec3],
+    ) -> Vec<(usize, Vec3, Vec3, f64, Vec3)> {
+        let contact = self.build_contact(height);
+        contact
+            .pair_readout(&self.fresh_mesh(), positions)
+            .iter()
+            .map(|r| {
+                let ContactPair::Vertex { vertex_id, .. } = r.pair;
+                // H_pair = cᵥ·n̂⊗n̂ ⇒ cᵥ = n̂·(H·n̂) (same as active_pair_curvatures).
+                let curv = contact
+                    .hessian(&r.pair, positions)
+                    .contributions
+                    .first()
+                    .map_or(0.0, |e| r.normal.dot(&(e.2 * r.normal)));
+                (
+                    vertex_id as usize,
+                    r.force_on_soft,
+                    r.normal,
+                    curv,
+                    r.position,
+                )
+            })
+            .collect()
+    }
+
+    /// The reaction **wrench** `[τ; f]` the soft body applies to the rigid body at
+    /// its COM `c = xipos`, for the contact plane at `height` and the current soft
+    /// positions: `f = −Σ gᵢ`, `τ = −Σ (rᵢ − c) × gᵢ` (`gᵢ = force_on_softᵢ`). The
+    /// shared forward building block for the articulated oracle and the
+    /// moment-routing gradient. Does not re-solve/mutate.
+    fn contact_wrench(&self, height: f64) -> SpatialVector {
+        let c = self.data.xipos[self.body];
+        let mut wrench = SpatialVector::zeros();
+        for &(_, g, _, _, r) in &self.active_pair_wrench_data(height, &self.positions()) {
+            let f = -g;
+            wrench[3] += f.x;
+            wrench[4] += f.y;
+            wrench[5] += f.z;
+            let tau = (r - c).cross(&f);
+            wrench[0] += tau.x;
+            wrench[1] += tau.y;
+            wrench[2] += tau.z;
+        }
+        wrench
     }
 
     /// Analytic `∂(total force_on_soft)/∂(plane height)` at the current soft
@@ -1457,6 +1628,28 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (0..self.model.nv).map(|c| jac[(5, c)]).collect()
     }
 
+    /// `J_lin = ∂c/∂qpos`: the body COM's linear (translational) world Jacobian
+    /// (`mj_jac_point` at `xipos`, rows 3–5) — `3 × nv`. The moment about the COM
+    /// `c = xipos(q)` depends on `q` through `c`, so [`ContactWrenchTrajVjp`] needs
+    /// this to thread `∂τ/∂qpos = [f]_× · J_lin`. Read at the same (stale) FK config
+    /// as the pose seam.
+    fn com_linear_jacobian(&self) -> DMatrix<f64> {
+        let jac = mj_jac_point(
+            &self.model,
+            &self.data,
+            self.body,
+            &self.data.xipos[self.body],
+        );
+        let nv = self.model.nv;
+        let mut jlin = DMatrix::zeros(3, nv);
+        for row in 0..3 {
+            for col in 0..nv {
+                jlin[(row, col)] = jac[(row + 3, col)]; // linear rows 3–5
+            }
+        }
+        jlin
+    }
+
     /// One scratch rigid step from a supplied `(qpos, qvel)` with a held spatial
     /// `wrench` on `body`, returning `(qpos', qvel')`. Like [`Self::rigid_step_probe`]
     /// but for the full generalized state (the LOADED step map whose Jacobian is the
@@ -1480,6 +1673,34 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         scratch.xfrc_applied[self.body] = *wrench;
         scratch.step(&self.model).expect("articulated probe step");
         (scratch.qpos.clone(), scratch.qvel.clone())
+    }
+
+    /// [`rigid_xfrc_column`] evaluated on a scratch `Data` **forwarded at the current
+    /// `qpos`** — the wrench→qvel response `Δt·M⁻¹·Jᵀ` at the config the real `step`
+    /// maps the wrench through, matching the eval point of [`Self::loaded_state_jacobian`].
+    ///
+    /// `self.data`'s `xipos`/`qM` lag `qpos` by one step (sim-core's `step` is
+    /// forward-then-integrate with no trailing FK), so reading `rigid_xfrc_column`
+    /// off `self.data` would map the wrench through the PREVIOUS config's `J` — a
+    /// one-step skew that is negligible for the slowly-varying linear (force)
+    /// Jacobian (the merged force path's ~6e-6) but material for the rotational
+    /// (moment) Jacobian. Forwarding a scratch at `qpos` removes it; the pose-seam /
+    /// moment-value factors stay at the stale config (they must match the oracle's
+    /// stale posing). See `docs/keystone/contact_moment_recon.md` §6.
+    ///
+    /// # Panics
+    /// Panics if the scratch forward diverges (a mis-constructed model).
+    // expect_used: a scratch forward on a valid model does not fail; a divergence is
+    // a programmer error surfaced loudly (mirrors `scratch_state_step`).
+    #[allow(clippy::expect_used)]
+    fn fresh_xfrc_column(&self) -> DMatrix<f64> {
+        let mut scratch = self.model.make_data();
+        scratch.qpos.copy_from(&self.data.qpos);
+        scratch.qvel.copy_from(&self.data.qvel);
+        scratch
+            .forward(&self.model)
+            .expect("articulated probe forward");
+        rigid_xfrc_column(&self.model, &scratch, self.body)
     }
 
     /// The LOADED single-step state Jacobian `∂[qpos'; qvel']/∂[qpos; qvel]`
@@ -1539,12 +1760,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 *vi = (xf - xo) / self.cfg.dt;
             }
             self.x = x_next;
-            let force_on_soft = self.contact_force_at_height(height);
-            let mut sf = SpatialVector::zeros();
-            sf[3] = -force_on_soft.x;
-            sf[4] = -force_on_soft.y;
-            sf[5] = -force_on_soft.z;
-            self.data.xfrc_applied[self.body] = sf;
+            // Route the full contact wrench [τ; f] at the COM (the off-COM moment
+            // τ = Σ rᵢ × fᵢ, NOT a pure force at the COM). `contact_wrench` reads
+            // `xipos` at the current pre-step (stale) FK config — the same config
+            // the gradient method's `ContactWrenchTrajVjp` linearizes about.
+            self.data.xfrc_applied[self.body] = self.contact_wrench(height);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in articulated rollout");
@@ -1554,39 +1774,52 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self.data.xipos[self.body].z
     }
 
-    /// **The multi-DOF (articulated) coupled trajectory gradient (PR2).** The
-    /// articulated successor to [`Self::coupled_trajectory_material_gradient`]: the
-    /// rigid body is an ARTICULATED mechanism (e.g. a hinge), not a free platen, so
-    /// a contact force at the tip maps to a generalized joint acceleration coupled
-    /// across joints (the matrix `Δt·M⁻¹·Jᵀ`, [`rigid_xfrc_column`], not the scalar
-    /// `dt/m`) and the contact-plane pose tracks the moving tip
-    /// (`∂(tip height)/∂q = J_z`, the `PoseSeamVjp` seam). Rolls forward `n_steps`
-    /// (advancing `self`) on one chassis tape, then ONE `tape.backward` gives
-    /// `(tip_z_N, ∂tip_z_N/∂p)` — the tip's final world height vs the soft block's
-    /// material (`param_idx`: `0 = μ`, `1 = λ`).
+    /// **The multi-DOF (articulated) coupled trajectory gradient — with the off-COM
+    /// contact MOMENT.** The articulated successor to
+    /// [`Self::coupled_trajectory_material_gradient`]: the rigid body is an
+    /// ARTICULATED mechanism (e.g. a hinge), not a free platen, so the soft contact
+    /// reaction maps to a generalized joint acceleration coupled across joints (the
+    /// matrix `Δt·M⁻¹·Jᵀ`, [`rigid_xfrc_column`], not the scalar `dt/m`) and the
+    /// contact-plane pose tracks the moving tip (`∂(tip height)/∂q = J_z`, the
+    /// `PoseSeamVjp` seam). The reaction is routed as the full spatial **wrench**
+    /// `[τ; f]` about the body COM — including the off-COM moment
+    /// `τ = −Σ(rᵢ − c) × gᵢ` (`gᵢ = force_on_softᵢ`, `c = xipos`) that the symmetric
+    /// platen drops and an off-center articulated contact does not. Rolls forward
+    /// `n_steps` (advancing `self`) on one chassis tape, then ONE `tape.backward`
+    /// gives `(tip_z_N, ∂tip_z_N/∂p)` — the tip's final world height vs the soft
+    /// block's material (`param_idx`: `0 = μ`, `1 = λ`).
     ///
-    /// Per step the tape threads: the pose seam `h = PoseSeam(s)` (the plane height
-    /// from the rigid state `s = [qpos; qvel]`), the soft solve `x*` (the same
+    /// Per step the tape threads: the pose seam `h = PoseSeam(s)` (plane height from
+    /// the rigid state `s = [qpos; qvel]`), the soft solve `x*` (the same
     /// `TrajectoryStepVjp` as the platen path, pose parent `= h`), the velocity
-    /// readout, the contact force `fz(x*, h)`, and the multi-DOF rigid carry
-    /// `s' = J_state·s + g·fz` (`RigidStateCarryVjp`) where `J_state` is the
-    /// LOADED single-step Jacobian (`loaded_state_jacobian`) and `g` the contact-force
-    /// response: its VELOCITY rows are `−g_v` (`g_v` = the f_z column of
-    /// [`rigid_xfrc_column`]; the reaction enters as `−fz`) and its POSITION rows are
-    /// ZEROED — the §8a fix (`∂qpos'/∂fz = 0`, mirroring the scalar `ZCarryVjp`; the
-    /// "true post" `−Δt·g_v` position term injects a spurious first-step gradient).
+    /// readout, the contact **wrench** `w = [τ; f](x*, h, s)` (`ContactWrenchTrajVjp`
+    /// — `∂w/∂x*` the moment's two parts, `∂w/∂h` the force/moment-vs-height feedback,
+    /// `∂w/∂s` the moment's `c(q)` feedback), and the multi-DOF rigid carry
+    /// `s' = J_state·s + G·w` (`RigidStateCarryVjp`) where `J_state` is the LOADED
+    /// single-step Jacobian (`loaded_state_jacobian`, the wrench — moment included —
+    /// held) and `G`'s VELOCITY rows are the full `nv×6` `rigid_xfrc_column` while its
+    /// POSITION rows are ZEROED — the §8a fix (`∂qpos'/∂w = 0`, mirroring the scalar
+    /// `ZCarryVjp`; the "true post" position term injects a spurious first-step
+    /// gradient).
     ///
-    /// **Accuracy / scope.** The velocity-response `G` and the pose seam are
-    /// analytic (machine-exact); the state carry `J_state` is finite-differenced
-    /// (it includes the applied-force geometric stiffness `∂(Jᵀw)/∂q` that
-    /// `transition_derivatives` omits — real for an articulated body, zero for the
-    /// platen), so the composed gradient is FD-accurate (~1e-5 rel vs a re-rolled
-    /// full-coupled oracle), adequate for co-design gradient descent. A machine-exact
-    /// analytic geometric-stiffness term is a documented follow-on. Hinge scope
-    /// (no quaternion joints; raw `[qpos; qvel]` state) and `rigid_damping = 0` (the
-    /// damping velocity-coupling is not in the loaded carry); contact at the body
-    /// COM (the symmetric-contact pure-force routing — off-COM moment `r×f` is a
-    /// follow-on). See `docs/keystone/multidof_rigid_recon.md`.
+    /// **Accuracy / scope.** The wrench node and pose seam are analytic
+    /// (FD-validated machine-exact vs the real contact readout, `tests/`); the wrench
+    /// **response** `G` is read at the config the real `step` maps through (a fresh
+    /// scratch forward, `fresh_xfrc_column`), and the state carry `J_state` is
+    /// finite-differenced (it includes the applied-wrench geometric stiffness
+    /// `∂(Jᵀw)/∂q` that `transition_derivatives` omits). The composed gradient is
+    /// **machine-exact through contact make/break** (≤~2e-6 rel through `n ≈ 6`,
+    /// including the soft node's `n = 1` rest-state zero and `n = 2` exactness) and
+    /// degrades to ~1e-3 over longer rollouts with sustained re-engagement, where the
+    /// moment's config-sensitive rotational Jacobian amplifies the FD'd
+    /// geometric-stiffness residual the merged force path carries at ~6e-6 (identical
+    /// under penalty and IPC — NOT a contact-smoothness cap). Still adequate for
+    /// co-design gradient descent; a machine-exact analytic geometric-stiffness term
+    /// is the documented follow-on. Hinge scope (no quaternion joints; raw
+    /// `[qpos; qvel]` state), `rigid_damping = 0` (the damping velocity-coupling is
+    /// not in the loaded carry), and a flat constant-normal plane (`τ_z = 0`;
+    /// tangential/curved contact is the next arc). See
+    /// `docs/keystone/contact_moment_recon.md`.
     ///
     /// # Panics
     /// Panics if `param_idx > 1`, if `rigid_damping != 0`, or if a rigid/soft step
@@ -1638,19 +1871,22 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // Pose seam: h = (tip height) from the rigid state. Value is the real
             // plane height; ∂h/∂q = J_z (∂h/∂qvel = 0).
             //
-            // EVALUATION POINT (load-bearing): `height`, `jz`, and `g` (below) all read
+            // EVALUATION POINT (load-bearing): `height`, `jz`, and the moment's COM
+            // `c`/`jlin` (the wrench VALUE + its `∂w/∂s` c-feedback, below) read
             // `self.data` at the PRE-integrate FK config sim-core's `step` leaves behind
-            // (forward-then-integrate, no trailing FK), while the loaded carry `J_state`
-            // (a fresh scratch forward) and the carried state are at the post-step qpos.
-            // This one-step skew is NOT a bug to "fix" by re-forwarding: the §8a
-            // force-drop carry is calibrated to exactly this staggered timing (it mirrors
-            // the merged platen, which poses from the same stale `xpos`), and the oracle
-            // `coupled_trajectory_articulated_z` reads the identical stale config — so the
-            // forward values match and the independent FD gate validates the gradient
-            // against the self-consistent forward model. (Re-forwarding to align the
-            // factors at the post-step qpos changes the forward model AND breaks the §8a
-            // structure → ~10% error; verified. The residual ~6e-6 at n=10 reflects this
-            // skew plus the FD'd geometric stiffness — see multidof_rigid_recon.md §8d.)
+            // (forward-then-integrate, no trailing FK; `xipos`/`qM` lag `qpos` one step).
+            // The wrench RESPONSE `G_vel` and the loaded `J_state`, by contrast, are at
+            // the post-integrate `qpos` — the config the real `step` maps the wrench
+            // through (both via a fresh scratch forward). This staggered timing is NOT a
+            // bug to "fix" by re-forwarding `self.data`: the §8a force-drop carry is
+            // calibrated to it (it mirrors the merged platen's stale `xpos` posing), and
+            // the oracle `coupled_trajectory_articulated_z` reads the identical stale
+            // config — so the forward values match and the independent FD gate validates
+            // the gradient against the self-consistent forward model. (Re-forwarding to
+            // align the factors changes the forward model AND breaks the §8a structure →
+            // ~10–30% error; verified. The residual is the moment's geometric stiffness,
+            // FD'd in `J_state`, amplified over long rollouts — see contact_moment_recon.md
+            // §6.)
             let jz = self.pose_seam_jz();
             let h_var = tape.push_custom(
                 &[s_var],
@@ -1680,54 +1916,69 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 }),
             );
 
-            // (3) contact force at the post-step config, plane at `height`.
+            // (3) contact WRENCH [τ; f] at the post-step soft config, plane at
+            // `height`, about the body COM c = xipos. The off-COM moment
+            // τ = −Σ(rᵢ−c)×gᵢ (gᵢ = force_on_softᵢ) is the contact-moment leaf's
+            // addition: the merged path routed only the scalar f_z (pure force at
+            // the COM); here the full spatial wrench drives the articulated body.
             let positions: Vec<Vec3> = x_next
                 .chunks_exact(3)
                 .map(|c| Vec3::new(c[0], c[1], c[2]))
                 .collect();
-            let force_on_soft: Vec3 = self
-                .build_contact(height)
-                .pair_readout(&self.fresh_mesh(), &positions)
-                .iter()
-                .map(|r| r.force_on_soft)
-                .sum();
-            let active = self.active_pair_curvatures(height, &positions);
-            let fz_var = tape.push_custom(
-                &[x_next_var, h_var],
-                Tensor::from_slice(&[force_on_soft.z], &[1]),
-                Box::new(ContactForceTrajVjp {
+            let c = self.data.xipos[self.body];
+            let pairs = self.active_pair_wrench_data(height, &positions);
+            let mut wrench = SpatialVector::zeros();
+            // ContactWrenchTrajVjp active list (vertex, g, n̂, cᵥ, d = rᵢ−c) +
+            // the wrench value, in one pass.
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            for (v, g, n, curv, r) in pairs {
+                let f = -g;
+                wrench[3] += f.x;
+                wrench[4] += f.y;
+                wrench[5] += f.z;
+                let tau = (r - c).cross(&f);
+                wrench[0] += tau.x;
+                wrench[1] += tau.y;
+                wrench[2] += tau.z;
+                active.push((v, g, n, curv, r - c));
+            }
+            let force = Vec3::new(wrench[3], wrench[4], wrench[5]);
+            let jlin = self.com_linear_jacobian();
+            // Wrench node w = [τ; f] with parents [x*, h, s]: ∂w/∂x* (the moment's
+            // explicit-rᵢ + via-gᵢ parts), ∂w/∂h (the force/moment-vs-plane-height
+            // feedback, the S1 explicit factor generalized), ∂w/∂s (the moment's
+            // c(q) feedback).
+            let w_var = tape.push_custom(
+                &[x_next_var, h_var, s_var],
+                Tensor::from_slice(wrench.as_slice(), &[6]),
+                Box::new(ContactWrenchTrajVjp {
                     active,
+                    force,
+                    jlin,
                     n_dof: 3 * n,
+                    nv,
                 }),
             );
 
-            // Multi-DOF carry at the CURRENT state, with the contact reaction held,
+            // Multi-DOF carry at the CURRENT state, with the contact wrench held,
             // BEFORE stepping.
             //   J_state = the FULL loaded single-step transition Jacobian
             //     ∂[qpos';qvel']/∂[qpos;qvel] (both blocks — incl the position-state
             //     coupling Δt·∂qvel'/∂qpos and the applied-force geometric stiffness
             //     ∂(Jᵀw)/∂q that the unloaded `transition_derivatives` drops; zero for
-            //     the free body, real for the hinge).
-            //   g = ∂[qpos';qvel']/∂(force_on_soft.z): the VELOCITY rows carry the
-            //     contact-force response −g_v (reaction = −fz); the POSITION rows are
-            //     ZEROED — the §8a fix. sim-core integrates qpos with the post-update
-            //     velocity, yet the FD-correct gradient carries this step's contact
-            //     force to qpos only NEXT step (through qvel), exactly as the scalar
-            //     `ZCarryVjp`'s ∂z'/∂fz = 0; wiring ∂qpos'/∂fz here injects a spurious
+            //     the free body, real for the hinge). The wrench held now includes the
+            //     moment, so J_state carries the moment's geometric stiffness too.
+            //   G_vel = ∂(qvel')/∂w = rigid_xfrc_column (nv×6, the full wrench column);
+            //     the POSITION rows of the full G are ZEROED — the §8a fix. sim-core
+            //     integrates qpos with the pre-update velocity, so this step's wrench
+            //     reaches qpos only NEXT step (through qvel), exactly as the scalar
+            //     `ZCarryVjp`'s ∂z'/∂fz = 0; wiring ∂qpos'/∂w here injects a spurious
             //     first-step gradient (the soft solve from rest barely depends on μ, so
             //     d(tip_z_1)/dμ = 0) — see docs/keystone/multidof_rigid_recon.md §8c.
-            let mut wrench = SpatialVector::zeros();
-            wrench[3] = -force_on_soft.x;
-            wrench[4] = -force_on_soft.y;
-            wrench[5] = -force_on_soft.z;
             let j_state = self.loaded_state_jacobian(&wrench);
-            let gvel = rigid_xfrc_column(&self.model, &self.data, self.body);
-            let mut g = vec![0.0_f64; 2 * nv];
-            for i in 0..nv {
-                g[nv + i] = -gvel[(i, 5)]; // velocity rows only; position rows = 0 (§8a)
-            }
+            let g_vel = self.fresh_xfrc_column();
 
-            // (4)+(5) route the reaction and step the real rigid body.
+            // (4)+(5) route the wrench and step the real rigid body.
             self.data.xfrc_applied[self.body] = wrench;
             self.data
                 .step(&self.model)
@@ -1739,9 +1990,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 s_next[nv + i] = self.data.qvel[i];
             }
             let s_next_var = tape.push_custom(
-                &[s_var, fz_var],
+                &[s_var, w_var],
                 Tensor::from_slice(&s_next, &[2 * nv]),
-                Box::new(RigidStateCarryVjp { j_state, g }),
+                Box::new(RigidStateCarryVjp { j_state, g_vel }),
             );
 
             // Advance the soft state and the tape handles.
@@ -2683,6 +2934,139 @@ mod tests {
         );
     }
 
+    /// `ContactWrenchTrajVjp`'s analytic Jacobian (the contact-MOMENT leaf's core
+    /// new math — `∂w/∂x*` with the moment's explicit-`rᵢ` + via-`gᵢ` parts, `∂w/∂h`
+    /// the force/moment-vs-height feedback, and `∂w/∂s` the moment's `c(q)` feedback)
+    /// is FD-EXACT against the REAL contact readout at a deeply-engaged off-COM hinge
+    /// config (the tip COM `xipos` offset ~0.08 m from the block-top contact
+    /// centroid, so the moment is large). This pins the wrench node independently of
+    /// the multi-step composition (the trajectory gate validates the composition).
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn contact_wrench_node_matches_readout_fd() {
+        const HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3; // tilt → off-COM contact (large moment)
+        data.forward(&model).expect("forward");
+        let c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        );
+
+        let height = c.tip_plane_height();
+        let positions = c.positions();
+        let com = c.data.xipos[c.body];
+        let n_dof = 3 * c.n_vertices;
+        let nv = c.model.nv;
+
+        // The REAL reaction wrench from the contact readout (recomputed g + r).
+        let wrench_of = |h: f64, pos: &[Vec3], cc: Vec3| -> [f64; 6] {
+            let mut w = [0.0_f64; 6];
+            for (_, g, _, _, r) in c.active_pair_wrench_data(h, pos) {
+                let f = -g;
+                w[3] += f.x;
+                w[4] += f.y;
+                w[5] += f.z;
+                let tau = (r - cc).cross(&f);
+                w[0] += tau.x;
+                w[1] += tau.y;
+                w[2] += tau.z;
+            }
+            w
+        };
+
+        // The analytic node at this config.
+        let mut active = Vec::new();
+        let mut force = Vec3::zeros();
+        for (v, g, n, curv, r) in c.active_pair_wrench_data(height, &positions) {
+            force += -g;
+            active.push((v, g, n, curv, r - com));
+        }
+        assert!(!active.is_empty(), "config must be contact-engaged");
+        let node = ContactWrenchTrajVjp {
+            active,
+            force,
+            jlin: c.com_linear_jacobian(),
+            n_dof,
+            nv,
+        };
+        // Row k of the Jacobian = the parent-cotangents for the unit cotangent e_k.
+        let jac_row = |k: usize| -> (Vec<f64>, f64, Vec<f64>) {
+            let mut cot = Tensor::zeros(&[6]);
+            cot.as_mut_slice()[k] = 1.0;
+            let mut pc = vec![
+                Tensor::zeros(&[n_dof]),
+                Tensor::zeros(&[1]),
+                Tensor::zeros(&[2 * nv]),
+            ];
+            node.vjp(&cot, &mut pc);
+            (
+                pc[0].as_slice().to_vec(),
+                pc[1].as_slice()[0],
+                pc[2].as_slice().to_vec(),
+            )
+        };
+        let rows: Vec<_> = (0..6).map(jac_row).collect();
+        let d = 1.0e-7;
+
+        let mut worst = 0.0_f64; // max |fd − analytic| / scale over all checked entries
+        let mut check = |fd: f64, an: f64, scale: f64| {
+            let rel = (fd - an).abs() / scale.max(1.0);
+            worst = worst.max(rel);
+        };
+        // Scales per channel (the dominant Jacobian magnitudes seen in this scene).
+        let sx = 1.0e3;
+        let sh = 1.0e5;
+        let sq = 1.0e3;
+
+        // ∂w/∂x* (each soft DOF) — the stable engaged active set holds across ±d.
+        for j in 0..n_dof {
+            let mut pp = positions.clone();
+            let mut pm = positions.clone();
+            pp[j / 3][j % 3] += d;
+            pm[j / 3][j % 3] -= d;
+            let wp = wrench_of(height, &pp, com);
+            let wm = wrench_of(height, &pm, com);
+            for k in 0..6 {
+                check((wp[k] - wm[k]) / (2.0 * d), rows[k].0[j], sx);
+            }
+        }
+        // ∂w/∂h (plane height).
+        let wp = wrench_of(height + d, &positions, com);
+        let wm = wrench_of(height - d, &positions, com);
+        for k in 0..6 {
+            check((wp[k] - wm[k]) / (2.0 * d), rows[k].1, sh);
+        }
+        // ∂w/∂qpos (the moment's c(q) feedback — perturb xipos via qpos, height held).
+        for jq in 0..nv {
+            let scratch_com = |dq: f64| -> Vec3 {
+                let mut s = c.model.make_data();
+                s.qpos.copy_from(&c.data.qpos);
+                s.qpos[jq] += dq;
+                s.forward(&c.model).expect("forward");
+                s.xipos[c.body]
+            };
+            let wp = wrench_of(height, &positions, scratch_com(d));
+            let wm = wrench_of(height, &positions, scratch_com(-d));
+            for k in 0..6 {
+                check((wp[k] - wm[k]) / (2.0 * d), rows[k].2[jq], sq);
+            }
+        }
+        assert!(
+            worst < 1e-5,
+            "ContactWrenchTrajVjp Jacobian must be FD-exact vs the real readout, \
+             worst scaled error {worst:.3e}"
+        );
+    }
+
     /// `VzControlCarryVjp` carries the three rigid-carry coefficients onto its
     /// parents: `∂vz'/∂vz = a`, `∂vz'/∂fz = −Δt/m`, `∂vz'/∂u = +Δt/m` (the control
     /// term, opposite sign to the contact term).
@@ -2734,7 +3118,7 @@ mod tests {
 
         // One control input vs an independent FD of the real coupled re-rollout.
         let k = 1;
-        let eps = 1e-2;
+        let eps = 1e-6;
         let mut up = controls.clone();
         let mut dn = controls.clone();
         up[k] += eps;
@@ -2779,7 +3163,7 @@ mod tests {
 
         // The proportional weight w_z vs an independent FD of the real re-rollout
         // (its gradient flows only through the state→control recurrence).
-        let eps = 1e-2;
+        let eps = 1e-6;
         let mut up = theta;
         let mut dn = theta;
         up[0] += eps;
