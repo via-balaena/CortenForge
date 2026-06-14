@@ -53,7 +53,7 @@
 //!   ONE tape, read `(∂z_N/∂μ_total, ∂z_N/∂θ)` from one `tape.backward` — the
 //!   mission's "one outer loop differentiating w.r.t. *both* design and policy".
 
-use sim_core::{Data, Model, SpatialVector};
+use sim_core::{DMatrix, Data, Model, SpatialVector, mj_jac_point};
 use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
@@ -111,6 +111,74 @@ fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64])
         slot[3 * v + 1] += cot * g * n.y;
         slot[3 * v + 2] += cot * g * n.z;
     }
+}
+
+/// The rigid engine's **multi-DOF** velocity response to an applied spatial force
+/// on `body` — the matrix successor to the scalar free-body `∂vz'/∂fz = dt/m`
+/// ([`StaggeredCoupling::rigid_vz_response`]).
+///
+/// Returns `∂qvel'/∂xfrc_applied[body] = Δt · M⁻¹ · J_comᵀ` — the `nv × 6` input
+/// (`G`) block of the coupled-step Jacobian `[A | G]` (the "xfrc column" of the
+/// recon), one column per spatial-force component. `J_com` is the body's COM
+/// spatial Jacobian (`mj_jac_point` at `xipos`, rows 0–2 angular / 3–5 linear —
+/// the `[τ; f]` layout the integrator projects through `mj_apply_ft`), `M =
+/// data.qM` the joint-space mass matrix, and `Δt = model.timestep`.
+///
+/// Reads the live `data.qM` / `data.xipos` (it does not re-step), so `data` must be
+/// at a **forwarded** configuration (call `data.forward(model)` — or any `step` —
+/// first); a stale/un-forwarded `data` yields a wrong column or trips the `M`
+/// invertibility panic.
+///
+/// This is the rigid factor of the coupled-step Jacobian generalized off the
+/// free-body platen: for a single free body the column collapses to the scalar
+/// `dt/m` on the contact axis; for an **articulated** mechanism a contact force at
+/// a point maps to a generalized joint acceleration coupled across joints (the
+/// off-diagonal terms the scalar drops — e.g. a force on a distal link accelerates
+/// the proximal joint). FD-validated against a real scratch step in
+/// `tests/rigid_multidof_response.rs` (hinge + 2-link, machine-exact).
+///
+/// **Scope of the bare `M⁻¹` form.** This is exact for the keystone scenes — an
+/// undamped mechanism under the (semi-implicit) Euler integrator. With nonzero joint
+/// damping/stiffness, the Euler path solves `(M + Δt·D + Δt²·K)·qacc = F`, so the
+/// true factor is `Δt·M_impl⁻¹·Jᵀ` (not the bare `Δt·M⁻¹·Jᵀ`); a non-Euler
+/// integrator likewise changes the velocity update. (Joint *armature* is fine — it
+/// is folded into `M = qM`, so `M⁻¹` already accounts for it; only the implicit
+/// `D`/`K` terms, which never enter `qM`, break the form.) Out of this leaf's
+/// scope — see `docs/keystone/multidof_rigid_recon.md`.
+///
+/// **Velocity vs position.** This is the *velocity* response only. Composing it
+/// into a multi-step coupled carry (which threads it with the dense state
+/// transition `A`, [`Data::transition_derivatives`], for the position rows) is the
+/// FD-gated follow-on leaf — and the staggered-coupling position carry does NOT
+/// follow naively from the bare integrator: the merged scalar carry integrates the
+/// height with the step's STARTING (pre-update) velocity (the convention
+/// `ZCarryVjp` encodes, FD-validated; flipping it to the freshly-updated velocity
+/// breaks the trajectory gate — the #307 fix). The multi-DOF composition must be
+/// FD-gated against a re-rolled full-coupled oracle, not derived from the bare-step
+/// linearization; see `docs/keystone/multidof_rigid_recon.md` §8a.
+///
+/// To route a pure contact force `f` applied at an off-COM point `r_c`, the caller
+/// sets `xfrc_applied[body] = [(r_c − xipos) × f ; f]` (the contact moment) so the
+/// column — defined w.r.t. the COM-interpreted `xfrc` the integrator consumes —
+/// maps it correctly.
+///
+/// # Panics
+/// Panics if `M` is singular (a degenerate model — should not occur for a
+/// well-posed mechanism).
+// expect_used: a singular mass matrix is a malformed-model programmer error
+// surfaced loudly, mirroring `rigid_step_probe`'s divergence-panic rationale.
+#[allow(clippy::expect_used)]
+#[must_use]
+pub fn rigid_xfrc_column(model: &Model, data: &Data, body: usize) -> DMatrix<f64> {
+    // J at the body COM (xipos): 6×nv, rows 0–2 angular, 3–5 linear — the same
+    // point and frame the integrator's `mj_apply_ft` uses for `xfrc_applied`.
+    let jac = mj_jac_point(model, data, body, &data.xipos[body]); // 6 × nv
+    let minv = data
+        .qM
+        .clone()
+        .try_inverse()
+        .expect("joint-space mass matrix M must be invertible");
+    model.timestep * minv * jac.transpose() // (nv × nv)·(nv × 6) = nv × 6
 }
 
 /// Chassis-tape [`VjpOp`] adapting a `sim-core` rigid step's response into the
@@ -383,6 +451,97 @@ impl VjpOp for ZCarryVjp {
         let c = cotangent.as_slice()[0];
         parent_cotans[0].as_mut_slice()[0] += c;
         parent_cotans[1].as_mut_slice()[0] += c * self.dt;
+    }
+}
+
+/// Chassis-tape [`VjpOp`] for the **multi-DOF** pose seam of an articulated rigid
+/// body: the contact-plane height tracks the contacting point's world height
+/// `h(q) = (FK of the contact point).z`, so `∂h/∂q = J_z` (the world-z row of the
+/// body Jacobian at the contact point). Parent `[s]` (the rigid state `[qpos(nv);
+/// qvel(nv)]`, shape `[2·nv]`), output `h` (`[1]`); `∂h/∂qpos = J_z`, `∂h/∂qvel = 0`.
+/// Generalizes the platen's scalar `∂plane/∂z = 1` (the 1-DOF special case where
+/// `J_z = [1]`). Keystone multi-DOF coupling, PR2.
+#[derive(Clone, Debug)]
+struct PoseSeamVjp {
+    /// `J_z`: the world-z row of the contact-point body Jacobian (length `nv`).
+    jz: Vec<f64>,
+}
+
+impl VjpOp for PoseSeamVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::PoseSeamVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        let nv = self.jz.len();
+        assert!(
+            cotangent.shape() == [1]
+                && parent_cotans.len() == 1
+                && parent_cotans[0].shape() == [2 * nv],
+            "PoseSeamVjp: expected cot [1] + 1 parent (state [2·nv])",
+        );
+        let c = cotangent.as_slice()[0];
+        let slot = parent_cotans[0].as_mut_slice();
+        // ∂h/∂qpos = J_z (position half); ∂h/∂qvel = 0 (velocity half untouched).
+        for (i, &j) in self.jz.iter().enumerate() {
+            slot[i] += c * j;
+        }
+    }
+}
+
+/// Chassis-tape [`VjpOp`] for the **multi-DOF** rigid state carry of an articulated
+/// body: `s' = J_state · s + g · fz`, where `s = [qpos(nv); qvel(nv)]` is the rigid
+/// state, `J_state` is the **loaded** single-step transition Jacobian
+/// `∂(state')/∂(state)` (with the contact reaction held — it includes the
+/// applied-force geometric/load stiffness `∂(Jᵀw)/∂q` that the unloaded
+/// `transition_derivatives` drops; see `docs/keystone/multidof_rigid_recon.md`
+/// §8c), and `g = ∂(state')/∂(force_on_soft.z)` is the contact-force response
+/// column. Parents `[s, fz]` (`[2·nv]`, `[1]`), output `s'` (`[2·nv]`);
+/// `∂L/∂s += J_stateᵀ·cot`, `∂L/∂fz += gᵀ·cot`. The matrix-valued successor to the
+/// scalar `VzCarryVjp` (velocity half) + `ZCarryVjp` (position half) the free-body
+/// platen uses. Keystone multi-DOF coupling, PR2.
+#[derive(Clone, Debug)]
+struct RigidStateCarryVjp {
+    /// The loaded transition Jacobian `J_state` (`2·nv × 2·nv`), indexed logically `j_state[(row, col)]`.
+    j_state: DMatrix<f64>,
+    /// The contact-force response column `g = ∂(state')/∂(force_on_soft.z)`
+    /// (length `2·nv`; already sign-adjusted — the reaction enters as `−fz`).
+    g: Vec<f64>,
+}
+
+impl VjpOp for RigidStateCarryVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::RigidStateCarryVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    // needless_range_loop: the Jᵀ·cot contraction indexes a 2-D matrix by (row i,
+    // col j); explicit indices read clearer than zipped row/col iterators here.
+    #[allow(clippy::panic, clippy::needless_range_loop)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        let n = self.g.len(); // 2·nv
+        assert!(
+            cotangent.shape() == [n]
+                && parent_cotans.len() == 2
+                && parent_cotans[0].shape() == [n]
+                && parent_cotans[1].shape() == [1],
+            "RigidStateCarryVjp: expected cot [2·nv] + parents (s [2·nv], fz [1])",
+        );
+        let cot = cotangent.as_slice();
+        // ∂L/∂s += J_stateᵀ·cot.
+        let s_slot = parent_cotans[0].as_mut_slice();
+        for j in 0..n {
+            let mut acc = 0.0;
+            for i in 0..n {
+                acc += self.j_state[(i, j)] * cot[i];
+            }
+            s_slot[j] += acc;
+        }
+        // ∂L/∂fz += gᵀ·cot.
+        let gdot: f64 = self.g.iter().zip(cot).map(|(gi, ci)| gi * ci).sum();
+        parent_cotans[1].as_mut_slice()[0] += gdot;
     }
 }
 
@@ -1274,6 +1433,340 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (z_final, grad)
     }
 
+    // ===================== Multi-DOF (articulated) coupling (PR2) =====================
+
+    /// The contact-plane height for an ARTICULATED body: the contacting point's
+    /// world height (the body COM `xipos`, the contact point for a point-mass tip)
+    /// minus the clearance. Unlike [`Self::plane_height`] (which reads the body
+    /// ORIGIN `xpos` — the fixed joint pivot for a hinge), this tracks the moving
+    /// tip. For the free-body platen `xipos == xpos`, so the two agree.
+    fn tip_plane_height(&self) -> f64 {
+        self.data.xipos[self.body].z - self.contact_clearance
+    }
+
+    /// `J_z`: the world-z row of the contacting body's COM spatial Jacobian
+    /// (`mj_jac_point` at `xipos`, row 5) — `∂(tip height)/∂q`, the multi-DOF pose
+    /// seam. Length `nv`.
+    fn pose_seam_jz(&self) -> Vec<f64> {
+        let jac = mj_jac_point(
+            &self.model,
+            &self.data,
+            self.body,
+            &self.data.xipos[self.body],
+        );
+        (0..self.model.nv).map(|c| jac[(5, c)]).collect()
+    }
+
+    /// One scratch rigid step from a supplied `(qpos, qvel)` with a held spatial
+    /// `wrench` on `body`, returning `(qpos', qvel')`. Like [`Self::rigid_step_probe`]
+    /// but for the full generalized state (the LOADED step map whose Jacobian is the
+    /// multi-DOF carry). Does NOT advance `self` (`Data` is not `Clone`, so a fresh
+    /// scratch is built).
+    ///
+    /// # Panics
+    /// Panics if the scratch step diverges (a mis-constructed model).
+    // expect_used: a scratch step on a valid model does not fail; a divergence is a
+    // programmer error surfaced loudly (mirrors `rigid_step_probe`).
+    #[allow(clippy::expect_used)]
+    fn scratch_state_step(
+        &self,
+        qpos: &nalgebra::DVector<f64>,
+        qvel: &nalgebra::DVector<f64>,
+        wrench: &SpatialVector,
+    ) -> (nalgebra::DVector<f64>, nalgebra::DVector<f64>) {
+        let mut scratch = self.model.make_data();
+        scratch.qpos.copy_from(qpos);
+        scratch.qvel.copy_from(qvel);
+        scratch.xfrc_applied[self.body] = *wrench;
+        scratch.step(&self.model).expect("articulated probe step");
+        (scratch.qpos.clone(), scratch.qvel.clone())
+    }
+
+    /// The LOADED single-step state Jacobian `∂[qpos'; qvel']/∂[qpos; qvel]`
+    /// (`2·nv × 2·nv`) at the current rigid state, with the contact `wrench` HELD —
+    /// computed by central finite differences over [`Self::scratch_state_step`].
+    ///
+    /// This is the multi-DOF state carry. It is the *loaded* Jacobian (the wrench
+    /// is held during the perturbation), so it includes the applied-force geometric
+    /// stiffness `∂(Jᵀw)/∂q` that `sim-core`'s unloaded `transition_derivatives`
+    /// drops — a real effect for an articulated body (zero for the free-body platen,
+    /// where `J = I`). FD-precision (the analytic geometric-stiffness term is a
+    /// documented follow-on); see `docs/keystone/multidof_rigid_recon.md` §8c.
+    fn loaded_state_jacobian(&self, wrench: &SpatialVector) -> DMatrix<f64> {
+        let nv = self.model.nv;
+        let eps = 1e-6;
+        let qpos = self.data.qpos.clone();
+        let qvel = self.data.qvel.clone();
+        let mut j = DMatrix::zeros(2 * nv, 2 * nv);
+        for c in 0..2 * nv {
+            let (mut qp, mut vp) = (qpos.clone(), qvel.clone());
+            let (mut qm, mut vm) = (qpos.clone(), qvel.clone());
+            if c < nv {
+                qp[c] += eps;
+                qm[c] -= eps;
+            } else {
+                vp[c - nv] += eps;
+                vm[c - nv] -= eps;
+            }
+            let (qpp, qvp) = self.scratch_state_step(&qp, &vp, wrench);
+            let (qpm, qvm) = self.scratch_state_step(&qm, &vm, wrench);
+            for r in 0..nv {
+                j[(r, c)] = (qpp[r] - qpm[r]) / (2.0 * eps);
+                j[(nv + r, c)] = (qvp[r] - qvm[r]) / (2.0 * eps);
+            }
+        }
+        j
+    }
+
+    /// Forward-only oracle for [`Self::coupled_trajectory_material_gradient_articulated`]:
+    /// roll the ARTICULATED coupled system forward `n_steps` (pose the plane from
+    /// the moving tip, soft solve, route the contact reaction at the body COM, step)
+    /// and return the tip world height `xipos[body].z` after the rollout. No tape;
+    /// the black-box oracle for finite-differencing the multi-DOF coupled gradient.
+    /// Advances `self` (build a fresh coupling per call).
+    ///
+    /// # Panics
+    /// Panics if the rigid step diverges or the soft solver fails (as in [`Self::step`]).
+    #[must_use]
+    // expect_used: a rigid-step divergence / soft non-convergence is a programmer
+    // error surfaced loudly, not recoverable for keystone-v1 (mirrors `step`).
+    #[allow(clippy::expect_used)]
+    pub fn coupled_trajectory_articulated_z(&mut self, n_steps: usize) -> f64 {
+        for _ in 0..n_steps {
+            let height = self.tip_plane_height();
+            let (_solver, x_next) = self.soft_resolve(height);
+            for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
+                *vi = (xf - xo) / self.cfg.dt;
+            }
+            self.x = x_next;
+            let force_on_soft = self.contact_force_at_height(height);
+            let mut sf = SpatialVector::zeros();
+            sf[3] = -force_on_soft.x;
+            sf[4] = -force_on_soft.y;
+            sf[5] = -force_on_soft.z;
+            self.data.xfrc_applied[self.body] = sf;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in articulated rollout");
+        }
+        // Return the post-step tip height (the stale-but-consistent FK config the
+        // gradient method's objective also reads — do not re-forward).
+        self.data.xipos[self.body].z
+    }
+
+    /// **The multi-DOF (articulated) coupled trajectory gradient (PR2).** The
+    /// articulated successor to [`Self::coupled_trajectory_material_gradient`]: the
+    /// rigid body is an ARTICULATED mechanism (e.g. a hinge), not a free platen, so
+    /// a contact force at the tip maps to a generalized joint acceleration coupled
+    /// across joints (the matrix `Δt·M⁻¹·Jᵀ`, [`rigid_xfrc_column`], not the scalar
+    /// `dt/m`) and the contact-plane pose tracks the moving tip
+    /// (`∂(tip height)/∂q = J_z`, the `PoseSeamVjp` seam). Rolls forward `n_steps`
+    /// (advancing `self`) on one chassis tape, then ONE `tape.backward` gives
+    /// `(tip_z_N, ∂tip_z_N/∂p)` — the tip's final world height vs the soft block's
+    /// material (`param_idx`: `0 = μ`, `1 = λ`).
+    ///
+    /// Per step the tape threads: the pose seam `h = PoseSeam(s)` (the plane height
+    /// from the rigid state `s = [qpos; qvel]`), the soft solve `x*` (the same
+    /// `TrajectoryStepVjp` as the platen path, pose parent `= h`), the velocity
+    /// readout, the contact force `fz(x*, h)`, and the multi-DOF rigid carry
+    /// `s' = J_state·s + g·fz` (`RigidStateCarryVjp`) where `J_state` is the
+    /// LOADED single-step Jacobian (`loaded_state_jacobian`) and `g` the contact-force
+    /// response: its VELOCITY rows are `−g_v` (`g_v` = the f_z column of
+    /// [`rigid_xfrc_column`]; the reaction enters as `−fz`) and its POSITION rows are
+    /// ZEROED — the §8a fix (`∂qpos'/∂fz = 0`, mirroring the scalar `ZCarryVjp`; the
+    /// "true post" `−Δt·g_v` position term injects a spurious first-step gradient).
+    ///
+    /// **Accuracy / scope.** The velocity-response `G` and the pose seam are
+    /// analytic (machine-exact); the state carry `J_state` is finite-differenced
+    /// (it includes the applied-force geometric stiffness `∂(Jᵀw)/∂q` that
+    /// `transition_derivatives` omits — real for an articulated body, zero for the
+    /// platen), so the composed gradient is FD-accurate (~1e-5 rel vs a re-rolled
+    /// full-coupled oracle), adequate for co-design gradient descent. A machine-exact
+    /// analytic geometric-stiffness term is a documented follow-on. Hinge scope
+    /// (no quaternion joints; raw `[qpos; qvel]` state) and `rigid_damping = 0` (the
+    /// damping velocity-coupling is not in the loaded carry); contact at the body
+    /// COM (the symmetric-contact pure-force routing — off-COM moment `r×f` is a
+    /// follow-on). See `docs/keystone/multidof_rigid_recon.md`.
+    ///
+    /// # Panics
+    /// Panics if `param_idx > 1`, if `rigid_damping != 0`, or if a rigid/soft step
+    /// diverges (surfaced loudly as in [`Self::step`]).
+    #[must_use]
+    // One coherent per-step tape-construction loop (the pose seam + soft + carry
+    // nodes + the real coupled step); splitting it would scatter the recurrence.
+    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly,
+    // not recoverable for keystone-v1 (mirrors `step`'s rationale).
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_material_gradient_articulated(
+        &mut self,
+        n_steps: usize,
+        param_idx: usize,
+    ) -> (f64, f64) {
+        assert!(
+            param_idx <= 1,
+            "material param index {param_idx} out of range (0 = μ, 1 = λ)"
+        );
+        // The loaded carry holds the contact wrench during its FD; a damping force
+        // −c·vz would not have its velocity-coupling captured. v1 scope: no damping.
+        // EXACT-zero is the intended semantics (not a tolerance): any nonzero damping
+        // must fail, and 0.0 is exactly representable / passed as a literal.
+        assert!(
+            self.rigid_damping == 0.0,
+            "articulated path requires rigid_damping = 0 (v1 scope)"
+        );
+        let n = self.n_vertices;
+        let nv = self.model.nv;
+        let dt = self.cfg.dt;
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+
+        let mut tape = Tape::new();
+        let p0 = if param_idx == 0 { self.mu } else { self.lambda };
+        let p_var = tape.param_tensor(Tensor::from_slice(&[p0], &[1]));
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        // Rigid state s = [qpos(nv); qvel(nv)] (raw — hinge scope, no quaternion).
+        let mut s0 = vec![0.0_f64; 2 * nv];
+        for i in 0..nv {
+            s0[i] = self.data.qpos[i];
+            s0[nv + i] = self.data.qvel[i];
+        }
+        let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
+
+        for _ in 0..n_steps {
+            let height = self.tip_plane_height();
+
+            // Pose seam: h = (tip height) from the rigid state. Value is the real
+            // plane height; ∂h/∂q = J_z (∂h/∂qvel = 0).
+            //
+            // EVALUATION POINT (load-bearing): `height`, `jz`, and `g` (below) all read
+            // `self.data` at the PRE-integrate FK config sim-core's `step` leaves behind
+            // (forward-then-integrate, no trailing FK), while the loaded carry `J_state`
+            // (a fresh scratch forward) and the carried state are at the post-step qpos.
+            // This one-step skew is NOT a bug to "fix" by re-forwarding: the §8a
+            // force-drop carry is calibrated to exactly this staggered timing (it mirrors
+            // the merged platen, which poses from the same stale `xpos`), and the oracle
+            // `coupled_trajectory_articulated_z` reads the identical stale config — so the
+            // forward values match and the independent FD gate validates the gradient
+            // against the self-consistent forward model. (Re-forwarding to align the
+            // factors at the post-step qpos changes the forward model AND breaks the §8a
+            // structure → ~10% error; verified. The residual ~6e-6 at n=10 reflects this
+            // skew plus the FD'd geometric stiffness — see multidof_rigid_recon.md §8d.)
+            let jz = self.pose_seam_jz();
+            let h_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[height], &[1]),
+                Box::new(PoseSeamVjp { jz }),
+            );
+
+            // (1)+(2) one dynamic soft step from the current (self.x, self.v).
+            let (solver, x_next) = self.soft_resolve(height);
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+            // Soft node x*: parents [x_prev, v_prev, p, h] (pose parent = h, the seam).
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, h_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp(&x_next, dt, param_idx, dir)),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (3) contact force at the post-step config, plane at `height`.
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0], c[1], c[2]))
+                .collect();
+            let force_on_soft: Vec3 = self
+                .build_contact(height)
+                .pair_readout(&self.fresh_mesh(), &positions)
+                .iter()
+                .map(|r| r.force_on_soft)
+                .sum();
+            let active = self.active_pair_curvatures(height, &positions);
+            let fz_var = tape.push_custom(
+                &[x_next_var, h_var],
+                Tensor::from_slice(&[force_on_soft.z], &[1]),
+                Box::new(ContactForceTrajVjp {
+                    active,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // Multi-DOF carry at the CURRENT state, with the contact reaction held,
+            // BEFORE stepping.
+            //   J_state = the FULL loaded single-step transition Jacobian
+            //     ∂[qpos';qvel']/∂[qpos;qvel] (both blocks — incl the position-state
+            //     coupling Δt·∂qvel'/∂qpos and the applied-force geometric stiffness
+            //     ∂(Jᵀw)/∂q that the unloaded `transition_derivatives` drops; zero for
+            //     the free body, real for the hinge).
+            //   g = ∂[qpos';qvel']/∂(force_on_soft.z): the VELOCITY rows carry the
+            //     contact-force response −g_v (reaction = −fz); the POSITION rows are
+            //     ZEROED — the §8a fix. sim-core integrates qpos with the post-update
+            //     velocity, yet the FD-correct gradient carries this step's contact
+            //     force to qpos only NEXT step (through qvel), exactly as the scalar
+            //     `ZCarryVjp`'s ∂z'/∂fz = 0; wiring ∂qpos'/∂fz here injects a spurious
+            //     first-step gradient (the soft solve from rest barely depends on μ, so
+            //     d(tip_z_1)/dμ = 0) — see docs/keystone/multidof_rigid_recon.md §8c.
+            let mut wrench = SpatialVector::zeros();
+            wrench[3] = -force_on_soft.x;
+            wrench[4] = -force_on_soft.y;
+            wrench[5] = -force_on_soft.z;
+            let j_state = self.loaded_state_jacobian(&wrench);
+            let gvel = rigid_xfrc_column(&self.model, &self.data, self.body);
+            let mut g = vec![0.0_f64; 2 * nv];
+            for i in 0..nv {
+                g[nv + i] = -gvel[(i, 5)]; // velocity rows only; position rows = 0 (§8a)
+            }
+
+            // (4)+(5) route the reaction and step the real rigid body.
+            self.data.xfrc_applied[self.body] = wrench;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in articulated trajectory");
+
+            let mut s_next = vec![0.0_f64; 2 * nv];
+            for i in 0..nv {
+                s_next[i] = self.data.qpos[i];
+                s_next[nv + i] = self.data.qvel[i];
+            }
+            let s_next_var = tape.push_custom(
+                &[s_var, fz_var],
+                Tensor::from_slice(&s_next, &[2 * nv]),
+                Box::new(RigidStateCarryVjp { j_state, g }),
+            );
+
+            // Advance the soft state and the tape handles.
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            s_var = s_next_var;
+        }
+
+        // Objective: the tip world height after the rollout = PoseSeam(s_N). Read the
+        // post-step `xipos` (the pre-integrate FK config, the same stale-but-consistent
+        // convention the loop + the oracle use — do NOT re-forward, see the loop note).
+        let tip_z = self.data.xipos[self.body].z;
+        let jz_final = self.pose_seam_jz();
+        let obj_var = tape.push_custom(
+            &[s_var],
+            Tensor::from_slice(&[tip_z], &[1]),
+            Box::new(PoseSeamVjp { jz: jz_final }),
+        );
+        tape.backward(obj_var);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (tip_z, grad)
+    }
+
     /// **The keystone control-gradient (the policy half's substrate).** Roll the
     /// coupled system forward applying a per-step vertical **control force** to
     /// the platen — `controls[k]` newtons (world `+z`) at step k — while
@@ -2139,6 +2632,54 @@ mod tests {
         assert!(
             (grad_mu - fd).abs() / fd.abs() < 1e-5,
             "smoke: material tape grad {grad_mu} vs FD {fd}"
+        );
+    }
+
+    /// Lib-level smoke test of the multi-DOF rigid factor `rigid_xfrc_column`
+    /// (the scientific FD validation — hinge / 2-link / free-body — is in
+    /// `tests/rigid_multidof_response.rs`): on the free platen the column reduces
+    /// to the scalar `dt/m` on the contact axis, tying the matrix factor to the
+    /// merged `rigid_vz_response`.
+    #[test]
+    fn rigid_xfrc_column_free_body_smoke() {
+        let model = load_model(PLATEN_MJCF).expect("platen MJCF loads");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let col = rigid_xfrc_column(&model, &data, 1);
+        assert_eq!(col.shape(), (6, 6)); // free joint: nv=6, 6 spatial-force columns
+        // ∂vz'/∂f_z (qvel[2] vs xfrc[5]) is the free-body dt/m (read from the model,
+        // not hardcoded, so it can't go stale if the fixture changes).
+        let dt_over_m = model.timestep / model.body_mass[1];
+        assert!(
+            (col[(2, 5)] - dt_over_m).abs() < 1e-12,
+            "free-body ∂vz'/∂f_z must be dt/m, got {}",
+            col[(2, 5)]
+        );
+    }
+
+    /// Lib-level smoke of the multi-DOF (articulated) coupled trajectory gradient
+    /// (the scientific hinge FD validation is in
+    /// `tests/articulated_trajectory_gradient.rs`). Exercises the full articulated
+    /// path — the `PoseSeamVjp`, the loaded `RigidStateCarryVjp`, and the forward
+    /// oracle — on a free-joint body (nv = 6, `rigid_damping = 0`): the tape forward
+    /// `tip_z_N` reproduces the real rollout and the gradient is finite.
+    #[test]
+    fn articulated_trajectory_smoke() {
+        // A free-joint platen with rigid_damping = 0 (the articulated path's scope).
+        let build = || {
+            let model = load_model(PLATEN_MJCF).expect("platen MJCF loads");
+            let mut data = model.make_data();
+            data.forward(&model).expect("forward");
+            StaggeredCoupling::<PenaltyRigidContact>::new(
+                model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+            )
+        };
+        let (tip_z, grad) = build().coupled_trajectory_material_gradient_articulated(5, 0);
+        assert!(tip_z.is_finite() && grad.is_finite());
+        let z_ref = build().coupled_trajectory_articulated_z(5);
+        assert!(
+            (tip_z - z_ref).abs() < 1e-12,
+            "tape forward tip_z {tip_z} != real rollout {z_ref}"
         );
     }
 
