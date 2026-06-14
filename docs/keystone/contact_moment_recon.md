@@ -162,13 +162,15 @@ and thread `∂w/∂x*` (+ maybe `∂w/∂s`).
   `c(q)` moment-feedback improves the gradient (1.6e-3 → 1.0e-3); it is correct and
   retained. (Before the `G_vel` fix it was masked by the larger stale-`G_vel` error.)
 - **The residual is the moment's FD'd GEOMETRIC STIFFNESS, not contact smoothness.**
-  The composed gradient is machine-exact through make/break (≤~2e-6 to n≈6) and
-  degrades to ~1e-3 over longer rollouts with sustained re-engagement. It is
-  IDENTICAL under penalty and IPC (measured) → NOT the penalty C⁰-kink; it is the
-  moment's config-sensitive `∂(Jᵀτ)/∂q` carried only to FD precision in `J_state`,
-  amplified ~150× over the force path's 6e-6 by the rotational Jacobian's sensitivity.
-  The analytic geometric-stiffness term (the merged leaf's documented follow-on) is
-  the cure. Adequate for co-design gradient descent (direction + 99.9% of magnitude).
+  Under PENALTY the composed gradient is machine-exact through make/break (≤~2e-6 to
+  n≈6) and the residual GROWS with n over longer rollouts (1.0e-3 at n=10, 5.7e-3 at
+  n=15). Under IPC it reaches the same ~1e-3 ORDER (n=10: 1.4e-3; spike-measured, not
+  gated) — IPC does NOT reduce it (it is even looser at small n: 7.3e-5 at n=6) → so
+  the residual is NOT the penalty C⁰-kink; it is the moment's config-sensitive
+  `∂(Jᵀτ)/∂q` carried only to FD precision in `J_state`, amplified ~150× over the
+  force path's 6e-6 by the rotational Jacobian's sensitivity. The analytic
+  geometric-stiffness term (the merged leaf's documented follow-on) is the cure.
+  Adequate for co-design gradient descent (direction + 99.9% of magnitude).
 - **Do NOT re-attribute the stale seam to the previous state var.** A "lagged
   attribution" (wiring the stale pose-seam / `c`-feedback to `s_{k-1}`) was tried and
   is WORSE (14%, breaks n=2): the merged path's attribution of the stale seam to the

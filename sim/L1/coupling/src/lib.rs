@@ -900,34 +900,25 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     }
 
     /// Per active contact pair at `positions` with the plane at `height`:
-    /// `(vertex_id, outward normal n̂, curvature cᵥ)` where the local contact
-    /// curvature `cᵥ = d²E/dsd² = n̂ᵀ·H_pair·n̂` is read from the contact's Hessian
-    /// (`κ` for penalty, `κ·b''(sd)` for IPC) — the general per-pair stiffness the
-    /// contact-force gradient factors use, in place of a hard-coded `κ`. Does not
-    /// re-solve or mutate.
+    /// `(vertex_id, outward normal n̂, curvature cᵥ)` — the contact-force gradient
+    /// factors' per-pair stiffness. A projection of [`Self::active_pair_wrench_data`]
+    /// (the single source of the per-pair readout + curvature extraction), dropping
+    /// the force `gᵢ` and position `rᵢ` the moment path additionally needs.
     fn active_pair_curvatures(&self, height: f64, positions: &[Vec3]) -> Vec<(usize, Vec3, f64)> {
-        let contact = self.build_contact(height);
-        contact
-            .pair_readout(&self.fresh_mesh(), positions)
-            .iter()
-            .map(|r| {
-                let ContactPair::Vertex { vertex_id, .. } = r.pair;
-                // H_pair = cᵥ·n̂⊗n̂ ⇒ cᵥ = n̂·(H·n̂).
-                let curv = contact
-                    .hessian(&r.pair, positions)
-                    .contributions
-                    .first()
-                    .map_or(0.0, |e| r.normal.dot(&(e.2 * r.normal)));
-                (vertex_id as usize, r.normal, curv)
-            })
+        self.active_pair_wrench_data(height, positions)
+            .into_iter()
+            .map(|(v, _g, n, curv, _r)| (v, n, curv))
             .collect()
     }
 
-    /// Per active contact pair at `positions` with the plane at `height`, the data
-    /// the contact-MOMENT routing + its [`ContactWrenchTrajVjp`] gradient need:
-    /// `(vertex_id, soft-force gᵢ, normal n̂, curvature cᵥ, world position rᵢ)`.
-    /// Sister of [`Self::active_pair_curvatures`] that also carries the per-pair
-    /// force `gᵢ = force_on_softᵢ` and contact point `rᵢ`. Does not re-solve/mutate.
+    /// Per active contact pair at `positions` with the plane at `height`:
+    /// `(vertex_id, soft-force gᵢ, normal n̂, curvature cᵥ, world position rᵢ)` where
+    /// the local curvature `cᵥ = d²E/dsd² = n̂ᵀ·H_pair·n̂` is read from the contact's
+    /// Hessian (`κ` for penalty, `κ·b''(sd)` for IPC). The single source of the
+    /// per-pair readout + curvature extraction (projected by
+    /// [`Self::active_pair_curvatures`]); the moment routing + its
+    /// [`ContactWrenchTrajVjp`] gradient additionally use the force `gᵢ` and contact
+    /// point `rᵢ`. Does not re-solve/mutate.
     fn active_pair_wrench_data(
         &self,
         height: f64,
@@ -1807,15 +1798,17 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// **response** `G` is read at the config the real `step` maps through (a fresh
     /// scratch forward, `fresh_xfrc_column`), and the state carry `J_state` is
     /// finite-differenced (it includes the applied-wrench geometric stiffness
-    /// `∂(Jᵀw)/∂q` that `transition_derivatives` omits). The composed gradient is
-    /// **machine-exact through contact make/break** (≤~2e-6 rel through `n ≈ 6`,
-    /// including the soft node's `n = 1` rest-state zero and `n = 2` exactness) and
-    /// degrades to ~1e-3 over longer rollouts with sustained re-engagement, where the
-    /// moment's config-sensitive rotational Jacobian amplifies the FD'd
-    /// geometric-stiffness residual the merged force path carries at ~6e-6 (identical
-    /// under penalty and IPC — NOT a contact-smoothness cap). Still adequate for
-    /// co-design gradient descent; a machine-exact analytic geometric-stiffness term
-    /// is the documented follow-on. Hinge scope (no quaternion joints; raw
+    /// `∂(Jᵀw)/∂q` that `transition_derivatives` omits). Under PENALTY contact the
+    /// composed gradient is **machine-exact through contact make/break** (≤~2e-6 rel
+    /// through `n ≈ 6`, including the soft node's `n = 1` rest-state zero and `n = 2`
+    /// exactness); over longer rollouts with sustained re-engagement the residual
+    /// GROWS with `n` (~1e-3 at `n = 10`), as the moment's config-sensitive rotational
+    /// Jacobian amplifies the FD'd geometric-stiffness residual the merged force path
+    /// carries at ~6e-6. This is NOT a contact-smoothness cap — IPC reaches the same
+    /// ~1e-3 order (it does not reduce it), confirming the residual is the geometric
+    /// stiffness, not the penalty active-set kink. Still adequate for co-design
+    /// gradient descent; a machine-exact analytic geometric-stiffness term is the
+    /// documented follow-on. Hinge scope (no quaternion joints; raw
     /// `[qpos; qvel]` state), `rigid_damping = 0` (the damping velocity-coupling is
     /// not in the loaded carry), and a flat constant-normal plane (`τ_z = 0`;
     /// tangential/curved contact is the next arc). See
@@ -3118,7 +3111,7 @@ mod tests {
 
         // One control input vs an independent FD of the real coupled re-rollout.
         let k = 1;
-        let eps = 1e-6;
+        let eps = 1e-2;
         let mut up = controls.clone();
         let mut dn = controls.clone();
         up[k] += eps;
@@ -3163,7 +3156,7 @@ mod tests {
 
         // The proportional weight w_z vs an independent FD of the real re-rollout
         // (its gradient flows only through the state→control recurrence).
-        let eps = 1e-6;
+        let eps = 1e-2;
         let mut up = theta;
         let mut dn = theta;
         up[0] += eps;

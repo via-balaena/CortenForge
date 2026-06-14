@@ -11,20 +11,24 @@
 //! COM — including the off-COM contact **moment** `τ = −Σ(rᵢ−c)×gᵢ`. The tip COM
 //! (`xipos`, x ≈ −0.028 when tilted) is offset ~0.08 m from the block-top contact
 //! centroid (x ≈ 0.05), so the resultant genuinely misses the COM: routing the
-//! moment vs a pure force at the COM shifts the rollout ~7% (the forward model is
-//! first-order wrong without it). One `tape.backward` gives `∂(tip height)_N/∂μ`
-//! across the whole rollout.
+//! moment vs a pure force at the COM shifts the rollout materially (~4.5% in tip_z_N
+//! by n = 6, growing to ~7% by n = 10 — the forward model is first-order wrong
+//! without it). One `tape.backward` gives `∂(tip height)_N/∂μ` across the whole
+//! rollout.
 //!
 //! Gates: the one-tape gradient matches a central FD of the FULL real coupled
 //! re-rollout (a fresh coupling at μ±ε, the real articulated `step` loop —
 //! `coupled_trajectory_articulated_z`, which routes the same moment), an INDEPENDENT
 //! oracle. The wrench node (`∂w/∂x*`, `∂w/∂h`, `∂w/∂s`) is separately FD-validated
-//! machine-exact against the real contact readout in `the `contact_wrench_node_matches_readout_fd` lib unit test`. Through
-//! contact make/break the composed gradient is machine-exact; over longer rollouts
-//! with sustained re-engagement it degrades to ~1e-3 — the moment's config-sensitive
-//! rotational Jacobian amplifying the FD'd geometric-stiffness carry residual (the
-//! analytic geometric-stiffness term is a follow-on; see
-//! docs/keystone/contact_moment_recon.md §6).
+//! machine-exact against the real contact readout in the
+//! `contact_wrench_node_matches_readout_fd` lib unit test. Under PENALTY contact the
+//! composed gradient is machine-exact through contact make/break; over longer
+//! rollouts with sustained re-engagement the residual GROWS with n (it is the
+//! moment's config-sensitive rotational Jacobian amplifying the FD'd
+//! geometric-stiffness carry residual). The same ~1e-3 order appears under IPC — it
+//! does NOT reduce it, confirming the residual is the geometric stiffness, not the
+//! penalty active-set kink; the analytic geometric-stiffness term is the follow-on.
+//! See docs/keystone/contact_moment_recon.md §5a/§6.
 
 #![allow(clippy::expect_used)]
 
@@ -88,12 +92,13 @@ fn tape_and_fd(n: usize) -> (f64, f64, f64) {
 
 #[test]
 fn articulated_gradient_matches_full_coupled_fd_through_make_break() {
-    // n = 6 spans the initial violent make (25 active, f_z ~ 800 N), the rebound
-    // (the active set flips to 0), and re-touch — a genuine make/break. The
-    // moment-routing tape gradient is MACHINE-EXACT against the independent
-    // full-coupled FD oracle here (the FD oracle is converged to <1e-9 over 4
-    // decades of ε; the wrench node is FD-exact vs the real readout in
-    // the `contact_wrench_node_matches_readout_fd` lib unit test).
+    // n = 6 spans the initial violent make (25 active, f_z ~ 800 N), a genuine
+    // LIFTOFF (active set 25 → 0 → 0 → 0 for steps 1–3), and a re-touch (1 active at
+    // step 4) — measured active-set sequence 25,0,0,0,1,0. The moment-routing tape
+    // gradient is MACHINE-EXACT against the independent full-coupled FD oracle here
+    // (the FD oracle is converged to <1e-9 over 4 decades of ε; the wrench node is
+    // FD-exact vs the real readout in the `contact_wrench_node_matches_readout_fd`
+    // lib unit test).
     let n = 6;
     let (tip_z, total, fd) = tape_and_fd(n);
     let z_oracle = build(MU0).coupled_trajectory_articulated_z(n);
@@ -110,29 +115,32 @@ fn articulated_gradient_matches_full_coupled_fd_through_make_break() {
     );
     assert!(total.abs() > 1e-9, "expected a nonzero ∂tip_z/∂μ");
     // The moment is load-bearing: a pure-force-at-COM forward model would shift the
-    // rollout materially (routing vs dropping the moment differs ~7% in tip_z_N; see
-    // the recon). The dt/m-vs-multi-DOF distinction — J_z ≈ 0.028 ≠ 1 on the tilted
-    // contact axis — is asserted at the primitive level in
-    // tests/rigid_multidof_response.rs.
+    // rollout materially (routing vs dropping the moment differs ~4.5% in tip_z_N at
+    // this n = 6 horizon, growing to ~7% by n = 10; see the recon). The
+    // dt/m-vs-multi-DOF distinction — J_z ≈ 0.028 ≠ 1 on the tilted contact axis — is
+    // asserted at the primitive level in tests/rigid_multidof_response.rs.
 }
 
-/// Over longer rollouts with sustained re-engagement the gradient degrades to
-/// ~1e-3: the moment's config-sensitive rotational Jacobian amplifies the FD'd
-/// geometric-stiffness carry residual the merged force path carries at ~6e-6 (this
-/// is NOT a contact-smoothness cap — penalty and IPC degrade identically; the
-/// analytic geometric-stiffness term is the follow-on). Still well within
-/// co-design-gradient-descent tolerance, and the DIRECTION/magnitude are ~99.9%
-/// correct. Gated loosely + documented rather than hidden.
+/// Over longer rollouts with sustained re-engagement the gradient residual GROWS
+/// with n (penalty: ~1e-3 at n = 10, ~5.7e-3 at n = 15): the moment's
+/// config-sensitive rotational Jacobian amplifies the FD'd geometric-stiffness carry
+/// residual the merged force path carries at ~6e-6. It is NOT a contact-smoothness
+/// cap — IPC reaches the same ~1e-3 order (does not reduce it), confirming the
+/// residual is the geometric stiffness, not the penalty active-set kink; the
+/// analytic geometric-stiffness term is the follow-on. The 3e-3 bound here is the
+/// n ≤ 10 value (it is exceeded for larger n) — well within
+/// co-design-gradient-descent tolerance (DIRECTION + ~99.9% of magnitude correct).
+/// Gated at n = 10 + documented rather than hidden.
 #[test]
-fn articulated_gradient_long_rollout_within_geometric_stiffness_cap() {
+fn articulated_gradient_long_rollout_grows_with_n() {
     let n = 10;
     let (_tip_z, total, fd) = tape_and_fd(n);
     let rel = (total - fd).abs() / fd.abs().max(1e-30);
     println!("n={n}: tape total={total:.8e} FD={fd:.8e} rel={rel:.3e}");
     assert!(
         rel < 3e-3,
-        "long-rollout articulated dμ gradient must stay within the documented \
-         geometric-stiffness cap, got rel {rel:.3e}"
+        "n=10 articulated dμ gradient must stay within the documented n≤10 \
+         geometric-stiffness residual bound, got rel {rel:.3e}"
     );
 }
 
