@@ -161,16 +161,22 @@ and thread `∂w/∂x*` (+ maybe `∂w/∂s`).
 - **Decision #3 (`∂w/∂s`) — material and KEPT.** With fresh `G_vel`, including the
   `c(q)` moment-feedback improves the gradient (1.6e-3 → 1.0e-3); it is correct and
   retained. (Before the `G_vel` fix it was masked by the larger stale-`G_vel` error.)
-- **The residual is the moment's FD'd GEOMETRIC STIFFNESS, not contact smoothness.**
-  Under PENALTY the composed gradient is machine-exact through make/break (≤~2e-6 to
-  n≈6) and the residual GROWS with n over longer rollouts (1.0e-3 at n=10, 5.7e-3 at
-  n=15). Under IPC it reaches the same ~1e-3 ORDER (n=10: 1.4e-3; spike-measured, not
-  gated) — IPC does NOT reduce it (it is even looser at small n: 7.3e-5 at n=6) → so
-  the residual is NOT the penalty C⁰-kink; it is the moment's config-sensitive
-  `∂(Jᵀτ)/∂q` carried only to FD precision in `J_state`, amplified ~150× over the
-  force path's 6e-6 by the rotational Jacobian's sensitivity. The analytic
-  geometric-stiffness term (the merged leaf's documented follow-on) is the cure.
-  Adequate for co-design gradient descent (direction + 99.9% of magnitude).
+- **The residual GROWS with n; it is moment-specific and smooth — NOT contact
+  smoothness.** Under PENALTY the composed gradient is machine-exact through make/break
+  (≤~2e-6 to n≈6) and the residual GROWS with n over longer rollouts (1.0e-3 at n=10,
+  5.7e-3 at n=15). Under IPC it reaches the same ~1e-3 ORDER (n=10: 1.4e-3) — IPC does
+  NOT reduce it (it is even looser at small n: 7.3e-5 at n=6) → so the residual is NOT
+  the penalty C⁰-kink.
+  > **★ ERRATA (2026-06-15).** This bullet originally concluded the residual was "the
+  > moment's config-sensitive `∂(Jᵀτ)/∂q` carried only to FD precision in `J_state`",
+  > with the analytic geometric-stiffness term as "the cure". **That attribution is
+  > FALSIFIED.** Making `J_state` analytic (machine-exact vs the FD loaded Jacobian for
+  > any wrench) left n≥10 UNCHANGED — it only tightened n≈6 — so `J_state` precision was
+  > never the long-rollout cap. The residual is the off-COM MOMENT's gradient over long
+  > rollouts: moment-specific (the free-platen articulated path, no moment, is
+  > machine-exact at every n), smooth, and resistant to fresh-FK / lag-attribution / the
+  > true position-row term (all WORSE). See `geometric_stiffness_recon.md` §3–4. Still
+  > adequate for co-design (direction + ~99.9% magnitude).
 - **Do NOT re-attribute the stale seam to the previous state var.** A "lagged
   attribution" (wiring the stale pose-seam / `c`-feedback to `s_{k-1}`) was tried and
   is WORSE (14%, breaks n=2): the merged path's attribution of the stale seam to the

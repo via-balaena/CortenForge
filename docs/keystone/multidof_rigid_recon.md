@@ -208,6 +208,15 @@ quality follow-on (the analogue of penalty→IPC: correct structure now, machine
 later). This keeps the free-body platen path machine-exact (no geometric stiffness)
 and the articulated path FD-accurate (~1e-5, co-design-adequate).
 
+> **★ FOLLOW-UP (2026-06-15).** The analytic `∂(Jᵀw)/∂q` carry shipped
+> (`analytic_state_jacobian`): it is machine-exact vs the FD loaded Jacobian for any
+> wrench and tightens the short-rollout gradient (n≈6). But it does NOT remove the
+> long-rollout residual: once the contact moment merged (#313), that residual is the
+> off-COM MOMENT's gradient — moment-specific (the free-platen articulated path is
+> machine-exact at every n) and NOT the geometric stiffness (analytic `J_state` leaves
+> n≥10 unchanged). The "machine-exact later" framing held only for short rollouts. See
+> `geometric_stiffness_recon.md` §3–4.
+
 ## 8d. PR2 BUILD RESULT (2026-06-13) — articulated coupled gradient on main path
 
 Built `coupled_trajectory_material_gradient_articulated` (+ `coupled_trajectory_articulated_z`
