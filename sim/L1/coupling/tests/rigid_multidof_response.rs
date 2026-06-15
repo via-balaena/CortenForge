@@ -137,6 +137,60 @@ fn two_link_xfrc_column_matches_fd_and_couples_offdiagonal() {
     );
 }
 
+/// With joint DAMPING the Euler `eulerdamp` solves `(M + Δt·D)·qacc = F`, so the
+/// wrench→velocity factor is `Δt·(M + Δt·D)⁻¹·Jᵀ` — `rigid_xfrc_column` must use the
+/// implicit mass matrix, not bare `M`. A damped hinge + a damped 2-link chain
+/// (off-diagonal `M`, so the `M + Δt·D` coupling is live) match the FD over the real
+/// (damped) step; bare `M⁻¹` is materially wrong (≈28% hinge, ≈10× chain — asserted in
+/// the S0 spike). FD over the real step is the ground truth since `step` runs eulerdamp.
+#[test]
+fn damped_xfrc_column_matches_fd() {
+    const DAMPED_HINGE: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0" damping="0.5"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    const DAMPED_2LINK: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0" damping="0.5"/>
+      <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.3"/>
+      <body name="lower" pos="0 0 -0.05">
+        <joint type="hinge" axis="0 1 0" damping="0.3"/>
+        <geom type="sphere" pos="0 0 -0.04" size="0.004" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    for (mjcf, body, seed, label) in [
+        (DAMPED_HINGE, 1usize, vec![(0usize, 0.3)], "hinge"),
+        (DAMPED_2LINK, 2, vec![(0, 0.1), (1, -0.05)], "2link"),
+    ] {
+        let model = sim_mjcf::load_model(mjcf).expect("damped model loads");
+        let mut data = model.make_data();
+        for (i, q) in seed {
+            data.qpos[i] = q;
+        }
+        data.forward(&model).expect("forward");
+        assert!(
+            model.implicit_damping.iter().any(|&d| d > 0.0),
+            "{label}: damping must be live in the model"
+        );
+        let analytic = rigid_xfrc_column(&model, &data, body);
+        let fd = fd_column(&model, &data.qpos, &data.qvel, body, 1e-4);
+        let (err, _) = max_relative_error(&analytic, &fd, 1e-10);
+        assert!(
+            err < 1e-6,
+            "{label}: damped xfrc column Δt·(M+Δt·D)⁻¹·Jᵀ must match FD, got rel {err:.3e}"
+        );
+    }
+}
+
 #[test]
 fn free_body_column_collapses_to_dt_over_m() {
     // A single free-joint box (the merged platen): the column must reduce to the

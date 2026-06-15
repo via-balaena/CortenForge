@@ -120,12 +120,16 @@ fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64])
 /// on `body` — the matrix successor to the scalar free-body `∂vz'/∂fz = dt/m`
 /// ([`StaggeredCoupling::rigid_vz_response`]).
 ///
-/// Returns `∂qvel'/∂xfrc_applied[body] = Δt · M⁻¹ · J_comᵀ` — the `nv × 6` input
+/// Returns `∂qvel'/∂xfrc_applied[body] = Δt · M_impl⁻¹ · J_comᵀ` — the `nv × 6` input
 /// (`G`) block of the coupled-step Jacobian `[A | G]` (the "xfrc column" of the
 /// recon), one column per spatial-force component. `J_com` is the body's COM
 /// spatial Jacobian (`mj_jac_point` at `xipos`, rows 0–2 angular / 3–5 linear —
-/// the `[τ; f]` layout the integrator projects through `mj_apply_ft`), `M =
-/// data.qM` the joint-space mass matrix, and `Δt = model.timestep`.
+/// the `[τ; f]` layout the integrator projects through `mj_apply_ft`), and `Δt =
+/// model.timestep`. `M_impl = M + Δt·D` is the Euler `eulerdamp` matrix — the
+/// joint-space mass `M = data.qM` plus the implicit joint **damping** `D =
+/// model.implicit_damping` on the diagonal (the integrator solves `(M + Δt·D)·qacc =
+/// F` then `qvel += Δt·qacc`, so the wrench reaches `qvel'` through `M_impl⁻¹`).
+/// Undamped (`D = 0`) ⇒ `M_impl = M`, the original bare form, exactly.
 ///
 /// Reads the live `data.qM` / `data.xipos` (it does not re-step), so `data` must be
 /// at a **forwarded** configuration (call `data.forward(model)` — or any `step` —
@@ -140,14 +144,14 @@ fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64])
 /// the proximal joint). FD-validated against a real scratch step in
 /// `tests/rigid_multidof_response.rs` (hinge + 2-link, machine-exact).
 ///
-/// **Scope of the bare `M⁻¹` form.** This is exact for the keystone scenes — an
-/// undamped mechanism under the (semi-implicit) Euler integrator. With nonzero joint
-/// damping/stiffness, the Euler path solves `(M + Δt·D + Δt²·K)·qacc = F`, so the
-/// true factor is `Δt·M_impl⁻¹·Jᵀ` (not the bare `Δt·M⁻¹·Jᵀ`); a non-Euler
-/// integrator likewise changes the velocity update. (Joint *armature* is fine — it
-/// is folded into `M = qM`, so `M⁻¹` already accounts for it; only the implicit
-/// `D`/`K` terms, which never enter `qM`, break the form.) Out of this leaf's
-/// scope — see `docs/keystone/multidof_rigid_recon.md`.
+/// **Damping / integrator scope.** The `M + Δt·D` form is exact for the Euler
+/// integrator (the keystone's, MuJoCo's default), whose `eulerdamp` treats joint
+/// *damping* implicitly but joint *stiffness* `K` explicitly — so `K` does NOT enter
+/// this matrix. (Joint *armature* is already folded into `M = qM`.) A stiffness-
+/// implicit integrator (`ImplicitSpringDamper`, `M + Δt·D + Δt²·K`) or `RungeKutta4`
+/// changes the velocity update and is out of scope — see
+/// `docs/keystone/damped_joints_recon.md`. FD-validated under damping in
+/// `tests/rigid_multidof_response.rs`.
 ///
 /// **Velocity vs position.** This is the *velocity* response only. Composing it
 /// into a multi-step coupled carry (which threads it with the dense state
@@ -176,12 +180,15 @@ pub fn rigid_xfrc_column(model: &Model, data: &Data, body: usize) -> DMatrix<f64
     // J at the body COM (xipos): 6×nv, rows 0–2 angular, 3–5 linear — the same
     // point and frame the integrator's `mj_apply_ft` uses for `xfrc_applied`.
     let jac = mj_jac_point(model, data, body, &data.xipos[body]); // 6 × nv
-    let minv = data
-        .qM
-        .clone()
+    // M_impl = M + Δt·D (the Euler `eulerdamp` matrix; D = 0 ⇒ M_impl = M exactly).
+    let mut m_impl = data.qM.clone();
+    for i in 0..model.nv {
+        m_impl[(i, i)] += model.timestep * model.implicit_damping[i];
+    }
+    let m_impl_inv = m_impl
         .try_inverse()
-        .expect("joint-space mass matrix M must be invertible");
-    model.timestep * minv * jac.transpose() // (nv × nv)·(nv × 6) = nv × 6
+        .expect("implicit mass matrix M + Δt·D must be invertible");
+    model.timestep * m_impl_inv * jac.transpose() // (nv × nv)·(nv × 6) = nv × 6
 }
 
 /// The **right Jacobian of SO(3)** `J_r(φ)` (`φ` = a rotation vector, `θ = ‖φ‖`):
@@ -2104,11 +2111,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// body inertia about the fixed axis), so `∂M⁻¹/∂q = 0` and the `Δt·M⁻¹·…` form is
     /// exact. Evaluated at a fresh scratch forward at `qpos` (the config the real
     /// `step` maps the wrench through, matching [`Self::fresh_xfrc_column`]).
+    ///
+    /// **Undamped scope.** Returns `None` when the model has joint damping — the unloaded
+    /// `A` from `transition_derivatives` has a subtle Euler-`eulerdamp` mismatch (≈2.6% on
+    /// the hinge gradient), so the damped single hinge falls back to the FD
+    /// [`Self::loaded_state_jacobian`] (which differentiates the real eulerdamp step and is
+    /// damping-correct — the 2-link chain confirms it). The analytic *damped* single-hinge
+    /// `J_state` (reconciling `A` with eulerdamp for machine-exactness) is the documented
+    /// follow-on; see `docs/keystone/damped_joints_recon.md`.
     // expect_used: a transition-derivative / forward on a valid model does not fail; a
     // failure is a programmer error surfaced loudly (mirrors `scratch_state_step`).
     #[allow(clippy::expect_used)]
     fn analytic_state_jacobian(&self, wrench: &SpatialVector) -> Option<DMatrix<f64>> {
         let jnt = self.single_hinge()?;
+        // Joint damping → fall back to the FD loaded Jacobian (damping-correct): the
+        // unloaded `A` has a subtle Euler-eulerdamp mismatch the FD path avoids.
+        if self.model.implicit_damping.iter().any(|&d| d != 0.0) {
+            return None;
+        }
         let dt = self.model.timestep;
         let nv = self.model.nv; // == 1 (single_hinge), so the state block is 2×2
         // Unloaded transition A at the current state. The real `step` re-forwards at
@@ -2229,12 +2249,17 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// (nv > 2) work via the same FD `J_state` carry (FD-carry precision) but are not
     /// explicitly gated; the analytic CHAIN carry (the Jacobian Hessian + `∂M⁻¹/∂q`) for
     /// machine-exactness at nv > 1 is the documented follow-on (`multilink_recon.md`).
-    /// Further scope: no quaternion joints (raw `[qpos; qvel]` state — ball/free-joint
-    /// quaternion is the follow-on), `rigid_damping = 0` (the damping velocity-coupling is
-    /// not in the loaded carry), and a flat constant-normal plane (`τ_z = 0`;
-    /// tangential/curved contact is the next arc). See also
-    /// `docs/keystone/geometric_stiffness_recon.md` and
-    /// `docs/keystone/contact_moment_recon.md`.
+    /// **Joint damping** is supported: the Euler `eulerdamp` carry factor is
+    /// `Δt·(M + Δt·D)⁻¹·Jᵀ` ([`rigid_xfrc_column`], `D = implicit_damping`), and the
+    /// analytic single-hinge `J_state` uses the same `M_impl` (the unloaded `A` already
+    /// carries the damping velocity-coupling) — FD-gated under damping for the hinge and
+    /// 2-link chain. Out of scope: stiffness-implicit / non-Euler integrators
+    /// (`ImplicitSpringDamper`'s `M + Δt·D + Δt²·K`, RK4); the coupling's own free-platen
+    /// `rigid_damping` knob (asserted 0 here — distinct from model joint damping);
+    /// state-dependent actuator forces (the follow-on toward the powered exo); and a flat
+    /// constant-normal plane unless `with_rotating_normal`. See
+    /// `docs/keystone/damped_joints_recon.md`, `geometric_stiffness_recon.md`, and
+    /// `contact_moment_recon.md`.
     ///
     /// # Panics
     /// Panics if `param_idx > 1`, if `rigid_damping != 0`, or if a rigid/soft step
@@ -3503,6 +3528,44 @@ mod tests {
                     .analytic_state_jacobian(&SpatialVector::zeros())
                     .is_none(),
             "free joint must fall back to the FD loaded Jacobian"
+        );
+    }
+
+    /// A DAMPED single hinge declines the analytic `J_state` (returns `None`) and falls
+    /// back to the FD `loaded_state_jacobian`: the unloaded `A` from
+    /// `transition_derivatives` has a subtle Euler-`eulerdamp` mismatch (≈2.6% on the
+    /// hinge gradient), whereas the FD path differentiates the real eulerdamp step and is
+    /// damping-correct (the 2-link chain confirms it). The analytic *damped* single-hinge
+    /// is the documented follow-on. See `docs/keystone/damped_joints_recon.md`.
+    #[test]
+    fn analytic_state_jacobian_declines_under_damping() {
+        const DAMPED_HINGE: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0" damping="0.7"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        let model = load_model(DAMPED_HINGE).expect("damped hinge loads");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.forward(&model).expect("forward");
+        assert!(model.implicit_damping[0] > 0.0, "damping must be live");
+        let c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        );
+        assert!(
+            c.single_hinge().is_some(),
+            "geometry is a single hinge (the analytic path's predicate)"
+        );
+        assert!(
+            c.analytic_state_jacobian(&SpatialVector::from_row_slice(&[
+                0.1, 0.2, 0.0, 5.0, -3.0, 800.0
+            ]))
+            .is_none(),
+            "a DAMPED single hinge must decline the analytic J_state (FD fallback)"
         );
     }
 
