@@ -2532,8 +2532,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // hinge/chain path. Quaternion (nq≠nv): D carries the SO(3) right Jacobian
             // J_r(Δt·qvel') at the POST-step velocity (`self.data.qvel`, the ω the
             // integrator actually integrated). See `docs/keystone/quaternion_joints_recon.md`.
+            // Δt is the RIGID integrator's `model.timestep` (matching G_vel + the real step
+            // + the quaternion branch's `integrator_pos_jacobian`), NOT the soft `cfg.dt`.
             let g_pos = if self.model.nq == self.model.nv {
-                dt * &g_vel
+                self.model.timestep * &g_vel
             } else {
                 self.integrator_pos_jacobian(&self.data.qvel) * &g_vel
             };
@@ -2775,12 +2777,16 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .expect("rigid step diverged in actuator trajectory");
 
             // Position rows: D = Δt·I (single hinge ⇒ Euclidean), so G_pos = Δt·G_vel and
-            // G_act = [Δt·G_act_vel; G_act_vel] (2·nv × nu).
-            let g_pos = dt * &g_vel;
+            // G_act = [Δt·G_act_vel; G_act_vel] (2·nv × nu). Δt here is the RIGID
+            // integrator's `model.timestep` (the same dt the velocity columns + the real
+            // step use), NOT the soft `cfg.dt` — they are equal under lockstep but the
+            // integrator term must track the rigid step.
+            let rigid_dt = self.model.timestep;
+            let g_pos = rigid_dt * &g_vel;
             let mut g_act = DMatrix::zeros(2 * nv, nu);
             g_act
                 .view_mut((0, 0), (nv, nu))
-                .copy_from(&(dt * &g_act_vel));
+                .copy_from(&(rigid_dt * &g_act_vel));
             g_act.view_mut((nv, 0), (nv, nu)).copy_from(&g_act_vel);
 
             let mut s_next = vec![0.0_f64; 2 * nv];
