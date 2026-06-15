@@ -162,3 +162,45 @@ fn rotating_normal_changes_the_gradient() {
         "the rotating normal must change the gradient materially (rel diff {rel:.3e})"
     );
 }
+
+/// The single-step S3 height probes stay correct AND `height`-parameterized under a
+/// rotating normal: `build_contact` honors the scalar `height` (translating the tilted
+/// plane vertically), so the explicit `contact_force_height_jacobian` and the total
+/// `contact_force_height_total_jacobian` match a central FD of their forward oracles
+/// (`contact_force_at_height` / `resolved_contact_force`) on a tilted scene. This pins
+/// the contract the rotating normal could otherwise have silently broken (a dead
+/// `height` argument), and confirms the tilted normal redirects the force off-vertical.
+#[test]
+fn rotating_normal_height_probes_match_fd() {
+    let c = build_ball(MU0, true);
+    // The engaged plane height for the current pose (clearance = 0.005, as built).
+    let h0 = c.data().xipos[1].z - 0.005;
+    let eps = 1e-7;
+
+    // Explicit (fixed-position) partial vs FD of contact_force_at_height.
+    let analytic_expl = c.contact_force_height_jacobian(h0);
+    let fd_expl =
+        (c.contact_force_at_height(h0 + eps) - c.contact_force_at_height(h0 - eps)) / (2.0 * eps);
+    let rel_expl = (analytic_expl - fd_expl).norm() / fd_expl.norm().max(1e-30);
+    println!("explicit: a={analytic_expl:?} fd={fd_expl:?} rel={rel_expl:.3e}");
+    assert!(
+        fd_expl.norm() > 1e-6 && rel_expl < 1e-4,
+        "rotating explicit ∂force/∂height must match FD (rel {rel_expl:.3e})"
+    );
+    // The tilted normal redirects the force off-vertical (flat would be purely +ẑ).
+    assert!(
+        analytic_expl.x.hypot(analytic_expl.y) > 1e-3 * analytic_expl.z.abs(),
+        "the tilted normal must give the height-jacobian a horizontal component"
+    );
+
+    // Total (re-equilibrated) derivative vs FD of resolved_contact_force.
+    let analytic_tot = c.contact_force_height_total_jacobian(h0);
+    let fd_tot =
+        (c.resolved_contact_force(h0 + eps) - c.resolved_contact_force(h0 - eps)) / (2.0 * eps);
+    let rel_tot = (analytic_tot - fd_tot).norm() / fd_tot.norm().max(1e-30);
+    println!("total: a={analytic_tot:?} fd={fd_tot:?} rel={rel_tot:.3e}");
+    assert!(
+        fd_tot.norm() > 1e-6 && rel_tot < 1e-3,
+        "rotating total d force/d height must match resolve-FD (rel {rel_tot:.3e})"
+    );
+}

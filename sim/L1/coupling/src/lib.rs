@@ -1049,7 +1049,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// normal's `q`-dependence (`∂n̂/∂q = −[n̂]×·J_ang`). Reduces to the flat plane at
     /// `R = I`. Opt-in (default off) because it changes the contact physics and is
     /// gated at gentle tilt (the flat-tuned large-tilt keystone scenes can diverge
-    /// under a rotating normal). See `docs/keystone/rotating_normal_recon.md`.
+    /// under a rotating normal). The single-step S3 height probes
+    /// ([`Self::contact_force_at_height`] etc.) remain `height`-parameterized — the
+    /// plane tilts with `R` but still translates with `height` — so their FD contract
+    /// holds in both modes. See `docs/keystone/rotating_normal_recon.md`.
     #[must_use]
     pub const fn with_rotating_normal(mut self, on: bool) -> Self {
         self.rotating_normal = on;
@@ -1071,12 +1074,18 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
 
     fn build_contact(&self, height: f64) -> C {
         let plane = if self.rotating_normal {
-            // Rotating normal: the plane tracks the body orientation. `n̂ = R·(0,0,−1)`,
-            // `offset = xipos·n̂ + clearance` (so `sd = p·n̂ − offset = (p − xipos)·n̂ −
-            // clearance`). Read the pose from the (freshly forwarded) rigid state; at
-            // `R = I` this is exactly `((0,0,−1), −height)` — the flat branch below.
+            // Rotating normal: the plane tracks the body ORIENTATION (`n̂ = R·(0,0,−1)`)
+            // while still honoring the scalar `height` like the flat branch — the plane
+            // passes through the reference point at the body's lateral position and world
+            // z = `height + clearance`, so `offset = p_ref·n̂ + clearance`. This keeps
+            // `height` a live parameter (the S3 single-step probes translate the tilted
+            // plane vertically by varying it) AND reduces to the flat `((0,0,−1),
+            // −height)` at `R = I`. In the coupled path `height = xipos.z − clearance`, so
+            // `p_ref = xipos` exactly (byte-identical to reading the live COM pose).
             let n = self.data.xquat[self.body] * Vec3::new(0.0, 0.0, -1.0);
-            let offset = self.data.xipos[self.body].dot(&n) + self.contact_clearance;
+            let com = self.data.xipos[self.body];
+            let p_ref = Vec3::new(com.x, com.y, height + self.contact_clearance);
+            let offset = p_ref.dot(&n) + self.contact_clearance;
             RigidPlane::new(n, offset)
         } else {
             // Downward ceiling at `height`: normal −z, offset −height ⇒ a soft
@@ -1193,24 +1202,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// Analytic `∂(total force_on_soft)/∂(plane height)` at the current soft
     /// configuration, holding the soft positions fixed.
     ///
-    /// For the downward plane, each active pair has `∂force/∂height = −cᵥ·n̂` with
-    /// curvature `cᵥ = d²E/dsd²` and unit normal `n̂ = −ẑ`, so the per-pair
-    /// contribution is `+cᵥ·ẑ`; over the active set the total is `+(Σ cᵥ)·ẑ`. For
-    /// penalty `cᵥ = κ` so this reduces to `κ·N_active·ẑ`; for IPC `cᵥ = κ·b''(sd)`.
-    /// This is the explicit (fixed-position) partial — one factor of the coupled
-    /// step's Jacobian, not the total settled-system derivative. Valid in the
-    /// contact-engaged regime where the active set is stable across the
-    /// perturbation; at the active-set boundary the penalty derivative is
-    /// non-smooth (the IPC barrier smooths it). FD-checked against
-    /// [`Self::contact_force_at_height`].
+    /// Raising the height translates the plane `+ẑ`, so per active pair
+    /// `∂sd/∂height = −n̂·ẑ = −n̂.z` and `∂force/∂height = −cᵥ·(∂sd/∂height)·n̂ =
+    /// cᵥ·n̂.z·n̂` (curvature `cᵥ = d²E/dsd²`). For the FLAT downward plane (`n̂ = −ẑ`)
+    /// this is `+cᵥ·ẑ` per pair, i.e. the total `+(Σ cᵥ)·ẑ` (penalty `cᵥ = κ` ⇒
+    /// `κ·N_active·ẑ`; IPC `cᵥ = κ·b''(sd)`); under a [rotating
+    /// normal](Self::with_rotating_normal) the tilted `n̂` redirects it. This is the
+    /// explicit (fixed-position) partial — one factor of the coupled step's Jacobian,
+    /// not the total settled-system derivative. Valid in the contact-engaged regime
+    /// where the active set is stable across the perturbation; at the active-set
+    /// boundary the penalty derivative is non-smooth (the IPC barrier smooths it).
+    /// FD-checked against [`Self::contact_force_at_height`].
     #[must_use]
     pub fn contact_force_height_jacobian(&self, height: f64) -> Vec3 {
-        let sum_curv: f64 = self
-            .active_pair_curvatures(height, &self.positions())
+        // ∂force/∂height = Σ cᵥ·n̂.z·n̂ (= (0,0,Σcᵥ) for the flat n̂ = −ẑ).
+        self.active_pair_curvatures(height, &self.positions())
             .iter()
-            .map(|&(_, _, c)| c)
-            .sum();
-        Vec3::new(0.0, 0.0, sum_curv)
+            .map(|&(_, n, c)| c * n.z * n)
+            .sum()
     }
 
     /// One-off rigid step from the *current* rigid state with an externally
