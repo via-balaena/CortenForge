@@ -27,8 +27,8 @@
 //!
 //! **Accuracy — MACHINE-EXACT at every horizon, single-hinge through multi-link.** The
 //! composed gradient matches the full-coupled FD to ~1e-9 at n = 1, 2, 6, 10, 15 — for
-//! the single hinge, a free-joint platen (nv = 6), AND a 2-link chain (nv = 2,
-//! `twolink_chain_gradient_machine_exact`). The earlier long-rollout moment residual
+//! the single hinge, a free-joint platen (nv = 6), AND a 2-link chain (nv = 2 at
+//! FD-carry precision, `twolink_chain_gradient_matches_fd`). The earlier long-rollout moment residual
 //! (~1e-3 at n = 10) and the 74%-at-n=2 multi-link error were BOTH the same defect: the
 //! stale-FK contact pose + §8a position-row drop was a self-consistent pair calibrated
 //! ONLY for nv = 1. The **fully-fresh formulation** — fresh-FK contact pose + fresh
