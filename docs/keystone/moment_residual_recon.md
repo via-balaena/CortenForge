@@ -53,7 +53,27 @@ Step 0 itself is fully FRESH and consistent (build forwards `self.data`, so its 
 not at its source. It compounds multiplicatively → grows with n. The free-platen
 (force-only) path injects ZERO such error, so it is specific to the MOMENT.
 
-## 3. Refined mechanism hypothesis (to test, §4)
+## 3b. COM-frame-skew hypothesis — FALSIFIED (2026-06-15)
+
+Tested via a `fresh_com` toggle on both spike instruments: compute the moment about the
+FRESH COM `xipos(q_k)` (scratch forward) with fresh `jlin`, in BOTH the tape value and
+the oracle. Result: **no improvement** — total_rel 9.5e-4 (stale) → 1.07e-3 (fresh),
+per-step rel errors slightly UP across the board. So the moment's COM reference point
+(stale vs fresh) is NOT the residual source. (Consistent with COM also being the eval
+point an earlier round found load-bearing-when-left-alone.)
+
+Remaining facts after this round: the residual is moment-specific, per-step, compounding,
+and the per-step error pattern has a sharp ~7× drop between step 4 (3.9e-4) and step 5
+(5.5e-5) and machine-exactness by step 8 — suggesting the error is injected at specific
+steps (candidate: active-set transition / re-engagement events), not uniformly.
+
+**Next decisive test (§4.1):** replace the analytic wrench-node Jacobian with a per-step
+FINITE DIFFERENCE of the real wrench readout `w(x*, h, s)` in the tape. If the residual
+VANISHES, the analytic `ContactWrenchTrajVjp` has a (sub-1e-5-gate) error in its moment
+rows that compounds; if it PERSISTS, the wrench node is fine and the error is in the
+soft-state propagation / carry interaction with the moment.
+
+## 3. (superseded) Refined mechanism hypothesis
 
 The leading candidate is a **one-step COM-reference frame skew specific to the moment**:
 
