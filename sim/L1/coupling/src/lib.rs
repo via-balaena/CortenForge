@@ -2249,11 +2249,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// (nv > 2) work via the same FD `J_state` carry (FD-carry precision) but are not
     /// explicitly gated; the analytic CHAIN carry (the Jacobian Hessian + `∂M⁻¹/∂q`) for
     /// machine-exactness at nv > 1 is the documented follow-on (`multilink_recon.md`).
-    /// **Joint damping** is supported: the Euler `eulerdamp` carry factor is
-    /// `Δt·(M + Δt·D)⁻¹·Jᵀ` ([`rigid_xfrc_column`], `D = implicit_damping`), and the
-    /// analytic single-hinge `J_state` uses the same `M_impl` (the unloaded `A` already
-    /// carries the damping velocity-coupling) — FD-gated under damping for the hinge and
-    /// 2-link chain. Out of scope: stiffness-implicit / non-Euler integrators
+    /// **Joint damping** is supported: the Euler `eulerdamp` wrench→velocity factor `G_vel`
+    /// is `Δt·(M + Δt·D)⁻¹·Jᵀ` ([`rigid_xfrc_column`], `D = implicit_damping`). The damped
+    /// `J_state` comes from the FD `loaded_state_jacobian` (which differentiates the real
+    /// eulerdamp step → damping-correct); the analytic single-hinge `J_state` DECLINES
+    /// under damping (its unloaded `A` has a subtle eulerdamp mismatch), so the damped
+    /// hinge and 2-link chain both run at FD-carry precision. FD-gated under damping. Out
+    /// of scope: stiffness-implicit / non-Euler integrators
     /// (`ImplicitSpringDamper`'s `M + Δt·D + Δt²·K`, RK4); the coupling's own free-platen
     /// `rigid_damping` knob (asserted 0 here — distinct from model joint damping);
     /// state-dependent actuator forces (the follow-on toward the powered exo); and a flat
