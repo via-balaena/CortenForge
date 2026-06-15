@@ -58,7 +58,9 @@
 //! - **CCD** — penalty has no time-of-impact concept; `ccd_toi`
 //!   returns [`f64::INFINITY`]. Phase H IPC delivers proper CCD.
 
-use super::{ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout};
+use super::{
+    ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout, RigidTwist,
+};
 use crate::{
     Vec3,
     mesh::{Mesh, VertexId},
@@ -837,7 +839,7 @@ impl ContactModel for PenaltyRigidContact {
         &self,
         pair: &ContactPair,
         positions: &[Vec3],
-        dir: Vec3,
+        twist: RigidTwist,
     ) -> ContactGradient {
         let &ContactPair::Vertex {
             vertex_id,
@@ -848,18 +850,22 @@ impl ContactModel for PenaltyRigidContact {
         let d = prim.eval(p);
         self.pair_contribution(d)
             .map_or_else(ContactGradient::default, |c| {
-                // Residual contact term is `+(dE/dsd)·n̂` (the +f_int
-                // scatter in `assemble_global_int_force`). Translating the
-                // primitive by `δ·dir` shifts the field, `sd(p;δ) =
-                // sd₀(p − δ·dir)` ⇒ `∂sd/∂δ = −∇sd·dir = −n̂·dir`. With a
-                // constant normal (plane: `∂n̂/∂δ = 0`), the per-vertex
-                // residual derivative is `d²E/dsd² · (∂sd/∂δ) · n̂`. `n̂` is
-                // the same normal `gradient` uses (`averaged_normal`, which
-                // equals `prim.grad` for the default `normal_avg_k == 1` /
-                // the plane scope this is validated on).
+                // Residual contact term is `+(dE/dsd)·n̂` (the +f_int scatter
+                // in `assemble_global_int_force`). Under an infinitesimal rigid
+                // motion (spatial twist `(ω, v)`) of the primitive the normal
+                // rotates `δn̂ = ω×n̂` and `sd = p·n̂ − offset` changes by
+                // `∂sd/∂s = p·δn̂ − δoffset`, `δoffset = v·n̂`. So
+                //   `∂(g_v)/∂s = d²E/dsd²·(∂sd/∂s)·n̂ + (dE/dsd)·δn̂`.
+                // The second (direction) term is the rotating-normal
+                // contribution; for a pure translation (`ω = 0`) `δn̂ = 0` and
+                // this reduces exactly to `d²E/dsd²·(−n̂·dir)·n̂`. `n̂` is the
+                // same normal `gradient` uses (`averaged_normal`, equal to
+                // `prim.grad` for the default `normal_avg_k == 1` / the plane
+                // scope the rotation term is validated on).
                 let n = self.averaged_normal(prim.as_ref(), p);
-                let dsd_ddelta = -n.dot(&dir);
-                let contribution = c.d2_energy_d_sd2 * dsd_ddelta * n;
+                let dn = twist.angular.cross(&n);
+                let dsd = p.coords.dot(&dn) - twist.linear.dot(&n);
+                let contribution = c.d2_energy_d_sd2 * dsd * n + c.d_energy_d_sd * dn;
                 ContactGradient {
                     contributions: vec![(vertex_id, contribution)],
                 }

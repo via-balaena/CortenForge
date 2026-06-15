@@ -41,7 +41,9 @@
 //! barrier finite and strongly repulsive so the line search rejects penetrating
 //! trials (a poor-man's filtering until CCD lands). A converged solve stays `d > 0`.
 
-use super::{ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout};
+use super::{
+    ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout, RigidTwist,
+};
 use crate::{
     Vec3,
     mesh::{Mesh, VertexId},
@@ -234,7 +236,7 @@ impl ContactModel for IpcRigidContact {
         &self,
         pair: &ContactPair,
         positions: &[Vec3],
-        dir: Vec3,
+        twist: RigidTwist,
     ) -> ContactGradient {
         let &ContactPair::Vertex {
             vertex_id,
@@ -244,13 +246,20 @@ impl ContactModel for IpcRigidContact {
         let prim = &self.primitives[primitive_id as usize];
         let sd = prim.eval(p);
         self.barrier(sd).map_or_else(ContactGradient::default, |c| {
-            // Translating the primitive by δ·dir: sd(p;δ) = sd₀(p − δ·dir) ⇒
-            // ∂sd/∂δ = −n̂·dir. Constant normal (plane: ∂n̂/∂δ = 0) ⇒ the per-vertex
-            // residual derivative is d²E/dsd² · (∂sd/∂δ) · n̂ = κ·b'' · (−n̂·dir) · n̂.
+            // Under an infinitesimal rigid motion (spatial twist `(ω, v)`) of the
+            // primitive the normal rotates `δn̂ = ω×n̂` and `sd = p·n̂ − offset`
+            // changes by `∂sd/∂s = p·δn̂ − v·n̂`, so the per-vertex residual
+            // derivative is `d²E/dsd²·(∂sd/∂s)·n̂ + (dE/dsd)·δn̂` (`d²E/dsd² = κ·b''`).
+            // The direction term vanishes for a pure translation (`ω = 0`),
+            // recovering `κ·b''·(−n̂·dir)·n̂` exactly.
             let n = prim.grad(p);
-            let dsd_ddelta = -n.dot(&dir);
+            let dn = twist.angular.cross(&n);
+            let dsd = p.coords.dot(&dn) - twist.linear.dot(&n);
             ContactGradient {
-                contributions: vec![(vertex_id, c.d2_energy_d_sd2 * dsd_ddelta * n)],
+                contributions: vec![(
+                    vertex_id,
+                    c.d2_energy_d_sd2 * dsd * n + c.d_energy_d_sd * dn,
+                )],
             }
         })
     }

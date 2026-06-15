@@ -44,7 +44,7 @@ use sim_ml_chassis::{Tensor, Var};
 use super::lm::{LmConfig, LmState};
 use super::{CpuTape, NewtonStep, Solver, SolverFailure};
 use crate::Vec3;
-use crate::contact::{ActivePairsFor, ContactModel};
+use crate::contact::{ActivePairsFor, ContactModel, RigidTwist};
 use crate::differentiable::newton_vjp::{
     MaterialStepVjp, NewtonStepVjp, StateStepVjp, TrajectoryStepVjp,
 };
@@ -1986,19 +1986,21 @@ where
             .collect()
     }
 
-    /// Forward sensitivity `∂x*/∂δ` of the converged step's soft
-    /// equilibrium to a unit *rigid translation* of the contact
-    /// primitive(s) along the world direction `dir`, holding
+    /// Forward sensitivity `∂x*/∂s` of the converged step's soft
+    /// equilibrium to an infinitesimal *rigid motion* of the contact
+    /// primitive(s) — the spatial [`RigidTwist`] `(ω, v)` — holding
     /// `(x_prev, v_prev, θ, dt)` fixed — the keystone S3 implicit factor
     /// (the soft re-equilibration the explicit coupled-step Jacobian was
-    /// missing).
+    /// missing). A pure translation along `dir` is
+    /// [`RigidTwist::translation(dir)`](RigidTwist::translation); a
+    /// rotating contact normal (`ω ≠ 0`) is the rotating-normal leaf.
     ///
     /// At the converged step `r(x*; pose) = 0` the implicit function
-    /// theorem gives `∂x*/∂δ = −A⁻¹·(∂r/∂δ)` with `A = ∂r/∂x|_{x*}` — the
+    /// theorem gives `∂x*/∂s = −A⁻¹·(∂r/∂s)` with `A = ∂r/∂x|_{x*}` — the
     /// SAME tangent the forward Newton step converged with (re-factored at
     /// `x_final` via `factor_at_position`, the factor [`NewtonStepVjp`] also
     /// reuses for the load adjoint `∂x*/∂θ`). The plane pose enters the
-    /// residual only through the contact term, so `(∂r/∂δ)` is gathered
+    /// residual only through the contact term, so `(∂r/∂s)` is gathered
     /// from the active set via
     /// [`ContactModel::pose_residual_derivative`]; the free-DOF system is
     /// solved with the factored tangent and scattered back to a full-DOF
@@ -2013,8 +2015,10 @@ where
     /// zeros.
     ///
     /// Scope: contact-engaged, stable-active-set regime (the penalty
-    /// active-set boundary is non-smooth — IPC the deferred cure) and
-    /// constant-normal (plane) primitives (`∂n̂/∂δ = 0`); see
+    /// active-set boundary is non-smooth — IPC the deferred cure); the
+    /// normal-rotation term is exact for plane primitives (`δn̂ = ω×n̂`),
+    /// curved-primitive normal curvature deferred. See
+    /// `docs/keystone/rotating_normal_recon.md` and
     /// `docs/keystone/s3_soft_pose_sensitivity_recon.md`. FD-validated
     /// against a re-solve in `tests/soft_pose_sensitivity.rs`.
     ///
@@ -2022,10 +2026,15 @@ where
     /// [`ContactModel::pose_residual_derivative`]: crate::contact::ContactModel::pose_residual_derivative
     /// [`NullContact`]: crate::contact::NullContact
     #[must_use]
-    pub fn equilibrium_pose_sensitivity(&self, x_final: &[f64], dt: f64, dir: Vec3) -> Vec<f64> {
+    pub fn equilibrium_pose_sensitivity(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        twist: RigidTwist,
+    ) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
-        let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
-        // A·w_free = −(∂r/∂δ)_free reusing the tangent at x_final.
+        let dr_dpose = self.assemble_pose_residual_grad(x_final, twist);
+        // A·w_free = −(∂r/∂s)_free reusing the tangent at x_final.
         let rhs: Vec<f64> = self
             .free_dof_indices
             .iter()
@@ -2099,18 +2108,20 @@ where
         self.solve_free_and_scatter(x_final, dt, rhs)
     }
 
-    /// `(∂r/∂δ)_full` — the contact-plane pose enters the residual only through
+    /// `(∂r/∂s)_full` — the contact-plane pose enters the residual only through
     /// the contact term, so this is the active-pair sum of
     /// [`ContactModel::pose_residual_derivative`](crate::contact::ContactModel::pose_residual_derivative)
-    /// for a unit rigid translation along `dir`. Shared (kept in lockstep) by
-    /// [`Self::equilibrium_pose_sensitivity`] (forward; negates + solves) and
-    /// [`Self::trajectory_step_vjp`] (reverse; gathers the free DOFs).
-    fn assemble_pose_residual_grad(&self, x_final: &[f64], dir: Vec3) -> Vec<f64> {
+    /// for the primitive's rigid-motion [`RigidTwist`] `(ω, v)`. Shared (kept in
+    /// lockstep) by [`Self::equilibrium_pose_sensitivity`] (forward; negates +
+    /// solves) and [`Self::trajectory_step_vjp`] (reverse; gathers the free DOFs).
+    fn assemble_pose_residual_grad(&self, x_final: &[f64], twist: RigidTwist) -> Vec<f64> {
         let positions = slice_to_vec3s(x_final);
         let pairs = self.contact.active_pairs(&self.mesh, &positions);
         let mut dr_dpose = vec![0.0_f64; self.n_dof];
         for pair in &pairs {
-            let g = self.contact.pose_residual_derivative(pair, &positions, dir);
+            let g = self
+                .contact
+                .pose_residual_derivative(pair, &positions, twist);
             for &(vid, d) in &g.contributions {
                 let v = vid as usize;
                 dr_dpose[3 * v] += d.x;
@@ -2318,8 +2329,10 @@ where
         let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
         let dr_dparam_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
         // Contact-pose RHS (∂r/∂pose)_free (S3) — shared with the forward
-        // `equilibrium_pose_sensitivity` (kept in lockstep).
-        let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
+        // `equilibrium_pose_sensitivity` (kept in lockstep). The reverse pose
+        // parent is a scalar translation along `dir`; the rotating-normal pose
+        // (`ω ≠ 0`) is wired through the reverse path in the coupling leaf (PR2).
+        let dr_dpose = self.assemble_pose_residual_grad(x_final, RigidTwist::translation(dir));
         let dr_dpose_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect();
         // State scales (PR1) + the shared factor at x_final.
         let dt2 = dt * dt;
@@ -2361,8 +2374,9 @@ where
         // Material RHS for the tied design variable: Σ_k weights[k]·(∂r/∂p_k)_free.
         let dr_dp = self.assemble_material_residual_grad_combined(x_final, param_weights);
         let dr_dparam_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
-        // Contact-pose RHS (∂r/∂pose)_free (S3) — identical to the single-param path.
-        let dr_dpose = self.assemble_pose_residual_grad(x_final, dir);
+        // Contact-pose RHS (∂r/∂pose)_free (S3) — identical to the single-param
+        // path (scalar translation along `dir`; rotating normal is PR2).
+        let dr_dpose = self.assemble_pose_residual_grad(x_final, RigidTwist::translation(dir));
         let dr_dpose_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect();
         let dt2 = dt * dt;
         let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();

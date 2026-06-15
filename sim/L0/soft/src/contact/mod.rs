@@ -120,6 +120,62 @@ pub struct ContactPairReadout {
     pub force_on_soft: Vec3,
 }
 
+/// Infinitesimal rigid motion (spatial twist) of a contact primitive —
+/// the general pose-rate that [`ContactModel::pose_residual_derivative`]
+/// differentiates the contact residual against.
+///
+/// A rigid primitive moving with angular velocity `angular` (ω) and
+/// linear velocity `linear` (v, the velocity of the primitive's material
+/// point instantaneously at the world origin) carries the material point
+/// at world location `p` with velocity `ξ(p) = v + ω × p`. For the plane
+/// primitive this rotates the outward unit normal by `δn̂ = ω × n̂` and
+/// shifts the offset by `δoffset = v · n̂` — the reference-point cross
+/// terms cancel (`(ω×x)·n̂ + x·(ω×n̂) = 0`), so the offset rate depends
+/// only on the linear part. See `docs/keystone/rotating_normal_recon.md`.
+///
+/// The keystone S3 soft-pose adjoint was scoped to a pure *translation*
+/// (`angular = 0`, constant normal `δn̂ = 0`); a rotating contact normal
+/// (`angular ≠ 0`) is the rotating-normal leaf. [`Self::translation`]
+/// reduces the pose-residual derivative to the original constant-normal
+/// form exactly (`δn̂ = 0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RigidTwist {
+    /// Angular velocity ω of the primitive (per unit pose parameter).
+    /// Rotates the primitive's normal: `δn̂ = ω × n̂`.
+    pub angular: Vec3,
+    /// Linear velocity v of the primitive's material point at the world
+    /// origin (per unit pose parameter). Shifts a plane's offset:
+    /// `δoffset = v · n̂`.
+    pub linear: Vec3,
+}
+
+impl RigidTwist {
+    /// A pure translation of the primitive along `dir` — `angular = 0`,
+    /// `linear = dir`. The keystone S3 translation-only pose; the soft
+    /// pose-residual derivative reduces to its original constant-normal
+    /// form (`∂n̂/∂δ = 0`).
+    #[must_use]
+    pub fn translation(dir: Vec3) -> Self {
+        Self {
+            angular: Vec3::zeros(),
+            linear: dir,
+        }
+    }
+
+    /// A unit-rate rotation of the primitive about the world `axis`
+    /// through the `pivot` point — `angular = axis`,
+    /// `linear = −axis × pivot` (so the material point at `pivot` is
+    /// instantaneously stationary). Tilts a plane's normal about a fixed
+    /// pivot on the plane.
+    #[must_use]
+    pub fn rotation_about(axis: Vec3, pivot: Vec3) -> Self {
+        Self {
+            angular: axis,
+            linear: -axis.cross(&pivot),
+        }
+    }
+}
+
 /// Contact-energy surface over candidate pairs. `dyn`-compatible at
 /// scene construction; monomorphized `C: ContactModel` on the hot path.
 ///
@@ -143,10 +199,10 @@ pub trait ContactModel: Send + Sync {
     /// `f64::INFINITY` means no contact within the step.
     fn ccd_toi(&self, pair: &ContactPair, x0: &[Vec3], x1: &[Vec3]) -> f64;
 
-    /// Sensitivity of this pair's contact-residual contribution to a
-    /// unit *rigid translation* of its primitive along the world
-    /// direction `dir` — `∂(∂E/∂x_pair)/∂δ`, the per-vertex 3-vector that
-    /// adds into the global residual derivative `∂r/∂δ`.
+    /// Sensitivity of this pair's contact-residual contribution to an
+    /// infinitesimal *rigid motion* of its primitive — the spatial
+    /// [`RigidTwist`] `(ω, v)` — `∂(∂E/∂x_pair)/∂s`, the per-vertex
+    /// 3-vector that adds into the global residual derivative `∂r/∂s`.
     ///
     /// This is the kinematic-pose analog of [`Self::gradient`]: where
     /// `gradient` differentiates the contact residual w.r.t. the soft
@@ -157,9 +213,13 @@ pub trait ContactModel: Send + Sync {
     ///
     /// Default: empty (a pose-independent / kinematic-free contact such
     /// as [`NullContact`] contributes nothing). [`PenaltyRigidContact`]
-    /// overrides it: for a translated rigid SDF `sd(p; δ) = sd₀(p − δ·dir)`
-    /// so `∂sd/∂δ = −∇sd·dir = −n̂·dir`, and (planes: `∂n̂/∂δ = 0`)
-    /// `∂r_v/∂δ = d²E/dsd² · (−n̂·dir) · n̂`.
+    /// overrides it. The contact residual is `g_v = (dE/dsd)·n̂` with
+    /// `sd = p·n̂ − offset`; under the twist the normal rotates
+    /// `δn̂ = ω×n̂` and `∂sd/∂s = p·δn̂ − v·n̂`, so
+    /// `∂g_v/∂s = d²E/dsd²·(∂sd/∂s)·n̂ + (dE/dsd)·δn̂`. The second
+    /// (direction) term is the rotating-normal contribution; it vanishes
+    /// for a pure translation ([`RigidTwist::translation`], `ω = 0`),
+    /// recovering the original constant-normal form `d²E/dsd²·(−n̂·dir)·n̂`.
     ///
     /// **Contract for new contact models**: any *pose-dependent* contact
     /// MUST override this — the default returns zero, so a forgotten
@@ -169,14 +229,16 @@ pub trait ContactModel: Send + Sync {
     ///
     /// **Scope** — engaged regime (the active set must be stable across
     /// the pose perturbation; the penalty active-set boundary is
-    /// non-smooth, IPC the deferred cure) and the constant-normal
-    /// (plane) case (`∂n̂/∂δ = 0`); curved-primitive normal curvature is
-    /// a documented deferral. See `docs/keystone/s3_soft_pose_sensitivity_recon.md`.
+    /// non-smooth, IPC the deferred cure). The normal-rotation term is
+    /// exact for a *plane* (`δn̂ = ω×n̂`, constant curvature); a curved
+    /// primitive's intrinsic normal curvature is a documented deferral.
+    /// See `docs/keystone/rotating_normal_recon.md` and
+    /// `docs/keystone/s3_soft_pose_sensitivity_recon.md`.
     fn pose_residual_derivative(
         &self,
         _pair: &ContactPair,
         _positions: &[Vec3],
-        _dir: Vec3,
+        _twist: RigidTwist,
     ) -> ContactGradient {
         ContactGradient::default()
     }
@@ -195,4 +257,37 @@ pub trait ActivePairsFor<M: crate::material::Material>: ContactModel {
     /// Active contact pairs for the given positions.
     fn active_pairs(&self, mesh: &dyn crate::mesh::Mesh<M>, positions: &[Vec3])
     -> Vec<ContactPair>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RigidTwist;
+    use crate::Vec3;
+
+    /// `translation` is a pure linear motion: zero angular part (constant
+    /// normal `δn̂ = ω×n̂ = 0`), linear part equal to the given direction.
+    #[test]
+    fn translation_is_pure_linear() {
+        let dir = Vec3::new(0.3, -0.7, 1.1);
+        let t = RigidTwist::translation(dir);
+        assert_eq!(t.angular, Vec3::zeros());
+        assert_eq!(t.linear, dir);
+    }
+
+    /// `rotation_about` leaves the pivot point instantaneously stationary
+    /// (`ξ(pivot) = v + ω×pivot = 0`) and rotates with unit angular rate
+    /// about the given axis — the contract the rotating-normal gate relies on.
+    #[test]
+    fn rotation_about_fixes_the_pivot() {
+        let axis = Vec3::new(0.0, 1.0, 0.0);
+        let pivot = Vec3::new(0.05, 0.05, 0.099);
+        let t = RigidTwist::rotation_about(axis, pivot);
+        assert_eq!(t.angular, axis);
+        // ξ(pivot) = linear + angular × pivot must vanish.
+        let xi_pivot = t.linear + t.angular.cross(&pivot);
+        assert!(
+            xi_pivot.norm() < 1e-15,
+            "pivot not stationary: {xi_pivot:?}"
+        );
+    }
 }

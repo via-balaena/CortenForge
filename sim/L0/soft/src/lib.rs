@@ -55,7 +55,7 @@ pub mod viz;
 pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{
     ActivePairsFor, ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout,
-    IpcRigidContact, NullContact, PenaltyRigidContact, RigidPlane,
+    IpcRigidContact, NullContact, PenaltyRigidContact, RigidPlane, RigidTwist,
     filter_pair_readouts_to_referenced,
 };
 pub use differentiable::{
