@@ -129,6 +129,46 @@ subtlety that only the moment exercises.
    treatment distinct from the force columns. Test: zero force-col position-rows (as now)
    but restore torque-col position-rows.
 
+## 3e. Both remaining suspects resolved (2026-06-15) — CONCLUSION
+
+- **Suspect #1 (§8a torque-column position-row): FALSIFIED.** Restoring `∂qpos'/∂w` for
+  the torque columns (force columns kept zeroed) is catastrophic: total_rel 9.5e-4 →
+  **0.33**, step0_rel 1.1e-3 → 0.17. The §8a zeroing is correct for the TORQUE columns
+  too (as it is for the force columns).
+- **Suspect #2 (`∂w/∂s`, the moment's `c(q)` feedback): IS the eval-skew.** In the forward
+  both the plane height `h_k` and the moment COM `c_k` are read from the STALE,
+  one-step-lagged FK (`xipos(q_{k-1})`), but the tape attributes them to `s_k` (the
+  current state). This is a deliberate, self-consistent forward-model choice (the oracle
+  reads the identical stale config, so forward VALUES match to 1e-12). The FORCE is
+  insensitive to it (no moment arm — why the free platen is exact); the MOMENT is not.
+
+**CONCLUSION — the residual is the staggered-coupling eval-skew × the off-COM moment, and
+it is NOT a leaf-sized fix.** Summary of the full elimination (every leaf-sized lever
+measured):
+
+| candidate | result |
+|---|---|
+| analytic geometric stiffness `∂(Jᵀw)/∂q` (#315) | machine-exact, n≥10 unchanged |
+| contact model (penalty vs IPC) | same order — not an active-set kink |
+| carry / soft adjoint | free-platen path exact at all n |
+| COM reference frame (fresh `c`+`jlin`) | no gain (slightly worse) |
+| wrench node `∂w/∂x*`, `∂w/∂h` (true rel err, deep-penetration config) | machine-exact |
+| §8a torque-column position-row restore | **0.33** (catastrophic) |
+| fresh-FK re-forward (tape+oracle) | 15–29% (breaks §8a calibration) |
+| lag-attribution (full / wrench-only) | 15–33% / no help (skew is load-bearing) |
+| true position-row term `Δt·G_vel` (all cols) | 17–51% |
+
+Every local factor is machine-exact at the actual rollout config, and the no-moment
+composition is exact at all n; the moment composition drifts ~1e-3 because the forward
+poses the contact plane/COM from the one-step-stale FK, and the tape cannot linearize
+that skew exactly without changing the (self-consistent) forward model — and every such
+change is worse. **Removing it is an ARCHITECTURAL change** (a non-lagged / monolithic or
+implicit coupling formulation with a re-derived carry), not a leaf. The current gradient
+is co-design-adequate (DIRECTION + ~99.9% magnitude). **Recommendation: bank this
+diagnosis; do not pursue further as a leaf. Revisit only if a future need (e.g. the exo)
+demands machine-exact long-rollout moment gradients — then as a coupling-formulation
+redesign.**
+
 ## 3. (superseded) Refined mechanism hypothesis
 
 The leading candidate is a **one-step COM-reference frame skew specific to the moment**:
