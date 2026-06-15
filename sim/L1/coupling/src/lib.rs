@@ -603,23 +603,29 @@ impl VjpOp for ContactWrenchTrajVjp {
 /// analytically for a single hinge, [`StaggeredCoupling::analytic_state_jacobian`],
 /// else by FD, [`StaggeredCoupling::loaded_state_jacobian`]), and `G = ∂(state')/∂w` is the
 /// 6-component wrench response. `G`'s VELOCITY rows are the full `nv × 6`
-/// [`rigid_xfrc_column`] (`Δt·M⁻¹·Jᵀ`); its POSITION rows are ZEROED — the §8a fix
-/// (the wrench reaches `qpos` only next step, through `qvel`, exactly as the scalar
-/// `ZCarryVjp`'s `∂z'/∂fz = 0`). NO sign flip — `w` is the reaction wrench directly
-/// (the negation lives in [`ContactWrenchTrajVjp`]).
+/// [`rigid_xfrc_column`] (`Δt·M⁻¹·Jᵀ`); its POSITION rows are `Δt·G_vel` — semi-implicit
+/// Euler integrates `qpos' = qpos + Δt·qvel'`, so this step's wrench reaches `qpos` this
+/// step through `Δt·qvel'` (the `g_pos_dt = Δt` term). NO sign flip — `w` is the reaction
+/// wrench directly (the negation lives in [`ContactWrenchTrajVjp`]).
+///
+/// (Historical: an earlier formulation read the contact pose from the one-step-stale FK
+/// and ZEROED these position rows — a self-consistent pair, but exact only for `nv = 1`.
+/// The fresh-FK formulation + this true `Δt·G_vel` term is machine-exact for single-hinge
+/// AND multi-link; see `docs/keystone/moment_residual_recon.md`.)
 ///
 /// Parents `[s, w]` (`[2·nv]`, `[6]`), output `s'` (`[2·nv]`);
-/// `∂L/∂s += J_stateᵀ·cot`, `∂L/∂w[k] += Σᵢ G_vel[(i,k)]·cot[nv+i]`. The
+/// `∂L/∂s += J_stateᵀ·cot`, `∂L/∂w[k] += Σᵢ G_vel[(i,k)]·(cot[nv+i] + Δt·cot[i])`. The
 /// matrix-valued successor to the scalar `VzCarryVjp` + `ZCarryVjp` the free-body
 /// platen uses; generalized from the f_z-only column to the full spatial wrench.
-/// Keystone contact-moment leaf.
 #[derive(Clone, Debug)]
 struct RigidStateCarryVjp {
     /// The loaded transition Jacobian `J_state` (`2·nv × 2·nv`), indexed logically `j_state[(row, col)]`.
     j_state: DMatrix<f64>,
-    /// The wrench response `G_vel = ∂(qvel')/∂w` (`nv × 6` = [`rigid_xfrc_column`];
-    /// the position rows of the full `G` are zero, §8a).
+    /// The wrench velocity response `G_vel = ∂(qvel')/∂w` (`nv × 6` = [`rigid_xfrc_column`]).
     g_vel: DMatrix<f64>,
+    /// Position-row coefficient `Δt`: the full `G`'s position rows are `Δt·G_vel`
+    /// (semi-implicit `qpos' = qpos + Δt·qvel'`).
+    g_pos_dt: f64,
 }
 
 impl VjpOp for RigidStateCarryVjp {
@@ -656,7 +662,8 @@ impl VjpOp for RigidStateCarryVjp {
         for k in 0..6 {
             let mut acc = 0.0;
             for i in 0..nv {
-                acc += self.g_vel[(i, k)] * cot[nv + i];
+                acc += self.g_vel[(i, k)] * cot[nv + i]; // velocity rows: G_vel
+                acc += self.g_pos_dt * self.g_vel[(i, k)] * cot[i]; // position rows: Δt·G_vel
             }
             w_slot[k] += acc;
         }
@@ -1705,12 +1712,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// drops — a real effect for an articulated body (zero for the free-body platen,
     /// where `J = I`).
     ///
-    /// This is the **fallback** path: the single-hinge scope uses the machine-exact
-    /// [`Self::analytic_state_jacobian`] instead (it replaces this routine's FD noise,
-    /// which over a multi-step carry is what caps the articulated gradient's
-    /// precision). This FD form still serves the free-joint platen smoke and is the
-    /// reference the analytic form is validated against; see
-    /// `docs/keystone/geometric_stiffness_recon.md`.
+    /// This is the **general fallback** path (any `nv`): the single-hinge scope uses the
+    /// machine-exact analytic [`Self::analytic_state_jacobian`] instead, but a free joint
+    /// or a multi-link chain uses this FD form (FD-carry precision ~1e-6; the analytic
+    /// chain carry is the documented follow-on). It is also the reference the analytic
+    /// form is FD-validated against; see `docs/keystone/geometric_stiffness_recon.md` and
+    /// `docs/keystone/multilink_recon.md`.
     fn loaded_state_jacobian(&self, wrench: &SpatialVector) -> DMatrix<f64> {
         let nv = self.model.nv;
         let eps = 1e-6;
@@ -1761,12 +1768,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// semi-implicit integrator, scaled by `Δt`), where `A` is the **unloaded**
     /// transition ([`Data::transition_derivatives`]) and the second term is the
     /// applied wrench's geometric/load stiffness that `A` drops. This replaces the FD
-    /// loaded Jacobian's noise with the exact term (deterministic, no eps). It tightens
-    /// the short-rollout articulated gradient (n≈6) and is the clean base for the
-    /// multi-link generalization; it does NOT, however, remove the long-rollout
-    /// residual — that is the off-COM moment's gradient, a separate open problem (see
-    /// the note on `coupled_trajectory_material_gradient_articulated` and
-    /// `docs/keystone/geometric_stiffness_recon.md`).
+    /// loaded Jacobian's noise with the exact term (deterministic, no eps) — making the
+    /// single-hinge articulated gradient machine-exact at every horizon (paired with the
+    /// fully-fresh formulation; see `coupled_trajectory_material_gradient_articulated`
+    /// and `docs/keystone/moment_residual_recon.md`). It is also the clean base for the
+    /// analytic multi-link CHAIN carry (the documented follow-on).
     ///
     /// For a single hinge the geometric stiffness is the closed form
     /// `∂(Jᵀw)/∂θ = (â×(â×r))·f`: with world axis `â`, moment arm `r = xipos − anchor`,
@@ -1826,6 +1832,15 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     #[allow(clippy::expect_used)]
     pub fn coupled_trajectory_articulated_z(&mut self, n_steps: usize) -> f64 {
         for _ in 0..n_steps {
+            // FRESH FK: pose the contact plane / COM from the CURRENT config (q_k).
+            // sim-core's `step` is forward-then-integrate with no trailing FK, so
+            // `self.data`'s `xipos`/`qM` lag `qpos` one step; re-forward so the contact
+            // is posed at the actual current tip (no one-step lag). This fresh
+            // formulation (paired with the gradient method's fresh output + true
+            // position-row carry) is machine-exact for single-hinge AND multi-link; the
+            // earlier stale-FK convention was a single-hinge-only calibration. See
+            // `docs/keystone/moment_residual_recon.md`.
+            self.data.forward(&self.model).expect("fresh FK");
             let height = self.tip_plane_height();
             let (_solver, x_next) = self.soft_resolve(height);
             for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
@@ -1833,16 +1848,15 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             }
             self.x = x_next;
             // Route the full contact wrench [τ; f] at the COM (the off-COM moment
-            // τ = Σ rᵢ × fᵢ, NOT a pure force at the COM). `contact_wrench` reads
-            // `xipos` at the current pre-step (stale) FK config — the same config
-            // the gradient method's `ContactWrenchTrajVjp` linearizes about.
+            // τ = Σ rᵢ × fᵢ, NOT a pure force at the COM), about the fresh-FK COM.
             self.data.xfrc_applied[self.body] = self.contact_wrench(height);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in articulated rollout");
         }
-        // Return the post-step tip height (the stale-but-consistent FK config the
-        // gradient method's objective also reads — do not re-forward).
+        // Return the FRESH post-rollout tip height (forward at q_N — the same fresh
+        // convention the gradient method's objective reads).
+        self.data.forward(&self.model).expect("fresh FK (output)");
         self.data.xipos[self.body].z
     }
 
@@ -1870,37 +1884,29 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `s' = J_state·s + G·w` (`RigidStateCarryVjp`) where `J_state` is the LOADED
     /// single-step Jacobian — for a single hinge the **analytic** geometric stiffness
     /// `A + Δt·M⁻¹·∂(Jᵀw)/∂q` (`analytic_state_jacobian`), else the FD
-    /// `loaded_state_jacobian` fallback — and `G`'s VELOCITY rows are the full
-    /// `nv×6` `rigid_xfrc_column` while its POSITION rows are ZEROED — the §8a fix
-    /// (`∂qpos'/∂w = 0`, mirroring the scalar `ZCarryVjp`; the "true post" position
-    /// term injects a spurious first-step gradient).
+    /// `loaded_state_jacobian` fallback — and `G`'s VELOCITY rows are the full `nv×6`
+    /// `rigid_xfrc_column` while its POSITION rows are `Δt·G_vel` (the true semi-implicit
+    /// term `∂qpos'/∂w = Δt·G_vel`, since `qpos' = qpos + Δt·qvel'`).
     ///
-    /// **Accuracy / scope.** The wrench node and pose seam are analytic (FD-validated
-    /// machine-exact vs the real contact readout, `tests/`); the wrench **response**
-    /// `G` is read at the config the real `step` maps through (a fresh scratch forward,
-    /// `fresh_xfrc_column`); and for the single hinge the state carry `J_state` is the
-    /// analytic geometric stiffness (machine-exact vs the FD loaded Jacobian, removing
-    /// the applied-wrench term `∂(Jᵀw)/∂q` that `transition_derivatives` omits — see
-    /// `analytic_state_jacobian_matches_fd_loaded`). Under PENALTY contact the composed
-    /// gradient is **machine-exact through contact make/break** (≤~1e-6 rel through
-    /// `n ≈ 6`, including the soft node's `n = 1` rest-state zero and `n = 2`
-    /// exactness).
+    /// **The fully-fresh formulation (machine-exact at every n, single-hinge through
+    /// multi-link).** The contact plane / COM are posed from a FRESH forward at the
+    /// current `qpos` each step (no one-step FK lag — also more physically faithful), the
+    /// output is read fresh (forward at `q_N`), and the carry uses the true position-row
+    /// term above. This triple is the correct differentiable formulation; the composed
+    /// gradient matches the full-coupled FD to ~1e-9 at n = 1…15 for the single hinge, a
+    /// free-joint platen (nv = 6), AND a 2-link chain (nv = 2, at FD-carry precision
+    /// ~1e-6 since a chain uses the FD `J_state`). The earlier long-rollout moment
+    /// residual (~1e-3 at n = 10) and the 74%-at-n=2 multi-link error were the SAME
+    /// defect: the stale-FK pose + §8a position-row drop was a self-consistent pair
+    /// calibrated ONLY for nv = 1 (`∂qpos'/∂qvel = Δt·I`, false for a chain). See
+    /// `docs/keystone/moment_residual_recon.md` §3f and `docs/keystone/multilink_recon.md`.
     ///
-    /// Over longer rollouts with sustained re-engagement the residual GROWS with `n`
-    /// (~1e-3 at `n = 10`, ~5e-3 at `n = 12`). **This is the off-COM MOMENT's gradient
-    /// over long rollouts** — re-diagnosed 2026-06-15, correcting two earlier drafts: it
-    /// is NOT the geometric stiffness (the analytic `J_state` is machine-exact yet n≥10
-    /// is unchanged — it only tightened n≈6) and NOT a penalty active-set kink (IPC
-    /// reaches the same order). It is moment-specific: the free-platen articulated path
-    /// (no moment, J = I) is machine-exact at every `n`
-    /// (`articulated_free_platen_exact_all_n`), and fresh-FK / lag-attribution / the
-    /// true position-row term were all measured WORSE (the stale-to-`s_k` calibration is
-    /// optimal). The precise source is a documented open problem (the next leaf); still
-    /// adequate for co-design gradient descent (DIRECTION + ~99.9% magnitude). Hinge
-    /// scope (no quaternion joints; raw `[qpos; qvel]` state), `rigid_damping = 0` (the
-    /// damping velocity-coupling is not in the loaded carry), and a flat constant-normal
-    /// plane (`τ_z = 0`; tangential/curved contact is the next arc). See
-    /// `docs/keystone/geometric_stiffness_recon.md` and
+    /// The wrench node and pose seam are analytic (FD-validated machine-exact vs the real
+    /// contact readout, `tests/`). Scope: hinge / chain (no quaternion joints; raw
+    /// `[qpos; qvel]` state — ball/free-joint quaternion is the follow-on),
+    /// `rigid_damping = 0` (the damping velocity-coupling is not in the loaded carry), and
+    /// a flat constant-normal plane (`τ_z = 0`; tangential/curved contact is the next
+    /// arc). See also `docs/keystone/geometric_stiffness_recon.md` and
     /// `docs/keystone/contact_moment_recon.md`.
     ///
     /// # Panics
@@ -1948,28 +1954,18 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
 
         for _ in 0..n_steps {
+            // FRESH FK (the matched fresh formulation): re-forward so `height`, `jz`,
+            // the moment COM `c`/`jlin`, the wrench response `G_vel`, and `J_state` all
+            // read the CURRENT config q_k (sim-core's `step` leaves `xipos`/`qM` lagging
+            // `qpos` one step). Paired with the fresh output read + the true position-row
+            // carry (`∂qpos'/∂w = Δt·G_vel`, below), this is machine-exact for single-hinge
+            // AND multi-link. (The earlier stale-FK + §8a-position-drop convention was a
+            // self-consistent pair that calibrated ONLY for nv=1 — Coriolis/`∂qacc/∂qvel`
+            // coupling at nv>1 broke it; see `docs/keystone/moment_residual_recon.md`.)
+            self.data.forward(&self.model).expect("fresh FK");
             let height = self.tip_plane_height();
-
             // Pose seam: h = (tip height) from the rigid state. Value is the real
             // plane height; ∂h/∂q = J_z (∂h/∂qvel = 0).
-            //
-            // EVALUATION POINT (load-bearing): `height`, `jz`, and the moment's COM
-            // `c`/`jlin` (the wrench VALUE + its `∂w/∂s` c-feedback, below) read
-            // `self.data` at the PRE-integrate FK config sim-core's `step` leaves behind
-            // (forward-then-integrate, no trailing FK; `xipos`/`qM` lag `qpos` one step).
-            // The wrench RESPONSE `G_vel` and the loaded `J_state`, by contrast, are at
-            // the post-integrate `qpos` — the config the real `step` maps the wrench
-            // through (both via a fresh scratch forward). This staggered timing is NOT a
-            // bug to "fix" by re-forwarding `self.data`: the §8a force-drop carry is
-            // calibrated to it (it mirrors the merged platen's stale `xpos` posing), and
-            // the oracle `coupled_trajectory_articulated_z` reads the identical stale
-            // config — so the forward values match and the independent FD gate validates
-            // the gradient against the self-consistent forward model. (Re-forwarding to
-            // align the factors changes the forward model AND breaks the §8a structure →
-            // ~10–30% error; verified (re-confirmed 2026-06-15). The long-rollout residual
-            // is the off-COM MOMENT's gradient (moment-specific; NOT the geometric
-            // stiffness — making `J_state` analytic left n≥10 unchanged) — a documented
-            // open problem; see geometric_stiffness_recon.md.)
             let jz = self.pose_seam_jz();
             let h_var = tape.push_custom(
                 &[s_var],
@@ -2043,22 +2039,21 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 }),
             );
 
-            // Multi-DOF carry at the CURRENT state, with the contact wrench held,
-            // BEFORE stepping.
+            // Multi-DOF carry at the CURRENT (fresh-FK) state, with the contact wrench
+            // held, BEFORE stepping.
             //   J_state = the FULL loaded single-step transition Jacobian
             //     ∂[qpos';qvel']/∂[qpos;qvel] (both blocks — incl the position-state
             //     coupling Δt·∂qvel'/∂qpos and the applied-force geometric stiffness
             //     ∂(Jᵀw)/∂q that the unloaded `transition_derivatives` drops; zero for
             //     the free body, real for the hinge). Single hinge ⇒ the machine-exact
             //     ANALYTIC `A + Δt·M⁻¹·∂(Jᵀw)/∂q` (`analytic_state_jacobian`); otherwise
-            //     (free-joint smoke, multi-link follow-on) the FD `loaded_state_jacobian`.
-            //   G_vel = ∂(qvel')/∂w = rigid_xfrc_column (nv×6, the full wrench column);
-            //     the POSITION rows of the full G are ZEROED — the §8a fix. sim-core
-            //     integrates qpos with the pre-update velocity, so this step's wrench
-            //     reaches qpos only NEXT step (through qvel), exactly as the scalar
-            //     `ZCarryVjp`'s ∂z'/∂fz = 0; wiring ∂qpos'/∂w here injects a spurious
-            //     first-step gradient (the soft solve from rest barely depends on μ, so
-            //     d(tip_z_1)/dμ = 0) — see docs/keystone/multidof_rigid_recon.md §8c.
+            //     (free joint, multi-link chain) the FD `loaded_state_jacobian`.
+            //   G_vel = ∂(qvel')/∂w = rigid_xfrc_column (nv×6, the full wrench column).
+            //     The full G's POSITION rows are Δt·G_vel (the carry below, `g_pos_dt =
+            //     Δt`): semi-implicit Euler integrates qpos with the UPDATED velocity
+            //     (`qpos' = qpos + Δt·qvel'`), so this step's wrench reaches qpos this
+            //     step through `Δt·qvel'`. (This is the true term; the earlier §8a ZERO
+            //     was the stale-FK pair's calibration, correct only for nv=1.)
             let j_state = self
                 .analytic_state_jacobian(&wrench)
                 .unwrap_or_else(|| self.loaded_state_jacobian(&wrench));
@@ -2078,7 +2073,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let s_next_var = tape.push_custom(
                 &[s_var, w_var],
                 Tensor::from_slice(&s_next, &[2 * nv]),
-                Box::new(RigidStateCarryVjp { j_state, g_vel }),
+                Box::new(RigidStateCarryVjp {
+                    j_state,
+                    g_vel,
+                    g_pos_dt: dt,
+                }),
             );
 
             // Advance the soft state and the tape handles.
@@ -2089,9 +2088,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             s_var = s_next_var;
         }
 
-        // Objective: the tip world height after the rollout = PoseSeam(s_N). Read the
-        // post-step `xipos` (the pre-integrate FK config, the same stale-but-consistent
-        // convention the loop + the oracle use — do NOT re-forward, see the loop note).
+        // Objective: the tip world height after the rollout = PoseSeam(s_N). Read it
+        // FRESH (forward at q_N) — the matched fresh convention the oracle also uses;
+        // the stale read's `s_N` attribution relied on ∂qpos'/∂qvel = Δt·I (true for
+        // nv=1, false for a chain). See `docs/keystone/moment_residual_recon.md`.
+        self.data.forward(&self.model).expect("fresh FK (output)");
         let tip_z = self.data.xipos[self.body].z;
         let jz_final = self.pose_seam_jz();
         let obj_var = tape.push_custom(

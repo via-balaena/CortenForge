@@ -129,7 +129,43 @@ subtlety that only the moment exercises.
    treatment distinct from the force columns. Test: zero force-col position-rows (as now)
    but restore torque-col position-rows.
 
-## 3e. Both remaining suspects resolved (2026-06-15) — CONCLUSION
+## 3f. ★★ RESOLVED (2026-06-15) — the residual was FIXABLE; §3e's "architectural" conclusion was WRONG
+
+The multi-link leaf's S0 spike (`multilink_recon.md`) found the SAME defect in a sharper
+form: a 2-link chain was **74% wrong at n = 2** — where the eval-skew is negligible and
+the single hinge is machine-exact. Localizing that (the output is read STALE,
+`tip_z_N = xipos(q_{N-1})`, attributed to `s_N`; the calibration relies on
+`∂qpos'/∂qvel = Δt·I`, true for a single hinge with no Coriolis, FALSE for a chain)
+revealed the fix — and it fixes the moment residual too.
+
+**The error in §3e:** I tested fresh-FK, lag-attribution, and the position-row term
+INDIVIDUALLY, each worse, and concluded "architectural." But `stale-FK + §8a-position-drop`
+and `fresh-FK + fresh-output + true-position-row` are each **self-consistent matched
+pairs**. The stale pair calibrates ONLY for nv = 1. The fully-fresh pair is the correct
+differentiable formulation — and is MACHINE-EXACT for single-hinge, free-joint, AND
+multi-link, at every n:
+
+```
+              baseline (stale pair)        fully-fresh pair
+HINGE n=10:   9.5e-4                        1.1e-9
+HINGE n=15:   3.8e-3                        2.1e-9
+2LINK n=2:    0.74                          9e-9
+2LINK n=10:   0.32                          4e-7
+```
+
+**The fix (shipped):** in `coupled_trajectory_articulated_z` (oracle) and
+`coupled_trajectory_material_gradient_articulated` (tape): (1) fresh FK at each step
+(`self.data.forward`) so the contact plane/COM are posed at the CURRENT config (no
+one-step lag — also more physically faithful); (2) fresh output (forward at q_N before
+the final read); (3) the true position-row carry `∂qpos'/∂w = Δt·G_vel`
+(`RigidStateCarryVjp.g_pos_dt = Δt`), replacing the §8a zero. The earlier "every fix is
+worse" results were all from breaking the matched pair (changing one of the three without
+the others). LESSON: when a calibration is a matched set, test the SET, not the parts.
+
+The rest of this file (§1–§3e) is the diagnosis that led here, preserved for the record;
+its "architectural / not-leaf-fixable" verdict is **superseded** by this section.
+
+## 3e. (SUPERSEDED — see §3f) Both remaining suspects resolved (2026-06-15) — CONCLUSION
 
 - **Suspect #1 (§8a torque-column position-row): FALSIFIED.** Restoring `∂qpos'/∂w` for
   the torque columns (force columns kept zeroed) is catastrophic: total_rel 9.5e-4 →

@@ -177,6 +177,13 @@ and thread `∂w/∂x*` (+ maybe `∂w/∂s`).
   > machine-exact at every n), smooth, and resistant to fresh-FK / lag-attribution / the
   > true position-row term (all WORSE). See `geometric_stiffness_recon.md` §3–4. Still
   > adequate for co-design (direction + ~99.9% magnitude).
+  >
+  > **★ ERRATA-2 (2026-06-15, supersedes the above): the residual was FIXED.** The
+  > "resistant to fresh-FK / lag-attribution / position-row (all WORSE)" finding was from
+  > testing those corrections INDIVIDUALLY — they are a matched set. The fully-fresh
+  > formulation (fresh-FK pose + fresh output + true position-row carry TOGETHER) is
+  > machine-exact for single-hinge AND multi-link at every n. See
+  > `moment_residual_recon.md` §3f.
 - **Do NOT re-attribute the stale seam to the previous state var.** A "lagged
   attribution" (wiring the stale pose-seam / `c`-feedback to `s_{k-1}`) was tried and
   is WORSE (14%, breaks n=2): the merged path's attribution of the stale seam to the

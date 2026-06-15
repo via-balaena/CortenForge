@@ -32,7 +32,24 @@ violent multi-link step the FD carry may itself be a precision liability, so the
 carry may be load-bearing for correctness here, not just a short-rollout tightening),
 THEN ball/free joints (quaternion, `nq ≠ nv`).
 
-## Suspects for the n=2 nv=2 bug (NEXT)
+## ★★ RESOLVED (2026-06-15) — the fully-fresh formulation fixes nv=2
+
+Localized: the 2-link forward MATCHES the oracle exactly (forward replay is fine); the
+bug is purely in the gradient, in step 0's contribution. Root cause: the output is read
+STALE (`tip_z_N = xipos(q_{N-1})`, attributed to `s_N`), and the stale-FK + §8a-drop
+calibration relies on `∂qpos'/∂qvel = Δt·I` — true for a single hinge (no Coriolis),
+FALSE for a chain (velocity coupling). The fix is the **fully-fresh matched formulation**
+(fresh-FK contact pose + fresh output + true position-row carry `∂qpos'/∂w = Δt·G_vel`),
+which is the correct differentiable formulation for ANY nv. Shipped; the 2-link gradient
+now matches the full-coupled FD at n = 2/6/10 (`twolink_chain_gradient_matches_fd`). Full
+write-up: `moment_residual_recon.md` §3f.
+
+Accuracy note: the chain uses the FD `loaded_state_jacobian` carry (single-hinge has no
+analytic `J_state`), so it is FD-CARRY precision (~1e-6), not the hinge's ~1e-9. The
+analytic CHAIN carry (the Jacobian Hessian + `∂M⁻¹/∂q`) is the remaining follow-on for
+machine-exactness at nv > 1; ball/free joints (quaternion, `nq ≠ nv`) are the leaf after.
+
+## (historical) Suspects for the n=2 nv=2 bug
 
 Localize with the per-step-μ-leaf tape vs per-step-truncated FD instrument (as in
 `moment_residual_recon.md` §1). At n=2 the single hinge is exact via: step 0 from rest

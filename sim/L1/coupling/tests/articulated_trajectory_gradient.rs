@@ -25,24 +25,16 @@
 //! `J_state` is the analytic single-hinge geometric stiffness, FD-validated in
 //! `analytic_state_jacobian_matches_fd_loaded`.
 //!
-//! **Accuracy + the long-rollout residual (re-diagnosed 2026-06-15).** Under PENALTY
-//! contact the composed gradient is machine-exact through contact make/break (≤~1e-6
-//! to n≈6), but over longer rollouts with sustained re-engagement the residual GROWS
-//! with n (~1e-3 at n=10, ~5e-3 at n=12). This residual is the OFF-COM MOMENT's
-//! gradient over long rollouts — and is NOT what two earlier drafts claimed. It is:
-//!   * MOMENT-specific: the SAME articulated path on a free-joint platen (no moment,
-//!     J=I) is machine-exact at every n (`articulated_free_platen_exact_all_n`), so the
-//!     carry, the soft adjoint, and the §8a structure are all sound;
-//!   * NOT the geometric stiffness: making `J_state` analytic (machine-exact vs the FD
-//!     loaded Jacobian) leaves n≥10 unchanged — it only tightened n≈6;
-//!   * NOT a penalty active-set kink: IPC reaches the same ~1e-3 order;
-//!   * resistant to fresh-FK re-forward, lag-attribution, and the true position-row
-//!     wrench term (all measured WORSE) — the stale-to-`s_k` calibration is optimal.
-//!
-//! The precise source is a documented open problem (the off-COM moment's long-rollout
-//! gradient); see docs/keystone/geometric_stiffness_recon.md. Still well within
-//! co-design tolerance (DIRECTION + ~99.9% magnitude). See also
-//! docs/keystone/contact_moment_recon.md §5a/§6.
+//! **Accuracy — MACHINE-EXACT at every horizon, single-hinge through multi-link.** The
+//! composed gradient matches the full-coupled FD to ~1e-9 at n = 1, 2, 6, 10, 15 — for
+//! the single hinge, a free-joint platen (nv = 6), AND a 2-link chain (nv = 2,
+//! `twolink_chain_gradient_machine_exact`). The earlier long-rollout moment residual
+//! (~1e-3 at n = 10) and the 74%-at-n=2 multi-link error were BOTH the same defect: the
+//! stale-FK contact pose + §8a position-row drop was a self-consistent pair calibrated
+//! ONLY for nv = 1. The **fully-fresh formulation** — fresh-FK contact pose + fresh
+//! output + the true position-row carry `∂qpos'/∂w = Δt·G_vel` — is the correct
+//! differentiable formulation (and the fresh pose is more physically faithful). See
+//! docs/keystone/moment_residual_recon.md and docs/keystone/multilink_recon.md.
 
 #![allow(clippy::expect_used)]
 
@@ -106,15 +98,14 @@ fn tape_and_fd(n: usize) -> (f64, f64, f64) {
 
 #[test]
 fn articulated_gradient_matches_full_coupled_fd_through_make_break() {
-    // n = 6 spans the initial violent make (25 active, f_z ~ 800 N), a genuine
-    // LIFTOFF (active set 25 → 0 → 0 → 0 for steps 1–3), and a re-touch (1 active at
-    // step 4) — measured active-set sequence 25,0,0,0,1,0. The moment-routing tape
-    // gradient is MACHINE-EXACT against the independent full-coupled FD oracle here
-    // (the FD oracle is converged to <1e-9 over 4 decades of ε; the wrench node is
-    // FD-exact vs the real readout in the `contact_wrench_node_matches_readout_fd`
-    // lib unit test). The analytic geometric-stiffness `J_state` (replacing the FD
-    // loaded Jacobian) tightens this from ~1.5e-6 to ~7e-7 — the gate is now 3e-6 (a
-    // float-noise margin over the measured value, the tightening the analytic enables).
+    // n = 6 spans the initial violent make (~25 active, f_z ~ 800 N), a liftoff, and a
+    // re-touch. The moment-routing tape gradient is MACHINE-EXACT against the
+    // independent full-coupled FD oracle (the wrench node is FD-exact vs the real
+    // readout in `contact_wrench_node_matches_readout_fd`; the analytic single-hinge
+    // `J_state` in `analytic_state_jacobian_matches_fd_loaded`). The fully-fresh
+    // formulation (fresh-FK contact pose + fresh output + true position-row carry
+    // `∂qpos'/∂w = Δt·G_vel`) removed the old long-rollout moment residual — see
+    // `docs/keystone/moment_residual_recon.md`.
     let n = 6;
     let (tip_z, total, fd) = tape_and_fd(n);
     let z_oracle = build(MU0).coupled_trajectory_articulated_z(n);
@@ -125,49 +116,37 @@ fn articulated_gradient_matches_full_coupled_fd_through_make_break() {
     let rel = (total - fd).abs() / fd.abs().max(1e-30);
     println!("n={n}: tape total={total:.8e} FD={fd:.8e} rel={rel:.3e}");
     assert!(
-        rel < 3e-6,
-        "articulated dμ gradient (with moment) must match full-coupled FD through \
-         make/break, got rel {rel:.3e}"
+        rel < 1e-7,
+        "articulated dμ gradient (with moment) must be machine-exact vs full-coupled \
+         FD through make/break, got rel {rel:.3e}"
     );
     assert!(total.abs() > 1e-9, "expected a nonzero ∂tip_z/∂μ");
-    // The moment is load-bearing: a pure-force-at-COM forward model would shift the
-    // rollout materially (routing vs dropping the moment differs ~4.5% in tip_z_N at
-    // this n = 6 horizon, growing to ~7% by n = 10; see the recon). The
-    // dt/m-vs-multi-DOF distinction — J_z ≈ 0.028 ≠ 1 on the tilted contact axis — is
+    // The dt/m-vs-multi-DOF distinction — J_z ≠ 1 on the tilted contact axis — is
     // asserted at the primitive level in tests/rigid_multidof_response.rs.
 }
 
-/// Over longer rollouts with sustained re-engagement the gradient residual GROWS
-/// with n (penalty: ~1e-3 at n = 10, ~5e-3 at n = 12). RE-DIAGNOSED 2026-06-15: this
-/// is the OFF-COM MOMENT's gradient over long rollouts — NOT the geometric stiffness
-/// (the analytic `J_state` here matches the FD loaded Jacobian to machine precision
-/// yet leaves n=10 unchanged) and NOT a penalty active-set kink (IPC reaches the same
-/// order). It is moment-specific: the free-platen articulated path (no moment) is
-/// machine-exact at every n — see `articulated_free_platen_exact_all_n`. The precise
-/// source is a documented open problem (docs/keystone/geometric_stiffness_recon.md);
-/// fresh-FK, lag-attribution, and the true position-row term were all measured WORSE.
-/// Still well within co-design tolerance (DIRECTION + ~99.9% of magnitude). The 3e-3
-/// bound is the n ≤ 10 value (exceeded for larger n); gated + documented, not hidden.
+/// The articulated gradient stays MACHINE-EXACT over LONG rollouts with sustained
+/// re-engagement (n = 10 and n = 15) — the fully-fresh formulation removed the
+/// moment-residual growth the earlier stale-FK convention carried (~1e-3 at n = 10,
+/// ~5e-3 at n = 15). See `docs/keystone/moment_residual_recon.md`.
 #[test]
-fn articulated_gradient_long_rollout_grows_with_n() {
-    let n = 10;
-    let (_tip_z, total, fd) = tape_and_fd(n);
-    let rel = (total - fd).abs() / fd.abs().max(1e-30);
-    println!("n={n}: tape total={total:.8e} FD={fd:.8e} rel={rel:.3e}");
-    assert!(
-        rel < 3e-3,
-        "n=10 articulated dμ gradient must stay within the documented n≤10 \
-         moment-residual bound, got rel {rel:.3e}"
-    );
+fn articulated_gradient_long_rollout_machine_exact() {
+    for n in [10usize, 15] {
+        let (_tip_z, total, fd) = tape_and_fd(n);
+        let rel = (total - fd).abs() / fd.abs().max(1e-30);
+        println!("n={n}: tape total={total:.8e} FD={fd:.8e} rel={rel:.3e}");
+        assert!(
+            rel < 1e-7,
+            "n={n} articulated dμ gradient must be machine-exact, got rel {rel:.3e}"
+        );
+    }
 }
 
-/// DISCRIMINATOR (the re-diagnosis evidence): the SAME articulated path on a
-/// free-joint platen — no off-COM moment (symmetric contact through the COM), J = I so
-/// no geometric stiffness, and the FD loaded Jacobian — is MACHINE-EXACT at every n,
-/// including n = 12 where the hinge-with-moment residual is ~5e-3. This isolates the
-/// long-rollout residual to the off-COM MOMENT's gradient: the shared multi-DOF carry,
-/// the soft adjoint, and the §8a structure are all sound (it is not a carry, soft, or
-/// geometric-stiffness defect). See docs/keystone/geometric_stiffness_recon.md.
+/// The articulated path on a free-joint platen (no off-COM moment, symmetric contact)
+/// is machine-exact at every n — the fully-fresh formulation handles the free joint
+/// (nv = 6) as cleanly as the hinge. (Historically this was the discriminator that
+/// isolated the long-rollout residual to the off-COM moment, since fixed by the
+/// fully-fresh formulation; see `docs/keystone/moment_residual_recon.md`.)
 #[test]
 fn articulated_free_platen_exact_all_n() {
     const FREE_PLATEN_MJCF: &str = r#"<mujoco>
@@ -205,22 +184,84 @@ fn articulated_free_platen_exact_all_n() {
     }
 }
 
-/// The §8a structure is locked: the pre-update force carry (∂qpos'/∂w = 0) makes
-/// the first step (soft solve from rest, dw/dμ ≈ 0) carry ZERO gradient, and the
-/// two-step gradient is machine-exact (the long-rollout moment residual only accrues
-/// over more steps). A regression that re-wires the wrench into the position carry
-/// (the spurious first-step gradient) trips n = 2.
+/// Short rollouts are machine-exact too. With the fresh output (`tip_z_N = xipos(q_N)`,
+/// not the old lagged `xipos(q_{N-1})`), even n = 1 carries a real, nonzero μ-gradient
+/// (the step-0 wrench reaches `qpos_1` through `Δt·qvel_1`, the true position-row term) —
+/// and the tape matches the full-coupled FD machine-exactly at n = 1 and n = 2.
 #[test]
 fn articulated_gradient_short_rollout_is_machine_exact() {
-    let (_t1, total1, fd1) = tape_and_fd(1);
+    for n in [1usize, 2] {
+        let (_t, total, fd) = tape_and_fd(n);
+        let rel = (total - fd).abs() / fd.abs().max(1e-30);
+        assert!(
+            total.abs() > 1e-12,
+            "n={n}: fresh-output gradient should be nonzero (tape {total:.3e})"
+        );
+        assert!(
+            rel < 1e-7,
+            "n={n} articulated gradient must be machine-exact, got rel {rel:.3e}"
+        );
+    }
+}
+
+// A 2-LINK hinge chain (nv = 2): a genuine multi-DOF articulated mechanism — the
+// distal tip presses the soft block, the contact wrench couples ACROSS both joints
+// (off-diagonal M, Coriolis velocity coupling). The capstone-exo bridge beyond the
+// single hinge.
+const TWOLINK_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.3"/>
+      <body name="lower" pos="0 0 -0.05">
+        <joint type="hinge" axis="0 1 0"/>
+        <geom type="sphere" pos="0 0 -0.04" size="0.004" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+fn build_2link(mu: f64) -> StaggeredCoupling {
+    let model = load_model(TWOLINK_MJCF).expect("2-link MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    data.qpos[1] = -0.05; // off-center tip; the off-diagonal joint coupling is live
+    data.forward(&model).expect("forward");
+    StaggeredCoupling::new(
+        model, data, 2, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+}
+
+/// **The multi-link (nv = 2) coupled gradient matches the full-coupled FD.** A 2-link
+/// hinge chain — genuine multi-DOF (off-diagonal mass coupling + Coriolis) — through the
+/// same articulated path, FD-gated at n = 2/6/10. The fully-fresh formulation handles the
+/// chain that the single-hinge-calibrated stale-FK convention got 74% wrong at n = 2.
+/// The accuracy here is FD-CARRY precision (~1e-6): a chain has no single-hinge analytic
+/// `J_state`, so it uses the FD `loaded_state_jacobian` (eps 1e-6). The analytic CHAIN
+/// carry (the Jacobian Hessian + `∂M⁻¹/∂q`) would lift this to ~1e-9 and is the
+/// documented follow-on; see `docs/keystone/multilink_recon.md`.
+#[test]
+fn twolink_chain_gradient_matches_fd() {
+    let z0 = build_2link(MU0).data().xipos[2].z;
     assert!(
-        total1.abs() < 1e-20 && fd1.abs() < 1e-20,
-        "first step from rest must carry zero μ-gradient (tape {total1:.3e}, FD {fd1:.3e})"
+        z0 > 0.10,
+        "2-link tip should start engaged near the block top, got {z0}"
     );
-    let (_t2, total2, fd2) = tape_and_fd(2);
-    let rel2 = (total2 - fd2).abs() / fd2.abs().max(1e-30);
-    assert!(
-        rel2 < 1e-6,
-        "two-step articulated gradient must be machine-exact, got rel {rel2:.3e}"
-    );
+    for n in [2usize, 6, 10] {
+        let (_t, gm) = build_2link(MU0).coupled_trajectory_material_gradient_articulated(n, 0);
+        let (_t2, gl) = build_2link(MU0).coupled_trajectory_material_gradient_articulated(n, 1);
+        let total = gm + 4.0 * gl;
+        let eps = MU0 * 1e-4;
+        let zp = build_2link(MU0 + eps).coupled_trajectory_articulated_z(n);
+        let zm = build_2link(MU0 - eps).coupled_trajectory_articulated_z(n);
+        let fd = (zp - zm) / (2.0 * eps);
+        let rel = (total - fd).abs() / fd.abs().max(1e-30);
+        println!("2-link n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
+        assert!(
+            total.abs() > 1e-12 && rel < 1e-5,
+            "2-link nv=2 gradient must match full-coupled FD (FD-carry precision) at \
+             n={n}, got rel {rel:.3e}"
+        );
+    }
 }

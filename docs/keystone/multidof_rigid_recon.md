@@ -216,6 +216,12 @@ and the articulated path FD-accurate (~1e-5, co-design-adequate).
 > machine-exact at every n) and NOT the geometric stiffness (analytic `J_state` leaves
 > n≥10 unchanged). The "machine-exact later" framing held only for short rollouts. See
 > `geometric_stiffness_recon.md` §3–4.
+>
+> **★ FOLLOW-UP-2 (2026-06-15): machine-exact at ALL n now.** The long-rollout residual
+> was fixed by the fully-fresh formulation (fresh-FK contact pose + fresh output + true
+> position-row carry `∂qpos'/∂w = Δt·G_vel`, replacing the §8a position-drop this §8a/§8d
+> documents). The §8a drop was correct ONLY for the stale-FK convention at nv=1; the fresh
+> pair is machine-exact for single-hinge AND multi-link. See `moment_residual_recon.md` §3f.
 
 ## 8d. PR2 BUILD RESULT (2026-06-13) — articulated coupled gradient on main path
 
