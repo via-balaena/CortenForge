@@ -117,3 +117,29 @@ measure the output qpos' tangent at the NOMINAL output `q'` (the body-frame `q'�
 which is what `jz`/`jlin` consume. `mjd_quat_integrate` / `transition_derivatives.A` use a
 DIFFERENT, internally-consistent convention (output tangent referenced at `q_old`), so their
 position-POSITION blocks legitimately DIFFER from the FD carry — do NOT "reconcile" them.
+
+## 7. PR2 SHIPPED (2026-06-15) — free joint (SE(3), nq=7, nv=6) machine-exact; TEST-ONLY
+
+**No production code change.** PR1's tangent machinery is `nv`-general — `loaded_state_jacobian_tangent`
+(`nq ≠ nv`), `integrator_pos_jacobian`'s `Free` arm (`[Δt·I₃ | Δt·J_r]`), and `right_jacobian_so3`
+already handle the free joint. PR2 is the rigorous off-COM scene that confirms it; the merged
+centered free-platen (`articulated_free_platen_exact_all_n`) never did — it is DEGENERATE.
+
+**★ THE DEGENERACY TRAP (decisive scene-design lesson):** a free body with a CENTERED geom has
+`xipos = body origin` regardless of orientation, so the objective `xipos.z` is ORIENTATION-BLIND —
+the quaternion never enters the μ-gradient even though the body spins fast (the centered platen
+tumbles yet is machine-exact, because the spin is μ-independent and the objective can't see it).
+To exercise SE(3) the COM must be OFFSET from the contact-patch centroid: then (1) the contact
+resultant misses the COM → an off-COM MOMENT that rotates the body, AND (2)
+`xipos.z = body_z + (R·offset).z` reads the orientation. Scene: a stabilizing plate at the body
+origin + an offset mass (`0.03, 0, −0.02`) → `xipos.x ≈ 0.025` (off-COM, asserted), `|Δq| ≈ 1.35`
+over the 4-step materiality check (asserted `> 1.0` — orientation very much live), machine-exact at
+n=1,2,4 (4e-9 / 8e-7 / 5e-6; n=6 ≈ 6e-6 observed, not gated).
+
+**★ STABILITY:** an unconstrained free body resting on a single block is rotationally unstable
+(COM above the contact, no anchor — unlike the ball's pivot). A single offset geom (long lever)
+falls/tumbles and the soft solver diverges by n=4; the plate-plus-offset-mass design (more
+rotational inertia near the origin) stays machine-exact through n=6. Gate is n=1,2,4 (ball's
+CI-proven margins). Materiality asserted IN the test: off-COM `xipos.x` + a material `|Δq|`.
+
+Gate: `free_joint_offcom_gradient_matches_fd`. **The capstone exo's floating base is validated.**

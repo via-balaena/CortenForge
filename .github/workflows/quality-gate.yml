@@ -252,7 +252,13 @@ jobs:
         run: |
           cargo test --release \
             -p sim-ml-chassis -p sim-thermostat -p sim-rl \
-            -p sim-conformance-tests -p sim-opt -p mesh-printability
+            -p sim-conformance-tests -p sim-opt -p mesh-printability \
+            -p sim-coupling
+          # sim-coupling (the keystone soft↔rigid bridge) runs here, not in
+          # tests-debug: its differentiable-coupling gates drive the soft FEM
+          # solver (slow in debug, like sim-soft). The whole suite is ~16 s in
+          # release. Without this the keystone gradient gates execute in NO CI
+          # job (grade shards use `--skip-coverage`, which skips test-running).
           # sim-soft release-only contact tests — Phase 5 commits 9 + 10
           # mark V-3 / V-5 / V-4-V-3 / V-4-V-5 as `#[cfg_attr(debug_assertions,
           # ignore)]` per `feedback_release_mode_heavy_tests`. The crate
