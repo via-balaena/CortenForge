@@ -1674,32 +1674,20 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (scratch.qpos.clone(), scratch.qvel.clone())
     }
 
-    /// [`rigid_xfrc_column`] evaluated on a scratch `Data` **forwarded at the current
-    /// `qpos`** — the wrench→qvel response `Δt·M⁻¹·Jᵀ` at the config the real `step`
-    /// maps the wrench through, matching the eval point of [`Self::loaded_state_jacobian`].
+    /// [`rigid_xfrc_column`] (the wrench→qvel response `Δt·M⁻¹·Jᵀ`) at the current
+    /// config — the config the real `step` maps the wrench through, matching the eval
+    /// point of [`Self::loaded_state_jacobian`].
     ///
-    /// `self.data`'s `xipos`/`qM` lag `qpos` by one step (sim-core's `step` is
-    /// forward-then-integrate with no trailing FK), so reading `rigid_xfrc_column`
-    /// off `self.data` would map the wrench through the PREVIOUS config's `J` — a
-    /// one-step skew that is negligible for the slowly-varying linear (force)
-    /// Jacobian (the merged force path's ~6e-6) but material for the rotational
-    /// (moment) Jacobian. Forwarding a scratch at `qpos` removes it; the pose-seam /
-    /// moment-value factors stay at the stale config (they must match the oracle's
-    /// stale posing). See `docs/keystone/contact_moment_recon.md` §6.
-    ///
-    /// # Panics
-    /// Panics if the scratch forward diverges (a mis-constructed model).
-    // expect_used: a scratch forward on a valid model does not fail; a divergence is
-    // a programmer error surfaced loudly (mirrors `scratch_state_step`).
-    #[allow(clippy::expect_used)]
+    /// Under the fully-fresh formulation the caller has already re-forwarded `self.data`
+    /// at the current `qpos` this step (the per-step `forward` in
+    /// `coupled_trajectory_material_gradient_articulated`), so `self.data`'s
+    /// `xipos`/`qM`/`J` are current and `rigid_xfrc_column` reads them directly — no
+    /// scratch forward needed. (Before the fresh-FK fix, `self.data` lagged `qpos` by one
+    /// step, so this routine forwarded a scratch to remove a one-step skew that was
+    /// material for the rotational/moment Jacobian; the fresh-FK formulation makes that
+    /// scratch redundant. See `docs/keystone/moment_residual_recon.md` §3f.)
     fn fresh_xfrc_column(&self) -> DMatrix<f64> {
-        let mut scratch = self.model.make_data();
-        scratch.qpos.copy_from(&self.data.qpos);
-        scratch.qvel.copy_from(&self.data.qvel);
-        scratch
-            .forward(&self.model)
-            .expect("articulated probe forward");
-        rigid_xfrc_column(&self.model, &scratch, self.body)
+        rigid_xfrc_column(&self.model, &self.data, self.body)
     }
 
     /// The LOADED single-step state Jacobian `∂[qpos'; qvel']/∂[qpos; qvel]`
@@ -1902,11 +1890,16 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `docs/keystone/moment_residual_recon.md` §3f and `docs/keystone/multilink_recon.md`.
     ///
     /// The wrench node and pose seam are analytic (FD-validated machine-exact vs the real
-    /// contact readout, `tests/`). Scope: hinge / chain (no quaternion joints; raw
-    /// `[qpos; qvel]` state — ball/free-joint quaternion is the follow-on),
-    /// `rigid_damping = 0` (the damping velocity-coupling is not in the loaded carry), and
-    /// a flat constant-normal plane (`τ_z = 0`; tangential/curved contact is the next
-    /// arc). See also `docs/keystone/geometric_stiffness_recon.md` and
+    /// contact readout, `tests/`). Tested scope: single-hinge (nv = 1) and free-joint
+    /// (nv = 6) at ~1e-9, and the 2-link chain (nv = 2) at FD-carry ~1e-6. Higher chains
+    /// (nv > 2) work via the same FD `J_state` carry (FD-carry precision) but are not
+    /// explicitly gated; the analytic CHAIN carry (the Jacobian Hessian + `∂M⁻¹/∂q`) for
+    /// machine-exactness at nv > 1 is the documented follow-on (`multilink_recon.md`).
+    /// Further scope: no quaternion joints (raw `[qpos; qvel]` state — ball/free-joint
+    /// quaternion is the follow-on), `rigid_damping = 0` (the damping velocity-coupling is
+    /// not in the loaded carry), and a flat constant-normal plane (`τ_z = 0`;
+    /// tangential/curved contact is the next arc). See also
+    /// `docs/keystone/geometric_stiffness_recon.md` and
     /// `docs/keystone/contact_moment_recon.md`.
     ///
     /// # Panics

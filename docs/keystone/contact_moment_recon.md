@@ -120,7 +120,9 @@ Generalize to the full wrench:
   no downstream `neg`). Leaves the platen's `ContactForceTrajVjp` **byte-untouched**.
 - **`RigidStateCarryVjp`** generalized to parents `[s, w]` (`w` a `[6]` wrench):
   `g: Vec<f64>` → `G_vel: DMatrix` (`nv × 6` = `rigid_xfrc_column`, velocity rows;
-  position rows zero, §8a). `∂L/∂w[k] = Σᵢ G_vel[(i,k)]·cot[nv+i]`. NO sign flip
+  position rows zero, §8a — NOTE: superseded 2026-06-15, the position rows are now the
+  true `Δt·G_vel`, see §6 banner + `moment_residual_recon.md` §3f).
+  `∂L/∂w[k] = Σᵢ G_vel[(i,k)]·cot[nv+i]`. NO sign flip
   (`w` is the reaction wrench directly). `J_state` carry unchanged (it already
   takes a full `SpatialVector` wrench via `loaded_state_jacobian`).
 
@@ -191,6 +193,17 @@ and thread `∂w/∂x*` (+ maybe `∂w/∂s`).
   worse (3–30%). The stale-FK timing is load-bearing exactly as PR #312 found.
 
 ## 6. The load-bearing invariants to preserve (carry forward from PR #312)
+
+> **★ SUPERSEDED (2026-06-15).** Items 1–3 below describe the STALE-FK + §8a-zeroed
+> formulation, which was correct only for nv=1. The fully-fresh formulation (fresh-FK
+> contact pose each step + fresh output + the true position-row carry
+> `∂qpos'/∂w = Δt·G_vel`) replaced ALL of them and is machine-exact for single-hinge AND
+> multi-link. Specifically NOW: (1) the FK is re-forwarded fresh each step (NOT stale —
+> the "do not re-forward" advice is reversed); (2) the carry's position rows are
+> `Δt·G_vel`, NOT zero; (3) `n=1` carries a real nonzero μ-gradient (fresh output reads
+> `xipos(q_N)`, not the lagged `xipos(q_{N-1})`). The "every alternative is worse"
+> findings here were from changing one of the matched-pair corrections in isolation. See
+> `moment_residual_recon.md` §3f. (Preserved below as the historical PR #312/#313 record.)
 
 1. **Stale-FK eval timing is load-bearing.** `height`, `jz`, `g`, and now `c` /
    `J_lin` all read `self.data` at the PRE-integrate FK config `step` leaves behind;
