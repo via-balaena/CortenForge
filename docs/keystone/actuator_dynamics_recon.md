@@ -43,19 +43,26 @@ single-hinge closed form `Δt·gear/(M + Δt·D)` matches to **1.3e-10**.
   (the control-aware FD oracle). Each `u_k` is a tape parameter feeding the carry's third
   parent; the reverse pass gets BOTH the direct joint drive AND the indirect coupled path.
 
-**Scope.** Single-hinge MOTOR (state-independent force, config-independent `M`), so the
-constant actuator force does not perturb `J_state` (the analytic single-hinge carry stays
-exact and the FD `J_state` needs no `ctrl` replication). Flat normal; joint damping
-supported (via `M_impl`). Gate: `actuator_control_gradient_matches_fd` — `∂tip_z_N/∂u_k`
-vs the full-coupled FD, machine-exact (rel ~1e-11); `motor_control_moves_the_tip`
-(materiality).
+PR1 gate: `motor_control_gradient_matches_fd` — `∂tip_z_N/∂u_k` vs the full-coupled FD,
+machine-exact (rel ~1e-11); `actuator_moves_the_tip` (materiality).
+
+## 3b. PR2 — state-feedback servos (NO code change; the prediction below was FALSIFIED)
+
+PR1's "single-hinge MOTOR" was an UNDER-CLAIM. Measure-first (S0) showed position AND
+velocity servos are ALREADY machine-exact with PR1's machinery: an affine servo's
+state-feedback slope `∂force/∂(qpos,qvel)` (`−kp`/`−kv`) is a CONSTANT, `ctrl`-INDEPENDENT,
+and EXPLICIT (non-eulerdamp) term, so `transition_derivatives`' analytic `A` already
+captures it — the `ctrl`-replicating scratch I predicted is NOT needed. (Contrast passive
+damping, which is IMPLICIT under eulerdamp and gave the ≈2.6% `A` mismatch in the damping
+leaf; an actuator velocity-servo's `kv` is explicit, so it is exact.) The control channel
+`∂qfrc/∂ctrl = gain` was already affine-general. PR2 is therefore validation + doc: gates
+`{position,velocity,pd}_servo_control_gradient_matches_fd` (all rel ~1e-11) + the corrected
+scope. **Lesson: measure-first can reveal the foundation is already MORE capable than the
+prior leaf claimed — don't write code to fill a gap you haven't confirmed exists.**
 
 ## 4. Follow-ons
-- **State-feedback servos** (position/velocity): the control channel is identical; the
-  state channel `∂qfrc/∂(qpos,qvel)` rides the FD `J_state` once `scratch_state_step`
-  replicates `ctrl`. The PD joint controller an exo actually uses.
-- **Chains** (`nv > 1`): the constant actuator force perturbs `J_state` through `∂M⁻¹/∂q`,
-  so the scratch must replicate `ctrl` there too.
+- **Chains** (`nv > 1`): the actuator force perturbs `J_state` through `∂M⁻¹/∂q`, so there
+  the FD scratch (`scratch_state_step`) DOES need to replicate `ctrl`.
 - **Muscles / activation dynamics** (`act` state, nonlinear gain) — the heavier nonlinear
-  actuator.
+  actuator (`transition_derivatives` already routes Millard to the FD path).
 - **Joint actuator + design on one tape** (the full co-design gradient through an actuator).
