@@ -23,8 +23,8 @@ use sim_ml_chassis::Tensor;
 use sim_soft::readout::scene::pick_vertices_by_predicate;
 use sim_soft::{
     BoundaryConditions, ContactModel, ContactPair, CpuNewtonSolver, HandBuiltTetMesh,
-    IpcRigidContact, LoadAxis, MaterialField, Mesh, RigidPlane, Solver, SolverConfig, Tet4, Vec3,
-    VertexId,
+    IpcRigidContact, LoadAxis, MaterialField, Mesh, RigidPlane, RigidTwist, Solver, SolverConfig,
+    Tet4, Vec3, VertexId,
 };
 
 type IpcSolver = CpuNewtonSolver<Tet4, HandBuiltTetMesh, IpcRigidContact>;
@@ -93,6 +93,32 @@ fn solve_step(s: &IpcSolver, x_prev: &[f64], v_prev: &[f64], theta: f64) -> Vec<
         DT,
     )
     .x_final
+}
+
+/// Downward ceiling normal after rotating by `theta` about `+ŷ`:
+/// `n̂(θ) = R(ŷ,θ)·(0,0,−1) = (−sinθ, 0, −cosθ)`.
+fn rotated_normal(theta: f64) -> Vec3 {
+    Vec3::new(-theta.sin(), 0.0, -theta.cos())
+}
+
+/// IPC solver with the ceiling plane rigidly *rotated* by `theta` about `+ŷ`
+/// through `pivot` (on the flat plane, so `offset(θ) = pivot·n̂(θ)`), keeping the
+/// same upward top-face load. The black-box FD oracle for the rotating-normal
+/// sensitivity through the log-barrier.
+fn rotated_solver(theta: f64, pivot: Vec3) -> IpcSolver {
+    let n = rotated_normal(theta);
+    let plane = RigidPlane::new(n, pivot.dot(&n));
+    let loaded = top_face().iter().map(|&v| (v, LoadAxis::AxisZ)).collect();
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    cfg.max_newton_iter = 80;
+    CpuNewtonSolver::new(
+        Tet4,
+        block(),
+        IpcRigidContact::with_params(vec![plane], KAPPA, D_HAT),
+        cfg,
+        BoundaryConditions::new(bottom_pins(), loaded),
+    )
 }
 
 /// Minimum gap `sd = height − z` over the top-face vertices at positions `x`.
@@ -209,7 +235,11 @@ fn ipc_pose_sensitivity_matches_resolve_fd() {
     }
     let x_final = solve_step(&s, &x, &v, theta);
     // Analytic ∂x*/∂δ (plane translation along +ẑ), reusing the tangent at x_final.
-    let analytic = s.equilibrium_pose_sensitivity(&x_final, DT, Vec3::new(0.0, 0.0, 1.0));
+    let analytic = s.equilibrium_pose_sensitivity(
+        &x_final,
+        DT,
+        RigidTwist::translation(Vec3::new(0.0, 0.0, 1.0)),
+    );
 
     // FD oracle: re-solve at height ± ε from the SAME (x, v), central-difference.
     let eps = 1.0e-7;
@@ -228,4 +258,55 @@ fn ipc_pose_sensitivity_matches_resolve_fd() {
     eprintln!("IPC pose sensitivity: ‖∂x*/∂δ‖_∞={mag:.3e} rel-to-FD={rel:.3e}");
     assert!(mag > 1e-6, "pose sensitivity implausibly small");
     assert!(rel < 1e-4, "IPC ∂x*/∂δ disagrees with re-solve FD: {rel:e}");
+}
+
+#[test]
+fn ipc_rotation_sensitivity_matches_resolve_fd() {
+    // The rotating-normal direction term through the IPC log-barrier: ∂x*/∂θ for
+    // a tilting ceiling vs a re-solve FD. Independent of the penalty rotation gate
+    // — IPC's curvature is κ·b'' (not penalty's constant κ), so this validates the
+    // new (dE/dsd)·δn̂ direction term against the barrier's own b'/b''.
+    let height = EDGE + 0.5 * D_HAT;
+    let theta_load = 4.0;
+    let pivot = Vec3::new(EDGE / 2.0, EDGE / 2.0, height);
+
+    // Settle to a deeply-engaged near-equilibrium at the flat ceiling.
+    let s = solver(height);
+    let n_dof = 3 * block().n_vertices();
+    let mut x = x_rest();
+    let mut v = vec![0.0_f64; n_dof];
+    for _ in 0..SETTLE_STEPS {
+        let xf = solve_step(&s, &x, &v, theta_load);
+        for (vi, (&xf_i, &xo)) in v.iter_mut().zip(xf.iter().zip(x.iter())) {
+            *vi = (xf_i - xo) / DT;
+        }
+        x = xf;
+    }
+    let x_final = solve_step(&s, &x, &v, theta_load);
+
+    // Analytic ∂x*/∂θ: ceiling rotating about +ŷ through `pivot` at unit rate.
+    let twist = RigidTwist::rotation_about(Vec3::new(0.0, 1.0, 0.0), pivot);
+    let analytic = s.equilibrium_pose_sensitivity(&x_final, DT, twist);
+
+    // FD oracle: re-solve the rotated step at θ = ±ε from the SAME (x, v) —
+    // touches none of the analytic twist / A⁻¹ machinery.
+    let eps = 1.0e-7;
+    let solve_at =
+        |th: f64| -> Vec<f64> { solve_step(&rotated_solver(th, pivot), &x, &v, theta_load) };
+    let fd: Vec<f64> = solve_at(eps)
+        .iter()
+        .zip(&solve_at(-eps))
+        .map(|(a, b)| (a - b) / (2.0 * eps))
+        .collect();
+
+    let num: f64 = (0..n_dof).map(|i| (analytic[i] - fd[i]).powi(2)).sum();
+    let den: f64 = (0..n_dof).map(|i| fd[i] * fd[i]).sum();
+    let rel = (num / den.max(1e-300)).sqrt();
+    let mag = analytic.iter().fold(0.0_f64, |m, &a| m.max(a.abs()));
+    eprintln!("IPC rotation sensitivity: ‖∂x*/∂θ‖_∞={mag:.3e} rel-to-FD={rel:.3e}");
+    assert!(
+        mag > 1e-4,
+        "rotation sensitivity implausibly small — direction term not wired"
+    );
+    assert!(rel < 1e-4, "IPC ∂x*/∂θ disagrees with re-solve FD: {rel:e}");
 }

@@ -45,8 +45,8 @@ use sim_ml_chassis::Tensor;
 use sim_soft::readout::scene::pick_vertices_by_predicate;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, Solver, SolverConfig, Tet4, Vec3,
-    VertexId,
+    PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, RigidTwist, Solver, SolverConfig,
+    Tet4, Vec3, VertexId,
 };
 
 // ── Scene constants (the keystone coupling regime) ────────────────────────
@@ -170,7 +170,11 @@ fn pose_sensitivity_matches_resolve_fd() {
 
     // Analytic: ∂x*/∂height = −A⁻¹·(∂r/∂height), reusing A at x_final.
     // Raising the plane height = translating the primitive along +ẑ.
-    let analytic = solver.equilibrium_pose_sensitivity(&x_final, DT, Vec3::new(0.0, 0.0, 1.0));
+    let analytic = solver.equilibrium_pose_sensitivity(
+        &x_final,
+        DT,
+        RigidTwist::translation(Vec3::new(0.0, 0.0, 1.0)),
+    );
 
     // FD oracle: re-solve at height ± ε, central-difference. Two ε to confirm
     // smooth convergence; the analytic path is touched nowhere here.
@@ -235,6 +239,160 @@ fn pose_sensitivity_matches_resolve_fd() {
     );
 }
 
+/// Downward unit normal of the contact plane after a rotation by `theta`
+/// about the world `+ŷ` axis, `n̂(θ) = R(ŷ,θ)·(0,0,−1) = (−sinθ, 0, −cosθ)`.
+fn rotated_normal(theta: f64) -> Vec3 {
+    Vec3::new(-theta.sin(), 0.0, -theta.cos())
+}
+
+/// Re-solve ONE dynamic step with the contact plane rigidly *rotated* by
+/// `theta` about `+ŷ` through `pivot` (on the flat plane), returning
+/// `x_final`. The plane stays through `pivot`: `offset(θ) = pivot·n̂(θ)`.
+/// The black-box FD oracle for the rotating-normal sensitivity — touches
+/// none of the analytic twist / `A⁻¹` machinery.
+fn solve_rotated_step(theta: f64, pivot: Vec3, x_prev: &[f64], v_prev: &[f64]) -> Vec<f64> {
+    let n_dof = x_prev.len();
+    let n = rotated_normal(theta);
+    let plane = RigidPlane::new(n, pivot.dot(&n));
+    let contact = PenaltyRigidContact::with_params(vec![plane], KAPPA, D_HAT);
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        Tet4,
+        block(),
+        contact,
+        cfg,
+        BoundaryConditions::new(bottom_pins(), Vec::new()),
+    );
+    solver
+        .replay_step(
+            &Tensor::from_slice(x_prev, &[n_dof]),
+            &Tensor::from_slice(v_prev, &[n_dof]),
+            &Tensor::zeros(&[0]),
+            DT,
+        )
+        .x_final
+}
+
+/// Active-pair count with the plane rotated by `theta` about `pivot` —
+/// the rotating-normal analog of [`active_count`], for the stable-active-
+/// set assertion.
+fn rotated_active_count(theta: f64, pivot: Vec3, x: &[f64]) -> usize {
+    let n = rotated_normal(theta);
+    let plane = RigidPlane::new(n, pivot.dot(&n));
+    let contact = PenaltyRigidContact::with_params(vec![plane], KAPPA, D_HAT);
+    let positions: Vec<Vec3> = x
+        .chunks_exact(3)
+        .map(|c| Vec3::new(c[0], c[1], c[2]))
+        .collect();
+    contact.per_pair_readout(&block(), &positions).len()
+}
+
+/// The rotating-normal gate (this leaf): the analytic forward sensitivity
+/// `∂x*/∂θ` to a plane *rotation* (a tilting contact normal, the
+/// `∂n̂/∂δ ≠ 0` term the S3 translation adjoint dropped) matches a
+/// nonlinear re-solve central FD.
+///
+/// Differentiated at the flat (`θ = 0`) deeply-engaged equilibrium: a
+/// downward normal `n̂₀ = (0,0,−1)` tilting about `+ŷ` through the top-face
+/// center redirects the contact force, so `∂x*/∂θ` is the new direction
+/// term `(dE/dsd)·(ŷ×n̂)` plus the `p·δn̂ − v·n̂` magnitude shift. The FD
+/// oracle re-runs the full Newton solve with a rigidly *rotated*
+/// [`RigidPlane`] at `θ ± ε` — independent of the analytic twist /
+/// `equilibrium_pose_sensitivity` path, so the agreement validates the
+/// rotating-normal pose-residual derivative itself.
+#[test]
+fn rotation_sensitivity_matches_resolve_fd() {
+    let (height, x_prev, v_prev) = settle();
+    let n_dof = x_prev.len();
+    // Pivot: center of the engaged top face, on the flat plane (z = height).
+    let pivot = Vec3::new(EDGE / 2.0, EDGE / 2.0, height);
+
+    // The converged flat step whose x* we differentiate (same as the
+    // translation gate — the rotation enters only through ∂r/∂θ).
+    let plane = RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), -height);
+    let contact = PenaltyRigidContact::with_params(vec![plane], KAPPA, D_HAT);
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        Tet4,
+        block(),
+        contact,
+        cfg,
+        BoundaryConditions::new(bottom_pins(), Vec::new()),
+    );
+    let x_final = solver
+        .replay_step(
+            &Tensor::from_slice(&x_prev, &[n_dof]),
+            &Tensor::from_slice(&v_prev, &[n_dof]),
+            &Tensor::zeros(&[0]),
+            DT,
+        )
+        .x_final;
+
+    // Analytic: ∂x*/∂θ = −A⁻¹·(∂r/∂θ), the plane rotating about +ŷ through
+    // `pivot` at unit rate — RigidTwist::rotation_about.
+    let twist = RigidTwist::rotation_about(Vec3::new(0.0, 1.0, 0.0), pivot);
+    let analytic = solver.equilibrium_pose_sensitivity(&x_final, DT, twist);
+
+    // FD oracle: re-solve the rotated step at θ = ±ε, central-difference.
+    let fd = |eps: f64| -> Vec<f64> {
+        let xp = solve_rotated_step(eps, pivot, &x_prev, &v_prev);
+        let xm = solve_rotated_step(-eps, pivot, &x_prev, &v_prev);
+        xp.iter()
+            .zip(xm.iter())
+            .map(|(a, b)| (a - b) / (2.0 * eps))
+            .collect::<Vec<f64>>()
+    };
+    let fd1 = fd(1.0e-6);
+    let fd2 = fd(5.0e-7);
+
+    // Active set stable across the rotation perturbation (engaged regime).
+    let n_active = rotated_active_count(0.0, pivot, &x_final);
+    assert!(
+        n_active > 0,
+        "scene must be contact-engaged, got 0 active pairs"
+    );
+    for (lbl, th) in [("+ε", 1.0e-6), ("-ε", -1.0e-6)] {
+        let x = solve_rotated_step(th, pivot, &x_prev, &v_prev);
+        assert_eq!(
+            rotated_active_count(th, pivot, &x),
+            n_active,
+            "active set flipped at {lbl} — outside the stable-active-set regime",
+        );
+    }
+
+    let rel = |a: &[f64], b: &[f64]| -> f64 {
+        let num: f64 = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum();
+        let den: f64 = b.iter().map(|y| y * y).sum();
+        (num / den).sqrt()
+    };
+    let two_eps = rel(&fd1, &fd2);
+    let analytic_vs_fd = rel(&analytic, &fd1);
+    let max_dx = analytic.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+
+    eprintln!(
+        "rotating-normal sensitivity: n_active={n_active}, ‖∂x*/∂θ‖_∞={max_dx:.4e}, \
+         two-ε rel={two_eps:.3e}, analytic-vs-FD rel={analytic_vs_fd:.3e}"
+    );
+
+    // FD smoothly converged (the rotated step is differentiable here).
+    assert!(
+        two_eps < 1e-3,
+        "FD not converged across ε (two-ε rel {two_eps:e}) — step not smooth under rotation",
+    );
+    // Physical sanity: the tilt redirects the force, so x* genuinely moves.
+    assert!(
+        max_dx > 1e-3,
+        "‖∂x*/∂θ‖_∞ = {max_dx:e} implausibly small — rotation sensitivity not wired",
+    );
+    // The headline gate: analytic rotating-normal IFT solve == re-solve FD.
+    assert!(
+        analytic_vs_fd < 1e-5,
+        "analytic ∂x*/∂θ disagrees with re-solve FD: rel {analytic_vs_fd:e}",
+    );
+}
+
 /// A pose-independent contact (`NullContact`, via the default
 /// `pose_residual_derivative`) yields a zero sensitivity — the active set
 /// contributes nothing to `∂r/∂δ`. Guards the default-empty trait method +
@@ -262,7 +420,11 @@ fn null_contact_pose_sensitivity_is_zero() {
         chunk[1] = p.y;
         chunk[2] = p.z;
     }
-    let s = solver.equilibrium_pose_sensitivity(&x_final, DT, Vec3::new(0.0, 0.0, 1.0));
+    let s = solver.equilibrium_pose_sensitivity(
+        &x_final,
+        DT,
+        RigidTwist::translation(Vec3::new(0.0, 0.0, 1.0)),
+    );
     assert_eq!(s.len(), n_dof);
     assert!(
         s.iter().all(|&x| x == 0.0),

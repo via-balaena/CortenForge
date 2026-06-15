@@ -62,7 +62,7 @@ use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
     ActivePairsFor, BoundaryConditions, ContactModel, ContactPair, ContactPairReadout,
     CpuNewtonSolver, HandBuiltTetMesh, IpcRigidContact, LoadAxis, MaterialField, Mesh, NeoHookean,
-    PenaltyRigidContact, RigidPlane, Solver, SolverConfig, Tet4, Vec3, VertexId,
+    PenaltyRigidContact, RigidPlane, RigidTwist, Solver, SolverConfig, Tet4, Vec3, VertexId,
 };
 use std::marker::PhantomData;
 
@@ -1185,7 +1185,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         // Raising the plane height = translating the rigid primitive +ẑ.
         let dir = Vec3::new(0.0, 0.0, 1.0);
         let (solver, x_final) = self.soft_resolve(height);
-        let dxstar = solver.equilibrium_pose_sensitivity(&x_final, self.cfg.dt, dir);
+        let dxstar = solver.equilibrium_pose_sensitivity(
+            &x_final,
+            self.cfg.dt,
+            RigidTwist::translation(dir),
+        );
         let positions: Vec<Vec3> = x_final
             .chunks_exact(3)
             .map(|c| Vec3::new(c[0], c[1], c[2]))
