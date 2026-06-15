@@ -599,8 +599,9 @@ impl VjpOp for ContactWrenchTrajVjp {
 /// state, `w = [τ; f]` is the contact **wrench** ([`ContactWrenchTrajVjp`]),
 /// `J_state` is the **loaded** single-step transition Jacobian `∂(state')/∂(state)`
 /// (with the contact wrench held — it includes the applied-force geometric/load
-/// stiffness `∂(Jᵀw)/∂q` that the unloaded `transition_derivatives` drops; see
-/// `docs/keystone/multidof_rigid_recon.md` §8c), and `G = ∂(state')/∂w` is the
+/// stiffness `∂(Jᵀw)/∂q` that the unloaded `transition_derivatives` drops; computed
+/// analytically for a single hinge, [`StaggeredCoupling::analytic_state_jacobian`],
+/// else by FD, [`StaggeredCoupling::loaded_state_jacobian`]), and `G = ∂(state')/∂w` is the
 /// 6-component wrench response. `G`'s VELOCITY rows are the full `nv × 6`
 /// [`rigid_xfrc_column`] (`Δt·M⁻¹·Jᵀ`); its POSITION rows are ZEROED — the §8a fix
 /// (the wrench reaches `qpos` only next step, through `qvel`, exactly as the scalar
@@ -1702,8 +1703,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// is held during the perturbation), so it includes the applied-force geometric
     /// stiffness `∂(Jᵀw)/∂q` that `sim-core`'s unloaded `transition_derivatives`
     /// drops — a real effect for an articulated body (zero for the free-body platen,
-    /// where `J = I`). FD-precision (the analytic geometric-stiffness term is a
-    /// documented follow-on); see `docs/keystone/multidof_rigid_recon.md` §8c.
+    /// where `J = I`).
+    ///
+    /// This is the **fallback** path: the single-hinge scope uses the machine-exact
+    /// [`Self::analytic_state_jacobian`] instead (it replaces this routine's FD noise,
+    /// which over a multi-step carry is what caps the articulated gradient's
+    /// precision). This FD form still serves the free-joint platen smoke and is the
+    /// reference the analytic form is validated against; see
+    /// `docs/keystone/geometric_stiffness_recon.md`.
     fn loaded_state_jacobian(&self, wrench: &SpatialVector) -> DMatrix<f64> {
         let nv = self.model.nv;
         let eps = 1e-6;
@@ -1728,6 +1735,80 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             }
         }
         j
+    }
+
+    /// The body's joint id if its kinematic chain to the world is exactly one
+    /// **hinge** with no other DOFs (`nv == 1`, hence `nq == nv` — raw `qpos` is a
+    /// valid coordinate, no quaternion). `None` for a free joint, a multi-link chain,
+    /// or any non-hinge case — those keep the FD [`Self::loaded_state_jacobian`]
+    /// fallback (the analytic geometric stiffness is the single-hinge closed form;
+    /// the multi-link off-diagonal Jacobian Hessian + the `∂M⁻¹/∂q` term are the
+    /// documented follow-on).
+    fn single_hinge(&self) -> Option<usize> {
+        if self.model.nv != 1 || self.model.body_jnt_num[self.body] != 1 {
+            return None;
+        }
+        let jnt = self.model.body_jnt_adr[self.body];
+        (self.model.jnt_type[jnt] == sim_core::MjJointType::Hinge).then_some(jnt)
+    }
+
+    /// The LOADED single-step state Jacobian `∂[qpos'; qvel']/∂[qpos; qvel]` computed
+    /// **analytically** for a single hinge — the machine-exact successor to the FD'd
+    /// [`Self::loaded_state_jacobian`]. `None` for any non-single-hinge body (the
+    /// caller falls back to the FD form).
+    ///
+    /// `J_state = A + Δt·M⁻¹·∂(Jᵀw)/∂q` (velocity rows; the position rows follow the
+    /// semi-implicit integrator, scaled by `Δt`), where `A` is the **unloaded**
+    /// transition ([`Data::transition_derivatives`]) and the second term is the
+    /// applied wrench's geometric/load stiffness that `A` drops. This replaces the FD
+    /// loaded Jacobian's noise with the exact term (deterministic, no eps). It tightens
+    /// the short-rollout articulated gradient (n≈6) and is the clean base for the
+    /// multi-link generalization; it does NOT, however, remove the long-rollout
+    /// residual — that is the off-COM moment's gradient, a separate open problem (see
+    /// the note on `coupled_trajectory_material_gradient_articulated` and
+    /// `docs/keystone/geometric_stiffness_recon.md`).
+    ///
+    /// For a single hinge the geometric stiffness is the closed form
+    /// `∂(Jᵀw)/∂θ = (â×(â×r))·f`: with world axis `â`, moment arm `r = xipos − anchor`,
+    /// and the wrench's linear part `f`, only `r` rotates with `θ` (`∂â/∂θ = 0`,
+    /// `∂anchor/∂θ = 0`), so `∂r/∂θ = â×r` and `∂(â×r)/∂θ = â×(â×r)`; the torque part
+    /// drops (`∂â/∂θ = 0`). `M` is configuration-independent for a single hinge (the
+    /// body inertia about the fixed axis), so `∂M⁻¹/∂q = 0` and the `Δt·M⁻¹·…` form is
+    /// exact. Evaluated at a fresh scratch forward at `qpos` (the config the real
+    /// `step` maps the wrench through, matching [`Self::fresh_xfrc_column`]).
+    // expect_used: a transition-derivative / forward on a valid model does not fail; a
+    // failure is a programmer error surfaced loudly (mirrors `scratch_state_step`).
+    #[allow(clippy::expect_used)]
+    fn analytic_state_jacobian(&self, wrench: &SpatialVector) -> Option<DMatrix<f64>> {
+        let jnt = self.single_hinge()?;
+        let dt = self.model.timestep;
+        let nv = self.model.nv; // == 1 (single_hinge), so the state block is 2×2
+        // Unloaded transition A at the current state. The real `step` re-forwards at
+        // `qpos`, so A's internal perturbations evaluate at the same fresh config the
+        // carry uses (`self.data`'s `xipos`/`qM` lag a step, but `step`/`forward` redo FK).
+        // A is (2·nv + na)²; take the [qpos; qvel] block (the carry's 2·nv × 2·nv state).
+        let a = self
+            .data
+            .transition_derivatives(&self.model, &sim_core::DerivativeConfig::default())
+            .expect("unloaded transition derivatives")
+            .A;
+        let mut j = a.view((0, 0), (2 * nv, 2 * nv)).into_owned();
+        // Geometric stiffness at a fresh scratch forward at `qpos` (matching the FD
+        // `loaded_state_jacobian` / `fresh_xfrc_column` eval point).
+        let mut scratch = self.model.make_data();
+        scratch.qpos.copy_from(&self.data.qpos);
+        scratch.qvel.copy_from(&self.data.qvel);
+        scratch.forward(&self.model).expect("scratch forward");
+        let jb = self.model.jnt_body[jnt];
+        let axis = scratch.xquat[jb] * self.model.jnt_axis[jnt];
+        let anchor = scratch.xpos[jb] + scratch.xquat[jb] * self.model.jnt_pos[jnt];
+        let r = scratch.xipos[self.body] - anchor;
+        let f = Vec3::new(wrench[3], wrench[4], wrench[5]);
+        let geom_stiff = axis.cross(&axis.cross(&r)).dot(&f); // ∂(Jᵀw)/∂θ
+        let vel_corr = dt / scratch.qM[(0, 0)] * geom_stiff; // ∂qvel'/∂qpos correction
+        j[(1, 0)] += vel_corr; // velocity row, qpos col
+        j[(0, 0)] += dt * vel_corr; // position row, qpos col (semi-implicit chain)
+        Some(j)
     }
 
     /// Forward-only oracle for [`Self::coupled_trajectory_material_gradient_articulated`]:
@@ -1787,31 +1868,39 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// — `∂w/∂x*` the moment's two parts, `∂w/∂h` the force/moment-vs-height feedback,
     /// `∂w/∂s` the moment's `c(q)` feedback), and the multi-DOF rigid carry
     /// `s' = J_state·s + G·w` (`RigidStateCarryVjp`) where `J_state` is the LOADED
-    /// single-step Jacobian (`loaded_state_jacobian`, the wrench — moment included —
-    /// held) and `G`'s VELOCITY rows are the full `nv×6` `rigid_xfrc_column` while its
-    /// POSITION rows are ZEROED — the §8a fix (`∂qpos'/∂w = 0`, mirroring the scalar
-    /// `ZCarryVjp`; the "true post" position term injects a spurious first-step
-    /// gradient).
+    /// single-step Jacobian — for a single hinge the **analytic** geometric stiffness
+    /// `A + Δt·M⁻¹·∂(Jᵀw)/∂q` (`analytic_state_jacobian`), else the FD
+    /// `loaded_state_jacobian` fallback — and `G`'s VELOCITY rows are the full
+    /// `nv×6` `rigid_xfrc_column` while its POSITION rows are ZEROED — the §8a fix
+    /// (`∂qpos'/∂w = 0`, mirroring the scalar `ZCarryVjp`; the "true post" position
+    /// term injects a spurious first-step gradient).
     ///
-    /// **Accuracy / scope.** The wrench node and pose seam are analytic
-    /// (FD-validated machine-exact vs the real contact readout, `tests/`); the wrench
-    /// **response** `G` is read at the config the real `step` maps through (a fresh
-    /// scratch forward, `fresh_xfrc_column`), and the state carry `J_state` is
-    /// finite-differenced (it includes the applied-wrench geometric stiffness
-    /// `∂(Jᵀw)/∂q` that `transition_derivatives` omits). Under PENALTY contact the
-    /// composed gradient is **machine-exact through contact make/break** (≤~2e-6 rel
-    /// through `n ≈ 6`, including the soft node's `n = 1` rest-state zero and `n = 2`
-    /// exactness); over longer rollouts with sustained re-engagement the residual
-    /// GROWS with `n` (~1e-3 at `n = 10`), as the moment's config-sensitive rotational
-    /// Jacobian amplifies the FD'd geometric-stiffness residual the merged force path
-    /// carries at ~6e-6. This is NOT a contact-smoothness cap — IPC reaches the same
-    /// ~1e-3 order (it does not reduce it), confirming the residual is the geometric
-    /// stiffness, not the penalty active-set kink. Still adequate for co-design
-    /// gradient descent; a machine-exact analytic geometric-stiffness term is the
-    /// documented follow-on. Hinge scope (no quaternion joints; raw
-    /// `[qpos; qvel]` state), `rigid_damping = 0` (the damping velocity-coupling is
-    /// not in the loaded carry), and a flat constant-normal plane (`τ_z = 0`;
-    /// tangential/curved contact is the next arc). See
+    /// **Accuracy / scope.** The wrench node and pose seam are analytic (FD-validated
+    /// machine-exact vs the real contact readout, `tests/`); the wrench **response**
+    /// `G` is read at the config the real `step` maps through (a fresh scratch forward,
+    /// `fresh_xfrc_column`); and for the single hinge the state carry `J_state` is the
+    /// analytic geometric stiffness (machine-exact vs the FD loaded Jacobian, removing
+    /// the applied-wrench term `∂(Jᵀw)/∂q` that `transition_derivatives` omits — see
+    /// `analytic_state_jacobian_matches_fd_loaded`). Under PENALTY contact the composed
+    /// gradient is **machine-exact through contact make/break** (≤~1e-6 rel through
+    /// `n ≈ 6`, including the soft node's `n = 1` rest-state zero and `n = 2`
+    /// exactness).
+    ///
+    /// Over longer rollouts with sustained re-engagement the residual GROWS with `n`
+    /// (~1e-3 at `n = 10`, ~5e-3 at `n = 12`). **This is the off-COM MOMENT's gradient
+    /// over long rollouts** — re-diagnosed 2026-06-15, correcting two earlier drafts: it
+    /// is NOT the geometric stiffness (the analytic `J_state` is machine-exact yet n≥10
+    /// is unchanged — it only tightened n≈6) and NOT a penalty active-set kink (IPC
+    /// reaches the same order). It is moment-specific: the free-platen articulated path
+    /// (no moment, J = I) is machine-exact at every `n`
+    /// (`articulated_free_platen_exact_all_n`), and fresh-FK / lag-attribution / the
+    /// true position-row term were all measured WORSE (the stale-to-`s_k` calibration is
+    /// optimal). The precise source is a documented open problem (the next leaf); still
+    /// adequate for co-design gradient descent (DIRECTION + ~99.9% magnitude). Hinge
+    /// scope (no quaternion joints; raw `[qpos; qvel]` state), `rigid_damping = 0` (the
+    /// damping velocity-coupling is not in the loaded carry), and a flat constant-normal
+    /// plane (`τ_z = 0`; tangential/curved contact is the next arc). See
+    /// `docs/keystone/geometric_stiffness_recon.md` and
     /// `docs/keystone/contact_moment_recon.md`.
     ///
     /// # Panics
@@ -1877,9 +1966,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // config — so the forward values match and the independent FD gate validates
             // the gradient against the self-consistent forward model. (Re-forwarding to
             // align the factors changes the forward model AND breaks the §8a structure →
-            // ~10–30% error; verified. The residual is the moment's geometric stiffness,
-            // FD'd in `J_state`, amplified over long rollouts — see contact_moment_recon.md
-            // §6.)
+            // ~10–30% error; verified (re-confirmed 2026-06-15). The long-rollout residual
+            // is the off-COM MOMENT's gradient (moment-specific; NOT the geometric
+            // stiffness — making `J_state` analytic left n≥10 unchanged) — a documented
+            // open problem; see geometric_stiffness_recon.md.)
             let jz = self.pose_seam_jz();
             let h_var = tape.push_custom(
                 &[s_var],
@@ -1959,8 +2049,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             //     ∂[qpos';qvel']/∂[qpos;qvel] (both blocks — incl the position-state
             //     coupling Δt·∂qvel'/∂qpos and the applied-force geometric stiffness
             //     ∂(Jᵀw)/∂q that the unloaded `transition_derivatives` drops; zero for
-            //     the free body, real for the hinge). The wrench held now includes the
-            //     moment, so J_state carries the moment's geometric stiffness too.
+            //     the free body, real for the hinge). Single hinge ⇒ the machine-exact
+            //     ANALYTIC `A + Δt·M⁻¹·∂(Jᵀw)/∂q` (`analytic_state_jacobian`); otherwise
+            //     (free-joint smoke, multi-link follow-on) the FD `loaded_state_jacobian`.
             //   G_vel = ∂(qvel')/∂w = rigid_xfrc_column (nv×6, the full wrench column);
             //     the POSITION rows of the full G are ZEROED — the §8a fix. sim-core
             //     integrates qpos with the pre-update velocity, so this step's wrench
@@ -1968,7 +2059,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             //     `ZCarryVjp`'s ∂z'/∂fz = 0; wiring ∂qpos'/∂w here injects a spurious
             //     first-step gradient (the soft solve from rest barely depends on μ, so
             //     d(tip_z_1)/dμ = 0) — see docs/keystone/multidof_rigid_recon.md §8c.
-            let j_state = self.loaded_state_jacobian(&wrench);
+            let j_state = self
+                .analytic_state_jacobian(&wrench)
+                .unwrap_or_else(|| self.loaded_state_jacobian(&wrench));
             let g_vel = self.fresh_xfrc_column();
 
             // (4)+(5) route the wrench and step the real rigid body.
@@ -2924,6 +3017,70 @@ mod tests {
         assert!(
             (tip_z - z_ref).abs() < 1e-12,
             "tape forward tip_z {tip_z} != real rollout {z_ref}"
+        );
+    }
+
+    /// The analytic single-hinge state Jacobian ([`StaggeredCoupling::analytic_state_jacobian`])
+    /// is MACHINE-EXACT against the FD [`StaggeredCoupling::loaded_state_jacobian`] for an
+    /// arbitrary held wrench (force AND torque components, nonzero `qvel`) — pinning the
+    /// closed-form geometric stiffness `Δt·M⁻¹·∂(Jᵀw)/∂q = Δt·M⁻¹·(â×(â×r))·f` added to the
+    /// unloaded transition `A`. It also confirms the scope predicate: `single_hinge` selects
+    /// the hinge and rejects the free joint (which falls back to the FD form, J = I ⇒ no
+    /// geometric stiffness). This replaces the FD Jacobian's noise with the exact term; see
+    /// `docs/keystone/geometric_stiffness_recon.md`.
+    #[test]
+    fn analytic_state_jacobian_matches_fd_loaded() {
+        const HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = -1.5; // nonzero velocity exercises the full Jacobian
+        data.forward(&model).expect("forward");
+        let c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        );
+        assert!(
+            c.single_hinge().is_some(),
+            "hinge must select the analytic path"
+        );
+
+        for wrench in [
+            SpatialVector::from_row_slice(&[0.1, 0.2, 0.0, 5.0, -3.0, 800.0]),
+            SpatialVector::from_row_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 600.0]),
+            SpatialVector::from_row_slice(&[0.3, -0.4, 0.2, -10.0, 7.0, -250.0]),
+        ] {
+            let loaded = c.loaded_state_jacobian(&wrench);
+            let analytic = c
+                .analytic_state_jacobian(&wrench)
+                .expect("single hinge → analytic");
+            let (err, loc) = sim_core::max_relative_error(&loaded, &analytic, 1e-3);
+            assert!(
+                err < 1e-6,
+                "analytic J_state must match FD loaded to FD precision, got rel {err:.3e} at {loc:?}"
+            );
+        }
+
+        // Free-joint platen: no single hinge ⇒ the analytic path declines (FD fallback).
+        let pmodel = load_model(PLATEN_MJCF).expect("platen MJCF loads");
+        let mut pdata = pmodel.make_data();
+        pdata.forward(&pmodel).expect("forward");
+        let pc: StaggeredCoupling = StaggeredCoupling::new(
+            pmodel, pdata, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        );
+        assert!(
+            pc.single_hinge().is_none()
+                && pc
+                    .analytic_state_jacobian(&SpatialVector::zeros())
+                    .is_none(),
+            "free joint must fall back to the FD loaded Jacobian"
         );
     }
 
