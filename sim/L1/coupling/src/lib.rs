@@ -172,6 +172,28 @@ fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64])
 /// # Panics
 /// Panics if `M` is singular (a degenerate model — should not occur for a
 /// well-posed mechanism).
+/// `M_impl⁻¹` where `M_impl = M + Δt·D` is the Euler `eulerdamp` matrix — the
+/// joint-space mass `M = data.qM` plus the implicit joint damping `D =
+/// model.implicit_damping` on the diagonal. The shared implicit factor for the
+/// wrench response ([`rigid_xfrc_column`]) and the actuator-input response
+/// (`StaggeredCoupling::actuator_velocity_column`). `D = 0` ⇒ bare `M⁻¹`, exactly.
+///
+/// # Panics
+/// Panics if `M_impl` is singular (a malformed model).
+// expect_used: a singular mass matrix is a malformed-model programmer error
+// surfaced loudly, mirroring `rigid_step_probe`'s divergence-panic rationale.
+#[allow(clippy::expect_used)]
+#[must_use]
+fn implicit_mass_inverse(model: &Model, data: &Data) -> DMatrix<f64> {
+    let mut m_impl = data.qM.clone();
+    for i in 0..model.nv {
+        m_impl[(i, i)] += model.timestep * model.implicit_damping[i];
+    }
+    m_impl
+        .try_inverse()
+        .expect("implicit mass matrix M + Δt·D must be invertible")
+}
+
 // expect_used: a singular mass matrix is a malformed-model programmer error
 // surfaced loudly, mirroring `rigid_step_probe`'s divergence-panic rationale.
 #[allow(clippy::expect_used)]
@@ -180,14 +202,7 @@ pub fn rigid_xfrc_column(model: &Model, data: &Data, body: usize) -> DMatrix<f64
     // J at the body COM (xipos): 6×nv, rows 0–2 angular, 3–5 linear — the same
     // point and frame the integrator's `mj_apply_ft` uses for `xfrc_applied`.
     let jac = mj_jac_point(model, data, body, &data.xipos[body]); // 6 × nv
-    // M_impl = M + Δt·D (the Euler `eulerdamp` matrix; D = 0 ⇒ M_impl = M exactly).
-    let mut m_impl = data.qM.clone();
-    for i in 0..model.nv {
-        m_impl[(i, i)] += model.timestep * model.implicit_damping[i];
-    }
-    let m_impl_inv = m_impl
-        .try_inverse()
-        .expect("implicit mass matrix M + Δt·D must be invertible");
+    let m_impl_inv = implicit_mass_inverse(model, data);
     model.timestep * m_impl_inv * jac.transpose() // (nv × nv)·(nv × 6) = nv × 6
 }
 
@@ -816,6 +831,13 @@ struct RigidStateCarryVjp {
     /// The wrench POSITION-row response `G_pos = ∂(tangent qpos')/∂w = D·G_vel` (`nv × 6`),
     /// `D` the integrator's tangent Jacobian (`Δt·I` Euclidean, `Δt·J_r` quaternion).
     g_pos: DMatrix<f64>,
+    /// Optional ACTUATOR-control channel `G_act = ∂s'/∂ctrl` (`2·nv × nu`): the
+    /// actuator drives `s' = J_state·s + G·w + G_act·u` where `u = ctrl`. When `Some`,
+    /// the node takes a third parent `u` (`[nu]`) and `∂L/∂u[a] += Σᵢ G_act[(i,a)]·cot[i]`.
+    /// `None` (the material/passive path) ⇒ two parents, byte-identical to the pre-actuator
+    /// carry. Rows are `[G_act_pos; G_act_vel]` with `G_act_vel = Δt·M_impl⁻¹·∂qfrc_act/∂ctrl`
+    /// and `G_act_pos = D·G_act_vel` (the same integrator tangent `D` as `G_pos`).
+    g_act: Option<DMatrix<f64>>,
 }
 
 impl VjpOp for RigidStateCarryVjp {
@@ -830,12 +852,16 @@ impl VjpOp for RigidStateCarryVjp {
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
         let n = self.j_state.nrows(); // 2·nv
         let nv = self.g_vel.nrows();
+        let nu = self.g_act.as_ref().map_or(0, DMatrix::ncols);
+        let want_parents = if self.g_act.is_some() { 3 } else { 2 };
+        let u_shape_ok = self.g_act.is_none() || parent_cotans[2].shape() == [nu];
         assert!(
             cotangent.shape() == [n]
-                && parent_cotans.len() == 2
+                && parent_cotans.len() == want_parents
                 && parent_cotans[0].shape() == [n]
-                && parent_cotans[1].shape() == [6],
-            "RigidStateCarryVjp: expected cot [2·nv] + parents (s [2·nv], w [6])",
+                && parent_cotans[1].shape() == [6]
+                && u_shape_ok,
+            "RigidStateCarryVjp: expected cot [2·nv] + parents (s [2·nv], w [6][, u [nu]])",
         );
         let cot = cotangent.as_slice();
         // ∂L/∂s += J_stateᵀ·cot.
@@ -847,7 +873,7 @@ impl VjpOp for RigidStateCarryVjp {
             }
             s_slot[j] += acc;
         }
-        // ∂L/∂w[k] += Σᵢ G_vel[(i,k)]·cot[nv+i] (position rows of G are zero).
+        // ∂L/∂w[k] += Σᵢ G_vel[(i,k)]·cot[nv+i] + G_pos[(i,k)]·cot[i].
         let w_slot = parent_cotans[1].as_mut_slice();
         for k in 0..6 {
             let mut acc = 0.0;
@@ -856,6 +882,18 @@ impl VjpOp for RigidStateCarryVjp {
                 acc += self.g_pos[(i, k)] * cot[i]; // position rows: G_pos = D·G_vel
             }
             w_slot[k] += acc;
+        }
+        // ∂L/∂u[a] += Σᵢ G_act[(i,a)]·cot[i] — the actuator-control channel (full 2·nv
+        // rows: G_act already stacks [pos; vel]).
+        if let Some(g_act) = &self.g_act {
+            let u_slot = parent_cotans[2].as_mut_slice();
+            for a in 0..nu {
+                let mut acc = 0.0;
+                for i in 0..n {
+                    acc += g_act[(i, a)] * cot[i];
+                }
+                u_slot[a] += acc;
+            }
         }
     }
 }
@@ -1936,6 +1974,43 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         rigid_xfrc_column(&self.model, &self.data, self.body)
     }
 
+    /// The actuator-control VELOCITY response `∂(qvel')/∂ctrl = Δt·M_impl⁻¹·∂qfrc_actuator/∂ctrl`
+    /// (`nv × nu`) at the current (fresh-FK) config — the actuator analog of the wrench
+    /// column [`Self::fresh_xfrc_column`], routed through the actuator transmission instead
+    /// of an applied wrench.
+    ///
+    /// `∂qfrc_actuator/∂ctrl` is computed by a forward-only central FD of `qfrc_actuator`
+    /// (a scratch `forward` at `qpos`/`qvel` with `ctrl_a ± ε`). For the affine force law
+    /// `force = gain·ctrl + bias` this is EXACT to roundoff (`qfrc_actuator` is affine in
+    /// `ctrl`, so the central difference has no truncation error) and robust to how the
+    /// transmission `moment`/`gain` are stored (the persisted `data.actuator_moment` is
+    /// transient — cleared after forward — whereas `qfrc_actuator` is the reliable output).
+    /// The POSITION rows are `D·(this)` (the same integrator tangent `D` as the wrench's
+    /// `G_pos`), assembled by the caller. See `docs/keystone/actuator_dynamics_recon.md`.
+    // expect_used: a scratch forward on a valid model does not fail (mirrors `scratch_state_step`).
+    #[allow(clippy::expect_used)]
+    fn actuator_velocity_column(&self) -> DMatrix<f64> {
+        let (nv, nu) = (self.model.nv, self.model.nu);
+        let eps = 1e-6;
+        let qfrc = |a: usize, du: f64| -> DVector<f64> {
+            let mut d = self.model.make_data();
+            d.qpos.copy_from(&self.data.qpos);
+            d.qvel.copy_from(&self.data.qvel);
+            d.ctrl[a] += du;
+            d.forward(&self.model)
+                .expect("scratch forward for actuator Jacobian");
+            d.qfrc_actuator.clone()
+        };
+        let mut dqfrc = DMatrix::zeros(nv, nu);
+        for a in 0..nu {
+            let col = (qfrc(a, eps) - qfrc(a, -eps)) / (2.0 * eps);
+            for i in 0..nv {
+                dqfrc[(i, a)] = col[i];
+            }
+        }
+        self.model.timestep * implicit_mass_inverse(&self.model, &self.data) * dqfrc
+    }
+
     /// The LOADED single-step state Jacobian `∂[qpos'; qvel']/∂[qpos; qvel]`
     /// (`2·nv × 2·nv`) at the current rigid state, with the contact `wrench` HELD —
     /// computed by central finite differences over [`Self::scratch_state_step`].
@@ -2457,8 +2532,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // hinge/chain path. Quaternion (nq≠nv): D carries the SO(3) right Jacobian
             // J_r(Δt·qvel') at the POST-step velocity (`self.data.qvel`, the ω the
             // integrator actually integrated). See `docs/keystone/quaternion_joints_recon.md`.
+            // Δt is the RIGID integrator's `model.timestep` (matching G_vel + the real step
+            // + the quaternion branch's `integrator_pos_jacobian`), NOT the soft `cfg.dt`.
             let g_pos = if self.model.nq == self.model.nv {
-                dt * &g_vel
+                self.model.timestep * &g_vel
             } else {
                 self.integrator_pos_jacobian(&self.data.qvel) * &g_vel
             };
@@ -2475,6 +2552,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     j_state,
                     g_vel,
                     g_pos,
+                    g_act: None, // passive/material path: no actuator-control channel
                 }),
             );
 
@@ -2500,6 +2578,255 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         );
         tape.backward(obj_var);
         let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (tip_z, grad)
+    }
+
+    /// Forward-only oracle for [`Self::coupled_trajectory_actuator_gradient`]: roll the
+    /// articulated coupled system forward applying the per-step motor control
+    /// `controls[k]` to the single actuator (`data.ctrl[0]`), and return the tip world
+    /// height after the rollout. No tape — the independent black-box oracle for
+    /// finite-differencing the actuator-control gradient. Advances `self`.
+    ///
+    /// # Panics
+    /// Panics if a rigid/soft step diverges (as in [`Self::step`]).
+    #[must_use]
+    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not
+    // recoverable for keystone-v1 (mirrors `step` / `coupled_trajectory_articulated_z`).
+    #[allow(clippy::expect_used)]
+    pub fn coupled_trajectory_actuated_z(&mut self, controls: &[f64]) -> f64 {
+        for &u_k in controls {
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.tip_plane_height();
+            let (_solver, x_next) = self.soft_resolve(height);
+            for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
+                *vi = (xf - xo) / self.cfg.dt;
+            }
+            self.x = x_next;
+            // Route the contact wrench AND the motor control, then step (the actuator
+            // drives the integration, not the pre-step contact, so set ctrl after the
+            // wrench readout — mirrors the gradient method's staggered order).
+            self.data.xfrc_applied[self.body] = self.contact_wrench(height);
+            self.data.ctrl[0] = u_k;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in actuated rollout");
+        }
+        self.data.forward(&self.model).expect("fresh FK (output)");
+        self.data.xipos[self.body].z
+    }
+
+    /// **The articulated actuator CONTROL gradient — the powered-exo substrate.** Rolls
+    /// the coupled system forward applying a per-step MuJoCo `<actuator>` motor control
+    /// (`controls[k]` at step k, on `data.ctrl[0]`) on ONE chassis tape, then ONE
+    /// `tape.backward(tip_z_N)` gives `(tip_z_N, [∂tip_z_N/∂u_0 … ∂u_{N−1}])` — the tip's
+    /// final height vs every actuator control. The articulated + real-`<actuator>`
+    /// successor to [`Self::coupled_trajectory_control_gradient`] (which applies a Cartesian
+    /// force on the free platen): here the control routes through the actuator transmission
+    /// (`qfrc_actuator = moment·gain·ctrl`) onto the joint, and the multi-DOF carry gains
+    /// the actuator-input channel — `s' = J_state·s + G·w + G_act·u`,
+    /// `G_act = ∂s'/∂ctrl = [Δt·G_act_vel; G_act_vel]` with
+    /// `G_act_vel = Δt·M_impl⁻¹·∂qfrc_actuator/∂ctrl` (`Self::actuator_velocity_column`).
+    ///
+    /// Each `u_k` is a tape parameter feeding the carry's third (control) parent, so the
+    /// reverse pass accumulates BOTH paths each control has on `tip_z_N`: the DIRECT joint
+    /// drive (`u_k → qvel' → tip_z`) AND the INDIRECT coupled path (`u_k` moves the arm →
+    /// changes the contact penetration → soft re-equilibration → reaction). The material
+    /// `μ` rides as a constant leaf (a joint actuator+design gradient on one tape is a
+    /// follow-on).
+    ///
+    /// **Scope (PR1).** A single-hinge MOTOR (`force = gain·ctrl`, no state feedback) on a
+    /// flat normal: the constant actuator force does not perturb `J_state` (single-hinge `M`
+    /// is config-independent), so the analytic single-hinge carry stays exact and the FD
+    /// `J_state` needs no `ctrl` replication. Joint damping IS supported (via `M_impl`).
+    /// State-feedback servos (position/velocity) and chains (where the control perturbs
+    /// `J_state` through `∂M⁻¹/∂q`) are the follow-on. See
+    /// `docs/keystone/actuator_dynamics_recon.md`.
+    ///
+    /// # Panics
+    /// Panics if the scene is not a single hinge with exactly one actuator, if
+    /// `rigid_damping ≠ 0`, if the rotating normal is enabled, or if a rigid/soft step
+    /// diverges.
+    #[must_use]
+    // One coherent per-step tape-construction loop (the pose seam + soft + wrench + carry
+    // nodes + the real actuated step); splitting it would scatter the recurrence.
+    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not
+    // recoverable for keystone-v1 (mirrors `coupled_trajectory_material_gradient_articulated`).
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_actuator_gradient(&mut self, controls: &[f64]) -> (f64, Vec<f64>) {
+        assert!(
+            self.single_hinge().is_some(),
+            "actuator gradient v1 scope: a single hinge"
+        );
+        assert!(
+            self.model.nu == 1,
+            "actuator gradient v1 scope: exactly one actuator"
+        );
+        assert!(
+            self.rigid_damping == 0.0,
+            "articulated path requires rigid_damping = 0 (the coupling's free-platen knob)"
+        );
+        assert!(
+            !self.rotating_normal,
+            "actuator gradient v1 scope: flat normal"
+        );
+        let n = self.n_vertices;
+        let nv = self.model.nv;
+        let nu = self.model.nu;
+        let dt = self.cfg.dt;
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+
+        let mut tape = Tape::new();
+        // Material μ is a CONSTANT leaf here (not differentiated — only the control
+        // leaves are read), so its unread gradient stays valid.
+        let p_var = tape.constant_tensor(Tensor::from_slice(&[self.mu], &[1]));
+        // One control parameter leaf per step (the gradient targets).
+        let control_vars: Vec<Var> = controls
+            .iter()
+            .map(|&u| tape.param_tensor(Tensor::from_slice(&[u], &[1])))
+            .collect();
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut s0 = vec![0.0_f64; 2 * nv];
+        for i in 0..nv {
+            s0[i] = self.data.qpos[i];
+            s0[nv + i] = self.data.qvel[i];
+        }
+        let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
+
+        for (k, &u_k) in controls.iter().enumerate() {
+            // FRESH FK (the matched fresh formulation, as in the material gradient).
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.tip_plane_height();
+            let h_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[height], &[1]),
+                Box::new(PoseSeamVjp {
+                    jz: self.pose_seam_jz(),
+                }),
+            );
+
+            // (1)+(2) one dynamic soft step (μ a constant leaf; param_idx 0 unread).
+            let (solver, x_next) = self.soft_resolve(height);
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, h_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp(&x_next, dt, 0, dir)),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (3) contact wrench [τ; f] at the post-step soft config (flat normal).
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0], c[1], c[2]))
+                .collect();
+            let c = self.data.xipos[self.body];
+            let pairs = self.active_pair_wrench_data(height, &positions);
+            let mut wrench = SpatialVector::zeros();
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            for (v, g, nrm, curv, r) in pairs {
+                let f = -g;
+                wrench[3] += f.x;
+                wrench[4] += f.y;
+                wrench[5] += f.z;
+                let tau = (r - c).cross(&f);
+                wrench[0] += tau.x;
+                wrench[1] += tau.y;
+                wrench[2] += tau.z;
+                active.push((v, g, nrm, curv, r - c));
+            }
+            let force = Vec3::new(wrench[3], wrench[4], wrench[5]);
+            let jlin = self.com_linear_jacobian();
+            let w_var = tape.push_custom(
+                &[x_next_var, h_var, s_var],
+                Tensor::from_slice(wrench.as_slice(), &[6]),
+                Box::new(ContactWrenchTrajVjp {
+                    active,
+                    force,
+                    jlin,
+                    n_dof: 3 * n,
+                    nv,
+                    pose: WrenchPose::Height,
+                }),
+            );
+
+            // Carry at the current (fresh-FK) state. J_state + the wrench response G_vel
+            // are taken BEFORE the step; the actuator-input velocity column too.
+            let j_state = self
+                .analytic_state_jacobian(&wrench)
+                .unwrap_or_else(|| self.loaded_state_jacobian(&wrench));
+            let g_vel = self.fresh_xfrc_column();
+            let g_act_vel = self.actuator_velocity_column(); // nv × nu
+
+            // (4)+(5) route the wrench AND the motor control, then step.
+            self.data.xfrc_applied[self.body] = wrench;
+            self.data.ctrl[0] = u_k;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in actuator trajectory");
+
+            // Position rows: D = Δt·I (single hinge ⇒ Euclidean), so G_pos = Δt·G_vel and
+            // G_act = [Δt·G_act_vel; G_act_vel] (2·nv × nu). Δt here is the RIGID
+            // integrator's `model.timestep` (the same dt the velocity columns + the real
+            // step use), NOT the soft `cfg.dt` — they are equal under lockstep but the
+            // integrator term must track the rigid step.
+            let rigid_dt = self.model.timestep;
+            let g_pos = rigid_dt * &g_vel;
+            let mut g_act = DMatrix::zeros(2 * nv, nu);
+            g_act
+                .view_mut((0, 0), (nv, nu))
+                .copy_from(&(rigid_dt * &g_act_vel));
+            g_act.view_mut((nv, 0), (nv, nu)).copy_from(&g_act_vel);
+
+            let mut s_next = vec![0.0_f64; 2 * nv];
+            for i in 0..nv {
+                s_next[i] = self.data.qpos[i];
+                s_next[nv + i] = self.data.qvel[i];
+            }
+            let s_next_var = tape.push_custom(
+                &[s_var, w_var, control_vars[k]],
+                Tensor::from_slice(&s_next, &[2 * nv]),
+                Box::new(RigidStateCarryVjp {
+                    j_state,
+                    g_vel,
+                    g_pos,
+                    g_act: Some(g_act),
+                }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            s_var = s_next_var;
+        }
+
+        // Objective: the fresh tip height = PoseSeam(s_N).
+        self.data.forward(&self.model).expect("fresh FK (output)");
+        let tip_z = self.data.xipos[self.body].z;
+        let obj_var = tape.push_custom(
+            &[s_var],
+            Tensor::from_slice(&[tip_z], &[1]),
+            Box::new(PoseSeamVjp {
+                jz: self.pose_seam_jz(),
+            }),
+        );
+        tape.backward(obj_var);
+        let grad: Vec<f64> = control_vars
+            .iter()
+            .map(|&u| tape.grad_tensor(u).as_slice()[0])
+            .collect();
         (tip_z, grad)
     }
 
