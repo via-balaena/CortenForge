@@ -21,14 +21,28 @@
 //! `coupled_trajectory_articulated_z`, which routes the same moment), an INDEPENDENT
 //! oracle. The wrench node (`∂w/∂x*`, `∂w/∂h`, `∂w/∂s`) is separately FD-validated
 //! machine-exact against the real contact readout in the
-//! `contact_wrench_node_matches_readout_fd` lib unit test. Under PENALTY contact the
-//! composed gradient is machine-exact through contact make/break; over longer
-//! rollouts with sustained re-engagement the residual GROWS with n (it is the
-//! moment's config-sensitive rotational Jacobian amplifying the FD'd
-//! geometric-stiffness carry residual). The same ~1e-3 order appears under IPC — it
-//! does NOT reduce it, confirming the residual is the geometric stiffness, not the
-//! penalty active-set kink; the analytic geometric-stiffness term is the follow-on.
-//! See docs/keystone/contact_moment_recon.md §5a/§6.
+//! `contact_wrench_node_matches_readout_fd` lib unit test; the rigid state carry
+//! `J_state` is the analytic single-hinge geometric stiffness, FD-validated in
+//! `analytic_state_jacobian_matches_fd_loaded`.
+//!
+//! **Accuracy + the long-rollout residual (re-diagnosed 2026-06-15).** Under PENALTY
+//! contact the composed gradient is machine-exact through contact make/break (≤~1e-6
+//! to n≈6), but over longer rollouts with sustained re-engagement the residual GROWS
+//! with n (~1e-3 at n=10, ~5e-3 at n=12). This residual is the OFF-COM MOMENT's
+//! gradient over long rollouts — and is NOT what two earlier drafts claimed. It is:
+//!   * MOMENT-specific: the SAME articulated path on a free-joint platen (no moment,
+//!     J=I) is machine-exact at every n (`articulated_free_platen_exact_all_n`), so the
+//!     carry, the soft adjoint, and the §8a structure are all sound;
+//!   * NOT the geometric stiffness: making `J_state` analytic (machine-exact vs the FD
+//!     loaded Jacobian) leaves n≥10 unchanged — it only tightened n≈6;
+//!   * NOT a penalty active-set kink: IPC reaches the same ~1e-3 order;
+//!   * resistant to fresh-FK re-forward, lag-attribution, and the true position-row
+//!     wrench term (all measured WORSE) — the stale-to-`s_k` calibration is optimal.
+//!
+//! The precise source is a documented open problem (the off-COM moment's long-rollout
+//! gradient); see docs/keystone/geometric_stiffness_recon.md. Still well within
+//! co-design tolerance (DIRECTION + ~99.9% magnitude). See also
+//! docs/keystone/contact_moment_recon.md §5a/§6.
 
 #![allow(clippy::expect_used)]
 
@@ -98,7 +112,9 @@ fn articulated_gradient_matches_full_coupled_fd_through_make_break() {
     // gradient is MACHINE-EXACT against the independent full-coupled FD oracle here
     // (the FD oracle is converged to <1e-9 over 4 decades of ε; the wrench node is
     // FD-exact vs the real readout in the `contact_wrench_node_matches_readout_fd`
-    // lib unit test).
+    // lib unit test). The analytic geometric-stiffness `J_state` (replacing the FD
+    // loaded Jacobian) tightens this from ~1.5e-6 to ~7e-7 — the gate is now 3e-6 (a
+    // float-noise margin over the measured value, the tightening the analytic enables).
     let n = 6;
     let (tip_z, total, fd) = tape_and_fd(n);
     let z_oracle = build(MU0).coupled_trajectory_articulated_z(n);
@@ -109,7 +125,7 @@ fn articulated_gradient_matches_full_coupled_fd_through_make_break() {
     let rel = (total - fd).abs() / fd.abs().max(1e-30);
     println!("n={n}: tape total={total:.8e} FD={fd:.8e} rel={rel:.3e}");
     assert!(
-        rel < 1e-5,
+        rel < 3e-6,
         "articulated dμ gradient (with moment) must match full-coupled FD through \
          make/break, got rel {rel:.3e}"
     );
@@ -122,15 +138,16 @@ fn articulated_gradient_matches_full_coupled_fd_through_make_break() {
 }
 
 /// Over longer rollouts with sustained re-engagement the gradient residual GROWS
-/// with n (penalty: ~1e-3 at n = 10, ~5.7e-3 at n = 15): the moment's
-/// config-sensitive rotational Jacobian amplifies the FD'd geometric-stiffness carry
-/// residual the merged force path carries at ~6e-6. It is NOT a contact-smoothness
-/// cap — IPC reaches the same ~1e-3 order (does not reduce it), confirming the
-/// residual is the geometric stiffness, not the penalty active-set kink; the
-/// analytic geometric-stiffness term is the follow-on. The 3e-3 bound here is the
-/// n ≤ 10 value (it is exceeded for larger n) — well within
-/// co-design-gradient-descent tolerance (DIRECTION + ~99.9% of magnitude correct).
-/// Gated at n = 10 + documented rather than hidden.
+/// with n (penalty: ~1e-3 at n = 10, ~5e-3 at n = 12). RE-DIAGNOSED 2026-06-15: this
+/// is the OFF-COM MOMENT's gradient over long rollouts — NOT the geometric stiffness
+/// (the analytic `J_state` here matches the FD loaded Jacobian to machine precision
+/// yet leaves n=10 unchanged) and NOT a penalty active-set kink (IPC reaches the same
+/// order). It is moment-specific: the free-platen articulated path (no moment) is
+/// machine-exact at every n — see `articulated_free_platen_exact_all_n`. The precise
+/// source is a documented open problem (docs/keystone/geometric_stiffness_recon.md);
+/// fresh-FK, lag-attribution, and the true position-row term were all measured WORSE.
+/// Still well within co-design tolerance (DIRECTION + ~99.9% of magnitude). The 3e-3
+/// bound is the n ≤ 10 value (exceeded for larger n); gated + documented, not hidden.
 #[test]
 fn articulated_gradient_long_rollout_grows_with_n() {
     let n = 10;
@@ -140,13 +157,57 @@ fn articulated_gradient_long_rollout_grows_with_n() {
     assert!(
         rel < 3e-3,
         "n=10 articulated dμ gradient must stay within the documented n≤10 \
-         geometric-stiffness residual bound, got rel {rel:.3e}"
+         moment-residual bound, got rel {rel:.3e}"
     );
+}
+
+/// DISCRIMINATOR (the re-diagnosis evidence): the SAME articulated path on a
+/// free-joint platen — no off-COM moment (symmetric contact through the COM), J = I so
+/// no geometric stiffness, and the FD loaded Jacobian — is MACHINE-EXACT at every n,
+/// including n = 12 where the hinge-with-moment residual is ~5e-3. This isolates the
+/// long-rollout residual to the off-COM MOMENT's gradient: the shared multi-DOF carry,
+/// the soft adjoint, and the §8a structure are all sound (it is not a carry, soft, or
+/// geometric-stiffness defect). See docs/keystone/geometric_stiffness_recon.md.
+#[test]
+fn articulated_free_platen_exact_all_n() {
+    const FREE_PLATEN_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.108">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let build_free = |mu: f64| -> StaggeredCoupling {
+        let model = load_model(FREE_PLATEN_MJCF).expect("platen MJCF loads");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        )
+    };
+    for n in [6usize, 10, 12] {
+        let (_t, g_mu) = build_free(MU0).coupled_trajectory_material_gradient_articulated(n, 0);
+        let (_t2, g_la) = build_free(MU0).coupled_trajectory_material_gradient_articulated(n, 1);
+        let total = g_mu + 4.0 * g_la;
+        let eps = MU0 * 1e-4;
+        let zp = build_free(MU0 + eps).coupled_trajectory_articulated_z(n);
+        let zm = build_free(MU0 - eps).coupled_trajectory_articulated_z(n);
+        let fd = (zp - zm) / (2.0 * eps);
+        let rel = (total - fd).abs() / fd.abs().max(1e-30);
+        println!("free-platen articulated n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
+        assert!(
+            rel < 1e-6,
+            "free-platen articulated gradient (no moment) must be machine-exact at \
+             n={n}, got rel {rel:.3e}"
+        );
+    }
 }
 
 /// The §8a structure is locked: the pre-update force carry (∂qpos'/∂w = 0) makes
 /// the first step (soft solve from rest, dw/dμ ≈ 0) carry ZERO gradient, and the
-/// two-step gradient is machine-exact (the geometric-stiffness residual only accrues
+/// two-step gradient is machine-exact (the long-rollout moment residual only accrues
 /// over more steps). A regression that re-wires the wrench into the position carry
 /// (the spurious first-step gradient) trips n = 2.
 #[test]
