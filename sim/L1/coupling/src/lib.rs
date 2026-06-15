@@ -530,6 +530,97 @@ impl VjpOp for PoseSeamVjp {
     }
 }
 
+/// The 6 canonical spatial-twist basis directions `(ω, v)` — 3 angular then 3 linear,
+/// matching [`StaggeredCoupling::pose_twist_jacobian`]'s row layout (`mj_jac_point`
+/// rows 0–2 angular, 3–5 linear). The rotating-normal pose channel is expressed in
+/// this rigid-agnostic basis (the soft pose-adjoint and the wrench `∂w/∂T`); the
+/// [`PoseTwistSeamVjp`] seam then maps the twist cotangent through `J_spatial`.
+fn twist_basis() -> [RigidTwist; 6] {
+    let e = |i: usize| {
+        let mut v = Vec3::zeros();
+        v[i] = 1.0;
+        v
+    };
+    [
+        RigidTwist {
+            angular: e(0),
+            linear: Vec3::zeros(),
+        },
+        RigidTwist {
+            angular: e(1),
+            linear: Vec3::zeros(),
+        },
+        RigidTwist {
+            angular: e(2),
+            linear: Vec3::zeros(),
+        },
+        RigidTwist {
+            angular: Vec3::zeros(),
+            linear: e(0),
+        },
+        RigidTwist {
+            angular: Vec3::zeros(),
+            linear: e(1),
+        },
+        RigidTwist {
+            angular: Vec3::zeros(),
+            linear: e(2),
+        },
+    ]
+}
+
+/// Chassis-tape [`VjpOp`] for the **rotating-normal** pose seam: the contact plane is
+/// rigidly attached to the body, so its 6-DOF spatial **twist** `T` (3 angular + 3
+/// linear, the soft side's [`sim_soft::RigidTwist`] basis) is a function of the rigid
+/// state, `∂T/∂qpos = J_spatial` (the body's spatial Jacobian at the world origin —
+/// rows 0–2 angular, 3–5 linear `v_O`). Parent `[s]` (`[2·nv]`), output `T` (`[6]`);
+/// `∂L/∂qpos = J_spatialᵀ·∂L/∂T`, `∂L/∂qvel = 0`.
+///
+/// This is the rotating-normal generalization of [`PoseSeamVjp`] (which threads only
+/// the scalar height `h`, `∂h/∂q = J_z`): the soft solve's pose-adjoint and the
+/// contact-wrench readout both consume the 6-DOF twist (`δn̂ = ω×n̂`, `δoffset = v·n̂`),
+/// and this seam maps the assembled twist cotangent back to the rigid DOFs. The twist
+/// node's value is the all-zero perturbation at the linearization point (the soft /
+/// wrench nodes carry the real `x*` / wrench values); only its cotangent is used.
+/// FD-validated via the full-coupled rotating-normal gradient gate. Keystone
+/// rotating-normal leaf, PR2.
+#[derive(Clone, Debug)]
+struct PoseTwistSeamVjp {
+    /// `J_spatial`: the body's spatial Jacobian at the world origin (`6 × nv`,
+    /// `mj_jac_point` rows 0–2 angular / 3–5 linear). `∂T/∂qpos`.
+    j_spatial: DMatrix<f64>,
+}
+
+impl VjpOp for PoseTwistSeamVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::PoseTwistSeamVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    // needless_range_loop: the `∂L/∂qpos = J_spatialᵀ·cot` contraction indexes the
+    // 2-D `j_spatial` by (row k, col i) and `cot` by k; explicit indices read clearer.
+    #[allow(clippy::panic, clippy::needless_range_loop)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        let nv = self.j_spatial.ncols();
+        assert!(
+            cotangent.shape() == [6]
+                && parent_cotans.len() == 1
+                && parent_cotans[0].shape() == [2 * nv],
+            "PoseTwistSeamVjp: expected cot [6] + 1 parent (state [2·nv])",
+        );
+        let cot = cotangent.as_slice();
+        let slot = parent_cotans[0].as_mut_slice();
+        // ∂L/∂qpos = J_spatialᵀ·∂L/∂T (position half); ∂L/∂qvel = 0.
+        for i in 0..nv {
+            let mut acc = 0.0_f64;
+            for k in 0..6 {
+                acc += self.j_spatial[(k, i)] * cot[k];
+            }
+            slot[i] += acc;
+        }
+    }
+}
+
 /// Chassis-tape [`VjpOp`] for the contact **wrench** readout along an articulated
 /// trajectory: the full reaction spatial force `w = [τ; f]` the soft body applies
 /// to the rigid body at its COM `c = xipos`, generalizing the scalar
@@ -561,6 +652,14 @@ impl VjpOp for PoseSeamVjp {
 /// is distinct from the h(q) channel and is small in the keystone scene; it does
 /// NOT double-count the loaded `J_state` (which holds the wrench fixed while
 /// perturbing `q`). See `docs/keystone/contact_moment_recon.md` §3.
+///
+/// **Rotating-normal (`WrenchPose::Twist`).** When the plane normal tracks the body
+/// orientation, the pose parent is the 6-DOF spatial **twist** `T` (not the scalar
+/// `h`), and `w` gains the normal-rotation feedback the flat `∂w/∂h` drops. Per basis
+/// twist `e_k = (ω_k, v_k)` (`dn_k = ω_k×n̂`, `dsd_k = rᵢ·dn_k − v_k·n̂`), the contact
+/// force varies by `∂gᵢ/∂T_k = −cᵥ·dsd_k·n̂ + (gᵢ·n̂)·dn_k` (the `(gᵢ·n̂)·dn_k` term —
+/// the force redirecting as `n̂` rotates — is NEW vs the flat path), so
+/// `∂L/∂T_k = −Σᵢ (∂gᵢ/∂T_k)·(cot_f + cot_τ×dᵢ)`.
 #[derive(Clone, Debug)]
 struct ContactWrenchTrajVjp {
     /// Per active pair `(vertex_id, soft-force gᵢ, normal n̂, curvature cᵥ,
@@ -574,6 +673,20 @@ struct ContactWrenchTrajVjp {
     n_dof: usize,
     /// Rigid-DOF count `nv` (parent `s` length is `2·nv`).
     nv: usize,
+    /// The pose channel: scalar height `h` (flat) or 6-DOF twist `T` (rotating).
+    pose: WrenchPose,
+}
+
+/// The contact-wrench node's pose dependence — the middle parent of
+/// [`ContactWrenchTrajVjp`]. `Height` is the flat scalar-`h` factor (parent `[1]`);
+/// `Twist` is the rotating-normal 6-DOF spatial-twist factor (parent `[6]`).
+#[derive(Clone, Debug)]
+enum WrenchPose {
+    /// Flat plane: `∂w/∂h` (the S1 explicit force/moment-vs-height factor).
+    Height,
+    /// Rotating normal: `∂w/∂T` per spatial-twist basis direction. `com = xipos`
+    /// recovers the soft contact point `rᵢ = dᵢ + com` the `sd` derivative needs.
+    Twist { basis: Vec<RigidTwist>, com: Vec3 },
 }
 
 impl VjpOp for ContactWrenchTrajVjp {
@@ -586,13 +699,17 @@ impl VjpOp for ContactWrenchTrajVjp {
     // `jlin` by (row, col j) and `s_slot` by j; explicit indices read clearer here.
     #[allow(clippy::panic, clippy::needless_range_loop)]
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        let n_pose = match &self.pose {
+            WrenchPose::Height => 1,
+            WrenchPose::Twist { basis, .. } => basis.len(),
+        };
         assert!(
             cotangent.shape() == [6]
                 && parent_cotans.len() == 3
                 && parent_cotans[0].shape() == [self.n_dof]
-                && parent_cotans[1].shape() == [1]
+                && parent_cotans[1].shape() == [n_pose]
                 && parent_cotans[2].shape() == [2 * self.nv],
-            "ContactWrenchTrajVjp: expected cot [6] + parents (x* [{}], h [1], s [{}])",
+            "ContactWrenchTrajVjp: expected cot [6] + parents (x* [{}], pose [{n_pose}], s [{}])",
             self.n_dof,
             2 * self.nv,
         );
@@ -612,14 +729,37 @@ impl VjpOp for ContactWrenchTrajVjp {
             xs[3 * v + 2] += term.z;
         }
 
-        // ∂L/∂h: the explicit force/moment-vs-height feedback (∂gᵢ/∂h = −cᵥ n̂).
-        //   ∂f/∂h = Σ cᵥ n̂ ;  ∂τ/∂h = Σ cᵥ (d × n̂).
-        let dh: f64 = self
-            .active
-            .iter()
-            .map(|&(_, _, n, curv, d)| curv * (n.dot(&cot_f) + d.cross(&n).dot(&cot_t)))
-            .sum();
-        parent_cotans[1].as_mut_slice()[0] += dh;
+        // ∂L/∂pose: flat scalar `h` or the rotating-normal 6-DOF twist.
+        let pose_slot = parent_cotans[1].as_mut_slice();
+        match &self.pose {
+            WrenchPose::Height => {
+                // ∂L/∂h: the explicit force/moment-vs-height feedback (∂gᵢ/∂h = −cᵥ n̂).
+                //   ∂f/∂h = Σ cᵥ n̂ ;  ∂τ/∂h = Σ cᵥ (d × n̂).
+                let dh: f64 = self
+                    .active
+                    .iter()
+                    .map(|&(_, _, n, curv, d)| curv * (n.dot(&cot_f) + d.cross(&n).dot(&cot_t)))
+                    .sum();
+                pose_slot[0] += dh;
+            }
+            WrenchPose::Twist { basis, com } => {
+                // ∂L/∂T_k = −Σᵢ (∂gᵢ/∂T_k)·(cot_f + cot_τ×dᵢ), with
+                //   dn_k = ω_k×n̂,  dsd_k = rᵢ·dn_k − v_k·n̂  (rᵢ = dᵢ + com),
+                //   ∂gᵢ/∂T_k = −cᵥ·dsd_k·n̂ + (gᵢ·n̂)·dn_k.
+                for (k, tw) in basis.iter().enumerate() {
+                    let mut acc = 0.0_f64;
+                    for &(_, g, n, curv, d) in &self.active {
+                        let dn = tw.angular.cross(&n);
+                        let r = d + com;
+                        let dsd = r.dot(&dn) - tw.linear.dot(&n);
+                        let dg = -curv * dsd * n + g.dot(&n) * dn;
+                        let co = cot_f + cot_t.cross(&d);
+                        acc -= dg.dot(&co);
+                    }
+                    pose_slot[k] += acc;
+                }
+            }
+        }
 
         // ∂L/∂s: only the qpos rows, only the moment's c(q)-dependence.
         //   ∂L/∂qpos = J_linᵀ · m,  m = −(f × cot_τ)  (= [f]_×ᵀ cot_τ).
@@ -825,6 +965,12 @@ pub struct StaggeredCoupling<C: PlaneContact = PenaltyRigidContact> {
     kappa: f64,
     d_hat: f64,
     rigid_damping: f64,
+    /// When `true`, the contact plane's normal tracks the rigid body's orientation
+    /// (`n̂ = R·(0,0,−1)`) instead of the fixed downward `(0,0,−1)` — a tilted body
+    /// presents a tilted, differentiable contact face (the rotating-normal leaf).
+    /// Default `false` (flat, byte-identical to the pre-leaf coupling); enabled via
+    /// [`Self::with_rotating_normal`]. See `docs/keystone/rotating_normal_recon.md`.
+    rotating_normal: bool,
     _contact: PhantomData<C>,
 }
 
@@ -891,8 +1037,26 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             kappa,
             d_hat,
             rigid_damping,
+            rotating_normal: false,
             _contact: PhantomData,
         }
+    }
+
+    /// Enable the **rotating contact normal**: the contact plane's outward normal
+    /// tracks the rigid body's orientation (`n̂ = R(q)·(0,0,−1)`, `offset = xipos·n̂
+    /// + clearance`) rather than the fixed downward `(0,0,−1)`, so a tilted body
+    /// presents a tilted contact face and the coupled gradient flows through the
+    /// normal's `q`-dependence (`∂n̂/∂q = −[n̂]×·J_ang`). Reduces to the flat plane at
+    /// `R = I`. Opt-in (default off) because it changes the contact physics and is
+    /// gated at gentle tilt (the flat-tuned large-tilt keystone scenes can diverge
+    /// under a rotating normal). The single-step S3 height probes
+    /// ([`Self::contact_force_at_height`] etc.) remain `height`-parameterized — the
+    /// plane tilts with `R` but still translates with `height` — so their FD contract
+    /// holds in both modes. See `docs/keystone/rotating_normal_recon.md`.
+    #[must_use]
+    pub const fn with_rotating_normal(mut self, on: bool) -> Self {
+        self.rotating_normal = on;
+        self
     }
 
     /// Read-only access to the rigid engine state.
@@ -909,9 +1073,25 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     }
 
     fn build_contact(&self, height: f64) -> C {
-        // Downward ceiling at `height`: normal −z, offset −height ⇒ a soft
-        // vertex below the plane has positive signed distance `height − z`.
-        let plane = RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), -height);
+        let plane = if self.rotating_normal {
+            // Rotating normal: the plane tracks the body ORIENTATION (`n̂ = R·(0,0,−1)`)
+            // while still honoring the scalar `height` like the flat branch — the plane
+            // passes through the reference point at the body's lateral position and world
+            // z = `height + clearance`, so `offset = p_ref·n̂ + clearance`. This keeps
+            // `height` a live parameter (the S3 single-step probes translate the tilted
+            // plane vertically by varying it) AND reduces to the flat `((0,0,−1),
+            // −height)` at `R = I`. In the coupled path `height = xipos.z − clearance`, so
+            // `p_ref = xipos` exactly (byte-identical to reading the live COM pose).
+            let n = self.data.xquat[self.body] * Vec3::new(0.0, 0.0, -1.0);
+            let com = self.data.xipos[self.body];
+            let p_ref = Vec3::new(com.x, com.y, height + self.contact_clearance);
+            let offset = p_ref.dot(&n) + self.contact_clearance;
+            RigidPlane::new(n, offset)
+        } else {
+            // Downward ceiling at `height`: normal −z, offset −height ⇒ a soft
+            // vertex below the plane has positive signed distance `height − z`.
+            RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), -height)
+        };
         C::from_plane(plane, self.kappa, self.d_hat)
     }
 
@@ -1022,24 +1202,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// Analytic `∂(total force_on_soft)/∂(plane height)` at the current soft
     /// configuration, holding the soft positions fixed.
     ///
-    /// For the downward plane, each active pair has `∂force/∂height = −cᵥ·n̂` with
-    /// curvature `cᵥ = d²E/dsd²` and unit normal `n̂ = −ẑ`, so the per-pair
-    /// contribution is `+cᵥ·ẑ`; over the active set the total is `+(Σ cᵥ)·ẑ`. For
-    /// penalty `cᵥ = κ` so this reduces to `κ·N_active·ẑ`; for IPC `cᵥ = κ·b''(sd)`.
-    /// This is the explicit (fixed-position) partial — one factor of the coupled
-    /// step's Jacobian, not the total settled-system derivative. Valid in the
-    /// contact-engaged regime where the active set is stable across the
-    /// perturbation; at the active-set boundary the penalty derivative is
-    /// non-smooth (the IPC barrier smooths it). FD-checked against
-    /// [`Self::contact_force_at_height`].
+    /// Raising the height translates the plane `+ẑ`, so per active pair
+    /// `∂sd/∂height = −n̂·ẑ = −n̂.z` and `∂force/∂height = −cᵥ·(∂sd/∂height)·n̂ =
+    /// cᵥ·n̂.z·n̂` (curvature `cᵥ = d²E/dsd²`). For the FLAT downward plane (`n̂ = −ẑ`)
+    /// this is `+cᵥ·ẑ` per pair, i.e. the total `+(Σ cᵥ)·ẑ` (penalty `cᵥ = κ` ⇒
+    /// `κ·N_active·ẑ`; IPC `cᵥ = κ·b''(sd)`); under a [rotating
+    /// normal](Self::with_rotating_normal) the tilted `n̂` redirects it. This is the
+    /// explicit (fixed-position) partial — one factor of the coupled step's Jacobian,
+    /// not the total settled-system derivative. Valid in the contact-engaged regime
+    /// where the active set is stable across the perturbation; at the active-set
+    /// boundary the penalty derivative is non-smooth (the IPC barrier smooths it).
+    /// FD-checked against [`Self::contact_force_at_height`].
     #[must_use]
     pub fn contact_force_height_jacobian(&self, height: f64) -> Vec3 {
-        let sum_curv: f64 = self
-            .active_pair_curvatures(height, &self.positions())
+        // ∂force/∂height = Σ cᵥ·n̂.z·n̂ (= (0,0,Σcᵥ) for the flat n̂ = −ẑ).
+        self.active_pair_curvatures(height, &self.positions())
             .iter()
-            .map(|&(_, _, c)| c)
-            .sum();
-        Vec3::new(0.0, 0.0, sum_curv)
+            .map(|&(_, n, c)| c * n.z * n)
+            .sum()
     }
 
     /// One-off rigid step from the *current* rigid state with an externally
@@ -1674,6 +1854,18 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (0..self.model.nv).map(|c| jac[(5, c)]).collect()
     }
 
+    /// `J_spatial`: the body's spatial Jacobian AT THE WORLD ORIGIN (`mj_jac_point` at
+    /// the origin) — `6 × nv`, rows 0–2 angular `ω`, rows 3–5 linear `v_O` (the body
+    /// material point at the origin). This is exactly `∂(plane spatial twist)/∂qpos`
+    /// for the rotating normal: column `j` is the [`sim_soft::RigidTwist`] the plane
+    /// undergoes per unit `qvel_j` (`δn̂ = ω×n̂`, `δoffset = v_O·n̂` reproduce
+    /// `∂n̂/∂q = −[n̂]×·J_ang` and `∂offset/∂q = n̂ᵀ·J_lin + xiposᵀ·∂n̂/∂q`, S0-validated).
+    /// Threaded by [`PoseTwistSeamVjp`] (`∂L/∂qpos = J_spatialᵀ·∂L/∂T`). Rotating-normal
+    /// pose seam, PR2; see `docs/keystone/rotating_normal_recon.md`.
+    fn pose_twist_jacobian(&self) -> DMatrix<f64> {
+        mj_jac_point(&self.model, &self.data, self.body, &Vec3::zeros())
+    }
+
     /// `J_lin = ∂c/∂qpos`: the body COM's linear (translational) world Jacobian
     /// (`mj_jac_point` at `xipos`, rows 3–5) — `3 × nv`. The moment about the COM
     /// `c = xipos(q)` depends on `q` through `c`, so [`ContactWrenchTrajVjp`] needs
@@ -2099,14 +2291,30 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // coupling at nv>1 broke it; see `docs/keystone/moment_residual_recon.md`.)
             self.data.forward(&self.model).expect("fresh FK");
             let height = self.tip_plane_height();
-            // Pose seam: h = (tip height) from the rigid state. Value is the real
-            // plane height; ∂h/∂q = J_z (∂h/∂qvel = 0).
-            let jz = self.pose_seam_jz();
-            let h_var = tape.push_custom(
-                &[s_var],
-                Tensor::from_slice(&[height], &[1]),
-                Box::new(PoseSeamVjp { jz }),
-            );
+            // Pose seam: the contact plane's pose from the rigid state. FLAT — the
+            // scalar tip height `h` (`∂h/∂q = J_z`). ROTATING — the 6-DOF spatial twist
+            // `T` of the body-attached plane (`∂T/∂qpos = J_spatial`, the
+            // `PoseTwistSeamVjp`); its value is the all-zero perturbation at the
+            // linearization point (only the cotangent is threaded). The soft node AND
+            // the wrench node share this one pose node (as the flat path shares `h`).
+            let rotating = self.rotating_normal;
+            let pose_var = if rotating {
+                tape.push_custom(
+                    &[s_var],
+                    Tensor::zeros(&[6]),
+                    Box::new(PoseTwistSeamVjp {
+                        j_spatial: self.pose_twist_jacobian(),
+                    }),
+                )
+            } else {
+                tape.push_custom(
+                    &[s_var],
+                    Tensor::from_slice(&[height], &[1]),
+                    Box::new(PoseSeamVjp {
+                        jz: self.pose_seam_jz(),
+                    }),
+                )
+            };
 
             // (1)+(2) one dynamic soft step from the current (self.x, self.v).
             let (solver, x_next) = self.soft_resolve(height);
@@ -2115,11 +2323,18 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .zip(&self.x)
                 .map(|(xf, xo)| (xf - xo) / dt)
                 .collect();
-            // Soft node x*: parents [x_prev, v_prev, p, h] (pose parent = h, the seam).
+            // Soft node x*: parents [x_prev, v_prev, p, pose]. ROTATING feeds the 6
+            // canonical spatial-twist basis directions (the `δn̂ = ω×n̂` adjoint);
+            // FLAT the single scalar translation along `dir`.
+            let soft_vjp: Box<dyn VjpOp> = if rotating {
+                Box::new(solver.trajectory_step_vjp_twist(&x_next, dt, param_idx, &twist_basis()))
+            } else {
+                Box::new(solver.trajectory_step_vjp(&x_next, dt, param_idx, dir))
+            };
             let x_next_var = tape.push_custom(
-                &[x_var, v_var, p_var, h_var],
+                &[x_var, v_var, p_var, pose_var],
                 Tensor::from_slice(&x_next, &[3 * n]),
-                Box::new(solver.trajectory_step_vjp(&x_next, dt, param_idx, dir)),
+                soft_vjp,
             );
             let v_next_var = tape.push_custom(
                 &[x_next_var, x_var],
@@ -2158,12 +2373,20 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             }
             let force = Vec3::new(wrench[3], wrench[4], wrench[5]);
             let jlin = self.com_linear_jacobian();
-            // Wrench node w = [τ; f] with parents [x*, h, s]: ∂w/∂x* (the moment's
-            // explicit-rᵢ + via-gᵢ parts), ∂w/∂h (the force/moment-vs-plane-height
-            // feedback, the S1 explicit factor generalized), ∂w/∂s (the moment's
-            // c(q) feedback).
+            // Wrench node w = [τ; f] with parents [x*, pose, s]: ∂w/∂x* (the moment's
+            // explicit-rᵢ + via-gᵢ parts), ∂w/∂pose (FLAT: the force/moment-vs-height
+            // S1 factor; ROTATING: the per-twist feedback incl. the normal redirect),
+            // ∂w/∂s (the moment's c(q) feedback — independent of the normal channel).
+            let wrench_pose = if rotating {
+                WrenchPose::Twist {
+                    basis: twist_basis().to_vec(),
+                    com: c,
+                }
+            } else {
+                WrenchPose::Height
+            };
             let w_var = tape.push_custom(
-                &[x_next_var, h_var, s_var],
+                &[x_next_var, pose_var, s_var],
                 Tensor::from_slice(wrench.as_slice(), &[6]),
                 Box::new(ContactWrenchTrajVjp {
                     active,
@@ -2171,6 +2394,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin,
                     n_dof: 3 * n,
                     nv,
+                    pose: wrench_pose,
                 }),
             );
 
@@ -3413,6 +3637,7 @@ mod tests {
             jlin: c.com_linear_jacobian(),
             n_dof,
             nv,
+            pose: WrenchPose::Height,
         };
         // Row k of the Jacobian = the parent-cotangents for the unit cotangent e_k.
         let jac_row = |k: usize| -> (Vec<f64>, f64, Vec<f64>) {

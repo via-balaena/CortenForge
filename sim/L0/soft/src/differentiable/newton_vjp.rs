@@ -522,13 +522,19 @@ impl VjpOp for StateStepVjp {
 /// 1. `x_prev` (`[n_dof]`): `∂L/∂x_prev = (M/Δt²)·λ_full`,
 /// 2. `v_prev` (`[n_dof]`): `∂L/∂v_prev = (M/Δt)·λ_full`,
 /// 3. `param`  (`[1]`, a material parameter): `∂L/∂param = −λ^T·(∂r/∂param)_free`,
-/// 4. `pose`   (`[1]`, the contact primitive's translation along a fixed world
-///    direction `dir`): `∂L/∂pose = −λ^T·(∂r/∂pose)_free`.
+/// 4. `pose`   (`[n_pose]`, the contact primitive's rigid motion): one component
+///    per pose **direction**, `∂L/∂pose[k] = −λ^T·(∂r/∂pose_k)_free`.
+///
+/// The pose parent has one component per [`RigidTwist`](crate::contact::RigidTwist)
+/// direction the op was built with: a single scalar translation (`n_pose = 1`, the
+/// keystone S3 / `trajectory_step_vjp`) or the 6 canonical spatial-twist basis
+/// directions (`n_pose = 6`, the rotating-normal `trajectory_step_vjp_twist`, whose
+/// coupling-side seam maps the twist cotangent through the rigid body Jacobian).
 ///
 /// The pinned base carries zero cotangent on the state parents (λ scatters onto
 /// free DOFs only). Hard-penalty, engaged, stable-within-step active-set scope —
 /// the active set + factor are captured at construction. Constructed by
-/// `CpuNewtonSolver::trajectory_step_vjp`.
+/// `CpuNewtonSolver::trajectory_step_vjp` / `trajectory_step_vjp_twist`.
 pub struct TrajectoryStepVjp {
     factor: FactoredFreeTangent,
     n_dof: usize,
@@ -539,8 +545,10 @@ pub struct TrajectoryStepVjp {
     m_over_dt: Vec<f64>,
     /// `(∂r/∂param)_free` — the material-residual sensitivity, free-DOF order.
     dr_dparam_free: Vec<f64>,
-    /// `(∂r/∂pose)_free` — the contact-pose-residual sensitivity, free-DOF order.
-    dr_dpose_free: Vec<f64>,
+    /// `(∂r/∂pose_k)_free` per pose direction `k` — the contact-pose-residual
+    /// sensitivity, free-DOF order. `len()` = the pose parent's component count
+    /// (`1` for a scalar translation, `6` for the spatial-twist basis).
+    dr_dpose_free: Vec<Vec<f64>>,
 }
 
 impl TrajectoryStepVjp {
@@ -553,13 +561,13 @@ impl TrajectoryStepVjp {
         m_over_dt2: Vec<f64>,
         m_over_dt: Vec<f64>,
         dr_dparam_free: Vec<f64>,
-        dr_dpose_free: Vec<f64>,
+        dr_dpose_free: Vec<Vec<f64>>,
     ) -> Self {
         let n_free = free_dof_indices.len();
         debug_assert_eq!(m_over_dt2.len(), n_dof);
         debug_assert_eq!(m_over_dt.len(), n_dof);
         debug_assert_eq!(dr_dparam_free.len(), n_free);
-        debug_assert_eq!(dr_dpose_free.len(), n_free);
+        debug_assert!(dr_dpose_free.iter().all(|d| d.len() == n_free));
         Self {
             factor,
             n_dof,
@@ -579,6 +587,7 @@ impl fmt::Debug for TrajectoryStepVjp {
             .field("factor", &"<FactoredFreeTangent>")
             .field("n_dof", &self.n_dof)
             .field("n_free", &self.free_dof_indices.len())
+            .field("n_pose", &self.dr_dpose_free.len())
             .finish_non_exhaustive()
     }
 }
@@ -597,14 +606,15 @@ impl VjpOp for TrajectoryStepVjp {
             self.n_dof,
             cotangent.shape(),
         );
+        let n_pose = self.dr_dpose_free.len();
         assert!(
             parent_cotans.len() == 4
                 && parent_cotans[0].shape() == [self.n_dof]
                 && parent_cotans[1].shape() == [self.n_dof]
                 && parent_cotans[2].shape() == [1]
-                && parent_cotans[3].shape() == [1],
+                && parent_cotans[3].shape() == [n_pose],
             "TrajectoryStepVjp: expected 4 parents (x_prev [{n}], v_prev [{n}], param [1], \
-             pose [1]); got {} parents",
+             pose [{n_pose}]); got {} parents",
             parent_cotans.len(),
             n = self.n_dof,
         );
@@ -617,12 +627,10 @@ impl VjpOp for TrajectoryStepVjp {
         self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
         // rhs now holds λ (free-DOF order).
 
-        // Scalar parents 3,4: −λ^T·(∂r/∂·)_free.
+        // Param parent 3: −λ^T·(∂r/∂param)_free (scalar).
         let mut grad_param = 0.0_f64;
-        let mut grad_pose = 0.0_f64;
         for (k, &lam) in rhs.iter().enumerate() {
             grad_param -= lam * self.dr_dparam_free[k];
-            grad_pose -= lam * self.dr_dpose_free[k];
         }
         // State parents 1,2: (M/Δt²)·λ_full and (M/Δt)·λ_full (free DOFs only).
         let (state, scal) = parent_cotans.split_at_mut(2);
@@ -635,6 +643,14 @@ impl VjpOp for TrajectoryStepVjp {
             vprev[full_idx] += self.m_over_dt[full_idx] * lam;
         }
         scal[0].as_mut_slice()[0] += grad_param;
-        scal[1].as_mut_slice()[0] += grad_pose;
+        // Pose parent 4: −λ^T·(∂r/∂pose_j)_free per pose direction `j`.
+        let pose_c = scal[1].as_mut_slice();
+        for (j, dr_dpose_j) in self.dr_dpose_free.iter().enumerate() {
+            let mut g = 0.0_f64;
+            for (k, &lam) in rhs.iter().enumerate() {
+                g -= lam * dr_dpose_j[k];
+            }
+            pose_c[j] += g;
+        }
     }
 }
