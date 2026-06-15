@@ -71,13 +71,23 @@ pub fn mj_differentiate_pos(
                 // q_delta = q1.inverse() * q2  (right convention)
                 let q_delta = q1.inverse() * q2;
 
-                // Extract axis-angle (clamp w to avoid NaN from floating-point precision)
-                let angle = 2.0 * q_delta.w.clamp(-1.0, 1.0).acos();
-                let sin_half = (1.0 - q_delta.w * q_delta.w).max(0.0).sqrt();
-
+                // Extract the rotation vector (the SO(3) log). Read sin(θ/2) from the
+                // vector-part norm DIRECTLY — NOT sqrt(1−w²), which loses all precision
+                // when w rounds to ±1 for a tiny rotation (e.g. a `θ ~ 1e-9` FD
+                // difference makes `1−w² ~ 1e-18` underflow to 0, falsely returning zero
+                // velocity) — and recover the angle via atan2 (stable near 0 and π,
+                // unlike acos). Matches MuJoCo's `mju_quat2Vel`.
+                //
+                // The `> 1e-10` guard only divides-by-zero-protects the exact `q1 == q2`
+                // case: `sin(θ/2) = 1e-10` is a half-angle floor ~2e-10 rad — far above
+                // f64 eps (~2e-16) yet orders below any real FD step (~1e-6…1e-8), so a
+                // genuine FD rotation is never clipped (this is what the lossy `sqrt(1−w²)`
+                // form silently violated).
+                let vec = Vector3::new(q_delta.i, q_delta.j, q_delta.k);
+                let sin_half = vec.norm();
                 if sin_half > 1e-10 {
-                    let axis = Vector3::new(q_delta.i, q_delta.j, q_delta.k) / sin_half;
-                    let omega = axis * angle * dt_inv;
+                    let angle = 2.0 * sin_half.atan2(q_delta.w);
+                    let omega = vec * (angle / sin_half * dt_inv);
                     qvel[dof_adr] = omega.x;
                     qvel[dof_adr + 1] = omega.y;
                     qvel[dof_adr + 2] = omega.z;
@@ -109,13 +119,14 @@ pub fn mj_differentiate_pos(
                 ));
 
                 let q_delta = q1.inverse() * q2;
-                // Clamp w to avoid NaN from floating-point precision
-                let angle = 2.0 * q_delta.w.clamp(-1.0, 1.0).acos();
-                let sin_half = (1.0 - q_delta.w * q_delta.w).max(0.0).sqrt();
-
+                // Robust log map: sin(θ/2) from the vector-part norm directly + atan2
+                // (see the Ball branch — sqrt(1−w²)+acos underflows to zero for a tiny
+                // rotation, which silently zeroed the FD position-velocity Jacobian).
+                let vec = Vector3::new(q_delta.i, q_delta.j, q_delta.k);
+                let sin_half = vec.norm();
                 if sin_half > 1e-10 {
-                    let axis = Vector3::new(q_delta.i, q_delta.j, q_delta.k) / sin_half;
-                    let omega = axis * angle * dt_inv;
+                    let angle = 2.0 * sin_half.atan2(q_delta.w);
+                    let omega = vec * (angle / sin_half * dt_inv);
                     qvel[dof_adr + 3] = omega.x;
                     qvel[dof_adr + 4] = omega.y;
                     qvel[dof_adr + 5] = omega.z;

@@ -53,7 +53,10 @@
 //!   ONE tape, read `(∂z_N/∂μ_total, ∂z_N/∂θ)` from one `tape.backward` — the
 //!   mission's "one outer loop differentiating w.r.t. *both* design and policy".
 
-use sim_core::{DMatrix, Data, Model, SpatialVector, mj_jac_point};
+use sim_core::{
+    DMatrix, DVector, Data, Matrix3, MjJointType, Model, SpatialVector, mj_differentiate_pos,
+    mj_integrate_pos_explicit, mj_jac_point,
+};
 use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
@@ -179,6 +182,42 @@ pub fn rigid_xfrc_column(model: &Model, data: &Data, body: usize) -> DMatrix<f64
         .try_inverse()
         .expect("joint-space mass matrix M must be invertible");
     model.timestep * minv * jac.transpose() // (nv × nv)·(nv × 6) = nv × 6
+}
+
+/// The **right Jacobian of SO(3)** `J_r(φ)` (`φ` = a rotation vector, `θ = ‖φ‖`):
+/// `J_r(φ) = I − (1−cosθ)/θ² · [φ]× + (θ−sinθ)/θ³ · [φ]×²`.
+///
+/// It is the exact tangent map of the quaternion exp-map step the integrator takes:
+/// for `q' = q ⊕ exp(φ)` (right-multiply, body frame), perturbing `φ → φ + δφ` and
+/// measuring the output tangent AT the nominal `q'` gives
+/// `log(q'⁻¹ · q'(φ+δφ)) = J_r(φ)·δφ`. This is the position-row factor the multi-DOF
+/// carry needs for a quaternion joint (the body-frame tangent convention
+/// [`mj_differentiate_pos`] reads, which the FD [`StaggeredCoupling::loaded_state_jacobian`]
+/// also uses), as distinct from the `h·I` / left-Jacobian forms
+/// [`sim_core::mjd_quat_integrate`] returns for its own (tangent-at-`q_old`) convention.
+/// Reduces to `I` as `θ → 0` (the linear / hinge limit). FD-validated against the real
+/// quaternion step in `tests/`.
+fn right_jacobian_so3(phi: Vec3) -> Matrix3<f64> {
+    let theta = phi.norm();
+    #[rustfmt::skip]
+    let skew = Matrix3::new(
+        0.0, -phi.z, phi.y,
+        phi.z, 0.0, -phi.x,
+        -phi.y, phi.x, 0.0,
+    );
+    let skew_sq = skew * skew;
+    // Coefficients of −[φ]× and [φ]×². Below ~1e-8 the closed forms lose precision to
+    // catastrophic cancellation, so use the small-angle Taylor limits (½ and 1/6).
+    let (a, b) = if theta < 1e-8 {
+        (0.5, 1.0 / 6.0)
+    } else {
+        let theta2 = theta * theta;
+        (
+            (1.0 - theta.cos()) / theta2,
+            (theta - theta.sin()) / (theta2 * theta),
+        )
+    };
+    Matrix3::identity() - a * skew + b * skew_sq
 }
 
 /// Chassis-tape [`VjpOp`] adapting a `sim-core` rigid step's response into the
@@ -603,18 +642,22 @@ impl VjpOp for ContactWrenchTrajVjp {
 /// analytically for a single hinge, [`StaggeredCoupling::analytic_state_jacobian`],
 /// else by FD, [`StaggeredCoupling::loaded_state_jacobian`]), and `G = ∂(state')/∂w` is the
 /// 6-component wrench response. `G`'s VELOCITY rows are the full `nv × 6`
-/// [`rigid_xfrc_column`] (`Δt·M⁻¹·Jᵀ`); its POSITION rows are `Δt·G_vel` — semi-implicit
-/// Euler integrates `qpos' = qpos + Δt·qvel'`, so this step's wrench reaches `qpos` this
-/// step through `Δt·qvel'` (the `g_pos_dt = Δt` term). NO sign flip — `w` is the reaction
-/// wrench directly (the negation lives in [`ContactWrenchTrajVjp`]).
+/// [`rigid_xfrc_column`] (`Δt·M⁻¹·Jᵀ`); its POSITION rows are `G_pos = D·G_vel`, where
+/// `D = ∂(tangent qpos')/∂qvel'` is the integrator's tangent Jacobian — semi-implicit
+/// Euler maps `qpos' = qpos ⊕ exp(Δt·qvel')`, so this step's wrench reaches `qpos` through
+/// `qvel'`. For a Euclidean DOF (hinge/slide/translation) `D = Δt·I`, so `G_pos = Δt·G_vel`;
+/// for a quaternion DOF (ball/free orientation) `D = Δt·J_r(Δt·qvel')`, the SO(3) right
+/// Jacobian ([`right_jacobian_so3`]) the curved-manifold integrator demands. NO sign flip —
+/// `w` is the reaction wrench directly (the negation lives in [`ContactWrenchTrajVjp`]).
 ///
 /// (Historical: an earlier formulation read the contact pose from the one-step-stale FK
 /// and ZEROED these position rows — a self-consistent pair, but exact only for `nv = 1`.
-/// The fresh-FK formulation + this true `Δt·G_vel` term is machine-exact for single-hinge
-/// AND multi-link; see `docs/keystone/moment_residual_recon.md`.)
+/// The fresh-FK formulation + this true `G_pos` term is machine-exact for single-hinge AND
+/// multi-link; the `J_r` generalizes the Euclidean `Δt·G_vel` to quaternion joints. See
+/// `docs/keystone/moment_residual_recon.md` and `docs/keystone/quaternion_joints_recon.md`.)
 ///
 /// Parents `[s, w]` (`[2·nv]`, `[6]`), output `s'` (`[2·nv]`);
-/// `∂L/∂s += J_stateᵀ·cot`, `∂L/∂w[k] += Σᵢ G_vel[(i,k)]·(cot[nv+i] + Δt·cot[i])`. The
+/// `∂L/∂s += J_stateᵀ·cot`, `∂L/∂w[k] += Σᵢ G_vel[(i,k)]·cot[nv+i] + G_pos[(i,k)]·cot[i]`. The
 /// matrix-valued successor to the scalar `VzCarryVjp` + `ZCarryVjp` the free-body
 /// platen uses; generalized from the f_z-only column to the full spatial wrench.
 #[derive(Clone, Debug)]
@@ -623,9 +666,9 @@ struct RigidStateCarryVjp {
     j_state: DMatrix<f64>,
     /// The wrench velocity response `G_vel = ∂(qvel')/∂w` (`nv × 6` = [`rigid_xfrc_column`]).
     g_vel: DMatrix<f64>,
-    /// Position-row coefficient `Δt`: the full `G`'s position rows are `Δt·G_vel`
-    /// (semi-implicit `qpos' = qpos + Δt·qvel'`).
-    g_pos_dt: f64,
+    /// The wrench POSITION-row response `G_pos = ∂(tangent qpos')/∂w = D·G_vel` (`nv × 6`),
+    /// `D` the integrator's tangent Jacobian (`Δt·I` Euclidean, `Δt·J_r` quaternion).
+    g_pos: DMatrix<f64>,
 }
 
 impl VjpOp for RigidStateCarryVjp {
@@ -663,7 +706,7 @@ impl VjpOp for RigidStateCarryVjp {
             let mut acc = 0.0;
             for i in 0..nv {
                 acc += self.g_vel[(i, k)] * cot[nv + i]; // velocity rows: G_vel
-                acc += self.g_pos_dt * self.g_vel[(i, k)] * cot[i]; // position rows: Δt·G_vel
+                acc += self.g_pos[(i, k)] * cot[i]; // position rows: G_pos = D·G_vel
             }
             w_slot[k] += acc;
         }
@@ -1706,7 +1749,22 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// chain carry is the documented follow-on). It is also the reference the analytic
     /// form is FD-validated against; see `docs/keystone/geometric_stiffness_recon.md` and
     /// `docs/keystone/multilink_recon.md`.
+    ///
+    /// **Tangent-space FD (SO(3)-correct for quaternion joints).** When the body has a
+    /// quaternion joint (`nq ≠ nv` — `qpos` holds un-normalized quaternion components on
+    /// a curved manifold) the position-coordinate FD must move ALONG the manifold and
+    /// difference in its tangent space, not a raw `qpos` add/subtract: position COLUMNS
+    /// step via [`Self::loaded_state_jacobian_tangent`]'s [`mj_integrate_pos_explicit`]
+    /// (`qpos ⊕ exp(±ε·e_c)`) and position ROWS difference via [`mj_differentiate_pos`]
+    /// (the SO(3) log, the body-frame tangent at the nominal output). A purely Euclidean
+    /// body (`nq == nv`: hinge/slide/translation only — the merged single-hinge*,
+    /// multi-link-chain, and translation paths) keeps the raw FD verbatim, BYTE-IDENTICAL.
+    /// (*the single hinge uses the analytic Jacobian and never reaches here.) See
+    /// `docs/keystone/quaternion_joints_recon.md`.
     fn loaded_state_jacobian(&self, wrench: &SpatialVector) -> DMatrix<f64> {
+        if self.model.nq != self.model.nv {
+            return self.loaded_state_jacobian_tangent(wrench);
+        }
         let nv = self.model.nv;
         let eps = 1e-6;
         let qpos = self.data.qpos.clone();
@@ -1730,6 +1788,86 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             }
         }
         j
+    }
+
+    /// The quaternion-joint (`nq ≠ nv`) branch of [`Self::loaded_state_jacobian`]: the
+    /// same loaded central-FD state Jacobian, but the position coordinates are perturbed
+    /// and differenced in the SO(3)/SE(3) **tangent** space (the only correct linearization
+    /// of a curved-manifold coordinate). The result is the `2·nv × 2·nv` tangent Jacobian
+    /// `∂[tangent qpos'; qvel']/∂[tangent qpos; qvel]` — drop-in for the carry, whose state
+    /// `s = [qpos(nv-tangent); qvel(nv)]` is already tangent-dimensioned. Velocity stays a
+    /// raw `nv` tangent quantity (no quaternion). See `docs/keystone/quaternion_joints_recon.md`.
+    fn loaded_state_jacobian_tangent(&self, wrench: &SpatialVector) -> DMatrix<f64> {
+        let nv = self.model.nv;
+        let eps = 1e-6;
+        let qpos = self.data.qpos.clone();
+        let qvel = self.data.qvel.clone();
+        let mut j = DMatrix::zeros(2 * nv, 2 * nv);
+        let mut tang = DVector::zeros(nv);
+        let mut dq = DVector::zeros(nv);
+        for c in 0..2 * nv {
+            let (mut qp, mut vp) = (qpos.clone(), qvel.clone());
+            let (mut qm, mut vm) = (qpos.clone(), qvel.clone());
+            if c < nv {
+                // Position column: step ±ε along the tangent basis vector e_c on SO(3)
+                // (a hinge/slide/translation DOF reduces to `qpos[c] ± ε`).
+                tang[c] = eps;
+                mj_integrate_pos_explicit(&self.model, &mut qp, &qpos, &tang, 1.0);
+                tang[c] = -eps;
+                mj_integrate_pos_explicit(&self.model, &mut qm, &qpos, &tang, 1.0);
+                tang[c] = 0.0;
+            } else {
+                vp[c - nv] += eps;
+                vm[c - nv] -= eps;
+            }
+            let (qpp, qvp) = self.scratch_state_step(&qp, &vp, wrench);
+            let (qpm, qvm) = self.scratch_state_step(&qm, &vm, wrench);
+            // Position rows: tangent (SO(3) log) difference of the `qpos'` outputs.
+            mj_differentiate_pos(&self.model, &mut dq, &qpm, &qpp, 2.0 * eps);
+            for r in 0..nv {
+                j[(r, c)] = dq[r];
+                j[(nv + r, c)] = (qvp[r] - qvm[r]) / (2.0 * eps);
+            }
+        }
+        j
+    }
+
+    /// The integrator's tangent position Jacobian `D = ∂(tangent qpos')/∂qvel'` (`nv × nv`,
+    /// block-diagonal per joint) at the post-step velocity `qvel_next`. Semi-implicit Euler
+    /// maps `qpos' = qpos ⊕ exp(Δt·qvel')`; differentiating w.r.t. `qvel'` (output tangent
+    /// at the nominal `qpos'`) gives, per joint: `Δt` for a hinge/slide/free-translation DOF
+    /// (the linear limit `J_r = I`), and `Δt·J_r(Δt·ω)` for a ball / free-orientation block
+    /// (`ω` = that joint's angular velocity, [`right_jacobian_so3`]). The carry's position-row
+    /// wrench response is then `G_pos = D·G_vel`. Only the quaternion path calls this; the
+    /// Euclidean path uses `Δt·G_vel` directly (byte-identical). See
+    /// `docs/keystone/quaternion_joints_recon.md`.
+    fn integrator_pos_jacobian(&self, qvel_next: &DVector<f64>) -> DMatrix<f64> {
+        let nv = self.model.nv;
+        let dt = self.model.timestep;
+        let mut d = DMatrix::zeros(nv, nv);
+        for jnt in 0..self.model.njnt {
+            let dof = self.model.jnt_dof_adr[jnt];
+            match self.model.jnt_type[jnt] {
+                MjJointType::Hinge | MjJointType::Slide => {
+                    d[(dof, dof)] = dt;
+                }
+                MjJointType::Ball => {
+                    let omega = Vec3::new(qvel_next[dof], qvel_next[dof + 1], qvel_next[dof + 2]);
+                    d.view_mut((dof, dof), (3, 3))
+                        .copy_from(&(dt * right_jacobian_so3(dt * omega)));
+                }
+                MjJointType::Free => {
+                    for i in 0..3 {
+                        d[(dof + i, dof + i)] = dt; // linear (translation) block
+                    }
+                    let omega =
+                        Vec3::new(qvel_next[dof + 3], qvel_next[dof + 4], qvel_next[dof + 5]);
+                    d.view_mut((dof + 3, dof + 3), (3, 3))
+                        .copy_from(&(dt * right_jacobian_so3(dt * omega)));
+                }
+            }
+        }
+        d
     }
 
     /// The body's joint id if its kinematic chain to the world is exactly one
@@ -2042,11 +2180,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             //     ANALYTIC `A + Δt·M⁻¹·∂(Jᵀw)/∂q` (`analytic_state_jacobian`); otherwise
             //     (free joint, multi-link chain) the FD `loaded_state_jacobian`.
             //   G_vel = ∂(qvel')/∂w = rigid_xfrc_column (nv×6, the full wrench column).
-            //     The full G's POSITION rows are Δt·G_vel (the carry below, `g_pos_dt =
-            //     Δt`): semi-implicit Euler integrates qpos with the UPDATED velocity
-            //     (`qpos' = qpos + Δt·qvel'`), so this step's wrench reaches qpos this
-            //     step through `Δt·qvel'`. (This is the true term; the earlier §8a ZERO
-            //     was the stale-FK pair's calibration, correct only for nv=1.)
+            //     The full G's POSITION rows are G_pos = D·G_vel (the carry below):
+            //     semi-implicit Euler integrates qpos with the UPDATED velocity
+            //     (`qpos' = qpos ⊕ exp(Δt·qvel')`), so this step's wrench reaches qpos
+            //     through `qvel'`. D = Δt·I for a Euclidean DOF (`G_pos = Δt·G_vel`, the
+            //     true term that replaced the §8a ZERO — correct only for nv=1) and
+            //     Δt·J_r(Δt·qvel') for a quaternion DOF (the SO(3) right Jacobian).
             let j_state = self
                 .analytic_state_jacobian(&wrench)
                 .unwrap_or_else(|| self.loaded_state_jacobian(&wrench));
@@ -2057,6 +2196,17 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in articulated trajectory");
+
+            // Position-row wrench response G_pos = D·G_vel (∂(tangent qpos')/∂w). Euclidean
+            // (nq==nv): D = Δt·I, so G_pos = Δt·G_vel — byte-identical to the merged
+            // hinge/chain path. Quaternion (nq≠nv): D carries the SO(3) right Jacobian
+            // J_r(Δt·qvel') at the POST-step velocity (`self.data.qvel`, the ω the
+            // integrator actually integrated). See `docs/keystone/quaternion_joints_recon.md`.
+            let g_pos = if self.model.nq == self.model.nv {
+                dt * &g_vel
+            } else {
+                self.integrator_pos_jacobian(&self.data.qvel) * &g_vel
+            };
 
             let mut s_next = vec![0.0_f64; 2 * nv];
             for i in 0..nv {
@@ -2069,7 +2219,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 Box::new(RigidStateCarryVjp {
                     j_state,
                     g_vel,
-                    g_pos_dt: dt,
+                    g_pos,
                 }),
             );
 
@@ -2761,6 +2911,56 @@ mod tests {
     use sim_mjcf::load_model;
     use sim_ml_chassis::autograd::VjpOp;
 
+    /// [`right_jacobian_so3`] is the exact tangent map of the quaternion exp-map step,
+    /// in the "output tangent at the nominal `q'`" convention: for `q' = q ⊕ exp(φ)`,
+    /// perturbing `φ → φ + δ` gives `log(q'⁻¹ · q'(φ+δ)) = J_r(φ)·δ`. FD-validated against
+    /// the real SO(3) integration at several angles (small, moderate, large).
+    #[test]
+    fn right_jacobian_so3_matches_quaternion_expmap_fd() {
+        use sim_core::UnitQuaternion;
+        // exp-map of a rotation vector → unit quaternion (right tangent).
+        let expq = |v: Vec3| -> UnitQuaternion<f64> {
+            let a = v.norm();
+            if a < 1e-12 {
+                UnitQuaternion::identity()
+            } else {
+                UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(v), a)
+            }
+        };
+        for phi in [
+            Vec3::new(1e-7, 0.0, 0.0),    // near-zero (small-angle branch)
+            Vec3::new(0.03, -0.02, 0.05), // moderate
+            Vec3::new(0.8, -0.6, 0.4),    // large
+        ] {
+            let jr = right_jacobian_so3(phi);
+            let qp = expq(phi); // the nominal q' (base q = identity, WLOG for the tangent map)
+            let eps = 1e-6;
+            for k in 0..3 {
+                let mut d = Vec3::zeros();
+                d[k] = eps;
+                // log(q'⁻¹ · exp(φ+δ)) and · exp(φ−δ), central difference → column k.
+                let plus = qp.inverse() * expq(phi + d);
+                let minus = qp.inverse() * expq(phi - d);
+                let logv = |q: UnitQuaternion<f64>| -> Vec3 {
+                    let v = Vec3::new(q.i, q.j, q.k);
+                    let s = v.norm();
+                    if s < 1e-12 {
+                        Vec3::zeros()
+                    } else {
+                        v * (2.0 * s.atan2(q.w) / s)
+                    }
+                };
+                let col_fd = (logv(plus) - logv(minus)) / (2.0 * eps);
+                let col_an = jr.column(k);
+                let err = (col_fd - col_an).norm();
+                assert!(
+                    err < 1e-5,
+                    "J_r column {k} at φ={phi:?}: analytic {col_an:?} != FD {col_fd:?} (err {err:.3e})"
+                );
+            }
+        }
+    }
+
     /// The generalized contact-force factors use PER-PAIR curvature `cᵥ = d²E/dsd²`
     /// (`κ·b''(sd)` for IPC), not just penalty's constant `κ`: `ContactForceVjp`
     /// scatters `−cᵥ·n̂_z·n̂` per pair, and `ContactForceTrajVjp`'s `∂fz/∂z` sums
@@ -3076,6 +3276,74 @@ mod tests {
                     .is_none(),
             "free joint must fall back to the FD loaded Jacobian"
         );
+    }
+
+    /// The tangent FD `loaded_state_jacobian` for a ball joint (`nq = 4, nv = 3`) is
+    /// SO(3)-correct: the position-VELOCITY block `∂(tangent qpos')/∂qvel` is the
+    /// integrator's `≈ Δt·I` (NOT zero — the bug the lossy `sqrt(1−w²)+acos` log map in
+    /// `mj_differentiate_pos` produced when a tiny FD rotation's `w` rounded to 1; fixed
+    /// to the vector-norm + atan2 form), and the position-VELOCITY and velocity-rows
+    /// match sim-core's analytic transition `A`. (The position-POSITION block legitimately
+    /// differs from `A`: this carry measures the output tangent at the nominal `qpos'`
+    /// (`mj_differentiate_pos`, the convention `jz`/`J_r` consume), whereas
+    /// `transition_derivatives` references it at `q_old` — a different, internally
+    /// consistent tangent. The end-to-end `ball_joint_gradient_matches_fd` trajectory gate
+    /// validates the full convention-consistent composition.)
+    #[test]
+    fn loaded_state_jacobian_ball_velocity_block_matches_analytic() {
+        const BALL_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="ball"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        let model = load_model(BALL_MJCF).expect("ball MJCF loads");
+        let mut data = model.make_data();
+        let half = 0.15_f64;
+        data.qpos[0] = half.cos();
+        data.qpos[2] = half.sin();
+        data.qvel[1] = -1.5; // nonzero ang vel exercises the integrator coupling
+        data.forward(&model).expect("forward");
+        let c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        );
+        // wrench = 0 ⇒ the FD loaded Jacobian is the unloaded transition. Two checks:
+        //  (1) the velocity rows (`∂qvel'/∂·`, convention-free — qvel' has no quaternion)
+        //      match the validated analytic transition `A`; and
+        //  (2) the position-velocity block's DIAGONAL is ≈ Δt — the integrator's `J_r ≈ I`.
+        //      This is the atan2-log-map regression guard: the lossy `sqrt(1−w²)+acos` form
+        //      returned ZERO here (a tiny FD rotation's `w` rounds to 1). The off-diagonals
+        //      are O(Δt²) and convention-dependent (see the doc), so are not compared.
+        let loaded = c.loaded_state_jacobian(&SpatialVector::zeros());
+        let a = c
+            .data
+            .transition_derivatives(&c.model, &sim_core::DerivativeConfig::default())
+            .expect("transition derivatives")
+            .A;
+        let nv = 3;
+        let dt = 1.0e-3;
+        for r in nv..2 * nv {
+            for col in 0..2 * nv {
+                let (lv, av) = (loaded[(r, col)], a[(r, col)]);
+                let rel = (lv - av).abs() / av.abs().max(1e-6);
+                assert!(
+                    rel < 1e-4,
+                    "ball velocity row J_state[{r},{col}] = {lv:.6e} != A {av:.6e}"
+                );
+            }
+        }
+        for i in 0..nv {
+            let d = loaded[(i, nv + i)];
+            assert!(
+                (d - dt).abs() < 1e-5,
+                "ball position-velocity diagonal J_state[{i},{}] = {d:.6e} must be ≈Δt={dt:.0e} \
+                 (atan2 log-map fix — was ZERO with the lossy sqrt(1−w²)+acos form)",
+                nv + i
+            );
+        }
     }
 
     /// `ContactWrenchTrajVjp`'s analytic Jacobian (the contact-MOMENT leaf's core

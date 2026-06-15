@@ -80,3 +80,40 @@ and the position-row term both need the integrator's tangent Jacobian.
   tangent (`nv`-column Jacobians) — likely correct; re-validate in PR1.
 - Keep the merged hinge/chain + scalar-platen paths byte-untouched (single_hinge / nq==nv
   unaffected; the change is in the FD carry + the position-row term for quaternion joints).
+
+## 6. PR1 SHIPPED (2026-06-15) — ball joint machine-exact; a THIRD bug found + fixed
+
+The two-touchpoint plan was right but INCOMPLETE — there was a third, foundational defect.
+
+**Implemented (all in `sim-coupling`, except the sim-core fix):**
+1. `loaded_state_jacobian` → tangent FD for `nq ≠ nv` (`loaded_state_jacobian_tangent`):
+   position columns step via `mj_integrate_pos_explicit`, position rows difference via
+   `mj_differentiate_pos`. The `nq == nv` path keeps the raw FD VERBATIM (byte-identical
+   hinge/chain).
+2. Position-row carry `G_pos = D·G_vel` with `D = ∂(tangent qpos')/∂qvel'` block-diagonal:
+   `Δt` (Euclidean) / `Δt·J_r(Δt·qvel')` (quaternion), `J_r` = SO(3) right Jacobian
+   (`right_jacobian_so3`, new). Replaces the scalar `g_pos_dt`. Euclidean ⇒ `Δt·G_vel`
+   (byte-identical). **This `J_r` fixed the S0 2.5%@n=1 residual → 2e-7.**
+3. **★ THE THIRD BUG (S0 missed it): `mj_differentiate_pos` had a lossy log map.** It read
+   `sin(θ/2)` from `sqrt(1−w²)` and the angle from `acos(w)` — for a TINY FD rotation
+   (`θ ~ Δt·ε ~ 1e-9`, the position-VELOCITY block) `w = 1 − O(1e-18)` rounds to exactly
+   `1.0`, so `sqrt(1−w²)=0` → it returned ZERO. The position-velocity Jacobian
+   `∂(tangent qpos')/∂qvel ≈ Δt·I` came out as ZERO → n=2 was 32% wrong. Fixed in
+   `sim/L0/core/src/jacobian/position.rs` to the robust form (`sin_half = ‖vec‖` directly +
+   `atan2`), matching MuJoCo's `mju_quat2Vel`. **This also fixes sim-core's own
+   `mjd_transition_fd` for ball/free joints** (same caller). Strictly more accurate, all 642
+   sim-core lib tests still green.
+
+**Gate:** `ball_joint_gradient_matches_fd` at n=1,2,4 — machine-exact (rel 2e-7 / 1.7e-6 /
+6.3e-6, FD-carry precision like the chain). **Refutes S0's wrong-sign rel-1.15@n=4.** A ball
+joint is UNCONSTRAINED (no restoring stiffness), so the violent contact impulse launches the
+arm into a chaotic regime by n≈6 (tip leaves the block, FD non-convergent — the GRADIENT is
+ill-conditioned, not the tape); long-rollout robustness stays with the hinge/free/chain
+gates. Two new lib unit tests: `right_jacobian_so3_matches_quaternion_expmap_fd` (math) and
+`loaded_state_jacobian_ball_velocity_block_matches_analytic` (the atan2 regression guard).
+
+**Convention note (carry forward to PR2):** `mj_differentiate_pos` / `right_jacobian_so3`
+measure the output qpos' tangent at the NOMINAL output `q'` (the body-frame `q'⁻¹·q'_new`),
+which is what `jz`/`jlin` consume. `mjd_quat_integrate` / `transition_derivatives.A` use a
+DIFFERENT, internally-consistent convention (output tangent referenced at `q_old`), so their
+position-POSITION blocks legitimately DIFFER from the FD carry — do NOT "reconcile" them.
