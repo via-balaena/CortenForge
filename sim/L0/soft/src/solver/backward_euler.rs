@@ -2346,6 +2346,59 @@ where
             m_over_dt2,
             m_over_dt,
             dr_dparam_free,
+            // One pose direction: the scalar translation along `dir`.
+            vec![dr_dpose_free],
+        )
+    }
+
+    /// Like [`Self::trajectory_step_vjp`] but the contact primitive's pose parent is
+    /// the full 6-DOF spatial **twist** — one pose direction per [`RigidTwist`] in
+    /// `twists` (the rotating-normal leaf, PR2). The pushed node's `pose` parent is
+    /// `[twists.len()]`, and `∂L/∂pose[k] = −λ^T·(∂r/∂twist_k)_free` from the same
+    /// single shared adjoint solve.
+    ///
+    /// The coupling passes the 6 canonical spatial-twist basis directions (three
+    /// angular, three linear); the coupling-side seam (`PoseTwistSeamVjp`) then maps
+    /// the twist cotangent through the rigid body's spatial Jacobian to the state. Each
+    /// twist's `∂r/∂twist_k` gathers [`ContactModel::pose_residual_derivative`] over
+    /// the active set — the rotating-normal `δn̂ = ω×n̂` term included (vs the
+    /// translation-only [`Self::trajectory_step_vjp`]). Same engaged / stable-active-
+    /// set / hard-penalty scope; the material/state parents and shared factor are
+    /// identical. See `docs/keystone/rotating_normal_recon.md`.
+    ///
+    /// [`ContactModel::pose_residual_derivative`]: crate::contact::ContactModel::pose_residual_derivative
+    #[must_use]
+    pub fn trajectory_step_vjp_twist(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        param_idx: usize,
+        twists: &[RigidTwist],
+    ) -> TrajectoryStepVjp {
+        debug_assert!(x_final.len() == self.n_dof);
+        let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
+        let dr_dparam_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
+        // One (∂r/∂twist_k)_free per pose direction — shares the forward
+        // `assemble_pose_residual_grad` (kept in lockstep with the forward
+        // `equilibrium_pose_sensitivity`).
+        let dr_dpose_free: Vec<Vec<f64>> = twists
+            .iter()
+            .map(|&tw| {
+                let dr = self.assemble_pose_residual_grad(x_final, tw);
+                self.free_dof_indices.iter().map(|&i| dr[i]).collect()
+            })
+            .collect();
+        let dt2 = dt * dt;
+        let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
+        let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
+        let factor = self.factor_at_position(x_final, dt, 0.0);
+        TrajectoryStepVjp::new(
+            factor,
+            self.n_dof,
+            self.free_dof_indices.clone(),
+            m_over_dt2,
+            m_over_dt,
+            dr_dparam_free,
             dr_dpose_free,
         )
     }
@@ -2389,7 +2442,8 @@ where
             m_over_dt2,
             m_over_dt,
             dr_dparam_free,
-            dr_dpose_free,
+            // One pose direction: the scalar translation along `dir`.
+            vec![dr_dpose_free],
         )
     }
 }
