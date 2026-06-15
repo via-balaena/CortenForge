@@ -116,6 +116,13 @@ is the off-COM moment's long-rollout gradient — an open problem (see §6).
 
 ## 6. The bookmark (next leaf)
 
+> **★ RESOLVED 2026-06-15.** The "real machine-exact cap" below was FIXED (it was not
+> architectural). The fully-fresh formulation (fresh-FK contact pose + fresh output +
+> true position-row carry `∂qpos'/∂w = Δt·G_vel`) is machine-exact for single-hinge,
+> free-joint, AND 2-link chain at every n. The earlier "every fix is worse" finding was
+> from testing the matched-pair corrections individually. See
+> `moment_residual_recon.md` §3f and `multilink_recon.md`.
+
 The off-COM moment's long-rollout gradient is the real machine-exact cap for the
 articulated-with-moment path. It is smooth, moment-specific, contact-model-independent,
 exact through n ≈ 6, and resistant to fresh-FK / lag-attribution / the true position-row
