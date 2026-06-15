@@ -2634,12 +2634,16 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `μ` rides as a constant leaf (a joint actuator+design gradient on one tape is a
     /// follow-on).
     ///
-    /// **Scope (PR1).** A single-hinge MOTOR (`force = gain·ctrl`, no state feedback) on a
-    /// flat normal: the constant actuator force does not perturb `J_state` (single-hinge `M`
-    /// is config-independent), so the analytic single-hinge carry stays exact and the FD
-    /// `J_state` needs no `ctrl` replication. Joint damping IS supported (via `M_impl`).
-    /// State-feedback servos (position/velocity) and chains (where the control perturbs
-    /// `J_state` through `∂M⁻¹/∂q`) are the follow-on. See
+    /// **Scope.** A single AFFINE actuator (`force = gain·ctrl + bias`) on a single hinge,
+    /// flat normal — a MOTOR (PR1) OR a state-feedback SERVO (position/velocity/PD, PR2).
+    /// The control channel `∂qfrc/∂ctrl = gain` is the carry's `G_act`. A servo's
+    /// state-feedback `∂qfrc/∂(qpos,qvel)` (`−kp`/`−kv`) is a CONSTANT, EXPLICIT (non-
+    /// eulerdamp) slope, so it is already in the analytic single-hinge `J_state` (the
+    /// unloaded `A` from `transition_derivatives`) — no `ctrl` replication needed (a motor's
+    /// state-independent force likewise leaves `J_state` exact). Joint damping IS supported
+    /// (via `M_impl`). Follow-ons: chains (`nv > 1`, where the actuator force perturbs
+    /// `J_state` through `∂M⁻¹/∂q` — there the scratch DOES need `ctrl`), muscles
+    /// (`act`-state, nonlinear gain), and the actuator+design gradient on one tape. See
     /// `docs/keystone/actuator_dynamics_recon.md`.
     ///
     /// # Panics
