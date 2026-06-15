@@ -265,3 +265,88 @@ fn twolink_chain_gradient_matches_fd() {
         );
     }
 }
+
+// A BALL joint (`nq = 4, nv = 3`): the first QUATERNION joint in the coupled gradient. A
+// single arm on a ball joint, tilted θ = 0.3 about Y so the off-COM tip (`xipos.x ≈
+// −0.028`) presses the block — the contact reaction's off-COM moment swings the ball, so
+// ∂tip_z/∂μ flows THROUGH the quaternion DOFs (orientation enters the gradient). This is
+// the scene S0 found the raw-`qpos` carry got WRONG-SIGN (rel 1.15 at n = 4): the
+// `loaded_state_jacobian` perturbed un-normalized quaternion components and differenced
+// raw `qpos'`, not the SO(3) tangent. The tangent-FD carry + the SO(3) right-Jacobian
+// position-row (`G_pos = Δt·J_r·G_vel`) make it match the full-coupled FD. A free body
+// with COM contact is a DEGENERATE quaternion test (orientation never enters the
+// COM-height plane — `articulated_free_platen_exact_all_n` passes even at 107° rotation);
+// the off-COM ball joint is the scene that exercises SO(3) in the gradient.
+const BALL_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="ball"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+fn build_ball(mu: f64) -> StaggeredCoupling {
+    let model = load_model(BALL_MJCF).expect("ball MJCF loads");
+    let mut data = model.make_data();
+    // Tilt θ = 0.3 about Y as a unit quaternion [cos(θ/2), 0, sin(θ/2), 0] — the same
+    // tilt the hinge scene sets via qpos[0] = 0.3, but on SO(3) (nq = 4 ≠ nv = 3).
+    let half = 0.15_f64;
+    data.qpos[0] = half.cos();
+    data.qpos[1] = 0.0;
+    data.qpos[2] = half.sin();
+    data.qpos[3] = 0.0;
+    data.forward(&model).expect("forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+}
+
+/// **The ball-joint (`nq = 4, nv = 3`) coupled gradient matches the full-coupled FD.** The
+/// first quaternion joint: the off-COM tip's height depends on the ball ORIENTATION, so
+/// ∂tip_z/∂μ flows through the quaternion DOFs. The TANGENT-space reformulation — the
+/// SO(3)-aware FD `loaded_state_jacobian` (perturb via `mj_integrate_pos_explicit`,
+/// difference via `mj_differentiate_pos`) plus the position-row SO(3) right Jacobian
+/// `G_pos = Δt·J_r(Δt·qvel')·G_vel` — fixes the S0 gap (raw `qpos` was WRONG-SIGN, rel
+/// 1.15 at n = 4; now machine-exact). Accuracy is FD-CARRY precision (~1e-6): a ball joint
+/// has no single-hinge analytic `J_state`, so it uses the FD `loaded_state_jacobian` (eps
+/// 1e-6), like the 2-link chain.
+///
+/// Gated at n = 1, 2, 4 — the stably-engaged, well-conditioned regime (FD converged across
+/// eps_rel 1e-3…1e-6). A ball joint is UNCONSTRAINED (3 rotational DOFs, no restoring
+/// stiffness), so the violent initial contact impulse eventually launches the arm into a
+/// chaotic regime (by n ≈ 6 the tip leaves the block and the FD is non-convergent — the
+/// GRADIENT itself becomes ill-conditioned, not the tape). Long-rollout gradient
+/// robustness is covered by the constrained hinge / free-platen / chain gates above. See
+/// `docs/keystone/quaternion_joints_recon.md`.
+#[test]
+fn ball_joint_gradient_matches_fd() {
+    let z0 = build_ball(MU0).data().xipos[1].z;
+    assert!(
+        z0 > 0.10 && z0 < 0.115,
+        "ball-joint tip should start engaged near the block top, got {z0}"
+    );
+    for n in [1usize, 2, 4] {
+        let (tip_z, gm) = build_ball(MU0).coupled_trajectory_material_gradient_articulated(n, 0);
+        let (_t2, gl) = build_ball(MU0).coupled_trajectory_material_gradient_articulated(n, 1);
+        let total = gm + 4.0 * gl;
+        // The fresh-output tape forward must reproduce the independent real rollout.
+        let z_oracle = build_ball(MU0).coupled_trajectory_articulated_z(n);
+        assert!(
+            (tip_z - z_oracle).abs() < 1e-12,
+            "n={n}: tape forward tip_z {tip_z} != real rollout {z_oracle}"
+        );
+        let eps = MU0 * 1e-4;
+        let zp = build_ball(MU0 + eps).coupled_trajectory_articulated_z(n);
+        let zm = build_ball(MU0 - eps).coupled_trajectory_articulated_z(n);
+        let fd = (zp - zm) / (2.0 * eps);
+        let rel = (total - fd).abs() / fd.abs().max(1e-30);
+        println!("ball n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
+        assert!(
+            total.abs() > 1e-12 && rel < 1e-5,
+            "ball-joint nq=4 nv=3 gradient must match full-coupled FD (FD-carry \
+             precision) at n={n}, got rel {rel:.3e}"
+        );
+    }
+}
