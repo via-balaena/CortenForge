@@ -207,6 +207,44 @@ mod tests {
         );
     }
 
+    /// Moving-collider drift, hand-checked: a soft vertex at REST (`x_v = xᵗ`) whose
+    /// friction reference is shifted by the rigid surface's within-step tangential drift
+    /// `Δ_surf` (i.e. effective start `xᵗ_eff = xᵗ + Δ_surf`) feels a friction force in
+    /// the `+Δ_surf` direction (the collider DRAGS it along), magnitude `μλ` once the
+    /// drift exceeds the stick band `w`. This is the sign + frame the solver relies on
+    /// for two-way grip; the solver applies the shift inside `friction_blocks`.
+    #[test]
+    fn drift_drags_resting_vertex_in_drift_direction() {
+        let n = Vec3::z();
+        let xt = Vec3::new(0.05, -0.02, 0.1); // step-start = current (vertex at rest)
+        // Deep-slip drift (‖Δ‖ = 5w ≫ w) ⇒ saturated f₁ = 1 ⇒ force = μλ exactly.
+        for dir in [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.6, -0.8, 0.0),
+            Vec3::new(-0.3, 0.4, 0.7), // the normal (z) part must be projected out
+        ] {
+            let dir_t = Vec3::new(dir.x, dir.y, 0.0); // tangential part of the drift dir
+            let drift = 5.0 * W * dir / dir.norm();
+            let x_start_eff = xt + drift;
+            // force on soft = −∇D (friction_blocks negates grad for the residual scatter).
+            let force_on_soft = -grad_hess(xt, x_start_eff, n, LAMBDA, MU, W).0;
+            // Direction: along +Δ_surf (tangential), i.e. the drag pulls the vertex the
+            // way the collider swept.
+            let expected = MU * LAMBDA * dir_t / dir_t.norm();
+            assert!(
+                (force_on_soft - expected).norm() / expected.norm() < 1e-12,
+                "drift {drift:?}: force {force_on_soft:?} vs expected μλ·Δ̂ {expected:?}"
+            );
+        }
+        // Zero drift + resting vertex ⇒ no slip ⇒ no force (PR1 byte-identical floor).
+        let f0 = -grad_hess(xt, xt, n, LAMBDA, MU, W).0;
+        assert!(
+            f0.norm() < 1e-12,
+            "zero drift at rest ⇒ zero friction, got {f0:?}"
+        );
+    }
+
     #[test]
     fn respects_coulomb_cone() {
         let n = Vec3::z();

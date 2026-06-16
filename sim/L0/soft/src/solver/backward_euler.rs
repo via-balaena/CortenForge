@@ -402,6 +402,18 @@ pub struct CpuNewtonSolver<
     /// Free DOF count (`free_dof_indices.len()`), cached.
     n_free: usize,
 
+    /// The rigid contact surface's **within-step tangential drift** `Δ_surf` —
+    /// the displacement the (kinematic) rigid collider sweeps over the step,
+    /// against which the smoothed-Coulomb friction measures the soft vertices'
+    /// RELATIVE tangential slip: `u_T = Tⁿᵀ((x_v − xᵗ_v) − Δ_surf)`. Default
+    /// `(0,0,0)` recovers PR1's one-way (static-collider) friction
+    /// byte-identically; a non-zero drift lets a *moving* collider DRAG the soft
+    /// body (the two-way grip a sliding device exerts on a held limb). Set via
+    /// [`Self::with_friction_surface_drift`]. Uniform translation only for now
+    /// (a single `Δ_surf` for all pairs); per-contact-point rotation (`ω×r`) is a
+    /// future refinement. Only consulted when `config.friction_mu > 0`.
+    friction_surface_drift: Vec3,
+
     /// Phantom — `M` only appears in the `Msh: Mesh<M>` and
     /// `C: ContactModel + ActivePairsFor<M>` bounds, not in any
     /// concrete field. The marker tells rustc the type parameter is
@@ -742,8 +754,22 @@ where
             symbolic_lu,
             n_dof,
             n_free,
+            friction_surface_drift: Vec3::zeros(),
             _material: std::marker::PhantomData,
         }
+    }
+
+    /// Set the rigid contact surface's within-step tangential drift `Δ_surf` (the
+    /// `friction_surface_drift` field) and return the solver, builder-style. The
+    /// drift is the kinematic collider's
+    /// tangential displacement over the step (`≈ v_surf·dt`); friction measures
+    /// the soft body's slip RELATIVE to it, so a non-zero drift lets a moving
+    /// collider drag the soft body. `Δ_surf = (0,0,0)` (the default) is PR1's
+    /// static-collider friction, byte-identical.
+    #[must_use]
+    pub const fn with_friction_surface_drift(mut self, drift: Vec3) -> Self {
+        self.friction_surface_drift = drift;
+        self
     }
 
     /// Check every per-tet [`Material::validity`] domain against the
@@ -1150,6 +1176,14 @@ where
              step-start position xᵗ (= x_prev) to build the ∂λⁿ/∂x Woodbury correction. \
              Forward-mode sensitivities pass `Some(x_prev)`; reverse-mode tape VJPs stay \
              friction-free until the coupling leaf (PR3) threads x_prev through."
+        );
+        assert!(
+            mu == 0.0 || self.friction_surface_drift == Vec3::zeros(),
+            "moving-collider friction drift gradient is not supported yet (PR3b): the IFT \
+             adjoint's Woodbury correction is built at the UN-drifted reference xᵗ, so a nonzero \
+             Δ_surf would return a gradient inconsistent with the forward solve (which shifts the \
+             reference by Δ_surf). Forward-only `replay_step` supports the drift; the \
+             differentiable paths require Δ_surf = 0 until PR3b threads it through the adjoint."
         );
         // A_sym includes the frozen-lag ∇²D when friction is active (the SAME symmetric
         // tangent the forward Newton step converged with); the asymmetric ∂λⁿ/∂x term is
@@ -1570,6 +1604,14 @@ where
              step-start position xᵗ (= x_prev) to build the ∂λⁿ/∂x Woodbury correction. \
              Forward-mode sensitivities pass `Some(x_prev)`; reverse-mode tape VJPs stay \
              friction-free until the coupling leaf (PR3) threads x_prev through."
+        );
+        assert!(
+            mu == 0.0 || self.friction_surface_drift == Vec3::zeros(),
+            "moving-collider friction drift gradient is not supported yet (PR3b): the IFT \
+             adjoint's Woodbury correction is built at the UN-drifted reference xᵗ, so a nonzero \
+             Δ_surf would return a gradient inconsistent with the forward solve (which shifts the \
+             reference by Δ_surf). Forward-only `replay_step` supports the drift; the \
+             differentiable paths require Δ_surf = 0 until PR3b threads it through the adjoint."
         );
         let x_prev_for_hessian = if mu == 0.0 { None } else { x_prev };
         let triplets = self.assemble_free_hessian_triplets(x_curr, x_prev_for_hessian, dt);
@@ -2142,13 +2184,44 @@ where
                 }
                 let v = vid as usize;
                 let x_v = positions[v];
-                let x_start = crate::Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2]);
+                // Effective step-start `xᵗ_eff = xᵗ + Δ_surf`: shifting the friction
+                // reference by the rigid surface's within-step tangential drift makes
+                // `u_T = Tⁿᵀ(x_v − xᵗ − Δ_surf)` the slip RELATIVE to the moving
+                // collider (a stationary vertex under a sliding collider gets dragged).
+                // Δ_surf = 0 (the default) recovers PR1's static-collider friction.
+                let x_start = crate::Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2])
+                    + self.friction_surface_drift;
                 let (grad, hess) =
                     crate::contact::friction::grad_hess(x_v, x_start, force, lambda, mu, w);
                 out.push((v, grad, hess));
             }
         }
         out
+    }
+
+    /// Per-active-pair smoothed-Coulomb friction FORCE on the soft body `(vertex, −∇D)` at
+    /// configuration `x_curr` with step start `x_prev`, including this solver's
+    /// [`friction_surface_drift`](Self::with_friction_surface_drift). `−∇D` is the force the
+    /// contact exerts on the soft side (the `force_on_soft` sign convention, the tangential
+    /// companion to the normal contact force); it is bit-equal to the per-pair friction the
+    /// forward residual scatters (both go through `friction_blocks`). A staggered coupling
+    /// routes `−Σ` of these (and their off-COM moment `−Σ(rᵢ−c)×`) onto the rigid body as the
+    /// tangential grip reaction. Empty when `friction_mu == 0` or no pair is active. `dt` is
+    /// the step used to form the stick-band width `w = dt·ε_v`.
+    // `v as VertexId`: `v` was produced as `vid as usize` from a `VertexId` (u32) in
+    // `friction_blocks`, so the round-trip is lossless.
+    #[allow(clippy::cast_possible_truncation)]
+    #[must_use]
+    pub fn friction_forces_on_soft(
+        &self,
+        x_curr: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+    ) -> Vec<(VertexId, crate::Vec3)> {
+        self.friction_blocks(x_curr, x_prev, dt)
+            .into_iter()
+            .map(|(v, grad, _)| (v as VertexId, -grad))
+            .collect()
     }
 
     /// Assemble the lower-triangle triplets of the free-DOF Hessian

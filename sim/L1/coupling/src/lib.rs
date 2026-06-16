@@ -1104,6 +1104,38 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self
     }
 
+    /// Enable **tangential (smoothed-Coulomb) friction GRIP** at the soft↔rigid contact.
+    /// The soft Newton solve becomes friction-aware (`μ_c = mu`, stick-band velocity
+    /// threshold `ε_v = eps_v`), and — crucially for two-way grip — each step feeds the
+    /// rigid body's within-step tangential motion to the soft solve as the collider drift
+    /// `Δ_surf` (so a sliding device DRAGS the held soft body), then routes the soft body's
+    /// friction reaction (and its off-COM moment) back onto the rigid body. The result: the
+    /// rigid body feels tangential grip — it is held / dragged by the gripping soft body
+    /// rather than sliding freely over it.
+    ///
+    /// Opt-in (default `μ = 0`, frictionless, byte-identical to the pre-friction coupling):
+    /// the grip is exercised by the friction-aware forward rollout
+    /// [`Self::coupled_trajectory_grip`].
+    ///
+    /// **Forward-only** (this leaf, PR3a): the *gradient* of a friction-coupled trajectory
+    /// is not yet supported — the soft adjoint panics on a nonzero collider drift with
+    /// friction (`sim_soft`'s `friction_surface_drift` guard). PR3b threads the drift
+    /// through the adjoint.
+    #[must_use]
+    pub fn with_friction(mut self, mu: f64, eps_v: f64) -> Self {
+        self.cfg.friction_mu = mu;
+        self.cfg.friction_eps_v = eps_v;
+        // The friction stick regime stiffens the Newton tangent (condition `~1/(ε_v·dt)`),
+        // so the default 10-iter / 20-backtrack budget is too tight; match PR1's converging
+        // `friction_stick_slip` budget. A no-op when `mu == 0` (the friction scatter is
+        // short-circuited, so the solve converges in the usual 3-5 iters either way).
+        if mu != 0.0 {
+            self.cfg.max_newton_iter = 80;
+            self.cfg.max_line_search_backtracks = 60;
+        }
+        self
+    }
+
     /// Read-only access to the rigid engine state.
     #[must_use]
     pub fn data(&self) -> &Data {
@@ -1233,6 +1265,33 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let mut wrench = SpatialVector::zeros();
         for &(_, g, _, _, r) in &self.active_pair_wrench_data(height, &self.positions()) {
             let f = -g;
+            wrench[3] += f.x;
+            wrench[4] += f.y;
+            wrench[5] += f.z;
+            let tau = (r - c).cross(&f);
+            wrench[0] += tau.x;
+            wrench[1] += tau.y;
+            wrench[2] += tau.z;
+        }
+        wrench
+    }
+
+    /// The reaction **wrench** `[τ; f]` INCLUDING the tangential friction grip — the friction
+    /// successor to [`Self::contact_wrench`]. On top of the normal contact reaction it folds
+    /// in the soft body's per-pair friction force `friction[i] = −∇Dᵢ` (the `force_on_soft`
+    /// sign, from [`CpuNewtonSolver::friction_forces_on_soft`]): the reaction on the rigid
+    /// body is `−friction[i]` at the contacted vertex `rᵢ = positions[vᵢ]`, with the off-COM
+    /// moment `(rᵢ − c) × (−friction[i])` about the COM `c = xipos`, so the same wrench
+    /// routing carries the tangential grip in any direction. `friction` is read at the
+    /// post-step soft config (the `self.positions()` the normal term also uses). Empty
+    /// `friction` ⇒ byte-identical to [`Self::contact_wrench`]. Does not re-solve/mutate.
+    fn contact_wrench_gripped(&self, height: f64, friction: &[(VertexId, Vec3)]) -> SpatialVector {
+        let c = self.data.xipos[self.body];
+        let positions = self.positions();
+        let mut wrench = self.contact_wrench(height);
+        for &(vid, f_fric) in friction {
+            let r = positions[vid as usize];
+            let f = -f_fric; // Newton's-3rd-law reaction on the rigid body
             wrench[3] += f.x;
             wrench[4] += f.y;
             wrench[5] += f.z;
@@ -3505,6 +3564,85 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             force_on_soft,
             rigid_z: self.data.xpos[self.body].z,
         }
+    }
+
+    /// Roll the coupled system forward `n_steps` **with the tangential friction grip**,
+    /// returning the rigid body's final world position `xpos[body]`. The friction-coupled
+    /// forward companion to [`Self::step`] (which is normal-only, force-at-COM): per step it
+    /// poses the contact from the current rigid config, takes one friction-aware soft step
+    /// fed the collider drift `Δ_surf = v_rigid_tangential·dt` (so the moving rigid surface
+    /// DRAGS the soft body), then routes the soft body's friction reaction (normal + the
+    /// tangential grip, with the off-COM moment) back onto the rigid body via the gripped
+    /// contact wrench, plus the contact-axis (z) damping `step` applies.
+    ///
+    /// Friction must do tangential WORK for grip to register, so the scene needs a tangential
+    /// rigid DOF/load: a free-joint platen under a sideways push (e.g. tilted gravity) slides
+    /// freely when frictionless and is HELD once friction grips. Returns the full position so
+    /// a gate can read the tangential slide. With `friction_mu == 0` the drift and the
+    /// friction reaction are both empty, so the rollout reduces to the plain coupled dynamics
+    /// (the platen still slides). Advances `self` (build a fresh coupling per call).
+    ///
+    /// Assumes the rigid `body` has a **free joint** (the keystone platen): the collider drift
+    /// reads `qvel[0..3]` as the world-frame linear velocity, and the omitted `ω×r` per-contact
+    /// rotation term is negligible for the COM-centered platen contact. A non-free-joint body
+    /// (hinge/slide) would mis-read `qvel`, so this is scoped to the free-joint platen for now.
+    ///
+    /// # Panics
+    /// Panics if the rigid step diverges or the soft solver fails (as in [`Self::step`]).
+    #[must_use]
+    // expect_used: a rigid-step divergence / soft non-convergence is a programmer error
+    // surfaced loudly, not recoverable for keystone-v1 (mirrors `step`).
+    #[allow(clippy::expect_used)]
+    pub fn coupled_trajectory_grip(&mut self, n_steps: usize) -> Vec3 {
+        let dt = self.cfg.dt;
+        let n = self.n_vertices;
+        for _ in 0..n_steps {
+            // FRESH FK: pose the contact / COM from the CURRENT config (no one-step lag,
+            // matching `coupled_trajectory_articulated_z`).
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.plane_height();
+            // Step-start soft config xᵗ — captured BEFORE the solve overwrites `self.x`;
+            // the friction potential differences the post-step config against it.
+            let x_start = self.x.clone();
+            // Δ_surf: the platen's within-step tangential sweep (linear velocity × dt). The
+            // friction tangent projects out the normal component, so the full linear
+            // displacement is correct for the flat downward plane (rotation ω×r omitted).
+            let drift = Vec3::new(self.data.qvel[0], self.data.qvel[1], self.data.qvel[2]) * dt;
+            // One friction-aware dynamic soft step with the moving-collider drift.
+            let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+            let solver: SoftSolver<C> = CpuNewtonSolver::new(
+                Tet4,
+                self.fresh_mesh(),
+                self.build_contact(height),
+                self.cfg,
+                bc,
+            )
+            .with_friction_surface_drift(drift);
+            let x_next = solver
+                .replay_step(
+                    &Tensor::from_slice(&self.x, &[3 * n]),
+                    &Tensor::from_slice(&self.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final;
+            // The friction reaction (with the same drift) at the post-step config.
+            let friction = solver.friction_forces_on_soft(&x_next, &x_start, dt);
+            for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
+                *vi = (xf - xo) / dt;
+            }
+            self.x = x_next;
+            // Route the gripped reaction wrench [τ; f] (normal + friction) about the fresh-FK
+            // COM, plus the contact-axis (z) damping so the platen settles vertically.
+            let mut wrench = self.contact_wrench_gripped(height, &friction);
+            wrench[5] -= self.rigid_damping * self.data.qvel[2];
+            self.data.xfrc_applied[self.body] = wrench;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in grip rollout");
+        }
+        self.data.forward(&self.model).expect("fresh FK (output)");
+        self.data.xpos[self.body]
     }
 }
 
