@@ -56,7 +56,11 @@ near the origin the force ramps LINEARLY in slip (slope `μλ·2/w`, the smooth 
   wrench already routes an arbitrary per-pair force (the off-COM moment handles any
   direction), so the TANGENTIAL reaction enters with no change to the wrench assembly — only
   `force_on_soft` extends from normal-only to `normal + friction`. `λⁿ` derives from the
-  barrier curvature the coupling already reads.
+  barrier curvature the coupling already reads. **PR3 must thread `x_prev` into the coupling's
+  `equilibrium_pose_sensitivity` call** (it passes `None` today, line ~1415, so the pose
+  adjoint is friction-free): the coupling already holds the step-start position (`self.x`), and
+  passing `Some(x_prev)` switches the pose adjoint onto the friction-exact Woodbury tangent —
+  the other half of the pose-RHS friction term below.
 - **Differentiability** — friction enters the system tangent `A` (the Hessian), so `∂x*/∂·`
   already flows through it once friction is in the Hessian; the pose-adjoint
   (`pose_residual_derivative` / `RigidTwist`) and the coupled wrench gain friction's

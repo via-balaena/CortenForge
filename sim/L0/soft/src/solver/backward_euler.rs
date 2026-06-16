@@ -1208,7 +1208,9 @@ where
                 let x_start = crate::Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2]);
                 let (grad_d, _) =
                     crate::contact::friction::grad_hess(x_v, x_start, *force, lambda, mu, w);
-                let a_v = grad_d / lambda; // ∂(∇D)/∂λⁿ = ∇D/λⁿ (friction force direction)
+                // aₚ = ∇D/λⁿ — the friction force direction. ∇D = μ·λⁿ·f₁·T·û is linear in
+                // λⁿ, so ∂(∇D)/∂λⁿ = ∇D/λⁿ (the rank-1 column's left factor).
+                let a_v = grad_d / lambda;
                 let nhat = force / lambda;
 
                 // U column: aₚ embedded at v's free DOFs.
