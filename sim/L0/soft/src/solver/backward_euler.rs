@@ -1177,17 +1177,11 @@ where
              Forward-mode sensitivities pass `Some(x_prev)`; reverse-mode tape VJPs stay \
              friction-free until the coupling leaf (PR3) threads x_prev through."
         );
-        assert!(
-            mu == 0.0 || self.friction_surface_drift == Vec3::zeros(),
-            "moving-collider friction drift gradient is not supported yet (PR3b): the IFT \
-             adjoint's Woodbury correction is built at the UN-drifted reference xᵗ, so a nonzero \
-             Δ_surf would return a gradient inconsistent with the forward solve (which shifts the \
-             reference by Δ_surf). Forward-only `replay_step` supports the drift; the \
-             differentiable paths require Δ_surf = 0 until PR3b threads it through the adjoint."
-        );
         // A_sym includes the frozen-lag ∇²D when friction is active (the SAME symmetric
         // tangent the forward Newton step converged with); the asymmetric ∂λⁿ/∂x term is
-        // added on top as a Woodbury correction below.
+        // added on top as a Woodbury correction below — now built at the drift-consistent
+        // reference, so the adjoint A is exact under a moving collider (the drift guard PR3a
+        // installed is retired; the coupling's drift-feedback edge is the remaining PR3b piece).
         let x_prev_for_hessian = if mu == 0.0 { None } else { x_prev };
         let triplets = self.assemble_free_hessian_triplets(x_curr, x_prev_for_hessian, dt);
         let mut lm_state = self
@@ -1239,7 +1233,12 @@ where
                 }
                 let v = *vid as usize;
                 let x_v = positions[v];
-                let x_start = crate::Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2]);
+                // Drift-consistent reference `xᵗ_eff = xᵗ + Δ_surf` — the SAME shift the forward
+                // `friction_blocks` applies, so the Woodbury `aₚ = ∇D/λⁿ` is evaluated at the
+                // config the forward solve converged with (the adjoint A stays exact under a
+                // moving collider). `Δ_surf = 0` recovers the PR2 static-collider Woodbury.
+                let x_start = crate::Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2])
+                    + self.friction_surface_drift;
                 let (grad_d, _) =
                     crate::contact::friction::grad_hess(x_v, x_start, *force, lambda, mu, w);
                 // aₚ = ∇D/λⁿ — the friction force direction. ∇D = μ·λⁿ·f₁·T·û is linear in
@@ -1605,14 +1604,8 @@ where
              Forward-mode sensitivities pass `Some(x_prev)`; reverse-mode tape VJPs stay \
              friction-free until the coupling leaf (PR3) threads x_prev through."
         );
-        assert!(
-            mu == 0.0 || self.friction_surface_drift == Vec3::zeros(),
-            "moving-collider friction drift gradient is not supported yet (PR3b): the IFT \
-             adjoint's Woodbury correction is built at the UN-drifted reference xᵗ, so a nonzero \
-             Δ_surf would return a gradient inconsistent with the forward solve (which shifts the \
-             reference by Δ_surf). Forward-only `replay_step` supports the drift; the \
-             differentiable paths require Δ_surf = 0 until PR3b threads it through the adjoint."
-        );
+        // Drift-consistent Woodbury ⇒ the adjoint is exact under a moving collider; the PR3a
+        // drift guard is retired (see `factor_at_position`).
         let x_prev_for_hessian = if mu == 0.0 { None } else { x_prev };
         let triplets = self.assemble_free_hessian_triplets(x_curr, x_prev_for_hessian, dt);
         let mut lm_state = self
@@ -2197,6 +2190,51 @@ where
             }
         }
         out
+    }
+
+    /// `∂r/∂Δ_surf · dir` (full-DOF) — the residual's sensitivity to the moving-collider
+    /// tangential drift along `dir`. The drift enters the residual ONLY through the friction
+    /// term `∇D(x_v − xᵗ − Δ_surf)`, so `∂r_v/∂Δ_surf = −∇²D_v` (chain rule through the
+    /// negated `Δ_surf`); the directional column is `−∇²D_v·dir`. Zeros off the active set.
+    /// Reuses `friction_blocks` (which evaluates `∇²D` at the drift-consistent reference).
+    fn assemble_drift_residual_grad(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        dir: Vec3,
+    ) -> Vec<f64> {
+        let mut out = vec![0.0_f64; self.n_dof];
+        for (v, _grad, hess) in self.friction_blocks(x_final, x_prev, dt) {
+            let col = -(hess * dir); // ∂r_v/∂Δ_surf · dir
+            out[3 * v] = col.x;
+            out[3 * v + 1] = col.y;
+            out[3 * v + 2] = col.z;
+        }
+        out
+    }
+
+    /// Forward sensitivity `∂x*/∂Δ_surf` of the converged soft equilibrium w.r.t. the
+    /// moving-collider tangential drift, along the direction `dir`. The drift shifts the
+    /// friction reference (`u_T = Tⁿᵀ(x_v − xᵗ − Δ_surf)`), entering the residual only through
+    /// the friction term, so `∂x*/∂Δ_surf = −A⁻¹·(∂r/∂Δ_surf)` reuses the SAME drift-consistent
+    /// factored tangent `A` (Woodbury-corrected) the material/pose sensitivities use — the
+    /// drift's own term is in the RHS. `x_prev` is the step-start `xᵗ` (required: the drift
+    /// sensitivity is only meaningful with friction active). Length `n_dof`, zeros on
+    /// pinned/roller DOFs and when frictionless / no active pair. The coupling contracts this
+    /// with `∂Δ_surf/∂(rigid velocity)` to thread the two-way grip feedback.
+    #[must_use]
+    pub fn equilibrium_drift_sensitivity(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        dir: Vec3,
+    ) -> Vec<f64> {
+        debug_assert!(x_final.len() == self.n_dof);
+        let dr = self.assemble_drift_residual_grad(x_final, x_prev, dt, dir);
+        let rhs: Vec<f64> = self.free_dof_indices.iter().map(|&i| -dr[i]).collect();
+        self.solve_free_and_scatter(x_final, Some(x_prev), dt, rhs)
     }
 
     /// Per-active-pair smoothed-Coulomb friction FORCE on the soft body `(vertex, −∇D)` at
