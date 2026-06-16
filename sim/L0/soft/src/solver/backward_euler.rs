@@ -144,6 +144,23 @@ pub struct SolverConfig {
     /// [`Solver::try_step`] for graceful
     /// failure on Armijo stall.
     pub lm_regularization: Option<LmConfig>,
+    /// Coulomb friction coefficient `μ_c` for the smoothed-Coulomb friction term
+    /// (`contact::friction`). Default `0.0` = FRICTIONLESS, which short-circuits the
+    /// friction scatter in the forward assembly → bit-equal to the pre-friction path
+    /// (the [`Self::skeleton`] / `gravity_z = 0` pattern). Friction enters the FORWARD
+    /// Newton solve (residual + its Hessian); the differentiable tangent
+    /// (`factor_at_position`) stays friction-free until the differentiability leaf.
+    ///
+    /// PR1 is FORWARD-ONLY: gradients with `friction_mu > 0` are **not** supported and the
+    /// differentiable paths (`step`, the VJP / equilibrium-sensitivity methods) panic rather
+    /// than silently return a tangent that omits the friction Hessian. Use `replay_step` for
+    /// forward-only friction; PR2 (the differentiability leaf) wires friction into the adjoint.
+    pub friction_mu: f64,
+    /// Friction velocity threshold `ε_v` (m/s): the transition-zone width in displacement
+    /// space is `w = dt·ε_v` (below this sliding speed the smoothed force ramps from zero
+    /// — the stick regime). Only consulted when `friction_mu > 0`. IPC default
+    /// `≈ 1e-3·L_bbox` m/s.
+    pub friction_eps_v: f64,
 }
 
 impl SolverConfig {
@@ -164,6 +181,8 @@ impl SolverConfig {
             max_line_search_backtracks: 20,
             gravity_z: 0.0,
             lm_regularization: None,
+            friction_mu: 0.0,
+            friction_eps_v: 0.0,
         }
     }
 }
@@ -1029,7 +1048,15 @@ where
         dt: f64,
         lm_seed_lambda: f64,
     ) -> FactoredFreeTangent {
-        let triplets = self.assemble_free_hessian_triplets(x_curr, dt);
+        assert!(
+            self.config.friction_mu == 0.0,
+            "friction gradients are not yet supported (PR1 is forward-physics-only): the IFT \
+             adjoint tangent omits the friction Hessian, so a gradient computed with \
+             `friction_mu > 0` would be silently inconsistent with the forward solve. Use \
+             `replay_step` for forward-only friction; the differentiability leaf (PR2) wires \
+             friction into this adjoint."
+        );
+        let triplets = self.assemble_free_hessian_triplets(x_curr, None, dt);
         let mut lm_state = self
             .config
             .lm_regularization
@@ -1345,7 +1372,15 @@ where
         dt: f64,
         lm_seed_lambda: f64,
     ) -> Result<FactoredFreeTangent, SolverFailure> {
-        let triplets = self.assemble_free_hessian_triplets(x_curr, dt);
+        assert!(
+            self.config.friction_mu == 0.0,
+            "friction gradients are not yet supported (PR1 is forward-physics-only): the IFT \
+             adjoint tangent omits the friction Hessian, so a gradient computed with \
+             `friction_mu > 0` would be silently inconsistent with the forward solve. Use \
+             `replay_step` for forward-only friction; the differentiability leaf (PR2) wires \
+             friction into this adjoint."
+        );
+        let triplets = self.assemble_free_hessian_triplets(x_curr, None, dt);
         let mut lm_state = self
             .config
             .lm_regularization
@@ -1600,7 +1635,7 @@ where
         let mut last_r_norm = 0.0_f64;
 
         for newton_iter in 0..self.config.max_newton_iter {
-            self.assemble_global_int_force(&x_curr, &mut f_int);
+            self.assemble_global_int_force(&x_curr, &x_prev_vec, dt, &mut f_int);
             residual_into(
                 &x_curr,
                 &x_prev_vec,
@@ -1632,7 +1667,7 @@ where
                 ));
             }
 
-            let triplets = self.assemble_free_hessian_triplets(&x_curr, dt);
+            let triplets = self.assemble_free_hessian_triplets(&x_curr, Some(&x_prev_vec), dt);
             x_curr = self.try_gated_factor_solve_armijo(
                 &triplets,
                 &r_full,
@@ -1698,7 +1733,7 @@ where
             for (free_idx, &full_idx) in self.free_dof_indices.iter().enumerate() {
                 trial_x[full_idx] = x_curr[full_idx] + alpha * delta_free[free_idx];
             }
-            self.assemble_global_int_force(&trial_x, &mut trial_f_int);
+            self.assemble_global_int_force(&trial_x, x_prev_vec, dt, &mut trial_f_int);
             residual_into(
                 &trial_x,
                 x_prev_vec,
@@ -1824,7 +1859,13 @@ where
     //
     // Lint allows: see assemble_free_hessian_triplets justification.
     #[allow(clippy::cast_possible_truncation, clippy::needless_range_loop)]
-    fn assemble_global_int_force(&self, x_curr: &[f64], f_int: &mut [f64]) {
+    fn assemble_global_int_force(
+        &self,
+        x_curr: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        f_int: &mut [f64],
+    ) {
         debug_assert!(x_curr.len() == self.n_dof);
         debug_assert!(f_int.len() == self.n_dof);
         f_int.fill(0.0);
@@ -1864,6 +1905,51 @@ where
                 f_int[3 * v + 2] += force.z;
             }
         }
+
+        // Smoothed-Coulomb friction gradient `∇D` (the dissipative tangential force),
+        // scattered like the contact force. Empty when frictionless ⇒ bit-equal.
+        for (v, grad, _) in self.friction_blocks(x_curr, x_prev, dt) {
+            f_int[3 * v] += grad.x;
+            f_int[3 * v + 1] += grad.y;
+            f_int[3 * v + 2] += grad.z;
+        }
+    }
+
+    /// Per-active-pair smoothed-Coulomb friction `(vertex, ∇D, ∇²D)` at the current
+    /// configuration, with the lagged `(normal, λⁿ)` read from the contact's own gradient
+    /// (the contact-energy gradient `force = ∇E_contact` has magnitude `λⁿ` and lies along
+    /// `±n̂`; the tangent plane is sign-agnostic). `xᵗ = x_prev` (the step start), `w =
+    /// dt·ε_v`. Empty when `friction_mu == 0` (the frictionless short-circuit) or no pairs.
+    /// Shared by the forward residual and Hessian assemblies so the two stay in lockstep.
+    fn friction_blocks(
+        &self,
+        x_curr: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+    ) -> Vec<(usize, crate::Vec3, nalgebra::Matrix3<f64>)> {
+        let mu = self.config.friction_mu;
+        if mu == 0.0 {
+            return Vec::new();
+        }
+        let w = dt * self.config.friction_eps_v;
+        let positions = slice_to_vec3s(x_curr);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        let mut out = Vec::new();
+        for pair in &pairs {
+            for (vid, force) in self.contact.gradient(pair, &positions).contributions {
+                let lambda = force.norm(); // |∇E_contact| = the normal-force magnitude λⁿ
+                if lambda == 0.0 {
+                    continue;
+                }
+                let v = vid as usize;
+                let x_v = positions[v];
+                let x_start = crate::Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2]);
+                let (grad, hess) =
+                    crate::contact::friction::grad_hess(x_v, x_start, force, lambda, mu, w);
+                out.push((v, grad, hess));
+            }
+        }
+        out
     }
 
     /// Assemble the lower-triangle triplets of the free-DOF Hessian
@@ -1896,6 +1982,7 @@ where
     fn assemble_free_hessian_triplets(
         &self,
         x_curr: &[f64],
+        x_prev: Option<&[f64]>,
         dt: f64,
     ) -> Vec<Triplet<usize, usize, f64>> {
         debug_assert!(x_curr.len() == self.n_dof);
@@ -1969,6 +2056,29 @@ where
                         ) && row_free >= col_free
                         {
                             *acc.entry((col_free, row_free)).or_insert(0.0) += block[(i, j)];
+                        }
+                    }
+                }
+            }
+        }
+
+        // Smoothed-Coulomb friction Hessian `∇²D` (PSD per-pair 3×3 block at the contacted
+        // vertex), scattered through the same free-DOF + lower-triangle filter. Threaded
+        // ONLY when `x_prev` is supplied — the FORWARD Newton solve passes `Some(x_prev)`
+        // (so the solve converges to the friction equilibrium); the differentiable tangent
+        // (`factor_at_position`) passes `None` (friction enters the adjoint in the
+        // differentiability leaf). Empty / `None` ⇒ acc unchanged ⇒ bit-equal.
+        if let Some(x_prev) = x_prev {
+            for (v, _, block) in self.friction_blocks(x_curr, x_prev, dt) {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        let (row_full, col_full) = (3 * v + i, 3 * v + j);
+                        if let (Some(rf), Some(cf)) = (
+                            self.full_to_free_idx[row_full],
+                            self.full_to_free_idx[col_full],
+                        ) && rf >= cf
+                        {
+                            *acc.entry((cf, rf)).or_insert(0.0) += block[(i, j)];
                         }
                     }
                 }
