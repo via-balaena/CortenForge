@@ -3644,6 +3644,82 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self.data.forward(&self.model).expect("fresh FK (output)");
         self.data.xpos[self.body]
     }
+
+    /// One friction-aware soft step from the CURRENT coupling state with the rigid body's
+    /// tangential velocity perturbed by `dv` along `dir`, returning the converged soft `x*`.
+    /// The platen velocity enters the soft solve ONLY through the collider drift
+    /// `Δ_surf = v_rigid·dt`, so this re-solves with `Δ_surf = (v_rigid + dv·dir)·dt`. The
+    /// black-box forward oracle for finite-differencing the coupled drift Jacobian
+    /// `∂x*/∂v_rigid`. Non-mutating (scratch solver; does not advance `self`).
+    ///
+    /// # Panics
+    /// Panics if the soft solver does not converge (as in [`Self::step`]).
+    #[must_use]
+    pub fn coupled_step_x_at_velocity_perturbation(&self, dir: Vec3, dv: f64) -> Vec<f64> {
+        let n = self.n_vertices;
+        let dt = self.cfg.dt;
+        let height = self.plane_height();
+        let v_rigid = Vec3::new(self.data.qvel[0], self.data.qvel[1], self.data.qvel[2]) + dir * dv;
+        let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+        let solver: SoftSolver<C> = CpuNewtonSolver::new(
+            Tet4,
+            self.fresh_mesh(),
+            self.build_contact(height),
+            self.cfg,
+            bc,
+        )
+        .with_friction_surface_drift(v_rigid * dt);
+        solver
+            .replay_step(
+                &Tensor::from_slice(&self.x, &[3 * n]),
+                &Tensor::from_slice(&self.v, &[3 * n]),
+                &Tensor::zeros(&[0]),
+                dt,
+            )
+            .x_final
+    }
+
+    /// The coupled-step **drift Jacobian** `∂x*/∂v_rigid` along `dir`: how the post-step soft
+    /// equilibrium responds to the rigid body's tangential velocity, through the moving-collider
+    /// grip. The velocity enters the soft solve only via the drift `Δ_surf = v_rigid·dt`, so by
+    /// the chain rule `∂x*/∂v_rigid = ∂x*/∂Δ_surf · dt` — the sim-soft drift sensitivity
+    /// ([`CpuNewtonSolver::equilibrium_drift_sensitivity`]) scaled by `dt`. This is the new
+    /// two-way feedback edge the full friction-coupled trajectory gradient chains; here it is
+    /// validated in isolation against [`Self::coupled_step_x_at_velocity_perturbation`] FD.
+    /// Non-mutating. Length `n_dof`; zeros when frictionless / no active pair.
+    ///
+    /// # Panics
+    /// Panics if the soft solver does not converge (as in [`Self::step`]).
+    #[must_use]
+    pub fn coupled_step_drift_jacobian(&self, dir: Vec3) -> Vec<f64> {
+        let n = self.n_vertices;
+        let dt = self.cfg.dt;
+        let height = self.plane_height();
+        let drift = Vec3::new(self.data.qvel[0], self.data.qvel[1], self.data.qvel[2]) * dt;
+        let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+        let solver: SoftSolver<C> = CpuNewtonSolver::new(
+            Tet4,
+            self.fresh_mesh(),
+            self.build_contact(height),
+            self.cfg,
+            bc,
+        )
+        .with_friction_surface_drift(drift);
+        let x_final = solver
+            .replay_step(
+                &Tensor::from_slice(&self.x, &[3 * n]),
+                &Tensor::from_slice(&self.v, &[3 * n]),
+                &Tensor::zeros(&[0]),
+                dt,
+            )
+            .x_final;
+        // ∂x*/∂v_rigid = ∂x*/∂Δ_surf · ∂Δ_surf/∂v_rigid = ∂x*/∂Δ_surf · dt.
+        solver
+            .equilibrium_drift_sensitivity(&x_final, &self.x, dt, dir)
+            .iter()
+            .map(|d| d * dt)
+            .collect()
+    }
 }
 
 #[cfg(test)]
