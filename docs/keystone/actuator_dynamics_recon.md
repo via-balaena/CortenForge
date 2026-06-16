@@ -60,9 +60,24 @@ leaf; an actuator velocity-servo's `kv` is explicit, so it is exact.) The contro
 scope. **Lesson: measure-first can reveal the foundation is already MORE capable than the
 prior leaf claimed — don't write code to fill a gap you haven't confirmed exists.**
 
+## 3c. PR3 — actuated CHAINS (`nv > 1`), the exo's topology
+
+The actuator method's single-hinge `assert!` was relaxed to EUCLIDEAN (`nq == nv` —
+hinge/slide chains). On a chain the (even constant) actuator force interacts with the
+configuration-dependent mass matrix `∂M⁻¹/∂q`, so the loaded `J_state` must see `ctrl` — a
+`ctrl`-blind FD `scratch_state_step` was ≈5e-5 wrong (S0); replicating `self.data.ctrl` in
+the scratch + setting `ctrl` BEFORE the carry drops it to ~1e-8. A chain has no analytic
+`J_state`, so it runs at FD-carry precision. Byte-identical for the single hinge (analytic
+path, never hits the scratch) and the material chain (no actuator ⇒ empty `ctrl`).
+
+Gate (`actuator_chain_gradient.rs`): a DAMPED 2-link chain (damping settles the otherwise-
+swinging chain on the block) with motor / position / velocity actuators on the distal
+joint — all `∂tip_z_N/∂u_k` machine-exact-ish (~1e-8) vs the full-coupled FD oracle, plus
+materiality.
+
 ## 4. Follow-ons
-- **Chains** (`nv > 1`): the actuator force perturbs `J_state` through `∂M⁻¹/∂q`, so there
-  the FD scratch (`scratch_state_step`) DOES need to replicate `ctrl`.
 - **Muscles / activation dynamics** (`act` state, nonlinear gain) — the heavier nonlinear
   actuator (`transition_derivatives` already routes Millard to the FD path).
+- **Quaternion-joint actuators** (ball/free), and the **analytic chain carry** (Jacobian
+  Hessian + `∂M⁻¹/∂q`) for machine-exact `nv > 1`.
 - **Joint actuator + design on one tape** (the full co-design gradient through an actuator).

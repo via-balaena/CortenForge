@@ -1954,6 +1954,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         scratch.qpos.copy_from(qpos);
         scratch.qvel.copy_from(qvel);
         scratch.xfrc_applied[self.body] = *wrench;
+        // Replicate the held control so the actuator force is present during the FD: on a
+        // CHAIN the actuator force interacts with `∂M⁻¹/∂q`, so a `ctrl`-blind step would
+        // drop that from the loaded `J_state`. `ctrl = 0` (no actuator / unactuated leaf)
+        // ⇒ byte-identical to the original. (Single hinge: the constant force leaves
+        // `J_state` unchanged, so this is a no-op there too.)
+        scratch.ctrl.copy_from(&self.data.ctrl);
         scratch.step(&self.model).expect("articulated probe step");
         (scratch.qpos.clone(), scratch.qvel.clone())
     }
@@ -2634,16 +2640,19 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `μ` rides as a constant leaf (a joint actuator+design gradient on one tape is a
     /// follow-on).
     ///
-    /// **Scope.** A single AFFINE actuator (`force = gain·ctrl + bias`) on a single hinge,
-    /// flat normal — a MOTOR (PR1) OR a state-feedback SERVO (position/velocity/PD, PR2).
-    /// The control channel `∂qfrc/∂ctrl = gain` is the carry's `G_act`. A servo's
-    /// state-feedback `∂qfrc/∂(qpos,qvel)` (`−kp`/`−kv`) is a CONSTANT, EXPLICIT (non-
-    /// eulerdamp) slope, so it is already in the analytic single-hinge `J_state` (the
-    /// unloaded `A` from `transition_derivatives`) — no `ctrl` replication needed (a motor's
-    /// state-independent force likewise leaves `J_state` exact). Joint damping IS supported
-    /// (via `M_impl`). Follow-ons: chains (`nv > 1`, where the actuator force perturbs
-    /// `J_state` through `∂M⁻¹/∂q` — there the scratch DOES need `ctrl`), muscles
-    /// (`act`-state, nonlinear gain), and the actuator+design gradient on one tape. See
+    /// **Scope.** A single AFFINE actuator (`force = gain·ctrl + bias`) on a EUCLIDEAN
+    /// mechanism (`nq == nv` — a hinge OR a hinge/slide CHAIN; no quaternion ball/free),
+    /// flat normal — a MOTOR or a state-feedback SERVO (position/velocity/PD). The control
+    /// channel `∂qfrc/∂ctrl = gain` is the carry's `G_act`. The actuator's state-feedback
+    /// `∂qfrc/∂(qpos,qvel)` enters `J_state`: on a CHAIN the (even constant) actuator force
+    /// also interacts with `∂M⁻¹/∂q`, so the FD `loaded_state_jacobian` replicates `ctrl`
+    /// in its scratch steps (set above, before the carry) — `coupled_trajectory_actuated_z`
+    /// drops a `ctrl`-blind scratch from ≈5e-5 to ~1e-8. (Single hinge: the analytic
+    /// `J_state` already captures a servo's `ctrl`-independent slope and a motor leaves it
+    /// unchanged — machine-exact; a chain has no analytic `J_state` ⇒ FD-carry precision.)
+    /// Joint damping IS supported (via `M_impl`). Follow-ons: muscles (`act`-state,
+    /// nonlinear gain), quaternion (ball/free) joints, the analytic chain carry (machine-
+    /// exact `nv > 1`), and the actuator+design gradient on one tape. See
     /// `docs/keystone/actuator_dynamics_recon.md`.
     ///
     /// # Panics
@@ -2658,12 +2667,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     #[allow(clippy::too_many_lines, clippy::expect_used)]
     pub fn coupled_trajectory_actuator_gradient(&mut self, controls: &[f64]) -> (f64, Vec<f64>) {
         assert!(
-            self.single_hinge().is_some(),
-            "actuator gradient v1 scope: a single hinge"
+            self.model.nq == self.model.nv,
+            "actuator gradient scope: Euclidean joints (nq == nv — hinge/slide chains; \
+             no quaternion ball/free)"
         );
         assert!(
             self.model.nu == 1,
-            "actuator gradient v1 scope: exactly one actuator"
+            "actuator gradient scope: exactly one actuator"
         );
         assert!(
             self.rigid_damping == 0.0,
@@ -2765,6 +2775,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 }),
             );
 
+            // Set the control BEFORE the carry: the FD `loaded_state_jacobian` replicates
+            // `self.data.ctrl` in its scratch steps so the actuator force is present in
+            // `J_state` (on a CHAIN the force interacts with `∂M⁻¹/∂q`). For the single
+            // hinge the constant force leaves `J_state` unchanged, so this ordering is
+            // byte-identical there.
+            self.data.ctrl[0] = u_k;
+
             // Carry at the current (fresh-FK) state. J_state + the wrench response G_vel
             // are taken BEFORE the step; the actuator-input velocity column too.
             let j_state = self
@@ -2773,9 +2790,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let g_vel = self.fresh_xfrc_column();
             let g_act_vel = self.actuator_velocity_column(); // nv × nu
 
-            // (4)+(5) route the wrench AND the motor control, then step.
+            // (4)+(5) route the wrench and step (control already set above).
             self.data.xfrc_applied[self.body] = wrench;
-            self.data.ctrl[0] = u_k;
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in actuator trajectory");
