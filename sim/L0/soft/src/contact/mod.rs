@@ -13,6 +13,7 @@ use crate::Vec3;
 use crate::mesh::VertexId;
 use nalgebra::Matrix3;
 
+pub mod friction;
 pub mod ipc;
 pub mod null;
 pub mod penalty;
