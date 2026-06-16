@@ -76,6 +76,7 @@
 
 use std::fmt;
 
+use nalgebra::{Matrix3, Vector3};
 use sim_ml_chassis::{Tensor, autograd::VjpOp};
 
 use super::{Differentiable, TapeNodeKey};
@@ -542,6 +543,22 @@ pub struct TrajectoryStepVjp {
     /// sensitivity, free-DOF order. `len()` = the pose parent's component count
     /// (`1` for a scalar translation, `6` for the spatial-twist basis).
     dr_dpose_free: Vec<Vec<f64>>,
+    /// `(∂r/∂Δ_surf · dir)_free` — the moving-collider friction-drift residual
+    /// sensitivity along a fixed direction, free-DOF order. `Some` only on the
+    /// friction-grip path (`trajectory_step_vjp_grip`), where the soft step gains a
+    /// fifth scalar parent for the rigid surface's within-step tangential drift
+    /// `Δ_surf`; `None` (the frictionless keystone path) keeps the four-parent shape
+    /// byte-for-byte. See [`CpuNewtonSolver::equilibrium_drift_sensitivity`].
+    dr_ddrift_free: Option<Vec<f64>>,
+    /// Per active-pair friction coupling of the `x_prev` state parent: `(vertex, the vertex's
+    /// three free-DOF indices — `None` per pinned axis, and `∇²D`)`. The friction reference
+    /// `x_start = x_prev + Δ_surf` makes the friction residual depend on `x_prev` (`∂r/∂x_prev`
+    /// gains `−∇²D` beside `−M/Δt²`), so the `x_prev` cotangent gains `+∇²D·λ` on top of
+    /// `M/Δt²·λ` — the state-parent companion of the drift parent (same Hessian). The adjoint
+    /// `λ` is zero on pinned axes, so per-axis `None` handling keeps a partially-pinned contact
+    /// vertex's FREE terms (mirroring the Woodbury / drift assemblies). `Some` only on the grip
+    /// path; `None` ⇒ the keystone `M/Δt²·λ`-only scatter, byte-identical.
+    friction_xprev: Option<Vec<(usize, [Option<usize>; 3], Matrix3<f64>)>>,
 }
 
 impl TrajectoryStepVjp {
@@ -556,11 +573,73 @@ impl TrajectoryStepVjp {
         dr_dparam_free: Vec<f64>,
         dr_dpose_free: Vec<Vec<f64>>,
     ) -> Self {
+        Self::new_inner(
+            factor,
+            n_dof,
+            free_dof_indices,
+            m_over_dt2,
+            m_over_dt,
+            dr_dparam_free,
+            dr_dpose_free,
+            None,
+            None,
+        )
+    }
+
+    /// As [`Self::new`] but with the friction-grip extras: the moving-collider drift
+    /// parent (a fifth scalar parent `Δ_surf`, contracting `(∂r/∂Δ_surf · dir)_free`) AND
+    /// the `x_prev` state parent's friction Hessian coupling (`friction_xprev`). Built by
+    /// `CpuNewtonSolver::trajectory_step_vjp_grip` on the friction-coupled tape.
+    #[must_use]
+    // too_many_arguments: the fused op carries one precomputed RHS / scale per tape parent
+    // (state, material, pose, drift) plus the shared factor — grouping them into a struct
+    // would just move the same fields behind a name the single call site never reuses.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_grip(
+        factor: FactoredFreeTangent,
+        n_dof: usize,
+        free_dof_indices: Vec<usize>,
+        m_over_dt2: Vec<f64>,
+        m_over_dt: Vec<f64>,
+        dr_dparam_free: Vec<f64>,
+        dr_dpose_free: Vec<Vec<f64>>,
+        dr_ddrift_free: Vec<f64>,
+        friction_xprev: Vec<(usize, [Option<usize>; 3], Matrix3<f64>)>,
+    ) -> Self {
+        Self::new_inner(
+            factor,
+            n_dof,
+            free_dof_indices,
+            m_over_dt2,
+            m_over_dt,
+            dr_dparam_free,
+            dr_dpose_free,
+            Some(dr_ddrift_free),
+            Some(friction_xprev),
+        )
+    }
+
+    #[must_use]
+    // too_many_arguments: the private all-fields constructor the two public ctors funnel
+    // through (one precomputed term per tape parent + the shared factor); see `new_grip`.
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        factor: FactoredFreeTangent,
+        n_dof: usize,
+        free_dof_indices: Vec<usize>,
+        m_over_dt2: Vec<f64>,
+        m_over_dt: Vec<f64>,
+        dr_dparam_free: Vec<f64>,
+        dr_dpose_free: Vec<Vec<f64>>,
+        dr_ddrift_free: Option<Vec<f64>>,
+        friction_xprev: Option<Vec<(usize, [Option<usize>; 3], Matrix3<f64>)>>,
+    ) -> Self {
         let n_free = free_dof_indices.len();
         debug_assert_eq!(m_over_dt2.len(), n_dof);
         debug_assert_eq!(m_over_dt.len(), n_dof);
         debug_assert_eq!(dr_dparam_free.len(), n_free);
         debug_assert!(dr_dpose_free.iter().all(|d| d.len() == n_free));
+        debug_assert!(dr_ddrift_free.as_ref().is_none_or(|d| d.len() == n_free));
         Self {
             factor,
             n_dof,
@@ -569,6 +648,8 @@ impl TrajectoryStepVjp {
             m_over_dt,
             dr_dparam_free,
             dr_dpose_free,
+            dr_ddrift_free,
+            friction_xprev,
         }
     }
 }
@@ -581,6 +662,7 @@ impl fmt::Debug for TrajectoryStepVjp {
             .field("n_dof", &self.n_dof)
             .field("n_free", &self.free_dof_indices.len())
             .field("n_pose", &self.dr_dpose_free.len())
+            .field("drift", &self.dr_ddrift_free.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -600,22 +682,32 @@ impl VjpOp for TrajectoryStepVjp {
             cotangent.shape(),
         );
         let n_pose = self.dr_dpose_free.len();
+        // The drift parent is appended only on the friction-grip path; the
+        // frictionless keystone tape keeps the four-parent shape byte-for-byte.
+        let has_drift = self.dr_ddrift_free.is_some();
+        let n_parents = if has_drift { 5 } else { 4 };
+        let drift_ok = !has_drift || (parent_cotans.len() == 5 && parent_cotans[4].shape() == [1]);
         assert!(
-            parent_cotans.len() == 4
+            parent_cotans.len() == n_parents
                 && parent_cotans[0].shape() == [self.n_dof]
                 && parent_cotans[1].shape() == [self.n_dof]
                 && parent_cotans[2].shape() == [1]
-                && parent_cotans[3].shape() == [n_pose],
-            "TrajectoryStepVjp: expected 4 parents (x_prev [{n}], v_prev [{n}], param [1], \
-             pose [{n_pose}]); got {} parents",
+                && parent_cotans[3].shape() == [n_pose]
+                && drift_ok,
+            "TrajectoryStepVjp: expected {n_parents} parents (x_prev [{n}], v_prev [{n}], \
+             param [1], pose [{n_pose}]{drift}); got {} parents",
             parent_cotans.len(),
             n = self.n_dof,
+            drift = if has_drift { ", drift [1]" } else { "" },
         );
 
-        // One shared adjoint solve A·λ = g_free.
+        // One shared adjoint solve Aᵀ·λ = g_free. The reverse VJP contracts the cotangent
+        // through A⁻ᵀ (each parent gradient is −(∂r/∂·)ᵀ A⁻ᵀ cot); with friction the
+        // Woodbury makes A non-symmetric, so the transpose solve is load-bearing. No
+        // friction ⇒ A symmetric ⇒ bit-identical to the plain solve.
         let cot = cotangent.as_slice();
         let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
-        self.factor.solve_free_in_place(&mut rhs);
+        self.factor.solve_free_transpose_in_place(&mut rhs);
         // rhs now holds λ (free-DOF order).
 
         // Param parent 3: −λ^T·(∂r/∂param)_free (scalar).
@@ -633,6 +725,26 @@ impl VjpOp for TrajectoryStepVjp {
             xprev[full_idx] += self.m_over_dt2[full_idx] * lam;
             vprev[full_idx] += self.m_over_dt[full_idx] * lam;
         }
+        // Friction `x_prev` coupling (grip only): `∂r/∂x_prev` gains `−∇²D` because the
+        // friction reference `x_start = x_prev + Δ_surf`, so the cotangent gains `+∇²D·λ`.
+        if let Some(blocks) = &self.friction_xprev {
+            for (v, free_idx, hess) in blocks {
+                // λ is zero on pinned axes (no adjoint DOF); gather per-axis so a
+                // partially-pinned contact vertex keeps its free-axis terms.
+                let lam_at = |axis: Option<usize>| axis.map_or(0.0, |i| rhs[i]);
+                let lam_v = Vector3::new(
+                    lam_at(free_idx[0]),
+                    lam_at(free_idx[1]),
+                    lam_at(free_idx[2]),
+                );
+                let c = hess * lam_v;
+                for (j, &axis) in free_idx.iter().enumerate() {
+                    if axis.is_some() {
+                        xprev[3 * v + j] += c[j];
+                    }
+                }
+            }
+        }
         scal[0].as_mut_slice()[0] += grad_param;
         // Pose parent 4: −λ^T·(∂r/∂pose_j)_free per pose direction `j`.
         let pose_c = scal[1].as_mut_slice();
@@ -642,6 +754,14 @@ impl VjpOp for TrajectoryStepVjp {
                 g -= lam * dr_dpose_j[k];
             }
             pose_c[j] += g;
+        }
+        // Drift parent 5 (friction-grip only): −λ^T·(∂r/∂Δ_surf · dir)_free (scalar).
+        if let Some(dr_ddrift) = &self.dr_ddrift_free {
+            let mut g = 0.0_f64;
+            for (k, &lam) in rhs.iter().enumerate() {
+                g -= lam * dr_ddrift[k];
+            }
+            scal[2].as_mut_slice()[0] += g;
         }
     }
 }

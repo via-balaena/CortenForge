@@ -85,8 +85,8 @@ pub use sdf_bridge::{
     Aabb3, DifferenceSdf, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf,
 };
 pub use solver::{
-    CpuNewtonSolver, CpuTape, LmConfig, NewtonStep, SaturationPolicy, Solver, SolverConfig,
-    SolverFailure,
+    CpuNewtonSolver, CpuTape, FrictionReactionGradients, LmConfig, NewtonStep, SaturationPolicy,
+    Solver, SolverConfig, SolverFailure,
 };
 pub use viz::{
     Plane, VizError, boundary_surface, design_scene, design_scene_deformed, design_slab_cut,

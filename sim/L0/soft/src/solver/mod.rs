@@ -20,7 +20,7 @@ pub mod backward_euler;
 pub mod lm;
 
 pub(crate) use backward_euler::FactoredFreeTangent;
-pub use backward_euler::{CpuNewtonSolver, SolverConfig};
+pub use backward_euler::{CpuNewtonSolver, FrictionReactionGradients, SolverConfig};
 pub use lm::{LmConfig, SaturationPolicy};
 // `SolverFailure` is re-exported from this module's own definition
 // below — no `use` needed.

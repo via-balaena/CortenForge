@@ -233,11 +233,18 @@ impl FactorInner {
 /// time, so each corrected solve is one symmetric back-solve plus a `k×k` dense solve
 /// (`k` = active-pair count). Empty (`k = 0`) ⇒ the correction is a no-op.
 struct WoodburyCorrection {
+    /// `U` columns (the `aₚ = ∇D/λⁿ` friction-force directions), each length `n_free`.
+    /// Kept for the transpose solve `A⁻ᵀ` (the reverse-mode tape); the forward solve
+    /// uses only `zu_cols`.
+    u_cols: Vec<Vec<f64>>,
     /// `V` columns (the `bₚ = ∂λⁿ/∂xₚ` rows), each length `n_free`.
     v_cols: Vec<Vec<f64>>,
-    /// `Z = A_sym⁻¹ U` columns (the `aₚ = ∇D/λⁿ` directions, pre-solved), `n_free` each.
-    z_cols: Vec<Vec<f64>>,
-    /// `M = I_k + Vᵀ Z` (`k×k`), the dense capacitance matrix.
+    /// `A_sym⁻¹ U` columns (pre-solved), `n_free` each — the forward `A⁻¹` tail.
+    zu_cols: Vec<Vec<f64>>,
+    /// `A_sym⁻¹ V` columns (pre-solved), `n_free` each — the transpose `A⁻ᵀ` tail.
+    zv_cols: Vec<Vec<f64>>,
+    /// `M = I_k + Vᵀ Z` (`k×k`), the dense capacitance matrix. The transpose solve
+    /// uses `Mᵀ` (its own LU), since `(I + VᵀA_sym⁻¹U)ᵀ = I + UᵀA_sym⁻¹V`.
     m: DMatrix<f64>,
 }
 
@@ -251,24 +258,53 @@ impl WoodburyCorrection {
     // structurally degenerate friction configuration, where the gradient is itself undefined.
     #[allow(clippy::expect_used)]
     fn apply_in_place(&self, rhs: &mut [f64]) {
-        let k = self.z_cols.len();
+        // Forward `A⁻¹`: rhs ← rhs − Z M⁻¹ (Vᵀ rhs), contracting V against rhs and Z back out.
+        self.apply_tail(rhs, &self.v_cols, &self.zu_cols, false);
+    }
+
+    /// Apply the transpose Woodbury tail `rhs ← rhs − Zᵀ M⁻ᵀ (Uᵀ rhs)` — turns the
+    /// symmetric solve `A_sym⁻¹ rhs` into the full `A⁻ᵀ rhs` (the reverse-mode adjoint).
+    /// `Aᵀ = A_sym + V Uᵀ`, so the roles of `(U, Z)` and `(V, Zᵀ)` swap and `M → Mᵀ`.
+    fn apply_transpose_in_place(&self, rhs: &mut [f64]) {
+        self.apply_tail(rhs, &self.u_cols, &self.zv_cols, true);
+    }
+
+    /// Shared low-rank tail: `rhs ← rhs − out_cols · (M[ᵀ])⁻¹ · (in_colsᵀ rhs)`.
+    //
+    // expect_used: `M = I + VᵀZ` is the Woodbury capacitance matrix of the true tangent
+    // `A = A_sym + UVᵀ`. `A` is non-singular at a converged stable equilibrium (the forward
+    // Newton solve converged through it), so `M` (and `Mᵀ`) is invertible — a singular `M`
+    // would mean a structurally degenerate friction configuration, where the gradient is
+    // itself undefined.
+    #[allow(clippy::expect_used)]
+    fn apply_tail(
+        &self,
+        rhs: &mut [f64],
+        in_cols: &[Vec<f64>],
+        out_cols: &[Vec<f64>],
+        transpose_m: bool,
+    ) {
+        let k = out_cols.len();
         if k == 0 {
             return;
         }
         let mut t = DVector::<f64>::zeros(k);
-        for (j, v) in self.v_cols.iter().enumerate() {
-            t[j] = v.iter().zip(rhs.iter()).map(|(a, b)| a * b).sum();
+        for (j, c) in in_cols.iter().enumerate() {
+            t[j] = c.iter().zip(rhs.iter()).map(|(a, b)| a * b).sum();
         }
-        let s = self
-            .m
-            .clone()
+        let m = if transpose_m {
+            self.m.transpose()
+        } else {
+            self.m.clone()
+        };
+        let s = m
             .lu()
             .solve(&t)
             .expect("Woodbury k×k capacitance solve (M = I + VᵀZ is invertible)");
-        for (j, z) in self.z_cols.iter().enumerate() {
+        for (j, c) in out_cols.iter().enumerate() {
             let sj = s[j];
-            for (r, &zr) in rhs.iter_mut().zip(z.iter()) {
-                *r -= zr * sj;
+            for (r, &cr) in rhs.iter_mut().zip(c.iter()) {
+                *r -= cr * sj;
             }
         }
     }
@@ -311,6 +347,19 @@ impl FactoredFreeTangent {
         }
     }
 
+    /// Solve the TRANSPOSE free-DOF adjoint `Aᵀ · x = rhs` in place — the symmetric
+    /// back-solve (`A_sym⁻ᵀ = A_sym⁻¹`) followed by the transpose Woodbury tail. This is
+    /// the solve the reverse-mode tape (`TrajectoryStepVjp::vjp`) needs: a VJP contracts
+    /// `(∂x*/∂·)ᵀ = −(∂r/∂·)ᵀ A⁻ᵀ`, so the cotangent passes through `A⁻ᵀ`, not `A⁻¹`. With
+    /// no friction (`woodbury == None`) `A` is symmetric and this is bit-identical to
+    /// [`Self::solve_free_in_place`].
+    pub(crate) fn solve_free_transpose_in_place(&self, rhs: &mut [f64]) {
+        self.solve_base_in_place(rhs);
+        if let Some(wb) = &self.woodbury {
+            wb.apply_transpose_in_place(rhs);
+        }
+    }
+
     /// `true` if the symmetric part factored as `Llt` (happy path) vs the `Lu` fallback.
     pub(crate) const fn is_llt(&self) -> bool {
         matches!(self.inner, FactorInner::Llt(_))
@@ -320,6 +369,32 @@ impl FactoredFreeTangent {
     pub(crate) const fn is_lu(&self) -> bool {
         matches!(self.inner, FactorInner::Lu(_))
     }
+}
+
+/// The friction reaction force on the rigid collider along a chosen direction, plus its
+/// first-order sensitivities — the tangential-grip readout a staggered coupling routes
+/// onto its rigid-state tape.
+///
+/// Produced by [`CpuNewtonSolver::friction_reaction_gradients`] (which documents the
+/// math). All fields are along the `react_dir` the gradients were built with; `dforce_dx`
+/// is length `n_dof` (zeros off the active set), the rest scalar.
+#[derive(Clone, Debug)]
+pub struct FrictionReactionGradients {
+    /// `F = (Σ_v ∇D_v)·react_dir` — the reaction force along `react_dir`.
+    pub force: f64,
+    /// `∂F/∂x*` (length `n_dof`) — frozen-lag `∇²D` slip term plus the normal-force
+    /// (λⁿ) coupling.
+    pub dforce_dx: Vec<f64>,
+    /// `∂F/∂x_prev` (length `n_dof`) — the friction reference `x_start = x_prev + Δ_surf`
+    /// makes the reaction depend on the step-start config too: `∂F/∂x_prev = −`(the
+    /// frozen-lag `∇²D` slip term of [`Self::dforce_dx`], λⁿ-coupling excluded, since λⁿ
+    /// tracks `x*` not `x_prev`). The state-config companion of [`Self::dforce_ddrift`].
+    pub dforce_dxprev: Vec<f64>,
+    /// `∂F/∂Δ_surf` along the build's `drift_dir` (the moving-collider reference shift,
+    /// λ-independent).
+    pub dforce_ddrift: f64,
+    /// `∂F/∂height` along the build's `pose_dir` plane translation (the λ-coupling).
+    pub dforce_dheight: f64,
 }
 
 /// CPU backward-Euler Newton solver.
@@ -1210,6 +1285,9 @@ where
     /// Hessian's `(v, cv)` blocks — for a plane only `(v, v)` is non-zero, but the sum
     /// stays correct for vertex–vertex contact). `Z = A_sym⁻¹ U` and `M = I + VᵀZ` are
     /// precomputed via the symmetric factor. Returns `None` when no pair is active.
+    // similar_names: `zu_cols`/`zv_cols` (`A_sym⁻¹U` / `A_sym⁻¹V`) mirror `u_cols`/`v_cols`
+    // by design — the Woodbury `U`/`V` factors and their symmetric back-solves.
+    #[allow(clippy::similar_names)]
     fn assemble_friction_woodbury(
         &self,
         x_final: &[f64],
@@ -1276,23 +1354,29 @@ where
         if k == 0 {
             return None;
         }
-        // Z = A_sym⁻¹ U (one symmetric back-solve per column).
-        let z_cols: Vec<Vec<f64>> = u_cols
-            .iter()
-            .map(|u| {
-                let mut z = u.clone();
-                factor.solve_base_in_place(&mut z);
-                z
-            })
-            .collect();
+        // Z = A_sym⁻¹ U and Zᵀ = A_sym⁻¹ V (one symmetric back-solve per column; Zᵀ
+        // serves the transpose solve A⁻ᵀ that the reverse-mode tape needs).
+        let base_solve = |c: &Vec<f64>| {
+            let mut z = c.clone();
+            factor.solve_base_in_place(&mut z);
+            z
+        };
+        let zu_cols: Vec<Vec<f64>> = u_cols.iter().map(base_solve).collect();
+        let zv_cols: Vec<Vec<f64>> = v_cols.iter().map(base_solve).collect();
         // M = I_k + Vᵀ Z.
         let mut m = DMatrix::<f64>::identity(k, k);
         for (i, v) in v_cols.iter().enumerate() {
-            for (j, z) in z_cols.iter().enumerate() {
+            for (j, z) in zu_cols.iter().enumerate() {
                 m[(i, j)] += v.iter().zip(z).map(|(a, b)| a * b).sum::<f64>();
             }
         }
-        Some(WoodburyCorrection { v_cols, z_cols, m })
+        Some(WoodburyCorrection {
+            u_cols,
+            v_cols,
+            zu_cols,
+            zv_cols,
+            m,
+        })
     }
 
     /// Solve `A_free · δ = -r_free` via the cached symbolic factor.
@@ -2262,6 +2346,109 @@ where
             .collect()
     }
 
+    /// The friction reaction force on the RIGID collider along `react_dir`,
+    /// `F = (Σ_v ∇D_v)·react_dir`, together with its first-order sensitivities — the
+    /// readout a staggered coupling routes onto its tangential rigid-state tape (the
+    /// tangential companion of the normal `ContactForceTrajVjp`). At configuration
+    /// `x_curr`, step start `x_prev`, and this solver's
+    /// [`friction_surface_drift`](Self::with_friction_surface_drift).
+    ///
+    /// `∇D_v = μ_c·λⁿ_v·f₁·Tû` is **linear in the lagged normal force** `λⁿ_v`, so the
+    /// reaction's total dependence on the post-step config has TWO parts (the flat-plane
+    /// tangent `Tⁿ` is config-independent, so `∂Tⁿ/∂x` drops):
+    /// - the frozen-lag slip term `∂(∇D_v)/∂x_v = ∇²D_v` (and `∂(∇D_v)/∂Δ_surf = −∇²D_v`,
+    ///   the moving-collider reference shift), plus
+    /// - the **normal-force coupling** `∂(∇D_v)/∂λⁿ_v · ∂λⁿ_v/∂· = a_v ⊗ ∂λⁿ_v/∂·` with
+    ///   `a_v = ∇D_v/λⁿ_v`, `∂λⁿ_v/∂x = n̂ᵀ·∇²E_contact` (the same `(a_v, ∂λⁿ/∂x)` rank-1
+    ///   pair the [`equilibrium_drift_sensitivity`](Self::equilibrium_drift_sensitivity)
+    ///   Woodbury adjoint uses), and `∂λⁿ_v/∂height = n̂ᵀ·∂(∇E_contact)/∂(plane pose)`.
+    ///
+    /// Returns the [`FrictionReactionGradients`]: `force` (`F`), `dforce_dx` (the full
+    /// `∂F/∂x*`, length `n_dof`, zeros off the active set), `dforce_ddrift` (`∂F/∂Δ_surf`
+    /// along `drift_dir`, λ-independent), `dforce_dheight` (`∂F/∂height` along the `pose_dir`
+    /// plane translation, the λ-coupling), and `dforce_dxprev` (`∂F/∂x_prev = −`the frozen-lag
+    /// slip term, since `x_start = x_prev + Δ_surf`). Zeros when `friction_mu == 0` or no pair
+    /// is active.
+    #[must_use]
+    pub fn friction_reaction_gradients(
+        &self,
+        x_curr: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        react_dir: Vec3,
+        drift_dir: Vec3,
+        pose_dir: Vec3,
+    ) -> FrictionReactionGradients {
+        let mu = self.config.friction_mu;
+        let mut out = FrictionReactionGradients {
+            force: 0.0,
+            dforce_dx: vec![0.0_f64; self.n_dof],
+            dforce_dxprev: vec![0.0_f64; self.n_dof],
+            dforce_ddrift: 0.0,
+            dforce_dheight: 0.0,
+        };
+        if mu == 0.0 {
+            return out;
+        }
+        let w = dt * self.config.friction_eps_v;
+        let positions = slice_to_vec3s(x_curr);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        let twist = RigidTwist::translation(pose_dir);
+        for pair in &pairs {
+            let grad_c = self.contact.gradient(pair, &positions);
+            let hess_c = self.contact.hessian(pair, &positions);
+            let pose_c = self
+                .contact
+                .pose_residual_derivative(pair, &positions, twist);
+            for (vid, force) in &grad_c.contributions {
+                let lambda = force.norm(); // λⁿ
+                if lambda == 0.0 {
+                    continue;
+                }
+                let v = *vid as usize;
+                let x_v = positions[v];
+                let x_start = Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2])
+                    + self.friction_surface_drift;
+                let (grad_d, hess_d) =
+                    crate::contact::friction::grad_hess(x_v, x_start, *force, lambda, mu, w);
+                out.force += grad_d.dot(&react_dir);
+                // Frozen-lag slip term (∇²D symmetric): ∂F/∂x_v = react_dirᵀ·∇²D_v, and the
+                // step-start config enters via `x_start = x_prev + Δ_surf` so
+                // ∂F/∂x_prev = −(this frozen-lag row) (λⁿ tracks x*, not x_prev).
+                let row = hess_d * react_dir;
+                out.dforce_dx[3 * v] += row.x;
+                out.dforce_dx[3 * v + 1] += row.y;
+                out.dforce_dx[3 * v + 2] += row.z;
+                out.dforce_dxprev[3 * v] -= row.x;
+                out.dforce_dxprev[3 * v + 1] -= row.y;
+                out.dforce_dxprev[3 * v + 2] -= row.z;
+                // Moving-collider reference: ∂F/∂Δ_surf = −react_dirᵀ·∇²D_v·drift_dir.
+                out.dforce_ddrift -= react_dir.dot(&(hess_d * drift_dir));
+                // Normal-force (λ) coupling — the same (a_v, ∂λⁿ/∂x) rank-1 pair as the
+                // drift-consistent Woodbury adjoint.
+                let a = grad_d / lambda; // ∂(∇D_v)/∂λⁿ_v
+                let coeff = react_dir.dot(&a); // react_dirᵀ·a_v
+                let nhat = force / lambda;
+                for (rv, cv, block) in &hess_c.contributions {
+                    if *rv as usize != v {
+                        continue;
+                    }
+                    let dlam = block.transpose() * nhat; // ∂λⁿ_v/∂x_cv
+                    let c = *cv as usize;
+                    out.dforce_dx[3 * c] += coeff * dlam.x;
+                    out.dforce_dx[3 * c + 1] += coeff * dlam.y;
+                    out.dforce_dx[3 * c + 2] += coeff * dlam.z;
+                }
+                for &(pv, d) in &pose_c.contributions {
+                    if pv as usize == v {
+                        out.dforce_dheight += coeff * nhat.dot(&d); // ∂λⁿ_v/∂height
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Assemble the lower-triangle triplets of the free-DOF Hessian
     /// `A_free = M_free / Δt² + K_free(x_curr) + K_contact(x_curr)`
     /// per Decision J + Phase 5 commit 5.
@@ -2454,6 +2641,17 @@ where
         twist: RigidTwist,
     ) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
+        // Silent-wrong guard: with friction active, `Some(x_prev)` makes the tangent `A`
+        // friction-exact (Woodbury) but the pose RHS here is normal-contact-only — it omits
+        // the friction pose term (`∂(∇D)/∂height`, `assemble_friction_pose_residual_grad`)
+        // that the grip reverse path adds. So a friction-active pose sensitivity must pass
+        // `None` (frictionless) until the friction pose-RHS is wired into this forward path;
+        // the reverse grip path uses `trajectory_step_vjp_grip`, which already includes it.
+        assert!(
+            self.config.friction_mu == 0.0 || x_prev.is_none(),
+            "equilibrium_pose_sensitivity: friction pose RHS not wired into the forward path — \
+             pass x_prev = None when friction_mu > 0 (the grip reverse path is friction-exact)"
+        );
         let dr_dpose = self.assemble_pose_residual_grad(x_final, twist);
         // A·w_free = −(∂r/∂s)_free reusing the tangent at x_final.
         let rhs: Vec<f64> = self
@@ -2535,6 +2733,60 @@ where
         // A·w_free = −(∂r/∂p_k)_free reusing the tangent at x_final.
         let rhs: Vec<f64> = self.free_dof_indices.iter().map(|&i| -dr_dp[i]).collect();
         self.solve_free_and_scatter(x_final, x_prev, dt, rhs)
+    }
+
+    /// `(∂r/∂height · pose_dir)_full` from the FRICTION term — the friction successor to the
+    /// normal [`Self::assemble_pose_residual_grad`], needed when the contact plane moves (the
+    /// grip's coupled height). The friction force `∇D = μ_c·λⁿ·f₁·Tû` scattered into the
+    /// residual is linear in the lagged normal force `λⁿ`, which the plane pose changes:
+    /// `∂r_v/∂height = ∂(∇D_v)/∂λⁿ_v · ∂λⁿ_v/∂height = a_v·(n̂ᵀ·∂(∇E_contact_v)/∂pose)` with
+    /// `a_v = ∇D_v/λⁿ_v` (the lagged `Tⁿ` held — a flat plane's tangent is pose-independent).
+    /// Zeros off the active set / when frictionless. Drift-consistent (`xᵗ + Δ_surf`).
+    fn assemble_friction_pose_residual_grad(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        pose_dir: Vec3,
+    ) -> Vec<f64> {
+        let mu = self.config.friction_mu;
+        let mut out = vec![0.0_f64; self.n_dof];
+        if mu == 0.0 {
+            return out;
+        }
+        let w = dt * self.config.friction_eps_v;
+        let positions = slice_to_vec3s(x_final);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        let twist = RigidTwist::translation(pose_dir);
+        for pair in &pairs {
+            let grad_c = self.contact.gradient(pair, &positions);
+            let pose_c = self
+                .contact
+                .pose_residual_derivative(pair, &positions, twist);
+            for (vid, force) in &grad_c.contributions {
+                let lambda = force.norm();
+                if lambda == 0.0 {
+                    continue;
+                }
+                let v = *vid as usize;
+                let x_v = positions[v];
+                let x_start = Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2])
+                    + self.friction_surface_drift;
+                let (grad_d, _) =
+                    crate::contact::friction::grad_hess(x_v, x_start, *force, lambda, mu, w);
+                let a = grad_d / lambda;
+                let nhat = force / lambda;
+                for &(pv, d) in &pose_c.contributions {
+                    if pv as usize == v {
+                        let dlam = nhat.dot(&d); // ∂λⁿ_v/∂height
+                        out[3 * v] += a.x * dlam;
+                        out[3 * v + 1] += a.y * dlam;
+                        out[3 * v + 2] += a.z * dlam;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// `(∂r/∂s)_full` — the contact-plane pose enters the residual only through
@@ -2780,6 +3032,90 @@ where
             dr_dparam_free,
             // One pose direction: the scalar translation along `dir`.
             vec![dr_dpose_free],
+        )
+    }
+
+    /// Like [`Self::trajectory_step_vjp`] but on the **friction-coupled grip** tape:
+    /// the soft step gains a fifth scalar parent for the moving-collider tangential
+    /// drift `Δ_surf` (along `drift_dir`), and the shared adjoint factor is the
+    /// friction-exact Woodbury-corrected tangent (`factor_at_position` with
+    /// `Some(x_prev)`), evaluated at this solver's
+    /// [`friction_surface_drift`](Self::with_friction_surface_drift) so the adjoint
+    /// matches the drift-consistent forward solve (PR3b-1). Pushed with five parents
+    /// `[x_prev, v_prev, param, pose, drift]`.
+    ///
+    /// The drift parent's `∂L/∂Δ_surf = −λ^T·(∂r/∂Δ_surf · drift_dir)_free` reuses the
+    /// SAME single shared solve as the other parents — it is the reverse-mode companion
+    /// of [`Self::equilibrium_drift_sensitivity`] (the two contract the same RHS with
+    /// `A⁻ᵀ`/`A⁻¹`). `x_prev` is the step start `xᵗ`; `pose_dir` / `drift_dir` are the
+    /// contact-plane translation and the surface-drift directions (the keystone grip
+    /// scene uses `+ẑ` and `+x̂`). Engaged / stable-active-set / hard-penalty scope.
+    #[must_use]
+    pub fn trajectory_step_vjp_grip(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        param_idx: usize,
+        pose_dir: Vec3,
+        drift_dir: Vec3,
+    ) -> TrajectoryStepVjp {
+        debug_assert!(x_final.len() == self.n_dof);
+        debug_assert!(x_prev.len() == self.n_dof);
+        // Material + contact-pose RHS — identical to the frictionless path.
+        let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
+        let dr_dparam_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
+        // Pose RHS = normal contact pose grad + the FRICTION pose grad (the friction force is
+        // linear in the pose-dependent normal force λⁿ — the PR2-deferred term that makes
+        // `∂x*/∂height` friction-exact, load-bearing for the coupled height↔grip cancellation).
+        let mut dr_dpose =
+            self.assemble_pose_residual_grad(x_final, RigidTwist::translation(pose_dir));
+        let dr_dpose_fric =
+            self.assemble_friction_pose_residual_grad(x_final, x_prev, dt, pose_dir);
+        for (d, df) in dr_dpose.iter_mut().zip(&dr_dpose_fric) {
+            *d += df;
+        }
+        let dr_dpose_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect();
+        // Drift RHS (∂r/∂Δ_surf · drift_dir)_free — the friction term's moving-collider
+        // dependence (`∂r_v/∂Δ_surf = −∇²D_v`, see `assemble_drift_residual_grad`).
+        let dr_ddrift = self.assemble_drift_residual_grad(x_final, x_prev, dt, drift_dir);
+        let dr_ddrift_free: Vec<f64> = self
+            .free_dof_indices
+            .iter()
+            .map(|&i| dr_ddrift[i])
+            .collect();
+        // Friction `x_prev` coupling: `x_start = x_prev + Δ_surf` makes the friction residual
+        // depend on `x_prev` (`∂r_v/∂x_prev = −∇²D_v`), so the `x_prev` state cotangent gains
+        // `+∇²D_v·λ_v` beyond `M/Δt²·λ`. Per-axis free indices (`None` on a pinned axis, where
+        // `λ = 0`) keep a partially-pinned contact vertex's free terms — the same per-DOF
+        // handling as the Woodbury / drift assemblies.
+        let friction_xprev: Vec<(usize, [Option<usize>; 3], nalgebra::Matrix3<f64>)> = self
+            .friction_blocks(x_final, x_prev, dt)
+            .into_iter()
+            .map(|(v, _grad, hess)| {
+                let fi = [
+                    self.full_to_free_idx[3 * v],
+                    self.full_to_free_idx[3 * v + 1],
+                    self.full_to_free_idx[3 * v + 2],
+                ];
+                (v, fi, hess)
+            })
+            .collect();
+        // State scales + the friction-exact Woodbury factor at x_final (Some(x_prev)).
+        let dt2 = dt * dt;
+        let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
+        let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
+        let factor = self.factor_at_position(x_final, Some(x_prev), dt, 0.0);
+        TrajectoryStepVjp::new_grip(
+            factor,
+            self.n_dof,
+            self.free_dof_indices.clone(),
+            m_over_dt2,
+            m_over_dt,
+            dr_dparam_free,
+            vec![dr_dpose_free],
+            dr_ddrift_free,
+            friction_xprev,
         )
     }
 
