@@ -134,7 +134,7 @@ fn forward_state_jvp_matches_resolve_fd() {
 
     // ── ∂x* for a prev-POSITION direction (dv_prev = 0) ──
     let dxp = direction(1);
-    let an_x = s.equilibrium_state_sensitivity(&x1, DT, &dxp, &zeros);
+    let an_x = s.equilibrium_state_sensitivity(&x1, None, DT, &dxp, &zeros);
     let xp_plus: Vec<f64> = x0.iter().zip(&dxp).map(|(a, d)| a + eps * d).collect();
     let xp_minus: Vec<f64> = x0.iter().zip(&dxp).map(|(a, d)| a - eps * d).collect();
     let fd_x: Vec<f64> = solve(&s, &xp_plus, &v0)
@@ -150,7 +150,7 @@ fn forward_state_jvp_matches_resolve_fd() {
 
     // ── ∂x* for a prev-VELOCITY direction (dx_prev = 0) ──
     let dvp = direction(3);
-    let an_v = s.equilibrium_state_sensitivity(&x1, DT, &zeros, &dvp);
+    let an_v = s.equilibrium_state_sensitivity(&x1, None, DT, &zeros, &dvp);
     let vp_plus: Vec<f64> = v0.iter().zip(&dvp).map(|(a, d)| a + eps * d).collect();
     let vp_minus: Vec<f64> = v0.iter().zip(&dvp).map(|(a, d)| a - eps * d).collect();
     let fd_v: Vec<f64> = solve(&s, &x0, &vp_plus)
@@ -219,7 +219,7 @@ fn state_step_vjp_backward_matches_forward_and_fd() {
     let dxp = direction(1);
     let rev_x = dot(&grad_xprev, &dxp);
     let fwd_x: f64 = s
-        .equilibrium_state_sensitivity(&x1, DT, &dxp, &zeros)
+        .equilibrium_state_sensitivity(&x1, None, DT, &dxp, &zeros)
         .iter()
         .sum();
     let xp_plus: Vec<f64> = x0.iter().zip(&dxp).map(|(a, d)| a + eps * d).collect();
@@ -232,7 +232,7 @@ fn state_step_vjp_backward_matches_forward_and_fd() {
     let dvp = direction(3);
     let rev_v = dot(&grad_vprev, &dvp);
     let fwd_v: f64 = s
-        .equilibrium_state_sensitivity(&x1, DT, &zeros, &dvp)
+        .equilibrium_state_sensitivity(&x1, None, DT, &zeros, &dvp)
         .iter()
         .sum();
     let vp_plus: Vec<f64> = v0.iter().zip(&dvp).map(|(a, d)| a + eps * d).collect();

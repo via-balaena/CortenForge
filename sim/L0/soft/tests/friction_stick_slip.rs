@@ -152,10 +152,12 @@ fn slide_decreases_monotonically_with_friction() {
 }
 
 /// PR1 is forward-only: the differentiable `step` (which re-factors the IFT adjoint tangent —
-/// friction-free in PR1) must PANIC with friction enabled rather than silently return a
-/// gradient inconsistent with the forward solve. `replay_step` (forward-only) stays allowed.
+/// friction-free until the coupling leaf PR3) must PANIC with friction enabled rather than
+/// silently return a gradient inconsistent with the forward solve: the reverse `step` passes
+/// `x_prev = None` to the adjoint, which the conditional guard rejects under friction.
+/// `replay_step` (forward-only) and the forward sensitivities (which pass `Some`) stay allowed.
 #[test]
-#[should_panic(expected = "friction gradients are not yet supported")]
+#[should_panic(expected = "friction-exact gradient requested without x_prev")]
 fn differentiable_step_rejects_friction() {
     let mut s = build_scene(3.0, 40.0);
     let mut tape = Tape::new();
