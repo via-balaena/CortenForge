@@ -150,6 +150,11 @@ pub struct SolverConfig {
     /// (the [`Self::skeleton`] / `gravity_z = 0` pattern). Friction enters the FORWARD
     /// Newton solve (residual + its Hessian); the differentiable tangent
     /// (`factor_at_position`) stays friction-free until the differentiability leaf.
+    ///
+    /// PR1 is FORWARD-ONLY: gradients with `friction_mu > 0` are **not** supported and the
+    /// differentiable paths (`step`, the VJP / equilibrium-sensitivity methods) panic rather
+    /// than silently return a tangent that omits the friction Hessian. Use `replay_step` for
+    /// forward-only friction; PR2 (the differentiability leaf) wires friction into the adjoint.
     pub friction_mu: f64,
     /// Friction velocity threshold `ε_v` (m/s): the transition-zone width in displacement
     /// space is `w = dt·ε_v` (below this sliding speed the smoothed force ramps from zero
@@ -1043,6 +1048,14 @@ where
         dt: f64,
         lm_seed_lambda: f64,
     ) -> FactoredFreeTangent {
+        assert!(
+            self.config.friction_mu == 0.0,
+            "friction gradients are not yet supported (PR1 is forward-physics-only): the IFT \
+             adjoint tangent omits the friction Hessian, so a gradient computed with \
+             `friction_mu > 0` would be silently inconsistent with the forward solve. Use \
+             `replay_step` for forward-only friction; the differentiability leaf (PR2) wires \
+             friction into this adjoint."
+        );
         let triplets = self.assemble_free_hessian_triplets(x_curr, None, dt);
         let mut lm_state = self
             .config
@@ -1359,6 +1372,14 @@ where
         dt: f64,
         lm_seed_lambda: f64,
     ) -> Result<FactoredFreeTangent, SolverFailure> {
+        assert!(
+            self.config.friction_mu == 0.0,
+            "friction gradients are not yet supported (PR1 is forward-physics-only): the IFT \
+             adjoint tangent omits the friction Hessian, so a gradient computed with \
+             `friction_mu > 0` would be silently inconsistent with the forward solve. Use \
+             `replay_step` for forward-only friction; the differentiability leaf (PR2) wires \
+             friction into this adjoint."
+        );
         let triplets = self.assemble_free_hessian_triplets(x_curr, None, dt);
         let mut lm_state = self
             .config

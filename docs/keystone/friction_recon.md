@@ -24,10 +24,16 @@ D(x)   = μ_c · λⁿ · f₀(‖u_T‖)            the per-pair friction poten
 λⁿ     = −(κ/h²)·∂b/∂d_k                 lagged normal-force magnitude (from the IPC barrier derivative)
 ```
 
-`λⁿ` (normal force) and `Tⁿ` (tangent basis) are **lagged** — frozen from the prior Newton
-iterate (warm-started from the prior step), refreshed between solves. That lagging is what
-makes `D` position-space and `C²` (the inner `‖·‖` non-smoothness is absorbed: near the
-origin `f₀(‖u‖) ≈ w/3 + ‖u‖²/w`, a smooth quadratic bowl).
+`λⁿ` (normal force) and `Tⁿ` (tangent basis) are **lagged** — held CONSTANT across the
+within-assembly differentiation (only `u_T` is differentiated). PR1 takes the simplest
+lagging that still converges to the correct equilibrium: recompute `(Tⁿ, λⁿ)` from the
+current iterate's positions and freeze them for that assembly (so the grad/Hessian see
+`λⁿ`/`Tⁿ` as constants). At the converged fixed point `x*` this is self-consistent
+(`λⁿ = λⁿ(x*)`), so the forward equilibrium is independent of the lagging detail — a
+prior-iterate freeze and this current-iterate freeze are both inexact-Newton variants
+reaching the same residual-zero. That lagging is what makes `D` position-space and `C²`
+(the inner `‖·‖` non-smoothness is absorbed: near the origin `f₀(‖u‖) ≈ w/3 + ‖u‖²/w`, a
+smooth quadratic bowl). No cross-iterate cache is needed for PR1 — see §2.
 
 ### S0 (THROWAWAY) — force-law CONFIRMED
 Standalone validation of `f₀`/`f₁`/`D`/`∇D`: `∇D` vs central FD rel ~1e-8–1e-10 across
@@ -42,8 +48,10 @@ near the origin the force ramps LINEARLY in slip (slope `μλ·2/w`, the smooth 
   the two tangent directions (a 3×3 block per pair, vs the barrier's rank-1 `n̂⊗n̂`).
 - **Solver (`solver/backward_euler.rs`)** — `assemble_global_int_force` / `assemble_free_hessian_triplets`
   already scatter the contact `gradient`/`hessian`; friction scatters the SAME way once the
-  term exists. `xᵗ = x_prev` and `h` are already in scope. NEW: the **lagged-state cache**
-  `(Tⁿ, λⁿ)` per pair, refreshed between Newton solves (the one piece of new infrastructure).
+  term exists. `xᵗ = x_prev` and `h` are already in scope. PR1 needs NO new persistent
+  infrastructure: `λⁿ = ‖contact.gradient‖` and `Tⁿ` are recomputed from the current iterate
+  inside `friction_blocks` and frozen for that assembly (see §1). PR2 may formalize a
+  per-solve freeze of `(Tⁿ, λⁿ)` if the adjoint needs the lag held at exactly `x*`.
 - **Coupling (`sim-coupling/lib.rs`)** — `active_pair_wrench_data` / `contact_wrench`: the
   wrench already routes an arbitrary per-pair force (the off-COM moment handles any
   direction), so the TANGENTIAL reaction enters with no change to the wrench assembly — only

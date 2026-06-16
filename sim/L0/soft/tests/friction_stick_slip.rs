@@ -18,7 +18,7 @@
     clippy::cast_precision_loss
 )]
 
-use sim_ml_chassis::Tensor;
+use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, LoadAxis, MaterialField, Mesh,
     PenaltyRigidContact, RigidPlane, Solver, SolverConfig, Tet4, Vec3, pick_vertices_by_predicate,
@@ -29,9 +29,21 @@ const DT: f64 = 1.0e-3;
 const KAPPA: f64 = 5.0e3;
 const GRAV_UP: f64 = 10.0; // +z gravity presses the block into the ceiling
 
-/// One forward step with friction `mu` and a horizontal drag `fx_total` (N) over the top
-/// (contact) vertices; returns their average x-displacement.
-fn top_slide(mu: f64, fx_total: f64) -> f64 {
+/// The friction scene: a pinned-bottom soft block pressed into a ceiling plane by upward
+/// gravity, with a horizontal drag `fx_total` (N) over the top (contact) vertices. Returns
+/// the assembled solver plus the step inputs (x0, v0, theta) and the geometry needed to read
+/// the slide. Shared by the forward gate and the gradient-guard test.
+struct FrictionScene {
+    solver: CpuNewtonSolver<Tet4, HandBuiltTetMesh, PenaltyRigidContact>,
+    x0: Vec<f64>,
+    v0: Vec<f64>,
+    theta: Vec<f64>,
+    top: Vec<usize>,
+    rest: Vec<Vec3>,
+    n: usize,
+}
+
+fn build_scene(mu: f64, fx_total: f64) -> FrictionScene {
     let field = MaterialField::uniform(3.0e4, 1.2e5);
     let mesh = HandBuiltTetMesh::uniform_block(4, EDGE, &field);
     let n = mesh.n_vertices();
@@ -69,16 +81,32 @@ fn top_slide(mu: f64, fx_total: f64) -> f64 {
     for k in 0..top.len() {
         theta[3 * k] = fx; // [fx, 0, 0] per loaded vertex
     }
-    let x_final = solver
+    FrictionScene {
+        solver,
+        x0,
+        v0,
+        theta,
+        top,
+        rest,
+        n,
+    }
+}
+
+/// One forward step with friction `mu` and a horizontal drag `fx_total` (N) over the top
+/// (contact) vertices; returns their average x-displacement.
+fn top_slide(mu: f64, fx_total: f64) -> f64 {
+    let s = build_scene(mu, fx_total);
+    let x_final = s
+        .solver
         .replay_step(
-            &Tensor::from_slice(&x0, &[3 * n]),
-            &Tensor::from_slice(&v0, &[3 * n]),
-            &Tensor::from_slice(&theta, &[3 * top.len()]),
+            &Tensor::from_slice(&s.x0, &[3 * s.n]),
+            &Tensor::from_slice(&s.v0, &[3 * s.n]),
+            &Tensor::from_slice(&s.theta, &[3 * s.top.len()]),
             DT,
         )
         .x_final;
-    let sum: f64 = top.iter().map(|&i| x_final[3 * i] - rest[i].x).sum();
-    sum / top.len() as f64
+    let sum: f64 = s.top.iter().map(|&i| x_final[3 * i] - s.rest[i].x).sum();
+    sum / s.top.len() as f64
 }
 
 /// The load-INDUCED tangential slide (loaded minus the load-free settling) at friction `mu`.
@@ -120,5 +148,23 @@ fn slide_decreases_monotonically_with_friction() {
     assert!(
         slides[4] < 0.1 * slides[0],
         "μ=3 must hold most of the frictionless slide"
+    );
+}
+
+/// PR1 is forward-only: the differentiable `step` (which re-factors the IFT adjoint tangent —
+/// friction-free in PR1) must PANIC with friction enabled rather than silently return a
+/// gradient inconsistent with the forward solve. `replay_step` (forward-only) stays allowed.
+#[test]
+#[should_panic(expected = "friction gradients are not yet supported")]
+fn differentiable_step_rejects_friction() {
+    let mut s = build_scene(3.0, 40.0);
+    let mut tape = Tape::new();
+    let theta_var = tape.param_tensor(Tensor::from_slice(&s.theta, &[3 * s.top.len()]));
+    let _ = s.solver.step(
+        &mut tape,
+        &Tensor::from_slice(&s.x0, &[3 * s.n]),
+        &Tensor::from_slice(&s.v0, &[3 * s.n]),
+        theta_var,
+        DT,
     );
 }
