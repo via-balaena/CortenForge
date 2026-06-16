@@ -172,6 +172,7 @@ fn pose_sensitivity_matches_resolve_fd() {
     // Raising the plane height = translating the primitive along +ẑ.
     let analytic = solver.equilibrium_pose_sensitivity(
         &x_final,
+        None,
         DT,
         RigidTwist::translation(Vec3::new(0.0, 0.0, 1.0)),
     );
@@ -333,7 +334,7 @@ fn rotation_sensitivity_matches_resolve_fd() {
     // Analytic: ∂x*/∂θ = −A⁻¹·(∂r/∂θ), the plane rotating about +ŷ through
     // `pivot` at unit rate — RigidTwist::rotation_about.
     let twist = RigidTwist::rotation_about(Vec3::new(0.0, 1.0, 0.0), pivot);
-    let analytic = solver.equilibrium_pose_sensitivity(&x_final, DT, twist);
+    let analytic = solver.equilibrium_pose_sensitivity(&x_final, None, DT, twist);
 
     // FD oracle: re-solve the rotated step at θ = ±ε, central-difference.
     let fd = |eps: f64| -> Vec<f64> {
@@ -422,6 +423,7 @@ fn null_contact_pose_sensitivity_is_zero() {
     }
     let s = solver.equilibrium_pose_sensitivity(
         &x_final,
+        None,
         DT,
         RigidTwist::translation(Vec3::new(0.0, 0.0, 1.0)),
     );

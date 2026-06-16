@@ -38,7 +38,7 @@ use faer::sparse::linalg::LltError;
 use faer::sparse::linalg::solvers::{Llt, Lu, SymbolicLlt, SymbolicLu};
 use faer::sparse::{SparseColMat, Triplet};
 use faer::{Conj, MatMut, Side};
-use nalgebra::{Matrix3, SMatrix};
+use nalgebra::{DMatrix, DVector, Matrix3, SMatrix};
 use sim_ml_chassis::{Tensor, Var};
 
 use super::lm::{LmConfig, LmState};
@@ -204,7 +204,7 @@ impl Default for SolverConfig {
 /// when the assembled tangent is indefinite at the current Newton iter
 /// (or, rarely, at `x_final` for the IFT adjoint), which historically
 /// surfaced at row 21 v1.5's capsule-cap apex contact concentration.
-pub(crate) enum FactoredFreeTangent {
+enum FactorInner {
     Llt(Llt<usize, f64>),
     /// Boxed because faer's `Lu` (carrying `NumericLu`'s row/col-perm
     /// vecs + factor data) is substantially larger than `Llt`. The Lu
@@ -214,17 +214,111 @@ pub(crate) enum FactoredFreeTangent {
     Lu(Box<Lu<usize, f64>>),
 }
 
-impl FactoredFreeTangent {
-    /// Solve `A · x = rhs` in place via the stored factor, forwarding
-    /// `conj` through. Same API shape as
-    /// [`faer::linalg::solvers::SolveCore::solve_in_place_with_conj`];
-    /// the match dispatches to whichever variant holds the actual
-    /// factor. `Box<Lu<…>>` auto-derefs through the trait call.
-    pub(crate) fn solve_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, f64>) {
+impl FactorInner {
+    /// Base solve `A_sym · x = rhs` in place via the stored symmetric factor.
+    fn solve_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, f64>) {
         match self {
             Self::Llt(llt) => llt.solve_in_place_with_conj(conj, rhs),
             Self::Lu(lu) => lu.solve_in_place_with_conj(conj, rhs),
         }
+    }
+}
+
+/// The asymmetric friction adjoint as a Woodbury low-rank correction around the
+/// symmetric factor: the true tangent is `A = A_sym + Σₚ aₚ bₚᵀ`, where `A_sym`
+/// (elastic + barrier + frozen-lag `∇²D`) is the factored symmetric part and each
+/// active friction pair contributes a rank-1 `aₚ bₚᵀ` (the `∂λⁿ/∂x` normal-force
+/// coupling that the frozen lag drops; friction is non-conservative, so this part is
+/// non-symmetric). `z = A_sym⁻¹ U` and `M = I + Vᵀ Z` are precomputed once at factor
+/// time, so each corrected solve is one symmetric back-solve plus a `k×k` dense solve
+/// (`k` = active-pair count). Empty (`k = 0`) ⇒ the correction is a no-op.
+struct WoodburyCorrection {
+    /// `V` columns (the `bₚ = ∂λⁿ/∂xₚ` rows), each length `n_free`.
+    v_cols: Vec<Vec<f64>>,
+    /// `Z = A_sym⁻¹ U` columns (the `aₚ = ∇D/λⁿ` directions, pre-solved), `n_free` each.
+    z_cols: Vec<Vec<f64>>,
+    /// `M = I_k + Vᵀ Z` (`k×k`), the dense capacitance matrix.
+    m: DMatrix<f64>,
+}
+
+impl WoodburyCorrection {
+    /// Apply `rhs ← rhs − Z M⁻¹ (Vᵀ rhs)` in place — the Woodbury tail that turns a
+    /// symmetric solve `A_sym⁻¹ rhs` into the full `A⁻¹ rhs`.
+    //
+    // expect_used: `M = I + VᵀZ` is the Woodbury capacitance matrix of the true tangent
+    // `A = A_sym + UVᵀ`. `A` is non-singular at a converged stable equilibrium (the forward
+    // Newton solve converged through it), so `M` is invertible — a singular `M` would mean a
+    // structurally degenerate friction configuration, where the gradient is itself undefined.
+    #[allow(clippy::expect_used)]
+    fn apply_in_place(&self, rhs: &mut [f64]) {
+        let k = self.z_cols.len();
+        if k == 0 {
+            return;
+        }
+        let mut t = DVector::<f64>::zeros(k);
+        for (j, v) in self.v_cols.iter().enumerate() {
+            t[j] = v.iter().zip(rhs.iter()).map(|(a, b)| a * b).sum();
+        }
+        let s = self
+            .m
+            .clone()
+            .lu()
+            .solve(&t)
+            .expect("Woodbury k×k capacitance solve (M = I + VᵀZ is invertible)");
+        for (j, z) in self.z_cols.iter().enumerate() {
+            let sj = s[j];
+            for (r, &zr) in rhs.iter_mut().zip(z.iter()) {
+                *r -= zr * sj;
+            }
+        }
+    }
+}
+
+/// A factored free-DOF tangent: the symmetric factor plus an optional asymmetric
+/// friction [`WoodburyCorrection`]. `None` correction ⇒ a plain symmetric solve,
+/// bit-identical to the pre-friction path (the frictionless / `x_prev = None` case).
+pub(crate) struct FactoredFreeTangent {
+    inner: FactorInner,
+    woodbury: Option<WoodburyCorrection>,
+}
+
+impl FactoredFreeTangent {
+    /// Wrap a bare symmetric factor with no friction correction (the frictionless path).
+    const fn symmetric(inner: FactorInner) -> Self {
+        Self {
+            inner,
+            woodbury: None,
+        }
+    }
+
+    /// Solve `A_sym · x = rhs` in place — the SYMMETRIC factor only, no friction
+    /// correction. The forward Newton step and Woodbury `Z = A_sym⁻¹ U` build both use
+    /// this (the forward Hessian is the frozen-lag symmetric tangent).
+    pub(crate) fn solve_base_in_place(&self, rhs: &mut [f64]) {
+        let n = rhs.len();
+        let mat = MatMut::from_column_major_slice_mut(rhs, n, 1);
+        self.inner.solve_in_place_with_conj(Conj::No, mat);
+    }
+
+    /// Solve the full free-DOF adjoint `A · x = rhs` in place: the symmetric back-solve
+    /// followed by the friction Woodbury tail (a no-op when `woodbury` is `None`). This
+    /// is the shared solve every adjoint consumer (sensitivities + tape VJPs) routes
+    /// through, so friction-exactness is transparent.
+    pub(crate) fn solve_free_in_place(&self, rhs: &mut [f64]) {
+        self.solve_base_in_place(rhs);
+        if let Some(wb) = &self.woodbury {
+            wb.apply_in_place(rhs);
+        }
+    }
+
+    /// `true` if the symmetric part factored as `Llt` (happy path) vs the `Lu` fallback.
+    pub(crate) const fn is_llt(&self) -> bool {
+        matches!(self.inner, FactorInner::Llt(_))
+    }
+
+    /// `true` if the symmetric part fell back to the `Lu` factor.
+    pub(crate) const fn is_lu(&self) -> bool {
+        matches!(self.inner, FactorInner::Lu(_))
     }
 }
 
@@ -926,7 +1020,7 @@ where
                         );
                     }
                     lm_state.on_llt_success();
-                    return FactoredFreeTangent::Llt(llt);
+                    return FactoredFreeTangent::symmetric(FactorInner::Llt(llt));
                 }
                 Err(LltError::Numeric(numeric_err)) if lm_state.can_bump(max_diag) => {
                     lm_state.on_non_pd(max_diag);
@@ -1024,7 +1118,7 @@ where
                          refinement, or contact-geometry change)."
                 )
             });
-        FactoredFreeTangent::Lu(Box::new(lu))
+        FactoredFreeTangent::symmetric(FactorInner::Lu(Box::new(lu)))
     }
 
     /// Re-factor the free-DOF condensed tangent at a specific position
@@ -1045,29 +1139,125 @@ where
     fn factor_at_position(
         &self,
         x_curr: &[f64],
+        x_prev: Option<&[f64]>,
         dt: f64,
         lm_seed_lambda: f64,
     ) -> FactoredFreeTangent {
+        let mu = self.config.friction_mu;
         assert!(
-            self.config.friction_mu == 0.0,
-            "friction gradients are not yet supported (PR1 is forward-physics-only): the IFT \
-             adjoint tangent omits the friction Hessian, so a gradient computed with \
-             `friction_mu > 0` would be silently inconsistent with the forward solve. Use \
-             `replay_step` for forward-only friction; the differentiability leaf (PR2) wires \
-             friction into this adjoint."
+            mu == 0.0 || x_prev.is_some(),
+            "friction-exact gradient requested without x_prev: the friction adjoint needs the \
+             step-start position xᵗ (= x_prev) to build the ∂λⁿ/∂x Woodbury correction. \
+             Forward-mode sensitivities pass `Some(x_prev)`; reverse-mode tape VJPs stay \
+             friction-free until the coupling leaf (PR3) threads x_prev through."
         );
-        let triplets = self.assemble_free_hessian_triplets(x_curr, None, dt);
+        // A_sym includes the frozen-lag ∇²D when friction is active (the SAME symmetric
+        // tangent the forward Newton step converged with); the asymmetric ∂λⁿ/∂x term is
+        // added on top as a Woodbury correction below.
+        let x_prev_for_hessian = if mu == 0.0 { None } else { x_prev };
+        let triplets = self.assemble_free_hessian_triplets(x_curr, x_prev_for_hessian, dt);
         let mut lm_state = self
             .config
             .lm_regularization
             .map_or_else(LmState::disabled, |cfg| {
                 LmState::from_config_with_seed(cfg, lm_seed_lambda)
             });
-        self.factor_free_tangent(
+        let mut factor = self.factor_free_tangent(
             &triplets,
             &mut lm_state,
             "factor_at_position (IFT adjoint at x_final)",
-        )
+        );
+        if mu != 0.0 {
+            if let Some(xp) = x_prev {
+                factor.woodbury = self.assemble_friction_woodbury(x_curr, xp, dt, &factor);
+            }
+        }
+        factor
+    }
+
+    /// The asymmetric friction adjoint as a [`WoodburyCorrection`] around the symmetric
+    /// factor — the `∂λⁿ/∂x` normal-force coupling the frozen lag drops. Per active pair
+    /// at contact vertex `v`: `aₚ = ∇D/λⁿ` (the friction force direction, at `v`'s DOFs)
+    /// and `bₚ = ∂λⁿ/∂x = n̂ᵀ·(∇²E_contact)` (the row `Σ_cv blockᵀ·n̂` over the contact
+    /// Hessian's `(v, cv)` blocks — for a plane only `(v, v)` is non-zero, but the sum
+    /// stays correct for vertex–vertex contact). `Z = A_sym⁻¹ U` and `M = I + VᵀZ` are
+    /// precomputed via the symmetric factor. Returns `None` when no pair is active.
+    fn assemble_friction_woodbury(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        factor: &FactoredFreeTangent,
+    ) -> Option<WoodburyCorrection> {
+        let mu = self.config.friction_mu;
+        let w = dt * self.config.friction_eps_v;
+        let positions = slice_to_vec3s(x_final);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        let mut u_cols: Vec<Vec<f64>> = Vec::new();
+        let mut v_cols: Vec<Vec<f64>> = Vec::new();
+        for pair in &pairs {
+            let grad = self.contact.gradient(pair, &positions);
+            let hess = self.contact.hessian(pair, &positions);
+            for (vid, force) in &grad.contributions {
+                let lambda = force.norm();
+                if lambda == 0.0 {
+                    continue;
+                }
+                let v = *vid as usize;
+                let x_v = positions[v];
+                let x_start = crate::Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2]);
+                let (grad_d, _) =
+                    crate::contact::friction::grad_hess(x_v, x_start, *force, lambda, mu, w);
+                let a_v = grad_d / lambda; // ∂(∇D)/∂λⁿ = ∇D/λⁿ (friction force direction)
+                let nhat = force / lambda;
+
+                // U column: aₚ embedded at v's free DOFs.
+                let mut u = vec![0.0_f64; self.n_free];
+                for j in 0..3 {
+                    if let Some(fi) = self.full_to_free_idx[3 * v + j] {
+                        u[fi] = a_v[j];
+                    }
+                }
+                // V column: ∂λⁿ_v/∂x = n̂ᵀ·Σ_cv block(v, cv), each placed at cv's free DOFs.
+                let mut vv = vec![0.0_f64; self.n_free];
+                for (rv, cv, block) in &hess.contributions {
+                    if *rv as usize != v {
+                        continue;
+                    }
+                    let row = block.transpose() * nhat; // (n̂ᵀ block)ᵀ at cv's DOFs
+                    let c = *cv as usize;
+                    for j in 0..3 {
+                        if let Some(fi) = self.full_to_free_idx[3 * c + j] {
+                            vv[fi] += row[j];
+                        }
+                    }
+                }
+                u_cols.push(u);
+                v_cols.push(vv);
+            }
+        }
+
+        let k = u_cols.len();
+        if k == 0 {
+            return None;
+        }
+        // Z = A_sym⁻¹ U (one symmetric back-solve per column).
+        let z_cols: Vec<Vec<f64>> = u_cols
+            .iter()
+            .map(|u| {
+                let mut z = u.clone();
+                factor.solve_base_in_place(&mut z);
+                z
+            })
+            .collect();
+        // M = I_k + Vᵀ Z.
+        let mut m = DMatrix::<f64>::identity(k, k);
+        for (i, v) in v_cols.iter().enumerate() {
+            for (j, z) in z_cols.iter().enumerate() {
+                m[(i, j)] += v.iter().zip(z).map(|(a, b)| a * b).sum::<f64>();
+            }
+        }
+        Some(WoodburyCorrection { v_cols, z_cols, m })
     }
 
     /// Solve `A_free · δ = -r_free` via the cached symbolic factor.
@@ -1099,9 +1289,7 @@ where
             .iter()
             .map(|&idx| -r_full[idx])
             .collect();
-        let rhs_mat: MatMut<'_, f64> =
-            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
-        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        factor.solve_base_in_place(&mut rhs);
         rhs
     }
 
@@ -1143,7 +1331,9 @@ where
             SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &full_triplets)
                 .expect("malformed full condensed-tangent triplet list");
         match Lu::<usize, f64>::try_new_with_symbolic(self.symbolic_lu.clone(), a_mat_full.rb()) {
-            Ok(lu) => Ok(FactoredFreeTangent::Lu(Box::new(lu))),
+            Ok(lu) => Ok(FactoredFreeTangent::symmetric(FactorInner::Lu(Box::new(
+                lu,
+            )))),
             Err(lu_err) => Err(DoublyFailedFactorInfo {
                 context: format!(
                     "condensed tangent factor doubly failed at {context}: \
@@ -1213,7 +1403,7 @@ where
                         );
                     }
                     lm_state.on_llt_success();
-                    return Ok(FactoredFreeTangent::Llt(llt));
+                    return Ok(FactoredFreeTangent::symmetric(FactorInner::Llt(llt)));
                 }
                 Err(LltError::Numeric(numeric_err)) if lm_state.can_bump(max_diag) => {
                     lm_state.on_non_pd(max_diag);
@@ -1277,9 +1467,7 @@ where
             .iter()
             .map(|&idx| -r_full[idx])
             .collect();
-        let rhs_mat: MatMut<'_, f64> =
-            MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
-        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        factor.solve_base_in_place(&mut rhs);
         Ok(rhs)
     }
 
@@ -1369,34 +1557,43 @@ where
     fn try_factor_at_position(
         &self,
         x_curr: &[f64],
+        x_prev: Option<&[f64]>,
         dt: f64,
         lm_seed_lambda: f64,
     ) -> Result<FactoredFreeTangent, SolverFailure> {
+        let mu = self.config.friction_mu;
         assert!(
-            self.config.friction_mu == 0.0,
-            "friction gradients are not yet supported (PR1 is forward-physics-only): the IFT \
-             adjoint tangent omits the friction Hessian, so a gradient computed with \
-             `friction_mu > 0` would be silently inconsistent with the forward solve. Use \
-             `replay_step` for forward-only friction; the differentiability leaf (PR2) wires \
-             friction into this adjoint."
+            mu == 0.0 || x_prev.is_some(),
+            "friction-exact gradient requested without x_prev: the friction adjoint needs the \
+             step-start position xᵗ (= x_prev) to build the ∂λⁿ/∂x Woodbury correction. \
+             Forward-mode sensitivities pass `Some(x_prev)`; reverse-mode tape VJPs stay \
+             friction-free until the coupling leaf (PR3) threads x_prev through."
         );
-        let triplets = self.assemble_free_hessian_triplets(x_curr, None, dt);
+        let x_prev_for_hessian = if mu == 0.0 { None } else { x_prev };
+        let triplets = self.assemble_free_hessian_triplets(x_curr, x_prev_for_hessian, dt);
         let mut lm_state = self
             .config
             .lm_regularization
             .map_or_else(LmState::disabled, |cfg| {
                 LmState::from_config_with_seed(cfg, lm_seed_lambda)
             });
-        self.try_factor_free_tangent(
-            &triplets,
-            &mut lm_state,
-            "factor_at_position (IFT adjoint at x_final)",
-        )
-        .map_err(|info| SolverFailure::DoublyFailedFactor {
-            x_partial: x_curr.to_vec(),
-            last_iter: 0,
-            context: info.context,
-        })
+        let mut factor = self
+            .try_factor_free_tangent(
+                &triplets,
+                &mut lm_state,
+                "factor_at_position (IFT adjoint at x_final)",
+            )
+            .map_err(|info| SolverFailure::DoublyFailedFactor {
+                x_partial: x_curr.to_vec(),
+                last_iter: 0,
+                context: info.context,
+            })?;
+        if mu != 0.0 {
+            if let Some(xp) = x_prev {
+                factor.woodbury = self.assemble_friction_woodbury(x_curr, xp, dt, &factor);
+            }
+        }
+        Ok(factor)
     }
 
     /// Inner solver: pure-function-of-θ Newton loop. Shared by `step`
@@ -2139,6 +2336,7 @@ where
     pub fn equilibrium_pose_sensitivity(
         &self,
         x_final: &[f64],
+        x_prev: Option<&[f64]>,
         dt: f64,
         twist: RigidTwist,
     ) -> Vec<f64> {
@@ -2150,7 +2348,7 @@ where
             .iter()
             .map(|&i| -dr_dpose[i])
             .collect();
-        self.solve_free_and_scatter(x_final, dt, rhs)
+        self.solve_free_and_scatter(x_final, x_prev, dt, rhs)
     }
 
     /// Reuse the tangent `A` factored at `x_final` to solve the free-DOF adjoint
@@ -2161,12 +2359,19 @@ where
     /// [`Self::equilibrium_material_sensitivity`] /
     /// [`Self::equilibrium_state_sensitivity`]), which differ only in how they
     /// assemble `rhs_free`.
-    fn solve_free_and_scatter(&self, x_final: &[f64], dt: f64, mut rhs_free: Vec<f64>) -> Vec<f64> {
+    /// `x_prev` is the step-start position `xᵗ`; `Some` enables the friction-exact
+    /// adjoint (the Woodbury `∂λⁿ/∂x` correction), `None` is the frictionless / friction
+    /// `μ = 0` path (bit-identical to pre-friction).
+    fn solve_free_and_scatter(
+        &self,
+        x_final: &[f64],
+        x_prev: Option<&[f64]>,
+        dt: f64,
+        mut rhs_free: Vec<f64>,
+    ) -> Vec<f64> {
         debug_assert_eq!(rhs_free.len(), self.n_free);
-        let factor = self.factor_at_position(x_final, dt, 0.0);
-        let rhs_mat: MatMut<'_, f64> =
-            MatMut::from_column_major_slice_mut(&mut rhs_free, self.n_free, 1);
-        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        let factor = self.factor_at_position(x_final, x_prev, dt, 0.0);
+        factor.solve_free_in_place(&mut rhs_free);
         let mut sensitivity = vec![0.0_f64; self.n_dof];
         for (k, &full_idx) in self.free_dof_indices.iter().enumerate() {
             sensitivity[full_idx] = rhs_free[k];
@@ -2208,6 +2413,7 @@ where
     pub fn equilibrium_material_sensitivity(
         &self,
         x_final: &[f64],
+        x_prev: Option<&[f64]>,
         dt: f64,
         param_idx: usize,
     ) -> Vec<f64> {
@@ -2215,7 +2421,7 @@ where
         let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
         // A·w_free = −(∂r/∂p_k)_free reusing the tangent at x_final.
         let rhs: Vec<f64> = self.free_dof_indices.iter().map(|&i| -dr_dp[i]).collect();
-        self.solve_free_and_scatter(x_final, dt, rhs)
+        self.solve_free_and_scatter(x_final, x_prev, dt, rhs)
     }
 
     /// `(∂r/∂s)_full` — the contact-plane pose enters the residual only through
@@ -2329,7 +2535,7 @@ where
         debug_assert!(x_final.len() == self.n_dof);
         let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
         let dr_dp_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
-        let factor = self.factor_at_position(x_final, dt, 0.0);
+        let factor = self.factor_at_position(x_final, None, dt, 0.0);
         MaterialStepVjp::new(
             factor,
             self.n_dof,
@@ -2362,6 +2568,7 @@ where
     pub fn equilibrium_state_sensitivity(
         &self,
         x_final: &[f64],
+        x_prev: Option<&[f64]>,
         dt: f64,
         dx_prev: &[f64],
         dv_prev: &[f64],
@@ -2371,6 +2578,8 @@ where
         let dt2 = dt * dt;
         // RHS_free = −(∂r/∂x_prev·dx_prev + ∂r/∂v_prev·dv_prev)_free
         //          = ((M/Δt²)·dx_prev + (M/Δt)·dv_prev)_free.
+        // NOTE: under friction xᵗ = x_prev also enters ∂r/∂x_prev (a friction RHS term not
+        // yet included here — PR2 gates material + pose; `x_prev` threads the adjoint A).
         let rhs: Vec<f64> = self
             .free_dof_indices
             .iter()
@@ -2378,7 +2587,7 @@ where
                 self.mass_per_dof[i] / dt2 * dx_prev[i] + self.mass_per_dof[i] / dt * dv_prev[i]
             })
             .collect();
-        self.solve_free_and_scatter(x_final, dt, rhs)
+        self.solve_free_and_scatter(x_final, x_prev, dt, rhs)
     }
 
     /// Build a [`StateStepVjp`] for one converged step — the reverse-mode (tape)
@@ -2398,7 +2607,7 @@ where
     #[must_use]
     pub fn state_step_vjp(&self, x_final: &[f64], dt: f64) -> StateStepVjp {
         debug_assert!(x_final.len() == self.n_dof);
-        let factor = self.factor_at_position(x_final, dt, 0.0);
+        let factor = self.factor_at_position(x_final, None, dt, 0.0);
         let dt2 = dt * dt;
         let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
         let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
@@ -2448,7 +2657,7 @@ where
         let dt2 = dt * dt;
         let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
         let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
-        let factor = self.factor_at_position(x_final, dt, 0.0);
+        let factor = self.factor_at_position(x_final, None, dt, 0.0);
         TrajectoryStepVjp::new(
             factor,
             self.n_dof,
@@ -2501,7 +2710,7 @@ where
         let dt2 = dt * dt;
         let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
         let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
-        let factor = self.factor_at_position(x_final, dt, 0.0);
+        let factor = self.factor_at_position(x_final, None, dt, 0.0);
         TrajectoryStepVjp::new(
             factor,
             self.n_dof,
@@ -2544,7 +2753,7 @@ where
         let dt2 = dt * dt;
         let m_over_dt2: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt2).collect();
         let m_over_dt: Vec<f64> = self.mass_per_dof.iter().map(|&m| m / dt).collect();
-        let factor = self.factor_at_position(x_final, dt, 0.0);
+        let factor = self.factor_at_position(x_final, None, dt, 0.0);
         TrajectoryStepVjp::new(
             factor,
             self.n_dof,
@@ -2589,7 +2798,7 @@ where
         // path the seed is ignored. Factor ownership pattern (I-3)
         // verified for Llt in tests/invariant_3_factor.rs; the same
         // Arc-internal ownership shape holds for Lu.
-        let factor = self.factor_at_position(&step.x_final, dt, lm_final_lambda);
+        let factor = self.factor_at_position(&step.x_final, None, dt, lm_final_lambda);
         self.push_newton_step_vjp(tape, theta_var, &mut step, factor);
         step
     }
@@ -2638,7 +2847,7 @@ where
                 }
                 Err(other) => return Err(other),
             };
-        let factor = self.try_factor_at_position(&step.x_final, dt, lm_final_lambda)?;
+        let factor = self.try_factor_at_position(&step.x_final, None, dt, lm_final_lambda)?;
         self.push_newton_step_vjp(tape, theta_var, &mut step, factor);
         Ok(step)
     }
@@ -2866,11 +3075,10 @@ mod tests {
     //! the test runner output as it would in a live run.
 
     use faer::sparse::Triplet;
-    use faer::{Conj, MatMut};
 
     use sim_ml_chassis::Tensor;
 
-    use super::{FactoredFreeTangent, SolverFailure};
+    use super::SolverFailure;
     use crate::contact::NullContact;
     use crate::material::MaterialField;
     use crate::mesh::SingleTetMesh;
@@ -3115,13 +3323,12 @@ mod tests {
         let mut lm_state = LmState::disabled();
         let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "SPD test fixture");
         assert!(
-            matches!(factor, FactoredFreeTangent::Llt(_)),
+            factor.is_llt(),
             "SPD case must take the Llt happy path, got Lu fallback"
         );
 
         let mut rhs = [1.0_f64, 1.0, 1.0];
-        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, 3, 1);
-        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        factor.solve_base_in_place(&mut rhs);
 
         // A · x verification — full matrix from the symmetric pattern.
         let ax0 = 2.0_f64.mul_add(rhs[0], rhs[1]);
@@ -3158,13 +3365,12 @@ mod tests {
         let factor =
             solver.factor_free_tangent(&triplets, &mut lm_state, "indefinite test fixture");
         assert!(
-            matches!(factor, FactoredFreeTangent::Lu(_)),
+            factor.is_lu(),
             "indefinite case must engage the Lu fallback"
         );
 
         let mut rhs = [1.0_f64, 1.0, 1.0];
-        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, 3, 1);
-        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        factor.solve_base_in_place(&mut rhs);
 
         // A = [[1, 2, 0], [2, 1, 0], [0, 0, 1]]; symmetric so the
         // lower-tri-derived "full" pattern matches A exactly.
@@ -3228,7 +3434,7 @@ mod tests {
         let mut lm_state = LmState::from_config(LmConfig::fork_b());
         let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "LM-rescue test fixture");
         assert!(
-            matches!(factor, FactoredFreeTangent::Llt(_)),
+            factor.is_llt(),
             "LM bump must rescue the non-PD case to Llt before LU fallback \
              fires (got Lu — LM exhausted retry budget before reaching SPD)"
         );

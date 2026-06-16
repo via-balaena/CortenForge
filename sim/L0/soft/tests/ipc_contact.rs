@@ -237,6 +237,7 @@ fn ipc_pose_sensitivity_matches_resolve_fd() {
     // Analytic ∂x*/∂δ (plane translation along +ẑ), reusing the tangent at x_final.
     let analytic = s.equilibrium_pose_sensitivity(
         &x_final,
+        None,
         DT,
         RigidTwist::translation(Vec3::new(0.0, 0.0, 1.0)),
     );
@@ -286,7 +287,7 @@ fn ipc_rotation_sensitivity_matches_resolve_fd() {
 
     // Analytic ∂x*/∂θ: ceiling rotating about +ŷ through `pivot` at unit rate.
     let twist = RigidTwist::rotation_about(Vec3::new(0.0, 1.0, 0.0), pivot);
-    let analytic = s.equilibrium_pose_sensitivity(&x_final, DT, twist);
+    let analytic = s.equilibrium_pose_sensitivity(&x_final, None, DT, twist);
 
     // FD oracle: re-solve the rotated step at θ = ±ε from the SAME (x, v) —
     // touches none of the analytic twist / A⁻¹ machinery.

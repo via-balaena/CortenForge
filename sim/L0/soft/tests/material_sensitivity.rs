@@ -130,7 +130,7 @@ fn equilibrium_material_sensitivity_matches_resolve_fd() {
     let x_final = solve(MU0, LAMBDA0);
 
     // ── ∂x*/∂μ ──
-    let an_mu = solver.equilibrium_material_sensitivity(&x_final, DT, 0);
+    let an_mu = solver.equilibrium_material_sensitivity(&x_final, None, DT, 0);
     let de = MU0 * 1e-6;
     let fd_mu: Vec<f64> = solve(MU0 + de, LAMBDA0)
         .iter()
@@ -141,7 +141,7 @@ fn equilibrium_material_sensitivity_matches_resolve_fd() {
     let max_mu = free.iter().map(|&i| an_mu[i].abs()).fold(0.0_f64, f64::max);
 
     // ── ∂x*/∂λ ──
-    let an_l = solver.equilibrium_material_sensitivity(&x_final, DT, 1);
+    let an_l = solver.equilibrium_material_sensitivity(&x_final, None, DT, 1);
     let dl = LAMBDA0 * 1e-6;
     let fd_l: Vec<f64> = solve(MU0, LAMBDA0 + dl)
         .iter()
@@ -191,7 +191,7 @@ fn material_step_vjp_backward_matches_forward_and_fd() {
 
     // Dual: Σ of the forward sensitivity ∂x*/∂μ (same factored A).
     let fwd_sum: f64 = solver
-        .equilibrium_material_sensitivity(&x_final, DT, 0)
+        .equilibrium_material_sensitivity(&x_final, None, DT, 0)
         .iter()
         .sum();
     // Independent: re-solve FD of Σx* over μ.

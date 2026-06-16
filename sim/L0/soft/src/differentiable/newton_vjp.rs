@@ -76,7 +76,6 @@
 
 use std::fmt;
 
-use faer::{Conj, MatMut};
 use sim_ml_chassis::{Tensor, autograd::VjpOp};
 
 use super::{Differentiable, TapeNodeKey};
@@ -243,15 +242,13 @@ impl VjpOp for NewtonStepVjp {
         // Gather `g_free` from the cotangent at the free DOF indices.
         let cot = cotangent.as_slice();
         let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
-        let n_free = rhs.len();
 
         // Solve `A · λ = g_free` in place via the stashed factor (Llt
         // or — under A2 fallback — Lu). `A` is symmetric for
         // `NeoHookean`, so we use the same factor shape the forward
         // Newton step produced — no transpose needed. (Asymmetric
         // materials would need `solve_transpose_in_place`.)
-        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
-        self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        self.factor.solve_free_in_place(&mut rhs);
         // `rhs` now holds λ (in free-DOF indexing).
 
         let parent_slice = parent_cotans[0].as_mut_slice();
@@ -362,9 +359,7 @@ impl VjpOp for MaterialStepVjp {
         // g_free, then solve A · λ = g_free with the factor at x_final.
         let cot = cotangent.as_slice();
         let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
-        let n_free = rhs.len();
-        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
-        self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        self.factor.solve_free_in_place(&mut rhs);
         // rhs now holds λ (free-DOF indexing). grad_p = −λ^T · (∂r/∂p)_free.
         let mut grad = 0.0_f64;
         for (lam, drdp) in rhs.iter().zip(&self.dr_dp_free) {
@@ -489,9 +484,7 @@ impl VjpOp for StateStepVjp {
         // g_free, then solve A · λ = g_free with the factor at x_final.
         let cot = cotangent.as_slice();
         let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
-        let n_free = rhs.len();
-        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
-        self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        self.factor.solve_free_in_place(&mut rhs);
         // rhs now holds λ (free-DOF indexing). Scatter into the parent cotangents
         // at the free DOFs (pinned/roller DOFs stay 0 — λ is zero there):
         //   ∂L/∂x_prev = (M/Δt²)·λ_full ,  ∂L/∂v_prev = (M/Δt)·λ_full.
@@ -622,9 +615,7 @@ impl VjpOp for TrajectoryStepVjp {
         // One shared adjoint solve A·λ = g_free.
         let cot = cotangent.as_slice();
         let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
-        let n_free = rhs.len();
-        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
-        self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+        self.factor.solve_free_in_place(&mut rhs);
         // rhs now holds λ (free-DOF order).
 
         // Param parent 3: −λ^T·(∂r/∂param)_free (scalar).

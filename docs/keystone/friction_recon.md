@@ -70,13 +70,30 @@ near the origin the force ramps LINEARLY in slip (slope `μλ·2/w`, the smooth 
    between Newton solves, `λⁿ` from the barrier derivative. Forward only (the solver
    minimizes elastic + barrier + friction). Gate: FD `∇D`/`∇²D`; the STICK/SLIP physics — a
    soft block under tangential load below `μλ` holds (sticks), above slides. The foundation.
-2. **PR2 (sim-soft) — friction differentiability.** The custom-VJP / equilibrium-sensitivity
-   inherit friction through the tangent `A`; FD-validate `∂x*/∂(material, pose)` with friction
-   active.
+2. **PR2 (sim-soft) — friction differentiability (the forward sensitivities).** ✅ **The
+   `∂λⁿ/∂x` term makes the friction adjoint NON-SYMMETRIC** (friction is the first
+   non-conservative force in the soft solve; the frozen-lag `∇²D` is its symmetric part, the
+   `∂λⁿ/∂x` normal-force coupling its asymmetric rank-1-per-pair part). The keystone factor
+   path is symmetric-only (Cholesky on lower-triangle triplets), so rather than tear into it
+   we add a **Woodbury low-rank correction AROUND the existing symmetric factor**: the true
+   adjoint `A = A_sym + Σₚ aₚ bₚᵀ` (`aₚ = ∇D/λⁿ`, `bₚ = n̂ᵀ∇²E_contact`), solved via
+   `A_sym⁻¹` reuse + a `k×k` capacitance solve (`k` = active pairs). Folded into
+   `FactoredFreeTangent` so every adjoint consumer is transparent; empty ⇒ bit-identical.
+   `factor_at_position` gains `x_prev: Option` (`Some` ⇒ friction-exact, `None` ⇒
+   frictionless / the guarded reverse path). **Gate: `∂x*/∂μ` (material) MACHINE-EXACT vs
+   re-solve FD (rel ~5e-9; S0 measured the frozen-lag-only adjoint stuck at a systematic
+   ~2e-3 — the Woodbury closes it to the FD floor).** The forward sensitivities
+   (`equilibrium_material/pose/state`) take the exact adjoint; the reverse-mode tape VJPs
+   stay friction-guarded (`x_prev = None` under friction → conditional panic) until PR3.
+   **Pose deferred to PR3:** the adjoint `A` is identical for material and pose (so it is
+   friction-exact for both), but the POSE *RHS* (`∂r/∂pose` = `assemble_pose_residual_grad`)
+   also needs the friction force's explicit pose dependence (moving the plane changes `λⁿ`),
+   which lands naturally with the coupling where the pose adjoint is consumed.
 3. **PR3 (sim-coupling) — friction in the coupled gradient.** The tangential reaction in the
-   wrench; the soft pose-adjoint friction terms; the lagged `λⁿ` wired from the contact.
-   FD-gate the coupled trajectory gradient on a scene with a tangential load (a tilted/sliding
-   contact — where friction holds vs slips). This is where it serves the exo / Bubby.
+   wrench; the **pose-residual friction term** (`∂r/∂pose`, deferred from PR2) + the
+   reverse-mode VJPs threaded with `x_prev`; the lagged `λⁿ` wired from the contact. FD-gate
+   the coupled trajectory gradient on a scene with a tangential load (a tilted/sliding contact
+   — where friction holds vs slips). This is where it serves the exo / Bubby.
 
 Follow-on: stick-slip at the true Coulomb limit is already captured by the smooth transition
 (the spec's whole point); the open knobs are `ε_v` (transition width) and per-pair `μ_c`.

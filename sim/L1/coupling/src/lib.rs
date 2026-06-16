@@ -1412,6 +1412,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let (solver, x_final) = self.soft_resolve(height);
         let dxstar = solver.equilibrium_pose_sensitivity(
             &x_final,
+            None,
             self.cfg.dt,
             RigidTwist::translation(dir),
         );
