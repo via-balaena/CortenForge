@@ -139,6 +139,25 @@ fn matrix() -> Vec<Case> {
         });
     }
     {
+        // hinge_offset_pivot — a hinge whose joint anchor is OFF the body frame
+        // origin (`jnt_pos ≠ 0`). Then `r = xpos[b] − jpos_world ≠ 0`, so the
+        // motion subspace has a nonzero lever (`S_lin = â×r`) and the same-body
+        // ∂S/∂q term carries the `â×(â×r)` linear coupling. The builders default
+        // `jnt_pos = 0` (every other case), so this is the only guard that the
+        // `anc=b` term stays exact when that coupling is live.
+        let mut m = Model::empty();
+        let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        let j = add_hinge_joint(&mut m, b, "h0", ax[1], 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        m.jnt_pos[j] = Vector3::new(0.08, -0.05, 0.06);
+        finalize(&mut m);
+        cases.push(Case {
+            name: "hinge_offset_pivot",
+            model: m,
+            qpos: vec![0.3],
+            qvel: vec![0.8],
+        });
+    }
+    {
         // slide_single
         let mut m = Model::empty();
         let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
@@ -369,10 +388,24 @@ fn forward_at(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
 ///   term owns (toggling any one shifts but does not remove it). The
 ///   translational-DOF transport added in this stone closed the bulk (1.0→0.30).
 ///   Follow-on: a from-scratch free-child ancestor-Coriolis derivation.
+/// - `hinge_offset_pivot` (≈5e-3): a hinge with `jnt_pos ≠ 0` rotates the body
+///   about the joint anchor (≠ body frame origin), i.e. rotation + translation
+///   of the origin. The same-body `∂S/∂q` (`â×(â×r)`) is correct, but the
+///   translation-of-origin contribution to the `∂I` rotation derivative (which
+///   assumes rotation about the origin) is incomplete, leaving a Coriolis-row
+///   residual (0.19 gravity-only, partially cancelled to ~5e-3 here). EVERY
+///   other case uses `jnt_pos = 0` (exact), and the codebase's real consumers
+///   (pendulum factory, sim-coupling chains, MJCF chains) all build origin-
+///   anchored joints — so this is a LATENT gap, surfaced by the harness, not a
+///   live one. Follow-on: offset-pivot `∂I`/transport completion.
 fn known_limit(name: &str) -> Option<f64> {
+    // Bounds are tight ratchets just above the measured residual (≈0.75, ≈0.30)
+    // so a partial regression that worsens either trips the test, while the
+    // documented gap itself stays green. Re-tighten if a follow-on shrinks them.
     match name {
-        "multi_joint_body" => Some(1.0),
-        "hinge_then_free" => Some(0.5),
+        "multi_joint_body" => Some(0.80),
+        "hinge_then_free" => Some(0.35),
+        "hinge_offset_pivot" => Some(1e-2),
         _ => None,
     }
 }

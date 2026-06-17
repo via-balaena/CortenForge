@@ -128,6 +128,14 @@ pub(super) fn compute_integration_derivatives(
                 // pre-step qvel — otherwise J_l⁻¹(θ) is evaluated at the wrong
                 // angle and the position-row columns carry an O(h²·qacc) error
                 // (only quaternion joints have a θ-dependent block).
+                //
+                // `qvel + h·qacc` is the exact post-step velocity for UNDAMPED
+                // Euler. For eulerdamp / ImplicitSpringDamper the true post-step
+                // velocity uses M_impl⁻¹ (not the bare `qacc` read here), so a
+                // damped quaternion joint keeps a residual O(h²·D·qacc) in this
+                // block — strictly smaller than the pre-step error this replaces,
+                // never larger. Closing it for the damped path is a follow-on
+                // (route the transition `qacc` in); the undamped path is exact.
                 let omega = Vector3::new(
                     data.qvel[dof_adr] + h * data.qacc[dof_adr],
                     data.qvel[dof_adr + 1] + h * data.qacc[dof_adr + 1],

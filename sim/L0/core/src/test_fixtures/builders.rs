@@ -777,7 +777,7 @@ pub(super) fn add_jointvel_sensor(model: &mut Model, joint_id: usize, name: &str
 /// Set scalar simulation options. Convenience wrapper for the common
 /// "fixture preamble" of timestep + gravity + integrator + (optional)
 /// contact-disable flag.
-pub fn set_options(
+pub(super) fn set_options(
     model: &mut Model,
     timestep: f64,
     gravity: Vector3<f64>,
