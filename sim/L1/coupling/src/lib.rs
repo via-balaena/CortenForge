@@ -2356,23 +2356,21 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// exact. Evaluated at a fresh scratch forward at `qpos` (the config the real
     /// `step` maps the wrench through, matching [`Self::fresh_xfrc_column`]).
     ///
-    /// **Undamped scope.** Returns `None` when the model has joint damping — the unloaded
-    /// `A` from `transition_derivatives` has a subtle Euler-`eulerdamp` mismatch (≈2.6% on
-    /// the hinge gradient), so the damped single hinge falls back to the FD
-    /// [`Self::loaded_state_jacobian`] (which differentiates the real eulerdamp step and is
-    /// damping-correct — the 2-link chain confirms it). The analytic *damped* single-hinge
-    /// `J_state` (reconciling `A` with eulerdamp for machine-exactness) is the documented
-    /// follow-on; see `docs/keystone/damped_joints_recon.md`.
+    /// **Joint damping (eulerdamp).** Under the Euler integrator MuJoCo solves the velocity
+    /// update with the IMPLICIT factor `M_impl = M + Δt·D` (`D = implicit_damping`), not bare
+    /// `M`. The unloaded `A` from `transition_derivatives` forms its velocity rows with bare
+    /// `M⁻¹` (`∂v⁺/∂v = I + Δt·M⁻¹·qDeriv`), so the damped hinge needs the solve factor
+    /// corrected: the velocity-row numerators rescale by `M/M_impl` and the geometric-stiffness
+    /// term uses `M_impl⁻¹`; the position rows then follow the semi-implicit chain
+    /// `θ' = θ + Δt·ω'`. `M_impl` is configuration-independent for a single hinge (constant `M`,
+    /// constant `D`), so `∂M_impl⁻¹/∂q = 0` and the form stays exact — machine-exact vs the FD
+    /// [`Self::loaded_state_jacobian`] (which differentiates the real eulerdamp step). `D = 0`
+    /// recovers the bare-`M` path BYTE-FOR-BYTE.
     // expect_used: a transition-derivative / forward on a valid model does not fail; a
     // failure is a programmer error surfaced loudly (mirrors `scratch_state_step`).
     #[allow(clippy::expect_used)]
     fn analytic_state_jacobian(&self, wrench: &SpatialVector) -> Option<DMatrix<f64>> {
         let jnt = self.single_hinge()?;
-        // Joint damping → fall back to the FD loaded Jacobian (damping-correct): the
-        // unloaded `A` has a subtle Euler-eulerdamp mismatch the FD path avoids.
-        if self.model.implicit_damping.iter().any(|&d| d != 0.0) {
-            return None;
-        }
         let dt = self.model.timestep;
         let nv = self.model.nv; // == 1 (single_hinge), so the state block is 2×2
         // Unloaded transition A at the current state. The real `step` re-forwards at
@@ -2397,9 +2395,27 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let r = scratch.xipos[self.body] - anchor;
         let f = Vec3::new(wrench[3], wrench[4], wrench[5]);
         let geom_stiff = axis.cross(&axis.cross(&r)).dot(&f); // ∂(Jᵀw)/∂θ
-        let vel_corr = dt / scratch.qM[(0, 0)] * geom_stiff; // ∂qvel'/∂qpos correction
-        j[(1, 0)] += vel_corr; // velocity row, qpos col
-        j[(0, 0)] += dt * vel_corr; // position row, qpos col (semi-implicit chain)
+        let m = scratch.qM[(0, 0)];
+        let damp = self.model.implicit_damping[0]; // single hinge ⇒ the only DOF
+        if damp == 0.0 {
+            // Undamped: bare `M`, patch the loaded geom-stiff onto the qpos column. Keeps
+            // `A`'s position rows (semi-implicit-consistent at `D = 0`) BYTE-FOR-BYTE.
+            let vel_corr = dt / m * geom_stiff; // ∂qvel'/∂qpos correction
+            j[(1, 0)] += vel_corr; // velocity row, qpos col
+            j[(0, 0)] += dt * vel_corr; // position row, qpos col (semi-implicit chain)
+        } else {
+            // Damped (eulerdamp): the velocity update solves with `M_impl = M + Δt·D`, so
+            // rescale `A`'s bare-`M` velocity-row numerators by `M/M_impl` and form the loaded
+            // geom-stiff over `M_impl`; then rebuild the position rows from `θ' = θ + Δt·ω'`.
+            let m_impl = m + dt * damp;
+            let s = m / m_impl;
+            let dwdw = 1.0 + s * (j[(1, 1)] - 1.0); // ∂ω'/∂ω
+            let dwdq = s * j[(1, 0)] + dt / m_impl * geom_stiff; // ∂ω'/∂θ (unloaded + loaded)
+            j[(1, 1)] = dwdw;
+            j[(1, 0)] = dwdq;
+            j[(0, 1)] = dt * dwdw; // ∂θ'/∂ω
+            j[(0, 0)] = 1.0 + dt * dwdq; // ∂θ'/∂θ
+        }
         Some(j)
     }
 
@@ -2495,10 +2511,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// machine-exactness at nv > 1 is the documented follow-on (`multilink_recon.md`).
     /// **Joint damping** is supported: the Euler `eulerdamp` wrench→velocity factor `G_vel`
     /// is `Δt·(M + Δt·D)⁻¹·Jᵀ` ([`rigid_xfrc_column`], `D = implicit_damping`). The damped
-    /// `J_state` comes from the FD `loaded_state_jacobian` (which differentiates the real
-    /// eulerdamp step → damping-correct); the analytic single-hinge `J_state` DECLINES
-    /// under damping (its unloaded `A` has a subtle eulerdamp mismatch), so the damped
-    /// hinge and 2-link chain both run at FD-carry precision. FD-gated under damping. Out
+    /// single HINGE uses the ANALYTIC `J_state` (the `M → M_impl` correction reconciles the
+    /// unloaded `A`'s bare-`M` velocity rows with eulerdamp → machine-exact, ~1e-9); the 2-link
+    /// CHAIN still uses the FD `loaded_state_jacobian` (damping-correct, FD-carry precision).
+    /// FD-gated under damping. Out
     /// of scope: stiffness-implicit / non-Euler integrators
     /// (`ImplicitSpringDamper`'s `M + Δt·D + Δt²·K`, RK4); the coupling's own free-platen
     /// `rigid_damping` knob (asserted 0 here — distinct from model joint damping);
@@ -4683,14 +4699,12 @@ mod tests {
         );
     }
 
-    /// A DAMPED single hinge declines the analytic `J_state` (returns `None`) and falls
-    /// back to the FD `loaded_state_jacobian`: the unloaded `A` from
-    /// `transition_derivatives` has a subtle Euler-`eulerdamp` mismatch (≈2.6% on the
-    /// hinge gradient), whereas the FD path differentiates the real eulerdamp step and is
-    /// damping-correct (the 2-link chain confirms it). The analytic *damped* single-hinge
-    /// is the documented follow-on. See `docs/keystone/damped_joints_recon.md`.
+    /// A DAMPED single hinge's analytic `J_state` matches the FD `loaded_state_jacobian` to the
+    /// FD floor: the `M → M_impl = M + Δt·D` correction (rescale `A`'s bare-`M` velocity rows by
+    /// `M/M_impl`, geom-stiff over `M_impl`, position rows from `θ' = θ + Δt·ω'`) reconciles the
+    /// unloaded `A` with the real eulerdamp step. A nonzero `qvel` exercises the damping term.
     #[test]
-    fn analytic_state_jacobian_declines_under_damping() {
+    fn analytic_state_jacobian_damped_matches_fd() {
         const DAMPED_HINGE: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
   <worldbody>
@@ -4703,6 +4717,7 @@ mod tests {
         let model = load_model(DAMPED_HINGE).expect("damped hinge loads");
         let mut data = model.make_data();
         data.qpos[0] = 0.3;
+        data.qvel[0] = 0.4; // nonzero velocity so the implicit-damping term is exercised
         data.forward(&model).expect("forward");
         assert!(model.implicit_damping[0] > 0.0, "damping must be live");
         let c: StaggeredCoupling = StaggeredCoupling::new(
@@ -4712,12 +4727,16 @@ mod tests {
             c.single_hinge().is_some(),
             "geometry is a single hinge (the analytic path's predicate)"
         );
+        let wrench = SpatialVector::from_row_slice(&[0.1, 0.2, 0.0, 5.0, -3.0, 800.0]);
+        let analytic = c
+            .analytic_state_jacobian(&wrench)
+            .expect("a damped single hinge now has an analytic J_state");
+        let fd = c.loaded_state_jacobian(&wrench);
+        let rel = (&analytic - &fd).norm() / fd.norm().max(1e-30);
+        eprintln!("damped analytic J_state vs FD: rel={rel:.3e}");
         assert!(
-            c.analytic_state_jacobian(&SpatialVector::from_row_slice(&[
-                0.1, 0.2, 0.0, 5.0, -3.0, 800.0
-            ]))
-            .is_none(),
-            "a DAMPED single hinge must decline the analytic J_state (FD fallback)"
+            rel < 1e-6,
+            "damped analytic J_state must match the FD loaded Jacobian, got rel {rel:.3e}"
         );
     }
 

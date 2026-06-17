@@ -45,21 +45,27 @@ from the MJCF `damping=` attr. **The gap is real; the fix is exactly `M → M + 
   used by BOTH the FD and analytic `J_state` paths.
 - The FD `loaded_state_jacobian` differentiates the real eulerdamp `step`, so it is
   ALREADY damping-correct — the multi-link / quaternion paths need no change.
-- `analytic_state_jacobian` (single hinge): **declines under damping** (returns `None` →
-  FD fallback). The unloaded `A` from `transition_derivatives` has a subtle
-  Euler-`eulerdamp` mismatch (≈2.6% on the hinge gradient) that the FD path avoids; the
-  damped single hinge therefore runs at FD-carry precision (~1e-6), not machine-exact.
+- `analytic_state_jacobian` (single hinge): in PR1 this **declined under damping** (returned
+  `None` → FD fallback), because the unloaded `A` from `transition_derivatives` forms its
+  velocity rows with bare `M⁻¹` and so mismatched eulerdamp. **DONE (follow-on, 2026-06-17):**
+  the damped single hinge now has an ANALYTIC `J_state` — the `M → M_impl = M + Δt·D`
+  correction (rescale `A`'s bare-`M` velocity rows by `M/M_impl`, geom-stiff over `M_impl`,
+  position rows from `θ' = θ + Δt·ω'`) makes it machine-exact (rel ~1e-10 vs FD). The 2-link
+  CHAIN still uses the FD `J_state` (the analytic multi-link carry remains the open follow-on).
 
 ### Gates
 - `rigid_multidof_response::damped_xfrc_column_matches_fd` — `G_vel` vs FD (damped hinge + 2-link).
-- lib `analytic_state_jacobian_declines_under_damping` — the FD-fallback contract.
+- lib `analytic_state_jacobian_damped_matches_fd` — the damped analytic `J_state` vs FD (rel ~1e-10).
 - `damped_joint_gradient::{damped_hinge,damped_2link}_gradient_matches_fd` — the coupled
   gradient vs the (damping-correct) full-coupled FD oracle, rel ~1e-6/1e-8 at n=2/6/10;
   `damping_changes_the_gradient` — damped vs undamped `∂tip_z/∂μ` differ ≈40% (materiality).
 
 ## 4. Follow-ons
-- **Analytic damped single-hinge `J_state`** — reconcile the unloaded `A` with the Euler
-  eulerdamp semantics so the damped hinge regains machine-exactness (drop the FD fallback).
+- **Analytic damped single-hinge `J_state`** — ✅ DONE (2026-06-17): the `M → M_impl` correction
+  reconciles the unloaded `A` with eulerdamp, machine-exact (rel ~1e-10 vs FD), FD fallback
+  dropped for the single hinge. See §3 above.
+- **Analytic damped multi-link CHAIN `J_state`** — the 2-link+ damped chain still uses the FD
+  `J_state`; the analytic carry (Jacobian Hessian + `∂M⁻¹/∂q`) for nv > 1 is the open follow-on.
 - **Actuator dynamics** — state-dependent actuator forces (velocity/position actuators
   fold into the implicit damping; torque/general actuators carry control gradients) — the
   direct on-ramp to the powered exo.

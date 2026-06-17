@@ -10,11 +10,10 @@
 //! **Matched pair.** The FD oracle `coupled_trajectory_articulated_z` steps the REAL
 //! engine, whose Euler `step` runs eulerdamp — so it is automatically damping-correct.
 //! The gate is the one-tape gradient vs a central FD of that oracle, at the same
-//! damping. Both the hinge and the 2-link chain use the FD `J_state` under damping
-//! (FD-carry precision ~1e-6): the analytic single-hinge `J_state` declines when joint
-//! damping is present (its unloaded `A` has a subtle eulerdamp mismatch), so the damped
-//! hinge falls back to the damping-correct FD path. The analytic damped single-hinge is
-//! the documented follow-on.
+//! damping. The single HINGE uses the ANALYTIC damped `J_state` (the `M → M_impl`
+//! correction reconciles `A`'s bare-`M` velocity rows with eulerdamp — machine-exact,
+//! ~1e-9). The 2-link CHAIN still uses the FD `J_state` under damping (FD-carry precision
+//! ~1e-6); the analytic multi-link damped carry is the documented follow-on.
 
 #![allow(clippy::expect_used)]
 
@@ -24,7 +23,7 @@ use sim_mjcf::load_model;
 const MU0: f64 = 3.0e4;
 
 // The single-hinge keystone scene + joint damping (the arm settles faster but stays
-// engaged on the block top). Falls back to the FD J_state under damping.
+// engaged on the block top). Uses the analytic damped `J_state` (the `M → M_impl` fix).
 const DAMPED_HINGE: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
   <worldbody>
@@ -82,9 +81,10 @@ fn tape_vs_fd(mjcf: &str, body: usize, seed: &[(usize, f64)], n: usize) -> (f64,
 }
 
 /// The damped single hinge matches the full-coupled FD over long, sustained
-/// engagement. It uses the FD `J_state` under damping (the analytic path declines), so
-/// the accuracy is FD-carry precision (~1e-6) — the `M_impl` `G_vel` fix is what makes
-/// the wrench response correct (bare `M` would be ≈28% wrong, the S0 spike).
+/// engagement. It uses the ANALYTIC damped `J_state` (the `M → M_impl` correction), so the
+/// per-step Jacobian is machine-exact and the gradient tightens to ~1e-9 (the FD oracle
+/// caps the gate). The `M_impl` `G_vel` fix makes the wrench response correct too (bare `M`
+/// would be ≈28% wrong, the S0 spike).
 #[test]
 fn damped_hinge_gradient_matches_fd() {
     let seed = [(0usize, 0.3)];
