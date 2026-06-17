@@ -359,11 +359,16 @@ fn forward_at(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
 ///   off for the earlier joint. Fixing it means reworking the multi-joint motion
 ///   subspace to track partial frames (touches RNE/CRBA) — the topology
 ///   sim-coupling deliberately declines. Follow-on: multi-joint kinematics.
-/// - `hinge_then_free` (≈0.30): residual free-child ↔ ancestor coupling. The
-///   translational-DOF transport (`∂r/∂q = dof_lin`) added in this stone closed
-///   the bulk (1.0→0.30); the tail is the free body's world-frame linear
-///   subspace interacting with an ancestor rotation. Follow-on: free-child
-///   coupling completion.
+/// - `hinge_then_free` (≈0.30): free-child ↔ ancestor Coriolis. A free body's
+///   bias generalized force is INVARIANT under an ancestor rotation (the child
+///   rotates rigidly, and the bias in body coords is rotation-invariant) — FD
+///   confirms `∂qfrc_bias/∂q_ancestor ≈ 0`. For a HINGE child the analytic's
+///   `∂S`/`∂I`/`∂v` ancestor terms cancel to match (hinge chains are
+///   machine-exact); for a FREE child the **world-frame linear velocity DOFs**
+///   break the rigid-rotation cancellation, leaving a residual that no single
+///   term owns (toggling any one shifts but does not remove it). The
+///   translational-DOF transport added in this stone closed the bulk (1.0→0.30).
+///   Follow-on: a from-scratch free-child ancestor-Coriolis derivation.
 fn known_limit(name: &str) -> Option<f64> {
     match name {
         "multi_joint_body" => Some(1.0),
