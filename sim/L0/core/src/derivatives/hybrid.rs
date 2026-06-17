@@ -1760,6 +1760,65 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     }
 }
 
+/// `∂(M·a)/∂q` — the configuration derivative of the mass matrix `M(q)` contracted with a
+/// FIXED acceleration vector `a` (an `nv × nv` matrix whose column `k` is `∂(M·a)/∂q_k`).
+///
+/// This is the mass-matrix *directional* derivative (a vector contraction of the rank-3
+/// `∂M/∂q` tensor), the term needed to differentiate `M⁻¹·f` w.r.t. `q` for a force `f`:
+/// `∂(M⁻¹·f)/∂q = M⁻¹·(∂f/∂q − (∂M/∂q)·(M⁻¹·f))`, with `a = M⁻¹·f`.
+///
+/// Named descriptively rather than with the `mjd_*` prefix of the direct MuJoCo-derivative
+/// ports (`mjd_rne_pos`, `mjd_smooth_pos`, …): this is a COMPOSED primitive built over them,
+/// not a one-to-one port.
+///
+/// Computed exactly (no finite differences) by reusing `mjd_rne_pos`, which assembles
+/// `qDeriv_pos = −∂(M·qacc + qfrc_bias)/∂q` at the data's current `qacc`. That expression is
+/// AFFINE in `qacc` (the bias `C(q,v) + g(q)` is `qacc`-independent), so
+/// `∂(M·a)/∂q = −(qDeriv_pos|_{qacc=a} − qDeriv_pos|_{qacc=0})` — the Coriolis/gravity bias
+/// cancels in the difference, making the result independent of `qvel`. Machine-exact vs an
+/// FD re-CRBA of `M·a`.
+///
+/// Requires a prior [`Data::forward`] (reads the FK/inertia operating point). Mutates then
+/// RESTORES `data.qacc` and `data.qDeriv_pos`; the internal scratch derivative buffers are
+/// left dirty (they are re-zeroed by the next derivative call).
+///
+/// # Panics
+/// Panics if `accel.len() != model.nv`.
+#[must_use]
+pub fn mass_directional_derivative(
+    model: &Model,
+    data: &mut Data,
+    accel: &DVector<f64>,
+) -> DMatrix<f64> {
+    assert_eq!(
+        accel.len(),
+        model.nv,
+        "mass_directional_derivative: accel length {} != nv {}",
+        accel.len(),
+        model.nv
+    );
+    let saved_qacc = data.qacc.clone();
+    let saved_qderiv = data.qDeriv_pos.clone();
+
+    // qDeriv_pos(qacc = a) = −∂(M·a + bias)/∂q. `mjd_rne_pos` ACCUMULATES into qDeriv_pos
+    // (via `-=`), so zero it before each call.
+    data.qacc.copy_from(accel);
+    data.qDeriv_pos.fill(0.0);
+    mjd_rne_pos(model, data);
+    let with_a = data.qDeriv_pos.clone();
+
+    // qDeriv_pos(qacc = 0) = −∂(bias)/∂q.
+    data.qacc.fill(0.0);
+    data.qDeriv_pos.fill(0.0);
+    mjd_rne_pos(model, data);
+    // ∂(M·a)/∂q = −(with_a − with_0) = with_0 − with_a.
+    let result = &data.qDeriv_pos - &with_a;
+
+    data.qacc = saved_qacc;
+    data.qDeriv_pos = saved_qderiv;
+    result
+}
+
 // ============================================================================
 // Step 9 — Phase D: mjd_transition_hybrid (hybrid analytical+FD)
 // ============================================================================
@@ -4016,6 +4075,84 @@ mod muscle_vel_deriv_tests {
             "Hill FV deriv just above v=-1: expected ≈ {}, got {}",
             expected,
             d_above
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::needless_range_loop)]
+mod mass_directional_derivative_tests {
+    use super::*;
+
+    /// `mass_directional_derivative` (`∂(M·a)/∂q`) matches an independent FD re-CRBA of `M·a`.
+    /// 3-link pendulum (nv = 3, a genuine chain where `M` is configuration-dependent) with a
+    /// NONZERO `qvel` — confirming the result is velocity-independent (the bias cancels in the
+    /// qacc=a minus qacc=0 difference). Also checks `data.qacc`/`qDeriv_pos` are restored.
+    #[test]
+    fn mass_directional_derivative_matches_fd_recrba() {
+        let model = Model::n_link_pendulum(3, 0.15, 0.4);
+        let nv = model.nv;
+        let q0 = [0.3_f64, -0.4, 0.5];
+        let v0 = [0.2_f64, -0.1, 0.15]; // nonzero velocity: result must be independent of it
+        let a = DVector::from_row_slice(&[1.3, -0.7, 0.9]);
+        let setup = |q: &[f64], v: &[f64]| -> Data {
+            let mut d = model.make_data();
+            for i in 0..nv {
+                d.qpos[i] = q[i];
+                d.qvel[i] = v[i];
+            }
+            d.forward(&model).expect("forward");
+            d
+        };
+
+        let mut data = setup(&q0, &v0);
+        let qacc_before = data.qacc.clone();
+        let qderiv_before = data.qDeriv_pos.clone();
+        let analytic = mass_directional_derivative(&model, &mut data, &a);
+        assert_eq!(data.qacc, qacc_before, "qacc must be restored");
+        assert_eq!(
+            data.qDeriv_pos, qderiv_before,
+            "qDeriv_pos must be restored"
+        );
+
+        let eps = 1e-7;
+        let mut fd = DMatrix::zeros(nv, nv);
+        for k in 0..nv {
+            let mut qp = q0;
+            let mut qm = q0;
+            qp[k] += eps;
+            qm[k] -= eps;
+            let map = &setup(&qp, &v0).qM * &a;
+            let mam = &setup(&qm, &v0).qM * &a;
+            for j in 0..nv {
+                fd[(j, k)] = (map[j] - mam[j]) / (2.0 * eps);
+            }
+        }
+        let rel = (&analytic - &fd).norm() / fd.norm().max(1e-30);
+        assert!(
+            fd.norm() > 1e-6,
+            "∂(M·a)/∂q implausibly small — chain not exercised"
+        );
+        assert!(
+            rel < 1e-6,
+            "mass_directional_derivative must match FD re-CRBA, got rel {rel:.3e}"
+        );
+    }
+
+    /// `∂(M·0)/∂q = 0` exactly (the qacc=a and qacc=0 calls are identical — no FD noise).
+    #[test]
+    fn mass_directional_derivative_zero_accel_is_zero() {
+        let model = Model::n_link_pendulum(2, 0.2, 0.3);
+        let nv = model.nv;
+        let mut data = model.make_data();
+        data.qpos[0] = 0.2;
+        data.qpos[1] = -0.3;
+        data.forward(&model).expect("forward");
+        let g = mass_directional_derivative(&model, &mut data, &DVector::zeros(nv));
+        assert!(
+            g.norm() < 1e-30,
+            "∂(M·0)/∂q must be exactly zero, got {:.3e}",
+            g.norm()
         );
     }
 }
