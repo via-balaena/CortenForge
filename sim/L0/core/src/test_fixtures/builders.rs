@@ -46,7 +46,7 @@ use crate::types::enums::{
 // mass, inertia, ipos…); a struct-spec API would be heavier than the value of
 // flattening these into named arguments at the fixture call site.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn add_body(
+pub fn add_body(
     model: &mut Model,
     parent_id: usize,
     name: &str,
@@ -219,7 +219,7 @@ fn add_scalar_joint(
 /// Add a hinge joint to `body_id`, rotating about `axis`.
 // Same wide-arg shape as add_scalar_joint — see justification there.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn add_hinge_joint(
+pub fn add_hinge_joint(
     model: &mut Model,
     body_id: usize,
     name: &str,
@@ -247,7 +247,7 @@ pub(super) fn add_hinge_joint(
 /// Add a slide (prismatic) joint to `body_id`, translating along `axis`.
 // Same wide-arg shape as add_scalar_joint — see justification there.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn add_slide_joint(
+pub fn add_slide_joint(
     model: &mut Model,
     body_id: usize,
     name: &str,
@@ -270,9 +270,88 @@ pub(super) fn add_slide_joint(
     )
 }
 
+/// Add a ball (3-DOF spherical) joint to `body_id`. Ball joints contribute
+/// 4 to `nq` (a unit quaternion) and 3 to `nv` (body-frame angular velocity).
+/// The reference (`qpos_spring`/`qpos0`) is the identity quaternion.
+// Currently exercised only by the `cfg(test)` transition-derivative harness
+// (`derivatives::transition_matrix_harness`); under the `test-fixtures` feature
+// build (no `cfg(test)`) it has no caller yet — a sibling of `add_freejoint`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn add_ball_joint(model: &mut Model, body_id: usize, name: &str) -> usize {
+    let jnt_id = model.njnt;
+    let dof_adr = model.nv;
+    let qpos_adr = model.nq;
+    model.njnt += 1;
+    model.nq += 4;
+    model.nv += 3;
+
+    model.jnt_type.push(MjJointType::Ball);
+    model.jnt_body.push(body_id);
+    model.jnt_qpos_adr.push(qpos_adr);
+    model.jnt_dof_adr.push(dof_adr);
+    model.jnt_pos.push(Vector3::zeros());
+    model.jnt_axis.push(Vector3::z()); // unused for ball, but required
+    model.jnt_limited.push(false);
+    model
+        .jnt_range
+        .push((-std::f64::consts::PI, std::f64::consts::PI));
+    model.jnt_stiffness.push(0.0);
+    model.jnt_springref.push(0.0);
+    model.jnt_damping.push(0.0);
+    model.jnt_armature.push(0.0);
+    model.jnt_solref.push(DEFAULT_SOLREF);
+    model.jnt_solimp.push(DEFAULT_SOLIMP);
+    model.jnt_name.push(Some(name.to_string()));
+    model.jnt_group.push(0);
+    model.jnt_actgravcomp.push(false);
+    model.jnt_margin.push(0.0);
+    model.qpos_spring.extend_from_slice(&[1.0, 0.0, 0.0, 0.0]); // identity quaternion
+
+    // First DOF walks the kinematic ancestry; intra-joint DOFs 1..3 chain off
+    // the previous DOF on this body (same pattern as add_freejoint).
+    let first_dof_parent = {
+        let n_existing = model.body_dof_num[body_id];
+        if n_existing > 0 {
+            Some(model.body_dof_adr[body_id] + n_existing - 1)
+        } else {
+            let mut ancestor = model.body_parent[body_id];
+            loop {
+                if ancestor == 0 {
+                    break None;
+                }
+                let n = model.body_dof_num[ancestor];
+                if n > 0 {
+                    break Some(model.body_dof_adr[ancestor] + n - 1);
+                }
+                ancestor = model.body_parent[ancestor];
+            }
+        }
+    };
+    for i in 0..3 {
+        model.dof_body.push(body_id);
+        model.dof_jnt.push(jnt_id);
+        model.dof_parent.push(if i == 0 {
+            first_dof_parent
+        } else {
+            Some(dof_adr + i - 1)
+        });
+        model.dof_armature.push(0.0);
+        model.dof_damping.push(0.0);
+        model.dof_frictionloss.push(0.0);
+        model.dof_solref.push(DEFAULT_SOLREF);
+        model.dof_solimp.push(DEFAULT_SOLIMP);
+        model.dof_invweight0.push(0.0);
+    }
+
+    model.body_jnt_num[body_id] += 1;
+    model.body_dof_num[body_id] += 3;
+
+    jnt_id
+}
+
 /// Add a free (6-DOF) joint to `body_id`. Free joints contribute 7 to
 /// `nq` (3 pos + 4 quat) and 6 to `nv` (3 lin + 3 ang).
-pub(super) fn add_freejoint(model: &mut Model, body_id: usize, name: &str) -> usize {
+pub fn add_freejoint(model: &mut Model, body_id: usize, name: &str) -> usize {
     let jnt_id = model.njnt;
     let dof_adr = model.nv;
     let qpos_adr = model.nq;
@@ -506,7 +585,7 @@ pub(super) fn add_ground_plane(model: &mut Model) -> usize {
 }
 
 /// Add a site (massless reference frame) on `body_id`.
-pub(super) fn add_site(
+pub fn add_site(
     model: &mut Model,
     body_id: usize,
     name: &str,
@@ -698,7 +777,7 @@ pub(super) fn add_jointvel_sensor(model: &mut Model, joint_id: usize, name: &str
 /// Set scalar simulation options. Convenience wrapper for the common
 /// "fixture preamble" of timestep + gravity + integrator + (optional)
 /// contact-disable flag.
-pub(super) fn set_options(
+pub fn set_options(
     model: &mut Model,
     timestep: f64,
     gravity: Vector3<f64>,
@@ -720,7 +799,7 @@ pub(super) fn set_options(
 /// `qpos_spring`-style state — for our fixtures, qpos0 starts at the
 /// joint's reference configuration (springref for hinge/slide,
 /// `[1,0,0,0]` for ball, `[0,0,0,1,0,0,0]` for free).
-pub(super) fn finalize(model: &mut Model) {
+pub fn finalize(model: &mut Model) {
     // qpos0 mirrors qpos_spring (reference/spring rest configuration).
     if model.qpos_spring.is_empty() {
         model.qpos0 = DVector::zeros(0);

@@ -113,9 +113,16 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
                 );
                 let r = subtree_com - jpos;
                 let torque = r.cross(&gravity_force);
-                data.qfrc_bias[dof_adr + 3] += torque.x;
-                data.qfrc_bias[dof_adr + 4] += torque.y;
-                data.qfrc_bias[dof_adr + 5] += torque.z;
+                // The free joint's angular DOFs are BODY-frame angular velocity
+                // (integration uses `q_new = q_old * dq`, a right-multiply), so
+                // their conjugate generalized force is a BODY-frame torque — rotate
+                // the world-frame gravity torque into the body frame, exactly as the
+                // Ball joint does above. (Storing it world-frame mixed conventions
+                // with the Featherstone Coriolis pass, which projects via S=[R;0].)
+                let body_torque = data.xquat[jnt_body].inverse() * torque;
+                data.qfrc_bias[dof_adr + 3] += body_torque.x;
+                data.qfrc_bias[dof_adr + 4] += body_torque.y;
+                data.qfrc_bias[dof_adr + 5] += body_torque.z;
             }
         }
     }

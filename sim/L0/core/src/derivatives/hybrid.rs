@@ -15,17 +15,17 @@ use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{SpatialVector, spatial_cross_force, spatial_cross_motion};
 use crate::forward::{
     MjStage, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, hill_force_velocity,
-    muscle_gain_length, muscle_gain_velocity, norm3,
+    mj_fwd_position, muscle_gain_length, muscle_gain_velocity, norm3,
 };
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
-use crate::jacobian::{mj_jac_body_com, mj_jac_geom};
+use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
 use crate::linalg::{
     cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse, mj_solve_sparse_batch,
 };
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType,
-    Integrator, MjJointType, Model, StepError,
+    Integrator, MjJointType, Model, StepError, TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -768,9 +768,18 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // 2. Tendon spring stiffness: ∂(J^T * k * (bound - length))/∂qpos ≈ -k · J^T · J
-    // This ignores the cross-term (∂J^T/∂qpos) · force — which is zero for
-    // fixed-point tendons (constant J) and small for spatial tendons.
+    // 2. Tendon spring stiffness: ∂(Jᵀ · k · (bound − length))/∂qpos.
+    //    qfrc = Jᵀ·f with f = k·(bound − length); the product rule gives
+    //      ∂qfrc/∂q = Jᵀ·∂f/∂q + (∂Jᵀ/∂q)·f = −k·Jᵀ·J + (∂Jᵀ/∂q)·f.
+    //    The first term (constant-J part) is exact below. The second is zero
+    //    for fixed tendons (constant J) but NONZERO for spatial tendons whose
+    //    routing geometry changes with q — previously dropped, leaving the
+    //    analytical columns silently wrong for an active spatial length-spring.
+    //    Added below via a targeted FD of `ten_J` (a closed-form tendon Hessian
+    //    over arbitrary site/geom/pulley wrap paths is intractable; FD of the
+    //    tendon Jacobian matches the codebase pattern for hard geometric
+    //    Jacobian-derivatives and is exact to FD precision).
+    let mut needs_jac_cross = false;
     for t in 0..model.ntendon {
         let stiffness = model.tendon_stiffness[t];
         if stiffness == 0.0 {
@@ -786,6 +795,10 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
             continue;
         }
 
+        if model.tendon_type[t] == TendonType::Spatial {
+            needs_jac_cross = true;
+        }
+
         let j = &data.ten_J[t];
         let scale = -stiffness;
         for r in 0..nv {
@@ -797,6 +810,49 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
                     continue;
                 }
                 data.qDeriv_pos[(r, c)] += scale * j[r] * j[c];
+            }
+        }
+    }
+
+    // Cross-term (∂Jᵀ/∂q)·f for active spatial-tendon length springs. Central-FD
+    // of `ten_J` w.r.t. each tangent DOF (recomputing tendon routing via
+    // `mj_fwd_position`), contracted with the spring force scalar `f`.
+    if needs_jac_cross {
+        const EPS: f64 = 1e-7;
+        let qpos0 = data.qpos.clone();
+        let mut scratch = data.clone();
+        let mut dir = DVector::zeros(nv);
+        for c in 0..nv {
+            dir[c] = 1.0;
+            mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, EPS);
+            mj_fwd_position(model, &mut scratch);
+            let j_plus: Vec<DVector<f64>> = (0..model.ntendon)
+                .map(|t| scratch.ten_J[t].clone())
+                .collect();
+            mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, -EPS);
+            mj_fwd_position(model, &mut scratch);
+            dir[c] = 0.0;
+
+            for (t, jp_t) in j_plus.iter().enumerate() {
+                if model.tendon_type[t] != TendonType::Spatial || model.tendon_stiffness[t] == 0.0 {
+                    continue;
+                }
+                let length = data.ten_length[t];
+                let [lower, upper] = model.tendon_lengthspring[t];
+                let f = if length > upper {
+                    model.tendon_stiffness[t] * (upper - length)
+                } else if length < lower {
+                    model.tendon_stiffness[t] * (lower - length)
+                } else {
+                    continue;
+                };
+                let jm_t = &scratch.ten_J[t];
+                for r in 0..nv {
+                    let djr = (jp_t[r] - jm_t[r]) / (2.0 * EPS);
+                    if djr != 0.0 {
+                        data.qDeriv_pos[(r, c)] += f * djr;
+                    }
+                }
             }
         }
     }
@@ -1029,16 +1085,32 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
         .collect();
 
-    // Pre-compute DOF→axis mappings for ancestor transport derivatives
+    // Pre-compute DOF→axis mappings for ancestor transport derivatives.
+    // `dof_axis` = angular block of S (rotation generator); `dof_lin` = linear
+    // block of S (translation generator, nonzero for Slide and Free-linear
+    // DOFs). The linear block drives the ∂r/∂q transport term for a body's OWN
+    // translational DOFs: translating body b relative to its parent changes
+    // `r = xpos[b] − xpos[parent]` by `dof_lin[k]` (ancestor translations move b
+    // and its parent together, so ∂r=0 — only a body's own translation counts).
     let mut dof_axis = vec![Vector3::zeros(); nv];
+    let mut dof_lin = vec![Vector3::zeros(); nv];
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let s = &joint_subspaces[jnt_id];
         let ndof = model.jnt_type[jnt_id].nv();
         for d in 0..ndof {
             dof_axis[dof_adr + d] = Vector3::new(s[(0, d)], s[(1, d)], s[(2, d)]);
+            dof_lin[dof_adr + d] = Vector3::new(s[(3, d)], s[(4, d)], s[(5, d)]);
         }
     }
+    // The translational position-DOFs of a single body (used to inject the
+    // `∂r/∂q = dof_lin` transport term wherever the rotational `axis×r` term is
+    // applied for that body itself). For a Hinge/Slide/Ball the linear subspace
+    // is either zero or a pure lever (Hinge `â×r`), so only genuine prismatic
+    // DOFs (Slide, Free-linear) contribute — detected by a nonzero `dof_lin`
+    // with zero `dof_axis` (no rotation).
+    let is_translational =
+        |k: usize| -> bool { dof_axis[k].norm_squared() == 0.0 && dof_lin[k].norm_squared() > 0.0 };
 
     // ========== Split RNEA: two separate operating points ==========
     //
@@ -1153,6 +1225,22 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 }
             }
             cacc_b[b] += spatial_cross_motion(data.cvel[pid], vj);
+
+            // Free-joint correction: the spatial-acceleration convention is
+            // `a = [α; a_O − ω×v_O]`, but a free joint's translational DOFs carry
+            // world-frame velocity directly. `mj_rne` subtracts `[0; ω×v]` here
+            // (rne.rs `Free joint correction`); without it the backward pass emits
+            // a spurious `m·(ω×v)` force on the translational DOFs (wrong for a
+            // tumbling free base). ω = body angular velocity, v = the joint's
+            // world-frame linear velocity (constant in q).
+            if model.jnt_type[jid] == MjJointType::Free {
+                let omega = Vector3::new(data.cvel[b][0], data.cvel[b][1], data.cvel[b][2]);
+                let v_world = Vector3::new(data.qvel[da], data.qvel[da + 1], data.qvel[da + 2]);
+                let corr = omega.cross(&v_world);
+                cacc_b[b][3] -= corr.x;
+                cacc_b[b][4] -= corr.y;
+                cacc_b[b][5] -= corr.z;
+            }
         }
     }
     // Backward: f_B = I·a_B + gyroscopic, then simple-add accumulation
@@ -1192,7 +1280,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             data.deriv_Dcvel_pos[body_id][(5, col)] += ox * r.y - oy * r.x;
         }
 
-        // Velocity transport derivative: cvel[parent]_ang × (axis × r)
+        // Velocity transport derivative: cvel[parent]_ang × (∂r/∂q).
+        // Rotational ancestor DOFs: ∂r/∂q = axis × r. Body-own translational
+        // DOFs: ∂r/∂q = dof_lin (the body slides relative to its parent).
         let omega_p = Vector3::new(
             data.cvel[parent_id][0],
             data.cvel[parent_id][1],
@@ -1216,6 +1306,15 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     }
                 }
                 anc = model.body_parent[anc];
+            }
+            let bd0 = model.body_dof_adr[body_id];
+            for k in bd0..bd0 + model.body_dof_num[body_id] {
+                if is_translational(k) {
+                    let contrib = omega_p.cross(&dof_lin[k]);
+                    data.deriv_Dcvel_pos[body_id][(3, k)] += contrib.x;
+                    data.deriv_Dcvel_pos[body_id][(4, k)] += contrib.y;
+                    data.deriv_Dcvel_pos[body_id][(5, k)] += contrib.z;
+                }
             }
         }
 
@@ -1322,7 +1421,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             data.deriv_Dcacc_pos[b][(5, col)] += ox * r.y - oy * r.x;
         }
 
-        // X_b transport derivative: a_A[parent]_ang × (axis × r)
+        // X_b transport derivative: a_A[parent]_ang × (∂r/∂q)
+        // (axis×r for rotational ancestors, dof_lin for body-own translation).
         let omega_acc_p = Vector3::new(cacc_a[pid][0], cacc_a[pid][1], cacc_a[pid][2]);
         if omega_acc_p.norm_squared() > 0.0 {
             let mut anc = pid;
@@ -1342,6 +1442,15 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     }
                 }
                 anc = model.body_parent[anc];
+            }
+            let bd0 = model.body_dof_adr[b];
+            for k in bd0..bd0 + model.body_dof_num[b] {
+                if is_translational(k) {
+                    let contrib = omega_acc_p.cross(&dof_lin[k]);
+                    data.deriv_Dcacc_pos[b][(3, k)] += contrib.x;
+                    data.deriv_Dcacc_pos[b][(4, k)] += contrib.y;
+                    data.deriv_Dcacc_pos[b][(5, k)] += contrib.z;
+                }
             }
         }
 
@@ -1479,7 +1588,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             data.deriv_Dcfrc_pos[pid][(5, col)] += fz;
         }
 
-        // Transport derivative: (axis × r) × cfrc_A[child]_lin
+        // Transport derivative: (∂r/∂q) × cfrc_A[child]_lin
+        // (axis×r for rotational ancestors, dof_lin for body-own translation).
         let f_lin = Vector3::new(cfrc_a[b][3], cfrc_a[b][4], cfrc_a[b][5]);
         if f_lin.norm_squared() > 0.0 {
             let mut anc = pid;
@@ -1499,6 +1609,15 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     }
                 }
                 anc = model.body_parent[anc];
+            }
+            let bd0 = model.body_dof_adr[b];
+            for k in bd0..bd0 + model.body_dof_num[b] {
+                if is_translational(k) {
+                    let torque = dof_lin[k].cross(&f_lin);
+                    data.deriv_Dcfrc_pos[pid][(0, k)] += torque.x;
+                    data.deriv_Dcfrc_pos[pid][(1, k)] += torque.y;
+                    data.deriv_Dcfrc_pos[pid][(2, k)] += torque.z;
+                }
             }
         }
     }
@@ -1618,6 +1737,15 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 }
                 anc = model.body_parent[anc];
             }
+            let bd0 = model.body_dof_adr[b];
+            for k in bd0..bd0 + model.body_dof_num[b] {
+                if is_translational(k) {
+                    let contrib = omega_acc_p.cross(&dof_lin[k]);
+                    data.deriv_Dcacc_pos[b][(3, k)] += contrib.x;
+                    data.deriv_Dcacc_pos[b][(4, k)] += contrib.y;
+                    data.deriv_Dcacc_pos[b][(5, k)] += contrib.z;
+                }
+            }
         }
 
         let js = model.body_jnt_adr[b];
@@ -1681,15 +1809,15 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 }
             }
             if v_j.norm_squared() > 0.0 {
-                // STRICT ANCESTORS only. The self/same-body term is zero for a single-hinge
-                // body (∂âⱼ/∂qⱼ = âⱼ×âⱼ = 0). NOTE (pre-existing gap, not regressed here): for
-                // a ball/free or multi-joint body the same-body ∂S/∂q is NOT zero, so the
-                // analytical Coriolis position columns of a NON-ROOT such body (moving parent
-                // ⇒ cvel[parent] ≠ 0) remain incomplete — the whole term was previously dropped;
-                // this adds only the ancestor half. Part A's Term D has the same-body analogue.
-                // The serial-hinge chain (the only analytical-`J_state` consumer in sim-coupling)
-                // is unaffected; closing the same-body half for ball/free is a follow-on.
-                let mut anc = pid;
+                // SAME BODY + ANCESTORS (`anc = b`). Perturbing an angular DOF `k` on body `b`
+                // ITSELF also rotates `b`'s frame, so the same-body ∂S/∂q is `s_ang_k ×_m v_J`
+                // exactly as for an ancestor. It is genuinely ZERO for a single-hinge body
+                // (`∂âⱼ/∂qⱼ = âⱼ×âⱼ = 0`, and with `jnt_pos=0` the linear coupling drops too), so
+                // the serial-hinge chain is unaffected — but it is MATERIAL for a non-root
+                // ball/free or multi-joint body (the body's own angular DOFs cross with the OTHER
+                // subspace contributions). Mirrors the Part B projection derivative below, which
+                // already starts at `anc = bid`.
+                let mut anc = b;
                 while anc != 0 {
                     let anc_js = model.body_jnt_adr[anc];
                     let anc_je = anc_js + model.body_jnt_num[anc];
@@ -1713,6 +1841,31 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     }
                     anc = model.body_parent[anc];
                 }
+            }
+        }
+
+        // Free-joint correction derivative: −∂(ω×v)/∂q. The operating-point
+        // `cacc_b` subtracts `[0; ω×v]` for a free joint (above); its position
+        // derivative is `−(∂ω/∂q)×v` (v, the joint's world-frame linear
+        // velocity, is constant in q). `∂ω/∂q` is the angular block of
+        // `deriv_Dcvel_pos[b]` (rows 0–2), which already carries this body's
+        // same-body and ancestor rotation effects.
+        for jid in js..je {
+            if model.jnt_type[jid] != MjJointType::Free {
+                continue;
+            }
+            let da = model.jnt_dof_adr[jid];
+            let v_world = Vector3::new(data.qvel[da], data.qvel[da + 1], data.qvel[da + 2]);
+            for c in 0..nv {
+                let domega = Vector3::new(
+                    data.deriv_Dcvel_pos[b][(0, c)],
+                    data.deriv_Dcvel_pos[b][(1, c)],
+                    data.deriv_Dcvel_pos[b][(2, c)],
+                );
+                let dcorr = domega.cross(&v_world);
+                data.deriv_Dcacc_pos[b][(3, c)] -= dcorr.x;
+                data.deriv_Dcacc_pos[b][(4, c)] -= dcorr.y;
+                data.deriv_Dcacc_pos[b][(5, c)] -= dcorr.z;
             }
         }
     }
