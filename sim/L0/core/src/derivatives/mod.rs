@@ -59,7 +59,10 @@ mod integration;
 
 // Re-export public items so they remain accessible at `crate::derivatives::*`
 pub use fd::{InverseDynamicsDerivatives, mjd_inverse_fd, mjd_transition_fd};
-pub use hybrid::{mjd_passive_vel, mjd_smooth_pos, mjd_smooth_vel, mjd_transition_hybrid};
+pub use hybrid::{
+    mass_directional_derivative, mjd_passive_vel, mjd_smooth_pos, mjd_smooth_vel,
+    mjd_transition_hybrid,
+};
 pub use integration::{mjd_quat_integrate, mjd_sub_quat};
 
 // Crate-internal re-exports

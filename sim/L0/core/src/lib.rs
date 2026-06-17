@@ -278,9 +278,9 @@ pub use jacobian::{
 
 pub use derivatives::{
     DerivativeConfig, InverseDynamicsDerivatives, TransitionMatrices, fd_convergence_check,
-    max_relative_error, mjd_inverse_fd, mjd_passive_vel, mjd_quat_integrate, mjd_smooth_pos,
-    mjd_smooth_vel, mjd_sub_quat, mjd_transition, mjd_transition_fd, mjd_transition_hybrid,
-    validate_analytical_vs_fd,
+    mass_directional_derivative, max_relative_error, mjd_inverse_fd, mjd_passive_vel,
+    mjd_quat_integrate, mjd_smooth_pos, mjd_smooth_vel, mjd_sub_quat, mjd_transition,
+    mjd_transition_fd, mjd_transition_hybrid, validate_analytical_vs_fd,
 };
 
 // Re-export key types from sim-types for convenience
