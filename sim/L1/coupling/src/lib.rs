@@ -556,12 +556,19 @@ impl VjpOp for DriftFromVelVjp {
 /// ∂fx/∂height` (`∂height/∂z = 1`), `dforce_ddrift = ∂fx/∂Δ_surf`, and `dforce_dxprev =
 /// ∂fx/∂x_prev` (the friction reference `x_start = x_prev + Δ_surf` makes `fx` depend on the
 /// step-start config — the state companion of the drift term).
+///
+/// `dforce_dmu_c` adds an OPTIONAL fifth parent: the Coulomb friction coefficient `μ_c`. The
+/// reaction is `fx = (Σ μ_c·λⁿ·t·grad2)·react_dir`, LINEAR in `μ_c`, so `∂fx/∂μ_c = fx/μ_c` at
+/// fixed `x*` — a DIRECT channel that does not flow through `x*` (the material parameter has no
+/// such term; its only path to `fx` is via `x*`). `None` ⇒ four parents, byte-identical to the
+/// material path; `Some` ⇒ five parents `[x*, z, Δ_surf, x_prev, μ_c]` for the `∂/∂μ_c` gradient.
 #[derive(Clone, Debug)]
 struct FrictionReactionTrajVjp {
     dforce_dx: Vec<f64>,
     dforce_dxprev: Vec<f64>,
     dforce_dheight: f64,
     dforce_ddrift: f64,
+    dforce_dmu_c: Option<f64>,
     n_dof: usize,
 }
 
@@ -573,16 +580,25 @@ impl VjpOp for FrictionReactionTrajVjp {
     // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
     #[allow(clippy::panic)]
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        let want = if self.dforce_dmu_c.is_some() { 5 } else { 4 };
         assert!(
             cotangent.shape() == [1]
-                && parent_cotans.len() == 4
+                && parent_cotans.len() == want
                 && parent_cotans[0].shape() == [self.n_dof]
                 && parent_cotans[1].shape() == [1]
                 && parent_cotans[2].shape() == [1]
-                && parent_cotans[3].shape() == [self.n_dof],
+                && parent_cotans[3].shape() == [self.n_dof]
+                && self
+                    .dforce_dmu_c
+                    .is_none_or(|_| parent_cotans[4].shape() == [1]),
             "FrictionReactionTrajVjp: expected cot [1] + parents (x* [{n}], z [1], Δ_surf [1], \
-             x_prev [{n}])",
+             x_prev [{n}]{mu})",
             n = self.n_dof,
+            mu = if self.dforce_dmu_c.is_some() {
+                ", μ_c [1]"
+            } else {
+                ""
+            },
         );
         let c = cotangent.as_slice()[0];
         let (xstar, rest) = parent_cotans.split_at_mut(1);
@@ -595,6 +611,9 @@ impl VjpOp for FrictionReactionTrajVjp {
         let xprev = rest[2].as_mut_slice(); // x_prev
         for (i, &g) in self.dforce_dxprev.iter().enumerate() {
             xprev[i] += c * g;
+        }
+        if let Some(dmu) = self.dforce_dmu_c {
+            rest[3].as_mut_slice()[0] += c * dmu; // μ_c (∂fx/∂μ_c = fx/μ_c)
         }
     }
 }
@@ -3963,6 +3982,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     dforce_dxprev: rg.dforce_dxprev,
                     dforce_dheight: rg.dforce_dheight,
                     dforce_ddrift: rg.dforce_ddrift,
+                    dforce_dmu_c: None,
                     n_dof: 3 * n,
                 }),
             );
@@ -4024,6 +4044,217 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             );
 
             // Advance the tape handles (the soft state was advanced before the wrench).
+            x_var = x_next_var;
+            v_var = v_next_var;
+            z_var = z_next_var;
+            vz_var = vz_next_var;
+            xx_var = xx_next_var;
+            vx_var = vx_next_var;
+            x_final_rigid = x_next_rigid;
+        }
+
+        tape.backward(xx_var);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (x_final_rigid, grad)
+    }
+
+    /// The coupled tangential-trajectory gradient w.r.t. the Coulomb friction COEFFICIENT `μ_c`:
+    /// `(platen x after `n_steps`, ∂(platen x)/∂μ_c)`. Mirror of
+    /// [`Self::coupled_trajectory_tangential_material_gradient`] — same nine-node-per-step tape,
+    /// same fresh-FK timing, same drift/reaction/carry — differing ONLY in the two places `μ_c`
+    /// enters and a material parameter does not:
+    ///
+    /// 1. **Through `x*`** (the soft equilibrium): the soft node uses
+    ///    [`CpuNewtonSolver::trajectory_step_vjp_grip_fric_coeff`], routing `∂r/∂μ_c = ∇D/μ_c`
+    ///    into the generic param slot. This lever is TINY in deep slip (`x*` barely moves).
+    /// 2. **Directly through the reaction** `fx = (Σ μ_c·λⁿ·…)·react_dir`: `μ_c` is an extra
+    ///    parent on the friction-reaction node with `∂fx/∂μ_c = fx/μ_c`. This DOMINATES — in the
+    ///    Coulomb-saturated regime `fx ≈ μ_c·λⁿ`, so `∂fx/∂μ_c = λⁿ` is the large, direct term.
+    ///
+    /// The single `μ_c` param leaf is parent to BOTH nodes; the tape sums the two channels. The
+    /// gradient is machine-exact; the FD validation uses a COMPLIANT block (like the material
+    /// trajectory gradient) — on a stiff block the FD re-solve's friction-term cancellation
+    /// (`∇²D ~ 1e4`) floors the FD-vs-analytic agreement at ~3e-4 for `μ_c` and the material
+    /// parameter alike (the linear-lever stiff advantage is for the soft-only `∂x*/∂μ_c`, not
+    /// the coupled FD oracle). Requires friction active (`self.cfg.friction_mu > 0`).
+    ///
+    /// # Panics
+    /// Panics if friction is inactive (`self.cfg.friction_mu ≤ 0`), or if the rigid step
+    /// diverges / the soft solver fails to converge (surfaced loudly, as in [`Self::step`]).
+    #[must_use]
+    // One coherent per-step tape-construction loop (the grip forward + 9 chained nodes);
+    // splitting it would scatter the recurrence's shared state. expect_used: a divergence is
+    // a programmer error surfaced loudly (mirrors `step`).
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_tangential_friction_coeff_gradient(
+        &mut self,
+        n_steps: usize,
+    ) -> (f64, f64) {
+        let mu_c = self.cfg.friction_mu;
+        assert!(
+            mu_c > 0.0,
+            "∂/∂μ_c requires friction active (cfg.friction_mu = {mu_c} ≤ 0)"
+        );
+        let n = self.n_vertices;
+        let dt = self.cfg.dt;
+        let pose_dir = Vec3::new(0.0, 0.0, 1.0);
+        let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+        let react_dir = Vec3::new(-1.0, 0.0, 0.0);
+        let dt_over_m = self.rigid_vz_response(0.0).1;
+        let a = 1.0 - self.rigid_damping * dt_over_m;
+
+        let mut tape = Tape::new();
+        // The gradient target: the friction coefficient (seeded from the linearization point).
+        let p_var = tape.param_tensor(Tensor::from_slice(&[mu_c], &[1]));
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut z_var =
+            tape.constant_tensor(Tensor::from_slice(&[self.data.xpos[self.body].z], &[1]));
+        let mut vz_var = tape.constant_tensor(Tensor::from_slice(&[self.data.qvel[2]], &[1]));
+        let mut xx_var =
+            tape.constant_tensor(Tensor::from_slice(&[self.data.xpos[self.body].x], &[1]));
+        let mut vx_var = tape.constant_tensor(Tensor::from_slice(&[self.data.qvel[0]], &[1]));
+        let mut x_final_rigid = self.data.xpos[self.body].x;
+
+        for _ in 0..n_steps {
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.plane_height();
+            let vz_k = self.data.qvel[2];
+            let x_start = self.x.clone();
+            let drift = Vec3::new(self.data.qvel[0], self.data.qvel[1], self.data.qvel[2]) * dt;
+
+            let drift_var = tape.push_custom(
+                &[vx_var],
+                Tensor::from_slice(&[drift.x], &[1]),
+                Box::new(DriftFromVelVjp { dt }),
+            );
+
+            // (1) one friction-aware soft step with the moving-collider drift.
+            let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+            let solver: SoftSolver<C> = CpuNewtonSolver::new(
+                Tet4,
+                self.fresh_mesh(),
+                self.build_contact(height),
+                self.cfg,
+                bc,
+            )
+            .with_friction_surface_drift(drift);
+            let x_next = solver
+                .replay_step(
+                    &Tensor::from_slice(&self.x, &[3 * n]),
+                    &Tensor::from_slice(&self.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final;
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+
+            // Channel 1 — soft node x*: parents [x_prev, v_prev, μ_c, z, Δ_surf], param slot = μ_c.
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, z_var, drift_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp_grip_fric_coeff(
+                    &x_next, &x_start, dt, pose_dir, drift_dir,
+                )),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (2) NORMAL contact force fz — frictionless, NO μ_c parent.
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0], c[1], c[2]))
+                .collect();
+            let force_on_soft: Vec3 = self
+                .build_contact(height)
+                .pair_readout(&self.fresh_mesh(), &positions)
+                .iter()
+                .map(|r| r.force_on_soft)
+                .sum();
+            let active = self.active_pair_curvatures(height, &positions);
+            let fz_var = tape.push_custom(
+                &[x_next_var, z_var],
+                Tensor::from_slice(&[force_on_soft.z], &[1]),
+                Box::new(ContactForceTrajVjp {
+                    active,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (3) TANGENTIAL friction reaction fx = force_on_soft.x. Channel 2 — μ_c is a DIRECT
+            // parent here (`∂fx/∂μ_c = fx/μ_c`, the dominant term), on top of [x*, z, Δ_surf, x_prev].
+            let friction = solver.friction_forces_on_soft(&x_next, &x_start, dt);
+            let rg = solver
+                .friction_reaction_gradients(&x_next, &x_start, dt, react_dir, drift_dir, pose_dir);
+            let fx_var = tape.push_custom(
+                &[x_next_var, z_var, drift_var, x_var, p_var],
+                Tensor::from_slice(&[rg.force], &[1]),
+                Box::new(FrictionReactionTrajVjp {
+                    dforce_dx: rg.dforce_dx,
+                    dforce_dxprev: rg.dforce_dxprev,
+                    dforce_dheight: rg.dforce_dheight,
+                    dforce_ddrift: rg.dforce_ddrift,
+                    dforce_dmu_c: Some(rg.force / mu_c),
+                    n_dof: 3 * n,
+                }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+
+            // (4) route the gripped wrench (normal + friction + moment) + z-damping; real step.
+            let mut wrench = self.contact_wrench_gripped(height, &friction);
+            wrench[5] -= self.rigid_damping * vz_k;
+            self.data.xfrc_applied[self.body] = wrench;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in tangential trajectory");
+            self.data
+                .forward(&self.model)
+                .expect("fresh FK (post-step)");
+            let z_next = self.data.xpos[self.body].z;
+            let vz_next = self.data.qvel[2];
+            let x_next_rigid = self.data.xpos[self.body].x;
+            let vx_next = self.data.qvel[0];
+
+            // (5) rigid carries (semi-implicit Euler), identical to the material driver.
+            let vz_next_var = tape.push_custom(
+                &[vz_var, fz_var],
+                Tensor::from_slice(&[vz_next], &[1]),
+                Box::new(VzCarryVjp {
+                    a,
+                    neg_dt_over_m: -dt_over_m,
+                }),
+            );
+            let vx_next_var = tape.push_custom(
+                &[vx_var, fx_var],
+                Tensor::from_slice(&[vx_next], &[1]),
+                Box::new(VzCarryVjp {
+                    a: 1.0,
+                    neg_dt_over_m: -dt_over_m,
+                }),
+            );
+            let z_next_var = tape.push_custom(
+                &[z_var, vz_next_var],
+                Tensor::from_slice(&[z_next], &[1]),
+                Box::new(ZCarryVjp { dt }),
+            );
+            let xx_next_var = tape.push_custom(
+                &[xx_var, vx_next_var],
+                Tensor::from_slice(&[x_next_rigid], &[1]),
+                Box::new(ZCarryVjp { dt }),
+            );
+
             x_var = x_next_var;
             v_var = v_next_var;
             z_var = z_next_var;
@@ -4277,6 +4508,46 @@ mod tests {
         assert!(
             grad.is_finite() && grad.abs() > 1e-12,
             "expected a finite nonzero ∂z_N/∂μ"
+        );
+    }
+
+    /// Lib-level smoke test of the friction-coefficient trajectory gradient (the
+    /// scientific FD validation is in `tests/friction_coupled_trajectory_coeff_gradient.rs`):
+    /// the `μ_c` driver's tape forward reproduces the real grip rollout exactly, and one
+    /// `tape.backward` gives a finite nonzero `∂x_N/∂μ_c` through both channels (the soft
+    /// equilibrium shift and the direct reaction `∂fx/∂μ_c`). Uses a tilted-gravity,
+    /// contact-engaged scene (the default `coupling()` has no lateral drive ⇒ no grip slip).
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn friction_coeff_trajectory_gradient_smoke() {
+        // Tilted gravity + a platen started engaged (z = 0.115) so the grip slides.
+        const GRIP_MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.115">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        let build = || -> StaggeredCoupling {
+            let model = load_model(GRIP_MJCF).expect("grip MJCF loads");
+            let mut data = model.make_data();
+            data.forward(&model).expect("initial forward");
+            StaggeredCoupling::new(
+                model, data, 1, 0.005, 4, 0.1, 3.0e3, 1.0e-3, 3.0e4, 1.0e-2, 8.0,
+            )
+            .with_friction(2.5, 0.1)
+        };
+        let (x_tape, grad) = build().coupled_trajectory_tangential_friction_coeff_gradient(20);
+        let x_ref = build().coupled_trajectory_grip(20).x;
+        assert!(
+            (x_tape - x_ref).abs() < 1e-12,
+            "tape forward x_N {x_tape} != real grip rollout {x_ref}"
+        );
+        assert!(
+            grad.is_finite() && grad.abs() > 1e-12,
+            "expected a finite nonzero ∂x_N/∂μ_c"
         );
     }
 

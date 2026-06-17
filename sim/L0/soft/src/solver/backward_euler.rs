@@ -2321,6 +2321,52 @@ where
         self.solve_free_and_scatter(x_final, Some(x_prev), dt, rhs)
     }
 
+    /// `∂r/∂μ_c` (full-DOF) — the residual's sensitivity to the Coulomb friction COEFFICIENT.
+    /// Friction enters the residual ONLY through `∇D = (μ_c·λⁿ)·(t·grad2)`, which is LINEAR in
+    /// `μ_c` (the lagged normal force `λⁿ`, the tangent basis, and the slip kernel are all
+    /// `μ_c`-independent), so `∂r_v/∂μ_c = ∇D_v / μ_c` — the friction force with the coefficient
+    /// divided back out. Zeros off the active set; empty when frictionless. Reuses
+    /// `friction_blocks` (the same `∇D` the forward residual scatters).
+    fn assemble_friction_coeff_residual_grad(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+    ) -> Vec<f64> {
+        let mut out = vec![0.0_f64; self.n_dof];
+        let mu = self.config.friction_mu;
+        if mu == 0.0 {
+            return out;
+        }
+        for (v, grad, _hess) in self.friction_blocks(x_final, x_prev, dt) {
+            out[3 * v] = grad.x / mu;
+            out[3 * v + 1] = grad.y / mu;
+            out[3 * v + 2] = grad.z / mu;
+        }
+        out
+    }
+
+    /// Forward sensitivity `∂x*/∂μ_c` of the converged soft equilibrium w.r.t. the Coulomb
+    /// friction COEFFICIENT. The coefficient enters the residual only through the friction term
+    /// (`∂r/∂μ_c = ∇D/μ_c`, see `assemble_friction_coeff_residual_grad`), so
+    /// `∂x*/∂μ_c = −A⁻¹·(∂r/∂μ_c)` reuses the SAME factored (Woodbury-corrected) tangent `A` the
+    /// material/drift sensitivities use. Unlike `∂x*/∂μ` (material), `μ_c` is LINEAR in the
+    /// residual ⇒ machine-exact even at a stiff block (no compliant-block conditioning needed).
+    /// `x_prev` is the step-start `xᵗ` (required: the coefficient sensitivity is only meaningful
+    /// with friction active). Length `n_dof`, zeros on pinned/roller DOFs and when frictionless.
+    #[must_use]
+    pub fn equilibrium_friction_coeff_sensitivity(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+    ) -> Vec<f64> {
+        debug_assert!(x_final.len() == self.n_dof);
+        let dr = self.assemble_friction_coeff_residual_grad(x_final, x_prev, dt);
+        let rhs: Vec<f64> = self.free_dof_indices.iter().map(|&i| -dr[i]).collect();
+        self.solve_free_and_scatter(x_final, Some(x_prev), dt, rhs)
+    }
+
     /// Per-active-pair smoothed-Coulomb friction FORCE on the soft body `(vertex, −∇D)` at
     /// configuration `x_curr` with step start `x_prev`, including this solver's
     /// [`friction_surface_drift`](Self::with_friction_surface_drift). `−∇D` is the force the
@@ -3060,11 +3106,52 @@ where
         pose_dir: Vec3,
         drift_dir: Vec3,
     ) -> TrajectoryStepVjp {
+        // The scalar "param" parent carries the MATERIAL residual sensitivity `∂r/∂p_k`.
+        let dr_dparam = self.assemble_material_residual_grad(x_final, param_idx);
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_dir, drift_dir)
+    }
+
+    /// Like [`Self::trajectory_step_vjp_grip`] but the scalar "param" parent is the Coulomb
+    /// friction COEFFICIENT `μ_c` rather than a material parameter. The grip node is generic in
+    /// its param slot — the reverse pass contracts `−λᵀ·(∂r/∂param)`, agnostic to which scalar
+    /// the RHS came from — so this swaps in `∂r/∂μ_c` (see
+    /// `assemble_friction_coeff_residual_grad`) and is otherwise byte-identical to the
+    /// material grip node (same five parents, same Woodbury factor, same drift/pose/`x_prev`
+    /// coupling). The coupling layer pairs this with a `∂fx/∂μ_c = fx/μ_c` term on the friction
+    /// REACTION readout, since `μ_c` also scales the platen reaction directly (not only via `x*`).
+    #[must_use]
+    pub fn trajectory_step_vjp_grip_fric_coeff(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        pose_dir: Vec3,
+        drift_dir: Vec3,
+    ) -> TrajectoryStepVjp {
+        let dr_dparam = self.assemble_friction_coeff_residual_grad(x_final, x_prev, dt);
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_dir, drift_dir)
+    }
+
+    /// Shared core of the friction-grip soft VJP node: everything except WHICH scalar the param
+    /// parent represents. `dr_dparam` is the full-DOF residual sensitivity for that scalar
+    /// (material `∂r/∂p_k` or friction-coefficient `∂r/∂μ_c`); the rest — pose, drift, `x_prev`
+    /// friction coupling, state scales, and the Woodbury factor — is identical either way.
+    fn trajectory_step_vjp_grip_core(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        dr_dparam: &[f64],
+        pose_dir: Vec3,
+        drift_dir: Vec3,
+    ) -> TrajectoryStepVjp {
         debug_assert!(x_final.len() == self.n_dof);
         debug_assert!(x_prev.len() == self.n_dof);
-        // Material + contact-pose RHS — identical to the frictionless path.
-        let dr_dp = self.assemble_material_residual_grad(x_final, param_idx);
-        let dr_dparam_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dp[i]).collect();
+        let dr_dparam_free: Vec<f64> = self
+            .free_dof_indices
+            .iter()
+            .map(|&i| dr_dparam[i])
+            .collect();
         // Pose RHS = normal contact pose grad + the FRICTION pose grad (the friction force is
         // linear in the pose-dependent normal force λⁿ — the PR2-deferred term that makes
         // `∂x*/∂height` friction-exact, load-bearing for the coupled height↔grip cancellation).
