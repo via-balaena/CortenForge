@@ -123,3 +123,36 @@ the residual to the non-parallel multi-hop `∂S/∂q` path (the same class as b
 fully closed). `chain_state_jacobian` therefore gates to `nv == 2`; `nv > 2` declines to the
 FD `loaded_state_jacobian` (machine-exact vs the re-rolled oracle at ~1e-8). Completing the
 multi-hop sim-core term (so the analytic carry covers a full leg, nv ≥ 3) is the follow-on.
+
+## ★★★★ RESOLVED (2026-06-17) — multi-hop Coriolis (bug #3): the bias-acceleration X_b transport
+
+The `nv == 2` gate is LIFTED — the analytic chain `J_state` is now machine-exact for serial
+hinge chains of any length (validated 2/3/4-link). The multi-hop residual (a spatial 3-link's
+unloaded `A` ~10% off; parallel exact) was a THIRD missing term, distinct from bug #1:
+
+`mjd_rne_pos`'s Part B (Coriolis) reconstructs the bias acceleration with a recursion that
+must match `mj_rne`'s. `mj_rne` uses `a_B[b] = X_b(a_B[parent]) + cvel[parent] ×_m (S·qvel)`
+— i.e. **X_b motion transport** of the parent bias accel (`linear += α_parent × r`). Part B
+used a **simple copy** (no transport), with a comment claiming the identity was exact. It is
+exact only when the parent bias accel has no angular part — true for the root's children and
+for any single hop, so ≤2-link agreed; but a ≥3-link non-parallel chain has a nonzero
+`α_parent`, and the dropped `α_parent × r` made `Sᵀ·cfrc_B` diverge from `mj_rne`'s
+`qfrc_bias` by ~26% at the operating point. The DERIVATIVE was self-consistent with this wrong
+forward model — which is why every per-step check (Dcvel, Dcacc, Dcfrc-local for all bodies)
+passed while the projected `qDeriv_pos` was off: **the analytic was correctly differentiating
+a forward reconstruction that itself didn't match the real bias.**
+
+Fix: Part B forward now does X_b transport (operating point: `α_parent × r`; derivative:
+X_b-transport of the parent's `dcacc` + the transport derivative `α_parent × (axis × r)` for
+ancestors — mirroring Part A and `mj_rne`). Backward stays simple-add (as `mj_rne` does — the
+old comment conflated forward-transport with X_bᵀ-backward). Regression:
+`analytical_transition_matches_fd_nonparallel_chain` now sweeps 2/3/4-link spatial chains.
+Coupling gate widened to `nv ≥ 2`; end-to-end `threelink_chain_gradient_matches_fd` (n = 2).
+
+### ★★ METHOD LESSON (the decisive bisection)
+The forward/derivative split is the trap: when every per-step DERIVATIVE check passes but the
+final result is off, **FD the forward OPERATING POINT itself** (`Sᵀ·cfrc_B` vs `mj_rne`'s
+`qfrc_bias`) — a derivative is only as right as the forward model it differentiates. The
+ladder Dcvel → Dcacc → Dcfrc-local → operating-point-identity localized it in ~5 FD probes.
+Also: parallel-vs-spatial and 2-link-vs-3-link toggles isolated it to "intermediate joint
+non-parallel WITH a descendant" before any code was touched.

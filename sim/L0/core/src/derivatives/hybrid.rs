@@ -1120,11 +1120,26 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     }
 
     // ==================== Part B operating point ====================
-    // Coriolis/gyroscopic RNEA (MuJoCo convention)
+    // Coriolis/gyroscopic RNEA — matches `mj_rne`'s bias-acceleration recursion EXACTLY:
+    // `a_B[b] = X_b(a_B[parent]) + cvel[parent] ×_m (S·qvel)` (X_b motion transport:
+    // angular unchanged, linear += α_parent × r). The X_b transport is ZERO for the root's
+    // children (parent bias accel = 0) and for a single hop, so a "simple copy" agreed for
+    // ≤2-link chains — but the parent's bias accel has a nonzero ANGULAR part once the chain
+    // is ≥3 links with non-parallel axes, and dropping `α_parent × r` then makes Sᵀ·cfrc_B
+    // diverge from `mj_rne`'s qfrc_bias (the forward identity it must satisfy). Backward stays
+    // simple-add (no X_bᵀ), exactly as `mj_rne` does.
     let mut cacc_b = vec![SpatialVector::zeros(); nbody];
     for b in 1..nbody {
         let pid = model.body_parent[b];
-        cacc_b[b] = cacc_b[pid]; // simple copy (no X_b transport)
+        // X_b motion transport of the parent bias acceleration.
+        let mut acc = cacc_b[pid];
+        let alpha_p = Vector3::new(acc[0], acc[1], acc[2]);
+        let r = data.xpos[b] - data.xpos[pid];
+        let cross = alpha_p.cross(&r);
+        acc[3] += cross.x;
+        acc[4] += cross.y;
+        acc[5] += cross.z;
+        cacc_b[b] = acc;
         let js = model.body_jnt_adr[b];
         let je = js + model.body_jnt_num[b];
         for jid in js..je {
@@ -1561,16 +1576,49 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         data.deriv_Dcfrc_pos[b].fill(0.0);
     }
 
-    // Part B acceleration: a_B[b] = a_B[parent] + cvel[parent] ×_m S·qvel
-    // ∂a_B/∂q = ∂a_B[parent]/∂q (simple copy, no transport derivative!)
+    // Part B acceleration: a_B[b] = X_b(a_B[parent]) + cvel[parent] ×_m S·qvel
+    // ∂a_B/∂q = X_b(∂a_B[parent]/∂q) + a_B[parent]_ang × (axis × r)  (X_b transport + its deriv)
     //         + (∂cvel[parent]/∂q) ×_m v_joint  (Term C)
-    //         + cvel[parent] ×_m (∂S/∂q · qvel)  (zero for hinges)
+    //         + cvel[parent] ×_m (∂S/∂q · qvel)  (ancestor ∂S/∂q, added per-body below)
     for b in 1..nbody {
         let pid = model.body_parent[b];
+        let r = data.xpos[b] - data.xpos[pid];
 
-        // Simple copy of parent dcacc_B (no X_b transport, no transport derivative)
+        // X_b motion transport of parent dcacc_B: copy, then add α-rows × r to the linear rows
+        // (matches the operating-point `α_parent × r`; mirrors Part A's forward derivative).
         let parent_dcacc = data.deriv_Dcacc_pos[pid].clone();
         data.deriv_Dcacc_pos[b].copy_from(&parent_dcacc);
+        for col in 0..nv {
+            let ox = parent_dcacc[(0, col)];
+            let oy = parent_dcacc[(1, col)];
+            let oz = parent_dcacc[(2, col)];
+            data.deriv_Dcacc_pos[b][(3, col)] += oy * r.z - oz * r.y;
+            data.deriv_Dcacc_pos[b][(4, col)] += oz * r.x - ox * r.z;
+            data.deriv_Dcacc_pos[b][(5, col)] += ox * r.y - oy * r.x;
+        }
+        // X_b transport derivative: a_B[parent]_ang × (axis × r) for each ancestor angular DOF
+        // (∂r/∂q_k = axis_k × r). Zero unless the parent bias accel has an angular part (≥3-link
+        // non-parallel) — the missing multi-hop term.
+        let omega_acc_p = Vector3::new(cacc_b[pid][0], cacc_b[pid][1], cacc_b[pid][2]);
+        if omega_acc_p.norm_squared() > 0.0 {
+            let mut anc = pid;
+            while anc != 0 {
+                let anc_js = model.body_jnt_adr[anc];
+                let anc_je = anc_js + model.body_jnt_num[anc];
+                for jid in anc_js..anc_je {
+                    let da = model.jnt_dof_adr[jid];
+                    let nd = model.jnt_type[jid].nv();
+                    for d in 0..nd {
+                        let axis = dof_axis[da + d];
+                        let contrib = omega_acc_p.cross(&axis.cross(&r));
+                        data.deriv_Dcacc_pos[b][(3, da + d)] += contrib.x;
+                        data.deriv_Dcacc_pos[b][(4, da + d)] += contrib.y;
+                        data.deriv_Dcacc_pos[b][(5, da + d)] += contrib.z;
+                    }
+                }
+                anc = model.body_parent[anc];
+            }
+        }
 
         let js = model.body_jnt_adr[b];
         let je = js + model.body_jnt_num[b];
@@ -4203,55 +4251,67 @@ mod mass_directional_derivative_tests {
         );
     }
 
-    /// The analytical position columns of the transition `A` match the central-FD `A` for a
-    /// **non-parallel (spatial) hinge chain** — the regression for the Coriolis `∂S/∂q`
-    /// ancestor term in [`mjd_rne_pos`]. A hinge's world-frame axis rotates when an ANCESTOR
-    /// rotates (`∂â_j/∂q_k = â_k × â_j`); this is zero for a parallel-axis chain (the
-    /// `n_link_pendulum` default, which is why the prior bug hid) but material for a spatial
-    /// one. Before the fix the velocity-position block was ~20% wrong here. Scope: this pins
-    /// the SINGLE-HOP (2-link) ancestor term; the multi-hop (3+ link) `∂S/∂q` is still
-    /// incomplete (a spatial 3-link's `A` is ~10% off) — the documented follow-on.
+    /// The analytical position columns of the transition `A` match the central-FD `A` for
+    /// **non-parallel (spatial) hinge chains** of 2, 3, and 4 links — the regression for the
+    /// Coriolis derivative in [`mjd_rne_pos`]. Two effects, both zero for a parallel-axis chain
+    /// (the `n_link_pendulum` default, which is why the bugs hid) but material for a spatial one:
+    /// (1) the `∂S/∂q` ancestor term (`∂âⱼ/∂q_k = â_k × âⱼ`) — wrong by ~20% on a 2-link before
+    /// the fix; (2) the X_b transport of the bias acceleration in the forward Coriolis pass
+    /// (`α_parent × r`), nonzero only once the parent's bias accel has an angular part (≥3-link
+    /// MULTI-HOP) — its omission made a spatial 3-link's `A` ~10% off (`Sᵀ·cfrc_B` diverged from
+    /// `mj_rne`'s `qfrc_bias`). Covers single-hop (n=2) and multi-hop (n=3,4).
     #[test]
     fn analytical_transition_matches_fd_nonparallel_chain() {
         use crate::derivatives::{max_relative_error, mjd_transition_fd};
-        // 2-link chain with a NON-PARALLEL second hinge axis (so â_0 × â_1 ≠ 0).
-        let mut model = Model::n_link_pendulum(2, 0.15, 0.4);
-        model.jnt_axis[1] = Vector3::new(1.0, 0.3, 0.0).normalize();
-        let mut data = model.make_data();
-        data.qpos[0] = 0.3;
-        data.qpos[1] = -0.4;
-        data.qvel[0] = 0.9; // nonzero velocity engages the Coriolis term
-        data.qvel[1] = -1.2;
-        data.forward(&model).expect("forward");
+        // Distinct non-parallel axes so every ancestor `â_k × âⱼ` and the bias-accel transport
+        // are exercised (joint 0 stays Y).
+        let axes = [
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(1.0, 0.3, 0.0).normalize(),
+            Vector3::new(0.2, 1.0, 0.1).normalize(),
+            Vector3::new(0.1, 0.2, 1.0).normalize(),
+        ];
+        let q0 = [0.3, -0.4, 0.25, -0.2];
+        let v0 = [0.9, -1.2, 0.7, -0.5]; // nonzero velocity engages the Coriolis term
+        for n in 2..=4 {
+            let mut model = Model::n_link_pendulum(n, 0.15, 0.4);
+            model.jnt_axis[1..n].copy_from_slice(&axes[1..n]);
+            let mut data = model.make_data();
+            for i in 0..n {
+                data.qpos[i] = q0[i];
+                data.qvel[i] = v0[i];
+            }
+            data.forward(&model).expect("forward");
 
-        let analytic = data
-            .transition_derivatives(
+            let analytic = data
+                .transition_derivatives(
+                    &model,
+                    &DerivativeConfig {
+                        use_analytical: true,
+                        ..Default::default()
+                    },
+                )
+                .expect("analytical transition");
+            let fd = mjd_transition_fd(
                 &model,
+                &data,
                 &DerivativeConfig {
-                    use_analytical: true,
+                    use_analytical: false,
                     ..Default::default()
                 },
             )
-            .expect("analytical transition");
-        let fd = mjd_transition_fd(
-            &model,
-            &data,
-            &DerivativeConfig {
-                use_analytical: false,
-                ..Default::default()
-            },
-        )
-        .expect("FD transition");
+            .expect("FD transition");
 
-        // Floor 1e-3 ignores the near-zero position-velocity entries (~Δt) whose FD noise
-        // would otherwise dominate the relative metric; the velocity-position block (the
-        // entry the bug corrupted) is O(0.1–1).
-        let (err, loc) = max_relative_error(&analytic.A, &fd.A, 1e-3);
-        assert!(
-            err < 1e-5,
-            "analytical transition A must match central-FD for a spatial hinge chain \
-             (Coriolis ∂S/∂q term), got rel {err:.3e} at {loc:?}"
-        );
+            // Floor 1e-3 ignores the near-zero position-velocity entries (~Δt) whose FD noise
+            // would otherwise dominate the relative metric; the velocity-position block (the
+            // entry the bugs corrupted) is O(0.1–1).
+            let (err, loc) = max_relative_error(&analytic.A, &fd.A, 1e-3);
+            assert!(
+                err < 1e-5,
+                "analytical transition A must match central-FD for a spatial {n}-link chain \
+                 (Coriolis ∂S/∂q + bias-accel transport), got rel {err:.3e} at {loc:?}"
+            );
+        }
     }
 
     /// `∂(M·0)/∂q = 0` exactly (the qacc=a and qacc=0 calls are identical — no FD noise).

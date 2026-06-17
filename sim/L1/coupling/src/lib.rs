@@ -2424,15 +2424,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         Some(j)
     }
 
-    /// The LOADED single-step state Jacobian computed **analytically** for an UNDAMPED 2-link
-    /// (`nv == 2`) serial HINGE chain — the multi-link successor to the single-hinge
-    /// [`Self::analytic_state_jacobian`]. `None` (→ FD `loaded_state_jacobian`) for any body
-    /// that is not a pure 2-link serial hinge chain spanning all DOFs, for a quaternion joint
-    /// (`nq ≠ nv`), or under joint damping. **Scope is `nv == 2` (single-hop ancestors):** a
-    /// 3+-link chain has multi-hop ancestors where the sim-core Coriolis `∂S/∂q` term is still
-    /// incomplete, so it declines to the FD fallback (machine-exact vs the oracle at ~1e-8
-    /// regardless). The damped chain and the multi-hop completion are the follow-ons; see
-    /// `docs/keystone/damped_joints_recon.md` and `docs/keystone/multilink_recon.md`.
+    /// The LOADED single-step state Jacobian computed **analytically** for an UNDAMPED serial
+    /// HINGE chain (`nv ≥ 2`) — the multi-link successor to the single-hinge
+    /// [`Self::analytic_state_jacobian`], removing the last FD fallback for the undamped
+    /// articulated coupling. `None` (→ FD `loaded_state_jacobian`) for any body that is not a
+    /// pure serial hinge chain spanning all DOFs (one joint per body), for a quaternion joint
+    /// (`nq ≠ nv`), or under joint damping (the damped chain is the separate follow-on; see
+    /// `docs/keystone/damped_joints_recon.md`). Machine-exact for 2-link through 4-link spatial
+    /// chains; the multi-hop Coriolis derivative it relies on is complete in `mjd_rne_pos`.
     ///
     /// **The decomposition.** The loaded single-step transition is exactly
     /// `loaded_J = A + Δt·∂(M⁻¹·Jᵀw)/∂q` on the velocity-position block and `+ Δt²·∂(…)` on the
@@ -2463,15 +2462,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     #[allow(clippy::expect_used)]
     fn chain_state_jacobian(&self, wrench: &SpatialVector) -> Option<DMatrix<f64>> {
         let model = &self.model;
-        // Scope guard: undamped serial HINGE chain spanning all DOFs, Euclidean (nq == nv).
-        // VALIDATED for `nv == 2` (single-hop ancestors), the keystone multi-link case. A
-        // 3+-link chain has MULTI-HOP strict ancestors (the tip's grandparent joint), and the
-        // sim-core Coriolis `∂S/∂q` term — correct for the single-hop 2-link — is still
-        // incomplete there (a spatial 3-link's unloaded `A` is ~10% off vs FD; a PARALLEL
-        // 3-link is exact, isolating it to the non-parallel multi-hop ∂S/∂q path). Until that
-        // sim-core follow-on lands, `nv > 2` falls back to the FD `loaded_state_jacobian`
-        // (machine-exact vs the re-rolled oracle at ~1e-8). See `docs/keystone/multilink_recon.md`.
-        if model.nq != model.nv || model.nv != 2 {
+        // Scope guard: undamped serial HINGE chain spanning all DOFs, Euclidean (nq == nv),
+        // nv ≥ 2. Validated machine-exact for 2-link through (at least) 4-link spatial chains —
+        // the sim-core Coriolis derivative (the `∂S/∂q` ancestor term AND the bias-acceleration
+        // X_b transport that the multi-hop case needs) is now complete for any serial hinge
+        // chain. See `docs/keystone/multilink_recon.md`.
+        if model.nq != model.nv || model.nv < 2 {
             return None;
         }
         let chain = &model.body_ancestor_joints[self.body];
@@ -2659,7 +2655,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// output is read fresh (forward at `q_N`), and the carry uses the true position-row
     /// term above. This triple is the correct differentiable formulation; the composed
     /// gradient matches the full-coupled FD to ~1e-9 for the single hinge, a free-joint
-    /// platen (nv = 6), AND an undamped 2-link chain (nv = 2). The earlier long-rollout
+    /// platen (nv = 6), AND undamped serial-hinge chains (2-link at n = 10, 3-link multi-hop
+    /// at n = 2 — `threelink_chain_gradient_matches_fd`). The earlier long-rollout
     /// moment residual (~1e-3 at n = 10) and the 74%-at-n=2 multi-link error were the SAME
     /// defect: the stale-FK pose + §8a position-row drop was a self-consistent pair
     /// calibrated ONLY for nv = 1 (`∂qpos'/∂qvel = Δt·I`, false for a chain). See
@@ -2670,8 +2667,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// single hinge (`analytic_state_jacobian`) and the undamped serial-hinge chain
     /// (`chain_state_jacobian` — the case-split geometric-stiffness Hessian `G`, the
     /// `∂M⁻¹/∂q` directional derivative `dMu`, and the unloaded transition `A` at the CLEAN
-    /// `xfrc = 0` operating point; the chain `A` relies on the sim-core Coriolis `∂S/∂q`
-    /// ancestor term). Free/quaternion joints use the FD `loaded_state_jacobian` (FD-carry).
+    /// `xfrc = 0` operating point; the chain `A` relies on the sim-core Coriolis derivative —
+    /// the `∂S/∂q` ancestor term plus the bias-acceleration X_b transport for multi-hop chains).
+    /// Free/quaternion joints use the FD `loaded_state_jacobian` (FD-carry).
     /// **Joint damping** is supported: the Euler `eulerdamp` wrench→velocity factor `G_vel`
     /// is `Δt·(M + Δt·D)⁻¹·Jᵀ` ([`rigid_xfrc_column`], `D = implicit_damping`). The damped
     /// single HINGE uses the ANALYTIC `J_state` (the `M → M_impl` correction reconciles the
@@ -4907,20 +4905,17 @@ mod tests {
         );
     }
 
-    /// The analytic UNDAMPED 2-link hinge **chain** `J_state`
+    /// The analytic UNDAMPED hinge **chain** `J_state`
     /// ([`StaggeredCoupling::chain_state_jacobian`]) is MACHINE-EXACT against the FD
     /// [`StaggeredCoupling::loaded_state_jacobian`] for arbitrary held wrenches (force AND
-    /// torque, nonzero per-joint `qvel`). Run on BOTH a planar (parallel-axis) chain and a
-    /// SPATIAL (non-parallel-axis, off-axis COM) chain — the latter exercises the off-diagonal
-    /// kinematics that the single-hinge form cannot, and depends on the sim-core Coriolis
-    /// `∂S/∂q` ancestor fix for its unloaded `A`. Pins the full chain assembly: the case-split
-    /// geometric-stiffness Hessian `G`, the mass-directional derivative `dMu` (the `∂M⁻¹/∂q`
-    /// term that vanishes for a single hinge), and the `A + Δt·M⁻¹·(G − dMu)` decomposition on
-    /// both the velocity and semi-implicit position rows. Run on a planar (parallel-axis)
-    /// 2-link AND a SPATIAL (non-parallel-axis, off-axis COM) 2-link — the latter exercises the
-    /// off-diagonal kinematics and the sim-core Coriolis `∂S/∂q` ancestor fix. A SPATIAL 3-link
-    /// (multi-hop ancestors) is asserted to DECLINE to the FD fallback (the validated analytic
-    /// scope is `nv == 2`; multi-hop is the documented follow-on). See
+    /// torque, nonzero per-joint `qvel`). Run on a planar (parallel-axis) 2-link, a SPATIAL
+    /// (non-parallel-axis, off-axis COM) 2-link, and a SPATIAL 3-link — the spatial cases
+    /// exercise the off-diagonal kinematics and depend on the sim-core Coriolis fixes (the
+    /// `∂S/∂q` ancestor term + the multi-hop bias-acceleration X_b transport) for their unloaded
+    /// `A`; the 3-link additionally exercises multi-hop ancestors. Pins the full chain assembly:
+    /// the case-split geometric-stiffness Hessian `G`, the mass-directional derivative `dMu` (the
+    /// `∂M⁻¹/∂q` term that vanishes for a single hinge), and the `A + Δt·M⁻¹·(G − dMu)`
+    /// decomposition on both the velocity and semi-implicit position rows. See
     /// `docs/keystone/multilink_recon.md`.
     #[test]
     fn chain_state_jacobian_matches_fd_loaded() {
@@ -4970,21 +4965,27 @@ mod tests {
   </worldbody>
 </mujoco>"#;
 
-        // Machine-exact for the validated `nv == 2` scope (planar + spatial).
-        for mjcf in [PLANAR_MJCF, SPATIAL_MJCF] {
+        // (mjcf, contact body = tip, nv). Planar + spatial 2-link, and spatial 3-link (multi-hop).
+        for (mjcf, body, nv) in [
+            (PLANAR_MJCF, 2, 2),
+            (SPATIAL_MJCF, 2, 2),
+            (THREELINK_MJCF, 3, 3),
+        ] {
             let model = load_model(mjcf).expect("chain MJCF loads");
             let mut data = model.make_data();
-            data.qpos[0] = 0.2;
-            data.qpos[1] = -0.15;
-            data.qvel[0] = -1.5; // nonzero velocities exercise the full transition (Coriolis)
-            data.qvel[1] = 0.8;
+            let q0 = [0.2, -0.15, 0.1];
+            let v0 = [-1.5, 0.8, -1.1]; // nonzero velocities exercise the full transition (Coriolis)
+            for i in 0..nv {
+                data.qpos[i] = q0[i];
+                data.qvel[i] = v0[i];
+            }
             data.forward(&model).expect("forward");
             let c: StaggeredCoupling = StaggeredCoupling::new(
-                model, data, 2, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+                model, data, body, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
             );
             assert!(
                 c.single_hinge().is_none(),
-                "a 2-link chain must NOT take the single-hinge path"
+                "a multi-link chain must NOT take the single-hinge path"
             );
 
             for wrench in [
@@ -4995,35 +4996,18 @@ mod tests {
                 let loaded = c.loaded_state_jacobian(&wrench);
                 let analytic = c
                     .analytic_state_jacobian(&wrench)
-                    .expect("2-link chain → analytic chain J_state");
+                    .expect("multi-link chain → analytic chain J_state");
                 // Tolerance is the FD REFERENCE's own central-difference floor (~1e-6, looser
                 // on the chain's velocity-velocity block); the analytic form is exact — the
                 // end-to-end gradient gate validates machine-exactness against re-rolled FD.
                 let (err, loc) = sim_core::max_relative_error(&loaded, &analytic, 1e-3);
                 assert!(
                     err < 1e-5,
-                    "analytic chain J_state must match FD loaded to FD precision, \
+                    "analytic chain J_state (nv={nv}) must match FD loaded to FD precision, \
                      got rel {err:.3e} at {loc:?}"
                 );
             }
         }
-
-        // A 3-link (multi-hop ancestors) DECLINES to the FD fallback — the analytic scope is
-        // gated to nv == 2 until the multi-hop sim-core Coriolis follow-on lands.
-        let model = load_model(THREELINK_MJCF).expect("3-link MJCF loads");
-        let mut data = model.make_data();
-        data.qpos[0] = 0.2;
-        data.qpos[1] = -0.15;
-        data.qpos[2] = 0.1;
-        data.forward(&model).expect("forward");
-        let c3: StaggeredCoupling = StaggeredCoupling::new(
-            model, data, 3, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
-        );
-        assert!(
-            c3.analytic_state_jacobian(&SpatialVector::zeros())
-                .is_none(),
-            "a 3-link chain (multi-hop) must decline the analytic path → FD fallback"
-        );
     }
 
     /// The tangent FD `loaded_state_jacobian` for a ball joint (`nq = 4, nv = 3`) is
