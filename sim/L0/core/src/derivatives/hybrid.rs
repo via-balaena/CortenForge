@@ -1597,11 +1597,75 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Velocity subspace derivative: cvel[parent] ×_m ((∂S/∂q)·qvel)
-            // For hinges, ∂S/∂q = 0. For other joint types:
-            // ∂(S·qvel)/∂q_d = (S_d ×_m S)·qvel
-            // Not needed for hinges; included for generality.
-            // (Already captured by the self-cross term in Dcvel which feeds Term C.)
+            // (The ∂S/∂q velocity-subspace term is added once per body below — it depends
+            // on the body's TOTAL joint velocity and the perturbing ANCESTOR axes, so it
+            // does not belong inside this per-joint accumulation.)
+        }
+
+        // Velocity subspace derivative: cvel[parent] ×_m ((∂S/∂q)·qvel).
+        //
+        // Each joint's world-frame motion subspace `S` on body `b` rotates when an
+        // ANCESTOR angular DOF `k` rotates body `b`'s frame: `∂S/∂q_k = s_ang_k ×_m S`
+        // (e.g. for a hinge, `∂â_j/∂q_k = â_k × â_j`). So the body's total joint velocity
+        // `v_J = Σ S·qvel` gains `∂v_J/∂q_k = s_ang_k ×_m v_J`, and the Part B Coriolis
+        // acceleration `a_B[b] += cvel[parent] ×_m v_J` gains `cvel[parent] ×_m ∂v_J/∂q_k`.
+        //
+        // This is ZERO for a single hinge and for any PARALLEL-axis chain (`â_k ∥ â_j ⇒
+        // â_k × â_j = 0`), which is why it was previously dropped as "zero for hinges" —
+        // but it is MATERIAL for a spatial (non-parallel) chain, where its omission left
+        // `∂C(q,v)/∂q` (and hence the analytical transition's position columns) wrong.
+        let cvel_parent = data.cvel[pid];
+        if cvel_parent.norm_squared() > 0.0 {
+            // Total joint velocity over orientation-dependent DOFs on body b (exclude Free
+            // linear DOFs: their world-frame S is constant, ∂S/∂q = 0).
+            let mut v_j = SpatialVector::zeros();
+            for jid in js..je {
+                let da = model.jnt_dof_adr[jid];
+                let s = &joint_subspaces[jid];
+                let nd = model.jnt_type[jid].nv();
+                for d in 0..nd {
+                    if model.jnt_type[jid] == MjJointType::Free && d < 3 {
+                        continue;
+                    }
+                    for row in 0..6 {
+                        v_j[row] += s[(row, d)] * data.qvel[da + d];
+                    }
+                }
+            }
+            if v_j.norm_squared() > 0.0 {
+                // STRICT ANCESTORS only. The self/same-body term is zero for a single-hinge
+                // body (∂âⱼ/∂qⱼ = âⱼ×âⱼ = 0). NOTE (pre-existing gap, not regressed here): for
+                // a ball/free or multi-joint body the same-body ∂S/∂q is NOT zero, so the
+                // analytical Coriolis position columns of a NON-ROOT such body (moving parent
+                // ⇒ cvel[parent] ≠ 0) remain incomplete — the whole term was previously dropped;
+                // this adds only the ancestor half. Part A's Term D has the same-body analogue.
+                // The serial-hinge chain (the only analytical-`J_state` consumer in sim-coupling)
+                // is unaffected; closing the same-body half for ball/free is a follow-on.
+                let mut anc = pid;
+                while anc != 0 {
+                    let anc_js = model.body_jnt_adr[anc];
+                    let anc_je = anc_js + model.body_jnt_num[anc];
+                    for kid in anc_js..anc_je {
+                        let da_k = model.jnt_dof_adr[kid];
+                        let nd_k = model.jnt_type[kid].nv();
+                        for dk in 0..nd_k {
+                            let axis_k = dof_axis[da_k + dk];
+                            if axis_k.norm_squared() == 0.0 {
+                                continue;
+                            }
+                            let s_ang_k =
+                                SpatialVector::new(axis_k[0], axis_k[1], axis_k[2], 0.0, 0.0, 0.0);
+                            // ∂v_J/∂q_k = s_ang_k ×_m v_J; then cross with cvel[parent].
+                            let dvj = spatial_cross_motion(s_ang_k, v_j);
+                            let contrib = spatial_cross_motion(cvel_parent, dvj);
+                            for row in 0..6 {
+                                data.deriv_Dcacc_pos[b][(row, da_k + dk)] += contrib[row];
+                            }
+                        }
+                    }
+                    anc = model.body_parent[anc];
+                }
+            }
         }
     }
 
@@ -4136,6 +4200,57 @@ mod mass_directional_derivative_tests {
         assert!(
             rel < 1e-6,
             "mass_directional_derivative must match FD re-CRBA, got rel {rel:.3e}"
+        );
+    }
+
+    /// The analytical position columns of the transition `A` match the central-FD `A` for a
+    /// **non-parallel (spatial) hinge chain** — the regression for the Coriolis `∂S/∂q`
+    /// ancestor term in [`mjd_rne_pos`]. A hinge's world-frame axis rotates when an ANCESTOR
+    /// rotates (`∂â_j/∂q_k = â_k × â_j`); this is zero for a parallel-axis chain (the
+    /// `n_link_pendulum` default, which is why the prior bug hid) but material for a spatial
+    /// one. Before the fix the velocity-position block was ~20% wrong here. Scope: this pins
+    /// the SINGLE-HOP (2-link) ancestor term; the multi-hop (3+ link) `∂S/∂q` is still
+    /// incomplete (a spatial 3-link's `A` is ~10% off) — the documented follow-on.
+    #[test]
+    fn analytical_transition_matches_fd_nonparallel_chain() {
+        use crate::derivatives::{max_relative_error, mjd_transition_fd};
+        // 2-link chain with a NON-PARALLEL second hinge axis (so â_0 × â_1 ≠ 0).
+        let mut model = Model::n_link_pendulum(2, 0.15, 0.4);
+        model.jnt_axis[1] = Vector3::new(1.0, 0.3, 0.0).normalize();
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qpos[1] = -0.4;
+        data.qvel[0] = 0.9; // nonzero velocity engages the Coriolis term
+        data.qvel[1] = -1.2;
+        data.forward(&model).expect("forward");
+
+        let analytic = data
+            .transition_derivatives(
+                &model,
+                &DerivativeConfig {
+                    use_analytical: true,
+                    ..Default::default()
+                },
+            )
+            .expect("analytical transition");
+        let fd = mjd_transition_fd(
+            &model,
+            &data,
+            &DerivativeConfig {
+                use_analytical: false,
+                ..Default::default()
+            },
+        )
+        .expect("FD transition");
+
+        // Floor 1e-3 ignores the near-zero position-velocity entries (~Δt) whose FD noise
+        // would otherwise dominate the relative metric; the velocity-position block (the
+        // entry the bug corrupted) is O(0.1–1).
+        let (err, loc) = max_relative_error(&analytic.A, &fd.A, 1e-3);
+        assert!(
+            err < 1e-5,
+            "analytical transition A must match central-FD for a spatial hinge chain \
+             (Coriolis ∂S/∂q term), got rel {err:.3e} at {loc:?}"
         );
     }
 

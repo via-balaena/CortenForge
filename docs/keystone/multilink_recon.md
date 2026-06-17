@@ -61,3 +61,65 @@ Localize with the per-step-μ-leaf tape vs per-step-truncated FD instrument (as 
 4. `rigid_xfrc_column` (`G_vel`, `nv×6`) off-diagonal columns at `nv = 2` (validated in
    `rigid_multidof_response` for a 2-link at the primitive level — re-check in the coupled
    composition).
+
+## ★★★ RESOLVED (2026-06-17) — the analytic UNDAMPED chain `J_state` (machine-exact)
+
+The "analytic CHAIN carry" follow-on above is now SHIPPED: the undamped serial-hinge chain
+uses the analytic loaded transition `J_state = A + Δt·M⁻¹·(G − dMu)`
+(`StaggeredCoupling::chain_state_jacobian`), machine-exact vs the full-coupled FD
+(`twolink_chain_gradient_matches_fd`: n=2 rel 6e-10, n=6 5e-9), replacing the FD `J_state`.
+
+Pieces (each S0-spike-validated):
+- `A` = the UNLOADED transition (`transition_derivatives`) — but it MUST be evaluated at the
+  CLEAN (`xfrc_applied = 0`) operating point (see bug #2).
+- `G = ∂(Jᵀw)/∂q` — the geom-stiff Hessian, case-split closed form: for joint j (world axis
+  `â_j`, anchor `o_j`, arm `r_j = p − o_j` to the contact COM `p`),
+  `G[j,k] = (∂â_j/∂q_k)·(τ + r_j×f) + â_j·((∂r_j/∂q_k)×f)`, with `∂â_j/∂q_k = â_k×â_j`,
+  `∂o_j/∂q_k = â_k×(o_j−o_k)` (both only when k is a STRICT ancestor of j), and
+  `∂p/∂q_k = â_k×(p−o_k)`. Reduces to the single-hinge `(â×(â×r))·f` at j=k.
+- `dMu = (∂M/∂q)·u`, `u = M⁻¹Jᵀw` (`sim_core::mass_directional_derivative`); the `∂M⁻¹/∂q`
+  term `= −M⁻¹·dMu`. Vanishes for a single hinge (constant M); material for a chain.
+
+### ★★ THE RE-SPIKE FOUND TWO BUGS the "it's just assembly" spec premise hid:
+
+**Bug #1 (sim-core) — the Coriolis `∂S/∂q` ancestor term.** `mjd_rne_pos`'s Part B
+(Coriolis) dropped `cvel[parent] ×_m ((∂S/∂q)·qvel)` as "zero for hinges" — TRUE only for
+the SELF term, FALSE for an ANCESTOR: a hinge's world-frame axis rotates when an ancestor
+rotates (`∂â_j/∂q_k = â_k×â_j`). Zero for a PARALLEL-axis chain (which is why
+`n_link_pendulum` never caught it), material for a SPATIAL chain (the analytical position
+columns / `transition_derivatives.A` velocity-position block were ~21% wrong). Added the
+ancestor term; regression `analytical_transition_matches_fd_nonparallel_chain`. Part A
+already had the analogue. **A single hinge is immune — a 1-DOF system has no Coriolis**,
+which is why the single-hinge analytic `J_state` was always exact.
+
+**Bug #2 (coupling) — `A` computed at a STALE operating point.** `chain_state_jacobian`
+first read `A` from `self.data.transition_derivatives(...)`, but `self.data.xfrc_applied`
+still holds the PREVIOUS step's contact wrench (sim-core's `step` does not clear it).
+`transition_derivatives` derives its operating-point `qacc` from an internal nominal step
+that consumes that stale wrench, and the chain's `∂(M·qacc)/∂q` term then uses the
+contaminated `qacc` → `A` was the loaded transition w.r.t. the STALE wrench, so adding the
+current-wrench `addend` double-counted. **Step 1 was exact (xfrc=0 from rest); step ≥2
+compounded** — the classic "exact@n=1, drifts@n ⇒ wiring, not per-step" signature. Again a
+single hinge is immune (`∂M/∂q = 0` ⇒ `qacc` operating point irrelevant). Fix: compute `A`
+on a fresh `xfrc=0` scratch (with `ctrl` copied — the actuator input IS a held transition
+input). This is also why the DIRECT `chain_state_jacobian_matches_fd_loaded` test passed
+while the end-to-end failed: the direct test builds a fresh coupling (xfrc already 0).
+
+### ★ METHOD LESSON
+The direct per-step `J_state`-vs-FD test (tol 1e-5) hid both: bug #1 was small at the test's
+modest qvel; bug #2 needs a stale xfrc that only exists mid-rollout. The END-TO-END
+gradient-vs-rerolled-FD gate is what exposed them. Also: FD-carry was ALREADY ~1e-8 (not the
+"~1e-6" the old docstrings claimed), so the analytic carry's win is determinism + a clean
+base for the damped chain, more than raw precision. Use a STABLE rollout to judge (the stiff
+2-link slams the underactuated distal link to qvel~600 — a diverged trajectory where even
+the analytical `A` and FD legitimately disagree; not a real defect).
+
+### ★ SCOPE: nv == 2 (single-hop ancestors); multi-hop is a follow-on
+The analytic chain `J_state` (and bug #1's sim-core `∂S/∂q` fix) is VALIDATED for the 2-link
+(single-hop ancestor) chain. A 3+-link chain has MULTI-HOP strict ancestors (the tip's
+grandparent joint), where the sim-core Coriolis position derivative is STILL incomplete: a
+spatial 3-link's unloaded `A` is ~10% off vs FD, while a PARALLEL 3-link is exact — isolating
+the residual to the non-parallel multi-hop `∂S/∂q` path (the same class as bug #1, not yet
+fully closed). `chain_state_jacobian` therefore gates to `nv == 2`; `nv > 2` declines to the
+FD `loaded_state_jacobian` (machine-exact vs the re-rolled oracle at ~1e-8). Completing the
+multi-hop sim-core term (so the analytic carry covers a full leg, nv ≥ 3) is the follow-on.
