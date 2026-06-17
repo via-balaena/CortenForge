@@ -364,20 +364,10 @@ fn forward_at(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
 ///   the bulk (1.0→0.30); the tail is the free body's world-frame linear
 ///   subspace interacting with an ancestor rotation. Follow-on: free-child
 ///   coupling completion.
-/// - `ball_root` / `hinge_then_ball` (≈1.6e-2 / 2.3e-2): a few-percent residual
-///   confined to the POSITION rows (`∂qpos'/∂qpos`) on near-floor entries —
-///   i.e. the quaternion INTEGRATION derivative (`compute_integration_derivatives`
-///   right-Jacobian, the quaternion-joints arc), a different subsystem than
-///   `mjd_rne_pos`. Follow-on: quaternion integration right-Jacobian.
-/// - `free_root_tumbling` (≈5.5e-4): same quaternion-integration tail, essentially
-///   at the FD floor; bounded here so it can't regress.
 fn known_limit(name: &str) -> Option<f64> {
     match name {
         "multi_joint_body" => Some(1.0),
         "hinge_then_free" => Some(0.5),
-        // Both quaternion-integration residuals share the same ~few-% bound.
-        "hinge_then_ball" | "ball_root" => Some(5e-2),
-        "free_root_tumbling" => Some(2e-3),
         _ => None,
     }
 }
