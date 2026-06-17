@@ -123,10 +123,23 @@ pub(super) fn compute_integration_derivatives(
                 dqpos_dqvel[(dof_adr, dof_adr)] = h;
             }
             crate::types::MjJointType::Ball => {
+                // θ = ω'·h uses the POST-step velocity (semi-implicit Euler
+                // integrates qpos with qvel_{t+1} = qvel + h·qacc), not the
+                // pre-step qvel — otherwise J_l⁻¹(θ) is evaluated at the wrong
+                // angle and the position-row columns carry an O(h²·qacc) error
+                // (only quaternion joints have a θ-dependent block).
+                //
+                // `qvel + h·qacc` is the exact post-step velocity for UNDAMPED
+                // Euler. For eulerdamp / ImplicitSpringDamper the true post-step
+                // velocity uses M_impl⁻¹ (not the bare `qacc` read here), so a
+                // damped quaternion joint keeps a residual O(h²·D·qacc) in this
+                // block — strictly smaller than the pre-step error this replaces,
+                // never larger. Closing it for the damped path is a follow-on
+                // (route the transition `qacc` in); the undamped path is exact.
                 let omega = Vector3::new(
-                    data.qvel[dof_adr],
-                    data.qvel[dof_adr + 1],
-                    data.qvel[dof_adr + 2],
+                    data.qvel[dof_adr] + h * data.qacc[dof_adr],
+                    data.qvel[dof_adr + 1] + h * data.qacc[dof_adr + 1],
+                    data.qvel[dof_adr + 2] + h * data.qacc[dof_adr + 2],
                 );
                 let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                     data.qpos[qpos_adr],
@@ -148,11 +161,12 @@ pub(super) fn compute_integration_derivatives(
                     dqpos_dqpos[(dof_adr + i, dof_adr + i)] = 1.0;
                     dqpos_dqvel[(dof_adr + i, dof_adr + i)] = h;
                 }
-                // Angular part (dof_adr+3..dof_adr+6)
+                // Angular part (dof_adr+3..dof_adr+6) — post-step velocity θ=ω'·h
+                // (see Ball above; pre-step qvel leaves an O(h²·qacc) error).
                 let omega = Vector3::new(
-                    data.qvel[dof_adr + 3],
-                    data.qvel[dof_adr + 4],
-                    data.qvel[dof_adr + 5],
+                    data.qvel[dof_adr + 3] + h * data.qacc[dof_adr + 3],
+                    data.qvel[dof_adr + 4] + h * data.qacc[dof_adr + 4],
+                    data.qvel[dof_adr + 5] + h * data.qacc[dof_adr + 5],
                 );
                 let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                     data.qpos[qpos_adr + 3],

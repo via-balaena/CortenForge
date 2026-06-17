@@ -57,6 +57,9 @@ mod fd;
 mod hybrid;
 mod integration;
 
+#[cfg(test)]
+mod transition_matrix_harness;
+
 // Re-export public items so they remain accessible at `crate::derivatives::*`
 pub use fd::{InverseDynamicsDerivatives, mjd_inverse_fd, mjd_transition_fd};
 pub use hybrid::{
