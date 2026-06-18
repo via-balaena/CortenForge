@@ -55,4 +55,7 @@ doc-valid-idents = [
     "Vulkan",
     "DirectX",
     "Metal",
+    "MuJoCo",
+    "MJCF",
+    "OpenSim",
 ]
