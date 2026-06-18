@@ -952,6 +952,54 @@ fn t15_qfrc_bias_pendulum() {
     eprintln!("  T15 passed: qfrc_bias matches CPU for 3-link pendulum");
 }
 
+// ── T15b: qfrc_bias for a NON-PARALLEL (spatial) 3-link chain ────────
+// Guards the RNE forward velocity-product transport. `n_link_pendulum` is an
+// all-Y (planar, parallel-axis) chain, where the `[0; ω_parent×r]` transport
+// lever of the Coriolis term vanishes — so T15 stays green even if the shader
+// drops it. A non-parallel ≥3-link chain is the first geometry where the lever
+// is material and the leaf transports a nonzero parent bias acceleration; this
+// is exactly where the CPU bug (fixed alongside this shader) showed up vs MuJoCo.
+#[test]
+fn t15b_qfrc_bias_spatial_chain() {
+    let ctx = gpu_or_skip!();
+
+    // Start from the 3-link chain and break parallelism/planarity: cycle the
+    // hinge axes through Y/X/Z and offset the leaf laterally (mirrors the CPU
+    // `three_link_spatial` conformance fixture). Mutating these public fields is
+    // valid here — GPU and CPU consume the identical model, so the test asserts
+    // GPU == CPU, and the CPU path is itself MuJoCo-validated.
+    let mut model = Model::n_link_pendulum(3, 0.2, 0.4);
+    model.jnt_axis[0] = Vector3::new(0.0, 1.0, 0.0);
+    model.jnt_axis[1] = Vector3::new(1.0, 0.0, 0.0);
+    model.jnt_axis[2] = Vector3::new(0.0, 0.0, 1.0);
+    model.body_pos[3] = Vector3::new(0.03, 0.0, -0.2); // lateral offset → non-planar
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.35;
+    data.qpos[2] = 0.25;
+    data.qvel[0] = 0.9;
+    data.qvel[1] = -0.6;
+    data.qvel[2] = 0.7;
+
+    data.forward(&model).expect("CPU forward failed");
+
+    let (_, state_buf) = run_through_rne(&ctx, &model, &data);
+    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+
+    let tol = 1e-3;
+    for d in 0..model.nv {
+        let g = gpu_bias[d];
+        let c = data.qfrc_bias[d] as f32;
+        assert!(
+            (g - c).abs() < tol,
+            "qfrc_bias[{d}]: GPU={g:.6} CPU={c:.6} err={:.2e}",
+            (g - c).abs()
+        );
+    }
+    eprintln!("  T15b passed: qfrc_bias matches CPU for non-parallel 3-link chain");
+}
+
 // ── T16: qacc_smooth for free body under gravity ─────────────────────
 
 #[test]

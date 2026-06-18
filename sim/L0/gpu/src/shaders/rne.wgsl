@@ -260,12 +260,18 @@ fn rne_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
     var a_ang = pa_ang;
     var a_lin = pa_lin + cross(pa_ang, r);
 
-    // Parent velocity (needed for velocity-product acceleration)
+    // Parent velocity, TRANSPORTED to this body's origin. cvel is referenced at
+    // each body's xpos, so the velocity-product term c[i] = v[i] ×_m (S·qdot) =
+    // X_b(v[parent]) ×_m (S·qdot) must use the transported parent velocity (angular
+    // unchanged, linear += ω_parent × r) — the raw parent value at the parent origin
+    // drops the [0; ω_parent×r] lever and corrupts non-parallel ≥3-link Coriolis.
+    // (Mirrors the CPU `transport_motion_spatial` in dynamics/spatial.rs; r is the
+    // same parent→child offset used for the bias-acceleration transport above.)
     let vp_ang = body_cvel[(env_body_off + parent) * 2u + 0u].xyz;
-    let vp_lin = body_cvel[(env_body_off + parent) * 2u + 1u].xyz;
+    let vp_lin = body_cvel[(env_body_off + parent) * 2u + 1u].xyz + cross(vp_ang, r);
 
     // Velocity-product acceleration from each DOF on this body
-    // c[i] = v[parent] ×_m (S[i] @ qdot[i])
+    // c[i] = X_b(v[parent]) ×_m (S[i] @ qdot[i])
     let dof_start = body.dof_adr;
     let dof_count = body.dof_num;
     for (var d = 0u; d < dof_count; d++) {
@@ -274,9 +280,9 @@ fn rne_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
         let vj_ang = cdof[dof_idx * 2u + 0u].xyz * qv;
         let vj_lin = cdof[dof_idx * 2u + 1u].xyz * qv;
 
-        // spatial_cross_motion(v_parent, v_joint):
+        // spatial_cross_motion(vt, v_joint):
         //   result.angular = ω_parent × vj_ang
-        //   result.linear  = ω_parent × vj_lin + v_parent_lin × vj_ang
+        //   result.linear  = ω_parent × vj_lin + vt_lin × vj_ang
         a_ang += cross(vp_ang, vj_ang);
         a_lin += cross(vp_ang, vj_lin) + cross(vp_lin, vj_ang);
     }
@@ -387,11 +393,18 @@ fn rne_backward(@builtin(global_invocation_id) gid: vec3<u32>) {
         bitcast<f32>(atomicLoad(&body_cfrc[cfrc_base + 6u])),
     );
 
-    // CAS-atomic-add into parent (world-frame, no spatial transport)
+    // CAS-atomic-add into parent with X_bᵀ spatial-force transport to the parent
+    // origin: force unchanged, torque gains the (xpos[child]−xpos[parent])×f lever.
+    // cfrc is a spatial force at each body's own origin, so a plain add across
+    // bodies at different origins drops this lever and corrupts ancestor-DOF
+    // Coriolis on a multi-link chain (matches CPU rne.rs after PR #350).
+    let r = body_xpos[env_body_off + body_id].xyz
+          - body_xpos[env_body_off + body.parent].xyz;
+    let lever = cross(r, cfrc_lin);
     let parent_base = (env_body_off + body.parent) * 8u;
-    atomic_add_f32_cfrc(parent_base + 0u, cfrc_ang.x);
-    atomic_add_f32_cfrc(parent_base + 1u, cfrc_ang.y);
-    atomic_add_f32_cfrc(parent_base + 2u, cfrc_ang.z);
+    atomic_add_f32_cfrc(parent_base + 0u, cfrc_ang.x + lever.x);
+    atomic_add_f32_cfrc(parent_base + 1u, cfrc_ang.y + lever.y);
+    atomic_add_f32_cfrc(parent_base + 2u, cfrc_ang.z + lever.z);
     atomic_add_f32_cfrc(parent_base + 4u, cfrc_lin.x);
     atomic_add_f32_cfrc(parent_base + 5u, cfrc_lin.y);
     atomic_add_f32_cfrc(parent_base + 6u, cfrc_lin.z);
