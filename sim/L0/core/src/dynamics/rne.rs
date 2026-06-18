@@ -6,7 +6,9 @@
 
 use nalgebra::Vector3;
 
-use crate::dynamics::spatial::{SpatialVector, spatial_cross_force, spatial_cross_motion};
+use crate::dynamics::spatial::{
+    SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
+};
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::joint_motion_subspace;
 use crate::types::{DISABLE_GRAVITY, Data, ENABLE_SLEEP, MIN_VAL, MjJointType, Model, SleepState};
@@ -216,12 +218,20 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Velocity-product acceleration: v[parent] ×_m v_joint
-            // This is the centripetal/Coriolis acceleration contribution
-            // Note: using parent velocity because v[i] = v[parent] + S@qdot,
-            // and (S@qdot) ×_m (S@qdot) = 0, so v[i] ×_m (S@qdot) = v[parent] ×_m (S@qdot)
-            let v_parent = data.cvel[parent_id];
-            a_bias += spatial_cross_motion(v_parent, v_joint);
+            // Velocity-product acceleration: Featherstone's bias term
+            // c[i] = v[i] ×_m (S·qdot). Since v[i] = X_b(v[parent]) + S·qdot and
+            // (S·qdot) ×_m (S·qdot) = 0, this equals X_b(v[parent]) ×_m (S·qdot),
+            // where X_b(v[parent]) is the parent velocity transported to body i's
+            // origin (cvel is referenced at each body's xpos). The raw cvel[parent],
+            // referenced at the PARENT origin, drops the lever [0; ω_parent×r] — a
+            // term that vanishes for single/two-link chains by geometry but corrupts
+            // the Coriolis force on a non-parallel ≥3-link chain (first nonzero at the
+            // leaf, which the backward pass cannot reach). Using the transported
+            // velocity (vs. cvel[body] = transported + S·qdot) avoids cancellation
+            // noise at the root, where it is identically zero. Validated against
+            // MuJoCo by the forward-conformance harness.
+            let v_parent_at_body = transport_motion_spatial(data.cvel[parent_id], &r);
+            a_bias += spatial_cross_motion(v_parent_at_body, v_joint);
 
             // Free joint correction: the spatial acceleration convention uses
             // a_spatial = [α; a_O - ω × v_O], but the free joint's translational

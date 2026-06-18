@@ -12,7 +12,9 @@ use super::integration::{compute_integration_derivatives, mjd_sub_quat};
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::object_velocity_local;
-use crate::dynamics::spatial::{SpatialVector, spatial_cross_force, spatial_cross_motion};
+use crate::dynamics::spatial::{
+    SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
+};
 use crate::forward::{
     MjStage, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, hill_force_velocity,
     mj_fwd_position, muscle_gain_length, muscle_gain_velocity, norm3,
@@ -430,6 +432,15 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
             data.deriv_Dcvel[body_id][(5, c)] = parent_dcvel[(5, c)] + lever.z;
         }
 
+        // Snapshot the TRANSPORTED parent velocity Jacobian `∂vt/∂qvel = X_b·Dcvel[parent]`
+        // before this body's own joint subspace is added below. The velocity-product
+        // term differentiates `vt = X_b(cvel[parent])` (the parent velocity transported
+        // to this body's origin), NOT `cvel[body] = vt + S·qvel`; using `vt` keeps the
+        // term identically zero at the root (where cvel[parent]=0) instead of relying on
+        // a `(S·qvel)×_m(S·qvel)` cancellation that leaves floating-point noise.
+        let dvt = data.deriv_Dcvel[body_id].clone();
+        let vt = transport_motion_spatial(data.cvel[parent_id], &r);
+
         // For each joint of this body
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
@@ -478,8 +489,9 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Term 1 (direct): crossMotion(cvel[parent], S[:, d])
-            let cvel_parent = data.cvel[parent_id];
+            // The forward velocity-product term is `crossMotion(vt, v_joint)` with
+            // `vt = X_b(cvel[parent])` (see `mj_rne`). Its qvel-derivative:
+            // Term 1 (direct, ∂v_joint): crossMotion(vt, S[:, d])
             for d in 0..ndof {
                 let s_col = SpatialVector::new(
                     s[(0, d)],
@@ -489,19 +501,18 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
                     s[(4, d)],
                     s[(5, d)],
                 );
-                let cross = spatial_cross_motion(cvel_parent, s_col);
+                let cross = spatial_cross_motion(vt, s_col);
                 for row in 0..6 {
                     data.deriv_Dcacc[body_id][(row, dof_adr + d)] += cross[row];
                 }
             }
 
-            // Term 2 (chain rule): mjd_cross_motion_vel(v_joint) · Dcvel[parent]
+            // Term 2 (chain rule, ∂vt): mjd_cross_motion_vel(v_joint) · (∂vt/∂qvel)
             let mat = mjd_cross_motion_vel(&v_joint); // 6×6
-            let parent_dcvel_ref = data.deriv_Dcvel[parent_id].clone();
-            // Dcacc[b] += mat · Dcvel[parent]  (6×nv += 6×6 · 6×nv)
+            // Dcacc[b] += mat · dvt  (6×nv += 6×6 · 6×nv)
             // Column-by-column to avoid mixed static/dynamic type
             for c in 0..nv {
-                let col = mat * parent_dcvel_ref.column(c);
+                let col = mat * dvt.column(c);
                 for r in 0..6 {
                     data.deriv_Dcacc[body_id][(r, c)] += col[r];
                 }
@@ -1162,8 +1173,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     //   Identity: S^T · cfrc_A = g(q) + M·qacc  ← exact (verified)
     //
     // Part B — Coriolis/gyroscopic:
-    //   Forward:  simple copy,  a_B[0] = 0,  a_B[b] = a_B[parent] + cvel[parent] ×_m S·qvel
-    //   Backward: simple add,   f_B[b] = I·a_B[b] + v ×* (I·v)
+    //   Forward:  X_b transport, a_B[0] = 0,  a_B[b] = X_b(a_B[parent]) + X_b(cvel[parent]) ×_m S·qvel
+    //   Backward: X_b^T transport, f_B[b] = I·a_B[b] + v ×* (I·v)
     //   Identity: S^T · cfrc_B = C(q,v)  ← exact (verified, matches MuJoCo convention)
 
     let grav = if model.disableflags & crate::types::DISABLE_GRAVITY != 0 {
@@ -1228,13 +1239,16 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
     // ==================== Part B operating point ====================
     // Coriolis/gyroscopic RNEA — matches `mj_rne`'s bias-acceleration recursion EXACTLY:
-    // `a_B[b] = X_b(a_B[parent]) + cvel[parent] ×_m (S·qvel)` (X_b motion transport:
-    // angular unchanged, linear += α_parent × r). The X_b transport is ZERO for the root's
-    // children (parent bias accel = 0) and for a single hop, so a "simple copy" agreed for
-    // ≤2-link chains — but the parent's bias accel has a nonzero ANGULAR part once the chain
-    // is ≥3 links with non-parallel axes, and dropping `α_parent × r` then makes Sᵀ·cfrc_B
-    // diverge from `mj_rne`'s qfrc_bias (the forward identity it must satisfy). Backward stays
-    // simple-add (no X_bᵀ), exactly as `mj_rne` does.
+    // `a_B[b] = X_b(a_B[parent]) + X_b(cvel[parent]) ×_m (S·qvel)` (X_b motion transport:
+    // angular unchanged, linear += α_parent × r). The velocity-product uses the parent
+    // velocity TRANSPORTED to this body's origin `vt = X_b(cvel[parent])`; the raw
+    // `cvel[parent]` at the parent origin drops the `[0; ω_parent×r] ×_m (S·qvel)` lever
+    // and corrupts a non-parallel ≥3-link chain (see `mj_rne`). The X_b transport of the
+    // parent bias accel is ZERO for the root's children and for a single hop, but its
+    // angular part is nonzero once the chain is ≥3 links with non-parallel axes, so
+    // dropping `α_parent × r` would make Sᵀ·cfrc_B diverge from `mj_rne`'s qfrc_bias (the
+    // forward identity it must satisfy). The backward pass transports X_bᵀ, exactly as
+    // `mj_rne` does.
     let mut cacc_b = vec![SpatialVector::zeros(); nbody];
     for b in 1..nbody {
         let pid = model.body_parent[b];
@@ -1259,7 +1273,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     vj[row] += s[(row, d)] * data.qvel[da + d];
                 }
             }
-            cacc_b[b] += spatial_cross_motion(data.cvel[pid], vj);
+            cacc_b[b] += spatial_cross_motion(transport_motion_spatial(data.cvel[pid], &r), vj);
 
             // Free-joint correction: the spatial-acceleration convention is
             // `a = [α; a_O − ω×v_O]`, but a free joint's translational DOFs carry
@@ -1307,6 +1321,13 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // ==================== Velocity derivatives (shared) ====================
     // cvel uses X_b transport: cvel[b] = X_b(cvel[parent]) + S·qvel
     // These derivatives are needed by Part B's Term C.
+    //
+    // `dvt_pos[b] = ∂(X_b·cvel[parent])/∂q` — the TRANSPORTED parent velocity
+    // Jacobian, captured after the X_b transport + its lever derivative but BEFORE
+    // this body's own joint subspace is folded in. Part B's velocity-product
+    // differentiates `vt = X_b(cvel[parent])`, so it needs `∂vt/∂q` (not the full
+    // `∂cvel[b]/∂q`, which also carries the body's own `∂(S·qvel)/∂q`).
+    let mut dvt_pos: Vec<DMatrix<f64>> = vec![DMatrix::zeros(6, nv); nbody];
     for body_id in 1..nbody {
         let parent_id = model.body_parent[body_id];
         let r = data.xpos[body_id] - data.xpos[parent_id];
@@ -1367,6 +1388,10 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 }
             }
         }
+
+        // Capture ∂vt/∂q (transport + lever derivative only) before the joint
+        // subspace term below mutates deriv_Dcvel_pos[body_id] in place.
+        dvt_pos[body_id].copy_from(&data.deriv_Dcvel_pos[body_id]);
 
         // Joint subspace position derivative: ∂(vJ_total)/∂q_k
         //
@@ -1790,10 +1815,13 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         data.deriv_Dcfrc_pos[b].fill(0.0);
     }
 
-    // Part B acceleration: a_B[b] = X_b(a_B[parent]) + cvel[parent] ×_m S·qvel
+    // Part B acceleration: a_B[b] = X_b(a_B[parent]) + vt ×_m S·qvel, vt = X_b(cvel[parent])
     // ∂a_B/∂q = X_b(∂a_B[parent]/∂q) + a_B[parent]_ang × (axis × r)  (X_b transport + its deriv)
-    //         + (∂cvel[parent]/∂q) ×_m v_joint  (Term C)
-    //         + cvel[parent] ×_m (∂S/∂q · qvel)  (ancestor ∂S/∂q, added per-body below)
+    //         + (∂vt/∂q) ×_m v_joint  (Term C, ∂vt/∂q = dvt_pos[b])
+    //         + vt ×_m (∂S/∂q · qvel)  (ancestor/same-body ∂S/∂q, added per-body below)
+    // The velocity-product uses the TRANSPORTED parent velocity vt (matching `mj_rne` and the
+    // Part B operating point above) — NOT cvel[b] = vt + S·qvel — so the term stays exactly
+    // zero at the root instead of differentiating a cancelling `(S·qvel)×_m(S·qvel)`.
     for b in 1..nbody {
         let pid = model.body_parent[b];
         let r = data.xpos[b] - data.xpos[pid];
@@ -1865,11 +1893,10 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Term C: (∂cvel[parent]/∂q) ×_m v_joint
+            // Term C: (∂vt/∂q) ×_m v_joint, with ∂vt/∂q = dvt_pos[b]
             let mat = mjd_cross_motion_vel(&v_joint);
-            let parent_dcvel = data.deriv_Dcvel_pos[pid].clone();
             for c in 0..nv {
-                let col = mat * parent_dcvel.column(c);
+                let col = mat * dvt_pos[b].column(c);
                 for row in 0..6 {
                     data.deriv_Dcacc_pos[b][(row, c)] += col[row];
                 }
@@ -1880,20 +1907,20 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             // does not belong inside this per-joint accumulation.)
         }
 
-        // Velocity subspace derivative: cvel[parent] ×_m ((∂S/∂q)·qvel).
+        // Velocity subspace derivative: vt ×_m ((∂S/∂q)·qvel), vt = X_b(cvel[parent]).
         //
         // Each joint's world-frame motion subspace `S` on body `b` rotates when an
         // ANCESTOR angular DOF `k` rotates body `b`'s frame: `∂S/∂q_k = s_ang_k ×_m S`
         // (e.g. for a hinge, `∂â_j/∂q_k = â_k × â_j`). So the body's total joint velocity
         // `v_J = Σ S·qvel` gains `∂v_J/∂q_k = s_ang_k ×_m v_J`, and the Part B Coriolis
-        // acceleration `a_B[b] += cvel[parent] ×_m v_J` gains `cvel[parent] ×_m ∂v_J/∂q_k`.
+        // acceleration `a_B[b] += vt ×_m v_J` gains `vt ×_m ∂v_J/∂q_k`.
         //
         // This is ZERO for a single hinge and for any PARALLEL-axis chain (`â_k ∥ â_j ⇒
         // â_k × â_j = 0`), which is why it was previously dropped as "zero for hinges" —
         // but it is MATERIAL for a spatial (non-parallel) chain, where its omission left
         // `∂C(q,v)/∂q` (and hence the analytical transition's position columns) wrong.
-        let cvel_parent = data.cvel[pid];
-        if cvel_parent.norm_squared() > 0.0 {
+        let vt = transport_motion_spatial(data.cvel[pid], &r);
+        if vt.norm_squared() > 0.0 {
             // Per-joint joint velocity over orientation-dependent DOFs on body
             // b (exclude Free linear DOFs: their world-frame S is constant,
             // ∂S/∂q = 0). `v_j` is the full body total (used for ancestors).
@@ -1942,9 +1969,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                             }
                             let s_ang_k =
                                 SpatialVector::new(axis_k[0], axis_k[1], axis_k[2], 0.0, 0.0, 0.0);
-                            // ∂v_J/∂q_k = s_ang_k ×_m vj_eff; then cross with cvel[parent].
+                            // ∂v_J/∂q_k = s_ang_k ×_m vj_eff; then cross with vt.
                             let dvj = spatial_cross_motion(s_ang_k, vj_eff);
-                            let contrib = spatial_cross_motion(cvel_parent, dvj);
+                            let contrib = spatial_cross_motion(vt, dvj);
                             for row in 0..6 {
                                 data.deriv_Dcacc_pos[b][(row, da_k + dk)] += contrib[row];
                             }
