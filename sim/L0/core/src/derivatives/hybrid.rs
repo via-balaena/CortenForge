@@ -1112,6 +1112,24 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     let is_translational =
         |k: usize| -> bool { dof_axis[k].norm_squared() == 0.0 && dof_lin[k].norm_squared() > 0.0 };
 
+    // A Free joint sets its body's world pose ABSOLUTELY (`position.rs` overwrites
+    // `pos`/`quat` from qpos, discarding the parent frame). So a free body's frame —
+    // and hence its velocity, inertia, and motion subspace — is INDEPENDENT of every
+    // ancestor DOF. The rigid-transport (`axis×r`), ancestor `∂S/∂q`, and ancestor
+    // `∂I/∂q` terms that are correct for a RELATIVE child (Hinge/Slide/Ball, whose
+    // frame rides the parent) are therefore SPURIOUS for a free child. The only
+    // genuine ancestor coupling that survives is through the parent's spatial velocity
+    // (`∂cvel[parent]/∂q`, already propagated by the `parent_dcvel`/`parent_dcacc`
+    // transport) and the parent origin's motion: since `xpos[b]` is fixed,
+    // `∂r/∂q_k = ∂xpos[b]/∂q_k − ∂xpos[parent]/∂q_k = −axis_k×(xpos[parent] − xanchor_k)`
+    // (vs `axis_k×r` for a relative child). Same-body (own free-DOF) terms are
+    // untouched — they are already machine-exact.
+    let is_free_body = |b: usize| -> bool {
+        let js = model.body_jnt_adr[b];
+        let je = js + model.body_jnt_num[b];
+        (js..je).any(|j| model.jnt_type[j] == MjJointType::Free)
+    };
+
     // ========== Split RNEA: two separate operating points ==========
     //
     // A combined X_b/X_b^T RNEA for all terms (gravity + M·qacc + Coriolis/gyroscopic)
@@ -1288,6 +1306,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             data.cvel[parent_id][1],
             data.cvel[parent_id][2],
         );
+        let bfree = is_free_body(body_id);
         if omega_p.norm_squared() > 0.0 {
             let mut anc = parent_id;
             while anc != 0 {
@@ -1298,7 +1317,13 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     let nd = model.jnt_type[jid].nv();
                     for d in 0..nd {
                         let axis = dof_axis[da + d];
-                        let dr = axis.cross(&r);
+                        // Free child: `xpos[body]` is absolute, so only the parent
+                        // origin moves (`∂r/∂q_k = −axis×(xpos[parent]−xanchor_k)`).
+                        let dr = if bfree {
+                            -axis.cross(&(data.xpos[parent_id] - data.xanchor[jid]))
+                        } else {
+                            axis.cross(&r)
+                        };
                         let contrib = omega_p.cross(&dr);
                         data.deriv_Dcvel_pos[body_id][(3, da + d)] += contrib.x;
                         data.deriv_Dcvel_pos[body_id][(4, da + d)] += contrib.y;
@@ -1380,8 +1405,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
         // Ancestor joint subspace derivative: ∂(vJ_rotating)/∂q_k for ancestor DOFs.
         // When an ancestor angular DOF rotates, it changes this body's orientation,
-        // affecting Hinge/Slide joint axes (not Ball/Free world-frame axes).
-        if vj_rotating.norm_squared() > 0.0 {
+        // affecting Hinge/Slide joint axes (not Ball/Free world-frame axes). Skipped
+        // for a free body: its world subspace is absolute, ∂S/∂q_ancestor = 0.
+        if vj_rotating.norm_squared() > 0.0 && !bfree {
             let mut anc = parent_id;
             while anc != 0 {
                 let anc_js = model.body_jnt_adr[anc];
@@ -1432,6 +1458,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
         // X_b transport derivative: a_A[parent]_ang × (∂r/∂q)
         // (axis×r for rotational ancestors, dof_lin for body-own translation).
+        let bfree = is_free_body(b);
         let omega_acc_p = Vector3::new(cacc_a[pid][0], cacc_a[pid][1], cacc_a[pid][2]);
         if omega_acc_p.norm_squared() > 0.0 {
             let mut anc = pid;
@@ -1443,7 +1470,12 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     let nd = model.jnt_type[jid].nv();
                     for d in 0..nd {
                         let axis = dof_axis[da + d];
-                        let dr = axis.cross(&r);
+                        // Free child: absolute origin → only the parent moves.
+                        let dr = if bfree {
+                            -axis.cross(&(data.xpos[pid] - data.xanchor[jid]))
+                        } else {
+                            axis.cross(&r)
+                        };
                         let contrib = omega_acc_p.cross(&dr);
                         data.deriv_Dcacc_pos[b][(3, da + d)] += contrib.x;
                         data.deriv_Dcacc_pos[b][(4, da + d)] += contrib.y;
@@ -1510,8 +1542,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
         }
 
-        // Ancestor DOFs: ancestor angular rotations also change this body's joint axes
-        if sj_qacc_rotating.norm_squared() > 0.0 {
+        // Ancestor DOFs: ancestor angular rotations also change this body's joint
+        // axes. Skipped for a free body (absolute subspace, ∂S/∂q_ancestor = 0).
+        if sj_qacc_rotating.norm_squared() > 0.0 && !bfree {
             let mut anc = pid;
             while anc != 0 {
                 let anc_js = model.body_jnt_adr[anc];
@@ -1554,6 +1587,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     for b in 1..nbody {
         let inertia = &data.cinert[b];
         let i_cacc = inertia * cacc_a[b];
+        // A free body's inertia is in its ABSOLUTE frame, so ∂I/∂q_ancestor = 0 —
+        // only the same-body (own free-DOF) rotation changes it.
+        let b_same_body_only = is_free_body(b);
 
         let mut anc = b;
         while anc != 0 {
@@ -1576,6 +1612,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                         data.deriv_Dcfrc_pos[b][(row, da + d)] += sf_i_a[row] - i_sm_a[row];
                     }
                 }
+            }
+            if b_same_body_only {
+                break; // free body: skip ancestor ∂I/∂q
             }
             anc = model.body_parent[anc];
         }
@@ -1605,6 +1644,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
         // Transport derivative: (∂r/∂q) × cfrc_A[child]_lin
         // (axis×r for rotational ancestors, dof_lin for body-own translation).
+        let bfree = is_free_body(b);
         let f_lin = Vector3::new(cfrc_a[b][3], cfrc_a[b][4], cfrc_a[b][5]);
         if f_lin.norm_squared() > 0.0 {
             let mut anc = pid;
@@ -1616,7 +1656,12 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     let nd = model.jnt_type[jid].nv();
                     for d in 0..nd {
                         let axis = dof_axis[da + d];
-                        let dr = axis.cross(&r);
+                        // Free child: absolute origin → only the parent moves.
+                        let dr = if bfree {
+                            -axis.cross(&(data.xpos[pid] - data.xanchor[jid]))
+                        } else {
+                            axis.cross(&r)
+                        };
                         let torque = dr.cross(&f_lin);
                         data.deriv_Dcfrc_pos[pid][(0, da + d)] += torque.x;
                         data.deriv_Dcfrc_pos[pid][(1, da + d)] += torque.y;
@@ -1705,6 +1750,10 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     }
                 }
             }
+            // Free `jid`: S is absolute, ∂S_jid/∂q_ancestor = 0 — same-body only.
+            if model.jnt_type[jid] == MjJointType::Free {
+                break;
+            }
             anc = model.body_parent[anc];
         }
     }
@@ -1739,6 +1788,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         // X_b transport derivative: a_B[parent]_ang × (axis × r) for each ancestor angular DOF
         // (∂r/∂q_k = axis_k × r). Zero unless the parent bias accel has an angular part (≥3-link
         // non-parallel) — the missing multi-hop term.
+        let bfree = is_free_body(b);
         let omega_acc_p = Vector3::new(cacc_b[pid][0], cacc_b[pid][1], cacc_b[pid][2]);
         if omega_acc_p.norm_squared() > 0.0 {
             let mut anc = pid;
@@ -1750,7 +1800,13 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     let nd = model.jnt_type[jid].nv();
                     for d in 0..nd {
                         let axis = dof_axis[da + d];
-                        let contrib = omega_acc_p.cross(&axis.cross(&r));
+                        // Free child: absolute origin → only the parent moves.
+                        let dr = if bfree {
+                            -axis.cross(&(data.xpos[pid] - data.xanchor[jid]))
+                        } else {
+                            axis.cross(&r)
+                        };
+                        let contrib = omega_acc_p.cross(&dr);
                         data.deriv_Dcacc_pos[b][(3, da + d)] += contrib.x;
                         data.deriv_Dcacc_pos[b][(4, da + d)] += contrib.y;
                         data.deriv_Dcacc_pos[b][(5, da + d)] += contrib.z;
@@ -1869,6 +1925,11 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                             }
                         }
                     }
+                    // Free body: subspace is absolute, ∂v_J/∂q_ancestor = 0 — the
+                    // same-body (`anc == b`) term is kept, ancestors are skipped.
+                    if is_free_body(b) {
+                        break;
+                    }
                     anc = model.body_parent[anc];
                 }
             }
@@ -1944,6 +2005,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         let i_cacc = inertia * cacc_b[b];
         let cvel_b = data.cvel[b];
         let i_cvel = inertia * cvel_b;
+        // Free body: inertia is in its absolute frame, ∂I/∂q_ancestor = 0.
+        let b_same_body_only = is_free_body(b);
 
         let mut anc = b;
         while anc != 0 {
@@ -1971,6 +2034,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                             (sf_i_a[row] - i_sm_a[row]) + vel_coupling[row];
                     }
                 }
+            }
+            if b_same_body_only {
+                break; // free body: skip ancestor ∂I/∂q
             }
             anc = model.body_parent[anc];
         }
@@ -2052,6 +2118,10 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                         data.qDeriv_pos[(da_j + dd, da_k + d)] -= proj;
                     }
                 }
+            }
+            // Free `jid`: S is absolute, ∂S_jid/∂q_ancestor = 0 — same-body only.
+            if model.jnt_type[jid] == MjJointType::Free {
+                break;
             }
             anc = model.body_parent[anc];
         }

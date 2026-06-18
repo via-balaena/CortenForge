@@ -274,6 +274,29 @@ fn matrix() -> Vec<Case> {
         });
     }
 
+    {
+        // hinge → hinge → free: the free body's parent ORIGIN moves under both
+        // ancestor hinges, so the general free-child transport derivative
+        // `∂r/∂q = −axis×(xpos[parent]−xanchor)` (parent origin moving, free body
+        // origin fixed) is exercised with a genuinely nonzero value — unlike
+        // `hinge_then_free` where the root hinge sits at the anchor (∂r = 0).
+        let mut m = Model::empty();
+        let b0 = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_hinge_joint(&mut m, b0, "h0", ax[1], 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        let b1 = link_body(&mut m, b0, "l1", Vector3::new(0.0, 0.0, -l), l);
+        add_hinge_joint(&mut m, b1, "h1", ax[0], 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        let b2 = link_body(&mut m, b1, "l2", Vector3::new(0.0, 0.0, -l), l);
+        add_freejoint(&mut m, b2, "free2");
+        finalize(&mut m);
+        let q = tilted_quat();
+        cases.push(Case {
+            name: "double_hinge_then_free",
+            model: m,
+            qpos: vec![0.3, -0.4, 0.1, -0.2, 0.3, q[0], q[1], q[2], q[3]],
+            qvel: vec![0.9, -0.7, 0.6, -0.4, 0.5, 0.5, -0.3, 0.7],
+        });
+    }
+
     // ---- multi-joint-per-body --------------------------------------------
     {
         // Two hinges on the SAME body (different axes): joint 1's subspace
@@ -377,16 +400,18 @@ fn forward_at(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
 /// `rne.rs` gravity projection, and the analytic `∂S/∂q` in `mjd_rne_pos`
 /// restricts the same-body cross-term to joints applied at-or-before `j`.)
 ///
-/// - `hinge_then_free` (≈0.30): free-child ↔ ancestor Coriolis. A free body's
-///   bias generalized force is INVARIANT under an ancestor rotation (the child
-///   rotates rigidly, and the bias in body coords is rotation-invariant) — FD
-///   confirms `∂qfrc_bias/∂q_ancestor ≈ 0`. For a HINGE child the analytic's
-///   `∂S`/`∂I`/`∂v` ancestor terms cancel to match (hinge chains are
-///   machine-exact); for a FREE child the **world-frame linear velocity DOFs**
-///   break the rigid-rotation cancellation, leaving a residual that no single
-///   term owns (toggling any one shifts but does not remove it). The
-///   translational-DOF transport added in this stone closed the bulk (1.0→0.30).
-///   Follow-on: a from-scratch free-child ancestor-Coriolis derivation.
+/// (`hinge_then_free` was a known limit here — a free child's ancestor-DOF bias
+/// derivative. A Free joint sets its body's world pose ABSOLUTELY (`position.rs`
+/// overwrites `pos`/`quat` from qpos), so the free body's frame — and hence its
+/// velocity, inertia, and motion subspace — is INDEPENDENT of every ancestor DOF
+/// (FD confirms `∂cvel/∂q_ancestor = ∂qfrc_bias/∂q_ancestor = 0` exactly). The
+/// `mjd_rne_pos` passes treated it as a relative child (applying `axis×r`
+/// transport, ancestor `∂S/∂q`, ancestor `∂I/∂q`), which is spurious. It is now
+/// machine-exact: for a free body the ancestor `∂S/∂q` and `∂I/∂q` terms are
+/// dropped and the offset derivative uses `∂r/∂q = −axis×(xpos[parent]−xanchor)`
+/// — only the parent origin moves — across all six transport/subspace/inertia/
+/// projection sites in `mjd_rne_pos`.)
+///
 /// - `hinge_offset_pivot` (≈5e-3): a hinge with `jnt_pos ≠ 0` rotates the body
 ///   about the joint anchor (≠ body frame origin), i.e. rotation + translation
 ///   of the origin. The same-body `∂S/∂q` (`â×(â×r)`) is correct, but the
@@ -398,11 +423,10 @@ fn forward_at(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
 ///   anchored joints — so this is a LATENT gap, surfaced by the harness, not a
 ///   live one. Follow-on: offset-pivot `∂I`/transport completion.
 fn known_limit(name: &str) -> Option<f64> {
-    // Bounds are tight ratchets just above the measured residual (≈0.30, ≈5e-3)
-    // so a partial regression that worsens either trips the test, while the
-    // documented gap itself stays green. Re-tighten if a follow-on shrinks them.
+    // Bound is a tight ratchet just above the measured residual (≈5e-3) so a
+    // partial regression that worsens it trips the test, while the documented
+    // gap itself stays green. Re-tighten if a follow-on shrinks it.
     match name {
-        "hinge_then_free" => Some(0.35),
         "hinge_offset_pivot" => Some(1e-2),
         _ => None,
     }
