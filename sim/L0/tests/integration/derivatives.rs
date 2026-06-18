@@ -810,7 +810,15 @@ fn test_qderiv_combined() {
     // Analytical
     mjd_smooth_vel(&model, &mut data);
 
-    let err = max_relative_error(&data.qDeriv, &fd_deriv, 1e-10);
+    // Floor 1e-6 (matching the sibling derivative tests): some Coriolis
+    // cross-terms of this chain are genuinely ~0 (analytic returns machine
+    // zero; central-FD at eps=1e-7 leaves ~1e-10 truncation noise), so a
+    // tighter 1e-10 floor would divide that noise by itself and report a
+    // spurious ~O(1) relative error. Meaningful entries are O(1e-2) and still
+    // gate at 1e-4. (The previous 1e-10 floor passed only because the pre-fix
+    // RNE Coriolis bug gave those entries a spurious non-zero value well above
+    // the floor.)
+    let err = max_relative_error(&data.qDeriv, &fd_deriv, 1e-6);
     assert!(
         err < 1e-4,
         "Combined qDeriv should match FD to 1e-4, got {}",
