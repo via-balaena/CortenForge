@@ -436,14 +436,61 @@ impl Model {
         }
     }
 
+    /// Validate the per-body joint layout: a Ball or Free joint must be the
+    /// LAST (for free, the sole) joint on its body.
+    ///
+    /// The motion subspace of a ball/free joint is read from the body's FINAL
+    /// orientation (`xquat[body]`), which is only the correct partial frame
+    /// when no later same-body joint rotates it. Hinge/slide joints publish a
+    /// partial-frame `xaxis`/`xanchor` and so may appear in any order, but
+    /// ball/free do not — a ball followed by another same-body joint would
+    /// silently over-rotate its subspace (wrong dynamics/Jacobians). This is a
+    /// one-time structural check so the violation is a loud model-load error
+    /// rather than a `debug_assert` that vanishes in release builds.
+    ///
+    /// # Panics
+    /// Panics if a ball/free joint is not the last (sole) joint on its body.
+    // An invalid joint layout is an unrecoverable model-load error (it would
+    // silently corrupt ball/free dynamics); panicking is the contract, mirrored
+    // by make_data's plugin-init panic. The `# Panics` doc above documents it.
+    #[allow(clippy::panic)]
+    pub fn validate_joint_layout(&self) {
+        for body in 0..self.nbody {
+            let start = self.body_jnt_adr[body];
+            let num = self.body_jnt_num[body];
+            if num == 0 {
+                continue;
+            }
+            for (offset, jnt) in (start..start + num).enumerate() {
+                let is_last = offset + 1 == num;
+                match self.jnt_type[jnt] {
+                    MjJointType::Free => assert!(
+                        num == 1,
+                        "free joint {jnt} on body {body} must be the body's only joint \
+                         (found {num} joints); a free joint cannot share a body"
+                    ),
+                    MjJointType::Ball => assert!(
+                        is_last,
+                        "ball joint {jnt} on body {body} must be the LAST joint on its body; \
+                         a later same-body joint would over-rotate its motion subspace"
+                    ),
+                    MjJointType::Hinge | MjJointType::Slide => {}
+                }
+            }
+        }
+    }
+
     /// Create initial Data struct for this model with all arrays pre-allocated.
     ///
     /// # Panics
-    /// Panics if any plugin's `init()` callback returns an error.
+    /// Panics if any plugin's `init()` callback returns an error, or if a ball
+    /// or free joint is not the last (sole) joint on its body — see
+    /// [`Self::validate_joint_layout`].
     #[must_use]
     // Plugin init failures are unrecoverable model-load errors and propagate via panic; the `# Panics` doc above documents the contract.
     #[allow(clippy::panic)]
     pub fn make_data(&self) -> Data {
+        self.validate_joint_layout();
         let mut data = Data {
             // Generalized coordinates
             qpos: self.qpos0.clone(),
@@ -491,6 +538,8 @@ impl Model {
             xmat: vec![Matrix3::identity(); self.nbody],
             xipos: vec![Vector3::zeros(); self.nbody],
             ximat: vec![Matrix3::identity(); self.nbody],
+            xanchor: vec![Vector3::zeros(); self.njnt],
+            xaxis: vec![Vector3::zeros(); self.njnt],
 
             // Mocap bodies (default to body_pos/body_quat for each mocap body)
             mocap_pos: if self.nmocap == 0 {
@@ -1223,5 +1272,92 @@ pub fn compute_dof_lengths(model: &mut Model) {
         } else {
             model.dof_length[dof] = 1.0; // translational: already in [m/s]
         }
+    }
+}
+
+#[cfg(test)]
+mod joint_layout_tests {
+    #![allow(clippy::expect_used)]
+    use crate::test_fixtures::builders::{
+        add_ball_joint, add_body, add_freejoint, add_hinge_joint, finalize,
+    };
+    use crate::types::Model;
+    use nalgebra::Vector3;
+
+    fn body(model: &mut Model, parent: usize, name: &str) -> usize {
+        add_body(
+            model,
+            parent,
+            name,
+            Vector3::zeros(),
+            1.0,
+            Vector3::new(0.02, 0.03, 0.04),
+            Vector3::new(0.01, -0.02, -0.15),
+        )
+    }
+
+    /// A ball joint that is the LAST joint on its body is valid (hinge → ball).
+    #[test]
+    fn ball_last_on_body_is_valid() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_hinge_joint(
+            &mut m,
+            b,
+            "h0",
+            Vector3::x(),
+            0.0,
+            0.0,
+            0.0,
+            false,
+            (-3.0, 3.0),
+        );
+        add_ball_joint(&mut m, b, "ball0");
+        finalize(&mut m);
+        m.validate_joint_layout(); // must not panic
+    }
+
+    /// A ball joint followed by another same-body joint must be rejected.
+    #[test]
+    #[should_panic(expected = "must be the LAST joint")]
+    fn ball_not_last_on_body_panics() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_ball_joint(&mut m, b, "ball0");
+        add_hinge_joint(
+            &mut m,
+            b,
+            "h0",
+            Vector3::x(),
+            0.0,
+            0.0,
+            0.0,
+            false,
+            (-3.0, 3.0),
+        );
+        finalize(&mut m);
+        m.validate_joint_layout();
+    }
+
+    /// A free joint sharing a body with another joint must be rejected.
+    #[test]
+    #[should_panic(expected = "must be the body's only joint")]
+    fn free_sharing_body_panics() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_freejoint(&mut m, b, "free0");
+        add_hinge_joint(
+            &mut m,
+            b,
+            "h0",
+            Vector3::x(),
+            0.0,
+            0.0,
+            0.0,
+            false,
+            (-3.0, 3.0),
+        );
+        finalize(&mut m);
+        m.validate_joint_layout();
     }
 }

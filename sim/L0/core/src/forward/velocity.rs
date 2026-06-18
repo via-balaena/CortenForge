@@ -75,19 +75,21 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
 
         for jnt_id in jnt_start..jnt_end {
             let dof_adr = model.jnt_dof_adr[jnt_id];
-            let axis = model.jnt_axis[jnt_id];
 
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge => {
-                    // Angular velocity contribution
-                    let omega = data.xquat[body_id] * axis * data.qvel[dof_adr];
+                    // Angular velocity contribution. Use the PARTIAL-frame world
+                    // axis (`xaxis`, set in forward kinematics) — for a multi-joint
+                    // body an earlier joint's axis must not be rotated by the later
+                    // joints (same fix as `joint_motion_subspace`).
+                    let omega = data.xaxis[jnt_id] * data.qvel[dof_adr];
                     vel[0] += omega.x;
                     vel[1] += omega.y;
                     vel[2] += omega.z;
                 }
                 MjJointType::Slide => {
-                    // Linear velocity contribution
-                    let v = data.xquat[body_id] * axis * data.qvel[dof_adr];
+                    // Linear velocity contribution (partial-frame world axis).
+                    let v = data.xaxis[jnt_id] * data.qvel[dof_adr];
                     vel[3] += v.x;
                     vel[4] += v.y;
                     vel[5] += v.z;

@@ -100,6 +100,8 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
             model,
             &data.xpos,
             &data.xquat,
+            &data.xaxis,
+            &data.xanchor,
             &force,
             &torque,
             &point,

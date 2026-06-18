@@ -91,15 +91,14 @@ pub fn compute_flex_contact_jacobian(
                     let jnt_body = model.jnt_body[jnt_id];
                     match model.jnt_type[jnt_id] {
                         MjJointType::Hinge => {
-                            let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                            let jpos =
-                                data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                            let axis = data.xaxis[jnt_id];
+                            let jpos = data.xanchor[jnt_id];
                             let r = contact.pos - jpos;
                             let j_col = axis.cross(&r);
                             j[(row, dof_adr)] += sign * direction.dot(&j_col);
                         }
                         MjJointType::Slide => {
-                            let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                            let axis = data.xaxis[jnt_id];
                             j[(row, dof_adr)] += sign * direction.dot(&axis);
                         }
                         MjJointType::Ball => {
@@ -272,15 +271,14 @@ pub fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -
 
                     match model.jnt_type[jnt_id] {
                         MjJointType::Hinge => {
-                            let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                            let jpos =
-                                data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                            let axis = data.xaxis[jnt_id];
+                            let jpos = data.xanchor[jnt_id];
                             let r = stabilize_lever_arm(contact.pos - jpos, &normal);
                             let j_col = axis.cross(&r);
                             j[(row, dof_adr)] += sign * direction.dot(&j_col);
                         }
                         MjJointType::Slide => {
-                            let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                            let axis = data.xaxis[jnt_id];
                             j[(row, dof_adr)] += sign * direction.dot(&axis);
                         }
                         MjJointType::Ball => {
@@ -385,8 +383,8 @@ pub fn add_angular_jacobian(
 
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge => {
-                    // Hinge contributes angular velocity along its axis
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    // Hinge contributes angular velocity along its (partial-frame) axis
+                    let axis = data.xaxis[jnt_id];
                     j[(row, dof_adr)] += sign * direction.dot(&axis);
                 }
                 MjJointType::Slide => {

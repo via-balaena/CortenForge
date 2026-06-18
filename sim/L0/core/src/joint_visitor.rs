@@ -147,10 +147,12 @@ pub(crate) fn joint_motion_subspace(
 
     match jnt_type {
         MjJointType::Hinge => {
-            // Revolute joint: S = [axis; axis × r]^T where r is from joint to body origin
-            let axis_world = data.xquat[body_id] * model.jnt_axis[jnt_id];
-            let jpos_world = data.xpos[body_id] + data.xquat[body_id] * model.jnt_pos[jnt_id];
-            let r = data.xpos[body_id] - jpos_world;
+            // Revolute joint: S = [axis; axis × r]^T where r is from joint to
+            // body origin. Both axis and anchor are read in the PARTIAL frame
+            // (computed in forward kinematics) — for a multi-joint body the
+            // later joints must not rotate an earlier joint's axis/anchor.
+            let axis_world = data.xaxis[jnt_id];
+            let r = data.xpos[body_id] - data.xanchor[jnt_id];
 
             // Angular part (rows 0-2)
             s[(0, 0)] = axis_world.x;
@@ -164,8 +166,8 @@ pub(crate) fn joint_motion_subspace(
             s[(5, 0)] = lin.z;
         }
         MjJointType::Slide => {
-            // Prismatic joint: S = [0; axis]^T
-            let axis_world = data.xquat[body_id] * model.jnt_axis[jnt_id];
+            // Prismatic joint: S = [0; axis]^T (partial-frame axis).
+            let axis_world = data.xaxis[jnt_id];
             s[(3, 0)] = axis_world.x;
             s[(4, 0)] = axis_world.y;
             s[(5, 0)] = axis_world.z;
@@ -175,6 +177,17 @@ pub(crate) fn joint_motion_subspace(
             // qvel is body-frame angular velocity; S maps body-frame → world-frame.
             // S = [R; 0] where R = xquat rotation matrix.
             // Matches MuJoCo's cdof: axis rotated to world frame.
+            //
+            // `xquat[body]` is the body's FINAL orientation, which is the
+            // correct subspace frame only when no later joint on the same body
+            // rotates it — i.e. this ball is the last (typically only) joint on
+            // its body. Every real/tested model satisfies this; a ball followed
+            // by another same-body joint would need a stored partial frame.
+            debug_assert!(
+                jnt_id + 1 == model.body_jnt_adr[body_id] + model.body_jnt_num[body_id],
+                "ball joint {jnt_id} is not the last joint on its body — angular \
+                 subspace would over-rotate (see joint_motion_subspace)"
+            );
             let rot = data.xquat[body_id].to_rotation_matrix().into_inner();
             for i in 0..3 {
                 for j in 0..3 {
@@ -185,6 +198,13 @@ pub(crate) fn joint_motion_subspace(
         MjJointType::Free => {
             // Free joint: 6 DOFs (3 linear + 3 angular)
             // DOF order in qvel: [vx, vy, vz, ωx, ωy, ωz]
+            // A free joint is always the only joint on its body (MuJoCo
+            // invariant), so `xquat[body]` is the correct angular frame.
+            debug_assert!(
+                jnt_id + 1 == model.body_jnt_adr[body_id] + model.body_jnt_num[body_id]
+                    && model.body_jnt_num[body_id] == 1,
+                "free joint {jnt_id} must be the sole joint on its body"
+            );
             // Linear DOFs (0-2): world-frame velocity → world-frame spatial linear
             for i in 0..3 {
                 s[(3 + i, i)] = 1.0;
@@ -203,4 +223,144 @@ pub(crate) fn joint_motion_subspace(
     // Only return the columns needed
     let _ = nv; // Used implicitly through jnt_type
     s
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+    use super::joint_motion_subspace;
+    use crate::forward::mj_fwd_position;
+    use crate::test_fixtures::builders::{add_body, add_hinge_joint, add_slide_joint, finalize};
+    use crate::types::Model;
+    use nalgebra::Vector3;
+
+    /// Ground truth for a joint DOF's motion subspace column: the FD geometric
+    /// Jacobian of the body pose — the spatial velocity (ω, v) of the body
+    /// frame when only that one DOF moves. The motion subspace IS that
+    /// Jacobian column, so this validates the partial-frame construction
+    /// without needing an external reference (e.g. MuJoCo).
+    fn assert_subspace_matches_fd(
+        model: &Model,
+        qpos: &[f64],
+        // (jnt_id, qpos_adr, body_id) for each scalar DOF to check
+        dofs: &[(usize, usize, usize)],
+    ) {
+        let mut data = model.make_data();
+        data.qpos.as_mut_slice()[..qpos.len()].copy_from_slice(qpos);
+        mj_fwd_position(model, &mut data);
+
+        let eps = 1e-7;
+        for &(jnt_id, qpos_adr, body_id) in dofs {
+            let s = joint_motion_subspace(model, &data, jnt_id);
+            let analytic_ang = Vector3::new(s[(0, 0)], s[(1, 0)], s[(2, 0)]);
+            let analytic_lin = Vector3::new(s[(3, 0)], s[(4, 0)], s[(5, 0)]);
+
+            let mut dp = data.clone();
+            dp.qpos[qpos_adr] += eps;
+            mj_fwd_position(model, &mut dp);
+            let fd_lin = (dp.xpos[body_id] - data.xpos[body_id]) / eps;
+            let dq = dp.xquat[body_id] * data.xquat[body_id].inverse();
+            let fd_ang = dq.scaled_axis() / eps;
+
+            assert!(
+                (analytic_ang - fd_ang).norm() < 1e-6,
+                "joint {jnt_id} angular subspace {analytic_ang:?} != FD {fd_ang:?}"
+            );
+            assert!(
+                (analytic_lin - fd_lin).norm() < 1e-6,
+                "joint {jnt_id} linear subspace {analytic_lin:?} != FD {fd_lin:?}"
+            );
+        }
+    }
+
+    fn link(model: &mut Model, parent: usize, name: &str, pos: Vector3<f64>) -> usize {
+        add_body(
+            model,
+            parent,
+            name,
+            pos,
+            1.0,
+            Vector3::new(0.02, 0.03, 0.04),
+            Vector3::new(0.01, -0.02, -0.15),
+        )
+    }
+
+    /// Two non-parallel hinges on ONE body: the earlier joint's axis must NOT
+    /// be rotated by the later joint's DOF (the `joint_motion_subspace` bug
+    /// fixed by reading the partial-frame `xaxis`).
+    #[test]
+    fn multi_hinge_body_subspace_matches_fd() {
+        let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
+        let ax1 = Vector3::new(0.2, 1.0, 0.1).normalize();
+        let mut m = Model::empty();
+        let b = link(&mut m, 0, "l0", Vector3::zeros());
+        let j0 = add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        let j1 = add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        finalize(&mut m);
+        assert_subspace_matches_fd(&m, &[0.3, -0.35], &[(j0, 0, b), (j1, 1, b)]);
+    }
+
+    /// Slide-then-hinge on ONE body: the slide axis must not rotate with the
+    /// later hinge, and the hinge lever must use the partial-frame anchor.
+    #[test]
+    fn slide_then_hinge_body_subspace_matches_fd() {
+        let ax0 = Vector3::new(1.0, 0.2, 0.0).normalize();
+        let ax1 = Vector3::new(0.1, 1.0, 0.3).normalize();
+        let mut m = Model::empty();
+        let b = link(&mut m, 0, "l0", Vector3::zeros());
+        let j0 = add_slide_joint(&mut m, b, "s0", ax0, 0.0, 0.0, 0.0);
+        let j1 = add_hinge_joint(&mut m, b, "h0", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        finalize(&mut m);
+        assert_subspace_matches_fd(&m, &[0.2, -0.3], &[(j0, 0, b), (j1, 1, b)]);
+    }
+
+    /// Single offset-pivot hinge (`jnt_pos ≠ 0`): the linear lever `â × r` must
+    /// use the partial-frame anchor. (Single-joint, so this also guards that
+    /// the new partial-frame path is byte-equivalent to the old final-frame
+    /// path when there are no later same-body joints.)
+    #[test]
+    fn offset_pivot_hinge_subspace_matches_fd() {
+        let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
+        let mut m = Model::empty();
+        let b = link(&mut m, 0, "l0", Vector3::zeros());
+        let j = add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        m.jnt_pos[j] = Vector3::new(0.08, -0.05, 0.06);
+        finalize(&mut m);
+        assert_subspace_matches_fd(&m, &[0.5], &[(j, 0, b)]);
+    }
+
+    /// The forward velocity stage (`velocity.rs`) builds the body spatial
+    /// velocity from its OWN copy of the motion subspace; it must stay
+    /// consistent with `joint_motion_subspace` (the original bug was these two
+    /// drifting apart on a multi-joint body). Guards `cvel[b] == Σ_j S_j·qvel_j`.
+    #[test]
+    fn forward_cvel_matches_joint_subspace() {
+        let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
+        let ax1 = Vector3::new(0.2, 1.0, 0.1).normalize();
+        let mut m = Model::empty();
+        let b = link(&mut m, 0, "l0", Vector3::zeros());
+        add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        finalize(&mut m);
+
+        let mut data = m.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&[0.3, -0.35]);
+        data.qvel.as_mut_slice().copy_from_slice(&[0.8, -0.6]);
+        data.forward(&m).expect("forward");
+
+        let mut expected = nalgebra::Vector6::zeros();
+        for jid in 0..m.njnt {
+            let s = joint_motion_subspace(&m, &data, jid);
+            let da = m.jnt_dof_adr[jid];
+            for d in 0..m.jnt_type[jid].nv() {
+                expected += s.column(d) * data.qvel[da + d];
+            }
+        }
+        assert!(
+            (data.cvel[b] - expected).norm() < 1e-12,
+            "cvel {:?} != Σ S·qvel {:?}",
+            data.cvel[b].as_slice(),
+            expected.as_slice()
+        );
+    }
 }

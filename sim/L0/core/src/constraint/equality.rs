@@ -473,14 +473,15 @@ pub fn add_body_point_jacobian_row(
 
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    // Partial-frame axis/anchor (single source of truth from FK).
+                    let axis = data.xaxis[jnt_id];
+                    let jpos = data.xanchor[jnt_id];
                     let r = point - jpos;
                     let j_col = axis.cross(&r);
                     j[(row, dof_adr)] += sign * direction.dot(&j_col);
                 }
                 MjJointType::Slide => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let axis = data.xaxis[jnt_id];
                     j[(row, dof_adr)] += sign * direction.dot(&axis);
                 }
                 MjJointType::Ball => {
@@ -546,7 +547,7 @@ pub fn add_body_angular_jacobian_row(
 
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let axis = data.xaxis[jnt_id];
                     j[(row, dof_adr)] += sign * direction.dot(&axis);
                 }
                 MjJointType::Slide => {
@@ -571,5 +572,55 @@ pub fn add_body_angular_jacobian_row(
             }
         }
         current_body = model.body_parent[current_body];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+    use super::add_body_point_jacobian_row;
+    use crate::forward::mj_fwd_position;
+    use crate::jacobian::mj_jac;
+    use crate::test_fixtures::builders::{add_body, add_hinge_joint, finalize};
+    use crate::types::Model;
+    use nalgebra::{DMatrix, Vector3};
+
+    /// The equality-constraint point-Jacobian row must agree with `mj_jac`
+    /// (FD-verified) on a MULTI-JOINT body: the row is `direction·jacp[:,k]`.
+    /// Guards the constraint subsystem reads the partial-frame axis/anchor.
+    #[test]
+    fn constraint_point_jacobian_row_matches_mj_jac_multi_joint() {
+        let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
+        let ax1 = Vector3::new(0.2, 1.0, 0.1).normalize();
+        let mut m = Model::empty();
+        let b = add_body(
+            &mut m,
+            0,
+            "l0",
+            Vector3::zeros(),
+            1.0,
+            Vector3::new(0.02, 0.03, 0.04),
+            Vector3::new(0.01, -0.02, -0.15),
+        );
+        add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        finalize(&mut m);
+
+        let mut data = m.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&[0.3, -0.35]);
+        mj_fwd_position(&m, &mut data);
+
+        let point = data.xpos[b] + data.xquat[b] * Vector3::new(0.1, -0.05, -0.2);
+        let direction = Vector3::new(0.4, -0.7, 0.6).normalize();
+        let (jacp, _) = mj_jac(&m, &data, b, &point);
+
+        let mut j = DMatrix::zeros(1, m.nv);
+        add_body_point_jacobian_row(&mut j, 0, &direction, b, point, 1.0, &m, &data);
+        for k in 0..2 {
+            let expected = jacp[(0, k)] * direction.x
+                + jacp[(1, k)] * direction.y
+                + jacp[(2, k)] * direction.z;
+            approx::assert_relative_eq!(j[(0, k)], expected, epsilon = 1e-12);
+        }
     }
 }
