@@ -50,35 +50,32 @@ const TOL_QM: f64 = 1e-9;
 const TOL_BIAS: f64 = 1e-9;
 const TOL_QACC: f64 = 1e-7;
 
-/// Documented, regression-guarded divergence from MuJoCo on the velocity-coupling
-/// (Coriolis) generalized force — `qfrc_bias` and the `qacc = M⁻¹(−qfrc_bias)`
-/// that follows — for multi-link chains.
+/// Per-fixture `(qfrc_bias_tol, qacc_tol)` overrides for documented, regression-
+/// guarded divergences from MuJoCo on the velocity-coupling (Coriolis) generalized
+/// force. Pose and `qM` stay machine-exact for every fixture; only the listed ones
+/// loosen `qfrc_bias`/`qacc`. Mirrors the transition harness's `known_limit`.
 ///
-/// Root cause: `rne.rs`'s Featherstone backward pass accumulates each child's
-/// bias force into its parent with a **simple add** (`cfrc_bias[parent] +=
-/// cfrc_bias[child]`), but `cfrc_bias[child]` is a spatial force at the *child's*
-/// origin. Combining it at the parent origin needs the moment-lever transport
-/// `Xᵀ`: `+= [τ_child + (xpos[child] − xpos[parent]) × f_child; f_child]`. The
-/// dropped `(Δx) × f_child` term perturbs only the Coriolis force on ANCESTOR
-/// DOFs of a multi-link chain. FK, the mass matrix, and gravity are unaffected
-/// (gravity uses a separate, correct subtree-COM path; the Featherstone pass is
-/// skipped entirely at zero velocity), so `xpos`/`xmat`/`qM` stay machine-exact
-/// and only `qfrc_bias`/`qacc` diverge — and only when `qvel ≠ 0`.
+/// CLOSED — `two_link_hinge` (backward `Xᵀ` moment-lever): `rne.rs`'s Featherstone
+/// backward pass accumulated each child's bias force into its parent with a simple
+/// add, but `cfrc_bias[child]` is a spatial force at the *child's* origin —
+/// combining it at the parent origin needs `+= (xpos[child]−xpos[parent])×f_child`
+/// on the torque rows. Fixed by giving the `rne.rs` backward the `Xᵀ` lever and
+/// matching it in the analytic Part-B and velocity-derivative backward passes;
+/// `two_link_hinge` (one transport hop) is now machine-exact.
 ///
-/// This is invisible to the transition-derivative harness: the analytic Part-B
-/// backward *also* does the simple add, so analytic-vs-FD agree (both reflect the
-/// same forward). Only an external oracle (MuJoCo) surfaces it — the reason this
-/// conformance harness exists.
-///
-/// Returns the per-fixture `(qfrc_bias_tol, qacc_tol)` bounds — tight ratchets
-/// just above the measured residual, so the divergence must not GROW. Closed by
-/// the Coriolis-transport stone (fix `rne.rs`'s `Xᵀ` accumulation while keeping
-/// the analytic Part-B backward consistent), after which this entry is removed
-/// and the fixture is held to the machine-exact bounds above.
+/// OPEN — `three_link_spatial`: with the backward fix in place, a non-parallel
+/// 3-link chain still diverges (~1e-2), and on EVERY DOF including the leaf. The
+/// backward `Xᵀ` cannot affect a leaf's force, so this is a SECOND, independent
+/// forward bug surfaced by nested transport: the forward bias-acceleration
+/// recursion (`cacc_bias`) — a 3-link leaf is the first body to transport a
+/// *nonzero* parent `cacc_bias` (`X_b` motion transport of the multi-hop Coriolis
+/// acceleration). FK/`qM`/gravity stay machine-exact, so it is purely the
+/// velocity-coupling term. Invisible to the transition harness (analytic follows
+/// the same forward). Follow-on stone: the multi-hop forward `cacc_bias` transport.
 fn known_coriolis_divergence(fixture: &str) -> Option<(f64, f64)> {
     match fixture {
-        // measured max |Δ|: qfrc_bias ≈ 5.7e-3, qacc ≈ 9.7e-2
-        "two_link_hinge" => Some((1e-2, 2e-1)),
+        // measured max |Δ|: qfrc_bias ≈ 1.2e-2, qacc ≈ 1.8e-1
+        "three_link_spatial" => Some((2e-2, 3e-1)),
         _ => None,
     }
 }
@@ -98,6 +95,10 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             xml: include_str!("conformance/fixtures/two_link_hinge.xml"),
             golden: include_str!("conformance/golden/two_link_hinge.json"),
+        },
+        Fixture {
+            xml: include_str!("conformance/fixtures/three_link_spatial.xml"),
+            golden: include_str!("conformance/golden/three_link_spatial.json"),
         },
     ]
 }

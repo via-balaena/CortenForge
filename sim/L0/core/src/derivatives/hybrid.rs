@@ -592,11 +592,28 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
     }
 
     // ========== Backward pass — Phase 2: Accumulate to parent (leaves to root) ==========
+    // X_bᵀ transport to the parent origin (matches the corrected `mj_rne` backward):
+    // each column's force is unchanged, its torque gains the r×f lever. No transport
+    // derivative here — this is ∂/∂qvel and r = xpos[child]−xpos[parent] is q-only.
     for body_id in (1..nbody).rev() {
         let parent_id = model.body_parent[body_id];
         if parent_id != 0 {
             let child_dcfrc = data.deriv_Dcfrc[body_id].clone();
-            data.deriv_Dcfrc[parent_id] += child_dcfrc;
+            let r = data.xpos[body_id] - data.xpos[parent_id];
+            for col in 0..nv {
+                let fx = child_dcfrc[(3, col)];
+                let fy = child_dcfrc[(4, col)];
+                let fz = child_dcfrc[(5, col)];
+                data.deriv_Dcfrc[parent_id][(0, col)] +=
+                    child_dcfrc[(0, col)] + r.y * fz - r.z * fy;
+                data.deriv_Dcfrc[parent_id][(1, col)] +=
+                    child_dcfrc[(1, col)] + r.z * fx - r.x * fz;
+                data.deriv_Dcfrc[parent_id][(2, col)] +=
+                    child_dcfrc[(2, col)] + r.x * fy - r.y * fx;
+                data.deriv_Dcfrc[parent_id][(3, col)] += fx;
+                data.deriv_Dcfrc[parent_id][(4, col)] += fy;
+                data.deriv_Dcfrc[parent_id][(5, col)] += fz;
+            }
         }
     }
 
@@ -1272,10 +1289,18 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     for b in (1..nbody).rev() {
         let pid = model.body_parent[b];
         if pid > 0 {
+            // X_bᵀ transport to the parent origin (matches the corrected `mj_rne`
+            // backward): force unchanged, torque gains the (x_child−x_parent)×f lever.
             let fc = cfrc_b[b];
-            for row in 0..6 {
-                cfrc_b[pid][row] += fc[row]; // simple add (no X_b^T)
-            }
+            let r = data.xpos[b] - data.xpos[pid];
+            let f_lin = Vector3::new(fc[3], fc[4], fc[5]);
+            let torque = r.cross(&f_lin);
+            cfrc_b[pid][0] += fc[0] + torque.x;
+            cfrc_b[pid][1] += fc[1] + torque.y;
+            cfrc_b[pid][2] += fc[2] + torque.z;
+            cfrc_b[pid][3] += fc[3];
+            cfrc_b[pid][4] += fc[4];
+            cfrc_b[pid][5] += fc[5];
         }
     }
 
@@ -2042,17 +2067,68 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // Backward pass for Part B: simple add (NO transport derivative)
+    // Backward pass for Part B: X_b^T transport + transport derivative.
+    // `mj_rne` now transports the Coriolis bias force to the parent origin with the
+    // same Xᵀ moment lever (rne.rs), so the derivative must match it or it drifts
+    // from FD. Identical structure to Part A's backward, using the Part B operating
+    // point force `cfrc_b`.
     for b in (1..nbody).rev() {
         let pid = model.body_parent[b];
         if pid == 0 {
             continue;
         }
-        // Simple add: just accumulate derivatives (no X_b^T, no transport derivative)
+        let r = data.xpos[b] - data.xpos[pid];
+
+        // X_b^T transport of the child's force derivative: [τ + r×f; f]
         let child_dcfrc = data.deriv_Dcfrc_pos[b].clone();
         for col in 0..nv {
-            for row in 0..6 {
-                data.deriv_Dcfrc_pos[pid][(row, col)] += child_dcfrc[(row, col)];
+            let fx = child_dcfrc[(3, col)];
+            let fy = child_dcfrc[(4, col)];
+            let fz = child_dcfrc[(5, col)];
+            data.deriv_Dcfrc_pos[pid][(0, col)] += child_dcfrc[(0, col)] + r.y * fz - r.z * fy;
+            data.deriv_Dcfrc_pos[pid][(1, col)] += child_dcfrc[(1, col)] + r.z * fx - r.x * fz;
+            data.deriv_Dcfrc_pos[pid][(2, col)] += child_dcfrc[(2, col)] + r.x * fy - r.y * fx;
+            data.deriv_Dcfrc_pos[pid][(3, col)] += fx;
+            data.deriv_Dcfrc_pos[pid][(4, col)] += fy;
+            data.deriv_Dcfrc_pos[pid][(5, col)] += fz;
+        }
+
+        // Transport derivative: (∂r/∂q) × cfrc_B[child]_lin
+        // (axis×r for rotational ancestors, dof_lin for body-own translation;
+        // free child uses the parent-origin motion — mirrors Part A).
+        let bfree = is_free_body(b);
+        let f_lin = Vector3::new(cfrc_b[b][3], cfrc_b[b][4], cfrc_b[b][5]);
+        if f_lin.norm_squared() > 0.0 {
+            let mut anc = pid;
+            while anc != 0 {
+                let anc_js = model.body_jnt_adr[anc];
+                let anc_je = anc_js + model.body_jnt_num[anc];
+                for jid in anc_js..anc_je {
+                    let da = model.jnt_dof_adr[jid];
+                    let nd = model.jnt_type[jid].nv();
+                    for d in 0..nd {
+                        let axis = dof_axis[da + d];
+                        let dr = if bfree {
+                            -axis.cross(&(data.xpos[pid] - data.xanchor[jid]))
+                        } else {
+                            axis.cross(&r)
+                        };
+                        let torque = dr.cross(&f_lin);
+                        data.deriv_Dcfrc_pos[pid][(0, da + d)] += torque.x;
+                        data.deriv_Dcfrc_pos[pid][(1, da + d)] += torque.y;
+                        data.deriv_Dcfrc_pos[pid][(2, da + d)] += torque.z;
+                    }
+                }
+                anc = model.body_parent[anc];
+            }
+            let bd0 = model.body_dof_adr[b];
+            for k in bd0..bd0 + model.body_dof_num[b] {
+                if is_translational(k) {
+                    let torque = dof_lin[k].cross(&f_lin);
+                    data.deriv_Dcfrc_pos[pid][(0, k)] += torque.x;
+                    data.deriv_Dcfrc_pos[pid][(1, k)] += torque.y;
+                    data.deriv_Dcfrc_pos[pid][(2, k)] += torque.z;
+                }
             }
         }
     }
