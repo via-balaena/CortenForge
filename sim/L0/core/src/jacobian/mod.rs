@@ -55,8 +55,11 @@ pub fn mj_jac(
 
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                    let anchor = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    // Partial-frame world axis/anchor (set in forward kinematics)
+                    // so a multi-joint body's earlier joint is not rotated by the
+                    // later ones. Single source of truth shared with RNE/velocity.
+                    let axis = data.xaxis[jnt_id];
+                    let anchor = data.xanchor[jnt_id];
                     let r = point - anchor;
                     let cross = axis.cross(&r);
                     for k in 0..3 {
@@ -65,7 +68,7 @@ pub fn mj_jac(
                     }
                 }
                 MjJointType::Slide => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let axis = data.xaxis[jnt_id];
                     for k in 0..3 {
                         jacp[(k, dof)] += axis[k];
                     }
@@ -221,6 +224,8 @@ pub(crate) fn mj_apply_ft(
     model: &Model,
     xpos: &[Vector3<f64>],
     xquat: &[UnitQuaternion<f64>],
+    xaxis: &[Vector3<f64>],
+    xanchor: &[Vector3<f64>],
     force: &Vector3<f64>,
     torque: &Vector3<f64>,
     point: &Vector3<f64>,
@@ -239,13 +244,13 @@ pub(crate) fn mj_apply_ft(
             let jnt_body = model.jnt_body[jnt_id];
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge => {
-                    let axis = xquat[jnt_body] * model.jnt_axis[jnt_id];
-                    let anchor = xpos[jnt_body] + xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let axis = xaxis[jnt_id];
+                    let anchor = xanchor[jnt_id];
                     let r = point - anchor;
                     qfrc[dof] += axis.cross(&r).dot(force) + axis.dot(torque);
                 }
                 MjJointType::Slide => {
-                    let axis = xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let axis = xaxis[jnt_id];
                     qfrc[dof] += axis.dot(force);
                 }
                 MjJointType::Ball => {
@@ -403,6 +408,8 @@ mod jac_site_tests {
                 &model,
                 &data.xpos,
                 &data.xquat,
+                &data.xaxis,
+                &data.xanchor,
                 &mut ten_j,
                 model.site_body[0],
                 &data.site_xpos[0],
@@ -417,6 +424,108 @@ mod jac_site_tests {
         let world_axis = data.xquat[1] * model.jnt_axis[0];
         for k in 0..3 {
             assert_relative_eq!(jac_r[(k, 0)], world_axis[k], epsilon = 1e-12);
+        }
+    }
+
+    /// `mj_jac` on a MULTI-JOINT body must match the FD geometric Jacobian:
+    /// `jacp[:,k] = ∂(world point)/∂q_k`, `jacr[:,k] = ∂(orientation)/∂q_k`.
+    /// Guards that the body Jacobian uses the partial-frame axis/anchor (an
+    /// earlier joint must not be rotated by the later one).
+    #[test]
+    fn mj_jac_multi_joint_body_matches_fd() {
+        use crate::test_fixtures::builders::{add_body, add_hinge_joint, finalize};
+
+        let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
+        let ax1 = Vector3::new(0.2, 1.0, 0.1).normalize();
+        let mut m = Model::empty();
+        let b = add_body(
+            &mut m,
+            0,
+            "l0",
+            Vector3::zeros(),
+            1.0,
+            Vector3::new(0.02, 0.03, 0.04),
+            Vector3::new(0.01, -0.02, -0.15),
+        );
+        add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        finalize(&mut m);
+
+        let mut data = m.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&[0.3, -0.35]);
+        mj_fwd_position(&m, &mut data);
+
+        // A point fixed in body b (offset from its origin).
+        let local = Vector3::new(0.1, -0.05, -0.2);
+        let point = data.xpos[b] + data.xquat[b] * local;
+        let (jac_pos, jac_rot) = mj_jac(&m, &data, b, &point);
+
+        let eps = 1e-7;
+        for k in 0..2 {
+            let mut dp = data.clone();
+            dp.qpos[k] += eps;
+            mj_fwd_position(&m, &mut dp);
+            let point_k = dp.xpos[b] + dp.xquat[b] * local;
+            let fd_p = (point_k - point) / eps;
+            let dq = dp.xquat[b] * data.xquat[b].inverse();
+            let fd_r = dq.scaled_axis() / eps;
+            for i in 0..3 {
+                assert_relative_eq!(jac_pos[(i, k)], fd_p[i], epsilon = 1e-6);
+                assert_relative_eq!(jac_rot[(i, k)], fd_r[i], epsilon = 1e-6);
+            }
+        }
+    }
+
+    /// The tendon path's `accumulate_point_jacobian` must agree with `mj_jac`
+    /// (FD-verified above) on a MULTI-JOINT body: `accumulate` projects the
+    /// point Jacobian onto a direction, so `accumulate[k] == direction·jacp[:,k]`.
+    /// Guards the tendon subsystem reads the same partial-frame source.
+    #[test]
+    fn accumulate_agrees_with_mj_jac_multi_joint() {
+        use crate::test_fixtures::builders::{add_body, add_hinge_joint, finalize};
+
+        let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
+        let ax1 = Vector3::new(0.2, 1.0, 0.1).normalize();
+        let mut m = Model::empty();
+        let b = add_body(
+            &mut m,
+            0,
+            "l0",
+            Vector3::zeros(),
+            1.0,
+            Vector3::new(0.02, 0.03, 0.04),
+            Vector3::new(0.01, -0.02, -0.15),
+        );
+        add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        finalize(&mut m);
+
+        let mut data = m.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&[0.3, -0.35]);
+        mj_fwd_position(&m, &mut data);
+
+        let point = data.xpos[b] + data.xquat[b] * Vector3::new(0.1, -0.05, -0.2);
+        let (jacp, _) = mj_jac(&m, &data, b, &point);
+        let direction = Vector3::new(0.4, -0.7, 0.6).normalize();
+
+        let mut ten_j = DVector::zeros(m.nv);
+        accumulate_point_jacobian(
+            &m,
+            &data.xpos,
+            &data.xquat,
+            &data.xaxis,
+            &data.xanchor,
+            &mut ten_j,
+            b,
+            &point,
+            &direction,
+            1.0,
+        );
+        for k in 0..2 {
+            let expected = jacp[(0, k)] * direction.x
+                + jacp[(1, k)] * direction.y
+                + jacp[(2, k)] * direction.z;
+            assert_relative_eq!(ten_j[k], expected, epsilon = 1e-12);
         }
     }
 

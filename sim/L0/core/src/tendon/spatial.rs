@@ -101,6 +101,8 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                     model,
                     &data.xpos,
                     &data.xquat,
+                    &data.xaxis,
+                    &data.xanchor,
                     &mut data.ten_J[t],
                     body1,
                     &p1,
@@ -111,6 +113,8 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                     model,
                     &data.xpos,
                     &data.xquat,
+                    &data.xaxis,
+                    &data.xanchor,
                     &mut data.ten_J[t],
                     body0,
                     &p0,
@@ -204,6 +208,8 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                             model,
                             &data.xpos,
                             &data.xquat,
+                            &data.xaxis,
+                            &data.xanchor,
                             &mut data.ten_J[t],
                             geom_body,
                             &t1,
@@ -214,6 +220,8 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                             model,
                             &data.xpos,
                             &data.xquat,
+                            &data.xaxis,
+                            &data.xanchor,
                             &mut data.ten_J[t],
                             body0,
                             &p0,
@@ -232,6 +240,8 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                             model,
                             &data.xpos,
                             &data.xquat,
+                            &data.xaxis,
+                            &data.xanchor,
                             &mut data.ten_J[t],
                             body1,
                             &p1,
@@ -242,6 +252,8 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                             model,
                             &data.xpos,
                             &data.xquat,
+                            &data.xaxis,
+                            &data.xanchor,
                             &mut data.ten_J[t],
                             geom_body,
                             &t2,
@@ -273,6 +285,8 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                             model,
                             &data.xpos,
                             &data.xquat,
+                            &data.xaxis,
+                            &data.xanchor,
                             &mut data.ten_J[t],
                             body1,
                             &p1,
@@ -283,6 +297,8 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                             model,
                             &data.xpos,
                             &data.xquat,
+                            &data.xaxis,
+                            &data.xanchor,
                             &mut data.ten_J[t],
                             body0,
                             &p0,
@@ -341,6 +357,8 @@ pub fn accumulate_point_jacobian(
     model: &Model,
     xpos: &[Vector3<f64>],
     xquat: &[UnitQuaternion<f64>],
+    xaxis: &[Vector3<f64>],
+    xanchor: &[Vector3<f64>],
     ten_j: &mut DVector<f64>,
     body_id: usize,
     point: &Vector3<f64>,
@@ -360,13 +378,13 @@ pub fn accumulate_point_jacobian(
             let jnt_body = model.jnt_body[jnt_id];
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge => {
-                    let axis = xquat[jnt_body] * model.jnt_axis[jnt_id];
-                    let jpos = xpos[jnt_body] + xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let axis = xaxis[jnt_id];
+                    let jpos = xanchor[jnt_id];
                     let r = point - jpos;
                     ten_j[dof] += scale * direction.dot(&axis.cross(&r));
                 }
                 MjJointType::Slide => {
-                    let axis = xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let axis = xaxis[jnt_id];
                     ten_j[dof] += scale * direction.dot(&axis);
                 }
                 MjJointType::Ball => {

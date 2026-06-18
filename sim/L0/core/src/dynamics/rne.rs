@@ -81,14 +81,18 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
 
         match model.jnt_type[jnt_id] {
             MjJointType::Hinge => {
-                let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                // Partial-frame world axis/anchor (set in forward kinematics):
+                // for a multi-joint body an earlier joint must not be rotated by
+                // the later joints. Identical to the final frame for a single
+                // joint (the pivot is invariant under rotation about itself).
+                let axis = data.xaxis[jnt_id];
+                let jpos = data.xanchor[jnt_id];
                 let r = subtree_com - jpos;
                 let torque = r.cross(&gravity_force);
                 data.qfrc_bias[dof_adr] += torque.dot(&axis);
             }
             MjJointType::Slide => {
-                let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                let axis = data.xaxis[jnt_id];
                 data.qfrc_bias[dof_adr] += gravity_force.dot(&axis);
             }
             MjJointType::Ball => {
@@ -347,6 +351,8 @@ pub fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
             model,
             &data.xpos,
             &data.xquat,
+            &data.xaxis,
+            &data.xanchor,
             &force,
             &zero_torque,
             &point,

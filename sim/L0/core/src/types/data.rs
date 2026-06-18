@@ -101,6 +101,19 @@ pub struct Data {
     pub xipos: Vec<Vector3<f64>>,
     /// Body inertial frame rotations (length `nbody`).
     pub ximat: Vec<Matrix3<f64>>,
+    /// Joint anchor positions in world frame (length `njnt`).
+    ///
+    /// Computed in the **partial frame** during forward kinematics: the world
+    /// pose accumulated through this body's parent, body offset, and the joints
+    /// that PRECEDE this one on the same body — but NOT this joint's own
+    /// rotation or any later joint. For a single-joint body this equals the
+    /// final-frame anchor; for a multi-joint body the later joints must not
+    /// rotate an earlier joint's anchor (the `joint_motion_subspace` bug fix).
+    pub xanchor: Vec<Vector3<f64>>,
+    /// Joint axes in world frame (length `njnt`), in the same partial frame as
+    /// [`Self::xanchor`]. Meaningful for hinge/slide; zero for ball/free (their
+    /// motion subspace is the body's rotation block, read from [`Self::xquat`]).
+    pub xaxis: Vec<Vector3<f64>>,
 
     // Geom poses (for collision detection)
     /// Geom positions in world frame (length `ngeom`).
@@ -706,6 +719,8 @@ impl Clone for Data {
             flexedge_length: self.flexedge_length.clone(),
             flexedge_velocity: self.flexedge_velocity.clone(),
             flexedge_J: self.flexedge_J.clone(),
+            xanchor: self.xanchor.clone(),
+            xaxis: self.xaxis.clone(),
             // Velocities
             cvel: self.cvel.clone(),
             cdof: self.cdof.clone(),
@@ -1295,7 +1310,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4368;
+        const EXPECTED_SIZE: usize = 4416;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

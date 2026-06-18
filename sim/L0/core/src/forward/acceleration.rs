@@ -134,6 +134,8 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
             model,
             &data.xpos,
             &data.xquat,
+            &data.xaxis,
+            &data.xanchor,
             &force,
             &torque,
             &point,

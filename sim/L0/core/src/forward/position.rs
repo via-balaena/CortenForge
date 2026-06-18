@@ -68,6 +68,14 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
 
                         // Rotate around axis
                         let world_axis = quat * axis;
+
+                        // Store the partial-frame axis/anchor (BEFORE this joint
+                        // and any later same-body joint rotates them) — the
+                        // motion subspace must not over-rotate an earlier
+                        // joint's axis by the later joints' DOFs.
+                        data.xanchor[jnt_id] = world_anchor;
+                        data.xaxis[jnt_id] = world_axis;
+
                         // Safety: use try_new_normalize to handle degenerate cases
                         let rot =
                             if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
@@ -84,7 +92,10 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
                     MjJointType::Slide => {
                         let displacement = data.qpos[qpos_adr];
                         let axis = model.jnt_axis[jnt_id];
-                        pos += quat * (axis * displacement);
+                        let world_axis = quat * axis;
+                        data.xanchor[jnt_id] = pos;
+                        data.xaxis[jnt_id] = world_axis;
+                        pos += world_axis * displacement;
                     }
                     MjJointType::Ball => {
                         // qpos stores quaternion [w, x, y, z]
@@ -95,6 +106,11 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
                             data.qpos[qpos_adr + 2],
                             data.qpos[qpos_adr + 3],
                         ));
+                        // Ball anchor = body origin in the partial frame; the
+                        // angular subspace block is read from `xquat[body]` (the
+                        // single-/last-joint-on-body assumption asserted in
+                        // `joint_motion_subspace`). `xaxis` stays zero.
+                        data.xanchor[jnt_id] = pos;
                         quat *= q;
                     }
                     MjJointType::Free => {
@@ -111,6 +127,8 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
                             data.qpos[qpos_adr + 5],
                             data.qpos[qpos_adr + 6],
                         ));
+                        // Free anchor = body origin; angular block from `xquat`.
+                        data.xanchor[jnt_id] = pos;
                     }
                 }
             }
