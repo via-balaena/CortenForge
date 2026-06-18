@@ -383,14 +383,11 @@ fn forward_at(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
     data
 }
 
-/// Per-case ceiling on `max_relative_error(analytic.A, fd.A)`. Cases not listed
-/// must be **machine-exact** (`< MACHINE_TOL`). The listed cases are documented
-/// KNOWN LIMITATIONS — the analytic transition derivative carries a *bounded*
-/// residual whose root cause lies outside this stone's scope; each bound is a
-/// regression guard (the residual must not grow) and points to the follow-on
-/// stone that closes it. Entries here are the cases the harness was built to
-/// surface and could NOT be made machine-exact without a separate subsystem
-/// change — recorded explicitly rather than silently widening the global tol.
+/// Per-case ceiling on `max_relative_error(analytic.A, fd.A)`. **Every case is
+/// now machine-exact** (`< MACHINE_TOL`) — there are no remaining known limits.
+/// The parentheticals below record the cases the harness surfaced and the
+/// subsystem fixes that closed each (kept as a map from symptom → root cause for
+/// the next person who touches this code), rather than silently widening the tol.
 ///
 /// (`multi_joint_body` was a known limit here — a multi-joint body's earlier
 /// joint had its motion subspace built from the body's FINAL orientation rather
@@ -412,24 +409,20 @@ fn forward_at(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
 /// — only the parent origin moves — across all six transport/subspace/inertia/
 /// projection sites in `mjd_rne_pos`.)
 ///
-/// - `hinge_offset_pivot` (≈5e-3): a hinge with `jnt_pos ≠ 0` rotates the body
-///   about the joint anchor (≠ body frame origin), i.e. rotation + translation
-///   of the origin. The same-body `∂S/∂q` (`â×(â×r)`) is correct, but the
-///   translation-of-origin contribution to the `∂I` rotation derivative (which
-///   assumes rotation about the origin) is incomplete, leaving a Coriolis-row
-///   residual (0.19 gravity-only, partially cancelled to ~5e-3 here). EVERY
-///   other case uses `jnt_pos = 0` (exact), and the codebase's real consumers
-///   (pendulum factory, sim-coupling chains, MJCF chains) all build origin-
-///   anchored joints — so this is a LATENT gap, surfaced by the harness, not a
-///   live one. Follow-on: offset-pivot `∂I`/transport completion.
-fn known_limit(name: &str) -> Option<f64> {
-    // Bound is a tight ratchet just above the measured residual (≈5e-3) so a
-    // partial regression that worsens it trips the test, while the documented
-    // gap itself stays green. Re-tighten if a follow-on shrinks it.
-    match name {
-        "hinge_offset_pivot" => Some(1e-2),
-        _ => None,
-    }
+/// (`hinge_offset_pivot` was a known limit here — a hinge with `jnt_pos ≠ 0`
+/// rotates the body about an anchor off the body origin, so the origin moves at
+/// `â×r` (r = origin − anchor). The residual was NOT in the derivative: the
+/// FORWARD `velocity.rs` built a hinge's `cvel` from the angular axis ONLY,
+/// omitting the linear lever `â×r` of the motion subspace `S = [â; â×r]` — so
+/// `cvel ≠ S·q̇` for offset pivots, while `mjd_rne_pos` (and CRBA, `mj_jac`) all
+/// project with the lever-correct `S`. The analytic derivative differentiated the
+/// consistent `S·q̇`, but the operating point did not, leaving the ~5e-3 mismatch.
+/// It is now machine-exact: `velocity.rs` adds the `â×r` lever (byte-identical for
+/// `jnt_pos = 0`, where `r = 0`), restoring `cvel = S·q̇`. Guarded by
+/// `forward_cvel_matches_joint_subspace` extended to a `jnt_pos ≠ 0` body.)
+fn known_limit(_name: &str) -> Option<f64> {
+    // No known limitations remain — every case in the matrix is machine-exact.
+    None
 }
 
 /// The harness assertion: analytic transition `A` matches central-FD `A` for

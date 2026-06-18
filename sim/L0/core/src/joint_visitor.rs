@@ -332,15 +332,23 @@ mod tests {
     /// The forward velocity stage (`velocity.rs`) builds the body spatial
     /// velocity from its OWN copy of the motion subspace; it must stay
     /// consistent with `joint_motion_subspace` (the original bug was these two
-    /// drifting apart on a multi-joint body). Guards `cvel[b] == Σ_j S_j·qvel_j`.
+    /// drifting apart on a multi-joint body). Guards `cvel[b] == Σ_j S_j·qvel_j`,
+    /// including a `jnt_pos ≠ 0` (offset-pivot) hinge — without the linear lever
+    /// `â×r` in `velocity.rs` the two drift apart only when the anchor is off the
+    /// body origin, which is why that case stayed latent.
     #[test]
     fn forward_cvel_matches_joint_subspace() {
         let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
         let ax1 = Vector3::new(0.2, 1.0, 0.1).normalize();
+
+        // Multi-joint body, AND both joints anchored off the body origin so the
+        // `â×r` lever is live (the latent forward bug; `jnt_pos = 0` hides it).
         let mut m = Model::empty();
         let b = link(&mut m, 0, "l0", Vector3::zeros());
-        add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
-        add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        let j0 = add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        let j1 = add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        m.jnt_pos[j0] = Vector3::new(0.08, -0.05, 0.06);
+        m.jnt_pos[j1] = Vector3::new(-0.04, 0.07, -0.03);
         finalize(&mut m);
 
         let mut data = m.make_data();

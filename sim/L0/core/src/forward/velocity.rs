@@ -86,6 +86,16 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
                     vel[0] += omega.x;
                     vel[1] += omega.y;
                     vel[2] += omega.z;
+                    // Linear lever: when the joint anchor is off the body origin
+                    // (`jnt_pos ≠ 0`), rotating about the anchor moves the body
+                    // origin at `â × r_anchor` (r_anchor = origin − anchor). This is
+                    // the linear block of the hinge motion subspace `S = [â; â×r]`;
+                    // omitting it left `cvel ≠ S·q̇` for offset pivots.
+                    let r_anchor = data.xpos[body_id] - data.xanchor[jnt_id];
+                    let lin = data.xaxis[jnt_id].cross(&r_anchor) * data.qvel[dof_adr];
+                    vel[3] += lin.x;
+                    vel[4] += lin.y;
+                    vel[5] += lin.z;
                 }
                 MjJointType::Slide => {
                     // Linear velocity contribution (partial-frame world axis).
