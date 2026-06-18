@@ -279,13 +279,26 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
         data.cfrc_bias[body_id] = i_a + gyro;
     }
 
-    // Propagate forces from leaves to root
+    // Propagate forces from leaves to root with spatial-force transport (Xᵀ) to
+    // the parent ORIGIN: the force is unchanged but the torque gains the moment
+    // lever (x_child − x_parent) × f. cfrc_bias is a spatial force at each body's
+    // own origin, so a plain sum across bodies at different origins drops this
+    // lever and corrupts the Coriolis generalized force on ANCESTOR DOFs of a
+    // multi-link chain (single-link / leaf DOFs are unaffected). Verified against
+    // MuJoCo by the forward-conformance harness (sim-mjcf `forward_conformance`).
     for body_id in (1..model.nbody).rev() {
         let parent_id = model.body_parent[body_id];
         if parent_id != 0 {
-            // Add child's force to parent (already in world frame, no transform needed)
             let child_force = data.cfrc_bias[body_id];
-            data.cfrc_bias[parent_id] += child_force;
+            let r = data.xpos[body_id] - data.xpos[parent_id];
+            let f_lin = nalgebra::Vector3::new(child_force[3], child_force[4], child_force[5]);
+            let lever = r.cross(&f_lin);
+            data.cfrc_bias[parent_id][0] += child_force[0] + lever.x;
+            data.cfrc_bias[parent_id][1] += child_force[1] + lever.y;
+            data.cfrc_bias[parent_id][2] += child_force[2] + lever.z;
+            data.cfrc_bias[parent_id][3] += child_force[3];
+            data.cfrc_bias[parent_id][4] += child_force[4];
+            data.cfrc_bias[parent_id][5] += child_force[5];
         }
     }
 

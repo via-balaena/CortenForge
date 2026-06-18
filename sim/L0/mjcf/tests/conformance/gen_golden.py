@@ -48,6 +48,12 @@ SAMPLES = {
         ([-0.5, 0.7], [-0.4, 0.9]),
         ([1.1, -0.9], [0.0, 0.0]),  # zero-velocity: isolates gravity + mass
     ],
+    "three_link_spatial": [
+        # nested transport: a non-parallel 3-link chain exercises two levels of
+        # the backward Xᵀ moment-lever (where a partial Coriolis fix would hide).
+        ([0.3, -0.35, 0.25], [0.9, -0.6, 0.7]),
+        ([-0.5, 0.7, -0.4], [-0.4, 0.9, -0.5]),
+    ],
 }
 
 

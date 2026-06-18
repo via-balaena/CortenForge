@@ -620,11 +620,25 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // §51 Fix C: Propagate internal forces from leaves to root,
     // including accumulation into world body (body 0).
     // MuJoCo propagates cfrc_int[0] = sum of all children.
+    //
+    // Spatial-force transport (Xᵀ) to the parent ORIGIN: `cfrc_int[b]` is a spatial
+    // force at body `b`'s own origin, so the torque gains the moment lever
+    // (xpos[child] − xpos[parent]) × f when moved to the parent. A plain sum drops
+    // it and corrupts the accumulated wrench on ancestor / world bodies of a
+    // multi-link chain — the same defect fixed in `mj_rne`'s backward pass.
     data.cfrc_int[0] = SpatialVector::zeros();
     for body_id in (1..model.nbody).rev() {
         let parent_id = model.body_parent[body_id];
         let child_force = data.cfrc_int[body_id];
-        data.cfrc_int[parent_id] += child_force;
+        let r = data.xpos[body_id] - data.xpos[parent_id];
+        let f_lin = nalgebra::Vector3::new(child_force[3], child_force[4], child_force[5]);
+        let lever = r.cross(&f_lin);
+        data.cfrc_int[parent_id][0] += child_force[0] + lever.x;
+        data.cfrc_int[parent_id][1] += child_force[1] + lever.y;
+        data.cfrc_int[parent_id][2] += child_force[2] + lever.z;
+        data.cfrc_int[parent_id][3] += child_force[3];
+        data.cfrc_int[parent_id][4] += child_force[4];
+        data.cfrc_int[parent_id][5] += child_force[5];
     }
 
     data.flg_rnepost = true;
