@@ -63,21 +63,22 @@ const TOL_QACC: f64 = 1e-7;
 /// matching it in the analytic Part-B and velocity-derivative backward passes;
 /// `two_link_hinge` (one transport hop) is now machine-exact.
 ///
-/// OPEN — `three_link_spatial`: with the backward fix in place, a non-parallel
-/// 3-link chain still diverges (~1e-2), and on EVERY DOF including the leaf. The
-/// backward `Xᵀ` cannot affect a leaf's force, so this is a SECOND, independent
-/// forward bug surfaced by nested transport: the forward bias-acceleration
-/// recursion (`cacc_bias`) — a 3-link leaf is the first body to transport a
-/// *nonzero* parent `cacc_bias` (`X_b` motion transport of the multi-hop Coriolis
-/// acceleration). FK/`qM`/gravity stay machine-exact, so it is purely the
-/// velocity-coupling term. Invisible to the transition harness (analytic follows
-/// the same forward). Follow-on stone: the multi-hop forward `cacc_bias` transport.
-fn known_coriolis_divergence(fixture: &str) -> Option<(f64, f64)> {
-    match fixture {
-        // measured max |Δ|: qfrc_bias ≈ 1.2e-2, qacc ≈ 1.8e-1
-        "three_link_spatial" => Some((2e-2, 3e-1)),
-        _ => None,
-    }
+/// CLOSED — `three_link_spatial` (forward velocity-product reference point): the
+/// bias-acceleration recursion's Coriolis term `c[i] = v[i] ×_m (S·qvel)` used the
+/// *raw* `cvel[parent]` (referenced at the parent origin) instead of this body's own
+/// `cvel[body]`. The Featherstone identity `v[i] ×_m (S·qvel) = v[parent] ×_m
+/// (S·qvel)` holds only when `v[parent]` is transported to the body origin; the raw
+/// value drops the `[0; ω_parent×r] ×_m (S·qvel)` lever, which vanishes for
+/// single/two-link chains by geometry but corrupts a non-parallel ≥3-link chain
+/// (first nonzero at the leaf, which the backward `Xᵀ` cannot reach). Fixed in
+/// `rne.rs` (and the sibling `cacc` pass in `forward/acceleration.rs`), with matching
+/// `cvel[body]`/`Dcvel[body]` updates in the analytic `mjd_rne_vel` and `mjd_rne_pos`
+/// Part B so the transition harness stays machine-exact. Now machine-exact.
+///
+/// No open divergences remain — every fixture/quantity is held to the machine-exact
+/// bounds above.
+const fn known_coriolis_divergence(_fixture: &str) -> Option<(f64, f64)> {
+    None
 }
 
 /// One fixture: the MJCF source and its golden JSON, both checked in.

@@ -5,7 +5,9 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
-use crate::dynamics::spatial::{SpatialVector, spatial_cross_force, spatial_cross_motion};
+use crate::dynamics::spatial::{
+    SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
+};
 use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
@@ -586,14 +588,20 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                 }
             }
 
-            // §51 Fix A: Coriolis acceleration = cvel_parent × (S * qvel)
+            // Coriolis acceleration c[i] = v[i] ×_m (S·qvel) = X_b(v[parent]) ×_m
+            // (S·qvel). cvel is referenced at each body's xpos, so the raw cvel[parent]
+            // (at the parent origin) drops the lever [0; ω_parent×r]; transport it to
+            // this body's origin instead. (Same fix as `mj_rne`'s bias-acceleration
+            // forward pass; vanishes for ≤2-link chains but matters for non-parallel
+            // ≥3-link chains.)
             let mut v_joint = SpatialVector::zeros();
             for d in 0..nv {
                 for row in 0..6 {
                     v_joint[row] += s[(row, d)] * data.qvel[dof_adr + d];
                 }
             }
-            acc += spatial_cross_motion(data.cvel[parent_id], v_joint);
+            let v_parent_at_body = transport_motion_spatial(data.cvel[parent_id], &r);
+            acc += spatial_cross_motion(v_parent_at_body, v_joint);
         }
 
         data.cacc[body_id] = acc;

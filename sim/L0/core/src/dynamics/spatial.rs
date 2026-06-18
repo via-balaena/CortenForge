@@ -222,6 +222,20 @@ pub fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f6
     result
 }
 
+/// Transport a 6D spatial motion vector by the world-frame offset `r` (from the
+/// current reference point to the target).
+///
+/// Pure-translation motion transport: angular unchanged, linear += angular × r.
+/// Used to bring a parent body's spatial velocity to a child's origin in the
+/// Featherstone velocity-product term `c[i] = X_b(v[parent]) ×_m (S·qdot)`.
+#[inline]
+#[must_use]
+pub fn transport_motion_spatial(m: SpatialVector, r: &Vector3<f64>) -> SpatialVector {
+    let omega = Vector3::new(m[0], m[1], m[2]);
+    let lin = Vector3::new(m[3], m[4], m[5]) + omega.cross(r);
+    SpatialVector::new(m[0], m[1], m[2], lin.x, lin.y, lin.z)
+}
+
 /// Shift a spatial motion vector (velocity or acceleration) from `body_origin`
 /// to `target_pos`.
 ///
@@ -402,6 +416,27 @@ mod tests {
         assert!((lin_out.x - 0.0).abs() < 1e-15);
         assert!((lin_out.y - 1.0).abs() < 1e-15);
         assert!((lin_out.z - 0.0).abs() < 1e-15);
+    }
+
+    /// T2b: transport_motion_spatial — zero offset returns the input unchanged,
+    /// and a known ω×r case matches the lever (angular unchanged, linear += ω×r).
+    #[test]
+    fn t02b_transport_motion_spatial() {
+        // Zero offset: identity.
+        let m = SpatialVector::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
+        let same = transport_motion_spatial(m, &Vector3::zeros());
+        assert_eq!(same, m);
+
+        // ω = ẑ, r = x̂ ⇒ ω×r = ŷ. Angular unchanged, linear gains ŷ.
+        let spin = SpatialVector::new(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        let out = transport_motion_spatial(spin, &Vector3::new(1.0, 0.0, 0.0));
+        assert_eq!(
+            Vector3::new(out[0], out[1], out[2]),
+            Vector3::new(0.0, 0.0, 1.0)
+        );
+        assert!((out[3] - 0.0).abs() < 1e-15);
+        assert!((out[4] - 1.0).abs() < 1e-15);
+        assert!((out[5] - 0.0).abs() < 1e-15);
     }
 
     /// T3: transport_force — moment arm.
