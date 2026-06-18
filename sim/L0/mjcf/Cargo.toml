@@ -43,6 +43,9 @@ approx = { workspace = true }
 mesh-types = { workspace = true }
 # Scratch directories for MJCF / MJB file round-trip tests
 tempfile = { workspace = true }
+# Parse the checked-in MuJoCo golden values for the forward-conformance harness
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [features]
 default = ["hfields"]

@@ -11618,6 +11618,7 @@ dependencies = [
  "nalgebra 0.34.2",
  "quick-xml 0.39.2",
  "serde",
+ "serde_json",
  "sim-core",
  "sim-types",
  "tempfile",
