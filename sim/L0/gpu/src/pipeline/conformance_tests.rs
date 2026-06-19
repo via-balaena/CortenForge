@@ -46,13 +46,17 @@ const _: () = ();
 
 use nalgebra::Vector3;
 
-use sim_core::test_fixtures::conformance::{ConformanceCase, dynamics_conformance_matrix};
+use sim_core::test_fixtures::conformance::{
+    ConformanceCase, damped_conformance_matrix, dynamics_conformance_matrix,
+};
 use sim_core::types::{Data, MjJointType, Model};
 
 use super::crba::GpuCrbaPipeline;
 use super::fk::{GpuFkPipeline, readback_f32s, readback_vec4s};
+use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
 use super::rne::GpuRnePipeline;
+use super::smooth::GpuSmoothPipeline;
 use super::state_buffers::GpuStateBuffers;
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
@@ -169,6 +173,15 @@ fn known_gpu_divergence(name: &str) -> Option<&'static str> {
         // n_env allocator + reduction slice.
         "branched_hinge" => {
             Some("subtree reduction race for sibling branches (Session-2 CAS atomics)")
+        }
+        // Damped-integration cases (Slice-2a): the GPU substep applies NO joint
+        // damping — it clears qfrc_passive to zero (no passive shader) AND lacks
+        // the implicit (M + h·D) eulerdamp solve, so it integrates the UNDAMPED
+        // trajectory. CPU uses the implicit damped solve. Fixed in Slice-2b
+        // (add the −D·q̇ passive force + fold h·D into the Cholesky), which flips
+        // these green and is forced by this allowlist's self-validation.
+        n if n.ends_with("_damped") => {
+            Some("GPU substep lacks implicit eulerdamp solve + joint damper force (Slice-2b)")
         }
         _ => None,
     }
@@ -463,35 +476,207 @@ fn gpu_dynamics_matches_cpu_across_joint_matrix() {
         // Separate this case's new failures so a known divergence neither gates
         // the suite nor silently hides a future GPU fix.
         let case_fails = fails.split_off(before);
-        match known_gpu_divergence(name) {
-            Some(reason) => {
-                assert!(
-                    !case_fails.is_empty(),
-                    "[{name}] is on the known-divergence allowlist ({reason}) but now MATCHES \
-                     CPU — the GPU was fixed; remove its `known_gpu_divergence` entry."
-                );
-                eprintln!(
-                    "  conformance[{name}] EXPECTED-DIVERGENT ({} entries, {reason})",
-                    case_fails.len()
-                );
-            }
-            None => {
-                if case_fails.is_empty() {
-                    eprintln!("  conformance[{name}] passed (nv={nv}, nbody={nbody})");
-                } else {
-                    eprintln!(
-                        "  conformance[{name}] FAILED ({} divergences, nv={nv}, nbody={nbody})",
-                        case_fails.len()
-                    );
-                    fails.extend(case_fails);
-                }
-            }
-        }
+        eprintln!("  conformance[{name}] (nv={nv}, nbody={nbody})");
+        finish_case(&mut fails, case_fails, name);
     }
 
     assert!(
         fails.is_empty(),
         "GPU↔CPU dynamics conformance found {} NEW divergence(s) (not on the known allowlist):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+/// Route a single case's new failures through the known-divergence allowlist.
+///
+/// - Allowlisted case: assert it STILL diverges (else the GPU was fixed →
+///   remove the entry); the failures don't gate the suite.
+/// - Otherwise: extend `fails` so any real divergence gates.
+fn finish_case(fails: &mut Failures, case_fails: Vec<String>, name: &str) {
+    match known_gpu_divergence(name) {
+        Some(reason) => {
+            assert!(
+                !case_fails.is_empty(),
+                "[{name}] is on the known-divergence allowlist ({reason}) but now MATCHES \
+                 CPU — the GPU was fixed; remove its `known_gpu_divergence` entry."
+            );
+            eprintln!(
+                "    EXPECTED-DIVERGENT ({} entries, {reason})",
+                case_fails.len()
+            );
+        }
+        None => {
+            if case_fails.is_empty() {
+                eprintln!("    passed");
+            } else {
+                eprintln!("    FAILED ({} divergences)", case_fails.len());
+                fails.extend(case_fails);
+            }
+        }
+    }
+}
+
+/// Compare GPU (readback `qpos`/`qvel`) vs CPU `Data` after a step. Handles any
+/// joint mix: the only quaternion-bearing layout in these fixtures is a root
+/// ball/free whose quaternion starts at `qpos[3]`, sign-aligned (`q ≡ −q`); for
+/// pure hinge/slide chains the loop below is a plain element-wise compare.
+fn check_step_state(
+    fails: &mut Failures,
+    name: &str,
+    step: usize,
+    gpu_qpos: &[f32],
+    gpu_qvel: &[f32],
+    cpu: &Data,
+    nq: usize,
+    nv: usize,
+    tol: f32,
+) {
+    // qpos: a unit quaternion (root ball/free) needs sign-alignment; a scalar
+    // (hinge/slide) does not. Detect by nq vs nv mismatch on the trailing block.
+    let has_quat = nq == nv + 1; // single ball(+1) or free(+1) root → one extra qpos
+    for i in 0..nq {
+        let (g, c) = if has_quat && i >= nq - 4 {
+            // quaternion block: sign-align on its w (first quat component).
+            let qw_idx = nq - 4;
+            let sign = if gpu_qpos[qw_idx] * cpu.qpos[qw_idx] as f32 >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
+            (gpu_qpos[i], sign * cpu.qpos[i] as f32)
+        } else {
+            (gpu_qpos[i], cpu.qpos[i] as f32)
+        };
+        check(fails, g, c, tol, format!("[{name}] step{step} qpos[{i}]"));
+    }
+    for i in 0..nv {
+        check(
+            fails,
+            gpu_qvel[i],
+            cpu.qvel[i] as f32,
+            tol,
+            format!("[{name}] step{step} qvel[{i}]"),
+        );
+    }
+}
+
+/// One contact-free GPU substep on a persistent state buffer: FK → CRBA →
+/// velocity-FK → RNE → smooth → (`qacc = qacc_smooth`) → integrate. Mirrors the
+/// T17/T18 hand-rolled trajectory loop (no collision/constraint stage, so it
+/// works for every joint type — unlike the orchestrator, which is free-only and
+/// needs geom buffers). `qfrc_*` accumulators are reset inside each pipeline's
+/// dispatch, as the multi-thousand-step T18 loop relies on.
+// (arg count covered by the module-level `#![allow(clippy::too_many_arguments)]`.)
+fn gpu_substep(
+    ctx: &GpuContext,
+    model: &Model,
+    model_buf: &GpuModelBuffers,
+    state: &GpuStateBuffers,
+    fk: &GpuFkPipeline,
+    crba: &GpuCrbaPipeline,
+    vel: &GpuVelocityFkPipeline,
+    rne: &GpuRnePipeline,
+    smooth: &GpuSmoothPipeline,
+    integrate: &GpuIntegratePipeline,
+) {
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("damped substep"),
+        });
+    fk.dispatch(ctx, model_buf, state, &mut encoder);
+    crba.dispatch(ctx, model_buf, state, &mut encoder);
+    vel.dispatch(ctx, model_buf, state, &mut encoder);
+    rne.dispatch(ctx, model_buf, state, model, &mut encoder);
+    smooth.dispatch(ctx, model_buf, state, model, &mut encoder);
+    // Contact-free bridge: qacc = qacc_smooth (the constraint stage's job).
+    encoder.copy_buffer_to_buffer(
+        &state.qacc_smooth,
+        0,
+        &state.qacc,
+        0,
+        u64::from(model.nv.max(1) as u32) * 4,
+    );
+    integrate.dispatch(ctx, model_buf, state, model, &mut encoder);
+    ctx.queue.submit([encoder.finish()]);
+}
+
+/// Slice-2 damped-integration conformance: step each damped fixture forward on
+/// GPU (hand-rolled contact-free substep) and CPU (`Data::step`) in lockstep and
+/// compare the `qpos`/`qvel` trajectory. The current GPU substep applies NO joint
+/// damping (no passive `−D·q̇` force, no implicit `(M + h·D)` solve), so it
+/// integrates the UNDAMPED trajectory — every damped case is EXPECTED-DIVERGENT
+/// until Slice-2b, and the allowlist's self-validation forces the fix to flip
+/// them green.
+#[test]
+fn gpu_damped_integration_matches_cpu() {
+    const N_STEPS: usize = 10;
+
+    let ctx = gpu_or_skip!();
+    let checkpoints = [1usize, N_STEPS];
+    let mut fails: Failures = Vec::new();
+
+    for case in &damped_conformance_matrix() {
+        let ConformanceCase {
+            name,
+            model,
+            qpos,
+            qvel,
+        } = case;
+
+        // Guard: the fixture must actually carry damping, else the test is a
+        // tautology (undamped GPU == undamped CPU).
+        assert!(
+            (0..model.nv).any(|i| model.implicit_damping[i] > 0.0),
+            "[{name}] fixture has no damping — vacuous eulerdamp test"
+        );
+
+        let mut data_cpu = model.make_data();
+        data_cpu.qpos.as_mut_slice().copy_from_slice(qpos);
+        data_cpu.qvel.as_mut_slice().copy_from_slice(qvel);
+
+        // GPU state persists across substeps (integrate writes qpos/qvel back
+        // into these buffers; the next substep's FK reads them).
+        let model_buf = GpuModelBuffers::upload(&ctx, model);
+        let state = GpuStateBuffers::new(&ctx, &model_buf, &data_cpu);
+        let fk = GpuFkPipeline::new(&ctx, &model_buf, &state);
+        let crba = GpuCrbaPipeline::new(&ctx, &model_buf, &state);
+        let vel = GpuVelocityFkPipeline::new(&ctx, &model_buf, &state);
+        let rne = GpuRnePipeline::new(&ctx, &model_buf, &state, model);
+        let smooth = GpuSmoothPipeline::new(&ctx, &model_buf, &state);
+        let integrate = GpuIntegratePipeline::new(&ctx, &model_buf, &state);
+
+        let before = fails.len();
+        for step in 1..=N_STEPS {
+            data_cpu.step(model).expect("CPU step");
+            gpu_substep(
+                &ctx, model, &model_buf, &state, &fk, &crba, &vel, &rne, &smooth, &integrate,
+            );
+            if checkpoints.contains(&step) {
+                let gpu_qpos = readback_f32s(&ctx, &state.qpos, model.nq);
+                let gpu_qvel = readback_f32s(&ctx, &state.qvel, model.nv);
+                check_step_state(
+                    &mut fails,
+                    name,
+                    step,
+                    &gpu_qpos,
+                    &gpu_qvel,
+                    &data_cpu,
+                    model.nq,
+                    model.nv,
+                    TOL_DYNAMIC,
+                );
+            }
+        }
+        let case_fails = fails.split_off(before);
+        eprintln!("  damped[{name}] (nv={})", model.nv);
+        finish_case(&mut fails, case_fails, name);
+    }
+
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU damped-integration conformance found {} NEW divergence(s):\n  {}",
         fails.len(),
         fails.join("\n  ")
     );
