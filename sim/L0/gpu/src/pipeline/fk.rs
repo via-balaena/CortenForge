@@ -322,20 +322,22 @@ impl GpuFkPipeline {
             pass.dispatch_workgroups(ceil64(self.ngeom), self.n_env, 1);
         }
 
-        // ── Subtree COM: backward scan ────────────────────────────────
-        for depth in (1..=self.max_depth).rev() {
-            // Reuse forward param slot (same depth value)
-            let offset = (u64::from(depth) * UNIFORM_ALIGN) as u32;
+        // ── Subtree COM: backward reduction ───────────────────────────
+        // One thread per env reduces children→parents sequentially (the
+        // shader's reverse sweep is race-free for the whole tree), so this
+        // is a single dispatch over the env axis. Slot 0's params carry the
+        // correct nbody/n_env; the reduction ignores `current_depth`.
+        {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("fk_subtree_backward"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.subtree_backward_pipeline);
-            pass.set_bind_group(0, &self.params_bind_group, &[offset]);
+            pass.set_bind_group(0, &self.params_bind_group, &[0]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.geom_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.n_env), 1, 1);
         }
 
         // ── Subtree COM: normalize ────────────────────────────────────

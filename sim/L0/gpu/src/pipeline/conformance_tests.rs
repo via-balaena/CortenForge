@@ -165,18 +165,13 @@ type Failures = Vec<String>;
 /// (`known divergence appears FIXED`) so this allowlist can never silently mask a
 /// fix — mirrors the CPU transition harness's `known_limit` discipline.
 fn known_gpu_divergence(name: &str) -> Option<&'static str> {
-    match name {
-        // `fk_subtree_backward` accumulates `subtree[parent] += subtree[child]`
-        // non-atomically; when sibling children share a parent (l1,l2 → l0 here)
-        // the two writes race and one branch's mass/COM is lost. Corrupts
-        // subtree_mass/subtree_com and the root joint's gravity qfrc_bias. The
-        // shader already flags CAS atomics as a Session-2 item; tracked for the
-        // n_env allocator + reduction slice.
-        "branched_hinge" => {
-            Some("subtree reduction race for sibling branches (Session-2 CAS atomics)")
-        }
-        _ => None,
-    }
+    // No cases are currently known-divergent: the n_env=1 smooth/kinematic path
+    // matches CPU across the whole conformance matrix. To re-arm, return
+    // `Some("reason (ledger ref)")` for the diverging case name; `finish_case`
+    // self-validates that an allowlisted case STILL diverges, so this can never
+    // silently mask a fix (mirrors the CPU transition harness's `known_limit`).
+    let _ = name;
+    None
 }
 
 /// Record `|gpu − cpu| ≥ tol` (NaN-safe via `!(< tol)`).

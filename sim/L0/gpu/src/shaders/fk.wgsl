@@ -3,7 +3,7 @@
 // 4 entry points dispatched in sequence:
 //   1. fk_forward           — per depth level (body poses, cinert, cdof)
 //   2. fk_geom_poses        — all geoms parallel (after FK)
-//   3. fk_subtree_backward  — per depth level, leaves→root
+//   3. fk_subtree_backward  — one thread per env, leaves→root reduction
 //   4. fk_subtree_normalize — all bodies parallel
 //
 // Quaternion layout: vec4<f32> = (x, y, z, w) throughout.
@@ -378,28 +378,37 @@ fn fk_geom_poses(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ── Entry point 3: Subtree COM backward ───────────────────────────────
 
+// One thread per env performs the entire children→parent reduction
+// SEQUENTIALLY, mirroring CPU `forward/position.rs`. Bodies are stored in
+// topological order (a parent's index is always < its children's), so a
+// single reverse sweep accumulates every body into its parent before the
+// parent is itself accumulated — race-free WITHOUT atomics, since each
+// thread touches only its own env's slots. The earlier per-body, per-depth
+// scatter raced when sibling branches shared a parent (two non-atomic
+// `subtree[parent] += child` writes collided and one was lost). The
+// per-env parallelism kept here is the axis that matters for batching;
+// the O(nbody) serial reduction is negligible beside the FK forward pass
+// (same single-thread-per-env convention as smooth_solve / eulerdamp).
+// NOTE: this pass is already env-correct, but end-to-end n_env>1 is still
+// gated upstream (fk_forward reads qpos without an env offset; the state
+// allocator hardcodes n_env=1) — see the divergence ledger.
 @compute @workgroup_size(64)
 fn fk_subtree_backward(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let body_id = gid.x;
-    let env_id = gid.y;
-    if (body_id >= params.nbody || env_id >= params.n_env) { return; }
-
-    let body = bodies[body_id];
-    if (body.depth != params.current_depth) { return; }
-    if (body_id == 0u) { return; }
+    let env_id = gid.x;
+    if (env_id >= params.n_env) { return; }
 
     let env_off = env_id * params.nbody;
-    let parent = body.parent;
-    let parent_idx = env_off + parent;
-    let child_idx = env_off + body_id;
 
-    // Accumulate child into parent.
-    // Race condition note: multiple children at the same depth may share
-    // a parent. For small trees with n_env=1 (Session 1 scope), each
-    // depth level fits in one workgroup and results are deterministic.
-    // Session 2 adds CAS atomics for larger trees.
-    subtree_mass[parent_idx] = subtree_mass[parent_idx] + subtree_mass[child_idx];
-    subtree_com[parent_idx] = subtree_com[parent_idx] + subtree_com[child_idx];
+    // Reverse sweep: b runs nbody → 2, body_id = b - 1 runs nbody-1 → 1.
+    // Phrased this way to keep the u32 loop counter from underflowing.
+    for (var b = params.nbody; b > 1u; b--) {
+        let body_id = b - 1u;
+        let parent = bodies[body_id].parent;
+        let parent_idx = env_off + parent;
+        let child_idx = env_off + body_id;
+        subtree_mass[parent_idx] = subtree_mass[parent_idx] + subtree_mass[child_idx];
+        subtree_com[parent_idx] = subtree_com[parent_idx] + subtree_com[child_idx];
+    }
 }
 
 // ── Entry point 4: Subtree COM normalize ──────────────────────────────
