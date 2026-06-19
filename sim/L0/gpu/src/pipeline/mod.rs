@@ -13,6 +13,8 @@ pub mod collision;
 #[cfg(test)]
 mod conformance_tests;
 pub mod constraint;
+#[cfg(test)]
+mod contact_conformance_tests;
 pub mod crba;
 pub mod eulerdamp;
 pub mod fk;
