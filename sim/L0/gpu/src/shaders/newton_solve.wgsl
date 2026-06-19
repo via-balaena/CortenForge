@@ -177,9 +177,15 @@ fn newton_solve(@builtin(local_invocation_id) lid: vec3<u32>) {
         if done != 0u { break; }
 
         // ── PHASE 1: Initialize Hessian H = M ──────────────────────────
-        // All 256 threads cooperate to copy the mass matrix into shared H
+        // All 256 threads cooperate to copy the mass matrix into shared H.
+        // qM_buf is row-major with stride `nv`; H_atomic is strided by MAX_NV
+        // (matching every other H access via `r * MAX_NV + c`). Translate the
+        // flat copy index into (r, c) so the two layouts agree — copying flat
+        // (stride-nv into stride-MAX_NV storage) corrupts H for nv < MAX_NV.
         for (var idx = tid; idx < nv * nv; idx += WG_SIZE) {
-            atomicStore(&H_atomic[idx], bitcast<u32>(qM_buf[idx]));
+            let r = idx / nv;
+            let c = idx % nv;
+            atomicStore(&H_atomic[r * MAX_NV + c], bitcast<u32>(qM_buf[idx]));
         }
         workgroupBarrier();
 
