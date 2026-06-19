@@ -28,7 +28,7 @@ const _: () = ();
 use nalgebra::{UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
-use sim_core::types::{Data, Model};
+use sim_core::types::{Data, MjJointType, Model};
 
 use super::collision::GpuCollisionPipeline;
 use super::constraint::GpuConstraintPipeline;
@@ -413,6 +413,86 @@ fn t5_cdof_matches_cpu() {
     eprintln!("  T5 passed: cdof matches CPU for 3-link pendulum");
 }
 
+/// Expected hinge/slide `cdof` from the CPU's stored PARTIAL frames
+/// (`data.xaxis`/`data.xanchor`) — the exact source `joint_motion_subspace`
+/// consumes. Unlike `cpu_hinge_cdof` (which rebuilds from the final `xquat`),
+/// this is correct for a multi-joint body where later joints rotate the frame.
+fn cpu_cdof_partial(model: &Model, data: &Data, jnt_id: usize) -> [f32; 6] {
+    let body_id = model.jnt_body[jnt_id];
+    let axis = data.xaxis[jnt_id];
+    match model.jnt_type[jnt_id] {
+        MjJointType::Hinge => {
+            let r = data.xpos[body_id] - data.xanchor[jnt_id];
+            let lin = axis.cross(&r);
+            [
+                axis.x as f32,
+                axis.y as f32,
+                axis.z as f32,
+                lin.x as f32,
+                lin.y as f32,
+                lin.z as f32,
+            ]
+        }
+        MjJointType::Slide => [0.0, 0.0, 0.0, axis.x as f32, axis.y as f32, axis.z as f32],
+        other => panic!("cpu_cdof_partial: unexpected joint type {other:?}"),
+    }
+}
+
+// ── T5b: cdof for a MULTI-JOINT body (partial-frame subspace) ─────────
+// `n_link_pendulum` puts one joint per body, so the cdof loop's final-frame
+// vs partial-frame distinction is invisible. `multi_joint_body` carries
+// hinge→slide→hinge on a single body: the first hinge and the slide are each
+// followed by a later *rotating* joint, so a final-frame cdof over-rotates
+// their subspace. This is the only fixture that catches the GPU fk.wgsl
+// partial-frame gap (mirrors CPU project-multi-joint-partial-frame).
+#[test]
+fn t5b_cdof_multi_joint_body() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::multi_joint_body();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.4; // hinge
+    data.qpos[1] = 0.15; // slide
+    data.qpos[2] = -0.3; // hinge
+
+    data.forward(&model).expect("CPU forward failed");
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+    let pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t5b") });
+    pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+    ctx.queue.submit([encoder.finish()]);
+
+    let gpu_cdof = readback_vec4s(&ctx, &state_buf.cdof, model.nv * 2);
+
+    let tol = 1e-4;
+    for dof in 0..model.nv {
+        let jnt_id = model.dof_jnt[dof];
+        let cpu = cpu_cdof_partial(&model, &data, jnt_id);
+        let gpu_ang = &gpu_cdof[dof * 2];
+        let gpu_lin = &gpu_cdof[dof * 2 + 1];
+        for r in 0..3 {
+            assert!(
+                (gpu_ang[r] - cpu[r]).abs() < tol,
+                "dof {dof} angular[{r}]: GPU={:.6} CPU={:.6}",
+                gpu_ang[r],
+                cpu[r]
+            );
+            assert!(
+                (gpu_lin[r] - cpu[r + 3]).abs() < tol,
+                "dof {dof} linear[{r}]: GPU={:.6} CPU={:.6}",
+                gpu_lin[r],
+                cpu[r + 3]
+            );
+        }
+    }
+    eprintln!("  T5b passed: cdof matches CPU for multi-joint body");
+}
+
 // ── T6: Subtree COM ───────────────────────────────────────────────────
 
 #[test]
@@ -665,6 +745,43 @@ fn t10_qm_flat_tree_free_bodies() {
     eprintln!("  T10 passed: qM matches CPU for free body (flat tree, nv={nv})");
 }
 
+// ── T10b: qM for a MULTI-JOINT body ──────────────────────────────────
+// CRBA's mass-matrix kernel walks the dof_parent chain and projects cdof; the
+// intra-body off-diagonals M[i,j] for two DOFs on the SAME body must use the
+// partial-frame cdof (no spurious body-boundary transport between them). Guards
+// CRBA on the hinge→slide→hinge single-body fixture.
+#[test]
+fn t10b_qm_multi_joint_body() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::multi_joint_body();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.4;
+    data.qpos[1] = 0.15;
+    data.qpos[2] = -0.3;
+
+    data.forward(&model).expect("CPU forward failed");
+
+    let (_, state_buf) = run_fk_and_crba(&ctx, &model, &data);
+
+    let nv = model.nv;
+    let gpu_qm = readback_f32s(&ctx, &state_buf.qm, nv * nv);
+
+    let tol = 1e-4;
+    for i in 0..nv {
+        for j in 0..nv {
+            let gpu_val = gpu_qm[i * nv + j];
+            let cpu_val = data.qM[(i, j)] as f32;
+            assert!(
+                (gpu_val - cpu_val).abs() < tol,
+                "qM[{i},{j}]: GPU={gpu_val:.6} CPU={cpu_val:.6} err={:.2e}",
+                (gpu_val - cpu_val).abs()
+            );
+        }
+    }
+    eprintln!("  T10b passed: qM matches CPU for multi-joint body (nv={nv})");
+}
+
 // ── T11: cvel for free body with non-zero qvel ──────────────────────
 
 #[test]
@@ -878,6 +995,62 @@ fn t13_qfrc_bias_gravity_free_body() {
     eprintln!("  T13 passed: qfrc_bias gravity matches CPU for free body");
 }
 
+// ── T13b: qfrc_bias gravity for a ROTATED, off-COM free body ──────────
+// T13 uses an identity orientation, so the free joint's ANGULAR gravity frame
+// (the subspace maps body-local ω → world, hence Sᵀ projects the gravity torque
+// into the BODY frame) is untested — a world-frame torque passes T13 anyway.
+// The discriminator requires BOTH a non-identity orientation AND a real COM
+// offset (xipos ≠ body origin) so the gravity torque is non-zero: with the COM
+// at the origin (free_body's default body_ipos = 0) every angular DOF is
+// identically zero regardless of frame, and the world-vs-body bug stays masked.
+#[test]
+fn t13b_qfrc_bias_gravity_rotated_free_body() {
+    let ctx = gpu_or_skip!();
+
+    let mut model = Model::free_body(2.5, Vector3::new(0.1, 0.2, 0.3));
+    // Genuine COM offset (free_body hardcodes body_ipos = 0). This makes the
+    // subtree COM differ from the joint anchor, so gravity exerts a non-zero
+    // torque whose body-frame vs world-frame projection actually diverges.
+    model.body_ipos[1] = Vector3::new(0.08, -0.12, 0.05);
+
+    let mut data = model.make_data();
+    data.qpos[2] = 5.0;
+    // Non-identity orientation (≈45° about a tilted axis), normalized.
+    let q = UnitQuaternion::from_axis_angle(
+        &nalgebra::Unit::new_normalize(Vector3::new(0.3, 1.0, 0.5)),
+        0.8,
+    );
+    let c = q.into_inner().coords; // (x, y, z, w)
+    data.qpos[3] = c[3];
+    data.qpos[4] = c[0];
+    data.qpos[5] = c[1];
+    data.qpos[6] = c[2];
+
+    data.forward(&model).expect("CPU forward failed");
+
+    let (_, state_buf) = run_through_rne(&ctx, &model, &data);
+    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+
+    let tol = 1e-4;
+    for d in 0..model.nv {
+        let g = gpu_bias[d];
+        let cc = data.qfrc_bias[d] as f32;
+        assert!(
+            (g - cc).abs() < tol,
+            "qfrc_bias[{d}]: GPU={g:.6} CPU={cc:.6} err={:.2e}",
+            (g - cc).abs()
+        );
+    }
+    // Guard against silent regression to the zero-torque tautology: the angular
+    // DOFs (3–5) must carry real signal for the frame to be discriminated.
+    let angular_signal = (3..6).any(|d| gpu_bias[d].abs() > 1e-3);
+    assert!(
+        angular_signal,
+        "T13b must exercise non-zero angular gravity to test the body-frame projection"
+    );
+    eprintln!("  T13b passed: qfrc_bias gravity matches CPU for rotated off-COM free body");
+}
+
 // ── T14: qfrc_bias Coriolis for spinning free body ───────────────────
 
 #[test]
@@ -998,6 +1171,42 @@ fn t15b_qfrc_bias_spatial_chain() {
         );
     }
     eprintln!("  T15b passed: qfrc_bias matches CPU for non-parallel 3-link chain");
+}
+
+// ── T15c: qfrc_bias for a MULTI-JOINT body ───────────────────────────
+// Downstream of T5b: cdof feeds CRBA (qM) and RNE (qfrc_bias), so a corrupted
+// partial-frame subspace propagates here too. Guards the full pipeline on the
+// hinge→slide→hinge single-body fixture, with nonzero qvel to engage the
+// velocity-dependent Coriolis terms.
+#[test]
+fn t15c_qfrc_bias_multi_joint_body() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::multi_joint_body();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.4;
+    data.qpos[1] = 0.15;
+    data.qpos[2] = -0.3;
+    data.qvel[0] = 0.8;
+    data.qvel[1] = -0.5;
+    data.qvel[2] = 0.6;
+
+    data.forward(&model).expect("CPU forward failed");
+
+    let (_, state_buf) = run_through_rne(&ctx, &model, &data);
+    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+
+    let tol = 1e-3;
+    for d in 0..model.nv {
+        let g = gpu_bias[d];
+        let c = data.qfrc_bias[d] as f32;
+        assert!(
+            (g - c).abs() < tol,
+            "qfrc_bias[{d}]: GPU={g:.6} CPU={c:.6} err={:.2e}",
+            (g - c).abs()
+        );
+    }
+    eprintln!("  T15c passed: qfrc_bias matches CPU for multi-joint body");
 }
 
 // ── T16: qacc_smooth for free body under gravity ─────────────────────

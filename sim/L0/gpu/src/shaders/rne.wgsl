@@ -8,20 +8,6 @@
 //
 // Computes qfrc_bias = gravity + Coriolis + gyroscopic bias forces.
 
-// ── Common math (duplicated — no WGSL includes) ─────────────────────
-
-fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
-    let u = q.xyz;
-    let s = q.w;
-    return 2.0 * dot(u, v) * u
-         + (s * s - dot(u, u)) * v
-         + 2.0 * s * cross(u, v);
-}
-
-fn quat_conjugate(q: vec4<f32>) -> vec4<f32> {
-    return vec4<f32>(-q.xyz, q.w);
-}
-
 // ── Constants ────────────────────────────────────────────────────────
 
 const JNT_FREE: u32 = 0u;
@@ -85,16 +71,16 @@ struct DofModel {
 @group(1) @binding(1) var<storage, read> joints: array<JointModel>;
 @group(1) @binding(2) var<storage, read> dofs: array<DofModel>;
 
-// Group 2: FK / velocity FK outputs (read-only)
+// Group 2: FK / velocity FK outputs (read-only). Bind only what RNE consumes —
+// gravity projects onto cdof (no quat/qpos), matching the per-shader minimal
+// binding convention of crba.wgsl / velocity_fk.wgsl.
 @group(2) @binding(0) var<storage, read> body_xpos: array<vec4<f32>>;
-@group(2) @binding(1) var<storage, read> body_xquat: array<vec4<f32>>;
-@group(2) @binding(2) var<storage, read> body_cinert: array<vec4<f32>>;
-@group(2) @binding(3) var<storage, read> cdof: array<vec4<f32>>;
-@group(2) @binding(4) var<storage, read> body_cvel: array<vec4<f32>>;
-@group(2) @binding(5) var<storage, read> subtree_mass: array<f32>;
-@group(2) @binding(6) var<storage, read> subtree_com: array<vec4<f32>>;
-@group(2) @binding(7) var<storage, read> qvel: array<f32>;
-@group(2) @binding(8) var<storage, read> qpos: array<f32>;
+@group(2) @binding(1) var<storage, read> body_cinert: array<vec4<f32>>;
+@group(2) @binding(2) var<storage, read> cdof: array<vec4<f32>>;
+@group(2) @binding(3) var<storage, read> body_cvel: array<vec4<f32>>;
+@group(2) @binding(4) var<storage, read> subtree_mass: array<f32>;
+@group(2) @binding(5) var<storage, read> subtree_com: array<vec4<f32>>;
+@group(2) @binding(6) var<storage, read> qvel: array<f32>;
 
 // Group 3: RNE outputs (read-write)
 @group(3) @binding(0) var<storage, read_write> body_cacc: array<vec4<f32>>;
@@ -173,56 +159,36 @@ fn rne_gravity(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sc = subtree_com[env_body_off + body_id].xyz;
     let grav = params.gravity.xyz;
 
-    // gravity_force = -subtree_mass * gravity (opposes motion)
+    // Subtree gravitational wrench, expressed as a spatial force at this body's
+    // ORIGIN: force gf = -subtree_mass·g (opposes gravity), torque about origin
+    // = (subtree_com − xpos[body]) × gf.
     let gf = -sm * grav;
-
-    // Body world pose
     let bxpos = body_xpos[env_body_off + body_id].xyz;
-    let bxquat = body_xquat[env_body_off + body_id];
+    let wrench_ang = cross(sc - bxpos, gf);
+    let wrench_lin = gf;
 
+    // Project onto every DOF's motion subspace: qfrc_bias[d] = cdof[d] · wrench.
+    // Reusing the (partial-frame-correct) cdof — rather than re-deriving each
+    // joint's world axis/anchor from the FINAL body quat — keeps the gravity
+    // projection consistent with the motion subspace for a multi-joint body
+    // (where an earlier joint's axis must not be over-rotated by later joints),
+    // with one projection path for every joint type. See
+    // project-multi-joint-partial-frame. NOTE: this references the wrench at the
+    // body origin (cdof's reference point); for a ball with jnt_pos ≠ 0 that
+    // differs from the CPU `mj_rne` ball anchor, but real ball joints sit at the
+    // body origin so no fixture exercises the divergence.
     let dof_adr = jnt.dof_adr;
-
+    var ndof = 1u;
     switch jnt.jtype {
-        case 2u: {  // JNT_HINGE
-            let world_axis = quat_rotate(bxquat, jnt.axis.xyz);
-            let world_anchor = bxpos + quat_rotate(bxquat, jnt.pos.xyz);
-            let r = sc - world_anchor;
-            let torque = cross(r, gf);
-            qfrc_bias[env_dof_off + dof_adr] = dot(torque, world_axis);
-        }
-        case 3u: {  // JNT_SLIDE
-            let world_axis = quat_rotate(bxquat, jnt.axis.xyz);
-            qfrc_bias[env_dof_off + dof_adr] = dot(gf, world_axis);
-        }
-        case 1u: {  // JNT_BALL
-            let world_anchor = bxpos + quat_rotate(bxquat, jnt.pos.xyz);
-            let r = sc - world_anchor;
-            let torque = cross(r, gf);
-            // Rotate torque to body-local frame
-            let body_torque = quat_rotate(quat_conjugate(bxquat), torque);
-            qfrc_bias[env_dof_off + dof_adr + 0u] = body_torque.x;
-            qfrc_bias[env_dof_off + dof_adr + 1u] = body_torque.y;
-            qfrc_bias[env_dof_off + dof_adr + 2u] = body_torque.z;
-        }
-        case 0u: {  // JNT_FREE
-            // Linear: direct gravity force (DOFs 0-2)
-            qfrc_bias[env_dof_off + dof_adr + 0u] = gf.x;
-            qfrc_bias[env_dof_off + dof_adr + 1u] = gf.y;
-            qfrc_bias[env_dof_off + dof_adr + 2u] = gf.z;
-            // Angular: torque from subtree COM (DOFs 3-5)
-            let env_nq_off = env_id * params.nq;
-            let jpos = vec3<f32>(
-                qpos[env_nq_off + jnt.qpos_adr + 0u],
-                qpos[env_nq_off + jnt.qpos_adr + 1u],
-                qpos[env_nq_off + jnt.qpos_adr + 2u],
-            );
-            let r = sc - jpos;
-            let torque = cross(r, gf);
-            qfrc_bias[env_dof_off + dof_adr + 3u] = torque.x;
-            qfrc_bias[env_dof_off + dof_adr + 4u] = torque.y;
-            qfrc_bias[env_dof_off + dof_adr + 5u] = torque.z;
-        }
-        default: {}
+        case 0u: { ndof = 6u; }  // JNT_FREE
+        case 1u: { ndof = 3u; }  // JNT_BALL
+        default: { ndof = 1u; }  // JNT_HINGE / JNT_SLIDE
+    }
+    for (var k = 0u; k < ndof; k++) {
+        let d = env_dof_off + dof_adr + k;
+        let cda = cdof[d * 2u + 0u].xyz;
+        let cdl = cdof[d * 2u + 1u].xyz;
+        qfrc_bias[d] = dot(cda, wrench_ang) + dot(cdl, wrench_lin);
     }
 }
 

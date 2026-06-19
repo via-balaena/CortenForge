@@ -174,6 +174,16 @@ fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
     var pos = body_xpos[env_off + parent].xyz;
     var quat = body_xquat[env_off + parent];
 
+    // Partial-frame hinge/slide axis & anchor, captured in the FK joint loop
+    // BEFORE later same-body joints rotate them. Consumed by the cdof loop so a
+    // multi-joint body's earlier joint subspace is not over-rotated by the later
+    // joints' DOFs (mirrors CPU `data.xaxis`/`data.xanchor`; see
+    // project-multi-joint-partial-frame). Indexed by joint index within the
+    // body: a body has at most 6 scalar DOFs and every joint contributes ≥1 DOF,
+    // so at most 6 joints — the fixed length 6 is an exact upper bound.
+    var part_axis: array<vec3<f32>, 6>;
+    var part_anchor: array<vec3<f32>, 6>;
+
     // Check mocap
     if (body.mocap_id != MOCAP_NONE) {
         pos = mocap_pos[body.mocap_id].xyz;
@@ -202,6 +212,11 @@ fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let world_axis = quat_rotate(quat, jnt.axis.xyz);
                 let world_anchor = pos + quat_rotate(quat, jnt.pos.xyz);
 
+                // Capture the partial frame (raw, unnormalized — matches CPU)
+                // before this joint and any later same-body joint rotates it.
+                part_axis[ji] = world_axis;
+                part_anchor[ji] = world_anchor;
+
                 // Normalize axis (guard degenerate)
                 let axis_len = length(world_axis);
                 var norm_axis = world_axis;
@@ -222,7 +237,10 @@ fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // RIGHT multiply (local-frame rotation) — matches CPU
                 quat = quat_mul(quat, q);
             } else if (jnt.jtype == JNT_SLIDE) {
-                pos += quat_rotate(quat, jnt.axis.xyz) * qpos[qa];
+                let world_axis = quat_rotate(quat, jnt.axis.xyz);
+                // Partial-frame axis (anchor unused by the slide subspace).
+                part_axis[ji] = world_axis;
+                pos += world_axis * qpos[qa];
             }
         }
 
@@ -286,15 +304,17 @@ fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
         let dof_base = env_dof_off + dof_start + dof_idx;
 
         if (jnt.jtype == JNT_HINGE) {
-            let axis = quat_rotate(quat, jnt.axis.xyz);
-            let anchor = pos + quat_rotate(quat, jnt.pos.xyz);
-            let r = pos - anchor;
+            // Partial-frame axis/anchor captured in the FK joint loop above; r
+            // uses the FINAL body origin (matches CPU joint_motion_subspace:
+            // r = xpos[body] - xanchor[jnt]).
+            let axis = part_axis[ji];
+            let r = pos - part_anchor[ji];
             let lin = cross(axis, r);
             cdof[dof_base * 2u + 0u] = vec4<f32>(axis, 0.0);
             cdof[dof_base * 2u + 1u] = vec4<f32>(lin, 0.0);
             dof_idx += 1u;
         } else if (jnt.jtype == JNT_SLIDE) {
-            let axis = quat_rotate(quat, jnt.axis.xyz);
+            let axis = part_axis[ji];
             cdof[dof_base * 2u + 0u] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
             cdof[dof_base * 2u + 1u] = vec4<f32>(axis, 0.0);
             dof_idx += 1u;
