@@ -379,3 +379,189 @@ pub fn dynamics_conformance_matrix() -> Vec<ConformanceCase> {
 
     cases
 }
+
+/// Set uniform damping `d` on every DOF of every joint, in place, BEFORE
+/// `finalize` expands it into `implicit_damping` (`jnt_damping` drives
+/// hinge/slide DOFs, `dof_damping` drives ball/free DOFs — see
+/// `Model::compute_implicit_params`).
+fn damp_all(m: &mut Model, d: f64) {
+    for j in 0..m.njnt {
+        m.jnt_damping[j] = d;
+        let adr = m.jnt_dof_adr[j];
+        for i in 0..m.jnt_type[j].nv() {
+            m.dof_damping[adr + i] = d;
+        }
+    }
+}
+
+/// Build the damped-integration conformance matrix.
+///
+/// The Slice-1 topologies but with nonzero joint/DOF damping, for comparing a
+/// multi-step trajectory under the *implicit* Euler damping solve
+/// (`(M + h·D)·q̈ = f`; see `integrate::Data::integrate`).
+///
+/// Damping-only (`stiffness = 0`) so the gap under test is unambiguously the
+/// damping treatment, not a missing passive spring force. Every case carries
+/// nonzero initial `qvel` so the damper force `−D·q̇` is live from step one.
+/// Names carry a `_damped` suffix (distinct from [`dynamics_conformance_matrix`])
+/// so the GPU suite can route them through a separate known-divergence entry.
+#[must_use]
+pub fn damped_conformance_matrix() -> Vec<ConformanceCase> {
+    const D: f64 = 2.0;
+    let ax = [
+        Vector3::new(0.0, 1.0, 0.0),
+        Vector3::new(1.0, 0.3, 0.0).normalize(),
+        Vector3::new(0.2, 1.0, 0.1).normalize(),
+    ];
+    let l = 0.4;
+    let mut cases = Vec::new();
+
+    {
+        // hinge_single_damped — 1-DOF, diagonal (M + h·D).
+        let mut m = Model::empty();
+        let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_hinge_joint(&mut m, b, "h0", ax[0], 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        damp_all(&mut m, D);
+        finalize(&mut m);
+        cases.push(ConformanceCase {
+            name: "hinge_single_damped",
+            model: m,
+            qpos: vec![0.3],
+            qvel: vec![0.8],
+        });
+    }
+    {
+        // slide_single_damped — prismatic damping.
+        let mut m = Model::empty();
+        let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_slide_joint(&mut m, b, "s0", ax[1], 0.0, 0.0, 0.0);
+        damp_all(&mut m, D);
+        finalize(&mut m);
+        cases.push(ConformanceCase {
+            name: "slide_single_damped",
+            model: m,
+            qpos: vec![0.2],
+            qvel: vec![0.7],
+        });
+    }
+    {
+        // ball_root_damped — 3 angular DOFs damped (dof_damping path).
+        let mut m = Model::empty();
+        let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_ball_joint(&mut m, b, "ball0");
+        damp_all(&mut m, D);
+        finalize(&mut m);
+        let q = tilted_quat();
+        cases.push(ConformanceCase {
+            name: "ball_root_damped",
+            model: m,
+            qpos: q.to_vec(),
+            qvel: vec![0.5, -0.3, 0.7],
+        });
+    }
+    {
+        // free_tumbling_damped — full coupled 6×6 (M + h·D), translate + rotate.
+        let mut m = Model::empty();
+        let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_freejoint(&mut m, b, "free0");
+        damp_all(&mut m, D);
+        finalize(&mut m);
+        let q = tilted_quat();
+        cases.push(ConformanceCase {
+            name: "free_tumbling_damped",
+            model: m,
+            qpos: vec![0.1, -0.2, 0.3, q[0], q[1], q[2], q[3]],
+            qvel: vec![0.6, -0.4, 0.5, 0.5, -0.3, 0.7],
+        });
+    }
+    {
+        // hinge3_spatial_damped — non-parallel 3-link chain; off-diagonal
+        // (M + h·D) coupling that a per-DOF approximation would miss.
+        let mut m = Model::empty();
+        let mut parent = 0;
+        for (i, &axis) in ax.iter().enumerate() {
+            let pos = if i == 0 {
+                Vector3::zeros()
+            } else {
+                Vector3::new(0.0, 0.0, -l)
+            };
+            let b = link_body(&mut m, parent, &format!("l{i}"), pos, l);
+            add_hinge_joint(
+                &mut m,
+                b,
+                &format!("h{i}"),
+                axis,
+                0.0,
+                0.0,
+                0.0,
+                false,
+                (-3.0, 3.0),
+            );
+            parent = b;
+        }
+        damp_all(&mut m, D);
+        finalize(&mut m);
+        cases.push(ConformanceCase {
+            name: "hinge3_spatial_damped",
+            model: m,
+            qpos: vec![0.3, -0.4, 0.25],
+            qvel: vec![0.9, -1.2, 0.7],
+        });
+    }
+    {
+        // multi_joint_body_damped — two hinges on one body; intra-body coupling.
+        let mut m = Model::empty();
+        let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_hinge_joint(&mut m, b, "h0", ax[1], 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        add_hinge_joint(&mut m, b, "h1", ax[2], 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+        damp_all(&mut m, D);
+        finalize(&mut m);
+        cases.push(ConformanceCase {
+            name: "multi_joint_body_damped",
+            model: m,
+            qpos: vec![0.3, -0.35],
+            qvel: vec![0.8, -0.6],
+        });
+    }
+
+    cases
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+    use super::{damped_conformance_matrix, dynamics_conformance_matrix};
+
+    /// Both matrices are well-formed: operating points sized to `nq`/`nv`, and
+    /// each model forward-evaluates without error (a CPU-side fixture sanity
+    /// independent of the GPU suite that consumes them).
+    #[test]
+    fn conformance_fixtures_well_formed() {
+        for case in dynamics_conformance_matrix()
+            .into_iter()
+            .chain(damped_conformance_matrix())
+        {
+            assert_eq!(case.qpos.len(), case.model.nq, "{}: qpos len", case.name);
+            assert_eq!(case.qvel.len(), case.model.nv, "{}: qvel len", case.name);
+
+            let mut data = case.model.make_data();
+            data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+            data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+            data.forward(&case.model).expect("fixture forward");
+        }
+    }
+
+    /// Every damped fixture carries nonzero `implicit_damping` — guards against a
+    /// silently-undamped fixture making the GPU eulerdamp conformance vacuous.
+    #[test]
+    fn damped_fixtures_have_damping() {
+        for case in damped_conformance_matrix() {
+            let m = &case.model;
+            assert!(
+                (0..m.nv).any(|i| m.implicit_damping[i] > 0.0),
+                "{}: expected nonzero implicit_damping",
+                case.name
+            );
+        }
+    }
+}
