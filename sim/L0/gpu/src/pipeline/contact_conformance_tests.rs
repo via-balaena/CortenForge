@@ -106,34 +106,31 @@ type Failures = Vec<String>;
 /// per follow-on PR.
 fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
     match (case, channel) {
-        // ── assembly: pyramidal R-scaling (assemble.wgsl) ──────────────────
-        // BOTH engines scale the bodyweight diagonal by (1 + mu²); CPU then
-        // OVERRIDES every pyramidal facet R with Rpy = 2·mu_reg²·R[first]
-        // (mu_reg = mu·√(1/impratio)), which the GPU omits. The shared (1+mu²)
-        // cancels in the ratio, so CPU/GPU `efc_d` differ by exactly
-        // 1/(2·mu_reg²) = 1.5625 at mu=0.8, impratio=2.0 (verified). The fix is
-        // the `2·mu_reg²` facet override, NOT the (1+mu²) factor. Frictionless
-        // (condim=1) has no pyramidal rows, so `contact_normal_only` `efc_d`
-        // MATCHES — the clean discriminator. `efc_aref` and row counts conform.
-        ("contact_pyramidal" | "contact_pyramidal_2pt", "efc_d") => Some(
-            "GPU omits the 2·mu_reg² pyramidal facet R-override (assemble.wgsl); \
-             peel: R-scaling fix PR",
-        ),
+        // ── assembly: pyramidal R-scaling (assemble.wgsl) — FULLY CONFORMS ──
+        // The pyramidal facet R-override (Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio),
+        // mu = mu[0] for ALL facets including torsional) is ported, so the assembly
+        // efc_d channel matches CPU across every fixture (condim=1/3/4) — no entry.
+        // efc_aref and row counts already conformed. The remaining divergences are
+        // all in the constraint SOLVE, below.
+        //
         // ── solve: Newton solver (newton_solve.wgsl) ───────────────────────
-        // The GPU constraint solve does not reproduce CPU dynamics. Measured:
-        // for `contact_normal_only` (assembly fully matches, normal `qfrc`
-        // matches) the GPU still perturbs the ROTATIONAL `qacc` DOFs even though
-        // their constraint force is zero — qacc is internally inconsistent with
-        // the mapped qfrc (a PURE solver divergence, independent of R-scaling).
-        // For the pyramidal cases the solve diverges on both `qacc` and `qfrc`
-        // (compounded by the wrong R feeding the solver). `contact_normal_only`
-        // `qfrc_constraint` MATCHES, so it is deliberately NOT allowlisted.
+        // The GPU constraint solve does not reproduce CPU dynamics. With the
+        // assembly channel now fully conformant (efc_d/efc_aref match), the
+        // solver receives the SAME inputs as CPU, so every remaining divergence
+        // here is purely the Newton solve — the clean attribution PR-3 starts
+        // from. Measured: for `contact_normal_only` (assembly matches, normal
+        // `qfrc` matches) the GPU still perturbs the ROTATIONAL `qacc` DOFs even
+        // though their constraint force is zero — qacc is internally inconsistent
+        // with the mapped qfrc. For the pyramidal cases the solve diverges on
+        // both `qacc` and `qfrc`. `contact_normal_only` `qfrc_constraint` MATCHES,
+        // so it is deliberately NOT allowlisted.
         ("contact_normal_only", "qacc") => {
             Some("Newton solve: rotational qacc inconsistent with mapped qfrc; peel: solver fix PR")
         }
-        ("contact_pyramidal" | "contact_pyramidal_2pt", "qacc" | "qfrc_constraint") => {
-            Some("Newton solve diverges (+ R-scaling-fed inputs); peel: solver fix PR")
-        }
+        (
+            "contact_pyramidal" | "contact_pyramidal_2pt" | "contact_torsional",
+            "qacc" | "qfrc_constraint",
+        ) => Some("Newton solve diverges (+ R-scaling-fed inputs); peel: solver fix PR"),
         _ => None,
     }
 }
@@ -196,8 +193,9 @@ fn gpu_contacts(contacts: &[ContactSpec]) -> Vec<PipelineContact> {
             depth: c.depth as f32,
             normal: [c.normal[0] as f32, c.normal[1] as f32, c.normal[2] as f32],
             geom1: c.geom1 as u32,
-            // Friction [slide, torsion, roll]; assemble.wgsl uses the slide term.
-            friction: [c.mu as f32, 0.0, 0.0],
+            // Friction [slide, torsion, roll]; assemble.wgsl uses the slide term
+            // for sliding facets and the torsion term for condim=4 torsional facets.
+            friction: [c.mu as f32, c.mu_torsion as f32, 0.0],
             geom2: c.geom2 as u32,
         })
         .collect()

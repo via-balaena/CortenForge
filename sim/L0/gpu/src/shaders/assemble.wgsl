@@ -353,7 +353,18 @@ fn compute_D_aref(
     let diag = max(bw, 1e-15);
 
     // ── Regularisation ──
-    let R = max((1.0 - imp) / imp * diag, 1e-15);
+    var R = max((1.0 - imp) / imp * diag, 1e-15);
+
+    // Pyramidal facet R-override (§32, matches CPU
+    // postprocess_pyramidal_r_scaling): every facet's R is replaced with
+    // Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio). All facets of a contact
+    // share the same bodyweight + impedance, so the per-row override here is
+    // equivalent to CPU's override-by-first-facet.
+    if is_pyramidal {
+        let mu_reg = mu * sqrt(1.0 / params.impratio);
+        R = max(2.0 * mu_reg * mu_reg * R, 1e-15);
+    }
+
     let D_val = 1.0 / R;
 
     // ── KBIP (stiffness + damping from solref) ──
@@ -500,7 +511,11 @@ fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
                 write_jacobian_body(row, body2,  1.0, normal, contact.point,
                                     normal, mu_torsion, facet_sign, true);
 
-                compute_D_aref(row, contact.depth, body1, body2, true, mu_torsion);
+                // Diagonal/R-scaling uses mu_slide (mu[0]) for ALL pyramidal
+                // facets — CPU postprocess_pyramidal_r_scaling and bw_py both key
+                // off mu[0], NOT the per-direction coefficient. Only the Jacobian
+                // above uses mu_torsion.
+                compute_D_aref(row, contact.depth, body1, body2, true, mu_slide);
 
                 row_idx += 1u;
             }
