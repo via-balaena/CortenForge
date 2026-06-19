@@ -107,28 +107,15 @@ type Failures = Vec<String>;
 fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
     match (case, channel) {
         // ── assembly: pyramidal R-scaling (assemble.wgsl) ──────────────────
-        // BOTH engines scale the bodyweight diagonal by (1 + mu²); CPU then
-        // OVERRIDES every pyramidal facet R with Rpy = 2·mu_reg²·R[first]
-        // (mu_reg = mu·√(1/impratio)), which the GPU omits. The shared (1+mu²)
-        // cancels in the ratio, so CPU/GPU `efc_d` differ by exactly
-        // 1/(2·mu_reg²) = 1.5625 at mu=0.8, impratio=2.0 (verified). The fix is
-        // the `2·mu_reg²` facet override, NOT the (1+mu²) factor. Frictionless
-        // (condim=1) has no pyramidal rows, so `contact_normal_only` `efc_d`
-        // MATCHES — the clean discriminator. `efc_aref` and row counts conform.
-        ("contact_pyramidal" | "contact_pyramidal_2pt", "efc_d") => Some(
-            "GPU omits the 2·mu_reg² pyramidal facet R-override (assemble.wgsl); \
-             peel: R-scaling fix PR",
-        ),
-        // contact_torsional (condim=4) diverges on efc_d for TWO reasons the
-        // R-scaling PR peels in order: (1) the same missing 2·mu_reg² facet
-        // override on its 4 sliding rows (fixed alongside the cases above), and
-        // (2) its 2 torsional rows use mu_torsion (mu[2]) for the bodyweight
-        // (1+mu²) base AND the mu_reg override, but CPU uses mu[0] (slide) for
-        // ALL pyramidal facets (`postprocess_pyramidal_r_scaling`). So this entry
-        // outlives the sliding fix and is removed only by the torsional fix.
+        // The sliding-facet R-override (Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio))
+        // is now ported, so contact_pyramidal / _2pt efc_d MATCH and are no longer
+        // allowlisted. The condim=4 contact_torsional still diverges on efc_d: its
+        // 2 torsional rows scale the bodyweight (1+mu²) base AND the mu_reg override
+        // by mu_torsion (mu[2]), but CPU uses mu[0] (slide) for ALL pyramidal facets
+        // (`postprocess_pyramidal_r_scaling`). Removed by the torsional facet fix.
         ("contact_torsional", "efc_d") => Some(
-            "GPU omits the 2·mu_reg² R-override AND scales the torsional facet \
-             diagonal by mu_torsion not mu_slide (assemble.wgsl); peel: R-scaling fix PR",
+            "GPU scales the torsional facet diagonal by mu_torsion not mu_slide \
+             (assemble.wgsl); peel: torsional R-scaling fix",
         ),
         // ── solve: Newton solver (newton_solve.wgsl) ───────────────────────
         // The GPU constraint solve does not reproduce CPU dynamics. Measured:
