@@ -166,7 +166,7 @@ pub struct GeomModelGpu {
 ///
 /// Layout matches WGSL `DofModel` exactly.
 /// ```text
-/// offset 0: body_id, parent, armature, _pad  (2 × u32 + f32 + u32 = 16 bytes)
+/// offset 0: body_id, parent, armature, damping  (2 × u32 + 2 × f32 = 16 bytes)
 /// ```
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -177,7 +177,10 @@ pub struct DofModelGpu {
     pub parent: u32,
     /// Combined armature: `jnt_armature[jnt] + dof_armature[i]`.
     pub armature: f32,
-    pub _pad: u32,
+    /// Implicit damping (`model.implicit_damping[i]`): `jnt_damping` for
+    /// hinge/slide, `dof_damping` for ball/free. Consumed by the eulerdamp solve
+    /// (`−D·q̇` force + `h·D` on the mass-matrix diagonal).
+    pub damping: f32,
 }
 
 /// Per-dispatch FK parameters. 32 bytes, 16-byte aligned.

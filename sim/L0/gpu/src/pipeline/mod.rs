@@ -14,6 +14,7 @@ pub mod collision;
 mod conformance_tests;
 pub mod constraint;
 pub mod crba;
+pub mod eulerdamp;
 pub mod fk;
 pub mod integrate;
 pub mod model_buffers;

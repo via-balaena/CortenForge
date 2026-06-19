@@ -51,6 +51,10 @@ pub struct GpuStateBuffers {
     pub qm: wgpu::Buffer,
     /// Dense Cholesky factor: `f32` x nv x nv (lower triangular L).
     pub qm_factor: wgpu::Buffer,
+    /// Scratch Cholesky factor of `(M + h·D)` for the eulerdamp solve: `f32` x
+    /// nv x nv. Kept separate from `qm_factor` so the constraint path's mass
+    /// matrix stays the pure `M`.
+    pub qm_eulerdamp_factor: wgpu::Buffer,
 
     // Velocity FK state (Session 2)
     /// Joint velocities input: `f32` × nv (uploaded from CPU).
@@ -160,6 +164,7 @@ impl GpuStateBuffers {
         let nv_sq = nv.max(1) * nv.max(1);
         let qm = alloc(ctx, "qM", nv_sq * 4, usage_inout);
         let qm_factor = alloc(ctx, "qM_factor", nv_sq * 4, usage_inout);
+        let qm_eulerdamp_factor = alloc(ctx, "qM_eulerdamp_factor", nv_sq * 4, usage_inout);
 
         // Velocity FK state (Session 2)
         // qvel: nv f32 (uploaded from CPU)
@@ -226,6 +231,7 @@ impl GpuStateBuffers {
             body_crb,
             qm,
             qm_factor,
+            qm_eulerdamp_factor,
             qvel,
             body_cvel,
             body_cacc,

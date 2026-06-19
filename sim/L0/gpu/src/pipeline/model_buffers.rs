@@ -190,7 +190,7 @@ impl GpuModelBuffers {
                     body_id: model.dof_body[dof] as u32,
                     parent: model.dof_parent[dof].map_or(DOF_PARENT_NONE, |p| p as u32),
                     armature: (arm_jnt + arm_dof) as f32,
-                    _pad: 0,
+                    damping: model.implicit_damping.get(dof).copied().unwrap_or(0.0) as f32,
                 }
             })
             .collect();
