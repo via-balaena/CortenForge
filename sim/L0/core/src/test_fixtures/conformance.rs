@@ -20,10 +20,11 @@
 use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::test_fixtures::builders::{
-    add_ball_joint, add_body, add_freejoint, add_hinge_joint, add_site, add_slide_joint, finalize,
+    add_ball_joint, add_body, add_freejoint, add_ground_plane, add_hinge_joint, add_site,
+    add_slide_joint, add_sphere_geom, finalize,
 };
-use crate::types::Model;
-use crate::types::enums::{TendonType, WrapType};
+use crate::types::enums::{Integrator, TendonType, WrapType};
+use crate::types::{Contact, Model};
 
 /// One matrix entry: a model plus an operating point.
 ///
@@ -527,6 +528,266 @@ pub fn damped_conformance_matrix() -> Vec<ConformanceCase> {
     cases
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// Contact / constraint conformance (GPU constraint slice)
+// ════════════════════════════════════════════════════════════════════════
+//
+// The smooth/kinematic matrices above feed the contact-free GPU↔CPU suites.
+// The contact path can't be compared by just running both collision pipelines:
+// GPU collision represents geoms as SDF grids (many per-cell contacts) while CPU
+// uses analytic geoms (one contact), so the two engines never agree on the
+// contact SET for the same geometry — a collision-layer divergence that would
+// swamp the constraint assembly/solver divergences we actually want to expose
+// (pyramidal R-scaling, Newton solver).
+//
+// So the CPU runs its ANALYTIC collision once (a fully self-consistent
+// `forward()` — the production path), and the SAME generated contacts are
+// injected into the GPU's `contact_buffer` while the GPU's own collision is
+// skipped. [`ContactSpec`] carries each contact across the boundary; the CPU
+// oracle is the reference and the GPU consumes its `contacts`, so neither side
+// can drift, and the comparison isolates assembly + solve. (Collision
+// conformance — SDF dedup, per-cell caps — is a separate later slice.) See
+// `project-gpu-shader-conformance-gap` (contact/constraint slice).
+
+/// One contact, expressed independently of either engine, carrying it from the
+/// CPU analytic collision to the GPU `contact_buffer`.
+///
+/// `geom1`/`geom2` index into the case model's geoms so the GPU can resolve the
+/// per-geom `condim` (`assemble.wgsl`); the normal points `geom1 → geom2`.
+#[derive(Debug, Clone)]
+pub struct ContactSpec {
+    /// World-space contact position.
+    pub pos: [f64; 3],
+    /// World-space unit normal (`geom1 → geom2`).
+    pub normal: [f64; 3],
+    /// Penetration depth (positive = overlap).
+    pub depth: f64,
+    /// Combined sliding friction coefficient (`mu[0]`). `0.0` for frictionless.
+    pub mu: f64,
+    /// Contact dimension: 1 (frictionless, 1 row) or 3 (pyramidal, 4 rows).
+    pub condim: usize,
+    /// First geom index.
+    pub geom1: usize,
+    /// Second geom index.
+    pub geom2: usize,
+}
+
+impl ContactSpec {
+    /// Capture a CPU-generated [`Contact`] for GPU injection.
+    fn from_contact(c: &Contact) -> Self {
+        Self {
+            pos: [c.pos.x, c.pos.y, c.pos.z],
+            normal: [c.normal.x, c.normal.y, c.normal.z],
+            depth: c.depth,
+            mu: c.mu[0],
+            condim: c.dim,
+            geom1: c.geom1,
+            geom2: c.geom2,
+        }
+    }
+}
+
+/// A contact conformance case: a free body resting (penetrating) on a plane.
+///
+/// The contact SET is produced by the CPU oracle's analytic collision (not
+/// hand-authored) and returned in [`ConstraintOracle`] for the GPU to inject.
+#[derive(Debug, Clone)]
+pub struct ContactConformanceCase {
+    /// Stable case label (used in test failure messages).
+    pub name: &'static str,
+    /// The model under test (free body + ground plane + sphere geom(s)).
+    pub model: Model,
+    /// Generalized position operating point (length `model.nq`).
+    pub qpos: Vec<f64>,
+    /// Generalized velocity operating point (length `model.nv`).
+    pub qvel: Vec<f64>,
+}
+
+/// CPU reference outputs for the constraint stage, plus the generated contacts.
+///
+/// `efc_d`/`efc_aref` are the per-row assembly outputs (the **assembly**
+/// comparison channel — where pyramidal R-scaling / aref divergences live);
+/// `qacc`/`qfrc_constraint` are the post-solve nv-vectors (the **solve**
+/// channel — where the Newton-solver divergences live). The nv-vectors are
+/// row-order-independent; the per-row vectors are compared as a sorted multiset
+/// (a single contact's facet rows must align, but the harness does not assume a
+/// fixed facet order). `contacts` is the analytic contact set the GPU injects so
+/// both engines solve the SAME contacts.
+#[derive(Debug, Clone)]
+pub struct ConstraintOracle {
+    /// Number of assembled constraint rows (`efc_D.len()`).
+    pub n_rows: usize,
+    /// Per-row constraint diagonal `D = 1/R` (GPU buffer: `efc_d`).
+    pub efc_d: Vec<f64>,
+    /// Per-row reference acceleration (GPU buffer: `efc_aref`).
+    pub efc_aref: Vec<f64>,
+    /// Post-solve generalized acceleration (length `nv`).
+    pub qacc: Vec<f64>,
+    /// Post-solve constraint force in joint space (length `nv`).
+    pub qfrc_constraint: Vec<f64>,
+    /// The CPU-generated contact set, for identical GPU injection.
+    pub contacts: Vec<ContactSpec>,
+}
+
+/// Build a contact conformance fixture: a free rigid body with `n_contacts`
+/// sphere geoms penetrating a ground plane.
+///
+/// `impratio` and `mu` are set so the **pyramidal** cases unambiguously expose
+/// the GPU R-scaling defect: CPU computes `Rpy = 2·mu_reg²·R[first]` with
+/// `mu_reg = mu·√(1/impratio)`, while the GPU does not apply that facet scaling
+/// — the gap is well above tolerance for `mu ≠ 1`, `impratio ≠ 1`.
+/// `diagapprox_bodyweight` is enabled so the *base* diagonal matches the GPU's
+/// bodyweight approximation (a documented MuJoCo option, not a port bug),
+/// leaving R-scaling as the sole `efc_d` divergence.
+fn contact_fixture(
+    name: &'static str,
+    condim: i32,
+    mu: f64,
+    impratio: f64,
+    n_contacts: usize,
+) -> ContactConformanceCase {
+    const RADIUS: f64 = 0.1;
+    const ORIGIN_Z: f64 = 0.08; // < RADIUS ⇒ each sphere penetrates the z=0 plane
+
+    let mut m = Model::empty();
+    m.gravity = Vector3::new(0.0, 0.0, -9.81);
+    m.timestep = 0.002;
+    m.integrator = Integrator::Euler; // explicit Euler — matches the GPU integrate stage
+    m.diagapprox_bodyweight = true; // match the GPU bodyweight diagonal approximation
+    m.impratio = impratio;
+    m.cone = 0; // pyramidal friction cone (MuJoCo default; the GPU path assumes it)
+
+    // Ground plane on the world body (geom 0).
+    let g_plane = add_ground_plane(&mut m);
+
+    // A free body holding the sphere(s); its origin sits below the sphere radius
+    // so each sphere penetrates the z=0 plane (depth = RADIUS − ORIGIN_Z).
+    let it = 0.02;
+    let b = add_body(
+        &mut m,
+        0,
+        "puck",
+        Vector3::new(0.0, 0.0, ORIGIN_Z),
+        1.0,
+        // Distinct principal moments so every angular DOF is observable.
+        Vector3::new(it, 1.3 * it, 0.7 * it),
+        Vector3::zeros(),
+    );
+    add_freejoint(&mut m, b, "free");
+
+    // Spheres: a single one centered, or two offset along x (two contacts couple
+    // the DOFs enough to drive the Newton solver off its fixed line-search grid).
+    let xs: &[f64] = if n_contacts == 1 {
+        &[0.0]
+    } else {
+        &[-0.15, 0.15]
+    };
+    let mut geoms = vec![g_plane];
+    for &x in xs.iter().take(n_contacts) {
+        let g = add_sphere_geom(
+            &mut m,
+            b,
+            Some("puck_geom"),
+            Vector3::new(x, 0.0, 0.0),
+            RADIUS,
+            true,
+        );
+        geoms.push(g);
+    }
+
+    // condim drives the pyramidal row count; equal slide friction on both geoms
+    // makes the combined contact friction unambiguously `mu`.
+    //
+    // INVARIANT for valid GPU↔CPU comparison: set the SAME `condim` on both
+    // geoms. CPU combines a pair's condim with `max`, the GPU with `min`; they
+    // agree only when equal. A future fixture with differing per-geom condim
+    // would diverge on row count from the combination rule alone — a phantom
+    // divergence, not a real GPU gap. Likewise these fixtures use an axis-aligned
+    // contact normal (sphere-on-plane → (0,0,1)); a tilted normal would expose a
+    // CPU/GPU tangent-FRAME convention difference that the sorted-multiset
+    // compare cannot absorb (it tolerates facet swap/negate, not a frame
+    // rotation), so reconcile the frame convention before adding tilted contacts.
+    for &g in &geoms {
+        m.geom_condim[g] = condim;
+        m.geom_friction[g] = Vector3::new(mu, 0.005, 0.0001);
+    }
+    finalize(&mut m);
+    // `builders::finalize` does NOT compute `invweight0` (the smooth/damped
+    // fixtures never touch it). The constraint diagonal approximation — on BOTH
+    // engines — divides by `body_invweight0`; leaving it zero clamps R to MINVAL,
+    // giving a degenerate D≈1/MINVAL that matches CPU↔GPU by accident yet blows
+    // the solver up. Compute it so the diagonal is physical.
+    m.compute_invweight0();
+
+    // Operating point: body at rest height, with translational (normal +
+    // tangential) and rotational velocity so the normal AND friction rows carry
+    // live `aref`/`jar` velocity terms.
+    let qpos = vec![0.0, 0.0, ORIGIN_Z, 1.0, 0.0, 0.0, 0.0];
+    let qvel = vec![0.3, -0.2, -0.5, 0.1, 0.05, -0.08];
+
+    ContactConformanceCase {
+        name,
+        model: m,
+        qpos,
+        qvel,
+    }
+}
+
+/// Build the contact conformance matrix.
+///
+/// Three fixtures, smallest-discriminating-first:
+/// - `contact_normal_only` (condim=1, 1 row): the frictionless baseline — no
+///   pyramidal scaling, so `efc_d` should MATCH; isolates aref + the
+///   single-row solve.
+/// - `contact_pyramidal` (condim=3, 4 rows): the R-scaling discriminator
+///   (`mu = 0.8`, `impratio = 2.0`).
+/// - `contact_pyramidal_2pt` (two condim=3 contacts, 8 rows): the Newton-solver
+///   discriminator — coupled contacts force off-grid line-search steps.
+#[must_use]
+pub fn contact_conformance_matrix() -> Vec<ContactConformanceCase> {
+    vec![
+        contact_fixture("contact_normal_only", 1, 0.0, 1.0, 1),
+        contact_fixture("contact_pyramidal", 3, 0.8, 2.0, 1),
+        contact_fixture("contact_pyramidal_2pt", 3, 0.8, 2.0, 2),
+    ]
+}
+
+/// Compute the CPU reference for a contact conformance case.
+///
+/// One standard `forward()` runs analytic collision → constraint assembly →
+/// solve in a single, fully self-consistent pass (the production path, so
+/// `qacc = qacc_smooth + M⁻¹·qfrc_constraint` holds exactly). The generated
+/// contacts are captured for identical GPU injection.
+///
+/// # Panics
+///
+/// Panics if `forward()` fails on the fixture (a malformed fixture is a test
+/// bug — fail loudly rather than return a silently-degraded oracle).
+#[must_use]
+// Test-fixture helper: a fixture that cannot forward is a bug to surface, not a
+// recoverable condition, so `expect` is the right contract here.
+#[allow(clippy::expect_used)]
+pub fn contact_constraint_oracle(case: &ContactConformanceCase) -> ConstraintOracle {
+    let model = &case.model;
+    let mut data = model.make_data();
+    data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+    data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+    data.forward(model).expect("contact oracle: forward");
+
+    ConstraintOracle {
+        n_rows: data.efc_D.len(),
+        efc_d: data.efc_D.clone(),
+        efc_aref: data.efc_aref.iter().copied().collect(),
+        qacc: data.qacc.iter().copied().collect(),
+        qfrc_constraint: data.qfrc_constraint.iter().copied().collect(),
+        contacts: data
+            .contacts
+            .iter()
+            .map(ContactSpec::from_contact)
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -561,6 +822,67 @@ mod tests {
                 (0..m.nv).any(|i| m.implicit_damping[i] > 0.0),
                 "{}: expected nonzero implicit_damping",
                 case.name
+            );
+        }
+    }
+
+    /// Contact fixtures are well-formed: operating points sized to `nq`/`nv`, a
+    /// ground plane plus sphere geom(s).
+    #[test]
+    fn contact_fixtures_well_formed() {
+        for case in super::contact_conformance_matrix() {
+            assert_eq!(case.qpos.len(), case.model.nq, "{}: qpos len", case.name);
+            assert_eq!(case.qvel.len(), case.model.nv, "{}: qvel len", case.name);
+            assert!(
+                case.model.ngeom >= 2,
+                "{}: expected plane + sphere(s)",
+                case.name
+            );
+        }
+    }
+
+    /// The oracle's analytic collision generates the expected contacts and the
+    /// solve produces a live, SELF-CONSISTENT response: condim=1 → 1 row,
+    /// condim=3 → 4 rows per contact; the contact holds the body
+    /// (`qacc ≈ qacc_smooth + M⁻¹·qfrc_constraint`, here a nonzero normal force
+    /// against gravity). Guards against a vacuous GPU comparison and against the
+    /// stale-`qacc` trap that an out-of-band constraint re-solve would create.
+    #[test]
+    fn contact_oracle_rows_and_response() {
+        let expected = [
+            ("contact_normal_only", 1usize, 1usize),
+            ("contact_pyramidal", 1, 4),
+            ("contact_pyramidal_2pt", 2, 8),
+        ];
+        for case in super::contact_conformance_matrix() {
+            let oracle = super::contact_constraint_oracle(&case);
+            let (want_contacts, want_rows) = expected
+                .iter()
+                .find(|(n, _, _)| *n == case.name)
+                .map(|&(_, c, r)| (c, r))
+                .expect("known case");
+            assert_eq!(oracle.contacts.len(), want_contacts, "{}: ncon", case.name);
+            assert_eq!(oracle.n_rows, want_rows, "{}: row count", case.name);
+            assert_eq!(oracle.efc_d.len(), want_rows, "{}: efc_d len", case.name);
+            assert_eq!(
+                oracle.efc_aref.len(),
+                want_rows,
+                "{}: efc_aref len",
+                case.name
+            );
+            // Penetrating contact under gravity → a nonzero normal constraint
+            // force (the vertical DOF is index 2 of the free joint).
+            assert!(
+                oracle.qfrc_constraint[2].abs() > 1e-6,
+                "{}: expected nonzero normal constraint force, got {:?}",
+                case.name,
+                oracle.qfrc_constraint
+            );
+            assert!(
+                oracle.efc_d.iter().all(|&d| d > 0.0),
+                "{}: non-positive efc_d {:?}",
+                case.name,
+                oracle.efc_d
             );
         }
     }
