@@ -564,7 +564,11 @@ pub struct ContactSpec {
     pub depth: f64,
     /// Combined sliding friction coefficient (`mu[0]`). `0.0` for frictionless.
     pub mu: f64,
-    /// Contact dimension: 1 (frictionless, 1 row) or 3 (pyramidal, 4 rows).
+    /// Combined torsional friction coefficient (`mu[2]`). Drives the condim=4
+    /// torsional facet Jacobian on both engines; `0.0` (or unused) below condim=4.
+    pub mu_torsion: f64,
+    /// Contact dimension: 1 (frictionless, 1 row), 3 (pyramidal sliding, 4 rows),
+    /// or 4 (pyramidal sliding + torsional, 6 rows).
     pub condim: usize,
     /// First geom index.
     pub geom1: usize,
@@ -580,6 +584,7 @@ impl ContactSpec {
             normal: [c.normal.x, c.normal.y, c.normal.z],
             depth: c.depth,
             mu: c.mu[0],
+            mu_torsion: c.mu[2],
             condim: c.dim,
             geom1: c.geom1,
             geom2: c.geom2,
@@ -638,11 +643,14 @@ pub struct ConstraintOracle {
 /// — the gap is well above tolerance for `mu ≠ 1`, `impratio ≠ 1`.
 /// `diagapprox_bodyweight` is enabled so the *base* diagonal matches the GPU's
 /// bodyweight approximation (a documented MuJoCo option, not a port bug),
-/// leaving R-scaling as the sole `efc_d` divergence.
+/// leaving R-scaling as the sole `efc_d` divergence. `mu_torsion` sets the
+/// torsional friction coefficient (`geom_friction.y`); it only matters for the
+/// condim=4 torsional facets — below condim=4 it is inert (no torsional rows).
 fn contact_fixture(
     name: &'static str,
     condim: i32,
     mu: f64,
+    mu_torsion: f64,
     impratio: f64,
     n_contacts: usize,
 ) -> ContactConformanceCase {
@@ -709,7 +717,7 @@ fn contact_fixture(
     // rotation), so reconcile the frame convention before adding tilted contacts.
     for &g in &geoms {
         m.geom_condim[g] = condim;
-        m.geom_friction[g] = Vector3::new(mu, 0.005, 0.0001);
+        m.geom_friction[g] = Vector3::new(mu, mu_torsion, 0.0001);
     }
     finalize(&mut m);
     // `builders::finalize` does NOT compute `invweight0` (the smooth/damped
@@ -735,7 +743,7 @@ fn contact_fixture(
 
 /// Build the contact conformance matrix.
 ///
-/// Three fixtures, smallest-discriminating-first:
+/// Four fixtures, smallest-discriminating-first:
 /// - `contact_normal_only` (condim=1, 1 row): the frictionless baseline — no
 ///   pyramidal scaling, so `efc_d` should MATCH; isolates aref + the
 ///   single-row solve.
@@ -743,12 +751,17 @@ fn contact_fixture(
 ///   (`mu = 0.8`, `impratio = 2.0`).
 /// - `contact_pyramidal_2pt` (two condim=3 contacts, 8 rows): the Newton-solver
 ///   discriminator — coupled contacts force off-grid line-search steps.
+/// - `contact_torsional` (condim=4, 6 rows): adds the torsional facet pair. Its
+///   `efc_d` R-scaling exposes whether the GPU uses `mu[0]` (slide) or `mu[2]`
+///   (torsion) for the facet `mu_reg` — CPU uses `mu[0]` for ALL facets
+///   (`postprocess_pyramidal_r_scaling`), so the torsional R-override must too.
 #[must_use]
 pub fn contact_conformance_matrix() -> Vec<ContactConformanceCase> {
     vec![
-        contact_fixture("contact_normal_only", 1, 0.0, 1.0, 1),
-        contact_fixture("contact_pyramidal", 3, 0.8, 2.0, 1),
-        contact_fixture("contact_pyramidal_2pt", 3, 0.8, 2.0, 2),
+        contact_fixture("contact_normal_only", 1, 0.0, 0.005, 1.0, 1),
+        contact_fixture("contact_pyramidal", 3, 0.8, 0.005, 2.0, 1),
+        contact_fixture("contact_pyramidal_2pt", 3, 0.8, 0.005, 2.0, 2),
+        contact_fixture("contact_torsional", 4, 0.8, 0.3, 2.0, 1),
     ]
 }
 
@@ -853,6 +866,7 @@ mod tests {
             ("contact_normal_only", 1usize, 1usize),
             ("contact_pyramidal", 1, 4),
             ("contact_pyramidal_2pt", 2, 8),
+            ("contact_torsional", 1, 6),
         ];
         for case in super::contact_conformance_matrix() {
             let oracle = super::contact_constraint_oracle(&case);

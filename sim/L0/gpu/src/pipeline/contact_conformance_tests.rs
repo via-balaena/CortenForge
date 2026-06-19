@@ -119,6 +119,17 @@ fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
             "GPU omits the 2·mu_reg² pyramidal facet R-override (assemble.wgsl); \
              peel: R-scaling fix PR",
         ),
+        // contact_torsional (condim=4) diverges on efc_d for TWO reasons the
+        // R-scaling PR peels in order: (1) the same missing 2·mu_reg² facet
+        // override on its 4 sliding rows (fixed alongside the cases above), and
+        // (2) its 2 torsional rows use mu_torsion (mu[2]) for the bodyweight
+        // (1+mu²) base AND the mu_reg override, but CPU uses mu[0] (slide) for
+        // ALL pyramidal facets (`postprocess_pyramidal_r_scaling`). So this entry
+        // outlives the sliding fix and is removed only by the torsional fix.
+        ("contact_torsional", "efc_d") => Some(
+            "GPU omits the 2·mu_reg² R-override AND scales the torsional facet \
+             diagonal by mu_torsion not mu_slide (assemble.wgsl); peel: R-scaling fix PR",
+        ),
         // ── solve: Newton solver (newton_solve.wgsl) ───────────────────────
         // The GPU constraint solve does not reproduce CPU dynamics. Measured:
         // for `contact_normal_only` (assembly fully matches, normal `qfrc`
@@ -131,9 +142,10 @@ fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
         ("contact_normal_only", "qacc") => {
             Some("Newton solve: rotational qacc inconsistent with mapped qfrc; peel: solver fix PR")
         }
-        ("contact_pyramidal" | "contact_pyramidal_2pt", "qacc" | "qfrc_constraint") => {
-            Some("Newton solve diverges (+ R-scaling-fed inputs); peel: solver fix PR")
-        }
+        (
+            "contact_pyramidal" | "contact_pyramidal_2pt" | "contact_torsional",
+            "qacc" | "qfrc_constraint",
+        ) => Some("Newton solve diverges (+ R-scaling-fed inputs); peel: solver fix PR"),
         _ => None,
     }
 }
@@ -196,8 +208,9 @@ fn gpu_contacts(contacts: &[ContactSpec]) -> Vec<PipelineContact> {
             depth: c.depth as f32,
             normal: [c.normal[0] as f32, c.normal[1] as f32, c.normal[2] as f32],
             geom1: c.geom1 as u32,
-            // Friction [slide, torsion, roll]; assemble.wgsl uses the slide term.
-            friction: [c.mu as f32, 0.0, 0.0],
+            // Friction [slide, torsion, roll]; assemble.wgsl uses the slide term
+            // for sliding facets and the torsion term for condim=4 torsional facets.
+            friction: [c.mu as f32, c.mu_torsion as f32, 0.0],
             geom2: c.geom2 as u32,
         })
         .collect()
