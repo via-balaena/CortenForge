@@ -106,26 +106,24 @@ type Failures = Vec<String>;
 /// per follow-on PR.
 fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
     match (case, channel) {
-        // ── assembly: pyramidal R-scaling (assemble.wgsl) ──────────────────
-        // The sliding-facet R-override (Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio))
-        // is now ported, so contact_pyramidal / _2pt efc_d MATCH and are no longer
-        // allowlisted. The condim=4 contact_torsional still diverges on efc_d: its
-        // 2 torsional rows scale the bodyweight (1+mu²) base AND the mu_reg override
-        // by mu_torsion (mu[2]), but CPU uses mu[0] (slide) for ALL pyramidal facets
-        // (`postprocess_pyramidal_r_scaling`). Removed by the torsional facet fix.
-        ("contact_torsional", "efc_d") => Some(
-            "GPU scales the torsional facet diagonal by mu_torsion not mu_slide \
-             (assemble.wgsl); peel: torsional R-scaling fix",
-        ),
+        // ── assembly: pyramidal R-scaling (assemble.wgsl) — FULLY CONFORMS ──
+        // The pyramidal facet R-override (Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio),
+        // mu = mu[0] for ALL facets including torsional) is ported, so the assembly
+        // efc_d channel matches CPU across every fixture (condim=1/3/4) — no entry.
+        // efc_aref and row counts already conformed. The remaining divergences are
+        // all in the constraint SOLVE, below.
+        //
         // ── solve: Newton solver (newton_solve.wgsl) ───────────────────────
-        // The GPU constraint solve does not reproduce CPU dynamics. Measured:
-        // for `contact_normal_only` (assembly fully matches, normal `qfrc`
-        // matches) the GPU still perturbs the ROTATIONAL `qacc` DOFs even though
-        // their constraint force is zero — qacc is internally inconsistent with
-        // the mapped qfrc (a PURE solver divergence, independent of R-scaling).
-        // For the pyramidal cases the solve diverges on both `qacc` and `qfrc`
-        // (compounded by the wrong R feeding the solver). `contact_normal_only`
-        // `qfrc_constraint` MATCHES, so it is deliberately NOT allowlisted.
+        // The GPU constraint solve does not reproduce CPU dynamics. With the
+        // assembly channel now fully conformant (efc_d/efc_aref match), the
+        // solver receives the SAME inputs as CPU, so every remaining divergence
+        // here is purely the Newton solve — the clean attribution PR-3 starts
+        // from. Measured: for `contact_normal_only` (assembly matches, normal
+        // `qfrc` matches) the GPU still perturbs the ROTATIONAL `qacc` DOFs even
+        // though their constraint force is zero — qacc is internally inconsistent
+        // with the mapped qfrc. For the pyramidal cases the solve diverges on
+        // both `qacc` and `qfrc`. `contact_normal_only` `qfrc_constraint` MATCHES,
+        // so it is deliberately NOT allowlisted.
         ("contact_normal_only", "qacc") => {
             Some("Newton solve: rotational qacc inconsistent with mapped qfrc; peel: solver fix PR")
         }

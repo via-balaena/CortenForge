@@ -511,7 +511,11 @@ fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
                 write_jacobian_body(row, body2,  1.0, normal, contact.point,
                                     normal, mu_torsion, facet_sign, true);
 
-                compute_D_aref(row, contact.depth, body1, body2, true, mu_torsion);
+                // Diagonal/R-scaling uses mu_slide (mu[0]) for ALL pyramidal
+                // facets — CPU postprocess_pyramidal_r_scaling and bw_py both key
+                // off mu[0], NOT the per-direction coefficient. Only the Jacobian
+                // above uses mu_torsion.
+                compute_D_aref(row, contact.depth, body1, body2, true, mu_slide);
 
                 row_idx += 1u;
             }
