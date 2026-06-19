@@ -110,27 +110,25 @@ fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
         // The pyramidal facet R-override (Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio),
         // mu = mu[0] for ALL facets including torsional) is ported, so the assembly
         // efc_d channel matches CPU across every fixture (condim=1/3/4) — no entry.
-        // efc_aref and row counts already conformed. The remaining divergences are
-        // all in the constraint SOLVE, below.
+        // efc_aref and row counts already conformed.
         //
         // ── solve: Newton solver (newton_solve.wgsl) ───────────────────────
-        // The GPU constraint solve does not reproduce CPU dynamics. With the
-        // assembly channel now fully conformant (efc_d/efc_aref match), the
-        // solver receives the SAME inputs as CPU, so every remaining divergence
-        // here is purely the Newton solve — the clean attribution PR-3 starts
-        // from. Measured: for `contact_normal_only` (assembly matches, normal
-        // `qfrc` matches) the GPU still perturbs the ROTATIONAL `qacc` DOFs even
-        // though their constraint force is zero — qacc is internally inconsistent
-        // with the mapped qfrc. For the pyramidal cases the solve diverges on
-        // both `qacc` and `qfrc`. `contact_normal_only` `qfrc_constraint` MATCHES,
-        // so it is deliberately NOT allowlisted.
-        ("contact_normal_only", "qacc") => {
-            Some("Newton solve: rotational qacc inconsistent with mapped qfrc; peel: solver fix PR")
+        // PR-3 fixed the PHASE-1 Hessian stride bug (H_atomic was initialized
+        // flat at stride `nv` but accessed at stride `MAX_NV` everywhere else, so
+        // for nv < MAX_NV the off-diagonal L factors leaked the translational
+        // search into the rotational DOFs). With H correct, the Newton solve now
+        // MATCHES CPU on both channels for `contact_normal_only`, `contact_pyramidal`
+        // and `contact_pyramidal_2pt` (condim 1 and 3) — no entries.
+        //
+        // The lone residual is `contact_torsional` (condim=4) DOF 5 (the spin
+        // axis): qacc[5] ~8.6% and qfrc_constraint[5] ~8.6%. The other 5 DOFs
+        // match, so this is NOT the stride bug — it is a separate condim=4
+        // torsional-solve divergence (the torsional Jacobian's angular term),
+        // armed here for a follow-on. The remaining DOFs of `contact_torsional`
+        // conform, so the channel-level arm is the finest the harness expresses.
+        ("contact_torsional", "qacc" | "qfrc_constraint") => {
+            Some("condim=4 torsional solve: DOF5 (spin axis) ~8.6%; peel: torsional-solve PR")
         }
-        (
-            "contact_pyramidal" | "contact_pyramidal_2pt" | "contact_torsional",
-            "qacc" | "qfrc_constraint",
-        ) => Some("Newton solve diverges (+ R-scaling-fed inputs); peel: solver fix PR"),
         _ => None,
     }
 }
