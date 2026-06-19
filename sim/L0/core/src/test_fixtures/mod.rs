@@ -1,6 +1,6 @@
 //! Canonical test-model fixtures.
 //!
-//! Pure-Rust [`Model`] factories for the small set of canonical mechanical
+//! Pure-Rust [`Model`](crate::types::Model) factories for the small set of canonical mechanical
 //! systems exercised across the L0-pure crates' test suites
 //! (`sim-thermostat`, `sim-ml-chassis`, `sim-opt`). These fixtures replace
 //! per-test ad-hoc MJCF XML strings + `sim_mjcf::load_model` so those
@@ -42,6 +42,7 @@ pub mod arms;
 pub mod bodies;
 pub(crate) mod builders;
 pub mod chains;
+pub mod conformance;
 pub mod particles;
 pub mod pendulums;
 

@@ -32,6 +32,10 @@ log = "0.4"
 [dev-dependencies]
 # Float-tolerance assertions for GPU vs CPU SDF collision parity tests
 approx = { workspace = true }
+# Shared joint×topology conformance fixtures (dynamics_conformance_matrix) so the
+# GPU-vs-CPU dynamics suite draws from the SAME model list as sim-core's CPU
+# transition harness — no drift. Merges with the normal-dep `gpu-internals`.
+sim-core = { workspace = true, features = ["test-fixtures"] }
 
 [lints]
 workspace = true
