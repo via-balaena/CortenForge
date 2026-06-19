@@ -154,6 +154,112 @@ impl Model {
         Self::n_link_pendulum(2, link_length, link_mass)
     }
 
+    /// Create a single body carrying THREE scalar joints (hinge → slide →
+    /// hinge) with non-parallel axes at offset pivots.
+    ///
+    /// This is the canonical fixture for the multi-joint partial-frame motion
+    /// subspace: an earlier joint's `cdof` axis/anchor must be captured BEFORE
+    /// the later same-body joints rotate the body frame. Here the first hinge
+    /// and the slide are each followed by a later *rotating* joint (the second
+    /// hinge), so a final-frame `cdof` computation over-rotates their subspace,
+    /// while the partial-frame capture is correct. `nq = nv = 3`.
+    ///
+    /// The body is off-COM (`body_ipos ≠ 0`) so the angular/linear coupling is
+    /// material, and the joint pivots are offset (`jnt_pos ≠ 0`) so the hinge
+    /// `axis × r` lever is non-trivial.
+    #[must_use]
+    pub fn multi_joint_body() -> Self {
+        let mut model = Self::empty();
+
+        // Dimensions: one body, three scalar DOFs.
+        model.nq = 3;
+        model.nv = 3;
+        model.nbody = 2; // world + body
+        model.njnt = 3;
+
+        // Body 1
+        model.body_parent.push(0);
+        model.body_rootid.push(1);
+        model.body_jnt_adr.push(0);
+        model.body_jnt_num.push(3);
+        model.body_dof_adr.push(0);
+        model.body_dof_num.push(3);
+        model.body_geom_adr.push(0);
+        model.body_geom_num.push(0);
+        model.body_pos.push(Vector3::new(0.1, -0.05, 0.2));
+        model.body_quat.push(UnitQuaternion::identity());
+        model.body_ipos.push(Vector3::new(0.05, 0.1, -0.15)); // off-COM
+        model.body_iquat.push(UnitQuaternion::identity());
+        model.body_mass.push(1.3);
+        model.body_inertia.push(Vector3::new(0.02, 0.03, 0.04));
+        model.body_name.push(Some("multi".to_string()));
+        model.body_subtreemass.push(0.0);
+        model.body_mocapid.push(None);
+
+        // Three joints: hinge (j0), slide (j1), hinge (j2), non-parallel axes,
+        // offset pivots.
+        let jnt_specs = [
+            (
+                MjJointType::Hinge,
+                Vector3::new(1.0, 0.3, 0.0).normalize(),
+                Vector3::new(0.0, 0.02, -0.03),
+                "h0",
+            ),
+            (
+                MjJointType::Slide,
+                Vector3::new(0.2, 1.0, 0.1).normalize(),
+                Vector3::new(0.01, 0.0, 0.04),
+                "s1",
+            ),
+            (
+                MjJointType::Hinge,
+                Vector3::new(0.0, 0.2, 1.0).normalize(),
+                Vector3::new(-0.02, 0.03, 0.0),
+                "h2",
+            ),
+        ];
+        for (i, (jtype, axis, pos, name)) in jnt_specs.into_iter().enumerate() {
+            model.jnt_type.push(jtype);
+            model.jnt_body.push(1);
+            model.jnt_qpos_adr.push(i);
+            model.jnt_dof_adr.push(i);
+            model.jnt_pos.push(pos);
+            model.jnt_axis.push(axis);
+            model.jnt_limited.push(false);
+            model.jnt_range.push((-PI, PI));
+            model.jnt_stiffness.push(0.0);
+            model.jnt_springref.push(0.0);
+            model.jnt_damping.push(0.0);
+            model.jnt_armature.push(0.0);
+            model.jnt_solref.push(DEFAULT_SOLREF);
+            model.jnt_solimp.push(DEFAULT_SOLIMP);
+            model.jnt_name.push(Some(name.to_string()));
+            model.qpos_spring.push(0.0);
+
+            model.dof_body.push(1);
+            model.dof_jnt.push(i);
+            model
+                .dof_parent
+                .push(if i == 0 { None } else { Some(i - 1) });
+            model.dof_armature.push(0.0);
+            model.dof_damping.push(0.0);
+            model.dof_frictionloss.push(0.0);
+        }
+
+        model.qpos0 = DVector::zeros(3);
+
+        model.timestep = 1.0 / 240.0;
+        model.gravity = Vector3::new(0.0, 0.0, -9.81);
+        model.solver_iterations = 10;
+        model.solver_tolerance = 1e-8;
+
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+
+        model
+    }
+
     /// Create a spherical pendulum (ball joint at origin).
     ///
     /// This creates a single body attached to the world by a ball joint,
@@ -384,6 +490,44 @@ impl Model {
         self.body_geom_num[0] += 1;
         if self.body_geom_num[0] == 1 {
             self.body_geom_adr[0] = geom_id;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+    use super::*;
+
+    #[test]
+    fn multi_joint_body_is_well_formed_and_steps() {
+        let model = Model::multi_joint_body();
+
+        // Structural counts: one moving body carrying three scalar DOFs.
+        assert_eq!(model.nbody, 2);
+        assert_eq!(model.njnt, 3);
+        assert_eq!(model.nq, 3);
+        assert_eq!(model.nv, 3);
+        assert_eq!(model.body_jnt_num[1], 3);
+        assert_eq!(model.body_dof_num[1], 3);
+        // hinge → slide → hinge.
+        assert_eq!(model.jnt_type[0], MjJointType::Hinge);
+        assert_eq!(model.jnt_type[1], MjJointType::Slide);
+        assert_eq!(model.jnt_type[2], MjJointType::Hinge);
+
+        // Forward dynamics runs and qM is symmetric positive-definite (a valid
+        // multi-joint mass matrix), confirming the fixture finalizes correctly.
+        let mut data = model.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&[0.4, 0.15, -0.3]);
+        data.forward(&model).expect("forward failed");
+        for i in 0..model.nv {
+            assert!(data.qM[(i, i)] > 0.0, "qM diagonal must be positive");
+            for j in 0..model.nv {
+                assert!(
+                    (data.qM[(i, j)] - data.qM[(j, i)]).abs() < 1e-12,
+                    "qM must be symmetric"
+                );
+            }
         }
     }
 }

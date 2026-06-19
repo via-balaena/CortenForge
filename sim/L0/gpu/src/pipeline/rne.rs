@@ -101,14 +101,12 @@ impl GpuRnePipeline {
                 label: Some("rne_state_layout"),
                 entries: &[
                     storage_entry(0, true), // body_xpos
-                    storage_entry(1, true), // body_xquat
-                    storage_entry(2, true), // body_cinert
-                    storage_entry(3, true), // cdof
-                    storage_entry(4, true), // body_cvel
-                    storage_entry(5, true), // subtree_mass
-                    storage_entry(6, true), // subtree_com
-                    storage_entry(7, true), // qvel
-                    storage_entry(8, true), // qpos
+                    storage_entry(1, true), // body_cinert
+                    storage_entry(2, true), // cdof
+                    storage_entry(3, true), // body_cvel
+                    storage_entry(4, true), // subtree_mass
+                    storage_entry(5, true), // subtree_com
+                    storage_entry(6, true), // qvel
                 ],
             });
 
@@ -184,14 +182,12 @@ impl GpuRnePipeline {
             layout: &state_layout,
             entries: &[
                 buf_entry(0, &state.body_xpos),
-                buf_entry(1, &state.body_xquat),
-                buf_entry(2, &state.body_cinert),
-                buf_entry(3, &state.cdof),
-                buf_entry(4, &state.body_cvel),
-                buf_entry(5, &state.subtree_mass),
-                buf_entry(6, &state.subtree_com),
-                buf_entry(7, &state.qvel),
-                buf_entry(8, &state.qpos),
+                buf_entry(1, &state.body_cinert),
+                buf_entry(2, &state.cdof),
+                buf_entry(3, &state.body_cvel),
+                buf_entry(4, &state.subtree_mass),
+                buf_entry(5, &state.subtree_com),
+                buf_entry(6, &state.qvel),
             ],
         });
 
