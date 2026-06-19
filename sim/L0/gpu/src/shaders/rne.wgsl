@@ -58,7 +58,7 @@ struct DofModel {
     body_id: u32,
     parent: u32,
     armature: f32,
-    _pad: u32,
+    damping: f32,
 };
 
 // ── Bindings ─────────────────────────────────────────────────────────

@@ -52,6 +52,7 @@ use sim_core::test_fixtures::conformance::{
 use sim_core::types::{Data, MjJointType, Model};
 
 use super::crba::GpuCrbaPipeline;
+use super::eulerdamp::GpuEulerdampPipeline;
 use super::fk::{GpuFkPipeline, readback_f32s, readback_vec4s};
 use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
@@ -173,15 +174,6 @@ fn known_gpu_divergence(name: &str) -> Option<&'static str> {
         // n_env allocator + reduction slice.
         "branched_hinge" => {
             Some("subtree reduction race for sibling branches (Session-2 CAS atomics)")
-        }
-        // Damped-integration cases (Slice-2a): the GPU substep applies NO joint
-        // damping — it clears qfrc_passive to zero (no passive shader) AND lacks
-        // the implicit (M + h·D) eulerdamp solve, so it integrates the UNDAMPED
-        // trajectory. CPU uses the implicit damped solve. Fixed in Slice-2b
-        // (add the −D·q̇ passive force + fold h·D into the Cholesky), which flips
-        // these green and is forced by this allowlist's self-validation.
-        n if n.ends_with("_damped") => {
-            Some("GPU substep lacks implicit eulerdamp solve + joint damper force (Slice-2b)")
         }
         _ => None,
     }
@@ -562,11 +554,13 @@ fn check_step_state(
 }
 
 /// One contact-free GPU substep on a persistent state buffer: FK → CRBA →
-/// velocity-FK → RNE → smooth → (`qacc = qacc_smooth`) → integrate. Mirrors the
-/// T17/T18 hand-rolled trajectory loop (no collision/constraint stage, so it
+/// velocity-FK → RNE → smooth → eulerdamp `(M+h·D)` solve → integrate. Mirrors
+/// the T17/T18 hand-rolled trajectory loop (no collision/constraint stage, so it
 /// works for every joint type — unlike the orchestrator, which is free-only and
-/// needs geom buffers). `qfrc_*` accumulators are reset inside each pipeline's
-/// dispatch, as the multi-thousand-step T18 loop relies on.
+/// needs geom buffers). The eulerdamp solve writes `qacc` (the contact-free
+/// analog of the constraint stage); for an undamped model it reduces to
+/// `M⁻¹·qfrc_smooth = qacc_smooth`, so it is safe for all cases. `qfrc_*`
+/// accumulators are reset inside each pipeline's dispatch.
 // (arg count covered by the module-level `#![allow(clippy::too_many_arguments)]`.)
 fn gpu_substep(
     ctx: &GpuContext,
@@ -578,6 +572,7 @@ fn gpu_substep(
     vel: &GpuVelocityFkPipeline,
     rne: &GpuRnePipeline,
     smooth: &GpuSmoothPipeline,
+    eulerdamp: &GpuEulerdampPipeline,
     integrate: &GpuIntegratePipeline,
 ) {
     let mut encoder = ctx
@@ -590,14 +585,9 @@ fn gpu_substep(
     vel.dispatch(ctx, model_buf, state, &mut encoder);
     rne.dispatch(ctx, model_buf, state, model, &mut encoder);
     smooth.dispatch(ctx, model_buf, state, model, &mut encoder);
-    // Contact-free bridge: qacc = qacc_smooth (the constraint stage's job).
-    encoder.copy_buffer_to_buffer(
-        &state.qacc_smooth,
-        0,
-        &state.qacc,
-        0,
-        u64::from(model.nv.max(1) as u32) * 4,
-    );
+    // Implicit damped velocity solve → qacc = (M + h·D)⁻¹·(qfrc_smooth − D·q̇),
+    // the contact-free analog of the constraint stage.
+    eulerdamp.dispatch(ctx, model_buf, model, &mut encoder);
     integrate.dispatch(ctx, model_buf, state, model, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 }
@@ -645,13 +635,15 @@ fn gpu_damped_integration_matches_cpu() {
         let vel = GpuVelocityFkPipeline::new(&ctx, &model_buf, &state);
         let rne = GpuRnePipeline::new(&ctx, &model_buf, &state, model);
         let smooth = GpuSmoothPipeline::new(&ctx, &model_buf, &state);
+        let eulerdamp = GpuEulerdampPipeline::new(&ctx, &model_buf, &state);
         let integrate = GpuIntegratePipeline::new(&ctx, &model_buf, &state);
 
         let before = fails.len();
         for step in 1..=N_STEPS {
             data_cpu.step(model).expect("CPU step");
             gpu_substep(
-                &ctx, model, &model_buf, &state, &fk, &crba, &vel, &rne, &smooth, &integrate,
+                &ctx, model, &model_buf, &state, &fk, &crba, &vel, &rne, &smooth, &eulerdamp,
+                &integrate,
             );
             if checkpoints.contains(&step) {
                 let gpu_qpos = readback_f32s(&ctx, &state.qpos, model.nq);
