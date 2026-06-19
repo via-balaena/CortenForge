@@ -10,6 +10,8 @@
 //! semi-implicit Euler integration. First full GPU physics loop.
 
 pub mod collision;
+#[cfg(test)]
+mod conformance_tests;
 pub mod constraint;
 pub mod crba;
 pub mod fk;
