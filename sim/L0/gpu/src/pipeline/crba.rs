@@ -339,10 +339,11 @@ impl GpuCrbaPipeline {
     ) {
         self.write_params(ctx, model, state);
 
-        // Zero qM before mass matrix assembly
+        // Zero qM before mass matrix assembly (all envs: the buffer is sized
+        // n_env × nv² and each env's block must start clean across reuse).
         let nv = self.nv;
         if nv > 0 {
-            let zero_bytes = vec![0u8; (nv as usize) * (nv as usize) * 4];
+            let zero_bytes = vec![0u8; (self.n_env as usize) * (nv as usize) * (nv as usize) * 4];
             ctx.queue.write_buffer(&state.qm, 0, &zero_bytes);
         }
 

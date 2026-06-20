@@ -112,21 +112,58 @@ pub struct GpuStateBuffers {
 }
 
 impl GpuStateBuffers {
-    /// Allocate per-env state buffers and upload initial qpos.
+    /// Allocate per-env state buffers for a single environment and upload its
+    /// initial qpos/qvel. Convenience wrapper over [`Self::new_batched`] for the
+    /// interactive (`n_env = 1`) path — byte-identical to the old single-env
+    /// allocator, so every existing caller is unaffected.
     #[must_use]
     pub fn new(ctx: &GpuContext, model: &GpuModelBuffers, data: &Data) -> Self {
-        let n_env = 1u32;
-        let nbody = u64::from(model.nbody);
-        let ngeom = u64::from(model.ngeom);
-        let nv = u64::from(model.nv);
-        let nmocap = u64::from(model.nmocap.max(1)); // At least 1 for buffer sizing
+        Self::new_batched(ctx, model, 1, &[data])
+    }
+
+    /// Allocate per-env state buffers for `n_env` environments and upload each
+    /// env's initial qpos/qvel.
+    ///
+    /// Every mutable state buffer is sized `n_env ×` its single-env footprint and
+    /// the env-striding shaders address env `k` at offset `k · count` (e.g.
+    /// `env_id * nbody` for body buffers). The shared [`GpuModelBuffers`]
+    /// (joint/dof/geom parameters) are NOT duplicated — they are identical across
+    /// environments. The two atomic counters (`contact_count`/`constraint_count`)
+    /// are also sized per-env so the collision/constraint batching slice (PR D)
+    /// need not revisit the allocator.
+    ///
+    /// `per_env[k]` supplies env `k`'s initial `qpos`/`qvel`; its length must
+    /// equal `n_env`. At `n_env = 1` this is byte-identical to the legacy
+    /// single-env layout (every stride collapses to `1×`).
+    ///
+    /// # Panics
+    /// Panics if `per_env.len() != n_env`.
+    #[must_use]
+    pub fn new_batched(
+        ctx: &GpuContext,
+        model: &GpuModelBuffers,
+        n_env: u32,
+        per_env: &[&Data],
+    ) -> Self {
+        assert_eq!(
+            per_env.len(),
+            n_env as usize,
+            "new_batched: per_env has {} entries but n_env = {n_env}",
+            per_env.len(),
+        );
+        let ne = u64::from(n_env);
+        let nbody = ne * u64::from(model.nbody);
+        let ngeom = ne * u64::from(model.ngeom);
+        let nv = ne * u64::from(model.nv);
+        let nmocap = ne * u64::from(model.nmocap.max(1)); // At least 1 for buffer sizing
 
         let usage_out = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
         let usage_in = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let usage_inout = usage_out | wgpu::BufferUsages::COPY_DST;
 
-        // Upload initial qpos (f64 → f32)
-        let qpos_f32 = f64s_to_f32s(data.qpos.as_slice());
+        // Upload initial qpos (f64 → f32), env states concatenated so env k lands
+        // at byte offset k · nq · 4 — the layout fk.wgsl reads via `env_id * nq`.
+        let qpos_f32 = concat_env_state(per_env, |d| d.qpos.as_slice());
         let qpos = upload_init(
             ctx,
             "qpos",
@@ -153,22 +190,26 @@ impl GpuStateBuffers {
         let subtree_mass = alloc(ctx, "subtree_mass", nbody * 4, usage_inout);
         let subtree_com = alloc(ctx, "subtree_com", nbody * 16, usage_inout);
 
-        // Mocap (uploaded from CPU per frame)
+        // Mocap (uploaded from CPU per frame). Sized ×n_env for layout uniformity,
+        // but the FK shader does NOT env-stride mocap reads yet (it indexes
+        // `mocap_pos[mocap_id]`, env 0 only); per-env mocap lands with the
+        // collision/constraint batching slice. No conformance fixture uses mocap.
         let mocap_pos = alloc(ctx, "mocap_pos", nmocap * 16, usage_in);
         let mocap_quat = alloc(ctx, "mocap_quat", nmocap * 16, usage_in);
 
         // CRBA state (Session 2)
         // body_crb: 12 u32 (= 48 bytes) per body — 3×vec4 worth of atomic<u32>
         let body_crb = alloc(ctx, "body_crb", nbody * 48, usage_inout);
-        // qM / qM_factor: nv × nv f32 (dense mass matrix)
-        let nv_sq = nv.max(1) * nv.max(1);
+        // qM / qM_factor: nv × nv f32 (dense mass matrix), per env.
+        let nv1 = u64::from(model.nv).max(1);
+        let nv_sq = ne * nv1 * nv1;
         let qm = alloc(ctx, "qM", nv_sq * 4, usage_inout);
         let qm_factor = alloc(ctx, "qM_factor", nv_sq * 4, usage_inout);
         let qm_eulerdamp_factor = alloc(ctx, "qM_eulerdamp_factor", nv_sq * 4, usage_inout);
 
         // Velocity FK state (Session 2)
-        // qvel: nv f32 (uploaded from CPU)
-        let qvel_f32 = f64s_to_f32s(data.qvel.as_slice());
+        // qvel: nv f32 per env (uploaded from CPU), env-concatenated like qpos.
+        let qvel_f32 = concat_env_state(per_env, |d| d.qvel.as_slice());
         let qvel = upload_init(
             ctx,
             "qvel",
@@ -183,7 +224,7 @@ impl GpuStateBuffers {
         let body_cacc = alloc(ctx, "body_cacc", nbody * 32, usage_inout);
         // body_cfrc: atomic<u32> × 8 per body = 32 bytes/body (6 spatial force + 2 padding)
         let body_cfrc = alloc(ctx, "body_cfrc", nbody * 32, usage_inout);
-        // Generalized force/acceleration vectors: nv f32 each
+        // Generalized force/acceleration vectors: nv f32 each, per env.
         let nv_bytes = nv.max(1) * 4;
         let qfrc_bias = alloc(ctx, "qfrc_bias", nv_bytes, usage_inout);
         let qfrc_applied = alloc(ctx, "qfrc_applied", nv_bytes, usage_inout);
@@ -196,23 +237,23 @@ impl GpuStateBuffers {
         // Collision state (Session 4)
         // geom_aabb: 2×vec4 per geom = 32 bytes/geom
         let geom_aabb = alloc(ctx, "geom_aabb", ngeom * 32, usage_inout);
-        // contact_buffer: 48 bytes per PipelineContact × max_contacts
+        // contact_buffer: 48 bytes per PipelineContact × max_contacts, per env.
         let contact_buffer = alloc(
             ctx,
             "contact_buffer",
-            u64::from(MAX_PIPELINE_CONTACTS) * 48,
+            ne * u64::from(MAX_PIPELINE_CONTACTS) * 48,
             usage_inout,
         );
-        // contact_count: single atomic u32
-        let contact_count = alloc(ctx, "contact_count", 4, usage_inout);
+        // contact_count: one atomic u32 per env.
+        let contact_count = alloc(ctx, "contact_count", ne * 4, usage_inout);
 
-        // Constraint solve state (Session 5)
+        // Constraint solve state (Session 5), per env.
         let max_c = u64::from(MAX_CONSTRAINTS);
-        let efc_j = alloc(ctx, "efc_J", max_c * nv.max(1) * 4, usage_inout);
-        let efc_d = alloc(ctx, "efc_D", max_c * 4, usage_inout);
-        let efc_aref = alloc(ctx, "efc_aref", max_c * 4, usage_inout);
-        let efc_force = alloc(ctx, "efc_force", max_c * 4, usage_inout);
-        let constraint_count = alloc(ctx, "constraint_count", 4, usage_inout);
+        let efc_j = alloc(ctx, "efc_J", ne * max_c * nv1 * 4, usage_inout);
+        let efc_d = alloc(ctx, "efc_D", ne * max_c * 4, usage_inout);
+        let efc_aref = alloc(ctx, "efc_aref", ne * max_c * 4, usage_inout);
+        let efc_force = alloc(ctx, "efc_force", ne * max_c * 4, usage_inout);
+        let constraint_count = alloc(ctx, "constraint_count", ne * 4, usage_inout);
         let qfrc_constraint = alloc(ctx, "qfrc_constraint", nv_bytes, usage_inout);
 
         Self {
@@ -299,6 +340,18 @@ impl GpuStateBuffers {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
+
+/// Concatenate one per-env f64 state slice (e.g. `qpos`/`qvel`) into a single
+/// f32 buffer, env 0 first. Env `k`'s block lands at offset `k · len`, matching
+/// the `env_id * n{q,v}` stride the shaders use. At `n_env = 1` this is exactly
+/// the single env's `f64s_to_f32s`, so the legacy layout is preserved.
+fn concat_env_state(per_env: &[&Data], pick: impl Fn(&Data) -> &[f64]) -> Vec<f32> {
+    let mut out = Vec::new();
+    for data in per_env {
+        out.extend(f64s_to_f32s(pick(data)));
+    }
+    out
+}
 
 fn alloc(ctx: &GpuContext, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
     // Minimum 16 bytes (wgpu requires non-zero, and some drivers need 16)
