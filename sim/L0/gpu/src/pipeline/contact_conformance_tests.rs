@@ -32,9 +32,11 @@
 //!   looser tolerance (f32 GPU Cholesky vs f64 CPU). This is where the Newton
 //!   solver divergences live.
 //!
-//! Scope: n_env = 1, EXPOSE only — the divergences are captured as
-//! self-validating `known_contact_divergence` allowlist entries; the fixes peel
-//! one per follow-on PR (assembly R-scaling first, then the Newton solver).
+//! Scope: n_env = 1. The whole contact-constraint path now CONFORMS across
+//! condim=1/3/4 (assembly R-scaling #358, Newton-solver stride #359, and the
+//! oracle pinned to `SolverType::Newton` to match the GPU's solver). The
+//! self-validating `known_contact_divergence` allowlist is currently empty; a
+//! new divergence re-arms a single (case, channel) entry without masking.
 
 #![cfg(test)]
 #![allow(
@@ -97,40 +99,33 @@ const TOL_SOLVE_ABS: f32 = 1e-3;
 
 type Failures = Vec<String>;
 
-/// Cases × channels with a KNOWN, pre-existing GPU↔CPU divergence (filed in the
-/// divergence ledger `project-gpu-shader-conformance-gap`), returning the reason.
+/// Allowlist of (case, channel) pairs with a KNOWN GPU↔CPU divergence, returning
+/// the reason. **Currently empty — the whole contact-constraint path conforms.**
 ///
 /// Self-validating, exactly like the contact-free suite's `known_gpu_divergence`:
 /// an allowlisted (case, channel) that suddenly MATCHES fails the test, so the
-/// allowlist can never silently mask a future fix. The fixes peel one channel
-/// per follow-on PR.
+/// allowlist can never silently mask a future fix. Re-arm one (case, channel) arm
+/// here when a NEW divergence is exposed.
 fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
-    match (case, channel) {
-        // ── assembly: pyramidal R-scaling (assemble.wgsl) — FULLY CONFORMS ──
-        // The pyramidal facet R-override (Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio),
-        // mu = mu[0] for ALL facets including torsional) is ported, so the assembly
-        // efc_d channel matches CPU across every fixture (condim=1/3/4) — no entry.
-        // efc_aref and row counts already conformed.
-        //
-        // ── solve: Newton solver (newton_solve.wgsl) ───────────────────────
-        // PR-3 fixed the PHASE-1 Hessian stride bug (H_atomic was initialized
-        // flat at stride `nv` but accessed at stride `MAX_NV` everywhere else, so
-        // for nv < MAX_NV the off-diagonal L factors leaked the translational
-        // search into the rotational DOFs). With H correct, the Newton solve now
-        // MATCHES CPU on both channels for `contact_normal_only`, `contact_pyramidal`
-        // and `contact_pyramidal_2pt` (condim 1 and 3) — no entries.
-        //
-        // The lone residual is `contact_torsional` (condim=4) DOF 5 (the spin
-        // axis): qacc[5] ~8.6% and qfrc_constraint[5] ~8.6%. The other 5 DOFs
-        // match, so this is NOT the stride bug — it is a separate condim=4
-        // torsional-solve divergence (the torsional Jacobian's angular term),
-        // armed here for a follow-on. The remaining DOFs of `contact_torsional`
-        // conform, so the channel-level arm is the finest the harness expresses.
-        ("contact_torsional", "qacc" | "qfrc_constraint") => {
-            Some("condim=4 torsional solve: DOF5 (spin axis) ~8.6%; peel: torsional-solve PR")
-        }
-        _ => None,
-    }
+    // No (case, channel) pairs diverge any more — the whole contact-constraint
+    // path (assembly + solve) conforms across condim=1/3/4:
+    //
+    // - **assembly** (efc_d/efc_aref/n_rows): the pyramidal facet R-override
+    //   (Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio), mu = mu[0] for ALL facets
+    //   including torsional) is ported (PR-2), so every row matches.
+    // - **solve** (qacc/qfrc_constraint): PR-3 fixed the PHASE-1 Hessian stride bug.
+    //   The last `contact_torsional` DOF5 (spin-axis) ~8.6% residual was NOT a GPU
+    //   bug — the GPU's Newton/Gauss-Newton solver reaches the exact constraint-QP
+    //   optimum, but the CPU oracle used the default first-order `SolverType::PGS`,
+    //   which had only crawled the weakly-coupled spin DOF partway at the default
+    //   iteration count (PGS@100 → 7.72, true optimum 8.385). The fixture now pins
+    //   the oracle to `SolverType::Newton` (the GPU's algorithm), so it converges in
+    //   ~1 iteration to the value the GPU already computed.
+    //
+    // Re-add a `match (case, channel)` arm here when a NEW divergence is exposed;
+    // the harness self-validates against it (an allowlisted pair that MATCHES fails).
+    let _ = (case, channel);
+    None
 }
 
 /// Record `|gpu − cpu| ≥ tol` (NaN-safe via `!(< tol)`).
