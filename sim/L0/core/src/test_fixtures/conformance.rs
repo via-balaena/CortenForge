@@ -23,7 +23,7 @@ use crate::test_fixtures::builders::{
     add_ball_joint, add_body, add_freejoint, add_ground_plane, add_hinge_joint, add_site,
     add_slide_joint, add_sphere_geom, finalize,
 };
-use crate::types::enums::{Integrator, TendonType, WrapType};
+use crate::types::enums::{Integrator, SolverType, TendonType, WrapType};
 use crate::types::{Contact, Model};
 
 /// One matrix entry: a model plus an operating point.
@@ -661,6 +661,14 @@ fn contact_fixture(
     m.gravity = Vector3::new(0.0, 0.0, -9.81);
     m.timestep = 0.002;
     m.integrator = Integrator::Euler; // explicit Euler — matches the GPU integrate stage
+    // The GPU constraint solver (`newton_solve.wgsl`) is a Newton/Gauss-Newton
+    // solver that reaches the exact constraint QP solution in ~1 step. The CPU
+    // default `SolverType::PGS` is first-order (linear convergence) and at the
+    // default iteration count has NOT converged the weakly-coupled DOFs (e.g. the
+    // condim=4 spin axis: PGS@100 iters reaches 7.72, true optimum 8.385). Match
+    // the GPU's algorithm so the oracle is apples-to-apples and exact — Newton
+    // converges this fixture in 1 iteration. (Newton is also MuJoCo's real default.)
+    m.solver_type = SolverType::Newton;
     m.diagapprox_bodyweight = true; // match the GPU bodyweight diagonal approximation
     m.impratio = impratio;
     m.cone = 0; // pyramidal friction cone (MuJoCo default; the GPU path assumes it)
@@ -786,6 +794,17 @@ pub fn contact_constraint_oracle(case: &ContactConformanceCase) -> ConstraintOra
     data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
     data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
     data.forward(model).expect("contact oracle: forward");
+
+    // The GPU↔CPU comparison only holds because this oracle uses the SAME solver
+    // as the GPU (Newton) — and Newton silently falls back to PGS on
+    // CholeskyFailed / MaxIterationsExceeded. If that happens the reference is an
+    // under-converged PGS result, not the Newton optimum the GPU computes, so a
+    // future fixture would compare against the wrong value. Fail loudly instead.
+    assert!(
+        data.newton_solved,
+        "contact oracle did not converge via Newton (silent PGS fallback) — \
+         the GPU↔CPU solve comparison would be against the wrong reference"
+    );
 
     ConstraintOracle {
         n_rows: data.efc_D.len(),
