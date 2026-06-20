@@ -23,11 +23,22 @@ struct PhysicsParams {
 // Group 0: physics params
 @group(0) @binding(0) var<uniform> params: PhysicsParams;
 
+// Per-DOF model entry (matches `DofModel` in types.rs / eulerdamp.wgsl) — read
+// for the implicit joint-damping coefficient.
+struct DofModel {
+    body_id: u32,
+    parent: u32,
+    armature: f32,
+    damping: f32,
+};
+
 // Group 1: force inputs (read-only)
 @group(1) @binding(0) var<storage, read> qfrc_bias: array<f32>;
 @group(1) @binding(1) var<storage, read> qfrc_applied: array<f32>;
 @group(1) @binding(2) var<storage, read> qfrc_actuator: array<f32>;
 @group(1) @binding(3) var<storage, read> qfrc_passive: array<f32>;
+@group(1) @binding(4) var<storage, read> qvel: array<f32>;
+@group(1) @binding(5) var<storage, read> dofs: array<DofModel>;
 
 // Group 2: mass matrix factor (read-only)
 @group(2) @binding(0) var<storage, read> qM_factor: array<f32>;
@@ -47,8 +58,15 @@ fn smooth_assemble(@builtin(global_invocation_id) gid: vec3<u32>) {
     let env_off = env_id * params.nv;
     let idx = env_off + d;
 
+    // Implicit joint-damping passive force −D·q̇ (MuJoCo qfrc_passive). Folded in
+    // HERE — before the constraint solve — so the constraint solver's
+    // unconstrained reference (qacc_smooth) includes the damper, matching the CPU
+    // (whose qfrc_passive flows into qfrc_smooth). The eulerdamp stage then makes
+    // the damping implicit via (M + h·D) on the LHS; it must NOT re-subtract the
+    // damper. `damping = 0` for undamped DOFs ⇒ this term is a no-op (byte-identical).
     qfrc_smooth[idx] = qfrc_applied[idx] + qfrc_actuator[idx]
-                      + qfrc_passive[idx] - qfrc_bias[idx];
+                      + qfrc_passive[idx] - qfrc_bias[idx]
+                      - dofs[d].damping * qvel[idx];
 }
 
 // ── Entry point 2: Cholesky solve (forward + backward substitution) ─

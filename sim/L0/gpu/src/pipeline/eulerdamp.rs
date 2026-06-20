@@ -1,9 +1,12 @@
 //! GPU implicit joint-damping (eulerdamp) pipeline.
 //!
 //! Compiles `eulerdamp.wgsl` (1 entry point): a single-threaded solve of
-//! `(M + h·D)·qacc = qfrc_smooth − D·q̇` into a scratch Cholesky factor,
-//! leaving crba's pure `qM`/`qM_factor` untouched. See the shader header for
-//! the CPU reference and scope notes.
+//! `(M + h·D)·qacc = qfrc_smooth + qfrc_constraint` into a scratch Cholesky
+//! factor, leaving crba's pure `qM`/`qM_factor` untouched. The `−D·q̇` damper is
+//! folded into `qfrc_smooth` by `smooth_assemble` (so the constraint solver sees
+//! it); the `qfrc_constraint` term (zero with no contacts) completes the
+//! MuJoCo-Euler total force. The orchestrator runs this between the constraint
+//! stage and integration. See the shader header for the CPU reference.
 
 #![allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
 
@@ -75,7 +78,7 @@ impl GpuEulerdampPipeline {
                 entries: &[
                     storage_entry(0, true), // qM
                     storage_entry(1, true), // qfrc_smooth
-                    storage_entry(2, true), // qvel
+                    storage_entry(2, true), // qfrc_constraint
                 ],
             });
 
@@ -132,7 +135,7 @@ impl GpuEulerdampPipeline {
             entries: &[
                 buf_entry(0, &state.qm),
                 buf_entry(1, &state.qfrc_smooth),
-                buf_entry(2, &state.qvel),
+                buf_entry(2, &state.qfrc_constraint),
             ],
         });
         let output_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
