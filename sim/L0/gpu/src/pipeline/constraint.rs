@@ -129,11 +129,11 @@ impl GpuConstraintPipeline {
             nv,
             max_iter: cpu_model.solver_iterations as u32,
             max_ls: cpu_model.ls_iterations.max(20) as u32,
-            _pad0: 0,
+            n_env: state_bufs.n_env,
             tolerance: cpu_model.solver_tolerance as f32,
             ls_tolerance: cpu_model.ls_tolerance as f32,
             meaninertia: cpu_model.stat_meaninertia as f32,
-            _pad1: 0.0,
+            max_constraints: super::types::MAX_CONSTRAINTS,
         };
         let solver_params_buf =
             create_uniform(ctx, "solver_params", bytemuck::bytes_of(&solver_params));
@@ -444,7 +444,8 @@ impl GpuConstraintPipeline {
             pass.set_bind_group(1, &self.newton_bg1, &[]);
             pass.set_bind_group(2, &self.newton_bg2, &[]);
             pass.set_bind_group(3, &self.newton_bg3, &[]);
-            pass.dispatch_workgroups(1, 1, 1);
+            // One workgroup per env (newton_solve.wgsl reads env = workgroup_id.x).
+            pass.dispatch_workgroups(self.n_env, 1, 1);
         }
 
         // ── 3. Force mapping ───────────────────────────────────────
@@ -457,7 +458,8 @@ impl GpuConstraintPipeline {
             pass.set_bind_group(0, &self.mapf_bg0, &[]);
             pass.set_bind_group(1, &self.mapf_bg1, &[]);
             pass.set_bind_group(2, &self.mapf_bg2, &[]);
-            pass.dispatch_workgroups(self.nv.div_ceil(64), 1, 1);
+            // Env axis on gid.y (map_forces.wgsl reads env_id = gid.y).
+            pass.dispatch_workgroups(self.nv.div_ceil(64), self.n_env, 1);
         }
     }
 }

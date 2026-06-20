@@ -352,11 +352,14 @@ pub struct SolverParams {
     pub nv: u32,
     pub max_iter: u32,
     pub max_ls: u32,
-    pub _pad0: u32,
+    /// Number of environments (batch size). `newton_solve` runs one workgroup per
+    /// env (env = `workgroup_id.x`); `map_forces` strides per-env on `gid.y`.
+    pub n_env: u32,
     pub tolerance: f32,
     pub ls_tolerance: f32,
     pub meaninertia: f32,
-    pub _pad1: f32,
+    /// Per-env row stride of the `efc_*` buffers (`MAX_CONSTRAINTS`).
+    pub max_constraints: u32,
 }
 
 // ── Conversion helpers ────────────────────────────────────────────────

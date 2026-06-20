@@ -152,6 +152,11 @@ impl GpuStateBuffers {
             per_env.len(),
         );
         let ne = u64::from(n_env);
+        // These are the BATCHED totals (×n_env), used to size every per-env buffer.
+        // Do NOT confuse with the shaders' `params.nv`/`params.nbody`, which are the
+        // SINGLE-env counts used for per-row/per-body strides (env offset is then
+        // `env_id * params.nv` etc.). A buffer's byte size is `ne · single-env`, so
+        // here `nv = ne · model.nv`; the per-env stride lives in the shader.
         let nbody = ne * u64::from(model.nbody);
         let ngeom = ne * u64::from(model.ngeom);
         let nv = ne * u64::from(model.nv);

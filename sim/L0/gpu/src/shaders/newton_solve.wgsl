@@ -25,14 +25,14 @@ const WG_SIZE: u32 = 256u;
 // ── Params struct ───────────────────────────────────────────────────────
 
 struct SolverParams {
-    nv:           u32,
-    max_iter:     u32,
-    max_ls:       u32,
-    _pad0:        u32,
-    tolerance:    f32,
-    ls_tolerance: f32,
-    meaninertia:  f32,
-    _pad1:        f32,
+    nv:              u32,
+    max_iter:        u32,
+    max_ls:          u32,
+    n_env:           u32,
+    tolerance:       f32,
+    ls_tolerance:    f32,
+    meaninertia:     f32,
+    max_constraints: u32,
 };
 
 // ── Bindings ────────────────────────────────────────────────────────────
@@ -105,30 +105,35 @@ fn atomic_add_H(idx: u32, val: f32) {
 // All 256 threads MUST participate — the function uses workgroupBarrier()
 // for the parallel reduction. Only thread 0's return value is meaningful.
 
-fn eval_cost(alpha: f32, nv: u32, nefc: u32, tid: u32) -> f32 {
+fn eval_cost(alpha: f32, nv: u32, nefc: u32, tid: u32, env: u32) -> f32 {
     var partial = 0.0;
+
+    // Per-env base offsets into the global buffers (workgroup scratch is private).
+    let env_efc = env * params.max_constraints;
+    let env_efcj = env_efc * nv;
 
     // Constraint cost: sum over active (violated) constraints of 0.5 * D * jar^2
     for (var i = tid; i < nefc; i += WG_SIZE) {
-        var jar_i = -efc_aref_buf[i];
-        let row_off = i * nv;
+        var jar_i = -efc_aref_buf[env_efc + i];
+        let row_off = env_efcj + i * nv;
         for (var k = 0u; k < nv; k++) {
             jar_i += efc_J_buf[row_off + k] * (qacc_sh[k] + alpha * search_sh[k]);
         }
         if jar_i < 0.0 {
-            partial += 0.5 * efc_D_buf[i] * jar_i * jar_i;
+            partial += 0.5 * efc_D_buf[env_efc + i] * jar_i * jar_i;
         }
     }
 
     // Gauss cost: 0.5 * u^T * (M*qacc_trial - qfrc_smooth)
     // where u = qacc_trial - qacc_smooth. First nv threads each handle one DOF.
     if tid < nv {
+        let env_qm = env * nv * nv;
         var ma_k = 0.0;
         for (var j = 0u; j < nv; j++) {
-            ma_k += qM_buf[tid * nv + j] * (qacc_sh[j] + alpha * search_sh[j]);
+            ma_k += qM_buf[env_qm + tid * nv + j] * (qacc_sh[j] + alpha * search_sh[j]);
         }
         let u_k = (qacc_sh[tid] + alpha * search_sh[tid]) - qacc_sm_sh[tid];
-        partial += 0.5 * u_k * (ma_k - qfrc_smooth_buf[tid]);
+        partial += 0.5 * u_k * (ma_k - qfrc_smooth_buf[env * nv + tid]);
     }
 
     // Parallel tree reduction across all 256 threads
@@ -146,22 +151,40 @@ fn eval_cost(alpha: f32, nv: u32, nefc: u32, tid: u32) -> f32 {
 // ── Main entry point ────────────────────────────────────────────────────
 
 @compute @workgroup_size(256)
-fn newton_solve(@builtin(local_invocation_id) lid: vec3<u32>) {
+fn newton_solve(
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+) {
     let tid = lid.x;
+    // One workgroup per env (env = workgroup_id.x; dispatched (n_env,1,1)). The
+    // guard is uniform across the workgroup (every thread shares wid.x), so the
+    // early return never splits a workgroupBarrier.
+    let env = wid.x;
+    if env >= params.n_env {
+        return;
+    }
     let nv = params.nv;
-    let nefc = atomicLoad(&constraint_count_buf[0]);
+    let nefc = atomicLoad(&constraint_count_buf[env]);
+
+    // Per-env base offsets into the global state buffers. The workgroup-local
+    // scratch (H_atomic / qacc_sh / grad_sh / search_sh / reduction_sh) is private
+    // to this workgroup, so one-workgroup-per-env needs no scratch offset.
+    let env_nv = env * nv;
+    let env_qm = env * nv * nv;
+    let env_efc = env * params.max_constraints;
+    let env_efcj = env_efc * nv;
 
     // ── INITIALIZE: cold-start qacc = qacc_smooth ───────────────────────
     if tid < nv {
-        qacc_sh[tid] = qacc_smooth_buf[tid];
-        qacc_sm_sh[tid] = qacc_smooth_buf[tid];
+        qacc_sh[tid] = qacc_smooth_buf[env_nv + tid];
+        qacc_sm_sh[tid] = qacc_smooth_buf[env_nv + tid];
     }
     workgroupBarrier();
 
     // Early exit: no active constraints means unconstrained solution is optimal
     if nefc == 0u {
         if tid < nv {
-            qacc_buf[tid] = qacc_sh[tid];
+            qacc_buf[env_nv + tid] = qacc_sh[tid];
         }
         return;
     }
@@ -185,7 +208,7 @@ fn newton_solve(@builtin(local_invocation_id) lid: vec3<u32>) {
         for (var idx = tid; idx < nv * nv; idx += WG_SIZE) {
             let r = idx / nv;
             let c = idx % nv;
-            atomicStore(&H_atomic[r * MAX_NV + c], bitcast<u32>(qM_buf[idx]));
+            atomicStore(&H_atomic[r * MAX_NV + c], bitcast<u32>(qM_buf[env_qm + idx]));
         }
         workgroupBarrier();
 
@@ -203,17 +226,17 @@ fn newton_solve(@builtin(local_invocation_id) lid: vec3<u32>) {
         for (var i = tid; i < nefc; i += WG_SIZE) {
             // Compute jar[i] = J[i] * qacc - aref[i]
             var jar_i = 0.0;
-            let row_off = i * nv;
+            let row_off = env_efcj + i * nv;
             for (var k = 0u; k < nv; k++) {
                 jar_i += efc_J_buf[row_off + k] * qacc_sh[k];
             }
-            jar_i -= efc_aref_buf[i];
+            jar_i -= efc_aref_buf[env_efc + i];
 
             // Satisfied constraint (jar >= 0) — skip
             if jar_i >= 0.0 { continue; }
 
             // Active constraint: accumulate H += D_i * J_i^T * J_i
-            let d_i = efc_D_buf[i];
+            let d_i = efc_D_buf[env_efc + i];
             for (var r = 0u; r < nv; r++) {
                 let j_r = efc_J_buf[row_off + r];
                 if j_r == 0.0 { continue; }
@@ -281,9 +304,9 @@ fn newton_solve(@builtin(local_invocation_id) lid: vec3<u32>) {
                 // M * qacc for DOF k
                 var ma_k = 0.0;
                 for (var j = 0u; j < nv; j++) {
-                    ma_k += qM_buf[k * nv + j] * qacc_sh[j];
+                    ma_k += qM_buf[env_qm + k * nv + j] * qacc_sh[j];
                 }
-                grad_sh[k] = ma_k - qfrc_smooth_buf[k] - reduction_sh[0];
+                grad_sh[k] = ma_k - qfrc_smooth_buf[env_nv + k] - reduction_sh[0];
             }
             workgroupBarrier();
         }
@@ -330,10 +353,10 @@ fn newton_solve(@builtin(local_invocation_id) lid: vec3<u32>) {
         // Evaluate total cost at alpha = {0.0, 1.0, 0.5, 0.25}.
         // All 256 threads must participate in each eval_cost call
         // because it contains workgroupBarrier() in its reduction.
-        let cost_0   = eval_cost(0.0,  nv, nefc, tid);
-        let cost_1   = eval_cost(1.0,  nv, nefc, tid);
-        let cost_05  = eval_cost(0.5,  nv, nefc, tid);
-        let cost_025 = eval_cost(0.25, nv, nefc, tid);
+        let cost_0   = eval_cost(0.0,  nv, nefc, tid, env);
+        let cost_1   = eval_cost(1.0,  nv, nefc, tid, env);
+        let cost_05  = eval_cost(0.5,  nv, nefc, tid, env);
+        let cost_025 = eval_cost(0.25, nv, nefc, tid, env);
 
         // Thread 0 picks the alpha that minimizes total cost
         if tid == 0u {
@@ -372,22 +395,22 @@ fn newton_solve(@builtin(local_invocation_id) lid: vec3<u32>) {
 
     // Write final constrained acceleration
     if tid < nv {
-        qacc_buf[tid] = qacc_sh[tid];
+        qacc_buf[env_nv + tid] = qacc_sh[tid];
     }
 
     // Write final constraint forces: force_i = -D_i * jar_i for active, 0 otherwise
     for (var i = tid; i < nefc; i += WG_SIZE) {
         var jar_i = 0.0;
-        let row_off = i * nv;
+        let row_off = env_efcj + i * nv;
         for (var k = 0u; k < nv; k++) {
             jar_i += efc_J_buf[row_off + k] * qacc_sh[k];
         }
-        jar_i -= efc_aref_buf[i];
+        jar_i -= efc_aref_buf[env_efc + i];
 
         if jar_i < 0.0 {
-            efc_force_buf[i] = -efc_D_buf[i] * jar_i;
+            efc_force_buf[env_efc + i] = -efc_D_buf[env_efc + i] * jar_i;
         } else {
-            efc_force_buf[i] = 0.0;
+            efc_force_buf[env_efc + i] = 0.0;
         }
     }
 }

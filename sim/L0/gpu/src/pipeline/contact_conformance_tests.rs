@@ -417,51 +417,29 @@ fn gpu_constraint_matches_cpu_on_injected_contacts() {
 // ─────────────────────────────────────────────────────────────────────────
 // Batched (n_env = 2) constraint conformance — PR D (Slice 2b)
 //
-// PR C made the FORWARD path (fk..smooth) env-correct. The constraint stage is
-// being env-strided one shader at a time: assemble.wgsl (PR D2, landed) is now
-// batched; newton_solve.wgsl + map_forces.wgsl (PR D3) still dispatch
-// `(1,1,1)`/`(X,1,1)` at env 0. This is the apples-to-apples batched analog of the
-// injected-contact suite above: two environments with DISTINCT states (env 1
-// penetrates deeper + moves faster) and their own injected contact sets run on the
-// shared batched buffers, each compared against its own CPU oracle. Env 0 (offset
-// 0) is the byte-identical legacy path and must conform.
+// PR C made the FORWARD path (fk..smooth) env-correct; the constraint stage is now
+// fully env-strided too — assemble.wgsl (PR D2) + newton_solve.wgsl + map_forces.wgsl
+// (PR D3). This is the apples-to-apples batched analog of the injected-contact suite
+// above: two environments with DISTINCT states (env 1 penetrates deeper + moves
+// faster) and their own injected contact sets run on the shared batched buffers,
+// each compared against its own CPU oracle. Env 0 (offset 0) is the byte-identical
+// legacy path; env 1 exercises the env stride on every channel.
 //
-// MEASURED on Metal: after PR D2 env 1's assembly conforms (n_rows + efc_d +
-// efc_aref), and env 1 diverges on only qacc + qfrc_constraint (the env-0-only
-// solve). The remaining fix (newton + map_forces) flips those green, dropping the
-// last allowlist arms.
+// MEASURED on Metal: both envs conform on ALL channels (n_rows / efc_d / efc_aref /
+// qacc / qfrc_constraint) across condim 1/3/4 — the batched allowlist is empty.
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Self-validating allowlist for the batched sweep, keyed by (channel, env).
-/// Env 0 is the legacy offset-0 path and never diverges. Env 1's verdict is the
-/// MEASURED map (see the module-level notes): with assembly batched (PR D2) only
-/// the env-0-only Newton solve + force map leave env 1's qacc/qfrc_constraint
-/// diverging, until those shaders are env-strided (PR D3).
+/// **Currently empty — the whole constraint stage is env-strided (assemble PR D2,
+/// Newton solve + force map PR D3), so every env conforms on every channel.**
 ///
 /// Like [`known_contact_divergence`], an allowlisted (channel, env) that suddenly
-/// MATCHES fails the test — so a fix that flips a channel green forces its arm to
-/// be removed here, and the allowlist can never silently mask progress.
+/// MATCHES fails the test — so the allowlist can never silently mask a regression
+/// or a future fix. Re-arm one (channel, env) arm here if a NEW batched divergence
+/// is exposed (e.g. when collision batching lands and a new channel is compared).
 fn known_batched_contact_divergence(channel: &str, env: usize) -> Option<&'static str> {
-    // Env 0 is the legacy offset-0 path — always conforms.
-    if env == 0 {
-        return None;
-    }
-    // Env > 0: assemble.wgsl is now env-strided (PR D2), so env 1's constraint
-    // assembly conforms — n_rows + efc_d + efc_aref all match (the assembly math was
-    // always correct; only the env stride was missing). The Newton solve and force
-    // map (newton_solve.wgsl / map_forces.wgsl) still dispatch (1,1,1)/(X,1,1) at
-    // env 0, so env 1's qacc / qfrc_constraint stay zero-initialised.
-    //
-    // MEASURED on Metal (PR D2): env 1 diverges on exactly qacc + qfrc_constraint.
-    match channel {
-        // newton_solve + map_forces are env-0-only → env 1 qacc/qfrc stay zero. (PR D3.)
-        "qacc" | "qfrc_constraint" => Some(
-            "Newton solve + force map are env-0-only (newton_solve.wgsl / \
-             map_forces.wgsl): env 1 stays zero-initialised — fixed by the solve \
-             env-offset PR",
-        ),
-        _ => None,
-    }
+    let _ = (channel, env);
+    None
 }
 
 /// Build env 1: the same model, pushed ~1 cm deeper into the plane and sped up, so
@@ -537,10 +515,11 @@ fn run_constraint_stage_batched(
     state_buf
 }
 
-/// Batched (`n_env = 2`) injected-contact constraint conformance. EXPOSE step of
-/// PR D: env 0 must conform (legacy offset-0 path); env 1 is measured against the
-/// self-validating batched allowlist. The constraint shaders' env fixes flip env
-/// 1's channels green one at a time.
+/// Batched (`n_env = 2`) injected-contact constraint conformance. Both envs must
+/// conform on every channel: env 0 is the legacy offset-0 path, env 1 exercises the
+/// env stride of the now fully-batched constraint stage (assemble PR D2, Newton
+/// solve + force map PR D3). Routed through the self-validating batched allowlist
+/// (now empty), so any future env regression turns the test red.
 #[test]
 fn gpu_batched_constraint_matches_cpu() {
     let ctx = gpu_or_skip!();

@@ -13,11 +13,11 @@ struct SolverParams {
     nv: u32,
     max_iter: u32,
     max_ls: u32,
-    _pad0: u32,
+    n_env: u32,
     tolerance: f32,
     ls_tolerance: f32,
     meaninertia: f32,
-    _pad1: f32,
+    max_constraints: u32,
 };
 
 // ── Bindings ──────────────────────────────────────────────────────────
@@ -38,18 +38,23 @@ struct SolverParams {
 @compute @workgroup_size(64)
 fn map_forces(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d = gid.x;
-    if d >= params.nv {
+    let env_id = gid.y;
+    if d >= params.nv || env_id >= params.n_env {
         return;
     }
 
-    // Read the number of active constraints (set atomically by collision pass).
-    let nefc = atomicLoad(&constraint_count_buf[0]);
+    // Per-env base offsets: efc rows stride by max_constraints, qfrc by nv.
+    let env_efc = env_id * params.max_constraints;
+    let env_nv = env_id * params.nv;
+
+    // Read the number of active constraints in THIS env (per-env atomic).
+    let nefc = atomicLoad(&constraint_count_buf[env_id]);
 
     // Accumulate J^T × force for this DOF.
     var total = 0.0;
     for (var i = 0u; i < nefc; i++) {
-        total += efc_force_buf[i] * efc_J_buf[i * params.nv + d];
+        total += efc_force_buf[env_efc + i] * efc_J_buf[(env_efc + i) * params.nv + d];
     }
 
-    qfrc_constraint_buf[d] = total;
+    qfrc_constraint_buf[env_nv + d] = total;
 }
