@@ -44,8 +44,9 @@
 #[cfg(test)]
 const _: () = ();
 
-use nalgebra::Vector3;
+use nalgebra::{DVector, Vector3};
 
+use sim_core::mj_integrate_pos_explicit;
 use sim_core::test_fixtures::conformance::{
     ConformanceCase, damped_conformance_matrix, dynamics_conformance_matrix,
 };
@@ -154,6 +155,31 @@ fn run_through_rne(ctx: &GpuContext, model: &Model, data: &Data) -> GpuStateBuff
     state_buf
 }
 
+/// Run FK → CRBA → velocity-FK → RNE on the GPU for `n_env` environments whose
+/// initial states are `per_env`, returning the populated batched state buffers.
+/// The pipelines pick up `state.n_env` and dispatch one workgroup column per env.
+fn run_through_rne_batched(ctx: &GpuContext, model: &Model, per_env: &[&Data]) -> GpuStateBuffers {
+    let n_env = per_env.len() as u32;
+    let model_buf = GpuModelBuffers::upload(ctx, model);
+    let state_buf = GpuStateBuffers::new_batched(ctx, &model_buf, n_env, per_env);
+    let fk = GpuFkPipeline::new(ctx, &model_buf, &state_buf);
+    let crba = GpuCrbaPipeline::new(ctx, &model_buf, &state_buf);
+    let vel = GpuVelocityFkPipeline::new(ctx, &model_buf, &state_buf);
+    let rne = GpuRnePipeline::new(ctx, &model_buf, &state_buf, model);
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("batched conformance fk+crba+vel+rne"),
+        });
+    fk.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    crba.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    vel.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    rne.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+    ctx.queue.submit([encoder.finish()]);
+    state_buf
+}
+
 /// Failure sink: one entry per diverging scalar, so a single run yields the
 /// complete divergence ledger instead of stopping at the first mismatch.
 type Failures = Vec<String>;
@@ -224,10 +250,13 @@ fn check_cinert(
     data: &Data,
     model: &Model,
     case: &str,
+    env: usize,
+    n_env: usize,
 ) {
-    let gpu = readback_vec4s(ctx, &state.body_cinert, model.nbody * 3);
+    let gpu = readback_vec4s(ctx, &state.body_cinert, model.nbody * 3 * n_env);
+    let env_off = env * model.nbody * 3;
     for b in 1..model.nbody {
-        let base = b * 3;
+        let base = env_off + b * 3;
         let gpu_mass = gpu[base][0];
         let gpu_h = [gpu[base][1], gpu[base][2], gpu[base][3]];
         let gpu_i = [
@@ -280,6 +309,179 @@ fn check_cinert(
     }
 }
 
+/// Compare environment `env` of a (possibly batched) GPU state against the CPU
+/// `forward()` result in `data`, field by field, using the Slice-1 oracle table
+/// (`xpos`/`xquat` · `subtree_com`/`subtree_mass` · `cinert` · `cdof` · `cvel` ·
+/// `cacc_bias` · `qM` · `qfrc_bias`).
+///
+/// Every per-env buffer is sized `n_env ×` its single-env footprint, so env `k`
+/// lives at offset `k · count`; this reads the full batched buffer and slices
+/// out `env`'s block. At `n_env = 1` it is the original single-env comparison.
+fn compare_env_fields(
+    fails: &mut Failures,
+    ctx: &GpuContext,
+    state: &GpuStateBuffers,
+    data: &Data,
+    model: &Model,
+    name: &str,
+    env: usize,
+    n_env: usize,
+) {
+    let nv = model.nv;
+    let nbody = model.nbody;
+    let off_b = env * nbody; // body-indexed buffers
+    let off_v = env * nv; // dof-indexed buffers
+
+    // ── Kinematics ────────────────────────────────────────────────
+    let gpu_xpos = readback_vec4s(ctx, &state.body_xpos, nbody * n_env);
+    let gpu_xquat = readback_vec4s(ctx, &state.body_xquat, nbody * n_env);
+    for b in 0..nbody {
+        for k in 0..3 {
+            check(
+                fails,
+                gpu_xpos[off_b + b][k],
+                data.xpos[b][k] as f32,
+                TOL_KINEMATIC,
+                format!("[{name}] xpos[{b}][{k}]"),
+            );
+        }
+        // q and −q are the same rotation: align sign on w.
+        let cq = data.xquat[b].as_ref().coords;
+        let sign = if gpu_xquat[off_b + b][3] * cq.w as f32 >= 0.0 {
+            1.0f32
+        } else {
+            -1.0
+        };
+        let cc = [cq.x, cq.y, cq.z, cq.w];
+        for k in 0..4 {
+            check(
+                fails,
+                gpu_xquat[off_b + b][k],
+                sign * cc[k] as f32,
+                TOL_KINEMATIC,
+                format!("[{name}] xquat[{b}][{k}]"),
+            );
+        }
+    }
+
+    // subtree_com / subtree_mass
+    let gpu_com = readback_vec4s(ctx, &state.subtree_com, nbody * n_env);
+    let gpu_smass = readback_f32s(ctx, &state.subtree_mass, nbody * n_env);
+    for b in 0..nbody {
+        check(
+            fails,
+            gpu_smass[off_b + b],
+            data.subtree_mass[b] as f32,
+            TOL_KINEMATIC,
+            format!("[{name}] subtree_mass[{b}]"),
+        );
+        for k in 0..3 {
+            check(
+                fails,
+                gpu_com[off_b + b][k],
+                data.subtree_com[b][k] as f32,
+                TOL_KINEMATIC,
+                format!("[{name}] subtree_com[{b}][{k}]"),
+            );
+        }
+    }
+
+    // cinert (compact, parallel-axis reversed)
+    check_cinert(fails, ctx, state, data, model, name, env, n_env);
+
+    // cdof — partial-frame oracle (data.cdof is vestigial)
+    let gpu_cdof = readback_vec4s(ctx, &state.cdof, nv * 2 * n_env);
+    for dof in 0..nv {
+        let cpu = cpu_cdof_dof(model, data, dof);
+        for k in 0..3 {
+            check(
+                fails,
+                gpu_cdof[(off_v + dof) * 2][k],
+                cpu[k],
+                TOL_KINEMATIC,
+                format!("[{name}] cdof[{dof}] angular[{k}]"),
+            );
+            check(
+                fails,
+                gpu_cdof[(off_v + dof) * 2 + 1][k],
+                cpu[k + 3],
+                TOL_KINEMATIC,
+                format!("[{name}] cdof[{dof}] linear[{k}]"),
+            );
+        }
+    }
+
+    // ── Velocity / dynamics ───────────────────────────────────────
+    let gpu_cvel = readback_vec4s(ctx, &state.body_cvel, nbody * 2 * n_env);
+    for b in 0..nbody {
+        check_spatial(
+            fails,
+            &gpu_cvel,
+            (off_b + b) * 2,
+            &data.cvel[b],
+            TOL_DYNAMIC,
+            name,
+            "cvel",
+            b,
+        );
+    }
+
+    let gpu_cacc = readback_vec4s(ctx, &state.body_cacc, nbody * 2 * n_env);
+    for b in 0..nbody {
+        check_spatial(
+            fails,
+            &gpu_cacc,
+            (off_b + b) * 2,
+            &data.cacc_bias[b],
+            TOL_DYNAMIC,
+            name,
+            "cacc_bias",
+            b,
+        );
+    }
+
+    // qM (full matrix), env block of nv·nv
+    let gpu_qm = readback_f32s(ctx, &state.qm, nv * nv * n_env);
+    let off_qm = env * nv * nv;
+    for i in 0..nv {
+        for j in 0..nv {
+            check(
+                fails,
+                gpu_qm[off_qm + i * nv + j],
+                data.qM[(i, j)] as f32,
+                TOL_DYNAMIC,
+                format!("[{name}] qM[{i},{j}]"),
+            );
+        }
+    }
+
+    // qfrc_bias (Coriolis + gravity)
+    let gpu_bias = readback_f32s(ctx, &state.qfrc_bias, nv * n_env);
+    for d in 0..nv {
+        check(
+            fails,
+            gpu_bias[off_v + d],
+            data.qfrc_bias[d] as f32,
+            TOL_DYNAMIC,
+            format!("[{name}] qfrc_bias[{d}]"),
+        );
+    }
+
+    // Vacuity guard (cf. T13b/T14): every fixture carries nonzero qvel, so the
+    // GPU's velocity FK MUST produce nonzero `cvel` on the moving body. This
+    // proves a green run actually compared live dynamics rather than
+    // all-zeros-vs-all-zeros. (`qfrc_bias` is NOT a valid witness here:
+    // `slide_single`'s axis is horizontal, so gravity projects to zero and a
+    // lone slide DOF has no Coriolis — its qfrc_bias is legitimately zero.)
+    assert!(
+        gpu_cvel[off_b * 2..(off_b + nbody) * 2]
+            .iter()
+            .any(|v| v[0].abs() + v[1].abs() + v[2].abs() > 1e-4),
+        "[{name}] env{env} cvel is all-zero on the GPU — velocity FK did not run; \
+         the conformance check would be vacuous."
+    );
+}
+
 /// The conformance sweep. Each non-tendon case in the shared matrix is run
 /// through the GPU dynamics chain and asserted field-by-field against the CPU
 /// `forward()`. A failure names the case + field + index so a new GPU↔CPU
@@ -309,161 +511,15 @@ fn gpu_dynamics_matches_cpu_across_joint_matrix() {
 
         let before = fails.len();
         let state = run_through_rne(&ctx, model, &data);
-        let nv = model.nv;
-        let nbody = model.nbody;
-
-        // ── Kinematics ────────────────────────────────────────────────
-        let gpu_xpos = readback_vec4s(&ctx, &state.body_xpos, nbody);
-        let gpu_xquat = readback_vec4s(&ctx, &state.body_xquat, nbody);
-        for b in 0..nbody {
-            for k in 0..3 {
-                check(
-                    &mut fails,
-                    gpu_xpos[b][k],
-                    data.xpos[b][k] as f32,
-                    TOL_KINEMATIC,
-                    format!("[{name}] xpos[{b}][{k}]"),
-                );
-            }
-            // q and −q are the same rotation: align sign on w.
-            let cq = data.xquat[b].as_ref().coords;
-            let sign = if gpu_xquat[b][3] * cq.w as f32 >= 0.0 {
-                1.0f32
-            } else {
-                -1.0
-            };
-            let cc = [cq.x, cq.y, cq.z, cq.w];
-            for k in 0..4 {
-                check(
-                    &mut fails,
-                    gpu_xquat[b][k],
-                    sign * cc[k] as f32,
-                    TOL_KINEMATIC,
-                    format!("[{name}] xquat[{b}][{k}]"),
-                );
-            }
-        }
-
-        // subtree_com / subtree_mass
-        let gpu_com = readback_vec4s(&ctx, &state.subtree_com, nbody);
-        let gpu_smass = readback_f32s(&ctx, &state.subtree_mass, nbody);
-        for b in 0..nbody {
-            check(
-                &mut fails,
-                gpu_smass[b],
-                data.subtree_mass[b] as f32,
-                TOL_KINEMATIC,
-                format!("[{name}] subtree_mass[{b}]"),
-            );
-            for k in 0..3 {
-                check(
-                    &mut fails,
-                    gpu_com[b][k],
-                    data.subtree_com[b][k] as f32,
-                    TOL_KINEMATIC,
-                    format!("[{name}] subtree_com[{b}][{k}]"),
-                );
-            }
-        }
-
-        // cinert (compact, parallel-axis reversed)
-        check_cinert(&mut fails, &ctx, &state, &data, model, name);
-
-        // cdof — partial-frame oracle (data.cdof is vestigial)
-        let gpu_cdof = readback_vec4s(&ctx, &state.cdof, nv * 2);
-        for dof in 0..nv {
-            let cpu = cpu_cdof_dof(model, &data, dof);
-            for k in 0..3 {
-                check(
-                    &mut fails,
-                    gpu_cdof[dof * 2][k],
-                    cpu[k],
-                    TOL_KINEMATIC,
-                    format!("[{name}] cdof[{dof}] angular[{k}]"),
-                );
-                check(
-                    &mut fails,
-                    gpu_cdof[dof * 2 + 1][k],
-                    cpu[k + 3],
-                    TOL_KINEMATIC,
-                    format!("[{name}] cdof[{dof}] linear[{k}]"),
-                );
-            }
-        }
-
-        // ── Velocity / dynamics ───────────────────────────────────────
-        let gpu_cvel = readback_vec4s(&ctx, &state.body_cvel, nbody * 2);
-        for b in 0..nbody {
-            check_spatial(
-                &mut fails,
-                &gpu_cvel,
-                b * 2,
-                &data.cvel[b],
-                TOL_DYNAMIC,
-                name,
-                "cvel",
-                b,
-            );
-        }
-
-        let gpu_cacc = readback_vec4s(&ctx, &state.body_cacc, nbody * 2);
-        for b in 0..nbody {
-            check_spatial(
-                &mut fails,
-                &gpu_cacc,
-                b * 2,
-                &data.cacc_bias[b],
-                TOL_DYNAMIC,
-                name,
-                "cacc_bias",
-                b,
-            );
-        }
-
-        // qM (full matrix)
-        let gpu_qm = readback_f32s(&ctx, &state.qm, nv * nv);
-        for i in 0..nv {
-            for j in 0..nv {
-                check(
-                    &mut fails,
-                    gpu_qm[i * nv + j],
-                    data.qM[(i, j)] as f32,
-                    TOL_DYNAMIC,
-                    format!("[{name}] qM[{i},{j}]"),
-                );
-            }
-        }
-
-        // qfrc_bias (Coriolis + gravity)
-        let gpu_bias = readback_f32s(&ctx, &state.qfrc_bias, nv);
-        for d in 0..nv {
-            check(
-                &mut fails,
-                gpu_bias[d],
-                data.qfrc_bias[d] as f32,
-                TOL_DYNAMIC,
-                format!("[{name}] qfrc_bias[{d}]"),
-            );
-        }
-
-        // Vacuity guard (cf. T13b/T14): every fixture carries nonzero qvel, so
-        // the GPU's velocity FK MUST produce nonzero `cvel` on the moving body.
-        // This proves a green run actually compared live dynamics rather than
-        // all-zeros-vs-all-zeros. (`qfrc_bias` is NOT a valid witness here:
-        // `slide_single`'s axis is horizontal, so gravity projects to zero and a
-        // lone slide DOF has no Coriolis — its qfrc_bias is legitimately zero.)
-        assert!(
-            gpu_cvel
-                .iter()
-                .any(|v| v[0].abs() + v[1].abs() + v[2].abs() > 1e-4),
-            "[{name}] cvel is all-zero on the GPU — velocity FK did not run; the \
-             conformance check would be vacuous."
-        );
+        compare_env_fields(&mut fails, &ctx, &state, &data, model, name, 0, 1);
 
         // Separate this case's new failures so a known divergence neither gates
         // the suite nor silently hides a future GPU fix.
         let case_fails = fails.split_off(before);
-        eprintln!("  conformance[{name}] (nv={nv}, nbody={nbody})");
+        eprintln!(
+            "  conformance[{name}] (nv={}, nbody={})",
+            model.nv, model.nbody
+        );
         finish_case(&mut fails, case_fails, name);
     }
 
@@ -664,6 +720,100 @@ fn gpu_damped_integration_matches_cpu() {
     assert!(
         fails.is_empty(),
         "GPU↔CPU damped-integration conformance found {} NEW divergence(s):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+/// Build a state that is DISTINCT from `(qpos, qvel)` yet valid for every joint
+/// type (quaternions stay normalized). The configuration is advanced along the
+/// velocity via the CPU's manifold-aware position integrator
+/// (`mj_integrate_pos_explicit`, the exp-map on SO(3) for ball/free) over a fixed
+/// `dt` — independent of `model.timestep` (which is unset/zero in these
+/// derivative-harness fixtures). The velocity is then set to a scaled copy of the
+/// original, so env 1 differs from env 0 in BOTH `qpos` and `qvel`. Returns a
+/// forward-evaluated `Data`.
+fn perturbed_env(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
+    // Advance the configuration along qvel by a fixed, sizeable dt so the
+    // perturbed pose clears the conformance tolerance for every fixture.
+    let qpos0 = DVector::from_row_slice(qpos);
+    let qvel0 = DVector::from_row_slice(qvel);
+    let mut qpos1 = qpos0.clone();
+    mj_integrate_pos_explicit(model, &mut qpos1, &qpos0, &qvel0, 0.3);
+
+    let mut d = model.make_data();
+    d.qpos.copy_from(&qpos1);
+    // env 1's actual velocity: a distinct scaling of the original.
+    for (dst, &v) in d.qvel.as_mut_slice().iter_mut().zip(qvel) {
+        *dst = v * 1.3;
+    }
+    d.forward(model).expect("CPU forward (perturbed env)");
+    d
+}
+
+/// Slice-2a batched (`n_env = 2`) forward conformance. For each non-tendon case
+/// in the shared matrix, env 0 is the case state and env 1 is a DISTINCT
+/// perturbed state ([`perturbed_env`]). The whole forward chain runs ONCE over
+/// both environments on the batched buffers; each env is then read back from its
+/// own stride and asserted against `forward(state_k)` via the Slice-1 oracle.
+///
+/// This is the verification that the forward path is env-correct after the
+/// allocator + `fk.wgsl` env-offset fixes: if any stage dropped the env stride
+/// (e.g. env 1 read env 0's `qpos`), env 1 would match `forward(state_0)` — which
+/// differs from `forward(state_1)` — and the comparison would fail. A
+/// per-case discriminator guard asserts the two CPU references actually differ,
+/// so a green run can never be vacuous.
+#[test]
+fn gpu_batched_forward_matches_cpu() {
+    let ctx = gpu_or_skip!();
+
+    let mut fails: Failures = Vec::new();
+
+    for case in dynamics_conformance_matrix() {
+        // No GPU tendon shader — the spatial-tendon case has no counterpart.
+        if case.name == "spatial_tendon_spring" {
+            continue;
+        }
+        let ConformanceCase {
+            name,
+            model,
+            qpos,
+            qvel,
+        } = &case;
+
+        // env 0 = the case state; env 1 = a distinct, valid perturbation.
+        let mut data0 = model.make_data();
+        data0.qpos.as_mut_slice().copy_from_slice(qpos);
+        data0.qvel.as_mut_slice().copy_from_slice(qvel);
+        data0.forward(model).expect("CPU forward (env 0)");
+        let data1 = perturbed_env(model, qpos, qvel);
+
+        // Discriminator guard: the two envs must feed the GPU genuinely distinct
+        // inputs, else a green batched run proves nothing (a stage that dropped
+        // the env stride and read env 0's state would still "match"). qpos differs
+        // by construction (the fk env-offset fix is exactly about per-env qpos);
+        // qvel differs by the 1.3× scale. (A single hinge whose body sits at its
+        // pivot moves only in xquat, not xpos — so we guard on qpos, not poses.)
+        let qpos_differ = (0..model.nq).any(|i| (data0.qpos[i] - data1.qpos[i]).abs() > 1e-3);
+        assert!(
+            qpos_differ,
+            "[{name}] env 0 and env 1 have near-identical qpos — the batched \
+             conformance check would be vacuous (perturbation too small)."
+        );
+
+        let before = fails.len();
+        let state = run_through_rne_batched(&ctx, model, &[&data0, &data1]);
+        compare_env_fields(&mut fails, &ctx, &state, &data0, model, name, 0, 2);
+        compare_env_fields(&mut fails, &ctx, &state, &data1, model, name, 1, 2);
+
+        let case_fails = fails.split_off(before);
+        eprintln!("  batched[{name}] (nv={}, nbody={})", model.nv, model.nbody);
+        finish_case(&mut fails, case_fails, name);
+    }
+
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU batched forward conformance found {} NEW divergence(s):\n  {}",
         fails.len(),
         fails.join("\n  ")
     );

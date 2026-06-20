@@ -287,8 +287,9 @@ impl GpuSmoothPipeline {
 
         self.write_params(ctx, model, state, cpu_model);
 
-        // Zero force accumulators (gravity-only: actuator + passive + applied = 0)
-        let zero_bytes = vec![0u8; (nv as usize) * 4];
+        // Zero force accumulators (gravity-only: actuator + passive + applied = 0).
+        // All envs: buffers are sized n_env × nv.
+        let zero_bytes = vec![0u8; (self.n_env as usize) * (nv as usize) * 4];
         ctx.queue.write_buffer(&state.qfrc_applied, 0, &zero_bytes);
         ctx.queue.write_buffer(&state.qfrc_actuator, 0, &zero_bytes);
         ctx.queue.write_buffer(&state.qfrc_passive, 0, &zero_bytes);

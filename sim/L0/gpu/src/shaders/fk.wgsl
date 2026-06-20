@@ -199,7 +199,10 @@ fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var ji = 0u; ji < jnt_count; ji++) {
             let j = jnt_start + ji;
             let jnt = joints[j];
-            let qa = jnt.qpos_adr;  // For n_env=1, qpos offset is just adr
+            // Env-strided qpos base: env k's coordinates start at k·nq. All the
+            // joint-type reads below index off `qa`, so this single offset makes
+            // every qpos read env-correct (byte-identical at n_env=1: env_id=0).
+            let qa = env_id * params.nq + jnt.qpos_adr;
 
             if (jnt.jtype == JNT_FREE) {
                 pos = vec3<f32>(qpos[qa], qpos[qa + 1u], qpos[qa + 2u]);

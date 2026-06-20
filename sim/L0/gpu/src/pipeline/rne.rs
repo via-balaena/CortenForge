@@ -403,12 +403,15 @@ impl GpuRnePipeline {
         self.write_params(ctx, model, state, cpu_model);
 
         // ── Zero qfrc_bias and body_cfrc (legacy) ────────────────────
+        // All envs: buffers are sized n_env × (nv | nbody·8); body_cfrc is a CAS
+        // accumulator so every env's block MUST start zeroed (no zero-init luck).
+        let ne = self.n_env as usize;
         if self.nv > 0 {
-            let zero_bias = vec![0u8; (self.nv as usize) * 4];
+            let zero_bias = vec![0u8; ne * (self.nv as usize) * 4];
             ctx.queue.write_buffer(&state.qfrc_bias, 0, &zero_bias);
         }
         {
-            let zero_cfrc = vec![0u8; (self.nbody as usize) * 32];
+            let zero_cfrc = vec![0u8; ne * (self.nbody as usize) * 32];
             ctx.queue.write_buffer(&state.body_cfrc, 0, &zero_cfrc);
         }
 
