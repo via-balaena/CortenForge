@@ -2151,17 +2151,125 @@ fn t30_multi_substep_single_submit() {
 
 // ── T31: GPU vs CPU trajectory comparison (5 seconds) ─────────────────
 
+/// Per-engine physical invariants over a full bouncing-sphere rollout.
+///
+/// The GPU (SDF-cell collision) and CPU (analytic collision) produce
+/// LEGITIMATELY different trajectories for the same drop — measured over 5 s the
+/// GPU settles to rest by ~step 300 while the CPU is still bouncing at step 1200
+/// (and the GPU rest height carries a coarse-SDF offset, ≠ the analytic radius).
+/// So a cross-engine position match is the wrong gate (the old `z_diff < 1.5 m`
+/// stopgap had to be loosened repeatedly and would mask a real per-engine bug).
+/// Instead, assert the SHARED PHYSICAL TRUTHS each engine must satisfy on its
+/// own — these are measured to hold for both:
+/// - **No energy pumping:** mechanical energy never exceeds the initial value
+///   (a solver injecting energy is a real bug a final-position check misses).
+/// - **Net dissipation:** final energy is well below initial — the contact
+///   actually engaged and removed energy (a vacuity guard: a body that missed
+///   the plane or froze immediately would not dissipate).
+/// - **Penetration bound:** the sphere never sinks more than `PEN_MAX` below the
+///   plane (no tunnelling).
+/// - **No launch / finite:** never rises above the drop height and stays finite.
+///
+/// These are PER-ENGINE physical gates: they catch a bug that breaks one engine's
+/// physics (energy injection, tunnelling, divergence), not one that corrupts both
+/// engines identically. Per-step CROSS-engine agreement is covered separately and
+/// exactly by the injected-contact conformance suite (`contact_conformance_tests`,
+/// byte-validated efc/qacc), which removes the collision-divergence this rollout
+/// deliberately lets through.
+struct RolloutInvariants {
+    e0: f64,
+    max_energy: f64,
+    final_energy: f64,
+    max_penetration: f64,
+    max_z: f64,
+    all_finite: bool,
+}
+
+impl RolloutInvariants {
+    fn assert(&self, label: &str) {
+        const DROP_Z: f64 = 10.0;
+        // Soft analytic contact allows a small, bounded sink (measured CPU max
+        // 0.137 on radius 5); PEN_MAX comfortably bounds it while catching
+        // tunnelling (sinking through the geom).
+        const PEN_MAX: f64 = 0.5;
+        // Energy pumping tolerance: 1% of E0. Measured excess is exactly 0 for
+        // both engines (semi-implicit Euler does not pump here); a real
+        // energy-injecting solver adds tens of joules, far outside this.
+        let energy_tol = 0.01 * self.e0;
+
+        eprintln!(
+            "  {label}: E0={:.3} maxE={:.3} (excess {:.2e}) finalE={:.3} maxpen={:.4} maxz={:.3}",
+            self.e0,
+            self.max_energy,
+            self.max_energy - self.e0,
+            self.final_energy,
+            self.max_penetration,
+            self.max_z,
+        );
+
+        assert!(self.all_finite, "{label}: non-finite state during rollout");
+        assert!(
+            self.max_energy <= self.e0 + energy_tol,
+            "{label}: energy pumped to {:.3} above E0={:.3} (+{:.3} > tol {:.3})",
+            self.max_energy,
+            self.e0,
+            self.max_energy - self.e0,
+            energy_tol,
+        );
+        assert!(
+            self.final_energy < 0.95 * self.e0,
+            "{label}: no net dissipation — finalE={:.3} not below 0.95·E0={:.3} \
+             (contact never engaged?)",
+            self.final_energy,
+            0.95 * self.e0,
+        );
+        assert!(
+            self.max_penetration < PEN_MAX,
+            "{label}: sphere sank {:.4} below the plane (limit {PEN_MAX}) — tunnelling",
+            self.max_penetration,
+        );
+        assert!(
+            self.max_z < DROP_Z + 0.1,
+            "{label}: rose to z={:.3} above the drop height {DROP_Z} — energy injected",
+            self.max_z,
+        );
+    }
+}
+
 #[test]
 fn t31_gpu_vs_cpu_trajectory() {
+    const RADIUS: f64 = 5.0;
+    const DROP_Z: f64 = 10.0;
+
     let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
     model.add_ground_plane();
-    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+    add_sdf_sphere_geom(&mut model, 1, RADIUS, 12);
 
-    // GPU trajectory
+    let g = model.gravity.z.abs();
+    let mass = model.body_mass[1];
+    let inertia = model.body_inertia[1];
+    // Mechanical energy KE + PE for the single free body. `free_body` sets COM at
+    // the body origin (ipos = 0), so PE = m·g·qpos[2]; the free joint's angular
+    // velocity (qvel[3..6]) is body-frame, matching the body-frame principal
+    // inertia, so rotational KE is ½·Σ Iᵢ·ωᵢ².
+    let mech_e = |qpos: &[f64], qvel: &[f64]| -> f64 {
+        let pe = mass * g * qpos[2];
+        let ke_lin = 0.5 * mass * (qvel[0] * qvel[0] + qvel[1] * qvel[1] + qvel[2] * qvel[2]);
+        let ke_ang = 0.5
+            * (inertia.x * qvel[3] * qvel[3]
+                + inertia.y * qvel[4] * qvel[4]
+                + inertia.z * qvel[5] * qvel[5]);
+        pe + ke_lin + ke_ang
+    };
+    let e0 = mass * g * DROP_Z;
+
+    let dt = model.timestep;
+    let nsteps = (5.0 / dt).round() as usize;
+
+    // ── GPU rollout ──────────────────────────────────────────────────
     let mut gpu_data = model.make_data();
-    gpu_data.qpos[2] = 10.0;
+    gpu_data.qpos[2] = DROP_Z;
     gpu_data.qpos[3] = 1.0;
-
     let pipeline = match GpuPhysicsPipeline::new(&model, &gpu_data) {
         Ok(p) => p,
         Err(GpuPipelineError::NoGpu(_)) => {
@@ -2171,64 +2279,59 @@ fn t31_gpu_vs_cpu_trajectory() {
         Err(e) => panic!("Pipeline creation failed: {e}"),
     };
 
-    let dt = model.timestep;
-    let total_time = 5.0;
-    let nsteps = (total_time / dt).round() as usize;
-
+    let mut gpu = RolloutInvariants {
+        e0,
+        max_energy: e0,
+        final_energy: e0,
+        max_penetration: 0.0,
+        max_z: DROP_Z,
+        all_finite: true,
+    };
     for _ in 0..nsteps {
         pipeline.step(&model, &mut gpu_data, 1);
+        let finite = (0..model.nq).all(|i| gpu_data.qpos[i].is_finite())
+            && (0..model.nv).all(|i| gpu_data.qvel[i].is_finite());
+        gpu.all_finite &= finite;
+        if !finite {
+            break;
+        }
+        gpu.final_energy = mech_e(gpu_data.qpos.as_slice(), gpu_data.qvel.as_slice());
+        gpu.max_energy = gpu.max_energy.max(gpu.final_energy);
+        gpu.max_penetration = gpu
+            .max_penetration
+            .max((RADIUS - gpu_data.qpos[2]).max(0.0));
+        gpu.max_z = gpu.max_z.max(gpu_data.qpos[2]);
     }
+    gpu.assert("GPU");
 
-    // CPU trajectory
+    // ── CPU rollout ──────────────────────────────────────────────────
     let mut cpu_data = model.make_data();
-    cpu_data.qpos[2] = 10.0;
+    cpu_data.qpos[2] = DROP_Z;
     cpu_data.qpos[3] = 1.0;
-
+    let mut cpu = RolloutInvariants {
+        e0,
+        max_energy: e0,
+        final_energy: e0,
+        max_penetration: 0.0,
+        max_z: DROP_Z,
+        all_finite: true,
+    };
     for _ in 0..nsteps {
         cpu_data.step(&model).expect("CPU step failed");
+        let finite = (0..model.nq).all(|i| cpu_data.qpos[i].is_finite())
+            && (0..model.nv).all(|i| cpu_data.qvel[i].is_finite());
+        cpu.all_finite &= finite;
+        if !finite {
+            break;
+        }
+        cpu.final_energy = mech_e(cpu_data.qpos.as_slice(), cpu_data.qvel.as_slice());
+        cpu.max_energy = cpu.max_energy.max(cpu.final_energy);
+        cpu.max_penetration = cpu
+            .max_penetration
+            .max((RADIUS - cpu_data.qpos[2]).max(0.0));
+        cpu.max_z = cpu.max_z.max(cpu_data.qpos[2]);
     }
-
-    let gpu_z = gpu_data.qpos[2];
-    let cpu_z = cpu_data.qpos[2];
-    let z_diff = (gpu_z - cpu_z).abs();
-
-    eprintln!("  T31: after {nsteps} steps ({total_time}s):");
-    eprintln!("    GPU z = {gpu_z:.4}");
-    eprintln!("    CPU z = {cpu_z:.4}");
-    eprintln!("    diff  = {z_diff:.4}");
-
-    // All values should be finite
-    for i in 0..model.nq {
-        assert!(
-            gpu_data.qpos[i].is_finite(),
-            "GPU qpos[{i}] = {} is not finite",
-            gpu_data.qpos[i]
-        );
-    }
-    for i in 0..model.nv {
-        assert!(
-            gpu_data.qvel[i].is_finite(),
-            "GPU qvel[{i}] = {} is not finite",
-            gpu_data.qvel[i]
-        );
-    }
-
-    // z should not diverge too far. The CPU now defaults to the same Newton
-    // solver the GPU is hardwired to (single-step contact conformance is
-    // byte-validated separately), so the residual spread over this 5 s / 1200-step
-    // bouncing-SDF-sphere trajectory is honest f32-vs-f64 + pyramidal-vs-elliptic
-    // friction drift accumulating through sensitive contact timing — measured
-    // ~1.06 m. The threshold bounds "stays in the same basin, nothing explodes",
-    // not step-wise identity.
-    assert!(
-        z_diff < 1.5,
-        "GPU/CPU z diverged by {z_diff:.4}m (limit 1.5m)"
-    );
-
-    // Body should not have exploded
-    assert!(gpu_z.abs() < 100.0, "GPU z exploded: {gpu_z}");
-
-    eprintln!("  T31 passed: GPU vs CPU trajectory within tolerance after {total_time}s");
+    cpu.assert("CPU");
 }
 
 // ── T32: Sustained multi-substep stress test ──────────────────────────

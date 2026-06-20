@@ -821,6 +821,112 @@ pub fn contact_constraint_oracle(case: &ContactConformanceCase) -> ConstraintOra
     }
 }
 
+/// One step of a frozen-contact resting rollout: the CPU reference state after
+/// integrating a single step with the frozen contact set injected.
+///
+/// Produced by [`contact_rollout_oracle`] and consumed by the GPU multi-step
+/// conformance test, which carries its own GPU state independently and compares
+/// against these per-step references under a linear drift budget.
+#[derive(Debug, Clone)]
+pub struct RolloutStep {
+    /// Generalized position after this step (length `nq`).
+    pub qpos: Vec<f64>,
+    /// Generalized velocity after this step (length `nv`).
+    pub qvel: Vec<f64>,
+    /// Constraint force in joint space after this step (length `nv`). Used as the
+    /// rollout's vacuity witness — a step where this is all-zero means the contact
+    /// set disengaged and the comparison is no longer testing the constraint path.
+    pub qfrc_constraint: Vec<f64>,
+}
+
+/// CPU reference for a frozen-contact resting rollout (PR-A tier 1).
+///
+/// The goal is to isolate pure integrator + solver f32-vs-f64 ACCUMULATION from
+/// the collision-layer divergence (GPU SDF-cell vs CPU analytic) that would
+/// otherwise swamp it. The mechanism: a body at rest in contact, with the SAME
+/// frozen contact set injected every step on BOTH engines, so there is zero
+/// collision divergence by construction.
+///
+/// This oracle:
+/// 1. Sets the body at the fixture's rest position with **zero velocity** (the
+///    fixture's nonzero `qvel` exists to exercise the single-step friction
+///    `aref`; a multi-step rest needs the body actually at rest), then runs one
+///    `forward()` to generate the contact set via analytic collision.
+/// 2. Captures that contact set as FROZEN (the full `Vec<Contact>` plus
+///    [`ContactSpec`]s for identical GPU injection).
+/// 3. Loops `nsteps`: `step1` (position/velocity stage, including collision —
+///    discarded) → overwrite `data.contacts`/`data.ncon` with the frozen set →
+///    `step2` (acceleration stage over the injected set + integration). Because
+///    `step2`'s acceleration stage does not re-run collision, overwriting between
+///    the two stages injects the frozen set; the constraint assembly rebuilds all
+///    `efc` rows from `data.contacts` each step, so cloning frozen contacts is safe.
+///
+/// Returns the frozen [`ContactSpec`]s (for the GPU to inject identically) and the
+/// per-step CPU reference states.
+///
+/// # Panics
+///
+/// Panics if `forward()`, `step1()`, or `step2()` fails on the fixture — a
+/// malformed fixture is a test bug to surface loudly, not a recoverable condition.
+#[must_use]
+// Test-fixture helper: a fixture that cannot step is a bug to surface, not a
+// recoverable condition, so `expect` is the right contract here.
+#[allow(clippy::expect_used)]
+pub fn contact_rollout_oracle(
+    case: &ContactConformanceCase,
+    nsteps: usize,
+) -> (Vec<ContactSpec>, Vec<RolloutStep>) {
+    let model = &case.model;
+    let mut data = model.make_data();
+    data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+    // Resting rollout: zero velocity. `make_data` already zeros qvel; set it
+    // explicitly so the rest contract is visible and robust to the fixture's
+    // nonzero `qvel`.
+    data.qvel.as_mut_slice().fill(0.0);
+    data.forward(model)
+        .expect("rollout oracle: initial forward");
+
+    // Freeze the contact set generated at the rest configuration.
+    let frozen_contacts: Vec<Contact> = data.contacts.clone();
+    let frozen_ncon = data.ncon;
+    let specs: Vec<ContactSpec> = frozen_contacts
+        .iter()
+        .map(ContactSpec::from_contact)
+        .collect();
+
+    let mut steps = Vec::with_capacity(nsteps);
+    for _ in 0..nsteps {
+        // Position/velocity stage (regenerates contacts via collision — discarded).
+        data.step1(model).expect("rollout oracle: step1");
+        // Inject the frozen contact set; the acceleration stage (step2) assembles
+        // constraints from it without re-running collision.
+        data.contacts.clone_from(&frozen_contacts);
+        data.ncon = frozen_ncon;
+        // Acceleration stage over the injected contacts + integration.
+        data.step2(model).expect("rollout oracle: step2");
+
+        // Same contract as the single-step oracle: the GPU↔CPU comparison only
+        // holds if EVERY step's reference came from Newton (the GPU's solver).
+        // Newton silently falls back to PGS on CholeskyFailed / MaxIterations; a
+        // step that fell back would carry an under-converged PGS reference the
+        // GPU-Newton trajectory cannot match. Fail loudly rather than report it
+        // as drift.
+        assert!(
+            data.newton_solved,
+            "rollout oracle: step did not converge via Newton (silent PGS \
+             fallback) — the reference would be against the wrong solver"
+        );
+
+        steps.push(RolloutStep {
+            qpos: data.qpos.iter().copied().collect(),
+            qvel: data.qvel.iter().copied().collect(),
+            qfrc_constraint: data.qfrc_constraint.iter().copied().collect(),
+        });
+    }
+
+    (specs, steps)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -918,6 +1024,38 @@ mod tests {
                 case.name,
                 oracle.efc_d
             );
+        }
+    }
+
+    /// The frozen-contact resting rollout stays well-formed and engaged: it
+    /// produces one reference state per step, the frozen contact set is nonempty,
+    /// every state is finite, and the body remains in contact (nonzero normal
+    /// constraint force throughout) so the GPU comparison cannot go vacuous. This
+    /// is the CPU-side smoke for the GPU multi-step conformance test (PR-A tier 1).
+    #[test]
+    fn contact_rollout_oracle_engaged() {
+        const N: usize = 50;
+        for case in super::contact_conformance_matrix() {
+            let nv = case.model.nv;
+            let (frozen, steps) = super::contact_rollout_oracle(&case, N);
+            assert!(!frozen.is_empty(), "{}: no frozen contacts", case.name);
+            assert_eq!(steps.len(), N, "{}: step count", case.name);
+            for (i, s) in steps.iter().enumerate() {
+                assert_eq!(s.qvel.len(), nv, "{}: step {i} qvel len", case.name);
+                assert!(
+                    s.qpos.iter().all(|v| v.is_finite()) && s.qvel.iter().all(|v| v.is_finite()),
+                    "{}: step {i} non-finite state",
+                    case.name
+                );
+                // Vertical DOF (index 2 of the free joint) carries the normal
+                // contact force balancing gravity — must stay engaged.
+                assert!(
+                    s.qfrc_constraint[2].abs() > 1e-6,
+                    "{}: step {i} disengaged (qfrc_constraint[2]={})",
+                    case.name,
+                    s.qfrc_constraint[2]
+                );
+            }
         }
     }
 }

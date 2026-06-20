@@ -59,13 +59,15 @@
 const _: () = ();
 
 use sim_core::test_fixtures::conformance::{
-    ConstraintOracle, ContactSpec, contact_conformance_matrix, contact_constraint_oracle,
+    ConstraintOracle, ContactSpec, RolloutStep, contact_conformance_matrix,
+    contact_constraint_oracle, contact_rollout_oracle,
 };
 use sim_core::types::{Data, Model};
 
 use super::constraint::GpuConstraintPipeline;
 use super::crba::GpuCrbaPipeline;
 use super::fk::{GpuFkPipeline, readback_f32s};
+use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
 use super::rne::GpuRnePipeline;
 use super::smooth::GpuSmoothPipeline;
@@ -361,6 +363,183 @@ fn gpu_constraint_matches_cpu_on_injected_contacts() {
         "GPU↔CPU contact conformance found {} NEW divergence(s) (not on the known \
          allowlist):\n  {}",
         fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Multi-step frozen-contact rollout (PR-A tier 1)
+//
+// Single-step injected-contact conformance (above) is byte-validated, but the
+// MULTI-step / accumulation claim — that the GPU integrator + solver track the
+// CPU over a rollout — was untested. This carries GPU and CPU state INDEPENDENTLY
+// for N steps with the SAME frozen contact set injected every step (zero
+// collision divergence by construction), isolating pure f32-vs-f64 accumulation,
+// and asserts the per-step divergence stays within a LINEAR drift budget.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Number of rollout steps. Long enough that super-linear drift would show, kept
+/// modest because each step is its own submit + qpos/qvel readback.
+const ROLLOUT_STEPS: usize = 200;
+
+/// Run a frozen-contact resting rollout on the GPU: build buffers + pipelines
+/// once, then for each step clear per-step buffers, inject the frozen contacts,
+/// run FK→CRBA→velFK→RNE→smooth→constraint→integrate, and read back (qpos, qvel).
+///
+/// GPU state is carried across steps in the SAME buffers (independent of the CPU)
+/// so drift accumulates and can be measured. Mirrors `orchestrator::encode_substep`
+/// exactly, with the collision stage replaced by frozen-contact injection — so the
+/// per-step buffer clears are the orchestrator's verified-correct multi-step set.
+fn run_rollout(
+    ctx: &GpuContext,
+    model: &Model,
+    data: &Data,
+    contacts: &[PipelineContact],
+    nsteps: usize,
+) -> Vec<(Vec<f32>, Vec<f32>)> {
+    let nq = model.nq;
+    let nv = model.nv;
+    let model_buf = GpuModelBuffers::upload(ctx, model);
+    let state_buf = GpuStateBuffers::new(ctx, &model_buf, data);
+
+    let fk = GpuFkPipeline::new(ctx, &model_buf, &state_buf);
+    let crba = GpuCrbaPipeline::new(ctx, &model_buf, &state_buf);
+    let vel = GpuVelocityFkPipeline::new(ctx, &model_buf, &state_buf);
+    let rne = GpuRnePipeline::new(ctx, &model_buf, &state_buf, model);
+    let smooth = GpuSmoothPipeline::new(ctx, &model_buf, &state_buf);
+    let constraint = GpuConstraintPipeline::new(ctx, &model_buf, &state_buf, model);
+    let integrate = GpuIntegratePipeline::new(ctx, &model_buf, &state_buf);
+
+    let count = contacts.len() as u32;
+    let mut traj = Vec::with_capacity(nsteps);
+
+    for _ in 0..nsteps {
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rollout substep"),
+            });
+
+        // Per-step buffer clears — identical to `encode_substep`, so the rollout
+        // faithfully mirrors the production multi-step path (which relies on these
+        // because CRBA/RNE accumulate into qm/qfrc_bias rather than overwriting).
+        encoder.clear_buffer(&state_buf.body_cfrc, 0, None);
+        encoder.clear_buffer(&state_buf.qfrc_bias, 0, None);
+        if nv > 0 {
+            let nv_sq_bytes = (nv as u64) * (nv as u64) * 4;
+            encoder.clear_buffer(&state_buf.qm, 0, Some(nv_sq_bytes));
+            encoder.clear_buffer(&state_buf.qfrc_applied, 0, None);
+            encoder.clear_buffer(&state_buf.qfrc_actuator, 0, None);
+            encoder.clear_buffer(&state_buf.qfrc_passive, 0, None);
+        }
+
+        // Inject the frozen contact set (collision is skipped). Queue writes are
+        // ordered before the submitted encoder's commands execute.
+        ctx.queue
+            .write_buffer(&state_buf.contact_buffer, 0, bytemuck::cast_slice(contacts));
+        ctx.queue
+            .write_buffer(&state_buf.contact_count, 0, bytemuck::bytes_of(&count));
+
+        fk.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+        crba.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+        vel.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+        rne.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+        smooth.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+        constraint.encode(&mut encoder, &state_buf);
+        integrate.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+
+        traj.push((
+            readback_f32s(ctx, &state_buf.qpos, nq),
+            readback_f32s(ctx, &state_buf.qvel, nv),
+        ));
+    }
+
+    traj
+}
+
+/// Largest absolute element-wise difference between a GPU f32 vector and the CPU
+/// f64 reference.
+fn max_abs_diff(gpu: &[f32], cpu: &[f64]) -> f32 {
+    gpu.iter()
+        .zip(cpu.iter())
+        .map(|(&g, &c)| (g - c as f32).abs())
+        .fold(0.0_f32, f32::max)
+}
+
+/// GPU↔CPU multi-step trajectory conformance over a frozen-contact resting
+/// rollout. Each step's GPU/CPU `(qpos, qvel)` divergence must stay within a
+/// LINEAR drift budget `base + k·step`; super-linear growth flags a real
+/// integrator/solver bug (vs benign f32-vs-f64 random-walk accumulation).
+#[test]
+fn gpu_cpu_multistep_rollout_matches() {
+    // Linear drift envelope `base + k·step`, calibrated by measurement
+    // (implement-measure-set): on Metal the observed max drift over the 200-step
+    // rollout is ~1e-6 across all four condim=1/3/4 fixtures (4e-7 … 1e-6), and
+    // essentially flat (the body rests, so f32-vs-f64 stays at the rounding floor).
+    // `BASE_TOL` bounds that floor by ~100× for cross-driver f32 variation (the
+    // test runs on whatever GPU host executes it); `DRIFT_PER_STEP` allows a small
+    // random-walk accumulation. A real per-step bug (an uncleared accumulator, a
+    // solver/integrator error) diverges by orders of magnitude or NaNs — far
+    // outside this envelope — so the budget separates signal from f32 noise.
+    const BASE_TOL: f32 = 1e-4;
+    const DRIFT_PER_STEP: f32 = 5e-7;
+
+    let ctx = gpu_or_skip!();
+    let mut fails: Failures = Vec::new();
+
+    for case in contact_conformance_matrix() {
+        let (frozen, cpu_steps): (Vec<ContactSpec>, Vec<RolloutStep>) =
+            contact_rollout_oracle(&case, ROLLOUT_STEPS);
+        let model = &case.model;
+
+        // GPU starts from the SAME rest state the oracle used (qpos at rest,
+        // zero velocity), carried independently from here.
+        let mut data = model.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+        data.qvel.as_mut_slice().fill(0.0);
+
+        let contacts = gpu_contacts(&frozen);
+        let traj = run_rollout(&ctx, model, &data, &contacts, ROLLOUT_STEPS);
+
+        // Vacuity guard: the CPU reference must stay engaged the whole rollout
+        // (every step carries a nonzero normal constraint force), else the
+        // comparison degenerates to free-flight, not the contact path under test.
+        let engaged = cpu_steps
+            .iter()
+            .all(|s| s.qfrc_constraint.iter().any(|v| v.abs() > 1e-6));
+        assert!(
+            engaged,
+            "[{}] CPU rollout disengaged from contact — fixture is vacuous.",
+            case.name
+        );
+
+        let mut max_seen = 0.0_f32;
+        for (step, (gpu, cpu)) in traj.iter().zip(cpu_steps.iter()).enumerate() {
+            let (gpu_qpos, gpu_qvel) = gpu;
+            let dq = max_abs_diff(gpu_qpos, &cpu.qpos);
+            let dv = max_abs_diff(gpu_qvel, &cpu.qvel);
+            let drift = dq.max(dv);
+            max_seen = max_seen.max(drift);
+
+            let budget = BASE_TOL + DRIFT_PER_STEP * step as f32;
+            if !(drift < budget) {
+                fails.push(format!(
+                    "[{}] step {step}: drift {drift:.3e} ≥ budget {budget:.3e} \
+                     (dqpos={dq:.3e}, dqvel={dv:.3e})",
+                    case.name
+                ));
+            }
+        }
+        eprintln!(
+            "  rollout[{}]: {ROLLOUT_STEPS} steps, max drift {max_seen:.3e}",
+            case.name
+        );
+    }
+
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU multi-step rollout exceeded the drift budget:\n  {}",
         fails.join("\n  ")
     );
 }
