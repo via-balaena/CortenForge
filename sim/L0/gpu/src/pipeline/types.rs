@@ -337,7 +337,10 @@ pub struct AssemblyParams {
     pub solimp_midpoint: f32,
     /// Default solimp: sigmoid power.
     pub solimp_power: f32,
-    pub _pad: [f32; 3],
+    /// Number of environments (batch size); the assemble kernel strides per-env
+    /// state by this on the `gid.y` env axis.
+    pub n_env: u32,
+    pub _pad: [u32; 2],
 }
 
 /// Newton solver parameters. 32 bytes, 16-byte aligned.

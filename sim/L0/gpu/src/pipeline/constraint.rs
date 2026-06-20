@@ -64,6 +64,7 @@ pub struct GpuConstraintPipeline {
 
     nv: u32,
     max_contacts: u32,
+    n_env: u32,
 }
 
 impl GpuConstraintPipeline {
@@ -117,7 +118,8 @@ impl GpuConstraintPipeline {
             solimp_width: solimp[2] as f32,
             solimp_midpoint: solimp[3] as f32,
             solimp_power: solimp[4] as f32,
-            _pad: [0.0; 3],
+            n_env: state_bufs.n_env,
+            _pad: [0; 2],
         };
         let assembly_params_buf =
             create_uniform(ctx, "assembly_params", bytemuck::bytes_of(&assembly_params));
@@ -394,6 +396,7 @@ impl GpuConstraintPipeline {
             solver_params_buf,
             nv,
             max_contacts,
+            n_env: state_bufs.n_env,
         }
     }
 
@@ -405,8 +408,14 @@ impl GpuConstraintPipeline {
             return;
         }
 
-        // Reset constraint row counter
-        encoder.clear_buffer(&state_bufs.constraint_count, 0, Some(4));
+        // Reset the per-env constraint row counters (one atomic u32 per env).
+        // Must clear ALL n_env slots, not just env 0 — the allocator sized this
+        // buffer ×n_env, so its paired clear is ×n_env too.
+        encoder.clear_buffer(
+            &state_bufs.constraint_count,
+            0,
+            Some(u64::from(self.n_env) * 4),
+        );
 
         // ── 1. Constraint assembly ─────────────────────────────────
         {
@@ -419,7 +428,9 @@ impl GpuConstraintPipeline {
             pass.set_bind_group(1, &self.assemble_bg1, &[]);
             pass.set_bind_group(2, &self.assemble_bg2, &[]);
             pass.set_bind_group(3, &self.assemble_bg3, &[]);
-            pass.dispatch_workgroups(self.max_contacts.div_ceil(256), 1, 1);
+            // Env axis on gid.y: one workgroup column per env (assemble.wgsl reads
+            // env_id = gid.y). Newton + map_forces stay env-0-only until PR D3.
+            pass.dispatch_workgroups(self.max_contacts.div_ceil(256), self.n_env, 1);
         }
 
         // ── 2. Newton solver (single workgroup) ────────────────────

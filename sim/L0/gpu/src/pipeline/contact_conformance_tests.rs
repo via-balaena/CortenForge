@@ -415,27 +415,28 @@ fn gpu_constraint_matches_cpu_on_injected_contacts() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Batched (n_env = 2) constraint conformance — PR D (Slice 2b) EXPOSE
+// Batched (n_env = 2) constraint conformance — PR D (Slice 2b)
 //
-// PR C made the FORWARD path (fk..smooth) env-correct, but the constraint stage
-// (assemble + newton_solve + map_forces) still dispatches `(X, 1, 1)` and indexes
-// every state buffer at env 0 only. This is the apples-to-apples batched analog of
-// the injected-contact suite above: two environments with DISTINCT states (env 1
+// PR C made the FORWARD path (fk..smooth) env-correct. The constraint stage is
+// being env-strided one shader at a time: assemble.wgsl (PR D2, landed) is now
+// batched; newton_solve.wgsl + map_forces.wgsl (PR D3) still dispatch
+// `(1,1,1)`/`(X,1,1)` at env 0. This is the apples-to-apples batched analog of the
+// injected-contact suite above: two environments with DISTINCT states (env 1
 // penetrates deeper + moves faster) and their own injected contact sets run on the
 // shared batched buffers, each compared against its own CPU oracle. Env 0 (offset
-// 0) is the byte-identical legacy path and must conform; the unbatched constraint
-// dispatch never fills env 1's buffers, so it diverges. MEASURED on Metal (not the
-// pre-run guess): env 1 diverges on n_rows + qacc + qfrc_constraint; efc_d/efc_aref
-// are gated behind the (zero) row count and surface under n_rows. The fixes
-// (assemble env-offset, then newton + map_forces) flip env 1's channels green one
-// risk-class at a time, dropping its allowlist arms.
+// 0) is the byte-identical legacy path and must conform.
+//
+// MEASURED on Metal: after PR D2 env 1's assembly conforms (n_rows + efc_d +
+// efc_aref), and env 1 diverges on only qacc + qfrc_constraint (the env-0-only
+// solve). The remaining fix (newton + map_forces) flips those green, dropping the
+// last allowlist arms.
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Self-validating allowlist for the batched sweep, keyed by (channel, env).
 /// Env 0 is the legacy offset-0 path and never diverges. Env 1's verdict is the
-/// MEASURED map (see the module-level expose notes): the unbatched constraint
-/// dispatch fills env 0 only, so every env-1 channel reads zero-initialised
-/// buffers and diverges until the corresponding shader is env-strided.
+/// MEASURED map (see the module-level notes): with assembly batched (PR D2) only
+/// the env-0-only Newton solve + force map leave env 1's qacc/qfrc_constraint
+/// diverging, until those shaders are env-strided (PR D3).
 ///
 /// Like [`known_contact_divergence`], an allowlisted (channel, env) that suddenly
 /// MATCHES fails the test — so a fix that flips a channel green forces its arm to
@@ -445,23 +446,14 @@ fn known_batched_contact_divergence(channel: &str, env: usize) -> Option<&'stati
     if env == 0 {
         return None;
     }
-    // Env > 0: the constraint stage (assemble + newton_solve + map_forces) still
-    // dispatches (X, 1, 1) and indexes every state buffer at env 0, so env 1's
-    // constraint_count / qacc / qfrc_constraint stay zero-initialised.
+    // Env > 0: assemble.wgsl is now env-strided (PR D2), so env 1's constraint
+    // assembly conforms — n_rows + efc_d + efc_aref all match (the assembly math was
+    // always correct; only the env stride was missing). The Newton solve and force
+    // map (newton_solve.wgsl / map_forces.wgsl) still dispatch (1,1,1)/(X,1,1) at
+    // env 0, so env 1's qacc / qfrc_constraint stay zero-initialised.
     //
-    // MEASURED on Metal (this expose, NOT the pre-run prediction of "all 5
-    // channels"): env 1 diverges on exactly n_rows + qacc + qfrc_constraint.
-    // efc_d / efc_aref are NOT armed — with env 1 at 0 rows the assembly multiset
-    // comparison is short-circuited by the row-count gate (the divergence surfaces
-    // under n_rows instead). They begin being compared once the assemble env-offset
-    // PR makes env 1's row count match, and must conform then (the assembly math is
-    // already correct — only the env stride was missing).
+    // MEASURED on Metal (PR D2): env 1 diverges on exactly qacc + qfrc_constraint.
     match channel {
-        // assemble.wgsl is env-0-only → env 1 allocates 0 constraint rows. (PR D2.)
-        "n_rows" => Some(
-            "constraint assembly is env-0-only (assemble.wgsl): env 1 allocates 0 \
-             rows — fixed by the assemble env-offset PR",
-        ),
         // newton_solve + map_forces are env-0-only → env 1 qacc/qfrc stay zero. (PR D3.)
         "qacc" | "qfrc_constraint" => Some(
             "Newton solve + force map are env-0-only (newton_solve.wgsl / \
