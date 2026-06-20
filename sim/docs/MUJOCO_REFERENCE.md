@@ -965,8 +965,8 @@ Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
 | `timestep` | `f64` | Simulation step size |
 | `gravity` | `Vector3` | Gravity vector |
 | `integrator` | `Integrator` | Euler, RungeKutta4, ImplicitSpringDamper, ImplicitFast, or Implicit |
-| `solver_iterations` | `usize` | Max PGS iterations (default 100) |
-| `solver_tolerance` | `f64` | PGS convergence threshold (default 1e-8) |
+| `solver_iterations` | `usize` | Max constraint-solver iterations (default 100) |
+| `solver_tolerance` | `f64` | Constraint-solver convergence threshold (default 1e-8) |
 
 ### Data (dynamic, mutable, pre-allocated)
 

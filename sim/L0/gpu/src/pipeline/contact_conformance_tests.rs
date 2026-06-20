@@ -116,7 +116,7 @@ fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
     // - **solve** (qacc/qfrc_constraint): PR-3 fixed the PHASE-1 Hessian stride bug.
     //   The last `contact_torsional` DOF5 (spin-axis) ~8.6% residual was NOT a GPU
     //   bug — the GPU's Newton/Gauss-Newton solver reaches the exact constraint-QP
-    //   optimum, but the CPU oracle used the default first-order `SolverType::PGS`,
+    //   optimum, but the CPU oracle had used the first-order `SolverType::PGS`,
     //   which had only crawled the weakly-coupled spin DOF partway at the default
     //   iteration count (PGS@100 → 7.72, true optimum 8.385). The fixture now pins
     //   the oracle to `SolverType::Newton` (the GPU's algorithm), so it converges in

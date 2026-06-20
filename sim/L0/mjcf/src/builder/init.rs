@@ -166,7 +166,9 @@ impl ModelBuilder {
             o_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
             o_friction: [1.0, 1.0, 0.005, 0.0001, 0.0001],
             integrator: Integrator::Euler,
-            solver_type: SolverType::PGS,
+            // Overwritten by `set_options` from `MjcfSolverType::default()` (Newton);
+            // kept consistent with the engine default for clarity.
+            solver_type: SolverType::Newton,
             sleep_tolerance: 1e-4,
             ccd_iterations: 35,
             ccd_tolerance: 1e-6,

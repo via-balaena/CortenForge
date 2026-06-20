@@ -707,13 +707,15 @@ All solvers share `assemble_unified_constraints()` which builds a unified constr
 Jacobian + RHS for ALL constraint types (equality, friction loss, limits, contacts,
 flex edge). There is no separate contact-only assembly path.
 
-- **PGS** (programmatic default) — Dual-space Gauss-Seidel on regularized Delassus
+- **PGS** (fallback solver) — Dual-space Gauss-Seidel on regularized Delassus
   matrix AR. Uses per-row inline elliptic friction cone projection inside the GS
   sweep. Warmstarts from `qacc_warmstart` via `classify_constraint_states`.
+  First-order, so under-converged at the default 100 iterations on
+  stiff/weakly-coupled DOFs; retained as the universal fallback for CG and Newton.
 - **CG** — Primal Polak-Ribiere conjugate gradient sharing `mj_sol_primal` with
   Newton. Uses M^-1 preconditioner. Falls back to PGS on non-convergence,
   reusing the pre-assembled constraint system.
-- **Newton** (MJCF default, matching MuJoCo) — Primal solver with H^-1
+- **Newton** (default, matching MuJoCo) — Primal solver with H^-1
   preconditioner and analytical second-order derivatives. Sparse LDL
   factorization. Shares `mj_sol_primal` infrastructure with CG. Converges in
   2-3 iterations vs PGS's 20+. Falls back to PGS on Cholesky failure or

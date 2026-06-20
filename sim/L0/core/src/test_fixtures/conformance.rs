@@ -662,12 +662,13 @@ fn contact_fixture(
     m.timestep = 0.002;
     m.integrator = Integrator::Euler; // explicit Euler — matches the GPU integrate stage
     // The GPU constraint solver (`newton_solve.wgsl`) is a Newton/Gauss-Newton
-    // solver that reaches the exact constraint QP solution in ~1 step. The CPU
-    // default `SolverType::PGS` is first-order (linear convergence) and at the
-    // default iteration count has NOT converged the weakly-coupled DOFs (e.g. the
-    // condim=4 spin axis: PGS@100 iters reaches 7.72, true optimum 8.385). Match
-    // the GPU's algorithm so the oracle is apples-to-apples and exact — Newton
-    // converges this fixture in 1 iteration. (Newton is also MuJoCo's real default.)
+    // solver that reaches the exact constraint QP solution in ~1 step. Pin the
+    // oracle to the same algorithm so the comparison is apples-to-apples: a
+    // first-order PGS solve at the default iteration count has NOT converged the
+    // weakly-coupled DOFs (e.g. the condim=4 spin axis: PGS@100 iters reaches
+    // 7.72, true optimum 8.385). This is now also the engine default, but it is
+    // set explicitly here as the system-under-test contract (the oracle must
+    // match the GPU's solver regardless of any future default change).
     m.solver_type = SolverType::Newton;
     m.diagapprox_bodyweight = true; // match the GPU bodyweight diagonal approximation
     m.impratio = impratio;
