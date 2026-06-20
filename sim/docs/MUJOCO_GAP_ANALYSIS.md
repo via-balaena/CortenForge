@@ -34,7 +34,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (symmetric D, Cholesky), Implicit (asymmetric D + Coriolis, LU)
-- Constraint solver: PGS (Gauss-Seidel, MuJoCo-aligned — no SOR) + CG (primal Polak-Ribiere, shares mj_sol_primal with Newton) + Newton (reduced primal, MJCF default), Warm Starting via `qacc_warmstart`
+- Constraint solver: PGS (Gauss-Seidel, MuJoCo-aligned — no SOR) + CG (primal Polak-Ribiere, shares mj_sol_primal with Newton) + Newton (reduced primal, default, matching MuJoCo), Warm Starting via `qacc_warmstart`
 - Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture, `contact_param()` with element-wise max friction, `geom/@priority` gating, `solmix`-weighted solver param mixing, margin/gap broadphase + narrow-phase + constraint assembly)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, **Free** — matching MuJoCo's 4 joint types; Universal/Planar/Cylindrical are CortenForge standalone extensions); **Joint limits** for all 3 supported types: hinge/slide (scalar upper/lower), **ball** (rotation cone via quaternion logarithm, [future_work_10 §38](./todo/future_work_10.md) ✅); free joint limits silently ignored (matching MuJoCo). **Gap:** `jnt_margin` (joint limit activation margin) not yet parsed or wired — hardcoded to 0.0 for all joint types ([future_work_15 §64a](./todo/future_work_15.md))

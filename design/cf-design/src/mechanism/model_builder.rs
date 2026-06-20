@@ -204,7 +204,8 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     model.diagapprox_bodyweight = true;
 
     // MuJoCo defaults to Newton solver, which has superior convergence for
-    // contact stacking vs PGS. Model::empty() defaults to PGS.
+    // contact stacking vs PGS. (Now also the `Model::empty()` default; set
+    // explicitly here to keep the intent clear at the call site.)
     model.solver_type = SolverType::Newton;
 
     // Parent-child collision filtering stays ON (MuJoCo default).

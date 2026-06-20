@@ -705,11 +705,13 @@ pub const MIN_AWAKE: i32 = 10;
 /// Newton share the primal `mj_sol_primal` infrastructure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SolverType {
-    /// Projected Gauss-Seidel (default, matches MuJoCo).
+    /// Projected Gauss-Seidel.
     /// Dual-space solver: operates on constraint forces via the regularized
     /// Delassus matrix AR = J·M⁻¹·J^T + diag(R). Handles all constraint types
     /// with per-type projection (bilateral, box, unilateral, friction cone).
-    #[default]
+    /// First-order (linear convergence): under-converged at the default 100
+    /// iterations on stiff/weakly-coupled DOFs. Retained as the universal
+    /// fallback for the CG and Newton solvers.
     PGS,
     /// Primal Polak-Ribiere conjugate gradient (matches MuJoCo's `mj_solCG`).
     /// Shares `mj_sol_primal` infrastructure with Newton: same constraint
@@ -720,6 +722,11 @@ pub enum SolverType {
     /// Primal solver operating on accelerations with H⁻¹ preconditioner.
     /// Converges in 2-3 iterations vs PGS's 20+. Falls back to PGS
     /// on Cholesky failure or non-convergence.
+    ///
+    /// Default solver, matching MuJoCo (Newton has been MuJoCo's default since
+    /// 2.0). The GPU pipeline is hardwired to Newton, so this keeps a
+    /// default-configured model consistent across the CPU and GPU paths.
+    #[default]
     Newton,
 }
 

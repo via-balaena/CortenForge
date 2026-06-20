@@ -363,7 +363,7 @@ impl Model {
             sdf_initpoints: 40,  // MuJoCo default for SDF initial sample points
             sdf_maxcontact: 50,  // Cap SDF-SDF contacts per pair (deepest kept)
             integrator: Integrator::Euler,
-            solver_type: SolverType::PGS,
+            solver_type: SolverType::Newton, // MuJoCo's default since 2.0; matches the GPU path
 
             // Cached implicit integration parameters (empty for empty model)
             implicit_stiffness: DVector::zeros(0),
