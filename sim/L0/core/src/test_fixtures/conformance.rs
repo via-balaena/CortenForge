@@ -653,6 +653,7 @@ fn contact_fixture(
     mu_torsion: f64,
     impratio: f64,
     n_contacts: usize,
+    damping: f64,
 ) -> ContactConformanceCase {
     const RADIUS: f64 = 0.1;
     const ORIGIN_Z: f64 = 0.08; // < RADIUS ⇒ each sphere penetrates the z=0 plane
@@ -728,6 +729,10 @@ fn contact_fixture(
         m.geom_condim[g] = condim;
         m.geom_friction[g] = Vector3::new(mu, mu_torsion, 0.0001);
     }
+    // Optional joint damping: `damp_all` sets jnt_damping/dof_damping BEFORE
+    // finalize, which derives `implicit_damping`. `damping = 0.0` is a no-op
+    // (every field is already zero), so the undamped fixtures are unchanged.
+    damp_all(&mut m, damping);
     finalize(&mut m);
     // `builders::finalize` does NOT compute `invweight0` (the smooth/damped
     // fixtures never touch it). The constraint diagonal approximation — on BOTH
@@ -767,11 +772,29 @@ fn contact_fixture(
 #[must_use]
 pub fn contact_conformance_matrix() -> Vec<ContactConformanceCase> {
     vec![
-        contact_fixture("contact_normal_only", 1, 0.0, 0.005, 1.0, 1),
-        contact_fixture("contact_pyramidal", 3, 0.8, 0.005, 2.0, 1),
-        contact_fixture("contact_pyramidal_2pt", 3, 0.8, 0.005, 2.0, 2),
-        contact_fixture("contact_torsional", 4, 0.8, 0.3, 2.0, 1),
+        contact_fixture("contact_normal_only", 1, 0.0, 0.005, 1.0, 1, 0.0),
+        contact_fixture("contact_pyramidal", 3, 0.8, 0.005, 2.0, 1, 0.0),
+        contact_fixture("contact_pyramidal_2pt", 3, 0.8, 0.005, 2.0, 2, 0.0),
+        contact_fixture("contact_torsional", 4, 0.8, 0.3, 2.0, 1, 0.0),
     ]
+}
+
+/// A damped contact fixture: the condim=3 pyramidal puck with uniform joint
+/// damping on its free DOFs.
+///
+/// Used by the GPU multi-step damped rollout test to validate the eulerdamp
+/// stage's contact-coupled RHS (the `qfrc_constraint` term) — under the resting
+/// rollout the constraint normal force is nonzero and is divided by the damped
+/// matrix `(M + h·D)` rather than `M`, so a wrong GPU eulerdamp solve shows as
+/// drift against the CPU oracle.
+///
+/// Built through the production damping path (`damp_all` → `finalize` derives
+/// `implicit_damping`), so the CPU's passive damper (`dof_damping`) and the
+/// implicit `(M + h·D)` term (`implicit_damping`) stay consistent — the two must
+/// agree or the CPU and GPU damping diverge.
+#[must_use]
+pub fn contact_damped_case() -> ContactConformanceCase {
+    contact_fixture("contact_pyramidal_damped", 3, 0.8, 0.005, 2.0, 1, 2.0)
 }
 
 /// Compute the CPU reference for a contact conformance case.
@@ -1057,5 +1080,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The damped contact case carries nonzero `implicit_damping` (so the GPU
+    /// eulerdamp conformance is not vacuous) and stays engaged over a rollout
+    /// (nonzero normal constraint force each step). CPU-side smoke for the GPU
+    /// damped-rollout test.
+    #[test]
+    fn contact_damped_case_is_damped_and_engaged() {
+        const N: usize = 200;
+        let case = super::contact_damped_case();
+        assert!(
+            (0..case.model.nv).any(|i| case.model.implicit_damping[i] > 0.0),
+            "damped contact case has no implicit_damping"
+        );
+        let (_frozen, steps) = super::contact_rollout_oracle(&case, N);
+        assert_eq!(steps.len(), N);
+        for (i, s) in steps.iter().enumerate() {
+            assert!(
+                s.qpos.iter().all(|v| v.is_finite()) && s.qvel.iter().all(|v| v.is_finite()),
+                "step {i}: non-finite state"
+            );
+            assert!(
+                s.qfrc_constraint[2].abs() > 1e-6,
+                "step {i}: disengaged (qfrc_constraint[2]={})",
+                s.qfrc_constraint[2]
+            );
+        }
+
+        // Discriminator: damping must perturb the rollout by MORE than the GPU
+        // drift budget (~2e-4 at the final step) versus the otherwise-identical
+        // UNDAMPED puck. This makes the GPU `gpu_cpu_damped_rollout_matches` test
+        // meaningful: it asserts GPU == this DAMPED oracle, and since the damped
+        // and undamped trajectories are materially distinct, a GPU that silently
+        // skipped eulerdamp (tracking the undamped dynamics) would diverge and
+        // fail. Measured max |damped − undamped| ≈ 8.5e-4 over 200 steps.
+        let undamped =
+            super::contact_fixture("contact_pyramidal_undamped", 3, 0.8, 0.005, 2.0, 1, 0.0);
+        let (_u, usteps) = super::contact_rollout_oracle(&undamped, N);
+        let max_diff = (0..N)
+            .flat_map(|s| (0..case.model.nv).map(move |i| (s, i)))
+            .map(|(s, i)| (steps[s].qvel[i] - usteps[s].qvel[i]).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_diff > 5e-4,
+            "damping barely perturbs the rollout (max |Δqvel| vs undamped = {max_diff:.2e}); \
+             the damped GPU conformance test would not discriminate the eulerdamp path"
+        );
     }
 }
