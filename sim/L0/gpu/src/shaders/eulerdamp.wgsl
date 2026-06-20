@@ -1,16 +1,20 @@
 // eulerdamp.wgsl — implicit joint-damping velocity solve (MuJoCo mj_Euler).
 //
 // CPU reference (sim-core integrate::Data::integrate, Euler + eulerdamp):
-//   solve (M + h·D)·qacc = qfrc_smooth   then   qvel += h·qacc
+//   solve (M + h·D)·qacc = qfrc_smooth + qfrc_constraint   then   qvel += h·qacc
 // where qfrc_smooth already includes the explicit passive damper force −D·q̇.
+// The GPU folds that damper into qfrc_smooth in `smooth_assemble` (so the
+// constraint solver's reference includes it, matching the CPU), so this kernel's
+// RHS is simply qfrc_smooth + qfrc_constraint — it must NOT re-subtract −D·q̇.
 //
-// The GPU smooth path produces qacc_smooth = M⁻¹·qfrc_smooth (pure M, no
-// damping) and never applies the damper force. This kernel re-solves with the
-// damped matrix into a SEPARATE scratch factor, so crba's qM / qM_factor stay
-// the pure M that the constraint/contact solver needs. It folds the −D·q̇
-// damper force into the right-hand side here (contact-free scope); when a
-// constraint+damping path is added, the damper should move into qfrc_smooth
-// proper so the constraint solver sees it.
+// The MuJoCo-Euler constraint solve itself uses the PURE M (only
+// ImplicitSpringDamper folds damping into the constraint Hessian), so the (M +
+// h·D) correction lives entirely here, after the solve. This kernel re-solves
+// into a SEPARATE scratch factor, leaving crba's qM / qM_factor the pure M the
+// constraint/contact solver needs, and OVERWRITES qacc — the orchestrator runs
+// it between the constraint stage (which writes qfrc_constraint, = 0 with no
+// contacts) and integration. With no contacts the result is the contact-free
+// damped solve.
 //
 // Single entry point, single thread per env (mirrors crba_cholesky +
 // smooth_solve): build (M + h·D) → Cholesky → forward/back substitution.
@@ -43,7 +47,7 @@ struct DofModel {
 // Group 2: inputs (read)
 @group(2) @binding(0) var<storage, read> qM: array<f32>;
 @group(2) @binding(1) var<storage, read> qfrc_smooth: array<f32>;
-@group(2) @binding(2) var<storage, read> qvel: array<f32>;
+@group(2) @binding(2) var<storage, read> qfrc_constraint: array<f32>;
 
 // Group 3: outputs (read-write)
 @group(3) @binding(0) var<storage, read_write> qM_damped: array<f32>; // scratch L
@@ -60,15 +64,16 @@ fn eulerdamp_solve(@builtin(global_invocation_id) gid: vec3<u32>) {
     let env_off = env_id * nv;
     let env_qm_off = env_id * nv * nv;
 
-    // Build (M + h·D) into the scratch factor buffer, and rhs = qfrc_smooth − D·q̇
-    // into qacc (the solve overwrites it in place).
+    // Build (M + h·D) into the scratch factor buffer, and the total RHS
+    // qfrc_smooth + qfrc_constraint into qacc (the solve overwrites it in place).
+    // qfrc_smooth already carries the −D·q̇ damper (folded in by smooth_assemble);
+    // qfrc_constraint is the constraint stage's per-DOF output, zero with no contacts.
     for (var i = 0u; i < nv; i++) {
         for (var j = 0u; j < nv; j++) {
             qM_damped[env_qm_off + i * nv + j] = qM[env_qm_off + i * nv + j];
         }
-        let d = dofs[i].damping;
-        qM_damped[env_qm_off + i * nv + i] += h * d;
-        qacc[env_off + i] = qfrc_smooth[env_off + i] - d * qvel[env_off + i];
+        qM_damped[env_qm_off + i * nv + i] += h * dofs[i].damping;
+        qacc[env_off + i] = qfrc_smooth[env_off + i] + qfrc_constraint[env_off + i];
     }
 
     // Dense Cholesky factorization (lower triangular L), mirrors crba_cholesky.

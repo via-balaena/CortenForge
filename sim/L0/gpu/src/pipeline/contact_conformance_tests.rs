@@ -59,13 +59,14 @@
 const _: () = ();
 
 use sim_core::test_fixtures::conformance::{
-    ConstraintOracle, ContactSpec, RolloutStep, contact_conformance_matrix,
-    contact_constraint_oracle, contact_rollout_oracle,
+    ConstraintOracle, ContactConformanceCase, ContactSpec, RolloutStep, contact_conformance_matrix,
+    contact_constraint_oracle, contact_damped_case, contact_rollout_oracle,
 };
 use sim_core::types::{Data, Model};
 
 use super::constraint::GpuConstraintPipeline;
 use super::crba::GpuCrbaPipeline;
+use super::eulerdamp::GpuEulerdampPipeline;
 use super::fk::{GpuFkPipeline, readback_f32s};
 use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
@@ -408,7 +409,12 @@ fn run_rollout(
     let rne = GpuRnePipeline::new(ctx, &model_buf, &state_buf, model);
     let smooth = GpuSmoothPipeline::new(ctx, &model_buf, &state_buf);
     let constraint = GpuConstraintPipeline::new(ctx, &model_buf, &state_buf, model);
+    let eulerdamp = GpuEulerdampPipeline::new(ctx, &model_buf, &state_buf);
     let integrate = GpuIntegratePipeline::new(ctx, &model_buf, &state_buf);
+
+    // Mirror the orchestrator: run the eulerdamp stage (between constraint and
+    // integration) only when the model has implicit damping.
+    let has_damping = (0..nv).any(|i| model.implicit_damping[i] > 0.0);
 
     let count = contacts.len() as u32;
     let mut traj = Vec::with_capacity(nsteps);
@@ -446,6 +452,9 @@ fn run_rollout(
         rne.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
         smooth.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
         constraint.encode(&mut encoder, &state_buf);
+        if has_damping {
+            eulerdamp.dispatch(ctx, &model_buf, model, &mut encoder);
+        }
         integrate.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
         ctx.queue.submit([encoder.finish()]);
 
@@ -467,79 +476,111 @@ fn max_abs_diff(gpu: &[f32], cpu: &[f64]) -> f32 {
         .fold(0.0_f32, f32::max)
 }
 
-/// GPU↔CPU multi-step trajectory conformance over a frozen-contact resting
-/// rollout. Each step's GPU/CPU `(qpos, qvel)` divergence must stay within a
-/// LINEAR drift budget `base + k·step`; super-linear growth flags a real
-/// integrator/solver bug (vs benign f32-vs-f64 random-walk accumulation).
-#[test]
-fn gpu_cpu_multistep_rollout_matches() {
-    // Linear drift envelope `base + k·step`, calibrated by measurement
-    // (implement-measure-set): on Metal the observed max drift over the 200-step
-    // rollout is ~1e-6 across all four condim=1/3/4 fixtures (4e-7 … 1e-6), and
-    // essentially flat (the body rests, so f32-vs-f64 stays at the rounding floor).
-    // `BASE_TOL` bounds that floor by ~100× for cross-driver f32 variation (the
-    // test runs on whatever GPU host executes it); `DRIFT_PER_STEP` allows a small
-    // random-walk accumulation. A real per-step bug (an uncleared accumulator, a
-    // solver/integrator error) diverges by orders of magnitude or NaNs — far
-    // outside this envelope — so the budget separates signal from f32 noise.
+/// Run a frozen-contact resting rollout for one case on both engines and record
+/// any per-step GPU↔CPU `(qpos, qvel)` drift exceeding the LINEAR budget
+/// `base + k·step` into `fails`. `run_rollout` invokes the eulerdamp stage when
+/// the case has damping, so this is shared by the undamped matrix sweep and the
+/// damped single-case test.
+///
+/// Linear drift envelope calibrated by measurement (implement-measure-set): on
+/// Metal the observed max drift over the 200-step rollout is ~1e-6 across the
+/// condim=1/3/4 fixtures, essentially flat (the body rests, so f32-vs-f64 stays
+/// at the rounding floor). `BASE_TOL` bounds that floor by ~100× for cross-driver
+/// f32 variation (the test runs on whatever GPU host executes it);
+/// `DRIFT_PER_STEP` allows a small random-walk accumulation. A real per-step bug
+/// (an uncleared accumulator, a solver/integrator/eulerdamp error) diverges by
+/// orders of magnitude or NaNs — far outside this envelope.
+fn check_rollout_case(ctx: &GpuContext, case: &ContactConformanceCase, fails: &mut Failures) {
     const BASE_TOL: f32 = 1e-4;
     const DRIFT_PER_STEP: f32 = 5e-7;
 
+    let (frozen, cpu_steps): (Vec<ContactSpec>, Vec<RolloutStep>) =
+        contact_rollout_oracle(case, ROLLOUT_STEPS);
+    let model = &case.model;
+
+    // GPU starts from the SAME rest state the oracle used (qpos at rest, zero
+    // velocity), carried independently from here.
+    let mut data = model.make_data();
+    data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+    data.qvel.as_mut_slice().fill(0.0);
+
+    let contacts = gpu_contacts(&frozen);
+    let traj = run_rollout(ctx, model, &data, &contacts, ROLLOUT_STEPS);
+
+    // Vacuity guard: the CPU reference must stay engaged the whole rollout (every
+    // step carries a nonzero normal constraint force), else the comparison
+    // degenerates to free-flight, not the contact path under test.
+    let engaged = cpu_steps
+        .iter()
+        .all(|s| s.qfrc_constraint.iter().any(|v| v.abs() > 1e-6));
+    assert!(
+        engaged,
+        "[{}] CPU rollout disengaged from contact — fixture is vacuous.",
+        case.name
+    );
+
+    let mut max_seen = 0.0_f32;
+    for (step, (gpu, cpu)) in traj.iter().zip(cpu_steps.iter()).enumerate() {
+        let (gpu_qpos, gpu_qvel) = gpu;
+        let dq = max_abs_diff(gpu_qpos, &cpu.qpos);
+        let dv = max_abs_diff(gpu_qvel, &cpu.qvel);
+        let drift = dq.max(dv);
+        max_seen = max_seen.max(drift);
+
+        let budget = BASE_TOL + DRIFT_PER_STEP * step as f32;
+        if !(drift < budget) {
+            fails.push(format!(
+                "[{}] step {step}: drift {drift:.3e} ≥ budget {budget:.3e} \
+                 (dqpos={dq:.3e}, dqvel={dv:.3e})",
+                case.name
+            ));
+        }
+    }
+    eprintln!(
+        "  rollout[{}]: {ROLLOUT_STEPS} steps, max drift {max_seen:.3e}",
+        case.name
+    );
+}
+
+/// GPU↔CPU multi-step trajectory conformance over a frozen-contact resting
+/// rollout (undamped fixtures). Each step's `(qpos, qvel)` divergence must stay
+/// within the linear drift budget; super-linear growth flags a real
+/// integrator/solver bug (vs benign f32-vs-f64 random-walk accumulation).
+#[test]
+fn gpu_cpu_multistep_rollout_matches() {
     let ctx = gpu_or_skip!();
     let mut fails: Failures = Vec::new();
-
     for case in contact_conformance_matrix() {
-        let (frozen, cpu_steps): (Vec<ContactSpec>, Vec<RolloutStep>) =
-            contact_rollout_oracle(&case, ROLLOUT_STEPS);
-        let model = &case.model;
-
-        // GPU starts from the SAME rest state the oracle used (qpos at rest,
-        // zero velocity), carried independently from here.
-        let mut data = model.make_data();
-        data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
-        data.qvel.as_mut_slice().fill(0.0);
-
-        let contacts = gpu_contacts(&frozen);
-        let traj = run_rollout(&ctx, model, &data, &contacts, ROLLOUT_STEPS);
-
-        // Vacuity guard: the CPU reference must stay engaged the whole rollout
-        // (every step carries a nonzero normal constraint force), else the
-        // comparison degenerates to free-flight, not the contact path under test.
-        let engaged = cpu_steps
-            .iter()
-            .all(|s| s.qfrc_constraint.iter().any(|v| v.abs() > 1e-6));
-        assert!(
-            engaged,
-            "[{}] CPU rollout disengaged from contact — fixture is vacuous.",
-            case.name
-        );
-
-        let mut max_seen = 0.0_f32;
-        for (step, (gpu, cpu)) in traj.iter().zip(cpu_steps.iter()).enumerate() {
-            let (gpu_qpos, gpu_qvel) = gpu;
-            let dq = max_abs_diff(gpu_qpos, &cpu.qpos);
-            let dv = max_abs_diff(gpu_qvel, &cpu.qvel);
-            let drift = dq.max(dv);
-            max_seen = max_seen.max(drift);
-
-            let budget = BASE_TOL + DRIFT_PER_STEP * step as f32;
-            if !(drift < budget) {
-                fails.push(format!(
-                    "[{}] step {step}: drift {drift:.3e} ≥ budget {budget:.3e} \
-                     (dqpos={dq:.3e}, dqvel={dv:.3e})",
-                    case.name
-                ));
-            }
-        }
-        eprintln!(
-            "  rollout[{}]: {ROLLOUT_STEPS} steps, max drift {max_seen:.3e}",
-            case.name
-        );
+        check_rollout_case(&ctx, &case, &mut fails);
     }
-
     assert!(
         fails.is_empty(),
         "GPU↔CPU multi-step rollout exceeded the drift budget:\n  {}",
+        fails.join("\n  ")
+    );
+}
+
+/// GPU↔CPU multi-step conformance with implicit joint DAMPING. Same frozen-contact
+/// rollout, but the fixture damps its free DOFs, so `run_rollout` exercises the
+/// eulerdamp stage and its contact-coupled RHS (qfrc_smooth − D·q̇ +
+/// qfrc_constraint). At rest the constraint normal force is nonzero and is divided
+/// by the damped matrix `(M + h·D)`, so a wrong GPU eulerdamp solve — including a
+/// mishandled `qfrc_constraint` term — shows as drift against the CPU oracle
+/// (whose `step2` runs the same eulerdamp).
+#[test]
+fn gpu_cpu_damped_rollout_matches() {
+    let ctx = gpu_or_skip!();
+    let case = contact_damped_case();
+    assert!(
+        (0..case.model.nv).any(|i| case.model.implicit_damping[i] > 0.0),
+        "damped rollout fixture carries no implicit_damping — would duplicate the \
+         undamped test instead of exercising eulerdamp"
+    );
+    let mut fails: Failures = Vec::new();
+    check_rollout_case(&ctx, &case, &mut fails);
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU damped rollout exceeded the drift budget:\n  {}",
         fails.join("\n  ")
     );
 }

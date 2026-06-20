@@ -78,6 +78,8 @@ impl GpuSmoothPipeline {
                     storage_entry(1, true), // qfrc_applied
                     storage_entry(2, true), // qfrc_actuator
                     storage_entry(3, true), // qfrc_passive
+                    storage_entry(4, true), // qvel (for the −D·q̇ damper term)
+                    storage_entry(5, true), // dofs (per-DOF damping)
                 ],
             });
 
@@ -148,6 +150,8 @@ impl GpuSmoothPipeline {
                 buf_entry(1, &state.qfrc_applied),
                 buf_entry(2, &state.qfrc_actuator),
                 buf_entry(3, &state.qfrc_passive),
+                buf_entry(4, &state.qvel),
+                buf_entry(5, &model.dofs),
             ],
         });
 

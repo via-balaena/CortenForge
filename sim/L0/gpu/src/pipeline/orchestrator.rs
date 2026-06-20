@@ -1,4 +1,4 @@
-//! GPU physics pipeline orchestrator — unified struct holding all 8 sub-pipelines.
+//! GPU physics pipeline orchestrator — unified struct holding all sub-pipelines.
 //!
 //! Session 6: Wraps FK, CRBA, velocity FK, RNE, smooth, collision, constraint,
 //! and integration into a single `GpuPhysicsPipeline` that encodes N substeps
@@ -15,6 +15,7 @@ use sim_core::types::{Data, MjJointType, Model};
 use super::collision::GpuCollisionPipeline;
 use super::constraint::GpuConstraintPipeline;
 use super::crba::GpuCrbaPipeline;
+use super::eulerdamp::GpuEulerdampPipeline;
 use super::fk::GpuFkPipeline;
 use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
@@ -56,7 +57,7 @@ impl std::error::Error for GpuPipelineError {}
 
 // ── Pipeline ──────────────────────────────────────────────────────────
 
-/// Unified GPU physics pipeline holding all 8 sub-pipelines.
+/// Unified GPU physics pipeline holding all sub-pipelines.
 ///
 /// Encodes N substeps into a single command buffer and submits once per frame.
 /// Reads back final qpos/qvel via staging buffers.
@@ -72,6 +73,7 @@ pub struct GpuPhysicsPipeline {
     smooth: GpuSmoothPipeline,
     collision: GpuCollisionPipeline,
     constraint: GpuConstraintPipeline,
+    eulerdamp: GpuEulerdampPipeline,
     integrate: GpuIntegratePipeline,
 
     // Staging buffers for readback (MAP_READ | COPY_DST)
@@ -81,13 +83,19 @@ pub struct GpuPhysicsPipeline {
     // Cached model dimensions
     nq: u32,
     nv: u32,
+
+    /// Whether any DOF has implicit damping. When true, the eulerdamp stage runs
+    /// between the constraint stage and integration, solving `(M + h·D)·qacc =
+    /// qfrc_smooth − D·q̇ + qfrc_constraint`. When false it is skipped entirely, so
+    /// the undamped trajectory is byte-identical to the pre-wiring pipeline.
+    has_damping: bool,
 }
 
 impl GpuPhysicsPipeline {
     /// Create the GPU physics pipeline.
     ///
     /// Validates the model (free joints only, nv ≤ 60), uploads static model
-    /// data, allocates state buffers, and creates all 8 sub-pipelines.
+    /// data, allocates state buffers, and creates all sub-pipelines.
     ///
     /// # Errors
     ///
@@ -118,7 +126,12 @@ impl GpuPhysicsPipeline {
         let smooth = GpuSmoothPipeline::new(&ctx, &model_bufs, &state_bufs);
         let collision = GpuCollisionPipeline::new(&ctx, model, &model_bufs, &state_bufs);
         let constraint = GpuConstraintPipeline::new(&ctx, &model_bufs, &state_bufs, model);
+        let eulerdamp = GpuEulerdampPipeline::new(&ctx, &model_bufs, &state_bufs);
         let integrate = GpuIntegratePipeline::new(&ctx, &model_bufs, &state_bufs);
+
+        // Eulerdamp runs only when the model actually has implicit damping;
+        // otherwise it is skipped so the undamped path is byte-identical.
+        let has_damping = (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
 
         // ── Staging buffers for readback ──────────────────────────
         let nq = model.nq as u32;
@@ -147,11 +160,13 @@ impl GpuPhysicsPipeline {
             smooth,
             collision,
             constraint,
+            eulerdamp,
             integrate,
             staging_qpos,
             staging_qvel,
             nq,
             nv,
+            has_damping,
         })
     }
 
@@ -175,6 +190,10 @@ impl GpuPhysicsPipeline {
             .write_params(&self.ctx, &self.model_bufs, &self.state_bufs, cpu_model);
         self.integrate
             .write_params(&self.ctx, &self.model_bufs, &self.state_bufs, cpu_model);
+        if self.has_damping {
+            self.eulerdamp
+                .write_params(&self.ctx, &self.model_bufs, cpu_model);
+        }
 
         // 3. Encode all substeps into ONE command buffer
         let mut encoder = self
@@ -212,7 +231,8 @@ impl GpuPhysicsPipeline {
 
     /// Encode one full substep into the command encoder.
     ///
-    /// Clears per-substep buffers, then encodes all 8 pipeline stages.
+    /// Clears per-substep buffers, then encodes the pipeline stages (eulerdamp
+    /// between constraint and integration only when the model has damping).
     fn encode_substep(&self, encoder: &mut wgpu::CommandEncoder) {
         // ── Zero per-substep state buffers ────────────────────────
         encoder.clear_buffer(&self.state_bufs.body_cfrc, 0, None);
@@ -225,7 +245,7 @@ impl GpuPhysicsPipeline {
             encoder.clear_buffer(&self.state_bufs.qfrc_passive, 0, None);
         }
 
-        // ── 8 pipeline stages ─────────────────────────────────────
+        // ── pipeline stages ──────────────────────────────────────
         self.fk.encode(encoder);
         self.crba.encode(encoder);
         self.velocity_fk.encode(encoder);
@@ -233,6 +253,13 @@ impl GpuPhysicsPipeline {
         self.smooth.encode(encoder);
         self.collision.encode(encoder, &self.state_bufs);
         self.constraint.encode(encoder, &self.state_bufs);
+        // Implicit joint damping (MuJoCo eulerdamp): re-solve qacc with the damped
+        // matrix and the contact-coupled RHS, between the constraint stage (which
+        // writes qfrc_constraint) and integration. Skipped for undamped models so
+        // their trajectory is byte-identical.
+        if self.has_damping {
+            self.eulerdamp.encode(encoder);
+        }
         self.integrate.encode(encoder);
     }
 }
