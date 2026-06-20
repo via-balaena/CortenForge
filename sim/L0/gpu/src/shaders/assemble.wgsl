@@ -35,7 +35,7 @@ struct AssemblyParams {
     solimp_width: f32,
     solimp_midpoint: f32,
     solimp_power: f32,
-    _pad0: f32,
+    n_env: u32,
     _pad1: f32,
     _pad2: f32,
 };
@@ -222,6 +222,7 @@ fn zero_row(row: u32) {
 /// `is_torsional` selects between pure-direction Jacobian (false) and
 ///   torsional Jacobian (true) which has a different angular term.
 fn write_jacobian_body(
+    env_id: u32,
     row: u32,
     body_id: u32,
     sign: f32,
@@ -235,10 +236,14 @@ fn write_jacobian_body(
     // World body (id=0) has no DOFs — skip.
     if body_id == 0u { return; }
 
+    // `row` is ABSOLUTE (env_id·max_constraints + local row), so efc_J indexing
+    // below is automatically env-strided. body_xpos/body_xquat are per-env state,
+    // so index them at env_id·nbody; `bodies` is shared model data (bare index).
     let dof_adr = bodies[body_id].dof_adr;
-    let r_raw = contact_pt - body_xpos[body_id].xyz;
+    let body_off = env_id * params.nbody + body_id;
+    let r_raw = contact_pt - body_xpos[body_off].xyz;
     let r = stabilize_lever_arm(r_raw, normal);
-    let rot = quat_to_mat3(body_xquat[body_id]);
+    let rot = quat_to_mat3(body_xquat[body_off]);
 
     let base = row * params.nv;
 
@@ -323,6 +328,7 @@ fn compute_impedance(violation: f32) -> f32 {
 /// `is_pyramidal` — true for friction facet rows (scale bodyweight by 1+mu^2).
 /// `mu` — friction coefficient for bodyweight scaling.
 fn compute_D_aref(
+    env_id: u32,
     row: u32,
     depth: f32,
     body1: u32,
@@ -376,10 +382,12 @@ fn compute_D_aref(
     let B = 2.0 / max(dmax * timeconst, 1e-15);
 
     // ── Velocity: vel = J_row . qvel ──
+    // `base` is env-strided because `row` is absolute; qvel is per-env state.
     let base = row * nv;
+    let qvel_off = env_id * nv;
     var vel = 0.0;
     for (var k = 0u; k < nv; k++) {
-        vel += efc_J[base + k] * qvel[k];
+        vel += efc_J[base + k] * qvel[qvel_off + k];
     }
 
     // ── Reference acceleration ──
@@ -395,15 +403,20 @@ fn compute_D_aref(
 @compute @workgroup_size(256)
 fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ci = gid.x;
+    let env_id = gid.y;
+    if env_id >= params.n_env {
+        return;
+    }
 
-    // 1. Bounds check: only process existing contacts.
-    let n_contacts = atomicLoad(&contact_count_buf[0]);
+    // 1. Bounds check: only process existing contacts in THIS env. Both the
+    //    contact counter and the contact buffer are per-env (stride max_contacts).
+    let n_contacts = atomicLoad(&contact_count_buf[env_id]);
     if ci >= n_contacts {
         return;
     }
 
-    // 2. Read contact from raw f32 buffer.
-    let contact = read_contact(ci);
+    // 2. Read contact from raw f32 buffer at this env's contact slot.
+    let contact = read_contact(env_id * params.max_contacts + ci);
 
     // 3. Look up geom properties.
     let g1 = geoms[contact.geom1];
@@ -447,11 +460,15 @@ fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
         default: { n_rows = 4u; } // fallback to condim=3
     }
 
-    // 6. Atomically allocate constraint rows.
-    let row_start = atomicAdd(&constraint_count[0], n_rows);
-    if row_start + n_rows > params.max_constraints {
+    // 6. Atomically allocate constraint rows within THIS env's row block.
+    let local_row_start = atomicAdd(&constraint_count[env_id], n_rows);
+    if local_row_start + n_rows > params.max_constraints {
         return;
     }
+    // Absolute row base = env_id·max_constraints + local. Used as `row` for every
+    // emit below, so all efc_J/efc_D/efc_aref indexing is automatically env-strided
+    // (the row-major [max_constraints, nv] layout makes env k's block start here).
+    let row_start = env_id * params.max_constraints + local_row_start;
 
     // 7. Friction coefficients from the contact.
     let mu_slide = contact.friction.x;
@@ -465,12 +482,12 @@ fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
         zero_row(row);
 
         // Jacobian: direction = normal
-        write_jacobian_body(row, body1, -1.0, normal, contact.point,
+        write_jacobian_body(env_id, row, body1, -1.0, normal, contact.point,
                             normal, 0.0, 0.0, false);
-        write_jacobian_body(row, body2,  1.0, normal, contact.point,
+        write_jacobian_body(env_id, row, body2,  1.0, normal, contact.point,
                             normal, 0.0, 0.0, false);
 
-        compute_D_aref(row, contact.depth, body1, body2, false, 0.0);
+        compute_D_aref(env_id, row, contact.depth, body1, body2, false, 0.0);
 
     } else {
         // ── PYRAMIDAL SLIDING FACETS (condim >= 3) ──
@@ -485,12 +502,12 @@ fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                 zero_row(row);
 
-                write_jacobian_body(row, body1, -1.0, facet_dir, contact.point,
+                write_jacobian_body(env_id, row, body1, -1.0, facet_dir, contact.point,
                                     normal, 0.0, 0.0, false);
-                write_jacobian_body(row, body2,  1.0, facet_dir, contact.point,
+                write_jacobian_body(env_id, row, body2,  1.0, facet_dir, contact.point,
                                     normal, 0.0, 0.0, false);
 
-                compute_D_aref(row, contact.depth, body1, body2, true, mu_slide);
+                compute_D_aref(env_id, row, contact.depth, body1, body2, true, mu_slide);
 
                 row_idx += 1u;
             }
@@ -506,16 +523,16 @@ fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                 // Torsional: translational Jacobian is normal, angular
                 // Jacobian includes +/- mu_t * dot(normal, omega_i).
-                write_jacobian_body(row, body1, -1.0, normal, contact.point,
+                write_jacobian_body(env_id, row, body1, -1.0, normal, contact.point,
                                     normal, mu_torsion, facet_sign, true);
-                write_jacobian_body(row, body2,  1.0, normal, contact.point,
+                write_jacobian_body(env_id, row, body2,  1.0, normal, contact.point,
                                     normal, mu_torsion, facet_sign, true);
 
                 // Diagonal/R-scaling uses mu_slide (mu[0]) for ALL pyramidal
                 // facets — CPU postprocess_pyramidal_r_scaling and bw_py both key
                 // off mu[0], NOT the per-direction coefficient. Only the Jacobian
                 // above uses mu_torsion.
-                compute_D_aref(row, contact.depth, body1, body2, true, mu_slide);
+                compute_D_aref(env_id, row, contact.depth, body1, body2, true, mu_slide);
 
                 row_idx += 1u;
             }
