@@ -2334,6 +2334,105 @@ fn t31_gpu_vs_cpu_trajectory() {
     cpu.assert("CPU");
 }
 
+// ── T33: production step() applies implicit joint damping (eulerdamp wiring) ──
+
+/// A damped free body with one geom but NO ground plane: the production
+/// `GpuPhysicsPipeline::step()` runs the eulerdamp stage with zero contacts (no
+/// collision pairs), so GPU and CPU integrate the SAME smooth damped trajectory
+/// (no SDF-vs-analytic divergence). Two assertions:
+/// 1. GPU-damped tracks CPU-damped (the eulerdamp wiring + solve are correct);
+/// 2. GPU-damped differs materially from the UNDAMPED trajectory — proving
+///    `step()` now actually applies damping. Before this wiring, `step()`
+///    silently integrated undamped, so the GPU would have matched (2)'s undamped
+///    reference instead.
+///
+/// Gravity is zeroed so the test isolates pure damping (exponential velocity
+/// decay from the initial qvel), with no fall confounding the comparison.
+#[test]
+fn t33_step_applies_implicit_damping() {
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    // One geom so the orchestrator's collision/constraint binding is valid; no
+    // ground plane ⇒ no contact pairs ⇒ no collision divergence.
+    add_sdf_sphere_geom(&mut model, 1, 0.5, 12);
+    model.gravity = Vector3::zeros();
+
+    // Undamped reference = the model before damping is added.
+    let undamped = model.clone();
+
+    // Add damping the production way: `dof_damping` drives the explicit passive
+    // damper force −D·q̇ (qfrc_passive → qfrc_smooth on the CPU), and
+    // `compute_implicit_params` derives `implicit_damping` (the (M + h·D) term,
+    // and what the GPU uploads as per-DOF damping). Setting only one would make
+    // the CPU and GPU see inconsistent damping.
+    for i in 0..model.nv {
+        model.dof_damping[i] = 3.0;
+    }
+    model.compute_implicit_params();
+
+    let nsteps = 200usize;
+    // Nonzero linear + angular velocity so the damper force −D·q̇ is live.
+    let set_init = |d: &mut Data| {
+        d.qpos[2] = 5.0;
+        d.qpos[3] = 1.0; // identity quaternion [w,x,y,z]
+        for (i, v) in [0.8, -0.5, 0.3, 1.2, -0.7, 0.4].into_iter().enumerate() {
+            d.qvel[i] = v;
+        }
+    };
+
+    // GPU damped trajectory via the production step() path.
+    let mut gpu_data = model.make_data();
+    set_init(&mut gpu_data);
+    let pipeline = match GpuPhysicsPipeline::new(&model, &gpu_data) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T33: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("Pipeline creation failed: {e}"),
+    };
+    for _ in 0..nsteps {
+        pipeline.step(&model, &mut gpu_data, 1);
+    }
+
+    // CPU damped trajectory (reference).
+    let mut cpu_data = model.make_data();
+    set_init(&mut cpu_data);
+    for _ in 0..nsteps {
+        cpu_data.step(&model).expect("CPU damped step");
+    }
+
+    // CPU UNDAMPED trajectory (the pre-wiring behavior step() used to produce).
+    let mut un_data = undamped.make_data();
+    set_init(&mut un_data);
+    for _ in 0..nsteps {
+        un_data.step(&undamped).expect("CPU undamped step");
+    }
+
+    let qvel_diff = |a: &Data, b: &Data| {
+        (0..model.nv)
+            .map(|i| (a.qvel[i] - b.qvel[i]).abs())
+            .fold(0.0_f64, f64::max)
+    };
+
+    // (1) GPU-damped tracks CPU-damped: the eulerdamp solve is correct.
+    let gpu_vs_cpu = qvel_diff(&gpu_data, &cpu_data);
+    // (2) GPU-damped is far from the undamped trajectory: damping actually fired.
+    let damped_vs_undamped = qvel_diff(&gpu_data, &un_data);
+    eprintln!(
+        "  T33: GPU↔CPU damped max|Δqvel|={gpu_vs_cpu:.3e}, GPU-damped↔undamped max|Δqvel|={damped_vs_undamped:.3e}"
+    );
+
+    assert!(
+        gpu_vs_cpu < 1e-3,
+        "GPU step() damped trajectory diverged from CPU: max|Δqvel|={gpu_vs_cpu:.3e}"
+    );
+    assert!(
+        damped_vs_undamped > 0.1,
+        "step() produced ~undamped motion (max|Δqvel| vs undamped only {damped_vs_undamped:.3e}) \
+         — eulerdamp not applied"
+    );
+}
+
 // ── T32: Sustained multi-substep stress test ──────────────────────────
 
 #[test]
