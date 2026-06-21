@@ -180,6 +180,101 @@ component StepBox inherits HorizontalLayout {
     }
 }
 
+// First-launch liability waiver + age gate. Rendered as a full-window opaque
+// overlay on top of the wizard on EVERY launch (acceptance is held in memory
+// only and never persisted), so the wizard cannot be used until the user
+// confirms. `accept()` clears the gate for the session; `quit()` closes the app.
+//
+// ⚠ PLACEHOLDER WORDING — NOT LEGAL ADVICE. The disclaimer and 18+
+// confirmation below are a reasonable template only. Via Balaena's legal
+// counsel MUST review and replace this text before any public release.
+component WaiverPage inherits Rectangle {
+    callback accept();
+    callback quit();
+
+    // Opaque (matches the window background) so the wizard underneath is fully
+    // hidden until the waiver is accepted.
+    background: #dce0e5;
+
+    // The required confirmation checkbox gates the "Agree & Continue" button.
+    property <bool> agreed: false;
+
+    Rectangle {
+        // Centered card, capped so it stays readable on large screens and
+        // shrinks (with the inner ScrollView) on small ones.
+        width: min(640px, parent.width - 56px);
+        height: min(760px, parent.height - 56px);
+        background: #f3f4f6;
+        border-radius: 14px;
+
+        VerticalBox {
+            padding: 28px;
+            spacing: 16px;
+
+            Text {
+                text: "Before you begin";
+                font-size: 30px;
+                font-weight: 800;
+                color: #1a1a1a;
+            }
+
+            terms-scroll := ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    width: terms-scroll.visible-width;
+                    spacing: 14px;
+
+                    Text {
+                        text: "Cendrillon is provided by Via Balaena as a design-assistance tool. It generates molds and casting plans for custom silicone devices from your own 3D scans.";
+                        font-size: 16px;
+                        color: #1a1a1a;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "You are solely responsible for how you use this software and for anything you make with it. Via Balaena makes no warranty that the software or its outputs are safe, accurate, fit for any purpose, or suitable for use on or in the body. Material selection, manufacture, curing, cleaning, and use are entirely at your own risk. To the fullest extent permitted by law, Via Balaena disclaims all liability for any injury, loss, or damage arising from use of this software or its outputs.";
+                        font-size: 16px;
+                        color: #1a1a1a;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "This software and the devices it helps you create are intended for adults only.";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: #1a1a1a;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "By continuing you confirm that you are at least 18 years old and that you have read and accept these terms.";
+                        font-size: 16px;
+                        color: #1a1a1a;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            CheckBox {
+                text: "I confirm I am 18 or older and accept the terms above.";
+                toggled => { root.agreed = self.checked; }
+            }
+
+            HorizontalBox {
+                spacing: 12px;
+                Button {
+                    text: "Quit";
+                    clicked => { root.quit(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: "Agree & Continue";
+                    primary: true;
+                    enabled: root.agreed;
+                    clicked => { root.accept(); }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Cendrillon";
     preferred-width: 900px;
@@ -194,6 +289,10 @@ export component AppWindow inherits Window {
     // macOS dark mode the off-panel text (progress checklist) went dark-on-
     // dark and vanished.
     background: #dce0e5;
+
+    // First-launch liability/age gate. False each launch (never persisted), so
+    // the WaiverPage overlay below covers the wizard until `accept-waiver()`.
+    in property <bool> waiver-accepted: false;
 
     in property <string> project-name: "Untitled";
     in property <[StepRow]> steps;
@@ -275,6 +374,11 @@ export component AppWindow inherits Window {
     in property <int> pour-timer-urgency: 0;
     in property <bool> pour-timer-running: false;
     in property <bool> pour-complete: false;
+
+    // First-launch waiver gate: accept clears the overlay for the session;
+    // quit closes the app from the gate (wired in main.rs).
+    callback accept-waiver();
+    callback quit-app();
 
     callback back();
     callback next();
@@ -1067,5 +1171,16 @@ export component AppWindow inherits Window {
             color: #8a909a;
             horizontal-alignment: right;
         }
+    }
+
+    // Liability/age gate — last child so it paints on top of the wizard, sized
+    // to fill the window. Shown until the user accepts (in-memory, every launch).
+    if !root.waiver-accepted: WaiverPage {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        accept => { root.accept-waiver(); }
+        quit => { root.quit-app(); }
     }
 }

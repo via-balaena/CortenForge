@@ -1058,6 +1058,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Placeholder — a help panel / per-step guidance arrives later.
     });
 
+    // ── first-launch waiver/age gate ──────────────────────────────
+    // Accept clears the overlay for this session only (never persisted, so the
+    // gate reappears every launch). Quit closes the app straight from the gate.
+    {
+        let weak = weak.clone();
+        ui.on_accept_waiver(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_waiver_accepted(true);
+            }
+        });
+    }
+    ui.on_quit_app(|| {
+        let _ = slint::quit_event_loop();
+    });
+
     // ── step 1: pick a scan → record it + open the live edit session ──
     {
         let (project, viewed, weak) = (project.clone(), viewed.clone(), weak.clone());
