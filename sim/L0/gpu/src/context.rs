@@ -43,6 +43,7 @@ impl GpuContext {
             .map_err(|_| GpuError::NoAdapter)?;
 
         let adapter_info = adapter.get_info();
+        let adapter_limits = adapter.limits();
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -51,8 +52,15 @@ impl GpuContext {
                 // Raise storage buffer limit for physics pipeline (FK uses
                 // ~12 storage buffers per shader stage). Metal supports 31,
                 // Vulkan/NVIDIA supports many more. WebGPU default is 8.
+                //
+                // Also request the adapter's full buffer-size limits (not wgpu's
+                // 256 MB default): batched state buffers scale with n_env, so the
+                // 256 MB cap otherwise pins the batch at ~16 environments. Apple
+                // and discrete GPUs support multi-GB buffers; take what's offered.
                 required_limits: wgpu::Limits {
                     max_storage_buffers_per_shader_stage: 16,
+                    max_buffer_size: adapter_limits.max_buffer_size,
+                    max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
                     ..wgpu::Limits::default()
                 },
                 memory_hints: wgpu::MemoryHints::Performance,

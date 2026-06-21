@@ -308,12 +308,33 @@ pub struct NarrowphaseParams {
     pub friction: [f32; 4],
 }
 
-/// Maximum pre-allocated pipeline contacts.
+/// Maximum pre-allocated pipeline contacts, per environment (single-env default).
+///
+/// The per-env contact + constraint buffers scale with this, so it is the
+/// single-env capacity. The batched path uses the much smaller
+/// [`DEFAULT_BATCHED_MAX_CONTACTS`] instead, because these buffers are also sized
+/// `× n_env`: at 32 768 the constraint Jacobian alone is ~4.7 MB/env, which blows
+/// past GPU buffer limits within ~16 environments.
 pub const MAX_PIPELINE_CONTACTS: u32 = 32_768;
 
-/// Maximum pre-allocated constraint rows (6 × `MAX_PIPELINE_CONTACTS`).
+/// Per-env contact budget for the batched (`n_env > 1`) path.
 ///
-/// Worst case: every contact has condim=4 → 6 pyramidal rows each.
+/// Far smaller than the single-env [`MAX_PIPELINE_CONTACTS`] because every
+/// contact/constraint buffer is sized `n_env × this`. 1024 contacts/env is ample
+/// for the supported model class (free bodies + SDF/plane geoms generate a
+/// handful to dozens of contacts). If an env DOES exceed it, assembly stops
+/// emitting rows past the budget and the solver/force-map clamp their row count to
+/// it, so the over-budget env is contained to its own block — it gets a degraded
+/// (truncated-contact) result, but never corrupts another env or reads out of
+/// bounds. Combined with the adapter's full buffer-size limits this reaches
+/// `n_env` ≈ 4096 on a multi-GB GPU.
+pub const DEFAULT_BATCHED_MAX_CONTACTS: u32 = 1_024;
+
+/// Maximum constraint rows per contact (condim=4 → 6 pyramidal rows, worst case).
+pub const CONSTRAINT_ROWS_PER_CONTACT: u32 = 6;
+
+/// Maximum pre-allocated constraint rows for the single-env path
+/// (`CONSTRAINT_ROWS_PER_CONTACT × MAX_PIPELINE_CONTACTS`).
 pub const MAX_CONSTRAINTS: u32 = 196_608;
 
 // ── Constraint solve params (Session 5) ─────────────────────────────

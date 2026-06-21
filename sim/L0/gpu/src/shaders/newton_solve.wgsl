@@ -164,7 +164,11 @@ fn newton_solve(
         return;
     }
     let nv = params.nv;
-    let nefc = atomicLoad(&constraint_count_buf[env]);
+    // Clamp to the per-env capacity: if assembly over-allocated (more contacts
+    // than max_constraints), the counter is inflated past this env's row block, so
+    // an unclamped loop would stride into the NEXT env's rows. Clamping contains an
+    // over-budget step to its own block (excess rows dropped). A no-op normally.
+    let nefc = min(atomicLoad(&constraint_count_buf[env]), params.max_constraints);
 
     // Per-env base offsets into the global state buffers. The workgroup-local
     // scratch (H_atomic / qacc_sh / grad_sh / search_sh / reduction_sh) is private

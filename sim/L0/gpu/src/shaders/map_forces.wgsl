@@ -47,8 +47,11 @@ fn map_forces(@builtin(global_invocation_id) gid: vec3<u32>) {
     let env_efc = env_id * params.max_constraints;
     let env_nv = env_id * params.nv;
 
-    // Read the number of active constraints in THIS env (per-env atomic).
-    let nefc = atomicLoad(&constraint_count_buf[env_id]);
+    // Read the number of active constraints in THIS env (per-env atomic), clamped
+    // to capacity: an over-budget assembly inflates the counter past this env's row
+    // block, and an unclamped loop would read into the next env's rows. A no-op
+    // unless contacts exceed max_constraints (excess already dropped by assembly).
+    let nefc = min(atomicLoad(&constraint_count_buf[env_id]), params.max_constraints);
 
     // Accumulate J^T × force for this DOF.
     var total = 0.0;

@@ -2536,7 +2536,13 @@ fn run_one_substep_batched(
     let nq = model.nq;
     let nv = model.nv;
     let model_buf = GpuModelBuffers::upload(ctx, model);
-    let state_buf = GpuStateBuffers::new_batched(ctx, &model_buf, n_env, datas);
+    let state_buf = GpuStateBuffers::new_batched(
+        ctx,
+        &model_buf,
+        n_env,
+        datas,
+        super::types::MAX_PIPELINE_CONTACTS,
+    );
 
     let fk = GpuFkPipeline::new(ctx, &model_buf, &state_buf);
     let crba = GpuCrbaPipeline::new(ctx, &model_buf, &state_buf);
@@ -2857,4 +2863,63 @@ fn t36_orchestrator_batched_step_with_contact_matches_single() {
     }
 
     eprintln!("  T36 passed: batched step() with contact matches single-env per env");
+}
+
+// ── T37: Large-batch allocation + step (scale wall #3 regression guard) ────
+//
+// Before the batched-capacity fix, the contact + constraint buffers were sized
+// `n_env × MAX_PIPELINE_CONTACTS` (32_768/env) and blew past the GPU's max-buffer
+// limit at n_env ≈ 16–32 — so `new_batched`/`step` PANICKED for any real batch.
+// This guards that a large batch (n_env = 256) both ALLOCATES and STEPS with active
+// contact, producing finite, per-env-distinct results. It would have panicked at
+// construction pre-fix, so it pins the wall open.
+#[test]
+fn t37_large_batch_allocates_and_steps() {
+    const N_ENV: usize = 256;
+
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 16);
+
+    // Distinct penetration depths per env so the contact responses differ.
+    let datas: Vec<Data> = (0..N_ENV)
+        .map(|i| {
+            let mut d = model.make_data();
+            d.qpos[2] = 3.0 + (i as f64) * 0.001;
+            d.qpos[3] = 1.0;
+            d
+        })
+        .collect();
+    let refs: Vec<&Data> = datas.iter().collect();
+
+    let pipe = match GpuPhysicsPipeline::new_batched(&model, &refs) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T37: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("large-batch pipeline creation failed: {e}"),
+    };
+    drop(refs);
+
+    let mut datas = datas;
+    pipe.step(&model, &mut datas, 1);
+
+    // Every env's result must be finite (a dropped/garbage env would NaN).
+    for (env, d) in datas.iter().enumerate() {
+        for i in 0..model.nq {
+            assert!(
+                d.qpos[i].is_finite(),
+                "env{env} qpos[{i}] not finite: {}",
+                d.qpos[i]
+            );
+        }
+    }
+    // Distinct inputs → distinct outputs (guards a stage reading env 0 for all envs).
+    assert!(
+        (datas[0].qpos[2] - datas[N_ENV - 1].qpos[2]).abs() > 0.0,
+        "first/last env identical — batching may be collapsed"
+    );
+
+    eprintln!("  T37 passed: n_env={N_ENV} allocates + steps with contact");
 }

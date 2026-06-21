@@ -26,8 +26,7 @@ use wgpu::util::DeviceExt;
 use super::model_buffers::GpuModelBuffers;
 use super::state_buffers::GpuStateBuffers;
 use super::types::{
-    GPU_GEOM_PLANE, GPU_GEOM_SDF, MAX_PIPELINE_CONTACTS, NarrowphaseParams, SDF_META_NONE,
-    SdfMetaGpu, geom_type_to_gpu,
+    GPU_GEOM_PLANE, GPU_GEOM_SDF, NarrowphaseParams, SDF_META_NONE, SdfMetaGpu, geom_type_to_gpu,
 };
 use crate::context::GpuContext;
 
@@ -337,7 +336,7 @@ impl GpuCollisionPipeline {
                         flip_normal: 0,
                         n_env: state_bufs.n_env,
                         ngeom: model_bufs.ngeom,
-                        max_contacts: MAX_PIPELINE_CONTACTS,
+                        max_contacts: state_bufs.max_contacts,
                         _pad1: 0,
                         _pad2: 0,
                         friction: [pair.friction[0], pair.friction[1], pair.friction[2], 0.0],
@@ -364,7 +363,7 @@ impl GpuCollisionPipeline {
                         flip_normal: 1,
                         n_env: state_bufs.n_env,
                         ngeom: model_bufs.ngeom,
-                        max_contacts: MAX_PIPELINE_CONTACTS,
+                        max_contacts: state_bufs.max_contacts,
                         _pad1: 0,
                         _pad2: 0,
                         friction: [pair.friction[0], pair.friction[1], pair.friction[2], 0.0],
@@ -396,7 +395,7 @@ impl GpuCollisionPipeline {
                         flip_normal: 0,
                         n_env: state_bufs.n_env,
                         ngeom: model_bufs.ngeom,
-                        max_contacts: MAX_PIPELINE_CONTACTS,
+                        max_contacts: state_bufs.max_contacts,
                         _pad1: 0,
                         _pad2: 0,
                         friction: [pair.friction[0], pair.friction[1], pair.friction[2], 0.0],
