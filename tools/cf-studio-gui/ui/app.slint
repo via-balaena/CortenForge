@@ -185,9 +185,14 @@ component StepBox inherits HorizontalLayout {
 // only and never persisted), so the wizard cannot be used until the user
 // confirms. `accept()` clears the gate for the session; `quit()` closes the app.
 //
-// ⚠ PLACEHOLDER WORDING — NOT LEGAL ADVICE. The disclaimer and 18+
-// confirmation below are a reasonable template only. Via Balaena's legal
-// counsel MUST review and replace this text before any public release.
+// ⚠ NOT LEGAL ADVICE — NOT LAWYER-REVIEWED. The disclaimer + 18+ confirmation
+// below are a good-faith draft following common conventions (as-is/no-warranty,
+// assumption of risk incl. body-safe materials + curing, no medical claims,
+// limitation of liability + indemnity, severability, adults/lawful use, age
+// affirmation). Enforceability varies by jurisdiction and consumer-protection law
+// may override waivers. A governing-law clause is intentionally omitted (it must
+// name Via Balaena's jurisdiction). Have it reviewed by counsel before relying on
+// it for legal protection or distributing publicly.
 component WaiverPage inherits Rectangle {
     callback accept();
     callback quit();
@@ -225,27 +230,39 @@ component WaiverPage inherits Rectangle {
                     spacing: 14px;
 
                     Text {
-                        text: "Cendrillon is provided by Via Balaena as a design-assistance tool. It generates molds and casting plans for custom silicone devices from your own 3D scans.";
+                        text: "Cendrillon is software provided by Via Balaena that helps you design molds and casting plans for custom silicone objects from your own 3D scans. It is a design-assistance tool only.";
                         font-size: 16px;
                         color: #1a1a1a;
                         wrap: word-wrap;
                     }
                     Text {
-                        text: "You are solely responsible for how you use this software and for anything you make with it. Via Balaena makes no warranty that the software or its outputs are safe, accurate, fit for any purpose, or suitable for use on or in the body. Material selection, manufacture, curing, cleaning, and use are entirely at your own risk. To the fullest extent permitted by law, Via Balaena disclaims all liability for any injury, loss, or damage arising from use of this software or its outputs.";
+                        text: "The software and everything it produces are provided \"as is,\" without warranties of any kind, express or implied — including merchantability, fitness for a particular purpose, accuracy, or safety. Via Balaena does not warrant that any design, mold, or finished object is safe or suitable for any use, including contact with or insertion into the body.";
                         font-size: 16px;
                         color: #1a1a1a;
                         wrap: word-wrap;
                     }
                     Text {
-                        text: "This software and the devices it helps you create are intended for adults only.";
+                        text: "You use this software — and make and use anything created with it — entirely at your own risk. You alone are responsible for choosing body-safe materials and for proper mixing, curing, cleaning, and hygiene. Improperly cured or non-body-safe silicone can cause serious injury.";
+                        font-size: 16px;
+                        color: #1a1a1a;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Cendrillon is not a medical device and makes no medical, therapeutic, or health claims.";
+                        font-size: 16px;
+                        color: #1a1a1a;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "To the fullest extent permitted by law, Via Balaena and its contributors are not liable for any injury, loss, or damage arising from the software or the objects you create with it, and you agree to indemnify Via Balaena against any claim arising from your use of either. If any part of these terms is unenforceable, the rest still applies.";
+                        font-size: 16px;
+                        color: #1a1a1a;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "This software and the objects it helps you create are intended for adults and only for lawful use. By continuing you confirm you are at least 18 years old, or the age of majority where you live if that is higher.";
                         font-size: 16px;
                         font-weight: 700;
-                        color: #1a1a1a;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: "By continuing you confirm that you are at least 18 years old and that you have read and accept these terms.";
-                        font-size: 16px;
                         color: #1a1a1a;
                         wrap: word-wrap;
                     }
@@ -253,7 +270,7 @@ component WaiverPage inherits Rectangle {
             }
 
             CheckBox {
-                text: "I confirm I am 18 or older and accept the terms above.";
+                text: "I have read and accept these terms, and I assume all risk.";
                 toggled => { root.agreed = self.checked; }
             }
 
