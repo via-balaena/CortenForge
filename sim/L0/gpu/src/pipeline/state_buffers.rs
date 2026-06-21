@@ -302,16 +302,20 @@ impl GpuStateBuffers {
         }
     }
 
-    /// Re-upload qpos from CPU data (e.g., after qpos change).
-    pub fn upload_qpos(&self, ctx: &GpuContext, data: &Data) {
-        let qpos_f32 = f64s_to_f32s(data.qpos.as_slice());
+    /// Re-upload qpos from CPU data for every environment (e.g. after a qpos
+    /// change or an RL reset). Env `k`'s block lands at offset `k · nq`, matching
+    /// the `env_id * nq` stride the shaders read; at `n_env = 1` this is exactly
+    /// the legacy single-env upload.
+    pub fn upload_qpos(&self, ctx: &GpuContext, per_env: &[&Data]) {
+        let qpos_f32 = concat_env_state(per_env, |d| d.qpos.as_slice());
         ctx.queue
             .write_buffer(&self.qpos, 0, bytemuck::cast_slice(&qpos_f32));
     }
 
-    /// Re-upload qvel from CPU data (e.g., after velocity change).
-    pub fn upload_qvel(&self, ctx: &GpuContext, data: &Data) {
-        let qvel_f32 = f64s_to_f32s(data.qvel.as_slice());
+    /// Re-upload qvel from CPU data for every environment (env-strided, see
+    /// [`Self::upload_qpos`]).
+    pub fn upload_qvel(&self, ctx: &GpuContext, per_env: &[&Data]) {
+        let qvel_f32 = concat_env_state(per_env, |d| d.qvel.as_slice());
         if !qvel_f32.is_empty() {
             ctx.queue
                 .write_buffer(&self.qvel, 0, bytemuck::cast_slice(&qvel_f32));

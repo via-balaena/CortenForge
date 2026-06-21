@@ -2071,7 +2071,7 @@ fn t29_single_substep_orchestrator() {
     };
 
     // Run 1 substep via orchestrator
-    pipeline.step(&model, &mut data, 1);
+    pipeline.step(&model, std::slice::from_mut(&mut data), 1);
 
     // Verify state is updated (z should have decreased slightly due to gravity)
     eprintln!("  T29: after 1 step, z = {:.6}", data.qpos[2]);
@@ -2111,7 +2111,7 @@ fn t30_multi_substep_single_submit() {
         Err(e) => panic!("Pipeline creation failed: {e}"),
     };
 
-    pipeline.step(&model, &mut data_batch, 10);
+    pipeline.step(&model, std::slice::from_mut(&mut data_batch), 10);
 
     // Run 10 substeps in 10 separate submits
     let mut data_serial = model.make_data();
@@ -2120,7 +2120,7 @@ fn t30_multi_substep_single_submit() {
 
     let pipeline2 = GpuPhysicsPipeline::new(&model, &data_serial).unwrap();
     for _ in 0..10 {
-        pipeline2.step(&model, &mut data_serial, 1);
+        pipeline2.step(&model, std::slice::from_mut(&mut data_serial), 1);
     }
 
     // Compare final states
@@ -2290,7 +2290,7 @@ fn t31_gpu_vs_cpu_trajectory() {
         all_finite: true,
     };
     for _ in 0..nsteps {
-        pipeline.step(&model, &mut gpu_data, 1);
+        pipeline.step(&model, std::slice::from_mut(&mut gpu_data), 1);
         let finite = (0..model.nq).all(|i| gpu_data.qpos[i].is_finite())
             && (0..model.nv).all(|i| gpu_data.qvel[i].is_finite());
         gpu.all_finite &= finite;
@@ -2393,7 +2393,7 @@ fn t33_step_applies_implicit_damping() {
         Err(e) => panic!("Pipeline creation failed: {e}"),
     };
     for _ in 0..nsteps {
-        pipeline.step(&model, &mut gpu_data, 1);
+        pipeline.step(&model, std::slice::from_mut(&mut gpu_data), 1);
     }
 
     // CPU damped trajectory (reference).
@@ -2464,7 +2464,7 @@ fn t32_sustained_multi_substep() {
     let num_batches = (total_time / (dt * f64::from(substeps_per_batch))).round() as usize;
 
     for batch in 0..num_batches {
-        pipeline.step(&model, &mut data, substeps_per_batch);
+        pipeline.step(&model, std::slice::from_mut(&mut data), substeps_per_batch);
 
         // Check stability every batch
         for i in 0..model.nq {
@@ -2673,4 +2673,188 @@ fn t34_gpu_batched_collision_substep_matches_single() {
         "batched collision substep diverged from single-env:\n  {}",
         fails.join("\n  ")
     );
+}
+
+// ── T35: Batched orchestrator step() conformance ──────────────────────────
+//
+// Exercises the PRODUCTION `GpuPhysicsPipeline::step()` in batched mode — the
+// write-params-once + `encode_substep` path the orchestrator actually uses, not
+// the hand-rolled `run_one_substep_batched` helper above. Two envs stepped
+// together must each match the same env stepped ALONE through a single-env
+// `step()`, so the only thing under test is the n_env stride threaded through
+// the whole orchestrator: batched upload, per-env buffer clears, multi-substep
+// single-submit, and per-env readback/writeback.
+//
+// A free-fall fixture (sphere far above the plane, never contacting over the
+// rollout) keeps the dynamics exact and deterministic, isolating the batching
+// plumbing from the non-deterministic per-cell contact ordering that T34 covers
+// separately. With no contact the per-env math is independent and identical, so
+// the gate is tight (1e-6).
+#[test]
+fn t35_orchestrator_batched_step_matches_single() {
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    // Two envs that genuinely differ: distinct heights + velocities, both far
+    // enough above the plane that the rollout never contacts it (pure free fall).
+    let make = |z: f64, vz: f64| {
+        let mut d = model.make_data();
+        d.qpos[2] = z;
+        d.qpos[3] = 1.0; // identity quaternion
+        d.qvel[2] = vz;
+        d
+    };
+    let d0 = make(20.0, 0.0);
+    let d1 = make(18.0, -2.0);
+    let substeps = 50;
+
+    // Build the batched pipeline first — this doubles as the GPU-availability gate.
+    let pipe = match GpuPhysicsPipeline::new_batched(&model, &[&d0, &d1]) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T35: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("batched pipeline creation failed: {e}"),
+    };
+
+    // Single-env oracle: each env stepped alone through the production step()
+    // (GPU confirmed present by the batched build above).
+    let step_single = |init: &Data| -> Data {
+        let p = GpuPhysicsPipeline::new(&model, init).expect("single-env pipeline");
+        let mut d = init.clone();
+        p.step(&model, std::slice::from_mut(&mut d), substeps);
+        d
+    };
+    let single0 = step_single(&d0);
+    let single1 = step_single(&d1);
+
+    // Discriminator: the two single-env results must differ, else env0 reading
+    // env1's slice (or vice versa) could not be caught — the check would be vacuous.
+    assert!(
+        (single0.qpos[2] - single1.qpos[2]).abs() > 1e-3,
+        "env0/env1 single-env results near-identical — batched check is vacuous"
+    );
+
+    // Batched run: both envs together on the shared batched buffers.
+    let mut datas = vec![d0, d1];
+    pipe.step(&model, &mut datas, substeps);
+
+    let oracle = [single0, single1];
+    for env in 0..2 {
+        for i in 0..model.nq {
+            let diff = (datas[env].qpos[i] - oracle[env].qpos[i]).abs();
+            assert!(
+                diff < 1e-6,
+                "env{env} qpos[{i}] batched={:.9} single={:.9} d={diff:.2e}",
+                datas[env].qpos[i],
+                oracle[env].qpos[i]
+            );
+        }
+        for i in 0..model.nv {
+            let diff = (datas[env].qvel[i] - oracle[env].qvel[i]).abs();
+            assert!(
+                diff < 1e-6,
+                "env{env} qvel[{i}] batched={:.9} single={:.9} d={diff:.2e}",
+                datas[env].qvel[i],
+                oracle[env].qvel[i]
+            );
+        }
+        assert!(
+            (datas[env].time - oracle[env].time).abs() < 1e-12,
+            "env{env} time advanced inconsistently"
+        );
+    }
+
+    eprintln!("  T35 passed: batched step() matches single-env per env");
+}
+
+// ── T36: Batched orchestrator step() conformance WITH contact ─────────────
+//
+// Closes the gap T35 leaves open: T35 is free-fall, so it never drives the
+// production `step()` / `encode_substep` path with active contacts, and T34
+// exercises contact-batching only through the hand-rolled `run_one_substep_batched`
+// helper — not the real orchestrator. This test runs the PRODUCTION `step()` in
+// batched mode with two spheres penetrating the ground plane at distinct depths,
+// so the per-substep contact + constraint clears and the collision/constraint
+// stages are validated end-to-end across n_env.
+//
+// ONE substep only: per-cell contact ordering is non-deterministic, but qpos/qvel
+// after a single substep are order-independent through the solve (the same property
+// T34 relies on), so the batched env-k vs single-env-k comparison is stable. The
+// gate matches T34's contact tolerances (1e-4 qpos / 1e-3 qvel), looser than T35's
+// exact free-fall gate.
+#[test]
+fn t36_orchestrator_batched_step_with_contact_matches_single() {
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 16);
+
+    // Two envs penetrating the z=0 plane at distinct depths + velocities, so the
+    // contact response genuinely differs between them.
+    let make = |z: f64, vz: f64| {
+        let mut d = model.make_data();
+        d.qpos[2] = z; // sphere centre z; < radius ⇒ penetrates the plane
+        d.qpos[3] = 1.0; // identity quaternion
+        d.qvel[2] = vz;
+        d
+    };
+    let d0 = make(3.0, 0.0);
+    let d1 = make(2.5, -0.5); // deeper + moving ⇒ a distinct contact result
+
+    // Batched pipeline first — doubles as the GPU-availability gate.
+    let pipe = match GpuPhysicsPipeline::new_batched(&model, &[&d0, &d1]) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T36: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("batched pipeline creation failed: {e}"),
+    };
+
+    // Single-env oracle: each env stepped alone through the production step().
+    let step_single = |init: &Data| -> Data {
+        let p = GpuPhysicsPipeline::new(&model, init).expect("single-env pipeline");
+        let mut d = init.clone();
+        p.step(&model, std::slice::from_mut(&mut d), 1);
+        d
+    };
+    let single0 = step_single(&d0);
+    let single1 = step_single(&d1);
+
+    // Discriminator: the two contact responses must differ, else the cross-env
+    // check would be vacuous.
+    assert!(
+        (single0.qvel[2] - single1.qvel[2]).abs() > 1e-3,
+        "env0/env1 single-env contact results near-identical — batched check is vacuous"
+    );
+
+    // Batched run: both envs together through the production step().
+    let mut datas = vec![d0, d1];
+    pipe.step(&model, &mut datas, 1);
+
+    let oracle = [single0, single1];
+    for env in 0..2 {
+        for i in 0..model.nq {
+            let diff = (datas[env].qpos[i] - oracle[env].qpos[i]).abs();
+            assert!(
+                diff < 1e-4,
+                "env{env} qpos[{i}] batched={:.6} single={:.6} d={diff:.2e}",
+                datas[env].qpos[i],
+                oracle[env].qpos[i]
+            );
+        }
+        for i in 0..model.nv {
+            let diff = (datas[env].qvel[i] - oracle[env].qvel[i]).abs();
+            assert!(
+                diff < 1e-3,
+                "env{env} qvel[{i}] batched={:.6} single={:.6} d={diff:.2e}",
+                datas[env].qvel[i],
+                oracle[env].qvel[i]
+            );
+        }
+    }
+
+    eprintln!("  T36 passed: batched step() with contact matches single-env per env");
 }
