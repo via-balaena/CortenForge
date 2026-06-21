@@ -18,7 +18,9 @@
     clippy::suboptimal_flops,
     clippy::needless_range_loop,
     clippy::cast_sign_loss,
-    clippy::doc_markdown
+    clippy::doc_markdown,
+    // `!(diff < tol)` is intentional: it treats NaN as a failure (unlike `>=`).
+    clippy::neg_cmp_op_on_partial_ord
 )]
 
 // CI safety scanner: this file is test-only (gated by #[cfg(test)] in mod.rs).
@@ -2497,4 +2499,178 @@ fn t32_sustained_multi_substep() {
     );
 
     eprintln!("  T32 passed: sustained multi-substep stable over {total_time}s");
+}
+
+// ── T34: Batched (n_env>1) full substep INCLUDING real GPU collision ──────
+//
+// The injected-contact conformance suite (contact_conformance_tests) skips
+// collision because GPU SDF-cell contacts never match CPU analytic contacts. To
+// validate COLLISION batching we use a GPU-only oracle instead: a batched env_k
+// must match a SINGLE-env GPU run of the same state, run through the IDENTICAL
+// substep helper — so n_env=1 is byte-identical and the only difference under test
+// is the env stride. qpos/qvel after one substep are order-independent through the
+// solve, so the non-deterministic per-cell contact ordering washes out.
+
+/// Self-validating allowlist for the batched-collision substep test, keyed by env.
+/// An armed env that suddenly MATCHES fails the test, so a fix that makes a env
+/// conform forces the arm's removal here (mirrors the constraint suite's allowlist).
+fn known_collision_batch_divergence(env: usize) -> Option<&'static str> {
+    // **Empty — collision (aabb + sdf_*_narrow) is now env-strided**, so every env's
+    // batched substep matches its single-env run. Self-validating: re-arm an env here
+    // only if a NEW collision-batch divergence is exposed.
+    let _ = env;
+    None
+}
+
+/// Run ONE full GPU substep (fk → crba → velFK → rne → smooth → collision →
+/// constraint → integrate) over `datas.len()` environments, returning each env's
+/// (qpos, qvel). Mirrors `orchestrator::encode_substep` with per-env buffer clears
+/// sized ×n_env. The fixture is undamped, so the eulerdamp stage is omitted (as the
+/// orchestrator does when `has_damping` is false).
+fn run_one_substep_batched(
+    ctx: &GpuContext,
+    model: &Model,
+    datas: &[&Data],
+) -> Vec<(Vec<f32>, Vec<f32>)> {
+    let n_env = datas.len() as u32;
+    let nq = model.nq;
+    let nv = model.nv;
+    let model_buf = GpuModelBuffers::upload(ctx, model);
+    let state_buf = GpuStateBuffers::new_batched(ctx, &model_buf, n_env, datas);
+
+    let fk = GpuFkPipeline::new(ctx, &model_buf, &state_buf);
+    let crba = GpuCrbaPipeline::new(ctx, &model_buf, &state_buf);
+    let vel = GpuVelocityFkPipeline::new(ctx, &model_buf, &state_buf);
+    let rne = GpuRnePipeline::new(ctx, &model_buf, &state_buf, model);
+    let smooth = GpuSmoothPipeline::new(ctx, &model_buf, &state_buf);
+    let collision = GpuCollisionPipeline::new(ctx, model, &model_buf, &state_buf);
+    let constraint = GpuConstraintPipeline::new(ctx, &model_buf, &state_buf, model);
+    let integrate = GpuIntegratePipeline::new(ctx, &model_buf, &state_buf);
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("batched collision substep"),
+        });
+    // Per-substep clears (mirror orchestrator::encode_substep, sized ×n_env).
+    encoder.clear_buffer(&state_buf.body_cfrc, 0, None);
+    encoder.clear_buffer(&state_buf.qfrc_bias, 0, None);
+    if nv > 0 {
+        let nv_sq_bytes = u64::from(n_env) * (nv as u64) * (nv as u64) * 4;
+        encoder.clear_buffer(&state_buf.qm, 0, Some(nv_sq_bytes));
+        encoder.clear_buffer(&state_buf.qfrc_applied, 0, None);
+        encoder.clear_buffer(&state_buf.qfrc_actuator, 0, None);
+        encoder.clear_buffer(&state_buf.qfrc_passive, 0, None);
+    }
+    fk.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    crba.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    vel.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    rne.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+    smooth.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+    collision.encode(&mut encoder, &state_buf);
+    constraint.encode(&mut encoder, &state_buf);
+    integrate.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+    ctx.queue.submit([encoder.finish()]);
+
+    let qpos_all = readback_f32s(ctx, &state_buf.qpos, nq * datas.len());
+    let qvel_all = readback_f32s(ctx, &state_buf.qvel, nv * datas.len());
+    (0..datas.len())
+        .map(|k| {
+            (
+                qpos_all[k * nq..(k + 1) * nq].to_vec(),
+                qvel_all[k * nv..(k + 1) * nv].to_vec(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn t34_gpu_batched_collision_substep_matches_single() {
+    let ctx = gpu_or_skip!();
+
+    // SDF sphere on a ground plane; two envs at DISTINCT penetrating heights.
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 16);
+
+    let make = |z: f64, vz: f64| {
+        let mut d = model.make_data();
+        d.qpos[2] = z; // sphere centre z; < radius ⇒ penetrates the z=0 plane
+        d.qpos[3] = 1.0; // identity quaternion
+        d.qvel[2] = vz;
+        d
+    };
+    let data0 = make(3.0, 0.0);
+    let data1 = make(2.5, -0.5); // deeper + moving ⇒ a distinct result
+
+    // Single-env GPU oracle: each state run alone through the identical substep.
+    let single0 = run_one_substep_batched(&ctx, &model, &[&data0]).remove(0);
+    let single1 = run_one_substep_batched(&ctx, &model, &[&data1]).remove(0);
+
+    // Discriminator: the two single-env results must genuinely differ, else a stage
+    // reading env 0's data for env 1 could not be caught (the run would be vacuous).
+    let differ = single0
+        .0
+        .iter()
+        .zip(&single1.0)
+        .any(|(a, b)| (a - b).abs() > 1e-3);
+    assert!(
+        differ,
+        "env 0/1 single-env results are near-identical — the batched check is vacuous"
+    );
+
+    // Batched run: both envs together on the shared batched buffers.
+    let batched = run_one_substep_batched(&ctx, &model, &[&data0, &data1]);
+    let oracle = [single0, single1];
+
+    let mut fails: Vec<String> = Vec::new();
+    for env in 0..2 {
+        let (bq, bv) = &batched[env];
+        let (sq, sv) = &oracle[env];
+        let mut env_fails: Vec<String> = Vec::new();
+        for i in 0..model.nq {
+            let d = (bq[i] - sq[i]).abs();
+            if !(d < 1e-4) {
+                env_fails.push(format!(
+                    "env{env} qpos[{i}] batched={:.6} single={:.6} d={d:.2e}",
+                    bq[i], sq[i]
+                ));
+            }
+        }
+        for i in 0..model.nv {
+            let d = (bv[i] - sv[i]).abs();
+            if !(d < 1e-3) {
+                env_fails.push(format!(
+                    "env{env} qvel[{i}] batched={:.6} single={:.6} d={d:.2e}",
+                    bv[i], sv[i]
+                ));
+            }
+        }
+        match known_collision_batch_divergence(env) {
+            Some(reason) => {
+                assert!(
+                    !env_fails.is_empty(),
+                    "env{env} is on the collision-batch allowlist ({reason}) but now \
+                     MATCHES — collision was fixed; remove its arm."
+                );
+                eprintln!(
+                    "  env{env}: EXPECTED-DIVERGENT ({} entries, {reason})",
+                    env_fails.len()
+                );
+            }
+            None => {
+                if env_fails.is_empty() {
+                    eprintln!("  env{env}: passed");
+                } else {
+                    fails.extend(env_fails);
+                }
+            }
+        }
+    }
+
+    assert!(
+        fails.is_empty(),
+        "batched collision substep diverged from single-env:\n  {}",
+        fails.join("\n  ")
+    );
 }

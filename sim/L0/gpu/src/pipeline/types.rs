@@ -295,7 +295,15 @@ pub struct NarrowphaseParams {
     pub contact_margin: f32,
     /// Normal convention: 0 = A→B (negate), 1 = B→A (keep).
     pub flip_normal: u32,
-    pub _pad: u32,
+    /// Number of environments; the narrowphase loops envs internally (the 3D grid
+    /// dispatch leaves no free axis for env), striding per-env geom poses + contacts.
+    pub n_env: u32,
+    /// Per-env geom-pose stride (`geom_xpos`/`geom_xmat`/`geom_aabb`).
+    pub ngeom: u32,
+    /// Per-env contact-buffer stride (`MAX_PIPELINE_CONTACTS`).
+    pub max_contacts: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
     /// Combined friction [slide, torsion, roll, 0].
     pub friction: [f32; 4],
 }

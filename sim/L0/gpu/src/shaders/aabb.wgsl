@@ -12,7 +12,7 @@
 
 struct AabbParams {
     ngeom: u32,
-    _pad0: u32,
+    n_env: u32,
     _pad1: u32,
     _pad2: u32,
 };
@@ -88,17 +88,20 @@ fn local_half_extents(gtype: u32, size: vec4<f32>) -> vec3<f32> {
 @compute @workgroup_size(64)
 fn compute_aabb(@builtin(global_invocation_id) gid: vec3<u32>) {
     let g = gid.x;
-    if g >= params.ngeom {
+    let env_id = gid.y;
+    if g >= params.ngeom || env_id >= params.n_env {
         return;
     }
 
-    let geom = geoms[g];
-    let pos = geom_xpos[g].xyz;
+    let geom = geoms[g]; // shared model data — bare geom index
+    // geom_xpos/geom_xmat/geom_aabb are per-env state (stride ngeom).
+    let gi = env_id * params.ngeom + g;
+    let pos = geom_xpos[gi].xyz;
 
     // geom_xmat: 3×vec4 per geom (column-major rotation matrix)
-    let col0 = geom_xmat[g * 3u + 0u].xyz;
-    let col1 = geom_xmat[g * 3u + 1u].xyz;
-    let col2 = geom_xmat[g * 3u + 2u].xyz;
+    let col0 = geom_xmat[gi * 3u + 0u].xyz;
+    let col1 = geom_xmat[gi * 3u + 1u].xyz;
+    let col2 = geom_xmat[gi * 3u + 2u].xyz;
 
     // Local-frame AABB half-extents from geom type + size
     let half = local_half_extents(geom.geom_type, geom.size);
@@ -111,6 +114,6 @@ fn compute_aabb(@builtin(global_invocation_id) gid: vec3<u32>) {
         abs(col0.z) * half.x + abs(col1.z) * half.y + abs(col2.z) * half.z,
     );
 
-    geom_aabb[g * 2u + 0u] = vec4(pos - world_half, 0.0);
-    geom_aabb[g * 2u + 1u] = vec4(pos + world_half, 0.0);
+    geom_aabb[gi * 2u + 0u] = vec4(pos - world_half, 0.0);
+    geom_aabb[gi * 2u + 1u] = vec4(pos + world_half, 0.0);
 }

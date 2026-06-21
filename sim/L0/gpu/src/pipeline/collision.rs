@@ -26,7 +26,8 @@ use wgpu::util::DeviceExt;
 use super::model_buffers::GpuModelBuffers;
 use super::state_buffers::GpuStateBuffers;
 use super::types::{
-    GPU_GEOM_PLANE, GPU_GEOM_SDF, NarrowphaseParams, SDF_META_NONE, SdfMetaGpu, geom_type_to_gpu,
+    GPU_GEOM_PLANE, GPU_GEOM_SDF, MAX_PIPELINE_CONTACTS, NarrowphaseParams, SDF_META_NONE,
+    SdfMetaGpu, geom_type_to_gpu,
 };
 use crate::context::GpuContext;
 
@@ -61,7 +62,8 @@ enum PairType {
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct AabbParams {
     ngeom: u32,
-    _pad: [u32; 3],
+    n_env: u32,
+    _pad: [u32; 2],
 }
 
 // ── Pre-built narrowphase dispatch ─────────────────────────────────────
@@ -103,6 +105,8 @@ pub struct GpuCollisionPipeline {
 
     // Cached count for AABB dispatch
     ngeom: u32,
+    // Batch size — env axis on the AABB dispatch (gid.y).
+    n_env: u32,
 }
 
 impl GpuCollisionPipeline {
@@ -257,7 +261,8 @@ impl GpuCollisionPipeline {
                 label: Some("aabb_params"),
                 contents: bytemuck::bytes_of(&AabbParams {
                     ngeom: model_bufs.ngeom,
-                    _pad: [0; 3],
+                    n_env: state_bufs.n_env,
+                    _pad: [0; 2],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -330,7 +335,11 @@ impl GpuCollisionPipeline {
                         surface_threshold: meta_a.cell_size * 2.0,
                         contact_margin: pair.margin,
                         flip_normal: 0,
-                        _pad: 0,
+                        n_env: state_bufs.n_env,
+                        ngeom: model_bufs.ngeom,
+                        max_contacts: MAX_PIPELINE_CONTACTS,
+                        _pad1: 0,
+                        _pad2: 0,
                         friction: [pair.friction[0], pair.friction[1], pair.friction[2], 0.0],
                     };
                     dispatches.push(make_dispatch(
@@ -353,7 +362,11 @@ impl GpuCollisionPipeline {
                         surface_threshold: meta_b.cell_size * 2.0,
                         contact_margin: pair.margin,
                         flip_normal: 1,
-                        _pad: 0,
+                        n_env: state_bufs.n_env,
+                        ngeom: model_bufs.ngeom,
+                        max_contacts: MAX_PIPELINE_CONTACTS,
+                        _pad1: 0,
+                        _pad2: 0,
                         friction: [pair.friction[0], pair.friction[1], pair.friction[2], 0.0],
                     };
                     dispatches.push(make_dispatch(
@@ -381,7 +394,11 @@ impl GpuCollisionPipeline {
                         surface_threshold: meta.cell_size * 2.0,
                         contact_margin: pair.margin,
                         flip_normal: 0,
-                        _pad: 0,
+                        n_env: state_bufs.n_env,
+                        ngeom: model_bufs.ngeom,
+                        max_contacts: MAX_PIPELINE_CONTACTS,
+                        _pad1: 0,
+                        _pad2: 0,
                         friction: [pair.friction[0], pair.friction[1], pair.friction[2], 0.0],
                     };
                     dispatches.push(make_dispatch(
@@ -399,6 +416,7 @@ impl GpuCollisionPipeline {
         }
 
         let ngeom = model_bufs.ngeom;
+        let n_env = state_bufs.n_env;
 
         Self {
             aabb_pipeline,
@@ -413,6 +431,7 @@ impl GpuCollisionPipeline {
             narrow_bg3,
             dispatches,
             ngeom,
+            n_env,
         }
     }
 
@@ -424,8 +443,14 @@ impl GpuCollisionPipeline {
     /// All bind groups and params buffers were pre-created in `new()` —
     /// this method performs zero GPU resource allocation.
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, state_bufs: &GpuStateBuffers) {
-        // 1. Reset contact counter to 0
-        encoder.clear_buffer(&state_bufs.contact_count, 0, Some(4));
+        // 1. Reset the per-env contact counters (one atomic u32 per env). Must
+        //    clear ALL n_env slots — the allocator sized this buffer ×n_env, so its
+        //    paired clear is ×n_env too (else env>0 keeps stale counts across steps).
+        encoder.clear_buffer(
+            &state_bufs.contact_count,
+            0,
+            Some(u64::from(self.n_env) * 4),
+        );
 
         // 2. AABB computation (one dispatch, all geoms)
         {
@@ -437,7 +462,9 @@ impl GpuCollisionPipeline {
             pass.set_bind_group(0, &self.aabb_bg0, &[]);
             pass.set_bind_group(1, &self.aabb_bg1, &[]);
             pass.set_bind_group(2, &self.aabb_bg2, &[]);
-            pass.dispatch_workgroups(self.ngeom.div_ceil(64), 1, 1);
+            // Env axis on gid.y: one workgroup column per env (aabb.wgsl reads
+            // env_id = gid.y). Narrowphase batching lands in the next commit.
+            pass.dispatch_workgroups(self.ngeom.div_ceil(64), self.n_env, 1);
         }
 
         // 3. Narrowphase dispatches (pre-built at construction time)
