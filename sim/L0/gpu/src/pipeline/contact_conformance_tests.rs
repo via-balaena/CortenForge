@@ -473,7 +473,8 @@ fn run_constraint_stage_batched(
     let n_env = per_env.len() as u32;
     let model_buf = GpuModelBuffers::upload(ctx, model);
     let datas: Vec<&Data> = per_env.iter().map(|(d, _)| d).collect();
-    let state_buf = GpuStateBuffers::new_batched(ctx, &model_buf, n_env, &datas);
+    let state_buf =
+        GpuStateBuffers::new_batched(ctx, &model_buf, n_env, &datas, MAX_PIPELINE_CONTACTS);
 
     // Inject each env's contacts at its per-env offset (env k at byte offset
     // k · MAX_PIPELINE_CONTACTS · size_of::<PipelineContact>(), count at [k]).

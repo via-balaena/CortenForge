@@ -141,7 +141,15 @@ impl GpuPhysicsPipeline {
 
         // ── Upload model + state ──────────────────────────────────
         let model_bufs = GpuModelBuffers::upload(&ctx, model);
-        let state_bufs = GpuStateBuffers::new_batched(&ctx, &model_bufs, n_env, datas);
+        // Single-env keeps the legacy per-env contact capacity; batched uses the
+        // smaller per-env budget so the ×n_env buffers stay within GPU limits.
+        let max_contacts = if n_env == 1 {
+            super::types::MAX_PIPELINE_CONTACTS
+        } else {
+            super::types::DEFAULT_BATCHED_MAX_CONTACTS
+        };
+        let state_bufs =
+            GpuStateBuffers::new_batched(&ctx, &model_bufs, n_env, datas, max_contacts);
 
         // ── Create all sub-pipelines ──────────────────────────────
         let fk = GpuFkPipeline::new(&ctx, &model_bufs, &state_bufs);

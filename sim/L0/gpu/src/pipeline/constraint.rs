@@ -23,7 +23,7 @@
 
 use super::model_buffers::GpuModelBuffers;
 use super::state_buffers::GpuStateBuffers;
-use super::types::{AssemblyParams, MAX_PIPELINE_CONTACTS, SolverParams};
+use super::types::{AssemblyParams, SolverParams};
 use crate::context::GpuContext;
 
 use sim_core::types::Model;
@@ -77,7 +77,10 @@ impl GpuConstraintPipeline {
         cpu_model: &Model,
     ) -> Self {
         let nv = model_bufs.nv;
-        let max_contacts = MAX_PIPELINE_CONTACTS;
+        // Capacity is owned by the state buffers (single-env vs batched differ), so
+        // the shader strides + dispatch sizes match the buffers' actual sizing.
+        let max_contacts = state_bufs.max_contacts;
+        let max_constraints = super::types::CONSTRAINT_ROWS_PER_CONTACT * max_contacts;
 
         // ── Compile shaders ────────────────────────────────────────
         let assemble_module = ctx
@@ -107,7 +110,7 @@ impl GpuConstraintPipeline {
         let assembly_params = AssemblyParams {
             nv,
             max_contacts,
-            max_constraints: super::types::MAX_CONSTRAINTS,
+            max_constraints,
             nbody: model_bufs.nbody,
             timestep: cpu_model.timestep as f32,
             impratio: cpu_model.impratio as f32,
@@ -133,7 +136,7 @@ impl GpuConstraintPipeline {
             tolerance: cpu_model.solver_tolerance as f32,
             ls_tolerance: cpu_model.ls_tolerance as f32,
             meaninertia: cpu_model.stat_meaninertia as f32,
-            max_constraints: super::types::MAX_CONSTRAINTS,
+            max_constraints,
         };
         let solver_params_buf =
             create_uniform(ctx, "solver_params", bytemuck::bytes_of(&solver_params));
