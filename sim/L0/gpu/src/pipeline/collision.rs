@@ -61,7 +61,8 @@ enum PairType {
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct AabbParams {
     ngeom: u32,
-    _pad: [u32; 3],
+    n_env: u32,
+    _pad: [u32; 2],
 }
 
 // ── Pre-built narrowphase dispatch ─────────────────────────────────────
@@ -103,6 +104,8 @@ pub struct GpuCollisionPipeline {
 
     // Cached count for AABB dispatch
     ngeom: u32,
+    // Batch size — env axis on the AABB dispatch (gid.y).
+    n_env: u32,
 }
 
 impl GpuCollisionPipeline {
@@ -257,7 +260,8 @@ impl GpuCollisionPipeline {
                 label: Some("aabb_params"),
                 contents: bytemuck::bytes_of(&AabbParams {
                     ngeom: model_bufs.ngeom,
-                    _pad: [0; 3],
+                    n_env: state_bufs.n_env,
+                    _pad: [0; 2],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -399,6 +403,7 @@ impl GpuCollisionPipeline {
         }
 
         let ngeom = model_bufs.ngeom;
+        let n_env = state_bufs.n_env;
 
         Self {
             aabb_pipeline,
@@ -413,6 +418,7 @@ impl GpuCollisionPipeline {
             narrow_bg3,
             dispatches,
             ngeom,
+            n_env,
         }
     }
 
@@ -437,7 +443,9 @@ impl GpuCollisionPipeline {
             pass.set_bind_group(0, &self.aabb_bg0, &[]);
             pass.set_bind_group(1, &self.aabb_bg1, &[]);
             pass.set_bind_group(2, &self.aabb_bg2, &[]);
-            pass.dispatch_workgroups(self.ngeom.div_ceil(64), 1, 1);
+            // Env axis on gid.y: one workgroup column per env (aabb.wgsl reads
+            // env_id = gid.y). Narrowphase batching lands in the next commit.
+            pass.dispatch_workgroups(self.ngeom.div_ceil(64), self.n_env, 1);
         }
 
         // 3. Narrowphase dispatches (pre-built at construction time)
