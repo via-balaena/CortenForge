@@ -80,9 +80,13 @@ pub struct GpuPhysicsPipeline {
     staging_qpos: wgpu::Buffer,
     staging_qvel: wgpu::Buffer,
 
-    // Cached model dimensions
+    // Cached model dimensions (single-env counts; per-env buffer strides).
     nq: u32,
     nv: u32,
+    // Number of environments stepped in lockstep. 1 = the interactive path
+    // (byte-identical to the legacy single-env pipeline); >1 batches every
+    // stage across envs via the env-strided shaders.
+    n_env: u32,
 
     /// Whether any DOF has implicit damping. When true, the eulerdamp stage runs
     /// between the constraint stage and integration, solving `(M + h·D)·qacc =
@@ -92,15 +96,36 @@ pub struct GpuPhysicsPipeline {
 }
 
 impl GpuPhysicsPipeline {
-    /// Create the GPU physics pipeline.
+    /// Create the GPU physics pipeline for a single (interactive) environment.
     ///
     /// Validates the model (free joints only, nv ≤ 60), uploads static model
-    /// data, allocates state buffers, and creates all sub-pipelines.
+    /// data, allocates state buffers, and creates all sub-pipelines. This is a
+    /// thin wrapper over [`Self::new_batched`] with `n_env = 1`, so the
+    /// trajectory is byte-identical to the legacy single-env pipeline.
     ///
     /// # Errors
     ///
     /// Returns [`GpuPipelineError`] if the model is incompatible or no GPU is available.
     pub fn new(model: &Model, data: &Data) -> Result<Self, GpuPipelineError> {
+        Self::new_batched(model, &[data])
+    }
+
+    /// Create the GPU physics pipeline for `datas.len()` environments stepped in
+    /// lockstep. Every state buffer is sized `n_env ×` its single-env footprint
+    /// and every stage dispatches `n_env` workgroup rows; the model is shared
+    /// (identical across envs). At `n_env = 1` this is byte-identical to [`Self::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuPipelineError`] if the model is incompatible or no GPU is available.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `datas` is empty.
+    pub fn new_batched(model: &Model, datas: &[&Data]) -> Result<Self, GpuPipelineError> {
+        assert!(!datas.is_empty(), "new_batched: datas must be non-empty");
+        let n_env = datas.len() as u32;
+
         // ── Validation ────────────────────────────────────────────
         if model.nv > 60 {
             return Err(GpuPipelineError::NvTooLarge(model.nv));
@@ -116,7 +141,7 @@ impl GpuPhysicsPipeline {
 
         // ── Upload model + state ──────────────────────────────────
         let model_bufs = GpuModelBuffers::upload(&ctx, model);
-        let state_bufs = GpuStateBuffers::new(&ctx, &model_bufs, data);
+        let state_bufs = GpuStateBuffers::new_batched(&ctx, &model_bufs, n_env, datas);
 
         // ── Create all sub-pipelines ──────────────────────────────
         let fk = GpuFkPipeline::new(&ctx, &model_bufs, &state_bufs);
@@ -133,18 +158,18 @@ impl GpuPhysicsPipeline {
         // otherwise it is skipped so the undamped path is byte-identical.
         let has_damping = (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
 
-        // ── Staging buffers for readback ──────────────────────────
+        // ── Staging buffers for readback (sized for all envs) ─────
         let nq = model.nq as u32;
         let nv = model.nv as u32;
         let staging_qpos = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging_qpos"),
-            size: u64::from(nq.max(1)) * 4,
+            size: u64::from((n_env * nq).max(1)) * 4,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let staging_qvel = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging_qvel"),
-            size: u64::from(nv.max(1)) * 4,
+            size: u64::from((n_env * nv).max(1)) * 4,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -166,16 +191,34 @@ impl GpuPhysicsPipeline {
             staging_qvel,
             nq,
             nv,
+            n_env,
             has_damping,
         })
     }
 
-    /// Run N substeps on GPU. Uploads current state, encodes all substeps
-    /// in one command buffer, submits once, reads back final state.
-    pub fn step(&self, cpu_model: &Model, data: &mut Data, num_substeps: u32) {
-        // 1. Upload per-frame inputs (CPU → GPU)
-        self.state_bufs.upload_qpos(&self.ctx, data);
-        self.state_bufs.upload_qvel(&self.ctx, data);
+    /// Run `num_substeps` substeps on GPU for every environment in lockstep.
+    /// Uploads each env's current state, encodes all substeps into one command
+    /// buffer, submits once, and reads the final per-env state back into `datas`.
+    ///
+    /// `datas` must hold exactly `n_env` environments (the count fixed at
+    /// construction); for the interactive path pass a one-element slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `datas.len()` does not equal the pipeline's `n_env`.
+    pub fn step(&self, cpu_model: &Model, datas: &mut [Data], num_substeps: u32) {
+        assert_eq!(
+            datas.len(),
+            self.n_env as usize,
+            "step: got {} envs but pipeline was built for n_env = {}",
+            datas.len(),
+            self.n_env,
+        );
+
+        // 1. Upload per-frame inputs (CPU → GPU), env-strided across all envs.
+        let refs: Vec<&Data> = datas.iter().collect();
+        self.state_bufs.upload_qpos(&self.ctx, &refs);
+        self.state_bufs.upload_qvel(&self.ctx, &refs);
 
         // 2. Write all uniform params (constant across substeps)
         self.fk
@@ -206,9 +249,11 @@ impl GpuPhysicsPipeline {
             self.encode_substep(&mut encoder);
         }
 
-        // 4. Copy final state to staging
-        let qpos_size = u64::from(self.nq.max(1)) * 4;
-        let qvel_size = u64::from(self.nv.max(1)) * 4;
+        // 4. Copy final state (all envs) to staging
+        let qpos_total = self.n_env * self.nq;
+        let qvel_total = self.n_env * self.nv;
+        let qpos_size = u64::from(qpos_total.max(1)) * 4;
+        let qvel_size = u64::from(qvel_total.max(1)) * 4;
         encoder.copy_buffer_to_buffer(&self.state_bufs.qpos, 0, &self.staging_qpos, 0, qpos_size);
         encoder.copy_buffer_to_buffer(&self.state_bufs.qvel, 0, &self.staging_qvel, 0, qvel_size);
 
@@ -216,17 +261,23 @@ impl GpuPhysicsPipeline {
         self.ctx.queue.submit([encoder.finish()]);
 
         // 6. Synchronous readback — map staging buffers directly
-        let qpos_f32 = map_staging_f32(&self.ctx, &self.staging_qpos, self.nq as usize);
-        let qvel_f32 = map_staging_f32(&self.ctx, &self.staging_qvel, self.nv as usize);
+        let qpos_f32 = map_staging_f32(&self.ctx, &self.staging_qpos, qpos_total as usize);
+        let qvel_f32 = map_staging_f32(&self.ctx, &self.staging_qvel, qvel_total as usize);
 
-        // 7. f32 → f64 widening, write back to Data
-        for (i, &v) in qpos_f32.iter().enumerate() {
-            data.qpos[i] = f64::from(v);
+        // 7. f32 → f64 widening, write each env's slice back to its Data. Env k's
+        //    block sits at offset k · n{q,v}, matching the shaders' env stride.
+        let nq = self.nq as usize;
+        let nv = self.nv as usize;
+        let dt = cpu_model.timestep * f64::from(num_substeps);
+        for (k, data) in datas.iter_mut().enumerate() {
+            for (i, &v) in qpos_f32[k * nq..(k + 1) * nq].iter().enumerate() {
+                data.qpos[i] = f64::from(v);
+            }
+            for (i, &v) in qvel_f32[k * nv..(k + 1) * nv].iter().enumerate() {
+                data.qvel[i] = f64::from(v);
+            }
+            data.time += dt;
         }
-        for (i, &v) in qvel_f32.iter().enumerate() {
-            data.qvel[i] = f64::from(v);
-        }
-        data.time += cpu_model.timestep * f64::from(num_substeps);
     }
 
     /// Encode one full substep into the command encoder.
@@ -238,7 +289,7 @@ impl GpuPhysicsPipeline {
         encoder.clear_buffer(&self.state_bufs.body_cfrc, 0, None);
         encoder.clear_buffer(&self.state_bufs.qfrc_bias, 0, None);
         if self.nv > 0 {
-            let nv_sq_bytes = u64::from(self.nv) * u64::from(self.nv) * 4;
+            let nv_sq_bytes = u64::from(self.n_env) * u64::from(self.nv) * u64::from(self.nv) * 4;
             encoder.clear_buffer(&self.state_bufs.qm, 0, Some(nv_sq_bytes));
             encoder.clear_buffer(&self.state_bufs.qfrc_applied, 0, None);
             encoder.clear_buffer(&self.state_bufs.qfrc_actuator, 0, None);
