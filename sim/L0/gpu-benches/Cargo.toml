@@ -1,0 +1,31 @@
+[package]
+name = "sim-gpu-benches"
+description = "Criterion benchmarks comparing CPU vs GPU-batched physics throughput (perf/scale baseline)"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L1"
+
+[dependencies]
+# Criterion harness for the bench target below
+criterion = { workspace = true }
+# Vector / quaternion types for fixture construction
+nalgebra = { workspace = true }
+# CPU engine under bench: Model, Data, batch::BatchSim, ShapeConvex, SdfGrid.
+# `parallel` enables rayon so the CPU-batch path is measured at its true best.
+sim-core = { workspace = true, features = ["parallel"] }
+# GPU engine under bench: GpuPhysicsPipeline (batched step)
+sim-gpu = { workspace = true }
+
+[[bench]]
+name = "perf_baseline"
+harness = false
+
+[lints]
+workspace = true
