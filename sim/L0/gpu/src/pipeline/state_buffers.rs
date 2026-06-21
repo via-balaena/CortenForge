@@ -15,7 +15,7 @@ use sim_core::types::Data;
 use wgpu::util::DeviceExt;
 
 use super::model_buffers::GpuModelBuffers;
-use super::types::{MAX_CONSTRAINTS, MAX_PIPELINE_CONTACTS, f64s_to_f32s};
+use super::types::{CONSTRAINT_ROWS_PER_CONTACT, MAX_PIPELINE_CONTACTS, f64s_to_f32s};
 use crate::context::GpuContext;
 
 /// Per-environment mutable state on GPU.
@@ -109,6 +109,11 @@ pub struct GpuStateBuffers {
     pub qfrc_constraint: wgpu::Buffer,
 
     pub n_env: u32,
+    /// Per-env contact capacity these buffers were sized for. The collision and
+    /// constraint pipelines read this for their shader strides + dispatch sizes, so
+    /// it MUST match the value used to size `contact_buffer`/`efc_*` here. Single-env
+    /// uses [`MAX_PIPELINE_CONTACTS`]; batched uses a smaller per-env budget.
+    pub max_contacts: u32,
 }
 
 impl GpuStateBuffers {
@@ -118,7 +123,7 @@ impl GpuStateBuffers {
     /// allocator, so every existing caller is unaffected.
     #[must_use]
     pub fn new(ctx: &GpuContext, model: &GpuModelBuffers, data: &Data) -> Self {
-        Self::new_batched(ctx, model, 1, &[data])
+        Self::new_batched(ctx, model, 1, &[data], MAX_PIPELINE_CONTACTS)
     }
 
     /// Allocate per-env state buffers for `n_env` environments and upload each
@@ -136,6 +141,12 @@ impl GpuStateBuffers {
     /// equal `n_env`. At `n_env = 1` this is byte-identical to the legacy
     /// single-env layout (every stride collapses to `1×`).
     ///
+    /// `max_contacts` is the per-env contact capacity the contact + constraint
+    /// buffers are sized for; the collision/constraint pipelines read it back from
+    /// [`Self::max_contacts`] so their shader strides match this layout. Pass
+    /// [`MAX_PIPELINE_CONTACTS`] for the legacy capacity or the smaller
+    /// `DEFAULT_BATCHED_MAX_CONTACTS` for large batches.
+    ///
     /// # Panics
     /// Panics if `per_env.len() != n_env`.
     #[must_use]
@@ -144,6 +155,7 @@ impl GpuStateBuffers {
         model: &GpuModelBuffers,
         n_env: u32,
         per_env: &[&Data],
+        max_contacts: u32,
     ) -> Self {
         assert_eq!(
             per_env.len(),
@@ -246,14 +258,15 @@ impl GpuStateBuffers {
         let contact_buffer = alloc(
             ctx,
             "contact_buffer",
-            ne * u64::from(MAX_PIPELINE_CONTACTS) * 48,
+            ne * u64::from(max_contacts) * 48,
             usage_inout,
         );
         // contact_count: one atomic u32 per env.
         let contact_count = alloc(ctx, "contact_count", ne * 4, usage_inout);
 
-        // Constraint solve state (Session 5), per env.
-        let max_c = u64::from(MAX_CONSTRAINTS);
+        // Constraint solve state (Session 5), per env. Rows scale with the per-env
+        // contact budget (condim=4 worst case → 6 pyramidal rows each).
+        let max_c = u64::from(max_contacts) * u64::from(CONSTRAINT_ROWS_PER_CONTACT);
         let efc_j = alloc(ctx, "efc_J", ne * max_c * nv1 * 4, usage_inout);
         let efc_d = alloc(ctx, "efc_D", ne * max_c * 4, usage_inout);
         let efc_aref = alloc(ctx, "efc_aref", ne * max_c * 4, usage_inout);
@@ -299,6 +312,7 @@ impl GpuStateBuffers {
             constraint_count,
             qfrc_constraint,
             n_env,
+            max_contacts,
         }
     }
 

@@ -161,7 +161,13 @@ fn run_through_rne(ctx: &GpuContext, model: &Model, data: &Data) -> GpuStateBuff
 fn run_through_rne_batched(ctx: &GpuContext, model: &Model, per_env: &[&Data]) -> GpuStateBuffers {
     let n_env = per_env.len() as u32;
     let model_buf = GpuModelBuffers::upload(ctx, model);
-    let state_buf = GpuStateBuffers::new_batched(ctx, &model_buf, n_env, per_env);
+    let state_buf = GpuStateBuffers::new_batched(
+        ctx,
+        &model_buf,
+        n_env,
+        per_env,
+        super::types::MAX_PIPELINE_CONTACTS,
+    );
     let fk = GpuFkPipeline::new(ctx, &model_buf, &state_buf);
     let crba = GpuCrbaPipeline::new(ctx, &model_buf, &state_buf);
     let vel = GpuVelocityFkPipeline::new(ctx, &model_buf, &state_buf);
