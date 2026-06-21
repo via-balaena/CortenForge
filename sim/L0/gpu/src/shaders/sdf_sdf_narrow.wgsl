@@ -18,7 +18,11 @@ struct NarrowphaseParams {
     surface_threshold: f32,
     contact_margin: f32,
     flip_normal: u32,
-    _pad: u32,
+    n_env: u32,
+    ngeom: u32,
+    max_contacts: u32,
+    _pad1: u32,
+    _pad2: u32,
     friction: vec4<f32>,
 };
 
@@ -52,7 +56,7 @@ struct PipelineContact {
 @group(2) @binding(2) var<storage, read> geom_aabb: array<vec4<f32>>;
 
 @group(3) @binding(0) var<storage, read_write> contacts: array<PipelineContact>;
-@group(3) @binding(1) var<storage, read_write> contact_count: atomic<u32>;
+@group(3) @binding(1) var<storage, read_write> contact_count: array<atomic<u32>>;
 
 // ── Pose helpers ───────────────────────────────────────────────────────
 
@@ -253,12 +257,12 @@ fn aabb_overlap(a_idx: u32, b_idx: u32) -> bool {
 
 @compute @workgroup_size(8, 8, 4)
 fn sdf_sdf_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
-    // 0. AABB guard — skip entire dispatch if no overlap
-    if !aabb_overlap(params.geom1, params.geom2) {
-        return;
-    }
+    // The 3D dispatch covers the source SDF grid (x,y,z), leaving no free axis for
+    // env, so this kernel loops over environments internally. Steps 1–6 are in the
+    // source SDF's LOCAL frame (grid coords + model SDF values) — env-independent,
+    // computed ONCE. The per-env pose transforms + dst query + emit run in the loop.
 
-    // 1. Load grid metadata
+    // 1. Load grid metadata (model data)
     let src_gm = sdf_metas[params.src_sdf_meta_idx];
     let dst_gm = sdf_metas[params.dst_sdf_meta_idx];
 
@@ -269,12 +273,7 @@ fn sdf_sdf_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // 2. Build pose matrices from FK output
-    let src_pose = geom_pose_mat4(params.geom1);
-    let dst_pose = geom_pose_mat4(params.geom2);
-    let dst_pose_inv = geom_pose_inv_mat4(params.geom2);
-
-    // 3. Read source SDF value
+    // 2. Read source SDF value (model data)
     let idx = src_gm.values_offset + grid_idx(x, y, z, src_gm.width, src_gm.height);
     let src_value = sdf_values[idx];
 
@@ -283,55 +282,72 @@ fn sdf_sdf_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // 4. Compute local position from grid coordinates
+    // 3. Compute local position from grid coordinates
     let local = src_gm.origin + vec3<f32>(f32(x), f32(y), f32(z)) * src_gm.cell_size;
 
-    // 5. Gradient (centered differences, normalized)
+    // 4. Gradient (centered differences, normalized)
     let grad = src_gradient(local, src_gm);
     if dot(grad, grad) < 0.5 {
         return;
     }
 
-    // 6. Surface reconstruction: project onto zero-isosurface
+    // 5. Surface reconstruction: project onto zero-isosurface
     let surface_local = local - grad * src_value;
 
-    // 7. Transform: src local → world
-    let world = (src_pose * vec4<f32>(surface_local, 1.0)).xyz;
+    // ── Per-env: pose transforms, dst query, contact emit ───────────────
+    for (var env = 0u; env < params.n_env; env++) {
+        // Per-env geom slots (geom_xpos/geom_xmat/geom_aabb stride ngeom).
+        let g1 = env * params.ngeom + params.geom1;
+        let g2 = env * params.ngeom + params.geom2;
 
-    // 8. Transform: world → dst local
-    let dst_local = (dst_pose_inv * vec4<f32>(world, 1.0)).xyz;
+        // 0. AABB guard (per-env poses give per-env AABBs)
+        if !aabb_overlap(g1, g2) {
+            continue;
+        }
 
-    // 9. Query destination SDF distance
-    let dst_dist = dst_trilinear(dst_local, dst_gm);
+        // 6. Build pose matrices from this env's FK output
+        let src_pose = geom_pose_mat4(g1);
+        let dst_pose = geom_pose_mat4(g2);
+        let dst_pose_inv = geom_pose_inv_mat4(g2);
 
-    // 10. Contact test
-    if dst_dist >= params.contact_margin {
-        return;
-    }
-    let penetration = max(-dst_dist, 0.0);
+        // 7. Transform: src local → world
+        let world = (src_pose * vec4<f32>(surface_local, 1.0)).xyz;
 
-    // 11. Destination gradient for contact normal
-    let dst_grad = dst_gradient(dst_local, dst_gm);
-    if dot(dst_grad, dst_grad) < 0.5 {
-        return;
-    }
+        // 8. Transform: world → dst local
+        let dst_local = (dst_pose_inv * vec4<f32>(world, 1.0)).xyz;
 
-    // 12. Normal convention — matches CPU exactly
-    var normal_world = (dst_pose * vec4<f32>(dst_grad, 0.0)).xyz;
-    if params.flip_normal == 0u {
-        normal_world = -normal_world;
-    }
+        // 9. Query destination SDF distance
+        let dst_dist = dst_trilinear(dst_local, dst_gm);
 
-    // 13. Atomic append to contact buffer
-    let ci = atomicAdd(&contact_count, 1u);
-    if ci < arrayLength(&contacts) {
-        contacts[ci] = PipelineContact(
-            world,
-            penetration,
-            normal_world,
-            params.geom1,
-            params.friction.xyz,
-            params.geom2,
-        );
+        // 10. Contact test
+        if dst_dist >= params.contact_margin {
+            continue;
+        }
+        let penetration = max(-dst_dist, 0.0);
+
+        // 11. Destination gradient for contact normal
+        let dst_grad = dst_gradient(dst_local, dst_gm);
+        if dot(dst_grad, dst_grad) < 0.5 {
+            continue;
+        }
+
+        // 12. Normal convention — matches CPU exactly
+        var normal_world = (dst_pose * vec4<f32>(dst_grad, 0.0)).xyz;
+        if params.flip_normal == 0u {
+            normal_world = -normal_world;
+        }
+
+        // 13. Atomic append into this env's contact block
+        let ci = atomicAdd(&contact_count[env], 1u);
+        if ci < params.max_contacts {
+            contacts[env * params.max_contacts + ci] = PipelineContact(
+                world,
+                penetration,
+                normal_world,
+                params.geom1,
+                params.friction.xyz,
+                params.geom2,
+            );
+        }
     }
 }

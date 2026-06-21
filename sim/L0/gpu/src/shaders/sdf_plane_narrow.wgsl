@@ -23,7 +23,11 @@ struct NarrowphaseParams {
     surface_threshold: f32,
     contact_margin: f32,
     flip_normal: u32,
-    _pad: u32,
+    n_env: u32,
+    ngeom: u32,
+    max_contacts: u32,
+    _pad1: u32,
+    _pad2: u32,
     friction: vec4<f32>,
 };
 
@@ -57,7 +61,7 @@ struct PipelineContact {
 @group(2) @binding(2) var<storage, read> geom_aabb: array<vec4<f32>>;
 
 @group(3) @binding(0) var<storage, read_write> contacts: array<PipelineContact>;
-@group(3) @binding(1) var<storage, read_write> contact_count: atomic<u32>;
+@group(3) @binding(1) var<storage, read_write> contact_count: array<atomic<u32>>;
 
 // ── Grid indexing ──────────────────────────────────────────────────────
 
@@ -168,12 +172,12 @@ fn sdf_gradient(point: vec3<f32>, gm: SdfMeta) -> vec3<f32> {
 
 @compute @workgroup_size(8, 8, 4)
 fn sdf_plane_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
-    // 0. AABB guard
-    if !aabb_overlap(params.geom1, params.geom2) {
-        return;
-    }
+    // The 3D dispatch covers the SDF grid (x,y,z), leaving no free axis for env,
+    // so this kernel loops over environments internally. Steps 1–6 are in the SDF's
+    // LOCAL frame (grid coords + model SDF values) — env-independent, computed ONCE.
+    // The per-env world transform + plane test + emit run in the loop below.
 
-    // 1. Load SDF grid metadata
+    // 1. Load SDF grid metadata (model data)
     let gm = sdf_metas[params.src_sdf_meta_idx];
 
     let x = gid.x;
@@ -183,7 +187,7 @@ fn sdf_plane_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // 2. Read SDF value
+    // 2. Read SDF value (model data)
     let idx = gm.values_offset + grid_idx(x, y, z, gm.width, gm.height);
     let sdf_value = sdf_values[idx];
 
@@ -204,35 +208,46 @@ fn sdf_plane_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
     // 6. Surface reconstruction
     let surface_local = local - grad * sdf_value;
 
-    // 7. Transform to world
-    let sdf_pose = geom_pose_mat4(params.geom1);
-    let world = (sdf_pose * vec4(surface_local, 1.0)).xyz;
+    // ── Per-env: world transform, plane equation, contact emit ──────────
+    for (var env = 0u; env < params.n_env; env++) {
+        // Per-env geom slots (geom_xpos/geom_xmat/geom_aabb stride ngeom).
+        let g1 = env * params.ngeom + params.geom1;
+        let g2 = env * params.ngeom + params.geom2;
 
-    // 8. Extract plane equation from plane geom's FK pose
-    // Plane normal = Z-axis (column 2) of plane's rotation matrix
-    let plane_normal = geom_xmat[params.geom2 * 3u + 2u].xyz;
-    let plane_pos = geom_xpos[params.geom2].xyz;
-    let plane_offset = dot(plane_normal, plane_pos);
+        // 0. AABB guard (per-env poses give per-env AABBs)
+        if !aabb_overlap(g1, g2) {
+            continue;
+        }
 
-    // 9. Signed distance to plane (positive = above plane)
-    let dist = dot(plane_normal, world) - plane_offset;
+        // 7. Transform to world
+        let sdf_pose = geom_pose_mat4(g1);
+        let world = (sdf_pose * vec4(surface_local, 1.0)).xyz;
 
-    // 10. Contact test
-    if dist >= params.contact_margin {
-        return;
-    }
-    let penetration = max(-dist, 0.0);
+        // 8. Plane equation from the plane geom's FK pose (Z-axis = column 2)
+        let plane_normal = geom_xmat[g2 * 3u + 2u].xyz;
+        let plane_pos = geom_xpos[g2].xyz;
+        let plane_offset = dot(plane_normal, plane_pos);
 
-    // 11. Emit contact — normal points away from plane (push object up)
-    let ci = atomicAdd(&contact_count, 1u);
-    if ci < arrayLength(&contacts) {
-        contacts[ci] = PipelineContact(
-            world,
-            penetration,
-            plane_normal,       // Normal points UP (away from plane)
-            params.geom1,       // SDF geom
-            params.friction.xyz,
-            params.geom2,       // Plane geom
-        );
+        // 9. Signed distance to plane (positive = above plane)
+        let dist = dot(plane_normal, world) - plane_offset;
+
+        // 10. Contact test
+        if dist >= params.contact_margin {
+            continue;
+        }
+        let penetration = max(-dist, 0.0);
+
+        // 11. Emit into this env's contact block — normal points away from plane
+        let ci = atomicAdd(&contact_count[env], 1u);
+        if ci < params.max_contacts {
+            contacts[env * params.max_contacts + ci] = PipelineContact(
+                world,
+                penetration,
+                plane_normal,       // Normal points UP (away from plane)
+                params.geom1,       // SDF geom
+                params.friction.xyz,
+                params.geom2,       // Plane geom
+            );
+        }
     }
 }

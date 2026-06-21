@@ -2515,15 +2515,11 @@ fn t32_sustained_multi_substep() {
 /// An armed env that suddenly MATCHES fails the test, so a fix that makes a env
 /// conform forces the arm's removal here (mirrors the constraint suite's allowlist).
 fn known_collision_batch_divergence(env: usize) -> Option<&'static str> {
-    // MEASURED on Metal: env 0 conforms; env > 0 diverges hard — collision (aabb +
-    // sdf narrowphase) is still env-0-only, so env 1 gets ZERO contacts and free-falls
-    // (qvel[2] batched ≈ −0.5 vs single ≈ +27 after the contact bounce). Dropped when
-    // the collision shaders are env-strided.
-    if env == 0 {
-        None
-    } else {
-        Some("collision (aabb + sdf_*_narrow) is env-0-only: env >0 gets no contacts")
-    }
+    // **Empty — collision (aabb + sdf_*_narrow) is now env-strided**, so every env's
+    // batched substep matches its single-env run. Self-validating: re-arm an env here
+    // only if a NEW collision-batch divergence is exposed.
+    let _ = env;
+    None
 }
 
 /// Run ONE full GPU substep (fk → crba → velFK → rne → smooth → collision →
