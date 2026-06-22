@@ -102,6 +102,15 @@ enum Commands {
         /// scatter evenly across shards. Omit to grade everything.
         #[arg(long, value_parser = parse_shard)]
         shard: Option<(usize, usize)>,
+
+        /// Restrict grading to a comma-separated set of crates (PR-scoped
+        /// CI; pass the output of `cargo xtask affected`). Applied before
+        /// `--shard`, so each shard grades a slice of this set. Omit to
+        /// grade the full workspace (the gate on main/merge). An empty
+        /// value (`--only ""`) grades nothing — the no-op for a PR that
+        /// touches no crate.
+        #[arg(long, value_delimiter = ',')]
+        only: Option<Vec<String>>,
     },
 
     /// Record A-grade completion for a crate
@@ -166,6 +175,7 @@ fn main() -> Result<()> {
             verbose,
             skip_coverage,
             shard,
+            only,
         } => grade::run_all(
             grade::Verbosity {
                 quiet,
@@ -174,6 +184,7 @@ fn main() -> Result<()> {
                 skip_coverage,
             },
             shard,
+            only,
         ),
         Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
         Commands::Affected { base, json } => affected::run(&base, json),
