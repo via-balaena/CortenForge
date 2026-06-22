@@ -25,6 +25,7 @@
 //!
 //! See docs/STANDARDS.md for full details.
 
+mod affected;
 mod check;
 mod complete;
 mod grade;
@@ -114,6 +115,19 @@ enum Commands {
         force: bool,
     },
 
+    /// List workspace crates affected by a diff (changed crates + their
+    /// reverse-dependency closure), for PR-scoped CI.
+    Affected {
+        /// Git ref to diff against (the PR base); compared as `base...HEAD`.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Emit `{"needs_full": bool, "crates": [...]}` JSON for CI to parse
+        /// instead of a human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Run full CI suite (same as GitHub Actions)
     Ci,
 
@@ -162,6 +176,7 @@ fn main() -> Result<()> {
             shard,
         ),
         Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
+        Commands::Affected { base, json } => affected::run(&base, json),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
         Commands::Setup => setup::run(),
