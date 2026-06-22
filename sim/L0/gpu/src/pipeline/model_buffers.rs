@@ -265,9 +265,16 @@ impl GpuModelBuffers {
 }
 
 fn upload_structs<T: bytemuck::Pod>(ctx: &GpuContext, label: &str, data: &[T]) -> wgpu::Buffer {
+    // An empty array (e.g. a geom-less model's `geoms`) must still be bound as
+    // `array<T>`, whose `min_binding_size` is one element (`size_of::<T>()`). A
+    // bare non-zero stub (16 bytes) is rejected by wgpu validation for any T
+    // larger than 16 bytes — GeomModel is 96. So back an empty buffer with one
+    // zeroed element (16-byte floor for wgpu's non-zero requirement when T is
+    // smaller, e.g. a u32 array).
+    let one_elem = std::mem::size_of::<T>().max(16);
+    let zeros = vec![0u8; one_elem];
     let bytes: &[u8] = if data.is_empty() {
-        // wgpu requires non-zero buffer size; provide minimum
-        &[0u8; 16]
+        &zeros
     } else {
         bytemuck::cast_slice(data)
     };
