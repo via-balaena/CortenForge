@@ -180,19 +180,11 @@ component StepBox inherits HorizontalLayout {
     }
 }
 
-// First-launch liability waiver + age gate. Rendered as a full-window opaque
+// First-launch safety waiver + age gate. Rendered as a full-window opaque
 // overlay on top of the wizard on EVERY launch (acceptance is held in memory
 // only and never persisted), so the wizard cannot be used until the user
 // confirms. `accept()` clears the gate for the session; `quit()` closes the app.
-//
-// ⚠ NOT LEGAL ADVICE — NOT LAWYER-REVIEWED. The disclaimer + 18+ confirmation
-// below are a good-faith draft following common conventions (as-is/no-warranty,
-// assumption of risk incl. body-safe materials + curing, no medical claims,
-// limitation of liability + indemnity, severability, adults/lawful use, age
-// affirmation). Enforceability varies by jurisdiction and consumer-protection law
-// may override waivers. A governing-law clause is intentionally omitted (it must
-// name Via Balaena's jurisdiction). Have it reviewed by counsel before relying on
-// it for legal protection or distributing publicly.
+// The terms shown below mirror DISCLAIMER.md / NOTICE at the repository root.
 component WaiverPage inherits Rectangle {
     callback accept();
     callback quit();
@@ -307,7 +299,7 @@ export component AppWindow inherits Window {
     // dark and vanished.
     background: #dce0e5;
 
-    // First-launch liability/age gate. False each launch (never persisted), so
+    // First-launch safety/age gate. False each launch (never persisted), so
     // the WaiverPage overlay below covers the wizard until `accept-waiver()`.
     in property <bool> waiver-accepted: false;
 
@@ -1190,7 +1182,7 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Liability/age gate — last child so it paints on top of the wizard, sized
+    // Safety/age gate — last child so it paints on top of the wizard, sized
     // to fill the window. Shown until the user accepts (in-memory, every launch).
     if !root.waiver-accepted: WaiverPage {
         x: 0;

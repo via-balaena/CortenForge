@@ -8,7 +8,7 @@ CortenForge is, at its core, a **software development kit for the mechatronics a
 
 Because those components are general, the surface of what they unlock is near-limitless — robotics, soft robotics, biomechanics, generative design and digital fabrication, custom-fit products, embodied-AI research, and adjacencies we have not yet imagined. We do not constrain the kit to one application; we constrain ourselves to making the components **excellent and composable**.
 
-To prove the components are real and that they compose end to end, our defining undertaking is to build the hardest thing we can with them: a **differentiable body-to-device co-design loop** — one differentiable representation carried across the full path **physical → digital → physical** — in the domain of **patient-specific assistive and rehabilitation robotics**, with a powered, RL-controlled **exoskeleton** as the capstone demonstration. **We have not built it yet.** It is the goal we are building toward — the proving ground that disciplines every component along the way.
+To prove the components are real and that they compose end to end, our defining undertaking is to build the hardest thing we can with them: a **differentiable body-to-device co-design loop** — one differentiable representation carried across the full path **physical → digital → physical** — in the domain of **person-specific assistive and wearable robotics**, with a powered, RL-controlled **exoskeleton** as the capstone demonstration. **We have not built it yet.** It is the goal we are building toward — the proving ground that disciplines every component along the way.
 
 There is a real person at the end of that loop. That is the point of the capstone — and an SDK puts the loop, and everything adjacent to it, in the hands of everyone who builds.
 
@@ -21,7 +21,7 @@ The components, composed into one system, form a spine — and the capstone is w
 1. **Body in.** A real body is scanned and cleaned into a watertight digital twin.
 2. **Twin built.** That twin becomes simulatable — rigid-body dynamics, muscles and tendons, and soft-tissue finite-element contact.
 3. **Device designed.** A device is described parametrically — its passive morphology (implicit-surface geometry, graded multi-material, lattice compliance fields) *and* any active elements (tendons, actuators).
-4. **Co-optimized.** Geometry **and** controller are optimized *through the differentiable simulator* against a clinical objective — pressure relief, restored gait, reduced metabolic cost, fall risk.
+4. **Co-optimized.** Geometry **and** controller are optimized *through the differentiable simulator* against a measurable biomechanical objective — load distribution, gait, metabolic cost, stability.
 5. **Made.** The result is gated for manufacturability and physically produced — molds, prints, and human-readable fabrication procedures.
 6. **Loop closed.** The real device is instrumented, measured, and the measurement feeds back to recalibrate the twin via system identification — tractable precisely *because* the simulation is differentiable.
 
@@ -37,10 +37,10 @@ The capstone is one path through the kit; it is not the kit's edge. The same com
 
 - **Robotics & control** — rigid-body dynamics, URDF/MJCF import, RL, differentiable control for any mechanism.
 - **Soft robotics** — hyperelastic FEM, contact, and fabrication for compliant actuators and grippers.
-- **Biomechanics & rehabilitation research** — fast, differentiable musculoskeletal simulation.
+- **Biomechanics research** — fast, differentiable musculoskeletal simulation.
 - **Generative design & digital fabrication** — implicit-surface modeling, graded lattices, printability, mold generation.
 - **3D scanning & reverse engineering** — scan repair, SDF conversion, measurement, the full mesh suite.
-- **Custom-fit products** — anything shaped to a scanned body, from medical devices to consumer goods.
+- **Custom-fit products** — anything shaped to a scanned body, from wearables to consumer goods.
 - **Embodied-AI research & education** — GPU-batched, differentiable environments with a worked-example corpus.
 
 We measure success not only by the capstone, but by how readily someone reaches for a CortenForge component to build something we never planned.
@@ -55,7 +55,7 @@ We measure success not only by the capstone, but by how readily someone reaches 
 2. **The keystone — differentiable soft↔rigid coupling.** Tissue ↔ skeleton ↔ device contact, with gradients through the contact. This is the genuinely open research problem, and *because* it determines the platform's ceiling, it is built first and built correctly — never deferred for a faster demonstration.
 3. **System identification, as a first-class discipline.** The twin must be *provably* tied to reality, not merely plausible.
 4. **Co-design optimization + differentiable compliance.** Built only on a substrate we already trust.
-5. **The capstone demo — the powered, RL-controlled exo/orthosis.** Chosen for ceiling, not for ease; it proves the whole SDK composes end to end and shows what the loop can reach. The passive prosthetic socket is the waypoint that exercises the loop before control enters.
+5. **The capstone demo — the powered, RL-controlled exoskeleton.** Chosen for ceiling, not for ease; it proves the whole SDK composes end to end and shows what the loop can reach. The passive socket is the waypoint that exercises the loop before control enters.
 
 ---
 
@@ -78,12 +78,12 @@ We measure success not only by the capstone, but by how readily someone reaches 
 
 ## The capstone demonstration
 
-The SDK's domain is the whole mechatronics and simulation space (§1); **patient-specific assistive and rehabilitation robotics is the flagship application we drive toward** — the proving ground that disciplines the kit, not its boundary. We pick it because it is the hardest, highest-stakes exercise of the components, and because the greater good is personalized assistive technology. And because the deliverable is a *kit*, the leverage is wider than any one device — or any one field: it is every clinician, researcher, and builder the SDK equips, including in domains we never imagined.
+The SDK's domain is the whole mechatronics and simulation space (§1); **person-specific assistive and wearable robotics is the flagship application we drive toward** — the proving ground that disciplines the kit, not its boundary. We pick it because it is the hardest, highest-stakes exercise of the components, and because the greater good is personalized assistive technology. And because the deliverable is a *kit*, the leverage is wider than any one device — or any one field: it is every researcher, engineer, and builder the SDK equips, including in domains we never imagined.
 
-The ceiling-defining capstone we are building toward is a **powered, RL-controlled orthosis/exosuit** — the only endpoint that exercises the *entire* SDK at once: scan-derived twin, full rigid-body dynamics, muscles and tendons, soft-tissue contact at the human interface, a control policy trained in the differentiable simulator, and a physically manufactured device. A **passive prosthetic socket** is a deliberate waypoint along the way — same loop, lower stakes, a place to prove fidelity and sim-to-real calibration before control and actuation enter. We aim all the way.
+The ceiling-defining capstone we are building toward is a **powered, RL-controlled exoskeleton/exosuit** — the only endpoint that exercises the *entire* SDK at once: scan-derived twin, full rigid-body dynamics, muscles and tendons, soft-tissue contact at the body interface, a control policy trained in the differentiable simulator, and a physically manufactured device. A **passive socket** is a deliberate waypoint along the way — same loop, lower stakes, a place to prove fidelity and sim-to-real calibration before control and actuation enter. We aim all the way.
 
 Because the product is an SDK, the quality bar is not just "does the exo work" — it is **API clarity, composability, and worked examples**, so that the path we walk to the capstone is one others can walk to devices we never imagined.
 
 ## Honest constraints
 
-This is a multi-year, research-grade program — not an integration exercise. Differentiable contact across soft and rigid bodies is hard. The sim-to-real gap is real. Anything that touches a patient carries clinical-validation and regulatory weight that code alone does not clear. We hold ourselves to *validated against measurement* as the line between an impressive demonstration and a trusted tool — and we are in no hurry to cross it before the quality is real.
+This is a multi-year, research-grade program — not an integration exercise. Differentiable contact across soft and rigid bodies is hard. The sim-to-real gap is real. Anything worn on a real body carries safety-validation and regulatory weight that code alone does not clear. We hold ourselves to *validated against measurement* as the line between an impressive demonstration and a trusted tool — and we are in no hurry to cross it before the quality is real.

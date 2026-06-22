@@ -10,7 +10,11 @@
 
 CortenForge is, at its core, a **software development kit**. It provides the building blocks spanning the full path **physical → digital → physical**: geometry, parametric design, meshing and digital fabrication, rigid- and soft-body physics, control and reinforcement learning, and sim-to-real calibration. Because those components are general, they serve a near-limitless range of adjacent applications — robotics, soft robotics, biomechanics, generative design and digital fabrication, custom-fit products, and embodied-AI research.
 
-The kit is the product. To prove the components compose end to end, our capstone undertaking — **not yet built** — is a differentiable body-to-device co-design loop for patient-specific assistive robotics, with a powered, RL-controlled exoskeleton as the demonstration. See **[MISSION.md](./MISSION.md)**.
+The kit is the product. To prove the components compose end to end, our capstone undertaking — **not yet built** — is a differentiable body-to-device co-design loop for person-specific assistive robotics, with a powered, RL-controlled exoskeleton as the demonstration. See **[MISSION.md](./MISSION.md)**.
+
+## ⚠️ Disclaimer
+
+CortenForge — including the **Cendrillon** application — is general-purpose research and engineering software, provided **AS IS** under the [Apache License 2.0](LICENSE), **without warranty of any kind**. **It is not a medical device** and makes no medical, therapeutic, or health claims. You use it — and make and use anything created with it — **entirely at your own risk**; you alone are responsible for choosing body-safe materials and for proper mixing, curing, and hygiene, and should always follow the manufacturer's safety data sheet (SDS). See **[DISCLAIMER.md](./DISCLAIMER.md)** for the full text.
 
 ## Stack
 
