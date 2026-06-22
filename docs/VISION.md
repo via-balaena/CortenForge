@@ -220,10 +220,10 @@ The honest assessment: We can get useful CAD interop in a year. Full MuJoCo pari
 
 ## Target Applications
 
-The flagship — the capstone we are building toward (see [MISSION.md](../MISSION.md)) — is **patient-specific assistive robotics**: a differentiable body-to-device co-design loop culminating in a powered, RL-controlled exoskeleton, which exercises the entire SDK at once. The applications below are among the near-limitless adjacent uses the same components serve.
+The flagship — the capstone we are building toward (see [MISSION.md](../MISSION.md)) — is **person-specific assistive robotics**: a differentiable body-to-device co-design loop culminating in a powered, RL-controlled exoskeleton, which exercises the entire SDK at once. The applications below are among the near-limitless adjacent uses the same components serve.
 
-### Patient-Specific Assistive Robotics (Flagship)
-- **Design:** Custom-fit sockets, orthoses, and exo shells via scan-driven implicit surfaces + graded multi-material
+### Person-Specific Assistive Robotics (Flagship)
+- **Design:** Custom-fit sockets, shells, and wearables via scan-driven implicit surfaces + graded multi-material
 - **Simulation:** Biomechanics, soft-tissue contact, RL-trained control
 - **Mesh:** Scan repair, multi-material mold generation, printability validation
 
@@ -356,7 +356,7 @@ Before contributing:
 4. Run `cargo xtask check`
 5. Understand why the rules exist
 
-We're building something that will run on robots, in vehicles, in medical devices. The stakes justify the standards.
+We're building something that will run on robots, in vehicles, in safety-critical systems. The stakes justify the standards.
 
 ---
 
