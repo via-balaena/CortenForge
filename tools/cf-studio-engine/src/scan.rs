@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use cf_studio_core::ScanInput;
-use mesh_io::load_mesh;
+use cortenforge::mesh_io::load_mesh;
 
 use crate::error::{EngineError, Result};
 
@@ -39,9 +39,9 @@ impl LoadedScan {
 
 /// Load + validate a scan file, auto-detecting the format (STL / OBJ /
 /// PLY / 3MF) by extension (case-insensitively). 3MF is enabled via
-/// `mesh-io`'s `threemf` feature (declared in this crate's Cargo.toml).
-/// STEP stays opt-out (heavy CAD deps); enable `mesh-io`'s `step` feature
-/// to add it.
+/// mesh-io's `threemf` feature (declared in the `cortenforge` facade's
+/// Cargo.toml, through which this crate uses mesh-io). STEP stays opt-out
+/// (heavy CAD deps).
 ///
 /// # Errors
 /// - [`EngineError::ScanLoad`] if the file is missing or can't be parsed.

@@ -32,13 +32,13 @@ pub use design::{
 pub use edit::{EditSession, run_simplify};
 // The reconstruct-shape choice an `EditSession::apply_reconstruct` caller
 // (the GUI) needs to name — re-exported through the engine front door.
-pub use cf_scan_prep_core::ReconstructShape;
+pub use cortenforge::cf_scan_prep_core::ReconstructShape;
 pub use error::{EngineError, Result};
 pub use mold::{generate_molds, generate_molds_for_design};
 // Re-export the config type `generate_molds` takes + the part-selection
 // types `generate_molds_for_design` takes, so a frontend can build/parse
 // them without a separate cf-cast-cli dependency.
-pub use cf_cast_cli::{CastConfig, CastMode, PartId, PartSelection, PieceSide};
+pub use cortenforge::cf_cast_cli::{CastConfig, CastMode, PartId, PartSelection, PieceSide};
 pub use pour::{LayerPour, build_pour_plan};
 pub use prep::accept_prep;
 pub use preview::{PlugPreview, proxy_preview_mesh};

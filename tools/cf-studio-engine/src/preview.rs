@@ -2,7 +2,7 @@
 //!
 //! The preview is a close approximation of the **real plug**: the cleaned-scan
 //! flood-fill SDF offset inward by the cavity inset, textured with the *same*
-//! `cf_cast` canal field (resolved through the cast's canonical mapping, so the
+//! `cortenforge::cf_cast` canal field (resolved through the cast's canonical mapping, so the
 //! ridge values match exactly). [`PlugPreview`] caches the slow part (the
 //! flood-fill SDF + the prep centerline / mouth anchor) so each inset / ridge
 //! edit only re-offsets + re-textures + re-meshes at a coarse cell size — fast
@@ -10,7 +10,7 @@
 //!
 //! It is an *approximation*, not a pixel-exact twin: the preview offsets the
 //! scan with a plain `Solid::offset` over padded scan bounds, whereas the cast
-//! builds the plug with `cf_design::pinned_floor_shell` (cap-pinned floor) over
+//! builds the plug with `cortenforge::cf_design::pinned_floor_shell` (cap-pinned floor) over
 //! its own eval bounds. So the floor/cap and the frac-keyed ring positions can
 //! drift by a small amount from the final cast. The ridge *field* and its
 //! parameters are exact; the base plug shape is representative.
@@ -21,14 +21,14 @@
 
 use std::path::Path;
 
-use cf_cap_planes::{CapPlane, parse_cap_planes};
-use cf_cast::{CanalSpec, preview_textured_plug, preview_textured_solid};
-use cf_cast_cli::{
+use cf_studio_core::RidgeOptions;
+use cortenforge::cf_cap_planes::{CapPlane, parse_cap_planes};
+use cortenforge::cf_cast::{CanalSpec, preview_textured_plug, preview_textured_solid};
+use cortenforge::cf_cast_cli::{
     SharedScanSdf, load_scan_sdf, parse_centerline_from_prep_toml, resolve_canal_spec,
 };
-use cf_design::{Aabb, Solid};
-use cf_studio_core::RidgeOptions;
-use mesh_types::IndexedMesh;
+use cortenforge::cf_design::{Aabb, Solid};
+use cortenforge::mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
 use crate::error::{EngineError, Result};
@@ -122,12 +122,12 @@ pub fn proxy_preview_mesh(ridges: &RidgeOptions) -> IndexedMesh {
     )
 }
 
-/// Map the owned [`RidgeOptions`] onto a `cf_cast::CanalSpec` — the one
+/// Map the owned [`RidgeOptions`] onto a `cortenforge::cf_cast::CanalSpec` — the one
 /// unified field the cast applies to the plug + every shell (rings + texture +
 /// side pinch + tip relief + orientation).
 ///
 /// Resolves through the EXACT path the cast uses
-/// (`canal_config_from_ridges` → `cf_cast_cli::resolve_canal_spec`), so the
+/// (`canal_config_from_ridges` → `cortenforge::cf_cast_cli::resolve_canal_spec`), so the
 /// preview's spec is identical to the cast's by construction — no second
 /// hand-maintained mapping to drift. A disabled `ridges` yields a feature-free
 /// spec (the smooth piece) — the cast simply skips the canal entirely in that

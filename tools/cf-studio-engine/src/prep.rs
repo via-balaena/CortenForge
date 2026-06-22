@@ -7,7 +7,7 @@
 //!
 //! - the cleaned STL loads and has geometry, and
 //! - the `.prep.toml` yields a centerline of **at least 2 points** (the
-//!   load-bearing precondition for `cf_cast::Ribbon::new`), and
+//!   load-bearing precondition for `cortenforge::cf_cast::Ribbon::new`), and
 //! - if a `[caps]` block is present, it parses.
 //!
 //! We deliberately reuse the cast pipeline's own parsers
@@ -20,9 +20,9 @@
 use std::fs;
 use std::path::Path;
 
-use cf_cap_planes::parse_cap_planes;
-use cf_cast_cli::parse_centerline_from_prep_toml;
 use cf_studio_core::PrepInput;
+use cortenforge::cf_cap_planes::parse_cap_planes;
+use cortenforge::cf_cast_cli::parse_centerline_from_prep_toml;
 
 use crate::error::{EngineError, Result};
 use crate::scan::load_scan;
@@ -47,7 +47,7 @@ pub fn accept_prep(cleaned_stl: &Path, prep_toml: &Path) -> Result<PrepInput> {
         reason: e.to_string(),
     })?;
 
-    // 3. It must yield a centerline of >= 2 points. cf_cast::Ribbon::new
+    // 3. It must yield a centerline of >= 2 points. cortenforge::cf_cast::Ribbon::new
     //    rejects < 2 (RibbonError::InsufficientPoints), so we catch a
     //    degenerate centerline here at step 2 rather than letting it blow
     //    up deep in the 15-minute mold-gen. (cf-cast-cli's own guard only

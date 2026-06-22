@@ -5,11 +5,11 @@
 
 use std::path::Path;
 
-use cf_device_types::design_toml::{
+use cf_studio_core::{DesignDraft, LayerDraft};
+use cortenforge::cf_device_types::design_toml::{
     DesignToml, build_design_toml, load_design_toml, save_design_toml, validate_design_toml,
 };
-use cf_device_types::{CavityState, LAYER_MATERIALS, LayerSpec, LayersState};
-use cf_studio_core::{DesignDraft, LayerDraft};
+use cortenforge::cf_device_types::{CavityState, LAYER_MATERIALS, LayerSpec, LayersState};
 
 use crate::error::{EngineError, Result};
 
@@ -116,8 +116,8 @@ pub fn draft_from_design_toml(path: &Path) -> Result<DesignDraft> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 
-    use cf_device_types::design_toml::load_design_toml;
     use cf_studio_core::{DesignDraft, LayerDraft};
+    use cortenforge::cf_device_types::design_toml::load_design_toml;
 
     use super::*;
 

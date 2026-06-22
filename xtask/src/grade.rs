@@ -2352,10 +2352,9 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // Workspace tools and shared helper crates that happen to match a
     // library-namespace prefix need an explicit exemption. xtask is
     // excluded by virtue of having no matching prefix at all; cf-viewer,
-    // cf-bevy-common, cf-scan-prep, cf-cast-cli, cf-device-design, and
-    // cf-sim-research all carry `cf-` prefixes that would otherwise
-    // pull them into the design-library scope (cf-spatial / cf-design
-    // / cf-geometry). Per docs/VIEWER_DESIGN.md Q1 + Q8 locks: cf-viewer
+    // cf-bevy-common, cf-scan-prep, cf-device-design, and cf-sim-research
+    // all carry `cf-` prefixes that would otherwise pull them into the
+    // design-library scope (cf-spatial / cf-design / cf-geometry). Per docs/VIEWER_DESIGN.md Q1 + Q8 locks: cf-viewer
     // is a workspace tool, carries no tier metadata, and Q8 directs
     // path-based filtering as the gating mechanism rather than
     // retrofitting metadata. cf-bevy-common (sim-soft PR2 C2b
@@ -4080,13 +4079,13 @@ serde = \"1\"
         // cf-viewer is a workspace tool with the cf- prefix; explicit
         // exemption per docs/VIEWER_DESIGN.md Q1 + Q8 locks. cf-bevy-common
         // is the C2b factor-out: workspace-internal Bevy helper, same
-        // exemption shape. cf-scan-prep, cf-cast-cli, cf-device-design,
-        // and cf-sim-research are workspace tools under `tools/`
-        // carrying cf- prefix; same exemption. cf-device-types
-        // (sim-decouple A1 Phase 1) is the shared Bevy-using
-        // device-design-types crate; cf-device-geometry (sim-decouple
-        // Phase 2.5.b) is the shared Bevy-using device-side geometric-
-        // primitives crate; same exemption.
+        // exemption shape. cf-scan-prep, cf-device-design, and
+        // cf-sim-research are Bevy GUI workspace tools under `tools/`
+        // carrying cf- prefix; same exemption. cf-device-geometry
+        // (sim-decouple Phase 2.5.b) is the shared Bevy-using device-side
+        // geometric-primitives crate; same exemption. (cf-cast-cli,
+        // cf-scan-prep-core, and cf-device-types were exempt but are now
+        // classified SDK library tiers — see the in-scope test.)
         assert!(!applies_to_crate("cf-viewer"));
         assert!(!applies_to_crate("cf-bevy-common"));
         assert!(!applies_to_crate("cf-scan-prep"));

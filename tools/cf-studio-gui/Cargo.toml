@@ -71,14 +71,12 @@ naga = { version = "28", features = ["termcolor"] }
 # Native open/save file dialogs for the step screens (scan / prep /
 # design pickers). Direct dep; isolated to the GUI crate.
 rfd = "0.15"
-# 3D scan/mold viewer (spike + the live preview): load meshes, do the
-# camera/normal math, and cast vertex/uniform data to GPU bytes.
-mesh-io = { workspace = true }
+# The SDK through the facade — mesh-io (load scan/mold meshes) + mesh-types
+# (`IndexedMesh` for the live preview the step-2 EditSession mutates), reached
+# as `cortenforge::mesh_io` / `cortenforge::mesh_types`.
+cortenforge = { workspace = true }
 nalgebra = { workspace = true }
 bytemuck = { version = "1", features = ["derive"] }
-# `IndexedMesh` — render the live working mesh the step-2 EditSession
-# mutates (converted to viewer vertices each edit). Bevy-free, L0.
-mesh-types = { workspace = true }
 
 [build-dependencies]
 # Compiles the `.slint` markup at build time.

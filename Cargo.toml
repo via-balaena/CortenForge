@@ -11,6 +11,9 @@ members = [
     # Development tooling
     "xtask",
 
+    # The SDK facade — one stable public surface re-exporting the SDK crates.
+    "cortenforge",
+
     # Workspace-wide visual-review viewer (replaces f3d + MeshLab for static artifacts)
     "cf-viewer",
     # Stage 2.5 scan-preprocessing GUI tool — see `docs/SCAN_PREP_DESIGN.md`.
@@ -706,6 +709,9 @@ cf-cast-cli = { path = "tools/cf-cast-cli" }
 
 # D4 physical-pbit (firmware core + analysis tool)
 pbit-fw-core = { path = "firmware/pbit-fw-core" }
+
+# The SDK facade — apps depend on this single crate (see MISSION.md).
+cortenforge = { path = "cortenforge" }
 
 # CortenForge Studio — guided scan→cast wizard (see MISSION.md).
 # cf-studio-core: headless workflow spine. cf-studio-engine: the
