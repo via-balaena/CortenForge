@@ -2061,13 +2061,23 @@ fn grade_dependencies(
 // the way for hard-gate by absorbing the per-surgery interim states without
 // blocking PRs.
 
-/// One of the four architectural tiers from `L0_architectural_plan.md` §2.1.
+/// One of the architectural tiers. `L0`/`L0-io`/`L0-integration`/`L1` are the
+/// SDK library tiers from `L0_architectural_plan.md` §2.1. `App` is the
+/// dependency *sink* for guided end-user applications (e.g. Cendrillon /
+/// `cf-studio-*`): an App-tier crate may depend on the SDK, but **no SDK-tier
+/// crate may ever depend on an App-tier crate**. That one-way rule is enforced
+/// by the App-tier sink check in the Layer Integrity criterion; see
+/// `MISSION.md` and the app-vs-SDK boundary plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tier {
     L0,
     L0Io,
     L0Integration,
     L1,
+    /// End-user application crate. Unbounded like `L1` for its own dep graph
+    /// (apps legitimately pull GUI/windowing stacks), but forbidden as a
+    /// dependency of any SDK-tier crate.
+    App,
 }
 
 impl Tier {
@@ -2077,6 +2087,7 @@ impl Tier {
             "L0-io" => Some(Tier::L0Io),
             "L0-integration" => Some(Tier::L0Integration),
             "L1" => Some(Tier::L1),
+            "App" => Some(Tier::App),
             _ => None,
         }
     }
@@ -2087,6 +2098,7 @@ impl Tier {
             Tier::L0Io => "L0-io",
             Tier::L0Integration => "L0-integration",
             Tier::L1 => "L1",
+            Tier::App => "App",
         }
     }
 
@@ -2099,6 +2111,10 @@ impl Tier {
             Tier::L0Io => 1,
             Tier::L0Integration => 2,
             Tier::L1 => 3,
+            // App is unbounded like L1 for its own graph; placed at the top so
+            // `effective_tier_for` never down-ranks an App crate. App is never
+            // a tier-up target, so this only affects ordering completeness.
+            Tier::App => 4,
         }
     }
 }
@@ -2240,6 +2256,18 @@ fn tier_config(tier: Tier) -> TierConfig {
             test_max: usize::MAX,
             banned: L1_BANNED,
         },
+        // App: unbounded and unbanned. Apps legitimately pull Slint/wgpu/winit;
+        // the constraint on an App crate is not on what it consumes but on who
+        // consumes IT (the sink rule). In practice this arm is never reached at
+        // runtime — an App crate short-circuits Layer Integrity before
+        // `tier_config`, and `App` is rejected as a tier-up target so it can
+        // never become an `effective_tier` — but it's required for exhaustive
+        // matching and keeps the table honest.
+        Tier::App => TierConfig {
+            release_max: usize::MAX,
+            test_max: usize::MAX,
+            banned: L1_BANNED,
+        },
     }
 }
 
@@ -2308,6 +2336,9 @@ enum FindingKind {
         pattern: &'static str,
         matched_pkg: String,
     },
+    /// An SDK-tier crate depends on an App-tier crate — a violation of the
+    /// one-way App sink rule (apps depend on the SDK, never the reverse).
+    AppSink { app_crate: String },
 }
 
 /// True if `crate_name` must declare tier metadata. Plan §5.1 scope:
@@ -2344,11 +2375,13 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d) is the shared
     // device-side compute + rendering primitives crate (cached SDF +
     // iso extraction + clip-plane material) consumed by the same two
-    // binaries — Bevy-using, same exemption shape. cf-studio-core +
-    // cf-studio-engine (the guided-workflow Studio spine + its
-    // SDK-boundary orchestrator; see MISSION.md) are workspace tools
-    // under `tools/` carrying the cf- prefix — same Q8 path-based-filter
-    // exemption, no SDK tier. cf-osim + cf-anthro + cf-msk-fit + cf-msk-lib
+    // binaries — Bevy-using, same exemption shape. (The four cf-studio-*
+    // crates — the guided Cendrillon app stack: cf-studio-core spine →
+    // cf-studio-engine orchestrator → cf-studio CLI / cf-studio-gui; see
+    // MISSION.md — are deliberately NOT exempt: they are classified
+    // `tier = "App"` (the dependency sink) and governed by the App sink rule,
+    // so they carry tier metadata and are intentionally absent from this list.)
+    // cf-osim + cf-anthro + cf-msk-fit + cf-msk-lib
     // + cf-mjcf-emit (the musculoskeletal-builder arc; Mission deliverable #4 —
     // OpenSim→IR bridge, scan landmark detection, place/scale/articulate, the
     // library/parameter spine that morphs a template into a body, and the
@@ -2368,10 +2401,6 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-sim-research"
             | "cf-device-types"
             | "cf-device-geometry"
-            | "cf-studio-core"
-            | "cf-studio-engine"
-            | "cf-studio"
-            | "cf-studio-gui"
             | "cf-osim"
             | "cf-anthro"
             | "cf-msk-fit"
@@ -2428,6 +2457,17 @@ fn parse_tier_metadata(cargo_toml_text: &str) -> Result<Option<TierMetadata>> {
                     feat, target_str
                 )
             })?;
+            // App is the dependency sink, never a tier-up target: allowing a
+            // feature to promote an SDK crate to App would make `effective_tier`
+            // unbounded/unbanned under --all-features and silently exempt it
+            // from every dep check. Reject it.
+            if target_tier == Tier::App {
+                anyhow::bail!(
+                    "tier_up_features.{}: `App` is not a valid tier-up target \
+                     (App is the dependency sink, not an SDK tier)",
+                    feat
+                );
+            }
             tier_up_features.push((feat.clone(), target_tier));
         }
     }
@@ -2553,6 +2593,13 @@ fn read_tree_deps(
         )
     })?;
 
+    Ok(parse_tree_names(&output))
+}
+
+/// Parse `cargo tree --prefix none --format {p}` output into a deduped list of
+/// package names (the first whitespace-delimited token per line). Shared by the
+/// count/ban scan ([`read_tree_deps`]) and the sink scan ([`read_sink_deps`]).
+fn parse_tree_names(output: &str) -> Vec<String> {
     let mut deps = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for line in output.lines() {
@@ -2562,7 +2609,36 @@ fn read_tree_deps(
             }
         }
     }
-    Ok(deps)
+    deps
+}
+
+/// Read the comprehensive dependency set for the App-tier sink check: ALL edge
+/// kinds (`normal,build,dev`) across ALL targets (`--target all`), for one
+/// feature config. Unlike [`read_tree_deps`] — which intentionally scopes the
+/// count/ban check to normal/dev edges on the host target — the sink rule must
+/// catch *every* form of SDK→App edge, including a `[build-dependencies]` or a
+/// `[target.'cfg(...)'.dependencies]` edge that would otherwise be invisible on
+/// the host. So it scans the widest graph cargo can produce.
+fn read_sink_deps(sh: &Shell, crate_name: &str, fc: FeatureConfig) -> Result<Vec<String>> {
+    let tree_format = "{p}";
+    let edges = "normal,build,dev";
+    let output = match fc {
+        FeatureConfig::NoDefault => cmd!(
+            sh,
+            "cargo tree -p {crate_name} -e {edges} --target all --no-default-features --prefix none --format {tree_format}"
+        ),
+        FeatureConfig::Default => cmd!(
+            sh,
+            "cargo tree -p {crate_name} -e {edges} --target all --prefix none --format {tree_format}"
+        ),
+        FeatureConfig::AllFeatures => cmd!(
+            sh,
+            "cargo tree -p {crate_name} -e {edges} --target all --all-features --prefix none --format {tree_format}"
+        ),
+    }
+    .read()
+    .with_context(|| format!("cargo tree (sink scan) failed for {} ({})", crate_name, fc.label()))?;
+    Ok(parse_tree_names(&output))
 }
 
 fn format_finding(f: &Finding) -> String {
@@ -2586,6 +2662,121 @@ fn format_finding(f: &Finding) -> String {
             pattern,
             matched_pkg,
         ),
+        FindingKind::AppSink { app_crate } => format!(
+            "[tier {}] forbidden App-tier dependency: {} \
+             (an SDK crate must never depend on an app)",
+            f.effective_tier.label(),
+            app_crate,
+        ),
+    }
+}
+
+/// Enumerate workspace members declaring `tier = "App"`. This is the forbidden
+/// set for the sink rule, derived from the declarations themselves (no
+/// hard-coded list — any crate that adopts `tier = "App"` is covered
+/// automatically). Reads each member's manifest via `cargo metadata --no-deps`.
+fn app_tier_members(sh: &Shell) -> Result<std::collections::HashSet<String>> {
+    let metadata_json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
+        .read()
+        .context("Failed to run `cargo metadata` for the App-tier scan")?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json)
+        .context("Failed to parse `cargo metadata` JSON output")?;
+    let packages = metadata["packages"]
+        .as_array()
+        .context("`cargo metadata`: missing 'packages' array")?;
+
+    let mut apps = std::collections::HashSet::new();
+    for p in packages {
+        let (Some(name), Some(manifest)) = (p["name"].as_str(), p["manifest_path"].as_str()) else {
+            continue;
+        };
+        // Skip-and-continue on a member we cannot read or parse. A malformed
+        // manifest is surfaced when THAT crate is graded; it must not abort the
+        // grade of an unrelated crate (this scan runs while grading every SDK
+        // crate). An unreadable/unparseable member simply isn't an App member.
+        let Ok(text) = std::fs::read_to_string(manifest) else {
+            continue;
+        };
+        if let Ok(Some(meta)) = parse_tier_metadata(&text) {
+            if meta.tier == Tier::App {
+                apps.insert(name.to_string());
+            }
+        }
+    }
+    Ok(apps)
+}
+
+/// The App-tier sink rule: one [`Finding`] per App-tier crate that appears in
+/// `crate_name`'s dependency graph. `tier` is the graded crate's own (SDK) tier,
+/// recorded on each finding for the message. Runs the comprehensive sink scan
+/// ([`read_sink_deps`]: all edge kinds × all targets) across the three feature
+/// configs and deduplicates, so each forbidden app dependency is reported once
+/// regardless of how many configs expose it. Returns empty when there are no
+/// app members or none appear in the graph.
+fn sink_findings(
+    sh: &Shell,
+    crate_name: &str,
+    tier: Tier,
+    app_members: &std::collections::HashSet<String>,
+) -> Result<Vec<Finding>> {
+    if app_members.is_empty() {
+        return Ok(Vec::new());
+    }
+    let configs = [
+        FeatureConfig::NoDefault,
+        FeatureConfig::Default,
+        FeatureConfig::AllFeatures,
+    ];
+    // BTreeSet → deterministic, deduplicated order across the three scans.
+    let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for fc in configs {
+        let deps = read_sink_deps(sh, crate_name, fc)?;
+        for app in evaluate_sink(&deps, crate_name, app_members) {
+            found.insert(app.to_string());
+        }
+    }
+    Ok(found
+        .into_iter()
+        .map(|app_crate| Finding {
+            // feature_config/graph_kind are not rendered for an AppSink finding
+            // (the violation is structural, not config-specific); nominal values.
+            feature_config: FeatureConfig::Default,
+            graph_kind: GraphKind::Release,
+            effective_tier: tier,
+            kind: FindingKind::AppSink { app_crate },
+        })
+        .collect())
+}
+
+/// Pure core of the sink check: the App-tier crate names present in `deps`,
+/// excluding the self-edge (cargo tree lists the queried crate as the root).
+/// Split out so it is unit-testable without a shell.
+fn evaluate_sink<'a>(
+    deps: &'a [String],
+    crate_name: &str,
+    app_members: &std::collections::HashSet<String>,
+) -> Vec<&'a str> {
+    deps.iter()
+        .map(|d| d.as_str())
+        .filter(|dep| *dep != crate_name && app_members.contains(*dep))
+        .collect()
+}
+
+/// Pure Layer Integrity grade decision given the crate's tier and how many
+/// findings were collected (count/ban + sink). Extracted so the load-bearing
+/// rule — especially **L1 with a sink finding must be F, not the old
+/// unconditional N/A** — is locked in by a unit test rather than only the
+/// integrated cargo-tree path.
+///
+/// - `App`: N/A (the sink itself is never checked for what it consumes).
+/// - `L1` with no findings: N/A (unbounded own graph), but a sink finding → F.
+/// - any other SDK tier: A when clean, F when any finding exists.
+fn layer_integrity_grade(tier: Tier, finding_count: usize) -> Grade {
+    match (tier, finding_count) {
+        (Tier::App, _) => Grade::NotApplicable,
+        (Tier::L1, 0) => Grade::NotApplicable,
+        (_, 0) => Grade::A,
+        (_, _) => Grade::F,
     }
 }
 
@@ -2642,52 +2833,76 @@ fn grade_layer_integrity(
         }
     };
 
-    // L1 is unbounded by definition — skip the cargo-tree work entirely.
-    if metadata.tier == Tier::L1 {
+    // App crates are the dependency SINK: their own graph is unbounded and is
+    // never checked for what it consumes. App→App is allowed (e.g.
+    // cf-studio-gui → cf-studio-engine → cf-studio-core), so an App crate is
+    // not sink-checked against itself either.
+    if metadata.tier == Tier::App {
         return Ok(CriterionResult {
             name: "6. Layer Integrity",
-            result: "(L1 tier)".to_string(),
+            result: "(App tier)".to_string(),
             grade: Grade::NotApplicable,
             threshold: "tier rules",
-            measured_detail: "Layer Integrity criterion is N/A for L1 tier".to_string(),
+            measured_detail: "Layer Integrity criterion is N/A for App tier (the dependency sink)"
+                .to_string(),
         });
     }
 
-    // Run the 6 (config × graph) cargo-tree invocations and aggregate.
-    let configs = [
-        FeatureConfig::NoDefault,
-        FeatureConfig::Default,
-        FeatureConfig::AllFeatures,
-    ];
-    let graphs = [GraphKind::Release, GraphKind::WithDev];
+    // App-tier SINK RULE: no SDK-tier crate (L0/L0-io/L0-integration/L1) may
+    // depend on an App-tier crate. Derived from the `tier = "App"` declarations
+    // (single source of truth — any future app is covered automatically) and
+    // enforced for EVERY SDK tier, including L1 (sim-coupling is L1 and must
+    // not reach into an app). Computed before the L1 short-circuit below.
+    let app_members = app_tier_members(sh)?;
+    let mut all_findings: Vec<Finding> =
+        sink_findings(sh, crate_name, metadata.tier, &app_members)?;
 
-    let mut all_findings: Vec<Finding> = Vec::new();
-    for fc in configs {
-        for gk in graphs {
-            let deps = read_tree_deps(sh, crate_name, fc, gk)?;
-            let effective_tier = effective_tier_for(&metadata, fc);
-            let config = tier_config(effective_tier);
-            let findings = evaluate_dep_set(&deps, config, fc, gk, effective_tier);
-            all_findings.extend(findings);
+    // L1 is unbounded for its OWN dep graph — skip the count/ban cargo-tree
+    // work; only the sink findings apply. L0/L0-io/L0-integration additionally
+    // run the count + banned-prefix checks on top of any sink findings.
+    if metadata.tier != Tier::L1 {
+        let configs = [
+            FeatureConfig::NoDefault,
+            FeatureConfig::Default,
+            FeatureConfig::AllFeatures,
+        ];
+        let graphs = [GraphKind::Release, GraphKind::WithDev];
+        for fc in configs {
+            for gk in graphs {
+                let deps = read_tree_deps(sh, crate_name, fc, gk)?;
+                let effective_tier = effective_tier_for(&metadata, fc);
+                let config = tier_config(effective_tier);
+                let findings = evaluate_dep_set(&deps, config, fc, gk, effective_tier);
+                all_findings.extend(findings);
+            }
         }
     }
 
-    // Hard-gated per plan §8 step 12 (was Grade::A unconditionally in
-    // step 3 warning-mode commit `1fb88e2f`).
-    let warning_grade = if all_findings.is_empty() {
-        Grade::A
-    } else {
-        Grade::F
-    };
-
-    if all_findings.is_empty() {
-        return Ok(CriterionResult {
-            name: "6. Layer Integrity",
-            result: "✓ confirmed".to_string(),
-            grade: warning_grade,
-            threshold: "tier rules",
-            measured_detail: format!("tier {} — no findings", metadata.tier.label()),
-        });
+    // Grade decision via the pure helper — locks in the load-bearing
+    // L1-with-sink-finding → F fall-through. Hard-gated per plan §8 step 12.
+    match layer_integrity_grade(metadata.tier, all_findings.len()) {
+        // Only L1 with zero findings reaches N/A here (App returned earlier).
+        Grade::NotApplicable => {
+            return Ok(CriterionResult {
+                name: "6. Layer Integrity",
+                result: "(L1 tier)".to_string(),
+                grade: Grade::NotApplicable,
+                threshold: "tier rules",
+                measured_detail:
+                    "Layer Integrity criterion is N/A for L1 tier (unbounded dep graph)".to_string(),
+            });
+        }
+        Grade::A => {
+            return Ok(CriterionResult {
+                name: "6. Layer Integrity",
+                result: "✓ confirmed".to_string(),
+                grade: Grade::A,
+                threshold: "tier rules",
+                measured_detail: format!("tier {} — no findings", metadata.tier.label()),
+            });
+        }
+        // Grade::F falls through to the finding rendering below.
+        _ => {}
     }
 
     // Render findings to stderr and to measured_detail. Stderr emission
@@ -2713,7 +2928,7 @@ fn grade_layer_integrity(
     Ok(CriterionResult {
         name: "6. Layer Integrity",
         result: format!("{} leak{}", n, if n == 1 { "" } else { "s" }),
-        grade: warning_grade,
+        grade: Grade::F,
         threshold: "tier rules",
         measured_detail: detail,
     })
@@ -3787,6 +4002,7 @@ serde = \"1\"
         assert_eq!(Tier::parse("L0-io"), Some(Tier::L0Io));
         assert_eq!(Tier::parse("L0-integration"), Some(Tier::L0Integration));
         assert_eq!(Tier::parse("L1"), Some(Tier::L1));
+        assert_eq!(Tier::parse("App"), Some(Tier::App));
     }
 
     #[test]
@@ -3794,16 +4010,36 @@ serde = \"1\"
         assert_eq!(Tier::parse("L2"), None);
         assert_eq!(Tier::parse("l0"), None);
         assert_eq!(Tier::parse(""), None);
+        // Case-sensitive: only "App" parses, not "app"/"APP".
+        assert_eq!(Tier::parse("app"), None);
+        assert_eq!(Tier::parse("APP"), None);
+    }
+
+    #[test]
+    fn tier_app_label_round_trips() {
+        assert_eq!(Tier::App.label(), "App");
+        assert_eq!(Tier::parse(Tier::App.label()), Some(Tier::App));
+    }
+
+    #[test]
+    fn tier_app_config_is_unbounded_and_unbanned() {
+        // App constrains who depends on it (the sink rule), not what it
+        // depends on — so its own dep graph is unbounded and unbanned.
+        let cfg = tier_config(Tier::App);
+        assert_eq!(cfg.release_max, usize::MAX);
+        assert_eq!(cfg.test_max, usize::MAX);
+        assert!(cfg.banned.is_empty());
     }
 
     #[test]
     fn tier_permissiveness_ordering() {
-        // L0 strictest → L1 most permissive. effective_tier_for relies
+        // L0 strictest → App most permissive. effective_tier_for relies
         // on this monotonic ordering when picking the loosest tier among
         // multiple tier_up_features.
         assert!(Tier::L0.permissiveness() < Tier::L0Io.permissiveness());
         assert!(Tier::L0Io.permissiveness() < Tier::L0Integration.permissiveness());
         assert!(Tier::L0Integration.permissiveness() < Tier::L1.permissiveness());
+        assert!(Tier::L1.permissiveness() < Tier::App.permissiveness());
     }
 
     #[test]
@@ -3815,6 +4051,12 @@ serde = \"1\"
         assert!(applies_to_crate("cf-spatial"));
         assert!(applies_to_crate("cf-design"));
         assert!(applies_to_crate("cortenforge-cli"));
+        // The Cendrillon app stack is now in-scope (classified `tier = "App"`),
+        // no longer on the exemption list — so Layer Integrity governs it.
+        assert!(applies_to_crate("cf-studio-core"));
+        assert!(applies_to_crate("cf-studio-engine"));
+        assert!(applies_to_crate("cf-studio"));
+        assert!(applies_to_crate("cf-studio-gui"));
     }
 
     #[test]
@@ -3855,10 +4097,6 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-sim-research"));
         assert!(!applies_to_crate("cf-device-types"));
         assert!(!applies_to_crate("cf-device-geometry"));
-        assert!(!applies_to_crate("cf-studio-core"));
-        assert!(!applies_to_crate("cf-studio-engine"));
-        assert!(!applies_to_crate("cf-studio"));
-        assert!(!applies_to_crate("cf-studio-gui"));
         // musculoskeletal-builder arc tools (Mission #4) — same exemption shape.
         assert!(!applies_to_crate("cf-osim"));
         assert!(!applies_to_crate("cf-anthro"));
@@ -3968,6 +4206,20 @@ name = "foo"
 [package.metadata.cortenforge]
 tier = "L0"
 tier_up_features = { foo = "L99" }
+"#;
+        assert!(parse_tier_metadata(toml).is_err());
+    }
+
+    #[test]
+    fn parse_tier_metadata_rejects_app_tier_up_target() {
+        // App is the dependency sink, never a tier-up target — promoting an SDK
+        // crate to App would silently exempt it from every dep check.
+        let toml = r#"
+[package]
+name = "foo"
+[package.metadata.cortenforge]
+tier = "L0"
+tier_up_features = { sneaky = "App" }
 "#;
         assert!(parse_tier_metadata(toml).is_err());
     }
@@ -4220,6 +4472,93 @@ tier_up_features = { foo = "L99" }
             Tier::L0,
         );
         assert_eq!(findings.len(), 0);
+    }
+
+    // === App-tier sink rule (evaluate_sink) ===
+
+    fn app_set(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn dep_list(deps: &[&str]) -> Vec<String> {
+        deps.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn evaluate_sink_clean_sdk_graph_no_findings() {
+        // A graph containing only SDK/third-party crates — no app dependency.
+        let deps = dep_list(&["sim-core", "mesh-types", "serde"]);
+        let apps = app_set(&["cf-studio-core", "cf-studio-engine"]);
+        assert!(evaluate_sink(&deps, "sim-soft", &apps).is_empty());
+    }
+
+    #[test]
+    fn evaluate_sink_flags_app_dependency() {
+        // The violation we exist to catch: an SDK crate reaching into an app.
+        let deps = dep_list(&["sim-core", "cf-studio-engine", "serde"]);
+        let apps = app_set(&["cf-studio-core", "cf-studio-engine", "cf-studio-gui"]);
+        assert_eq!(
+            evaluate_sink(&deps, "sim-coupling", &apps),
+            vec!["cf-studio-engine"]
+        );
+    }
+
+    #[test]
+    fn evaluate_sink_excludes_self_edge() {
+        // cargo tree lists the queried crate itself; it must not flag itself.
+        let deps = dep_list(&["cf-studio-gui", "cf-studio-engine"]);
+        let apps = app_set(&["cf-studio-gui", "cf-studio-engine"]);
+        assert_eq!(
+            evaluate_sink(&deps, "cf-studio-gui", &apps),
+            vec!["cf-studio-engine"]
+        );
+    }
+
+    #[test]
+    fn evaluate_sink_flags_every_app_dependency() {
+        let deps = dep_list(&["sim-core", "cf-studio-engine", "cf-studio-core"]);
+        let apps = app_set(&["cf-studio-core", "cf-studio-engine", "cf-studio-gui"]);
+        let mut found = evaluate_sink(&deps, "mesh-sdf", &apps);
+        found.sort();
+        assert_eq!(found, vec!["cf-studio-core", "cf-studio-engine"]);
+    }
+
+    #[test]
+    fn evaluate_sink_empty_app_set_no_findings() {
+        let deps = dep_list(&["cf-studio-engine"]);
+        assert!(evaluate_sink(&deps, "sim-core", &app_set(&[])).is_empty());
+    }
+
+    #[test]
+    fn format_finding_app_sink_renders_message() {
+        // PR-blocking message shape for the sink violation. Structural, so no
+        // per-config prefix — just the graded crate's tier and the app crate.
+        let f = Finding {
+            feature_config: FeatureConfig::Default,
+            graph_kind: GraphKind::Release,
+            effective_tier: Tier::L1,
+            kind: FindingKind::AppSink {
+                app_crate: "cf-studio-engine".to_string(),
+            },
+        };
+        assert_eq!(
+            format_finding(&f),
+            "[tier L1] forbidden App-tier dependency: \
+             cf-studio-engine (an SDK crate must never depend on an app)"
+        );
+    }
+
+    #[test]
+    fn layer_integrity_grade_truth_table() {
+        // The load-bearing decision, especially L1-with-sink-finding → F.
+        assert_eq!(layer_integrity_grade(Tier::App, 0), Grade::NotApplicable);
+        assert_eq!(layer_integrity_grade(Tier::App, 3), Grade::NotApplicable);
+        assert_eq!(layer_integrity_grade(Tier::L1, 0), Grade::NotApplicable);
+        assert_eq!(layer_integrity_grade(Tier::L1, 1), Grade::F); // the fall-through
+        assert_eq!(layer_integrity_grade(Tier::L0, 0), Grade::A);
+        assert_eq!(layer_integrity_grade(Tier::L0, 2), Grade::F);
+        assert_eq!(layer_integrity_grade(Tier::L0Io, 0), Grade::A);
+        assert_eq!(layer_integrity_grade(Tier::L0Integration, 1), Grade::F);
     }
 
     #[test]

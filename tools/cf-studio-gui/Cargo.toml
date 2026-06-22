@@ -12,10 +12,13 @@ publish = false
 # the app.
 default-run = "cf-studio-gui"
 
-# Workspace tool; no `[package.metadata.cortenforge]` block (matches the
-# cf-studio / cf-cast-cli precedent). The Project→display mapping lives in
-# the lib (testable, headless); main.rs is the Slint event-loop glue,
-# which needs a display to *run* but compiles headlessly.
+# Cendrillon app stack — App tier (the dependency sink): may depend on the SDK,
+# but no SDK crate may depend on it (enforced by grade Layer Integrity).
+# See MISSION.md. The Project→display mapping lives in the lib (testable,
+# headless); main.rs is the Slint event-loop glue, which needs a display to
+# *run* but compiles headlessly.
+[package.metadata.cortenforge]
+tier = "App"
 
 [[bin]]
 name = "cf-studio-gui"

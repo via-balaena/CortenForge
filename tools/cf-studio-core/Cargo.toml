@@ -9,6 +9,12 @@ authors.workspace = true
 rust-version.workspace = true
 publish = false
 
+# Cendrillon app stack — App tier (the dependency sink): may depend on the SDK,
+# but no SDK crate may depend on it (enforced by grade Layer Integrity).
+# See MISSION.md and the app-vs-SDK boundary.
+[package.metadata.cortenforge]
+tier = "App"
+
 # Headless by construction: NO Bevy, NO rendering, NO UI, and (in P1)
 # no SDK crates either — the spine is a pure, serializable workflow
 # state machine. The SDK boundary (cf-cast / scan-prep / device-types)

@@ -9,6 +9,12 @@ authors.workspace = true
 rust-version.workspace = true
 publish = false
 
+# Cendrillon app stack — App tier (the dependency sink): may depend on the SDK,
+# but no SDK crate may depend on it (enforced by grade Layer Integrity).
+# See MISSION.md and the app-vs-SDK boundary.
+[package.metadata.cortenforge]
+tier = "App"
+
 # This is the layer that knows about the SDK crates, so the spine
 # (cf-studio-core) can stay pure + fast to build/test. Same strict lint
 # posture as the spine: forbid unsafe, deny the panicking shortcuts.
