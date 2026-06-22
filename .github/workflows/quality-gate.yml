@@ -243,6 +243,12 @@ jobs:
     name: Tests (debug)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # PR-scoped to the affected crates (see the `affected` job); always runs
+    # (`if: !cancelled()`) so it is never a skipped required check, and falls
+    # back to the full crate list on any non-PR / needs_full / affected-failed
+    # path via .github/scripts/affected-packages.sh.
+    needs: [affected]
+    if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@v6
 
@@ -260,6 +266,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Run tests
+        env:
+          AFFECTED_RESULT: ${{ needs.affected.result }}
+          AFFECTED_FULL: ${{ needs.affected.outputs.needs_full }}
+          AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           # Library + integration crates whose tests are fast in debug mode.
           # Excluded by intent:
@@ -280,20 +291,27 @@ jobs:
           # cf-viewer + sim-bevy + sim-bevy-soft. sim-bevy-soft (sim-soft
           # PR2 C2c) is the deforming-tet-mesh trajectory replay (β) crate
           # consumed by sim-soft Tier 4 examples (rows 12-14, 18).
-          cargo test \
-            -p mesh-types -p mesh-io -p mesh-repair -p mesh-sdf \
-            -p mesh-offset -p mesh-shell -p mesh-measure \
-            -p mesh-printability -p mesh-lattice -p mesh \
-            -p sim-types -p sim-simd -p sim-core -p sim-mjcf \
-            -p sim-urdf -p sim-gpu -p sim-soft -p sim-ml-chassis-bevy \
-            -p sim-therm-env -p cf-geometry -p cf-spatial -p cf-design \
-            -p cf-design-tests -p cf-viewer -p cf-bevy-common \
-            -p sim-bevy-soft \
-            -p cf-studio-core -p cf-studio-engine -p cf-studio-gui \
-            -p cf-studio -p cf-scan-prep-core -p cf-cast-cli
+          CANDIDATES="mesh-types mesh-io mesh-repair mesh-sdf mesh-offset \
+            mesh-shell mesh-measure mesh-printability mesh-lattice mesh \
+            sim-types sim-simd sim-core sim-mjcf sim-urdf sim-gpu sim-soft \
+            sim-ml-chassis-bevy sim-therm-env cf-geometry cf-spatial cf-design \
+            cf-design-tests cf-viewer cf-bevy-common sim-bevy-soft \
+            cf-studio-core cf-studio-engine cf-studio-gui cf-studio \
+            cf-scan-prep-core cf-cast-cli"
+          # Restrict to the PR-affected subset (full on main/merge/fallback).
+          PKGS=$(bash .github/scripts/affected-packages.sh "$CANDIDATES")
+          if [ -z "$PKGS" ]; then
+            echo "tests-debug: no affected crates in this set — skipping."
+            exit 0
+          fi
+          echo "tests-debug packages: $PKGS"
+          cargo test $PKGS
           # mesh-io's 3MF unit-scaling tests are behind the non-default
-          # `threemf` feature, so run that crate again with it enabled.
-          cargo test -p mesh-io --features threemf
+          # `threemf` feature, so run that crate again with it enabled —
+          # only when mesh-io is in the selected set.
+          case " $PKGS " in
+            *" -p mesh-io "*) cargo test -p mesh-io --features threemf ;;
+          esac
         shell: bash
 
   # ============================================================================
@@ -340,16 +358,22 @@ jobs:
     # Heavy stochastic validators; 45 min guards a hung test without masking a
     # genuine ~9-10 min shard (post-nextest). Tune down once re-measured.
     timeout-minutes: 45
+    # PR-scoped to the affected crates (see the `affected` job); always runs so
+    # it is never a skipped required check, and falls back to the full shard
+    # list on any non-PR / needs_full / affected-failed path. `crates` are bare
+    # names here (not `-p` flags) so affected-packages.sh can intersect them.
+    needs: [affected]
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - id: 1
-            crates: -p sim-conformance-tests -p sim-coupling
+            crates: sim-conformance-tests sim-coupling
           - id: 2
-            crates: -p sim-thermostat -p sim-opt -p mesh-printability
+            crates: sim-thermostat sim-opt mesh-printability
           - id: 3
-            crates: -p sim-ml-chassis -p sim-rl
+            crates: sim-ml-chassis sim-rl
     steps:
       - uses: actions/checkout@v6
 
@@ -377,13 +401,32 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # Resolve this shard's crates against the affected set ONCE; the nextest
+      # and doctest steps reuse PKGS, and SOFT_PKGS gates the sim-soft step.
+      - name: Select affected packages
+        env:
+          AFFECTED_RESULT: ${{ needs.affected.result }}
+          AFFECTED_FULL: ${{ needs.affected.outputs.needs_full }}
+          AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          PKGS=$(bash .github/scripts/affected-packages.sh "${{ matrix.crates }}")
+          echo "PKGS=$PKGS" >> "$GITHUB_ENV"
+          echo "shard ${{ matrix.id }} packages: ${PKGS:-<none>}"
+          # sim-soft isn't in any shard's crate list (it runs as selective test
+          # bins below), so resolve it independently.
+          SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "sim-soft")
+          echo "SOFT_PKGS=$SOFT_PKGS" >> "$GITHUB_ENV"
+        shell: bash
+
       - name: Run tests (nextest, --release)
         # sim-coupling (the keystone soft↔rigid bridge) runs here, not in
         # tests-debug: its differentiable-coupling gates drive the soft FEM
         # solver (slow in debug, like sim-soft). The whole suite is ~16 s in
         # release. Without this the keystone gradient gates execute in NO CI
         # job (grade shards use `--skip-coverage`, which skips test-running).
-        run: cargo nextest run --release ${{ matrix.crates }}
+        if: env.PKGS != ''
+        run: cargo nextest run --release $PKGS
         shell: bash
 
       # nextest does NOT run doctests (a known limitation — its process-per-test
@@ -392,7 +435,8 @@ jobs:
       # the nextest switch (e.g. mesh-printability's 4 doctests). Doctests are
       # compile-bound and trivially fast to execute.
       - name: Run doctests (--release)
-        run: cargo test --release --doc ${{ matrix.crates }}
+        if: env.PKGS != ''
+        run: cargo test --release --doc $PKGS
         shell: bash
 
       # sim-soft release-only contact tests live on shard 3. Phase 5 commits
@@ -401,9 +445,10 @@ jobs:
       # `feedback_release_mode_heavy_tests`. The crate itself runs in
       # `tests-debug` for V-1 / V-2 / V-3a / V-6 + 220+ legacy tests; these
       # `--test` selections add the cfg-attr-debug-skip release-only paths only
-      # (avoids 2× compile cost on debug-already-covered tests).
+      # (avoids 2× compile cost on debug-already-covered tests). Runs when
+      # sim-soft is affected (SOFT_PKGS non-empty → also true on the full path).
       - name: Run sim-soft release-only contact tests
-        if: matrix.id == 3
+        if: matrix.id == 3 && env.SOFT_PKGS != ''
         run: |
           cargo test --release -p sim-soft \
             --test hertz_sphere_plane \
@@ -434,6 +479,12 @@ jobs:
     name: Cross-OS Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    # PR-scoped to the affected crates; always runs (never a skipped required
+    # check), full on non-PR / needs_full / affected-failed. A Cargo.lock change
+    # trips the full-fallback valve → needs_full → the Cendrillon pin guard
+    # below still runs, so lockfile drift is never silently skipped.
+    needs: [affected]
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -449,15 +500,32 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
+      - name: Select affected packages
+        env:
+          AFFECTED_RESULT: ${{ needs.affected.result }}
+          AFFECTED_FULL: ${{ needs.affected.outputs.needs_full }}
+          AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          PKGS=$(bash .github/scripts/affected-packages.sh "sim-core sim-mjcf mesh-io mesh-printability")
+          echo "PKGS=$PKGS" >> "$GITHUB_ENV"
+          GUI_PKGS=$(bash .github/scripts/affected-packages.sh "cf-studio-gui")
+          echo "GUI_PKGS=$GUI_PKGS" >> "$GITHUB_ENV"
+        shell: bash
+
       - name: Run tests (default features)
-        run: cargo test -p sim-core -p sim-mjcf -p mesh-io -p mesh-printability
+        if: env.PKGS != ''
+        run: cargo test $PKGS
         shell: bash
 
       # Build Cendrillon (the only thing released for Windows) on each OS,
       # --locked, so a lockfile drift that breaks the Windows build — e.g. a
       # cargo update dropping gpu-allocator's windows 0.62.2 pin — fails the
       # PR here instead of silently dropping the Windows download at release.
+      # A Cargo.lock change trips needs_full (→ GUI_PKGS non-empty), so the
+      # guard always runs exactly when a lockfile drift could occur.
       - name: Build Cendrillon (guards the Windows windows-crate pin)
+        if: env.GUI_PKGS != ''
         run: cargo build --locked -p cf-studio-gui
         shell: bash
 
@@ -477,6 +545,10 @@ jobs:
     name: Feature Combos
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # PR-scoped: the only combo is sim-soft's `gpu-probe`, so this runs when
+    # sim-soft is affected (and always on non-PR / needs_full / fallback).
+    needs: [affected]
+    if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@v6
 
@@ -493,7 +565,19 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
+      - name: Select affected packages
+        env:
+          AFFECTED_RESULT: ${{ needs.affected.result }}
+          AFFECTED_FULL: ${{ needs.affected.outputs.needs_full }}
+          AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "sim-soft")
+          echo "SOFT_PKGS=$SOFT_PKGS" >> "$GITHUB_ENV"
+        shell: bash
+
       - name: Test sim-soft with gpu-probe
+        if: env.SOFT_PKGS != ''
         run: cargo test --features gpu-probe -p sim-soft
 
   # ============================================================================
