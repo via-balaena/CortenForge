@@ -79,6 +79,7 @@ jobs:
   format:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
@@ -114,6 +115,7 @@ jobs:
   grade:
     name: xtask Grade (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -160,6 +162,7 @@ jobs:
   tests-debug:
     name: Tests (debug)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -216,7 +219,7 @@ jobs:
   # ============================================================================
   # TESTS (RELEASE) - Default features, --release — heavy-physics gate
   # ============================================================================
-  # Runs `cargo test --release` on the 5 crates whose default test suite
+  # Runs `cargo test --release` on the crates whose default test suite
   # contains stochastic-physics validators (Boltzmann learning, CEM
   # convergence, REINFORCE, SA/PT optimizers, MuJoCo conformance) doing
   # 90M–600M physics steps each.
@@ -229,9 +232,39 @@ jobs:
   # test-execution savings dominate. Runs in parallel with tests-debug on a
   # separate runner so the --release compile doesn't extend the wall time of
   # the lighter crates.
+  #
+  # SHARDING (3 legs, mirrors the `grade` job): this was the ~29-min critical
+  # path — a single sequential monolith. Unlike `grade`, the shard assignment
+  # can NOT delegate to a round-robin tool: tests-release is TEST-EXECUTION-
+  # bound, not compile-bound (per reference_ci_timing — stochastic validators
+  # run minutes each; compile is ~5 of the 29 min). Round-robin over the sorted
+  # crate list CLUSTERS the heavy learners onto one shard (the same imbalance
+  # `grade` shows: shard 1 ~18 min vs ~10), and a naive 2-way split (#351,
+  # reverted) put sim-soft alone vs the 4 learners → critical path barely moved
+  # (29→27). So the shards below are hand-balanced to SPREAD the five heavy
+  # learners (conformance / thermostat / rl / opt / ml-chassis) one-or-two per
+  # leg. Re-tune from measured per-shard wall-clock if one leg dominates. The
+  # downstream `quality-gate` job `needs: [tests-release]` waits for all matrix
+  # legs and fails if any fails, so branch protection still gates every crate.
+  # Each shard keeps its own rust-cache (matrix value is part of the key); 3
+  # legs (not matrix-per-crate) keeps the cache-key count bounded under the
+  # 10 GB repo ceiling.
   tests-release:
-    name: Tests (release, heavy)
+    name: Tests (release, heavy — shard ${{ matrix.id }}/3)
     runs-on: ubuntu-latest
+    # Heavy stochastic validators; 45 min guards a hung test without masking a
+    # genuine ~13-15 min shard. Tune down once measured.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: 1
+            crates: -p sim-conformance-tests -p sim-coupling
+          - id: 2
+            crates: -p sim-thermostat -p sim-opt -p mesh-printability
+          - id: 3
+            crates: -p sim-ml-chassis -p sim-rl
     steps:
       - uses: actions/checkout@v6
 
@@ -249,23 +282,24 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Run tests (--release)
+        # sim-coupling (the keystone soft↔rigid bridge) runs here, not in
+        # tests-debug: its differentiable-coupling gates drive the soft FEM
+        # solver (slow in debug, like sim-soft). The whole suite is ~16 s in
+        # release. Without this the keystone gradient gates execute in NO CI
+        # job (grade shards use `--skip-coverage`, which skips test-running).
+        run: cargo test --release ${{ matrix.crates }}
+        shell: bash
+
+      # sim-soft release-only contact tests live on shard 3. Phase 5 commits
+      # 9 + 10 mark V-3 / V-5 / V-4-V-3 / V-4-V-5 as
+      # `#[cfg_attr(debug_assertions, ignore)]` per
+      # `feedback_release_mode_heavy_tests`. The crate itself runs in
+      # `tests-debug` for V-1 / V-2 / V-3a / V-6 + 220+ legacy tests; these
+      # `--test` selections add the cfg-attr-debug-skip release-only paths only
+      # (avoids 2× compile cost on debug-already-covered tests).
+      - name: Run sim-soft release-only contact tests
+        if: matrix.id == 3
         run: |
-          cargo test --release \
-            -p sim-ml-chassis -p sim-thermostat -p sim-rl \
-            -p sim-conformance-tests -p sim-opt -p mesh-printability \
-            -p sim-coupling
-          # sim-coupling (the keystone soft↔rigid bridge) runs here, not in
-          # tests-debug: its differentiable-coupling gates drive the soft FEM
-          # solver (slow in debug, like sim-soft). The whole suite is ~16 s in
-          # release. Without this the keystone gradient gates execute in NO CI
-          # job (grade shards use `--skip-coverage`, which skips test-running).
-          # sim-soft release-only contact tests — Phase 5 commits 9 + 10
-          # mark V-3 / V-5 / V-4-V-3 / V-4-V-5 as `#[cfg_attr(debug_assertions,
-          # ignore)]` per `feedback_release_mode_heavy_tests`. The crate
-          # itself runs in `tests-debug` for V-1 / V-2 / V-3a / V-6 + 220+
-          # legacy tests; these `--test` selections add the cfg-attr-debug-
-          # skip release-only paths only (avoids 2× compile cost on debug-
-          # already-covered tests).
           cargo test --release -p sim-soft \
             --test hertz_sphere_plane \
             --test contact_drop_rest \
@@ -294,6 +328,7 @@ jobs:
   cross-os:
     name: Cross-OS Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -336,6 +371,7 @@ jobs:
   feature-combos:
     name: Feature Combos
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -363,6 +399,7 @@ jobs:
   dependencies:
     name: Dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
@@ -377,6 +414,7 @@ jobs:
   semver:
     name: Semver
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Only run on PRs (compare against base branch)
     if: github.event_name == 'pull_request'
     steps:
@@ -400,6 +438,7 @@ jobs:
   sbom:
     name: SBOM
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -428,6 +467,7 @@ jobs:
     name: Quality Gate
     needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: All checks passed
         run: |
