@@ -2320,9 +2320,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// **hinge** with no other DOFs (`nv == 1`, hence `nq == nv` — raw `qpos` is a
     /// valid coordinate, no quaternion). `None` for a free joint, a multi-link chain,
     /// or any non-hinge case. The single hinge uses the scalar closed-form geometric
-    /// stiffness in [`Self::analytic_state_jacobian`]; the undamped multi-link chain
-    /// uses the off-diagonal Hessian + `∂M⁻¹/∂q` form in [`Self::chain_state_jacobian`];
-    /// the remaining cases (free/quaternion, damped chain) keep the FD
+    /// stiffness in [`Self::analytic_state_jacobian`]; the multi-link chain (damped or
+    /// undamped) uses the off-diagonal Hessian + `∂M_impl⁻¹/∂q` form in
+    /// [`Self::chain_state_jacobian`]; the remaining cases (free/quaternion) keep the FD
     /// [`Self::loaded_state_jacobian`] fallback.
     fn single_hinge(&self) -> Option<usize> {
         if self.model.nv != 1 || self.model.body_jnt_num[self.body] != 1 {
@@ -2370,10 +2370,19 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     // failure is a programmer error surfaced loudly (mirrors `scratch_state_step`).
     #[allow(clippy::expect_used)]
     fn analytic_state_jacobian(&self, wrench: &SpatialVector) -> Option<DMatrix<f64>> {
+        // The analytic carry assumes the Euler (eulerdamp) integrator: damping enters the
+        // velocity solve as `M_impl = M + Δt·D`, with joint stiffness applied EXPLICITLY. A
+        // stiffness-implicit integrator (`ImplicitSpringDamper`: `M + Δt·D + Δt²·K`) needs a
+        // different solve matrix, so defer to the always-correct FD `loaded_state_jacobian`.
+        // (Before damped chains were analytic, the damping guard incidentally excluded such
+        // models — which are damped — so this preserves that protection explicitly.)
+        if self.model.integrator != sim_core::Integrator::Euler {
+            return None;
+        }
         let Some(jnt) = self.single_hinge() else {
-            // Not a single hinge: try the analytic UNDAMPED multi-link chain carry
-            // (`Self::chain_state_jacobian`); a free joint / quaternion / damped chain
-            // returns `None` there → the caller's FD `loaded_state_jacobian` fallback.
+            // Not a single hinge: try the analytic multi-link chain carry (damped or undamped,
+            // `Self::chain_state_jacobian`); a free joint / quaternion / multi-joint-per-body
+            // body returns `None` there → the caller's FD `loaded_state_jacobian` fallback.
             return self.chain_state_jacobian(wrench);
         };
         let dt = self.model.timestep;
@@ -2416,24 +2425,28 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         Some(j)
     }
 
-    /// The LOADED single-step state Jacobian computed **analytically** for an UNDAMPED serial
-    /// HINGE chain (`nv ≥ 2`) — the multi-link successor to the single-hinge
-    /// [`Self::analytic_state_jacobian`], removing the last FD fallback for the undamped
-    /// articulated coupling. `None` (→ FD `loaded_state_jacobian`) for any body that is not a
-    /// pure serial hinge chain spanning all DOFs (one joint per body), for a quaternion joint
-    /// (`nq ≠ nv`), or under joint damping (the damped chain is the separate follow-on; see
-    /// `docs/keystone/damped_joints_recon.md`). Machine-exact for 2-link through 4-link spatial
-    /// chains; the multi-hop Coriolis derivative it relies on is complete in `mjd_rne_pos`.
+    /// The LOADED single-step state Jacobian computed **analytically** for a serial HINGE chain
+    /// (`nv ≥ 2`), with or without joint damping — the multi-link successor to the single-hinge
+    /// [`Self::analytic_state_jacobian`], removing the last FD fallback for the articulated
+    /// coupling. `None` (→ FD `loaded_state_jacobian`) for any body that is not a pure serial
+    /// hinge chain spanning all DOFs (one joint per body) or a quaternion joint (`nq ≠ nv`).
+    /// Joint damping is handled by routing the loaded term through `M_impl = M + Δt·D` (the Euler
+    /// eulerdamp solve matrix); the unloaded `A` is eulerdamp-correct from sim-core. Machine-exact
+    /// for 2-link through 4-link spatial chains (FD-validated damped and undamped); the multi-hop
+    /// Coriolis derivative it relies on is complete in `mjd_rne_pos`.
     ///
     /// **The decomposition.** The loaded single-step transition is exactly
-    /// `loaded_J = A + Δt·∂(M⁻¹·Jᵀw)/∂q` on the velocity-position block and `+ Δt²·∂(…)` on the
-    /// position-position block (semi-implicit `q' = q + Δt·v'`), where:
+    /// `loaded_J = A + Δt·∂(M_impl⁻¹·Jᵀw)/∂q` on the velocity-position block and `+ Δt²·∂(…)` on
+    /// the position-position block (semi-implicit `q' = q + Δt·v'`), where `M_impl = M + Δt·D` is
+    /// the Euler eulerdamp solve matrix (`= M` when undamped), and:
     /// - `A` is the **unloaded** transition ([`Data::transition_derivatives`]) — already
-    ///   machine-exact for the undamped chain (its `∂v'/∂q` block captures the mass-matrix
-    ///   config dependence via `sim-core`'s `mjd_rne_pos` inertia-transport derivatives).
-    /// - `∂(M⁻¹·Jᵀw)/∂q = M⁻¹·(G − dMu)`, with `G = ∂(Jᵀw)/∂q` the applied-wrench geometric
-    ///   stiffness Hessian and `dMu = (∂M/∂q)·u` (`u = M⁻¹·Jᵀw`) the mass-matrix directional
-    ///   derivative [`sim_core::mass_directional_derivative`]. The `(∂M⁻¹/∂q)·Jᵀw = −M⁻¹·dMu`
+    ///   machine-exact (its `∂v'/∂q` block captures the mass-matrix config dependence via
+    ///   `sim-core`'s `mjd_rne_pos` inertia-transport derivatives, and it routes the Euler
+    ///   velocity solve through `M_impl` under damping).
+    /// - `∂(M_impl⁻¹·Jᵀw)/∂q = M_impl⁻¹·(G − dMu)`, with `G = ∂(Jᵀw)/∂q` the applied-wrench
+    ///   geometric stiffness Hessian and `dMu = (∂M/∂q)·u` (`u = M_impl⁻¹·Jᵀw`; `∂M_impl/∂q =
+    ///   ∂M/∂q` since `D` is constant) the mass-matrix directional derivative
+    ///   [`sim_core::mass_directional_derivative`]. The `(∂M_impl⁻¹/∂q)·Jᵀw = −M_impl⁻¹·dMu`
     ///   term VANISHES for a single hinge (constant `M`) but is MATERIAL for a chain (~14% of
     ///   the wrench contribution); dropping it ships a ~10%-wrong gradient.
     ///
@@ -2464,11 +2477,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
         let chain = &model.body_ancestor_joints[self.body];
         // The chain must be exactly the model's DOFs (each hinge = 1 DOF), all hinges, one
-        // joint per body, undamped. The one-joint-per-body guard matters: with multiple joints
-        // on a body, this body's world axis/anchor read (`xquat[body] * jnt_axis`, the FINAL
-        // body frame) differs from FK's running-frame axis for a non-last same-body joint, and
-        // `is_ancestor` flags same-body joints as mutual strict ancestors — so such a model
-        // would get a wrong analytic `J_state` instead of the safe FD fallback.
+        // joint per body. Joint DAMPING is supported: the loaded term routes through `M_impl`
+        // below, and the unloaded `A` is eulerdamp-correct from sim-core. The one-joint-per-body
+        // guard matters: with multiple joints on a body, this body's world axis/anchor read
+        // (`xquat[body] * jnt_axis`, the FINAL body frame) differs from FK's running-frame axis
+        // for a non-last same-body joint, and `is_ancestor` flags same-body joints as mutual
+        // strict ancestors — so such a model would get a wrong analytic `J_state` instead of the
+        // safe FD fallback.
         if chain.len() != model.nv
             || !chain
                 .iter()
@@ -2476,7 +2491,6 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             || !chain
                 .iter()
                 .all(|&j| model.body_jnt_num[model.jnt_body[j]] == 1)
-            || model.implicit_damping.iter().any(|&d| d != 0.0)
         {
             return None;
         }
@@ -2546,18 +2560,27 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             }
         }
 
-        // dMu = (∂M/∂q)·u with u = M⁻¹·Jᵀw, and the addend = Δt·M⁻¹·(G − dMu)
-        // = Δt·∂(M⁻¹·Jᵀw)/∂q (undamped ⇒ bare M⁻¹).
-        let m_inv = scratch.qM.clone().try_inverse().expect("M invertible");
+        // The loaded velocity-row term is Δt·∂(M_impl⁻¹·Jᵀw)/∂q, where `M_impl = M + Δt·D` is the
+        // Euler eulerdamp solve matrix (= M when undamped). Expanding with ∂M_impl/∂q = ∂M/∂q
+        // (D constant): ∂(M_impl⁻¹·Jᵀw)/∂q = M_impl⁻¹·(G − dMu), with u = M_impl⁻¹·Jᵀw and
+        // dMu = (∂M/∂q)·u. The unloaded `A` is already eulerdamp-correct from sim-core (it routes
+        // the Euler velocity solve through M_impl under damping), so the carry only adds this
+        // loaded term over the SAME M_impl — mirroring the single-hinge unification. `D = 0 ⇒
+        // M_impl = M`, recovering the bare-M form BYTE-FOR-BYTE.
+        let mut m_impl = scratch.qM.clone();
+        for i in 0..nv {
+            m_impl[(i, i)] += dt * model.implicit_damping[i];
+        }
+        let m_inv = m_impl.try_inverse().expect("M_impl invertible");
         let jac = mj_jac_point(model, &scratch, self.body, &p); // 6×nv
         let mut w_vec = DVector::zeros(6);
         for i in 0..6 {
             w_vec[i] = wrench[i];
         }
         let jtw = jac.transpose() * &w_vec; // nv
-        let u = &m_inv * &jtw; // nv
+        let u = &m_inv * &jtw; // u = M_impl⁻¹·Jᵀw
         let d_mu = mass_directional_derivative(model, &mut scratch, &u); // nv×nv
-        let addend = dt * &m_inv * (&g - &d_mu); // Δt·M⁻¹·(G − dMu)
+        let addend = dt * &m_inv * (&g - &d_mu); // Δt·M_impl⁻¹·(G − dMu)
 
         // Velocity rows + semi-implicit position rows get the loaded correction on the qpos
         // columns (mirrors the single-hinge `vel_corr` / `dt·vel_corr` patch).
@@ -2844,10 +2867,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             //     ∂[qpos';qvel']/∂[qpos;qvel] (both blocks — incl the position-state
             //     coupling Δt·∂qvel'/∂qpos and the applied-force geometric stiffness
             //     ∂(Jᵀw)/∂q that the unloaded `transition_derivatives` drops; zero for
-            //     the free body, real for the hinge). Single hinge OR undamped serial-hinge
-            //     chain ⇒ the machine-exact ANALYTIC carry (`analytic_state_jacobian`, which
-            //     dispatches to `chain_state_jacobian` for the chain); free/quaternion joints
-            //     and damped chains ⇒ the FD `loaded_state_jacobian`.
+            //     the free body, real for the hinge). Single hinge OR serial-hinge chain
+            //     (damped or undamped) ⇒ the machine-exact ANALYTIC carry
+            //     (`analytic_state_jacobian`, which dispatches to `chain_state_jacobian` for
+            //     the chain); free/quaternion joints and non-Euler integrators ⇒ the FD
+            //     `loaded_state_jacobian`.
             //   G_vel = ∂(qvel')/∂w = rigid_xfrc_column (nv×6, the full wrench column).
             //     The full G's POSITION rows are G_pos = D·G_vel (the carry below):
             //     semi-implicit Euler integrates qpos with the UPDATED velocity
@@ -4996,6 +5020,63 @@ mod tests {
                 assert!(
                     err < 1e-5,
                     "analytic chain J_state (nv={nv}) must match FD loaded to FD precision, \
+                     got rel {err:.3e} at {loc:?}"
+                );
+            }
+        }
+    }
+
+    /// A DAMPED serial hinge chain's analytic `J_state` matches the FD
+    /// [`StaggeredCoupling::loaded_state_jacobian`] — the multi-link analogue of
+    /// [`analytic_state_jacobian_damped_matches_fd`]. The loaded term routes through
+    /// `M_impl = M + Δt·D`; the unloaded `A` is eulerdamp-correct from sim-core. Covers 2-link
+    /// (spatial) and 3-link (multi-hop) chains at several damping levels; `damp = 0` confirms the
+    /// damped code path collapses to the bare-M result.
+    #[test]
+    fn chain_state_jacobian_damped_matches_fd() {
+        // Spatial 2-link and multi-hop 3-link, joints carrying `damping` (interpolated below).
+        let mk = |damp: f64| -> [(String, usize, usize); 2] {
+            let two = format!(
+                r#"<mujoco><option gravity="0 0 -9.81" timestep="0.001"/><worldbody>
+<body name="upper" pos="0 0 0.2"><joint type="hinge" axis="0 1 0" damping="{damp}"/>
+<geom type="sphere" pos="0.01 0 -0.025" size="0.004" mass="0.3"/>
+<body name="lower" pos="0.02 0 -0.05"><joint type="hinge" axis="1 0.3 0" damping="{damp}"/>
+<geom type="sphere" pos="0.015 0.01 -0.04" size="0.004" mass="0.4"/></body></body></worldbody></mujoco>"#
+            );
+            let three = format!(
+                r#"<mujoco><option gravity="0 0 -9.81" timestep="0.001"/><worldbody>
+<body name="upper" pos="0 0 0.2"><joint type="hinge" axis="0 1 0" damping="{damp}"/>
+<geom type="sphere" pos="0.01 0 -0.025" size="0.004" mass="0.3"/>
+<body name="mid" pos="0.02 0 -0.05"><joint type="hinge" axis="1 0.3 0" damping="{damp}"/>
+<geom type="sphere" pos="0.015 0.01 -0.03" size="0.004" mass="0.35"/>
+<body name="lower" pos="0.01 0.005 -0.05"><joint type="hinge" axis="0.2 1 0.1" damping="{damp}"/>
+<geom type="sphere" pos="0.012 0.008 -0.03" size="0.004" mass="0.4"/></body></body></body></worldbody></mujoco>"#
+            );
+            [(two, 2, 2), (three, 3, 3)]
+        };
+        for &damp in &[0.0_f64, 0.5, 2.0] {
+            for (mjcf, body, nv) in mk(damp) {
+                let model = load_model(&mjcf).expect("damped chain MJCF loads");
+                let mut data = model.make_data();
+                let q0 = [0.2, -0.15, 0.1];
+                let v0 = [-1.5, 0.8, -1.1]; // nonzero ⇒ exercises Coriolis
+                for i in 0..nv {
+                    data.qpos[i] = q0[i];
+                    data.qvel[i] = v0[i];
+                }
+                data.forward(&model).expect("forward");
+                let c: StaggeredCoupling = StaggeredCoupling::new(
+                    model, data, body, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+                );
+                let wrench = SpatialVector::from_row_slice(&[0.3, -0.4, 0.2, -10.0, 7.0, -250.0]);
+                let loaded = c.loaded_state_jacobian(&wrench);
+                let analytic = c
+                    .analytic_state_jacobian(&wrench)
+                    .expect("damped multi-link chain → analytic chain J_state");
+                let (err, loc) = sim_core::max_relative_error(&loaded, &analytic, 1e-3);
+                assert!(
+                    err < 1e-5,
+                    "damped analytic chain J_state (nv={nv}, damp={damp}) must match FD loaded, \
                      got rel {err:.3e} at {loc:?}"
                 );
             }
