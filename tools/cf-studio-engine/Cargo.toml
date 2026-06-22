@@ -29,44 +29,13 @@ panic = "deny"
 [dependencies]
 # The workflow spine — `DesignDraft` and the other step artifacts.
 cf-studio-core = { workspace = true }
-# Headless reuse of the device-design types (cavity + layer stack +
-# silicone catalog + `.design.toml` read/write). cf-device-types'
-# `default = []` is empty, so a plain dep pulls NO Bevy — the payoff of
-# making that crate Bevy-optional; build this crate in isolation and no
-# game engine comes along. (The `bevy` feature is opt-in, and we never
-# opt in here.)
-cf-device-types = { workspace = true }
-# Load + validate the raw scan file, auto-detecting STL/OBJ/PLY/3MF by
-# extension (scanners + phone-app scanners export these; 3MF via the
-# `threemf` feature, which pulls zip). STEP stays opt-out (heavy CAD deps).
-# No Bevy — headless.
-mesh-io = { workspace = true, features = ["threemf"] }
-# Reuse the cast pipeline's REAL prep parsers so the wizard validates
-# exactly what the cast requires — centerline (cf-cast-cli) + cap planes
-# (cf-cap-planes) — rather than a divergent re-check. cf-cast-cli also
-# provides `run()` for mold generation (P2d). This pulls cf-cast
-# (parry3d / manifold3d / marching cubes) — the first heavy SDK dep, but
-# still no Bevy; the engine stays headless.
-cf-cast-cli = { workspace = true }
-cf-cap-planes = { workspace = true }
-# cf_cast::cure::lookup — per-silicone mix ratio / pot life / cure time
-# for the structured pour plan (the Step-6 pour-assistant's data).
-cf-cast = { workspace = true }
-# The SDF kernel — `Solid::from_sdf` / `offset` to build the real plug
-# (cleaned-scan SDF offset inward by the cavity inset) for the live
-# "Shape your piece" preview. Headless, no Bevy.
-cf-design = { workspace = true }
-# The headless scan-prep algorithms (simplify / cap / centerline / trim /
-# reconstruct + the cleaned-mesh & .prep.toml builders) that the step-2
-# EditSession drives — the same code the Bevy cf-scan-prep tool uses, so
-# Studio's editor + that tool stay functionally identical. Bevy-free.
-cf-scan-prep-core = { workspace = true }
-# `IndexedMesh` (the working mesh the EditSession mutates) + `Bounded::aabb`.
-mesh-types = { workspace = true }
-# `weld_vertices` + `remove_unreferenced_vertices` for the standalone Weld
-# op (simplify welds internally; this exposes weld on its own per the
-# step-2 op set).
-mesh-repair = { workspace = true }
+# The SDK — through the facade. The engine compiles against this one stable
+# contract (see MISSION.md / the app-vs-SDK boundary) instead of the individual
+# crates. Reached as `cortenforge::<crate>`: cf-device-types (device types),
+# mesh-io[threemf]/mesh-types/mesh-repair (mesh), cf-cast-cli/cf-cast/
+# cf-cap-planes (cast pipeline + prep parsers + cure data), cf-scan-prep-core
+# (scan-prep algorithms), cf-design (SDF kernel). Headless — no Bevy.
+cortenforge = { workspace = true }
 # `UnitQuaternion` / `Vector3` — the PCA-orient + recenter transform state
 # the EditSession accumulates for the .prep.toml provenance.
 nalgebra = { workspace = true }

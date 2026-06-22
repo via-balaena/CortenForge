@@ -9,9 +9,9 @@
 //! cure time come from `cf-cast`'s cure-protocol table, the friendly
 //! display name from the silicone catalog.
 
-use cf_cast::cure::lookup as cure_lookup;
-use cf_cast_cli::display_name_for_anchor;
 use cf_studio_core::{PourPlan, PourStep};
+use cortenforge::cf_cast::cure::lookup as cure_lookup;
+use cortenforge::cf_cast_cli::display_name_for_anchor;
 
 use crate::error::{EngineError, Result};
 

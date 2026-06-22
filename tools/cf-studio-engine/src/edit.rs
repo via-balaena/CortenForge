@@ -2,7 +2,7 @@
 //! interactive scan cleanup.
 //!
 //! Holds the working mesh + the original (for reset) + accumulated
-//! edit/provenance state, and applies [`cf_scan_prep_core`] ops. The Bevy
+//! edit/provenance state, and applies [`cortenforge::cf_scan_prep_core`] ops. The Bevy
 //! `cf-scan-prep` tool and CortenForge Studio's step-2 editor are two
 //! frontends over this same logic — the goal is identical function. The
 //! session ultimately produces the cleaned STL + `.prep.toml` the cast
@@ -18,9 +18,10 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_scan_prep_core::{AppliedReconstruct, DetectedCapLoop, ReconstructShape};
-use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
-use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
+use cortenforge::cf_scan_prep_core; // module import keeps call sites short
+use cortenforge::cf_scan_prep_core::{AppliedReconstruct, DetectedCapLoop, ReconstructShape};
+use cortenforge::mesh_repair::{remove_unreferenced_vertices, weld_vertices};
+use cortenforge::mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::error::{EngineError, Result};
@@ -126,10 +127,11 @@ impl EditSession {
     /// - [`EngineError::ScanLoad`] if the file is missing or unparseable.
     /// - [`EngineError::EmptyScan`] if it parses but has no geometry.
     pub fn load(path: &Path, scale_to_m: f64) -> Result<Self> {
-        let mut mesh = mesh_io::load_mesh(path).map_err(|e| EngineError::ScanLoad {
-            path: path.display().to_string(),
-            reason: e.to_string(),
-        })?;
+        let mut mesh =
+            cortenforge::mesh_io::load_mesh(path).map_err(|e| EngineError::ScanLoad {
+                path: path.display().to_string(),
+                reason: e.to_string(),
+            })?;
         if mesh.vertices.is_empty() || mesh.faces.is_empty() {
             return Err(EngineError::EmptyScan {
                 path: path.display().to_string(),
@@ -816,7 +818,7 @@ fn floor_leveling_rotation(normal: Vector3<f64>) -> Option<UnitQuaternion<f64>> 
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use mesh_types::Point3;
+    use cortenforge::mesh_types::Point3;
 
     use super::*;
 
@@ -1241,7 +1243,7 @@ mod tests {
             "SAVED: {:?}\n  {} faces, {stl_bytes} bytes\n  prep: {:?}",
             report.cleaned_stl, report.face_count, report.prep_toml,
         );
-        let reloaded = mesh_io::load_stl(&report.cleaned_stl).unwrap();
+        let reloaded = cortenforge::mesh_io::load_stl(&report.cleaned_stl).unwrap();
         eprintln!(
             "cleaned STL reloads: {} faces, {} verts",
             reloaded.faces.len(),
@@ -1305,7 +1307,7 @@ mod tests {
             "prep records the cleaned STL"
         );
 
-        let reloaded = mesh_io::load_stl(&report.cleaned_stl).unwrap();
+        let reloaded = cortenforge::mesh_io::load_stl(&report.cleaned_stl).unwrap();
         assert!(
             !reloaded.faces.is_empty(),
             "the cleaned STL reloads as a mesh"

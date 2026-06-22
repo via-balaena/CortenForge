@@ -146,8 +146,8 @@ struct MeshData {
 fn load_mesh(path: Option<&str>) -> MeshData {
     let (positions, faces): (Vec<Point3<f32>>, Vec<[u32; 3]>) = match path {
         Some(p) => {
-            let mesh =
-                mesh_io::load_mesh(p).unwrap_or_else(|e| panic!("failed to load mesh at {p}: {e}"));
+            let mesh = cortenforge::mesh_io::load_mesh(p)
+                .unwrap_or_else(|e| panic!("failed to load mesh at {p}: {e}"));
             let positions = mesh
                 .vertices
                 .iter()

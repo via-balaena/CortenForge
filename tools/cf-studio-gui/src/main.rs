@@ -40,7 +40,7 @@ use cf_studio_gui::{
     format_pour_plan, gate_ridge_options, nav_state, part_selection_from_checks, pour_countdown,
     print_step_summary, step_rows,
 };
-use mesh_types::IndexedMesh;
+use cortenforge::mesh_types::IndexedMesh;
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use ui::{AppWindow, LayerRow, PartRow, RingRow, StepRow};
@@ -1719,7 +1719,7 @@ fn render_texture_preview(
     ui: &AppWindow,
     gpu: &GpuHandles,
     texture_scene: &RefCell<Option<Scene>>,
-    mesh: &mesh_types::IndexedMesh,
+    mesh: &cortenforge::mesh_types::IndexedMesh,
 ) {
     let Some((device, queue)) = gpu.borrow().clone() else {
         return;

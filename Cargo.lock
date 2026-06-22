@@ -2515,16 +2515,8 @@ dependencies = [
 name = "cf-studio-engine"
 version = "1.0.0"
 dependencies = [
- "cf-cap-planes",
- "cf-cast",
- "cf-cast-cli",
- "cf-design",
- "cf-device-types",
- "cf-scan-prep-core",
  "cf-studio-core",
- "mesh-io",
- "mesh-repair",
- "mesh-types",
+ "cortenforge",
  "nalgebra 0.34.2",
  "thiserror 2.0.18",
 ]
@@ -2536,8 +2528,7 @@ dependencies = [
  "bytemuck",
  "cf-studio-core",
  "cf-studio-engine",
- "mesh-io",
- "mesh-types",
+ "cortenforge",
  "naga 28.0.0",
  "nalgebra 0.34.2",
  "rfd",
@@ -2947,6 +2938,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
 dependencies = [
  "libm",
+]
+
+[[package]]
+name = "cortenforge"
+version = "1.0.0"
+dependencies = [
+ "cf-cap-planes",
+ "cf-cast",
+ "cf-cast-cli",
+ "cf-design",
+ "cf-device-types",
+ "cf-scan-prep-core",
+ "mesh-io",
+ "mesh-repair",
+ "mesh-types",
 ]
 
 [[package]]
