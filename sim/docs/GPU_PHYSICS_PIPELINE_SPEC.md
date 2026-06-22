@@ -26,9 +26,12 @@ in the inner loop. No stale data between substeps.
 
 A GPU physics pipeline where **every stage** of the physics step —
 FK, CRBA, RNE, collision, constraint solve, integration — runs as
-sequential compute dispatches in a single command buffer. The CPU
-submits one command buffer per frame and reads back only what Bevy
-needs for rendering.
+sequential compute dispatches. The CPU submits the substeps in bounded
+chunks (at most `SUBSTEP_CHUNK` substeps per command buffer; a single
+interactive frame is typically one chunk) and reads back only what Bevy
+needs for rendering. Long rollouts span multiple ordered submits (state
+persists in the GPU state buffers between them); see `SUBSTEP_CHUNK` in
+`orchestrator.rs`.
 
 ```
 Per frame:

@@ -2,7 +2,7 @@
 //!
 //! Session 6: Wraps FK, CRBA, velocity FK, RNE, smooth, collision, constraint,
 //! and integration into a single `GpuPhysicsPipeline` that encodes N substeps
-//! into one command buffer and submits once per frame.
+//! and submits them in bounded chunks (see `SUBSTEP_CHUNK`).
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -24,6 +24,17 @@ use super::smooth::GpuSmoothPipeline;
 use super::state_buffers::GpuStateBuffers;
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
+
+/// Maximum substeps encoded into a single Metal/wgpu command buffer.
+///
+/// Each substep encodes ~14 GPU commands; very long single-submit buffers
+/// (~100+ substeps ≈ 1400 commands) exceed backend limits and the synchronous
+/// readback poll then blocks forever. `step()` chunks the substep loop into
+/// bounded submits of this size. Submits are ordered and state persists in
+/// `state_bufs` between chunks, so a run of `> SUBSTEP_CHUNK` substeps is
+/// chunk-boundary-independent, and a run of `<= SUBSTEP_CHUNK` is a single
+/// submit (byte-identical to the pre-chunking single-buffer encoding).
+const SUBSTEP_CHUNK: u32 = 32;
 
 // ── Error type ────────────────────────────────────────────────────────
 
@@ -59,7 +70,7 @@ impl std::error::Error for GpuPipelineError {}
 
 /// Unified GPU physics pipeline holding all sub-pipelines.
 ///
-/// Encodes N substeps into a single command buffer and submits once per frame.
+/// Encodes N substeps and submits them in bounded chunks (see `SUBSTEP_CHUNK`).
 /// Reads back final qpos/qvel via staging buffers.
 pub struct GpuPhysicsPipeline {
     ctx: GpuContext,
@@ -205,8 +216,9 @@ impl GpuPhysicsPipeline {
     }
 
     /// Run `num_substeps` substeps on GPU for every environment in lockstep.
-    /// Uploads each env's current state, encodes all substeps into one command
-    /// buffer, submits once, and reads the final per-env state back into `datas`.
+    /// Uploads each env's current state, encodes the substeps and submits them
+    /// in bounded chunks (see `SUBSTEP_CHUNK`), and reads the final per-env state
+    /// back into `datas`.
     ///
     /// `datas` must hold exactly `n_env` environments (the count fixed at
     /// construction); for the interactive path pass a one-element slice.
@@ -246,27 +258,56 @@ impl GpuPhysicsPipeline {
                 .write_params(&self.ctx, &self.model_bufs, cpu_model);
         }
 
-        // 3. Encode all substeps into ONE command buffer
-        let mut encoder = self
-            .ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("gpu_physics_step"),
-            });
-        for _ in 0..num_substeps {
-            self.encode_substep(&mut encoder);
-        }
-
-        // 4. Copy final state (all envs) to staging
+        // 3. Encode the substeps in bounded chunks, submitting each chunk
+        //    separately. A single command buffer holding all substeps overruns
+        //    backend command limits for large `num_substeps` (see SUBSTEP_CHUNK).
+        //    State lives in `state_bufs` across submits, which are ordered, so
+        //    the trajectory is independent of where the chunk boundaries fall;
+        //    the final-state copy rides the last chunk's encoder.
         let qpos_total = self.n_env * self.nq;
         let qvel_total = self.n_env * self.nv;
         let qpos_size = u64::from(qpos_total.max(1)) * 4;
         let qvel_size = u64::from(qvel_total.max(1)) * 4;
-        encoder.copy_buffer_to_buffer(&self.state_bufs.qpos, 0, &self.staging_qpos, 0, qpos_size);
-        encoder.copy_buffer_to_buffer(&self.state_bufs.qvel, 0, &self.staging_qvel, 0, qvel_size);
+        let mut remaining = num_substeps;
+        loop {
+            let chunk = remaining.min(SUBSTEP_CHUNK);
+            let is_last = chunk == remaining;
 
-        // 5. Single submit
-        self.ctx.queue.submit([encoder.finish()]);
+            let mut encoder =
+                self.ctx
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("gpu_physics_step"),
+                    });
+            for _ in 0..chunk {
+                self.encode_substep(&mut encoder);
+            }
+
+            // The final chunk also copies the final state (all envs) to staging.
+            if is_last {
+                encoder.copy_buffer_to_buffer(
+                    &self.state_bufs.qpos,
+                    0,
+                    &self.staging_qpos,
+                    0,
+                    qpos_size,
+                );
+                encoder.copy_buffer_to_buffer(
+                    &self.state_bufs.qvel,
+                    0,
+                    &self.staging_qvel,
+                    0,
+                    qvel_size,
+                );
+            }
+
+            self.ctx.queue.submit([encoder.finish()]);
+
+            remaining -= chunk;
+            if remaining == 0 {
+                break;
+            }
+        }
 
         // 6. Synchronous readback — map staging buffers directly
         let qpos_f32 = map_staging_f32(&self.ctx, &self.staging_qpos, qpos_total as usize);

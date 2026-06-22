@@ -2923,3 +2923,78 @@ fn t37_large_batch_allocates_and_steps() {
 
     eprintln!("  T37 passed: n_env={N_ENV} allocates + steps with contact");
 }
+
+// ── T38: Chunked substep submits (long-rollout hang, wall #2 regression guard) ──
+//
+// Before chunking, `step(num_substeps)` encoded EVERY substep into one command
+// buffer (~14 cmds/substep) and submitted once; past ~100 substeps that overran a
+// backend command limit and the synchronous readback poll then blocked forever
+// (probe: 75 OK, 100 hang). `step()` now submits in bounded chunks of
+// `SUBSTEP_CHUNK` (=32). This guards two things at once:
+//   1. NO-HANG: `step(150)` (> SUBSTEP_CHUNK, the regime that used to hang) simply
+//      completing is the regression guard — pre-fix this test would never return.
+//   2. BYTE-IDENTICAL: chunk boundaries must not change the trajectory. State lives
+//      in `state_bufs` across the ordered submits, and the f32→f64→f32 round-trip
+//      between per-step uploads is lossless, so a single `step(150)` must match
+//      150× `step(1)` exactly. A contactless free-fall fixture keeps the math the
+//      simplest deterministic path (no contact set, no solver iteration variance).
+#[test]
+fn t38_chunked_substeps_no_hang_and_byte_identical() {
+    const SUBSTEPS: u32 = 150; // > SUBSTEP_CHUNK (32): spans multiple chunks/submits.
+
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    // One geom (no ground plane) → collision finds no pairs, so the body free-falls
+    // under gravity. The geom still satisfies the orchestrator's geom-buffer needs.
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut init = model.make_data();
+    init.qpos[2] = 50.0;
+    init.qpos[3] = 1.0; // unit quaternion (w)
+
+    let pipeline = match GpuPhysicsPipeline::new(&model, &init) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T38: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("Pipeline creation failed: {e}"),
+    };
+
+    // Run A: one chunked call. Completing at all is the no-hang guard.
+    let mut data_batch = init.clone();
+    pipeline.step(&model, std::slice::from_mut(&mut data_batch), SUBSTEPS);
+
+    // Run B: SUBSTEPS single-substep calls (each one chunk).
+    let mut data_iter = init.clone();
+    for _ in 0..SUBSTEPS {
+        pipeline.step(&model, std::slice::from_mut(&mut data_iter), 1);
+    }
+
+    // Byte-identical: chunk-boundary independence (exact f64 equality).
+    for i in 0..model.nq {
+        assert_eq!(
+            data_batch.qpos[i], data_iter.qpos[i],
+            "qpos[{i}] differs: chunked step({SUBSTEPS}) {} vs {SUBSTEPS}× step(1) {}",
+            data_batch.qpos[i], data_iter.qpos[i]
+        );
+    }
+    for i in 0..model.nv {
+        assert_eq!(
+            data_batch.qvel[i], data_iter.qvel[i],
+            "qvel[{i}] differs: chunked step({SUBSTEPS}) {} vs {SUBSTEPS}× step(1) {}",
+            data_batch.qvel[i], data_iter.qvel[i]
+        );
+    }
+
+    // Vacuity: the body must actually have fallen (otherwise the comparison is trivial).
+    assert!(
+        data_batch.qpos[2] < init.qpos[2] - 1.0,
+        "free-fall did not advance: z {} → {}",
+        init.qpos[2],
+        data_batch.qpos[2]
+    );
+
+    eprintln!(
+        "  T38 passed: step({SUBSTEPS}) completes (no hang) and is byte-identical to {SUBSTEPS}× step(1)"
+    );
+}
