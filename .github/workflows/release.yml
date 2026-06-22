@@ -121,22 +121,35 @@ jobs:
           # bundle with no signature can trigger on Apple Silicon.
           codesign --force --deep --sign - "$app" || true
           mkdir -p dist
-          # ditto preserves the bundle layout + executable bit in the zip.
-          ditto -c -k --keepParent "$app" "dist/${{ matrix.asset }}"
+          # Stage the app next to the license/disclaimer so the terms travel
+          # inside the archive (Apache-2.0 §4) — a redistributed copy carries
+          # them. ditto (no --keepParent) archives the staging dir's contents,
+          # preserving the .app bundle layout + executable bit.
+          stage="$(mktemp -d)"
+          mv "$app" "$stage/"
+          cp LICENSE NOTICE DISCLAIMER.md "$stage/"
+          ditto -c -k "$stage" "dist/${{ matrix.asset }}"
 
       - name: Package Studio (Linux tar.gz)
         if: runner.os == 'Linux'
         run: |
           mkdir -p dist
-          tar czf "dist/${{ matrix.asset }}" -C "target/${{ matrix.target }}/release" cf-studio-gui
+          # Include the license/disclaimer at the archive root so the terms
+          # travel with a redistributed copy (Apache-2.0 §4). GNU tar applies
+          # each -C to the files that follow it.
+          tar czf "dist/${{ matrix.asset }}" \
+            -C "target/${{ matrix.target }}/release" cf-studio-gui \
+            -C "$GITHUB_WORKSPACE" LICENSE NOTICE DISCLAIMER.md
 
       - name: Package Studio (Windows zip)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+          # Include the license/disclaimer at the archive root so the terms
+          # travel with a redistributed copy (Apache-2.0 §4).
           Compress-Archive -Force `
-            -Path "target/${{ matrix.target }}/release/cf-studio-gui.exe" `
+            -Path "target/${{ matrix.target }}/release/cf-studio-gui.exe", "LICENSE", "NOTICE", "DISCLAIMER.md" `
             -DestinationPath "dist/${{ matrix.asset }}"
 
       - name: Upload Studio artifact
@@ -317,6 +330,8 @@ jobs:
             ${{ needs.changelog.outputs.changelog }}
 
             ---
+            By downloading and using this software you accept the terms in the bundled `DISCLAIMER` — it is general-purpose research software, provided **as is**, **not a medical device**, used **entirely at your own risk**. Each archive includes `LICENSE`, `NOTICE`, and `DISCLAIMER`.
+
             SBOM (CycloneDX) attached. All builds meet the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
           files: |
             artifacts/*.cdx.json
