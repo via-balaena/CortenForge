@@ -463,6 +463,7 @@ members = [
     "sim/L0/urdf",
     "sim/L0/tests",
     "sim/L0/gpu",
+    "sim/L0/gpu-benches",
     "sim/L0/ml-chassis",
     "sim/L0/ml-chassis-benches",
     "sim/L0/rl",
@@ -742,6 +743,7 @@ sim-core-benches = { path = "sim/L0/core-benches" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
 sim-gpu = { path = "sim/L0/gpu" }
+sim-gpu-benches = { path = "sim/L0/gpu-benches" }
 sim-ml-chassis = { path = "sim/L0/ml-chassis" }
 sim-ml-chassis-benches = { path = "sim/L0/ml-chassis-benches" }
 sim-rl = { path = "sim/L0/rl" }

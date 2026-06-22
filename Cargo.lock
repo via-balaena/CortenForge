@@ -11607,6 +11607,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-gpu-benches"
+version = "1.0.0"
+dependencies = [
+ "criterion",
+ "nalgebra 0.34.2",
+ "sim-core",
+ "sim-gpu",
+]
+
+[[package]]
 name = "sim-mjcf"
 version = "1.0.0"
 dependencies = [
