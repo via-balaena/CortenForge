@@ -2361,21 +2361,18 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // retrofitting metadata. cf-bevy-common (sim-soft PR2 C2b
     // factor-out) is a workspace-internal Bevy helper consumed by
     // cf-viewer + sim-bevy + sim-bevy-soft; same exemption shape.
-    // cf-scan-prep (Stage 2.5 scan preprocessing GUI; first inhabitant
-    // of `tools/`) + cf-cast-cli (scan→cast bridge CLI; second
-    // inhabitant) + cf-device-design (layered-silicone-device design
-    // suite; third inhabitant) + cf-sim-research (sim-research
-    // viewer; fourth inhabitant, Phase 2 of the sim-decouple
-    // refactor) are all workspace tools with the same Q8
-    // path-based-filter exemption. cf-device-types (sim-decouple A1
-    // Phase 1; `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3) is the
-    // shared device-design types crate consumed by cf-device-design
-    // and cf-sim-research — Bevy-using like cf-bevy-common, same
-    // exemption shape. cf-device-geometry (sim-decouple Phase 2.5.b;
-    // `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.b-d) is the shared
-    // device-side compute + rendering primitives crate (cached SDF +
-    // iso extraction + clip-plane material) consumed by the same two
-    // binaries — Bevy-using, same exemption shape. (The four cf-studio-*
+    // cf-scan-prep (Stage 2.5 scan-preprocessing GUI) + cf-device-design
+    // (layered-silicone-device design suite) + cf-sim-research (sim-research
+    // viewer) are Bevy GUI workspace tools with the Q8 path-based-filter
+    // exemption. cf-device-geometry (sim-decouple Phase 2.5.b) is the shared
+    // Bevy-using device-side compute + rendering primitives crate consumed by
+    // those binaries — same exemption shape.
+    //
+    // NOT exempt — classified as SDK library tiers because the Cendrillon app
+    // stack consumes them AS LIBRARIES, so they must be governed:
+    // cf-device-types → L0 (the `bevy` feature tiers up to L1), cf-scan-prep-core
+    // → L0-io, cf-cast-cli → L0-integration. They carry tier metadata and are
+    // intentionally absent from this list. (The four cf-studio-*
     // crates — the guided Cendrillon app stack: cf-studio-core spine →
     // cf-studio-engine orchestrator → cf-studio CLI / cf-studio-gui; see
     // MISSION.md — are deliberately NOT exempt: they are classified
@@ -2395,11 +2392,8 @@ fn applies_to_crate(crate_name: &str) -> bool {
         "cf-viewer"
             | "cf-bevy-common"
             | "cf-scan-prep"
-            | "cf-scan-prep-core"
-            | "cf-cast-cli"
             | "cf-device-design"
             | "cf-sim-research"
-            | "cf-device-types"
             | "cf-device-geometry"
             | "cf-osim"
             | "cf-anthro"
@@ -4057,6 +4051,11 @@ serde = \"1\"
         assert!(applies_to_crate("cf-studio-engine"));
         assert!(applies_to_crate("cf-studio"));
         assert!(applies_to_crate("cf-studio-gui"));
+        // The dual-use library crates the app stack consumes are now classified
+        // SDK tiers (no longer exempt), so Layer Integrity governs them too.
+        assert!(applies_to_crate("cf-device-types"));
+        assert!(applies_to_crate("cf-scan-prep-core"));
+        assert!(applies_to_crate("cf-cast-cli"));
     }
 
     #[test]
@@ -4091,11 +4090,8 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-viewer"));
         assert!(!applies_to_crate("cf-bevy-common"));
         assert!(!applies_to_crate("cf-scan-prep"));
-        assert!(!applies_to_crate("cf-scan-prep-core"));
-        assert!(!applies_to_crate("cf-cast-cli"));
         assert!(!applies_to_crate("cf-device-design"));
         assert!(!applies_to_crate("cf-sim-research"));
-        assert!(!applies_to_crate("cf-device-types"));
         assert!(!applies_to_crate("cf-device-geometry"));
         // musculoskeletal-builder arc tools (Mission #4) — same exemption shape.
         assert!(!applies_to_crate("cf-osim"));

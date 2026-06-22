@@ -9,9 +9,13 @@ authors.workspace = true
 rust-version.workspace = true
 publish = false
 
-# Workspace tool; no `[package.metadata.cortenforge]` block — tier
-# metadata is for sim L0/L1 libraries, not workspace tools (matches
-# `tools/cf-scan-prep` precedent).
+# SDK library tier: the Cendrillon app stack consumes this crate's LIBRARY
+# (`run_with_config`, `CastConfig`, `display_name_for_anchor`), so it is
+# governed (no longer exempt). L0-integration — it composes cf-cast (L0-io) +
+# cf-design + mesh-* (103 deps, no Bevy); the CLI binary rides along.
+# Follow-up: split the reusable library out from the `[[bin]]`.
+[package.metadata.cortenforge]
+tier = "L0-integration"
 
 [[bin]]
 name = "cf-cast-cli"

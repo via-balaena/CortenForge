@@ -9,11 +9,13 @@ authors.workspace = true
 rust-version.workspace = true
 publish = false
 
-# Shared workspace-internal types crate (precedent: cf-bevy-common,
-# cf-cap-planes). No `[package.metadata.cortenforge]` tier block —
-# tier metadata is reserved for sim L0/L1 libraries (xtask Layer
-# Integrity grader exempts shared support crates by name; see
-# `xtask/src/grade.rs::applies_to_crate`).
+# SDK library tier: the Cendrillon app stack consumes this crate AS A LIBRARY,
+# so it is governed (no longer exempt). L0 design-types crate (32 deps, wasm-
+# clean by default); the optional `bevy` feature pulls the Bevy stack, so it
+# tiers up to L1 when enabled (the sim-soft gpu-probe pattern).
+[package.metadata.cortenforge]
+tier = "L0"
+tier_up_features = { bevy = "L1" }
 
 # Matches cf-device-design's lint posture (the crate this code was
 # lifted out of). Workspace `pedantic = warn` is intentionally NOT
