@@ -53,6 +53,10 @@
 //!   [`sim_core::mjd_damping_trajectory_jacobian`] (forward-sensitivity
 //!   `s_{t+1} = A_t·s_t + P_t`). The first gradient path to a *rigid* parameter
 //!   (mass/damping/inertia/friction), where the other axes all tune a design.
+//!   Recovers several dampings at once; the Gauss-Newton `JᵀJ` conditioning is
+//!   reported by [`DampingSystemId::observation_jacobian`] with [`identifiability`]
+//!   so a parameter trade-off (weak joint-identifiability) shows up as data,
+//!   not a silent stall.
 //!
 //! A weakly-sensitive objective (a tiny gradient, like the position-valued
 //! trajectory outcome `z_N`) is conditioned for the optimizer by the general
@@ -1522,6 +1526,35 @@ impl DampingSystemId {
             cfg,
         }
     }
+
+    /// Roll out at `params` and return the analytic terminal-state Jacobian.
+    #[allow(clippy::expect_used)] // a rollout failure is unrecoverable model misuse.
+    fn rollout(&self, params: &[f64]) -> sim_core::TrajectoryDampingJacobian {
+        let mut model = self.model.clone();
+        for (&jid, &d) in self.joints.iter().zip(params) {
+            model.jnt_damping[jid] = d;
+        }
+        model.compute_implicit_params();
+        sim_core::mjd_damping_trajectory_jacobian(&model, &self.data0, self.n_steps, &self.cfg)
+            .expect("system-ID trajectory jacobian")
+    }
+
+    /// The observation Jacobian `J = ∂x_N/∂θ` at `params` — sensitivity of the
+    /// terminal observation to each identified damping parameter (columns in
+    /// `joints` order, rows = terminal-state dim `2·nv + na`). Its conditioning
+    /// (via [`identifiability`]) governs whether the parameters are *jointly*
+    /// recoverable or trade off.
+    #[must_use]
+    pub fn observation_jacobian(&self, params: &[f64]) -> sim_core::DMatrix<f64> {
+        let traj = self.rollout(params);
+        let nx = traj.terminal_state.len();
+        let mut j = sim_core::DMatrix::zeros(nx, self.joints.len());
+        for (col, &jid) in self.joints.iter().enumerate() {
+            let dof = self.model.jnt_dof_adr[jid];
+            j.set_column(col, &traj.dterminal_dD.column(dof));
+        }
+        j
+    }
 }
 
 impl CoDesignProblem for DampingSystemId {
@@ -1529,19 +1562,8 @@ impl CoDesignProblem for DampingSystemId {
         self.joints.len()
     }
 
-    #[allow(clippy::expect_used)] // evaluate has no Result channel; a rollout
-    // failure here is an unrecoverable misuse (non-SPD M_impl), not control flow.
     fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
-        let mut model = self.model.clone();
-        for (&jid, &d) in self.joints.iter().zip(params) {
-            model.jnt_damping[jid] = d;
-        }
-        model.compute_implicit_params();
-
-        let traj =
-            sim_core::mjd_damping_trajectory_jacobian(&model, &self.data0, self.n_steps, &self.cfg)
-                .expect("system-ID trajectory jacobian");
-
+        let traj = self.rollout(params);
         // Residual over the terminal state; gradient flows through ∂x_N/∂D.
         let residual = &traj.terminal_state - &self.target_terminal;
         let loss = 0.5 * residual.dot(&residual);
@@ -1549,7 +1571,7 @@ impl CoDesignProblem for DampingSystemId {
             .joints
             .iter()
             .map(|&jid| {
-                let dof = model.jnt_dof_adr[jid];
+                let dof = self.model.jnt_dof_adr[jid];
                 residual.dot(&traj.dterminal_dD.column(dof))
             })
             .collect();
@@ -1559,6 +1581,52 @@ impl CoDesignProblem for DampingSystemId {
     fn lower_bounds(&self) -> Option<Vec<f64>> {
         // Joint damping is physically non-negative.
         Some(vec![0.0; self.joints.len()])
+    }
+}
+
+/// Identifiability summary of a least-squares system-ID problem, from the
+/// singular values of an observation Jacobian `J = ∂(observation)/∂(params)`.
+///
+/// The Gauss-Newton / Fisher information is `JᵀJ`, whose eigenvalues are the
+/// squared singular values of `J`. A large [`condition_number`](Self::condition_number)
+/// (or a [`rank`](Self::rank) below the parameter count) means some parameter
+/// combination is weakly observed — the parameters trade off and are not jointly
+/// identifiable from this observation.
+#[derive(Clone, Debug)]
+pub struct Identifiability {
+    /// Singular values of `J`, descending. `σ_i²` are the Fisher eigenvalues.
+    pub singular_values: Vec<f64>,
+    /// `σ_max / σ_min` (so `cond(JᵀJ) = condition_number²`). `+∞` if any singular
+    /// value is zero — a rank-deficient, structurally unidentifiable direction.
+    pub condition_number: f64,
+    /// Numerical rank: singular values above `rel_tol · σ_max`. Equals the
+    /// parameter count iff every parameter direction is independently observable.
+    pub rank: usize,
+}
+
+/// Compute the [`Identifiability`] of an observation Jacobian `J` (rows =
+/// observations, columns = parameters). `rel_tol` sets the rank threshold
+/// relative to the largest singular value (e.g. `1e-9`).
+///
+/// Generic over any least-squares system-ID Jacobian — e.g. the one from
+/// [`DampingSystemId::observation_jacobian`].
+#[must_use]
+pub fn identifiability(jacobian: &sim_core::DMatrix<f64>, rel_tol: f64) -> Identifiability {
+    // nalgebra returns singular values in descending order.
+    let singular_values: Vec<f64> = jacobian.clone().singular_values().iter().copied().collect();
+    let s_max = singular_values.first().copied().unwrap_or(0.0);
+    let s_min = singular_values.last().copied().unwrap_or(0.0);
+    let condition_number = if s_min > 0.0 {
+        s_max / s_min
+    } else {
+        f64::INFINITY
+    };
+    let threshold = rel_tol * s_max;
+    let rank = singular_values.iter().filter(|&&s| s > threshold).count();
+    Identifiability {
+        singular_values,
+        condition_number,
+        rank,
     }
 }
 
@@ -1777,6 +1845,103 @@ mod tests {
             rel < 1e-5,
             "recovered damping {recovered:.6} (rel err {rel:.3e}) after {} iters",
             result.iters
+        );
+    }
+
+    /// Build the canonical 2-link, 2-damping system-ID fixture used by the
+    /// multi-parameter tests (joints 0 and 1, true damping `[0.5, 0.8]`).
+    fn two_param_fixture() -> DampingSystemId {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_damping = vec![0.0, 0.0];
+        model.compute_implicit_params();
+        let mut data0 = model.make_data();
+        data0.qpos[0] = 1.0;
+        data0.qpos[1] = 0.5;
+        DampingSystemId::for_inverse_design(model, data0, 40, vec![0, 1], &[0.5, 0.8])
+    }
+
+    /// Multi-parameter system-ID: recover BOTH joint dampings at once, with each
+    /// gradient component FD-validated (sign + scale) independent of convergence.
+    #[test]
+    fn recovers_two_joint_dampings() {
+        let problem = two_param_fixture();
+
+        // Off-target: each analytic gradient component matches a central FD of the loss.
+        let p = [0.3, 0.3];
+        let (_, grad) = problem.evaluate(&p);
+        let h = 1e-6;
+        for i in 0..2 {
+            let (mut pp, mut pm) = (p, p);
+            pp[i] += h;
+            pm[i] -= h;
+            let fd = (problem.evaluate(&pp).0 - problem.evaluate(&pm).0) / (2.0 * h);
+            let rel = (grad[i] - fd).abs() / fd.abs().max(1e-12);
+            assert!(
+                rel < 1e-4,
+                "grad[{i}] {} vs FD {fd} (rel {rel:.3e})",
+                grad[i]
+            );
+        }
+
+        // Recover both from an off-target start via log-space Adam.
+        let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+        let cfg = normalized.recommended_config();
+        let result = normalized.optimize(&[0.2, 0.2], &cfg);
+        let r0 = (result.params[0] - 0.5).abs() / 0.5;
+        let r1 = (result.params[1] - 0.8).abs() / 0.8;
+        assert!(
+            r0 < 1e-3 && r1 < 1e-3,
+            "recovered [{:.6}, {:.6}] rel [{r0:.2e}, {r1:.2e}] in {} iters",
+            result.params[0],
+            result.params[1],
+            result.iters
+        );
+    }
+
+    /// Identifiability readout: the terminal-state observation Jacobian is
+    /// full-rank (both dampings observable) and its conditioning is surfaced as
+    /// data — the Gauss-Newton `JᵀJ` verdict on whether the params trade off.
+    #[test]
+    fn damping_identifiability_readout() {
+        let problem = two_param_fixture();
+        let j = problem.observation_jacobian(&[0.5, 0.8]);
+        let id = identifiability(&j, 1e-9);
+        println!(
+            "IDENTIFIABILITY sv={:?} cond={:.4e} rank={}",
+            id.singular_values, id.condition_number, id.rank
+        );
+        assert_eq!(
+            id.rank, 2,
+            "both dampings should be observable from the terminal state"
+        );
+        // Observed cond ≈ 12 (cond(JᵀJ) ≈ 150) — well-conditioned, no trade-off;
+        // terminal-state matching suffices here (trajectory-matching would only be
+        // needed if this were ill-conditioned). cond ≥ 1 always (σ_max ≥ σ_min), so
+        // the lower bound catches an inverted σ_max/σ_min; 100 is a robust upper guard.
+        assert!(
+            (1.0..100.0).contains(&id.condition_number),
+            "terminal-state observation should be well-conditioned, cond={:.3e}",
+            id.condition_number
+        );
+    }
+
+    /// The identifiability readout must also *detect* badness: a rank-deficient
+    /// observation Jacobian (parallel columns ⇒ a parameter direction unobserved)
+    /// reports reduced rank and a blown-up condition number.
+    #[test]
+    fn identifiability_detects_rank_deficiency() {
+        // Two identical columns ⇒ rank 1, second singular value ≈ 0.
+        let degenerate = sim_core::DMatrix::from_fn(4, 2, |i, _| (i as f64) + 1.0);
+        let id = identifiability(&degenerate, 1e-9);
+        assert_eq!(
+            id.rank, 1,
+            "parallel columns ⇒ numerical rank 1, got {}",
+            id.rank
+        );
+        assert!(
+            id.condition_number > 1e6,
+            "a near-singular direction should blow up cond, got {:.3e}",
+            id.condition_number
         );
     }
 }
