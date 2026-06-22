@@ -18,6 +18,9 @@ publish = false
 sim-coupling = { path = "../../sim/L1/coupling" }
 # Builds the rigid side (a sim-core Model) from a minimal MJCF string.
 sim-mjcf = { path = "../../sim/L0/mjcf" }
+# The rigid engine + its analytic parameter-Jacobian channel (system-ID): the
+# `∂(trajectory)/∂(joint damping)` gradient that drives sim-to-real calibration.
+sim-core = { path = "../../sim/L0/core" }
 # The gradient optimizer (Adam) — reused, not reinvented (sim-opt is gradient-free).
 sim-ml-chassis = { workspace = true }
 

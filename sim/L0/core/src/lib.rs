@@ -277,8 +277,9 @@ pub use jacobian::{
 };
 
 pub use derivatives::{
-    DerivativeConfig, InverseDynamicsDerivatives, TransitionMatrices, fd_convergence_check,
-    mass_directional_derivative, max_relative_error, mjd_inverse_fd, mjd_passive_vel,
+    DampingJacobian, DerivativeConfig, InverseDynamicsDerivatives, TrajectoryDampingJacobian,
+    TransitionMatrices, fd_convergence_check, mass_directional_derivative, max_relative_error,
+    mjd_damping_jacobian, mjd_damping_trajectory_jacobian, mjd_inverse_fd, mjd_passive_vel,
     mjd_quat_integrate, mjd_smooth_pos, mjd_smooth_vel, mjd_sub_quat, mjd_transition,
     mjd_transition_fd, mjd_transition_hybrid, validate_analytical_vs_fd,
 };
