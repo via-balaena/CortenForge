@@ -9,9 +9,12 @@ authors.workspace = true
 rust-version.workspace = true
 publish = false
 
-# Workspace tool; no `[package.metadata.cortenforge]` block (matches the
-# cf-cast-cli / cf-studio-engine precedent). Logic lives in the lib so it
-# is testable; main.rs is a thin clap dispatcher.
+# Cendrillon app stack — App tier (the dependency sink): may depend on the SDK,
+# but no SDK crate may depend on it (enforced by grade Layer Integrity).
+# See MISSION.md. Logic lives in the lib so it is testable; main.rs is a thin
+# clap dispatcher.
+[package.metadata.cortenforge]
+tier = "App"
 
 [[bin]]
 name = "cf-studio"
