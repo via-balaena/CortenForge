@@ -52,6 +52,14 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  # Merge queue: when a PR is queued to merge, GitHub runs this workflow on a
+  # temporary `gh-readonly-queue/<base>/...` ref with the PR's commits stacked
+  # on the current base. The `affected` job forces `needs_full=true` on any
+  # non-pull_request event, so the merge_group run grades + tests the FULL
+  # workspace. With "Require merge queue" + "Quality Gate" as the required
+  # check, this is the PRE-merge full gate: a PR's own (PR-scoped) run gives
+  # fast feedback, but nothing lands on main until the full suite passes here.
+  merge_group:
 
 env:
   CARGO_TERM_COLOR: always
@@ -64,13 +72,15 @@ env:
   RUSTDOCFLAGS: "-D warnings"
 
 # One in-flight run per ref. A new push to a PR/branch cancels the superseded
-# run rather than queueing behind it (this whole gate is ~13 jobs incl. 3
+# run rather than queueing behind it (this whole gate is ~14 jobs incl. 3
 # grade shards + cross-OS, so stacked runs starve the runner pool and the
-# newest commit waits longest). Never cancel on main — every landed commit's
-# gate should complete.
+# newest commit waits longest). Cancel ONLY superseded pull_request runs:
+# never cancel a push to main (every landed commit's gate should complete) and
+# never cancel a `merge_group` run — cancelling a queued merge-gate run would
+# bounce the PR out of the merge queue.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ============================================================================
