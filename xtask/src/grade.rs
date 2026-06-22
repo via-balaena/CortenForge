@@ -566,6 +566,29 @@ fn select_shard(crate_names: &[String], shard: Option<(usize, usize)>) -> Vec<St
     }
 }
 
+/// Restrict the crate list to an explicit affected set (PR-scoped CI).
+///
+/// `None` returns the list unchanged (the full-workspace gate on
+/// `main`/merge). `Some(set)` keeps only crates present in `set`, preserving
+/// input order; an *empty* set therefore grades nothing — a deliberate no-op
+/// for a PR that touches no crate (e.g. docs-only). `set` entries that are not
+/// workspace members are simply ignored. Filtering happens before
+/// [`select_shard`], so each shard grades a slice of the affected subset.
+///
+/// Pairs with `cargo xtask affected`, which computes the affected set
+/// (changed crates + reverse-dependency closure) the caller passes via
+/// `--only`.
+fn filter_only(crate_names: &[String], only: Option<&[String]>) -> Vec<String> {
+    match only {
+        None => crate_names.to_vec(),
+        Some(set) => crate_names
+            .iter()
+            .filter(|c| set.iter().any(|s| s == *c))
+            .cloned()
+            .collect(),
+    }
+}
+
 /// Run grading across every workspace member.
 ///
 /// Enumerates workspace crates via `cargo metadata --no-deps` — no
@@ -580,7 +603,11 @@ fn select_shard(crate_names: &[String], shard: Option<(usize, usize)>) -> Vec<St
 /// Intended as the CI entry point for single-source-of-truth grading:
 /// CI runs `cargo xtask grade-all --skip-coverage --quiet`, checks the
 /// exit code, and surfaces the failure summary on red.
-pub fn run_all(verbosity: Verbosity, shard: Option<(usize, usize)>) -> Result<()> {
+pub fn run_all(
+    verbosity: Verbosity,
+    shard: Option<(usize, usize)>,
+    only: Option<Vec<String>>,
+) -> Result<()> {
     let sh = Shell::new()?;
     let workspace_root = find_workspace_root(&sh)?;
     sh.change_dir(&workspace_root);
@@ -603,8 +630,14 @@ pub fn run_all(verbosity: Verbosity, shard: Option<(usize, usize)>) -> Result<()
     all_crate_names.sort();
     let workspace_total = all_crate_names.len();
 
+    // Apply --only <affected>: PR-scoped CI grades only the affected subset
+    // (changed crates + reverse-dep closure from `xtask affected`). Absent on
+    // main/merge → full workspace. Runs before sharding so each shard takes a
+    // slice of the affected set.
+    let scoped = filter_only(&all_crate_names, only.as_deref());
+
     // Apply --shard i/N: each parallel CI job grades a disjoint slice.
-    let crate_names = select_shard(&all_crate_names, shard);
+    let crate_names = select_shard(&scoped, shard);
 
     if !verbosity.quiet {
         eprintln!();
@@ -620,6 +653,12 @@ pub fn run_all(verbosity: Verbosity, shard: Option<(usize, usize)>) -> Result<()
                 "  grade-all: evaluating {} workspace crates…",
                 crate_names.len()
             ),
+        }
+        if only.is_some() {
+            eprintln!(
+                "  (PR-scoped via --only: {} affected crate(s) before sharding)",
+                scoped.len()
+            );
         }
         if verbosity.skip_coverage {
             eprintln!("  (coverage skipped via --skip-coverage)");
@@ -2961,6 +3000,58 @@ mod tests {
             max - min <= 1,
             "shard sizes {sizes:?} differ by more than 1"
         );
+    }
+
+    #[test]
+    fn filter_only_none_returns_everything() {
+        let all = names(10);
+        assert_eq!(filter_only(&all, None), all);
+    }
+
+    #[test]
+    fn filter_only_keeps_just_the_affected_set_in_order() {
+        let all = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        let only = vec!["c".to_string(), "a".to_string()];
+        // Input order preserved (a before c), not the `--only` order.
+        assert_eq!(filter_only(&all, Some(&only)), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn filter_only_empty_set_grades_nothing() {
+        // The deliberate no-op: a PR touching no crate must grade zero crates,
+        // NOT fall through to the full workspace.
+        let all = names(5);
+        assert!(filter_only(&all, Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn filter_only_ignores_non_member_names() {
+        let all = vec!["sim-core".to_string(), "mesh".to_string()];
+        let only = vec!["sim-core".to_string(), "ghost-crate".to_string()];
+        assert_eq!(filter_only(&all, Some(&only)), vec!["sim-core"]);
+    }
+
+    #[test]
+    fn filter_only_then_shard_slices_the_affected_subset() {
+        // `--only` runs before `--shard`, so the union of shards over a
+        // filtered list reconstructs exactly the affected set.
+        let all = names(20);
+        let only: Vec<String> = all.iter().take(7).cloned().collect();
+        let scoped = filter_only(&all, Some(&only));
+        let n = 3;
+        let mut union: Vec<String> = Vec::new();
+        for i in 1..=n {
+            union.extend(select_shard(&scoped, Some((i, n))));
+        }
+        union.sort();
+        let mut expected = only.clone();
+        expected.sort();
+        assert_eq!(union, expected);
     }
 
     #[test]

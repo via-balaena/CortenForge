@@ -92,6 +92,61 @@ jobs:
         run: cargo fmt --all -- --check
 
   # ============================================================================
+  # AFFECTED - Compute the PR-scoped crate set (changed + reverse-dep closure)
+  # ============================================================================
+  # On a pull request, runs `cargo xtask affected` to compute which crates the
+  # diff can break (changed crates + their reverse-dependency closure), with a
+  # full-fallback valve for graph-invalidating files. Downstream jobs consume
+  # `needs.affected.outputs.{needs_full,crates}` to scope their work to that
+  # subset, cutting PR feedback without dropping merge-gating coverage.
+  #
+  # On any non-PR event (push to main, merge_group) it emits `needs_full=true`,
+  # so the full workspace always runs on the branch that gates merges — the
+  # affected subset can only narrow PR feedback, never what reaches main. If
+  # this job itself errors, consumers fall back to FULL (see the grade job's
+  # `needs.affected.result` guard), so a miss here is fail-safe, never a hole.
+  affected:
+    name: Affected crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      needs_full: ${{ steps.compute.outputs.needs_full }}
+      crates: ${{ steps.compute.outputs.crates }}
+    steps:
+      # fetch-depth: 0 — the diff is `origin/<base>...HEAD`, which needs the
+      # merge-base, i.e. enough history of both sides.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      - name: Compute affected set
+        id: compute
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "Non-PR event (${{ github.event_name }}) → full workspace."
+            echo "needs_full=true" >> "$GITHUB_OUTPUT"
+            echo "crates=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Populate origin/<base> so the merge-base diff resolves.
+          git fetch --no-tags --prune origin "${{ github.base_ref }}"
+          JSON=$(cargo run -q -p xtask --release -- \
+            affected --base "origin/${{ github.base_ref }}" --json)
+          echo "affected: $JSON"
+          echo "needs_full=$(echo "$JSON" | jq -r '.needs_full')" >> "$GITHUB_OUTPUT"
+          echo "crates=$(echo "$JSON" | jq -r '.crates | join(",")')" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+  # ============================================================================
   # XTASK GRADE - Single source of truth for the seven automated criteria
   # ============================================================================
   # Replaces four formerly-separate bash-reimplementation jobs (clippy, docs,
@@ -112,10 +167,19 @@ jobs:
   # protection on `Quality Gate` still gates every crate. Each shard keeps its
   # own rust-cache (matrix value is part of the key). Bump the shard count here
   # AND the `/3` denominator in the run step together if the workspace grows.
+  #
+  # PR-scoping: on a pull request this grades only the affected crates
+  # (`--only`, from the `affected` job) instead of the whole workspace; on
+  # main/merge it grades everything. The job always runs (`if: !cancelled()`)
+  # so it is never a *skipped required check* — and if the `affected` job did
+  # not succeed, it falls back to a FULL grade rather than trusting an empty
+  # set (which would be a silent coverage hole).
   grade:
     name: xtask Grade (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    needs: [affected]
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -144,7 +208,23 @@ jobs:
           # Emit per-file safety debug + doc stderr tail on F so CI logs
           # surface the actual failure cause rather than opaque counts.
           XTASK_GRADE_DEBUG: "1"
-        run: cargo run -p xtask --release -- grade-all --skip-coverage --quiet --shard ${{ matrix.shard }}/3
+        # Scope to the affected subset ONLY when the affected job succeeded, the
+        # event is a PR, and it didn't trip the full-fallback valve. Every other
+        # path (non-PR, needs_full, affected failed/skipped) grades the full
+        # workspace — under-scoping requires a positive, trustworthy signal.
+        run: |
+          if [ "${{ needs.affected.result }}" = "success" ] \
+            && [ "${{ github.event_name }}" = "pull_request" ] \
+            && [ "${{ needs.affected.outputs.needs_full }}" != "true" ]; then
+            echo "PR-scoped grade (--only): ${{ needs.affected.outputs.crates }}"
+            cargo run -p xtask --release -- grade-all --skip-coverage --quiet \
+              --shard ${{ matrix.shard }}/3 --only "${{ needs.affected.outputs.crates }}"
+          else
+            echo "Full grade (non-PR / needs_full / affected unavailable)."
+            cargo run -p xtask --release -- grade-all --skip-coverage --quiet \
+              --shard ${{ matrix.shard }}/3
+          fi
+        shell: bash
 
   # ============================================================================
   # TESTS (DEBUG) - Default features, debug profile — light-crate gate
