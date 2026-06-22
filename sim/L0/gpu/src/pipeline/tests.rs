@@ -2998,3 +2998,50 @@ fn t38_chunked_substeps_no_hang_and_byte_identical() {
         "  T38 passed: step({SUBSTEPS}) completes (no hang) and is byte-identical to {SUBSTEPS}× step(1)"
     );
 }
+
+// ── T39: No-geom model steps without a binding panic (wall #1 regression guard) ──
+//
+// `upload_structs` backed an EMPTY struct array (a geom-less model's `geoms`)
+// with a bare 16-byte stub, but the shader binds `array<GeomModel>` whose
+// `min_binding_size` is one element = 96 bytes. So `step()` PANICKED at the
+// first dispatch ("Buffer is bound with size 16 where the shader expects 96")
+// for any model with `ngeom == 0` — a valid model the public API must accept.
+// Every other fixture has geoms, so this was never exercised. The fix backs an
+// empty buffer with one zeroed element; this guards that a geom-less free body
+// constructs AND steps under gravity without panicking.
+#[test]
+fn t39_no_geom_model_steps() {
+    // free_body adds NO geoms (ngeom == 0) — the degenerate-but-valid case.
+    let model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    assert_eq!(model.ngeom, 0, "fixture must be geom-less to guard wall #1");
+
+    let mut data = model.make_data();
+    data.qpos[2] = 5.0;
+    data.qpos[3] = 1.0; // unit quaternion (w)
+
+    let pipeline = match GpuPhysicsPipeline::new(&model, &data) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T39: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("Pipeline creation failed: {e}"),
+    };
+
+    // Pre-fix this dispatch panicked on the geoms binding (size 16 vs 96).
+    let z0 = data.qpos[2];
+    pipeline.step(&model, std::slice::from_mut(&mut data), 10);
+
+    // Vacuity: with no contacts the body free-falls, so z must drop.
+    assert!(
+        data.qpos[2] < z0,
+        "no-geom free body did not fall: z {z0} → {}",
+        data.qpos[2]
+    );
+    assert!(data.qpos[2].is_finite(), "qpos[2] not finite");
+
+    eprintln!(
+        "  T39 passed: geom-less model steps (z {z0} → {:.4})",
+        data.qpos[2]
+    );
+}
