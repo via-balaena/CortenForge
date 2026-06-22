@@ -45,6 +45,15 @@
 //!   mixed conditioning (positive `μ` log-reparametrized internally, signed `θ`
 //!   linear) so a single `loss_scale`-conditioned Adam loop drives both.
 //!
+//! *System-ID axis* — recover *rigid dynamics* parameters from an observed
+//! trajectory (what sim-to-real calibration needs), rather than tuning a design:
+//! - [`DampingSystemId`] — recover a pure-rigid model's **joint-damping**
+//!   coefficients so its terminal state after an N-step rollout matches an
+//!   observed one, reading `∂x_N/∂D` from the analytic rigid-parameter channel
+//!   [`sim_core::mjd_damping_trajectory_jacobian`] (forward-sensitivity
+//!   `s_{t+1} = A_t·s_t + P_t`). The first gradient path to a *rigid* parameter
+//!   (mass/damping/inertia/friction), where the other axes all tune a design.
+//!
 //! A weakly-sensitive objective (a tiny gradient, like the position-valued
 //! trajectory outcome `z_N`) is conditioned for the optimizer by the general
 //! [`Normalized`] wrapper — a dimensionless residual plus log-space (relative)
@@ -1439,6 +1448,120 @@ impl<P: DiffPolicy> CoDesignProblem for JointTarget<P> {
     // the θ weights are signed (no bound) — so `lower_bounds = None`.
 }
 
+/// **System-ID axis** — recover *rigid* dynamics parameters (joint damping) from
+/// an observed trajectory, the gradient channel sim-to-real calibration needs.
+///
+/// Where the design/policy targets above tune a *design* parameter via the
+/// coupling gradient, this problem tunes the **joint-damping coefficients** of a
+/// pure-rigid [`sim_core`] model so that its terminal state after an `n_steps`
+/// rollout matches an observed one. It consumes the analytic rigid-parameter
+/// channel [`sim_core::mjd_damping_trajectory_jacobian`] (forward-sensitivity
+/// `s_{t+1} = A_t·s_t + P_t`), turning damping system-ID from FD-only into a
+/// one-pass analytic gradient.
+///
+/// Parameters are the damping coefficients on the joints in `joints`; the loss is
+/// `½‖x_N(D) − x_N*‖²` over the terminal state in tangent space. Damping is
+/// bounded below at zero ([`lower_bounds`](CoDesignProblem::lower_bounds)).
+///
+/// Preconditions follow [`sim_core::mjd_damping_trajectory_jacobian`]: Euler
+/// integrator, hinge/slide joints, no tendons.
+pub struct DampingSystemId {
+    /// Rigid model; the `joints`' damping is overwritten each `evaluate`, other
+    /// parameters (mass, geometry, untargeted damping) are held fixed.
+    model: sim_core::Model,
+    /// Initial state the rollout starts from.
+    data0: sim_core::Data,
+    /// Observed terminal state `x_N*` in tangent space (relative to `data0.qpos`).
+    target_terminal: sim_core::DVector<f64>,
+    /// Number of rollout steps the observation spans.
+    n_steps: usize,
+    /// Indices of the joints whose damping is identified (the parameter order).
+    joints: Vec<usize>,
+    /// Transition-derivative config for the per-step `A_t`.
+    cfg: sim_core::DerivativeConfig,
+}
+
+impl DampingSystemId {
+    /// Build a sim-to-sim **inverse-design** problem: generate the observed
+    /// terminal state by rolling out at the *true* damping values
+    /// `true_damping[i]` (on `joints[i]`), then forget them — `evaluate` recovers
+    /// them from the trajectory. `model`'s untargeted joints keep their damping.
+    ///
+    /// # Panics
+    /// Panics if `joints.len() != true_damping.len()`, or if the reference rollout
+    /// fails (a malformed model/state).
+    #[must_use]
+    #[allow(clippy::expect_used)] // a failed reference rollout is fixture misuse.
+    pub fn for_inverse_design(
+        mut model: sim_core::Model,
+        data0: sim_core::Data,
+        n_steps: usize,
+        joints: Vec<usize>,
+        true_damping: &[f64],
+    ) -> Self {
+        assert_eq!(
+            joints.len(),
+            true_damping.len(),
+            "joints and true_damping length mismatch",
+        );
+        for (&jid, &d) in joints.iter().zip(true_damping) {
+            model.jnt_damping[jid] = d;
+        }
+        model.compute_implicit_params();
+        let cfg = sim_core::DerivativeConfig::default();
+        let target_terminal =
+            sim_core::mjd_damping_trajectory_jacobian(&model, &data0, n_steps, &cfg)
+                .expect("system-ID reference rollout")
+                .terminal_state;
+        Self {
+            model,
+            data0,
+            target_terminal,
+            n_steps,
+            joints,
+            cfg,
+        }
+    }
+}
+
+impl CoDesignProblem for DampingSystemId {
+    fn n_params(&self) -> usize {
+        self.joints.len()
+    }
+
+    #[allow(clippy::expect_used)] // evaluate has no Result channel; a rollout
+    // failure here is an unrecoverable misuse (non-SPD M_impl), not control flow.
+    fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
+        let mut model = self.model.clone();
+        for (&jid, &d) in self.joints.iter().zip(params) {
+            model.jnt_damping[jid] = d;
+        }
+        model.compute_implicit_params();
+
+        let traj =
+            sim_core::mjd_damping_trajectory_jacobian(&model, &self.data0, self.n_steps, &self.cfg)
+                .expect("system-ID trajectory jacobian");
+
+        // Residual over the terminal state; gradient flows through ∂x_N/∂D.
+        let residual = &traj.terminal_state - &self.target_terminal;
+        let loss = 0.5 * residual.dot(&residual);
+        let grad = self
+            .joints
+            .iter()
+            .map(|&jid| {
+                let dof = model.jnt_dof_adr[jid];
+                residual.dot(&traj.dterminal_dD.column(dof))
+            })
+            .collect();
+        (loss, grad)
+    }
+
+    fn lower_bounds(&self) -> Option<Vec<f64>> {
+        // Joint damping is physically non-negative.
+        Some(vec![0.0; self.joints.len()])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1600,6 +1723,60 @@ mod tests {
             grad[1..].iter().any(|g| g.abs() > 1e-12),
             "policy block should be live, got {:?}",
             &grad[1..]
+        );
+    }
+
+    /// System-ID: recover a rigid joint-damping coefficient (`d* = 0.8`) from a
+    /// short rollout, starting from `d₀ = 0.2`, via the analytic
+    /// `∂(trajectory)/∂(damping)` channel + the Adam chassis (the spike did this
+    /// with FD-Newton; this pins the analytic, scalable version).
+    #[test]
+    fn recovers_joint_damping_from_trajectory() {
+        // 2-link hinge pendulum; identify joint 0's damping. Joint 1 carries a
+        // fixed, untargeted damping (so the recovery is not trivially decoupled).
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_damping = vec![0.0, 0.3];
+        model.compute_implicit_params();
+        let mut data0 = model.make_data();
+        data0.qpos[0] = 1.0;
+        data0.qpos[1] = 0.5; // released from an angle; gravity drives the decaying swing.
+
+        let problem = DampingSystemId::for_inverse_design(model, data0, 40, vec![0], &[0.8]);
+
+        // At the true value the residual — hence the gradient — vanishes.
+        let (loss_star, grad_star) = problem.evaluate(&[0.8]);
+        assert!(
+            loss_star < 1e-20 && grad_star[0].abs() < 1e-10,
+            "zero residual at d* ⇒ zero grad: loss={loss_star:.3e} grad={:.3e}",
+            grad_star[0]
+        );
+
+        // Off-target: the analytic gradient the optimizer consumes matches a
+        // central FD of the problem's own loss — validates sign AND scale
+        // independent of whether Adam happens to converge.
+        let d = 0.5;
+        let (_, grad) = problem.evaluate(&[d]);
+        let h = 1e-6;
+        let fd = (problem.evaluate(&[d + h]).0 - problem.evaluate(&[d - h]).0) / (2.0 * h);
+        let g_rel = (grad[0] - fd).abs() / fd.abs().max(1e-12);
+        assert!(
+            g_rel < 1e-4 && grad[0] < 0.0,
+            "gradient {:.6e} vs FD {fd:.6e} (rel {g_rel:.3e}); expected match and grad<0 below d*",
+            grad[0]
+        );
+
+        // Damping is a positive scale parameter ⇒ log-space relative steps.
+        let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+        let cfg = normalized.recommended_config();
+        let result = normalized.optimize(&[0.2], &cfg);
+
+        let recovered = result.params[0];
+        let rel = (recovered - 0.8).abs() / 0.8;
+        // Observed ~1e-8 (analytic gradient + Adam); 1e-5 is a robust guard.
+        assert!(
+            rel < 1e-5,
+            "recovered damping {recovered:.6} (rel err {rel:.3e}) after {} iters",
+            result.iters
         );
     }
 }

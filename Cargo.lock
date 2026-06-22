@@ -2281,6 +2281,7 @@ dependencies = [
 name = "cf-codesign"
 version = "1.0.0"
 dependencies = [
+ "sim-core",
  "sim-coupling",
  "sim-mjcf",
  "sim-ml-chassis",

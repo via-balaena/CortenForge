@@ -56,6 +56,7 @@
 mod fd;
 mod hybrid;
 mod integration;
+mod param;
 
 #[cfg(test)]
 mod transition_matrix_harness;
@@ -67,6 +68,10 @@ pub use hybrid::{
     mjd_transition_hybrid,
 };
 pub use integration::{mjd_quat_integrate, mjd_sub_quat};
+pub use param::{
+    DampingJacobian, TrajectoryDampingJacobian, mjd_damping_jacobian,
+    mjd_damping_trajectory_jacobian,
+};
 
 // Crate-internal re-exports
 pub(crate) use hybrid::{mjd_actuator_vel, mjd_rne_vel};
