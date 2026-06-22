@@ -233,27 +233,32 @@ jobs:
   # separate runner so the --release compile doesn't extend the wall time of
   # the lighter crates.
   #
-  # SHARDING (3 legs, mirrors the `grade` job): this was the ~29-min critical
-  # path — a single sequential monolith. Unlike `grade`, the shard assignment
-  # can NOT delegate to a round-robin tool: tests-release is TEST-EXECUTION-
-  # bound, not compile-bound (per reference_ci_timing — stochastic validators
-  # run minutes each; compile is ~5 of the 29 min). Round-robin over the sorted
-  # crate list CLUSTERS the heavy learners onto one shard (the same imbalance
-  # `grade` shows: shard 1 ~18 min vs ~10), and a naive 2-way split (#351,
-  # reverted) put sim-soft alone vs the 4 learners → critical path barely moved
-  # (29→27). So the shards below are hand-balanced to SPREAD the five heavy
-  # learners (conformance / thermostat / rl / opt / ml-chassis) one-or-two per
-  # leg. Re-tune from measured per-shard wall-clock if one leg dominates. The
-  # downstream `quality-gate` job `needs: [tests-release]` waits for all matrix
-  # legs and fails if any fails, so branch protection still gates every crate.
-  # Each shard keeps its own rust-cache (matrix value is part of the key); 3
-  # legs (not matrix-per-crate) keeps the cache-key count bounded under the
+  # SHARDING (3 legs, mirrors the `grade` job): this was a ~29-min sequential
+  # monolith — TEST-EXECUTION-bound, not compile-bound (per reference_ci_timing).
+  # PR #1 sharded it 3 ways (29 → ~18 min). The measured per-shard breakdown then
+  # revealed the long pole is a SINGLE indivisible crate, sim-thermostat (~17 min
+  # of stochastic validators — coupled_bistable_array alone ~7.7 min); the other
+  # crates combined are ~6 min, so re-balancing the crate GROUPS can't beat ~18.
+  #
+  # PR #1b attacks that with cargo-nextest (below): `cargo test` runs one binary
+  # at a time, so sim-thermostat's six heavy validator binaries ran back-to-back;
+  # nextest's process-per-test scheduler runs tests across all binaries
+  # concurrently on the runner's cores, collapsing the thermostat shard toward
+  # ~9-10 min without changing the crate groups. The groups are kept hand-spread
+  # (conformance/thermostat/rl/opt/ml-chassis distributed) so nextest's win lands
+  # on the right shard; further gains need per-test partitioning or a faster
+  # linker, deferred until measurement shows they're needed.
+  #
+  # The downstream `quality-gate` job `needs: [tests-release]` waits for all
+  # matrix legs and fails if any fails, so branch protection still gates every
+  # crate. Each shard keeps its own rust-cache (matrix value is part of the key);
+  # 3 legs (not matrix-per-crate) keeps the cache-key count bounded under the
   # 10 GB repo ceiling.
   tests-release:
     name: Tests (release, heavy — shard ${{ matrix.id }}/3)
     runs-on: ubuntu-latest
     # Heavy stochastic validators; 45 min guards a hung test without masking a
-    # genuine ~13-15 min shard. Tune down once measured.
+    # genuine ~9-10 min shard (post-nextest). Tune down once re-measured.
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -281,13 +286,33 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
-      - name: Run tests (--release)
+      # cargo-nextest runs each test in its own process under a single scheduler
+      # across ALL test binaries — unlike `cargo test`, which runs one binary at
+      # a time. sim-thermostat's ~17 min was six heavy validator binaries run
+      # back-to-back; nextest fills the runner's idle cores with tests from other
+      # binaries, collapsing that toward max(longest single test, total / cores).
+      # Prebuilt binary, ~5-10 s install.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run tests (nextest, --release)
         # sim-coupling (the keystone soft↔rigid bridge) runs here, not in
         # tests-debug: its differentiable-coupling gates drive the soft FEM
         # solver (slow in debug, like sim-soft). The whole suite is ~16 s in
         # release. Without this the keystone gradient gates execute in NO CI
         # job (grade shards use `--skip-coverage`, which skips test-running).
-        run: cargo test --release ${{ matrix.crates }}
+        run: cargo nextest run --release ${{ matrix.crates }}
+        shell: bash
+
+      # nextest does NOT run doctests (a known limitation — its process-per-test
+      # model can't host them). `cargo test --doc` is the documented companion
+      # step, so this preserves doctest coverage that `cargo test` ran before
+      # the nextest switch (e.g. mesh-printability's 4 doctests). Doctests are
+      # compile-bound and trivially fast to execute.
+      - name: Run doctests (--release)
+        run: cargo test --release --doc ${{ matrix.crates }}
         shell: bash
 
       # sim-soft release-only contact tests live on shard 3. Phase 5 commits
