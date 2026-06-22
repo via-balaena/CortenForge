@@ -142,3 +142,69 @@ fn analytical_transition_matches_fd_across_joint_matrix() {
         failures.join("\n  ")
     );
 }
+
+/// The analytic state-transition Jacobian `A` must match central-FD under joint
+/// **damping** — the eulerdamp regime the joint×topology matrix above does NOT
+/// exercise (every case there is undamped). Before the eulerdamp fix, the Euler
+/// arm solved the velocity update with bare `M` while the real step uses `M_impl =
+/// M + h·D`, so `A` was silently wrong under damping (measured 0.2%→11%, growing
+/// with damping and chain length, in the `∂v⁺/∂q` block). This is the permanent
+/// guard for that fix.
+///
+/// Covers a serial hinge chain of 1–3 links at several damping levels. `damp = 0`
+/// is included to assert the undamped path stays byte-exact (the fix keeps a
+/// bare-`M` fast path when no DOF is damped).
+#[test]
+fn analytic_transition_matches_fd_under_damping() {
+    const FLOOR: f64 = 1e-3;
+    const TOL: f64 = 1e-5;
+
+    let mk = |nlink: usize, damp: f64| {
+        let mut m = Model::n_link_pendulum(nlink, 1.0, 1.0);
+        for j in 0..m.njnt {
+            m.jnt_damping[j] = damp;
+        }
+        m.compute_implicit_params();
+        m
+    };
+    let mut failures = Vec::new();
+    for &(nlink, ref qpos, ref qvel) in &[
+        (1usize, vec![0.3], vec![0.7]),
+        (2usize, vec![0.3, -0.4], vec![0.7, 0.5]),
+        (3usize, vec![0.2, -0.3, 0.4], vec![0.6, -0.5, 0.3]),
+    ] {
+        for &damp in &[0.0_f64, 0.5, 2.0] {
+            let model = mk(nlink, damp);
+            let data = forward_at(&model, qpos, qvel);
+            let analytic = data
+                .transition_derivatives(
+                    &model,
+                    &DerivativeConfig {
+                        use_analytical: true,
+                        ..Default::default()
+                    },
+                )
+                .expect("analytic transition");
+            let fd = mjd_transition_fd(
+                &model,
+                &data,
+                &DerivativeConfig {
+                    use_analytical: false,
+                    ..Default::default()
+                },
+            )
+            .expect("FD transition");
+            let (err, loc) = max_relative_error(&analytic.A, &fd.A, FLOOR);
+            if !(err < TOL) {
+                failures.push(format!(
+                    "{nlink}-link damp={damp} → rel {err:.3e} at {loc:?} (tol {TOL:.1e})"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "analytic transition A diverged from central-FD under damping for:\n  {}",
+        failures.join("\n  ")
+    );
+}

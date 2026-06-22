@@ -2358,14 +2358,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// **Joint damping (eulerdamp).** Under the Euler integrator MuJoCo solves the velocity
     /// update with the IMPLICIT factor `M_impl = M + Δt·D` (`D = implicit_damping`), not bare
-    /// `M`. The unloaded `A` from `transition_derivatives` forms its velocity rows with bare
-    /// `M⁻¹` (`∂v⁺/∂v = I + Δt·M⁻¹·qDeriv`), so the damped hinge needs the solve factor
-    /// corrected: the velocity-row numerators rescale by `M/M_impl` and the geometric-stiffness
-    /// term uses `M_impl⁻¹`; the position rows then follow the semi-implicit chain
-    /// `θ' = θ + Δt·ω'`. `M_impl` is configuration-independent for a single hinge (constant `M`,
-    /// constant `D`), so `∂M_impl⁻¹/∂q = 0` and the form stays exact — machine-exact vs the FD
-    /// [`Self::loaded_state_jacobian`] (which differentiates the real eulerdamp step). `D = 0`
-    /// recovers the bare-`M` path BYTE-FOR-BYTE.
+    /// `M`. The unloaded `A` from `transition_derivatives` already accounts for this — sim-core
+    /// routes its Euler velocity solve through `M_impl` when any DOF is damped (see
+    /// `derivatives/hybrid.rs`). So the carry only adds the LOADED geometric stiffness, routed
+    /// through the same `M_impl` (`∂(M_impl⁻¹·Jᵀw)/∂θ = geom_stiff / M_impl`), and the position
+    /// rows follow the semi-implicit chain `θ' = θ + Δt·ω'`. `M_impl` is configuration-independent
+    /// for a single hinge (constant `M`, constant `D`), so `∂M_impl⁻¹/∂q = 0` and the form stays
+    /// exact — machine-exact vs the FD [`Self::loaded_state_jacobian`] (which differentiates the
+    /// real eulerdamp step). `D = 0 ⇒ M_impl = M`, recovering the bare-`M` path BYTE-FOR-BYTE.
     // expect_used: a transition-derivative / forward on a valid model does not fail; a
     // failure is a programmer error surfaced loudly (mirrors `scratch_state_step`).
     #[allow(clippy::expect_used)]
@@ -2402,25 +2402,17 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let geom_stiff = axis.cross(&axis.cross(&r)).dot(&f); // ∂(Jᵀw)/∂θ
         let m = scratch.qM[(0, 0)];
         let damp = self.model.implicit_damping[0]; // single hinge ⇒ the only DOF
-        if damp == 0.0 {
-            // Undamped: bare `M`, patch the loaded geom-stiff onto the qpos column. Keeps
-            // `A`'s position rows (semi-implicit-consistent at `D = 0`) BYTE-FOR-BYTE.
-            let vel_corr = dt / m * geom_stiff; // ∂qvel'/∂qpos correction
-            j[(1, 0)] += vel_corr; // velocity row, qpos col
-            j[(0, 0)] += dt * vel_corr; // position row, qpos col (semi-implicit chain)
-        } else {
-            // Damped (eulerdamp): the velocity update solves with `M_impl = M + Δt·D`, so
-            // rescale `A`'s bare-`M` velocity-row numerators by `M/M_impl` and form the loaded
-            // geom-stiff over `M_impl`; then rebuild the position rows from `θ' = θ + Δt·ω'`.
-            let m_impl = m + dt * damp;
-            let s = m / m_impl;
-            let dwdw = 1.0 + s * (j[(1, 1)] - 1.0); // ∂ω'/∂ω
-            let dwdq = s * j[(1, 0)] + dt / m_impl * geom_stiff; // ∂ω'/∂θ (unloaded + loaded)
-            j[(1, 1)] = dwdw;
-            j[(1, 0)] = dwdq;
-            j[(0, 1)] = dt * dwdw; // ∂θ'/∂ω
-            j[(0, 0)] = 1.0 + dt * dwdq; // ∂θ'/∂θ
-        }
+        // `A` (= `j`, from `transition_derivatives`) is ALREADY the eulerdamp-correct
+        // unloaded transition: sim-core routes the Euler velocity solve through
+        // `M_impl = M + Δt·D` under damping (and through bare `M` when undamped). So the
+        // carry only patches the LOADED geometric stiffness onto the qpos column, routed
+        // through the same `M_impl` (`∂(M_impl⁻¹·Jᵀw)/∂θ = geom_stiff / M_impl`); the
+        // position rows follow the semi-implicit chain `θ' = θ + Δt·ω'`. `M_impl = M`
+        // when undamped, so the `D = 0` result is unchanged BYTE-FOR-BYTE.
+        let m_impl = m + dt * damp;
+        let vel_corr = dt / m_impl * geom_stiff; // ∂qvel'/∂qpos correction
+        j[(1, 0)] += vel_corr; // velocity row, qpos col
+        j[(0, 0)] += dt * vel_corr; // position row, qpos col (semi-implicit chain)
         Some(j)
     }
 

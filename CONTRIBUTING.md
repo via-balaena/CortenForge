@@ -303,7 +303,7 @@ docs(mesh-types): add examples to all public functions
 - **Questions:** Open a Discussion
 - **Bugs:** Open an Issue with reproduction steps
 - **Features:** Open an Issue for discussion first
-- **Security:** Email security@cortenforge.dev (do not open public issue)
+- **Security:** [Report a vulnerability privately](https://github.com/cortenforge/forge/security/advisories/new) via GitHub Security Advisories (do not open a public issue) — see [docs/SECURITY.md](docs/SECURITY.md)
 
 ---
 

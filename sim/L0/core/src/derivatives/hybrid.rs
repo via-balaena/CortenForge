@@ -23,11 +23,13 @@ use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
 use crate::linalg::{
-    cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse, mj_solve_sparse_batch,
+    cholesky_in_place, cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse,
+    mj_solve_sparse_batch,
 };
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType,
-    Integrator, MjJointType, Model, StepError, TendonType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_DAMPER, DISABLE_EULERDAMP,
+    DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError,
+    TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -2340,6 +2342,29 @@ pub fn mjd_transition_hybrid(
     let mut data_work = data.clone();
     mjd_smooth_vel(model, &mut data_work);
 
+    // 1b. Eulerdamp factor. The real Euler step applies joint damping IMPLICITLY:
+    //     it solves `(M + h·D)·qacc_new = F` and `qvel += h·qacc_new` (see
+    //     `integrate/mod.rs`), so the analytic velocity columns must route through
+    //     `M_impl = M + h·D`, NOT bare `M`. (The `Implicit*` integrators carry their
+    //     own `scratch_m_impl`; the explicit Euler path does not, so build it here.)
+    //     Gated identically to the step (DISABLE_EULERDAMP / DISABLE_DAMPER). When
+    //     no DOF is damped, `M_impl == M` and the bare-`M` fast path is kept, so the
+    //     undamped result is byte-for-byte unchanged.
+    let eulerdamp_active = matches!(model.integrator, Integrator::Euler)
+        && model.disableflags & DISABLE_EULERDAMP == 0
+        && model.disableflags & DISABLE_DAMPER == 0
+        && (0..nv).any(|i| model.implicit_damping[i] > 0.0);
+    let m_impl_euler = if eulerdamp_active {
+        let mut mi = data_work.qM.clone();
+        for i in 0..nv {
+            mi[(i, i)] += h * model.implicit_damping[i];
+        }
+        cholesky_in_place(&mut mi)?;
+        Some(mi)
+    } else {
+        None
+    };
+
     // 2. Compute integration derivatives (pure function).
     let integ = compute_integration_derivatives(model, data);
 
@@ -2350,19 +2375,28 @@ pub fn mjd_transition_hybrid(
     // === 3a/3b. Velocity columns of A (analytical) ===
     let dvdv = match model.integrator {
         Integrator::Euler => {
-            // ∂v⁺/∂v = I + h · M⁻¹ · qDeriv
-            // Batch solve: solve M⁻¹ · qDeriv for all nv columns at once.
-            // O(1) CSR metadata sweeps vs O(nv) for separate solves.
+            // ∂v⁺/∂v = I + h · M_impl⁻¹ · qDeriv  (M_impl = M + h·D under eulerdamp;
+            // = M when undamped). qDeriv (with its −D diagonal) is unchanged; only the
+            // solve matrix differs from bare M.
             let mut minv_qderiv = data_work.qDeriv.clone();
-            let (rowadr, rownnz, colind) = model.qld_csr();
-            mj_solve_sparse_batch(
-                rowadr,
-                rownnz,
-                colind,
-                &data_work.qLD_data,
-                &data_work.qLD_diag_inv,
-                &mut minv_qderiv,
-            );
+            if let Some(ref mi) = m_impl_euler {
+                for j in 0..nv {
+                    let mut col = minv_qderiv.column(j).clone_owned();
+                    cholesky_solve_in_place(mi, &mut col);
+                    minv_qderiv.column_mut(j).copy_from(&col);
+                }
+            } else {
+                // Bare-M batch solve (undamped fast path; byte-identical to before).
+                let (rowadr, rownnz, colind) = model.qld_csr();
+                mj_solve_sparse_batch(
+                    rowadr,
+                    rownnz,
+                    colind,
+                    &data_work.qLD_data,
+                    &data_work.qLD_diag_inv,
+                    &mut minv_qderiv,
+                );
+            }
             let mut dvdv = DMatrix::identity(nv, nv);
             dvdv += h * &minv_qderiv;
             dvdv
@@ -2513,6 +2547,10 @@ pub fn mjd_transition_hybrid(
             // Solve: M⁻¹ or (M−hD)⁻¹ or (M+hD+h²K)⁻¹
             match model.integrator {
                 Integrator::Euler => {
+                    // NOTE: under eulerdamp this bare-M solve is the same M_impl gap fixed
+                    // for the A matrix (dvdv/dvdq); the activation columns (na>0 non-muscle
+                    // stateful actuators) are a narrow, separately-gated path — deferred to
+                    // a follow-on with an actuated-damped fixture. See PR scope note.
                     let (rowadr, rownnz, colind) = model.qld_csr();
                     mj_solve_sparse(
                         rowadr,
@@ -2645,22 +2683,44 @@ pub fn mjd_transition_hybrid(
             crate::forward::mj_fwd_velocity(model, &mut data_work);
         }
 
+        // Eulerdamp (explicit Euler): the position columns' mass-directional term
+        // `−∂(M·qacc)/∂q` (built by `mjd_rne_pos` from `data_work.qacc` via S·qacc)
+        // must use the IMPLICIT acceleration `qacc_impl = M_impl⁻¹·(qfrc_smooth +
+        // qfrc_constraint)` — the accel the real eulerdamp step integrates — not the
+        // bare-M forward qacc. qvel is unchanged for Euler, so cvel/cdof stay valid
+        // (no velocity FK recompute). Undamped ⇒ `m_impl_euler` is `None`, untouched.
+        if let Some(ref mi) = m_impl_euler {
+            let mut qacc_impl = &data_work.qfrc_smooth + &data_work.qfrc_constraint;
+            cholesky_solve_in_place(mi, &mut qacc_impl);
+            data_work.qacc.copy_from(&qacc_impl);
+        }
+
         // Analytical position columns via mjd_smooth_pos + chain rule
         mjd_smooth_pos(model, &mut data_work);
 
         let dvdq = match model.integrator {
             Integrator::Euler => {
-                // dvdq = h · M⁻¹ · qDeriv_pos
+                // dvdq = h · M_impl⁻¹ · qDeriv_pos  (M_impl = M + h·D under eulerdamp,
+                // = M when undamped). qDeriv_pos already carries the −∂(M·qacc_impl)/∂q
+                // term (qacc set to qacc_impl above), so only the solve matrix differs.
                 let mut dvdq = data_work.qDeriv_pos.clone();
-                let (rowadr, rownnz, colind) = model.qld_csr();
-                mj_solve_sparse_batch(
-                    rowadr,
-                    rownnz,
-                    colind,
-                    &data_work.qLD_data,
-                    &data_work.qLD_diag_inv,
-                    &mut dvdq,
-                );
+                if let Some(ref mi) = m_impl_euler {
+                    for j in 0..nv {
+                        let mut col = dvdq.column(j).clone_owned();
+                        cholesky_solve_in_place(mi, &mut col);
+                        dvdq.column_mut(j).copy_from(&col);
+                    }
+                } else {
+                    let (rowadr, rownnz, colind) = model.qld_csr();
+                    mj_solve_sparse_batch(
+                        rowadr,
+                        rownnz,
+                        colind,
+                        &data_work.qLD_data,
+                        &data_work.qLD_diag_inv,
+                        &mut dvdq,
+                    );
+                }
                 dvdq *= h;
                 dvdq
             }
@@ -3082,6 +3142,11 @@ pub fn mjd_transition_hybrid(
 
             match model.integrator {
                 Integrator::Euler => {
+                    // NOTE: under eulerdamp this bare-M solve has the same M_impl gap fixed
+                    // for the A matrix; the control columns (B = ∂next/∂ctrl) feed RL/control
+                    // Jacobians and want M_impl too. Deferred to a follow-on with an
+                    // actuated-damped gate (add_motor is not reachable from the damped
+                    // transition test, and the shared conformance matrix carries no actuators).
                     let (rowadr, rownnz, colind) = model.qld_csr();
                     mj_solve_sparse(
                         rowadr,

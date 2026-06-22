@@ -11,9 +11,14 @@
 
 **Do not report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them via email to: security@cortenforge.dev
+Instead, please report them privately through GitHub Security Advisories:
+[**Report a vulnerability**](https://github.com/cortenforge/forge/security/advisories/new).
+This opens a private advisory visible only to the maintainers — no email or
+third-party domain is involved.
 
-You should receive a response within 48 hours. If for some reason you do not, please follow up via email to ensure we received your original message.
+You should receive a response within 48 hours. If you do not, please follow up by
+opening a (non-sensitive) GitHub issue asking a maintainer to check the private
+advisory queue.
 
 Please include the following information:
 
@@ -115,5 +120,5 @@ Security advisories will be published to:
 
 ## Contact
 
-- Security issues: security@cortenforge.dev
+- Security issues: [Report a vulnerability](https://github.com/cortenforge/forge/security/advisories/new) (private GitHub Security Advisory)
 - General issues: [GitHub Issues](https://github.com/cortenforge/forge/issues)
