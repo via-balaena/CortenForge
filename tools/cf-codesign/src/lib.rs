@@ -46,17 +46,22 @@
 //!   linear) so a single `loss_scale`-conditioned Adam loop drives both.
 //!
 //! *System-ID axis* — recover *rigid dynamics* parameters from an observed
-//! trajectory (what sim-to-real calibration needs), rather than tuning a design:
-//! - [`DampingSystemId`] — recover a pure-rigid model's **joint-damping**
-//!   coefficients so its terminal state after an N-step rollout matches an
-//!   observed one, reading `∂x_N/∂D` from the analytic rigid-parameter channel
-//!   [`sim_core::mjd_damping_trajectory_jacobian`] (forward-sensitivity
-//!   `s_{t+1} = A_t·s_t + P_t`). The first gradient path to a *rigid* parameter
-//!   (mass/damping/inertia/friction), where the other axes all tune a design.
-//!   Recovers several dampings at once; the Gauss-Newton `JᵀJ` conditioning is
-//!   reported by [`DampingSystemId::observation_jacobian`] with [`identifiability`]
-//!   so a parameter trade-off (weak joint-identifiability) shows up as data,
-//!   not a silent stall.
+//! trajectory (what sim-to-real calibration needs), rather than tuning a design.
+//! One generic [`RigidParamSystemId`] drives all three families — it tunes a
+//! pure-rigid model's parameters so its terminal state after an N-step rollout
+//! matches an observed one, reading `∂x_N/∂θ` from the matching analytic
+//! rigid-parameter channel (forward-sensitivity `s_{t+1} = A_t·s_t + P_t`):
+//! - [`DampingSystemId`] — per-joint **damping** (`∂x_N/∂D`),
+//! - [`MassSystemId`] — per-body **mass** (`∂x_N/∂m`),
+//! - [`InertiaSystemId`] — per-body principal **inertia** (`∂x_N/∂I`).
+//!
+//! These are the gradient paths to *rigid* parameters (mass/damping/inertia, with
+//! friction next), where the other axes all tune a design; a new family is one
+//! [`RigidParamSpec`] impl. Each recovers several parameters at once, and the
+//! Gauss-Newton `JᵀJ` conditioning is reported by
+//! [`observation_jacobian`](RigidParamSystemId::observation_jacobian) with
+//! [`identifiability`] so a parameter trade-off (weak joint-identifiability) shows
+//! up as data, not a silent stall.
 //!
 //! A weakly-sensitive objective (a tiny gradient, like the position-valued
 //! trajectory outcome `z_N`) is conditioned for the optimizer by the general
@@ -1452,156 +1457,67 @@ impl<P: DiffPolicy> CoDesignProblem for JointTarget<P> {
     // the θ weights are signed (no bound) — so `lower_bounds = None`.
 }
 
-/// **System-ID axis** — recover *rigid* dynamics parameters (joint damping) from
-/// an observed trajectory, the gradient channel sim-to-real calibration needs.
+/// How a rigid-parameter family plugs into the generic [`RigidParamSystemId`].
+///
+/// The damping, mass, and inertia system-ID problems share one shape — roll out a
+/// pure-rigid model, match its terminal state, and read `∂x_N/∂θ` from an analytic
+/// trajectory Jacobian. They differ only in three places, which this trait
+/// isolates: which model field a parameter writes, which `mjd_*_trajectory_jacobian`
+/// computes the sensitivity, and how each identified *target* maps to a column of
+/// that Jacobian. Implementing it for a new parameter family (the next being body
+/// friction) yields a full first-class `SystemId` via the type alias pattern below.
+pub trait RigidParamSpec {
+    /// A single identified target: a joint index (damping), a body index (mass),
+    /// or a `(body, axis)` pair (inertia).
+    type Target: Copy;
+
+    /// Write `value` into `model` for `target`. Cached implicit parameters are
+    /// refreshed once afterwards by [`finalize`](RigidParamSpec::finalize).
+    fn apply(model: &mut sim_core::Model, target: Self::Target, value: f64);
+
+    /// Refresh any cached parameters after all targets have been applied. Default
+    /// is a no-op; the damping spec overrides it to recompute `implicit_damping`.
+    fn finalize(_model: &mut sim_core::Model) {}
+
+    /// Compute the analytic terminal-state Jacobian of an `n_steps` rollout,
+    /// returning `(x_N, ∂x_N/∂θ_grid)` — the terminal state and the full parameter
+    /// Jacobian whose columns [`column`](RigidParamSpec::column) indexes.
+    ///
+    /// # Errors
+    /// Propagates any [`sim_core::StepError`] from the rollout or per-step
+    /// derivatives.
+    fn trajectory_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError>;
+
+    /// Column of the trajectory Jacobian corresponding to `target`.
+    fn column(model: &sim_core::Model, target: Self::Target) -> usize;
+}
+
+/// **System-ID axis** — recover *rigid* dynamics parameters from an observed
+/// trajectory, the gradient channel sim-to-real calibration needs.
 ///
 /// Where the design/policy targets above tune a *design* parameter via the
-/// coupling gradient, this problem tunes the **joint-damping coefficients** of a
+/// coupling gradient, this problem tunes a **rigid model parameter** of a
 /// pure-rigid [`sim_core`] model so that its terminal state after an `n_steps`
 /// rollout matches an observed one. It consumes the analytic rigid-parameter
-/// channel [`sim_core::mjd_damping_trajectory_jacobian`] (forward-sensitivity
-/// `s_{t+1} = A_t·s_t + P_t`), turning damping system-ID from FD-only into a
-/// one-pass analytic gradient.
+/// channel via the [`RigidParamSpec`] `S` (forward-sensitivity
+/// `s_{t+1} = A_t·s_t + P_t`), turning system-ID from FD-only into a one-pass
+/// analytic gradient.
 ///
-/// Parameters are the damping coefficients on the joints in `joints`; the loss is
-/// `½‖x_N(D) − x_N*‖²` over the terminal state in tangent space. Damping is
-/// bounded below at zero ([`lower_bounds`](CoDesignProblem::lower_bounds)).
-///
-/// Preconditions follow [`sim_core::mjd_damping_trajectory_jacobian`]: Euler
-/// integrator, hinge/slide joints, no tendons.
-pub struct DampingSystemId {
-    /// Rigid model; the `joints`' damping is overwritten each `evaluate`, other
-    /// parameters (mass, geometry, untargeted damping) are held fixed.
-    model: sim_core::Model,
-    /// Initial state the rollout starts from.
-    data0: sim_core::Data,
-    /// Observed terminal state `x_N*` in tangent space (relative to `data0.qpos`).
-    target_terminal: sim_core::DVector<f64>,
-    /// Number of rollout steps the observation spans.
-    n_steps: usize,
-    /// Indices of the joints whose damping is identified (the parameter order).
-    joints: Vec<usize>,
-    /// Transition-derivative config for the per-step `A_t`.
-    cfg: sim_core::DerivativeConfig,
-}
-
-impl DampingSystemId {
-    /// Build a sim-to-sim **inverse-design** problem: generate the observed
-    /// terminal state by rolling out at the *true* damping values
-    /// `true_damping[i]` (on `joints[i]`), then forget them — `evaluate` recovers
-    /// them from the trajectory. `model`'s untargeted joints keep their damping.
-    ///
-    /// # Panics
-    /// Panics if `joints.len() != true_damping.len()`, or if the reference rollout
-    /// fails (a malformed model/state).
-    #[must_use]
-    #[allow(clippy::expect_used)] // a failed reference rollout is fixture misuse.
-    pub fn for_inverse_design(
-        mut model: sim_core::Model,
-        data0: sim_core::Data,
-        n_steps: usize,
-        joints: Vec<usize>,
-        true_damping: &[f64],
-    ) -> Self {
-        assert_eq!(
-            joints.len(),
-            true_damping.len(),
-            "joints and true_damping length mismatch",
-        );
-        for (&jid, &d) in joints.iter().zip(true_damping) {
-            model.jnt_damping[jid] = d;
-        }
-        model.compute_implicit_params();
-        let cfg = sim_core::DerivativeConfig::default();
-        let target_terminal =
-            sim_core::mjd_damping_trajectory_jacobian(&model, &data0, n_steps, &cfg)
-                .expect("system-ID reference rollout")
-                .terminal_state;
-        Self {
-            model,
-            data0,
-            target_terminal,
-            n_steps,
-            joints,
-            cfg,
-        }
-    }
-
-    /// Roll out at `params` and return the analytic terminal-state Jacobian.
-    #[allow(clippy::expect_used)] // a rollout failure is unrecoverable model misuse.
-    fn rollout(&self, params: &[f64]) -> sim_core::TrajectoryDampingJacobian {
-        let mut model = self.model.clone();
-        for (&jid, &d) in self.joints.iter().zip(params) {
-            model.jnt_damping[jid] = d;
-        }
-        model.compute_implicit_params();
-        sim_core::mjd_damping_trajectory_jacobian(&model, &self.data0, self.n_steps, &self.cfg)
-            .expect("system-ID trajectory jacobian")
-    }
-
-    /// The observation Jacobian `J = ∂x_N/∂θ` at `params` — sensitivity of the
-    /// terminal observation to each identified damping parameter (columns in
-    /// `joints` order, rows = terminal-state dim `2·nv + na`). Its conditioning
-    /// (via [`identifiability`]) governs whether the parameters are *jointly*
-    /// recoverable or trade off.
-    #[must_use]
-    pub fn observation_jacobian(&self, params: &[f64]) -> sim_core::DMatrix<f64> {
-        let traj = self.rollout(params);
-        let nx = traj.terminal_state.len();
-        let mut j = sim_core::DMatrix::zeros(nx, self.joints.len());
-        for (col, &jid) in self.joints.iter().enumerate() {
-            let dof = self.model.jnt_dof_adr[jid];
-            j.set_column(col, &traj.dterminal_dD.column(dof));
-        }
-        j
-    }
-}
-
-impl CoDesignProblem for DampingSystemId {
-    fn n_params(&self) -> usize {
-        self.joints.len()
-    }
-
-    fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
-        let traj = self.rollout(params);
-        // Residual over the terminal state; gradient flows through ∂x_N/∂D.
-        let residual = &traj.terminal_state - &self.target_terminal;
-        let loss = 0.5 * residual.dot(&residual);
-        let grad = self
-            .joints
-            .iter()
-            .map(|&jid| {
-                let dof = self.model.jnt_dof_adr[jid];
-                residual.dot(&traj.dterminal_dD.column(dof))
-            })
-            .collect();
-        (loss, grad)
-    }
-
-    fn lower_bounds(&self) -> Option<Vec<f64>> {
-        // Joint damping is physically non-negative.
-        Some(vec![0.0; self.joints.len()])
-    }
-}
-
-/// **System-ID axis** — recover *rigid* dynamics parameters (**body mass**) from
-/// an observed trajectory, the sibling of [`DampingSystemId`] for the mass channel.
-///
-/// Tunes the per-body masses in `bodies` so the model's terminal state after an
-/// `n_steps` rollout matches an observed one, consuming the analytic mass channel
-/// [`sim_core::mjd_mass_trajectory_jacobian`] (forward-sensitivity
-/// `s_{t+1} = A_t·s_t + P_t`, where `P_t` is the single-step `∂f/∂m`). Mass
-/// system-ID is thereby a one-pass analytic gradient rather than FD-only.
-///
-/// Parameters are `body_mass[bodies[i]]`; the loss is `½‖x_N(m) − x_N*‖²` over the
-/// terminal state in tangent space. Mass is bounded below at zero
+/// The concrete parameter families are the type aliases [`DampingSystemId`],
+/// [`MassSystemId`], and [`InertiaSystemId`]. The loss is `½‖x_N(θ) − x_N*‖²` over
+/// the terminal state in tangent space; parameters are bounded below at zero
 /// ([`lower_bounds`](CoDesignProblem::lower_bounds)).
 ///
-/// Preconditions follow [`sim_core::mjd_mass_trajectory_jacobian`]: Euler
+/// Preconditions follow the chosen channel's `mjd_*_trajectory_jacobian`: Euler
 /// integrator, hinge/slide joints, no tendons.
-pub struct MassSystemId {
-    /// Rigid model; the `bodies`' mass is overwritten each `evaluate`, other
-    /// parameters (damping, geometry, untargeted masses) are held fixed.
+pub struct RigidParamSystemId<S: RigidParamSpec> {
+    /// Rigid model; the targeted parameters are overwritten each `evaluate`, all
+    /// other parameters are held fixed.
     model: sim_core::Model,
     /// Initial state the rollout starts from.
     data0: sim_core::Data,
@@ -1609,20 +1525,20 @@ pub struct MassSystemId {
     target_terminal: sim_core::DVector<f64>,
     /// Number of rollout steps the observation spans.
     n_steps: usize,
-    /// Indices of the bodies whose mass is identified (the parameter order).
-    bodies: Vec<usize>,
+    /// The identified targets, in parameter order.
+    targets: Vec<S::Target>,
     /// Transition-derivative config for the per-step `A_t`.
     cfg: sim_core::DerivativeConfig,
 }
 
-impl MassSystemId {
+impl<S: RigidParamSpec> RigidParamSystemId<S> {
     /// Build a sim-to-sim **inverse-design** problem: generate the observed
-    /// terminal state by rolling out at the *true* masses `true_mass[i]` (on
-    /// `bodies[i]`), then forget them — `evaluate` recovers them from the
-    /// trajectory. `model`'s untargeted bodies keep their mass.
+    /// terminal state by rolling out at the *true* values `true_values[i]` (on
+    /// `targets[i]`), then forget them — `evaluate` recovers them from the
+    /// trajectory. The model's untargeted parameters are held fixed.
     ///
     /// # Panics
-    /// Panics if `bodies.len() != true_mass.len()`, or if the reference rollout
+    /// Panics if `targets.len() != true_values.len()`, or if the reference rollout
     /// fails (a malformed model/state).
     #[must_use]
     #[allow(clippy::expect_used)] // a failed reference rollout is fixture misuse.
@@ -1630,81 +1546,188 @@ impl MassSystemId {
         mut model: sim_core::Model,
         data0: sim_core::Data,
         n_steps: usize,
-        bodies: Vec<usize>,
-        true_mass: &[f64],
+        targets: Vec<S::Target>,
+        true_values: &[f64],
     ) -> Self {
         assert_eq!(
-            bodies.len(),
-            true_mass.len(),
-            "bodies and true_mass length mismatch",
+            targets.len(),
+            true_values.len(),
+            "targets and true_values length mismatch",
         );
-        for (&bid, &m) in bodies.iter().zip(true_mass) {
-            model.body_mass[bid] = m;
+        for (&t, &v) in targets.iter().zip(true_values) {
+            S::apply(&mut model, t, v);
         }
+        S::finalize(&mut model);
         let cfg = sim_core::DerivativeConfig::default();
-        let target_terminal = sim_core::mjd_mass_trajectory_jacobian(&model, &data0, n_steps, &cfg)
-            .expect("system-ID reference rollout")
-            .terminal_state;
+        let (target_terminal, _) = S::trajectory_jacobian(&model, &data0, n_steps, &cfg)
+            .expect("system-ID reference rollout");
         Self {
             model,
             data0,
             target_terminal,
             n_steps,
-            bodies,
+            targets,
             cfg,
         }
     }
 
-    /// Roll out at `params` and return the analytic terminal-state Jacobian.
+    /// Roll out at `params` and return the analytic terminal state and its full
+    /// parameter Jacobian.
     #[allow(clippy::expect_used)] // a rollout failure is unrecoverable model misuse.
-    fn rollout(&self, params: &[f64]) -> sim_core::TrajectoryMassJacobian {
+    fn rollout(&self, params: &[f64]) -> (sim_core::DVector<f64>, sim_core::DMatrix<f64>) {
         let mut model = self.model.clone();
-        for (&bid, &m) in self.bodies.iter().zip(params) {
-            model.body_mass[bid] = m;
+        for (&t, &v) in self.targets.iter().zip(params) {
+            S::apply(&mut model, t, v);
         }
-        sim_core::mjd_mass_trajectory_jacobian(&model, &self.data0, self.n_steps, &self.cfg)
+        S::finalize(&mut model);
+        S::trajectory_jacobian(&model, &self.data0, self.n_steps, &self.cfg)
             .expect("system-ID trajectory jacobian")
     }
 
     /// The observation Jacobian `J = ∂x_N/∂θ` at `params` — sensitivity of the
-    /// terminal observation to each identified body mass (columns in `bodies`
+    /// terminal observation to each identified parameter (columns in `targets`
     /// order, rows = terminal-state dim `2·nv + na`). Its conditioning (via
-    /// [`identifiability`]) governs whether the masses are *jointly* recoverable.
+    /// [`identifiability`]) governs whether the parameters are *jointly* recoverable
+    /// or trade off.
     #[must_use]
     pub fn observation_jacobian(&self, params: &[f64]) -> sim_core::DMatrix<f64> {
-        let traj = self.rollout(params);
-        let nx = traj.terminal_state.len();
-        let mut j = sim_core::DMatrix::zeros(nx, self.bodies.len());
-        for (col, &bid) in self.bodies.iter().enumerate() {
-            j.set_column(col, &traj.dterminal_dm.column(bid));
+        let (terminal, full) = self.rollout(params);
+        let nx = terminal.len();
+        let mut j = sim_core::DMatrix::zeros(nx, self.targets.len());
+        for (col, &t) in self.targets.iter().enumerate() {
+            j.set_column(col, &full.column(S::column(&self.model, t)));
         }
         j
     }
 }
 
-impl CoDesignProblem for MassSystemId {
+impl<S: RigidParamSpec> CoDesignProblem for RigidParamSystemId<S> {
     fn n_params(&self) -> usize {
-        self.bodies.len()
+        self.targets.len()
     }
 
     fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
-        let traj = self.rollout(params);
-        // Residual over the terminal state; gradient flows through ∂x_N/∂m.
-        let residual = &traj.terminal_state - &self.target_terminal;
+        let (terminal, full) = self.rollout(params);
+        // Residual over the terminal state; gradient flows through ∂x_N/∂θ.
+        let residual = &terminal - &self.target_terminal;
         let loss = 0.5 * residual.dot(&residual);
         let grad = self
-            .bodies
+            .targets
             .iter()
-            .map(|&bid| residual.dot(&traj.dterminal_dm.column(bid)))
+            .map(|&t| residual.dot(&full.column(S::column(&self.model, t))))
             .collect();
         (loss, grad)
     }
 
     fn lower_bounds(&self) -> Option<Vec<f64>> {
-        // Body mass is physically non-negative.
-        Some(vec![0.0; self.bodies.len()])
+        // Mass, damping, and inertia are all physically non-negative.
+        Some(vec![0.0; self.targets.len()])
     }
 }
+
+/// [`RigidParamSpec`] for per-joint **damping** — `∂x_N/∂D` via
+/// [`sim_core::mjd_damping_trajectory_jacobian`]. Targets are joint indices.
+pub struct DampingSpec;
+
+impl RigidParamSpec for DampingSpec {
+    type Target = usize;
+
+    fn apply(model: &mut sim_core::Model, joint: usize, value: f64) {
+        model.jnt_damping[joint] = value;
+    }
+
+    fn finalize(model: &mut sim_core::Model) {
+        // Damping feeds the cached implicit eulerdamp coefficients.
+        model.compute_implicit_params();
+    }
+
+    fn trajectory_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
+        let t = sim_core::mjd_damping_trajectory_jacobian(model, data0, n_steps, cfg)?;
+        Ok((t.terminal_state, t.dterminal_dD))
+    }
+
+    fn column(model: &sim_core::Model, joint: usize) -> usize {
+        // Hinge/slide: the joint's single DOF column.
+        model.jnt_dof_adr[joint]
+    }
+}
+
+/// [`RigidParamSpec`] for per-body **mass** — `∂x_N/∂m` via
+/// [`sim_core::mjd_mass_trajectory_jacobian`]. Targets are body indices.
+pub struct MassSpec;
+
+impl RigidParamSpec for MassSpec {
+    type Target = usize;
+
+    fn apply(model: &mut sim_core::Model, body: usize, value: f64) {
+        model.body_mass[body] = value;
+    }
+
+    fn trajectory_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
+        let t = sim_core::mjd_mass_trajectory_jacobian(model, data0, n_steps, cfg)?;
+        Ok((t.terminal_state, t.dterminal_dm))
+    }
+
+    fn column(_model: &sim_core::Model, body: usize) -> usize {
+        // Mass Jacobian columns are indexed directly by body.
+        body
+    }
+}
+
+/// [`RigidParamSpec`] for per-body principal **inertia** — `∂x_N/∂I` via
+/// [`sim_core::mjd_inertia_trajectory_jacobian`]. Targets are `(body, axis)` pairs
+/// (`axis ∈ 0..3`, the principal-inertia component).
+pub struct InertiaSpec;
+
+impl RigidParamSpec for InertiaSpec {
+    type Target = (usize, usize);
+
+    fn apply(model: &mut sim_core::Model, (body, axis): (usize, usize), value: f64) {
+        model.body_inertia[body][axis] = value;
+    }
+
+    fn trajectory_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
+        let t = sim_core::mjd_inertia_trajectory_jacobian(model, data0, n_steps, cfg)?;
+        Ok((t.terminal_state, t.dterminal_dI))
+    }
+
+    fn column(_model: &sim_core::Model, (body, axis): (usize, usize)) -> usize {
+        // Inertia Jacobian columns are laid out per (body, axis) as 3*body + axis.
+        3 * body + axis
+    }
+}
+
+/// **System-ID axis** — recover a pure-rigid model's **joint-damping**
+/// coefficients from an observed trajectory, via the analytic
+/// [`sim_core::mjd_damping_trajectory_jacobian`]. Targets are joint indices; see
+/// [`RigidParamSystemId`].
+pub type DampingSystemId = RigidParamSystemId<DampingSpec>;
+
+/// **System-ID axis** — recover a pure-rigid model's per-body **mass** from an
+/// observed trajectory, via the analytic [`sim_core::mjd_mass_trajectory_jacobian`].
+/// Targets are body indices; see [`RigidParamSystemId`].
+pub type MassSystemId = RigidParamSystemId<MassSpec>;
+
+/// **System-ID axis** — recover a pure-rigid model's per-body principal **inertia**
+/// from an observed trajectory, via the analytic
+/// [`sim_core::mjd_inertia_trajectory_jacobian`]. Targets are `(body, axis)` pairs;
+/// see [`RigidParamSystemId`].
+pub type InertiaSystemId = RigidParamSystemId<InertiaSpec>;
 
 /// Identifiability summary of a least-squares system-ID problem, from the
 /// singular values of an observation Jacobian `J = ∂(observation)/∂(params)`.
@@ -2220,6 +2243,171 @@ mod tests {
             rest_id.condition_number > 100.0,
             "from-rest terminal-state mass observation should be ill-conditioned, cond={:.3e}",
             rest_id.condition_number
+        );
+    }
+
+    /// Build a 2-link inertia system-ID fixture targeting the **hinge-axis** (Y,
+    /// axis 1) principal moment of both links — the only inertia component a planar
+    /// swing about Y excites (the off-axis X/Z moments are unobservable, see
+    /// [`inertia_identifiability_readout`]). Excited (nonzero initial velocity, 200
+    /// steps) so both are jointly identifiable from the terminal state.
+    fn two_inertia_fixture() -> InertiaSystemId {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_damping = vec![0.2, 0.2];
+        model.compute_implicit_params();
+        let mut data0 = model.make_data();
+        data0.qpos[0] = 1.2;
+        data0.qpos[1] = -0.4;
+        data0.qvel[0] = 1.2;
+        data0.qvel[1] = -0.9;
+        InertiaSystemId::for_inverse_design(model, data0, 200, vec![(1, 1), (2, 1)], &[0.02, 0.015])
+    }
+
+    /// System-ID: recover a rigid **body inertia** (link 1's hinge-axis moment
+    /// `I* = 0.02`) from a short rollout, starting from `I₀ = 0.01`, via the
+    /// analytic `∂(trajectory)/∂(inertia)` channel + the Adam chassis. Link 2's
+    /// inertia is fixed and untargeted.
+    #[test]
+    fn recovers_body_inertia_from_trajectory() {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_damping = vec![0.2, 0.2];
+        model.compute_implicit_params();
+        let mut data0 = model.make_data();
+        data0.qpos[0] = 1.0;
+        data0.qpos[1] = 0.5;
+        data0.qvel[0] = 0.9;
+        data0.qvel[1] = -0.6;
+
+        // Identify link 1's hinge-axis (Y) principal moment; link 2 fixed.
+        let problem = InertiaSystemId::for_inverse_design(model, data0, 60, vec![(1, 1)], &[0.02]);
+
+        // At the true value the residual — hence the gradient — vanishes.
+        let (loss_star, grad_star) = problem.evaluate(&[0.02]);
+        assert!(
+            loss_star < 1e-20 && grad_star[0].abs() < 1e-10,
+            "zero residual at I* ⇒ zero grad: loss={loss_star:.3e} grad={:.3e}",
+            grad_star[0]
+        );
+
+        // Off-target: the analytic gradient matches a central FD of the problem's
+        // own loss — validates sign AND scale.
+        let i = 0.01;
+        let (_, grad) = problem.evaluate(&[i]);
+        let h = 1e-8; // inertia ≈ 0.01–0.02, so a tighter FD step than the mass channel
+        let fd = (problem.evaluate(&[i + h]).0 - problem.evaluate(&[i - h]).0) / (2.0 * h);
+        let g_rel = (grad[0] - fd).abs() / fd.abs().max(1e-12);
+        assert!(
+            g_rel < 1e-4 && grad[0] < 0.0,
+            "gradient {:.6e} vs FD {fd:.6e} (rel {g_rel:.3e}); expected match and grad<0 below I*",
+            grad[0]
+        );
+
+        // Inertia is a positive scale parameter ⇒ log-space relative steps.
+        let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+        let cfg = normalized.recommended_config();
+        let result = normalized.optimize(&[0.01], &cfg);
+
+        let recovered = result.params[0];
+        let rel = (recovered - 0.02).abs() / 0.02;
+        assert!(
+            rel < 1e-4,
+            "recovered inertia {recovered:.6} (rel err {rel:.3e}) after {} iters",
+            result.iters
+        );
+    }
+
+    /// Multi-parameter inertia system-ID: recover BOTH links' hinge-axis moments at
+    /// once, each gradient component FD-validated (sign + scale) independent of
+    /// convergence.
+    #[test]
+    fn recovers_two_body_inertias() {
+        let problem = two_inertia_fixture();
+
+        let p = [0.012, 0.012];
+        let (_, grad) = problem.evaluate(&p);
+        let h = 1e-8;
+        for i in 0..2 {
+            let (mut pp, mut pm) = (p, p);
+            pp[i] += h;
+            pm[i] -= h;
+            let fd = (problem.evaluate(&pp).0 - problem.evaluate(&pm).0) / (2.0 * h);
+            let rel = (grad[i] - fd).abs() / fd.abs().max(1e-12);
+            assert!(
+                rel < 1e-4,
+                "grad[{i}] {} vs FD {fd} (rel {rel:.3e})",
+                grad[i]
+            );
+        }
+
+        let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+        let cfg = normalized.recommended_config();
+        let result = normalized.optimize(&[0.012, 0.012], &cfg);
+        let r0 = (result.params[0] - 0.02).abs() / 0.02;
+        let r1 = (result.params[1] - 0.015).abs() / 0.015;
+        assert!(
+            r0 < 1e-3 && r1 < 1e-3,
+            "recovered [{:.6}, {:.6}] rel [{r0:.2e}, {r1:.2e}] in {} iters",
+            result.params[0],
+            result.params[1],
+            result.iters
+        );
+    }
+
+    /// Identifiability readout for the inertia channel — and the demonstration of
+    /// the **planar-excitation finding**. The hinge-axis (Y) moments of both links
+    /// are jointly observable (full rank, well-conditioned). But a planar swing
+    /// about Y excites *only* the Y principal moment, so identifying all three
+    /// principal axes of one link is rank-deficient: the off-axis (X, Z) moments
+    /// are unobservable from this excitation. The SVD readout surfaces both.
+    #[test]
+    fn inertia_identifiability_readout() {
+        // Hinge-axis moments of both links — observable, jointly identifiable.
+        let problem = two_inertia_fixture();
+        let j = problem.observation_jacobian(&[0.02, 0.015]);
+        let id = identifiability(&j, 1e-9);
+        println!(
+            "INERTIA IDENTIFIABILITY (hinge axis) sv={:?} cond={:.4e} rank={}",
+            id.singular_values, id.condition_number, id.rank
+        );
+        assert_eq!(
+            id.rank, 2,
+            "both hinge-axis moments should be observable from the terminal state"
+        );
+        assert!(
+            (1.0..1e3).contains(&id.condition_number),
+            "excited hinge-axis inertia observation should be well-conditioned, cond={:.3e}",
+            id.condition_number
+        );
+
+        // The finding: a planar swing about Y excites only the Y principal moment.
+        // Identifying all three principal axes of one link is rank-deficient — the
+        // off-axis (X, Z) components are unobservable from this excitation.
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_damping = vec![0.2, 0.2];
+        model.compute_implicit_params();
+        let mut data0 = model.make_data();
+        data0.qpos[0] = 1.2;
+        data0.qpos[1] = -0.4;
+        data0.qvel[0] = 1.2;
+        data0.qvel[1] = -0.9;
+        let all_axes = InertiaSystemId::for_inverse_design(
+            model,
+            data0,
+            200,
+            vec![(1, 0), (1, 1), (1, 2)],
+            &[0.0083, 0.0083, 0.0001],
+        );
+        let off = identifiability(
+            &all_axes.observation_jacobian(&[0.0083, 0.0083, 0.0001]),
+            1e-9,
+        );
+        println!(
+            "INERTIA IDENTIFIABILITY (3 axes, 1 body) sv={:?} cond={:.4e} rank={}",
+            off.singular_values, off.condition_number, off.rank
+        );
+        assert_eq!(
+            off.rank, 1,
+            "only the hinge-axis (Y) moment is observable from a planar swing"
         );
     }
 }
