@@ -193,6 +193,22 @@ fn assert_mass_scope(model: &Model) {
         model.ntendon, 0,
         "analytic mass Jacobian does not model tendon spring/damper M_impl terms",
     );
+    // Unlike damping, body mass enters two further passive forces the channel does
+    // NOT differentiate, so they must be absent (mass-specific guards):
+    // - gravity compensation: qfrc_gravcomp = −g·(body_mass·gravcomp), linear in mass.
+    // - inertia-box fluid drag: equivalent box dims ∝ 1/mass (see mj_inertia_box_fluid).
+    assert_eq!(
+        model.ngravcomp, 0,
+        "analytic mass Jacobian does not differentiate the mass-proportional gravcomp force",
+    );
+    // Exact zero is the disabled sentinel for both fluid coefficients.
+    #[allow(clippy::float_cmp)]
+    {
+        assert!(
+            model.density == 0.0 && model.viscosity == 0.0,
+            "analytic mass Jacobian does not model mass-dependent fluid drag (density/viscosity must be 0)",
+        );
+    }
 }
 
 /// Compute the analytic single-step mass Jacobian `∂x⁺/∂body_mass` at the current
@@ -200,10 +216,13 @@ fn assert_mass_scope(model: &Model) {
 ///
 /// # Math
 ///
-/// The eulerdamp step is `v⁺ = M_impl⁻¹·(M·v + h·f)` with
-/// `M_impl = M + h·D`, `f = f_ext − qfrc_bias`, and `qacc = (v⁺ − v)/h`.
-/// Body mass `m_b` enters `M` (so `M·v` and `M_impl`) and `qfrc_bias` (gravity +
-/// Coriolis). The `M·v` and `M_impl` mass-dependences combine exactly, leaving
+/// The Euler eulerdamp step (`integrate`) is `v⁺ = v + h·M_impl⁻¹·F` with
+/// `M_impl = M + h·D` (`D = implicit_damping`; spring `K` enters Euler only as a
+/// mass-independent explicit force, never `M_impl`) and `F = qfrc_smooth +
+/// qfrc_constraint`. Equivalently `v⁺ = M_impl⁻¹·(M·v + h·F)`, with
+/// `qacc = (v⁺ − v)/h`. Body mass `m_b` enters `M` (so `M·v` and `M_impl`) and
+/// `qfrc_bias` ⊂ `qfrc_smooth` (gravity + Coriolis). The `M·v` and `M_impl`
+/// mass-dependences combine exactly, leaving
 ///
 /// ```text
 /// ∂v⁺/∂m_b = h · M_impl⁻¹ · [ ∂f/∂m_b − (∂M/∂m_b)·qacc ]
@@ -219,10 +238,11 @@ fn assert_mass_scope(model: &Model) {
 /// - `∂cinert[b]/∂m_b = compute_body_spatial_inertia(1, 0, R_b, h_b)` (the
 ///   unit-mass, zero-rotational-inertia spatial inertia of body `b`), zero for
 ///   all other bodies — feeds the CRBA composite-inertia and RNE Coriolis passes.
-/// - For gravity, the joint torque depends only on the mass-moment
-///   `subtree_mass·subtree_com`, whose `∂/∂m_b` is "a unit point mass at body
-///   `b`'s COM in every subtree containing `b`": `subtree_mass[k] ← [b ∈
-///   subtree(k)]`, `subtree_com[k] ← xipos[b]`.
+/// - For gravity, the joint torque is built from the mass-moment
+///   `subtree_mass·subtree_com` (and a `subtree_mass·jpos` lever), so the exact
+///   `∂/∂m_b` is reproduced by "a unit point mass at body `b`'s COM in every
+///   subtree containing `b`": `subtree_mass[k] ← [b ∈ subtree(k)]`,
+///   `subtree_com[k] ← xipos[b]`.
 ///
 /// Reusing the production CRBA/RNE inherits their conformance fixes (the spatial
 /// transport / `Xᵀ` moment lever) rather than re-deriving them.
@@ -230,9 +250,29 @@ fn assert_mass_scope(model: &Model) {
 /// The position-tangent row uses the hinge/slide semi-implicit map
 /// `∂qpos⁺/∂m = h·∂v⁺/∂m`.
 ///
+/// # Scope
+///
+/// Beyond the hard-asserted scope below, the operating point must be
+/// **constraint-free** (no active contacts/joint limits): `qfrc_constraint`
+/// depends on mass through the constraint solve and is not differentiated here
+/// (shared with the damping channel). The pure-rigid `n_link_pendulum` regime
+/// satisfies this.
+///
+/// # Performance
+///
+/// `O(nbody)` per call: one operating-point step/forward plus, for each body, a
+/// `Data` clone and a full `mj_rne` + `mj_crba` pass (the latter's factorization
+/// is unused). The trajectory driver calls this every step, so the trajectory
+/// cost is `O(nbody · n_steps · cost(rne+crba))` — fine for system-ID on small
+/// chains; a perturbation-CRBA without factorization is a future optimization.
+///
 /// # Panics
 ///
-/// Same hard scope as [`mjd_damping_jacobian`] (Euler, hinge/slide, no tendons).
+/// Hard scope (panics in all profiles): Euler integrator, hinge/slide joints, no
+/// tendons, no gravity compensation (`ngravcomp == 0`), no fluid drag
+/// (`density == viscosity == 0`). The last two are mass-specific: those passive
+/// forces are mass-dependent but not modelled, so an out-of-scope model would get
+/// a silently-wrong gradient.
 ///
 /// # Errors
 ///
@@ -655,6 +695,51 @@ mod tests {
         let (mut model, data) = damped_pendulum();
         model.integrator = Integrator::RungeKutta4;
         mjd_mass_jacobian(&model, &data).unwrap();
+    }
+
+    /// Gravity compensation is mass-proportional (`qfrc_gravcomp = −g·m·gravcomp`)
+    /// but not differentiated — an in-scope-by-other-asserts model with gravcomp
+    /// must panic rather than return a silently-wrong gradient.
+    #[test]
+    #[should_panic(expected = "gravcomp")]
+    fn mass_rejects_gravcomp() {
+        let (mut model, data) = damped_pendulum();
+        model.ngravcomp = 1; // signals at least one gravcomp body present
+        mjd_mass_jacobian(&model, &data).unwrap();
+    }
+
+    /// 3-link variant of the single-step FD gate. The 2-link fixture cannot
+    /// exercise 3-deep ancestor transport in the gravity subtree-mass walk or the
+    /// CRBA composite-inertia accumulation; this catches a transport/sign bug that
+    /// vanishes for ≤2-link chains (a recurring failure mode in this codebase).
+    #[test]
+    fn analytic_mass_jacobian_matches_fd_3link() {
+        let mut model = Model::n_link_pendulum(3, 1.0, 0.1);
+        model.jnt_damping = vec![0.5, 0.3, 0.7];
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qpos[1] = -0.2;
+        data.qpos[2] = 0.4;
+        data.qvel[0] = 0.7;
+        data.qvel[1] = -0.4;
+        data.qvel[2] = 0.5;
+        data.forward(&model).unwrap();
+
+        let analytic = mjd_mass_jacobian(&model, &data).unwrap();
+        let fd = fd_mass_jacobian(&model, &data, 1e-6);
+        let (err, loc) = max_relative_error(&analytic.dxdm, &fd, 1e-3);
+        assert!(
+            err < 1e-5,
+            "3-link analytic ∂x⁺/∂m disagrees with FD: max_rel_err={err:.3e} at {loc:?}\n\
+             analytic=\n{:.6}\nfd=\n{:.6}",
+            analytic.dxdm,
+            fd
+        );
+        assert!(
+            analytic.dxdm.amax() > 1e-3,
+            "expected non-negligible sensitivity"
+        );
     }
 
     /// Central-FD reference for `∂x_N/∂m` over a full `n_steps` rollout: perturb

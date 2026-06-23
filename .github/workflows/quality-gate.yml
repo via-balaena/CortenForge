@@ -307,7 +307,7 @@ jobs:
             sim-ml-chassis-bevy sim-therm-env cf-geometry cf-spatial cf-design \
             cf-design-tests cf-viewer cf-bevy-common sim-bevy-soft \
             cf-studio-core cf-studio-engine cf-studio-gui cf-studio \
-            cf-scan-prep-core cf-cast-cli"
+            cf-scan-prep-core cf-cast-cli cf-codesign"
           # Restrict to the PR-affected subset (full on main/merge/fallback).
           PKGS=$(bash .github/scripts/affected-packages.sh "$CANDIDATES")
           if [ -z "$PKGS" ]; then

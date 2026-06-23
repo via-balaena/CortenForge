@@ -2190,14 +2190,36 @@ mod tests {
             id.rank, 2,
             "both link masses should be observable from the terminal state"
         );
-        // Observed cond ≈ 13 with the excited fixture (cond ≈ 340 from rest) —
-        // well-conditioned, both masses jointly identifiable from the terminal
-        // state. cond ≥ 1 always; 50 is a robust upper guard well above the
-        // observed value but far below the from-rest regime.
+        // Observed cond ≈ 13 with the excited fixture — well-conditioned, both
+        // masses jointly identifiable from the terminal state. cond ≥ 1 always;
+        // 25 brackets the observed value tightly enough that a 2× degradation
+        // (a real identifiability regression) fails.
         assert!(
-            (1.0..50.0).contains(&id.condition_number),
-            "terminal-state mass observation should be well-conditioned, cond={:.3e}",
+            (1.0..25.0).contains(&id.condition_number),
+            "excited terminal-state mass observation should be well-conditioned, cond={:.3e}",
             id.condition_number
+        );
+
+        // Demonstrate the finding's other half: released from REST with a short
+        // swing, the same two masses are poorly separated at the terminal state
+        // (cond ≈ 340), so excitation is what makes terminal-state mass-ID work.
+        let mut rest_model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        rest_model.jnt_damping = vec![0.2, 0.2];
+        rest_model.compute_implicit_params();
+        let mut rest_data = rest_model.make_data();
+        rest_data.qpos[0] = 1.0;
+        rest_data.qpos[1] = 0.5; // released from rest (qvel = 0).
+        let rest =
+            MassSystemId::for_inverse_design(rest_model, rest_data, 40, vec![1, 2], &[1.5, 0.8]);
+        let rest_id = identifiability(&rest.observation_jacobian(&[1.5, 0.8]), 1e-9);
+        println!(
+            "MASS IDENTIFIABILITY (from rest) cond={:.4e} rank={}",
+            rest_id.condition_number, rest_id.rank
+        );
+        assert!(
+            rest_id.condition_number > 100.0,
+            "from-rest terminal-state mass observation should be ill-conditioned, cond={:.3e}",
+            rest_id.condition_number
         );
     }
 }
