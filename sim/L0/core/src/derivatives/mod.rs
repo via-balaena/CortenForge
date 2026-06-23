@@ -69,9 +69,10 @@ pub use hybrid::{
 };
 pub use integration::{mjd_quat_integrate, mjd_sub_quat};
 pub use param::{
-    DampingJacobian, MassJacobian, TrajectoryDampingJacobian, TrajectoryMassJacobian,
-    mjd_damping_jacobian, mjd_damping_trajectory_jacobian, mjd_mass_jacobian,
-    mjd_mass_trajectory_jacobian,
+    DampingJacobian, InertiaJacobian, MassJacobian, TrajectoryDampingJacobian,
+    TrajectoryInertiaJacobian, TrajectoryMassJacobian, mjd_damping_jacobian,
+    mjd_damping_trajectory_jacobian, mjd_inertia_jacobian, mjd_inertia_trajectory_jacobian,
+    mjd_mass_jacobian, mjd_mass_trajectory_jacobian,
 };
 
 // Crate-internal re-exports
