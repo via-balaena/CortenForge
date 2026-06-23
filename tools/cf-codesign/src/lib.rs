@@ -1584,6 +1584,128 @@ impl CoDesignProblem for DampingSystemId {
     }
 }
 
+/// **System-ID axis** — recover *rigid* dynamics parameters (**body mass**) from
+/// an observed trajectory, the sibling of [`DampingSystemId`] for the mass channel.
+///
+/// Tunes the per-body masses in `bodies` so the model's terminal state after an
+/// `n_steps` rollout matches an observed one, consuming the analytic mass channel
+/// [`sim_core::mjd_mass_trajectory_jacobian`] (forward-sensitivity
+/// `s_{t+1} = A_t·s_t + P_t`, where `P_t` is the single-step `∂f/∂m`). Mass
+/// system-ID is thereby a one-pass analytic gradient rather than FD-only.
+///
+/// Parameters are `body_mass[bodies[i]]`; the loss is `½‖x_N(m) − x_N*‖²` over the
+/// terminal state in tangent space. Mass is bounded below at zero
+/// ([`lower_bounds`](CoDesignProblem::lower_bounds)).
+///
+/// Preconditions follow [`sim_core::mjd_mass_trajectory_jacobian`]: Euler
+/// integrator, hinge/slide joints, no tendons.
+pub struct MassSystemId {
+    /// Rigid model; the `bodies`' mass is overwritten each `evaluate`, other
+    /// parameters (damping, geometry, untargeted masses) are held fixed.
+    model: sim_core::Model,
+    /// Initial state the rollout starts from.
+    data0: sim_core::Data,
+    /// Observed terminal state `x_N*` in tangent space (relative to `data0.qpos`).
+    target_terminal: sim_core::DVector<f64>,
+    /// Number of rollout steps the observation spans.
+    n_steps: usize,
+    /// Indices of the bodies whose mass is identified (the parameter order).
+    bodies: Vec<usize>,
+    /// Transition-derivative config for the per-step `A_t`.
+    cfg: sim_core::DerivativeConfig,
+}
+
+impl MassSystemId {
+    /// Build a sim-to-sim **inverse-design** problem: generate the observed
+    /// terminal state by rolling out at the *true* masses `true_mass[i]` (on
+    /// `bodies[i]`), then forget them — `evaluate` recovers them from the
+    /// trajectory. `model`'s untargeted bodies keep their mass.
+    ///
+    /// # Panics
+    /// Panics if `bodies.len() != true_mass.len()`, or if the reference rollout
+    /// fails (a malformed model/state).
+    #[must_use]
+    #[allow(clippy::expect_used)] // a failed reference rollout is fixture misuse.
+    pub fn for_inverse_design(
+        mut model: sim_core::Model,
+        data0: sim_core::Data,
+        n_steps: usize,
+        bodies: Vec<usize>,
+        true_mass: &[f64],
+    ) -> Self {
+        assert_eq!(
+            bodies.len(),
+            true_mass.len(),
+            "bodies and true_mass length mismatch",
+        );
+        for (&bid, &m) in bodies.iter().zip(true_mass) {
+            model.body_mass[bid] = m;
+        }
+        let cfg = sim_core::DerivativeConfig::default();
+        let target_terminal = sim_core::mjd_mass_trajectory_jacobian(&model, &data0, n_steps, &cfg)
+            .expect("system-ID reference rollout")
+            .terminal_state;
+        Self {
+            model,
+            data0,
+            target_terminal,
+            n_steps,
+            bodies,
+            cfg,
+        }
+    }
+
+    /// Roll out at `params` and return the analytic terminal-state Jacobian.
+    #[allow(clippy::expect_used)] // a rollout failure is unrecoverable model misuse.
+    fn rollout(&self, params: &[f64]) -> sim_core::TrajectoryMassJacobian {
+        let mut model = self.model.clone();
+        for (&bid, &m) in self.bodies.iter().zip(params) {
+            model.body_mass[bid] = m;
+        }
+        sim_core::mjd_mass_trajectory_jacobian(&model, &self.data0, self.n_steps, &self.cfg)
+            .expect("system-ID trajectory jacobian")
+    }
+
+    /// The observation Jacobian `J = ∂x_N/∂θ` at `params` — sensitivity of the
+    /// terminal observation to each identified body mass (columns in `bodies`
+    /// order, rows = terminal-state dim `2·nv + na`). Its conditioning (via
+    /// [`identifiability`]) governs whether the masses are *jointly* recoverable.
+    #[must_use]
+    pub fn observation_jacobian(&self, params: &[f64]) -> sim_core::DMatrix<f64> {
+        let traj = self.rollout(params);
+        let nx = traj.terminal_state.len();
+        let mut j = sim_core::DMatrix::zeros(nx, self.bodies.len());
+        for (col, &bid) in self.bodies.iter().enumerate() {
+            j.set_column(col, &traj.dterminal_dm.column(bid));
+        }
+        j
+    }
+}
+
+impl CoDesignProblem for MassSystemId {
+    fn n_params(&self) -> usize {
+        self.bodies.len()
+    }
+
+    fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
+        let traj = self.rollout(params);
+        // Residual over the terminal state; gradient flows through ∂x_N/∂m.
+        let residual = &traj.terminal_state - &self.target_terminal;
+        let loss = 0.5 * residual.dot(&residual);
+        let grad = self
+            .bodies
+            .iter()
+            .map(|&bid| residual.dot(&traj.dterminal_dm.column(bid)))
+            .collect();
+        (loss, grad)
+    }
+
+    fn lower_bounds(&self) -> Option<Vec<f64>> {
+        // Body mass is physically non-negative.
+        Some(vec![0.0; self.bodies.len()])
+    }
+}
+
 /// Identifiability summary of a least-squares system-ID problem, from the
 /// singular values of an observation Jacobian `J = ∂(observation)/∂(params)`.
 ///
@@ -1941,6 +2063,140 @@ mod tests {
         assert!(
             id.condition_number > 1e6,
             "a near-singular direction should blow up cond, got {:.3e}",
+            id.condition_number
+        );
+    }
+
+    /// Build the canonical 2-link, 2-mass system-ID fixture (bodies 1 and 2, true
+    /// masses `[1.5, 0.8]`), with light damping so `M_impl = M + h·D` is exercised.
+    ///
+    /// Excitation matters for mass: released from rest with a short swing, the two
+    /// link masses are weakly separated at the terminal state (cond ≈ 340). A
+    /// properly excited, longer rollout (nonzero initial velocity, 200 steps)
+    /// drops the conditioning to ≈ 13 — comparable to the damping channel — so
+    /// both masses are jointly identifiable from the terminal state alone. The
+    /// [`identifiability`] readout is the instrument that surfaces this.
+    fn two_mass_fixture() -> MassSystemId {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_damping = vec![0.2, 0.2];
+        model.compute_implicit_params();
+        let mut data0 = model.make_data();
+        data0.qpos[0] = 1.2;
+        data0.qpos[1] = -0.4;
+        data0.qvel[0] = 1.2;
+        data0.qvel[1] = -0.9;
+        MassSystemId::for_inverse_design(model, data0, 200, vec![1, 2], &[1.5, 0.8])
+    }
+
+    /// System-ID: recover a rigid **body mass** (`m* = 1.5` on link 1) from a short
+    /// rollout, starting from `m₀ = 0.8`, via the analytic `∂(trajectory)/∂(mass)`
+    /// channel + the Adam chassis. Link 2 carries a fixed, untargeted mass (so the
+    /// recovery is not the scale-degenerate single-pendulum case).
+    #[test]
+    fn recovers_body_mass_from_trajectory() {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_damping = vec![0.2, 0.2];
+        model.compute_implicit_params();
+        let mut data0 = model.make_data();
+        data0.qpos[0] = 1.0;
+        data0.qpos[1] = 0.5;
+
+        let problem = MassSystemId::for_inverse_design(model, data0, 40, vec![1], &[1.5]);
+
+        // At the true value the residual — hence the gradient — vanishes.
+        let (loss_star, grad_star) = problem.evaluate(&[1.5]);
+        assert!(
+            loss_star < 1e-20 && grad_star[0].abs() < 1e-10,
+            "zero residual at m* ⇒ zero grad: loss={loss_star:.3e} grad={:.3e}",
+            grad_star[0]
+        );
+
+        // Off-target: the analytic gradient the optimizer consumes matches a
+        // central FD of the problem's own loss — validates sign AND scale.
+        let m = 1.0;
+        let (_, grad) = problem.evaluate(&[m]);
+        let h = 1e-6;
+        let fd = (problem.evaluate(&[m + h]).0 - problem.evaluate(&[m - h]).0) / (2.0 * h);
+        let g_rel = (grad[0] - fd).abs() / fd.abs().max(1e-12);
+        assert!(
+            g_rel < 1e-4 && grad[0] < 0.0,
+            "gradient {:.6e} vs FD {fd:.6e} (rel {g_rel:.3e}); expected match and grad<0 below m*",
+            grad[0]
+        );
+
+        // Mass is a positive scale parameter ⇒ log-space relative steps.
+        let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+        let cfg = normalized.recommended_config();
+        let result = normalized.optimize(&[0.8], &cfg);
+
+        let recovered = result.params[0];
+        let rel = (recovered - 1.5).abs() / 1.5;
+        assert!(
+            rel < 1e-5,
+            "recovered mass {recovered:.6} (rel err {rel:.3e}) after {} iters",
+            result.iters
+        );
+    }
+
+    /// Multi-parameter mass system-ID: recover BOTH link masses at once, each
+    /// gradient component FD-validated (sign + scale) independent of convergence.
+    #[test]
+    fn recovers_two_body_masses() {
+        let problem = two_mass_fixture();
+
+        let p = [1.0, 1.0];
+        let (_, grad) = problem.evaluate(&p);
+        let h = 1e-6;
+        for i in 0..2 {
+            let (mut pp, mut pm) = (p, p);
+            pp[i] += h;
+            pm[i] -= h;
+            let fd = (problem.evaluate(&pp).0 - problem.evaluate(&pm).0) / (2.0 * h);
+            let rel = (grad[i] - fd).abs() / fd.abs().max(1e-12);
+            assert!(
+                rel < 1e-4,
+                "grad[{i}] {} vs FD {fd} (rel {rel:.3e})",
+                grad[i]
+            );
+        }
+
+        let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+        let cfg = normalized.recommended_config();
+        let result = normalized.optimize(&[1.0, 1.0], &cfg);
+        let r0 = (result.params[0] - 1.5).abs() / 1.5;
+        let r1 = (result.params[1] - 0.8).abs() / 0.8;
+        assert!(
+            r0 < 1e-3 && r1 < 1e-3,
+            "recovered [{:.6}, {:.6}] rel [{r0:.2e}, {r1:.2e}] in {} iters",
+            result.params[0],
+            result.params[1],
+            result.iters
+        );
+    }
+
+    /// Identifiability readout for the mass channel: is the terminal-state
+    /// observation Jacobian full-rank (both link masses observable), and how
+    /// well-conditioned? Surfaces the `JᵀJ` verdict as data.
+    #[test]
+    fn mass_identifiability_readout() {
+        let problem = two_mass_fixture();
+        let j = problem.observation_jacobian(&[1.5, 0.8]);
+        let id = identifiability(&j, 1e-9);
+        println!(
+            "MASS IDENTIFIABILITY sv={:?} cond={:.4e} rank={}",
+            id.singular_values, id.condition_number, id.rank
+        );
+        assert_eq!(
+            id.rank, 2,
+            "both link masses should be observable from the terminal state"
+        );
+        // Observed cond ≈ 13 with the excited fixture (cond ≈ 340 from rest) —
+        // well-conditioned, both masses jointly identifiable from the terminal
+        // state. cond ≥ 1 always; 50 is a robust upper guard well above the
+        // observed value but far below the from-rest regime.
+        assert!(
+            (1.0..50.0).contains(&id.condition_number),
+            "terminal-state mass observation should be well-conditioned, cond={:.3e}",
             id.condition_number
         );
     }

@@ -37,10 +37,13 @@
 
 use super::fd::extract_state;
 use super::{DerivativeConfig, mjd_transition};
+use crate::dynamics::compute_body_spatial_inertia;
+use crate::dynamics::crba::mj_crba;
+use crate::dynamics::rne::mj_rne;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
 use crate::types::{Integrator, MjJointType, StepError};
 use crate::{Data, Model};
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Matrix6, Vector3};
 
 /// Analytic single-step Jacobian of the next state w.r.t. per-DOF joint damping.
 ///
@@ -152,6 +155,172 @@ pub fn mjd_damping_jacobian(model: &Model, data: &Data) -> Result<DampingJacobia
     Ok(DampingJacobian { dxdD })
 }
 
+/// Analytic single-step Jacobian of the next state w.r.t. per-body mass.
+///
+/// Column `b` of [`dxdm`](Self::dxdm) is `∂x⁺/∂body_mass[b]`. Column `0` (the
+/// world body) is always zero. Body mass enters the step through three coupled
+/// paths — the mass matrix `M` (CRBA), the gravity force, and the Coriolis/bias
+/// force (RNE) — but they collapse to a single inverse-dynamics term (see
+/// [`mjd_mass_jacobian`]).
+pub struct MassJacobian {
+    /// `∂x⁺/∂m`, dimensions `(2*nv + na) × nbody`.
+    ///
+    /// Row layout matches [`TransitionMatrices`](super::TransitionMatrices):
+    /// `[0..nv]` position tangent, `[nv..2*nv]` velocity, `[2*nv..2*nv+na]`
+    /// activation (always zero — mass does not affect activation in one step).
+    /// Column `b` is the derivative w.r.t. `body_mass[b]`; column `0` is zero.
+    pub dxdm: DMatrix<f64>,
+}
+
+/// Hard-assert a model is within the supported scope of the analytic mass channel
+/// (Euler integrator, hinge/slide joints, no tendons) — identical scope to the
+/// damping channel. Out-of-scope models would yield a silently-wrong gradient, so
+/// this panics in all profiles.
+fn assert_mass_scope(model: &Model) {
+    assert_eq!(
+        model.integrator,
+        Integrator::Euler,
+        "analytic mass Jacobian requires the Euler (eulerdamp) integrator",
+    );
+    assert!(
+        model
+            .jnt_type
+            .iter()
+            .all(|t| matches!(t, MjJointType::Hinge | MjJointType::Slide)),
+        "analytic mass Jacobian position row is hinge/slide-only",
+    );
+    assert_eq!(
+        model.ntendon, 0,
+        "analytic mass Jacobian does not model tendon spring/damper M_impl terms",
+    );
+}
+
+/// Compute the analytic single-step mass Jacobian `∂x⁺/∂body_mass` at the current
+/// state.
+///
+/// # Math
+///
+/// The eulerdamp step is `v⁺ = M_impl⁻¹·(M·v + h·f)` with
+/// `M_impl = M + h·D`, `f = f_ext − qfrc_bias`, and `qacc = (v⁺ − v)/h`.
+/// Body mass `m_b` enters `M` (so `M·v` and `M_impl`) and `qfrc_bias` (gravity +
+/// Coriolis). The `M·v` and `M_impl` mass-dependences combine exactly, leaving
+///
+/// ```text
+/// ∂v⁺/∂m_b = h · M_impl⁻¹ · [ ∂f/∂m_b − (∂M/∂m_b)·qacc ]
+///          = −h · M_impl⁻¹ · ∂τ_ID/∂m_b
+/// ```
+///
+/// where `τ_ID = M·qacc + qfrc_bias` is the inverse-dynamics torque at the
+/// operating point `(q, v, qacc)`. The bracket is `−∂τ_ID/∂m_b`, and since both
+/// CRBA and RNE are **linear in the body spatial inertias**, the two pieces
+/// `(∂M/∂m_b)·qacc` and `∂qfrc_bias/∂m_b` are obtained by re-running the existing
+/// `mj_crba` and `mj_rne` on a perturbation inertia distribution:
+///
+/// - `∂cinert[b]/∂m_b = compute_body_spatial_inertia(1, 0, R_b, h_b)` (the
+///   unit-mass, zero-rotational-inertia spatial inertia of body `b`), zero for
+///   all other bodies — feeds the CRBA composite-inertia and RNE Coriolis passes.
+/// - For gravity, the joint torque depends only on the mass-moment
+///   `subtree_mass·subtree_com`, whose `∂/∂m_b` is "a unit point mass at body
+///   `b`'s COM in every subtree containing `b`": `subtree_mass[k] ← [b ∈
+///   subtree(k)]`, `subtree_com[k] ← xipos[b]`.
+///
+/// Reusing the production CRBA/RNE inherits their conformance fixes (the spatial
+/// transport / `Xᵀ` moment lever) rather than re-deriving them.
+///
+/// The position-tangent row uses the hinge/slide semi-implicit map
+/// `∂qpos⁺/∂m = h·∂v⁺/∂m`.
+///
+/// # Panics
+///
+/// Same hard scope as [`mjd_damping_jacobian`] (Euler, hinge/slide, no tendons).
+///
+/// # Errors
+///
+/// Returns [`StepError::CholeskyFailed`] if `M_impl` is not positive definite, or
+/// any step error encountered while evaluating the operating point.
+pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, StepError> {
+    assert_mass_scope(model);
+
+    let nv = model.nv;
+    let na = model.na;
+    let nx = 2 * nv + na;
+    let nbody = model.nbody;
+    let h = model.timestep;
+
+    // Operating point: eulerdamp qacc from a real step, and the pose-dependent
+    // forward state (cinert, cvel, subtree_*, qM) the perturbation passes reuse.
+    let mut d_post = data.clone();
+    d_post.step(model)?;
+    let qacc: DVector<f64> = (&d_post.qvel - &data.qvel) / h;
+
+    let mut d_op = data.clone();
+    d_op.forward(model)?;
+
+    // M_impl = M + h·D (same factor as the eulerdamp step and Tier-1/2).
+    let mut m_impl = d_op.qM.clone();
+    for i in 0..nv {
+        m_impl[(i, i)] += h * model.implicit_damping[i];
+    }
+    cholesky_in_place(&mut m_impl)?;
+
+    // Armature is mass-independent, so the ∂M/∂m CRBA pass must exclude it.
+    let mut model_no_arm = model.clone();
+    model_no_arm.jnt_armature.iter_mut().for_each(|a| *a = 0.0);
+
+    let mut dxdm = DMatrix::zeros(nx, nbody);
+    for b in 1..nbody {
+        let mut d_pert = d_op.clone();
+
+        // ∂cinert/∂m_b: unit-mass, zero-rotational-inertia spatial inertia at body
+        // b's COM offset; zero for every other body.
+        let h_b = d_op.xipos[b] - d_op.xpos[b];
+        let d_inertia = compute_body_spatial_inertia(1.0, Vector3::zeros(), &d_op.ximat[b], h_b);
+        for i in 0..nbody {
+            d_pert.cinert[i] = if i == b { d_inertia } else { Matrix6::zeros() };
+        }
+
+        // ∂(subtree mass-moment)/∂m_b: a unit point mass at body b's COM in every
+        // subtree containing b (b and its ancestors). The gravity block reads only
+        // `subtree_mass` and `subtree_com`, and its torque depends on the product
+        // `subtree_mass·subtree_com`, so these substitutions give the exact
+        // gravity-torque derivative.
+        let xipos_b = d_op.xipos[b];
+        for k in 0..nbody {
+            d_pert.subtree_mass[k] = 0.0;
+            d_pert.subtree_com[k] = xipos_b;
+        }
+        let mut k = b;
+        loop {
+            d_pert.subtree_mass[k] = 1.0;
+            let parent = model.body_parent[k];
+            if parent == k {
+                break; // reached the world root (its own parent)
+            }
+            k = parent;
+        }
+
+        // ∂qfrc_bias/∂m_b (gravity + Coriolis), linear in the perturbation inertia.
+        mj_rne(model, &mut d_pert);
+        let d_bias = d_pert.qfrc_bias.clone();
+
+        // ∂M/∂m_b (no armature), linear in the perturbation inertia; only qM is read
+        // (the bogus factorization of this non-PD derivative matrix is unused).
+        mj_crba(&model_no_arm, &mut d_pert);
+        let d_mass_qacc = &d_pert.qM * &qacc;
+
+        // ∂v⁺/∂m_b = h · M_impl⁻¹ · [ −∂qfrc_bias/∂m_b − (∂M/∂m_b)·qacc ].
+        let mut col = -(&d_bias) - d_mass_qacc;
+        col *= h;
+        cholesky_solve_in_place(&m_impl, &mut col);
+        for r in 0..nv {
+            dxdm[(nv + r, b)] = col[r];
+            dxdm[(r, b)] = h * col[r]; // hinge/slide position-tangent row
+        }
+    }
+
+    Ok(MassJacobian { dxdm })
+}
+
 /// Terminal-state sensitivity of an `n_steps` pure-rigid rollout w.r.t. joint
 /// damping — `∂x_N/∂D` accumulated analytically in one forward pass.
 pub struct TrajectoryDampingJacobian {
@@ -217,6 +386,66 @@ pub fn mjd_damping_trajectory_jacobian(
     Ok(TrajectoryDampingJacobian {
         terminal_state: extract_state(model, &data, &qpos_0),
         dterminal_dD: s,
+    })
+}
+
+/// Terminal-state sensitivity of an `n_steps` pure-rigid rollout w.r.t. per-body
+/// mass — `∂x_N/∂m` accumulated analytically in one forward pass.
+pub struct TrajectoryMassJacobian {
+    /// Terminal state `x_N = [dq_N, qvel_N, act_N]` in tangent space, taken
+    /// relative to the *initial* `qpos` (length `2*nv + na`).
+    pub terminal_state: DVector<f64>,
+    /// `∂x_N/∂m`, dimensions `(2*nv + na) × nbody`. Column `b` is the sensitivity
+    /// of the terminal state to `body_mass[b]`; column `0` (world) is zero.
+    pub dterminal_dm: DMatrix<f64>,
+}
+
+/// Analytic terminal-state Jacobian of a rollout w.r.t. per-body mass, via the
+/// forward-sensitivity recursion.
+///
+/// Identical recursion to [`mjd_damping_trajectory_jacobian`] — the recursion
+/// `s_0 = 0`, `s_{t+1} = A_t·s_t + P_t` is **parameter-agnostic** and reuses the
+/// same Tier-1/2 transition matrix `A_t`. Only the single-step parameter Jacobian
+/// `P_t` differs: here it is [`mjd_mass_jacobian`] (`∂f/∂m`) instead of
+/// [`mjd_damping_jacobian`]. Returns `s_N` (with `nbody` columns) and `x_N`.
+///
+/// # Panics
+///
+/// Same scope as [`mjd_mass_jacobian`] (Euler integrator, hinge/slide joints, no
+/// tendons). Panics in all build profiles if the model is out of scope.
+///
+/// # Errors
+///
+/// Propagates any [`StepError`] from the rollout or per-step derivatives.
+pub fn mjd_mass_trajectory_jacobian(
+    model: &Model,
+    data0: &Data,
+    n_steps: usize,
+    config: &DerivativeConfig,
+) -> Result<TrajectoryMassJacobian, StepError> {
+    assert_mass_scope(model);
+
+    let nv = model.nv;
+    let na = model.na;
+    let nx = 2 * nv + na;
+    let qpos_0 = data0.qpos.clone();
+
+    let mut data = data0.clone();
+    let mut s = DMatrix::zeros(nx, model.nbody); // s_0 = ∂x_0/∂m = 0
+    for _ in 0..n_steps {
+        // Re-derive the operating point so the per-step linearizations read a
+        // forward-consistent state (both helpers also re-forward internally).
+        data.forward(model)?;
+        let a_t = mjd_transition(model, &data, config)?.A;
+        let p_t = mjd_mass_jacobian(model, &data)?.dxdm;
+        // s_{t+1} = A_t · s_t + P_t
+        s = &a_t * &s + &p_t;
+        data.step(model)?;
+    }
+
+    Ok(TrajectoryMassJacobian {
+        terminal_state: extract_state(model, &data, &qpos_0),
+        dterminal_dm: s,
     })
 }
 
@@ -359,6 +588,133 @@ mod tests {
         let mut m = model;
         m.jnt_type[1] = MjJointType::Ball;
         mjd_damping_trajectory_jacobian(&m, &data, 4, &DerivativeConfig::default()).unwrap();
+    }
+
+    /// Central-FD reference for `∂x⁺/∂body_mass` — perturbs the physical knob
+    /// `body_mass[b]` and re-steps. Column `b` is `∂x⁺/∂m_b`; column `0` (world)
+    /// is left zero to match the analytic layout.
+    fn fd_mass_jacobian(model: &Model, data: &Data, eps: f64) -> DMatrix<f64> {
+        let nv = model.nv;
+        let nx = 2 * nv + model.na;
+        let qpos_0 = data.qpos.clone();
+        let mut jac = DMatrix::zeros(nx, model.nbody);
+        for b in 1..model.nbody {
+            let mut mp = model.clone();
+            mp.body_mass[b] += eps;
+            let mut dp = data.clone();
+            dp.step(&mp).unwrap();
+            let yp = extract_state(&mp, &dp, &qpos_0);
+
+            let mut mm = model.clone();
+            mm.body_mass[b] -= eps;
+            let mut dm = data.clone();
+            dm.step(&mm).unwrap();
+            let ym = extract_state(&mm, &dm, &qpos_0);
+
+            jac.column_mut(b).copy_from(&((yp - ym) / (2.0 * eps)));
+        }
+        jac
+    }
+
+    #[test]
+    fn analytic_mass_jacobian_matches_fd_2link() {
+        let (model, data) = damped_pendulum();
+        let analytic = mjd_mass_jacobian(&model, &data).unwrap();
+        let fd = fd_mass_jacobian(&model, &data, 1e-6);
+
+        let (err, loc) = max_relative_error(&analytic.dxdm, &fd, 1e-3);
+        assert!(
+            err < 1e-5,
+            "analytic ∂x⁺/∂m disagrees with FD: max_rel_err={err:.3e} at {loc:?}\n\
+             analytic=\n{:.6}\nfd=\n{:.6}",
+            analytic.dxdm,
+            fd
+        );
+
+        // Non-trivial sensitivity (not a degenerate ~0 match), and the world
+        // column is exactly zero.
+        assert!(
+            analytic.dxdm.amax() > 1e-3,
+            "expected a non-negligible mass sensitivity"
+        );
+        // The world-body column is never written (the loop starts at b=1), so it
+        // is exactly the zero it was initialized to — an exact compare is correct.
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(
+                analytic.dxdm.column(0).amax(),
+                0.0,
+                "world-body mass column must be zero"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Euler")]
+    fn mass_rejects_non_euler_integrator() {
+        let (mut model, data) = damped_pendulum();
+        model.integrator = Integrator::RungeKutta4;
+        mjd_mass_jacobian(&model, &data).unwrap();
+    }
+
+    /// Central-FD reference for `∂x_N/∂m` over a full `n_steps` rollout: perturb
+    /// the physical knob `body_mass[b]`, roll the whole trajectory, and difference
+    /// the terminal state (tangent vs the initial `qpos`).
+    fn fd_mass_trajectory_jacobian(
+        model: &Model,
+        data0: &Data,
+        n_steps: usize,
+        eps: f64,
+    ) -> (DVector<f64>, DMatrix<f64>) {
+        let nv = model.nv;
+        let nx = 2 * nv + model.na;
+        let qpos_0 = data0.qpos.clone();
+
+        let rollout = |body: usize, delta: f64| -> DVector<f64> {
+            let mut m = model.clone();
+            m.body_mass[body] += delta;
+            let mut d = data0.clone();
+            for _ in 0..n_steps {
+                d.step(&m).unwrap();
+            }
+            extract_state(&m, &d, &qpos_0)
+        };
+
+        let mut nominal = data0.clone();
+        for _ in 0..n_steps {
+            nominal.step(model).unwrap();
+        }
+        let terminal = extract_state(model, &nominal, &qpos_0);
+
+        let mut jac = DMatrix::zeros(nx, model.nbody);
+        for b in 1..model.nbody {
+            let col = (rollout(b, eps) - rollout(b, -eps)) / (2.0 * eps);
+            jac.column_mut(b).copy_from(&col);
+        }
+        (terminal, jac)
+    }
+
+    #[test]
+    fn analytic_mass_trajectory_jacobian_matches_fd_2link() {
+        let (model, data) = damped_pendulum();
+        let n_steps = 60;
+        let cfg = DerivativeConfig::default();
+        let analytic = mjd_mass_trajectory_jacobian(&model, &data, n_steps, &cfg).unwrap();
+        let (fd_terminal, fd_jac) = fd_mass_trajectory_jacobian(&model, &data, n_steps, 1e-6);
+
+        let state_err = (&analytic.terminal_state - &fd_terminal).amax();
+        assert!(state_err < 1e-9, "terminal state mismatch: {state_err:.3e}");
+
+        let (err, loc) = max_relative_error(&analytic.dterminal_dm, &fd_jac, 1e-3);
+        assert!(
+            err < 1e-6,
+            "analytic ∂x_N/∂m disagrees with rollout FD: max_rel_err={err:.3e} at {loc:?}"
+        );
+
+        assert!(
+            analytic.dterminal_dm.amax() > 1e-3,
+            "expected a non-negligible terminal mass sensitivity"
+        );
     }
 
     #[test]
