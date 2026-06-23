@@ -307,7 +307,7 @@ jobs:
             sim-ml-chassis-bevy sim-therm-env cf-geometry cf-spatial cf-design \
             cf-design-tests cf-viewer cf-bevy-common sim-bevy-soft \
             cf-studio-core cf-studio-engine cf-studio-gui cf-studio \
-            cf-scan-prep-core cf-cast-cli cf-codesign"
+            cf-scan-prep-core cf-cast-cli"
           # Restrict to the PR-affected subset (full on main/merge/fallback).
           PKGS=$(bash .github/scripts/affected-packages.sh "$CANDIDATES")
           if [ -z "$PKGS" ]; then
@@ -383,7 +383,7 @@ jobs:
           - id: 2
             crates: sim-thermostat sim-opt mesh-printability
           - id: 3
-            crates: sim-ml-chassis sim-rl
+            crates: sim-ml-chassis sim-rl cf-codesign
     steps:
       - uses: actions/checkout@v6
 
