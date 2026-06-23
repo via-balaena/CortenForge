@@ -383,7 +383,7 @@ jobs:
           - id: 2
             crates: sim-thermostat sim-opt mesh-printability
           - id: 3
-            crates: sim-ml-chassis sim-rl
+            crates: sim-ml-chassis sim-rl cf-codesign
     steps:
       - uses: actions/checkout@v6
 
