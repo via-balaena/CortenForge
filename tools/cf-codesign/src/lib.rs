@@ -1503,6 +1503,36 @@ pub trait RigidParamSpec {
         cfg: &sim_core::DerivativeConfig,
     ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError>;
 
+    /// Compute the **full-trajectory** Jacobian: the tangent states at each step
+    /// index in `waypoints` (1-based, strictly increasing, each `≤ n_steps`),
+    /// stacked into one observation vector, plus the matching stacked parameter
+    /// Jacobian. Terminal-state matching is the special case `waypoints == [n_steps]`.
+    ///
+    /// The default supports **only** that terminal case — it delegates to
+    /// [`trajectory_jacobian`](RigidParamSpec::trajectory_jacobian) — so a spec that
+    /// has not wired full-trajectory matching stays terminal-only and panics loudly
+    /// (rather than silently mismatching) if driven with interior waypoints.
+    /// [`FrictionSpec`] overrides it with a true multi-waypoint finite-difference
+    /// rollout; the smooth channels' analytic waypoint emission is deferred.
+    ///
+    /// # Errors
+    /// Propagates any [`sim_core::StepError`] from the rollout or per-step
+    /// derivatives.
+    fn waypoint_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        waypoints: &[usize],
+        cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
+        assert!(
+            waypoints.len() == 1 && waypoints[0] == n_steps,
+            "this channel matches the terminal state only; full-trajectory waypoint \
+             matching is not yet wired for it (friction is first; smooth channels are leaf 2)",
+        );
+        Self::trajectory_jacobian(model, data0, n_steps, cfg)
+    }
+
     /// Column of the trajectory Jacobian corresponding to `target`.
     fn column(model: &sim_core::Model, target: Self::Target) -> usize;
 }
@@ -1512,29 +1542,46 @@ pub trait RigidParamSpec {
 ///
 /// Where the design/policy targets above tune a *design* parameter via the
 /// coupling gradient, this problem tunes a **rigid model parameter** of a
-/// pure-rigid [`sim_core`] model so that its terminal state after an `n_steps`
-/// rollout matches an observed one. It consumes the rigid-parameter trajectory
+/// pure-rigid [`sim_core`] model so that its `n_steps` rollout matches an observed
+/// one (over the configured waypoints; see **Objective** below). It consumes the
+/// rigid-parameter trajectory
 /// gradient via the [`RigidParamSpec`] `S` — analytic (forward-sensitivity
 /// `s_{t+1} = A_t·s_t + P_t`) for the smooth channels, finite-difference for
 /// friction.
 ///
 /// The concrete parameter families are the type aliases [`DampingSystemId`],
-/// [`MassSystemId`], [`InertiaSystemId`], and [`FrictionSystemId`]. The loss is
-/// `½‖x_N(θ) − x_N*‖²` over the terminal state in tangent space; parameters are
-/// bounded below at zero ([`lower_bounds`](CoDesignProblem::lower_bounds)).
+/// [`MassSystemId`], [`InertiaSystemId`], and [`FrictionSystemId`].
+///
+/// **Objective.** The loss is `½ Σ_t ‖x_t(θ) − x_t*‖²` over the tangent states at a
+/// set of recorded [`waypoints`](Self) — `½‖x_N(θ) − x_N*‖²` collapses to the
+/// terminal-only special case `waypoints == [n_steps]` ([`for_inverse_design`]).
+/// Full-trajectory matching (interior waypoints) flattens friction's spurious
+/// near-zero loss basin, where terminal-only matching is non-convex; see
+/// [`for_inverse_design_trajectory`](Self::for_inverse_design_trajectory) and the
+/// sim-to-real entry point [`from_measured_trajectory`](Self::from_measured_trajectory).
+/// Parameters are bounded below at zero ([`lower_bounds`](CoDesignProblem::lower_bounds)).
+///
+/// Full-trajectory matching is wired for [`FrictionSpec`] (finite-difference); the
+/// smooth channels remain terminal-only and panic if driven with interior waypoints.
 ///
 /// Preconditions follow the chosen channel: Euler integrator, hinge/slide joints,
 /// no tendons (and, for friction, friction loss as the only active constraint).
+///
+/// [`for_inverse_design`]: Self::for_inverse_design
 pub struct RigidParamSystemId<S: RigidParamSpec> {
     /// Rigid model; the targeted parameters are overwritten each `evaluate`, all
     /// other parameters are held fixed.
     model: sim_core::Model,
     /// Initial state the rollout starts from.
     data0: sim_core::Data,
-    /// Observed terminal state `x_N*` in tangent space (relative to `data0.qpos`).
-    target_terminal: sim_core::DVector<f64>,
+    /// Observed tangent states `x_t*` (relative to `data0.qpos`) stacked over
+    /// [`waypoints`](Self), in waypoint order. Length `waypoints.len() · (2·nv + na)`.
+    observed: sim_core::DVector<f64>,
     /// Number of rollout steps the observation spans.
     n_steps: usize,
+    /// Step indices (1-based, strictly increasing, each `≤ n_steps`) at which the
+    /// observation is matched. `[n_steps]` is terminal-only matching.
+    waypoints: Vec<usize>,
     /// The identified targets, in parameter order.
     targets: Vec<S::Target>,
     /// Transition-derivative config for the per-step `A_t`.
@@ -1551,11 +1598,40 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
     /// Panics if `targets.len() != true_values.len()`, or if the reference rollout
     /// fails (a malformed model/state).
     #[must_use]
-    #[allow(clippy::expect_used)] // a failed reference rollout is fixture misuse.
     pub fn for_inverse_design(
+        model: sim_core::Model,
+        data0: sim_core::Data,
+        n_steps: usize,
+        targets: Vec<S::Target>,
+        true_values: &[f64],
+    ) -> Self {
+        // Terminal-only matching is the single-waypoint case `[n_steps]`.
+        Self::for_inverse_design_trajectory(
+            model,
+            data0,
+            n_steps,
+            vec![n_steps],
+            targets,
+            true_values,
+        )
+    }
+
+    /// Build a sim-to-sim **full-trajectory** inverse-design problem: like
+    /// [`for_inverse_design`](Self::for_inverse_design), but the observation is the
+    /// stack of tangent states at the recorded `waypoints` (1-based step indices,
+    /// strictly increasing, each `≤ n_steps`), so the loss is `½ Σ_t ‖x_t − x_t*‖²`.
+    /// Full-trajectory matching is what flattens friction's non-convex terminal loss.
+    ///
+    /// # Panics
+    /// Panics if `targets.len() != true_values.len()`, if `waypoints` is empty / not
+    /// strictly increasing / out of `1..=n_steps`, or if the reference rollout fails.
+    #[must_use]
+    #[allow(clippy::expect_used)] // a failed reference rollout is fixture misuse.
+    pub fn for_inverse_design_trajectory(
         mut model: sim_core::Model,
         data0: sim_core::Data,
         n_steps: usize,
+        waypoints: Vec<usize>,
         targets: Vec<S::Target>,
         true_values: &[f64],
     ) -> Self {
@@ -1564,24 +1640,65 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
             true_values.len(),
             "targets and true_values length mismatch",
         );
+        validate_waypoints(&waypoints, n_steps);
         for (&t, &v) in targets.iter().zip(true_values) {
             S::apply(&mut model, t, v);
         }
         S::finalize(&mut model);
         let cfg = sim_core::DerivativeConfig::default();
-        let (target_terminal, _) = S::trajectory_jacobian(&model, &data0, n_steps, &cfg)
+        let (observed, _) = S::waypoint_jacobian(&model, &data0, n_steps, &waypoints, &cfg)
             .expect("system-ID reference rollout");
         Self {
             model,
             data0,
-            target_terminal,
+            observed,
             n_steps,
+            waypoints,
             targets,
             cfg,
         }
     }
 
-    /// Roll out at `params` and return the analytic terminal state and its full
+    /// **Sim-to-real entry point** — build the problem from an *externally measured*
+    /// trajectory rather than a known truth. `observed` is the stack of tangent
+    /// states `[qpos_t − data0.qpos; qvel_t; act_t]` at the recorded `waypoints`, in
+    /// waypoint order (length `waypoints.len() · (2·nv + na)`). `model` carries the
+    /// fixed (untargeted) parameters and the initial state is `data0`; `evaluate`
+    /// then recovers the `targets` that best reproduce the measured states.
+    ///
+    /// # Panics
+    /// Panics if `waypoints` is empty / not strictly increasing / out of `1..=n_steps`,
+    /// or if `observed.len() != waypoints.len() · (2·nv + na)`.
+    #[must_use]
+    pub fn from_measured_trajectory(
+        model: sim_core::Model,
+        data0: sim_core::Data,
+        n_steps: usize,
+        waypoints: Vec<usize>,
+        targets: Vec<S::Target>,
+        observed: sim_core::DVector<f64>,
+    ) -> Self {
+        validate_waypoints(&waypoints, n_steps);
+        let nx = 2 * model.nv + model.na;
+        assert_eq!(
+            observed.len(),
+            waypoints.len() * nx,
+            "observed length {} != waypoints {} × state dim {nx}",
+            observed.len(),
+            waypoints.len(),
+        );
+        Self {
+            model,
+            data0,
+            observed,
+            n_steps,
+            waypoints,
+            targets,
+            cfg: sim_core::DerivativeConfig::default(),
+        }
+    }
+
+    /// Roll out at `params` and return the stacked waypoint states and their full
     /// parameter Jacobian.
     #[allow(clippy::expect_used)] // a rollout failure is unrecoverable model misuse.
     fn rollout(&self, params: &[f64]) -> (sim_core::DVector<f64>, sim_core::DMatrix<f64>) {
@@ -1590,20 +1707,28 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
             S::apply(&mut model, t, v);
         }
         S::finalize(&mut model);
-        S::trajectory_jacobian(&model, &self.data0, self.n_steps, &self.cfg)
-            .expect("system-ID trajectory jacobian")
+        S::waypoint_jacobian(
+            &model,
+            &self.data0,
+            self.n_steps,
+            &self.waypoints,
+            &self.cfg,
+        )
+        .expect("system-ID trajectory jacobian")
     }
 
-    /// The observation Jacobian `J = ∂x_N/∂θ` at `params` — sensitivity of the
-    /// terminal observation to each identified parameter (columns in `targets`
-    /// order, rows = terminal-state dim `2·nv + na`). Its conditioning (via
+    /// The observation Jacobian `J = ∂x/∂θ` at `params` — sensitivity of the stacked
+    /// waypoint observation to each identified parameter (columns in `targets` order,
+    /// rows = `waypoints.len() · (2·nv + na)`). Its conditioning (via
     /// [`identifiability`]) governs whether the parameters are *jointly* recoverable
-    /// or trade off.
+    /// or trade off; adding interior waypoints only appends rows, which can only raise
+    /// the smallest singular value — strengthening weakly-observed parameters (it does
+    /// not necessarily lower the condition-number ratio).
     #[must_use]
     pub fn observation_jacobian(&self, params: &[f64]) -> sim_core::DMatrix<f64> {
-        let (terminal, full) = self.rollout(params);
-        let nx = terminal.len();
-        let mut j = sim_core::DMatrix::zeros(nx, self.targets.len());
+        let (states, full) = self.rollout(params);
+        let rows = states.len();
+        let mut j = sim_core::DMatrix::zeros(rows, self.targets.len());
         for (col, &t) in self.targets.iter().enumerate() {
             j.set_column(col, &full.column(S::column(&self.model, t)));
         }
@@ -1617,9 +1742,9 @@ impl<S: RigidParamSpec> CoDesignProblem for RigidParamSystemId<S> {
     }
 
     fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
-        let (terminal, full) = self.rollout(params);
-        // Residual over the terminal state; gradient flows through ∂x_N/∂θ.
-        let residual = &terminal - &self.target_terminal;
+        let (states, full) = self.rollout(params);
+        // Residual over the stacked waypoint states; gradient flows through ∂x_t/∂θ.
+        let residual = &states - &self.observed;
         let loss = 0.5 * residual.dot(&residual);
         let grad = self
             .targets
@@ -1722,7 +1847,25 @@ impl RigidParamSpec for InertiaSpec {
     }
 }
 
-/// Terminal state in tangent space — `[qpos_N − qpos_0; qvel_N; act_N]` — for the
+/// Validate a waypoint schedule: non-empty, strictly increasing, every index in
+/// `1..=n_steps`. A 1-based step index `k` denotes the state after `k` steps.
+///
+/// # Panics
+/// Panics on any violation (a malformed schedule would silently misalign the
+/// observation stack with the rollout).
+fn validate_waypoints(waypoints: &[usize], n_steps: usize) {
+    assert!(!waypoints.is_empty(), "waypoints must be non-empty");
+    assert!(
+        waypoints[0] >= 1 && *waypoints.last().expect("non-empty") <= n_steps,
+        "waypoints must lie in 1..={n_steps}, got {waypoints:?}",
+    );
+    assert!(
+        waypoints.windows(2).all(|w| w[0] < w[1]),
+        "waypoints must be strictly increasing, got {waypoints:?}",
+    );
+}
+
+/// Tangent state at one recorded step — `[qpos − qpos_0; qvel; act]` — for the
 /// hinge/slide scope (where `nq == nv` and the position tangent is plain
 /// subtraction). Used by the FD friction trajectory gradient; matches the
 /// convention the analytic `mjd_*_trajectory_jacobian` channels return.
@@ -1769,12 +1912,23 @@ impl RigidParamSpec for FrictionSpec {
         model: &sim_core::Model,
         data0: &sim_core::Data,
         n_steps: usize,
+        cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
+        // Terminal-only matching is the single-waypoint case.
+        Self::waypoint_jacobian(model, data0, n_steps, &[n_steps], cfg)
+    }
+
+    fn waypoint_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        waypoints: &[usize],
         _cfg: &sim_core::DerivativeConfig,
     ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
         // Scope: pin to the same tested regime as the single-step
         // `mjd_friction_jacobian` so the FD path can't be driven on an untested,
         // potentially surprising configuration. The hinge/slide assert is
-        // *load-bearing* (the terminal tangent uses `qpos − qpos0`, valid only where
+        // *load-bearing* (the tangent uses `qpos − qpos0`, valid only where
         // `nq == nv`); Euler + no-tendon match the documented system-ID scope (the FD
         // rollout would in principle differentiate other regimes too, but they are
         // untested here). Contacts/limits are a documented precondition (constraint
@@ -1789,7 +1943,7 @@ impl RigidParamSpec for FrictionSpec {
                 t,
                 sim_core::MjJointType::Hinge | sim_core::MjJointType::Slide
             )),
-            "friction system-ID is hinge/slide-only (the terminal tangent uses qpos − qpos0)",
+            "friction system-ID is hinge/slide-only (the tangent uses qpos − qpos0)",
         );
         assert_eq!(
             model.ntendon, 0,
@@ -1799,31 +1953,56 @@ impl RigidParamSpec for FrictionSpec {
         let nv = model.nv;
         let nx = 2 * nv + model.na;
         let qpos0 = data0.qpos.clone();
+        let w = waypoints.len();
 
-        // Roll out `n_steps` and return the terminal tangent state.
+        // Roll out, recording the tangent state at each waypoint, stacked in order.
+        // Assumes `waypoints` is strictly increasing within `1..=n_steps` (the
+        // problem constructors validate it).
         let rollout = |m: &sim_core::Model| -> Result<sim_core::DVector<f64>, sim_core::StepError> {
             let mut d = data0.clone();
-            for _ in 0..n_steps {
+            let mut out = sim_core::DVector::zeros(w * nx);
+            let mut slot = 0;
+            for step in 1..=n_steps {
                 d.step(m)?;
+                if slot < w && waypoints[slot] == step {
+                    out.rows_mut(slot * nx, nx)
+                        .copy_from(&terminal_tangent(&d, &qpos0));
+                    slot += 1;
+                }
             }
-            Ok(terminal_tangent(&d, &qpos0))
+            Ok(out)
         };
 
-        let terminal = rollout(model)?;
+        let states = rollout(model)?;
 
         // Central FD over each per-DOF friction coefficient. `eps = 1e-6` is the
         // value the opening spike used to recover a known coefficient to rel ~1e-9.
+        // One perturbed rollout already passes through every waypoint, so the
+        // multi-waypoint Jacobian costs no more rollouts than the terminal one.
+        //
+        // The minus probe is floored at zero: the engine drops the friction-loss
+        // constraint entirely for `dof_frictionloss <= 0` (a hard kink), so probing
+        // negative would difference across that discontinuity for μ ≲ eps — exactly
+        // the near-zero basin full-trajectory matching targets. Flooring degrades to a
+        // one-sided difference there (the `hi - lo` denominator shrinks to match);
+        // away from zero `hi - lo == 2·eps`, the ordinary central difference.
         let eps = 1e-6;
-        let mut grid = sim_core::DMatrix::zeros(nx, nv);
+        let mut grid = sim_core::DMatrix::zeros(w * nx, nv);
+        // One reusable clone, perturbed in place per DOF and restored. The rollout
+        // reads `dof_frictionloss` directly (no cached implicit params to refresh), so
+        // this is byte-identical to cloning afresh, at 1 clone instead of 2·nv.
+        let mut probe = model.clone();
         for j in 0..nv {
-            let mut m_plus = model.clone();
-            m_plus.dof_frictionloss[j] += eps;
-            let mut m_minus = model.clone();
-            m_minus.dof_frictionloss[j] -= eps;
-            let col = (rollout(&m_plus)? - rollout(&m_minus)?) / (2.0 * eps);
-            grid.set_column(j, &col);
+            let mu = model.dof_frictionloss[j];
+            let (hi, lo) = (mu + eps, (mu - eps).max(0.0));
+            probe.dof_frictionloss[j] = hi;
+            let plus = rollout(&probe)?;
+            probe.dof_frictionloss[j] = lo;
+            let minus = rollout(&probe)?;
+            probe.dof_frictionloss[j] = mu; // restore for the next DOF
+            grid.set_column(j, &((plus - minus) / (hi - lo)));
         }
-        Ok((terminal, grid))
+        Ok((states, grid))
     }
 
     fn column(model: &sim_core::Model, joint: usize) -> usize {
@@ -2543,12 +2722,7 @@ mod tests {
     /// links slide from the start — the regime where dry friction is identifiable (a
     /// *sticking* joint is locally unidentifiable in its friction). `fl` is modest
     /// (≪ the gravity torque) so neither joint sticks at the operating point.
-    fn friction_fixture(
-        fl0: f64,
-        fl1: f64,
-        targets: Vec<usize>,
-        truth: &[f64],
-    ) -> FrictionSystemId {
+    fn friction_rig(fl0: f64, fl1: f64) -> (sim_core::Model, sim_core::Data) {
         let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
         model.dof_frictionloss = vec![fl0, fl1];
         model.compute_implicit_params();
@@ -2560,7 +2734,81 @@ mod tests {
         // the joint slides.
         data0.qvel[0] = 1.5;
         data0.qvel[1] = -1.0;
+        (model, data0)
+    }
+
+    /// Terminal-only friction problem on [`friction_rig`].
+    fn friction_fixture(
+        fl0: f64,
+        fl1: f64,
+        targets: Vec<usize>,
+        truth: &[f64],
+    ) -> FrictionSystemId {
+        let (model, data0) = friction_rig(fl0, fl1);
         FrictionSystemId::for_inverse_design(model, data0, 150, targets, truth)
+    }
+
+    /// Recover friction with the standard log-space Adam config (shared by the
+    /// full-trajectory tests below).
+    fn recover_friction(problem: &dyn CoDesignProblem, x0: &[f64]) -> Vec<f64> {
+        let normalized = Normalized::with_residual_scale(problem, 1.0, true);
+        normalized
+            .optimize(x0, &normalized.recommended_config())
+            .params
+    }
+
+    /// Roll out the *measured* system and stack the tangent states at `waypoints`
+    /// — the shape a sim-to-real caller feeds [`RigidParamSystemId::from_measured_trajectory`].
+    /// The pendulum fixture has `na == 0`, so this only fills the qpos/qvel rows;
+    /// production [`terminal_tangent`] also fills the `act` rows for `na > 0` models.
+    fn measured_waypoints(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        waypoints: &[usize],
+    ) -> sim_core::DVector<f64> {
+        let nv = model.nv;
+        let nx = 2 * nv + model.na;
+        let qpos0 = data0.qpos.clone();
+        let mut out = sim_core::DVector::zeros(waypoints.len() * nx);
+        let mut d = data0.clone();
+        let mut slot = 0;
+        for step in 1..=n_steps {
+            d.step(model).expect("measured rollout");
+            if slot < waypoints.len() && waypoints[slot] == step {
+                for i in 0..nv {
+                    out[slot * nx + i] = d.qpos[i] - qpos0[i];
+                    out[slot * nx + nv + i] = d.qvel[i];
+                }
+                slot += 1;
+            }
+        }
+        out
+    }
+
+    /// Deterministic standard-normal sample stream (Box–Muller over an LCG) so the
+    /// noise tests are reproducible without an RNG dependency.
+    fn gaussian_noise(len: usize, sigma: f64, seed: u64) -> sim_core::DVector<f64> {
+        let mut state = seed;
+        let mut next_u = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        sim_core::DVector::from_iterator(
+            len,
+            (0..len).map(|_| {
+                let u1 = next_u().max(1e-12);
+                let u2 = next_u();
+                sigma * (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+            }),
+        )
+    }
+
+    /// 15 waypoints, every 10th step over the 150-step rollout.
+    fn friction_waypoints() -> Vec<usize> {
+        (10..=150).step_by(10).collect()
     }
 
     #[test]
@@ -2697,5 +2945,203 @@ mod tests {
         let data0 = model.make_data();
         let problem = FrictionSystemId::for_inverse_design(model, data0, 4, vec![0], &[0.05]);
         problem.evaluate(&[0.05]);
+    }
+
+    // ---- full-trajectory friction matching (leaf 1) ----
+
+    /// **The headline finding made first-class.** Terminal-only friction matching is
+    /// non-convex — a spurious local basin near zero friction traps a cold start
+    /// (see [`recovers_two_joint_frictionlosses`]). Matching the *full trajectory*
+    /// (residuals summed over interior waypoints) flattens that basin, so the same
+    /// cold start that fails terminal-only now recovers exactly.
+    #[test]
+    fn fulltraj_flattens_friction_basin() {
+        let truth = [0.05, 0.08];
+        let term = friction_fixture(0.0, 0.0, vec![0, 1], &truth);
+        let (model, data0) = friction_rig(0.0, 0.0);
+        let full = FrictionSystemId::for_inverse_design_trajectory(
+            model,
+            data0,
+            150,
+            friction_waypoints(),
+            vec![0, 1],
+            &truth,
+        );
+
+        // Along μ₁ (μ₀ at truth), terminal-only has a local min at zero (loss rises
+        // toward the barrier); full-trajectory removes it (loss falls away from zero).
+        assert!(
+            term.evaluate(&[0.05, 0.0]).0 < term.evaluate(&[0.05, 0.02]).0,
+            "terminal-only baseline: spurious near-zero basin",
+        );
+        assert!(
+            full.evaluate(&[0.05, 0.0]).0 > full.evaluate(&[0.05, 0.02]).0,
+            "full-trajectory: basin flattened (loss decreases away from zero friction)",
+        );
+
+        // The FD gradient the optimizer consumes matches a central FD of the loss.
+        let p = [0.04, 0.06];
+        let (_, grad) = full.evaluate(&p);
+        let h = 1e-6;
+        for i in 0..2 {
+            let (mut pp, mut pm) = (p, p);
+            pp[i] += h;
+            pm[i] -= h;
+            let fd = (full.evaluate(&pp).0 - full.evaluate(&pm).0) / (2.0 * h);
+            let g_rel = (grad[i] - fd).abs() / fd.abs().max(1e-12);
+            assert!(g_rel < 1e-3, "grad[{i}] {:.3e} vs FD {fd:.3e}", grad[i]);
+        }
+
+        // Cold start [0.02, 0.02]: terminal-only falls into the zero basin; the
+        // full-trajectory objective recovers both coefficients.
+        let rt = recover_friction(&term, &[0.02, 0.02]);
+        assert!(
+            (rt[1] - truth[1]).abs() / truth[1] > 0.5,
+            "terminal-only cold start should fail (joint 1 → zero basin), got {rt:?}",
+        );
+        let rf = recover_friction(&full, &[0.02, 0.02]);
+        for (got, want) in rf.iter().zip(truth) {
+            let rel = (got - want).abs() / want;
+            assert!(
+                rel < 5e-3,
+                "full-traj recovered {got:.6} vs {want} (rel {rel:.3e})"
+            );
+        }
+    }
+
+    /// **Sim-to-real entry point.** Recover friction from an *externally measured*
+    /// waypoint trajectory via [`RigidParamSystemId::from_measured_trajectory`], and
+    /// confirm recovery degrades *gracefully* under synthetic Gaussian observation
+    /// noise: the error stays bounded (no blow-up) as σ grows, while remaining well
+    /// above the clean recovery floor (the noise genuinely propagates). The error is
+    /// **not** strictly monotone in σ — there is one noise realization per σ — so we
+    /// assert boundedness, not proportionality.
+    #[test]
+    fn fulltraj_from_measured_trajectory_with_noise() {
+        let truth = [0.05, 0.08];
+        let waypoints = friction_waypoints();
+        // The "real" system carries the true friction; we measure its trajectory.
+        let (truth_model, data0) = friction_rig(truth[0], truth[1]);
+        let clean = measured_waypoints(&truth_model, &data0, 150, &waypoints);
+
+        // Clean recovery from the externally-supplied observation (estimator model
+        // starts at zero friction — the targeted DOFs are overwritten each evaluate).
+        let (model, _) = friction_rig(0.0, 0.0);
+        let problem = FrictionSystemId::from_measured_trajectory(
+            model,
+            data0.clone(),
+            150,
+            waypoints.clone(),
+            vec![0, 1],
+            clean.clone(),
+        );
+        let rec = recover_friction(&problem, &[0.06, 0.06]);
+        for (got, want) in rec.iter().zip(truth) {
+            assert!(
+                (got - want).abs() / want < 1e-3,
+                "clean recover {got:.6} vs {want}"
+            );
+        }
+
+        // Identifiability of the full-trajectory observation: both frictions jointly
+        // recoverable, well-conditioned (interior waypoints only add rows).
+        let id = identifiability(&problem.observation_jacobian(&truth), 1e-9);
+        assert_eq!(id.rank, 2, "both frictions observable from the trajectory");
+
+        // Graceful degradation: recovery stays bounded (no blow-up) at every σ.
+        let mut errs = vec![];
+        for &sigma in &[1e-4, 1e-3, 1e-2] {
+            let noised = &clean + gaussian_noise(clean.len(), sigma, 0x51_5709 ^ sigma.to_bits());
+            let (m, _) = friction_rig(0.0, 0.0);
+            let noisy = FrictionSystemId::from_measured_trajectory(
+                m,
+                data0.clone(),
+                150,
+                waypoints.clone(),
+                vec![0, 1],
+                noised,
+            );
+            let rec = recover_friction(&noisy, &[0.06, 0.06]);
+            let err = rec
+                .iter()
+                .zip(truth)
+                .map(|(g, w)| (g - w).abs() / w)
+                .fold(0.0_f64, f64::max);
+            assert!(
+                err < 0.05,
+                "σ={sigma:.0e}: recovery should stay bounded, max rel err {err:.3e}",
+            );
+            errs.push(err);
+        }
+        // The noise genuinely propagates — the largest σ sits well above the ~1e-7
+        // clean floor (so the test isn't passing because noise was a no-op), yet the
+        // estimate stays sane. (Not asserting monotonicity: one realization per σ.)
+        assert!(
+            *errs.last().expect("three σ values") > 1e-4,
+            "observation noise should perturb the estimate, got {errs:?}",
+        );
+    }
+
+    /// A smooth (non-friction) channel has no full-trajectory wiring yet (leaf 2), so
+    /// it must reject interior waypoints loudly rather than silently mismatch.
+    #[test]
+    #[should_panic(expected = "terminal state only")]
+    fn smooth_channel_rejects_interior_waypoints() {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_damping = vec![0.2, 0.2];
+        model.compute_implicit_params();
+        let data0 = model.make_data();
+        // Interior waypoints (not just [n_steps]) → DampingSpec's default panics.
+        let _ = DampingSystemId::for_inverse_design_trajectory(
+            model,
+            data0,
+            40,
+            vec![20, 40],
+            vec![0, 1],
+            &[0.5, 0.8],
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "strictly increasing")]
+    fn rejects_non_increasing_waypoints() {
+        let (model, data0) = friction_rig(0.0, 0.0);
+        let _ = FrictionSystemId::for_inverse_design_trajectory(
+            model,
+            data0,
+            150,
+            vec![30, 30],
+            vec![0],
+            &[0.05],
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "1..=")]
+    fn rejects_out_of_range_waypoint() {
+        let (model, data0) = friction_rig(0.0, 0.0);
+        let _ = FrictionSystemId::for_inverse_design_trajectory(
+            model,
+            data0,
+            150,
+            vec![50, 151],
+            vec![0],
+            &[0.05],
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "observed length")]
+    fn from_measured_rejects_mismatched_observation_length() {
+        let (model, data0) = friction_rig(0.0, 0.0);
+        // 2 waypoints × (2·nv) = 8 expected; supply the wrong length.
+        let _ = FrictionSystemId::from_measured_trajectory(
+            model,
+            data0,
+            150,
+            vec![75, 150],
+            vec![0, 1],
+            sim_core::DVector::zeros(4),
+        );
     }
 }
