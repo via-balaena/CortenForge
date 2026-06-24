@@ -22,6 +22,9 @@
 //! - [`SoftMaterialTrajectoryTarget`] (v2) — the rigid body's *height after an
 //!   N-step contact-engaged coupled rollout* (the keystone multi-step gradient
 //!   `∂z_N/∂μ`, one `tape.backward` across both engines and every step boundary).
+//! - [`PeakForceTarget`] — the *peak contact force* during a high-velocity impact
+//!   (the de-escalation RQ2 target: tune a protective buffer's stiffness to a
+//!   recoverability spec, the keystone peak-force gradient `∂(peak |fz|)/∂μ`).
 //!
 //! *Policy axis* — tune the control inputs applied each step:
 //! - [`ControlScheduleTarget`] — an **open-loop** per-step platen control-force
@@ -558,6 +561,44 @@ fn build_coupling(
     )
 }
 
+/// Like [`build_coupling`] but injects a downward STRIKE velocity on the free-joint body
+/// (`qvel[2] = −impact_velocity`) before the coupling is built — the de-escalation impact
+/// scene ([`PeakForceTarget`]). Assumes `body` carries a free joint whose linear-z DOF is
+/// `qvel[2]` (the keystone platen / limb). `impact_velocity = 0` reduces to [`build_coupling`].
+#[allow(clippy::expect_used, clippy::too_many_arguments)]
+fn build_coupling_impact(
+    mjcf: &str,
+    body: usize,
+    contact_clearance: f64,
+    n_per_edge: usize,
+    edge: f64,
+    mu: f64,
+    dt: f64,
+    kappa: f64,
+    d_hat: f64,
+    rigid_damping: f64,
+    impact_velocity: f64,
+) -> StaggeredCoupling {
+    let model = sim_mjcf::load_model(mjcf).expect("co-design coupling fixture: MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model)
+        .expect("co-design coupling fixture: initial forward");
+    data.qvel[2] = -impact_velocity; // free-joint linear-z: the incoming strike
+    StaggeredCoupling::new(
+        model,
+        data,
+        body,
+        contact_clearance,
+        n_per_edge,
+        edge,
+        mu,
+        dt,
+        kappa,
+        d_hat,
+        rigid_damping,
+    )
+}
+
 /// A co-design problem over a soft block's Neo-Hookean stiffness: tune the
 /// material parameter `μ` (with the keystone's `λ = 4μ` tie — i.e. scale the
 /// stiffness at fixed Poisson ratio) so the platen's next-step vertical
@@ -850,6 +891,188 @@ impl CoDesignProblem for SoftMaterialTrajectoryTarget {
         let dz_dstiffness = 4.0_f64.mul_add(dz_dlambda, dz_dmu);
         let residual = z_n - self.target_z;
         (0.5 * residual * residual, vec![residual * dz_dstiffness])
+    }
+
+    fn lower_bounds(&self) -> Option<Vec<f64>> {
+        Some(vec![self.mu_floor])
+    }
+}
+
+/// A co-design problem over a soft buffer's stiffness whose outcome is the **peak contact force**
+/// during a high-velocity impact — the de-escalation study's RQ2 design target (the differentiable
+/// body↔outcome loop applied to a protective buffer). A rigid limb strikes a pinned soft buffer at
+/// `impact_velocity`; tune the buffer's Neo-Hookean stiffness `μ` (with the `λ = 4μ` tie) so the
+/// peak contact force it transmits matches `target_force` — a *recoverability spec* (e.g. set it
+/// below the ISO/TS 15066 ~270 N transient line). Loss `½(|peak_force| − target_force)²`.
+///
+/// First consumer of [`StaggeredCoupling::coupled_trajectory_peak_force_gradient`]: each
+/// [`evaluate`](CoDesignProblem::evaluate) reads `(peak_fz, ∂peak_fz/∂μ, ∂peak_fz/∂λ)` from ONE
+/// backward over the peak step's contact-force tape node, and (as with the sibling material
+/// targets) the `λ = 4μ` rebuild makes the stiffness-scale gradient the total `∂/∂μ + 4·∂/∂λ`.
+/// The objective on `|peak_fz|` carries the sign of `peak_fz` (the contact force on the soft body
+/// is `−ẑ`, so `peak_fz < 0`) through the chain `∂|peak_fz|/∂μ = sign(peak_fz)·∂peak_fz/∂μ`.
+///
+/// **Scope.** Forward-only physics on the NORMAL-only contact path (no friction grip ⇒ no PR3b
+/// adjoint gate). Peak-force(μ) is monotone in this scene (a softer buffer is always gentler),
+/// so `target_force` has a unique minimizer `μ*` — and unconstrained *minimization* of peak force
+/// would be trivial (μ → floor); the constrained "minimize subject to absorbing the strike"
+/// variant needs a bottoming/backing regime this scene does not exhibit, and is a documented
+/// follow-on. The subgradient of `max_k |fz_k|` is taken at the (stable) argmax peak step.
+///
+/// **Conditioning.** Peak force is `O(100 N)` with gradient `O(1e-3)`, so the raw loss gradient is
+/// `O(0.1)` — comfortably above Adam's standard `eps`; unlike the position-outcome targets there
+/// is no tiny-gradient problem. `μ` is still a large positive scale (`~1e4`), so wrap in
+/// [`Normalized`] with `log_space = true` for relative (scale-free) steps and a structural `μ > 0`.
+///
+/// ```no_run
+/// use cf_codesign::{Normalized, PeakForceTarget};
+/// # const MJCF: &str = "";
+/// // Recover the buffer stiffness whose peak strike force lands at 200 N (recoverable).
+/// let target = PeakForceTarget::for_impact_design(MJCF.to_string(), 2.0, 60, 200.0);
+/// // Residual scale L is a FORCE here (≈ the target), so (peak − target)/L is dimensionless.
+/// let problem = Normalized::with_residual_scale(&target, 200.0, true);
+/// let cfg = problem.recommended_config();
+/// let result = problem.optimize(&[20_000.0], &cfg);
+/// assert!(result.converged);
+/// ```
+pub struct PeakForceTarget {
+    mjcf: String,
+    /// Rigid body index (the free-joint limb).
+    body: usize,
+    contact_clearance: f64,
+    n_per_edge: usize,
+    edge: f64,
+    dt: f64,
+    kappa: f64,
+    d_hat: f64,
+    rigid_damping: f64,
+    /// Incoming downward strike speed (m/s) on the limb's free-joint linear-z DOF.
+    impact_velocity: f64,
+    /// Number of coupled steps the peak contact force is taken over.
+    n_steps: usize,
+    /// Target peak contact-force MAGNITUDE (N) to recover a buffer stiffness for.
+    target_force: f64,
+    /// Lower bound on `μ` (positive stiffness).
+    mu_floor: f64,
+}
+
+impl PeakForceTarget {
+    /// Construct with explicit coupling parameters.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        mjcf: String,
+        body: usize,
+        contact_clearance: f64,
+        n_per_edge: usize,
+        edge: f64,
+        dt: f64,
+        kappa: f64,
+        d_hat: f64,
+        rigid_damping: f64,
+        impact_velocity: f64,
+        n_steps: usize,
+        target_force: f64,
+    ) -> Self {
+        Self {
+            mjcf,
+            body,
+            contact_clearance,
+            n_per_edge,
+            edge,
+            dt,
+            kappa,
+            d_hat,
+            rigid_damping,
+            impact_velocity,
+            n_steps,
+            target_force,
+            mu_floor: 1.0,
+        }
+    }
+
+    /// Convenience for the de-escalation impact fixture (the `limb` body 1, clearance 5 mm, 4³
+    /// block edge 0.1 m, dt 1 ms, κ = 3e4, d̂ = 1e-2, `rigid_damping = 0` for a physical impact).
+    /// The limb MJCF should start at the contact-band top (e.g. `pos.z = 0.115`) so the strike
+    /// builds physically. `target_force` is the peak-force magnitude (N) to recover a buffer for
+    /// (e.g. set it to [`Self::forward_peak_force`] at a reference `μ*`).
+    #[must_use]
+    pub fn for_impact_design(
+        mjcf: String,
+        impact_velocity: f64,
+        n_steps: usize,
+        target_force: f64,
+    ) -> Self {
+        Self::new(
+            mjcf,
+            1,
+            0.005,
+            4,
+            0.1,
+            1.0e-3,
+            3.0e4,
+            1.0e-2,
+            0.0,
+            impact_velocity,
+            n_steps,
+            target_force,
+        )
+    }
+
+    /// Build the impact coupling at stiffness `mu` (`λ = 4μ`, strike velocity injected).
+    fn build(&self, mu: f64) -> StaggeredCoupling {
+        build_coupling_impact(
+            &self.mjcf,
+            self.body,
+            self.contact_clearance,
+            self.n_per_edge,
+            self.edge,
+            mu,
+            self.dt,
+            self.kappa,
+            self.d_hat,
+            self.rigid_damping,
+            self.impact_velocity,
+        )
+    }
+
+    /// The peak contact-force MAGNITUDE (N) over the `n_steps` impact rollout at stiffness `mu` —
+    /// the forward outcome (no gradient). Used to set up an inverse-design target.
+    #[must_use]
+    pub fn forward_peak_force(&self, mu: f64) -> f64 {
+        self.build(mu)
+            .coupled_trajectory_peak_force_gradient(self.n_steps, 0)
+            .0
+            .abs()
+    }
+
+    /// The target peak-force magnitude this problem optimizes toward.
+    #[must_use]
+    pub const fn target_force(&self) -> f64 {
+        self.target_force
+    }
+}
+
+impl CoDesignProblem for PeakForceTarget {
+    fn n_params(&self) -> usize {
+        1
+    }
+
+    fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
+        // `coupled_trajectory_peak_force_gradient` takes `&mut self` (advances the rollout), so
+        // each parameter index needs its own fresh build.
+        let (peak_fz, dpeak_dmu, _) = self
+            .build(params[0])
+            .coupled_trajectory_peak_force_gradient(self.n_steps, 0);
+        let (_, dpeak_dlambda, _) = self
+            .build(params[0])
+            .coupled_trajectory_peak_force_gradient(self.n_steps, 1);
+        // Stiffness scale μ with λ = 4μ ⇒ total ∂peak_fz/∂μ = ∂/∂μ + 4·∂/∂λ.
+        let dpeak_dstiffness = 4.0_f64.mul_add(dpeak_dlambda, dpeak_dmu);
+        // Objective on the force MAGNITUDE: ∂|peak_fz|/∂μ = sign(peak_fz)·∂peak_fz/∂μ.
+        let dmag_dstiffness = peak_fz.signum() * dpeak_dstiffness;
+        let residual = peak_fz.abs() - self.target_force;
+        (0.5 * residual * residual, vec![residual * dmag_dstiffness])
     }
 
     fn lower_bounds(&self) -> Option<Vec<f64>> {

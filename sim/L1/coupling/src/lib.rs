@@ -2038,6 +2038,144 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (z_final, grad)
     }
 
+    /// Analytic `∂(peak contact force fz over the trajectory)/∂param` for the normal-only coupled
+    /// impact rollout — the de-escalation RQ2 design gradient (a buffer's peak strike force vs its
+    /// material stiffness). Builds the SAME time-adjoint tape as
+    /// [`Self::coupled_trajectory_material_gradient`] — the per-step `fz_var` (contact
+    /// `force_on_soft.z`) is already a differentiable node — but backpropagates from the PEAK
+    /// step's `fz_var` instead of the final height. This is the subgradient of `max_k |fz_k|` at
+    /// its argmax, valid where the peak step is stable across the perturbation (it is for the
+    /// impact scene; FD-validated to rel ~1e-9 by `cf-codesign`'s `peak_force_inverse_design`
+    /// gate, which differences this against a re-rolled forward oracle). Returns
+    /// `(peak_fz, ∂peak_fz/∂param, peak_step)`. `param_idx`: 0 = μ, 1 = λ; the coupling's λ=4μ tie
+    /// ⇒ the design gradient is the total `grad(0) + 4·grad(1)`. Normal-only (no friction) ⇒ no
+    /// PR3b adjoint gate. `&mut self`: advances the rollout, so rebuild a fresh coupling per call.
+    #[must_use]
+    // One coherent per-step tape-construction loop (mirrors `coupled_trajectory_material_gradient`,
+    // tracking the peak fz_var); splitting it would scatter the recurrence's shared state.
+    // expect_used: a rigid-step divergence is a programmer error surfaced loudly (mirrors `step`).
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_peak_force_gradient(
+        &mut self,
+        n_steps: usize,
+        param_idx: usize,
+    ) -> (f64, f64, usize) {
+        assert!(
+            param_idx <= 1,
+            "material param index {param_idx} out of range (0 = μ, 1 = λ)"
+        );
+        let n = self.n_vertices;
+        let dt = self.cfg.dt;
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+        let dt_over_m = self.rigid_vz_response(0.0).1;
+        let a = 1.0 - self.rigid_damping * dt_over_m;
+
+        let mut tape = Tape::new();
+        let p0 = if param_idx == 0 { self.mu } else { self.lambda };
+        let p_var = tape.param_tensor(Tensor::from_slice(&[p0], &[1]));
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut z_var =
+            tape.constant_tensor(Tensor::from_slice(&[self.data.xpos[self.body].z], &[1]));
+        let mut vz_var = tape.constant_tensor(Tensor::from_slice(&[self.data.qvel[2]], &[1]));
+
+        // Track the peak |fz| step and its tape node as we roll forward.
+        let mut peak_abs = -1.0_f64;
+        let mut peak_signed = 0.0_f64;
+        let mut peak_step = 0_usize;
+        let mut peak_fz_var: Option<Var> = None;
+
+        for k in 0..n_steps {
+            let height = self.plane_height();
+            let vz_k = self.data.qvel[2];
+
+            let (solver, x_next) = self.soft_resolve(height);
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, z_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp(&x_next, dt, param_idx, dir)),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0], c[1], c[2]))
+                .collect();
+            let force_on_soft: Vec3 = self
+                .build_contact(height)
+                .pair_readout(&self.fresh_mesh(), &positions)
+                .iter()
+                .map(|r| r.force_on_soft)
+                .sum();
+            let active = self.active_pair_curvatures(height, &positions);
+            let fz_var = tape.push_custom(
+                &[x_next_var, z_var],
+                Tensor::from_slice(&[force_on_soft.z], &[1]),
+                Box::new(ContactForceTrajVjp {
+                    active,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            if force_on_soft.z.abs() > peak_abs {
+                peak_abs = force_on_soft.z.abs();
+                peak_signed = force_on_soft.z;
+                peak_step = k;
+                peak_fz_var = Some(fz_var);
+            }
+
+            let mut sf = SpatialVector::zeros();
+            sf[3] = -force_on_soft.x;
+            sf[4] = -force_on_soft.y;
+            sf[5] = -force_on_soft.z - self.rigid_damping * vz_k;
+            self.data.xfrc_applied[self.body] = sf;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in coupled trajectory");
+            let z_next = self.data.xpos[self.body].z;
+            let vz_next = self.data.qvel[2];
+
+            let vz_next_var = tape.push_custom(
+                &[vz_var, fz_var],
+                Tensor::from_slice(&[vz_next], &[1]),
+                Box::new(VzCarryVjp {
+                    a,
+                    neg_dt_over_m: -dt_over_m,
+                }),
+            );
+            let z_next_var = tape.push_custom(
+                &[z_var, vz_var],
+                Tensor::from_slice(&[z_next], &[1]),
+                Box::new(ZCarryVjp { dt }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            z_var = z_next_var;
+            vz_var = vz_next_var;
+        }
+
+        let pv = peak_fz_var.expect("trajectory has at least one step with contact force");
+        tape.backward(pv);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (peak_signed, grad, peak_step)
+    }
+
     // ===================== Multi-DOF (articulated) coupling (PR2) =====================
 
     /// The contact-plane height for an ARTICULATED body: the contacting point's
