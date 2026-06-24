@@ -5,10 +5,20 @@
 //! third sibling: `∂x⁺/∂θ` for rigid **model** parameters `θ` — the gradient
 //! channel that sim-to-real / system-ID calibration needs. The implemented
 //! families are per-DOF **joint damping** (`mjd_damping_jacobian`), per-body
-//! **mass** (`mjd_mass_jacobian`), and per-body principal **inertia**
-//! (`mjd_inertia_jacobian`); body friction is the next. Each has a single-step
-//! Jacobian and a terminal-state trajectory Jacobian (the latter sharing one
-//! parameter-agnostic forward-sensitivity recursion, `param_trajectory_jacobian`).
+//! **mass** (`mjd_mass_jacobian`), per-body principal **inertia**
+//! (`mjd_inertia_jacobian`), and per-DOF dry **friction**
+//! (`mjd_friction_jacobian`). The three smooth channels (damping/mass/inertia) each
+//! have a single-step Jacobian *and* a terminal-state trajectory Jacobian (the
+//! latter sharing one parameter-agnostic forward-sensitivity recursion,
+//! `param_trajectory_jacobian`).
+//!
+//! **Friction is single-step only.** It acts through the friction-loss *constraint*
+//! rather than the smooth dynamics, so the per-step Jacobian is regime-dependent
+//! (sliding vs sticking) and — crucially — stick↔slide transitions make a rollout
+//! non-differentiable, which breaks the smooth `s_{t+1} = A_t·s_t + P_t` recursion
+//! on any reversing trajectory. The trajectory layer for friction is therefore
+//! finite-difference (in `cf-codesign`'s `FrictionSystemId`), not analytic. See
+//! [`mjd_friction_jacobian`] for the full regime analysis.
 //!
 //! The math below derives the joint-damping channel; mass and inertia are
 //! documented on their respective functions.
@@ -561,6 +571,183 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
 
     Ok(InertiaJacobian { dxdI })
 }
+
+/// Analytic single-step Jacobian of the next state w.r.t. per-DOF dry friction
+/// (`dof_frictionloss`).
+///
+/// Column `j` of [`dxdf`](Self::dxdf) is `∂x⁺/∂dof_frictionloss[j]`. Unlike the
+/// damping/mass/inertia channels (which act through the smooth dynamics), friction
+/// acts **only through the friction-loss constraint force**, so this channel is
+/// regime-dependent — and that regime-dependence is the whole story.
+pub struct FrictionJacobian {
+    /// `∂x⁺/∂dof_frictionloss`, dimensions `(2*nv + na) × nv`.
+    ///
+    /// Row layout matches [`TransitionMatrices`](super::TransitionMatrices):
+    /// `[0..nv]` position tangent, `[nv..2*nv]` velocity, `[2*nv..2*nv+na]`
+    /// activation (always zero — friction does not affect activation in one step).
+    /// Column `j` is the derivative w.r.t. `dof_frictionloss[j]`; a DOF with no
+    /// friction, or one whose constraint is *not* saturated (sticking), has a zero
+    /// column.
+    pub dxdf: DMatrix<f64>,
+}
+
+/// Hard-assert a model is within the supported scope of the analytic friction
+/// channel. Out-of-scope models would yield a silently-wrong gradient, so this
+/// panics in all profiles.
+///
+/// This asserts only the model-level *structural* scope; the load-bearing
+/// operating-point guard (friction loss must be the *only* active constraint — no
+/// contacts/limits/equality) is asserted inside [`mjd_friction_jacobian`] once the
+/// constraints have been assembled.
+fn assert_friction_scope(model: &Model) {
+    assert_eq!(
+        model.integrator,
+        Integrator::Euler,
+        "analytic friction Jacobian requires the Euler (eulerdamp) integrator",
+    );
+    assert!(
+        model
+            .jnt_type
+            .iter()
+            .all(|t| matches!(t, MjJointType::Hinge | MjJointType::Slide)),
+        "analytic friction Jacobian position row is hinge/slide-only",
+    );
+    assert_eq!(
+        model.ntendon, 0,
+        "analytic friction Jacobian does not model tendon friction loss",
+    );
+}
+
+/// Compute the analytic single-step friction Jacobian `∂x⁺/∂dof_frictionloss` at
+/// the current state.
+///
+/// # Math — the regime split is the point
+///
+/// `dof_frictionloss[j]` (the Coulomb cap `μ_j`) enters the Euler step through the
+/// friction-loss constraint force `qfrc_constraint`, and *only* there. Per DOF the
+/// constraint has two regimes, and `∂x⁺/∂μ_j` differs categorically between them:
+///
+/// - **Sliding** (the constraint is *saturated* at the cap, `qfrc_constraint_j =
+///   −μ_j·sign(v_j)`): the friction force is an explicit `−μ_j·sign(v_j)` added to
+///   the eulerdamp `rhs`, with `M_impl` independent of `μ`. So
+///   ```text
+///   ∂v⁺/∂μ_j = h · M_impl⁻¹ · sign(qfrc_constraint_j) · e_j
+///   ```
+///   (using `sign(qfrc_constraint_j) = −sign(v_j)`, read from the *constraint
+///   force* so it is well-defined even at `v_j = 0`). The position-tangent row is
+///   `h · ∂v⁺/∂μ_j` (hinge/slide semi-implicit Euler). This needs **no**
+///   differentiation of the nonlinear constraint solve — friction is a plain
+///   explicit force in this regime.
+/// - **Sticking** (the constraint holds *below* the cap, `|qfrc_constraint_j| <
+///   μ_j`): the held force balances the smooth force independently of `μ_j`, so
+///   `∂x⁺/∂μ_j = 0` exactly — and the joint is *locally unidentifiable* in `μ_j`
+///   while it holds. The column is zero.
+///
+/// A spike confirmed both regimes against full finite differences (sliding to
+/// `1.5e-6`, sticking to the exact zero).
+///
+/// # Why there is no analytic *trajectory* sibling
+///
+/// The smooth `s_{t+1} = A_t·s_t + P_t` recursion (used by the damping/mass/inertia
+/// trajectory Jacobians) is machine-exact for friction **only on a strictly
+/// sliding, no-velocity-reversal rollout**. Any stick↔slide transition or velocity
+/// zero-crossing is a non-differentiable kink in the step, which corrupts the
+/// carried sensitivity (a spike measured 15–66% error from a handful of crossing
+/// steps). Friction system-ID over a real (reversing) trajectory therefore uses a
+/// finite-difference trajectory gradient instead — robust to the kink, and cheap
+/// because friction has few parameters. This single-step Jacobian is the honest
+/// analytic per-step capability; the trajectory layer is FD by design.
+///
+/// # Scope
+///
+/// Model-level (hard-asserted): Euler integrator, hinge/slide joints, no tendons.
+/// Operating-point (hard-asserted after constraint assembly): the friction-loss
+/// constraints must be the *only* active constraints — no contacts, joint limits,
+/// or equality constraints (this channel does not differentiate their forces).
+/// Fluid drag and gravity compensation are **not** guarded: they are
+/// `dof_frictionloss`-independent, so they cannot corrupt this gradient (unlike the
+/// inertia channel, where fluid drag is inertia-derived).
+///
+/// # Panics
+///
+/// Panics (in all build profiles) if the model or operating point is out of the
+/// scope above — a silently-wrong gradient would be a contract violation.
+///
+/// # Errors
+///
+/// Returns [`StepError::CholeskyFailed`] if `M_impl` is not positive definite, or
+/// any step error encountered while evaluating the operating point.
+pub fn mjd_friction_jacobian(model: &Model, data: &Data) -> Result<FrictionJacobian, StepError> {
+    use crate::types::enums::ConstraintType;
+    assert_friction_scope(model);
+
+    let nv = model.nv;
+    let na = model.na;
+    let nx = 2 * nv + na;
+    let h = model.timestep;
+
+    // Operating point: forward() to assemble the constraints (qfrc_constraint,
+    // efc_type) and the pose-dependent mass matrix qM the eulerdamp solve reuses.
+    let mut d_op = data.clone();
+    d_op.forward(model)?;
+
+    // Load-bearing operating-point guard: friction loss must be the only active
+    // constraint. A contact/limit/equality force would enter qfrc_constraint with a
+    // state-dependence this channel does not differentiate → silently wrong.
+    assert!(
+        d_op.efc_type
+            .iter()
+            .all(|t| matches!(t, ConstraintType::FrictionLoss)),
+        "analytic friction Jacobian requires friction loss to be the only active \
+         constraint (no contacts, joint limits, or equality constraints)",
+    );
+
+    // M_impl = M + h·D (same factor as the eulerdamp step and Tier-1/2).
+    let mut m_impl = d_op.qM.clone();
+    for i in 0..nv {
+        m_impl[(i, i)] += h * model.implicit_damping[i];
+    }
+    cholesky_in_place(&mut m_impl)?;
+
+    let mut dxdf = DMatrix::zeros(nx, nv);
+    let mut e_j = DVector::zeros(nv);
+    for j in 0..nv {
+        let mu = model.dof_frictionloss[j];
+        if mu <= 0.0 {
+            continue; // no friction on this DOF → zero column.
+        }
+        // Sliding iff the friction force is saturated at the Coulomb cap. When it
+        // sticks (force below the cap), μ_j has no first-order effect on the next
+        // state, so the column stays zero.
+        let fj = d_op.qfrc_constraint[j];
+        let sliding = fj.abs() >= mu * (1.0 - FRICTION_SAT_REL);
+        if !sliding {
+            continue;
+        }
+
+        // col_j = M_impl⁻¹ · e_j (j-th column of the inverse).
+        e_j.fill(0.0);
+        e_j[j] = 1.0;
+        cholesky_solve_in_place(&m_impl, &mut e_j);
+
+        // ∂qfrc_constraint_j/∂μ_j = sign(qfrc_constraint_j); read the sign from the
+        // constraint force so it is well-defined even at v_j = 0.
+        let scale = h * fj.signum();
+        for r in 0..nv {
+            let dv = scale * e_j[r];
+            dxdf[(nv + r, j)] = dv;
+            dxdf[(r, j)] = h * dv; // hinge/slide position-tangent row
+        }
+        // Activation rows stay zero.
+    }
+
+    Ok(FrictionJacobian { dxdf })
+}
+
+/// Relative margin below the Coulomb cap within which a friction-loss constraint is
+/// treated as *saturated* (sliding). The solver drives a saturated force to the cap
+/// within `solver_tolerance` (~1e-8), so this is comfortably loose.
+const FRICTION_SAT_REL: f64 = 1e-6;
 
 /// Parameter-agnostic forward-sensitivity recursion shared by every rigid-param
 /// trajectory Jacobian.
@@ -1306,5 +1493,159 @@ mod tests {
             err_partial > 1e-1,
             "implicit-only path must differ from the combined form: {err_partial:.3e}"
         );
+    }
+
+    // ---- friction (dof_frictionloss) single-step channel ----
+
+    /// 2-link hinge pendulum carrying per-DOF dry friction. The `n_link_pendulum`
+    /// factory leaves the per-DOF constraint-solver arrays empty (its default regime
+    /// has no constraints), so populate them with engine defaults — the friction-loss
+    /// row reads `dof_solref`/`dof_solimp`/`dof_invweight0`.
+    fn friction_pendulum(fl: f64) -> (Model, Data) {
+        friction_pendulum_v(fl, 0.7, -0.4)
+    }
+
+    /// `v0`/`v1` set the regime: nonzero ⇒ sliding (friction saturates at the cap),
+    /// rest ⇒ sticking when `fl` exceeds the gravity torque.
+    fn friction_pendulum_v(fl: f64, v0: f64, v1: f64) -> (Model, Data) {
+        let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+        model.dof_frictionloss = vec![fl, fl];
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qpos[1] = -0.2;
+        data.qvel[0] = v0;
+        data.qvel[1] = v1;
+        data.forward(&model).unwrap();
+        (model, data)
+    }
+
+    /// Central-FD reference for `∂x⁺/∂dof_frictionloss[j]` — perturb the physical
+    /// friction knob and re-step once.
+    fn fd_friction_jacobian(model: &Model, data: &Data, eps: f64) -> DMatrix<f64> {
+        let nv = model.nv;
+        let nx = 2 * nv + model.na;
+        let qpos_0 = data.qpos.clone();
+        let mut jac = DMatrix::zeros(nx, nv);
+        for j in 0..nv {
+            let roll = |sign: f64| -> DVector<f64> {
+                let mut m = model.clone();
+                m.dof_frictionloss[j] += sign * eps;
+                m.compute_implicit_params();
+                let mut d = data.clone();
+                d.step(&m).unwrap();
+                extract_state(&m, &d, &qpos_0)
+            };
+            jac.column_mut(j)
+                .copy_from(&((roll(1.0) - roll(-1.0)) / (2.0 * eps)));
+        }
+        jac
+    }
+
+    #[test]
+    fn friction_jacobian_matches_fd_sliding() {
+        // fl=0.05 saturates against the ~1 N·m gravity torque, so both DOFs slide.
+        let (model, data) = friction_pendulum(0.05);
+        // Confirm the regime: friction loss is the only constraint and it is saturated.
+        assert!(
+            data.qfrc_constraint.amax() >= 0.05 - 1e-9,
+            "fixture should be saturated (sliding)"
+        );
+
+        let analytic = mjd_friction_jacobian(&model, &data).unwrap();
+        let fd = fd_friction_jacobian(&model, &data, 1e-7);
+        let (err, loc) = max_relative_error(&analytic.dxdf, &fd, 1e-4);
+        assert!(
+            err < 1e-5,
+            "analytic ∂x⁺/∂frictionloss disagrees with FD: max_rel_err={err:.3e} at {loc:?}\n\
+             analytic=\n{:.6}\nfd=\n{:.6}",
+            analytic.dxdf,
+            fd
+        );
+        assert!(
+            analytic.dxdf.amax() > 1e-3,
+            "expected a non-negligible sliding-regime sensitivity"
+        );
+    }
+
+    #[test]
+    fn friction_jacobian_zero_column_for_frictionless_dof() {
+        // A DOF with no friction (μ=0) has an exactly-zero column; a sliding DOF in
+        // the same model has a live one — covers the `μ ≤ 0` skip branch.
+        let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+        model.dof_frictionloss = vec![0.0, 0.05]; // DOF 0 frictionless, DOF 1 slides
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 0.7;
+        data.qvel[1] = -0.4;
+        data.forward(&model).unwrap();
+
+        let analytic = mjd_friction_jacobian(&model, &data).unwrap();
+        assert!(
+            analytic.dxdf.column(0).amax() < 1e-12 && analytic.dxdf.column(1).amax() > 1e-3,
+            "frictionless DOF 0 → zero column, sliding DOF 1 → live column"
+        );
+    }
+
+    #[test]
+    fn friction_jacobian_zero_when_sticking() {
+        // At rest with fl=5.0 ≫ the ~1 N·m gravity torque, both DOFs stick (the
+        // friction force holds against gravity, below the cap).
+        let (model, data) = friction_pendulum_v(5.0, 0.0, 0.0);
+        // Confirm the regime: held force is below the cap.
+        assert!(
+            data.qfrc_constraint.amax() < 5.0 - 1e-6,
+            "fixture should be sticking (held below cap)"
+        );
+
+        let analytic = mjd_friction_jacobian(&model, &data).unwrap();
+        // A held joint's next state is independent of μ → exactly zero columns, and
+        // FD agrees (the true gradient is zero in stick).
+        #[allow(clippy::float_cmp)]
+        // exact-zero sentinel: stuck columns are skipped, never computed.
+        {
+            assert_eq!(
+                analytic.dxdf.amax(),
+                0.0,
+                "sticking DOFs must have exactly-zero friction columns"
+            );
+        }
+        let fd = fd_friction_jacobian(&model, &data, 1e-7);
+        assert!(
+            fd.amax() < 1e-9,
+            "FD confirms friction is locally unidentifiable while sticking: {:.3e}",
+            fd.amax()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Euler")]
+    fn friction_rejects_non_euler_integrator() {
+        let (mut model, data) = friction_pendulum(0.05);
+        model.integrator = Integrator::RungeKutta4;
+        mjd_friction_jacobian(&model, &data).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "hinge/slide")]
+    fn friction_rejects_ball_joint() {
+        let (mut model, data) = friction_pendulum(0.05);
+        model.jnt_type[1] = MjJointType::Ball;
+        mjd_friction_jacobian(&model, &data).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "only active constraint")]
+    fn friction_rejects_active_joint_limit() {
+        // A joint limit the pose violates adds a non-FrictionLoss efc row, which the
+        // operating-point guard must reject (the channel cannot differentiate it).
+        let (mut model, mut data) = friction_pendulum(0.05);
+        model.jnt_limited[0] = true;
+        model.jnt_range[0] = (-0.1, 0.1);
+        model.jnt_margin = vec![0.0; model.njnt]; // factory leaves this empty
+        data.qpos[0] = 0.3; // outside the limit → active LimitJoint constraint
+        data.forward(&model).unwrap();
+        mjd_friction_jacobian(&model, &data).unwrap();
     }
 }

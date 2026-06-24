@@ -277,14 +277,14 @@ pub use jacobian::{
 };
 
 pub use derivatives::{
-    DampingJacobian, DerivativeConfig, InertiaJacobian, InverseDynamicsDerivatives, MassJacobian,
-    TrajectoryDampingJacobian, TrajectoryInertiaJacobian, TrajectoryMassJacobian,
-    TransitionMatrices, fd_convergence_check, mass_directional_derivative, max_relative_error,
-    mjd_damping_jacobian, mjd_damping_trajectory_jacobian, mjd_inertia_jacobian,
-    mjd_inertia_trajectory_jacobian, mjd_inverse_fd, mjd_mass_jacobian,
-    mjd_mass_trajectory_jacobian, mjd_passive_vel, mjd_quat_integrate, mjd_smooth_pos,
-    mjd_smooth_vel, mjd_sub_quat, mjd_transition, mjd_transition_fd, mjd_transition_hybrid,
-    validate_analytical_vs_fd,
+    DampingJacobian, DerivativeConfig, FrictionJacobian, InertiaJacobian,
+    InverseDynamicsDerivatives, MassJacobian, TrajectoryDampingJacobian, TrajectoryInertiaJacobian,
+    TrajectoryMassJacobian, TransitionMatrices, fd_convergence_check, mass_directional_derivative,
+    max_relative_error, mjd_damping_jacobian, mjd_damping_trajectory_jacobian,
+    mjd_friction_jacobian, mjd_inertia_jacobian, mjd_inertia_trajectory_jacobian, mjd_inverse_fd,
+    mjd_mass_jacobian, mjd_mass_trajectory_jacobian, mjd_passive_vel, mjd_quat_integrate,
+    mjd_smooth_pos, mjd_smooth_vel, mjd_sub_quat, mjd_transition, mjd_transition_fd,
+    mjd_transition_hybrid, validate_analytical_vs_fd,
 };
 
 // Re-export key types from sim-types for convenience
