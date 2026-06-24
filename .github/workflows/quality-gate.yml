@@ -21,6 +21,10 @@
 # Test execution structure (L0 plan §8 step 13 / §6):
 # - `tests-debug` (ubuntu, default features, debug profile): authoritative
 #   test gate for the 23 light-weight workspace lib/integration crates.
+#   Sharded 3 ways (balanced by dependency tree) like `tests-release` and
+#   `grade`: on a foundational `sim-core` PR the affected set is nearly the full
+#   crate list, making this the COMPILE-bound long pole, so the heavy GUI dep
+#   trees (Bevy / Slint) are isolated one-per-shard to compile once each.
 # - `tests-release` (ubuntu, default features, --release): authoritative
 #   test gate for the 5 crates whose heavy stochastic-physics integration
 #   tests (90M–600M-step Boltzmann/CEM/REINFORCE/SA validators) run 5–10×
@@ -249,16 +253,58 @@ jobs:
   # the grader enforces all-features cleanliness; running it again here would
   # just re-pay the bevy_ecs / image / zip / criterion compile cost on every
   # consumer's test build for no additional signal.
+  # SHARDING (3 legs, mirrors `tests-release` + `grade`): on a foundational
+  # `sim-core` PR the affected set is nearly the whole crate list, so this job is
+  # COMPILE-bound (it rebuilds ~30 crates in debug) and was the single ~25-min
+  # long pole — within ~5 min of its own timeout. (Test *execution* is trivial:
+  # the slowest single suite measured ~39 s; the cost is compilation.)
+  #
+  # The split is BY DEPENDENCY TREE, not round-robin: a first attempt that
+  # round-robined crates by count left one shard compiling BOTH giant optional
+  # trees (Bevy via sim-bevy-soft + Slint/wgpu via cf-studio-gui) and it stayed
+  # at ~25 min. Each giant tree must compile *somewhere*, so the win comes from
+  # co-locating each tree's consumers on ONE shard (it compiles once, not 2-3×):
+  #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy)
+  #   - shard 2 = the Slint tree  (cf-studio-{core,engine,gui,studio}; cf-studio-gui pulls ~12 slint crates)
+  #   - shard 3 = FEM + core + mesh (sim-soft, sim-core, sim-mjcf, …) — no Bevy, no Slint
+  # `sim-core` is a universal dep so it compiles in every shard regardless (the
+  # wall-time floor); only the two GUI trees are isolable. Rebalance the lists if
+  # a shard's measured time drifts. Crates intentionally in NO shard (run
+  # elsewhere or not unit-tested): sim-bevy (fragile headless graphics; clippy in
+  # `grade` covers it), examples (~197, no #[test]), -benches (5), xtask (graded
+  # by grade-all; unit tests via pre-commit), and the heavy stochastic-physics
+  # validators sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests /
+  # sim-opt (run in `tests-release` below). cf-viewer / cf-bevy-common /
+  # sim-bevy-soft ARE included: their tests are pure-function (no App::new() /
+  # window spin-up), so headless CI handles them with the x11/wayland dev libs
+  # installed below.
+  #
+  # The `quality-gate` job `needs: [tests-debug]` waits for ALL matrix legs and
+  # fails if any shard fails, so the `Quality Gate` required check still gates
+  # every crate. Each shard keeps its own rust-cache (matrix value keys it).
   tests-debug:
-    name: Tests (debug)
+    name: Tests (debug — shard ${{ matrix.id }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # PR-scoped to the affected crates (see the `affected` job); always runs
+    # PR-scoped to each shard's crate list (see the `affected` job); always runs
     # (`if: !cancelled()`) so it is never a skipped required check, and falls
-    # back to the full crate list on any non-PR / needs_full / affected-failed
+    # back to the full shard list on any non-PR / needs_full / affected-failed
     # path via .github/scripts/affected-packages.sh.
     needs: [affected]
     if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: 1
+            crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy
+              mesh-types mesh-io mesh-repair mesh-sdf mesh-offset mesh-shell mesh-measure
+          - id: 2
+            crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio
+              cf-geometry cf-spatial cf-scan-prep-core mesh-printability mesh-lattice mesh
+          - id: 3
+            crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types sim-simd
+              sim-therm-env cf-design cf-design-tests cf-cast-cli
     steps:
       - uses: actions/checkout@v6
 
@@ -282,43 +328,18 @@ jobs:
           AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          # Library + integration crates whose tests are fast in debug mode.
-          # Excluded by intent:
-          # - sim-bevy: tests would pull bevy graphics deps that are fragile
-          #   on headless CI runners; clippy in `grade` still verifies it
-          #   compiles cleanly.
-          # - examples (~197): demos with main() binaries, no #[test] fns.
-          # - -benches crates (5): bench-only, no #[test] fns.
-          # - xtask: graded by grade-all itself; its 114 unit tests run
-          #   locally via pre-commit, not in this matrix.
-          # - sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests
-          #   / sim-opt: heavy-physics validators move to tests-release below.
-          # cf-viewer + cf-bevy-common + sim-bevy-soft are included: their
-          # tests are pure-function (no App::new() / window spin-up), so
-          # headless CI handles them; the x11 / wayland dev libs already
-          # installed above suffice for the link step. cf-bevy-common
-          # (sim-soft PR2 C2b) is the shared Bevy helper crate consumed by
-          # cf-viewer + sim-bevy + sim-bevy-soft. sim-bevy-soft (sim-soft
-          # PR2 C2c) is the deforming-tet-mesh trajectory replay (β) crate
-          # consumed by sim-soft Tier 4 examples (rows 12-14, 18).
-          CANDIDATES="mesh-types mesh-io mesh-repair mesh-sdf mesh-offset \
-            mesh-shell mesh-measure mesh-printability mesh-lattice mesh \
-            sim-types sim-simd sim-core sim-mjcf sim-urdf sim-gpu sim-soft \
-            sim-ml-chassis-bevy sim-therm-env cf-geometry cf-spatial cf-design \
-            cf-design-tests cf-viewer cf-bevy-common sim-bevy-soft \
-            cf-studio-core cf-studio-engine cf-studio-gui cf-studio \
-            cf-scan-prep-core cf-cast-cli"
-          # Restrict to the PR-affected subset (full on main/merge/fallback).
-          PKGS=$(bash .github/scripts/affected-packages.sh "$CANDIDATES")
+          # Intersect this shard's dependency-tree-balanced crate list (see the
+          # matrix above) with the PR-affected set (full on main/merge/fallback).
+          PKGS=$(bash .github/scripts/affected-packages.sh "${{ matrix.crates }}")
           if [ -z "$PKGS" ]; then
-            echo "tests-debug: no affected crates in this set — skipping."
+            echo "tests-debug shard ${{ matrix.id }}: no affected crates in this shard — skipping."
             exit 0
           fi
-          echo "tests-debug packages: $PKGS"
+          echo "tests-debug shard ${{ matrix.id }} packages: $PKGS"
           cargo test $PKGS
           # mesh-io's 3MF unit-scaling tests are behind the non-default
           # `threemf` feature, so run that crate again with it enabled —
-          # only when mesh-io is in the selected set.
+          # only when mesh-io is in this shard's selected set.
           case " $PKGS " in
             *" -p mesh-io "*) cargo test -p mesh-io --features threemf ;;
           esac

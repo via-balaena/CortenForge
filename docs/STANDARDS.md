@@ -608,7 +608,7 @@ Every push to `main`/`develop` and every PR triggers parallel CI jobs (`.github/
 |---|---|
 | Format | `cargo fmt --check` strict |
 | xtask Grade | `cargo xtask grade-all --skip-coverage --quiet` — runs Criteria 2–7 over every workspace crate. Coverage is excluded for runtime (see below). |
-| Tests (debug) | `cargo test` (default features, debug profile) on the ~23 light-weight workspace crates. |
+| Tests (debug — shard N/3) | `cargo test` (default features, debug profile) on the ~23 light-weight workspace crates, sharded 3 ways (balanced by dependency tree — the Bevy and Slint GUI trees isolated one-per-shard) since a foundational `sim-core` change makes this the compile-bound long pole. |
 | Tests (release, heavy) | `cargo test --release` on the 5 crates whose default test suite contains heavy stochastic-physics validators (sim-ml-chassis, sim-thermostat, sim-rl, sim-conformance-tests, sim-opt). Per `feedback_release_mode_heavy_tests.md` and plan §6.5: these tests do 90M–600M physics steps each and run 5–10× slower in debug. |
 | Cross-OS Tests (macOS, Windows) | Default-features test on the 3 platform-sensitive crates (sim-core for FP determinism, sim-mjcf for XML/file paths, mesh-io for multi-format file paths). Other crates' cross-OS coverage is provided by ubuntu in the tests-debug + tests-release jobs. |
 | Feature Combos | Non-default feature paths. Currently sim-soft `gpu-probe` (the only `tier_up_features` declarer); add new combos here as features land. |
