@@ -2296,6 +2296,40 @@ pub fn mass_directional_derivative(
 // Step 9 — Phase D: mjd_transition_hybrid (hybrid analytical+FD)
 // ============================================================================
 
+/// Whether the implicit-Coriolis integrators' analytic transition derivative is
+/// INCOMPLETE for this model and must fall back to exact finite difference.
+///
+/// The analytic paths for `ImplicitSpringDamper` and full `Implicit` are exact for
+/// articulated joint chains (the common case — joint K/D + rigid-body Coriolis), but
+/// each omits one class of term that only some models exercise:
+///
+/// - **ImplicitSpringDamper with an active tendon spring/damper.** DT-35 folds the
+///   tendon `h²·k·JᵀJ + h·b·JᵀJ` into `M_impl`'s LHS, but the analytic velocity block
+///   only adds the *joint* damper (`h·d` diagonal) back — the off-diagonal tendon
+///   `−b·JᵀJ` in `qDeriv` is left uncancelled — and the position block omits the
+///   tendon `JᵀJ` q-dependence of `M_impl`. (ISD's own `M_impl` is otherwise
+///   v-independent, so joint-only chains need no correction.)
+/// - **Full Implicit with a Muscle/HillMuscle gain actuator.** The velocity-block
+///   second-order term `T = rne_vel(qacc)` captures only the Coriolis part of
+///   `∂D/∂v`; a force–velocity-curve gain is v-dependent and contributes a
+///   `∂D_actuator/∂v` that `T` misses. (Affine gain is constant in v ⇒ fine.)
+///
+/// FD is exact in both cases. Euler / ImplicitFast / RK4 never hit these terms, so
+/// they always return `false` here. This is the single source of truth shared by
+/// `mjd_transition`'s `can_analytical` gate and the defensive FD return below, so a
+/// direct `mjd_transition_hybrid` caller is guarded identically.
+pub fn implicit_analytic_incomplete(model: &Model) -> bool {
+    match model.integrator {
+        Integrator::ImplicitSpringDamper => (0..model.ntendon)
+            .any(|t| model.tendon_stiffness[t] > 0.0 || model.tendon_damping[t] > 0.0),
+        Integrator::Implicit => model
+            .actuator_gaintype
+            .iter()
+            .any(|g| matches!(g, GainType::Muscle | GainType::HillMuscle)),
+        _ => false,
+    }
+}
+
 /// Compute hybrid analytical+FD transition derivatives.
 ///
 /// Uses analytical `qDeriv` for velocity columns of A, FD for position columns.
@@ -2329,6 +2363,13 @@ pub fn mjd_transition_hybrid(
         "FD derivatives not supported with nhistory > 0 (delays)"
     );
 
+    // Defensive FD fallback for the implicit-Coriolis integrators on models whose
+    // analytic path is incomplete (tendon-K/D under ISD, Muscle/HillMuscle gain under
+    // Implicit). `mjd_transition` already gates these to FD; this guards a direct call.
+    if implicit_analytic_incomplete(model) {
+        return mjd_transition_fd(model, data, config);
+    }
+
     let eps = config.eps;
     let h = model.timestep;
     let nv = model.nv;
@@ -2340,6 +2381,20 @@ pub fn mjd_transition_hybrid(
     //    The clone preserves qLD_data/qLD_diag_inv, scratch_m_impl, qM — all
     //    unmodified by mjd_smooth_vel.
     let mut data_work = data.clone();
+    // ImplicitSpringDamper is the only integrator whose forward pass OVERWRITES
+    // `qvel` (to v⁺) while leaving `cvel` at the pre-step v_old (see
+    // `mj_fwd_acceleration_implicit`). The transition operating point is (q, v⁺),
+    // so the Coriolis velocity-Jacobian inside `qDeriv` must be evaluated at v⁺ —
+    // refresh velocity kinematics first. (Euler/ImplicitFast/Implicit do NOT
+    // overwrite qvel in forward, so for them this would be a no-op; gating it to
+    // ISD keeps their result byte-for-byte unchanged.) `mj_fwd_velocity` touches
+    // only velocity-FK fields (cvel/cdof/...); qM, qLD, and scratch_m_impl — used
+    // by the velocity/activation solves below — are position-only and untouched.
+    // NOTE: the analytic-position branch does its OWN later refresh (it also re-points
+    // qacc); the two are independent and both required — do not dedupe them.
+    if matches!(model.integrator, Integrator::ImplicitSpringDamper) {
+        crate::forward::mj_fwd_velocity(model, &mut data_work);
+    }
     mjd_smooth_vel(model, &mut data_work);
 
     // 1b. Eulerdamp factor. The real Euler step applies joint damping IMPLICITLY:
@@ -2401,18 +2456,81 @@ pub fn mjd_transition_hybrid(
             dvdv += h * &minv_qderiv;
             dvdv
         }
-        Integrator::ImplicitSpringDamper | Integrator::Implicit | Integrator::RungeKutta4 => {
-            // No sound analytic transition derivative for these:
-            //  • RungeKutta4 — multi-stage; not yet differentiated analytically.
-            //  • ImplicitSpringDamper / Implicit — the closed form
-            //    `M_impl⁻¹·(M + h·qDeriv + h·D)` omits the implicit Coriolis
-            //    `∂qfrc_bias/∂v` coupling these integrators fold into `M_impl`, so it is
-            //    silently wrong for coupled DOFs (the stiffness harness exposed it: the
-            //    off-diagonal `∂vᵢ⁺/∂vⱼ` block diverges, present even at k=0, growing with
-            //    k and chain length; 1-link is exact). Deferred — see
-            //    project-foundation-completion-map robustness recon.
-            // FD is exact for all three. `mjd_transition` already gates them to FD; this
-            // guards a direct `mjd_transition_hybrid` call.
+        Integrator::ImplicitSpringDamper => {
+            // ∂v⁺/∂v = M_impl⁻¹ · (M + h·qDeriv + h·D).
+            // The ISD step solves `M_impl·v⁺ = M·v + h·f_ext − h·K·(q−q_eq)` with
+            // `M_impl = M + h·D + h²·K` (joint K/D diagonal + tendon, v-INDEPENDENT) and
+            // `f_ext` carrying −qfrc_bias(q,v). Holding q fixed, `∂(RHS)/∂v = M + h·∂f_ext/∂v`,
+            // and since the joint damper is moved to the LHS, `∂f_ext/∂v = qDeriv + D`
+            // (qDeriv carries the −D damper diagonal that cancels back out). M_impl has no
+            // v-dependence, so there is no second-order term. `qDeriv` is evaluated at the
+            // refreshed (q, v⁺) operating point (see the ISD re-forward above) — without
+            // that refresh the Coriolis block is silently wrong for coupled DOFs.
+            let d = &model.implicit_damping;
+            let mut dvdv = DMatrix::zeros(nv, nv);
+            for j in 0..nv {
+                let mut rhs = DVector::zeros(nv);
+                for i in 0..nv {
+                    rhs[i] = data_work.qM[(i, j)]
+                        + h * data_work.qDeriv[(i, j)]
+                        + if i == j { h * d[i] } else { 0.0 };
+                }
+                cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs);
+                dvdv.column_mut(j).copy_from(&rhs);
+            }
+            dvdv
+        }
+        Integrator::Implicit => {
+            // ∂v⁺/∂v = I + h·M_hat⁻¹·qDeriv + h²·M_hat⁻¹·T.
+            // The full-implicit step is `qacc = M_hat⁻¹·F`, `v⁺ = v + h·qacc`, with
+            // `M_hat = M − h·D` and `D = qDeriv` (the FULL smooth-vel Jacobian, Coriolis
+            // INCLUDED → v-dependent). Differentiating `M_hat(v)·qacc = F(v)`:
+            //   ∂qacc/∂vⱼ = M_hat⁻¹·[∂F/∂vⱼ − (∂M_hat/∂vⱼ)·qacc]
+            //             = M_hat⁻¹·[qDeriv_j + h·(∂D/∂vⱼ)·qacc].
+            // The first term gives the standard `I + h·M_hat⁻¹·qDeriv`; the second is the
+            // implicit-Coriolis correction the bare closed form drops (the stiffness/damping
+            // harness exposed it: off-diagonal `∂vᵢ⁺/∂vⱼ`, growing with chain length;
+            // 1-DOF exact). Let `T[:,j] = (∂D/∂vⱼ)·qacc`. Only D's Coriolis part is
+            // v-dependent, and the Coriolis velocity-Jacobian is LINEAR in its evaluation
+            // velocity with a SYMMETRIC second derivative (mixed partials commute), so
+            // `(∂D/∂vⱼ)·qacc` equals that same Jacobian evaluated at `qvel := qacc` — i.e.
+            // `T = mjd_rne_vel(qacc)` (one extra analytic call; no second-derivative tensor).
+            let mut dvdv = DMatrix::identity(nv, nv);
+            for j in 0..nv {
+                let mut col = data_work.qDeriv.column(j).clone_owned();
+                lu_solve_factored(
+                    &data_work.scratch_m_impl,
+                    &data_work.scratch_lu_piv,
+                    &mut col,
+                );
+                for i in 0..nv {
+                    dvdv[(i, j)] += h * col[i];
+                }
+            }
+            // T = Coriolis velocity-Jacobian at qvel := qacc. Refresh velocity FK at qacc,
+            // then accumulate ONLY the bias term (mjd_rne_vel) into a fresh qDeriv buffer.
+            let mut dq = data_work.clone();
+            dq.qvel.copy_from(&data_work.qacc);
+            crate::forward::mj_fwd_velocity(model, &mut dq);
+            dq.qDeriv.fill(0.0);
+            mjd_rne_vel(model, &mut dq);
+            for j in 0..nv {
+                let mut col = dq.qDeriv.column(j).clone_owned();
+                lu_solve_factored(
+                    &data_work.scratch_m_impl,
+                    &data_work.scratch_lu_piv,
+                    &mut col,
+                );
+                for i in 0..nv {
+                    dvdv[(i, j)] += h * h * col[i];
+                }
+            }
+            dvdv
+        }
+        Integrator::RungeKutta4 => {
+            // RK4 is multi-stage; no analytic transition derivative yet. FD is exact.
+            // `mjd_transition` already gates it to FD; this guards a direct
+            // `mjd_transition_hybrid` call.
             return mjd_transition_fd(model, data, config);
         }
         Integrator::ImplicitFast => {
@@ -2587,7 +2705,18 @@ pub fn mjd_transition_hybrid(
                 t,
                 BiasType::Muscle | BiasType::HillMuscle | BiasType::MillardMuscle
             )
-        });
+        })
+        // Full Implicit's POSITION columns are FD-only. Its forward step is
+        // `qacc = M_hat⁻¹·F` with `M_hat = M − h·D`; D's Coriolis part depends on q,
+        // so the exact `∂v⁺/∂q` carries `+h²·M_hat⁻¹·(∂D/∂q)·qacc` — a MIXED q–v
+        // second derivative of the bias. Unlike the velocity block's v–v term (which
+        // collapses to `rne_vel(qacc)` by symmetry), the mixed term has no clean
+        // single-call analytic form, and FD-ing it costs the same as FD-ing the
+        // position columns outright. So: analytic velocity columns (the implicit-
+        // Coriolis term IS handled there), FD position columns (exact). ISD is
+        // unaffected — its `M_impl` is v-independent, so its position columns are
+        // already analytic-exact.
+        && !matches!(model.integrator, Integrator::Implicit);
 
     // Save nominal state for FD perturbation loop (needed by activation/B matrix FD too)
     let qpos_0 = data.qpos.clone();
@@ -2726,22 +2855,12 @@ pub fn mjd_transition_hybrid(
                 }
                 dvdq
             }
-            Integrator::Implicit => {
-                // dvdq = h · LU⁻¹ · qDeriv_pos
-                let mut dvdq = DMatrix::zeros(nv, nv);
-                for j in 0..nv {
-                    let mut col = data_work.qDeriv_pos.column(j).clone_owned();
-                    lu_solve_factored(
-                        &data_work.scratch_m_impl,
-                        &data_work.scratch_lu_piv,
-                        &mut col,
-                    );
-                    for i in 0..nv {
-                        dvdq[(i, j)] = h * col[i];
-                    }
-                }
-                dvdq
-            }
+            // Full Implicit is excluded from `use_analytical_pos` (its position columns
+            // need the mixed q–v Coriolis term and route through the FD branch below),
+            // so this arm is never reached. Kept explicit, like RK4.
+            Integrator::Implicit => unreachable!(
+                "full Implicit uses FD position columns (excluded from use_analytical_pos)"
+            ),
             // RK4 is dispatched via a separate transition path before reaching this code.
             Integrator::RungeKutta4 => unreachable!(),
         };

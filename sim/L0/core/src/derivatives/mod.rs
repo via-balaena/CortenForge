@@ -204,15 +204,17 @@ impl Default for DerivativeConfig {
 /// Compute transition derivatives using the best available method.
 ///
 /// When `config.use_analytical == true` and the integrator has a sound analytic
-/// transition derivative (Euler or ImplicitFast), uses hybrid analytical+FD (Phase
-/// D). The other integrators fall back to pure finite difference (Phase A):
-/// RungeKutta4 (multi-stage, not yet differentiated analytically) and —
-/// **ImplicitSpringDamper / Implicit** — because their analytic velocity-Jacobian
-/// folds the implicit Coriolis `∂/∂v` coupling into `M_impl`, which the current
-/// closed form does not match (silently wrong for multi-DOF systems, off-diagonal
-/// `∂vᵢ⁺/∂vⱼ`; see the stiffness harness + project-foundation-completion-map's
-/// robustness recon). FD is exact for all of them; the analytic derivation for
-/// ImplicitSpringDamper/Implicit is a deferred follow-on.
+/// transition derivative (Euler, ImplicitFast, ImplicitSpringDamper, or full
+/// Implicit), uses hybrid analytical+FD (Phase D). Only RungeKutta4 falls back to
+/// pure finite difference (Phase A) — it is multi-stage and not yet differentiated
+/// analytically. FD is exact there.
+///
+/// The implicit-Coriolis integrators get their velocity-Jacobian right in two ways
+/// (see `hybrid::mjd_transition_hybrid`): ImplicitSpringDamper evaluates `qDeriv` at
+/// the refreshed (q, v⁺) operating point (its forward pass overwrites qvel but leaves
+/// cvel stale), and full Implicit adds the second-order term `h²·M_hat⁻¹·rne_vel(qacc)`
+/// for the `v`-dependence of `M_hat = M − h·D`. Both are guarded machine-exact by the
+/// stiffness/damping rows of the transition harness.
 ///
 /// # Errors
 ///
@@ -238,12 +240,17 @@ pub fn mjd_transition(
     let can_analytical = config.use_analytical
         && !matches!(
             model.integrator,
-            // RK4: multi-stage, no analytic path. ImplicitSpringDamper / Implicit:
-            // analytic velocity-Jacobian is unsound for coupled DOFs (implicit
-            // Coriolis ∂/∂v not matched) — FD is exact; analytic deferred.
-            Integrator::RungeKutta4 | Integrator::ImplicitSpringDamper | Integrator::Implicit
+            // RK4 is the only integrator without an analytic transition derivative:
+            // it is multi-stage and not yet differentiated analytically. FD is exact.
+            // (ImplicitSpringDamper and full Implicit now have sound analytic paths —
+            // ISD via an operating-point refresh, Implicit via the implicit-Coriolis
+            // second-order term; see `hybrid::mjd_transition_hybrid`.)
+            Integrator::RungeKutta4
         )
-        && !has_millard;
+        && !has_millard
+        // ISD/Implicit analytic is incomplete for tendon-K/D (ISD) or Muscle/HillMuscle
+        // gain (Implicit); such models take exact FD. See `implicit_analytic_incomplete`.
+        && !hybrid::implicit_analytic_incomplete(model);
     if can_analytical {
         mjd_transition_hybrid(model, data, config)
     } else {
