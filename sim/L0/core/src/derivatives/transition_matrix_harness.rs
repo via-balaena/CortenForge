@@ -26,7 +26,7 @@
 
 use super::{DerivativeConfig, max_relative_error, mjd_transition_fd};
 use crate::test_fixtures::conformance::{ConformanceCase, dynamics_conformance_matrix};
-use crate::types::{Data, Model};
+use crate::types::{Data, Integrator, Model};
 
 /// The conformance matrix this harness sweeps. Construction lives in the shared
 /// [`crate::test_fixtures::conformance`] module so the CPU analytic-vs-FD check
@@ -205,6 +205,89 @@ fn analytic_transition_matches_fd_under_damping() {
     assert!(
         failures.is_empty(),
         "analytic transition A diverged from central-FD under damping for:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// The analytic state-transition Jacobian `A` must match central-FD under joint
+/// **spring stiffness** (`jnt_stiffness`, τ = −k·(q − springref)) — the regime the
+/// joint×topology matrix does NOT exercise (every case there has `k = 0`). The
+/// analytic position columns add `−k` to `qDeriv_pos` (`hybrid.rs`, joint-spring
+/// block); this is the permanent guard that the `−k` term actually reaches `A` on
+/// the analytic paths (**Euler**, **ImplicitFast**). The implicit-Coriolis
+/// integrators are handled separately (below).
+///
+/// Covers a serial hinge chain of 1–3 links at several stiffness levels, for all
+/// four non-RK4 integrators. **Euler** and **ImplicitFast** are validated through
+/// their genuine analytic path. **ImplicitSpringDamper** and **Implicit** are FD-
+/// gated in [`super::mjd_transition`] (their analytic velocity-Jacobian omits the
+/// implicit Coriolis `∂/∂v` coupling — this very harness exposed it: off-diagonal
+/// `∂vᵢ⁺/∂vⱼ`, present even at `k = 0`, growing with `k` and chain length), so they
+/// route to FD and match trivially today — but the rows stay here as the **guard
+/// that re-fires** the moment a future analytic derivation re-enables them with the
+/// bug unfixed. `k = 0` asserts the no-spring path stays exact. Stiffness levels are
+/// kept well inside the Euler stability limit (`dt·√(k/I) ≪ 2`) so the FD reference
+/// is itself valid (an unstable forward step would poison the FD).
+#[test]
+fn analytic_transition_matches_fd_under_stiffness() {
+    const FLOOR: f64 = 1e-3;
+    const TOL: f64 = 1e-5;
+
+    let mk = |nlink: usize, stiff: f64, integ: Integrator| {
+        let mut m = Model::n_link_pendulum(nlink, 1.0, 1.0);
+        for j in 0..m.njnt {
+            m.jnt_stiffness[j] = stiff;
+            m.jnt_springref[j] = 0.0;
+        }
+        m.integrator = integ;
+        m.compute_implicit_params();
+        m
+    };
+    let mut failures = Vec::new();
+    for &(nlink, ref qpos, ref qvel) in &[
+        (1usize, vec![0.3], vec![0.7]),
+        (2usize, vec![0.3, -0.4], vec![0.7, 0.5]),
+        (3usize, vec![0.2, -0.3, 0.4], vec![0.6, -0.5, 0.3]),
+    ] {
+        for &stiff in &[0.0_f64, 1.0, 10.0, 100.0] {
+            for &integ in &[
+                Integrator::Euler,
+                Integrator::ImplicitSpringDamper,
+                Integrator::Implicit,
+                Integrator::ImplicitFast,
+            ] {
+                let model = mk(nlink, stiff, integ);
+                let data = forward_at(&model, qpos, qvel);
+                let analytic = data
+                    .transition_derivatives(
+                        &model,
+                        &DerivativeConfig {
+                            use_analytical: true,
+                            ..Default::default()
+                        },
+                    )
+                    .expect("analytic transition");
+                let fd = mjd_transition_fd(
+                    &model,
+                    &data,
+                    &DerivativeConfig {
+                        use_analytical: false,
+                        ..Default::default()
+                    },
+                )
+                .expect("FD transition");
+                let (err, loc) = max_relative_error(&analytic.A, &fd.A, FLOOR);
+                if !(err < TOL) {
+                    failures.push(format!(
+                        "{nlink}-link {integ:?} k={stiff} → rel {err:.3e} at {loc:?} (tol {TOL:.1e})"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "analytic transition A diverged from central-FD under stiffness for:\n  {}",
         failures.join("\n  ")
     );
 }
