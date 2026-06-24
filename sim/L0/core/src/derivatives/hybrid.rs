@@ -2401,21 +2401,19 @@ pub fn mjd_transition_hybrid(
             dvdv += h * &minv_qderiv;
             dvdv
         }
-        Integrator::ImplicitSpringDamper => {
-            // ∂v⁺/∂v = (M+hD+h²K)⁻¹ · (M + h·(qDeriv + D))
-            let d = &model.implicit_damping;
-            let mut dvdv = DMatrix::zeros(nv, nv);
-            for j in 0..nv {
-                let mut rhs = DVector::zeros(nv);
-                for i in 0..nv {
-                    rhs[i] = data_work.qM[(i, j)]
-                        + h * data_work.qDeriv[(i, j)]
-                        + if i == j { h * d[i] } else { 0.0 };
-                }
-                cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs);
-                dvdv.column_mut(j).copy_from(&rhs);
-            }
-            dvdv
+        Integrator::ImplicitSpringDamper | Integrator::Implicit | Integrator::RungeKutta4 => {
+            // No sound analytic transition derivative for these:
+            //  • RungeKutta4 — multi-stage; not yet differentiated analytically.
+            //  • ImplicitSpringDamper / Implicit — the closed form
+            //    `M_impl⁻¹·(M + h·qDeriv + h·D)` omits the implicit Coriolis
+            //    `∂qfrc_bias/∂v` coupling these integrators fold into `M_impl`, so it is
+            //    silently wrong for coupled DOFs (the stiffness harness exposed it: the
+            //    off-diagonal `∂vᵢ⁺/∂vⱼ` block diverges, present even at k=0, growing with
+            //    k and chain length; 1-link is exact). Deferred — see
+            //    project-foundation-completion-map robustness recon.
+            // FD is exact for all three. `mjd_transition` already gates them to FD; this
+            // guards a direct `mjd_transition_hybrid` call.
+            return mjd_transition_fd(model, data, config);
         }
         Integrator::ImplicitFast => {
             // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
@@ -2429,27 +2427,6 @@ pub fn mjd_transition_hybrid(
                 }
             }
             dvdv
-        }
-        Integrator::Implicit => {
-            // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
-            // scratch_m_impl holds LU factors, scratch_lu_piv holds pivots
-            let mut dvdv = DMatrix::identity(nv, nv);
-            for j in 0..nv {
-                let mut col = data_work.qDeriv.column(j).clone_owned();
-                lu_solve_factored(
-                    &data_work.scratch_m_impl,
-                    &data_work.scratch_lu_piv,
-                    &mut col,
-                );
-                for i in 0..nv {
-                    dvdv[(i, j)] += h * col[i];
-                }
-            }
-            dvdv
-        }
-        Integrator::RungeKutta4 => {
-            // Should not reach here — caller should use mjd_transition_fd
-            return mjd_transition_fd(model, data, config);
         }
     };
 
