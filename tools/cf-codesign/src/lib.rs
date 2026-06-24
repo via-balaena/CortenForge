@@ -47,18 +47,23 @@
 //!
 //! *System-ID axis* — recover *rigid dynamics* parameters from an observed
 //! trajectory (what sim-to-real calibration needs), rather than tuning a design.
-//! One generic [`RigidParamSystemId`] drives all three families — it tunes a
+//! One generic [`RigidParamSystemId`] drives all four families — it tunes a
 //! pure-rigid model's parameters so its terminal state after an N-step rollout
-//! matches an observed one, reading `∂x_N/∂θ` from the matching analytic
-//! rigid-parameter channel (forward-sensitivity `s_{t+1} = A_t·s_t + P_t`):
+//! matches an observed one, reading `∂x_N/∂θ` from the matching rigid-parameter
+//! channel:
 //! - [`DampingSystemId`] — per-joint **damping** (`∂x_N/∂D`),
 //! - [`MassSystemId`] — per-body **mass** (`∂x_N/∂m`),
-//! - [`InertiaSystemId`] — per-body principal **inertia** (`∂x_N/∂I`).
+//! - [`InertiaSystemId`] — per-body principal **inertia** (`∂x_N/∂I`),
+//! - [`FrictionSystemId`] — per-DOF dry **friction** (`∂x_N/∂μ`).
 //!
-//! These are the gradient paths to *rigid* parameters (mass/damping/inertia, with
-//! friction next), where the other axes all tune a design; a new family is one
-//! [`RigidParamSpec`] impl. Each recovers several parameters at once, and the
-//! Gauss-Newton `JᵀJ` conditioning is reported by
+//! The three smooth channels read an **analytic** forward-sensitivity recursion
+//! `s_{t+1} = A_t·s_t + P_t`. **Friction is the exception** — it acts through the
+//! friction-loss constraint, whose stick↔slide transitions make a reversing
+//! trajectory non-differentiable, so [`FrictionSystemId`] uses a **finite-difference**
+//! trajectory gradient (robust to the kink, cheap for friction's few parameters).
+//! All four share the same problem shape; a new family is one [`RigidParamSpec`]
+//! impl. Each recovers several parameters at once, and the Gauss-Newton `JᵀJ`
+//! conditioning is reported by
 //! [`observation_jacobian`](RigidParamSystemId::observation_jacobian) with
 //! [`identifiability`] so a parameter trade-off (weak joint-identifiability) shows
 //! up as data, not a silent stall.
@@ -1459,13 +1464,16 @@ impl<P: DiffPolicy> CoDesignProblem for JointTarget<P> {
 
 /// How a rigid-parameter family plugs into the generic [`RigidParamSystemId`].
 ///
-/// The damping, mass, and inertia system-ID problems share one shape — roll out a
-/// pure-rigid model, match its terminal state, and read `∂x_N/∂θ` from an analytic
+/// The damping, mass, inertia, and friction system-ID problems share one shape —
+/// roll out a pure-rigid model, match its terminal state, and read `∂x_N/∂θ` from a
 /// trajectory Jacobian. They differ only in three places, which this trait
-/// isolates: which model field a parameter writes, which `mjd_*_trajectory_jacobian`
-/// computes the sensitivity, and how each identified *target* maps to a column of
-/// that Jacobian. Implementing it for a new parameter family (the next being body
-/// friction) yields a full first-class `SystemId` via the type alias pattern below.
+/// isolates: which model field a parameter writes, how the trajectory Jacobian is
+/// computed, and how each identified *target* maps to a column of that Jacobian. The
+/// Jacobian source is the spec's choice — the smooth channels return an analytic
+/// `mjd_*_trajectory_jacobian`, while [`FrictionSpec`] returns a finite-difference
+/// grid (friction's stick↔slide non-smoothness breaks the analytic recursion).
+/// Implementing the trait for a new parameter family yields a full first-class
+/// `SystemId` via the type alias pattern below.
 pub trait RigidParamSpec {
     /// A single identified target: a joint index (damping), a body index (mass),
     /// or a `(body, axis)` pair (inertia).
@@ -1479,9 +1487,11 @@ pub trait RigidParamSpec {
     /// is a no-op; the damping spec overrides it to recompute `implicit_damping`.
     fn finalize(_model: &mut sim_core::Model) {}
 
-    /// Compute the analytic terminal-state Jacobian of an `n_steps` rollout,
-    /// returning `(x_N, ∂x_N/∂θ_grid)` — the terminal state and the full parameter
-    /// Jacobian whose columns [`column`](RigidParamSpec::column) indexes.
+    /// Compute the terminal-state Jacobian of an `n_steps` rollout, returning
+    /// `(x_N, ∂x_N/∂θ_grid)` — the terminal state and the full parameter Jacobian
+    /// whose columns [`column`](RigidParamSpec::column) indexes. The smooth channels
+    /// produce this analytically; [`FrictionSpec`] produces it by finite differences.
+    /// (`cfg` configures the analytic transition derivative; FD specs ignore it.)
     ///
     /// # Errors
     /// Propagates any [`sim_core::StepError`] from the rollout or per-step
@@ -1503,18 +1513,18 @@ pub trait RigidParamSpec {
 /// Where the design/policy targets above tune a *design* parameter via the
 /// coupling gradient, this problem tunes a **rigid model parameter** of a
 /// pure-rigid [`sim_core`] model so that its terminal state after an `n_steps`
-/// rollout matches an observed one. It consumes the analytic rigid-parameter
-/// channel via the [`RigidParamSpec`] `S` (forward-sensitivity
-/// `s_{t+1} = A_t·s_t + P_t`), turning system-ID from FD-only into a one-pass
-/// analytic gradient.
+/// rollout matches an observed one. It consumes the rigid-parameter trajectory
+/// gradient via the [`RigidParamSpec`] `S` — analytic (forward-sensitivity
+/// `s_{t+1} = A_t·s_t + P_t`) for the smooth channels, finite-difference for
+/// friction.
 ///
 /// The concrete parameter families are the type aliases [`DampingSystemId`],
-/// [`MassSystemId`], and [`InertiaSystemId`]. The loss is `½‖x_N(θ) − x_N*‖²` over
-/// the terminal state in tangent space; parameters are bounded below at zero
-/// ([`lower_bounds`](CoDesignProblem::lower_bounds)).
+/// [`MassSystemId`], [`InertiaSystemId`], and [`FrictionSystemId`]. The loss is
+/// `½‖x_N(θ) − x_N*‖²` over the terminal state in tangent space; parameters are
+/// bounded below at zero ([`lower_bounds`](CoDesignProblem::lower_bounds)).
 ///
-/// Preconditions follow the chosen channel's `mjd_*_trajectory_jacobian`: Euler
-/// integrator, hinge/slide joints, no tendons.
+/// Preconditions follow the chosen channel: Euler integrator, hinge/slide joints,
+/// no tendons (and, for friction, friction loss as the only active constraint).
 pub struct RigidParamSystemId<S: RigidParamSpec> {
     /// Rigid model; the targeted parameters are overwritten each `evaluate`, all
     /// other parameters are held fixed.
@@ -1712,6 +1722,116 @@ impl RigidParamSpec for InertiaSpec {
     }
 }
 
+/// Terminal state in tangent space — `[qpos_N − qpos_0; qvel_N; act_N]` — for the
+/// hinge/slide scope (where `nq == nv` and the position tangent is plain
+/// subtraction). Used by the FD friction trajectory gradient; matches the
+/// convention the analytic `mjd_*_trajectory_jacobian` channels return.
+fn terminal_tangent(
+    data: &sim_core::Data,
+    qpos0: &sim_core::DVector<f64>,
+) -> sim_core::DVector<f64> {
+    let nv = data.qvel.len();
+    let na = data.act.len();
+    let mut x = sim_core::DVector::zeros(2 * nv + na);
+    for i in 0..nv {
+        x[i] = data.qpos[i] - qpos0[i];
+        x[nv + i] = data.qvel[i];
+    }
+    for i in 0..na {
+        x[2 * nv + i] = data.act[i];
+    }
+    x
+}
+
+/// [`RigidParamSpec`] for per-DOF dry **friction** (`dof_frictionloss`) — `∂x_N/∂μ`
+/// via a **finite-difference** trajectory gradient. Targets are joint indices.
+///
+/// Unlike the three smooth siblings (which read an *analytic*
+/// `mjd_*_trajectory_jacobian`), friction's trajectory gradient is FD by design:
+/// friction acts through the friction-loss constraint, whose stick↔slide
+/// transitions make a rollout non-differentiable and break the analytic
+/// `s_{t+1} = A_t·s_t + P_t` recursion on any velocity-reversing trajectory. FD is
+/// robust to that kink and cheap, since friction has few parameters. (The
+/// single-step analytic Jacobian [`sim_core::mjd_friction_jacobian`] is exact in the
+/// sliding regime; it is the trajectory composition that FD handles here.)
+pub struct FrictionSpec;
+
+impl RigidParamSpec for FrictionSpec {
+    type Target = usize;
+
+    fn apply(model: &mut sim_core::Model, joint: usize, value: f64) {
+        model.dof_frictionloss[model.jnt_dof_adr[joint]] = value;
+    }
+
+    // No `finalize`: `dof_frictionloss` does not feed any cached implicit parameter.
+
+    fn trajectory_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        _cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
+        // Scope: pin to the same tested regime as the single-step
+        // `mjd_friction_jacobian` so the FD path can't be driven on an untested,
+        // potentially surprising configuration. The hinge/slide assert is
+        // *load-bearing* (the terminal tangent uses `qpos − qpos0`, valid only where
+        // `nq == nv`); Euler + no-tendon match the documented system-ID scope (the FD
+        // rollout would in principle differentiate other regimes too, but they are
+        // untested here). Contacts/limits are a documented precondition (constraint
+        // free), shared with the analytic siblings.
+        assert_eq!(
+            model.integrator,
+            sim_core::Integrator::Euler,
+            "friction system-ID is scoped to the Euler integrator (matches the single-step channel)",
+        );
+        assert!(
+            model.jnt_type.iter().all(|t| matches!(
+                t,
+                sim_core::MjJointType::Hinge | sim_core::MjJointType::Slide
+            )),
+            "friction system-ID is hinge/slide-only (the terminal tangent uses qpos − qpos0)",
+        );
+        assert_eq!(
+            model.ntendon, 0,
+            "friction system-ID does not model tendon friction loss",
+        );
+
+        let nv = model.nv;
+        let nx = 2 * nv + model.na;
+        let qpos0 = data0.qpos.clone();
+
+        // Roll out `n_steps` and return the terminal tangent state.
+        let rollout = |m: &sim_core::Model| -> Result<sim_core::DVector<f64>, sim_core::StepError> {
+            let mut d = data0.clone();
+            for _ in 0..n_steps {
+                d.step(m)?;
+            }
+            Ok(terminal_tangent(&d, &qpos0))
+        };
+
+        let terminal = rollout(model)?;
+
+        // Central FD over each per-DOF friction coefficient. `eps = 1e-6` is the
+        // value the opening spike used to recover a known coefficient to rel ~1e-9.
+        let eps = 1e-6;
+        let mut grid = sim_core::DMatrix::zeros(nx, nv);
+        for j in 0..nv {
+            let mut m_plus = model.clone();
+            m_plus.dof_frictionloss[j] += eps;
+            let mut m_minus = model.clone();
+            m_minus.dof_frictionloss[j] -= eps;
+            let col = (rollout(&m_plus)? - rollout(&m_minus)?) / (2.0 * eps);
+            grid.set_column(j, &col);
+        }
+        Ok((terminal, grid))
+    }
+
+    fn column(model: &sim_core::Model, joint: usize) -> usize {
+        // Hinge/slide: the joint's single DOF column (matches the FD grid layout).
+        model.jnt_dof_adr[joint]
+    }
+}
+
 /// **System-ID axis** — recover a pure-rigid model's **joint-damping**
 /// coefficients from an observed trajectory, via the analytic
 /// [`sim_core::mjd_damping_trajectory_jacobian`]. Targets are joint indices; see
@@ -1728,6 +1848,12 @@ pub type MassSystemId = RigidParamSystemId<MassSpec>;
 /// [`sim_core::mjd_inertia_trajectory_jacobian`]. Targets are `(body, axis)` pairs;
 /// see [`RigidParamSystemId`].
 pub type InertiaSystemId = RigidParamSystemId<InertiaSpec>;
+
+/// **System-ID axis** — recover a pure-rigid model's per-DOF dry **friction**
+/// (`dof_frictionloss`) from an observed trajectory, via a finite-difference
+/// trajectory gradient (see [`FrictionSpec`] for why friction is FD where the other
+/// channels are analytic). Targets are joint indices; see [`RigidParamSystemId`].
+pub type FrictionSystemId = RigidParamSystemId<FrictionSpec>;
 
 /// Identifiability summary of a least-squares system-ID problem, from the
 /// singular values of an observation Jacobian `J = ∂(observation)/∂(params)`.
@@ -2409,5 +2535,167 @@ mod tests {
             off.rank, 1,
             "only the hinge-axis (Y) moment is observable from a planar swing"
         );
+    }
+
+    // ---- friction (dof_frictionloss) system-ID, FD trajectory gradient ----
+
+    /// 2-link hinge pendulum, released from an angle and velocity-excited, so both
+    /// links slide from the start — the regime where dry friction is identifiable (a
+    /// *sticking* joint is locally unidentifiable in its friction). `fl` is modest
+    /// (≪ the gravity torque) so neither joint sticks at the operating point.
+    fn friction_fixture(
+        fl0: f64,
+        fl1: f64,
+        targets: Vec<usize>,
+        truth: &[f64],
+    ) -> FrictionSystemId {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.dof_frictionloss = vec![fl0, fl1];
+        model.compute_implicit_params();
+        let mut data0 = model.make_data();
+        data0.qpos[0] = 1.0;
+        data0.qpos[1] = 0.5;
+        // Excite both DOFs (nonzero initial velocity) so neither link starts in the
+        // weakly-identifiable stick regime — friction-loss is only identifiable while
+        // the joint slides.
+        data0.qvel[0] = 1.5;
+        data0.qvel[1] = -1.0;
+        FrictionSystemId::for_inverse_design(model, data0, 150, targets, truth)
+    }
+
+    #[test]
+    fn recovers_joint_frictionloss_from_trajectory() {
+        // Identify joint 0's friction; joint 1 carries a fixed, untargeted friction
+        // (so the recovery is not trivially decoupled).
+        let problem = friction_fixture(0.0, 0.03, vec![0], &[0.05]);
+
+        // At the true value the residual — hence the FD gradient — vanishes.
+        let (loss_star, grad_star) = problem.evaluate(&[0.05]);
+        assert!(
+            loss_star < 1e-18 && grad_star[0].abs() < 1e-8,
+            "zero residual at μ* ⇒ zero grad: loss={loss_star:.3e} grad={:.3e}",
+            grad_star[0]
+        );
+
+        // Off-target: the FD trajectory gradient the optimizer consumes matches a
+        // central FD of the problem's own loss (validates sign AND scale).
+        let mu = 0.03;
+        let (_, grad) = problem.evaluate(&[mu]);
+        let h = 1e-6;
+        let fd = (problem.evaluate(&[mu + h]).0 - problem.evaluate(&[mu - h]).0) / (2.0 * h);
+        let g_rel = (grad[0] - fd).abs() / fd.abs().max(1e-12);
+        assert!(
+            g_rel < 1e-3 && grad[0] < 0.0,
+            "gradient {:.6e} vs FD {fd:.6e} (rel {g_rel:.3e}); expected match and grad<0 below μ*",
+            grad[0]
+        );
+
+        // Friction is a positive scale parameter ⇒ log-space relative steps.
+        let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+        let cfg = normalized.recommended_config();
+        let result = normalized.optimize(&[0.02], &cfg);
+
+        let recovered = result.params[0];
+        let rel = (recovered - 0.05).abs() / 0.05;
+        assert!(
+            rel < 1e-3,
+            "recovered frictionloss {recovered:.6} (rel err {rel:.3e}) after {} iters",
+            result.iters
+        );
+    }
+
+    /// Multi-parameter friction recovery — and the finding that distinguishes
+    /// friction from the smooth channels: its terminal-state loss is **non-convex**.
+    #[test]
+    fn recovers_two_joint_frictionlosses() {
+        let problem = friction_fixture(0.0, 0.0, vec![0, 1], &[0.05, 0.08]);
+
+        // Each FD gradient component matches a central FD of the loss (sign + scale).
+        let p = [0.06, 0.06];
+        let (_, grad) = problem.evaluate(&p);
+        let h = 1e-6;
+        for i in 0..2 {
+            let (mut pp, mut pm) = (p, p);
+            pp[i] += h;
+            pm[i] -= h;
+            let fd = (problem.evaluate(&pp).0 - problem.evaluate(&pm).0) / (2.0 * h);
+            let g_rel = (grad[i] - fd).abs() / fd.abs().max(1e-12);
+            assert!(
+                g_rel < 1e-3,
+                "grad[{i}] {:.6e} vs FD {fd:.6e} (rel {g_rel:.3e})",
+                grad[i]
+            );
+        }
+
+        // ★ THE FRICTION FINDING: unlike the smooth (damping/mass/inertia) channels,
+        // whose terminal-state loss is convex, friction's loss is NON-CONVEX — the
+        // stick-slide structure creates a spurious local basin near *zero* friction.
+        // Along joint 1 (joint 0 fixed at its true 0.05) the loss has a local min at
+        // μ₁≈0, a barrier near μ₁≈0.02, then the true global min at μ₁=0.08. A far,
+        // friction-agnostic start (e.g. [0.02, 0.02]) falls into the zero basin; a
+        // sensible start within the true basin recovers exactly. This is honest
+        // sim-to-real reality: friction ID needs a reasonable prior, not a cold start.
+        let loss_at = |a: f64, b: f64| problem.evaluate(&[a, b]).0;
+        assert!(
+            loss_at(0.05, 0.0) < loss_at(0.05, 0.02),
+            "expected a spurious local basin near zero friction (loss rises toward the barrier)"
+        );
+        assert!(
+            loss_at(0.05, 0.08) < loss_at(0.05, 0.0),
+            "the true min must still be the global one"
+        );
+
+        // From a start within the true basin, recover both exactly.
+        let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+        let cfg = normalized.recommended_config();
+        let result = normalized.optimize(&[0.06, 0.06], &cfg);
+        for (got, want) in result.params.iter().zip([0.05, 0.08]) {
+            let rel = (got - want).abs() / want;
+            assert!(
+                rel < 5e-3,
+                "recovered {got:.6} vs {want} (rel {rel:.3e}) after {} iters",
+                result.iters
+            );
+        }
+    }
+
+    #[test]
+    fn friction_identifiability_readout() {
+        // Both sliding joints contribute to the terminal state → jointly identifiable.
+        let problem = friction_fixture(0.0, 0.0, vec![0, 1], &[0.05, 0.08]);
+        let j = problem.observation_jacobian(&[0.05, 0.08]);
+        let id = identifiability(&j, 1e-9);
+        println!(
+            "FRICTION IDENTIFIABILITY sv={:?} cond={:.4e} rank={}",
+            id.singular_values, id.condition_number, id.rank
+        );
+        assert_eq!(
+            id.rank, 2,
+            "both sliding-joint frictions should be observable from the terminal state"
+        );
+    }
+
+    /// The hinge/slide scope is a hard contract (a ball joint's tangent extraction
+    /// would be silently wrong), enforced in all build profiles.
+    #[test]
+    #[should_panic(expected = "hinge/slide-only")]
+    fn friction_rejects_ball_joint() {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.jnt_type[1] = sim_core::MjJointType::Ball;
+        let data0 = model.make_data();
+        let problem = FrictionSystemId::for_inverse_design(model, data0, 4, vec![0], &[0.05]);
+        problem.evaluate(&[0.05]);
+    }
+
+    /// Friction system-ID is pinned to the tested Euler regime (matching the
+    /// single-step channel), enforced in all build profiles.
+    #[test]
+    #[should_panic(expected = "Euler")]
+    fn friction_rejects_non_euler_integrator() {
+        let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+        model.integrator = sim_core::Integrator::RungeKutta4;
+        let data0 = model.make_data();
+        let problem = FrictionSystemId::for_inverse_design(model, data0, 4, vec![0], &[0.05]);
+        problem.evaluate(&[0.05]);
     }
 }

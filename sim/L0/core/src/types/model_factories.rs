@@ -143,6 +143,15 @@ impl Model {
         // Pre-compute CSR sparsity metadata for sparse LDL factorization
         model.compute_qld_csr_metadata();
 
+        // Per-DOF constraint-solver parameters, so a friction-loss or joint-limit
+        // constraint assembles correctly if one is added (the MJCF builder populates
+        // these for every DOF; the factory left them empty, which panicked on the
+        // first `dof_solref`/`dof_solimp` read and mis-scaled the constraint via the
+        // `MJ_MINVAL` invweight fallback). Inert for the default constraint-free use.
+        model.dof_solref = vec![DEFAULT_SOLREF; model.nv];
+        model.dof_solimp = vec![DEFAULT_SOLIMP; model.nv];
+        model.compute_invweight0();
+
         model
     }
 
