@@ -291,3 +291,253 @@ fn analytic_transition_matches_fd_under_stiffness() {
         failures.join("\n  ")
     );
 }
+
+/// The analytic state-transition Jacobian `A` must match central-FD for the
+/// implicit-Coriolis integrators (**ImplicitSpringDamper**, full **Implicit**)
+/// under joint **damping** with a multi-link chain and live Coriolis (`qvel ≠ 0`).
+///
+/// This guards the two analytic fixes those integrators rely on, **independent of
+/// joint stiffness** (the `under_stiffness` sweep drives `k`; this drives `D` and
+/// the velocity-coupling that exposes the implicit-Coriolis term):
+///  - ISD evaluates `qDeriv` at the refreshed (q, v⁺) operating point — its forward
+///    pass overwrites `qvel` but leaves `cvel` stale; without the refresh the
+///    off-diagonal `∂vᵢ⁺/∂vⱼ` Coriolis block is silently wrong.
+///  - full Implicit adds the second-order term `h²·M_hat⁻¹·rne_vel(qacc)` for the
+///    `v`-dependence of `M_hat = M − h·D`; without it the same off-diagonal block
+///    diverges, growing with chain length (1-DOF is exact either way).
+///
+/// `damp = 0` is included to assert the no-damping path stays exact too.
+#[test]
+fn analytic_transition_matches_fd_implicit_coriolis_under_damping() {
+    const FLOOR: f64 = 1e-3;
+    const TOL: f64 = 1e-5;
+
+    // NON-PARALLEL hinge axes: a planar (all-Y) chain zeroes several âₖ×âⱼ Coriolis
+    // cross-terms (the degeneracy the module header warns about), so use distinct axes
+    // to exercise the full off-diagonal velocity coupling the fix targets.
+    let axes = [
+        nalgebra::Vector3::new(0.0, 1.0, 0.0),
+        nalgebra::Vector3::new(1.0, 0.3, 0.0).normalize(),
+        nalgebra::Vector3::new(0.2, 1.0, 0.1).normalize(),
+    ];
+    let mk = |nlink: usize, damp: f64, integ: Integrator| {
+        let mut m = Model::n_link_pendulum(nlink, 1.0, 1.0);
+        for j in 0..m.njnt {
+            m.jnt_damping[j] = damp;
+            m.jnt_axis[j] = axes[j % axes.len()];
+        }
+        m.integrator = integ;
+        m.compute_implicit_params();
+        m
+    };
+    let mut failures = Vec::new();
+    for &(nlink, ref qpos, ref qvel) in &[
+        (2usize, vec![0.3, -0.4], vec![0.7, 0.5]),
+        (3usize, vec![0.2, -0.3, 0.4], vec![0.6, -0.5, 0.3]),
+    ] {
+        for &damp in &[0.0_f64, 0.5, 2.0] {
+            for &integ in &[Integrator::ImplicitSpringDamper, Integrator::Implicit] {
+                let model = mk(nlink, damp, integ);
+                let data = forward_at(&model, qpos, qvel);
+                let analytic = data
+                    .transition_derivatives(
+                        &model,
+                        &DerivativeConfig {
+                            use_analytical: true,
+                            ..Default::default()
+                        },
+                    )
+                    .expect("analytic transition");
+                let fd = mjd_transition_fd(
+                    &model,
+                    &data,
+                    &DerivativeConfig {
+                        use_analytical: false,
+                        ..Default::default()
+                    },
+                )
+                .expect("FD transition");
+                let (err, loc) = max_relative_error(&analytic.A, &fd.A, FLOOR);
+                if !(err < TOL) {
+                    failures.push(format!(
+                        "{nlink}-link {integ:?} damp={damp} → rel {err:.3e} at {loc:?} (tol {TOL:.1e})"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "analytic implicit-Coriolis transition A diverged from central-FD under damping for:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// A 2-link hinge chain with a damped FIXED tendon coupling both DOFs
+/// (`ten_J = [1, −1]`, so `−b·JᵀJ` has live off-diagonal entries).
+fn fixed_tendon_chain(damping: f64, integ: Integrator) -> Model {
+    use crate::types::{TendonType, WrapType};
+    let mut m = Model::n_link_pendulum(2, 1.0, 1.0);
+    // One fixed tendon, two joint wraps (dofs 0 and 1) with opposite coefficients.
+    m.tendon_adr.push(0);
+    m.tendon_num.push(2);
+    m.tendon_type.push(TendonType::Fixed);
+    m.tendon_stiffness.push(0.0); // only damping triggers the velocity-block gap
+    m.tendon_damping.push(damping);
+    m.tendon_lengthspring.push([0.0, 0.0]);
+    m.tendon_length0.push(0.0);
+    m.tendon_limited.push(false);
+    m.tendon_range.push((-1e10, 1e10));
+    m.tendon_margin.push(0.0);
+    m.tendon_frictionloss.push(0.0);
+    m.tendon_solref_lim.push([0.02, 1.0]);
+    m.tendon_solimp_lim.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+    m.tendon_solref_fri.push([0.02, 1.0]);
+    m.tendon_solimp_fri.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+    m.tendon_group.push(0);
+    m.tendon_rgba.push([0.5, 0.5, 0.5, 1.0]);
+    m.tendon_treenum.push(0);
+    m.tendon_tree.push(0);
+    m.tendon_invweight0.push(0.0);
+    m.tendon_name.push(Some("coupling_tendon".to_string()));
+    m.tendon_user.push(vec![]);
+    for (objid, coef) in [(0usize, 1.0_f64), (1usize, -1.0)] {
+        m.wrap_type.push(WrapType::Joint);
+        m.wrap_objid.push(objid);
+        m.wrap_prm.push(coef);
+        m.wrap_sidesite.push(usize::MAX);
+    }
+    m.ntendon += 1;
+    m.nwrap += 2;
+    m.integrator = integ;
+    m.compute_implicit_params();
+    m
+}
+
+/// **Guard for the FD-fallback on the incomplete analytic regimes.** ISD's analytic
+/// velocity block adds back only the *joint* damper, so a damped TENDON (whose
+/// `−b·JᵀJ` M_impl folds into the LHS) makes it silently wrong off-diagonal; full
+/// Implicit's velocity Hessian misses a Muscle/HillMuscle gain's velocity term. Both
+/// classes must route to exact FD (`implicit_analytic_incomplete` → FD in
+/// `mjd_transition`). This test drives a real tendon-damped ISD model through the
+/// public dispatch and asserts the result equals pure FD — which holds trivially while
+/// the gate routes it to FD, and goes RED the moment someone re-enables the analytic
+/// path for it (the off-diagonal tendon term would then diverge). `damping = 0`
+/// confirms the no-tendon-force path stays analytic-exact.
+#[test]
+fn tendon_damped_isd_routes_to_fd_and_matches() {
+    const FLOOR: f64 = 1e-3;
+    const TOL: f64 = 1e-5;
+    let qpos = [0.3, -0.4];
+    let qvel = [0.7, 0.5];
+    let mut failures = Vec::new();
+    for &damping in &[0.0_f64, 1.5] {
+        let model = fixed_tendon_chain(damping, Integrator::ImplicitSpringDamper);
+        // Sanity: the fixture forward-steps and the tendon Jacobian is the live coupling.
+        let data = forward_at(&model, &qpos, &qvel);
+        assert_eq!(model.ntendon, 1, "fixture should have one tendon");
+        let dispatched = data
+            .transition_derivatives(
+                &model,
+                &DerivativeConfig {
+                    use_analytical: true,
+                    ..Default::default()
+                },
+            )
+            .expect("dispatched transition");
+        let fd = mjd_transition_fd(
+            &model,
+            &data,
+            &DerivativeConfig {
+                use_analytical: false,
+                ..Default::default()
+            },
+        )
+        .expect("FD transition");
+        let (err, loc) = max_relative_error(&dispatched.A, &fd.A, FLOOR);
+        if !(err < TOL) {
+            failures.push(format!(
+                "tendon-ISD damp={damping} → rel {err:.3e} at {loc:?} (tol {TOL:.1e})"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "tendon-damped ISD analytic dispatch diverged from FD (gate regressed?):\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// The gate `implicit_analytic_incomplete` must classify exactly the model classes
+/// whose ISD/Implicit analytic transition derivative is incomplete: tendon-K/D under
+/// ImplicitSpringDamper, and a Muscle/HillMuscle *gain* actuator under full Implicit.
+/// Joint-only chains and the other integrators stay on the analytic path.
+#[test]
+fn implicit_analytic_incomplete_classifies_regimes() {
+    use super::hybrid::implicit_analytic_incomplete;
+    use crate::types::GainType;
+
+    // Plain joint chains: analytic-complete for every integrator.
+    for &integ in &[
+        Integrator::Euler,
+        Integrator::ImplicitFast,
+        Integrator::ImplicitSpringDamper,
+        Integrator::Implicit,
+        Integrator::RungeKutta4,
+    ] {
+        let mut m = Model::n_link_pendulum(2, 1.0, 1.0);
+        m.integrator = integ;
+        assert!(
+            !implicit_analytic_incomplete(&m),
+            "plain joint chain must be analytic-complete for {integ:?}"
+        );
+    }
+
+    // Damped tendon: incomplete ONLY under ISD (Implicit's Hessian ignores the
+    // v-constant tendon damping; the others never hit the term).
+    for &(integ, expect) in &[
+        (Integrator::ImplicitSpringDamper, true),
+        (Integrator::Implicit, false),
+        (Integrator::Euler, false),
+    ] {
+        let m = fixed_tendon_chain(1.5, integ);
+        assert_eq!(
+            implicit_analytic_incomplete(&m),
+            expect,
+            "damped-tendon classification wrong for {integ:?}"
+        );
+    }
+    // Tendon stiffness (no damping) also disqualifies ISD (M_impl q-dependence).
+    let mut stiff_tendon = fixed_tendon_chain(0.0, Integrator::ImplicitSpringDamper);
+    stiff_tendon.tendon_stiffness[0] = 5.0;
+    assert!(
+        implicit_analytic_incomplete(&stiff_tendon),
+        "stiff tendon must disqualify ISD"
+    );
+
+    // Muscle/HillMuscle gain: incomplete ONLY under full Implicit.
+    for &gain in &[GainType::Muscle, GainType::HillMuscle] {
+        for &(integ, expect) in &[
+            (Integrator::Implicit, true),
+            (Integrator::ImplicitSpringDamper, false),
+            (Integrator::ImplicitFast, false),
+        ] {
+            let mut m = Model::n_link_pendulum(1, 1.0, 1.0);
+            m.integrator = integ;
+            m.actuator_gaintype.push(gain);
+            assert_eq!(
+                implicit_analytic_incomplete(&m),
+                expect,
+                "{gain:?} gain classification wrong for {integ:?}"
+            );
+        }
+    }
+    // Affine gain is v-constant ⇒ does NOT disqualify Implicit.
+    let mut affine = Model::n_link_pendulum(1, 1.0, 1.0);
+    affine.integrator = Integrator::Implicit;
+    affine.actuator_gaintype.push(GainType::Affine);
+    assert!(
+        !implicit_analytic_incomplete(&affine),
+        "affine gain must stay analytic under Implicit"
+    );
+}
