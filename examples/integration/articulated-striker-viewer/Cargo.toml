@@ -1,0 +1,41 @@
+[package]
+name = "example-integration-articulated-striker-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Sdf + SphereSdf (the finite fist) + PenaltyRigidContact(Solver) + the tet block + BCs + the
+# measured-Ecoflex buffer material. The raw soft solver pressed by a finite SDF intruder (the fist).
+sim-soft = { workspace = true }
+# Tensor — the (x_prev, v_prev, theta) arguments to replay_step.
+sim-ml-chassis = { workspace = true }
+# build_soft_mesh + apply_soft_positions — the soft-body deformed-mesh build + per-frame replay path.
+sim-bevy-soft = { workspace = true }
+# UpAxis::PlusZ (sim +Z-up → Bevy +Y-up swap) + OrbitCamera / OrbitCameraPlugin.
+cf-bevy-common = { workspace = true }
+# Point3 — the Sdf trait's query point (for the TranslatedSdf pose wrapper).
+nalgebra = { workspace = true }
+# Bevy 0.18 windowed render pipeline (visual mode only; headless capture never touches Bevy).
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+    "x11",
+] }
+
+[lints]
+workspace = true
