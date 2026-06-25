@@ -39,7 +39,7 @@
 //! [r16]: ../../../../../examples/sim-soft/solid-to-sim-soft/
 
 use crate::Vec3;
-use nalgebra::Point3;
+use nalgebra::{Matrix3, Point3};
 
 pub use cf_geometry::Sdf;
 
@@ -96,6 +96,25 @@ impl Sdf for SphereSdf {
             Vec3::z()
         } else {
             p.coords / n
+        }
+    }
+
+    /// `∇²(‖p‖ − r) = (I − n̂n̂ᵀ)/‖p‖` — the curvature of a sphere's signed-distance
+    /// field (the `−r` is constant, Hessian-free). `n̂ = p/‖p‖`; the result is the
+    /// tangential projector at `p` scaled by `1/‖p‖`, so the normal swings faster as
+    /// the query nears the centre. Returns the zero matrix at the centre singularity
+    /// (the same `n == 0.0` predicate `grad` uses), unobservable downstream.
+    fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
+        let n = p.coords.norm();
+        // `n == 0.0` iff `p` is exactly the centre singularity (IEEE 754 `sqrt` is
+        // exact at 0) — the same predicate + rationale as `grad` above; the result
+        // there (`(I − n̂n̂ᵀ)/n`) blows up, so the centre returns the zero matrix.
+        #[allow(clippy::float_cmp)]
+        if n == 0.0 {
+            Matrix3::zeros()
+        } else {
+            let nhat = p.coords / n;
+            (Matrix3::identity() - nhat * nhat.transpose()) / n
         }
     }
 }

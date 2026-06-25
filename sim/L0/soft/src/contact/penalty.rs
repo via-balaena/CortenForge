@@ -823,8 +823,16 @@ impl ContactModel for PenaltyRigidContact {
         let d = prim.eval(p);
         self.pair_contribution(d)
             .map_or_else(ContactHessian::default, |c| {
+                // ∂(g_v)/∂x_v = d²E/dsd²·(n̂ n̂ᵀ) + (dE/dsd)·∂n̂/∂x_v. The second term is
+                // the GEOMETRIC stiffness: as the vertex slides over the primitive its
+                // contact normal turns, `∂n̂/∂x_v = ∇²sd = H` ([`Sdf::hessian`]). H = 0 for
+                // a plane (constant normal) so this is the historical `d²E·(n̂ n̂ᵀ)`; for a
+                // CURVED primitive it adds `dE·H` — the dual of the `−H·u` pose-residual
+                // curvature term, and required for the IFT tangent (and the pose
+                // sensitivity that reuses its factor) to be exact on curved contact.
                 let n = self.averaged_normal(prim.as_ref(), p);
-                let block: Matrix3<f64> = c.d2_energy_d_sd2 * (n * n.transpose());
+                let block: Matrix3<f64> =
+                    c.d2_energy_d_sd2 * (n * n.transpose()) + c.d_energy_d_sd * prim.hessian(p);
                 ContactHessian {
                     contributions: vec![(vertex_id, vertex_id, block)],
                 }
@@ -850,21 +858,26 @@ impl ContactModel for PenaltyRigidContact {
         let d = prim.eval(p);
         self.pair_contribution(d)
             .map_or_else(ContactGradient::default, |c| {
-                // Residual contact term is `+(dE/dsd)·n̂` (the +f_int scatter
-                // in `assemble_global_int_force`). Under an infinitesimal rigid
-                // motion (spatial twist `(ω, v)`) of the primitive the normal
-                // rotates `δn̂ = ω×n̂` and `sd = p·n̂ − offset` changes by
-                // `∂sd/∂s = p·δn̂ − δoffset`, `δoffset = v·n̂`. So
-                //   `∂(g_v)/∂s = d²E/dsd²·(∂sd/∂s)·n̂ + (dE/dsd)·δn̂`.
-                // The second (direction) term is the rotating-normal
-                // contribution; for a pure translation (`ω = 0`) `δn̂ = 0` and
-                // this reduces exactly to `d²E/dsd²·(−n̂·dir)·n̂`. `n̂` is the
-                // same normal `gradient` uses (`averaged_normal`, equal to
-                // `prim.grad` for the default `normal_avg_k == 1` / the plane
-                // scope the rotation term is validated on).
+                // Residual contact term is `+(dE/dsd)·n̂` (the +f_int scatter in
+                // `assemble_global_int_force`). Under an infinitesimal rigid motion of
+                // the primitive (spatial twist `(ω, v)`; the primitive's velocity at the
+                // fixed world point `p` is `u = v + ω×p`):
+                //   `∂(g_v)/∂s = d²E/dsd²·(∂sd/∂s)·n̂ + (dE/dsd)·δn̂`,
+                // with two geometric rates, EXACT for any SDF (the signed-distance field
+                // convects rigidly with the primitive, `D(sd)/Dt = 0`):
+                //   `∂sd/∂s = −u·n̂`           (= `p·(ω×n̂) − v·n̂`, as before)
+                //   `δn̂     = ω×n̂ − H·u`      (`H = ∇²sd`, the [`Sdf::hessian`])
+                // The normal both ROTATES with the primitive (`ω×n̂`) and CONVECTS as the
+                // contact point slides over a CURVED primitive (`−H·u`). For a PLANE the
+                // normal is constant (`H = 0`) so the curvature term vanishes and this
+                // reduces to the historical plane formula. `n̂` is `gradient`'s normal
+                // (`averaged_normal`, `= prim.grad` for `normal_avg_k == 1`, the
+                // differentiated scope); `H = prim.hessian(p)` is the matching curvature.
                 let n = self.averaged_normal(prim.as_ref(), p);
-                let dn = twist.angular.cross(&n);
-                let dsd = p.coords.dot(&dn) - twist.linear.dot(&n);
+                let omega_x_n = twist.angular.cross(&n);
+                let dsd = p.coords.dot(&omega_x_n) - twist.linear.dot(&n);
+                let u = twist.linear + twist.angular.cross(&p.coords);
+                let dn = omega_x_n - prim.hessian(p) * u;
                 let contribution = c.d2_energy_d_sd2 * dsd * n + c.d_energy_d_sd * dn;
                 ContactGradient {
                     contributions: vec![(vertex_id, contribution)],

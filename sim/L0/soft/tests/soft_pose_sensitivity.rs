@@ -29,8 +29,12 @@
 //! Differentiated in the contact-ENGAGED regime where the active set is
 //! stable across the FD perturbation (asserted) — the penalty active-set
 //! boundary is non-smooth (IPC the deferred cure). The plane has a constant
-//! normal (`∂n̂/∂δ = 0`); curved-primitive normal curvature is a documented
-//! deferral. See `docs/keystone/s3_soft_pose_sensitivity_recon.md`.
+//! normal (`∂n̂/∂δ = 0`); a CURVED primitive's normal also swings as it
+//! translates — the `−H·u` curvature term ([`Sdf::hessian`]) that the
+//! `sphere_pose_sensitivity_matches_resolve_fd` gate validates below.
+//! See `docs/keystone/s3_soft_pose_sensitivity_recon.md`.
+//!
+//! [`Sdf::hessian`]: sim_soft::Sdf::hessian
 //!
 //! [`NewtonStepVjp`]: sim_soft::NewtonStepVjp
 
@@ -41,12 +45,13 @@
     clippy::expect_used
 )]
 
+use nalgebra::{Matrix3, Point3};
 use sim_ml_chassis::Tensor;
 use sim_soft::readout::scene::pick_vertices_by_predicate;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, RigidTwist, Solver, SolverConfig,
-    Tet4, Vec3, VertexId,
+    PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, RigidTwist, Sdf, Solver,
+    SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
 };
 
 // ── Scene constants (the keystone coupling regime) ────────────────────────
@@ -391,6 +396,189 @@ fn rotation_sensitivity_matches_resolve_fd() {
     assert!(
         analytic_vs_fd < 1e-5,
         "analytic ∂x*/∂θ disagrees with re-solve FD: rel {analytic_vs_fd:e}",
+    );
+}
+
+// ── Curved-primitive pose sensitivity (the `−H·u` curvature term) ──────────
+
+/// A `SphereSdf` posed at a world `center` — forwards `eval`/`grad`/`hessian`
+/// (translation leaves the Hessian unchanged), so the curvature term is the
+/// sphere's own `∇²sd`.
+struct PosedSphere {
+    inner: SphereSdf,
+    center: Vec3,
+}
+impl Sdf for PosedSphere {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        self.inner.eval(p - self.center)
+    }
+    fn grad(&self, p: Point3<f64>) -> Vec3 {
+        self.inner.grad(p - self.center)
+    }
+    fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
+        self.inner.hessian(p - self.center)
+    }
+}
+
+/// Sphere radius (m) and its lateral centre (the block's top-face centre).
+const SPHERE_R: f64 = 0.04;
+
+fn sphere_at(center_z: f64) -> PosedSphere {
+    PosedSphere {
+        inner: SphereSdf { radius: SPHERE_R },
+        center: Vec3::new(EDGE / 2.0, EDGE / 2.0, center_z),
+    }
+}
+
+/// Re-solve ONE dynamic step with the sphere centred at `center_z` (its south
+/// pole pressing into the top face), returning `x_final`. The curved-primitive
+/// analog of [`solve_step`]; the FD oracle moves `center_z` (a `+ẑ` translation
+/// of the primitive) and touches none of the analytic machinery.
+fn sphere_solve_step(center_z: f64, x_prev: &[f64], v_prev: &[f64]) -> Vec<f64> {
+    let n_dof = x_prev.len();
+    let contact = PenaltyRigidContact::with_params(vec![sphere_at(center_z)], KAPPA, D_HAT);
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    cfg.max_newton_iter = 80; // the curved contact's deep engagement needs more iterations
+    let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        Tet4,
+        block(),
+        contact,
+        cfg,
+        BoundaryConditions::new(bottom_pins(), Vec::new()),
+    );
+    solver
+        .replay_step(
+            &Tensor::from_slice(x_prev, &[n_dof]),
+            &Tensor::from_slice(v_prev, &[n_dof]),
+            &Tensor::zeros(&[0]),
+            DT,
+        )
+        .x_final
+}
+
+fn sphere_active_count(center_z: f64, x: &[f64]) -> usize {
+    let contact = PenaltyRigidContact::with_params(vec![sphere_at(center_z)], KAPPA, D_HAT);
+    let positions: Vec<Vec3> = x
+        .chunks_exact(3)
+        .map(|c| Vec3::new(c[0], c[1], c[2]))
+        .collect();
+    contact.per_pair_readout(&block(), &positions).len()
+}
+
+/// **The curvature gate (this leaf's headline).** `∂x*/∂(sphere +ẑ translation)`
+/// from the keystone [`equilibrium_pose_sensitivity`] matches a nonlinear
+/// re-solve FD — to the SAME machine-exact `< 1e-5` as the plane. This passes
+/// ONLY with the `−H·u` curvature term in `pose_residual_derivative`: without it
+/// the sphere's normal-swing-under-translation is dropped and the error sits at
+/// ~7e-3 (measured), ~700× the plane. A flat plane (`H = 0`) is unaffected.
+///
+/// [`equilibrium_pose_sensitivity`]: sim_soft::CpuNewtonSolver::equilibrium_pose_sensitivity
+#[test]
+fn sphere_pose_sensitivity_matches_resolve_fd() {
+    // Settle to engaged equilibrium: sphere south pole `PENETRATION` below the top.
+    let center_z = EDGE + SPHERE_R - PENETRATION;
+    let mesh = block();
+    let n_dof = 3 * mesh.n_vertices();
+    let mut x = vec![0.0_f64; n_dof];
+    for (chunk, p) in x.chunks_exact_mut(3).zip(mesh.positions().iter()) {
+        chunk[0] = p.x;
+        chunk[1] = p.y;
+        chunk[2] = p.z;
+    }
+    let mut v = vec![0.0_f64; n_dof];
+    for _ in 0..SETTLE_STEPS {
+        let xf = sphere_solve_step(center_z, &x, &v);
+        for (vi, (&xf_i, &xo)) in v.iter_mut().zip(xf.iter().zip(x.iter())) {
+            *vi = (xf_i - xo) / DT;
+        }
+        x = xf;
+    }
+    let (x_prev, v_prev) = (x.clone(), v.clone());
+
+    let contact = PenaltyRigidContact::with_params(vec![sphere_at(center_z)], KAPPA, D_HAT);
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    cfg.max_newton_iter = 80;
+    let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        Tet4,
+        block(),
+        contact,
+        cfg,
+        BoundaryConditions::new(bottom_pins(), Vec::new()),
+    );
+    let x_final = solver
+        .replay_step(
+            &Tensor::from_slice(&x_prev, &[n_dof]),
+            &Tensor::from_slice(&v_prev, &[n_dof]),
+            &Tensor::zeros(&[0]),
+            DT,
+        )
+        .x_final;
+
+    // Analytic: ∂x*/∂(sphere +ẑ translation) — a unit translation of the primitive.
+    let analytic = solver.equilibrium_pose_sensitivity(
+        &x_final,
+        None,
+        DT,
+        RigidTwist::translation(Vec3::new(0.0, 0.0, 1.0)),
+    );
+
+    // FD oracle: re-solve with the sphere centre moved ±ε in z.
+    let fd = |eps: f64| -> Vec<f64> {
+        let xp = sphere_solve_step(center_z + eps, &x_prev, &v_prev);
+        let xm = sphere_solve_step(center_z - eps, &x_prev, &v_prev);
+        xp.iter()
+            .zip(xm.iter())
+            .map(|(a, b)| (a - b) / (2.0 * eps))
+            .collect::<Vec<f64>>()
+    };
+    let fd1 = fd(1.0e-6);
+    let fd2 = fd(5.0e-7);
+
+    // Active set stable across the perturbation (engaged regime).
+    let n_active = sphere_active_count(center_z, &x_final);
+    assert!(
+        n_active > 0,
+        "scene must be contact-engaged, got 0 active pairs"
+    );
+    for (lbl, cz) in [("+ε", center_z + 1.0e-6), ("-ε", center_z - 1.0e-6)] {
+        let x = sphere_solve_step(cz, &x_prev, &v_prev);
+        assert_eq!(
+            sphere_active_count(cz, &x),
+            n_active,
+            "active set flipped at {lbl} — outside the stable-active-set regime",
+        );
+    }
+
+    let rel = |a: &[f64], b: &[f64]| -> f64 {
+        let num: f64 = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum();
+        let den: f64 = b.iter().map(|y| y * y).sum();
+        (num / den).sqrt()
+    };
+    let two_eps = rel(&fd1, &fd2);
+    let analytic_vs_fd = rel(&analytic, &fd1);
+    let max_dx = analytic.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+
+    eprintln!(
+        "sphere (curved) pose sensitivity: n_active={n_active}, ‖∂x*/∂z‖_∞={max_dx:.4e}, \
+         two-ε rel={two_eps:.3e}, analytic-vs-FD rel={analytic_vs_fd:.3e}"
+    );
+
+    assert!(
+        two_eps < 1e-3,
+        "FD not converged across ε (two-ε rel {two_eps:e}) — step not smooth in this regime",
+    );
+    assert!(
+        max_dx > 0.1,
+        "‖∂x*/∂z‖_∞ = {max_dx:e} implausibly small for an engaged sphere contact",
+    );
+    // The headline: machine-exact, SAME gate as the plane — only the `−H·u`
+    // curvature term makes this pass (without it the error is ~7e-3).
+    assert!(
+        analytic_vs_fd < 1e-5,
+        "analytic ∂x*/∂(sphere z) disagrees with re-solve FD: rel {analytic_vs_fd:e} \
+         — the curved-primitive `−H·u` curvature term is missing or wrong",
     );
 }
 
