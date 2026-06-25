@@ -13,13 +13,20 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 10
+    # Cap concurrent dependabot PRs: a week's bumps should land as at most a
+    # couple of grouped PRs, not a dozen one-per-crate PRs that each trigger the
+    # full CI matrix and saturate the runner pool (the quality-gate concurrency
+    # note also serializes dependabot CI as a backstop).
+    open-pull-requests-limit: 4
     commit-message:
       prefix: "chore(deps)"
     labels:
       - "dependencies"
       - "rust"
-    # Group minor/patch updates to reduce noise
+    # Group ALL updates so a week's bumps collapse into TWO PRs at most: routine
+    # minor/patch in one, breaking majors in another (majors stay separate so a
+    # breaking bump doesn't block the routine updates). Without the major group,
+    # every major bump opens its own PR — the runner-saturating flood this fixes.
     groups:
       rust-minor:
         patterns:
@@ -27,6 +34,11 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      rust-major:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
@@ -34,8 +46,14 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    open-pull-requests-limit: 4
     commit-message:
       prefix: "ci(deps)"
     labels:
       - "dependencies"
       - "ci"
+    # One PR for all action bumps (rare + light).
+    groups:
+      github-actions:
+        patterns:
+          - "*"
