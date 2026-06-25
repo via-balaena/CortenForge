@@ -357,6 +357,7 @@ members = [
     # Examples — integration (cross-domain pipelines)
     "examples/integration/coupled-impact-viewer",
     "examples/integration/finite-striker-viewer",
+    "examples/integration/articulated-striker-viewer",
     "examples/integration/design-to-sim",
     "examples/integration/design-to-print",
     "examples/integration/sim-informed-design",
