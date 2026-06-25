@@ -428,6 +428,11 @@ pub struct FrictionVertexForce {
     /// `∂force/∂height` along the build's `pose_dir` plane translation (`a_v·(n̂·∂(plane)/∂pose)`,
     /// the λⁿ coupling).
     pub dforce_dheight: Vec3,
+    /// `∂force/∂μ_c` — the friction force is `∇D_v = μ_c·λⁿ_v·f₁·Tû`, LINEAR in the Coulomb
+    /// coefficient `μ_c`, so `∂force/∂μ_c = ∇D_v/μ_c` (the DIRECT channel, at fixed `x*`/λⁿ). The
+    /// dominant lever for the friction-coefficient co-design gradient (the soft `x*` channel is
+    /// tiny in deep slip).
+    pub dforce_dmu_c: Vec3,
 }
 
 /// CPU backward-Euler Newton solver.
@@ -2620,6 +2625,9 @@ where
                     dforce_dxprev,
                     dforce_ddrift,
                     dforce_dheight,
+                    // ∇D_v is linear in μ_c ⇒ ∂force/∂μ_c = ∇D_v/μ_c (mu > 0 here: the mu == 0
+                    // early-return above guarantees it).
+                    dforce_dmu_c: grad_d / mu,
                 });
             }
         }

@@ -61,8 +61,9 @@ use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
     ActivePairsFor, BoundaryConditions, ContactModel, ContactPair, ContactPairReadout,
-    CpuNewtonSolver, HandBuiltTetMesh, IpcRigidContact, LoadAxis, MaterialField, Mesh, NeoHookean,
-    PenaltyRigidContact, RigidPlane, RigidTwist, Solver, SolverConfig, Tet4, Vec3, VertexId,
+    CpuNewtonSolver, FrictionVertexForce, HandBuiltTetMesh, IpcRigidContact, LoadAxis,
+    MaterialField, Mesh, NeoHookean, PenaltyRigidContact, RigidPlane, RigidTwist, Solver,
+    SolverConfig, Tet4, Vec3, VertexId,
 };
 use std::marker::PhantomData;
 
@@ -1059,6 +1060,9 @@ struct FrictionWrenchVert {
     dforce_ddrift: Vec3,
     /// `∂force/∂height` along the build's `pose_dir`.
     dforce_dheight: Vec3,
+    /// `∂force/∂μ_c = ∇D_v/μ_c` — the DIRECT Coulomb-coefficient channel (only threaded when the
+    /// node carries a `μ_c` parent, i.e. the friction-coefficient gradient).
+    dforce_dmu_c: Vec3,
 }
 
 /// Chassis-tape [`VjpOp`] folding the full TANGENTIAL friction GRIP wrench into the spatial
@@ -1073,6 +1077,10 @@ struct FrictionWrenchVert {
 /// `m = −f_fric_total × cot_τ` threaded through `J_lin` (as in [`ContactWrenchTrajVjp`]'s
 /// `∂L/∂s`). Parents `[w_normal, x*, pose, s, drift, x_prev]`
 /// (`[6]`, `[3n]`, `[1]`, `[2·nv]`, `[1]`, `[3n]`), output `w` (`[6]`).
+///
+/// With [`Self::mu_c`] set, the node takes a 7th parent — the Coulomb coefficient `μ_c` — and
+/// threads the DIRECT channel `∂L/∂μ_c += Σ_v co_v · (∇D_v/μ_c)` (the friction-coefficient
+/// gradient); without it, the material/passive path has 6 parents (byte-identical).
 #[derive(Clone, Debug)]
 struct FrictionWrenchTrajVjp {
     /// Per active friction vertex.
@@ -1085,6 +1093,9 @@ struct FrictionWrenchTrajVjp {
     n_dof: usize,
     /// Rigid-DOF count `nv`.
     nv: usize,
+    /// When `true`, a 7th parent `μ_c` (`[1]`) is present and the `∂L/∂μ_c` direct channel is
+    /// threaded; `false` ⇒ 6 parents, no `μ_c` channel.
+    mu_c: bool,
 }
 
 impl VjpOp for FrictionWrenchTrajVjp {
@@ -1098,17 +1109,20 @@ impl VjpOp for FrictionWrenchTrajVjp {
     #[allow(clippy::panic, clippy::needless_range_loop)]
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
         let nd = self.n_dof;
+        let want_parents = if self.mu_c { 7 } else { 6 };
+        let mu_c_shape_ok = !self.mu_c || parent_cotans[6].shape() == [1];
         assert!(
             cotangent.shape() == [6]
-                && parent_cotans.len() == 6
+                && parent_cotans.len() == want_parents
                 && parent_cotans[0].shape() == [6]
                 && parent_cotans[1].shape() == [nd]
                 && parent_cotans[2].shape() == [1]
                 && parent_cotans[3].shape() == [2 * self.nv]
                 && parent_cotans[4].shape() == [1]
-                && parent_cotans[5].shape() == [nd],
+                && parent_cotans[5].shape() == [nd]
+                && mu_c_shape_ok,
             "FrictionWrenchTrajVjp: expected cot [6] + parents (w_normal [6], x* [{nd}], \
-             pose [1], s [{}], drift [1], x_prev [{nd}])",
+             pose [1], s [{}], drift [1], x_prev [{nd}][, μ_c [1]])",
             2 * self.nv,
         );
         let cot = cotangent.as_slice();
@@ -1124,6 +1138,7 @@ impl VjpOp for FrictionWrenchTrajVjp {
         // Per-vertex friction contributions.
         let mut pose_acc = 0.0_f64;
         let mut drift_acc = 0.0_f64;
+        let mut mu_c_acc = 0.0_f64;
         for v in &self.verts {
             // Effective cotangent on ∇D_v: force part + moment-via-∇D_v part.
             let co = cot_f + cot_t.cross(&v.arm);
@@ -1147,9 +1162,14 @@ impl VjpOp for FrictionWrenchTrajVjp {
             }
             pose_acc += co.dot(&v.dforce_dheight);
             drift_acc += co.dot(&v.dforce_ddrift);
+            mu_c_acc += co.dot(&v.dforce_dmu_c);
         }
         parent_cotans[2].as_mut_slice()[0] += pose_acc;
         parent_cotans[4].as_mut_slice()[0] += drift_acc;
+        // Direct μ_c channel (only when the node carries the μ_c parent).
+        if self.mu_c {
+            parent_cotans[6].as_mut_slice()[0] += mu_c_acc;
+        }
 
         // ∂L/∂s via the COM c(q): m = −f_fric_total × cot_τ, ∂L/∂qpos = J_linᵀ·m (qvel rows 0).
         let m = -self.f_total.cross(&cot_t);
@@ -1159,6 +1179,43 @@ impl VjpOp for FrictionWrenchTrajVjp {
                 self.jlin[(0, j)] * m.x + self.jlin[(1, j)] * m.y + self.jlin[(2, j)] * m.z;
         }
     }
+}
+
+/// Assemble the per-vertex friction grip onto a wrench: adds the friction force `Σ∇D_v` and the
+/// off-COM moment `Σ(r_v−c)×∇D_v` (`r_v = positions[vid]`, `c` the COM) onto `wrench`, and returns
+/// the per-vertex carry [`FrictionWrenchVert`]s plus the total friction force `Σ∇D_v` (the node's
+/// `c(q)` feedback). Shared forward+tape assembly for the material and friction-coefficient
+/// articulated gradients.
+fn assemble_friction_wrench(
+    pv: Vec<FrictionVertexForce>,
+    positions: &[Vec3],
+    c: Vec3,
+    wrench: &mut SpatialVector,
+) -> (Vec<FrictionWrenchVert>, Vec3) {
+    let mut f_total = Vec3::zeros();
+    let mut fverts = Vec::with_capacity(pv.len());
+    for p in pv {
+        let arm = positions[p.vid as usize] - c; // d_v = r_v − c
+        let tau = arm.cross(&p.force);
+        wrench[0] += tau.x;
+        wrench[1] += tau.y;
+        wrench[2] += tau.z;
+        wrench[3] += p.force.x;
+        wrench[4] += p.force.y;
+        wrench[5] += p.force.z;
+        f_total += p.force;
+        fverts.push(FrictionWrenchVert {
+            vid: p.vid as usize,
+            force: p.force,
+            arm,
+            dforce_dx: p.dforce_dx,
+            dforce_dxprev: p.dforce_dxprev,
+            dforce_ddrift: p.dforce_ddrift,
+            dforce_dheight: p.dforce_dheight,
+            dforce_dmu_c: p.dforce_dmu_c,
+        });
+    }
+    (fverts, f_total)
 }
 
 /// Result of one coupled step.
@@ -3426,28 +3483,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // sim-soft's `friction_force_jacobians`; the node threads them through force AND moment.
             let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
             let mut w_total = w_normal;
-            let mut f_fric_total = Vec3::zeros();
-            let mut fverts: Vec<FrictionWrenchVert> = Vec::with_capacity(pv.len());
-            for p in pv {
-                let arm = positions[p.vid as usize] - c; // d_v = r_v − c
-                let tau = arm.cross(&p.force);
-                w_total[0] += tau.x;
-                w_total[1] += tau.y;
-                w_total[2] += tau.z;
-                w_total[3] += p.force.x;
-                w_total[4] += p.force.y;
-                w_total[5] += p.force.z;
-                f_fric_total += p.force;
-                fverts.push(FrictionWrenchVert {
-                    vid: p.vid as usize,
-                    force: p.force,
-                    arm,
-                    dforce_dx: p.dforce_dx,
-                    dforce_dxprev: p.dforce_dxprev,
-                    dforce_ddrift: p.dforce_ddrift,
-                    dforce_dheight: p.dforce_dheight,
-                });
-            }
+            let (fverts, f_fric_total) = assemble_friction_wrench(pv, &positions, c, &mut w_total);
             let w_total_var = tape.push_custom(
                 &[w_normal_var, x_next_var, pose_var, s_var, drift_var, x_var],
                 Tensor::from_slice(w_total.as_slice(), &[6]),
@@ -3457,6 +3493,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin,
                     n_dof: 3 * n,
                     nv,
+                    mu_c: false,
                 }),
             );
 
@@ -3497,6 +3534,244 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
 
         // Objective: the tip world x after the rollout = (COM x-Jacobian)·δq — the tangential
         // drag. Read fresh (forward at q_N), the matched fresh convention the oracle uses.
+        self.data.forward(&self.model).expect("fresh FK (output)");
+        let tip_x = self.data.xipos[self.body].x;
+        let jx_final: Vec<f64> = {
+            let jlin = self.com_linear_jacobian();
+            (0..nv).map(|j| jlin[(0, j)]).collect()
+        };
+        let obj_var = tape.push_custom(
+            &[s_var],
+            Tensor::from_slice(&[tip_x], &[1]),
+            Box::new(PoseSeamVjp { jz: jx_final }),
+        );
+        tape.backward(obj_var);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (tip_x, grad)
+    }
+
+    /// **The articulated FRICTION-grip trajectory gradient w.r.t. the Coulomb COEFFICIENT `μ_c`.**
+    /// The friction-coefficient sibling of
+    /// [`Self::coupled_trajectory_tangential_material_gradient_articulated`] (which differentiates
+    /// the soft block's `μ`/`λ`) and the articulated successor to the free-platen
+    /// [`Self::coupled_trajectory_tangential_friction_coeff_gradient`]: rolls the grip system
+    /// forward `n_steps` on one chassis tape, then one `tape.backward` gives `(tip_x_N, ∂tip_x_N/∂μ_c)`
+    /// — the tip's tangential drag vs the contact's grip-surface friction coefficient.
+    ///
+    /// `μ_c` enters through the SAME two channels as the free platen, now on the matrix carry:
+    /// 1. **Soft `x*`** — the friction potential `D ∝ μ_c` shifts the soft equilibrium; routed by
+    ///    [`CpuNewtonSolver::trajectory_step_vjp_grip_fric_coeff`] into the soft node's param slot.
+    ///    TINY in deep slip (`x*` barely moves).
+    /// 2. **Direct through the friction force** — `∇D_v = μ_c·λⁿ_v·…` is LINEAR in `μ_c`, so
+    ///    `∂∇D_v/∂μ_c = ∇D_v/μ_c` ([`sim_soft::FrictionVertexForce::dforce_dmu_c`]); the
+    ///    `FrictionWrenchTrajVjp` node threads it through BOTH force and off-COM moment via the same
+    ///    per-vertex `co_v` as the material path. This DOMINATES (`≈ λⁿ` in the saturated regime).
+    ///
+    /// Every other node (pose seam, articulated drift, normal wrench, matrix carry, tip-x objective)
+    /// is identical to the material gradient. Same scope: EUCLIDEAN joints (`nq == nv`), flat normal,
+    /// friction active, `rigid_damping = 0`. FD-gated against [`Self::coupled_trajectory_gripped_articulated`].
+    ///
+    /// # Panics
+    /// Panics if `nq != nv`, if friction is inactive, if `rigid_damping != 0`, if the rotating
+    /// normal is enabled, or if a rigid/soft step diverges.
+    #[must_use]
+    // One coherent per-step tape-construction loop (mirrors the material gradient; μ_c swaps the
+    // param leaf, the soft VJP, and adds the friction node's μ_c parent).
+    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not recoverable.
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_tangential_friction_coeff_gradient_articulated(
+        &mut self,
+        n_steps: usize,
+    ) -> (f64, f64) {
+        assert!(
+            self.model.nq == self.model.nv,
+            "articulated friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
+        );
+        assert!(
+            self.cfg.friction_mu > 0.0,
+            "∂/∂μ_c requires friction active (cfg.friction_mu > 0)"
+        );
+        assert!(
+            self.rigid_damping == 0.0,
+            "articulated path requires rigid_damping = 0 (the coupling's free-platen knob)"
+        );
+        assert!(
+            !self.rotating_normal,
+            "articulated friction gradient is flat-normal only (rotating normal unsupported)"
+        );
+        let n = self.n_vertices;
+        let nv = self.model.nv;
+        let dt = self.cfg.dt;
+        let pose_dir = Vec3::new(0.0, 0.0, 1.0);
+        let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+
+        let mut tape = Tape::new();
+        let p_var = tape.param_tensor(Tensor::from_slice(&[self.cfg.friction_mu], &[1]));
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut s0 = vec![0.0_f64; 2 * nv];
+        for i in 0..nv {
+            s0[i] = self.data.qpos[i];
+            s0[nv + i] = self.data.qvel[i];
+        }
+        let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
+
+        for _ in 0..n_steps {
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.tip_plane_height();
+            let jlin = self.com_linear_jacobian();
+            let jlin_x: Vec<f64> = (0..nv).map(|j| jlin[(0, j)]).collect();
+            let v_com = &jlin * &self.data.qvel;
+            let drift = Vec3::new(v_com[0], v_com[1], v_com[2]) * dt;
+            let x_start = self.x.clone();
+
+            let pose_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[height], &[1]),
+                Box::new(PoseSeamVjp {
+                    jz: self.pose_seam_jz(),
+                }),
+            );
+            let drift_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[drift.x], &[1]),
+                Box::new(DriftFromStateVjp { dt, jlin_x }),
+            );
+
+            // (1) one friction-aware soft step; the soft node's param slot is μ_c (channel 1).
+            let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+            let solver: SoftSolver<C> = CpuNewtonSolver::new(
+                Tet4,
+                self.fresh_mesh(),
+                self.build_contact(height),
+                self.cfg,
+                bc,
+            )
+            .with_friction_surface_drift(drift);
+            let x_next = solver
+                .replay_step(
+                    &Tensor::from_slice(&self.x, &[3 * n]),
+                    &Tensor::from_slice(&self.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final;
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, pose_var, drift_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp_grip_fric_coeff(
+                    &x_next, &x_start, dt, pose_dir, drift_dir,
+                )),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (2) NORMAL contact wrench — μ_c does NOT enter the normal force, so no μ_c parent.
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|cc| Vec3::new(cc[0], cc[1], cc[2]))
+                .collect();
+            let c = self.data.xipos[self.body];
+            let pairs = self.active_pair_wrench_data(height, &positions);
+            let mut w_normal = SpatialVector::zeros();
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            for (v, g, nrm, curv, r) in pairs {
+                let f = -g;
+                w_normal[3] += f.x;
+                w_normal[4] += f.y;
+                w_normal[5] += f.z;
+                let tau = (r - c).cross(&f);
+                w_normal[0] += tau.x;
+                w_normal[1] += tau.y;
+                w_normal[2] += tau.z;
+                active.push((v, g, nrm, curv, r - c));
+            }
+            let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
+            let w_normal_var = tape.push_custom(
+                &[x_next_var, pose_var, s_var],
+                Tensor::from_slice(w_normal.as_slice(), &[6]),
+                Box::new(ContactWrenchTrajVjp {
+                    active,
+                    force: normal_force,
+                    jlin: jlin.clone(),
+                    n_dof: 3 * n,
+                    nv,
+                    pose: WrenchPose::Height,
+                }),
+            );
+
+            // (3)+(4) FRICTION wrench WITH the μ_c direct channel (7th parent = μ_c).
+            let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
+            let mut w_total = w_normal;
+            let (fverts, f_fric_total) = assemble_friction_wrench(pv, &positions, c, &mut w_total);
+            let w_total_var = tape.push_custom(
+                &[
+                    w_normal_var,
+                    x_next_var,
+                    pose_var,
+                    s_var,
+                    drift_var,
+                    x_var,
+                    p_var,
+                ],
+                Tensor::from_slice(w_total.as_slice(), &[6]),
+                Box::new(FrictionWrenchTrajVjp {
+                    verts: fverts,
+                    f_total: f_fric_total,
+                    jlin,
+                    n_dof: 3 * n,
+                    nv,
+                    mu_c: true,
+                }),
+            );
+
+            // (5) multi-DOF carry with the TOTAL wrench held.
+            let j_state = self
+                .analytic_state_jacobian(&w_total)
+                .unwrap_or_else(|| self.loaded_state_jacobian(&w_total));
+            let g_vel = self.fresh_xfrc_column();
+
+            self.data.xfrc_applied[self.body] = w_total;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in articulated friction-coeff trajectory");
+
+            let g_pos = self.model.timestep * &g_vel;
+            let mut s_next = vec![0.0_f64; 2 * nv];
+            for i in 0..nv {
+                s_next[i] = self.data.qpos[i];
+                s_next[nv + i] = self.data.qvel[i];
+            }
+            let s_next_var = tape.push_custom(
+                &[s_var, w_total_var],
+                Tensor::from_slice(&s_next, &[2 * nv]),
+                Box::new(RigidStateCarryVjp {
+                    j_state,
+                    g_vel,
+                    g_pos,
+                    g_act: None,
+                }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            s_var = s_next_var;
+        }
+
         self.data.forward(&self.model).expect("fresh FK (output)");
         let tip_x = self.data.xipos[self.body].x;
         let jx_final: Vec<f64> = {
@@ -5565,7 +5840,13 @@ mod tests {
             build().coupled_trajectory_tangential_material_gradient_articulated(3, 0);
         assert!(
             tip_x.is_finite() && grad.is_finite(),
-            "articulated friction gradient must be finite, got ({tip_x}, {grad})"
+            "articulated friction material gradient must be finite, got ({tip_x}, {grad})"
+        );
+        let (cx, cgrad) =
+            build().coupled_trajectory_tangential_friction_coeff_gradient_articulated(3);
+        assert!(
+            cx.is_finite() && cgrad.is_finite(),
+            "articulated friction-coeff gradient must be finite, got ({cx}, {cgrad})"
         );
     }
 

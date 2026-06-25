@@ -282,6 +282,7 @@ fn per_vertex_force_jacobians_match_aggregate_and_fd() {
         let sum_force: f64 = pv.iter().map(|p| p.force[i]).sum();
         let sum_ddrift: f64 = pv.iter().map(|p| p.dforce_ddrift[i]).sum();
         let sum_dheight: f64 = pv.iter().map(|p| p.dforce_dheight[i]).sum();
+        let sum_dmu_c: f64 = pv.iter().map(|p| p.dforce_dmu_c[i]).sum();
         let mut sum_dx = vec![0.0_f64; nd];
         let mut sum_dxprev = vec![0.0_f64; nd];
         for p in &pv {
@@ -317,6 +318,15 @@ fn per_vertex_force_jacobians_match_aggregate_and_fd() {
         assert!(
             (sum_dheight - agg.dforce_dheight).abs() <= 1e-10 * agg.dforce_dheight.abs().max(1e-12),
             "dforce_dheight[{i}]"
+        );
+        // μ_c direct channel: ∂force/∂μ_c = force/μ_c (force linear in μ_c), so the per-vertex
+        // sum equals the aggregate reaction along êᵢ divided by μ_c (= FRIC_MU). The aggregate's
+        // own μ_c-linearity is FD-gated by the free-platen coeff-gradient test.
+        assert!(
+            (sum_dmu_c - agg.force / FRIC_MU).abs()
+                <= 1e-10 * (agg.force / FRIC_MU).abs().max(1e-12),
+            "dforce_dmu_c[{i}]: per-vertex sum {sum_dmu_c:e} vs agg.force/μ_c {:e}",
+            agg.force / FRIC_MU
         );
     }
 
