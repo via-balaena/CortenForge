@@ -3822,6 +3822,67 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self.data.xipos[self.body].z
     }
 
+    /// Forward-only oracle for the actuator CONTROL gradient THROUGH the friction grip — the
+    /// gripped sibling of [`Self::coupled_trajectory_actuated_z`] (normal-only) and the actuated
+    /// sibling of [`Self::coupled_trajectory_gripped_articulated`]. Rolls the coupled system
+    /// forward applying the per-step motor control `controls[k]` (`data.ctrl[0]`) with the full
+    /// GRIPPED contact wrench (normal + friction + off-COM moment) and the collider drift read
+    /// from the articulated state (`Δ_surf = J_lin·qvel·dt`). Returns the body COM (`xipos`) so a
+    /// gate can read the tangential drag (`.x`); the independent black-box reference for
+    /// finite-differencing `∂tip_x/∂u_k`. Advances `self`.
+    ///
+    /// Mirrors the gradient method's staggered per-step order — soft solve → wrench readout → set
+    /// `ctrl` → step (the actuator drives the integration, not the pre-step contact).
+    ///
+    /// # Panics
+    /// Panics if a rigid/soft step diverges (as in [`Self::step`]).
+    #[must_use]
+    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not recoverable
+    // for keystone-v1 (mirrors `coupled_trajectory_actuated_z` / `coupled_trajectory_gripped_articulated`).
+    #[allow(clippy::expect_used)]
+    pub fn coupled_trajectory_actuated_gripped_x(&mut self, controls: &[f64]) -> Vec3 {
+        let dt = self.cfg.dt;
+        let n = self.n_vertices;
+        for &u_k in controls {
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.tip_plane_height();
+            let x_start = self.x.clone();
+            let v_com = &self.com_linear_jacobian() * &self.data.qvel;
+            let drift = Vec3::new(v_com[0], v_com[1], v_com[2]) * dt;
+            let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+            let solver: SoftSolver<C> = CpuNewtonSolver::new(
+                Tet4,
+                self.fresh_mesh(),
+                self.build_contact(height),
+                self.cfg,
+                bc,
+            )
+            .with_friction_surface_drift(drift);
+            let x_next = solver
+                .replay_step(
+                    &Tensor::from_slice(&self.x, &[3 * n]),
+                    &Tensor::from_slice(&self.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final;
+            let friction = solver.friction_forces_on_soft(&x_next, &x_start, dt);
+            for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
+                *vi = (xf - xo) / dt;
+            }
+            self.x = x_next;
+            // Route the gripped reaction wrench AND the motor control, then step (ctrl set after
+            // the wrench readout — the staggered order the gradient method also uses).
+            self.data.xfrc_applied[self.body] = self.contact_wrench_gripped(height, &friction);
+            self.data.ctrl[0] = u_k;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in actuated grip rollout");
+        }
+        self.data.forward(&self.model).expect("fresh FK (output)");
+        self.data.xipos[self.body]
+    }
+
     /// **The articulated actuator CONTROL gradient — the powered-exo substrate.** Rolls
     /// the coupled system forward applying a per-step MuJoCo `<actuator>` motor control
     /// (`controls[k]` at step k, on `data.ctrl[0]`) on ONE chassis tape, then ONE
@@ -4052,6 +4113,261 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .map(|&u| tape.grad_tensor(u).as_slice()[0])
             .collect();
         (tip_z, grad)
+    }
+
+    /// **The actuator CONTROL gradient THROUGH the friction grip — the powered-grip substrate.**
+    /// The friction successor to [`Self::coupled_trajectory_actuator_gradient`] (normal-only): the
+    /// actuated articulated limb now GRIPS the soft body via friction, so the per-step motor
+    /// control `controls[k]` drives the limb against the full gripped contact wrench (normal +
+    /// friction + off-COM moment) with the collider drift read from the articulated state. One
+    /// `tape.backward(tip_x_N)` gives `(tip_x_N, [∂tip_x_N/∂u_0 … ∂u_{N−1}])` — the tip's final
+    /// tangential drag vs every actuator control: the differentiable lever for how the agent should
+    /// actuate to grip recoverably.
+    ///
+    /// Reuses the friction machinery (the gripped soft node + drift + the `FrictionWrenchTrajVjp`
+    /// node) on the same tape as the actuator channel `s' = J_state·s + G·w + G_act·u`. `J_state` holds
+    /// the GRIPPED wrench `w` with `ctrl` replicated (the FD `loaded_state_jacobian` captures the
+    /// friction-loaded AND actuator-loaded geometric stiffness together); the single hinge uses the
+    /// analytic friction-loaded carry. The objective is the tip's tangential `x` (the friction-
+    /// relevant coordinate), not the `z` height of the normal-only gradient.
+    ///
+    /// **Scope.** A single AFFINE actuator (`force = gain·ctrl + bias`) on a EUCLIDEAN mechanism
+    /// (`nq == nv` — hinge/slide chains), flat normal, friction active, `rigid_damping = 0`.
+    /// FD-gated against [`Self::coupled_trajectory_actuated_gripped_x`]. The material `μ` rides as a
+    /// constant leaf (a control+design gradient on one tape is a follow-on).
+    ///
+    /// # Panics
+    /// Panics if `nq != nv`, if `nu != 1`, if friction is inactive, if `rigid_damping != 0`, if the
+    /// rotating normal is enabled, or if a rigid/soft step diverges.
+    #[must_use]
+    // One coherent per-step tape-construction loop (mirrors the actuator gradient with the friction
+    // grip swaps: gripped soft node + drift + friction wrench, keeping the actuator g_act channel).
+    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not recoverable.
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_actuator_friction_gradient(
+        &mut self,
+        controls: &[f64],
+    ) -> (f64, Vec<f64>) {
+        assert!(
+            self.model.nq == self.model.nv,
+            "actuator-friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
+        );
+        assert!(
+            self.model.nu == 1,
+            "actuator-friction gradient scope: exactly one actuator"
+        );
+        assert!(
+            self.cfg.friction_mu > 0.0,
+            "actuator-friction gradient requires friction active (cfg.friction_mu > 0)"
+        );
+        assert!(
+            self.rigid_damping == 0.0,
+            "articulated path requires rigid_damping = 0 (the coupling's free-platen knob)"
+        );
+        assert!(
+            !self.rotating_normal,
+            "actuator-friction gradient is flat-normal only (rotating normal unsupported)"
+        );
+        let n = self.n_vertices;
+        let nv = self.model.nv;
+        let nu = self.model.nu;
+        let dt = self.cfg.dt;
+        let pose_dir = Vec3::new(0.0, 0.0, 1.0);
+        let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+
+        let mut tape = Tape::new();
+        // Material μ is a CONSTANT leaf here (only the control leaves are differentiated).
+        let p_var = tape.constant_tensor(Tensor::from_slice(&[self.mu], &[1]));
+        let control_vars: Vec<Var> = controls
+            .iter()
+            .map(|&u| tape.param_tensor(Tensor::from_slice(&[u], &[1])))
+            .collect();
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut s0 = vec![0.0_f64; 2 * nv];
+        for i in 0..nv {
+            s0[i] = self.data.qpos[i];
+            s0[nv + i] = self.data.qvel[i];
+        }
+        let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
+
+        for (k, &u_k) in controls.iter().enumerate() {
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.tip_plane_height();
+            let jlin = self.com_linear_jacobian();
+            let jlin_x: Vec<f64> = (0..nv).map(|j| jlin[(0, j)]).collect();
+            let v_com = &jlin * &self.data.qvel;
+            let drift = Vec3::new(v_com[0], v_com[1], v_com[2]) * dt;
+            let x_start = self.x.clone();
+
+            let pose_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[height], &[1]),
+                Box::new(PoseSeamVjp {
+                    jz: self.pose_seam_jz(),
+                }),
+            );
+            let drift_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[drift.x], &[1]),
+                Box::new(DriftFromStateVjp { dt, jlin_x }),
+            );
+
+            // (1)+(2) one friction-aware soft step (μ a constant leaf; param_idx 0 unread).
+            let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+            let solver: SoftSolver<C> = CpuNewtonSolver::new(
+                Tet4,
+                self.fresh_mesh(),
+                self.build_contact(height),
+                self.cfg,
+                bc,
+            )
+            .with_friction_surface_drift(drift);
+            let x_next = solver
+                .replay_step(
+                    &Tensor::from_slice(&self.x, &[3 * n]),
+                    &Tensor::from_slice(&self.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final;
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, pose_var, drift_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(
+                    solver.trajectory_step_vjp_grip(&x_next, &x_start, dt, 0, pose_dir, drift_dir),
+                ),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (3) NORMAL contact wrench (friction folds on separately below).
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|cc| Vec3::new(cc[0], cc[1], cc[2]))
+                .collect();
+            let c = self.data.xipos[self.body];
+            let pairs = self.active_pair_wrench_data(height, &positions);
+            let mut w_normal = SpatialVector::zeros();
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            for (v, g, nrm, curv, r) in pairs {
+                let f = -g;
+                w_normal[3] += f.x;
+                w_normal[4] += f.y;
+                w_normal[5] += f.z;
+                let tau = (r - c).cross(&f);
+                w_normal[0] += tau.x;
+                w_normal[1] += tau.y;
+                w_normal[2] += tau.z;
+                active.push((v, g, nrm, curv, r - c));
+            }
+            let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
+            let w_normal_var = tape.push_custom(
+                &[x_next_var, pose_var, s_var],
+                Tensor::from_slice(w_normal.as_slice(), &[6]),
+                Box::new(ContactWrenchTrajVjp {
+                    active,
+                    force: normal_force,
+                    jlin: jlin.clone(),
+                    n_dof: 3 * n,
+                    nv,
+                    pose: WrenchPose::Height,
+                }),
+            );
+
+            // (4) friction wrench (force + off-COM moment), folded onto the normal wrench.
+            let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
+            let mut w_total = w_normal;
+            let (fverts, f_fric_total) = assemble_friction_wrench(pv, &positions, c, &mut w_total);
+            let w_total_var = tape.push_custom(
+                &[w_normal_var, x_next_var, pose_var, s_var, drift_var, x_var],
+                Tensor::from_slice(w_total.as_slice(), &[6]),
+                Box::new(FrictionWrenchTrajVjp {
+                    verts: fverts,
+                    f_total: f_fric_total,
+                    jlin: jlin.clone(),
+                    n_dof: 3 * n,
+                    nv,
+                    mu_c: false,
+                }),
+            );
+
+            // Set the control BEFORE the carry (the FD `loaded_state_jacobian` replicates
+            // `self.data.ctrl` in its scratch steps so the actuator force enters `J_state`).
+            self.data.ctrl[0] = u_k;
+
+            // (5) carry with the GRIPPED wrench held + the actuator-input channel.
+            let j_state = self
+                .analytic_state_jacobian(&w_total)
+                .unwrap_or_else(|| self.loaded_state_jacobian(&w_total));
+            let g_vel = self.fresh_xfrc_column();
+            let g_act_vel = self.actuator_velocity_column(); // nv × nu
+
+            self.data.xfrc_applied[self.body] = w_total;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in actuator-friction trajectory");
+
+            let rigid_dt = self.model.timestep;
+            let g_pos = rigid_dt * &g_vel;
+            let mut g_act = DMatrix::zeros(2 * nv, nu);
+            g_act
+                .view_mut((0, 0), (nv, nu))
+                .copy_from(&(rigid_dt * &g_act_vel));
+            g_act.view_mut((nv, 0), (nv, nu)).copy_from(&g_act_vel);
+
+            let mut s_next = vec![0.0_f64; 2 * nv];
+            for i in 0..nv {
+                s_next[i] = self.data.qpos[i];
+                s_next[nv + i] = self.data.qvel[i];
+            }
+            let s_next_var = tape.push_custom(
+                &[s_var, w_total_var, control_vars[k]],
+                Tensor::from_slice(&s_next, &[2 * nv]),
+                Box::new(RigidStateCarryVjp {
+                    j_state,
+                    g_vel,
+                    g_pos,
+                    g_act: Some(g_act),
+                }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            s_var = s_next_var;
+        }
+
+        // Objective: the fresh tip tangential x = (COM x-Jacobian)·δq — the grip drag.
+        self.data.forward(&self.model).expect("fresh FK (output)");
+        let tip_x = self.data.xipos[self.body].x;
+        let jx_final: Vec<f64> = {
+            let jlin = self.com_linear_jacobian();
+            (0..nv).map(|j| jlin[(0, j)]).collect()
+        };
+        let obj_var = tape.push_custom(
+            &[s_var],
+            Tensor::from_slice(&[tip_x], &[1]),
+            Box::new(PoseSeamVjp { jz: jx_final }),
+        );
+        tape.backward(obj_var);
+        let grad: Vec<f64> = control_vars
+            .iter()
+            .map(|&u| tape.grad_tensor(u).as_slice()[0])
+            .collect();
+        (tip_x, grad)
     }
 
     /// **The keystone control-gradient (the policy half's substrate).** Roll the
@@ -5847,6 +6163,45 @@ mod tests {
         assert!(
             cx.is_finite() && cgrad.is_finite(),
             "articulated friction-coeff gradient must be finite, got ({cx}, {cgrad})"
+        );
+    }
+
+    /// Lib smoke for the actuator CONTROL gradient through the friction grip: the gripped-actuated
+    /// forward oracle and the control gradient (exercising the friction wrench node + the actuator
+    /// `g_act` channel on one tape). Machine-exact accuracy lives in the
+    /// `actuator_friction_gradient` integration test; this keeps `--lib` coverage honest.
+    #[test]
+    fn actuator_friction_grip_smoke() {
+        const MOTOR_MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j" gear="1"/></actuator>
+</mujoco>"#;
+        let build = || -> StaggeredCoupling {
+            let model = load_model(MOTOR_MJCF).expect("motor MJCF loads");
+            let mut data = model.make_data();
+            data.qpos[0] = 0.3;
+            data.forward(&model).expect("forward");
+            StaggeredCoupling::new(
+                model, data, 1, 0.005, 4, 0.1, 3.0e3, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+            )
+            .with_friction(2.5, 0.1)
+        };
+        let controls = [0.03_f64; 3];
+        let tip = build().coupled_trajectory_actuated_gripped_x(&controls);
+        assert!(
+            tip.x.is_finite() && (0.10..0.12).contains(&tip.z),
+            "gripped-actuated rollout must stay finite and engaged, got {tip:?}"
+        );
+        let (tx, grad) = build().coupled_trajectory_actuator_friction_gradient(&controls);
+        assert!(
+            tx.is_finite() && grad.iter().all(|g| g.is_finite()),
+            "actuator-friction gradient must be finite, got ({tx}, {grad:?})"
         );
     }
 
