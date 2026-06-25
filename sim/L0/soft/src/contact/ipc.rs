@@ -252,6 +252,13 @@ impl ContactModel for IpcRigidContact {
             // derivative is `d²E/dsd²·(∂sd/∂s)·n̂ + (dE/dsd)·δn̂` (`d²E/dsd² = κ·b''`).
             // The direction term vanishes for a pure translation (`ω = 0`),
             // recovering `κ·b''·(−n̂·dir)·n̂` exactly.
+            //
+            // FLAT-PRIMITIVE scope (deferred for IPC): this drops the curved-primitive
+            // `−H·u` curvature term (and the dual `dE·H` in `hessian`) that
+            // `PenaltyRigidContact` carries via [`Sdf::hessian`] — exact for a plane
+            // (`H = 0`) but ~0.7% off for a sphere. The differentiated keystone path uses
+            // the penalty contact; lift the same two terms here when IPC is differentiated
+            // through a curved primitive.
             let n = prim.grad(p);
             let dn = twist.angular.cross(&n);
             let dsd = p.coords.dot(&dn) - twist.linear.dot(&n);

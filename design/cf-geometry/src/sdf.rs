@@ -61,7 +61,7 @@
 
 use std::sync::Arc;
 
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Matrix3, Point3, Vector3};
 
 use crate::Aabb;
 use crate::bounded::Bounded;
@@ -85,6 +85,21 @@ pub trait Sdf: Send + Sync {
 
     /// Gradient of [`Sdf::eval`] at `p`.
     fn grad(&self, p: Point3<f64>) -> Vector3<f64>;
+
+    /// Hessian `∇²(eval)` at `p` — the 3×3 matrix of second partials of the signed
+    /// distance, i.e. the Jacobian of [`Sdf::grad`].
+    ///
+    /// The default is the **zero matrix**, which is exact for any SDF whose signed
+    /// distance is AFFINE in `p` (a half-space / plane, `sd = p·n̂ − offset`, has a
+    /// constant normal). Curved primitives override it — a sphere of radius `r`
+    /// centred at `c` has `∇²sd = (I − n̂n̂ᵀ)/‖p−c‖` with `n̂ = (p−c)/‖p−c‖`.
+    ///
+    /// Used by pose-sensitivity differentiation: when a primitive rigidly moves,
+    /// the contact normal at a fixed world point changes by `δn̂ = ω×n̂ − H·(v+ω×p)`
+    /// (twist `(ω, v)`), and `H` here is the curvature term a flat normal drops.
+    fn hessian(&self, _p: Point3<f64>) -> Matrix3<f64> {
+        Matrix3::zeros()
+    }
 }
 
 /// Forwarding impl through `Box<T>` for any `T: Sdf + ?Sized`.
@@ -100,6 +115,10 @@ impl<T: Sdf + ?Sized> Sdf for Box<T> {
 
     fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
         (**self).grad(p)
+    }
+
+    fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
+        (**self).hessian(p)
     }
 }
 
@@ -118,6 +137,10 @@ impl<T: Sdf + ?Sized> Sdf for Arc<T> {
 
     fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
         (**self).grad(p)
+    }
+
+    fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
+        (**self).hessian(p)
     }
 }
 
