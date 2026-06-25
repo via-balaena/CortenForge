@@ -397,6 +397,39 @@ pub struct FrictionReactionGradients {
     pub dforce_dheight: f64,
 }
 
+/// The per-vertex friction force on the rigid collider `∇D_v` (a 3-vector) and its
+/// first-order sensitivities.
+///
+/// The VECTOR, per-contacted-vertex generalization of [`FrictionReactionGradients`] (which
+/// projects onto a single `react_dir` and sums). A staggered coupling needs the per-vertex
+/// VECTOR force to assemble the off-COM friction MOMENT `Σ_v (r_v − c) × ∇D_v` and its
+/// Jacobian; the scalar aggregate cannot (the moment arm `r_v − c` weights each vertex
+/// differently).
+///
+/// `force = ∇D_v` is the reaction on the RIGID body at vertex `v` (the soft body feels
+/// `−∇D_v`). `dforce_dx`/`dforce_dxprev` are row-major `3 × n_dof` blocks (`∂force[r]/∂x[col]`
+/// at flat index `r·n_dof + col`); the rest are `3`-vectors. Produced by
+/// [`CpuNewtonSolver::friction_force_jacobians`].
+#[derive(Clone, Debug)]
+pub struct FrictionVertexForce {
+    /// The contacted vertex.
+    pub vid: VertexId,
+    /// `∇D_v` — the friction force on the rigid body at `v` (on the soft body: `−∇D_v`).
+    pub force: Vec3,
+    /// `∂force/∂x*` — row-major `3 × n_dof` (frozen-lag `∇²D_v` slip at `v`'s own coords plus
+    /// the normal-force λⁿ coupling `a_v ⊗ ∂λⁿ_v/∂x_c` spread over the contact-neighbor coords).
+    pub dforce_dx: Vec<f64>,
+    /// `∂force/∂x_prev` — row-major `3 × n_dof`; `−`(the frozen-lag `∇²D_v` slip at `v`'s coords),
+    /// λⁿ-coupling excluded (λⁿ tracks `x*`, not `x_prev`), via `x_start = x_prev + Δ_surf`.
+    pub dforce_dxprev: Vec<f64>,
+    /// `∂force/∂Δ_surf` along the build's `drift_dir` (`−∇²D_v·drift_dir`, the moving-collider
+    /// reference shift, λ-independent).
+    pub dforce_ddrift: Vec3,
+    /// `∂force/∂height` along the build's `pose_dir` plane translation (`a_v·(n̂·∂(plane)/∂pose)`,
+    /// the λⁿ coupling).
+    pub dforce_dheight: Vec3,
+}
+
 /// CPU backward-Euler Newton solver.
 ///
 /// Six generic parameters: element `E<N, G>`, mesh `Msh`, contact `C`,
@@ -2490,6 +2523,104 @@ where
                         out.dforce_dheight += coeff * nhat.dot(&d); // ∂λⁿ_v/∂height
                     }
                 }
+            }
+        }
+        out
+    }
+
+    /// The PER-VERTEX friction force on the rigid collider `∇D_v` and its first-order
+    /// sensitivities — the VECTOR generalization of [`Self::friction_reaction_gradients`]
+    /// (which projects each `∇D_v` onto a single `react_dir` and sums to a scalar). A
+    /// staggered coupling routes the per-vertex VECTOR force to assemble the off-COM friction
+    /// MOMENT `Σ_v (r_v − c) × ∇D_v` and its Jacobian (the scalar aggregate cannot — each
+    /// vertex's moment arm `r_v − c` differs). Same math as the aggregate, kept per-vertex:
+    /// - frozen-lag slip `∂(∇D_v)/∂x_v = ∇²D_v` (3×3) at `v`'s own coords, and
+    ///   `∂(∇D_v)/∂x_prev,v = −∇²D_v`, `∂(∇D_v)/∂Δ_surf = −∇²D_v·drift_dir`;
+    /// - normal-force λⁿ coupling `∂(∇D_v)/∂x_c = a_v ⊗ ∂λⁿ_v/∂x_c` (`a_v = ∇D_v/λⁿ_v`,
+    ///   `∂λⁿ_v/∂x_c = n̂ᵀ·∇²E_contact`) over the contact neighbors `c`, and
+    ///   `∂(∇D_v)/∂height = a_v·(n̂ᵀ·∂(plane)/∂pose)`.
+    ///
+    /// Returns one [`FrictionVertexForce`] per active contacted vertex (empty when
+    /// `friction_mu == 0` or no pair is active), with `dforce_dx`/`dforce_dxprev` as row-major
+    /// `3 × n_dof` blocks. At configuration `x_curr`, step start `x_prev`, and this solver's
+    /// [`friction_surface_drift`](Self::with_friction_surface_drift).
+    #[must_use]
+    pub fn friction_force_jacobians(
+        &self,
+        x_curr: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        drift_dir: Vec3,
+        pose_dir: Vec3,
+    ) -> Vec<FrictionVertexForce> {
+        let mu = self.config.friction_mu;
+        let mut out = Vec::new();
+        if mu == 0.0 {
+            return out;
+        }
+        let nd = self.n_dof;
+        let w = dt * self.config.friction_eps_v;
+        let positions = slice_to_vec3s(x_curr);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        let twist = RigidTwist::translation(pose_dir);
+        for pair in &pairs {
+            let grad_c = self.contact.gradient(pair, &positions);
+            let hess_c = self.contact.hessian(pair, &positions);
+            let pose_c = self
+                .contact
+                .pose_residual_derivative(pair, &positions, twist);
+            for (vid, force) in &grad_c.contributions {
+                let lambda = force.norm(); // λⁿ
+                if lambda == 0.0 {
+                    continue;
+                }
+                let v = *vid as usize;
+                let x_v = positions[v];
+                let x_start = Vec3::new(x_prev[3 * v], x_prev[3 * v + 1], x_prev[3 * v + 2])
+                    + self.friction_surface_drift;
+                let (grad_d, hess_d) =
+                    crate::contact::friction::grad_hess(x_v, x_start, *force, lambda, mu, w);
+                let mut dforce_dx = vec![0.0_f64; 3 * nd];
+                let mut dforce_dxprev = vec![0.0_f64; 3 * nd];
+                // Frozen-lag slip ∇²D_v at v's own coords (and −∇²D_v for x_prev).
+                for r in 0..3 {
+                    for col in 0..3 {
+                        dforce_dx[r * nd + 3 * v + col] += hess_d[(r, col)];
+                        dforce_dxprev[r * nd + 3 * v + col] -= hess_d[(r, col)];
+                    }
+                }
+                // Moving-collider reference: ∂(∇D_v)/∂Δ_surf = −∇²D_v·drift_dir.
+                let dforce_ddrift = -(hess_d * drift_dir);
+                // Normal-force (λ) coupling: a_v ⊗ ∂λⁿ_v/∂x_c over contact neighbors.
+                let a = grad_d / lambda; // ∂(∇D_v)/∂λⁿ_v
+                let nhat = force / lambda;
+                for (rv, cv, block) in &hess_c.contributions {
+                    if *rv as usize != v {
+                        continue;
+                    }
+                    let dlam = block.transpose() * nhat; // ∂λⁿ_v/∂x_cv
+                    let c = *cv as usize;
+                    for r in 0..3 {
+                        dforce_dx[r * nd + 3 * c] += a[r] * dlam.x;
+                        dforce_dx[r * nd + 3 * c + 1] += a[r] * dlam.y;
+                        dforce_dx[r * nd + 3 * c + 2] += a[r] * dlam.z;
+                    }
+                }
+                // Plane-pose (height) coupling: ∂(∇D_v)/∂height = a_v·(n̂·∂(plane)/∂pose).
+                let mut dforce_dheight = Vec3::zeros();
+                for &(pv, d) in &pose_c.contributions {
+                    if pv as usize == v {
+                        dforce_dheight += a * nhat.dot(&d);
+                    }
+                }
+                out.push(FrictionVertexForce {
+                    vid: *vid,
+                    force: grad_d,
+                    dforce_dx,
+                    dforce_dxprev,
+                    dforce_ddrift,
+                    dforce_dheight,
+                });
             }
         }
         out

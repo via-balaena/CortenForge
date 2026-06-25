@@ -543,6 +543,46 @@ impl VjpOp for DriftFromVelVjp {
     }
 }
 
+/// Chassis-tape [`VjpOp`] for the within-step collider drift `Δ_surf,x = (J_lin·qvel)_x·dt`
+/// from the ARTICULATED rigid state — the multi-DOF successor to [`DriftFromVelVjp`] (which
+/// reads a free platen's scalar `vx`). The tangential drift's x-component is the contact
+/// body's COM linear velocity along x̂ times `dt`; `J_lin = ∂c/∂q` is the COM linear Jacobian
+/// ([`StaggeredCoupling::com_linear_jacobian`]), so `∂Δ_surf,x/∂qvel = dt·J_lin[0,:]` (the
+/// x-row) and `∂Δ_surf,x/∂qpos = 0` (the drift is linear in `qvel` at the linearization
+/// config; `J_lin(q)` enters only at second order, captured by the per-step fresh FK). One
+/// parent `[s]` (the rigid state `[qpos(nv); qvel(nv)]`, `[2·nv]`), output `Δ_surf,x` (`[1]`).
+#[derive(Clone, Debug)]
+struct DriftFromStateVjp {
+    dt: f64,
+    /// The x-row of the COM linear Jacobian `J_lin[0,:]` (length `nv`).
+    jlin_x: Vec<f64>,
+}
+
+impl VjpOp for DriftFromStateVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::DriftFromStateVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        let nv = self.jlin_x.len();
+        assert!(
+            cotangent.shape() == [1]
+                && parent_cotans.len() == 1
+                && parent_cotans[0].shape() == [2 * nv],
+            "DriftFromStateVjp: expected cot [1] + 1 parent (s [{}])",
+            2 * nv,
+        );
+        let c = cotangent.as_slice()[0];
+        let s_slot = parent_cotans[0].as_mut_slice();
+        for j in 0..nv {
+            // qvel rows only (nv + j); qpos rows untouched (∂Δ_surf/∂qpos = 0).
+            s_slot[nv + j] += c * self.dt * self.jlin_x[j];
+        }
+    }
+}
+
 /// Chassis-tape [`VjpOp`] for the **tangential friction-reaction** readout along a
 /// trajectory: the scalar `fx = (Σ ∇D)·react_dir` (the rigid-side reaction `F·react_dir`
 /// from [`CpuNewtonSolver::friction_reaction_gradients`]) at the post-step soft config `x*`,
@@ -997,6 +1037,126 @@ impl VjpOp for RigidStateCarryVjp {
                 }
                 u_slot[a] += acc;
             }
+        }
+    }
+}
+
+/// One active friction vertex carried by [`FrictionWrenchTrajVjp`] — the per-vertex friction
+/// force on the rigid body and its Jacobians, plus the moment arm about the COM.
+#[derive(Clone, Debug)]
+struct FrictionWrenchVert {
+    /// The contacted soft vertex.
+    vid: usize,
+    /// `∇D_v` — the friction force on the rigid body at `v`.
+    force: Vec3,
+    /// `d_v = r_v − c` — the moment arm about the COM `c` (`r_v = x*_v`, the soft vertex pos).
+    arm: Vec3,
+    /// `∂force/∂x*` — row-major `3 × n_dof` ([`sim_soft::FrictionVertexForce::dforce_dx`]).
+    dforce_dx: Vec<f64>,
+    /// `∂force/∂x_prev` — row-major `3 × n_dof`.
+    dforce_dxprev: Vec<f64>,
+    /// `∂force/∂Δ_surf` along the build's `drift_dir`.
+    dforce_ddrift: Vec3,
+    /// `∂force/∂height` along the build's `pose_dir`.
+    dforce_dheight: Vec3,
+}
+
+/// Chassis-tape [`VjpOp`] folding the full TANGENTIAL friction GRIP wrench into the spatial
+/// wrench: `w = w_normal + [τ_fric; f_fric]` with `f_fric = Σ_v ∇D_v` and the off-COM friction
+/// MOMENT `τ_fric = Σ_v (r_v − c) × ∇D_v`. The moment successor to the force-only fold: it
+/// threads the per-vertex friction Jacobians ([`sim_soft::FrictionVertexForce`], from
+/// [`CpuNewtonSolver::friction_force_jacobians`]) through BOTH the force AND moment rows.
+///
+/// Per vertex the effective cotangent on `∇D_v` is `co_v = cot_f + cot_τ × d_v` (the force part
+/// plus the moment-via-`∇D_v` part, since `(d×f)·cot_τ = f·(cot_τ×d)`); the moment's ARM part
+/// adds `∇D_v × cot_τ` to `v`'s own soft coords (`r_v = x*_v`); and the COM `c(q)` feedback is
+/// `m = −f_fric_total × cot_τ` threaded through `J_lin` (as in [`ContactWrenchTrajVjp`]'s
+/// `∂L/∂s`). Parents `[w_normal, x*, pose, s, drift, x_prev]`
+/// (`[6]`, `[3n]`, `[1]`, `[2·nv]`, `[1]`, `[3n]`), output `w` (`[6]`).
+#[derive(Clone, Debug)]
+struct FrictionWrenchTrajVjp {
+    /// Per active friction vertex.
+    verts: Vec<FrictionWrenchVert>,
+    /// `f_fric_total = Σ ∇D_v` — the total friction force (for the COM `c(q)` feedback).
+    f_total: Vec3,
+    /// The COM linear Jacobian `J_lin = ∂c/∂qpos` (`3 × nv`).
+    jlin: DMatrix<f64>,
+    /// Soft-DOF count `3·n_vertices`.
+    n_dof: usize,
+    /// Rigid-DOF count `nv`.
+    nv: usize,
+}
+
+impl VjpOp for FrictionWrenchTrajVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::FrictionWrenchTrajVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    // needless_range_loop: the per-coord contractions index flat 3×n_dof / 2-D `jlin` blocks;
+    // explicit indices read clearer than zipped iterators here.
+    #[allow(clippy::panic, clippy::needless_range_loop)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        let nd = self.n_dof;
+        assert!(
+            cotangent.shape() == [6]
+                && parent_cotans.len() == 6
+                && parent_cotans[0].shape() == [6]
+                && parent_cotans[1].shape() == [nd]
+                && parent_cotans[2].shape() == [1]
+                && parent_cotans[3].shape() == [2 * self.nv]
+                && parent_cotans[4].shape() == [1]
+                && parent_cotans[5].shape() == [nd],
+            "FrictionWrenchTrajVjp: expected cot [6] + parents (w_normal [6], x* [{nd}], \
+             pose [1], s [{}], drift [1], x_prev [{nd}])",
+            2 * self.nv,
+        );
+        let cot = cotangent.as_slice();
+        let cot_t = Vec3::new(cot[0], cot[1], cot[2]); // cotangent on τ
+        let cot_f = Vec3::new(cot[3], cot[4], cot[5]); // cotangent on f
+
+        // ∂L/∂w_normal: pass-through (the friction wrench adds onto the normal wrench).
+        let wn = parent_cotans[0].as_mut_slice();
+        for i in 0..6 {
+            wn[i] += cot[i];
+        }
+
+        // Per-vertex friction contributions.
+        let mut pose_acc = 0.0_f64;
+        let mut drift_acc = 0.0_f64;
+        for v in &self.verts {
+            // Effective cotangent on ∇D_v: force part + moment-via-∇D_v part.
+            let co = cot_f + cot_t.cross(&v.arm);
+            // ∂L/∂x* via the per-vertex Jacobian, plus the moment ARM term on v's own coords.
+            let xs = parent_cotans[1].as_mut_slice();
+            for k in 0..nd {
+                xs[k] += co.x * v.dforce_dx[k]
+                    + co.y * v.dforce_dx[nd + k]
+                    + co.z * v.dforce_dx[2 * nd + k];
+            }
+            let arm_grad = v.force.cross(&cot_t); // ∂[(x*_v−c)×∇D_v]·cot_τ / ∂x*_v
+            xs[3 * v.vid] += arm_grad.x;
+            xs[3 * v.vid + 1] += arm_grad.y;
+            xs[3 * v.vid + 2] += arm_grad.z;
+            // ∂L/∂x_prev via the per-vertex Jacobian (no arm term — x_prev does not move r_v).
+            let xp = parent_cotans[5].as_mut_slice();
+            for k in 0..nd {
+                xp[k] += co.x * v.dforce_dxprev[k]
+                    + co.y * v.dforce_dxprev[nd + k]
+                    + co.z * v.dforce_dxprev[2 * nd + k];
+            }
+            pose_acc += co.dot(&v.dforce_dheight);
+            drift_acc += co.dot(&v.dforce_ddrift);
+        }
+        parent_cotans[2].as_mut_slice()[0] += pose_acc;
+        parent_cotans[4].as_mut_slice()[0] += drift_acc;
+
+        // ∂L/∂s via the COM c(q): m = −f_fric_total × cot_τ, ∂L/∂qpos = J_linᵀ·m (qvel rows 0).
+        let m = -self.f_total.cross(&cot_t);
+        let s_slot = parent_cotans[3].as_mut_slice();
+        for j in 0..self.nv {
+            s_slot[j] +=
+                self.jlin[(0, j)] * m.x + self.jlin[(1, j)] * m.y + self.jlin[(2, j)] * m.z;
         }
     }
 }
@@ -3082,6 +3242,277 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (tip_z, grad)
     }
 
+    /// **The articulated FRICTION-grip trajectory gradient — full matrix-carry wrench (force +
+    /// off-COM moment).** The
+    /// articulated successor to the free-platen [`Self::coupled_trajectory_tangential_material_gradient`]:
+    /// the rigid body is an ARTICULATED mechanism (hinge/slide chain), so the tangential grip
+    /// reaction maps to a generalized joint acceleration through the full matrix carry
+    /// `Δt·M_impl⁻¹·Jᵀ` (`RigidStateCarryVjp`) — NOT the free-platen scalar `dt/m` lanes — and
+    /// the collider drift is read from the articulated state (`Δ_surf,x = (J_lin·qvel)_x·dt`,
+    /// `DriftFromStateVjp`). Rolls forward `n_steps` on one chassis tape, then ONE
+    /// `tape.backward` gives `(tip_x_N, ∂tip_x_N/∂p)` — the tip's final world x (the tangential
+    /// drag) vs the soft block's Neo-Hookean material (`param_idx`: `0 = μ`, `1 = λ`).
+    ///
+    /// Per step the tape threads: the pose seam `h = PoseSeam(s)`, the articulated drift
+    /// `Δ_surf,x = DriftFromState(s)`, the friction-aware soft solve `x*` (drift + height
+    /// parents), the NORMAL contact wrench `w_normal = [τ; f](x*, h, s)` (`ContactWrenchTrajVjp`),
+    /// the FRICTION wrench fold `w = w_normal + [τ_fric; f_fric]` (`FrictionWrenchTrajVjp` —
+    /// the per-vertex friction force `Σ∇D_v` AND its off-COM moment `Σ(r_v−c)×∇D_v`, with the
+    /// per-vertex Jacobians from [`CpuNewtonSolver::friction_force_jacobians`]), and the
+    /// multi-DOF carry `s' = J_state·s + G·w`.
+    ///
+    /// **Scope.** The full grip wrench (force + off-COM moment) is routed — FD-gated against the
+    /// full forward [`Self::coupled_trajectory_gripped_articulated`]. EUCLIDEAN joints
+    /// (`nq == nv` — hinge/slide chains), flat normal, friction active, `rigid_damping = 0`.
+    /// `J_state` is the analytic single-hinge / undamped-chain carry (`analytic_state_jacobian`),
+    /// else the FD `loaded_state_jacobian` (damped chain / free / quaternion).
+    ///
+    /// # Panics
+    /// Panics if `param_idx > 1`, if `nq != nv`, if friction is inactive, if `rigid_damping != 0`,
+    /// if the rotating normal is enabled, or if a rigid/soft step diverges.
+    #[must_use]
+    // One coherent per-step tape-construction loop (pose + drift + soft + normal-wrench +
+    // friction-wrench + carry nodes + the real step); splitting it would scatter the recurrence.
+    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not
+    // recoverable for keystone-v1 (mirrors `coupled_trajectory_material_gradient_articulated`).
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_tangential_material_gradient_articulated(
+        &mut self,
+        n_steps: usize,
+        param_idx: usize,
+    ) -> (f64, f64) {
+        assert!(
+            param_idx <= 1,
+            "material param index {param_idx} out of range (0 = μ, 1 = λ)"
+        );
+        assert!(
+            self.model.nq == self.model.nv,
+            "articulated friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
+        );
+        assert!(
+            self.cfg.friction_mu > 0.0,
+            "articulated friction gradient requires friction active (cfg.friction_mu > 0)"
+        );
+        assert!(
+            self.rigid_damping == 0.0,
+            "articulated path requires rigid_damping = 0 (the coupling's free-platen knob)"
+        );
+        assert!(
+            !self.rotating_normal,
+            "articulated friction gradient is flat-normal only (rotating normal unsupported)"
+        );
+        let n = self.n_vertices;
+        let nv = self.model.nv;
+        let dt = self.cfg.dt;
+        let pose_dir = Vec3::new(0.0, 0.0, 1.0);
+        let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+
+        let mut tape = Tape::new();
+        let p0 = if param_idx == 0 { self.mu } else { self.lambda };
+        let p_var = tape.param_tensor(Tensor::from_slice(&[p0], &[1]));
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut s0 = vec![0.0_f64; 2 * nv];
+        for i in 0..nv {
+            s0[i] = self.data.qpos[i];
+            s0[nv + i] = self.data.qvel[i];
+        }
+        let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
+
+        for _ in 0..n_steps {
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.tip_plane_height();
+            let jlin = self.com_linear_jacobian();
+            let jlin_x: Vec<f64> = (0..nv).map(|j| jlin[(0, j)]).collect();
+            // Δ_surf from the articulated state: the full 3-vector drives the soft solve; only
+            // the differentiated x-component is threaded (the y/z drift carry no μ-sensitivity
+            // in the y-symmetric flat scene, as in the free-platen tangential gradient).
+            let v_com = &jlin * &self.data.qvel;
+            let drift = Vec3::new(v_com[0], v_com[1], v_com[2]) * dt;
+            let x_start = self.x.clone();
+
+            let pose_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[height], &[1]),
+                Box::new(PoseSeamVjp {
+                    jz: self.pose_seam_jz(),
+                }),
+            );
+            let drift_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[drift.x], &[1]),
+                Box::new(DriftFromStateVjp { dt, jlin_x }),
+            );
+
+            // (1) one friction-aware soft step with the moving-collider drift.
+            let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+            let solver: SoftSolver<C> = CpuNewtonSolver::new(
+                Tet4,
+                self.fresh_mesh(),
+                self.build_contact(height),
+                self.cfg,
+                bc,
+            )
+            .with_friction_surface_drift(drift);
+            let x_next = solver
+                .replay_step(
+                    &Tensor::from_slice(&self.x, &[3 * n]),
+                    &Tensor::from_slice(&self.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final;
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+
+            // Soft node x*: parents [x_prev, v_prev, p, height, Δ_surf].
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, pose_var, drift_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp_grip(
+                    &x_next, &x_start, dt, param_idx, pose_dir, drift_dir,
+                )),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            // (2) NORMAL contact wrench [τ; f] about the fresh-FK COM (friction is folded in
+            // separately below — `pair_readout` is the contact-penalty normal force only).
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|cc| Vec3::new(cc[0], cc[1], cc[2]))
+                .collect();
+            let c = self.data.xipos[self.body];
+            let pairs = self.active_pair_wrench_data(height, &positions);
+            let mut w_normal = SpatialVector::zeros();
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            for (v, g, nrm, curv, r) in pairs {
+                let f = -g;
+                w_normal[3] += f.x;
+                w_normal[4] += f.y;
+                w_normal[5] += f.z;
+                let tau = (r - c).cross(&f);
+                w_normal[0] += tau.x;
+                w_normal[1] += tau.y;
+                w_normal[2] += tau.z;
+                active.push((v, g, nrm, curv, r - c));
+            }
+            let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
+            let w_normal_var = tape.push_custom(
+                &[x_next_var, pose_var, s_var],
+                Tensor::from_slice(w_normal.as_slice(), &[6]),
+                Box::new(ContactWrenchTrajVjp {
+                    active,
+                    force: normal_force,
+                    jlin: jlin.clone(),
+                    n_dof: 3 * n,
+                    nv,
+                    pose: WrenchPose::Height,
+                }),
+            );
+
+            // (3)+(4) FRICTION wrench: per-vertex friction force `∇D_v` (on the rigid body) folded
+            // into the normal wrench's force rows PLUS its off-COM moment `Σ(r_v−c)×∇D_v`. The
+            // per-vertex Jacobians (frozen-lag slip + λⁿ coupling + drift + height) come from
+            // sim-soft's `friction_force_jacobians`; the node threads them through force AND moment.
+            let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
+            let mut w_total = w_normal;
+            let mut f_fric_total = Vec3::zeros();
+            let mut fverts: Vec<FrictionWrenchVert> = Vec::with_capacity(pv.len());
+            for p in pv {
+                let arm = positions[p.vid as usize] - c; // d_v = r_v − c
+                let tau = arm.cross(&p.force);
+                w_total[0] += tau.x;
+                w_total[1] += tau.y;
+                w_total[2] += tau.z;
+                w_total[3] += p.force.x;
+                w_total[4] += p.force.y;
+                w_total[5] += p.force.z;
+                f_fric_total += p.force;
+                fverts.push(FrictionWrenchVert {
+                    vid: p.vid as usize,
+                    force: p.force,
+                    arm,
+                    dforce_dx: p.dforce_dx,
+                    dforce_dxprev: p.dforce_dxprev,
+                    dforce_ddrift: p.dforce_ddrift,
+                    dforce_dheight: p.dforce_dheight,
+                });
+            }
+            let w_total_var = tape.push_custom(
+                &[w_normal_var, x_next_var, pose_var, s_var, drift_var, x_var],
+                Tensor::from_slice(w_total.as_slice(), &[6]),
+                Box::new(FrictionWrenchTrajVjp {
+                    verts: fverts,
+                    f_total: f_fric_total,
+                    jlin,
+                    n_dof: 3 * n,
+                    nv,
+                }),
+            );
+
+            // (5) multi-DOF carry at the current (fresh-FK) state, with the TOTAL wrench held.
+            let j_state = self
+                .analytic_state_jacobian(&w_total)
+                .unwrap_or_else(|| self.loaded_state_jacobian(&w_total));
+            let g_vel = self.fresh_xfrc_column();
+
+            self.data.xfrc_applied[self.body] = w_total;
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in articulated friction trajectory");
+
+            let g_pos = self.model.timestep * &g_vel; // Euclidean (nq == nv): D = Δt·I.
+            let mut s_next = vec![0.0_f64; 2 * nv];
+            for i in 0..nv {
+                s_next[i] = self.data.qpos[i];
+                s_next[nv + i] = self.data.qvel[i];
+            }
+            let s_next_var = tape.push_custom(
+                &[s_var, w_total_var],
+                Tensor::from_slice(&s_next, &[2 * nv]),
+                Box::new(RigidStateCarryVjp {
+                    j_state,
+                    g_vel,
+                    g_pos,
+                    g_act: None,
+                }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            s_var = s_next_var;
+        }
+
+        // Objective: the tip world x after the rollout = (COM x-Jacobian)·δq — the tangential
+        // drag. Read fresh (forward at q_N), the matched fresh convention the oracle uses.
+        self.data.forward(&self.model).expect("fresh FK (output)");
+        let tip_x = self.data.xipos[self.body].x;
+        let jx_final: Vec<f64> = {
+            let jlin = self.com_linear_jacobian();
+            (0..nv).map(|j| jlin[(0, j)]).collect()
+        };
+        let obj_var = tape.push_custom(
+            &[s_var],
+            Tensor::from_slice(&[tip_x], &[1]),
+            Box::new(PoseSeamVjp { jz: jx_final }),
+        );
+        tape.backward(obj_var);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (tip_x, grad)
+    }
+
     /// Forward-only oracle for [`Self::coupled_trajectory_actuator_gradient`]: roll the
     /// articulated coupled system forward applying the per-step motor control
     /// `controls[k]` to the single actuator (`data.ctrl[0]`), and return the tip world
@@ -4083,6 +4514,87 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self.data.xpos[self.body]
     }
 
+    /// **Forward-only oracle for the articulated FRICTION (gripped) trajectory gradient.**
+    /// The articulated successor to [`Self::coupled_trajectory_grip`] (free platen) and the
+    /// gripped sibling of [`Self::coupled_trajectory_articulated_z`] (normal-only articulated):
+    /// rolls the coupled system forward `n_steps`, routing the full GRIPPED reaction wrench
+    /// `[τ; f]` (normal + friction + off-COM moment, `contact_wrench_gripped`) onto the
+    /// ARTICULATED body. The moving-collider drift is read from the articulated state —
+    /// `Δ_surf = (J_lin·qvel)·dt`, the COM linear velocity (the multi-DOF successor to the free
+    /// platen's `qvel[0..3]`), with `J_lin = ∂c/∂q` the COM linear Jacobian
+    /// (`com_linear_jacobian`, the same one the wrench moment uses). Returns the body
+    /// COM (`xipos` — the swept TIP, not the fixed hinge pivot `xpos`) after the rollout so a
+    /// gate can read both the tangential drag (`.x`) and the engagement height (`.z`).
+    ///
+    /// No tape — the independent black-box reference for finite-differencing the articulated
+    /// friction gradient (sub-leaf 1 of the friction → matrix-carry lift). Advances `self`
+    /// (build a fresh coupling per call).
+    ///
+    /// **Scope (v1).** A EUCLIDEAN articulated mechanism (hinge/slide chain — `nq == nv`), flat
+    /// normal, friction active. The drift uses the COM linear velocity (matching the gradient's
+    /// drift-from-state channel and the wrench moment's `c(q)`); the per-contact `ω×r` rotation
+    /// term is omitted, as in [`Self::coupled_trajectory_grip`]. No `rigid_damping` z-term — the
+    /// articulated path damps through the model's joint damping (`M_impl`), not the free-platen
+    /// settling knob.
+    ///
+    /// # Panics
+    /// Panics if the rigid step diverges or the soft solver fails (as in [`Self::step`]).
+    #[must_use]
+    // expect_used: a rigid-step divergence / soft non-convergence is a programmer error
+    // surfaced loudly, not recoverable for keystone-v1 (mirrors `coupled_trajectory_grip`).
+    #[allow(clippy::expect_used)]
+    pub fn coupled_trajectory_gripped_articulated(&mut self, n_steps: usize) -> Vec3 {
+        let dt = self.cfg.dt;
+        let n = self.n_vertices;
+        for _ in 0..n_steps {
+            // FRESH FK: pose the contact / COM from the CURRENT config (no one-step lag,
+            // matching `coupled_trajectory_articulated_z`).
+            self.data.forward(&self.model).expect("fresh FK");
+            let height = self.tip_plane_height();
+            // Step-start soft config xᵗ — captured BEFORE the solve overwrites `self.x`;
+            // the friction potential differences the post-step config against it.
+            let x_start = self.x.clone();
+            // Δ_surf: the contacting body's within-step tangential sweep from the ARTICULATED
+            // state — the COM linear velocity `J_lin·qvel` (the multi-DOF successor to the free
+            // platen's `qvel[0..3]`), times dt. The friction tangent projects out the normal
+            // component (rotation `ω×r` omitted, as in `coupled_trajectory_grip`).
+            let v_com = &self.com_linear_jacobian() * &self.data.qvel;
+            let drift = Vec3::new(v_com[0], v_com[1], v_com[2]) * dt;
+            // One friction-aware dynamic soft step with the moving-collider drift.
+            let bc = BoundaryConditions::new(self.pinned.clone(), Vec::new());
+            let solver: SoftSolver<C> = CpuNewtonSolver::new(
+                Tet4,
+                self.fresh_mesh(),
+                self.build_contact(height),
+                self.cfg,
+                bc,
+            )
+            .with_friction_surface_drift(drift);
+            let x_next = solver
+                .replay_step(
+                    &Tensor::from_slice(&self.x, &[3 * n]),
+                    &Tensor::from_slice(&self.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final;
+            // The friction reaction (with the same drift) at the post-step config.
+            let friction = solver.friction_forces_on_soft(&x_next, &x_start, dt);
+            for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
+                *vi = (xf - xo) / dt;
+            }
+            self.x = x_next;
+            // Route the full gripped reaction wrench [τ; f] (normal + friction + off-COM moment)
+            // about the fresh-FK COM, then step the articulated body.
+            self.data.xfrc_applied[self.body] = self.contact_wrench_gripped(height, &friction);
+            self.data
+                .step(&self.model)
+                .expect("rigid step diverged in articulated grip rollout");
+        }
+        self.data.forward(&self.model).expect("fresh FK (output)");
+        self.data.xipos[self.body]
+    }
+
     /// One friction-aware soft step from the CURRENT coupling state with the rigid body's
     /// tangential velocity perturbed by `dv` along `dir`, returning the converged soft `x*`.
     /// The platen velocity enters the soft solve ONLY through the collider drift
@@ -5015,6 +5527,45 @@ mod tests {
                     .analytic_state_jacobian(&SpatialVector::zeros())
                     .is_none(),
             "free joint must fall back to the FD loaded Jacobian"
+        );
+    }
+
+    /// Lib smoke for the articulated FRICTION-grip path: the full gripped forward oracle and the
+    /// matrix-carry friction material gradient (exercising the per-vertex friction wrench node,
+    /// the articulated drift node, and sim-soft's `friction_force_jacobians`). Machine-exact
+    /// accuracy lives in the `friction_articulated_material_gradient` integration test; this
+    /// keeps the `--lib` coverage honest over the new public surface.
+    #[test]
+    fn articulated_friction_grip_smoke() {
+        const HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        let build = || -> StaggeredCoupling {
+            let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
+            let mut data = model.make_data();
+            data.qpos[0] = 0.3;
+            data.forward(&model).expect("forward");
+            StaggeredCoupling::new(
+                model, data, 1, 0.005, 4, 0.1, 3.0e3, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+            )
+            .with_friction(2.5, 0.1)
+        };
+        let tip = build().coupled_trajectory_gripped_articulated(3);
+        assert!(
+            tip.x.is_finite() && (0.10..0.12).contains(&tip.z),
+            "gripped articulated rollout must stay finite and engaged, got {tip:?}"
+        );
+        let (tip_x, grad) =
+            build().coupled_trajectory_tangential_material_gradient_articulated(3, 0);
+        assert!(
+            tip_x.is_finite() && grad.is_finite(),
+            "articulated friction gradient must be finite, got ({tip_x}, {grad})"
         );
     }
 

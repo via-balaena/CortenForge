@@ -256,6 +256,113 @@ fn reaction_gradients_match_resolve_fd() {
     );
 }
 
+/// The PER-VERTEX friction force Jacobian (`friction_force_jacobians`, the VECTOR successor
+/// the off-COM friction MOMENT needs). Two checks: (1) CONSISTENCY — projecting the
+/// per-vertex forces & Jacobians onto each basis direction êᵢ and summing reproduces the
+/// already-FD-gated scalar `friction_reaction_gradients(react = êᵢ)` EXACTLY (same arithmetic,
+/// so this transitively inherits that test's FD validation, component by component); (2) a
+/// DIRECT central-FD of one vertex's force vector along a generic soft-config perturbation.
+#[test]
+fn per_vertex_force_jacobians_match_aggregate_and_fd() {
+    let solver = build(MU0, LAMBDA0, DRIFT);
+    let x_prev = x_rest();
+    let x_final = solve(MU0, LAMBDA0, DRIFT);
+    let nd = x_final.len();
+    let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+    let pose_dir = Vec3::new(0.0, 0.0, 1.0);
+    let pv = solver.friction_force_jacobians(&x_final, &x_prev, DT, drift_dir, pose_dir);
+    assert!(!pv.is_empty(), "expected active friction vertices");
+
+    // (1) Consistency vs the aggregate, per basis direction êᵢ.
+    for i in 0..3 {
+        let mut react = Vec3::zeros();
+        react[i] = 1.0;
+        let agg =
+            solver.friction_reaction_gradients(&x_final, &x_prev, DT, react, drift_dir, pose_dir);
+        let sum_force: f64 = pv.iter().map(|p| p.force[i]).sum();
+        let sum_ddrift: f64 = pv.iter().map(|p| p.dforce_ddrift[i]).sum();
+        let sum_dheight: f64 = pv.iter().map(|p| p.dforce_dheight[i]).sum();
+        let mut sum_dx = vec![0.0_f64; nd];
+        let mut sum_dxprev = vec![0.0_f64; nd];
+        for p in &pv {
+            for k in 0..nd {
+                sum_dx[k] += p.dforce_dx[i * nd + k];
+                sum_dxprev[k] += p.dforce_dxprev[i * nd + k];
+            }
+        }
+        let rel_vec = |a: &[f64], b: &[f64]| -> f64 {
+            let num: f64 = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let den: f64 = b.iter().map(|y| y * y).sum::<f64>().sqrt();
+            num / den.max(1e-30)
+        };
+        assert!(
+            (sum_force - agg.force).abs() <= 1e-10 * agg.force.abs().max(1e-12),
+            "force[{i}]: per-vertex sum {sum_force:e} vs aggregate {:e}",
+            agg.force
+        );
+        assert!(rel_vec(&sum_dx, &agg.dforce_dx) < 1e-10, "dforce_dx[{i}]");
+        assert!(
+            rel_vec(&sum_dxprev, &agg.dforce_dxprev) < 1e-10,
+            "dforce_dxprev[{i}]"
+        );
+        assert!(
+            (sum_ddrift - agg.dforce_ddrift).abs() <= 1e-10 * agg.dforce_ddrift.abs().max(1e-12),
+            "dforce_ddrift[{i}]"
+        );
+        assert!(
+            (sum_dheight - agg.dforce_dheight).abs() <= 1e-10 * agg.dforce_dheight.abs().max(1e-12),
+            "dforce_dheight[{i}]"
+        );
+    }
+
+    // (2) Direct central FD of the max-force vertex's force vector along a generic direction.
+    let target = pv
+        .iter()
+        .max_by(|a, b| {
+            a.force
+                .norm()
+                .partial_cmp(&b.force.norm())
+                .expect("finite friction-force norms")
+        })
+        .map(|p| p.vid)
+        .expect("at least one active friction vertex");
+    let mut d = vec![0.0_f64; nd];
+    for (k, e) in d.iter_mut().enumerate() {
+        *e = ((k % 7) as f64 - 3.0) * 0.2 + 0.05;
+    }
+    let eps = 1e-8;
+    let force_at = |x: &[f64]| -> Vec3 {
+        build(MU0, LAMBDA0, DRIFT)
+            .friction_force_jacobians(x, &x_prev, DT, drift_dir, pose_dir)
+            .into_iter()
+            .find(|p| p.vid == target)
+            .map_or_else(Vec3::zeros, |p| p.force)
+    };
+    let xp: Vec<f64> = x_final.iter().zip(&d).map(|(a, e)| a + eps * e).collect();
+    let xm: Vec<f64> = x_final.iter().zip(&d).map(|(a, e)| a - eps * e).collect();
+    let fd = (force_at(&xp) - force_at(&xm)) / (2.0 * eps);
+    let tp = pv
+        .iter()
+        .find(|p| p.vid == target)
+        .expect("target vertex present");
+    let an = Vec3::new(
+        (0..nd).map(|k| tp.dforce_dx[k] * d[k]).sum(),
+        (0..nd).map(|k| tp.dforce_dx[nd + k] * d[k]).sum(),
+        (0..nd).map(|k| tp.dforce_dx[2 * nd + k] * d[k]).sum(),
+    );
+    let r = (an - fd).norm() / fd.norm().max(1e-9);
+    eprintln!("per-vertex ∂force/∂x* (vid={target}): an={an:?} fd={fd:?} rel={r:.3e}");
+    assert!(
+        fd.norm() > 1e-3 && r < 1e-6,
+        "per-vertex ∂force/∂x* vs FD: {r:e}"
+    );
+}
+
 /// SLICE 1 (tape node): the friction-grip `TrajectoryStepVjp` (five parents — the
 /// frictionless four plus the moving-collider drift `Δ_surf`) routes the drift cotangent
 /// correctly. With `L = Σx*`, the drift parent's gradient matches a re-solve FD over the
