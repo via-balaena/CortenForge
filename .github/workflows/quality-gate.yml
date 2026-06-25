@@ -82,9 +82,18 @@ env:
 # never cancel a push to main (every landed commit's gate should complete) and
 # never cancel a `merge_group` run — cancelling a queued merge-gate run would
 # bounce the PR out of the merge queue.
+#
+# Dependabot exception: ALL dependabot runs share ONE group (not per-ref), so a
+# batch of dep-bump PRs serializes to one run at a time instead of each spawning
+# a full ~14-job matrix in parallel and saturating the pool. Human PRs keep their
+# per-ref group and run freely — so our work always has runner headroom no matter
+# how many dependabot PRs are open. (Actions has no native job priority; this +
+# the dependabot.yml grouping/limit are the effective levers.) Dependabot's group
+# does NOT cancel-in-progress — its runs queue (serialize) rather than killing the
+# one ahead.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.actor == 'dependabot[bot]' && format('{0}-dependabot', github.workflow) || format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' }}
 
 jobs:
   # ============================================================================
