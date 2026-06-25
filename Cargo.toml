@@ -571,7 +571,7 @@ parry3d = "0.17"
 # `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-2 + the S1 commit's
 # precision diagnosis. Two parry crates in workspace = ~2× build
 # cost of parry; acceptable for the precision win.
-parry3d-f64 = "0.17"
+parry3d-f64 = "0.28"
 
 # ---------------------------------------------------------------------------
 # Randomness
