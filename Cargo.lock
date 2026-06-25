@@ -8718,9 +8718,9 @@ dependencies = [
 
 [[package]]
 name = "manifold-csg"
-version = "0.1.8"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf7d61a2fed9e32a65e9f987505c01e7e1b1b34d32b3f75df3ecff77c246b78a"
+checksum = "4cee17a66b896d3fe7d42c33ad243050782523ee004380ea04f1b4bd31f7fdd6"
 dependencies = [
  "log",
  "manifold-csg-sys",
@@ -8730,18 +8730,18 @@ dependencies = [
 
 [[package]]
 name = "manifold-csg-sys"
-version = "3.4.107"
+version = "3.5.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7ba98ad842ca99ec2752d2e556f43ce69aa3f8000bd55b188053b383f9cb095"
+checksum = "6c525420ceac2336c7b927b051c3d7711f7c757ce47a8b31f6d9afcc5c972a1d"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "manifold3d"
-version = "0.1.8"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b644d8063a3a60f36f238489d0c67f13a5b55dacd1a7cd7467cfdedc6c42067"
+checksum = "1f3d5b9ba0f35663bbb2cac7bd463e191e942dbe8a1b24f1d1ad9e8cd40634f0"
 dependencies = [
  "manifold-csg",
 ]

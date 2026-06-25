@@ -653,7 +653,7 @@ pollster = "0.4"
 # First-time builds compile the upstream `elalish/manifold` C++ kernel via
 # manifold-csg-sys's build.rs (CMake + a vendored Clipper2); measured ~3 min
 # 14 s on the S1 spike. Subsequent builds use cargo's target cache.
-manifold3d = { version = "=0.1.8", features = ["nalgebra"] }
+manifold3d = { version = "=0.3.1", features = ["nalgebra"] }
 
 # ---------------------------------------------------------------------------
 # Testing
