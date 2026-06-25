@@ -4439,6 +4439,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-integration-coupled-impact-viewer"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "cf-bevy-common",
+ "sim-bevy-soft",
+ "sim-coupling",
+ "sim-mjcf",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-integrator-comparison"
 version = "1.0.0"
 dependencies = [

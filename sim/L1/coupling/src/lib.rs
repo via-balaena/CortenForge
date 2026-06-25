@@ -1500,6 +1500,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         &self.data
     }
 
+    /// The soft body's current deformed vertex positions, flat stride-3
+    /// (`[x₀,y₀,z₀, x₁,…]`, length `3·n_vertices`) — the live `x*` the last
+    /// [`Self::step`] / grip rollout produced. A read surface for visualization
+    /// (capture per step into a deformed-mesh trajectory) and instrumentation.
+    #[must_use]
+    pub fn soft_positions(&self) -> &[f64] {
+        &self.x
+    }
+
+    /// The soft body's surface triangulation (`boundary_faces`) for the rest tet
+    /// mesh — the topology a renderer pairs with [`Self::soft_positions`] frames to
+    /// build and animate the deformed surface mesh. Constant across the rollout
+    /// (only vertex positions move), so capture it once.
+    #[must_use]
+    pub fn soft_boundary_faces(&self) -> Vec<[VertexId; 3]> {
+        self.fresh_mesh().boundary_faces().to_vec()
+    }
+
     /// The contact plane's height for the current rigid pose (a downward
     /// half-space whose surface sits at the rigid body's reference point minus
     /// the clearance).
