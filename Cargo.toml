@@ -585,7 +585,7 @@ rand_distr = "0.5"
 # transitive copy into the `wasm_js` backend (see each L0 crate's
 # `[target.'cfg(...)'.dependencies]` block + the workspace
 # `.cargo/config.toml` rustflag).
-getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 # ---------------------------------------------------------------------------
 # Parallelism
