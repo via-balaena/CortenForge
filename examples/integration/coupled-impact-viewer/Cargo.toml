@@ -1,0 +1,42 @@
+[package]
+name = "example-integration-coupled-impact-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# StaggeredCoupling + the de-escalation impact rollout (soft buffer ← rigid limb strike), plus
+# the soft_positions / soft_boundary_faces capture surface for the deformed-mesh trajectory.
+sim-coupling = { path = "../../../sim/L1/coupling" }
+# load_model — the limb MJCF (a free-joint mass over the soft buffer).
+sim-mjcf = { workspace = true }
+# Vec3 / VertexId / the measured Ecoflex material const for the buffer.
+sim-soft = { workspace = true }
+# build_soft_mesh + apply_soft_positions — the soft-body deformed-mesh build + per-frame replay path.
+sim-bevy-soft = { workspace = true }
+# UpAxis::PlusZ (sim +Z-up → Bevy +Y-up swap) + OrbitCamera / OrbitCameraPlugin.
+cf-bevy-common = { workspace = true }
+# Bevy 0.18 windowed render pipeline (visual mode only; headless capture never touches Bevy).
+# Feature set mirrors examples/sim-soft/compressive-block verbatim.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+    "x11",
+] }
+
+[lints]
+workspace = true

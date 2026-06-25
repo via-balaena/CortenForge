@@ -355,6 +355,7 @@ members = [
     "examples/sdf-physics/gpu/01-hockey",
 
     # Examples — integration (cross-domain pipelines)
+    "examples/integration/coupled-impact-viewer",
     "examples/integration/design-to-sim",
     "examples/integration/design-to-print",
     "examples/integration/sim-informed-design",
