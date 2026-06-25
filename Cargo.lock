@@ -348,7 +348,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -359,7 +359,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3377,7 +3377,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -3693,7 +3693,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7135,7 +7135,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
+ "windows-link 0.1.3",
  "windows-result 0.4.1",
 ]
 
@@ -9475,7 +9475,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10026,15 +10026,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ordered-float"
-version = "5.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0218004a4aae742209bee9c3cef05672f6b2708be36a50add8eb613b1f2a4008"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10128,7 +10119,7 @@ dependencies = [
  "nalgebra 0.33.3",
  "num-derive 0.4.2",
  "num-traits",
- "ordered-float 4.6.0",
+ "ordered-float",
  "rstar",
  "rustc-hash 2.1.1",
  "simba",
@@ -10154,7 +10145,7 @@ dependencies = [
  "nalgebra 0.33.3",
  "num-derive 0.4.2",
  "num-traits",
- "ordered-float 4.6.0",
+ "ordered-float",
  "rstar",
  "rustc-hash 2.1.1",
  "simba",
@@ -11281,7 +11272,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -11634,7 +11625,7 @@ dependencies = [
  "pollster",
  "sim-core",
  "sim-types",
- "wgpu 27.0.1",
+ "wgpu 28.0.0",
 ]
 
 [[package]]
@@ -11762,7 +11753,7 @@ dependencies = [
  "pollster",
  "serde_json",
  "sim-ml-chassis",
- "wgpu 27.0.1",
+ "wgpu 28.0.0",
 ]
 
 [[package]]
@@ -12385,7 +12376,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -12989,7 +12980,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -13537,18 +13528,13 @@ dependencies = [
  "cfg_aliases",
  "document-features",
  "hashbrown 0.16.1",
- "js-sys",
  "log",
  "naga 27.0.3",
- "parking_lot",
  "portable-atomic",
  "profiling",
  "raw-window-handle",
  "smallvec",
  "static_assertions",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
  "wgpu-core 27.0.3",
  "wgpu-hal 27.0.4",
  "wgpu-types 27.0.1",
@@ -13610,7 +13596,6 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "wgpu-core-deps-apple 27.0.0",
- "wgpu-core-deps-emscripten 27.0.0",
  "wgpu-core-deps-windows-linux-android 27.0.0",
  "wgpu-hal 27.0.4",
  "wgpu-types 27.0.1",
@@ -13642,7 +13627,7 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "wgpu-core-deps-apple 28.0.0",
- "wgpu-core-deps-emscripten 28.0.0",
+ "wgpu-core-deps-emscripten",
  "wgpu-core-deps-windows-linux-android 28.0.0",
  "wgpu-hal 28.0.1",
  "wgpu-types 28.0.0",
@@ -13664,15 +13649,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "87b7b696b918f337c486bf93142454080a32a37832ba8a31e4f48221890047da"
 dependencies = [
  "wgpu-hal 28.0.1",
-]
-
-[[package]]
-name = "wgpu-core-deps-emscripten"
-version = "27.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b06ac3444a95b0813ecfd81ddb2774b66220b264b3e2031152a4a29fda4da6b5"
-dependencies = [
- "wgpu-hal 27.0.4",
 ]
 
 [[package]]
@@ -13718,23 +13694,18 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "core-graphics-types 0.2.0",
- "glow",
- "glutin_wgl_sys",
  "gpu-alloc",
  "gpu-allocator 0.27.0",
  "gpu-descriptor",
  "hashbrown 0.16.1",
- "js-sys",
- "khronos-egl",
  "libc",
  "libloading 0.8.9",
  "log",
  "metal 0.32.0",
  "naga 27.0.3",
- "ndk-sys",
  "objc",
  "once_cell",
- "ordered-float 5.2.0",
+ "ordered-float",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",
@@ -13744,8 +13715,6 @@ dependencies = [
  "renderdoc-sys",
  "smallvec",
  "thiserror 2.0.18",
- "wasm-bindgen",
- "web-sys",
  "wgpu-types 27.0.1",
  "windows 0.58.0",
  "windows-core 0.58.0",
@@ -13782,7 +13751,7 @@ dependencies = [
  "ndk-sys",
  "objc",
  "once_cell",
- "ordered-float 5.2.0",
+ "ordered-float",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",
@@ -13868,7 +13837,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
