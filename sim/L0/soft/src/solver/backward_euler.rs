@@ -3271,6 +3271,34 @@ where
         self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_dir, drift_dir)
     }
 
+    /// Like [`Self::trajectory_step_vjp_grip`] but the scalar "param" parent is a single
+    /// **design variable** driving a linear combination of the material parameters,
+    /// `p_k = p_k(p)` with `param_weights[k] = dp_k/dp` (e.g. the coupling's tied stiffness
+    /// scale `μ = p, λ = 4p`, `param_weights = [1, 4]`). It is to
+    /// [`Self::trajectory_step_vjp_grip`] exactly what
+    /// [`Self::trajectory_step_vjp_combined`] is to [`Self::trajectory_step_vjp`]: the grip
+    /// core is generic in its param RHS (it contracts `−λᵀ·(∂r/∂param)`, agnostic to which
+    /// scalar produced the RHS), so this swaps in the combined material RHS
+    /// `Σ_k weights[k]·(∂r/∂p_k)` and is otherwise byte-identical to the single-material grip
+    /// node (same pose/drift/`x_prev`-friction coupling and Woodbury factor). With a unit
+    /// weight vector it reduces to `trajectory_step_vjp_grip` at that index exactly. Enables
+    /// differentiating the buffer's stiffness AND a control policy on ONE friction-grip tape
+    /// (the de-escalation co-design "one outer loop over both"). Same engaged /
+    /// stable-active-set / hard-penalty scope.
+    #[must_use]
+    pub fn trajectory_step_vjp_grip_combined(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        param_weights: &[f64],
+        pose_dir: Vec3,
+        drift_dir: Vec3,
+    ) -> TrajectoryStepVjp {
+        let dr_dparam = self.assemble_material_residual_grad_combined(x_final, param_weights);
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_dir, drift_dir)
+    }
+
     /// Shared core of the friction-grip soft VJP node: everything except WHICH scalar the param
     /// parent represents. `dr_dparam` is the full-DOF residual sensitivity for that scalar
     /// (material `∂r/∂p_k` or friction-coefficient `∂r/∂μ_c`); the rest — pose, drift, `x_prev`
