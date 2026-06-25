@@ -563,7 +563,7 @@ toml = "1.1"
 # Spatial & Collision
 # ---------------------------------------------------------------------------
 # parry3d: Collision detection, BVH, convex hulls
-parry3d = "0.17"
+parry3d = "0.28"
 # parry3d-f64: f64-Real sibling of parry3d. Used by mesh-printability's
 # F4 spatial-index path (`flag_thin_wall_faces` BVH ray-cast) where
 # f32 precision drift at the `min_wall_thickness` threshold causes
