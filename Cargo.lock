@@ -2415,7 +2415,7 @@ dependencies = [
  "approx 0.5.1",
  "cf-msk-lib",
  "nalgebra 0.34.2",
- "quick-xml 0.39.2",
+ "quick-xml 0.40.1",
  "serde_json",
  "sim-core",
  "sim-mjcf",
@@ -8842,7 +8842,7 @@ dependencies = [
  "criterion",
  "mesh-types",
  "ply-rs",
- "quick-xml 0.39.2",
+ "quick-xml 0.40.1",
  "tempfile",
  "thiserror 2.0.18",
  "truck-meshalgo",
@@ -10773,12 +10773,21 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.39.2"
+version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "958f21e8e7ceb5a1aa7fa87fab28e7c75976e0bfe7e23ff069e0a260f894067d"
+checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
 dependencies = [
  "memchr 2.8.0",
  "serde",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.40.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
+dependencies = [
+ "memchr 2.8.0",
 ]
 
 [[package]]
@@ -11657,7 +11666,7 @@ dependencies = [
  "mesh-io",
  "mesh-types",
  "nalgebra 0.34.2",
- "quick-xml 0.39.2",
+ "quick-xml 0.40.1",
  "serde",
  "serde_json",
  "sim-core",
@@ -11809,7 +11818,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra 0.34.2",
- "quick-xml 0.39.2",
+ "quick-xml 0.40.1",
  "serde",
  "sim-core",
  "sim-mjcf",
@@ -13483,7 +13492,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c86287151a309799b821ca709b7345a048a2956af05957c89cb824ab919fa4e3"
 dependencies = [
  "proc-macro2",
- "quick-xml 0.39.2",
+ "quick-xml 0.39.4",
  "quote",
 ]
 
@@ -14916,7 +14925,7 @@ version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8067892e940ed1727dea64690378601603b31d62dfde019a5335fbb7c0e0ed9"
 dependencies = [
- "quick-xml 0.39.2",
+ "quick-xml 0.39.4",
  "serde",
  "zbus_names",
  "zvariant",
