@@ -4451,6 +4451,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-integration-finite-striker-viewer"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "cf-bevy-common",
+ "nalgebra 0.34.2",
+ "sim-bevy-soft",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-integrator-comparison"
 version = "1.0.0"
 dependencies = [
