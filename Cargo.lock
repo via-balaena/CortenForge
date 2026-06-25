@@ -2219,7 +2219,7 @@ dependencies = [
  "mesh-io",
  "mesh-measure",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
 ]
 
 [[package]]
@@ -2236,7 +2236,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
  "toml 1.1.0+spec-1.1.0",
 ]
@@ -2253,7 +2253,7 @@ dependencies = [
  "mesh-printability",
  "mesh-repair",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "rayon",
  "thiserror 2.0.18",
 ]
@@ -2271,7 +2271,7 @@ dependencies = [
  "mesh-io",
  "mesh-printability",
  "mesh-sdf",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
  "tempfile",
  "toml 1.1.0+spec-1.1.0",
@@ -2295,7 +2295,7 @@ dependencies = [
  "cf-geometry",
  "mesh-sdf",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "rayon",
  "sim-core",
 ]
@@ -2306,7 +2306,7 @@ version = "1.0.0"
 dependencies = [
  "cf-design",
  "mesh-io",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
  "tempfile",
@@ -2348,7 +2348,7 @@ dependencies = [
  "mesh-repair",
  "mesh-sdf",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
 ]
 
 [[package]]
@@ -2358,7 +2358,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
  "toml 1.1.0+spec-1.1.0",
 ]
@@ -2368,7 +2368,7 @@ name = "cf-geometry"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
 ]
 
@@ -2378,7 +2378,7 @@ version = "1.0.0"
 dependencies = [
  "cf-msk-lib",
  "cf-osim",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-core",
  "sim-mjcf",
@@ -2395,7 +2395,7 @@ dependencies = [
  "mesh-io",
  "mesh-sdf",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-core",
  "sim-mjcf",
@@ -2405,7 +2405,7 @@ dependencies = [
 name = "cf-msk-lib"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
 ]
 
 [[package]]
@@ -2414,7 +2414,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-msk-lib",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "quick-xml 0.39.2",
  "serde_json",
  "sim-core",
@@ -2435,7 +2435,7 @@ dependencies = [
  "mesh-io",
  "mesh-repair",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
  "toml 1.1.0+spec-1.1.0",
 ]
@@ -2449,7 +2449,7 @@ dependencies = [
  "mesh-io",
  "mesh-repair",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
  "toml 1.1.0+spec-1.1.0",
 ]
@@ -2473,7 +2473,7 @@ dependencies = [
  "mesh-repair",
  "mesh-sdf",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
  "sim-ml-chassis",
  "sim-soft",
@@ -2486,7 +2486,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "proptest",
  "serde",
  "thiserror 2.0.18",
@@ -2517,7 +2517,7 @@ version = "1.0.0"
 dependencies = [
  "cf-studio-core",
  "cortenforge",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "thiserror 2.0.18",
 ]
 
@@ -2530,7 +2530,7 @@ dependencies = [
  "cf-studio-engine",
  "cortenforge",
  "naga 28.0.0",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "rfd",
  "slint",
  "slint-build",
@@ -3916,7 +3916,7 @@ dependencies = [
  "bevy",
  "cf-design",
  "cf-geometry",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
 ]
 
@@ -3928,7 +3928,7 @@ dependencies = [
  "cf-cast",
  "cf-design",
  "mesh-printability",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
 ]
 
 [[package]]
@@ -3939,7 +3939,7 @@ dependencies = [
  "cf-cast",
  "cf-design",
  "mesh-printability",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
 ]
 
 [[package]]
@@ -3985,7 +3985,7 @@ name = "example-contact-condim-compare"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4025,7 +4025,7 @@ dependencies = [
 name = "example-contact-filtering-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -4035,7 +4035,7 @@ name = "example-contact-friction-slide"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4046,7 +4046,7 @@ name = "example-contact-margin-gap"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4057,7 +4057,7 @@ name = "example-contact-pair-override"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4068,7 +4068,7 @@ name = "example-contact-solimp-depth"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4079,7 +4079,7 @@ name = "example-contact-solref-bounce"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4089,7 +4089,7 @@ dependencies = [
 name = "example-contact-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -4099,7 +4099,7 @@ name = "example-derivatives-control-design"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4110,7 +4110,7 @@ name = "example-derivatives-convergence"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4121,7 +4121,7 @@ name = "example-derivatives-epsilon-vcurve"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4132,7 +4132,7 @@ name = "example-derivatives-hybrid-vs-fd"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4143,7 +4143,7 @@ name = "example-derivatives-inverse-dynamics"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4154,7 +4154,7 @@ name = "example-derivatives-linearize-pendulum"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4165,7 +4165,7 @@ name = "example-derivatives-sensor-jacobians"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4175,7 +4175,7 @@ dependencies = [
 name = "example-derivatives-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -4192,7 +4192,7 @@ dependencies = [
  "mesh-printability",
  "mesh-repair",
  "mesh-shell",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
 ]
 
@@ -4202,7 +4202,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -4260,7 +4260,7 @@ name = "example-equality-connect-body-to-body"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4271,7 +4271,7 @@ name = "example-equality-connect-to-world"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4282,7 +4282,7 @@ name = "example-equality-distance"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4312,7 +4312,7 @@ dependencies = [
 name = "example-equality-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -4322,7 +4322,7 @@ name = "example-equality-weld-body-to-body"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4333,7 +4333,7 @@ name = "example-equality-weld-to-world"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -4346,7 +4346,7 @@ dependencies = [
  "bevy",
  "cf-design",
  "cf-geometry",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -4375,7 +4375,7 @@ dependencies = [
 name = "example-free-joint-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -4402,7 +4402,7 @@ dependencies = [
  "mesh-printability",
  "mesh-repair",
  "mesh-shell",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -4414,7 +4414,7 @@ dependencies = [
  "bevy",
  "cf-design",
  "cf-geometry",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
 ]
 
@@ -4456,7 +4456,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy-soft",
  "sim-ml-chassis",
  "sim-soft",
@@ -4800,7 +4800,7 @@ dependencies = [
  "mesh-io",
  "mesh-measure",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
 ]
 
 [[package]]
@@ -4882,7 +4882,7 @@ dependencies = [
  "mesh-printability",
  "mesh-repair",
  "mesh-shell",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
 ]
 
@@ -4915,7 +4915,7 @@ dependencies = [
  "mesh-io",
  "mesh-printability",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
 ]
 
 [[package]]
@@ -5259,7 +5259,7 @@ name = "example-mocap-bodies-drag-target"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -5270,7 +5270,7 @@ name = "example-mocap-bodies-push-object"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -5280,7 +5280,7 @@ dependencies = [
 name = "example-mocap-bodies-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -5290,7 +5290,7 @@ name = "example-mocap-bodies-tilt-drop"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -5388,7 +5388,7 @@ dependencies = [
 name = "example-passive-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -5398,7 +5398,7 @@ name = "example-passive-wind"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -5409,7 +5409,7 @@ name = "example-raycasting-basic-shapes"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -5420,7 +5420,7 @@ name = "example-raycasting-heightfield"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -5431,7 +5431,7 @@ name = "example-raycasting-scene-query"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -5442,7 +5442,7 @@ name = "example-raycasting-stress-test"
 version = "1.0.0"
 dependencies = [
  "cf-geometry",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-types",
 ]
@@ -5453,7 +5453,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
 ]
 
@@ -5463,7 +5463,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
 ]
 
@@ -5473,7 +5473,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5484,7 +5484,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5495,7 +5495,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5506,7 +5506,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5517,7 +5517,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5528,7 +5528,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5539,7 +5539,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5550,7 +5550,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5561,7 +5561,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-gpu",
@@ -5573,7 +5573,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5584,7 +5584,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5595,7 +5595,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5606,7 +5606,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5617,7 +5617,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5700,7 +5700,7 @@ dependencies = [
 name = "example-sensor-adv-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -5805,7 +5805,7 @@ dependencies = [
  "mesh-lattice",
  "mesh-measure",
  "mesh-repair",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
 ]
@@ -5818,7 +5818,7 @@ dependencies = [
  "approx 0.5.1",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-soft",
 ]
 
@@ -5830,7 +5830,7 @@ dependencies = [
  "approx 0.5.1",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-ml-chassis",
  "sim-soft",
 ]
@@ -5859,7 +5859,7 @@ dependencies = [
  "approx 0.5.1",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-ml-chassis",
  "sim-soft",
 ]
@@ -5915,7 +5915,7 @@ dependencies = [
  "approx 0.5.1",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-soft",
 ]
 
@@ -5929,7 +5929,7 @@ dependencies = [
  "mesh-io",
  "mesh-sdf",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-ml-chassis",
  "sim-soft",
@@ -5953,7 +5953,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-ml-chassis",
  "sim-soft",
@@ -5965,7 +5965,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-soft",
 ]
@@ -5979,7 +5979,7 @@ dependencies = [
  "cf-design",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-ml-chassis",
  "sim-soft",
@@ -5994,7 +5994,7 @@ dependencies = [
  "cf-design",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-ml-chassis",
  "sim-soft",
@@ -6009,7 +6009,7 @@ dependencies = [
  "cf-design",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-ml-chassis",
  "sim-soft",
@@ -6024,7 +6024,7 @@ dependencies = [
  "cf-design",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-ml-chassis",
  "sim-soft",
@@ -6039,7 +6039,7 @@ dependencies = [
  "cf-design",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-ml-chassis",
  "sim-soft",
@@ -6054,7 +6054,7 @@ dependencies = [
  "cf-design",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-ml-chassis",
  "sim-soft",
@@ -6076,7 +6076,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde_json",
  "sim-soft",
 ]
@@ -6115,7 +6115,7 @@ dependencies = [
  "cf-design",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-ml-chassis",
  "sim-soft",
 ]
@@ -6251,7 +6251,7 @@ name = "example-tendon-cylinder-wrap"
 version = "1.0.0"
 dependencies = [
  "bevy",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
@@ -6311,7 +6311,7 @@ dependencies = [
 name = "example-tendon-stress-test"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
 ]
@@ -6323,7 +6323,7 @@ dependencies = [
  "anyhow",
  "cf-design",
  "mesh-io",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
 ]
 
 [[package]]
@@ -7345,6 +7345,12 @@ name = "glam"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
+
+[[package]]
+name = "glam"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "898f5a568a84989b6c0f8caa50a93074b97dbdc58fc6d9543157bb4562758933"
 
 [[package]]
 name = "glob"
@@ -8862,7 +8868,7 @@ dependencies = [
  "mesh-offset",
  "mesh-sdf",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "rand 0.9.2",
  "thiserror 2.0.18",
 ]
@@ -8873,7 +8879,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -8885,7 +8891,7 @@ dependencies = [
  "approx 0.5.1",
  "mesh-sdf",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "thiserror 2.0.18",
 ]
 
@@ -8897,7 +8903,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "mesh-repair",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "parry3d-f64",
  "thiserror 2.0.18",
 ]
@@ -8910,7 +8916,7 @@ dependencies = [
  "cf-geometry",
  "hashbrown 0.16.1",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "parry3d-f64",
  "proptest",
  "rayon",
@@ -8934,7 +8940,7 @@ dependencies = [
  "approx 0.5.1",
  "cf-geometry",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "parry3d",
  "thiserror 2.0.18",
 ]
@@ -8948,7 +8954,7 @@ dependencies = [
  "mesh-offset",
  "mesh-repair",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -8968,7 +8974,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
  "serde_json",
 ]
@@ -9144,7 +9150,7 @@ dependencies = [
  "num-complex",
  "num-rational",
  "num-traits",
- "simba",
+ "simba 0.9.1",
  "typenum",
 ]
 
@@ -9178,8 +9184,28 @@ dependencies = [
  "num-complex",
  "num-rational",
  "num-traits",
+ "simba 0.9.1",
+ "typenum",
+]
+
+[[package]]
+name = "nalgebra"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adc43a60c217b0c6ff46e47f26911015ad8d2e5a8be1af668c67e370d99a4346"
+dependencies = [
+ "approx 0.5.1",
+ "glam 0.30.10",
+ "glam 0.31.1",
+ "glam 0.32.1",
+ "glam 0.33.1",
+ "matrixmultiply",
+ "nalgebra-macros",
+ "num-complex",
+ "num-rational",
+ "num-traits",
  "serde",
- "simba",
+ "simba 0.10.0",
  "typenum",
 ]
 
@@ -9192,7 +9218,7 @@ dependencies = [
  "approx 0.5.1",
  "nalgebra 0.34.2",
  "num-traits",
- "simba",
+ "simba 0.9.1",
 ]
 
 [[package]]
@@ -10131,7 +10157,7 @@ dependencies = [
  "ordered-float 4.6.0",
  "rstar",
  "rustc-hash 2.1.1",
- "simba",
+ "simba 0.9.1",
  "slab",
  "smallvec",
  "spade",
@@ -10157,7 +10183,7 @@ dependencies = [
  "ordered-float 4.6.0",
  "rstar",
  "rustc-hash 2.1.1",
- "simba",
+ "simba 0.9.1",
  "slab",
  "smallvec",
  "spade",
@@ -11369,6 +11395,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "safe_arch"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f7caad094bd561859bcd467734a720c3c1f5d1f338995351fefe2190c45efed"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11554,7 +11589,7 @@ dependencies = [
  "cf-bevy-common",
  "cf-geometry",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
  "sim-types",
@@ -11576,7 +11611,7 @@ name = "sim-conformance-tests"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
  "sim-thermostat",
@@ -11591,7 +11626,7 @@ dependencies = [
  "approx 0.5.1",
  "cf-geometry",
  "log",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "rand 0.9.2",
  "rayon",
  "serde",
@@ -11606,7 +11641,7 @@ name = "sim-core-benches"
 version = "1.0.0"
 dependencies = [
  "criterion",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "rand 0.9.2",
  "sim-core",
 ]
@@ -11615,7 +11650,7 @@ dependencies = [
 name = "sim-coupling"
 version = "1.0.0"
 dependencies = [
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
@@ -11630,7 +11665,7 @@ dependencies = [
  "bytemuck",
  "cf-geometry",
  "log",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "pollster",
  "sim-core",
  "sim-types",
@@ -11642,7 +11677,7 @@ name = "sim-gpu-benches"
 version = "1.0.0"
 dependencies = [
  "criterion",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-core",
  "sim-gpu",
 ]
@@ -11656,7 +11691,7 @@ dependencies = [
  "image",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "quick-xml 0.39.2",
  "serde",
  "serde_json",
@@ -11673,7 +11708,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "getrandom 0.3.4",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "num-traits",
  "rand 0.9.2",
  "serde",
@@ -11732,7 +11767,7 @@ name = "sim-simd"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "proptest",
  "rand 0.9.2",
 ]
@@ -11742,7 +11777,7 @@ name = "sim-simd-benches"
 version = "1.0.0"
 dependencies = [
  "criterion",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "rand 0.9.2",
  "sim-simd",
 ]
@@ -11758,7 +11793,7 @@ dependencies = [
  "getrandom 0.3.4",
  "mesh-offset",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "pollster",
  "serde_json",
  "sim-ml-chassis",
@@ -11784,7 +11819,7 @@ name = "sim-thermostat"
 version = "1.0.0"
 dependencies = [
  "getrandom 0.3.4",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "rand 0.9.2",
  "rand_chacha 0.9.0",
  "rand_distr 0.5.1",
@@ -11798,7 +11833,7 @@ name = "sim-types"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -11808,7 +11843,7 @@ name = "sim-urdf"
 version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "quick-xml 0.39.2",
  "serde",
  "sim-core",
@@ -11828,7 +11863,19 @@ dependencies = [
  "num-complex",
  "num-traits",
  "paste",
- "wide",
+ "wide 0.7.33",
+]
+
+[[package]]
+name = "simba"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f45c644a9f3a386f9288625d9f0c1e999e1acf07a37df35d0516c7f199d9cb2"
+dependencies = [
+ "approx 0.5.1",
+ "num-complex",
+ "num-traits",
+ "wide 1.5.0",
 ]
 
 [[package]]
@@ -12164,7 +12211,7 @@ dependencies = [
  "cf-design",
  "mesh-io",
  "mesh-types",
- "nalgebra 0.34.2",
+ "nalgebra 0.35.0",
  "sim-soft",
  "spade",
 ]
@@ -13843,7 +13890,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
 dependencies = [
  "bytemuck",
- "safe_arch",
+ "safe_arch 0.7.4",
+]
+
+[[package]]
+name = "wide"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfdfe6a32973f2d1b268b8895845a8a96cac2f0191e72c27cc929036060dbf89"
+dependencies = [
+ "bytemuck",
+ "safe_arch 1.0.0",
 ]
 
 [[package]]

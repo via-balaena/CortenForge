@@ -535,7 +535,7 @@ let_underscore_must_use = "deny"
 # Math Foundation
 # ---------------------------------------------------------------------------
 # nalgebra: Linear algebra, matches parry3d and avian for compatibility
-nalgebra = "0.34.2"
+nalgebra = "0.35.0"
 # num-traits: generic numeric traits (Float, Zero, One, NumCast) — promoted
 # to explicit workspace dep per platform refactor audit A.1 (Tensor<T> generic);
 # already transitive via nalgebra, this just gives us a direct import path.
