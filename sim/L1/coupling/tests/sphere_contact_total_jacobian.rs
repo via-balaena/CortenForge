@@ -125,3 +125,39 @@ fn sphere_collider_panics_on_multistep_gradient() {
     // it must panic in `active_pair_curvatures` rather than return a wrong number.
     let _ = coupling.coupled_trajectory_material_gradient(2, 0);
 }
+
+/// A tilted Y-hinge arm pressing a point-mass tip into the soft block — the
+/// articulated scene the wrench-path trajectory gradients target.
+const HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+/// The ARTICULATED arm of the L1a scope guard (the gap the pre-PR review missed):
+/// the articulated trajectory gradients assemble the contact WRENCH via
+/// `active_pair_wrench_data` → `ContactWrenchTrajVjp`, a different path than the
+/// free-body `active_pair_curvatures` guard covers — and `active_pair_wrench_data`
+/// cannot self-guard because the curvature-correct single-step pose Jacobians use it
+/// too. So each articulated gradient method carries a method-entry `require_plane_collider`
+/// guard; a finite sphere collider must panic LOUDLY rather than emit a silently-wrong
+/// gradient (and the sphere is doubly unsupported here — `build_contact` poses it over
+/// the block centre, not the arm tip).
+#[test]
+#[should_panic(expected = "plane collider")]
+fn sphere_collider_panics_on_articulated_gradient() {
+    let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3; // tilt off vertical
+    data.forward(&model).expect("initial forward");
+    // Articulated v1 scope requires rigid_damping = 0.
+    let mut coupling: StaggeredCoupling = StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, KAPPA, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(SPHERE_R);
+    let _ = coupling.coupled_trajectory_material_gradient_articulated(2, 0);
+}

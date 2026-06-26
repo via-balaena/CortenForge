@@ -1655,6 +1655,33 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
     }
 
+    /// Assert the contact collider is the infinite plane — the L1a scope guard for the
+    /// MULTI-step trajectory gradients, which do not yet thread the curved-normal
+    /// geometric stiffness (`dE·H`, #415) through their adjoints (the L1b follow-on).
+    /// Called at the entry of every multi-step gradient method so a finite-sphere
+    /// collider ([`Self::with_sphere_collider`]) fails LOUDLY rather than emitting a
+    /// silently-wrong gradient (a silent contract violation on a public API is
+    /// ship-blocking).
+    ///
+    /// The FREE-body gradients are additionally guarded at their shared data factory
+    /// ([`Self::active_pair_curvatures`]); the ARTICULATED (wrench-path) gradients rely
+    /// on this method-entry guard because their data factory
+    /// ([`Self::active_pair_wrench_data`]) is shared with the curvature-correct
+    /// single-step pose Jacobians and so cannot itself assert. For the articulated
+    /// scene the sphere is doubly unsupported — [`Self::build_contact`] poses it over
+    /// the block centre, ignoring the end-effector tip's lateral position (the L1b
+    /// posed-SDF carry).
+    fn require_plane_collider(&self) {
+        assert!(
+            matches!(self.collider, Collider::Plane),
+            "multi-step coupled gradients require the plane collider; a finite sphere \
+             collider (with_sphere_collider) is not yet supported on the trajectory \
+             adjoint (the curved dE·H term is not threaded through it — the L1b \
+             follow-on). Use the single-step contact_force_height_total_jacobian for a \
+             curved collider."
+        );
+    }
+
     fn build_contact(&self, height: f64) -> C {
         if let Collider::Sphere { radius } = self.collider {
             let center = self.sphere_center(radius, height);
@@ -1732,6 +1759,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// fail loudly here than emit a silently-wrong gradient. The SINGLE-step pose
     /// Jacobians ([`Self::contact_force_height_total_jacobian`]) are curvature-correct for
     /// the sphere and go through [`Self::active_pair_wrench_data`] directly, not this.
+    ///
+    /// This is the FREE-body multi-step gradients' guard (their shared data factory). The
+    /// ARTICULATED (wrench-path) gradients guard at their method entry via
+    /// [`Self::require_plane_collider`] instead — `active_pair_wrench_data` is shared with
+    /// the curvature-correct single-step Jacobians above, so it cannot itself assert.
     fn active_pair_curvatures(&self, height: f64, positions: &[Vec3]) -> Vec<(usize, Vec3, f64)> {
         assert!(
             matches!(self.collider, Collider::Plane),
@@ -3305,6 +3337,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64) {
+        self.require_plane_collider();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -3575,6 +3608,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64) {
+        self.require_plane_collider();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -3820,6 +3854,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         &mut self,
         n_steps: usize,
     ) -> (f64, f64) {
+        self.require_plane_collider();
         assert!(
             self.model.nq == self.model.nv,
             "articulated friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
@@ -4168,6 +4203,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     // recoverable for keystone-v1 (mirrors `coupled_trajectory_material_gradient_articulated`).
     #[allow(clippy::too_many_lines, clippy::expect_used)]
     pub fn coupled_trajectory_actuator_gradient(&mut self, controls: &[f64]) -> (f64, Vec<f64>) {
+        self.require_plane_collider();
         assert!(
             self.model.nq == self.model.nv,
             "actuator gradient scope: Euclidean joints (nq == nv — hinge/slide chains; \
@@ -4385,6 +4421,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         &mut self,
         controls: &[f64],
     ) -> (f64, Vec<f64>) {
+        self.require_plane_collider();
         assert!(
             self.model.nq == self.model.nv,
             "actuator-friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
@@ -4642,6 +4679,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         params: &[f64],
         n_steps: usize,
     ) -> (f64, Vec<f64>) {
+        self.require_plane_collider();
         assert_eq!(
             params.len(),
             policy.n_params(),
@@ -4945,6 +4983,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         params: &[f64],
         n_steps: usize,
     ) -> (f64, f64, Vec<f64>) {
+        self.require_plane_collider();
         assert_eq!(
             params.len(),
             policy.n_params(),
