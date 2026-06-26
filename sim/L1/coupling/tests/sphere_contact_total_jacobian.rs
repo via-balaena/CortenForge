@@ -143,18 +143,19 @@ const HINGE_MJCF: &str = r#"<mujoco>
   </worldbody>
 </mujoco>"#;
 
-/// The ARTICULATED arm of the L1a scope guard (the gap the pre-PR review missed):
-/// the articulated trajectory gradients assemble the contact WRENCH via
-/// `active_pair_wrench_data` → `ContactWrenchTrajVjp`, a different path than the
-/// free-body `active_pair_curvatures` guard covers — and `active_pair_wrench_data`
-/// cannot self-guard because the curvature-correct single-step pose Jacobians use it
-/// too. So each articulated gradient method carries a method-entry `require_plane_collider`
-/// guard; a finite sphere collider must panic LOUDLY rather than emit a silently-wrong
-/// gradient (and the sphere is doubly unsupported here — `build_contact` poses it over
-/// the block centre, not the arm tip).
+/// The ARTICULATED-NORMAL guard frontier after the L1b articulated-wrench-NORMAL carry: the
+/// MATERIAL articulated gradient (`coupled_trajectory_material_gradient_articulated`) is now
+/// curvature-correct on a sphere (its `ContactWrenchTrajVjp` carries `f_mag·H`, FD-exact in
+/// `sphere_contact_wrench_node_matches_readout_fd`, gated end-to-end by
+/// `sphere_articulated_trajectory_gradient.rs`) and is UN-guarded. The still-guarded sibling is
+/// the ACTUATOR articulated gradient (`coupled_trajectory_actuator_gradient`) — it shares the
+/// curvature-correct wrench but layers state-dependent actuator dynamics not yet sphere-gated
+/// (the exo follow-on). A finite sphere collider must panic LOUDLY there rather than emit a
+/// silently-wrong gradient. (The articulated FRICTION gradients stay guarded too —
+/// `sphere_collider_panics_on_articulated_friction_gradient`.)
 #[test]
 #[should_panic(expected = "plane collider")]
-fn sphere_collider_panics_on_articulated_gradient() {
+fn sphere_collider_panics_on_articulated_actuator_gradient() {
     let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
     let mut data = model.make_data();
     data.qpos[0] = 0.3; // tilt off vertical
@@ -164,5 +165,7 @@ fn sphere_collider_panics_on_articulated_gradient() {
         model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, KAPPA, 1.0e-2, 0.0,
     )
     .with_sphere_collider(SPHERE_R);
-    let _ = coupling.coupled_trajectory_material_gradient_articulated(2, 0);
+    // The actuator articulated gradient stays plane-guarded; the guard is its first statement,
+    // so it panics before the controls/nq asserts (empty controls are fine).
+    let _ = coupling.coupled_trajectory_actuator_gradient(&[]);
 }

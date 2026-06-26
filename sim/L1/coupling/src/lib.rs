@@ -932,8 +932,10 @@ impl VjpOp for PoseTwistSeamVjp {
 #[derive(Clone, Debug)]
 struct ContactWrenchTrajVjp {
     /// Per active pair `(vertex_id, soft-force gᵢ, normal n̂, curvature cᵥ,
-    /// moment arm d = rᵢ − c)` at the linearization config.
-    active: Vec<(usize, Vec3, Vec3, f64, Vec3)>,
+    /// moment arm d = rᵢ − c, collider normal-curvature Hᵢ = ∇²sd)` at the
+    /// linearization config. `Hᵢ = 0` for the constant-normal plane; for a finite curved
+    /// collider it carries the geometric-stiffness term `f_mag·H` of `∂gᵢ/∂x_v` and `∂gᵢ/∂h`.
+    active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)>,
     /// The reaction force `f = −Σ gᵢ` (cached for `∂τ/∂c = [f]_×`).
     force: Vec3,
     /// The COM linear Jacobian `J_lin = ∂c/∂qpos` (`3 × nv`).
@@ -990,9 +992,16 @@ impl VjpOp for ContactWrenchTrajVjp {
         //   force rows:  +cᵥ (n̂·cot_f) n̂
         //   torque rows: −(gᵢ × cot_τ)  −  cᵥ (n̂·(d × cot_τ)) n̂
         let xs = parent_cotans[0].as_mut_slice();
-        for &(v, g, n, curv, d) in &self.active {
-            let term =
+        for &(v, g, n, curv, d, h) in &self.active {
+            // Flat part: ∂g/∂x_v = −cᵥ n̂⊗n̂ (constant normal).
+            let mut term =
                 curv * n.dot(&cot_f) * n - g.cross(&cot_t) - curv * n.dot(&d.cross(&cot_t)) * n;
+            // Curved-normal geometric stiffness: the tangent frame turns as the vertex slides
+            // over the primitive, so ∂g/∂x_v gains `+f_mag·H` (`f_mag = gᵢ·n̂`, `H = ∇²sd`, the
+            // [`Self::collider_hessian`]). The force rows pick up `−f_mag·H·cot_f`, the torque
+            // g-part `+f_mag·H·(d×cot_t)`. `H = 0` for a plane ⇒ `+0` (byte-identical).
+            let f_mag = g.dot(&n);
+            term += f_mag * (h * (d.cross(&cot_t) - cot_f));
             xs[3 * v] += term.x;
             xs[3 * v + 1] += term.y;
             xs[3 * v + 2] += term.z;
@@ -1002,12 +1011,23 @@ impl VjpOp for ContactWrenchTrajVjp {
         let pose_slot = parent_cotans[1].as_mut_slice();
         match &self.pose {
             WrenchPose::Height => {
-                // ∂L/∂h: the explicit force/moment-vs-height feedback (∂gᵢ/∂h = −cᵥ n̂).
-                //   ∂f/∂h = Σ cᵥ n̂ ;  ∂τ/∂h = Σ cᵥ (d × n̂).
+                // ∂L/∂h: the explicit force/moment-vs-height feedback (∂gᵢ/∂h = −cᵥ n̂ + curved).
+                //   flat:    ∂f/∂h = Σ cᵥ n̂ ,  ∂τ/∂h = Σ cᵥ (d × n̂).
+                //   curved:  ∂n̂/∂h = −H·ẑ, so ∂gᵢ/∂h gains `f_mag·(−H·ẑ)` ⇒ the readout gains
+                //   `f_mag·(H·ẑ)·(cot_f + cot_t×d)`. `H = 0` for a plane ⇒ `+0` (byte-identical).
+                let zhat = Vec3::new(0.0, 0.0, 1.0);
                 let dh: f64 = self
                     .active
                     .iter()
-                    .map(|&(_, _, n, curv, d)| curv * (n.dot(&cot_f) + d.cross(&n).dot(&cot_t)))
+                    .map(|&(_, g, n, curv, d, h)| {
+                        // Magnitude: ∂sd/∂h = −n̂·ẑ = −n̂_z (the primitive translates +ẑ), so the
+                        // force-magnitude feedback is `−cᵥ·n̂_z` per pair — NOT the plane-baked
+                        // `cᵥ` (the flat downward plane has n̂_z = −1 ⇒ `−cᵥ·(−1) = cᵥ`,
+                        // byte-identical; a sphere's tilted off-pole normals need the n̂_z factor).
+                        let flat = -curv * n.z * (n.dot(&cot_f) + d.cross(&n).dot(&cot_t));
+                        let curved = g.dot(&n) * (h * zhat).dot(&(cot_f + cot_t.cross(&d)));
+                        flat + curved
+                    })
                     .sum();
                 pose_slot[0] += dh;
             }
@@ -1017,7 +1037,7 @@ impl VjpOp for ContactWrenchTrajVjp {
                 //   ∂gᵢ/∂T_k = −cᵥ·dsd_k·n̂ + (gᵢ·n̂)·dn_k.
                 for (k, tw) in basis.iter().enumerate() {
                     let mut acc = 0.0_f64;
-                    for &(_, g, n, curv, d) in &self.active {
+                    for &(_, g, n, curv, d, _h) in &self.active {
                         let dn = tw.angular.cross(&n);
                         let r = d + com;
                         let dsd = r.dot(&dn) - tw.linear.dot(&n);
@@ -1670,24 +1690,30 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// emitting a silently-wrong gradient (a silent contract violation on a public API is
     /// ship-blocking).
     ///
-    /// Scope after the L1b free-body NORMAL + TANGENTIAL carries: the free-body NORMAL gradients
-    /// (contact crossing via [`Self::active_pair_force_factors`]) AND the free-body
-    /// TANGENTIAL/FRICTION gradients (the friction reaction `DN·H` + the soft adjoint's curved-T
-    /// tangent + friction pose-residual grad) are now curvature-correct and NOT guarded. Still
-    /// guarded here: the ARTICULATED (wrench-path) gradients — their data factory
-    /// ([`Self::active_pair_wrench_data`]) is shared with the curvature-correct single-step pose
-    /// Jacobians and so cannot itself assert; the sphere is doubly unsupported there
-    /// ([`Self::build_contact`] poses it over the block centre, not the end-effector tip — the
-    /// L1b articulated wrench-path / posed-SDF follow-on).
+    /// Scope after the L1b free-body (NORMAL + TANGENTIAL) and articulated-NORMAL carries:
+    /// curvature-correct and NOT guarded are the free-body NORMAL gradients
+    /// ([`Self::active_pair_force_factors`]), the free-body TANGENTIAL/FRICTION gradients (the
+    /// friction reaction `DN·H` + the soft adjoint's curved-T tangent + friction pose-residual
+    /// grad), AND the articulated MATERIAL gradient — its [`ContactWrenchTrajVjp`] now carries the
+    /// curved-normal `f_mag·H` term in `∂w/∂x*` and `∂w/∂h`
+    /// (`sphere_contact_wrench_node_matches_readout_fd`). Still guarded here:
+    /// - the articulated ACTUATOR gradients ([`Self::coupled_trajectory_actuator_gradient`] and
+    ///   the actuator-friction sibling) — they share the curvature-correct wrench but layer
+    ///   state-dependent actuator dynamics not yet sphere-gated (the exo follow-on);
+    /// - the articulated FRICTION gradients — their `friction_force_jacobians` per-vertex Jacobian
+    ///   still drops the curved `DN·C` term (the off-COM friction moment, the next L1b rung).
+    ///
+    /// Caveat (forward fidelity, not gradient correctness): [`Self::build_contact`] poses the
+    /// sphere laterally over the block centre, not the arm tip — orthogonal to the FD-validated
+    /// gradient (forward and adjoint share the posing), a separate lateral-at-tip follow-on.
     fn require_plane_collider(&self) {
         assert!(
             matches!(self.collider, Collider::Plane),
-            "this ARTICULATED (wrench-path) coupled gradient requires the plane collider; a \
-             finite sphere collider (with_sphere_collider) is not yet supported on the \
-             articulated trajectory adjoint (the curved term is not threaded through \
-             ContactWrenchTrajVjp, and build_contact poses the sphere over the block centre, \
-             not the arm tip — the L1b articulated follow-on). The FREE-BODY normal and \
-             friction trajectory gradients ARE curvature-correct on a sphere."
+            "this articulated ACTUATOR / FRICTION wrench-path gradient requires the plane \
+             collider; a finite sphere collider (with_sphere_collider) is not yet supported on it \
+             (the actuator dynamics / the friction off-COM moment's curved term are not yet \
+             threaded — the L1b articulated follow-on). The free-body gradients AND the \
+             articulated MATERIAL gradient ARE curvature-correct on a sphere."
         );
     }
 
@@ -3358,7 +3384,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64) {
-        self.require_plane_collider();
+        // Curvature-correct on a finite sphere (L1b-articulated NORMAL): the contact wrench
+        // (`ContactWrenchTrajVjp`) now carries the curved-normal `f_mag·H` term in `∂w/∂x*` and
+        // `∂w/∂h` (FD-exact in `sphere_contact_wrench_node_matches_readout_fd`); the soft node +
+        // pose seam are SDF-generic. No `require_plane_collider` guard. (The articulated FRICTION
+        // gradients stay guarded — `friction_force_jacobians` still drops the curved term.)
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -3468,7 +3498,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let mut wrench = SpatialVector::zeros();
             // ContactWrenchTrajVjp active list (vertex, g, n̂, cᵥ, d = rᵢ−c) +
             // the wrench value, in one pass.
-            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)> =
+                Vec::with_capacity(pairs.len());
             for (v, g, n, curv, r) in pairs {
                 let f = -g;
                 wrench[3] += f.x;
@@ -3478,7 +3509,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 wrench[0] += tau.x;
                 wrench[1] += tau.y;
                 wrench[2] += tau.z;
-                active.push((v, g, n, curv, r - c));
+                active.push((v, g, n, curv, r - c, self.collider_hessian(height, r)));
             }
             let force = Vec3::new(wrench[3], wrench[4], wrench[5]);
             let jlin = self.com_linear_jacobian();
@@ -3743,7 +3774,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let c = self.data.xipos[self.body];
             let pairs = self.active_pair_wrench_data(height, &positions);
             let mut w_normal = SpatialVector::zeros();
-            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)> =
+                Vec::with_capacity(pairs.len());
             for (v, g, nrm, curv, r) in pairs {
                 let f = -g;
                 w_normal[3] += f.x;
@@ -3753,7 +3785,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 w_normal[0] += tau.x;
                 w_normal[1] += tau.y;
                 w_normal[2] += tau.z;
-                active.push((v, g, nrm, curv, r - c));
+                active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
             let w_normal_var = tape.push_custom(
@@ -3979,7 +4011,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let c = self.data.xipos[self.body];
             let pairs = self.active_pair_wrench_data(height, &positions);
             let mut w_normal = SpatialVector::zeros();
-            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)> =
+                Vec::with_capacity(pairs.len());
             for (v, g, nrm, curv, r) in pairs {
                 let f = -g;
                 w_normal[3] += f.x;
@@ -3989,7 +4022,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 w_normal[0] += tau.x;
                 w_normal[1] += tau.y;
                 w_normal[2] += tau.z;
-                active.push((v, g, nrm, curv, r - c));
+                active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
             let w_normal_var = tape.push_custom(
@@ -4307,7 +4340,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let c = self.data.xipos[self.body];
             let pairs = self.active_pair_wrench_data(height, &positions);
             let mut wrench = SpatialVector::zeros();
-            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)> =
+                Vec::with_capacity(pairs.len());
             for (v, g, nrm, curv, r) in pairs {
                 let f = -g;
                 wrench[3] += f.x;
@@ -4317,7 +4351,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 wrench[0] += tau.x;
                 wrench[1] += tau.y;
                 wrench[2] += tau.z;
-                active.push((v, g, nrm, curv, r - c));
+                active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let force = Vec3::new(wrench[3], wrench[4], wrench[5]);
             let jlin = self.com_linear_jacobian();
@@ -4555,7 +4589,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let c = self.data.xipos[self.body];
             let pairs = self.active_pair_wrench_data(height, &positions);
             let mut w_normal = SpatialVector::zeros();
-            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)> =
+                Vec::with_capacity(pairs.len());
             for (v, g, nrm, curv, r) in pairs {
                 let f = -g;
                 w_normal[3] += f.x;
@@ -4565,7 +4600,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 w_normal[0] += tau.x;
                 w_normal[1] += tau.y;
                 w_normal[2] += tau.z;
-                active.push((v, g, nrm, curv, r - c));
+                active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
             let w_normal_var = tape.push_custom(
@@ -4850,7 +4885,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let c = self.data.xipos[self.body];
             let pairs = self.active_pair_wrench_data(height, &positions);
             let mut w_normal = SpatialVector::zeros();
-            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)> =
+                Vec::with_capacity(pairs.len());
             for (v, g, nrm, curv, r) in pairs {
                 let f = -g;
                 w_normal[3] += f.x;
@@ -4860,7 +4896,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 w_normal[0] += tau.x;
                 w_normal[1] += tau.y;
                 w_normal[2] += tau.z;
-                active.push((v, g, nrm, curv, r - c));
+                active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
             let w_normal_var = tape.push_custom(
@@ -5162,7 +5198,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let c = self.data.xipos[self.body];
             let pairs = self.active_pair_wrench_data(height, &positions);
             let mut w_normal = SpatialVector::zeros();
-            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3)> = Vec::with_capacity(pairs.len());
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)> =
+                Vec::with_capacity(pairs.len());
             for (v, g, nrm, curv, r) in pairs {
                 let f = -g;
                 w_normal[3] += f.x;
@@ -5172,7 +5209,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 w_normal[0] += tau.x;
                 w_normal[1] += tau.y;
                 w_normal[2] += tau.z;
-                active.push((v, g, nrm, curv, r - c));
+                active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
             let w_normal_var = tape.push_custom(
@@ -7539,7 +7576,7 @@ mod tests {
         let mut force = Vec3::zeros();
         for (v, g, n, curv, r) in c.active_pair_wrench_data(height, &positions) {
             force += -g;
-            active.push((v, g, n, curv, r - com));
+            active.push((v, g, n, curv, r - com, c.collider_hessian(height, r)));
         }
         assert!(!active.is_empty(), "config must be contact-engaged");
         let node = ContactWrenchTrajVjp {
@@ -7615,6 +7652,147 @@ mod tests {
         assert!(
             worst < 1e-5,
             "ContactWrenchTrajVjp Jacobian must be FD-exact vs the real readout, \
+             worst scaled error {worst:.3e}"
+        );
+    }
+
+    /// L1b articulated NORMAL wrench curvature: the contact-wrench node on a FINITE sphere
+    /// collider is FD-exact against the real readout. Same engaged off-COM hinge config as
+    /// `contact_wrench_node_matches_readout_fd`, but with `with_sphere_collider` — the sphere's
+    /// contact normal turns as a soft vertex slides (`∂n̂/∂x = H`) and as the primitive
+    /// translates with the tip height (`∂n̂/∂h = −H·ẑ`), so `∂w/∂x*` and `∂w/∂h` carry the
+    /// geometric-stiffness term `f_mag·H` (zero for the plane's constant normal). A flat
+    /// `ContactWrenchTrajVjp` misses it and disagrees with the curved-readout FD at the
+    /// curvature scale.
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn sphere_contact_wrench_node_matches_readout_fd() {
+        const HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        // Sphere radius: large vs the 0.1 m block so the south-pole patch spans several top-face
+        // vertices yet stays curved enough that f_mag·H is materially nonzero.
+        const SPHERE_R: f64 = 0.08;
+        let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3; // tilt → off-COM contact (large moment) + engaged sphere
+        data.forward(&model).expect("forward");
+        let c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_sphere_collider(SPHERE_R);
+
+        let height = c.tip_plane_height();
+        let positions = c.positions();
+        let com = c.data.xipos[c.body];
+        let n_dof = 3 * c.n_vertices;
+        let nv = c.model.nv;
+
+        // The REAL reaction wrench from the curved-collider readout (recomputed g + r).
+        let wrench_of = |h: f64, pos: &[Vec3], cc: Vec3| -> [f64; 6] {
+            let mut w = [0.0_f64; 6];
+            for (_, g, _, _, r) in c.active_pair_wrench_data(h, pos) {
+                let f = -g;
+                w[3] += f.x;
+                w[4] += f.y;
+                w[5] += f.z;
+                let tau = (r - cc).cross(&f);
+                w[0] += tau.x;
+                w[1] += tau.y;
+                w[2] += tau.z;
+            }
+            w
+        };
+
+        // The analytic node at this config (the curved H comes from `active_pair_wrench_curv`).
+        let mut active = Vec::new();
+        let mut force = Vec3::zeros();
+        for (v, g, n, curv, r) in c.active_pair_wrench_data(height, &positions) {
+            force += -g;
+            active.push((
+                v,
+                g,
+                n,
+                curv,
+                r - com,
+                c.collider_hessian(height, positions[v]),
+            ));
+        }
+        assert!(!active.is_empty(), "config must be contact-engaged");
+        let node = ContactWrenchTrajVjp {
+            active,
+            force,
+            jlin: c.com_linear_jacobian(),
+            n_dof,
+            nv,
+            pose: WrenchPose::Height,
+        };
+        let jac_row = |k: usize| -> (Vec<f64>, f64, Vec<f64>) {
+            let mut cot = Tensor::zeros(&[6]);
+            cot.as_mut_slice()[k] = 1.0;
+            let mut pc = vec![
+                Tensor::zeros(&[n_dof]),
+                Tensor::zeros(&[1]),
+                Tensor::zeros(&[2 * nv]),
+            ];
+            node.vjp(&cot, &mut pc);
+            (
+                pc[0].as_slice().to_vec(),
+                pc[1].as_slice()[0],
+                pc[2].as_slice().to_vec(),
+            )
+        };
+        let rows: Vec<_> = (0..6).map(jac_row).collect();
+        let d = 1.0e-7;
+
+        let mut worst = 0.0_f64;
+        let mut check = |fd: f64, an: f64, scale: f64| {
+            let rel = (fd - an).abs() / scale.max(1.0);
+            worst = worst.max(rel);
+        };
+        let sx = 1.0e3;
+        let sh = 1.0e5;
+        let sq = 1.0e3;
+
+        for j in 0..n_dof {
+            let mut pp = positions.clone();
+            let mut pm = positions.clone();
+            pp[j / 3][j % 3] += d;
+            pm[j / 3][j % 3] -= d;
+            let wp = wrench_of(height, &pp, com);
+            let wm = wrench_of(height, &pm, com);
+            for k in 0..6 {
+                check((wp[k] - wm[k]) / (2.0 * d), rows[k].0[j], sx);
+            }
+        }
+        let wp = wrench_of(height + d, &positions, com);
+        let wm = wrench_of(height - d, &positions, com);
+        for k in 0..6 {
+            check((wp[k] - wm[k]) / (2.0 * d), rows[k].1, sh);
+        }
+        for jq in 0..nv {
+            let scratch_com = |dq: f64| -> Vec3 {
+                let mut s = c.model.make_data();
+                s.qpos.copy_from(&c.data.qpos);
+                s.qpos[jq] += dq;
+                s.forward(&c.model).expect("forward");
+                s.xipos[c.body]
+            };
+            let wp = wrench_of(height, &positions, scratch_com(d));
+            let wm = wrench_of(height, &positions, scratch_com(-d));
+            for k in 0..6 {
+                check((wp[k] - wm[k]) / (2.0 * d), rows[k].2[jq], sq);
+            }
+        }
+        assert!(
+            worst < 1e-5,
+            "sphere ContactWrenchTrajVjp Jacobian must be FD-exact vs the curved readout, \
              worst scaled error {worst:.3e}"
         );
     }
