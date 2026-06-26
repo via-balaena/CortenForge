@@ -272,10 +272,12 @@ impl WoodburyCorrection {
     /// Shared low-rank tail: `rhs ← rhs − out_cols · (M[ᵀ])⁻¹ · (in_colsᵀ rhs)`.
     //
     // expect_used: `M = I + VᵀZ` is the Woodbury capacitance matrix of the true tangent
-    // `A = A_sym + UVᵀ`. `A` is non-singular at a converged stable equilibrium (the forward
-    // Newton solve converged through it), so `M` (and `Mᵀ`) is invertible — a singular `M`
-    // would mean a structurally degenerate friction configuration, where the gradient is
-    // itself undefined.
+    // `A = A_sym + UVᵀ` (the asymmetric friction λ-coupling AND, on a curved collider, the
+    // `DN·C` tangent-rotation columns). `A` is non-singular at a converged stable equilibrium,
+    // so `M` (and `Mᵀ`) is invertible — a singular `M` would mean a structurally degenerate
+    // friction configuration, where the gradient is itself undefined. (The curved-T columns can
+    // make `A` indefinite in the sharp/deep regime — the #415 `dE·H` caveat; `lm_regularization`
+    // shrinks `A_sym⁻¹` and keeps `M` near `I` there. Fail-loud, never silently wrong.)
     #[allow(clippy::expect_used)]
     fn apply_tail(
         &self,
@@ -1342,6 +1344,9 @@ where
         for pair in &pairs {
             let grad = self.contact.gradient(pair, &positions);
             let hess = self.contact.hessian(pair, &positions);
+            // Force-direction curvature `C = ∂n̂/∂x = sign(dE)·∇²sd` (0 for a plane) — feeds the
+            // asymmetric curved-T tangent block below.
+            let hess_n = self.contact.normal_curvature(pair, &positions);
             for (vid, force) in &grad.contributions {
                 let lambda = force.norm();
                 if lambda == 0.0 {
@@ -1361,6 +1366,33 @@ where
                 // λⁿ, so ∂(∇D)/∂λⁿ = ∇D/λⁿ (the rank-1 column's left factor).
                 let a_v = grad_d / lambda;
                 let nhat = force / lambda;
+
+                // Curved-normal tangent block `B = DN·C` (`∂(∇D_v)/∂x_v` via the rotating tangent
+                // frame; `DN = ∂∇D/∂n̂`, `C = ∂n̂/∂x_v`) — ASYMMETRIC (the lagged friction force is
+                // not a conservative gradient), so it cannot join the symmetric `A_sym` triplets;
+                // it enters the adjoint tangent here as 3 rank-1 column pairs at v's DOFs,
+                // `B = Σ_j B[:,j]·e_jᵀ`. `C = 0` for a plane ⇒ B = 0 ⇒ no columns ⇒ the plane's
+                // Woodbury (k, M) is byte-identical.
+                let dnh = crate::contact::friction::normal_rotation_term(
+                    x_v, x_start, *force, lambda, mu, w,
+                ) * hess_n;
+                if dnh != Matrix3::zeros() {
+                    for j in 0..3 {
+                        let Some(fj) = self.full_to_free_idx[3 * v + j] else {
+                            continue; // a pinned column DOF carries no free unknown
+                        };
+                        let mut uc = vec![0.0_f64; self.n_free];
+                        for i in 0..3 {
+                            if let Some(fi) = self.full_to_free_idx[3 * v + i] {
+                                uc[fi] = dnh[(i, j)];
+                            }
+                        }
+                        let mut vc = vec![0.0_f64; self.n_free];
+                        vc[fj] = 1.0;
+                        u_cols.push(uc);
+                        v_cols.push(vc);
+                    }
+                }
 
                 // U column: aₚ embedded at v's free DOFs.
                 let mut u = vec![0.0_f64; self.n_free];
@@ -2484,6 +2516,11 @@ where
             let pose_c = self
                 .contact
                 .pose_residual_derivative(pair, &positions, twist);
+            // Force-direction curvature `C = ∂n̂/∂x_v = sign(dE)·∇²sd` (0 for a plane,
+            // [`ContactModel::normal_curvature`]). The friction force turns as the collider normal
+            // turns — `∂(∇D)/∂x_v` gains `DN·C` (the contact point slides) and `∂(∇D)/∂height`
+            // gains `DN·(−C·pose_dir)` (the primitive translates), `DN = ∂∇D/∂n̂`.
+            let hess_n = self.contact.normal_curvature(pair, &positions);
             for (vid, force) in &grad_c.contributions {
                 let lambda = force.norm(); // λⁿ
                 if lambda == 0.0 {
@@ -2506,7 +2543,20 @@ where
                 out.dforce_dxprev[3 * v] -= row.x;
                 out.dforce_dxprev[3 * v + 1] -= row.y;
                 out.dforce_dxprev[3 * v + 2] -= row.z;
-                // Moving-collider reference: ∂F/∂Δ_surf = −react_dirᵀ·∇²D_v·drift_dir.
+                // Curved-normal term `DN·C` — the tangent frame rotates as the contact point
+                // slides over the primitive (`∂n̂/∂x_v = C`). `C = 0` for a plane ⇒ +0 (the row
+                // and the dforce_dheight term below stay byte-identical to the plane path). `n̂`
+                // does NOT depend on x_prev, so dforce_dxprev gains no curved term.
+                let dn = crate::contact::friction::normal_rotation_term(
+                    x_v, x_start, *force, lambda, mu, w,
+                );
+                let row_curv = (dn * hess_n).transpose() * react_dir;
+                out.dforce_dx[3 * v] += row_curv.x;
+                out.dforce_dx[3 * v + 1] += row_curv.y;
+                out.dforce_dx[3 * v + 2] += row_curv.z;
+                // ∂n̂/∂height = −C·pose_dir, so ∂F/∂height gains react_dirᵀ·DN·(−C·pose_dir).
+                out.dforce_dheight += react_dir.dot(&(dn * (-(hess_n * pose_dir))));
+                // Moving-collider reference: ∂F/∂Δ_surf = −react_dirᵀ·∇²D_v·drift_dir (n̂ ⊥ drift).
                 out.dforce_ddrift -= react_dir.dot(&(hess_d * drift_dir));
                 // Normal-force (λ) coupling — the same (a_v, ∂λⁿ/∂x) rank-1 pair as the
                 // drift-consistent Woodbury adjoint.
@@ -2549,6 +2599,13 @@ where
     /// `friction_mu == 0` or no pair is active), with `dforce_dx`/`dforce_dxprev` as row-major
     /// `3 × n_dof` blocks. At configuration `x_curr`, step start `x_prev`, and this solver's
     /// [`friction_surface_drift`](Self::with_friction_surface_drift).
+    ///
+    /// **Curved-collider scope (deferred):** unlike the scalar [`Self::friction_reaction_gradients`]
+    /// (which carries the curved-normal tangent-rotation term `DN·C`), this per-vertex VECTOR
+    /// version does NOT yet thread it — so on a finite curved primitive `dforce_dx` / `dforce_dheight`
+    /// drop the `∂(∇D_v)/∂n̂ · ∂n̂/∂·` contribution. Exact for a plane (`C = 0`). Its only consumer is
+    /// the off-COM moment / articulated wrench path, which is guarded plane-only at the coupling
+    /// (`require_plane_collider`) — the L1b articulated follow-on lifts both together.
     #[must_use]
     pub fn friction_force_jacobians(
         &self,
@@ -2806,10 +2863,18 @@ where
     /// active set yields no pose contributions and the result is all
     /// zeros.
     ///
+    /// With friction active (`friction_mu != 0` and `Some(x_prev)`), the pose RHS additionally
+    /// carries the friction term `∂(∇D)/∂pose` (the λⁿ-coupling plus the curved-normal tangent
+    /// rotation, `assemble_friction_pose_residual_grad`) for a pure translation along
+    /// `twist.linear` — the same RHS the reverse grip path
+    /// ([`Self::trajectory_step_vjp_grip`]) assembles. FD-validated under a curved (sphere)
+    /// collider with friction in `tests/friction_sphere_tangent.rs`.
+    ///
     /// Scope: contact-engaged, stable-active-set regime (the penalty
     /// active-set boundary is non-smooth — IPC the deferred cure); the
-    /// normal-rotation term is exact for plane primitives (`δn̂ = ω×n̂`),
-    /// curved-primitive normal curvature deferred. See
+    /// normal-rotation term is exact for plane primitives (`δn̂ = ω×n̂`) and now also for curved
+    /// primitives (`δn̂ = ω×n̂ − H·u`, the #415 curvature term in
+    /// [`ContactModel::pose_residual_derivative`]). See
     /// `docs/keystone/rotating_normal_recon.md` and
     /// `docs/keystone/s3_soft_pose_sensitivity_recon.md`. FD-validated
     /// against a re-solve in `tests/soft_pose_sensitivity.rs`.
@@ -2826,18 +2891,29 @@ where
         twist: RigidTwist,
     ) -> Vec<f64> {
         debug_assert!(x_final.len() == self.n_dof);
-        // Silent-wrong guard: with friction active, `Some(x_prev)` makes the tangent `A`
-        // friction-exact (Woodbury) but the pose RHS here is normal-contact-only — it omits
-        // the friction pose term (`∂(∇D)/∂height`, `assemble_friction_pose_residual_grad`)
-        // that the grip reverse path adds. So a friction-active pose sensitivity must pass
-        // `None` (frictionless) until the friction pose-RHS is wired into this forward path;
-        // the reverse grip path uses `trajectory_step_vjp_grip`, which already includes it.
-        assert!(
-            self.config.friction_mu == 0.0 || x_prev.is_none(),
-            "equilibrium_pose_sensitivity: friction pose RHS not wired into the forward path — \
-             pass x_prev = None when friction_mu > 0 (the grip reverse path is friction-exact)"
-        );
-        let dr_dpose = self.assemble_pose_residual_grad(x_final, twist);
+        let mut dr_dpose = self.assemble_pose_residual_grad(x_final, twist);
+        // With friction active (`Some(x_prev)`), the pose RHS also carries the friction term
+        // `∂(∇D)/∂pose` (λⁿ-coupling + the curved-normal tangent rotation,
+        // `assemble_friction_pose_residual_grad`) — the same RHS the reverse grip path
+        // (`trajectory_step_vjp_grip`) assembles. The friction pose RHS supports only a pure
+        // TRANSLATION (`twist.linear`); the rotational friction pose term is not yet wired, so
+        // fail LOUDLY for an angular twist with friction rather than return a silently-incomplete
+        // sensitivity (the normal RHS above DOES use the full twist — a partial result would be a
+        // silent contract violation on this public API).
+        if self.config.friction_mu != 0.0
+            && let Some(xp) = x_prev
+        {
+            assert!(
+                twist.angular == Vec3::zeros(),
+                "equilibrium_pose_sensitivity: friction pose sensitivity supports only a pure \
+                 translation (twist.angular must be 0); the rotational friction pose RHS is not \
+                 yet wired. Pass a translation twist, or x_prev = None for the frictionless path."
+            );
+            let fric = self.assemble_friction_pose_residual_grad(x_final, xp, dt, twist.linear);
+            for (d, f) in dr_dpose.iter_mut().zip(&fric) {
+                *d += f;
+            }
+        }
         // A·w_free = −(∂r/∂s)_free reusing the tangent at x_final.
         let rhs: Vec<f64> = self
             .free_dof_indices
@@ -2922,11 +2998,17 @@ where
 
     /// `(∂r/∂height · pose_dir)_full` from the FRICTION term — the friction successor to the
     /// normal [`Self::assemble_pose_residual_grad`], needed when the contact plane moves (the
-    /// grip's coupled height). The friction force `∇D = μ_c·λⁿ·f₁·Tû` scattered into the
-    /// residual is linear in the lagged normal force `λⁿ`, which the plane pose changes:
-    /// `∂r_v/∂height = ∂(∇D_v)/∂λⁿ_v · ∂λⁿ_v/∂height = a_v·(n̂ᵀ·∂(∇E_contact_v)/∂pose)` with
-    /// `a_v = ∇D_v/λⁿ_v` (the lagged `Tⁿ` held — a flat plane's tangent is pose-independent).
-    /// Zeros off the active set / when frictionless. Drift-consistent (`xᵗ + Δ_surf`).
+    /// grip's coupled height). The friction force `∇D = μ_c·λⁿ·f₁·Tû` scattered into the residual
+    /// has TWO pose channels:
+    /// - the **λⁿ-coupling** (`∇D` is linear in the lagged normal force `λⁿ`, which the pose
+    ///   changes): `a_v·(n̂ᵀ·∂(∇E_contact_v)/∂pose)`, `a_v = ∇D_v/λⁿ_v`;
+    /// - the **curved-normal tangent rotation** `DN·(−C·pose_dir)` (the tangent frame turns as the
+    ///   primitive translates, `∂n̂/∂pose = −C·pose_dir`, `C` the force-direction curvature
+    ///   [`ContactModel::normal_curvature`], `DN = ∂∇D/∂n̂`). Zero for a plane (`C = 0`, its
+    ///   constant tangent IS pose-independent), the curved-contact term for a finite primitive.
+    ///
+    /// Zeros off the active set / when frictionless. Drift-consistent (`xᵗ + Δ_surf`). Pure
+    /// translation along `pose_dir` (the rotational pose channel is not wired here).
     fn assemble_friction_pose_residual_grad(
         &self,
         x_final: &[f64],
@@ -2948,6 +3030,11 @@ where
             let pose_c = self
                 .contact
                 .pose_residual_derivative(pair, &positions, twist);
+            // Force-direction curvature `C = ∂n̂/∂x = sign(dE)·∇²sd` (0 for a plane) — the
+            // curved-normal companion to the λ-coupling: the tangent frame rotates as the
+            // primitive translates, `∂n̂/∂height = −C·pose_dir`, adding `DN·(−C·pose_dir)` to
+            // `∂r_v/∂height`.
+            let hess_n = self.contact.normal_curvature(pair, &positions);
             for (vid, force) in &grad_c.contributions {
                 let lambda = force.norm();
                 if lambda == 0.0 {
@@ -2969,6 +3056,14 @@ where
                         out[3 * v + 2] += a.z * dlam;
                     }
                 }
+                // Curved-normal tangent-rotation term `DN·(−C·pose_dir)` (`+0` for a plane).
+                let dn = crate::contact::friction::normal_rotation_term(
+                    x_v, x_start, *force, lambda, mu, w,
+                );
+                let curv = dn * (-(hess_n * pose_dir));
+                out[3 * v] += curv.x;
+                out[3 * v + 1] += curv.y;
+                out[3 * v + 2] += curv.z;
             }
         }
         out

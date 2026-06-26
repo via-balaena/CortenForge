@@ -1670,24 +1670,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// emitting a silently-wrong gradient (a silent contract violation on a public API is
     /// ship-blocking).
     ///
-    /// Scope after the L1b free-body NORMAL carry: the free-body NORMAL gradients are now
-    /// curvature-correct (the contact crossing reads precomputed factors from
-    /// [`Self::active_pair_force_factors`]) and are NOT guarded. Still guarded here:
-    /// - the ARTICULATED (wrench-path) gradients — their data factory
-    ///   ([`Self::active_pair_wrench_data`]) is shared with the curvature-correct
-    ///   single-step pose Jacobians and so cannot itself assert; the sphere is doubly
-    ///   unsupported there ([`Self::build_contact`] poses it over the block centre, not
-    ///   the end-effector tip — the L1b posed-SDF carry);
-    /// - the free-body TANGENTIAL/FRICTION gradients — their `FrictionReactionTrajVjp`
-    ///   still drops the curved term (the L1b-tangential follow-on).
+    /// Scope after the L1b free-body NORMAL + TANGENTIAL carries: the free-body NORMAL gradients
+    /// (contact crossing via [`Self::active_pair_force_factors`]) AND the free-body
+    /// TANGENTIAL/FRICTION gradients (the friction reaction `DN·H` + the soft adjoint's curved-T
+    /// tangent + friction pose-residual grad) are now curvature-correct and NOT guarded. Still
+    /// guarded here: the ARTICULATED (wrench-path) gradients — their data factory
+    /// ([`Self::active_pair_wrench_data`]) is shared with the curvature-correct single-step pose
+    /// Jacobians and so cannot itself assert; the sphere is doubly unsupported there
+    /// ([`Self::build_contact`] poses it over the block centre, not the end-effector tip — the
+    /// L1b articulated wrench-path / posed-SDF follow-on).
     fn require_plane_collider(&self) {
         assert!(
             matches!(self.collider, Collider::Plane),
-            "multi-step coupled gradients require the plane collider; a finite sphere \
-             collider (with_sphere_collider) is not yet supported on the trajectory \
-             adjoint (the curved dE·H term is not threaded through it — the L1b \
-             follow-on). Use the single-step contact_force_height_total_jacobian for a \
-             curved collider."
+            "this ARTICULATED (wrench-path) coupled gradient requires the plane collider; a \
+             finite sphere collider (with_sphere_collider) is not yet supported on the \
+             articulated trajectory adjoint (the curved term is not threaded through \
+             ContactWrenchTrajVjp, and build_contact poses the sphere over the block centre, \
+             not the arm tip — the L1b articulated follow-on). The FREE-BODY normal and \
+             friction trajectory gradients ARE curvature-correct on a sphere."
         );
     }
 
@@ -6276,12 +6276,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
         );
-        // The NORMAL crossing (ContactForceTrajVjp) is curvature-correct for a sphere via
-        // `active_pair_force_factors`, but the TANGENTIAL reaction (FrictionReactionTrajVjp)
-        // still drops the curved-normal term — so this free-body FRICTION gradient stays
-        // plane-only (the L1b-tangential follow-on). Guard loudly rather than emit a
-        // silently-wrong gradient on a finite collider.
-        self.require_plane_collider();
+        // Curvature-correct on a finite sphere (L1b-tangential): the friction reaction
+        // (`FrictionReactionTrajVjp`), the soft adjoint's friction tangent, and the friction
+        // pose-residual grad all carry the curved-normal term `DN·H` now (per-term machine-exact,
+        // `sim_soft/tests/friction_sphere_tangent.rs`). No `require_plane_collider` guard.
         let n = self.n_vertices;
         let dt = self.cfg.dt;
         let pose_dir = Vec3::new(0.0, 0.0, 1.0);
@@ -6512,10 +6510,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             mu_c > 0.0,
             "∂/∂μ_c requires friction active (cfg.friction_mu = {mu_c} ≤ 0)"
         );
-        // Free-body FRICTION gradient: the tangential FrictionReactionTrajVjp still drops the
-        // curved-normal term, so guard plane-only even though the normal crossing is now
-        // curvature-correct (the L1b-tangential follow-on). See the material-gradient sibling.
-        self.require_plane_collider();
+        // Curvature-correct on a finite sphere (L1b-tangential) — see the material-gradient
+        // sibling; the friction adjoints all carry the curved-normal `DN·H` term. No guard.
         let n = self.n_vertices;
         let dt = self.cfg.dt;
         let pose_dir = Vec3::new(0.0, 0.0, 1.0);
