@@ -53,6 +53,7 @@
 //!   ONE tape, read `(∂z_N/∂μ_total, ∂z_N/∂θ)` from one `tape.backward` — the
 //!   mission's "one outer loop differentiating w.r.t. *both* design and policy".
 
+use nalgebra::Point3;
 use sim_core::{
     DMatrix, DVector, Data, Matrix3, MjJointType, Model, SpatialVector,
     mass_directional_derivative, mj_differentiate_pos, mj_integrate_pos_explicit, mj_jac_point,
@@ -62,28 +63,37 @@ use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
     ActivePairsFor, BoundaryConditions, ContactModel, ContactPair, ContactPairReadout,
     CpuNewtonSolver, FrictionVertexForce, HandBuiltTetMesh, IpcRigidContact, LoadAxis,
-    MaterialField, Mesh, NeoHookean, PenaltyRigidContact, RigidPlane, RigidTwist, Solver,
-    SolverConfig, Tet4, Vec3, VertexId,
+    MaterialField, Mesh, NeoHookean, PenaltyRigidContact, RigidPlane, RigidTwist, Sdf, Solver,
+    SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
 };
 use std::marker::PhantomData;
 
-/// A rigid-primitive contact constructible from a downward plane + `(κ, d̂)`, with
-/// an active-pair readout over the keystone block — the bridge that lets
-/// [`StaggeredCoupling`] run over either [`PenaltyRigidContact`] (the stepping
+/// A rigid-primitive contact constructible from a single posed [`Sdf`] primitive +
+/// `(κ, d̂)`, with an active-pair readout over the keystone block — the bridge that
+/// lets [`StaggeredCoupling`] run over either [`PenaltyRigidContact`] (the stepping
 /// stone) or [`IpcRigidContact`] (the C²-barrier successor). Defined here (a local
 /// trait) so the soft-side contact types need no change.
+///
+/// The primitive is generic over [`Sdf`] (not fixed to [`RigidPlane`]) so the
+/// coupling can pose a FINITE collider — a curved end-effector ([`PosedSphere`])
+/// indenting the soft block — and not just the infinite downward half-space. The
+/// plane path constructs `from_primitive(RigidPlane, …)`, byte-identical to the
+/// pre-generalization `with_params(vec![plane], …)` (a single boxing of the same
+/// `RigidPlane`). The finite-collider path is the L1 finite-contact carry (the
+/// gradient of #415's curved-contact term composed through the coupling adjoint).
 pub trait PlaneContact: ContactModel + ActivePairsFor<NeoHookean> + Sized {
-    /// Build the contact from a single downward plane and the penalty/barrier
-    /// parameters `(κ, d̂)`.
-    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self;
+    /// Build the contact from a single posed rigid primitive (`RigidPlane` for the
+    /// keystone half-space, `PosedSphere` for the finite collider) and the
+    /// penalty/barrier parameters `(κ, d̂)`.
+    fn from_primitive<S: Sdf + 'static>(primitive: S, kappa: f64, d_hat: f64) -> Self;
     /// Per-active-pair readout at `positions` (the inherent `per_pair_readout`,
     /// surfaced through the trait so the coupling can call it generically).
     fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout>;
 }
 
 impl PlaneContact for PenaltyRigidContact {
-    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self {
-        Self::with_params(vec![plane], kappa, d_hat)
+    fn from_primitive<S: Sdf + 'static>(primitive: S, kappa: f64, d_hat: f64) -> Self {
+        Self::with_params(vec![primitive], kappa, d_hat)
     }
     fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout> {
         self.per_pair_readout(mesh, positions)
@@ -91,12 +101,65 @@ impl PlaneContact for PenaltyRigidContact {
 }
 
 impl PlaneContact for IpcRigidContact {
-    fn from_plane(plane: RigidPlane, kappa: f64, d_hat: f64) -> Self {
-        Self::with_params(vec![plane], kappa, d_hat)
+    fn from_primitive<S: Sdf + 'static>(primitive: S, kappa: f64, d_hat: f64) -> Self {
+        Self::with_params(vec![primitive], kappa, d_hat)
     }
     fn pair_readout(&self, mesh: &HandBuiltTetMesh, positions: &[Vec3]) -> Vec<ContactPairReadout> {
         self.per_pair_readout(mesh, positions)
     }
+}
+
+/// A finite [`SphereSdf`] posed at a world `center` — the keystone's first finite
+/// rigid collider (the infinite [`RigidPlane`] successor). `SphereSdf` is
+/// origin-centred, so posing is a query-point translation `p ↦ p − center`;
+/// `eval`/`grad`/`hessian` forward to the inner sphere (translation leaves the
+/// Hessian — the curvature #415 added — unchanged, so the curved-normal pose
+/// sensitivity is the sphere's own `∇²sd`). A sphere needs no rotation, so
+/// translation alone poses it; the rotational pose carry is the L1b follow-on
+/// (when a shared `TranslatedSdf` graduates into `sim_soft`, deduping the
+/// finite-striker viewer + the L0 `soft_pose_sensitivity` gate's copies).
+#[derive(Clone, Copy, Debug)]
+pub struct PosedSphere {
+    /// Radius of the sphere in world units (metres).
+    pub radius: f64,
+    /// World-space centre the origin-centred [`SphereSdf`] is translated to.
+    pub center: Vec3,
+}
+
+impl Sdf for PosedSphere {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        SphereSdf {
+            radius: self.radius,
+        }
+        .eval(p - self.center)
+    }
+    fn grad(&self, p: Point3<f64>) -> Vec3 {
+        SphereSdf {
+            radius: self.radius,
+        }
+        .grad(p - self.center)
+    }
+    fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
+        SphereSdf {
+            radius: self.radius,
+        }
+        .hessian(p - self.center)
+    }
+}
+
+/// The rigid collider geometry [`StaggeredCoupling`] poses against the soft block.
+#[derive(Clone, Copy, Debug)]
+enum Collider {
+    /// The infinite downward half-space (the keystone #402–#406 scene; default) —
+    /// `build_contact` constructs a [`RigidPlane`], optionally orientation-tracking
+    /// under [`StaggeredCoupling::with_rotating_normal`].
+    Plane,
+    /// A finite posed sphere of the given radius (the L1 finite-contact gate) — a
+    /// curved end-effector indenting the block, exercising #415's curvature term
+    /// (`∇²sd ≠ 0`) through the coupling adjoint. The scalar `height` still drives
+    /// the vertical carry (the sphere centre rides `+ẑ` with `height`); the lateral
+    /// centre sits over the block so the contact patch is central + stable.
+    Sphere { radius: f64 },
 }
 
 /// The soft Newton solver the coupling builds per step, over contact type `C`.
@@ -1374,6 +1437,10 @@ pub struct StaggeredCoupling<C: PlaneContact = PenaltyRigidContact> {
     /// Default `false` (flat, byte-identical to the pre-leaf coupling); enabled via
     /// [`Self::with_rotating_normal`]. See `docs/keystone/rotating_normal_recon.md`.
     rotating_normal: bool,
+    /// The rigid collider geometry (default [`Collider::Plane`], the byte-identical
+    /// keystone half-space; [`Collider::Sphere`] is the finite-contact gate). Set
+    /// via [`Self::with_sphere_collider`].
+    collider: Collider,
     _contact: PhantomData<C>,
 }
 
@@ -1441,6 +1508,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             d_hat,
             rigid_damping,
             rotating_normal: false,
+            collider: Collider::Plane,
             _contact: PhantomData,
         }
     }
@@ -1459,6 +1527,39 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     #[must_use]
     pub const fn with_rotating_normal(mut self, on: bool) -> Self {
         self.rotating_normal = on;
+        self
+    }
+
+    /// Replace the infinite contact plane with a **finite posed sphere** of the
+    /// given `radius` — the L1 finite-contact collider (a curved end-effector
+    /// indenting the soft block) the de-escalation viz ladder shows. The scalar
+    /// `height` still drives the vertical carry (the sphere centre rides `+ẑ` with
+    /// `height`, so the existing `RigidTwist::translation(ẑ)` pose-sensitivity probe
+    /// and `∂sd/∂h = −n̂·ẑ` formula remain exactly correct — `n̂` is now the sphere's
+    /// per-vertex varying normal rather than the plane's constant `−ẑ`); the lateral
+    /// centre sits over the block's top-face centroid so the contact patch is
+    /// central and the active set stays stable across an FD perturbation.
+    ///
+    /// Opt-in (default the infinite [`RigidPlane`], byte-identical to the
+    /// pre-finite-collider keystone scenes #402–#406). Curved contact engages more
+    /// deeply per Newton step, so this also widens the soft solve's iteration budget
+    /// (matching the L0 `sphere_pose_sensitivity` gate). Takes precedence over
+    /// [`Self::with_rotating_normal`] if both are set (a sphere's normal already turns
+    /// with the query, so `build_contact` ignores the plane-tilt flag).
+    ///
+    /// **Scope (L1a).** Only the SINGLE-STEP pose-sensitivity channel is
+    /// curvature-correct for the sphere — [`Self::contact_force_height_jacobian`] and
+    /// [`Self::contact_force_height_total_jacobian`], gated by
+    /// `tests/sphere_contact_total_jacobian.rs` (the coupling-level lift of #415's L0
+    /// curved-pose sensitivity, machine-exact). The MULTI-step trajectory gradients
+    /// (`coupled_trajectory_*`) still assemble the contact-force Jacobian as the
+    /// flat `−cᵥ·n̂⊗n̂` (exact for the plane, missing the curved `dE·H` term) — threading
+    /// the curvature term through their adjoints is the L1b follow-on; see
+    /// `docs/keystone/` for the finite-contact carry.
+    #[must_use]
+    pub fn with_sphere_collider(mut self, radius: f64) -> Self {
+        self.collider = Collider::Sphere { radius };
+        self.cfg.max_newton_iter = self.cfg.max_newton_iter.max(80);
         self
     }
 
@@ -1525,7 +1626,40 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self.data.xpos[self.body].z - self.contact_clearance
     }
 
+    /// The finite sphere collider's world centre for a given `radius` and scalar
+    /// `height`: over the block's top-face centroid `(edge/2, edge/2)`, with centre
+    /// z `= height + radius` so the south pole sits at `height` (the same engagement
+    /// depth the plane's surface would). The `height`-carry is thus a pure `+ẑ`
+    /// translation of the primitive — exactly the `RigidTwist::translation(ẑ)` the
+    /// pose-sensitivity probes — lifting #415's L0 curved gate into the coupling.
+    /// The single source of the centre formula (shared by [`Self::build_contact`]
+    /// and [`Self::collider_hessian`]).
+    fn sphere_center(&self, radius: f64, height: f64) -> Vec3 {
+        Vec3::new(self.edge / 2.0, self.edge / 2.0, height + radius)
+    }
+
+    /// The contact primitive's curvature `H = ∂n̂/∂p = ∇²sd` at world point `p` for
+    /// the current collider posed at `height` — the geometric-stiffness factor the
+    /// curved-contact force Jacobian needs (#415's `dE·H` term). `0` for the infinite
+    /// plane (constant normal, in both flat and rotating-normal modes — the tilt
+    /// depends on the body pose `q`, not the query `p`), the sphere's
+    /// `(I − n̂n̂ᵀ)/‖p − c‖` for the finite collider.
+    fn collider_hessian(&self, height: f64, p: Vec3) -> Matrix3<f64> {
+        match self.collider {
+            Collider::Plane => Matrix3::zeros(),
+            Collider::Sphere { radius } => PosedSphere {
+                radius,
+                center: self.sphere_center(radius, height),
+            }
+            .hessian(Point3::from(p)),
+        }
+    }
+
     fn build_contact(&self, height: f64) -> C {
+        if let Collider::Sphere { radius } = self.collider {
+            let center = self.sphere_center(radius, height);
+            return C::from_primitive(PosedSphere { radius, center }, self.kappa, self.d_hat);
+        }
         let plane = if self.rotating_normal {
             // Rotating normal: the plane tracks the body ORIENTATION (`n̂ = R·(0,0,−1)`)
             // while still honoring the scalar `height` like the flat branch — the plane
@@ -1545,7 +1679,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // vertex below the plane has positive signed distance `height − z`.
             RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), -height)
         };
-        C::from_plane(plane, self.kappa, self.d_hat)
+        C::from_primitive(plane, self.kappa, self.d_hat)
     }
 
     /// A fresh rest-topology soft mesh (the solver consumes one per step, and
@@ -1588,7 +1722,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// factors' per-pair stiffness. A projection of [`Self::active_pair_wrench_data`]
     /// (the single source of the per-pair readout + curvature extraction), dropping
     /// the force `gᵢ` and position `rᵢ` the moment path additionally needs.
+    ///
+    /// # Panics
+    /// Panics if a finite (sphere) collider is active ([`Self::with_sphere_collider`]).
+    /// This factor encodes only the FLAT contact-force Jacobian `−cᵥ·n̂⊗n̂`; it drops the
+    /// curved-normal geometric stiffness `dE·H` (#415's term), so it is correct only for
+    /// the constant-normal plane. The MULTI-step trajectory gradients that consume it do
+    /// not yet thread that term through their adjoints (the L1b follow-on) — better to
+    /// fail loudly here than emit a silently-wrong gradient. The SINGLE-step pose
+    /// Jacobians ([`Self::contact_force_height_total_jacobian`]) are curvature-correct for
+    /// the sphere and go through [`Self::active_pair_wrench_data`] directly, not this.
     fn active_pair_curvatures(&self, height: f64, positions: &[Vec3]) -> Vec<(usize, Vec3, f64)> {
+        assert!(
+            matches!(self.collider, Collider::Plane),
+            "active_pair_curvatures (the flat −cᵥ·n̂⊗n̂ gradient factor) is plane-only; the \
+             multi-step trajectory gradients do not yet support a finite sphere collider \
+             (missing the curved dE·H term — the L1b follow-on). Use the single-step \
+             contact_force_height_total_jacobian for a curved collider."
+        );
         self.active_pair_wrench_data(height, positions)
             .into_iter()
             .map(|(v, _g, n, curv, _r)| (v, n, curv))
@@ -1693,12 +1844,27 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// where the active set is stable across the perturbation; at the active-set
     /// boundary the penalty derivative is non-smooth (the IPC barrier smooths it).
     /// FD-checked against [`Self::contact_force_at_height`].
+    ///
+    /// For a CURVED collider ([`Self::with_sphere_collider`]) the normal also rotates
+    /// as the primitive translates, adding the geometric-stiffness term `f_mag·(−H·ẑ)`
+    /// (`H = ∇²sd`, #415); for the plane `H = 0`, so the added term is exactly `+0` and
+    /// the plane result is numerically unchanged (`x + 0 = x`).
     #[must_use]
     pub fn contact_force_height_jacobian(&self, height: f64) -> Vec3 {
-        // ∂force/∂height = Σ cᵥ·n̂.z·n̂ (= (0,0,Σcᵥ) for the flat n̂ = −ẑ).
-        self.active_pair_curvatures(height, &self.positions())
+        // ∂force/∂h|_x = Σ [ cᵥ·n̂.z·n̂  +  f_mag·(∂n̂/∂h) ]. The first term (= (0,0,Σcᵥ)
+        // for the flat n̂ = −ẑ) is the magnitude change; the second is the curved-normal
+        // rotation as the primitive translates `+ẑ` — `∂n̂/∂h = −H·ẑ` (#415's geometric
+        // stiffness, `H = ∇²sd`). H = 0 for the plane, so that term vanishes
+        // (byte-identical); for the sphere it is the per-pair force magnitude `f_mag =
+        // gᵢ·n̂` times `−H·ẑ`.
+        let positions = self.positions();
+        let zhat = Vec3::new(0.0, 0.0, 1.0);
+        self.active_pair_wrench_data(height, &positions)
             .iter()
-            .map(|&(_, n, c)| c * n.z * n)
+            .map(|&(v, g, n, c, _r)| {
+                let f_mag = g.dot(&n);
+                c * n.z * n + f_mag * (self.collider_hessian(height, positions[v]) * (-zhat))
+            })
             .sum()
     }
 
@@ -1822,6 +1988,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// pose sensitivity `∂x*/∂h` (`equilibrium_pose_sensitivity`). Does not
     /// advance `self`.
     ///
+    /// For a CURVED collider ([`Self::with_sphere_collider`]) both terms additionally
+    /// carry the normal-rotation contribution `f_mag·∂n̂` (the geometric stiffness
+    /// `dE·H`, `H = ∇²sd`, #415): explicit `+ f_mag·(−H·ẑ)` as the primitive translates,
+    /// implicit `+ f_mag·(H·∂x*/∂h)` as the vertex slides. Both vanish for the plane
+    /// (`H = 0`), so the plane result is unchanged; for the sphere they are what make
+    /// this Jacobian match the curved re-solve FD (the `sphere_contact_total_jacobian`
+    /// gate, machine-exact).
+    ///
     /// Physically the implicit term largely cancels the explicit one in the
     /// engaged regime: when the plane rises the soft body follows, so the
     /// signed distances — hence the force — barely change. The explicit-only
@@ -1857,14 +2031,21 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .collect();
         let mut explicit = Vec3::zeros();
         let mut implicit = Vec3::zeros();
-        for (v, n_hat, curv) in self.active_pair_curvatures(height, &positions) {
-            // ∂sd/∂h = −n̂·ẑ for translating the plane +ẑ (here +1, n̂=−ẑ).
-            let dsd_dh = -n_hat.z;
-            // explicit: ∂force/∂h|_x = −cᵥ·(∂sd/∂h)·n̂ per active pair.
-            explicit += -curv * dsd_dh * n_hat;
-            // implicit: (∂force/∂x = −cᵥ·n̂⊗n̂) · ∂x*/∂h.
+        for (v, g, n_hat, curv, _r) in self.active_pair_wrench_data(height, &positions) {
+            // The per-pair soft force is gᵢ = f_mag·n̂; differentiating force = Σ f_mag·n̂
+            // splits into a MAGNITUDE change (the cᵥ = d²E/dsd² terms, exact for a plane)
+            // and a NORMAL-ROTATION change (the f_mag·∂n̂ terms — #415's geometric
+            // stiffness `dE·H`, zero for the plane's constant normal, live for the sphere).
+            let f_mag = g.dot(&n_hat);
+            let h_mat = self.collider_hessian(height, positions[v]);
             let dxs = Vec3::new(dxstar[3 * v], dxstar[3 * v + 1], dxstar[3 * v + 2]);
-            implicit += -curv * n_hat.dot(&dxs) * n_hat;
+            // explicit ∂force/∂h|_x: magnitude `−cᵥ·(∂sd/∂h)·n̂` (∂sd/∂h = −n̂·ẑ) + normal
+            // rotation `f_mag·∂n̂/∂h` (∂n̂/∂h = −H·ẑ as the primitive translates +ẑ).
+            let dsd_dh = -n_hat.z;
+            explicit += -curv * dsd_dh * n_hat + f_mag * (h_mat * (-dir));
+            // implicit (∂force/∂x)·∂x*/∂h: magnitude `−cᵥ·n̂⊗n̂` + normal rotation `f_mag·H`
+            // (∂n̂/∂x = H), contracted against the IFT pose sensitivity ∂x*/∂h.
+            implicit += -curv * n_hat.dot(&dxs) * n_hat + f_mag * (h_mat * dxs);
         }
         explicit + implicit
     }
