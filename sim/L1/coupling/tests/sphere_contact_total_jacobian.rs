@@ -105,15 +105,17 @@ fn sphere_total_force_jacobian_wrt_height_matches_resolve_fd() {
     );
 }
 
-/// The L1a scope guard: the MULTI-step trajectory gradients still assemble the flat
-/// `−cᵥ·n̂⊗n̂` contact-force Jacobian (missing the curved `dE·H` term — the L1b
-/// follow-on), so calling one with a finite sphere collider must FAIL LOUDLY rather
-/// than emit a silently-wrong gradient (a silent contract violation on a public API
-/// is ship-blocking). The guard lives in `active_pair_curvatures`, the single factor
-/// every multi-step gradient path consumes.
+/// The scope guard after the L1b free-body NORMAL carry: the free-body NORMAL trajectory
+/// gradients are now curvature-correct for the sphere (see `sphere_trajectory_gradient.rs`),
+/// but the free-body TANGENTIAL/FRICTION gradients still assemble a flat
+/// `FrictionReactionTrajVjp` (missing the curved term — the L1b-tangential follow-on), so
+/// calling one with a finite sphere collider must FAIL LOUDLY rather than emit a
+/// silently-wrong gradient (a silent contract violation on a public API is ship-blocking).
+/// The guard is the `require_plane_collider` method-entry assert these friction methods now
+/// carry (the curvature-correct normal crossing they share cannot itself assert).
 #[test]
-#[should_panic(expected = "plane-only")]
-fn sphere_collider_panics_on_multistep_gradient() {
+#[should_panic(expected = "plane collider")]
+fn sphere_collider_panics_on_friction_gradient() {
     let model = load_model(PLATEN_MJCF).expect("platen MJCF loads");
     let mut data = model.make_data();
     data.forward(&model).expect("initial forward");
@@ -121,9 +123,9 @@ fn sphere_collider_panics_on_multistep_gradient() {
         model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, KAPPA, 1.0e-2, 12.0,
     )
     .with_sphere_collider(SPHERE_R);
-    // A multi-step material gradient on the sphere collider is not yet curvature-correct;
-    // it must panic in `active_pair_curvatures` rather than return a wrong number.
-    let _ = coupling.coupled_trajectory_material_gradient(2, 0);
+    // A free-body tangential (friction) gradient on the sphere is not yet curvature-correct;
+    // it must panic at `require_plane_collider` rather than return a wrong number.
+    let _ = coupling.coupled_trajectory_tangential_material_gradient(2, 0);
 }
 
 /// A tilted Y-hinge arm pressing a point-mass tip into the soft block — the

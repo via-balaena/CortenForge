@@ -165,18 +165,18 @@ enum Collider {
 /// The soft Newton solver the coupling builds per step, over contact type `C`.
 type SoftSolver<C> = CpuNewtonSolver<Tet4, HandBuiltTetMesh, C, NeoHookean, 4, 1>;
 
-/// Scatter the contact-force-vs-position Jacobian `∂fz/∂x_v = −cᵥ·n̂_z·n̂` (the
-/// z-row of the `−cᵥ·n̂⊗n̂` per-pair Jacobian) onto `slot`, scaled by the upstream
-/// scalar cotangent `cot`. `active` is per active pair `(vertex_id, n̂, curvature)`
-/// where `curvature = d²E/dsd² = n̂ᵀ·H_pair·n̂` is the contact's local stiffness
-/// (`κ` for penalty, `κ·b''(sd)` for IPC). Shared by [`ContactForceVjp`] (single-
-/// step crossing) and [`ContactForceTrajVjp`] (which adds its own `∂fz/∂z` term).
-fn scatter_dfz_dxstar(active: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64]) {
-    for &(v, n, curv) in active {
-        let g = -curv * n.z;
-        slot[3 * v] += cot * g * n.x;
-        slot[3 * v + 1] += cot * g * n.y;
-        slot[3 * v + 2] += cot * g * n.z;
+/// Scatter the precomputed contact-force-vs-position factor `∂fz/∂x_v` onto `slot`,
+/// scaled by the upstream scalar cotangent `cot`. `factors` is per active pair
+/// `(vertex_id, ∂fz/∂x_v, ∂fz/∂height)` from [`StaggeredCoupling::active_pair_force_factors`]
+/// — curvature-correct for any collider (`∂fz/∂x_v = −cᵥ·n̂_z·n̂ + f_mag·H·ẑ`, the z-row
+/// of `−cᵥ·n̂⊗n̂ + f_mag·H`; flat `(0,0,−cᵥ)` for the plane). Shared by [`ContactForceVjp`]
+/// (single-step crossing, x* parent only) and [`ContactForceTrajVjp`] (which additionally
+/// adds the `∂fz/∂height` factor onto its z parent).
+fn scatter_dfz_dxstar(factors: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64]) {
+    for &(v, dfz_dxv, _dfz_dz) in factors {
+        slot[3 * v] += cot * dfz_dxv.x;
+        slot[3 * v + 1] += cot * dfz_dxv.y;
+        slot[3 * v + 2] += cot * dfz_dxv.z;
     }
 }
 
@@ -357,25 +357,28 @@ impl VjpOp for RigidStepVjp {
 /// soft-contact half (keystone S4).
 ///
 /// Parent = the soft positions `x*` (shape `3·n_vertices`); output = the total
-/// `force_on_soft.z` (shape `[1]`). The VJP applies the per-active-pair contact-force
-/// Jacobian `∂fz/∂x_v = −cᵥ·n̂_z·n̂` (the S3 `−cᵥ·n̂⊗n̂` factor, z-row, where the
-/// per-pair curvature `cᵥ = d²E/dsd²` is `κ` for penalty, `κ·b''(sd)` for IPC),
-/// turning a downstream `∂L/∂fz` into the `∂L/∂x*` cotangent that the soft
-/// `NewtonStepVjp` then carries back to the soft parameters. Active set + curvature
-/// captured at construction (engaged regime).
+/// `force_on_soft.z` (shape `[1]`). The VJP scatters the per-active-pair precomputed
+/// factor `∂fz/∂x_v` (`= −cᵥ·n̂_z·n̂ + f_mag·H·ẑ`, curvature-correct for any collider;
+/// flat `−cᵥ·n̂⊗n̂` z-row for the plane, where `cᵥ = d²E/dsd²` is `κ` for penalty,
+/// `κ·b''(sd)` for IPC), turning a downstream `∂L/∂fz` into the `∂L/∂x*` cotangent that
+/// the soft `NewtonStepVjp` then carries back to the soft parameters. Factors captured at
+/// construction from `StaggeredCoupling::active_pair_force_factors` (engaged regime).
 #[derive(Clone, Debug)]
 pub struct ContactForceVjp {
-    /// `(vertex_id, outward unit normal n̂, curvature cᵥ = d²E/dsd²)` for each
-    /// active contact pair at the linearization positions.
-    active: Vec<(usize, Vec3, f64)>,
+    /// `(vertex_id, ∂fz/∂x_v, ∂fz/∂height)` per active contact pair at the linearization
+    /// positions (the single-step crossing reads only `∂fz/∂x_v`; the `∂fz/∂height` slot
+    /// is unused here — its z pose is held fixed). From
+    /// `StaggeredCoupling::active_pair_force_factors`.
+    factors: Vec<(usize, Vec3, f64)>,
 }
 
 impl ContactForceVjp {
-    /// Construct from the active-pair `(vertex_id, normal, curvature)` list, where
-    /// `curvature = d²E/dsd² = n̂ᵀ·H_pair·n̂` (`κ` for penalty, `κ·b''(sd)` for IPC).
+    /// Construct from the per-pair precomputed-factor list
+    /// `(vertex_id, ∂fz/∂x_v, ∂fz/∂height)` (from
+    /// `StaggeredCoupling::active_pair_force_factors`).
     #[must_use]
-    pub fn new(active: Vec<(usize, Vec3, f64)>) -> Self {
-        Self { active }
+    pub fn new(factors: Vec<(usize, Vec3, f64)>) -> Self {
+        Self { factors }
     }
 }
 
@@ -396,7 +399,7 @@ impl VjpOp for ContactForceVjp {
         );
         let c = cotangent.as_slice()[0];
         let slot = parent_cotans[0].as_mut_slice();
-        scatter_dfz_dxstar(&self.active, c, slot);
+        scatter_dfz_dxstar(&self.factors, c, slot);
     }
 }
 
@@ -439,15 +442,19 @@ impl VjpOp for VelVjp {
 }
 
 /// Chassis-tape [`VjpOp`] for the contact-force readout along a trajectory:
-/// `fz = Σ force_on_soft.z` at the post-step soft config `x*` with the plane at
-/// height `z − clearance`. Parents `[x_star, z]` (`[n_dof]`, `[1]`), output `fz`
-/// (`[1]`). `∂fz/∂x* = −cᵥ·n̂_z·n̂` per active pair (the S3 factor) and
-/// `∂fz/∂z = ∂fz/∂height = +Σ cᵥ` (the S1 explicit factor, `∂height/∂z=1`), where
-/// the per-pair curvature `cᵥ = d²E/dsd²` is `κ` for penalty (so `Σ cᵥ = κ·N`),
-/// `κ·b''(sd)` for IPC.
+/// `fz = Σ force_on_soft.z` at the post-step soft config `x*` with the collider posed at
+/// height `z − clearance`. Parents `[x_star, z]` (`[n_dof]`, `[1]`), output `fz` (`[1]`).
+/// Both factors come precomputed per active pair from
+/// [`StaggeredCoupling::active_pair_force_factors`] (curvature-correct for any collider):
+/// `∂fz/∂x* = −cᵥ·n̂_z·n̂ + f_mag·H·ẑ` (the S3 factor + #415's geometric stiffness) and
+/// `∂fz/∂z = ∂fz/∂height = Σ (cᵥ·n̂_z² − f_mag·(H·ẑ)_z)` (the S1 explicit factor,
+/// `∂height/∂z=1`). `H = 0` for the plane, where `n̂ = −ẑ` ⇒ this reduces to the flat
+/// `−cᵥ·n̂⊗n̂` / `+Σ cᵥ` (penalty `cᵥ = κ`, IPC `κ·b''(sd)`), byte-identical.
 #[derive(Clone, Debug)]
 struct ContactForceTrajVjp {
-    active: Vec<(usize, Vec3, f64)>,
+    /// `(vertex_id, ∂fz/∂x_v, ∂fz/∂height)` per active contact pair, from
+    /// [`StaggeredCoupling::active_pair_force_factors`].
+    factors: Vec<(usize, Vec3, f64)>,
     n_dof: usize,
 }
 
@@ -469,11 +476,12 @@ impl VjpOp for ContactForceTrajVjp {
         );
         let c = cotangent.as_slice()[0];
         let (xstar, z) = parent_cotans.split_at_mut(1);
-        // ∂fz/∂x* = −cᵥ·n̂_z·n̂ (shared with ContactForceVjp).
-        scatter_dfz_dxstar(&self.active, c, xstar[0].as_mut_slice());
-        // ∂fz/∂z = +Σ cᵥ (∂height/∂z = 1) — the trajectory-only term.
-        let sum_curv: f64 = self.active.iter().map(|&(_, _, curv)| curv).sum();
-        z[0].as_mut_slice()[0] += c * sum_curv;
+        // ∂fz/∂x* = −cᵥ·n̂_z·n̂ + f_mag·H·ẑ (shared with ContactForceVjp).
+        scatter_dfz_dxstar(&self.factors, c, xstar[0].as_mut_slice());
+        // ∂fz/∂z = Σ (cᵥ·n̂_z² − f_mag·(H·ẑ)_z) (∂height/∂z = 1) — the trajectory-only
+        // term (Σ cᵥ for the flat plane). The precomputed per-pair ∂fz/∂height factor.
+        let sum_dfz_dz: f64 = self.factors.iter().map(|&(_, _, dfz_dz)| dfz_dz).sum();
+        z[0].as_mut_slice()[0] += c * sum_dfz_dz;
     }
 }
 
@@ -1655,22 +1663,23 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
     }
 
-    /// Assert the contact collider is the infinite plane — the L1a scope guard for the
-    /// MULTI-step trajectory gradients, which do not yet thread the curved-normal
-    /// geometric stiffness (`dE·H`, #415) through their adjoints (the L1b follow-on).
-    /// Called at the entry of every multi-step gradient method so a finite-sphere
-    /// collider ([`Self::with_sphere_collider`]) fails LOUDLY rather than emitting a
-    /// silently-wrong gradient (a silent contract violation on a public API is
+    /// Assert the contact collider is the infinite plane — the scope guard for the
+    /// trajectory gradients whose adjoints still drop the curved-normal geometric
+    /// stiffness (`dE·H`, #415). Called at the entry of every such method so a
+    /// finite-sphere collider ([`Self::with_sphere_collider`]) fails LOUDLY rather than
+    /// emitting a silently-wrong gradient (a silent contract violation on a public API is
     /// ship-blocking).
     ///
-    /// The FREE-body gradients are additionally guarded at their shared data factory
-    /// ([`Self::active_pair_curvatures`]); the ARTICULATED (wrench-path) gradients rely
-    /// on this method-entry guard because their data factory
-    /// ([`Self::active_pair_wrench_data`]) is shared with the curvature-correct
-    /// single-step pose Jacobians and so cannot itself assert. For the articulated
-    /// scene the sphere is doubly unsupported — [`Self::build_contact`] poses it over
-    /// the block centre, ignoring the end-effector tip's lateral position (the L1b
-    /// posed-SDF carry).
+    /// Scope after the L1b free-body NORMAL carry: the free-body NORMAL gradients are now
+    /// curvature-correct (the contact crossing reads precomputed factors from
+    /// [`Self::active_pair_force_factors`]) and are NOT guarded. Still guarded here:
+    /// - the ARTICULATED (wrench-path) gradients — their data factory
+    ///   ([`Self::active_pair_wrench_data`]) is shared with the curvature-correct
+    ///   single-step pose Jacobians and so cannot itself assert; the sphere is doubly
+    ///   unsupported there ([`Self::build_contact`] poses it over the block centre, not
+    ///   the end-effector tip — the L1b posed-SDF carry);
+    /// - the free-body TANGENTIAL/FRICTION gradients — their `FrictionReactionTrajVjp`
+    ///   still drops the curved term (the L1b-tangential follow-on).
     fn require_plane_collider(&self) {
         assert!(
             matches!(self.collider, Collider::Plane),
@@ -1744,37 +1753,49 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self.contact_readout(height).0
     }
 
-    /// Per active contact pair at `positions` with the plane at `height`:
-    /// `(vertex_id, outward normal n̂, curvature cᵥ)` — the contact-force gradient
-    /// factors' per-pair stiffness. A projection of [`Self::active_pair_wrench_data`]
-    /// (the single source of the per-pair readout + curvature extraction), dropping
-    /// the force `gᵢ` and position `rᵢ` the moment path additionally needs.
+    /// Per active contact pair at `positions` with the collider posed at `height`:
+    /// `(vertex_id, ∂fz/∂x_v, ∂fz/∂height)` — the PRECOMPUTED z-force gradient factors
+    /// the free-body contact crossing scatters ([`ContactForceVjp`], [`ContactForceTrajVjp`]),
+    /// curvature-correct for any collider (the L1b carry, dual to the FD-validated
+    /// single-step [`Self::contact_force_height_total_jacobian`]).
     ///
-    /// # Panics
-    /// Panics if a finite (sphere) collider is active ([`Self::with_sphere_collider`]).
-    /// This factor encodes only the FLAT contact-force Jacobian `−cᵥ·n̂⊗n̂`; it drops the
-    /// curved-normal geometric stiffness `dE·H` (#415's term), so it is correct only for
-    /// the constant-normal plane. The MULTI-step trajectory gradients that consume it do
-    /// not yet thread that term through their adjoints (the L1b follow-on) — better to
-    /// fail loudly here than emit a silently-wrong gradient. The SINGLE-step pose
-    /// Jacobians ([`Self::contact_force_height_total_jacobian`]) are curvature-correct for
-    /// the sphere and go through [`Self::active_pair_wrench_data`] directly, not this.
+    /// Differentiating the total normal force `fz = Σ gᵢ·ẑ = Σ f_mag·n̂_z` (per-pair force
+    /// `gᵢ = f_mag·n̂`, `f_mag = gᵢ·n̂`) splits into a MAGNITUDE change (`cᵥ = d²E/dsd²`, the
+    /// flat term) and a NORMAL-ROTATION change (`f_mag·∂n̂`, #415's geometric stiffness
+    /// `H = ∇²sd` = [`Self::collider_hessian`]). Taking the z-row of the per-pair force
+    /// Jacobian `∂force/∂x_v = −cᵥ·n̂⊗n̂ + f_mag·H` and the explicit height partial
+    /// `∂force/∂h = cᵥ·n̂_z·n̂ + f_mag·(−H·ẑ)` (raising the height translates the primitive
+    /// `+ẑ`, `∂sd/∂h = −n̂_z`, `∂n̂/∂h = −H·ẑ`):
+    /// - `∂fz/∂x_v = −cᵥ·n̂_z·n̂ + f_mag·(H·ẑ)`
+    /// - `∂fz/∂height = cᵥ·n̂_z² − f_mag·(H·ẑ)_z`
     ///
-    /// This is the FREE-body multi-step gradients' guard (their shared data factory). The
-    /// ARTICULATED (wrench-path) gradients guard at their method entry via
-    /// [`Self::require_plane_collider`] instead — `active_pair_wrench_data` is shared with
-    /// the curvature-correct single-step Jacobians above, so it cannot itself assert.
-    fn active_pair_curvatures(&self, height: f64, positions: &[Vec3]) -> Vec<(usize, Vec3, f64)> {
-        assert!(
-            matches!(self.collider, Collider::Plane),
-            "active_pair_curvatures (the flat −cᵥ·n̂⊗n̂ gradient factor) is plane-only; the \
-             multi-step trajectory gradients do not yet support a finite sphere collider \
-             (missing the curved dE·H term — the L1b follow-on). Use the single-step \
-             contact_force_height_total_jacobian for a curved collider."
-        );
+    /// `H = 0` for the plane, where additionally `n̂ = −ẑ` exactly ⇒ `∂fz/∂x_v = (0,0,−cᵥ)`
+    /// and `∂fz/∂height = cᵥ` — BYTE-IDENTICAL to the old flat `−cᵥ·n̂⊗n̂` / `Σ cᵥ` factors
+    /// (#402–#406 untouched). For the sphere the `H·ẑ` terms are what make the free-body
+    /// trajectory gradients match the curved re-solve FD. Read from
+    /// [`Self::active_pair_wrench_data`] + [`Self::collider_hessian`]; does not re-solve/mutate.
+    ///
+    /// NOT a guard: the NORMAL contact crossing is now curvature-correct for the sphere. The
+    /// still-flat paths (the articulated wrench gradients, the free-body TANGENTIAL/friction
+    /// gradients whose `FrictionReactionTrajVjp` drops the curved term) guard at their method
+    /// entry via [`Self::require_plane_collider`] — the L1b-tangential / articulated follow-ons.
+    fn active_pair_force_factors(
+        &self,
+        height: f64,
+        positions: &[Vec3],
+    ) -> Vec<(usize, Vec3, f64)> {
+        let zhat = Vec3::new(0.0, 0.0, 1.0);
         self.active_pair_wrench_data(height, positions)
             .into_iter()
-            .map(|(v, _g, n, curv, _r)| (v, n, curv))
+            .map(|(v, g, n, curv, _r)| {
+                let f_mag = g.dot(&n);
+                // H·ẑ = the z-row of the symmetric contact Hessian H = ∇²sd (#415);
+                // 0 for the plane, the sphere's `(I − n̂n̂ᵀ)/‖p − c‖ · ẑ` for the finite collider.
+                let h_zhat = self.collider_hessian(height, positions[v]) * zhat;
+                let dfz_dxv = -curv * n.z * n + f_mag * h_zhat;
+                let dfz_dz = curv * n.z * n.z - f_mag * h_zhat.z;
+                (v, dfz_dxv, dfz_dz)
+            })
             .collect()
     }
 
@@ -1783,9 +1804,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// the local curvature `cᵥ = d²E/dsd² = n̂ᵀ·H_pair·n̂` is read from the contact's
     /// Hessian (`κ` for penalty, `κ·b''(sd)` for IPC). The single source of the
     /// per-pair readout + curvature extraction (projected by
-    /// [`Self::active_pair_curvatures`]); the moment routing + its
-    /// [`ContactWrenchTrajVjp`] gradient additionally use the force `gᵢ` and contact
-    /// point `rᵢ`. Does not re-solve/mutate.
+    /// [`Self::active_pair_force_factors`] into the free-body z-force gradient factors);
+    /// the moment routing + its [`ContactWrenchTrajVjp`] gradient additionally use the
+    /// force `gᵢ` and contact point `rᵢ`. Does not re-solve/mutate.
     fn active_pair_wrench_data(
         &self,
         height: f64,
@@ -1797,7 +1818,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .iter()
             .map(|r| {
                 let ContactPair::Vertex { vertex_id, .. } = r.pair;
-                // H_pair = cᵥ·n̂⊗n̂ ⇒ cᵥ = n̂·(H·n̂) (same as active_pair_curvatures).
+                // H_pair = cᵥ·n̂⊗n̂ ⇒ cᵥ = n̂·(H·n̂), the per-pair contact stiffness.
                 let curv = contact
                     .hessian(&r.pair, positions)
                     .contributions
@@ -2197,11 +2218,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .iter()
             .map(|r| r.force_on_soft.z)
             .sum();
-        let active = self.active_pair_curvatures(height, &positions);
+        let factors = self.active_pair_force_factors(height, &positions);
         let force_var = tape.push_custom(
             &[xstar_var],
             Tensor::from_slice(&[fz], &[1]),
-            Box::new(ContactForceVjp::new(active)),
+            Box::new(ContactForceVjp::new(factors)),
         );
         // Reaction onto the rigid body, then the rigid step's velocity response.
         let xfrc_var = tape.neg(force_var); // xfrc_z = −force_on_soft.z
@@ -2466,12 +2487,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .iter()
                 .map(|r| r.force_on_soft)
                 .sum();
-            let active = self.active_pair_curvatures(height, &positions);
+            let factors = self.active_pair_force_factors(height, &positions);
             let fz_var = tape.push_custom(
                 &[x_next_var, z_var],
                 Tensor::from_slice(&[force_on_soft.z], &[1]),
                 Box::new(ContactForceTrajVjp {
-                    active,
+                    factors,
                     n_dof: 3 * n,
                 }),
             );
@@ -2606,12 +2627,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .iter()
                 .map(|r| r.force_on_soft)
                 .sum();
-            let active = self.active_pair_curvatures(height, &positions);
+            let factors = self.active_pair_force_factors(height, &positions);
             let fz_var = tape.push_custom(
                 &[x_next_var, z_var],
                 Tensor::from_slice(&[force_on_soft.z], &[1]),
                 Box::new(ContactForceTrajVjp {
-                    active,
+                    factors,
                     n_dof: 3 * n,
                 }),
             );
@@ -5354,12 +5375,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .iter()
                 .map(|r| r.force_on_soft)
                 .sum();
-            let active = self.active_pair_curvatures(height, &positions);
+            let factors = self.active_pair_force_factors(height, &positions);
             let fz_var = tape.push_custom(
                 &[x_next_var, z_var],
                 Tensor::from_slice(&[force_on_soft.z], &[1]),
                 Box::new(ContactForceTrajVjp {
-                    active,
+                    factors,
                     n_dof: 3 * n,
                 }),
             );
@@ -5569,12 +5590,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .iter()
                 .map(|r| r.force_on_soft)
                 .sum();
-            let active = self.active_pair_curvatures(height, &positions);
+            let factors = self.active_pair_force_factors(height, &positions);
             let fz_var = tape.push_custom(
                 &[x_next_var, z_var],
                 Tensor::from_slice(&[force_on_soft.z], &[1]),
                 Box::new(ContactForceTrajVjp {
-                    active,
+                    factors,
                     n_dof: 3 * n,
                 }),
             );
@@ -5864,12 +5885,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .iter()
                 .map(|r| r.force_on_soft)
                 .sum();
-            let active = self.active_pair_curvatures(height, &positions);
+            let factors = self.active_pair_force_factors(height, &positions);
             let fz_var = tape.push_custom(
                 &[x_next_var, z_var],
                 Tensor::from_slice(&[force_on_soft.z], &[1]),
                 Box::new(ContactForceTrajVjp {
-                    active,
+                    factors,
                     n_dof: 3 * n,
                 }),
             );
@@ -6255,6 +6276,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
         );
+        // The NORMAL crossing (ContactForceTrajVjp) is curvature-correct for a sphere via
+        // `active_pair_force_factors`, but the TANGENTIAL reaction (FrictionReactionTrajVjp)
+        // still drops the curved-normal term — so this free-body FRICTION gradient stays
+        // plane-only (the L1b-tangential follow-on). Guard loudly rather than emit a
+        // silently-wrong gradient on a finite collider.
+        self.require_plane_collider();
         let n = self.n_vertices;
         let dt = self.cfg.dt;
         let pose_dir = Vec3::new(0.0, 0.0, 1.0);
@@ -6350,12 +6377,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .iter()
                 .map(|r| r.force_on_soft)
                 .sum();
-            let active = self.active_pair_curvatures(height, &positions);
+            let factors = self.active_pair_force_factors(height, &positions);
             let fz_var = tape.push_custom(
                 &[x_next_var, z_var],
                 Tensor::from_slice(&[force_on_soft.z], &[1]),
                 Box::new(ContactForceTrajVjp {
-                    active,
+                    factors,
                     n_dof: 3 * n,
                 }),
             );
@@ -6485,6 +6512,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             mu_c > 0.0,
             "∂/∂μ_c requires friction active (cfg.friction_mu = {mu_c} ≤ 0)"
         );
+        // Free-body FRICTION gradient: the tangential FrictionReactionTrajVjp still drops the
+        // curved-normal term, so guard plane-only even though the normal crossing is now
+        // curvature-correct (the L1b-tangential follow-on). See the material-gradient sibling.
+        self.require_plane_collider();
         let n = self.n_vertices;
         let dt = self.cfg.dt;
         let pose_dir = Vec3::new(0.0, 0.0, 1.0);
@@ -6571,12 +6602,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .iter()
                 .map(|r| r.force_on_soft)
                 .sum();
-            let active = self.active_pair_curvatures(height, &positions);
+            let factors = self.active_pair_force_factors(height, &positions);
             let fz_var = tape.push_custom(
                 &[x_next_var, z_var],
                 Tensor::from_slice(&[force_on_soft.z], &[1]),
                 Box::new(ContactForceTrajVjp {
-                    active,
+                    factors,
                     n_dof: 3 * n,
                 }),
             );
@@ -6716,30 +6747,36 @@ mod tests {
         }
     }
 
-    /// The generalized contact-force factors use PER-PAIR curvature `cᵥ = d²E/dsd²`
-    /// (`κ·b''(sd)` for IPC), not just penalty's constant `κ`: `ContactForceVjp`
-    /// scatters `−cᵥ·n̂_z·n̂` per pair, and `ContactForceTrajVjp`'s `∂fz/∂z` sums
-    /// `cᵥ`. Distinct per-pair curvatures verify the generalization beyond the
-    /// constant-`κ` penalty path the keystone gates exercise.
+    /// The Vjp ops scatter their PRECOMPUTED per-pair factors `(vertex_id, ∂fz/∂x_v,
+    /// ∂fz/∂height)` straight through: `ContactForceVjp` scatters `∂fz/∂x_v` onto x*, and
+    /// `ContactForceTrajVjp` additionally sums `∂fz/∂height` onto its z parent. Distinct
+    /// per-pair values verify both ops route the factors correctly (the curvature-aware
+    /// generalization beyond the constant-`κ` penalty path the keystone gates exercise);
+    /// the flat plane values `∂fz/∂x_v = (0,0,−cᵥ)`, `∂fz/∂height = cᵥ` here mirror what
+    /// `active_pair_force_factors` produces for `n̂ = −ẑ`, `H = 0`.
     #[test]
-    fn contact_force_factors_use_per_pair_curvature() {
-        let n = Vec3::new(0.0, 0.0, -1.0); // plane normal −ẑ
-        let active = vec![(0_usize, n, 2.0), (1_usize, n, 5.0)]; // distinct cᵥ
-        // ContactForceVjp: ∂fz/∂x_v z-component = −cᵥ·n̂_z·n̂_z = −cᵥ (cot=1).
+    fn contact_force_factors_scatter_per_pair() {
+        // Precomputed factors for two pairs with distinct stiffness cᵥ = 2, 5 on the flat
+        // plane: ∂fz/∂x_v = (0,0,−cᵥ), ∂fz/∂height = cᵥ.
+        let factors = vec![
+            (0_usize, Vec3::new(0.0, 0.0, -2.0), 2.0),
+            (1_usize, Vec3::new(0.0, 0.0, -5.0), 5.0),
+        ];
+        // ContactForceVjp scatters ∂fz/∂x_v (cot=1): z-components −2, −5.
         let mut parent = vec![Tensor::zeros(&[6])];
-        ContactForceVjp::new(active.clone()).vjp(&Tensor::from_slice(&[1.0], &[1]), &mut parent);
+        ContactForceVjp::new(factors.clone()).vjp(&Tensor::from_slice(&[1.0], &[1]), &mut parent);
         let g = parent[0].as_slice();
         assert!(
             (g[2] + 2.0).abs() < 1e-12 && (g[5] + 5.0).abs() < 1e-12,
-            "∂fz/∂x* should carry per-pair curvature, got {g:?}"
+            "∂fz/∂x* should carry the per-pair ∂fz/∂x_v factor, got {g:?}"
         );
-        // ContactForceTrajVjp: ∂fz/∂z = Σ cᵥ = 7.
-        let traj = ContactForceTrajVjp { active, n_dof: 6 };
+        // ContactForceTrajVjp: ∂fz/∂z = Σ ∂fz/∂height = 7.
+        let traj = ContactForceTrajVjp { factors, n_dof: 6 };
         let mut parents = vec![Tensor::zeros(&[6]), Tensor::zeros(&[1])];
         traj.vjp(&Tensor::from_slice(&[1.0], &[1]), &mut parents);
         assert!(
             (parents[1].as_slice()[0] - 7.0).abs() < 1e-12,
-            "∂fz/∂z should be Σ cᵥ = 7, got {}",
+            "∂fz/∂z should be Σ ∂fz/∂height = 7, got {}",
             parents[1].as_slice()[0]
         );
     }
