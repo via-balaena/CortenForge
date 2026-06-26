@@ -134,6 +134,61 @@ pub(crate) fn grad_hess(
     (grad, hess)
 }
 
+/// The friction force's **normal-rotation Jacobian** `DN = ∂(∇D)/∂n̂` (3×3) — how the
+/// friction force turns as the contact NORMAL turns, with the lagged `(λⁿ, slip)` held.
+/// Zero contribution for a flat collider (the normal is constant), the missing curved-contact
+/// term for a finite primitive whose normal rotates as the contact point slides over it
+/// (`∂n̂/∂x = H`) or as the primitive translates (`∂n̂/∂pose = −H·dir`). The curved-normal
+/// dual of the in-plane slip Hessian [`grad_hess`] returns: where that differentiates the
+/// tangential displacement `u_T` (normal frozen), this differentiates the tangent frame.
+///
+/// `∇D = μ·λⁿ·g(u_t)` with `g(u_t) = f₁(r)·u_t/r`, `r = ‖u_t‖`, and the basis-free tangential
+/// displacement `u_t = (I − n̂n̂ᵀ)·Δ`, `Δ = x_v − x_start` (`= T·u_T`, identical force). Only
+/// `u_t` carries the `n̂`-dependence, so the chain rule gives
+///
+/// ```text
+/// DN = μ·λⁿ · J_g · (∂u_t/∂n̂),
+///   J_g     = (f₁/r)(I − ûûᵀ) + f₁'·ûûᵀ          (the full 3-D force Jacobian, û = u_t/r)
+///   ∂u_t/∂n̂ = −[ (n̂·Δ)·I + n̂·Δᵀ ]                (from u_t = Δ − n̂(n̂·Δ))
+/// ```
+///
+/// At `r = 0` (the smooth bowl) `J_g → (2/w)·I` — the same isotropic limit [`grad_hess`] uses.
+/// A caller chains this with `∂n̂/∂x = H = ∇²sd` (state) or `∂n̂/∂pose = −H·dir` (pose): the
+/// reaction Jacobian's `DN·H` term and the friction pose-residual's `DN·(−H·dir)` term. `H = 0`
+/// for a plane makes every such chain identically zero (flat-collider byte-identity).
+// `t`/`u`/`r`/`g` match `grad_hess`'s symbols (this is its curved-normal companion).
+#[allow(clippy::many_single_char_names)]
+#[must_use]
+pub(crate) fn normal_rotation_term(
+    x_v: Vec3,
+    x_start_v: Vec3,
+    normal: Vec3,
+    lambda_n: f64,
+    mu: f64,
+    w: f64,
+) -> Matrix3<f64> {
+    let scale = mu * lambda_n;
+    if scale == 0.0 {
+        return Matrix3::zeros();
+    }
+    let n = normal.normalize();
+    let delta = x_v - x_start_v;
+    // u_t = (I − n̂n̂ᵀ)·Δ (the tangential slip, basis-free); r = ‖u_t‖.
+    let u_t = delta - n * n.dot(&delta);
+    let r = u_t.norm();
+    // J_g = ∂g/∂u_t — the full 3-D friction-force Jacobian (the bowl limit (2/w)·I at r → 0).
+    let j_g: Matrix3<f64> = if r < 1e-300 {
+        Matrix3::identity() * (2.0 / w)
+    } else {
+        let uhat = u_t / r;
+        let uu = uhat * uhat.transpose();
+        f1(r, w) / r * (Matrix3::identity() - uu) + f1_prime(r, w) * uu
+    };
+    // ∂u_t/∂n̂ = −[(n̂·Δ)I + n̂Δᵀ].
+    let du_dn = -(Matrix3::identity() * n.dot(&delta) + n * delta.transpose());
+    scale * (j_g * du_dn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +298,46 @@ mod tests {
             f0.norm() < 1e-12,
             "zero drift at rest ⇒ zero friction, got {f0:?}"
         );
+    }
+
+    /// `normal_rotation_term` (`DN = ∂∇D/∂n̂`) matches a finite difference of the friction
+    /// force `grad_hess.0` w.r.t. the (normalized) contact normal. `grad_hess` normalizes its
+    /// `normal`, so FD-ing it measures `DN·(I − n̂n̂ᵀ)` (the perturbation projects ⊥ n̂ — exactly
+    /// the curved-collider regime, where `∂n̂/∂x = H` is itself a `(I − n̂n̂ᵀ)`-image), so the
+    /// analytic is compared after the same projection. Slip > 0 (away from the bowl r = 0 and
+    /// the f₁ seam r = w, where the term is kinked).
+    #[test]
+    fn normal_rotation_matches_fd() {
+        let n = Vec3::new(0.2, -0.3, 1.0).normalize();
+        let xs = Vec3::new(0.05, -0.02, 0.1);
+        let proj = Matrix3::identity() - n * n.transpose();
+        let eps = 1e-7;
+        for slip in [0.3 * W, 2.0 * W, 50.0 * W] {
+            // A slip direction with a real tangential component (project off n̂).
+            let dir = Vec3::new(0.6, 0.8, 0.4);
+            let dir_t = dir - n * n.dot(&dir);
+            let x = xs + slip * dir_t.normalize();
+            let dn = normal_rotation_term(x, xs, n, LAMBDA, MU, W);
+            let expected = dn * proj;
+            // Central FD of grad_hess.0 w.r.t. the normal vector.
+            let mut fd = Matrix3::zeros();
+            for j in 0..3 {
+                let (mut np, mut nm) = (n, n);
+                np[j] += eps;
+                nm[j] -= eps;
+                let col = (grad_hess(x, xs, np, LAMBDA, MU, W).0
+                    - grad_hess(x, xs, nm, LAMBDA, MU, W).0)
+                    / (2.0 * eps);
+                for r in 0..3 {
+                    fd[(r, j)] = col[r];
+                }
+            }
+            let rel = (expected - fd).norm() / fd.norm().max(1e-12);
+            assert!(
+                rel < 1e-5,
+                "DN vs FD at slip {slip:.1e}: rel {rel:.2e}\nexpected {expected}\nfd {fd}"
+            );
+        }
     }
 
     #[test]

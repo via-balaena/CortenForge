@@ -243,6 +243,24 @@ pub trait ContactModel: Send + Sync {
     ) -> ContactGradient {
         ContactGradient::default()
     }
+
+    /// The curvature of the contact-FORCE direction, `C = ∂n̂/∂x_v` (3×3), at this pair —
+    /// where `n̂ = force.normalize()` is the unit direction of [`Self::gradient`]'s force
+    /// (`force = dE/dsd·n̂_sdf`). It equals `sign(dE/dsd)·∇²sd`: the same geometric curvature
+    /// [`Self::hessian`] folds into its `dE·H` stiffness and [`Self::pose_residual_derivative`]
+    /// into `−H·u`, but carrying the force-direction sign so the friction-reaction curvature
+    /// carry can chain it as `∂n̂/∂x = C` (state) and `∂n̂/∂pose = −C·dir` (pose) — `DN = ∂∇D/∂n̂`
+    /// (`friction::normal_rotation_term`) is taken w.r.t. that exact force direction, so the sign
+    /// is load-bearing (the friction tangent frame is `±n̂`-symmetric, but `DN`'s chain to `x` is
+    /// not — it differentiates the ACTUAL `n̂`).
+    ///
+    /// Default `Matrix3::zeros()` — a constant-normal contact (the infinite plane,
+    /// [`NullContact`]) contributes none, keeping the historical plane path byte-identical (the
+    /// chained curved terms are then literal `+0`). [`PenaltyRigidContact`] returns
+    /// `sign(dE)·(I − n̂n̂ᵀ)/‖p − c‖` for a sphere, `0` for a plane (and off the active band).
+    fn normal_curvature(&self, _pair: &ContactPair, _positions: &[Vec3]) -> Matrix3<f64> {
+        Matrix3::zeros()
+    }
 }
 
 /// Active-pair selection for a [`ContactModel`] over a particular

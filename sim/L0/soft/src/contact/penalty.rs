@@ -884,6 +884,26 @@ impl ContactModel for PenaltyRigidContact {
                 }
             })
     }
+
+    fn normal_curvature(&self, pair: &ContactPair, positions: &[Vec3]) -> Matrix3<f64> {
+        let &ContactPair::Vertex {
+            vertex_id,
+            primitive_id,
+        } = pair;
+        // The curvature of the contact-FORCE direction, `∂n̂/∂x_v` for `n̂ = force.normalize()`
+        // (the normal the friction frame is built from). The force is `dE/dsd·n̂_sdf`, so its unit
+        // direction is `sign(dE/dsd)·n̂_sdf` and `∂n̂/∂x_v = sign(dE/dsd)·∇²sd` (the `d²E·n̂n̂ᵀ`
+        // magnitude part is ‖ the direction and drops). `∇²sd` is the SAME curvature `hessian`
+        // folds into its `dE·H` stiffness; the sign matters here because `DN = ∂∇D/∂n̂` (the
+        // friction-force normal-rotation Jacobian this chains with) is taken w.r.t. that exact
+        // force direction. Zero off the active band (no engaged contact ⇒ no normal).
+        let p = Point3::from(positions[vertex_id as usize]);
+        let prim = &self.primitives[primitive_id as usize];
+        self.pair_contribution(prim.eval(p))
+            .map_or_else(Matrix3::zeros, |c| {
+                c.d_energy_d_sd.signum() * prim.hessian(p)
+            })
+    }
 }
 
 impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidContact {
