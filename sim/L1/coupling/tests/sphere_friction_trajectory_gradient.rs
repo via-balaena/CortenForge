@@ -145,23 +145,29 @@ fn sphere_tangential_friction_gradient_matches_fd() {
     );
 }
 
-/// The sibling lifted method — `coupled_trajectory_tangential_material_gradient` (the soft
-/// MATERIAL lever) — runs curvature-correct on the sphere too. It shares every curvature-bearing
-/// factory with the μ_c gate above (the curved tangent `A`, `FrictionReactionTrajVjp`,
-/// `active_pair_force_factors`); only the collider-agnostic material residual RHS differs. The
-/// material lever is WEAK (the friction reaction barely depends on the block's Neo-Hookean μ in
-/// this creep-slip regime), so its FD is noisier than the μ_c lever — the bound is looser, and
-/// the rigorous per-term proof remains the single-step suite. The block ties `λ = 4μ`, so the
-/// constructor-FD measures `d/dμ|_{λ=4μ} = ∂/∂μ + 4·∂/∂λ`.
+/// COMPOSITION smoke test for the *other* lifted method — `coupled_trajectory_tangential_
+/// material_gradient` (the soft MATERIAL lever) — on a sphere: it runs (the guard is lifted), its
+/// tape forward matches the real rollout, and its gradient is gross-sane vs FD. This is NOT a
+/// curvature gate: the material lever is so WEAK (the friction reaction barely depends on the
+/// block's Neo-Hookean μ in creep slip) that the curved `DN·C` term sits below the FD noise floor
+/// — zeroing the curvature leaves the rel essentially unchanged, so a curvature regression would
+/// NOT trip this. The material method's curvature CORRECTNESS is inherited by construction: it
+/// shares every curvature-bearing factory (the curved tangent `A`, `FrictionReactionTrajVjp`,
+/// `active_pair_force_factors`) with the μ_c gate above (which DOES discriminate the term) and the
+/// single-step suite; only the collider-agnostic material residual RHS differs. The block ties
+/// `λ = 4μ`, so the constructor-FD measures `d/dμ|_{λ=4μ} = ∂/∂μ + 4·∂/∂λ`.
 #[test]
-fn sphere_tangential_material_gradient_matches_fd() {
-    let grad_mu = build_grip(FRIC_MU)
-        .coupled_trajectory_tangential_material_gradient(N, 0)
-        .1;
+fn sphere_tangential_material_gradient_composes() {
+    let (x_n, grad_mu) = build_grip(FRIC_MU).coupled_trajectory_tangential_material_gradient(N, 0);
     let grad_lambda = build_grip(FRIC_MU)
         .coupled_trajectory_tangential_material_gradient(N, 1)
         .1;
     let grad = grad_mu + 4.0 * grad_lambda;
+    // The lifted material method runs on the sphere and its forward reproduces the real rollout.
+    assert!(
+        (x_n - final_x_mat(MU0, N)).abs() < 1e-12,
+        "material tape forward x_N {x_n} != real sphere rollout"
+    );
     let mut best = f64::INFINITY;
     let mut best_fd = 0.0;
     for k in 3..=6 {
@@ -180,8 +186,9 @@ fn sphere_tangential_material_gradient_matches_fd() {
         grad.abs() > 1e-12,
         "material gradient implausibly ~0 ({grad:e})"
     );
-    // Weak-lever floor: the forward-solver convergence floor plus the small-signal FD noise of the
-    // material channel. The curvature-correct composition is rigorously gated per-term elsewhere.
+    // Gross-error tripwire only (the curvature discrimination lives in the μ_c + single-step gates):
+    // the weak material lever can't resolve the curved term, so this catches a structural blow-up,
+    // not a curvature regression.
     assert!(
         best < 5e-2,
         "one-tape sphere ∂x_N/∂μ {grad} disagrees with full-coupled FD {best_fd} (rel {best:e})"

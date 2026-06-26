@@ -6,7 +6,8 @@
 //! = DN·H` (the friction tangent frame rotates as the sphere's contact normal turns, `∂n̂/∂x =
 //! H`). On the infinite plane `H = 0` so the existing frozen-lag `∇²D` + λ-coupling Woodbury are
 //! exact (the plane gate `friction_coeff_gradient.rs` is machine-exact); on the sphere a dropped
-//! curved-T term shows up as a curvature-scale (~1e-2) mismatch vs the friction re-solve FD.
+//! curved-T term shows up as a curvature-scale mismatch (a fixed plateau ~2e-3 to ~3e-2
+//! depending on the channel) vs the friction re-solve FD.
 //!
 //! This isolates the soft tangent from the multi-step rigid carry / reaction readout that the
 //! coupling-level `sphere_friction_trajectory_gradient.rs` gate composes. FD-step sweep is the
@@ -355,6 +356,12 @@ fn friction_sphere_drift_sensitivity_matches_fd() {
             )
             .x_final
     };
+    // Non-degeneracy: a real lever (else the rel below is vacuously satisfied by 0 ≈ 0).
+    let max: f64 = an.iter().map(|v| v.abs()).fold(0.0, f64::max);
+    assert!(
+        max > 1e-9,
+        "∂x*/∂drift implausibly small — no friction lever"
+    );
     let mut best = f64::INFINITY;
     for k in 4..=9 {
         let de = 10f64.powi(-k);
@@ -439,7 +446,7 @@ fn friction_sphere_reverse_mode_matches_forward() {
 }
 
 /// `∂x*/∂μ_c` through the sphere friction tangent matches the friction re-solve FD — the
-/// curved-T term in `A` is what makes it match (a flat `A` plateaus at ~1e-2).
+/// curved-T term in `A` is what makes it match (a flat `A` plateaus at ~2.4e-3 on this channel).
 #[test]
 fn friction_sphere_coeff_sensitivity_matches_fd() {
     let mu = 3.0e3;
