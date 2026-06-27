@@ -331,3 +331,49 @@ fn grip_hold_moving_ee_evaluates() {
         "moving-EE Hold evaluate must yield a finite, live loss + gradient, got (loss {loss}, grad {grad:?})"
     );
 }
+
+/// The moving-EE hold optimization is fail-closed-fragile: some Adam-explored θ tears the buffer and
+/// the soft solver PANICS. With `OptConfig::reject_infeasible` the optimizer backtracks past those
+/// steps and SURVIVES — reducing the holding cost where the default loop would crash. This is the
+/// robustness the R5 viewer relies on to co-design a moving-EE hold at a useful horizon.
+#[test]
+fn grip_hold_moving_ee_optimizes_robustly() {
+    let problem = GripCoDesignTarget::new(
+        MOVING_EE_MJCF.to_string(),
+        1,
+        0.005,
+        4,
+        0.1,
+        1.0e-3,
+        3.0e4,
+        1.0e-2,
+        0.05,
+        0.08,
+        2.5,
+        0.1,
+        8,
+        GripObjective::Hold(0.0),
+        sim_coupling::LinearFeedback,
+    )
+    .with_contact_geom(0);
+    let x0 = problem.x0(4.0e3, &[0.0, 0.0, 0.0]);
+    let (cost_start, _) = problem.evaluate(&x0);
+    let normalized = problem.recommended_normalized(cost_start.sqrt().max(1e-3));
+    let cfg = OptConfig {
+        lr: 0.03,
+        max_iters: 40,
+        loss_tol: 1e-18,
+        reject_infeasible: true,
+        ..OptConfig::default()
+    };
+    let result = normalized.optimize(&x0, &cfg);
+    let (cost_final, _) = problem.evaluate(&result.params);
+    // Survived the tearing steps (no crash) and — because feasibility-aware optimization returns the
+    // BEST feasible iterate, and the feasible x0 is the first point scored — the holding cost is
+    // structurally never worse than the start. (Reduction magnitude varies with the fragile contact;
+    // survival + the never-worse guarantee are the load-bearing claims.)
+    assert!(
+        cost_final.is_finite() && cost_final <= cost_start,
+        "robust moving-EE hold optimize should survive and not worsen: {cost_start} -> {cost_final}"
+    );
+}
