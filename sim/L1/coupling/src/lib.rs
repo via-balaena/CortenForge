@@ -780,6 +780,49 @@ impl VjpOp for PoseSeamVjp {
     }
 }
 
+/// The **moving-end-effector** pose seam — the 3-vector generalization of
+/// [`PoseSeamVjp`] (scalar height). When the contact sphere rides a rigid geom (the arm
+/// tip, [`StaggeredCoupling::with_contact_geom`]), its centre translates in x/y/z as the
+/// body moves, so the pose channel is the 3-vector centre `c = geom_xpos(q)` rather than
+/// the scalar height. Threads `∂L/∂qpos = J_geomᵀ·∂L/∂centre` (position half;
+/// `∂centre/∂qvel = 0`, velocity half untouched), where `J_geom = ∂centre/∂qpos` is
+/// [`StaggeredCoupling::pose_centre_jacobian`] (the geom's linear world Jacobian).
+#[derive(Debug)]
+struct PoseCentreVjp {
+    /// `J_geom`: the contact-geom centre's linear world Jacobian (`3 × nv`).
+    j_geom: DMatrix<f64>,
+}
+
+impl VjpOp for PoseCentreVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::PoseCentreVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    // needless_range_loop: the `∂L/∂qpos = J_geomᵀ·cot` contraction indexes the 2-D `j_geom`
+    // by (row, col j) and `slot` by j; explicit indices read clearer (as in `ContactWrenchTrajVjp`).
+    #[allow(clippy::panic, clippy::needless_range_loop)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        let nv = self.j_geom.ncols();
+        assert!(
+            cotangent.shape() == [3]
+                && parent_cotans.len() == 1
+                && parent_cotans[0].shape() == [2 * nv],
+            "PoseCentreVjp: expected cot [3] + 1 parent (state [2·nv])",
+        );
+        let cot = cotangent.as_slice();
+        let slot = parent_cotans[0].as_mut_slice();
+        // ∂L/∂qpos = J_geomᵀ·cot (position half); ∂L/∂qvel = 0 (velocity half untouched).
+        for j in 0..nv {
+            let mut acc = 0.0_f64;
+            for row in 0..3 {
+                acc += self.j_geom[(row, j)] * cot[row];
+            }
+            slot[j] += acc;
+        }
+    }
+}
+
 /// The 6 canonical spatial-twist basis directions `(ω, v)` — 3 angular then 3 linear,
 /// matching [`StaggeredCoupling::pose_twist_jacobian`]'s row layout (`mj_jac_point`
 /// rows 0–2 angular, 3–5 linear). The rotating-normal pose channel is expressed in
@@ -936,6 +979,13 @@ struct ContactWrenchTrajVjp {
 enum WrenchPose {
     /// Flat plane: `∂w/∂h` (the S1 explicit force/moment-vs-height factor).
     Height,
+    /// Moving end-effector: `∂w/∂(centre)` per translation basis direction — the
+    /// 3-vector generalization of [`WrenchPose::Height`] (which is the `ẑ`-only
+    /// channel). The contact sphere rides a rigid geom (the arm tip) that translates
+    /// in x/y/z as the body moves, so the pose parent is the 3-vector centre
+    /// (`∂centre/∂q = J_geom`, the `PoseCentreVjp` seam) rather than the scalar
+    /// height. `basis = [x̂, ŷ, ẑ]` recovers the `Height` branch on its z component.
+    Centre { basis: Vec<Vec3> },
     /// Rotating normal: `∂w/∂T` per spatial-twist basis direction. `com = xipos`
     /// recovers the soft contact point `rᵢ = dᵢ + com` the `sd` derivative needs.
     Twist { basis: Vec<RigidTwist>, com: Vec3 },
@@ -953,6 +1003,7 @@ impl VjpOp for ContactWrenchTrajVjp {
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
         let n_pose = match &self.pose {
             WrenchPose::Height => 1,
+            WrenchPose::Centre { basis } => basis.len(),
             WrenchPose::Twist { basis, .. } => basis.len(),
         };
         assert!(
@@ -1011,6 +1062,27 @@ impl VjpOp for ContactWrenchTrajVjp {
                     })
                     .sum();
                 pose_slot[0] += dh;
+            }
+            WrenchPose::Centre { basis } => {
+                // ∂L/∂(centre translation along dir): the moving-end-effector generalization
+                // of the `Height` (ẑ-only) branch. Per axis `dir`, the EXPLICIT force change
+                // (x* held — the implicit ∂x*/∂centre rides the soft node's pose parent) is
+                //   ∂gᵢ/∂(centre·dir) = cᵥ·(n̂·dir)·n̂ − f_mag·(H·dir)
+                // (magnitude `∂sd/∂(centre·dir) = −n̂·dir` ⇒ `+cᵥ·(n̂·dir)·n̂`; normal rotation
+                // `∂n̂/∂centre = −H·dir` ⇒ `−f_mag·(H·dir)`), folded into the wrench readout as
+                //   ∂L/∂dir = Σᵢ −∂gᵢ·(cot_f + cot_τ×dᵢ).
+                // `dir = ẑ` reproduces `Height` term-for-term (`n̂·ẑ = n̂_z`, `H·ẑ`); `H = 0`
+                // for a plane ⇒ only the magnitude term (also exact). See
+                // [`StaggeredCoupling::contact_force_centre_total_jacobian`] (the EXPLICIT half).
+                for (k, dir) in basis.iter().enumerate() {
+                    let mut acc = 0.0_f64;
+                    for &(_, g, n, curv, d, h) in &self.active {
+                        let co = cot_f + cot_t.cross(&d);
+                        let f_mag = g.dot(&n);
+                        acc += -curv * n.dot(dir) * n.dot(&co) + f_mag * (h * dir).dot(&co);
+                    }
+                    pose_slot[k] += acc;
+                }
             }
             WrenchPose::Twist { basis, com } => {
                 // ∂L/∂T_k = −Σᵢ (∂gᵢ/∂T_k)·(cot_f + cot_τ×dᵢ), with
@@ -1673,10 +1745,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// step. Pair the `radius` with the geom's own (`with_sphere_collider(r)` where the
     /// geom's `size = r`) so the contact sphere is the fist.
     ///
-    /// Forward fidelity only: the trajectory adjoints hold the centre fixed (a moving
-    /// end-effector gradient carry is the follow-on). A no-op for the infinite plane
-    /// collider. Default (unset) reproduces the byte-identical block-centroid posing
-    /// the finite-contact gates use.
+    /// The articulated MATERIAL (normal) trajectory gradient
+    /// ([`Self::coupled_trajectory_material_gradient_articulated`]) threads the moving centre
+    /// through the adjoint (the 3-vector `PoseCentreVjp` seam + `WrenchPose::Centre`, gated
+    /// by `sphere_moving_ee_trajectory_gradient.rs`); its forward oracle
+    /// ([`Self::coupled_trajectory_articulated_z`]) poses at the same geom. The friction and
+    /// actuator/policy gradients do NOT yet thread it (guarded — the follow-on). A no-op for the
+    /// infinite plane collider. Default (unset) reproduces the byte-identical block-centroid
+    /// posing the finite-contact gates use.
     #[must_use]
     pub const fn with_contact_geom(mut self, geom_id: usize) -> Self {
         self.contact_geom = Some(geom_id);
@@ -1730,12 +1806,15 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///   curvature-correct normal + friction wrench but layer state-dependent actuator dynamics
     ///   (the `g_act` channel) not yet sphere-gated (the exo follow-on, NOT finite-contact).
     ///
-    /// Caveat (forward fidelity, not gradient correctness): [`Self::build_contact`] poses the
-    /// sphere at [`Self::sphere_center_override`] when set (default the block centre);
-    /// [`Self::with_contact_geom`] + [`Self::step_articulated`] re-point it to a moving end-effector
-    /// (the arm tip) in the forward rollout, but the trajectory adjoints hold that centre FIXED
-    /// (forward and adjoint share the per-step posing, so the FD-validated gates are unaffected — a
-    /// moving end-effector gradient carry is the follow-on, the lateral analog of the `height` carry).
+    /// Moving end-effector ([`Self::with_contact_geom`], the sphere centre riding the arm
+    /// tip `geom_xpos(q)`): the articulated MATERIAL (normal) gradient
+    /// ([`Self::coupled_trajectory_material_gradient_articulated`]) now threads the moving
+    /// centre (the 3-vector [`PoseCentreVjp`] seam + [`WrenchPose::Centre`]); its forward
+    /// oracle ([`Self::coupled_trajectory_articulated_z`]) poses at the same geom. The other
+    /// sphere-capable articulated gradients (the two FRICTION gradients) do NOT yet thread it
+    /// and are guarded by [`Self::require_no_moving_ee`] (the friction moving-EE carry is the
+    /// follow-on). With no contact geom set the centre defaults to the block centroid (the
+    /// finite-contact gates' scope), byte-identical to before.
     fn require_plane_collider(&self) {
         assert!(
             matches!(self.collider, Collider::Plane),
@@ -1744,6 +1823,23 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
              actuator dynamics `g_act` channel is not yet sphere-gated — the exo follow-on). The \
              free-body gradients AND the articulated MATERIAL + FRICTION gradients ARE \
              curvature-correct on a sphere."
+        );
+    }
+
+    /// Assert no contact end-effector geom is set ([`Self::with_contact_geom`]) — the scope
+    /// guard for the sphere-capable articulated gradients that do NOT yet thread the
+    /// moving-end-effector centre carry. Only
+    /// [`Self::coupled_trajectory_material_gradient_articulated`] threads the moving centre;
+    /// the articulated FRICTION gradients would otherwise silently pose the sphere at the block
+    /// centroid (ignoring the tip), disagreeing with a tip-posed forward rollout — a silent
+    /// contract violation. The friction moving-EE carry is the follow-on. A no-op when no geom
+    /// is set (the centroid-posed gates + the plane).
+    fn require_no_moving_ee(&self) {
+        assert!(
+            self.contact_geom.is_none(),
+            "this articulated gradient does not yet support a moving end-effector \
+             (with_contact_geom); only coupled_trajectory_material_gradient_articulated threads \
+             the moving-centre carry (the friction moving-EE carry is the follow-on)."
         );
     }
 
@@ -2817,6 +2913,31 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         jlin
     }
 
+    /// `J_geom = ∂(contact-geom centre)/∂qpos`: the contact end-effector geom's linear
+    /// world Jacobian (`mj_jac_point` at `geom_xpos[contact_geom]`, rows 3–5) — `3 × nv`.
+    /// The moving-end-effector pose seam: with [`Self::with_contact_geom`] the sphere
+    /// centre rides the geom, so the trajectory adjoint threads `∂centre/∂q = J_geom`
+    /// (the [`PoseCentreVjp`] seam), the 3-vector generalization of [`Self::pose_seam_jz`]'s
+    /// scalar height channel. Read at the same (fresh-FK) config as the wrench node.
+    ///
+    /// # Panics
+    /// Panics if no contact geom is set (`with_contact_geom` not called) — the centre
+    /// channel is only meaningful for an end-effector-posed sphere.
+    fn pose_centre_jacobian(&self) -> DMatrix<f64> {
+        let g = self
+            .contact_geom
+            .expect("pose_centre_jacobian requires with_contact_geom");
+        let jac = mj_jac_point(&self.model, &self.data, self.body, &self.data.geom_xpos[g]);
+        let nv = self.model.nv;
+        let mut jlin = DMatrix::zeros(3, nv);
+        for row in 0..3 {
+            for col in 0..nv {
+                jlin[(row, col)] = jac[(row + 3, col)]; // linear rows 3–5
+            }
+        }
+        jlin
+    }
+
     /// One scratch rigid step from a supplied `(qpos, qvel)` with a held spatial
     /// `wrench` on `body`, returning `(qpos', qvel')`. Like [`Self::rigid_step_probe`]
     /// but for the full generalized state (the LOADED step map whose Jacobian is the
@@ -3338,6 +3459,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // earlier stale-FK convention was a single-hinge-only calibration. See
             // `docs/keystone/moment_residual_recon.md`.
             self.data.forward(&self.model).expect("fresh FK");
+            // MOVING END-EFFECTOR: pose the sphere at the contact geom (the arm tip) each
+            // step — the forward companion of the moving-EE centre gradient, so the FD
+            // oracle and the adjoint share the per-step posing. A no-op (override stays
+            // None ⇒ block-centroid) when `with_contact_geom` is not set (byte-identical).
+            if let Some(g) = self.contact_geom {
+                self.sphere_center_override = Some(self.data.geom_xpos[g]);
+            }
             let height = self.tip_plane_height();
             let (_solver, x_next) = self.soft_resolve(height);
             for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
@@ -3371,6 +3499,17 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `n_steps` (advancing `self`) on one chassis tape, then ONE `tape.backward`
     /// gives `(tip_z_N, ∂tip_z_N/∂p)` — the tip's final world height vs the soft
     /// block's material (`param_idx`: `0 = μ`, `1 = λ`).
+    ///
+    /// **Moving end-effector** ([`Self::with_contact_geom`]). When the finite sphere rides a
+    /// rigid geom (the arm tip), its centre `c = geom_xpos(q)` translates in x/y/z as the body
+    /// swings, so the scalar height pose channel generalizes to the 3-vector centre: the pose
+    /// seam becomes `∂c/∂q = J_geom` (`PoseCentreVjp`, `pose_centre_jacobian`), the
+    /// soft node feeds the three translation axes, and the wrench node's pose parent is
+    /// `WrenchPose::Centre` (the lateral `f_mag·H` + magnitude feedback the height channel
+    /// drops). Machine-exact vs the geom-posed re-rollout FD (`sphere_moving_ee_trajectory_gradient.rs`).
+    /// With no contact geom set the centre defaults to the block centroid and the channel reduces
+    /// to the scalar height (byte-identical). Combining it with `with_rotating_normal` is not yet
+    /// supported (asserted).
     ///
     /// Per step the tape threads: the pose seam `h = PoseSeam(s)` (plane height from
     /// the rigid state `s = [qpos; qvel]`), the soft solve `x*` (the same
@@ -3479,20 +3618,50 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // self-consistent pair that calibrated ONLY for nv=1 — Coriolis/`∂qacc/∂qvel`
             // coupling at nv>1 broke it; see `docs/keystone/moment_residual_recon.md`.)
             self.data.forward(&self.model).expect("fresh FK");
+            // MOVING END-EFFECTOR: pose the contact sphere at the contact geom (the arm
+            // tip) — the centre rides `geom_xpos(q)`, so the pose channel is the 3-vector
+            // centre (`PoseCentreVjp`), the lateral generalization of the scalar height.
+            // Refreshed each step from the fresh-FK geom pose (mirrors `step_articulated`).
+            let moving_ee = self.contact_geom.is_some();
+            if let Some(g) = self.contact_geom {
+                self.sphere_center_override = Some(self.data.geom_xpos[g]);
+            }
             let height = self.tip_plane_height();
-            // Pose seam: the contact plane's pose from the rigid state. FLAT — the
-            // scalar tip height `h` (`∂h/∂q = J_z`). ROTATING — the 6-DOF spatial twist
-            // `T` of the body-attached plane (`∂T/∂qpos = J_spatial`, the
-            // `PoseTwistSeamVjp`); its value is the all-zero perturbation at the
-            // linearization point (only the cotangent is threaded). The soft node AND
-            // the wrench node share this one pose node (as the flat path shares `h`).
+            // Pose seam: the contact primitive's pose from the rigid state. FLAT — the
+            // scalar tip height `h` (`∂h/∂q = J_z`). MOVING-EE — the 3-vector sphere
+            // centre `c = geom_xpos(q)` (`∂c/∂q = J_geom`, the `PoseCentreVjp`). ROTATING —
+            // the 6-DOF spatial twist `T` of the body-attached plane (`∂T/∂qpos =
+            // J_spatial`, the `PoseTwistSeamVjp`); its value is the all-zero perturbation
+            // at the linearization point (only the cotangent is threaded). The soft node
+            // AND the wrench node share this one pose node (as the flat path shares `h`).
             let rotating = self.rotating_normal;
+            assert!(
+                !(rotating && moving_ee),
+                "rotating-normal + moving-end-effector posing is not yet combined (the \
+                 rotating-centre `WrenchPose::Twist` sibling is the follow-on)"
+            );
+            // The moving-EE centre channel's three translation axes (`x̂, ŷ, ẑ`); `ẑ`
+            // reproduces the scalar height channel.
+            let centre_basis = [
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+            ];
             let pose_var = if rotating {
                 tape.push_custom(
                     &[s_var],
                     Tensor::zeros(&[6]),
                     Box::new(PoseTwistSeamVjp {
                         j_spatial: self.pose_twist_jacobian(),
+                    }),
+                )
+            } else if moving_ee {
+                let centre = self.sphere_center_override.expect("moving-EE override set");
+                tape.push_custom(
+                    &[s_var],
+                    Tensor::from_slice(centre.as_slice(), &[3]),
+                    Box::new(PoseCentreVjp {
+                        j_geom: self.pose_centre_jacobian(),
                     }),
                 )
             } else {
@@ -3514,9 +3683,17 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .collect();
             // Soft node x*: parents [x_prev, v_prev, p, pose]. ROTATING feeds the 6
             // canonical spatial-twist basis directions (the `δn̂ = ω×n̂` adjoint);
-            // FLAT the single scalar translation along `dir`.
+            // MOVING-EE the 3 translation axes of the centre (reusing the twist node's
+            // per-direction pose RHS with pure-translation twists); FLAT the single scalar
+            // translation along `dir`.
             let soft_vjp: Box<dyn VjpOp> = if rotating {
                 Box::new(solver.trajectory_step_vjp_twist(&x_next, dt, param_idx, &twist_basis()))
+            } else if moving_ee {
+                let twists: Vec<RigidTwist> = centre_basis
+                    .iter()
+                    .map(|&d| RigidTwist::translation(d))
+                    .collect();
+                Box::new(solver.trajectory_step_vjp_twist(&x_next, dt, param_idx, &twists))
             } else {
                 Box::new(solver.trajectory_step_vjp(&x_next, dt, param_idx, dir))
             };
@@ -3571,6 +3748,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 WrenchPose::Twist {
                     basis: twist_basis().to_vec(),
                     com: c,
+                }
+            } else if moving_ee {
+                WrenchPose::Centre {
+                    basis: centre_basis.to_vec(),
                 }
             } else {
                 WrenchPose::Height
@@ -3716,6 +3897,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64) {
+        // Curvature-correct on a centroid-posed sphere (#421) but NOT yet on a moving
+        // end-effector — reject a set contact geom (first, before the scope asserts).
+        self.require_no_moving_ee();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -3964,6 +4148,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         &mut self,
         n_steps: usize,
     ) -> (f64, f64) {
+        // Curvature-correct on a centroid-posed sphere (#421) but NOT yet on a moving
+        // end-effector — reject a set contact geom (first, before the scope asserts).
+        self.require_no_moving_ee();
         assert!(
             self.model.nq == self.model.nv,
             "articulated friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
@@ -8061,6 +8248,135 @@ mod tests {
         assert!(
             worst < 1e-5,
             "sphere ContactWrenchTrajVjp Jacobian must be FD-exact vs the curved readout, \
+             worst scaled error {worst:.3e}"
+        );
+    }
+
+    /// The CENTRE-channel companion to `sphere_contact_wrench_node_matches_readout_fd`:
+    /// the moving-end-effector sphere is posed at an explicit centre OVERRIDE (the arm tip),
+    /// and the wrench node's pose parent is the 3-vector centre channel ([`WrenchPose::Centre`])
+    /// rather than the scalar height. FD: translate the centre along each axis, recompute the
+    /// curved-collider wrench readout (soft positions held), compare to the analytic per-axis
+    /// pose Jacobian. The z axis reproduces the `Height` channel; x/y are the lateral channels
+    /// the moving-EE carry needs (the `f_mag·H` normal-rotation term is materially nonzero on
+    /// the off-pole curved patch the off-centroid centre selects).
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn sphere_contact_wrench_node_centre_matches_readout_fd() {
+        const HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        const SPHERE_R: f64 = 0.08;
+        let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3; // tilt → off-COM contact + engaged sphere
+        data.forward(&model).expect("forward");
+        let mut c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_sphere_collider(SPHERE_R);
+
+        let height = c.tip_plane_height();
+        // Pose the fist at an explicit centre (the moving-EE scenario), OFF the block centroid
+        // so n̂·x̂ and n̂·ŷ are nonzero on the curved patch ⇒ the lateral channels are exercised.
+        let base = Vec3::new(
+            c.edge / 2.0 + 0.012,
+            c.edge / 2.0 - 0.009,
+            height + SPHERE_R,
+        );
+        c.set_sphere_center(base);
+        let positions = c.positions();
+        let com = c.data.xipos[c.body];
+        let n_dof = 3 * c.n_vertices;
+        let nv = c.model.nv;
+
+        // The curved-collider wrench readout at the current sphere-centre override, soft
+        // positions held fixed (the explicit ∂w/∂centre the pose parent carries).
+        let wrench_of = |c: &StaggeredCoupling, pos: &[Vec3]| -> [f64; 6] {
+            let mut w = [0.0_f64; 6];
+            for (_, g, _, _, r) in c.active_pair_wrench_data(height, pos) {
+                let f = -g;
+                w[3] += f.x;
+                w[4] += f.y;
+                w[5] += f.z;
+                let tau = (r - com).cross(&f);
+                w[0] += tau.x;
+                w[1] += tau.y;
+                w[2] += tau.z;
+            }
+            w
+        };
+
+        // Analytic node at the base centre (curv + H read here, before the FD mutates the override).
+        let mut active = Vec::new();
+        let mut force = Vec3::zeros();
+        for (v, g, n, curv, r) in c.active_pair_wrench_data(height, &positions) {
+            force += -g;
+            active.push((
+                v,
+                g,
+                n,
+                curv,
+                r - com,
+                c.collider_hessian(height, positions[v]),
+            ));
+        }
+        assert!(!active.is_empty(), "config must be contact-engaged");
+        let basis = vec![
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+        let node = ContactWrenchTrajVjp {
+            active,
+            force,
+            jlin: c.com_linear_jacobian(),
+            n_dof,
+            nv,
+            pose: WrenchPose::Centre { basis },
+        };
+        // Pose-parent cotangent rows: ∂w_k/∂(centre axis), one [3] per wrench component k.
+        let pose_rows: Vec<[f64; 3]> = (0..6)
+            .map(|k| {
+                let mut cot = Tensor::zeros(&[6]);
+                cot.as_mut_slice()[k] = 1.0;
+                let mut pc = vec![
+                    Tensor::zeros(&[n_dof]),
+                    Tensor::zeros(&[3]),
+                    Tensor::zeros(&[2 * nv]),
+                ];
+                node.vjp(&cot, &mut pc);
+                let s = pc[1].as_slice();
+                [s[0], s[1], s[2]]
+            })
+            .collect();
+
+        let d = 1.0e-7;
+        // The centre channel is a translation like the height channel ⇒ the same 1e5 scale
+        // the height gate calibrated (the z axis IS that channel; x/y are smaller).
+        let scale = 1.0e5;
+        let mut worst = 0.0_f64;
+        for axis in 0..3 {
+            let mut dir = Vec3::zeros();
+            dir[axis] = 1.0;
+            c.set_sphere_center(base + d * dir);
+            let wp = wrench_of(&c, &positions);
+            c.set_sphere_center(base - d * dir);
+            let wm = wrench_of(&c, &positions);
+            for k in 0..6 {
+                let fd = (wp[k] - wm[k]) / (2.0 * d);
+                worst = worst.max((fd - pose_rows[k][axis]).abs() / scale);
+            }
+        }
+        assert!(
+            worst < 1e-5,
+            "sphere ContactWrenchTrajVjp CENTRE Jacobian must be FD-exact vs the curved readout, \
              worst scaled error {worst:.3e}"
         );
     }
