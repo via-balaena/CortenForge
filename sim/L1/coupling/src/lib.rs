@@ -1769,15 +1769,16 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// step. Pair the `radius` with the geom's own (`with_sphere_collider(r)` where the
     /// geom's `size = r`) so the contact sphere is the fist.
     ///
-    /// The articulated MATERIAL (normal) AND FRICTION (material + μ_c) trajectory gradients thread
-    /// the moving centre through the adjoint — the 3-vector `PoseCentreVjp` seam, `WrenchPose::Centre`,
-    /// the grip soft node's 3-axis pose, and the friction wrench's 3-vector `dforce_dpose` (gated by
-    /// `sphere_moving_ee_trajectory_gradient.rs` and `sphere_moving_ee_friction_trajectory_gradient.rs`);
-    /// their forward oracles ([`Self::coupled_trajectory_articulated_z`],
-    /// [`Self::coupled_trajectory_gripped_articulated`]) pose at the same geom. The FREE-BODY
-    /// gradients (and grip forward) and the actuator/policy gradients do NOT yet thread it (guarded,
-    /// the follow-on). A no-op for the infinite plane collider. Default (unset) reproduces the
-    /// byte-identical block-centroid posing the finite-contact gates use.
+    /// The ARTICULATED gradients — material/friction (#428/#429) AND actuator/policy (#431) — thread
+    /// the moving centre through the adjoint (the 3-vector `PoseCentreVjp` seam, `WrenchPose::Centre`,
+    /// the grip soft node's 3-axis pose, and the friction wrench's 3-vector `dforce_dpose`; gated by
+    /// `sphere_moving_ee_{,friction_}trajectory_gradient.rs` + `actuator_moving_ee_gradient.rs`);
+    /// their forward oracles (`coupled_trajectory_articulated_z` / `_gripped_articulated` / the
+    /// actuated/policy `*_z` / `*_gripped_x`) pose at the same geom. The FREE-BODY gradients (+ grip
+    /// forward) are guarded (`require_no_moving_ee`) — a moving EE there is DEGENERATE, not a
+    /// follow-on (flat-block translation-invariance + no off-COM moment; the sweep is the drift
+    /// channel). A no-op for the infinite plane collider. Default (unset) reproduces the byte-identical
+    /// block-centroid posing the finite-contact gates use.
     #[must_use]
     pub const fn with_contact_geom(mut self, geom_id: usize) -> Self {
         self.contact_geom = Some(geom_id);
@@ -1823,14 +1824,32 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// otherwise silently pose the sphere at the block centroid (ignoring the tip), a silent
     /// contract violation on a public API (ship-blocking even if currently unused) — is the
     /// FREE-BODY gradients (`material`/`peak_force`/`control`/`policy`/`joint`/`tangential_*`) and
-    /// the free-body grip forward ([`Self::coupled_trajectory_grip`]). Threading those is the
-    /// follow-on. A no-op when no geom is set (the centroid-posed gates + the plane).
+    /// the free-body grip forward ([`Self::coupled_trajectory_grip`]). A no-op when no geom is set
+    /// (the centroid-posed gates + the plane).
+    ///
+    /// **The free-body guard is a DELIBERATE boundary, not an unfinished follow-on** (verified by a
+    /// spike, 2026-06-27). A moving end-effector on the free platen is DEGENERATE — there is no real
+    /// centre channel to thread:
+    /// - The free-body coupling threads scalar lanes (vertical `z`/`vz`, plus lateral `xx`/`vx` for
+    ///   friction) with NO off-COM moment, so the contact's absolute lateral *position* feeds no
+    ///   gradient channel (unlike the articulated arm, whose tip arcs and whose off-COM moment makes
+    ///   `tip_z` pose-sensitive).
+    /// - Over the FLAT block the contact is laterally translation-invariant (a sphere staying over
+    ///   the block feels the same force at any x), and the collider's relative sweep is ALREADY the
+    ///   drift channel (`Δ_surf = v_collider·dt`). So a `geom_xpos` centre channel adds nothing the
+    ///   drift + height don't (consistent with #429's pose-insensitive friction `tip_x`).
+    /// - Naive geom-posing isn't even the same model: the geom centre is `xpos.z`, vs the keystone's
+    ///   `height + r` south-pole reference — a vertical-convention mismatch, not a tip-tracking gain.
+    ///
+    /// So this guard stays as the correct LOUD rejection; "completing" the free body would mean a
+    /// full 6-DOF rigid model (a different effort), not a moving-EE carry.
     fn require_no_moving_ee(&self) {
         assert!(
             self.contact_geom.is_none(),
-            "this free-body gradient/rollout does not thread the moving end-effector \
-             (with_contact_geom) centre carry; the articulated + actuator/policy gradients do (set \
-             the contact geom only on those paths, or use the block-centroid default)."
+            "a moving end-effector (with_contact_geom) is not supported on the free-body path — it \
+             is DEGENERATE there (flat-block translation-invariance + no off-COM moment; the \
+             collider sweep is already the drift channel). Use the ARTICULATED or ACTUATOR/POLICY \
+             gradients for a tip-posed sphere, or the block-centroid default here."
         );
     }
 
@@ -3645,10 +3664,17 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // at the linearization point (only the cotangent is threaded). The soft node
             // AND the wrench node share this one pose node (as the flat path shares `h`).
             let rotating = self.rotating_normal;
+            // DELIBERATE boundary, not an unfinished follow-on: `rotating_normal` tilts the PLANE
+            // with the body, but `moving_ee` requires the SPHERE collider, whose contact normal is
+            // set by the geometry (centre + vertex) and is orientation-INVARIANT — `rotating_normal`
+            // is a no-op on a sphere (`build_contact`'s sphere branch ignores it). So the combo is
+            // meaningless; it would only matter for a non-spherical oriented end-effector (capsule/
+            // ellipsoid), which does not exist. Reject it loudly rather than silently no-op.
             assert!(
                 !(rotating && moving_ee),
-                "rotating-normal + moving-end-effector posing is not yet combined (the \
-                 rotating-centre `WrenchPose::Twist` sibling is the follow-on)"
+                "rotating-normal + moving-end-effector is unsupported: rotating-normal tilts the \
+                 plane, but a moving EE is a sphere whose normal is orientation-invariant (the \
+                 rotating-normal would be a silent no-op). Use one or the other."
             );
             // The moving-EE centre channel's three translation axes (`x̂, ŷ, ẑ`); `ẑ`
             // reproduces the scalar height channel.
