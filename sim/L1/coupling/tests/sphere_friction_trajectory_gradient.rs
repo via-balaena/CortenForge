@@ -15,21 +15,30 @@
 //! the soft adjoint's friction tangent `A`, and the friction pose-residual grad) — invisible to
 //! every plane gate.
 //!
-//! ## Accuracy / scope — read this before tightening the tolerance.
+//! ## Accuracy / scope — the ~2e-3 floor is INTRINSIC (do not chase it; spike falsified the fix).
 //! Each curved-friction term is MACHINE-EXACT, gated per-term by the single-step FD isolation
 //! suite `sim/L0/soft/tests/friction_sphere_tangent.rs` (`∂F/∂x*`, `∂F/∂height`, `∂x*/∂μ_c`,
 //! `∂x*/∂height`, `∂x*/∂drift`, plus the reverse-mode `A⁻ᵀ == A⁻¹` check) — that suite is the
 //! rigorous validation. THIS end-to-end gate composes them over a rollout and is bounded NOT by
-//! the gradient (which is exact) but by the FORWARD SOLVER: a finite curved contact's Newton
-//! tangent carries the negative-semidefinite `dE·H` geometric stiffness (#415), so the
-//! friction+curved solve cannot converge as tightly as the plane (it floors near ~1e-10 and the
-//! per-step residual the IFT adjoint assumes-zero is `∝ κ`). The gradient is the EXACT gradient
-//! of what the solve produces; it tracks the FD oracle (which rides the same forward solve) to
-//! that floor. A well-conditioned (compliant `κ`) scene lands ~2e-3; a stiff scene drifts to
-//! ~1e-2. Tightening the curved-contact solve (preconditioning the `dE·H` tangent) is the lift
-//! that would make this gate machine-exact. The friction-COEFFICIENT lever is used (linear in
-//! `μ_c`, a far cleaner signal than the weak material lever). See
-//! `project-differentiable-finite-contact.md`.
+//! the gradient (which is exact) but by the FORWARD SOLVER: the frozen-lag friction on a curved
+//! contact plateaus at a ~1e-10 forward residual it cannot drive lower, and the IFT adjoint (which
+//! assumes `r(x*) = 0`) amplifies that residual by the curved-contact conditioning into the floor.
+//! The gradient is the EXACT gradient of what the solve produces; it tracks the FD oracle (which
+//! rides the same forward solve) to that floor. A well-conditioned (compliant `κ`) scene lands
+//! ~2e-3; a stiff scene drifts to ~1e-2. Normal-only curved contact has NO such floor
+//! (`sphere_trajectory_gradient.rs` / `sphere_articulated_trajectory_gradient.rs` are machine-exact
+//! end-to-end) — it is the frozen-lag friction model, not the curvature conditioning.
+//!
+//! This floor is INTRINSIC, not a preconditioning gap. A 2026-06-27 implement-measure-revert spike
+//! falsified all three tangent levers: (1) `lm_regularization` is INERT — the forward tangent stays
+//! positive-definite (Cholesky succeeds), so the `dE·H` NSD term never triggers the `+λI` retry;
+//! (2) tightening tol 1e-10→1e-13 with 5× the iter budget hits `NewtonIterCap` (the ~1e-10 plateau
+//! is a linear-convergence stall, not a budget problem); (3) threading the curved `DN·C` into the
+//! forward friction Hessian (`friction_blocks`) makes it WORSE (~6e-2) by desyncing forward `x*`
+//! from the adjoint's frozen-lag tangent. The only conceivable fix is a fully consistent ASYMMETRIC
+//! forward tangent (Woodbury in the forward solve) — large change, speculative payoff, NOT pursued.
+//! The friction-COEFFICIENT lever is used (linear in `μ_c`, a far cleaner signal than the weak
+//! material lever). See `project-differentiable-finite-contact.md`.
 
 // A missing/malformed fixture (MJCF load, body index) surfaces as a test panic.
 #![allow(clippy::expect_used)]
@@ -116,7 +125,7 @@ fn sphere_tangential_forward_matches_grip_rollout() {
 /// The curved-normal `DN` terms (zero for the plane, machine-exact per-term in
 /// `friction_sphere_tangent.rs`) are what bring this from the ~1e-2 no-curvature miss down to
 /// the forward-solver floor; the residual is curved-contact convergence, NOT a gradient error
-/// (see the module note — do not tighten below the floor without preconditioning the solve).
+/// (see the module note — this ~2e-3 floor is INTRINSIC; a spike falsified the tangent-fix levers).
 #[test]
 fn sphere_tangential_friction_gradient_matches_fd() {
     let (_x, grad) = build_grip(FRIC_MU).coupled_trajectory_tangential_friction_coeff_gradient(N);
