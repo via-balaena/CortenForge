@@ -1428,6 +1428,43 @@ pub struct CoupledStep {
     pub rigid_z: f64,
 }
 
+/// One captured frame of a closed-loop **friction-grip** rollout — the per-step
+/// state a viewer replays (see
+/// [`StaggeredCoupling::coupled_trajectory_policy_gripped_capture`]).
+///
+/// The capturing rollout shares its loop body with the scalar forward
+/// [`StaggeredCoupling::coupled_trajectory_policy_gripped_x`] (the FD oracle for the
+/// design+policy-friction gradient), so the animated scene is the *same* physics the
+/// gradient differentiates — not a re-derivation. One frame is emitted before the
+/// first step (the rest state) and one after each step, so a rollout of `n_steps`
+/// yields `n_steps + 1` frames.
+///
+/// **Framing.** A frame pairs the post-step `soft_positions` and contact `fist_center`
+/// (both from this step's *contact* configuration — the correct staggered pairing: the
+/// soft solve responds to the step-start sphere) with the post-step `arm_pivot`. For
+/// the centroid grip the fist is static over the block (it does not track the swinging
+/// arm — that is the moving-end-effector follow-on), so the swing angle is not
+/// recoverable from these fields alone; render the limb from `arm_pivot` → `fist_center`
+/// only in the moving-EE case.
+#[derive(Clone, Debug)]
+pub struct GripRolloutFrame {
+    /// Deformed soft-body vertex positions after this step, flat
+    /// `[x0, y0, z0, x1, y1, z1, …]` (length `3 · n_vertices`). Pair with
+    /// [`StaggeredCoupling::soft_boundary_faces`] (the fixed rest topology) to build
+    /// the surface mesh.
+    pub soft_positions: Vec<f64>,
+    /// The gripped rigid body's world **origin** (`data().xpos[body]`) after this step
+    /// — the arm-side anchor a viewer renders the limb from. This is the body origin
+    /// (e.g. the fixed hinge pivot for the grip scene), not the inertial-frame tip the
+    /// scalar forward returns (`xipos`).
+    pub arm_pivot: [f64; 3],
+    /// The contact sphere's world centre this step — the block centroid (centroid
+    /// grip) or the arm-tip geom (moving end-effector). This is what the soft body
+    /// actually grips; render it as the fist. Sphere-only: a plane collider has no
+    /// fist, and this defaults to the block-centre point on the contact plane.
+    pub fist_center: [f64; 3],
+}
+
 /// The state a [`DiffPolicy`] observes each step — two loop-carried chassis-tape scalar [`Var`]s.
 /// On the free platen these are the platen height `z` and vertical velocity `vz`
 /// ([`StaggeredCoupling::coupled_trajectory_policy_gradient`]); on the articulated grip they are
@@ -6399,14 +6436,55 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// # Panics
     /// Panics if `params.len() != policy.n_params()`, or if a rigid/soft step diverges.
     #[must_use]
-    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not recoverable
-    // (mirrors `coupled_trajectory_actuated_gripped_x` / `coupled_trajectory_policy_z`).
-    #[allow(clippy::expect_used)]
     pub fn coupled_trajectory_policy_gripped_x<P: DiffPolicy>(
         &mut self,
         policy: &P,
         params: &[f64],
         n_steps: usize,
+    ) -> Vec3 {
+        self.policy_gripped_rollout(policy, params, n_steps, None)
+    }
+
+    /// The closed-loop friction-grip rollout, capturing every frame — the
+    /// **visualization** sibling of [`Self::coupled_trajectory_policy_gripped_x`].
+    ///
+    /// Runs the SAME physics (the shared `policy_gripped_rollout` loop body, so the
+    /// byte-identical scalar `tip_x` is the first element of the tuple), but
+    /// also returns one [`GripRolloutFrame`] before the first step (the rest state)
+    /// and one after each step — `n_steps + 1` frames total. A viewer replays these
+    /// to render the *exact* co-designed encounter the design+policy-friction
+    /// gradient differentiates (see `examples/integration/`).
+    ///
+    /// # Panics
+    /// Panics if `params.len() != policy.n_params()`, or if a rigid/soft step diverges.
+    #[must_use]
+    pub fn coupled_trajectory_policy_gripped_capture<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+    ) -> (Vec3, Vec<GripRolloutFrame>) {
+        let mut frames = Vec::with_capacity(n_steps + 1);
+        let tip = self.policy_gripped_rollout(policy, params, n_steps, Some(&mut frames));
+        (tip, frames)
+    }
+
+    /// Shared loop body for the closed-loop friction-grip rollout. With `capture =
+    /// None` this is the FD-oracle forward (byte-identical to the pre-refactor
+    /// `coupled_trajectory_policy_gripped_x`); with `Some(sink)` it additionally
+    /// pushes a [`GripRolloutFrame`] before the first step and after each step. The
+    /// capture work is fully guarded behind `Some`, so the `None` path — the
+    /// gradient's reference oracle — is unchanged (no extra `forward`, no clones).
+    //
+    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not
+    // recoverable (mirrors `coupled_trajectory_actuated_gripped_x` / `_policy_z`).
+    #[allow(clippy::expect_used)]
+    fn policy_gripped_rollout<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+        mut capture: Option<&mut Vec<GripRolloutFrame>>,
     ) -> Vec3 {
         assert_eq!(
             params.len(),
@@ -6417,6 +6495,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         );
         let dt = self.cfg.dt;
         let n = self.n_vertices;
+        // Rest frame (capture only): the undeformed soft body + the starting pose.
+        if let Some(sink) = capture.as_deref_mut() {
+            self.data
+                .forward(&self.model)
+                .expect("fresh FK (capture rest)");
+            let h0 = self.tip_plane_height();
+            sink.push(self.grip_frame(h0));
+        }
         for _ in 0..n_steps {
             self.data.forward(&self.model).expect("fresh FK");
             // MOVING END-EFFECTOR: pose the sphere at the contact geom (FD oracle for the moving-EE
@@ -6458,9 +6544,35 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in policy grip rollout");
+            // Post-step frame (capture only): the deformed soft body + the integrated pose.
+            // The trailing `forward` refreshes `xpos` for the capture; it does not touch
+            // `qpos`/`qvel`/`x`, so the `None` oracle path (which skips it) is unaffected.
+            if let Some(sink) = capture.as_deref_mut() {
+                self.data
+                    .forward(&self.model)
+                    .expect("fresh FK (capture step)");
+                sink.push(self.grip_frame(height));
+            }
         }
         self.data.forward(&self.model).expect("fresh FK (output)");
         self.data.xipos[self.body]
+    }
+
+    /// Snapshot the current state as a [`GripRolloutFrame`]: the deformed soft mesh,
+    /// the gripped body's world origin, and the contact sphere centre posed at
+    /// `height` (the value `build_contact` used this step).
+    fn grip_frame(&self, height: f64) -> GripRolloutFrame {
+        let radius = match self.collider {
+            Collider::Sphere { radius } => radius,
+            Collider::Plane => 0.0,
+        };
+        let fist = self.sphere_center(radius, height);
+        let pivot = self.data.xpos[self.body];
+        GripRolloutFrame {
+            soft_positions: self.x.clone(),
+            arm_pivot: [pivot.x, pivot.y, pivot.z],
+            fist_center: [fist.x, fist.y, fist.z],
+        }
     }
 
     /// **Joint design + policy gradient** — the mission's "one outer loop
@@ -7994,6 +8106,18 @@ mod tests {
         assert!(
             pol.x.is_finite() && (0.10..0.12).contains(&pol.z),
             "policy-gripped rollout must stay finite and engaged, got {pol:?}"
+        );
+        // The frame-capturing sibling: byte-identical tip_x + n_steps+1 frames (the R5 viz
+        // surface). Accuracy/identity gates live in `tests/grip_rollout_capture.rs`.
+        let (cap_tip, frames) =
+            build().coupled_trajectory_policy_gripped_capture(&LinearFeedback, &params, 3);
+        assert!(
+            cap_tip.x == pol.x && frames.len() == 4,
+            "capture must byte-match the scalar oracle and yield n_steps+1 frames, \
+             got tip {} vs {} / {} frames",
+            cap_tip.x,
+            pol.x,
+            frames.len()
         );
         let (px, pgrad) =
             build().coupled_trajectory_policy_friction_gradient(&LinearFeedback, &params, 3);
