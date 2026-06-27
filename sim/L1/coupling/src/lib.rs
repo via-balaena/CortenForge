@@ -1809,58 +1809,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
     }
 
-    /// Assert the contact collider is the infinite plane — the scope guard for the
-    /// trajectory gradients whose adjoints still drop the curved-normal geometric
-    /// stiffness (`dE·H`, #415). Called at the entry of every such method so a
-    /// finite-sphere collider ([`Self::with_sphere_collider`]) fails LOUDLY rather than
-    /// emitting a silently-wrong gradient (a silent contract violation on a public API is
-    /// ship-blocking).
-    ///
-    /// Scope after the L1b free-body (NORMAL + TANGENTIAL), articulated-NORMAL, and
-    /// articulated-FRICTION carries: curvature-correct and NOT guarded are the free-body NORMAL
-    /// gradients ([`Self::active_pair_force_factors`]), the free-body TANGENTIAL/FRICTION gradients
-    /// (the friction reaction `DN·C` + the soft adjoint's curved-T tangent + friction pose-residual
-    /// grad), the articulated MATERIAL gradient (its [`ContactWrenchTrajVjp`] carries the
-    /// curved-normal `f_mag·H` in `∂w/∂x*`, `∂w/∂h` — `sphere_contact_wrench_node_matches_readout_fd`),
-    /// AND the articulated FRICTION gradients (material + μ_c coefficient) — their
-    /// [`FrictionWrenchTrajVjp`] now carries the curved `DN·C` term from
-    /// [`CpuNewtonSolver::friction_force_jacobians`] (`per_vertex_force_jacobians_sphere_matches_fd`,
-    /// end-to-end `sphere_articulated_friction_trajectory_gradient.rs`). Still guarded here:
-    /// - the articulated ACTUATOR and POLICY gradients ([`Self::coupled_trajectory_actuator_gradient`],
-    ///   the actuator-friction sibling, and the (design+)policy-friction siblings) — they share the
-    ///   curvature-correct normal + friction wrench but layer state-dependent actuator dynamics
-    ///   (the `g_act` channel) not yet sphere-gated (the exo follow-on, NOT finite-contact).
-    ///
-    /// Moving end-effector ([`Self::with_contact_geom`], the sphere centre riding the arm
-    /// tip `geom_xpos(q)`): the articulated MATERIAL (normal) AND FRICTION (material + μ_c)
-    /// gradients thread the moving centre (the 3-vector [`PoseCentreVjp`] seam +
-    /// [`WrenchPose::Centre`] + the grip soft node's 3-axis pose + the friction wrench's 3-vector
-    /// `dforce_dpose`); their forward oracles ([`Self::coupled_trajectory_articulated_z`],
-    /// [`Self::coupled_trajectory_gripped_articulated`]) pose at the same geom. The FREE-BODY
-    /// gradients + grip forward do NOT yet thread it and are guarded by
-    /// [`Self::require_no_moving_ee`] (the follow-on). With no contact geom set the centre defaults
-    /// to the block centroid (the finite-contact gates' scope), byte-identical to before.
-    fn require_plane_collider(&self) {
-        assert!(
-            matches!(self.collider, Collider::Plane),
-            "this articulated ACTUATOR / POLICY wrench-path gradient requires the plane collider; \
-             a finite sphere collider (with_sphere_collider) is not yet supported on it (the \
-             actuator dynamics `g_act` channel is not yet sphere-gated — the exo follow-on). The \
-             free-body gradients AND the articulated MATERIAL + FRICTION gradients ARE \
-             curvature-correct on a sphere."
-        );
-    }
-
     /// Assert no contact end-effector geom is set ([`Self::with_contact_geom`]) — the scope
     /// guard for every sphere-capable trajectory method that does NOT thread the
-    /// moving-end-effector centre carry. The articulated NORMAL + FRICTION gradients (and their
-    /// forward oracles [`Self::coupled_trajectory_articulated_z`],
-    /// [`Self::coupled_trajectory_gripped_articulated`]) thread the moving centre; the FREE-BODY
-    /// normal/friction gradients + the free-body grip forward ([`Self::coupled_trajectory_grip`])
-    /// do NOT, and would otherwise silently pose the sphere at the block centroid (ignoring the
-    /// tip) — a silent contract violation on a public API (ship-blocking even if currently
-    /// unused). Threading them is the follow-on. A no-op when no geom is set (the centroid-posed
-    /// gates + the plane).
+    /// moving-end-effector centre carry.
+    ///
+    /// **All actuator/policy + free-body gradients are now curvature-correct on a CENTROID sphere**
+    /// (the contact nodes carry the #415–#429 curvature; the actuator `g_act` channel is
+    /// contact-independent, so the formerly plane-only actuator/policy gradients just inherited the
+    /// curved contact — `actuator_sphere_centroid` / `..._friction_sphere_centroid` /
+    /// `design_policy_friction_sphere_centroid` gates). What none of these thread is the *moving*
+    /// end-effector (the 3-vector centre channel): only the articulated MATERIAL + FRICTION
+    /// gradients (and their forward oracles [`Self::coupled_trajectory_articulated_z`],
+    /// [`Self::coupled_trajectory_gripped_articulated`]) pose at + differentiate through
+    /// `geom_xpos(q)`. So this guard rejects a set contact geom on the rest — the FREE-BODY
+    /// normal/friction gradients, the free-body grip forward ([`Self::coupled_trajectory_grip`]),
+    /// and the ACTUATOR/POLICY gradients — which would otherwise silently pose the sphere at the
+    /// block centroid (ignoring the tip), a silent contract violation on a public API
+    /// (ship-blocking even if currently unused). Threading them is the follow-on. A no-op when no
+    /// geom is set (the centroid-posed gates + the plane).
     fn require_no_moving_ee(&self) {
         assert!(
             self.contact_geom.is_none(),
@@ -1956,9 +1922,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// NOT a guard: the NORMAL contact crossing is curvature-correct for the sphere, as are the
     /// free-body + articulated FRICTION wrench paths (curved `DN·C` carried by #419 / the
-    /// articulated-friction rung). The only still-flat paths are the articulated ACTUATOR / POLICY
-    /// `g_act` channels, which guard at their method entry via [`Self::require_plane_collider`]
-    /// (the exo follow-on, NOT finite-contact).
+    /// articulated-friction rung) AND the actuator/policy gradients (centroid sphere — the `g_act`
+    /// channel is contact-independent). What no path threads except the articulated normal/friction
+    /// gradients is the MOVING end-effector centre channel ([`Self::require_no_moving_ee`]).
     fn active_pair_force_factors(
         &self,
         height: f64,
@@ -3616,8 +3582,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         // Curvature-correct on a finite sphere (L1b-articulated NORMAL): the contact wrench
         // (`ContactWrenchTrajVjp`) now carries the curved-normal `f_mag·H` term in `∂w/∂x*` and
         // `∂w/∂h` (FD-exact in `sphere_contact_wrench_node_matches_readout_fd`); the soft node +
-        // pose seam are SDF-generic. No `require_plane_collider` guard. (The articulated FRICTION
-        // gradients stay guarded — `friction_force_jacobians` still drops the curved term.)
+        // pose seam are SDF-generic. Curvature-correct on a sphere — no plane guard; threads the
+        // moving-EE centre channel directly (no `require_no_moving_ee`).
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -3925,8 +3891,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// Curvature-correct on a FINITE sphere collider ([`Self::with_sphere_collider`]): both the
     /// NORMAL wrench (`ContactWrenchTrajVjp`'s `f_mag·H`) and the FRICTION wrench
-    /// (`friction_force_jacobians`'s `DN·C`) carry the curved-normal term, so this gradient is NOT
-    /// `require_plane_collider`-guarded (FD-gated end-to-end by
+    /// (`friction_force_jacobians`'s `DN·C`) carry the curved-normal term, so this gradient is
+    /// curvature-correct on a centroid sphere (FD-gated end-to-end by
     /// `sphere_articulated_friction_trajectory_gradient.rs`).
     ///
     /// MOVING END-EFFECTOR ([`Self::with_contact_geom`]): when the sphere rides the contact geom,
@@ -4253,7 +4219,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// is identical to the material gradient. Same scope: EUCLIDEAN joints (`nq == nv`), flat normal,
     /// friction active, `rigid_damping = 0`. FD-gated against [`Self::coupled_trajectory_gripped_articulated`].
     /// Curvature-correct on a FINITE sphere collider (same curved-normal carry as the material
-    /// sibling — normal `f_mag·H` + friction `DN·C`), so NOT `require_plane_collider`-guarded. Like
+    /// sibling — normal `f_mag·H` + friction `DN·C`), so curvature-correct on a centroid sphere. Like
     /// the material sibling it also threads the MOVING-END-EFFECTOR 3-vector centre channel under
     /// [`Self::with_contact_geom`] (the same `grip_centre` soft node + `WrenchPose::Centre` + 3-vector
     /// friction `dforce_dpose`); gated by `sphere_moving_ee_friction_trajectory_gradient.rs`.
@@ -4680,7 +4646,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     // recoverable for keystone-v1 (mirrors `coupled_trajectory_material_gradient_articulated`).
     #[allow(clippy::too_many_lines, clippy::expect_used)]
     pub fn coupled_trajectory_actuator_gradient(&mut self, controls: &[f64]) -> (f64, Vec<f64>) {
-        self.require_plane_collider();
+        // Curvature-correct on a CENTROID sphere: the contact nodes carry the #415-#429 curvature
+        // (collider_hessian / curved grip tangent / friction DN.C) and `g_act` is contact-independent
+        // (the actuator velocity column). The scalar pose channel is NOT moving-EE, so a set contact
+        // geom must still fail loudly (the moving-EE actuator/policy centre carry is the follow-on).
+        self.require_no_moving_ee();
         assert!(
             self.model.nq == self.model.nv,
             "actuator gradient scope: Euclidean joints (nq == nv — hinge/slide chains; \
@@ -4755,7 +4725,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 }),
             );
 
-            // (3) contact wrench [τ; f] at the post-step soft config (flat normal).
+            // (3) contact wrench [τ; f] at the post-step soft config (curvature-correct on a
+            // sphere — `active` carries `collider_hessian`; centroid posing).
             let positions: Vec<Vec3> = x_next
                 .chunks_exact(3)
                 .map(|c| Vec3::new(c[0], c[1], c[2]))
@@ -4899,7 +4870,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         &mut self,
         controls: &[f64],
     ) -> (f64, Vec<f64>) {
-        self.require_plane_collider();
+        // Curvature-correct on a CENTROID sphere: the contact nodes carry the #415-#429 curvature
+        // (collider_hessian / curved grip tangent / friction DN.C) and `g_act` is contact-independent
+        // (the actuator velocity column). The scalar pose channel is NOT moving-EE, so a set contact
+        // geom must still fail loudly (the moving-EE actuator/policy centre carry is the follow-on).
+        self.require_no_moving_ee();
         assert!(
             self.model.nq == self.model.nv,
             "actuator-friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
@@ -5160,7 +5135,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         params: &[f64],
         n_steps: usize,
     ) -> (f64, Vec<f64>) {
-        self.require_plane_collider();
+        // Curvature-correct on a CENTROID sphere: the contact nodes carry the #415-#429 curvature
+        // (collider_hessian / curved grip tangent / friction DN.C) and `g_act` is contact-independent
+        // (the actuator velocity column). The scalar pose channel is NOT moving-EE, so a set contact
+        // geom must still fail loudly (the moving-EE actuator/policy centre carry is the follow-on).
+        self.require_no_moving_ee();
         assert_eq!(
             params.len(),
             policy.n_params(),
@@ -5467,7 +5446,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         params: &[f64],
         n_steps: usize,
     ) -> (f64, f64, Vec<f64>) {
-        self.require_plane_collider();
+        // Curvature-correct on a CENTROID sphere: the contact nodes carry the #415-#429 curvature
+        // (collider_hessian / curved grip tangent / friction DN.C) and `g_act` is contact-independent
+        // (the actuator velocity column). The scalar pose channel is NOT moving-EE, so a set contact
+        // geom must still fail loudly (the moving-EE actuator/policy centre carry is the follow-on).
+        self.require_no_moving_ee();
         assert_eq!(
             params.len(),
             policy.n_params(),
@@ -6854,7 +6837,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         // Curvature-correct on a finite sphere (L1b-tangential): the friction reaction
         // (`FrictionReactionTrajVjp`), the soft adjoint's friction tangent, and the friction
         // pose-residual grad all carry the curved-normal term `DN·H` now (per-term machine-exact,
-        // `sim_soft/tests/friction_sphere_tangent.rs`). No `require_plane_collider` guard.
+        // `sim_soft/tests/friction_sphere_tangent.rs`). Curvature-correct on a centroid sphere.
         let n = self.n_vertices;
         let dt = self.cfg.dt;
         let pose_dir = Vec3::new(0.0, 0.0, 1.0);

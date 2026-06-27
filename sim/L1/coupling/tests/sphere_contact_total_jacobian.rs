@@ -154,31 +154,26 @@ fn sphere_total_force_jacobian_wrt_lateral_centre_matches_resolve_fd() {
     );
 }
 
-/// The scope guard after the L1b free-body + articulated NORMAL & FRICTION carries: the free-body
-/// gradients (`sphere_trajectory_gradient.rs`, `sphere_friction_trajectory_gradient.rs`) AND the
-/// articulated MATERIAL + FRICTION gradients (`sphere_articulated_trajectory_gradient.rs`,
-/// `sphere_articulated_friction_trajectory_gradient.rs`; per-term machine-exact in
-/// `sim_soft/tests/friction_sphere_tangent.rs`) are now curvature-correct for the sphere and
-/// un-guarded. The still-guarded frontier is the ARTICULATED ACTUATOR / POLICY wrench-path family
-/// — they share the curvature-correct normal + friction wrench but layer the state-dependent
-/// actuator dynamics (`g_act`) not yet sphere-gated (the exo follow-on). A finite sphere collider
-/// must FAIL LOUDLY there rather than emit a silently-wrong gradient (a silent contract violation
-/// on a public API is ship-blocking).
+/// The actuator/policy gradients are now curvature-correct on a CENTROID sphere (the `g_act`
+/// channel is contact-independent; the contact nodes carry the #415–#429 curvature — gated by
+/// `actuator_sphere_centroid_gradient.rs`). What they do NOT yet thread is the MOVING end-effector
+/// (the 3-vector centre channel); so a set contact geom must FAIL LOUDLY (`require_no_moving_ee`)
+/// rather than silently centroid-pose vs a tip-posed expectation (a silent contract violation on a
+/// public API is ship-blocking). The guard is the gradient's first statement.
 #[test]
-#[should_panic(expected = "plane collider")]
-fn sphere_collider_panics_on_articulated_actuator_friction_gradient() {
+#[should_panic(expected = "moving end-effector")]
+fn moving_ee_panics_on_articulated_actuator_friction_gradient() {
     let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
     let mut data = model.make_data();
     data.qpos[0] = 0.3; // tilt off vertical
     data.forward(&model).expect("initial forward");
-    // Articulated v1 scope requires rigid_damping = 0.
     let mut coupling: StaggeredCoupling = StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, KAPPA, 1.0e-2, 0.0,
     )
-    .with_sphere_collider(SPHERE_R);
-    // The actuator-friction articulated gradient stays plane-guarded (the actuator `g_act` channel
-    // is not yet sphere-gated); the guard is its first statement, so empty controls are fine — it
-    // must panic at `require_plane_collider`, not return a wrong number.
+    .with_sphere_collider(SPHERE_R)
+    .with_contact_geom(0);
+    // Moving-EE not yet threaded on the actuator path; the guard is its first statement, so empty
+    // controls are fine — it must panic at `require_no_moving_ee`, not return a wrong number.
     let _ = coupling.coupled_trajectory_actuator_friction_gradient(&[]);
 }
 
@@ -194,29 +189,21 @@ const HINGE_MJCF: &str = r#"<mujoco>
   </worldbody>
 </mujoco>"#;
 
-/// The ARTICULATED-NORMAL guard frontier after the L1b articulated-wrench-NORMAL carry: the
-/// MATERIAL articulated gradient (`coupled_trajectory_material_gradient_articulated`) is now
-/// curvature-correct on a sphere (its `ContactWrenchTrajVjp` carries `f_mag·H`, FD-exact in
-/// `sphere_contact_wrench_node_matches_readout_fd`, gated end-to-end by
-/// `sphere_articulated_trajectory_gradient.rs`) and is UN-guarded. The still-guarded sibling is
-/// the ACTUATOR articulated gradient (`coupled_trajectory_actuator_gradient`) — it shares the
-/// curvature-correct wrench but layers state-dependent actuator dynamics not yet sphere-gated
-/// (the exo follow-on). A finite sphere collider must panic LOUDLY there rather than emit a
-/// silently-wrong gradient. (The articulated FRICTION gradients stay guarded too —
-/// `sphere_collider_panics_on_articulated_friction_gradient`.)
+/// The NORMAL actuator gradient (`coupled_trajectory_actuator_gradient`) is likewise centroid-sphere
+/// curvature-correct now (the `g_act` channel is contact-independent), but does not thread the
+/// moving end-effector — a set contact geom must panic LOUDLY (`require_no_moving_ee`).
 #[test]
-#[should_panic(expected = "plane collider")]
-fn sphere_collider_panics_on_articulated_actuator_gradient() {
+#[should_panic(expected = "moving end-effector")]
+fn moving_ee_panics_on_articulated_actuator_gradient() {
     let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
     let mut data = model.make_data();
     data.qpos[0] = 0.3; // tilt off vertical
     data.forward(&model).expect("initial forward");
-    // Articulated v1 scope requires rigid_damping = 0.
     let mut coupling: StaggeredCoupling = StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, KAPPA, 1.0e-2, 0.0,
     )
-    .with_sphere_collider(SPHERE_R);
-    // The actuator articulated gradient stays plane-guarded; the guard is its first statement,
-    // so it panics before the controls/nq asserts (empty controls are fine).
+    .with_sphere_collider(SPHERE_R)
+    .with_contact_geom(0);
+    // The guard is the gradient's first statement, so it panics before the controls/nq asserts.
     let _ = coupling.coupled_trajectory_actuator_gradient(&[]);
 }
