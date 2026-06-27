@@ -1321,6 +1321,11 @@ impl VjpOp for FrictionWrenchTrajVjp {
         let mut drift_acc = 0.0_f64;
         let mut mu_c_acc = 0.0_f64;
         for v in &self.verts {
+            debug_assert_eq!(
+                v.dforce_dpose.len(),
+                self.n_pose,
+                "every vertex's dforce_dpose must have n_pose axes"
+            );
             // Effective cotangent on ∇D_v: force part + moment-via-∇D_v part.
             let co = cot_f + cot_t.cross(&v.arm);
             // ∂L/∂x* via the per-vertex Jacobian, plus the moment ARM term on v's own coords.
@@ -1764,14 +1769,15 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// step. Pair the `radius` with the geom's own (`with_sphere_collider(r)` where the
     /// geom's `size = r`) so the contact sphere is the fist.
     ///
-    /// The articulated MATERIAL (normal) trajectory gradient
-    /// ([`Self::coupled_trajectory_material_gradient_articulated`]) threads the moving centre
-    /// through the adjoint (the 3-vector `PoseCentreVjp` seam + `WrenchPose::Centre`, gated
-    /// by `sphere_moving_ee_trajectory_gradient.rs`); its forward oracle
-    /// ([`Self::coupled_trajectory_articulated_z`]) poses at the same geom. The friction and
-    /// actuator/policy gradients do NOT yet thread it (guarded — the follow-on). A no-op for the
-    /// infinite plane collider. Default (unset) reproduces the byte-identical block-centroid
-    /// posing the finite-contact gates use.
+    /// The articulated MATERIAL (normal) AND FRICTION (material + μ_c) trajectory gradients thread
+    /// the moving centre through the adjoint — the 3-vector `PoseCentreVjp` seam, `WrenchPose::Centre`,
+    /// the grip soft node's 3-axis pose, and the friction wrench's 3-vector `dforce_dpose` (gated by
+    /// `sphere_moving_ee_trajectory_gradient.rs` and `sphere_moving_ee_friction_trajectory_gradient.rs`);
+    /// their forward oracles ([`Self::coupled_trajectory_articulated_z`],
+    /// [`Self::coupled_trajectory_gripped_articulated`]) pose at the same geom. The FREE-BODY
+    /// gradients (and grip forward) and the actuator/policy gradients do NOT yet thread it (guarded,
+    /// the follow-on). A no-op for the infinite plane collider. Default (unset) reproduces the
+    /// byte-identical block-centroid posing the finite-contact gates use.
     #[must_use]
     pub const fn with_contact_geom(mut self, geom_id: usize) -> Self {
         self.contact_geom = Some(geom_id);
@@ -1859,8 +1865,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         assert!(
             self.contact_geom.is_none(),
             "this gradient/rollout does not thread the moving end-effector (with_contact_geom) \
-             centre carry; only coupled_trajectory_material_gradient_articulated does (set the \
-             contact geom only on that path, or use the block-centroid default)."
+             centre carry; only the articulated NORMAL + FRICTION gradients do (set the contact \
+             geom only on those paths, or use the block-centroid default)."
         );
     }
 
@@ -4247,7 +4253,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// is identical to the material gradient. Same scope: EUCLIDEAN joints (`nq == nv`), flat normal,
     /// friction active, `rigid_damping = 0`. FD-gated against [`Self::coupled_trajectory_gripped_articulated`].
     /// Curvature-correct on a FINITE sphere collider (same curved-normal carry as the material
-    /// sibling — normal `f_mag·H` + friction `DN·C`), so NOT `require_plane_collider`-guarded.
+    /// sibling — normal `f_mag·H` + friction `DN·C`), so NOT `require_plane_collider`-guarded. Like
+    /// the material sibling it also threads the MOVING-END-EFFECTOR 3-vector centre channel under
+    /// [`Self::with_contact_geom`] (the same `grip_centre` soft node + `WrenchPose::Centre` + 3-vector
+    /// friction `dforce_dpose`); gated by `sphere_moving_ee_friction_trajectory_gradient.rs`.
     ///
     /// # Panics
     /// Panics if `nq != nv`, if friction is inactive, if `rigid_damping != 0`, if the rotating
@@ -8577,6 +8586,165 @@ mod tests {
             worst < 1e-5,
             "sphere ContactWrenchTrajVjp CENTRE Jacobian must be FD-exact vs the curved readout, \
              worst scaled error {worst:.3e}"
+        );
+    }
+
+    /// The FRICTION wrench node's 3-vector CENTRE pose channel is FD-exact — the friction analog of
+    /// `sphere_contact_wrench_node_centre_matches_readout_fd`, covering the L1 friction-pose WIRING
+    /// (the `[axis][vertex] → [vertex][axis]` `dforce_dpose` transpose + `n_pose` + the node's
+    /// `pose_slot` loop) that the (pose-INSENSITIVE) friction trajectory gate cannot reach. FD:
+    /// perturb the sphere centre per axis (soft x* held), recompute the friction wrench
+    /// `Σ[∇D_v; (r_v−c)×∇D_v]`, and compare to the node's pose-parent cotangent rows.
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn friction_wrench_node_centre_matches_readout_fd() {
+        const HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="1.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        const SPHERE_R: f64 = 0.08;
+        let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.forward(&model).expect("forward");
+        let mut c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e3, 1.2e4, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_sphere_collider(SPHERE_R)
+        .with_friction(2.5, 0.1);
+
+        let height = c.tip_plane_height();
+        let dt = c.cfg.dt;
+        let n = c.n_vertices;
+        let nv = c.model.nv;
+        let drift = Vec3::new(5.0e-4, 0.0, 0.0);
+        let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+        let com = c.data.xipos[c.body];
+        let x_start = c.x.clone();
+        // Off-centroid centre (the moving-EE scenario) so the lateral axes are exercised.
+        let base = Vec3::new(c.edge / 2.0 + 0.01, c.edge / 2.0 - 0.008, height + SPHERE_R);
+        let basis = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+
+        // One friction soft solve at the base centre (x* held fixed for the explicit-pose FD).
+        c.sphere_center_override = Some(base);
+        let x_next = {
+            let bc = BoundaryConditions::new(c.pinned.clone(), Vec::new());
+            let solver: SoftSolver<_> =
+                CpuNewtonSolver::new(Tet4, c.fresh_mesh(), c.build_contact(height), c.cfg, bc)
+                    .with_friction_surface_drift(drift);
+            solver
+                .replay_step(
+                    &Tensor::from_slice(&c.x, &[3 * n]),
+                    &Tensor::from_slice(&c.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final
+        };
+        let positions: Vec<Vec3> = x_next
+            .chunks_exact(3)
+            .map(|q| Vec3::new(q[0], q[1], q[2]))
+            .collect();
+
+        // Friction wrench readout Σ[∇D_v; (r_v−c)×∇D_v] at sphere centre `centre`, x* held.
+        let wrench_of = |c: &mut StaggeredCoupling, centre: Vec3| -> [f64; 6] {
+            c.sphere_center_override = Some(centre);
+            let bc = BoundaryConditions::new(c.pinned.clone(), Vec::new());
+            let solver: SoftSolver<_> =
+                CpuNewtonSolver::new(Tet4, c.fresh_mesh(), c.build_contact(height), c.cfg, bc)
+                    .with_friction_surface_drift(drift);
+            let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, basis[2]);
+            let mut w = [0.0_f64; 6];
+            for p in pv {
+                let f = p.force;
+                let tau = (positions[p.vid as usize] - com).cross(&f);
+                w[0] += tau.x;
+                w[1] += tau.y;
+                w[2] += tau.z;
+                w[3] += f.x;
+                w[4] += f.y;
+                w[5] += f.z;
+            }
+            w
+        };
+
+        // Analytic node at the base centre: per-axis `dforce_dpose` (the transpose the gradient builds).
+        c.sphere_center_override = Some(base);
+        let bc = BoundaryConditions::new(c.pinned.clone(), Vec::new());
+        let solver: SoftSolver<_> =
+            CpuNewtonSolver::new(Tet4, c.fresh_mesh(), c.build_contact(height), c.cfg, bc)
+                .with_friction_surface_drift(drift);
+        let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, basis[2]);
+        let per_axis: Vec<Vec<Vec3>> = basis
+            .iter()
+            .map(|&e| {
+                solver
+                    .friction_force_jacobians(&x_next, &x_start, dt, drift_dir, e)
+                    .into_iter()
+                    .map(|p| p.dforce_dheight)
+                    .collect()
+            })
+            .collect();
+        let pose_dforce: Vec<Vec<Vec3>> = (0..pv.len())
+            .map(|i| per_axis.iter().map(|a| a[i]).collect())
+            .collect();
+        let mut w_total = SpatialVector::zeros();
+        let (fverts, f_total) =
+            assemble_friction_wrench(pv, &positions, com, &mut w_total, Some(pose_dforce));
+        assert!(!fverts.is_empty(), "config must be friction-engaged");
+        let node = FrictionWrenchTrajVjp {
+            verts: fverts,
+            f_total,
+            jlin: c.com_linear_jacobian(),
+            n_dof: 3 * n,
+            nv,
+            n_pose: 3,
+            mu_c: false,
+        };
+        // Pose-parent cotangent rows: ∂(w·e_k)/∂(centre axis), one [3] per wrench component k.
+        let pose_rows: Vec<[f64; 3]> = (0..6)
+            .map(|k| {
+                let mut cot = Tensor::zeros(&[6]);
+                cot.as_mut_slice()[k] = 1.0;
+                let mut pc = vec![
+                    Tensor::zeros(&[6]),
+                    Tensor::zeros(&[3 * n]),
+                    Tensor::zeros(&[3]),
+                    Tensor::zeros(&[2 * nv]),
+                    Tensor::zeros(&[1]),
+                    Tensor::zeros(&[3 * n]),
+                ];
+                node.vjp(&cot, &mut pc);
+                let s = pc[2].as_slice();
+                [s[0], s[1], s[2]]
+            })
+            .collect();
+
+        let d = 1.0e-7;
+        let scale = 1.0e5; // friction-wrench-vs-centre derivatives ~1e5 (cf. the leaf reaction gate)
+        let mut worst = 0.0_f64;
+        for axis in 0..3 {
+            let mut dir = Vec3::zeros();
+            dir[axis] = 1.0;
+            let wp = wrench_of(&mut c, base + d * dir);
+            let wm = wrench_of(&mut c, base - d * dir);
+            for k in 0..6 {
+                let fd = (wp[k] - wm[k]) / (2.0 * d);
+                worst = worst.max((fd - pose_rows[k][axis]).abs() / scale);
+            }
+        }
+        assert!(
+            worst < 1e-5,
+            "friction wrench CENTRE pose Jacobian must be FD-exact vs the readout, worst {worst:.3e}"
         );
     }
 
