@@ -47,6 +47,18 @@
 //!   [`StaggeredCoupling::coupled_trajectory_joint_gradient`] backward. It owns the
 //!   mixed conditioning (positive `μ` log-reparametrized internally, signed `θ`
 //!   linear) so a single `loss_scale`-conditioned Adam loop drives both.
+//! - [`GripCoDesignTarget`] — the same both-axes loop, but on the **de-escalation
+//!   friction grip** (a soft buffer holding a *moving* limb): an actuated hinge arm
+//!   whose finite sphere tip sweeps tangentially into the soft block, gripped by
+//!   dry friction. It co-designs the buffer stiffness `μ` and a feedback holding
+//!   policy `θ` so the gripped limb's tangential drag `tip_x` reaches a **restraint
+//!   target**, reading both gradient blocks `(∂tip_x/∂μ_total, ∂tip_x/∂θ)` from one
+//!   [`StaggeredCoupling::coupled_trajectory_design_policy_friction_gradient`]
+//!   backward (the finite-contact gradient from PR #406/#430). This is the
+//!   de-escalation study's first co-design *result* on the keystone soft↔rigid grip
+//!   scene — restraining the limb to a target POSITION (`tip_x` — not a force or
+//!   recoverability metric: the soft buffer's recoverability is RQ1's separate
+//!   result, and a peak-force objective on the grip is a documented follow-on).
 //!
 //! *System-ID axis* — recover *rigid dynamics* parameters from an observed
 //! trajectory (what sim-to-real calibration needs), rather than tuning a design.
@@ -597,6 +609,53 @@ fn build_coupling_impact(
         d_hat,
         rigid_damping,
     )
+}
+
+/// Build the de-escalation **friction grip** coupling [`GripCoDesignTarget`] uses:
+/// an actuated hinge arm started at angle `qpos0`, its finite sphere tip (radius
+/// `sphere_r`, centroid-posed) pressed into the soft block and gripped by dry
+/// friction (coefficient `friction_mu`, regularization `friction_eps_v`). The
+/// articulated finite-contact path requires `rigid_damping = 0` (a free-platen-only
+/// knob), so it is fixed here rather than exposed.
+//
+// expect: a malformed fixture MJCF / coupling is a caller error surfaced loudly —
+// the canonical fixture idiom, mirroring `sim-coupling`'s tests.
+#[allow(clippy::expect_used, clippy::too_many_arguments)]
+fn build_coupling_grip(
+    mjcf: &str,
+    body: usize,
+    contact_clearance: f64,
+    n_per_edge: usize,
+    edge: f64,
+    mu: f64,
+    dt: f64,
+    kappa: f64,
+    d_hat: f64,
+    qpos0: f64,
+    sphere_r: f64,
+    friction_mu: f64,
+    friction_eps_v: f64,
+) -> StaggeredCoupling {
+    let model = sim_mjcf::load_model(mjcf).expect("grip coupling fixture: MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = qpos0; // initial hinge angle: the tip already engaged on the block
+    data.forward(&model)
+        .expect("grip coupling fixture: initial forward");
+    StaggeredCoupling::new(
+        model,
+        data,
+        body,
+        contact_clearance,
+        n_per_edge,
+        edge,
+        mu,
+        dt,
+        kappa,
+        d_hat,
+        0.0, // articulated finite-contact path requires rigid_damping = 0
+    )
+    .with_sphere_collider(sphere_r)
+    .with_friction(friction_mu, friction_eps_v)
 }
 
 /// A co-design problem over a soft block's Neo-Hookean stiffness: tune the
@@ -1678,6 +1737,249 @@ impl<P: DiffPolicy> CoDesignProblem for JointTarget<P> {
         grad.push(residual * dz_dmu * mu);
         // d loss / dθ_i = residual · ∂z/∂θ_i (linear).
         grad.extend(dz_dtheta.iter().map(|&g| residual * g));
+        (0.5 * residual * residual, grad)
+    }
+
+    // μ is reparametrized as ln μ (positive by construction, no bound needed) and
+    // the θ weights are signed (no bound) — so `lower_bounds = None`.
+}
+
+/// Joint design+policy co-design on the **de-escalation friction grip** — a soft
+/// buffer holding a *moving* limb.
+///
+/// Where [`JointTarget`] tunes `(μ, θ)` against a free platen's height `z_N`, this
+/// target runs the same both-axes loop on the keystone's articulated friction grip:
+/// an actuated hinge arm whose finite sphere tip sweeps tangentially into the soft
+/// block, gripped by dry friction (the de-escalation scene — soft holding a moving
+/// limb, not a static press). It co-designs the buffer stiffness `μ` (`λ = 4μ`) and
+/// a closed-loop feedback holding policy `θ` so the gripped limb's tangential drag
+/// `tip_x` after the rollout reaches a **restraint target** `tip_x*` — loss
+/// `½(tip_x − tip_x*)²` — restraining the limb where the agent wants it.
+///
+/// Both gradient blocks `(∂tip_x/∂μ_total, ∂tip_x/∂θ)` come from ONE
+/// [`StaggeredCoupling::coupled_trajectory_design_policy_friction_gradient`]
+/// backward — the curvature-correct finite-contact gradient (PR #406, gated on the
+/// centroid sphere by #430). The forward outcome is
+/// [`coupled_trajectory_policy_gripped_x`](StaggeredCoupling::coupled_trajectory_policy_gripped_x)`.x`.
+///
+/// Like [`JointTarget`], the optimizer works in `p = [ln μ, θ…]` — the positive `μ`
+/// is log-reparametrized internally (relative steps, `μ > 0` by construction), the
+/// signed `θ` stay linear — so a single [`Normalized`] `loss_scale`-conditioned
+/// Adam loop with one `lr` drives both axes. See `examples/grip_codesign.rs`.
+///
+/// **Scope.** The articulated finite-contact gradient requires Euclidean joints
+/// (`nq == nv`), exactly one actuator, active friction, `rigid_damping = 0`, and a
+/// flat (non-rotating) contact normal (all asserted by the gradient). The sphere is
+/// centroid-posed (the #430 regime, where the gradient is gated machine-exact —
+/// also the gentle large-sphere regime where the curvature contribution is below
+/// the trajectory tolerance, #422); the moving-end-effector tip pose is a
+/// documented follow-on, as is a peak-force/recoverability objective on the grip
+/// (which needs a new grip-force gradient — this target reads the `tip_x` task
+/// metric the existing #406 gradient differentiates).
+pub struct GripCoDesignTarget<P: DiffPolicy> {
+    mjcf: String,
+    body: usize,
+    contact_clearance: f64,
+    n_per_edge: usize,
+    edge: f64,
+    dt: f64,
+    kappa: f64,
+    d_hat: f64,
+    qpos0: f64,
+    sphere_r: f64,
+    friction_mu: f64,
+    friction_eps_v: f64,
+    n_steps: usize,
+    target_x: f64,
+    policy: P,
+}
+
+impl<P: DiffPolicy> GripCoDesignTarget<P> {
+    /// Construct with explicit coupling parameters and the feedback `policy`.
+    /// (`μ` is a design variable here, not a constructor argument — it enters
+    /// through the optimized parameter vector as `ln μ`.)
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        mjcf: String,
+        body: usize,
+        contact_clearance: f64,
+        n_per_edge: usize,
+        edge: f64,
+        dt: f64,
+        kappa: f64,
+        d_hat: f64,
+        qpos0: f64,
+        sphere_r: f64,
+        friction_mu: f64,
+        friction_eps_v: f64,
+        n_steps: usize,
+        target_x: f64,
+        policy: P,
+    ) -> Self {
+        Self {
+            mjcf,
+            body,
+            contact_clearance,
+            n_per_edge,
+            edge,
+            dt,
+            kappa,
+            d_hat,
+            qpos0,
+            sphere_r,
+            friction_mu,
+            friction_eps_v,
+            n_steps,
+            target_x,
+            policy,
+        }
+    }
+
+    /// Build the grip coupling at the physical stiffness `mu` (`λ = 4μ`).
+    fn build_at(&self, mu: f64) -> StaggeredCoupling {
+        build_coupling_grip(
+            &self.mjcf,
+            self.body,
+            self.contact_clearance,
+            self.n_per_edge,
+            self.edge,
+            mu,
+            self.dt,
+            self.kappa,
+            self.d_hat,
+            self.qpos0,
+            self.sphere_r,
+            self.friction_mu,
+            self.friction_eps_v,
+        )
+    }
+
+    /// The gripped limb's tangential drag `tip_x` after the closed-loop rollout at
+    /// physical stiffness `mu` under policy params `theta` — the forward outcome (no
+    /// gradient). Takes PHYSICAL `μ` (not `ln μ`); used to set up the target.
+    #[must_use]
+    pub fn forward_x(&self, mu: f64, theta: &[f64]) -> f64 {
+        self.build_at(mu)
+            .coupled_trajectory_policy_gripped_x(&self.policy, theta, self.n_steps)
+            .x
+    }
+
+    /// Assemble an optimizer start vector `p = [ln μ0, θ0…]` from a PHYSICAL
+    /// `(mu0, theta0)`. The optimizer works in this `p`-space (see the type docs).
+    ///
+    /// # Panics
+    /// Panics if `mu0 <= 0` (its logarithm is the optimized parameter) or
+    /// `theta0.len() != policy.n_params()`.
+    #[must_use]
+    pub fn x0(&self, mu0: f64, theta0: &[f64]) -> Vec<f64> {
+        assert!(
+            mu0 > 0.0,
+            "mu0 must be positive (the optimized param is ln μ), got {mu0}"
+        );
+        assert_eq!(
+            theta0.len(),
+            self.policy.n_params(),
+            "theta0 length {} != policy n_params {}",
+            theta0.len(),
+            self.policy.n_params(),
+        );
+        let mut p = Vec::with_capacity(1 + theta0.len());
+        p.push(mu0.ln());
+        p.extend_from_slice(theta0);
+        p
+    }
+
+    /// Read the PHYSICAL design `(μ, θ)` back out of an optimizer parameter vector
+    /// `p = [ln μ, θ…]` (`μ = exp(p[0])`).
+    ///
+    /// # Panics
+    /// Panics if `p` is empty.
+    #[must_use]
+    pub fn to_physical(&self, p: &[f64]) -> (f64, Vec<f64>) {
+        assert!(!p.is_empty(), "grip parameter vector must be non-empty");
+        (p[0].exp(), p[1..].to_vec())
+    }
+
+    /// The restraint target this problem optimizes toward (`tip_x*`).
+    #[must_use]
+    pub const fn target_x(&self) -> f64 {
+        self.target_x
+    }
+
+    /// A [`Normalized`] wrapper conditioning this target for the standard Adam
+    /// `eps`: a dimensionless residual (`loss_scale = 1/L²`) with `log_space =
+    /// false` — the `μ` log-reparametrization is already done *inside* this target
+    /// (the parameter vector is `[ln μ, θ…]`), exactly as for [`JointTarget`]. Drive
+    /// it with [`Normalized::optimize`] and an [`OptConfig`] on the standard `eps`
+    /// and a single `lr ~ 0.03`. See `examples/grip_codesign.rs`.
+    #[must_use]
+    pub fn recommended_normalized(&self, residual_scale: f64) -> Normalized<'_> {
+        Normalized::with_residual_scale(self, residual_scale, false)
+    }
+}
+
+impl GripCoDesignTarget<LinearFeedback> {
+    /// Convenience for the worked grip demo with the actuated-hinge fixture (the
+    /// `arm` body 1, clearance 5 mm, 4³ block edge 0.1 m, dt 1 ms, κ = 3e4,
+    /// d̂ = 1e-2, sphere r = 0.08, friction μ_c = 2.5 / ε_v = 0.1, hinge started at
+    /// 0.3 rad) and a [`LinearFeedback`] holding policy. The MJCF should be an
+    /// actuated hinge arm with a sphere tip under sideways gravity (the tip sweeps
+    /// tangentially into the block — the de-escalation grip), as in
+    /// `examples/grip_codesign.rs`.
+    #[must_use]
+    pub fn linear_for_inverse_design(mjcf: String, n_steps: usize, target_x: f64) -> Self {
+        Self::new(
+            mjcf,
+            1,
+            0.005,
+            4,
+            0.1,
+            1.0e-3,
+            3.0e4,
+            1.0e-2,
+            0.3,
+            0.08,
+            2.5,
+            0.1,
+            n_steps,
+            target_x,
+            LinearFeedback,
+        )
+    }
+}
+
+impl<P: DiffPolicy> CoDesignProblem for GripCoDesignTarget<P> {
+    fn n_params(&self) -> usize {
+        1 + self.policy.n_params()
+    }
+
+    /// `(loss, gradient)` at `p = [ln μ, θ…]`. The `μ` component of the gradient
+    /// carries the `dμ/d(ln μ) = μ` chain-rule factor; the `θ` components are
+    /// linear. One design+policy-friction backward yields both blocks.
+    ///
+    /// # Panics
+    /// Panics if `p.len() != 1 + policy.n_params()`.
+    fn evaluate(&self, p: &[f64]) -> (f64, Vec<f64>) {
+        assert_eq!(
+            p.len(),
+            1 + self.policy.n_params(),
+            "grip param length {} != 1 + policy n_params {}",
+            p.len(),
+            1 + self.policy.n_params(),
+        );
+        let mu = p[0].exp();
+        let theta = &p[1..];
+        // ONE backward over the coupled grip rollout → both gradient blocks.
+        let (tip_x, dx_dmu, dx_dtheta) = self
+            .build_at(mu)
+            .coupled_trajectory_design_policy_friction_gradient(&self.policy, theta, self.n_steps);
+        let residual = tip_x - self.target_x;
+        let mut grad = Vec::with_capacity(p.len());
+        // d loss / d(ln μ) = residual · ∂tip_x/∂μ_total · μ (the log-μ chain rule).
+        grad.push(residual * dx_dmu * mu);
+        // d loss / dθ_i = residual · ∂tip_x/∂θ_i (linear).
+        grad.extend(dx_dtheta.iter().map(|&g| residual * g));
         (0.5 * residual * residual, grad)
     }
 
