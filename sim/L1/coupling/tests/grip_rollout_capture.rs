@@ -94,7 +94,9 @@ fn capture_frames_are_well_formed_and_deform() {
         assert!(
             f.soft_positions.iter().all(|p| p.is_finite())
                 && f.arm_pivot.iter().all(|p| p.is_finite())
-                && f.fist_center.iter().all(|p| p.is_finite()),
+                && f.arm_tip.iter().all(|p| p.is_finite())
+                && f.fist_center.iter().all(|p| p.is_finite())
+                && f.qpos0.is_finite(),
             "frame {i}: non-finite capture data"
         );
     }
@@ -114,5 +116,17 @@ fn capture_frames_are_well_formed_and_deform() {
     assert!(
         max_disp > 1e-5,
         "the grip should deform the soft body (max vertex displacement {max_disp:e})"
+    );
+    // The limb genuinely SWINGS: arm_tip (xipos) moves over the rollout while arm_pivot
+    // (the fixed hinge) does not — the renderable swing the viewer draws as pivot → tip.
+    let tip_swing = (frames[N_STEPS].arm_tip[0] - frames[0].arm_tip[0]).abs();
+    let pivot_drift = (frames[N_STEPS].arm_pivot[0] - frames[0].arm_pivot[0]).abs();
+    assert!(
+        tip_swing > 1e-4,
+        "the limb tip should swing over the grip (Δtip_x {tip_swing:e})"
+    );
+    assert!(
+        pivot_drift < 1e-9,
+        "the hinge pivot should stay fixed (Δpivot_x {pivot_drift:e})"
     );
 }
