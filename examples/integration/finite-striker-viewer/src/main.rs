@@ -29,13 +29,12 @@
     clippy::doc_markdown
 )]
 
-use nalgebra::Point3;
 use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::ECOFLEX_00_30_MEASURED;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, Sdf, Solver, SolverConfig, SphereSdf, Tet4,
-    Vec3, VertexId,
+    PenaltyRigidContact, PenaltyRigidContactSolver, Solver, SolverConfig, SphereSdf, Tet4,
+    TranslatedSdf, Vec3, VertexId,
 };
 
 // ── Soft buffer (same measured-Ecoflex block as Rung 1) ──
@@ -55,22 +54,6 @@ const N_STEPS: usize = 120; // press-in then press-out (cosine ease → seamless
 // ── Replay / render ──
 const RENDER_SCALE: f32 = 10.0; // 0.10 m block → 1.0 Bevy unit
 const REPLAY_DT: f64 = 0.035; // wall-clock s per frame (≈4 s for 120 steps)
-
-/// A finite [`Sdf`] posed at a world `center` — `SphereSdf` is origin-centered, so to drive it we
-/// translate the query point. (A sphere needs no rotation; translation alone poses it.)
-struct TranslatedSdf<S> {
-    inner: S,
-    center: Vec3,
-}
-
-impl<S: Sdf> Sdf for TranslatedSdf<S> {
-    fn eval(&self, p: Point3<f64>) -> f64 {
-        self.inner.eval(p - self.center)
-    }
-    fn grad(&self, p: Point3<f64>) -> Vec3 {
-        self.inner.grad(p - self.center)
-    }
-}
 
 /// Striker centre at step `k`: laterally over the block, pressed down by a cosine-eased depth that
 /// goes 0 → `MAX_INDENT` → 0 over the rollout (so the indent forms and releases, and the loop is
@@ -126,7 +109,7 @@ fn run_capture() -> Capture {
         // is not Clone; the StaggeredCoupling / insertion-ramp pattern rebuilds the contact per step).
         let striker = TranslatedSdf {
             inner: SphereSdf { radius: STRIKER_R },
-            center,
+            offset: center,
         };
         let contact = PenaltyRigidContact::with_params(vec![striker], KAPPA, D_HAT);
         let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
@@ -153,7 +136,7 @@ fn run_capture() -> Capture {
         let readout_contact = PenaltyRigidContact::with_params(
             vec![TranslatedSdf {
                 inner: SphereSdf { radius: STRIKER_R },
-                center,
+                offset: center,
             }],
             KAPPA,
             D_HAT,

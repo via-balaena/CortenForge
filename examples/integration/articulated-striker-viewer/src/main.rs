@@ -31,13 +31,12 @@
     clippy::doc_markdown
 )]
 
-use nalgebra::Point3;
 use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::ECOFLEX_00_30_MEASURED;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, Sdf, Solver, SolverConfig, SphereSdf, Tet4,
-    Vec3, VertexId,
+    PenaltyRigidContact, PenaltyRigidContactSolver, Solver, SolverConfig, SphereSdf, Tet4,
+    TranslatedSdf, Vec3, VertexId,
 };
 
 // ── Soft buffer (measured-Ecoflex block) ──
@@ -75,21 +74,6 @@ const N_STEPS: usize = 120; // cock → hammer down → recock (cosine ease → 
 // ── Replay / render ──
 const RENDER_SCALE: f32 = 10.0; // 0.10 m block → 1.0 Bevy unit
 const REPLAY_DT: f64 = 0.035;
-
-/// A finite [`Sdf`] posed at a world `center` — `SphereSdf` is origin-centered, so to drive it we
-/// translate the query point. (A sphere needs no rotation; translation alone poses it.)
-struct TranslatedSdf<S> {
-    inner: S,
-    center: Vec3,
-}
-impl<S: Sdf> Sdf for TranslatedSdf<S> {
-    fn eval(&self, p: Point3<f64>) -> f64 {
-        self.inner.eval(p - self.center)
-    }
-    fn grad(&self, p: Point3<f64>) -> Vec3 {
-        self.inner.grad(p - self.center)
-    }
-}
 
 /// Closed-form 2-link planar IK in the x–z plane: joint angles `(θ1, θ2)` (from +x, elbow-down)
 /// that place the fist at `(tx, tz)`. `θ1` is the upper-arm angle, `θ2` the elbow angle.
@@ -168,7 +152,7 @@ fn run_capture() -> Capture {
         let contact = PenaltyRigidContact::with_params(
             vec![TranslatedSdf {
                 inner: SphereSdf { radius: FIST_R },
-                center: fist,
+                offset: fist,
             }],
             KAPPA,
             D_HAT,
@@ -195,7 +179,7 @@ fn run_capture() -> Capture {
         let readout = PenaltyRigidContact::with_params(
             vec![TranslatedSdf {
                 inner: SphereSdf { radius: FIST_R },
-                center: fist,
+                offset: fist,
             }],
             KAPPA,
             D_HAT,
