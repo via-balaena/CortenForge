@@ -137,7 +137,8 @@ enum Collider {
     /// curved end-effector indenting the block, exercising #415's curvature term
     /// (`∇²sd ≠ 0`) through the coupling adjoint. The scalar `height` still drives
     /// the vertical carry (the sphere centre rides `+ẑ` with `height`); the lateral
-    /// centre sits over the block so the contact patch is central + stable.
+    /// centre is [`StaggeredCoupling::sphere_center_xy`] (default over the block for a
+    /// central + stable patch, re-pointable to a moving end-effector).
     Sphere { radius: f64 },
 }
 
@@ -1448,6 +1449,14 @@ pub struct StaggeredCoupling<C: PlaneContact = PenaltyRigidContact> {
     /// keystone half-space; [`Collider::Sphere`] is the finite-contact gate). Set
     /// via [`Self::with_sphere_collider`].
     collider: Collider,
+    /// The finite sphere collider's **lateral** (`xy`) contact centre — where the
+    /// posed [`Collider::Sphere`] sits over the block (the `z` carry stays the scalar
+    /// `height`). Defaults to the block's top-face centroid `[edge/2, edge/2]` (a
+    /// stable central patch — byte-identical to the pre-end-effector posing); the
+    /// caller re-points it to a moving end-effector (the arm tip) via
+    /// [`Self::set_sphere_center_xy`] so the fist tracks the striker. Ignored for the
+    /// infinite [`Collider::Plane`] (lateral position is irrelevant to a half-space).
+    sphere_center_xy: [f64; 2],
     _contact: PhantomData<C>,
 }
 
@@ -1516,6 +1525,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             rigid_damping,
             rotating_normal: false,
             collider: Collider::Plane,
+            sphere_center_xy: [edge / 2.0, edge / 2.0],
             _contact: PhantomData,
         }
     }
@@ -1544,8 +1554,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `height`, so the existing `RigidTwist::translation(ẑ)` pose-sensitivity probe
     /// and `∂sd/∂h = −n̂·ẑ` formula remain exactly correct — `n̂` is now the sphere's
     /// per-vertex varying normal rather than the plane's constant `−ẑ`); the lateral
-    /// centre sits over the block's top-face centroid so the contact patch is
-    /// central and the active set stays stable across an FD perturbation.
+    /// centre defaults to the block's top-face centroid so the contact patch is
+    /// central and the active set stays stable across an FD perturbation, and is
+    /// re-pointable to a moving end-effector via [`Self::set_sphere_center_xy`].
     ///
     /// Opt-in (default the infinite [`RigidPlane`], byte-identical to the
     /// pre-finite-collider keystone scenes #402–#406). Curved contact engages more
@@ -1634,15 +1645,37 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     }
 
     /// The finite sphere collider's world centre for a given `radius` and scalar
-    /// `height`: over the block's top-face centroid `(edge/2, edge/2)`, with centre
-    /// z `= height + radius` so the south pole sits at `height` (the same engagement
-    /// depth the plane's surface would). The `height`-carry is thus a pure `+ẑ`
-    /// translation of the primitive — exactly the `RigidTwist::translation(ẑ)` the
-    /// pose-sensitivity probes — lifting #415's L0 curved gate into the coupling.
-    /// The single source of the centre formula (shared by [`Self::build_contact`]
-    /// and [`Self::collider_hessian`]).
+    /// `height`: the configurable lateral centre [`Self::sphere_center_xy`] (default
+    /// the block's top-face centroid `[edge/2, edge/2]`; re-pointed to a moving
+    /// end-effector via [`Self::set_sphere_center_xy`]), with centre z `= height +
+    /// radius` so the south pole sits at `height` (the same engagement depth the
+    /// plane's surface would). The `height`-carry is thus a pure `+ẑ` translation of
+    /// the primitive — exactly the `RigidTwist::translation(ẑ)` the pose-sensitivity
+    /// probes — lifting #415's L0 curved gate into the coupling (the lateral centre is
+    /// `height`-independent, so the `∂/∂height` probe is unchanged). The single source
+    /// of the centre formula (shared by [`Self::build_contact`] and
+    /// [`Self::collider_hessian`]).
     fn sphere_center(&self, radius: f64, height: f64) -> Vec3 {
-        Vec3::new(self.edge / 2.0, self.edge / 2.0, height + radius)
+        Vec3::new(
+            self.sphere_center_xy[0],
+            self.sphere_center_xy[1],
+            height + radius,
+        )
+    }
+
+    /// Re-point the finite sphere collider's **lateral** (`xy`) contact centre — used
+    /// to pose the fist at a moving end-effector (the arm tip) so it tracks the
+    /// striker rather than sitting over the block centroid. Call before
+    /// [`Self::step`] each frame with the end-effector's world `xy`; the vertical
+    /// engagement stays the scalar `height` carry (`z = height + radius`), unchanged.
+    ///
+    /// A no-op on the contact physics for the infinite plane collider (a half-space
+    /// ignores lateral position); only the finite sphere collider
+    /// ([`Self::with_sphere_collider`]) reads it. The default (block-face centroid
+    /// `[edge/2, edge/2]`) reproduces the byte-identical centred patch the
+    /// finite-contact gates use.
+    pub fn set_sphere_center_xy(&mut self, x: f64, y: f64) {
+        self.sphere_center_xy = [x, y];
     }
 
     /// The contact primitive's curvature `H = ∂n̂/∂p = ∇²sd` at world point `p` for
@@ -1683,8 +1716,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///   (the `g_act` channel) not yet sphere-gated (the exo follow-on, NOT finite-contact).
     ///
     /// Caveat (forward fidelity, not gradient correctness): [`Self::build_contact`] poses the
-    /// sphere laterally over the block centre, not the arm tip — orthogonal to the FD-validated
-    /// gradient (forward and adjoint share the posing), a separate lateral-at-tip follow-on.
+    /// sphere at the lateral centre [`Self::set_sphere_center_xy`] (default the block centre);
+    /// re-pointing it to a moving end-effector tracks the arm tip in the forward rollout, but the
+    /// trajectory adjoints hold that centre FIXED (forward and adjoint share the per-step posing, so
+    /// the FD-validated gates are unaffected — a moving-lateral-centre gradient carry is the
+    /// follow-on, the lateral analog of the `height` carry).
     fn require_plane_collider(&self) {
         assert!(
             matches!(self.collider, Collider::Plane),
@@ -7640,6 +7676,50 @@ mod tests {
             "ContactWrenchTrajVjp Jacobian must be FD-exact vs the real readout, \
              worst scaled error {worst:.3e}"
         );
+    }
+
+    /// `set_sphere_center_xy` re-points the finite collider's LATERAL centre (the forward
+    /// end-effector posing — step 1 of tracking the arm tip), while the `z` engagement stays the
+    /// scalar `height` carry; the default reproduces the block-face centroid byte-identically.
+    #[test]
+    fn set_sphere_center_xy_repoints_lateral_centre() {
+        const MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.125">
+      <joint type="slide" axis="0 0 1"/>
+      <geom type="box" size="0.05 0.05 0.02" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        const SPHERE_R: f64 = 0.08;
+        const EDGE: f64 = 0.1;
+        let model = load_model(MJCF).expect("MJCF loads");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let mut c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, EDGE, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_sphere_collider(SPHERE_R);
+
+        let height = 0.09_f64;
+        // Default lateral centre = block top-face centroid; `z = height + radius`.
+        assert_eq!(
+            c.sphere_center(SPHERE_R, height),
+            Vec3::new(EDGE / 2.0, EDGE / 2.0, height + SPHERE_R),
+        );
+
+        // Re-point the lateral centre to a (moving) end-effector; the `z` carry is unchanged.
+        c.set_sphere_center_xy(0.02, 0.03);
+        assert_eq!(
+            c.sphere_center(SPHERE_R, height),
+            Vec3::new(0.02, 0.03, height + SPHERE_R),
+        );
+
+        // The posed sphere (and its curvature readout) follow the new centre: the Hessian a south
+        // pole below the new centre is the sphere's finite `(I − n̂n̂ᵀ)/r`, not the zero plane.
+        let h = c.collider_hessian(height, Vec3::new(0.02, 0.03, height));
+        assert!(h.iter().all(|v| v.is_finite()) && h.norm() > 0.0);
     }
 
     /// L1b articulated NORMAL wrench curvature: the contact-wrench node on a FINITE sphere
