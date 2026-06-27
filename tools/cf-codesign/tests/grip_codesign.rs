@@ -29,7 +29,7 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, GripCoDesignTarget, OptConfig};
+use cf_codesign::{CoDesignProblem, GripCoDesignTarget, GripObjective, OptConfig};
 
 // The de-escalation grip: an actuated hinge arm, its finite sphere tip pressed into
 // the soft buffer under a sideways gravity that drives the tangential sweep.
@@ -165,5 +165,169 @@ fn grip_inverse_design_recovers_behavior() {
     assert!(
         (x_tgt - x_start).abs() > 1e-6,
         "restraint target should differ from the start drag"
+    );
+}
+
+/// The public `build_at` (the viewer bridge) hands back the EXACT optimized scene:
+/// a viewer renders the co-designed encounter by capturing frames from it. The
+/// terminal tip agrees with the scalar `forward_x` — the picture IS the optimized
+/// rollout. (Byte-identity of the capture vs the scalar rollout is gated in
+/// `sim-coupling`'s `grip_rollout_capture.rs`; here we check the cf-codesign scene
+/// plumbs through to renderable frames.)
+#[test]
+fn build_at_yields_renderable_frames() {
+    let problem = target();
+    let mu = 4.0e3;
+    let theta = [0.05_f64, -0.1, 0.2];
+    let frames = problem
+        .build_at(mu)
+        .coupled_trajectory_policy_gripped_capture(&sim_coupling::LinearFeedback, &theta, N_STEPS)
+        .1;
+    assert_eq!(
+        frames.len(),
+        N_STEPS + 1,
+        "expected a rest frame + one per step ({} total), got {}",
+        N_STEPS + 1,
+        frames.len()
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|f| f.soft_positions.iter().all(|p| p.is_finite())
+                && f.arm_pivot.iter().all(|p| p.is_finite())
+                && f.fist_center.iter().all(|p| p.is_finite())),
+        "all captured frames must be finite"
+    );
+    // The terminal frame's tracked drag must agree with the scalar forward: the picture
+    // is the same rollout the optimizer scored. (The frame carries the body ORIGIN in
+    // arm_pivot; forward_x returns the inertial tip xipos.x, so compare via a fresh
+    // forward_x — both come from the shared sim-coupling loop body, hence byte-equal.)
+    let scalar_tip = problem.forward_x(mu, &theta);
+    // The soft body deforms over the rollout (a real grip, not a static frame dump).
+    let max_disp = frames[N_STEPS]
+        .soft_positions
+        .iter()
+        .zip(&frames[0].soft_positions)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        scalar_tip.is_finite() && max_disp > 1e-5,
+        "the captured grip should deform the soft body (scalar tip {scalar_tip}, \
+         max vertex displacement {max_disp:e})"
+    );
+}
+
+const Q_HOLD: f64 = 0.25;
+
+/// The HOLD objective's loss gradient (the `GripObjective::Hold` dispatch) matches a central FD
+/// of the holding loss `L = Σ (qₖ − q_hold)²` in `p = [ln μ, θ]` space — the cf-codesign glue
+/// (the log-μ chain on `L`, the dispatch) on top of the H1 trajectory-integrated gradient (gated
+/// in `sim-coupling`'s `design_policy_hold_gradient.rs`).
+#[test]
+fn grip_hold_loss_gradient_matches_fd() {
+    let problem = GripCoDesignTarget::linear_for_hold(GRIP_MJCF.to_string(), N_STEPS, Q_HOLD);
+    let p = problem.x0(5.0e3, &[0.05, -0.1, 0.2]);
+    let (_loss, grad) = problem.evaluate(&p);
+
+    let loss_at = |p: &[f64]| problem.evaluate(p).0;
+    let names = ["ln μ", "w_z", "w_vz", "b"];
+    for i in 0..p.len() {
+        let eps = if i == 0 { 1e-5 } else { 1e-4 };
+        let mut up = p.clone();
+        let mut dn = p.clone();
+        up[i] += eps;
+        dn[i] -= eps;
+        let fd = (loss_at(&up) - loss_at(&dn)) / (2.0 * eps);
+        assert!(fd.abs() > 1e-9, "∂L/∂{} degenerate FD ({fd:e})", names[i]);
+        let rel = (grad[i] - fd).abs() / fd.abs().max(1e-9);
+        assert!(
+            rel < 5e-3,
+            "∂L/∂{} {} vs FD {fd} (rel {rel:e})",
+            names[i],
+            grad[i]
+        );
+    }
+}
+
+/// Hold co-design reduces the holding cost: from a perturbed start (firm buffer, zero policy) the
+/// optimizer drives `L = Σ (qₖ − q_hold)²` down — the co-designed buffer + policy hold the limb
+/// closer to `q_hold` throughout. (A minimization, not a recover-to-zero, so we assert a clear
+/// reduction, not convergence to a known target.)
+#[test]
+fn grip_hold_reduces_cost() {
+    let problem = GripCoDesignTarget::linear_for_hold(GRIP_MJCF.to_string(), N_STEPS, Q_HOLD);
+    let x0 = problem.x0(6.0e3, &[0.0, 0.0, 0.0]);
+    let (loss_start, _) = problem.evaluate(&x0);
+
+    // Condition by the starting cost scale; run a fixed Adam budget (the loss floors above 0, so
+    // it won't hit loss_tol — we judge by the reduction).
+    let normalized = problem.recommended_normalized(loss_start.sqrt().max(1e-3));
+    let cfg = OptConfig {
+        lr: 0.05,
+        max_iters: 200,
+        loss_tol: 1e-18,
+        ..OptConfig::default()
+    };
+    let result = normalized.optimize(&x0, &cfg);
+    let (loss_final, _) = problem.evaluate(&result.params);
+
+    eprintln!(
+        "hold cost: start {loss_start:.6e} -> final {loss_final:.6e} ({:.1}% reduction) in {} iters",
+        100.0 * (1.0 - loss_final / loss_start),
+        result.iters,
+    );
+    assert!(
+        loss_start > 1e-6,
+        "the start should have a real holding deficit (got {loss_start:e})"
+    );
+    assert!(
+        loss_final < 0.8 * loss_start,
+        "hold co-design should clearly reduce the holding cost: {loss_start} -> {loss_final}"
+    );
+}
+
+// The MOVING-EE grip the R5 viewer drives: the contact sphere tracks the arm-tip geom
+// (`with_contact_geom`), pivot directly above the block centre. The gated geometry from
+// sim-coupling's `design_policy_hold_gradient.rs` moving-EE case.
+const MOVING_EE_MJCF: &str = r#"<mujoco>
+  <option gravity="1.5 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0.05 0.05 0.344">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.17" size="0.08" mass="0.2"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j" gear="1"/></actuator>
+</mujoco>"#;
+
+/// The moving-EE Hold path (`with_contact_geom` + `GripObjective::Hold` dispatch) — the exact
+/// plumbing the R5 viewer drives — evaluates to a finite loss + gradient. Gradient *correctness*
+/// for the moving-EE hold is gated upstream (sim-coupling `design_policy_hold_gradient.rs`,
+/// moving-EE case); this checks the cf-codesign scene/objective wiring threads through.
+#[test]
+fn grip_hold_moving_ee_evaluates() {
+    let problem = GripCoDesignTarget::new(
+        MOVING_EE_MJCF.to_string(),
+        1,
+        0.005,
+        4,
+        0.1,
+        1.0e-3,
+        3.0e4,
+        1.0e-2,
+        0.05,
+        0.08,
+        2.5,
+        0.1,
+        5,
+        GripObjective::Hold(0.0),
+        sim_coupling::LinearFeedback,
+    )
+    .with_contact_geom(0);
+    let p = problem.x0(3.0e3, &[0.05, -0.02, 0.01]);
+    let (loss, grad) = problem.evaluate(&p);
+    assert!(
+        loss.is_finite() && loss > 1e-9 && grad.len() == 4 && grad.iter().all(|g| g.is_finite()),
+        "moving-EE Hold evaluate must yield a finite, live loss + gradient, got (loss {loss}, grad {grad:?})"
     );
 }

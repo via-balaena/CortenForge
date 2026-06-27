@@ -59,6 +59,9 @@
 //!   scene — restraining the limb to a target POSITION (`tip_x` — not a force or
 //!   recoverability metric: the soft buffer's recoverability is RQ1's separate
 //!   result, and a peak-force objective on the grip is a documented follow-on).
+//!   Via [`GripObjective`] the same target also optimizes a **sustained hold**
+//!   (`L = Σ (qₖ − q_hold)²`, the trajectory-integrated H1 gradient) — keeping the
+//!   limb pressed at a setpoint throughout, not just touched at the end.
 //!
 //! *System-ID axis* — recover *rigid dynamics* parameters from an observed
 //! trajectory (what sim-to-real calibration needs), rather than tuning a design.
@@ -635,13 +638,14 @@ fn build_coupling_grip(
     sphere_r: f64,
     friction_mu: f64,
     friction_eps_v: f64,
+    contact_geom: Option<usize>,
 ) -> StaggeredCoupling {
     let model = sim_mjcf::load_model(mjcf).expect("grip coupling fixture: MJCF loads");
     let mut data = model.make_data();
     data.qpos[0] = qpos0; // initial hinge angle: the tip already engaged on the block
     data.forward(&model)
         .expect("grip coupling fixture: initial forward");
-    StaggeredCoupling::new(
+    let coupling = StaggeredCoupling::new(
         model,
         data,
         body,
@@ -655,7 +659,12 @@ fn build_coupling_grip(
         0.0, // articulated finite-contact path requires rigid_damping = 0
     )
     .with_sphere_collider(sphere_r)
-    .with_friction(friction_mu, friction_eps_v)
+    .with_friction(friction_mu, friction_eps_v);
+    // Moving end-effector: pose the contact sphere at the arm-tip geom each step.
+    match contact_geom {
+        Some(g) => coupling.with_contact_geom(g),
+        None => coupling,
+    }
 }
 
 /// A co-design problem over a soft block's Neo-Hookean stiffness: tune the
@@ -1774,8 +1783,12 @@ impl<P: DiffPolicy> CoDesignProblem for JointTarget<P> {
 /// also the gentle large-sphere regime where the curvature contribution is below
 /// the trajectory tolerance, #422); the moving-end-effector tip pose is a
 /// documented follow-on, as is a peak-force/recoverability objective on the grip
-/// (which needs a new grip-force gradient — this target reads the `tip_x` task
-/// metric the existing #406 gradient differentiates).
+/// (which needs a new grip-force gradient — this target reads a task metric the
+/// existing #406-family gradients differentiate).
+///
+/// Two objectives share this one scene + co-design machinery (see [`GripObjective`]):
+/// the original tangential-drag restraint (`tip_x → target`, terminal) and the
+/// trajectory-integrated **hold** (`Σ (qₖ − q_hold)²`, the sustained grip).
 pub struct GripCoDesignTarget<P: DiffPolicy> {
     mjcf: String,
     body: usize,
@@ -1789,9 +1802,22 @@ pub struct GripCoDesignTarget<P: DiffPolicy> {
     sphere_r: f64,
     friction_mu: f64,
     friction_eps_v: f64,
+    contact_geom: Option<usize>,
     n_steps: usize,
-    target_x: f64,
+    objective: GripObjective,
     policy: P,
+}
+
+/// What a [`GripCoDesignTarget`] optimizes — the two grip objectives, sharing the same
+/// scene construction and the same `(μ, θ)` co-design tape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GripObjective {
+    /// Drive the gripped limb's terminal tangential drag `tip_x` to a target (the #406
+    /// terminal gradient). Loss `½(tip_x − target)²`. A transient restraint.
+    RestrainTipX(f64),
+    /// Hold the limb's hinge angle at a setpoint over the WHOLE rollout: minimize
+    /// `L = Σₖ (qₖ − q_hold)²` (the H1 trajectory-integrated gradient). A sustained grip.
+    Hold(f64),
 }
 
 impl<P: DiffPolicy> GripCoDesignTarget<P> {
@@ -1814,7 +1840,7 @@ impl<P: DiffPolicy> GripCoDesignTarget<P> {
         friction_mu: f64,
         friction_eps_v: f64,
         n_steps: usize,
-        target_x: f64,
+        objective: GripObjective,
         policy: P,
     ) -> Self {
         Self {
@@ -1830,14 +1856,36 @@ impl<P: DiffPolicy> GripCoDesignTarget<P> {
             sphere_r,
             friction_mu,
             friction_eps_v,
+            contact_geom: None,
             n_steps,
-            target_x,
+            objective,
             policy,
         }
     }
 
-    /// Build the grip coupling at the physical stiffness `mu` (`λ = 4μ`).
-    fn build_at(&self, mu: f64) -> StaggeredCoupling {
+    /// Switch to a **moving-end-effector** grip: pose the contact sphere at the
+    /// rigid geom `geom_id` (the arm's fist) each step, so the contact tracks the
+    /// swinging tip instead of sitting over the block centroid. Pair with a
+    /// `sphere_r` matching that geom's own size. The design+policy-friction gradient
+    /// is gated machine-exact on this tip-posed sphere
+    /// (`sim-coupling`'s `design_policy_friction_moving_ee_gradient_matches_fd`).
+    #[must_use]
+    pub fn with_contact_geom(mut self, geom_id: usize) -> Self {
+        self.contact_geom = Some(geom_id);
+        self
+    }
+
+    /// Build the grip coupling at the physical stiffness `mu` (`λ = 4μ`) — the exact
+    /// scene the optimizer scores. Public so a viewer can render the *co-designed*
+    /// encounter: build at the converged `μ`, then drive the returned coupling with
+    /// the keystone's own API
+    /// ([`coupled_trajectory_policy_gripped_capture`](StaggeredCoupling::coupled_trajectory_policy_gripped_capture)
+    /// for the per-step frames,
+    /// [`soft_boundary_faces`](StaggeredCoupling::soft_boundary_faces) for the rest
+    /// topology) so the picture is byte-identical to the rollout the gradient
+    /// differentiates (the R5 grip-codesign viewer).
+    #[must_use]
+    pub fn build_at(&self, mu: f64) -> StaggeredCoupling {
         build_coupling_grip(
             &self.mjcf,
             self.body,
@@ -1852,6 +1900,7 @@ impl<P: DiffPolicy> GripCoDesignTarget<P> {
             self.sphere_r,
             self.friction_mu,
             self.friction_eps_v,
+            self.contact_geom,
         )
     }
 
@@ -1901,10 +1950,28 @@ impl<P: DiffPolicy> GripCoDesignTarget<P> {
         (p[0].exp(), p[1..].to_vec())
     }
 
-    /// The restraint target this problem optimizes toward (`tip_x*`).
+    /// The objective this target optimizes (tangential-drag restraint vs sustained hold).
+    #[must_use]
+    pub const fn objective(&self) -> GripObjective {
+        self.objective
+    }
+
+    /// The restraint target `tip_x*`, for a [`GripObjective::RestrainTipX`] target.
+    ///
+    /// # Panics
+    /// Panics if the objective is [`GripObjective::Hold`] (it has no restraint target) —
+    /// a programmer error (use [`Self::objective`] to branch); surfaced loudly.
+    // panic: a documented programmer-error accessor misuse (Hold target has no tip_x target),
+    // mirroring the crate's loud-failure idiom for misuse.
+    #[allow(clippy::panic)]
     #[must_use]
     pub const fn target_x(&self) -> f64 {
-        self.target_x
+        match self.objective {
+            GripObjective::RestrainTipX(x) => x,
+            GripObjective::Hold(_) => {
+                panic!("target_x() called on a Hold-objective GripCoDesignTarget")
+            }
+        }
     }
 
     /// A [`Normalized`] wrapper conditioning this target for the standard Adam
@@ -1943,7 +2010,32 @@ impl GripCoDesignTarget<LinearFeedback> {
             2.5,
             0.1,
             n_steps,
-            target_x,
+            GripObjective::RestrainTipX(target_x),
+            LinearFeedback,
+        )
+    }
+
+    /// Convenience for the worked grip demo with the [`GripObjective::Hold`] objective —
+    /// same actuated-hinge fixture as [`Self::linear_for_inverse_design`], but optimizing a
+    /// sustained hold of the hinge angle at `q_hold` (`L = Σ (qₖ − q_hold)²`) instead of a
+    /// terminal tangential-drag restraint.
+    #[must_use]
+    pub fn linear_for_hold(mjcf: String, n_steps: usize, q_hold: f64) -> Self {
+        Self::new(
+            mjcf,
+            1,
+            0.005,
+            4,
+            0.1,
+            1.0e-3,
+            3.0e4,
+            1.0e-2,
+            0.3,
+            0.08,
+            2.5,
+            0.1,
+            n_steps,
+            GripObjective::Hold(q_hold),
             LinearFeedback,
         )
     }
@@ -1954,9 +2046,15 @@ impl<P: DiffPolicy> CoDesignProblem for GripCoDesignTarget<P> {
         1 + self.policy.n_params()
     }
 
-    /// `(loss, gradient)` at `p = [ln μ, θ…]`. The `μ` component of the gradient
-    /// carries the `dμ/d(ln μ) = μ` chain-rule factor; the `θ` components are
-    /// linear. One design+policy-friction backward yields both blocks.
+    /// `(loss, gradient)` at `p = [ln μ, θ…]`, dispatched on the [`GripObjective`]. In both
+    /// cases the `μ` component carries the `dμ/d(ln μ) = μ` log-chain factor and the `θ`
+    /// components are linear; one design+policy backward over the shared grip tape yields
+    /// both blocks.
+    ///
+    /// - [`GripObjective::RestrainTipX`]`(target)`: loss `½(tip_x − target)²`, gradient
+    ///   `residual · ∂tip_x/∂·` (the #406 terminal gradient).
+    /// - [`GripObjective::Hold`]`(q_hold)`: loss `L = Σ (qₖ − q_hold)²` *directly* (the H1
+    ///   trajectory-integrated gradient already returns `∂L/∂·`, so there is no residual factor).
     ///
     /// # Panics
     /// Panics if `p.len() != 1 + policy.n_params()`.
@@ -1970,17 +2068,37 @@ impl<P: DiffPolicy> CoDesignProblem for GripCoDesignTarget<P> {
         );
         let mu = p[0].exp();
         let theta = &p[1..];
-        // ONE backward over the coupled grip rollout → both gradient blocks.
-        let (tip_x, dx_dmu, dx_dtheta) = self
-            .build_at(mu)
-            .coupled_trajectory_design_policy_friction_gradient(&self.policy, theta, self.n_steps);
-        let residual = tip_x - self.target_x;
         let mut grad = Vec::with_capacity(p.len());
-        // d loss / d(ln μ) = residual · ∂tip_x/∂μ_total · μ (the log-μ chain rule).
-        grad.push(residual * dx_dmu * mu);
-        // d loss / dθ_i = residual · ∂tip_x/∂θ_i (linear).
-        grad.extend(dx_dtheta.iter().map(|&g| residual * g));
-        (0.5 * residual * residual, grad)
+        match self.objective {
+            GripObjective::RestrainTipX(target_x) => {
+                // ONE backward over the coupled grip rollout → both terminal-tip_x gradient blocks.
+                let (tip_x, dx_dmu, dx_dtheta) = self
+                    .build_at(mu)
+                    .coupled_trajectory_design_policy_friction_gradient(
+                        &self.policy,
+                        theta,
+                        self.n_steps,
+                    );
+                let residual = tip_x - target_x;
+                grad.push(residual * dx_dmu * mu); // d loss / d(ln μ), log-μ chain
+                grad.extend(dx_dtheta.iter().map(|&g| residual * g)); // d loss / dθ_i
+                (0.5 * residual * residual, grad)
+            }
+            GripObjective::Hold(q_hold) => {
+                // The holding gradient returns (L, ∂L/∂μ_total, ∂L/∂θ) directly — L is the loss.
+                let (cost, dl_dmu, dl_dtheta) = self
+                    .build_at(mu)
+                    .coupled_trajectory_design_policy_hold_gradient(
+                        &self.policy,
+                        theta,
+                        self.n_steps,
+                        q_hold,
+                    );
+                grad.push(dl_dmu * mu); // d L / d(ln μ), log-μ chain
+                grad.extend(dl_dtheta); // d L / dθ_i (linear)
+                (cost, grad)
+            }
+        }
     }
 
     // μ is reparametrized as ln μ (positive by construction, no bound needed) and
