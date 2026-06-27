@@ -6,17 +6,17 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# Sdf + SphereSdf (the finite striker) + PenaltyRigidContact(Solver) + the tet block + BCs + the
-# measured-Ecoflex buffer material. The raw soft solver pressed by a finite SDF intruder.
+# StaggeredCoupling — owns the soft buffer + the posed finite striker; `step_kinematic` drives the
+# one-way (kinematic collider → soft response) step the scripted striker needs.
+sim-coupling = { workspace = true }
+# Vec3 / VertexId + the measured Ecoflex buffer material (mu) — the soft-side block params.
 sim-soft = { workspace = true }
-# Tensor — the (x_prev, v_prev, theta) arguments to replay_step.
-sim-ml-chassis = { workspace = true }
+# load_model — the static anchor body that hosts the coupling (the striker is kinematic).
+sim-mjcf = { workspace = true }
 # build_soft_mesh + apply_soft_positions — the soft-body deformed-mesh build + per-frame replay path.
 sim-bevy-soft = { workspace = true }
 # UpAxis::PlusZ (sim +Z-up → Bevy +Y-up swap) + OrbitCamera / OrbitCameraPlugin.
 cf-bevy-common = { workspace = true }
-# Point3 — the Sdf trait's query point (for the TranslatedSdf pose wrapper).
-nalgebra = { workspace = true }
 # Bevy 0.18 windowed render pipeline (visual mode only; headless capture never touches Bevy).
 bevy = { workspace = true, default-features = false, features = [
     "bevy_asset",

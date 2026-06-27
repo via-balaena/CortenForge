@@ -4,11 +4,12 @@
 //! half-space, so the contact is a localized dimple where the striker actually is.
 //!
 //! Builds on Rung 1's viz harness (the same looping lockstep replay) and adds the new physics
-//! capability: soft-vs-FINITE-rigid contact. The contact routes through sim-soft's `Sdf` trait, so
-//! the striker is just an analytic `SphereSdf` posed each step (no infinite `RigidPlane`). The
-//! striker is KINEMATIC here — driven on a prescribed press-in/press-out path (the buffer feels the
-//! contact; the striker does not feel the reaction). Coupling that reaction back to a *dynamic*
-//! rigid striker is a later rung; this rung isolates the finite-geometry contact.
+//! capability: soft-vs-FINITE-rigid contact. The striker is an analytic sphere posed each step at a
+//! scripted centre via `StaggeredCoupling::set_sphere_center`, and the buffer responds through the
+//! coupling's one-way `step_kinematic` (no infinite `RigidPlane`). The striker is KINEMATIC here —
+//! driven on a prescribed press-in/press-out path (the buffer feels the contact; the striker does
+//! not feel the reaction). Coupling that reaction back to a *dynamic* rigid striker is a later rung
+//! (Rung 3b, `step_articulated`); this rung isolates the finite-geometry contact.
 //!
 //! ## Run
 //! Headless capture + a one-line metric summary always run (CI-safe). The Bevy window is opt-in:
@@ -29,13 +30,10 @@
     clippy::doc_markdown
 )]
 
-use sim_ml_chassis::Tensor;
+use sim_coupling::StaggeredCoupling;
+use sim_mjcf::load_model;
 use sim_soft::material::silicone_table::ECOFLEX_00_30_MEASURED;
-use sim_soft::{
-    BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, Solver, SolverConfig, SphereSdf, Tet4,
-    TranslatedSdf, Vec3, VertexId,
-};
+use sim_soft::{Vec3, VertexId};
 
 // ── Soft buffer (same measured-Ecoflex block as Rung 1) ──
 const N_PER_EDGE: usize = 6; // finer than Rung 1 (4) so the local dimple resolves
@@ -76,87 +74,57 @@ struct Capture {
 }
 
 fn run_capture() -> Capture {
-    let field = MaterialField::uniform(ECOFLEX_00_30_MEASURED.mu, 4.0 * ECOFLEX_00_30_MEASURED.mu);
-    let mesh = HandBuiltTetMesh::uniform_block(N_PER_EDGE, EDGE, &field);
-    let n = mesh.n_vertices();
-    let pinned: Vec<VertexId> = sim_soft::pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
-    assert!(!pinned.is_empty(), "soft block has no z=0 base to pin");
+    // The striker is KINEMATIC — a scripted vertical path, no dynamic rigid body. A static anchor
+    // body just hosts the coupling (which owns the soft buffer); `step_kinematic` poses the fist at
+    // `striker_center(k)` via `set_sphere_center` and takes one soft step (no reaction fed back).
+    let model = load_model(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="anchor"><geom type="sphere" size="0.01"/></body>
+  </worldbody>
+</mujoco>"#,
+    )
+    .expect("anchor MJCF loads");
+    let data = model.make_data();
+    let mu = ECOFLEX_00_30_MEASURED.mu;
+    let mut c: StaggeredCoupling = StaggeredCoupling::new(
+        model, data, 1, 0.005, N_PER_EDGE, EDGE, mu, DT, KAPPA, D_HAT, 0.0,
+    )
+    .with_sphere_collider(STRIKER_R);
 
-    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
-    let boundary_faces = mesh.boundary_faces().to_vec();
-    let mut x: Vec<f64> = rest_positions
-        .iter()
-        .flat_map(|p| [p.x, p.y, p.z])
-        .collect();
-    let mut v = vec![0.0_f64; 3 * n];
+    let to_vec3 = |flat: &[f64]| -> Vec<Vec3> {
+        flat.chunks_exact(3)
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+            .collect()
+    };
+    let rest_positions = to_vec3(c.soft_positions());
+    let boundary_faces: Vec<[VertexId; 3]> = c.soft_boundary_faces();
 
-    let mut cfg = SolverConfig::skeleton();
-    cfg.dt = DT;
-    cfg.max_newton_iter = 80; // the local indent is a large deformation — give Newton headroom
-    let theta = Tensor::zeros(&[0]); // penalty-mediated contact ⇒ no external traction DOFs
-
-    let mut soft_frames: Vec<Vec<f64>> = vec![x.clone()];
+    let mut soft_frames: Vec<Vec<f64>> = vec![c.soft_positions().to_vec()];
     let mut striker_centers: Vec<[f64; 3]> = vec![{
-        let c = striker_center(0);
-        [c.x, c.y, c.z]
+        let s = striker_center(0);
+        [s.x, s.y, s.z]
     }];
     let mut peak_force = 0.0_f64;
     let mut max_indent_reached = 0.0_f64;
 
     for k in 1..=N_STEPS {
         let center = striker_center(k);
-        // Re-pose the finite striker by rebuilding the contact at the new centre (PenaltyRigidContact
-        // is not Clone; the StaggeredCoupling / insertion-ramp pattern rebuilds the contact per step).
-        let striker = TranslatedSdf {
-            inner: SphereSdf { radius: STRIKER_R },
-            offset: center,
-        };
-        let contact = PenaltyRigidContact::with_params(vec![striker], KAPPA, D_HAT);
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
-            Tet4,
-            mesh.clone(),
-            contact,
-            cfg,
-            BoundaryConditions::new(pinned.clone(), Vec::new()),
-        );
+        c.set_sphere_center(center);
+        let step = c.step_kinematic();
 
-        let x_t = Tensor::from_slice(&x, &[3 * n]);
-        let v_t = Tensor::from_slice(&v, &[3 * n]);
-        let x_final = solver.replay_step(&x_t, &v_t, &theta, DT).x_final;
-        for i in 0..3 * n {
-            v[i] = (x_final[i] - x[i]) / DT;
-        }
-        x = x_final;
-
-        // Instrument: total normal force on the soft body + the deepest indent of the top face.
-        let positions: Vec<Vec3> = x
-            .chunks_exact(3)
-            .map(|c| Vec3::new(c[0], c[1], c[2]))
-            .collect();
-        let readout_contact = PenaltyRigidContact::with_params(
-            vec![TranslatedSdf {
-                inner: SphereSdf { radius: STRIKER_R },
-                offset: center,
-            }],
-            KAPPA,
-            D_HAT,
-        );
-        let fz: f64 = readout_contact
-            .per_pair_readout(&mesh, &positions)
-            .iter()
-            .map(|r| r.force_on_soft.z)
-            .sum();
-        peak_force = peak_force.max(fz.abs());
-        // Indent depth = the deepest a vertex was pushed DOWN from its rest position (the dimple
-        // under the striker). Measured vs rest, not absolute z (the base is pinned at z=0).
-        let deepest_push = positions
+        // Instrument: total normal force on the soft body + the deepest indent of the top face
+        // (the deepest a vertex was pushed DOWN from rest — the dimple under the striker).
+        peak_force = peak_force.max(step.force_on_soft.z.abs());
+        let deepest_push = to_vec3(c.soft_positions())
             .iter()
             .zip(&rest_positions)
             .map(|(p, r)| r.z - p.z)
             .fold(0.0_f64, f64::max);
         max_indent_reached = max_indent_reached.max(deepest_push);
 
-        soft_frames.push(x.clone());
+        soft_frames.push(c.soft_positions().to_vec());
         striker_centers.push([center.x, center.y, center.z]);
     }
 
