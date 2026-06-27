@@ -108,23 +108,15 @@ fn sphere_moving_ee_gradient_matches_full_coupled_fd() {
     }
 }
 
-/// The moving-EE centre carry is threaded ONLY through the articulated MATERIAL (normal) gradient.
-/// The sphere-capable articulated FRICTION gradients do NOT yet thread it, so a set contact geom
-/// must FAIL LOUDLY (`require_no_moving_ee`) rather than silently pose at the block centroid and
-/// disagree with a tip-posed forward (a silent contract violation is ship-blocking). The guard is
-/// the gradient's first statement, so no friction config is needed to reach it.
+/// The moving-EE centre carry is threaded through the articulated NORMAL + FRICTION gradients, but
+/// the sphere-capable FREE-BODY gradients do NOT thread it, so a set contact geom must still FAIL
+/// LOUDLY (`require_no_moving_ee`) there rather than silently pose at the block centroid (a silent
+/// contract violation is ship-blocking). The guard is the gradient's first statement, so it panics
+/// before any scope assert (the articulated `build()` coupling reaches it on the free-body path).
 #[test]
 #[should_panic(expected = "moving end-effector")]
-fn moving_ee_panics_on_articulated_friction_gradient() {
-    let _ = build(MU0).coupled_trajectory_tangential_material_gradient_articulated(2, 0);
-}
-
-/// The friction-COEFFICIENT articulated gradient is the second sphere-capable friction path that
-/// does not thread the centre — it too must reject a set contact geom (the same guard).
-#[test]
-#[should_panic(expected = "moving end-effector")]
-fn moving_ee_panics_on_articulated_friction_coeff_gradient() {
-    let _ = build(MU0).coupled_trajectory_tangential_friction_coeff_gradient_articulated(2);
+fn moving_ee_panics_on_free_body_friction_gradient() {
+    let _ = build(MU0).coupled_trajectory_tangential_material_gradient(2, 0);
 }
 
 /// Finding-1 regression: with a PLANE collider, `with_contact_geom` must be a NO-OP for the
