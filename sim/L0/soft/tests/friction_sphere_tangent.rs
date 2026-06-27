@@ -376,6 +376,116 @@ fn friction_sphere_drift_sensitivity_matches_fd() {
     assert!(best < 1e-5, "∂x*/∂drift disagrees with FD: {best:e}");
 }
 
+/// L1b articulated-friction rung: the PER-VERTEX VECTOR friction Jacobian
+/// (`friction_force_jacobians`, the off-COM friction MOMENT's successor to the scalar
+/// `friction_reaction_gradients`) carries the curved-normal term `DN·C` on a FINITE sphere.
+/// Two direct FD checks isolate the new term: (1) `∂force_v/∂x*` along a generic soft-config
+/// perturbation; (2) `∂force_v/∂height` by translating the sphere centre ±ẑ. On the plane
+/// `C = 0`, the existing frozen-lag + λ-coupling are exact (`per_vertex_force_jacobians_…` in
+/// `friction_drift_gradient.rs`); on the sphere a dropped `DN·C` shows up as a curvature-scale
+/// mismatch (the same ~7e-3 plateau the scalar reaction gate exhibits H-unused).
+#[test]
+fn per_vertex_force_jacobians_sphere_matches_fd() {
+    let mu = 3.0e3;
+    let lambda = 1.2e4;
+    let x_prev = x_rest(mu, lambda);
+    let x_final = solve(mu, lambda, FRIC_MU);
+    let nd = x_final.len();
+    let solver = build(mu, lambda, FRIC_MU);
+    let pv = solver.friction_force_jacobians(&x_final, &x_prev, DT, drift_dir(), pose_dir());
+    assert!(
+        !pv.is_empty(),
+        "expected active friction vertices on the sphere"
+    );
+
+    // The max-force vertex carries the largest curved term — the cleanest FD target.
+    let target = pv
+        .iter()
+        .max_by(|a, b| {
+            a.force
+                .norm()
+                .partial_cmp(&b.force.norm())
+                .expect("finite friction-force norms")
+        })
+        .map(|p| p.vid)
+        .expect("at least one active friction vertex");
+    let tp = pv
+        .iter()
+        .find(|p| p.vid == target)
+        .expect("target vertex present");
+
+    // (1) ∂force_v/∂x* along a generic direction d (curved-normal DN·C lives here).
+    let mut d = vec![0.0_f64; nd];
+    for (k, e) in d.iter_mut().enumerate() {
+        *e = ((k % 7) as f64 - 3.0) * 0.2 + 0.05;
+    }
+    let eps = 1e-8;
+    let force_at = |x: &[f64]| -> Vec3 {
+        build(mu, lambda, FRIC_MU)
+            .friction_force_jacobians(x, &x_prev, DT, drift_dir(), pose_dir())
+            .into_iter()
+            .find(|p| p.vid == target)
+            .map_or_else(Vec3::zeros, |p| p.force)
+    };
+    let xp: Vec<f64> = x_final.iter().zip(&d).map(|(a, e)| a + eps * e).collect();
+    let xm: Vec<f64> = x_final.iter().zip(&d).map(|(a, e)| a - eps * e).collect();
+    let fd_x = (force_at(&xp) - force_at(&xm)) / (2.0 * eps);
+    let an_x = Vec3::new(
+        (0..nd).map(|k| tp.dforce_dx[k] * d[k]).sum(),
+        (0..nd).map(|k| tp.dforce_dx[nd + k] * d[k]).sum(),
+        (0..nd).map(|k| tp.dforce_dx[2 * nd + k] * d[k]).sum(),
+    );
+    let rel_x = (an_x - fd_x).norm() / fd_x.norm().max(1e-9);
+    eprintln!(
+        "sphere per-vertex ∂force/∂x* (vid={target}): an={an_x:?} fd={fd_x:?} rel={rel_x:.3e}"
+    );
+    assert!(fd_x.norm() > 1e-3, "∂force/∂x* implausibly small");
+    assert!(
+        rel_x < 1e-5,
+        "sphere per-vertex ∂force/∂x* disagrees with FD: {rel_x:e}"
+    );
+
+    // (2) ∂force_v/∂height : move the sphere centre ±ε along +ẑ (pose_dir), x* held.
+    let force_at_height = |dz: f64| -> Vec3 {
+        let mesh = block(mu, lambda);
+        let pinned = pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
+        let top = top_vertices(mu, lambda);
+        let mut s = sphere();
+        s.center.z += dz;
+        let contact = PenaltyRigidContact::with_params(vec![s], KAPPA, D_HAT);
+        let loaded: Vec<(u32, LoadAxis)> = top
+            .iter()
+            .map(|&i| (i as u32, LoadAxis::FullVector))
+            .collect();
+        let bc = BoundaryConditions::new(pinned, loaded);
+        let mut cfg = SolverConfig::skeleton();
+        cfg.dt = DT;
+        cfg.gravity_z = GRAV_UP;
+        cfg.friction_mu = FRIC_MU;
+        cfg.friction_eps_v = EPS_V;
+        cfg.max_newton_iter = 80;
+        cfg.max_line_search_backtracks = 60;
+        CpuNewtonSolver::new(Tet4, mesh, contact, cfg, bc)
+            .with_friction_surface_drift(Vec3::new(DRIFT, 0.0, 0.0))
+            .friction_force_jacobians(&x_final, &x_prev, DT, drift_dir(), pose_dir())
+            .into_iter()
+            .find(|p| p.vid == target)
+            .map_or_else(Vec3::zeros, |p| p.force)
+    };
+    let eps_h = 1e-8;
+    let fd_h = (force_at_height(eps_h) - force_at_height(-eps_h)) / (2.0 * eps_h);
+    let rel_h = (tp.dforce_dheight - fd_h).norm() / fd_h.norm().max(1e-12);
+    eprintln!(
+        "sphere per-vertex ∂force/∂height: an={:?} fd={fd_h:?} rel={rel_h:.3e}",
+        tp.dforce_dheight
+    );
+    assert!(fd_h.norm() > 1e-6, "∂force/∂height implausibly small");
+    assert!(
+        rel_h < 1e-5,
+        "sphere per-vertex ∂force/∂height disagrees with FD: {rel_h:e}"
+    );
+}
+
 /// Sum-reduce VJP for the reverse-mode check below.
 #[derive(Debug)]
 struct SumVjp;

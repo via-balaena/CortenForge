@@ -1690,18 +1690,20 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// emitting a silently-wrong gradient (a silent contract violation on a public API is
     /// ship-blocking).
     ///
-    /// Scope after the L1b free-body (NORMAL + TANGENTIAL) and articulated-NORMAL carries:
-    /// curvature-correct and NOT guarded are the free-body NORMAL gradients
-    /// ([`Self::active_pair_force_factors`]), the free-body TANGENTIAL/FRICTION gradients (the
-    /// friction reaction `DN·H` + the soft adjoint's curved-T tangent + friction pose-residual
-    /// grad), AND the articulated MATERIAL gradient — its [`ContactWrenchTrajVjp`] now carries the
-    /// curved-normal `f_mag·H` term in `∂w/∂x*` and `∂w/∂h`
-    /// (`sphere_contact_wrench_node_matches_readout_fd`). Still guarded here:
-    /// - the articulated ACTUATOR gradients ([`Self::coupled_trajectory_actuator_gradient`] and
-    ///   the actuator-friction sibling) — they share the curvature-correct wrench but layer
-    ///   state-dependent actuator dynamics not yet sphere-gated (the exo follow-on);
-    /// - the articulated FRICTION gradients — their `friction_force_jacobians` per-vertex Jacobian
-    ///   still drops the curved `DN·C` term (the off-COM friction moment, the next L1b rung).
+    /// Scope after the L1b free-body (NORMAL + TANGENTIAL), articulated-NORMAL, and
+    /// articulated-FRICTION carries: curvature-correct and NOT guarded are the free-body NORMAL
+    /// gradients ([`Self::active_pair_force_factors`]), the free-body TANGENTIAL/FRICTION gradients
+    /// (the friction reaction `DN·C` + the soft adjoint's curved-T tangent + friction pose-residual
+    /// grad), the articulated MATERIAL gradient (its [`ContactWrenchTrajVjp`] carries the
+    /// curved-normal `f_mag·H` in `∂w/∂x*`, `∂w/∂h` — `sphere_contact_wrench_node_matches_readout_fd`),
+    /// AND the articulated FRICTION gradients (material + μ_c coefficient) — their
+    /// [`FrictionWrenchTrajVjp`] now carries the curved `DN·C` term from
+    /// [`CpuNewtonSolver::friction_force_jacobians`] (`per_vertex_force_jacobians_sphere_matches_fd`,
+    /// end-to-end `sphere_articulated_friction_trajectory_gradient.rs`). Still guarded here:
+    /// - the articulated ACTUATOR and POLICY gradients ([`Self::coupled_trajectory_actuator_gradient`],
+    ///   the actuator-friction sibling, and the (design+)policy-friction siblings) — they share the
+    ///   curvature-correct normal + friction wrench but layer state-dependent actuator dynamics
+    ///   (the `g_act` channel) not yet sphere-gated (the exo follow-on, NOT finite-contact).
     ///
     /// Caveat (forward fidelity, not gradient correctness): [`Self::build_contact`] poses the
     /// sphere laterally over the block centre, not the arm tip — orthogonal to the FD-validated
@@ -1709,11 +1711,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     fn require_plane_collider(&self) {
         assert!(
             matches!(self.collider, Collider::Plane),
-            "this articulated ACTUATOR / FRICTION wrench-path gradient requires the plane \
-             collider; a finite sphere collider (with_sphere_collider) is not yet supported on it \
-             (the actuator dynamics / the friction off-COM moment's curved term are not yet \
-             threaded — the L1b articulated follow-on). The free-body gradients AND the \
-             articulated MATERIAL gradient ARE curvature-correct on a sphere."
+            "this articulated ACTUATOR / POLICY wrench-path gradient requires the plane collider; \
+             a finite sphere collider (with_sphere_collider) is not yet supported on it (the \
+             actuator dynamics `g_act` channel is not yet sphere-gated — the exo follow-on). The \
+             free-body gradients AND the articulated MATERIAL + FRICTION gradients ARE \
+             curvature-correct on a sphere."
         );
     }
 
@@ -1801,10 +1803,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// trajectory gradients match the curved re-solve FD. Read from
     /// [`Self::active_pair_wrench_data`] + [`Self::collider_hessian`]; does not re-solve/mutate.
     ///
-    /// NOT a guard: the NORMAL contact crossing is now curvature-correct for the sphere. The
-    /// still-flat paths (the articulated wrench gradients, the free-body TANGENTIAL/friction
-    /// gradients whose `FrictionReactionTrajVjp` drops the curved term) guard at their method
-    /// entry via [`Self::require_plane_collider`] — the L1b-tangential / articulated follow-ons.
+    /// NOT a guard: the NORMAL contact crossing is curvature-correct for the sphere, as are the
+    /// free-body + articulated FRICTION wrench paths (curved `DN·C` carried by #419 / the
+    /// articulated-friction rung). The only still-flat paths are the articulated ACTUATOR / POLICY
+    /// `g_act` channels, which guard at their method entry via [`Self::require_plane_collider`]
+    /// (the exo follow-on, NOT finite-contact).
     fn active_pair_force_factors(
         &self,
         height: f64,
@@ -3646,6 +3649,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `J_state` is the analytic single-hinge / undamped-chain carry (`analytic_state_jacobian`),
     /// else the FD `loaded_state_jacobian` (damped chain / free / quaternion).
     ///
+    /// Curvature-correct on a FINITE sphere collider ([`Self::with_sphere_collider`]): both the
+    /// NORMAL wrench (`ContactWrenchTrajVjp`'s `f_mag·H`) and the FRICTION wrench
+    /// (`friction_force_jacobians`'s `DN·C`) carry the curved-normal term, so this gradient is NOT
+    /// `require_plane_collider`-guarded (FD-gated end-to-end by
+    /// `sphere_articulated_friction_trajectory_gradient.rs`).
+    ///
     /// # Panics
     /// Panics if `param_idx > 1`, if `nq != nv`, if friction is inactive, if `rigid_damping != 0`,
     /// if the rotating normal is enabled, or if a rigid/soft step diverges.
@@ -3660,7 +3669,6 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64) {
-        self.require_plane_collider();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -3894,6 +3902,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// Every other node (pose seam, articulated drift, normal wrench, matrix carry, tip-x objective)
     /// is identical to the material gradient. Same scope: EUCLIDEAN joints (`nq == nv`), flat normal,
     /// friction active, `rigid_damping = 0`. FD-gated against [`Self::coupled_trajectory_gripped_articulated`].
+    /// Curvature-correct on a FINITE sphere collider (same curved-normal carry as the material
+    /// sibling — normal `f_mag·H` + friction `DN·C`), so NOT `require_plane_collider`-guarded.
     ///
     /// # Panics
     /// Panics if `nq != nv`, if friction is inactive, if `rigid_damping != 0`, if the rotating
@@ -3907,7 +3917,6 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         &mut self,
         n_steps: usize,
     ) -> (f64, f64) {
-        self.require_plane_collider();
         assert!(
             self.model.nq == self.model.nv,
             "articulated friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
