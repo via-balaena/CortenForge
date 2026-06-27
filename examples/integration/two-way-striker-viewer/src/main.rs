@@ -6,12 +6,13 @@
 //! articulated coupling (R1 had two-way but only with an infinite plane; R2/R3 had finite contact
 //! but one-way).
 //!
-//! The loop is the `StaggeredCoupling::step` pattern, hand-rolled for a finite SDF at an off-COM
-//! end-effector: per step — pose the fist `SphereSdf` at the arm's end-effector → solve the soft
-//! buffer (the Rung 2 path) → route the reaction `[(fist − COM) × f ; f]` to the arm's
-//! `xfrc_applied` (the contact moment about the body COM, the sim-coupling pattern) → `data.step()`.
-//! A single hinge keeps the articulated body minimal so the two-way coupling is the only new
-//! variable. Forward only (no gradients).
+//! The loop is `StaggeredCoupling::step_articulated`: per step the coupling poses the finite fist
+//! sphere at the arm's end-effector geom (`with_contact_geom`) → solves the soft buffer → routes the
+//! off-COM reaction wrench `[(rᵢ − COM) × fᵢ ; fᵢ]` (the distributed contact moment) to the arm's
+//! `xfrc_applied` → steps the arm. Earlier rungs hand-rolled this loop because the coupling could
+//! not yet pose a finite collider at a moving end-effector; now it owns the whole two-way step. A
+//! single hinge keeps the articulated body minimal so the two-way coupling is the only new variable.
+//! Forward only (no gradients).
 //!
 //! ## Run
 //! Headless capture + a one-line summary always run (CI-safe). The Bevy window is opt-in:
@@ -34,15 +35,10 @@
     clippy::too_many_lines
 )]
 
-use sim_core::SpatialVector;
+use sim_coupling::StaggeredCoupling;
 use sim_mjcf::load_model;
-use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::ECOFLEX_00_30_MEASURED;
-use sim_soft::{
-    BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, Solver, SolverConfig, SphereSdf, Tet4,
-    TranslatedSdf, Vec3, VertexId,
-};
+use sim_soft::{Vec3, VertexId};
 
 // ── Soft buffer (measured-Ecoflex block, finer mesh like Rung 3) ──
 const N_PER_EDGE: usize = 10;
@@ -94,112 +90,55 @@ fn run_capture() -> Capture {
 </mujoco>"#
     );
     let model = load_model(&mjcf).expect("arm MJCF loads");
-    let mut data = model.make_data();
     let arm_bid = model.body_id("arm").expect("arm body");
     let fist_gid = model.geom_id("fist").expect("fist geom");
+    let mut data = model.make_data();
     data.qvel[0] = INIT_QVEL;
     data.forward(&model).expect("initial forward");
 
-    // Soft buffer.
-    let field = MaterialField::uniform(ECOFLEX_00_30_MEASURED.mu, 4.0 * ECOFLEX_00_30_MEASURED.mu);
-    let mesh = HandBuiltTetMesh::uniform_block(N_PER_EDGE, EDGE, &field);
-    let n = mesh.n_vertices();
-    let pinned: Vec<VertexId> = sim_soft::pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
-    assert!(!pinned.is_empty(), "soft block has no z=0 base to pin");
-    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
-    let boundary_faces = mesh.boundary_faces().to_vec();
-    let mut x: Vec<f64> = rest_positions
-        .iter()
-        .flat_map(|p| [p.x, p.y, p.z])
-        .collect();
-    let mut v = vec![0.0_f64; 3 * n];
-    let mut cfg = SolverConfig::skeleton();
-    cfg.dt = DT;
-    cfg.max_newton_iter = 80;
-    let theta = Tensor::zeros(&[0]);
+    // The keystone coupling owns BOTH halves of the two-way loop: per `step_articulated` it poses
+    // the soft contact sphere at the fist geom (`with_contact_geom` → the arm tip), takes one
+    // finite-fist soft step, and routes the off-COM reaction WRENCH `[(rᵢ−c)×fᵢ ; fᵢ]` back to the
+    // arm — the loop the earlier rungs hand-rolled, now the coupling's own forward stepper.
+    let mu = ECOFLEX_00_30_MEASURED.mu;
+    let mut c: StaggeredCoupling = StaggeredCoupling::new(
+        model, data, arm_bid, 0.0, N_PER_EDGE, EDGE, mu, DT, KAPPA, D_HAT, 0.0,
+    )
+    .with_sphere_collider(FIST_R)
+    .with_contact_geom(fist_gid);
+
+    let to_vec3 = |flat: &[f64]| -> Vec<Vec3> {
+        flat.chunks_exact(3)
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+            .collect()
+    };
+    let rest_positions = to_vec3(c.soft_positions());
+    let boundary_faces: Vec<[VertexId; 3]> = c.soft_boundary_faces();
 
     let pt = |p: Vec3| [p.x, p.y, p.z];
-    let mut soft_frames: Vec<Vec<f64>> = vec![x.clone()];
+    let mut soft_frames: Vec<Vec<f64>> = vec![c.soft_positions().to_vec()];
     let mut joints: Vec<[[f64; 3]; 2]> =
-        vec![[pt(data.xpos[arm_bid]), pt(data.geom_xpos[fist_gid])]];
-    let mut qvel: Vec<f64> = vec![data.qvel[0]];
+        vec![[pt(c.data().xpos[arm_bid]), pt(c.data().geom_xpos[fist_gid])]];
+    let mut qvel: Vec<f64> = vec![c.data().qvel[0]];
     let mut peak_force = 0.0_f64;
     let mut max_indent_reached = 0.0_f64;
 
     for _ in 0..N_STEPS {
-        data.forward(&model).expect("forward");
-        let fist = data.geom_xpos[fist_gid]; // end-effector world centre (pre-step pose)
+        // One two-way coupled step: pose the fist at the arm tip → soft solve → route the off-COM
+        // reaction wrench → step the arm (it decelerates / rebounds off the buffer).
+        let step = c.step_articulated();
 
-        // (soft) one finite-fist soft step (the Rung 2 path).
-        let contact = PenaltyRigidContact::with_params(
-            vec![TranslatedSdf {
-                inner: SphereSdf { radius: FIST_R },
-                offset: fist,
-            }],
-            KAPPA,
-            D_HAT,
-        );
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
-            Tet4,
-            mesh.clone(),
-            contact,
-            cfg,
-            BoundaryConditions::new(pinned.clone(), Vec::new()),
-        );
-        let x_t = Tensor::from_slice(&x, &[3 * n]);
-        let v_t = Tensor::from_slice(&v, &[3 * n]);
-        let x_final = solver.replay_step(&x_t, &v_t, &theta, DT).x_final;
-        for i in 0..3 * n {
-            v[i] = (x_final[i] - x[i]) / DT;
-        }
-        x = x_final;
-
-        // (reaction) total contact force on the soft body → reaction on the fist (−f), routed to the
-        // arm as a wrench at the body COM: force + the off-COM moment (fist − COM) × f.
-        let positions: Vec<Vec3> = x
-            .chunks_exact(3)
-            .map(|c| Vec3::new(c[0], c[1], c[2]))
-            .collect();
-        let readout = PenaltyRigidContact::with_params(
-            vec![TranslatedSdf {
-                inner: SphereSdf { radius: FIST_R },
-                offset: fist,
-            }],
-            KAPPA,
-            D_HAT,
-        );
-        let f_on_soft: Vec3 = readout
-            .per_pair_readout(&mesh, &positions)
-            .iter()
-            .map(|r| r.force_on_soft)
-            .sum();
-        let reaction = -f_on_soft;
-        let com = data.xipos[arm_bid];
-        let moment = (fist - com).cross(&reaction);
-        let mut w = SpatialVector::zeros();
-        w[0] = moment.x;
-        w[1] = moment.y;
-        w[2] = moment.z;
-        w[3] = reaction.x;
-        w[4] = reaction.y;
-        w[5] = reaction.z;
-        data.xfrc_applied[arm_bid] = w;
-
-        // (rigid) step the arm under gravity + the reaction → it decelerates / rebounds.
-        data.step(&model).expect("arm step");
-        data.forward(&model).expect("forward (post-step pose)");
-
-        peak_force = peak_force.max(f_on_soft.z.abs());
-        let deepest_push = positions
+        peak_force = peak_force.max(step.force_on_soft.z.abs());
+        let deepest_push = to_vec3(c.soft_positions())
             .iter()
             .zip(&rest_positions)
             .map(|(p, r)| r.z - p.z)
             .fold(0.0_f64, f64::max);
         max_indent_reached = max_indent_reached.max(deepest_push);
 
-        soft_frames.push(x.clone());
-        joints.push([pt(data.xpos[arm_bid]), pt(data.geom_xpos[fist_gid])]);
-        qvel.push(data.qvel[0]);
+        soft_frames.push(c.soft_positions().to_vec());
+        joints.push([pt(c.data().xpos[arm_bid]), pt(c.data().geom_xpos[fist_gid])]);
+        qvel.push(c.data().qvel[0]);
     }
 
     Capture {

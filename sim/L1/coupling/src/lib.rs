@@ -137,7 +137,9 @@ enum Collider {
     /// curved end-effector indenting the block, exercising #415's curvature term
     /// (`∇²sd ≠ 0`) through the coupling adjoint. The scalar `height` still drives
     /// the vertical carry (the sphere centre rides `+ẑ` with `height`); the lateral
-    /// centre sits over the block so the contact patch is central + stable.
+    /// centre defaults over the block for a central + stable patch, and is re-pointable
+    /// to a moving end-effector (the arm tip) via
+    /// [`StaggeredCoupling::with_contact_geom`].
     Sphere { radius: f64 },
 }
 
@@ -1448,6 +1450,20 @@ pub struct StaggeredCoupling<C: PlaneContact = PenaltyRigidContact> {
     /// keystone half-space; [`Collider::Sphere`] is the finite-contact gate). Set
     /// via [`Self::with_sphere_collider`].
     collider: Collider,
+    /// When `Some`, the **full** world centre the finite [`Collider::Sphere`] is posed
+    /// at — overriding the default block-centroid-over-`height` posing so the fist
+    /// tracks a moving end-effector (the arm tip). `None` (default) poses over the
+    /// block's top-face centroid at `z = height + radius` (a stable central patch,
+    /// byte-identical to the pre-end-effector posing — the gradient gates' scene).
+    /// [`Self::step_articulated`] refreshes it each frame from [`Self::contact_geom`];
+    /// the trajectory adjoints hold it fixed (forward fidelity, not a gradient carry).
+    /// Ignored for the infinite [`Collider::Plane`] (a half-space has no lateral pose).
+    sphere_center_override: Option<Vec3>,
+    /// When `Some`, the rigid **geom** whose world centre [`Self::step_articulated`]
+    /// poses the finite sphere collider at each frame (the contact end-effector — the
+    /// fist at the arm tip), via [`Self::sphere_center_override`]. `None` (default)
+    /// keeps the block-centroid posing. Set via [`Self::with_contact_geom`].
+    contact_geom: Option<usize>,
     _contact: PhantomData<C>,
 }
 
@@ -1516,6 +1532,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             rigid_damping,
             rotating_normal: false,
             collider: Collider::Plane,
+            sphere_center_override: None,
+            contact_geom: None,
             _contact: PhantomData,
         }
     }
@@ -1544,8 +1562,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `height`, so the existing `RigidTwist::translation(ẑ)` pose-sensitivity probe
     /// and `∂sd/∂h = −n̂·ẑ` formula remain exactly correct — `n̂` is now the sphere's
     /// per-vertex varying normal rather than the plane's constant `−ẑ`); the lateral
-    /// centre sits over the block's top-face centroid so the contact patch is
-    /// central and the active set stays stable across an FD perturbation.
+    /// centre defaults to the block's top-face centroid so the contact patch is
+    /// central and the active set stays stable across an FD perturbation, and is
+    /// re-pointable to a moving end-effector via [`Self::with_contact_geom`].
     ///
     /// Opt-in (default the infinite [`RigidPlane`], byte-identical to the
     /// pre-finite-collider keystone scenes #402–#406). Curved contact engages more
@@ -1634,15 +1653,34 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     }
 
     /// The finite sphere collider's world centre for a given `radius` and scalar
-    /// `height`: over the block's top-face centroid `(edge/2, edge/2)`, with centre
-    /// z `= height + radius` so the south pole sits at `height` (the same engagement
-    /// depth the plane's surface would). The `height`-carry is thus a pure `+ẑ`
-    /// translation of the primitive — exactly the `RigidTwist::translation(ẑ)` the
-    /// pose-sensitivity probes — lifting #415's L0 curved gate into the coupling.
-    /// The single source of the centre formula (shared by [`Self::build_contact`]
-    /// and [`Self::collider_hessian`]).
+    /// `height`. The default (no [`Self::sphere_center_override`]) poses over the
+    /// block's top-face centroid `(edge/2, edge/2)` at centre z `= height + radius`, so
+    /// the south pole sits at `height` (the same engagement depth the plane's surface
+    /// would) — a pure `+ẑ` translation of the primitive, exactly the
+    /// `RigidTwist::translation(ẑ)` the pose-sensitivity probes (lifting #415's L0
+    /// curved gate into the coupling). When the override is set (end-effector posing,
+    /// [`Self::step_articulated`]) it is the centre directly. The single source of the
+    /// centre formula (shared by [`Self::build_contact`] and [`Self::collider_hessian`]).
     fn sphere_center(&self, radius: f64, height: f64) -> Vec3 {
-        Vec3::new(self.edge / 2.0, self.edge / 2.0, height + radius)
+        self.sphere_center_override
+            .unwrap_or_else(|| Vec3::new(self.edge / 2.0, self.edge / 2.0, height + radius))
+    }
+
+    /// Pose the finite sphere collider at a rigid **geom**'s world centre each frame —
+    /// the contact end-effector (the fist at the arm tip), so the fist tracks the
+    /// striker instead of sitting over the block centroid. [`Self::step_articulated`]
+    /// reads `geom_xpos[geom_id]` (fresh-FK) into the sphere-centre override per
+    /// step. Pair the `radius` with the geom's own (`with_sphere_collider(r)` where the
+    /// geom's `size = r`) so the contact sphere is the fist.
+    ///
+    /// Forward fidelity only: the trajectory adjoints hold the centre fixed (a moving
+    /// end-effector gradient carry is the follow-on). A no-op for the infinite plane
+    /// collider. Default (unset) reproduces the byte-identical block-centroid posing
+    /// the finite-contact gates use.
+    #[must_use]
+    pub const fn with_contact_geom(mut self, geom_id: usize) -> Self {
+        self.contact_geom = Some(geom_id);
+        self
     }
 
     /// The contact primitive's curvature `H = ∂n̂/∂p = ∇²sd` at world point `p` for
@@ -1683,8 +1721,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///   (the `g_act` channel) not yet sphere-gated (the exo follow-on, NOT finite-contact).
     ///
     /// Caveat (forward fidelity, not gradient correctness): [`Self::build_contact`] poses the
-    /// sphere laterally over the block centre, not the arm tip — orthogonal to the FD-validated
-    /// gradient (forward and adjoint share the posing), a separate lateral-at-tip follow-on.
+    /// sphere at [`Self::sphere_center_override`] when set (default the block centre);
+    /// [`Self::with_contact_geom`] + [`Self::step_articulated`] re-point it to a moving end-effector
+    /// (the arm tip) in the forward rollout, but the trajectory adjoints hold that centre FIXED
+    /// (forward and adjoint share the per-step posing, so the FD-validated gates are unaffected — a
+    /// moving end-effector gradient carry is the follow-on, the lateral analog of the `height` carry).
     fn require_plane_collider(&self) {
         assert!(
             matches!(self.collider, Collider::Plane),
@@ -6022,6 +6063,62 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
     }
 
+    /// Advance the coupled system by one lockstep step for an **articulated** body,
+    /// routing the full off-COM contact **wrench** `[τ; f]` (not the pure force at the
+    /// COM that [`Self::step`] uses) — the per-frame forward companion to the
+    /// articulated trajectory rollouts ([`Self::coupled_trajectory_articulated_z`]),
+    /// exposing the per-step state a viewer captures.
+    ///
+    /// Per step: fresh FK (so the contact poses at the *current* tip, no one-step lag),
+    /// pose the finite sphere collider at the contact end-effector
+    /// ([`Self::with_contact_geom`]'s geom centre, else the block-centroid default),
+    /// one dynamic soft step, route the reaction wrench `[(rᵢ − c) × fᵢ ; fᵢ]` about the
+    /// body COM `c = xipos` to `xfrc_applied`, then step the rigid body. Returns the
+    /// contact force on the soft body and the body reference height; read
+    /// [`Self::soft_positions`] / [`Self::data`] for the deformed mesh + arm pose.
+    ///
+    /// # Panics
+    /// Panics if the rigid step diverges (as in [`Self::step`]).
+    //
+    // expect_used: a rigid-step divergence / soft non-convergence is a programmer error surfaced
+    // loudly, not recoverable for keystone-v1 (mirrors `step`).
+    #[allow(clippy::expect_used)]
+    pub fn step_articulated(&mut self) -> CoupledStep {
+        // Fresh FK: pose the contact + COM from the CURRENT config (no one-step lag —
+        // sim-core's `step` integrates without trailing FK; see
+        // `coupled_trajectory_articulated_z`).
+        self.data.forward(&self.model).expect("fresh FK");
+        // Pose the finite sphere at the contact end-effector geom (the arm tip), so the
+        // fist tracks the striker rather than sitting over the block centroid.
+        if let Some(g) = self.contact_geom {
+            self.sphere_center_override = Some(self.data.geom_xpos[g]);
+        }
+        let height = self.tip_plane_height();
+
+        let (_solver, x_next) = self.soft_resolve(height);
+        let dt = self.cfg.dt;
+        for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
+            *vi = (xf - xo) / dt;
+        }
+        self.x = x_next;
+
+        let force_on_soft = self.contact_force_at_height(height);
+        self.data.xfrc_applied[self.body] = self.contact_wrench(height);
+        self.data
+            .step(&self.model)
+            .expect("rigid step diverged in articulated coupled solve");
+        // Trailing FK so the post-step pose (`data().xpos` / `geom_xpos`) and `rigid_z` are fresh
+        // for the caller's per-frame capture (sim-core's `step` integrates without trailing FK).
+        self.data
+            .forward(&self.model)
+            .expect("fresh FK (post-step)");
+
+        CoupledStep {
+            force_on_soft,
+            rigid_z: self.data.xpos[self.body].z,
+        }
+    }
+
     /// Roll the coupled system forward `n_steps` **with the tangential friction grip**,
     /// returning the rigid body's final world position `xpos[body]`. The friction-coupled
     /// forward companion to [`Self::step`] (which is normal-only, force-at-COM): per step it
@@ -7639,6 +7736,86 @@ mod tests {
             worst < 1e-5,
             "ContactWrenchTrajVjp Jacobian must be FD-exact vs the real readout, \
              worst scaled error {worst:.3e}"
+        );
+    }
+
+    /// The finite-sphere centre defaults to the block-face centroid (byte-identical to the
+    /// pre-end-effector posing) and follows the `sphere_center_override` when set — the forward
+    /// end-effector posing primitive.
+    #[test]
+    fn sphere_center_default_and_override() {
+        const MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.125">
+      <joint type="slide" axis="0 0 1"/>
+      <geom type="box" size="0.05 0.05 0.02" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        const SPHERE_R: f64 = 0.08;
+        const EDGE: f64 = 0.1;
+        let model = load_model(MJCF).expect("MJCF loads");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let mut c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, EDGE, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_sphere_collider(SPHERE_R);
+
+        let height = 0.09_f64;
+        // Default = block top-face centroid; `z = height + radius`.
+        assert_eq!(
+            c.sphere_center(SPHERE_R, height),
+            Vec3::new(EDGE / 2.0, EDGE / 2.0, height + SPHERE_R),
+        );
+
+        // Override = the full end-effector centre, `height`-independent.
+        let ee = Vec3::new(0.02, 0.03, 0.12);
+        c.sphere_center_override = Some(ee);
+        assert_eq!(c.sphere_center(SPHERE_R, height), ee);
+    }
+
+    /// `step_articulated` + `with_contact_geom` poses the finite fist at the rigid geom's world
+    /// centre each frame (tracking the arm tip), engages the soft block, and routes the off-COM
+    /// reaction wrench — the per-frame forward stepper the striker viewers drive.
+    #[test]
+    fn step_articulated_poses_at_contact_geom() {
+        // Slide arm directly over the block centre (xy = edge/2): the fist geom hangs `0.13` below
+        // the body origin at `z = 0.25`, so its centre sits at `z ≈ 0.12` and its south pole
+        // (`0.12 − 0.04 = 0.08`) penetrates the rest top face (`z = 0.1`).
+        const MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0.05 0.05 0.25">
+      <joint type="slide" axis="0 0 1"/>
+      <geom name="fist" type="sphere" pos="0 0 -0.13" size="0.04" mass="0.5"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        const FIST_R: f64 = 0.04;
+        let model = load_model(MJCF).expect("MJCF loads");
+        let fist_gid = model.geom_id("fist").expect("fist geom");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        // The fist's world centre at the (unchanged) start config — what `step_articulated`'s
+        // leading FK poses the contact sphere at. (Captured before `data` moves into the coupling;
+        // the step's trailing FK then advances the live pose.)
+        let fist0 = data.geom_xpos[fist_gid];
+        let mut c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_sphere_collider(FIST_R)
+        .with_contact_geom(fist_gid);
+
+        let readout = c.step_articulated();
+        // The fist posed at the geom's world centre (not the block centroid).
+        assert_eq!(c.sphere_center_override, Some(fist0));
+        // Engaged: a finite upward contact force on the soft block.
+        assert!(readout.force_on_soft.z.is_finite());
+        assert!(
+            readout.force_on_soft.norm() > 1e-6,
+            "fist over the block should engage the soft contact",
         );
     }
 

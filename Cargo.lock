@@ -4480,11 +4480,9 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
- "nalgebra 0.34.2",
  "sim-bevy-soft",
- "sim-core",
+ "sim-coupling",
  "sim-mjcf",
- "sim-ml-chassis",
  "sim-soft",
 ]
 
