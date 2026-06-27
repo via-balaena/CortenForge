@@ -1234,8 +1234,9 @@ struct FrictionWrenchVert {
     dforce_dxprev: Vec<f64>,
     /// `∂force/∂Δ_surf` along the build's `drift_dir`.
     dforce_ddrift: Vec3,
-    /// `∂force/∂height` along the build's `pose_dir`.
-    dforce_dheight: Vec3,
+    /// `∂force/∂(centre·e_k)` per pose-basis axis — `[∂force/∂height]` (length 1) for the scalar
+    /// height channel, or the 3 translation axes `[x̂, ŷ, ẑ]` for a moving end-effector centre.
+    dforce_dpose: Vec<Vec3>,
     /// `∂force/∂μ_c = ∇D_v/μ_c` — the DIRECT Coulomb-coefficient channel (only threaded when the
     /// node carries a `μ_c` parent, i.e. the friction-coefficient gradient).
     dforce_dmu_c: Vec3,
@@ -1269,6 +1270,9 @@ struct FrictionWrenchTrajVjp {
     n_dof: usize,
     /// Rigid-DOF count `nv`.
     nv: usize,
+    /// Pose-parent component count: `1` for the scalar height channel, `3` for a moving
+    /// end-effector centre (`[x̂, ŷ, ẑ]`). Must equal every vertex's `dforce_dpose.len()`.
+    n_pose: usize,
     /// When `true`, a 7th parent `μ_c` (`[1]`) is present and the `∂L/∂μ_c` direct channel is
     /// threaded; `false` ⇒ 6 parents, no `μ_c` channel.
     mu_c: bool,
@@ -1292,13 +1296,14 @@ impl VjpOp for FrictionWrenchTrajVjp {
                 && parent_cotans.len() == want_parents
                 && parent_cotans[0].shape() == [6]
                 && parent_cotans[1].shape() == [nd]
-                && parent_cotans[2].shape() == [1]
+                && parent_cotans[2].shape() == [self.n_pose]
                 && parent_cotans[3].shape() == [2 * self.nv]
                 && parent_cotans[4].shape() == [1]
                 && parent_cotans[5].shape() == [nd]
                 && mu_c_shape_ok,
             "FrictionWrenchTrajVjp: expected cot [6] + parents (w_normal [6], x* [{nd}], \
-             pose [1], s [{}], drift [1], x_prev [{nd}][, μ_c [1]])",
+             pose [{}], s [{}], drift [1], x_prev [{nd}][, μ_c [1]])",
+            self.n_pose,
             2 * self.nv,
         );
         let cot = cotangent.as_slice();
@@ -1312,10 +1317,15 @@ impl VjpOp for FrictionWrenchTrajVjp {
         }
 
         // Per-vertex friction contributions.
-        let mut pose_acc = 0.0_f64;
+        let mut pose_acc = vec![0.0_f64; self.n_pose];
         let mut drift_acc = 0.0_f64;
         let mut mu_c_acc = 0.0_f64;
         for v in &self.verts {
+            debug_assert_eq!(
+                v.dforce_dpose.len(),
+                self.n_pose,
+                "every vertex's dforce_dpose must have n_pose axes"
+            );
             // Effective cotangent on ∇D_v: force part + moment-via-∇D_v part.
             let co = cot_f + cot_t.cross(&v.arm);
             // ∂L/∂x* via the per-vertex Jacobian, plus the moment ARM term on v's own coords.
@@ -1336,11 +1346,16 @@ impl VjpOp for FrictionWrenchTrajVjp {
                     + co.y * v.dforce_dxprev[nd + k]
                     + co.z * v.dforce_dxprev[2 * nd + k];
             }
-            pose_acc += co.dot(&v.dforce_dheight);
+            for (k, dfp) in v.dforce_dpose.iter().enumerate() {
+                pose_acc[k] += co.dot(dfp);
+            }
             drift_acc += co.dot(&v.dforce_ddrift);
             mu_c_acc += co.dot(&v.dforce_dmu_c);
         }
-        parent_cotans[2].as_mut_slice()[0] += pose_acc;
+        let pose_slot = parent_cotans[2].as_mut_slice();
+        for (k, &a) in pose_acc.iter().enumerate() {
+            pose_slot[k] += a;
+        }
         parent_cotans[4].as_mut_slice()[0] += drift_acc;
         // Direct μ_c channel (only when the node carries the μ_c parent).
         if self.mu_c {
@@ -1362,15 +1377,21 @@ impl VjpOp for FrictionWrenchTrajVjp {
 /// the per-vertex carry [`FrictionWrenchVert`]s plus the total friction force `Σ∇D_v` (the node's
 /// `c(q)` feedback). Shared forward+tape assembly for the material and friction-coefficient
 /// articulated gradients.
+///
+/// `pose_dforce` is the per-vertex pose-axis sensitivity, index-aligned with `pv`: `None` ⇒ the
+/// scalar height channel (`dforce_dpose = [p.dforce_dheight]`, one axis); `Some(rows)` ⇒ the moving
+/// end-effector centre channel, `rows[i]` the `[∂force/∂(centre·x̂), …·ŷ, …·ẑ]` for `pv[i]` (each
+/// `friction_force_jacobians(pose_dir = e_k).dforce_dheight`).
 fn assemble_friction_wrench(
     pv: Vec<FrictionVertexForce>,
     positions: &[Vec3],
     c: Vec3,
     wrench: &mut SpatialVector,
+    pose_dforce: Option<Vec<Vec<Vec3>>>,
 ) -> (Vec<FrictionWrenchVert>, Vec3) {
     let mut f_total = Vec3::zeros();
     let mut fverts = Vec::with_capacity(pv.len());
-    for p in pv {
+    for (i, p) in pv.into_iter().enumerate() {
         let arm = positions[p.vid as usize] - c; // d_v = r_v − c
         let tau = arm.cross(&p.force);
         wrench[0] += tau.x;
@@ -1380,6 +1401,9 @@ fn assemble_friction_wrench(
         wrench[4] += p.force.y;
         wrench[5] += p.force.z;
         f_total += p.force;
+        let dforce_dpose = pose_dforce
+            .as_ref()
+            .map_or_else(|| vec![p.dforce_dheight], |rows| rows[i].clone());
         fverts.push(FrictionWrenchVert {
             vid: p.vid as usize,
             force: p.force,
@@ -1387,7 +1411,7 @@ fn assemble_friction_wrench(
             dforce_dx: p.dforce_dx,
             dforce_dxprev: p.dforce_dxprev,
             dforce_ddrift: p.dforce_ddrift,
-            dforce_dheight: p.dforce_dheight,
+            dforce_dpose,
             dforce_dmu_c: p.dforce_dmu_c,
         });
     }
@@ -1745,14 +1769,15 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// step. Pair the `radius` with the geom's own (`with_sphere_collider(r)` where the
     /// geom's `size = r`) so the contact sphere is the fist.
     ///
-    /// The articulated MATERIAL (normal) trajectory gradient
-    /// ([`Self::coupled_trajectory_material_gradient_articulated`]) threads the moving centre
-    /// through the adjoint (the 3-vector `PoseCentreVjp` seam + `WrenchPose::Centre`, gated
-    /// by `sphere_moving_ee_trajectory_gradient.rs`); its forward oracle
-    /// ([`Self::coupled_trajectory_articulated_z`]) poses at the same geom. The friction and
-    /// actuator/policy gradients do NOT yet thread it (guarded — the follow-on). A no-op for the
-    /// infinite plane collider. Default (unset) reproduces the byte-identical block-centroid
-    /// posing the finite-contact gates use.
+    /// The articulated MATERIAL (normal) AND FRICTION (material + μ_c) trajectory gradients thread
+    /// the moving centre through the adjoint — the 3-vector `PoseCentreVjp` seam, `WrenchPose::Centre`,
+    /// the grip soft node's 3-axis pose, and the friction wrench's 3-vector `dforce_dpose` (gated by
+    /// `sphere_moving_ee_trajectory_gradient.rs` and `sphere_moving_ee_friction_trajectory_gradient.rs`);
+    /// their forward oracles ([`Self::coupled_trajectory_articulated_z`],
+    /// [`Self::coupled_trajectory_gripped_articulated`]) pose at the same geom. The FREE-BODY
+    /// gradients (and grip forward) and the actuator/policy gradients do NOT yet thread it (guarded,
+    /// the follow-on). A no-op for the infinite plane collider. Default (unset) reproduces the
+    /// byte-identical block-centroid posing the finite-contact gates use.
     #[must_use]
     pub const fn with_contact_geom(mut self, geom_id: usize) -> Self {
         self.contact_geom = Some(geom_id);
@@ -1807,14 +1832,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///   (the `g_act` channel) not yet sphere-gated (the exo follow-on, NOT finite-contact).
     ///
     /// Moving end-effector ([`Self::with_contact_geom`], the sphere centre riding the arm
-    /// tip `geom_xpos(q)`): the articulated MATERIAL (normal) gradient
-    /// ([`Self::coupled_trajectory_material_gradient_articulated`]) now threads the moving
-    /// centre (the 3-vector [`PoseCentreVjp`] seam + [`WrenchPose::Centre`]); its forward
-    /// oracle ([`Self::coupled_trajectory_articulated_z`]) poses at the same geom. The other
-    /// sphere-capable articulated gradients (the two FRICTION gradients) do NOT yet thread it
-    /// and are guarded by [`Self::require_no_moving_ee`] (the friction moving-EE carry is the
-    /// follow-on). With no contact geom set the centre defaults to the block centroid (the
-    /// finite-contact gates' scope), byte-identical to before.
+    /// tip `geom_xpos(q)`): the articulated MATERIAL (normal) AND FRICTION (material + μ_c)
+    /// gradients thread the moving centre (the 3-vector [`PoseCentreVjp`] seam +
+    /// [`WrenchPose::Centre`] + the grip soft node's 3-axis pose + the friction wrench's 3-vector
+    /// `dforce_dpose`); their forward oracles ([`Self::coupled_trajectory_articulated_z`],
+    /// [`Self::coupled_trajectory_gripped_articulated`]) pose at the same geom. The FREE-BODY
+    /// gradients + grip forward do NOT yet thread it and are guarded by
+    /// [`Self::require_no_moving_ee`] (the follow-on). With no contact geom set the centre defaults
+    /// to the block centroid (the finite-contact gates' scope), byte-identical to before.
     fn require_plane_collider(&self) {
         assert!(
             matches!(self.collider, Collider::Plane),
@@ -1828,20 +1853,20 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
 
     /// Assert no contact end-effector geom is set ([`Self::with_contact_geom`]) — the scope
     /// guard for every sphere-capable trajectory method that does NOT thread the
-    /// moving-end-effector centre carry. Only
-    /// [`Self::coupled_trajectory_material_gradient_articulated`] (and its forward oracle
-    /// [`Self::coupled_trajectory_articulated_z`]) threads the moving centre; the other
-    /// sphere-capable gradients/rollouts (the articulated FRICTION gradients, the free-body
-    /// normal/friction gradients, the grip forwards) would otherwise silently pose the sphere at
-    /// the block centroid (ignoring the tip) — a silent contract violation on a public API
-    /// (ship-blocking even if currently unused). Threading them is the follow-on. A no-op when
-    /// no geom is set (the centroid-posed gates + the plane).
+    /// moving-end-effector centre carry. The articulated NORMAL + FRICTION gradients (and their
+    /// forward oracles [`Self::coupled_trajectory_articulated_z`],
+    /// [`Self::coupled_trajectory_gripped_articulated`]) thread the moving centre; the FREE-BODY
+    /// normal/friction gradients + the free-body grip forward ([`Self::coupled_trajectory_grip`])
+    /// do NOT, and would otherwise silently pose the sphere at the block centroid (ignoring the
+    /// tip) — a silent contract violation on a public API (ship-blocking even if currently
+    /// unused). Threading them is the follow-on. A no-op when no geom is set (the centroid-posed
+    /// gates + the plane).
     fn require_no_moving_ee(&self) {
         assert!(
             self.contact_geom.is_none(),
             "this gradient/rollout does not thread the moving end-effector (with_contact_geom) \
-             centre carry; only coupled_trajectory_material_gradient_articulated does (set the \
-             contact geom only on that path, or use the block-centroid default)."
+             centre carry; only the articulated NORMAL + FRICTION gradients do (set the contact \
+             geom only on those paths, or use the block-centroid default)."
         );
     }
 
@@ -3904,6 +3929,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `require_plane_collider`-guarded (FD-gated end-to-end by
     /// `sphere_articulated_friction_trajectory_gradient.rs`).
     ///
+    /// MOVING END-EFFECTOR ([`Self::with_contact_geom`]): when the sphere rides the contact geom,
+    /// the pose channel is the 3-vector centre (`PoseCentreVjp` + `WrenchPose::Centre` + the grip
+    /// soft node's 3-axis pose + the friction wrench's 3-vector `dforce_dpose`), posed at
+    /// `geom_xpos(q)` each step. The single-step lateral channels are machine-exact in
+    /// `friction_sphere_tangent.rs`; the composition is gated by
+    /// `sphere_moving_ee_friction_trajectory_gradient.rs`. No geom set ⇒ scalar-height channel
+    /// (byte-identical).
+    ///
     /// # Panics
     /// Panics if `param_idx > 1`, if `nq != nv`, if friction is inactive, if `rigid_damping != 0`,
     /// if the rotating normal is enabled, or if a rigid/soft step diverges.
@@ -3918,9 +3951,6 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64) {
-        // Curvature-correct on a centroid-posed sphere (#421) but NOT yet on a moving
-        // end-effector — reject a set contact geom (first, before the scope asserts).
-        self.require_no_moving_ee();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -3946,6 +3976,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let dt = self.cfg.dt;
         let pose_dir = Vec3::new(0.0, 0.0, 1.0);
         let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+        // Moving-EE centre channel axes (ẑ reproduces the scalar height channel).
+        let centre_basis = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
 
         let mut tape = Tape::new();
         let p0 = if param_idx == 0 { self.mu } else { self.lambda };
@@ -3961,6 +3997,15 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
 
         for _ in 0..n_steps {
             self.data.forward(&self.model).expect("fresh FK");
+            // MOVING END-EFFECTOR: pose the finite sphere at the contact geom (the arm tip), so
+            // the contact centre rides geom_xpos(q) (the 3-vector PoseCentreVjp channel). Sphere
+            // only; for the plane/centroid it stays the scalar height channel (byte-identical).
+            let moving_ee =
+                self.contact_geom.is_some() && matches!(self.collider, Collider::Sphere { .. });
+            if moving_ee {
+                let g = self.contact_geom.expect("moving_ee ⇒ contact geom set");
+                self.sphere_center_override = Some(self.data.geom_xpos[g]);
+            }
             let height = self.tip_plane_height();
             let jlin = self.com_linear_jacobian();
             let jlin_x: Vec<f64> = (0..nv).map(|j| jlin[(0, j)]).collect();
@@ -3971,13 +4016,26 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let drift = Vec3::new(v_com[0], v_com[1], v_com[2]) * dt;
             let x_start = self.x.clone();
 
-            let pose_var = tape.push_custom(
-                &[s_var],
-                Tensor::from_slice(&[height], &[1]),
-                Box::new(PoseSeamVjp {
-                    jz: self.pose_seam_jz(),
-                }),
-            );
+            // Pose seam: scalar height (PoseSeamVjp) or, for a moving end-effector, the 3-vector
+            // centre c = geom_xpos(q) (PoseCentreVjp). Shared by the soft + both wrench nodes.
+            let pose_var = if moving_ee {
+                let centre = self.sphere_center_override.expect("moving-EE override set");
+                tape.push_custom(
+                    &[s_var],
+                    Tensor::from_slice(centre.as_slice(), &[3]),
+                    Box::new(PoseCentreVjp {
+                        j_geom: self.pose_centre_jacobian(),
+                    }),
+                )
+            } else {
+                tape.push_custom(
+                    &[s_var],
+                    Tensor::from_slice(&[height], &[1]),
+                    Box::new(PoseSeamVjp {
+                        jz: self.pose_seam_jz(),
+                    }),
+                )
+            };
             let drift_var = tape.push_custom(
                 &[s_var],
                 Tensor::from_slice(&[drift.x], &[1]),
@@ -4008,13 +4066,25 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .map(|(xf, xo)| (xf - xo) / dt)
                 .collect();
 
-            // Soft node x*: parents [x_prev, v_prev, p, height, Δ_surf].
+            // Soft node x*: parents [x_prev, v_prev, p, pose, Δ_surf]. The pose parent is the
+            // scalar height (grip) or the 3-vector centre (grip_centre, moving-EE).
+            let soft_grip = if moving_ee {
+                solver.trajectory_step_vjp_grip_centre(
+                    &x_next,
+                    &x_start,
+                    dt,
+                    param_idx,
+                    &centre_basis,
+                    drift_dir,
+                )
+            } else {
+                solver
+                    .trajectory_step_vjp_grip(&x_next, &x_start, dt, param_idx, pose_dir, drift_dir)
+            };
             let x_next_var = tape.push_custom(
                 &[x_var, v_var, p_var, pose_var, drift_var],
                 Tensor::from_slice(&x_next, &[3 * n]),
-                Box::new(solver.trajectory_step_vjp_grip(
-                    &x_next, &x_start, dt, param_idx, pose_dir, drift_dir,
-                )),
+                Box::new(soft_grip),
             );
             let v_next_var = tape.push_custom(
                 &[x_next_var, x_var],
@@ -4048,6 +4118,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
+            let normal_pose = if moving_ee {
+                WrenchPose::Centre {
+                    basis: centre_basis.to_vec(),
+                }
+            } else {
+                WrenchPose::Height
+            };
             let w_normal_var = tape.push_custom(
                 &[x_next_var, pose_var, s_var],
                 Tensor::from_slice(w_normal.as_slice(), &[6]),
@@ -4057,7 +4134,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin: jlin.clone(),
                     n_dof: 3 * n,
                     nv,
-                    pose: WrenchPose::Height,
+                    pose: normal_pose,
                 }),
             );
 
@@ -4067,7 +4144,27 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // sim-soft's `friction_force_jacobians`; the node threads them through force AND moment.
             let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
             let mut w_total = w_normal;
-            let (fverts, f_fric_total) = assemble_friction_wrench(pv, &positions, c, &mut w_total);
+            // Moving-EE: the friction wrench's pose parent becomes the 3-vector centre — per-vertex
+            // ∂force/∂(centre·e_k) for each axis (reusing the validated `friction_force_jacobians`,
+            // same active set/order), transposed [axis][vertex] → [vertex][axis].
+            let pose_dforce = moving_ee.then(|| {
+                let per_axis: Vec<Vec<Vec3>> = centre_basis
+                    .iter()
+                    .map(|&e| {
+                        solver
+                            .friction_force_jacobians(&x_next, &x_start, dt, drift_dir, e)
+                            .into_iter()
+                            .map(|p| p.dforce_dheight)
+                            .collect()
+                    })
+                    .collect();
+                (0..pv.len())
+                    .map(|i| per_axis.iter().map(|axis| axis[i]).collect())
+                    .collect::<Vec<Vec<Vec3>>>()
+            });
+            let n_pose = if moving_ee { 3 } else { 1 };
+            let (fverts, f_fric_total) =
+                assemble_friction_wrench(pv, &positions, c, &mut w_total, pose_dforce);
             let w_total_var = tape.push_custom(
                 &[w_normal_var, x_next_var, pose_var, s_var, drift_var, x_var],
                 Tensor::from_slice(w_total.as_slice(), &[6]),
@@ -4077,6 +4174,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin,
                     n_dof: 3 * n,
                     nv,
+                    n_pose,
                     mu_c: false,
                 }),
             );
@@ -4155,7 +4253,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// is identical to the material gradient. Same scope: EUCLIDEAN joints (`nq == nv`), flat normal,
     /// friction active, `rigid_damping = 0`. FD-gated against [`Self::coupled_trajectory_gripped_articulated`].
     /// Curvature-correct on a FINITE sphere collider (same curved-normal carry as the material
-    /// sibling — normal `f_mag·H` + friction `DN·C`), so NOT `require_plane_collider`-guarded.
+    /// sibling — normal `f_mag·H` + friction `DN·C`), so NOT `require_plane_collider`-guarded. Like
+    /// the material sibling it also threads the MOVING-END-EFFECTOR 3-vector centre channel under
+    /// [`Self::with_contact_geom`] (the same `grip_centre` soft node + `WrenchPose::Centre` + 3-vector
+    /// friction `dforce_dpose`); gated by `sphere_moving_ee_friction_trajectory_gradient.rs`.
     ///
     /// # Panics
     /// Panics if `nq != nv`, if friction is inactive, if `rigid_damping != 0`, if the rotating
@@ -4169,9 +4270,6 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         &mut self,
         n_steps: usize,
     ) -> (f64, f64) {
-        // Curvature-correct on a centroid-posed sphere (#421) but NOT yet on a moving
-        // end-effector — reject a set contact geom (first, before the scope asserts).
-        self.require_no_moving_ee();
         assert!(
             self.model.nq == self.model.nv,
             "articulated friction gradient scope: Euclidean joints (nq == nv — hinge/slide chains)"
@@ -4193,6 +4291,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let dt = self.cfg.dt;
         let pose_dir = Vec3::new(0.0, 0.0, 1.0);
         let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+        // Moving-EE centre channel axes (ẑ reproduces the scalar height channel).
+        let centre_basis = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
 
         let mut tape = Tape::new();
         let p_var = tape.param_tensor(Tensor::from_slice(&[self.cfg.friction_mu], &[1]));
@@ -4207,6 +4311,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
 
         for _ in 0..n_steps {
             self.data.forward(&self.model).expect("fresh FK");
+            // MOVING END-EFFECTOR: pose the finite sphere at the contact geom (see the material
+            // sibling). Sphere only; plane/centroid stays the scalar height channel.
+            let moving_ee =
+                self.contact_geom.is_some() && matches!(self.collider, Collider::Sphere { .. });
+            if moving_ee {
+                let g = self.contact_geom.expect("moving_ee ⇒ contact geom set");
+                self.sphere_center_override = Some(self.data.geom_xpos[g]);
+            }
             let height = self.tip_plane_height();
             let jlin = self.com_linear_jacobian();
             let jlin_x: Vec<f64> = (0..nv).map(|j| jlin[(0, j)]).collect();
@@ -4214,13 +4326,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let drift = Vec3::new(v_com[0], v_com[1], v_com[2]) * dt;
             let x_start = self.x.clone();
 
-            let pose_var = tape.push_custom(
-                &[s_var],
-                Tensor::from_slice(&[height], &[1]),
-                Box::new(PoseSeamVjp {
-                    jz: self.pose_seam_jz(),
-                }),
-            );
+            let pose_var = if moving_ee {
+                let centre = self.sphere_center_override.expect("moving-EE override set");
+                tape.push_custom(
+                    &[s_var],
+                    Tensor::from_slice(centre.as_slice(), &[3]),
+                    Box::new(PoseCentreVjp {
+                        j_geom: self.pose_centre_jacobian(),
+                    }),
+                )
+            } else {
+                tape.push_custom(
+                    &[s_var],
+                    Tensor::from_slice(&[height], &[1]),
+                    Box::new(PoseSeamVjp {
+                        jz: self.pose_seam_jz(),
+                    }),
+                )
+            };
             let drift_var = tape.push_custom(
                 &[s_var],
                 Tensor::from_slice(&[drift.x], &[1]),
@@ -4251,12 +4374,22 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .map(|(xf, xo)| (xf - xo) / dt)
                 .collect();
 
+            let soft_grip = if moving_ee {
+                solver.trajectory_step_vjp_grip_fric_coeff_centre(
+                    &x_next,
+                    &x_start,
+                    dt,
+                    &centre_basis,
+                    drift_dir,
+                )
+            } else {
+                solver
+                    .trajectory_step_vjp_grip_fric_coeff(&x_next, &x_start, dt, pose_dir, drift_dir)
+            };
             let x_next_var = tape.push_custom(
                 &[x_var, v_var, p_var, pose_var, drift_var],
                 Tensor::from_slice(&x_next, &[3 * n]),
-                Box::new(solver.trajectory_step_vjp_grip_fric_coeff(
-                    &x_next, &x_start, dt, pose_dir, drift_dir,
-                )),
+                Box::new(soft_grip),
             );
             let v_next_var = tape.push_custom(
                 &[x_next_var, x_var],
@@ -4289,6 +4422,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let normal_force = Vec3::new(w_normal[3], w_normal[4], w_normal[5]);
+            let normal_pose = if moving_ee {
+                WrenchPose::Centre {
+                    basis: centre_basis.to_vec(),
+                }
+            } else {
+                WrenchPose::Height
+            };
             let w_normal_var = tape.push_custom(
                 &[x_next_var, pose_var, s_var],
                 Tensor::from_slice(w_normal.as_slice(), &[6]),
@@ -4298,14 +4438,32 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin: jlin.clone(),
                     n_dof: 3 * n,
                     nv,
-                    pose: WrenchPose::Height,
+                    pose: normal_pose,
                 }),
             );
 
-            // (3)+(4) FRICTION wrench WITH the μ_c direct channel (7th parent = μ_c).
+            // (3)+(4) FRICTION wrench WITH the μ_c direct channel (7th parent = μ_c). Moving-EE:
+            // the pose parent is the 3-vector centre — per-vertex ∂force/∂(centre·e_k) per axis.
             let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
             let mut w_total = w_normal;
-            let (fverts, f_fric_total) = assemble_friction_wrench(pv, &positions, c, &mut w_total);
+            let pose_dforce = moving_ee.then(|| {
+                let per_axis: Vec<Vec<Vec3>> = centre_basis
+                    .iter()
+                    .map(|&e| {
+                        solver
+                            .friction_force_jacobians(&x_next, &x_start, dt, drift_dir, e)
+                            .into_iter()
+                            .map(|p| p.dforce_dheight)
+                            .collect()
+                    })
+                    .collect();
+                (0..pv.len())
+                    .map(|i| per_axis.iter().map(|axis| axis[i]).collect())
+                    .collect::<Vec<Vec<Vec3>>>()
+            });
+            let n_pose = if moving_ee { 3 } else { 1 };
+            let (fverts, f_fric_total) =
+                assemble_friction_wrench(pv, &positions, c, &mut w_total, pose_dforce);
             let w_total_var = tape.push_custom(
                 &[
                     w_normal_var,
@@ -4323,6 +4481,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin,
                     n_dof: 3 * n,
                     nv,
+                    n_pose,
                     mu_c: true,
                 }),
             );
@@ -4883,7 +5042,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // (4) friction wrench (force + off-COM moment), folded onto the normal wrench.
             let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
             let mut w_total = w_normal;
-            let (fverts, f_fric_total) = assemble_friction_wrench(pv, &positions, c, &mut w_total);
+            let (fverts, f_fric_total) =
+                assemble_friction_wrench(pv, &positions, c, &mut w_total, None);
             let w_total_var = tape.push_custom(
                 &[w_normal_var, x_next_var, pose_var, s_var, drift_var, x_var],
                 Tensor::from_slice(w_total.as_slice(), &[6]),
@@ -4893,6 +5053,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin: jlin.clone(),
                     n_dof: 3 * n,
                     nv,
+                    n_pose: 1,
                     mu_c: false,
                 }),
             );
@@ -5179,7 +5340,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // (4) friction wrench (force + off-COM moment), folded onto the normal wrench.
             let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
             let mut w_total = w_normal;
-            let (fverts, f_fric_total) = assemble_friction_wrench(pv, &positions, c, &mut w_total);
+            let (fverts, f_fric_total) =
+                assemble_friction_wrench(pv, &positions, c, &mut w_total, None);
             let w_total_var = tape.push_custom(
                 &[w_normal_var, x_next_var, pose_var, s_var, drift_var, x_var],
                 Tensor::from_slice(w_total.as_slice(), &[6]),
@@ -5189,6 +5351,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin: jlin.clone(),
                     n_dof: 3 * n,
                     nv,
+                    n_pose: 1,
                     mu_c: false,
                 }),
             );
@@ -5492,7 +5655,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // (4) friction wrench (force + off-COM moment), folded onto the normal wrench.
             let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, pose_dir);
             let mut w_total = w_normal;
-            let (fverts, f_fric_total) = assemble_friction_wrench(pv, &positions, c, &mut w_total);
+            let (fverts, f_fric_total) =
+                assemble_friction_wrench(pv, &positions, c, &mut w_total, None);
             let w_total_var = tape.push_custom(
                 &[w_normal_var, x_next_var, pose_var, s_var, drift_var, x_var],
                 Tensor::from_slice(w_total.as_slice(), &[6]),
@@ -5502,6 +5666,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     jlin: jlin.clone(),
                     n_dof: 3 * n,
                     nv,
+                    n_pose: 1,
                     mu_c: false,
                 }),
             );
@@ -6492,7 +6657,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// No tape — the independent black-box reference for finite-differencing the articulated
     /// friction gradient (sub-leaf 1 of the friction → matrix-carry lift). Advances `self`
-    /// (build a fresh coupling per call).
+    /// (build a fresh coupling per call). With [`Self::with_contact_geom`] + a sphere collider it
+    /// poses the contact at the geom each step (the moving-EE friction forward oracle, matching the
+    /// gradient's posing); a no-op for the plane / no geom.
     ///
     /// **Scope (v1).** A EUCLIDEAN articulated mechanism (hinge/slide chain — `nq == nv`), flat
     /// normal, friction active. The drift uses the COM linear velocity (matching the gradient's
@@ -6508,16 +6675,18 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     // surfaced loudly, not recoverable for keystone-v1 (mirrors `coupled_trajectory_grip`).
     #[allow(clippy::expect_used)]
     pub fn coupled_trajectory_gripped_articulated(&mut self, n_steps: usize) -> Vec3 {
-        // Articulated grip forward: sphere-capable but does not pose at the contact geom
-        // (no moving-EE) — reject a set geom (its friction gradient sibling is likewise
-        // guarded), unlike coupled_trajectory_articulated_z which DOES pose at the geom.
-        self.require_no_moving_ee();
         let dt = self.cfg.dt;
         let n = self.n_vertices;
         for _ in 0..n_steps {
             // FRESH FK: pose the contact / COM from the CURRENT config (no one-step lag,
             // matching `coupled_trajectory_articulated_z`).
             self.data.forward(&self.model).expect("fresh FK");
+            // MOVING END-EFFECTOR: pose the finite sphere at the contact geom each step — the
+            // friction-grip forward companion of the moving-EE friction gradient (its FD oracle),
+            // so forward and adjoint share posing. Sphere-only; no-op for the plane/no-geom.
+            if let (Some(g), Collider::Sphere { .. }) = (self.contact_geom, self.collider) {
+                self.sphere_center_override = Some(self.data.geom_xpos[g]);
+            }
             let height = self.tip_plane_height();
             // Step-start soft config xᵗ — captured BEFORE the solve overwrites `self.x`;
             // the friction potential differences the post-step config against it.
@@ -8417,6 +8586,165 @@ mod tests {
             worst < 1e-5,
             "sphere ContactWrenchTrajVjp CENTRE Jacobian must be FD-exact vs the curved readout, \
              worst scaled error {worst:.3e}"
+        );
+    }
+
+    /// The FRICTION wrench node's 3-vector CENTRE pose channel is FD-exact — the friction analog of
+    /// `sphere_contact_wrench_node_centre_matches_readout_fd`, covering the L1 friction-pose WIRING
+    /// (the `[axis][vertex] → [vertex][axis]` `dforce_dpose` transpose + `n_pose` + the node's
+    /// `pose_slot` loop) that the (pose-INSENSITIVE) friction trajectory gate cannot reach. FD:
+    /// perturb the sphere centre per axis (soft x* held), recompute the friction wrench
+    /// `Σ[∇D_v; (r_v−c)×∇D_v]`, and compare to the node's pose-parent cotangent rows.
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn friction_wrench_node_centre_matches_readout_fd() {
+        const HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="1.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        const SPHERE_R: f64 = 0.08;
+        let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.forward(&model).expect("forward");
+        let mut c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, 3.0e3, 1.2e4, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_sphere_collider(SPHERE_R)
+        .with_friction(2.5, 0.1);
+
+        let height = c.tip_plane_height();
+        let dt = c.cfg.dt;
+        let n = c.n_vertices;
+        let nv = c.model.nv;
+        let drift = Vec3::new(5.0e-4, 0.0, 0.0);
+        let drift_dir = Vec3::new(1.0, 0.0, 0.0);
+        let com = c.data.xipos[c.body];
+        let x_start = c.x.clone();
+        // Off-centroid centre (the moving-EE scenario) so the lateral axes are exercised.
+        let base = Vec3::new(c.edge / 2.0 + 0.01, c.edge / 2.0 - 0.008, height + SPHERE_R);
+        let basis = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+
+        // One friction soft solve at the base centre (x* held fixed for the explicit-pose FD).
+        c.sphere_center_override = Some(base);
+        let x_next = {
+            let bc = BoundaryConditions::new(c.pinned.clone(), Vec::new());
+            let solver: SoftSolver<_> =
+                CpuNewtonSolver::new(Tet4, c.fresh_mesh(), c.build_contact(height), c.cfg, bc)
+                    .with_friction_surface_drift(drift);
+            solver
+                .replay_step(
+                    &Tensor::from_slice(&c.x, &[3 * n]),
+                    &Tensor::from_slice(&c.v, &[3 * n]),
+                    &Tensor::zeros(&[0]),
+                    dt,
+                )
+                .x_final
+        };
+        let positions: Vec<Vec3> = x_next
+            .chunks_exact(3)
+            .map(|q| Vec3::new(q[0], q[1], q[2]))
+            .collect();
+
+        // Friction wrench readout Σ[∇D_v; (r_v−c)×∇D_v] at sphere centre `centre`, x* held.
+        let wrench_of = |c: &mut StaggeredCoupling, centre: Vec3| -> [f64; 6] {
+            c.sphere_center_override = Some(centre);
+            let bc = BoundaryConditions::new(c.pinned.clone(), Vec::new());
+            let solver: SoftSolver<_> =
+                CpuNewtonSolver::new(Tet4, c.fresh_mesh(), c.build_contact(height), c.cfg, bc)
+                    .with_friction_surface_drift(drift);
+            let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, basis[2]);
+            let mut w = [0.0_f64; 6];
+            for p in pv {
+                let f = p.force;
+                let tau = (positions[p.vid as usize] - com).cross(&f);
+                w[0] += tau.x;
+                w[1] += tau.y;
+                w[2] += tau.z;
+                w[3] += f.x;
+                w[4] += f.y;
+                w[5] += f.z;
+            }
+            w
+        };
+
+        // Analytic node at the base centre: per-axis `dforce_dpose` (the transpose the gradient builds).
+        c.sphere_center_override = Some(base);
+        let bc = BoundaryConditions::new(c.pinned.clone(), Vec::new());
+        let solver: SoftSolver<_> =
+            CpuNewtonSolver::new(Tet4, c.fresh_mesh(), c.build_contact(height), c.cfg, bc)
+                .with_friction_surface_drift(drift);
+        let pv = solver.friction_force_jacobians(&x_next, &x_start, dt, drift_dir, basis[2]);
+        let per_axis: Vec<Vec<Vec3>> = basis
+            .iter()
+            .map(|&e| {
+                solver
+                    .friction_force_jacobians(&x_next, &x_start, dt, drift_dir, e)
+                    .into_iter()
+                    .map(|p| p.dforce_dheight)
+                    .collect()
+            })
+            .collect();
+        let pose_dforce: Vec<Vec<Vec3>> = (0..pv.len())
+            .map(|i| per_axis.iter().map(|a| a[i]).collect())
+            .collect();
+        let mut w_total = SpatialVector::zeros();
+        let (fverts, f_total) =
+            assemble_friction_wrench(pv, &positions, com, &mut w_total, Some(pose_dforce));
+        assert!(!fverts.is_empty(), "config must be friction-engaged");
+        let node = FrictionWrenchTrajVjp {
+            verts: fverts,
+            f_total,
+            jlin: c.com_linear_jacobian(),
+            n_dof: 3 * n,
+            nv,
+            n_pose: 3,
+            mu_c: false,
+        };
+        // Pose-parent cotangent rows: ∂(w·e_k)/∂(centre axis), one [3] per wrench component k.
+        let pose_rows: Vec<[f64; 3]> = (0..6)
+            .map(|k| {
+                let mut cot = Tensor::zeros(&[6]);
+                cot.as_mut_slice()[k] = 1.0;
+                let mut pc = vec![
+                    Tensor::zeros(&[6]),
+                    Tensor::zeros(&[3 * n]),
+                    Tensor::zeros(&[3]),
+                    Tensor::zeros(&[2 * nv]),
+                    Tensor::zeros(&[1]),
+                    Tensor::zeros(&[3 * n]),
+                ];
+                node.vjp(&cot, &mut pc);
+                let s = pc[2].as_slice();
+                [s[0], s[1], s[2]]
+            })
+            .collect();
+
+        let d = 1.0e-7;
+        let scale = 1.0e5; // friction-wrench-vs-centre derivatives ~1e5 (cf. the leaf reaction gate)
+        let mut worst = 0.0_f64;
+        for axis in 0..3 {
+            let mut dir = Vec3::zeros();
+            dir[axis] = 1.0;
+            let wp = wrench_of(&mut c, base + d * dir);
+            let wm = wrench_of(&mut c, base - d * dir);
+            for k in 0..6 {
+                let fd = (wp[k] - wm[k]) / (2.0 * d);
+                worst = worst.max((fd - pose_rows[k][axis]).abs() / scale);
+            }
+        }
+        assert!(
+            worst < 1e-5,
+            "friction wrench CENTRE pose Jacobian must be FD-exact vs the readout, worst {worst:.3e}"
         );
     }
 

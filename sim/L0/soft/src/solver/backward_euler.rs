@@ -3368,7 +3368,44 @@ where
     ) -> TrajectoryStepVjp {
         // The scalar "param" parent carries the MATERIAL residual sensitivity `∂r/∂p_k`.
         let dr_dparam = self.assemble_material_residual_grad(x_final, param_idx);
-        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_dir, drift_dir)
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, &[pose_dir], drift_dir)
+    }
+
+    /// Like [`Self::trajectory_step_vjp_grip`] but the pose parent is the 3-vector contact-sphere
+    /// **centre** (a moving end-effector riding the arm tip) rather than a single scalar
+    /// translation — the friction-grip analog of [`Self::trajectory_step_vjp_twist`] for pure
+    /// translations. The pushed node's `pose` parent is `[basis.len()]` (the coupling passes the
+    /// 3 translation axes `[x̂, ŷ, ẑ]`), and `∂L/∂pose[k] = −λᵀ·(∂r/∂(centre·e_k))_free` — each
+    /// column the SAME normal + friction pose-residual the scalar grip builds, per axis. With a
+    /// single-direction basis it reduces to [`Self::trajectory_step_vjp_grip`] exactly.
+    #[must_use]
+    pub fn trajectory_step_vjp_grip_centre(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        param_idx: usize,
+        pose_basis: &[Vec3],
+        drift_dir: Vec3,
+    ) -> TrajectoryStepVjp {
+        let dr_dparam = self.assemble_material_residual_grad(x_final, param_idx);
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_basis, drift_dir)
+    }
+
+    /// The friction-COEFFICIENT (`μ_c`) sibling of [`Self::trajectory_step_vjp_grip_centre`] — the
+    /// 3-vector moving-EE centre pose channel with the `μ_c` param RHS (cf.
+    /// [`Self::trajectory_step_vjp_grip_fric_coeff`]).
+    #[must_use]
+    pub fn trajectory_step_vjp_grip_fric_coeff_centre(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        pose_basis: &[Vec3],
+        drift_dir: Vec3,
+    ) -> TrajectoryStepVjp {
+        let dr_dparam = self.assemble_friction_coeff_residual_grad(x_final, x_prev, dt);
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_basis, drift_dir)
     }
 
     /// Like [`Self::trajectory_step_vjp_grip`] but the scalar "param" parent is the Coulomb
@@ -3389,7 +3426,7 @@ where
         drift_dir: Vec3,
     ) -> TrajectoryStepVjp {
         let dr_dparam = self.assemble_friction_coeff_residual_grad(x_final, x_prev, dt);
-        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_dir, drift_dir)
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, &[pose_dir], drift_dir)
     }
 
     /// Like [`Self::trajectory_step_vjp_grip`] but the scalar "param" parent is a single
@@ -3417,7 +3454,7 @@ where
         drift_dir: Vec3,
     ) -> TrajectoryStepVjp {
         let dr_dparam = self.assemble_material_residual_grad_combined(x_final, param_weights);
-        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_dir, drift_dir)
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, &[pose_dir], drift_dir)
     }
 
     /// Shared core of the friction-grip soft VJP node: everything except WHICH scalar the param
@@ -3430,7 +3467,7 @@ where
         x_prev: &[f64],
         dt: f64,
         dr_dparam: &[f64],
-        pose_dir: Vec3,
+        pose_basis: &[Vec3],
         drift_dir: Vec3,
     ) -> TrajectoryStepVjp {
         debug_assert!(x_final.len() == self.n_dof);
@@ -3442,15 +3479,22 @@ where
             .collect();
         // Pose RHS = normal contact pose grad + the FRICTION pose grad (the friction force is
         // linear in the pose-dependent normal force λⁿ — the PR2-deferred term that makes
-        // `∂x*/∂height` friction-exact, load-bearing for the coupled height↔grip cancellation).
-        let mut dr_dpose =
-            self.assemble_pose_residual_grad(x_final, RigidTwist::translation(pose_dir));
-        let dr_dpose_fric =
-            self.assemble_friction_pose_residual_grad(x_final, x_prev, dt, pose_dir);
-        for (d, df) in dr_dpose.iter_mut().zip(&dr_dpose_fric) {
-            *d += df;
-        }
-        let dr_dpose_free: Vec<f64> = self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect();
+        // `∂x*/∂pose` friction-exact, load-bearing for the coupled pose↔grip cancellation). One
+        // column per pose-basis direction: a single scalar height/translation (`[pose_dir]`) or
+        // the 3 translation axes of a moving end-effector centre (`[x̂, ŷ, ẑ]`).
+        let dr_dpose_free: Vec<Vec<f64>> = pose_basis
+            .iter()
+            .map(|&pose_dir| {
+                let mut dr_dpose =
+                    self.assemble_pose_residual_grad(x_final, RigidTwist::translation(pose_dir));
+                let dr_dpose_fric =
+                    self.assemble_friction_pose_residual_grad(x_final, x_prev, dt, pose_dir);
+                for (d, df) in dr_dpose.iter_mut().zip(&dr_dpose_fric) {
+                    *d += df;
+                }
+                self.free_dof_indices.iter().map(|&i| dr_dpose[i]).collect()
+            })
+            .collect();
         // Drift RHS (∂r/∂Δ_surf · drift_dir)_free — the friction term's moving-collider
         // dependence (`∂r_v/∂Δ_surf = −∇²D_v`, see `assemble_drift_residual_grad`).
         let dr_ddrift = self.assemble_drift_residual_grad(x_final, x_prev, dt, drift_dir);
@@ -3488,7 +3532,7 @@ where
             m_over_dt2,
             m_over_dt,
             dr_dparam_free,
-            vec![dr_dpose_free],
+            dr_dpose_free,
             dr_ddrift_free,
             friction_xprev,
         )

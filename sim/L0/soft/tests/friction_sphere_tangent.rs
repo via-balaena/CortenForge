@@ -468,6 +468,195 @@ fn per_vertex_force_jacobians_sphere_matches_fd() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// Moving-end-effector LATERAL channel (the friction analog of #427's normal lateral leaf): the
+// contact sphere centre translates IN the friction tangent plane (along +x̂, the limb-sliding
+// direction) rather than NORMAL to it (the +ẑ height channel above). The L0 friction machinery is
+// already axis-generic (`pose_dir` threads `equilibrium_pose_sensitivity`, `friction_reaction_
+// gradients`, `friction_force_jacobians`, and `assemble_friction_pose_residual_grad`), so this is
+// a NEW GATE, not new code — and a discriminator: a term that silently baked in `pose_dir = ẑ`
+// (⊥ the tangent plane) shows up as a curvature/tangent-scale mismatch when the pose moves IN the
+// plane. FD oracle: re-pose the sphere by ±ε·x̂ (shifting `offset.x`) and re-solve.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// The lateral pose axis: +x̂, the limb-sliding direction (coincides with the drift/reaction axis,
+/// the physically relevant moving-EE direction; non-degenerate, unlike +ŷ which the x-symmetry of
+/// the block + x-drift would zero out).
+const fn lateral_dir() -> Vec3 {
+    Vec3::new(1.0, 0.0, 0.0)
+}
+
+/// Build the friction sphere solver with the collider centre shifted by `d` (the FD oracle's
+/// re-posed primitive) — the lateral generalization of [`solve_with_sphere_dz`]'s `offset.z` bump.
+fn build_shifted(
+    mu: f64,
+    lambda: f64,
+    d: Vec3,
+) -> CpuNewtonSolver<Tet4, HandBuiltTetMesh, PenaltyRigidContact> {
+    let mesh = block(mu, lambda);
+    let pinned = pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
+    let top = top_vertices(mu, lambda);
+    let mut s = sphere();
+    s.offset += d;
+    let contact = PenaltyRigidContact::with_params(vec![s], KAPPA, D_HAT);
+    let loaded: Vec<(u32, LoadAxis)> = top
+        .iter()
+        .map(|&i| (i as u32, LoadAxis::FullVector))
+        .collect();
+    let bc = BoundaryConditions::new(pinned, loaded);
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    cfg.gravity_z = GRAV_UP;
+    cfg.friction_mu = FRIC_MU;
+    cfg.friction_eps_v = EPS_V;
+    cfg.max_newton_iter = 80;
+    cfg.max_line_search_backtracks = 60;
+    CpuNewtonSolver::new(Tet4, mesh, contact, cfg, bc)
+        .with_friction_surface_drift(Vec3::new(DRIFT, 0.0, 0.0))
+}
+
+/// Site 2+3 LATERAL: `∂x*/∂(centre·x̂)` (the soft equilibrium's sensitivity to the sphere
+/// translating in the tangent plane) under friction matches the re-solve FD. Exercises the
+/// friction tangent `A` (curved-T) AND the friction pose-residual grad along an IN-PLANE pose
+/// direction — the channel the moving-EE grip gradient's lateral↔friction feedback will ride.
+#[test]
+fn friction_sphere_pose_sensitivity_lateral_matches_fd() {
+    let mu = 3.0e3;
+    let lambda = 1.2e4;
+    let x_prev = x_rest(mu, lambda);
+    let x_final = solve(mu, lambda, FRIC_MU);
+    let an = build(mu, lambda, FRIC_MU).equilibrium_pose_sensitivity(
+        &x_final,
+        Some(&x_prev),
+        DT,
+        RigidTwist::translation(lateral_dir()),
+    );
+    let max: f64 = an.iter().map(|v| v.abs()).fold(0.0, f64::max);
+    let mut best = f64::INFINITY;
+    for k in 3..=9 {
+        let dx = 10f64.powi(-k);
+        let step = lateral_dir() * dx;
+        let xp = build_shifted(mu, lambda, step).replay_step(
+            &Tensor::from_slice(&x_rest(mu, lambda), &[x_final.len()]),
+            &Tensor::from_slice(&vec![0.0_f64; x_final.len()], &[x_final.len()]),
+            &Tensor::from_slice(&theta(mu, lambda), &[3 * top_vertices(mu, lambda).len()]),
+            DT,
+        );
+        let xm = build_shifted(mu, lambda, -step).replay_step(
+            &Tensor::from_slice(&x_rest(mu, lambda), &[x_final.len()]),
+            &Tensor::from_slice(&vec![0.0_f64; x_final.len()], &[x_final.len()]),
+            &Tensor::from_slice(&theta(mu, lambda), &[3 * top_vertices(mu, lambda).len()]),
+            DT,
+        );
+        let fd: Vec<f64> = xp
+            .x_final
+            .iter()
+            .zip(&xm.x_final)
+            .map(|(a, b)| (a - b) / (2.0 * dx))
+            .collect();
+        let r = rel(&an, &fd);
+        eprintln!("  dx=1e-{k}: rel={r:.3e}");
+        best = best.min(r);
+    }
+    eprintln!("sphere ∂x*/∂(centre·x̂): ‖·‖∞={max:.3e}  best-rel-vs-FD={best:.3e}");
+    assert!(
+        max > 1e-9,
+        "∂x*/∂lateral implausibly small — no lateral lever"
+    );
+    assert!(
+        best < 1e-5,
+        "sphere ∂x*/∂(centre·x̂) disagrees with FD even at best step: {best:e}"
+    );
+}
+
+/// Site 1 LATERAL: the friction-REACTION readout's `∂F/∂(centre·x̂)` (the `dforce_dheight` slot
+/// with `pose_dir = x̂`) matches FD. The in-plane pose translation redistributes λⁿ AND rotates
+/// the curved tangent frame (`DN·(−C·x̂)`), the terms a ẑ-only validation never exercises.
+#[test]
+fn friction_sphere_reaction_lateral_matches_fd() {
+    let mu = 3.0e3;
+    let lambda = 1.2e4;
+    let x_prev = x_rest(mu, lambda);
+    let x_final = solve(mu, lambda, FRIC_MU);
+    let an = build(mu, lambda, FRIC_MU)
+        .friction_reaction_gradients(
+            &x_final,
+            &x_prev,
+            DT,
+            react_dir(),
+            drift_dir(),
+            lateral_dir(),
+        )
+        .dforce_dheight;
+    let force_at = |d: Vec3| {
+        build_shifted(mu, lambda, d)
+            .friction_reaction_gradients(
+                &x_final,
+                &x_prev,
+                DT,
+                react_dir(),
+                drift_dir(),
+                lateral_dir(),
+            )
+            .force
+    };
+    let eps = 1e-8;
+    let step = lateral_dir() * eps;
+    let fd = (force_at(step) - force_at(-step)) / (2.0 * eps);
+    let rel = (an - fd).abs() / fd.abs().max(1e-12);
+    eprintln!("∂F/∂(centre·x̂) analytic={an:.6e} fd={fd:.6e} rel={rel:.3e}");
+    assert!(fd.abs() > 1e-6, "∂F/∂lateral implausibly small");
+    assert!(rel < 1e-5, "∂F/∂(centre·x̂) disagrees with FD: {rel:e}");
+}
+
+/// Per-vertex VECTOR friction Jacobian LATERAL: `∂force_v/∂(centre·x̂)` (the off-COM friction
+/// moment's `dforce_dheight` with `pose_dir = x̂`) matches FD — the articulated-friction
+/// moving-EE wrench node will consume this. Carries the curved `DN·(−C·x̂)` term for the in-plane
+/// pose translation.
+#[test]
+fn per_vertex_force_jacobians_sphere_lateral_matches_fd() {
+    let mu = 3.0e3;
+    let lambda = 1.2e4;
+    let x_prev = x_rest(mu, lambda);
+    let x_final = solve(mu, lambda, FRIC_MU);
+    let target = build(mu, lambda, FRIC_MU)
+        .friction_force_jacobians(&x_final, &x_prev, DT, drift_dir(), lateral_dir())
+        .into_iter()
+        .max_by(|a, b| {
+            a.force
+                .norm()
+                .partial_cmp(&b.force.norm())
+                .expect("finite friction-force norms")
+        })
+        .map(|p| p.vid)
+        .expect("at least one active friction vertex");
+    let an = build(mu, lambda, FRIC_MU)
+        .friction_force_jacobians(&x_final, &x_prev, DT, drift_dir(), lateral_dir())
+        .into_iter()
+        .find(|p| p.vid == target)
+        .expect("target vertex present")
+        .dforce_dheight;
+    let force_at = |d: Vec3| -> Vec3 {
+        build_shifted(mu, lambda, d)
+            .friction_force_jacobians(&x_final, &x_prev, DT, drift_dir(), lateral_dir())
+            .into_iter()
+            .find(|p| p.vid == target)
+            .map_or_else(Vec3::zeros, |p| p.force)
+    };
+    let eps = 1e-8;
+    let step = lateral_dir() * eps;
+    let fd = (force_at(step) - force_at(-step)) / (2.0 * eps);
+    let rel = (an - fd).norm() / fd.norm().max(1e-12);
+    eprintln!(
+        "sphere per-vertex ∂force/∂(centre·x̂) (vid={target}): an={an:?} fd={fd:?} rel={rel:.3e}"
+    );
+    assert!(fd.norm() > 1e-6, "∂force/∂lateral implausibly small");
+    assert!(
+        rel < 1e-5,
+        "sphere per-vertex ∂force/∂(centre·x̂) disagrees with FD: {rel:e}"
+    );
+}
+
 /// Sum-reduce VJP for the reverse-mode check below.
 #[derive(Debug)]
 struct SumVjp;
