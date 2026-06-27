@@ -1683,6 +1683,16 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         self
     }
 
+    /// Pose the finite sphere collider at an explicit world `center` — for a
+    /// **kinematically driven** striker whose end-effector path is scripted in the
+    /// caller (no rigid body to read a geom from), paired with [`Self::step_kinematic`].
+    /// Call before each soft step with the striker's world centre; the contact then
+    /// engages there. The direct counterpart to [`Self::with_contact_geom`] (which
+    /// reads the centre from a rigid geom). A no-op for the infinite plane collider.
+    pub fn set_sphere_center(&mut self, center: Vec3) {
+        self.sphere_center_override = Some(center);
+    }
+
     /// The contact primitive's curvature `H = ∂n̂/∂p = ∇²sd` at world point `p` for
     /// the current collider posed at `height` — the geometric-stiffness factor the
     /// curved-contact force Jacobian needs (#415's `dE·H` term). `0` for the infinite
@@ -6119,6 +6129,39 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
     }
 
+    /// Advance the SOFT body one lockstep step under a **kinematically driven**
+    /// collider — a ONE-WAY coupling: the finite sphere is posed at the caller's
+    /// scripted end-effector ([`Self::set_sphere_center`], or [`Self::with_contact_geom`]
+    /// off a caller-posed rigid geom), the soft body responds, and NO reaction is fed
+    /// back (no rigid integration). The per-frame forward stepper the *kinematic*
+    /// striker viewers drive (a scripted fist path; the dynamic two-way sibling is
+    /// [`Self::step_articulated`]).
+    ///
+    /// Pose the collider via [`Self::set_sphere_center`] **before** each call. Returns
+    /// the contact force on the soft body; read [`Self::soft_positions`] for the
+    /// deformed mesh. The `height` carry is unused — the override governs posing.
+    pub fn step_kinematic(&mut self) -> CoupledStep {
+        // A caller-posed rigid geom (if any) drives the collider; else the explicit
+        // `set_sphere_center` override does. No rigid step / FK — the collider is external.
+        if let Some(g) = self.contact_geom {
+            self.sphere_center_override = Some(self.data.geom_xpos[g]);
+        }
+        // The override governs posing, so the `height` arg is ignored (see `sphere_center`).
+        let height = 0.0;
+        let (_solver, x_next) = self.soft_resolve(height);
+        let dt = self.cfg.dt;
+        for (vi, (&xf, &xo)) in self.v.iter_mut().zip(x_next.iter().zip(self.x.iter())) {
+            *vi = (xf - xo) / dt;
+        }
+        self.x = x_next;
+
+        let force_on_soft = self.contact_force_at_height(height);
+        CoupledStep {
+            force_on_soft,
+            rigid_z: self.data.xpos[self.body].z,
+        }
+    }
+
     /// Roll the coupled system forward `n_steps` **with the tangential friction grip**,
     /// returning the rigid body's final world position `xpos[body]`. The friction-coupled
     /// forward companion to [`Self::step`] (which is normal-only, force-at-COM): per step it
@@ -7817,6 +7860,49 @@ mod tests {
             readout.force_on_soft.norm() > 1e-6,
             "fist over the block should engage the soft contact",
         );
+    }
+
+    /// `step_kinematic` + `set_sphere_center` pose the finite sphere at a scripted world point and
+    /// take ONE soft step (no rigid integration) — the kinematic striker path. The fist over the
+    /// block engages and dimples the soft body; no dynamic rigid body is needed (a static anchor
+    /// just hosts the coupling).
+    #[test]
+    fn step_kinematic_poses_at_set_center_and_engages() {
+        const MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="anchor">
+      <geom type="sphere" size="0.01"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+        const FIST_R: f64 = 0.04;
+        const EDGE: f64 = 0.1;
+        let model = load_model(MJCF).expect("MJCF loads");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let mut c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, EDGE, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_sphere_collider(FIST_R);
+
+        // Pose the fist over the block centre, south pole pressing into the rest top face (z = EDGE).
+        let center = Vec3::new(EDGE / 2.0, EDGE / 2.0, EDGE + FIST_R - 0.01);
+        c.set_sphere_center(center);
+        let rest = c.soft_positions().to_vec();
+        let readout = c.step_kinematic();
+
+        assert_eq!(c.sphere_center_override, Some(center));
+        assert!(
+            readout.force_on_soft.norm() > 1e-6,
+            "fist over the block should engage the soft contact",
+        );
+        let moved = c
+            .soft_positions()
+            .iter()
+            .zip(&rest)
+            .any(|(a, b)| (a - b).abs() > 1e-9);
+        assert!(moved, "kinematic step should deform the soft body");
     }
 
     /// L1b articulated NORMAL wrench curvature: the contact-wrench node on a FINITE sphere
