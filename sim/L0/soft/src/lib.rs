@@ -83,6 +83,7 @@ pub use readout::{
 };
 pub use sdf_bridge::{
     Aabb3, DifferenceSdf, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf,
+    TranslatedSdf,
 };
 pub use solver::{
     CpuNewtonSolver, CpuTape, FrictionReactionGradients, FrictionVertexForce, LmConfig, NewtonStep,

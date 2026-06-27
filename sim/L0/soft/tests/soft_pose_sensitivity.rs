@@ -45,13 +45,12 @@
     clippy::expect_used
 )]
 
-use nalgebra::{Matrix3, Point3};
 use sim_ml_chassis::Tensor;
 use sim_soft::readout::scene::pick_vertices_by_predicate;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, RigidTwist, Sdf, Solver,
-    SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
+    PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, RigidTwist, Solver, SolverConfig,
+    SphereSdf, Tet4, TranslatedSdf, Vec3, VertexId,
 };
 
 // ── Scene constants (the keystone coupling regime) ────────────────────────
@@ -401,32 +400,16 @@ fn rotation_sensitivity_matches_resolve_fd() {
 
 // ── Curved-primitive pose sensitivity (the `−H·u` curvature term) ──────────
 
-/// A `SphereSdf` posed at a world `center` — forwards `eval`/`grad`/`hessian`
-/// (translation leaves the Hessian unchanged), so the curvature term is the
-/// sphere's own `∇²sd`.
-struct PosedSphere {
-    inner: SphereSdf,
-    center: Vec3,
-}
-impl Sdf for PosedSphere {
-    fn eval(&self, p: Point3<f64>) -> f64 {
-        self.inner.eval(p - self.center)
-    }
-    fn grad(&self, p: Point3<f64>) -> Vec3 {
-        self.inner.grad(p - self.center)
-    }
-    fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
-        self.inner.hessian(p - self.center)
-    }
-}
-
 /// Sphere radius (m) and its lateral centre (the block's top-face centre).
 const SPHERE_R: f64 = 0.04;
 
-fn sphere_at(center_z: f64) -> PosedSphere {
-    PosedSphere {
+/// A `SphereSdf` posed at the block's top-face centre, raised to `center_z` — the
+/// shared `TranslatedSdf` wrapper (translation leaves the Hessian unchanged, so
+/// the curvature term is the sphere's own `∇²sd`).
+fn sphere_at(center_z: f64) -> TranslatedSdf<SphereSdf> {
+    TranslatedSdf {
         inner: SphereSdf { radius: SPHERE_R },
-        center: Vec3::new(EDGE / 2.0, EDGE / 2.0, center_z),
+        offset: Vec3::new(EDGE / 2.0, EDGE / 2.0, center_z),
     }
 }
 

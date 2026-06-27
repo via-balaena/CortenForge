@@ -64,7 +64,7 @@ use sim_soft::{
     ActivePairsFor, BoundaryConditions, ContactModel, ContactPair, ContactPairReadout,
     CpuNewtonSolver, FrictionVertexForce, HandBuiltTetMesh, IpcRigidContact, LoadAxis,
     MaterialField, Mesh, NeoHookean, PenaltyRigidContact, RigidPlane, RigidTwist, Sdf, Solver,
-    SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
+    SolverConfig, SphereSdf, Tet4, TranslatedSdf, Vec3, VertexId,
 };
 use std::marker::PhantomData;
 
@@ -75,7 +75,7 @@ use std::marker::PhantomData;
 /// trait) so the soft-side contact types need no change.
 ///
 /// The primitive is generic over [`Sdf`] (not fixed to [`RigidPlane`]) so the
-/// coupling can pose a FINITE collider — a curved end-effector ([`PosedSphere`])
+/// coupling can pose a FINITE collider — a curved end-effector (`PosedSphere`)
 /// indenting the soft block — and not just the infinite downward half-space. The
 /// plane path constructs `from_primitive(RigidPlane, …)`, byte-identical to the
 /// pre-generalization `with_params(vec![plane], …)` (a single boxing of the same
@@ -109,41 +109,20 @@ impl PlaneContact for IpcRigidContact {
     }
 }
 
-/// A finite [`SphereSdf`] posed at a world `center` — the keystone's first finite
-/// rigid collider (the infinite [`RigidPlane`] successor). `SphereSdf` is
-/// origin-centred, so posing is a query-point translation `p ↦ p − center`;
-/// `eval`/`grad`/`hessian` forward to the inner sphere (translation leaves the
-/// Hessian — the curvature #415 added — unchanged, so the curved-normal pose
-/// sensitivity is the sphere's own `∇²sd`). A sphere needs no rotation, so
-/// translation alone poses it; the rotational pose carry is the L1b follow-on
-/// (when a shared `TranslatedSdf` graduates into `sim_soft`, deduping the
-/// finite-striker viewer + the L0 `soft_pose_sensitivity` gate's copies).
-#[derive(Clone, Copy, Debug)]
-pub struct PosedSphere {
-    /// Radius of the sphere in world units (metres).
-    pub radius: f64,
-    /// World-space centre the origin-centred [`SphereSdf`] is translated to.
-    pub center: Vec3,
-}
+/// The keystone's finite rigid collider: a [`SphereSdf`] posed at a world centre
+/// via [`TranslatedSdf`] (the shared `sim_soft` posing wrapper). `SphereSdf` is
+/// origin-centred and rotation-invariant, so a query-point translation `p ↦ p −
+/// center` is the full pose; `eval`/`grad`/`hessian` forward to the inner sphere
+/// (translation leaves the Hessian — the curvature #415 added — unchanged, so the
+/// curved-normal pose sensitivity is the sphere's own `∇²sd`).
+type PosedSphere = TranslatedSdf<SphereSdf>;
 
-impl Sdf for PosedSphere {
-    fn eval(&self, p: Point3<f64>) -> f64 {
-        SphereSdf {
-            radius: self.radius,
-        }
-        .eval(p - self.center)
-    }
-    fn grad(&self, p: Point3<f64>) -> Vec3 {
-        SphereSdf {
-            radius: self.radius,
-        }
-        .grad(p - self.center)
-    }
-    fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
-        SphereSdf {
-            radius: self.radius,
-        }
-        .hessian(p - self.center)
+/// Pose a [`SphereSdf`] of the given `radius` at world `center` — the keystone's
+/// finite curved end-effector (`PosedSphere`).
+fn posed_sphere(radius: f64, center: Vec3) -> PosedSphere {
+    TranslatedSdf {
+        inner: SphereSdf { radius },
+        offset: center,
     }
 }
 
@@ -1675,11 +1654,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     fn collider_hessian(&self, height: f64, p: Vec3) -> Matrix3<f64> {
         match self.collider {
             Collider::Plane => Matrix3::zeros(),
-            Collider::Sphere { radius } => PosedSphere {
-                radius,
-                center: self.sphere_center(radius, height),
+            Collider::Sphere { radius } => {
+                posed_sphere(radius, self.sphere_center(radius, height)).hessian(Point3::from(p))
             }
-            .hessian(Point3::from(p)),
         }
     }
 
@@ -1722,7 +1699,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     fn build_contact(&self, height: f64) -> C {
         if let Collider::Sphere { radius } = self.collider {
             let center = self.sphere_center(radius, height);
-            return C::from_primitive(PosedSphere { radius, center }, self.kappa, self.d_hat);
+            return C::from_primitive(posed_sphere(radius, center), self.kappa, self.d_hat);
         }
         let plane = if self.rotating_normal {
             // Rotating normal: the plane tracks the body ORIENTATION (`n̂ = R·(0,0,−1)`)
