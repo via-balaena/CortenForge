@@ -2600,12 +2600,14 @@ where
     /// `3 × n_dof` blocks. At configuration `x_curr`, step start `x_prev`, and this solver's
     /// [`friction_surface_drift`](Self::with_friction_surface_drift).
     ///
-    /// **Curved-collider scope (deferred):** unlike the scalar [`Self::friction_reaction_gradients`]
-    /// (which carries the curved-normal tangent-rotation term `DN·C`), this per-vertex VECTOR
-    /// version does NOT yet thread it — so on a finite curved primitive `dforce_dx` / `dforce_dheight`
-    /// drop the `∂(∇D_v)/∂n̂ · ∂n̂/∂·` contribution. Exact for a plane (`C = 0`). Its only consumer is
-    /// the off-COM moment / articulated wrench path, which is guarded plane-only at the coupling
-    /// (`require_plane_collider`) — the L1b articulated follow-on lifts both together.
+    /// **Curved-collider scope:** like the scalar [`Self::friction_reaction_gradients`], this
+    /// per-vertex VECTOR version threads the curved-normal tangent-rotation term `DN·C` — so on a
+    /// finite curved primitive `dforce_dx` gains `∂(∇D_v)/∂x_v += DN·C` and `dforce_dheight` gains
+    /// `DN·(−C·pose_dir)` (`C = ∂n̂/∂x_v = sign(dE)·∇²sd`, [`ContactModel::normal_curvature`]).
+    /// `C = 0` for a plane ⇒ byte-identical. FD-exact on a sphere
+    /// (`per_vertex_force_jacobians_sphere_matches_fd`); its off-COM-moment / articulated-friction
+    /// wrench consumer is now curvature-correct and un-guarded for the FRICTION-only articulated
+    /// gradients (the actuator/policy siblings stay `require_plane_collider`-guarded for the exo).
     #[must_use]
     pub fn friction_force_jacobians(
         &self,
@@ -2631,6 +2633,11 @@ where
             let pose_c = self
                 .contact
                 .pose_residual_derivative(pair, &positions, twist);
+            // Force-direction curvature `C = ∂n̂/∂x_v = sign(dE)·∇²sd` (0 for a plane,
+            // [`ContactModel::normal_curvature`]) — the curved-collider normal rotates as the
+            // contact point slides, turning the friction force (the per-vertex VECTOR analog of
+            // the curved-normal term `friction_reaction_gradients` carries).
+            let hess_n = self.contact.normal_curvature(pair, &positions);
             for (vid, force) in &grad_c.contributions {
                 let lambda = force.norm(); // λⁿ
                 if lambda == 0.0 {
@@ -2649,6 +2656,21 @@ where
                     for col in 0..3 {
                         dforce_dx[r * nd + 3 * v + col] += hess_d[(r, col)];
                         dforce_dxprev[r * nd + 3 * v + col] -= hess_d[(r, col)];
+                    }
+                }
+                // Curved-normal term `DN·C` (the VECTOR analog of `friction_reaction_gradients`'s
+                // scalar `(DN·C)ᵀ·react_dir`, kept per-vertex for the off-COM moment routing):
+                // ∂(∇D_v)/∂x_v gains `DN·C` as the tangent frame rotates with the sliding contact
+                // point (`∂n̂/∂x_v = C`). `C = 0` for a plane ⇒ literal +0 (the rows and the
+                // dforce_dheight curved term below stay byte-identical to the plane path). `n̂`
+                // does NOT depend on x_prev, so dforce_dxprev gains no curved term.
+                let dn = crate::contact::friction::normal_rotation_term(
+                    x_v, x_start, *force, lambda, mu, w,
+                );
+                let m_curv = dn * hess_n; // DN·C (3×3)
+                for r in 0..3 {
+                    for col in 0..3 {
+                        dforce_dx[r * nd + 3 * v + col] += m_curv[(r, col)];
                     }
                 }
                 // Moving-collider reference: ∂(∇D_v)/∂Δ_surf = −∇²D_v·drift_dir.
@@ -2675,6 +2697,10 @@ where
                         dforce_dheight += a * nhat.dot(&d);
                     }
                 }
+                // Curved-normal height term: raising the height translates the primitive +pose_dir,
+                // so `∂n̂/∂height = −C·pose_dir` and ∂(∇D_v)/∂height gains `DN·(−C·pose_dir)`.
+                // `C = 0` for a plane ⇒ +0 (byte-identical).
+                dforce_dheight += dn * (-(hess_n * pose_dir));
                 out.push(FrictionVertexForce {
                     vid: *vid,
                     force: grad_d,

@@ -105,18 +105,19 @@ fn sphere_total_force_jacobian_wrt_height_matches_resolve_fd() {
     );
 }
 
-/// The scope guard after the L1b free-body NORMAL + TANGENTIAL carries: the free-body NORMAL
-/// trajectory gradients (`sphere_trajectory_gradient.rs`) AND the free-body TANGENTIAL/FRICTION
-/// gradients (`sphere_friction_trajectory_gradient.rs`; per-term machine-exact in
+/// The scope guard after the L1b free-body + articulated NORMAL & FRICTION carries: the free-body
+/// gradients (`sphere_trajectory_gradient.rs`, `sphere_friction_trajectory_gradient.rs`) AND the
+/// articulated MATERIAL + FRICTION gradients (`sphere_articulated_trajectory_gradient.rs`,
+/// `sphere_articulated_friction_trajectory_gradient.rs`; per-term machine-exact in
 /// `sim_soft/tests/friction_sphere_tangent.rs`) are now curvature-correct for the sphere and
-/// un-guarded. The still-guarded frontier is the ARTICULATED wrench-path family — including the
-/// articulated FRICTION gradient here, whose `ContactWrenchTrajVjp` still drops the curved term
-/// (and `build_contact` poses the sphere over the block centre, not the arm tip). It must FAIL
-/// LOUDLY rather than emit a silently-wrong gradient (a silent contract violation on a public
-/// API is ship-blocking).
+/// un-guarded. The still-guarded frontier is the ARTICULATED ACTUATOR / POLICY wrench-path family
+/// — they share the curvature-correct normal + friction wrench but layer the state-dependent
+/// actuator dynamics (`g_act`) not yet sphere-gated (the exo follow-on). A finite sphere collider
+/// must FAIL LOUDLY there rather than emit a silently-wrong gradient (a silent contract violation
+/// on a public API is ship-blocking).
 #[test]
 #[should_panic(expected = "plane collider")]
-fn sphere_collider_panics_on_articulated_friction_gradient() {
+fn sphere_collider_panics_on_articulated_actuator_friction_gradient() {
     let model = load_model(HINGE_MJCF).expect("hinge MJCF loads");
     let mut data = model.make_data();
     data.qpos[0] = 0.3; // tilt off vertical
@@ -126,9 +127,10 @@ fn sphere_collider_panics_on_articulated_friction_gradient() {
         model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, KAPPA, 1.0e-2, 0.0,
     )
     .with_sphere_collider(SPHERE_R);
-    // An ARTICULATED friction gradient on the sphere is not yet curvature-correct (the
-    // wrench-path follow-on); it must panic at `require_plane_collider`, not return a wrong number.
-    let _ = coupling.coupled_trajectory_tangential_material_gradient_articulated(2, 0);
+    // The actuator-friction articulated gradient stays plane-guarded (the actuator `g_act` channel
+    // is not yet sphere-gated); the guard is its first statement, so empty controls are fine — it
+    // must panic at `require_plane_collider`, not return a wrong number.
+    let _ = coupling.coupled_trajectory_actuator_friction_gradient(&[]);
 }
 
 /// A tilted Y-hinge arm pressing a point-mass tip into the soft block — the
