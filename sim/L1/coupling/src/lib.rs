@@ -1813,26 +1813,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// guard for every sphere-capable trajectory method that does NOT thread the
     /// moving-end-effector centre carry.
     ///
-    /// **All actuator/policy + free-body gradients are now curvature-correct on a CENTROID sphere**
-    /// (the contact nodes carry the #415–#429 curvature; the actuator `g_act` channel is
-    /// contact-independent, so the formerly plane-only actuator/policy gradients just inherited the
-    /// curved contact — `actuator_sphere_centroid` / `..._friction_sphere_centroid` /
-    /// `design_policy_friction_sphere_centroid` gates). What none of these thread is the *moving*
-    /// end-effector (the 3-vector centre channel): only the articulated MATERIAL + FRICTION
-    /// gradients (and their forward oracles [`Self::coupled_trajectory_articulated_z`],
-    /// [`Self::coupled_trajectory_gripped_articulated`]) pose at + differentiate through
-    /// `geom_xpos(q)`. So this guard rejects a set contact geom on the rest — the FREE-BODY
-    /// normal/friction gradients, the free-body grip forward ([`Self::coupled_trajectory_grip`]),
-    /// and the ACTUATOR/POLICY gradients — which would otherwise silently pose the sphere at the
-    /// block centroid (ignoring the tip), a silent contract violation on a public API
-    /// (ship-blocking even if currently unused). Threading them is the follow-on. A no-op when no
-    /// geom is set (the centroid-posed gates + the plane).
+    /// Every sphere-capable gradient is curvature-correct on a CENTROID sphere (the contact nodes
+    /// carry the #415–#429 curvature; the actuator `g_act` channel is contact-independent). The
+    /// *moving* end-effector (the 3-vector centre channel, posing at + differentiating through
+    /// `geom_xpos(q)`) is threaded by the ARTICULATED normal/friction gradients (#428/#429) AND the
+    /// ACTUATOR/POLICY gradients (and all their forward oracles —
+    /// [`Self::coupled_trajectory_articulated_z`], [`Self::coupled_trajectory_gripped_articulated`],
+    /// the actuated/policy `*_z`/`*_gripped_x` oracles). The remaining guarded set — which would
+    /// otherwise silently pose the sphere at the block centroid (ignoring the tip), a silent
+    /// contract violation on a public API (ship-blocking even if currently unused) — is the
+    /// FREE-BODY gradients (`material`/`peak_force`/`control`/`policy`/`joint`/`tangential_*`) and
+    /// the free-body grip forward ([`Self::coupled_trajectory_grip`]). Threading those is the
+    /// follow-on. A no-op when no geom is set (the centroid-posed gates + the plane).
     fn require_no_moving_ee(&self) {
         assert!(
             self.contact_geom.is_none(),
-            "this gradient/rollout does not thread the moving end-effector (with_contact_geom) \
-             centre carry; only the articulated NORMAL + FRICTION gradients do (set the contact \
-             geom only on those paths, or use the block-centroid default)."
+            "this free-body gradient/rollout does not thread the moving end-effector \
+             (with_contact_geom) centre carry; the articulated + actuator/policy gradients do (set \
+             the contact geom only on those paths, or use the block-centroid default)."
         );
     }
 
@@ -1922,9 +1920,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// NOT a guard: the NORMAL contact crossing is curvature-correct for the sphere, as are the
     /// free-body + articulated FRICTION wrench paths (curved `DN·C` carried by #419 / the
-    /// articulated-friction rung) AND the actuator/policy gradients (centroid sphere — the `g_act`
-    /// channel is contact-independent). What no path threads except the articulated normal/friction
-    /// gradients is the MOVING end-effector centre channel ([`Self::require_no_moving_ee`]).
+    /// articulated-friction rung) AND the actuator/policy gradients. The MOVING end-effector centre
+    /// channel is threaded by the articulated normal/friction + actuator/policy gradients; only the
+    /// FREE-BODY gradients still guard it ([`Self::require_no_moving_ee`]).
     fn active_pair_force_factors(
         &self,
         height: f64,

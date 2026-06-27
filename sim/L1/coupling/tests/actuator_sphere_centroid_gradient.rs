@@ -9,8 +9,8 @@
 //! lifting the guard (→ `require_no_moving_ee`) just exposed an already-correct sphere gradient.
 //!
 //! Each gate is the one-tape gradient vs a central FD of the independent full-coupled rollout
-//! oracle, on a `with_sphere_collider` (centroid-posed) scene. The moving end-effector (tip-posed)
-//! centre channel is a separate follow-on (these stay `require_no_moving_ee`-guarded).
+//! oracle, on a `with_sphere_collider` (centroid-posed, no `with_contact_geom`) scene. The moving
+//! end-effector (tip-posed) centre channel was the follow-on, now done — `actuator_moving_ee_gradient.rs`.
 //!
 //! **What these gates prove (and what they do NOT).** They prove the actuator/policy gradient
 //! COMPOSITION is machine-exact on a sphere — the `g_act` channel composes correctly with the

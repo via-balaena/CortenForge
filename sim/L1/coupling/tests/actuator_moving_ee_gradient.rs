@@ -10,8 +10,12 @@
 //! objective is POSE-SENSITIVE (unlike the friction tip_x drag, #429), so this gate DOES discriminate
 //! the centre channel — a height-only adjoint disagrees with the geom-posed FD.
 //!
-//! n = 1 is the single-step leaf (isolate the moving-EE + g_act composition before the multi-step
-//! rollout); n = 2, 6 are the multi-step composition.
+//! n = 1 isolates the direct `g_act` transmission, NOT the moving-EE centre channel: the staggered
+//! order (the contact wrench is read from the pre-control state) means the last control reaches
+//! tip_z only through `g_act`, never through the contact/pose — so the centre channel is dormant at
+//! n = 1 (verified: zeroing the lateral `J_geom` rows leaves n = 1 unchanged). n = 2 is the minimal
+//! case that exercises the centre channel, and n = 2/6 is where zeroing the lateral rows breaks the
+//! gate (rel 2.9e-3) — the moving-EE discrimination. So n = 1 = g_act leaf, n ≥ 2 = moving-EE.
 
 #![allow(clippy::expect_used)]
 
@@ -54,7 +58,8 @@ fn actuator_moving_ee_engages_and_is_stable() {
 }
 
 /// `∂tip_z/∂u_k` (one tape) vs a central FD of the geom-posed `coupled_trajectory_actuated_z`.
-/// n = 1 is the single-step leaf; the centre channel (pose-sensitive tip_z) is what makes it match.
+/// n = 1 isolates the `g_act` transmission; at n ≥ 2 the pose-sensitive tip_z exercises (and the
+/// gate discriminates) the moving-EE centre channel.
 #[test]
 fn actuator_moving_ee_gradient_matches_fd() {
     let controls = [0.03_f64, -0.02, 0.04, 0.01, -0.015, 0.02];
