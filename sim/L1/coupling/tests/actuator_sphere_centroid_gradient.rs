@@ -11,6 +11,17 @@
 //! Each gate is the one-tape gradient vs a central FD of the independent full-coupled rollout
 //! oracle, on a `with_sphere_collider` (centroid-posed) scene. The moving end-effector (tip-posed)
 //! centre channel is a separate follow-on (these stay `require_no_moving_ee`-guarded).
+//!
+//! **What these gates prove (and what they do NOT).** They prove the actuator/policy gradient
+//! COMPOSITION is machine-exact on a sphere — the `g_act` channel composes correctly with the
+//! curved contact nodes (tape-vs-sphere-FD, the FD oracle poses the SAME sphere). They do NOT by
+//! themselves DISCRIMINATE the curved-normal term: in this gentle large-sphere regime (r = 0.08,
+//! south-pole patch ⇒ `∇²sd` ≈ 0) the curvature contribution to the trajectory gradient is below
+//! the gate tolerance (zeroing `SphereSdf::hessian` leaves all four passing) — the same
+//! small-curvature regime as #422. The curved-contact term's correctness is gated SINGLE-STEP
+//! (`sphere_contact_total_jacobian.rs`, `sim_soft/tests/friction_sphere_tangent.rs`, and the
+//! materially-curved articulated trajectory gates `sphere_articulated_{,friction_}trajectory_gradient.rs`).
+//! The point here is that lifting the conservative plane guard exposed an already-correct gradient.
 
 #![allow(clippy::expect_used)]
 
@@ -194,6 +205,7 @@ fn design_policy_friction_sphere_centroid_matches_fd() {
                 .x)
             / (2.0 * eps);
         let rel = (theta[k] - fd).abs() / fd.abs().max(1e-9);
+        assert!(fd.abs() > 1e-9, "θ[{k}]: degenerate FD");
         assert!(
             rel < 5e-3,
             "θ[{k}]: design+policy sphere gradient {} vs FD {fd} (rel {rel:e})",
@@ -210,6 +222,12 @@ fn design_policy_friction_sphere_centroid_matches_fd() {
             .x)
         / (2.0 * eps_mu);
     let rel_mu = (mu_grad - fd_mu).abs() / fd_mu.abs().max(1e-9);
+    // The design (μ) lever on a policy-driven tip_x is intrinsically small (the policy adapts), but
+    // must be a real signal — else the rel check is vacuously satisfied via the floor.
+    assert!(
+        fd_mu.abs() > 1e-9,
+        "μ: degenerate FD ({fd_mu:e}) — design lever inert?"
+    );
     assert!(
         rel_mu < 5e-3,
         "μ: design+policy sphere gradient {mu_grad} vs FD {fd_mu} (rel {rel_mu:e})"

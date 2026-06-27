@@ -2606,8 +2606,9 @@ where
     /// `DN·(−C·pose_dir)` (`C = ∂n̂/∂x_v = sign(dE)·∇²sd`, [`ContactModel::normal_curvature`]).
     /// `C = 0` for a plane ⇒ byte-identical. FD-exact on a sphere
     /// (`per_vertex_force_jacobians_sphere_matches_fd`); its off-COM-moment / articulated-friction
-    /// wrench consumer is now curvature-correct and un-guarded for the FRICTION-only articulated
-    /// gradients (the actuator/policy siblings stay `require_plane_collider`-guarded for the exo).
+    /// wrench consumer is curvature-correct and un-guarded for the articulated FRICTION gradients,
+    /// and the actuator/policy siblings inherit it (curvature-correct on a centroid sphere; the
+    /// `g_act` channel is contact-independent — they guard only the moving end-effector).
     #[must_use]
     pub fn friction_force_jacobians(
         &self,

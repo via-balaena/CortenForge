@@ -4725,7 +4725,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 }),
             );
 
-            // (3) contact wrench [τ; f] at the post-step soft config (flat normal).
+            // (3) contact wrench [τ; f] at the post-step soft config (curvature-correct on a
+            // sphere — `active` carries `collider_hessian`; centroid posing).
             let positions: Vec<Vec3> = x_next
                 .chunks_exact(3)
                 .map(|c| Vec3::new(c[0], c[1], c[2]))
