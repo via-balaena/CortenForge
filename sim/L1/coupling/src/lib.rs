@@ -1441,11 +1441,12 @@ pub struct CoupledStep {
 ///
 /// **Framing.** A frame pairs the post-step `soft_positions` and contact `fist_center`
 /// (both from this step's *contact* configuration — the correct staggered pairing: the
-/// soft solve responds to the step-start sphere) with the post-step `arm_pivot`. For
-/// the centroid grip the fist is static over the block (it does not track the swinging
-/// arm — that is the moving-end-effector follow-on), so the swing angle is not
-/// recoverable from these fields alone; render the limb from `arm_pivot` → `fist_center`
-/// only in the moving-EE case.
+/// soft solve responds to the step-start sphere) with the post-step rigid pose
+/// (`arm_pivot`, `arm_tip`). Render the swinging limb as the segment `arm_pivot →
+/// arm_tip` (the pivot is the fixed hinge for the grip scene; the tip swings). For the
+/// centroid grip the `fist_center` is static over the block (the contact is abstracted
+/// to the block centroid — the moving-end-effector follow-on would instead pose it at
+/// `arm_tip`), so draw it as the abstracted contact patch, not the limb's end.
 #[derive(Clone, Debug)]
 pub struct GripRolloutFrame {
     /// Deformed soft-body vertex positions after this step, flat
@@ -1454,15 +1455,47 @@ pub struct GripRolloutFrame {
     /// the surface mesh.
     pub soft_positions: Vec<f64>,
     /// The gripped rigid body's world **origin** (`data().xpos[body]`) after this step
-    /// — the arm-side anchor a viewer renders the limb from. This is the body origin
-    /// (e.g. the fixed hinge pivot for the grip scene), not the inertial-frame tip the
-    /// scalar forward returns (`xipos`).
+    /// — the limb's anchor (the fixed hinge pivot for the grip scene). Pair with
+    /// `arm_tip` to draw the limb.
     pub arm_pivot: [f64; 3],
+    /// The gripped rigid body's world **inertial origin** (`data().xipos[body]`) after
+    /// this step — the swinging end of the limb, the same quantity the scalar forward
+    /// tracks (`tip_x = xipos[body].x`). Render the limb as `arm_pivot → arm_tip`.
+    pub arm_tip: [f64; 3],
     /// The contact sphere's world centre this step — the block centroid (centroid
     /// grip) or the arm-tip geom (moving end-effector). This is what the soft body
     /// actually grips; render it as the fist. Sphere-only: a plane collider has no
     /// fist, and this defaults to the block-centre point on the contact plane.
     pub fist_center: [f64; 3],
+    /// The gripped limb's primary joint coordinate `qpos[0]` this step — the hinge angle
+    /// the holding objective regulates (and the FD oracle for
+    /// [`StaggeredCoupling::coupled_trajectory_design_policy_hold_gradient`]).
+    pub qpos0: f64,
+}
+
+/// One built design+policy friction-grip tape, ready to seed with an objective.
+///
+/// The expensive per-step coupled machinery — the #406 design+policy-friction tape (soft
+/// re-equilibration, contact + friction wrench nodes, the closed-loop state→control recurrence,
+/// the `μ`/`θ` leaves) — is shared by every objective; only the *seeding* differs. The
+/// terminal-outcome objective seeds `tip_x` (via `s_final`/`jx_final`); a trajectory-integrated
+/// objective seeds a cost summed over `qpos_steps` (the per-step policy-observed hinge angle). Built
+/// by `build_design_policy_tape`; consumed by the public design+policy gradients.
+struct DesignPolicyTape {
+    tape: Tape,
+    /// The material design leaf (`μ`, with the `λ = 4μ` tie folded into its grip node).
+    p_var: Var,
+    /// The policy parameter leaves (`θ`), shared across steps.
+    param_vars: Vec<Var>,
+    /// The policy-observed hinge angle `qpos[0]` at the start of each step — the leaf a
+    /// trajectory-integrated objective (e.g. a holding cost) regulates.
+    qpos_steps: Vec<Var>,
+    /// The terminal carried state (`[qpos; qvel]`), the parent of the terminal-`tip_x` seam node.
+    s_final: Var,
+    /// `∂tip_x/∂state` at the terminal config (the linear COM-Jacobian row), for `PoseSeamVjp`.
+    jx_final: Vec<f64>,
+    /// The terminal tangential drag `tip_x = xipos[body].x` (the terminal-outcome value).
+    tip_x: f64,
 }
 
 /// The state a [`DiffPolicy`] observes each step — two loop-carried chassis-tape scalar [`Var`]s.
@@ -5616,51 +5649,23 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (tip_x, grad)
     }
 
-    /// **Design + policy on ONE friction-grip tape — the mission's "one outer loop over BOTH".**
-    /// The articulated-grip analog of [`Self::coupled_trajectory_joint_gradient`] (the free-platen
-    /// design+policy gradient): roll the coupled system forward `n_steps` under a closed-loop
-    /// feedback policy `u_k = π_θ(qpos₀, qvel₀)` ([`DiffPolicy`]) on ONE chassis tape, with **both**
-    /// the soft material design variable `μ` (the stiffness scale, with the `λ = 4μ` tie) AND the
-    /// policy parameters `θ` live as tape leaves, then a single `tape.backward(tip_x_N)` reads BOTH
-    /// gradients at once: `(tip_x_N, ∂tip_x_N/∂μ_total, [∂tip_x_N/∂θ_0 …])`, where `∂tip_x_N/∂μ_total`
-    /// is the total `∂/∂μ + 4·∂/∂λ` along the stiffness-scale line. The differentiable co-design lever
-    /// for tuning the de-escalation buffer's stiffness AND the agent's feedback policy together,
-    /// through an articulated friction grip (force + off-COM moment).
-    ///
-    /// This is the union of [`Self::coupled_trajectory_tangential_material_gradient_articulated`]
-    /// (the friction-grip material design leaf) and
-    /// [`Self::coupled_trajectory_policy_friction_gradient`] (the closed-loop policy leaves): it is a
-    /// clone of the latter with exactly two changes — (1) the material `μ` rides as a `param_tensor`
-    /// leaf (the gradient target) rather than a constant, and (2) the soft node is built with
-    /// [`CpuNewtonSolver::trajectory_step_vjp_grip_combined`]`(&[1, 4], …)` so the design variable's
-    /// single tape parent carries the `λ = 4μ` total `∂/∂μ_total` in ONE backward (vs the single-param
-    /// `trajectory_step_vjp_grip`). The reverse pass therefore accumulates the material gradient
-    /// (through the soft re-equilibration at every step) AND the policy gradient
-    /// (backprop-through-time across the state→control recurrence) simultaneously — both design and
-    /// policy, one friction-grip tape, one backward.
-    ///
-    /// **Scope.** Identical to [`Self::coupled_trajectory_policy_friction_gradient`]: a single AFFINE
-    /// actuator on a EUCLIDEAN mechanism (`nq == nv`), flat normal, friction active,
-    /// `rigid_damping = 0`. The policy observes the single hinge's joint state (`s[0]`, `s[nv]`).
-    /// FD-gated against [`Self::coupled_trajectory_policy_gripped_x`] on couplings rebuilt at `μ ± ε`
-    /// (the material/design channel — `λ = 4μ` tied, so the build perturbation measures
-    /// `∂/∂μ_total`) and at `θ ± ε` (the policy channel).
+    /// Build the shared design+policy friction-grip tape (the #406 per-step machinery), ready to seed
+    /// with an objective. Both public design+policy gradients call this and then seed terminal
+    /// `tip_x` or a trajectory-integrated cost over `qpos_steps` before one backward — the expensive
+    /// coupled recurrence is built once, the objective is a thin tail. See [`DesignPolicyTape`].
     ///
     /// # Panics
     /// Panics if `params.len() != policy.n_params()`, if `nq != nv`, if `nu != 1`, if friction is
     /// inactive, if `rigid_damping != 0`, if the rotating normal is enabled, or if a step diverges.
-    #[must_use]
     // One coherent per-step tape loop (fuses the friction-grip material design leaf and the closed-
-    // loop policy leaves); a clone of `coupled_trajectory_policy_friction_gradient` with the material
-    // leaf differentiated via the combined grip node. Splitting it would scatter the recurrence.
-    // expect_used: a rigid/soft divergence is a programmer error surfaced loudly, not recoverable.
+    // loop policy leaves). expect_used: a rigid/soft divergence is a programmer error surfaced loudly.
     #[allow(clippy::too_many_lines, clippy::expect_used)]
-    pub fn coupled_trajectory_design_policy_friction_gradient<P: DiffPolicy>(
+    fn build_design_policy_tape<P: DiffPolicy>(
         &mut self,
         policy: &P,
         params: &[f64],
         n_steps: usize,
-    ) -> (f64, f64, Vec<f64>) {
+    ) -> DesignPolicyTape {
         assert_eq!(
             params.len(),
             policy.n_params(),
@@ -5717,6 +5722,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             s0[nv + i] = self.data.qvel[i];
         }
         let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
+        // Collect the per-step policy-observed hinge angle for trajectory-integrated objectives
+        // (e.g. the holding cost). Pure observation of an already-taped Var — the terminal-`tip_x`
+        // objective never reads it, so that path is unchanged.
+        let mut qpos_steps: Vec<Var> = Vec::with_capacity(n_steps);
 
         for _ in 0..n_steps {
             self.data.forward(&self.model).expect("fresh FK");
@@ -5739,6 +5748,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     n_state: 2 * nv,
                 }),
             );
+            qpos_steps.push(qpos_obs);
             let qvel_obs = tape.push_custom(
                 &[s_var],
                 Tensor::from_slice(&[self.data.qvel[0]], &[1]),
@@ -5979,18 +5989,121 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let jlin = self.com_linear_jacobian();
             (0..nv).map(|j| jlin[(0, j)]).collect()
         };
-        let obj_var = tape.push_custom(
-            &[s_var],
-            Tensor::from_slice(&[tip_x], &[1]),
-            Box::new(PoseSeamVjp { jz: jx_final }),
+        DesignPolicyTape {
+            tape,
+            p_var,
+            param_vars,
+            qpos_steps,
+            s_final: s_var,
+            jx_final,
+            tip_x,
+        }
+    }
+
+    /// **Design + policy on ONE friction-grip tape — the mission's "one outer loop over BOTH".**
+    /// The articulated-grip analog of [`Self::coupled_trajectory_joint_gradient`] (the free-platen
+    /// design+policy gradient): roll the coupled system forward `n_steps` under a closed-loop
+    /// feedback policy `u_k = π_θ(qpos₀, qvel₀)` ([`DiffPolicy`]) on ONE chassis tape, with **both**
+    /// the soft material design variable `μ` (the stiffness scale, with the `λ = 4μ` tie) AND the
+    /// policy parameters `θ` live as tape leaves, then a single `tape.backward(tip_x_N)` reads BOTH
+    /// gradients at once: `(tip_x_N, ∂tip_x_N/∂μ_total, [∂tip_x_N/∂θ_0 …])`, where `∂tip_x_N/∂μ_total`
+    /// is the total `∂/∂μ + 4·∂/∂λ` along the stiffness-scale line. The differentiable co-design lever
+    /// for tuning the de-escalation buffer's stiffness AND the agent's feedback policy together,
+    /// through an articulated friction grip (force + off-COM moment).
+    ///
+    /// This is the union of [`Self::coupled_trajectory_tangential_material_gradient_articulated`]
+    /// (the friction-grip material design leaf) and
+    /// [`Self::coupled_trajectory_policy_friction_gradient`] (the closed-loop policy leaves): the
+    /// shared per-step tape (`build_design_policy_tape`) carries the material `μ` as a leaf
+    /// (the `λ = 4μ` tie folded into the combined grip node) AND the policy leaves, so the reverse
+    /// pass accumulates the material gradient (through the soft re-equilibration at every step) AND
+    /// the policy gradient (backprop-through-time across the state→control recurrence) simultaneously
+    /// — both design and policy, one friction-grip tape, one backward seeding the terminal `tip_x`.
+    ///
+    /// **Scope.** Identical to [`Self::coupled_trajectory_policy_friction_gradient`]: a single AFFINE
+    /// actuator on a EUCLIDEAN mechanism (`nq == nv`), flat normal, friction active,
+    /// `rigid_damping = 0`. The policy observes the single hinge's joint state (`s[0]`, `s[nv]`).
+    /// FD-gated against [`Self::coupled_trajectory_policy_gripped_x`] on couplings rebuilt at `μ ± ε`
+    /// (the material/design channel — `λ = 4μ` tied, so the build perturbation measures
+    /// `∂/∂μ_total`) and at `θ ± ε` (the policy channel).
+    ///
+    /// # Panics
+    /// Panics if `params.len() != policy.n_params()`, if `nq != nv`, if `nu != 1`, if friction is
+    /// inactive, if `rigid_damping != 0`, if the rotating normal is enabled, or if a step diverges.
+    #[must_use]
+    pub fn coupled_trajectory_design_policy_friction_gradient<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+    ) -> (f64, f64, Vec<f64>) {
+        let mut t = self.build_design_policy_tape(policy, params, n_steps);
+        // Seed the terminal tangential drag `tip_x = xipos[body].x` and backward once.
+        let obj_var = t.tape.push_custom(
+            &[t.s_final],
+            Tensor::from_slice(&[t.tip_x], &[1]),
+            Box::new(PoseSeamVjp { jz: t.jx_final }),
         );
-        tape.backward(obj_var);
-        let mu_grad = tape.grad_tensor(p_var).as_slice()[0];
-        let theta_grad: Vec<f64> = param_vars
+        t.tape.backward(obj_var);
+        let mu_grad = t.tape.grad_tensor(t.p_var).as_slice()[0];
+        let theta_grad: Vec<f64> = t
+            .param_vars
             .iter()
-            .map(|&p| tape.grad_tensor(p).as_slice()[0])
+            .map(|&p| t.tape.grad_tensor(p).as_slice()[0])
             .collect();
-        (tip_x, mu_grad, theta_grad)
+        (t.tip_x, mu_grad, theta_grad)
+    }
+
+    /// **Trajectory-integrated HOLDING gradient** — the first sustained-behavior co-design lever.
+    /// Where [`Self::coupled_trajectory_design_policy_friction_gradient`] differentiates a *terminal*
+    /// outcome (`tip_x_N`), this differentiates a cost summed over the WHOLE rollout: the squared
+    /// deviation of the gripped limb's hinge angle from a held setpoint,
+    /// `L = Σₖ (qₖ − q_hold)²` (k = 0 … n_steps−1, `qₖ` = the policy-observed `qpos[0]` at the *start*
+    /// of step k). Minimizing `L` over `(μ, θ)` co-designs a buffer + holding policy that keep the
+    /// limb *pressed at `q_hold`* throughout — a sustained de-escalation grip, not a transient touch.
+    /// (The k = 0 term is the fixed initial angle — a constant offset in `L` with zero gradient, so it
+    /// does not affect the minimizer; it is kept so `L` matches the forward oracle term-for-term.)
+    ///
+    /// Returns `(L, ∂L/∂μ_total, [∂L/∂θ_0 …])` from ONE backward over the shared design+policy tape
+    /// (`build_design_policy_tape`): the per-step `qₖ` are already taped Vars, so the cost is
+    /// a thin sum-of-squares tail on the same #406 machinery (no new physics). The `λ = 4μ` tie rides
+    /// the same combined grip node, so `∂L/∂μ_total` is the total `∂/∂μ + 4·∂/∂λ`.
+    ///
+    /// **Scope.** Identical to the terminal sibling (`nq == nv`, one affine actuator, flat normal,
+    /// friction active, `rigid_damping = 0`). FD-gated against a forward holding cost
+    /// (`Σ (qₖ − q_hold)²` over [`Self::coupled_trajectory_policy_gripped_capture`]).
+    ///
+    /// # Panics
+    /// Panics under the same conditions as [`Self::coupled_trajectory_design_policy_friction_gradient`].
+    #[must_use]
+    pub fn coupled_trajectory_design_policy_hold_gradient<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+        q_hold: f64,
+    ) -> (f64, f64, Vec<f64>) {
+        let mut t = self.build_design_policy_tape(policy, params, n_steps);
+        // L = Σ (qₖ − q_hold)², built on the shared tape: subtract the q_hold constant, square via
+        // mul, accumulate via add. One backward over the sum reads ∂L/∂μ and ∂L/∂θ.
+        let neg_q_hold = t.tape.constant_tensor(Tensor::from_slice(&[-q_hold], &[1]));
+        let mut cost_var = t.tape.constant_tensor(Tensor::from_slice(&[0.0], &[1]));
+        for &q_var in &t.qpos_steps {
+            let dev = t.tape.add(q_var, neg_q_hold);
+            let sq = t.tape.mul(dev, dev);
+            cost_var = t.tape.add(cost_var, sq);
+        }
+        // Read L from the tape's forward value (single source of truth — the same node `backward`
+        // differentiates), not a parallel hand-sum.
+        let cost_val = t.tape.value_tensor(cost_var).as_slice()[0];
+        t.tape.backward(cost_var);
+        let mu_grad = t.tape.grad_tensor(t.p_var).as_slice()[0];
+        let theta_grad: Vec<f64> = t
+            .param_vars
+            .iter()
+            .map(|&p| t.tape.grad_tensor(p).as_slice()[0])
+            .collect();
+        (cost_val, mu_grad, theta_grad)
     }
 
     /// **The keystone control-gradient (the policy half's substrate).** Roll the
@@ -6568,10 +6681,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         };
         let fist = self.sphere_center(radius, height);
         let pivot = self.data.xpos[self.body];
+        let tip = self.data.xipos[self.body];
         GripRolloutFrame {
             soft_positions: self.x.clone(),
             arm_pivot: [pivot.x, pivot.y, pivot.z],
+            arm_tip: [tip.x, tip.y, tip.z],
             fist_center: [fist.x, fist.y, fist.z],
+            qpos0: self.data.qpos[0],
         }
     }
 
@@ -8135,6 +8251,21 @@ mod tests {
                 && dgrad.len() == 3
                 && dgrad.iter().all(|g| g.is_finite()),
             "design+policy-friction gradient must be finite, got ({dx}, {dmu}, {dgrad:?})"
+        );
+        // Trajectory-integrated HOLDING gradient (Σ (qₖ − q_hold)²) on the SAME shared tape —
+        // accuracy is gated in `design_policy_hold_gradient.rs`; this keeps --lib coverage honest.
+        let (lcost, lmu, lgrad) = build().coupled_trajectory_design_policy_hold_gradient(
+            &LinearFeedback,
+            &params,
+            3,
+            0.25,
+        );
+        assert!(
+            lcost.is_finite()
+                && lmu.is_finite()
+                && lgrad.len() == 3
+                && lgrad.iter().all(|g| g.is_finite()),
+            "holding gradient must be finite, got ({lcost}, {lmu}, {lgrad:?})"
         );
     }
 
