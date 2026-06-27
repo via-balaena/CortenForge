@@ -31,13 +31,10 @@
     clippy::doc_markdown
 )]
 
-use sim_ml_chassis::Tensor;
+use sim_coupling::StaggeredCoupling;
+use sim_mjcf::load_model;
 use sim_soft::material::silicone_table::ECOFLEX_00_30_MEASURED;
-use sim_soft::{
-    BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, Solver, SolverConfig, SphereSdf, Tet4,
-    TranslatedSdf, Vec3, VertexId,
-};
+use sim_soft::{Vec3, VertexId};
 
 // ── Soft buffer (measured-Ecoflex block) ──
 // Finer than Rung 2 (6) so a DEEP strike resolves as a local crater AND stays inside the
@@ -119,85 +116,54 @@ struct Capture {
 }
 
 fn run_capture() -> Capture {
-    let field = MaterialField::uniform(ECOFLEX_00_30_MEASURED.mu, 4.0 * ECOFLEX_00_30_MEASURED.mu);
-    let mesh = HandBuiltTetMesh::uniform_block(N_PER_EDGE, EDGE, &field);
-    let n = mesh.n_vertices();
-    let pinned: Vec<VertexId> = sim_soft::pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
-    assert!(!pinned.is_empty(), "soft block has no z=0 base to pin");
+    // The arm is KINEMATIC (closed-form FK/IK, no rigid solver), so this is a one-way coupling: the
+    // fist is posed at its FK centre and the buffer responds, no reaction fed back. A static anchor
+    // body hosts the coupling; `step_kinematic` poses the fist via `set_sphere_center`.
+    let model = load_model(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="anchor"><geom type="sphere" size="0.01"/></body>
+  </worldbody>
+</mujoco>"#,
+    )
+    .expect("anchor MJCF loads");
+    let data = model.make_data();
+    let mu = ECOFLEX_00_30_MEASURED.mu;
+    let mut c: StaggeredCoupling = StaggeredCoupling::new(
+        model, data, 1, 0.005, N_PER_EDGE, EDGE, mu, DT, KAPPA, D_HAT, 0.0,
+    )
+    .with_sphere_collider(FIST_R);
 
-    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
-    let boundary_faces = mesh.boundary_faces().to_vec();
-    let mut x: Vec<f64> = rest_positions
-        .iter()
-        .flat_map(|p| [p.x, p.y, p.z])
-        .collect();
-    let mut v = vec![0.0_f64; 3 * n];
-
-    let mut cfg = SolverConfig::skeleton();
-    cfg.dt = DT;
-    cfg.max_newton_iter = 80;
-    let theta = Tensor::zeros(&[0]);
+    let to_vec3 = |flat: &[f64]| -> Vec<Vec3> {
+        flat.chunks_exact(3)
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+            .collect()
+    };
+    let rest_positions = to_vec3(c.soft_positions());
+    let boundary_faces: Vec<[VertexId; 3]> = c.soft_boundary_faces();
 
     let joint_pt = |j: Vec3| [j.x, j.y, j.z];
-
-    let mut soft_frames: Vec<Vec<f64>> = vec![x.clone()];
+    let mut soft_frames: Vec<Vec<f64>> = vec![c.soft_positions().to_vec()];
     let mut joints: Vec<[[f64; 3]; 3]> = vec![arm_joints(0).map(joint_pt)];
     let mut peak_force = 0.0_f64;
     let mut max_indent_reached = 0.0_f64;
 
     for k in 1..=N_STEPS {
         let j = arm_joints(k);
-        let fist = j[2];
-        // Re-pose the finite fist by rebuilding the contact at its FK centre (the Rung 2 pattern).
-        let contact = PenaltyRigidContact::with_params(
-            vec![TranslatedSdf {
-                inner: SphereSdf { radius: FIST_R },
-                offset: fist,
-            }],
-            KAPPA,
-            D_HAT,
-        );
-        let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
-            Tet4,
-            mesh.clone(),
-            contact,
-            cfg,
-            BoundaryConditions::new(pinned.clone(), Vec::new()),
-        );
-        let x_t = Tensor::from_slice(&x, &[3 * n]);
-        let v_t = Tensor::from_slice(&v, &[3 * n]);
-        let x_final = solver.replay_step(&x_t, &v_t, &theta, DT).x_final;
-        for i in 0..3 * n {
-            v[i] = (x_final[i] - x[i]) / DT;
-        }
-        x = x_final;
+        // Pose the fist at its FK centre (the arm tip) and take one one-way soft step.
+        c.set_sphere_center(j[2]);
+        let step = c.step_kinematic();
 
-        let positions: Vec<Vec3> = x
-            .chunks_exact(3)
-            .map(|c| Vec3::new(c[0], c[1], c[2]))
-            .collect();
-        let readout = PenaltyRigidContact::with_params(
-            vec![TranslatedSdf {
-                inner: SphereSdf { radius: FIST_R },
-                offset: fist,
-            }],
-            KAPPA,
-            D_HAT,
-        );
-        let fz: f64 = readout
-            .per_pair_readout(&mesh, &positions)
-            .iter()
-            .map(|r| r.force_on_soft.z)
-            .sum();
-        peak_force = peak_force.max(fz.abs());
-        let deepest_push = positions
+        peak_force = peak_force.max(step.force_on_soft.z.abs());
+        let deepest_push = to_vec3(c.soft_positions())
             .iter()
             .zip(&rest_positions)
             .map(|(p, r)| r.z - p.z)
             .fold(0.0_f64, f64::max);
         max_indent_reached = max_indent_reached.max(deepest_push);
 
-        soft_frames.push(x.clone());
+        soft_frames.push(c.soft_positions().to_vec());
         joints.push(j.map(joint_pt));
     }
 
