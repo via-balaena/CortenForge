@@ -29,6 +29,7 @@
 
 use sim_coupling::StaggeredCoupling;
 use sim_mjcf::load_model;
+use sim_soft::Vec3;
 
 const PLATEN_MJCF: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
@@ -102,6 +103,54 @@ fn sphere_total_force_jacobian_wrt_height_matches_resolve_fd() {
     );
     eprintln!(
         "✓ sphere finite-contact total Jacobian matches the nonlinear re-solve FD (rel {rel:.2e})"
+    );
+}
+
+/// The **moving-end-effector leaf** (single-step): the total `∂(contact force)/∂(sphere centre
+/// LATERAL x̂)` matches a black-box re-solve FD. The keystone validates only the z-HEIGHT pose
+/// channel; tracking the arm tip moves the centre in x/y too, so the trajectory carry needs the
+/// per-axis sensitivity. `contact_force_centre_total_jacobian(dir = x̂)` reuses the same explicit +
+/// implicit structure with `dir` substituted — the curvature term is axis-generic (its L0 leaf is
+/// `soft_pose_sensitivity::sphere_pose_sensitivity_lateral_matches_resolve_fd`). Proves the L1
+/// per-axis sensitivity BEFORE any trajectory threading.
+#[test]
+fn sphere_total_force_jacobian_wrt_lateral_centre_matches_resolve_fd() {
+    let model = load_model(PLATEN_MJCF).expect("platen MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("initial forward");
+    let mut coupling: StaggeredCoupling = StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, KAPPA, 1.0e-2, 12.0,
+    )
+    .with_sphere_collider(SPHERE_R);
+
+    // Pose the sphere over the block centre at the engaged depth (south pole ~1.5 mm in), then probe
+    // the LATERAL sensitivity by re-pointing the centre override along x̂ (the moving-tip channel).
+    let h = 0.0985;
+    let centre = Vec3::new(0.05, 0.05, h + SPHERE_R);
+    coupling.set_sphere_center(centre);
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+
+    // Analytic total = explicit (∂force/∂cₓ|_x) + implicit (∂force/∂x · ∂x*/∂cₓ).
+    let analytic = coupling.contact_force_centre_total_jacobian(h, dir);
+
+    // Black-box oracle: re-point the centre ± ε along x̂ and central-difference the contact force.
+    let eps = 1.0e-6;
+    coupling.set_sphere_center(centre + dir * eps);
+    let fp = coupling.resolved_contact_force(h);
+    coupling.set_sphere_center(centre - dir * eps);
+    let fm = coupling.resolved_contact_force(h);
+    let fd = (fp - fm) / (2.0 * eps);
+
+    let rel = (analytic - fd).norm() / fd.norm();
+    eprintln!("sphere lateral ∂force/∂cₓ: analytic={analytic:?}  FD={fd:?}  rel={rel:.3e}");
+    assert!(
+        fd.norm() > 1.0,
+        "degenerate gate: lateral re-solve FD ≈ 0 ({}) — sphere not engaging?",
+        fd.norm()
+    );
+    assert!(
+        rel < 1e-6,
+        "lateral centre Jacobian disagrees with re-solve FD (rel {rel:.3e}): {analytic:?} vs {fd:?}"
     );
 }
 
