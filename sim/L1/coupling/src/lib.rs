@@ -5530,6 +5530,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             s_var = s_next_var;
         }
 
+        // expect_used: a fresh-FK divergence is a programmer error surfaced loudly (mirrors `step`);
+        // a statement-level allow because the moving-EE threading pushes this tail past the fn-level
+        // allow's reach in the grade safety scanner's 300-line back-window.
+        #[allow(clippy::expect_used)]
         self.data.forward(&self.model).expect("fresh FK (output)");
         let tip_x = self.data.xipos[self.body].x;
         let jx_final: Vec<f64> = {
@@ -5902,6 +5906,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             s_var = s_next_var;
         }
 
+        // expect_used: a fresh-FK divergence is a programmer error surfaced loudly (mirrors `step`);
+        // a statement-level allow because the moving-EE threading pushes this tail past the fn-level
+        // allow's reach in the grade safety scanner's 300-line back-window.
+        #[allow(clippy::expect_used)]
         self.data.forward(&self.model).expect("fresh FK (output)");
         let tip_x = self.data.xipos[self.body].x;
         let jx_final: Vec<f64> = {
