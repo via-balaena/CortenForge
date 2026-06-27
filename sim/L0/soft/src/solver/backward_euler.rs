@@ -3458,6 +3458,23 @@ where
         self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, &[pose_dir], drift_dir)
     }
 
+    /// The moving-end-effector 3-vector centre sibling of [`Self::trajectory_step_vjp_grip_combined`]
+    /// (the tied design-variable param RHS with the centre pose basis; cf.
+    /// [`Self::trajectory_step_vjp_grip_centre`]).
+    #[must_use]
+    pub fn trajectory_step_vjp_grip_combined_centre(
+        &self,
+        x_final: &[f64],
+        x_prev: &[f64],
+        dt: f64,
+        param_weights: &[f64],
+        pose_basis: &[Vec3],
+        drift_dir: Vec3,
+    ) -> TrajectoryStepVjp {
+        let dr_dparam = self.assemble_material_residual_grad_combined(x_final, param_weights);
+        self.trajectory_step_vjp_grip_core(x_final, x_prev, dt, &dr_dparam, pose_basis, drift_dir)
+    }
+
     /// Shared core of the friction-grip soft VJP node: everything except WHICH scalar the param
     /// parent represents. `dr_dparam` is the full-DOF residual sensitivity for that scalar
     /// (material `∂r/∂p_k` or friction-coefficient `∂r/∂μ_c`); the rest — pose, drift, `x_prev`
