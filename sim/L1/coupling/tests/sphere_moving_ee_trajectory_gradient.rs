@@ -118,3 +118,52 @@ fn sphere_moving_ee_gradient_matches_full_coupled_fd() {
 fn moving_ee_panics_on_articulated_friction_gradient() {
     let _ = build(MU0).coupled_trajectory_tangential_material_gradient_articulated(2, 0);
 }
+
+/// The friction-COEFFICIENT articulated gradient is the second sphere-capable friction path that
+/// does not thread the centre — it too must reject a set contact geom (the same guard).
+#[test]
+#[should_panic(expected = "moving end-effector")]
+fn moving_ee_panics_on_articulated_friction_coeff_gradient() {
+    let _ = build(MU0).coupled_trajectory_tangential_friction_coeff_gradient_articulated(2);
+}
+
+/// Finding-1 regression: with a PLANE collider, `with_contact_geom` must be a NO-OP for the
+/// gradient. `build_contact` ignores the centre override for a plane (the forward poses at the
+/// COM height `xipos.z`), so the adjoint must take the scalar-height channel — NOT the
+/// geom-Jacobian centre channel (which routes `∂h/∂q` through `geom_xpos ≠ xipos` → a silently
+/// wrong gradient). The gradient with a set contact geom must be BYTE-IDENTICAL to without.
+#[test]
+fn plane_collider_ignores_contact_geom_in_gradient() {
+    const PLANE_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let build_plane = |geom: Option<usize>| -> StaggeredCoupling {
+        let model = load_model(PLANE_MJCF).expect("plane MJCF loads");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3; // tilt → off-COM contact (geom_xpos ≠ xipos for the rotational DOF)
+        data.forward(&model).expect("forward");
+        let mut c: StaggeredCoupling = StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        );
+        if let Some(g) = geom {
+            c = c.with_contact_geom(g);
+        }
+        c
+    };
+    let (z0, g0) = build_plane(None).coupled_trajectory_material_gradient_articulated(4, 0);
+    let (z1, g1) = build_plane(Some(0)).coupled_trajectory_material_gradient_articulated(4, 0);
+    assert_eq!(
+        z0, z1,
+        "plane + contact_geom must not change the forward value"
+    );
+    assert_eq!(
+        g0, g1,
+        "plane + contact_geom must not change the gradient (with_contact_geom is a no-op for a plane)"
+    );
+}

@@ -1827,19 +1827,21 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     }
 
     /// Assert no contact end-effector geom is set ([`Self::with_contact_geom`]) — the scope
-    /// guard for the sphere-capable articulated gradients that do NOT yet thread the
+    /// guard for every sphere-capable trajectory method that does NOT thread the
     /// moving-end-effector centre carry. Only
-    /// [`Self::coupled_trajectory_material_gradient_articulated`] threads the moving centre;
-    /// the articulated FRICTION gradients would otherwise silently pose the sphere at the block
-    /// centroid (ignoring the tip), disagreeing with a tip-posed forward rollout — a silent
-    /// contract violation. The friction moving-EE carry is the follow-on. A no-op when no geom
-    /// is set (the centroid-posed gates + the plane).
+    /// [`Self::coupled_trajectory_material_gradient_articulated`] (and its forward oracle
+    /// [`Self::coupled_trajectory_articulated_z`]) threads the moving centre; the other
+    /// sphere-capable gradients/rollouts (the articulated FRICTION gradients, the free-body
+    /// normal/friction gradients, the grip forwards) would otherwise silently pose the sphere at
+    /// the block centroid (ignoring the tip) — a silent contract violation on a public API
+    /// (ship-blocking even if currently unused). Threading them is the follow-on. A no-op when
+    /// no geom is set (the centroid-posed gates + the plane).
     fn require_no_moving_ee(&self) {
         assert!(
             self.contact_geom.is_none(),
-            "this articulated gradient does not yet support a moving end-effector \
-             (with_contact_geom); only coupled_trajectory_material_gradient_articulated threads \
-             the moving-centre carry (the friction moving-EE carry is the follow-on)."
+            "this gradient/rollout does not thread the moving end-effector (with_contact_geom) \
+             centre carry; only coupled_trajectory_material_gradient_articulated does (set the \
+             contact geom only on that path, or use the block-centroid default)."
         );
     }
 
@@ -2594,6 +2596,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64) {
+        // Free-body normal: sphere-capable (#418) but no moving-EE centre carry yet.
+        self.require_no_moving_ee();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -2739,6 +2743,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64, usize) {
+        // Free-body normal: sphere-capable but no moving-EE centre carry yet.
+        self.require_no_moving_ee();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -2922,11 +2928,19 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// # Panics
     /// Panics if no contact geom is set (`with_contact_geom` not called) — the centre
-    /// channel is only meaningful for an end-effector-posed sphere.
+    /// channel is only meaningful for an end-effector-posed sphere — or if the contact geom is
+    /// not rigidly attached to the contacting body (the coupling routes the reaction wrench to
+    /// `self.body`, so the centre must ride it for the model to be coherent; `mj_jac_point`
+    /// would otherwise return the Jacobian of the wrong body's material point).
     fn pose_centre_jacobian(&self) -> DMatrix<f64> {
         let g = self
             .contact_geom
             .expect("pose_centre_jacobian requires with_contact_geom");
+        assert_eq!(
+            self.model.geom_body[g], self.body,
+            "the contact geom must be attached to the contacting body (self.body) — the moving-EE \
+             centre Jacobian ∂(geom_xpos)/∂q treats the geom as rigidly fixed to self.body"
+        );
         let jac = mj_jac_point(&self.model, &self.data, self.body, &self.data.geom_xpos[g]);
         let nv = self.model.nv;
         let mut jlin = DMatrix::zeros(3, nv);
@@ -3461,9 +3475,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             self.data.forward(&self.model).expect("fresh FK");
             // MOVING END-EFFECTOR: pose the sphere at the contact geom (the arm tip) each
             // step — the forward companion of the moving-EE centre gradient, so the FD
-            // oracle and the adjoint share the per-step posing. A no-op (override stays
-            // None ⇒ block-centroid) when `with_contact_geom` is not set (byte-identical).
-            if let Some(g) = self.contact_geom {
+            // oracle and the adjoint share the per-step posing. Sphere-only (the plane
+            // ignores the override); a no-op (override stays None ⇒ block-centroid) when
+            // `with_contact_geom` is not set or the collider is the plane (byte-identical).
+            if let (Some(g), Collider::Sphere { .. }) = (self.contact_geom, self.collider) {
                 self.sphere_center_override = Some(self.data.geom_xpos[g]);
             }
             let height = self.tip_plane_height();
@@ -3622,8 +3637,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // tip) — the centre rides `geom_xpos(q)`, so the pose channel is the 3-vector
             // centre (`PoseCentreVjp`), the lateral generalization of the scalar height.
             // Refreshed each step from the fresh-FK geom pose (mirrors `step_articulated`).
-            let moving_ee = self.contact_geom.is_some();
-            if let Some(g) = self.contact_geom {
+            // Requires the SPHERE collider: `with_contact_geom` is a no-op for the plane
+            // (`build_contact` ignores the override for a plane → forward poses at `xipos`),
+            // so a plane must take the scalar-height channel, NOT the geom-Jacobian centre
+            // channel, or the adjoint would route `∂h/∂q` through `geom_xpos` ≠ `xipos`.
+            let moving_ee =
+                self.contact_geom.is_some() && matches!(self.collider, Collider::Sphere { .. });
+            if moving_ee {
+                let g = self.contact_geom.expect("moving_ee ⇒ contact geom set");
                 self.sphere_center_override = Some(self.data.geom_xpos[g]);
             }
             let height = self.tip_plane_height();
@@ -5593,6 +5614,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     // not recoverable for keystone-v1 (mirrors `step`'s rationale).
     #[allow(clippy::too_many_lines, clippy::expect_used)]
     pub fn coupled_trajectory_control_gradient(&mut self, controls: &[f64]) -> (f64, Vec<f64>) {
+        // Free-body control: sphere-capable but no moving-EE centre carry yet.
+        self.require_no_moving_ee();
         let n = self.n_vertices;
         let dt = self.cfg.dt;
         let dir = Vec3::new(0.0, 0.0, 1.0);
@@ -5791,6 +5814,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         params: &[f64],
         n_steps: usize,
     ) -> (f64, Vec<f64>) {
+        // Free-body policy: sphere-capable but no moving-EE centre carry yet.
+        self.require_no_moving_ee();
         assert_eq!(
             params.len(),
             policy.n_params(),
@@ -6089,6 +6114,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         params: &[f64],
         n_steps: usize,
     ) -> (f64, f64, Vec<f64>) {
+        // Free-body joint design+policy: sphere-capable but no moving-EE centre carry yet.
+        self.require_no_moving_ee();
         assert_eq!(
             params.len(),
             policy.n_params(),
@@ -6396,6 +6423,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     // surfaced loudly, not recoverable for keystone-v1 (mirrors `step`).
     #[allow(clippy::expect_used)]
     pub fn coupled_trajectory_grip(&mut self, n_steps: usize) -> Vec3 {
+        // Free-body grip forward: sphere-capable but does not pose at the contact geom
+        // (no moving-EE) — reject a set geom so it can't silently centroid-pose vs a caller's
+        // tip-posed expectation (its friction gradient sibling is likewise guarded).
+        self.require_no_moving_ee();
         let dt = self.cfg.dt;
         let n = self.n_vertices;
         for _ in 0..n_steps {
@@ -6477,6 +6508,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     // surfaced loudly, not recoverable for keystone-v1 (mirrors `coupled_trajectory_grip`).
     #[allow(clippy::expect_used)]
     pub fn coupled_trajectory_gripped_articulated(&mut self, n_steps: usize) -> Vec3 {
+        // Articulated grip forward: sphere-capable but does not pose at the contact geom
+        // (no moving-EE) — reject a set geom (its friction gradient sibling is likewise
+        // guarded), unlike coupled_trajectory_articulated_z which DOES pose at the geom.
+        self.require_no_moving_ee();
         let dt = self.cfg.dt;
         let n = self.n_vertices;
         for _ in 0..n_steps {
@@ -6641,6 +6676,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         param_idx: usize,
     ) -> (f64, f64) {
+        // Free-body friction: sphere-capable (#419) but no moving-EE centre carry yet.
+        self.require_no_moving_ee();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
@@ -6874,6 +6911,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         &mut self,
         n_steps: usize,
     ) -> (f64, f64) {
+        // Free-body friction coeff: sphere-capable (#419) but no moving-EE centre carry yet.
+        self.require_no_moving_ee();
         let mu_c = self.cfg.friction_mu;
         assert!(
             mu_c > 0.0,
