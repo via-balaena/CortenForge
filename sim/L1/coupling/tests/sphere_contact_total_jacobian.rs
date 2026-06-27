@@ -7,7 +7,7 @@
 //! `RigidPlane`. This gate re-runs the SAME analytic assembly
 //! ([`StaggeredCoupling::contact_force_height_total_jacobian`]) against the SAME
 //! black-box oracle ([`StaggeredCoupling::resolved_contact_force`]) but with the
-//! collider swapped to a finite [`PosedSphere`] (`with_sphere_collider`) — a curved
+//! collider swapped to a finite `TranslatedSdf<SphereSdf>` (`with_sphere_collider`) — a curved
 //! end-effector whose `∇²sd ≠ 0`, so the contact normal turns as a vertex slides
 //! over it.
 //!

@@ -5,7 +5,7 @@
 //! sphere): the same grip tape machinery (`coupled_trajectory_tangential_*`) against the same
 //! full-grip-rollout FD oracle (`coupled_trajectory_grip`) as the plane gate
 //! `friction_coupled_trajectory_coeff_gradient.rs`, but with the collider swapped to a finite
-//! [`PosedSphere`] (`with_sphere_collider`).
+//! `TranslatedSdf<SphereSdf>` (`with_sphere_collider`).
 //!
 //! Why it's a genuinely new check: the friction force `∇D = μ·λⁿ·f₁·T·û` turns its tangent
 //! frame `T` as the sphere's contact normal turns — both as a soft vertex slides over it

@@ -34,15 +34,14 @@
     clippy::too_many_lines
 )]
 
-use nalgebra::Point3;
 use sim_core::SpatialVector;
 use sim_mjcf::load_model;
 use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::ECOFLEX_00_30_MEASURED;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh,
-    PenaltyRigidContact, PenaltyRigidContactSolver, Sdf, Solver, SolverConfig, SphereSdf, Tet4,
-    Vec3, VertexId,
+    PenaltyRigidContact, PenaltyRigidContactSolver, Solver, SolverConfig, SphereSdf, Tet4,
+    TranslatedSdf, Vec3, VertexId,
 };
 
 // ── Soft buffer (measured-Ecoflex block, finer mesh like Rung 3) ──
@@ -65,21 +64,6 @@ const N_STEPS: usize = 220;
 // ── Replay / render ──
 const RENDER_SCALE: f32 = 10.0;
 const REPLAY_DT: f64 = 0.012;
-
-/// A finite [`Sdf`] posed at a world `center` — `SphereSdf` is origin-centered, so to drive it we
-/// translate the query point.
-struct TranslatedSdf<S> {
-    inner: S,
-    center: Vec3,
-}
-impl<S: Sdf> Sdf for TranslatedSdf<S> {
-    fn eval(&self, p: Point3<f64>) -> f64 {
-        self.inner.eval(p - self.center)
-    }
-    fn grad(&self, p: Point3<f64>) -> Vec3 {
-        self.inner.grad(p - self.center)
-    }
-}
 
 /// One headless capture of the two-way strike: soft buffer frames + the arm's [pivot, fist] world
 /// points per step, plus the rest surface mesh; the arm's angular velocity is tracked to show the
@@ -150,7 +134,7 @@ fn run_capture() -> Capture {
         let contact = PenaltyRigidContact::with_params(
             vec![TranslatedSdf {
                 inner: SphereSdf { radius: FIST_R },
-                center: fist,
+                offset: fist,
             }],
             KAPPA,
             D_HAT,
@@ -179,7 +163,7 @@ fn run_capture() -> Capture {
         let readout = PenaltyRigidContact::with_params(
             vec![TranslatedSdf {
                 inner: SphereSdf { radius: FIST_R },
-                center: fist,
+                offset: fist,
             }],
             KAPPA,
             D_HAT,

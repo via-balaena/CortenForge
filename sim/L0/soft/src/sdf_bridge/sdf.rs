@@ -119,6 +119,42 @@ impl Sdf for SphereSdf {
     }
 }
 
+/// An [`Sdf`] translated so its origin sits at a world `offset` — a query-point
+/// shift `p ↦ p − offset` forwarded to the `inner` primitive.
+///
+/// Translation commutes with the SDF derivatives: `eval`, `grad`, and `hessian`
+/// (the curvature term #415 added) are all evaluated at the shifted point, so a
+/// translated [`SphereSdf`] keeps the sphere's own `∇²sd` curvature exactly. This
+/// is the shared posing wrapper for a finite collider riding a moving frame — the
+/// keystone coupling poses a `TranslatedSdf<SphereSdf>` end-effector over the soft
+/// block, and the `soft_pose_sensitivity` / `friction_sphere_tangent` curved-pose
+/// gates pose the same type (deduping their former local copies).
+///
+/// Translation alone is the full pose for a sphere (rotation-invariant about its
+/// centre); a primitive needing orientation would compose this with a rotation
+/// wrapper.
+#[derive(Clone, Copy, Debug)]
+pub struct TranslatedSdf<S> {
+    /// The origin-centred primitive being posed.
+    pub inner: S,
+    /// World-space point the primitive's origin is translated to.
+    pub offset: Vec3,
+}
+
+impl<S: Sdf> Sdf for TranslatedSdf<S> {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        self.inner.eval(p - self.offset)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vec3 {
+        self.inner.grad(p - self.offset)
+    }
+
+    fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
+        self.inner.hessian(p - self.offset)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

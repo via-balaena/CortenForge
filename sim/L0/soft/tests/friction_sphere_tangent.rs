@@ -21,12 +21,11 @@
     clippy::similar_names
 )]
 
-use nalgebra::Point3;
 use sim_ml_chassis::Tensor;
 use sim_ml_chassis::autograd::{Tape, VjpOp};
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, LoadAxis, MaterialField, Mesh,
-    PenaltyRigidContact, RigidTwist, Sdf, Solver, SolverConfig, SphereSdf, Tet4, Vec3,
+    PenaltyRigidContact, RigidTwist, Solver, SolverConfig, SphereSdf, Tet4, TranslatedSdf, Vec3,
     pick_vertices_by_predicate,
 };
 
@@ -45,29 +44,12 @@ const SPHERE_R: f64 = 0.08;
 /// South-pole penetration into the rest top face (z = EDGE).
 const PENETRATION: f64 = 3.0e-3;
 
-/// A `SphereSdf` posed at a world `center` (forwards `eval`/`grad`/`hessian`), the finite
-/// collider the coupling's `with_sphere_collider` builds.
-#[derive(Clone, Debug)]
-struct PosedSphere {
-    inner: SphereSdf,
-    center: Vec3,
-}
-impl Sdf for PosedSphere {
-    fn eval(&self, p: Point3<f64>) -> f64 {
-        self.inner.eval(p - self.center)
-    }
-    fn grad(&self, p: Point3<f64>) -> Vec3 {
-        self.inner.grad(p - self.center)
-    }
-    fn hessian(&self, p: Point3<f64>) -> nalgebra::Matrix3<f64> {
-        self.inner.hessian(p - self.center)
-    }
-}
-
-fn sphere() -> PosedSphere {
-    PosedSphere {
+/// A `SphereSdf` posed at the block's top-face centre (the finite collider the
+/// coupling's `with_sphere_collider` builds) — the shared `TranslatedSdf` wrapper.
+fn sphere() -> TranslatedSdf<SphereSdf> {
+    TranslatedSdf {
         inner: SphereSdf { radius: SPHERE_R },
-        center: Vec3::new(EDGE / 2.0, EDGE / 2.0, EDGE + SPHERE_R - PENETRATION),
+        offset: Vec3::new(EDGE / 2.0, EDGE / 2.0, EDGE + SPHERE_R - PENETRATION),
     }
 }
 
@@ -208,7 +190,7 @@ fn friction_sphere_reaction_readout_matches_fd() {
         let pinned = pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
         let top = top_vertices(mu, lambda);
         let mut s = sphere();
-        s.center.z += dz;
+        s.offset.z += dz;
         let contact = PenaltyRigidContact::with_params(vec![s], KAPPA, D_HAT);
         let loaded: Vec<(u32, LoadAxis)> = top
             .iter()
@@ -253,7 +235,7 @@ fn solve_with_sphere_dz(mu: f64, lambda: f64, dz: f64) -> Vec<f64> {
     let pinned = pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
     let top = top_vertices(mu, lambda);
     let mut s = sphere();
-    s.center.z += dz;
+    s.offset.z += dz;
     let contact = PenaltyRigidContact::with_params(vec![s], KAPPA, D_HAT);
     let loaded: Vec<(u32, LoadAxis)> = top
         .iter()
@@ -451,7 +433,7 @@ fn per_vertex_force_jacobians_sphere_matches_fd() {
         let pinned = pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
         let top = top_vertices(mu, lambda);
         let mut s = sphere();
-        s.center.z += dz;
+        s.offset.z += dz;
         let contact = PenaltyRigidContact::with_params(vec![s], KAPPA, D_HAT);
         let loaded: Vec<(u32, LoadAxis)> = top
             .iter()

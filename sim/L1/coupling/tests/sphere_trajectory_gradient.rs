@@ -6,7 +6,7 @@
 //! the infinite `RigidPlane`. These gates re-run the SAME tape machinery
 //! (`coupled_step_load_gradient`, `coupled_trajectory_material_gradient`) against the
 //! SAME independent full-coupled FD oracles (`coupled_step_load_vz`, a real re-rollout)
-//! but with the collider swapped to a finite [`PosedSphere`] (`with_sphere_collider`).
+//! but with the collider swapped to a finite `TranslatedSdf<SphereSdf>` (`with_sphere_collider`).
 //!
 //! Why it's a genuinely new check, not the plane gate re-skinned: a sphere's contact
 //! normal turns both as a soft vertex slides over it (`∂n̂/∂x = H`) and as the primitive

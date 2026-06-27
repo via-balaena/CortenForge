@@ -24,7 +24,7 @@ mod sdf_meshed_tet_mesh;
 mod stuffing;
 
 pub use difference::DifferenceSdf;
-pub use sdf::{Sdf, SphereSdf};
+pub use sdf::{Sdf, SphereSdf, TranslatedSdf};
 pub use sdf_meshed_tet_mesh::{MeshingError, SdfMeshedTetMesh};
 
 use crate::Vec3;
