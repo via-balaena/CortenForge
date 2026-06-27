@@ -762,6 +762,7 @@ sim-opt = { path = "sim/L0/opt" }
 sim-therm-env = { path = "sim/L0/therm-env" }
 sim-soft = { path = "sim/L0/soft" }
 # Sim domain - Layer 1 (Bevy integration)
+sim-coupling = { path = "sim/L1/coupling" }
 sim-bevy = { path = "sim/L1/bevy" }
 sim-ml-chassis-bevy = { path = "sim/L1/ml-chassis-bevy" }
 sim-bevy-soft = { path = "sim/L1/sim-bevy-soft" }
