@@ -2127,7 +2127,26 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     #[must_use]
     pub fn contact_force_height_total_jacobian(&self, height: f64) -> Vec3 {
         // Raising the plane height = translating the rigid primitive +ẑ.
-        let dir = Vec3::new(0.0, 0.0, 1.0);
+        self.contact_force_centre_total_jacobian(height, Vec3::new(0.0, 0.0, 1.0))
+    }
+
+    /// The total `∂(contact force)/∂(sphere-centre translation along `dir`)` — the
+    /// axis-generic generalization of [`Self::contact_force_height_total_jacobian`]
+    /// (which is the `dir = ẑ` height channel). This is the **moving-end-effector
+    /// leaf**: tracking the arm tip moves the contact sphere centre in x/y as well as
+    /// z, so the trajectory carry needs the sensitivity along each axis, not just the
+    /// scalar height. `dir = ẑ` reproduces the height Jacobian exactly
+    /// (`−n̂·ẑ = −n̂_z`); the lateral `x̂`/`ŷ` channels reuse the SAME explicit + implicit
+    /// structure with `dir` substituted (the L0 `−H·u` pose sensitivity is already
+    /// axis-generic — `soft_pose_sensitivity::sphere_pose_sensitivity_lateral_matches_resolve_fd`).
+    ///
+    /// The collider is posed at the current sphere-centre override (the end-effector,
+    /// [`Self::set_sphere_center`]); `height` only feeds the default block-centroid
+    /// posing when no override is set. Validated against a black-box re-solve FD per axis
+    /// (`sphere_contact_total_jacobian.rs`). Same engaged / stable-active-set /
+    /// hard-penalty scope as the height Jacobian.
+    #[must_use]
+    pub fn contact_force_centre_total_jacobian(&self, height: f64, dir: Vec3) -> Vec3 {
         let (solver, x_final) = self.soft_resolve(height);
         let dxstar = solver.equilibrium_pose_sensitivity(
             &x_final,
@@ -2149,12 +2168,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let f_mag = g.dot(&n_hat);
             let h_mat = self.collider_hessian(height, positions[v]);
             let dxs = Vec3::new(dxstar[3 * v], dxstar[3 * v + 1], dxstar[3 * v + 2]);
-            // explicit ∂force/∂h|_x: magnitude `−cᵥ·(∂sd/∂h)·n̂` (∂sd/∂h = −n̂·ẑ) + normal
-            // rotation `f_mag·∂n̂/∂h` (∂n̂/∂h = −H·ẑ as the primitive translates +ẑ).
-            let dsd_dh = -n_hat.z;
-            explicit += -curv * dsd_dh * n_hat + f_mag * (h_mat * (-dir));
-            // implicit (∂force/∂x)·∂x*/∂h: magnitude `−cᵥ·n̂⊗n̂` + normal rotation `f_mag·H`
-            // (∂n̂/∂x = H), contracted against the IFT pose sensitivity ∂x*/∂h.
+            // explicit ∂force/∂δ|_x: magnitude `−cᵥ·(∂sd/∂δ)·n̂` (∂sd/∂δ = −n̂·dir as the
+            // primitive translates +dir) + normal rotation `f_mag·∂n̂/∂δ` (∂n̂/∂δ = −H·dir).
+            let dsd_ddir = -n_hat.dot(&dir);
+            explicit += -curv * dsd_ddir * n_hat + f_mag * (h_mat * (-dir));
+            // implicit (∂force/∂x)·∂x*/∂δ: magnitude `−cᵥ·n̂⊗n̂` + normal rotation `f_mag·H`
+            // (∂n̂/∂x = H), contracted against the IFT pose sensitivity ∂x*/∂δ.
             implicit += -curv * n_hat.dot(&dxs) * n_hat + f_mag * (h_mat * dxs);
         }
         explicit + implicit

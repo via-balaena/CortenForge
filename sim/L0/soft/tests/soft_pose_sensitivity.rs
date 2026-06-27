@@ -565,6 +565,161 @@ fn sphere_pose_sensitivity_matches_resolve_fd() {
     );
 }
 
+// ── Lateral (x̂) pose sensitivity (the moving-end-effector carry's L0 leaf) ─────
+
+/// A `SphereSdf` posed at an arbitrary world `centre` (the lateral gate moves it in x̂, not just z).
+const fn sphere_centred(centre: Vec3) -> TranslatedSdf<SphereSdf> {
+    TranslatedSdf {
+        inner: SphereSdf { radius: SPHERE_R },
+        offset: centre,
+    }
+}
+
+/// Re-solve ONE dynamic step with the sphere at `centre` (the curved-primitive analog of
+/// [`sphere_solve_step`] for a full 3-D centre — the lateral FD oracle moves `centre.x`).
+fn sphere_solve_at(centre: Vec3, x_prev: &[f64], v_prev: &[f64]) -> Vec<f64> {
+    let n_dof = x_prev.len();
+    let contact = PenaltyRigidContact::with_params(vec![sphere_centred(centre)], KAPPA, D_HAT);
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    cfg.max_newton_iter = 80;
+    let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        Tet4,
+        block(),
+        contact,
+        cfg,
+        BoundaryConditions::new(bottom_pins(), Vec::new()),
+    );
+    solver
+        .replay_step(
+            &Tensor::from_slice(x_prev, &[n_dof]),
+            &Tensor::from_slice(v_prev, &[n_dof]),
+            &Tensor::zeros(&[0]),
+            DT,
+        )
+        .x_final
+}
+
+fn sphere_active_at(centre: Vec3, x: &[f64]) -> usize {
+    let contact = PenaltyRigidContact::with_params(vec![sphere_centred(centre)], KAPPA, D_HAT);
+    let positions: Vec<Vec3> = x
+        .chunks_exact(3)
+        .map(|c| Vec3::new(c[0], c[1], c[2]))
+        .collect();
+    contact.per_pair_readout(&block(), &positions).len()
+}
+
+/// **The moving-end-effector carry's L0 leaf.** `∂x*/∂(sphere LATERAL +x̂ translation)` matches a
+/// nonlinear re-solve FD — the lateral analog of `sphere_pose_sensitivity_matches_resolve_fd`. The
+/// keystone validates only the z-HEIGHT pose channel; tracking the arm tip needs the centre to
+/// move in x/y too. The L0 `−H·u` curvature term is already axis-generic (`u = v + ω×p`, pure
+/// translation ⇒ `u = dir`), so this should pass machine-exact with no new L0 code — this gate
+/// PROVES that before any L1 trajectory carry.
+#[test]
+fn sphere_pose_sensitivity_lateral_matches_resolve_fd() {
+    // Engaged equilibrium, sphere over the block centre (same depth as the z gate).
+    let centre = Vec3::new(EDGE / 2.0, EDGE / 2.0, EDGE + SPHERE_R - PENETRATION);
+    let mesh = block();
+    let n_dof = 3 * mesh.n_vertices();
+    let mut x = vec![0.0_f64; n_dof];
+    for (chunk, p) in x.chunks_exact_mut(3).zip(mesh.positions().iter()) {
+        chunk[0] = p.x;
+        chunk[1] = p.y;
+        chunk[2] = p.z;
+    }
+    let mut v = vec![0.0_f64; n_dof];
+    for _ in 0..SETTLE_STEPS {
+        let xf = sphere_solve_at(centre, &x, &v);
+        for (vi, (&xf_i, &xo)) in v.iter_mut().zip(xf.iter().zip(x.iter())) {
+            *vi = (xf_i - xo) / DT;
+        }
+        x = xf;
+    }
+    let (x_prev, v_prev) = (x.clone(), v.clone());
+
+    let contact = PenaltyRigidContact::with_params(vec![sphere_centred(centre)], KAPPA, D_HAT);
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    cfg.max_newton_iter = 80;
+    let solver: PenaltyRigidContactSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        Tet4,
+        block(),
+        contact,
+        cfg,
+        BoundaryConditions::new(bottom_pins(), Vec::new()),
+    );
+    let x_final = solver
+        .replay_step(
+            &Tensor::from_slice(&x_prev, &[n_dof]),
+            &Tensor::from_slice(&v_prev, &[n_dof]),
+            &Tensor::zeros(&[0]),
+            DT,
+        )
+        .x_final;
+
+    // Analytic: ∂x*/∂(sphere +x̂ translation) — a unit LATERAL translation of the primitive.
+    let analytic = solver.equilibrium_pose_sensitivity(
+        &x_final,
+        None,
+        DT,
+        RigidTwist::translation(Vec3::new(1.0, 0.0, 0.0)),
+    );
+
+    // FD oracle: re-solve with the sphere centre moved ±ε in x.
+    let fd = |eps: f64| -> Vec<f64> {
+        let xp = sphere_solve_at(centre + Vec3::new(eps, 0.0, 0.0), &x_prev, &v_prev);
+        let xm = sphere_solve_at(centre - Vec3::new(eps, 0.0, 0.0), &x_prev, &v_prev);
+        xp.iter()
+            .zip(xm.iter())
+            .map(|(a, b)| (a - b) / (2.0 * eps))
+            .collect::<Vec<f64>>()
+    };
+    let fd1 = fd(1.0e-6);
+    let fd2 = fd(5.0e-7);
+
+    let n_active = sphere_active_at(centre, &x_final);
+    assert!(
+        n_active > 0,
+        "scene must be contact-engaged, got 0 active pairs"
+    );
+    for (lbl, dx) in [("+ε", 1.0e-6), ("-ε", -1.0e-6)] {
+        let c = centre + Vec3::new(dx, 0.0, 0.0);
+        let x = sphere_solve_at(c, &x_prev, &v_prev);
+        assert_eq!(
+            sphere_active_at(c, &x),
+            n_active,
+            "active set flipped at {lbl} — outside the stable-active-set regime",
+        );
+    }
+
+    let rel = |a: &[f64], b: &[f64]| -> f64 {
+        let num: f64 = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum();
+        let den: f64 = b.iter().map(|y| y * y).sum();
+        (num / den).sqrt()
+    };
+    let two_eps = rel(&fd1, &fd2);
+    let analytic_vs_fd = rel(&analytic, &fd1);
+    let max_dx = analytic.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+    eprintln!(
+        "sphere LATERAL (x̂) pose sensitivity: n_active={n_active}, ‖∂x*/∂x‖_∞={max_dx:.4e}, \
+         two-ε rel={two_eps:.3e}, analytic-vs-FD rel={analytic_vs_fd:.3e}"
+    );
+
+    assert!(
+        two_eps < 1e-3,
+        "FD not converged across ε (two-ε rel {two_eps:e})"
+    );
+    assert!(
+        max_dx > 1e-3,
+        "‖∂x*/∂x‖_∞ = {max_dx:e} implausibly small for an engaged sphere"
+    );
+    assert!(
+        analytic_vs_fd < 1e-5,
+        "analytic ∂x*/∂(sphere x̂) disagrees with re-solve FD: rel {analytic_vs_fd:e} \
+         — the curved-primitive pose sensitivity is not axis-generic for the lateral translation",
+    );
+}
+
 /// A pose-independent contact (`NullContact`, via the default
 /// `pose_residual_derivative`) yields a zero sensitivity — the active set
 /// contributes nothing to `∂r/∂δ`. Guards the default-empty trait method +
