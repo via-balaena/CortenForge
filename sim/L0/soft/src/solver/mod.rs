@@ -103,9 +103,9 @@ impl<T> NewtonStep<T> {
 ///   policy. `Solver::step` always panics on this; `try_step`
 ///   dispatches on the policy (`PanicOnStall` → forward to `step`'s
 ///   panic; `ReturnFailed` → return `Err(ArmijoStall)`).
-/// - `NewtonIterCap` and `DoublyFailedFactor`: `try_step` ALWAYS
-///   returns `Err`; `Solver::step` ALWAYS panics — no per-variant
-///   policy.
+/// - `NewtonIterCap`, `DoublyFailedFactor`, and `ValidityViolation`:
+///   `try_step` ALWAYS returns `Err`; `Solver::step` ALWAYS panics — no
+///   per-variant policy.
 #[derive(Debug)]
 pub enum SolverFailure {
     /// Armijo line-search stalled (under F3 LM, this means: retries
@@ -173,6 +173,27 @@ pub enum SolverFailure {
         /// pre-F3 panic message text for diagnostic logging).
         context: String,
     },
+    /// Validity-domain violation (Phase 4 Decision Q): a tet's
+    /// deformation gradient left the material's validity domain —
+    /// inversion (`det F ≤ 0`) or a principal-stretch /
+    /// stretch-deviation bound — detected by
+    /// `check_validity_at_step_start` at step start or at the converged
+    /// state. `try_step`/`try_replay_step` ALWAYS return this as `Err`
+    /// (no per-variant policy), so a feasibility-aware caller can treat
+    /// the design as infeasible and skip it; `Solver::step` re-panics
+    /// with `message` (the verbatim Decision Q fail-closed text).
+    ValidityViolation {
+        /// The first (lowest-id) tet whose `F` left the validity domain
+        /// — the first-violator-wins tet attribution (Decision Q).
+        tet_id: usize,
+        /// The full structured fail-closed message (violated slot + tet
+        /// id + the offending value — singular values of `F` for a
+        /// stretch bound, or `det F` for an inversion), preserved
+        /// verbatim so `Solver::step`'s panic path emits the pre-existing
+        /// Decision Q message and the message-substring contract tests
+        /// still hold.
+        message: String,
+    },
 }
 
 /// Mechanical solver surface. Two concrete impls: `CpuNewtonSolver`
@@ -238,11 +259,12 @@ pub trait Solver: Send + Sync {
     ///
     /// # Errors
     /// Returns [`SolverFailure`] on Armijo stall (when the effective
-    /// policy is `ReturnFailed`), Newton iter cap (always), or
-    /// doubly-failed factor (always). When the effective policy is
-    /// `PanicOnStall` (the LM-disabled default), Armijo stall panics
-    /// instead of returning. See variant docs for `x_partial`
-    /// semantics.
+    /// policy is `ReturnFailed`), Newton iter cap (always),
+    /// doubly-failed factor (always), or validity-domain violation
+    /// (always — a tet over-stretching / inverting, Decision Q). When
+    /// the effective policy is `PanicOnStall` (the LM-disabled default),
+    /// Armijo stall panics instead of returning. See variant docs for
+    /// `x_partial` semantics.
     fn try_step(
         &mut self,
         tape: &mut Self::Tape,

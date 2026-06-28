@@ -69,10 +69,15 @@
 //!
 //! [v]: ../../../../docs/studies/soft_body_architecture/src/20-materials/00-trait-hierarchy/02-validity.md
 
+// Test asserts via `panic!` in match fallbacks (the `Ok` type `NewtonStep<Tape>` is not `Debug`, so
+// `unwrap`/`expect` on the `Result` is unavailable) — the standard allow for a test file.
+#![allow(clippy::panic)]
+
 use sim_ml_chassis::Tensor;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, LoadAxis,
-    MaterialField, Mesh, NullContact, SingleTetMesh, SkeletonSolver, Solver, SolverConfig, Tet4,
+    MaterialField, Mesh, NullContact, SingleTetMesh, SkeletonSolver, Solver, SolverConfig,
+    SolverFailure, Tet4,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -245,4 +250,37 @@ fn iv_7_first_violator_wins_names_lowest_tet_id() {
     let theta = Tensor::from_slice(&[1.0], &[1]);
 
     let _ = solver.replay_step(&x_prev, &v_prev, &theta, cfg.dt);
+}
+
+/// Validity-as-`Err`: the SAME over-stretch as `iv_7_excessive_stretch_panics_with_slot_name`, but
+/// the `try_` path returns a typed `Err(SolverFailure::ValidityViolation)` instead of panicking — so a
+/// feasibility-aware caller (the co-design optimizer, through `try_replay_step` → `RolloutError` →
+/// `InfeasibleDesign`) can treat the design as infeasible and SKIP it rather than crashing. The
+/// panic-path `replay_step`/`step` still fail-closed (above), preserving the Decision Q contract.
+#[test]
+fn validity_violation_is_typed_err_on_try_path() {
+    let solver = build_skeleton_solver();
+    let cfg = SolverConfig::skeleton();
+    let n_dof = 3 * 4;
+    let mut x_prev_flat = vec![0.0; n_dof];
+    x_prev_flat[3] = 0.25; // v_1 stretched 2.5× along +x (F = diag(2.5, 1, 1))
+    x_prev_flat[7] = 0.1; // v_2.y (rest)
+    x_prev_flat[11] = 0.1; // v_3.z (rest)
+    let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let theta = Tensor::from_slice(&[1.0], &[1]);
+
+    // `NewtonStep<Tape>` (the `Ok` type) is not `Debug`, so match directly rather than `expect_err`.
+    match solver.try_replay_step(&x_prev, &v_prev, &theta, cfg.dt) {
+        Err(SolverFailure::ValidityViolation { tet_id, message }) => {
+            assert_eq!(tet_id, 0, "first-violator-wins tet attribution");
+            // The verbatim Decision Q message is preserved (the panic path re-emits it).
+            assert!(
+                message.contains("max_stretch_deviation") && message.contains("tet 0"),
+                "message must carry the slot + tet id, got: {message}"
+            );
+        }
+        Err(other) => panic!("expected ValidityViolation, got {other:?}"),
+        Ok(_) => panic!("expected an Err (validity violation), got Ok"),
+    }
 }

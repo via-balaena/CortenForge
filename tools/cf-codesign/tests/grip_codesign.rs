@@ -462,3 +462,54 @@ fn normalized_grip_try_evaluate_forwards_infeasible() {
         "forwarded error should be the grip's InfeasibleDesign, got: {err}"
     );
 }
+
+// A SHARP fist (small sphere) deeply indenting the coarse buffer over-stretches a local tet past the
+// material's validity domain — the fail-close mode the R5 viewer's co-design hits (distinct from the
+// Newton iter-cap the blunter moving-EE scene hits). Arm pivot above the block, fist grazing at qpos0.
+const VALIDITY_TEAR_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0.05 0.05 0.285">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom name="fist" type="sphere" pos="0 0 -0.15" size="0.06" mass="0.5"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j" gear="1"/></actuator>
+</mujoco>"#;
+
+/// Validity-as-`Err` end-to-end (the H3-unblocking fix): a grip whose contact over-stretches a tet
+/// (the validity-domain fail-close) now surfaces as `Err(InfeasibleDesign)` through `try_evaluate` —
+/// the soft `ValidityViolation` → `RolloutError` → `InfeasibleDesign` chain — instead of panicking.
+/// Before this fix the soft solver's validity `assert!` panicked uncaught (only `NewtonIterCap` was a
+/// typed `Err`), crashing the R5 co-design; now the optimizer skips a validity tear like any other
+/// infeasible design.
+#[test]
+fn grip_try_evaluate_returns_err_on_validity_tear() {
+    let problem = GripCoDesignTarget::new(
+        VALIDITY_TEAR_MJCF.to_string(),
+        1,
+        0.005,
+        4,
+        0.1,
+        1.0e-3,
+        3.0e4,
+        1.0e-2,
+        0.15, // qpos0 — the fist presses in
+        0.06, // sphere radius = the sharp fist
+        2.5,
+        0.1,
+        6,
+        GripObjective::Hold(0.0),
+        sim_coupling::LinearFeedback,
+    )
+    .with_contact_geom(0);
+    let p = problem.x0(4.0e3, &[0.0, 0.0, 0.0]);
+    let err: InfeasibleDesign = problem
+        .try_evaluate(&p)
+        .expect_err("a tet-over-stretching grip must be a typed Err, not a panic");
+    // Specifically the validity-domain path (not a Newton iter-cap) — proves the new variant flows.
+    assert!(
+        err.to_string().contains("validity domain"),
+        "expected a validity-domain fail-close, got: {err}"
+    );
+}

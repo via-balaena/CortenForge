@@ -153,3 +153,52 @@ fn try_hold_gradient_ok_matches_panic_path_when_feasible() {
         assert_eq!(a.to_bits(), b.to_bits(), "θ-grad[{k}] byte-identical");
     }
 }
+
+// A SHARP fist (small sphere) deeply indenting the coarse buffer over-stretches a local tet past the
+// material's validity domain — the OTHER stiff-contact fail-close mode (distinct from the Newton
+// iter-cap above). Now a typed `SolverFailure::ValidityViolation` (the validity-as-Err completion),
+// so the `try_` rollout returns it as `RolloutError` instead of panicking.
+const VALIDITY_TEAR: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0.05 0.05 0.285">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.15" size="0.06" mass="0.5"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j" gear="1"/></actuator>
+</mujoco>"#;
+
+fn build_validity_tear(mu: f64) -> StaggeredCoupling {
+    let model = load_model(VALIDITY_TEAR).expect("scene loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.15; // the fist presses in
+    data.forward(&model).expect("forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(0.06)
+    .with_contact_geom(0)
+    .with_friction(2.5, 0.1)
+}
+
+/// Validity tear at the coupling layer: a sharp-fist grip that over-stretches a tet returns
+/// `Err(RolloutError { failure: SolverFailure::ValidityViolation, .. })` — NOT a panic. The
+/// structural sibling of `try_hold_gradient_returns_err_on_infeasible_design` (which pins the
+/// `NewtonIterCap` failure mode), so both stiff-contact fail-close variants are gated at this layer.
+#[test]
+fn try_hold_gradient_returns_err_on_validity_tear() {
+    let err = build_validity_tear(4.0e3)
+        .try_coupled_trajectory_design_policy_hold_gradient(
+            &LinearFeedback,
+            &[0.0, 0.0, 0.0],
+            6,
+            0.0,
+        )
+        .expect_err("a tet-over-stretching grip must surface as Err, not panic");
+    assert!(
+        matches!(err.failure, SolverFailure::ValidityViolation { .. }),
+        "expected a validity-domain fail-close, got {:?}",
+        err.failure,
+    );
+}
