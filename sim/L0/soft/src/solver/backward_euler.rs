@@ -923,22 +923,23 @@ where
     /// converged to `σ_max = 2.05` at tet 3206, was only caught at
     /// step 2's start check pre-this-fix).  The book Part 2 §00
     /// §02 prescription is a runtime warning; Decision Q upgrades
-    /// to panic for Phase 4 fail-closed semantics.
+    /// to fail-closed semantics for Phase 4.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// On first violator, with structured message
-    /// `"validity violation at tet {id}: {slot} = {value:.3} ..."`
-    /// where `{slot}` is one of `max_stretch_deviation` or
-    /// `inversion`. The `{slot}` substring is the IV-7 contract per
-    /// Decision Q — tests pin on it via `#[should_panic(expected =
-    /// "max_stretch_deviation")]` etc.
+    /// Returns [`SolverFailure::ValidityViolation`] on the first violator, carrying the violated
+    /// `tet_id` and the structured `message`
+    /// `"validity violation at tet {id}: {slot} = {value:.3} ..."` (where `{slot}` is one of
+    /// `max_stretch_deviation` / `max_principal_stretch` / `min_principal_stretch` / `inversion`).
+    /// The `try_step`/`try_replay_step` callers surface this `Err` so a feasibility-aware caller can
+    /// skip the design; the panic-path `step`/`replay_step` re-`panic!` with the same `message`, so
+    /// the IV-7 `#[should_panic(expected = "max_stretch_deviation")]` slot-substring contract holds.
     //
     // similar_names: `tet_id`/`tet` mirrors the assembly methods.
     // cast_possible_truncation: same Mesh-trait API tax as the
     // assembly methods.
     #[allow(clippy::similar_names, clippy::cast_possible_truncation)]
-    fn check_validity_at_step_start(&self, x_curr: &[f64]) {
+    fn check_validity_at_step_start(&self, x_curr: &[f64]) -> Result<(), SolverFailure> {
         debug_assert!(x_curr.len() == self.n_dof);
         let materials = self.mesh.materials();
         for (tet_id, geom) in self.element_geometries.iter().enumerate() {
@@ -955,14 +956,16 @@ where
             // and Phase 4 has none — Phase H may add `Barrier` /
             // `OptIn` variants when an impl needs them.
             let det_f = f.determinant();
-            if matches!(validity.inversion, InversionHandling::RequireOrientation) {
-                assert!(
-                    det_f > 0.0,
-                    "validity violation at tet {tet_id}: inversion = det F = \
-                     {det_f:.3} violates RequireOrientation handler (must be \
-                     strictly positive). Phase 4 scope memo Decision Q \
-                     fail-closed semantics."
-                );
+            if matches!(validity.inversion, InversionHandling::RequireOrientation) && det_f <= 0.0 {
+                return Err(SolverFailure::ValidityViolation {
+                    tet_id,
+                    message: format!(
+                        "validity violation at tet {tet_id}: inversion = det F = \
+                         {det_f:.3} violates RequireOrientation handler (must be \
+                         strictly positive). Phase 4 scope memo Decision Q \
+                         fail-closed semantics."
+                    ),
+                });
             }
 
             // Principal-stretch bounds: SVD `F = U Σ V^T` gives
@@ -994,47 +997,60 @@ where
                         .map(|s| (s - 1.0).abs())
                         .fold(0.0_f64, f64::max);
                     let bound = validity.max_stretch_deviation;
-                    assert!(
-                        max_dev <= bound,
-                        "validity violation at tet {tet_id}: max_stretch_deviation \
-                         = {max_dev:.3} exceeds bound {bound:.3} (singular values \
-                         of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
-                         Decision Q fail-closed semantics.",
-                        s0 = sigma[0],
-                        s1 = sigma[1],
-                        s2 = sigma[2],
-                    );
+                    if max_dev > bound {
+                        return Err(SolverFailure::ValidityViolation {
+                            tet_id,
+                            message: format!(
+                                "validity violation at tet {tet_id}: max_stretch_deviation \
+                                 = {max_dev:.3} exceeds bound {bound:.3} (singular values \
+                                 of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                                 Decision Q fail-closed semantics.",
+                                s0 = sigma[0],
+                                s1 = sigma[1],
+                                s2 = sigma[2],
+                            ),
+                        });
+                    }
                 }
                 (max_p, min_p) => {
                     if let Some(max) = max_p {
                         let max_sigma = sigma.iter().fold(0.0_f64, |a, &b| a.max(b));
-                        assert!(
-                            max_sigma <= max,
-                            "validity violation at tet {tet_id}: max_principal_stretch \
-                             = {max_sigma:.3} exceeds bound {max:.3} (singular values \
-                             of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
-                             Decision Q fail-closed semantics.",
-                            s0 = sigma[0],
-                            s1 = sigma[1],
-                            s2 = sigma[2],
-                        );
+                        if max_sigma > max {
+                            return Err(SolverFailure::ValidityViolation {
+                                tet_id,
+                                message: format!(
+                                    "validity violation at tet {tet_id}: max_principal_stretch \
+                                     = {max_sigma:.3} exceeds bound {max:.3} (singular values \
+                                     of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                                     Decision Q fail-closed semantics.",
+                                    s0 = sigma[0],
+                                    s1 = sigma[1],
+                                    s2 = sigma[2],
+                                ),
+                            });
+                        }
                     }
                     if let Some(min) = min_p {
                         let min_sigma = sigma.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-                        assert!(
-                            min_sigma >= min,
-                            "validity violation at tet {tet_id}: min_principal_stretch \
-                             = {min_sigma:.3} below bound {min:.3} (singular values \
-                             of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
-                             Decision Q fail-closed semantics.",
-                            s0 = sigma[0],
-                            s1 = sigma[1],
-                            s2 = sigma[2],
-                        );
+                        if min_sigma < min {
+                            return Err(SolverFailure::ValidityViolation {
+                                tet_id,
+                                message: format!(
+                                    "validity violation at tet {tet_id}: min_principal_stretch \
+                                     = {min_sigma:.3} below bound {min:.3} (singular values \
+                                     of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                                     Decision Q fail-closed semantics.",
+                                    s0 = sigma[0],
+                                    s1 = sigma[1],
+                                    s2 = sigma[2],
+                                ),
+                            });
+                        }
                     }
                 }
             }
         }
+        Ok(())
     }
 
     /// Free-DOF residual norm (scope §5 R-1 convergence criterion).
@@ -1807,6 +1823,10 @@ where
     ///   the A2 Lu fallback also failed — see
     ///   `Self::factor_free_tangent`). This is a model-level
     ///   degeneracy, not runtime-recoverable.
+    /// - A tet leaves the material's validity domain (Decision Q —
+    ///   over-stretch / inversion), at step start or at the converged
+    ///   state. (`try_step`/`try_replay_step` return this as
+    ///   `SolverFailure::ValidityViolation` instead.)
     //
     // panic: scope §3 R-1 (3-5-iter convergence prediction) cap +
     // Armijo cap are book-level findings, not runtime-recoverable
@@ -1836,6 +1856,9 @@ where
                     tol = self.config.tol,
                 ),
                 SolverFailure::DoublyFailedFactor { context, .. } => panic!("{context}"),
+                // Decision Q fail-closed: `step`/`replay_step` re-panic with the verbatim
+                // validity message (the `try_` path returns it as `Err` instead).
+                SolverFailure::ValidityViolation { message, .. } => panic!("{message}"),
             })
     }
 
@@ -2006,11 +2029,14 @@ where
         let mut f_ext = vec![0.0; self.n_dof];
         self.assemble_external_force(theta, &mut f_ext);
 
-        // Decision Q validity check stays a fail-closed panic —
-        // validity violations are scene-wiring errors at construction
-        // time, not in-solve numerical conditions; graceful-failure
-        // consumers gain nothing from converting these to Err.
-        self.check_validity_at_step_start(&x_curr);
+        // Decision Q validity check (step-start boundary): returns
+        // `SolverFailure::ValidityViolation` on a tet leaving the
+        // validity domain. `try_solve_impl` propagates it via `?` so
+        // the `try_` path surfaces it as `Err` (a feasibility-aware
+        // co-design caller skips the design); `solve_impl`/`step`
+        // re-panic the verbatim Decision Q message (fail-closed
+        // contract unchanged).
+        self.check_validity_at_step_start(&x_curr)?;
 
         let mut f_int = vec![0.0; self.n_dof];
         let mut r_full = vec![0.0; self.n_dof];
@@ -2048,7 +2074,7 @@ where
                 // output physically meaningless. See
                 // `check_validity_at_step_start`'s docstring for the
                 // motivating finding + the two-boundary check contract.
-                self.check_validity_at_step_start(&x_curr);
+                self.check_validity_at_step_start(&x_curr)?;
                 return Ok((
                     NewtonStep::new_converged(x_curr, newton_iter, r_norm),
                     lm_state.lambda(),

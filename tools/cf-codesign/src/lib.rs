@@ -244,13 +244,13 @@ pub struct OptConfig {
     /// (1) the safety net is **opt-in per problem** — only problems whose `try_evaluate` returns
     /// `Err` (the grip, and `Normalized` wrapping one) are skipped; a problem that still *panics*
     /// (e.g. on a genuine bug) crashes the run, which is the intended fail-loud behavior.
-    /// (2) A residual *panic* surface remains for the soft solver's `ArmijoStall` / validity-domain
-    /// fail-closes (which still panic rather than returning `Err`). The current shipped grip
-    /// scene/horizon fail-closes via `NewtonIterCap` (returned as `Err`), so it backtracks rather
-    /// than crashes; but other scenes/horizons — or a step that *converges to an invalid state*
-    /// (the validity check fires at the next step's start) or that line-search-stalls — can still
-    /// reach the validity/`ArmijoStall` panic and would crash rather than backtrack. Closing that is
-    /// the deferred soft-solver-robustness work, not a guarantee this path makes today.
+    /// (2) The soft solver's two stiff-contact fail-close modes — a Newton iter-cap AND a
+    /// validity-domain violation (a tet over-stretching / inverting) — are both typed `Err` now, so a
+    /// grip that tears the buffer either way is skipped, not crashed. The ONE residual panic surface
+    /// is an `ArmijoStall` (a non-SPD-tangent line-search stall, which the soft solver still panics on
+    /// rather than returning `Err`); the grip does not reach it at its Newton iter-cap, but a future
+    /// scene that stalls would crash rather than backtrack. Closing that is the remaining
+    /// soft-solver-robustness work.
     pub reject_infeasible: bool,
 }
 

@@ -1259,6 +1259,11 @@ pub fn run_single_insertion_step(
                 "insertion solve doubly-failed factor at Newton iter {last_iter}: {context}"
             ));
         }
+        Err(SolverFailure::ValidityViolation { tet_id, .. }) => {
+            return Err(anyhow!(
+                "insertion solve left the validity domain at tet {tet_id} (a tet over-stretched / inverted)"
+            ));
+        }
     };
 
     Ok(InsertionStep {
@@ -2011,6 +2016,9 @@ fn solver_failure_message(failure: &SolverFailure) -> String {
         SolverFailure::DoublyFailedFactor {
             last_iter, context, ..
         } => format!("doubly-failed factor at Newton iter {last_iter}: {context}"),
+        SolverFailure::ValidityViolation { tet_id, .. } => {
+            format!("validity-domain violation at tet {tet_id} (a tet over-stretched / inverted)")
+        }
     }
 }
 

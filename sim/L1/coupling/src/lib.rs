@@ -85,15 +85,15 @@ use std::marker::PhantomData;
 /// `catch_unwind`.
 ///
 /// **Which fail-closes convert to this error.** Under the coupling's default solver
-/// config (LM regularization disabled — see [`SolverConfig`]), the soft solver
-/// returns [`SolverFailure::NewtonIterCap`] and [`SolverFailure::DoublyFailedFactor`]
-/// as `Err`, so they become a `RolloutError` here. The grip's stiff-contact
-/// fail-close is `NewtonIterCap` (the optimizer's infeasible designs hit the Newton
-/// iter-cap), so this covers the case the `try_` path exists for. NOT yet converted —
-/// still a panic even on the `try_` path: [`SolverFailure::ArmijoStall`] (the soft
-/// solver's `SaturationPolicy::PanicOnStall` default forwards it to a panic) and
-/// the validity-domain `assert!` (tet inversion / over-stretch). Those are the
-/// pending soft-solver-robustness work; the grip doesn't reach them at its iter-cap.
+/// config (LM regularization disabled — see [`SolverConfig`]), the soft solver returns
+/// [`SolverFailure::NewtonIterCap`], [`SolverFailure::DoublyFailedFactor`], and
+/// [`SolverFailure::ValidityViolation`] (a tet over-stretching / inverting past the
+/// material's validity domain) as `Err`, so they all become a `RolloutError` here —
+/// covering the two stiff-contact fail-close modes the grip actually hits (the Newton
+/// iter-cap and the validity tear). The ONE residual still on the panic path: an
+/// [`SolverFailure::ArmijoStall`] (the soft solver's `SaturationPolicy::PanicOnStall`
+/// default forwards it to a panic) — the grip does not reach it at its Newton iter-cap;
+/// closing it is the remaining soft-solver-robustness work.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RolloutError {
@@ -134,6 +134,11 @@ impl fmt::Display for RolloutError {
             SolverFailure::DoublyFailedFactor { context, .. } => {
                 write!(f, "soft tangent factorization doubly failed: {context}")
             }
+            SolverFailure::ValidityViolation { tet_id, .. } => write!(
+                f,
+                "soft buffer left its validity domain at tet {tet_id} (a tet over-stretched / \
+                 inverted) — infeasible design (the grip indents the coarse buffer too hard)",
+            ),
         }
     }
 }
@@ -6140,11 +6145,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// to skip infeasible `(μ, θ)` instead of unwinding a panic.
     ///
     /// # Errors
-    /// Returns [`RolloutError`] when an aggressive design/policy tears the coarse buffer into a
-    /// non-convergent contact problem at some rollout step. See [`RolloutError`] for exactly which
-    /// [`SolverFailure`] variants convert to a value here vs still panic under the default config
-    /// (the grip's `NewtonIterCap` fail-close converts; an `ArmijoStall`/validity violation still
-    /// panics — the pending robustness work the grip does not reach).
+    /// Returns [`RolloutError`] when an aggressive design/policy tears the coarse buffer at some
+    /// rollout step — either a Newton iter-cap or a validity-domain violation (a tet over-stretching).
+    /// See [`RolloutError`] for exactly which [`SolverFailure`] variants convert to a value here vs
+    /// the one residual (`ArmijoStall`) that still panics — the pending robustness work the grip does
+    /// not reach.
     ///
     /// # Panics
     /// Still panics on the *non-recoverable* preconditions (`params.len() != policy.n_params()`,
