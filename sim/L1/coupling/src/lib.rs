@@ -64,9 +64,84 @@ use sim_soft::{
     ActivePairsFor, BoundaryConditions, ContactModel, ContactPair, ContactPairReadout,
     CpuNewtonSolver, FrictionVertexForce, HandBuiltTetMesh, IpcRigidContact, LoadAxis,
     MaterialField, Mesh, NeoHookean, PenaltyRigidContact, RigidPlane, RigidTwist, Sdf, Solver,
-    SolverConfig, SphereSdf, Tet4, TranslatedSdf, Vec3, VertexId,
+    SolverConfig, SolverFailure, SphereSdf, Tet4, TranslatedSdf, Vec3, VertexId,
 };
+use std::fmt;
 use std::marker::PhantomData;
+
+/// A coupled-rollout failure surfaced as a value instead of a panic.
+///
+/// The closed-loop grip rollout re-solves the soft buffer at every step. On a
+/// stiff-contact design/policy the co-design optimizer explores (an aggressive
+/// holding gain pressing a finite end-effector deep into the coarse buffer), that
+/// soft solve can fail to converge — a *genuinely infeasible* equilibrium, not a
+/// solver bug (raising the Newton cap converts it to an Armijo stall at a plateau
+/// residual; the deformation gradient never inverts). The panic-path rollouts
+/// ([`StaggeredCoupling::coupled_trajectory_design_policy_friction_gradient`] and
+/// friends) surface that as a panic, matching the soft solver's fail-closed
+/// contract. The `try_`-prefixed siblings return this error instead, so the
+/// optimizer can skip the infeasible point and keep its best feasible iterate
+/// (the robustness `cf_codesign::OptConfig::reject_infeasible` relies on) without a
+/// `catch_unwind`.
+///
+/// **Which fail-closes convert to this error.** Under the coupling's default solver
+/// config (LM regularization disabled — see [`SolverConfig`]), the soft solver
+/// returns [`SolverFailure::NewtonIterCap`] and [`SolverFailure::DoublyFailedFactor`]
+/// as `Err`, so they become a `RolloutError` here. The grip's stiff-contact
+/// fail-close is `NewtonIterCap` (the optimizer's infeasible designs hit the Newton
+/// iter-cap), so this covers the case the `try_` path exists for. NOT yet converted —
+/// still a panic even on the `try_` path: [`SolverFailure::ArmijoStall`] (the soft
+/// solver's `SaturationPolicy::PanicOnStall` default forwards it to a panic) and
+/// the validity-domain `assert!` (tet inversion / over-stretch). Those are the
+/// pending soft-solver-robustness work; the grip doesn't reach them at its iter-cap.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RolloutError {
+    /// The 0-based rollout step at which the soft solve failed.
+    pub step: usize,
+    /// The underlying soft-solver failure. Named `failure` (not `source`) so it does
+    /// not read as the [`std::error::Error::source`] cause chain — `SolverFailure` is
+    /// not an `Error`, so it is exposed as structured data, not as a `&dyn Error`.
+    pub failure: SolverFailure,
+}
+
+impl fmt::Display for RolloutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Render the soft failure concisely: name the variant + its scalar diagnostics, but OMIT the
+        // per-variant `x_partial` (a full DOF vector — noise in a panic/log message; the structured
+        // `failure` field still carries it for programmatic inspection). `SolverFailure` is
+        // `Debug`-only, so this hand-formats rather than delegating to its `Display`.
+        write!(f, "coupled grip rollout failed at step {}: ", self.step)?;
+        match &self.failure {
+            SolverFailure::NewtonIterCap {
+                max_iter,
+                last_r_norm,
+                ..
+            } => write!(
+                f,
+                "soft Newton iter-cap ({max_iter} iters) reached without convergence (residual \
+                 {last_r_norm:e}) — infeasible design (the buffer cannot re-equilibrate)",
+            ),
+            SolverFailure::ArmijoStall {
+                last_iter,
+                last_r_norm,
+                ..
+            } => write!(
+                f,
+                "soft Armijo line-search stalled at Newton iter {last_iter} (residual \
+                 {last_r_norm:e}) — non-SPD tangent / infeasible design",
+            ),
+            SolverFailure::DoublyFailedFactor { context, .. } => {
+                write!(f, "soft tangent factorization doubly failed: {context}")
+            }
+        }
+    }
+}
+
+// `source()` returns `None`: `SolverFailure` does not implement `std::error::Error`
+// (it is a `Debug`-only failure value), so it cannot be returned as a `&dyn Error`
+// cause. The structured `source` field above exposes it for programmatic inspection.
+impl std::error::Error for RolloutError {}
 
 /// A rigid-primitive contact constructible from a single posed [`Sdf`] primitive +
 /// `(κ, d̂)`, with an active-pair readout over the keystone block — the bridge that
@@ -5654,18 +5729,24 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `tip_x` or a trajectory-integrated cost over `qpos_steps` before one backward — the expensive
     /// coupled recurrence is built once, the objective is a thin tail. See [`DesignPolicyTape`].
     ///
+    /// # Errors
+    /// Returns [`RolloutError`] if the per-step soft solve fails to converge (the
+    /// infeasible-design fail-close, surfaced as a value for the `try_` gradient path).
+    ///
     /// # Panics
     /// Panics if `params.len() != policy.n_params()`, if `nq != nv`, if `nu != 1`, if friction is
-    /// inactive, if `rigid_damping != 0`, if the rotating normal is enabled, or if a step diverges.
+    /// inactive, if `rigid_damping != 0`, if the rotating normal is enabled, or if the *rigid* step
+    /// diverges (a separate fail-closed surface from the soft solve).
     // One coherent per-step tape loop (fuses the friction-grip material design leaf and the closed-
-    // loop policy leaves). expect_used: a rigid/soft divergence is a programmer error surfaced loudly.
+    // loop policy leaves). expect_used: a rigid-step / FK divergence is a programmer error surfaced
+    // loudly (the *soft* non-convergence is the recoverable fail-close — returned as `RolloutError`).
     #[allow(clippy::too_many_lines, clippy::expect_used)]
     fn build_design_policy_tape<P: DiffPolicy>(
         &mut self,
         policy: &P,
         params: &[f64],
         n_steps: usize,
-    ) -> DesignPolicyTape {
+    ) -> Result<DesignPolicyTape, RolloutError> {
         assert_eq!(
             params.len(),
             policy.n_params(),
@@ -5727,7 +5808,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         // objective never reads it, so that path is unchanged.
         let mut qpos_steps: Vec<Var> = Vec::with_capacity(n_steps);
 
-        for _ in 0..n_steps {
+        for k in 0..n_steps {
             self.data.forward(&self.model).expect("fresh FK");
             // MOVING END-EFFECTOR (mirrors #429 friction + the g_act/policy channel). Sphere-only.
             let moving_ee =
@@ -5809,13 +5890,18 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 bc,
             )
             .with_friction_surface_drift(drift);
+            // Fallible soft solve: a non-convergent step is the infeasible-design
+            // fail-close — surfaced as `Err` (tagged with the rollout step) so the
+            // `try_` gradient path returns it as a value. On success this is
+            // byte-identical to the panic-path `replay_step` (same `solve_impl`).
             let x_next = solver
-                .replay_step(
+                .try_replay_step(
                     &Tensor::from_slice(&self.x, &[3 * n]),
                     &Tensor::from_slice(&self.v, &[3 * n]),
                     &Tensor::zeros(&[0]),
                     dt,
                 )
+                .map_err(|failure| RolloutError { step: k, failure })?
                 .x_final;
             let v_next: Vec<f64> = x_next
                 .iter()
@@ -5989,7 +6075,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let jlin = self.com_linear_jacobian();
             (0..nv).map(|j| jlin[(0, j)]).collect()
         };
-        DesignPolicyTape {
+        Ok(DesignPolicyTape {
             tape,
             p_var,
             param_vars,
@@ -5997,7 +6083,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             s_final: s_var,
             jx_final,
             tip_x,
-        }
+        })
     }
 
     /// **Design + policy on ONE friction-grip tape — the mission's "one outer loop over BOTH".**
@@ -6029,7 +6115,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// # Panics
     /// Panics if `params.len() != policy.n_params()`, if `nq != nv`, if `nu != 1`, if friction is
-    /// inactive, if `rigid_damping != 0`, if the rotating normal is enabled, or if a step diverges.
+    /// inactive, if `rigid_damping != 0`, if the rotating normal is enabled, if the rigid step
+    /// diverges, **or if the soft solve fails to converge** (the infeasible-design fail-close). Use
+    /// [`Self::try_coupled_trajectory_design_policy_friction_gradient`] to handle that last case as a
+    /// value instead of a panic.
+    // panic: the fail-closed contract — this convenience wrapper re-panics the `try_` sibling's
+    // `RolloutError` (the soft solver's own fail-close surface) for callers that want it loud.
+    #[allow(clippy::panic)]
     #[must_use]
     pub fn coupled_trajectory_design_policy_friction_gradient<P: DiffPolicy>(
         &mut self,
@@ -6037,7 +6129,34 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         params: &[f64],
         n_steps: usize,
     ) -> (f64, f64, Vec<f64>) {
-        let mut t = self.build_design_policy_tape(policy, params, n_steps);
+        self.try_coupled_trajectory_design_policy_friction_gradient(policy, params, n_steps)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Fallible sibling of [`Self::coupled_trajectory_design_policy_friction_gradient`]: returns the
+    /// terminal-`tip_x` loss-gradient blocks, or [`RolloutError`] if a per-step soft solve fails to
+    /// converge (the infeasible-design fail-close). On success the returned tuple is byte-identical to
+    /// the panic-path method (same tape, same backward). The co-design optimizer routes through this
+    /// to skip infeasible `(μ, θ)` instead of unwinding a panic.
+    ///
+    /// # Errors
+    /// Returns [`RolloutError`] when an aggressive design/policy tears the coarse buffer into a
+    /// non-convergent contact problem at some rollout step. See [`RolloutError`] for exactly which
+    /// [`SolverFailure`] variants convert to a value here vs still panic under the default config
+    /// (the grip's `NewtonIterCap` fail-close converts; an `ArmijoStall`/validity violation still
+    /// panics — the pending robustness work the grip does not reach).
+    ///
+    /// # Panics
+    /// Still panics on the *non-recoverable* preconditions (`params.len() != policy.n_params()`,
+    /// `nq != nv`, `nu != 1`, friction inactive, `rigid_damping != 0`, rotating normal, or a rigid-step
+    /// divergence) — those are programmer/scope errors, not infeasible designs.
+    pub fn try_coupled_trajectory_design_policy_friction_gradient<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+    ) -> Result<(f64, f64, Vec<f64>), RolloutError> {
+        let mut t = self.build_design_policy_tape(policy, params, n_steps)?;
         // Seed the terminal tangential drag `tip_x = xipos[body].x` and backward once.
         let obj_var = t.tape.push_custom(
             &[t.s_final],
@@ -6051,7 +6170,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .iter()
             .map(|&p| t.tape.grad_tensor(p).as_slice()[0])
             .collect();
-        (t.tip_x, mu_grad, theta_grad)
+        Ok((t.tip_x, mu_grad, theta_grad))
     }
 
     /// **Trajectory-integrated HOLDING gradient** — the first sustained-behavior co-design lever.
@@ -6074,7 +6193,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// (`Σ (qₖ − q_hold)²` over [`Self::coupled_trajectory_policy_gripped_capture`]).
     ///
     /// # Panics
-    /// Panics under the same conditions as [`Self::coupled_trajectory_design_policy_friction_gradient`].
+    /// Panics under the same conditions as [`Self::coupled_trajectory_design_policy_friction_gradient`]
+    /// — including a non-convergent soft solve. Use
+    /// [`Self::try_coupled_trajectory_design_policy_hold_gradient`] to handle the fail-close as a value.
+    // panic: the fail-closed contract — re-panics the `try_` sibling's `RolloutError` for callers
+    // that want the soft solver's fail-close loud (mirrors the friction sibling).
+    #[allow(clippy::panic)]
     #[must_use]
     pub fn coupled_trajectory_design_policy_hold_gradient<P: DiffPolicy>(
         &mut self,
@@ -6083,7 +6207,32 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         n_steps: usize,
         q_hold: f64,
     ) -> (f64, f64, Vec<f64>) {
-        let mut t = self.build_design_policy_tape(policy, params, n_steps);
+        self.try_coupled_trajectory_design_policy_hold_gradient(policy, params, n_steps, q_hold)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Fallible sibling of [`Self::coupled_trajectory_design_policy_hold_gradient`]: returns the
+    /// holding-cost `L = Σ (qₖ − q_hold)²` and its `(∂L/∂μ_total, ∂L/∂θ)` blocks, or [`RolloutError`]
+    /// if a per-step soft solve fails to converge. On success the returned tuple is byte-identical to
+    /// the panic-path method. The Hold co-design optimizer routes through this to survive the
+    /// infeasible `(μ, θ)` an aggressive holding policy explores.
+    ///
+    /// # Errors
+    /// Returns [`RolloutError`] when the soft buffer cannot be re-equilibrated at some rollout step.
+    /// See [`RolloutError`] for which [`SolverFailure`] variants convert vs still panic (same coverage
+    /// as the fallible friction sibling).
+    ///
+    /// # Panics
+    /// Still panics on the non-recoverable preconditions / a rigid-step divergence (see the fallible
+    /// friction sibling).
+    pub fn try_coupled_trajectory_design_policy_hold_gradient<P: DiffPolicy>(
+        &mut self,
+        policy: &P,
+        params: &[f64],
+        n_steps: usize,
+        q_hold: f64,
+    ) -> Result<(f64, f64, Vec<f64>), RolloutError> {
+        let mut t = self.build_design_policy_tape(policy, params, n_steps)?;
         // L = Σ (qₖ − q_hold)², built on the shared tape: subtract the q_hold constant, square via
         // mul, accumulate via add. One backward over the sum reads ∂L/∂μ and ∂L/∂θ.
         let neg_q_hold = t.tape.constant_tensor(Tensor::from_slice(&[-q_hold], &[1]));
@@ -6103,7 +6252,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .iter()
             .map(|&p| t.tape.grad_tensor(p).as_slice()[0])
             .collect();
-        (cost_val, mu_grad, theta_grad)
+        Ok((cost_val, mu_grad, theta_grad))
     }
 
     /// **The keystone control-gradient (the policy half's substrate).** Roll the
