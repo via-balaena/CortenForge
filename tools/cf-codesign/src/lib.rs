@@ -107,8 +107,58 @@
 //! assert!(result.converged);
 //! ```
 
-use sim_coupling::{DiffPolicy, LinearFeedback, StaggeredCoupling};
+use sim_coupling::{DiffPolicy, LinearFeedback, RolloutError, StaggeredCoupling};
 use sim_ml_chassis::OptimizerConfig;
+use std::fmt;
+
+/// The co-design objective could not be evaluated at a parameter point because the
+/// underlying forward model **fail-closed** there — a *genuinely infeasible* design,
+/// not a bug. (For the stiff-contact grip this is the soft solver's non-convergence:
+/// an aggressive `(μ, θ)` tears the coarse buffer into a contact problem the Newton
+/// solve cannot resolve.) The feasibility-aware optimizer ([`OptConfig::reject_infeasible`])
+/// skips such points — backtracking toward the last feasible iterate — instead of
+/// crashing the whole run.
+///
+/// Carries a human-readable `reason`; the [`CoDesignProblem`] trait stays decoupled
+/// from any specific forward-model error type, so a mock or a future non-grip problem
+/// can report its own infeasibility. The grip maps [`sim_coupling::RolloutError`] in
+/// via [`From`].
+///
+/// `#[non_exhaustive]`: construct via [`InfeasibleDesign::new`] (or [`From`]) — this
+/// leaves room to add a structured cause later (e.g. the param point or the typed
+/// [`sim_coupling::RolloutError`]) without a breaking change, mirroring `RolloutError`.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct InfeasibleDesign {
+    /// Human-readable description of why the design is infeasible.
+    pub reason: String,
+}
+
+impl InfeasibleDesign {
+    /// Construct from any reason string.
+    #[must_use]
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for InfeasibleDesign {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "infeasible design: {}", self.reason)
+    }
+}
+
+impl std::error::Error for InfeasibleDesign {}
+
+impl From<RolloutError> for InfeasibleDesign {
+    /// A coupled-rollout fail-close is reported as an infeasible design (its `Display`
+    /// names the failing step + the soft-solver failure).
+    fn from(e: RolloutError) -> Self {
+        Self::new(e.to_string())
+    }
+}
 
 /// A differentiable design objective the [`optimize`] loop drives: it maps a
 /// parameter vector to a scalar loss and its gradient.
@@ -123,6 +173,23 @@ pub trait CoDesignProblem {
     /// `(loss, gradient)` at `params`. `gradient.len()` must equal
     /// [`n_params`](Self::n_params).
     fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>);
+
+    /// Fallible form of [`evaluate`](Self::evaluate): `Ok((loss, gradient))`, or
+    /// `Err(`[`InfeasibleDesign`]`)` if the forward model fail-closes at `params` (a
+    /// genuinely infeasible design, not a bug). The feasibility-aware optimizer
+    /// ([`OptConfig::reject_infeasible`]) drives this so it can skip infeasible points
+    /// — instead of catching a panic — and keep its best feasible iterate.
+    ///
+    /// Default: `Ok(self.evaluate(params))` — for the smooth objectives that never
+    /// fail-close (their `evaluate` always returns). Fail-close-prone problems (the
+    /// stiff-contact grip) **override** this to return `Err` rather than panicking,
+    /// and route their own `evaluate` through it.
+    ///
+    /// # Errors
+    /// Returns [`InfeasibleDesign`] when evaluation is infeasible at `params`.
+    fn try_evaluate(&self, params: &[f64]) -> Result<(f64, Vec<f64>), InfeasibleDesign> {
+        Ok(self.evaluate(params))
+    }
 
     /// Optional per-parameter lower bounds, clamped after each optimizer step
     /// (e.g. a positive-stiffness floor `μ > 0`). Default: unconstrained.
@@ -2179,8 +2246,32 @@ impl<P: DiffPolicy> CoDesignProblem for GripCoDesignTarget<P> {
     ///   trajectory-integrated gradient already returns `∂L/∂·`, so there is no residual factor).
     ///
     /// # Panics
-    /// Panics if `p.len() != 1 + policy.n_params()`.
+    /// Panics if `p.len() != 1 + policy.n_params()`, or if the grip rollout fail-closes at `p` (an
+    /// infeasible design). Use [`try_evaluate`](Self::try_evaluate) to handle that fail-close as a
+    /// value — the feasibility-aware optimizer does.
     fn evaluate(&self, p: &[f64]) -> (f64, Vec<f64>) {
+        self.try_evaluate(p).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// `(loss, gradient)` at `p = [ln μ, θ…]`, or `Err(`[`InfeasibleDesign`]`)` if the grip rollout
+    /// fail-closes at `p`. Dispatched on the [`GripObjective`]; the `μ` component carries the
+    /// `dμ/d(ln μ) = μ` log-chain factor and the `θ` components are linear; one design+policy backward
+    /// over the shared grip tape yields both blocks.
+    ///
+    /// - [`GripObjective::RestrainTipX`]`(target)`: loss `½(tip_x − target)²`, gradient
+    ///   `residual · ∂tip_x/∂·` (the #406 terminal gradient).
+    /// - [`GripObjective::Hold`]`(q_hold)`: loss `L = Σ (qₖ − q_hold)²` *directly* (the H1
+    ///   trajectory-integrated gradient already returns `∂L/∂·`, so there is no residual factor).
+    ///
+    /// Routes through the coupling's `try_` grip gradients so a stiff-contact fail-close becomes a
+    /// value (the `?`/[`From`] maps [`RolloutError`] → [`InfeasibleDesign`]), not a panic.
+    ///
+    /// # Errors
+    /// Returns [`InfeasibleDesign`] if the soft buffer cannot be re-equilibrated at some rollout step.
+    ///
+    /// # Panics
+    /// Panics if `p.len() != 1 + policy.n_params()` (a caller error, not an infeasible design).
+    fn try_evaluate(&self, p: &[f64]) -> Result<(f64, Vec<f64>), InfeasibleDesign> {
         assert_eq!(
             p.len(),
             1 + self.policy.n_params(),
@@ -2196,29 +2287,29 @@ impl<P: DiffPolicy> CoDesignProblem for GripCoDesignTarget<P> {
                 // ONE backward over the coupled grip rollout → both terminal-tip_x gradient blocks.
                 let (tip_x, dx_dmu, dx_dtheta) = self
                     .build_at(mu)
-                    .coupled_trajectory_design_policy_friction_gradient(
+                    .try_coupled_trajectory_design_policy_friction_gradient(
                         &self.policy,
                         theta,
                         self.n_steps,
-                    );
+                    )?;
                 let residual = tip_x - target_x;
                 grad.push(residual * dx_dmu * mu); // d loss / d(ln μ), log-μ chain
                 grad.extend(dx_dtheta.iter().map(|&g| residual * g)); // d loss / dθ_i
-                (0.5 * residual * residual, grad)
+                Ok((0.5 * residual * residual, grad))
             }
             GripObjective::Hold(q_hold) => {
                 // The holding gradient returns (L, ∂L/∂μ_total, ∂L/∂θ) directly — L is the loss.
                 let (cost, dl_dmu, dl_dtheta) = self
                     .build_at(mu)
-                    .coupled_trajectory_design_policy_hold_gradient(
+                    .try_coupled_trajectory_design_policy_hold_gradient(
                         &self.policy,
                         theta,
                         self.n_steps,
                         q_hold,
-                    );
+                    )?;
                 grad.push(dl_dmu * mu); // d L / d(ln μ), log-μ chain
                 grad.extend(dl_dtheta); // d L / dθ_i (linear)
-                (cost, grad)
+                Ok((cost, grad))
             }
         }
     }
