@@ -1,18 +1,23 @@
 //! Feasibility-aware optimization ([`OptConfig::reject_infeasible`]) — robustness for fail-closed
-//! forward models (the soft solver PANICS, not `Err`s, on a torn/diverged step).
+//! forward models (the stiff-contact grip reports infeasibility as a typed `Err` from
+//! [`CoDesignProblem::try_evaluate`]; its panic-path `evaluate` still fail-closes loudly).
 //!
-//! A synthetic 1-D quadratic whose `evaluate` PANICS outside a feasible region `x ≤ feasible_max`
-//! stands in for the stiff-contact co-design (where an Adam step can land on a parameter point whose
-//! coupled rollout tears the buffer and panics). The gates:
-//! 1. with `reject_infeasible = true` the optimizer SURVIVES the panic, stays feasible, and pushes
-//!    to the constrained optimum (the feasible boundary);
-//! 2. with `reject_infeasible = false` the same run PANICS — the robustness is load-bearing;
-//! 3. when the optimum is interior (no panic), `reject_infeasible` leaves the result byte-identical.
+//! A synthetic 1-D quadratic whose `try_evaluate` returns `Err(InfeasibleDesign)` outside a feasible
+//! region `x ≤ feasible_max` (and whose `evaluate` still PANICS there) stands in for the
+//! stiff-contact co-design (where an Adam step can land on a parameter point whose coupled rollout
+//! tears the buffer). The gates:
+//! 1. with `reject_infeasible = true` the optimizer SKIPS the infeasible step (no panic), stays
+//!    feasible, and pushes to the constrained optimum (the feasible boundary);
+//! 2. with `reject_infeasible = false` the same run hits the panic-path `evaluate` and PANICS — the
+//!    feasibility-aware path is load-bearing;
+//! 3. when the optimum is interior (never infeasible), `reject_infeasible` leaves the result
+//!    byte-identical.
 
-use cf_codesign::{CoDesignProblem, OptConfig, optimize};
+use cf_codesign::{CoDesignProblem, InfeasibleDesign, OptConfig, optimize};
 
-/// `½(x − target)²` with a fail-closed feasible region: `evaluate` panics for `x > feasible_max`
-/// (mimicking the soft solver's panic on a torn step).
+/// `½(x − target)²` with a fail-closed feasible region: `try_evaluate` returns `Err` for
+/// `x > feasible_max`, and `evaluate` re-panics it (mimicking the grip — a typed `Err` on the
+/// fallible path, a loud panic on the infallible one).
 struct FailClosedQuadratic {
     target: f64,
     feasible_max: f64,
@@ -23,14 +28,18 @@ impl CoDesignProblem for FailClosedQuadratic {
         1
     }
     fn evaluate(&self, p: &[f64]) -> (f64, Vec<f64>) {
+        self.try_evaluate(p).unwrap_or_else(|e| panic!("{e}"))
+    }
+    fn try_evaluate(&self, p: &[f64]) -> Result<(f64, Vec<f64>), InfeasibleDesign> {
         let x = p[0];
-        assert!(
-            x <= self.feasible_max,
-            "infeasible: x = {x} > feasible_max {}",
-            self.feasible_max
-        );
+        if x > self.feasible_max {
+            return Err(InfeasibleDesign::new(format!(
+                "infeasible: x = {x} > feasible_max {}",
+                self.feasible_max
+            )));
+        }
         let r = x - self.target;
-        (0.5 * r * r, vec![r])
+        Ok((0.5 * r * r, vec![r]))
     }
 }
 
@@ -114,5 +123,34 @@ fn feasibility_aware_never_worse_when_feasible() {
         "both converge to the interior optimum x = 1.0 (best {}, last {})",
         robust.params[0],
         base.params[0]
+    );
+}
+
+/// A smooth problem that does NOT override `try_evaluate` still optimizes under
+/// `reject_infeasible = true`: the rewired (catch_unwind-free) loop drives the DEFAULT
+/// `try_evaluate` (`Ok(self.evaluate(..))`), so a never-fail-closing target descends exactly as in
+/// default mode. Covers the default trait path through the loop — the smooth co-design targets
+/// (material / joint / policy) rely on it.
+#[test]
+fn default_try_evaluate_through_reject_infeasible_loop() {
+    struct SmoothQuadratic {
+        target: f64,
+    }
+    // Note: no `try_evaluate` override — exercises the trait default.
+    impl CoDesignProblem for SmoothQuadratic {
+        fn n_params(&self) -> usize {
+            1
+        }
+        fn evaluate(&self, p: &[f64]) -> (f64, Vec<f64>) {
+            let r = p[0] - self.target;
+            (0.5 * r * r, vec![r])
+        }
+    }
+    let prob = SmoothQuadratic { target: 1.5 };
+    let result = optimize(&prob, &[0.0], &cfg(true));
+    assert!(
+        (result.params[0] - 1.5).abs() < 1e-3,
+        "smooth problem under reject_infeasible should reach the interior optimum 1.5, got {}",
+        result.params[0]
     );
 }
