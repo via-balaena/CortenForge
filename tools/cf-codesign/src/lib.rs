@@ -224,25 +224,33 @@ pub struct OptConfig {
     /// tiny `ε` (which only works while the un-normalized gradient stays above it).
     /// `ε` remains exposed as the legitimate general Adam knob it is.
     pub eps: f64,
-    /// Opt-in **feasibility-aware** stepping for fail-closed forward models. The soft solver
-    /// PANICS (does not return `Err`) when a step tears the buffer or the Newton solve diverges, so
-    /// on a stiff-contact co-design (e.g. a moving-EE grip) an unconstrained Adam step can land on a
-    /// parameter point whose `evaluate` panics and crash the whole run. When `true`, each candidate
-    /// step is checked by catching that panic ([`std::panic::catch_unwind`]) and **backtracking** the
-    /// Adam step (halving toward the last feasible iterate) until `evaluate` succeeds — keeping the
-    /// iterate in the region where the solve converges. The run then returns the **best feasible
-    /// iterate** seen (not the last), so the result is never worse than the feasible `x0`. Default
-    /// `false`: the loop is byte-identical (no `catch_unwind`, no backtracking, last-iterate result)
-    /// for the smooth targets that never panic.
+    /// Opt-in **feasibility-aware** stepping for fail-closed forward models. On a stiff-contact
+    /// co-design (e.g. a moving-EE grip) an unconstrained Adam step can land on a parameter point
+    /// whose forward model cannot be solved (the soft buffer tears into a non-convergent contact
+    /// problem — a genuinely infeasible design). When `true`, the loop scores each candidate via
+    /// [`CoDesignProblem::try_evaluate`] and, on `Err(`[`InfeasibleDesign`]`)`, **backtracks** the
+    /// Adam step (halving toward the last feasible iterate) until it is feasible again — keeping the
+    /// iterate in the region where the model solves. The run returns the **best feasible iterate**
+    /// seen (not the last), so the result is never worse than the feasible `x0`. Default `false`:
+    /// the loop evaluates directly (`evaluate`, last-iterate result, byte-identical) for the smooth
+    /// targets that never fail-close.
     ///
-    /// Requires a **feasible `x0`** (the starting point must not itself panic; an infeasible `x0`
+    /// Requires a **feasible `x0`** (the starting point must itself be feasible; an infeasible `x0`
     /// yields a `NaN`-loss, non-converged result rather than a crash).
     ///
-    /// **Caveats.** (1) `catch_unwind` reclassifies *any* panic — including a genuine logic bug, not
-    /// just a solver tear — as "infeasible" and backtracks away from it, and the silenced panic hook
-    /// hides its message; debug a suspected bug with this flag off. (2) The panic-hook swap is
-    /// process-global, so this mode is **not re-entrant / not safe under concurrent `optimize` calls**
-    /// in the same process (fine for a single co-design run, the intended use).
+    /// **The infeasibility signal is a typed `Err`, not a caught panic.** A problem reports
+    /// infeasibility by returning `Err` from [`try_evaluate`](CoDesignProblem::try_evaluate) (the
+    /// grip maps the coupling's `RolloutError` in); there is no `catch_unwind`. Two consequences:
+    /// (1) the safety net is **opt-in per problem** — only problems whose `try_evaluate` returns
+    /// `Err` (the grip, and `Normalized` wrapping one) are skipped; a problem that still *panics*
+    /// (e.g. on a genuine bug) crashes the run, which is the intended fail-loud behavior.
+    /// (2) A residual *panic* surface remains for the soft solver's `ArmijoStall` / validity-domain
+    /// fail-closes (which still panic rather than returning `Err`). The current shipped grip
+    /// scene/horizon fail-closes via `NewtonIterCap` (returned as `Err`), so it backtracks rather
+    /// than crashes; but other scenes/horizons — or a step that *converges to an invalid state*
+    /// (the validity check fires at the next step's start) or that line-search-stalls — can still
+    /// reach the validity/`ArmijoStall` panic and would crash rather than backtrack. Closing that is
+    /// the deferred soft-solver-robustness work, not a guarantee this path makes today.
     pub reject_infeasible: bool,
 }
 
@@ -292,45 +300,16 @@ pub struct OptResult {
     pub history: Vec<IterRecord>,
 }
 
-/// RAII guard for [`OptConfig::reject_infeasible`]: installs a no-op panic hook (silencing the
-/// fail-closed solver's panic message + backtrace during the many feasibility trials) and restores
-/// the previous hook on drop (including on early return / unwind).
-struct SilencedPanicHook(
-    Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>>,
-);
-
-impl SilencedPanicHook {
-    fn install() -> Self {
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        Self(Some(prev))
-    }
-}
-
-impl Drop for SilencedPanicHook {
-    fn drop(&mut self) {
-        if let Some(prev) = self.0.take() {
-            std::panic::set_hook(prev);
-        }
-    }
-}
-
-/// Evaluate `problem` at `params`, catching a fail-closed-solver panic as `None` (infeasible).
-/// `evaluate` rebuilds its scene fresh, so a caught panic leaves no corrupt state for the next call.
-fn try_evaluate(problem: &dyn CoDesignProblem, params: &[f64]) -> Option<(f64, Vec<f64>)> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| problem.evaluate(params))).ok()
-}
-
 /// Backtrack a just-taken Adam step (in `params`, from `prev`) toward `prev`, halving until the
-/// iterate is feasible (`evaluate` no longer panics). Gives up (restores `prev`, the last feasible
-/// point) if even a tiny step is infeasible. Applies `bounds` after each trial.
+/// iterate is feasible ([`CoDesignProblem::try_evaluate`] returns `Ok`). Gives up (restores `prev`,
+/// the last feasible point) if even a tiny step is infeasible. Applies `bounds` after each trial.
 fn backtrack_to_feasible(
     problem: &dyn CoDesignProblem,
     prev: &[f64],
     params: &mut [f64],
     bounds: &Option<Vec<f64>>,
 ) {
-    if try_evaluate(problem, params).is_some() {
+    if problem.try_evaluate(params).is_ok() {
         return; // the full step is already feasible
     }
     let stepped = params.to_vec();
@@ -346,7 +325,7 @@ fn backtrack_to_feasible(
                 }
             }
         }
-        if try_evaluate(problem, params).is_some() {
+        if problem.try_evaluate(params).is_ok() {
             return;
         }
         alpha *= 0.5;
@@ -398,9 +377,6 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
     let mut params = x0.to_vec();
     let bounds = problem.lower_bounds();
     let mut history = Vec::with_capacity(cfg.max_iters);
-    // Feasibility-aware mode silences the fail-closed solver's panic output for the whole run
-    // (restored on drop); the loop converts panics into backtracking. No-op when not opted in.
-    let _hook = cfg.reject_infeasible.then(SilencedPanicHook::install);
     // Feasibility-aware runs return the BEST feasible iterate seen, not the last: Adam is
     // non-monotonic and backtracking restores feasibility (not loss), so "best so far" is what makes
     // the result a genuine improvement — and, since the feasible `x0` is the first point scored, never
@@ -409,12 +385,12 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
 
     for it in 0..cfg.max_iters {
         // The iterate is kept feasible (invariant, maintained by the backtrack below), so this
-        // evaluate succeeds. In feasible-aware mode go through `try_evaluate` anyway and stop if a
+        // evaluate succeeds. In feasibility-aware mode go through `try_evaluate` anyway and stop if a
         // feasible iterate somehow can't be evaluated; in default mode evaluate directly (identical).
         let (loss, grad) = if cfg.reject_infeasible {
-            match try_evaluate(problem, &params) {
-                Some(v) => v,
-                None => break,
+            match problem.try_evaluate(&params) {
+                Ok(v) => v,
+                Err(_) => break,
             }
         } else {
             problem.evaluate(&params)
@@ -668,8 +644,27 @@ impl CoDesignProblem for Normalized<'_> {
     }
 
     fn evaluate(&self, params: &[f64]) -> (f64, Vec<f64>) {
+        // panic: the fail-closed contract — re-panics the fallible `try_evaluate`'s `InfeasibleDesign`
+        // for callers that want it loud; the feasibility-aware optimizer uses `try_evaluate` instead.
+        self.try_evaluate(params).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Forwards the fallible path through the wrapper: scales the **inner**
+    /// [`try_evaluate`](CoDesignProblem::try_evaluate) result by `loss_scale` (and the
+    /// log-space chain factor), propagating an inner [`InfeasibleDesign`] unchanged. This is the
+    /// load-bearing override for feasibility-aware co-design: the grip is optimized *through* a
+    /// `Normalized` wrapper, so without forwarding here the optimizer would hit the panic-path
+    /// `evaluate` and crash on an infeasible design instead of skipping it.
+    ///
+    /// # Errors
+    /// Returns the inner [`InfeasibleDesign`] when the wrapped problem fail-closes at `params`.
+    ///
+    /// # Panics
+    /// Panics (not an infeasible design) if the scaled loss/gradient is non-finite — a `log_space`
+    /// `exp(p)` overflow, the runaway-insurance guard below.
+    fn try_evaluate(&self, params: &[f64]) -> Result<(f64, Vec<f64>), InfeasibleDesign> {
         let physical = self.to_physical(params);
-        let (loss, grad) = self.inner.evaluate(&physical);
+        let (loss, grad) = self.inner.try_evaluate(&physical)?;
         debug_assert_eq!(
             grad.len(),
             physical.len(),
@@ -699,13 +694,14 @@ impl CoDesignProblem for Normalized<'_> {
         // release-heavy CI and real long runs (the only place a runaway could
         // occur), so it must be a plain `assert!`. The cost is one `is_finite` per
         // value per iteration, negligible against the coupled rollout it guards —
-        // the safety net any reusable combinator should carry.
+        // the safety net any reusable combinator should carry. (A non-finite is a
+        // bug-class overflow, not an infeasible design — hence a panic, not `Err`.)
         assert!(
             scaled_loss.is_finite() && scaled.iter().all(|g| g.is_finite()),
             "Normalized produced a non-finite loss/gradient at params {physical:?} \
              (loss {scaled_loss}; a log_space parameter may have overflowed to ±inf)",
         );
-        (scaled_loss, scaled)
+        Ok((scaled_loss, scaled))
     }
 
     fn lower_bounds(&self) -> Option<Vec<f64>> {

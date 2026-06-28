@@ -334,10 +334,12 @@ fn grip_hold_moving_ee_evaluates() {
     );
 }
 
-/// The moving-EE hold optimization is fail-closed-fragile: some Adam-explored θ tears the buffer and
-/// the soft solver PANICS. With `OptConfig::reject_infeasible` the optimizer backtracks past those
-/// steps and SURVIVES — reducing the holding cost where the default loop would crash. This is the
-/// robustness the R5 viewer relies on to co-design a moving-EE hold at a useful horizon.
+/// The moving-EE hold optimization is fail-closed-fragile: some Adam-explored θ tears the buffer into
+/// a non-convergent soft solve, which the grip surfaces as a typed `Err(InfeasibleDesign)` (the soft
+/// `NewtonIterCap` → `RolloutError` → `InfeasibleDesign` chain). With `OptConfig::reject_infeasible`
+/// the optimizer reads that `Err` and backtracks past those steps and SURVIVES — reducing the holding
+/// cost where the default loop would hit the panic-path `evaluate` and crash. This is the robustness
+/// the R5 viewer relies on to co-design a moving-EE hold at a useful horizon.
 #[test]
 fn grip_hold_moving_ee_optimizes_robustly() {
     let problem = GripCoDesignTarget::new(
@@ -403,8 +405,8 @@ fn moving_ee_hold_target() -> GripCoDesignTarget<sim_coupling::LinearFeedback> {
     .with_contact_geom(0)
 }
 
-/// PR2a: `CoDesignProblem::try_evaluate` surfaces a grip fail-close as `Err(InfeasibleDesign)` — the
-/// typed path the optimizer will consume (PR2b) to drop its `catch_unwind`. An aggressive holding
+/// `CoDesignProblem::try_evaluate` surfaces a grip fail-close as `Err(InfeasibleDesign)` — the typed
+/// path the feasibility-aware optimizer consumes (in lieu of `catch_unwind`). An aggressive holding
 /// policy (θ = [50, 0, 50]) tears the coarse buffer into a non-convergent soft solve; `try_evaluate`
 /// returns Err (NOT a panic, NOT a bogus Ok), and its `Display` carries the fail-close reason.
 #[test]
@@ -436,4 +438,27 @@ fn grip_try_evaluate_ok_matches_evaluate_when_feasible() {
     for (k, (a, b)) in grad_e.iter().zip(&grad_t).enumerate() {
         assert_eq!(a.to_bits(), b.to_bits(), "grad[{k}] byte-identical");
     }
+}
+
+/// The load-bearing `Normalized::try_evaluate` override: the grip is optimized THROUGH a `Normalized`
+/// wrapper, so the wrapper must FORWARD the inner grip's `Err(InfeasibleDesign)` rather than fall back
+/// to the panic-path `evaluate`. A *deterministic* guard (the optimize loop's tear is stochastic):
+/// wrap the moving-EE grip, call `try_evaluate` at the known-infeasible θ=[50,0,50], and assert it
+/// returns `Err` — not a panic, not a swallowed `Ok`. Without the override this would panic (the
+/// default `Normalized::try_evaluate` → `Normalized::evaluate` → grip `evaluate` → `panic!`), which is
+/// exactly the crash `grip_hold_moving_ee_optimizes_robustly` would suffer once `catch_unwind` is gone.
+#[test]
+fn normalized_grip_try_evaluate_forwards_infeasible() {
+    let problem = moving_ee_hold_target();
+    // `recommended_normalized` wraps the grip in `Normalized` (log_space = false — the μ log-reparam
+    // lives in the target — so the optimizer-space params equal the grip's `x0` space).
+    let normalized = problem.recommended_normalized(1.0);
+    let p = problem.x0(2.0e3, &[50.0, 0.0, 50.0]);
+    let err: InfeasibleDesign = normalized.try_evaluate(&p).expect_err(
+        "Normalized must forward the grip's infeasibility as Err, not panic or swallow it",
+    );
+    assert!(
+        err.to_string().contains("infeasible design"),
+        "forwarded error should be the grip's InfeasibleDesign, got: {err}"
+    );
 }
