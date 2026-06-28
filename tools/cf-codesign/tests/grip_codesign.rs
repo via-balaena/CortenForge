@@ -29,7 +29,9 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, GripCoDesignTarget, GripObjective, OptConfig};
+use cf_codesign::{
+    CoDesignProblem, GripCoDesignTarget, GripObjective, InfeasibleDesign, OptConfig,
+};
 
 // The de-escalation grip: an actuated hinge arm, its finite sphere tip pressed into
 // the soft buffer under a sideways gravity that drives the tangential sweep.
@@ -376,4 +378,62 @@ fn grip_hold_moving_ee_optimizes_robustly() {
         cost_final.is_finite() && cost_final <= cost_start,
         "robust moving-EE hold optimize should survive and not worsen: {cost_start} -> {cost_final}"
     );
+}
+
+// The moving-EE Hold grip target (the fail-closed-fragile R5 scene) at the horizon the robust-
+// optimize test uses.
+fn moving_ee_hold_target() -> GripCoDesignTarget<sim_coupling::LinearFeedback> {
+    GripCoDesignTarget::new(
+        MOVING_EE_MJCF.to_string(),
+        1,
+        0.005,
+        4,
+        0.1,
+        1.0e-3,
+        3.0e4,
+        1.0e-2,
+        0.05,
+        0.08,
+        2.5,
+        0.1,
+        8,
+        GripObjective::Hold(0.0),
+        sim_coupling::LinearFeedback,
+    )
+    .with_contact_geom(0)
+}
+
+/// PR2a: `CoDesignProblem::try_evaluate` surfaces a grip fail-close as `Err(InfeasibleDesign)` — the
+/// typed path the optimizer will consume (PR2b) to drop its `catch_unwind`. An aggressive holding
+/// policy (θ = [50, 0, 50]) tears the coarse buffer into a non-convergent soft solve; `try_evaluate`
+/// returns Err (NOT a panic, NOT a bogus Ok), and its `Display` carries the fail-close reason.
+#[test]
+fn grip_try_evaluate_returns_err_on_infeasible_design() {
+    let problem = moving_ee_hold_target();
+    let p = problem.x0(2.0e3, &[50.0, 0.0, 50.0]);
+    let err: InfeasibleDesign = problem
+        .try_evaluate(&p)
+        .expect_err("an aggressive holding policy must tear the buffer → Err, not Ok");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("infeasible design") && msg.contains("rollout failed at step"),
+        "Display should name the fail-close, got: {msg}"
+    );
+}
+
+/// PR2a: on a feasible design `try_evaluate` returns `Ok` byte-identical to `evaluate` (the panic-path
+/// method now delegates to it). Pins the success-path equivalence of the two surfaces.
+#[test]
+fn grip_try_evaluate_ok_matches_evaluate_when_feasible() {
+    let problem = moving_ee_hold_target();
+    let p = problem.x0(3.0e3, &[0.05, -0.02, 0.01]);
+    let (loss_e, grad_e) = problem.evaluate(&p);
+    let (loss_t, grad_t) = problem
+        .try_evaluate(&p)
+        .expect("a feasible design must evaluate");
+    assert_eq!(loss_e.to_bits(), loss_t.to_bits(), "loss byte-identical");
+    assert_eq!(grad_e.len(), grad_t.len(), "gradient length");
+    for (k, (a, b)) in grad_e.iter().zip(&grad_t).enumerate() {
+        assert_eq!(a.to_bits(), b.to_bits(), "grad[{k}] byte-identical");
+    }
 }
