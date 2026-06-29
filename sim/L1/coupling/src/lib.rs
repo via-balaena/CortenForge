@@ -1463,6 +1463,19 @@ impl VjpOp for FrictionWrenchTrajVjp {
 /// scalar height channel (`dforce_dpose = [p.dforce_dheight]`, one axis); `Some(rows)` ⇒ the moving
 /// end-effector centre channel, `rows[i]` the `[∂force/∂(centre·x̂), …·ŷ, …·ẑ]` for `pv[i]` (each
 /// `friction_force_jacobians(pose_dir = e_k).dforce_dheight`).
+/// Accumulate the off-COM contact **moment** of a single reaction force `f` applied at world
+/// point `r`, about the COM `c`, into a wrench's angular part (`w[0..3]` of the `[angular; linear]`
+/// [`SpatialVector`] layout): `τ += (r − c) × f`. The single source of the `(r − c) × f` moment
+/// convention (reference point, sign, index layout) shared by the forward reaction-wrench builders
+/// [`StaggeredCoupling::contact_wrench`], `contact_wrench_gripped`, and the free-body `step_core`,
+/// so a change to the definition lives in one place.
+fn add_contact_moment(w: &mut SpatialVector, r: Vec3, f: Vec3, c: Vec3) {
+    let tau = (r - c).cross(&f);
+    w[0] += tau.x;
+    w[1] += tau.y;
+    w[2] += tau.z;
+}
+
 fn assemble_friction_wrench(
     pv: Vec<FrictionVertexForce>,
     positions: &[Vec3],
@@ -1740,6 +1753,16 @@ pub struct StaggeredCoupling<C: PlaneContact = PenaltyRigidContact> {
     /// fist at the arm tip), via [`Self::sphere_center_override`]. `None` (default)
     /// keeps the block-centroid posing. Set via [`Self::with_contact_geom`].
     contact_geom: Option<usize>,
+    /// When `true`, the free-body [`Self::step`] routes the off-COM contact **moment**
+    /// `Σ (rᵢ − c) × (−gᵢ)` (about the body COM `c = xipos`) alongside the linear
+    /// reaction, so an off-centre strike spins the body. Default `false` (the linear-only
+    /// routing, byte-identical to the pre-moment coupling); enabled via
+    /// [`Self::with_contact_moment`]. **Scaffolding, not a permanent knob** — the moment is
+    /// correct physics (not an opt-in modeling choice like [`Self::with_rotating_normal`]),
+    /// so the end state is moment-always-on with this flag retired, once the free-body
+    /// trajectory gradients carry the wrench and the keystone scenes are re-centred. See
+    /// [`Self::with_contact_moment`].
+    contact_moment: bool,
     _contact: PhantomData<C>,
 }
 
@@ -1810,6 +1833,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             collider: Collider::Plane,
             sphere_center_override: None,
             contact_geom: None,
+            contact_moment: false,
             _contact: PhantomData,
         }
     }
@@ -1828,6 +1852,36 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     #[must_use]
     pub const fn with_rotating_normal(mut self, on: bool) -> Self {
         self.rotating_normal = on;
+        self
+    }
+
+    /// Route the off-COM contact **moment** in the free-body [`Self::step`]: on top of the
+    /// linear reaction `−Σ gᵢ`, fill the wrench's angular part with `τ = Σ (rᵢ − c) × (−gᵢ)`
+    /// about the body COM `c = xipos` (`gᵢ = force_on_softᵢ`, `rᵢ` the contact point). With
+    /// this on, an **off-centre** strike spins the free body (the angular impulse a torque-free
+    /// `[0; f]` routing drops); a centred strike is moment-free in the continuum (the corner-origin
+    /// tet mesh is not mirror-symmetric, so a small discretisation residual remains). The same
+    /// moment definition `contact_wrench` / [`Self::step_articulated`] already route — here
+    /// reduced from [`Self::step`]'s own contact readouts (no second contact eval).
+    ///
+    /// Opt-in, default `false` (linear-only routing, **byte-identical** to the pre-moment
+    /// coupling), because turning it on changes the rotational physics of every free-body scene
+    /// and the flat-tuned keystone fixtures are geometrically off-centre (the soft block's
+    /// contact centroid `(edge/2, edge/2)` sits ~`edge/2` from the platen COM at the origin), so
+    /// a large undamped tipping moment would diverge them (`rigid_damping` damps only the linear
+    /// contact axis). Exercised by a re-centred off-centre-strike gate.
+    ///
+    /// **Scaffolding, not a permanent modeling knob.** Unlike [`Self::with_rotating_normal`] (a
+    /// legitimate normal-tracking approximation with regimes where off is correct), the contact
+    /// moment is simply correct-vs-wrong physics: a free body under an off-centre force *must*
+    /// gain angular velocity. The target end state is moment-always-on with this flag deleted,
+    /// once the free-body trajectory gradients carry the wrench (mirroring `ContactWrenchTrajVjp`)
+    /// and the keystone scenes are re-centred (an x,y-translation that is byte-identical under the
+    /// current linear-only routing). Default off keeps the forward step and its force-only
+    /// gradient *consistent* in the interim.
+    #[must_use]
+    pub const fn with_contact_moment(mut self, on: bool) -> Self {
+        self.contact_moment = on;
         self
     }
 
@@ -2254,10 +2308,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             wrench[3] += f.x;
             wrench[4] += f.y;
             wrench[5] += f.z;
-            let tau = (r - c).cross(&f);
-            wrench[0] += tau.x;
-            wrench[1] += tau.y;
-            wrench[2] += tau.z;
+            add_contact_moment(&mut wrench, r, f, c);
         }
         wrench
     }
@@ -2281,10 +2332,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             wrench[3] += f.x;
             wrench[4] += f.y;
             wrench[5] += f.z;
-            let tau = (r - c).cross(&f);
-            wrench[0] += tau.x;
-            wrench[1] += tau.y;
-            wrench[2] += tau.z;
+            add_contact_moment(&mut wrench, r, f, c);
         }
         wrench
     }
@@ -7179,15 +7227,25 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         // above), captured here BEFORE the rigid body integrates below. Computed only on demand.
         let field = want_field.then(|| self.vertex_pressures_from(&readouts));
 
-        // (4) route the reaction (−force_on_soft) + axis damping → rigid xfrc as
-        // a pure force at the body COM. The contact moment (Σ rᵢ × fᵢ) is omitted
-        // — exact for the ~symmetric scene here; a deferred generalization for
-        // off-centre contact (alongside general posed primitives).
+        // (4) route the reaction (−force_on_soft) + axis damping → rigid xfrc.
+        // The linear part is a pure force at the body COM; the angular part (the
+        // off-COM contact moment) is filled only when `with_contact_moment` is set
+        // (default off ⇒ `sf[0..3] = 0`, byte-identical to the pre-moment routing).
         let v_axis = self.data.qvel[2]; // free-joint linear z velocity
         let mut sf = SpatialVector::zeros(); // [angular(3), linear(3)]
         sf[3] = -force_on_soft.x;
         sf[4] = -force_on_soft.y;
         sf[5] = -force_on_soft.z - self.rigid_damping * v_axis;
+        // (4b) off-COM contact moment `Σ (rᵢ − c) × (−gᵢ)` about the body COM, from
+        // step's OWN readouts (same definition as `contact_wrench`, no 2nd contact
+        // eval). Opt-in: an off-centre strike spins the body, but it destabilises the
+        // flat-tuned, off-centre-COM keystone scenes — see `with_contact_moment`.
+        if self.contact_moment {
+            let c = self.data.xipos[self.body];
+            for r in &readouts {
+                add_contact_moment(&mut sf, r.position, -r.force_on_soft, c);
+            }
+        }
         self.data.xfrc_applied[self.body] = sf;
 
         // (5) step the rigid body.
