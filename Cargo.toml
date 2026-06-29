@@ -538,7 +538,7 @@ let_underscore_must_use = "deny"
 # Math Foundation
 # ---------------------------------------------------------------------------
 # nalgebra: Linear algebra, matches parry3d and avian for compatibility
-nalgebra = "0.34.2"
+nalgebra = "0.35.0"
 # num-traits: generic numeric traits (Float, Zero, One, NumCast) — promoted
 # to explicit workspace dep per platform refactor audit A.1 (Tensor<T> generic);
 # already transitive via nalgebra, this just gives us a direct import path.
@@ -566,7 +566,7 @@ toml = "1.1"
 # Spatial & Collision
 # ---------------------------------------------------------------------------
 # parry3d: Collision detection, BVH, convex hulls
-parry3d = "0.17"
+parry3d = "0.28"
 # parry3d-f64: f64-Real sibling of parry3d. Used by mesh-printability's
 # F4 spatial-index path (`flag_thin_wall_faces` BVH ray-cast) where
 # f32 precision drift at the `min_wall_thickness` threshold causes
@@ -574,21 +574,21 @@ parry3d = "0.17"
 # `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-2 + the S1 commit's
 # precision diagnosis. Two parry crates in workspace = ~2× build
 # cost of parry; acceptable for the precision win.
-parry3d-f64 = "0.17"
+parry3d-f64 = "0.28"
 
 # ---------------------------------------------------------------------------
 # Randomness
 # ---------------------------------------------------------------------------
-rand = "0.9"
-rand_chacha = "0.9"
-rand_distr = "0.5"
+rand = "0.10"
+rand_chacha = "0.10"
+rand_distr = "0.6"
 # getrandom is not used directly anywhere in this workspace; it enters
 # transitively via rand_chacha → rand_core. It is registered here so
 # L0 crates that build for wasm32-unknown-unknown can opt the
 # transitive copy into the `wasm_js` backend (see each L0 crate's
 # `[target.'cfg(...)'.dependencies]` block + the workspace
 # `.cargo/config.toml` rustflag).
-getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 # ---------------------------------------------------------------------------
 # Parallelism
@@ -598,7 +598,7 @@ rayon = "1.12"
 # ---------------------------------------------------------------------------
 # Data Structures
 # ---------------------------------------------------------------------------
-hashbrown = "0.16"
+hashbrown = "0.17"
 
 # ---------------------------------------------------------------------------
 # Image Processing
@@ -618,7 +618,7 @@ tracing = "0.1"
 # backend feature, winit hits `compile_error!("platform not supported")`
 # during its conditional compilation. macOS uses an unconditional backend
 # so local builds don't surface this; CI did until x11 was added.
-bevy = { version = "0.18", default-features = false, features = ["x11"] }
+bevy = { version = "0.19", default-features = false, features = ["x11"] }
 
 # ---------------------------------------------------------------------------
 # Compression
@@ -631,7 +631,7 @@ zip = "8.6"
 # PLY format support
 ply-rs = "0.1"
 # 3MF format support (XML parsing)
-quick-xml = "0.39"
+quick-xml = "0.41"
 # STEP format support (CAD interchange) - truck ecosystem
 truck-stepio = "0.3"
 truck-modeling = "0.6"
@@ -642,7 +642,7 @@ truck-meshalgo = "0.4"
 # ---------------------------------------------------------------------------
 # GPU Compute
 # ---------------------------------------------------------------------------
-wgpu = "27"
+wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 
@@ -656,7 +656,7 @@ pollster = "0.4"
 # First-time builds compile the upstream `elalish/manifold` C++ kernel via
 # manifold-csg-sys's build.rs (CMake + a vendored Clipper2); measured ~3 min
 # 14 s on the S1 spike. Subsequent builds use cargo's target cache.
-manifold3d = { version = "=0.1.8", features = ["nalgebra"] }
+manifold3d = { version = "=0.3.1", features = ["nalgebra"] }
 
 # ---------------------------------------------------------------------------
 # Testing
