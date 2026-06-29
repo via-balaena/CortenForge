@@ -3020,6 +3020,210 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (z_final, grad)
     }
 
+    /// Analytic `∂(final angular velocity ω_N about a body axis)/∂(material param)` for the
+    /// **free-body** coupled impact rollout — the contact-MOMENT made differentiable. The
+    /// orientation-dependent successor to [`Self::coupled_trajectory_material_gradient`]: that
+    /// path's `z_N` target is moment-DECOUPLED (a free body's z-translation and the flat-plane
+    /// contact never see its orientation, so the moment leaves `z_N` bit-identical — verified),
+    /// so it cannot exercise the contact moment; the final spin `ω_N = qvel[3 + axis]` (the body
+    /// angular-velocity component the off-COM strike drives) is the natural target that does.
+    ///
+    /// Builds the same stale-FK time-adjoint tape as the force-only path (the contact is posed at
+    /// the one-step-lagged height, matching [`Self::step`]), but routes the full contact **wrench**
+    /// `w = [τ; f]` (`ContactWrenchTrajVjp`) through the multi-DOF `RigidStateCarryVjp` carry
+    /// `s' = J_state·s + G·w` (`s = [qpos(nv); qvel(nv)]`) instead of the scalar `f_z` →
+    /// `VzCarryVjp`/`ZCarryVjp`. The free joint's loaded `J_state` is the tangent-space FD
+    /// (`loaded_state_jacobian_tangent`) and `G_pos = Δt·J_r·G_vel` carries the SO(3)
+    /// right-Jacobian (`integrator_pos_jacobian`'s `Free` block). `axis ∈ {0,1,2}`
+    /// (x/y/z body angular). Returns `(ω_N, ∂ω_N/∂param)` (`param_idx`: 0 = μ, 1 = λ; the block's
+    /// λ=4μ tie ⇒ the design gradient is `grad(0) + 4·grad(1)`). FD-exact (machine floor) vs a
+    /// re-rolled forward oracle; gated in `tests/freebody_angular_velocity_gradient.rs`.
+    ///
+    /// **Scope (v1).** Free body (`Collider::Plane`), no moving end-effector, `rigid_damping = 0`
+    /// (the wrench carry's loaded `J_state` does not yet capture a `−c·v` velocity-coupling — the
+    /// articulated path shares this bound), and `with_contact_moment` enabled (the moment is the
+    /// spin's source). `&mut self`: advances the rollout, so rebuild per call.
+    ///
+    /// **Precision.** The free joint has no analytic state Jacobian, so the carry uses the FD
+    /// `loaded_state_jacobian` (tangent-space, ~1e-6 FD-carry precision — the same fallback the
+    /// articulated path uses for any non-hinge joint). The gradient is machine-exact (~1e-7 vs
+    /// full-coupled FD) at realistic rollout lengths and approaches that ~1e-6 FD-J_state floor only
+    /// at extreme lengths (hundreds of steps); the stale-FK contact reads themselves are exact for
+    /// the free body (constant `M`, and the moment/pose channels do not reach ω — verified).
+    ///
+    /// # Panics
+    /// Panics if `param_idx > 1`, `axis >= 3`, the body lacks angular DOFs at `qvel[3 + axis]`
+    /// (`3 + axis >= nv` — needs a free joint), `rigid_damping != 0`, `with_contact_moment` is
+    /// off, or a moving end-effector is set (`require_no_moving_ee`); and if the rigid step
+    /// diverges or the soft solver does not converge — surfaced loudly as in [`Self::step`].
+    #[must_use]
+    // One coherent per-step tape-construction loop (the soft/pose/wrench/carry nodes share the
+    // recurrence's state); splitting it would scatter that shared state (mirrors
+    // `coupled_trajectory_material_gradient`).
+    // expect_used: a rigid-step divergence is a programmer error surfaced loudly, not recoverable
+    // for keystone-v1 (mirrors `step`'s rationale).
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    pub fn coupled_trajectory_angular_velocity_gradient(
+        &mut self,
+        n_steps: usize,
+        param_idx: usize,
+        axis: usize,
+    ) -> (f64, f64) {
+        self.require_no_moving_ee();
+        assert!(
+            param_idx <= 1,
+            "material param index {param_idx} out of range (0 = μ, 1 = λ)"
+        );
+        assert!(
+            axis < 3,
+            "angular axis {axis} out of range (0 = x, 1 = y, 2 = z)"
+        );
+        // `omega_idx = 3 + axis` is the FREE-joint qvel layout [v(3); ω(3)]; require the angular
+        // block to exist there (a free body has nv = 6 — or more with extra trailing DOFs).
+        assert!(
+            3 + axis < self.model.nv,
+            "angular-velocity gradient needs a free joint's angular DOFs at qvel[3 + axis]; nv = {}",
+            self.model.nv
+        );
+        // The loaded carry holds the contact wrench during its FD; a damping force −c·v would not
+        // have its velocity-coupling captured (mirrors the articulated path's bound).
+        assert!(
+            self.rigid_damping == 0.0,
+            "angular-velocity gradient requires rigid_damping = 0 (v1 scope)"
+        );
+        // This gradient's forward always routes the contact MOMENT (the spin's whole source); a
+        // moment-off coupling's `step` would leave ω ≈ 0, so the gradient would not match the
+        // caller's own rollout. Require the moment so forward and gradient agree.
+        assert!(
+            self.contact_moment,
+            "angular-velocity gradient requires with_contact_moment(true) (the moment drives ω_N)"
+        );
+        let omega_idx = 3 + axis; // free-joint qvel layout: [v(3); ω(3)]
+        let n = self.n_vertices;
+        let nv = self.model.nv;
+        let dt = self.cfg.dt;
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+
+        let mut tape = Tape::new();
+        let p0 = if param_idx == 0 { self.mu } else { self.lambda };
+        let p_var = tape.param_tensor(Tensor::from_slice(&[p0], &[1]));
+        let mut x_var = tape.constant_tensor(Tensor::from_slice(&self.x, &[3 * n]));
+        let mut v_var = tape.constant_tensor(Tensor::from_slice(&self.v, &[3 * n]));
+        let mut s0 = vec![0.0_f64; 2 * nv];
+        for i in 0..nv {
+            s0[i] = self.data.qpos[i];
+            s0[nv + i] = self.data.qvel[i];
+        }
+        let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
+
+        for _ in 0..n_steps {
+            let height = self.plane_height(); // STALE-FK (no fresh forward, matches `step`)
+            let pose_var = tape.push_custom(
+                &[s_var],
+                Tensor::from_slice(&[height], &[1]),
+                Box::new(PoseSeamVjp {
+                    jz: self.pose_seam_jz(),
+                }),
+            );
+            let (solver, x_next) = self.soft_resolve(height);
+            let v_next: Vec<f64> = x_next
+                .iter()
+                .zip(&self.x)
+                .map(|(xf, xo)| (xf - xo) / dt)
+                .collect();
+            let x_next_var = tape.push_custom(
+                &[x_var, v_var, p_var, pose_var],
+                Tensor::from_slice(&x_next, &[3 * n]),
+                Box::new(solver.trajectory_step_vjp(&x_next, dt, param_idx, dir)),
+            );
+            let v_next_var = tape.push_custom(
+                &[x_next_var, x_var],
+                Tensor::from_slice(&v_next, &[3 * n]),
+                Box::new(VelVjp {
+                    inv_dt: 1.0 / dt,
+                    n_dof: 3 * n,
+                }),
+            );
+
+            let positions: Vec<Vec3> = x_next
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0], c[1], c[2]))
+                .collect();
+            let c = self.data.xipos[self.body];
+            let pairs = self.active_pair_wrench_data(height, &positions);
+            let mut wrench = SpatialVector::zeros();
+            let mut active: Vec<(usize, Vec3, Vec3, f64, Vec3, Matrix3<f64>)> =
+                Vec::with_capacity(pairs.len());
+            for (v, g, nrm, curv, r) in pairs {
+                let f = -g;
+                wrench[3] += f.x;
+                wrench[4] += f.y;
+                wrench[5] += f.z;
+                add_contact_moment(&mut wrench, r, f, c);
+                active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
+            }
+            let force = Vec3::new(wrench[3], wrench[4], wrench[5]);
+            let jlin = self.com_linear_jacobian();
+            let w_var = tape.push_custom(
+                &[x_next_var, pose_var, s_var],
+                Tensor::from_slice(wrench.as_slice(), &[6]),
+                Box::new(ContactWrenchTrajVjp {
+                    active,
+                    force,
+                    jlin,
+                    n_dof: 3 * n,
+                    nv,
+                    pose: WrenchPose::Height,
+                }),
+            );
+            let j_state = self
+                .analytic_state_jacobian(&wrench)
+                .unwrap_or_else(|| self.loaded_state_jacobian(&wrench));
+            let g_vel = rigid_xfrc_column(&self.model, &self.data, self.body);
+            self.data.xfrc_applied[self.body] = wrench;
+            self.data.step(&self.model).expect("rigid step");
+            let g_pos = if self.model.nq == self.model.nv {
+                self.model.timestep * &g_vel
+            } else {
+                self.integrator_pos_jacobian(&self.data.qvel) * &g_vel
+            };
+            let mut s_next = vec![0.0_f64; 2 * nv];
+            for i in 0..nv {
+                s_next[i] = self.data.qpos[i];
+                s_next[nv + i] = self.data.qvel[i];
+            }
+            let s_next_var = tape.push_custom(
+                &[s_var, w_var],
+                Tensor::from_slice(&s_next, &[2 * nv]),
+                Box::new(RigidStateCarryVjp {
+                    j_state,
+                    g_vel,
+                    g_pos,
+                    g_act: None,
+                }),
+            );
+
+            self.v = v_next;
+            self.x = x_next;
+            x_var = x_next_var;
+            v_var = v_next_var;
+            s_var = s_next_var;
+        }
+
+        let omega = self.data.qvel[omega_idx];
+        let obj_var = tape.push_custom(
+            &[s_var],
+            Tensor::from_slice(&[omega], &[1]),
+            Box::new(StateComponentVjp {
+                idx: nv + omega_idx,
+                n_state: 2 * nv,
+            }),
+        );
+        tape.backward(obj_var);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (omega, grad)
+    }
+
     /// Analytic `∂(peak contact force fz over the trajectory)/∂param` for the normal-only coupled
     /// impact rollout — the de-escalation RQ2 design gradient (a buffer's peak strike force vs its
     /// material stiffness). Builds the SAME time-adjoint tape as
@@ -5097,10 +5301,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 wrench[3] += f.x;
                 wrench[4] += f.y;
                 wrench[5] += f.z;
-                let tau = (r - c).cross(&f);
-                wrench[0] += tau.x;
-                wrench[1] += tau.y;
-                wrench[2] += tau.z;
+                add_contact_moment(&mut wrench, r, f, c);
                 active.push((v, g, nrm, curv, r - c, self.collider_hessian(height, r)));
             }
             let force = Vec3::new(wrench[3], wrench[4], wrench[5]);
