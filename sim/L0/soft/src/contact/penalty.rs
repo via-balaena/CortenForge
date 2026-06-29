@@ -718,6 +718,14 @@ impl PenaltyRigidContact {
     /// Row 18 (`contact-force-readout`) is the canonical consumer;
     /// row 14 (`compressive-block`) reconstructs this surface inline
     /// from known plane geometry, predating this method.
+    ///
+    /// # Panics
+    ///
+    /// `positions` must cover the mesh's full `VertexId` space — pass
+    /// `mesh.positions()` or a deformed copy of the same length. The
+    /// per-pair tributary areas index `mesh.boundary_faces()` into
+    /// `positions`, so a partial slice panics out of bounds (and would
+    /// already mislabel `vertex_id`s).
     // `vid as VertexId` and `pid as u32` mirror `active_pairs`'s `Vec`-
     // iteration index packing — bounded by mesh / primitive counts that
     // fit in `u32` for any Phase 5 scene.
@@ -725,9 +733,14 @@ impl PenaltyRigidContact {
     #[must_use]
     pub fn per_pair_readout<M: crate::material::Material>(
         &self,
-        _mesh: &dyn Mesh<M>,
+        mesh: &dyn Mesh<M>,
         positions: &[Vec3],
     ) -> Vec<ContactPairReadout> {
+        // Deformed-surface tributary areas, indexed by VertexId — one
+        // pass over the boundary faces at the readout positions, computed
+        // lazily on the first active pair so no-contact steps pay nothing
+        // (then reused across every pair; see `super::contact_pressure`).
+        let mut areas: Option<Vec<f64>> = None;
         let mut readouts = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
             let p_pt = Point3::from(p);
@@ -736,6 +749,9 @@ impl PenaltyRigidContact {
                 if let Some(contribution) = self.pair_contribution(sd) {
                     let normal = self.averaged_normal(prim.as_ref(), p_pt);
                     let force_on_soft = -contribution.d_energy_d_sd * normal;
+                    let tributary_area = areas.get_or_insert_with(|| {
+                        crate::boundary_vertex_areas(positions, mesh.boundary_faces())
+                    })[vid];
                     readouts.push(ContactPairReadout {
                         pair: ContactPair::Vertex {
                             vertex_id: vid as VertexId,
@@ -745,6 +761,8 @@ impl PenaltyRigidContact {
                         sd,
                         normal,
                         force_on_soft,
+                        tributary_area,
+                        pressure: super::contact_pressure(force_on_soft, tributary_area),
                     });
                 }
             }

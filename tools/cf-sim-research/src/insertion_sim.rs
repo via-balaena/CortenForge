@@ -3913,6 +3913,8 @@ mod tests {
                 sd: -0.1,
                 normal: Vec3::new(0.0, 0.0, 1.0),
                 force_on_soft: Vec3::new(0.0, 0.0, 3.0),
+                tributary_area: 1.0,
+                pressure: 3.0,
             },
             ContactPairReadout {
                 pair: ContactPair::Vertex {
@@ -3923,6 +3925,8 @@ mod tests {
                 sd: -0.1,
                 normal: Vec3::new(0.0, 0.0, 1.0),
                 force_on_soft: Vec3::new(0.0, 0.0, 5.0),
+                tributary_area: 1.0,
+                pressure: 5.0,
             },
         ];
 
