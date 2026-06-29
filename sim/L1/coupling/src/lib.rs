@@ -2103,6 +2103,52 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         peak_contact_pressure(&self.pair_readouts_at_height(height))
     }
 
+    /// Per-vertex contact pressure field (Pa) at the current soft configuration with the collider
+    /// posed at `height` — the per-vertex form of [`Self::contact_peak_pressure_at_height`], for a
+    /// pressure *field* (e.g. a deformed-surface heatmap). Length `n_vertices`, indexed by
+    /// `VertexId`: each entry is the max per-face stress over that vertex's active pairs, `0.0`
+    /// where the vertex is not in contact, or `f64::NAN` where it IS in contact but every pair is
+    /// degenerate (zero tributary area) — the same NaN-degenerate sentinel
+    /// [`peak_contact_pressure`] uses, so a degenerate contact reads off-nominal rather than as a
+    /// danger-masking zero, and the field's finite max equals the scalar peak. Does not re-solve or
+    /// mutate. Indices line up with `soft_positions` / `soft_boundary_faces`, so a renderer drops
+    /// the values straight onto the surface mesh's vertices.
+    ///
+    /// ⚠ For a forward-replay heatmap that must match the just-solved deformation, use
+    /// [`Self::step_with_pressure_field`] instead of calling this after [`Self::step`] — `step`
+    /// advances the rigid body, so the live `plane_height` is one timestep ahead of the contact the
+    /// field should describe.
+    #[must_use]
+    pub fn contact_vertex_pressures_at_height(&self, height: f64) -> Vec<f64> {
+        self.vertex_pressures_from(&self.pair_readouts_at_height(height))
+    }
+
+    /// Scatter a set of active-pair readouts into a per-vertex pressure field (the shared core of
+    /// [`Self::contact_vertex_pressures_at_height`] and [`Self::step_with_pressure_field`], so both
+    /// see the same max-of-faces + NaN-degenerate reduction as [`peak_contact_pressure`]).
+    fn vertex_pressures_from(&self, readouts: &[ContactPairReadout]) -> Vec<f64> {
+        let mut field = vec![0.0_f64; self.n_vertices];
+        let mut any_pair = vec![false; self.n_vertices];
+        let mut any_finite = vec![false; self.n_vertices];
+        for r in readouts {
+            let ContactPair::Vertex { vertex_id, .. } = r.pair;
+            let v = vertex_id as usize;
+            any_pair[v] = true;
+            if r.pressure.is_finite() {
+                any_finite[v] = true;
+                field[v] = field[v].max(r.pressure);
+            }
+        }
+        // A vertex in contact whose every pair was degenerate (no finite pressure) is off-nominal —
+        // the NaN sentinel, not a reassuring 0.0 (matches `peak_contact_pressure`'s altitude).
+        for v in 0..self.n_vertices {
+            if any_pair[v] && !any_finite[v] {
+                field[v] = f64::NAN;
+            }
+        }
+        field
+    }
+
     /// Total contact force the soft body exerts, evaluated at the current soft
     /// configuration with the contact plane at `height` (no re-solve, no
     /// mutation). The forward building block for finite-difference and analytic
@@ -7071,12 +7117,37 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// Panics if the rigid engine's step diverges — for the validated forward
     /// scene this does not occur; a panic signals a mis-constructed or unstable
     /// coupling, surfaced loudly rather than silently corrupting state.
-    //
-    // A rigid-step failure is divergence / a programmer error surfaced loudly,
-    // not a recoverable condition for keystone-v1 (a Result-returning step is a
-    // deferred robustness upgrade alongside the LM / non-smooth-contact work).
-    #[allow(clippy::expect_used)]
     pub fn step(&mut self) -> CoupledStep {
+        self.step_core(false).0
+    }
+
+    /// Like [`Self::step`], but also returns the per-vertex contact-pressure field evaluated at the
+    /// SAME posed contact `step` uses for its `peak_pressure` — so the field's finite max equals
+    /// that peak and matches the just-solved deformation. This is the no-lag readout for a
+    /// forward-replay heatmap: unlike calling [`Self::contact_vertex_pressures_at_height`] after
+    /// `step` (whose `plane_height` has advanced a timestep), the field here is captured BEFORE the
+    /// rigid body integrates. Length `n_vertices`, indexed by `VertexId`.
+    ///
+    /// # Panics
+    /// Panics if the rigid engine's step diverges (as in [`Self::step`]).
+    // expect_used: `step_core(true)` always populates the field, and the rigid-step divergence is
+    // surfaced loudly (as in `step`); both are programmer errors, not recoverable for keystone-v1.
+    #[allow(clippy::expect_used)]
+    pub fn step_with_pressure_field(&mut self) -> (CoupledStep, Vec<f64>) {
+        let (step, field) = self.step_core(true);
+        (
+            step,
+            field.expect("step_core(true) always returns the field"),
+        )
+    }
+
+    /// Shared body of [`Self::step`] / [`Self::step_with_pressure_field`]. Computes the per-vertex
+    /// pressure field only when `want_field`, so the forward stepper that does not need it (e.g.
+    /// [`Self::coupled_trajectory_peak_pressure`]) pays nothing.
+    // expect_used: a rigid-step divergence is a programmer error surfaced loudly, not recoverable
+    // for keystone-v1 (a Result-returning step is a deferred robustness upgrade — mirrors `step`).
+    #[allow(clippy::expect_used)]
+    fn step_core(&mut self, want_field: bool) -> (CoupledStep, Option<Vec<f64>>) {
         let height = self.plane_height();
         let n = self.n_vertices;
 
@@ -7104,6 +7175,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let readouts = self.pair_readouts_at_height(height);
         let force_on_soft: Vec3 = readouts.iter().map(|r| r.force_on_soft).sum();
         let peak_pressure = peak_contact_pressure(&readouts);
+        // Per-vertex field from the SAME readouts (so it matches the just-solved dent + the peak
+        // above), captured here BEFORE the rigid body integrates below. Computed only on demand.
+        let field = want_field.then(|| self.vertex_pressures_from(&readouts));
 
         // (4) route the reaction (−force_on_soft) + axis damping → rigid xfrc as
         // a pure force at the body COM. The contact moment (Σ rᵢ × fᵢ) is omitted
@@ -7121,11 +7195,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .step(&self.model)
             .expect("rigid step diverged in coupled solve");
 
-        CoupledStep {
-            force_on_soft,
-            rigid_z: self.data.xpos[self.body].z,
-            peak_pressure,
-        }
+        (
+            CoupledStep {
+                force_on_soft,
+                rigid_z: self.data.xpos[self.body].z,
+                peak_pressure,
+            },
+            field,
+        )
     }
 
     /// Advance the coupled system by one lockstep step for an **articulated** body,
