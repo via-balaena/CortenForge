@@ -3156,10 +3156,14 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let mut s_prev = s_var;
 
         for _ in 0..n_steps {
-            s_prev = s_var;
-            let height = self.plane_height(); // STALE-FK (no fresh forward, matches `step`)
+            // STALE-FK: `step` poses the contact at the one-step-lagged `xpos` (= the PREVIOUS
+            // state `s_{k-1}`, which `s_prev` holds), so the pose seam — and the wrench's COM
+            // `c = xipos` below — attach to `s_prev`, NOT the current `s_var`. (For the flat plane
+            // this is invisible to ω/z, but the sphere's curved pose term `f_mag·H` reaches the
+            // moment, so the lagged attribution is load-bearing — it is the n≥2 fix.)
+            let height = self.plane_height();
             let pose_var = tape.push_custom(
-                &[s_var],
+                &[s_prev],
                 Tensor::from_slice(&[height], &[1]),
                 Box::new(PoseSeamVjp {
                     jz: self.pose_seam_jz(),
@@ -3205,7 +3209,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let force = Vec3::new(wrench[3], wrench[4], wrench[5]);
             let jlin = self.com_linear_jacobian();
             let w_var = tape.push_custom(
-                &[x_next_var, pose_var, s_var],
+                &[x_next_var, pose_var, s_prev],
                 Tensor::from_slice(wrench.as_slice(), &[6]),
                 Box::new(ContactWrenchTrajVjp {
                     active,
@@ -3216,6 +3220,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     pose: WrenchPose::Height,
                 }),
             );
+            // Advance the lagged-state handle now that the stale-FK contact nodes (pose, wrench)
+            // have consumed `s_prev = s_{k-1}`: it becomes `s_k` for the next step's lag, and after
+            // the loop holds `s_{N-1}` (the stale-FK `xpos.z` readout node — see the doc).
+            s_prev = s_var;
             // `J_state` holds the CONTACT `wrench` fixed; the contact-axis damping `−c·vz` is a
             // velocity-dependent force `scratch_state_step` re-derives from the perturbed velocity,
             // so the loaded Jacobian picks up its `a = 1 − c·Δt/m` coupling (`c = 0` ⇒ unchanged).

@@ -131,3 +131,72 @@ fn angular_velocity_gradient_machine_exact_at_all_lengths() {
         );
     }
 }
+
+const SPHERE_R: f64 = 0.08;
+
+/// The off-centre platen above, but with a finite SPHERE collider (the curved indenter the
+/// de-escalation viz uses) — the path the stale-FK lagged-attribution fix is FOR.
+fn build_sphere(mu: f64) -> StaggeredCoupling {
+    let com_z = EDGE + HALF_Z - PEN;
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="{DT}"/>
+  <worldbody>
+    <body name="platen" pos="0.07 0.05 {com_z}">
+      <freejoint/>
+      <geom type="box" size="{HALF_X} {HALF_X} {HALF_Z}" mass="{MASS}"/>
+    </body>
+  </worldbody>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("platen MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(model, data, 1, HALF_Z, 4, EDGE, mu, DT, 3.0e4, 1.0e-2, 0.0)
+        .with_sphere_collider(SPHERE_R)
+        .with_contact_moment(true)
+}
+
+fn final_omega_sphere(mu: f64, n: usize) -> f64 {
+    let mut c = build_sphere(mu);
+    for _ in 0..n {
+        c.step();
+    }
+    c.data().qvel[3 + AXIS]
+}
+
+/// **Curved-collider regression gate.** The free-body ω gradient under a finite SPHERE exercises
+/// the curved-pose contact-moment term `f_mag·H`, which the stale-FK lagged-attribution fix makes
+/// correctly per-step. Without the fix this is ~5.86% off the full-coupled FD; with it, ~1e-5.
+///
+/// The threshold is `1e-3`, NOT the plane's `1e-6`: the free body's loaded `J_state` is the FD
+/// `loaded_state_jacobian`, and the sphere's curved contact carries a small residual moment term
+/// beyond the lagged-attribution fix — together a documented ~1e-5 floor (machine-exactness via an
+/// analytic free-body `J_state` + the residual curved term is a recorded follow-on). `1e-3` guards
+/// against the 5.86%-class regression the fix prevents while tolerating that floor with margin.
+#[test]
+fn sphere_angular_velocity_gradient_tracks_fd() {
+    for &n in &[4_usize, 8, 16] {
+        let g = build_sphere(MU0)
+            .coupled_trajectory_angular_velocity_gradient(n, 0, AXIS)
+            .1
+            + 4.0
+                * build_sphere(MU0)
+                    .coupled_trajectory_angular_velocity_gradient(n, 1, AXIS)
+                    .1;
+        let eps = MU0 * 5e-4;
+        let fd =
+            (final_omega_sphere(MU0 + eps, n) - final_omega_sphere(MU0 - eps, n)) / (2.0 * eps);
+        let rel = (g - fd).abs() / fd.abs().max(1e-30);
+        eprintln!("sphere n={n}: rel={rel:.3e}");
+        assert!(
+            fd.abs() > 1e-9,
+            "degenerate sphere gate at n={n}: FD ≈ 0 — the sphere should spin the body"
+        );
+        assert!(
+            rel < 1e-3,
+            "sphere dω_N/dμ at n={n} regressed vs full-coupled FD (the lagged-attribution fix): \
+             rel {rel:e} (guard 1e-3, ~1e-5 expected)"
+        );
+    }
+}
