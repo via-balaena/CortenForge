@@ -65,6 +65,7 @@ use sim_soft::{
     CpuNewtonSolver, FrictionVertexForce, HandBuiltTetMesh, IpcRigidContact, LoadAxis,
     MaterialField, Mesh, NeoHookean, PenaltyRigidContact, RigidPlane, RigidTwist, Sdf, Solver,
     SolverConfig, SolverFailure, SphereSdf, Tet4, TranslatedSdf, Vec3, VertexId,
+    peak_contact_pressure,
 };
 use std::fmt;
 use std::marker::PhantomData;
@@ -1506,6 +1507,35 @@ pub struct CoupledStep {
     pub force_on_soft: Vec3,
     /// Current height of the contacting rigid body's reference point.
     pub rigid_z: f64,
+    /// Peak contact *pressure* this step (Pa) — the max per-contact-face stress
+    /// over the active pairs ([`peak_contact_pressure`]). The measured local
+    /// concentration that total `force_on_soft` cannot see: a finite sphere
+    /// reads a high peak pressure at low total force, a broad slab the reverse.
+    /// `0.0` with no contact; `f64::NAN` if every active contact is degenerate
+    /// (the deliberate off-nominal sentinel — see [`peak_contact_pressure`]). A
+    /// consumer reading this per-step field directly must filter non-finite
+    /// values (the [`TrajectoryPeakPressure`] reduction already does), exactly as
+    /// for the per-pair [`sim_soft::ContactPairReadout::pressure`] it reduces.
+    pub peak_pressure: f64,
+}
+
+/// Trajectory peak-pressure readout from
+/// [`StaggeredCoupling::coupled_trajectory_peak_pressure`] — the measured
+/// contrast between local concentration (pressure) and total load (force)
+/// over a coupled impact rollout.
+#[derive(Clone, Copy, Debug)]
+pub struct TrajectoryPeakPressure {
+    /// Max per-face contact pressure (Pa) over the rollout — the worst local
+    /// concentration any contact face saw (max of each step's
+    /// [`CoupledStep::peak_pressure`], ignoring non-finite/degenerate steps).
+    pub peak_pressure: f64,
+    /// Max total contact force magnitude on the soft body (N) over the rollout
+    /// — the worst *total* load, the quantity a force-only readout reports.
+    pub peak_total_force: f64,
+    /// Step index at which [`Self::peak_pressure`] occurred, or `None` if no
+    /// finite contact pressure was ever recorded (no contact, or every contact
+    /// degenerate) — distinct from `Some(0)`, which is a real first-step peak.
+    pub peak_step: Option<usize>,
 }
 
 /// One captured frame of a closed-loop **friction-grip** rollout — the per-step
@@ -2044,16 +2074,33 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .collect()
     }
 
+    /// Per-active-pair readouts at the current soft configuration with the
+    /// collider posed at `height` — does not re-solve or mutate. The shared
+    /// building block for the total-force readout, its pose-sensitivity, and
+    /// the peak-pressure readout (so all three see the same posed contact).
+    fn pair_readouts_at_height(&self, height: f64) -> Vec<ContactPairReadout> {
+        self.build_contact(height)
+            .pair_readout(&self.fresh_mesh(), &self.positions())
+    }
+
     /// `(total force_on_soft, active-pair count)` at the current soft
     /// configuration with the contact plane placed at `height` — does not
     /// re-solve or mutate. The shared building block for the contact-force
     /// readout and its analytic pose-sensitivity.
     fn contact_readout(&self, height: f64) -> (Vec3, usize) {
-        let positions = self.positions();
-        let readout = self
-            .build_contact(height)
-            .pair_readout(&self.fresh_mesh(), &positions);
+        let readout = self.pair_readouts_at_height(height);
         (readout.iter().map(|r| r.force_on_soft).sum(), readout.len())
+    }
+
+    /// Peak contact *pressure* (Pa) — the max per-contact-face stress over the
+    /// active pairs ([`peak_contact_pressure`]) — at the current soft
+    /// configuration with the collider posed at `height`. Companion to
+    /// [`Self::contact_force_at_height`]; does not re-solve or mutate. The
+    /// measured local concentration total force cannot see (a finite sphere:
+    /// high peak pressure at low total force; a broad slab: the reverse).
+    #[must_use]
+    pub fn contact_peak_pressure_at_height(&self, height: f64) -> f64 {
+        peak_contact_pressure(&self.pair_readouts_at_height(height))
     }
 
     /// Total contact force the soft body exerts, evaluated at the current soft
@@ -7051,8 +7098,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
         self.x = x_final;
 
-        // (3) total contact force on the soft body.
-        let force_on_soft = self.contact_force_at_height(height);
+        // (3) total contact force on the soft body + peak per-face pressure, from
+        // ONE set of pair readouts (the force sum is byte-identical to
+        // `contact_force_at_height`, which reduces the same readouts).
+        let readouts = self.pair_readouts_at_height(height);
+        let force_on_soft: Vec3 = readouts.iter().map(|r| r.force_on_soft).sum();
+        let peak_pressure = peak_contact_pressure(&readouts);
 
         // (4) route the reaction (−force_on_soft) + axis damping → rigid xfrc as
         // a pure force at the body COM. The contact moment (Σ rᵢ × fᵢ) is omitted
@@ -7073,6 +7124,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         CoupledStep {
             force_on_soft,
             rigid_z: self.data.xpos[self.body].z,
+            peak_pressure,
         }
     }
 
@@ -7115,7 +7167,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
         self.x = x_next;
 
-        let force_on_soft = self.contact_force_at_height(height);
+        // Force + peak per-face pressure from ONE readout pass at the posed
+        // contact (pre-rigid-step, sphere override still the current tip pose —
+        // see `step`); the force sum is byte-identical to `contact_force_at_height`.
+        let readouts = self.pair_readouts_at_height(height);
+        let force_on_soft: Vec3 = readouts.iter().map(|r| r.force_on_soft).sum();
+        let peak_pressure = peak_contact_pressure(&readouts);
         self.data.xfrc_applied[self.body] = self.contact_wrench(height);
         self.data
             .step(&self.model)
@@ -7129,6 +7186,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         CoupledStep {
             force_on_soft,
             rigid_z: self.data.xpos[self.body].z,
+            peak_pressure,
         }
     }
 
@@ -7158,10 +7216,48 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         }
         self.x = x_next;
 
-        let force_on_soft = self.contact_force_at_height(height);
+        // Force + peak pressure from ONE readout pass (force sum byte-identical
+        // to `contact_force_at_height`; mirrors `step`).
+        let readouts = self.pair_readouts_at_height(height);
+        let force_on_soft: Vec3 = readouts.iter().map(|r| r.force_on_soft).sum();
+        let peak_pressure = peak_contact_pressure(&readouts);
         CoupledStep {
             force_on_soft,
             rigid_z: self.data.xpos[self.body].z,
+            peak_pressure,
+        }
+    }
+
+    /// Roll the free-body coupled system forward `n_steps` (the [`Self::step`]
+    /// path) and return the trajectory's peak contact **pressure** alongside its
+    /// peak total **force** — the measured contrast at the heart of the
+    /// de-escalation pressure story. A concentrated finite collider (a sphere)
+    /// reads a HIGH peak pressure at LOW total force; a broad slab the reverse —
+    /// the distinction total `force_on_soft` alone cannot make. Forward-only (no
+    /// tape); advances `self`, so build a fresh coupling per call. Non-finite
+    /// (all-degenerate) per-step pressures are ignored when tracking the peak
+    /// (see [`peak_contact_pressure`]); the force peak still tracks them.
+    ///
+    /// # Panics
+    /// Panics if the rigid step diverges or the soft solver fails (as in
+    /// [`Self::step`]).
+    #[must_use]
+    pub fn coupled_trajectory_peak_pressure(&mut self, n_steps: usize) -> TrajectoryPeakPressure {
+        let mut peak_pressure = 0.0_f64;
+        let mut peak_total_force = 0.0_f64;
+        let mut peak_step: Option<usize> = None;
+        for k in 0..n_steps {
+            let s = self.step();
+            peak_total_force = peak_total_force.max(s.force_on_soft.norm());
+            if s.peak_pressure.is_finite() && s.peak_pressure > peak_pressure {
+                peak_pressure = s.peak_pressure;
+                peak_step = Some(k);
+            }
+        }
+        TrajectoryPeakPressure {
+            peak_pressure,
+            peak_total_force,
+            peak_step,
         }
     }
 
