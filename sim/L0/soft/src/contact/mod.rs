@@ -119,6 +119,74 @@ pub struct ContactPairReadout {
     /// Force the contact model exerts on the soft side at this pair —
     /// see "Sign convention" in the type docs.
     pub force_on_soft: Vec3,
+    /// Tributary surface area carried by the contacted vertex on the
+    /// deformed boundary — the barycentric lumped area
+    /// `⅓·Σ area(f)` over boundary triangles incident to the vertex
+    /// (see [`boundary_vertex_areas`](crate::boundary_vertex_areas)),
+    /// evaluated at the same readout-time `positions`.
+    ///
+    /// `0.0` when the contacted vertex lies on no boundary face — an
+    /// *interior* vertex that entered the contact band (the
+    /// `per_pair_readout` walk tests every vertex, not only boundary
+    /// ones), or a degenerate/collapsed surface triangle. This is the
+    /// off-nominal case that drives the [`pressure`](Self::pressure)
+    /// `NaN` sentinel below.
+    pub tributary_area: f64,
+    /// Contact pressure at this pair — `|force_on_soft| / tributary_area`,
+    /// the force spread over the vertex's deformed surface patch. The
+    /// measurable that distinguishes a broad contact (high force, low
+    /// pressure) from a concentrated one (low force, high pressure).
+    ///
+    /// **`NaN` when [`tributary_area`](Self::tributary_area) is `0.0`** —
+    /// there is no surface patch over which to define pressure, so the
+    /// value is genuinely undefined rather than zero. A `NaN` sentinel
+    /// (over a falsely-reassuring `0.0`) is deliberate for a safety
+    /// readout: zero-area contacts are off-nominal (an interior vertex
+    /// penetrating, or a diverged-solve degeneracy), exactly where a
+    /// reported `0.0` would mask danger. Mirrors the `f64::NAN`
+    /// sentinel convention in [`reward_breakdown`](crate::Observable::reward_breakdown).
+    /// Peak-pressure consumers must filter non-finite values. Pressure
+    /// scales as `1/area`, so a *non-zero but tiny* near-degenerate
+    /// triangle yields a correspondingly large (finite) value — guarding
+    /// genuine geometric degeneracy is the soft solver's validity
+    /// responsibility upstream, not this readout's.
+    ///
+    /// **Per-pair, not per-vertex.** This is the pressure of *this*
+    /// `(vertex, primitive)` pair — `|force_on_soft|` divided by the
+    /// vertex's *full* tributary area. A vertex contacting several
+    /// primitives at once (e.g. a pinch between two jaws) emits one
+    /// readout per primitive, each dividing its own force by the same
+    /// full area; the per-pair values therefore *under-report* the true
+    /// local concentration. A consumer wanting the true pressure on such
+    /// a vertex must sum `force_on_soft` across that vertex's pairs
+    /// before dividing — the peak-pressure reduction (PR3) is the
+    /// intended place for that aggregation.
+    ///
+    /// The triple `pressure · tributary_area · normal` reconstructs
+    /// `force_on_soft` for every well-defined (area `> 0`) pair — exact
+    /// because `normal` is the unit primitive normal (its field
+    /// contract) and the contact force is parallel to it — so
+    /// `Σ pressure·area·n̂ == Σ force_on_soft` over a boundary contact,
+    /// the faithful-decomposition invariant. (This sum is unaffected by
+    /// the per-pair caveat above: the full area cancels in each term.)
+    pub pressure: f64,
+}
+
+/// Contact pressure from a per-pair force and its tributary area —
+/// `|force| / area`, with a `f64::NAN` sentinel when `area == 0.0`.
+///
+/// The single definition behind [`ContactPairReadout::pressure`],
+/// shared by every `per_pair_readout` producer so the zero-area
+/// sentinel convention lives in one place. See the
+/// [`pressure`](ContactPairReadout::pressure) field docs for why the
+/// degenerate case is `NaN` rather than `0.0`.
+#[must_use]
+pub(crate) fn contact_pressure(force_on_soft: Vec3, tributary_area: f64) -> f64 {
+    if tributary_area > 0.0 {
+        force_on_soft.norm() / tributary_area
+    } else {
+        f64::NAN
+    }
 }
 
 /// Infinitesimal rigid motion (spatial twist) of a contact primitive —
@@ -280,8 +348,49 @@ pub trait ActivePairsFor<M: crate::material::Material>: ContactModel {
 
 #[cfg(test)]
 mod tests {
-    use super::RigidTwist;
+    use super::{RigidTwist, contact_pressure};
     use crate::Vec3;
+
+    /// `contact_pressure` is `|force| / area` on the well-defined branch.
+    #[test]
+    fn contact_pressure_is_force_magnitude_over_area() {
+        // Force of magnitude 5 (3-4-5 right triangle) over area 2.
+        let force = Vec3::new(0.0, 3.0, 4.0);
+        let p = contact_pressure(force, 2.0);
+        assert!(
+            (p - 2.5).abs() < 1e-15,
+            "expected |force|/area = 5/2, got {p}"
+        );
+    }
+
+    /// Zero (or negative) tributary area has no surface patch to define
+    /// pressure on — the off-nominal case returns the `NaN` sentinel
+    /// rather than a falsely-reassuring `0.0` or an `Inf`.
+    #[test]
+    fn contact_pressure_zero_area_is_nan() {
+        let force = Vec3::new(1.0, 0.0, 0.0);
+        assert!(
+            contact_pressure(force, 0.0).is_nan(),
+            "zero area must yield NaN"
+        );
+        assert!(
+            contact_pressure(force, -1.0).is_nan(),
+            "non-positive area must yield NaN"
+        );
+    }
+
+    /// A zero force over a real surface patch is honest zero pressure —
+    /// the `NaN` sentinel is reserved for the missing-area case.
+    #[test]
+    fn contact_pressure_zero_force_finite_area_is_zero() {
+        let p = contact_pressure(Vec3::zeros(), 1.5);
+        // Bit-compare against +0.0 (exact; sidesteps clippy::float_cmp).
+        assert_eq!(
+            p.to_bits(),
+            0.0_f64.to_bits(),
+            "zero force over positive area is zero pressure"
+        );
+    }
 
     /// `translation` is a pure linear motion: zero angular part (constant
     /// normal `δn̂ = ω×n̂ = 0`), linear part equal to the given direction.

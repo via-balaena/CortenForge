@@ -82,14 +82,20 @@ fn penalty_with_interior_cutoff_keeps_within_band_pair() {
 fn penalty_per_pair_readout_respects_interior_cutoff() {
     let c = z_floor_with_cutoff();
     let mesh = SingleTetMesh::new(&MaterialField::skeleton_default());
-    // Three vertices: deep-interior (excluded), in-band (kept), above
-    // band (filtered by d̂-gate, not the cutoff). The cutoff path and
-    // the band-gate path each contribute one filtered vertex; only the
-    // middle vertex survives both.
+    // `SingleTetMesh` has 4 vertices, and `per_pair_readout` now computes
+    // per-vertex tributary areas over the mesh's boundary faces, so
+    // `positions` must cover all 4 (its documented precondition). Pose
+    // the three filter-test vertices as before — deep-interior (cutoff
+    // excludes), in-band (kept), above-band (d̂-gate filters) — and park
+    // the 4th vertex above the band too, so it is filtered and adds no
+    // readout. The `z`-normal plane has `sd = z`, so distinct `x`/`y`
+    // offsets keep `sd` controlled by `z` alone while making the tet
+    // non-degenerate.
     let positions = [
-        Vec3::new(0.0, 0.0, -10.0e-3),    // sd = -10 mm — cutoff excludes
-        Vec3::new(0.0, 0.0, -3.0e-3),     // sd = -3 mm — kept
-        Vec3::new(0.0, 0.0, 5.0 * D_HAT), // sd = +5 mm — d̂-gate filters
+        Vec3::new(0.00, 0.00, -10.0e-3),    // sd = -10 mm — cutoff excludes
+        Vec3::new(0.01, 0.00, -3.0e-3),     // sd = -3 mm — kept
+        Vec3::new(0.00, 0.01, 5.0 * D_HAT), // sd = +5 mm — d̂-gate filters
+        Vec3::new(0.01, 0.01, 5.0 * D_HAT), // 4th tet vertex, parked above band
     ];
     let readouts = c.per_pair_readout(&mesh, &positions);
     assert_eq!(

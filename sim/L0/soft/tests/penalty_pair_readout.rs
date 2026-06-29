@@ -36,7 +36,7 @@
 
 use sim_soft::{
     ActivePairsFor, ContactModel, ContactPair, MaterialField, Mesh, PenaltyRigidContact,
-    RigidPlane, SoftScene, Vec3,
+    RigidPlane, SoftScene, Vec3, boundary_vertex_areas,
 };
 
 /// Cube edge length (1 cm). Mirrors the compressive-block fixture / row 14.
@@ -226,5 +226,95 @@ fn per_pair_readout_matches_active_pairs_and_gradient() {
         "Σ readouts.force_on_soft.z = {} should bit-match −manual_reaction = {}",
         sum_readout_z,
         -sum_manual_reaction,
+    );
+}
+
+/// PR2 pressure gate — the faithful-decomposition invariant.
+///
+/// Contact pressure is reported per pair as `|force_on_soft| /
+/// tributary_area`. Because the penalty force is parallel to the
+/// outward normal, the triple `pressure · tributary_area · normal`
+/// reconstructs `force_on_soft` for every pair, so the readouts'
+/// pressures-times-areas-times-normals sum (vectorially) to the total
+/// soft-side force. Same compressive-block scene as
+/// `per_pair_readout_matches_active_pairs_and_gradient`: the 9 active
+/// pairs are all top-face *boundary* vertices, so every tributary area
+/// is strictly positive and every pressure is finite (no `NaN`
+/// sentinel here — that path is unit-tested on the helper).
+#[test]
+fn per_pair_readout_pressure_decomposes_total_force() {
+    let materials = MaterialField::uniform(MU, LAMBDA);
+    let (mesh, _bc, _initial, _default_contact) =
+        SoftScene::compressive_block_on_plane(EDGE_LEN, CELL_SIZE, DISPLACEMENT, &materials);
+    let plane = RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), DISPLACEMENT - EDGE_LEN);
+    let contact = PenaltyRigidContact::with_params(vec![plane], KAPPA, D_HAT_OVERRIDE);
+
+    let positions: Vec<Vec3> = mesh.positions().to_vec();
+    let readouts = contact.per_pair_readout(&mesh, &positions);
+    assert_eq!(
+        readouts.len(),
+        9,
+        "expected 9 active pairs at n=2 rest config"
+    );
+
+    // Independent reference: the tributary areas the readout should
+    // carry, computed straight from PR1's geometry helper at the same
+    // positions.
+    let areas = boundary_vertex_areas(&positions, mesh.boundary_faces());
+
+    let mut reconstructed_total = Vec3::zeros();
+    let mut force_total = Vec3::zeros();
+    for (idx, r) in readouts.iter().enumerate() {
+        let ContactPair::Vertex { vertex_id, .. } = r.pair;
+
+        // The readout's tributary area is exactly PR1's per-vertex area
+        // (bit-compare — both come from the same `boundary_vertex_areas`
+        // call, so equality is exact; sidesteps clippy::float_cmp).
+        assert_eq!(
+            r.tributary_area.to_bits(),
+            areas[vertex_id as usize].to_bits(),
+            "readout[{idx}] tributary_area should match boundary_vertex_areas[{vertex_id}]",
+        );
+        // Top-face contacts are boundary vertices — positive area, finite
+        // pressure (the off-nominal zero-area/NaN path can't arise here).
+        assert!(
+            r.tributary_area > 0.0,
+            "readout[{idx}] top-face vertex must have positive tributary area, got {}",
+            r.tributary_area,
+        );
+        assert!(
+            r.pressure.is_finite(),
+            "readout[{idx}] pressure must be finite for a boundary contact, got {}",
+            r.pressure,
+        );
+        // Pressure is force magnitude per unit area.
+        let expected_pressure = r.force_on_soft.norm() / r.tributary_area;
+        assert!(
+            (r.pressure - expected_pressure).abs() <= 1e-12 * expected_pressure,
+            "readout[{idx}] pressure {} should equal |force|/area {}",
+            r.pressure,
+            expected_pressure,
+        );
+
+        // Per-pair reconstruction: pressure · area · n̂ recovers the
+        // soft-side force (the penalty force is parallel to n̂, so the
+        // scalar |force| spread over the area and re-projected onto the
+        // unit normal returns the original vector to rounding).
+        let reconstructed = r.pressure * r.tributary_area * r.normal;
+        let err = (reconstructed - r.force_on_soft).norm();
+        assert!(
+            err <= 1e-12 * r.force_on_soft.norm(),
+            "readout[{idx}] pressure·area·n̂ {reconstructed:?} should reconstruct force_on_soft {:?}",
+            r.force_on_soft,
+        );
+        reconstructed_total += reconstructed;
+        force_total += r.force_on_soft;
+    }
+
+    // Faithful decomposition: Σ pressure·area·n̂ == Σ force_on_soft.
+    let total_err = (reconstructed_total - force_total).norm();
+    assert!(
+        total_err <= 1e-12 * force_total.norm(),
+        "Σ pressure·area·n̂ {reconstructed_total:?} should equal Σ force_on_soft {force_total:?}",
     );
 }
