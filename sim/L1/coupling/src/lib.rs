@@ -3079,17 +3079,29 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     }
 
     /// Build the **free-body wrench-carry** time-adjoint tape for one coupled impact rollout, and
-    /// return `(tape, p_var, s_var_final)` for an objective node to read the final state `s_N` and
+    /// return `(tape, p_var, s_final, s_prev)` for an objective node to read the final state and
     /// `tape.backward`. The shared body of the orientation-target gradients
-    /// ([`Self::coupled_trajectory_angular_velocity_gradient`] reads a `qvel` row for `ω_N`;
-    /// [`Self::coupled_trajectory_orientation_gradient`] reads a quaternion component) — only the
-    /// objective differs, so the per-step recurrence lives here once.
+    /// ([`Self::coupled_trajectory_angular_velocity_gradient`] reads a `qvel` row of `s_final` for
+    /// `ω_N`; [`Self::coupled_trajectory_orientation_gradient`] reads a quaternion component) — only
+    /// the objective differs, so the per-step recurrence lives here once.
     ///
     /// Mirrors the force-only [`Self::coupled_trajectory_material_gradient`]'s stale-FK loop (the
     /// contact is posed at the one-step-lagged height, matching [`Self::step`]) but routes the full
     /// contact **wrench** `[τ; f]` (`ContactWrenchTrajVjp`) through the multi-DOF `RigidStateCarryVjp`
     /// carry `s' = J_state·s + G·w` with the free joint's tangent-space state (`J_state` =
     /// `loaded_state_jacobian`, `G_pos = Δt·J_r·G_vel`).
+    ///
+    /// **Fresh- vs stale-FK readout — and why both carries coexist.** `s_final = s_N` holds the
+    /// freshly-integrated `qpos_N`; `s_prev = s_{N-1}` is the second-to-last state. The two matter
+    /// because `step` leaves `xpos` lagging `qpos` by a step, so its `rigid_z = xpos.z = qpos_{N-1}.z`
+    /// — the stale-FK height the force-only `z_N` path tracks lives in `s_prev`, NOT `s_final`. This
+    /// is the bridge between the two free-body carries: the scalar `VzCarryVjp`/`ZCarryVjp` path
+    /// ([`Self::coupled_trajectory_material_gradient`], the keystone z/force target, with damping) is
+    /// the **z-special-case of this general wrench carry** — reading `s_prev`'s z-translation row here
+    /// reproduces its `z_N` gradient to machine precision at `rigid_damping = 0` (proven in
+    /// `wrench_carry_subsumes_scalar_z_carry`). They are one dynamics at two readout conventions, not
+    /// redundant implementations; the scalar path additionally carries the `−c·v` damping the general
+    /// carry does not yet (its `v1` scope).
     ///
     /// # Panics
     /// Panics if `param_idx > 1`, `rigid_damping != 0`, `with_contact_moment` is off, a moving
@@ -3098,12 +3110,19 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     // recurrence's state); splitting it would scatter that shared state.
     // expect_used: a rigid-step divergence is a programmer error surfaced loudly (mirrors `step`).
     #[allow(clippy::too_many_lines, clippy::expect_used)]
-    fn build_freebody_wrench_tape(&mut self, n_steps: usize, param_idx: usize) -> (Tape, Var, Var) {
+    fn build_freebody_wrench_tape(
+        &mut self,
+        n_steps: usize,
+        param_idx: usize,
+    ) -> (Tape, Var, Var, Var) {
         self.require_no_moving_ee();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
         );
+        // A gradient needs ≥ 1 step; this also keeps `s_prev` meaningful (with 0 steps the loop
+        // never runs and `s_prev` would alias the initial state rather than `s_{N-1}`).
+        assert!(n_steps >= 1, "free-body wrench gradient needs n_steps >= 1");
         // The loaded carry holds the contact wrench during its FD; a damping force −c·v would not
         // have its velocity-coupling captured (mirrors the articulated path's bound).
         assert!(
@@ -3133,8 +3152,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             s0[nv + i] = self.data.qvel[i];
         }
         let mut s_var = tape.constant_tensor(Tensor::from_slice(&s0, &[2 * nv]));
+        // Track the second-to-last state: after the loop `s_prev = s_{N-1}`, whose FK is the
+        // stale `xpos.z` that `step`'s `rigid_z` returns (see the doc's fresh-vs-stale-FK note).
+        let mut s_prev = s_var;
 
         for _ in 0..n_steps {
+            s_prev = s_var;
             let height = self.plane_height(); // STALE-FK (no fresh forward, matches `step`)
             let pose_var = tape.push_custom(
                 &[s_var],
@@ -3227,7 +3250,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             v_var = v_next_var;
             s_var = s_next_var;
         }
-        (tape, p_var, s_var)
+        (tape, p_var, s_var, s_prev)
     }
 
     /// Analytic `∂(final angular velocity ω_N about a body axis)/∂(material param)` for the
@@ -3269,7 +3292,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let (_, dadr) = self.free_joint_adrs();
         let nv = self.model.nv;
         let omega_idx = dadr + 3 + axis; // free-joint qvel layout: [v(3); ω(3)]
-        let (mut tape, p_var, s_var) = self.build_freebody_wrench_tape(n_steps, param_idx);
+        let (mut tape, p_var, s_var, _) = self.build_freebody_wrench_tape(n_steps, param_idx);
 
         // Objective: the final spin ω_N = qvel[3 + axis] — a Euclidean `qvel` row of the state, so
         // the readout is a plain component select. It exercises the wrench MOMENT carry (τ → ω via
@@ -3327,7 +3350,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         );
         let (qadr, dadr) = self.free_joint_adrs(); // qpos [x,y,z, qw,qx,qy,qz], dof [v(3); ω(3)]
         let nv = self.model.nv;
-        let (mut tape, p_var, s_var) = self.build_freebody_wrench_tape(n_steps, param_idx);
+        let (mut tape, p_var, s_var, _) = self.build_freebody_wrench_tape(n_steps, param_idx);
 
         // Objective: the final quaternion vector component q_vec[axis]. Its body-frame tangent
         // derivative is the `axis` row of ½(w·I + [v]_×) at the final orientation; seeding the
@@ -8438,6 +8461,69 @@ mod tests {
     use super::*;
     use sim_mjcf::load_model;
     use sim_ml_chassis::autograd::VjpOp;
+
+    /// A centred free-body platen over the soft block (COM at the block centroid), `rigid_damping = 0`
+    /// (the general wrench carry's scope), moment on. Used by the carry-subsumption proof.
+    fn centred_freebody(mu: f64) -> StaggeredCoupling {
+        let mjcf = r#"<mujoco><option gravity="0 0 -9.81" timestep="0.001"/><worldbody>
+  <body name="p" pos="0.05 0.05 0.1049"><freejoint/>
+    <geom type="box" size="0.06 0.06 0.005" mass="0.2"/></body></worldbody></mujoco>"#;
+        let model = load_model(mjcf).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("fwd");
+        StaggeredCoupling::new(
+            model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        )
+        .with_contact_moment(true)
+    }
+
+    /// `∂z_N/∂param` via the GENERAL wrench carry, reading the stale-FK `xpos.z` (= `s_prev`'s
+    /// z-translation row) so the readout matches `step`'s `rigid_z`.
+    fn z_grad_via_wrench(mu: f64, n: usize, param_idx: usize) -> f64 {
+        let mut c = centred_freebody(mu);
+        let (_, dadr) = c.free_joint_adrs();
+        let nv = c.model.nv;
+        let (mut tape, p_var, _s_final, s_prev) = c.build_freebody_wrench_tape(n, param_idx);
+        let z = c.data.xpos[c.body].z;
+        // The state's z-translation is the free joint's 3rd linear DOF row, `dadr + 2` (the qpos
+        // rows of `s` are DOF-indexed; z-translation is Euclidean, so raw == tangent).
+        let obj = tape.push_custom(
+            &[s_prev],
+            Tensor::from_slice(&[z], &[1]),
+            Box::new(StateComponentVjp {
+                idx: dadr + 2,
+                n_state: 2 * nv,
+            }),
+        );
+        tape.backward(obj);
+        tape.grad_tensor(p_var).as_slice()[0]
+    }
+
+    /// The scalar `VzCarryVjp`/`ZCarryVjp` z-carry is the **z-special-case of the general wrench
+    /// carry**: at `rigid_damping = 0`, reading `s_prev`'s stale-FK z-translation through the general
+    /// carry reproduces `coupled_trajectory_material_gradient`'s `z_N` gradient to machine precision.
+    /// Proves the two free-body carries are one dynamics at two readout conventions (not redundant
+    /// implementations), the foundation for retiring the scalar carry once the general carry also
+    /// carries damping. (λ=4μ block tie ⇒ compare the design gradient `grad(0) + 4·grad(1)`.)
+    #[test]
+    fn wrench_carry_subsumes_scalar_z_carry() {
+        for &n in &[4_usize, 8, 16] {
+            let g_wrench = z_grad_via_wrench(3.0e4, n, 0) + 4.0 * z_grad_via_wrench(3.0e4, n, 1);
+            let g_scalar = centred_freebody(3.0e4)
+                .coupled_trajectory_material_gradient(n, 0)
+                .1
+                + 4.0
+                    * centred_freebody(3.0e4)
+                        .coupled_trajectory_material_gradient(n, 1)
+                        .1;
+            let rel = (g_wrench - g_scalar).abs() / g_scalar.abs().max(1e-30);
+            assert!(
+                rel < 1e-8,
+                "general wrench carry must reproduce the scalar z_N gradient at n={n}: \
+                 wrench={g_wrench:e} scalar={g_scalar:e} rel={rel:e}"
+            );
+        }
+    }
 
     /// [`right_jacobian_so3`] is the exact tangent map of the quaternion exp-map step,
     /// in the "output tangent at the nominal `q'`" convention: for `q' = q ⊕ exp(φ)`,
