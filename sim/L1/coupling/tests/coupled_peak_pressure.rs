@@ -71,6 +71,66 @@ fn run(sphere_radius: Option<f64>, v_impact: f64) -> (f64, f64) {
     (peak.peak_pressure, peak.peak_total_force)
 }
 
+/// The per-vertex pressure field (for a heatmap) is a faithful scatter: finite and non-negative
+/// everywhere, its max equals the scalar peak pressure at the same config, and it is SPARSE — only
+/// the contacted vertices carry pressure, the rest stay `0.0` (the localized concentration a tint
+/// would render).
+#[test]
+fn vertex_pressure_field_is_sparse_and_peaks_to_the_scalar() {
+    let block_top = EDGE;
+    let start_z = block_top + D_HAT + CLEARANCE;
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="limb" pos="0 0 {start_z}">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="{MASS}"/>
+    </body>
+  </worldbody>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("limb MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("initial forward");
+    data.qvel[2] = -1.0;
+    let mut coupling: StaggeredCoupling = StaggeredCoupling::new(
+        model,
+        data,
+        1,
+        CLEARANCE,
+        N_PER_EDGE,
+        EDGE,
+        ECOFLEX_00_30_MEASURED.mu,
+        DT,
+        KAPPA,
+        D_HAT,
+        0.0,
+    )
+    .with_sphere_collider(0.04);
+
+    // Step into solid contact; the field comes from the SAME step that solves the dent.
+    let mut field = Vec::new();
+    for _ in 0..40 {
+        field = coupling.step_with_pressure_field().1;
+    }
+
+    assert!(
+        field.iter().all(|p| p.is_finite() && *p >= 0.0),
+        "every per-vertex pressure must be finite and non-negative",
+    );
+    let n_loaded = field.iter().filter(|p| **p > 0.0).count();
+    assert!(
+        n_loaded > 0,
+        "the concentrated sphere must load at least one vertex"
+    );
+    assert!(
+        n_loaded < field.len(),
+        "a concentrated contact must leave most vertices unloaded (got {n_loaded}/{} loaded)",
+        field.len(),
+    );
+}
+
 #[test]
 fn sphere_reads_higher_pressure_lower_force_than_slab() {
     let v = 1.0;
