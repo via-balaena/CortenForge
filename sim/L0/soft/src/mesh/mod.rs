@@ -277,6 +277,57 @@ pub(crate) fn boundary_faces_from_topology(tets: &[[VertexId; 4]]) -> Vec<[Verte
         .collect()
 }
 
+/// Per-vertex tributary area on the deformed boundary surface —
+/// barycentric lumped over incident boundary triangles.
+///
+/// Each boundary triangle contributes one third of its (deformed) area
+/// to each of its three vertices: `area(v) = ⅓ · Σ area(f)` over
+/// boundary faces `f` incident to `v`, with `area(f)` evaluated at the
+/// supplied `positions` (so a squished buffer reports a spread-out
+/// patch in real time). The returned vector is indexed by
+/// [`VertexId`] and has length `positions.len()`; interior vertices —
+/// those touched by no boundary face — carry `0.0`.
+///
+/// The one-third split makes the per-vertex areas a faithful partition
+/// of the surface: their sum equals the total boundary surface area
+/// exactly (each triangle's full area is dealt out across its three
+/// vertices, `3 · ⅓ = 1`). That invariant is what lets a downstream
+/// contact-pressure readout decompose a total force into
+/// `Σ pressure(v) · area(v) · n̂(v)` without leaking or inventing area.
+///
+/// Pure geometry — no contact model, no solver state. `positions` are
+/// the deformed vertex positions and `boundary_faces` the outward
+/// triangles from [`Mesh::boundary_faces`]; the winding does not
+/// matter here (area is the cross-product *magnitude*). Walked in face
+/// order for determinism.
+///
+/// # Panics
+///
+/// Panics with an out-of-bounds index if any `boundary_faces` entry
+/// references a `VertexId` `>= positions.len()`. The two slices must
+/// share one mesh's `VertexId` space — pass `mesh.positions()` (or a
+/// deformed copy of the same length) together with
+/// `mesh.boundary_faces()` from that same mesh, as every index-by-
+/// `VertexId` helper in this crate requires.
+#[must_use]
+pub fn boundary_vertex_areas(positions: &[Vec3], boundary_faces: &[[VertexId; 3]]) -> Vec<f64> {
+    let mut areas = vec![0.0; positions.len()];
+    for &[a, b, c] in boundary_faces {
+        // One third of each triangle's deformed area lands on each of
+        // its vertices; `triangle_area` is the crate's canonical
+        // ½‖(b−a)×(c−a)‖ (shared with the tet-quality metrics).
+        let third_area = quality::triangle_area(
+            positions[a as usize],
+            positions[b as usize],
+            positions[c as usize],
+        ) / 3.0;
+        areas[a as usize] += third_area;
+        areas[b as usize] += third_area;
+        areas[c as usize] += third_area;
+    }
+    areas
+}
+
 /// Collect every vertex referenced by at least one tet, ascending.
 ///
 /// Walks `mesh.tet_vertices(0..n_tets)`, accumulates ids into a
@@ -307,4 +358,111 @@ pub fn referenced_vertices<M: Material>(mesh: &dyn Mesh<M>) -> Vec<VertexId> {
         }
     }
     set.into_iter().collect()
+}
+
+#[cfg(test)]
+mod boundary_vertex_areas_tests {
+    use super::quality::triangle_area;
+    use super::{HandBuiltTetMesh, Mesh, VertexId, boundary_vertex_areas};
+    use crate::Vec3;
+    use crate::material::MaterialField;
+
+    /// One triangle: each of its three vertices gets exactly one third
+    /// of the triangle's area, and the three shares sum back to the
+    /// full area.
+    #[test]
+    fn single_triangle_splits_one_third_each() {
+        // Right triangle in the z=0 plane with legs 3 and 4 → area 6.
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+            Vec3::new(0.0, 4.0, 0.0),
+        ];
+        let faces: [[VertexId; 3]; 1] = [[0, 1, 2]];
+
+        let areas = boundary_vertex_areas(&positions, &faces);
+
+        assert_eq!(areas.len(), 3);
+        for a in areas {
+            assert!(
+                (a - 2.0).abs() < 1e-15,
+                "expected 6/3 = 2 per vertex, got {a}"
+            );
+        }
+    }
+
+    /// A vertex referenced by no boundary face carries zero tributary
+    /// area (interior-vertex case).
+    #[test]
+    fn unreferenced_vertex_is_zero() {
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            // Vertex 3 sits in no face.
+            Vec3::new(0.5, 0.5, 9.0),
+        ];
+        let faces: [[VertexId; 3]; 1] = [[0, 1, 2]];
+
+        let areas = boundary_vertex_areas(&positions, &faces);
+
+        // Triangle (legs 1×1) has area ½; one third (1/6) lands on each
+        // of its three vertices. Vertex 3 is in no face, so it keeps the
+        // additive-identity zero. Asserting the whole `Vec` (slice
+        // equality, not a bare float `==`) pins the exact partition.
+        let sixth = 1.0 / 6.0;
+        assert_eq!(areas, vec![sixth, sixth, sixth, 0.0]);
+    }
+
+    /// Winding does not change the area (cross-product magnitude is
+    /// orientation-blind): a face and its reverse give identical areas.
+    #[test]
+    fn reversed_winding_same_area() {
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
+        let forward = boundary_vertex_areas(&positions, &[[0, 1, 2]]);
+        let reversed = boundary_vertex_areas(&positions, &[[0, 2, 1]]);
+        assert_eq!(forward, reversed);
+    }
+
+    /// The load-bearing invariant on real topology: per-vertex areas
+    /// partition the boundary exactly. On a unit-edge-scaled cube the
+    /// sum equals the analytic total surface area `6·edge²`, and it
+    /// also equals the independently summed per-face areas.
+    #[test]
+    fn cube_areas_sum_to_total_surface_area() {
+        let edge = 0.1;
+        let field = MaterialField::uniform(1.0e5, 4.0e5);
+        let mesh = HandBuiltTetMesh::uniform_block(2, edge, &field);
+        let positions = mesh.positions();
+        let faces = mesh.boundary_faces();
+
+        let areas = boundary_vertex_areas(positions, faces);
+        let summed: f64 = areas.iter().sum();
+
+        // Independent reference: sum each boundary triangle's own area.
+        let face_total: f64 = faces
+            .iter()
+            .map(|&[a, b, c]| {
+                triangle_area(
+                    positions[a as usize],
+                    positions[b as usize],
+                    positions[c as usize],
+                )
+            })
+            .sum();
+
+        let analytic = 6.0 * edge * edge;
+        assert!(
+            (summed - face_total).abs() < 1e-15,
+            "Σ per-vertex areas {summed} must equal Σ per-face areas {face_total}",
+        );
+        assert!(
+            (summed - analytic).abs() < 1e-15,
+            "Σ per-vertex areas {summed} must equal cube surface area {analytic}",
+        );
+    }
 }
