@@ -3096,16 +3096,21 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// because `step` leaves `xpos` lagging `qpos` by a step, so its `rigid_z = xpos.z = qpos_{N-1}.z`
     /// — the stale-FK height the force-only `z_N` path tracks lives in `s_prev`, NOT `s_final`. This
     /// is the bridge between the two free-body carries: the scalar `VzCarryVjp`/`ZCarryVjp` path
-    /// ([`Self::coupled_trajectory_material_gradient`], the keystone z/force target, with damping) is
-    /// the **z-special-case of this general wrench carry** — reading `s_prev`'s z-translation row here
-    /// reproduces its `z_N` gradient to machine precision at `rigid_damping = 0` (proven in
-    /// `wrench_carry_subsumes_scalar_z_carry`). They are one dynamics at two readout conventions, not
-    /// redundant implementations; the scalar path additionally carries the `−c·v` damping the general
-    /// carry does not yet (its `v1` scope).
+    /// ([`Self::coupled_trajectory_material_gradient`], the keystone z/force target) is the
+    /// **z-special-case of this general wrench carry** — reading `s_prev`'s z-translation row here
+    /// reproduces its `z_N` gradient to machine precision (proven in
+    /// `wrench_carry_subsumes_scalar_z_carry`, both undamped and at `rigid_damping = 60`). They are
+    /// one dynamics at two readout conventions, not redundant implementations.
+    ///
+    /// **Contact-axis damping.** The free-body linear-z damping `−c·vz` is routed in the forward
+    /// (matching `step`'s `sf[5] = −fz − c·vz`) and captured in the loaded `J_state` (the
+    /// velocity-dependent term `scratch_state_step` re-derives). `c = 0` ⇒ byte-identical to the
+    /// undamped carry the ω/orientation gates use.
     ///
     /// # Panics
-    /// Panics if `param_idx > 1`, `rigid_damping != 0`, `with_contact_moment` is off, a moving
-    /// end-effector is set, the rigid step diverges, or the soft solver does not converge.
+    /// Panics if `param_idx > 1`, the contacting body is not a single free joint,
+    /// `with_contact_moment` is off, a moving end-effector is set, the rigid step diverges, or the
+    /// soft solver does not converge.
     // One coherent per-step tape-construction loop (the soft/pose/wrench/carry nodes share the
     // recurrence's state); splitting it would scatter that shared state.
     // expect_used: a rigid-step divergence is a programmer error surfaced loudly (mirrors `step`).
@@ -3123,12 +3128,6 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         // A gradient needs ≥ 1 step; this also keeps `s_prev` meaningful (with 0 steps the loop
         // never runs and `s_prev` would alias the initial state rather than `s_{N-1}`).
         assert!(n_steps >= 1, "free-body wrench gradient needs n_steps >= 1");
-        // The loaded carry holds the contact wrench during its FD; a damping force −c·v would not
-        // have its velocity-coupling captured (mirrors the articulated path's bound).
-        assert!(
-            self.rigid_damping == 0.0,
-            "free-body wrench gradient requires rigid_damping = 0 (v1 scope)"
-        );
         // The forward always routes the contact MOMENT (the orientation target's whole source); a
         // moment-off `step` would leave the body unspun, so the gradient would not match the
         // caller's own rollout. Require the moment so forward and gradient agree.
@@ -3217,11 +3216,21 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                     pose: WrenchPose::Height,
                 }),
             );
+            // `J_state` holds the CONTACT `wrench` fixed; the contact-axis damping `−c·vz` is a
+            // velocity-dependent force `scratch_state_step` re-derives from the perturbed velocity,
+            // so the loaded Jacobian picks up its `a = 1 − c·Δt/m` coupling (`c = 0` ⇒ unchanged).
             let j_state = self
                 .analytic_state_jacobian(&wrench)
                 .unwrap_or_else(|| self.loaded_state_jacobian(&wrench));
             let g_vel = rigid_xfrc_column(&self.model, &self.data, self.body);
-            self.data.xfrc_applied[self.body] = wrench;
+            // Route the contact wrench + the forward damping `−c·qvel[2]` on the world-z linear
+            // force, matching `step_core`'s `sf[5] = −fz − c·qvel[2]` (gated like `scratch_state_step`
+            // so the `c = 0` path is structurally byte-identical).
+            let mut applied = wrench;
+            if self.rigid_damping != 0.0 {
+                applied[5] += -self.rigid_damping * self.data.qvel[2];
+            }
+            self.data.xfrc_applied[self.body] = applied;
             self.data.step(&self.model).expect("rigid step");
             let g_pos = if self.model.nq == self.model.nv {
                 self.model.timestep * &g_vel
@@ -3271,12 +3280,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// forward oracle; gated in `tests/freebody_angular_velocity_gradient.rs`.
     ///
     /// **Scope (v1).** As `build_freebody_wrench_tape` (free body, plane collider,
-    /// `rigid_damping = 0`, `with_contact_moment` on, no moving EE), plus a single free joint on the
-    /// contacting body. `&mut self`: advances the rollout, so rebuild per call.
+    /// `with_contact_moment` on, no moving EE), plus a single free joint and `rigid_damping = 0`
+    /// (the carry supports damping, but the damped *angular* gradient is not yet FD-gated — only the
+    /// z-translation row is). `&mut self`: advances the rollout, so rebuild per call.
     ///
     /// # Panics
-    /// Panics if `param_idx > 1`, `axis >= 3`, the contacting body is not a single free joint, or
-    /// any `build_freebody_wrench_tape` precondition fails; and if the rigid step diverges
+    /// Panics if `param_idx > 1`, `axis >= 3`, `rigid_damping != 0`, the contacting body is not a
+    /// single free joint, or any `build_freebody_wrench_tape` precondition fails; and if the rigid step diverges
     /// or the soft solver does not converge — surfaced loudly as in [`Self::step`].
     #[must_use]
     pub fn coupled_trajectory_angular_velocity_gradient(
@@ -3288,6 +3298,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         assert!(
             axis < 3,
             "angular axis {axis} out of range (0 = x, 1 = y, 2 = z)"
+        );
+        // The carry supports contact-axis damping, but the ANGULAR target's damped gradient has no
+        // FD oracle yet (only the z-translation row is gated under damping); keep this method to the
+        // validated undamped scope until a damped angular gate lands.
+        assert!(
+            self.rigid_damping == 0.0,
+            "angular-velocity gradient requires rigid_damping = 0 (damped angular target not yet gated)"
         );
         let (_, dadr) = self.free_joint_adrs();
         let nv = self.model.nv;
@@ -3329,7 +3346,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// turn (the smooth regime); gated in `tests/freebody_orientation_gradient.rs`.
     ///
     /// **Scope (v1).** As [`Self::coupled_trajectory_angular_velocity_gradient`] (free body, plane
-    /// collider, `rigid_damping = 0`, `with_contact_moment` on), plus the contacting body must carry
+    /// collider, `with_contact_moment` on, `rigid_damping = 0`), plus the contacting body must carry
     /// a single free joint (the quaternion the readout reads). The ~1e-6 FD-`J_state` precision floor
     /// applies identically. `&mut self`: advances the rollout, so rebuild per call.
     ///
@@ -3347,6 +3364,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         assert!(
             axis < 3,
             "quaternion axis {axis} out of range (0 = x, 1 = y, 2 = z)"
+        );
+        // The carry supports contact-axis damping, but the orientation target's damped gradient has
+        // no FD oracle yet (only the z-translation row is gated under damping); keep this method to
+        // the validated undamped scope until a damped orientation gate lands.
+        assert!(
+            self.rigid_damping == 0.0,
+            "orientation gradient requires rigid_damping = 0 (damped orientation target not yet gated)"
         );
         let (qadr, dadr) = self.free_joint_adrs(); // qpos [x,y,z, qw,qx,qy,qz], dof [v(3); ω(3)]
         let nv = self.model.nv;
@@ -3616,6 +3640,16 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// multi-DOF carry). Does NOT advance `self` (`Data` is not `Clone`, so a fresh
     /// scratch is built).
     ///
+    /// **Linear-axis damping.** When `rigid_damping != 0` (the free-platen contact-axis damping
+    /// the wrench carry now supports), the velocity-dependent damping force `−c·vz` is added on
+    /// the world-z linear force from the SUPPLIED `qvel` — so a position/velocity FD over this
+    /// step sees the damping vary with the perturbed state and the loaded `J_state` picks up its
+    /// `a = 1 − c·Δt/m` velocity-coupling. The damped vz is `qvel[2]`, matching [`Self::step`]'s
+    /// `sf[5] = −fz − c·qvel[2]` exactly (the free platen's z velocity; `rigid_damping` is the
+    /// free-body knob, so this branch only fires for a free body). This is what lets the general
+    /// carry reproduce the scalar `VzCarryVjp`/`ZCarryVjp` z-carry under damping. `c = 0` ⇒ the
+    /// branch is skipped, byte-identical for the articulated/hinge paths (which assert `c = 0`).
+    ///
     /// # Panics
     /// Panics if the scratch step diverges (a mis-constructed model).
     // expect_used: a scratch step on a valid model does not fail; a divergence is a
@@ -3630,7 +3664,11 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let mut scratch = self.model.make_data();
         scratch.qpos.copy_from(qpos);
         scratch.qvel.copy_from(qvel);
-        scratch.xfrc_applied[self.body] = *wrench;
+        let mut w = *wrench;
+        if self.rigid_damping != 0.0 {
+            w[5] += -self.rigid_damping * qvel[2]; // velocity-dependent contact-axis damping (free platen z)
+        }
+        scratch.xfrc_applied[self.body] = w;
         // Replicate the held control so the actuator force is present during the FD: on a
         // CHAIN the actuator force interacts with `∂M⁻¹/∂q`, so a `ctrl`-blind step would
         // drop that from the loaded `J_state`. `ctrl = 0` (no actuator / unactuated leaf)
@@ -8462,9 +8500,9 @@ mod tests {
     use sim_mjcf::load_model;
     use sim_ml_chassis::autograd::VjpOp;
 
-    /// A centred free-body platen over the soft block (COM at the block centroid), `rigid_damping = 0`
-    /// (the general wrench carry's scope), moment on. Used by the carry-subsumption proof.
-    fn centred_freebody(mu: f64) -> StaggeredCoupling {
+    /// A centred free-body platen over the soft block (COM at the block centroid), with contact-axis
+    /// `damping`, moment on. Used by the carry-subsumption proof.
+    fn centred_freebody(mu: f64, damping: f64) -> StaggeredCoupling {
         let mjcf = r#"<mujoco><option gravity="0 0 -9.81" timestep="0.001"/><worldbody>
   <body name="p" pos="0.05 0.05 0.1049"><freejoint/>
     <geom type="box" size="0.06 0.06 0.005" mass="0.2"/></body></worldbody></mujoco>"#;
@@ -8472,15 +8510,15 @@ mod tests {
         let mut data = model.make_data();
         data.forward(&model).expect("fwd");
         StaggeredCoupling::new(
-            model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+            model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, damping,
         )
         .with_contact_moment(true)
     }
 
     /// `∂z_N/∂param` via the GENERAL wrench carry, reading the stale-FK `xpos.z` (= `s_prev`'s
     /// z-translation row) so the readout matches `step`'s `rigid_z`.
-    fn z_grad_via_wrench(mu: f64, n: usize, param_idx: usize) -> f64 {
-        let mut c = centred_freebody(mu);
+    fn z_grad_via_wrench(mu: f64, n: usize, param_idx: usize, damping: f64) -> f64 {
+        let mut c = centred_freebody(mu, damping);
         let (_, dadr) = c.free_joint_adrs();
         let nv = c.model.nv;
         let (mut tape, p_var, _s_final, s_prev) = c.build_freebody_wrench_tape(n, param_idx);
@@ -8500,28 +8538,32 @@ mod tests {
     }
 
     /// The scalar `VzCarryVjp`/`ZCarryVjp` z-carry is the **z-special-case of the general wrench
-    /// carry**: at `rigid_damping = 0`, reading `s_prev`'s stale-FK z-translation through the general
-    /// carry reproduces `coupled_trajectory_material_gradient`'s `z_N` gradient to machine precision.
-    /// Proves the two free-body carries are one dynamics at two readout conventions (not redundant
-    /// implementations), the foundation for retiring the scalar carry once the general carry also
-    /// carries damping. (λ=4μ block tie ⇒ compare the design gradient `grad(0) + 4·grad(1)`.)
+    /// carry**: reading `s_prev`'s stale-FK z-translation through the general carry reproduces
+    /// `coupled_trajectory_material_gradient`'s `z_N` gradient to machine precision — both undamped
+    /// AND under the contact-axis damping the keystone uses (`rigid_damping = 60`, captured by the
+    /// damping-aware loaded `J_state`). Proves the two free-body carries are one dynamics at two
+    /// readout conventions (not redundant implementations), so retiring the scalar carry would be a
+    /// safe, provable move. (λ=4μ block tie ⇒ compare the design gradient `grad(0) + 4·grad(1)`.)
     #[test]
     fn wrench_carry_subsumes_scalar_z_carry() {
-        for &n in &[4_usize, 8, 16] {
-            let g_wrench = z_grad_via_wrench(3.0e4, n, 0) + 4.0 * z_grad_via_wrench(3.0e4, n, 1);
-            let g_scalar = centred_freebody(3.0e4)
-                .coupled_trajectory_material_gradient(n, 0)
-                .1
-                + 4.0
-                    * centred_freebody(3.0e4)
-                        .coupled_trajectory_material_gradient(n, 1)
-                        .1;
-            let rel = (g_wrench - g_scalar).abs() / g_scalar.abs().max(1e-30);
-            assert!(
-                rel < 1e-8,
-                "general wrench carry must reproduce the scalar z_N gradient at n={n}: \
-                 wrench={g_wrench:e} scalar={g_scalar:e} rel={rel:e}"
-            );
+        for &damping in &[0.0_f64, 60.0] {
+            for &n in &[4_usize, 8, 16] {
+                let g_wrench = z_grad_via_wrench(3.0e4, n, 0, damping)
+                    + 4.0 * z_grad_via_wrench(3.0e4, n, 1, damping);
+                let g_scalar = centred_freebody(3.0e4, damping)
+                    .coupled_trajectory_material_gradient(n, 0)
+                    .1
+                    + 4.0
+                        * centred_freebody(3.0e4, damping)
+                            .coupled_trajectory_material_gradient(n, 1)
+                            .1;
+                let rel = (g_wrench - g_scalar).abs() / g_scalar.abs().max(1e-30);
+                assert!(
+                    rel < 1e-8,
+                    "general wrench carry must reproduce the scalar z_N gradient at \
+                     damping={damping} n={n}: wrench={g_wrench:e} scalar={g_scalar:e} rel={rel:e}"
+                );
+            }
         }
     }
 
