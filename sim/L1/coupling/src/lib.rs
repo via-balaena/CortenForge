@@ -749,6 +749,50 @@ impl VjpOp for StateComponentVjp {
     }
 }
 
+/// Chassis-tape [`VjpOp`] reading one **quaternion vector component** `q_vec[axis]` (`qx`/`qy`/`qz`)
+/// of the free body's final orientation from the rigid state `s` — the orientation target that
+/// exercises the multi-DOF carry's *position* rows (`G_pos = Δt·J_r`), which the velocity-only
+/// `ω_N` readout ([`StateComponentVjp`] on a `qvel` row) leaves untouched. The quaternion component
+/// is smooth in the rotation (no angle-wrap, unlike `‖log q‖`), and its body-frame tangent
+/// derivative is closed-form: for `q = [w, v]` a right perturbation `q ⊗ exp(δ)` gives
+/// `∂q_vec/∂δ = ½(w·I + [v]_×)`, so `∂(q_vec[axis])/∂δ` is that matrix's `axis` row
+/// (`grad_tang`, precomputed at the final orientation). One parent `s` (`[2·nv]`), scalar output;
+/// `∂L/∂s[ang_dof + k] += cot · grad_tang[k]` over the joint's 3 ANGULAR tangent DOFs (the
+/// `qpos` tangent rows the position carry feeds), translation/`qvel` rows untouched.
+#[derive(Clone, Copy, Debug)]
+struct QuatComponentVjp {
+    /// Start index of the free joint's angular tangent DOFs in `s` (`jnt_dof_adr + 3`).
+    ang_dof: usize,
+    /// `∂(q_vec[axis])/∂(body angular tangent)` — the `axis` row of `½(w·I + [v]_×)` at the
+    /// final orientation.
+    grad_tang: Vec3,
+    /// The state length `2·nv` (parent shape).
+    n_state: usize,
+}
+
+impl VjpOp for QuatComponentVjp {
+    fn op_id(&self) -> &'static str {
+        "sim_coupling::QuatComponentVjp"
+    }
+
+    // Shape mismatches are programmer bugs (wrong node shape pushed) — assert.
+    #[allow(clippy::panic)]
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        assert!(
+            cotangent.shape() == [1]
+                && parent_cotans.len() == 1
+                && parent_cotans[0].shape() == [self.n_state],
+            "QuatComponentVjp: expected cot [1] + 1 parent (s [{}])",
+            self.n_state,
+        );
+        let c = cotangent.as_slice()[0];
+        let s = parent_cotans[0].as_mut_slice();
+        s[self.ang_dof] += c * self.grad_tang.x;
+        s[self.ang_dof + 1] += c * self.grad_tang.y;
+        s[self.ang_dof + 2] += c * self.grad_tang.z;
+    }
+}
+
 /// Chassis-tape [`VjpOp`] for the **tangential friction-reaction** readout along a
 /// trajectory: the scalar `fx = (Σ ∇D)·react_dir` (the rigid-side reaction `F·react_dir`
 /// from [`CpuNewtonSolver::friction_reaction_gradients`]) at the post-step soft config `x*`,
@@ -3020,85 +3064,59 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         (z_final, grad)
     }
 
-    /// Analytic `∂(final angular velocity ω_N about a body axis)/∂(material param)` for the
-    /// **free-body** coupled impact rollout — the contact-MOMENT made differentiable. The
-    /// orientation-dependent successor to [`Self::coupled_trajectory_material_gradient`]: that
-    /// path's `z_N` target is moment-DECOUPLED (a free body's z-translation and the flat-plane
-    /// contact never see its orientation, so the moment leaves `z_N` bit-identical — verified),
-    /// so it cannot exercise the contact moment; the final spin `ω_N = qvel[3 + axis]` (the body
-    /// angular-velocity component the off-COM strike drives) is the natural target that does.
+    /// The contacting body's free-joint `(qpos_adr, dof_adr)` start addresses — asserting the body
+    /// carries exactly one free joint, so the spin/orientation readouts index its angular `qvel`
+    /// (`dof_adr + 3 + axis`) and quaternion (`qpos_adr + 3..7`) at the right offsets even when the
+    /// free body is not the model's first joint.
+    fn free_joint_adrs(&self) -> (usize, usize) {
+        let jnt = self.model.body_jnt_adr[self.body];
+        assert!(
+            self.model.body_jnt_num[self.body] == 1
+                && self.model.jnt_type[jnt] == MjJointType::Free,
+            "free-body wrench gradient needs the contacting body to be a single free joint"
+        );
+        (self.model.jnt_qpos_adr[jnt], self.model.jnt_dof_adr[jnt])
+    }
+
+    /// Build the **free-body wrench-carry** time-adjoint tape for one coupled impact rollout, and
+    /// return `(tape, p_var, s_var_final)` for an objective node to read the final state `s_N` and
+    /// `tape.backward`. The shared body of the orientation-target gradients
+    /// ([`Self::coupled_trajectory_angular_velocity_gradient`] reads a `qvel` row for `ω_N`;
+    /// [`Self::coupled_trajectory_orientation_gradient`] reads a quaternion component) — only the
+    /// objective differs, so the per-step recurrence lives here once.
     ///
-    /// Builds the same stale-FK time-adjoint tape as the force-only path (the contact is posed at
-    /// the one-step-lagged height, matching [`Self::step`]), but routes the full contact **wrench**
-    /// `w = [τ; f]` (`ContactWrenchTrajVjp`) through the multi-DOF `RigidStateCarryVjp` carry
-    /// `s' = J_state·s + G·w` (`s = [qpos(nv); qvel(nv)]`) instead of the scalar `f_z` →
-    /// `VzCarryVjp`/`ZCarryVjp`. The free joint's loaded `J_state` is the tangent-space FD
-    /// (`loaded_state_jacobian_tangent`) and `G_pos = Δt·J_r·G_vel` carries the SO(3)
-    /// right-Jacobian (`integrator_pos_jacobian`'s `Free` block). `axis ∈ {0,1,2}`
-    /// (x/y/z body angular). Returns `(ω_N, ∂ω_N/∂param)` (`param_idx`: 0 = μ, 1 = λ; the block's
-    /// λ=4μ tie ⇒ the design gradient is `grad(0) + 4·grad(1)`). FD-exact (machine floor) vs a
-    /// re-rolled forward oracle; gated in `tests/freebody_angular_velocity_gradient.rs`.
-    ///
-    /// **Scope (v1).** Free body (`Collider::Plane`), no moving end-effector, `rigid_damping = 0`
-    /// (the wrench carry's loaded `J_state` does not yet capture a `−c·v` velocity-coupling — the
-    /// articulated path shares this bound), and `with_contact_moment` enabled (the moment is the
-    /// spin's source). `&mut self`: advances the rollout, so rebuild per call.
-    ///
-    /// **Precision.** The free joint has no analytic state Jacobian, so the carry uses the FD
-    /// `loaded_state_jacobian` (tangent-space, ~1e-6 FD-carry precision — the same fallback the
-    /// articulated path uses for any non-hinge joint). The gradient is machine-exact (~1e-7 vs
-    /// full-coupled FD) at realistic rollout lengths and approaches that ~1e-6 FD-J_state floor only
-    /// at extreme lengths (hundreds of steps); the stale-FK contact reads themselves are exact for
-    /// the free body (constant `M`, and the moment/pose channels do not reach ω — verified).
+    /// Mirrors the force-only [`Self::coupled_trajectory_material_gradient`]'s stale-FK loop (the
+    /// contact is posed at the one-step-lagged height, matching [`Self::step`]) but routes the full
+    /// contact **wrench** `[τ; f]` (`ContactWrenchTrajVjp`) through the multi-DOF `RigidStateCarryVjp`
+    /// carry `s' = J_state·s + G·w` with the free joint's tangent-space state (`J_state` =
+    /// `loaded_state_jacobian`, `G_pos = Δt·J_r·G_vel`).
     ///
     /// # Panics
-    /// Panics if `param_idx > 1`, `axis >= 3`, the body lacks angular DOFs at `qvel[3 + axis]`
-    /// (`3 + axis >= nv` — needs a free joint), `rigid_damping != 0`, `with_contact_moment` is
-    /// off, or a moving end-effector is set (`require_no_moving_ee`); and if the rigid step
-    /// diverges or the soft solver does not converge — surfaced loudly as in [`Self::step`].
-    #[must_use]
+    /// Panics if `param_idx > 1`, `rigid_damping != 0`, `with_contact_moment` is off, a moving
+    /// end-effector is set, the rigid step diverges, or the soft solver does not converge.
     // One coherent per-step tape-construction loop (the soft/pose/wrench/carry nodes share the
-    // recurrence's state); splitting it would scatter that shared state (mirrors
-    // `coupled_trajectory_material_gradient`).
-    // expect_used: a rigid-step divergence is a programmer error surfaced loudly, not recoverable
-    // for keystone-v1 (mirrors `step`'s rationale).
+    // recurrence's state); splitting it would scatter that shared state.
+    // expect_used: a rigid-step divergence is a programmer error surfaced loudly (mirrors `step`).
     #[allow(clippy::too_many_lines, clippy::expect_used)]
-    pub fn coupled_trajectory_angular_velocity_gradient(
-        &mut self,
-        n_steps: usize,
-        param_idx: usize,
-        axis: usize,
-    ) -> (f64, f64) {
+    fn build_freebody_wrench_tape(&mut self, n_steps: usize, param_idx: usize) -> (Tape, Var, Var) {
         self.require_no_moving_ee();
         assert!(
             param_idx <= 1,
             "material param index {param_idx} out of range (0 = μ, 1 = λ)"
         );
-        assert!(
-            axis < 3,
-            "angular axis {axis} out of range (0 = x, 1 = y, 2 = z)"
-        );
-        // `omega_idx = 3 + axis` is the FREE-joint qvel layout [v(3); ω(3)]; require the angular
-        // block to exist there (a free body has nv = 6 — or more with extra trailing DOFs).
-        assert!(
-            3 + axis < self.model.nv,
-            "angular-velocity gradient needs a free joint's angular DOFs at qvel[3 + axis]; nv = {}",
-            self.model.nv
-        );
         // The loaded carry holds the contact wrench during its FD; a damping force −c·v would not
         // have its velocity-coupling captured (mirrors the articulated path's bound).
         assert!(
             self.rigid_damping == 0.0,
-            "angular-velocity gradient requires rigid_damping = 0 (v1 scope)"
+            "free-body wrench gradient requires rigid_damping = 0 (v1 scope)"
         );
-        // This gradient's forward always routes the contact MOMENT (the spin's whole source); a
-        // moment-off coupling's `step` would leave ω ≈ 0, so the gradient would not match the
+        // The forward always routes the contact MOMENT (the orientation target's whole source); a
+        // moment-off `step` would leave the body unspun, so the gradient would not match the
         // caller's own rollout. Require the moment so forward and gradient agree.
         assert!(
             self.contact_moment,
-            "angular-velocity gradient requires with_contact_moment(true) (the moment drives ω_N)"
+            "free-body wrench gradient requires with_contact_moment(true) (the moment drives the spin)"
         );
-        let omega_idx = 3 + axis; // free-joint qvel layout: [v(3); ω(3)]
         let n = self.n_vertices;
         let nv = self.model.nv;
         let dt = self.cfg.dt;
@@ -3209,7 +3227,54 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             v_var = v_next_var;
             s_var = s_next_var;
         }
+        (tape, p_var, s_var)
+    }
 
+    /// Analytic `∂(final angular velocity ω_N about a body axis)/∂(material param)` for the
+    /// **free-body** coupled impact rollout — the contact-MOMENT made differentiable. The
+    /// orientation-dependent successor to [`Self::coupled_trajectory_material_gradient`]: that
+    /// path's `z_N` target is moment-DECOUPLED (a free body's z-translation and the flat-plane
+    /// contact never see its orientation, so the moment leaves `z_N` bit-identical — verified),
+    /// so it cannot exercise the contact moment; the final spin `ω_N = qvel[dof + 3 + axis]` (the
+    /// body angular-velocity component the off-COM strike drives) is the natural target that does.
+    ///
+    /// Routes the full contact wrench through the shared multi-DOF carry
+    /// (`build_freebody_wrench_tape`); the objective is a plain `qvel` component select
+    /// (the spin is Euclidean), so this exercises the wrench MOMENT carry (`τ → ω`) but not the
+    /// position carry `G_pos` — [`Self::coupled_trajectory_orientation_gradient`] gates that.
+    /// `axis ∈ {0,1,2}` (x/y/z body angular). Returns `(ω_N, ∂ω_N/∂param)` (`param_idx`: 0 = μ,
+    /// 1 = λ; the block's λ=4μ tie ⇒ the design gradient is `grad(0) + 4·grad(1)`). FD-exact
+    /// (machine floor, the ~1e-6 FD-`J_state` precision floor at extreme lengths) vs a re-rolled
+    /// forward oracle; gated in `tests/freebody_angular_velocity_gradient.rs`.
+    ///
+    /// **Scope (v1).** As `build_freebody_wrench_tape` (free body, plane collider,
+    /// `rigid_damping = 0`, `with_contact_moment` on, no moving EE), plus a single free joint on the
+    /// contacting body. `&mut self`: advances the rollout, so rebuild per call.
+    ///
+    /// # Panics
+    /// Panics if `param_idx > 1`, `axis >= 3`, the contacting body is not a single free joint, or
+    /// any `build_freebody_wrench_tape` precondition fails; and if the rigid step diverges
+    /// or the soft solver does not converge — surfaced loudly as in [`Self::step`].
+    #[must_use]
+    pub fn coupled_trajectory_angular_velocity_gradient(
+        &mut self,
+        n_steps: usize,
+        param_idx: usize,
+        axis: usize,
+    ) -> (f64, f64) {
+        assert!(
+            axis < 3,
+            "angular axis {axis} out of range (0 = x, 1 = y, 2 = z)"
+        );
+        let (_, dadr) = self.free_joint_adrs();
+        let nv = self.model.nv;
+        let omega_idx = dadr + 3 + axis; // free-joint qvel layout: [v(3); ω(3)]
+        let (mut tape, p_var, s_var) = self.build_freebody_wrench_tape(n_steps, param_idx);
+
+        // Objective: the final spin ω_N = qvel[3 + axis] — a Euclidean `qvel` row of the state, so
+        // the readout is a plain component select. It exercises the wrench MOMENT carry (τ → ω via
+        // `G_vel` + the `J_state` qvel-block) but NOT the position carry `G_pos`; the orientation
+        // readout ([`Self::coupled_trajectory_orientation_gradient`]) covers that.
         let omega = self.data.qvel[omega_idx];
         let obj_var = tape.push_custom(
             &[s_var],
@@ -3222,6 +3287,73 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         tape.backward(obj_var);
         let grad = tape.grad_tensor(p_var).as_slice()[0];
         (omega, grad)
+    }
+
+    /// Analytic `∂(final orientation component q_vec[axis])/∂(material param)` for the **free-body**
+    /// coupled impact rollout — the orientation successor to
+    /// [`Self::coupled_trajectory_angular_velocity_gradient`]. Where `ω_N` exercises only the wrench
+    /// MOMENT carry (`τ → ω`), the body's final *orientation* depends on the position carry
+    /// `G_pos = Δt·J_r·G_vel` (the SO(3) right-Jacobian integrating `qvel'` into the quaternion), so
+    /// this target is the one that gates `G_pos`.
+    ///
+    /// The objective is a quaternion **vector component** `q_vec[axis]` (`qx`/`qy`/`qz`) of the free
+    /// joint's final orientation — smooth in the rotation (no angle-wrap, unlike `‖log q‖`). Its
+    /// body-frame tangent derivative is closed-form (`∂q_vec/∂δ = ½(w·I + [v]_×)`; the `axis` row
+    /// seeds the state's angular `qpos` tangent rows, `QuatComponentVjp`) — no SO(3)-log in the
+    /// adjoint. `axis ∈ {0,1,2}` (`qx`/`qy`/`qz`). Returns `(q_vec[axis], ∂/∂param)` (`param_idx`:
+    /// 0 = μ, 1 = λ; the λ=4μ tie ⇒ the design gradient is `grad(0) + 4·grad(1)`). FD-exact
+    /// (machine floor) vs a re-rolled forward oracle, on a rollout short enough to stay below a half
+    /// turn (the smooth regime); gated in `tests/freebody_orientation_gradient.rs`.
+    ///
+    /// **Scope (v1).** As [`Self::coupled_trajectory_angular_velocity_gradient`] (free body, plane
+    /// collider, `rigid_damping = 0`, `with_contact_moment` on), plus the contacting body must carry
+    /// a single free joint (the quaternion the readout reads). The ~1e-6 FD-`J_state` precision floor
+    /// applies identically. `&mut self`: advances the rollout, so rebuild per call.
+    ///
+    /// # Panics
+    /// Panics if `param_idx > 1`, `axis >= 3`, the contacting body is not a single free joint,
+    /// `rigid_damping != 0`, `with_contact_moment` is off, a moving end-effector is set; and if the
+    /// rigid step diverges or the soft solver does not converge — surfaced loudly as in [`Self::step`].
+    #[must_use]
+    pub fn coupled_trajectory_orientation_gradient(
+        &mut self,
+        n_steps: usize,
+        param_idx: usize,
+        axis: usize,
+    ) -> (f64, f64) {
+        assert!(
+            axis < 3,
+            "quaternion axis {axis} out of range (0 = x, 1 = y, 2 = z)"
+        );
+        let (qadr, dadr) = self.free_joint_adrs(); // qpos [x,y,z, qw,qx,qy,qz], dof [v(3); ω(3)]
+        let nv = self.model.nv;
+        let (mut tape, p_var, s_var) = self.build_freebody_wrench_tape(n_steps, param_idx);
+
+        // Objective: the final quaternion vector component q_vec[axis]. Its body-frame tangent
+        // derivative is the `axis` row of ½(w·I + [v]_×) at the final orientation; seeding the
+        // state's angular `qpos` tangent rows routes the adjoint through the position carry `G_pos`.
+        let w = self.data.qpos[qadr + 3];
+        let v = Vec3::new(
+            self.data.qpos[qadr + 4],
+            self.data.qpos[qadr + 5],
+            self.data.qpos[qadr + 6],
+        );
+        // half = ½(w·I + [v]_×); row `axis` is ∂(q_vec[axis])/∂(body angular tangent).
+        let half = 0.5 * (w * Matrix3::identity() + v.cross_matrix());
+        let grad_tang = Vec3::new(half[(axis, 0)], half[(axis, 1)], half[(axis, 2)]);
+        let q_comp = self.data.qpos[qadr + 4 + axis];
+        let obj_var = tape.push_custom(
+            &[s_var],
+            Tensor::from_slice(&[q_comp], &[1]),
+            Box::new(QuatComponentVjp {
+                ang_dof: dadr + 3,
+                grad_tang,
+                n_state: 2 * nv,
+            }),
+        );
+        tape.backward(obj_var);
+        let grad = tape.grad_tensor(p_var).as_slice()[0];
+        (q_comp, grad)
     }
 
     /// Analytic `∂(peak contact force fz over the trajectory)/∂param` for the normal-only coupled
