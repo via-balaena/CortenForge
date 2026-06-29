@@ -56,7 +56,7 @@ pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{
     ActivePairsFor, ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout,
     IpcRigidContact, NullContact, PenaltyRigidContact, RigidPlane, RigidTwist,
-    filter_pair_readouts_to_referenced,
+    filter_pair_readouts_to_referenced, peak_contact_pressure,
 };
 pub use differentiable::{
     CpuDifferentiable, Differentiable, MaterialStepVjp, NewtonStepVjp, StateStepVjp, TapeNodeKey,

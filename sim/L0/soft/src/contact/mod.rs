@@ -151,16 +151,15 @@ pub struct ContactPairReadout {
     /// genuine geometric degeneracy is the soft solver's validity
     /// responsibility upstream, not this readout's.
     ///
-    /// **Per-pair, not per-vertex.** This is the pressure of *this*
-    /// `(vertex, primitive)` pair — `|force_on_soft|` divided by the
-    /// vertex's *full* tributary area. A vertex contacting several
-    /// primitives at once (e.g. a pinch between two jaws) emits one
-    /// readout per primitive, each dividing its own force by the same
-    /// full area; the per-pair values therefore *under-report* the true
-    /// local concentration. A consumer wanting the true pressure on such
-    /// a vertex must sum `force_on_soft` across that vertex's pairs
-    /// before dividing — the peak-pressure reduction (PR3) is the
-    /// intended place for that aggregation.
+    /// **Per-pair = per-contact-face.** This is the normal stress *this*
+    /// primitive imposes on the contacted vertex's surface patch —
+    /// `|force_on_soft|` divided by the vertex's tributary area. A vertex
+    /// touching several primitives at once (e.g. a pinch between two
+    /// jaws) emits one readout per primitive, each the real stress of one
+    /// contact face. The peak load on the patch is the *max* over those
+    /// faces, not a sum of their forces (summing would cancel a pinch's
+    /// opposing forces and double-count co-directed ones) —
+    /// [`peak_contact_pressure`] is the reduction that takes that max.
     ///
     /// The triple `pressure · tributary_area · normal` reconstructs
     /// `force_on_soft` for every well-defined (area `> 0`) pair — exact
@@ -187,6 +186,50 @@ pub(crate) fn contact_pressure(force_on_soft: Vec3, tributary_area: f64) -> f64 
     } else {
         f64::NAN
     }
+}
+
+/// Peak contact pressure (stress) over a set of active-pair readouts —
+/// the maximum per-pair [`ContactPairReadout::pressure`].
+///
+/// Contact pressure is a **per-contact-face** quantity: each
+/// `(vertex, primitive)` pair already carries the normal stress that
+/// primitive imposes on the vertex's surface patch (`|force_on_soft| /
+/// tributary_area`). The peak load a patch experiences is therefore the
+/// max over its contacting faces — *not* a sum of their forces. Summing
+/// would be wrong in both directions: for a pinch between two opposing
+/// jaws the per-vertex force *vectors* nearly cancel (`|f_A + f_B| ≈ 0`)
+/// and would report ~zero pressure for a maximally-squeezed vertex —
+/// the exact danger a safety readout must never miss — while for
+/// co-directed faces it double-counts. Taking the max of the per-face
+/// stresses reports the true highest local concentration in every case.
+///
+/// Non-finite per-pair pressures are filtered: a zero-tributary-area
+/// pair (an interior vertex in the band, or a degenerate patch) carries
+/// the `NaN` sentinel and does not participate, so a finite contact
+/// alongside a degenerate one still reports the real stress.
+///
+/// Return value, consistent with the per-pair `NaN`-sentinel altitude:
+/// - `0.0` when there are **no** readouts — genuinely no contact, safe.
+/// - `f64::NAN` when readouts are present but **every** pressure is
+///   non-finite (all contacts degenerate) — off-nominal and undefined,
+///   *not* a falsely-reassuring `0.0` indistinguishable from no contact.
+/// - otherwise the maximum finite per-pair pressure.
+///
+/// Order-independent: `max` over the (NaN-free) finite pressures does
+/// not depend on readout order.
+#[must_use]
+pub fn peak_contact_pressure(readouts: &[ContactPairReadout]) -> f64 {
+    if readouts.is_empty() {
+        return 0.0; // no contact — safe identity, distinct from degenerate
+    }
+    let peak = readouts
+        .iter()
+        .map(|r| r.pressure)
+        .filter(|p| p.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    // `NEG_INFINITY` survives only when no finite pressure was folded in
+    // — contacts present but all degenerate ⇒ undefined (NaN), not 0.0.
+    if peak.is_finite() { peak } else { f64::NAN }
 }
 
 /// Infinitesimal rigid motion (spatial twist) of a contact primitive —
@@ -348,8 +391,109 @@ pub trait ActivePairsFor<M: crate::material::Material>: ContactModel {
 
 #[cfg(test)]
 mod tests {
-    use super::{RigidTwist, contact_pressure};
+    use super::{
+        ContactPair, ContactPairReadout, RigidTwist, VertexId, contact_pressure,
+        peak_contact_pressure,
+    };
     use crate::Vec3;
+
+    /// Build a minimal active-pair readout for the pressure-reduction
+    /// tests — only `pair` (vertex id), `force_on_soft`, and
+    /// `tributary_area` matter to `peak_contact_pressure`; the geometry
+    /// fields are filler, and `pressure` is set consistently for realism.
+    fn readout(vid: VertexId, pid: u32, force: Vec3, area: f64) -> ContactPairReadout {
+        ContactPairReadout {
+            pair: ContactPair::Vertex {
+                vertex_id: vid,
+                primitive_id: pid,
+            },
+            position: Vec3::zeros(),
+            sd: -0.1,
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            force_on_soft: force,
+            tributary_area: area,
+            pressure: contact_pressure(force, area),
+        }
+    }
+
+    /// A single contact: peak pressure is that vertex's `|force| / area`.
+    #[test]
+    fn peak_pressure_single_contact() {
+        let rs = [readout(0, 0, Vec3::new(0.0, 0.0, 6.0), 2.0)];
+        let peak = peak_contact_pressure(&rs);
+        assert!((peak - 3.0).abs() < 1e-12, "expected 6/2 = 3, got {peak}");
+    }
+
+    /// The safety-critical multi-primitive case: one vertex pinched
+    /// between two OPPOSING primitives. The peak is the max per-face
+    /// stress (`F/area`), NOT the vector sum of the forces — which would
+    /// cancel (`|+F − F| ≈ 0`) and falsely report a squeezed vertex as
+    /// pressure-free.
+    #[test]
+    fn peak_pressure_pinch_does_not_cancel() {
+        // Vertex 0 squeezed by primitive 0 (+4·ẑ) and primitive 1 (−4·ẑ),
+        // tributary area 2 → each face stress |4|/2 = 2; vector sum 0.
+        let rs = [
+            readout(0, 0, Vec3::new(0.0, 0.0, 4.0), 2.0),
+            readout(0, 1, Vec3::new(0.0, 0.0, -4.0), 2.0),
+        ];
+        let peak = peak_contact_pressure(&rs);
+        assert!(
+            (peak - 2.0).abs() < 1e-12,
+            "pinch peak is the per-face stress 2, not the cancelled vector-sum 0; got {peak}",
+        );
+    }
+
+    /// Across faces (vertices or primitives) the reduction takes the max
+    /// per-pair pressure.
+    #[test]
+    fn peak_pressure_is_max_over_faces() {
+        let rs = [
+            readout(0, 0, Vec3::new(0.0, 0.0, 2.0), 1.0), // pressure 2
+            readout(1, 0, Vec3::new(0.0, 0.0, 9.0), 1.0), // pressure 9 — the peak
+            readout(2, 0, Vec3::new(0.0, 0.0, 4.0), 1.0), // pressure 4
+        ];
+        let peak = peak_contact_pressure(&rs);
+        assert!(
+            (peak - 9.0).abs() < 1e-12,
+            "expected max pressure 9, got {peak}"
+        );
+    }
+
+    /// A zero-area (NaN-pressure) pair is filtered out; a finite peer
+    /// still wins.
+    #[test]
+    fn peak_pressure_filters_nonfinite() {
+        let mixed = [
+            readout(0, 0, Vec3::new(0.0, 0.0, 5.0), 0.0), // zero area → NaN, filtered
+            readout(1, 0, Vec3::new(0.0, 0.0, 4.0), 2.0), // pressure 2
+        ];
+        let peak = peak_contact_pressure(&mixed);
+        assert!(
+            (peak - 2.0).abs() < 1e-12,
+            "NaN pair filtered, finite peak 2, got {peak}"
+        );
+    }
+
+    /// Altitude-consistency with the per-pair `NaN` sentinel: no contact
+    /// is a safe `0.0`, but contacts that are ALL degenerate are `NaN`
+    /// (undefined / off-nominal), not a danger-masking `0.0`.
+    #[test]
+    fn peak_pressure_empty_is_zero_but_all_degenerate_is_nan() {
+        assert_eq!(
+            peak_contact_pressure(&[]).to_bits(),
+            0.0_f64.to_bits(),
+            "no readouts → 0.0 (no contact)",
+        );
+        let all_degenerate = [
+            readout(0, 0, Vec3::new(0.0, 0.0, 5.0), 0.0),
+            readout(1, 0, Vec3::new(0.0, 0.0, 3.0), 0.0),
+        ];
+        assert!(
+            peak_contact_pressure(&all_degenerate).is_nan(),
+            "contacts present but all degenerate → NaN (off-nominal, not 0.0)",
+        );
+    }
 
     /// `contact_pressure` is `|force| / area` on the well-defined branch.
     #[test]
