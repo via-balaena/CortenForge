@@ -72,7 +72,7 @@ pub use material::{
 };
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
-    referenced_vertices,
+    boundary_vertex_areas, referenced_vertices,
 };
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{

@@ -72,7 +72,12 @@ fn dihedral_min_max(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3) -> (f64, f64) {
     (min, max)
 }
 
-fn triangle_area(a: Vec3, b: Vec3, c: Vec3) -> f64 {
+/// Area of the triangle `(a, b, c)` — half the cross-product magnitude.
+///
+/// Shared by tet-quality metrics (inradius) and
+/// [`boundary_vertex_areas`](super::boundary_vertex_areas), so the
+/// deformed-triangle-area convention lives in exactly one place.
+pub(crate) fn triangle_area(a: Vec3, b: Vec3, c: Vec3) -> f64 {
     0.5 * (b - a).cross(&(c - a)).norm()
 }
 
