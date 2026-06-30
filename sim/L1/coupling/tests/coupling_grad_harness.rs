@@ -56,10 +56,20 @@
 //! - **per-step call params** (control / policy / actuator) → the channel's
 //!   dedicated `_z` method, since `step()` takes no per-step input.
 //!
-//! Adding a channel or scene is one [`GradCase`] row. Further scenes (free-body,
-//! moving-EE) and retiring the now-redundant bespoke gates follow in later PRs;
-//! the existing per-channel gates stay in place meanwhile, this harness running
-//! alongside them as the scalable guard.
+//! Adding a channel or scene is one [`GradCase`] row.
+//!
+//! ## Retiring the bespoke gates
+//!
+//! The end goal is for this matrix to REPLACE the per-scene gates, not run beside
+//! them. A gate is retired once its row asserts everything the gate did. Each
+//! gate's asserts are one of three kinds, all now expressible here: the per-component
+//! FD-match (the row's core), the tape-vs-oracle forward match ([`FORWARD_TOL`],
+//! folded into [`fd_check`] for every row), and per-component physical invariants
+//! (liveness / zero-effect, via [`Comp`]). Retired so far: `control`
+//! (`coupled_control_gradient.rs` — FD-match + forward match + the terminal-control
+//! `Comp::Zero` invariant). The remaining bespoke gates retire row-by-row as their
+//! coverage is confirmed folded; further scenes (free-body ang-vel, moving-EE) and
+//! channels (friction / tangential / peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -219,6 +229,21 @@ fn freebody_coupling(mu: f64) -> StaggeredCoupling {
 
 // ── Harness core ──
 
+/// Per-component physical expectation on the gradient — the generalization of
+/// the bespoke gates' liveness / zero-effect invariants.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Comp {
+    /// The component MUST couple: its FD is non-degenerate (`|fd| > floor`), so a
+    /// channel that silently stopped coupling there can't pass vacuously
+    /// (generalizes e.g. policy's `feedback_weights_carry_gradient`).
+    Live,
+    /// The component MUST be physically zero-effect: both the tape gradient AND
+    /// the oracle FD are `< floor` (generalizes e.g. control's
+    /// `last_control_has_no_effect` — the terminal control under the off-by-one
+    /// rigid carry never moves the final state).
+    Zero,
+}
+
 /// One gradient channel reduced to the harness's uniform interface.
 struct GradCase {
     /// Display label (`channel` or `channel[block]`).
@@ -233,15 +258,10 @@ struct GradCase {
     /// Absolute-error floor for components whose FD bottoms near its float floor
     /// (e.g. a physically zero-effect terminal control).
     floor: f64,
-    /// Per-component liveness expectation: `true` requires that component's FD be
-    /// non-degenerate (`|fd| > floor`), so a channel that silently stopped
-    /// coupling there can't pass vacuously. This is the per-component
-    /// generalization of the bespoke gates' liveness checks (e.g. policy's
-    /// `feedback_weights_carry_gradient`). `false` marks a component that is
-    /// physically zero-effect (e.g. the terminal control under the off-by-one
-    /// rigid carry), where degeneracy is expected — the harness does NOT assert
-    /// it is *exactly* zero (that physical invariant stays in the targeted gate).
-    expect_live: Vec<bool>,
+    /// Per-component physical expectation ([`Comp`]) — `Live` (must couple) or
+    /// `Zero` (must be exactly zero-effect). Folds the bespoke gates' liveness /
+    /// zero invariants into the matrix.
+    expect: Vec<Comp>,
     /// Analytic `(loss, grad)` over `baseline` — one `tape.backward`.
     analytic: Box<dyn Fn() -> (f64, Vec<f64>)>,
     /// Scalar loss at an arbitrary full parameter vector, via a fresh REAL
@@ -249,10 +269,18 @@ struct GradCase {
     value_at: Box<dyn Fn(&[f64]) -> f64>,
 }
 
-/// The channel-agnostic core: analytic tape gradient vs per-component central FD
-/// through `value_at`. Asserts each component matches, and that every component
-/// flagged `expect_live` has a non-degenerate FD (so a channel that silently
-/// stopped coupling to the loss can't pass vacuously).
+/// Forward-consistency tolerance: the analytic tape's loss (`analytic().0`) must
+/// equal the independent oracle at the baseline to this bound. Every bespoke gate
+/// asserts the same `< 1e-12` tape-vs-oracle forward match; folding it here gives
+/// it to all rows (the tape's forward carries the real `step` values, so a glue
+/// bug that diverges the tape forward from the real rollout is caught even when
+/// the gradient FD doesn't expose it).
+const FORWARD_TOL: f64 = 1e-12;
+
+/// The channel-agnostic core. Three checks per case: (1) the tape's forward loss
+/// matches the independent oracle at the baseline ([`FORWARD_TOL`]); (2) each
+/// component's analytic gradient matches the central FD of `value_at`; (3) each
+/// component meets its [`Comp`] expectation (live / zero).
 fn fd_check(case: &GradCase) {
     let (loss, grad) = (case.analytic)();
     assert!(loss.is_finite(), "{}: loss not finite", case.name);
@@ -273,12 +301,21 @@ fn fd_check(case: &GradCase) {
         case.baseline.len()
     );
     assert_eq!(
-        case.expect_live.len(),
+        case.expect.len(),
         case.baseline.len(),
-        "{}: expect_live len {} != baseline len {}",
+        "{}: expect len {} != baseline len {}",
         case.name,
-        case.expect_live.len(),
+        case.expect.len(),
         case.baseline.len()
+    );
+
+    // (1) Forward consistency: the tape's primal must reproduce the real rollout.
+    let fwd = (case.value_at)(&case.baseline);
+    let fwd_err = (loss - fwd).abs();
+    assert!(
+        fwd_err < FORWARD_TOL,
+        "{}: tape forward loss {loss} != oracle rollout {fwd} (|Δ|={fwd_err:e} ≥ {FORWARD_TOL:e})",
+        case.name
     );
 
     for i in 0..case.baseline.len() {
@@ -294,21 +331,29 @@ fn fd_check(case: &GradCase) {
             "  {} [{i}]: tape={g:.6e} fd={fd:.6e} rel={rel:.3e} abs={abs:.3e}",
             case.name
         );
-        // Per-component liveness: a component expected to couple must have a
-        // non-degenerate FD, else a silently-decoupled channel passes vacuously
-        // (analytic 0 vs oracle 0). Generalizes the bespoke per-weight guards.
-        assert!(
-            !case.expect_live[i] || fd.abs() > case.floor,
-            "{} [{i}]: expected a live coupling but |fd|={:e} ≤ floor — the channel is not \
-             coupling to the loss here (degenerate gate)",
-            case.name,
-            fd.abs()
-        );
+        // (2) Gradient match.
         assert!(
             rel < case.tol || abs < case.floor,
             "{} [{i}]: tape {g} vs full-coupled FD {fd} (rel {rel:e} abs {abs:e})",
             case.name
         );
+        // (3) Per-component physical expectation.
+        match case.expect[i] {
+            Comp::Live => assert!(
+                fd.abs() > case.floor,
+                "{} [{i}]: expected a live coupling but |fd|={:e} ≤ floor — the channel is not \
+                 coupling to the loss here (degenerate gate)",
+                case.name,
+                fd.abs()
+            ),
+            Comp::Zero => assert!(
+                g.abs() < case.floor && fd.abs() < case.floor,
+                "{} [{i}]: expected zero-effect but |tape|={:e} / |fd|={:e} ≥ floor",
+                case.name,
+                g.abs(),
+                fd.abs()
+            ),
+        }
     }
 }
 
@@ -346,9 +391,18 @@ fn control_case() -> GradCase {
         floor: 1e-12,
         // Every control couples EXCEPT the last: sim-core integrates height with
         // the step's STARTING velocity, so the terminal control never moves z_N
-        // (the off-by-one rigid carry). Its exact-zero invariant is the bespoke
-        // `last_control_has_no_effect` gate's job.
-        expect_live: (0..base.len()).map(|k| k + 1 != base.len()).collect(),
+        // (the off-by-one rigid carry). Marked `Comp::Zero` — which asserts its
+        // exact-zero invariant here (absorbed from the retired bespoke
+        // `last_control_has_no_effect` gate).
+        expect: (0..base.len())
+            .map(|k| {
+                if k + 1 == base.len() {
+                    Comp::Zero
+                } else {
+                    Comp::Live
+                }
+            })
+            .collect(),
         baseline: base.clone(),
         analytic: Box::new(move || traj_coupling(MU0).coupled_trajectory_control_gradient(&base)),
         value_at: Box::new(|p| traj_coupling(MU0).coupled_trajectory_control_z(p)),
@@ -368,7 +422,7 @@ fn policy_case() -> GradCase {
         floor: 1e-12,
         // All three live, including the feedback weights w_z/w_vz whose gradient
         // flows ONLY through the recurrence (subsumes `feedback_weights_carry_gradient`).
-        expect_live: vec![true, true, true],
+        expect: vec![Comp::Live, Comp::Live, Comp::Live],
         analytic: Box::new(|| {
             traj_coupling(MU0).coupled_trajectory_policy_gradient(&LinearFeedback, &THETA, N)
         }),
@@ -392,7 +446,7 @@ fn joint_case() -> GradCase {
         tol: 1e-5,
         floor: 1e-12,
         // Soft stiffness μ AND all three policy params couple.
-        expect_live: vec![true, true, true, true],
+        expect: vec![Comp::Live, Comp::Live, Comp::Live, Comp::Live],
         analytic: Box::new(|| {
             let (z, dmu, dth) =
                 traj_coupling(MU0).coupled_trajectory_joint_gradient(&LinearFeedback, &THETA, N);
@@ -416,7 +470,7 @@ fn material_case(idx: usize, name: &'static str, p0: f64) -> GradCase {
         eps: vec![p0 * 1e-6],
         tol: 1e-5,
         floor: 1e-12,
-        expect_live: vec![true],
+        expect: vec![Comp::Live],
         analytic: Box::new(move || {
             let (vz, g) = step_coupling().coupled_step_material_gradient(H, idx);
             (vz, vec![g])
@@ -438,7 +492,7 @@ fn articulated_material_case() -> GradCase {
         eps: vec![MU0 * 1e-4],
         tol: 1e-7,
         floor: 1e-12,
-        expect_live: vec![true],
+        expect: vec![Comp::Live],
         analytic: Box::new(|| {
             let (tip_z, g_mu) =
                 hinge_coupling(MU0).coupled_trajectory_material_gradient_articulated(N, 0);
@@ -462,7 +516,7 @@ fn actuator_motor_case() -> GradCase {
         eps: vec![1e-3; base.len()],
         tol: 1e-6,
         floor: 1e-12,
-        expect_live: vec![true; base.len()],
+        expect: vec![Comp::Live; base.len()],
         baseline: base.clone(),
         analytic: Box::new(move || {
             actuated_hinge_coupling(MOTOR).coupled_trajectory_actuator_gradient(&base)
@@ -484,7 +538,7 @@ fn sphere_material_case() -> GradCase {
         eps: vec![MU0 * 5e-4],
         tol: 1e-6,
         floor: 1e-12,
-        expect_live: vec![true],
+        expect: vec![Comp::Live],
         analytic: Box::new(|| {
             let (z, g_mu) = sphere_coupling(MU0).coupled_trajectory_material_gradient(N, 0);
             let g_la = sphere_coupling(MU0)
@@ -511,7 +565,7 @@ fn freebody_orientation_case() -> GradCase {
         eps: vec![MU0 * 5e-4],
         tol: 1e-6,
         floor: 1e-12,
-        expect_live: vec![true],
+        expect: vec![Comp::Live],
         analytic: Box::new(|| {
             let (q, g_mu) =
                 freebody_coupling(MU0).coupled_trajectory_orientation_gradient(N, 0, AXIS);
