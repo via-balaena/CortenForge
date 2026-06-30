@@ -61,15 +61,21 @@
 //! ## Retiring the bespoke gates
 //!
 //! The end goal is for this matrix to REPLACE the per-scene gates, not run beside
-//! them. A gate is retired once its row asserts everything the gate did. Each
-//! gate's asserts are one of three kinds, all now expressible here: the per-component
-//! FD-match (the row's core), the tape-vs-oracle forward match ([`FORWARD_TOL`],
-//! folded into [`fd_check`] for every row), and per-component physical invariants
-//! (liveness / zero-effect, via [`Comp`]). Retired so far: `control`
-//! (`coupled_control_gradient.rs` — FD-match + forward match + the terminal-control
-//! `Comp::Zero` invariant). The remaining bespoke gates retire row-by-row as their
-//! coverage is confirmed folded; further scenes (free-body ang-vel, moving-EE) and
-//! channels (friction / tangential / peak-pressure) join the same way.
+//! them. A gate is retired once its row asserts everything the gate did. Every
+//! bespoke assert is now expressible here, all folded into [`fd_check`] so each
+//! serves every row:
+//! - the per-component **FD-match** (the row's core);
+//! - the tape-vs-oracle **forward match** ([`FORWARD_TOL`]);
+//! - **engagement** — either a state-level band on the baseline loss
+//!   ([`GradCase::value_bounds`], folding e.g. `tip_z ∈ (0.10, 0.115)`) or a
+//!   gradient-level [`Comp::Live`] floor ([`LIVE_FLOOR`], folding `grad > 1e-9`),
+//!   so a fixture that drifts to non-engagement can't pass vacuously;
+//! - per-component **zero-effect** invariants ([`Comp::Zero`]).
+//!
+//! Retired so far: `control` (`coupled_control_gradient.rs`). The remaining
+//! bespoke gates retire row-by-row as their coverage is confirmed folded; further
+//! scenes (free-body ang-vel, moving-EE) and channels (friction / tangential /
+//! peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -233,9 +239,12 @@ fn freebody_coupling(mu: f64) -> StaggeredCoupling {
 /// the bespoke gates' liveness / zero-effect invariants.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Comp {
-    /// The component MUST couple: its FD is non-degenerate (`|fd| > floor`), so a
-    /// channel that silently stopped coupling there can't pass vacuously
-    /// (generalizes e.g. policy's `feedback_weights_carry_gradient`).
+    /// The component MUST couple MEANINGFULLY: its FD is well above the float
+    /// floor (`|fd| > LIVE_FLOOR`, not merely the FD-noise `floor`), so a channel
+    /// that silently stopped coupling — or whose scene quietly de-engaged toward
+    /// noise — can't pass vacuously (folds the bespoke gates' `grad > 1e-9`
+    /// liveness sanities, e.g. sphere/free-body; cf. the loss-band [`value_bounds`]
+    /// guard for scenes that pin engagement on the state instead).
     Live,
     /// The component MUST be physically zero-effect: both the tape gradient AND
     /// the oracle FD are `< floor` (generalizes e.g. control's
@@ -262,6 +271,14 @@ struct GradCase {
     /// `Zero` (must be exactly zero-effect). Folds the bespoke gates' liveness /
     /// zero invariants into the matrix.
     expect: Vec<Comp>,
+    /// Optional engagement band on the baseline loss `(min, max)`. `Some` folds a
+    /// bespoke gate's "the scene stays in its contact regime" assert (e.g.
+    /// articulated/actuator's `tip_z ∈ (0.10, 0.115)`): the baseline rollout must
+    /// land in-band, catching a fixture that drifts to non-engagement (loss too
+    /// high) OR over-penetration/tearing (loss too low) — the direct state-level
+    /// guard against fixture-rot in a consolidated harness. `None` for scenes that
+    /// pin engagement via the gradient floor ([`Comp::Live`]) instead.
+    value_bounds: Option<(f64, f64)>,
     /// Analytic `(loss, grad)` over `baseline` — one `tape.backward`.
     analytic: Box<dyn Fn() -> (f64, Vec<f64>)>,
     /// Scalar loss at an arbitrary full parameter vector, via a fresh REAL
@@ -277,10 +294,18 @@ struct GradCase {
 /// the gradient FD doesn't expose it).
 const FORWARD_TOL: f64 = 1e-12;
 
-/// The channel-agnostic core. Three checks per case: (1) the tape's forward loss
-/// matches the independent oracle at the baseline ([`FORWARD_TOL`]); (2) each
-/// component's analytic gradient matches the central FD of `value_at`; (3) each
-/// component meets its [`Comp`] expectation (live / zero).
+/// Liveness floor for [`Comp::Live`] — a gradient is "meaningfully coupling" only
+/// if `|fd|` clears this, well above the FD-noise `floor`. Matches the bespoke
+/// gates' `grad > 1e-9` sanities; every live component in the matrix clears it
+/// with ≥10× margin (the smallest, hinge-material's tied-μ, is ~2e-8). A scene
+/// that quietly de-engaged toward noise would drop below it and fail.
+const LIVE_FLOOR: f64 = 1e-9;
+
+/// The channel-agnostic core. Four checks per case: (1) the tape's forward loss
+/// matches the independent oracle at the baseline ([`FORWARD_TOL`]) and sits in
+/// the optional engagement band; (2) each component's analytic gradient matches
+/// the central FD of `value_at`; (3) each component meets its [`Comp`] expectation
+/// (live / zero).
 fn fd_check(case: &GradCase) {
     let (loss, grad) = (case.analytic)();
     assert!(loss.is_finite(), "{}: loss not finite", case.name);
@@ -317,6 +342,16 @@ fn fd_check(case: &GradCase) {
         "{}: tape forward loss {loss} != oracle rollout {fwd} (|Δ|={fwd_err:e} ≥ {FORWARD_TOL:e})",
         case.name
     );
+    // (1b) Engagement band: the baseline rollout must stay in its contact regime,
+    // so a fixture that drifts to non-engagement / tearing can't pass vacuously.
+    if let Some((lo, hi)) = case.value_bounds {
+        assert!(
+            loss >= lo && loss <= hi,
+            "{}: baseline loss {loss} outside engagement band ({lo}, {hi}) — fixture not in \
+             its intended contact regime",
+            case.name
+        );
+    }
 
     for i in 0..case.baseline.len() {
         let mut up = case.baseline.clone();
@@ -340,9 +375,9 @@ fn fd_check(case: &GradCase) {
         // (3) Per-component physical expectation.
         match case.expect[i] {
             Comp::Live => assert!(
-                fd.abs() > case.floor,
-                "{} [{i}]: expected a live coupling but |fd|={:e} ≤ floor — the channel is not \
-                 coupling to the loss here (degenerate gate)",
+                fd.abs() > LIVE_FLOOR,
+                "{} [{i}]: expected a live coupling but |fd|={:e} ≤ LIVE_FLOOR — the channel is \
+                 not meaningfully coupling here (degenerate gate / de-engaged scene)",
                 case.name,
                 fd.abs()
             ),
@@ -386,6 +421,7 @@ fn control_case() -> GradCase {
     let base = controls.clone();
     GradCase {
         name: "control",
+        value_bounds: None,
         eps: vec![1e-2; base.len()],
         tol: 1e-6,
         floor: 1e-12,
@@ -416,6 +452,7 @@ fn policy_case() -> GradCase {
     const N: usize = 12;
     GradCase {
         name: "policy(θ)",
+        value_bounds: None,
         baseline: THETA.to_vec(),
         eps: vec![1e-2, 1e-2, 1e-3],
         tol: 1e-5,
@@ -441,6 +478,7 @@ fn joint_case() -> GradCase {
     const N: usize = 12;
     GradCase {
         name: "joint(μ+θ)",
+        value_bounds: None,
         baseline: vec![MU0, THETA[0], THETA[1], THETA[2]],
         eps: vec![MU0 * 1e-6, 1e-2, 1e-2, 1e-3],
         tol: 1e-5,
@@ -466,6 +504,7 @@ fn material_case(idx: usize, name: &'static str, p0: f64) -> GradCase {
     const H: f64 = 0.099;
     GradCase {
         name,
+        value_bounds: None,
         baseline: vec![p0],
         eps: vec![p0 * 1e-6],
         tol: 1e-5,
@@ -488,6 +527,7 @@ fn articulated_material_case() -> GradCase {
     const N: usize = 6; // spans the violent make, a liftoff, and a re-touch
     GradCase {
         name: "hinge·material[μ]",
+        value_bounds: Some((0.10, 0.115)),
         baseline: vec![MU0],
         eps: vec![MU0 * 1e-4],
         tol: 1e-7,
@@ -513,6 +553,7 @@ fn actuator_motor_case() -> GradCase {
     let base = controls.clone();
     GradCase {
         name: "hinge·actuator(motor)",
+        value_bounds: Some((0.10, 0.115)),
         eps: vec![1e-3; base.len()],
         tol: 1e-6,
         floor: 1e-12,
@@ -534,6 +575,7 @@ fn sphere_material_case() -> GradCase {
     const N: usize = 8;
     GradCase {
         name: "sphere·material[μ]",
+        value_bounds: None,
         baseline: vec![MU0],
         eps: vec![MU0 * 5e-4],
         tol: 1e-6,
@@ -561,6 +603,7 @@ fn freebody_orientation_case() -> GradCase {
     const AXIS: usize = 1; // qy — the off-centre +x strike tumbles about body-y
     GradCase {
         name: "freebody·orientation[μ]",
+        value_bounds: None,
         baseline: vec![MU0],
         eps: vec![MU0 * 5e-4],
         tol: 1e-6,
