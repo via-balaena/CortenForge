@@ -43,6 +43,10 @@
 //!   (`damping=0.5`, analytic damped `J_state`) and a 2-link chain (per-joint damping,
 //!   off-diagonal FD `J_state`) — the `M_impl = M + Δt·D` velocity coupling a
 //!   damping-free scene can't exercise;
+//! - **rotating-normal arms** (`rotating_coupling`): `material` on a tilted ball joint
+//!   and a free base with `with_rotating_normal(true)`, so the carry flows through the
+//!   contact normal's `q`-dependence (`δn̂ = ω×n̂` + the wrench redirect + the pose-twist
+//!   seam) — terms a fixed-normal scene zeroes;
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (real `<motor>` and
 //!   state-feedback `<position>`/`<velocity>`/PD servos, per-step control driving the
 //!   arm through the contact);
@@ -201,6 +205,33 @@ fn damped_coupling(mjcf: &str, mu: f64, body: usize, seed: &[(usize, f64)]) -> S
     StaggeredCoupling::new(
         model, data, body, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
+}
+
+/// Rotating-normal articulated scene: a body tilted off-vertical by `half` radians
+/// about Y (a quaternion seed `qpos[w_idx]=cos(half)`, `qpos[v_idx]=sin(half)`)
+/// pressing the soft block with `with_rotating_normal(true)`, so the contact normal
+/// tracks the body orientation (`n̂ = R(q)·(0,0,−1)`). The coupled gradient then flows
+/// through the normal's `q`-dependence (the pose-adjoint `δn̂ = ω×n̂`, the wrench's
+/// `∂w/∂T` redirect, the `PoseTwistSeamVjp` seam). A GENTLE tilt (`half ≈ 0.02–0.05`)
+/// keeps both the flat and rotating models stable — the ball diverges at θ = 0.3.
+/// `body=1` for both seeds; the FD `loaded_state_jacobian` carries the ball/free joint
+/// (neither has a single-hinge analytic `J_state`).
+fn rotating_coupling(
+    mjcf: &str,
+    mu: f64,
+    w_idx: usize,
+    v_idx: usize,
+    half: f64,
+) -> StaggeredCoupling {
+    let model = load_model(mjcf).expect("rotating-normal MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[w_idx] = half.cos();
+    data.qpos[v_idx] = half.sin();
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_rotating_normal(true)
 }
 
 /// Actuated Y-hinge: the same arm driven by a swappable `<actuator>` on joint
@@ -696,6 +727,75 @@ fn damped_material_case(
     }
 }
 
+/// The rotating-normal ball joint at a gentle Y-tilt (θ = 0.1): the off-COM tip presses
+/// the block and the rotating normal redirects the reaction.
+const ROT_BALL_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="ball"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+/// The rotating-normal free joint (floating base) with an off-COM mass at a gentle
+/// Y-tilt (θ = 0.04): the full SE(3) successor, started just above the block on a broad
+/// base plate so the unconstrained base stays stable under the tangential redirect.
+const ROT_FREE_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="body" pos="0 0 0.123">
+      <freejoint/>
+      <geom type="box" pos="0 0 0" size="0.06 0.06 0.003" mass="0.2"/>
+      <geom type="sphere" pos="0.02 0 -0.02" size="0.004" mass="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+/// ROTATING-NORMAL-MATERIAL — the articulated material-trajectory gradient with the
+/// contact normal tracking body orientation (`with_rotating_normal(true)`), so the carry
+/// flows through the normal's `q`-dependence (the `δn̂ = ω×n̂` pose-adjoint + the wrench
+/// `∂w/∂T` redirect + the `PoseTwistSeamVjp` seam) — terms a fixed-normal scene zeroes.
+/// Same tied-μ + `coupled_trajectory_articulated_z` oracle as [`articulated_material_case`];
+/// the oracle is built through the SAME `with_rotating_normal`-gated `build_contact`, so the
+/// FD is rotating-normal too (a matched pair). `(w_idx, v_idx, half)` is the quaternion tilt
+/// seed; the per-scene `band`/`n` keep the gentle-tilt fixture in its stable engaged regime
+/// (the ball climbs out of contact past n ≈ 4, the free body is slow-climbing). Folds the FD
+/// cells of `rotating_normal_gradient.rs`; that file keeps the rotating-vs-flat materiality
+/// check and the single-step height-probe JACOBIAN (a different, Bucket-B shape).
+#[allow(clippy::too_many_arguments)]
+fn rotating_material_case(
+    name: &'static str,
+    mjcf: &'static str,
+    w_idx: usize,
+    v_idx: usize,
+    half: f64,
+    n: usize,
+    band: (f64, f64),
+) -> GradCase {
+    GradCase {
+        name,
+        value_bounds: Some(band),
+        baseline: vec![MU0],
+        eps: vec![MU0 * 1e-4],
+        tol: 1e-5,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(move || {
+            let (z, g_mu) = rotating_coupling(mjcf, MU0, w_idx, v_idx, half)
+                .coupled_trajectory_material_gradient_articulated(n, 0);
+            let g_la = rotating_coupling(mjcf, MU0, w_idx, v_idx, half)
+                .coupled_trajectory_material_gradient_articulated(n, 1)
+                .1;
+            (z, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(move |p| {
+            rotating_coupling(mjcf, p[0], w_idx, v_idx, half).coupled_trajectory_articulated_z(n)
+        }),
+    }
+}
+
 /// ACTUATOR — a real `<actuator>`'s per-step control schedule on the actuated hinge, FD'd via
 /// `coupled_trajectory_actuated_z`. The same machinery covers any AFFINE actuator: a direct-torque
 /// MOTOR (`force = gear·ctrl`) and the state-feedback SERVOS (position `kp·(ctrl−qpos)`, velocity
@@ -843,6 +943,27 @@ fn cases() -> Vec<GradCase> {
             2,
             &[(0, 0.1), (1, -0.05)],
             20,
+        ),
+        // rotating contact normal (n̂ = R(q)·(0,0,−1)): ball joint and free base, gentle
+        // Y-tilt. n/band are per-scene (the ball climbs out of contact past n≈4; the free
+        // base sits in a higher, slow-climbing band than the hinge scenes).
+        rotating_material_case(
+            "ball-rot·material[μ]",
+            ROT_BALL_MJCF,
+            0,
+            2,
+            0.05,
+            2,
+            (0.10, 0.115),
+        ),
+        rotating_material_case(
+            "free-rot·material[μ]",
+            ROT_FREE_MJCF,
+            3,
+            5,
+            0.02,
+            6,
+            (0.114, 0.123),
         ),
         // actuated Y-hinge
         actuator_case(

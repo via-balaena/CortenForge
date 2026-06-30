@@ -1,26 +1,25 @@
-//! Keystone rotating-normal leaf (PR2) — the coupled ARTICULATED trajectory
-//! gradient with a contact normal that tracks the body orientation
-//! (`n̂ = R(q)·(0,0,−1)`).
+//! Keystone rotating-normal leaf (PR2) — the two invariants the consolidated grad
+//! harness can't express, for a contact normal that tracks body orientation
+//! (`n̂ = R(q)·(0,0,−1)`, enabled via `StaggeredCoupling::with_rotating_normal(true)`).
 //!
-//! Enabled via `StaggeredCoupling::with_rotating_normal(true)`: a tilted body
-//! presents a tilted contact face, and the coupled gradient flows through the
-//! normal's `q`-dependence (the soft pose-adjoint's `δn̂ = ω×n̂` term + the wrench's
-//! `∂w/∂T` normal-redirect feedback + the `PoseTwistSeamVjp` seam mapping the plane
-//! twist through the body's spatial Jacobian `J_spatial = mj_jac_point(origin)`).
+//! The per-horizon FD-match of the rotating-normal trajectory gradient (ball joint and
+//! free base, gentle θ ≈ 0.1 tilt) is now the `ball-rot·material[μ]` / `free-rot·material[μ]`
+//! rows of `coupling_grad_harness.rs` — the gradient flowing through the normal's
+//! `q`-dependence (the soft pose-adjoint's `δn̂ = ω×n̂` term + the wrench's `∂w/∂T`
+//! normal-redirect + the `PoseTwistSeamVjp` seam), FD'd against the matched
+//! rotating-normal oracle. What stays here:
 //!
-//! **Matched pair.** Both the one-tape gradient AND the full-coupled FD oracle
-//! (`coupled_trajectory_articulated_z`) build the contact through the SAME
-//! `build_contact`, gated by the same flag — so with the flag on, the oracle uses
-//! the rotating normal too. The gate is the tape gradient vs a central FD of that
-//! rotating-normal oracle.
+//! 1. **Materiality** — a cross-scene check the FD matrix can't hold: the rotating normal
+//!    must *change* the gradient vs the flat normal on the SAME scene (the new channel is
+//!    live, not a vacuous pass).
+//! 2. **Single-step height probes** — a Jacobian/VJP-structure shape (Bucket B), not a
+//!    scalar `(loss, grad)`: the explicit and total `∂force/∂height` match a central FD,
+//!    AND the tilted normal gives the height-jacobian a horizontal component (the `height`
+//!    arg stays load-bearing under a rotating normal, and the redirect is real).
 //!
-//! **Stability.** The rotating normal redirects ~`sin θ` of the contact force
-//! tangentially; at large tilt it destabilizes the flat-tuned scenes (θ = 0.3 ball
-//! diverges), so these gates use a GENTLE tilt (θ ≈ 0.1) where both the flat and
-//! rotating models are stable. Accuracy is FD-carry precision (~1e-6): a ball / free
-//! joint has no single-hinge analytic `J_state`, so the carry uses the FD
-//! `loaded_state_jacobian`. Gated at n = 1, 2, 4 (the well-conditioned, stably-
-//! engaged regime). See `docs/keystone/rotating_normal_recon.md`.
+//! **Stability.** The rotating normal redirects ~`sin θ` of the contact force tangentially;
+//! at large tilt it destabilizes the flat-tuned scenes (θ = 0.3 ball diverges), so these
+//! use a GENTLE tilt (θ ≈ 0.1). See `docs/keystone/rotating_normal_recon.md`.
 
 #![allow(clippy::expect_used)]
 
@@ -52,88 +51,6 @@ fn build_ball(mu: f64, rotating: bool) -> StaggeredCoupling {
         model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_rotating_normal(rotating)
-}
-
-// A free joint (floating base) with an off-COM mass — the full SE(3) successor.
-// GENTLE engagement (started just above the block, θ = 0.04 tilt, a broad
-// stabilizing base plate) so the unconstrained floating base stays stable under the
-// rotating normal's tangential redirect: the flat-tuned deep-engagement free scene
-// (the `articulated_trajectory_gradient` gate) LAUNCHES under a rotating normal by
-// n = 2. The off-COM sphere still tips the body so the contact moment rotates it and
-// `xipos.z` reads the orientation.
-const FREE_OFFCOM_MJCF: &str = r#"<mujoco>
-  <option gravity="0 0 -9.81" timestep="0.001"/>
-  <worldbody>
-    <body name="body" pos="0 0 0.123">
-      <freejoint/>
-      <geom type="box" pos="0 0 0" size="0.06 0.06 0.003" mass="0.2"/>
-      <geom type="sphere" pos="0.02 0 -0.02" size="0.004" mass="0.1"/>
-    </body>
-  </worldbody>
-</mujoco>"#;
-
-fn build_free(mu: f64, rotating: bool) -> StaggeredCoupling {
-    let model = load_model(FREE_OFFCOM_MJCF).expect("free off-COM MJCF loads");
-    let mut data = model.make_data();
-    let half = 0.02_f64; // θ = 0.04 tilt about Y
-    data.qpos[3] = half.cos();
-    data.qpos[5] = half.sin();
-    data.forward(&model).expect("forward");
-    StaggeredCoupling::new(
-        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
-    )
-    .with_rotating_normal(rotating)
-}
-
-/// Tape gradient vs the rotating-normal full-coupled FD oracle, for a builder
-/// `b(mu, rotating)`. Returns `(tape_total, fd, rel)` at horizon `n`.
-fn tape_vs_fd(b: impl Fn(f64, bool) -> StaggeredCoupling, n: usize) -> (f64, f64, f64) {
-    let (tip_z, gm) = b(MU0, true).coupled_trajectory_material_gradient_articulated(n, 0);
-    let (_t, gl) = b(MU0, true).coupled_trajectory_material_gradient_articulated(n, 1);
-    let total = gm + 4.0 * gl;
-    // Fresh-output consistency: the tape forward must reproduce the real rollout.
-    let z_oracle = b(MU0, true).coupled_trajectory_articulated_z(n);
-    assert!(
-        (tip_z - z_oracle).abs() < 1e-12,
-        "n={n}: tape forward tip_z {tip_z} != rotating-normal rollout {z_oracle}"
-    );
-    let eps = MU0 * 1e-4;
-    let zp = b(MU0 + eps, true).coupled_trajectory_articulated_z(n);
-    let zm = b(MU0 - eps, true).coupled_trajectory_articulated_z(n);
-    let fd = (zp - zm) / (2.0 * eps);
-    let rel = (total - fd).abs() / fd.abs().max(1e-30);
-    (total, fd, rel)
-}
-
-#[test]
-fn ball_rotating_normal_gradient_matches_fd() {
-    let z0 = build_ball(MU0, true).data().xipos[1].z;
-    assert!(
-        z0 > 0.10 && z0 < 0.115,
-        "ball tip should start engaged near the block top, got {z0}"
-    );
-    for n in [1usize, 2, 4] {
-        let (total, fd, rel) = tape_vs_fd(build_ball, n);
-        println!("ball-rot n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
-        assert!(
-            total.abs() > 1e-12 && rel < 1e-5,
-            "ball rotating-normal gradient must match the rotating-normal full-coupled \
-             FD (FD-carry precision) at n={n}, got rel {rel:.3e}"
-        );
-    }
-}
-
-#[test]
-fn free_rotating_normal_gradient_matches_fd() {
-    for n in [1usize, 2, 4] {
-        let (total, fd, rel) = tape_vs_fd(build_free, n);
-        println!("free-rot n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
-        assert!(
-            total.abs() > 1e-12 && rel < 1e-5,
-            "free-joint rotating-normal gradient must match the rotating-normal \
-             full-coupled FD at n={n}, got rel {rel:.3e}"
-        );
-    }
 }
 
 /// Materiality: the rotating normal genuinely changes the gradient — the new normal
