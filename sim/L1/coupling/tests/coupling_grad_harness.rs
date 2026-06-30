@@ -40,7 +40,10 @@
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (a real
 //!   `<motor>`'s per-step control driving the arm through the contact);
 //! - **curved `SphereSdf` collider** (`sphere_coupling`): `material` (the
-//!   rotating-normal `f_mag·H` curvature carry a plane can't exercise).
+//!   rotating-normal `f_mag·H` curvature carry a plane can't exercise);
+//! - **off-COM free body, contact moment ON** (`freebody_coupling`):
+//!   `orientation` (a final quaternion component — gates the wrench carry's
+//!   POSITION rows `G_pos`, read via a `qpos` readout closure).
 //!
 //! ## Oracle independence — two kinds
 //!
@@ -184,6 +187,34 @@ fn sphere_coupling(mu: f64) -> StaggeredCoupling {
         model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 40.0,
     )
     .with_sphere_collider(0.08)
+}
+
+/// Off-centre free body with the contact MOMENT enabled: the platen's COM sits at
+/// x = 0.07 (off the +x contact patch), pre-penetrated and released from rest, so
+/// the off-COM contact wrench tumbles it about body-y. This is the only scene with
+/// `with_contact_moment(true)` — it exercises the free-joint wrench carry's
+/// POSITION rows `G_pos = Δt·J_r·G_vel` (the SO(3) right-Jacobian integrating
+/// `qvel'` into the quaternion), the rung the orientation target gates.
+fn freebody_coupling(mu: f64) -> StaggeredCoupling {
+    let com_z = 0.1 + 0.005 - 1.0e-4; // EDGE + HALF_Z − penetration
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0.07 0.05 {com_z}">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("free-body platen MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_contact_moment(true)
 }
 
 // ── Harness core ──
@@ -465,6 +496,36 @@ fn sphere_material_case() -> GradCase {
     }
 }
 
+/// FREEBODY-ORIENTATION — `∂(final quaternion component qy)/∂(material)` on the
+/// tumbling off-COM free body. Unlike the height/tip targets, the loss is an
+/// ORIENTATION component, so this gates the wrench carry's POSITION rows
+/// (`G_pos`, the SO(3) right-Jacobian). Tied-μ (`∂qy/∂μ + 4·∂qy/∂λ`); FD oracle =
+/// `step_rollout` reading `qpos[4 + AXIS]` (the free joint's quaternion vector
+/// component), the contact-moment analogue of the sphere row's height readout.
+fn freebody_orientation_case() -> GradCase {
+    const N: usize = 16;
+    const AXIS: usize = 1; // qy — the off-centre +x strike tumbles about body-y
+    GradCase {
+        name: "freebody·orientation[μ]",
+        baseline: vec![MU0],
+        eps: vec![MU0 * 5e-4],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect_live: vec![true],
+        analytic: Box::new(|| {
+            let (q, g_mu) =
+                freebody_coupling(MU0).coupled_trajectory_orientation_gradient(N, 0, AXIS);
+            let g_la = freebody_coupling(MU0)
+                .coupled_trajectory_orientation_gradient(N, 1, AXIS)
+                .1;
+            (q, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(|p| {
+            step_rollout(freebody_coupling(p[0]), N, |c| c.data().qpos[4 + AXIS])
+        }),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -481,6 +542,8 @@ fn cases() -> Vec<GradCase> {
         actuator_motor_case(),
         // curved SphereSdf collider (generic tapeless step_rollout oracle)
         sphere_material_case(),
+        // off-COM free body, contact moment ON (gates G_pos via orientation)
+        freebody_orientation_case(),
     ]
 }
 
