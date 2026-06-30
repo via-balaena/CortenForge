@@ -1,5 +1,13 @@
 # F3 — sim-soft Levenberg-Marquardt regularization — design spec
 
+> **UPDATE 2026-06-30:** the `SaturationPolicy` enum + `LmConfig::on_saturation`
+> field specced below were REMOVED. The graceful API (`Solver::try_step` /
+> `try_replay_step`) is now unconditional — it returns `Err(SolverFailure::ArmijoStall)`
+> on a stall regardless of LM config, never panics; `Solver::step` remains the
+> panic-on-fail-close mirror. The per-stall policy knob is gone (a `Result`-returning
+> method must not panic on one of its own declared failure modes). The §2.5 /
+> §F3.3 dispatch tables below are historical.
+>
 > **STATUS — FALSIFIED 2026-05-18 EVENING** (`sim-arc/sl-4-intruder-render`)
 >
 > F3.1 → F3.4 shipped; visual gate on iter-1 `sock_over_capsule.cleaned.stl`

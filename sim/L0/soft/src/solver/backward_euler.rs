@@ -1735,21 +1735,6 @@ where
         step.x_final_var = Some(x_final_var);
     }
 
-    /// Resolve the effective Armijo-stall policy for `try_step` /
-    /// `try_replay_step`. Defaults to
-    /// [`SaturationPolicy::PanicOnStall`](crate::SaturationPolicy::PanicOnStall)
-    /// when LM is disabled (`lm_regularization == None`) — preserves
-    /// the pre-F3 panic-on-stall surface for callers that opted into
-    /// `try_step` but not into LM. With LM enabled, the configured
-    /// `LmConfig::on_saturation` field wins.
-    fn armijo_stall_policy(&self) -> crate::SaturationPolicy {
-        self.config
-            .lm_regularization
-            .map_or(crate::SaturationPolicy::PanicOnStall, |cfg| {
-                cfg.on_saturation
-            })
-    }
-
     /// Graceful-failure mirror of [`Self::factor_at_position`] (F3.3
     /// per spec §2.5). Used by [`Self::try_step`] for the IFT-adjoint
     /// factor at converged `x_final`. On doubly-failed factor returns
@@ -3732,11 +3717,10 @@ where
         step
     }
 
-    // panic: try_step honors SaturationPolicy::PanicOnStall by
-    // forwarding ArmijoStall to the pre-F3 panic surface (per spec
-    // §2.5 dispatch table). NewtonIterCap + DoublyFailedFactor are
-    // unconditionally Err regardless of policy.
-    #[allow(clippy::panic)]
+    // Graceful API: every fail-close (ArmijoStall included) surfaces as
+    // `Err`, never a panic — `try_solve_impl` already returns all four
+    // variants. The panic-on-fail-close mirror is `step` (a separate
+    // `solve_impl` path), which is unaffected by this.
     fn try_step(
         &mut self,
         tape: &mut Self::Tape,
@@ -3746,28 +3730,13 @@ where
         dt: f64,
     ) -> Result<NewtonStep<Self::Tape>, SolverFailure> {
         let theta_tensor = tape.value_tensor(theta_var).clone();
-        let policy = self.armijo_stall_policy();
-        let (mut step, lm_final_lambda) =
-            match self.try_solve_impl(x_prev, v_prev, &theta_tensor, dt) {
-                Ok(ok) => ok,
-                Err(SolverFailure::ArmijoStall {
-                    last_iter,
-                    last_r_norm,
-                    ..
-                }) if matches!(policy, crate::SaturationPolicy::PanicOnStall) => {
-                    panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm))
-                }
-                Err(other) => return Err(other),
-            };
+        let (mut step, lm_final_lambda) = self.try_solve_impl(x_prev, v_prev, &theta_tensor, dt)?;
         let factor = self.try_factor_at_position(&step.x_final, None, dt, lm_final_lambda)?;
         self.push_newton_step_vjp(tape, theta_var, &mut step, factor);
         Ok(step)
     }
 
-    // panic: same `SaturationPolicy::PanicOnStall` honoring as
-    // `try_step` — replay path mirrors the forward path's failure
-    // surface.
-    #[allow(clippy::panic)]
+    // Replay mirror of `try_step` — same unconditional-`Err` contract.
     fn try_replay_step(
         &self,
         x_prev: &Tensor<f64>,
@@ -3775,18 +3744,7 @@ where
         theta: &Tensor<f64>,
         dt: f64,
     ) -> Result<NewtonStep<Self::Tape>, SolverFailure> {
-        let policy = self.armijo_stall_policy();
-        let (step, _lm_final_lambda) = match self.try_solve_impl(x_prev, v_prev, theta, dt) {
-            Ok(ok) => ok,
-            Err(SolverFailure::ArmijoStall {
-                last_iter,
-                last_r_norm,
-                ..
-            }) if matches!(policy, crate::SaturationPolicy::PanicOnStall) => {
-                panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm))
-            }
-            Err(other) => return Err(other),
-        };
+        let (step, _lm_final_lambda) = self.try_solve_impl(x_prev, v_prev, theta, dt)?;
         Ok(step)
     }
 
@@ -4396,16 +4354,13 @@ mod tests {
     /// a permanent regression net for it is the F3.5
     /// `contact_stability` augment.
     #[test]
-    fn try_step_returns_err_on_newton_iter_cap_regardless_of_policy() {
+    fn try_step_returns_err_on_newton_iter_cap() {
         use sim_ml_chassis::Tape;
         let mut cfg = SolverConfig::skeleton();
         cfg.max_newton_iter = 1;
-        // LM enabled with PanicOnStall — verifies NewtonIterCap is
-        // *never* governed by SaturationPolicy (per spec §2.5).
-        cfg.lm_regularization = Some(LmConfig {
-            on_saturation: crate::SaturationPolicy::PanicOnStall,
-            ..LmConfig::fork_b()
-        });
+        // LM enabled — NewtonIterCap is an unconditional `Err` on the
+        // `try_` path (it was never gated on a stall policy).
+        cfg.lm_regularization = Some(LmConfig::fork_b());
         let mut solver = CpuNewtonSolver::new(
             Tet4,
             SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
@@ -4483,6 +4438,116 @@ mod tests {
         assert_eq!(stall.x_curr, rest.to_vec());
     }
 
+    /// Build a compressive-block scene that Armijo-stalls through the
+    /// FULL solve (not the synthetic direct `armijo_backtrack` call
+    /// above): a 2×2×2 `NeoHookean` cube, bottom face pinned, top face
+    /// driven by a strong downward `AxisZ` load. With the line-search
+    /// budget pinned to a single α = 1 trial, the strong load's full
+    /// Newton step overshoots the nonlinear equilibrium on the first
+    /// iter → `armijo_backtrack` exhausts → `ArmijoStall` — a real
+    /// `solve_impl` path, deterministic with a large overshoot margin.
+    /// Returns the `(rest, v_prev, config, bc)` build inputs so each
+    /// test constructs a fresh solver (the cache is mutated per solve).
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    fn compressive_block_stall_scene() -> (Vec<f64>, Vec<f64>, SolverConfig, BoundaryConditions) {
+        let n = 2usize;
+        let edge = 0.01;
+        let dx = edge / n as f64;
+        let sy = n + 1;
+        let sz = (n + 1) * (n + 1);
+        let vid = |i: usize, j: usize, k: usize| (i + j * sy + k * sz) as u32;
+        let (mut pinned, mut loaded) = (Vec::new(), Vec::new());
+        for i in 0..=n {
+            for j in 0..=n {
+                pinned.push(vid(i, j, 0));
+                loaded.push((vid(i, j, n), LoadAxis::AxisZ));
+            }
+        }
+        let n_dof = (n + 1) * (n + 1) * (n + 1) * 3;
+        let mut rest = Vec::with_capacity(n_dof);
+        for k in 0..=n {
+            for j in 0..=n {
+                for i in 0..=n {
+                    rest.extend_from_slice(&[i as f64 * dx, j as f64 * dx, k as f64 * dx]);
+                }
+            }
+        }
+        let mut cfg = SolverConfig::skeleton();
+        // One α = 1 trial only: a strong load's full Newton step
+        // overshoots → guaranteed stall on the first iter.
+        cfg.max_line_search_backtracks = 0;
+        let bc = BoundaryConditions {
+            pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
+            loaded_vertices: loaded,
+        };
+        (rest, vec![0.0; n_dof], cfg, bc)
+    }
+
+    /// Wrapper contract (the graceful API never panics): on a scene that
+    /// Armijo-stalls through the full solve, `try_step` returns
+    /// `Err(SolverFailure::ArmijoStall)` — NOT a panic — under the
+    /// default LM-disabled config (the coupling's config). This is the
+    /// fix that closed the coupling's last panic-path residual; the
+    /// sister `step_panics_on_armijo_stall` pins the mirror.
+    #[test]
+    fn try_step_returns_err_on_armijo_stall() {
+        use crate::mesh::HandBuiltTetMesh;
+        use sim_ml_chassis::Tape;
+        let (rest, zerov, cfg, bc) = compressive_block_stall_scene();
+        let n = 2usize;
+        let mut solver = CpuNewtonSolver::new(
+            Tet4,
+            HandBuiltTetMesh::uniform_block(n, 0.01, &MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            bc,
+        );
+        assert!(
+            cfg.lm_regularization.is_none(),
+            "scene must use the LM-disabled default (the coupling's config)"
+        );
+        let x_prev = Tensor::from_slice(&rest, &[rest.len()]);
+        let v_prev = Tensor::from_slice(&zerov, &[zerov.len()]);
+        let mut tape = Tape::new();
+        let tv = tape.param_tensor(Tensor::from_slice(&[-1.0e3], &[1]));
+        match solver.try_step(&mut tape, &x_prev, &v_prev, tv, 1e-3) {
+            Ok(_) => panic!("expected Err(ArmijoStall), got Ok"),
+            Err(SolverFailure::ArmijoStall { last_iter, .. }) => {
+                assert_eq!(
+                    last_iter, 0,
+                    "single-α stall fires on the first Newton iter"
+                );
+            }
+            Err(other) => panic!("expected Err(ArmijoStall), got {other:?}"),
+        }
+    }
+
+    /// Mirror of `try_step_returns_err_on_armijo_stall`: the SAME
+    /// stalling scene driven through `Solver::step` STILL panics with
+    /// the pre-F3 Armijo-stall message — the panic-on-fail-close
+    /// contract is preserved (only the graceful `try_` API changed).
+    #[test]
+    #[should_panic(expected = "Armijo line-search stalled")]
+    fn step_panics_on_armijo_stall() {
+        use crate::mesh::HandBuiltTetMesh;
+        use sim_ml_chassis::Tape;
+        let (rest, zerov, cfg, bc) = compressive_block_stall_scene();
+        let n = 2usize;
+        let mut solver = CpuNewtonSolver::new(
+            Tet4,
+            HandBuiltTetMesh::uniform_block(n, 0.01, &MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            bc,
+        );
+        let x_prev = Tensor::from_slice(&rest, &[rest.len()]);
+        let v_prev = Tensor::from_slice(&zerov, &[zerov.len()]);
+        let mut tape = Tape::new();
+        let tv = tape.param_tensor(Tensor::from_slice(&[-1.0e3], &[1]));
+        let _ = solver.step(&mut tape, &x_prev, &v_prev, tv, 1e-3);
+    }
+
     /// F3.3 `NewtonIterCap` via `try_solve_impl`: set `max_newton_iter
     /// = 1` and a θ that requires more than 1 iter to converge. Iter
     /// 0 runs (factor + armijo accept); loop exits via cap; returns
@@ -4537,10 +4602,10 @@ mod tests {
     /// F3.3 panic-translation: same scene as
     /// `try_solve_impl_returns_err_on_newton_iter_cap` but called via
     /// `Solver::step` — verifies `solve_impl`'s panic-translation arm
-    /// (per F3.3 spec §2.5: `step` ALWAYS panics on `NewtonIterCap`,
-    /// regardless of `SaturationPolicy`). Pins the existing panic
-    /// message text so a regression in `solve_impl`'s `match` arm
-    /// would surface as test failure not silent message drift.
+    /// (per F3.3 spec §2.5: `step` ALWAYS panics on `NewtonIterCap`).
+    /// Pins the existing panic message text so a regression in
+    /// `solve_impl`'s `match` arm would surface as test failure not
+    /// silent message drift.
     #[test]
     #[should_panic(expected = "Newton failed to converge within 1 iterations")]
     fn solver_step_panics_on_newton_iter_cap_via_solve_impl_translation() {

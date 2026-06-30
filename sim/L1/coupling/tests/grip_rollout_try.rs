@@ -71,8 +71,9 @@ fn try_hold_gradient_returns_err_on_infeasible_design() {
         err.step,
     );
     // Pin the mechanism: the grip's stiff-contact fail-close is the soft Newton iter-cap (NOT a
-    // misfired precondition — those panic, which `expect_err` would surface as a test failure, not an
-    // `Err` — and NOT an Armijo stall, which would still panic through the `try_` path today).
+    // misfired precondition — those panic, which `expect_err` would surface as a test failure, not
+    // an `Err`). An Armijo stall would ALSO surface as `Err` now (the `try_` path is unconditional),
+    // but this scene reaches the iter-cap first — that's the variant pinned here.
     assert!(
         matches!(err.failure, SolverFailure::NewtonIterCap { .. }),
         "expected a Newton iter-cap fail-close, got {:?}",

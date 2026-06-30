@@ -85,16 +85,17 @@ use std::marker::PhantomData;
 /// (the robustness `cf_codesign::OptConfig::reject_infeasible` relies on) without a
 /// `catch_unwind`.
 ///
-/// **Which fail-closes convert to this error.** Under the coupling's default solver
-/// config (LM regularization disabled — see [`SolverConfig`]), the soft solver returns
-/// [`SolverFailure::NewtonIterCap`], [`SolverFailure::DoublyFailedFactor`], and
-/// [`SolverFailure::ValidityViolation`] (a tet over-stretching / inverting past the
-/// material's validity domain) as `Err`, so they all become a `RolloutError` here —
-/// covering the two stiff-contact fail-close modes the grip actually hits (the Newton
-/// iter-cap and the validity tear). The ONE residual still on the panic path: an
-/// [`SolverFailure::ArmijoStall`] (the soft solver's `SaturationPolicy::PanicOnStall`
-/// default forwards it to a panic) — the grip does not reach it at its Newton iter-cap;
-/// closing it is the remaining soft-solver-robustness work.
+/// **Which fail-closes convert to this error.** ALL of them. The `try_`-prefixed
+/// rollout routes through the soft solver's `try_replay_step`, whose contract is
+/// unconditional: every [`SolverFailure`] variant — [`SolverFailure::NewtonIterCap`],
+/// [`SolverFailure::DoublyFailedFactor`], [`SolverFailure::ValidityViolation`] (a tet
+/// over-stretching / inverting past the material's validity domain), and
+/// [`SolverFailure::ArmijoStall`] (a non-SPD tangent / near-singular condensed system) —
+/// surfaces as `Err`, never a panic, regardless of the solver's LM config. So all four
+/// become a `RolloutError` here. (`ArmijoStall` was historically the one residual still
+/// on the panic path; making the graceful API unconditional closed it — the grip itself
+/// hits the Newton iter-cap and validity tear, but an aggressive design elsewhere can
+/// reach the stall, and now it skips like any other infeasible point.)
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RolloutError {
