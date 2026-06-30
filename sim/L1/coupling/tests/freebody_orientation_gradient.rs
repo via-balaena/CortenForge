@@ -9,9 +9,13 @@
 //!
 //! The objective is smooth (a quaternion component, no angle-wrap) on a rollout kept below a half
 //! turn. Its body-frame tangent VJP is closed-form (`∂q_vec/∂δ = ½(w·I + [v]×)`), so no SO(3)-log
-//! enters the adjoint. Gate: the one-tape gradient matches a central FD of the full real coupled
-//! rollout (a fresh `step()` re-roll reading `qpos[quat + axis]`), machine-exact (~1e-7 rel) at
-//! every rollout length, on an off-centre scene where the body tumbles.
+//! enters the adjoint.
+//!
+//! The single-length FD-match + forward-consistency + engagement coverage (n = 16) is the
+//! `freebody·orientation[μ]` row of `coupling_grad_harness.rs`, the channel-agnostic FD matrix.
+//! What lives HERE is the one check that row does not subsume: the machine-exactness holds at
+//! EVERY rollout length below a half turn (n = 4, 8, 16, 20) — an all-lengths sweep on the
+//! off-centre tumble that pins `G_pos` across horizons.
 
 #![allow(
     // A missing/malformed fixture (MJCF load, body index) surfaces as a test panic —
@@ -63,47 +67,10 @@ fn final_qcomp(mu: f64, n: usize) -> f64 {
     c.data().qpos[4 + AXIS]
 }
 
-/// The tape forward reproduces the real coupled dynamics — its `q_vec[axis]` equals the real roll.
-#[test]
-fn orientation_tape_forward_matches_real_rollout() {
-    let n = 16;
-    let (q, _grad) = build(MU0).coupled_trajectory_orientation_gradient(n, 0, AXIS);
-    let q_ref = final_qcomp(MU0, n);
-    assert!(
-        (q - q_ref).abs() < 1e-12,
-        "tape forward q_vec[axis] {q} != real rollout {q_ref}"
-    );
-}
-
-/// One `tape.backward` over the off-centre tumble matches the full-coupled FD oracle — the carry's
-/// POSITION rows (`G_pos`) are correct. The block ties `λ = 4μ`, so the constructor-FD measures
-/// `d/dμ|_{λ=4μ} = ∂/∂μ + 4·∂/∂λ`.
-#[test]
-fn orientation_gradient_matches_full_fd() {
-    let n = 16;
-    let (_q, grad_mu) = build(MU0).coupled_trajectory_orientation_gradient(n, 0, AXIS);
-    let grad_lambda = build(MU0)
-        .coupled_trajectory_orientation_gradient(n, 1, AXIS)
-        .1;
-    let grad_total = grad_mu + 4.0 * grad_lambda;
-
-    let eps = MU0 * 5e-4;
-    let fd = (final_qcomp(MU0 + eps, n) - final_qcomp(MU0 - eps, n)) / (2.0 * eps);
-    let rel = (grad_total - fd).abs() / fd.abs().max(1e-30);
-    eprintln!(
-        "∂qy/∂μ={grad_mu:.6e} ∂qy/∂λ={grad_lambda:.6e} total(tape)={grad_total:.6e} FD={fd:.6e} rel={rel:.3e}"
-    );
-    assert!(
-        grad_total.abs() > 1e-9,
-        "gradient implausibly ~0 — G_pos / orientation not exercised"
-    );
-    assert!(
-        rel < 1e-6,
-        "one-tape dqy/dμ {grad_total} disagrees with full-coupled FD {fd} (rel {rel:e})"
-    );
-}
-
-/// Machine-exact at every rollout length kept below a half turn (the smooth regime).
+/// Machine-exact at every rollout length kept below a half turn (the smooth regime). The
+/// single-length (n = 16) FD-match, forward-consistency, and engagement coverage is the
+/// `freebody·orientation[μ]` row of `coupling_grad_harness.rs`; this sweep extends it across
+/// horizons (n = 4, 8, 16, 20).
 #[test]
 fn orientation_gradient_machine_exact_at_all_lengths() {
     for &n in &[4_usize, 8, 16, 20] {
