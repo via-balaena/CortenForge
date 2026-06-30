@@ -129,7 +129,7 @@ Each leaf: n+1 cold-read + pre-PR local ultra-review; no push/PR without go-ahea
   → (vz', ∂vz'/∂p)` routes the material parameter through the SAME S4 chain (a shared `run_crossing_tail`
   appends `ContactForceVjp → neg → RigidStepVjp`; only the soft node differs — `MaterialStepVjp` vs the
   load adjoint); `coupled_step_material_vz` is the forward FD oracle (`mu`/`lambda` now stored on the
-  coupling). Gate `tests/coupled_material_gradient.rs`: **∂vz'/∂μ tape = 1.869e-5 vs full-coupled FD =
+  coupling). Gated by the `material[μ]`/`material[λ]` rows of `tests/coupling_grad_harness.rs`: **∂vz'/∂μ tape = 1.869e-5 vs full-coupled FD =
   1.869e-5 (rel 7.5e-9)**, ∂vz'/∂λ rel 1.7e-9; + lib smoke. grade A (Coverage A+).
 
 ★ S5 = the co-design gradient `∂(rigid outcome)/∂(soft material)` now crosses BOTH engines via one
