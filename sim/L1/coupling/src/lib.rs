@@ -8797,7 +8797,8 @@ mod tests {
     }
 
     /// Lib-level smoke test of the multi-step time-adjoint (the scientific FD
-    /// validation is in `tests/coupled_trajectory_gradient.rs`): one
+    /// validation is the `platen·material[μ]` row of `tests/coupling_grad_harness.rs`
+    /// plus the all-lengths sweep in `tests/coupled_trajectory_gradient.rs`): one
     /// `tape.backward` over a coupled rollout that crosses the contact make event
     /// gives a finite gradient, and the tape's forward rollout reproduces the
     /// real `step` dynamics exactly.

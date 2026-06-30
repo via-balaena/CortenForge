@@ -9,10 +9,13 @@
 //! `TrajectoryStepVjp` (PR1 + S5 + S3), the velocity readout, the contact-force
 //! readout, and the rigid semi-implicit carry.
 //!
-//! Gate: the one-tape gradient matches a central FD of the FULL real coupled
-//! re-rollout (a fresh coupling at μ±ε, the real `step` loop) — an INDEPENDENT
-//! oracle (it re-runs the real Newton solves and sim-core steps), in the
-//! deeply-engaged, stable-active-set regime the keystone is scoped to.
+//! The single-length (n = 20) FD-match + forward-consistency coverage is the
+//! `platen·material[μ]` row of `coupling_grad_harness.rs`, the channel-agnostic FD
+//! matrix. What lives HERE is the one invariant that row can't express: the gradient
+//! stays machine-exact vs the full-coupled FD at EVERY rollout length (n = 5, 8, 20,
+//! 40) — the light touch, the firmly-engaged middle, and the marginal/make-break tail
+//! alike — confirming the residual is flat at the machine floor, not an
+//! engagement-dependent non-smoothness.
 //!
 //! **Accuracy.** The composed gradient is MACHINE-EXACT (~3e-8 rel) at every
 //! rollout length and engagement depth — light touch, firm engagement, and through
@@ -65,47 +68,6 @@ fn final_z(mu: f64, n_steps: usize) -> f64 {
         z = c.step().rigid_z;
     }
     z
-}
-
-/// The tape's forward rollout reproduces the real coupled dynamics exactly (the
-/// nodes carry real `step` values; only the backward pass is analytic).
-#[test]
-fn trajectory_forward_matches_real_rollout() {
-    let n = 20;
-    let (z_n, _grad) = build(MU0).coupled_trajectory_material_gradient(n, 0);
-    let z_ref = final_z(MU0, n);
-    assert!(
-        (z_n - z_ref).abs() < 1e-12,
-        "tape forward z_N {z_n} != real rollout {z_ref}"
-    );
-}
-
-/// One `tape.backward` over a deeply-engaged coupled rollout matches the
-/// full-coupled FD oracle. The block ties `λ = 4μ`, so the constructor-FD (which
-/// moves λ = 4μ with μ) measures the total `d/dμ|_{λ=4μ} = ∂/∂μ + 4·∂/∂λ` — the
-/// documented S5 linear combination of the two `param_idx` gradients.
-#[test]
-fn trajectory_gradient_engaged_matches_full_fd() {
-    let n = 20;
-    let (_z, grad_mu) = build(MU0).coupled_trajectory_material_gradient(n, 0);
-    let (_z2, grad_lambda) = build(MU0).coupled_trajectory_material_gradient(n, 1);
-    let grad_total = grad_mu + 4.0 * grad_lambda;
-
-    let eps = MU0 * 5e-4;
-    let fd = (final_z(MU0 + eps, n) - final_z(MU0 - eps, n)) / (2.0 * eps);
-    let rel = (grad_total - fd).abs() / fd.abs().max(1e-30);
-    eprintln!(
-        "engaged: ∂/∂μ={grad_mu:.6e} ∂/∂λ={grad_lambda:.6e} \
-         total(tape)={grad_total:.6e} FD={fd:.6e} rel={rel:.3e}"
-    );
-    assert!(grad_total.abs() > 1e-9, "gradient implausibly ~0");
-    // Machine-exact (~3e-8) since the rigid position-carry off-by-one fix; gate at
-    // 1e-6 so a multi-step-Jacobian regression in the glue VJPs — which the forward
-    // rollout, taken from the real `step`, cannot reveal — is caught immediately.
-    assert!(
-        rel < 1e-6,
-        "one-tape total dz_N/dμ {grad_total} disagrees with full-coupled FD {fd} (rel {rel:e})"
-    );
 }
 
 /// The gradient is machine-exact at EVERY rollout length — the initial light touch,
