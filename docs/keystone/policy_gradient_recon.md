@@ -197,8 +197,8 @@ merged `ControlScheduleTarget`. → **Proceed to PR1 with the `DiffPolicy` trait
 
 **PR1 (sim-coupling):** `DiffPolicy` trait + `PolicyState` + `LinearFeedback` +
 `coupled_trajectory_policy_gradient` (one `tape.backward` over the closed-loop
-rollout) + `coupled_trajectory_policy_z` (forward oracle) + gate
-`tests/coupled_policy_gradient.rs` (FD-exact per param, incl. the recurrent
+rollout) + `coupled_trajectory_policy_z` (forward oracle) + gate (the `policy(θ)`
+row of `tests/coupling_grad_harness.rs`: FD-exact per param, incl. the recurrent
 `w_z`/`w_vz`; forward-match; feedback-weights-live) + lib smoke. The policy is a
 tape sub-expression (chassis `mul`/`add`), so chassis autograd carries ∂u/∂θ and
 ∂u/∂state — no hand-rolled `PolicyVjp`. Design fork resolved → **trait that emits

@@ -458,7 +458,8 @@ fn policy_case() -> GradCase {
         tol: 1e-5,
         floor: 1e-12,
         // All three live, including the feedback weights w_z/w_vz whose gradient
-        // flows ONLY through the recurrence (subsumes `feedback_weights_carry_gradient`).
+        // flows ONLY through the recurrence (subsumes the retired policy gate's
+        // feedback-weights-live check).
         expect: vec![Comp::Live, Comp::Live, Comp::Live],
         analytic: Box::new(|| {
             traj_coupling(MU0).coupled_trajectory_policy_gradient(&LinearFeedback, &THETA, N)

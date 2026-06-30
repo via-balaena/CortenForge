@@ -7028,7 +7028,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// [`DiffPolicy::eval`] feeds the real `xfrc_applied`, identical to the tape
     /// node's value); the per-node Jacobians are the analytic/factored
     /// sensitivities. FD-validated against [`Self::coupled_trajectory_policy_z`]
-    /// (the real re-rolled closed-loop oracle) in `tests/coupled_policy_gradient.rs`.
+    /// (the real re-rolled closed-loop oracle) by the `policy(θ)` row of
+    /// `tests/coupling_grad_harness.rs`.
     ///
     /// # Panics
     /// Panics if the rigid step diverges or the soft solver does not converge —
@@ -10149,7 +10150,8 @@ mod tests {
     }
 
     /// Lib-level smoke test of the closed-loop policy gradient (the scientific FD
-    /// validation is in `tests/coupled_policy_gradient.rs`): one `tape.backward`
+    /// validation is the `policy(θ)` row of `tests/coupling_grad_harness.rs`): one
+    /// `tape.backward`
     /// over a short closed-loop rollout under `LinearFeedback` gives one finite
     /// gradient per policy parameter, the feedback-weight gradients are nonzero
     /// (the recurrence is live), the forward replays the real dynamics, and a
