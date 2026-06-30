@@ -38,8 +38,9 @@
 //!   (the single-step S4 cross-engine load crossing, two operating points);
 //! - **passive Y-hinge arm** (`hinge_coupling`): `articulated-material` (the
 //!   moment-routed `Δt·M⁻¹·Jᵀ` carry, FD'd along the λ = 4μ tie);
-//! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (a real
-//!   `<motor>`'s per-step control driving the arm through the contact);
+//! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (real `<motor>` and
+//!   state-feedback `<position>`/`<velocity>`/PD servos, per-step control driving the
+//!   arm through the contact);
 //! - **curved `SphereSdf` collider** (`sphere_coupling` / `load_sphere_coupling`):
 //!   `material` (the rotating-normal `f_mag·H` curvature carry a plane can't
 //!   exercise) and `load·sphere` (the same load crossing on the curved normal);
@@ -74,8 +75,9 @@
 //!   so a fixture that drifts to non-engagement can't pass vacuously;
 //! - per-component **zero-effect** invariants ([`Comp::Zero`]).
 //!
-//! Retired/folded so far: `control`, `material-step`, `policy`, and the single-step
-//! `load` channel (plane + sphere) — their bespoke files deleted; `joint` and
+//! Retired/folded so far: `control`, `material-step`, `policy`, the single-step
+//! `load` channel (plane + sphere), and the `actuator` channel (motor + position /
+//! velocity / PD servos) — their bespoke files deleted; `joint` and
 //! `freebody-orientation` SLIMMED to the one invariant the FD matrix can't express
 //! (a tape-vs-tape fusion-soundness check, an all-lengths sweep). The remaining
 //! bespoke gates retire row-by-row as their coverage is confirmed folded; further
@@ -600,25 +602,29 @@ fn articulated_material_case() -> GradCase {
     }
 }
 
-/// ACTUATOR — a real `<motor>`'s per-step control schedule on the actuated hinge
-/// (`force = gear·ctrl`). All controls are live (the torque drives the arm
-/// through the contact), FD'd via `coupled_trajectory_actuated_z`.
-fn actuator_motor_case() -> GradCase {
-    const MOTOR: &str = r#"<motor name="a" joint="j" gear="4"/>"#;
-    let controls = vec![0.3, -0.2, 0.25, -0.15, 0.1, 0.2];
+/// ACTUATOR — a real `<actuator>`'s per-step control schedule on the actuated hinge, FD'd via
+/// `coupled_trajectory_actuated_z`. The same machinery covers any AFFINE actuator: a direct-torque
+/// MOTOR (`force = gear·ctrl`) and the state-feedback SERVOS (position `kp·(ctrl−qpos)`, velocity
+/// `kv·(ctrl−qvel)`, PD combining both) — a servo's `∂force/∂(qpos,qvel)` is a constant explicit
+/// slope already carried by the analytic `J_state`, so no `ctrl`-replication is needed and all
+/// controls are live (the torque drives the arm through the contact).
+fn actuator_case(name: &'static str, actuator: &'static str, controls: Vec<f64>) -> GradCase {
+    let n = controls.len();
     let base = controls.clone();
     GradCase {
-        name: "hinge·actuator(motor)",
+        name,
         value_bounds: Some((0.10, 0.115)),
-        eps: vec![1e-3; base.len()],
+        eps: vec![1e-3; n],
         tol: 1e-6,
         floor: 1e-12,
-        expect: vec![Comp::Live; base.len()],
-        baseline: base.clone(),
+        expect: vec![Comp::Live; n],
+        baseline: controls,
         analytic: Box::new(move || {
-            actuated_hinge_coupling(MOTOR).coupled_trajectory_actuator_gradient(&base)
+            actuated_hinge_coupling(actuator).coupled_trajectory_actuator_gradient(&base)
         }),
-        value_at: Box::new(|p| actuated_hinge_coupling(MOTOR).coupled_trajectory_actuated_z(p)),
+        value_at: Box::new(move |p| {
+            actuated_hinge_coupling(actuator).coupled_trajectory_actuated_z(p)
+        }),
     }
 }
 
@@ -698,7 +704,26 @@ fn cases() -> Vec<GradCase> {
         // passive Y-hinge arm
         articulated_material_case(),
         // actuated Y-hinge
-        actuator_motor_case(),
+        actuator_case(
+            "hinge·actuator(motor)",
+            r#"<motor name="a" joint="j" gear="4"/>"#,
+            vec![0.3, -0.2, 0.25, -0.15, 0.1, 0.2],
+        ),
+        actuator_case(
+            "hinge·actuator(position)",
+            r#"<position name="a" joint="j" kp="8"/>"#,
+            vec![0.35, 0.25, 0.4, 0.2, 0.3, 0.28],
+        ),
+        actuator_case(
+            "hinge·actuator(velocity)",
+            r#"<velocity name="a" joint="j" kv="0.5"/>"#,
+            vec![0.5, -0.3, 0.4, -0.2, 0.3, -0.1],
+        ),
+        actuator_case(
+            "hinge·actuator(pd)",
+            r#"<position name="a" joint="j" kp="8" kv="0.4"/>"#,
+            vec![0.35, 0.25, 0.4, 0.2, 0.3, 0.28],
+        ),
         // curved SphereSdf collider (generic tapeless step_rollout oracle)
         sphere_material_case(),
         // off-COM free body, contact moment ON (gates G_pos via orientation)
