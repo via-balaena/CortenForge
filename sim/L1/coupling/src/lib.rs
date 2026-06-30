@@ -6833,7 +6833,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// coupled dynamics (identical to [`Self::step`] with the control force added);
     /// the per-node Jacobians are the analytic/factored sensitivities. FD-validated
     /// against [`Self::coupled_trajectory_control_z`] (the real re-rolled coupled
-    /// oracle) in `tests/coupled_control_gradient.rs`.
+    /// oracle) by the `control` row of `tests/coupling_grad_harness.rs`.
     ///
     /// # Panics
     /// Panics if the rigid step diverges or the soft solver does not converge —
@@ -10112,7 +10112,7 @@ mod tests {
     }
 
     /// Lib-level smoke test of the control gradient (the scientific FD validation
-    /// is in `tests/coupled_control_gradient.rs`): one `tape.backward` over a
+    /// is the `control` row of `tests/coupling_grad_harness.rs`): one `tape.backward` over a
     /// short coupled rollout under a control schedule gives one finite gradient
     /// per control input, the forward replays the real dynamics, and a single
     /// control input matches an independent FD of the real re-rollout.

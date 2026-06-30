@@ -196,7 +196,8 @@ substrate is shipped.
   verdict. Delete after.
 - **PR-A** (sim-coupling): `coupled_trajectory_control_gradient` +
   `coupled_trajectory_control_z` (FD oracle) + the 3-parent control-carry node +
-  FD gate (`tests/coupled_control_gradient.rs`) + lib smoke. grade A.
+  FD gate (`tests/coupled_control_gradient.rs`; later retired into the `control`
+  row of `tests/coupling_grad_harness.rs`) + lib smoke. grade A.
 - **PR-B** (cf-codesign): `ControlScheduleTarget` consumer + inverse-design gate
   + worked example + the bundled `Normalized::evaluate` is_finite hardening
   (deferred from the v3 review). grade A.
