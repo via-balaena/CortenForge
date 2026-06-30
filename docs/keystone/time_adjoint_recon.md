@@ -158,7 +158,9 @@ vs re-solve FD (∂/∂x_prev rel 4.1e-10, ∂/∂v_prev 4.8e-8); reverse VJP on
 4-parent VJP fusing the prev-state, material, and contact-pose adjoints into ONE shared `A·λ=g_free`
 solve) + `trajectory_step_vjp`. sim-coupling glue VJPs (`VelVjp`, `ContactForceTrajVjp`,
 `VzCarryVjp`, `ZCarryVjp`) + `coupled_trajectory_material_gradient(n_steps, param_idx)` — ONE
-`tape.backward(z_N)` over the coupled rollout. Gate `tests/coupled_trajectory_gradient.rs`.
+`tape.backward(z_N)` over the coupled rollout. Gated by the `platen·material[μ]` row of
+`tests/coupling_grad_harness.rs` (single length) plus the all-lengths sweep in
+`tests/coupled_trajectory_gradient.rs`.
 
 **★ RESULT — the gradient is CORRECT, penalty-accuracy-capped (refines the trajectory-spike verdict).**
 Each per-step factor is machine-exact — `TrajectoryStepVjp`'s four cotangents (state/material/pose) are

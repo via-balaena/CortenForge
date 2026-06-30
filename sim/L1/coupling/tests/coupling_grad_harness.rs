@@ -34,8 +34,9 @@
 //! cross-product, since not every channel applies to every rigid topology. The
 //! cells live in [`cases`], grouped by scene:
 //! - **free platen** (`traj_coupling` / `step_coupling`): `control`, `policy`,
-//!   `joint` (the heterogeneous μ+θ case), `material[μ]`/`material[λ]`, `load·plane`
-//!   (the single-step S4 cross-engine load crossing, two operating points);
+//!   `joint` (the heterogeneous μ+θ case), `material[μ]`/`material[λ]` (single-step),
+//!   `platen·material[μ]` (the 20-step material trajectory), `load·plane` (the
+//!   single-step S4 cross-engine load crossing, two operating points);
 //! - **passive Y-hinge arm** (`hinge_coupling`): `articulated-material` (the
 //!   moment-routed `Δt·M⁻¹·Jᵀ` carry, FD'd along the λ = 4μ tie);
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (real `<motor>` and
@@ -78,8 +79,9 @@
 //! Retired/folded so far: `control`, `material-step`, `policy`, the single-step
 //! `load` channel (plane + sphere), and the `actuator` channel (motor + position /
 //! velocity / PD servos) — their bespoke files deleted; `joint` and
-//! `freebody-orientation` SLIMMED to the one invariant the FD matrix can't express
-//! (a tape-vs-tape fusion-soundness check, an all-lengths sweep). The remaining
+//! `freebody-orientation` and the platen `material-trajectory` SLIMMED to the one
+//! invariant the FD matrix can't express (a tape-vs-tape fusion-soundness check, an
+//! all-lengths sweep). The remaining
 //! bespoke gates retire row-by-row as their coverage is confirmed folded; further
 //! scenes (free-body ang-vel, moving-EE) and channels (friction / tangential /
 //! peak-pressure) join the same way.
@@ -628,6 +630,34 @@ fn actuator_case(name: &'static str, actuator: &'static str, controls: Vec<f64>)
     }
 }
 
+/// PLATEN-MATERIAL — the multi-step material trajectory gradient on the free platen
+/// (the half-plane counterpart of [`sphere_material_case`]): `∂z_N/∂μ` over a 20-step
+/// engaged rollout via one `tape.backward`. Tied-μ (λ = 4μ → `∂z/∂μ + 4·∂z/∂λ`); FD
+/// oracle = the generic tapeless `step_rollout` reading the platen's world height. The
+/// fixture is the shared `traj_coupling` (platen 0.108, damping 60). Folds the
+/// engaged-FD + forward tests of `coupled_trajectory_gradient.rs`; that file keeps its
+/// machine-exact-at-all-lengths sweep, the one invariant a single-length row can't hold.
+fn platen_material_case() -> GradCase {
+    const N: usize = 20;
+    GradCase {
+        name: "platen·material[μ]",
+        value_bounds: None,
+        baseline: vec![MU0],
+        eps: vec![MU0 * 5e-4],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(|| {
+            let (z, g_mu) = traj_coupling(MU0).coupled_trajectory_material_gradient(N, 0);
+            let g_la = traj_coupling(MU0)
+                .coupled_trajectory_material_gradient(N, 1)
+                .1;
+            (z, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(|p| step_rollout(traj_coupling(p[0]), N, |c| c.data().xpos[1].z)),
+    }
+}
+
 /// SPHERE-MATERIAL — the material gradient on the curved `SphereSdf` collider: the
 /// rotating contact normal exercises the `f_mag·H` curvature carry (zero for a
 /// plane). Tied-μ param (λ = 4μ), so the analytic total is `∂z/∂μ + 4·∂z/∂λ`. ★
@@ -695,6 +725,7 @@ fn cases() -> Vec<GradCase> {
         joint_case(),
         material_case(0, "material[μ]", MU0),
         material_case(1, "material[λ]", LAMBDA0),
+        platen_material_case(),
         // single-step LOAD channel — two operating points per collider (shallow/deep),
         // mirroring the retired plane + sphere load gates
         load_case("load·plane[shallow]", step_coupling, 0.099, 5.0),
