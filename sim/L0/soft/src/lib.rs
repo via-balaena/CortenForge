@@ -87,7 +87,7 @@ pub use sdf_bridge::{
 };
 pub use solver::{
     CpuNewtonSolver, CpuTape, FrictionReactionGradients, FrictionVertexForce, LmConfig, NewtonStep,
-    SaturationPolicy, Solver, SolverConfig, SolverFailure,
+    Solver, SolverConfig, SolverFailure,
 };
 pub use viz::{
     Plane, VizError, boundary_surface, design_scene, design_scene_deformed, design_slab_cut,

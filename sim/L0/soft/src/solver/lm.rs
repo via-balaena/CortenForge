@@ -2,8 +2,8 @@
 //! non-PD tangent rescue.
 //!
 //! Per `docs/F3_LM_REGULARIZATION_SPEC.md`. Module surface:
-//! - [`LmConfig`] (pub) + [`SaturationPolicy`] (pub) — tunables; opt
-//!   in via `SolverConfig::lm_regularization` (F3.1).
+//! - [`LmConfig`] (pub) — tunables; opt in via
+//!   `SolverConfig::lm_regularization` (F3.1).
 //! - `LmState` (`pub(super)`) — mutable in-solve state, threaded
 //!   through `factor_free_tangent` / `factor_and_solve_free` /
 //!   `factor_at_position` from `solve_impl`. The `disabled()`
@@ -17,34 +17,6 @@
 //! attempt followed by direct LU fallback — observably bit-equal vs
 //! pre-F3 including the existing `"sim-soft: faer LU fallback fired"`
 //! stderr line.
-
-/// Per-stall policy applying ONLY to `SolverFailure::ArmijoStall`.
-///
-/// The other failure variants (`NewtonIterCap`, `DoublyFailedFactor`,
-/// added at F3.3) always return `Err` on `try_step` and always panic on
-/// `step`, regardless of this setting — there is no per-variant policy
-/// for them.
-///
-/// The "saturation" in the name refers specifically to LM saturation
-/// (retries exhausted at `λ_max`) followed by Armijo stall on the
-/// un-regularized LU fallback step (per spec §2.5 step 5b). With LM
-/// disabled, the policy applies to first-Armijo-stall (today's only
-/// stall surface).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SaturationPolicy {
-    /// Today's behavior: panic with the existing Armijo-stall message
-    /// (augmented to note LM-saturated when applicable). `Solver::step`
-    /// always uses this regardless of LM enabled-ness; `try_step`
-    /// dispatches to this when `PanicOnStall` is set.
-    PanicOnStall,
-    /// Used only by `Solver::try_step`. Returns
-    /// `Err(SolverFailure::ArmijoStall { x_partial, last_iter,
-    /// last_r_norm })` — the caller decides whether to accept the
-    /// partial solve. `Solver::step` still panics on Armijo stall
-    /// regardless of this setting; callers wanting graceful failure
-    /// must use `try_step`.
-    ReturnFailed,
-}
 
 /// Tunables for the Marquardt-style `+λI` retry loop.
 ///
@@ -78,17 +50,13 @@ pub struct LmConfig {
     /// the budget spans `λ_seed` → `λ_seed × up_factor^(N-1)`. Default
     /// `8` (per [`Self::fork_b`]).
     pub max_retries_per_iter: usize,
-    /// What happens when λ saturates at `λ_max` AND the saturated LU
-    /// fallback step still Armijo-stalls. See [`SaturationPolicy`].
-    /// Set to [`SaturationPolicy::ReturnFailed`] by [`Self::fork_b`].
-    pub on_saturation: SaturationPolicy,
 }
 
 impl LmConfig {
     /// Fork-B preset (cf-device-design insertion-ramp consumers). Spec
-    /// §2.3 defaults, `ReturnFailed` saturation — callers route through
-    /// `Solver::try_step` and propagate the `Err(SolverFailure)` as an
-    /// anyhow error rather than panicking.
+    /// §2.3 defaults — callers route through `Solver::try_step`, which
+    /// returns `Err(SolverFailure)` on any fail-close (including a
+    /// saturated Armijo stall) rather than panicking.
     #[must_use]
     pub const fn fork_b() -> Self {
         Self {
@@ -97,7 +65,6 @@ impl LmConfig {
             down_factor: 0.5,
             max_relative: 1e3,
             max_retries_per_iter: 8,
-            on_saturation: SaturationPolicy::ReturnFailed,
         }
     }
 }
@@ -277,7 +244,6 @@ mod tests {
         assert_eq!(cfg.down_factor, 0.5);
         assert_eq!(cfg.max_relative, 1e3);
         assert_eq!(cfg.max_retries_per_iter, 8);
-        assert_eq!(cfg.on_saturation, SaturationPolicy::ReturnFailed);
     }
 
     #[test]
@@ -352,7 +318,6 @@ mod tests {
             down_factor: 0.5,
             max_relative: 1.0,
             max_retries_per_iter: 32, // un-cap retries; isolate clamp
-            on_saturation: SaturationPolicy::ReturnFailed,
         };
         let mut s = LmState::from_config(tight);
         // Seed: λ = 0.5, below ceiling=1.0, can_bump still true.

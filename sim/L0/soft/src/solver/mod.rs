@@ -23,7 +23,7 @@ pub(crate) use backward_euler::FactoredFreeTangent;
 pub use backward_euler::{
     CpuNewtonSolver, FrictionReactionGradients, FrictionVertexForce, SolverConfig,
 };
-pub use lm::{LmConfig, SaturationPolicy};
+pub use lm::LmConfig;
 // `SolverFailure` is re-exported from this module's own definition
 // below — no `use` needed.
 
@@ -97,15 +97,12 @@ impl<T> NewtonStep<T> {
 /// on `insertion_solver_config()` in
 /// `tools/cf-device-design/src/insertion_sim.rs`).
 ///
-/// Variant semantics per [`crate::SaturationPolicy`]:
-/// - `ArmijoStall`: only this variant is governed by the
-///   [`LmConfig::on_saturation`](crate::LmConfig::on_saturation)
-///   policy. `Solver::step` always panics on this; `try_step`
-///   dispatches on the policy (`PanicOnStall` → forward to `step`'s
-///   panic; `ReturnFailed` → return `Err(ArmijoStall)`).
-/// - `NewtonIterCap`, `DoublyFailedFactor`, and `ValidityViolation`:
-///   `try_step` ALWAYS returns `Err`; `Solver::step` ALWAYS panics — no
-///   per-variant policy.
+/// Variant semantics — uniform across all four: `try_step` /
+/// `try_replay_step` ALWAYS return `Err`; `Solver::step` /
+/// `replay_step` ALWAYS panic. `ArmijoStall` used to be governed by a
+/// per-stall `SaturationPolicy` knob; that knob was removed once the
+/// graceful API's contract was made unconditional (a `Result`-returning
+/// method must not panic on one of its declared failure modes).
 #[derive(Debug)]
 pub enum SolverFailure {
     /// Armijo line-search stalled (under F3 LM, this means: retries
@@ -231,25 +228,14 @@ pub trait Solver: Send + Sync {
 
     /// Graceful-failure counterpart to [`Self::step`] (F3.3 per
     /// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5). Returns the same
-    /// converged [`NewtonStep`] on the happy path; on the three
-    /// failure surfaces (`ArmijoStall`, `NewtonIterCap`,
-    /// `DoublyFailedFactor`) returns `Err(SolverFailure)` instead of
-    /// panicking. The caller decides whether to abort the parent
-    /// computation or accept the partial solve.
-    ///
-    /// `ArmijoStall` is governed by
-    /// [`LmConfig::on_saturation`](crate::LmConfig::on_saturation):
-    /// `PanicOnStall` forwards to [`Self::step`]'s panic (preserving
-    /// pre-F3 semantics for callers that opted in to LM but not to
-    /// graceful failure); `ReturnFailed` returns `Err`. When LM is
-    /// disabled (`SolverConfig::lm_regularization == None`), the
-    /// effective policy is `PanicOnStall` — calling `try_step` on
-    /// an LM-disabled solver yields the same panic-on-stall surface
-    /// as `step` itself. Graceful Armijo-stall handling REQUIRES
-    /// opting into LM with `ReturnFailed` (or constructing an
-    /// `LmConfig` explicitly setting that policy). The other two
-    /// variants always return `Err` regardless of policy — they
-    /// were already model-level non-recoverable conditions pre-F3.
+    /// converged [`NewtonStep`] on the happy path; on every fail-close
+    /// surface (`ArmijoStall`, `NewtonIterCap`, `DoublyFailedFactor`,
+    /// `ValidityViolation`) returns `Err(SolverFailure)` instead of
+    /// panicking — unconditionally, regardless of LM config. The caller
+    /// decides whether to abort the parent computation or accept the
+    /// partial solve. (`Solver::step` is the panic-on-fail-close mirror;
+    /// the two split exactly on panic-vs-`Err`, never on which failures
+    /// they detect.)
     ///
     /// REQUIRED with no default impl per spec §2.5 — a default
     /// `Ok(self.step(...))` would mislead callers (the signature
@@ -258,12 +244,10 @@ pub trait Solver: Send + Sync {
     /// `Solver` impls from silently inheriting the wrong contract.
     ///
     /// # Errors
-    /// Returns [`SolverFailure`] on Armijo stall (when the effective
-    /// policy is `ReturnFailed`), Newton iter cap (always),
-    /// doubly-failed factor (always), or validity-domain violation
-    /// (always — a tet over-stretching / inverting, Decision Q). When
-    /// the effective policy is `PanicOnStall` (the LM-disabled default),
-    /// Armijo stall panics instead of returning. See variant docs for
+    /// Returns [`SolverFailure`] on Armijo stall, Newton iter cap,
+    /// doubly-failed factor, or validity-domain violation (a tet
+    /// over-stretching / inverting, Decision Q) — all four always
+    /// surface as `Err` here, never a panic. See variant docs for
     /// `x_partial` semantics.
     fn try_step(
         &mut self,
