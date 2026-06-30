@@ -222,10 +222,11 @@ normalization buys ~3 orders of deep convergence.
   rebuild-line FD (<1e-5).
 - *sim-coupling:* `coupled_trajectory_joint_gradient(policy, params, n_steps)` →
   `(z_N, ∂z_N/∂μ_total, [∂z_N/∂θ])` — BOTH the μ design leaf (combined-weights soft
-  node) AND the θ policy leaves on one tape, both read from one backward. Gate
-  `tests/coupled_joint_gradient.rs` (both blocks FD-exact; the joint θ block
-  matches the policy-only method to machine zero — two deterministic builds, gated
-  at rel <1e-9 — ⇒ the material leaf doesn't perturb policy, fusion sound) + lib
+  node) AND the θ policy leaves on one tape, both read from one backward. Gated by the
+  `joint(μ+θ)` row of `tests/coupling_grad_harness.rs` (both blocks FD-exact);
+  `tests/coupled_joint_gradient.rs` retains the fusion-soundness invariant (the joint
+  θ block matches the policy-only method to machine zero — two deterministic builds,
+  gated at rel <1e-9 — ⇒ the material leaf doesn't perturb policy, fusion sound) + lib
   smoke.
 - *cf-codesign:* `JointTarget<P>` over `p = [ln μ, θ…]` — owns the **mixed
   conditioning**: positive μ log-reparametrized *internally* (`μ = exp(p[0])`, the
