@@ -3352,7 +3352,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// adjoint. `axis ∈ {0,1,2}` (`qx`/`qy`/`qz`). Returns `(q_vec[axis], ∂/∂param)` (`param_idx`:
     /// 0 = μ, 1 = λ; the λ=4μ tie ⇒ the design gradient is `grad(0) + 4·grad(1)`). FD-exact
     /// (machine floor) vs a re-rolled forward oracle, on a rollout short enough to stay below a half
-    /// turn (the smooth regime); gated in `tests/freebody_orientation_gradient.rs`.
+    /// turn (the smooth regime); gated by the `freebody·orientation[μ]` row of
+    /// `tests/coupling_grad_harness.rs` (single length n = 16) plus the all-lengths sweep in
+    /// `tests/freebody_orientation_gradient.rs`.
     ///
     /// **Scope (v1).** As [`Self::coupled_trajectory_angular_velocity_gradient`] (free body, plane
     /// collider, `with_contact_moment` on, `rigid_damping = 0`), plus the contacting body must carry
