@@ -34,13 +34,15 @@
 //! cross-product, since not every channel applies to every rigid topology. The
 //! cells live in [`cases`], grouped by scene:
 //! - **free platen** (`traj_coupling` / `step_coupling`): `control`, `policy`,
-//!   `joint` (the heterogeneous μ+θ case), `material[μ]`/`material[λ]`;
+//!   `joint` (the heterogeneous μ+θ case), `material[μ]`/`material[λ]`, `load·plane`
+//!   (the single-step S4 cross-engine load crossing, two operating points);
 //! - **passive Y-hinge arm** (`hinge_coupling`): `articulated-material` (the
 //!   moment-routed `Δt·M⁻¹·Jᵀ` carry, FD'd along the λ = 4μ tie);
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (a real
 //!   `<motor>`'s per-step control driving the arm through the contact);
-//! - **curved `SphereSdf` collider** (`sphere_coupling`): `material` (the
-//!   rotating-normal `f_mag·H` curvature carry a plane can't exercise);
+//! - **curved `SphereSdf` collider** (`sphere_coupling` / `load_sphere_coupling`):
+//!   `material` (the rotating-normal `f_mag·H` curvature carry a plane can't
+//!   exercise) and `load·sphere` (the same load crossing on the curved normal);
 //! - **off-COM free body, contact moment ON** (`freebody_coupling`):
 //!   `orientation` (a final quaternion component — gates the wrench carry's
 //!   POSITION rows `G_pos`, read via a `qpos` readout closure).
@@ -72,7 +74,10 @@
 //!   so a fixture that drifts to non-engagement can't pass vacuously;
 //! - per-component **zero-effect** invariants ([`Comp::Zero`]).
 //!
-//! Retired so far: `control` (`coupled_control_gradient.rs`). The remaining
+//! Retired/folded so far: `control`, `material-step`, `policy`, and the single-step
+//! `load` channel (plane + sphere) — their bespoke files deleted; `joint` and
+//! `freebody-orientation` SLIMMED to the one invariant the FD matrix can't express
+//! (a tape-vs-tape fusion-soundness check, an all-lengths sweep). The remaining
 //! bespoke gates retire row-by-row as their coverage is confirmed folded; further
 //! scenes (free-body ang-vel, moving-EE) and channels (friction / tangential /
 //! peak-pressure) join the same way.
@@ -81,6 +86,7 @@
 
 use sim_coupling::{LinearFeedback, StaggeredCoupling};
 use sim_mjcf::load_model;
+use sim_soft::{HandBuiltTetMesh, MaterialField, VertexId, pick_vertices_by_predicate};
 
 // ── Scene library (the seed; grows along the scene axis in later PRs) ──
 
@@ -129,6 +135,23 @@ fn step_coupling() -> StaggeredCoupling {
     StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 12.0,
     )
+}
+
+/// The single-step LOAD channel's sphere variant: the same z=0.125 platen fixture as
+/// [`step_coupling`] (the single-step gates pass an explicit `height`, so the platen pose is
+/// irrelevant), with the half-plane swapped for a finite `SphereSdf`. The curved normal makes
+/// the load crossing carry the `f_mag·H` term a plane can't (mirrors the retired
+/// `sphere_trajectory_gradient.rs` load gate).
+fn load_sphere_coupling() -> StaggeredCoupling {
+    step_coupling().with_sphere_collider(0.08)
+}
+
+/// The block's top-face vertex ids (the loaded set for the single-step load gate) — recovered
+/// from a mesh built with the SAME block params the coupling fixtures use (n_per_edge = 4,
+/// edge = 0.1, μ/λ = MU0/LAMBDA0).
+fn load_top_face() -> Vec<VertexId> {
+    let mesh = HandBuiltTetMesh::uniform_block(4, 0.1, &MaterialField::uniform(MU0, LAMBDA0));
+    pick_vertices_by_predicate(&mesh, |p| (p.z - 0.1).abs() < 1e-9)
 }
 
 /// Passive Y-hinge arm: a tilted link with a point mass on the tip pressing the
@@ -519,6 +542,38 @@ fn material_case(idx: usize, name: &'static str, p0: f64) -> GradCase {
     }
 }
 
+/// LOAD — the single-step S4 cross-engine load gradient `∂vz'/∂theta`: a scalar load handle
+/// `theta` on the block's top face drives the contact force hence the rigid step. `build`
+/// selects the collider (plane via [`step_coupling`] or curved via [`load_sphere_coupling`]);
+/// `(h, theta0)` is the operating point (the single-step gate passes `h` explicitly and freezes
+/// the plane during the soft solve). `theta` is a per-call arg, so the FD oracle is the
+/// dedicated `coupled_step_load_vz` (not `step_rollout`). Folds the retired
+/// `coupled_load_gradient.rs` (plane) and the load test of `sphere_trajectory_gradient.rs`
+/// (sphere); each gate ran two operating points, kept here as two rows per collider.
+fn load_case(
+    name: &'static str,
+    build: fn() -> StaggeredCoupling,
+    h: f64,
+    theta0: f64,
+) -> GradCase {
+    let loaded_a = load_top_face();
+    let loaded_v = loaded_a.clone();
+    GradCase {
+        name,
+        value_bounds: None,
+        baseline: vec![theta0],
+        eps: vec![1e-4],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(move || {
+            let (vz, g) = build().coupled_step_load_gradient(h, &loaded_a, theta0);
+            (vz, vec![g])
+        }),
+        value_at: Box::new(move |p| build().coupled_step_load_vz(h, &loaded_v, p[0])),
+    }
+}
+
 /// ARTICULATED-MATERIAL — the material gradient on the passive Y-hinge scene: a
 /// contact force at the arm tip routed through the joint (`Δt·M⁻¹·Jᵀ`). The lone
 /// param is the soft stiffness μ with λ slaved (the constructor's λ = 4μ tie), so
@@ -634,6 +689,12 @@ fn cases() -> Vec<GradCase> {
         joint_case(),
         material_case(0, "material[μ]", MU0),
         material_case(1, "material[λ]", LAMBDA0),
+        // single-step LOAD channel — two operating points per collider (shallow/deep),
+        // mirroring the retired plane + sphere load gates
+        load_case("load·plane[shallow]", step_coupling, 0.099, 5.0),
+        load_case("load·plane[deep]", step_coupling, 0.097, 9.0),
+        load_case("load·sphere[shallow]", load_sphere_coupling, 0.099, 5.0),
+        load_case("load·sphere[deep]", load_sphere_coupling, 0.097, 9.0),
         // passive Y-hinge arm
         articulated_material_case(),
         // actuated Y-hinge

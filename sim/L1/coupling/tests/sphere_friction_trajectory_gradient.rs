@@ -1,8 +1,9 @@
 //! L1b free-body TANGENTIAL/friction curvature carry — the friction-coupled trajectory
 //! gradient on a FINITE posed sphere collider (end-to-end composition check).
 //!
-//! The friction successor to `sphere_trajectory_gradient.rs` (the NORMAL crossing on the
-//! sphere): the same grip tape machinery (`coupled_trajectory_tangential_*`) against the same
+//! The friction successor to the NORMAL sphere crossing (the `sphere·material[μ]` and
+//! `load·sphere` rows of `coupling_grad_harness.rs`): the same grip tape machinery
+//! (`coupled_trajectory_tangential_*`) against the same
 //! full-grip-rollout FD oracle (`coupled_trajectory_grip`) as the plane gate
 //! `friction_coupled_trajectory_coeff_gradient.rs`, but with the collider swapped to a finite
 //! `TranslatedSdf<SphereSdf>` (`with_sphere_collider`).
@@ -25,9 +26,9 @@
 //! assumes `r(x*) = 0`) amplifies that residual by the curved-contact conditioning into the floor.
 //! The gradient is the EXACT gradient of what the solve produces; it tracks the FD oracle (which
 //! rides the same forward solve) to that floor. A well-conditioned (compliant `κ`) scene lands
-//! ~2e-3; a stiff scene drifts to ~1e-2. Normal-only curved contact has NO such floor
-//! (`sphere_trajectory_gradient.rs` / `sphere_articulated_trajectory_gradient.rs` are machine-exact
-//! end-to-end) — it is the frozen-lag friction model, not the curvature conditioning.
+//! ~2e-3; a stiff scene drifts to ~1e-2. Normal-only curved contact has NO such floor (the
+//! `sphere·material[μ]` row of `coupling_grad_harness.rs` / `sphere_articulated_trajectory_gradient.rs`
+//! are machine-exact end-to-end) — it is the frozen-lag friction model, not the curvature conditioning.
 //!
 //! This floor is INTRINSIC, not a preconditioning gap. A 2026-06-27 implement-measure-revert spike
 //! falsified all three tangent levers: (1) `lm_regularization` is INERT — the forward tangent stays

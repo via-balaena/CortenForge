@@ -2672,8 +2672,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// step (staggered) — supplied explicitly (the same convention as
     /// [`Self::contact_force_height_jacobian`]) so the gradient can be probed at
     /// a deeply-engaged height regardless of the current platen position.
-    /// FD-validated against the full coupled step in
-    /// `tests/coupled_load_gradient.rs`. Engaged, stable-active-set,
+    /// FD-validated against the full coupled step by the `load·plane`/`load·sphere`
+    /// rows of `tests/coupling_grad_harness.rs`. Engaged, stable-active-set,
     /// hard-penalty scope (the penalty active-set boundary is non-smooth — IPC
     /// deferred). See `docs/keystone/s4_vjp_crossing_recon.md`.
     ///
@@ -8756,7 +8756,8 @@ mod tests {
     }
 
     /// Lib-level smoke test of the S4 cross-engine tape crossing (the scientific
-    /// FD validation is in `tests/{rigid_step_vjp,coupled_load_gradient}.rs`).
+    /// FD validation is in `tests/rigid_step_vjp.rs` and the `load·plane`/`load·sphere`
+    /// rows of `tests/coupling_grad_harness.rs`).
     /// Exercises `rigid_vz_response`, `coupled_step_load_gradient` (one
     /// `tape.backward` across both engines), and the forward oracle
     /// `coupled_step_load_vz` at a deeply-engaged height with a loaded top face.

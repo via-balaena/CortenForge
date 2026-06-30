@@ -1,8 +1,9 @@
 //! L1b articulated NORMAL wrench curvature — the coupled ARTICULATED trajectory gradient on a
 //! FINITE posed sphere collider (the off-COM contact moment, curved collider).
 //!
-//! The articulated successor to `sphere_trajectory_gradient.rs` (free-body NORMAL on the
-//! sphere): the same `coupled_trajectory_material_gradient_articulated` tape against the same
+//! The articulated successor to the free-body NORMAL sphere gradient (the `sphere·material[μ]`
+//! and `load·sphere` rows of `coupling_grad_harness.rs`): the same
+//! `coupled_trajectory_material_gradient_articulated` tape against the same
 //! full-coupled re-rollout FD oracle (`coupled_trajectory_articulated_z`) as the plane gate
 //! `articulated_trajectory_gradient.rs`, but with `with_sphere_collider`. The Y-hinge arm
 //! presses the soft block through a finite sphere end-effector; the reaction is routed as the

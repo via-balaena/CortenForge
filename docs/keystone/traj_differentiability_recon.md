@@ -34,8 +34,8 @@ The single-step gradient lives in `sim/L1/coupling/src/lib.rs` (`StaggeredCoupli
   height, param_idx)` (lib.rs:670) and `coupled_step_load_gradient(...)`. Each builds a *fresh* tape,
   does ONE step at a **supplied fixed `height`**, runs one `tape.backward` across both engines
   (`MaterialStepVjp`/load adjoint → `ContactForceVjp` → `neg` → `RigidStepVjp`), tears the tape down.
-  FD-validated to ~1e-9 (the `material[μ]`/`material[λ]` rows of `tests/coupling_grad_harness.rs`, and
-  `coupled_load_gradient.rs`) — at a
+  FD-validated to ~1e-9 (the `material[μ]`/`material[λ]` and `load·plane`/`load·sphere` rows of
+  `tests/coupling_grad_harness.rs`) — at a
   **deeply-engaged height** (`h = 0.099`, plane ~1 mm below the rest top face z=0.1 → all 25 top
   vertices active and STABLE across the FD step).
 
