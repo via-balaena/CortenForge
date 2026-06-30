@@ -7412,7 +7412,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// Takes `&mut self` (runs the real rollout in place), so build a fresh coupling
     /// per call. FD-validated against `coupled_trajectory_policy_z` on couplings
-    /// rebuilt at `μ ± ε` (material block) and at `θ ± ε` (policy) in
+    /// rebuilt at `μ ± ε` (material block) and at `θ ± ε` (policy) by the `joint(μ+θ)`
+    /// row of `tests/coupling_grad_harness.rs`; the fusion-soundness invariant (the
+    /// policy block equals the standalone policy method) lives in
     /// `tests/coupled_joint_gradient.rs`.
     ///
     /// # Panics
@@ -10196,7 +10198,8 @@ mod tests {
     }
 
     /// Lib-level smoke test of the JOINT design+policy gradient (the scientific FD
-    /// validation is in `tests/coupled_joint_gradient.rs`): one `tape.backward`
+    /// validation is the `joint(μ+θ)` row of `tests/coupling_grad_harness.rs`): one
+    /// `tape.backward`
     /// yields BOTH a finite material gradient `∂z_N/∂μ_total` AND the policy
     /// gradient `∂z_N/∂θ`, the forward replays the real rollout, and the joint
     /// policy block matches the policy-only method (the material leaf does not
@@ -10210,8 +10213,9 @@ mod tests {
         assert_eq!(dz_dtheta.len(), 3);
         // Both blocks finite (the `coupling()` fixture starts above contact, so at
         // n=8 the block may be undeformed ⇒ ∂z/∂μ can be 0; the engaged μ gradient
-        // is validated nonzero + FD-exact in `tests/coupled_joint_gradient.rs`). The
-        // policy block is genuinely live (control always moves z).
+        // is validated nonzero + FD-exact by the `joint(μ+θ)` row of
+        // `tests/coupling_grad_harness.rs`). The policy block is genuinely live
+        // (control always moves z).
         assert!(
             dz_dmu.is_finite() && dz_dtheta.iter().all(|g| g.is_finite()),
             "joint gradients finite: μ={dz_dmu}, θ={dz_dtheta:?}"
