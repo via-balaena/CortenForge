@@ -39,6 +39,10 @@
 //!   single-step S4 cross-engine load crossing, two operating points);
 //! - **passive Y-hinge arm** (`hinge_coupling`): `articulated-material` (the
 //!   moment-routed `Δt·M⁻¹·Jᵀ` carry, FD'd along the λ = 4μ tie);
+//! - **damped articulated arms** (`damped_coupling`): `material` on a single hinge
+//!   (`damping=0.5`, analytic damped `J_state`) and a 2-link chain (per-joint damping,
+//!   off-diagonal FD `J_state`) — the `M_impl = M + Δt·D` velocity coupling a
+//!   damping-free scene can't exercise;
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (real `<motor>` and
 //!   state-feedback `<position>`/`<velocity>`/PD servos, per-step control driving the
 //!   arm through the contact);
@@ -178,6 +182,24 @@ fn hinge_coupling(mu: f64) -> StaggeredCoupling {
     data.forward(&model).expect("initial forward");
     StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+}
+
+/// Damped articulated arm: a hinge (or chain) with MuJoCo `damping=` on its
+/// joints, seeded off-vertical and pressing the soft block. Under the default Euler
+/// integrator `eulerdamp` solves `(M + Δt·D)·qacc = F`, so the contact wrench reaches
+/// `qvel'` through `M_impl = M + Δt·D`, not the bare `M` — a channel a damping-free
+/// scene can't exercise. `body`/`seed` select the contacting body and the off-vertical
+/// pose. Bare-M⁻¹ scope otherwise matches [`hinge_coupling`].
+fn damped_coupling(mjcf: &str, mu: f64, body: usize, seed: &[(usize, f64)]) -> StaggeredCoupling {
+    let model = load_model(mjcf).expect("damped MJCF loads");
+    let mut data = model.make_data();
+    for &(i, q) in seed {
+        data.qpos[i] = q;
+    }
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, body, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
 }
 
@@ -324,8 +346,10 @@ const FORWARD_TOL: f64 = 1e-12;
 /// Liveness floor for [`Comp::Live`] — a gradient is "meaningfully coupling" only
 /// if `|fd|` clears this, well above the FD-noise `floor`. Matches the bespoke
 /// gates' `grad > 1e-9` sanities; every live component in the matrix clears it
-/// with ≥10× margin (the smallest, hinge-material's tied-μ, is ~2e-8). A scene
-/// that quietly de-engaged toward noise would drop below it and fail.
+/// with ≥10× margin (the smallest, the damped-hinge tied-μ, is ~1.2e-8 — the
+/// damped chains' tied gradients are intrinsically near this floor, so their rows
+/// run a longer horizon to lift clear of it). A scene that quietly de-engaged
+/// toward noise would drop below it and fail.
 const LIVE_FLOOR: f64 = 1e-9;
 
 /// The channel-agnostic core. Four checks per case: (1) the tape's forward loss
@@ -604,6 +628,74 @@ fn articulated_material_case() -> GradCase {
     }
 }
 
+/// The damped single-hinge keystone scene (`damping=0.5`): the analytic damped
+/// `J_state` (the `M → M_impl` correction) makes its per-step Jacobian machine-exact.
+const DAMPED_HINGE_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0" damping="0.5"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+/// A 2-link chain with per-joint damping — off-diagonal `M`, so the `M + Δt·D`
+/// coupling is genuinely live ACROSS joints (the FD `J_state` path under damping).
+const DAMPED_2LINK_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0" damping="0.5"/>
+      <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.3"/>
+      <body name="lower" pos="0 0 -0.05">
+        <joint type="hinge" axis="0 1 0" damping="0.3"/>
+        <geom type="sphere" pos="0 0 -0.04" size="0.004" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+/// DAMPED-MATERIAL — the articulated material-trajectory gradient on a joint with
+/// MuJoCo `damping=`, the `M_impl = M + Δt·D` counterpart of [`articulated_material_case`].
+/// Tied-μ (λ = 4μ → `∂tip_z/∂μ + 4·∂tip_z/∂λ`); FD oracle = `coupled_trajectory_articulated_z`
+/// (the same tapeless articulated rollout, automatically damping-correct because the engine's
+/// Euler `step` runs `eulerdamp`). `(mjcf, body, seed)` selects the single hinge (analytic
+/// damped `J_state`, ~1e-9) or the 2-link chain (FD `J_state`, ~1e-6, off-diagonal coupling).
+/// Folds the FD cells of `damped_joint_gradient.rs`; that file keeps its damped-vs-undamped
+/// materiality cross-check, the one invariant a single-scene FD row can't express.
+fn damped_material_case(
+    name: &'static str,
+    mjcf: &'static str,
+    body: usize,
+    seed: &'static [(usize, f64)],
+    n: usize,
+) -> GradCase {
+    GradCase {
+        name,
+        // The articulated tip rides the block top; the band pins engagement directly
+        // (the 2-link chain's tied-μ gradient is intrinsically ~1e-8, so the state band
+        // — not just the gradient floor — is what guards against a de-engaged fixture).
+        value_bounds: Some((0.10, 0.115)),
+        baseline: vec![MU0],
+        eps: vec![MU0 * 1e-4],
+        tol: 1e-5,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(move || {
+            let (tip_z, g_mu) = damped_coupling(mjcf, MU0, body, seed)
+                .coupled_trajectory_material_gradient_articulated(n, 0);
+            let g_la = damped_coupling(mjcf, MU0, body, seed)
+                .coupled_trajectory_material_gradient_articulated(n, 1)
+                .1;
+            (tip_z, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(move |p| {
+            damped_coupling(mjcf, p[0], body, seed).coupled_trajectory_articulated_z(n)
+        }),
+    }
+}
+
 /// ACTUATOR — a real `<actuator>`'s per-step control schedule on the actuated hinge, FD'd via
 /// `coupled_trajectory_actuated_z`. The same machinery covers any AFFINE actuator: a direct-torque
 /// MOTOR (`force = gear·ctrl`) and the state-feedback SERVOS (position `kp·(ctrl−qpos)`, velocity
@@ -734,6 +826,24 @@ fn cases() -> Vec<GradCase> {
         load_case("load·sphere[deep]", load_sphere_coupling, 0.097, 9.0),
         // passive Y-hinge arm
         articulated_material_case(),
+        // damped articulated arms (the M_impl = M + Δt·D channel): single hinge
+        // (analytic damped J_state) and a 2-link chain (off-diagonal FD J_state)
+        damped_material_case(
+            "damped-hinge·material[μ]",
+            DAMPED_HINGE_MJCF,
+            1,
+            &[(0, 0.3)],
+            6,
+        ),
+        // n=20: the 2-link's tied-μ gradient grows with horizon (~5e-10 at n=2), so a
+        // longer rollout lifts it clear of LIVE_FLOOR while the tip stays in the band.
+        damped_material_case(
+            "damped-2link·material[μ]",
+            DAMPED_2LINK_MJCF,
+            2,
+            &[(0, 0.1), (1, -0.05)],
+            20,
+        ),
         // actuated Y-hinge
         actuator_case(
             "hinge·actuator(motor)",
