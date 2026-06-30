@@ -38,12 +38,25 @@
 //! - **passive Y-hinge arm** (`hinge_coupling`): `articulated-material` (the
 //!   moment-routed `Δt·M⁻¹·Jᵀ` carry, FD'd along the λ = 4μ tie);
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (a real
-//!   `<motor>`'s per-step control driving the arm through the contact).
+//!   `<motor>`'s per-step control driving the arm through the contact);
+//! - **curved `SphereSdf` collider** (`sphere_coupling`): `material` (the
+//!   rotating-normal `f_mag·H` curvature carry a plane can't exercise).
 //!
-//! Adding a channel or scene is one [`GradCase`] row. Further scenes (sphere
-//! collider, free-body, moving-EE) and retiring the now-redundant bespoke gates
-//! follow in later PRs; the existing per-channel gates stay in place meanwhile,
-//! this harness running alongside them as the scalable guard.
+//! ## Oracle independence — two kinds
+//!
+//! Every channel's FD oracle re-runs the REAL coupled physics, tape-free. Two
+//! shapes, by what the parameter is:
+//! - **scene-construction params** (material μ, …) → [`step_rollout`]: a generic
+//!   `n`-step rollout via the public `step()` + a `readout` closure. Works on ANY
+//!   scene with NO bespoke evaluator (the platen/hinge rows predate it and still
+//!   use their dedicated `_z` methods, which are equally tapeless);
+//! - **per-step call params** (control / policy / actuator) → the channel's
+//!   dedicated `_z` method, since `step()` takes no per-step input.
+//!
+//! Adding a channel or scene is one [`GradCase`] row. Further scenes (free-body,
+//! moving-EE) and retiring the now-redundant bespoke gates follow in later PRs;
+//! the existing per-channel gates stay in place meanwhile, this harness running
+//! alongside them as the scalable guard.
 
 #![allow(clippy::expect_used)]
 
@@ -149,6 +162,30 @@ fn actuated_hinge_coupling(actuator: &str) -> StaggeredCoupling {
     )
 }
 
+/// Curved-collider platen: the soft block contacted by a finite `SphereSdf`
+/// (`with_sphere_collider`) instead of a half-plane, so the contact normal
+/// rotates over the curved face — the `f_mag·H` curvature term the plane gates
+/// can't exercise. Started deeply engaged (platen z = 0.103) and damped so it
+/// settles into the curved contact without tearing.
+fn sphere_coupling(mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.103">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("sphere platen MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 40.0,
+    )
+    .with_sphere_collider(0.08)
+}
+
 // ── Harness core ──
 
 /// One gradient channel reduced to the harness's uniform interface.
@@ -242,6 +279,25 @@ fn fd_check(case: &GradCase) {
             case.name
         );
     }
+}
+
+/// Generic tapeless FD oracle for scene-construction-param channels: roll the
+/// REAL coupled dynamics forward `n` steps via the public `step()` (which builds
+/// NO tape), then read a scalar from the final state. `step()` is SDF-generic, so
+/// this drives the actual posed-collider contact for ANY scene — a genuinely
+/// independent oracle (it shares no code with the analytic tape/VJP path) without
+/// needing a bespoke per-channel `_z` evaluator. Channels whose parameter is a
+/// per-STEP call arg (control / policy / actuator) can't use this — `step()` takes
+/// no per-step input — and route through their dedicated `_z` methods instead.
+fn step_rollout(
+    mut c: StaggeredCoupling,
+    n: usize,
+    readout: impl Fn(&StaggeredCoupling) -> f64,
+) -> f64 {
+    for _ in 0..n {
+        c.step();
+    }
+    readout(&c)
 }
 
 // ── Channel adapters ──
@@ -384,6 +440,31 @@ fn actuator_motor_case() -> GradCase {
     }
 }
 
+/// SPHERE-MATERIAL — the material gradient on the curved `SphereSdf` collider: the
+/// rotating contact normal exercises the `f_mag·H` curvature carry (zero for a
+/// plane). Tied-μ param (λ = 4μ), so the analytic total is `∂z/∂μ + 4·∂z/∂λ`. ★
+/// FD oracle = the GENERIC tapeless `step_rollout` (no bespoke `_z` method),
+/// reading the platen's world height — the first row to use the readout oracle.
+fn sphere_material_case() -> GradCase {
+    const N: usize = 8;
+    GradCase {
+        name: "sphere·material[μ]",
+        baseline: vec![MU0],
+        eps: vec![MU0 * 5e-4],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect_live: vec![true],
+        analytic: Box::new(|| {
+            let (z, g_mu) = sphere_coupling(MU0).coupled_trajectory_material_gradient(N, 0);
+            let g_la = sphere_coupling(MU0)
+                .coupled_trajectory_material_gradient(N, 1)
+                .1;
+            (z, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(|p| step_rollout(sphere_coupling(p[0]), N, |c| c.data().xpos[1].z)),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -398,6 +479,8 @@ fn cases() -> Vec<GradCase> {
         articulated_material_case(),
         // actuated Y-hinge
         actuator_motor_case(),
+        // curved SphereSdf collider (generic tapeless step_rollout oracle)
+        sphere_material_case(),
     ]
 }
 
