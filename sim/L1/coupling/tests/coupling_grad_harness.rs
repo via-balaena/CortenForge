@@ -28,14 +28,22 @@
 //! `eps`/`tol`/`floor` let a relative-eps stiffness param and an absolute-eps
 //! control schedule share one harness core ([`fd_check`]).
 //!
-//! ## PR1 scope
+//! ## Coverage
 //!
-//! The four co-design channels — `control`, `policy`, `joint` (the heterogeneous
-//! μ+θ case), and `material` (the single-step S5 gradient, split into μ and λ) —
-//! on the keystone platen scene(s). Broadening the *scene* axis (articulated /
-//! sphere / free-body topologies) and retiring the now-redundant bespoke gates
-//! follow in later PRs. The existing per-channel gates stay in place meanwhile;
-//! this harness runs alongside them as the scalable guard.
+//! The harness covers a set of `(scene, channel)` cells — not a dense
+//! cross-product, since not every channel applies to every rigid topology. The
+//! cells live in [`cases`], grouped by scene:
+//! - **free platen** (`traj_coupling` / `step_coupling`): `control`, `policy`,
+//!   `joint` (the heterogeneous μ+θ case), `material[μ]`/`material[λ]`;
+//! - **passive Y-hinge arm** (`hinge_coupling`): `articulated-material` (the
+//!   moment-routed `Δt·M⁻¹·Jᵀ` carry, FD'd along the λ = 4μ tie);
+//! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (a real
+//!   `<motor>`'s per-step control driving the arm through the contact).
+//!
+//! Adding a channel or scene is one [`GradCase`] row. Further scenes (sphere
+//! collider, free-body, moving-EE) and retiring the now-redundant bespoke gates
+//! follow in later PRs; the existing per-channel gates stay in place meanwhile,
+//! this harness running alongside them as the scalable guard.
 
 #![allow(clippy::expect_used)]
 
@@ -88,6 +96,56 @@ fn step_coupling() -> StaggeredCoupling {
     data.forward(&model).expect("initial forward");
     StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 12.0,
+    )
+}
+
+/// Passive Y-hinge arm: a tilted link with a point mass on the tip pressing the
+/// soft block (a contact force at the tip maps through the joint as
+/// `Δt·M⁻¹·Jᵀ`, ≠ the platen's scalar `Δt/m`). Started off-vertical (qpos = 0.3)
+/// so the tip arcs and gravity sustains engagement. Bare-M⁻¹ scope (no damping).
+fn hinge_coupling(mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("hinge MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3; // tilt off vertical so the moment arm is live
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+}
+
+/// Actuated Y-hinge: the same arm driven by a swappable `<actuator>` on joint
+/// `j` — the actuator torque drives the arm THROUGH the contact, so the per-step
+/// control is the differentiated parameter.
+fn actuated_hinge_coupling(actuator: &str) -> StaggeredCoupling {
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+  <actuator>
+    {actuator}
+  </actuator>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("actuated hinge MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
 }
 
@@ -280,15 +338,66 @@ fn material_case(idx: usize, name: &'static str, p0: f64) -> GradCase {
     }
 }
 
-/// The PR1 matrix: four co-design channels (material split μ/λ) on the keystone
-/// platen scene(s). Adding a channel or scene is one row here.
+/// ARTICULATED-MATERIAL — the material gradient on the passive Y-hinge scene: a
+/// contact force at the arm tip routed through the joint (`Δt·M⁻¹·Jᵀ`). The lone
+/// param is the soft stiffness μ with λ slaved (the constructor's λ = 4μ tie), so
+/// the analytic total is `∂tip_z/∂μ + 4·∂tip_z/∂λ` and the FD rebuilds along the
+/// same line via `coupled_trajectory_articulated_z`.
+fn articulated_material_case() -> GradCase {
+    const N: usize = 6; // spans the violent make, a liftoff, and a re-touch
+    GradCase {
+        name: "hinge·material[μ]",
+        baseline: vec![MU0],
+        eps: vec![MU0 * 1e-4],
+        tol: 1e-7,
+        floor: 1e-12,
+        expect_live: vec![true],
+        analytic: Box::new(|| {
+            let (tip_z, g_mu) =
+                hinge_coupling(MU0).coupled_trajectory_material_gradient_articulated(N, 0);
+            let (_t, g_la) =
+                hinge_coupling(MU0).coupled_trajectory_material_gradient_articulated(N, 1);
+            (tip_z, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(|p| hinge_coupling(p[0]).coupled_trajectory_articulated_z(N)),
+    }
+}
+
+/// ACTUATOR — a real `<motor>`'s per-step control schedule on the actuated hinge
+/// (`force = gear·ctrl`). All controls are live (the torque drives the arm
+/// through the contact), FD'd via `coupled_trajectory_actuated_z`.
+fn actuator_motor_case() -> GradCase {
+    const MOTOR: &str = r#"<motor name="a" joint="j" gear="4"/>"#;
+    let controls = vec![0.3, -0.2, 0.25, -0.15, 0.1, 0.2];
+    let base = controls.clone();
+    GradCase {
+        name: "hinge·actuator(motor)",
+        eps: vec![1e-3; base.len()],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect_live: vec![true; base.len()],
+        baseline: base.clone(),
+        analytic: Box::new(move || {
+            actuated_hinge_coupling(MOTOR).coupled_trajectory_actuator_gradient(&base)
+        }),
+        value_at: Box::new(|p| actuated_hinge_coupling(MOTOR).coupled_trajectory_actuated_z(p)),
+    }
+}
+
+/// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
+/// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
     vec![
+        // free platen
         control_case(),
         policy_case(),
         joint_case(),
         material_case(0, "material[μ]", MU0),
         material_case(1, "material[λ]", LAMBDA0),
+        // passive Y-hinge arm
+        articulated_material_case(),
+        // actuated Y-hinge
+        actuator_motor_case(),
     ]
 }
 
