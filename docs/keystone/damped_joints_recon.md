@@ -56,9 +56,10 @@ from the MJCF `damping=` attr. **The gap is real; the fix is exactly `M → M + 
 ### Gates
 - `rigid_multidof_response::damped_xfrc_column_matches_fd` — `G_vel` vs FD (damped hinge + 2-link).
 - lib `analytic_state_jacobian_damped_matches_fd` — the damped analytic `J_state` vs FD (rel ~1e-10).
-- `damped_joint_gradient::{damped_hinge,damped_2link}_gradient_matches_fd` — the coupled
-  gradient vs the (damping-correct) full-coupled FD oracle, rel ~1e-6/1e-8 at n=2/6/10;
-  `damping_changes_the_gradient` — damped vs undamped `∂tip_z/∂μ` differ ≈40% (materiality).
+- `coupling_grad_harness::{damped-hinge,damped-2link}·material[μ]` rows — the coupled
+  gradient vs the (damping-correct) full-coupled FD oracle, rel ~1e-6/1e-8;
+  `damped_joint_gradient::damping_changes_the_gradient` — damped vs undamped `∂tip_z/∂μ`
+  differ ≈40% (materiality; the one invariant the FD harness rows can't express).
 
 ## 4. Follow-ons
 - **Analytic damped single-hinge `J_state`** — ✅ DONE (2026-06-17): the `M → M_impl` correction
