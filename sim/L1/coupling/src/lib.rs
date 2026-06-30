@@ -8858,8 +8858,9 @@ mod tests {
     }
 
     /// Lib-level smoke test of the S5 co-design crossing `∂vz'/∂μ` (the
-    /// scientific FD validation is in `tests/coupled_material_gradient.rs`):
-    /// the material parameter rides the same crossing via `MaterialStepVjp`.
+    /// scientific FD validation is the `material[μ]`/`material[λ]` rows of
+    /// `tests/coupling_grad_harness.rs`): the material parameter rides the same
+    /// crossing via `MaterialStepVjp`.
     #[test]
     fn material_crossing_smoke() {
         let c = coupling();
