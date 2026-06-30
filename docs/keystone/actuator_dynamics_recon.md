@@ -43,8 +43,9 @@ single-hinge closed form `Δt·gear/(M + Δt·D)` matches to **1.3e-10**.
   (the control-aware FD oracle). Each `u_k` is a tape parameter feeding the carry's third
   parent; the reverse pass gets BOTH the direct joint drive AND the indirect coupled path.
 
-PR1 gate: `motor_control_gradient_matches_fd` — `∂tip_z_N/∂u_k` vs the full-coupled FD,
-machine-exact (rel ~1e-11); `actuator_moves_the_tip` (materiality).
+Gated by the `hinge·actuator(motor)` row of `tests/coupling_grad_harness.rs` — `∂tip_z_N/∂u_k`
+vs the full-coupled FD, machine-exact (rel ~1e-11); the per-control `Comp::Live` floor subsumes
+the old `actuator_moves_the_tip` materiality check (a nonzero gradient ⇒ the actuator moves the tip).
 
 ## 3b. PR2 — state-feedback servos (NO code change; the prediction below was FALSIFIED)
 
@@ -55,9 +56,9 @@ and EXPLICIT (non-eulerdamp) term, so `transition_derivatives`' analytic `A` alr
 captures it — the `ctrl`-replicating scratch I predicted is NOT needed. (Contrast passive
 damping, which is IMPLICIT under eulerdamp and gave the ≈2.6% `A` mismatch in the damping
 leaf; an actuator velocity-servo's `kv` is explicit, so it is exact.) The control channel
-`∂qfrc/∂ctrl = gain` was already affine-general. PR2 is therefore validation + doc: gates
-`{position,velocity,pd}_servo_control_gradient_matches_fd` (all rel ~1e-11) + the corrected
-scope. **Lesson: measure-first can reveal the foundation is already MORE capable than the
+`∂qfrc/∂ctrl = gain` was already affine-general. PR2 is therefore validation + doc: the
+`hinge·actuator({position,velocity,pd})` rows of `tests/coupling_grad_harness.rs` (all rel ~1e-11)
++ the corrected scope. **Lesson: measure-first can reveal the foundation is already MORE capable than the
 prior leaf claimed — don't write code to fill a gap you haven't confirmed exists.**
 
 ## 3c. PR3 — actuated CHAINS (`nv > 1`), the exo's topology
