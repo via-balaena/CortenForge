@@ -53,6 +53,9 @@
 //! - **curved `SphereSdf` collider** (`sphere_coupling` / `load_sphere_coupling`):
 //!   `material` (the rotating-normal `f_mag·H` curvature carry a plane can't
 //!   exercise) and `load·sphere` (the same load crossing on the curved normal);
+//! - **moving end-effector** (`moving_ee_coupling`): `material` on a finite sphere
+//!   tracking the arm geom (`with_contact_geom`), so the contact centre moves laterally
+//!   as the arm swings — the 3-vector `∂centre/∂q` channel a height-only carry drops;
 //! - **off-COM free body, contact moment ON** (`freebody_coupling`):
 //!   `orientation` (a final quaternion component — gates the wrench carry's
 //!   POSITION rows `G_pos`, read via a `qpos` readout closure).
@@ -232,6 +235,35 @@ fn rotating_coupling(
         model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_rotating_normal(true)
+}
+
+/// Moving-end-effector scene: a Y-hinge arm whose long link carries a finite sphere
+/// end-effector (`with_sphere_collider` + `with_contact_geom(0)`) posed DIRECTLY over the
+/// block centroid, so the sphere centre TRACKS the geom (`centre = geom_xpos(q)`) and
+/// translates laterally in x as the tilted arm swings — not just vertically. The coupled
+/// gradient must thread the 3-vector centre channel (`∂centre/∂q = J_geom`, the
+/// `PoseCentreVjp` seam, `WrenchPose::Centre`); a height-only carry drops the lateral
+/// feedback and is wrong here. Tilted (qpos = 0.15) for the off-COM moment + lateral travel,
+/// large gentle sphere (r = 0.08, low curvature ⇒ a definite forward tangent). No damping.
+fn moving_ee_coupling(mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0.05 0.05 0.344">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.17" size="0.08" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("moving-EE hinge MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.15; // tilt → off-COM moment + lateral centre travel
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(0.08)
+    .with_contact_geom(0)
 }
 
 /// Actuated Y-hinge: the same arm driven by a swappable `<actuator>` on joint
@@ -796,6 +828,40 @@ fn rotating_material_case(
     }
 }
 
+/// MOVING-EE-MATERIAL — the articulated material-trajectory gradient with the finite sphere
+/// end-effector tracking the arm geom (`with_contact_geom`), so the contact centre moves
+/// LATERALLY (x) as well as vertically as the arm swings. The lateral generalization of
+/// [`sphere_material_case`]'s curved-normal carry: the gradient threads the 3-vector centre
+/// channel (`∂centre/∂q = J_geom`, the `PoseCentreVjp` seam) a height-only carry drops. Same
+/// tied-μ + `coupled_trajectory_articulated_z` oracle as the other articulated rows (forward and
+/// adjoint pose at the SAME geom each step, so the FD is moving-EE too). n=8: the gradient is
+/// intrinsically near `LIVE_FLOOR` (~1.4e-9 at n=2) and grows with horizon, so a longer rollout
+/// lifts it clear (~1.1e-8, ~11×) while the arm-reference height stays ~0.176. Folds the FD +
+/// engagement tests of `sphere_moving_ee_trajectory_gradient.rs`; that file keeps the two
+/// invariants the matrix can't express — the `#[should_panic]` free-body-friction contract guard
+/// and the plane-collider byte-identity no-op cross-check.
+fn moving_ee_material_case() -> GradCase {
+    const N: usize = 8;
+    GradCase {
+        name: "sphere-moving-ee·material[μ]",
+        value_bounds: Some((0.17, 0.185)),
+        baseline: vec![MU0],
+        eps: vec![MU0 * 1e-4],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(|| {
+            let (z, g_mu) =
+                moving_ee_coupling(MU0).coupled_trajectory_material_gradient_articulated(N, 0);
+            let g_la = moving_ee_coupling(MU0)
+                .coupled_trajectory_material_gradient_articulated(N, 1)
+                .1;
+            (z, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(|p| moving_ee_coupling(p[0]).coupled_trajectory_articulated_z(N)),
+    }
+}
+
 /// ACTUATOR — a real `<actuator>`'s per-step control schedule on the actuated hinge, FD'd via
 /// `coupled_trajectory_actuated_z`. The same machinery covers any AFFINE actuator: a direct-torque
 /// MOTOR (`force = gear·ctrl`) and the state-feedback SERVOS (position `kp·(ctrl−qpos)`, velocity
@@ -988,6 +1054,8 @@ fn cases() -> Vec<GradCase> {
         ),
         // curved SphereSdf collider (generic tapeless step_rollout oracle)
         sphere_material_case(),
+        // moving end-effector: finite sphere tracking the arm geom (lateral centre channel)
+        moving_ee_material_case(),
         // off-COM free body, contact moment ON (gates G_pos via orientation)
         freebody_orientation_case(),
     ]
