@@ -9345,8 +9345,8 @@ mod tests {
     /// differs from `A`: this carry measures the output tangent at the nominal `qpos'`
     /// (`mj_differentiate_pos`, the convention `jz`/`J_r` consume), whereas
     /// `transition_derivatives` references it at `q_old` — a different, internally
-    /// consistent tangent. The end-to-end `ball_joint_gradient_matches_fd` trajectory gate
-    /// validates the full convention-consistent composition.)
+    /// consistent tangent. The end-to-end flat `ball·material[μ]` trajectory row of
+    /// `tests/coupling_grad_harness.rs` validates the full convention-consistent composition.)
     #[test]
     fn loaded_state_jacobian_ball_velocity_block_matches_analytic() {
         const BALL_MJCF: &str = r#"<mujoco>
