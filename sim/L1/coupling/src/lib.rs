@@ -8832,7 +8832,8 @@ mod tests {
     }
 
     /// Lib-level smoke test of the friction-coefficient trajectory gradient (the
-    /// scientific FD validation is in `tests/friction_coupled_trajectory_coeff_gradient.rs`):
+    /// scientific FD validation is the `friction·tangential-coeff[μ_c]` row of the coupling
+    /// gradient harness, `tests/coupling_grad_harness.rs`):
     /// the `μ_c` driver's tape forward reproduces the real grip rollout exactly, and one
     /// `tape.backward` gives a finite nonzero `∂x_N/∂μ_c` through both channels (the soft
     /// equilibrium shift and the direct reaction `∂fx/∂μ_c`). Uses a tilted-gravity,
