@@ -42,11 +42,12 @@
 //! **Quaternion joints (`nq ≠ nv`).** The carry is reformulated in SO(3)/SE(3) TANGENT
 //! space (SO(3)-aware FD `loaded_state_jacobian` + the position-row right Jacobian
 //! `G_pos = Δt·J_r(Δt·qvel')·G_vel`), so the gradient is correct through quaternion DOFs:
-//! an off-COM BALL joint (`nv = 3`, `ball_joint_gradient_matches_fd`) and an off-COM FREE
-//! joint (`nv = 6`, the floating base, `free_joint_offcom_gradient_matches_fd`) are
-//! machine-exact at n = 1, 2, 4. Both need an OFF-COM contact: a centered free platen is
-//! degenerate (`xipos.z` is orientation-blind, so the quaternion never enters the
-//! μ-gradient). See docs/keystone/quaternion_joints_recon.md.
+//! an off-COM BALL joint (`nv = 3`) and an off-COM FREE joint (`nv = 6`, the floating base)
+//! are machine-exact — validated by the flat `ball·material[μ]` / `free-offcom·material[μ]`
+//! rows of the coupling gradient matrix (`tests/coupling_grad_harness.rs`). Both need an
+//! OFF-COM contact: a centered free platen is degenerate (`xipos.z` is orientation-blind, so
+//! the quaternion never enters the μ-gradient) — the `articulated_free_platen_exact_all_n`
+//! sweep below is that degenerate control. See docs/keystone/quaternion_joints_recon.md.
 
 #![allow(clippy::expect_used)]
 
@@ -106,35 +107,6 @@ fn tape_and_fd(n: usize) -> (f64, f64, f64) {
     let zm = build(MU0 - eps).coupled_trajectory_articulated_z(n);
     let fd = (zp - zm) / (2.0 * eps);
     (tip_z, total, fd)
-}
-
-#[test]
-fn articulated_gradient_matches_full_coupled_fd_through_make_break() {
-    // n = 6 spans the initial violent make (~25 active, f_z ~ 800 N), a liftoff, and a
-    // re-touch. The moment-routing tape gradient is MACHINE-EXACT against the
-    // independent full-coupled FD oracle (the wrench node is FD-exact vs the real
-    // readout in `contact_wrench_node_matches_readout_fd`; the analytic single-hinge
-    // `J_state` in `analytic_state_jacobian_matches_fd_loaded`). The fully-fresh
-    // formulation (fresh-FK contact pose + fresh output + true position-row carry
-    // `∂qpos'/∂w = Δt·G_vel`) removed the old long-rollout moment residual — see
-    // `docs/keystone/moment_residual_recon.md`.
-    let n = 6;
-    let (tip_z, total, fd) = tape_and_fd(n);
-    let z_oracle = build(MU0).coupled_trajectory_articulated_z(n);
-    assert!(
-        (tip_z - z_oracle).abs() < 1e-12,
-        "tape forward tip_z {tip_z} != real rollout {z_oracle}"
-    );
-    let rel = (total - fd).abs() / fd.abs().max(1e-30);
-    println!("n={n}: tape total={total:.8e} FD={fd:.8e} rel={rel:.3e}");
-    assert!(
-        rel < 1e-7,
-        "articulated dμ gradient (with moment) must be machine-exact vs full-coupled \
-         FD through make/break, got rel {rel:.3e}"
-    );
-    assert!(total.abs() > 1e-9, "expected a nonzero ∂tip_z/∂μ");
-    // The dt/m-vs-multi-DOF distinction — J_z ≠ 1 on the tilted contact axis — is
-    // asserted at the primitive level in tests/rigid_multidof_response.rs.
 }
 
 /// The articulated gradient stays MACHINE-EXACT over LONG rollouts with sustained
@@ -212,207 +184,6 @@ fn articulated_gradient_short_rollout_is_machine_exact() {
         assert!(
             rel < 1e-7,
             "n={n} articulated gradient must be machine-exact, got rel {rel:.3e}"
-        );
-    }
-}
-
-// A BALL joint (`nq = 4, nv = 3`): the first QUATERNION joint in the coupled gradient. A
-// single arm on a ball joint, tilted θ = 0.3 about Y so the off-COM tip (`xipos.x ≈
-// −0.028`) presses the block — the contact reaction's off-COM moment swings the ball, so
-// ∂tip_z/∂μ flows THROUGH the quaternion DOFs (orientation enters the gradient). This is
-// the scene S0 found the raw-`qpos` carry got WRONG-SIGN (rel 1.15 at n = 4): the
-// `loaded_state_jacobian` perturbed un-normalized quaternion components and differenced
-// raw `qpos'`, not the SO(3) tangent. The tangent-FD carry + the SO(3) right-Jacobian
-// position-row (`G_pos = Δt·J_r·G_vel`) make it match the full-coupled FD. A free body
-// with COM contact is a DEGENERATE quaternion test (orientation never enters the
-// COM-height plane — `articulated_free_platen_exact_all_n` passes even at 107° rotation);
-// the off-COM ball joint is the scene that exercises SO(3) in the gradient.
-const BALL_MJCF: &str = r#"<mujoco>
-  <option gravity="0 0 -9.81" timestep="0.001"/>
-  <worldbody>
-    <body name="arm" pos="0 0 0.2">
-      <joint type="ball"/>
-      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
-    </body>
-  </worldbody>
-</mujoco>"#;
-
-fn build_ball(mu: f64) -> StaggeredCoupling {
-    let model = load_model(BALL_MJCF).expect("ball MJCF loads");
-    let mut data = model.make_data();
-    // Tilt θ = 0.3 about Y as a unit quaternion [cos(θ/2), 0, sin(θ/2), 0] — the same
-    // tilt the hinge scene sets via qpos[0] = 0.3, but on SO(3) (nq = 4 ≠ nv = 3).
-    let half = 0.15_f64;
-    data.qpos[0] = half.cos();
-    data.qpos[1] = 0.0;
-    data.qpos[2] = half.sin();
-    data.qpos[3] = 0.0;
-    data.forward(&model).expect("forward");
-    StaggeredCoupling::new(
-        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
-    )
-}
-
-/// **The ball-joint (`nq = 4, nv = 3`) coupled gradient matches the full-coupled FD.** The
-/// first quaternion joint: the off-COM tip's height depends on the ball ORIENTATION, so
-/// ∂tip_z/∂μ flows through the quaternion DOFs. The TANGENT-space reformulation — the
-/// SO(3)-aware FD `loaded_state_jacobian` (perturb via `mj_integrate_pos_explicit`,
-/// difference via `mj_differentiate_pos`) plus the position-row SO(3) right Jacobian
-/// `G_pos = Δt·J_r(Δt·qvel')·G_vel` — fixes the S0 gap (raw `qpos` was WRONG-SIGN, rel
-/// 1.15 at n = 4; now machine-exact). Accuracy is FD-CARRY precision (~1e-6): a quaternion
-/// joint (`nq ≠ nv`) has no analytic `J_state`, so it uses the FD `loaded_state_jacobian`
-/// (eps 1e-6) — unlike the undamped hinge chain, which now uses the analytic chain carry.
-///
-/// Gated at n = 1, 2, 4 — the stably-engaged, well-conditioned regime (FD converged across
-/// eps_rel 1e-3…1e-6). A ball joint is UNCONSTRAINED (3 rotational DOFs, no restoring
-/// stiffness), so the violent initial contact impulse eventually launches the arm into a
-/// chaotic regime (by n ≈ 6 the tip leaves the block and the FD is non-convergent — the
-/// GRADIENT itself becomes ill-conditioned, not the tape). Long-rollout gradient
-/// robustness is covered by the constrained hinge / free-platen / chain gates above. See
-/// `docs/keystone/quaternion_joints_recon.md`.
-#[test]
-fn ball_joint_gradient_matches_fd() {
-    let z0 = build_ball(MU0).data().xipos[1].z;
-    assert!(
-        z0 > 0.10 && z0 < 0.115,
-        "ball-joint tip should start engaged near the block top, got {z0}"
-    );
-    for n in [1usize, 2, 4] {
-        let (tip_z, gm) = build_ball(MU0).coupled_trajectory_material_gradient_articulated(n, 0);
-        let (_t2, gl) = build_ball(MU0).coupled_trajectory_material_gradient_articulated(n, 1);
-        let total = gm + 4.0 * gl;
-        // The fresh-output tape forward must reproduce the independent real rollout.
-        let z_oracle = build_ball(MU0).coupled_trajectory_articulated_z(n);
-        assert!(
-            (tip_z - z_oracle).abs() < 1e-12,
-            "n={n}: tape forward tip_z {tip_z} != real rollout {z_oracle}"
-        );
-        let eps = MU0 * 1e-4;
-        let zp = build_ball(MU0 + eps).coupled_trajectory_articulated_z(n);
-        let zm = build_ball(MU0 - eps).coupled_trajectory_articulated_z(n);
-        let fd = (zp - zm) / (2.0 * eps);
-        let rel = (total - fd).abs() / fd.abs().max(1e-30);
-        println!("ball n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
-        assert!(
-            total.abs() > 1e-12 && rel < 1e-5,
-            "ball-joint nq=4 nv=3 gradient must match full-coupled FD (FD-carry \
-             precision) at n={n}, got rel {rel:.3e}"
-        );
-    }
-}
-
-// A FREE joint (`nq = 7, nv = 6`): the floating base — the full SE(3) successor to the
-// ball joint, the capstone exo's root. Two geoms: a stabilizing plate at the body origin
-// + an OFFSET mass (`0.03, 0, −0.02`), so the body COM is offset ~0.025 m HORIZONTALLY
-// from the contact-patch centroid (`xipos.x ≈ 0.025`). That offset is the whole point:
-// (1) the contact resultant misses the COM → an off-COM MOMENT that rotates the free body
-// (the quaternion evolves — |Δq| ≈ 1.35 over the 4-step check, asserted), and (2) the objective
-// `xipos.z = body_z + (R·offset).z` depends on the body ORIENTATION, so ∂tip_z/∂μ flows
-// THROUGH the SE(3) angular DOFs. A CENTERED free platen
-// (`articulated_free_platen_exact_all_n`) is DEGENERATE — `xipos.z` = body-z is
-// orientation-blind, so the quaternion never enters the μ-gradient (it passes even while
-// spinning). The offset COM is what makes this a real SE(3) test.
-const FREE_OFFCOM_MJCF: &str = r#"<mujoco>
-  <option gravity="0 0 -9.81" timestep="0.001"/>
-  <worldbody>
-    <body name="body" pos="0 0 0.116">
-      <freejoint/>
-      <geom type="box" pos="0 0 0" size="0.06 0.06 0.003" mass="0.05"/>
-      <geom type="sphere" pos="0.03 0 -0.02" size="0.004" mass="0.3"/>
-    </body>
-  </worldbody>
-</mujoco>"#;
-
-fn build_free_offcom(mu: f64) -> StaggeredCoupling {
-    let model = load_model(FREE_OFFCOM_MJCF).expect("free off-COM MJCF loads");
-    let mut data = model.make_data();
-    // free joint qpos = [x y z  qw qx qy qz]; seed a small θ=0.05 tilt about Y.
-    let half = 0.025_f64;
-    data.qpos[3] = half.cos();
-    data.qpos[5] = half.sin();
-    data.forward(&model).expect("forward");
-    StaggeredCoupling::new(
-        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
-    )
-}
-
-/// **The free-joint (`nq = 7, nv = 6`) off-COM coupled gradient matches the full-coupled
-/// FD.** The full SE(3) floating base: an off-COM contact moment rotates the free body and
-/// the objective `xipos.z = body_z + (R·offset).z` reads the orientation, so ∂tip_z/∂μ
-/// flows through ALL SIX DOFs incl. the 3 SO(3) angular ones. The same tangent-space
-/// reformulation that fixed the ball joint (the SO(3)-aware FD `loaded_state_jacobian` +
-/// the position-row right Jacobian `G_pos = Δt·J_r(Δt·qvel')·G_vel`, with the free joint's
-/// `[Δt·I₃ | Δt·J_r]` integrator block) handles `nv = 6` with no new machinery — machine
-/// exact at FD-carry precision. Materiality is asserted directly: the COM is off the
-/// contact-patch centroid AND the quaternion rotates materially over the rollout (vs the
-/// degenerate centered `articulated_free_platen_exact_all_n`). See
-/// `docs/keystone/quaternion_joints_recon.md`.
-///
-/// Gated at n = 1, 2, 4 (FD-converged, well-conditioned). Like the ball, an unconstrained
-/// free body resting on a single block is rotationally unstable at longer horizons; this
-/// scene stays machine-exact further (n = 6 ≈ 6e-6) but the hard gate matches the ball's
-/// CI-proven margins.
-#[test]
-fn free_joint_offcom_gradient_matches_fd() {
-    // Materiality #1: the COM is genuinely off the contact-patch centroid (orientation
-    // enters the objective). A centered platen has xipos.x ≈ 0 and is degenerate.
-    let cx = build_free_offcom(MU0).data().xipos[1].x;
-    assert!(
-        cx > 0.015,
-        "scene must be off-COM for SE(3) to enter the gradient, got xipos.x = {cx}"
-    );
-    // Materiality #2: the free body actually ROTATES over the rollout (the SO(3) angular
-    // DOFs are live, not a frozen orientation).
-    let q0 = {
-        let c = build_free_offcom(MU0);
-        [
-            c.data().qpos[3],
-            c.data().qpos[4],
-            c.data().qpos[5],
-            c.data().qpos[6],
-        ]
-    };
-    let qn = {
-        let mut c = build_free_offcom(MU0);
-        for _ in 0..4 {
-            let _ = c.coupled_trajectory_articulated_z(1);
-        }
-        [
-            c.data().qpos[3],
-            c.data().qpos[4],
-            c.data().qpos[5],
-            c.data().qpos[6],
-        ]
-    };
-    let dq: f64 = (0..4).map(|i| (qn[i] - q0[i]).powi(2)).sum::<f64>().sqrt();
-    // |Δq| ≈ 1.35 here — a large rotation; `> 1.0` proves the SO(3) DOFs are genuinely
-    // live (not a frozen orientation) with margin, without pinning the exact tumble.
-    assert!(
-        dq > 1.0,
-        "the free body must rotate materially, got |Δq| = {dq:.3e}"
-    );
-
-    for n in [1usize, 2, 4] {
-        let (tip_z, gm) =
-            build_free_offcom(MU0).coupled_trajectory_material_gradient_articulated(n, 0);
-        let (_t2, gl) =
-            build_free_offcom(MU0).coupled_trajectory_material_gradient_articulated(n, 1);
-        let total = gm + 4.0 * gl;
-        let z_oracle = build_free_offcom(MU0).coupled_trajectory_articulated_z(n);
-        assert!(
-            (tip_z - z_oracle).abs() < 1e-12,
-            "n={n}: tape forward tip_z {tip_z} != real rollout {z_oracle}"
-        );
-        let eps = MU0 * 1e-4;
-        let zp = build_free_offcom(MU0 + eps).coupled_trajectory_articulated_z(n);
-        let zm = build_free_offcom(MU0 - eps).coupled_trajectory_articulated_z(n);
-        let fd = (zp - zm) / (2.0 * eps);
-        let rel = (total - fd).abs() / fd.abs().max(1e-30);
-        println!("free-offcom n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
-        assert!(
-            total.abs() > 1e-12 && rel < 1e-5,
-            "free-joint nq=7 nv=6 off-COM gradient must match full-coupled FD (FD-carry \
-             precision) at n={n}, got rel {rel:.3e}"
         );
     }
 }

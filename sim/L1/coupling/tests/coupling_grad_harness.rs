@@ -45,10 +45,12 @@
 //!   scene can't exercise — AND on undamped chains routed through the analytic chain
 //!   `J_state`: a 2-link (nv = 2, off-diagonal `M` + Coriolis) and a 3-link multi-hop chain
 //!   (nv = 3, the bias-acceleration transport a 2-link never reaches);
-//! - **rotating-normal arms** (`rotating_coupling`): `material` on a tilted ball joint
-//!   and a free base with `with_rotating_normal(true)`, so the carry flows through the
-//!   contact normal's `q`-dependence (`δn̂ = ω×n̂` + the wrench redirect + the pose-twist
-//!   seam) — terms a fixed-normal scene zeroes;
+//! - **tilted quaternion arms** (`tilted_arm_coupling`): `material` on a tilted ball joint
+//!   (`nv = 3`) and an off-COM free base (`nv = 6`), with the contact normal FLAT (the
+//!   SO(3)/SE(3) quaternion carry `G_pos = Δt·J_r·G_vel` on a fixed normal) or ROTATING
+//!   (`with_rotating_normal(true)`, so the carry additionally flows through the normal's
+//!   `q`-dependence `δn̂ = ω×n̂` + the wrench redirect + the pose-twist seam — terms a
+//!   fixed-normal scene zeroes);
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (real `<motor>` and
 //!   state-feedback `<position>`/`<velocity>`/PD servos, per-step control driving the
 //!   arm through the contact);
@@ -242,23 +244,30 @@ fn seeded_arm_coupling(
     )
 }
 
-/// Rotating-normal articulated scene: a body tilted off-vertical by `half` radians
-/// about Y (a quaternion seed `qpos[w_idx]=cos(half)`, `qpos[v_idx]=sin(half)`)
-/// pressing the soft block with `with_rotating_normal(true)`, so the contact normal
-/// tracks the body orientation (`n̂ = R(q)·(0,0,−1)`). The coupled gradient then flows
-/// through the normal's `q`-dependence (the pose-adjoint `δn̂ = ω×n̂`, the wrench's
-/// `∂w/∂T` redirect, the `PoseTwistSeamVjp` seam). A GENTLE tilt (`half ≈ 0.02–0.05`)
-/// keeps both the flat and rotating models stable — the ball diverges at θ = 0.3.
-/// `body=1` for both seeds; the FD `loaded_state_jacobian` carries the ball/free joint
-/// (neither has a single-hinge analytic `J_state`).
-fn rotating_coupling(
+/// Tilted quaternion arm: a body (`body=1`) tilted off-vertical by `half` radians about Y
+/// (a quaternion seed `qpos[w_idx]=cos(half)`, `qpos[v_idx]=sin(half)`) pressing the soft
+/// block, with the contact normal either FLAT (`rotating=false` — the default fixed
+/// world-`−z` normal) or TRACKING the body orientation (`rotating=true` →
+/// `with_rotating_normal`, `n̂ = R(q)·(0,0,−1)`). The two modes exercise DIFFERENT channels:
+/// - **flat** gates the SO(3)/SE(3) quaternion carry itself (the tangent-space FD
+///   `loaded_state_jacobian` + the position-row right Jacobian `G_pos = Δt·J_r·G_vel`) on a
+///   fixed normal — the ball / off-COM-free rows;
+/// - **rotating** additionally flows the gradient through the normal's `q`-dependence (the
+///   pose-adjoint `δn̂ = ω×n̂`, the wrench's `∂w/∂T` redirect, the `PoseTwistSeamVjp` seam) —
+///   the rotating-ball / rotating-free rows.
+///
+/// A GENTLE tilt (`half ≈ 0.02–0.05`) keeps the rotating model stable; the flat carry
+/// tolerates the sharper ball tilt (θ = 0.3, `half = 0.15`). Neither joint has a single-hinge
+/// analytic `J_state`, so the FD `loaded_state_jacobian` carries both.
+fn tilted_arm_coupling(
     mjcf: &str,
     mu: f64,
     w_idx: usize,
     v_idx: usize,
     half: f64,
+    rotating: bool,
 ) -> StaggeredCoupling {
-    let model = load_model(mjcf).expect("rotating-normal MJCF loads");
+    let model = load_model(mjcf).expect("tilted-arm MJCF loads");
     let mut data = model.make_data();
     data.qpos[w_idx] = half.cos();
     data.qpos[v_idx] = half.sin();
@@ -266,7 +275,7 @@ fn rotating_coupling(
     StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
-    .with_rotating_normal(true)
+    .with_rotating_normal(rotating)
 }
 
 /// Moving-end-effector scene: a Y-hinge arm whose long link carries a finite sphere
@@ -864,9 +873,11 @@ fn arm_material_case(
     }
 }
 
-/// The rotating-normal ball joint at a gentle Y-tilt (θ = 0.1): the off-COM tip presses
-/// the block and the rotating normal redirects the reaction.
-const ROT_BALL_MJCF: &str = r#"<mujoco>
+/// A ball-joint arm (`nq = 4, nv = 3`): a single arm on a ball joint whose off-COM tip
+/// presses the block, so ∂tip_z/∂μ flows THROUGH the quaternion DOFs. Shared by the FLAT
+/// ball row (sharp tilt θ = 0.3, `half = 0.15` — the SO(3) carry on a fixed normal) and the
+/// rotating-normal ball row (gentle θ = 0.1 — the same scene with the normal tracking `q`).
+const BALL_ARM_MJCF: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
   <worldbody>
     <body name="arm" pos="0 0 0.2">
@@ -890,24 +901,51 @@ const ROT_FREE_MJCF: &str = r#"<mujoco>
   </worldbody>
 </mujoco>"#;
 
-/// ROTATING-NORMAL-MATERIAL — the articulated material-trajectory gradient with the
-/// contact normal tracking body orientation (`with_rotating_normal(true)`), so the carry
-/// flows through the normal's `q`-dependence (the `δn̂ = ω×n̂` pose-adjoint + the wrench
-/// `∂w/∂T` redirect + the `PoseTwistSeamVjp` seam) — terms a fixed-normal scene zeroes.
-/// Same tied-μ + `coupled_trajectory_articulated_z` oracle as [`articulated_material_case`];
-/// the oracle is built through the SAME `with_rotating_normal`-gated `build_contact`, so the
-/// FD is rotating-normal too (a matched pair). `(w_idx, v_idx, half)` is the quaternion tilt
-/// seed; the per-scene `band`/`n` keep the gentle-tilt fixture in its stable engaged regime
-/// (the ball climbs out of contact past n ≈ 4, the free body is slow-climbing). Folds the FD
-/// cells of `rotating_normal_gradient.rs`; that file keeps the rotating-vs-flat materiality
-/// check and the single-step height-probe JACOBIAN (a different, Bucket-B shape).
+/// The FLAT-normal off-COM free joint (`nq = 7, nv = 6`): the capstone exo's floating base.
+/// A stabilizing plate at the body origin PLUS an offset mass (`0.03, 0, −0.02`) puts the COM
+/// ~0.025 m horizontally off the contact-patch centroid, so the objective
+/// `xipos.z = body_z + (R·offset).z` reads the body ORIENTATION and ∂tip_z/∂μ flows through the
+/// SE(3) angular DOFs (a CENTERED free platen is orientation-blind — degenerate). Distinct from
+/// [`ROT_FREE_MJCF`]: sharper offset + lighter plate, the fixed-normal SE(3)-carry fixture.
+const FREE_OFFCOM_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="body" pos="0 0 0.116">
+      <freejoint/>
+      <geom type="box" pos="0 0 0" size="0.06 0.06 0.003" mass="0.05"/>
+      <geom type="sphere" pos="0.03 0 -0.02" size="0.004" mass="0.3"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+/// TILTED-QUATERNION-MATERIAL — the articulated material-trajectory gradient on a tilted
+/// quaternion arm ([`tilted_arm_coupling`]), with the contact normal FLAT (`rotating=false`)
+/// or TRACKING the body orientation (`rotating=true`). Same tied-μ +
+/// `coupled_trajectory_articulated_z` oracle as [`articulated_material_case`], built through
+/// the SAME `rotating`-gated `tilted_arm_coupling` so the FD oracle matches the tape's normal
+/// model (a matched pair). Two channels share this shape:
+/// - **flat** (ball `nv = 3`, off-COM free `nv = 6`): gates the SO(3)/SE(3) quaternion carry
+///   on a fixed normal — folds the FD cells of the ball / free-offcom tests of
+///   `articulated_trajectory_gradient.rs` (the `Comp::Live` floor subsumes their off-COM +
+///   `|Δq|` materiality asserts: a centered/degenerate fixture is orientation-blind, so its
+///   μ-gradient would drop below the floor and fail);
+/// - **rotating** (gentle ball / free): adds the normal's `q`-dependence (`δn̂ = ω×n̂` +
+///   `∂w/∂T` redirect + `PoseTwistSeamVjp` seam) — folds the FD cells of
+///   `rotating_normal_gradient.rs` (that file keeps the rotating-vs-flat materiality check +
+///   a single-step height-probe JACOBIAN, a Bucket-B shape).
+///
+/// `(w_idx, v_idx, half)` is the quaternion tilt seed; per-scene `band`/`n` keep each fixture
+/// in its well-conditioned engaged regime (probed: the sharp-tilt ball climbs out of contact
+/// past n ≈ 4 and the whippy free body launches, so n = 2 is the folded flat rows' horizon;
+/// the gentle rotating ball also tops out past n ≈ 4).
 #[allow(clippy::too_many_arguments)]
-fn rotating_material_case(
+fn tilted_material_case(
     name: &'static str,
     mjcf: &'static str,
     w_idx: usize,
     v_idx: usize,
     half: f64,
+    rotating: bool,
     n: usize,
     band: (f64, f64),
 ) -> GradCase {
@@ -920,15 +958,16 @@ fn rotating_material_case(
         floor: 1e-12,
         expect: vec![Comp::Live],
         analytic: Box::new(move || {
-            let (z, g_mu) = rotating_coupling(mjcf, MU0, w_idx, v_idx, half)
+            let (z, g_mu) = tilted_arm_coupling(mjcf, MU0, w_idx, v_idx, half, rotating)
                 .coupled_trajectory_material_gradient_articulated(n, 0);
-            let g_la = rotating_coupling(mjcf, MU0, w_idx, v_idx, half)
+            let g_la = tilted_arm_coupling(mjcf, MU0, w_idx, v_idx, half, rotating)
                 .coupled_trajectory_material_gradient_articulated(n, 1)
                 .1;
             (z, vec![g_mu + 4.0 * g_la])
         }),
         value_at: Box::new(move |p| {
-            rotating_coupling(mjcf, p[0], w_idx, v_idx, half).coupled_trajectory_articulated_z(n)
+            tilted_arm_coupling(mjcf, p[0], w_idx, v_idx, half, rotating)
+                .coupled_trajectory_articulated_z(n)
         }),
     }
 }
@@ -1242,24 +1281,52 @@ fn cases() -> Vec<GradCase> {
             1e-5,
             1e-4,
         ),
-        // rotating contact normal (n̂ = R(q)·(0,0,−1)): ball joint and free base, gentle
-        // Y-tilt. n/band are per-scene (the ball climbs out of contact past n≈4; the free
-        // base sits in a higher, slow-climbing band than the hinge scenes).
-        rotating_material_case(
-            "ball-rot·material[μ]",
-            ROT_BALL_MJCF,
+        // FLAT-normal quaternion carry (rotating=false): the SO(3) ball (sharp θ=0.3 tilt,
+        // half=0.15) and the SE(3) off-COM free base. n=2 is the folded flat rows' horizon —
+        // the sharp-tilt ball climbs out of contact past n≈4 and the whippy free body
+        // launches, so n=2 is the well-conditioned point (probed: ball grad 132×floor rel
+        // 1.7e-6; free-offcom grad 292×floor rel 3.7e-7). Comp::Live subsumes the bespoke
+        // off-COM + |Δq| materiality asserts (a degenerate centered fixture → grad below floor).
+        tilted_material_case(
+            "ball·material[μ]",
+            BALL_ARM_MJCF,
             0,
             2,
-            0.05,
+            0.15,
+            false,
             2,
             (0.10, 0.115),
         ),
-        rotating_material_case(
+        tilted_material_case(
+            "free-offcom·material[μ]",
+            FREE_OFFCOM_MJCF,
+            3,
+            5,
+            0.025,
+            false,
+            2,
+            (0.140, 0.155),
+        ),
+        // rotating contact normal (n̂ = R(q)·(0,0,−1), rotating=true): ball joint and free base,
+        // gentle Y-tilt. n/band are per-scene (the ball climbs out of contact past n≈4; the free
+        // base sits in a higher, slow-climbing band than the hinge scenes).
+        tilted_material_case(
+            "ball-rot·material[μ]",
+            BALL_ARM_MJCF,
+            0,
+            2,
+            0.05,
+            true,
+            2,
+            (0.10, 0.115),
+        ),
+        tilted_material_case(
             "free-rot·material[μ]",
             ROT_FREE_MJCF,
             3,
             5,
             0.02,
+            true,
             6,
             (0.114, 0.123),
         ),

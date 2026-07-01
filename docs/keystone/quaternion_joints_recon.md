@@ -104,8 +104,9 @@ The two-touchpoint plan was right but INCOMPLETE — there was a third, foundati
    `mjd_transition_fd` for ball/free joints** (same caller). Strictly more accurate, all 642
    sim-core lib tests still green.
 
-**Gate:** `ball_joint_gradient_matches_fd` at n=1,2,4 — machine-exact (rel 2e-7 / 1.7e-6 /
-6.3e-6, FD-carry precision like the chain). **Refutes S0's wrong-sign rel-1.15@n=4.** A ball
+**Gate:** the flat `ball·material[μ]` row of `tests/coupling_grad_harness.rs` (folded from the
+former `ball_joint_gradient_matches_fd`), machine-exact at n=2 (rel 1.7e-6, FD-carry precision
+like the chain). **Refutes S0's wrong-sign rel-1.15@n=4.** A ball
 joint is UNCONSTRAINED (no restoring stiffness), so the violent contact impulse launches the
 arm into a chaotic regime by n≈6 (tip leaves the block, FD non-convergent — the GRADIENT is
 ill-conditioned, not the tape); long-rollout robustness stays with the hinge/free/chain
@@ -140,6 +141,8 @@ n=1,2,4 (4e-9 / 8e-7 / 5e-6; n=6 ≈ 6e-6 observed, not gated).
 (COM above the contact, no anchor — unlike the ball's pivot). A single offset geom (long lever)
 falls/tumbles and the soft solver diverges by n=4; the plate-plus-offset-mass design (more
 rotational inertia near the origin) stays machine-exact through n=6. Gate is n=1,2,4 (ball's
-CI-proven margins). Materiality asserted IN the test: off-COM `xipos.x` + a material `|Δq|`.
+CI-proven margins). Materiality (off-COM `xipos.x` + a material `|Δq|`) is subsumed by the
+folded row's `Comp::Live` floor — a centered/degenerate fixture drops the gradient below it.
 
-Gate: `free_joint_offcom_gradient_matches_fd`. **The capstone exo's floating base is validated.**
+Gate: the flat `free-offcom·material[μ]` row of `tests/coupling_grad_harness.rs` (folded from the
+former `free_joint_offcom_gradient_matches_fd`). **The capstone exo's floating base is validated.**
