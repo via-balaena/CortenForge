@@ -73,7 +73,11 @@
 //! - **IPC (C²-barrier) contact model** (`ipc_coupling`, a `StaggeredCoupling<IpcRigidContact>`
 //!   type-parameter variant): single-step `material` (the isolated per-step factor) and the
 //!   multi-step `material` trajectory through the contact make/break event across the barrier-
-//!   stiffness sweep (κ from 3e4 to 3e2).
+//!   stiffness sweep (κ from 3e4 to 3e2);
+//! - **tangential FRICTION grip** (`friction_grip_coupling`, a compliant platen dragged sideways
+//!   by the block's Coulomb friction): `tangential-material` — the FIRST non-height objective, the
+//!   platen's world `x` SLIDE, so `∂x/∂μ` flows through the tangential grip feedback loop
+//!   (`vx → Δ_surf → x*`, `x* → fx`, `fx → vx' → x'`) a height carry leaves dormant.
 //!
 //! ## Oracle independence — two kinds
 //!
@@ -107,7 +111,8 @@
 //! (plane + sphere), the `actuator` channel (motor + position / velocity / PD servos, on
 //! both the single hinge and the 2-link damped chain), the `sphere-articulated` material
 //! trajectory, and the `IPC` contact-model trajectory
-//! (single-step + the multi-step make/break rollout). SLIMMED (the file keeps only what the FD
+//! (single-step + the multi-step make/break rollout). SLIMMED (the file
+//! keeps only what the FD
 //! matrix structurally can't hold — an invariant, or a sibling channel not yet reached): `joint`
 //! (a tape-vs-tape fusion-soundness check), `freebody-orientation`, `freebody-angular-velocity`
 //! (each an all-lengths machine-exact sweep) and the platen `material-trajectory` (all-lengths
@@ -115,9 +120,11 @@
 //! `rotating-normal` (a rotating-vs-flat materiality check + a single-step height-probe
 //! Jacobian), `moving-EE` material (a `#[should_panic]` free-body contract guard + a
 //! plane-collider byte-identity no-op), `moving-EE` actuator (the file keeps its FRICTION /
-//! policy-friction / design-policy-friction moving-EE gates for the friction/grip steps). The
+//! policy-friction / design-policy-friction moving-EE gates for the friction/grip steps), and the
+//! `tangential-material` FRICTION channel (the file keeps the z-ENGAGEMENT invariant the row's
+//! x-slide loss band structurally can't express — engagement is a non-loss component here). The
 //! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; further
-//! channels (friction / tangential / peak-pressure) join the same way.
+//! channels (the rest of the friction family / grip co-design / peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -131,6 +138,10 @@ use sim_soft::{
 
 const MU0: f64 = 3.0e4;
 const LAMBDA0: f64 = 1.2e5; // = 4·μ (the constructor's Lamé relation)
+
+/// The friction grip scene's COMPLIANT block stiffness (softer than the height scenes' `MU0`) —
+/// a sharper μ-lever on the tangential slide (see [`friction_grip_coupling`]).
+const FRIC_MU0: f64 = 3.0e3;
 
 /// Deeply-engaged platen for the *trajectory* channels: the soft block's top
 /// face sits inside the platen's contact band so the rollout is firmly engaged —
@@ -498,6 +509,32 @@ fn ipc_coupling(mu: f64, kappa: f64) -> StaggeredCoupling<IpcRigidContact> {
     StaggeredCoupling::<IpcRigidContact>::new(
         model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, kappa, 1.0e-2, 8.0,
     )
+}
+
+/// The tangential FRICTION grip scene: a free-joint platen pressed onto the pinned soft block
+/// and pushed SIDEWAYS by tilted gravity (`gx = 2.0`), started near vertical force balance
+/// (z = 0.115). The Coulomb friction (`with_friction`) makes the block drag the platen, so the
+/// objective is the platen's tangential SLIDE (world `x`), not its height. A COMPLIANT block
+/// (`FRIC_MU0 = 3e3`, softer than the height scenes' 3e4) deforms more under the drag, so μ is a
+/// sharper lever on the slide — `∂x/∂μ` is a well-conditioned ~6e-8 m rather than the ~4e-9 m
+/// residual a stiff block leaves (catastrophic cancellation of the large stiff friction terms).
+fn friction_grip_coupling(soft_mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.115">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("friction grip platen MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 8.0,
+    )
+    .with_friction(2.5, 0.1)
 }
 
 // ── Harness core ──
@@ -1348,6 +1385,47 @@ fn ipc_traj_material_case(name: &'static str, kappa: f64) -> GradCase {
     }
 }
 
+/// FRICTION-TANGENTIAL-MATERIAL — the material gradient on the tangential FRICTION grip
+/// ([`friction_grip_coupling`]): the platen dragged SIDEWAYS by the soft block's Coulomb
+/// friction, so the objective is the platen's world `x` SLIDE (not its height). `∂x/∂μ` flows
+/// through the tangential grip feedback loop — the moving-collider drift parent
+/// (`vx → Δ_surf → x*`), the friction-reaction readout (`x* → fx`), and the tangential rigid
+/// carry (`fx → vx' → x'`) — a channel every prior (height) row leaves dormant. Tied-μ
+/// (λ = 4μ → `∂x/∂μ + 4·∂x/∂λ`); FD oracle = `coupled_trajectory_grip(n).x` (the tapeless real
+/// grip rollout's final platen pose, reading its `x` component). n = 40 (the S0 creep horizon):
+/// `n = 1` is exactly 0 (position integrates the pre-step velocity → the drift feedback is
+/// load-bearing only at n ≥ 2) and the tied-μ gradient grows with horizon (~4e-12 at n = 2), so
+/// n = 40 lifts it ~58× clear of `LIVE_FLOOR` while the platen stays contact-engaged. The loss
+/// band is on the SLIDE `x` itself (the harness bands the loss, and the slide staying in its
+/// creep regime is a sanity on the objective). Folds the FD + forward tests of
+/// `friction_coupled_trajectory_gradient.rs`; that file keeps only the z-ENGAGEMENT invariant
+/// this row structurally can't express — the harness bands the loss (the slide `x`), but
+/// engagement is a property of a DIFFERENT component (the height `z`), so a state-level z-band
+/// can't be a loss band here.
+fn friction_tangential_material_case() -> GradCase {
+    const N: usize = 40;
+    GradCase {
+        name: "friction·tangential-material[μ]",
+        value_bounds: Some((7.0e-4, 8.5e-4)),
+        baseline: vec![FRIC_MU0],
+        eps: vec![FRIC_MU0 * 1e-5],
+        // Machine-exact (~2e-6); 1e-4 for cross-platform float-ordering margin (the bespoke's
+        // gate — a structural regression in any friction-coupled VJP edge blows it past 1.0).
+        tol: 1e-4,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(|| {
+            let (x, g_mu) = friction_grip_coupling(FRIC_MU0)
+                .coupled_trajectory_tangential_material_gradient(N, 0);
+            let g_la = friction_grip_coupling(FRIC_MU0)
+                .coupled_trajectory_tangential_material_gradient(N, 1)
+                .1;
+            (x, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(|p| friction_grip_coupling(p[0]).coupled_trajectory_grip(N).x),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -1565,6 +1643,9 @@ fn cases() -> Vec<GradCase> {
         ipc_traj_material_case("ipc-traj·material[μ,κ=3e3]", 3.0e3),
         ipc_traj_material_case("ipc-traj·material[μ,κ=1e3]", 1.0e3),
         ipc_traj_material_case("ipc-traj·material[μ,κ=3e2]", 3.0e2),
+        // tangential FRICTION grip: the FIRST non-height objective — the platen's world x SLIDE
+        // dragged by the block's Coulomb friction, `∂x/∂μ` through the tangential feedback loop
+        friction_tangential_material_case(),
     ]
 }
 

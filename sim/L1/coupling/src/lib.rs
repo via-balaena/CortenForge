@@ -8079,8 +8079,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// flows through both the soft material stiffness and the moving-collider feedback. The
     /// normal `z`-chain is retained because the contact height sets the friction normal
     /// force `λⁿ`. Free-joint platen / engaged-contact scope, as
-    /// [`Self::coupled_trajectory_grip`]. FD-gated machine-exact in
-    /// `tests/friction_coupled_trajectory_gradient.rs`.
+    /// [`Self::coupled_trajectory_grip`]. FD-gated machine-exact by the
+    /// `friction·tangential-material[μ]` row of the coupling gradient harness
+    /// (`tests/coupling_grad_harness.rs`).
     ///
     /// # Panics
     /// Panics if `param_idx > 1`, or if the rigid step diverges / the soft solver fails to
