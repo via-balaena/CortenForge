@@ -51,9 +51,11 @@
 //!   (`with_rotating_normal(true)`, so the carry additionally flows through the normal's
 //!   `q`-dependence `δn̂ = ω×n̂` + the wrench redirect + the pose-twist seam — terms a
 //!   fixed-normal scene zeroes);
-//! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (real `<motor>` and
-//!   state-feedback `<position>`/`<velocity>`/PD servos, per-step control driving the
-//!   arm through the contact);
+//! - **actuated Y-hinge** (`actuated_hinge_coupling`) and **actuated 2-link damped chain**
+//!   (`actuated_chain_coupling`, the exo topology, `nv = 2`): `actuator` (real `<motor>` and
+//!   state-feedback `<position>`/`<velocity>`/PD servos, per-step control driving the arm
+//!   through the contact — the hinge machine-exact via its analytic `J_state`, the chain at
+//!   FD-`J_state` precision since the actuator force interacts with `∂M⁻¹/∂q`);
 //! - **curved `SphereSdf` collider** (`sphere_coupling` / `load_sphere_coupling` /
 //!   `sphere_articulated_coupling`): `material` (the `f_mag·H` curvature carry a plane
 //!   can't exercise) on the free platen and the articulated hinge (the curved wrench
@@ -101,8 +103,9 @@
 //!
 //! Retired/folded so far. FULLY FOLDED (bespoke file deleted, nothing the matrix
 //! can't express): `control`, `material-step`, `policy`, the single-step `load` channel
-//! (plane + sphere), the `actuator` channel (motor + position / velocity / PD servos),
-//! the `sphere-articulated` material trajectory, and the `IPC` contact-model trajectory
+//! (plane + sphere), the `actuator` channel (motor + position / velocity / PD servos, on
+//! both the single hinge and the 2-link damped chain), the `sphere-articulated` material
+//! trajectory, and the `IPC` contact-model trajectory
 //! (single-step + the multi-step make/break rollout). SLIMMED (the file keeps the one
 //! invariant the FD matrix structurally can't hold): `joint` (a tape-vs-tape
 //! fusion-soundness check), `freebody-orientation`, `freebody-angular-velocity` (each an
@@ -334,6 +337,43 @@ fn actuated_hinge_coupling(actuator: &str) -> StaggeredCoupling {
     data.forward(&model).expect("initial forward");
     StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+}
+
+/// Actuated 2-link CHAIN (`nv = 2`, the exo's actual topology): a damped hinge chain whose
+/// DISTAL joint `j1` carries a swappable `<actuator>` with direct authority on the contacting
+/// tip (`body = 2`). Unlike the single [`actuated_hinge_coupling`], the actuator force interacts
+/// with the configuration-dependent mass matrix (`∂M⁻¹/∂q`), so the loaded `J_state` must see
+/// `ctrl` — and a DAMPED chain has no analytic `J_state`, so it runs at FD-`loaded_state_jacobian`
+/// precision (the `chain·actuator` rows' 1e-5 tol, vs the hinge's machine-exact 1e-6). Joint
+/// damping settles the otherwise-swinging chain on the block. Seeded off-vertical
+/// (`qpos = [0.1, −0.05]`) so the tip engages.
+fn actuated_chain_coupling(actuator: &str) -> StaggeredCoupling {
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.2">
+      <joint name="j0" type="hinge" axis="0 1 0" damping="0.3"/>
+      <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.3"/>
+      <body name="lower" pos="0 0 -0.05">
+        <joint name="j1" type="hinge" axis="0 1 0" damping="0.3"/>
+        <geom type="sphere" pos="0 0 -0.04" size="0.004" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    {actuator}
+  </actuator>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("actuated chain MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    data.qpos[1] = -0.05;
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 2, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
 }
 
@@ -1052,29 +1092,39 @@ fn sphere_articulated_material_case() -> GradCase {
     }
 }
 
-/// ACTUATOR — a real `<actuator>`'s per-step control schedule on the actuated hinge, FD'd via
-/// `coupled_trajectory_actuated_z`. The same machinery covers any AFFINE actuator: a direct-torque
-/// MOTOR (`force = gear·ctrl`) and the state-feedback SERVOS (position `kp·(ctrl−qpos)`, velocity
-/// `kv·(ctrl−qvel)`, PD combining both) — a servo's `∂force/∂(qpos,qvel)` is a constant explicit
-/// slope already carried by the analytic `J_state`, so no `ctrl`-replication is needed and all
-/// controls are live (the torque drives the arm through the contact).
-fn actuator_case(name: &'static str, actuator: &'static str, controls: Vec<f64>) -> GradCase {
+/// ACTUATOR — a real `<actuator>`'s per-step control schedule driving an arm THROUGH the contact,
+/// FD'd via `coupled_trajectory_actuated_z`. The same machinery covers any AFFINE actuator: a
+/// direct-torque MOTOR (`force = gear·ctrl`) and the state-feedback SERVOS (position `kp·(ctrl−qpos)`,
+/// velocity `kv·(ctrl−qvel)`, PD combining both) — a servo's `∂force/∂(qpos,qvel)` is a constant
+/// explicit slope already carried by the analytic `J_state`, so no `ctrl`-replication is needed and
+/// all controls are live (the torque drives the arm through the contact). `build` selects the
+/// mechanism: the single [`actuated_hinge_coupling`] (`nv = 1`, analytic `J_state` ⇒ machine-exact,
+/// `tol = 1e-6`) or the damped [`actuated_chain_coupling`] (`nv = 2`, the exo topology — the
+/// actuator force interacts with `∂M⁻¹/∂q` so a `ctrl`-blind FD `J_state` was ≈5e-5 wrong;
+/// `coupled_trajectory_actuator_gradient` replicates `ctrl` in the scratch → FD-carry `tol = 1e-5`).
+/// The per-control `Comp::Live` floor subsumes the chain gate's aggregate driven-vs-passive
+/// materiality (each `∂tip_z/∂u_k > 1e-9` ⇒ the finite drive moves the tip). Folds the FD cells of
+/// `actuator_chain_gradient.rs` (a clean full fold — that file is deleted).
+fn actuator_case(
+    name: &'static str,
+    build: fn(&str) -> StaggeredCoupling,
+    actuator: &'static str,
+    controls: Vec<f64>,
+    band: (f64, f64),
+    tol: f64,
+) -> GradCase {
     let n = controls.len();
     let base = controls.clone();
     GradCase {
         name,
-        value_bounds: Some((0.10, 0.115)),
+        value_bounds: Some(band),
         eps: vec![1e-3; n],
-        tol: 1e-6,
+        tol,
         floor: 1e-12,
         expect: vec![Comp::Live; n],
         baseline: controls,
-        analytic: Box::new(move || {
-            actuated_hinge_coupling(actuator).coupled_trajectory_actuator_gradient(&base)
-        }),
-        value_at: Box::new(move |p| {
-            actuated_hinge_coupling(actuator).coupled_trajectory_actuated_z(p)
-        }),
+        analytic: Box::new(move || build(actuator).coupled_trajectory_actuator_gradient(&base)),
+        value_at: Box::new(move |p| build(actuator).coupled_trajectory_actuated_z(p)),
     }
 }
 
@@ -1380,26 +1430,66 @@ fn cases() -> Vec<GradCase> {
             6,
             (0.114, 0.123),
         ),
-        // actuated Y-hinge
+        // actuated Y-hinge (nv=1, analytic J_state ⇒ machine-exact, tol 1e-6)
         actuator_case(
             "hinge·actuator(motor)",
+            actuated_hinge_coupling,
             r#"<motor name="a" joint="j" gear="4"/>"#,
             vec![0.3, -0.2, 0.25, -0.15, 0.1, 0.2],
+            (0.10, 0.115),
+            1e-6,
         ),
         actuator_case(
             "hinge·actuator(position)",
+            actuated_hinge_coupling,
             r#"<position name="a" joint="j" kp="8"/>"#,
             vec![0.35, 0.25, 0.4, 0.2, 0.3, 0.28],
+            (0.10, 0.115),
+            1e-6,
         ),
         actuator_case(
             "hinge·actuator(velocity)",
+            actuated_hinge_coupling,
             r#"<velocity name="a" joint="j" kv="0.5"/>"#,
             vec![0.5, -0.3, 0.4, -0.2, 0.3, -0.1],
+            (0.10, 0.115),
+            1e-6,
         ),
         actuator_case(
             "hinge·actuator(pd)",
+            actuated_hinge_coupling,
             r#"<position name="a" joint="j" kp="8" kv="0.4"/>"#,
             vec![0.35, 0.25, 0.4, 0.2, 0.3, 0.28],
+            (0.10, 0.115),
+            1e-6,
+        ),
+        // actuated 2-link damped CHAIN (nv=2, the exo topology): the distal-joint actuator
+        // force interacts with ∂M⁻¹/∂q, carried at FD-J_state precision (tol 1e-5). Motor +
+        // position / velocity servos on j1; Comp::Live subsumes the chain's driven-vs-passive
+        // materiality (each ∂tip_z/∂u_k > 1e-9).
+        actuator_case(
+            "chain·actuator(motor)",
+            actuated_chain_coupling,
+            r#"<motor name="a" joint="j1" gear="2"/>"#,
+            vec![0.15, -0.1, 0.12, -0.08],
+            (0.105, 0.115),
+            1e-5,
+        ),
+        actuator_case(
+            "chain·actuator(position)",
+            actuated_chain_coupling,
+            r#"<position name="a" joint="j1" kp="2"/>"#,
+            vec![0.1, -0.1, 0.05, -0.05],
+            (0.105, 0.115),
+            1e-5,
+        ),
+        actuator_case(
+            "chain·actuator(velocity)",
+            actuated_chain_coupling,
+            r#"<velocity name="a" joint="j1" kv="0.3"/>"#,
+            vec![0.3, -0.2, 0.25, -0.15],
+            (0.105, 0.115),
+            1e-5,
         ),
         // curved SphereSdf collider (generic tapeless step_rollout oracle)
         sphere_material_case(),
