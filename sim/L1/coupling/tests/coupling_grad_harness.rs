@@ -60,9 +60,10 @@
 //!   `sphere_articulated_coupling`): `material` (the `f_mag·H` curvature carry a plane
 //!   can't exercise) on the free platen and the articulated hinge (the curved wrench
 //!   routed through the joint), plus `load·sphere` (the load crossing on the curved normal);
-//! - **moving end-effector** (`moving_ee_coupling`): `material` on a finite sphere
-//!   tracking the arm geom (`with_contact_geom`), so the contact centre moves laterally
-//!   as the arm swings — the 3-vector `∂centre/∂q` channel a height-only carry drops;
+//! - **moving end-effector** (`moving_ee_coupling` / `actuated_moving_ee_coupling`): `material`
+//!   and `actuator` on a finite sphere tracking the arm geom (`with_contact_geom`), so the
+//!   contact centre moves laterally as the arm swings — the 3-vector `∂centre/∂q` channel a
+//!   height-only carry drops (the `actuator` row composes it with the `g_act` control channel);
 //! - **off-COM free body, contact moment ON** (`freebody_coupling` /
 //!   `freebody_sphere_coupling`): `orientation` (a final quaternion component — gates the
 //!   wrench carry's POSITION rows `G_pos`, read via a `qpos` readout closure) and
@@ -106,15 +107,17 @@
 //! (plane + sphere), the `actuator` channel (motor + position / velocity / PD servos, on
 //! both the single hinge and the 2-link damped chain), the `sphere-articulated` material
 //! trajectory, and the `IPC` contact-model trajectory
-//! (single-step + the multi-step make/break rollout). SLIMMED (the file keeps the one
-//! invariant the FD matrix structurally can't hold): `joint` (a tape-vs-tape
-//! fusion-soundness check), `freebody-orientation`, `freebody-angular-velocity` (each an
-//! all-lengths machine-exact sweep) and the platen `material-trajectory` (all-lengths
+//! (single-step + the multi-step make/break rollout). SLIMMED (the file keeps only what the FD
+//! matrix structurally can't hold — an invariant, or a sibling channel not yet reached): `joint`
+//! (a tape-vs-tape fusion-soundness check), `freebody-orientation`, `freebody-angular-velocity`
+//! (each an all-lengths machine-exact sweep) and the platen `material-trajectory` (all-lengths
 //! machine-exact sweep), `damped` (a damped-vs-undamped materiality cross-check),
 //! `rotating-normal` (a rotating-vs-flat materiality check + a single-step height-probe
-//! Jacobian), `moving-EE` (a `#[should_panic]` free-body contract guard + a plane-collider
-//! byte-identity no-op). The remaining bespoke gates retire row-by-row as their coverage is
-//! confirmed folded; further channels (friction / tangential / peak-pressure) join the same way.
+//! Jacobian), `moving-EE` material (a `#[should_panic]` free-body contract guard + a
+//! plane-collider byte-identity no-op), `moving-EE` actuator (the file keeps its FRICTION /
+//! policy-friction / design-policy-friction moving-EE gates for the friction/grip steps). The
+//! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; further
+//! channels (friction / tangential / peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -375,6 +378,40 @@ fn actuated_chain_coupling(actuator: &str) -> StaggeredCoupling {
     StaggeredCoupling::new(
         model, data, 2, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
+}
+
+/// Actuated MOVING-END-EFFECTOR: the [`moving_ee_coupling`] scene (a long Y-hinge arm carrying a
+/// finite sphere posed over the block centroid, `with_contact_geom(0)` so the contact centre
+/// TRACKS the tip geom) driven by a swappable `<actuator>` on the hinge. The control swings the
+/// arm, so the contact centre translates laterally as the tip arcs — composing the actuator
+/// `g_act` channel with the moving-EE 3-vector centre channel (`PoseCentreVjp`) on ONE tape (the
+/// centre channel is dormant at n = 1 — the last control reaches `tip_z` only through `g_act` —
+/// and live at n ≥ 2). The `tip_z` objective is pose-SENSITIVE, so a height-only carry disagrees
+/// with the geom-posed FD. No damping.
+fn actuated_moving_ee_coupling(actuator: &str) -> StaggeredCoupling {
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0.05 0.05 0.344">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.17" size="0.08" mass="0.2"/>
+    </body>
+  </worldbody>
+  <actuator>
+    {actuator}
+  </actuator>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("actuated moving-EE MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.15;
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(0.08)
+    .with_contact_geom(0)
 }
 
 /// Curved-collider platen: the soft block contacted by a finite `SphereSdf`
@@ -1489,6 +1526,18 @@ fn cases() -> Vec<GradCase> {
             r#"<velocity name="a" joint="j1" kv="0.3"/>"#,
             vec![0.3, -0.2, 0.25, -0.15],
             (0.105, 0.115),
+            1e-5,
+        ),
+        // actuated MOVING end-effector (sphere tracks the tip geom, nv=1): the actuator g_act
+        // channel composed with the moving-EE lateral centre channel on one tape. n=6 (≥2 →
+        // the centre channel is live); pose-sensitive tip_z ~0.176 discriminates it. FD-carry
+        // tol 1e-5 (probed worst rel ~1e-9).
+        actuator_case(
+            "moving-ee·actuator(motor)",
+            actuated_moving_ee_coupling,
+            r#"<motor name="a" joint="j" gear="1"/>"#,
+            vec![0.03, -0.02, 0.04, 0.01, -0.015, 0.02],
+            (0.17, 0.185),
             1e-5,
         ),
         // curved SphereSdf collider (generic tapeless step_rollout oracle)

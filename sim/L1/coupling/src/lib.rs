@@ -2051,7 +2051,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// The ARTICULATED gradients — material/friction (#428/#429) AND actuator/policy (#431) — thread
     /// the moving centre through the adjoint (the 3-vector `PoseCentreVjp` seam, `WrenchPose::Centre`,
     /// the grip soft node's 3-axis pose, and the friction wrench's 3-vector `dforce_dpose`; gated by
-    /// `sphere_moving_ee_{,friction_}trajectory_gradient.rs` + `actuator_moving_ee_gradient.rs`);
+    /// `sphere_moving_ee_{,friction_}trajectory_gradient.rs` + the `moving-ee·actuator` row of
+    /// `coupling_grad_harness.rs` (pose-sensitive `tip_z` discriminator) + the friction/grip gates
+    /// in `actuator_moving_ee_gradient.rs`);
     /// their forward oracles (`coupled_trajectory_articulated_z` / `_gripped_articulated` / the
     /// actuated/policy `*_z` / `*_gripped_x`) pose at the same geom. The FREE-BODY gradients (+ grip
     /// forward) are guarded (`require_no_moving_ee`) — a moving EE there is DEGENERATE, not a

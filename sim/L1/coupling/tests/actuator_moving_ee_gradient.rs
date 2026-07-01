@@ -1,107 +1,27 @@
-//! Moving-end-effector ACTUATOR control gradient on a tip-posed sphere — the actuator/policy
-//! successor to #428 (moving-EE material-normal). A motor drives the hinge arm; the contact sphere
-//! rides the arm-tip geom (`with_contact_geom`), so the contact centre moves as the controls swing
-//! the arm. `∂tip_z/∂u_k` from one tape vs a central FD of the geom-posed actuated rollout.
+//! Moving-end-effector FRICTION + GRIP control gradients on a tip-posed sphere. A motor / policy
+//! drives a hinge arm carrying a sphere end-effector that rides the arm-tip geom
+//! (`with_contact_geom`), so the contact centre moves as the controls swing the arm; sideways
+//! gravity turns the press into a tangential grip.
 //!
-//! Why it composes: the moving-EE pose channel (PoseCentreVjp + WrenchPose::Centre + the
-//! twist-translation soft node) is the SAME machinery #427/#428 validated single-step; the actuator
-//! `g_act` channel is contact-independent (Δt·M⁻¹·∂qfrc_actuator/∂ctrl) and orthogonal to the pose
-//! channel. So this gate is the composition check (g_act + moving-EE centre on one tape). The tip_z
-//! objective is POSE-SENSITIVE (unlike the friction tip_x drag, #429), so this gate DOES discriminate
-//! the centre channel — a height-only adjoint disagrees with the geom-posed FD.
-//!
-//! n = 1 isolates the direct `g_act` transmission, NOT the moving-EE centre channel: the staggered
-//! order (the contact wrench is read from the pre-control state) means the last control reaches
-//! tip_z only through `g_act`, never through the contact/pose — so the centre channel is dormant at
-//! n = 1 (verified: zeroing the lateral `J_geom` rows leaves n = 1 unchanged). n = 2 is the minimal
-//! case that exercises the centre channel, and n = 2/6 is where zeroing the lateral rows breaks the
-//! gate (rel 2.9e-3) — the moving-EE discrimination. So n = 1 = g_act leaf, n ≥ 2 = moving-EE.
+//! The pose-SENSITIVE `tip_z` actuator gradient (the moving-EE centre-channel discriminator) and
+//! its engagement sanity are the `moving-ee·actuator(motor)` row of `coupling_grad_harness.rs`.
+//! What lives HERE are the FRICTION-family moving-EE gradients — objective `tip_x` (the tangential
+//! drag, which is pose-INSENSITIVE, #429: zeroing the pose-centre seam leaves `∂tip_x`
+//! machine-exact) — so these are COMPOSITION / engagement gates (the `g_act` + friction + moving-EE
+//! centre composition on one geom-posed tape): the ACTUATOR-friction, POLICY-friction, and
+//! DESIGN+POLICY-friction (#406's gradient, R5's) channels. They stay bespoke until the
+//! friction / grip families are folded into the harness as their own rows; tolerance 5e-3 = the
+//! curved-friction floor.
 
 #![allow(clippy::expect_used)]
 
 use sim_coupling::{LinearFeedback, StaggeredCoupling};
 use sim_mjcf::load_model;
 
-// A long Y-hinge arm with a motor, sphere end-effector pressing the block top from directly above
-// (body at xy = block centroid; the link reaches down so the south pole indents ~4 mm). The motor
-// control swings the arm → the contact centre translates as the tip arcs.
-const MJCF: &str = r#"<mujoco>
-  <option gravity="0 0 -9.81" timestep="0.001"/>
-  <worldbody>
-    <body name="arm" pos="0.05 0.05 0.344">
-      <joint name="j" type="hinge" axis="0 1 0"/>
-      <geom type="sphere" pos="0 0 -0.17" size="0.08" mass="0.2"/>
-    </body>
-  </worldbody>
-  <actuator><motor name="a" joint="j" gear="1"/></actuator>
-</mujoco>"#;
-
 const SPHERE_R: f64 = 0.08;
 
-fn build() -> StaggeredCoupling {
-    let model = load_model(MJCF).expect("actuator scene loads");
-    let mut data = model.make_data();
-    data.qpos[0] = 0.15;
-    data.forward(&model).expect("forward");
-    StaggeredCoupling::new(
-        model, data, 1, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
-    )
-    .with_sphere_collider(SPHERE_R)
-    .with_contact_geom(0)
-}
-
-/// The tip-posed actuated rollout engages the block and stays finite.
-#[test]
-fn actuator_moving_ee_engages_and_is_stable() {
-    let zn = build().coupled_trajectory_actuated_z(&[0.02_f64; 8]);
-    assert!(zn.is_finite() && (0.10..0.40).contains(&zn), "got zN={zn}");
-}
-
-/// `∂tip_z/∂u_k` (one tape) vs a central FD of the geom-posed `coupled_trajectory_actuated_z`.
-/// n = 1 isolates the `g_act` transmission; at n ≥ 2 the pose-sensitive tip_z exercises (and the
-/// gate discriminates) the moving-EE centre channel.
-#[test]
-fn actuator_moving_ee_gradient_matches_fd() {
-    let controls = [0.03_f64, -0.02, 0.04, 0.01, -0.015, 0.02];
-    for &n in &[1usize, 2, 6] {
-        let ctl = &controls[..n];
-        let (tip_z, grad) = build().coupled_trajectory_actuator_gradient(ctl);
-        let z0 = build().coupled_trajectory_actuated_z(ctl);
-        assert!(
-            (tip_z - z0).abs() < 1e-10,
-            "n={n}: forward mismatch {tip_z} vs {z0}"
-        );
-        let eps = 1e-3;
-        let mut worst = 0.0_f64;
-        for k in 0..n {
-            let (mut up, mut dn) = (ctl.to_vec(), ctl.to_vec());
-            up[k] += eps;
-            dn[k] -= eps;
-            let fd = (build().coupled_trajectory_actuated_z(&up)
-                - build().coupled_trajectory_actuated_z(&dn))
-                / (2.0 * eps);
-            assert!(fd.abs() > 1e-9, "n={n} k={k}: degenerate FD");
-            let rel = (grad[k] - fd).abs() / fd.abs().max(1e-9);
-            worst = worst.max(rel);
-        }
-        eprintln!("actuator moving-EE (n={n}): worst rel = {worst:.3e}");
-        assert!(
-            worst < 1e-5,
-            "n={n}: moving-EE actuator ∂tip_z/∂u disagrees with FD (worst rel {worst:e})"
-        );
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────
-// FRICTION + POLICY moving-EE gradients. Sideways-gravity grip; the tip sweeps tangentially as the
-// motor/policy drives it. Objective = tip_x (the tangential drag), which is POSE-INSENSITIVE (#429:
-// zeroing the pose-centre seam leaves ∂tip_x machine-exact) — so these are COMPOSITION/engagement
-// gates (the g_act + friction + moving-EE centre composition on one geom-posed tape), NOT pose
-// discriminators. The moving-EE friction-pose pieces are proven single-step (#429 leaf gates +
-// friction_wrench_node_centre); the pose-sensitive discriminator for the actuator path is the tip_z
-// `actuator_moving_ee_gradient_matches_fd` gate above. Tolerance 5e-3 = the curved-friction floor.
-// ─────────────────────────────────────────────────────────────────────────────────────────
-
+// A long Y-hinge arm with a motor and a sphere end-effector, under SIDEWAYS gravity so the tip
+// sweeps tangentially as the motor/policy drives it (the grip drag the friction gates read).
 const FRIC_MJCF: &str = r#"<mujoco>
   <option gravity="1.5 0 -9.81" timestep="0.001"/>
   <worldbody>
