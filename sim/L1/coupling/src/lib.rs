@@ -4252,8 +4252,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// output is read fresh (forward at `q_N`), and the carry uses the true position-row
     /// term above. This triple is the correct differentiable formulation; the composed
     /// gradient matches the full-coupled FD to ~1e-9 for the single hinge, a free-joint
-    /// platen (nv = 6), AND undamped serial-hinge chains (2-link at n = 10, 3-link multi-hop
-    /// at n = 2 — `threelink_chain_gradient_matches_fd`). The earlier long-rollout
+    /// platen (nv = 6), AND undamped serial-hinge chains (2-link and 3-link multi-hop — the
+    /// `2link·material[μ]` / `3link·material[μ]` rows of `tests/coupling_grad_harness.rs`).
+    /// The earlier long-rollout
     /// moment residual (~1e-3 at n = 10) and the 74%-at-n=2 multi-link error were the SAME
     /// defect: the stale-FK pose + §8a position-row drop was a self-consistent pair
     /// calibrated ONLY for nv = 1 (`∂qpos'/∂qvel = Δt·I`, false for a chain). See
