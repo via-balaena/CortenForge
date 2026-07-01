@@ -215,8 +215,8 @@ meet) and the divergent C²-barrier as a robustness property — NOT a measured
 gradient-accuracy advantage in these scenes.
 
 **Gates.** `coupled_trajectory_gradient.rs` (penalty) now asserts machine-exact at all
-lengths; `ipc_trajectory_gradient.rs::ipc_multi_step_gradient_matches_fd` (IPC, the
-headline) asserts rel < 1e-6 over a 90-step make/break rollout across κ. New sim-soft
+lengths; the `ipc-traj·material` rows of `coupling_grad_harness.rs` (IPC, the
+headline) assert rel < 1e-6 over a 90-step make/break rollout across the κ sweep. New sim-soft
 gates `ipc_trajectory_step_vjp.rs` validate `TrajectoryStepVjp`'s four cotangents
 under IPC's varying `b''` for BOTH uniform and contact-concentrated (sparse) seeds —
 the localization probes that proved the soft VJP was never the source.
@@ -265,8 +265,9 @@ add an IPC variant of `sim-soft/tests/trajectory_step_vjp.rs` to check
 `TrajectoryStepVjp`'s pose + state cotangents vs re-solve FD **with `IpcRigidContact`**
 (varying b''). If those are clean → the bug is in the coupling chain
 (`ContactForceTrajVjp` z-parent or the rigid carry); if off → it's the sim-soft fused
-VJP under varying curvature. Repro: `cargo test -p sim-coupling --test
-ipc_trajectory_gradient diag_ipc_multi_step_residual -- --ignored --nocapture`.
+VJP under varying curvature. (RESOLVED — see §9: the residual was a rigid position-carry
+off-by-one, not the IPC VJP; the multi-step IPC gate is now the `ipc-traj·material` rows of
+`coupling_grad_harness.rs`, and the `diag_ipc_multi_step_residual` scratch test is retired.)
 A secondary hypothesis: the scene is intrinsically **marginally engaged** (platen
 weight balances the barrier near `d̂`, where b''→0 and b''' is large); a
 firmly-engaged scene (smaller d̂ / heavier load) may be machine-clean — worth

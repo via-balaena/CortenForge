@@ -999,8 +999,9 @@ impl CoDesignProblem for SoftMaterialTarget {
 /// platen deepens/settles (it does not break and re-make contact). That is the
 /// regime this target's gate validates. The consumed gradient is itself
 /// machine-exact through genuine contact make/break — the keystone/IPC gates
-/// (`sim-coupling`'s `coupled_trajectory_gradient` / `ipc_trajectory_gradient`,
-/// which start the platen above contact) establish that independently.
+/// (`sim-coupling`'s `coupled_trajectory_gradient.rs` and the `ipc-traj·material`
+/// rows of its `coupling_grad_harness.rs`, which start the platen above contact)
+/// establish that independently.
 ///
 /// **Conditioning.** `z_N` is a position, so `∂z_N/∂μ` is small (`~1e-7` for the
 /// keystone scene) and the raw loss gradient is `~2e-10` — *below* Adam's

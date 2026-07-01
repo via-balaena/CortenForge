@@ -229,7 +229,8 @@ fn recovers_known_material_from_target_trajectory() {
 /// engaged scene above carries the *convergence* proof (a full recovery here would
 /// need ~80-step rollouts × hundreds of iters — minutes). The substrate's
 /// independent make/break validation (vs a re-rolled FD oracle) lives in
-/// `sim-coupling`'s `coupled_trajectory_gradient` / `ipc_trajectory_gradient`.
+/// `sim-coupling`'s `coupled_trajectory_gradient.rs` and the `ipc-traj·material` rows of
+/// its `coupling_grad_harness.rs`.
 #[test]
 fn trajectory_gradient_matches_fd_through_make_break() {
     let n = 80;
