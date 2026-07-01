@@ -27,7 +27,7 @@
 //! The gradient is the EXACT gradient of what the solve produces; it tracks the FD oracle (which
 //! rides the same forward solve) to that floor. A well-conditioned (compliant `κ`) scene lands
 //! ~2e-3; a stiff scene drifts to ~1e-2. Normal-only curved contact has NO such floor (the
-//! `sphere·material[μ]` row of `coupling_grad_harness.rs` / `sphere_articulated_trajectory_gradient.rs`
+//! `sphere·material[μ]` / `sphere-articulated·material[μ]` rows of `coupling_grad_harness.rs`
 //! are machine-exact end-to-end) — it is the frozen-lag friction model, not the curvature conditioning.
 //!
 //! This floor is INTRINSIC, not a preconditioning gap. A 2026-06-27 implement-measure-revert spike

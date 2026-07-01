@@ -50,9 +50,10 @@
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`): `actuator` (real `<motor>` and
 //!   state-feedback `<position>`/`<velocity>`/PD servos, per-step control driving the
 //!   arm through the contact);
-//! - **curved `SphereSdf` collider** (`sphere_coupling` / `load_sphere_coupling`):
-//!   `material` (the rotating-normal `f_mag·H` curvature carry a plane can't
-//!   exercise) and `load·sphere` (the same load crossing on the curved normal);
+//! - **curved `SphereSdf` collider** (`sphere_coupling` / `load_sphere_coupling` /
+//!   `sphere_articulated_coupling`): `material` (the `f_mag·H` curvature carry a plane
+//!   can't exercise) on the free platen and the articulated hinge (the curved wrench
+//!   routed through the joint), plus `load·sphere` (the load crossing on the curved normal);
 //! - **moving end-effector** (`moving_ee_coupling`): `material` on a finite sphere
 //!   tracking the arm geom (`with_contact_geom`), so the contact centre moves laterally
 //!   as the arm swings — the 3-vector `∂centre/∂q` channel a height-only carry drops;
@@ -87,15 +88,18 @@
 //!   so a fixture that drifts to non-engagement can't pass vacuously;
 //! - per-component **zero-effect** invariants ([`Comp::Zero`]).
 //!
-//! Retired/folded so far: `control`, `material-step`, `policy`, the single-step
-//! `load` channel (plane + sphere), and the `actuator` channel (motor + position /
-//! velocity / PD servos) — their bespoke files deleted; `joint` and
-//! `freebody-orientation` and the platen `material-trajectory` SLIMMED to the one
-//! invariant the FD matrix can't express (a tape-vs-tape fusion-soundness check, an
-//! all-lengths sweep). The remaining
-//! bespoke gates retire row-by-row as their coverage is confirmed folded; further
-//! scenes (free-body ang-vel, moving-EE) and channels (friction / tangential /
-//! peak-pressure) join the same way.
+//! Retired/folded so far. FULLY FOLDED (bespoke file deleted, nothing the matrix
+//! can't express): `control`, `material-step`, `policy`, the single-step `load` channel
+//! (plane + sphere), the `actuator` channel (motor + position / velocity / PD servos),
+//! and the `sphere-articulated` material trajectory. SLIMMED (the file keeps the one
+//! invariant the FD matrix structurally can't hold): `joint` (a tape-vs-tape
+//! fusion-soundness check), `freebody-orientation` and the platen `material-trajectory`
+//! (all-lengths machine-exact sweeps), `damped` (a damped-vs-undamped materiality
+//! cross-check), `rotating-normal` (a rotating-vs-flat materiality check + a single-step
+//! height-probe Jacobian), `moving-EE` (a `#[should_panic]` free-body contract guard + a
+//! plane-collider byte-identity no-op). The remaining bespoke gates retire row-by-row as
+//! their coverage is confirmed folded; further scenes (free-body ang-vel, ipc) and
+//! channels (friction / tangential / peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -190,6 +194,16 @@ fn hinge_coupling(mu: f64) -> StaggeredCoupling {
     StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
+}
+
+/// The passive Y-hinge arm with a finite `SphereSdf` end-effector instead of the
+/// half-plane (the articulated counterpart of [`sphere_coupling`]): the SAME
+/// [`hinge_coupling`] scene + `with_sphere_collider`, posed over the block centroid. The
+/// contact normal turns as a soft vertex slides over the curved face AND as the primitive
+/// translates with tip height, so the wrench Jacobian carries the geometric-stiffness term
+/// `f_mag·H` (zero for the plane) routed through the joint as `Δt·M⁻¹·Jᵀ`.
+fn sphere_articulated_coupling(mu: f64) -> StaggeredCoupling {
+    hinge_coupling(mu).with_sphere_collider(0.08)
 }
 
 /// Damped articulated arm: a hinge (or chain) with MuJoCo `damping=` on its
@@ -862,6 +876,40 @@ fn moving_ee_material_case() -> GradCase {
     }
 }
 
+/// SPHERE-ARTICULATED-MATERIAL — the material-trajectory gradient on the passive Y-hinge
+/// arm pressing the block through a finite `SphereSdf` end-effector: the curved-normal
+/// `f_mag·H` geometric-stiffness wrench term (zero for the plane `articulated_material_case`)
+/// routed through the joint. The articulated counterpart of [`sphere_material_case`]'s free
+/// platen and the curved sibling of [`articulated_material_case`]'s plane hinge, sharing the
+/// tied-μ `coupled_trajectory_articulated_z` oracle. n=8: the gradient is intrinsically near
+/// `LIVE_FLOOR` (~1.8e-9 at n=2) and grows with horizon, so a longer rollout lifts it clear
+/// (~1.6e-8, ~16×) while the tip stays engaged near the block top. Folds the FD + engagement
+/// tests of `sphere_articulated_trajectory_gradient.rs` (a clean full fold — no bespoke
+/// invariant the matrix can't express, so that file is deleted).
+fn sphere_articulated_material_case() -> GradCase {
+    const N: usize = 8;
+    GradCase {
+        name: "sphere-articulated·material[μ]",
+        value_bounds: Some((0.10, 0.118)),
+        baseline: vec![MU0],
+        eps: vec![MU0 * 1e-4],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(|| {
+            let (z, g_mu) = sphere_articulated_coupling(MU0)
+                .coupled_trajectory_material_gradient_articulated(N, 0);
+            let g_la = sphere_articulated_coupling(MU0)
+                .coupled_trajectory_material_gradient_articulated(N, 1)
+                .1;
+            (z, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(|p| {
+            sphere_articulated_coupling(p[0]).coupled_trajectory_articulated_z(N)
+        }),
+    }
+}
+
 /// ACTUATOR — a real `<actuator>`'s per-step control schedule on the actuated hinge, FD'd via
 /// `coupled_trajectory_actuated_z`. The same machinery covers any AFFINE actuator: a direct-torque
 /// MOTOR (`force = gear·ctrl`) and the state-feedback SERVOS (position `kp·(ctrl−qpos)`, velocity
@@ -1054,6 +1102,8 @@ fn cases() -> Vec<GradCase> {
         ),
         // curved SphereSdf collider (generic tapeless step_rollout oracle)
         sphere_material_case(),
+        // articulated finite sphere: the f_mag·H curved-wrench term routed through the joint
+        sphere_articulated_material_case(),
         // moving end-effector: finite sphere tracking the arm geom (lateral centre channel)
         moving_ee_material_case(),
         // off-COM free body, contact moment ON (gates G_pos via orientation)
