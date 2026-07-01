@@ -71,7 +71,7 @@ fn assert_matches(n: usize) {
     assert!(tip_x.is_finite() && total.is_finite() && fd.is_finite());
     // Non-vacuity: a friction channel regressed to ~0 would make BOTH total and fd ~0, so a
     // pure relative gate could pass trivially. Require a real lever (mirrors the free-platen
-    // `friction_coupled_trajectory_gradient` guard).
+    // `friction·tangential-material[μ]` harness row's `Comp::Live` guard).
     assert!(
         total.abs() > 1e-9 && fd.abs() > 1e-9,
         "n={n}: gradient implausibly ~0 (total={total:e}, fd={fd:e}) — friction channel inert?"
