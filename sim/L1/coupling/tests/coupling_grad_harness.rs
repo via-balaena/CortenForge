@@ -39,10 +39,12 @@
 //!   single-step S4 cross-engine load crossing, two operating points);
 //! - **passive Y-hinge arm** (`hinge_coupling`): `articulated-material` (the
 //!   moment-routed `Δt·M⁻¹·Jᵀ` carry, FD'd along the λ = 4μ tie);
-//! - **damped articulated arms** (`damped_coupling`): `material` on a single hinge
-//!   (`damping=0.5`, analytic damped `J_state`) and a 2-link chain (per-joint damping,
-//!   off-diagonal FD `J_state`) — the `M_impl = M + Δt·D` velocity coupling a
-//!   damping-free scene can't exercise;
+//! - **seeded serial arms** (`seeded_arm_coupling`): `material` on damped arms — a single
+//!   hinge (`damping=0.5`, analytic damped `J_state`) and a 2-link chain (per-joint damping,
+//!   off-diagonal FD `J_state`), the `M_impl = M + Δt·D` velocity coupling a damping-free
+//!   scene can't exercise — AND on undamped chains routed through the analytic chain
+//!   `J_state`: a 2-link (nv = 2, off-diagonal `M` + Coriolis) and a 3-link multi-hop chain
+//!   (nv = 3, the bias-acceleration transport a 2-link never reaches);
 //! - **rotating-normal arms** (`rotating_coupling`): `material` on a tilted ball joint
 //!   and a free base with `with_rotating_normal(true)`, so the carry flows through the
 //!   contact normal's `q`-dependence (`δn̂ = ω×n̂` + the wrench redirect + the pose-twist
@@ -213,14 +215,23 @@ fn sphere_articulated_coupling(mu: f64) -> StaggeredCoupling {
     hinge_coupling(mu).with_sphere_collider(0.08)
 }
 
-/// Damped articulated arm: a hinge (or chain) with MuJoCo `damping=` on its
-/// joints, seeded off-vertical and pressing the soft block. Under the default Euler
+/// A seeded serial articulated arm: an MJCF hinge / chain (with or without MuJoCo
+/// `damping=` on its joints) seeded off-vertical and pressing the soft block. `body`/`seed`
+/// select the contacting body and the off-vertical pose; the joint torque routing is the
+/// articulated `Δt·M⁻¹·Jᵀ` carry. When the MJCF carries `damping=`, the default Euler
 /// integrator `eulerdamp` solves `(M + Δt·D)·qacc = F`, so the contact wrench reaches
-/// `qvel'` through `M_impl = M + Δt·D`, not the bare `M` — a channel a damping-free
-/// scene can't exercise. `body`/`seed` select the contacting body and the off-vertical
-/// pose. Bare-M⁻¹ scope otherwise matches [`hinge_coupling`].
-fn damped_coupling(mjcf: &str, mu: f64, body: usize, seed: &[(usize, f64)]) -> StaggeredCoupling {
-    let model = load_model(mjcf).expect("damped MJCF loads");
+/// `qvel'` through `M_impl = M + Δt·D`, not the bare `M` — a channel a damping-free scene
+/// can't exercise; undamped chains route through the bare `M`. The builder body itself is
+/// damping-agnostic (the damping lives entirely in the MJCF), so it serves the damped hinge /
+/// chain AND the undamped 2-link / 3-link chains. Bare-M⁻¹ scope otherwise matches
+/// [`hinge_coupling`].
+fn seeded_arm_coupling(
+    mjcf: &str,
+    mu: f64,
+    body: usize,
+    seed: &[(usize, f64)],
+) -> StaggeredCoupling {
+    let model = load_model(mjcf).expect("seeded arm MJCF loads");
     let mut data = model.make_data();
     for &(i, q) in seed {
         data.qpos[i] = q;
@@ -765,42 +776,90 @@ const DAMPED_2LINK_MJCF: &str = r#"<mujoco>
   </worldbody>
 </mujoco>"#;
 
-/// DAMPED-MATERIAL — the articulated material-trajectory gradient on a joint with
-/// MuJoCo `damping=`, the `M_impl = M + Δt·D` counterpart of [`articulated_material_case`].
-/// Tied-μ (λ = 4μ → `∂tip_z/∂μ + 4·∂tip_z/∂λ`); FD oracle = `coupled_trajectory_articulated_z`
-/// (the same tapeless articulated rollout, automatically damping-correct because the engine's
-/// Euler `step` runs `eulerdamp`). `(mjcf, body, seed)` selects the single hinge (analytic
-/// damped `J_state`, ~1e-9) or the 2-link chain (FD `J_state`, ~1e-6, off-diagonal coupling).
-/// Folds the FD cells of `damped_joint_gradient.rs`; that file keeps its damped-vs-undamped
-/// materiality cross-check, the one invariant a single-scene FD row can't express.
-fn damped_material_case(
+// An UNDAMPED 2-link hinge chain (nv = 2): the distal tip presses the block, so the
+// contact wrench couples ACROSS both joints (off-diagonal M, Coriolis velocity coupling)
+// through the analytic chain `J_state` — the bare-M⁻¹ (no-damping) counterpart of
+// DAMPED_2LINK_MJCF. Started slightly off-centre so the joint coupling is live.
+const TWOLINK_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.3"/>
+      <body name="lower" pos="0 0 -0.05">
+        <joint type="hinge" axis="0 1 0"/>
+        <geom type="sphere" pos="0 0 -0.04" size="0.004" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+// An UNDAMPED 3-link hinge chain (nv = 3): the MULTI-HOP case — the tip joint's ancestor
+// is two links up, exercising the sim-core Coriolis bias-acceleration transport (bug #3)
+// that a 2-link never reaches. Planar (parallel axes) so the rollout stays
+// well-conditioned; the analytic chain carry's multi-hop correctness is under test.
+const THREELINK_MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.02" size="0.004" mass="0.3"/>
+      <body name="mid" pos="0 0 -0.04">
+        <joint type="hinge" axis="0 1 0"/>
+        <geom type="sphere" pos="0 0 -0.02" size="0.004" mass="0.35"/>
+        <body name="lower" pos="0 0 -0.04">
+          <joint type="hinge" axis="0 1 0"/>
+          <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.4"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+/// ARM-MATERIAL — the articulated material-trajectory gradient on a seeded serial arm
+/// ([`seeded_arm_coupling`]): a single hinge / chain, damped or undamped, its tip pressing
+/// the block, the contact wrench routed through the joint(s) as `Δt·M⁻¹·Jᵀ`. The general
+/// counterpart of [`articulated_material_case`] across the seeded-arm scene family. Tied-μ
+/// (λ = 4μ → `∂tip_z/∂μ + 4·∂tip_z/∂λ`); FD oracle = `coupled_trajectory_articulated_z` (the
+/// same tapeless articulated rollout, automatically damping-correct because the engine's Euler
+/// `step` runs `eulerdamp`). `(mjcf, body, seed)` selects the scene; per-scene `(n, band, eps_rel,
+/// tol)` keep each fixture in its well-conditioned engaged horizon (the damped chains' tied-μ
+/// gradient is intrinsically ~1e-8, so a longer horizon + the state `band` — not just the
+/// gradient floor — guard against a de-engaged fixture; the undamped chains are machine-exact
+/// via the analytic chain carry but whippy, so the horizon is capped in the stable regime).
+/// Folds the FD cells of `damped_joint_gradient.rs` (damped hinge + chain) and the 2-link /
+/// 3-link FD cells of `articulated_trajectory_gradient.rs` (undamped chains); those files keep
+/// only the invariants a single-scene FD row can't express (the damped-vs-undamped materiality
+/// cross-check; the single-hinge / free-platen machine-exact-at-all-lengths sweeps).
+#[allow(clippy::too_many_arguments)]
+fn arm_material_case(
     name: &'static str,
     mjcf: &'static str,
     body: usize,
     seed: &'static [(usize, f64)],
     n: usize,
+    band: (f64, f64),
+    eps_rel: f64,
+    tol: f64,
 ) -> GradCase {
     GradCase {
         name,
-        // The articulated tip rides the block top; the band pins engagement directly
-        // (the 2-link chain's tied-μ gradient is intrinsically ~1e-8, so the state band
-        // — not just the gradient floor — is what guards against a de-engaged fixture).
-        value_bounds: Some((0.10, 0.115)),
+        value_bounds: Some(band),
         baseline: vec![MU0],
-        eps: vec![MU0 * 1e-4],
-        tol: 1e-5,
+        eps: vec![MU0 * eps_rel],
+        tol,
         floor: 1e-12,
         expect: vec![Comp::Live],
         analytic: Box::new(move || {
-            let (tip_z, g_mu) = damped_coupling(mjcf, MU0, body, seed)
+            let (tip_z, g_mu) = seeded_arm_coupling(mjcf, MU0, body, seed)
                 .coupled_trajectory_material_gradient_articulated(n, 0);
-            let g_la = damped_coupling(mjcf, MU0, body, seed)
+            let g_la = seeded_arm_coupling(mjcf, MU0, body, seed)
                 .coupled_trajectory_material_gradient_articulated(n, 1)
                 .1;
             (tip_z, vec![g_mu + 4.0 * g_la])
         }),
         value_at: Box::new(move |p| {
-            damped_coupling(mjcf, p[0], body, seed).coupled_trajectory_articulated_z(n)
+            seeded_arm_coupling(mjcf, p[0], body, seed).coupled_trajectory_articulated_z(n)
         }),
     }
 }
@@ -1134,21 +1193,54 @@ fn cases() -> Vec<GradCase> {
         articulated_material_case(),
         // damped articulated arms (the M_impl = M + Δt·D channel): single hinge
         // (analytic damped J_state) and a 2-link chain (off-diagonal FD J_state)
-        damped_material_case(
+        arm_material_case(
             "damped-hinge·material[μ]",
             DAMPED_HINGE_MJCF,
             1,
             &[(0, 0.3)],
             6,
+            (0.10, 0.115),
+            1e-4,
+            1e-5,
         ),
         // n=20: the 2-link's tied-μ gradient grows with horizon (~5e-10 at n=2), so a
         // longer rollout lifts it clear of LIVE_FLOOR while the tip stays in the band.
-        damped_material_case(
+        arm_material_case(
             "damped-2link·material[μ]",
             DAMPED_2LINK_MJCF,
             2,
             &[(0, 0.1), (1, -0.05)],
             20,
+            (0.10, 0.115),
+            1e-4,
+            1e-5,
+        ),
+        // undamped serial chains (bare M⁻¹): the analytic chain J_state on a 2-link
+        // (nv=2, off-diagonal M + Coriolis) and a 3-link multi-hop chain (nv=3, the
+        // bias-acceleration transport a 2-link never reaches). Machine-exact at all
+        // horizons (analytic carry, probed flat rel ~7.6e-10 to n=12 for the 2-link),
+        // so one operating point per scene captures the carry; n stays in the stable
+        // engaged regime (the whippy undamped 3-link launches off the block by n≈3, so
+        // n=2 is its sole well-conditioned horizon, with eps=μ·1e-5 for the tighter FD).
+        arm_material_case(
+            "2link·material[μ]",
+            TWOLINK_MJCF,
+            2,
+            &[(0, 0.1), (1, -0.05)],
+            6,
+            (0.130, 0.145),
+            1e-4,
+            1e-7,
+        ),
+        arm_material_case(
+            "3link·material[μ]",
+            THREELINK_MJCF,
+            3,
+            &[(0, 0.08), (1, -0.05), (2, -0.03)],
+            2,
+            (0.220, 0.232),
+            1e-5,
+            1e-4,
         ),
         // rotating contact normal (n̂ = R(q)·(0,0,−1)): ball joint and free base, gentle
         // Y-tilt. n/band are per-scene (the ball climbs out of contact past n≈4; the free

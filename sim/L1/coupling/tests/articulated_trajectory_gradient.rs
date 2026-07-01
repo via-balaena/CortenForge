@@ -28,9 +28,10 @@
 //!
 //! **Accuracy — MACHINE-EXACT at every horizon, single-hinge through multi-link.** The
 //! composed gradient matches the full-coupled FD to ~1e-9 at n = 1, 2, 6, 10, 15 — for
-//! the single hinge, a free-joint platen (nv = 6), an undamped 2-link chain (nv = 2,
-//! `twolink_chain_gradient_matches_fd`), AND an undamped 3-link MULTI-HOP chain (nv = 3,
-//! `threelink_chain_gradient_matches_fd`, n = 2) — all via the analytic chain `J_state`. The earlier long-rollout moment residual
+//! the single hinge and a free-joint platen (nv = 6) here, and for undamped serial chains
+//! (2-link nv = 2, 3-link multi-hop nv = 3) in the coupling gradient matrix
+//! (`tests/coupling_grad_harness.rs`, the `2link·material[μ]` / `3link·material[μ]` rows) —
+//! all via the analytic chain `J_state`. The earlier long-rollout moment residual
 //! (~1e-3 at n = 10) and the 74%-at-n=2 multi-link error were BOTH the same defect: the
 //! stale-FK contact pose + §8a position-row drop was a self-consistent pair calibrated
 //! ONLY for nv = 1. The **fully-fresh formulation** — fresh-FK contact pose + fresh
@@ -213,135 +214,6 @@ fn articulated_gradient_short_rollout_is_machine_exact() {
             "n={n} articulated gradient must be machine-exact, got rel {rel:.3e}"
         );
     }
-}
-
-// A 2-LINK hinge chain (nv = 2): a genuine multi-DOF articulated mechanism — the
-// distal tip presses the soft block, the contact wrench couples ACROSS both joints
-// (off-diagonal M, Coriolis velocity coupling). The capstone-exo bridge beyond the
-// single hinge.
-const TWOLINK_MJCF: &str = r#"<mujoco>
-  <option gravity="0 0 -9.81" timestep="0.001"/>
-  <worldbody>
-    <body name="upper" pos="0 0 0.2">
-      <joint type="hinge" axis="0 1 0"/>
-      <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.3"/>
-      <body name="lower" pos="0 0 -0.05">
-        <joint type="hinge" axis="0 1 0"/>
-        <geom type="sphere" pos="0 0 -0.04" size="0.004" mass="0.4"/>
-      </body>
-    </body>
-  </worldbody>
-</mujoco>"#;
-
-fn build_2link(mu: f64) -> StaggeredCoupling {
-    let model = load_model(TWOLINK_MJCF).expect("2-link MJCF loads");
-    let mut data = model.make_data();
-    data.qpos[0] = 0.1;
-    data.qpos[1] = -0.05; // off-center tip; the off-diagonal joint coupling is live
-    data.forward(&model).expect("forward");
-    StaggeredCoupling::new(
-        model, data, 2, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
-    )
-}
-
-/// **The multi-link (nv = 2) coupled gradient matches the full-coupled FD — MACHINE-EXACT.**
-/// A 2-link hinge chain — genuine multi-DOF (off-diagonal mass coupling + Coriolis) — through
-/// the same articulated path, FD-gated at n = 2/6/10. Now uses the ANALYTIC chain `J_state`
-/// (`A + Δt·M⁻¹·(G − dMu)`: the case-split geometric-stiffness Hessian `G`, the `∂M⁻¹/∂q`
-/// directional derivative `dMu`, and the unloaded transition `A` computed at the CLEAN
-/// (`xfrc = 0`) operating point), so the gradient is machine-exact (~1e-9 at n = 2, 6) rather
-/// than the earlier FD-carry precision. The analytic chain carry depends on the sim-core
-/// Coriolis `∂S/∂q` ancestor term (`mjd_rne_pos`); see `docs/keystone/multilink_recon.md`.
-#[test]
-fn twolink_chain_gradient_matches_fd() {
-    let z0 = build_2link(MU0).data().xipos[2].z;
-    assert!(
-        z0 > 0.10,
-        "2-link tip should start engaged near the block top, got {z0}"
-    );
-    for n in [2usize, 6, 10] {
-        let (_t, gm) = build_2link(MU0).coupled_trajectory_material_gradient_articulated(n, 0);
-        let (_t2, gl) = build_2link(MU0).coupled_trajectory_material_gradient_articulated(n, 1);
-        let total = gm + 4.0 * gl;
-        let eps = MU0 * 1e-4;
-        let zp = build_2link(MU0 + eps).coupled_trajectory_articulated_z(n);
-        let zm = build_2link(MU0 - eps).coupled_trajectory_articulated_z(n);
-        let fd = (zp - zm) / (2.0 * eps);
-        let rel = (total - fd).abs() / fd.abs().max(1e-30);
-        println!("2-link n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
-        // Machine-exact via the analytic chain carry (the n = 10 floor is the FD oracle's
-        // long-rollout precision, not the analytic carry).
-        let tol = if n >= 10 { 5e-6 } else { 1e-7 };
-        assert!(
-            total.abs() > 1e-12 && rel < tol,
-            "2-link nv=2 analytic-chain gradient must match full-coupled FD at \
-             n={n}, got rel {rel:.3e}"
-        );
-    }
-}
-
-// A 3-LINK hinge chain (nv = 3): the MULTI-HOP case — the tip joint has an ancestor two
-// links up, exercising the sim-core Coriolis bias-acceleration X_b transport (bug #3) that a
-// 2-link never reaches. Planar (parallel axes) so the rollout stays well-conditioned; the
-// analytic chain carry's multi-hop correctness is what's under test (a parallel chain still
-// exercises the full transport recursion, just with the ∂S/∂q cross-terms zero).
-const THREELINK_MJCF: &str = r#"<mujoco>
-  <option gravity="0 0 -9.81" timestep="0.001"/>
-  <worldbody>
-    <body name="upper" pos="0 0 0.2">
-      <joint type="hinge" axis="0 1 0"/>
-      <geom type="sphere" pos="0 0 -0.02" size="0.004" mass="0.3"/>
-      <body name="mid" pos="0 0 -0.04">
-        <joint type="hinge" axis="0 1 0"/>
-        <geom type="sphere" pos="0 0 -0.02" size="0.004" mass="0.35"/>
-        <body name="lower" pos="0 0 -0.04">
-          <joint type="hinge" axis="0 1 0"/>
-          <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.4"/>
-        </body>
-      </body>
-    </body>
-  </worldbody>
-</mujoco>"#;
-
-fn build_3link(mu: f64) -> StaggeredCoupling {
-    let model = load_model(THREELINK_MJCF).expect("3-link MJCF loads");
-    let mut data = model.make_data();
-    data.qpos[0] = 0.08;
-    data.qpos[1] = -0.05;
-    data.qpos[2] = -0.03; // off-center tip; multi-hop coupling live
-    data.forward(&model).expect("forward");
-    StaggeredCoupling::new(
-        model, data, 3, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
-    )
-}
-
-/// **The multi-hop (nv = 3) coupled gradient matches the full-coupled FD.** A 3-link hinge
-/// chain — the tip joint's ancestors span two hops — through the analytic chain `J_state`. The
-/// end-to-end gate for the sim-core multi-hop Coriolis fix (bug #3: the bias-acceleration X_b
-/// transport that a 2-link never reaches): n = 2 is where `J_state` first enters the adjoint
-/// (n = 1's `J_state·s₀` has zero μ-derivative). This whippy 3-link is launched off the block
-/// by n ≈ 3 (no sustained engagement), so n = 2 is the well-conditioned horizon; LONG-horizon
-/// compounding is covered by `twolink_chain_gradient_matches_fd` (n = 10, the identical
-/// nv-agnostic carry) and the per-step 3-link `J_state` by `chain_state_jacobian_matches_fd_loaded`.
-/// FD oracle uses eps = MU0·1e-5 (the larger 1e-4 shows central-difference truncation here).
-/// See `docs/keystone/multilink_recon.md`.
-#[test]
-fn threelink_chain_gradient_matches_fd() {
-    let n = 2;
-    let (_t, gm) = build_3link(MU0).coupled_trajectory_material_gradient_articulated(n, 0);
-    let (_t2, gl) = build_3link(MU0).coupled_trajectory_material_gradient_articulated(n, 1);
-    let total = gm + 4.0 * gl;
-    let eps = MU0 * 1e-5;
-    let zp = build_3link(MU0 + eps).coupled_trajectory_articulated_z(n);
-    let zm = build_3link(MU0 - eps).coupled_trajectory_articulated_z(n);
-    let fd = (zp - zm) / (2.0 * eps);
-    let rel = (total - fd).abs() / fd.abs().max(1e-30);
-    println!("3-link n={n}: tape={total:.6e} FD={fd:.6e} rel={rel:.3e}");
-    assert!(
-        total.abs() > 1e-12 && rel < 1e-4,
-        "3-link nv=3 analytic-chain gradient must match full-coupled FD at n={n}, \
-         got rel {rel:.3e}"
-    );
 }
 
 // A BALL joint (`nq = 4, nv = 3`): the first QUATERNION joint in the coupled gradient. A
