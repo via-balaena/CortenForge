@@ -61,9 +61,12 @@
 //! - **moving end-effector** (`moving_ee_coupling`): `material` on a finite sphere
 //!   tracking the arm geom (`with_contact_geom`), so the contact centre moves laterally
 //!   as the arm swings — the 3-vector `∂centre/∂q` channel a height-only carry drops;
-//! - **off-COM free body, contact moment ON** (`freebody_coupling`):
-//!   `orientation` (a final quaternion component — gates the wrench carry's
-//!   POSITION rows `G_pos`, read via a `qpos` readout closure);
+//! - **off-COM free body, contact moment ON** (`freebody_coupling` /
+//!   `freebody_sphere_coupling`): `orientation` (a final quaternion component — gates the
+//!   wrench carry's POSITION rows `G_pos`, read via a `qpos` readout closure) and
+//!   `angular-velocity` (the final spin `ω_N` the contact MOMENT drives directly, `τ → ω`,
+//!   read via a `qvel` closure — on the half-plane and a curved `SphereSdf`, the `f_mag·H`
+//!   moment term);
 //! - **IPC (C²-barrier) contact model** (`ipc_coupling`, a `StaggeredCoupling<IpcRigidContact>`
 //!   type-parameter variant): single-step `material` (the isolated per-step factor) and the
 //!   multi-step `material` trajectory through the contact make/break event across the barrier-
@@ -102,13 +105,13 @@
 //! the `sphere-articulated` material trajectory, and the `IPC` contact-model trajectory
 //! (single-step + the multi-step make/break rollout). SLIMMED (the file keeps the one
 //! invariant the FD matrix structurally can't hold): `joint` (a tape-vs-tape
-//! fusion-soundness check), `freebody-orientation` and the platen `material-trajectory`
-//! (all-lengths machine-exact sweeps), `damped` (a damped-vs-undamped materiality
-//! cross-check), `rotating-normal` (a rotating-vs-flat materiality check + a single-step
-//! height-probe Jacobian), `moving-EE` (a `#[should_panic]` free-body contract guard + a
-//! plane-collider byte-identity no-op). The remaining bespoke gates retire row-by-row as
-//! their coverage is confirmed folded; further scenes (free-body ang-vel) and
-//! channels (friction / tangential / peak-pressure) join the same way.
+//! fusion-soundness check), `freebody-orientation`, `freebody-angular-velocity` (each an
+//! all-lengths machine-exact sweep) and the platen `material-trajectory` (all-lengths
+//! machine-exact sweep), `damped` (a damped-vs-undamped materiality cross-check),
+//! `rotating-normal` (a rotating-vs-flat materiality check + a single-step height-probe
+//! Jacobian), `moving-EE` (a `#[should_panic]` free-body contract guard + a plane-collider
+//! byte-identity no-op). The remaining bespoke gates retire row-by-row as their coverage is
+//! confirmed folded; further channels (friction / tangential / peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -384,6 +387,15 @@ fn freebody_coupling(mu: f64) -> StaggeredCoupling {
         model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_contact_moment(true)
+}
+
+/// The off-COM free body of [`freebody_coupling`] contacted by a finite `SphereSdf`
+/// (`with_sphere_collider`, the curved indenter the de-escalation viz uses) instead of the
+/// half-plane. The curved normal makes the off-COM wrench carry the geometric-stiffness moment
+/// term `f_mag·H` a plane can't — the curved counterpart of the free-body ANGULAR-velocity row,
+/// the path the stale-FK lagged-attribution per-step fix is for.
+fn freebody_sphere_coupling(mu: f64) -> StaggeredCoupling {
+    freebody_coupling(mu).with_sphere_collider(0.08)
 }
 
 /// IPC-contact platen: the same z=0.125 free platen as [`step_coupling`] but running the
@@ -1151,6 +1163,44 @@ fn freebody_orientation_case() -> GradCase {
     }
 }
 
+/// FREEBODY-ANGULAR-VELOCITY — `∂(final spin ωy)/∂(material)` on the tumbling off-COM free body.
+/// Where [`freebody_orientation_case`] reads a quaternion component (gating the wrench carry's
+/// POSITION rows `G_pos`), the spin `ω_N = qvel[3 + axis]` is the target the contact MOMENT itself
+/// drives (`τ → ω`), so it gates the moment carry directly — the z-translation the material rows
+/// read is orientation-blind (block-diagonal mass, plane height in `xpos.z` only) and cannot
+/// exercise it. Tied-μ (`∂ω/∂μ + 4·∂ω/∂λ`); FD oracle = `step_rollout` reading `qvel[3 + axis]`.
+/// `build` selects the collider: the half-plane ([`freebody_coupling`], the SO(3)/free-joint
+/// wrench moment carry, tol 1e-6) or a finite `SphereSdf` ([`freebody_sphere_coupling`], the
+/// curved `f_mag·H` moment term — a documented ~1e-5 floor from the FD `J_state` + the residual
+/// curved term, so tol 1e-3, guarding the ~5.86% regression the lagged-attribution fix prevents).
+/// Folds the FD + forward cells of `freebody_angular_velocity_gradient.rs`; that file keeps the
+/// plane all-lengths machine-exact sweep the single-length matrix can't express.
+fn freebody_angular_velocity_case(
+    name: &'static str,
+    build: fn(f64) -> StaggeredCoupling,
+    tol: f64,
+) -> GradCase {
+    const N: usize = 16;
+    const AXIS: usize = 1; // ωy — the off-centre +x strike spins the body about body-y
+    GradCase {
+        name,
+        value_bounds: None,
+        baseline: vec![MU0],
+        eps: vec![MU0 * 5e-4],
+        tol,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(move || {
+            let (w, g_mu) = build(MU0).coupled_trajectory_angular_velocity_gradient(N, 0, AXIS);
+            let g_la = build(MU0)
+                .coupled_trajectory_angular_velocity_gradient(N, 1, AXIS)
+                .1;
+            (w, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(move |p| step_rollout(build(p[0]), N, |c| c.data().qvel[3 + AXIS])),
+    }
+}
+
 /// IPC-STEP-MATERIAL — the single-step co-design gradient `∂vz'/∂p` on the `IpcRigidContact`
 /// (C²-barrier) contact model: the IPC counterpart of [`material_case`], isolating the per-step
 /// factor (the generic coupling + IPC contact + per-pair-curvature factors compose for ONE step)
@@ -1359,6 +1409,14 @@ fn cases() -> Vec<GradCase> {
         moving_ee_material_case(),
         // off-COM free body, contact moment ON (gates G_pos via orientation)
         freebody_orientation_case(),
+        // off-COM free body, contact moment ON: the spin ω the moment drives (τ → ω carry),
+        // half-plane (SO(3) wrench moment) and curved SphereSdf (the f_mag·H moment term)
+        freebody_angular_velocity_case("freebody·angular-velocity[μ]", freebody_coupling, 1e-6),
+        freebody_angular_velocity_case(
+            "sphere-freebody·angular-velocity[μ]",
+            freebody_sphere_coupling,
+            1e-3,
+        ),
         // IPC (C²-barrier) contact model, type-parameter variant: single-step material
         // (the isolated per-step factor) + the multi-step make/break rollout across the full
         // barrier-stiffness sweep the headline gate validated (κ = 3e4 … 3e2, 100×).

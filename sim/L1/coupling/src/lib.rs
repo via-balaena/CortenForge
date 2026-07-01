@@ -3286,7 +3286,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `axis ∈ {0,1,2}` (x/y/z body angular). Returns `(ω_N, ∂ω_N/∂param)` (`param_idx`: 0 = μ,
     /// 1 = λ; the block's λ=4μ tie ⇒ the design gradient is `grad(0) + 4·grad(1)`). FD-exact
     /// (machine floor, the ~1e-6 FD-`J_state` precision floor at extreme lengths) vs a re-rolled
-    /// forward oracle; gated in `tests/freebody_angular_velocity_gradient.rs`.
+    /// forward oracle; gated by the `freebody·angular-velocity[μ]` (plane) and
+    /// `sphere-freebody·angular-velocity[μ]` (curved) rows of `tests/coupling_grad_harness.rs`
+    /// (single length n = 16) plus the all-lengths sweep in
+    /// `tests/freebody_angular_velocity_gradient.rs`.
     ///
     /// **Scope (v1).** As `build_freebody_wrench_tape` (free body, plane collider,
     /// `with_contact_moment` on, no moving EE), plus a single free joint and `rigid_damping = 0`
