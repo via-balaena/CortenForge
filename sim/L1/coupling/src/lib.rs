@@ -2916,8 +2916,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// and the composed multi-step gradient is machine-exact too — it matches the
     /// full-coupled FD to ~3e-8 (rel) at every rollout length and engagement
     /// depth, through genuine contact make/break alike (gated in
-    /// `tests/coupled_trajectory_gradient.rs` for penalty and
-    /// `tests/ipc_trajectory_gradient.rs` for IPC). The earlier ~3e-4 "penalty
+    /// `tests/coupled_trajectory_gradient.rs` for penalty and the `ipc-traj·material`
+    /// rows of `tests/coupling_grad_harness.rs` for IPC). The earlier ~3e-4 "penalty
     /// floor" — and the make/break degradation the keystone time-adjoint reported
     /// — was a rigid position-carry off-by-one, NOT penalty non-smoothness:
     /// sim-core integrates the height with the step's STARTING velocity

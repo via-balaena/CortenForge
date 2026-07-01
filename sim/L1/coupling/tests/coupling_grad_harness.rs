@@ -59,7 +59,11 @@
 //!   as the arm swings — the 3-vector `∂centre/∂q` channel a height-only carry drops;
 //! - **off-COM free body, contact moment ON** (`freebody_coupling`):
 //!   `orientation` (a final quaternion component — gates the wrench carry's
-//!   POSITION rows `G_pos`, read via a `qpos` readout closure).
+//!   POSITION rows `G_pos`, read via a `qpos` readout closure);
+//! - **IPC (C²-barrier) contact model** (`ipc_coupling`, a `StaggeredCoupling<IpcRigidContact>`
+//!   type-parameter variant): single-step `material` (the isolated per-step factor) and the
+//!   multi-step `material` trajectory through the contact make/break event across the barrier-
+//!   stiffness sweep (κ from 3e4 to 3e2).
 //!
 //! ## Oracle independence — two kinds
 //!
@@ -91,21 +95,24 @@
 //! Retired/folded so far. FULLY FOLDED (bespoke file deleted, nothing the matrix
 //! can't express): `control`, `material-step`, `policy`, the single-step `load` channel
 //! (plane + sphere), the `actuator` channel (motor + position / velocity / PD servos),
-//! and the `sphere-articulated` material trajectory. SLIMMED (the file keeps the one
+//! the `sphere-articulated` material trajectory, and the `IPC` contact-model trajectory
+//! (single-step + the multi-step make/break rollout). SLIMMED (the file keeps the one
 //! invariant the FD matrix structurally can't hold): `joint` (a tape-vs-tape
 //! fusion-soundness check), `freebody-orientation` and the platen `material-trajectory`
 //! (all-lengths machine-exact sweeps), `damped` (a damped-vs-undamped materiality
 //! cross-check), `rotating-normal` (a rotating-vs-flat materiality check + a single-step
 //! height-probe Jacobian), `moving-EE` (a `#[should_panic]` free-body contract guard + a
 //! plane-collider byte-identity no-op). The remaining bespoke gates retire row-by-row as
-//! their coverage is confirmed folded; further scenes (free-body ang-vel, ipc) and
+//! their coverage is confirmed folded; further scenes (free-body ang-vel) and
 //! channels (friction / tangential / peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
-use sim_coupling::{LinearFeedback, StaggeredCoupling};
+use sim_coupling::{LinearFeedback, PlaneContact, StaggeredCoupling};
 use sim_mjcf::load_model;
-use sim_soft::{HandBuiltTetMesh, MaterialField, VertexId, pick_vertices_by_predicate};
+use sim_soft::{
+    HandBuiltTetMesh, IpcRigidContact, MaterialField, VertexId, pick_vertices_by_predicate,
+};
 
 // ── Scene library (the seed; grows along the scene axis in later PRs) ──
 
@@ -359,6 +366,31 @@ fn freebody_coupling(mu: f64) -> StaggeredCoupling {
     .with_contact_moment(true)
 }
 
+/// IPC-contact platen: the same z=0.125 free platen as [`step_coupling`] but running the
+/// coupling on `IpcRigidContact` (the C²-barrier contact model) instead of the default
+/// penalty, with the barrier stiffness `kappa` as a scene arg. The coupling is generic over
+/// the contact model (a type parameter), so the SAME `(loss, grad)` methods and the SAME
+/// tapeless `step()` oracle drive it — the `GradCase` closures type-erase the concrete
+/// `StaggeredCoupling<IpcRigidContact>`. Exercises that the generic refactor + IPC contact +
+/// the per-pair-curvature gradient factors compose, single- and multi-step.
+fn ipc_coupling(mu: f64, kappa: f64) -> StaggeredCoupling<IpcRigidContact> {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.125">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("IPC platen MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::<IpcRigidContact>::new(
+        model, data, 1, 0.005, 4, 0.1, mu, 1.0e-3, kappa, 1.0e-2, 8.0,
+    )
+}
+
 // ── Harness core ──
 
 /// Per-component physical expectation on the gradient — the generalization of
@@ -528,10 +560,10 @@ fn fd_check(case: &GradCase) {
 /// needing a bespoke per-channel `_z` evaluator. Channels whose parameter is a
 /// per-STEP call arg (control / policy / actuator) can't use this — `step()` takes
 /// no per-step input — and route through their dedicated `_z` methods instead.
-fn step_rollout(
-    mut c: StaggeredCoupling,
+fn step_rollout<C: PlaneContact>(
+    mut c: StaggeredCoupling<C>,
     n: usize,
-    readout: impl Fn(&StaggeredCoupling) -> f64,
+    readout: impl Fn(&StaggeredCoupling<C>) -> f64,
 ) -> f64 {
     for _ in 0..n {
         c.step();
@@ -1021,6 +1053,66 @@ fn freebody_orientation_case() -> GradCase {
     }
 }
 
+/// IPC-STEP-MATERIAL — the single-step co-design gradient `∂vz'/∂p` on the `IpcRigidContact`
+/// (C²-barrier) contact model: the IPC counterpart of [`material_case`], isolating the per-step
+/// factor (the generic coupling + IPC contact + per-pair-curvature factors compose for ONE step)
+/// from the multi-step carry. `idx` selects μ (0) or λ (1); `κ = 3e4`, engaged height `h = 0.105`
+/// (`0 < sd < d̂`). Folds the single-step half of `ipc_trajectory_gradient.rs` at one representative
+/// engaged height (this harness tests one operating point per cell; the deleted gate additionally
+/// spot-checked `h = 0.103` / `0.107`, sample points of this same single-step FD-match).
+fn ipc_step_material_case(idx: usize, name: &'static str, p0: f64) -> GradCase {
+    const H: f64 = 0.105;
+    const KAPPA: f64 = 3.0e4;
+    GradCase {
+        name,
+        value_bounds: None,
+        baseline: vec![p0],
+        eps: vec![p0 * 5e-4],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(move || {
+            let (vz, g) = ipc_coupling(MU0, KAPPA).coupled_step_material_gradient(H, idx);
+            (vz, vec![g])
+        }),
+        value_at: Box::new(move |p| {
+            ipc_coupling(MU0, KAPPA).coupled_step_material_vz(H, idx, p[0])
+        }),
+    }
+}
+
+/// IPC-TRAJ-MATERIAL — the multi-step material-trajectory gradient `dz_N/dμ` on the
+/// `IpcRigidContact` contact model, over a 90-step rollout that descends through the contact
+/// make/break boundary (the regime the keystone time-adjoint once reported as a 5–25% penalty
+/// degradation; machine-exact once the rigid position-carry off-by-one was fixed — shared with
+/// penalty, not an IPC effect). Tied-μ (λ = 4μ); FD oracle = the generic tapeless `step_rollout`
+/// reading the platen height (bit-identical to the bespoke gate's `step().rigid_z` rollout). One
+/// row per `kappa` — the harness keeps the deleted gate's full barrier-stiffness sweep
+/// (κ ∈ {3e4, 3e3, 1e3, 3e2}, a 100× range) so a κ-dependent regression can't hide. n = 90 is
+/// load-bearing: it is what carries the rollout through the make/break event.
+fn ipc_traj_material_case(name: &'static str, kappa: f64) -> GradCase {
+    const N: usize = 90;
+    GradCase {
+        name,
+        value_bounds: Some((0.112, 0.117)),
+        baseline: vec![MU0],
+        eps: vec![MU0 * 5e-4],
+        tol: 1e-6,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(move || {
+            let (z, g_mu) = ipc_coupling(MU0, kappa).coupled_trajectory_material_gradient(N, 0);
+            let g_la = ipc_coupling(MU0, kappa)
+                .coupled_trajectory_material_gradient(N, 1)
+                .1;
+            (z, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(move |p| {
+            step_rollout(ipc_coupling(p[0], kappa), N, |c| c.data().xpos[1].z)
+        }),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -1108,6 +1200,15 @@ fn cases() -> Vec<GradCase> {
         moving_ee_material_case(),
         // off-COM free body, contact moment ON (gates G_pos via orientation)
         freebody_orientation_case(),
+        // IPC (C²-barrier) contact model, type-parameter variant: single-step material
+        // (the isolated per-step factor) + the multi-step make/break rollout across the full
+        // barrier-stiffness sweep the headline gate validated (κ = 3e4 … 3e2, 100×).
+        ipc_step_material_case(0, "ipc-step·material[μ]", MU0),
+        ipc_step_material_case(1, "ipc-step·material[λ]", LAMBDA0),
+        ipc_traj_material_case("ipc-traj·material[μ,κ=3e4]", 3.0e4),
+        ipc_traj_material_case("ipc-traj·material[μ,κ=3e3]", 3.0e3),
+        ipc_traj_material_case("ipc-traj·material[μ,κ=1e3]", 1.0e3),
+        ipc_traj_material_case("ipc-traj·material[μ,κ=3e2]", 3.0e2),
     ]
 }
 

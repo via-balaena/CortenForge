@@ -271,7 +271,8 @@ gates establish it independently against a re-rolled FD oracle); the keystone's 
 
 - Trajectory gradient: `sim/L1/coupling/src/lib.rs` (`coupled_trajectory_material_gradient`).
 - Keystone trajectory gate (the FD-oracle `final_z` pattern to mirror):
-  `sim/L1/coupling/tests/coupled_trajectory_gradient.rs`, `ipc_trajectory_gradient.rs`.
+  `sim/L1/coupling/tests/coupled_trajectory_gradient.rs`, and the `ipc-traj·material` rows of
+  `sim/L1/coupling/tests/coupling_grad_harness.rs` (IPC).
 - Optimizer: `sim/L0/ml-chassis/src/optimizer.rs` (`OptimizerConfig::Adam { eps }`).
 - Time-adjoint / IPC recons: `docs/keystone/time_adjoint_recon.md`, `docs/ipc/recon.md`.
 
