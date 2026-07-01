@@ -71,10 +71,11 @@ the scratch + setting `ctrl` BEFORE the carry drops it to ~1e-8. A chain has no 
 `J_state`, so it runs at FD-carry precision. Byte-identical for the single hinge (analytic
 path, never hits the scratch) and the material chain (no actuator ⇒ empty `ctrl`).
 
-Gate (`actuator_chain_gradient.rs`): a DAMPED 2-link chain (damping settles the otherwise-
-swinging chain on the block) with motor / position / velocity actuators on the distal
-joint — all `∂tip_z_N/∂u_k` machine-exact-ish (~1e-8) vs the full-coupled FD oracle, plus
-materiality.
+Gate (the `chain·actuator(motor/position/velocity)` rows of `coupling_grad_harness.rs`): a
+DAMPED 2-link chain (damping settles the otherwise-swinging chain on the block) with motor /
+position / velocity actuators on the distal joint — all `∂tip_z_N/∂u_k` machine-exact-ish
+(~1e-8, guarded at FD-carry tol 1e-5) vs the full-coupled FD oracle. Materiality is subsumed
+by the harness's per-control `Comp::Live` floor (each `∂tip_z/∂u_k > 1e-9`).
 
 ## 4. Follow-ons
 - **Muscles / activation dynamics** (`act` state, nonlinear gain) — the heavier nonlinear
