@@ -3,8 +3,9 @@
 //! (`with_contact_geom`), so the contact centre moves laterally (x/y) as well as vertically
 //! as the body swings.
 //!
-//! The lateral generalization of `sphere_articulated_trajectory_gradient.rs` (which poses the
-//! sphere over the block CENTROID, threading only the scalar height channel `∂h/∂q = J_z`). Here
+//! The lateral generalization of the `sphere-articulated·material[μ]` row of
+//! `coupling_grad_harness.rs` (which poses the sphere over the block CENTROID, threading only the
+//! scalar height channel `∂h/∂q = J_z`). Here
 //! the sphere rides the geom (`centre = geom_xpos(q)`), so the pose channel is the 3-vector centre
 //! (`∂centre/∂q = J_geom`, the `PoseCentreVjp` seam) and the wrench node's pose parent is
 //! `WrenchPose::Centre`. The per-horizon FD-match of that multi-step gradient against the full

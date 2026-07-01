@@ -1,8 +1,8 @@
 //! L1b articulated FRICTION wrench curvature — the coupled ARTICULATED friction-grip trajectory
 //! gradient on a FINITE posed sphere collider (the off-COM FRICTION moment, curved collider).
 //!
-//! The articulated-friction successor to `sphere_articulated_trajectory_gradient.rs` (articulated
-//! NORMAL on the sphere) and the curved-collider successor to the plane
+//! The articulated-friction successor to the `sphere-articulated·material[μ]` row of
+//! `coupling_grad_harness.rs` (articulated NORMAL on the sphere) and the curved-collider successor to the plane
 //! `friction_articulated_material_gradient.rs`: the same
 //! `coupled_trajectory_tangential_material_gradient_articulated` tape against the same full-grip
 //! re-rollout FD oracle (`coupled_trajectory_gripped_articulated`), but with `with_sphere_collider`.
