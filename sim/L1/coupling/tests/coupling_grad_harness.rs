@@ -88,7 +88,13 @@
 //!   `SphereSdf` where the friction force Jacobian carries the `DN·C` curved-normal term at the
 //!   ~2e-3 curved-contact forward-solver floor: the free platen (`μ_c`), the articulated hinge
 //!   (material), and a sphere that TRACKS the arm tip geom (material + `μ_c`, the moving-EE
-//!   de-escalation capstone).
+//!   de-escalation capstone);
+//! - **GRIP co-design** (`powered_friction_{hinge,chain,moving_ee,sphere_centroid}_mu`, a
+//!   `<motor>`-driven friction grip): `design-policy-friction` — the mission's "one outer loop over
+//!   BOTH design and policy", the soft material `μ` (the DESIGN leaf, tied `λ = 4μ`) AND the policy
+//!   θ differentiated in ONE `tape.backward(tip_x)`, the [`joint_case`] mixed-μ+θ shape now on the
+//!   friction-loaded carry — on the single hinge, the 2-link chain, the moving-EE tracked sphere,
+//!   and the centroid sphere.
 //!
 //! ## Oracle independence — two kinds
 //!
@@ -127,7 +133,10 @@
 //! slim file already holds), the `sphere-articulated-friction-material` channel (the curved
 //! hinge grip — its engagement smoke `|x| < 0.1` folds into a `value_bounds` loss band), and the
 //! `sphere-moving-ee-friction` channels (material + μ_c on a sphere that TRACKS the arm tip geom —
-//! the de-escalation capstone; the engagement smoke `x ∈ (0, 0.1)` folds into `value_bounds`).
+//! the de-escalation capstone; the engagement smoke `x ∈ (0, 0.1)` folds into `value_bounds`), and
+//! the moving-EE and centroid-sphere `design-policy-friction` grip co-design gates (the μ + θ
+//! one-tape gradient — their files held nothing but that pure FD-match cell, and the `Comp::Live`
+//! floor subsumes their `∂/∂μ > 1e-9` design-lever sanity).
 //! SLIMMED (the file
 //! keeps only what the FD
 //! matrix structurally can't hold — an invariant, or a sibling channel not yet reached): `joint`
@@ -136,8 +145,10 @@
 //! machine-exact sweep), `damped` (a damped-vs-undamped materiality cross-check),
 //! `rotating-normal` (a rotating-vs-flat materiality check + a single-step height-probe
 //! Jacobian), `moving-EE` material (a `#[should_panic]` free-body contract guard + a
-//! plane-collider byte-identity no-op), `moving-EE` actuator (the file keeps its FRICTION /
-//! policy-friction / design-policy-friction moving-EE gates for the friction/grip steps), and the
+//! plane-collider byte-identity no-op), the `design-policy-friction` grip co-design channel (the
+//! file keeps the single-hinge MULTI-HORIZON machine-exact sweep at n = 5 / 20 / 40 + the 2-link
+//! chain's machine-exactness through a mid-rollout active-set change, neither expressible by a
+//! single-n matrix row), and the
 //! `tangential-material` FRICTION channel (the file keeps the z-ENGAGEMENT invariant the row's
 //! x-slide loss band structurally can't express — engagement is a non-loss component here), and the
 //! `articulated-friction-material` channel (hinge + 2-link chain — the file keeps the hinge
@@ -750,10 +761,13 @@ fn sphere_moving_ee_friction_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCo
 
 /// A POWERED friction grip: a `<motor>`-actuated single Y-hinge arm pushed sideways by tilted
 /// gravity (so the tip arcs into the block top and sweeps tangentially — a CONTROLLED friction
-/// grip, the powered-exo substrate). The differentiated parameter is the per-step control (actuator
-/// channel) or the closed-loop policy θ, injected per CALL, so this builder takes no param; the
-/// friction is baked in. Shared by the `actuator-friction` and `policy-friction` rows.
-fn powered_friction_hinge() -> StaggeredCoupling {
+/// grip, the powered-exo substrate). The per-step control (actuator channel) or the closed-loop
+/// policy θ is injected per CALL; the block stiffness `soft_mu` is the DESIGN leaf, so it is a
+/// parameter here — the `grip·design-policy-friction` co-design row FD's it by rebuilding (the tied
+/// `λ = 4·soft_mu` moves with it), while the per-call actuator/policy rows hold it at the default
+/// via [`powered_friction_hinge`]. Shared by the `actuator-friction`, `policy-friction`, and
+/// `grip·design-policy-friction` rows.
+fn powered_friction_hinge_mu(soft_mu: f64) -> StaggeredCoupling {
     const MJCF: &str = r#"<mujoco>
   <option gravity="2.0 0 -9.81" timestep="0.001"/>
   <worldbody>
@@ -769,15 +783,22 @@ fn powered_friction_hinge() -> StaggeredCoupling {
     data.qpos[0] = 0.3;
     data.forward(&model).expect("initial forward");
     StaggeredCoupling::new(
-        model, data, 1, 0.005, 4, 0.1, FRIC_MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_friction(FRIC_COEF0, 0.1)
 }
 
-/// The 2-link CHAIN counterpart of [`powered_friction_hinge`] (`nv = 2`, motor on the proximal
+/// [`powered_friction_hinge_mu`] at the baseline block stiffness [`FRIC_MU0`] — the no-arg builder
+/// the per-call `actuator-friction` / `policy-friction` rows pass as a `fn() -> _`.
+fn powered_friction_hinge() -> StaggeredCoupling {
+    powered_friction_hinge_mu(FRIC_MU0)
+}
+
+/// The 2-link CHAIN counterpart of [`powered_friction_hinge_mu`] (`nv = 2`, motor on the proximal
 /// joint, contacting tip = lower link `body = 2`): the powered friction grip on a genuine multi-DOF
-/// topology (the loaded `chain_state_jacobian` carry under friction + actuator load).
-fn powered_friction_chain() -> StaggeredCoupling {
+/// topology (the loaded `chain_state_jacobian` carry under friction + actuator load). `soft_mu` is
+/// the design leaf (see [`powered_friction_hinge_mu`]).
+fn powered_friction_chain_mu(soft_mu: f64) -> StaggeredCoupling {
     const MJCF: &str = r#"<mujoco>
   <option gravity="2.0 0 -9.81" timestep="0.001"/>
   <worldbody>
@@ -798,9 +819,15 @@ fn powered_friction_chain() -> StaggeredCoupling {
     data.qpos[1] = -0.05;
     data.forward(&model).expect("initial forward");
     StaggeredCoupling::new(
-        model, data, 2, 0.005, 4, 0.1, FRIC_MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        model, data, 2, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_friction(FRIC_COEF0, 0.1)
+}
+
+/// [`powered_friction_chain_mu`] at the baseline block stiffness [`FRIC_MU0`] — the no-arg builder
+/// the per-call `chain·actuator-friction` / `chain·policy-friction` rows pass as a `fn() -> _`.
+fn powered_friction_chain() -> StaggeredCoupling {
+    powered_friction_chain_mu(FRIC_MU0)
 }
 
 /// The MOVING-end-effector counterpart of [`powered_friction_hinge`]: a `<motor>`-actuated Y-hinge
@@ -812,9 +839,11 @@ fn powered_friction_chain() -> StaggeredCoupling {
 /// in at `3e3` (a sharp μ-lever). The `tip_x` drag objective is pose-INSENSITIVE (#429: zeroing the
 /// pose-centre seam leaves `∂tip_x` machine-exact), so despite the curved moving collider the
 /// actuator/policy gradients are machine-exact — these rows gate the `g_act`/policy + friction +
-/// moving-EE centre composition. Shared by the `moving-ee·actuator-friction` and
-/// `moving-ee·policy-friction` rows.
-fn powered_friction_moving_ee() -> StaggeredCoupling {
+/// moving-EE centre composition. `soft_mu` is the design leaf (see [`powered_friction_hinge_mu`]);
+/// the `moving-ee·design-policy-friction` co-design row FD's it by rebuilding. Shared by the
+/// `moving-ee·actuator-friction`, `moving-ee·policy-friction`, and `moving-ee·design-policy-friction`
+/// rows (the last also holds the moving-EE grip HOLD co-design row).
+fn powered_friction_moving_ee_mu(soft_mu: f64) -> StaggeredCoupling {
     const MJCF: &str = r#"<mujoco>
   <option gravity="1.5 0 -9.81" timestep="0.001"/>
   <worldbody>
@@ -830,11 +859,17 @@ fn powered_friction_moving_ee() -> StaggeredCoupling {
     data.qpos[0] = 0.05; // slight tilt → off-COM + the sideways push sweeps the tip in x
     data.forward(&model).expect("initial forward");
     StaggeredCoupling::new(
-        model, data, 1, 0.005, 4, 0.1, 3.0e3, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_sphere_collider(0.08)
     .with_contact_geom(0)
     .with_friction(2.5, 0.1)
+}
+
+/// [`powered_friction_moving_ee_mu`] at the baseline block stiffness [`FRIC_MU0`] — the no-arg
+/// builder the per-call `moving-ee·actuator-friction` / `moving-ee·policy-friction` rows pass.
+fn powered_friction_moving_ee() -> StaggeredCoupling {
+    powered_friction_moving_ee_mu(FRIC_MU0)
 }
 
 /// The CENTROID finite-sphere counterpart of [`powered_friction_hinge`]: a `<motor>`-actuated Y-hinge
@@ -843,9 +878,11 @@ fn powered_friction_moving_ee() -> StaggeredCoupling {
 /// controlled friction grip on a curved indenter. Machine-exact for the same small-curvature reason
 /// as [`actuated_sphere_centroid_coupling`] (the drag `tip_x` gradient is below the curvature-term
 /// tolerance). The differentiated parameter is the per-step control (actuator channel) or the policy
-/// θ, injected per CALL, so the soft stiffness is baked in at `3e3`. Shared by the
-/// `sphere·actuator-friction` and `sphere·policy-friction` rows.
-fn powered_friction_sphere_centroid() -> StaggeredCoupling {
+/// θ, injected per CALL; `soft_mu` is the design leaf (see [`powered_friction_hinge_mu`]), so the
+/// `sphere·design-policy-friction` co-design row FD's it by rebuilding. Shared by the
+/// `sphere·actuator-friction`, `sphere·policy-friction`, and `sphere·design-policy-friction` rows
+/// (the last also holds the centroid grip HOLD co-design row).
+fn powered_friction_sphere_centroid_mu(soft_mu: f64) -> StaggeredCoupling {
     const MJCF: &str = r#"<mujoco>
   <option gravity="2.0 0 -9.81" timestep="0.001"/>
   <worldbody>
@@ -861,10 +898,16 @@ fn powered_friction_sphere_centroid() -> StaggeredCoupling {
     data.qpos[0] = 0.3;
     data.forward(&model).expect("initial forward");
     StaggeredCoupling::new(
-        model, data, 1, 0.005, 4, 0.1, FRIC_MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+        model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_sphere_collider(0.08)
     .with_friction(FRIC_COEF0, 0.1)
+}
+
+/// [`powered_friction_sphere_centroid_mu`] at the baseline block stiffness [`FRIC_MU0`] — the no-arg
+/// builder the per-call `sphere·actuator-friction` / `sphere·policy-friction` rows pass.
+fn powered_friction_sphere_centroid() -> StaggeredCoupling {
+    powered_friction_sphere_centroid_mu(FRIC_MU0)
 }
 
 // ── Harness core ──
@@ -1962,6 +2005,53 @@ fn policy_friction_case(
     }
 }
 
+/// GRIP DESIGN+POLICY-friction — the mission's "one outer loop over BOTH design and policy" on a
+/// friction grip: the soft material stiffness `μ` (the DESIGN leaf, tied `λ = 4μ`) AND the policy
+/// θ are differentiated in ONE `tape.backward(tip_x)`, so the analytic returns
+/// `(tip_x, ∂/∂μ, [∂/∂θ])`. The MIXED μ+θ shape of [`joint_case`], now on the friction-loaded
+/// carry: the flat vector is `[μ, θ₀, θ₁, θ₂]`, the μ component FD'd by REBUILDING the scene at
+/// `soft_mu ± ε` (which moves μ AND the tied λ together — matching the tape's `[1, 4]` combined
+/// leaf, a relative ε since μ ≈ 3e3 is large), the θ components FD'd by re-calling the shared
+/// `coupled_trajectory_policy_gripped_x(θ).x` oracle (well-conditioned, absolute ε = 1e-6). The
+/// tape's forward tip_x is BIT-IDENTICAL to that oracle (`FORWARD_TOL` trivially met), so the FD is
+/// genuinely independent. `build` selects the topology / collider (single hinge, 2-link chain,
+/// moving-EE tracked sphere, centroid sphere); no loss band (engagement is the tip HEIGHT `z`, a
+/// non-loss component kept in the slim `design_policy_friction_gradient.rs`). Folds the single-point
+/// FD cells of that file (which keeps its multi-horizon machine-exact sweep + the 2-link active-set
+/// invariant) and the whole `actuator_moving_ee_gradient.rs` / `actuator_sphere_centroid_gradient.rs`
+/// design-policy gates.
+fn grip_design_policy_friction_case(
+    name: &'static str,
+    build: fn(f64) -> StaggeredCoupling,
+    params: [f64; 3],
+    n: usize,
+    tol: f64,
+) -> GradCase {
+    GradCase {
+        name,
+        value_bounds: None,
+        baseline: vec![FRIC_MU0, params[0], params[1], params[2]],
+        eps: vec![FRIC_MU0 * 1e-4, 1e-6, 1e-6, 1e-6],
+        tol,
+        floor: 1e-12,
+        expect: vec![Comp::Live; 4],
+        analytic: Box::new(move || {
+            let (x, dmu, dth) = build(FRIC_MU0).coupled_trajectory_design_policy_friction_gradient(
+                &LinearFeedback,
+                &params,
+                n,
+            );
+            (x, vec![dmu, dth[0], dth[1], dth[2]])
+        }),
+        value_at: Box::new(move |p| {
+            let theta = [p[1], p[2], p[3]];
+            build(p[0])
+                .coupled_trajectory_policy_gripped_x(&LinearFeedback, &theta, n)
+                .x
+        }),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -2319,6 +2409,40 @@ fn cases() -> Vec<GradCase> {
             "sphere·policy-friction[θ]",
             powered_friction_sphere_centroid,
             12,
+            1e-5,
+        ),
+        // GRIP DESIGN+POLICY co-design (the mission's one outer loop over design AND policy): the
+        // soft μ leaf AND the policy θ on ONE friction-grip tape, terminal tip_x. Machine-exact on
+        // all four topologies — the tip_x drag is pose-insensitive, so even the curved moving-EE /
+        // centroid spheres stay machine-exact. Horizons chosen for the best-conditioned μ signal:
+        // hinge n=20, chain n=12, moving-EE n=4, centroid n=8 (n=4 leaves μ_grad only ~9× the live
+        // floor; n=8 lifts it to ~19× while the tip stays engaged, n=20 breaks the FD conditioning).
+        grip_design_policy_friction_case(
+            "hinge·design-policy-friction[μ+θ]",
+            powered_friction_hinge_mu,
+            [0.08, -0.02, 0.01],
+            20,
+            1e-5,
+        ),
+        grip_design_policy_friction_case(
+            "chain·design-policy-friction[μ+θ]",
+            powered_friction_chain_mu,
+            [0.08, -0.02, 0.01],
+            12,
+            1e-5,
+        ),
+        grip_design_policy_friction_case(
+            "moving-ee·design-policy-friction[μ+θ]",
+            powered_friction_moving_ee_mu,
+            [0.05, -0.02, 0.01],
+            4,
+            1e-5,
+        ),
+        grip_design_policy_friction_case(
+            "sphere·design-policy-friction[μ+θ]",
+            powered_friction_sphere_centroid_mu,
+            [0.08, -0.02, 0.01],
+            8,
             1e-5,
         ),
     ]

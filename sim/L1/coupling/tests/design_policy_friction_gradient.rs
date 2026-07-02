@@ -12,6 +12,13 @@
 //! MACHINE-EXACT at single-hinge (n = 5/20/40) AND a 2-link chain. The μ FD uses a RELATIVE step
 //! `ε = μ·1e-4` (μ ≈ 3e3 is large; an absolute step underflows — the #403 conditioning lesson); the
 //! well-conditioned policy levers take `ε = 1e-6`.
+//!
+//! The single-point FD cells of this channel are now the `{hinge, chain, moving-ee, sphere}·design-
+//! policy-friction[μ+θ]` rows of `coupling_grad_harness.rs`. What stays HERE is what the single-n
+//! matrix rows structurally can't express: the single-hinge MULTI-HORIZON machine-exact sweep
+//! (`gate_single` at n = 5 / 20 / 40, spanning make / slide / liftoff) and the 2-link chain's
+//! machine-exactness THROUGH a mid-rollout active-set change (the tip lifts off the block), with its
+//! start-engagement guard — a stronger gradient test than a permanently-engaged single grip.
 
 #![allow(clippy::expect_used)]
 
