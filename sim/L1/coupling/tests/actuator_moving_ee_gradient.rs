@@ -1,17 +1,17 @@
-//! Moving-end-effector FRICTION + GRIP control gradients on a tip-posed sphere. A motor / policy
-//! drives a hinge arm carrying a sphere end-effector that rides the arm-tip geom
-//! (`with_contact_geom`), so the contact centre moves as the controls swing the arm; sideways
-//! gravity turns the press into a tangential grip.
+//! Moving-end-effector GRIP CO-DESIGN gradient on a tip-posed sphere. A policy drives a hinge arm
+//! carrying a sphere end-effector that rides the arm-tip geom (`with_contact_geom`), so the contact
+//! centre moves as the controls swing the arm; sideways gravity turns the press into a tangential
+//! grip.
 //!
-//! The pose-SENSITIVE `tip_z` actuator gradient (the moving-EE centre-channel discriminator) and
-//! its engagement sanity are the `moving-ee·actuator(motor)` row of `coupling_grad_harness.rs`.
-//! What lives HERE are the FRICTION-family moving-EE gradients — objective `tip_x` (the tangential
-//! drag, which is pose-INSENSITIVE, #429: zeroing the pose-centre seam leaves `∂tip_x`
-//! machine-exact) — so these are COMPOSITION / engagement gates (the `g_act` + friction + moving-EE
-//! centre composition on one geom-posed tape): the ACTUATOR-friction, POLICY-friction, and
-//! DESIGN+POLICY-friction (#406's gradient, R5's) channels. They stay bespoke until the
-//! friction / grip families are folded into the harness as their own rows; tolerance 5e-3 = the
-//! curved-friction floor.
+//! The pose-SENSITIVE `tip_z` actuator gradient (the moving-EE centre-channel discriminator) is the
+//! `moving-ee·actuator(motor)` row of `coupling_grad_harness.rs`; the moving-EE ACTUATOR-friction
+//! and POLICY-friction control gradients are now the `moving-ee·actuator-friction[u]` /
+//! `moving-ee·policy-friction[θ]` rows there (folded via `powered_friction_moving_ee`). What remains
+//! HERE is the DESIGN+POLICY-friction (#406's gradient, R5's) channel — the μ + θ grip CO-DESIGN
+//! gradient, objective `tip_x` (the tangential drag, which is pose-INSENSITIVE, #429: zeroing the
+//! pose-centre seam leaves `∂tip_x` machine-exact). It stays bespoke until the grip co-design family
+//! is folded into the harness as its own row (the fallible `try_`/`RolloutError` path); tolerance
+//! 5e-3 = the curved-friction floor.
 
 #![allow(clippy::expect_used)]
 
@@ -46,75 +46,6 @@ fn build_fric(soft_mu: f64) -> StaggeredCoupling {
     .with_sphere_collider(SPHERE_R)
     .with_contact_geom(0)
     .with_friction(2.5, 0.1)
-}
-
-/// Moving-EE ACTUATOR-FRICTION control gradient vs the FD of the geom-posed `actuated_gripped_x`.
-#[test]
-fn actuator_friction_moving_ee_gradient_matches_fd() {
-    let controls = [0.04_f64, -0.03, 0.05, 0.02];
-    let (tip_x, grad) = build_fric(3.0e3).coupled_trajectory_actuator_friction_gradient(&controls);
-    let x0 = build_fric(3.0e3)
-        .coupled_trajectory_actuated_gripped_x(&controls)
-        .x;
-    assert!(
-        (tip_x - x0).abs() < 1e-10,
-        "forward mismatch {tip_x} vs {x0}"
-    );
-    let eps = 1e-3;
-    for k in 0..controls.len() {
-        let (mut up, mut dn) = (controls, controls);
-        up[k] += eps;
-        dn[k] -= eps;
-        let fd = (build_fric(3.0e3)
-            .coupled_trajectory_actuated_gripped_x(&up)
-            .x
-            - build_fric(3.0e3)
-                .coupled_trajectory_actuated_gripped_x(&dn)
-                .x)
-            / (2.0 * eps);
-        assert!(fd.abs() > 1e-9, "k={k}: degenerate FD");
-        let rel = (grad[k] - fd).abs() / fd.abs().max(1e-9);
-        assert!(
-            rel < 5e-3,
-            "k={k}: actuator-friction moving-EE {} vs FD {fd} (rel {rel:e})",
-            grad[k]
-        );
-    }
-}
-
-/// Moving-EE POLICY-FRICTION gradient (θ) vs the FD of the geom-posed `policy_gripped_x`.
-#[test]
-fn policy_friction_moving_ee_gradient_matches_fd() {
-    let n = 4;
-    let (tip_x, theta) =
-        build_fric(3.0e3).coupled_trajectory_policy_friction_gradient(&LinearFeedback, &PARAMS, n);
-    let x0 = build_fric(3.0e3)
-        .coupled_trajectory_policy_gripped_x(&LinearFeedback, &PARAMS, n)
-        .x;
-    assert!(
-        (tip_x - x0).abs() < 1e-10,
-        "forward mismatch {tip_x} vs {x0}"
-    );
-    let eps = 1e-6;
-    for k in 0..PARAMS.len() {
-        let (mut up, mut dn) = (PARAMS, PARAMS);
-        up[k] += eps;
-        dn[k] -= eps;
-        let fd = (build_fric(3.0e3)
-            .coupled_trajectory_policy_gripped_x(&LinearFeedback, &up, n)
-            .x
-            - build_fric(3.0e3)
-                .coupled_trajectory_policy_gripped_x(&LinearFeedback, &dn, n)
-                .x)
-            / (2.0 * eps);
-        assert!(fd.abs() > 1e-9, "θ[{k}]: degenerate FD");
-        let rel = (theta[k] - fd).abs() / fd.abs().max(1e-9);
-        assert!(
-            rel < 5e-3,
-            "θ[{k}]: policy-friction moving-EE {} vs FD {fd} (rel {rel:e})",
-            theta[k]
-        );
-    }
 }
 
 /// Moving-EE DESIGN+POLICY-friction gradient (#406, R5's gradient) — μ + θ channels vs the FD of
