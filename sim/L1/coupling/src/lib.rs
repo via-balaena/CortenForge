@@ -9127,7 +9127,8 @@ mod tests {
             "design+policy-friction gradient must be finite, got ({dx}, {dmu}, {dgrad:?})"
         );
         // Trajectory-integrated HOLDING gradient (Σ (qₖ − q_hold)²) on the SAME shared tape —
-        // accuracy is gated in `design_policy_hold_gradient.rs`; this keeps --lib coverage honest.
+        // accuracy is gated by the `*·design-policy-hold[μ+θ]` rows of `coupling_grad_harness.rs`;
+        // this keeps --lib coverage honest.
         let (lcost, lmu, lgrad) = build().coupled_trajectory_design_policy_hold_gradient(
             &LinearFeedback,
             &params,

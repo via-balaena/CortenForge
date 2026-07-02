@@ -90,11 +90,13 @@
 //!   (material), and a sphere that TRACKS the arm tip geom (material + `μ_c`, the moving-EE
 //!   de-escalation capstone);
 //! - **GRIP co-design** (`powered_friction_{hinge,chain,moving_ee,sphere_centroid}_mu`, a
-//!   `<motor>`-driven friction grip): `design-policy-friction` — the mission's "one outer loop over
-//!   BOTH design and policy", the soft material `μ` (the DESIGN leaf, tied `λ = 4μ`) AND the policy
-//!   θ differentiated in ONE `tape.backward(tip_x)`, the [`joint_case`] mixed-μ+θ shape now on the
-//!   friction-loaded carry — on the single hinge, the 2-link chain, the moving-EE tracked sphere,
-//!   and the centroid sphere.
+//!   `<motor>`-driven friction grip): the mission's "one outer loop over BOTH design and policy" —
+//!   the soft material `μ` (the DESIGN leaf, tied `λ = 4μ`) AND the policy θ differentiated in ONE
+//!   `tape.backward`, the [`joint_case`] mixed-μ+θ shape now on the friction-loaded carry. Two
+//!   objectives: `design-policy-friction` (the TERMINAL `tip_x` drag, on the single hinge, the
+//!   2-link chain, the moving-EE tracked sphere, and the centroid sphere) and `design-policy-hold`
+//!   (the trajectory-summed holding cost `Σ(qₖ − q_hold)²`, on the centroid + moving-EE spheres —
+//!   the sustained-behavior lever).
 //!
 //! ## Oracle independence — two kinds
 //!
@@ -136,7 +138,10 @@
 //! the de-escalation capstone; the engagement smoke `x ∈ (0, 0.1)` folds into `value_bounds`), and
 //! the moving-EE and centroid-sphere `design-policy-friction` grip co-design gates (the μ + θ
 //! one-tape gradient — their files held nothing but that pure FD-match cell, and the `Comp::Live`
-//! floor subsumes their `∂/∂μ > 1e-9` design-lever sanity).
+//! floor subsumes their `∂/∂μ > 1e-9` design-lever sanity), and the `design-policy-HOLD` grip
+//! co-design channel (the μ + θ gradient of the trajectory hold cost `Σ(qₖ − q_hold)²`, on the
+//! centroid + moving-EE spheres at short and long horizon — its `cost > 1e-6` holding-signal guard
+//! folds into a `value_bounds` loss band).
 //! SLIMMED (the file
 //! keeps only what the FD
 //! matrix structurally can't hold — an invariant, or a sibling channel not yet reached): `joint`
@@ -162,8 +167,9 @@
 //! each file keeps its single-hinge multi-horizon machine-exact sweep, with the z-engagement, and
 //! the friction-ON-vs-OFF materiality the matrix can't toggle).
 //! The
-//! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; further
-//! channels (grip co-design / peak-pressure) join the same way.
+//! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; the
+//! grip co-design family (design-policy friction + hold) is now fully folded, so the last open
+//! gradient cluster is `peak-pressure`, which joins the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -2052,6 +2058,63 @@ fn grip_design_policy_friction_case(
     }
 }
 
+/// The `q_hold` setpoint the grip HOLD co-design rows regulate the gripped limb's hinge angle to.
+const Q_HOLD: f64 = 0.25;
+
+/// GRIP DESIGN+POLICY-HOLD co-design — the sustained-behavior sibling of
+/// [`grip_design_policy_friction_case`]. Where the friction rows differentiate the TERMINAL `tip_x`,
+/// the hold rows differentiate a cost summed over the WHOLE rollout,
+/// `L = Σ_{k=0}^{N-1} (qₖ − q_hold)²` (the gripped limb's hinge angle vs a held setpoint) — the first
+/// sustained-holding co-design lever. The SAME mixed μ+θ flat vector `[μ, θ₀, θ₁, θ₂]` and the SAME
+/// per-step coupled tape as the friction rows; only the seeding differs. The FD oracle is an
+/// INDEPENDENT forward: it reads the per-step `qpos0` from `coupled_trajectory_policy_gripped_capture`
+/// (byte-identical to the friction oracle's rollout, tape-free) and sums the hold cost, so the FD
+/// never touches the gradient's tape. The tape's forward cost is BIT-IDENTICAL to that sum
+/// (`FORWARD_TOL` trivially met). `value_bounds` bands the hold cost itself (the loss), folding the
+/// bespoke `cost > 1e-6` "holding signal present" guard AND catching fixture drift. Folds the whole
+/// `design_policy_hold_gradient.rs` (centroid + moving-EE, short + long horizon).
+fn grip_hold_case(
+    name: &'static str,
+    build: fn(f64) -> StaggeredCoupling,
+    params: [f64; 3],
+    n: usize,
+    tol: f64,
+    value_bounds: Option<(f64, f64)>,
+) -> GradCase {
+    // The independent forward hold cost `Σ (qₖ − q_hold)²` from the tape-free capture (the FD oracle
+    // for BOTH the μ rebuild and the θ re-call).
+    fn hold_cost(mut c: StaggeredCoupling, params: &[f64; 3], n: usize) -> f64 {
+        let frames = c
+            .coupled_trajectory_policy_gripped_capture(&LinearFeedback, params, n)
+            .1;
+        (0..n)
+            .map(|k| (frames[k].qpos0 - Q_HOLD) * (frames[k].qpos0 - Q_HOLD))
+            .sum()
+    }
+    GradCase {
+        name,
+        value_bounds,
+        baseline: vec![FRIC_MU0, params[0], params[1], params[2]],
+        eps: vec![FRIC_MU0 * 1e-4, 1e-6, 1e-6, 1e-6],
+        tol,
+        floor: 1e-12,
+        expect: vec![Comp::Live; 4],
+        analytic: Box::new(move || {
+            let (cost, dmu, dth) = build(FRIC_MU0).coupled_trajectory_design_policy_hold_gradient(
+                &LinearFeedback,
+                &params,
+                n,
+                Q_HOLD,
+            );
+            (cost, vec![dmu, dth[0], dth[1], dth[2]])
+        }),
+        value_at: Box::new(move |p| {
+            let theta = [p[1], p[2], p[3]];
+            hold_cost(build(p[0]), &theta, n)
+        }),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -2444,6 +2507,38 @@ fn cases() -> Vec<GradCase> {
             [0.08, -0.02, 0.01],
             8,
             1e-5,
+        ),
+        // GRIP HOLD co-design (the sustained-holding lever): the μ + θ gradient of the trajectory
+        // hold cost Σ(qₖ − q_hold)². Centroid sphere at a short (n=5) and a longer (n=20) horizon —
+        // the longer one exercises the cost ACCUMULATION through the carry recurrence, where the
+        // #422 frozen-lag friction residual compounds over the n summed per-step terms (worst rel
+        // ~1.4e-6 at n=20 vs the terminal-tip rows' ~1e-8, so tol=1e-4 keeps ~70× headroom — tighter
+        // than the bespoke gate's conservative 5e-3, matching the sibling friction rows' philosophy).
+        // Plus the moving-EE tracked sphere (the R5 de-escalation scene). The hold cost is a clean
+        // loss band (folds the bespoke `cost > 1e-6` holding-signal guard).
+        grip_hold_case(
+            "centroid·design-policy-hold[μ+θ]",
+            powered_friction_sphere_centroid_mu,
+            [0.05, -0.02, 0.01],
+            5,
+            1e-4,
+            Some((5e-3, 2e-2)),
+        ),
+        grip_hold_case(
+            "centroid·design-policy-hold[μ+θ]·n20",
+            powered_friction_sphere_centroid_mu,
+            [0.05, -0.02, 0.01],
+            20,
+            1e-4,
+            Some((1e-2, 3e-2)),
+        ),
+        grip_hold_case(
+            "moving-ee·design-policy-hold[μ+θ]",
+            powered_friction_moving_ee_mu,
+            [0.05, -0.02, 0.01],
+            5,
+            1e-4,
+            Some((0.1, 0.3)),
         ),
     ]
 }
