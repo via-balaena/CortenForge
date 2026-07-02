@@ -457,6 +457,39 @@ fn actuated_moving_ee_coupling(actuator: &str) -> StaggeredCoupling {
     .with_contact_geom(0)
 }
 
+/// A CENTROID finite-sphere actuator scene: a `<motor>`-driven Y-hinge arm pressing the block top
+/// through a finite `SphereSdf` posed over the block centroid (`with_sphere_collider`, NO
+/// `with_contact_geom` — the sphere sits at the centroid, unlike the moving-EE tip-tracked variant).
+/// The `g_act` actuator channel composes with the CURVED contact nodes on one tape; the gradient is
+/// machine-exact because the gentle large-sphere south-pole patch (r = 0.08, `∇²sd` ≈ 0) leaves the
+/// curvature contribution below tolerance (the same small-curvature regime the bespoke centroid gate
+/// documented). Straight-down gravity ⇒ the `tip_z` normal-actuator objective. Shared by the
+/// `sphere·actuator` row.
+fn actuated_sphere_centroid_coupling(actuator: &str) -> StaggeredCoupling {
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+  <actuator>
+    {actuator}
+  </actuator>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("actuated centroid-sphere MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(0.08)
+}
+
 /// Curved-collider platen: the soft block contacted by a finite `SphereSdf`
 /// (`with_sphere_collider`) instead of a half-plane, so the contact normal
 /// rotates over the curved face — the `f_mag·H` curvature term the plane gates
@@ -802,6 +835,36 @@ fn powered_friction_moving_ee() -> StaggeredCoupling {
     .with_sphere_collider(0.08)
     .with_contact_geom(0)
     .with_friction(2.5, 0.1)
+}
+
+/// The CENTROID finite-sphere counterpart of [`powered_friction_hinge`]: a `<motor>`-actuated Y-hinge
+/// arm pushed sideways (`gx = 2.0`) into the block top through a finite `SphereSdf` posed over the
+/// centroid (`with_sphere_collider`, NO `with_contact_geom`), so the tip sweeps tangentially into a
+/// controlled friction grip on a curved indenter. Machine-exact for the same small-curvature reason
+/// as [`actuated_sphere_centroid_coupling`] (the drag `tip_x` gradient is below the curvature-term
+/// tolerance). The differentiated parameter is the per-step control (actuator channel) or the policy
+/// θ, injected per CALL, so the soft stiffness is baked in at `3e3`. Shared by the
+/// `sphere·actuator-friction` and `sphere·policy-friction` rows.
+fn powered_friction_sphere_centroid() -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j" gear="1"/></actuator>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("powered centroid-sphere friction MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, FRIC_MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(0.08)
+    .with_friction(FRIC_COEF0, 0.1)
 }
 
 // ── Harness core ──
@@ -2230,6 +2293,31 @@ fn cases() -> Vec<GradCase> {
         policy_friction_case(
             "moving-ee·policy-friction[θ]",
             powered_friction_moving_ee,
+            12,
+            1e-5,
+        ),
+        // CENTROID finite-sphere control gradients (the curved indenter posed over the block
+        // centroid): the NORMAL actuator (tip_z) plus the actuator/policy friction grip (tip_x).
+        // Machine-exact — the gentle large-sphere curvature term sits below tolerance (∇²sd≈0), the
+        // same small-curvature regime the bespoke centroid gate documented; n=12 the best-conditioned
+        // policy horizon (n=20 degrades to ~9e-5)
+        actuator_case(
+            "sphere·actuator(motor)",
+            actuated_sphere_centroid_coupling,
+            r#"<motor name="a" joint="j" gear="4"/>"#,
+            vec![0.3, -0.2, 0.4],
+            (0.10, 0.115),
+            1e-5,
+        ),
+        actuator_friction_case(
+            "sphere·actuator-friction[u]",
+            powered_friction_sphere_centroid,
+            vec![0.1, -0.05, 0.08, 0.04],
+            1e-5,
+        ),
+        policy_friction_case(
+            "sphere·policy-friction[θ]",
+            powered_friction_sphere_centroid,
             12,
             1e-5,
         ),
