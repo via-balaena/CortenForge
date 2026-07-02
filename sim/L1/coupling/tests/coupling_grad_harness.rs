@@ -83,9 +83,12 @@
 //!   `∂fx/∂μ_c = fx/μ_c`) — on the free platen and, through `friction_hinge_coupling` /
 //!   `friction_chain_coupling`, on an ARTICULATED grip where the wrench routes through the joint
 //!   carry `Δt·M⁻¹·Jᵀ` and adds its off-COM MOMENT `Σ(r_v−c)×∇D_v` (the 2-link chain the multi-DOF
-//!   `J_lin`/arm indexing a single hinge collapses), and — via `sphere_friction_coupling` — on a
-//!   curved `SphereSdf` where the friction force Jacobian carries the `DN·C` curved-normal term at
-//!   the ~2e-3 curved-contact forward-solver floor (`μ_c`, the coefficient lever that resolves it).
+//!   `J_lin`/arm indexing a single hinge collapses), and — via `sphere_friction_coupling` /
+//!   `sphere_hinge_friction_coupling` / `sphere_moving_ee_friction_coupling` — on a curved
+//!   `SphereSdf` where the friction force Jacobian carries the `DN·C` curved-normal term at the
+//!   ~2e-3 curved-contact forward-solver floor: the free platen (`μ_c`), the articulated hinge
+//!   (material), and a sphere that TRACKS the arm tip geom (material + `μ_c`, the moving-EE
+//!   de-escalation capstone).
 //!
 //! ## Oracle independence — two kinds
 //!
@@ -121,8 +124,11 @@
 //! trajectory, the `IPC` contact-model trajectory
 //! (single-step + the multi-step make/break rollout), the `tangential-coeff` FRICTION channel
 //! (`∂x/∂μ_c` — its z-engagement guard is on the same baseline rollout the `tangential-material`
-//! slim file already holds), and the `sphere-articulated-friction-material` channel (the curved
-//! hinge grip — its engagement smoke `|x| < 0.1` folds into a `value_bounds` loss band). SLIMMED (the file
+//! slim file already holds), the `sphere-articulated-friction-material` channel (the curved
+//! hinge grip — its engagement smoke `|x| < 0.1` folds into a `value_bounds` loss band), and the
+//! `sphere-moving-ee-friction` channels (material + μ_c on a sphere that TRACKS the arm tip geom —
+//! the de-escalation capstone; the engagement smoke `x ∈ (0, 0.1)` folds into `value_bounds`).
+//! SLIMMED (the file
 //! keeps only what the FD
 //! matrix structurally can't hold — an invariant, or a sibling channel not yet reached): `joint`
 //! (a tape-vs-tape fusion-soundness check), `freebody-orientation`, `freebody-angular-velocity`
@@ -671,6 +677,37 @@ fn sphere_hinge_friction_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupli
         model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_sphere_collider(0.08)
+    .with_friction(fric_mu, 0.1)
+}
+
+/// The MOVING-end-effector friction grip on a finite `SphereSdf` that TRACKS the arm tip geom
+/// (`with_contact_geom`): a long Y-hinge arm posed over the block centroid, pushed sideways
+/// (`gx = 1.5`) so the tip sweeps tangentially in x and the contact centre translates laterally AS
+/// the friction grip drags. The de-escalation capstone physics (a soft body friction-gripping a
+/// MOVING rigid limb): the pose channel is the 3-vector centre (`PoseCentreVjp`, `WrenchPose::Centre`,
+/// the friction wrench's 3-vector `dforce_dpose`). `soft_mu`/`fric_mu` FD'd by rebuilding. The
+/// `tip_x` drag objective is pose-INSENSITIVE (the discriminating moving-EE POSE channel is the
+/// NORMAL `tip_z` gate and the single-step lateral leaf gates), so these rows gate the moving-EE
+/// friction COMPOSITION, not the pose seam.
+fn sphere_moving_ee_friction_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="1.5 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0.05 0.05 0.344">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.17" size="0.08" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("moving-EE sphere friction MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.05; // slight tilt → off-COM + the sideways push sweeps the tip in x
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(0.08)
+    .with_contact_geom(0)
     .with_friction(fric_mu, 0.1)
 }
 
@@ -1673,10 +1710,11 @@ fn friction_articulated_coeff_case(
     build: fn(f64, f64) -> StaggeredCoupling,
     n: usize,
     tol: f64,
+    band: Option<(f64, f64)>,
 ) -> GradCase {
     GradCase {
         name,
-        value_bounds: None,
+        value_bounds: band,
         baseline: vec![FRIC_COEF0],
         eps: vec![FRIC_COEF0 * 1e-3],
         tol,
@@ -1957,12 +1995,14 @@ fn cases() -> Vec<GradCase> {
             friction_hinge_coupling,
             40,
             2e-5,
+            None,
         ),
         friction_articulated_coeff_case(
             "chain·friction-coeff[μ_c]",
             friction_chain_coupling,
             12,
             2e-5,
+            None,
         ),
         // curved-collider free-platen friction: the μ_c gate on a finite SphereSdf — the friction
         // force Jacobian's DN·C curved-normal term, at the ~2e-3 curved-contact forward-solver floor
@@ -1973,6 +2013,24 @@ fn cases() -> Vec<GradCase> {
             8,
             5e-3,
             None,
+        ),
+        // MOVING-end-effector friction: the sphere tracks the arm tip geom, so the contact centre
+        // translates laterally as the friction grip drags — the de-escalation capstone (a soft body
+        // gripping a moving limb). Material + μ_c on the moving-EE composition, at the curved floor
+        // (tol 5e-3); the tip stays over the block so x∈(0,0.1) is a clean loss band
+        friction_articulated_material_case(
+            "sphere-moving-ee·friction-material[μ]",
+            sphere_moving_ee_friction_coupling,
+            6,
+            5e-3,
+            Some((0.0, 0.1)),
+        ),
+        friction_articulated_coeff_case(
+            "sphere-moving-ee·friction-coeff[μ_c]",
+            sphere_moving_ee_friction_coupling,
+            6,
+            5e-3,
+            Some((0.0, 0.1)),
         ),
     ]
 }
