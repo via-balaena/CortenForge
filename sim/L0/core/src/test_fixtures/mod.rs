@@ -42,6 +42,7 @@ pub mod arms;
 pub mod bodies;
 pub(crate) mod builders;
 pub mod chains;
+pub mod collision;
 pub mod conformance;
 pub mod particles;
 pub mod pendulums;
@@ -49,6 +50,7 @@ pub mod pendulums;
 pub use arms::{reaching_2dof, reaching_6dof, reaching_6dof_obstacle};
 pub use bodies::{builder_test_minimal, cart_pole, free_body_diag, hinge_chain_2dof_inertial};
 pub use chains::{bistable_chain, hinge_chain};
+pub use collision::collision_geoms;
 pub use particles::{
     bistable_1dof, ising_pair, ratchet, sho_1d, single_slide, stochastic_resonance,
 };

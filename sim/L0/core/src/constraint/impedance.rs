@@ -5,16 +5,10 @@
 //! Corresponds to the impedance machinery in MuJoCo's
 //! `engine_core_constraint.c` (§15.1).
 
-use nalgebra::{DVector, UnitQuaternion, Vector3};
+use nalgebra::{DVector, Vector3};
 
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
 use crate::types::{ConstraintType, Data, Model};
-
-// Canonical copy in dynamics/crba.rs. Retained here for non-CRBA uses
-// (quaternion_to_axis_angle, constraint body mass lookup) until those
-// functions are extracted in later phases.
-#[allow(dead_code)]
-const MIN_INERTIA_THRESHOLD: f64 = 1e-10;
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
 ///
@@ -105,42 +99,6 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
 
     // Interpolate: d = d0 + y * (d_width - d0)
     d0 + y * (d_width - d0)
-}
-
-/// Convert a quaternion error to axis-angle representation.
-///
-/// For a unit quaternion `q = (w, x, y, z) = (cos(θ/2), sin(θ/2) * axis)`,
-/// returns `θ * axis` as a Vector3.
-///
-/// This is more accurate than the small-angle approximation `2 * [x, y, z]`
-/// which has ~10% error at 90° and ~36% error at 180°.
-///
-/// # Arguments
-/// * `quat` - A unit quaternion representing the rotation error
-///
-/// # Returns
-/// Axis-angle representation as `angle * axis` (Vector3)
-#[inline]
-#[allow(dead_code)]
-pub fn quaternion_to_axis_angle(quat: &UnitQuaternion<f64>) -> Vector3<f64> {
-    let q = quat.quaternion();
-    let (qw, qx, qy, qz) = (q.w, q.i, q.j, q.k);
-
-    // Handle identity quaternion (no rotation)
-    let sin_half_angle_sq = qx * qx + qy * qy + qz * qz;
-    if sin_half_angle_sq < MIN_INERTIA_THRESHOLD {
-        return Vector3::zeros();
-    }
-
-    let sin_half_angle = sin_half_angle_sq.sqrt();
-
-    // Compute full angle: θ = 2 * atan2(||xyz||, w)
-    // This handles all cases including w < 0 (angle > π)
-    let angle = 2.0 * sin_half_angle.atan2(qw);
-
-    // Axis is normalized [x, y, z] / ||xyz||
-    // Result is angle * axis
-    Vector3::new(qx, qy, qz) * (angle / sin_half_angle)
 }
 
 /// Compute KBIP stiffness K and damping B from solref parameters (§15.1).
