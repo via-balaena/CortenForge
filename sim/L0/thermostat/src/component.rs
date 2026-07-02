@@ -96,8 +96,9 @@ pub trait PassiveComponent: Send + Sync + 'static {
 /// The stack hands components out as `Arc<dyn PassiveComponent>` —
 /// shared, immutable references — so any mutable state on the
 /// component must use interior mutability. `LangevinThermostat` uses
-/// an `AtomicBool` for the active flag and a `Mutex<ChaCha8Rng>` for
-/// the RNG; both are compatible with `&self`-only access.
+/// an `AtomicBool` for the active flag and an `AtomicU64` step counter
+/// feeding a stateless PRF (it holds no RNG); both are compatible with
+/// `&self`-only access.
 pub trait Stochastic: Send + Sync {
     /// Set the active flag. `true` re-enables the stochastic part of
     /// `apply`; `false` disables it (deterministic-only forces).

@@ -12,7 +12,7 @@
 
 use sim_core::{DVector, Model};
 
-use crate::test_utils::WellState;
+use crate::well_state::WellState;
 use crate::{
     DoubleWellPotential, ExternalField, LangevinThermostat, PairwiseCoupling, PassiveStack,
 };
@@ -209,7 +209,8 @@ impl IsingLearner {
 
     /// Run a single trajectory and return per-site magnetization means
     /// and per-edge correlation means.
-    // Precision loss is acceptable for trajectory/seed index casting.
+    // Precision loss is acceptable for the sample-count (`mag_count`/
+    // `corr_count`) → f64 casts used to average magnetization/correlation.
     // Panics on step/forward failure are intentional — see § Panics.
     #[allow(clippy::cast_precision_loss, clippy::panic)]
     fn run_trajectory(&mut self, seed: u64) -> (Vec<f64>, Vec<f64>) {

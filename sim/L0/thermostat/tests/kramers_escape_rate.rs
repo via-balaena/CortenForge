@@ -27,7 +27,8 @@
 
 use sim_core::DVector;
 use sim_core::test_fixtures::bistable_1dof;
-use sim_thermostat::test_utils::{WelfordOnline, WellState};
+use sim_thermostat::WellState;
+use sim_thermostat::test_utils::WelfordOnline;
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PassiveStack};
 
 // ─── Central parameter set (spec §7) ───────────────────────────────────────

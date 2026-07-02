@@ -29,8 +29,8 @@
 
 use sim_core::DVector;
 use sim_core::test_fixtures::bistable_chain;
+use sim_thermostat::WellState;
 use sim_thermostat::ising::{exact_distribution, kl_divergence, tv_distance};
-use sim_thermostat::test_utils::WellState;
 use sim_thermostat::{
     DoubleWellPotential, ExternalField, GibbsSampler, LangevinThermostat, PairwiseCoupling,
     PassiveStack,

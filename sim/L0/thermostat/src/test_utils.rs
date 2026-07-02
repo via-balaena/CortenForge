@@ -22,10 +22,6 @@
 //!   default `n_sigma = 3.0` is the chassis sub-decision N2 default;
 //!   the Phase 1 tests use the default verbatim.
 //!
-//! - [`sample_stats`]: a one-shot helper that returns `(mean, variance)`
-//!   over a slice — useful for tests that don't need the streaming
-//!   accumulator's `merge`/`reset` machinery.
-//!
 //! ## Why this lives in `pub mod test_utils` and not `#[cfg(test)]`
 //!
 //! The chassis Decision-6 layout puts these helpers behind
@@ -36,61 +32,6 @@
 //! machinery). Behind `#[cfg(test)]` they would be invisible to
 //! integration tests, which compile against the crate as a normal
 //! library consumer.
-
-/// Hysteresis-based well-state classification for bistable elements.
-///
-/// Used by Phase 3+ tests to classify a 1-DOF position into one of three
-/// regions: left well, right well, or barrier. The threshold `x_thresh`
-/// defines the boundary between well and barrier regions.
-///
-/// At the Phase 3 central parameters (`κ = λ_r/ω_b = 0.313`), ~69% of
-/// zero-crossings are recrossings. Hysteresis at `x_thresh = x₀/2` filters
-/// these out and recovers the genuine committed-transition rate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WellState {
-    /// Position is in the left well: `x < −x_thresh`.
-    Left,
-    /// Position is in the right well: `x > +x_thresh`.
-    Right,
-    /// Position is in the barrier region: `−x_thresh ≤ x ≤ +x_thresh`.
-    Barrier,
-}
-
-impl WellState {
-    /// Classify a position into a well state given the hysteresis threshold.
-    #[must_use]
-    pub fn from_position(x: f64, x_thresh: f64) -> Self {
-        if x > x_thresh {
-            Self::Right
-        } else if x < -x_thresh {
-            Self::Left
-        } else {
-            Self::Barrier
-        }
-    }
-
-    /// Convert to a spin value: `+1.0` for Right, `−1.0` for Left.
-    ///
-    /// # Panics
-    /// Panics if called on `Barrier` — callers must check
-    /// [`is_in_well`](Self::is_in_well) first.
-    #[must_use]
-    // Panic on Barrier is a deliberate contract — callers must check is_in_well() first.
-    #[allow(clippy::panic)]
-    pub fn spin(self) -> f64 {
-        match self {
-            Self::Right => 1.0,
-            Self::Left => -1.0,
-            Self::Barrier => panic!("spin() called on Barrier state"), // deliberate contract violation
-        }
-    }
-
-    /// Returns `true` if the element is in a well (not in the barrier).
-    #[must_use]
-    pub fn is_in_well(self) -> bool {
-        self != Self::Barrier
-    }
-}
 
 /// Numerically stable single-pass mean/variance accumulator.
 ///
@@ -306,20 +247,6 @@ pub fn assert_within_n_sigma(
     );
 }
 
-/// One-shot `(mean, variance)` over a slice.
-///
-/// Useful for tests that don't need the streaming accumulator's
-/// `merge`/`reset` machinery. Returns `(0.0, NaN)` for `data.len() < 2`
-/// to match `WelfordOnline`'s degenerate-input convention.
-#[must_use]
-pub fn sample_stats(data: &[f64]) -> (f64, f64) {
-    let mut acc = WelfordOnline::new();
-    for &x in data {
-        acc.push(x);
-    }
-    (acc.mean(), acc.variance())
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
@@ -515,66 +442,11 @@ mod tests {
     }
 
     #[test]
-    fn sample_stats_matches_welford() {
-        let data = [1.0, 2.0, 3.0, 4.0, 5.0];
-        let (mean, var) = sample_stats(&data);
-        assert!((mean - 3.0).abs() < 1e-12);
-        assert!((var - 2.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn sample_stats_empty_returns_zero_and_nan() {
-        let (mean, var) = sample_stats(&[]);
-        assert_eq!(mean, 0.0);
-        assert!(var.is_nan());
-    }
-
-    #[test]
     fn welford_default_equals_new() {
         let a = WelfordOnline::new();
         let b = WelfordOnline::default();
         assert_eq!(a.count(), b.count());
         assert_eq!(a.mean(), b.mean());
         assert!(a.variance().is_nan() && b.variance().is_nan());
-    }
-
-    // ─── WellState tests ──────────────────────────────────────────────
-
-    #[test]
-    fn well_state_from_position_classifies_correctly() {
-        let thresh = 0.5;
-        assert_eq!(WellState::from_position(1.0, thresh), WellState::Right);
-        assert_eq!(WellState::from_position(-1.0, thresh), WellState::Left);
-        assert_eq!(WellState::from_position(0.0, thresh), WellState::Barrier);
-        assert_eq!(WellState::from_position(0.5, thresh), WellState::Barrier);
-        assert_eq!(WellState::from_position(-0.5, thresh), WellState::Barrier);
-        assert_eq!(
-            WellState::from_position(0.500_001, thresh),
-            WellState::Right
-        );
-        assert_eq!(
-            WellState::from_position(-0.500_001, thresh),
-            WellState::Left
-        );
-    }
-
-    #[test]
-    fn well_state_spin_values() {
-        assert_eq!(WellState::Right.spin(), 1.0);
-        assert_eq!(WellState::Left.spin(), -1.0);
-    }
-
-    #[test]
-    #[should_panic(expected = "spin() called on Barrier")]
-    fn well_state_spin_panics_on_barrier() {
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = WellState::Barrier.spin();
-    }
-
-    #[test]
-    fn well_state_is_in_well() {
-        assert!(WellState::Right.is_in_well());
-        assert!(WellState::Left.is_in_well());
-        assert!(!WellState::Barrier.is_in_well());
     }
 }
