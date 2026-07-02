@@ -24,7 +24,7 @@ use sim_ml_chassis::optimizer::OptimizerConfig;
 use sim_ml_chassis::policy::DifferentiablePolicy;
 use sim_ml_chassis::replay_buffer::ReplayBuffer;
 use sim_ml_chassis::tensor::Tensor;
-use sim_ml_chassis::value::{QFunction, soft_update};
+use sim_ml_chassis::value::{QFunction, soft_update, soft_update_policy};
 use sim_ml_chassis::vec_env::VecEnv;
 
 // ── Hyperparameters ──────────────────────────────────────────────────────
@@ -71,12 +71,12 @@ pub struct Td3Hyperparams {
 ///
 /// ```ignore
 /// let td3 = Td3::new(
-///     Box::new(MlpPolicy::new(od, 32, ad, &sc)),   // actor
-///     Box::new(MlpPolicy::new(od, 32, ad, &sc)),   // actor target
-///     Box::new(MlpQ::new(od, 32, ad, &sc)),        // Q1
-///     Box::new(MlpQ::new(od, 32, ad, &sc)),        // Q2
-///     Box::new(MlpQ::new(od, 32, ad, &sc)),        // Q1 target
-///     Box::new(MlpQ::new(od, 32, ad, &sc)),        // Q2 target
+///     Box::new(MlpPolicy::new(od, 32, ad, sc)),   // actor
+///     Box::new(MlpPolicy::new(od, 32, ad, sc)),   // actor target
+///     Box::new(MlpQ::new(od, 32, ad, sc)),        // Q1
+///     Box::new(MlpQ::new(od, 32, ad, sc)),        // Q2
+///     Box::new(MlpQ::new(od, 32, ad, sc)),        // Q1 target
+///     Box::new(MlpQ::new(od, 32, ad, sc)),        // Q2 target
 ///     OptimizerConfig::adam(3e-4),
 ///     Td3Hyperparams { .. },
 /// );
@@ -88,8 +88,6 @@ pub struct Td3 {
     q2: Box<dyn QFunction>,
     target_q1: Box<dyn QFunction>,
     target_q2: Box<dyn QFunction>,
-    #[allow(dead_code)] // kept for from_checkpoint() reconstruction
-    optimizer_config: OptimizerConfig,
     hyperparams: Td3Hyperparams,
     /// Actor optimizer (momentum persists across `train()` calls).
     actor_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
@@ -137,7 +135,6 @@ impl Td3 {
             q2,
             target_q1,
             target_q2,
-            optimizer_config,
             hyperparams,
             actor_opt,
             q1_opt,
@@ -202,7 +199,6 @@ impl Td3 {
             q2,
             target_q1,
             target_q2,
-            optimizer_config,
             hyperparams,
             actor_opt,
             q1_opt,
@@ -462,12 +458,9 @@ impl Algorithm for Td3 {
                             .policy
                             .forward_vjp_batch(&batch.obs, &neg_dq_da, obs_dim);
 
-                        // Negate the result since forward_vjp_batch computes mean(v^T · dμ/dθ)
-                        // with v = -dQ/da, giving -dJ/dθ. We want ascent on J.
-                        // Actually: we pass neg_dq_da as v, so VJP = mean((-dQ/da)^T · dμ/dθ)
-                        // = -mean(dQ/da · dμ/dθ) = -dJ/dθ.
-                        // We want to maximize J, so we do ascent on dJ/dθ = -(-dJ/dθ).
-                        // Equivalently: descent on (-dJ/dθ).
+                        // forward_vjp_batch returns actor_grad = mean((-dQ/da)ᵀ · dμ/dθ)
+                        // = -dJ/dθ, so descending on it (step_in_place ascent=false) is
+                        // ascent on J — which is the objective.
                         let mut ap = self.policy.params().to_vec();
                         self.actor_opt.step_in_place(&mut ap, &actor_grad, false);
                         self.policy.set_params(&ap);
@@ -478,15 +471,8 @@ impl Algorithm for Td3 {
                         // Soft update all 3 target networks.
                         soft_update(&mut *self.target_q1, &*self.q1, hp.tau);
                         soft_update(&mut *self.target_q2, &*self.q2, hp.tau);
-                        // Soft update target policy via raw params.
-                        let src = self.policy.params();
-                        let tgt = self.target_policy.params().to_vec();
-                        let updated: Vec<f64> = tgt
-                            .iter()
-                            .zip(src)
-                            .map(|(&t, &s)| hp.tau.mul_add(s, (1.0 - hp.tau) * t))
-                            .collect();
-                        self.target_policy.set_params(&updated);
+                        // Soft update the target policy (Polyak averaging).
+                        soft_update_policy(&mut *self.target_policy, &*self.policy, hp.tau);
                     }
                 }
             }

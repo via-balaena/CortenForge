@@ -10,12 +10,12 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-pub mod cem;
-pub mod ppo;
-pub mod reinforce;
-pub mod sac;
-pub mod tasks;
-pub mod td3;
+mod cem;
+mod ppo;
+mod reinforce;
+mod sac;
+mod tasks;
+mod td3;
 
 // Algorithm exports.
 pub use cem::{Cem, CemHyperparams};

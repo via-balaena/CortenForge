@@ -6,7 +6,7 @@
 //!
 //! Requires [`DifferentiablePolicy`] + [`OptimizerConfig`].
 //!
-//! Key findings from stress-testing (see `project_reinforce_findings.md`):
+//! Key findings from stress-testing:
 //! - Adam optimizer is essential (vanilla SGD oscillates on noisy PG).
 //! - Advantage normalization (zero-mean, unit-var) is critical for stability.
 
@@ -60,8 +60,6 @@ pub struct ReinforceHyperparams {
 /// ```
 pub struct Reinforce {
     policy: Box<dyn DifferentiablePolicy>,
-    #[allow(dead_code)] // kept for from_checkpoint() reconstruction
-    optimizer_config: OptimizerConfig,
     hyperparams: ReinforceHyperparams,
     /// Optimizer instance (momentum persists across `train()` calls).
     optimizer: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
@@ -84,7 +82,6 @@ impl Reinforce {
         let best = sim_ml_chassis::best_tracker::BestTracker::new(policy.params());
         Self {
             policy,
-            optimizer_config,
             hyperparams,
             optimizer,
             sigma,
@@ -126,7 +123,6 @@ impl Reinforce {
         );
         Ok(Self {
             policy,
-            optimizer_config,
             hyperparams,
             optimizer,
             sigma,
@@ -150,12 +146,11 @@ impl Algorithm for Reinforce {
     // REINFORCE's training loop stays inlined for the same reason as PPO:
     // the rollout → return computation → policy-gradient update sequence is
     // most readable as a single linear pass. Cast lints are usize → f64 for
-    // baseline normalization; panics guard documented internal invariants.
+    // baseline normalization.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::too_many_lines,
-        clippy::panic
+        clippy::too_many_lines
     )]
     fn train(
         &mut self,

@@ -16,7 +16,7 @@ use rand::rngs::StdRng;
 use sim_ml_chassis::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 use sim_ml_chassis::artifact::{ArtifactError, PolicyArtifact, TrainingCheckpoint};
 use sim_ml_chassis::policy::Policy;
-use sim_ml_chassis::rollout::collect_episodic_rollout;
+use sim_ml_chassis::rollout::{Trajectory, collect_episodic_rollout};
 use sim_ml_chassis::vec_env::VecEnv;
 
 // ── Hyperparameters ──────────────────────────────────────────────────────
@@ -130,10 +130,6 @@ impl Algorithm for Cem {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    // The training loop panics on internal invariant violations (e.g. empty
-    // elite set after sorting) which represent CEM-specific bugs, not
-    // recoverable runtime conditions — see `# Panics` on the trait method.
-    #[allow(clippy::panic)]
     fn train(
         &mut self,
         env: &mut VecEnv,
@@ -269,9 +265,6 @@ impl Algorithm for Cem {
         }
     }
 }
-
-// ── use rollout::Trajectory for len() ────────────────────────────────────
-use sim_ml_chassis::rollout::Trajectory;
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
