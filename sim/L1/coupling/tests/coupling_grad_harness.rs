@@ -132,7 +132,10 @@
 //! `tangential-material` FRICTION channel (the file keeps the z-ENGAGEMENT invariant the row's
 //! x-slide loss band structurally can't express — engagement is a non-loss component here), and the
 //! `articulated-friction-material` channel (hinge + 2-link chain — the file keeps the hinge
-//! multi-horizon machine-exact sweep + the 2-link start-engagement guard). The
+//! multi-horizon machine-exact sweep + the 2-link start-engagement guard), and the
+//! `articulated-friction-coeff` channel (μ_c — the file keeps only its own hinge multi-horizon
+//! FD-match sweep; its 2-link start-engagement guard is redundant with the material file's, on the
+//! byte-identical baseline). The
 //! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; further
 //! channels (the rest of the friction family / grip co-design / peak-pressure) join the same way.
 
@@ -1584,6 +1587,46 @@ fn friction_articulated_material_case(
     }
 }
 
+/// FRICTION-ARTICULATED-COEFF — the Coulomb-COEFFICIENT (`μ_c`) sibling of
+/// [`friction_articulated_material_case`]: the same articulated grip scenes and tip-`x` slide
+/// objective, but the differentiated param is `μ_c` (`with_friction`), entering DIRECTLY through
+/// the friction force `∂∇D_v/∂μ_c = ∇D_v/μ_c` threaded through force AND off-COM moment. A single
+/// (untied) param; oracle `coupled_trajectory_gripped_articulated(n).x`. ★ eps = `μ_c·1e-3` — the
+/// FD V-SHAPE minimum: `∂x/∂μ_c` is a tiny change in a large tip coordinate, so a smaller step
+/// (e.g. `μ_c·1e-5`) lands in the round-off cancellation branch (rel ~2e-4) and a larger one in the
+/// O(ε²) truncation; the gradient is exact, the FD is the noisy party (tol 2e-5, looser than the
+/// material rows whose larger μ-lever stays machine-exact at its own step). `Comp::Live`, no loss
+/// band (tip-`x` swings sign; engagement is a non-loss component). Folds the single-point FD cells
+/// of `friction_articulated_coeff_gradient.rs`; that file keeps only its own hinge multi-horizon
+/// FD-match invariant (its 2-link start-engagement guard is redundant with the
+/// articulated-material slim file's, on the byte-identical baseline).
+fn friction_articulated_coeff_case(
+    name: &'static str,
+    build: fn(f64, f64) -> StaggeredCoupling,
+    n: usize,
+    tol: f64,
+) -> GradCase {
+    GradCase {
+        name,
+        value_bounds: None,
+        baseline: vec![FRIC_COEF0],
+        eps: vec![FRIC_COEF0 * 1e-3],
+        tol,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(move || {
+            let (x, g) = build(FRIC_MU0, FRIC_COEF0)
+                .coupled_trajectory_tangential_friction_coeff_gradient_articulated(n);
+            (x, vec![g])
+        }),
+        value_at: Box::new(move |p| {
+            build(FRIC_MU0, p[0])
+                .coupled_trajectory_gripped_articulated(n)
+                .x
+        }),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -1820,6 +1863,20 @@ fn cases() -> Vec<GradCase> {
             friction_chain_coupling,
             12,
             1e-5,
+        ),
+        // the μ_c (Coulomb coefficient) sibling on the same articulated grips — FD at the V-shape
+        // step μ_c·1e-3, tol 2e-5 (FD-conditioning-limited, not a gradient defect)
+        friction_articulated_coeff_case(
+            "hinge·friction-coeff[μ_c]",
+            friction_hinge_coupling,
+            40,
+            2e-5,
+        ),
+        friction_articulated_coeff_case(
+            "chain·friction-coeff[μ_c]",
+            friction_chain_coupling,
+            12,
+            2e-5,
         ),
     ]
 }
