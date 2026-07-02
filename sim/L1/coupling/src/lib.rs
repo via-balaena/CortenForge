@@ -4629,9 +4629,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// the pose channel is the 3-vector centre (`PoseCentreVjp` + `WrenchPose::Centre` + the grip
     /// soft node's 3-axis pose + the friction wrench's 3-vector `dforce_dpose`), posed at
     /// `geom_xpos(q)` each step. The single-step lateral channels are machine-exact in
-    /// `friction_sphere_tangent.rs`; the composition is gated by
-    /// `sphere_moving_ee_friction_trajectory_gradient.rs`. No geom set ⇒ scalar-height channel
-    /// (byte-identical).
+    /// `friction_sphere_tangent.rs`; the composition is gated by the
+    /// `sphere-moving-ee·friction-material[μ]` / `sphere-moving-ee·friction-coeff[μ_c]` rows of the
+    /// coupling gradient harness (`tests/coupling_grad_harness.rs`). No geom set ⇒ scalar-height
+    /// channel (byte-identical).
     ///
     /// # Panics
     /// Panics if `param_idx > 1`, if `nq != nv`, if friction is inactive, if `rigid_damping != 0`,
@@ -4952,7 +4953,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// sibling — normal `f_mag·H` + friction `DN·C`), so curvature-correct on a centroid sphere. Like
     /// the material sibling it also threads the MOVING-END-EFFECTOR 3-vector centre channel under
     /// [`Self::with_contact_geom`] (the same `grip_centre` soft node + `WrenchPose::Centre` + 3-vector
-    /// friction `dforce_dpose`); gated by `sphere_moving_ee_friction_trajectory_gradient.rs`.
+    /// friction `dforce_dpose`); gated by the `sphere-moving-ee·friction-coeff[μ_c]` row of the
+    /// coupling gradient harness (`tests/coupling_grad_harness.rs`).
     ///
     /// # Panics
     /// Panics if `nq != nv`, if friction is inactive, if `rigid_damping != 0`, if the rotating
