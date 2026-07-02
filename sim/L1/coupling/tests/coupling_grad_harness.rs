@@ -147,11 +147,12 @@
 //! byte-identical baseline), and the `sphere-friction-coeff` channel (the μ_c curvature gate on a
 //! finite `SphereSdf` — the file keeps the weak-material composition smoke, which can't clear the
 //! FD-noise floor to be a curvature gate, plus its z-engagement guard), and the `actuator-friction`
-//! channel (the powered exo grip — the file keeps its single-hinge multi-horizon machine-exact
-//! sweep, with the z-engagement, and the friction-ON-vs-OFF materiality the matrix can't toggle).
+//! and `policy-friction` channels (the powered exo grip + the closed-loop de-escalation agent —
+//! each file keeps its single-hinge multi-horizon machine-exact sweep, with the z-engagement, and
+//! the friction-ON-vs-OFF materiality the matrix can't toggle).
 //! The
 //! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; further
-//! channels (policy-friction / grip co-design / peak-pressure) join the same way.
+//! channels (grip co-design / peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -1824,6 +1825,46 @@ fn actuator_friction_case(
     }
 }
 
+/// POLICY-FRICTION — the closed-loop POLICY gradient THROUGH the friction grip (the de-escalation
+/// agent that DECIDES how to actuate the grip from the limb's state). The control is now a
+/// differentiable policy `u_k = π_θ(qpos₀, qvel₀)` (a `DiffPolicy` sub-expression on the tape), so
+/// one `tape.backward` gives `∂tip_x/∂θ` across the state→control recurrence (backprop-through-time)
+/// under the friction-loaded carry — the policy successor of [`actuator_friction_case`]. The three
+/// `LinearFeedback` params θ = `[w_qpos, w_qvel, b]` are the differentiated slice (each acts at every
+/// step via the recurrence), FD'd via the dedicated `coupled_trajectory_policy_gripped_x(θ, n).x`
+/// oracle (eps 1e-6 — θ is a strong, well-conditioned lever). `build` selects the topology
+/// ([`powered_friction_hinge`] / [`powered_friction_chain`], the same shared scenes as the actuator
+/// rows). `Comp::Live` per param (~1e6× the floor); no loss band (engagement is the tip HEIGHT `z`,
+/// kept in the slim file). Folds the single-point FD cells of `policy_friction_gradient.rs`; that
+/// file keeps the single-hinge multi-horizon machine-exact sweep (with its z-engagement) and the
+/// friction-ON-vs-OFF materiality the matrix can't express.
+fn policy_friction_case(
+    name: &'static str,
+    build: fn() -> StaggeredCoupling,
+    n: usize,
+    tol: f64,
+) -> GradCase {
+    const PARAMS: [f64; 3] = [0.08, -0.02, 0.01];
+    GradCase {
+        name,
+        value_bounds: None,
+        baseline: PARAMS.to_vec(),
+        eps: vec![1e-6; 3],
+        tol,
+        floor: 1e-12,
+        expect: vec![Comp::Live; 3],
+        analytic: Box::new(move || {
+            build().coupled_trajectory_policy_friction_gradient(&LinearFeedback, &PARAMS, n)
+        }),
+        value_at: Box::new(move |p| {
+            let theta = [p[0], p[1], p[2]];
+            build()
+                .coupled_trajectory_policy_gripped_x(&LinearFeedback, &theta, n)
+                .x
+        }),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -2138,6 +2179,10 @@ fn cases() -> Vec<GradCase> {
             vec![0.03; 12],
             1e-5,
         ),
+        // closed-loop POLICY through the friction grip (the de-escalation agent): ∂tip_x/∂θ by
+        // backprop-through-time, on the same powered hinge / 2-link chain scenes
+        policy_friction_case("hinge·policy-friction[θ]", powered_friction_hinge, 20, 1e-5),
+        policy_friction_case("chain·policy-friction[θ]", powered_friction_chain, 12, 1e-5),
     ]
 }
 
