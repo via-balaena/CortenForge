@@ -905,3 +905,369 @@ fn test_sat_axis(
 
     r1 + r2 - dist
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
+mod tests {
+    use super::{
+        collide_box_box, collide_capsule_box, collide_cylinder_capsule, collide_cylinder_sphere,
+    };
+    use crate::test_fixtures::collision::collision_geoms as make_model;
+    use crate::types::GeomType;
+    use approx::assert_relative_eq;
+    use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+
+    const I: fn() -> Matrix3<f64> = Matrix3::identity;
+
+    // ── cylinder ↔ sphere ─────────────────────────────────────────────
+
+    #[test]
+    fn cyl_sphere_side_penetration() {
+        // Cylinder (r=0.3, hh=0.5) axis +Z at origin; sphere (r=0.2) beside it
+        // at x=0.4. Closest surface point x=0.3, gap 0.1, penetration 0.2-0.1=0.1.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Cylinder;
+        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
+        m.geom_type[1] = GeomType::Sphere;
+        m.geom_size[1] = Vector3::new(0.2, 0.0, 0.0);
+
+        let c = collide_cylinder_sphere(
+            &m,
+            0,
+            1,
+            GeomType::Cylinder,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(0.4, 0.0, 0.0),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert_eq!(c.len(), 1);
+        assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
+        // Cylinder is the lower geom index → normal points from cylinder toward sphere (+X).
+        assert_relative_eq!(c[0].normal, Vector3::x(), epsilon = 1e-9);
+    }
+
+    #[test]
+    fn cyl_sphere_reversed_order_geom_dispatch() {
+        // Sphere is geom 0 / type1, cylinder geom 1: exercises the dispatcher's
+        // `else` branch. Same geometry as the side-penetration case; because the
+        // cylinder is the higher index the emitted normal is flipped to point
+        // from geom 0 (sphere) toward geom 1 (cylinder) = -X.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Sphere;
+        m.geom_size[0] = Vector3::new(0.2, 0.0, 0.0);
+        m.geom_type[1] = GeomType::Cylinder;
+        m.geom_size[1] = Vector3::new(0.3, 0.5, 0.0);
+        let c = collide_cylinder_sphere(
+            &m,
+            0,
+            1,
+            GeomType::Sphere,
+            Vector3::new(0.4, 0.0, 0.0),
+            I(),
+            Vector3::zeros(),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert_eq!(c.len(), 1);
+        assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
+        assert_relative_eq!(c[0].normal, -Vector3::x(), epsilon = 1e-9);
+    }
+
+    #[test]
+    fn cyl_sphere_separated_returns_empty() {
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Cylinder;
+        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
+        m.geom_size[1] = Vector3::new(0.2, 0.0, 0.0);
+        let c = collide_cylinder_sphere(
+            &m,
+            0,
+            1,
+            GeomType::Cylinder,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(1.0, 0.0, 0.0),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn cyl_sphere_within_margin_emits_contact() {
+        // Not overlapping (surface gap 0.05) but inside a 0.1 margin band, so a
+        // contact with negative depth (a gap) is still emitted.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Cylinder;
+        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
+        m.geom_size[1] = Vector3::new(0.2, 0.0, 0.0);
+        let c = collide_cylinder_sphere(
+            &m,
+            0,
+            1,
+            GeomType::Cylinder,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(0.55, 0.0, 0.0),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.1,
+        );
+        assert_eq!(c.len(), 1);
+        assert_relative_eq!(c[0].depth, -0.05, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn cyl_sphere_cap_penetration() {
+        // Sphere directly above the top cap: cap face at z=0.5, sphere center
+        // z=0.6, gap 0.1, penetration 0.2-0.1=0.1, normal +Z.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Cylinder;
+        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
+        m.geom_size[1] = Vector3::new(0.2, 0.0, 0.0);
+        let c = collide_cylinder_sphere(
+            &m,
+            0,
+            1,
+            GeomType::Cylinder,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(0.0, 0.0, 0.6),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert_eq!(c.len(), 1);
+        assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
+        assert_relative_eq!(c[0].normal, Vector3::z(), epsilon = 1e-9);
+    }
+
+    #[test]
+    fn cyl_sphere_edge_contact() {
+        // Sphere off the rim corner (r=0.3, hh=0.5) at (0.4, 0, 0.6): beyond both
+        // the radius and the cap, so the closest feature is the rim edge point
+        // (0.3, 0, 0.5). Distance = sqrt(0.1^2 + 0.1^2) ≈ 0.1414 < 0.2 → contact.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Cylinder;
+        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
+        m.geom_size[1] = Vector3::new(0.2, 0.0, 0.0);
+        let c = collide_cylinder_sphere(
+            &m,
+            0,
+            1,
+            GeomType::Cylinder,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(0.4, 0.0, 0.6),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert_eq!(c.len(), 1);
+        let expected = 0.2 - 0.1_f64.hypot(0.1);
+        assert_relative_eq!(c[0].depth, expected, epsilon = 1e-9);
+        assert_relative_eq!(c[0].normal.norm(), 1.0, epsilon = 1e-9);
+    }
+
+    // ── cylinder ↔ capsule ────────────────────────────────────────────
+
+    #[test]
+    fn cyl_capsule_parallel_side_penetration() {
+        // Both axes +Z, side-by-side. Cylinder r=0.3 at origin, capsule r=0.2
+        // hl=0.4 at x=0.4. Axes 0.4 apart; cyl surface at x=0.3; capsule surface
+        // reaches x=0.4-0.2=0.2 → overlap 0.1.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Cylinder;
+        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
+        m.geom_type[1] = GeomType::Capsule;
+        m.geom_size[1] = Vector3::new(0.2, 0.4, 0.0);
+        let c = collide_cylinder_capsule(
+            &m,
+            0,
+            1,
+            GeomType::Cylinder,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(0.4, 0.0, 0.0),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert_eq!(c.len(), 1);
+        assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
+        assert_relative_eq!(c[0].normal, Vector3::x(), epsilon = 1e-9);
+    }
+
+    #[test]
+    fn cyl_capsule_separated_returns_empty() {
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Cylinder;
+        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
+        m.geom_type[1] = GeomType::Capsule;
+        m.geom_size[1] = Vector3::new(0.2, 0.4, 0.0);
+        let c = collide_cylinder_capsule(
+            &m,
+            0,
+            1,
+            GeomType::Cylinder,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(1.2, 0.0, 0.0),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert!(c.is_empty());
+    }
+
+    // ── capsule ↔ box ─────────────────────────────────────────────────
+
+    #[test]
+    fn capsule_box_face_penetration() {
+        // Box half-extents 0.5 at origin; capsule r=0.2 hl=0.3 axis +Z at x=0.6.
+        // Capsule axis 0.6 from center; +X face at 0.5; axis-to-face gap 0.1;
+        // penetration 0.2-0.1=0.1 along +X.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Capsule;
+        m.geom_size[0] = Vector3::new(0.2, 0.3, 0.0);
+        m.geom_type[1] = GeomType::Box;
+        m.geom_size[1] = Vector3::new(0.5, 0.5, 0.5);
+        let c = collide_capsule_box(
+            &m,
+            0,
+            1,
+            GeomType::Capsule,
+            Vector3::new(0.6, 0.0, 0.0),
+            I(),
+            Vector3::zeros(),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert!(!c.is_empty());
+        assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-6);
+        // Contact normal is aligned with the box's ±X face axis.
+        assert_relative_eq!(c[0].normal.x.abs(), 1.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn capsule_box_separated_returns_empty() {
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Capsule;
+        m.geom_size[0] = Vector3::new(0.2, 0.3, 0.0);
+        m.geom_type[1] = GeomType::Box;
+        m.geom_size[1] = Vector3::new(0.5, 0.5, 0.5);
+        let c = collide_capsule_box(
+            &m,
+            0,
+            1,
+            GeomType::Capsule,
+            Vector3::new(1.5, 0.0, 0.0),
+            I(),
+            Vector3::zeros(),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert!(c.is_empty());
+    }
+
+    // ── box ↔ box ─────────────────────────────────────────────────────
+
+    #[test]
+    fn box_box_face_overlap() {
+        // Two unit boxes (half 0.5). Centers 0.9 apart on X; combined reach 1.0;
+        // penetration 0.1 along X.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Box;
+        m.geom_size[0] = Vector3::new(0.5, 0.5, 0.5);
+        m.geom_type[1] = GeomType::Box;
+        m.geom_size[1] = Vector3::new(0.5, 0.5, 0.5);
+        let c = collide_box_box(
+            &m,
+            0,
+            1,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(0.9, 0.0, 0.0),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert!(!c.is_empty());
+        for contact in &c {
+            assert_relative_eq!(contact.depth, 0.1, epsilon = 1e-6);
+            assert_relative_eq!(contact.normal.x.abs(), 1.0, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn box_box_separated_returns_empty() {
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Box;
+        m.geom_size[0] = Vector3::new(0.5, 0.5, 0.5);
+        m.geom_type[1] = GeomType::Box;
+        m.geom_size[1] = Vector3::new(0.5, 0.5, 0.5);
+        let c = collide_box_box(
+            &m,
+            0,
+            1,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(1.5, 0.0, 0.0),
+            I(),
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn box_box_rotated_corner_contact() {
+        // Box 1 axis-aligned (half 0.5); box 2 rotated 45° about Z, its corner
+        // poking the +X face. Sanity: a contact exists with a unit normal and
+        // positive penetration.
+        let mut m = make_model(2);
+        m.geom_type[0] = GeomType::Box;
+        m.geom_size[0] = Vector3::new(0.5, 0.5, 0.5);
+        m.geom_type[1] = GeomType::Box;
+        m.geom_size[1] = Vector3::new(0.5, 0.5, 0.5);
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), std::f64::consts::FRAC_PI_4)
+            .to_rotation_matrix()
+            .into_inner();
+        // 45°-rotated box has corner reach 0.5*sqrt(2) ≈ 0.707 along X; place its
+        // center at 1.15 so the corner (x ≈ 0.443) overlaps box 1's +X face (0.5).
+        let c = collide_box_box(
+            &m,
+            0,
+            1,
+            Vector3::zeros(),
+            I(),
+            Vector3::new(1.15, 0.0, 0.0),
+            rot,
+            m.geom_size[0],
+            m.geom_size[1],
+            0.0,
+        );
+        assert!(!c.is_empty());
+        assert_relative_eq!(c[0].normal.norm(), 1.0, epsilon = 1e-6);
+        assert!(c.iter().all(|x| x.depth > 0.0));
+    }
+}
