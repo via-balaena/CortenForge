@@ -78,9 +78,8 @@ Layer 0 (Pure Rust) — ~29 library crates
 │   ├── cf-device-types     Layered-device domain types
 │   ├── cf-device-geometry  Cached scan SDF + per-layer extraction
 │   └── cf-cast             Multi-material mold + plug generation for casting
-└── sim/            12 crates — MuJoCo-aligned physics + soft FEM + RL
+└── sim/            11 crates — MuJoCo-aligned physics + soft FEM + RL
     ├── sim-types           Pose, Twist, MassProperties, JointState
-    ├── sim-simd            SIMD batch operations (Vec3x4/Vec3x8)
     ├── sim-core            Model/Data, FK, CRBA, RNE, Newton/PGS/CG solvers,
     │                       implicit integration, muscles, deformables, constraints
     ├── sim-soft            Hyperelastic FEM (NeoHookean/Yeoh), SDF→tet, contact
@@ -155,8 +154,8 @@ COMPLETE (40+ workspace crates):
 ├── Design & Fabrication Domain (7 crates)
 │   cf-geometry, cf-spatial, cf-design, cf-cap-planes,
 │   cf-device-types, cf-device-geometry, cf-cast
-├── Simulation Domain (12 L0 + 4 L1)
-│   sim-types, sim-simd, sim-core, sim-soft, sim-mjcf, sim-urdf,
+├── Simulation Domain (11 L0 + 4 L1)
+│   sim-types, sim-core, sim-soft, sim-mjcf, sim-urdf,
 │   sim-gpu, sim-ml-chassis, sim-rl, sim-opt, sim-therm-env, sim-thermostat,
 │   sim-bevy, sim-bevy-soft, sim-ml-chassis-bevy, cf-bevy-common
 ├── Tools & apps (5)

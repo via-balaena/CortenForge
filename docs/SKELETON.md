@@ -109,7 +109,7 @@ cf-geometry (foundation — no workspace deps)
     ├── mesh-types ──── mesh-* chain
     │       └── mesh-io ── sim-mjcf ── sim-urdf
     ├── sim-gpu
-    └── sim-core ─────── sim-types + sim-simd
+    └── sim-core ─────── sim-types
                               │
          sim-bevy ◄────── all L0 crates
               │

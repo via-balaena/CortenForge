@@ -19,7 +19,6 @@ are the source of truth), and body poses are computed via forward kinematics.
 sim/
 ├── L0/                    # Layer 0: Bevy-free simulation
 │   ├── types/             # sim-types — Foundation types (BodyId, Pose, config)
-│   ├── simd/              # sim-simd — SIMD batch operations
 │   ├── core/              # sim-core — Pipeline, collision, integration
 │   ├── mjcf/              # sim-mjcf — MuJoCo format parser
 │   ├── urdf/              # sim-urdf — URDF parser
@@ -406,18 +405,9 @@ Foundation types with no physics logic. Minimal dependencies: nalgebra, thiserro
 `BodyId`, `Pose`, `Gravity`, `SimulationConfig`, `SolverConfig`, `ParallelConfig`,
 `SimError`.
 
-### sim-simd
-
-SIMD-optimized batch operations for performance-critical paths.
-`Vec3x4`/`Vec3x8` batched vectors, `find_max_dot`, `batch_dot_product_4`,
-`batch_aabb_overlap_4`, `batch_normal_force_4`, `batch_integrate_position_4`/
-`batch_integrate_velocity_4`. **Note:** only `find_max_dot` is currently called
-by sim-core (GJK); all other batch ops are benchmarked but have no callers.
-2-4x speedup on x86-64, 2-3x on Apple Silicon.
-
 ### sim-core
 
-The physics engine. Depends on sim-types and sim-simd. Organized as a module
+The physics engine. Depends on sim-types. Organized as a module
 tree mirroring MuJoCo's pipeline stages (see directory listing above). Key
 modules:
 

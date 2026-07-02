@@ -16,8 +16,6 @@ tier = "L0"
 cf-geometry = { workspace = true }
 # Foundation types: BodyId, Pose, SimConfig
 sim-types = { workspace = true }
-# SIMD kernels for hot-path math (contact, integration)
-sim-simd = { workspace = true }
 # Model / Data matrices, spatial algebra, collision primitives
 nalgebra = { workspace = true }
 # Derive macros for solver / collision error enums

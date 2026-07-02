@@ -463,8 +463,6 @@ members = [
 
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
-    "sim/L0/simd",
-    "sim/L0/simd-benches",
     "sim/L0/core",
     "sim/L0/core-benches",
     "sim/L0/mjcf",
@@ -747,8 +745,6 @@ cf-device-geometry = { path = "design/cf-device-geometry" }
 
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }
-sim-simd = { path = "sim/L0/simd" }
-sim-simd-benches = { path = "sim/L0/simd-benches" }
 sim-core = { path = "sim/L0/core" }
 sim-core-benches = { path = "sim/L0/core-benches" }
 sim-mjcf = { path = "sim/L0/mjcf" }
