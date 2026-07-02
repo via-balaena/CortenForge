@@ -68,7 +68,7 @@ jobs:
             beta: true
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -153,7 +153,7 @@ jobs:
             -DestinationPath "dist/${{ matrix.asset }}"
 
       - name: Upload Studio artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: studio-${{ matrix.target }}
           path: dist/${{ matrix.asset }}
@@ -167,7 +167,7 @@ jobs:
     # Supplementary — must never block the actual downloads.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -189,7 +189,7 @@ jobs:
           find . -name 'cf-studio-gui.cdx.json' -not -path './sbom-out/*' -exec cp {} sbom-out/ \;
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: sbom-out/
@@ -204,7 +204,7 @@ jobs:
     outputs:
       changelog: ${{ steps.changelog.outputs.changelog }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -272,17 +272,17 @@ jobs:
     needs: [build, sbom, changelog]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download SBOM
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: sbom
           path: ./artifacts
 
       - name: Download Studio downloads
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: studio-*
           merge-multiple: true
@@ -351,7 +351,7 @@ jobs:
   #   runs-on: ubuntu-latest
   #   if: ${{ !contains(github.ref, '-') }}  # Only stable releases
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7
   #
   #     - name: Install Rust
   #       uses: dtolnay/rust-toolchain@stable
