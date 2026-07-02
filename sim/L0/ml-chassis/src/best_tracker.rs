@@ -72,14 +72,12 @@ impl BestTracker {
     }
 
     /// Best-epoch mean reward (`NEG_INFINITY` if no training has occurred).
-    #[allow(dead_code)] // non-test callers pending (visualization / analysis)
     #[must_use]
     pub const fn reward(&self) -> f64 {
         self.reward
     }
 
     /// Best-epoch index (0-based).
-    #[allow(dead_code)] // non-test callers pending (visualization / analysis)
     #[must_use]
     pub const fn epoch(&self) -> usize {
         self.epoch
