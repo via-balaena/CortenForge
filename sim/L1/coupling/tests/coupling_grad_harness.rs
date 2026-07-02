@@ -146,9 +146,12 @@
 //! FD-match sweep; its 2-link start-engagement guard is redundant with the material file's, on the
 //! byte-identical baseline), and the `sphere-friction-coeff` channel (the μ_c curvature gate on a
 //! finite `SphereSdf` — the file keeps the weak-material composition smoke, which can't clear the
-//! FD-noise floor to be a curvature gate, plus its z-engagement guard). The
+//! FD-noise floor to be a curvature gate, plus its z-engagement guard), and the `actuator-friction`
+//! channel (the powered exo grip — the file keeps its single-hinge multi-horizon machine-exact
+//! sweep, with the z-engagement, and the friction-ON-vs-OFF materiality the matrix can't toggle).
+//! The
 //! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; further
-//! channels (the rest of the friction family / grip co-design / peak-pressure) join the same way.
+//! channels (policy-friction / grip co-design / peak-pressure) join the same way.
 
 #![allow(clippy::expect_used)]
 
@@ -709,6 +712,61 @@ fn sphere_moving_ee_friction_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCo
     .with_sphere_collider(0.08)
     .with_contact_geom(0)
     .with_friction(fric_mu, 0.1)
+}
+
+/// A POWERED friction grip: a `<motor>`-actuated single Y-hinge arm pushed sideways by tilted
+/// gravity (so the tip arcs into the block top and sweeps tangentially — a CONTROLLED friction
+/// grip, the powered-exo substrate). The differentiated parameter is the per-step control (actuator
+/// channel) or the closed-loop policy θ, injected per CALL, so this builder takes no param; the
+/// friction is baked in. Shared by the `actuator-friction` and `policy-friction` rows.
+fn powered_friction_hinge() -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j" gear="1"/></actuator>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("powered friction hinge MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, FRIC_MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_friction(FRIC_COEF0, 0.1)
+}
+
+/// The 2-link CHAIN counterpart of [`powered_friction_hinge`] (`nv = 2`, motor on the proximal
+/// joint, contacting tip = lower link `body = 2`): the powered friction grip on a genuine multi-DOF
+/// topology (the loaded `chain_state_jacobian` carry under friction + actuator load).
+fn powered_friction_chain() -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.2">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.3"/>
+      <body name="lower" pos="0 0 -0.05">
+        <joint type="hinge" axis="0 1 0"/>
+        <geom type="sphere" pos="0 0 -0.04" size="0.004" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j" gear="1"/></actuator>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("powered friction chain MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    data.qpos[1] = -0.05;
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 2, 0.005, 4, 0.1, FRIC_MU0, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_friction(FRIC_COEF0, 0.1)
 }
 
 // ── Harness core ──
@@ -1733,6 +1791,39 @@ fn friction_articulated_coeff_case(
     }
 }
 
+/// ACTUATOR-FRICTION — the actuator CONTROL gradient THROUGH the friction grip (the powered-exo
+/// substrate: a `<motor>`-driven limb actively gripping the soft buffer via friction). The
+/// per-step control `u_k` is the differentiated parameter (a call-slice through the actuator
+/// channel `s' = J_state·s + G·w + G_act·u` under the friction-loaded carry), so the FD oracle is
+/// the dedicated `coupled_trajectory_actuated_gripped_x(controls).x` (the tip-`x` drag of the real
+/// gripped-actuated rollout). `build` selects the topology ([`powered_friction_hinge`], `nv = 1`
+/// analytic friction-loaded carry ⇒ machine-exact; [`powered_friction_chain`], `nv = 2` the exo
+/// topology via the analytic `chain_state_jacobian`). `Comp::Live` per control (each ∂tip_x/∂u_k is
+/// a strong lever, ~50000× the floor); no loss band (engagement is the tip HEIGHT `z`, a non-loss
+/// component kept in the slim file). Folds the single-point FD cells of
+/// `actuator_friction_gradient.rs`; that file keeps the single-hinge multi-horizon machine-exact
+/// sweep (with its z-engagement) and the friction-ON-vs-OFF materiality the matrix can't express.
+fn actuator_friction_case(
+    name: &'static str,
+    build: fn() -> StaggeredCoupling,
+    controls: Vec<f64>,
+    tol: f64,
+) -> GradCase {
+    let n = controls.len();
+    let base = controls.clone();
+    GradCase {
+        name,
+        value_bounds: None,
+        eps: vec![1e-3; n],
+        tol,
+        floor: 1e-12,
+        expect: vec![Comp::Live; n],
+        baseline: controls,
+        analytic: Box::new(move || build().coupled_trajectory_actuator_friction_gradient(&base)),
+        value_at: Box::new(move |p| build().coupled_trajectory_actuated_gripped_x(p).x),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -2031,6 +2122,21 @@ fn cases() -> Vec<GradCase> {
             6,
             5e-3,
             Some((0.0, 0.1)),
+        ),
+        // POWERED friction grip (the exo substrate): the actuator CONTROL gradient through the
+        // friction grip — per-step motor control drives the gripped limb's tip-x drag. Single hinge
+        // (analytic friction-loaded carry, machine-exact) and the 2-link chain (nv=2 exo topology)
+        actuator_friction_case(
+            "hinge·actuator-friction[motor]",
+            powered_friction_hinge,
+            vec![0.03; 20],
+            1e-5,
+        ),
+        actuator_friction_case(
+            "chain·actuator-friction[motor]",
+            powered_friction_chain,
+            vec![0.03; 12],
+            1e-5,
         ),
     ]
 }
