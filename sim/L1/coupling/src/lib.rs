@@ -4621,8 +4621,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// Curvature-correct on a FINITE sphere collider ([`Self::with_sphere_collider`]): both the
     /// NORMAL wrench (`ContactWrenchTrajVjp`'s `f_mag·H`) and the FRICTION wrench
     /// (`friction_force_jacobians`'s `DN·C`) carry the curved-normal term, so this gradient is
-    /// curvature-correct on a centroid sphere (FD-gated end-to-end by
-    /// `sphere_articulated_friction_trajectory_gradient.rs`).
+    /// curvature-correct on a centroid sphere (FD-gated end-to-end by the
+    /// `sphere-hinge·friction-material[μ]` row of the coupling gradient harness,
+    /// `tests/coupling_grad_harness.rs`).
     ///
     /// MOVING END-EFFECTOR ([`Self::with_contact_geom`]): when the sphere rides the contact geom,
     /// the pose channel is the 3-vector centre (`PoseCentreVjp` + `WrenchPose::Centre` + the grip

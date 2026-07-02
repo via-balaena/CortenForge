@@ -3,8 +3,8 @@
 //! so the contact centre moves laterally (x/y) as the gripped limb sweeps.
 //!
 //! The friction successor to `sphere_moving_ee_trajectory_gradient.rs` (moving-EE NORMAL) and the
-//! moving-EE successor to `sphere_articulated_friction_trajectory_gradient.rs` (centroid-posed
-//! friction): the same `coupled_trajectory_tangential_material_gradient_articulated` /
+//! moving-EE successor to the centroid-posed `sphere-hinge·friction-material[μ]` row of
+//! `coupling_grad_harness.rs`: the same `coupled_trajectory_tangential_material_gradient_articulated` /
 //! `..._friction_coeff_gradient_articulated` tapes against the full-grip re-rollout FD oracle
 //! (`coupled_trajectory_gripped_articulated`), but with `with_contact_geom` so the sphere rides the
 //! geom. The pose channel is the 3-vector centre (`PoseCentreVjp` + `WrenchPose::Centre` + the
