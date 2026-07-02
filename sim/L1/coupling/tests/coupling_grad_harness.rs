@@ -83,7 +83,9 @@
 //!   `∂fx/∂μ_c = fx/μ_c`) — on the free platen and, through `friction_hinge_coupling` /
 //!   `friction_chain_coupling`, on an ARTICULATED grip where the wrench routes through the joint
 //!   carry `Δt·M⁻¹·Jᵀ` and adds its off-COM MOMENT `Σ(r_v−c)×∇D_v` (the 2-link chain the multi-DOF
-//!   `J_lin`/arm indexing a single hinge collapses).
+//!   `J_lin`/arm indexing a single hinge collapses), and — via `sphere_friction_coupling` — on a
+//!   curved `SphereSdf` where the friction force Jacobian carries the `DN·C` curved-normal term at
+//!   the ~2e-3 curved-contact forward-solver floor (`μ_c`, the coefficient lever that resolves it).
 //!
 //! ## Oracle independence — two kinds
 //!
@@ -135,7 +137,9 @@
 //! multi-horizon machine-exact sweep + the 2-link start-engagement guard), and the
 //! `articulated-friction-coeff` channel (μ_c — the file keeps only its own hinge multi-horizon
 //! FD-match sweep; its 2-link start-engagement guard is redundant with the material file's, on the
-//! byte-identical baseline). The
+//! byte-identical baseline), and the `sphere-friction-coeff` channel (the μ_c curvature gate on a
+//! finite `SphereSdf` — the file keeps the weak-material composition smoke, which can't clear the
+//! FD-noise floor to be a curvature gate, plus its z-engagement guard). The
 //! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; further
 //! channels (the rest of the friction family / grip co-design / peak-pressure) join the same way.
 
@@ -613,6 +617,34 @@ fn friction_chain_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupling {
         model, data, 2, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_friction(fric_mu, 0.1)
+}
+
+/// The free-platen friction grip on a finite `SphereSdf` collider (`with_sphere_collider`): the
+/// same sideways-pushed platen as [`friction_grip_coupling`] but the half-plane swapped for a
+/// curved indenter, so the tangential grip's friction force Jacobian carries the curved-normal term
+/// `DN·C` (zero for the plane) as a soft vertex slides over the sphere. A compliant CONTACT
+/// (`κ = 2e3`, the best-conditioned curved+friction solve) keeps the μ_c FD near the ~2e-3
+/// curved-contact forward-solver floor. `soft_mu`/`fric_mu` are the two differentiated params, one
+/// per channel, FD'd by rebuilding (only `μ_c` becomes a row here — the weak material lever is a
+/// bespoke composition smoke, not a curvature gate).
+fn sphere_friction_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.112">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("sphere friction platen MJCF loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 2.0e3, 1.0e-2, 8.0,
+    )
+    .with_friction(fric_mu, 0.1)
+    .with_sphere_collider(0.08)
 }
 
 // ── Harness core ──
@@ -1508,39 +1540,41 @@ fn friction_tangential_material_case() -> GradCase {
     }
 }
 
-/// FRICTION-TANGENTIAL-COEFF — the gradient of the platen slide w.r.t. the Coulomb COEFFICIENT
-/// `μ_c` on the same tangential FRICTION grip ([`friction_grip_coupling`]) as
-/// [`friction_tangential_material_case`]. The sibling channel to tangential-material: same scene,
-/// same `x`-slide objective, same `coupled_trajectory_grip(n).x` oracle and n = 40 horizon — but
-/// `μ_c` enters through TWO channels the material param lacks, the soft-equilibrium shift `∂x*/∂μ_c`
-/// (tiny in deep slip) and DIRECTLY through the friction reaction `∂fx/∂μ_c = fx/μ_c` (the dominant
-/// Coulomb-saturated term). A single (untied) param, FD'd by rebuilding at `μ_c ± ε`. Folds the FD +
-/// forward tests of `friction_coupled_trajectory_coeff_gradient.rs` (a clean full fold — that gate's
-/// z-engagement guard is on the SAME (material 3e3, μ_c 2.5) baseline rollout the material slim
-/// file's `friction_grip_stays_engaged` already holds, so nothing unique remains — the file is
-/// deleted).
-fn friction_tangential_coeff_case() -> GradCase {
-    const N: usize = 40;
+/// FRICTION-TANGENTIAL-COEFF — the platen-slide gradient w.r.t. the Coulomb COEFFICIENT `μ_c` on a
+/// free-platen friction grip (`build` = the half-plane [`friction_grip_coupling`] or the curved
+/// [`sphere_friction_coupling`]). The sibling channel to tangential-material: same `x`-slide
+/// objective and `coupled_trajectory_grip(n).x` oracle — but `μ_c` enters through TWO channels the
+/// material param lacks, the soft-equilibrium shift `∂x*/∂μ_c` (tiny in deep slip) and DIRECTLY
+/// through the friction reaction `∂fx/∂μ_c = fx/μ_c` (the dominant Coulomb-saturated term). A single
+/// (untied) param, FD'd by rebuilding at `μ_c ± ε`. `(n, tol, band)` per collider: the plane is
+/// machine-exact (n = 40, tol 1e-4, an engaged `x`-band), the curved sphere carries the friction
+/// force Jacobian's `DN·C` term and sits at the ~2e-3 curved-contact forward-solver floor (n = 8,
+/// tol 5e-3, `Comp::Live` — the tip-`x` is ~5e-5 so there's no clean `x`-band; engagement stays in
+/// the slim file). Folds the plane `friction_coupled_trajectory_coeff_gradient.rs` (deleted — its
+/// z-guard is redundant with the material slim file's) and the μ_c gate of
+/// `sphere_friction_trajectory_gradient.rs` (slimmed — it keeps the weak-material composition smoke
+/// + z-engagement the matrix can't express).
+fn friction_tangential_coeff_case(
+    name: &'static str,
+    build: fn(f64, f64) -> StaggeredCoupling,
+    n: usize,
+    tol: f64,
+    value_bounds: Option<(f64, f64)>,
+) -> GradCase {
     GradCase {
-        name: "friction·tangential-coeff[μ_c]",
-        value_bounds: Some((7.0e-4, 8.5e-4)),
+        name,
+        value_bounds,
         baseline: vec![FRIC_COEF0],
         eps: vec![FRIC_COEF0 * 1e-5],
-        // Machine-exact (~5e-6); 1e-4 for cross-platform float-ordering margin (the bespoke's gate
-        // — a dropped channel, e.g. the direct reaction term `∂fx/∂μ_c`, blows it past 1.0).
-        tol: 1e-4,
+        tol,
         floor: 1e-12,
         expect: vec![Comp::Live],
-        analytic: Box::new(|| {
-            let (x, g) = friction_grip_coupling(FRIC_MU0, FRIC_COEF0)
-                .coupled_trajectory_tangential_friction_coeff_gradient(N);
+        analytic: Box::new(move || {
+            let (x, g) = build(FRIC_MU0, FRIC_COEF0)
+                .coupled_trajectory_tangential_friction_coeff_gradient(n);
             (x, vec![g])
         }),
-        value_at: Box::new(|p| {
-            friction_grip_coupling(FRIC_MU0, p[0])
-                .coupled_trajectory_grip(N)
-                .x
-        }),
+        value_at: Box::new(move |p| build(FRIC_MU0, p[0]).coupled_trajectory_grip(n).x),
     }
 }
 
@@ -1848,7 +1882,13 @@ fn cases() -> Vec<GradCase> {
         // dragged by the block's Coulomb friction. material stiffness (`∂x/∂μ`) and the Coulomb
         // coefficient (`∂x/∂μ_c`, the direct reaction term `fx/μ_c`), both through the loop
         friction_tangential_material_case(),
-        friction_tangential_coeff_case(),
+        friction_tangential_coeff_case(
+            "friction·tangential-coeff[μ_c]",
+            friction_grip_coupling,
+            40,
+            1e-4,
+            Some((7.0e-4, 8.5e-4)),
+        ),
         // ARTICULATED friction grip (tip-x slide through the joint carry + off-COM grip moment):
         // the single Y-hinge (analytic J_state ⇒ machine-exact, tol 1e-6) and the 2-link chain
         // (nv=2, FD-J_state precision, the moment cross-term a single lever hides, tol 1e-5)
@@ -1877,6 +1917,16 @@ fn cases() -> Vec<GradCase> {
             friction_chain_coupling,
             12,
             2e-5,
+        ),
+        // curved-collider free-platen friction: the μ_c gate on a finite SphereSdf — the friction
+        // force Jacobian's DN·C curved-normal term, at the ~2e-3 curved-contact forward-solver floor
+        // (tol 5e-3; tip-x ~5e-5 so no clean x-band, Comp::Live + slim-file z-engagement)
+        friction_tangential_coeff_case(
+            "sphere·friction-coeff[μ_c]",
+            sphere_friction_coupling,
+            8,
+            5e-3,
+            None,
         ),
     ]
 }
