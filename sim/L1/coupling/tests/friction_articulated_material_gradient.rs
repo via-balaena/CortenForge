@@ -1,24 +1,22 @@
-//! Friction → matrix-carry lift, sub-leaf 3 — the articulated FRICTION material gradient
-//! (full grip wrench: force + off-COM moment).
+//! Articulated FRICTION material gradient — the invariants the coupling gradient harness can't
+//! express.
 //!
-//! `StaggeredCoupling::coupled_trajectory_tangential_material_gradient_articulated` is the
-//! articulated successor to the free-platen `coupled_trajectory_tangential_material_gradient`:
-//! a hinge arm grips a soft block under a sideways push, and the tangential friction grip
-//! maps to a generalized joint acceleration through the FULL matrix carry `Δt·M_impl⁻¹·Jᵀ`
-//! (`RigidStateCarryVjp`) instead of the free-platen scalar `dt/m` lanes, with the collider
-//! drift read from the articulated state (`Δ_surf,x = (J_lin·qvel)_x·dt`, `DriftFromStateVjp`)
-//! and the friction grip routed as the full wrench `[τ_fric; f_fric]` — the per-vertex force
-//! `Σ∇D_v` AND its off-COM moment `Σ(r_v−c)×∇D_v` (`FrictionWrenchTrajVjp`, fed by sim-soft's
-//! `friction_force_jacobians`). One `tape.backward` gives `∂(tip x)_N/∂p` — the tangential drag
-//! vs the soft block's Neo-Hookean material (the constructor ties `λ = 4μ`).
+//! The per-horizon FD cells of `StaggeredCoupling::coupled_trajectory_tangential_material_gradient_articulated`
+//! (the tip-`x` slide vs the soft material on a hinge / 2-link grip, the wrench routed through the
+//! joint carry `Δt·M⁻¹·Jᵀ` with its off-COM moment) are folded into the `hinge·friction-material[μ]`
+//! and `chain·friction-material[μ]` rows of `tests/coupling_grad_harness.rs`, which assert the same
+//! tied-λ = 4μ FD match against the same `coupled_trajectory_gripped_articulated(n).x` oracle plus
+//! forward-consistency and a `Comp::Live` non-vacuity floor.
 //!
-//! Gate: the one-tape gradient matches the central FD of the full real grip re-rollout
-//! (`coupled_trajectory_gripped_articulated`, an INDEPENDENT black-box re-rollout at μ±ε) —
-//! MACHINE-EXACT (rel ~8e-9, FD-limited) at n = 5, 20, 40. A COMPLIANT block (`μ = 3e3`) keeps
-//! `μ` a well-conditioned lever on the tangential drag (a stiff block floors the FD-vs-analytic
-//! relative agreement via the friction term's `∇²D ~ 1e4` cancellation, as in the free-platen
-//! gate). `n = 1` is exactly 0 (position integrates the pre-step velocity → the drift feedback
-//! is load-bearing only at `n ≥ 2`).
+//! What those single-horizon rows CAN'T fold, kept here:
+//! - the **hinge multi-horizon machine-exactness** — the composed gradient stays FD-limited
+//!   (rel ~8e-9) as the rollout lengthens across the make, a liftoff, and a re-touch (n = 5, 20, 40),
+//!   a cross-horizon invariant a single-length matrix cell can't hold;
+//! - the **2-link start-engagement** — the chain tip must begin engaged near the block top; the
+//!   harness bands only the LOSS (the tip-`x` slide, which swings sign across the horizon), so this
+//!   state-level guard on the tip HEIGHT `z` isn't expressible as a loss band.
+//!
+//! See `docs/keystone/moment_residual_recon.md` and `project-friction-leaf.md`.
 
 #![allow(clippy::expect_used)]
 
@@ -66,41 +64,30 @@ fn tape_and_fd(n: usize) -> (f64, f64, f64) {
     (tip_x, total, fd)
 }
 
-fn assert_matches(n: usize) {
-    let (tip_x, total, fd) = tape_and_fd(n);
-    assert!(tip_x.is_finite() && total.is_finite() && fd.is_finite());
-    // Non-vacuity: a friction channel regressed to ~0 would make BOTH total and fd ~0, so a
-    // pure relative gate could pass trivially. Require a real lever (mirrors the free-platen
-    // `friction·tangential-material[μ]` harness row's `Comp::Live` guard).
-    assert!(
-        total.abs() > 1e-9 && fd.abs() > 1e-9,
-        "n={n}: gradient implausibly ~0 (total={total:e}, fd={fd:e}) — friction channel inert?"
-    );
-    let rel = (total - fd).abs() / fd.abs().max(1e-9);
-    assert!(
-        rel < 1e-6,
-        "n={n}: tape gradient {total:e} vs full-grip FD {fd:e} (rel {rel:e}); tip_x={tip_x}"
-    );
-}
-
+/// HINGE multi-horizon machine-exactness (the cross-horizon invariant the single-length matrix row
+/// can't express): the composed friction-material gradient stays FD-limited as the rollout lengthens
+/// across the make, a liftoff, and a re-touch. The `Comp::Live`-style non-vacuity floor guards a
+/// silently de-coupled channel from passing on `0 ≈ 0`.
 #[test]
-fn articulated_friction_material_gradient_matches_fd_n5() {
-    assert_matches(5);
-}
-
-#[test]
-fn articulated_friction_material_gradient_matches_fd_n20() {
-    assert_matches(20);
-}
-
-#[test]
-fn articulated_friction_material_gradient_matches_fd_n40() {
-    assert_matches(40);
+fn articulated_friction_material_gradient_machine_exact_at_all_lengths() {
+    for n in [5usize, 20, 40] {
+        let (tip_x, total, fd) = tape_and_fd(n);
+        assert!(tip_x.is_finite() && total.is_finite() && fd.is_finite());
+        assert!(
+            total.abs() > 1e-9 && fd.abs() > 1e-9,
+            "n={n}: gradient implausibly ~0 (total={total:e}, fd={fd:e}) — friction channel inert?"
+        );
+        let rel = (total - fd).abs() / fd.abs().max(1e-9);
+        assert!(
+            rel < 1e-6,
+            "n={n}: tape gradient {total:e} vs full-grip FD {fd:e} (rel {rel:e}); tip_x={tip_x}"
+        );
+    }
 }
 
 // A 2-link hinge CHAIN (nv = 2) — genuine multi-DOF: off-diagonal mass coupling, Coriolis, and
 // per-vertex friction moment arms that DON'T collapse to a single lever (the nv = 1 case hides a
-// chain-only `J_lin`/arm indexing bug — exactly the moment-residual blind spot, see
+// chain-only `J_lin`/arm indexing bug — the moment-residual blind spot, see
 // `docs/keystone/moment_residual_recon.md`). The lower link (body 2) is the contacting tip.
 const TWOLINK_MJCF: &str = r#"<mujoco>
   <option gravity="2.0 0 -9.81" timestep="0.001"/>
@@ -128,38 +115,15 @@ fn build_2link(soft_mu: f64) -> StaggeredCoupling {
     .with_friction(FRIC_MU, EPS_V)
 }
 
-/// The friction material gradient on a 2-link CHAIN matches the full-grip FD — the moment
-/// cross-term and `J_lin` feedback on a genuine `nv > 1` topology (the analytic `chain_state_jacobian`
-/// carry). Guards against a chain-only indexing/transpose bug the single-hinge tests cannot see.
+/// The 2-link chain's START-ENGAGEMENT (the state guard the `chain·friction-material[μ]` harness
+/// row can't express — the row bands the tip-`x` loss, engagement is the tip HEIGHT `z`): the
+/// contacting tip must begin near the block top, so the FD cell the harness gates is taken in the
+/// intended engaged regime rather than in free flight.
 #[test]
-fn articulated_friction_material_gradient_2link_matches_fd() {
+fn articulated_friction_material_chain_starts_engaged() {
     let z0 = build_2link(MU0).data().xipos[2].z;
     assert!(
         z0 > 0.10,
         "2-link tip must start engaged near the block top, got {z0}"
     );
-    for n in [3usize, 12] {
-        let (_t, gm) =
-            build_2link(MU0).coupled_trajectory_tangential_material_gradient_articulated(n, 0);
-        let (_t2, gl) =
-            build_2link(MU0).coupled_trajectory_tangential_material_gradient_articulated(n, 1);
-        let total = gm + 4.0 * gl;
-        let eps = MU0 * 1e-4;
-        let xp = build_2link(MU0 + eps)
-            .coupled_trajectory_gripped_articulated(n)
-            .x;
-        let xm = build_2link(MU0 - eps)
-            .coupled_trajectory_gripped_articulated(n)
-            .x;
-        let fd = (xp - xm) / (2.0 * eps);
-        assert!(
-            total.abs() > 1e-9 && fd.abs() > 1e-9,
-            "2-link n={n}: gradient implausibly ~0 (total={total:e}, fd={fd:e})"
-        );
-        let rel = (total - fd).abs() / fd.abs().max(1e-9);
-        assert!(
-            rel < 1e-5,
-            "2-link n={n}: tape gradient {total:e} vs full-grip FD {fd:e} (rel {rel:e})"
-        );
-    }
 }

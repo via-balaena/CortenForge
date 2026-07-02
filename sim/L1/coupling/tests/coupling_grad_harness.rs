@@ -80,7 +80,10 @@
 //!   (`vx → Δ_surf → x*`, `x* → fx`, `fx → vx' → x'`) a height carry leaves dormant — on two params
 //!   the height rows can't reach: `tangential-material` (`∂x/∂μ`, the block stiffness) and
 //!   `tangential-coeff` (`∂x/∂μ_c`, the Coulomb coefficient, dominated by the direct reaction
-//!   `∂fx/∂μ_c = fx/μ_c`).
+//!   `∂fx/∂μ_c = fx/μ_c`) — on the free platen and, through `friction_hinge_coupling` /
+//!   `friction_chain_coupling`, on an ARTICULATED grip where the wrench routes through the joint
+//!   carry `Δt·M⁻¹·Jᵀ` and adds its off-COM MOMENT `Σ(r_v−c)×∇D_v` (the 2-link chain the multi-DOF
+//!   `J_lin`/arm indexing a single hinge collapses).
 //!
 //! ## Oracle independence — two kinds
 //!
@@ -127,7 +130,9 @@
 //! plane-collider byte-identity no-op), `moving-EE` actuator (the file keeps its FRICTION /
 //! policy-friction / design-policy-friction moving-EE gates for the friction/grip steps), and the
 //! `tangential-material` FRICTION channel (the file keeps the z-ENGAGEMENT invariant the row's
-//! x-slide loss band structurally can't express — engagement is a non-loss component here). The
+//! x-slide loss band structurally can't express — engagement is a non-loss component here), and the
+//! `articulated-friction-material` channel (hinge + 2-link chain — the file keeps the hinge
+//! multi-horizon machine-exact sweep + the 2-link start-engagement guard). The
 //! remaining bespoke gates retire row-by-row as their coverage is confirmed folded; further
 //! channels (the rest of the friction family / grip co-design / peak-pressure) join the same way.
 
@@ -545,6 +550,64 @@ fn friction_grip_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupling {
     data.forward(&model).expect("initial forward");
     StaggeredCoupling::new(
         model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 8.0,
+    )
+    .with_friction(fric_mu, 0.1)
+}
+
+/// The ARTICULATED friction grip scene: a Y-hinge arm pushed sideways by tilted gravity
+/// (`gx = 2.0`), tilted off vertical (`qpos = 0.3`) so the tip arcs and sweeps tangentially across
+/// the block top. The tangential friction grip maps to a joint acceleration through the FULL
+/// matrix carry `Δt·M⁻¹·Jᵀ` (not the free platen's scalar `dt/m`), and the grip wrench carries its
+/// off-COM MOMENT `Σ(r_v−c)×∇D_v` — the articulated successor of [`friction_grip_coupling`], with
+/// the objective the tip's world `x` slide. `soft_mu`/`fric_mu` are the two differentiated params
+/// (one per channel), both scene-construction args FD'd by rebuilding. No damping.
+fn friction_hinge_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("articulated friction hinge MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3; // tilt off vertical so the tip arcs across the block
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_friction(fric_mu, 0.1)
+}
+
+/// The 2-link CHAIN friction grip (`nv = 2`, the contacting tip is the lower link, `body = 2`):
+/// off-diagonal mass coupling + Coriolis + per-vertex friction moment arms that DON'T collapse to a
+/// single lever, so it exercises the chain `J_lin`/arm indexing the single hinge can't (the
+/// moment-residual blind spot). Seeded off-centre (`qpos = [0.1, −0.05]`) so the tip engages the
+/// block top and the off-diagonal joint coupling is live. Same `(soft_mu, fric_mu)` friction params
+/// as [`friction_hinge_coupling`].
+fn friction_chain_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.025" size="0.004" mass="0.3"/>
+      <body name="lower" pos="0 0 -0.05">
+        <joint type="hinge" axis="0 1 0"/>
+        <geom type="sphere" pos="0 0 -0.04" size="0.004" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("articulated friction chain MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    data.qpos[1] = -0.05; // off-centre tip → the off-diagonal joint coupling is live
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 2, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
     )
     .with_friction(fric_mu, 0.1)
 }
@@ -1478,6 +1541,49 @@ fn friction_tangential_coeff_case() -> GradCase {
     }
 }
 
+/// FRICTION-ARTICULATED-MATERIAL — the tangential-material gradient on an ARTICULATED friction
+/// grip (`build` = [`friction_hinge_coupling`] or [`friction_chain_coupling`]): the same tip-`x`
+/// slide objective as the plane [`friction_tangential_material_case`], but the grip wrench now
+/// routes through the joint(s) as `Δt·M⁻¹·Jᵀ` AND carries its off-COM MOMENT `Σ(r_v−c)×∇D_v`
+/// (`FrictionWrenchTrajVjp`) — the moment cross-term a free platen can't exercise, and on the
+/// 2-link chain the multi-DOF `J_lin`/arm indexing a single hinge collapses. Tied-μ (λ = 4μ →
+/// `∂x/∂μ + 4·∂x/∂λ`); FD oracle = `coupled_trajectory_gripped_articulated(n).x`. `Comp::Live`
+/// (no loss band — the tip-`x` slide swings sign across the horizon, so it isn't a clean
+/// engagement band; engagement lives in the slim file's z-guards). `(n, tol)` per scene: the hinge
+/// is machine-exact via its analytic `J_state` (n = 40, tol 1e-6), the chain runs at FD-`J_state`
+/// precision (n = 12, tol 1e-5). Folds the single-point FD cells of
+/// `friction_articulated_material_gradient.rs`; that file keeps the hinge multi-horizon
+/// machine-exact sweep and the 2-link start-engagement guard the matrix can't express.
+fn friction_articulated_material_case(
+    name: &'static str,
+    build: fn(f64, f64) -> StaggeredCoupling,
+    n: usize,
+    tol: f64,
+) -> GradCase {
+    GradCase {
+        name,
+        value_bounds: None,
+        baseline: vec![FRIC_MU0],
+        eps: vec![FRIC_MU0 * 1e-4],
+        tol,
+        floor: 1e-12,
+        expect: vec![Comp::Live],
+        analytic: Box::new(move || {
+            let (x, g_mu) = build(FRIC_MU0, FRIC_COEF0)
+                .coupled_trajectory_tangential_material_gradient_articulated(n, 0);
+            let g_la = build(FRIC_MU0, FRIC_COEF0)
+                .coupled_trajectory_tangential_material_gradient_articulated(n, 1)
+                .1;
+            (x, vec![g_mu + 4.0 * g_la])
+        }),
+        value_at: Box::new(move |p| {
+            build(p[0], FRIC_COEF0)
+                .coupled_trajectory_gripped_articulated(n)
+                .x
+        }),
+    }
+}
+
 /// The coverage matrix: `(scene, channel)` cells, grouped by scene. Adding a
 /// channel or scene is one row here.
 fn cases() -> Vec<GradCase> {
@@ -1700,6 +1806,21 @@ fn cases() -> Vec<GradCase> {
         // coefficient (`∂x/∂μ_c`, the direct reaction term `fx/μ_c`), both through the loop
         friction_tangential_material_case(),
         friction_tangential_coeff_case(),
+        // ARTICULATED friction grip (tip-x slide through the joint carry + off-COM grip moment):
+        // the single Y-hinge (analytic J_state ⇒ machine-exact, tol 1e-6) and the 2-link chain
+        // (nv=2, FD-J_state precision, the moment cross-term a single lever hides, tol 1e-5)
+        friction_articulated_material_case(
+            "hinge·friction-material[μ]",
+            friction_hinge_coupling,
+            40,
+            1e-6,
+        ),
+        friction_articulated_material_case(
+            "chain·friction-material[μ]",
+            friction_chain_coupling,
+            12,
+            1e-5,
+        ),
     ]
 }
 
