@@ -72,8 +72,6 @@ pub struct PpoHyperparams {
 pub struct Ppo {
     policy: Box<dyn DifferentiablePolicy>,
     value_fn: Box<dyn ValueFn>,
-    #[allow(dead_code)] // kept for from_checkpoint() reconstruction
-    optimizer_config: OptimizerConfig,
     hyperparams: PpoHyperparams,
     /// Actor optimizer (momentum persists across `train()` calls).
     actor_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
@@ -101,7 +99,6 @@ impl Ppo {
         Self {
             policy,
             value_fn,
-            optimizer_config,
             hyperparams,
             actor_opt,
             critic_opt,
@@ -167,7 +164,6 @@ impl Ppo {
         Ok(Self {
             policy,
             value_fn,
-            optimizer_config,
             hyperparams,
             actor_opt,
             critic_opt,
@@ -208,13 +204,11 @@ impl Algorithm for Ppo {
     // PPO's training loop is intentionally inlined as a single function so
     // the rollout / GAE / minibatch / clipped-objective stages stay readable
     // top-to-bottom; cast lints are usize → f64 for advantage normalization
-    // and minibatch counts (well below 2^52); panics guard internal
-    // invariants documented on the trait's `# Panics` section.
+    // and minibatch counts (well below 2^52).
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::too_many_lines,
-        clippy::panic
+        clippy::too_many_lines
     )]
     fn train(
         &mut self,
@@ -245,16 +239,11 @@ impl Algorithm for Ppo {
             // collect_episodic_rollout handles the env stepping; we record extras.
             let mut per_step_mu: Vec<Vec<Vec<f64>>> = (0..n_envs).map(|_| Vec::new()).collect();
             let mut per_step_v: Vec<Vec<f64>> = (0..n_envs).map(|_| Vec::new()).collect();
-            let mut env_done: Vec<bool> = vec![false; n_envs];
 
             let sigma = self.sigma; // local copy for closure
             let rollout = collect_episodic_rollout(
                 env,
                 &mut |env_idx, obs| {
-                    if env_done[env_idx] {
-                        // Env already done — return zeros (won't be recorded).
-                        return vec![0.0; self.policy.forward(obs).len()];
-                    }
                     let mu = self.policy.forward(obs);
                     let v = self.value_fn.forward(obs);
                     per_step_mu[env_idx].push(mu.clone());
@@ -265,11 +254,6 @@ impl Algorithm for Ppo {
                 },
                 hp.max_episode_steps,
             );
-
-            // Mark done envs (for the recording above — not used further).
-            for (i, traj) in rollout.trajectories.iter().enumerate() {
-                env_done[i] = traj.done;
-            }
 
             // ── Phase 2: GAE per trajectory ──────────────────────────────
 

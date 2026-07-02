@@ -154,7 +154,6 @@ pub fn reaching_6dof() -> TaskConfig {
     let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
 
     // Compute target fingertip position via forward kinematics.
-    #[allow(clippy::panic)]
     let target_tip = {
         let mut batch = BatchSim::new(Arc::clone(&model), 1);
         {
@@ -276,7 +275,6 @@ pub fn obstacle_reaching_6dof() -> TaskConfig {
     let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
     // FK block runs on a fresh BatchSim built from a compile-time fixture;
     // every failure path here is an author bug, so panic is correct.
-    #[allow(clippy::panic)]
     let target_tip = {
         let mut batch = BatchSim::new(Arc::clone(&model), 1);
         {

@@ -78,11 +78,11 @@ pub struct SacHyperparams {
 ///
 /// ```ignore
 /// let sac = Sac::new(
-///     Box::new(LinearStochasticPolicy::new(od, ad, &sc, -0.5)),
-///     Box::new(LinearQ::new(od, ad, &sc)),
-///     Box::new(LinearQ::new(od, ad, &sc)),
-///     Box::new(LinearQ::new(od, ad, &sc)),  // Q1 target
-///     Box::new(LinearQ::new(od, ad, &sc)),  // Q2 target
+///     Box::new(LinearStochasticPolicy::new(od, ad, sc, -0.5)),
+///     Box::new(LinearQ::new(od, ad, sc)),
+///     Box::new(LinearQ::new(od, ad, sc)),
+///     Box::new(LinearQ::new(od, ad, sc)),  // Q1 target
+///     Box::new(LinearQ::new(od, ad, sc)),  // Q2 target
 ///     OptimizerConfig::adam(3e-4),
 ///     SacHyperparams { .. },
 /// );
@@ -93,8 +93,6 @@ pub struct Sac {
     q2: Box<dyn QFunction>,
     target_q1: Box<dyn QFunction>,
     target_q2: Box<dyn QFunction>,
-    #[allow(dead_code)] // kept for from_checkpoint() reconstruction
-    optimizer_config: OptimizerConfig,
     hyperparams: SacHyperparams,
     /// Actor optimizer (momentum persists across `train()` calls).
     actor_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
@@ -138,7 +136,6 @@ impl Sac {
             q2,
             target_q1,
             target_q2,
-            optimizer_config,
             hyperparams,
             actor_opt,
             q1_opt,
@@ -208,7 +205,6 @@ impl Sac {
             q2,
             target_q1,
             target_q2,
-            optimizer_config,
             hyperparams,
             actor_opt,
             q1_opt,
@@ -616,10 +612,7 @@ impl Algorithm for Sac {
                 self.q1_opt.snapshot("q1"),
                 self.q2_opt.snapshot("q2"),
             ],
-            algorithm_state: BTreeMap::from([
-                ("log_alpha".into(), self.log_alpha),
-                ("alpha_lr".into(), self.hyperparams.alpha_lr),
-            ]),
+            algorithm_state: BTreeMap::from([("log_alpha".into(), self.log_alpha)]),
             best_params: Some(best_params),
             best_reward,
             best_epoch,
@@ -755,7 +748,6 @@ mod tests {
         assert_eq!(cp.critics.len(), 4); // q1, q2, q1_target, q2_target
         assert_eq!(cp.optimizer_states.len(), 3); // actor, q1, q2
         assert!(cp.algorithm_state.contains_key("log_alpha"));
-        assert!(cp.algorithm_state.contains_key("alpha_lr"));
     }
 
     #[test]
