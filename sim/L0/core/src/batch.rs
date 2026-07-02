@@ -59,9 +59,8 @@ use crate::types::{Data, Model, StepError};
 ///
 /// Each environment owns a full [`Data`] instance with its own heap
 /// allocations (scratch buffers, contact vectors, warmstart `HashMap`).
-/// Cross-environment parallelism comes from rayon task-level parallelism;
-/// within-environment acceleration comes from sim-simd SIMD operations.
-/// The two are orthogonal and compose naturally.
+/// Cross-environment parallelism comes from rayon task-level parallelism,
+/// applied across independent per-environment [`Data`] instances.
 ///
 /// # Which path was used?
 ///
