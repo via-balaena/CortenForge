@@ -979,7 +979,7 @@ which uses rayon's `par_iter_mut` to step multiple simulation environments concu
 **Current implementation:**
 - `BatchSim::step_all()` in `sim-core/src/batch.rs` — rayon `par_iter_mut` over environments
 
-**Files:** `sim-core/src/batch.rs` (BatchSim), `sim-types/src/config.rs` (ParallelConfig)
+**Files:** `sim-core/src/batch.rs` (BatchSim)
 
 ### Implementation Notes: GPU Acceleration
 
@@ -1260,7 +1260,7 @@ See [future_work_1.md](./todo/future_work_1.md) for remaining items.
 The `parallel` feature originally enabled multi-threaded constraint solving and body integration.
 Standalone island-parallel constraint solving (`solve_islands_parallel()` and `islands.rs`) were removed in Phase 3 consolidation. The rayon dependency and `parallel` feature flag are now used by `BatchSim::step_all()` for cross-environment parallelism ([future_work_3 #9](./todo/future_work_3.md)). Note: the Newton solver was not removed — it was reimplemented as pipeline-native `newton_solve()` (§15).
 
-**Files:** `sim-core/src/batch.rs` (BatchSim), `sim-types/src/config.rs` (ParallelConfig). Removed: `sim-constraint/src/parallel.rs`, `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
+**Files:** `sim-core/src/batch.rs` (BatchSim). Removed: `sim-constraint/src/parallel.rs`, `sim-core/src/world.rs`, `sim-core/src/stepper.rs`, `sim-types/src/config.rs::ParallelConfig` (orphaned config for the removed island-parallel solver; cross-env parallelism is gated by the `parallel` cargo feature, not this struct)
 
 ### ✅ Recently Completed: MJB Binary Format
 

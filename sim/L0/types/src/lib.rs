@@ -54,7 +54,7 @@ mod config;
 mod error;
 
 pub use body::{BodyId, Pose};
-pub use config::{Gravity, ParallelConfig, SimulationConfig, SolverConfig};
+pub use config::{Gravity, SimulationConfig, SolverConfig};
 pub use error::SimError;
 
 // Re-export math types for convenience

@@ -402,7 +402,7 @@ Supporting modules: `mid_phase.rs` (BVH construction and traversal),
 
 Foundation types with no physics logic. Minimal dependencies: nalgebra, thiserror.
 
-`BodyId`, `Pose`, `Gravity`, `SimulationConfig`, `SolverConfig`, `ParallelConfig`,
+`BodyId`, `Pose`, `Gravity`, `SimulationConfig`, `SolverConfig`,
 `SimError`.
 
 ### sim-core
