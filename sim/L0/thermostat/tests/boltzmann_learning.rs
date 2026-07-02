@@ -30,7 +30,7 @@
 
 use sim_core::DVector;
 use sim_core::test_fixtures::{bistable_chain, single_slide};
-use sim_thermostat::test_utils::WellState;
+use sim_thermostat::WellState;
 use sim_thermostat::{
     DoubleWellPotential, ExternalField, IsingLearner, IsingTarget, LangevinThermostat,
     LearnerConfig, PassiveStack,

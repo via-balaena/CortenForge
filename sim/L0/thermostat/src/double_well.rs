@@ -160,7 +160,10 @@ impl DoubleWellPotential {
         // (denominator ≥ ¼) and decays once δλ² ≫ 1, so cut off at √(30/δ).
         let lam_max = (30.0 / delta).sqrt().clamp(20.0, 400.0);
         let steps = 6000usize;
-        let dlam = lam_max / 6000.0;
+        // steps is a small exact-in-f64 constant; deriving dlam from it (rather
+        // than a hardcoded 6000.0) keeps the two in sync if the count changes.
+        #[allow(clippy::cast_precision_loss)]
+        let dlam = lam_max / steps as f64;
         let mut lam = 0.0_f64;
         let mut integral = 0.0;
         for i in 0..=steps {

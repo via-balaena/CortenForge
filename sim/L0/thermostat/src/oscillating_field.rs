@@ -120,19 +120,12 @@ impl OscillatingField {
 
     /// Signal value at time `t`: `A₀ · cos(ωt + φ₀)`.
     ///
-    /// Exposed for reward computation and diagnostics — the reward closure
-    /// needs the signal value to compute synchrony.
+    /// This is the force the field injects in [`apply`](PassiveComponent::apply);
+    /// also exposed for diagnostics and reward closures that want the raw
+    /// drive value.
     #[must_use]
     pub fn signal_value(&self, t: f64) -> f64 {
         self.amplitude * self.omega.mul_add(t, self.phase).cos()
-    }
-
-    /// Normalized signal at time `t`: `cos(ωt + φ₀)` (unit amplitude).
-    ///
-    /// For synchrony reward: `reward = sign(x) · normalized_signal(t)`.
-    #[must_use]
-    pub fn normalized_signal(&self, t: f64) -> f64 {
-        self.omega.mul_add(t, self.phase).cos()
     }
 }
 
@@ -268,35 +261,6 @@ mod tests {
                 0.0,
                 "signal should be exactly zero when A₀=0, got {} at t={t}",
                 f.signal_value(t),
-            );
-        }
-    }
-
-    // ── normalized signal ───────────────────────────────────────────────
-
-    #[test]
-    fn normalized_signal_is_unit_amplitude() {
-        let f = OscillatingField::new(5.0, 0.3, 0.7, 0);
-        // Sample many time points
-        for i in 0..100 {
-            let t = i as f64 * 0.37;
-            let ns = f.normalized_signal(t);
-            assert!(
-                ns.abs() <= 1.0 + 1e-15,
-                "normalized_signal({t}) = {ns}, expected |ns| ≤ 1",
-            );
-        }
-    }
-
-    #[test]
-    fn normalized_signal_matches_signal_value_divided_by_amplitude() {
-        let f = OscillatingField::new(3.0, 0.5, 0.2, 0);
-        for &t in &[0.0, 1.0, 2.5, 7.0] {
-            let ns = f.normalized_signal(t);
-            let sv = f.signal_value(t) / f.amplitude();
-            assert!(
-                (ns - sv).abs() < 1e-15,
-                "normalized_signal({t}) = {ns} ≠ signal_value/A₀ = {sv}",
             );
         }
     }

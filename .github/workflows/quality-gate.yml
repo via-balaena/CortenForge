@@ -457,6 +457,26 @@ jobs:
           # bins below), so resolve it independently.
           SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "sim-soft")
           echo "SOFT_PKGS=$SOFT_PKGS" >> "$GITHUB_ENV"
+          # Doctests require a lib target. When a shard's affected set is only
+          # test-only crates (no lib — e.g. sim-conformance-tests), a bare
+          # `cargo test --doc -p <that>` fails with "no library targets found".
+          # Filter PKGS down to lib-bearing crates for the doctest step; an
+          # empty result makes that step a no-op pass (guarded by DOC_PKGS != '').
+          LIB_CRATES=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(any(.targets[]; .kind == ["lib"])) | .name')
+          DOC_PKGS=""
+          for pkg in $PKGS; do
+            [ "$pkg" = "-p" ] && continue
+            for lib in $LIB_CRATES; do
+              if [ "$lib" = "$pkg" ]; then
+                DOC_PKGS="$DOC_PKGS -p $pkg"
+                break
+              fi
+            done
+          done
+          DOC_PKGS=${DOC_PKGS# }
+          echo "DOC_PKGS=$DOC_PKGS" >> "$GITHUB_ENV"
+          echo "shard ${{ matrix.id }} doc packages: ${DOC_PKGS:-<none>}"
         shell: bash
 
       - name: Run tests (nextest, --release)
@@ -475,8 +495,8 @@ jobs:
       # the nextest switch (e.g. mesh-printability's 4 doctests). Doctests are
       # compile-bound and trivially fast to execute.
       - name: Run doctests (--release)
-        if: env.PKGS != ''
-        run: cargo test --release --doc $PKGS
+        if: env.DOC_PKGS != ''
+        run: cargo test --release --doc $DOC_PKGS
         shell: bash
 
       # sim-soft release-only contact tests live on shard 3. Phase 5 commits

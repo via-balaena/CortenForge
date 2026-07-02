@@ -35,7 +35,8 @@
 
 use sim_core::DVector;
 use sim_core::test_fixtures::bistable_chain;
-use sim_thermostat::test_utils::{WelfordOnline, WellState};
+use sim_thermostat::WellState;
+use sim_thermostat::test_utils::WelfordOnline;
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PairwiseCoupling, PassiveStack};
 
 // ─── Model ─────────────────────────────────────────────────────────────────

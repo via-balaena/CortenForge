@@ -127,12 +127,6 @@ impl ColoredDriveSim {
         self.v += half_dt * total2 / m; // B
     }
 
-    /// Current position.
-    #[must_use]
-    pub const fn position(&self) -> f64 {
-        self.x
-    }
-
     /// Current velocity.
     #[must_use]
     pub const fn velocity(&self) -> f64 {
