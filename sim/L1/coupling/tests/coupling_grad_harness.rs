@@ -770,6 +770,40 @@ fn powered_friction_chain() -> StaggeredCoupling {
     .with_friction(FRIC_COEF0, 0.1)
 }
 
+/// The MOVING-end-effector counterpart of [`powered_friction_hinge`]: a `<motor>`-actuated Y-hinge
+/// arm carrying a finite sphere end-effector that TRACKS the arm-tip geom (`with_sphere_collider` +
+/// `with_contact_geom(0)`), under sideways gravity (`gx = 1.5`) so the tip sweeps tangentially and
+/// the contact centre translates AS the friction grip drags (the de-escalation capstone physics — a
+/// controlled grip on a MOVING rigid limb). The differentiated parameter is the per-step control
+/// (actuator channel) or the closed-loop policy θ, injected per CALL, so the soft stiffness is baked
+/// in at `3e3` (a sharp μ-lever). The `tip_x` drag objective is pose-INSENSITIVE (#429: zeroing the
+/// pose-centre seam leaves `∂tip_x` machine-exact), so despite the curved moving collider the
+/// actuator/policy gradients are machine-exact — these rows gate the `g_act`/policy + friction +
+/// moving-EE centre composition. Shared by the `moving-ee·actuator-friction` and
+/// `moving-ee·policy-friction` rows.
+fn powered_friction_moving_ee() -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="1.5 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0.05 0.05 0.344">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.17" size="0.08" mass="0.2"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j" gear="1"/></actuator>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("powered moving-EE friction MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.05; // slight tilt → off-COM + the sideways push sweeps the tip in x
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, 3.0e3, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(0.08)
+    .with_contact_geom(0)
+    .with_friction(2.5, 0.1)
+}
+
 // ── Harness core ──
 
 /// Per-component physical expectation on the gradient — the generalization of
@@ -2183,6 +2217,22 @@ fn cases() -> Vec<GradCase> {
         // backprop-through-time, on the same powered hinge / 2-link chain scenes
         policy_friction_case("hinge·policy-friction[θ]", powered_friction_hinge, 20, 1e-5),
         policy_friction_case("chain·policy-friction[θ]", powered_friction_chain, 12, 1e-5),
+        // MOVING end-effector powered friction grip: the actuator/policy control gradients through
+        // the friction grip on a finite sphere TRACKING the arm tip (the controlled grip on a
+        // MOVING rigid limb). tip-x drag is pose-insensitive ⇒ machine-exact despite the curved
+        // moving collider; n=12 is the best-conditioned policy horizon (min|fd|~1e-4)
+        actuator_friction_case(
+            "moving-ee·actuator-friction[u]",
+            powered_friction_moving_ee,
+            vec![0.04, -0.03, 0.05, 0.02],
+            1e-5,
+        ),
+        policy_friction_case(
+            "moving-ee·policy-friction[θ]",
+            powered_friction_moving_ee,
+            12,
+            1e-5,
+        ),
     ]
 }
 
