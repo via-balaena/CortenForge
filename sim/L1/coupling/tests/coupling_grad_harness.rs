@@ -119,9 +119,10 @@
 //! (plane + sphere), the `actuator` channel (motor + position / velocity / PD servos, on
 //! both the single hinge and the 2-link damped chain), the `sphere-articulated` material
 //! trajectory, the `IPC` contact-model trajectory
-//! (single-step + the multi-step make/break rollout), and the `tangential-coeff` FRICTION channel
+//! (single-step + the multi-step make/break rollout), the `tangential-coeff` FRICTION channel
 //! (`∂x/∂μ_c` — its z-engagement guard is on the same baseline rollout the `tangential-material`
-//! slim file already holds). SLIMMED (the file
+//! slim file already holds), and the `sphere-articulated-friction-material` channel (the curved
+//! hinge grip — its engagement smoke `|x| < 0.1` folds into a `value_bounds` loss band). SLIMMED (the file
 //! keeps only what the FD
 //! matrix structurally can't hold — an invariant, or a sibling channel not yet reached): `joint`
 //! (a tape-vs-tape fusion-soundness check), `freebody-orientation`, `freebody-angular-velocity`
@@ -645,6 +646,32 @@ fn sphere_friction_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupling {
     )
     .with_friction(fric_mu, 0.1)
     .with_sphere_collider(0.08)
+}
+
+/// The ARTICULATED friction grip on a finite `SphereSdf` end-effector: the [`friction_hinge_coupling`]
+/// Y-hinge arm with the half-plane swapped for a curved sphere (`with_sphere_collider`), so the
+/// tangential grip reaction is routed as the full spatial wrench about the body COM AND the friction
+/// force Jacobian carries the curved-normal `DN·C` term (zero for the plane). The curved counterpart
+/// of the plane hinge friction rows; `soft_mu`/`fric_mu` FD'd by rebuilding.
+fn sphere_hinge_friction_coupling(soft_mu: f64, fric_mu: f64) -> StaggeredCoupling {
+    const MJCF: &str = r#"<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.2">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+    let model = load_model(MJCF).expect("sphere articulated friction MJCF loads");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3; // tilt off vertical so the tip arcs across the block
+    data.forward(&model).expect("initial forward");
+    StaggeredCoupling::new(
+        model, data, 1, 0.005, 4, 0.1, soft_mu, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+    )
+    .with_sphere_collider(0.08)
+    .with_friction(fric_mu, 0.1)
 }
 
 // ── Harness core ──
@@ -1588,18 +1615,25 @@ fn friction_tangential_coeff_case(
 /// (no loss band — the tip-`x` slide swings sign across the horizon, so it isn't a clean
 /// engagement band; engagement lives in the slim file's z-guards). `(n, tol)` per scene: the hinge
 /// is machine-exact via its analytic `J_state` (n = 40, tol 1e-6), the chain runs at FD-`J_state`
-/// precision (n = 12, tol 1e-5). Folds the single-point FD cells of
-/// `friction_articulated_material_gradient.rs`; that file keeps the hinge multi-horizon
-/// machine-exact sweep and the 2-link start-engagement guard the matrix can't express.
+/// precision (n = 12, tol 1e-5), and the curved `SphereSdf` hinge
+/// ([`sphere_hinge_friction_coupling`]) carries the friction force Jacobian's `DN·C` term at the
+/// ~2e-3 curved-contact floor (n = 6, tol 5e-3). `band` is the optional loss band: the plane rows
+/// pass `None` (tip-`x` swings sign), the curved sphere hinge passes `Some((−0.1, 0.1))` — its tip
+/// stays near the block so `|x| < 0.1` IS a clean loss band (folding the bespoke engagement smoke).
+/// Folds the single-point FD cells of `friction_articulated_material_gradient.rs` (plane hinge/chain
+/// — that file keeps the hinge multi-horizon machine-exact sweep + the 2-link start-engagement
+/// guard) and the whole `sphere_articulated_friction_trajectory_gradient.rs` (curved hinge — a clean
+/// full fold: its engagement smoke folds into `band`, so that file is deleted).
 fn friction_articulated_material_case(
     name: &'static str,
     build: fn(f64, f64) -> StaggeredCoupling,
     n: usize,
     tol: f64,
+    band: Option<(f64, f64)>,
 ) -> GradCase {
     GradCase {
         name,
-        value_bounds: None,
+        value_bounds: band,
         baseline: vec![FRIC_MU0],
         eps: vec![FRIC_MU0 * 1e-4],
         tol,
@@ -1897,12 +1931,24 @@ fn cases() -> Vec<GradCase> {
             friction_hinge_coupling,
             40,
             1e-6,
+            None,
         ),
         friction_articulated_material_case(
             "chain·friction-material[μ]",
             friction_chain_coupling,
             12,
             1e-5,
+            None,
+        ),
+        // curved SphereSdf hinge: the same tied-μ material gradient through the joint carry, now
+        // with the friction force Jacobian's DN·C curved-normal term (~2e-3 curved-contact floor,
+        // tol 5e-3); the tip stays near the block so |x|<0.1 is a clean loss band
+        friction_articulated_material_case(
+            "sphere-hinge·friction-material[μ]",
+            sphere_hinge_friction_coupling,
+            6,
+            5e-3,
+            Some((-0.1, 0.1)),
         ),
         // the μ_c (Coulomb coefficient) sibling on the same articulated grips — FD at the V-shape
         // step μ_c·1e-3, tol 2e-5 (FD-conditioning-limited, not a gradient defect)
