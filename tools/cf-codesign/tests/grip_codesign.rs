@@ -224,7 +224,7 @@ const Q_HOLD: f64 = 0.25;
 /// The HOLD objective's loss gradient (the `GripObjective::Hold` dispatch) matches a central FD
 /// of the holding loss `L = Σ (qₖ − q_hold)²` in `p = [ln μ, θ]` space — the cf-codesign glue
 /// (the log-μ chain on `L`, the dispatch) on top of the H1 trajectory-integrated gradient (gated
-/// in `sim-coupling`'s `design_policy_hold_gradient.rs`).
+/// by `sim-coupling`'s `*·design-policy-hold[μ+θ]` `coupling_grad_harness.rs` rows).
 #[test]
 fn grip_hold_loss_gradient_matches_fd() {
     let problem = GripCoDesignTarget::linear_for_hold(GRIP_MJCF.to_string(), N_STEPS, Q_HOLD);
@@ -290,7 +290,7 @@ fn grip_hold_reduces_cost() {
 
 // The MOVING-EE grip the R5 viewer drives: the contact sphere tracks the arm-tip geom
 // (`with_contact_geom`), pivot directly above the block centre. The gated geometry from
-// sim-coupling's `design_policy_hold_gradient.rs` moving-EE case.
+// sim-coupling's `powered_friction_moving_ee_mu` harness scene (the moving-EE grip).
 const MOVING_EE_MJCF: &str = r#"<mujoco>
   <option gravity="1.5 0 -9.81" timestep="0.001"/>
   <worldbody>
@@ -304,8 +304,8 @@ const MOVING_EE_MJCF: &str = r#"<mujoco>
 
 /// The moving-EE Hold path (`with_contact_geom` + `GripObjective::Hold` dispatch) — the exact
 /// plumbing the R5 viewer drives — evaluates to a finite loss + gradient. Gradient *correctness*
-/// for the moving-EE hold is gated upstream (sim-coupling `design_policy_hold_gradient.rs`,
-/// moving-EE case); this checks the cf-codesign scene/objective wiring threads through.
+/// for the moving-EE hold is gated upstream (sim-coupling's `moving-ee·design-policy-hold[μ+θ]`
+/// `coupling_grad_harness.rs` row); this checks the cf-codesign scene/objective wiring threads through.
 #[test]
 fn grip_hold_moving_ee_evaluates() {
     let problem = GripCoDesignTarget::new(

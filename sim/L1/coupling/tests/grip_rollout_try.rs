@@ -33,7 +33,7 @@ const MOVING_EE: &str = r#"<mujoco>
   <actuator><motor joint="j" gear="1"/></actuator>
 </mujoco>"#;
 
-// Mirrors `design_policy_hold_gradient.rs`'s `build` for the moving-EE case.
+// Mirrors the harness `powered_friction_moving_ee_mu` builder (the moving-EE grip scene).
 fn build(mu: f64) -> StaggeredCoupling {
     let model = load_model(MOVING_EE).expect("scene loads");
     let mut data = model.make_data();
@@ -133,8 +133,9 @@ fn panic_path_hold_gradient_still_panics_on_infeasible() {
 /// path now delegates to `try_`, this guards the *delegation* (no divergence between the two
 /// surfaces), not the numerics. The substantive guarantee — that swapping `replay_step` →
 /// `try_replay_step` preserved the gradient values — rests on the pre-existing FD gradient gates
-/// (`design_policy_hold_gradient.rs` / `design_policy_friction_gradient.rs`), which now route through
-/// `try_replay_step` and still match their finite differences.
+/// (the `*·design-policy-hold[μ+θ]` and `*·design-policy-friction[μ+θ]` rows of
+/// `coupling_grad_harness.rs`, plus the slim `design_policy_friction_gradient.rs` multi-horizon
+/// sweep), which now route through `try_replay_step` and still match their finite differences.
 #[test]
 fn try_hold_gradient_ok_matches_panic_path_when_feasible() {
     let params = [0.05_f64, -0.02, 0.01];
