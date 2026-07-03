@@ -1,10 +1,8 @@
-//! Shared test helper retained for `common_smoke.rs`.
+//! Shared test helpers for the d2c_sr_rematch* integration fixtures.
 //!
-//! The d2c_sr_rematch* integration fixtures that also used this helper moved
-//! to the `sim-rl-baselines` crate (which carries its own copy); `common_smoke`
-//! is the only remaining in-crate consumer. Lives at `tests/common/mod.rs`
-//! (not `tests/common.rs`) so cargo treats it as a shared module rather than
-//! its own integration-test target; the consumer imports via `mod common;`.
+//! Lives at `tests/common/mod.rs` (not `tests/common.rs`) so cargo
+//! treats it as a shared module rather than its own integration-test
+//! target. Each fixture imports via `mod common;`.
 
 use std::fs;
 use std::io;
@@ -22,8 +20,9 @@ use sim_opt::TwoMetricOutcome;
 /// of whether `--nocapture` / `--show-output` was passed.
 ///
 /// The path is rooted at `CARGO_MANIFEST_DIR/../../../target/...` —
-/// resolves to the workspace `target/` from `common_smoke.rs` at
-/// `sim/L0/opt/tests/`. Directory is created if absent.
+/// resolves to the workspace `target/` from the fixture files (they live
+/// at `sim/L0/rl-baselines/tests/d2c_sr_rematch*.rs`, the same three-levels-
+/// up depth as the crate's manifest). Directory is created if absent.
 ///
 /// # Errors
 ///
@@ -35,7 +34,7 @@ use sim_opt::TwoMetricOutcome;
 pub fn write_verdict_json(fixture_name: &str, outcome: &TwoMetricOutcome) -> io::Result<()> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let mut artifact_dir = PathBuf::from(manifest_dir);
-    // sim/L0/opt → workspace root
+    // sim/L0/rl-baselines → workspace root
     artifact_dir.push("../../..");
     artifact_dir.push("target/rematch_verdicts");
     fs::create_dir_all(&artifact_dir)?;

@@ -43,6 +43,15 @@ sim-core    = { workspace = true, features = ["test-fixtures"] }
 # criterion benches live in the sibling `sim-ml-chassis-benches` crate
 # (L0 plan §4.2: keeps criterion + plotters out of chassis's dev-graph).
 
+[features]
+# Exposes the `test_stock_tasks` reaching-arm `TaskConfig` fixtures to
+# downstream test-only crates (e.g. sim-opt's internal unit tests) without a
+# backwards dev-dep on the higher-tier sim-rl. Forwards to sim-core's
+# `test-fixtures` so the underlying Model factories compile. Mirrors
+# sim-core's own `test-fixtures` feature. No effect on release builds that
+# don't opt in.
+test-fixtures = ["sim-core/test-fixtures"]
+
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # wasm_js backend opt-in for getrandom (transitively pulled via
 # rand_chacha → rand_core). Paired with the workspace `.cargo/config.toml`

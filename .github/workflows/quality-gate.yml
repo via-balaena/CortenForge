@@ -26,11 +26,16 @@
 #   crate list, making this the COMPILE-bound long pole, so the heavy GUI dep
 #   trees (Bevy / Slint) are isolated one-per-shard to compile once each.
 # - `tests-release` (ubuntu, default features, --release): authoritative
-#   test gate for the 5 crates whose heavy stochastic-physics integration
+#   test gate for the 6 crates whose heavy stochastic-physics integration
 #   tests (90M–600M-step Boltzmann/CEM/REINFORCE/SA validators) run 5–10×
 #   slower in debug. Per `feedback_release_mode_heavy_tests.md` and plan
 #   §6.5: sim-ml-chassis, sim-thermostat, sim-rl, sim-conformance-tests,
-#   sim-opt. Runs in parallel with tests-debug on a separate runner.
+#   sim-opt, sim-rl-baselines. Runs in parallel with tests-debug on a
+#   separate runner. (sim-rl-baselines holds the RL-baseline fixtures that
+#   used to live under sim-thermostat/sim-therm-env/sim-opt; nearly all its
+#   tests are `#[ignore]`d — only two fast compute-parity checks run — so in
+#   CI it is effectively a COMPILE gate. The isolation removes the backwards
+#   sim-rl dev-dep from those L0 physics crates.)
 # - `cross-os` (macos + windows, 3 platform-sensitive crates): cross-OS
 #   validation for FP determinism + file-path handling concerns. Per
 #   plan §6.3 (b): sim-core (FP/physics), sim-mjcf (XML/file paths),
@@ -283,7 +288,7 @@ jobs:
   # `grade` covers it), examples (~197, no #[test]), -benches (5), xtask (graded
   # by grade-all; unit tests via pre-commit), and the heavy stochastic-physics
   # validators sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests /
-  # sim-opt (run in `tests-release` below). cf-viewer / cf-bevy-common /
+  # sim-opt / sim-rl-baselines (run in `tests-release` below). cf-viewer / cf-bevy-common /
   # sim-bevy-soft ARE included: their tests are pure-function (no App::new() /
   # window spin-up), so headless CI handles them with the x11/wayland dev libs
   # installed below.
@@ -387,6 +392,12 @@ jobs:
   # on the right shard; further gains need per-test partitioning or a faster
   # linker, deferred until measurement shows they're needed.
   #
+  # sim-rl-baselines sits in shard 1 (with conformance/coupling, the lightest
+  # leg): it holds the RL-baseline fixtures moved out of thermostat/therm-env/
+  # opt, nearly all `#[ignore]`d (only two ~0.3s parity checks run), so in CI
+  # it is effectively a COMPILE gate — shard 1 has the spare capacity and keeps
+  # it off shard 3 where sim-rl itself already runs.
+  #
   # The downstream `quality-gate` job `needs: [tests-release]` waits for all
   # matrix legs and fails if any fails, so branch protection still gates every
   # crate. Each shard keeps its own rust-cache (matrix value is part of the key);
@@ -409,7 +420,7 @@ jobs:
       matrix:
         include:
           - id: 1
-            crates: sim-conformance-tests sim-coupling
+            crates: sim-conformance-tests sim-coupling sim-rl-baselines
           - id: 2
             crates: sim-thermostat sim-opt mesh-printability
           - id: 3

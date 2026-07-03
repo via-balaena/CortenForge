@@ -1,7 +1,8 @@
 //! Smoke test for `tests/common/mod.rs::write_verdict_json`.
 //!
-//! The actual d2c_sr_rematch* consumers run multi-thousand seconds
-//! release-only, so they're not exercised in normal CI. This file is
+//! The actual d2c_sr_rematch* consumers (now in the `sim-rl-baselines`
+//! crate, which carries its own copy of `common/`) run multi-thousand
+//! seconds release-only, so they're not exercised in normal CI. This file is
 //! a fast (sub-millisecond) integration test that constructs a
 //! synthetic [`TwoMetricOutcome`] and verifies the JSON write +
 //! round-trip on its own integration-test crate.

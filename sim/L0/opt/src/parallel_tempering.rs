@@ -53,7 +53,7 @@
 //! commitment binds the follow-ups to the unchanged driver.  The
 //! cleanest honoring is `Pt::name() == "SA"` with the fixture
 //! file name and header identifying the variant.  See
-//! `sim/L0/opt/tests/d2c_sr_rematch_pt.rs`.
+//! `sim/L0/rl-baselines/tests/d2c_sr_rematch_pt.rs`.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -491,7 +491,7 @@ impl Algorithm for Pt {
 mod tests {
     use super::*;
     use sim_ml_chassis::LinearPolicy;
-    use sim_rl::reaching_2dof;
+    use sim_ml_chassis::reaching_2dof;
 
     const TEST_N_ENVS: usize = 4;
 

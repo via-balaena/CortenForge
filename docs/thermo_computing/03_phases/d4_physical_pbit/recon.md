@@ -179,7 +179,7 @@ Software gates are fully headless, and the calibration pipeline is validated aga
 sim ground truth *before* any hardware:
 
 - **S1:** manifold STL (non-empty mesh, finite `mass_properties`) per swept candidate.
-- **S2:** **DONE** (`sim/L0/therm-env/tests/kramers_pbit.rs`). The sim reproduces
+- **S2:** **DONE** (`sim/L0/rl-baselines/tests/kramers_pbit.rs`). The sim reproduces
   the Kramers law on the real code path. Primary gate: the measured rate (averaged
   over 4 seeds × 5 temperatures, ΔV/kT 1.2–2.0) sits within **~15%** of the
   analytic `kramers_rate` at every temperature. Consequently the Arrhenius slope
@@ -189,7 +189,7 @@ sim ground truth *before* any hardware:
   (exponential); **cold equipartition ratio ≈ 1.15**. The earlier single-seed
   run reported a luckier 8% slope; averaging makes the gate load-bearing (a local
   ultra-review found single-seed fails ~50% of seeds). Run:
-  `cargo test -p sim-therm-env --release --test kramers_pbit -- --ignored`.
+  `cargo test -p sim-rl-baselines --release --test kramers_pbit -- --ignored`.
 - **S3 (key): DONE** (`tools/pbit-analyze`). Recovers switching rate, dwell CV,
   in-well variance, and `kt_eff` from a CSV; well centres via two-means (robust to
   unequal dwell fractions). Validated two ways: a controlled-telegraph unit test
