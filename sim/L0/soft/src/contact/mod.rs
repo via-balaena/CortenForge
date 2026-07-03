@@ -1,13 +1,14 @@
 //! `ContactModel` trait — contact energy-term interface.
 //!
-//! Five items: active-pair detection, energy, gradient, Hessian, and
-//! CCD time-of-impact. Two impls ship as of Phase 5 commit 4:
-//! [`NullContact`] is the zero-stub default (real zeros — `Vec::new()`
-//! / `0.0` / `f64::INFINITY`) for non-contact scenes, and
-//! [`PenaltyRigidContact`] is the first force-bearing impl — soft
-//! vertex against kinematic rigid primitives, one-way coupling.
-//! Penalty is a stepping stone to IPC at Phase H per BF-12 (Phase 5
-//! commit 9).
+//! Six methods — `energy`, `gradient`, `hessian`, `ccd_toi`,
+//! `pose_residual_derivative`, and `normal_curvature` — plus
+//! active-pair detection via the [`ActivePairsFor`] subtrait. Three
+//! impls ship: [`NullContact`] is the zero-stub default (real zeros —
+//! `Vec::new()` / `0.0` / `f64::INFINITY`) for non-contact scenes,
+//! [`PenaltyRigidContact`] is the first force-bearing impl (soft
+//! vertex against kinematic rigid primitives, one-way coupling), and
+//! [`IpcRigidContact`] is the C²-barrier successor to penalty.
+//! Penalty is a stepping stone to IPC per BF-12.
 
 use crate::Vec3;
 use crate::mesh::VertexId;

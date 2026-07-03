@@ -1,12 +1,14 @@
 //! `SoftScene` — skeleton scene constructors + scene-config bundles.
 //!
-//! `one_tet_cube()` returns the canonical decimeter-edge tet per spec
-//! §2 bundled with its boundary conditions and initial state. The
-//! 3-tuple shape `(impl Mesh, BoundaryConditions, SceneInitial)` is
-//! Phase 2's canonical scene-emission contract — Decision K + L of
+//! Each constructor returns a `(impl Mesh, BoundaryConditions,
+//! SceneInitial)` 3-tuple — Phase 2's canonical scene-emission
+//! contract, Decision K + L of
 //! [`phase_2_multi_element_fem_scope.md`](../../../../docs/todo/phase_2_multi_element_fem_scope.md).
-//! Multi-tet scenes (`HandBuiltTetMesh::two_isolated_tets`,
-//! `two_tet_shared_face`) land in Phase 2 commit 2.
+//! The family: `one_tet_cube` (the canonical decimeter-edge tet per
+//! spec §2), `layered_silicone_sphere`, `compressive_block_on_plane`,
+//! `sphere_on_plane`, and `dropping_sphere`. Multi-tet meshes are
+//! constructed directly on [`HandBuiltTetMesh`]
+//! (`two_isolated_tets`, `two_tet_shared_face`).
 
 use std::collections::BTreeSet;
 
@@ -43,9 +45,10 @@ pub const LAYERED_SPHERE_R_OUTER: f64 = 0.10;
 /// Phase 3 / IV-4 `bbox_half_extent / cell_size = 6.0` ratio at h/2 = 0.02).
 pub const LAYERED_SPHERE_BBOX_HALF_EXTENT: f64 = 0.12;
 
-/// Scene constructors. Skeleton ships one constructor for the 1-tet
-/// cube; multi-tet siblings (`n_isolated_tets`, `two_tet_shared_face`)
-/// land in Phase 2 commit 2 as new methods on the same `impl` block.
+/// Scene constructors. Five scenes ship as methods on this `impl`:
+/// `one_tet_cube` (the 1-tet skeleton), `layered_silicone_sphere`,
+/// `compressive_block_on_plane`, `sphere_on_plane`, and
+/// `dropping_sphere`.
 pub struct SoftScene;
 
 impl SoftScene {

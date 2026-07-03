@@ -1,8 +1,10 @@
 //! `NullContact` — empty active-pairs, zero energy/gradient/Hessian.
 //!
 //! Default contact model — real zero-stubs as of Phase 5. Exercises
-//! the trait surface without pulling in IPC machinery.
-//! Phase C adds `IpcBarrierModel` with CCD + friction per spec §8.
+//! the trait surface without pulling in IPC machinery. The C²-barrier
+//! successor [`IpcRigidContact`](crate::IpcRigidContact) (CCD +
+//! friction) has since shipped; `NullContact` remains the zero-cost
+//! default for non-contact scenes.
 
 use super::{ActivePairsFor, ContactGradient, ContactHessian, ContactModel, ContactPair};
 use crate::Vec3;

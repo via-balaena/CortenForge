@@ -95,7 +95,7 @@ impl<T> NewtonStep<T> {
 /// the partial solve (Fork-B `tol = 1e-1` is loose enough to
 /// physically interpret some non-converged states; see the docstring
 /// on `insertion_solver_config()` in
-/// `tools/cf-device-design/src/insertion_sim.rs`).
+/// `tools/cf-sim-research/src/insertion_sim.rs`).
 ///
 /// Variant semantics — uniform across all four: `try_step` /
 /// `try_replay_step` ALWAYS return `Err`; `Solver::step` /

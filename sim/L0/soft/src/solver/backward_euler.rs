@@ -139,7 +139,7 @@ pub struct SolverConfig {
     /// at `factor_free_tangent`'s retry loop: `Llt` first, then direct
     /// `Lu` fallback on non-PD, no `+λI`. `Some(LmConfig)` activates
     /// the in-iter Marquardt adapter; the `Lu` fallback then becomes
-    /// the λ-saturation surface. Fork-B (cf-device-design) consumers
+    /// the λ-saturation surface. Fork-B (cf-sim-research) consumers
     /// opt in via [`LmConfig::fork_b`] paired with
     /// [`Solver::try_step`] for graceful
     /// failure on Armijo stall.
@@ -4656,7 +4656,7 @@ mod tests {
     /// Companion: the gated short-circuit branch (`!lm_state.
     /// is_active()`) is exercised by every existing LM-disabled
     /// test that completes normally; the gated escalation branch
-    /// is exercised end-to-end by the cf-device-design insertion
+    /// is exercised end-to-end by the cf-sim-research insertion
     /// suite (integration test).
     #[test]
     fn gated_lm_enabled_happy_path_converges_same_as_pre_f3() {
