@@ -564,11 +564,11 @@ lossy** — approximated as a single hinge (loses 2 of 3 DOF).
 The `sim-gpu` crate was removed in workspace trim (2026-03-19), then
 re-introduced via PR #143 with the GPU physics pipeline scaffold
 (Sessions 1–6: FK / CRBA / RNE / smooth / integrate / constraint /
-collision orchestrator). Two subsystems today: **SDF collision** —
-GPU-accelerated rigid-body SDF narrowphase implementing `sim-core`'s
-`GpuSdfCollision` trait (trait-in-core / impl-in-companion, parallel to
-sim-mjcf and sim-urdf); **physics pipeline** — full GPU rigid-body
-physics scaffold per `GPU_PHYSICS_PIPELINE_SPEC.md`. Owns its own
+collision orchestrator). One subsystem: the **physics pipeline** — a
+full GPU-resident rigid-body physics step (including SDF narrowphase
+collision) per `GPU_PHYSICS_PIPELINE_SPEC.md`. (An earlier standalone
+"CPU sim + GPU collision offload" hybrid was removed once the
+architecture settled on pure-CPU-or-pure-GPU.) Owns its own
 `wgpu::Device` separate from any rendering Device to avoid Bevy
 contention. No autograd surface, no chassis dependency — orthogonal to
 the future `sim_ml_chassis::gpu` autograd substrate (Phase E) and the
@@ -748,7 +748,6 @@ is Layer 1 only.
 | Flag | Crates | Description |
 |------|--------|-------------|
 | `parallel` | sim-core | Rayon-based parallelization for `BatchSim::step_all()` CPU forward pass. Sequential fallback when disabled. See [future_work_3 #9](./todo/future_work_3.md) |
-| `gpu-internals` | sim-core | Exposes internal helpers (`integrate_without_velocity`, `envs_as_mut_slice`, `model_arc`) for GPU backends. No additional deps. |
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 

@@ -11661,14 +11661,12 @@ dependencies = [
 name = "sim-gpu"
 version = "1.0.0"
 dependencies = [
- "approx 0.5.1",
  "bytemuck",
  "cf-geometry",
  "log",
  "nalgebra 0.34.2",
  "pollster",
  "sim-core",
- "sim-types",
  "wgpu 27.0.1",
 ]
 

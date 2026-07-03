@@ -227,7 +227,6 @@ impl Model {
             // Shapes (empty)
             nshape: 0,
             shape_data: vec![],
-            gpu_collider: None,
 
             // Sites (empty)
             site_body: vec![],

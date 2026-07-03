@@ -346,31 +346,6 @@ impl BatchSim {
             data.reset(model);
         }
     }
-
-    // ==================== GPU Internals ====================
-
-    /// Direct mutable slice access to environments.
-    ///
-    /// Used by GPU backend for rayon par_iter_mut() over envs.
-    #[cfg(feature = "gpu-internals")]
-    #[doc(hidden)]
-    pub fn envs_as_mut_slice(&mut self) -> &mut [Data] {
-        &mut self.envs
-    }
-
-    /// Reference to the shared model `Arc`, or `None` for per-env batches.
-    ///
-    /// Used by GPU backend to pass model to parallel `forward()` calls.
-    /// Returns `Some(&Arc<Model>)` for shared-model batches (constructed
-    /// via [`BatchSim::new`]) and `None` for per-env batches (constructed
-    /// via [`BatchSim::new_per_env`]), which have no single `Arc<Model>`
-    /// to hand out — each env carries its own.
-    #[cfg(feature = "gpu-internals")]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn model_arc(&self) -> Option<&Arc<Model>> {
-        self.shared_model.as_ref()
-    }
 }
 
 /// Trait exposing the `install_per_env` surface [`BatchSim::new_per_env`]

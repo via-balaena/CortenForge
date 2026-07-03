@@ -734,9 +734,9 @@ physiological range.
 
 **GPU path:** The `sim-gpu` crate was removed in workspace trim
 (2026-03-19), then re-introduced via PR #143 with the GPU physics
-pipeline scaffold. The `gpu-internals` feature flag and
-`Data::integrate_without_velocity()` in sim-core remain the integration
-seam for `sim-gpu`'s GPU integrator. See `sim/L0/gpu/src/pipeline/` and
+pipeline scaffold. It builds its GPU buffers directly from sim-core's
+`Model`/`Data`, running velocity and position integration entirely in the
+pipeline's compute shaders. See `sim/L0/gpu/src/pipeline/` and
 `GPU_PHYSICS_PIPELINE_SPEC.md` for current state.
 
 **ImplicitSpringDamper (`Integrator::ImplicitSpringDamper`):**
