@@ -10,9 +10,6 @@
 //! - Gate C: trained policy outperforms the random baseline by ≥ 2×
 //!
 //! All tests require `--release` (160M+ physics steps across training).
-//!
-//! Spec: `docs/thermo_computing/03_phases/d1_brownian_ratchet.md` §10 D1c
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

@@ -8,9 +8,6 @@
 //! - Gate A: trained policy produces significant ratchet current (p < 0.01)
 //! - Gate B: fitness improves over training
 //! - Gate C: report trained/CEM ratio (informational, no hard threshold)
-//!
-//! Spec: `docs/thermo_computing/03_phases/d1_brownian_ratchet.md` §10 D1d
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

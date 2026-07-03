@@ -12,9 +12,6 @@
 //! - Supporting: NNN and long-range correlations
 //! - Supporting: Configuration frequency ratio
 //! - Supporting: Reproducibility
-//!
-//! Spec: `docs/thermo_computing/03_phases/04_coupled_bistable_array.md`
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

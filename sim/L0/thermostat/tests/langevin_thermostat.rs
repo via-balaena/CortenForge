@@ -86,13 +86,11 @@ fn test_sho_model_invariants() {
 /// `n_burn_in = 5·τ_eq` and `n_measure = 20·τ_eq` where `τ_eq = M/(γh) =
 /// 10_000` steps is the energy equilibration time. Burn-in scales with
 /// `τ_eq`, NOT with `τ_int = M/(2γ)` (which is the v² autocorrelation
-/// time, used only for `N_eff` sizing). See
-/// `06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md` for the
-/// foundational distinction and Crack 4 propagation chain.
+/// time, used only for `N_eff` sizing).
 ///
-/// `WelfordOnline::merge` is intentionally NOT used here. See
-/// `06_findings/2026-04-09_phase1_statistical_propagation_chain.md` for
-/// the propagation-chain post-mortem.
+/// `WelfordOnline::merge` is intentionally NOT used here — see its
+/// docstring for why merging per-step accumulators across autocorrelated
+/// trajectories underestimates the std error.
 #[test]
 fn test_equipartition_central_parameter_set() {
     // n_burn_in = 5·τ_eq, n_measure = 20·τ_eq where τ_eq = M/(γh) = 10_000.
@@ -169,10 +167,8 @@ fn test_equipartition_central_parameter_set() {
 /// **Per-combo `τ_eq` scaling.** `n_burn_in` and `n_measure` are computed
 /// per combo as `5·τ_eq` and `20·τ_eq` where `τ_eq = M/(γh)` is the
 /// energy equilibration time. A fixed step count would leave the slow-γ
-/// rows catastrophically un-equilibrated — see
-/// `06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md` for the
-/// quantitative analysis (`γ=0.01` with fixed `25k` burn-in produces a
-/// `49%`-of-`½kT` systematic bias).
+/// rows catastrophically un-equilibrated (`γ=0.01` with fixed `25k`
+/// burn-in produces a `49%`-of-`½kT` systematic bias).
 #[test]
 #[ignore = "order-of-minutes runtime — opt-in via --ignored; central combo is gated by test_equipartition_central_parameter_set"]
 fn test_equipartition_sweep_gamma_t() {

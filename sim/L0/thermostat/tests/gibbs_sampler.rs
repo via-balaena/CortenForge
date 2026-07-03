@@ -9,9 +9,6 @@
 //! - Gate B: Three-way comparison on Phase 5 params (must-pass)
 //! - Gate C: Phase 4 §11.4 closure on NN chain (must-pass)
 //! - Reproducibility: same seed → bit-identical histograms
-//!
-//! Spec: `docs/thermo_computing/03_phases/06_gibbs_sampler.md`
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
