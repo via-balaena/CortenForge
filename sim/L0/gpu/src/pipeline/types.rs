@@ -269,14 +269,15 @@ pub struct PipelineContact {
     pub geom2: u32,
 }
 
-/// Per-pair narrowphase dispatch parameters. 48 bytes, 16-byte aligned.
+/// Per-pair narrowphase dispatch parameters. 64 bytes, 16-byte aligned.
 ///
 /// Written per narrowphase dispatch. The shader reads geom poses from
 /// `geom_xpos`/`geom_xmat` directly (no pose matrices in params).
 /// ```text
 /// offset  0: geom1, geom2, src_sdf_meta_idx, dst_sdf_meta_idx  (4 × u32 = 16 bytes)
-/// offset 16: surface_threshold, contact_margin, flip_normal, _pad  (16 bytes)
-/// offset 32: friction (vec4<f32>)  (16 bytes)
+/// offset 16: surface_threshold, contact_margin, flip_normal, n_env  (16 bytes)
+/// offset 32: ngeom, max_contacts, _pad1, _pad2                  (4 × u32 = 16 bytes)
+/// offset 48: friction (vec4<f32>)  (16 bytes)
 /// ```
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]

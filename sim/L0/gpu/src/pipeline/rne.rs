@@ -1,11 +1,12 @@
 //! GPU RNE pipeline — bias forces (gravity + Coriolis + gyroscopic).
 //!
-//! Compiles `rne.wgsl` (4 entry points), creates bind groups, and
+//! Compiles `rne.wgsl` (5 entry points), creates bind groups, and
 //! dispatches the RNE sequence:
-//!   1. `rne_gravity`  — per-joint parallel gravity projection
-//!   2. `rne_forward`  — root→leaves bias acceleration scan
-//!   3. `rne_backward` — leaves→root bias force accumulation (CAS atomics)
-//!   4. `rne_project`  — per-DOF parallel S^T · cfrc projection
+//!   1. `rne_gravity`   — per-joint parallel gravity projection
+//!   2. `rne_forward`   — root→leaves bias acceleration scan
+//!   3. `rne_cfrc_init` — per-body parallel net spatial-force seed (I·a + v×*I·v)
+//!   4. `rne_backward`  — leaves→root bias force accumulation (CAS atomics)
+//!   5. `rne_project`   — per-DOF parallel S^T · cfrc projection
 
 #![allow(
     clippy::cast_possible_truncation,

@@ -8,6 +8,16 @@
 //!
 //! Session 3: RNE (bias forces) + smooth dynamics (`qacc_smooth`) +
 //! semi-implicit Euler integration. First full GPU physics loop.
+//!
+//! Session 4: `collision` — per-geom AABB + SDF-SDF / SDF-plane narrowphase,
+//! producing contacts in a GPU buffer.
+//!
+//! Session 5: `constraint` — assemble pyramidal rows, run the primal Newton
+//! solver, map forces back to joint space.
+//!
+//! Session 6: `orchestrator` ties every stage into a single GPU step
+//! (`GpuPhysicsPipeline`), with optional implicit joint damping (`eulerdamp`)
+//! folded into the integration substep.
 
 pub mod collision;
 #[cfg(test)]
