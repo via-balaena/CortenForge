@@ -344,7 +344,7 @@ mod tests {
                 obs_dim: self.obs_dim,
                 act_dim: Some(self.act_dim),
                 hidden_dims: vec![],
-                activation: crate::autograd_layers::Activation::Tanh,
+                activation: crate::autograd::Activation::Tanh,
                 obs_scale: self.obs_scale.clone(),
             }
         }

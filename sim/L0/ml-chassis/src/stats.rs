@@ -5,7 +5,7 @@
 //! hand-coded code paths (e.g., `sim-rl`'s SAC implementation) and by
 //! chassis-level consumers that build RL loops from primitives (e.g.,
 //! the `vec-env/sac` visual example). The autograd-tape version of
-//! `gaussian_log_prob` lives in [`crate::autograd_layers`] alongside the
+//! `gaussian_log_prob` lives in [`crate::autograd`] alongside the
 //! other `Var`-based ops.
 
 /// Log probability of `action` under a diagonal Gaussian with mean `mu`

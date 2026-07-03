@@ -16,8 +16,8 @@
 //! `Vec<f64>` — same convention as [`MlpPolicy`](crate::MlpPolicy).
 
 use crate::artifact::{NetworkKind, PolicyDescriptor};
+use crate::autograd::{Activation, gaussian_log_prob, linear_hidden, linear_tanh};
 use crate::autograd::{Tape, Var};
-use crate::autograd_layers::{Activation, gaussian_log_prob, linear_hidden, linear_tanh};
 use crate::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 use crate::stats::randn;
 
