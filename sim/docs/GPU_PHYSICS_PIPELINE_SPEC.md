@@ -143,8 +143,6 @@ pytrees which are effectively the same). Memory coalescing is preserved
 because all threads at a given depth level access the same struct fields
 in sequence.
 
-See `gpu-physics-pipeline/LIMITATIONS.md` §1 for full rationale.
-
 **n_env dimension:** Every per-state buffer has a leading `n_env`
 dimension. For `n_env=1` (interactive), this is just an offset of 0.
 For `n_env=1000` (batch), each thread computes
@@ -499,7 +497,7 @@ fn atomic_add_f32_crb(idx: u32, val: f32) {
 }
 ```
 
-**WGSL limitation (LIMITATIONS.md §8):** Storage pointers cannot be
+**WGSL limitation:** Storage pointers cannot be
 passed as function arguments. Each buffer that needs CAS-atomic f32
 addition requires its own dedicated function accessing the global
 variable by name (e.g., `atomic_add_f32_crb` for `body_crb`).
@@ -675,7 +673,7 @@ ximat = quat_to_mat3(quat × body_iquat[body])
 
 **Step 6 — Spatial inertia (cinert):**
 Compute the 6×6 spatial inertia in world frame, stored as 12 floats
-(3 × vec4, padded from 10 for alignment — see LIMITATIONS.md §3):
+(3 × vec4, padded from 10 for alignment):
 ```
 h = xipos - pos                    // COM offset from body origin (world frame)
 I_COM = ximat × diag(body_inertia[body]) × ximat^T   // rotated inertia
@@ -733,7 +731,6 @@ Phase 3 (per-body): subtree_com[b] = weighted_com[b] / subtree_mass[b]
 **Actual:** ~300 lines WGSL. 4 entry points.
 **Pattern:** Format conversion + backward tree scan + per-DOF parallel M assembly + Cholesky.
 **Reference:** CPU `crba.rs`, `spatial.rs:shift_spatial_inertia()`
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_2_CRBA_VELOCITY_FK.md`
 
 **Bindings (9 total, 4 bind groups):**
 - Group 0: `FkParams` uniform (dynamic offset) — reuses FK params struct
@@ -808,7 +805,6 @@ Needed by `smooth.wgsl` for `qacc_smooth`.
 **Actual:** ~100 lines WGSL. 1 entry point.
 **Pattern:** Tree scan (forward), one dispatch per depth level.
 **Reference:** CPU `velocity.rs:mj_fwd_velocity()`
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_2_CRBA_VELOCITY_FK.md`
 
 **Bindings (6 total, 3 bind groups):**
 - Group 0: `FkParams` uniform (dynamic offset)
@@ -856,7 +852,6 @@ dynamics.
 **Pattern:** Per-joint map + forward tree scan + per-body map + backward tree scan + per-DOF map.
 **Reference:** CPU `rne.rs`, MJX `smooth.py:rne()`
 **Prerequisite:** `velocity_fk.wgsl` must have written `body_cvel`.
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_3_RNE_FORCES_INTEGRATION.md`
 
 **Bindings (16 total, max 9 per entry point — under 16-per-stage limit):**
 - Group 0: `PhysicsParams` uniform (dynamic offset)
@@ -898,7 +893,7 @@ for d in 0..=max_depth:
 **Phase 2b: `rne_cfrc_init` — per-body parallel (no depth ordering)**
 
 **CRITICAL: Must be a separate dispatch from the backward accumulation.**
-See LIMITATIONS.md §9. Computes each body's own cfrc, writes via
+Computes each body's own cfrc, writes via
 `atomicStore` into the pre-zeroed `body_cfrc` buffer.
 ```
 per body (all parallel):
@@ -915,8 +910,7 @@ math as CRBA's `crb_mul_cdof`).
 **Phase 2c: `rne_backward` — accumulate cfrc (leaves → root)**
 
 Only CAS-accumulates into parent — does NOT write own cfrc (that was
-done in `rne_cfrc_init`). Uses buffer-specific `atomic_add_f32_cfrc()`
-(LIMITATIONS.md §8).
+done in `rne_cfrc_init`). Uses buffer-specific `atomic_add_f32_cfrc()`.
 ```
 for d in max_depth..=1:
   per body at depth d:
@@ -980,7 +974,6 @@ passive forces remain CPU-only for the initial implementation.
 
 **Actual:** ~98 lines WGSL. 2 entry points.
 **Pattern:** Per-DOF parallel + single-thread Cholesky solve.
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_3_RNE_FORCES_INTEGRATION.md`
 
 **Bindings (8 total, 4 bind groups):**
 - Group 0: `PhysicsParams` uniform (dynamic offset)
@@ -1022,7 +1015,6 @@ For nv=13: ~338 flops. Trivially fast.
 
 **Actual:** ~98 lines WGSL. 1 entry point: `compute_aabb`.
 **Pattern:** Per-geom parallel map.
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
 
 **Bindings (5 total, 3 bind groups):**
 - Group 0: `AabbParams` uniform (ngeom)
@@ -1059,7 +1051,6 @@ plan. The AABB shader and narrowphase shaders are reused as-is.
 
 **Actual:** ~310 lines WGSL. 1 entry point: `sdf_sdf_narrow`.
 **Pattern:** Per-voxel parallel (workgroup 8×8×4).
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
 
 **Note:** This shader began as a rewrite of the standalone SDF surface-trace
 collider (`trace_surface.wgsl`), which was removed in #499 along with the rest
@@ -1092,7 +1083,6 @@ Dedup is deferred to Session 5's constraint assembly (contact capping).
 
 **Actual:** ~213 lines WGSL. 1 entry point: `sdf_plane_narrow`.
 **Pattern:** Per-voxel parallel (workgroup 8×8×4).
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
 
 **Bindings:** Same bind group layout as `sdf_sdf_narrow.wgsl`.
 
@@ -1118,7 +1108,7 @@ emit `PipelineContact` with plane normal as contact normal.
 - Group 3: efc_J, efc_D, efc_aref, constraint_count (output, rw)
 
 **Algorithm per thread (one contact):**
-1. Read `PipelineContact` as 12 raw f32s (vec3 storage alignment workaround, LIMITATIONS §12)
+1. Read `PipelineContact` as 12 raw f32s (vec3 storage alignment workaround)
 2. Look up geom → body mapping, effective condim = min(geom1.condim, geom2.condim)
 3. **Body swap:** If body1 > body2, swap body indices (no normal negate — normal already
    points from lower body toward higher body). Ensures body2 = moving body (+1 sign).
@@ -1152,10 +1142,10 @@ power-law interpolation of `violation / width`. Clamped to [0.0001, 0.9999].
 **Bindings:** 10 total (1 uniform + 9 storage), 4 bind groups.
 - Group 0: `SolverParams` uniform (nv, max_iter, tolerance, meaninertia)
 - Group 1: qM, qacc_smooth, qfrc_smooth (read)
-- Group 2: efc_J, efc_D, efc_aref, constraint_count (read, but atomic requires rw — LIMITATIONS §13)
+- Group 2: efc_J, efc_D, efc_aref, constraint_count (read, but atomic requires rw)
 - Group 3: qacc, efc_force (output, rw)
 
-**Shared memory (exactly 16,384 bytes at MAX_NV=60 — LIMITATIONS §11):**
+**Shared memory (exactly 16,384 bytes at MAX_NV=60):**
 
 | Array | Size |
 |---|---|
@@ -1169,7 +1159,7 @@ Ma and qfrc_smooth read from global memory on-the-fly (no shared memory budget).
 **Algorithm (per Newton iteration):**
 1. **Init H = M**: 256 threads cooperatively copy `qM → H_atomic`
 2. **Classify + H + J^T·force**: Each thread processes constraint row stripe.
-   Active rows (jar < 0) contribute `D·J^T·J` to H via CAS atomics (LIMITATIONS §4)
+   Active rows (jar < 0) contribute `D·J^T·J` to H via CAS atomics
    and accumulate partial J^T·force in per-thread registers (`partial_jtf[MAX_NV]`).
    Merged single pass — no second iteration over constraints for gradient.
 3. **Cholesky**: Thread 0 factorizes H in shared memory. `sqrt(max(s, 1e-10))` guard.
@@ -1178,7 +1168,7 @@ Ma and qfrc_smooth read from global memory on-the-fly (no shared memory budget).
 5. **Search**: Thread 0 solves `search = -H⁻¹·grad` via Cholesky forward/backward substitution.
 6. **Line search (backtracking, not bracket-narrowing Newton):**
    Evaluates cost at 4 alphas {1.0, 0.5, 0.25, 0.125} plus alpha=0 (current).
-   All 256 threads participate in all evaluations (LIMITATIONS §14 — barriers require
+   All 256 threads participate in all evaluations (barriers require
    uniform control flow). Thread 0 picks the alpha minimizing total cost.
    Cost = Gauss (½·u^T·M·u) + Σ_active ½·D·jar².
 7. **Update**: `qacc += best_alpha × search`. If alpha=0, set convergence flag.
@@ -1200,7 +1190,7 @@ to global memory.
 
 `qfrc_constraint[dof] = Σ_row efc_force[row] × efc_J[row × nv + dof]`
 
-Reads `constraint_count` via `atomicLoad` (requires rw access — LIMITATIONS §13).
+Reads `constraint_count` via `atomicLoad` (requires rw access).
 Each thread handles one DOF, iterates over all constraint rows.
 
 ### 8.15 `integrate.wgsl` — Semi-implicit Euler — COMPLETE (Session 3)
@@ -1208,7 +1198,6 @@ Each thread handles one DOF, iterates over all constraint rows.
 **Actual:** ~130 lines WGSL. 1 entry point.
 **Pattern:** Per-joint parallel map (one thread per joint).
 **Reference:** CPU `euler.rs`, MJX `math.py:quat_integrate()`
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_3_RNE_FORCES_INTEGRATION.md`
 
 **Bindings (5 total, 3 bind groups):**
 - Group 0: `PhysicsParams` uniform (non-dynamic, single dispatch)
@@ -1218,7 +1207,7 @@ Each thread handles one DOF, iterates over all constraint rows.
 Per joint: semi-implicit Euler (`qvel += dt × qacc`, then `qpos += dt × f(qvel)`).
 Hinge/slide: scalar integration. Ball/free: quaternion exponential map
 (`q_new = q_old × axis_angle(ω/|ω|, |ω|×dt)`) with normalization. Handles
-qpos quaternion layout swizzle `(w,x,y,z) ↔ (x,y,z,w)` (LIMITATIONS.md §6).
+qpos quaternion layout swizzle `(w,x,y,z) ↔ (x,y,z,w)`.
 
 ## 9. Command buffer structure
 
@@ -1264,7 +1253,7 @@ for _substep in 0..num_substeps {
 
     // RNE: gravity + forward scan + cfrc_init + backward accumulation + project
     // (reads cvel from velocity_fk for Coriolis/gyroscopic terms)
-    // NOTE: cfrc_init and backward MUST be separate dispatches (LIMITATIONS.md §9)
+    // NOTE: cfrc_init and backward MUST be separate dispatches
     compute_pass(&encoder, &rne_gravity_pipeline, ceil(njnt, 64), n_env);
     for depth in 0..=max_depth {
         update_uniform(&encoder, depth);
@@ -1472,8 +1461,6 @@ the CPU reference files, implement, validate against CPU, commit. Use
 
 **Goal:** Body poses computed on GPU match CPU FK within f32 tolerance.
 
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_1_FK_TREE_SCAN.md`
-
 **Implemented:**
 1. Tree scan dispatch with dynamic uniform offsets (one submit, not one per depth)
 2. `fk.wgsl` — 4 entry points: fk_forward, fk_geom_poses, fk_subtree_backward, fk_subtree_normalize
@@ -1499,8 +1486,6 @@ the CPU reference files, implement, validate against CPU, commit. Use
 - Subtree COM backward: plain f32 addition, not CAS atomics (single-workgroup safe)
 - `max_storage_buffers_per_shader_stage` raised to 16 in `GpuContext`
 
-**Constraints documented:** `sim/docs/gpu-physics-pipeline/LIMITATIONS.md`
-
 **Milestone:** `cargo test -p sim-gpu` — 11/11 tests pass (4 existing + 7 new).
 
 ---
@@ -1508,8 +1493,6 @@ the CPU reference files, implement, validate against CPU, commit. Use
 ### Session 2: CRBA + velocity FK — COMPLETE (2026-03-24)
 
 **Goal:** Mass matrix M and body velocities cvel match CPU within f32 tolerance.
-
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_2_CRBA_VELOCITY_FK.md`
 
 **Implemented:**
 1. `crba.wgsl` — 4 entry points: `crba_init`, `crba_backward`, `crba_mass_matrix`, `crba_cholesky`
@@ -1539,7 +1522,7 @@ the CPU reference files, implement, validate against CPU, commit. Use
 - `body_cvel`: 2×vec4 (32 bytes/body) not 6×f32 (24 bytes) — vec4 alignment.
 - Armature pre-combined at upload: `dofs[i].armature = jnt_armature + dof_armature`.
 
-**Constraints documented:** `LIMITATIONS.md` §8 (WGSL storage pointer function args)
+**Constraints:** WGSL storage pointers cannot be passed as function arguments.
 
 **Milestone:** `cargo test -p sim-gpu` — 16/16 tests pass (11 existing + 5 new).
 
@@ -1549,8 +1532,6 @@ the CPU reference files, implement, validate against CPU, commit. Use
 
 **Goal:** A complete GPU physics loop (no contacts) that drops objects
 under gravity and matches CPU trajectories.
-
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_3_RNE_FORCES_INTEGRATION.md`
 
 **Implemented:**
 1. `rne.wgsl` — 5 entry points: `rne_gravity`, `rne_forward`, `rne_cfrc_init`, `rne_backward`, `rne_project`
@@ -1597,8 +1578,6 @@ First full GPU physics loop: objects fall under gravity correctly.
 
 **Goal:** GPU collision detection (AABB + narrowphase) produces contacts
 that match CPU collision within f32 tolerance.
-
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
 
 **Implemented:**
 1. `aabb.wgsl` — 1 entry point: `compute_aabb` (per-geom parallel)
@@ -1647,8 +1626,6 @@ Collision contacts feed into Session 5's constraint assembly via `contact_buffer
 **Goal:** GPU constraint solver (assembly + Newton + force mapping)
 produces qacc that matches CPU Newton solver within f32 tolerance.
 
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_5_CONSTRAINT_SOLVE.md`
-
 **Implemented:**
 1. `assemble.wgsl` — per-contact parallel: PipelineContact → pyramidal constraint rows (efc_J/D/aref). Free joints only. condim=1,3,4. Bodyweight diagApprox.
 2. `newton_solve.wgsl` — single workgroup (256 threads): shared-memory Hessian (MAX_NV=60, 16 KB), Cholesky factorization, backtracking line search (4 candidates: {1.0, 0.5, 0.25, 0.125}). Cold start from qacc_smooth.
@@ -1681,8 +1658,6 @@ produces qacc that matches CPU Newton solver within f32 tolerance.
 
 **Goal:** Unified GPU physics pipeline with single-submit command buffer.
 All substeps encoded in one command buffer per frame.
-
-**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_6_PIPELINE_ORCHESTRATION.md`
 
 **Implemented:**
 1. Sub-pipeline refactoring: split `dispatch()` into `write_params()` + `encode()` for all 6 pipelines (FK, CRBA, velocity FK, RNE, smooth, integrate). Existing `dispatch()` preserved as backward-compat wrapper.
