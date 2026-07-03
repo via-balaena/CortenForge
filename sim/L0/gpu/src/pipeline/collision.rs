@@ -68,10 +68,11 @@ struct AabbParams {
 // ── Pre-built narrowphase dispatch ─────────────────────────────────────
 
 /// Pre-built narrowphase dispatch — params buffer + bind group created at init.
+///
+/// The uniform params buffer is not stored: `bind_group_0` Arc-holds it, and it
+/// is written once at construction (usage is `UNIFORM` only — never `COPY_DST`).
 struct NarrowphaseDispatch {
     bind_group_0: wgpu::BindGroup,
-    #[allow(dead_code)]
-    params_buf: wgpu::Buffer, // prevent premature drop
     is_sdf_sdf: bool,
     workgroup_x: u32,
     workgroup_y: u32,
@@ -87,9 +88,7 @@ pub struct GpuCollisionPipeline {
     sdf_sdf_pipeline: wgpu::ComputePipeline,
     sdf_plane_pipeline: wgpu::ComputePipeline,
 
-    // Pre-created AABB bind groups + params buffer (prevent premature drop)
-    #[allow(dead_code)]
-    aabb_params_buf: wgpu::Buffer,
+    // Pre-created AABB bind groups (the params buffer is Arc-held by aabb_bg0).
     aabb_bg0: wgpu::BindGroup,
     aabb_bg1: wgpu::BindGroup,
     aabb_bg2: wgpu::BindGroup,
@@ -421,7 +420,6 @@ impl GpuCollisionPipeline {
             aabb_pipeline,
             sdf_sdf_pipeline,
             sdf_plane_pipeline,
-            aabb_params_buf,
             aabb_bg0,
             aabb_bg1,
             aabb_bg2,
@@ -526,7 +524,6 @@ fn make_dispatch(
     });
     NarrowphaseDispatch {
         bind_group_0,
-        params_buf: buf,
         is_sdf_sdf,
         workgroup_x,
         workgroup_y,

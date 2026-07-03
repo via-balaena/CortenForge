@@ -99,7 +99,6 @@ impl std::fmt::Display for GpuError {
 impl std::error::Error for GpuError {}
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

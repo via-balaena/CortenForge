@@ -309,11 +309,11 @@ impl GpuPhysicsPipeline {
             }
         }
 
-        // 6. Synchronous readback — map staging buffers directly
+        // 4. Synchronous readback — map staging buffers directly
         let qpos_f32 = map_staging_f32(&self.ctx, &self.staging_qpos, qpos_total as usize);
         let qvel_f32 = map_staging_f32(&self.ctx, &self.staging_qvel, qvel_total as usize);
 
-        // 7. f32 → f64 widening, write each env's slice back to its Data. Env k's
+        // 5. f32 → f64 widening, write each env's slice back to its Data. Env k's
         //    block sits at offset k · n{q,v}, matching the shaders' env stride.
         let nq = self.nq as usize;
         let nv = self.nv as usize;

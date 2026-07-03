@@ -56,12 +56,6 @@ pub struct GpuConstraintPipeline {
     mapf_bg1: wgpu::BindGroup,
     mapf_bg2: wgpu::BindGroup,
 
-    // Uniform buffers (kept alive — GPU references them via bind groups)
-    #[allow(dead_code)]
-    assembly_params_buf: wgpu::Buffer,
-    #[allow(dead_code)]
-    solver_params_buf: wgpu::Buffer,
-
     nv: u32,
     max_contacts: u32,
     n_env: u32,
@@ -124,6 +118,8 @@ impl GpuConstraintPipeline {
             n_env: state_bufs.n_env,
             _pad: [0; 2],
         };
+        // Written once here; the bind groups below retain it (a wgpu bind group
+        // Arc-holds its buffers), so no owning field is needed on the struct.
         let assembly_params_buf =
             create_uniform(ctx, "assembly_params", bytemuck::bytes_of(&assembly_params));
 
@@ -138,6 +134,7 @@ impl GpuConstraintPipeline {
             meaninertia: cpu_model.stat_meaninertia as f32,
             max_constraints,
         };
+        // Retained by the newton + map_forces bind groups (see note above).
         let solver_params_buf =
             create_uniform(ctx, "solver_params", bytemuck::bytes_of(&solver_params));
 
@@ -395,8 +392,6 @@ impl GpuConstraintPipeline {
             mapf_bg0,
             mapf_bg1,
             mapf_bg2,
-            assembly_params_buf,
-            solver_params_buf,
             nv,
             max_contacts,
             n_env: state_bufs.n_env,
