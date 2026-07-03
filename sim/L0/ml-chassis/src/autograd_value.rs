@@ -16,6 +16,7 @@
 use crate::artifact::{NetworkDescriptor, NetworkKind};
 use crate::autograd::{Tape, Var};
 use crate::autograd_layers::{Activation, linear_hidden, linear_raw, mse_loss};
+use crate::stats::randn;
 use crate::value::{QFunction, ValueFn};
 
 // ── Layer offset bookkeeping (shared with autograd_policy.rs) ─────────────
@@ -54,13 +55,6 @@ fn compute_offsets(layer_sizes: &[usize]) -> Vec<LayerOffsets> {
 }
 
 // ── Xavier / He initialization ────────────────────────────────────────────
-
-/// Box-Muller normal sample.
-fn randn(rng: &mut impl rand::Rng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
 
 /// Initialize weights using Xavier (Glorot) or He initialization.
 // fan_in/fan_out are usize → f64 for sqrt; widths are << 2^52 in practice.

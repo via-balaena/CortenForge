@@ -23,6 +23,7 @@ use sim_ml_chassis::artifact::{
 use sim_ml_chassis::optimizer::OptimizerConfig;
 use sim_ml_chassis::policy::DifferentiablePolicy;
 use sim_ml_chassis::replay_buffer::ReplayBuffer;
+use sim_ml_chassis::stats::randn;
 use sim_ml_chassis::tensor::Tensor;
 use sim_ml_chassis::value::{QFunction, soft_update, soft_update_policy};
 use sim_ml_chassis::vec_env::VecEnv;
@@ -208,13 +209,6 @@ impl Td3 {
     }
 }
 
-/// Box-Muller normal sample.
-fn randn(rng: &mut impl rand::Rng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
-
 impl Algorithm for Td3 {
     fn name(&self) -> &'static str {
         "TD3"
@@ -270,6 +264,10 @@ impl Algorithm for Td3 {
             let mut epoch_q2_loss = 0.0_f64;
             let mut epoch_policy_loss = 0.0_f64;
             let mut epoch_updates = 0_usize;
+            // Policy updates are delayed (every `policy_delay` critic updates), so
+            // they are counted separately — `policy_loss` is averaged over these,
+            // not over `epoch_updates` (which counts critic updates).
+            let mut epoch_policy_updates = 0_usize;
             let mut env_episode_reward = vec![0.0_f64; n_envs];
             let mut env_complete = vec![false; n_envs];
 
@@ -467,6 +465,7 @@ impl Algorithm for Td3 {
 
                         epoch_policy_loss +=
                             dq_da.iter().map(|g| g * g).sum::<f64>().sqrt() / hp.batch_size as f64;
+                        epoch_policy_updates += 1;
 
                         // Soft update all 3 target networks.
                         soft_update(&mut *self.target_q1, &*self.q1, hp.tau);
@@ -504,7 +503,17 @@ impl Algorithm for Td3 {
             if epoch_updates > 0 {
                 extra.insert("q1_loss".into(), epoch_q1_loss / epoch_updates as f64);
                 extra.insert("q2_loss".into(), epoch_q2_loss / epoch_updates as f64);
-                extra.insert("policy_loss".into(), epoch_policy_loss);
+                // Mean over policy (not critic) updates — the same per-update
+                // averaging convention as q1/q2 and SAC's `policy_loss` (the
+                // underlying scalar is a per-algorithm gradient-norm proxy, not a
+                // directly comparable value). Guarded because a short epoch can
+                // run critic updates without hitting a delayed policy update.
+                if epoch_policy_updates > 0 {
+                    extra.insert(
+                        "policy_loss".into(),
+                        epoch_policy_loss / epoch_policy_updates as f64,
+                    );
+                }
             }
             extra.insert("buffer_size".into(), buffer.len() as f64);
 

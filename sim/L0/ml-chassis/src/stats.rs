@@ -33,6 +33,17 @@ pub fn gaussian_log_prob(action: &[f64], mu: &[f64], log_std: &[f64]) -> f64 {
     lp
 }
 
+/// One standard-normal sample via the Box-Muller transform.
+///
+/// Returns a single draw from `N(0, 1)`. `u1` is drawn as `1 - U(0, 1)` so the
+/// argument to `ln` is in `(0, 1]` and never zero.
+#[must_use]
+pub fn randn(rng: &mut impl rand::Rng) -> f64 {
+    let u1: f64 = 1.0 - rng.random::<f64>();
+    let u2: f64 = rng.random::<f64>();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
