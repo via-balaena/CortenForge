@@ -373,21 +373,25 @@ pub struct AssemblyParams {
     pub _pad: [u32; 2],
 }
 
-/// Newton solver parameters. 32 bytes, 16-byte aligned.
+/// Newton solver parameters. 16 bytes, 16-byte aligned.
 ///
 /// Passed as a uniform to `newton_solve.wgsl` and `map_forces.wgsl`.
+///
+/// The GPU Newton solver is deliberately fixed-config: it runs a hardcoded
+/// backtracking line search (candidates `{1.0, 0.5, 0.25}`), is bounded by
+/// `max_iter`, and converges on no-progress (a line search that fails to
+/// improve cost). It does NOT consult the CPU's `solver_tolerance` /
+/// `ls_iterations` / `ls_tolerance` — dynamic loop bounds would break the
+/// single-workgroup uniform-control-flow the shared-memory Cholesky requires.
+/// So only these four fields are plumbed; the CPU solver-config knobs are not.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct SolverParams {
     pub nv: u32,
     pub max_iter: u32,
-    pub max_ls: u32,
     /// Number of environments (batch size). `newton_solve` runs one workgroup per
     /// env (env = `workgroup_id.x`); `map_forces` strides per-env on `gid.y`.
     pub n_env: u32,
-    pub tolerance: f32,
-    pub ls_tolerance: f32,
-    pub meaninertia: f32,
     /// Per-env row stride of the `efc_*` buffers (`MAX_CONSTRAINTS`).
     pub max_constraints: u32,
 }

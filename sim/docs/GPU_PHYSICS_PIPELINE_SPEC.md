@@ -298,7 +298,7 @@ World body (id=0) must have invweight0 = (0, 0, 0, 0).
 | Buffer | Rust type | Size | Used by |
 |---|---|---|---|
 | `assembly_params` | `AssemblyParams` | 64 | `assemble.wgsl` — nv, timestep, solref, solimp, impratio, max counts. |
-| `solver_params` | `SolverParams` | 32 | `newton_solve.wgsl`, `map_forces.wgsl` — nv, max_iter, tolerance, meaninertia. |
+| `solver_params` | `SolverParams` | 16 | `newton_solve.wgsl`, `map_forces.wgsl` — nv, max_iter, n_env, max_constraints. Fixed-config solver: CPU solver tolerances are not plumbed (see §8.13). |
 
 **Actuator structure (for GPU actuation):**
 
@@ -1139,8 +1139,20 @@ power-law interpolation of `violation / width`. Clamped to [0.0001, 0.9999].
 **Pattern:** Single workgroup (256 threads), all iterations in one dispatch.
 **Reference:** CPU `newton.rs:newton_solve()`, `primal.rs`
 
+**Fixed-config solver:** hardcoded backtracking line search (candidates
+`{1.0, 0.5, 0.25}`), bounded by `max_iter`, converges on no-progress (none of
+those candidates improves cost). It does NOT consult the CPU's
+`solver_tolerance` / `ls_iterations` / `ls_tolerance` — dynamic loop bounds
+would break the single-workgroup uniform control flow the shared-memory
+Cholesky requires. This is not bit-exact with the CPU: the CPU exits on
+`gradient < tolerance` and uses a finer line search, so the two can reach
+slightly different iterates for a given `max_iter` — and the GPU's coarse
+3-candidate search can occasionally stall (no-progress) short of where the
+CPU's finer search would descend. Validated against CPU trajectories within a
+loose bound (T31: divergence < 1.0 m over 5 s), not to bit-equality.
+
 **Bindings:** 10 total (1 uniform + 9 storage), 4 bind groups.
-- Group 0: `SolverParams` uniform (nv, max_iter, tolerance, meaninertia)
+- Group 0: `SolverParams` uniform (nv, max_iter, n_env, max_constraints)
 - Group 1: qM, qacc_smooth, qfrc_smooth (read)
 - Group 2: efc_J, efc_D, efc_aref, constraint_count (read, but atomic requires rw)
 - Group 3: qacc, efc_force (output, rw)
