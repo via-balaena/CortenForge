@@ -7,7 +7,7 @@
 //!
 //! - Parse URDF XML from files or strings
 //! - Convert to MuJoCo-aligned Model/Data architecture
-//! - Support for primitive collision shapes (box, sphere, cylinder)
+//! - Support for box, sphere, cylinder, and mesh collision geometry
 //! - Kinematic tree validation
 //!
 //! # Layer 0
@@ -52,8 +52,9 @@
 //!
 //! - `<link name="...">` - Rigid body definition
 //! - `<inertial>` - Mass, center of mass, inertia tensor
-//! - `<collision>` - Collision geometry (primitives only)
-//! - `<visual>` - Parsed but not used (Layer 0 has no rendering)
+//! - `<collision>` - Collision geometry (box, sphere, cylinder, mesh)
+//! - `<visual>` - Converted to geometry, then discarded by the MJCF compiler
+//!   (`discardvisual="true"`; Layer 0 has no rendering)
 //!
 //! ## Joints
 //!
@@ -70,23 +71,19 @@
 //! - `<box size="x y z"/>` - Box collision shape
 //! - `<sphere radius="r"/>` - Sphere collision shape
 //! - `<cylinder radius="r" length="l"/>` - Native cylinder collision shape
-//! - `<mesh filename="..."/>` - Parsed but mesh file loading not yet implemented in URDF converter
+//! - `<mesh filename="..."/>` - Emitted as an MJCF `<mesh>` asset + geom; the
+//!   mesh file itself is resolved by the MJCF compiler, not loaded here
 //!
 //! # Limitations
 //!
-//! - Mesh file loading is not yet implemented (meshes are parsed but geometry is not loaded)
-//! - `<mimic>` joints are not supported
 //! - `<gazebo>` extensions are ignored
 //! - Kinematic loops are not supported (tree structures only)
 //!
 //! # Coordinate System
 //!
-//! URDF uses a right-handed coordinate system which is converted to match
-//! the CortenForge convention:
-//!
-//! - X: right
-//! - Y: forward
-//! - Z: up
+//! URDF uses a right-handed coordinate system, and `MuJoCo`/MJCF shares the
+//! same right-handed, Z-up convention. Link and joint frames (`xyz`, `rpy`,
+//! `axis`) are therefore passed through verbatim, with no axis remapping.
 
 #![doc(html_root_url = "https://docs.rs/sim-urdf/1.0.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used)]

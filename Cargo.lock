@@ -11828,8 +11828,6 @@ dependencies = [
  "serde",
  "sim-core",
  "sim-mjcf",
- "sim-types",
- "tempfile",
  "thiserror 2.0.18",
 ]
 
