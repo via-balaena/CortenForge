@@ -1,13 +1,15 @@
 //! `sim-soft` — soft-body FEM crate.
 //!
-//! Scope as of Phase 4 + Yeoh arc: backward-Euler hyperelastic FEM on
+//! Scope: backward-Euler hyperelastic FEM on
 //! linear-tetrahedral (`Tet4`) meshes with per-element materials
 //! sourced from a per-mesh [`MaterialField`] aggregator. Two material
 //! impls today — [`NeoHookean`] (Phase 4 scaffold) and [`Yeoh`] (Yeoh
 //! arc, F1+F2+F3+F4.0). Multi-element assembly (Phase 2), pure-Rust
 //! SDF→tet bridge via BCC plus Labelle-Shewchuk Isosurface Stuffing
 //! (Phase 3), bonded multi-material via spatial field aggregation
-//! (Phase 4). Architecture follows the seven γ-locked API names from
+//! (Phase 4), and rigid-contact FEM via penalty and IPC C²-barrier
+//! models with friction (Phase 5). Architecture follows the seven
+//! γ-locked API names from
 //! [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md);
 //! `MaterialField` is internal-API-shaped per Phase 4 scope memo
 //! Decision M.
@@ -18,9 +20,9 @@
 //! explicitly via the [`CpuTet4YeohSolver`] /
 //! [`PenaltyRigidContactYeohSolver`] aliases.
 //!
-//! Forward roadmap: Phase 5 penalty contact, Phase E GPU port; Phase H
-//! decorators (HGO anisotropy, viscoelasticity, thermal coupling), Tet10,
-//! interface-aware refinement, IPC.
+//! Forward roadmap: Phase E GPU port; Phase H decorators (HGO
+//! anisotropy, viscoelasticity, thermal coupling), Tet10, and
+//! interface-aware refinement.
 
 #![allow(
     // Placeholder bodies in `contact/null.rs`, `observable/basic.rs`,

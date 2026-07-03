@@ -36,7 +36,7 @@ const KAPPA: f64 = 1.0e4;
 /// Fixture-local contact band — 1 mm.
 const D_HAT: f64 = 1.0e-3;
 /// Gap-smoothing window — 0.075 mm, the C′.a-pinned value (mirrors
-/// the cf-device-design const). Used to confirm normal-averaging
+/// the cf-sim-research const). Used to confirm normal-averaging
 /// composes orthogonally with the C′.a gap smoothing.
 const EPS: f64 = 0.075e-3;
 /// Normal-averaging offset radius — 0.5 mm (matches the spec §2.3

@@ -4,7 +4,7 @@
 //! [`ActivePairsFor::active_pairs`] and
 //! [`PenaltyRigidContact::per_pair_readout`].
 //!
-//! Motivating consumer + design rationale: cortenforge cf-device-design
+//! Motivating consumer + design rationale: cortenforge cf-sim-research
 //! sliding-intruder FEM ramp (see
 //! `docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md`). A `TransformedSdf`
 //! of a flood-fill-signed closed-body `GridSdf` can return `sd << 0` at

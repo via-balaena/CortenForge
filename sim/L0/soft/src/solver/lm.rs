@@ -21,7 +21,7 @@
 /// Tunables for the Marquardt-style `+λI` retry loop.
 ///
 /// Carried on `SolverConfig::lm_regularization` as `Option<LmConfig>`;
-/// `None` is the bit-equal-to-pre-F3 opt-out. Fork-B (cf-device-design)
+/// `None` is the bit-equal-to-pre-F3 opt-out. Fork-B (cf-sim-research)
 /// consumers opt in via [`Self::fork_b`]; F3.2 consumes this config
 /// inside the retry loop in `factor_free_tangent`.
 #[derive(Clone, Copy, Debug)]
@@ -53,7 +53,7 @@ pub struct LmConfig {
 }
 
 impl LmConfig {
-    /// Fork-B preset (cf-device-design insertion-ramp consumers). Spec
+    /// Fork-B preset (cf-sim-research insertion-ramp consumers). Spec
     /// §2.3 defaults — callers route through `Solver::try_step`, which
     /// returns `Err(SolverFailure)` on any fail-close (including a
     /// saturated Armijo stall) rather than panicking.

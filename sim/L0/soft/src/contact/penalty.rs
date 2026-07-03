@@ -24,7 +24,7 @@
 //!   averaging of the contact **normal direction** over `k` axis-
 //!   aligned offset samples, smoothing slope discontinuities in
 //!   `n = ∂d/∂p` at SDF partition boundaries (grid cell faces for
-//!   the `GridSdf` consumer in cf-device-design, or triangle Voronoi
+//!   the `GridSdf` consumer in cf-sim-research, or triangle Voronoi
 //!   cells for mesh-direct SDFs). See
 //!   `docs/CANDIDATE_E_B_NORMAL_AVERAGING_SPEC.md` for the design.
 //!
@@ -185,7 +185,7 @@ pub struct PenaltyRigidContact {
     /// produced. The asymmetry is explicit so a future consumer that
     /// hand-builds pairs is aware of the contract.
     ///
-    /// Motivating consumer: the `cf-device-design` sliding-intruder FEM
+    /// Motivating consumer: the `cf-sim-research` sliding-intruder FEM
     /// ramp (`docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md`).
     interior_cutoff: Option<f64>,
     /// One-sided smoothing window (m) above `d_hat`. When `> 0`, pairs
@@ -378,7 +378,7 @@ impl PenaltyRigidContact {
     /// window and a positive interior cutoff. Composes
     /// [`with_params_and_smoothing`](Self::with_params_and_smoothing) and
     /// [`with_params_and_interior_cutoff`](Self::with_params_and_interior_cutoff).
-    /// Motivating consumer: the `cf-device-design` sliding-intruder
+    /// Motivating consumer: the `cf-sim-research` sliding-intruder
     /// FEM ramp (needs the interior cutoff for pose-dependent
     /// deep-interior pairs and the smoothing window for class-2
     /// chattering at deep cavity insets).

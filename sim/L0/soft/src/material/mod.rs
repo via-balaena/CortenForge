@@ -1,7 +1,9 @@
 //! `Material` trait — constitutive-model surface.
 //!
-//! Four items per spec §14 / Part 11 Ch 01 00-core.md: `energy`,
-//! `first_piola`, `tangent`, `validity`. Two impls today:
+//! Four required items per spec §14 / Part 11 Ch 01 00-core.md:
+//! `energy`, `first_piola`, `tangent`, `validity` — plus a defaulted
+//! `first_piola_param_grad` (the keystone-S5 material-sensitivity
+//! extension). Two impls today:
 //! [`NeoHookean`] (Phase 4 scaffold; calibrated by `(μ, λ)`) and
 //! [`Yeoh`] (Yeoh arc, 2-parameter compressible polynomial calibrated
 //! by `(μ, λ, C₂)`). Additional decorators (Mooney-Rivlin
@@ -107,7 +109,7 @@ pub struct ValidityDomain {
     /// arc memo D8 + `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` —
     /// but note H4-2-C drops this slot to `None` for per-tet `Yeoh`s
     /// built via [`crate::MaterialField::sample_yeoh`], so in the
-    /// cf-device-design FEM path the compressive cap is currently
+    /// cf-sim-research FEM path the compressive cap is currently
     /// dormant (preserved for future Option B re-enable per
     /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).
     pub min_principal_stretch: Option<f64>,

@@ -36,7 +36,7 @@ pub trait Differentiable {
     ///
     /// **BF-4 stub:** chassis's `Tape::push_custom` bundles the VJP at
     /// forward time. Skeleton keeps this method for trait compliance
-    /// but never wires it up. Book-edit queue: `project_soft_body_bug_audit.md`.
+    /// but never wires it up.
     fn register_vjp(&mut self, forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>);
 
     /// Implicit-function-theorem adjoint for one Newton step. Seeds
