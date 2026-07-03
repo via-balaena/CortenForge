@@ -12,8 +12,6 @@ rust-version.workspace = true
 tier = "L0-io"
 
 [dependencies]
-# Foundation types (BodyId, Pose) populated into the Model
-sim-types = { workspace = true }
 # Physics Model / Data target of URDF -> MJCF -> Model conversion
 sim-core = { workspace = true }
 # MJCF builder reused as the URDF converter's intermediate representation
@@ -24,18 +22,16 @@ nalgebra = { workspace = true }
 quick-xml = { workspace = true }
 # Derive macros for the URDF parse / validation error enum
 thiserror = { workspace = true }
-# Optional Serialize / Deserialize re-exported from sim-types / sim-core
+# Optional Serialize / Deserialize derives for the URDF IR types
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Float-tolerance assertions for joint-frame / inertia unit tests
 approx = { workspace = true }
-# Scratch directories for URDF / mesh-reference file round-trip tests
-tempfile = { workspace = true }
 
 [features]
 default = []
-serde = ["dep:serde", "sim-types/serde", "sim-core/serde"]
+serde = ["dep:serde", "sim-core/serde"]
 
 [lints]
 workspace = true

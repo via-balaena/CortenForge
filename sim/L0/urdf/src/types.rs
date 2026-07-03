@@ -3,7 +3,7 @@
 //! These types represent the parsed URDF structure before conversion to sim types.
 //! They closely mirror the URDF XML schema but use Rust-native types.
 
-use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -41,25 +41,10 @@ impl Default for UrdfOrigin {
 }
 
 impl UrdfOrigin {
-    /// Create a new origin at position with identity rotation.
-    #[must_use]
-    pub fn from_xyz(x: f64, y: f64, z: f64) -> Self {
-        Self {
-            xyz: Vector3::new(x, y, z),
-            rpy: Vector3::zeros(),
-        }
-    }
-
     /// Create from position and rpy.
     #[must_use]
     pub fn new(xyz: Vector3<f64>, rpy: Vector3<f64>) -> Self {
         Self { xyz, rpy }
-    }
-
-    /// Get the position as a point.
-    #[must_use]
-    pub fn position(&self) -> Point3<f64> {
-        Point3::from(self.xyz)
     }
 
     /// Convert rpy to quaternion.
@@ -83,8 +68,7 @@ pub struct UrdfInertial {
     pub origin: UrdfOrigin,
     /// Mass in kg.
     pub mass: f64,
-    /// Inertia tensor elements (symmetric 3x3 matrix).
-    /// Stored as [ixx, ixy, ixz, iyy, iyz, izz].
+    /// Inertia tensor (symmetric 3x3), held as its six independent elements.
     pub inertia: UrdfInertia,
 }
 
@@ -94,17 +78,6 @@ impl Default for UrdfInertial {
             origin: UrdfOrigin::default(),
             mass: 1.0,
             inertia: UrdfInertia::default(),
-        }
-    }
-}
-
-impl UrdfInertial {
-    /// Create inertial properties with given mass and default inertia.
-    #[must_use]
-    pub fn with_mass(mass: f64) -> Self {
-        Self {
-            mass,
-            ..Default::default()
         }
     }
 }
@@ -145,19 +118,6 @@ impl Default for UrdfInertia {
 }
 
 impl UrdfInertia {
-    /// Create a diagonal inertia tensor.
-    #[must_use]
-    pub fn diagonal(ixx: f64, iyy: f64, izz: f64) -> Self {
-        Self {
-            ixx,
-            ixy: 0.0,
-            ixz: 0.0,
-            iyy,
-            iyz: 0.0,
-            izz,
-        }
-    }
-
     /// Convert to a 3x3 matrix.
     #[must_use]
     pub fn to_matrix(&self) -> Matrix3<f64> {
@@ -200,28 +160,6 @@ pub enum UrdfGeometry {
         /// Optional scale factor.
         scale: Option<Vector3<f64>>,
     },
-}
-
-impl UrdfGeometry {
-    /// Create a box geometry.
-    #[must_use]
-    pub fn box_shape(x: f64, y: f64, z: f64) -> Self {
-        Self::Box {
-            size: Vector3::new(x, y, z),
-        }
-    }
-
-    /// Create a cylinder geometry.
-    #[must_use]
-    pub fn cylinder(radius: f64, length: f64) -> Self {
-        Self::Cylinder { radius, length }
-    }
-
-    /// Create a sphere geometry.
-    #[must_use]
-    pub fn sphere(radius: f64) -> Self {
-        Self::Sphere { radius }
-    }
 }
 
 // ============================================================================
@@ -296,12 +234,6 @@ impl UrdfLink {
     pub fn with_collision(mut self, collision: UrdfCollision) -> Self {
         self.collisions.push(collision);
         self
-    }
-
-    /// Check if this is a massless/fixed link.
-    #[must_use]
-    pub fn is_massless(&self) -> bool {
-        self.inertial.is_none()
     }
 }
 
@@ -380,19 +312,6 @@ impl Default for UrdfJointLimit {
             upper: 0.0,
             effort: 0.0,
             velocity: 0.0,
-        }
-    }
-}
-
-impl UrdfJointLimit {
-    /// Create symmetric limits.
-    #[must_use]
-    pub fn symmetric(limit: f64, effort: f64, velocity: f64) -> Self {
-        Self {
-            lower: -limit,
-            upper: limit,
-            effort,
-            velocity,
         }
     }
 }
@@ -564,16 +483,6 @@ impl UrdfRobot {
     #[must_use]
     pub fn joint(&self, name: &str) -> Option<&UrdfJoint> {
         self.joints.iter().find(|j| j.name == name)
-    }
-
-    /// Get all link names.
-    pub fn link_names(&self) -> impl Iterator<Item = &str> {
-        self.links.iter().map(|l| l.name.as_str())
-    }
-
-    /// Get all joint names.
-    pub fn joint_names(&self) -> impl Iterator<Item = &str> {
-        self.joints.iter().map(|j| j.name.as_str())
     }
 }
 

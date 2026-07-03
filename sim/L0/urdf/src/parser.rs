@@ -211,11 +211,10 @@ fn parse_visual<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         geometry = Some(parse_geometry(reader)?);
                     }
                     b"material" => {
+                        // Only the material name reference is used; any nested
+                        // material definition (color/texture) is ignored and
+                        // consumed by the outer loop's catch-all arm.
                         material = get_attribute_opt(e, "name");
-                        // Skip material content if it's a start tag
-                        if matches!(buf.first(), Some(_)) {
-                            // It was parsed as Start, skip to end
-                        }
                     }
                     _ => {}
                 }
@@ -504,7 +503,7 @@ fn skip_element<R: BufRead>(reader: &mut Reader<R>, name: &[u8]) -> Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

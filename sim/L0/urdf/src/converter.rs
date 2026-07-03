@@ -428,11 +428,25 @@ impl<'a> Converter<'a> {
         let mass = inertial.mass;
         let inertia = &inertial.inertia;
 
-        // MJCF inertial uses diagonal inertia (ixx, iyy, izz)
-        // and optional fullinertia for off-diagonal terms
-        let diag_inertia = format!("{} {} {}", inertia.ixx, inertia.iyy, inertia.izz);
+        // MJCF inertial uses diaginertia (ixx, iyy, izz) when the tensor is
+        // diagonal, or fullinertia (ixx, iyy, izz, ixy, ixz, iyz) when any
+        // off-diagonal term is present.
+        let inertia_attr = if inertia.ixy.abs() > 1e-10
+            || inertia.ixz.abs() > 1e-10
+            || inertia.iyz.abs() > 1e-10
+        {
+            format!(
+                r#"fullinertia="{} {} {} {} {} {}""#,
+                inertia.ixx, inertia.iyy, inertia.izz, inertia.ixy, inertia.ixz, inertia.iyz
+            )
+        } else {
+            format!(
+                r#"diaginertia="{} {} {}""#,
+                inertia.ixx, inertia.iyy, inertia.izz
+            )
+        };
 
-        let mut attrs = format!(r#"mass="{mass}" diaginertia="{diag_inertia}""#);
+        let mut attrs = format!(r#"mass="{mass}" {inertia_attr}"#);
 
         // Add position if non-zero
         if pos.norm() > 1e-10 {
@@ -442,23 +456,6 @@ impl<'a> Converter<'a> {
         // Add orientation if non-zero
         if rpy.norm() > 1e-10 {
             write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
-        }
-
-        // Check for off-diagonal inertia terms
-        if inertia.ixy.abs() > 1e-10 || inertia.ixz.abs() > 1e-10 || inertia.iyz.abs() > 1e-10 {
-            // Use fullinertia instead: ixx, iyy, izz, ixy, ixz, iyz
-            let full = format!(
-                "{} {} {} {} {} {}",
-                inertia.ixx, inertia.iyy, inertia.izz, inertia.ixy, inertia.ixz, inertia.iyz
-            );
-            // Replace diaginertia with fullinertia
-            attrs = format!(r#"mass="{mass}" fullinertia="{full}""#);
-            if pos.norm() > 1e-10 {
-                write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
-            }
-            if rpy.norm() > 1e-10 {
-                write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
-            }
         }
 
         self.write_line(&format!("<inertial {attrs}/>"));

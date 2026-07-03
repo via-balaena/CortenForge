@@ -12,10 +12,6 @@ use crate::types::{UrdfGeometry, UrdfRobot};
 pub struct ValidationResult {
     /// The root link name (link with no parent joint).
     pub root_link: String,
-    /// Map from link name to its parent joint name.
-    pub link_parent_joint: HashMap<String, String>,
-    /// Map from link name to its child joint names.
-    pub link_child_joints: HashMap<String, Vec<String>>,
     /// Topologically sorted link names (root first).
     pub sorted_links: Vec<String>,
 }
@@ -105,8 +101,6 @@ pub fn validate(robot: &UrdfRobot) -> Result<ValidationResult> {
 
     Ok(ValidationResult {
         root_link,
-        link_parent_joint,
-        link_child_joints,
         sorted_links,
     })
 }
@@ -237,13 +231,10 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
                 ));
             }
 
-            // Check triangle inequality for physical validity
-            // For a valid inertia tensor: Ixx + Iyy >= Izz (and cyclic)
-            // This is a necessary (but not sufficient) condition
-            if i.ixx + i.iyy < i.izz || i.iyy + i.izz < i.ixx || i.izz + i.ixx < i.iyy {
-                // This is a warning-level issue, not an error
-                // Many URDFs have slightly invalid inertias
-            }
+            // Note: the triangle inequality (Ixx + Iyy >= Izz and cyclic) is a
+            // necessary condition for a physical inertia tensor, but it is
+            // intentionally NOT enforced here — many real URDFs ship with
+            // slightly invalid inertias, so this is treated as acceptable input.
         }
     }
 
