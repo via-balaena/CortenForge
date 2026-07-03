@@ -18,12 +18,11 @@
 //! Session 25's analytic `∂f/∂θ` enables future hybrid approaches
 //! (analytic mass/inertia gradients + FD for the sim boundary).
 //!
-//! See `docs/thermo_computing/04_recon_log/2026-04-09_part_13_q5_cf_design.md`
-//! ("First break" / "Second break") for the recon that named the three
-//! concrete breaks downstream of the SDF field. The mass-properties wiring
-//! is the fixable one — `mechanism/mass.rs::mass_properties` already returns
-//! `f64` outputs that could carry `param_gradient` propagation in a few
-//! hundred LOC, independent of the mesh-extraction question.
+//! Three concrete breaks downstream of the SDF field block end-to-end AD.
+//! The mass-properties wiring is the fixable one — `mechanism/mass.rs::mass_properties`
+//! already returns `f64` outputs that could carry `param_gradient`
+//! propagation in a few hundred LOC, independent of the mesh-extraction
+//! question.
 
 use crate::param::ParamStore;
 

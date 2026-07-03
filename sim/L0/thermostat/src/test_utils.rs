@@ -10,9 +10,7 @@
 //!   inner accumulator collects per-step `½v²` samples, and its scalar
 //!   `mean()` is pushed into a top-level accumulator that holds the
 //!   100 trajectory means as IID samples. `merge` is **not** used by
-//!   the §7 gate (see
-//!   `06_findings/2026-04-09_phase1_statistical_propagation_chain.md`
-//!   for why merging per-step accumulators across trajectories
+//!   the §7 gate (merging per-step accumulators across trajectories
 //!   underestimates the std error by `√(1+2·τ_int) ≈ 100`); it ships
 //!   for IID parallel-reduce contexts in Phase 4+ batch reductions.
 //!
@@ -49,9 +47,7 @@
 /// uses `push`/`mean` in a **two-level pattern** (per-trajectory
 /// inner accumulator + across-trajectories top-level accumulator);
 /// `merge` ships for Phase 4+ IID parallel-reduce contexts but is
-/// not used by the §7 gate. See the module-level docstring and
-/// `06_findings/2026-04-09_phase1_statistical_propagation_chain.md`
-/// for why.
+/// not used by the §7 gate. See the module-level docstring for why.
 #[derive(Clone, Debug)]
 pub struct WelfordOnline {
     count: usize,
@@ -116,9 +112,7 @@ impl WelfordOnline {
     /// and merging per-step accumulators across trajectories then
     /// calling `std_error_of_mean` on the merged result yields the
     /// IID std error — which underestimates the true std error by
-    /// `√(1+2·τ_int) ≈ 100`. See
-    /// `06_findings/2026-04-09_phase1_statistical_propagation_chain.md`
-    /// for the full propagation-chain post-mortem.
+    /// `√(1+2·τ_int) ≈ 100`.
     ///
     /// The unit test
     /// `welford_merge_matches_one_pass_over_full_dataset` locks the

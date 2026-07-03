@@ -9,9 +9,6 @@
 //! - Gate B: Arrhenius slope over kT sweep (must-pass, `#[ignore]`)
 //! - Supporting: Boltzmann position distribution shape
 //! - Supporting: Reproducibility from seed
-//!
-//! Spec: `docs/thermo_computing/03_phases/03_bistable_kramers.md`
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

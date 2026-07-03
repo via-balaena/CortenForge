@@ -4,9 +4,6 @@
 //! `ctrl_temperature` + `DoubleWellPotential` + `OscillatingField`) composes
 //! correctly and produces bounded bistable motion with a periodic signal
 //! force superimposed.
-//!
-//! Spec: `docs/thermo_computing/03_phases/d2_stochastic_resonance.md` §7, §11 D2a
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

@@ -6,9 +6,6 @@
 //!
 //! This is the D1a gate: the ratchet potential produces the expected
 //! physics before any RL is attempted.
-//!
-//! Spec: `docs/thermo_computing/03_phases/d1_brownian_ratchet.md` §10
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

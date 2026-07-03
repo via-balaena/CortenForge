@@ -10,9 +10,6 @@
 //! - Gate B: Parameter recovery (`#[ignore]`)
 //! - Supporting: ExternalField symmetry breaking
 //! - Supporting: Reproducibility
-//!
-//! Spec: `docs/thermo_computing/03_phases/05_boltzmann_learning.md`
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

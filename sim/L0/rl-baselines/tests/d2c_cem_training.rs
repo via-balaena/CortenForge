@@ -6,8 +6,6 @@
 //!
 //! All tests require `--release` (~10 min each, ~40 min total if serial).
 //!
-//! Spec: `docs/thermo_computing/03_phases/d2_stochastic_resonance.md` §11 D2c
-//!
 //! Post-Ch 41 §2.2 Decision 1: every algorithm's reported `mean_reward`
 //! is in per-episode-total units (sum of rewards across `n_envs`
 //! trajectories, divided by `n_envs`). The per-step mean is no longer

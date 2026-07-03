@@ -7,9 +7,6 @@
 //! - `VecEnv` construction: verifies the RL environment builds correctly
 //!
 //! All multi-episode tests must run with `--release` (spec §13.4).
-//!
-//! Spec: `docs/thermo_computing/03_phases/d2_stochastic_resonance.md` §10, §11 D2b
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

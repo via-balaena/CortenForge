@@ -7,9 +7,6 @@
 //! - `VecEnv` construction: verifies the RL environment builds correctly
 //!
 //! All multi-episode tests must run with `--release` (spec §12.4).
-//!
-//! Spec: `docs/thermo_computing/03_phases/d1_brownian_ratchet.md` §9, §10, §12
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
