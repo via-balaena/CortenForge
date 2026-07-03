@@ -1,6 +1,6 @@
 // sdf_sdf_narrow.wgsl — SDF-SDF narrowphase for the physics pipeline
 //
-// Adapted from trace_surface.wgsl. Key changes:
+// The sole GPU SDF-SDF narrowphase. Distinguishing properties:
 // 1. AABB guard — returns if geom pair AABBs don't overlap
 // 2. Unified SDF buffer — reads from sdf_values[offset + idx]
 // 3. Extended contact output — 48-byte PipelineContact with geom indices + friction

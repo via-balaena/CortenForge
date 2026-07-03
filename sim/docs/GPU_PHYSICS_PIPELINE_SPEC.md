@@ -1,18 +1,29 @@
 # GPU Physics Pipeline Spec
 
+> **Status (2026-07-03): Sessions 1–6 COMPLETE.** This spec drove the migration
+> from a CPU-bound physics step (with a single half-GPU collision offload) to a
+> fully on-device GPU pipeline, now shipped as `orchestrator.rs::GpuPhysicsPipeline`.
+> The intermediate half-GPU path this spec uses as its "current" baseline — the
+> `GpuSdfCollision` trait, `GpuSdfCollider`, and `trace_surface.wgsl` — was
+> **removed in #499** once the full pipeline superseded it. Sections describing
+> that baseline (§1, §10.4, §11) and the pre-implementation API sketches
+> (§10.1–§10.3) are kept as historical design record; the dated session log (§14)
+> is a point-in-time account. The living shader/buffer specs (§6–§9) describe the
+> current code.
+
 ## 1. Problem
 
-The current physics step runs entirely on CPU, with one exception:
-`sim-gpu` accelerates SDF-SDF narrowphase collision via a WGSL compute
-shader. But this creates a **half-GPU** pattern — upload poses, dispatch
+Before this pipeline, the physics step ran entirely on CPU, with one exception:
+`sim-gpu` accelerated SDF-SDF narrowphase collision via a WGSL compute
+shader. But that created a **half-GPU** pattern — upload poses, dispatch
 shader, readback contacts, continue on CPU. At VR rates (90 Hz × 2–4
 substeps = 180–360 steps/sec), the per-step transfer latency dominates.
 
 ```
-Current (per substep):
+Original (pre-pipeline, per substep):
   CPU: FK, CRBA, RNE, actuation, passive, broadphase
     → CPU→GPU: upload poses
-       → GPU: trace_surface.wgsl
+       → GPU: SDF surface-trace collision shader
           → GPU→CPU: readback contacts
              → CPU: assembly, solver, integration
 ```
@@ -267,12 +278,13 @@ per-grid buffer bindings with dynamic indexing into one large buffer.
 | `FkParams` | 32 | FK, CRBA, velocity FK | current_depth, nbody, njnt, ngeom, nv, n_env, nq, _pad. |
 | `PhysicsParams` | 48 | RNE, smooth, integrate | gravity (vec4), timestep, nbody, njnt, nv, nq, n_env, current_depth, nu. |
 | `AabbParams` | 16 | AABB | ngeom, _pad[3]. Session 4. |
-| `NarrowphaseParams` | 48 | SDF-SDF, SDF-plane narrowphase | geom1, geom2, src/dst sdf_meta_idx, surface_threshold, margin, flip_normal, friction. Session 4. |
+| `NarrowphaseParams` | 64 | SDF-SDF, SDF-plane narrowphase | geom1, geom2, src/dst sdf_meta_idx, surface_threshold, margin, flip_normal, n_env, ngeom, max_contacts, friction. Session 4. |
 
 `FkParams` (Session 1) serves kinematics shaders. `PhysicsParams` (Session 3)
 adds gravity and timestep for dynamics shaders. `NarrowphaseParams` (Session 4)
-is written per-pair dispatch — each narrowphase invocation gets its own pair's
-metadata via `queue.write_buffer` before the dispatch.
+is pre-computed at pipeline construction: each narrowphase dispatch gets its own
+`UNIFORM`-only params buffer, baked once from the pre-computed pair plan (no
+per-dispatch `queue.write_buffer` — see the "last write wins" fix in §14/Session 6).
 
 **Per-body inverse weight** (Session 5) — for bodyweight diagonal approximation:
 
@@ -407,9 +419,9 @@ Friction is combined at pair plan construction time: element-wise max of
 both geoms' friction vectors. Written into `NarrowphaseParams` and copied
 into each contact by the narrowphase shader.
 
-**Note:** The standalone `GpuContact` (32 bytes, in `collision.rs`) used by
-the half-GPU path (`GpuSdfCollision` trait) is a separate type and is
-unchanged. `PipelineContact` (48 bytes) is used only by the pipeline path.
+**Note:** `PipelineContact` (48 bytes) is the pipeline's contact type. The
+standalone `GpuContact` (32 bytes) and its half-GPU `GpuSdfCollision` path were
+removed in #499, so `PipelineContact` is now the only GPU contact type.
 
 ### 6.4 Pre-allocation sizes
 
@@ -1046,15 +1058,14 @@ plan. The AABB shader and narrowphase shaders are reused as-is.
 ### 8.10 `sdf_sdf_narrow.wgsl` — SDF-SDF narrowphase — COMPLETE (Session 4)
 
 **Actual:** ~310 lines WGSL. 1 entry point: `sdf_sdf_narrow`.
-**Pattern:** Per-voxel parallel (workgroup 8×8×4), same as trace_surface.wgsl.
+**Pattern:** Per-voxel parallel (workgroup 8×8×4).
 **Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
 
-**Note:** This is a **new file** adapted from `trace_surface.wgsl`, not a
-modification of it. The standalone `trace_surface.wgsl` (267 lines) is
-preserved unchanged for the existing `GpuSdfCollider` / `GpuSdfCollision`
-trait used by the half-GPU path.
+**Note:** This shader began as a rewrite of the standalone SDF surface-trace
+collider (`trace_surface.wgsl`), which was removed in #499 along with the rest
+of the half-GPU path. It is now the sole GPU SDF-SDF narrowphase.
 
-**Key changes from standalone trace_surface.wgsl:**
+**Distinguishing properties (vs. the original standalone collider):**
 1. **AABB guard** — first operation reads `geom_aabb` for the pair, all
    threads return if no overlap.
 2. **Unified SDF buffer** — reads from `sdf_values[offset + idx]` via
@@ -1071,8 +1082,8 @@ trait used by the half-GPU path.
 - Group 3: `contact_buffer` (rw), `contact_count` (atomic)
 
 **Symmetric dispatch:** For each SDF-SDF pair, two dispatches are encoded
-(A→B with `flip_normal=0`, B→A with `flip_normal=1`), matching the
-existing trace_surface.wgsl pattern. Both write to the same contact buffer.
+(A→B with `flip_normal=0`, B→A with `flip_normal=1`). Both write to the same
+contact buffer.
 
 **No GPU-side dedup.** The symmetric dispatch produces ~2× contacts.
 Dedup is deferred to Session 5's constraint assembly (contact capping).
@@ -1387,23 +1398,31 @@ pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
 
 ### 10.4 Relationship to existing code
 
+As-built, only two pieces of the pre-pipeline GPU code carried over. The
+half-GPU SDF-collision code the original plan reused (`trace_surface.wgsl`,
+`GpuSdfGrid`, the `GpuSdfCollision` trait) was **removed in #499** once the full
+pipeline superseded it; `integrate_without_velocity()` was removed with it.
+
 | Existing code | Role in GPU pipeline |
 |---|---|
-| `trace_surface.wgsl` | Directly reused as narrowphase SDF-SDF |
 | `GpuContext` (device, queue) | Shared across all pipeline stages |
-| `GpuSdfGrid` (grid upload) | Reused for static SDF buffers |
 | CPU `Data::step()` | Unchanged. CPU fallback + validation reference |
-| `integrate_without_velocity()` | Not needed — full GPU handles everything |
-| `GpuSdfCollision` trait | Deprecated by full pipeline. Kept for standalone testing |
 
-## 11. Cleanup of current half-GPU path
+## 11. Cleanup of the half-GPU path — COMPLETE
 
-1. **Phase 1 (now):** Keep `GpuSdfCollision` trait as-is. Working, tested.
+The staged migration below is done: **#499 removed the half-GPU path entirely**
+(the `GpuSdfCollision` trait, `GpuSdfCollider`, and `trace_surface.wgsl`, plus
+the always-None GPU dispatch branch inside `sim-core`'s `sdf_collide.rs` — the
+file itself remains as the CPU SDF-collision path), going past the original
+phase 4. There is no longer a per-step CPU↔GPU collision readback path — the
+full pipeline is the only GPU path. Retained here as the record of how the
+transition was sequenced:
+
+1. **Phase 1:** Keep `GpuSdfCollision` trait as-is. Working, tested.
 2. **Phase 2:** Add `GpuPhysicsPipeline` as parallel path. Both coexist.
 3. **Phase 3:** Deprecate `GpuSdfCollision` dispatch in sdf_collide.rs.
-   Move to `gpu_standalone` module for test/validation only.
-4. **Phase 4:** Remove per-step readback path. `GpuSdfCollision` remains
-   for unit tests only.
+4. **Phase 4:** Remove per-step readback path.
+5. **Done (#499):** Remove the standalone `GpuSdfCollision` path outright.
 
 ## 12. Validation strategy
 
@@ -1583,12 +1602,12 @@ that match CPU collision within f32 tolerance.
 
 **Implemented:**
 1. `aabb.wgsl` — 1 entry point: `compute_aabb` (per-geom parallel)
-2. `sdf_sdf_narrow.wgsl` — 1 entry point: `sdf_sdf_narrow` (adapted from trace_surface.wgsl)
+2. `sdf_sdf_narrow.wgsl` — 1 entry point: `sdf_sdf_narrow` (rewrite of the then-standalone SDF surface-trace collider)
 3. `sdf_plane_narrow.wgsl` — 1 entry point: `sdf_plane_narrow`
 4. Extended `GeomModelGpu` (48 → 96 bytes): type, contype, conaffinity, size, friction, sdf_meta_idx, condim
 5. `SdfMetaGpu` (32 bytes): per-shape grid metadata pointing into unified buffer
 6. `PipelineContact` (48 bytes): contact with geom indices + combined friction
-7. `NarrowphaseParams` (48 bytes): per-pair dispatch uniform
+7. `NarrowphaseParams` (64 bytes): per-pair dispatch uniform
 8. Unified SDF grid buffer: all grids concatenated in `sdf_values`, indexed via `sdf_metas`
 9. `GpuCollisionPipeline`: pre-computed pair plan, AABB guard, dispatch orchestration
 10. New state buffers: `geom_aabb`, `contact_buffer` (48×32768), `contact_count`
@@ -1609,9 +1628,10 @@ that match CPU collision within f32 tolerance.
 - Narrowphase shaders read `geom_xpos`/`geom_xmat` directly from FK output
   instead of receiving pre-computed mat4x4 poses via params. Eliminates per-pair
   CPU pose upload, keeps poses on GPU.
-- `sdf_sdf_narrow.wgsl` is a clean rewrite adapted from `trace_surface.wgsl`,
-  not a modification of it. The standalone `trace_surface.wgsl` is preserved
-  unchanged for the existing `GpuSdfCollider` (used by `GpuSdfCollision` trait).
+- `sdf_sdf_narrow.wgsl` is a clean rewrite of the then-standalone
+  `trace_surface.wgsl` SDF collider, not a modification of it. (That standalone
+  collider and its `GpuSdfCollider` / `GpuSdfCollision` path were later removed
+  in #499 once this pipeline superseded them.)
 - Contact deduplication not implemented on GPU. SDF-SDF symmetric dispatch
   produces ~2× contacts. Dedup deferred to Session 5's constraint assembly
   (contact capping per pair).
@@ -1698,12 +1718,11 @@ All substeps encoded in one command buffer per frame.
   implementation. `queue.write_buffer` per-pair in `encode()` produced "last write
   wins" because all writes batch to the start of `queue.submit()`. Fixed by
   pre-allocating one uniform buffer per dispatch at creation time.
-- Buffer lifetime: wgpu bind groups may not reliably prevent premature buffer drop.
-  Explicitly stored buffer references in `NarrowphaseDispatch` and
-  `GpuCollisionPipeline` to prevent drop. See LIMITATIONS.md §15–§16.
-
-**Constraints documented:** `LIMITATIONS.md` §15 (queue.write_buffer sequencing),
-§16 (buffer lifetime / bind group references).
+- Buffer lifetime: out of caution, buffer references were explicitly stored in
+  `NarrowphaseDispatch` and `GpuCollisionPipeline` to prevent premature drop.
+  (Later reversed in PR-2: a buffer bound into a bind group is Arc-retained by
+  that bind group, so those owning fields were redundant — the drop concern was
+  a misconception, not a real wgpu limitation.)
 
 **Milestone:** `cargo test -p sim-gpu` — 35/35 tests pass (30 existing + 5 new).
 Full GPU physics pipeline available via `GpuPhysicsPipeline::new()` + `step()`.

@@ -1,8 +1,8 @@
 //! GPU collision pipeline — AABB + pre-computed narrowphase dispatch.
 //!
-//! Session 4: Per-geom AABB computation, SDF-SDF narrowphase (adapted from
-//! `trace_surface.wgsl`), and SDF-plane narrowphase. Produces contacts in
-//! a GPU buffer for Session 5's constraint assembly.
+//! Session 4: Per-geom AABB computation, SDF-SDF narrowphase, and SDF-plane
+//! narrowphase. Produces contacts in a GPU buffer for Session 5's constraint
+//! assembly.
 //!
 //! Instead of a broadphase shader, uses a pre-computed pair plan determined
 //! at model upload time. Each narrowphase dispatch includes an AABB overlap
