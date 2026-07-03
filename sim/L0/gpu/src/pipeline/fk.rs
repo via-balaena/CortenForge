@@ -13,6 +13,7 @@
 use super::model_buffers::GpuModelBuffers;
 use super::state_buffers::GpuStateBuffers;
 use super::types::FkParams;
+use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 use crate::context::GpuContext;
 
 /// Minimum uniform buffer offset alignment (`WebGPU` spec: 256 bytes).
@@ -437,44 +438,5 @@ fn poll_wait(ctx: &GpuContext) {
     }) {
         Ok(_) => {}
         Err(e) => log::warn!("GPU poll timeout: {e:?}"),
-    }
-}
-
-// ── Pipeline + bind group helpers ─────────────────────────────────────
-
-fn create_pipeline(
-    ctx: &GpuContext,
-    layout: &wgpu::PipelineLayout,
-    module: &wgpu::ShaderModule,
-    entry_point: &str,
-) -> wgpu::ComputePipeline {
-    ctx.device
-        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(entry_point),
-            layout: Some(layout),
-            module,
-            entry_point: Some(entry_point),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        })
-}
-
-const fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-fn buf_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: buffer.as_entire_binding(),
     }
 }

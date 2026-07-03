@@ -28,6 +28,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::{
     GPU_GEOM_PLANE, GPU_GEOM_SDF, NarrowphaseParams, SDF_META_NONE, SdfMetaGpu, geom_type_to_gpu,
 };
+use super::wgpu_helpers::{buf_entry, storage_entry, uniform_entry};
 use crate::context::GpuContext;
 
 // ── Pair descriptor ────────────────────────────────────────────────────
@@ -154,13 +155,17 @@ impl GpuCollisionPipeline {
 
         let aabb_bg_layout_0 = ctx
             .device
-            .create_bind_group_layout(&bgl_desc("aabb_g0", &[bgl_uniform(0)]));
+            .create_bind_group_layout(&bgl_desc("aabb_g0", &[uniform_entry(0)]));
         let aabb_bg_layout_1 = ctx
             .device
-            .create_bind_group_layout(&bgl_desc("aabb_g1", &[bgl_storage_ro(0)]));
+            .create_bind_group_layout(&bgl_desc("aabb_g1", &[storage_entry(0, true)]));
         let aabb_bg_layout_2 = ctx.device.create_bind_group_layout(&bgl_desc(
             "aabb_g2",
-            &[bgl_storage_ro(0), bgl_storage_ro(1), bgl_storage_rw(2)],
+            &[
+                storage_entry(0, true),
+                storage_entry(1, true),
+                storage_entry(2, false),
+            ],
         ));
 
         let aabb_pl = ctx
@@ -203,18 +208,22 @@ impl GpuCollisionPipeline {
         // ── Narrowphase bind group layouts (shared by both shaders) ───
         let narrow_bg_layout_0 = ctx
             .device
-            .create_bind_group_layout(&bgl_desc("narrow_g0", &[bgl_uniform(0)]));
+            .create_bind_group_layout(&bgl_desc("narrow_g0", &[uniform_entry(0)]));
         let narrow_bg_layout_1 = ctx.device.create_bind_group_layout(&bgl_desc(
             "narrow_g1",
-            &[bgl_storage_ro(0), bgl_storage_ro(1)],
+            &[storage_entry(0, true), storage_entry(1, true)],
         ));
         let narrow_bg_layout_2 = ctx.device.create_bind_group_layout(&bgl_desc(
             "narrow_g2",
-            &[bgl_storage_ro(0), bgl_storage_ro(1), bgl_storage_ro(2)],
+            &[
+                storage_entry(0, true),
+                storage_entry(1, true),
+                storage_entry(2, true),
+            ],
         ));
         let narrow_bg_layout_3 = ctx.device.create_bind_group_layout(&bgl_desc(
             "narrow_g3",
-            &[bgl_storage_rw(0), bgl_storage_rw(1)],
+            &[storage_entry(0, false), storage_entry(1, false)],
         ));
 
         let narrow_pl = ctx
@@ -268,20 +277,20 @@ impl GpuCollisionPipeline {
         let aabb_bg0 = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("aabb_bg0"),
             layout: &aabb_bg_layout_0,
-            entries: &[bg_entry(0, &aabb_params_buf)],
+            entries: &[buf_entry(0, &aabb_params_buf)],
         });
         let aabb_bg1 = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("aabb_bg1"),
             layout: &aabb_bg_layout_1,
-            entries: &[bg_entry(0, &model_bufs.geoms)],
+            entries: &[buf_entry(0, &model_bufs.geoms)],
         });
         let aabb_bg2 = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("aabb_bg2"),
             layout: &aabb_bg_layout_2,
             entries: &[
-                bg_entry(0, &state_bufs.geom_xpos),
-                bg_entry(1, &state_bufs.geom_xmat),
-                bg_entry(2, &state_bufs.geom_aabb),
+                buf_entry(0, &state_bufs.geom_xpos),
+                buf_entry(1, &state_bufs.geom_xmat),
+                buf_entry(2, &state_bufs.geom_aabb),
             ],
         });
 
@@ -290,25 +299,25 @@ impl GpuCollisionPipeline {
             label: Some("narrow_bg1"),
             layout: &narrow_bg_layout_1,
             entries: &[
-                bg_entry(0, &model_bufs.sdf_metas),
-                bg_entry(1, &model_bufs.sdf_values),
+                buf_entry(0, &model_bufs.sdf_metas),
+                buf_entry(1, &model_bufs.sdf_values),
             ],
         });
         let narrow_bg2 = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("narrow_bg2"),
             layout: &narrow_bg_layout_2,
             entries: &[
-                bg_entry(0, &state_bufs.geom_xpos),
-                bg_entry(1, &state_bufs.geom_xmat),
-                bg_entry(2, &state_bufs.geom_aabb),
+                buf_entry(0, &state_bufs.geom_xpos),
+                buf_entry(1, &state_bufs.geom_xmat),
+                buf_entry(2, &state_bufs.geom_aabb),
             ],
         });
         let narrow_bg3 = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("narrow_bg3"),
             layout: &narrow_bg_layout_3,
             entries: &[
-                bg_entry(0, &state_bufs.contact_buffer),
-                bg_entry(1, &state_bufs.contact_count),
+                buf_entry(0, &state_bufs.contact_buffer),
+                buf_entry(1, &state_bufs.contact_count),
             ],
         });
 
@@ -520,7 +529,7 @@ fn make_dispatch(
     let bind_group_0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
-        entries: &[bg_entry(0, &buf)],
+        entries: &[buf_entry(0, &buf)],
     });
     NarrowphaseDispatch {
         bind_group_0,
@@ -620,51 +629,5 @@ const fn bgl_desc<'a>(
     wgpu::BindGroupLayoutDescriptor {
         label: Some(label),
         entries,
-    }
-}
-
-const fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-const fn bgl_storage_ro(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-const fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: false },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-fn bg_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: buffer.as_entire_binding(),
     }
 }
