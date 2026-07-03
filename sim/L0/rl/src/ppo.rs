@@ -175,6 +175,12 @@ impl Ppo {
 }
 
 /// Log probability under isotropic Gaussian: `Σ -0.5 * (a_i - μ_i)² / σ²`.
+///
+/// The constant normalizer (`-0.5·ln(2πσ²)` per dim) is intentionally omitted:
+/// this is only used inside the PPO ratio `logp_new - logp_old`, where σ is
+/// fixed, so the normalizer cancels. It is NOT a full log-density — do not
+/// reuse it where an absolute log-probability is needed (use
+/// `sim_ml_chassis::stats::gaussian_log_prob` for that).
 fn gaussian_log_prob(mu: &[f64], action: &[f64], sigma: f64) -> f64 {
     let sigma2 = sigma * sigma;
     mu.iter()
