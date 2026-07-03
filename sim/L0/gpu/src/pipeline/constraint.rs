@@ -24,6 +24,7 @@
 use super::model_buffers::GpuModelBuffers;
 use super::state_buffers::GpuStateBuffers;
 use super::types::{AssemblyParams, SolverParams};
+use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry, uniform_entry};
 use crate::context::GpuContext;
 
 use sim_core::types::Model;
@@ -149,9 +150,9 @@ impl GpuConstraintPipeline {
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("asm_layout1"),
                 entries: &[
-                    storage_ro(0), // geoms
-                    storage_ro(1), // bodies
-                    storage_ro(2), // body_invweight0
+                    storage_entry(0, true), // geoms
+                    storage_entry(1, true), // bodies
+                    storage_entry(2, true), // body_invweight0
                 ],
             });
         let asm_layout2 = ctx
@@ -159,11 +160,11 @@ impl GpuConstraintPipeline {
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("asm_layout2"),
                 entries: &[
-                    storage_ro(0), // contact_buffer
-                    storage_rw(1), // contact_count (atomicLoad requires read_write)
-                    storage_ro(2), // body_xpos
-                    storage_ro(3), // body_xquat
-                    storage_ro(4), // qvel
+                    storage_entry(0, true),  // contact_buffer
+                    storage_entry(1, false), // contact_count (atomicLoad requires read_write)
+                    storage_entry(2, true),  // body_xpos
+                    storage_entry(3, true),  // body_xquat
+                    storage_entry(4, true),  // qvel
                 ],
             });
         let asm_layout3 = ctx
@@ -171,10 +172,10 @@ impl GpuConstraintPipeline {
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("asm_layout3"),
                 entries: &[
-                    storage_rw(0), // efc_J
-                    storage_rw(1), // efc_D
-                    storage_rw(2), // efc_aref
-                    storage_rw(3), // constraint_count
+                    storage_entry(0, false), // efc_J
+                    storage_entry(1, false), // efc_D
+                    storage_entry(2, false), // efc_aref
+                    storage_entry(3, false), // constraint_count
                 ],
             });
 
@@ -185,7 +186,7 @@ impl GpuConstraintPipeline {
                 bind_group_layouts: &[&asm_layout0, &asm_layout1, &asm_layout2, &asm_layout3],
                 push_constant_ranges: &[],
             });
-        let assemble_pipeline = make_pipeline(
+        let assemble_pipeline = create_pipeline(
             ctx,
             &asm_pipe_layout,
             &assemble_module,
@@ -243,9 +244,9 @@ impl GpuConstraintPipeline {
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("newton_layout1"),
                     entries: &[
-                        storage_ro(0), // qM
-                        storage_ro(1), // qacc_smooth
-                        storage_ro(2), // qfrc_smooth
+                        storage_entry(0, true), // qM
+                        storage_entry(1, true), // qacc_smooth
+                        storage_entry(2, true), // qfrc_smooth
                     ],
                 });
         let newton_layout2 =
@@ -253,10 +254,10 @@ impl GpuConstraintPipeline {
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("newton_layout2"),
                     entries: &[
-                        storage_ro(0), // efc_J
-                        storage_ro(1), // efc_D
-                        storage_ro(2), // efc_aref
-                        storage_rw(3), // constraint_count (atomicLoad requires read_write)
+                        storage_entry(0, true),  // efc_J
+                        storage_entry(1, true),  // efc_D
+                        storage_entry(2, true),  // efc_aref
+                        storage_entry(3, false), // constraint_count (atomicLoad requires read_write)
                     ],
                 });
         let newton_layout3 =
@@ -264,8 +265,8 @@ impl GpuConstraintPipeline {
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("newton_layout3"),
                     entries: &[
-                        storage_rw(0), // qacc
-                        storage_rw(1), // efc_force
+                        storage_entry(0, false), // qacc
+                        storage_entry(1, false), // efc_force
                     ],
                 });
 
@@ -282,7 +283,7 @@ impl GpuConstraintPipeline {
                     push_constant_ranges: &[],
                 });
         let newton_pipeline =
-            make_pipeline(ctx, &newton_pipe_layout, &newton_module, "newton_solve");
+            create_pipeline(ctx, &newton_pipe_layout, &newton_module, "newton_solve");
 
         let newton_bg0 = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("newton_bg0"),
@@ -332,16 +333,16 @@ impl GpuConstraintPipeline {
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("mapf_layout1"),
                 entries: &[
-                    storage_ro(0), // efc_J
-                    storage_ro(1), // efc_force
-                    storage_rw(2), // constraint_count (atomicLoad requires read_write)
+                    storage_entry(0, true),  // efc_J
+                    storage_entry(1, true),  // efc_force
+                    storage_entry(2, false), // constraint_count (atomicLoad requires read_write)
                 ],
             });
         let mapf_layout2 = ctx
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("mapf_layout2"),
-                entries: &[storage_rw(0)], // qfrc_constraint
+                entries: &[storage_entry(0, false)], // qfrc_constraint
             });
 
         let mapf_pipe_layout = ctx
@@ -351,7 +352,8 @@ impl GpuConstraintPipeline {
                 bind_group_layouts: &[&mapf_layout0, &mapf_layout1, &mapf_layout2],
                 push_constant_ranges: &[],
             });
-        let map_forces_pipeline = make_pipeline(ctx, &mapf_pipe_layout, &mapf_module, "map_forces");
+        let map_forces_pipeline =
+            create_pipeline(ctx, &mapf_pipe_layout, &mapf_module, "map_forces");
 
         let mapf_bg0 = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mapf_bg0"),
@@ -458,25 +460,6 @@ impl GpuConstraintPipeline {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────
-
-fn make_pipeline(
-    ctx: &GpuContext,
-    layout: &wgpu::PipelineLayout,
-    module: &wgpu::ShaderModule,
-    entry: &str,
-) -> wgpu::ComputePipeline {
-    ctx.device
-        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(entry),
-            layout: Some(layout),
-            module,
-            entry_point: Some(entry),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        })
-}
-
 fn create_uniform(ctx: &GpuContext, label: &str, data: &[u8]) -> wgpu::Buffer {
     use wgpu::util::DeviceExt;
     ctx.device
@@ -485,50 +468,4 @@ fn create_uniform(ctx: &GpuContext, label: &str, data: &[u8]) -> wgpu::Buffer {
             contents: data,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         })
-}
-
-const fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-const fn storage_ro(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-const fn storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: false },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-fn buf_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: buffer.as_entire_binding(),
-    }
 }

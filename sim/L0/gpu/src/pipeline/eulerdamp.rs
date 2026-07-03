@@ -13,6 +13,7 @@
 use super::model_buffers::GpuModelBuffers;
 use super::state_buffers::GpuStateBuffers;
 use super::types::PhysicsParams;
+use super::wgpu_helpers::{buf_entry, storage_entry};
 use crate::context::GpuContext;
 
 use sim_core::types::Model;
@@ -207,27 +208,5 @@ impl GpuEulerdampPipeline {
     ) {
         self.write_params(ctx, model, cpu_model);
         self.encode(encoder);
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────
-
-const fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-fn buf_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: buffer.as_entire_binding(),
     }
 }
