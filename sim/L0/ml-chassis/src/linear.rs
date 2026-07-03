@@ -20,7 +20,7 @@
 //! and for gradient magnitude (all three).
 
 use crate::artifact::{NetworkDescriptor, NetworkKind, PolicyDescriptor};
-use crate::autograd_layers::Activation;
+use crate::autograd::Activation;
 use crate::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 use crate::value::{QFunction, ValueFn};
 

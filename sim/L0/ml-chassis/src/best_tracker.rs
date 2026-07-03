@@ -134,7 +134,7 @@ impl BestTracker {
 mod tests {
     use super::*;
     use crate::artifact::NetworkKind;
-    use crate::autograd_layers::Activation;
+    use crate::autograd::Activation;
 
     fn test_descriptor() -> PolicyDescriptor {
         PolicyDescriptor {

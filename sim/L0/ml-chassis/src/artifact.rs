@@ -18,9 +18,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::algorithm::EpochMetrics;
-use crate::autograd_layers::Activation;
-use crate::autograd_policy::{AutogradPolicy, AutogradStochasticPolicy};
-use crate::autograd_value::{AutogradQ, AutogradValue};
+use crate::autograd::Activation;
+use crate::autograd::{AutogradPolicy, AutogradStochasticPolicy};
+use crate::autograd::{AutogradQ, AutogradValue};
 use crate::linear::{LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue};
 use crate::mlp::{MlpPolicy, MlpQ, MlpValue};
 use crate::optimizer::OptimizerConfig;
@@ -771,8 +771,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::autograd_layers::Activation;
-    use crate::autograd_value::{AutogradQ, AutogradValue};
+    use crate::autograd::Activation;
+    use crate::autograd::{AutogradQ, AutogradValue};
     use crate::linear::{LinearQ, LinearValue};
     use crate::mlp::{MlpQ, MlpValue};
     use crate::policy::Policy;

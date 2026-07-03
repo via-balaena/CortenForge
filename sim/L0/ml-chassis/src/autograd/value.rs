@@ -14,12 +14,12 @@
 //! is linear (no tanh) — value predictions are unbounded.
 
 use crate::artifact::{NetworkDescriptor, NetworkKind};
+use crate::autograd::{Activation, linear_hidden, linear_raw, mse_loss};
 use crate::autograd::{Tape, Var};
-use crate::autograd_layers::{Activation, linear_hidden, linear_raw, mse_loss};
 use crate::stats::randn;
 use crate::value::{QFunction, ValueFn};
 
-// ── Layer offset bookkeeping (shared with autograd_policy.rs) ─────────────
+// ── Layer offset bookkeeping (shared with policy.rs) ──────────────────────
 
 #[derive(Clone, Debug)]
 struct LayerOffsets {
