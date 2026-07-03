@@ -985,11 +985,12 @@ which uses rayon's `par_iter_mut` to step multiple simulation environments concu
 
 The `sim-gpu` crate was removed in workspace trim (2026-03-19), then
 re-introduced via PR #143 with the GPU physics pipeline scaffold
-(Sessions 1–6). The `gpu-internals` feature flag in sim-core remains the
-integration seam. Two subsystems today: SDF-collision narrowphase
-(`GpuSdfCollider` implementing `sim-core::sdf::gpu::GpuSdfCollision`) and
-the GPU physics pipeline scaffold (FK / CRBA / RNE / smooth / integrate /
-constraint). See `sim/L0/gpu/` and `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`.
+(Sessions 1–6). One subsystem: the GPU physics pipeline (FK / CRBA /
+RNE / smooth / integrate / constraint / SDF-collision narrowphase), built
+directly from sim-core's `Model`/`Data`. (An earlier standalone
+GPU-collision-offload hybrid was removed once the architecture settled on
+pure-CPU-or-pure-GPU.) See `sim/L0/gpu/` and
+`sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`.
 
 ### Implementation Notes: Sleeping / Body Deactivation ✅ COMPLETE (Phases A/B/C — 93 tests)
 
