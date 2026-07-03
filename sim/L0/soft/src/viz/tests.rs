@@ -18,9 +18,16 @@
     clippy::float_cmp
 )]
 
+use std::collections::BTreeMap;
+
+use nalgebra::Point3 as NaPoint3;
+
+use super::scalar_transfer::idw_k_nearest_tet_centroids;
 use super::*;
+use crate::Vec3;
 use crate::material::MaterialField;
-use crate::mesh::{HandBuiltTetMesh, SingleTetMesh};
+use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh};
+use crate::sdf_bridge::{Aabb3, Sdf};
 
 /// Single-tet boundary surface: 4 vertices, 4 boundary faces, all
 /// per-vertex scalars equal the (single) per-tet scalar.
