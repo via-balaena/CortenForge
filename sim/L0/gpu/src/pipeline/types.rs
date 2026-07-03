@@ -249,9 +249,9 @@ pub struct SdfMetaGpu {
 
 /// Pipeline contact output. 48 bytes, 16-byte aligned.
 ///
-/// Extended from the standalone `GpuContact` (32 bytes) with geom
-/// indices and combined friction for constraint assembly (Session 5).
-/// Layout matches WGSL `PipelineContact` exactly.
+/// Carries geom indices and combined friction (beyond position/normal/depth)
+/// for constraint assembly (Session 5). Layout matches WGSL `PipelineContact`
+/// exactly.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct PipelineContact {
