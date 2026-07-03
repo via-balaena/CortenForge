@@ -21,6 +21,7 @@ use sim_ml_chassis::artifact::{ArtifactError, PolicyArtifact, TrainingCheckpoint
 use sim_ml_chassis::optimizer::OptimizerConfig;
 use sim_ml_chassis::policy::DifferentiablePolicy;
 use sim_ml_chassis::rollout::collect_episodic_rollout;
+use sim_ml_chassis::stats::randn;
 use sim_ml_chassis::vec_env::VecEnv;
 
 // ── Hyperparameters ──────────────────────────────────────────────────────
@@ -129,13 +130,6 @@ impl Reinforce {
             best,
         })
     }
-}
-
-/// Box-Muller normal sample.
-fn randn(rng: &mut impl rand::Rng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
 }
 
 impl Algorithm for Reinforce {

@@ -26,7 +26,7 @@ use sim_ml_chassis::artifact::{
 use sim_ml_chassis::optimizer::OptimizerConfig;
 use sim_ml_chassis::policy::StochasticPolicy;
 use sim_ml_chassis::replay_buffer::ReplayBuffer;
-use sim_ml_chassis::stats::gaussian_log_prob;
+use sim_ml_chassis::stats::{gaussian_log_prob, randn};
 use sim_ml_chassis::tensor::Tensor;
 use sim_ml_chassis::value::{QFunction, soft_update};
 use sim_ml_chassis::vec_env::VecEnv;
@@ -213,13 +213,6 @@ impl Sac {
             best,
         })
     }
-}
-
-/// Box-Muller normal sample.
-fn randn(rng: &mut impl rand::Rng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
 }
 
 impl Algorithm for Sac {

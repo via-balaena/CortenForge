@@ -19,6 +19,7 @@ use crate::artifact::{NetworkKind, PolicyDescriptor};
 use crate::autograd::{Tape, Var};
 use crate::autograd_layers::{Activation, gaussian_log_prob, linear_hidden, linear_tanh};
 use crate::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
+use crate::stats::randn;
 
 // ── Layer offset bookkeeping ──────────────────────────────────────────────
 
@@ -58,13 +59,6 @@ fn compute_offsets(layer_sizes: &[usize]) -> Vec<LayerOffsets> {
 }
 
 // ── Xavier / He initialization ────────────────────────────────────────────
-
-/// Box-Muller normal sample.
-fn randn(rng: &mut impl rand::Rng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
 
 /// Initialize weights using Xavier (Glorot) or He initialization.
 ///
