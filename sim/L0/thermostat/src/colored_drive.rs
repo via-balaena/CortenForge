@@ -24,10 +24,8 @@
 //! Integrated BAOAB-style (damping-only O step, since the colored force is the
 //! energy source) for underdamped fidelity.
 
-use rand::{Rng, SeedableRng};
-use rand_chacha::ChaCha8Rng;
-
 use crate::double_well::DoubleWellPotential;
+use crate::reference_integrator::{NormalSampler, quartic_well_force};
 
 /// A 1-DOF quartic-double-well oscillator driven by external OU colored noise.
 pub struct ColoredDriveSim {
@@ -44,8 +42,8 @@ pub struct ColoredDriveSim {
     eta: f64,
     x: f64,
     v: f64,
-    rng: ChaCha8Rng,
-    spare: Option<f64>,
+    /// Deterministic noise source (Box–Muller, cached spare).
+    noise: NormalSampler,
 }
 
 impl ColoredDriveSim {
@@ -82,14 +80,13 @@ impl ColoredDriveSim {
             eta: 0.0,
             x: x_init,
             v: 0.0,
-            rng: ChaCha8Rng::seed_from_u64(seed),
-            spare: None,
+            noise: NormalSampler::seed_from_u64(seed),
         }
     }
 
     /// Conservative force `F(x) = −4ax(x² − x₀²)`.
     fn force(&self, x: f64) -> f64 {
-        -4.0 * self.a * x * (x * x - self.x_0 * self.x_0)
+        quartic_well_force(self.a, self.x_0, x)
     }
 
     /// Potential second derivative `V''(x) = 4a(3x² − x₀²)` (for config temp).
@@ -97,22 +94,10 @@ impl ColoredDriveSim {
         4.0 * self.a * (3.0 * x * x - self.x_0 * self.x_0)
     }
 
-    fn gauss(&mut self) -> f64 {
-        if let Some(s) = self.spare.take() {
-            return s;
-        }
-        let u1: f64 = self.rng.random::<f64>().max(1e-300);
-        let u2: f64 = self.rng.random::<f64>();
-        let r = (-2.0 * u1.ln()).sqrt();
-        let theta = 2.0 * std::f64::consts::PI * u2;
-        self.spare = Some(r * theta.sin());
-        r * theta.cos()
-    }
-
     /// Advance one step.
     pub fn step(&mut self) {
         // Exact OU update of the colored force.
-        self.eta = self.ou_retain * self.eta + self.ou_innov * self.gauss();
+        self.eta = self.ou_retain * self.eta + self.ou_innov * self.noise.sample();
 
         let m = self.mass;
         let half_dt = 0.5 * self.dt;

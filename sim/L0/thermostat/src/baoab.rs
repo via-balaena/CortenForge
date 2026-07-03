@@ -19,10 +19,8 @@
 //! Standalone (no sim-core coupling) — this is the trustworthy rate engine for
 //! the high-Q regime the real p-bit lives in.
 
-use rand::{Rng, SeedableRng};
-use rand_chacha::ChaCha8Rng;
-
 use crate::double_well::DoubleWellPotential;
+use crate::reference_integrator::{NormalSampler, quartic_well_force};
 
 /// A 1-DOF BAOAB Langevin integrator in a quartic double well.
 pub struct Baoab1D {
@@ -42,10 +40,8 @@ pub struct Baoab1D {
     x: f64,
     /// Velocity.
     v: f64,
-    /// Deterministic noise source.
-    rng: ChaCha8Rng,
-    /// Cached second Box–Muller normal sample.
-    spare: Option<f64>,
+    /// Deterministic noise source (Box–Muller, cached spare).
+    noise: NormalSampler,
 }
 
 impl Baoab1D {
@@ -73,27 +69,13 @@ impl Baoab1D {
             dt,
             x: x_init,
             v: 0.0,
-            rng: ChaCha8Rng::seed_from_u64(seed),
-            spare: None,
+            noise: NormalSampler::seed_from_u64(seed),
         }
     }
 
     /// Conservative force `F(x) = −V′(x) = −4ax(x² − x₀²)`.
     fn force(&self, x: f64) -> f64 {
-        -4.0 * self.a * x * (x * x - self.x_0 * self.x_0)
-    }
-
-    /// One standard-normal sample via Box–Muller (caches the pair's second).
-    fn gauss(&mut self) -> f64 {
-        if let Some(s) = self.spare.take() {
-            return s;
-        }
-        let u1: f64 = self.rng.random::<f64>().max(1e-300);
-        let u2: f64 = self.rng.random::<f64>();
-        let r = (-2.0 * u1.ln()).sqrt();
-        let theta = 2.0 * std::f64::consts::PI * u2;
-        self.spare = Some(r * theta.sin());
-        r * theta.cos()
+        quartic_well_force(self.a, self.x_0, x)
     }
 
     /// Advance one BAOAB step.
@@ -108,7 +90,7 @@ impl Baoab1D {
         // A
         self.x += half_dt * self.v;
         // O (exact Ornstein–Uhlenbeck)
-        self.v = c * self.v + sigma * self.gauss();
+        self.v = c * self.v + sigma * self.noise.sample();
         // A
         self.x += half_dt * self.v;
         // B

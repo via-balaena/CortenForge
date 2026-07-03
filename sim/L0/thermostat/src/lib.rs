@@ -81,6 +81,7 @@ mod oscillating_field;
 mod pairwise_coupling;
 pub mod prf;
 mod ratchet;
+mod reference_integrator;
 mod stack;
 mod well_state;
 
