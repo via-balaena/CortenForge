@@ -9,14 +9,12 @@
 
 // ── Solver parameters ─────────────────────────────────────────────────
 
+// Mirrors the Rust `SolverParams` (16 bytes); map_forces reads nv / n_env /
+// max_constraints. See newton_solve.wgsl for the fixed-config solver rationale.
 struct SolverParams {
     nv: u32,
     max_iter: u32,
-    max_ls: u32,
     n_env: u32,
-    tolerance: f32,
-    ls_tolerance: f32,
-    meaninertia: f32,
     max_constraints: u32,
 };
 

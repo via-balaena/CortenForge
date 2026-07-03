@@ -24,14 +24,13 @@ const WG_SIZE: u32 = 256u;
 
 // ── Params struct ───────────────────────────────────────────────────────
 
+// Fixed-config solver: hardcoded line search + max_iter bound + no-progress
+// convergence. Mirrors the Rust `SolverParams` (16 bytes) — CPU solver-config
+// knobs (tolerance / ls_iterations) are intentionally not plumbed.
 struct SolverParams {
     nv:              u32,
     max_iter:        u32,
-    max_ls:          u32,
     n_env:           u32,
-    tolerance:       f32,
-    ls_tolerance:    f32,
-    meaninertia:     f32,
     max_constraints: u32,
 };
 

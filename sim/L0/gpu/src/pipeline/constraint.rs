@@ -127,11 +127,7 @@ impl GpuConstraintPipeline {
         let solver_params = SolverParams {
             nv,
             max_iter: cpu_model.solver_iterations as u32,
-            max_ls: cpu_model.ls_iterations.max(20) as u32,
             n_env: state_bufs.n_env,
-            tolerance: cpu_model.solver_tolerance as f32,
-            ls_tolerance: cpu_model.ls_tolerance as f32,
-            meaninertia: cpu_model.stat_meaninertia as f32,
             max_constraints,
         };
         // Retained by the newton + map_forces bind groups (see note above).
