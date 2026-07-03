@@ -9,7 +9,8 @@ authors.workspace = true
 rust-version.workspace = true
 
 # Coverage criterion N/A: env wrapper is exercised by integration tests
-# (phase2.rs / phase3.rs / experiment_*.rs / ising_chain.rs); src/ has
+# (phase2.rs / phase3.rs here; the RL-baseline fixtures experiment_*/
+# ising_chain/kramers_* moved to the sim-rl-baselines crate); src/ has
 # no inline #[cfg(test)] modules so --lib coverage reports 0.0%.
 [package.metadata.cortenforge]
 tier = "L0-integration"
@@ -30,10 +31,11 @@ thiserror = { workspace = true }
 [dev-dependencies]
 # Float tolerance assertions across phase2/phase3 unit tests
 approx = { workspace = true }
-# RL baselines — Cem/Ppo/LinearPolicy/TrainingBudget for experiment_1/experiment_4/ising_chain fixtures
-sim-rl = { workspace = true }
-# Gradient-free optimizers — Sa/RicherSa for experiment_1 + ising_chain fixtures
-sim-opt = { workspace = true }
+# NOTE: the RL-baseline (sim-rl) and gradient-free-optimizer (sim-opt)
+# fixtures — experiment_1/experiment_4/ising_chain/kramers_* — moved to the
+# `sim-rl-baselines` crate, so therm-env no longer dev-deps sim-rl or sim-opt.
+# That severs the therm-env → sim-opt → sim-rl transitive edge, keeping
+# behaviour-neutral sim-rl changes out of therm-env's CI affected-closure.
 
 [lints]
 workspace = true

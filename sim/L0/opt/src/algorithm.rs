@@ -379,7 +379,7 @@ impl Algorithm for Sa {
 mod tests {
     use super::*;
     use sim_ml_chassis::LinearPolicy;
-    use sim_rl::reaching_2dof;
+    use sim_ml_chassis::reaching_2dof;
 
     // Small debug-mode test config: n_envs=4, max_episode_steps=50.
     // The D2c SR rematch uses n_envs=32 and max_episode_steps=5000

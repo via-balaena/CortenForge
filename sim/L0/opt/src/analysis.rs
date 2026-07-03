@@ -20,8 +20,8 @@ use sim_thermostat::prf::splitmix64;
 // ── Rematch constants ────────────────────────────────────────────────────
 
 /// Pre-registered master seed from Ch 32 Decision 4. Matches
-/// `d2c_cem_training.rs:69`'s `SEED_BASE` literal and Ch 23
-/// §1.2's example master value.
+/// `sim-rl-baselines/tests/d2c_cem_training.rs`'s `SEED_BASE` literal and
+/// Ch 23 §1.2's example master value.
 pub const REMATCH_MASTER_SEED: u64 = 20_260_412;
 
 /// Initial batch size picked by Ch 32 Decision 3.
@@ -454,7 +454,7 @@ fn emit_metric_block(
 /// and returns the final classified outcome. Seeds are derived
 /// from [`REMATCH_MASTER_SEED`] via
 /// [`sim_thermostat::prf::splitmix64`], matching the
-/// `d2c_cem_training.rs:69` `SEED_BASE` pattern.
+/// `sim-rl-baselines/tests/d2c_cem_training.rs` `SEED_BASE` pattern.
 ///
 /// # Parameters
 ///

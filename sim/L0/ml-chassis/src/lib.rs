@@ -37,8 +37,13 @@ pub mod tensor;
 pub mod value;
 pub mod vec_env;
 
-#[cfg(test)]
-mod test_stock_tasks;
+// Stock reaching-arm `TaskConfig` fixtures. Compiled for the crate's own
+// `#[cfg(test)]` suites, and — under the `test-fixtures` feature — exposed to
+// downstream test-only crates (e.g. `sim-opt`'s internal unit tests) so they
+// get a realistic env without dev-depending on the higher-tier `sim-rl`.
+// Mirrors `sim-core`'s `test-fixtures` feature pattern.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_stock_tasks;
 
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use artifact::{
@@ -70,3 +75,9 @@ pub use task::{TaskConfig, TaskConfigBuilder};
 pub use tensor::{Tensor, TensorSpec};
 pub use value::{QFunction, ValueFn, soft_update, soft_update_policy, soft_update_value};
 pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};
+
+// Re-export the stock reaching-arm fixtures when they are compiled (own tests
+// or the `test-fixtures` feature), so downstream test crates can
+// `use sim_ml_chassis::reaching_2dof`.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use test_stock_tasks::{reaching_2dof, reaching_6dof};

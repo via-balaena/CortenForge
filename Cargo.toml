@@ -473,6 +473,7 @@ members = [
     "sim/L0/ml-chassis",
     "sim/L0/ml-chassis-benches",
     "sim/L0/rl",
+    "sim/L0/rl-baselines",
     "sim/L0/thermostat",
     "sim/L0/opt",
     "sim/L0/therm-env",
@@ -754,6 +755,7 @@ sim-gpu-benches = { path = "sim/L0/gpu-benches" }
 sim-ml-chassis = { path = "sim/L0/ml-chassis" }
 sim-ml-chassis-benches = { path = "sim/L0/ml-chassis-benches" }
 sim-rl = { path = "sim/L0/rl" }
+sim-rl-baselines = { path = "sim/L0/rl-baselines" }
 sim-thermostat = { path = "sim/L0/thermostat" }
 sim-opt = { path = "sim/L0/opt" }
 sim-therm-env = { path = "sim/L0/therm-env" }

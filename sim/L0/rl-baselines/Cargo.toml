@@ -1,0 +1,52 @@
+[package]
+name = "sim-rl-baselines"
+description = "RL-baseline integration tests: trains sim-rl algorithms against the sim-thermostat / sim-therm-env / sim-opt physics crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Coverage criterion N/A: this crate has no src/ at all — only integration
+# test targets. It exists to hold the RL-baseline fixtures that previously
+# lived under sim-thermostat / sim-therm-env / sim-opt as `tests/*.rs`. Moving
+# them here removes the backwards `sim-rl` dev-dep from those L0 physics crates
+# so a behaviour-neutral sim-rl change no longer cascades their (unrelated,
+# heavy) validators into the CI affected-closure. Nearly all fixtures here are
+# `#[ignore]`d and run only under `cargo test --release --ignored`, exactly as
+# before the move; the only two non-ignored tests are the fast compute-parity
+# checks in d2c_sr_rematch_pt / d2c_sr_rematch_richer_sa (~0.3s total).
+[package.metadata.cortenforge]
+tier = "L0-integration"
+grading_profile = "integration-only"
+
+[dependencies]
+# The RL algorithms under baseline: Cem / Reinforce / Ppo / Sac / Td3 /
+# Competition + the LinearPolicy/TaskConfig/VecEnv surface re-exported through
+# sim-rl. This is the dev-dep edge deliberately isolated to this crate.
+sim-rl = { workspace = true }
+# Thermostat env + physics the D1c/D1d/D2c and therm-env fixtures train on.
+sim-thermostat = { workspace = true }
+# ThermCircuitEnv builder exercised by experiment_*/ising_chain/kramers_* .
+sim-therm-env = { workspace = true }
+# Gradient-free optimizers (Sa/RicherSa/Pt) the SR-rematch + therm-env
+# baselines compare CEM against.
+sim-opt = { workspace = true }
+# Model/DVector + the `test-fixtures` Model factories (ratchet,
+# stochastic_resonance, ...) the fixtures build their environments from.
+sim-core = { workspace = true, features = ["test-fixtures"] }
+# RNG for the fixtures' seeded episode sampling.
+rand = { workspace = true }
+# Deterministic CSPRNG for reproducible fixture seeds.
+rand_chacha = { workspace = true }
+# Normal/Uniform action-noise distributions used by the CEM/reinforce fixtures.
+rand_distr = { workspace = true }
+
+[dev-dependencies]
+# JSON emit for the d2c_sr_rematch* verdict artifacts (tests/common/mod.rs).
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -38,7 +38,7 @@
 //! commitment is to have `RicherSa::name()` return `"SA"` so the
 //! fixture is drop-in; the *fixture filename* and the fixture's
 //! `eprintln!` header identify which SA variant actually fired.
-//! See `sim/L0/opt/tests/d2c_sr_rematch_richer_sa.rs` for the
+//! See `sim/L0/rl-baselines/tests/d2c_sr_rematch_richer_sa.rs` for the
 //! corresponding fixture.
 
 use std::collections::BTreeMap;
@@ -495,7 +495,7 @@ impl Algorithm for RicherSa {
 mod tests {
     use super::*;
     use sim_ml_chassis::LinearPolicy;
-    use sim_rl::reaching_2dof;
+    use sim_ml_chassis::reaching_2dof;
 
     const TEST_N_ENVS: usize = 4;
 

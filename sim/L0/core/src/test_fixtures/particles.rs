@@ -100,8 +100,9 @@ pub fn ratchet() -> Model {
 /// Stochastic-resonance particle: same shape as [`ratchet`] with a `temp_ctrl` actuator.
 ///
 /// The actuator's `ctrlrange=(0, 10)`; the harness uses `data.ctrl[0]`
-/// as a temperature setpoint. Matches `SR_XML` in
-/// `sim-thermostat/tests/d2*.rs` and `sim-opt/tests/d2c_sr_rematch*.rs`.
+/// as a temperature setpoint. Matches `SR_XML` in the stochastic-resonance
+/// fixtures under `sim-thermostat/tests/d2{a,b}_*.rs` and
+/// `sim-rl-baselines/tests/d2c_*.rs`.
 ///
 /// Shape: nbody=2, njnt=1, nq=1, nv=1, ngeom=1, nu=1.
 #[must_use]

@@ -31,7 +31,7 @@
 
 // Numeric research code: index/dimension casts and the threshold round-trip are
 // intentional and benign. Matches the house allow-block used across the thermo
-// experiments (e.g. `sim/L0/therm-env/tests/ising_chain.rs`).
+// experiments (e.g. `sim/L0/rl-baselines/tests/ising_chain.rs`).
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
 use anyhow::{Context, Result};

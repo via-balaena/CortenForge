@@ -32,14 +32,9 @@ rand_chacha = { workspace = true }
 sim-core = { workspace = true, features = ["test-fixtures"] }
 # ML chassis — RL environment primitives for D1b/D2b baseline tests
 sim-ml-chassis = { workspace = true }
-# RL baselines — Cem/Reinforce/Ppo/Sac/Td3 for D1c/D1d/D2c training tests.
-# sim-rl is now fixture-backed too (its release graph no longer pulls
-# sim-mjcf — see L0 plan §3.2), so this dev-dep doesn't reintroduce the
-# mjcf chain transitively.
-sim-rl = { workspace = true }
-# Normal/Uniform distributions — used by the d1b/d1c test files for
-# Uniform action sampling. After the C-3 rewrite of LangevinThermostat,
-# no src/ target uses rand_distr (dev-only).
+# Normal/Uniform distributions — used by the d1b test file for Uniform action
+# sampling. After the C-3 rewrite of LangevinThermostat, no src/ target uses
+# rand_distr (dev-only).
 rand_distr = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
