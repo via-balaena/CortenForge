@@ -5,6 +5,7 @@
 use super::*;
 use sim_mjcf::load_model;
 use sim_ml_chassis::autograd::VjpOp;
+use sim_soft::HandBuiltTetMesh;
 
 /// A centred free-body platen over the soft block (COM at the block centroid), with contact-axis
 /// `damping`, moment on. Used by the carry-subsumption proof.
