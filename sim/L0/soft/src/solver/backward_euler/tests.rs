@@ -30,11 +30,11 @@ use faer::sparse::Triplet;
 
 use sim_ml_chassis::Tensor;
 
-use super::SolverFailure;
 use crate::contact::NullContact;
 use crate::material::MaterialField;
 use crate::mesh::SingleTetMesh;
 use crate::readout::{BoundaryConditions, LoadAxis};
+use crate::solver::SolverFailure;
 use crate::solver::lm::LmState;
 use crate::solver::{CpuNewtonSolver, LmConfig, Solver, SolverConfig};
 use crate::{SkeletonSolver, element::Tet4};
