@@ -3,9 +3,17 @@
 #![cfg(test)]
 
 use super::*;
+use sim_core::SpatialVector;
 use sim_mjcf::load_model;
+use sim_ml_chassis::Tensor;
 use sim_ml_chassis::autograd::VjpOp;
-use sim_soft::HandBuiltTetMesh;
+use sim_soft::{BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, Solver, Tet4};
+
+use crate::contact::SoftSolver;
+use crate::vjp::{
+    ContactForceTrajVjp, ContactWrenchTrajVjp, FrictionWrenchTrajVjp, StateComponentVjp,
+    VzControlCarryVjp, WrenchPose, assemble_friction_wrench, right_jacobian_so3,
+};
 
 /// A centred free-body platen over the soft block (COM at the block centroid), with contact-axis
 /// `damping`, moment on. Used by the carry-subsumption proof.
