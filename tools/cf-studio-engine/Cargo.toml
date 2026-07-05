@@ -32,10 +32,12 @@ cf-studio-core = { workspace = true }
 # The SDK — through the facade. The engine compiles against this one stable
 # contract (see MISSION.md / the app-vs-SDK boundary) instead of the individual
 # crates. Reached as `cortenforge::<crate>`: cf-device-types (device types),
-# mesh-io[threemf]/mesh-types/mesh-repair (mesh), cf-cast-cli/cf-cast/
-# cf-cap-planes (cast pipeline + prep parsers + cure data), cf-scan-prep-core
-# (scan-prep algorithms), cf-design (SDF kernel). Headless — no Bevy.
-cortenforge = { workspace = true }
+# the `mesh` umbrella (`cortenforge::mesh::{io,types,repair}`), cf-cast-cli/
+# cf-cast/cf-cap-planes (cast pipeline + prep parsers + cure data),
+# cf-scan-prep-core (scan-prep algorithms), cf-design (SDF kernel). Headless.
+# The engine needs only the mesh + fabrication domains, so it opts out of the
+# facade's default `sim` feature (no physics/RL spine in the engine's build).
+cortenforge = { workspace = true, default-features = false, features = ["mesh", "fabrication"] }
 # `UnitQuaternion` / `Vector3` — the PCA-orient + recenter transform state
 # the EditSession accumulates for the .prep.toml provenance.
 nalgebra = { workspace = true }

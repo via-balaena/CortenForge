@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use cf_studio_core::ScanInput;
-use cortenforge::mesh_io::load_mesh;
+use cortenforge::mesh::io::load_mesh;
 
 use crate::error::{EngineError, Result};
 

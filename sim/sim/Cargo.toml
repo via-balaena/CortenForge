@@ -1,0 +1,60 @@
+# Unified Simulation & Co-design Library
+#
+# This umbrella crate re-exports the headless CortenForge simulation spine —
+# rigid (sim-core), soft-FEM (sim-soft), the L1 soft↔rigid coupling keystone,
+# model I/O (mjcf/urdf), and the learning/optimization stack (ml-chassis/rl/opt/
+# thermostat). Users depend on this single crate to get the full headless sim
+# toolkit. Bevy/GUI/GPU crates are deliberately excluded so this stays headless.
+
+[package]
+name = "sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Headless simulation & differentiable co-design toolkit: rigid + soft-FEM physics, soft↔rigid coupling, model I/O, and the RL/optimization stack"
+keywords = ["simulation", "physics", "robotics", "differentiable", "rl"]
+categories = ["science", "simulation"]
+# Publishing is deferred: this umbrella re-exports the L1 `sim-coupling`
+# keystone, which is `publish = false` while its public surface settles.
+publish = false
+
+# Aggregates the L0/L0-io/L0-integration sim libraries plus the L1 coupling
+# keystone, so the umbrella itself is L1. It is deliberately Bevy-free and
+# GPU-free: sim-soft is pulled WITHOUT its `gpu-probe` feature, and sim-gpu
+# (hard wgpu dep) plus every `sim/L1/bevy*` crate are excluded.
+[package.metadata.cortenforge]
+tier = "L1"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Foundation
+sim-types = { workspace = true }
+
+# Rigid + soft physics engines
+sim-core = { workspace = true }
+sim-soft = { workspace = true }
+
+# L1 keystone: staggered forward soft↔rigid coupling (the mission's named
+# open problem — one tape.backward across both engines).
+sim-coupling = { workspace = true }
+
+# Model I/O
+sim-mjcf = { workspace = true }
+sim-urdf = { workspace = true }
+
+# Learning & optimization stack
+sim-ml-chassis = { workspace = true }
+sim-rl = { workspace = true }
+sim-opt = { workspace = true }
+
+# Thermodynamic-computing track
+sim-thermostat = { workspace = true }
+sim-therm-env = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

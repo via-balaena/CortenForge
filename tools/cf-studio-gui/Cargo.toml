@@ -71,10 +71,11 @@ naga = { version = "28", features = ["termcolor"] }
 # Native open/save file dialogs for the step screens (scan / prep /
 # design pickers). Direct dep; isolated to the GUI crate.
 rfd = "0.15"
-# The SDK through the facade — mesh-io (load scan/mold meshes) + mesh-types
-# (`IndexedMesh` for the live preview the step-2 EditSession mutates), reached
-# as `cortenforge::mesh_io` / `cortenforge::mesh_types`.
-cortenforge = { workspace = true }
+# The SDK through the facade — the `mesh` umbrella: `cortenforge::mesh::io`
+# (load scan/mold meshes) + `cortenforge::mesh::types` (`IndexedMesh` for the
+# live preview the step-2 EditSession mutates). The GUI needs only the mesh
+# domain, so it opts out of the facade's default `sim`/`fabrication` features.
+cortenforge = { workspace = true, default-features = false, features = ["mesh"] }
 nalgebra = { workspace = true }
 bytemuck = { version = "1", features = ["derive"] }
 

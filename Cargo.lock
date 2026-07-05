@@ -2949,10 +2949,11 @@ dependencies = [
  "cf-cast-cli",
  "cf-design",
  "cf-device-types",
+ "cf-geometry",
  "cf-scan-prep-core",
- "mesh-io",
- "mesh-repair",
- "mesh-types",
+ "cf-spatial",
+ "mesh",
+ "sim",
 ]
 
 [[package]]
@@ -11580,6 +11581,23 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "sim"
+version = "1.0.0"
+dependencies = [
+ "sim-core",
+ "sim-coupling",
+ "sim-mjcf",
+ "sim-ml-chassis",
+ "sim-opt",
+ "sim-rl",
+ "sim-soft",
+ "sim-therm-env",
+ "sim-thermostat",
+ "sim-types",
+ "sim-urdf",
 ]
 
 [[package]]
