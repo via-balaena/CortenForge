@@ -1,6 +1,8 @@
 [package]
 name = "sim-urdf"
 description = "URDF robot description parser for physics simulation"
+keywords = ["urdf", "robotics", "physics", "simulation", "parser"]
+categories = ["parsing", "simulation", "science::robotics"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

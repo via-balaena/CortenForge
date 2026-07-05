@@ -1,6 +1,8 @@
 [package]
 name = "cf-cast"
 description = "Physical-cast tooling — mold/plug STL extraction for layered silicone devices"
+keywords = ["mesh", "casting", "mold", "3d-printing", "manufacturing"]
+categories = ["graphics", "science", "algorithms"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,8 @@
 [package]
 name = "sim-mjcf"
 description = "MJCF (MuJoCo XML Format) model loader for physics simulation"
+keywords = ["mjcf", "mujoco", "physics", "simulation", "robotics"]
+categories = ["parsing", "simulation", "science::robotics"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

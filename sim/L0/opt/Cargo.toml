@@ -1,6 +1,8 @@
 [package]
 name = "sim-opt"
 description = "Gradient-free optimization algorithms and rematch analysis machinery"
+keywords = ["optimization", "annealing", "cem", "gradient-free", "metaheuristic"]
+categories = ["algorithms", "mathematics", "science"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

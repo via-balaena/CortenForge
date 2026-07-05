@@ -5,6 +5,8 @@
 [package]
 name = "mesh-io"
 description = "Mesh file I/O: STL, OBJ, PLY loading and saving"
+keywords = ["mesh", "stl", "obj", "ply", "3d"]
+categories = ["parsing", "graphics", "encoding"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
