@@ -58,7 +58,9 @@ fn main() {
         ))
         .build();
 
-    let model = mechanism.to_model(1.0, 0.3);
+    let model = mechanism
+        .to_model(1.0, 0.3)
+        .expect("failed to build sim model");
 
     // ── Verify mass ─────────────────────────────────────────────────
     let volume_mm3 = (4.0 / 3.0) * std::f64::consts::PI * RADIUS.powi(3);

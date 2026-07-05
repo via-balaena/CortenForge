@@ -51,7 +51,9 @@ fn main() {
         ))
         .build();
 
-    let mut model = mechanism.to_model(1.0, 0.3);
+    let mut model = mechanism
+        .to_model(1.0, 0.3)
+        .expect("failed to build sim model");
     model.add_ground_plane();
 
     eprintln!();

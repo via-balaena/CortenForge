@@ -48,7 +48,7 @@ use sim_core::{
 use crate::mechanism::analytical_shape::AnalyticalShape;
 
 use super::actuator::ActuatorKind;
-use super::builder::Mechanism;
+use super::builder::{Mechanism, MechanismError};
 use super::joint::{JointDef, JointKind};
 use super::part::Part;
 use super::tendon::TendonDef;
@@ -69,12 +69,23 @@ impl Mechanism {
     /// - `visual_resolution`: Marching cubes cell size for the visual mesh.
     ///   Smaller = smoother rendering (e.g., 0.3 for high quality).
     ///
+    /// # Errors
+    ///
+    /// - [`MechanismError::PartHasNoFiniteBounds`] if a part's solid has no
+    ///   finite bounding box (e.g. a bare infinite plane) — it cannot be
+    ///   voxelized into an SDF collision grid. (Such parts are still valid
+    ///   for `to_shapes`/`to_mjcf`/`to_stl_kit`, which do not voxelize.)
+    /// - [`MechanismError::PartNotReachable`] if a part cannot be placed in
+    ///   the kinematic tree because its joints form a cycle.
+    ///
     /// # Panics
     ///
-    /// Panics if either resolution is not positive and finite, or if a part
-    /// has no finite bounds (e.g., an infinite plane).
-    #[must_use]
-    pub fn to_model(&self, sdf_resolution: f64, visual_resolution: f64) -> Model {
+    /// Panics if either resolution is not positive and finite.
+    pub fn to_model(
+        &self,
+        sdf_resolution: f64,
+        visual_resolution: f64,
+    ) -> Result<Model, MechanismError> {
         generate(self, sdf_resolution, visual_resolution)
     }
 }
@@ -82,7 +93,11 @@ impl Mechanism {
 // ── Model construction ──────────────────────────────────────────────────
 
 /// Build a sim-core Model from a validated mechanism.
-fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) -> Model {
+fn generate(
+    mechanism: &Mechanism,
+    sdf_resolution: f64,
+    visual_resolution: f64,
+) -> Result<Model, MechanismError> {
     assert!(
         sdf_resolution > 0.0 && sdf_resolution.is_finite(),
         "SDF resolution must be positive and finite, got {sdf_resolution}"
@@ -149,6 +164,20 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
 
     let nbody = body_order.len() + 1; // +1 for world body
 
+    // Every part must be reachable from a root body. A part missing from
+    // `body_order` was never pushed onto the BFS stack, meaning its joint
+    // chain never reaches a root — i.e. its joints form a cycle. Reject
+    // here (rather than panicking later when its geoms/sites are wired)
+    // since `validate` does not yet detect cycles.
+    if body_order.len() != parts.len() {
+        let unreachable = parts
+            .iter()
+            .map(Part::name)
+            .find(|n| !part_to_body.contains_key(n))
+            .expect("length mismatch implies at least one unreachable part");
+        return Err(MechanismError::PartNotReachable(unreachable.to_owned()));
+    }
+
     // ── Generate SDF grids and visual meshes per part ────────────────
     let mut shape_data: Vec<Arc<dyn PhysicsShape>> = Vec::new();
     let mut mesh_data: Vec<Arc<sim_core::TriangleMeshData>> = Vec::new();
@@ -158,13 +187,16 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
 
     for part in parts {
         let solid = part.solid();
+        // Physics voxelization requires finite bounds. `sdf_grid_at`
+        // returns `None` only when `bounds()` does, so one check covers
+        // both; the second `expect` below is then unreachable.
         let bounds = solid
             .bounds()
-            .unwrap_or_else(|| panic!("part '{}' has no finite bounds", part.name()));
+            .ok_or_else(|| MechanismError::PartHasNoFiniteBounds(part.name().to_owned()))?;
 
         let sdf = solid
             .sdf_grid_at(sdf_resolution)
-            .unwrap_or_else(|| panic!("part '{}' has no finite bounds", part.name()));
+            .expect("bounds() succeeded above, so sdf_grid_at cannot be None");
 
         let sdf_id = shape_data.len();
         let grid = Arc::new(sdf);
@@ -573,10 +605,15 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
         // Wrap objects (site references)
         for (i, _wp) in tendon.waypoints().iter().enumerate() {
             let site_name = format!("{}_s{i}", tendon.name());
+            // Internal invariant: sites are emitted for every part in
+            // `body_order`, and the reachability guard above ensures every
+            // part is in `body_order`. Tendon waypoint parts are validated
+            // to exist at build, so their generated site names are always
+            // present in `site_name_to_id`.
             let site_id = site_name_to_id
                 .get(&site_name)
                 .copied()
-                .unwrap_or_else(|| panic!("site '{site_name}' not found in model"));
+                .expect("internal invariant: generated tendon site name is in the site map");
             model.wrap_type.push(WrapType::Site);
             model.wrap_objid.push(site_id);
             model.wrap_prm.push(0.0);
@@ -588,17 +625,14 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
 
     // ── Actuators ───────────────────────────────────────────────────
     for act in actuators {
+        // Mechanism invariant: actuator tendon references are validated in
+        // `MechanismBuilder::validate` (`ActuatorRefersToUnknownTendon`), so
+        // the referenced tendon is always present in the model.
         let tendon_id = model
             .tendon_name
             .iter()
             .position(|n| n.as_deref() == Some(act.tendon()))
-            .unwrap_or_else(|| {
-                panic!(
-                    "actuator '{}' references unknown tendon '{}'",
-                    act.name(),
-                    act.tendon()
-                )
-            });
+            .expect("Mechanism invariant: actuator tendon reference is validated at build");
 
         model.actuator_trntype.push(ActuatorTransmission::Tendon);
         model.actuator_dyntype.push(ActuatorDynamics::None);
@@ -690,7 +724,7 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     discover_kinematic_trees(&mut model);
     sim_core::compute_dof_lengths(&mut model);
 
-    model
+    Ok(model)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -971,8 +1005,8 @@ mod tests {
     use nalgebra::{Point3, Vector3};
 
     use crate::{
-        ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, Part, Solid,
-        TendonDef, TendonWaypoint,
+        ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, MechanismError, Part,
+        Solid, TendonDef, TendonWaypoint,
     };
     use sim_core::GeomType;
 
@@ -1000,11 +1034,81 @@ mod tests {
             .build()
     }
 
+    // ── 0. to_model error paths ────────────────────────────────────
+
+    #[test]
+    fn unbounded_part_to_model_errors() {
+        // A bare infinite plane cannot be voxelized into an SDF collision
+        // grid, so `to_model` reports it rather than panicking.
+        let mechanism = Mechanism::builder("with_floor")
+            .part(Part::new("floor", Solid::plane(Vector3::z(), 0.0), pla()))
+            .build();
+
+        assert!(
+            matches!(
+                mechanism.to_model(1.0, 1.0),
+                Err(MechanismError::PartHasNoFiniteBounds(name)) if name == "floor"
+            ),
+            "expected PartHasNoFiniteBounds(\"floor\")"
+        );
+    }
+
+    #[test]
+    fn unbounded_part_still_exportable() {
+        // The same unbounded part is valid for the mesh/MJCF export paths,
+        // which tolerate infinite geometry — they must not panic. This
+        // guards against re-tightening the check at build() time.
+        let mechanism = Mechanism::builder("with_floor")
+            .part(Part::new("floor", Solid::plane(Vector3::z(), 0.0), pla()))
+            .build();
+
+        let mjcf = mechanism.to_mjcf(1.0);
+        assert!(
+            mjcf.contains("<mujoco model=\"with_floor\">"),
+            "expected MJCF XML, got: {mjcf}"
+        );
+    }
+
+    #[test]
+    fn joint_cycle_to_model_errors() {
+        // A ↔ B joint cycle passes validation (both parts exist and are
+        // connected) but leaves both parts unreachable from any root body.
+        // `to_model` reports it rather than panicking on the empty tree.
+        let mechanism = Mechanism::builder("cycle")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .joint(JointDef::new(
+                "j_ab",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::origin(),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "j_ba",
+                "b",
+                "a",
+                JointKind::Revolute,
+                Point3::origin(),
+                Vector3::x(),
+            ))
+            .build();
+
+        assert!(
+            matches!(
+                mechanism.to_model(2.0, 2.0),
+                Err(MechanismError::PartNotReachable(_))
+            ),
+            "expected PartNotReachable for a joint cycle"
+        );
+    }
+
     // ── 1. Model dimensions ────────────────────────────────────────
 
     #[test]
     fn model_dimensions() {
-        let model = two_part_mechanism().to_model(2.0, 2.0);
+        let model = two_part_mechanism().to_model(2.0, 2.0).unwrap();
 
         // 2 parts → 3 bodies (world + palm + finger)
         assert_eq!(model.nbody, 3);
@@ -1020,7 +1124,7 @@ mod tests {
 
     #[test]
     fn sdf_geoms_present() {
-        let model = two_part_mechanism().to_model(2.0, 2.0);
+        let model = two_part_mechanism().to_model(2.0, 2.0).unwrap();
 
         let sdf_count = model
             .geom_type
@@ -1044,7 +1148,7 @@ mod tests {
 
     #[test]
     fn mesh_geoms_present() {
-        let model = two_part_mechanism().to_model(2.0, 2.0);
+        let model = two_part_mechanism().to_model(2.0, 2.0).unwrap();
 
         let mesh_count = model
             .geom_type
@@ -1065,7 +1169,7 @@ mod tests {
 
     #[test]
     fn shape_data_populated() {
-        let model = two_part_mechanism().to_model(2.0, 2.0);
+        let model = two_part_mechanism().to_model(2.0, 2.0).unwrap();
 
         assert_eq!(model.shape_data.len(), 2, "expected 2 shape assets");
         for (i, shape) in model.shape_data.iter().enumerate() {
@@ -1082,7 +1186,7 @@ mod tests {
 
     #[test]
     fn parent_child_collision_filtered() {
-        let model = two_part_mechanism().to_model(2.0, 2.0);
+        let model = two_part_mechanism().to_model(2.0, 2.0).unwrap();
         assert_eq!(
             model.disableflags & sim_core::DISABLE_FILTERPARENT,
             0,
@@ -1094,7 +1198,7 @@ mod tests {
 
     #[test]
     fn forward_kinematics_runs() {
-        let model = two_part_mechanism().to_model(2.0, 2.0);
+        let model = two_part_mechanism().to_model(2.0, 2.0).unwrap();
         let mut data = model.make_data();
         let result = data.forward(&model);
         assert!(
@@ -1137,7 +1241,7 @@ mod tests {
             )
             .build();
 
-        let model = m.to_model(2.0, 2.0);
+        let model = m.to_model(2.0, 2.0).unwrap();
 
         assert_eq!(model.ntendon, 1, "expected 1 tendon");
         assert_eq!(model.nu, 1, "expected 1 actuator");
@@ -1152,7 +1256,7 @@ mod tests {
             .part(Part::new("body", Solid::sphere(5.0), pla()))
             .build();
 
-        let model = m.to_model(2.0, 2.0);
+        let model = m.to_model(2.0, 2.0).unwrap();
 
         assert_eq!(model.nbody, 2); // world + body
         assert_eq!(model.njnt, 0);
@@ -1175,7 +1279,7 @@ mod tests {
             ))
             .build();
 
-        let model = m.to_model(2.0, 2.0);
+        let model = m.to_model(2.0, 2.0).unwrap();
 
         assert_eq!(model.nbody, 2); // world + body
         assert_eq!(model.njnt, 1); // free joint
@@ -1209,7 +1313,7 @@ mod tests {
             ))
             .build();
 
-        let mut model = m.to_model(1.0, 0.3);
+        let mut model = m.to_model(1.0, 0.3).unwrap();
         model.add_ground_plane();
 
         let mut data = model.make_data();
@@ -1303,7 +1407,7 @@ mod tests {
             ))
             .build();
 
-        let mut model = mechanism.to_model(1.0, 1.0);
+        let mut model = mechanism.to_model(1.0, 1.0).unwrap();
         // Ground plane holds the socket so gravity creates relative force
         // between socket (resting on ground) and pin (falling inside socket).
         // Without ground, both bodies free-fall equally → zero relative velocity
@@ -1946,7 +2050,7 @@ mod tests {
             ))
             .build();
 
-        let mut model = mechanism.to_model(1.0, 1.0);
+        let mut model = mechanism.to_model(1.0, 1.0).unwrap();
         // Frictionless contacts — the whole point of this test
         for i in 0..model.ngeom {
             model.geom_friction[i] = Vector3::new(0.0, 0.0, 0.0);

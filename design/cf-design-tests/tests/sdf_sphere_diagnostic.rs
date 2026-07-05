@@ -164,7 +164,7 @@ fn diagnose_sdf_sphere_gap() {
             Vector3::z(),
         ))
         .build();
-    let mut cfd_model = m.to_model(1.0, 0.3);
+    let mut cfd_model = m.to_model(1.0, 0.3).unwrap();
     cfd_model.add_ground_plane();
 
     // Compare key fields for bodies 1 and 2 (the spheres)
@@ -421,7 +421,7 @@ fn diagnose_sdf_sphere_gap() {
 
     // Now build the REAL cf-design model with same SDF + mass as MJCF
     // and diff EVERY field to find what cf-design sets wrong.
-    let mut cfd_full = m.to_model(1.0, 0.3);
+    let mut cfd_full = m.to_model(1.0, 0.3).unwrap();
     cfd_full.add_ground_plane();
     // Patch to match MJCF exactly (mass, inertia, SDF)
     let cfd_sdf2 = Arc::new(Solid::sphere(5.0).sdf_grid_at(1.0).unwrap());
