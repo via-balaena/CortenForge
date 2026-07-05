@@ -76,8 +76,8 @@ impl Model {
                             // semantically wrong (wrap_objid holds site/geom IDs, not
                             // DOFs). Skip estimation and leave lengthrange = (0, 0).
                             if self.tendon_type[tid] == TendonType::Spatial {
-                                eprintln!(
-                                    "Warning: Unlimited spatial tendon {tid}: cannot \
+                                log::warn!(
+                                    "Unlimited spatial tendon {tid}: cannot \
                                      estimate actuator_lengthrange from joint ranges. \
                                      Specify explicit lengthrange in MJCF for muscle \
                                      actuators."
