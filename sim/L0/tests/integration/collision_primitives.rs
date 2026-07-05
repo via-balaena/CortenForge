@@ -1526,12 +1526,13 @@ fn sphere_stack_contacts() {
     }
 }
 
-/// Two free-body spheres stacking under gravity — tests dynamic contact stability.
-/// KNOWN ISSUE: analytical spheres also fail to stack. The constraint solver
-/// doesn't maintain sphere-on-sphere separation with free joints.
-/// This is NOT an SDF-specific problem — it affects all geom types.
+/// Two free-body spheres stacking under gravity at mm-scale with the default
+/// 0.002 s timestep. KNOWN GAP: the pair collapses (gap ≈ 0) in this regime —
+/// mm-scale contact stiffness outruns what the default timestep resolves.
+/// NOT universal: stacking succeeds at meter-scale and at mm-scale with a
+/// smaller timestep. See `docs/KNOWN_GAPS.md` for the measured boundary.
 #[test]
-#[ignore = "known issue: free-body stacking not implemented yet"]
+#[ignore = "known gap: mm-scale free-body stacking at default timestep — see docs/KNOWN_GAPS.md"]
 fn sphere_stack_dynamic() {
     let mjcf = r#"
         <mujoco model="dynamic_stack">
@@ -1582,177 +1583,6 @@ fn sphere_stack_dynamic() {
     // Gap should be ~10 (2 radii)
     let gap = z_up - z_lo;
     assert!((gap - 10.0).abs() < 2.0, "gap should be ~10, got {gap:.3}");
-}
-
-/// Same stacking test but at meter-scale (MuJoCo standard units).
-/// Tests whether the stacking failure is mm-scale-specific.
-#[test]
-#[ignore = "diagnostic: free-body stacking at meter scale"]
-fn sphere_stack_dynamic_meter_scale() {
-    let mjcf = r#"
-        <mujoco model="dynamic_stack_m">
-            <option gravity="0 0 -9.81" timestep="0.002"/>
-            <worldbody>
-                <geom name="floor" type="plane" size="10 10 0.1"/>
-                <body name="lower" pos="0 0 0.55">
-                    <joint type="free"/>
-                    <inertial pos="0 0 0" mass="0.655" diaginertia="0.00655 0.00655 0.00655"/>
-                    <geom type="sphere" size="0.5"/>
-                </body>
-                <body name="upper" pos="0 0 1.55">
-                    <joint type="free"/>
-                    <inertial pos="0 0 0" mass="0.655" diaginertia="0.00655 0.00655 0.00655"/>
-                    <geom type="sphere" size="0.5"/>
-                </body>
-            </worldbody>
-        </mujoco>
-    "#;
-
-    let model = load_model(mjcf).expect("Failed to load model");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward failed");
-
-    for _ in 0..2500 {
-        data.step(&model).expect("step failed");
-    }
-
-    let z_lo = data.qpos[2];
-    let z_up = data.qpos[9];
-
-    eprintln!(
-        "meter_scale_stack: z_lo={:.4} z_up={:.4} ncon={}",
-        z_lo, z_up, data.ncon
-    );
-    eprintln!("  gap={:.4} (expected 1.0)", z_up - z_lo);
-}
-
-/// MM-scale with DEFAULT solref (not tightened). Tests whether solref=0.005
-/// specifically causes the failure.
-#[test]
-#[ignore = "diagnostic: free-body stacking with default solref"]
-fn sphere_stack_dynamic_mm_default_solref() {
-    let mjcf = r#"
-        <mujoco model="dynamic_stack_mm_default">
-            <option gravity="0 0 -9810" timestep="0.002"/>
-            <worldbody>
-                <geom name="floor" type="plane" size="40 40 0.1"/>
-                <body name="lower" pos="0 0 5.5">
-                    <joint type="free"/>
-                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
-                    <geom type="sphere" size="5"/>
-                </body>
-                <body name="upper" pos="0 0 15.5">
-                    <joint type="free"/>
-                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
-                    <geom type="sphere" size="5"/>
-                </body>
-            </worldbody>
-        </mujoco>
-    "#;
-
-    let model = load_model(mjcf).expect("Failed to load model");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward failed");
-
-    for _ in 0..2500 {
-        data.step(&model).expect("step failed");
-    }
-
-    let z_lo = data.qpos[2];
-    let z_up = data.qpos[9];
-
-    eprintln!(
-        "mm_default_solref: z_lo={:.3} z_up={:.3} gap={:.3} ncon={}",
-        z_lo,
-        z_up,
-        z_up - z_lo,
-        data.ncon
-    );
-}
-
-/// MM-scale with smaller timestep. Tests whether the issue is Nyquist-related.
-#[test]
-#[ignore = "diagnostic: free-body stacking with small timestep"]
-fn sphere_stack_dynamic_mm_small_timestep() {
-    let mjcf = r#"
-        <mujoco model="dynamic_stack_mm_small_dt">
-            <option gravity="0 0 -9810" timestep="0.0001"/>
-            <worldbody>
-                <geom name="floor" type="plane" size="40 40 0.1"/>
-                <body name="lower" pos="0 0 5.5">
-                    <joint type="free"/>
-                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
-                    <geom type="sphere" size="5"/>
-                </body>
-                <body name="upper" pos="0 0 15.5">
-                    <joint type="free"/>
-                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
-                    <geom type="sphere" size="5"/>
-                </body>
-            </worldbody>
-        </mujoco>
-    "#;
-
-    let model = load_model(mjcf).expect("Failed to load model");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward failed");
-
-    // 50000 steps at 0.0001s = 5 seconds
-    for _ in 0..50000 {
-        data.step(&model).expect("step failed");
-    }
-
-    let z_lo = data.qpos[2];
-    let z_up = data.qpos[9];
-    eprintln!(
-        "mm_small_dt: z_lo={:.3} z_up={:.3} gap={:.3} ncon={}",
-        z_lo,
-        z_up,
-        z_up - z_lo,
-        data.ncon
-    );
-}
-
-/// MM-scale with 0.0005s timestep — compromise between speed and stability.
-#[test]
-#[ignore = "diagnostic: free-body stacking with mid timestep"]
-fn sphere_stack_dynamic_mm_mid_timestep() {
-    let mjcf = r#"
-        <mujoco model="dynamic_stack_mm_mid_dt">
-            <option gravity="0 0 -9810" timestep="0.0005"/>
-            <worldbody>
-                <geom name="floor" type="plane" size="40 40 0.1"/>
-                <body name="lower" pos="0 0 5.5">
-                    <joint type="free"/>
-                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
-                    <geom type="sphere" size="5"/>
-                </body>
-                <body name="upper" pos="0 0 15.5">
-                    <joint type="free"/>
-                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
-                    <geom type="sphere" size="5"/>
-                </body>
-            </worldbody>
-        </mujoco>
-    "#;
-
-    let model = load_model(mjcf).expect("Failed to load model");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward failed");
-
-    for _ in 0..10000 {
-        data.step(&model).expect("step failed");
-    }
-
-    let z_lo = data.qpos[2];
-    let z_up = data.qpos[9];
-    eprintln!(
-        "mm_mid_dt: z_lo={:.3} z_up={:.3} gap={:.3} ncon={}",
-        z_lo,
-        z_up,
-        z_up - z_lo,
-        data.ncon
-    );
 }
 
 /// SDF-SDF stacking: two SDF spheres should stack vertically.
