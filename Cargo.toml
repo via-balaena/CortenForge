@@ -23,7 +23,6 @@ members = [
     "tools/cf-scan-prep-core",
     # Scan → cast bridge CLI; consumes cf-scan-prep outputs + cast.toml,
     # writes v2.1 mold pieces + plugs + procedure.md.
-    # See `project_scan_to_cast_bridge_design.md`.
     "tools/cf-cast-cli",
     # Headless workflow core for the guided scan→cast Studio wizard.
     # The CLI + Slint GUI are thin clients over this. See MISSION.md.

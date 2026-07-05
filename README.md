@@ -28,7 +28,7 @@ CortenForge — including the **Cendrillon** application — is general-purpose 
 | **Mesh** | mesh-io, mesh-repair, mesh-sdf + 7 more | STL/OBJ/PLY/3MF I/O, repair, offset, shell, lattice, print validation |
 | **Scan → fabrication** | cf-scan-prep, cf-cast, mesh-printability | Scan cleanup, multi-material mold generation, printability gating, procedure generation |
 
-40+ crates. Pure Rust. Zero framework dependencies (Layer 0). Compiles to native, WASM, Python.
+60+ crates. Pure Rust. Zero framework dependencies (Layer 0). Compiles to native and WASM.
 
 ## Quick Start
 

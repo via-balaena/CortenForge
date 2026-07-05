@@ -594,9 +594,6 @@ the relevant slice:
 - [[project_layered_silicone_device_engineering_suite]] —
   banked requirements + architectural correction memo for
   cf-cast-cli's Option A.
-- [[project_scan_to_cast_bridge_design]] — cf-cast-cli
-  scaffolding decisions (will need a follow-up entry noting
-  the design.toml input mode added in slice 9).
 - [[project_v2_1_cf_cast_arc_complete]] — cf-cast v2.1
   architecture (Ribbon, per-layer plugs, detachable shells)
   this suite produces specs for.

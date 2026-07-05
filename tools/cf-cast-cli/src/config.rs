@@ -1,7 +1,6 @@
 //! `cast.toml` schema + deserialization + semantic validation.
 //!
-//! See `project_scan_to_cast_bridge_design.md` for the schema
-//! rationale. This module is pure (no I/O); higher-level orchestration
+//! This module is pure (no I/O); higher-level orchestration
 //! lives in [`crate::run`].
 
 use std::path::PathBuf;

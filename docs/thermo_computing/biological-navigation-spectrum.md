@@ -237,8 +237,18 @@ Experiment 6 — Regime transition characterization
 For each pair of adjacent regimes, simulate a Langevin circuit operating at the strategy of the lower regime and systematically increase the injection rate. Measure when performance begins to degrade and what the transition regime looks like. Identify the critical τ_circuit / τ_noise ratio at each transition. Map these to concrete circuit parameters (injection rate, noise floor, relaxation time) to provide actionable design guidance for where to switch encoding strategies.
 Experiment 7 — Fish lateral line in-situ sensing
 Implement a lateral-line-style sensor array in the simulated circuit: distributed local pressure sensors (equivalent to neuromasts) providing real-time vortex shedding frequency and local gradient information. Test whether this in-situ sensing reduces the number of pre-measurement calibration steps required before the X-encoder can operate effectively. Quantify the steady-state sensing accuracy as a function of array density and sensor placement.
-6.3 Connections to Existing CortenForge Infrastructure
-Simulation NeedCortenForge ModuleLangevin dynamicssim-core with Euler/Verlet/RK4 integratorsHill-type muscle for octopussim-physics Hill-type muscle modelsFluid-structure interactionsim-contact + sim-constraintRL for guidance law optimizationml-training (Burn)Sensor array (lateral line)sensor-fusion hardware-agnostic sensor types3D mesh reconstructionmesh-io, mesh-repairParametric geometry (M-shape wing)geometry/curve-types NURBSGPU-batched simulationssim-physics GPU batching
+6.3 Mapping to CortenForge Infrastructure
+
+| Simulation need | CortenForge module |
+|---|---|
+| Langevin dynamics | `sim-thermostat` / `sim-therm-env` (Langevin thermostats) + `sim-core` integrators (Euler / RK4) |
+| Hill-type muscle for octopus | `sim-core` (Hill-type muscle models) |
+| Fluid-structure interaction | *not yet built — no fluid solver in the workspace* |
+| RL for guidance-law optimization | `sim-ml-chassis` + `sim-rl` (custom autograd; PPO / TD3 / SAC) |
+| Sensor array (lateral line) | *not yet built — no sensor-fusion crate* |
+| 3D mesh reconstruction | `mesh-io`, `mesh-repair` |
+| Parametric geometry (M-shape wing) | `cf-geometry` / `cf-design` (SDF-based; NURBS not implemented) |
+| GPU-batched simulations | `sim-gpu` |
 
 Part VII: Strategic and Positioning Notes
 7.1 What Is Novel About This Program

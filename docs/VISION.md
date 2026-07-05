@@ -58,12 +58,13 @@ A `cf_design::Solid` created from implicit surfaces and smooth booleans is direc
 
 **Zero Bevy dependencies. Zero framework lock-in.**
 
-Every Layer 0 crate compiles to:
+Every Layer 0 crate is pure Rust with zero framework dependencies. Today it
+compiles to:
 - Native binaries
 - WASM for browsers
-- Python modules via PyO3
-- Embedded targets
-- Other game engines
+
+That same purity keeps the door open — no core changes required — to Python
+bindings (PyO3), embedded targets, and other game engines.
 
 This is non-negotiable. Layer 0 is the **permanent foundation**. Bevy could be replaced tomorrow and Layer 0 would remain intact.
 
@@ -147,27 +148,28 @@ A headless training run uses `sim-core` directly. A visualization demo uses `sim
 ### Domain Roadmap
 
 ```
-COMPLETE (40+ workspace crates):
+COMPLETE (60+ crates):
 ├── Mesh Domain (10 crates)
 │   mesh, mesh-types, mesh-io, mesh-repair, mesh-measure,
 │   mesh-offset, mesh-shell, mesh-lattice, mesh-sdf, mesh-printability
 ├── Design & Fabrication Domain (7 crates)
 │   cf-geometry, cf-spatial, cf-design, cf-cap-planes,
 │   cf-device-types, cf-device-geometry, cf-cast
-├── Simulation Domain (11 L0 + 4 L1)
+├── Simulation Domain (11 L0 + 5 L1)
 │   sim-types, sim-core, sim-soft, sim-mjcf, sim-urdf,
 │   sim-gpu, sim-ml-chassis, sim-rl, sim-opt, sim-therm-env, sim-thermostat,
+│   sim-coupling (keystone — differentiable soft↔rigid coupling),
 │   sim-bevy, sim-bevy-soft, sim-ml-chassis-bevy, cf-bevy-common
-├── Tools & apps (5)
-│   cf-scan-prep, cf-cast-cli, cf-device-design, cf-sim-research, cf-viewer
+├── Tools & apps (16)
+│   cf-studio (guided cast wizard), cf-codesign (co-design optimizer),
+│   cf-cast-cli, cf-scan-prep, cf-device-design, cf-msk-fit, cf-msk-lib,
+│   cf-osim, cf-sim-research, cf-viewer, …
 └── Dev & test
-    xtask, cf-design-tests, sim-conformance-tests, *-benches
+    xtask, cf-design-tests, sim-conformance-tests, sim-rl-baselines, *-benches
 
-NEXT PHASE (the capstone connective tissue — see MISSION.md):
-├── Differentiable soft↔rigid coupling   Keystone — gradients through tissue/skeleton/device contact
-├── Co-design optimizer                  Joint design + control-policy optimization
-├── System-ID / sim-to-real calibration  Fit material/tissue models from measurement
-└── PyO3 bindings                        Python access to Layer 0
+IN PROGRESS / NEXT (see MISSION.md):
+├── System-ID / sim-to-real calibration  Rigid-param recovery + real-pendulum fit landed; soft/contact fidelity open
+└── PyO3 bindings                        Python access to Layer 0 (not yet built)
 
 FUTURE:
 ├── B-Rep upgrade         Ship of Theseus swap of cf-design internals (if Fornjot matures)
@@ -294,7 +296,7 @@ There is no "done." Cathedrals are never finished; they're maintained and extend
 But there are milestones:
 
 ### Milestone 1: Foundation ✅
-- 40+ crates across mesh, design & fabrication, and simulation
+- 60+ crates across mesh, design & fabrication, simulation, and tooling
 - MuJoCo-aligned rigid-body physics with 79/79 conformance tests
 - Hyperelastic soft-body FEM (sim-soft: NeoHookean/Yeoh, SDF→tet, contact)
 - Implicit-surface design kernel with mechanism assembly (cf-design)
