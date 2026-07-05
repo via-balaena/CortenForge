@@ -28,7 +28,7 @@ use cortenforge::cf_cast_cli::{
     SharedScanSdf, load_scan_sdf, parse_centerline_from_prep_toml, resolve_canal_spec,
 };
 use cortenforge::cf_design::{Aabb, Solid};
-use cortenforge::mesh_types::IndexedMesh;
+use cortenforge::mesh::types::IndexedMesh;
 use nalgebra::Point3;
 
 use crate::error::{EngineError, Result};

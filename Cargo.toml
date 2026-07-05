@@ -485,6 +485,11 @@ members = [
     "sim/L1/sim-bevy-soft",
     # Layer-2 keystone: staggered forward soft↔rigid coupling (sim-soft ↔ sim-core).
     "sim/L1/coupling",
+
+    # Simulation umbrella — one crate re-exporting the headless sim spine
+    # (rigid + soft + coupling + model I/O + RL/opt). Mirrors `mesh/mesh`;
+    # re-exported by the `cortenforge` facade as `cortenforge::sim`.
+    "sim/sim",
 ]
 
 # Exclude directories that aren't workspace members
@@ -715,7 +720,11 @@ cf-cast-cli = { path = "tools/cf-cast-cli" }
 pbit-fw-core = { path = "firmware/pbit-fw-core" }
 
 # The SDK facade — apps depend on this single crate (see MISSION.md).
-cortenforge = { path = "cortenforge" }
+# default-features off at the workspace baseline so each consumer opts into
+# only the SDK domains it uses (see the facade's `[features]`); members add
+# `features = [...]`. A direct `cargo add cortenforge` still gets all domains
+# via the facade's own `default`. Only cf-studio-{engine,gui} consume it.
+cortenforge = { path = "cortenforge", default-features = false }
 
 # CortenForge Studio — guided scan→cast wizard (see MISSION.md).
 # cf-studio-core: headless workflow spine. cf-studio-engine: the
@@ -762,6 +771,8 @@ sim-therm-env = { path = "sim/L0/therm-env" }
 sim-soft = { path = "sim/L0/soft" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-coupling = { path = "sim/L1/coupling" }
+# Headless sim umbrella (re-exports the spine above) — see sim/sim.
+sim = { path = "sim/sim" }
 sim-bevy = { path = "sim/L1/bevy" }
 sim-ml-chassis-bevy = { path = "sim/L1/ml-chassis-bevy" }
 sim-bevy-soft = { path = "sim/L1/sim-bevy-soft" }

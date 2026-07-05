@@ -70,7 +70,7 @@ impl MeshData {
 /// # Errors
 /// The loader's error message if the file is missing or unparseable.
 pub fn load_mesh_data(path: &Path) -> Result<MeshData, String> {
-    let mesh = cortenforge::mesh_io::load_mesh(path).map_err(|e| e.to_string())?;
+    let mesh = cortenforge::mesh::io::load_mesh(path).map_err(|e| e.to_string())?;
     let positions: Vec<[f32; 3]> = mesh
         .vertices
         .iter()
@@ -79,13 +79,13 @@ pub fn load_mesh_data(path: &Path) -> Result<MeshData, String> {
     Ok(mesh_data_from_geometry(&positions, &mesh.faces))
 }
 
-/// Build render-ready [`MeshData`] from an in-memory [`cortenforge::mesh_types::IndexedMesh`] — the
+/// Build render-ready [`MeshData`] from an in-memory [`cortenforge::mesh::types::IndexedMesh`] — the
 /// live working mesh the step-2 [`EditSession`] mutates. Re-derived after
 /// every edit so the viewport reflects the current state.
 ///
 /// [`EditSession`]: cf_studio_engine::EditSession
 #[must_use]
-pub fn mesh_data_from_indexed(mesh: &cortenforge::mesh_types::IndexedMesh) -> MeshData {
+pub fn mesh_data_from_indexed(mesh: &cortenforge::mesh::types::IndexedMesh) -> MeshData {
     let positions: Vec<[f32; 3]> = mesh
         .vertices
         .iter()

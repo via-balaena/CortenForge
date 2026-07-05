@@ -1,6 +1,6 @@
 [package]
 name = "cortenforge"
-description = "The CortenForge SDK facade — one stable dependency that re-exports the public SDK crates. Applications depend on this single crate and reach the SDK through it (cortenforge::cf_cast, cortenforge::mesh_io, …) so the SDK's internal crate structure can evolve behind one contract. See MISSION.md."
+description = "The CortenForge SDK facade — one stable dependency that re-exports the public SDK crates. Applications depend on this single crate and reach the SDK through it (cortenforge::sim, cortenforge::mesh, cortenforge::cf_cast, …) so the SDK's internal crate structure can evolve behind one contract. See MISSION.md."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,35 +9,77 @@ authors.workspace = true
 rust-version.workspace = true
 publish = false
 
-# The SDK public surface. Aggregates the L0/L0-io/L0-integration library crates,
-# so it is itself L0-integration. It is deliberately Bevy-free: it re-exports
-# cf-device-types WITHOUT that crate's optional `bevy` feature, so the facade
-# (and every app compiling against it) stays headless.
+# The SDK public surface. Aggregates the whole headless spine — including the
+# L1 `sim-coupling` keystone (via the `sim` umbrella) — so the facade is itself
+# L1. It stays deliberately Bevy-free and GPU-free: it re-exports only headless
+# crates (the `sim`/`mesh` umbrellas exclude every Bevy/wgpu crate, and
+# cf-device-types is pulled WITHOUT its optional `bevy` feature), so the facade
+# and every app compiling against it stay headless. Bevy-freedom is enforced at
+# the leaf crates' own tiers (sim-core, mesh-*, … ban bevy/winit).
 [package.metadata.cortenforge]
-tier = "L0-integration"
+tier = "L1"
 
 [lints]
 workspace = true
 
+# One feature per SDK domain, so a consumer that needs only part of the SDK
+# doesn't pay to build the rest. `default` enables all three, so a plain
+# `cargo add cortenforge` still yields the whole SDK; a mesh-only app opts out
+# of the sim spine with `default-features = false, features = ["mesh"]`.
+[features]
+default = ["sim", "mesh", "fabrication"]
+# The flagship headless simulation & co-design spine — `cortenforge::sim`.
+# Also activates the shared geometry kernels its types surface through.
+sim = ["dep:sim", "dep:cf-geometry", "dep:cf-spatial"]
+# The mesh-processing toolkit — `cortenforge::mesh`.
+mesh = ["dep:mesh"]
+# The design → fabrication path (`cf_design` / `cf_cast` / scan-prep / …).
+# Also activates the shared geometry kernels the design kernel builds on.
+fabrication = [
+    "dep:cf-design",
+    "dep:cf-cap-planes",
+    "dep:cf-device-types",
+    "dep:cf-scan-prep-core",
+    "dep:cf-cast",
+    "dep:cf-cast-cli",
+    "dep:cf-geometry",
+    "dep:cf-spatial",
+]
+
 [dependencies]
 # Each dependency is re-exported verbatim from src/lib.rs — the facade adds no
 # logic, so every dep's justification is "it IS part of the SDK public surface."
-# Re-exported as `cortenforge::cf_cap_planes` — cap-plane parsing.
-cf-cap-planes = { workspace = true }
-# Re-exported as `cortenforge::cf_cast` — multi-material mold generation.
-cf-cast = { workspace = true }
-# Re-exported as `cortenforge::cf_cast_cli` — the scan→cast bridge.
-cf-cast-cli = { workspace = true }
+# All are optional and activated by the domain features above.
+
+# --- Simulation & co-design (the flagship headless spine) ---
+# Re-exported as `cortenforge::sim` — the headless sim umbrella (rigid +
+# soft-FEM + the L1 coupling keystone + model I/O + RL/opt). Bevy/GPU-free.
+sim = { workspace = true, optional = true }
+
+# --- Mesh processing ---
+# Re-exported as `cortenforge::mesh` — the full mesh toolkit umbrella
+# (`mesh::io`, `mesh::repair`, `mesh::sdf`, …). The umbrella already enables
+# `mesh-io/threemf`, so 3MF scan I/O is available through `cortenforge::mesh::io`.
+mesh = { workspace = true, optional = true }
+
+# --- Foundation kernels (shared by `sim` + `fabrication`) ---
+# Re-exported as `cortenforge::cf_geometry` — geometry primitives (`Aabb`,
+# `Shape`, `Sdf`); their types already surface through the sim/design crates.
+cf-geometry = { workspace = true, optional = true }
+# Re-exported as `cortenforge::cf_spatial` — spatial-math primitives.
+cf-spatial = { workspace = true, optional = true }
+
+# --- Design & fabrication ---
 # Re-exported as `cortenforge::cf_design` — implicit-surface design kernel.
-cf-design = { workspace = true }
+cf-design = { workspace = true, optional = true }
+# Re-exported as `cortenforge::cf_cap_planes` — cap-plane parsing.
+cf-cap-planes = { workspace = true, optional = true }
 # Re-exported as `cortenforge::cf_device_types` — device-design domain types.
 # Its `bevy` feature is intentionally NOT enabled — the facade stays headless.
-cf-device-types = { workspace = true }
+cf-device-types = { workspace = true, optional = true }
 # Re-exported as `cortenforge::cf_scan_prep_core` — headless scan-prep.
-cf-scan-prep-core = { workspace = true }
-# Re-exported as `cortenforge::mesh_io` — mesh I/O; `threemf` for 3MF scans.
-mesh-io = { workspace = true, features = ["threemf"] }
-# Re-exported as `cortenforge::mesh_repair` — mesh repair / welding.
-mesh-repair = { workspace = true }
-# Re-exported as `cortenforge::mesh_types` — core mesh types.
-mesh-types = { workspace = true }
+cf-scan-prep-core = { workspace = true, optional = true }
+# Re-exported as `cortenforge::cf_cast` — multi-material mold generation.
+cf-cast = { workspace = true, optional = true }
+# Re-exported as `cortenforge::cf_cast_cli` — the scan→cast bridge.
+cf-cast-cli = { workspace = true, optional = true }

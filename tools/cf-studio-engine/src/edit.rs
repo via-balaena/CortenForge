@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 
 use cortenforge::cf_scan_prep_core; // module import keeps call sites short
 use cortenforge::cf_scan_prep_core::{AppliedReconstruct, DetectedCapLoop, ReconstructShape};
-use cortenforge::mesh_repair::{remove_unreferenced_vertices, weld_vertices};
-use cortenforge::mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
+use cortenforge::mesh::repair::{remove_unreferenced_vertices, weld_vertices};
+use cortenforge::mesh::types::{Aabb, Bounded, IndexedMesh, Point3};
 use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::error::{EngineError, Result};
@@ -128,7 +128,7 @@ impl EditSession {
     /// - [`EngineError::EmptyScan`] if it parses but has no geometry.
     pub fn load(path: &Path, scale_to_m: f64) -> Result<Self> {
         let mut mesh =
-            cortenforge::mesh_io::load_mesh(path).map_err(|e| EngineError::ScanLoad {
+            cortenforge::mesh::io::load_mesh(path).map_err(|e| EngineError::ScanLoad {
                 path: path.display().to_string(),
                 reason: e.to_string(),
             })?;
@@ -818,7 +818,7 @@ fn floor_leveling_rotation(normal: Vector3<f64>) -> Option<UnitQuaternion<f64>> 
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use cortenforge::mesh_types::Point3;
+    use cortenforge::mesh::types::Point3;
 
     use super::*;
 
@@ -1243,7 +1243,7 @@ mod tests {
             "SAVED: {:?}\n  {} faces, {stl_bytes} bytes\n  prep: {:?}",
             report.cleaned_stl, report.face_count, report.prep_toml,
         );
-        let reloaded = cortenforge::mesh_io::load_stl(&report.cleaned_stl).unwrap();
+        let reloaded = cortenforge::mesh::io::load_stl(&report.cleaned_stl).unwrap();
         eprintln!(
             "cleaned STL reloads: {} faces, {} verts",
             reloaded.faces.len(),
@@ -1307,7 +1307,7 @@ mod tests {
             "prep records the cleaned STL"
         );
 
-        let reloaded = cortenforge::mesh_io::load_stl(&report.cleaned_stl).unwrap();
+        let reloaded = cortenforge::mesh::io::load_stl(&report.cleaned_stl).unwrap();
         assert!(
             !reloaded.faces.is_empty(),
             "the cleaned STL reloads as a mesh"

@@ -34,7 +34,7 @@ CortenForge — including the **Cendrillon** application — is general-purpose 
 
 ### Use the SDK
 
-Applications depend on a single crate — the **`cortenforge` facade** — and reach the SDK through it (`cortenforge::mesh_io`, `cortenforge::cf_cast`, …), so the internal crate structure can evolve behind one stable contract.
+Applications depend on a single crate — the **`cortenforge` facade** — and reach the whole SDK through it, so the internal crate structure can evolve behind one stable contract.
 
 ```toml
 [dependencies]
@@ -43,11 +43,21 @@ cortenforge = { git = "https://github.com/via-balaena/CortenForge" }
 ```
 
 ```rust
-// Everything is reached through the one facade crate.
-use cortenforge::{mesh_io, mesh_repair, cf_scan_prep_core, cf_cast, cf_cast_cli};
+// Two domain umbrellas expose the whole toolkit through one dependency:
+use cortenforge::sim;   // rigid + soft physics, soft↔rigid coupling, RL/opt
+use cortenforge::mesh;  // load / repair / measure / print meshes
+
+// …alongside the design & fabrication path:
+use cortenforge::{cf_design, cf_scan_prep_core, cf_cast, cf_cast_cli};
 ```
 
-Today the facade exposes the **scan → design → fabrication** path (load and repair a scan, then drive it to a printable multi-material mold). The **simulation and differentiable co-design spine** — rigid-body (`sim-core`), soft-body FEM (`sim-soft`), the soft↔rigid coupling, and the RL/optimization stack — currently lives in its own `sim-*` crates and will be unified into the facade in an upcoming release. See **[MISSION.md](./MISSION.md)**.
+The facade is a headless capability map across three domains:
+
+- **Simulation & co-design** — `cortenforge::sim`: rigid-body dynamics (`sim::core`), soft-body FEM (`sim::soft`), the differentiable soft↔rigid **coupling keystone** (`sim::coupling`), model I/O (`sim::mjcf` / `sim::urdf`), and the learning + optimization stack (`sim::ml_chassis` / `sim::rl` / `sim::opt`).
+- **Mesh processing** — `cortenforge::mesh`: `mesh::io` (STL/OBJ/PLY/3MF), `mesh::repair`, `mesh::sdf`, `mesh::shell`, `mesh::measure`, `mesh::printability`, …
+- **Design → fabrication** — the implicit-surface design kernel (`cf_design`), headless scan-prep (`cf_scan_prep_core`), and multi-material mold generation (`cf_cast` / `cf_cast_cli`).
+
+Bevy/GUI/GPU crates are deliberately excluded, so every app compiling against the facade stays headless. See **[MISSION.md](./MISSION.md)**.
 
 ### Build from source
 
