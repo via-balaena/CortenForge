@@ -194,7 +194,7 @@ macro_rules! flag_test {
 // ============================================================================
 
 #[test]
-#[ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 step 0 — equality constraint solver"]
+#[ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"]
 fn golden_baseline() {
     // Flag=0 with is_enable=false → disableflags |= 0 → no-op → baseline.
     run_flag_test(0, false, "baseline_qacc.npy");
@@ -208,136 +208,132 @@ flag_test!(
     golden_disable_constraint,
     disable,
     DISABLE_CONSTRAINT,
-    "disable_constraint_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~25.9 dof 0 step 1 — constraint solver divergence"
+    "disable_constraint_qacc.npy"
 );
 flag_test!(
     golden_disable_equality,
     disable,
     DISABLE_EQUALITY,
     "disable_equality_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~0.002 dof 0 — residual dynamics gap without equality"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_frictionloss,
     disable,
     DISABLE_FRICTIONLOSS,
-    "disable_frictionloss_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~3.99 dof 0 — frictionloss computation"
+    "disable_frictionloss_qacc.npy"
 );
 flag_test!(
     golden_disable_limit,
     disable,
     DISABLE_LIMIT,
     "disable_limit_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_contact,
     disable,
     DISABLE_CONTACT,
     "disable_contact_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_spring,
     disable,
     DISABLE_SPRING,
     "disable_spring_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_damper,
     disable,
     DISABLE_DAMPER,
     "disable_damper_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_gravity,
     disable,
     DISABLE_GRAVITY,
     "disable_gravity_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~0.40 dof 0 — equality constraint solver (gravity-off)"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_clampctrl,
     disable,
     DISABLE_CLAMPCTRL,
     "disable_clampctrl_qacc.npy",
-    ignore =
-        "CONFORMANCE GAP: qacc diff ~2.48 dof 0 — equality constraint + ctrl clamp interaction"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_warmstart,
     disable,
     DISABLE_WARMSTART,
     "disable_warmstart_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_filterparent,
     disable,
     DISABLE_FILTERPARENT,
     "disable_filterparent_qacc.npy",
-    ignore =
-        "CONFORMANCE GAP: qacc diff ~51.9 dof 0 — parent-child collision filter implementation"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_actuation,
     disable,
     DISABLE_ACTUATION,
     "disable_actuation_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_refsafe,
     disable,
     DISABLE_REFSAFE,
     "disable_refsafe_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_sensor,
     disable,
     DISABLE_SENSOR,
     "disable_sensor_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_midphase,
     disable,
     DISABLE_MIDPHASE,
     "disable_midphase_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_eulerdamp,
     disable,
     DISABLE_EULERDAMP,
     "disable_eulerdamp_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_autoreset,
     disable,
     DISABLE_AUTORESET,
     "disable_autoreset_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_nativeccd,
     disable,
     DISABLE_NATIVECCD,
     "disable_nativeccd_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_disable_island,
     disable,
     DISABLE_ISLAND,
     "disable_island_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 
 // ============================================================================
@@ -349,40 +345,40 @@ flag_test!(
     enable,
     ENABLE_OVERRIDE,
     "enable_override_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_enable_energy,
     enable,
     ENABLE_ENERGY,
     "enable_energy_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_enable_fwdinv,
     enable,
     ENABLE_FWDINV,
     "enable_fwdinv_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_enable_invdiscrete,
     enable,
     ENABLE_INVDISCRETE,
     "enable_invdiscrete_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_enable_multiccd,
     enable,
     ENABLE_MULTICCD,
     "enable_multiccd_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
 flag_test!(
     golden_enable_sleep,
     enable,
     ENABLE_SLEEP,
     "enable_sleep_qacc.npy",
-    ignore = "CONFORMANCE GAP: qacc diff ~1.69 dof 0 — equality constraint solver"
+    ignore = "known conformance gap: constraint-solve qacc residual vs MuJoCo 3.4.0 golden — see docs/KNOWN_GAPS.md"
 );
