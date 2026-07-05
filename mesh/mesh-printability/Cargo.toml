@@ -1,9 +1,11 @@
 [package]
 name = "mesh-printability"
-version = "0.8.0"
-edition = "2024"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Print validation and manufacturing analysis for triangle meshes"
+repository.workspace = true
 keywords = ["mesh", "3d-printing", "validation", "manufacturing", "fdm"]
 categories = ["graphics", "game-development", "science"]
 

@@ -1,10 +1,11 @@
 [package]
 name = "mesh-repair"
 version.workspace = true
-edition = "2024"
-license = "MIT OR Apache-2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Mesh repair operations: validation, welding, degenerate removal, hole filling, winding correction, component analysis, self-intersection detection"
-repository = "https://github.com/cortenforge/cortenforge"
+repository.workspace = true
 keywords = ["mesh", "repair", "3d", "geometry", "manifold"]
 categories = ["algorithms", "graphics", "game-development"]
 
