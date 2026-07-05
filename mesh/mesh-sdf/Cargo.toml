@@ -1,10 +1,11 @@
 [package]
 name = "mesh-sdf"
 version.workspace = true
-edition = "2024"
-license = "MIT OR Apache-2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Signed distance field computation for triangle meshes"
-repository = "https://github.com/cortenforge/cortenforge"
+repository.workspace = true
 keywords = ["mesh", "sdf", "distance-field", "3d", "geometry"]
 categories = ["algorithms", "graphics", "game-development"]
 

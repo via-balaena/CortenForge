@@ -16,8 +16,8 @@ We maintain **A-grade academic standards** for all code. This is the cultural fo
 
 ```bash
 # Clone the repository
-git clone https://github.com/cortenforge/forge.git
-cd forge
+git clone https://github.com/via-balaena/CortenForge.git
+cd CortenForge
 
 # Build - git hooks are installed automatically
 cargo build
@@ -168,17 +168,19 @@ Every push and PR runs:
 ## Project Structure
 
 ```
-forge/
+CortenForge/
 ├── CONTRIBUTING.md      ← You are here
 ├── docs/                ← Project documentation
 │   ├── STANDARDS.md     ← Full quality criteria
 │   └── archive/         ← Historical docs
 ├── xtask/               ← Quality enforcement tool
 │
-├── design/              ← Foundation & design kernel (3 crates)
+├── cortenforge/         ← The SDK facade — one stable public crate (start here)
+├── design/              ← Foundation & design kernel (8 crates)
 ├── mesh/                ← Mesh pipeline (10 crates + umbrella)
-├── sim/                 ← Physics simulation (7 crates)
-└── examples/            ← Working showcases (6 examples)
+├── sim/                 ← Physics simulation (~20 crates across L0/L1)
+├── tools/               ← CLIs, GUIs & app engines (Studio, cast, MSK, co-design)
+└── examples/            ← Working showcases (100+ examples)
 ```
 
 ### Per-Crate Structure
@@ -303,7 +305,7 @@ docs(mesh-types): add examples to all public functions
 - **Questions:** Open a Discussion
 - **Bugs:** Open an Issue with reproduction steps
 - **Features:** Open an Issue for discussion first
-- **Security:** [Report a vulnerability privately](https://github.com/cortenforge/forge/security/advisories/new) via GitHub Security Advisories (do not open a public issue) — see [docs/SECURITY.md](docs/SECURITY.md)
+- **Security:** [Report a vulnerability privately](https://github.com/via-balaena/CortenForge/security/advisories/new) via GitHub Security Advisories (do not open a public issue) — see [docs/SECURITY.md](docs/SECURITY.md)
 
 ---
 

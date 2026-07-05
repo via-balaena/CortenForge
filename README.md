@@ -32,11 +32,30 @@ CortenForge — including the **Cendrillon** application — is general-purpose 
 
 ## Quick Start
 
+### Use the SDK
+
+Applications depend on a single crate — the **`cortenforge` facade** — and reach the SDK through it (`cortenforge::mesh_io`, `cortenforge::cf_cast`, …), so the internal crate structure can evolve behind one stable contract.
+
+```toml
+[dependencies]
+# Publishing to crates.io is in progress; until then, depend on it via git:
+cortenforge = { git = "https://github.com/via-balaena/CortenForge" }
+```
+
+```rust
+// Everything is reached through the one facade crate.
+use cortenforge::{mesh_io, mesh_repair, cf_scan_prep_core, cf_cast, cf_cast_cli};
+```
+
+Today the facade exposes the **scan → design → fabrication** path (load and repair a scan, then drive it to a printable multi-material mold). The **simulation and differentiable co-design spine** — rigid-body (`sim-core`), soft-body FEM (`sim-soft`), the soft↔rigid coupling, and the RL/optimization stack — currently lives in its own `sim-*` crates and will be unified into the facade in an upcoming release. See **[MISSION.md](./MISSION.md)**.
+
+### Build from source
+
 ```bash
 git clone https://github.com/via-balaena/CortenForge.git
 cd CortenForge
 cargo build --workspace
-cargo xtask grade <crate-name>
+cargo xtask grade <crate-name>   # run the quality gate on a single crate
 ```
 
 ## Links

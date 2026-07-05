@@ -496,8 +496,8 @@ exclude = [
 version = "1.0.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/cortenforge/forge"
-authors = ["CortenForge Team"]
+repository = "https://github.com/via-balaena/CortenForge"
+authors = ["Via Balaena"]
 rust-version = "1.87"
 
 [workspace.lints.rust]

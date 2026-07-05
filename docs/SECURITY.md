@@ -12,7 +12,7 @@
 **Do not report security vulnerabilities through public GitHub issues.**
 
 Instead, please report them privately through GitHub Security Advisories:
-[**Report a vulnerability**](https://github.com/cortenforge/forge/security/advisories/new).
+[**Report a vulnerability**](https://github.com/via-balaena/CortenForge/security/advisories/new).
 This opens a private advisory visible only to the maintainers — no email or
 third-party domain is involved.
 
@@ -108,7 +108,7 @@ We use multiple layers of dependency security:
 ## Security Advisories
 
 Security advisories will be published to:
-- [GitHub Security Advisories](https://github.com/cortenforge/forge/security/advisories)
+- [GitHub Security Advisories](https://github.com/via-balaena/CortenForge/security/advisories)
 - The RustSec Advisory Database (for published crates)
 
 ## Disclosure Policy
@@ -120,5 +120,5 @@ Security advisories will be published to:
 
 ## Contact
 
-- Security issues: [Report a vulnerability](https://github.com/cortenforge/forge/security/advisories/new) (private GitHub Security Advisory)
-- General issues: [GitHub Issues](https://github.com/cortenforge/forge/issues)
+- Security issues: [Report a vulnerability](https://github.com/via-balaena/CortenForge/security/advisories/new) (private GitHub Security Advisory)
+- General issues: [GitHub Issues](https://github.com/via-balaena/CortenForge/issues)
