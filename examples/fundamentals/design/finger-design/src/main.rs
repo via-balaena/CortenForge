@@ -213,7 +213,9 @@ fn setup(
     // ── Right: sim-driven animated finger (SDF-native physics) ─────────
     // SDF resolution must be finer than the thinnest wall (socket wall = 0.6mm).
     // Visual resolution matches the static mesh for visual consistency.
-    let model = mechanism.to_model(0.5, 0.3);
+    let model = mechanism
+        .to_model(0.5, 0.3)
+        .expect("failed to build sim model");
 
     println!(
         "  Physics: {} bodies, {} joints, {} DOFs, {} geoms, {} actuators",

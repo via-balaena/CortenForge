@@ -150,7 +150,9 @@ fn setup(
     );
 
     // ── SDF-native physics model ────────────────────────────────────
-    let model = mechanism.to_model(1.0, 0.8);
+    let model = mechanism
+        .to_model(1.0, 0.8)
+        .expect("failed to build sim model");
 
     println!(
         "  Physics model: {} bodies, {} joints, {} DOFs, {} geoms, {} meshes",

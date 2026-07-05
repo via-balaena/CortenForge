@@ -97,7 +97,9 @@ fn main() {
         .build();
 
     // SDF: 1.0mm collision grid, 0.3mm visual mesh (smooth enough for CSG seams)
-    let mut model = mechanism.to_model(1.0, 0.3);
+    let mut model = mechanism
+        .to_model(1.0, 0.3)
+        .expect("failed to build sim model");
     model.add_ground_plane();
 
     // 500Hz — REFSAFE auto-clamps solref[0] to max(0.005, 2×0.002) = 0.005,

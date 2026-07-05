@@ -237,7 +237,9 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
 
     // ── Simulate ─────────────────────────────────────────────────────
     println!("\nSimulating 100 steps with applied forces...");
-    let model = mechanism.to_model(1.0, 0.8);
+    let model = mechanism
+        .to_model(1.0, 0.8)
+        .expect("failed to build sim model");
     let mut data = model.make_data();
 
     // Apply forces and step
@@ -411,7 +413,9 @@ fn setup(
     let pipeline = run_pipeline(&mechanism);
 
     // ── Load physics model for initial poses ───────────────────────
-    let model = mechanism.to_model(1.0, 0.8);
+    let model = mechanism
+        .to_model(1.0, 0.8)
+        .expect("failed to build sim model");
     let mut data = model.make_data();
     let _ = data.forward(&model);
 

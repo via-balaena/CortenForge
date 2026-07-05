@@ -82,6 +82,20 @@ pub enum MechanismError {
     },
     /// A part is not referenced by any joint (neither as parent nor child).
     OrphanPart(String),
+    /// A part's solid has no finite bounding box (e.g. a bare infinite
+    /// `Plane`), so it cannot be voxelized into an SDF collision grid.
+    ///
+    /// Surfaced by [`Mechanism::to_model`](super::Mechanism::to_model), not
+    /// by [`validate`](MechanismBuilder::validate): an unbounded part is
+    /// still exportable via `to_shapes`/`to_mjcf`/`to_stl_kit` (which skip
+    /// it or emit an empty mesh); only physics voxelization requires bounds.
+    PartHasNoFiniteBounds(String),
+    /// A part is not reachable from any root body, so it cannot be placed
+    /// in the kinematic tree — its joints form a cycle (e.g. A is B's child
+    /// and B is A's child, with no path to `world`).
+    ///
+    /// Surfaced by [`Mechanism::to_model`](super::Mechanism::to_model).
+    PartNotReachable(String),
 }
 
 impl fmt::Display for MechanismError {
@@ -106,6 +120,16 @@ impl fmt::Display for MechanismError {
             Self::OrphanPart(name) => {
                 write!(f, "orphan part: \"{name}\" not connected by any joint")
             }
+            Self::PartHasNoFiniteBounds(name) => write!(
+                f,
+                "part \"{name}\" has no finite bounds (e.g. an infinite plane); \
+                 it cannot be voxelized into a collision geom"
+            ),
+            Self::PartNotReachable(name) => write!(
+                f,
+                "part \"{name}\" is not reachable from any root body; \
+                 check for a joint cycle"
+            ),
         }
     }
 }
@@ -821,6 +845,23 @@ mod tests {
         // "a" and "b" should NOT be orphaned.
         assert!(!errors.contains(&MechanismError::OrphanPart("a".into())));
         assert!(!errors.contains(&MechanismError::OrphanPart("b".into())));
+    }
+
+    // ── 13b. Unbounded parts are NOT a validation error ─────────────
+
+    #[test]
+    fn unbounded_part_passes_validation() {
+        // An unbounded part (bare infinite plane) is still exportable via
+        // to_shapes/to_mjcf/to_stl_kit, so it must NOT be rejected at build
+        // time. `to_model` alone requires finite bounds (see its tests).
+        let errors = Mechanism::builder("with_floor")
+            .part(Part::new("floor", Solid::plane(Vector3::z(), 0.0), pla()))
+            .validate();
+
+        assert!(
+            errors.is_empty(),
+            "unbounded part should pass validation, got {errors:?}"
+        );
     }
 
     // ── 14. Multiple errors collected ───────────────────────────────

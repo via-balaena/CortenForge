@@ -72,7 +72,9 @@ fn main() {
         ))
         .build();
 
-    let mut model = mechanism.to_model(1.0, 1.0);
+    let mut model = mechanism
+        .to_model(1.0, 1.0)
+        .expect("failed to build sim model");
     model.add_ground_plane();
 
     model.timestep = 0.002;

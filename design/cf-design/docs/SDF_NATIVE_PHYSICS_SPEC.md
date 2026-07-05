@@ -124,7 +124,7 @@ let model = sim_mjcf::load_model(&mjcf_xml).expect("...");
 
 With:
 ```rust
-let model = mechanism.to_model(0.5, 0.3);
+let model = mechanism.to_model(0.5, 0.3)?;
 // sdf_resolution=0.5mm: resolves 0.6mm socket wall (~1.2 cells)
 // visual_resolution=0.3mm: high-res display mesh (matches static view)
 ```

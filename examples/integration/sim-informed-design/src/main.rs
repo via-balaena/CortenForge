@@ -146,7 +146,9 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vector3<f64>, f32)>, f64) {
 
     // ── Simulate ─────────────────────────────────────────────────────
     println!("\nStage 2: Simulate under load");
-    let model = mechanism.to_model(1.0, 0.8);
+    let model = mechanism
+        .to_model(1.0, 0.8)
+        .expect("failed to build sim model");
 
     println!("  Model: {} bodies, {} geoms", model.nbody, model.ngeom);
 
