@@ -1,6 +1,8 @@
 [package]
 name = "sim-gpu"
 description = "GPU-accelerated physics pipeline for CortenForge simulation"
+keywords = ["gpu", "physics", "simulation", "wgpu", "compute"]
+categories = ["simulation", "science", "graphics"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

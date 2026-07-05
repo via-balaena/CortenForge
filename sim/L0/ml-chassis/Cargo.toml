@@ -1,6 +1,8 @@
 [package]
 name = "sim-ml-chassis"
 description = "Algorithm chassis: traits, primitives, Competition runner — the foundation every CortenForge algorithm crate bolts onto"
+keywords = ["machine-learning", "autograd", "rl", "optimization", "framework"]
+categories = ["science", "algorithms", "mathematics"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

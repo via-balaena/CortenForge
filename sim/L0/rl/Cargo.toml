@@ -1,6 +1,8 @@
 [package]
 name = "sim-rl"
 description = "Generic RL baselines (CEM, REINFORCE, PPO, TD3, SAC) — the control group for every CortenForge competition"
+keywords = ["rl", "ppo", "sac", "td3", "reinforcement"]
+categories = ["science", "algorithms", "simulation"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

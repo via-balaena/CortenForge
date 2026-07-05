@@ -1,6 +1,8 @@
 [package]
 name = "cf-geometry"
 description = "Shared geometric kernel for CortenForge"
+keywords = ["geometry", "sdf", "3d", "kernel", "cad"]
+categories = ["mathematics", "graphics", "algorithms"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

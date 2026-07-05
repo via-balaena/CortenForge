@@ -1,6 +1,8 @@
 [package]
 name = "cf-cap-planes"
 description = "Shared cap-plane abstraction for CortenForge scan-prep / device-design / cast tools — parses cf-scan-prep's [caps] block and strips cap-polygon faces from a cleaned scan so consumers can build cap-stripped (dome-wall-only) signed-distance fields for the pinned-floor shell primitive"
+keywords = ["geometry", "mesh", "sdf", "3d", "scan"]
+categories = ["graphics", "mathematics"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

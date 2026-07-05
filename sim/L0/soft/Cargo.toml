@@ -1,6 +1,8 @@
 [package]
 name = "sim-soft"
 description = "Soft-body walking skeleton — seven-trait surface over faer + chassis tape. Phase B fills in bodies."
+keywords = ["physics", "simulation", "soft-body", "fem", "differentiable"]
+categories = ["simulation", "science", "mathematics"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

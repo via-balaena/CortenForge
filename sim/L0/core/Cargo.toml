@@ -1,6 +1,8 @@
 [package]
 name = "sim-core"
 description = "Physics simulation core: Model/Data architecture, MuJoCo pipeline, collision, integration"
+keywords = ["physics", "simulation", "mujoco", "robotics", "dynamics"]
+categories = ["simulation", "science", "science::robotics"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
