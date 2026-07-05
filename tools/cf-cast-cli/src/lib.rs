@@ -36,7 +36,7 @@
 //!
 //! # Plug-derivation choice (Option A.1)
 //!
-//! Per `project_scan_to_cast_bridge_design.md` + slice-9.6 update,
+//! Per the slice-9.6 plug-derivation update,
 //! the plug equals the scan shrunk inward by `cf-device-design`'s
 //! `cavity.inset_m`, baking the press-fit reservation into the
 //! mold geometry. When no design source is present (inline

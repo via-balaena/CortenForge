@@ -177,7 +177,7 @@ CortenForge/
 │
 ├── cortenforge/         ← The SDK facade — one stable public crate (start here)
 ├── design/              ← Foundation & design kernel (8 crates)
-├── mesh/                ← Mesh pipeline (10 crates + umbrella)
+├── mesh/                ← Mesh pipeline (10 crates incl. umbrella)
 ├── sim/                 ← Physics simulation (~20 crates across L0/L1)
 ├── tools/               ← CLIs, GUIs & app engines (Studio, cast, MSK, co-design)
 └── examples/            ← Working showcases (100+ examples)
