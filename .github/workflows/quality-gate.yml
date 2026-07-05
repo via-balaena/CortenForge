@@ -313,13 +313,15 @@ jobs:
           - id: 1
             crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy
               mesh-types mesh-io mesh-repair mesh-sdf mesh-offset mesh-shell mesh-measure
+              cf-msk-lib cf-mjcf-emit cf-osim
           - id: 2
             crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio
               cf-geometry cf-spatial cf-scan-prep-core mesh-printability mesh-lattice mesh
-              cortenforge
+              cortenforge cf-msk-fit cf-anthro cf-cap-planes
           - id: 3
             crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types
               sim-therm-env cf-design cf-design-tests cf-cast-cli sim
+              pbit-analyze pbit-fw-core
     steps:
       - uses: actions/checkout@v6
 
@@ -469,6 +471,13 @@ jobs:
           # bins below), so resolve it independently.
           SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "sim-soft")
           echo "SOFT_PKGS=$SOFT_PKGS" >> "$GITHUB_ENV"
+          # cf-cast (Monte-Carlo mold kernel) runs --lib-only below: its 358
+          # library tests are the gate, but two tests/ characterisation probe
+          # files are exploratory spikes (not regression gates) that currently
+          # fail on a geometry behaviour drift — see the cf-cast FDM arc. Kept
+          # out of any shard's crate list so nextest doesn't pick up the probes.
+          CAST_PKGS=$(bash .github/scripts/affected-packages.sh "cf-cast")
+          echo "CAST_PKGS=$CAST_PKGS" >> "$GITHUB_ENV"
           # Doctests require a lib target. When a shard's affected set is only
           # test-only crates (no lib — e.g. sim-conformance-tests), a bare
           # `cargo test --doc -p <that>` fails with "no library targets found".
@@ -526,6 +535,16 @@ jobs:
             --test hertz_sphere_plane \
             --test contact_drop_rest \
             --test non_interpenetration
+        shell: bash
+
+      # cf-cast's mold/cast kernel (358 library tests) runs --lib-only in
+      # release (its Monte-Carlo probes are ~30× slower in debug). --lib
+      # deliberately excludes the tests/ characterisation probe files, which
+      # are exploratory spikes rather than regression gates. Pinned to shard 1
+      # so it runs once. Without this the whole kernel executes in NO CI job.
+      - name: Run cf-cast library tests (--lib, --release)
+        if: matrix.id == 1 && env.CAST_PKGS != ''
+        run: cargo nextest run --release --lib -p cf-cast
         shell: bash
 
   # ============================================================================
