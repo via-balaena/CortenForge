@@ -300,9 +300,7 @@ pub fn reset_sleep_state(model: &Model, data: &mut Data) {
     // Then: validate and create sleep cycles for Init trees
     if let Err(e) = validate_init_sleep(model, data) {
         // Log warning and degrade Init trees to awake (spec §16.24)
-        #[cfg(debug_assertions)]
-        eprintln!("Init-sleep validation failed: {e}");
-        let _ = e; // Suppress unused warning in release
+        log::warn!("Init-sleep validation failed: {e}");
     }
 
     mj_update_sleep_arrays(model, data);

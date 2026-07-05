@@ -257,10 +257,12 @@ impl ModelBuilder {
             if let Some(&bid) = self.body_name_to_id.get(&flex.body[vert_idx]) {
                 bid
             } else {
-                eprintln!(
-                    "Warning: flex '{}' vertex {} references unknown body '{}', \
+                tracing::warn!(
+                    "flex '{}' vertex {} references unknown body '{}', \
                      parenting to worldbody",
-                    flex.name, vert_idx, flex.body[vert_idx]
+                    flex.name,
+                    vert_idx,
+                    flex.body[vert_idx]
                 );
                 0
             }
