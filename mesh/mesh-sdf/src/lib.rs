@@ -87,6 +87,7 @@
 
 mod error;
 mod flood_fill;
+mod metrics;
 mod oracle;
 mod sdf;
 mod sdf_adapter;
@@ -98,6 +99,9 @@ pub use error::{SdfError, SdfResult};
 pub use flood_fill::{
     CachedGridSdf, FloodFillSign, FloodFilledSdfBuildError, WALL_THRESHOLD_FACTOR_DEFAULT,
     flood_filled_sdf,
+};
+pub use metrics::{
+    DeviationReport, SampleOptions, SignedExtremes, hausdorff_distance, surface_deviation_to_sdf,
 };
 pub use oracle::{FloodFillError, FloodFillReport, Region, Sign, Signed, UnsignedDistance};
 pub use sdf::{PseudoNormalSign, TriMeshDistance};
