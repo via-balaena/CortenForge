@@ -8,7 +8,7 @@ pub type SdfResult<T> = Result<T, SdfError>;
 /// Errors that can occur during SDF computation.
 #[derive(Debug, Error)]
 pub enum SdfError {
-    /// Mesh is empty (no vertices or faces).
+    /// Mesh has no faces (nothing to build a surface or BVH from).
     #[error("mesh is empty")]
     EmptyMesh,
 

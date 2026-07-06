@@ -23,11 +23,13 @@
 //!
 //! Both metrics sample each triangle at its centroid plus
 //! [`SampleOptions::samples_per_triangle`] deterministic low-discrepancy
-//! (Halton) interior points — no RNG, so repeated runs are bit-identical.
-//! Per-sample deviations are **area-weighted**, so `mean_abs` / `rms` are
-//! density-independent surface averages. `max_abs` is a sampled *lower
-//! bound* on the true Hausdorff supremum; it tightens as
-//! `samples_per_triangle` grows.
+//! (Halton) interior points — no RNG, so repeated runs of the same input are
+//! bit-identical. Per-sample deviations are **area-weighted**, so
+//! `mean_abs` / `rms` approximate the true surface average and become
+//! independent of tessellation density in the dense-sampling limit (at a
+//! fixed `samples_per_triangle` a small centroid-sampling bias remains).
+//! `max_abs` is a sampled *lower bound* on the true Hausdorff supremum; it
+//! tightens as `samples_per_triangle` grows.
 //!
 //! # Malformed input
 //!
@@ -49,6 +51,21 @@ use mesh_types::{IndexedMesh, Point3};
 
 use crate::{SdfError, SdfResult, TriMeshDistance, UnsignedDistance};
 
+/// Signed deviation extremes across all samples, in meters.
+///
+/// Carried only by the signed metric [`surface_deviation_to_sdf`]: a
+/// negative value means a sampled mesh point sits *inside* the reference
+/// field's zero level set, positive means *outside*. So `min < 0 < max`
+/// indicates a mesh that straddles the true surface; `max <= 0` a mesh that
+/// lies entirely inside it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SignedExtremes {
+    /// Most-negative (deepest-inside) signed deviation.
+    pub min: f64,
+    /// Most-positive (furthest-outside) signed deviation.
+    pub max: f64,
+}
+
 /// Aggregate deviation statistics between a sampled surface and a reference.
 ///
 /// All distances are in meters. Produced by [`surface_deviation_to_sdf`]
@@ -61,17 +78,15 @@ pub struct DeviationReport {
     /// symmetric) Hausdorff distance — it tightens as sampling density
     /// grows.
     pub max_abs: f64,
-    /// Area-weighted mean of the absolute deviation — a density-independent
-    /// surface average.
+    /// Area-weighted mean of the absolute deviation (see the module `Sampling`
+    /// section for the density-independence caveat).
     pub mean_abs: f64,
     /// Area-weighted root-mean-square deviation (`≥ mean_abs`).
     pub rms: f64,
-    /// `(min_signed, max_signed)` deviation for the signed metric
-    /// ([`surface_deviation_to_sdf`]): a negative value means the sampled
-    /// mesh point sits *inside* the reference field's zero level set,
-    /// positive means *outside*. `None` for the unsigned mesh↔mesh metric,
-    /// which has no inside/outside notion.
-    pub signed_extremes: Option<(f64, f64)>,
+    /// Signed inside/outside extremes for the signed metric
+    /// ([`surface_deviation_to_sdf`]); `None` for the unsigned mesh↔mesh
+    /// metric, which has no inside/outside notion.
+    pub signed_extremes: Option<SignedExtremes>,
     /// Number of surface samples aggregated.
     pub n_samples: usize,
 }
@@ -82,7 +97,9 @@ pub struct SampleOptions {
     /// Deterministic low-discrepancy (Halton) interior points drawn per
     /// triangle, **in addition to** the centroid. The centroid is always
     /// sampled because it is the worst case for a chord bulging away from a
-    /// curved reference. Clamped to at least 1.
+    /// curved reference. A value of `0` is treated as `1` by the metric
+    /// functions, so every triangle always contributes at least the centroid
+    /// plus one interior point.
     pub samples_per_triangle: usize,
 }
 
@@ -299,7 +316,9 @@ fn combine(a: RawStats, b: RawStats) -> RawStats {
 ///
 /// # Errors
 ///
-/// Returns [`SdfError::NonFiniteDeviation`] if any sample was non-finite.
+/// Returns [`SdfError::NonFiniteDeviation`] if any sample was non-finite, or
+/// if the aggregates themselves come out non-finite (e.g. an area weight
+/// overflowed to infinity on a mesh with a huge-but-finite vertex).
 fn finalize(raw: RawStats, signed: bool) -> SdfResult<DeviationReport> {
     if raw.non_finite {
         return Err(SdfError::NonFiniteDeviation);
@@ -317,11 +336,20 @@ fn finalize(raw: RawStats, signed: bool) -> SdfResult<DeviationReport> {
     } else {
         (0.0, 0.0)
     };
+    // The per-sample guard above only sees `d`; an area weight or a running
+    // sum can still overflow to infinity (→ inf/inf = NaN aggregates) while
+    // every `d` is finite. Surface that rather than return a NaN report.
+    if !mean_abs.is_finite() || !rms.is_finite() || !raw.max_abs.is_finite() {
+        return Err(SdfError::NonFiniteDeviation);
+    }
     Ok(DeviationReport {
         max_abs: raw.max_abs,
         mean_abs,
         rms,
-        signed_extremes: signed.then_some((raw.min_signed, raw.max_signed)),
+        signed_extremes: signed.then_some(SignedExtremes {
+            min: raw.min_signed,
+            max: raw.max_signed,
+        }),
         n_samples: raw.n,
     })
 }
@@ -541,11 +569,12 @@ mod tests {
             radius: 1.0,
         };
         let r = surface_deviation_to_sdf(&mesh, &sphere, SampleOptions::default()).unwrap();
-        let (min_signed, max_signed) = r.signed_extremes.unwrap();
-        assert!(min_signed < 0.0, "chords must fall inside the sphere");
+        let ext = r.signed_extremes.unwrap();
+        assert!(ext.min < 0.0, "chords must fall inside the sphere");
         assert!(
-            max_signed < 1e-9,
-            "no inscribed sample should lie outside the sphere, got {max_signed}"
+            ext.max < 1e-9,
+            "no inscribed sample should lie outside the sphere, got {}",
+            ext.max
         );
     }
 
@@ -562,13 +591,18 @@ mod tests {
         };
         let (d1, d2, d3) = (dev(1), dev(2), dev(3));
         // Strictly decreasing, ~4× per level (halving edge length on a
-        // curved surface quarters the chord sagitta).
+        // curved surface quarters the chord sagitta). The ratio is bounded on
+        // BOTH sides so this pins quadratic-ish convergence — a bug that
+        // over-shrinks `max_abs` toward zero would blow the upper bound.
         assert!(
             d1 > d2 && d2 > d3,
             "deviation must shrink: {d1} > {d2} > {d3}"
         );
-        assert!(d2 / d3 > 2.5, "expected ~4× convergence, got {}", d2 / d3);
-        assert!(d3 < d1 / 8.0, "two levels should cut deviation >8×");
+        let ratio = d2 / d3;
+        assert!(
+            (2.5..6.0).contains(&ratio),
+            "expected ~4× per-level convergence, got {ratio}"
+        );
     }
 
     #[test]
@@ -600,8 +634,10 @@ mod tests {
             fine.max_abs < coarse.max_abs,
             "torus deviation must shrink with resolution"
         );
-        let (min_signed, _) = fine.signed_extremes.unwrap();
-        assert!(min_signed < 0.0, "chords must fall inside the tube");
+        assert!(
+            fine.signed_extremes.unwrap().min < 0.0,
+            "chords must fall inside the tube"
+        );
     }
 
     // ── report shape + guards ───────────────────────────────────────────
@@ -617,7 +653,12 @@ mod tests {
             samples_per_triangle: 8,
         };
         let r = surface_deviation_to_sdf(&mesh, &sphere, opts).unwrap();
-        assert!(r.mean_abs <= r.max_abs);
+        // Both orderings hold up to a rounding ulp (a division may round the
+        // quotient just past the stored extremum).
+        assert!(
+            r.mean_abs <= r.max_abs + 1e-15,
+            "mean must be <= max of |d|"
+        );
         assert!(r.rms + 1e-15 >= r.mean_abs, "rms must be >= mean of |d|");
         assert_eq!(r.n_samples, 80 * (8 + 1)); // centroid + 8 per face
     }
@@ -738,5 +779,114 @@ mod tests {
             hausdorff_distance(&mesh, &good, SampleOptions::default()),
             Err(SdfError::FaceIndexOutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn overflowing_area_weight_errors_instead_of_a_nan_report() {
+        // A finite-but-enormous vertex makes the triangle area (a cross
+        // product) overflow to +inf, so the area weight and its running sums
+        // go infinite while every per-sample `d` stays finite. The final
+        // finiteness guard must surface this rather than return a NaN mean.
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::origin());
+        mesh.vertices.push(Point3::new(1e200, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1e200, 0.0));
+        mesh.faces.push([0, 1, 2]);
+        let sphere = AnalyticSphere {
+            center: Point3::origin(),
+            radius: 1.0,
+        };
+        assert!(matches!(
+            surface_deviation_to_sdf(&mesh, &sphere, SampleOptions::default()),
+            Err(SdfError::NonFiniteDeviation)
+        ));
+    }
+
+    #[test]
+    fn hausdorff_is_symmetric_and_driven_by_the_larger_one_sided_distance() {
+        // A = unit sphere. B = A plus one far-away "spike" triangle near
+        // x = 10. Then h(A->B) ~ 0 (every A point lies on B too), but
+        // h(B->A) ~ 9 (the spike is ~9 m from the sphere). The reported
+        // symmetric Hausdorff must be the LARGER of the two — a one-sided
+        // `a.max_abs`, or a `.min()`, would report ~0 and fail here.
+        let a = icosphere(1.0, 1);
+        let mut b = a.clone();
+        let base = b.vertices.len() as u32;
+        b.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        b.vertices.push(Point3::new(10.1, 0.0, 0.0));
+        b.vertices.push(Point3::new(10.0, 0.1, 0.0));
+        b.faces.push([base, base + 1, base + 2]);
+
+        let ab = hausdorff_distance(&a, &b, SampleOptions::default()).unwrap();
+        assert!(
+            ab.max_abs > 8.0,
+            "symmetric Hausdorff must catch the far spike via the B->A \
+             direction, got {}",
+            ab.max_abs
+        );
+        // Swapping the arguments must give the same symmetric distance.
+        let ba = hausdorff_distance(&b, &a, SampleOptions::default()).unwrap();
+        assert!(
+            (ab.max_abs - ba.max_abs).abs() < 1e-9,
+            "Hausdorff must be symmetric: {} vs {}",
+            ab.max_abs,
+            ba.max_abs
+        );
+    }
+
+    #[test]
+    fn circumscribed_mesh_reports_positive_outside_deviation() {
+        // A mesh sitting entirely OUTSIDE the reference sphere must produce
+        // positive signed deviation — exercises the "outside = positive"
+        // branch that inscribed meshes never reach.
+        let mesh = icosphere(1.05, 2);
+        let sphere = AnalyticSphere {
+            center: Point3::origin(),
+            radius: 1.0,
+        };
+        let r = surface_deviation_to_sdf(&mesh, &sphere, SampleOptions::default()).unwrap();
+        let ext = r.signed_extremes.unwrap();
+        assert!(
+            ext.min > 0.0,
+            "every sample should lie outside the unit sphere, got min {}",
+            ext.min
+        );
+        assert!(
+            ext.max > 0.03,
+            "outside deviation should be ~0.05, got {}",
+            ext.max
+        );
+    }
+
+    #[test]
+    fn mean_is_area_weighted_not_a_flat_sample_average() {
+        // Two far-apart triangles of very unequal area (100x). The big
+        // triangle sits at deviation ~10, the small one at ~2. Area-weighted,
+        // the mean is dominated by the big triangle (~9.95); a flat
+        // (unweighted) sample average would be ~6. Assert we get the former.
+        let mut mesh = IndexedMesh::new();
+        // Small triangle near x = 3 (|d| ~ 2), area 5e-5.
+        mesh.vertices.push(Point3::new(3.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(3.01, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(3.0, 0.01, 0.0));
+        mesh.faces.push([0, 1, 2]);
+        // Large triangle near x = 11 (|d| ~ 10), area 5e-3 (100x larger).
+        mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(11.1, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(11.0, 0.1, 0.0));
+        mesh.faces.push([3, 4, 5]);
+
+        let sphere = AnalyticSphere {
+            center: Point3::origin(),
+            radius: 1.0,
+        };
+        let r = surface_deviation_to_sdf(&mesh, &sphere, SampleOptions::default()).unwrap();
+        // ~9.95 if area-weighted; ~6.0 if a flat sample average. The `> 8`
+        // bound cleanly separates the two.
+        assert!(
+            r.mean_abs > 8.0 && r.mean_abs < 10.1,
+            "mean must be area-weighted (~9.95), got {}",
+            r.mean_abs
+        );
     }
 }
