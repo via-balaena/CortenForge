@@ -4,8 +4,7 @@ Long-horizon research line: **mechanical p-bits + Langevin thermostat
 + EBM + RL, design → simulate → 3D-print**.
 
 **Status (2026-04-11):** Phases 1-6 + D1 + D2 complete in `sim-thermostat`.
-D4 (sim-to-real) deferred — needs 6 foundation layers first (see
-`docs/LAYER_1_SPEC.md`).
+D4 (sim-to-real) deferred — needs 6 foundation layers first.
 
 ## What's here
 
