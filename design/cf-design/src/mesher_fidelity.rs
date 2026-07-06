@@ -3,136 +3,122 @@
 //!
 //! Points the mesh-sdf surface-fidelity harness (rung 0) at cf-design's two
 //! production meshers — marching cubes ([`Solid::mesh`]) and dual contouring
-//! ([`Solid::mesh_dc`]) — across fixtures spanning smooth → sharp → organic
-//! geometry, at matched resolution (same `tolerance` → same cell size).
+//! ([`Solid::mesh_dc`]) — at matched resolution (same `tolerance` → same cell
+//! size), turning "which mesher is more faithful?" into numbers.
 //!
-//! # What the numbers say (measured, radius/half-extent ~1 m, cell 0.05 m)
+//! # Fixtures are EXACT signed-distance fields only
 //!
-//! | fixture                     | MC max dev | DC max dev |
-//! |-----------------------------|-----------:|-----------:|
-//! | sphere (smooth)             |   0.0009 m |   0.0055 m |
-//! | cuboid (sharp convex)       |   0.0333 m |   0.0000 m |
-//! | sphere−sphere (concave)     |   0.0313 m |   0.0353 m |
-//! | blob + thin process         |   0.0031 m |   0.0162 m |
+//! `surface_deviation_to_sdf` reads `reference.eval(p)` as the point-distance
+//! deviation, which is a true Euclidean distance only when the field is metric
+//! (`|∇| = 1`). cf-design's `smooth_union` / CSG fields are deliberately
+//! non-metric (the crate carries a `lipschitz_factor` for exactly that), so
+//! measuring against them would report field values, not distances — precisely
+//! in the blend region where MC and DC diverge. Every fixture here is therefore
+//! an exact-SDF primitive (sphere, torus, capsule = exact), plus a *rotated*
+//! cuboid for sharp convex edges — tilted off every grid plane so DC's feature
+//! snapping is genuine, not a grid-alignment coincidence.
 //!
-//! **DC's win is confined to sharp *convex* edges** — there its QEF vertex
-//! snaps exactly onto the crease while MC bevels it by ~⅔ cell. On smooth and
-//! organic (feature-free) surfaces the opposite holds: DC's per-cell QEF
-//! vertex wanders off the true surface more than MC's on-edge zero-crossing,
-//! so **MC has the lower point-distance error there**. On concave creases the
-//! two are comparable. Consequence for cf-cast (which meshes smooth scanned
-//! anatomy, no sharp convex edges): switching MC→DC would not improve — and
-//! could slightly worsen — point-distance fidelity. The tests below lock each
-//! of these relationships.
+//! # What the numbers say (measured; extent ~1 m, cell 0.05 m)
+//!
+//! | fixture                  | MC max  | DC max  | MC mean | DC mean |
+//! |--------------------------|--------:|--------:|--------:|--------:|
+//! | sphere (smooth)          | 0.00093 | 0.00553 | 0.00053 | 0.00033 |
+//! | torus (smooth)           | 0.00266 | 0.00814 | 0.00089 | 0.00062 |
+//! | capsule (smooth)         | 0.00228 | 0.00360 | 0.00091 | 0.00047 |
+//! | rotated cuboid (sharp)   | 0.02479 | 0.01478 | 0.00051 | 0.00019 |
+//!
+//! Two consistent facts: **DC has the lower *mean* (average) deviation on every
+//! fixture**, while **MC has the lower *max* (worst-case) deviation on the
+//! smooth ones**. At a genuinely off-grid sharp convex edge DC beats MC on both
+//! metrics, but only ~1.7× on max — it is *not* exact (an earlier grid-aligned
+//! cuboid made DC look exact; that was an artifact).
+//!
+//! Consequence for cf-cast (smooth scanned anatomy, no sharp convex edges): the
+//! two meshers differ by sub-millimetre at this cell size, and it is a genuine
+//! trade-off (DC better average, MC better worst-case) rather than a win for
+//! either — so there is no compelling fidelity reason to swap the tested MC
+//! production path. DC's clear advantage shows up only on sharp CAD-like
+//! features, which casts do not have.
 //!
 //! Caveat: this harness measures *point-distance* fidelity. DC also improves
-//! normal/triangle-shape quality, which point-distance under-captures; for
-//! silicone casts (fit + wall thickness = point-distance) that is the metric
-//! that matters, but a normal-deviation metric would be the tool for a
-//! normal-sensitive downstream.
+//! normal/triangle-shape quality, which point-distance under-captures; that is
+//! the metric that matters for casts (fit + wall thickness), but a
+//! normal-deviation metric would be the tool for a normal-sensitive downstream.
 
 #![allow(clippy::unwrap_used, clippy::print_stdout)]
 
-use nalgebra::Vector3;
+use nalgebra::{Unit, UnitQuaternion, Vector3};
 
 use crate::Solid;
-use mesh_sdf::{DeviationReport, SampleOptions, hausdorff_distance, surface_deviation_to_sdf};
+use mesh_sdf::{DeviationReport, SampleOptions, surface_deviation_to_sdf};
 
-/// Mesh `solid` with both meshers at matched resolution and measure each
-/// against the analytic field; returns `(mc_dev, dc_dev, mc_vs_dc_hausdorff)`
-/// and prints one table row (visible under `--nocapture`).
-fn measure(
-    name: &str,
-    solid: &Solid,
-    tol: f64,
-) -> (DeviationReport, DeviationReport, DeviationReport) {
+/// Mesh `solid` with both meshers at matched resolution, measure each against
+/// the analytic field, and print one row (visible under `--nocapture`).
+fn measure(name: &str, solid: &Solid, tol: f64) -> (DeviationReport, DeviationReport) {
     let opts = SampleOptions::default();
     let mc = solid.mesh(tol);
     let dc = solid.mesh_dc(tol);
     let mc_dev = surface_deviation_to_sdf(&mc.geometry, solid, opts).unwrap();
     let dc_dev = surface_deviation_to_sdf(&dc.geometry, solid, opts).unwrap();
-    let hd = hausdorff_distance(&mc.geometry, &dc.geometry, opts).unwrap();
     println!(
-        "{name:<30} MC[tris={} max={:.5} mean={:.5}]  DC[tris={} max={:.5} mean={:.5}]  MC-DC_hd={:.5}",
-        mc.geometry.faces.len(),
-        mc_dev.max_abs,
-        mc_dev.mean_abs,
-        dc.geometry.faces.len(),
-        dc_dev.max_abs,
-        dc_dev.mean_abs,
-        hd.max_abs,
+        "{name:<24} MC[max={:.5} mean={:.5}]  DC[max={:.5} mean={:.5}]",
+        mc_dev.max_abs, mc_dev.mean_abs, dc_dev.max_abs, dc_dev.mean_abs
     );
-    (mc_dev, dc_dev, hd)
+    (mc_dev, dc_dev)
 }
 
-/// On sharp convex edges DC's QEF snaps vertices onto the crease → near-exact,
-/// while MC cannot represent the crease and bevels it, missing the true corner
-/// by ~⅔ of a cell. This is the one place DC decisively wins.
-#[test]
-fn dc_is_near_exact_on_sharp_convex_edges_where_mc_bevels() {
-    let (mc, dc, _) = measure(
-        "cuboid (sharp convex)",
-        &Solid::cuboid(Vector3::new(1.0, 1.0, 1.0)),
-        0.05,
-    );
-    assert!(
-        dc.max_abs < 1e-4,
-        "DC should reproduce sharp convex edges near-exactly, got {}",
-        dc.max_abs
-    );
-    assert!(
-        mc.max_abs > 0.02,
-        "MC should bevel sharp edges by ~cell size, got {}",
-        mc.max_abs
-    );
+/// A cuboid tilted off every grid plane, so DC's sharp-edge snapping is
+/// measured on its own merit rather than coinciding with grid-aligned faces.
+fn rotated_cuboid() -> Solid {
+    let axis = Unit::new_normalize(Vector3::new(1.0, 1.0, 1.0));
+    Solid::cuboid(Vector3::new(0.8, 0.8, 0.8)).rotate(UnitQuaternion::from_axis_angle(&axis, 0.5))
 }
 
-/// On feature-free (smooth / organic) surfaces DC's per-cell QEF vertex wanders
-/// off the true surface more than MC's on-edge zero-crossing, so MC is the
-/// better *point-distance* mesher there — the mission-relevant regime, since
-/// scanned anatomy has no sharp convex edges.
+/// On smooth surfaces the two meshers trade places: MC's on-edge zero-crossing
+/// gives the tighter worst-case (max), while DC's per-cell QEF vertex gives the
+/// tighter average (mean). Holds consistently across three exact-SDF shapes, so
+/// neither mesher is uniformly more faithful on feature-free geometry.
 #[test]
-fn mc_holds_tighter_than_dc_on_smooth_and_organic_surfaces() {
-    let smooth = measure("sphere (smooth)", &Solid::sphere(1.0), 0.05);
-    assert!(
-        smooth.0.max_abs < smooth.1.max_abs,
-        "sphere: MC max {} should beat DC max {}",
-        smooth.0.max_abs,
-        smooth.1.max_abs
-    );
-
-    let organic = measure(
-        "blob + thin process",
-        &Solid::sphere(1.0).smooth_union(
-            Solid::capsule(0.15, 0.8).translate(Vector3::new(1.0, 0.0, 0.0)),
-            0.1,
-        ),
-        0.03,
-    );
-    assert!(
-        organic.0.max_abs < organic.1.max_abs,
-        "organic: MC max {} should beat DC max {}",
-        organic.0.max_abs,
-        organic.1.max_abs
-    );
+fn mc_wins_worst_case_dc_wins_average_on_smooth_surfaces() {
+    for (name, solid) in [
+        ("sphere", Solid::sphere(1.0)),
+        ("torus", Solid::torus(1.0, 0.3)),
+        ("capsule", Solid::capsule(0.4, 0.8)),
+    ] {
+        let (mc, dc) = measure(name, &solid, 0.05);
+        assert!(
+            mc.max_abs < dc.max_abs,
+            "{name}: MC worst-case {} should beat DC {}",
+            mc.max_abs,
+            dc.max_abs
+        );
+        assert!(
+            dc.mean_abs < mc.mean_abs,
+            "{name}: DC average {} should beat MC {}",
+            dc.mean_abs,
+            mc.mean_abs
+        );
+    }
 }
 
-/// On a concave crease neither mesher dominates on point distance — both sit
-/// within about a cell of the true surface. So DC's advantage is specific to
-/// sharp *convex* features, not concavities (which scanned anatomy does have).
+/// At a genuinely off-grid sharp convex edge DC beats MC on BOTH max and mean —
+/// its QEF snaps toward the crease that MC can only bevel. But it is a modest
+/// win (~1.7× on max), not the exactness a grid-aligned box would fake: DC's max
+/// error is still a good fraction of a cell.
 #[test]
-fn mc_and_dc_are_comparable_on_concave_creases() {
-    let concave =
-        Solid::sphere(1.0).subtract(Solid::sphere(0.7).translate(Vector3::new(0.6, 0.0, 0.0)));
-    let (mc, dc, _) = measure("sphere-minus-sphere (concave)", &concave, 0.05);
+fn dc_beats_mc_at_off_grid_sharp_convex_edges_but_not_exactly() {
+    let (mc, dc) = measure("rotated cuboid", &rotated_cuboid(), 0.05);
     assert!(
-        (mc.max_abs - dc.max_abs).abs() < 0.02,
-        "concave: MC {} and DC {} should be comparable (within ~cell)",
+        dc.max_abs < mc.max_abs && dc.mean_abs < mc.mean_abs,
+        "DC should beat MC on both metrics at a sharp edge: MC(max={} mean={}) DC(max={} mean={})",
         mc.max_abs,
-        dc.max_abs
+        mc.mean_abs,
+        dc.max_abs,
+        dc.mean_abs
     );
     assert!(
-        mc.max_abs < 0.06 && dc.max_abs < 0.06,
-        "both bounded by ~cell size"
+        dc.max_abs > 0.005,
+        "off-grid DC is not exact — its max should be a real fraction of a cell, got {}",
+        dc.max_abs
     );
 }
