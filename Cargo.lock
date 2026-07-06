@@ -2305,7 +2305,10 @@ name = "cf-design-tests"
 version = "1.0.0"
 dependencies = [
  "cf-design",
+ "cf-geometry",
  "mesh-io",
+ "mesh-repair",
+ "mesh-sdf",
  "nalgebra 0.34.2",
  "sim-core",
  "sim-mjcf",

@@ -27,6 +27,12 @@ mesh-io = { workspace = true, features = ["threemf"] }
 sim-core = { workspace = true }
 # Vector / Point primitives.
 nalgebra = { workspace = true }
+# Rung-2 L4 round-trip: repair the imported vertebra, build a metric distance
+# oracle from it, and measure the re-meshed surface against it.
+mesh-repair = { workspace = true }
+mesh-sdf = { workspace = true }
+# Aabb / IndexedMesh types shared across the load → repair → oracle → mesh path.
+cf-geometry = { workspace = true }
 
 [dev-dependencies]
 # Temporary directories for 3MF round-trip tests.
