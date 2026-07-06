@@ -29,6 +29,11 @@
 //! [r]: ../../../../../../docs/studies/soft_body_architecture/src/60-differentiability/02-implicit-function.md
 //! [tet4]: ../../../../../../docs/studies/soft_body_architecture/src/30-discretization/00-element-choice/00-tet4.md
 
+// Forward-riding placeholders across the backward-Euler module: `CpuNewtonSolver::element`
+// carries the (Tet10) element variant forward, and `factor.rs`'s `is_llt` / `is_lu`
+// factorization-kind accessors + `factor_and_solve_free` alt-path ride the shape; not yet used.
+#![allow(dead_code)]
+
 use faer::sparse::linalg::solvers::{SymbolicLlt, SymbolicLu};
 use nalgebra::SMatrix;
 

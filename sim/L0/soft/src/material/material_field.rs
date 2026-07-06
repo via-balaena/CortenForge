@@ -48,6 +48,10 @@
 //!
 //! [s]: ../../../../docs/studies/soft_body_architecture/src/20-materials/09-spatial-fields/00-sdf-valued.md
 
+// `min_principal_stretch` rides the `MaterialField` shape forward for upcoming
+// stretch-limit diagnostics; not yet read by any consumer.
+#![allow(dead_code)]
+
 use super::{Material, NeoHookean, Yeoh};
 use crate::Vec3;
 use crate::field::{ConstantField, Field};

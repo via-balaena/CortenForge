@@ -79,6 +79,11 @@ use super::scalar_transfer::{
 ///   positive (zero, negative, or `NaN`).
 /// - [`VizError::PerTetScalarLengthMismatch`] if any scalar's length
 ///   != `analysis_mesh.n_tets()`.
+///
+/// # Panics
+///
+/// Does not panic on caller input (invalid arguments are returned as
+/// [`VizError`]); the internal `.expect()` is unreachable by construction.
 //
 // `cast_possible_truncation` allowed for f64 → f32 (PLY emit format)
 // and usize → u32 (VertexId is u32 crate-wide). `cast_precision_loss`
@@ -265,6 +270,11 @@ pub fn design_slab_cut<M: Material>(
 ///   positive (zero, negative, or `NaN`).
 /// - [`VizError::PerTetScalarLengthMismatch`] if any scalar's length
 ///   != `analysis_mesh.n_tets()`.
+///
+/// # Panics
+///
+/// Does not panic on caller input (invalid arguments are returned as
+/// [`VizError`]); the internal `.expect()` is unreachable by construction.
 //
 // `cast_possible_truncation` allowed for the f64 → f32 PLY emit path
 // and usize → u32 vertex/tet index path (`VertexId` and `TetId` are
