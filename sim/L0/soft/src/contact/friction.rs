@@ -28,6 +28,10 @@
 //! See `docs/keystone/friction_recon.md` and
 //! `docs/studies/soft_body_architecture/src/40-contact/02-friction/01-smoothed.md`.
 
+// `f0` and `potential` are the C^2 friction-potential / energy-value helpers kept on the
+// crate surface for energy-readout diagnostics + tests, ahead of the readout wiring.
+#![allow(dead_code)]
+
 use crate::Vec3;
 use nalgebra::{Matrix2, Matrix3, Matrix3x2, Vector2};
 

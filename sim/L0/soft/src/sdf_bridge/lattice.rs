@@ -27,6 +27,10 @@
 //! changes slowest and `i` fastest. This matches scope-memo Decision M
 //! D-11's deterministic iteration order for the warp step (commit 5).
 
+// `cell_size` field + `position_of` accessor are BCC-lattice conveniences retained on the
+// shape for upcoming accessors; not yet read.
+#![allow(dead_code)]
+
 use crate::Vec3;
 use crate::mesh::VertexId;
 

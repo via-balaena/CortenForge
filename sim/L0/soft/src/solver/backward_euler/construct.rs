@@ -38,6 +38,14 @@ where
     /// because the cache build runs `mesh.tet_vertices`, sparse-pattern
     /// construction, and faer's symbolic factorization — none of which
     /// are const-evaluable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `N != 4` (the Phase-2 solver is pinned to Tet4); if
+    /// `boundary_conditions` reference an out-of-range, doubly-classified
+    /// (both pinned and loaded), or orphan (tet-unreferenced) loaded vertex;
+    /// or if the rest mesh is malformed (a singular reference Jacobian, or
+    /// more vertices than fit in a `u32` `VertexId`).
     //
     // expect_used + panic justifications:
     //   • Singular reference Jacobian = malformed rest mesh, programmer

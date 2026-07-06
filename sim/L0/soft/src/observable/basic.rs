@@ -62,6 +62,10 @@ impl BasicObservable {
     /// For the 1-tet skeleton: pass `vec![11]` (the z-DOF of
     /// `v_3`). For multi-vertex Stage-1 scenes: pass the z-DOF of
     /// each loaded vertex.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `peak_bound_dofs` is empty.
     #[must_use]
     pub fn new(peak_bound_dofs: Vec<usize>) -> Self {
         assert!(

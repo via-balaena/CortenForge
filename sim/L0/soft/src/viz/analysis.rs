@@ -37,6 +37,11 @@ use super::scalar_transfer::{
 ///
 /// Returns [`VizError::PerTetScalarLengthMismatch`] if any value vec in
 /// `per_tet_scalars` has length other than `mesh.n_tets()`.
+///
+/// # Panics
+///
+/// Does not panic on caller input (an invalid `per_tet_scalars` is returned
+/// as [`VizError`]); the internal `.expect()` is unreachable by construction.
 //
 // `cast_possible_truncation` allowed: per-vertex scalar values are
 // projected to f32 for PLY emit (the format's per-vertex extra slot

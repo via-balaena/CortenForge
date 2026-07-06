@@ -24,22 +24,13 @@
 //! anisotropy, viscoelasticity, thermal coupling), Tet10, and
 //! interface-aware refinement.
 
-#![allow(
-    // Placeholder bodies in `contact/null.rs`, `observable/basic.rs`,
-    // `readout/reward_breakdown.rs`, and `differentiable/newton_vjp.rs`
-    // (`time_adjoint`, `fd_wrapper`) are intentional `unimplemented!(...)`
-    // for Phase 5 / Phase C / Phase G / Phase E+ surfaces that bolt onto
-    // the trait shape but ship empty in Phase 4.
-    clippy::unimplemented,
-    // Placeholder fields like `CpuNewtonSolver::element: E` and
-    // `BccLattice::position_of` ride the trait/struct shape forward for
-    // upcoming phases (Tet10 element variant, future BCC accessors)
-    // without bit-rotting the public surface in the meantime.
-    dead_code,
-    // Placeholder bodies panic via `unimplemented!`. Documenting it on
-    // every method's `# Panics` section adds noise without information.
-    clippy::missing_panics_doc
-)]
+// Lint policy for intentional placeholders is scoped per-module (not crate-wide)
+// so the crate root can't silently mask unrelated dead code or panic-doc gaps:
+//   - `clippy::unimplemented` is allowed only in the three files carrying genuine
+//     `unimplemented!()` trait stubs (`differentiable/newton_vjp`, `observable/basic`,
+//     `readout/reward_breakdown`).
+//   - `dead_code` is allowed only in the files holding forward-riding placeholders.
+//   - real public functions that can panic carry a `# Panics` doc section (not an allow).
 
 pub mod autograd_ops;
 pub mod contact;
