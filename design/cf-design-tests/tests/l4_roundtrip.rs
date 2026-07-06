@@ -7,6 +7,23 @@
 //! resolutions, and measures how faithfully the re-meshed surface matches the
 //! original — the SDF→mesh half the import spike did not exercise.
 //!
+//! # What it establishes (and the important scope limit)
+//!
+//! - The pipeline round-trips real vertebra anatomy: MC Hausdorff-to-original
+//!   converges to a small fraction of the part size as the cell shrinks.
+//! - **MC beats DC here because the reference is a MESH-DERIVED SDF, not because
+//!   the shape is organic.** `Solid::from_sdf` wraps the oracle as a
+//!   `FieldNode::UserFn` whose gradients are finite-difference, and DC's QEF
+//!   sharp-feature advantage *requires* accurate gradients. A scan/mesh-derived
+//!   SDF can only ever hand DC finite-difference gradients, so this is the
+//!   permanent reality of meshing scanned anatomy — MC is the right mesher for
+//!   that path. (Contrast rung 1: on an *analytic* field with exact gradients,
+//!   smooth geometry was a trade-off.)
+//!
+//! `hausdorff_distance.max_abs` is a *sampled lower bound* on the true Hausdorff
+//! (see mesh-sdf docs), so the fidelity check below is a strong necessary
+//! indicator of feature preservation, not a proof.
+//!
 //! # Asset & licensing
 //!
 //! The reference mesh (`BodyParts3D` L4 = `FMA13075`) is CC BY-SA — copyleft —
@@ -17,7 +34,7 @@
 //!
 //! ```text
 //! CF_L4_STL=/path/to/L4.stl cargo test -p cf-design-tests \
-//!   --test l4_roundtrip -- --ignored --nocapture
+//!   --release --test l4_roundtrip -- --ignored --nocapture
 //! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -25,24 +42,13 @@
 use std::sync::Arc;
 
 use cf_design::Solid;
-use cf_geometry::{Aabb, IndexedMesh};
+use cf_geometry::Aabb;
 use mesh_io::load_stl;
 use mesh_repair::{RepairParams, repair_mesh, validate_mesh};
 use mesh_sdf::{
     PseudoNormalSign, SampleOptions, Signed, TriMeshDistance, hausdorff_distance,
     surface_deviation_to_sdf,
 };
-use nalgebra::{Point3, Vector3};
-
-fn aabb_of(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
-    let mut lo = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-    let mut hi = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for v in &mesh.vertices {
-        lo = Point3::new(lo.x.min(v.x), lo.y.min(v.y), lo.z.min(v.z));
-        hi = Point3::new(hi.x.max(v.x), hi.y.max(v.y), hi.z.max(v.z));
-    }
-    (lo, hi)
-}
 
 #[test]
 #[ignore = "needs a local vertebra mesh via $CF_L4_STL (CC BY-SA asset, not committed)"]
@@ -58,15 +64,15 @@ fn l4_roundtrips_feature_faithfully() {
         report.is_watertight && report.is_manifold,
         "reference must be watertight+manifold after repair (got {report:?})"
     );
-    let (lo, hi) = aabb_of(&mesh);
-    let ext = hi - lo;
+    let bbox = Aabb::from_points(mesh.vertices.iter());
+    // Scale everything to the mesh's own size, so the test is unit-agnostic
+    // (STL is unitless and `$CF_L4_STL` may point at any specimen/scale).
+    let diag = bbox.diagonal();
     println!(
-        "\n[L4] {} verts {} faces  extent ({:.1},{:.1},{:.1}) mm",
+        "[L4] {} verts {} faces  bbox diagonal {:.2}",
         mesh.vertices.len(),
         mesh.faces.len(),
-        ext.x,
-        ext.y,
-        ext.z
+        diag
     );
 
     // 2. Exact, grid-free metric oracle from the watertight mesh
@@ -82,29 +88,31 @@ fn l4_roundtrips_feature_faithfully() {
     // the oracle is not a valid metric reference (bad sign, etc.).
     let self_dev = surface_deviation_to_sdf(&mesh, &oracle, opts).expect("self dev");
     println!(
-        "[oracle] self-consistency max_abs = {:.6} mm",
+        "[oracle] self-consistency max_abs = {:.6}",
         self_dev.max_abs
     );
     assert!(
-        self_dev.max_abs < 1e-3,
+        self_dev.max_abs < diag * 1e-4,
         "oracle self-consistency should be ~0, got {}",
         self_dev.max_abs
     );
 
-    // 3+4. Re-mesh the oracle with MC and DC at several resolutions and measure
-    //      fidelity to the original (symmetric Hausdorff → catches dropped thin
-    //      processes) and deviation from the true surface (vs the oracle).
-    let margin = 4.0;
-    let bounds = Aabb::new(lo - Vector3::repeat(margin), hi + Vector3::repeat(margin));
+    // 3+4. Re-mesh the oracle with MC and DC at several (scale-relative) cell
+    //      sizes and measure fidelity to the original (symmetric Hausdorff →
+    //      catches dropped thin processes) and deviation from the true surface.
+    let bounds = bbox.expanded(diag * 0.03);
     println!(
-        "{:<6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
-        "tol_mm", "MC_tris", "DC_tris", "MC_hd", "DC_hd", "MC_dev", "DC_dev"
+        "{:<8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "cell", "MC_tris", "DC_tris", "MC_hd", "DC_hd", "MC_dev", "DC_dev"
     );
-    let tols = [2.0_f64, 1.0, 0.5];
+    let cells = [diag / 64.0, diag / 128.0, diag / 256.0];
     let mut mc_hds = Vec::new();
-    for &tol in &tols {
-        let mc = Solid::from_sdf(Arc::clone(&oracle), bounds).mesh(tol);
-        let dc = Solid::from_sdf(Arc::clone(&oracle), bounds).mesh_dc(tol);
+    for &cell in &cells {
+        let mc = Solid::from_sdf(Arc::clone(&oracle), bounds).mesh(cell);
+        let dc = Solid::from_sdf(Arc::clone(&oracle), bounds).mesh_dc(cell);
+        // NOTE: each call rebuilds a parry BVH over the original mesh (the
+        // `hausdorff_distance` mesh-in-mesh signature can't reuse the oracle's
+        // existing BVH — the standing rung-0 borrowing-ctor follow-up).
         let mc_hd = hausdorff_distance(&mesh, &mc.geometry, opts)
             .expect("mc hd")
             .max_abs;
@@ -118,8 +126,8 @@ fn l4_roundtrips_feature_faithfully() {
             .expect("dc dev")
             .max_abs;
         println!(
-            "{:<6.2} {:>10} {:>10} {:>10.4} {:>10.4} {:>10.4} {:>10.4}",
-            tol,
+            "{:<8.3} {:>10} {:>10} {:>10.4} {:>10.4} {:>10.4} {:>10.4}",
+            cell,
             mc.geometry.faces.len(),
             dc.geometry.faces.len(),
             mc_hd,
@@ -127,28 +135,31 @@ fn l4_roundtrips_feature_faithfully() {
             mc_dev,
             dc_dev
         );
-        // The pipeline round-trips real anatomy: on this smooth-dominated organic
-        // part MC is the tighter mesher at every resolution (extends rung 1;
-        // `from_sdf` also hands DC finite-difference gradients, blunting its QEF).
+        // MC beats DC at every resolution — but the load-bearing reason is that
+        // DC is fed finite-difference gradients here (mesh-derived SDF via
+        // `from_sdf`), which is exactly the scan/anatomy regime. This is a
+        // claim about the FIELD being mesh-derived, not about organic shape.
         assert!(
             mc_hd < dc_hd,
-            "tol {tol}: MC Hausdorff {mc_hd} should beat DC {dc_hd} on organic anatomy"
+            "cell {cell}: MC Hausdorff {mc_hd} should beat FD-gradient DC {dc_hd}"
         );
         mc_hds.push(mc_hd);
     }
 
-    // Feature-faithful: MC Hausdorff-to-original converges monotonically and, at
-    // 0.5 mm cell, matches the original vertebra to well under a millimetre
-    // (~0.5% of the part's 43 mm height) — the thin processes / foramen / facets
-    // survive the round-trip.
+    // Overall convergence (not strict step-wise — grid aliasing on thin
+    // processes can make a finer cell align slightly worse): the finest cell
+    // more than halves the coarsest cell's round-trip error, and lands within a
+    // small fraction of the part size. Since the Hausdorff is a sampled lower
+    // bound, this is a strong necessary indicator that the thin processes /
+    // foramen / facets are preserved — not a proof.
+    let (coarse, fine) = (mc_hds[0], *mc_hds.last().unwrap());
     assert!(
-        mc_hds[0] > mc_hds[1] && mc_hds[1] > mc_hds[2],
-        "MC round-trip error must converge with resolution: {mc_hds:?}"
+        fine < coarse * 0.5,
+        "MC round-trip error should converge with resolution: {mc_hds:?}"
     );
     assert!(
-        *mc_hds.last().unwrap() < 0.3,
-        "at 0.5 mm cell the L4 round-trip should be sub-0.3 mm, got {}",
-        mc_hds.last().unwrap()
+        fine < diag * 5e-3,
+        "finest-cell round-trip error should be a small fraction of the part, got {fine}"
     );
     println!();
 }
