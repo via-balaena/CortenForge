@@ -37,6 +37,8 @@ mod gradient;
 mod interval;
 pub mod mechanism;
 mod mesher;
+#[cfg(test)]
+mod mesher_fidelity;
 pub mod optim;
 mod param;
 mod param_gradient;

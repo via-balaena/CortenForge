@@ -121,6 +121,18 @@ impl Default for SampleOptions {
 /// deviation: negative where the mesh sits inside the true surface,
 /// positive outside.
 ///
+/// # Precondition: `reference` must be a *metric* SDF
+///
+/// The returned deviation equals true **Euclidean** distance to the surface
+/// only when `reference` is a metric signed-distance field — `|∇eval| ≈ 1`
+/// everywhere. For a **non-metric** field (e.g. a polynomial smooth-min /
+/// smooth-union blend, or many CSG combinators, whose gradient magnitude drops
+/// below 1 near the blend) `eval(p)` *under-reports* the true distance, so the
+/// report measures a field-value deviation, not a metric one. Prefer an exact
+/// primitive SDF, or a mesh-derived distance oracle
+/// ([`crate::Signed`] / [`crate::TriMeshDistance`], which are exact by
+/// construction), as the reference.
+///
 /// # Errors
 ///
 /// - [`SdfError::EmptyMesh`] if `mesh` has no faces.
