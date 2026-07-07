@@ -221,6 +221,45 @@ where
         out
     }
 
+    /// Nodal **reaction forces** the soft body exerts on its Dirichlet
+    /// constraints at the configuration `x_curr` — the public readout the
+    /// soft↔rigid *bond* consumes (rung 6).
+    ///
+    /// ⚠ **Quasi-static regime only.** This returns `−f_int`, which equals the
+    /// constraint reaction ONLY when the inertial term is negligible (a large-`dt`
+    /// static solve) and the constrained nodes carry no external load. It takes no
+    /// velocity and does not subtract `M/dt²·(x − x_prev − dt·v)`, so calling it at a
+    /// physical `dt` where inertia matters returns a **silently wrong** reaction. A
+    /// dynamic consumer must form the full residual instead (`dt`/`x_prev` are taken
+    /// here only to feed the friction term of `assemble_global_int_force`).
+    ///
+    /// Returns a length-`n_dof` vector holding `−f_int` per DOF, where
+    /// `f_int` is the assembled internal force (`assemble_global_int_force`).
+    /// For a **converged static** solve (`dt` large so the inertial term
+    /// `M/dt²` is negligible, no external load on the constrained nodes) the
+    /// force a Dirichlet-pinned node's constraint must supply to hold it is the
+    /// residual `r = f_int` there, so by Newton's third law the force the soft
+    /// body exerts *on that constraint* (e.g. a bonded rigid endplate) is
+    /// `−f_int`. Summing the returned entries over a bonded vertex set gives the
+    /// net force that face applies to its rigid attachment; pairing each with its
+    /// moment arm about the body centre gives the wrench.
+    ///
+    /// The internal force includes any active contact / friction contributions
+    /// (empty for the `NullContact`, frictionless bond), so this is the total
+    /// nodal reaction, not the elastic part alone. It does **not** subtract
+    /// inertia or external load — a static, load-free constrained solve (the bond
+    /// regime) is where `−f_int` *is* the reaction; a dynamic or externally-loaded
+    /// constrained node would need the full residual instead.
+    #[must_use]
+    pub fn nodal_reaction_forces(&self, x_curr: &[f64], x_prev: &[f64], dt: f64) -> Vec<f64> {
+        let mut f_int = vec![0.0; self.n_dof];
+        self.assemble_global_int_force(x_curr, x_prev, dt, &mut f_int);
+        for f in &mut f_int {
+            *f = -*f;
+        }
+        f_int
+    }
+
     /// Assemble the lower-triangle triplets of the free-DOF Hessian
     /// `A_free = M_free / Δt² + K_free(x_curr) + K_contact(x_curr)`
     /// per Decision J + Phase 5 commit 5.

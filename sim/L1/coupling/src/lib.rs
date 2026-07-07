@@ -59,6 +59,7 @@ use std::marker::PhantomData;
 
 mod articulated;
 mod articulated_grad;
+mod bonded;
 mod construct;
 mod contact;
 mod contact_readout;
@@ -73,6 +74,7 @@ mod tangential;
 mod types;
 mod vjp;
 
+pub use bonded::{BondStep, BondedSandwich};
 pub use contact::PlaneContact;
 pub use error::RolloutError;
 pub use policy::{DiffPolicy, LinearFeedback};
