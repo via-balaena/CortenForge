@@ -16,7 +16,11 @@
 //! (`load` / `oracle` / `body_center` / `segment_frame` / `extreme_vertex` /
 //! `facet_grid`) are still duplicated across the rung7 + rung6c tests; once
 //! this viewer proves the reusable shape they lift into one graded home
-//! (the next rung). The values here mirror those tests exactly.
+//! (the next rung). The recipe (constants + oracle + site/contact derivation)
+//! mirrors those tests; the viewer-specific parts — `extreme_vertex` returning
+//! `Option` instead of an origin fallback, the neutral-pose facet rendering,
+//! and the `superior_axis` + `coregistration_warnings` additions — are noted at
+//! each function.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -38,7 +42,7 @@ type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
 const FACET_CELL: f64 = 1.0; // facet SDF grid cell (mm)
 const MIDLINE_TOL: f64 = 8.0; // mm off mid-sagittal for a near-midline site
 const BODY_RADIUS: f64 = 30.0; // mm: keep the ALL site on the vertebral body
-const FACET_MAX_CONTACTS: usize = 256; // per-pair contact cap (rung 4b/7; 184 at neutral)
+const FACET_MAX_CONTACTS: usize = 256; // per-pair contact cap (matches rung 4b/7); the neutral pose stays well under it
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
@@ -78,6 +82,15 @@ struct SegmentFrame {
 fn load(path: &Path) -> Result<IndexedMesh> {
     let mut mesh = load_stl(path).with_context(|| format!("loading STL {}", path.display()))?;
     let rep = repair_mesh(&mut mesh, &RepairParams::for_scans());
+    // Reject an empty mesh here, once, for all three inputs: only L4/L5 build an
+    // SDF oracle (which would catch it), so an empty DISC would otherwise slip
+    // through to a NaN AABB centre that silently defeats the seating guard.
+    if mesh.vertices.is_empty() {
+        bail!(
+            "{} has no vertices after repair — empty or unreadable STL",
+            path.display()
+        );
+    }
     println!(
         "[{}] welded {} verts -> {} verts / {} faces",
         path.display(),
@@ -272,17 +285,19 @@ fn build_ligaments(
     ligaments
 }
 
-/// Co-registration sanity checks (rung-7's validity cross-checks, cheaply
-/// reproduced from AABBs — no SDF needed): the disc's principal ML must agree
-/// with the vertebral frame ML, and the disc must be seated between the two body
-/// centres along the superior axis. A grossly mismatched or misaligned trio
-/// (wrong specimen, wrong disc level, rotated frame) trips these — so it is never
-/// shown as a literature-validated FSU.
+/// Co-registration sanity checks, cheaply reproduced from AABBs (no SDF needed):
+/// the disc's principal ML must agree with the vertebral frame ML (rung-7's own
+/// obliquity cross-check), AND the disc must be seated between the two body
+/// centres along the superior axis (a viewer-added guard rung-7 does not assert).
+/// A grossly mismatched or misaligned trio (wrong specimen, wrong disc level,
+/// rotated frame) trips these — so it is never shown as a literature-validated FSU.
 ///
 /// The ML agreement mirrors rung-7's own obliquity assert (`disc_ml · frame.ml >
 /// 0.9`): `disc_ml` is a coordinate axis, `frame.ml` continuous, so the 0.9 band
 /// assumes the anatomy sits roughly axis-aligned — true for the BodyParts3D
 /// frame this tool targets (rung 7 measured ~0.95), not for arbitrary rotations.
+/// Note it does NOT detect an L4↔L5 swap: that renders valid geometry at true
+/// positions with only the tissue labels flipped (the guards stay in-range).
 fn coregistration_warnings(
     disc: &IndexedMesh,
     frame: &SegmentFrame,
@@ -331,11 +346,11 @@ fn facet_grid(mesh: &IndexedMesh, sdf: &MeshOracle) -> Arc<SdfGrid> {
 
 /// Facet near-contact points at the NEUTRAL pose (both vertebrae at identity).
 /// `compute_shape_contact` returns every pair within the detection margin
-/// (`FACET_CELL` = 1 mm); at neutral the articular surfaces nearly touch
-/// (rung 4b measured a +0.3 mm closest approach) so these are the near-contact
-/// facet region, not interpenetrations — we render them all rather than
-/// filtering `penetration > 0` (which is the force-relevant subset, empty at
-/// neutral).
+/// (`FACET_CELL` = 1 mm); at neutral the articular surfaces nearly touch (rung
+/// 4b measured a small positive gap, no interpenetration) so these are the
+/// near-contact facet region, not interpenetrations — we render them all rather
+/// than filtering `penetration > 0` (which is the force-relevant subset, empty
+/// at neutral).
 fn facet_contact_points(g4: &Arc<SdfGrid>, g5: &Arc<SdfGrid>) -> Vec<Point3<f64>> {
     let identity = Pose {
         position: Point3::origin(),
@@ -522,9 +537,10 @@ mod tests {
     }
 
     #[test]
-    fn disc_principal_ml_snaps_a_non_axis_span_to_a_coordinate_axis() {
-        // Widest span (x=10) is not perfectly axis-aligned in the mesh, but the
-        // derived ML is still the pure coordinate axis (rung-7's snap).
+    fn disc_principal_ml_uses_aabb_extent_not_pca() {
+        // The tool deliberately uses the widest AABB EXTENT (not a PCA principal
+        // axis): this cloud's longest point-to-point direction is the x-y diagonal,
+        // but its widest axis-aligned extent is x (span 10 vs y-span 3) → +X.
         let m = mesh(&[[0.0, 0.0, 0.0], [10.0, 3.0, 1.0]]);
         assert_eq!(disc_principal_ml(&m), Vector3::x());
     }
@@ -547,21 +563,66 @@ mod tests {
         let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::y());
         let disc = mesh(&[[-10.0, -1.0, 9.0], [10.0, 1.0, 11.0]]); // ML x; centre (0,0,10) seated
         let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
-        assert!(
-            w.iter().any(|s| s.contains("agreement")),
-            "expected an ML-agreement warning, got {w:?}"
+        // Exactly the ML warning — the disc is seated, so the between-check stays silent.
+        assert_eq!(
+            w.len(),
+            1,
+            "expected only the ML-agreement warning, got {w:?}"
         );
+        assert!(w[0].contains("agreement"), "wrong warning: {w:?}");
     }
 
     #[test]
-    fn coregistration_warns_when_disc_not_between_bodies() {
+    fn coregistration_warns_when_disc_below_l5() {
         // Disc centred BELOW L5 along the SI axis → `along` negative → "not between".
         let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
         let disc = mesh(&[[-10.0, -5.0, -15.0], [10.0, 5.0, -13.0]]); // centre z=-14
         let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
-        assert!(
-            w.iter().any(|s| s.contains("not between")),
-            "expected a not-between-bodies warning, got {w:?}"
+        assert_eq!(
+            w.len(),
+            1,
+            "expected only the not-between warning, got {w:?}"
         );
+        assert!(w[0].contains("not between"), "wrong warning: {w:?}");
+    }
+
+    #[test]
+    fn coregistration_warns_when_disc_above_l4() {
+        // The OTHER half of the seating guard: disc centred ABOVE L4 (along >
+        // separation) must also warn — guards against dropping `|| along > sep`.
+        let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
+        let disc = mesh(&[[-10.0, -5.0, 29.0], [10.0, 5.0, 31.0]]); // centre z=30 > sep 20
+        let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
+        assert_eq!(
+            w.len(),
+            1,
+            "expected only the not-between warning, got {w:?}"
+        );
+        assert!(w[0].contains("not between"), "wrong warning: {w:?}");
+    }
+
+    #[test]
+    fn coregistration_clean_at_seating_boundary() {
+        // The seating test is strict (`< 0` / `> separation`): a disc centred
+        // exactly on L5 (along == 0) is seated, so NO warning — a `<=` typo bites.
+        let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
+        let disc = mesh(&[[-10.0, -5.0, -1.0], [10.0, 5.0, 1.0]]); // centre z=0 == b5
+        let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
+        assert!(w.is_empty(), "on-boundary disc must not warn, got {w:?}");
+    }
+
+    #[test]
+    fn extreme_vertex_midline_filter_is_symmetric() {
+        // The midline filter uses `|d·ml|`, so a vertex on the NEGATIVE ML side
+        // (z=-20) is rejected too — guards against dropping the `.abs()`.
+        let m = mesh(&[[5.0, 0.0, -20.0], [10.0, 0.0, -20.0]]);
+        let got = extreme_vertex(
+            &m,
+            Point3::origin(),
+            Vector3::x(),
+            Vector3::z(),
+            f64::INFINITY,
+        );
+        assert_eq!(got, None);
     }
 }
