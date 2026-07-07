@@ -1,0 +1,105 @@
+[package]
+name = "cf-spine-viewer"
+description = "Native Bevy viewer for anatomical spine models — static Functional Spinal Unit (FSU) scene: per-tissue vertebrae + disc + ligament lines + facet-contact points"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace tool; no `[package.metadata.cortenforge]` block — tier
+# metadata is for sim L0/L1 libraries, not workspace tools (matches
+# cf-sim-research / cf-device-design / cf-scan-prep precedent).
+
+[[bin]]
+name = "cf-spine-viewer"
+path = "src/main.rs"
+
+[dependencies]
+# cf-viewer library — reuses the shared scene scaffold:
+# `setup_camera_and_lighting` (orbit camera + directional + ambient).
+# Depending on cf-viewer keeps a SINGLE source of truth for
+# camera/light/framing rather than copying the ~35-line helper.
+cf-viewer = { workspace = true }
+
+# Shared Bevy helpers — the `OrbitCameraPlugin` system set (input +
+# transform update). `UpAxis::PlusZ` = the workspace Z-up convention
+# (BodyParts3D anatomy is Z-up).
+cf-bevy-common = { workspace = true }
+
+# sim-bevy — `mesh::triangle_mesh_from_attributed` renders the stored
+# per-vertex (area-weighted) normals SMOOTH for the organic bone look,
+# and `convert::vec3_from_point` applies the same Z-up→Y-up swap for the
+# ligament/facet overlay gizmos so they align with the meshes. Reusing
+# these avoids rolling a new f64→f32 / axis-swap path.
+sim-bevy = { workspace = true }
+
+# sim-core — the SDF collision seam that produces facet near-contact
+# points: `sdf::compute_shape_contact` over two `ShapeConcave` grids
+# (`SdfGrid` + `Pose` + `SdfContact`). Same recipe as the rung 4b/7 tests.
+sim-core = { workspace = true }
+
+# STL loader for the vertebra / disc meshes (native BodyParts3D mm).
+mesh-io = { workspace = true }
+# `AttributedMesh` (+ `compute_normals`) / `IndexedMesh` / `Aabb`.
+mesh-types = { workspace = true }
+# Weld-repair the raw BodyParts3D triangle soup before the SDF oracle.
+mesh-repair = { workspace = true }
+# `Signed<TriMeshDistance, PseudoNormalSign>` — the exact mesh-derived
+# metric oracle each vertebra's facet grid samples.
+mesh-sdf = { workspace = true }
+# `Point3` / `Vector3` / `UnitQuaternion` — field-derived site math + poses.
+nalgebra = { workspace = true }
+
+# Bevy 0.18 — feature set mirrors cf-sim-research exactly so the
+# workspace's validated rendering subset stays consistent across viewers.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+
+# egui-on-Bevy plugin — the per-tissue visibility toggle panel. 0.39.1 is
+# the workspace-validated pin (cf-viewer / cf-sim-research precedent).
+bevy_egui = { version = "0.39.1", default-features = false, features = [
+    "default_fonts",
+    "render",
+    "bevy_ui",
+] }
+
+# `Result<()>` + error-context chaining for the CLI load path.
+anyhow = { workspace = true }
+# CLI argument parsing — direct dep with `derive` (clap has no workspace
+# pin; cf-sim-research / cf-device-design precedent).
+clap = { version = "4", features = ["derive"] }
+
+[features]
+default = ["x11"]
+# Linux window backends — mirror cf-sim-research's feature shape.
+x11 = ["bevy/x11"]
+wayland = ["bevy/wayland"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# Per `feedback_lint_posture_on_extract` — lenient posture mirroring the
+# other tools/ viewers (workspace pedantic would turn carryover warnings
+# into `-D warnings` failures).
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
