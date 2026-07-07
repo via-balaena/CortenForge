@@ -4,22 +4,23 @@
 //! quantities an FSU model needs, deriving everything **from the signed
 //! field — no coordinate convention on faith**:
 //!
-//!   * [`load`] — read + weld-repair an STL, keeping native coordinates so
+//!   * [`load`] / [`load_from_env`] — read + weld-repair an STL (by path, or by
+//!     the environment variable holding the path), keeping native coordinates so
 //!     sibling vertebrae stay in their shared frame;
 //!   * [`oracle`] — build the exact mesh-derived signed-distance [`MeshOracle`];
+//!   * [`body_center`] — locate one vertebral body as the deepest interior point
+//!     of the field (no axis on faith);
 //!   * [`segment_frame`] — derive the segmental frame (superior / posterior / ML)
-//!     from two vertebrae, locating each vertebral body as the deepest interior
-//!     point of the field;
+//!     from two vertebrae, locating each vertebral body with [`body_center`];
 //!   * [`extreme_vertex`] — pick a near-midline attachment vertex along a
 //!     direction (ligament sites);
 //!   * [`facet_grid`] — sample the field into an [`SdfGrid`] for facet contact.
 //!
-//! The recipes were proven in the geometry-fidelity ladder (rung 4b/5/7) and are
-//! consumed by the `cf-spine-viewer` tool; those integration tests still carry
-//! their own copies and migrate to this crate in a follow-up. The crate is
-//! deliberately **sim-core-free**: [`facet_grid`] builds a `cf_geometry::SdfGrid`
-//! directly, and the `ShapeConcave` collision that consumes the grid stays in
-//! each caller.
+//! The recipes were proven in the geometry-fidelity ladder and are the single
+//! home consumed by the `cf-spine-viewer` tool and the rung 4b / 5 / 6c / 7
+//! integration tests. The crate is deliberately **sim-core-free**: [`facet_grid`]
+//! builds a `cf_geometry::SdfGrid` directly, and the `ShapeConcave` collision
+//! that consumes the grid stays in each caller.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -86,6 +87,20 @@ pub fn load(path: &Path) -> Result<IndexedMesh> {
     Ok(mesh)
 }
 
+/// Load + weld-repair the STL whose path is held in environment variable `var`.
+///
+/// The license-gated ladder tests key the `BodyParts3D` mesh paths off
+/// `$CF_L4_STL` / `$CF_L5_STL` / `$CF_DISC_STL` (the meshes are CC BY-SA and not
+/// committed); this is the thin env-lookup convenience over [`load`] they share.
+///
+/// # Errors
+/// Returns an error if `var` is unset, or if [`load`] rejects the file it names.
+pub fn load_from_env(var: &str) -> Result<IndexedMesh> {
+    let path = std::env::var(var)
+        .with_context(|| format!("environment variable ${var} is not set (path to an STL)"))?;
+    load(Path::new(&path))
+}
+
 /// Build the exact signed-distance [`MeshOracle`] for a mesh.
 ///
 /// # Errors
@@ -98,10 +113,13 @@ pub fn oracle(mesh: &IndexedMesh) -> Result<MeshOracle> {
     Ok(Signed { distance, sign })
 }
 
-/// Vertebral body centre = the deepest interior point of the signed field (the
-/// thickest solid mass, no axis assumption). Coarse `BODY_CENTER_STEP`-mm AABB
-/// scan; returns `(point, depth)` where `depth < 0` is interior. Used internally
-/// by [`segment_frame`].
+/// Vertebral body centre = the deepest interior point of the signed field.
+///
+/// The thickest solid mass, no axis assumption. Coarse `BODY_CENTER_STEP`-mm AABB
+/// scan; returns `(point, depth)` where `depth < 0` is interior. Used by
+/// [`segment_frame`], and directly by callers that locate a single vertebral body
+/// without building the full segmental frame (rung 4b facet contact, rung 5
+/// ligament tension).
 // Grid indices/counts are small non-negative integers over an mm-scale AABB;
 // the f64↔usize casts cannot truncate, lose sign, or lose precision in practice.
 #[allow(
@@ -109,7 +127,8 @@ pub fn oracle(mesh: &IndexedMesh) -> Result<MeshOracle> {
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
 )]
-fn body_center(mesh: &IndexedMesh, sdf: &MeshOracle) -> (Point3<f64>, f64) {
+#[must_use]
+pub fn body_center(mesh: &IndexedMesh, sdf: &MeshOracle) -> (Point3<f64>, f64) {
     let bbox = Aabb::from_points(mesh.vertices.iter());
     let span = bbox.max - bbox.min;
     let steps = |len: f64| (len / BODY_CENTER_STEP).ceil().max(0.0) as usize + 1;
@@ -506,5 +525,16 @@ mod tests {
         let empty = dir.path().join("empty.stl");
         std::fs::write(&empty, "solid empty\nendsolid empty\n").unwrap();
         assert!(load(&empty).is_err(), "empty STL must error");
+    }
+
+    #[test]
+    fn load_from_env_errors_when_var_unset() {
+        // A variable name guaranteed unset in the test environment: the env
+        // lookup fails before any file I/O. (The happy path delegates to `load`,
+        // exercised by `load_round_trips_and_rejects_empty`; setting a process
+        // env var here would be `unsafe` on edition 2024 and racy under the
+        // parallel test runner.)
+        let err = load_from_env("CF_FSU_GEOMETRY_DEFINITELY_UNSET_VAR").unwrap_err();
+        assert!(format!("{err}").contains("is not set"), "got {err}");
     }
 }
