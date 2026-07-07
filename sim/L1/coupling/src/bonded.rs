@@ -470,27 +470,28 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
     /// its frame origin (`xpos`). Also returns the forward [`BondStep`] (the wrench values).
     ///
     /// **The reverse pass** (one adjoint solve, both faces coupled). Per bonded vertex `i`
-    /// with reaction `Rᵢ`, target `rᵢ`, arm `dᵢ = rᵢ − c`:
-    /// 1. reaction cotangent `∂L/∂Rᵢ = cot_f + cot_τ × dᵢ` (force + moment readout adjoint,
-    ///    the crate's `add_contact_moment` moment convention);
+    /// with reaction `Rᵢ`, target `rᵢ`, moment arm `armᵢ = rᵢ − xipos`, offset from the
+    /// rotation centre `offsetᵢ = rᵢ − xpos`:
+    /// 1. reaction cotangent `∂L/∂Rᵢ = cot_f + cot_τ × armᵢ` (force + moment readout adjoint,
+    ///    the crate's `add_contact_moment` moment convention — the moment is about the COM
+    ///    `xipos`, matching the forward `face_wrench`);
     /// 2. ONE Dirichlet reaction VJP
     ///    ([`CpuNewtonSolver::equilibrium_dirichlet_reaction_vjp`](sim_soft::CpuNewtonSolver::equilibrium_dirichlet_reaction_vjp))
     ///    maps `∂L/∂R` (both faces) → `∂L/∂(target)` through the symmetric reaction
     ///    Jacobian — this is the coupling term (moving one endplate changes the other's
-    ///    reaction);
-    /// 3. the geometric moment-arm term `∂L/∂ω += offsetᵢ × (Rᵢ × cot_τ)` (the moment arm
-    ///    rotates with the body), added to the pose map of step 2's `∂L/∂(target)`
-    ///    (`∂target/∂v = I`, `∂target/∂ω = −[offsetᵢ]×`, `offsetᵢ = rᵢ − xpos`).
+    ///    reaction) — then the pose map of that `∂L/∂target` (`∂target/∂v = I`,
+    ///    `∂target/∂ω = −[offsetᵢ]×`, since the targets rotate about `xpos`);
+    /// 3. the geometric moment-arm term `∂L/∂ω += armᵢ × (Rᵢ × cot_τ)` (the arm turns with
+    ///    the body: `∂armᵢ/∂ω = −[armᵢ]×`, `∂armᵢ/∂v = 0` — the target and COM translate
+    ///    together, so the linear parts cancel exactly, off-centre bodies included).
     ///
-    /// **Scope: centered bodies** (`xipos ≈ xpos` — the geom COM at the frame origin, as in
-    /// every FSU scene). Then the moment reference `c = xipos` equals the rotation centre
-    /// `xpos`, so `dᵢ = offsetᵢ` and the translation components of the moment-arm and COM
-    /// paths cancel exactly. An off-centre body (`xipos ≠ xpos`) needs the extra `∂c/∂ω`
-    /// term and is a follow-on; asserted here so a mis-posed scene fails loudly.
+    /// **General:** valid for an off-centre inertial frame (`xipos ≠ xpos`, e.g. an
+    /// anatomical vertebra whose auto-computed COM sits off its joint origin). The moment
+    /// arm (about `xipos`) and the target's rotation (about `xpos`) use their own reference
+    /// points, so no centered-body assumption is made.
     ///
     /// # Panics
-    /// Panics if either body is not centered (`‖xipos − xpos‖` above a small tolerance) or
-    /// if the disc solve diverges.
+    /// Panics if the disc solve diverges.
     #[must_use]
     pub fn probe_with_pose_gradient(
         &mut self,
@@ -530,7 +531,9 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
 
     /// Map a bonded face's `∂L/∂(target)` (reaction path) plus its geometric moment-arm
     /// term to the body's world-frame co-twist `[ang = ∂L/∂ω; lin = ∂L/∂v]`. See
-    /// [`Self::probe_with_pose_gradient`] for the math; centered-body scope asserted here.
+    /// [`Self::probe_with_pose_gradient`] for the math. General (off-centre bodies included):
+    /// the targets rotate about the frame origin `xpos` (`offset`) while the moment arm is
+    /// about the COM `xipos` (`arm`).
     fn body_pose_cotwist(
         &self,
         bond: &Bond,
@@ -538,25 +541,22 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
         cot: SpatialVector,
     ) -> SpatialVector {
         let pivot = self.data.xpos[bond.body]; // rotation centre (free-joint origin)
-        // Centered-body guard: the moment reference (xipos) must coincide with the rotation
-        // centre (xpos), else the off-centre ∂c/∂ω term (unmodeled) would bias the gradient.
-        assert!(
-            (self.data.xipos[bond.body] - pivot).norm() < 1e-7,
-            "probe_with_pose_gradient requires a centered body (xipos ≈ xpos); body {} is off-centre",
-            bond.body,
-        );
+        let com = self.data.xipos[bond.body]; // moment reference (COM)
         let cot_t = wrench_moment(&cot);
         let (mut d_ang, mut d_lin) = (Vec3::zeros(), Vec3::zeros());
         for &v in &bond.verts {
             let i = v as usize;
-            let offset = vec3_at(&self.last_targets, i) - pivot;
+            let target = vec3_at(&self.last_targets, i);
+            let offset = target - pivot; // for the reaction-path pose map (about xpos)
+            let arm = target - com; // for the geometric moment-arm (about xipos)
             let dtr = vec3_at(dl_dtarget, i); // reaction-path ∂L/∂target
             let r_i = vec3_at(&self.last_reaction, i); // reaction force at this vertex
             // Reaction path: ∂target/∂v = I, ∂target/∂ω = −[offset]× ⇒ +offset × dtr.
             d_lin += dtr;
             d_ang += offset.cross(&dtr);
-            // Geometric moment-arm: ∂L/∂ω += offset × (Rᵢ × cot_τ) (no linear term when centered).
-            d_ang += offset.cross(&r_i.cross(&cot_t));
+            // Geometric moment-arm: ∂armᵢ/∂ω = −[arm]× (∂/∂v = 0 — target & COM translate
+            // together) ⇒ ∂L/∂ω += arm × (Rᵢ × cot_τ).
+            d_ang += arm.cross(&r_i.cross(&cot_t));
         }
         let mut g = SpatialVector::zeros();
         g[0] = d_ang.x;

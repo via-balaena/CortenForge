@@ -11,6 +11,10 @@
 //! Evaluated at a flexed + compressed operating point so force AND moment (hence the
 //! moment-arm term) are live. This is the reverse dual of the block spike that measured
 //! `∂F_up.z/∂z = −9061.966`.
+//!
+//! Run on BOTH a centered body (`xipos = xpos`) and an OFF-CENTRE one (geom COM offset from
+//! the joint origin, as an anatomical vertebra has) — the off-centre case exercises the
+//! moment-arm (`xipos`) vs. target-rotation (`xpos`) reference-point split.
 
 #![allow(
     clippy::expect_used,
@@ -36,13 +40,18 @@ const UPPER: usize = 2;
 const C: f64 = EDGE / 2.0;
 const UPPER_REST_Z: f64 = EDGE + H;
 
-fn fsu_mjcf() -> String {
+/// FSU scene. `goff` offsets each box geom's centre along `+z` in its body frame, so the
+/// auto-computed COM (`xipos`) sits `goff` off the joint origin (`xpos`) — `goff = 0` is
+/// the centered body, `goff ≠ 0` an anatomical off-centre one. The bond (disc↔body) is
+/// unchanged by `goff` (it references `xpos`), so the forward disc solve is identical; only
+/// the wrench's moment reference (`xipos`) moves.
+fn fsu_mjcf(goff: f64) -> String {
     format!(
         r#"<mujoco>
   <option gravity="0 0 0" timestep="0.001"/>
   <worldbody>
-    <body name="L5" pos="{c} {c} {z5}"><freejoint/><geom type="box" size="{hx} {hx} {h}" mass="0.05"/></body>
-    <body name="L4" pos="{c} {c} {z4}"><freejoint/><geom type="box" size="{hx} {hx} {h}" mass="0.05"/></body>
+    <body name="L5" pos="{c} {c} {z5}"><freejoint/><geom type="box" pos="0 0 {goff}" size="{hx} {hx} {h}" mass="0.05"/></body>
+    <body name="L4" pos="{c} {c} {z4}"><freejoint/><geom type="box" pos="0 0 {goff}" size="{hx} {hx} {h}" mass="0.05"/></body>
   </worldbody>
 </mujoco>"#,
         c = C,
@@ -50,11 +59,12 @@ fn fsu_mjcf() -> String {
         z4 = UPPER_REST_Z,
         hx = EDGE / 2.0,
         h = H,
+        goff = goff,
     )
 }
 
-fn build() -> BondedSandwich {
-    let model = load_model(&fsu_mjcf()).expect("mjcf");
+fn build(goff: f64) -> BondedSandwich {
+    let model = load_model(&fsu_mjcf(goff)).expect("mjcf");
     let mut data = model.make_data();
     data.forward(&model).expect("fwd");
     BondedSandwich::new(model, data, LOWER, UPPER, N, EDGE, MU, STATIC_DT)
@@ -75,16 +85,8 @@ fn operating_poses() -> ((Vec3, UnitQuaternion<f64>), (Vec3, UnitQuaternion<f64>
 
 /// Rich cotangents on the two endplate wrenches (`[ang = ∂L/∂moment; lin = ∂L/∂force]`).
 fn cotangents() -> (SpatialVector, SpatialVector) {
-    let mut cl = SpatialVector::zeros();
-    let mut cu = SpatialVector::zeros();
-    // lower: ang (0.1,0.4,-0.2), lin (-0.3,0.1,0.5)
-    for (k, val) in [0.1, 0.4, -0.2, -0.3, 0.1, 0.5].into_iter().enumerate() {
-        cl[k] = val;
-    }
-    // upper: ang (0.5,-0.3,0.2), lin (0.1,0.2,1.0)
-    for (k, val) in [0.5, -0.3, 0.2, 0.1, 0.2, 1.0].into_iter().enumerate() {
-        cu[k] = val;
-    }
+    let cl = SpatialVector::from_row_slice(&[0.1, 0.4, -0.2, -0.3, 0.1, 0.5]);
+    let cu = SpatialVector::from_row_slice(&[0.5, -0.3, 0.2, 0.1, 0.2, 1.0]);
     (cl, cu)
 }
 
@@ -107,10 +109,10 @@ fn loss(step: &BondStep, cl: SpatialVector, cu: SpatialVector) -> f64 {
 
 /// Perturb `body`'s pose along world-frame twist DOF `m` (0..3 angular, 3..6 linear) by
 /// `eps` on a fresh sandwich, re-probe, and return the loss.
-fn loss_perturbed(body: usize, m: usize, eps: f64) -> f64 {
+fn loss_perturbed(body: usize, m: usize, eps: f64, goff: f64) -> f64 {
     let (lower, upper) = operating_poses();
     let (cl, cu) = cotangents();
-    let mut c = build();
+    let mut c = build(goff);
     let mut poses = [lower, upper];
     let slot = if body == LOWER { 0 } else { 1 };
     let (pos, quat) = poses[slot];
@@ -139,28 +141,27 @@ fn rel(a: &[f64], b: &[f64]) -> f64 {
 }
 
 /// FD the 6-twist gradient of L w.r.t. `body`'s pose at eps, via re-probe.
-fn fd_gradient(body: usize, eps: f64) -> [f64; 6] {
+fn fd_gradient(body: usize, eps: f64, goff: f64) -> [f64; 6] {
     let mut g = [0.0; 6];
     for (m, gm) in g.iter_mut().enumerate() {
-        *gm = (loss_perturbed(body, m, eps) - loss_perturbed(body, m, -eps)) / (2.0 * eps);
+        *gm = (loss_perturbed(body, m, eps, goff) - loss_perturbed(body, m, -eps, goff))
+            / (2.0 * eps);
     }
     g
 }
 
-#[test]
-fn bonded_pose_gradient_matches_reprobe_fd() {
+/// The analytic pose gradient (both bodies) vs re-probe FD at COM offset `goff`.
+fn run_gate(goff: f64) {
     let (lower, upper) = operating_poses();
     let (cl, cu) = cotangents();
 
-    // Analytic gradient at the operating point.
-    let mut c = build();
+    let mut c = build(goff);
     c.set_body_pose(LOWER, lower.0, lower.1);
     c.set_body_pose(UPPER, upper.0, upper.1);
     let (_step, grads) = c.probe_with_pose_gradient(cl, cu);
     let an_lower: [f64; 6] = std::array::from_fn(|k| grads[0][k]);
     let an_upper: [f64; 6] = std::array::from_fn(|k| grads[1][k]);
 
-    // Liveness: both gradients must be substantial (not a vacuous 0 ≈ 0).
     let live = |g: &[f64; 6]| g.iter().map(|x| x.abs()).fold(0.0, f64::max);
     assert!(live(&an_upper) > 1.0, "upper pose gradient degenerate");
     assert!(live(&an_lower) > 1.0, "lower pose gradient degenerate");
@@ -169,15 +170,29 @@ fn bonded_pose_gradient_matches_reprobe_fd() {
         let mut best = f64::INFINITY;
         for e in [1e-4, 1e-5, 1e-6, 1e-7] {
             let eps = e * EDGE;
-            let fd = fd_gradient(body, eps);
+            let fd = fd_gradient(body, eps, goff);
             let r = rel(an, &fd);
-            eprintln!("[{name}] eps={e:.1e}·EDGE  rel = {r:.3e}");
+            eprintln!("[goff={goff:.3} {name}] eps={e:.1e}·EDGE  rel = {r:.3e}");
             best = best.min(r);
         }
-        eprintln!("[{name}] analytic = {an:?}");
+        eprintln!("[goff={goff:.3} {name}] analytic = {an:?}");
         assert!(
             best < 1e-5,
-            "{name} pose gradient must match re-probe FD; best rel = {best:.3e}"
+            "{name} pose gradient must match re-probe FD (goff={goff}); best rel = {best:.3e}"
         );
     }
+}
+
+/// Centered body (`xipos = xpos`): the moment arm and target-rotation share a reference.
+#[test]
+fn bonded_pose_gradient_matches_reprobe_fd() {
+    run_gate(0.0);
+}
+
+/// Off-centre body (`xipos ≠ xpos`, geom COM 5 mm off the joint origin) — exercises the
+/// moment-arm (`xipos`) vs. target-rotation (`xpos`) reference split, the path an
+/// anatomical vertebra (rung 6d PR3) takes.
+#[test]
+fn bonded_pose_gradient_offcenter_matches_reprobe_fd() {
+    run_gate(0.005);
 }

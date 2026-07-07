@@ -1876,4 +1876,19 @@ fn bonded_pose_gradient_is_live_and_physical() {
         "axial stiffness sign wrong: ∂F_up.z/∂v_z = {}",
         grad_upper[5]
     );
+
+    // Exercise the geometric moment-arm branch (needs cot_τ ≠ 0): flex L4 and differentiate
+    // a moment cotangent. The resulting pose gradient must still be finite and live.
+    let mut c = bonded_fsu();
+    let rot = UnitQuaternion::from_axis_angle(&Vec3::x_axis(), 0.08);
+    let pivot = Vec3::new(0.01, 0.01, 0.02);
+    c.set_body_pose(2, pivot + rot * (Vec3::new(0.01, 0.01, 0.03) - pivot), rot);
+    let mut cot_moment = SpatialVector::zeros();
+    cot_moment[0] = 1.0; // ∂L/∂moment_upper.x (drives the moment-arm term)
+    let (_step, grads) = c.probe_with_pose_gradient(SpatialVector::zeros(), cot_moment);
+    assert!(
+        grads[1].iter().all(|g| g.is_finite())
+            && grads[1].iter().map(|g| g.abs()).fold(0.0, f64::max) > 1e-6,
+        "moment-arm pose gradient must be finite and live"
+    );
 }
