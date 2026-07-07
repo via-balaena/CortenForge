@@ -2386,6 +2386,9 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // deliverable #2 — gradient-based optimization over the differentiable
     // soft↔rigid coupling, consuming sim-coupling + reusing the chassis Adam)
     // is a `tools/` workspace tool with the cf- prefix — same exemption.
+    // cf-spine-viewer (the native Bevy anatomical-spine viewer; static L4-L5
+    // FSU scene) is a `tools/` Bevy GUI workspace tool with the cf- prefix —
+    // same exemption shape as cf-sim-research.
     if matches!(
         crate_name,
         "cf-viewer"
@@ -2393,6 +2396,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-scan-prep"
             | "cf-device-design"
             | "cf-sim-research"
+            | "cf-spine-viewer"
             | "cf-device-geometry"
             | "cf-osim"
             | "cf-anthro"
@@ -4091,6 +4095,8 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-scan-prep"));
         assert!(!applies_to_crate("cf-device-design"));
         assert!(!applies_to_crate("cf-sim-research"));
+        // cf-spine-viewer: native Bevy anatomical-spine viewer, same shape.
+        assert!(!applies_to_crate("cf-spine-viewer"));
         assert!(!applies_to_crate("cf-device-geometry"));
         // musculoskeletal-builder arc tools (Mission #4) — same exemption shape.
         assert!(!applies_to_crate("cf-osim"));
