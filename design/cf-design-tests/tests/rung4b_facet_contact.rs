@@ -60,13 +60,11 @@
 
 use std::sync::Arc;
 
+use cf_fsu_geometry::{MeshOracle, body_center, load_from_env, oracle};
 use cf_geometry::{Aabb, IndexedMesh};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
 use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave, convex_hull};
-
-mod common;
-use common::{MeshOracle, body_center, load_native, oracle};
 
 /// Grid cell size (mm). The facet clearance is sub-mm and the joint band is a
 /// few mm; 1 mm resolves it and localizes the contact tightly. Coordinates are
@@ -140,10 +138,10 @@ fn nearest_to_a_body(cs: &[SdfContact], b0: Point3<f64>, b1: Point3<f64>) -> f64
 #[test]
 #[ignore = "needs local L4+L5 vertebra meshes via $CF_L4_STL/$CF_L5_STL (CC BY-SA, not committed)"]
 fn l4_l5_facet_contact_localizes_to_the_joints_not_the_bodies() {
-    let l4 = load_native("CF_L4_STL");
-    let l5 = load_native("CF_L5_STL");
-    let o4 = oracle(&l4);
-    let o5 = oracle(&l5);
+    let l4 = load_from_env("CF_L4_STL").expect("load L4 mesh");
+    let l5 = load_from_env("CF_L5_STL").expect("load L5 mesh");
+    let o4 = oracle(&l4).expect("L4 oracle");
+    let o5 = oracle(&l5).expect("L5 oracle");
 
     // Native pose stacks the vertebrae so the posterior elements overlap in z
     // (context — NOT the localization proof; two AABBs overlapping in z is not
@@ -225,7 +223,10 @@ fn l4_l5_facet_contact_localizes_to_the_joints_not_the_bodies() {
     // differs (concave true surface vs its convex hull).
     let (cg4, cg5) = (grid(&l4, &o4), grid(&l5, &o5));
     let (hull4, hull5) = (hull_of(&l4), hull_of(&l5));
-    let (ho4, ho5) = (oracle(&hull4), oracle(&hull5));
+    let (ho4, ho5) = (
+        oracle(&hull4).expect("hull4 oracle"),
+        oracle(&hull5).expect("hull5 oracle"),
+    );
     let (hg4, hg5) = (grid(&hull4, &ho4), grid(&hull5, &ho5));
     let cc = contact(&cg4, &cg5);
     let hh = contact(&hg4, &hg5);

@@ -66,10 +66,10 @@
 //! force), which is why the facet contribution here is qualitative (engagement) in
 //! the headline and quantitative only inside the sensitivity band.
 //!
-//! The mesh load/oracle helpers (`load_native`, `oracle`, `MeshOracle`) are duplicated
-//! from `rung6c_disc_geometry.rs` — sim-coupling has no shared `tests/common/` (unlike
-//! `cf-design-tests`). Extracting one is a deferred cleanup shared with rung 6c (kept
-//! standalone here to not couple two standalone rung narratives in this PR).
+//! The shared FSU geometry recipes (mesh load + oracle, the segmental frame, the
+//! ligament attachment sites, the facet SDF grid) live in the `cf-fsu-geometry`
+//! crate — this rung consumes them; only the literature harness, disc-bond model,
+//! and superposition machinery below are rung-7-specific.
 //!
 //! Env-gated + license-clean like the other rungs: `#[ignore]` + `$CF_L4_STL` +
 //! `$CF_L5_STL` + `$CF_DISC_STL` (`BodyParts3D` meshes are CC BY-SA, not committed).
@@ -88,16 +88,16 @@
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
-    clippy::too_many_lines,
-    dead_code
+    clippy::too_many_lines
 )]
 
 use std::sync::Arc;
 
+use cf_fsu_geometry::{
+    BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid,
+    load_from_env, oracle, segment_frame,
+};
 use cf_geometry::{Aabb, IndexedMesh};
-use mesh_io::load_stl;
-use mesh_repair::{RepairParams, repair_mesh};
-use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
 use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
@@ -131,96 +131,7 @@ const DEFAULT_MU: f64 = 1.0e5; // disc Neo-Hookean shear modulus (Pa) — the ru
 
 // ── Ligament / facet constants (native mm frame). ──
 const K_LIG: f64 = 20.0; // tendon stiffness N/mm (rung-5, uncalibrated)
-const FACET_CELL: f64 = 1.0; // facet SDF grid cell (mm)
 const K_FACET: f64 = 200.0; // facet penalty N/mm (uncalibrated; sensitivity only)
-const MIDLINE_TOL: f64 = 8.0; // mm off mid-sagittal for a near-midline ligament site
-const BODY_RADIUS: f64 = 30.0; // mm: keep the ALL site on the vertebral body
-
-/// The exact mesh-derived signed-distance oracle (metric by construction).
-type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
-
-fn load_native(var: &str) -> IndexedMesh {
-    let path = std::env::var(var).unwrap_or_else(|_| panic!("set ${var} to an STL path"));
-    let mut mesh = load_stl(&path).unwrap_or_else(|e| panic!("load {var}: {e}"));
-    let rep = repair_mesh(&mut mesh, &RepairParams::for_scans());
-    println!(
-        "[{var}] welded {} verts -> {} faces",
-        rep.vertices_welded,
-        mesh.faces.len()
-    );
-    mesh
-}
-
-fn oracle(mesh: &IndexedMesh) -> MeshOracle {
-    let dist = TriMeshDistance::new(mesh.clone()).unwrap();
-    let sign = PseudoNormalSign::from_distance(&dist);
-    Signed {
-        distance: dist,
-        sign,
-    }
-}
-
-/// Vertebral body centre = deepest interior point of the signed field (no axis
-/// assumption; the thickest solid mass is the body). Returns (point, depth<0).
-fn body_center(mesh: &IndexedMesh, sdf: &MeshOracle) -> (Point3<f64>, f64) {
-    let bbox = Aabb::from_points(mesh.vertices.iter());
-    let step = 2.0;
-    let span = bbox.max - bbox.min;
-    let n = |l: f64| (l / step).ceil() as usize + 1;
-    let (mut depth, mut center) = (f64::MAX, Point3::origin());
-    for iz in 0..n(span.z) {
-        for iy in 0..n(span.y) {
-            for ix in 0..n(span.x) {
-                let p = bbox.min + Vector3::new(ix as f64, iy as f64, iz as f64) * step;
-                let v = sdf.evaluate(p);
-                if v < depth {
-                    depth = v;
-                    center = p;
-                }
-            }
-        }
-    }
-    (center, depth)
-}
-
-fn centroid(mesh: &IndexedMesh) -> Point3<f64> {
-    let s: Vector3<f64> = mesh.vertices.iter().map(|v| v.coords).sum();
-    Point3::from(s / mesh.vertices.len() as f64)
-}
-
-/// The shared segmental frame, derived from the two vertebrae (native mm).
-struct SegmentFrame {
-    ml: Vector3<f64>,        // medio-lateral (flexion/extension axis), field-derived
-    b4: Point3<f64>,         // L4 body centre
-    b5: Point3<f64>,         // L5 body centre
-    posterior: Vector3<f64>, // body → arch, ⟂ superior
-}
-
-/// Derive the anatomical frame from the field: superior = L5→L4 body centres,
-/// posterior = body→mesh-centroid (arch pulls it back), ML = superior × posterior.
-fn segment_frame(
-    l4: &IndexedMesh,
-    l5: &IndexedMesh,
-    o4: &MeshOracle,
-    o5: &MeshOracle,
-) -> SegmentFrame {
-    let (b4, d4) = body_center(l4, o4);
-    let (b5, d5) = body_center(l5, o5);
-    assert!(
-        d4 < -5.0 && d5 < -5.0,
-        "body centres must be thick solid mass ({d4:.1},{d5:.1})"
-    );
-    let superior = (b4 - b5).normalize();
-    let raw_post = (centroid(l4) - b4) + (centroid(l5) - b5);
-    let posterior = (raw_post - raw_post.dot(&superior) * superior).normalize();
-    let ml = superior.cross(&posterior).normalize();
-    SegmentFrame {
-        ml,
-        b4,
-        b5,
-        posterior,
-    }
-}
 
 // ─────────────────────────── DISC SUBSYSTEM (scaled SI) ───────────────────────────
 
@@ -253,13 +164,13 @@ fn disc_mjcf(c_inf: Vec3, c_sup: Vec3) -> String {
 /// Load + tet-mesh the real disc at shear modulus `mu`, bond it between two field-posed
 /// boxes, and capture the shared pivot (disc AABB centre, native mm) + the ML direction.
 fn build_disc(mu: f64) -> DiscModel {
-    let mut mesh = load_native("CF_DISC_STL");
+    let mut mesh = load_from_env("CF_DISC_STL").expect("load disc mesh");
     let bbox0 = Aabb::from_points(mesh.vertices.iter());
     let center_native = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
     for v in &mut mesh.vertices {
         *v = Point3::from((v.coords - center_native.coords) * SCALE);
     }
-    let sdf = oracle(&mesh);
+    let sdf = oracle(&mesh).expect("disc oracle");
     let bbox = Aabb::from_points(mesh.vertices.iter());
     // Derive the disc's principal axes from its AABB extents (no axis on faith,
     // rung-6c discipline): SI = thinnest, ML (the flexion/extension axis) = widest.
@@ -355,31 +266,6 @@ fn disc_flexion_moment(disc: &mut DiscModel, theta: f64) -> (f64, f64) {
 
 // ─────────────────────────── LIGAMENT SUBSYSTEM (native mm) ───────────────────────────
 
-/// Farthest near-midline surface vertex from `origin` along `dir`, within `max_radius`
-/// (∞ for the far spinous tip; a body radius to force the ALL onto the body rim).
-fn extreme_vertex(
-    mesh: &IndexedMesh,
-    origin: Point3<f64>,
-    dir: Vector3<f64>,
-    ml: Vector3<f64>,
-    max_radius: f64,
-) -> Point3<f64> {
-    let mut best = origin;
-    let mut best_proj = f64::MIN;
-    for v in &mesh.vertices {
-        let d = v - origin;
-        if d.dot(&ml).abs() > MIDLINE_TOL || d.norm() > max_radius {
-            continue;
-        }
-        let proj = d.dot(&dir);
-        if proj > best_proj {
-            best_proj = proj;
-            best = *v;
-        }
-    }
-    best
-}
-
 /// Build the 2-body flexion hinge + 2 ligaments (anterior ALL + posterior interspinous)
 /// as pull-only `<spatial>` tendons, hinged about the shared ML axis through `pivot`.
 fn build_ligament_model(
@@ -391,10 +277,13 @@ fn build_ligament_model(
     k_lig: f64,
 ) -> sim_core::Model {
     let (b4, b5, post) = (frame.b4, frame.b5, frame.posterior);
-    let all4 = extreme_vertex(l4, b4, -post, ml, BODY_RADIUS);
-    let all5 = extreme_vertex(l5, b5, -post, ml, BODY_RADIUS);
-    let isp4 = extreme_vertex(l4, b4, post, ml, f64::INFINITY);
-    let isp5 = extreme_vertex(l5, b5, post, ml, f64::INFINITY);
+    let attach = |m: &IndexedMesh, o: Point3<f64>, d: Vector3<f64>, r: f64| {
+        extreme_vertex(m, o, d, ml, r).expect("ligament attachment site (no vertex qualifies)")
+    };
+    let all4 = attach(l4, b4, -post, BODY_RADIUS);
+    let all5 = attach(l5, b5, -post, BODY_RADIUS);
+    let isp4 = attach(l4, b4, post, f64::INFINITY);
+    let isp5 = attach(l5, b5, post, f64::INFINITY);
     let slack = |a: Point3<f64>, b: Point3<f64>| (a - b).norm();
     let site = |p: Point3<f64>| format!("{} {} {}", p.x, p.y, p.z);
     let mjcf = format!(
@@ -435,22 +324,6 @@ fn ligament_moment(model: &sim_core::Model, theta: f64) -> f64 {
 
 // ─────────────────────────── FACET SUBSYSTEM (native mm) ───────────────────────────
 
-fn facet_grid(mesh: &IndexedMesh, sdf: &MeshOracle) -> Arc<SdfGrid> {
-    let bbox = Aabb::from_points(mesh.vertices.iter());
-    let pad = 4.0 * FACET_CELL;
-    let lo = bbox.min - Vector3::repeat(pad);
-    let span = (bbox.max + Vector3::repeat(pad)) - lo;
-    let cells = |l: f64| (l / FACET_CELL).ceil() as usize + 1;
-    Arc::new(SdfGrid::from_fn(
-        cells(span.x),
-        cells(span.y),
-        cells(span.z),
-        FACET_CELL,
-        lo,
-        |p| sdf.evaluate(p),
-    ))
-}
-
 /// Facet response at flexion `θ`: L4 rotated by `θ` about the ML axis through `pivot`,
 /// L5 fixed. Returns (number of engaged facet contacts, penalty restoring moment about
 /// ML in N·m). Contacts fire only when the articular surfaces overlap → zero in flexion,
@@ -479,7 +352,7 @@ fn facet_response(
         &ShapeConcave::new(Arc::clone(g5)),
         &pose_b,
         FACET_CELL,
-        256,
+        FACET_MAX_CONTACTS,
     );
     let mut m = Vec3::zeros();
     let mut engaged = 0;
@@ -568,11 +441,11 @@ fn l4_l5_fsu_segmental_response_vs_literature() {
     println!("\n=== RUNG 7 — assembled L4–L5 FSU: flexion/extension response vs literature ===");
 
     // ── Shared frame from the two vertebrae (native mm) ──
-    let l4 = load_native("CF_L4_STL");
-    let l5 = load_native("CF_L5_STL");
-    let o4 = oracle(&l4);
-    let o5 = oracle(&l5);
-    let frame = segment_frame(&l4, &l5, &o4, &o5);
+    let l4 = load_from_env("CF_L4_STL").expect("load L4 mesh");
+    let l5 = load_from_env("CF_L5_STL").expect("load L5 mesh");
+    let o4 = oracle(&l4).expect("L4 oracle");
+    let o5 = oracle(&l5).expect("L5 oracle");
+    let frame = segment_frame(&l4, &l5, &o4, &o5).expect("segment frame");
     println!(
         "[frame] ML = ({:.3},{:.3},{:.3})",
         frame.ml.x, frame.ml.y, frame.ml.z

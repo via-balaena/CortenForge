@@ -53,45 +53,14 @@
     clippy::too_many_lines
 )]
 
+use cf_fsu_geometry::{load_from_env, oracle};
 use cf_geometry::{Aabb, IndexedMesh};
-use mesh_io::load_stl;
-use mesh_repair::{RepairParams, repair_mesh};
-use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use nalgebra::{Point3, UnitQuaternion, Vector6};
 use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
 use sim_soft::{
     Aabb3, Mesh, MeshingHints, SdfMeshedTetMesh, Vec3, VertexId, pick_vertices_by_predicate,
 };
-
-/// The exact mesh-derived metric oracle (signed distance to a surface): a parry BVH
-/// distance composed with a pseudo-normal inside/outside sign (metric by construction).
-/// Mirrors `cf-design-tests`'s ladder helper — sim-coupling has no shared `common/`.
-type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
-
-/// Load + weld-repair a mesh named by the environment variable `path_var`.
-fn load_native(path_var: &str) -> IndexedMesh {
-    let path = std::env::var(path_var).unwrap_or_else(|_| panic!("set ${path_var} to a disc STL"));
-    let mut mesh = load_stl(&path).unwrap_or_else(|e| panic!("load {path_var}: {e}"));
-    let rep = repair_mesh(&mut mesh, &RepairParams::for_scans());
-    println!(
-        "[{path_var}] welded -> {} verts / {} faces ({} welded)",
-        mesh.vertices.len(),
-        mesh.faces.len(),
-        rep.vertices_welded
-    );
-    mesh
-}
-
-/// Build the exact signed distance oracle for a mesh (parry BVH + pseudo-normal sign).
-fn oracle(mesh: &IndexedMesh) -> MeshOracle {
-    let dist = TriMeshDistance::new(mesh.clone()).unwrap();
-    let sign = PseudoNormalSign::from_distance(&dist);
-    Signed {
-        distance: dist,
-        sign,
-    }
-}
 
 // ── Meshing / scene constants (SI metres). The disc is recentred to the origin and
 // scaled mm→m at load (rung-3 discipline): the soft solver's convergence tolerance is
@@ -246,9 +215,9 @@ struct Scene {
 /// vertebra COMs off their joint origins (`0` = centered, forward tests; nonzero = the
 /// rung-6d off-centre gradient gate) — see [`fsu_mjcf`].
 fn build(geom_off: f64) -> Scene {
-    let mut mesh = load_native("CF_DISC_STL");
+    let mut mesh = load_from_env("CF_DISC_STL").expect("load disc mesh");
     recenter_and_scale(&mut mesh);
-    let sdf = oracle(&mesh);
+    let sdf = oracle(&mesh).expect("disc oracle");
     let bbox = Aabb::from_points(mesh.vertices.iter());
     let frame = disc_frame(&bbox);
 

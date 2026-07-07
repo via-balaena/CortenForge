@@ -28,10 +28,9 @@ nalgebra = { workspace = true }
 sim-ml-chassis = { workspace = true }
 
 [dev-dependencies]
-# Rung-6c FSU disc: load + repair the real intervertebral-disc STL and build its exact
-# signed-distance oracle to tet-mesh via sim-soft (BodyParts3D mesh, env-gated, not committed).
-mesh-io = { workspace = true }
-mesh-repair = { workspace = true }
-mesh-sdf = { workspace = true }
-# Aabb / IndexedMesh types on the load → repair → oracle path.
+# Rung-6c/7 FSU geometry recipes: load + weld the real vertebra/disc STLs, build
+# the exact signed-distance oracle, and derive the segmental frame / ligament
+# sites / facet grid (BodyParts3D meshes, env-gated, not committed).
+cf-fsu-geometry = { workspace = true }
+# Aabb / IndexedMesh types used directly on the disc recenter/scale + frame path.
 cf-geometry = { workspace = true }

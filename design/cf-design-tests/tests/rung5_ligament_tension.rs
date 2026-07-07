@@ -58,12 +58,10 @@
     clippy::too_many_lines
 )]
 
+use cf_fsu_geometry::{body_center, load_from_env, oracle};
 use cf_geometry::IndexedMesh;
 use nalgebra::{Point3, Vector3};
 use sim_mjcf::load_model;
-
-mod common;
-use common::{body_center, load_native, oracle};
 
 /// Tendon stiffness (N/mm). Model is kept in native millimetres, so tension is in
 /// newtons and moment in N·mm — self-consistent with the hand oracle.
@@ -121,10 +119,10 @@ fn extreme_vertex(
 #[test]
 #[ignore = "needs local L4+L5 vertebra meshes via $CF_L4_STL/$CF_L5_STL (CC BY-SA, not committed)"]
 fn l4_l5_ligament_tension_is_pull_only_and_restoring() {
-    let l4 = load_native("CF_L4_STL");
-    let l5 = load_native("CF_L5_STL");
-    let o4 = oracle(&l4);
-    let o5 = oracle(&l5);
+    let l4 = load_from_env("CF_L4_STL").expect("load L4 mesh");
+    let l5 = load_from_env("CF_L5_STL").expect("load L5 mesh");
+    let o4 = oracle(&l4).expect("L4 oracle");
+    let o5 = oracle(&l5).expect("L5 oracle");
 
     // ── Field-derived anatomical frame ──────────────────────────────────────
     let (b4, depth4) = body_center(&l4, &o4);
