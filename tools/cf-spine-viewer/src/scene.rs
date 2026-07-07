@@ -66,11 +66,11 @@ pub struct FsuScene {
 
 /// The shared segmental frame, derived from the two vertebrae (native mm).
 struct SegmentFrame {
-    b4: Point3<f64>,         // L4 body centre
-    b5: Point3<f64>,         // L5 body centre
-    superior: Vector3<f64>,  // L5 → L4 body centres (SI axis)
-    posterior: Vector3<f64>, // body → arch, ⟂ superior
-    ml: Vector3<f64>,        // medio-lateral, superior × posterior (vertebral-frame ML)
+    b4: Point3<f64>,             // L4 body centre
+    b5: Point3<f64>,             // L5 body centre
+    superior_axis: Vector3<f64>, // L5 → L4 body centres (SI direction)
+    posterior: Vector3<f64>,     // body → arch, ⟂ superior_axis
+    ml: Vector3<f64>,            // medio-lateral, superior_axis × posterior (vertebral-frame ML)
 }
 
 /// Load + weld-repair a vertebra/disc STL, KEEPING native coordinates (the
@@ -167,7 +167,7 @@ fn segment_frame(
     Ok(SegmentFrame {
         b4,
         b5,
-        superior,
+        superior_axis: superior,
         posterior,
         ml,
     })
@@ -182,6 +182,8 @@ fn disc_principal_ml(disc: &IndexedMesh) -> Vector3<f64> {
     let bbox = Aabb::from_points(disc.vertices.iter());
     let span = bbox.max - bbox.min;
     let extents = [span.x, span.y, span.z];
+    // Widest extent = ML. On exactly-equal extents `max_by` keeps the later
+    // index (deterministic); a real disc has a distinct widest axis.
     let widest = (0..3)
         .max_by(|&a, &b| extents[a].total_cmp(&extents[b]))
         .unwrap_or(0);
@@ -298,8 +300,8 @@ fn coregistration_warnings(
     // Disc centre must sit between the L4/L5 body centres along the SI axis.
     let bbox = Aabb::from_points(disc.vertices.iter());
     let disc_center = Point3::from(bbox.min.coords + (bbox.max - bbox.min) * 0.5);
-    let along = (disc_center - frame.b5).dot(&frame.superior);
-    let separation = (frame.b4 - frame.b5).dot(&frame.superior);
+    let along = (disc_center - frame.b5).dot(&frame.superior_axis);
+    let separation = (frame.b4 - frame.b5).dot(&frame.superior_axis);
     if along < 0.0 || along > separation {
         warnings.push(format!(
             "disc centre is not between the L4/L5 bodies ({along:.1} mm of {separation:.1} mm along SI) — wrong disc level?"
@@ -406,15 +408,35 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
 mod tests {
     use super::*;
 
-    /// A vertices-only mesh (the coordinate-free helpers read only `vertices`;
-    /// a dummy face keeps the type well-formed).
+    /// A vertices-only mesh (the coordinate-free helpers read only `vertices`).
+    /// A single dummy face is added only when there are ≥3 vertices, so the
+    /// helper can't hand back an out-of-bounds face index to a future test.
     fn mesh(verts: &[[f64; 3]]) -> IndexedMesh {
+        let faces = if verts.len() >= 3 {
+            vec![[0, 1, 2]]
+        } else {
+            vec![]
+        };
         IndexedMesh {
             vertices: verts
                 .iter()
                 .map(|&[x, y, z]| Point3::new(x, y, z))
                 .collect(),
-            faces: vec![[0, 1, 2]],
+            faces,
+        }
+    }
+
+    /// Build a `SegmentFrame` directly (bypassing the SDF oracles) so the pure
+    /// co-registration math can be tested without the licensed meshes.
+    fn frame(b5: [f64; 3], b4: [f64; 3], ml: Vector3<f64>) -> SegmentFrame {
+        let b5 = Point3::new(b5[0], b5[1], b5[2]);
+        let b4 = Point3::new(b4[0], b4[1], b4[2]);
+        SegmentFrame {
+            b4,
+            b5,
+            superior_axis: (b4 - b5).normalize(),
+            posterior: Vector3::y(), // unused by coregistration_warnings
+            ml,
         }
     }
 
@@ -490,5 +512,56 @@ mod tests {
     fn centroid_is_the_mean_vertex() {
         let m = mesh(&[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 3.0, 3.0]]);
         assert_eq!(centroid(&m), Point3::new(1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn disc_principal_ml_is_widest_extent_axis() {
+        // Extents x=2, y=12, z=1 → widest is Y → ML snaps to the +Y axis.
+        let m = mesh(&[[0.0, -2.0, 0.0], [2.0, 10.0, 1.0]]);
+        assert_eq!(disc_principal_ml(&m), Vector3::y());
+    }
+
+    #[test]
+    fn disc_principal_ml_snaps_a_non_axis_span_to_a_coordinate_axis() {
+        // Widest span (x=10) is not perfectly axis-aligned in the mesh, but the
+        // derived ML is still the pure coordinate axis (rung-7's snap).
+        let m = mesh(&[[0.0, 0.0, 0.0], [10.0, 3.0, 1.0]]);
+        assert_eq!(disc_principal_ml(&m), Vector3::x());
+    }
+
+    #[test]
+    fn coregistration_clean_when_aligned_and_seated() {
+        // L5→L4 along +z; disc widest along x, centred midway between the bodies.
+        let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
+        let disc = mesh(&[[-10.0, -5.0, 9.0], [10.0, 5.0, 11.0]]); // ML x; centre (0,0,10)
+        let disc_ml = disc_principal_ml(&disc);
+        assert!(
+            coregistration_warnings(&disc, &f, disc_ml).is_empty(),
+            "an aligned, seated trio must produce no warnings"
+        );
+    }
+
+    #[test]
+    fn coregistration_warns_on_ml_disagreement() {
+        // Vertebral ML is +y but the disc's widest extent (→ ML) is +x: dot 0 < 0.9.
+        let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::y());
+        let disc = mesh(&[[-10.0, -1.0, 9.0], [10.0, 1.0, 11.0]]); // ML x; centre (0,0,10) seated
+        let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
+        assert!(
+            w.iter().any(|s| s.contains("agreement")),
+            "expected an ML-agreement warning, got {w:?}"
+        );
+    }
+
+    #[test]
+    fn coregistration_warns_when_disc_not_between_bodies() {
+        // Disc centred BELOW L5 along the SI axis → `along` negative → "not between".
+        let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
+        let disc = mesh(&[[-10.0, -5.0, -15.0], [10.0, 5.0, -13.0]]); // centre z=-14
+        let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
+        assert!(
+            w.iter().any(|s| s.contains("not between")),
+            "expected a not-between-bodies warning, got {w:?}"
+        );
     }
 }
