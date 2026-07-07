@@ -458,6 +458,116 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
         &self.upper.verts
     }
 
+    /// Reverse-mode gradient of the bonded reaction wrenches w.r.t. the two body poses
+    /// (rung 6d — the differentiable bond). Resolves the disc at the current poses (like
+    /// [`Self::probe`]) and, given a cotangent on each endplate's wrench, returns the
+    /// gradient of that scalar loss w.r.t. each body's **world-frame twist**.
+    ///
+    /// Inputs `cot_lower` / `cot_upper` are `∂L/∂wrench` per endplate in the `[ang; lin]`
+    /// [`SpatialVector`] layout (`ang = ∂L/∂moment`, `lin = ∂L/∂force`). The returned
+    /// `[lower, upper]` gradients use the SAME layout as a **co-twist**: `ang = ∂L/∂ω`,
+    /// `lin = ∂L/∂v`, with `(ω, v)` the body's world-frame angular / linear velocity about
+    /// its frame origin (`xpos`). Also returns the forward [`BondStep`] (the wrench values).
+    ///
+    /// **The reverse pass** (one adjoint solve, both faces coupled). Per bonded vertex `i`
+    /// with reaction `Rᵢ`, target `rᵢ`, arm `dᵢ = rᵢ − c`:
+    /// 1. reaction cotangent `∂L/∂Rᵢ = cot_f + cot_τ × dᵢ` (force + moment readout adjoint,
+    ///    the crate's `add_contact_moment` moment convention);
+    /// 2. ONE Dirichlet reaction VJP
+    ///    ([`CpuNewtonSolver::equilibrium_dirichlet_reaction_vjp`](sim_soft::CpuNewtonSolver::equilibrium_dirichlet_reaction_vjp))
+    ///    maps `∂L/∂R` (both faces) → `∂L/∂(target)` through the symmetric reaction
+    ///    Jacobian — this is the coupling term (moving one endplate changes the other's
+    ///    reaction);
+    /// 3. the geometric moment-arm term `∂L/∂ω += offsetᵢ × (Rᵢ × cot_τ)` (the moment arm
+    ///    rotates with the body), added to the pose map of step 2's `∂L/∂(target)`
+    ///    (`∂target/∂v = I`, `∂target/∂ω = −[offsetᵢ]×`, `offsetᵢ = rᵢ − xpos`).
+    ///
+    /// **Scope: centered bodies** (`xipos ≈ xpos` — the geom COM at the frame origin, as in
+    /// every FSU scene). Then the moment reference `c = xipos` equals the rotation centre
+    /// `xpos`, so `dᵢ = offsetᵢ` and the translation components of the moment-arm and COM
+    /// paths cancel exactly. An off-centre body (`xipos ≠ xpos`) needs the extra `∂c/∂ω`
+    /// term and is a follow-on; asserted here so a mis-posed scene fails loudly.
+    ///
+    /// # Panics
+    /// Panics if either body is not centered (`‖xipos − xpos‖` above a small tolerance) or
+    /// if the disc solve diverges.
+    #[must_use]
+    pub fn probe_with_pose_gradient(
+        &mut self,
+        cot_lower: SpatialVector,
+        cot_upper: SpatialVector,
+    ) -> (BondStep, [SpatialVector; 2]) {
+        let (lower_w, upper_w) = self.resolve();
+        let step = BondStep::from_wrenches(lower_w, upper_w);
+
+        // (1) reaction cotangent ∂L/∂R (full-DOF, both bonded faces; zero on free DOFs).
+        let mut dl_dr = vec![0.0_f64; 3 * self.n_vertices];
+        face_reaction_cotangent(
+            &mut dl_dr,
+            &self.lower.verts,
+            &self.last_targets,
+            self.data.xipos[self.lower.body],
+            cot_lower,
+        );
+        face_reaction_cotangent(
+            &mut dl_dr,
+            &self.upper.verts,
+            &self.last_targets,
+            self.data.xipos[self.upper.body],
+            cot_upper,
+        );
+
+        // (2) one Dirichlet reaction VJP: ∂L/∂R → ∂L/∂(target), coupling both faces.
+        let dl_dtarget =
+            self.solver
+                .equilibrium_dirichlet_reaction_vjp(&self.x, self.static_dt, &dl_dr);
+
+        // (3) per body: geometric moment-arm term + pose map → world-frame co-twist.
+        let grad_lower = self.body_pose_cotwist(&self.lower, &dl_dtarget, cot_lower);
+        let grad_upper = self.body_pose_cotwist(&self.upper, &dl_dtarget, cot_upper);
+        (step, [grad_lower, grad_upper])
+    }
+
+    /// Map a bonded face's `∂L/∂(target)` (reaction path) plus its geometric moment-arm
+    /// term to the body's world-frame co-twist `[ang = ∂L/∂ω; lin = ∂L/∂v]`. See
+    /// [`Self::probe_with_pose_gradient`] for the math; centered-body scope asserted here.
+    fn body_pose_cotwist(
+        &self,
+        bond: &Bond,
+        dl_dtarget: &[f64],
+        cot: SpatialVector,
+    ) -> SpatialVector {
+        let pivot = self.data.xpos[bond.body]; // rotation centre (free-joint origin)
+        // Centered-body guard: the moment reference (xipos) must coincide with the rotation
+        // centre (xpos), else the off-centre ∂c/∂ω term (unmodeled) would bias the gradient.
+        assert!(
+            (self.data.xipos[bond.body] - pivot).norm() < 1e-7,
+            "probe_with_pose_gradient requires a centered body (xipos ≈ xpos); body {} is off-centre",
+            bond.body,
+        );
+        let cot_t = wrench_moment(&cot);
+        let (mut d_ang, mut d_lin) = (Vec3::zeros(), Vec3::zeros());
+        for &v in &bond.verts {
+            let i = v as usize;
+            let offset = vec3_at(&self.last_targets, i) - pivot;
+            let dtr = vec3_at(dl_dtarget, i); // reaction-path ∂L/∂target
+            let r_i = vec3_at(&self.last_reaction, i); // reaction force at this vertex
+            // Reaction path: ∂target/∂v = I, ∂target/∂ω = −[offset]× ⇒ +offset × dtr.
+            d_lin += dtr;
+            d_ang += offset.cross(&dtr);
+            // Geometric moment-arm: ∂L/∂ω += offset × (Rᵢ × cot_τ) (no linear term when centered).
+            d_ang += offset.cross(&r_i.cross(&cot_t));
+        }
+        let mut g = SpatialVector::zeros();
+        g[0] = d_ang.x;
+        g[1] = d_ang.y;
+        g[2] = d_ang.z;
+        g[3] = d_lin.x;
+        g[4] = d_lin.y;
+        g[5] = d_lin.z;
+        g
+    }
+
     /// Per-DOF reaction (`−f_int`, vertex-major xyz) read at the last [`Self::step`]
     /// or [`Self::probe`] — the force the disc exerts on its Dirichlet anchors. Length
     /// `3 · n_vertices`.
@@ -502,6 +612,34 @@ fn face_wrench(react: &[f64], verts: &[VertexId], targets: &[Vec3], c: Vec3) -> 
         add_contact_moment(&mut w, r, f, c);
     }
     w
+}
+
+/// Read a world-frame vertex vector from a vertex-major xyz slice.
+fn vec3_at(s: &[f64], i: usize) -> Vec3 {
+    Vec3::new(s[3 * i], s[3 * i + 1], s[3 * i + 2])
+}
+
+/// Scatter a bonded face's reaction cotangent `∂L/∂Rᵢ = cot_f + cot_τ × armᵢ` into `dl_dr`
+/// (`armᵢ = targetᵢ − c`, `c` the body's moment reference). The reverse of the wrench
+/// readout (force `Σ Rᵢ` + moment `Σ armᵢ × Rᵢ`, [`add_contact_moment`] convention). The two
+/// faces are disjoint, so plain assignment per vertex is unambiguous.
+fn face_reaction_cotangent(
+    dl_dr: &mut [f64],
+    verts: &[VertexId],
+    targets: &[f64],
+    c: Vec3,
+    cot: SpatialVector,
+) {
+    let cot_t = wrench_moment(&cot); // ∂L/∂moment
+    let cot_f = wrench_force(&cot); // ∂L/∂force
+    for &v in verts {
+        let i = v as usize;
+        let arm = vec3_at(targets, i) - c;
+        let d = cot_f + cot_t.cross(&arm);
+        dl_dr[3 * i] = d.x;
+        dl_dr[3 * i + 1] = d.y;
+        dl_dr[3 * i + 2] = d.z;
+    }
 }
 
 /// Linear (force) part of a `[ang(3), lin(3)]` wrench.

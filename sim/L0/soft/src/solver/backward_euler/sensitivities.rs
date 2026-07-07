@@ -689,6 +689,33 @@ where
         k_dx.iter().map(|&x| -x).collect()
     }
 
+    /// Reverse-mode VJP of the constrained (Dirichlet) reaction — rung 6d, the
+    /// bonded-disc adjoint's backward pass. Given a cotangent `cot = ∂L/∂R` on the nodal
+    /// reaction `R = −f_int` (nonzero on the pinned/bonded DOFs, zero on the free DOFs),
+    /// returns `∂L/∂(pinned target) = K_reactᵀ · cot` — length `n_dof`, meaningful on the
+    /// pinned DOFs (the endplate-target cotangent the coupling maps to a body-pose gradient).
+    ///
+    /// **It IS the forward JVP applied to `cot`.** The reaction Jacobian
+    /// `K_react = K_pf·A_ff⁻¹·K_fp − K_pp` is **symmetric** for the frictionless
+    /// [`NullContact`](crate::contact::NullContact) bond (`K` symmetric ⇒ `K_pf = K_fpᵀ`,
+    /// `K_pp = K_ppᵀ`; `A_ff` SPD), so `K_reactᵀ = K_react` and the reverse VJP equals
+    /// [`Self::equilibrium_dirichlet_reaction_sensitivity`] evaluated at the cotangent — a
+    /// single delegation, no separate transpose path. (A future asymmetric tangent — added
+    /// contact/friction under a Dirichlet bond — would break this symmetry and need a real
+    /// transpose; out of scope, guarded by the frictionless matvec.)
+    ///
+    /// `x_final` / `dt` are the converged constrained equilibrium and its time-step. The
+    /// caller's cotangent must be zero on the free DOFs (checked in debug).
+    #[must_use]
+    pub fn equilibrium_dirichlet_reaction_vjp(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        cotangent: &[f64],
+    ) -> Vec<f64> {
+        self.equilibrium_dirichlet_reaction_sensitivity(x_final, dt, cotangent)
+    }
+
     /// `(∂r/∂height · pose_dir)_full` from the FRICTION term — the friction successor to the
     /// normal [`Self::assemble_pose_residual_grad`], needed when the contact plane moves (the
     /// grip's coupled height). The friction force `∇D = μ_c·λⁿ·f₁·Tû` scattered into the residual

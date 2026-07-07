@@ -1838,3 +1838,42 @@ fn bonded_sandwich_conserves_and_is_two_way() {
     let step = c.step();
     assert!(step.force_upper.z.is_finite() && c.data().qpos.iter().all(|q| q.is_finite()));
 }
+
+/// Rung 6d: the reverse-mode pose gradient of the bonded wrench is finite, live, and has
+/// the right physical sign — pinned in-crate for `--lib` coverage. The full 6-twist FD
+/// match (both bodies) lives in `tests/bonded_pose_gradient.rs`.
+#[test]
+fn bonded_pose_gradient_is_live_and_physical() {
+    use nalgebra::UnitQuaternion;
+    use sim_soft::Vec3;
+
+    // Compress L4 straight down 5%, then differentiate L = force_upper.z.
+    let mut c = bonded_fsu();
+    c.set_body_pose(
+        2,
+        Vec3::new(0.01, 0.01, 0.03 - 0.001),
+        UnitQuaternion::identity(),
+    );
+    let mut cot_upper = SpatialVector::zeros();
+    cot_upper[5] = 1.0; // ∂L/∂force_upper.z
+    let (step, grads) = c.probe_with_pose_gradient(SpatialVector::zeros(), cot_upper);
+
+    assert!(
+        step.force_upper.z > 0.0,
+        "compressed disc pushes the upper plate up"
+    );
+    let grad_upper = grads[1];
+    assert!(
+        grad_upper.iter().all(|g| g.is_finite()),
+        "gradient must be finite"
+    );
+    let live = grad_upper.iter().map(|g| g.abs()).fold(0.0, f64::max);
+    assert!(live > 1.0, "pose gradient degenerate (max {live:.3e})");
+    // Raising the upper plate (+v_z) relieves compression, so ∂(force_upper.z)/∂v_z < 0 —
+    // the axial bond stiffness (the reverse dual of the block spike's −9061.966).
+    assert!(
+        grad_upper[5] < 0.0,
+        "axial stiffness sign wrong: ∂F_up.z/∂v_z = {}",
+        grad_upper[5]
+    );
+}
