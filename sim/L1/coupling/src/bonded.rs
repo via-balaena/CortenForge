@@ -23,16 +23,20 @@
 //! equal-and-opposite up to the free-node residual (Newton's third law across the
 //! coupled interface) — measured to ~1e-12 in `tests/bonded_sandwich_fsu.rs`.
 //!
-//! ## Scope (6b)
+//! ## Scope (6b / 6c)
 //!
-//! Forward only. A **primitive** tet disc ([`HandBuiltTetMesh::uniform_block`]) —
-//! the real disc geometry is rung 6c, and differentiability across the bond is
-//! rung 6d (the constrained DOFs carry zero cotangent today, and the existing
-//! pose→soft adjoint is wired to contact, not Dirichlet). The soft solve is
-//! **quasi-static** (a large `dt` so the inertial term is negligible): the disc
-//! equilibrates to the current endplate poses each step while the rigid bodies
-//! integrate at their own model timestep — the standard staggered scheme, with the
-//! penalty contact replaced by the Dirichlet bond.
+//! Forward only. The bond is **mesh-agnostic**: [`BondedSandwich`] is generic over
+//! the tet-mesh type ([`Mesh`]). [`BondedSandwich::new`] bonds a **primitive** block
+//! disc ([`HandBuiltTetMesh::uniform_block`], rung 6b); [`BondedSandwich::from_tet_mesh`]
+//! bonds **any** tet mesh with caller-supplied endplate-vertex sets — the real
+//! intervertebral-disc geometry ([`SdfMeshedTetMesh`](sim_soft::SdfMeshedTetMesh)
+//! from the anatomical mesh, rung 6c). Differentiability across the bond is rung 6d
+//! (the constrained DOFs carry zero cotangent today, and the existing pose→soft
+//! adjoint is wired to contact, not Dirichlet). The soft solve is **quasi-static** (a
+//! large `dt` so the inertial term is negligible): the disc equilibrates to the
+//! current endplate poses each step while the rigid bodies integrate at their own
+//! model timestep — the standard staggered scheme, with the penalty contact replaced
+//! by the Dirichlet bond.
 
 use nalgebra::UnitQuaternion;
 use sim_core::{Data, MjJointType, Model, SpatialVector};
@@ -43,6 +47,11 @@ use sim_soft::{
 };
 
 use crate::vjp::add_contact_moment;
+
+/// Newton-iteration budget for the quasi-static disc solve. Generous headroom over the
+/// skeleton's block-tuned 10 so a real many-thousand-tet disc converges to the same
+/// `tol` under stiff near-incompressible modes; easy problems early-exit unaffected.
+const MAX_NEWTON_ITER: usize = 50;
 
 /// One rigid endplate's bond: which rigid body, which disc nodes glue to it, and
 /// each node's rest offset expressed in the body frame (so the target tracks the
@@ -106,22 +115,29 @@ impl BondStep {
     }
 }
 
-/// A primitive soft disc bonded between two rigid bodies (rung 6b).
+/// A soft disc bonded between two rigid bodies (rung 6b / 6c).
 ///
-/// Construct with [`BondedSandwich::new`], then drive the coupled system with
-/// [`BondedSandwich::step`]. The disc's bottom face (`z ≈ 0`) bonds to `lower_body`
-/// and its top face (`z ≈ edge`) to `upper_body`; both bodies must already be posed
-/// so those faces coincide with their endplates (see the FSU gate for the canonical
-/// scene). Forward only — see the module docs for the 6b scope.
-pub struct BondedSandwich {
+/// Generic over the tet-mesh type `Msh` (defaults to [`HandBuiltTetMesh`], the rung-6b
+/// primitive block). Construct a primitive block disc with [`BondedSandwich::new`] or
+/// bond an arbitrary tet mesh — e.g. the real intervertebral disc
+/// ([`SdfMeshedTetMesh`](sim_soft::SdfMeshedTetMesh)) — with
+/// [`BondedSandwich::from_tet_mesh`]; then drive the coupled system with
+/// [`BondedSandwich::step`] / [`BondedSandwich::probe`]. The lower bonded face glues to
+/// `lower_body` and the upper to `upper_body`; both bodies must already be posed so
+/// those faces coincide with their endplates (see the FSU gates for the canonical
+/// scenes). Forward only — see the module docs for scope.
+pub struct BondedSandwich<Msh = HandBuiltTetMesh>
+where
+    Msh: Mesh,
+{
     model: Model,
     data: Data,
 
-    /// The primitive-disc solver, built ONCE: the bonded (pinned) Dirichlet set and
-    /// the mesh topology are constant, and [`Solver::replay_step`] /
-    /// `nodal_reaction_forces` are pure functions of the per-step Dirichlet targets
-    /// (`&self`), so only `x_prev` changes step to step — no per-step rebuild.
-    solver: DiscSolver,
+    /// The disc solver, built ONCE: the bonded (pinned) Dirichlet set and the mesh
+    /// topology are constant, and [`Solver::replay_step`] / `nodal_reaction_forces`
+    /// are pure functions of the per-step Dirichlet targets (`&self`), so only
+    /// `x_prev` changes step to step — no per-step rebuild.
+    solver: DiscSolver<Msh>,
     /// The large quasi-static timestep (inertial term `M/dt²` negligible).
     static_dt: f64,
     n_vertices: usize,
@@ -141,17 +157,18 @@ pub struct BondedSandwich {
     last_targets: Vec<f64>,
 }
 
-type DiscSolver = CpuNewtonSolver<Tet4, HandBuiltTetMesh, NullContact>;
+type DiscSolver<Msh> = CpuNewtonSolver<Tet4, Msh, NullContact>;
 
-impl BondedSandwich {
+impl BondedSandwich<HandBuiltTetMesh> {
     /// Bond a primitive Neo-Hookean disc of `n_per_edge` cells and `edge` length
-    /// between `lower_body` and `upper_body` in `model`/`data`.
+    /// between `lower_body` and `upper_body` in `model`/`data` (rung 6b).
     ///
     /// `mu` sets the disc's Neo-Hookean stiffness (`λ = 4μ`); `static_dt` is the
     /// large timestep that makes the soft solve quasi-static (the inertial term
     /// `M/dt²` negligible). `data` must already be `forward`-ed so body poses are
     /// current; the disc's bottom face (`z ≈ 0`) bonds to `lower_body` and its top
-    /// face (`z ≈ edge`) to `upper_body`.
+    /// face (`z ≈ edge`) to `upper_body`. A convenience wrapper over
+    /// [`Self::from_tet_mesh`] that builds the block and picks its two planar faces.
     ///
     /// # Panics
     /// Panics if the disc has no `z ≈ 0` or no `z ≈ edge` face to bond (a malformed
@@ -172,20 +189,87 @@ impl BondedSandwich {
     ) -> Self {
         let field = MaterialField::uniform(mu, 4.0 * mu);
         let mesh = HandBuiltTetMesh::uniform_block(n_per_edge, edge, &field);
-        let n_vertices = mesh.n_vertices();
-        let rest: Vec<Vec3> = mesh.positions().to_vec();
 
+        // The two planar block faces; `from_tet_mesh` is the single validator (asserts
+        // them non-empty — a valid `n_per_edge ≥ 1` block always has both).
         let lower_verts = sim_soft::pick_vertices_by_predicate(&mesh, |p| p.z.abs() < 1e-9);
         let upper_verts =
             sim_soft::pick_vertices_by_predicate(&mesh, |p| (p.z - edge).abs() < 1e-9);
+
+        Self::from_tet_mesh(
+            model,
+            data,
+            lower_body,
+            upper_body,
+            mesh,
+            lower_verts,
+            upper_verts,
+            static_dt,
+        )
+    }
+}
+
+impl<Msh: Mesh> BondedSandwich<Msh> {
+    /// Bond an **arbitrary** tet mesh between `lower_body` and `upper_body`, with the
+    /// two endplate faces supplied as vertex-id sets (rung 6c — the real disc geometry).
+    ///
+    /// `lower_verts` glue to `lower_body`, `upper_verts` to `upper_body`; the caller
+    /// derives them from the disc's own geometry (e.g. a band of the superior /
+    /// inferior extent along the disc's short axis) — this constructor takes no axis
+    /// convention. The mesh already carries its per-tet material (baked at mesh
+    /// construction); `static_dt` is the large timestep that makes the soft solve
+    /// quasi-static. `data` must already be `forward`-ed so body poses are current, and
+    /// the two bodies posed so the endplate faces coincide with their surfaces (the
+    /// rest state is deformation-free — each bonded node's offset is snapshot at the
+    /// current pose).
+    ///
+    /// # Panics
+    /// Panics if either bonded-vertex set is empty, contains a duplicate id (which would
+    /// double-count that node's reaction), shares a vertex with the other set (a node
+    /// cannot bond to both endplates), or contains an id out of range for `mesh`.
+    #[must_use]
+    // 8 independent physical inputs (two bodies + mesh + two face sets + static dt); a
+    // config-struct bundle is a deferred ergonomics refactor (mirrors `StaggeredCoupling::new`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_tet_mesh(
+        model: Model,
+        data: Data,
+        lower_body: usize,
+        upper_body: usize,
+        mesh: Msh,
+        lower_verts: Vec<VertexId>,
+        upper_verts: Vec<VertexId>,
+        static_dt: f64,
+    ) -> Self {
+        let n_vertices = mesh.n_vertices();
+        assert!(!lower_verts.is_empty(), "lower bonded face is empty");
+        assert!(!upper_verts.is_empty(), "upper bonded face is empty");
         assert!(
-            !lower_verts.is_empty(),
-            "disc has no z≈0 face to bond to the lower body"
+            lower_verts
+                .iter()
+                .chain(&upper_verts)
+                .all(|&v| (v as usize) < n_vertices),
+            "a bonded vertex id is out of range for the {n_vertices}-vertex disc mesh"
+        );
+        // Each face's ids must be unique (a repeat would double-count that node's
+        // reaction in the endplate wrench), and the two faces disjoint (a node cannot
+        // bond to both bodies). Deduped sets give both checks in one place.
+        let lower_set: std::collections::HashSet<VertexId> = lower_verts.iter().copied().collect();
+        let upper_set: std::collections::HashSet<VertexId> = upper_verts.iter().copied().collect();
+        assert!(
+            lower_set.len() == lower_verts.len(),
+            "the lower bonded face has a duplicate vertex id"
         );
         assert!(
-            !upper_verts.is_empty(),
-            "disc has no z≈edge face to bond to the upper body"
+            upper_set.len() == upper_verts.len(),
+            "the upper bonded face has a duplicate vertex id"
         );
+        assert!(
+            lower_set.is_disjoint(&upper_set),
+            "the two endplate faces share a vertex (a node cannot bond to both bodies)"
+        );
+
+        let rest: Vec<Vec3> = mesh.positions().to_vec();
         let lower = Bond::new(lower_body, lower_verts, &rest, &data);
         let upper = Bond::new(upper_body, upper_verts, &rest, &data);
 
@@ -203,7 +287,8 @@ impl BondedSandwich {
         pinned.extend_from_slice(&upper.verts);
         let mut cfg = SolverConfig::skeleton();
         cfg.dt = static_dt;
-        let solver: DiscSolver = CpuNewtonSolver::new(
+        cfg.max_newton_iter = MAX_NEWTON_ITER; // real-mesh headroom; see the const's doc.
+        let solver: DiscSolver<Msh> = CpuNewtonSolver::new(
             Tet4,
             mesh,
             NullContact,

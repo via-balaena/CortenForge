@@ -11671,6 +11671,10 @@ dependencies = [
 name = "sim-coupling"
 version = "1.0.0"
 dependencies = [
+ "cf-geometry",
+ "mesh-io",
+ "mesh-repair",
+ "mesh-sdf",
  "nalgebra 0.34.2",
  "sim-core",
  "sim-mjcf",
