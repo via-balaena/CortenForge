@@ -599,9 +599,18 @@ where
     /// Forward sensitivity `∂(reaction)/∂(pinned target)` of a converged **constrained
     /// (Dirichlet) equilibrium** — rung 6d, the bonded-disc reaction adjoint's forward
     /// JVP. Given a displacement direction `dx_pinned` of the *pinned* (Dirichlet) DOFs
-    /// — zero on the free DOFs — returns the resulting change in the nodal reaction
-    /// `R = −f_int` (length `n_dof`; the meaningful entries are the pinned DOFs — the
-    /// bonded endplate the caller sums into a wrench).
+    /// (**zero on the free DOFs** — the input is a motion of the Dirichlet targets),
+    /// returns the directional derivative of [`Self::nodal_reaction_forces`] (`R = −f_int`),
+    /// length `n_dof`.
+    ///
+    /// ⚠ **Only the constrained (pinned) DOFs are physical reactions.** Like the readout it
+    /// differentiates, this is defined on every DOF, but a reaction exists only where a
+    /// constraint supplies force: the free/interior entries are the derivative of the
+    /// free-node residual (`−f_int,free`, which is `≈0` in the static bond regime), NOT a
+    /// reaction — do not sum them into a wrench. The bonded-endplate consumer sums only its
+    /// pinned face (mirroring `nodal_reaction_forces`), so this footgun is not tripped in the
+    /// FSU path; the guard is the doc contract here + the FD gate's pinned-only comparison
+    /// (`tests/dirichlet_reaction_sensitivity.rs`).
     ///
     /// **Why the existing sensitivities don't cover this.** The keystone family
     /// ([`Self::equilibrium_pose_sensitivity`], [`Self::equilibrium_material_sensitivity`],
@@ -633,8 +642,17 @@ where
     /// [`NullContact`](crate::contact::NullContact) Dirichlet bond) — see the
     /// `internal_force_tangent_matvec` scope note. The reverse (tape) dual is the rung-6d VJP.
     ///
+    /// **Cost.** Each call factors `A_ff` once (via `solve_free_and_scatter`) and assembles the
+    /// element tangent for two full-DOF matvecs — appropriate for a single directional
+    /// derivative (the validation sibling of the reverse VJP). Building the FULL reaction
+    /// Jacobian one column per pinned DOF this way re-factors `A_ff` every column; the reverse
+    /// (tape) VJP is the factor-once / back-substitute-many path for that.
+    ///
     /// # Panics
     /// Panics if `dx_pinned.len() != n_dof`.
+    // float_cmp: the debug contract is that the free entries are EXACTLY 0.0 (the caller
+    // leaves them untouched), so an exact comparison is the intended check.
+    #[allow(clippy::float_cmp)]
     #[must_use]
     pub fn equilibrium_dirichlet_reaction_sensitivity(
         &self,
@@ -647,6 +665,14 @@ where
             "dx_pinned must have length n_dof = {}, got {}",
             self.n_dof,
             dx_pinned.len()
+        );
+        // Enforce the "zero on free DOFs" contract: `dx_pinned` is a motion of the Dirichlet
+        // TARGETS, so a nonzero free entry would silently corrupt the JVP (fold `K_ff·dx_free`
+        // into rhs at step 1 and double-add it at step 3). Debug-only — a hot path whose sole
+        // consumer (the bonded coupling) builds `dx_pinned` from pinned DOFs by construction.
+        debug_assert!(
+            self.free_dof_indices.iter().all(|&i| dx_pinned[i] == 0.0),
+            "dx_pinned must be zero on the free DOFs (it perturbs the Dirichlet targets)"
         );
         // (1) rhs_free = −(K·dx_pinned)_free — only K_fp couples free rows to the pinned
         //     perturbation (dx_pinned is zero on free DOFs by contract).

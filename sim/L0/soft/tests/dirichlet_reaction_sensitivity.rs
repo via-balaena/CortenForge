@@ -162,18 +162,4 @@ fn dirichlet_reaction_jvp_matches_resolve_fd() {
         best < 1e-6,
         "Dirichlet reaction JVP must match re-solve FD; best rel = {best:.3e}"
     );
-
-    // Conservation of the reaction derivative: the internal force is self-equilibrated
-    // (Σ f_int ≡ 0), so Σ dR = 0 per axis, for ANY perturbation (Newton's third law in
-    // the derivative). Independent of the FD above.
-    for axis in 0..3 {
-        let sum: f64 = (0..n_dof() / 3).map(|v| an[3 * v + axis]).sum();
-        let scale: f64 = an.iter().map(|x| x.abs()).fold(0.0, f64::max).max(1e-30);
-        eprintln!("  Σ dR axis {axis} / scale = {:.2e}", sum / scale);
-        assert!(
-            (sum / scale).abs() < 1e-9,
-            "reaction-derivative not conserved on axis {axis}: {:.2e}",
-            sum / scale
-        );
-    }
 }

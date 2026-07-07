@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use faer::sparse::Triplet;
+use nalgebra::{Matrix3, SMatrix};
 use sim_ml_chassis::Tensor;
 
 use crate::contact::{ActivePairsFor, ContactModel};
@@ -315,6 +316,10 @@ where
                 let va = verts[a] as usize;
                 for b in 0..4 {
                     let vb = verts[b] as usize;
+                    // The 3×3 `V·(BₐᵀℂB_b)` block (shared with `internal_force_tangent_matvec`);
+                    // scatter only its free-DOF, lower-triangle entries.
+                    let block =
+                        element_tangent_block(&geom.grad_x_n, &tangent_9x9, geom.volume, a, b);
                     for i in 0..3 {
                         for j in 0..3 {
                             let row_full = 3 * va + i;
@@ -324,18 +329,7 @@ where
                                 self.full_to_free_idx[col_full],
                             ) && row_free >= col_free
                             {
-                                // (B_a^T 𝕔 B_b)[i,j] = Σ_{l,l'} (grad_X N_a)_l ·
-                                //   𝕔[(i+3l), (j+3l')] · (grad_X N_b)_{l'}
-                                let mut block = 0.0;
-                                for l in 0..3 {
-                                    for lp in 0..3 {
-                                        block += geom.grad_x_n[(a, l)]
-                                            * tangent_9x9[(i + 3 * l, j + 3 * lp)]
-                                            * geom.grad_x_n[(b, lp)];
-                                    }
-                                }
-                                *acc.entry((col_free, row_free)).or_insert(0.0) +=
-                                    geom.volume * block;
+                                *acc.entry((col_free, row_free)).or_insert(0.0) += block[(i, j)];
                             }
                         }
                     }
@@ -451,19 +445,13 @@ where
                 let va = verts[a] as usize;
                 for b in 0..4 {
                     let vb = verts[b] as usize;
+                    // Same `V·(BₐᵀℂB_b)` block as `assemble_free_hessian_triplets`, contracted
+                    // full-DOF against `v` (no free/pinned filter).
+                    let block =
+                        element_tangent_block(&geom.grad_x_n, &tangent_9x9, geom.volume, a, b);
                     for i in 0..3 {
                         for j in 0..3 {
-                            // (B_a^T ℂ B_b)[i,j] = Σ_{l,l'} (grad_X N_a)_l ·
-                            //   ℂ[(i+3l),(j+3l')] · (grad_X N_b)_{l'}
-                            let mut block = 0.0;
-                            for l in 0..3 {
-                                for lp in 0..3 {
-                                    block += geom.grad_x_n[(a, l)]
-                                        * tangent_9x9[(i + 3 * l, j + 3 * lp)]
-                                        * geom.grad_x_n[(b, lp)];
-                                }
-                            }
-                            out[3 * va + i] += geom.volume * block * v[3 * vb + j];
+                            out[3 * va + i] += block[(i, j)] * v[3 * vb + j];
                         }
                     }
                 }
@@ -489,4 +477,39 @@ where
 
         out
     }
+}
+
+/// The per-element 3×3 tangent block `V·(Bₐᵀ ℂ B_b)` coupling tet-vertices `a` and `b`:
+///
+/// ```text
+///     block[i,j] = V · Σ_{l,l'} (∇ₓNₐ)_l · ℂ[i+3l, j+3l'] · (∇ₓN_b)_{l'}     (BF-5 flattening)
+/// ```
+///
+/// Single-sourced by [`CpuNewtonSolver::assemble_free_hessian_triplets`] (which scatters
+/// its free-DOF, lower-triangle entries into the sparse tangent) and
+/// [`CpuNewtonSolver::internal_force_tangent_matvec`] (which contracts the full block
+/// against a direction) so the material-tangent flattening convention lives in exactly
+/// one place — the two callers can no longer drift out of lockstep.
+#[allow(clippy::needless_range_loop, clippy::many_single_char_names)]
+fn element_tangent_block(
+    grad_x_n: &SMatrix<f64, 4, 3>,
+    tangent_9x9: &SMatrix<f64, 9, 9>,
+    volume: f64,
+    a: usize,
+    b: usize,
+) -> Matrix3<f64> {
+    let mut block = Matrix3::zeros();
+    for i in 0..3 {
+        for j in 0..3 {
+            let mut s = 0.0;
+            for l in 0..3 {
+                for lp in 0..3 {
+                    s +=
+                        grad_x_n[(a, l)] * tangent_9x9[(i + 3 * l, j + 3 * lp)] * grad_x_n[(b, lp)];
+                }
+            }
+            block[(i, j)] = volume * s;
+        }
+    }
+    block
 }

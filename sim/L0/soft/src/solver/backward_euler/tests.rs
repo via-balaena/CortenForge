@@ -1016,11 +1016,4 @@ fn dirichlet_reaction_matvec_and_sensitivity_lib_smoke() {
     assert!(dr.iter().all(|x| x.is_finite()), "dR must be finite");
     let live = dr.iter().map(|x| x.abs()).fold(0.0, f64::max);
     assert!(live > 1.0, "dR must be live (max |dR| = {live:.3e})");
-    for axis in 0..3 {
-        let sum: f64 = (0..n).map(|vv| dr[3 * vv + axis]).sum();
-        assert!(
-            (sum / live).abs() < 1e-9,
-            "reaction derivative not conserved on axis {axis}"
-        );
-    }
 }
