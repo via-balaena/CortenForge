@@ -57,7 +57,7 @@ use cf_geometry::{Aabb, IndexedMesh};
 use mesh_io::load_stl;
 use mesh_repair::{RepairParams, repair_mesh};
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
-use nalgebra::{Point3, UnitQuaternion};
+use nalgebra::{Point3, UnitQuaternion, Vector6};
 use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
 use sim_soft::{
@@ -181,7 +181,17 @@ fn si_spread(tet: &SdfMeshedTetMesh, verts: &[VertexId], si: usize) -> (f64, f64
 /// Two free-joint boxes centred on the disc's inferior / superior endplate centroids,
 /// each offset by `H_BOX` along SI so the box face meets the disc surface. The boxes
 /// are the rigid vertebrae the disc bonds to; gravity off (probe-driven readout).
-fn fsu_mjcf(frame: &DiscFrame, c_inf: Vec3, c_sup: Vec3) -> String {
+///
+/// `geom_off` shifts each box geom's centre by `geom_off` along SI within its body frame,
+/// so the auto-computed COM (`xipos`) sits off the free-joint origin (`xpos`) — a real
+/// anatomical vertebra's COM is offset from its endplate. `geom_off = 0` is the centered
+/// body the rung-6c forward tests use; the rung-6d gradient gate passes a nonzero offset to
+/// exercise the off-centre pose gradient on the real disc. The offset does NOT change the
+/// bond or the reaction (the disc bonds to `xpos`, not the geom), nor the wrench FORCE
+/// (`Σ Rᵢ`), but it DOES move the wrench MOMENT reference (each face wrench is reduced about
+/// the COM `xipos`, see `resolve`/`face_wrench`) — so it is inert for the rung-6c forward
+/// tests only because they pass `geom_off = 0`.
+fn fsu_mjcf(frame: &DiscFrame, c_inf: Vec3, c_sup: Vec3, geom_off: f64) -> String {
     let si = frame.si_hat();
     let lo = c_inf - si * H_BOX; // inferior box COM (top face at the inferior endplate)
     let hi = c_sup + si * H_BOX; // superior box COM (bottom face at the superior endplate)
@@ -190,17 +200,18 @@ fn fsu_mjcf(frame: &DiscFrame, c_inf: Vec3, c_sup: Vec3) -> String {
     // rigid engine), but sized realistically for a vertebra endplate.
     let (mut sz, si_i) = ([0.025_f64, 0.025, 0.025], frame.si);
     sz[si_i] = H_BOX;
+    let gp = si * geom_off; // geom-centre offset along SI (body frame)
     format!(
         r#"<mujoco>
   <option gravity="0 0 0" timestep="0.001"/>
   <worldbody>
     <body name="inferior" pos="{lx} {ly} {lz}">
       <freejoint/>
-      <geom type="box" size="{sx} {sy} {szz}" mass="0.05"/>
+      <geom type="box" pos="{gx} {gy} {gz}" size="{sx} {sy} {szz}" mass="0.05"/>
     </body>
     <body name="superior" pos="{ux} {uy} {uz}">
       <freejoint/>
-      <geom type="box" size="{sx} {sy} {szz}" mass="0.05"/>
+      <geom type="box" pos="{gx} {gy} {gz}" size="{sx} {sy} {szz}" mass="0.05"/>
     </body>
   </worldbody>
 </mujoco>"#,
@@ -210,6 +221,9 @@ fn fsu_mjcf(frame: &DiscFrame, c_inf: Vec3, c_sup: Vec3) -> String {
         ux = hi.x,
         uy = hi.y,
         uz = hi.z,
+        gx = gp.x,
+        gy = gp.y,
+        gz = gp.z,
         sx = sz[0],
         sy = sz[1],
         szz = sz[2],
@@ -228,8 +242,10 @@ struct Scene {
 }
 
 /// The full rung-6c scene: load + tet-mesh the real disc, derive its frame + endplate
-/// faces, pose two rigid vertebrae to its surfaces, and bond.
-fn build() -> Scene {
+/// faces, pose two rigid vertebrae to its surfaces, and bond. `geom_off` offsets the
+/// vertebra COMs off their joint origins (`0` = centered, forward tests; nonzero = the
+/// rung-6d off-centre gradient gate) — see [`fsu_mjcf`].
+fn build(geom_off: f64) -> Scene {
     let mut mesh = load_native("CF_DISC_STL");
     recenter_and_scale(&mut mesh);
     let sdf = oracle(&mesh);
@@ -283,7 +299,7 @@ fn build() -> Scene {
     let c_inf = centroid(&tet, &inferior);
     let c_sup = centroid(&tet, &superior);
 
-    let model = load_model(&fsu_mjcf(&frame, c_inf, c_sup)).expect("FSU MJCF loads");
+    let model = load_model(&fsu_mjcf(&frame, c_inf, c_sup, geom_off)).expect("FSU MJCF loads");
     let mut data = model.make_data();
     data.forward(&model).expect("initial forward");
     let rest_upper_com = data.xpos[UPPER];
@@ -339,7 +355,7 @@ fn real_disc_bonds_conserves_and_springs_apart_under_compression() {
         rest_upper_com: rest_up,
         c_inf,
         c_sup,
-    } = build();
+    } = build(0.0);
     let mut c = sandwich;
     let si = frame.si;
 
@@ -424,7 +440,7 @@ fn real_disc_carries_two_way_tension_under_flexion() {
         rest_upper_com: rest_up,
         c_sup: pivot,
         ..
-    } = build();
+    } = build(0.0);
     let mut c = sandwich;
     let (si, ml) = (frame.si, frame.ml);
 
@@ -471,4 +487,155 @@ fn real_disc_carries_two_way_tension_under_flexion() {
         "flexed disc must produce a restoring moment (M_sup.ML<0), got {:+.5}",
         flex.moment_upper[ml]
     );
+}
+
+// ── Rung 6d: the differentiable bond on the REAL disc ──────────────────────────
+//
+// PR1/PR2 validated the pose gradient on a primitive block; this confirms it FD-holds
+// on the real 12.5k-tet L4–L5 disc AND on OFF-CENTRE vertebra bodies (COM ≠ joint
+// origin, as real anatomy has) — the exact co-design consumer. Reverse dual of the
+// forward tests above.
+
+/// `sim-core`'s `SpatialVector` (`[ang(3); lin(3)]` layout) — a `Vector6<f64>`.
+type SpatialVector = Vector6<f64>;
+
+/// Vertebra COM offset off the joint origin (m) — makes the bodies off-centre.
+const GEOM_OFF: f64 = 0.01;
+
+/// Scalar loss `L = cot·wrench` summed over both endplates (`[ang; lin]` layout).
+fn wrench_loss(step: &sim_coupling::BondStep, cl: SpatialVector, cu: SpatialVector) -> f64 {
+    let d = |c: SpatialVector, m: Vec3, f: Vec3| {
+        c[0] * m.x + c[1] * m.y + c[2] * m.z + c[3] * f.x + c[4] * f.y + c[5] * f.z
+    };
+    d(cl, step.moment_lower, step.force_lower) + d(cu, step.moment_upper, step.force_upper)
+}
+
+/// The operating-point geometry the FD sweep threads (the disc frame + the rest poses the
+/// perturbations are taken about).
+struct OpCtx<'a> {
+    frame: &'a DiscFrame,
+    rest_up: Vec3,
+    pivot: Vec3,
+    rest_low: Vec3,
+}
+
+/// Place the superior vertebra at the operating point (compress δ along SI + flex θ about
+/// ML through the superior endplate centroid), then perturb `body`'s world-frame twist DOF
+/// `m` (0..3 angular, 3..6 linear) by `eps`. The inferior stays at rest.
+fn set_operating(
+    c: &mut BondedSandwich<SdfMeshedTetMesh>,
+    ctx: &OpCtx,
+    body: usize,
+    m: usize,
+    eps: f64,
+) {
+    let ml = ctx.frame.ml;
+    let delta = 1.0e-4;
+    let theta = 0.015_f64;
+    let mut ml_axis = Vec3::zeros();
+    ml_axis[ml] = 1.0;
+    let rot = UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(ml_axis), theta);
+    let compressed = ctx.rest_up - ctx.frame.si_hat() * delta;
+    let mut up = (ctx.pivot + rot * (compressed - ctx.pivot), rot);
+    let mut low = (ctx.rest_low, UnitQuaternion::identity());
+    // Apply the twist perturbation to the requested body.
+    let target = if body == UPPER { &mut up } else { &mut low };
+    if m < 3 {
+        let mut axis = Vec3::zeros();
+        axis[m] = 1.0;
+        target.1 = UnitQuaternion::from_scaled_axis(axis * eps) * target.1;
+    } else {
+        let mut dp = Vec3::zeros();
+        dp[m - 3] = eps;
+        target.0 += dp;
+    }
+    c.set_body_pose(LOWER, low.0, low.1);
+    c.set_body_pose(UPPER, up.0, up.1);
+}
+
+#[test]
+#[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+fn real_disc_pose_gradient_matches_reprobe_fd() {
+    let Scene {
+        sandwich,
+        frame,
+        rest_upper_com: rest_up,
+        c_inf,
+        c_sup: pivot,
+    } = build(GEOM_OFF);
+    let mut c = sandwich;
+    let rest_low = c_inf - frame.si_hat() * H_BOX; // inferior box COM at rest
+    let ctx = OpCtx {
+        frame: &frame,
+        rest_up,
+        pivot,
+        rest_low,
+    };
+
+    // A rich cotangent (force + moment on both endplates).
+    let cl = SpatialVector::from_row_slice(&[0.4, -0.2, 0.3, -0.5, 0.2, 0.7]);
+    let cu = SpatialVector::from_row_slice(&[0.6, 0.3, -0.4, 0.2, -0.3, 1.0]);
+
+    // Analytic gradient at the operating point.
+    set_operating(&mut c, &ctx, UPPER, 0, 0.0);
+    let (_step, grads) = c.probe_with_pose_gradient(cl, cu);
+    let an: [[f64; 6]; 2] = [
+        std::array::from_fn(|k| grads[0][k]),
+        std::array::from_fn(|k| grads[1][k]),
+    ];
+
+    // Confirm BOTH vertebra bodies are genuinely off-centre (‖xipos − xpos‖ ≫ the block's
+    // tolerance) — so both bodies' gradients exercise the `xipos ≠ xpos` moment-arm path.
+    for b in [LOWER, UPPER] {
+        let off = (c.data().xipos[b] - c.data().xpos[b]).norm();
+        println!(
+            "[rung6d] body {b} COM offset ‖xipos−xpos‖ = {:.1} mm",
+            off * 1e3
+        );
+        assert!(
+            off > 1e-3,
+            "vertebra body {b} should be off-centre for this gate"
+        );
+    }
+
+    for (bi, (name, body)) in [("inferior", LOWER), ("superior", UPPER)]
+        .into_iter()
+        .enumerate()
+    {
+        let an_b = &an[bi];
+        let scale = an_b.iter().map(|x| x.abs()).fold(0.0, f64::max);
+        assert!(
+            scale > 1.0,
+            "{name} pose gradient degenerate (max {scale:.3e})"
+        );
+        // A tiny absolute floor (relative to the gradient scale) so a genuinely-near-zero
+        // component doesn't blow up the ratio; negligible for the O(1)+ components.
+        let floor = 1e-6 * scale;
+        eprintln!("[rung6d {name}] analytic = {an_b:?}");
+        // Require EVERY twist component to match the FD, at EVERY eps (agreement across
+        // perturbation scales) — a PER-DOF relative error, so a wrong low-magnitude co-twist
+        // (e.g. an angular DOF ~100× smaller than the force DOFs) cannot hide behind the
+        // dominant components the way an aggregate L2 error would.
+        // Two well-conditioned central-difference scales (`1e-7` is roundoff-limited on the
+        // small co-twist DOFs of a 12.5k-tet solve; both of these sit near the FD minimum).
+        for e in [1e-5, 1e-6] {
+            let mut fd = [0.0_f64; 6];
+            for (m, fdm) in fd.iter_mut().enumerate() {
+                set_operating(&mut c, &ctx, body, m, e);
+                let lp = wrench_loss(&c.probe(), cl, cu);
+                set_operating(&mut c, &ctx, body, m, -e);
+                let lm = wrench_loss(&c.probe(), cl, cu);
+                *fdm = (lp - lm) / (2.0 * e);
+            }
+            let worst = (0..6)
+                .map(|k| (an_b[k] - fd[k]).abs() / (fd[k].abs() + floor))
+                .fold(0.0, f64::max);
+            println!("[rung6d {name}] eps={e:.1e}  worst per-DOF rel = {worst:.3e}");
+            assert!(
+                worst < 1e-4,
+                "{name} real-disc pose gradient: a twist DOF fails FD at eps={e:.1e} \
+                 (worst per-DOF rel {worst:.3e}); analytic={an_b:?}, fd={fd:?}"
+            );
+        }
+    }
 }
