@@ -807,3 +807,114 @@ fn gated_lm_enabled_happy_path_converges_same_as_pre_f3() {
          on happy-path), got {lm_lambda}"
     );
 }
+
+// --- Rung 6: nodal reaction-force readout (`nodal_reaction_forces`) ---
+
+/// The reaction readout returns correct NEWTONS, validated against the analytic
+/// uniaxial solution (an INDEPENDENT oracle, not the FEM assembly).
+///
+/// Impose the homogeneous uniaxial-tension affine field `diag(λ, λt, λt)` (λt from
+/// [`free_transverse_uniaxial`]) as full Dirichlet BCs on every boundary node of a
+/// `Tet4` coupon; solve one static step. The reaction summed over the driven `+x`
+/// face is the total axial force transmitted, which must equal the analytic
+/// `cauchy_stress · deformed_area` (`σ · L² · λt²`), and its transverse components
+/// must vanish (the free-transverse condition). This proves the public readout
+/// (which the rung-6 soft↔rigid bond consumes) integrates the internal stress into
+/// the right force, not just a self-consistent `−f_int`.
+#[test]
+#[allow(clippy::cast_possible_truncation)] // vertex indices sit far inside u32 range
+fn nodal_reaction_matches_analytic_uniaxial_traction() {
+    use crate::CpuTet4NHSolver;
+    use crate::Vec3;
+    use crate::material::{NeoHookean, free_transverse_uniaxial};
+    use crate::mesh::{HandBuiltTetMesh, Mesh, VertexId};
+
+    const L: f64 = 0.1;
+    const N: usize = 4; // nz must be even
+    const MU: f64 = 1.69e4;
+    let mat = NeoHookean::from_lame(MU, 4.0 * MU);
+    let field = MaterialField::uniform(MU, 4.0 * MU);
+
+    let lam = 1.15_f64;
+    let lat = free_transverse_uniaxial(&mat, lam).transverse_stretch;
+    let affine = |p: Vec3| Vec3::new(p.x * lam, p.y * lat, p.z * lat);
+    let on_boundary = |p: Vec3| {
+        let e = 1e-9;
+        p.x.abs() < e
+            || (p.x - L).abs() < e
+            || p.y.abs() < e
+            || (p.y - L).abs() < e
+            || p.z.abs() < e
+            || (p.z - L).abs() < e
+    };
+
+    let mesh = HandBuiltTetMesh::uniform_block(N, L, &field);
+    let rest: Vec<Vec3> = mesh.positions().to_vec();
+    let n = mesh.n_vertices();
+    let mut x_prev = vec![0.0_f64; 3 * n];
+    let mut pinned = Vec::new();
+    let mut plus_x_face = Vec::new();
+    for (v, &p) in rest.iter().enumerate() {
+        let target = affine(p);
+        if on_boundary(p) {
+            pinned.push(v as VertexId);
+            if (p.x - L).abs() < 1e-9 {
+                plus_x_face.push(v);
+            }
+        }
+        x_prev[3 * v] = target.x;
+        x_prev[3 * v + 1] = target.y;
+        x_prev[3 * v + 2] = target.z;
+    }
+
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0e3; // static (inertia negligible)
+    let solver: CpuTet4NHSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        Tet4,
+        mesh,
+        NullContact,
+        cfg,
+        BoundaryConditions::new(pinned, vec![]),
+    );
+    let step = solver.replay_step(
+        &Tensor::from_slice(&x_prev, &[3 * n]),
+        &Tensor::zeros(&[3 * n]),
+        &Tensor::zeros(&[0]),
+        cfg.dt,
+    );
+    assert!(
+        step.final_residual_norm < cfg.tol,
+        "static uniaxial solve must converge, residual {:.2e}",
+        step.final_residual_norm
+    );
+
+    let react = solver.nodal_reaction_forces(&step.x_final, &x_prev, cfg.dt);
+    // Reaction the constraint supplies on the +x face = the transmitted axial force.
+    let f_face = plus_x_face.iter().fold(Vec3::zeros(), |acc, &v| {
+        acc + Vec3::new(react[3 * v], react[3 * v + 1], react[3 * v + 2])
+    });
+
+    // Independent oracle: analytic Cauchy stress on the DEFORMED cross-section
+    // (rest area L² scaled by the two transverse stretches λt²).
+    let sigma = free_transverse_uniaxial(&mat, lam).cauchy_stress;
+    let f_analytic = sigma * L * L * lat * lat;
+    assert!(
+        (f_face.x.abs() - f_analytic).abs() / f_analytic < 1e-6,
+        "axial reaction {:.6} N ≠ analytic uniaxial force {f_analytic:.6} N",
+        f_face.x.abs()
+    );
+    // Free-transverse: the driven face carries no shear/transverse reaction.
+    assert!(
+        f_face.y.abs().max(f_face.z.abs()) / f_analytic < 1e-6,
+        "transverse reaction not free: ({:.3e}, {:.3e}) N",
+        f_face.y,
+        f_face.z
+    );
+
+    // The readout is exactly `−f_int` (the documented contract).
+    let mut f_int = vec![0.0; 3 * n];
+    solver.assemble_global_int_force(&step.x_final, &x_prev, cfg.dt, &mut f_int);
+    for (r, fi) in react.iter().zip(f_int.iter()) {
+        assert_eq!(*r, -*fi, "nodal_reaction_forces must return −f_int exactly");
+    }
+}

@@ -1747,3 +1747,94 @@ fn joint_gradient_smoke() {
         assert!((gj - gp).abs() < 1e-14, "joint θ {gj} != policy-only {gp}");
     }
 }
+
+// --- Rung 6b: BondedSandwich (two-rigid bonded disc) lib smoke ---
+
+/// Build the canonical FSU sandwich: two free-joint boxes (L5 lower, L4 upper) with
+/// a primitive disc's rest slab `z ∈ [0, 0.02]` between their facing surfaces.
+fn bonded_fsu() -> BondedSandwich {
+    let h = 0.01;
+    let edge = 0.02;
+    let c = edge / 2.0; // boxes centred on the disc's lateral centre (rest slab [0, edge]²)
+    let mjcf = format!(
+        r#"<mujoco><option gravity="0 0 0" timestep="0.001"/><worldbody>
+  <body name="L5" pos="{c} {c} {z5}"><freejoint/><geom type="box" size="{hx} {hx} {h}" mass="0.05"/></body>
+  <body name="L4" pos="{c} {c} {z4}"><freejoint/><geom type="box" size="{hx} {hx} {h}" mass="0.05"/></body>
+</worldbody></mujoco>"#,
+        c = c,
+        z5 = -h,
+        z4 = edge + h,
+        hx = edge / 2.0,
+        h = h,
+    );
+    let model = load_model(&mjcf).expect("FSU mjcf loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("fwd");
+    BondedSandwich::new(model, data, 1, 2, 2, edge, 1.0e5, 1.0e3)
+}
+
+/// The bond conserves (Newton's third law across the interface) and carries two-way
+/// tension under flexion — the rung-6b keystone, pinned in-crate. The decisive
+/// magnitudes + the coupled rollout live in `tests/bonded_sandwich_fsu.rs`.
+#[test]
+fn bonded_sandwich_conserves_and_is_two_way() {
+    use nalgebra::UnitQuaternion;
+    use sim_soft::Vec3;
+
+    let sum_face = |c: &BondedSandwich, verts: &[u32]| -> Vec3 {
+        let r = c.last_reaction();
+        verts.iter().fold(Vec3::zeros(), |a, &v| {
+            let i = v as usize;
+            a + Vec3::new(r[3 * i], r[3 * i + 1], r[3 * i + 2])
+        })
+    };
+
+    // Compression: press L4 down 5% → disc pushes the plates apart, no tension.
+    // (L4 COM rests at (0.01, 0.01, 0.03), centred on the disc.)
+    let mut c = bonded_fsu();
+    c.set_body_pose(
+        2,
+        Vec3::new(0.01, 0.01, 0.03 - 0.001),
+        UnitQuaternion::identity(),
+    );
+    let s = c.probe();
+    assert!(
+        s.force_upper.z > 0.0 && s.force_lower.z < 0.0,
+        "disc must spring the plates apart"
+    );
+    let f_lower = sum_face(&c, c.lower_face());
+    let f_upper = sum_face(&c, c.upper_face());
+    let scale = f_lower.norm().max(f_upper.norm());
+    assert!(
+        (f_lower + f_upper).norm() / scale < 1e-9,
+        "force not conserved across the bond"
+    );
+
+    // Flexion: rotate L4 about x → the bonded face carries BOTH tension and compression.
+    let mut c = bonded_fsu();
+    let rot = UnitQuaternion::from_axis_angle(&Vec3::x_axis(), 0.08);
+    let pivot = Vec3::new(0.01, 0.01, 0.02);
+    c.set_body_pose(2, pivot + rot * (Vec3::new(0.01, 0.01, 0.03) - pivot), rot);
+    let flex = c.probe();
+    let r = c.last_reaction();
+    let (min_z, max_z) =
+        c.upper_face()
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                let rz = r[3 * v as usize + 2];
+                (lo.min(rz), hi.max(rz))
+            });
+    assert!(
+        min_z < 0.0 && max_z > 0.0,
+        "flexed face must carry tension AND compression"
+    );
+    assert!(
+        flex.moment_upper.x < 0.0,
+        "flexion must produce a restoring moment"
+    );
+
+    // The coupled loop through the rigid engine runs (round-trip forward).
+    let mut c = bonded_fsu();
+    let step = c.step();
+    assert!(step.force_upper.z.is_finite() && c.data().qpos.iter().all(|q| q.is_finite()));
+}
