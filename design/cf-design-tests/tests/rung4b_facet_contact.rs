@@ -61,12 +61,12 @@
 use std::sync::Arc;
 
 use cf_geometry::{Aabb, IndexedMesh};
-use mesh_io::load_stl;
-use mesh_repair::{RepairParams, repair_mesh};
-use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
 use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave, convex_hull};
+
+mod common;
+use common::{MeshOracle, body_center, load_native, oracle};
 
 /// Grid cell size (mm). The facet clearance is sub-mm and the joint band is a
 /// few mm; 1 mm resolves it and localizes the contact tightly. Coordinates are
@@ -77,63 +77,6 @@ const CELL: f64 = 1.0;
 /// when probing the surface separation there. ~ a lumbar body's half-extent, so
 /// the probe samples the body's endplate region, not the pedicles/facets.
 const BODY_PROBE_R: f64 = 12.0;
-
-/// The exact mesh-derived metric oracle (signed distance to a vertebra surface).
-type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
-
-/// Load, weld-repair, and KEEP native coordinates (do not recenter — the two
-/// vertebrae must stay in their shared anatomical frame so they stack).
-fn load_native(path_var: &str) -> IndexedMesh {
-    let path =
-        std::env::var(path_var).unwrap_or_else(|_| panic!("set ${path_var} to a vertebra STL"));
-    let mut mesh = load_stl(&path).unwrap_or_else(|e| panic!("load {path_var}: {e}"));
-    let rep = repair_mesh(&mut mesh, &RepairParams::for_scans());
-    println!(
-        "[{path_var}] welded {} verts -> {} verts / {} faces",
-        rep.vertices_welded,
-        mesh.vertices.len(),
-        mesh.faces.len()
-    );
-    mesh
-}
-
-/// Build the exact signed distance oracle for a mesh (parry BVH + pseudo-normal
-/// sign — metric by construction).
-fn oracle(mesh: &IndexedMesh) -> MeshOracle {
-    let dist = TriMeshDistance::new(mesh.clone()).unwrap();
-    let sign = PseudoNormalSign::from_distance(&dist);
-    Signed {
-        distance: dist,
-        sign,
-    }
-}
-
-/// Locate the vertebral body WITHOUT any axis assumption: the deepest interior
-/// point of the signed field (most negative distance) is the thickest solid
-/// mass, which for a vertebra is the body. Coarse AABB scan. Returns the point
-/// and its depth (negative = inside).
-fn body_center(mesh: &IndexedMesh, sdf: &MeshOracle) -> (Point3<f64>, f64) {
-    let bbox = Aabb::from_points(mesh.vertices.iter());
-    let step = 2.0;
-    let span = bbox.max - bbox.min;
-    let count = |len: f64| (len / step).ceil() as usize + 1;
-    let (nx, ny, nz) = (count(span.x), count(span.y), count(span.z));
-    let (mut depth, mut center) = (f64::MAX, Point3::origin());
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let offset = Vector3::new(ix as f64, iy as f64, iz as f64) * step;
-                let pt = bbox.min + offset;
-                let val = sdf.evaluate(pt);
-                if val < depth {
-                    depth = val;
-                    center = pt;
-                }
-            }
-        }
-    }
-    (center, depth)
-}
 
 /// Sample an oracle's field into a grid over its mesh's padded AABB. The grid
 /// stores absolute native coordinates, so an identity pose places the shape at
