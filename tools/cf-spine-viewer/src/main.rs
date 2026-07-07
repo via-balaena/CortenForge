@@ -194,8 +194,8 @@ fn run_app(fsu: FsuScene) {
 }
 
 /// Build a SMOOTH-shaded Bevy mesh from an indexed surface: area-weighted
-/// per-vertex normals (the platform's single source of truth) rendered by
-/// the shared attributed converter (f64→f32 + Z-up→Y-up handled internally).
+/// per-vertex normals (`AttributedMesh::compute_normals`) rendered by the
+/// shared attributed converter (f64→f32 + Z-up→Y-up handled internally).
 fn smooth_mesh(indexed: &IndexedMesh) -> Mesh {
     let mut attributed = AttributedMesh::from(indexed.clone());
     attributed.compute_normals();
@@ -275,8 +275,9 @@ fn setup_scene(
     );
 
     // Native mm — the parts are already >1 unit, so no render-scale lift is
-    // needed; frame directly on the combined AABB. `framing_for_aabb` swaps
-    // the target into Bevy Y-up, matching the swapped meshes.
+    // needed; frame directly on the combined AABB. `setup_camera_and_lighting`
+    // (via `OrbitCamera::framing_for_aabb`) swaps the target into Bevy Y-up,
+    // matching the swapped meshes.
     setup_camera_and_lighting(&mut commands, &overlays.aabb, UpAxis::PlusZ);
 
     // The meshes are now GPU assets; free the CPU-side copies for the session.
@@ -351,9 +352,17 @@ fn scene_panel(
             ui.checkbox(&mut toggles.l4, "L4 vertebra");
             ui.checkbox(&mut toggles.l5, "L5 vertebra");
             ui.checkbox(&mut toggles.disc, "Intervertebral disc");
-            ui.checkbox(&mut toggles.ligaments, "Ligaments (ALL, ISP)");
+            ui.checkbox(&mut toggles.ligaments, "Ligaments");
             ui.checkbox(&mut toggles.facets, "Facet near-contacts");
             ui.separator();
+            // Derive the ligament readout from what was actually built — a
+            // degenerate mesh can drop one, and the panel must not claim it.
+            let names: Vec<&str> = overlays.ligaments.iter().map(|l| l.name).collect();
+            ui.label(format!(
+                "{} ligaments ({})",
+                overlays.ligaments.len(),
+                names.join(", ")
+            ));
             ui.label(format!(
                 "{} facet near-contact points",
                 overlays.facet_contacts.len()

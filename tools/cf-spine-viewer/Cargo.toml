@@ -19,14 +19,14 @@ path = "src/main.rs"
 
 [dependencies]
 # cf-viewer library — reuses the shared scene scaffold:
-# `setup_camera_and_lighting` (orbit camera + directional + ambient).
-# Depending on cf-viewer keeps a SINGLE source of truth for
+# `setup_camera_and_lighting` (orbit camera + directional + ambient) and the
+# `UpAxis` re-export (`PlusZ` = the workspace Z-up convention; BodyParts3D
+# anatomy is Z-up). Depending on cf-viewer keeps a SINGLE source of truth for
 # camera/light/framing rather than copying the ~35-line helper.
 cf-viewer = { workspace = true }
 
-# Shared Bevy helpers — the `OrbitCameraPlugin` system set (input +
-# transform update). `UpAxis::PlusZ` = the workspace Z-up convention
-# (BodyParts3D anatomy is Z-up).
+# Shared Bevy helpers — the `OrbitCameraPlugin` system set (`orbit_camera_input`
+# + transform update) driving the orbit camera.
 cf-bevy-common = { workspace = true }
 
 # sim-bevy — `mesh::triangle_mesh_from_attributed` renders the stored

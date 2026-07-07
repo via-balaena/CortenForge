@@ -38,6 +38,7 @@ type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
 const FACET_CELL: f64 = 1.0; // facet SDF grid cell (mm)
 const MIDLINE_TOL: f64 = 8.0; // mm off mid-sagittal for a near-midline site
 const BODY_RADIUS: f64 = 30.0; // mm: keep the ALL site on the vertebral body
+const FACET_MAX_CONTACTS: usize = 256; // per-pair contact cap (rung 4b/7; 184 at neutral)
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
@@ -67,8 +68,9 @@ pub struct FsuScene {
 struct SegmentFrame {
     b4: Point3<f64>,         // L4 body centre
     b5: Point3<f64>,         // L5 body centre
+    superior: Vector3<f64>,  // L5 → L4 body centres (SI axis)
     posterior: Vector3<f64>, // body → arch, ⟂ superior
-    ml: Vector3<f64>,        // medio-lateral (mid-sagittal normal)
+    ml: Vector3<f64>,        // medio-lateral, superior × posterior (vertebral-frame ML)
 }
 
 /// Load + weld-repair a vertebra/disc STL, KEEPING native coordinates (the
@@ -148,15 +150,44 @@ fn segment_frame(
         );
     }
     let superior = (b4 - b5).normalize();
+    // Posterior = the body→arch direction, orthogonalised against superior.
+    // Guard THIS normalize too: if the arch offset is (near-)parallel to the SI
+    // axis (an arch-stripped or synthetic mesh), the orthogonal part is ~0 and
+    // `.normalize()` would yield a silent NaN frame — misattributed downstream
+    // as a "degenerate mesh" ligament failure rather than a lost posterior.
     let raw_post = (centroid(l4) - b4) + (centroid(l5) - b5);
-    let posterior = (raw_post - raw_post.dot(&superior) * superior).normalize();
+    let orthogonal = raw_post - raw_post.dot(&superior) * superior;
+    if orthogonal.norm() < 1e-6 {
+        bail!(
+            "cannot derive a posterior direction — each vertebra's centroid sits directly along the SI axis over its body centre (arch-stripped or synthetic mesh?)"
+        );
+    }
+    let posterior = orthogonal.normalize();
     let ml = superior.cross(&posterior).normalize();
     Ok(SegmentFrame {
         b4,
         b5,
+        superior,
         posterior,
         ml,
     })
+}
+
+/// The disc's principal medio-lateral axis = its widest AABB extent, snapped to
+/// the coordinate axis (rung-7's `ml_scaled` derivation). This is the CANONICAL
+/// flexion/extension axis rung-7 adopted over the vertebral-frame ML: the latter
+/// is tilted ~19° by the lordotic wedge + coarse body-centre localisation, so
+/// the ligament midline filter uses THIS axis to match the validated FSU.
+fn disc_principal_ml(disc: &IndexedMesh) -> Vector3<f64> {
+    let bbox = Aabb::from_points(disc.vertices.iter());
+    let span = bbox.max - bbox.min;
+    let extents = [span.x, span.y, span.z];
+    let widest = (0..3)
+        .max_by(|&a, &b| extents[a].total_cmp(&extents[b]))
+        .unwrap_or(0);
+    let mut ml = Vector3::zeros();
+    ml[widest] = 1.0;
+    ml
 }
 
 /// Farthest near-midline surface vertex from `origin` along `dir`, within
@@ -190,15 +221,18 @@ fn extreme_vertex(
 
 /// The two modelled ligaments: anterior longitudinal (ALL, on the body rim,
 /// `-posterior`) and interspinous (ISP, at the spinous tips, `+posterior`) —
-/// endpoints field-derived. A ligament whose sites can't be located on a
-/// degenerate mesh is skipped with a warning rather than drawn wrong.
+/// endpoints field-derived. `ml` is the disc principal axis (rung-7's canonical
+/// flexion axis), used as the mid-sagittal-plane normal for the near-midline
+/// filter so the sites match the validated FSU. A ligament whose sites can't be
+/// located on a degenerate mesh is skipped with a warning rather than drawn wrong.
 fn build_ligaments(
     l4: &IndexedMesh,
     l5: &IndexedMesh,
     frame: &SegmentFrame,
+    ml: Vector3<f64>,
     warnings: &mut Vec<String>,
 ) -> Vec<Ligament> {
-    let (b4, b5, post, ml) = (frame.b4, frame.b5, frame.posterior, frame.ml);
+    let (b4, b5, post) = (frame.b4, frame.b5, frame.posterior);
     let mut ligaments = Vec::new();
 
     match (
@@ -237,23 +271,23 @@ fn build_ligaments(
 }
 
 /// Co-registration sanity checks (rung-7's validity cross-checks, cheaply
-/// reproduced from AABBs — no SDF needed): the disc's principal ML (widest
-/// AABB extent) must agree with the vertebral frame ML, and the disc must be
-/// seated between the two body centres along the superior axis. A grossly
-/// mismatched or misaligned trio (wrong specimen, wrong disc level, rotated
-/// frame) trips these — so it is never shown as a literature-validated FSU.
-fn coregistration_warnings(disc: &IndexedMesh, frame: &SegmentFrame) -> Vec<String> {
+/// reproduced from AABBs — no SDF needed): the disc's principal ML must agree
+/// with the vertebral frame ML, and the disc must be seated between the two body
+/// centres along the superior axis. A grossly mismatched or misaligned trio
+/// (wrong specimen, wrong disc level, rotated frame) trips these — so it is never
+/// shown as a literature-validated FSU.
+///
+/// The ML agreement mirrors rung-7's own obliquity assert (`disc_ml · frame.ml >
+/// 0.9`): `disc_ml` is a coordinate axis, `frame.ml` continuous, so the 0.9 band
+/// assumes the anatomy sits roughly axis-aligned — true for the BodyParts3D
+/// frame this tool targets (rung 7 measured ~0.95), not for arbitrary rotations.
+fn coregistration_warnings(
+    disc: &IndexedMesh,
+    frame: &SegmentFrame,
+    disc_ml: Vector3<f64>,
+) -> Vec<String> {
     let mut warnings = Vec::new();
-    let bbox = Aabb::from_points(disc.vertices.iter());
-    let span = bbox.max - bbox.min;
 
-    // Disc principal ML = widest AABB extent axis (rung-7 derivation).
-    let extents = [span.x, span.y, span.z];
-    let widest = (0..3)
-        .max_by(|&a, &b| extents[a].total_cmp(&extents[b]))
-        .unwrap_or(0);
-    let mut disc_ml = Vector3::zeros();
-    disc_ml[widest] = 1.0;
     let agreement = disc_ml.dot(&frame.ml).abs();
     if agreement < 0.9 {
         warnings.push(format!(
@@ -262,10 +296,10 @@ fn coregistration_warnings(disc: &IndexedMesh, frame: &SegmentFrame) -> Vec<Stri
     }
 
     // Disc centre must sit between the L4/L5 body centres along the SI axis.
-    let superior = (frame.b4 - frame.b5).normalize();
-    let disc_center = Point3::from(bbox.min.coords + span * 0.5);
-    let along = (disc_center - frame.b5).dot(&superior);
-    let separation = (frame.b4 - frame.b5).dot(&superior);
+    let bbox = Aabb::from_points(disc.vertices.iter());
+    let disc_center = Point3::from(bbox.min.coords + (bbox.max - bbox.min) * 0.5);
+    let along = (disc_center - frame.b5).dot(&frame.superior);
+    let separation = (frame.b4 - frame.b5).dot(&frame.superior);
     if along < 0.0 || along > separation {
         warnings.push(format!(
             "disc centre is not between the L4/L5 bodies ({along:.1} mm of {separation:.1} mm along SI) — wrong disc level?"
@@ -311,7 +345,7 @@ fn facet_contact_points(g4: &Arc<SdfGrid>, g5: &Arc<SdfGrid>) -> Vec<Point3<f64>
         &ShapeConcave::new(Arc::clone(g5)),
         &identity,
         FACET_CELL,
-        256,
+        FACET_MAX_CONTACTS,
     );
     contacts.iter().map(|c| c.point).collect()
 }
@@ -330,8 +364,11 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
     let o5 = oracle(&l5)?;
     let frame = segment_frame(&l4, &l5, &o4, &o5)?;
 
-    let mut warnings = coregistration_warnings(&disc, &frame);
-    let ligaments = build_ligaments(&l4, &l5, &frame, &mut warnings);
+    // The disc's own principal axis is the canonical ML (rung-7): use it for
+    // both the ligament midline filter and the co-registration cross-check.
+    let disc_ml = disc_principal_ml(&disc);
+    let mut warnings = coregistration_warnings(&disc, &frame, disc_ml);
+    let ligaments = build_ligaments(&l4, &l5, &frame, disc_ml, &mut warnings);
 
     let g4 = facet_grid(&l4, &o4);
     let g5 = facet_grid(&l5, &o5);
