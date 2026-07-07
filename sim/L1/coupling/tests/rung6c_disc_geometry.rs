@@ -186,8 +186,11 @@ fn si_spread(tet: &SdfMeshedTetMesh, verts: &[VertexId], si: usize) -> (f64, f64
 /// so the auto-computed COM (`xipos`) sits off the free-joint origin (`xpos`) — a real
 /// anatomical vertebra's COM is offset from its endplate. `geom_off = 0` is the centered
 /// body the rung-6c forward tests use; the rung-6d gradient gate passes a nonzero offset to
-/// exercise the off-centre pose gradient on the real disc. The offset is cosmetic for the
-/// forward bond (which reads only `xpos`), moving only the wrench's moment reference.
+/// exercise the off-centre pose gradient on the real disc. The offset does NOT change the
+/// bond or the reaction (the disc bonds to `xpos`, not the geom), nor the wrench FORCE
+/// (`Σ Rᵢ`), but it DOES move the wrench MOMENT reference (each face wrench is reduced about
+/// the COM `xipos`, see `resolve`/`face_wrench`) — so it is inert for the rung-6c forward
+/// tests only because they pass `geom_off = 0`.
 fn fsu_mjcf(frame: &DiscFrame, c_inf: Vec3, c_sup: Vec3, geom_off: f64) -> String {
     let si = frame.si_hat();
     let lo = c_inf - si * H_BOX; // inferior box COM (top face at the inferior endplate)
@@ -581,29 +584,41 @@ fn real_disc_pose_gradient_matches_reprobe_fd() {
         std::array::from_fn(|k| grads[1][k]),
     ];
 
-    // Confirm the bodies are genuinely off-centre (‖xipos − xpos‖ ≫ the block's tolerance).
-    let off = (c.data().xipos[UPPER] - c.data().xpos[UPPER]).norm();
-    println!(
-        "[rung6d] vertebra COM offset ‖xipos−xpos‖ = {:.1} mm (off-centre)",
-        off * 1e3
-    );
-    assert!(
-        off > 1e-3,
-        "vertebra bodies should be off-centre for this gate"
-    );
+    // Confirm BOTH vertebra bodies are genuinely off-centre (‖xipos − xpos‖ ≫ the block's
+    // tolerance) — so both bodies' gradients exercise the `xipos ≠ xpos` moment-arm path.
+    for b in [LOWER, UPPER] {
+        let off = (c.data().xipos[b] - c.data().xpos[b]).norm();
+        println!(
+            "[rung6d] body {b} COM offset ‖xipos−xpos‖ = {:.1} mm",
+            off * 1e3
+        );
+        assert!(
+            off > 1e-3,
+            "vertebra body {b} should be off-centre for this gate"
+        );
+    }
 
     for (bi, (name, body)) in [("inferior", LOWER), ("superior", UPPER)]
         .into_iter()
         .enumerate()
     {
         let an_b = &an[bi];
-        let live = an_b.iter().map(|x| x.abs()).fold(0.0, f64::max);
+        let scale = an_b.iter().map(|x| x.abs()).fold(0.0, f64::max);
         assert!(
-            live > 1.0,
-            "{name} pose gradient degenerate (max {live:.3e})"
+            scale > 1.0,
+            "{name} pose gradient degenerate (max {scale:.3e})"
         );
-        let mut best = f64::INFINITY;
-        for e in [1e-6, 1e-7] {
+        // A tiny absolute floor (relative to the gradient scale) so a genuinely-near-zero
+        // component doesn't blow up the ratio; negligible for the O(1)+ components.
+        let floor = 1e-6 * scale;
+        eprintln!("[rung6d {name}] analytic = {an_b:?}");
+        // Require EVERY twist component to match the FD, at EVERY eps (agreement across
+        // perturbation scales) — a PER-DOF relative error, so a wrong low-magnitude co-twist
+        // (e.g. an angular DOF ~100× smaller than the force DOFs) cannot hide behind the
+        // dominant components the way an aggregate L2 error would.
+        // Two well-conditioned central-difference scales (`1e-7` is roundoff-limited on the
+        // small co-twist DOFs of a 12.5k-tet solve; both of these sit near the FD minimum).
+        for e in [1e-5, 1e-6] {
             let mut fd = [0.0_f64; 6];
             for (m, fdm) in fd.iter_mut().enumerate() {
                 set_operating(&mut c, &ctx, body, m, e);
@@ -612,16 +627,15 @@ fn real_disc_pose_gradient_matches_reprobe_fd() {
                 let lm = wrench_loss(&c.probe(), cl, cu);
                 *fdm = (lp - lm) / (2.0 * e);
             }
-            let num: f64 = an_b.iter().zip(&fd).map(|(a, b)| (a - b).powi(2)).sum();
-            let den: f64 = fd.iter().map(|b| b * b).sum();
-            let rel = (num / den.max(1e-300)).sqrt();
-            println!("[rung6d {name}] eps={e:.1e}  rel = {rel:.3e}");
-            best = best.min(rel);
+            let worst = (0..6)
+                .map(|k| (an_b[k] - fd[k]).abs() / (fd[k].abs() + floor))
+                .fold(0.0, f64::max);
+            println!("[rung6d {name}] eps={e:.1e}  worst per-DOF rel = {worst:.3e}");
+            assert!(
+                worst < 1e-4,
+                "{name} real-disc pose gradient: a twist DOF fails FD at eps={e:.1e} \
+                 (worst per-DOF rel {worst:.3e}); analytic={an_b:?}, fd={fd:?}"
+            );
         }
-        eprintln!("[rung6d {name}] analytic = {an_b:?}");
-        assert!(
-            best < 1e-4,
-            "{name} real-disc pose gradient must match re-probe FD; best rel = {best:.3e}"
-        );
     }
 }
