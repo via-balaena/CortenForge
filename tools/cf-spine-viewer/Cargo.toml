@@ -41,15 +41,13 @@ sim-bevy = { workspace = true }
 # (`SdfGrid` + `Pose` + `SdfContact`). Same recipe as the rung 4b/7 tests.
 sim-core = { workspace = true }
 
-# STL loader for the vertebra / disc meshes (native BodyParts3D mm).
-mesh-io = { workspace = true }
+# cf-fsu-geometry — the shared FSU geometry recipes (`load` / `oracle` /
+# `segment_frame` / `extreme_vertex` / `facet_grid` + `SegmentFrame` + the
+# facet/ligament constants), extracted from this viewer + the rung 4b/5/7 tests.
+cf-fsu-geometry = { workspace = true }
+
 # `AttributedMesh` (+ `compute_normals`) / `IndexedMesh` / `Aabb`.
 mesh-types = { workspace = true }
-# Weld-repair the raw BodyParts3D triangle soup before the SDF oracle.
-mesh-repair = { workspace = true }
-# `Signed<TriMeshDistance, PseudoNormalSign>` — the exact mesh-derived
-# metric oracle each vertebra's facet grid samples.
-mesh-sdf = { workspace = true }
 # `Point3` / `Vector3` / `UnitQuaternion` — field-derived site math + poses.
 nalgebra = { workspace = true }
 

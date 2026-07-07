@@ -2367,6 +2367,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-fsu-geometry"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-geometry",
+ "mesh-io",
+ "mesh-repair",
+ "mesh-sdf",
+ "nalgebra 0.34.2",
+ "tempfile",
+]
+
+[[package]]
 name = "cf-geometry"
 version = "1.0.0"
 dependencies = [
@@ -2503,11 +2516,9 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
+ "cf-fsu-geometry",
  "cf-viewer",
  "clap",
- "mesh-io",
- "mesh-repair",
- "mesh-sdf",
  "mesh-types",
  "nalgebra 0.34.2",
  "sim-bevy",
