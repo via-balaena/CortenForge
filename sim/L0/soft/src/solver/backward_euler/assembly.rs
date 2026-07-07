@@ -490,6 +490,10 @@ where
 /// [`CpuNewtonSolver::internal_force_tangent_matvec`] (which contracts the full block
 /// against a direction) so the material-tangent flattening convention lives in exactly
 /// one place — the two callers can no longer drift out of lockstep.
+//
+// needless_range_loop + many_single_char_names: this is the raw tensor contraction — the
+// i/j/l/l' indices (BF-5 flattening) and the a/b node indices ARE the math; explicit ranges
+// read clearer than iterators here (mirrors `assemble_free_hessian_triplets`).
 #[allow(clippy::needless_range_loop, clippy::many_single_char_names)]
 fn element_tangent_block(
     grad_x_n: &SMatrix<f64, 4, 3>,

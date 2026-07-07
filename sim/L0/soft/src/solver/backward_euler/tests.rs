@@ -928,6 +928,8 @@ fn nodal_reaction_matches_analytic_uniaxial_traction() {
 /// new methods in the `--lib` coverage set and validates the matvec primitive in
 /// isolation (FD-the-forward-intermediate).
 #[test]
+// Test-only lints: small usize loop indices/counts cast to f64 (lossless at these sizes)
+// and exact-value asserts on analytically-known quantities (`rel`, `live`).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
