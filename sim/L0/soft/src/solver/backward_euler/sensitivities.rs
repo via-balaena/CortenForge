@@ -596,6 +596,99 @@ where
         self.solve_free_and_scatter(x_final, x_prev, dt, rhs)
     }
 
+    /// Forward sensitivity `∂(reaction)/∂(pinned target)` of a converged **constrained
+    /// (Dirichlet) equilibrium** — rung 6d, the bonded-disc reaction adjoint's forward
+    /// JVP. Given a displacement direction `dx_pinned` of the *pinned* (Dirichlet) DOFs
+    /// (**zero on the free DOFs** — the input is a motion of the Dirichlet targets),
+    /// returns the directional derivative of [`Self::nodal_reaction_forces`] (`R = −f_int`),
+    /// length `n_dof`.
+    ///
+    /// ⚠ **Only the constrained (pinned) DOFs are physical reactions.** Like the readout it
+    /// differentiates, this is defined on every DOF, but a reaction exists only where a
+    /// constraint supplies force: the free/interior entries are the derivative of the
+    /// free-node residual (`−f_int,free`, which is `≈0` in the static bond regime), NOT a
+    /// reaction — do not sum them into a wrench. The bonded-endplate consumer sums only its
+    /// pinned face (mirroring `nodal_reaction_forces`), so this footgun is not tripped in the
+    /// FSU path; the guard is the doc contract here + the FD gate's pinned-only comparison
+    /// (`tests/dirichlet_reaction_sensitivity.rs`).
+    ///
+    /// **Why the existing sensitivities don't cover this.** The keystone family
+    /// ([`Self::equilibrium_pose_sensitivity`], [`Self::equilibrium_material_sensitivity`],
+    /// [`Self::equilibrium_state_sensitivity`]) all solve `A_ff·λ = g_free` with the
+    /// free-free factor and scatter to the FREE DOFs (zeros on pinned) — the *constrained*
+    /// columns are never assembled. Here the input IS the pinned target and the output IS
+    /// the pinned reaction, so we need those columns.
+    ///
+    /// **The math (Schur complement of the stiffness).** Partition DOFs into free `f` and
+    /// pinned `p`; the pinned nodes are held at targets `x_p`. Free equilibrium
+    /// `f_int,f(x_f, x_p) = 0` gives `∂x_f/∂x_p = −A_ff⁻¹·K_fp` (the coupling is purely
+    /// elastic — the lumped mass is diagonal, so it does not couple free↔pinned). The
+    /// reaction is `R_p = −f_int,p`, and its inertial term cancels (a pinned node's target
+    /// equals its `x_prev`), so
+    ///
+    /// ```text
+    ///     dR_p/dx_p = K_pf·A_ff⁻¹·K_fp − K_pp    (= −Schur complement of K_ff in K)
+    /// ```
+    ///
+    /// Applied to `dx_pinned` in three steps, reusing the SAME factor the forward Newton
+    /// step and the other sensitivities use:
+    /// 1. `rhs_free = −(K·dx_pinned)_free`   (`= −K_fp·dx_pinned`, via the crate-private
+    ///    `internal_force_tangent_matvec`);
+    /// 2. `dx_free = A_ff⁻¹·rhs_free`, scattered to full DOFs (zeros on pinned);
+    /// 3. `dR = −K·(dx_free + dx_pinned)`   (one more matvec — the reaction is `−f_int`).
+    ///
+    /// `x_final` is the converged constrained equilibrium; `dt` is that solve's time-step
+    /// (the factor's `M/Δt²` must match). Frictionless / contact-free scope (the
+    /// [`NullContact`](crate::contact::NullContact) Dirichlet bond) — see the
+    /// `internal_force_tangent_matvec` scope note. The reverse (tape) dual is the rung-6d VJP.
+    ///
+    /// **Cost.** Each call factors `A_ff` once (via `solve_free_and_scatter`) and assembles the
+    /// element tangent for two full-DOF matvecs — appropriate for a single directional
+    /// derivative (the validation sibling of the reverse VJP). Building the FULL reaction
+    /// Jacobian one column per pinned DOF this way re-factors `A_ff` every column; the reverse
+    /// (tape) VJP is the factor-once / back-substitute-many path for that.
+    ///
+    /// # Panics
+    /// Panics if `dx_pinned.len() != n_dof`.
+    // float_cmp: the debug contract is that the free entries are EXACTLY 0.0 (the caller
+    // leaves them untouched), so an exact comparison is the intended check.
+    #[allow(clippy::float_cmp)]
+    #[must_use]
+    pub fn equilibrium_dirichlet_reaction_sensitivity(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        dx_pinned: &[f64],
+    ) -> Vec<f64> {
+        assert!(
+            dx_pinned.len() == self.n_dof,
+            "dx_pinned must have length n_dof = {}, got {}",
+            self.n_dof,
+            dx_pinned.len()
+        );
+        // Enforce the "zero on free DOFs" contract: `dx_pinned` is a motion of the Dirichlet
+        // TARGETS, so a nonzero free entry would silently corrupt the JVP (fold `K_ff·dx_free`
+        // into rhs at step 1 and double-add it at step 3). Debug-only — a hot path whose sole
+        // consumer (the bonded coupling) builds `dx_pinned` from pinned DOFs by construction.
+        debug_assert!(
+            self.free_dof_indices.iter().all(|&i| dx_pinned[i] == 0.0),
+            "dx_pinned must be zero on the free DOFs (it perturbs the Dirichlet targets)"
+        );
+        // (1) rhs_free = −(K·dx_pinned)_free — only K_fp couples free rows to the pinned
+        //     perturbation (dx_pinned is zero on free DOFs by contract).
+        let k_dxp = self.internal_force_tangent_matvec(x_final, dx_pinned);
+        let rhs: Vec<f64> = self.free_dof_indices.iter().map(|&i| -k_dxp[i]).collect();
+        // (2) dx_free = A_ff⁻¹·rhs_free, scattered to full DOFs (zeros on pinned).
+        let mut dx_total = self.solve_free_and_scatter(x_final, None, dt, rhs);
+        // (3) total config perturbation = dx_free (free) + dx_pinned (pinned), then
+        //     dR = −K·dx_total (the reaction is −f_int).
+        for (d, &p) in dx_total.iter_mut().zip(dx_pinned) {
+            *d += p;
+        }
+        let k_dx = self.internal_force_tangent_matvec(x_final, &dx_total);
+        k_dx.iter().map(|&x| -x).collect()
+    }
+
     /// `(∂r/∂height · pose_dir)_full` from the FRICTION term — the friction successor to the
     /// normal [`Self::assemble_pose_residual_grad`], needed when the contact plane moves (the
     /// grip's coupled height). The friction force `∇D = μ_c·λⁿ·f₁·Tû` scattered into the residual
