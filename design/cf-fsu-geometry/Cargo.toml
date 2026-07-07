@@ -1,0 +1,42 @@
+[package]
+name = "cf-fsu-geometry"
+description = "Shared geometry recipes for the lumbar Functional Spinal Unit — load + weld a vertebra/disc mesh, build its signed-distance oracle, and locate anatomy from the field (body centre, segmental frame, ligament attachment sites, facet SDF grid)"
+keywords = ["spine", "fsu", "anatomy", "sdf", "geometry"]
+categories = ["science", "mathematics"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# Composes the mesh stack (io/repair/sdf) + the cf-geometry kernel into
+# anatomical field recipes; depends on `mesh-io`, so it cannot be L0 (mesh-io
+# is L0-banned) — L0-integration is the tightest legal tier and its 200-dep cap
+# easily fits the ~65-package footprint. Deliberately sim-core-FREE (facet_grid
+# builds a `cf_geometry::SdfGrid` directly; the ShapeConcave collision that
+# consumes it stays in the callers), so it never pulls the sim engine.
+[package.metadata.cortenforge]
+tier = "L0-integration"
+
+[lints]
+workspace = true
+
+[dependencies]
+# `IndexedMesh` / `Aabb` / `SdfGrid` — the geometric kernel types.
+cf-geometry = { workspace = true }
+# `load_stl` — read a vertebra/disc STL.
+mesh-io = { workspace = true }
+# `repair_mesh` / `RepairParams::for_scans` — weld raw triangle soup watertight.
+mesh-repair = { workspace = true }
+# `Signed<TriMeshDistance, PseudoNormalSign>` — the exact mesh-derived metric oracle.
+mesh-sdf = { workspace = true }
+# `Point3` / `Vector3` — field-derived site + frame math.
+nalgebra = { workspace = true }
+# `Result` + context/`bail!` for the fallible load/oracle/frame path.
+anyhow = { workspace = true }
+
+[dev-dependencies]
+# Write synthetic STL fixtures to a temp dir for the `load` round-trip lib test
+# (`mesh-io`'s `save_stl` + the normal `load_stl` dep close the loop).
+tempfile = { workspace = true }
