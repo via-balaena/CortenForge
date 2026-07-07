@@ -918,3 +918,109 @@ fn nodal_reaction_matches_analytic_uniaxial_traction() {
         assert_eq!(*r, -*fi, "nodal_reaction_forces must return −f_int exactly");
     }
 }
+
+// --- Rung 6d: constrained (Dirichlet) reaction sensitivity (lib smoke) ---
+
+/// Lib-level check of the rung-6d building block `internal_force_tangent_matvec`
+/// (`K·v = ∂f_int/∂x · v`) against a directional FD of `assemble_global_int_force`, plus
+/// a finite/live smoke of `equilibrium_dirichlet_reaction_sensitivity`. The full
+/// re-solve FD gate lives in `tests/dirichlet_reaction_sensitivity.rs`; this keeps the
+/// new methods in the `--lib` coverage set and validates the matvec primitive in
+/// isolation (FD-the-forward-intermediate).
+#[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::float_cmp
+)]
+fn dirichlet_reaction_matvec_and_sensitivity_lib_smoke() {
+    use crate::mesh::{HandBuiltTetMesh, Mesh, VertexId};
+
+    const L: f64 = 0.1;
+    const N: usize = 2;
+    const MU: f64 = 3.0e4;
+    let field = MaterialField::uniform(MU, 4.0 * MU);
+    let mesh = HandBuiltTetMesh::uniform_block(N, L, &field);
+    let n = mesh.n_vertices();
+
+    // Both z-faces pinned (the two-endplate bond), free interior.
+    let pinned: Vec<VertexId> = mesh
+        .positions()
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.z.abs() < 1e-9 || (p.z - L).abs() < 1e-9)
+        .map(|(v, _)| v as VertexId)
+        .collect();
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0e3;
+    cfg.max_newton_iter = 50;
+    let solver: crate::CpuTet4NHSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
+        Tet4,
+        mesh.clone(),
+        NullContact,
+        cfg,
+        BoundaryConditions::new(pinned, vec![]),
+    );
+
+    // Compress the top face 5% and solve to equilibrium (a non-trivial K).
+    let mut x_prev = vec![0.0_f64; 3 * n];
+    for (v, p) in mesh.positions().iter().enumerate() {
+        x_prev[3 * v] = p.x;
+        x_prev[3 * v + 1] = p.y;
+        x_prev[3 * v + 2] = if (p.z - L).abs() < 1e-9 {
+            p.z - 0.05 * L
+        } else {
+            p.z
+        };
+    }
+    let x_final = solver
+        .replay_step(
+            &Tensor::from_slice(&x_prev, &[3 * n]),
+            &Tensor::zeros(&[3 * n]),
+            &Tensor::zeros(&[0]),
+            cfg.dt,
+        )
+        .x_final;
+
+    // (1) K·v vs a directional FD of f_int — the matvec primitive in isolation.
+    let mut v = vec![0.0_f64; 3 * n];
+    for (k, vi) in v.iter_mut().enumerate() {
+        *vi = ((k % 7) as f64 - 3.0) * 0.1;
+    }
+    let kv = solver.internal_force_tangent_matvec(&x_final, &v);
+    let eps = 1e-7;
+    let xp: Vec<f64> = x_final.iter().zip(&v).map(|(a, d)| a + eps * d).collect();
+    let xm: Vec<f64> = x_final.iter().zip(&v).map(|(a, d)| a - eps * d).collect();
+    let (mut fp, mut fm) = (vec![0.0; 3 * n], vec![0.0; 3 * n]);
+    solver.assemble_global_int_force(&xp, &x_prev, cfg.dt, &mut fp);
+    solver.assemble_global_int_force(&xm, &x_prev, cfg.dt, &mut fm);
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for i in 0..3 * n {
+        let fd = (fp[i] - fm[i]) / (2.0 * eps);
+        num += (kv[i] - fd).powi(2);
+        den += fd * fd;
+    }
+    let rel = (num / den.max(1e-300)).sqrt();
+    assert!(rel < 1e-6, "K·v must match ∂f_int/∂x·v FD; rel = {rel:.3e}");
+
+    // (2) reaction sensitivity: finite, live, and conserved (Σ dR ≈ 0 per axis).
+    // Perturb the upper (top-face) pinned targets straight down.
+    let mut dir = vec![0.0_f64; 3 * n];
+    for (pv, p) in mesh.positions().iter().enumerate() {
+        if (p.z - L).abs() < 1e-9 {
+            dir[3 * pv + 2] = -1.0;
+        }
+    }
+    let dr = solver.equilibrium_dirichlet_reaction_sensitivity(&x_final, cfg.dt, &dir);
+    assert!(dr.iter().all(|x| x.is_finite()), "dR must be finite");
+    let live = dr.iter().map(|x| x.abs()).fold(0.0, f64::max);
+    assert!(live > 1.0, "dR must be live (max |dR| = {live:.3e})");
+    for axis in 0..3 {
+        let sum: f64 = (0..n).map(|vv| dr[3 * vv + axis]).sum();
+        assert!(
+            (sum / live).abs() < 1e-9,
+            "reaction derivative not conserved on axis {axis}"
+        );
+    }
+}

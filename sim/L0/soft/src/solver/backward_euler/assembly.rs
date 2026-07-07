@@ -403,4 +403,90 @@ where
             .map(|((c, r), v)| Triplet::new(r, c, v))
             .collect()
     }
+
+    /// `K(x)·v` (full-DOF) — the internal-force tangent `K = ∂f_int/∂x` at
+    /// configuration `x` contracted against an arbitrary full-DOF direction `v`.
+    ///
+    /// This is the **full-DOF** matvec of the SAME tangent
+    /// [`assemble_free_hessian_triplets`](Self::assemble_free_hessian_triplets)
+    /// factors — the per-element `Bᵀ𝕔B` elastic block plus the contact Hessian —
+    /// but WITHOUT the free/pinned filter and WITHOUT the `M/Δt²` mass diagonal.
+    /// It is the building block the constrained (Dirichlet) reaction sensitivity
+    /// needs: the pinned columns (`K_fp`, `K_pf`, `K_pp`) the free-free factor drops
+    /// (`// a pinned column DOF carries no free unknown`). Because it is a matvec, no
+    /// off-free block is ever materialized.
+    ///
+    /// **Scope: frictionless.** It matches the tangent
+    /// [`factor_at_position`](Self::factor_at_position) builds with `x_prev = None`
+    /// (elastic + contact Hessian, no `∇²D`). The Dirichlet-bond consumer
+    /// (`BondedSandwich` in `sim-coupling`) uses
+    /// [`NullContact`](crate::contact::NullContact), so `K = K_elastic` and both the
+    /// contact and friction terms are empty. Mass is excluded because the constrained
+    /// reaction it feeds is the *internal-force* reaction `−f_int` (the inertial term
+    /// cancels at a pinned node whose target equals its `x_prev`).
+    //
+    // Lint allows mirror `assemble_free_hessian_triplets` (the loop this contracts):
+    // `as TetId` is the Mesh-trait API tax, the `for a/b in 0..4` node loops index
+    // both `verts[a]` and `grad_x_n[(a, l)]`, and `va`/`vb` mirror the (a, b) block
+    // symmetry.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::needless_range_loop,
+        clippy::similar_names,
+        clippy::many_single_char_names
+    )]
+    #[must_use]
+    pub(super) fn internal_force_tangent_matvec(&self, x: &[f64], v: &[f64]) -> Vec<f64> {
+        debug_assert!(x.len() == self.n_dof && v.len() == self.n_dof);
+        let mut out = vec![0.0_f64; self.n_dof];
+
+        // Elastic tangent: for each element, (K_elem·v)[3va+i] += V·(BᵀℂB)_{ai,bj}·v[3vb+j].
+        let materials = self.mesh.materials();
+        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+            let verts = self.mesh.tet_vertices(tet_id as TetId);
+            let x_elem = extract_element_dof_values(x, &verts);
+            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+            let tangent_9x9 = materials[tet_id].tangent(&f);
+            for a in 0..4 {
+                let va = verts[a] as usize;
+                for b in 0..4 {
+                    let vb = verts[b] as usize;
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            // (B_a^T ℂ B_b)[i,j] = Σ_{l,l'} (grad_X N_a)_l ·
+                            //   ℂ[(i+3l),(j+3l')] · (grad_X N_b)_{l'}
+                            let mut block = 0.0;
+                            for l in 0..3 {
+                                for lp in 0..3 {
+                                    block += geom.grad_x_n[(a, l)]
+                                        * tangent_9x9[(i + 3 * l, j + 3 * lp)]
+                                        * geom.grad_x_n[(b, lp)];
+                                }
+                            }
+                            out[3 * va + i] += geom.volume * block * v[3 * vb + j];
+                        }
+                    }
+                }
+            }
+        }
+
+        // Contact Hessian (empty for the `NullContact` bond → byte-identical to the
+        // elastic-only path). Full-DOF scatter of each `(row_vid, col_vid, 3×3)` block.
+        let positions = slice_to_vec3s(x);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        for pair in &pairs {
+            let h = self.contact.hessian(pair, &positions);
+            for &(row_vid, col_vid, block) in &h.contributions {
+                let r = row_vid as usize;
+                let c = col_vid as usize;
+                for i in 0..3 {
+                    for j in 0..3 {
+                        out[3 * r + i] += block[(i, j)] * v[3 * c + j];
+                    }
+                }
+            }
+        }
+
+        out
+    }
 }

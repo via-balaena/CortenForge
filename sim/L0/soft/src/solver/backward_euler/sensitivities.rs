@@ -596,6 +596,73 @@ where
         self.solve_free_and_scatter(x_final, x_prev, dt, rhs)
     }
 
+    /// Forward sensitivity `∂(reaction)/∂(pinned target)` of a converged **constrained
+    /// (Dirichlet) equilibrium** — rung 6d, the bonded-disc reaction adjoint's forward
+    /// JVP. Given a displacement direction `dx_pinned` of the *pinned* (Dirichlet) DOFs
+    /// — zero on the free DOFs — returns the resulting change in the nodal reaction
+    /// `R = −f_int` (length `n_dof`; the meaningful entries are the pinned DOFs — the
+    /// bonded endplate the caller sums into a wrench).
+    ///
+    /// **Why the existing sensitivities don't cover this.** The keystone family
+    /// ([`Self::equilibrium_pose_sensitivity`], [`Self::equilibrium_material_sensitivity`],
+    /// [`Self::equilibrium_state_sensitivity`]) all solve `A_ff·λ = g_free` with the
+    /// free-free factor and scatter to the FREE DOFs (zeros on pinned) — the *constrained*
+    /// columns are never assembled. Here the input IS the pinned target and the output IS
+    /// the pinned reaction, so we need those columns.
+    ///
+    /// **The math (Schur complement of the stiffness).** Partition DOFs into free `f` and
+    /// pinned `p`; the pinned nodes are held at targets `x_p`. Free equilibrium
+    /// `f_int,f(x_f, x_p) = 0` gives `∂x_f/∂x_p = −A_ff⁻¹·K_fp` (the coupling is purely
+    /// elastic — the lumped mass is diagonal, so it does not couple free↔pinned). The
+    /// reaction is `R_p = −f_int,p`, and its inertial term cancels (a pinned node's target
+    /// equals its `x_prev`), so
+    ///
+    /// ```text
+    ///     dR_p/dx_p = K_pf·A_ff⁻¹·K_fp − K_pp    (= −Schur complement of K_ff in K)
+    /// ```
+    ///
+    /// Applied to `dx_pinned` in three steps, reusing the SAME factor the forward Newton
+    /// step and the other sensitivities use:
+    /// 1. `rhs_free = −(K·dx_pinned)_free`   (`= −K_fp·dx_pinned`, via the crate-private
+    ///    `internal_force_tangent_matvec`);
+    /// 2. `dx_free = A_ff⁻¹·rhs_free`, scattered to full DOFs (zeros on pinned);
+    /// 3. `dR = −K·(dx_free + dx_pinned)`   (one more matvec — the reaction is `−f_int`).
+    ///
+    /// `x_final` is the converged constrained equilibrium; `dt` is that solve's time-step
+    /// (the factor's `M/Δt²` must match). Frictionless / contact-free scope (the
+    /// [`NullContact`](crate::contact::NullContact) Dirichlet bond) — see the
+    /// `internal_force_tangent_matvec` scope note. The reverse (tape) dual is the rung-6d VJP.
+    ///
+    /// # Panics
+    /// Panics if `dx_pinned.len() != n_dof`.
+    #[must_use]
+    pub fn equilibrium_dirichlet_reaction_sensitivity(
+        &self,
+        x_final: &[f64],
+        dt: f64,
+        dx_pinned: &[f64],
+    ) -> Vec<f64> {
+        assert!(
+            dx_pinned.len() == self.n_dof,
+            "dx_pinned must have length n_dof = {}, got {}",
+            self.n_dof,
+            dx_pinned.len()
+        );
+        // (1) rhs_free = −(K·dx_pinned)_free — only K_fp couples free rows to the pinned
+        //     perturbation (dx_pinned is zero on free DOFs by contract).
+        let k_dxp = self.internal_force_tangent_matvec(x_final, dx_pinned);
+        let rhs: Vec<f64> = self.free_dof_indices.iter().map(|&i| -k_dxp[i]).collect();
+        // (2) dx_free = A_ff⁻¹·rhs_free, scattered to full DOFs (zeros on pinned).
+        let mut dx_total = self.solve_free_and_scatter(x_final, None, dt, rhs);
+        // (3) total config perturbation = dx_free (free) + dx_pinned (pinned), then
+        //     dR = −K·dx_total (the reaction is −f_int).
+        for (d, &p) in dx_total.iter_mut().zip(dx_pinned) {
+            *d += p;
+        }
+        let k_dx = self.internal_force_tangent_matvec(x_final, &dx_total);
+        k_dx.iter().map(|&x| -x).collect()
+    }
+
     /// `(∂r/∂height · pose_dir)_full` from the FRICTION term — the friction successor to the
     /// normal [`Self::assemble_pose_residual_grad`], needed when the contact plane moves (the
     /// grip's coupled height). The friction force `∇D = μ_c·λⁿ·f₁·Tû` scattered into the residual
