@@ -32,5 +32,9 @@ sim-ml-chassis = { workspace = true }
 # the exact signed-distance oracle, and derive the segmental frame / ligament
 # sites / facet grid (BodyParts3D meshes, env-gated, not committed).
 cf-fsu-geometry = { workspace = true }
-# Aabb / IndexedMesh types used directly on the disc recenter/scale + frame path.
+# Rung-7 bonded-disc scene + flexion driver (build_bonded_disc / BondedDisc). A
+# dev-dep cycle — cf-fsu-model depends on this crate's BondedSandwich, but only the
+# tests consume it back, so the lib graph stays acyclic.
+cf-fsu-model = { workspace = true }
+# IndexedMesh type used directly on the vertebra load → oracle → frame path.
 cf-geometry = { workspace = true }

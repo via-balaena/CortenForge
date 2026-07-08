@@ -423,7 +423,7 @@ jobs:
       matrix:
         include:
           - id: 1
-            crates: sim-conformance-tests sim-coupling sim-rl-baselines
+            crates: sim-conformance-tests sim-coupling cf-fsu-model sim-rl-baselines
           - id: 2
             crates: sim-thermostat sim-opt mesh-printability
           - id: 3

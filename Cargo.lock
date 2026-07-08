@@ -2381,6 +2381,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-fsu-model"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-fsu-geometry",
+ "cf-geometry",
+ "nalgebra 0.34.2",
+ "sim-coupling",
+ "sim-mjcf",
+ "sim-soft",
+]
+
+[[package]]
 name = "cf-geometry"
 version = "1.0.0"
 dependencies = [
@@ -11703,6 +11716,7 @@ name = "sim-coupling"
 version = "1.0.0"
 dependencies = [
  "cf-fsu-geometry",
+ "cf-fsu-model",
  "cf-geometry",
  "nalgebra 0.34.2",
  "sim-core",

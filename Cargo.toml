@@ -490,6 +490,8 @@ members = [
     "sim/L1/sim-bevy-soft",
     # Layer-2 keystone: staggered forward soft↔rigid coupling (sim-soft ↔ sim-core).
     "sim/L1/coupling",
+    # Assembled FSU flexion model (bonded soft disc between two rigid vertebrae).
+    "sim/L1/fsu-model",
 
     # Simulation umbrella — one crate re-exporting the headless sim spine
     # (rigid + soft + coupling + model I/O + RL/opt). Mirrors `mesh/mesh`;
@@ -777,6 +779,7 @@ sim-therm-env = { path = "sim/L0/therm-env" }
 sim-soft = { path = "sim/L0/soft" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-coupling = { path = "sim/L1/coupling" }
+cf-fsu-model = { path = "sim/L1/fsu-model" }
 # Headless sim umbrella (re-exports the spine above) — see sim/sim.
 sim = { path = "sim/sim" }
 sim-bevy = { path = "sim/L1/bevy" }
