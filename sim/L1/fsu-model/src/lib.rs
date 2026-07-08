@@ -53,7 +53,9 @@ use sim_soft::{
 pub use sim_soft::VertexId;
 
 mod coupled;
-pub use coupled::{CoupledFrame, CoupledFsu, CoupledParams, CoupledTrajectory};
+pub use coupled::{
+    CoupledFrame, CoupledFsu, CoupledParams, CoupledTrajectory, posed_facet_contacts,
+};
 
 /// Body index of the inferior (lower) vertebra box in the disc scene (world = 0).
 const LOWER: usize = 1;

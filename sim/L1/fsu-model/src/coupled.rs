@@ -27,6 +27,7 @@
 //! positive angle is flexion and a negative angle is extension. An applied moment is
 //! likewise positive for flexion. Callers never handle a raw handedness.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -37,7 +38,7 @@ use cf_fsu_geometry::{
 use cf_geometry::IndexedMesh;
 use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
-use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
+use sim_core::{Data, Pose, SdfContact, SdfGrid, ShapeConcave};
 use sim_mjcf::load_model;
 
 use crate::{BondedDisc, DiscParams, build_bonded_disc};
@@ -87,6 +88,13 @@ impl Default for CoupledParams {
 pub struct CoupledFsu {
     /// Disc bushing (hinge spring) + the two ligament tendons, in native mm.
     model: sim_core::Model,
+    /// Reused solver scratch for [`Self::restoring_moment`], so the equilibrium bisection
+    /// does not allocate a fresh `Data` on every evaluation. `RefCell` because the moment
+    /// queries take `&self` (single-threaded use — the FSU is built and swept on one thread).
+    scratch: RefCell<Data>,
+    /// The segment's anatomical frame (body centres + SI/posterior/ML axes), retained so a
+    /// viewer can build the ligament/co-registration overlays without recomputing it.
+    frame: SegmentFrame,
     /// Superior (L4) articular SDF grid — rotates with flexion.
     g4: Arc<SdfGrid>,
     /// Inferior (L5) articular SDF grid — fixed; its outward gradient orients contact.
@@ -147,9 +155,12 @@ impl CoupledFsu {
 
         let model = build_coupled_model(l4, l5, &frame, axis, pivot, params.k_lig, -k_disc * 1e3)
             .context("build coupled ligament/bushing model")?;
+        let scratch = RefCell::new(model.make_data());
 
         Ok(Self {
             model,
+            scratch,
+            frame,
             g4,
             g5,
             pivot,
@@ -158,6 +169,19 @@ impl CoupledFsu {
             k_disc,
             disc,
         })
+    }
+
+    /// The segment's anatomical frame (body centres + SI/posterior/ML axes).
+    #[must_use]
+    pub const fn frame(&self) -> &SegmentFrame {
+        &self.frame
+    }
+
+    /// The two articular SDF grids `(superior L4, inferior L5)` — reusable for a viewer's
+    /// facet overlay so the expensive grids are sampled once.
+    #[must_use]
+    pub const fn grids(&self) -> (&Arc<SdfGrid>, &Arc<SdfGrid>) {
+        (&self.g4, &self.g5)
     }
 
     /// The shared flexion pivot (disc AABB centre, native mm).
@@ -188,10 +212,12 @@ impl CoupledFsu {
     /// valid 1-DOF model (no contacts, no actuators, gravity off).
     #[must_use]
     pub fn restoring_moment(&self, theta: f64) -> f64 {
-        let mut data = self.model.make_data();
+        let mut data = self.scratch.borrow_mut();
         data.qpos[0] = theta;
-        // Infallible for this static 1-DOF model (see the `# Panics` note): a forward
-        // solve of two bodies + a hinge + tendons has no failure mode to recover from.
+        // `forward` is a full recompute from `qpos` (position-dependent spring; `qvel`
+        // stays 0 so no damper term), so reusing the scratch `Data` across calls is exact.
+        // Infallible for this static 1-DOF model (see the `# Panics` note): a forward solve
+        // of two bodies + a hinge + tendons has no failure mode to recover from.
         #[allow(clippy::expect_used)]
         data.forward(&self.model).expect("coupled forward");
         data.qfrc_spring[0] * 1e-3
@@ -203,7 +229,17 @@ impl CoupledFsu {
     /// Zero in flexion (`theta > 0`), engaging in extension.
     #[must_use]
     pub fn facet_moment(&self, theta: f64) -> (usize, f64) {
-        facet_moment_oriented(
+        let (points, moment) = self.facet_response(theta);
+        (points.len(), moment)
+    }
+
+    /// Facet contact at flexion `theta`: the penetrating contact **points** (native mm) and
+    /// the restoring **moment** about the flexion axis (N·m), from one SDF query. The
+    /// engaged count is `points.len()`; a viewer draws the points to show where the bones
+    /// actually touch at that pose.
+    #[must_use]
+    pub fn facet_response(&self, theta: f64) -> (Vec<Point3<f64>>, f64) {
+        facet_response_oriented(
             &self.g4,
             &self.g5,
             self.pivot,
@@ -314,12 +350,14 @@ impl CoupledFsu {
                 };
                 let deformed_nodes_native =
                     rest.iter().zip(field).map(|(r, d)| r + d * s).collect();
-                let (n_facet, _) = self.facet_moment(theta);
+                // One facet query at the solved angle yields the engaged contact points a
+                // viewer draws (count = len); the moment is unused here (the solver used it).
+                let (facet_points, _) = self.facet_response(theta);
                 Ok(CoupledFrame {
                     applied,
                     theta,
                     deformed_nodes_native,
-                    n_facet,
+                    facet_points,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -335,7 +373,7 @@ impl CoupledFsu {
 }
 
 /// One captured coupled equilibrium pose: the applied moment, the solved angle, the
-/// disc's deformed surface (native mm), and the number of engaged facet contacts.
+/// disc's deformed surface (native mm), and the engaged facet contact points.
 pub struct CoupledFrame {
     /// The applied moment about the flexion axis (N·m, positive = flexion).
     pub applied: f64,
@@ -343,8 +381,10 @@ pub struct CoupledFrame {
     pub theta: f64,
     /// The disc's deformed tet-vertex positions (native mm) at `theta`.
     pub deformed_nodes_native: Vec<Point3<f64>>,
-    /// Engaged facet contacts at `theta` (0 in flexion; grows in extension).
-    pub n_facet: usize,
+    /// The penetrating facet contact points (native mm) at `theta` — where the bones
+    /// actually touch. Empty in flexion (facets open); grows into extension. The engaged
+    /// count a viewer reports is `facet_points.len()`.
+    pub facet_points: Vec<Point3<f64>>,
 }
 
 /// A replayable capture of the coupled FSU swept over a moment ramp.
@@ -456,9 +496,14 @@ fn solve_decreasing(target: f64, bracket: f64, tol: f64, f: impl Fn(f64) -> f64)
     ((f(root) - target).abs() < tol).then_some(root)
 }
 
-/// The two articular SDF grids posed at flexion `theta` (L4 rotated about `axis`
-/// through `pivot`, L5 fixed), and the resulting contact set.
-fn facet_contacts(
+/// The two articular SDF grids posed at flexion `theta` (superior `g4` rotated by `theta`
+/// about `axis` through `pivot`, inferior `g5` fixed), and the resulting contact set.
+///
+/// The single source of the "pose the articular grids and query their contact" convention
+/// (cell size [`FACET_CELL`], cap [`FACET_MAX_CONTACTS`]) shared by the coupled solver and
+/// the rung-7 validation harness — so the convention lives in one place.
+#[must_use]
+pub fn posed_facet_contacts(
     g4: &Arc<SdfGrid>,
     g5: &Arc<SdfGrid>,
     pivot: Point3<f64>,
@@ -492,37 +537,39 @@ fn facet_engaged(
     axis: Vector3<f64>,
     theta: f64,
 ) -> usize {
-    facet_contacts(g4, g5, pivot, axis, theta)
+    posed_facet_contacts(g4, g5, pivot, axis, theta)
         .iter()
         .filter(|c| c.penetration > 0.0)
         .count()
 }
 
-/// Facet penalty moment about `axis` at flexion `theta`, with each repulsive force
-/// oriented along L5's outward SDF gradient at the contact point — guaranteeing it
-/// separates L4 from L5 (a restoring contact). Returns `(engaged count, moment N·m)`.
-fn facet_moment_oriented(
+/// Facet response at flexion `theta`: the penetrating (engaged) contact **points** (native
+/// mm) and the penalty restoring **moment** about `axis` (N·m). Each repulsive force is
+/// oriented along L5's outward SDF gradient at the contact point, so the moment genuinely
+/// separates L4 from L5 (restoring). One SDF query yields both — a viewer reads the points,
+/// the solver the moment, and the engaged count is `points.len()`.
+fn facet_response_oriented(
     g4: &Arc<SdfGrid>,
     g5: &Arc<SdfGrid>,
     pivot: Point3<f64>,
     axis: Vector3<f64>,
     theta: f64,
     k_facet: f64,
-) -> (usize, f64) {
+) -> (Vec<Point3<f64>>, f64) {
+    let mut points = Vec::new();
     let mut m = Vector3::zeros();
-    let mut engaged = 0;
-    for c in facet_contacts(g4, g5, pivot, axis, theta) {
+    for c in posed_facet_contacts(g4, g5, pivot, axis, theta) {
         if c.penetration <= 0.0 {
             continue;
         }
-        engaged += 1;
+        points.push(c.point);
         let g = g5.gradient_clamped(c.point);
         if g.norm() > 1e-9 {
             let f = g.normalize() * (k_facet * c.penetration);
             m += (c.point - pivot).cross(&f);
         }
     }
-    (engaged, m.dot(&axis) * 1e-3)
+    (points, m.dot(&axis) * 1e-3)
 }
 
 #[cfg(test)]
@@ -675,8 +722,11 @@ mod tests {
         let g5 = Arc::new(SdfGrid::sphere(Point3::origin(), 10.0, 24, 2.0));
         let g4 = Arc::new(SdfGrid::sphere(Point3::new(80.0, 0.0, 0.0), 10.0, 24, 2.0));
         let disc = build_bonded_disc(synthetic_disc(), &DiscParams::default()).expect("disc");
+        let scratch = RefCell::new(model.make_data());
         CoupledFsu {
             model,
+            scratch,
+            frame,
             g4,
             g5,
             pivot,
@@ -751,9 +801,12 @@ mod tests {
         let (g4, g5) = overlapping_spheres();
         let pivot = Point3::new(0.0, 0.0, -5.0); // offset so the contact has a lever arm
         let axis = Vector3::z();
-        let (n1, m1) = facet_moment_oriented(&g4, &g5, pivot, axis, 0.0, 100.0);
-        let (n2, m2) = facet_moment_oriented(&g4, &g5, pivot, axis, 0.0, 200.0);
-        assert!(n1 > 0 && n1 == n2, "same geometry → same engaged count");
+        let (p1, m1) = facet_response_oriented(&g4, &g5, pivot, axis, 0.0, 100.0);
+        let (p2, m2) = facet_response_oriented(&g4, &g5, pivot, axis, 0.0, 200.0);
+        assert!(
+            !p1.is_empty() && p1.len() == p2.len(),
+            "same geometry → same engaged count"
+        );
         assert!(
             (m2 - 2.0 * m1).abs() < 1e-9 * m1.abs().max(1e-12),
             "oriented facet moment must be linear in k_facet: m(200)={m2:.4}, 2·m(100)={:.4}",
