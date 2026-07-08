@@ -25,7 +25,7 @@ use cf_fsu_geometry::{
     BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid, load,
     oracle, segment_frame,
 };
-use cf_fsu_model::{DiscParams, FlexionTrajectory, build_bonded_disc};
+use cf_fsu_model::{DiscParams, FlexionTrajectory, VertexId, build_bonded_disc};
 use mesh_types::{Aabb, IndexedMesh};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
@@ -52,9 +52,18 @@ pub struct Ligament {
 pub struct FsuScene {
     pub l4: IndexedMesh,
     pub l5: IndexedMesh,
+    /// The clean STL disc surface (native mm) — a smooth watertight lens, the render
+    /// geometry. The tet mesh is too fragmented to render as a coherent disc, so the
+    /// viewer draws THIS surface and displaces it by the FEM field (see [`disc_node_map`]).
+    pub disc_surface: IndexedMesh,
+    /// For each `disc_surface` vertex, the index (into [`FlexionTrajectory::rest_nodes_native`])
+    /// of the nearest tet node on the largest component's boundary. Per frame the vertex is
+    /// displaced by that node's FEM displacement — a smooth, complete disc that deforms by
+    /// the real physics without depending on the ragged tet boundary.
+    pub disc_node_map: Vec<usize>,
     /// The live bonded disc's captured flexion sweep: rest + per-angle deformed
-    /// tet-node positions (native mm) + boundary faces + pivot/axis. Replaces the
-    /// static STL disc shell — the viewer renders the deforming tet boundary.
+    /// tet-node positions (native mm) + pivot/axis. The FEM displacement field sampled
+    /// onto [`disc_surface`] via [`disc_node_map`].
     pub flexion: FlexionTrajectory,
     pub ligaments: Vec<Ligament>,
     /// Facet near-contact points (within the 1 mm detection margin at the
@@ -237,6 +246,44 @@ fn capture_flexion(disc: IndexedMesh) -> Result<FlexionTrajectory> {
     Ok(traj)
 }
 
+/// For each `surface` vertex, the index of the nearest tet node **on the disc's rendered
+/// boundary** (`boundary_faces` — the largest connected component's surface nodes).
+///
+/// Restricting candidates to the boundary nodes matters for correctness, not just speed:
+/// the dropped rim-island nodes stay at rest (zero displacement), so mapping a surface
+/// vertex onto one would tear the disc under exaggeration; the boundary nodes all carry a
+/// real, smooth, connected FEM displacement. It also shrinks the brute-force pass ~5× (a
+/// one-time startup cost, dwarfed by the sweep's FEM solves). The matched node's
+/// displacement is applied to that surface vertex each frame.
+fn nearest_tet_nodes(
+    surface: &IndexedMesh,
+    rest_nodes: &[Point3<f64>],
+    boundary_faces: &[[VertexId; 3]],
+) -> Vec<usize> {
+    let mut candidates: Vec<usize> = boundary_faces
+        .iter()
+        .flatten()
+        .map(|&v| v as usize)
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+    surface
+        .vertices
+        .iter()
+        .map(|v| {
+            candidates
+                .iter()
+                .copied()
+                .min_by(|&a, &b| {
+                    (rest_nodes[a] - v)
+                        .norm_squared()
+                        .total_cmp(&(rest_nodes[b] - v).norm_squared())
+                })
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
 /// Assemble the static FSU scene from the three STL paths (native mm).
 pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScene> {
     let l4 = load(l4_path)?;
@@ -286,16 +333,25 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         eprintln!("WARNING: {w}");
     }
 
-    // Frame the camera on all three tissues (the STL disc extent ≈ the tet-boundary),
-    // then consume the disc mesh into the bonded-disc flexion capture.
+    // Frame the camera on all three tissues, then capture the flexion sweep. The disc
+    // STL is kept as the (clean) render surface; `capture_flexion` consumes a clone for
+    // the FEM tet-mesh + solve.
     let aabb = combined_aabb(&[&l4, &l5, &disc]);
     println!("capturing bonded-disc flexion sweep ({N_FLEX_FRAMES} frames, ±{MAX_FLEX_DEG:.2}°)…");
-    let flexion = capture_flexion(disc)?; // logs the disc surface size (single component)
+    let flexion = capture_flexion(disc.clone())?;
     println!("captured {} flexion frames", flexion.frames.len());
+
+    // Map each clean-STL vertex to its nearest connected-component boundary tet node, so
+    // the smooth surface can be displaced by the FEM field per frame (the tet boundary is
+    // too fragmented to draw directly).
+    let disc_node_map =
+        nearest_tet_nodes(&disc, &flexion.rest_nodes_native, &flexion.boundary_faces);
 
     Ok(FsuScene {
         l4,
         l5,
+        disc_surface: disc,
+        disc_node_map,
         flexion,
         ligaments,
         facet_contacts,
