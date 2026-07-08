@@ -189,6 +189,11 @@ pub fn build_bonded_disc(mut mesh: IndexedMesh, params: &DiscParams) -> Result<B
     let sdf = oracle(&mesh).context("disc oracle")?;
     let tet = SdfMeshedTetMesh::from_sdf(&sdf, &hints)
         .map_err(|e| anyhow::anyhow!("tet-mesh disc: {e:?}"))?;
+    // A physical disc is one connected solid, but the BCC isosurface-stuffing mesher
+    // fragments the disc's sub-cell-thin tapering rim into disconnected islands — which
+    // both scatter the rendered surface and poison the Newton tangent's conditioning
+    // (a floating tet component carries unconstrained rigid modes). Keep the main body.
+    let tet = tet.largest_component();
 
     // Endplate faces = bands at the SI surface extremes (field-derived, not z=const).
     let (lo_z, hi_z) = (bbox.min.z, bbox.max.z);

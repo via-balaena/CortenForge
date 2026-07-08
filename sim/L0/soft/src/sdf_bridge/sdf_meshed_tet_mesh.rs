@@ -213,6 +213,93 @@ fn build<M: BuildableFromField>(
     })
 }
 
+impl<M: BuildableFromField + Clone> SdfMeshedTetMesh<M> {
+    /// Return a copy keeping only the tets of the **largest face-connected
+    /// component**.
+    ///
+    /// The BCC isosurface-stuffing pipeline fragments a sub-cell-thin feature — e.g.
+    /// a lens-shaped intervertebral disc's tapering rim — into a main body plus many
+    /// small disconnected islands. Those islands are structurally unconstrained
+    /// (free rigid-body modes), so they poison the tangent's conditioning (a
+    /// near-singular Newton system) and render as scattered surface fragments. A
+    /// physical solid is a single connected component, so filtering to the largest
+    /// one restores that model invariant.
+    ///
+    /// Two tets are connected when they share a triangular face. Vertices are
+    /// retained as-is — the now-unreferenced island vertices are handled downstream by
+    /// [`referenced_vertices`](crate::mesh::referenced_vertices), exactly as the
+    /// pipeline's own orphan lattice corners already are. The per-tet caches
+    /// (materials, interface flags) are subset to the kept tets; the boundary-face and
+    /// quality caches are recomputed from them.
+    #[must_use]
+    pub fn largest_component(&self) -> Self {
+        // Sorted triangular faces of a tet (its four opposite-a-vertex faces).
+        fn faces(t: &[VertexId; 4]) -> [[VertexId; 3]; 4] {
+            let s = |mut f: [VertexId; 3]| {
+                f.sort_unstable();
+                f
+            };
+            [
+                s([t[1], t[2], t[3]]),
+                s([t[0], t[2], t[3]]),
+                s([t[0], t[1], t[3]]),
+                s([t[0], t[1], t[2]]),
+            ]
+        }
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]]; // path halving
+                x = parent[x];
+            }
+            x
+        }
+
+        let n = self.tets.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        // A face shared by two tets unions them.
+        let mut owner: std::collections::HashMap<[VertexId; 3], usize> =
+            std::collections::HashMap::new();
+        for (ti, tet) in self.tets.iter().enumerate() {
+            for f in faces(tet) {
+                if let Some(&other) = owner.get(&f) {
+                    let (ra, rb) = (find(&mut parent, ti), find(&mut parent, other));
+                    parent[rb] = ra;
+                } else {
+                    owner.insert(f, ti);
+                }
+            }
+        }
+        let roots: Vec<usize> = (0..n).map(|t| find(&mut parent, t)).collect();
+        let mut per_root: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        for &r in &roots {
+            *per_root.entry(r).or_default() += 1;
+        }
+        let Some((&largest, _)) = per_root.iter().max_by_key(|(_, c)| **c) else {
+            return self.clone(); // no tets — nothing to filter
+        };
+
+        let keep: Vec<usize> = (0..n).filter(|&t| roots[t] == largest).collect();
+        let tets: Vec<[VertexId; 4]> = keep.iter().map(|&t| self.tets[t]).collect();
+        let material_cache: Vec<M> = keep
+            .iter()
+            .map(|&t| self.material_cache[t].clone())
+            .collect();
+        let interface_flags: Vec<bool> = keep.iter().map(|&t| self.interface_flags[t]).collect();
+        let boundary_faces = boundary_faces_from_topology(&tets);
+        let q = quality::compute_metrics(&self.vertices, &tets);
+        Self {
+            vertices: self.vertices.clone(),
+            tets,
+            adj: MeshAdjacency,
+            q,
+            material_cache,
+            interface_flags,
+            boundary_faces,
+        }
+    }
+}
+
 impl SdfMeshedTetMesh<NeoHookean> {
     /// Build an NH mesh by running the BCC + Labelle-Shewchuk
     /// Isosurface Stuffing pipeline (see module doc).
