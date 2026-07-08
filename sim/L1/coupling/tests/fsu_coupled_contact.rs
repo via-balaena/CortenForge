@@ -154,6 +154,21 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
         "ligaments+disc alone must be too lax to reach {PHYSIOLOGIC_MOMENT} N·m — facets are the limiter"
     );
 
+    // ── CAVEAT (honest account of the facet extension result; investigated 2026-07-08):
+    //    like rung 7, the coupled model shares ONE pivot (the disc centre) and ONE axis
+    //    (the disc's principal ML) across disc + ligaments + facets. That is right for the
+    //    disc (which bends about its own centre) but is a SIMPLIFICATION for the facets,
+    //    whose physiological extension axis-of-rotation is the vertebral-ML through a
+    //    POSTERIOR IAR (~the posterior annulus, ~12–16 mm behind the disc centre here). A
+    //    pivot/axis sweep showed the facet ENGAGEMENT MECHANICS (which facet, how many
+    //    contacts) are pivot-dominated — but the extension ROM is ROBUST: the shipped
+    //    disc-ML/disc-centre gives ≈4.5°, and the physiological vertebral-ML/posterior-IAR
+    //    gives ≈3.6–4.8°, both in the literature band and near Yamamoto's 3.5°. Separately,
+    //    the engagement is ONE-SIDED at EVERY axis/pivot (this specimen's right facet does
+    //    not engage in extension) — real anatomical asymmetry, not a modelling artifact. A
+    //    decoupled-facet model (vertebral-ML + posterior IAR) is a realism refinement for
+    //    the engagement mechanics, not a correction to the (already in-band) ROM. ──
+
     // ── K_facet convergence: the facet penalty is a NUMERICAL regularisation of a
     //    near-rigid bone contact, not a tissue property. As K_facet → ∞ the contact
     //    hardens and the extension ROM converges to the GEOMETRIC contact limit (the

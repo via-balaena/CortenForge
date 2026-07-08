@@ -94,14 +94,12 @@
 use std::sync::Arc;
 
 use cf_fsu_geometry::{
-    BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid,
-    load_from_env, oracle, segment_frame,
+    BODY_RADIUS, SegmentFrame, extreme_vertex, facet_grid, load_from_env, oracle, segment_frame,
 };
-use cf_fsu_model::{DiscParams, build_bonded_disc};
+use cf_fsu_model::{DiscParams, build_bonded_disc, posed_facet_contacts};
 use cf_geometry::IndexedMesh;
-use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
-use sim_core::sdf::compute_shape_contact;
-use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
+use nalgebra::{Point3, Vector3};
+use sim_core::SdfGrid;
 use sim_mjcf::load_model;
 use sim_soft::Vec3;
 
@@ -196,26 +194,12 @@ fn facet_response(
     theta: f64,
     k_facet: f64,
 ) -> (usize, f64) {
-    let r = UnitQuaternion::from_axis_angle(&Unit::new_normalize(ml), theta);
-    let pose_a = Pose {
-        position: Point3::from(pivot.coords - r * pivot.coords),
-        rotation: r,
-    };
-    let pose_b = Pose {
-        position: Point3::origin(),
-        rotation: UnitQuaternion::identity(),
-    };
-    let cs: Vec<SdfContact> = compute_shape_contact(
-        &ShapeConcave::new(Arc::clone(g4)),
-        &pose_a,
-        &ShapeConcave::new(Arc::clone(g5)),
-        &pose_b,
-        FACET_CELL,
-        FACET_MAX_CONTACTS,
-    );
+    // Shared posed-articular-contact query (cf-fsu-model). This rung keeps its own RAW-normal
+    // penalty (deliberately unvalidated — the reason it stays out of the headline), unlike
+    // the coupled solver's gradient-oriented one; only the pose+query scaffolding is shared.
     let mut m = Vec3::zeros();
     let mut engaged = 0;
-    for c in &cs {
+    for c in posed_facet_contacts(g4, g5, pivot, ml, theta) {
         if c.penetration <= 0.0 {
             continue;
         }
