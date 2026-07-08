@@ -192,8 +192,11 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
     // flattens), and the whole converging range must stay physiological (lit band). This
     // is the honest account of the uncalibrated K_facet — not a tuned point-match.
     for w in roms.windows(2) {
+        // Slack (1e-2°) sits well above the ~1e-6° root jitter from the discretised facet
+        // moment but far below the ~0.1–0.5° real ROM steps, so this catches a genuine
+        // reversal without flaking on numerical noise near convergence.
         assert!(
-            w[1] <= w[0] + 1e-9,
+            w[1] <= w[0] + 1e-2,
             "extension ROM must converge DOWNWARD as K_facet stiffens (got {:.3}° → {:.3}°)",
             w[0],
             w[1]

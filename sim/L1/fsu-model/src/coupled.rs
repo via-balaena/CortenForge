@@ -48,6 +48,11 @@ const K_DISC_PROBE: f64 = 0.86_f64 * std::f64::consts::PI / 180.0;
 /// Angular bracket for the equilibrium bisection (rad). Comfortably spans the
 /// physiological ROM (flexion ~6°, extension ~4.5°) on both sides of neutral.
 const EQUILIBRIUM_BRACKET: f64 = 12.0_f64 * std::f64::consts::PI / 180.0;
+/// Base residual tolerance (N·m) for accepting a bisection root — physically negligible,
+/// far above the ~1e-5 N·m sub-grid jitter of the discretised facet moment at the built-in
+/// `k_facet`. A `k_facet` sensitivity sweep scales the facet moment (and hence its jitter),
+/// so the effective tolerance scales with that factor (see `equilibrium_with_facet_scale`).
+const RESIDUAL_TOL: f64 = 1.0e-3;
 
 /// Tunable stiffnesses for the coupled FSU assembly.
 ///
@@ -239,8 +244,11 @@ impl CoupledFsu {
     #[must_use]
     pub fn equilibrium_with_facet_scale(&self, applied: f64, facet_scale: f64) -> Option<f64> {
         // Balance: restoring + facet_scale·facet = −applied. Monotone DECREASING in theta,
-        // so bisect over ±EQUILIBRIUM_BRACKET for the unique root.
-        solve_decreasing(-applied, EQUILIBRIUM_BRACKET, |t| {
+        // so bisect over ±EQUILIBRIUM_BRACKET for the unique root. Scaling the facet moment
+        // scales its jitter, so the residual tolerance scales with it too (never below the
+        // base) — otherwise a stiff sweep point could reject a valid root as a false gap.
+        let tol = RESIDUAL_TOL * facet_scale.max(1.0);
+        solve_decreasing(-applied, EQUILIBRIUM_BRACKET, tol, |t| {
             self.restoring_moment(t) + facet_scale * self.facet_moment(t).1
         })
     }
@@ -416,11 +424,11 @@ fn build_coupled_model(
 /// Returns `None` in two cases, so a caller never receives a non-root angle:
 /// - `target` is outside `[f(+bracket), f(−bracket)]` — no root in range (this stops a
 ///   bracketed bisection from silently returning the *bracket edge* as a solved root);
-/// - the bisection converges but the **residual** `|f(root) − target|` is not near zero —
-///   which happens when `f` is not actually monotone over the bracket (e.g. a
-///   non-monotone / discontinuous contact response near engagement onset), so there is no
-///   clean crossing and the bisection would otherwise report a spurious one.
-fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> Option<f64> {
+/// - the bisection converges but the **residual** `|f(root) − target|` exceeds `tol` —
+///   which happens when the target falls in a discontinuity gap (no clean crossing, e.g. a
+///   segment that would snap rather than balance). `tol` must sit above the numerical
+///   jitter of `f` at a real root but below any physical gap.
+fn solve_decreasing(target: f64, bracket: f64, tol: f64, f: impl Fn(f64) -> f64) -> Option<f64> {
     // Monotone decreasing ⇒ f(−bracket) is the max, f(+bracket) the min; a root exists
     // iff f(+bracket) ≤ target ≤ f(−bracket).
     if target > f(-bracket) || target < f(bracket) {
@@ -442,13 +450,10 @@ fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> Option
         }
     }
     let root = 0.5 * (lo + hi);
-    // A converged bisection on a continuous `f` drives the residual to ~0. A residual
-    // that stays large means the target fell in a discontinuity gap (no static
-    // equilibrium — the segment would snap) → signal no-equilibrium. The tolerance is set
-    // at 1e-3 N·m: physically negligible, but far above the sub-grid contact-point jitter
-    // of the discretised facet moment (which the 1 mm SDF grid can wobble by ~1e-5 N·m at
-    // a converged root), so a genuine equilibrium is never mistaken for a gap.
-    ((f(root) - target).abs() < 1e-3).then_some(root)
+    // A converged bisection on a continuous `f` drives the residual to ~0. A residual that
+    // stays above `tol` means the target fell in a discontinuity gap (no static equilibrium
+    // — the segment would snap) → signal no-equilibrium.
+    ((f(root) - target).abs() < tol).then_some(root)
 }
 
 /// The two articular SDF grids posed at flexion `theta` (L4 rotated about `axis`
@@ -532,14 +537,14 @@ mod tests {
         // moment M is θ* = M/k. Here target = −applied, and f(θ) = −k·θ.
         let k = 3.0_f64;
         let applied = 0.6_f64;
-        let theta = solve_decreasing(-applied, 1.0, |t| -k * t).expect("root in bracket");
+        let theta = solve_decreasing(-applied, 1.0, RESIDUAL_TOL, |t| -k * t).expect("root");
         assert!(
             (theta - applied / k).abs() < 1e-9,
             "expected θ = M/k = {:.6}, got {theta:.6}",
             applied / k
         );
         // A negative (extension) applied moment gives a negative angle.
-        let theta_ext = solve_decreasing(applied, 1.0, |t| -k * t).expect("root in bracket");
+        let theta_ext = solve_decreasing(applied, 1.0, RESIDUAL_TOL, |t| -k * t).expect("root");
         assert!((theta_ext + applied / k).abs() < 1e-9, "sign symmetry");
     }
 
@@ -549,12 +554,12 @@ mod tests {
         // return None rather than silently handing back the bracket edge as a "root".
         let k = 3.0_f64;
         assert_eq!(
-            solve_decreasing(-6.0, 1.0, |t| -k * t),
+            solve_decreasing(-6.0, 1.0, RESIDUAL_TOL, |t| -k * t),
             None,
             "a root at θ=2.0 outside the ±1.0 bracket must yield None, not the edge"
         );
         assert_eq!(
-            solve_decreasing(6.0, 1.0, |t| -k * t),
+            solve_decreasing(6.0, 1.0, RESIDUAL_TOL, |t| -k * t),
             None,
             "the extension side out-of-bracket case must also yield None"
         );
