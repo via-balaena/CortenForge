@@ -518,7 +518,7 @@ fn draw_ligaments(
     let rot = display_rotation(&flexion);
     let pivot = flexion.traj.pivot;
     for lig in &overlays.ligaments {
-        let superior = pivot + rot * (lig.superior - pivot); // rides L4
+        let superior = pose_about_pivot(&lig.superior, &rot, pivot); // rides L4
         let (a, b) = (vec3_from_point(&lig.inferior), vec3_from_point(&superior));
         gizmos.line(a, b, LIGAMENT_COLOR);
         gizmos.sphere(Isometry3d::from_translation(a), SITE_RADIUS, LIGAMENT_COLOR);
@@ -526,11 +526,17 @@ fn draw_ligaments(
     }
 }
 
-/// Draw the facet near-contact points as small spheres riding the superior articular
-/// process. When the coupled solve reports engaged contacts (extension — the bones stop
-/// where the bones actually touch at the current pose. These are the coupled solve's real
-/// engaged contact points at the nearest captured frame (empty in flexion — facets open —
-/// so nothing draws; growing red spheres in extension where the bones stop).
+/// Rotate a native-mm point about the flexion `pivot` by `rot` — the `pivot + R·(p−pivot)`
+/// idiom the L4-riding overlays share.
+fn pose_about_pivot(p: &Point3<f64>, rot: &UnitQuaternion<f64>, pivot: Point3<f64>) -> Point3<f64> {
+    pivot + rot * (p - pivot)
+}
+
+/// Draw the coupled solve's real engaged facet contact points — where the bones actually
+/// touch — as red spheres. They are empty in flexion (facets open, nothing drawn) and grow
+/// in extension where the bones stop. The points were captured at their frame's angle, so
+/// they are re-posed by the small residual rotation to the interpolated body angle to stay
+/// glued to the articulation between frames.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn draw_facets(mut gizmos: Gizmos, toggles: Res<SceneToggles>, flexion: Res<Flexion>) {
     if !toggles.facets {
@@ -541,11 +547,14 @@ fn draw_facets(mut gizmos: Gizmos, toggles: Res<SceneToggles>, flexion: Res<Flex
         return;
     }
     let nearest = flexion.cursor.round().clamp(0.0, (n - 1) as f32) as usize;
-    // The facet points are already at the posed (rotated) contact locations for that
-    // frame's angle — draw them directly (no display_rotation).
+    let pivot = flexion.traj.pivot;
+    // Residual rotation from the captured frame's angle to the interpolated body angle.
+    let delta = flexion.true_theta - flexion.traj.frames[nearest].theta;
+    let rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(flexion.traj.axis), delta);
     for p in &flexion.traj.frames[nearest].facet_points {
+        let posed = pose_about_pivot(p, &rot, pivot);
         gizmos.sphere(
-            Isometry3d::from_translation(vec3_from_point(p)),
+            Isometry3d::from_translation(vec3_from_point(&posed)),
             FACET_RADIUS * 1.4,
             FACET_COLOR,
         );
@@ -618,7 +627,7 @@ fn scene_panel(
             ui.checkbox(&mut toggles.l5, "L5 vertebra");
             ui.checkbox(&mut toggles.disc, "Intervertebral disc (FEM)");
             ui.checkbox(&mut toggles.ligaments, "Ligaments");
-            ui.checkbox(&mut toggles.facets, "Facet near-contacts");
+            ui.checkbox(&mut toggles.facets, "Facet contacts (extension)");
             ui.separator();
 
             // Derive the ligament readout from what was actually built — a
