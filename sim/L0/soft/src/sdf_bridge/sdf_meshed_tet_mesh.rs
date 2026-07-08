@@ -439,3 +439,155 @@ impl<M: BuildableFromField> Mesh<M> for SdfMeshedTetMesh<M> {
         true
     }
 }
+
+#[cfg(test)]
+mod largest_component_tests {
+    #![allow(clippy::expect_used, clippy::cast_possible_truncation)]
+
+    use super::{MeshingHints, SdfMeshedTetMesh};
+    use crate::Vec3;
+    use crate::material::MaterialField;
+    use crate::mesh::{Mesh, TetId, VertexId};
+    use crate::sdf_bridge::{Aabb3, Sdf, SphereSdf};
+    use nalgebra::Point3;
+
+    /// A two-solid SDF (min of two spheres) so meshing yields ≥2 disconnected
+    /// components — the exact shape [`SdfMeshedTetMesh::largest_component`] filters.
+    struct TwoSpheres {
+        a_c: Vec3,
+        a_r: f64,
+        b_c: Vec3,
+        b_r: f64,
+    }
+
+    impl Sdf for TwoSpheres {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            let da = (p.coords - self.a_c).norm() - self.a_r;
+            let db = (p.coords - self.b_c).norm() - self.b_r;
+            da.min(db) // union of two solids
+        }
+        fn grad(&self, p: Point3<f64>) -> Vec3 {
+            let da = (p.coords - self.a_c).norm() - self.a_r;
+            let db = (p.coords - self.b_c).norm() - self.b_r;
+            let c = if da <= db { self.a_c } else { self.b_c };
+            (p.coords - c).normalize()
+        }
+    }
+
+    /// Number of face-connected tet components (independent of the method's own
+    /// union-find, so it cross-checks rather than mirrors it).
+    fn n_components(mesh: &SdfMeshedTetMesh) -> usize {
+        fn sorted_face(tet: &[VertexId; 4], idx: [usize; 3]) -> [VertexId; 3] {
+            let mut tri = [tet[idx[0]], tet[idx[1]], tet[idx[2]]];
+            tri.sort_unstable();
+            tri
+        }
+        fn find(parent: &mut [usize], mut node: usize) -> usize {
+            while parent[node] != node {
+                parent[node] = parent[parent[node]];
+                node = parent[node];
+            }
+            node
+        }
+        let n_tets = mesh.n_tets();
+        let mut parent: Vec<usize> = (0..n_tets).collect();
+        let mut owner: std::collections::HashMap<[VertexId; 3], usize> =
+            std::collections::HashMap::new();
+        for ti in 0..n_tets {
+            let tet = mesh.tet_vertices(ti as TetId);
+            for tri in [
+                sorted_face(&tet, [1, 2, 3]),
+                sorted_face(&tet, [0, 2, 3]),
+                sorted_face(&tet, [0, 1, 3]),
+                sorted_face(&tet, [0, 1, 2]),
+            ] {
+                if let Some(&other) = owner.get(&tri) {
+                    let (root_a, root_b) = (find(&mut parent, ti), find(&mut parent, other));
+                    parent[root_b] = root_a;
+                } else {
+                    owner.insert(tri, ti);
+                }
+            }
+        }
+        (0..n_tets)
+            .map(|ti| find(&mut parent, ti))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
+    fn hints(min: Vec3, max: Vec3) -> MeshingHints {
+        MeshingHints {
+            bbox: Aabb3::new(min, max),
+            cell_size: 0.02,
+            material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
+        }
+    }
+
+    #[test]
+    fn largest_component_keeps_only_the_biggest_connected_solid() {
+        // A big sphere (r=0.10) and a disjoint small one (r=0.04) well apart.
+        let sdf = TwoSpheres {
+            a_c: Vec3::new(-0.15, 0.0, 0.0),
+            a_r: 0.10,
+            b_c: Vec3::new(0.22, 0.0, 0.0),
+            b_r: 0.04,
+        };
+        let mesh = SdfMeshedTetMesh::from_sdf(
+            &sdf,
+            &hints(Vec3::new(-0.28, -0.13, -0.13), Vec3::new(0.28, 0.13, 0.13)),
+        )
+        .expect("two-sphere scene meshes");
+        assert!(
+            n_components(&mesh) >= 2,
+            "two disjoint spheres must mesh as ≥2 components, got {}",
+            n_components(&mesh)
+        );
+
+        let filtered = mesh.largest_component();
+        assert_eq!(
+            n_components(&filtered),
+            1,
+            "filter must leave exactly one connected component"
+        );
+        assert!(
+            filtered.n_tets() < mesh.n_tets(),
+            "filter must drop the smaller sphere's tets ({} vs {})",
+            filtered.n_tets(),
+            mesh.n_tets()
+        );
+        assert!(
+            filtered.n_tets() > mesh.n_tets() / 2,
+            "the kept component must be the LARGER sphere (majority of tets)"
+        );
+        // Per-tet caches are subset consistently; vertices retained (orphans kept,
+        // handled downstream by referenced_vertices); boundary faces stay in range.
+        assert_eq!(filtered.materials().len(), filtered.n_tets());
+        assert_eq!(filtered.n_vertices(), mesh.n_vertices());
+        let nv = filtered.n_vertices();
+        assert!(
+            filtered
+                .boundary_faces()
+                .iter()
+                .flatten()
+                .all(|&v| (v as usize) < nv),
+            "every filtered boundary-face vertex must index into the vertex buffer"
+        );
+    }
+
+    #[test]
+    fn largest_component_is_a_noop_on_a_single_solid() {
+        let mesh = SdfMeshedTetMesh::from_sdf(
+            &SphereSdf { radius: 0.1 },
+            &hints(Vec3::new(-0.13, -0.13, -0.13), Vec3::new(0.13, 0.13, 0.13)),
+        )
+        .expect("sphere scene meshes");
+        assert_eq!(n_components(&mesh), 1, "a sphere is one component");
+        let filtered = mesh.largest_component();
+        assert_eq!(
+            filtered.n_tets(),
+            mesh.n_tets(),
+            "a single-component mesh must lose no tets"
+        );
+        assert_eq!(n_components(&filtered), 1);
+    }
+}

@@ -654,16 +654,16 @@ mod tests {
         );
 
         // Reproducibility — asserted on the PHYSICAL OBSERVABLE (the restoring moment),
-        // not per-node bit-identity. The disc's Newton tangent is indefinite (the faer LU
-        // fallback fires every solve) and the force residual (Newton tol 1e-10) is FLAT
-        // over a ~0.02 mm subspace of interior free-node configurations; the multi-threaded
-        // indefinite LU then lands on different points in that flat subspace run-to-run.
-        // The bonded (boundary) nodes are Dirichlet-pinned, so the reaction — hence the
-        // moment — is well-determined regardless. This is fine for the viewer, which replays
-        // ONE captured sweep; we assert the observable a regression would actually track.
-        // (Root cause + the deferred fix — deterministic LU or `SolverConfig::lm_regularization`,
-        // NOT mass regularization, which a spike showed does not help — are a sim-soft
-        // concern, out of scope for this viz rung.)
+        // not per-node bit-identity. `build_bonded_disc` now drops the mesher's
+        // disconnected rim islands (`SdfMeshedTetMesh::largest_component`), which were the
+        // dominant source of the near-singular Newton tangent (floating tet components =
+        // unconstrained rigid modes): the faer LU fallback count fell from ~17 to ~4 on
+        // the real disc. A small residual remains (near-sliver tets within the main body),
+        // so the multi-threaded indefinite LU can still land on slightly different interior
+        // configurations run-to-run. The bonded (boundary) nodes are Dirichlet-pinned, so
+        // the reaction — hence the moment — is well-determined regardless. We assert the
+        // observable a regression would actually track. (Fully eliminating the residual
+        // needs a thin-feature-capable mesher — a separate sim-soft rung.)
         //
         // Drift is the absolute moment change normalised by the sweep's peak moment, NOT by
         // each frame's own moment: the near-zero θ=0 frame would make a per-frame ratio blow up.
