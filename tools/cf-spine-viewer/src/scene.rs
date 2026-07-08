@@ -25,21 +25,21 @@ use cf_fsu_geometry::{
     BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid, load,
     oracle, segment_frame,
 };
-use cf_fsu_model::{DiscParams, FlexionTrajectory, VertexId, build_bonded_disc};
+use cf_fsu_model::{CoupledFsu, CoupledParams, CoupledTrajectory, VertexId};
 use mesh_types::{Aabb, IndexedMesh};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
 use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
 
-/// Peak flexion/extension angle of the captured sweep (degrees). The bonded disc
-/// converges only at sub-degree strains — beyond ~1° the boundary tets leave their
-/// SPD region and the solve diverges (rung 7) — so the sweep stays at the validated
-/// maximum and the viewer exaggerates the sub-mm deformation for legibility.
-const MAX_FLEX_DEG: f64 = 0.86;
-/// Frames in the captured sweep, evenly spaced in angle across `[-MAX, +MAX]`. Each is
-/// one expensive quasi-static soft solve, so the count is modest; the viewer
-/// interpolates between them for smooth playback.
-const N_FLEX_FRAMES: usize = 15;
+/// Peak applied moment of the captured ramp (N·m) — the physiologic pure-moment probe
+/// (rung 7). Swept from `−MAX` (extension) to `+MAX` (flexion); the coupled solver
+/// returns the equilibrium angle at each, so the motion is force-driven and ROM-limited
+/// (bones stop on the facets in extension, ligaments/disc limit flexion).
+const MAX_MOMENT: f64 = 7.5;
+/// Frames in the captured ramp, evenly spaced in applied moment across `[−MAX, +MAX]`.
+/// Each solves one coupled equilibrium (cheap) + reuses one sub-degree disc solve, so the
+/// count can be generous; the viewer interpolates between frames for smooth playback.
+const N_RAMP_FRAMES: usize = 25;
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
@@ -56,15 +56,15 @@ pub struct FsuScene {
     /// geometry. The tet mesh is too fragmented to render as a coherent disc, so the
     /// viewer draws THIS surface and displaces it by the FEM field (see `disc_node_map`).
     pub disc_surface: IndexedMesh,
-    /// For each `disc_surface` vertex, the index (into [`FlexionTrajectory::rest_nodes_native`])
+    /// For each `disc_surface` vertex, the index (into [`CoupledTrajectory::rest_nodes_native`])
     /// of the nearest tet node on the largest component's boundary. Per frame the vertex is
     /// displaced by that node's FEM displacement — a smooth, complete disc that deforms by
     /// the real physics without depending on the ragged tet boundary.
     pub disc_node_map: Vec<usize>,
-    /// The live bonded disc's captured flexion sweep: rest + per-angle deformed
-    /// tet-node positions (native mm) + pivot/axis. The FEM displacement field sampled
-    /// onto `disc_surface` via `disc_node_map`.
-    pub flexion: FlexionTrajectory,
+    /// The coupled FSU's captured force-driven ramp: per-frame equilibrium angle +
+    /// deformed disc tet-node positions (native mm) + facet engagement + pivot/axis. The
+    /// disc FEM displacement field is sampled onto `disc_surface` via `disc_node_map`.
+    pub flexion: CoupledTrajectory,
     pub ligaments: Vec<Ligament>,
     /// Facet near-contact points (within the 1 mm detection margin at the
     /// neutral pose) — the articular-process contact region.
@@ -215,31 +215,42 @@ fn combined_aabb(meshes: &[&IndexedMesh]) -> Aabb {
     Aabb::from_points(meshes.iter().flat_map(|m| m.vertices.iter()))
 }
 
-/// Evenly-spaced flexion angles across `[-MAX_FLEX_DEG, +MAX_FLEX_DEG]` (radians),
-/// ascending so the captured sweep warm-starts smoothly frame to frame.
-fn flexion_sweep() -> Vec<f64> {
-    let max = MAX_FLEX_DEG.to_radians();
-    (0..N_FLEX_FRAMES)
+/// Evenly-spaced applied moments across `[-MAX_MOMENT, +MAX_MOMENT]` (N·m), ascending
+/// (extension → flexion) so the replay sweeps the segment open smoothly.
+fn moment_ramp() -> Vec<f64> {
+    (0..N_RAMP_FRAMES)
         .map(|i| {
-            #[allow(clippy::cast_precision_loss)] // N_FLEX_FRAMES is tiny; the ratio is exact.
-            let t = i as f64 / (N_FLEX_FRAMES - 1) as f64; // 0..=1
-            -max + t * (2.0 * max)
+            #[allow(clippy::cast_precision_loss)] // N_RAMP_FRAMES is tiny; the ratio is exact.
+            let t = i as f64 / (N_RAMP_FRAMES - 1) as f64; // 0..=1
+            -MAX_MOMENT + t * (2.0 * MAX_MOMENT)
         })
         .collect()
 }
 
-/// Tet-mesh the real disc, bond it between the two vertebra endplates, and capture a
-/// sub-degree flexion sweep as a replayable trajectory (native mm). Consumes its own
-/// copy of the disc mesh (`build_bonded_disc` recentres + scales it destructively).
+/// Assemble the coupled FSU (disc bushing + ligament tendons + oriented facet contact)
+/// and capture its force-driven equilibrium over a pure-moment ramp as a replayable
+/// trajectory (native mm). Consumes its own copy of the disc mesh (the disc build
+/// recentres + scales it destructively).
 ///
-/// `build_bonded_disc` already drops the mesher's disconnected rim islands
-/// (`SdfMeshedTetMesh::largest_component`), so the captured surface is a single connected
-/// component — the viewer renders it directly, no render-side filtering needed.
-fn capture_flexion(disc: IndexedMesh) -> Result<FlexionTrajectory> {
-    let mut bonded = build_bonded_disc(disc, &DiscParams::default())?;
-    let traj = bonded.capture_flexion(&flexion_sweep());
+/// The disc's deformation at each equilibrium angle is the sub-degree FEM field linearly
+/// extrapolated to that angle (the same `k_disc` linearity rung 7 relies on) — the disc
+/// only converges sub-degree, so this is the honest larger-angle disc shape. The bones
+/// stop on the facets in extension because the solved angle is ROM-limited, not exaggerated.
+fn capture_coupled(
+    l4: &IndexedMesh,
+    l5: &IndexedMesh,
+    disc: IndexedMesh,
+) -> Result<CoupledTrajectory> {
+    let mut fsu = CoupledFsu::build(l4, l5, disc, &CoupledParams::default())?;
+    let traj = fsu.capture_ramp(&moment_ramp());
+    let (ext, flex) = (
+        traj.frames.first().map_or(0.0, |f| f.theta.to_degrees()),
+        traj.frames.last().map_or(0.0, |f| f.theta.to_degrees()),
+    );
     println!(
-        "disc surface: {} nodes, {} boundary faces (single component)",
+        "coupled ramp: {} frames, ±{MAX_MOMENT} N·m → extension {ext:.2}° … flexion {flex:.2}°; \
+         disc surface {} nodes, {} boundary faces",
+        traj.frames.len(),
         traj.rest_nodes_native.len(),
         traj.boundary_faces.len()
     );
@@ -333,13 +344,13 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         eprintln!("WARNING: {w}");
     }
 
-    // Frame the camera on all three tissues, then capture the flexion sweep. The disc
-    // STL is kept as the (clean) render surface; `capture_flexion` consumes a clone for
-    // the FEM tet-mesh + solve.
+    // Frame the camera on all three tissues, then capture the coupled force-driven ramp.
+    // The disc STL is kept as the (clean) render surface; `capture_coupled` consumes a
+    // clone for the disc FEM tet-mesh + the coupled solve.
     let aabb = combined_aabb(&[&l4, &l5, &disc]);
-    println!("capturing bonded-disc flexion sweep ({N_FLEX_FRAMES} frames, ±{MAX_FLEX_DEG:.2}°)…");
-    let flexion = capture_flexion(disc.clone())?;
-    println!("captured {} flexion frames", flexion.frames.len());
+    println!("capturing coupled FSU moment ramp ({N_RAMP_FRAMES} frames, ±{MAX_MOMENT} N·m)…");
+    let flexion = capture_coupled(&l4, &l5, disc.clone())?;
+    println!("captured {} coupled frames", flexion.frames.len());
 
     // Map each clean-STL vertex to its nearest connected-component boundary tet node, so
     // the smooth surface can be displaced by the FEM field per frame (the tet boundary is
