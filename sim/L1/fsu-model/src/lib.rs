@@ -447,21 +447,19 @@ impl BondedDisc {
     }
 }
 
+/// License-free geometry fixtures shared by this crate's test modules (`lib.rs` and
+/// `coupled.rs`), so the box triangulation lives in exactly one place.
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/expect/panic.
+pub(crate) mod test_support {
+    use nalgebra::{Point3, Vector3};
 
-    use super::*;
+    use crate::IndexedMesh;
 
-    /// A watertight axis-aligned box (8 verts, 12 outward-wound triangles) with the
-    /// given half-extents, centred at `center` — a closed surface the signed oracle
-    /// can sign, standing in for the disc (thinnest extent = a disc-like endplate gap).
-    ///
-    /// Mirrors the cubic `box_mesh` fixture in `cf-fsu-geometry`'s own tests (widened
-    /// here to per-axis half-extents). Kept local rather than shared: it is a
-    /// `#[cfg(test)]` helper, and promoting it to either crate's public surface just to
-    /// avoid a small, self-contained fixture would leak test scaffolding into the API.
-    fn box_mesh(center: Point3<f64>, half: Vector3<f64>) -> IndexedMesh {
+    /// A watertight axis-aligned box (8 verts, 12 outward-wound triangles) with the given
+    /// half-extents, centred at `center` — a closed surface the signed oracle can sign,
+    /// standing in for the disc (thinnest extent = a disc-like endplate gap).
+    #[must_use]
+    pub fn box_mesh(center: Point3<f64>, half: Vector3<f64>) -> IndexedMesh {
         let c = center;
         let (hx, hy, hz) = (half.x, half.y, half.z);
         let vertices = vec![
@@ -493,12 +491,21 @@ mod tests {
 
     /// A disc-like synthetic slab: widest in x (ML), thinnest in z (SI), placed at a
     /// native-mm-scale offset so recentring + scaling are exercised.
-    fn synthetic_disc() -> IndexedMesh {
+    #[must_use]
+    pub fn synthetic_disc() -> IndexedMesh {
         box_mesh(
             Point3::new(100.0, 100.0, 950.0),
             Vector3::new(12.0, 10.0, 3.0), // 24 × 20 × 6 mm — x widest, z thinnest
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/expect/panic.
+
+    use super::test_support::{box_mesh, synthetic_disc};
+    use super::*;
 
     #[test]
     fn builds_and_derives_the_ml_axis_and_pivot() {
@@ -513,6 +520,26 @@ mod tests {
             (disc.center_native() - Point3::new(100.0, 100.0, 950.0)).norm() < 1e-9,
             "pivot is the native-mm AABB centre, got {:?}",
             disc.center_native()
+        );
+    }
+
+    #[test]
+    fn ml_axis_breaks_extent_ties_by_last_max_not_longest_axis() {
+        // Guards the deliberate `max_by` (LAST maximum) tie-break vs `Aabb::longest_axis`
+        // (FIRST maximum): a disc with x and y extents TIED at the widest must pick the
+        // last (y). A regression to `longest_axis()` / a PCA axis would flip a square disc
+        // and silently rotate the whole segment about the wrong axis (a real defect the
+        // PR-A gating review already caught once).
+        let disc = build_bonded_disc(
+            // 20 × 20 × 6 mm: x == y widest (tied), z thinnest (the SI guard).
+            box_mesh(Point3::new(0.0, 0.0, 950.0), Vector3::new(10.0, 10.0, 3.0)),
+            &DiscParams::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            disc.ml_axis(),
+            Vector3::y(),
+            "a tied widest extent must resolve to the LAST axis (y), not the first (x)"
         );
     }
 

@@ -226,11 +226,23 @@ impl CoupledFsu {
     /// Facet contact at flexion `theta` (rad): `(engaged contact count, restoring moment
     /// about the flexion axis in N·m)`. Each repulsive force is oriented along L5's
     /// outward SDF gradient, so the moment genuinely opposes penetration (restoring).
-    /// Zero in flexion (`theta > 0`), engaging in extension.
+    /// Zero in flexion (`theta > 0`), engaging in extension. This is the equilibrium
+    /// solver's hot path, so it only COUNTS the contacts (no point allocation).
     #[must_use]
     pub fn facet_moment(&self, theta: f64) -> (usize, f64) {
-        let (points, moment) = self.facet_response(theta);
-        (points.len(), moment)
+        let mut n = 0;
+        let moment = facet_oriented(
+            &self.g4,
+            &self.g5,
+            self.pivot,
+            self.axis,
+            theta,
+            self.k_facet,
+            |_| {
+                n += 1;
+            },
+        );
+        (n, moment)
     }
 
     /// Facet contact at flexion `theta`: the penetrating contact **points** (native mm) and
@@ -239,14 +251,17 @@ impl CoupledFsu {
     /// actually touch at that pose.
     #[must_use]
     pub fn facet_response(&self, theta: f64) -> (Vec<Point3<f64>>, f64) {
-        facet_response_oriented(
+        let mut points = Vec::new();
+        let moment = facet_oriented(
             &self.g4,
             &self.g5,
             self.pivot,
             self.axis,
             theta,
             self.k_facet,
-        )
+            |p| points.push(p),
+        );
+        (points, moment)
     }
 
     /// Total coupled restoring moment (disc + ligaments + oriented facet contact) about
@@ -543,33 +558,34 @@ fn facet_engaged(
         .count()
 }
 
-/// Facet response at flexion `theta`: the penetrating (engaged) contact **points** (native
-/// mm) and the penalty restoring **moment** about `axis` (N·m). Each repulsive force is
-/// oriented along L5's outward SDF gradient at the contact point, so the moment genuinely
-/// separates L4 from L5 (restoring). One SDF query yields both — a viewer reads the points,
-/// the solver the moment, and the engaged count is `points.len()`.
-fn facet_response_oriented(
+/// Oriented facet penalty **moment** about `axis` (N·m) at flexion `theta`, invoking
+/// `on_point` for each penetrating (engaged) contact point (native mm). Each repulsive
+/// force is oriented along L5's outward SDF gradient at the contact point, so the moment
+/// genuinely separates L4 from L5 (restoring). The callback lets the caller COUNT contacts
+/// (allocation-free — the equilibrium solver's hot path) or COLLECT the points (the
+/// viewer's capture) from one SDF query, without this function committing to a `Vec`.
+fn facet_oriented(
     g4: &Arc<SdfGrid>,
     g5: &Arc<SdfGrid>,
     pivot: Point3<f64>,
     axis: Vector3<f64>,
     theta: f64,
     k_facet: f64,
-) -> (Vec<Point3<f64>>, f64) {
-    let mut points = Vec::new();
+    mut on_point: impl FnMut(Point3<f64>),
+) -> f64 {
     let mut m = Vector3::zeros();
     for c in posed_facet_contacts(g4, g5, pivot, axis, theta) {
         if c.penetration <= 0.0 {
             continue;
         }
-        points.push(c.point);
+        on_point(c.point);
         let g = g5.gradient_clamped(c.point);
         if g.norm() > 1e-9 {
             let f = g.normalize() * (k_facet * c.penetration);
             m += (c.point - pivot).cross(&f);
         }
     }
-    (points, m.dot(&axis) * 1e-3)
+    m.dot(&axis) * 1e-3
 }
 
 #[cfg(test)]
@@ -577,6 +593,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/panic.
 
     use super::*;
+    use crate::test_support::synthetic_disc;
 
     #[test]
     fn solve_decreasing_finds_a_linear_spring_root() {
@@ -664,39 +681,6 @@ mod tests {
             vertices,
             faces: vec![[0, 1, 2]],
         }
-    }
-
-    /// A disc-like synthetic slab (widest x = ML, thinnest z = SI), matching the shape
-    /// `build_bonded_disc` expects, placed at a native-mm-scale offset.
-    fn synthetic_disc() -> IndexedMesh {
-        let c = Point3::new(0.0, 0.0, 950.0);
-        let h = Vector3::new(12.0, 10.0, 3.0);
-        let v = |dx: f64, dy: f64, dz: f64| Point3::new(c.x + dx, c.y + dy, c.z + dz);
-        let vertices = vec![
-            v(-h.x, -h.y, -h.z),
-            v(h.x, -h.y, -h.z),
-            v(h.x, h.y, -h.z),
-            v(-h.x, h.y, -h.z),
-            v(-h.x, -h.y, h.z),
-            v(h.x, -h.y, h.z),
-            v(h.x, h.y, h.z),
-            v(-h.x, h.y, h.z),
-        ];
-        let faces = vec![
-            [0, 3, 2],
-            [0, 2, 1],
-            [4, 5, 6],
-            [4, 6, 7],
-            [0, 1, 5],
-            [0, 5, 4],
-            [2, 3, 7],
-            [2, 7, 6],
-            [0, 4, 7],
-            [0, 7, 3],
-            [1, 2, 6],
-            [1, 6, 5],
-        ];
-        IndexedMesh { vertices, faces }
     }
 
     /// Assemble a synthetic [`CoupledFsu`] directly (the test submodule can name the
@@ -801,12 +785,10 @@ mod tests {
         let (g4, g5) = overlapping_spheres();
         let pivot = Point3::new(0.0, 0.0, -5.0); // offset so the contact has a lever arm
         let axis = Vector3::z();
-        let (p1, m1) = facet_response_oriented(&g4, &g5, pivot, axis, 0.0, 100.0);
-        let (p2, m2) = facet_response_oriented(&g4, &g5, pivot, axis, 0.0, 200.0);
-        assert!(
-            !p1.is_empty() && p1.len() == p2.len(),
-            "same geometry → same engaged count"
-        );
+        let (mut n1, mut n2) = (0usize, 0usize);
+        let m1 = facet_oriented(&g4, &g5, pivot, axis, 0.0, 100.0, |_| n1 += 1);
+        let m2 = facet_oriented(&g4, &g5, pivot, axis, 0.0, 200.0, |_| n2 += 1);
+        assert!(n1 > 0 && n1 == n2, "same geometry → same engaged count");
         assert!(
             (m2 - 2.0 * m1).abs() < 1e-9 * m1.abs().max(1e-12),
             "oriented facet moment must be linear in k_facet: m(200)={m2:.4}, 2·m(100)={:.4}",
