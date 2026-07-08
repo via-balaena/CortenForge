@@ -42,6 +42,7 @@ use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
 use sim_soft::{
     Aabb3, MaterialField, Mesh, MeshingHints, SdfMeshedTetMesh, Vec3, pick_vertices_by_predicate,
+    referenced_vertices,
 };
 // Re-exported: `FlexionTrajectory::boundary_faces` is `Vec<[VertexId; 3]>`, so consumers
 // (e.g. a viewer building a mesh from it) need to name the vertex-index type.
@@ -198,8 +199,20 @@ pub fn build_bonded_disc(mut mesh: IndexedMesh, params: &DiscParams) -> Result<B
     // Endplate faces = bands at the SI surface extremes (field-derived, not z=const).
     let (lo_z, hi_z) = (bbox.min.z, bbox.max.z);
     let band = params.band_frac * (hi_z - lo_z);
-    let inferior = pick_vertices_by_predicate(&tet, |p| p.z < lo_z + band);
-    let superior = pick_vertices_by_predicate(&tet, |p| p.z > hi_z - band);
+    // `largest_component` (and the mesher's own lattice) retain unreferenced "orphan"
+    // vertices; a spatial predicate over ALL positions can pick them, and bonding a
+    // zero-stiffness orphan (or averaging it into the endplate centroid) would silently
+    // skew the disc. Drop orphans first — the established `referenced_vertices` pattern.
+    let referenced: std::collections::HashSet<VertexId> =
+        referenced_vertices(&tet).into_iter().collect();
+    let inferior: Vec<VertexId> = pick_vertices_by_predicate(&tet, |p| p.z < lo_z + band)
+        .into_iter()
+        .filter(|v| referenced.contains(v))
+        .collect();
+    let superior: Vec<VertexId> = pick_vertices_by_predicate(&tet, |p| p.z > hi_z - band)
+        .into_iter()
+        .filter(|v| referenced.contains(v))
+        .collect();
     if inferior.is_empty() || superior.is_empty() {
         bail!(
             "endplate band ({:.4} m) captured no vertices (inferior {}, superior {}) — increase band_frac or refine cell",

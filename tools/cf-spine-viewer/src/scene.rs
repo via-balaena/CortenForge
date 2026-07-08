@@ -25,7 +25,7 @@ use cf_fsu_geometry::{
     BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid, load,
     oracle, segment_frame,
 };
-use cf_fsu_model::{DiscParams, FlexionTrajectory, VertexId, build_bonded_disc};
+use cf_fsu_model::{DiscParams, FlexionTrajectory, build_bonded_disc};
 use mesh_types::{Aabb, IndexedMesh};
 
 /// Peak flexion/extension angle of the captured sweep (degrees). The bonded disc
@@ -219,64 +219,20 @@ fn flexion_sweep() -> Vec<f64> {
         .collect()
 }
 
-/// The boundary faces of the LARGEST connected surface component.
-///
-/// The SDF tet-mesher emits the disc as a main body plus small disconnected islands
-/// (meshing artifacts — and the likely source of the disc solve's near-singular
-/// tangent, since a floating tet component carries unconstrained rigid modes). Those
-/// islands render as scattered fragments, so the viewer draws only the main body. This
-/// filters ONLY the rendered faces; the captured node field (the physics) is untouched.
-fn largest_component_faces(n_nodes: usize, faces: &[[VertexId; 3]]) -> Vec<[VertexId; 3]> {
-    let mut parent: Vec<usize> = (0..n_nodes).collect();
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]]; // path halving
-            x = parent[x];
-        }
-        x
-    }
-    for f in faces {
-        let ra = find(&mut parent, f[0] as usize);
-        let rb = find(&mut parent, f[1] as usize);
-        let rc = find(&mut parent, f[2] as usize);
-        parent[rb] = ra;
-        parent[rc] = ra;
-    }
-    // Each face's vertices share one root; tally faces per component, keep the largest.
-    let roots: Vec<usize> = faces
-        .iter()
-        .map(|f| find(&mut parent, f[0] as usize))
-        .collect();
-    let mut per_root: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-    for &r in &roots {
-        *per_root.entry(r).or_default() += 1;
-    }
-    let Some((&largest, _)) = per_root.iter().max_by_key(|(_, c)| **c) else {
-        return faces.to_vec();
-    };
-    faces
-        .iter()
-        .zip(&roots)
-        .filter(|(_, r)| **r == largest)
-        .map(|(f, _)| *f)
-        .collect()
-}
-
 /// Tet-mesh the real disc, bond it between the two vertebra endplates, and capture a
 /// sub-degree flexion sweep as a replayable trajectory (native mm). Consumes its own
 /// copy of the disc mesh (`build_bonded_disc` recentres + scales it destructively).
-/// The rendered surface is filtered to the disc's largest connected component (the
-/// mesher's spurious islands are dropped from drawing — see [`largest_component_faces`]).
+///
+/// `build_bonded_disc` already drops the mesher's disconnected rim islands
+/// (`SdfMeshedTetMesh::largest_component`), so the captured surface is a single connected
+/// component — the viewer renders it directly, no render-side filtering needed.
 fn capture_flexion(disc: IndexedMesh) -> Result<FlexionTrajectory> {
     let mut bonded = build_bonded_disc(disc, &DiscParams::default())?;
-    let mut traj = bonded.capture_flexion(&flexion_sweep());
-    let before = traj.boundary_faces.len();
-    traj.boundary_faces =
-        largest_component_faces(traj.rest_nodes_native.len(), &traj.boundary_faces);
+    let traj = bonded.capture_flexion(&flexion_sweep());
     println!(
-        "disc surface: kept {} of {before} boundary faces (largest component; dropped {} island faces)",
-        traj.boundary_faces.len(),
-        before - traj.boundary_faces.len()
+        "disc surface: {} nodes, {} boundary faces (single component)",
+        traj.rest_nodes_native.len(),
+        traj.boundary_faces.len()
     );
     Ok(traj)
 }

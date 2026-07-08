@@ -367,6 +367,8 @@ fn flexion_update(
     time: Res<Time<Real>>,
     mut flexion: ResMut<Flexion>,
     mut meshes: ResMut<Assets<Mesh>>,
+    // Reused across frames (cleared + refilled in place) to avoid a per-frame heap alloc.
+    mut flat: Local<Vec<f64>>,
     q_disc: Query<&Mesh3d, With<DiscMesh>>,
     mut q_l4: Query<&mut Transform, With<FlexedL4>>,
 ) {
@@ -402,12 +404,14 @@ fn flexion_update(
     let pivot = flexion.traj.pivot;
     let axis = flexion.traj.axis;
 
-    // Build the exaggerated deformed frame + interpolated true angle in a scoped
-    // borrow of the trajectory, so we can write back `true_theta` afterwards.
-    let (flat, true_theta) = {
+    // Build the exaggerated deformed frame into the reused scratch buffer + the
+    // interpolated true angle, in a scoped borrow so we can write back `true_theta`.
+    // `flat` (a system Local) is independent of `flexion`, so filling it while borrowing
+    // the trajectory is fine.
+    flat.clear();
+    let true_theta = {
         let traj = &flexion.traj;
         let (fa, fb) = (&traj.frames[lo], &traj.frames[hi]);
-        let mut flat = Vec::with_capacity(traj.rest_nodes_native.len() * 3);
         for (i, r) in traj.rest_nodes_native.iter().enumerate() {
             let a = fa.deformed_nodes_native[i];
             let b = fb.deformed_nodes_native[i];
@@ -417,7 +421,7 @@ fn flexion_update(
             flat.push(p.y);
             flat.push(p.z);
         }
-        (flat, fa.theta + (fb.theta - fa.theta) * frac)
+        fa.theta + (fb.theta - fa.theta) * frac
     };
     flexion.true_theta = true_theta;
 

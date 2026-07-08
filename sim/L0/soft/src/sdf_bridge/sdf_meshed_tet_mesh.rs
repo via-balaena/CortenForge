@@ -275,7 +275,15 @@ impl<M: BuildableFromField + Clone> SdfMeshedTetMesh<M> {
         for &r in &roots {
             *per_root.entry(r).or_default() += 1;
         }
-        let Some((&largest, _)) = per_root.iter().max_by_key(|(_, c)| **c) else {
+        // Largest by tet count; DETERMINISTIC tie-break on the smallest root index
+        // (HashMap iteration order is not stable, so a plain `max_by_key` would pick an
+        // arbitrary component run-to-run when two are equal-sized).
+        let Some((&largest, _)) = per_root
+            .iter()
+            .max_by(|(root_a, count_a), (root_b, count_b)| {
+                count_a.cmp(count_b).then_with(|| root_b.cmp(root_a))
+            })
+        else {
             return self.clone(); // no tets — nothing to filter
         };
 
