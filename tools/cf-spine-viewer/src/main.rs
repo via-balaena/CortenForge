@@ -459,9 +459,14 @@ fn flexion_update(
     };
     flexion.true_theta = true_theta;
     flexion.applied = applied;
-    // Facet engagement at the nearest captured frame (integer count — no interpolation).
-    let nearest = flexion.cursor.round().clamp(0.0, max) as usize;
-    flexion.n_facet = flexion.traj.frames[nearest].n_facet;
+    // Interpolate the engaged-contact count between the bracketing frames so the "facets
+    // ENGAGED" readout tracks the interpolated pose (contacts grow monotonically into
+    // extension), rather than snapping at the frame midpoint.
+    let (n_lo, n_hi) = (
+        flexion.traj.frames[lo].n_facet as f64,
+        flexion.traj.frames[hi].n_facet as f64,
+    );
+    flexion.n_facet = (n_lo + (n_hi - n_lo) * frac).round() as usize;
 
     // Rewrite the disc surface (Z-up→Y-up swap + smooth-normal recompute).
     if let Ok(handle) = q_disc.single() {

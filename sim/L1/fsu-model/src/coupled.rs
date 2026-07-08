@@ -292,6 +292,13 @@ impl CoupledFsu {
                     format!("no equilibrium within the ROM bracket for {applied} N·m")
                 })?;
                 let phi = disc_sign * theta; // disc-frame extrapolation angle
+                // At the physiologic flexion peak (~6.13°) this scales the sub-degree field
+                // by ~7×. Deliberately UNCAPPED: the disc surface must track L4's real solved
+                // ROM (a deform cap would unglue the disc top from the vertebra). The old
+                // viewer's ×6 ceiling guarded the *fragmented tet-boundary* render; this
+                // displaces the clean watertight STL surface, which stays coherent at this
+                // scale (user-verified clean at the 6.13° extreme). The ROM itself is bounded
+                // by EQUILIBRIUM_BRACKET, so `s` cannot run away.
                 let (field, s) = if phi >= 0.0 {
                     (&disp_plus, phi / K_DISC_PROBE)
                 } else {
@@ -435,9 +442,13 @@ fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> Option
         }
     }
     let root = 0.5 * (lo + hi);
-    // A monotone bisection drives the residual to ~0; a large residual means the bracket
-    // held no clean root (f non-monotone / discontinuous), so signal no-equilibrium.
-    ((f(root) - target).abs() < 1e-6).then_some(root)
+    // A converged bisection on a continuous `f` drives the residual to ~0. A residual
+    // that stays large means the target fell in a discontinuity gap (no static
+    // equilibrium — the segment would snap) → signal no-equilibrium. The tolerance is set
+    // at 1e-3 N·m: physically negligible, but far above the sub-grid contact-point jitter
+    // of the discretised facet moment (which the 1 mm SDF grid can wobble by ~1e-5 N·m at
+    // a converged root), so a genuine equilibrium is never mistaken for a gap.
+    ((f(root) - target).abs() < 1e-3).then_some(root)
 }
 
 /// The two articular SDF grids posed at flexion `theta` (L4 rotated about `axis`
